@@ -61,7 +61,9 @@ class AggregatedInput(InputHandler):
         """
         self._sources = sources
         self._merge = merge
-        self._pending: dict[str, dict[str, Any]] = {}  # request_id -> {from_stage: data}
+        self._pending: dict[str, dict[str, Any]] = (
+            {}
+        )  # request_id -> {from_stage: data}
 
     def receive(self, request_id: str, from_stage: str, data: Any) -> Any | None:
         if from_stage not in self._sources:

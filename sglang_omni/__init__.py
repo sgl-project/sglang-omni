@@ -12,7 +12,11 @@ from sglang_omni.core.types import (
 )
 from sglang_omni.engine.base import EchoEngine, Engine
 from sglang_omni.pipeline.coordinator import Coordinator
-from sglang_omni.pipeline.input_handler import AggregatedInput, DirectInput, InputHandler
+from sglang_omni.pipeline.input_handler import (
+    AggregatedInput,
+    DirectInput,
+    InputHandler,
+)
 from sglang_omni.pipeline.stage import Stage
 from sglang_omni.pipeline.worker import Worker
 

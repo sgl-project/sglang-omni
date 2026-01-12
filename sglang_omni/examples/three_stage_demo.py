@@ -20,7 +20,7 @@ from typing import Any
 
 sys.path.insert(0, "/vllm-workspace/sglang-omni")
 
-from sglang_omni import Coordinator, EchoEngine, Stage, Worker
+from sglang_omni import Coordinator
 
 logging.basicConfig(
     level=logging.INFO,

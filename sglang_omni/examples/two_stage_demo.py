@@ -22,7 +22,7 @@ from typing import Any
 # Add parent directory to path for imports
 sys.path.insert(0, "/vllm-workspace/sglang-omni")
 
-from sglang_omni import Coordinator, EchoEngine, Stage, Worker
+from sglang_omni import Coordinator
 
 # Configure logging
 logging.basicConfig(

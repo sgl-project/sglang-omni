@@ -34,7 +34,9 @@ class Engine(ABC):
         """Abort a request."""
         ...
 
-    def transform_output(self, request_id: str, output: Any, next_stage: str | None) -> Any:
+    def transform_output(
+        self, request_id: str, output: Any, next_stage: str | None
+    ) -> Any:
         """Transform output before sending to next stage.
 
         Override this to customize output transformation per next_stage.
