@@ -3,7 +3,7 @@
 
 from typing import Any
 
-from sglang_omni.core.types import SHMMetadata
+from sglang_omni.proto import SHMMetadata
 from sglang_omni.relay.operations.base import BaseReadableOperation, BaseReadOperation
 
 

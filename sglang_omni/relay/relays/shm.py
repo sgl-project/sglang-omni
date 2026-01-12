@@ -6,7 +6,7 @@ import pickle
 from multiprocessing import shared_memory as _shm
 from typing import Any
 
-from sglang_omni.core.types import SHMMetadata
+from sglang_omni.proto import SHMMetadata
 from sglang_omni.relay.descriptor import Descriptor
 from sglang_omni.relay.operations.shm import SHMReadableOperation, SHMReadOperation
 from sglang_omni.relay.relays.base import Relay

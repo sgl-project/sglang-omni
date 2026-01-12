@@ -10,7 +10,7 @@ from typing import Any, Callable
 
 import numpy as np
 
-from sglang_omni.core.types import (
+from sglang_omni.proto import (
     DataReadyMessage,
     ShutdownMessage,
     StageInfo,

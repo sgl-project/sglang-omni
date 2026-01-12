@@ -10,8 +10,8 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
-from sglang_omni.core.types import CompleteMessage, DataReadyMessage
-from sglang_omni.engine.base import Engine
+from sglang_omni.engines.base import Engine
+from sglang_omni.proto import CompleteMessage, DataReadyMessage
 from sglang_omni.relay.descriptor import Descriptor
 from sglang_omni.relay.relays.shm import SHMRelay
 
