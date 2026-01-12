@@ -10,14 +10,14 @@ from typing import Any, Callable
 
 import numpy as np
 
+from sglang_omni.pipeline.input_handler import DirectInput, InputHandler
+from sglang_omni.pipeline.worker import Worker
 from sglang_omni.proto import (
     DataReadyMessage,
     ShutdownMessage,
     StageInfo,
     SubmitMessage,
 )
-from sglang_omni.pipeline.input_handler import DirectInput, InputHandler
-from sglang_omni.pipeline.worker import Worker
 from sglang_omni.relay.descriptor import Descriptor
 from sglang_omni.relay.relays.base import Relay
 from sglang_omni.relay.relays.nixl import NIXLRelay
