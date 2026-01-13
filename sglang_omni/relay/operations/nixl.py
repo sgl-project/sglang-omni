@@ -1,14 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
-"""NIXL operation classes - re-exported from nixl.connector module.
+"""NIXL operation classes."""
 
-NIXL operations are tightly coupled with the Connection and Connector classes,
-so they remain in the nixl.connector module and are re-exported here for convenience.
-"""
+from typing import Any
 
-# Re-export NIXL operation classes
-# These classes are defined in sglang_omni.relay.nixl.connector
-# and are re-exported here for API consistency
-
+from sglang_omni.relay.operations.base import BaseReadOperation
 from sglang_omni.relay.nixl import (
     RdmaMetadata,
     ReadableOperation,
@@ -16,6 +11,12 @@ from sglang_omni.relay.nixl import (
     WritableOperation,
     WriteOperation,
 )
+
+
+
+# Re-export NIXL operation classes
+# These classes are defined in sglang_omni.relay.nixl.connector
+# and are re-exported here for API consistency
 
 __all__ = [
     "ReadOperation",

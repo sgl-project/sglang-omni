@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Shared memory operation classes."""
 
-from typing import Any
-
-from sglang_omni.core.types import SHMMetadata
+from sglang_omni.relay.nixl import SHMMetadata
 from sglang_omni.relay.operations.base import BaseReadableOperation, BaseReadOperation
 
 
@@ -15,8 +13,8 @@ class SHMReadableOperation(BaseReadableOperation):
     - wait_for_completion(): No-op for SHM (write is synchronous)
     """
 
-    def __init__(self, shm_metadata: SHMMetadata):
-        self._metadata = shm_metadata
+    def __init__(self, metadata: SHMMetadata):
+        self._metadata = metadata
 
     def metadata(self) -> SHMMetadata:
         """Return the SHM metadata for this operation."""
@@ -31,11 +29,14 @@ class SHMReadOperation(BaseReadOperation):
 
     Provides:
     - wait_for_completion(): No-op for SHM (read is synchronous)
-    - data: The deserialized data (available immediately)
     """
 
-    def __init__(self, data: Any, size: int):
-        self.data = data
+    def __init__(self, size: int = 0):
+        """Initialize SHMReadOperation.
+
+        Args:
+            size: Total size of the data in bytes
+        """
         self._size = size
 
     @property
@@ -45,3 +46,5 @@ class SHMReadOperation(BaseReadOperation):
 
     async def wait_for_completion(self) -> None:
         """Wait for the operation to complete. No-op for SHM (synchronous)."""
+
+

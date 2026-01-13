@@ -28,6 +28,7 @@ from abc import ABC, abstractmethod
 from enum import IntEnum
 from functools import cached_property
 from typing import Any, List, Optional
+from dataclasses import dataclass, field
 
 from pydantic import BaseModel, ConfigDict, field_validator
 
@@ -1218,7 +1219,6 @@ class ReadableOperation(PassiveOperation, BaseReadableOperation):
         """
         await super()._wait_for_completion_()
 
-
 class RdmaMetadata(BaseModel):
     """
     Pydantic serialization type for describing the passive side of a transfer.
@@ -1254,6 +1254,83 @@ class RdmaMetadata(BaseModel):
                 "Argument `operation_kind` must be an integer value of `dynamo.nixl_connect.OperationKind`."
             )
         return v
+
+@dataclass
+class SHMMetadata:
+    """Metadata for shared memory segment(s).
+    
+    Supports both single segment (legacy) and multiple descriptors (new format).
+    The new format is compatible with RdmaMetadata structure.
+    """
+
+    name: str = ""  # SHM segment name (system-generated) - legacy single segment
+    size: int = 0  # Size in bytes - legacy single segment
+    descriptors: list[SerializedDescriptor] = field(default_factory=list)  # List of SerializedDescriptor - new format (compatible with RdmaMetadata)
+    shm_segments: list[dict[str, Any]] = field(default_factory=list)  # List of {name, size} for each descriptor - new format
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize to dictionary."""
+        if self.descriptors and len(self.descriptors) > 0:
+            # New format: multiple descriptors (compatible with RdmaMetadata)
+            serialized_descriptors = []
+            for desc in self.descriptors:
+                serialized_descriptors.append(desc.model_dump())
+            
+            return {
+                "descriptors": serialized_descriptors,
+                "shm_segments": self.shm_segments,
+                "_type": "SHMMetadata",
+            }
+        else:
+            # Legacy format: single segment
+            return {"name": self.name, "size": self.size, "_type": "SHMMetadata"}
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> "SHMMetadata":
+        """Deserialize from dictionary."""
+        if "descriptors" in d and d["descriptors"]:
+            descriptors = []
+            for desc_dict in d["descriptors"]:
+                if isinstance(desc_dict, dict):
+                    descriptors.append(SerializedDescriptor(**desc_dict))
+                else:
+                    descriptors.append(desc_dict)
+            
+            return cls(
+                descriptors=descriptors,
+                shm_segments=d.get("shm_segments", []),
+            )
+        else:
+            # Legacy format: single segment
+            return cls(name=d["name"], size=d["size"])
+
+    def to_descriptors(self) -> Any:
+        """Convert to Descriptor(s), compatible with RdmaMetadata interface.
+        
+        Returns:
+            Descriptor or list[Descriptor]: Descriptor objects for receiving data.
+            The size information comes from shm_segments (actual data size in SHM).
+        """        
+        desc_list = []
+        for i, serialized_desc in enumerate(self.descriptors):
+            # Use size from shm_segments if available (actual data size)
+            if self.shm_segments and i < len(self.shm_segments):
+                actual_size = self.shm_segments[i]["size"]
+                # Create descriptor with actual size from SHM segment
+                desc = Descriptor(data=(
+                    serialized_desc.ptr if serialized_desc.ptr != 0 else 1,  # Placeholder if ptr is 0
+                    actual_size,  # Use actual size from SHM segment
+                    serialized_desc.device,
+                    None
+                ))
+            else:
+                # Fallback to serialized descriptor size
+                desc = serialized_desc.to_descriptor()
+            desc_list.append(desc)
+        
+        if len(desc_list) == 1:
+            return desc_list[0]
+        return desc_list
 
 
 class Remote:

@@ -7,7 +7,6 @@ from sglang_omni.core.types import (
     CompleteMessage,
     DataReadyMessage,
     RequestState,
-    SHMMetadata,
     StageInfo,
 )
 from sglang_omni.engine.base import EchoEngine, Engine
@@ -39,5 +38,4 @@ __all__ = [
     "DataReadyMessage",
     "AbortMessage",
     "CompleteMessage",
-    "SHMMetadata",
 ]

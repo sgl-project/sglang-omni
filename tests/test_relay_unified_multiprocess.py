@@ -1,11 +1,17 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Multiprocess tests for relay implementations (NIXLRelay and SHMRelay)."""
+"""Multiprocess tests for relay implementations (NIXLRelay and SHMRelay).
+
+This test follows the same pattern as stage.py and worker.py:
+- Sender: serializes data, creates descriptors, uses put_async (like worker)
+- Receiver: creates local descriptors, uses get_async, extracts data directly (like stage)
+"""
 
 import asyncio
 import multiprocessing
 import pickle
 from queue import Empty
 
+import numpy as np
 import pytest
 import torch
 
@@ -23,7 +29,7 @@ from sglang_omni.relay.descriptor import Descriptor
 def sender_process(
     relay_type, config, queue, done_event, num_transfers, data_size, results
 ):
-    """Sender process: creates data and sends via put_async."""
+    """Sender process: creates data and sends via put_async (following worker.py pattern)."""
 
     async def run():
         if relay_type == "nixl":
@@ -39,16 +45,35 @@ def sender_process(
 
         try:
             for i in range(num_transfers):
+                # Create test data
                 tensor = torch.randn(data_size, dtype=torch.bfloat16, device=device)
                 original = tensor.cpu().clone()
 
-                readable_op = await connector.put_async([Descriptor(tensor)])
+                # Follow worker.py pattern: serialize data first
+                # This allows both SHMRelay and NIXLRelay to use the same descriptor format
+                serialized_data = pickle.dumps(tensor)
+                data_size_bytes = len(serialized_data)
+
+                # Create a numpy buffer to hold the serialized data (like worker.py)
+                buffer = np.frombuffer(serialized_data, dtype=np.uint8).copy()
+
+                # Create descriptor with serialized data buffer (like worker.py)
+                descriptor = Descriptor((
+                    buffer.ctypes.data,
+                    data_size_bytes,
+                    "cpu",
+                    buffer
+                ))
+
+                # Put data and get metadata (like worker.py)
+                readable_op = await connector.put_async([descriptor])
                 metadata = readable_op.metadata()
 
-                # Serialize metadata
+                # Serialize metadata for inter-process communication
                 try:
                     meta_bytes = pickle.dumps(metadata)
                 except Exception:
+                    # Fallback: convert to dict if direct pickle fails
                     meta_dict = (
                         metadata.model_dump()
                         if hasattr(metadata, "model_dump")
@@ -56,21 +81,22 @@ def sender_process(
                     )
                     meta_bytes = pickle.dumps(meta_dict)
 
+                # Send metadata and original data for verification
                 queue.put(
                     {
                         "metadata": meta_bytes,
-                        "size": data_size,
-                        "dtype": tensor.dtype,
                         "original": pickle.dumps(original),
-                        "relay_type": relay_type,
                     }
                 )
 
+                # Wait for completion if needed (like worker.py)
                 if hasattr(readable_op, "wait_for_completion"):
                     await readable_op.wait_for_completion()
 
             queue.put(None)  # Signal completion
-            done_event.wait(timeout=300)
+            # Wait for receiver to finish processing
+            if not done_event.wait(timeout=300):
+                results["sender_error"] = "Timeout waiting for receiver to complete"
         except Exception as e:
             results["sender_error"] = str(e)
             import traceback
@@ -78,12 +104,17 @@ def sender_process(
             results["sender_traceback"] = traceback.format_exc()
         finally:
             connector.close()
+            # Ensure done_event is set even if sender fails
+            try:
+                done_event.set()
+            except:
+                pass
 
     asyncio.run(run())
 
 
 def receiver_process(relay_type, config, queue, done_event, num_transfers, results):
-    """Receiver process: receives data via get_async."""
+    """Receiver process: receives data via get_async (following stage.py pattern)."""
 
     async def run():
         if relay_type == "nixl":
@@ -91,12 +122,11 @@ def receiver_process(relay_type, config, queue, done_event, num_transfers, resul
             from sglang_omni.relay.relays.nixl import NIXLRelay
 
             connector = NIXLRelay(config)
-            device = f'cuda:{config["gpu_id"]}' if torch.cuda.is_available() else "cpu"
         else:
+            from sglang_omni.relay.operations.shm import SHMMetadata
             from sglang_omni.relay.relays.shm import SHMRelay
 
             connector = SHMRelay(config)
-            device = "cpu"
 
         try:
             count = 0
@@ -109,39 +139,77 @@ def receiver_process(relay_type, config, queue, done_event, num_transfers, resul
                     # Deserialize metadata
                     meta_obj = pickle.loads(item["metadata"])
 
+                    # Reconstruct metadata object (like stage.py)
                     if relay_type == "nixl":
                         metadata = (
                             RdmaMetadata(**meta_obj)
                             if isinstance(meta_obj, dict)
                             else meta_obj
                         )
-                        # Receive data into buffer for NIXL
-                        buffer = torch.empty(
-                            item["size"], dtype=item["dtype"], device=device
-                        )
-                        read_op = await connector.get_async(
-                            metadata, [Descriptor(buffer)]
-                        )
-                        if hasattr(read_op, "wait_for_completion"):
-                            await read_op.wait_for_completion()
-                        received = buffer.cpu()
                     else:
-                        # For SHM, metadata reconstruction depends on implementation
-                        if isinstance(meta_obj, dict):
-                            from sglang_omni.relay.operations.shm import SHMMetadata
-
-                            metadata = SHMMetadata(**meta_obj)
-                        else:
-                            metadata = meta_obj
-
-                        # SHM returns data directly
-                        read_op = await connector.get_async(metadata, [])
-                        received_data = read_op.data
-                        received = (
-                            received_data.cpu()
-                            if isinstance(received_data, torch.Tensor)
-                            else torch.tensor(received_data).cpu()
+                        metadata = (
+                            SHMMetadata(**meta_obj)
+                            if isinstance(meta_obj, dict)
+                            else meta_obj
                         )
+
+                    # Follow stage.py pattern: extract remote descriptors from metadata
+                    remote_descriptors = metadata.to_descriptors()
+
+                    # Handle both single Descriptor and list[Descriptor] cases (like stage.py)
+                    if isinstance(remote_descriptors, list):
+                        # Multiple descriptors - create buffers for each
+                        local_descriptors = []
+                        for remote_desc in remote_descriptors:
+                            # Create a buffer of the same size (like stage.py)
+                            buffer = np.empty(remote_desc.size, dtype=np.uint8)
+                            local_desc = Descriptor((
+                                buffer.ctypes.data,
+                                remote_desc.size,
+                                "cpu",
+                                buffer
+                            ))
+                            local_descriptors.append(local_desc)
+                    else:
+                        # Single descriptor (like stage.py)
+                        buffer = np.empty(remote_descriptors.size, dtype=np.uint8)
+                        local_desc = Descriptor((
+                            buffer.ctypes.data,
+                            remote_descriptors.size,
+                            "cpu",
+                            buffer
+                        ))
+                        local_descriptors = [local_desc]
+
+                    # Unified interface: both SHMRelay and NIXLRelay use descriptors (like stage.py)
+                    read_op = await connector.get_async(
+                        metadata=metadata,
+                        descriptors=local_descriptors
+                    )
+
+                    # Wait for data transfer to complete (like stage.py)
+                    await read_op.wait_for_completion()
+
+                    # Extract and deserialize data directly from local_descriptors buffers (like stage.py)
+                    if len(local_descriptors) == 1:
+                        # Single descriptor: extract directly
+                        buffer = local_descriptors[0]._data_ref
+                        buffer_bytes = buffer.tobytes()
+                    else:
+                        # Multiple descriptors: concatenate data from all descriptors
+                        buffer_parts = []
+                        for desc in local_descriptors:
+                            buffer_parts.append(desc._data_ref.tobytes())
+                        buffer_bytes = b"".join(buffer_parts)
+
+                    # Deserialize the data (like stage.py)
+                    received_data = pickle.loads(buffer_bytes)
+
+                    # Convert to tensor for verification
+                    if isinstance(received_data, torch.Tensor):
+                        received = received_data.cpu()
+                    else:
+                        received = torch.tensor(received_data).cpu()
 
                     # Verify data
                     original = pickle.loads(item["original"])
@@ -164,6 +232,8 @@ def receiver_process(relay_type, config, queue, done_event, num_transfers, resul
 
                     count += 1
                 except Empty:
+                    # Queue timeout - sender may have failed or finished
+                    results["receiver_error"] = "Queue timeout: no data received within 60 seconds"
                     break
                 except Exception as e:
                     results["receiver_error"] = str(e)
@@ -173,13 +243,14 @@ def receiver_process(relay_type, config, queue, done_event, num_transfers, resul
                     break
 
             results["transfers_completed"] = count
-            done_event.set()
         except Exception as e:
             results["receiver_error"] = str(e)
             import traceback
 
             results["receiver_traceback"] = traceback.format_exc()
         finally:
+            # Always set done_event to unblock sender, even on error
+            done_event.set()
             connector.close()
 
     asyncio.run(run())
@@ -187,7 +258,12 @@ def receiver_process(relay_type, config, queue, done_event, num_transfers, resul
 
 @pytest.mark.parametrize("relay_type", ["nixl", "shm"])
 def test_multiprocess_transfer(relay_type):
-    """Test data transfer between two processes using different relay implementations."""
+    """Test data transfer between two processes using different relay implementations.
+
+    This test follows the same pattern as stage.py and worker.py:
+    - Sender uses put_async with serialized data descriptors (like worker)
+    - Receiver uses get_async with local descriptors and extracts data directly (like stage)
+    """
 
     if relay_type == "nixl":
         if torch.cuda.is_available() and torch.cuda.device_count() < 2:

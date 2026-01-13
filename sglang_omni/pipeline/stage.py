@@ -213,52 +213,47 @@ class Stage:
             self.relay.cleanup(request_id)
             return
 
-        # Read data using relay interface
+        # Read data using unified relay interface with descriptors
         try:
-            # Determine relay type and prepare descriptors accordingly
-            if isinstance(self.relay, SHMRelay):
-                # SHMRelay: descriptors can be empty, data is in read_op.data
-                read_op = await self.relay.get_async(metadata=msg.shm_metadata, descriptors=[])
-                await read_op.wait_for_completion()
-                data = read_op.data
+            # Extract remote descriptors from metadata to determine data size and structure
+            remote_descriptors = msg.metadata.to_descriptors()
+            
+            # Handle both single Descriptor and list[Descriptor] cases
+            if isinstance(remote_descriptors, list):
+                # Multiple descriptors - create buffers for each
+                local_descriptors = []
+                for remote_desc in remote_descriptors:
+                    # Create a buffer of the same size
+                    buffer = np.empty(remote_desc.size, dtype=np.uint8)
+                    local_desc = Descriptor((buffer.ctypes.data, remote_desc.size, "cpu", buffer))
+                    local_descriptors.append(local_desc)
             else:
-                # NIXLRelay: need to create descriptors from metadata
-                # Extract remote descriptors from metadata
-                remote_descriptors = msg.shm_metadata.to_descriptors()
-                
-                # Create local descriptors (buffers) to receive data
-                # Handle both single Descriptor and list[Descriptor] cases
-                if isinstance(remote_descriptors, list):
-                    # Multiple descriptors - create buffers for each
-                    local_descriptors = []
-                    for remote_desc in remote_descriptors:
-                        # Create a buffer of the same size
-                        buffer = np.empty(remote_desc.size, dtype=np.uint8)
-                        local_desc = Descriptor((buffer.ctypes.data, remote_desc.size, "cpu", buffer))
-                        local_descriptors.append(local_desc)
-                else:
-                    # Single descriptor
-                    buffer = np.empty(remote_descriptors.size, dtype=np.uint8)
-                    local_desc = Descriptor((buffer.ctypes.data, remote_descriptors.size, "cpu", buffer))
-                    local_descriptors = [local_desc]
-
-                
-                read_op = await self.relay.get_async(metadata=msg.shm_metadata, descriptors=local_descriptors)
-                await read_op.wait_for_completion()
-                
-                # Extract data from buffer(s)
-                # For simple Python objects, data should be in the first buffer
-                if len(local_descriptors) > 0:
-                    buffer = local_descriptors[0]._data_ref
-                    # Deserialize the data (assuming it was pickled)
-                    data = pickle.loads(buffer.tobytes())
-                else:
-                    logger.error(
-                        "Stage %s: no descriptors to extract data from for req=%s",
-                        self.name,
-                        request_id,
-                    )
-                    return
+                # Single descriptor
+                buffer = np.empty(remote_descriptors.size, dtype=np.uint8)
+                local_desc = Descriptor((buffer.ctypes.data, remote_descriptors.size, "cpu", buffer))
+                local_descriptors = [local_desc]
+            
+            # Unified interface: both SHMRelay and NIXLRelay use descriptors
+            read_op = await self.relay.get_async(metadata=msg.metadata, descriptors=local_descriptors)
+            
+            # Wait for data transfer to complete (data is now in local_descriptors buffers)
+            await read_op.wait_for_completion()
+            
+            # Extract and deserialize data directly from local_descriptors buffers
+            # This avoids going through read_op.data and eliminates an extra abstraction layer
+            if len(local_descriptors) == 1:
+                # Single descriptor: extract directly
+                buffer = local_descriptors[0]._data_ref
+                buffer_bytes = buffer.tobytes()
+            else:
+                # Multiple descriptors: concatenate data from all descriptors
+                buffer_parts = []
+                for desc in local_descriptors:
+                    buffer_parts.append(desc._data_ref.tobytes())
+                buffer_bytes = b"".join(buffer_parts)
+            
+            # Deserialize the data (assuming it was pickled)
+            data = pickle.loads(buffer_bytes)
         except Exception as e:
             logger.error(
                 "Stage %s failed to get data for req=%s: %s", self.name, request_id, e

@@ -1,6 +1,14 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Unified tests for relay implementations (NIXLRelay and SHMRelay)."""
+"""Unified tests for relay implementations (NIXLRelay and SHMRelay).
 
+This test follows the same pattern as stage.py and worker.py:
+- Sender: serializes data, creates descriptors, uses put/put_async (like worker)
+- Receiver: creates local descriptors, uses get/get_async, extracts data directly (like stage)
+"""
+
+import pickle
+
+import numpy as np
 import pytest
 import torch
 
@@ -43,21 +51,6 @@ def relay_configs(relay_class):
     return [{}, {}]
 
 
-def _get_device(relay_class, config):
-    if relay_class.__name__ == "NIXLRelay":
-        return f'cuda:{config["gpu_id"]}' if torch.cuda.is_available() else "cpu"
-    return "cpu"
-
-
-def _get_received_data(relay_class, read_op, buffer=None):
-    if relay_class.__name__ == "SHMRelay":
-        data = read_op.data
-        return (
-            data.cpu() if isinstance(data, torch.Tensor) else torch.tensor(data).cpu()
-        )
-    return buffer.cpu() if buffer is not None else None
-
-
 def _create_connectors(relay_class, configs):
     try:
         return relay_class(configs[0]), relay_class(configs[1])
@@ -67,33 +60,65 @@ def _create_connectors(relay_class, configs):
 
 class TestRelayUnified:
     def test_transfer(self, relay_class, relay_configs):
+        """Test synchronous data transfer (following worker.py and stage.py patterns)."""
         connector0, connector1 = _create_connectors(relay_class, relay_configs)
         try:
-            device0, device1 = _get_device(relay_class, relay_configs[0]), _get_device(
-                relay_class, relay_configs[1]
-            )
-            test_tensor = torch.randn(100000, dtype=torch.bfloat16, device=device0)
+            # Create test data
+            test_tensor = torch.randn(100000, dtype=torch.bfloat16, device="cpu")
             original = test_tensor.cpu().clone()
 
-            readable_op = connector0.put([Descriptor(test_tensor)])
+            # Follow worker.py pattern: serialize data first
+            # This allows both SHMRelay and NIXLRelay to use the same descriptor format
+            serialized_data = pickle.dumps(test_tensor)
+            data_size = len(serialized_data)
+
+            # Create a numpy buffer to hold the serialized data (like worker.py)
+            buffer = np.frombuffer(serialized_data, dtype=np.uint8).copy()
+
+            # Create descriptor with serialized data buffer (like worker.py)
+            descriptor = Descriptor((
+                buffer.ctypes.data,
+                data_size,
+                "cpu",
+                buffer
+            ))
+
+            # Put data and get metadata (like worker.py)
+            readable_op = connector0.put([descriptor])
             metadata = readable_op.metadata()
 
-            buffer = None
-            if relay_class.__name__ == "SHMRelay":
-                read_op = connector1.get(metadata, [])
-            else:
-                desc_meta = (
-                    metadata.descriptors[0]
-                    if hasattr(metadata, "descriptors")
-                    else metadata
-                )
-                buffer = torch.empty(
-                    desc_meta.size // test_tensor.element_size(),
-                    dtype=test_tensor.dtype,
-                    device=device1,
-                )
-                read_op = connector1.get(metadata, [Descriptor(buffer)])
+            # Follow stage.py pattern: extract remote descriptors from metadata
+            remote_descriptors = metadata.to_descriptors()
 
+            # Handle both single Descriptor and list[Descriptor] cases (like stage.py)
+            if isinstance(remote_descriptors, list):
+                # Multiple descriptors - create buffers for each
+                local_descriptors = []
+                for remote_desc in remote_descriptors:
+                    # Create a buffer of the same size (like stage.py)
+                    recv_buffer = np.empty(remote_desc.size, dtype=np.uint8)
+                    local_desc = Descriptor((
+                        recv_buffer.ctypes.data,
+                        remote_desc.size,
+                        "cpu",
+                        recv_buffer
+                    ))
+                    local_descriptors.append(local_desc)
+            else:
+                # Single descriptor (like stage.py)
+                recv_buffer = np.empty(remote_descriptors.size, dtype=np.uint8)
+                local_desc = Descriptor((
+                    recv_buffer.ctypes.data,
+                    remote_descriptors.size,
+                    "cpu",
+                    recv_buffer
+                ))
+                local_descriptors = [local_desc]
+
+            # Unified interface: both SHMRelay and NIXLRelay use descriptors (like stage.py)
+            read_op = connector1.get(metadata=metadata, descriptors=local_descriptors)
+
+            # Wait for data transfer to complete (like stage.py)
             if hasattr(read_op, "wait_for_completion"):
                 coro = read_op.wait_for_completion()
                 if coro:
@@ -101,11 +126,30 @@ class TestRelayUnified:
                         connector1._run_maybe_async(coro)
                     else:
                         import asyncio
-
                         asyncio.run(coro)
 
-            received = _get_received_data(relay_class, read_op, buffer)
+            # Extract and deserialize data directly from local_descriptors buffers (like stage.py)
+            if len(local_descriptors) == 1:
+                # Single descriptor: extract directly
+                buffer = local_descriptors[0]._data_ref
+                buffer_bytes = buffer.tobytes()
+            else:
+                # Multiple descriptors: concatenate data from all descriptors
+                buffer_parts = []
+                for desc in local_descriptors:
+                    buffer_parts.append(desc._data_ref.tobytes())
+                buffer_bytes = b"".join(buffer_parts)
 
+            # Deserialize the data (like stage.py)
+            received_data = pickle.loads(buffer_bytes)
+
+            # Convert to tensor for verification
+            if isinstance(received_data, torch.Tensor):
+                received = received_data.cpu()
+            else:
+                received = torch.tensor(received_data).cpu()
+
+            # Verify data
             assert (
                 original.shape == received.shape
             ), f"Shape mismatch: {original.shape} vs {received.shape}"
@@ -127,39 +171,89 @@ class TestRelayUnified:
 
     @pytest.mark.asyncio
     async def test_transfer_async(self, relay_class, relay_configs):
+        """Test asynchronous data transfer (following worker.py and stage.py patterns)."""
         connector0, connector1 = _create_connectors(relay_class, relay_configs)
         try:
-            device0, device1 = _get_device(relay_class, relay_configs[0]), _get_device(
-                relay_class, relay_configs[1]
-            )
-            test_tensor = torch.randn(100000, dtype=torch.bfloat16, device=device0)
+            # Create test data
+            test_tensor = torch.randn(100000, dtype=torch.bfloat16, device="cpu")
             original = test_tensor.cpu().clone()
 
-            readable_op = await connector0.put_async([Descriptor(test_tensor)])
+            # Follow worker.py pattern: serialize data first
+            # This allows both SHMRelay and NIXLRelay to use the same descriptor format
+            serialized_data = pickle.dumps(test_tensor)
+            data_size = len(serialized_data)
+
+            # Create a numpy buffer to hold the serialized data (like worker.py)
+            buffer = np.frombuffer(serialized_data, dtype=np.uint8).copy()
+
+            # Create descriptor with serialized data buffer (like worker.py)
+            descriptor = Descriptor((
+                buffer.ctypes.data,
+                data_size,
+                "cpu",
+                buffer
+            ))
+
+            # Put data and get metadata (like worker.py)
+            readable_op = await connector0.put_async([descriptor])
             metadata = readable_op.metadata()
 
-            if relay_class.__name__ == "SHMRelay":
-                read_op = await connector1.get_async(metadata, [])
+            # Follow stage.py pattern: extract remote descriptors from metadata
+            remote_descriptors = metadata.to_descriptors()
+
+            # Handle both single Descriptor and list[Descriptor] cases (like stage.py)
+            if isinstance(remote_descriptors, list):
+                # Multiple descriptors - create buffers for each
+                local_descriptors = []
+                for remote_desc in remote_descriptors:
+                    # Create a buffer of the same size (like stage.py)
+                    recv_buffer = np.empty(remote_desc.size, dtype=np.uint8)
+                    local_desc = Descriptor((
+                        recv_buffer.ctypes.data,
+                        remote_desc.size,
+                        "cpu",
+                        recv_buffer
+                    ))
+                    local_descriptors.append(local_desc)
             else:
-                desc_meta = (
-                    metadata.descriptors[0]
-                    if hasattr(metadata, "descriptors")
-                    else metadata
-                )
-                buffer = torch.empty(
-                    desc_meta.size // test_tensor.element_size(),
-                    dtype=test_tensor.dtype,
-                    device=device1,
-                )
-                read_op = await connector1.get_async(metadata, [Descriptor(buffer)])
+                # Single descriptor (like stage.py)
+                recv_buffer = np.empty(remote_descriptors.size, dtype=np.uint8)
+                local_desc = Descriptor((
+                    recv_buffer.ctypes.data,
+                    remote_descriptors.size,
+                    "cpu",
+                    recv_buffer
+                ))
+                local_descriptors = [local_desc]
 
-            if hasattr(read_op, "wait_for_completion"):
-                await read_op.wait_for_completion()
+            # Unified interface: both SHMRelay and NIXLRelay use descriptors (like stage.py)
+            read_op = await connector1.get_async(metadata=metadata, descriptors=local_descriptors)
 
-            buffer = buffer if relay_class.__name__ != "SHMRelay" else None
-            received = _get_received_data(relay_class, read_op, buffer)
+            # Wait for data transfer to complete (like stage.py)
+            await read_op.wait_for_completion()
 
-            # 详细的数据一致性检查
+            # Extract and deserialize data directly from local_descriptors buffers (like stage.py)
+            if len(local_descriptors) == 1:
+                # Single descriptor: extract directly
+                buffer = local_descriptors[0]._data_ref
+                buffer_bytes = buffer.tobytes()
+            else:
+                # Multiple descriptors: concatenate data from all descriptors
+                buffer_parts = []
+                for desc in local_descriptors:
+                    buffer_parts.append(desc._data_ref.tobytes())
+                buffer_bytes = b"".join(buffer_parts)
+
+            # Deserialize the data (like stage.py)
+            received_data = pickle.loads(buffer_bytes)
+
+            # Convert to tensor for verification
+            if isinstance(received_data, torch.Tensor):
+                received = received_data.cpu()
+            else:
+                received = torch.tensor(received_data).cpu()
+
+            # Verify data
             assert (
                 original.shape == received.shape
             ), f"Shape mismatch: {original.shape} vs {received.shape}"
@@ -170,7 +264,6 @@ class TestRelayUnified:
                 original, received, rtol=1e-5, atol=1e-5
             ), f"Data mismatch: max diff = {torch.max(torch.abs(original - received)).item()}"
 
-            # 验证数据完整性：检查是否有NaN或Inf
             assert not torch.isnan(received).any(), "Received data contains NaN"
             assert not torch.isinf(received).any(), "Received data contains Inf"
         finally:
@@ -178,6 +271,7 @@ class TestRelayUnified:
             connector1.close()
 
     def test_health(self, relay_class, relay_configs):
+        """Test relay health check."""
         connector = _create_connectors(relay_class, relay_configs)[0]
         try:
             health = connector.health()
@@ -186,6 +280,7 @@ class TestRelayUnified:
             connector.close()
 
     def test_cleanup(self, relay_class, relay_configs):
+        """Test relay cleanup."""
         connector = _create_connectors(relay_class, relay_configs)[0]
         try:
             connector.cleanup("test_request_id")

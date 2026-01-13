@@ -2,7 +2,10 @@
 
 import asyncio
 import logging
+import pickle
 from typing import Any
+
+import numpy as np
 
 from sglang_omni.relay.descriptor import Descriptor
 from sglang_omni.relay.nixl import (
@@ -183,7 +186,7 @@ class NIXLRelay(Relay):
 
         Returns
         -------
-        Any
+        ReadOperation
             Read operation object with wait_for_completion() method
         """
         if not self.connector:
@@ -205,6 +208,8 @@ class NIXLRelay(Relay):
                 total_size,
             )
 
+            # connector.begin_read() already returns a ReadOperation instance
+            # Return it directly (it already implements BaseReadOperation interface)
             return read_op
 
         except Exception as e:
