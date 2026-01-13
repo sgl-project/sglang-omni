@@ -365,7 +365,8 @@ def main():
         gpu_ids = [int(x.strip()) for x in args.gpu_ids.split(",")]
         if len(gpu_ids) < 2:
             logger.warning(
-                "Only %d GPU IDs provided, using first GPU for remaining stages", len(gpu_ids)
+                "Only %d GPU IDs provided, using first GPU for remaining stages",
+                len(gpu_ids),
             )
             gpu_ids.extend([gpu_ids[0]] * (2 - len(gpu_ids)))
     except ValueError:

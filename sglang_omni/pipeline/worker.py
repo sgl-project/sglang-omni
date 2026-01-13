@@ -10,8 +10,8 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
-from sglang_omni.core.types import CompleteMessage, DataReadyMessage
-from sglang_omni.engine.base import Engine
+from sglang_omni.engines.base import Engine
+from sglang_omni.proto import CompleteMessage, DataReadyMessage
 from sglang_omni.relay.descriptor import Descriptor
 from sglang_omni.relay.relays.shm import SHMRelay
 
@@ -157,8 +157,6 @@ class Worker:
             logger.error("Worker: failed to write data for req=%s: %s", request_id, e)
             await self._send_failure(request_id, f"Failed to write data: {e}")
             return
-
-
 
     async def _send_failure(self, request_id: str, error: str) -> None:
         """Send failure to coordinator."""

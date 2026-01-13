@@ -10,15 +10,17 @@ readme = "README.md"
 license = {text = "Apache-2.0"}
 requires-python = ">=3.10"
 dependencies = [
-    "pyzmq>=25.0.0",
-    "msgpack>=1.0.0",
-    "numpy>=1.24.0",
-]
-
-[project.optional-dependencies]
-dev = [
+    # Core dependencies
+    "pyzmq>=25.0.0",          # ZMQ messaging for control plane
+    "msgpack>=1.0.0",         # Message serialization
+    "numpy>=1.24.0",          # Array operations
+    "pydantic>=2.0.0",        # Data validation and serialization
+    "torch>=2.0.0",           # PyTorch for tensor operations
+    # Testing dependencies
     "pytest>=7.0.0",
     "pytest-asyncio>=0.21.0",
+    "nixl",
+    "logger",
 ]
 
 [tool.setuptools.packages.find]

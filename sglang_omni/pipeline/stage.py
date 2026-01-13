@@ -12,18 +12,17 @@ import numpy as np
 
 from sglang_omni.pipeline.input_handler import DirectInput, InputHandler
 from sglang_omni.pipeline.worker import Worker
-from sglang_omni.core.types import (
+from sglang_omni.proto import (
     DataReadyMessage,
     ShutdownMessage,
     StageInfo,
     SubmitMessage,
 )
-from sglang_omni.transport.control_plane import StageControlPlane
+from sglang_omni.relay.descriptor import Descriptor
 from sglang_omni.relay.relays.base import Relay
 from sglang_omni.relay.relays.nixl import NIXLRelay
 from sglang_omni.relay.relays.shm import SHMRelay
-from sglang_omni.relay.nixl import RdmaMetadata
-from sglang_omni.relay.descriptor import Descriptor
+from sglang_omni.transport.control_plane import StageControlPlane
 
 logger = logging.getLogger(__name__)
 
@@ -80,7 +79,7 @@ class Stage:
             self.relay = NIXLRelay(relay_config)
         else:
             self.relay = SHMRelay()
-        
+
         self.control_plane = StageControlPlane(
             stage_name=name,
             recv_endpoint=recv_endpoint,

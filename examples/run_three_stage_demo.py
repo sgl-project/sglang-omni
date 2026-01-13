@@ -373,9 +373,7 @@ def main():
                 logger.info("NIXLRelay is available and initialized successfully")
                 test_relay.close()
             except ImportError as e:
-                logger.error(
-                    "NIXLRelay requires dynamo.nixl_connect: %s", e
-                )
+                logger.error("NIXLRelay requires dynamo.nixl_connect: %s", e)
                 raise
         except ImportError as e:
             logger.error("Failed to import NIXLRelay: %s", e)
@@ -392,7 +390,8 @@ def main():
         gpu_ids = [int(x.strip()) for x in args.gpu_ids.split(",")]
         if len(gpu_ids) < 3:
             logger.warning(
-                "Only %d GPU IDs provided, using first GPU for remaining stages", len(gpu_ids)
+                "Only %d GPU IDs provided, using first GPU for remaining stages",
+                len(gpu_ids),
             )
             gpu_ids.extend([gpu_ids[0]] * (3 - len(gpu_ids)))
     except ValueError:

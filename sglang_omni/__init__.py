@@ -19,6 +19,16 @@ from sglang_omni.pipeline.input_handler import (
 from sglang_omni.pipeline.stage import Stage
 from sglang_omni.pipeline.worker import Worker
 
+# Re-export from submodules for convenience
+from sglang_omni.proto import (
+    AbortMessage,
+    CompleteMessage,
+    DataReadyMessage,
+    RequestState,
+    SHMMetadata,
+    StageInfo,
+)
+
 __version__ = "0.1.0"
 
 __all__ = [
