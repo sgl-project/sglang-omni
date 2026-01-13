@@ -215,7 +215,7 @@ class Stage:
         # Read data using unified relay interface with descriptors
         try:
             # Extract remote descriptors from metadata to determine data size and structure
-            remote_descriptors = msg.metadata.to_descriptors()
+            remote_descriptors = msg.shm_metadata.to_descriptors()
             
             # Handle both single Descriptor and list[Descriptor] cases
             if isinstance(remote_descriptors, list):
@@ -233,7 +233,7 @@ class Stage:
                 local_descriptors = [local_desc]
             
             # Unified interface: both SHMRelay and NIXLRelay use descriptors
-            read_op = await self.relay.get_async(metadata=msg.metadata, descriptors=local_descriptors)
+            read_op = await self.relay.get_async(metadata=msg.shm_metadata, descriptors=local_descriptors)
             
             # Wait for data transfer to complete (data is now in local_descriptors buffers)
             await read_op.wait_for_completion()

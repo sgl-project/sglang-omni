@@ -123,7 +123,7 @@ def receiver_process(relay_type, config, queue, done_event, num_transfers, resul
 
             connector = NIXLRelay(config)
         else:
-            from sglang_omni.relay.operations.shm import SHMMetadata
+            from sglang_omni.relay.nixl import SHMMetadata
             from sglang_omni.relay.relays.shm import SHMRelay
 
             connector = SHMRelay(config)

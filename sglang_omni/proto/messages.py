@@ -4,7 +4,8 @@
 from dataclasses import dataclass
 from typing import Any
 
-from .data import SHMMetadata
+# Import metadata types from relay.nixl
+from sglang_omni.relay.nixl import RdmaMetadata, SHMMetadata
 
 
 @dataclass
@@ -48,25 +49,29 @@ class DataReadyMessage:
     def from_dict(cls, d: dict[str, Any]) -> "DataReadyMessage":
         metadata_dict = d["shm_metadata"]
 
-        # Determine metadata type based on content
-        if "_type" in metadata_dict and metadata_dict["_type"] == "RdmaMetadata":
-            # RdmaMetadata
-            from sglang_omni.relay.nixl import RdmaMetadata
-
-            # Remove the type marker
-            metadata_dict = {k: v for k, v in metadata_dict.items() if k != "_type"}
-            metadata = RdmaMetadata(**metadata_dict)
-        elif "descriptors" in metadata_dict or "nixl_metadata" in metadata_dict:
-            # Looks like RdmaMetadata
+        # Determine metadata type based on _type field first
+        metadata_type = metadata_dict.get("_type", "")
+        
+        if metadata_type == "RdmaMetadata":
+            # RdmaMetadata: remove type marker and fields not in RdmaMetadata
+            clean_dict = {k: v for k, v in metadata_dict.items() 
+                         if k not in ["_type", "shm_segments"]}
+            metadata = RdmaMetadata(**clean_dict)
+        elif metadata_type == "SHMMetadata" or "shm_segments" in metadata_dict:
+            # SHMMetadata (new format with descriptors and shm_segments, or legacy format)
+            metadata = SHMMetadata.from_dict(metadata_dict)
+        elif "descriptors" in metadata_dict:
+            # Has descriptors but no _type - try RdmaMetadata first, fallback to SHMMetadata
             try:
-                from sglang_omni.relay.nixl import RdmaMetadata
-
-                metadata = RdmaMetadata(**metadata_dict)
+                # Remove fields not in RdmaMetadata
+                clean_dict = {k: v for k, v in metadata_dict.items() 
+                             if k not in ["_type", "shm_segments"]}
+                metadata = RdmaMetadata(**clean_dict)
             except Exception:
-                # Fallback to SHMMetadata if RdmaMetadata import fails
+                # Fallback to SHMMetadata if RdmaMetadata fails
                 metadata = SHMMetadata.from_dict(metadata_dict)
         else:
-            # SHMMetadata (has "name" and "size" fields)
+            # Legacy SHMMetadata format (has "name" and "size" fields)
             metadata = SHMMetadata.from_dict(metadata_dict)
 
         return cls(

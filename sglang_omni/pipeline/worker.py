@@ -147,7 +147,7 @@ class Worker:
                     request_id=request_id,
                     from_stage=self.stage.name,
                     to_stage=next_stage,
-                    metadata=metadata,  # Unified field name for both SHM and NIXL metadata
+                    shm_metadata=metadata,  # Can be SHMMetadata or RdmaMetadata
                 ),
             )
 

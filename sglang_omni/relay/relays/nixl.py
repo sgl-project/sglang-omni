@@ -208,8 +208,6 @@ class NIXLRelay(Relay):
                 total_size,
             )
 
-            # connector.begin_read() already returns a ReadOperation instance
-            # Return it directly (it already implements BaseReadOperation interface)
             return read_op
 
         except Exception as e:
