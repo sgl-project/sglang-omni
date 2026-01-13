@@ -2,10 +2,7 @@
 
 import asyncio
 import logging
-import pickle
 from typing import Any
-
-import numpy as np
 
 from sglang_omni.relay.descriptor import Descriptor
 from sglang_omni.relay.nixl import (

@@ -51,11 +51,14 @@ class DataReadyMessage:
 
         # Determine metadata type based on _type field first
         metadata_type = metadata_dict.get("_type", "")
-        
+
         if metadata_type == "RdmaMetadata":
             # RdmaMetadata: remove type marker and fields not in RdmaMetadata
-            clean_dict = {k: v for k, v in metadata_dict.items() 
-                         if k not in ["_type", "shm_segments"]}
+            clean_dict = {
+                k: v
+                for k, v in metadata_dict.items()
+                if k not in ["_type", "shm_segments"]
+            }
             metadata = RdmaMetadata(**clean_dict)
         elif metadata_type == "SHMMetadata" or "shm_segments" in metadata_dict:
             # SHMMetadata (new format with descriptors and shm_segments, or legacy format)
@@ -64,8 +67,11 @@ class DataReadyMessage:
             # Has descriptors but no _type - try RdmaMetadata first, fallback to SHMMetadata
             try:
                 # Remove fields not in RdmaMetadata
-                clean_dict = {k: v for k, v in metadata_dict.items() 
-                             if k not in ["_type", "shm_segments"]}
+                clean_dict = {
+                    k: v
+                    for k, v in metadata_dict.items()
+                    if k not in ["_type", "shm_segments"]
+                }
                 metadata = RdmaMetadata(**clean_dict)
             except Exception:
                 # Fallback to SHMMetadata if RdmaMetadata fails

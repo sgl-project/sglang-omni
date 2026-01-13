@@ -6,12 +6,9 @@ import pickle
 from multiprocessing import shared_memory as _shm
 from typing import Any
 
-from sglang_omni.relay.nixl import SHMMetadata
 from sglang_omni.relay.descriptor import Descriptor
-from sglang_omni.relay.operations.shm import (
-    SHMReadableOperation,
-    SHMReadOperation,
-)
+from sglang_omni.relay.nixl import SHMMetadata
+from sglang_omni.relay.operations.shm import SHMReadableOperation, SHMReadOperation
 from sglang_omni.relay.relays.base import Relay
 
 logger = logging.getLogger(__name__)
@@ -19,13 +16,13 @@ logger = logging.getLogger(__name__)
 
 def shm_write_buffer(buffer: bytes | memoryview, size: int) -> SHMMetadata:
     """Write buffer (bytes or memoryview) into SharedMemory and return metadata.
-    
+
     This is a unified function that can handle both bytes and numpy arrays efficiently.
-    
+
     Args:
         buffer: Buffer to write (bytes, bytearray, or memoryview of numpy array)
         size: Size of data to write in bytes
-        
+
     Returns:
         SHMMetadata: Metadata for the created shared memory segment
     """
@@ -33,7 +30,11 @@ def shm_write_buffer(buffer: bytes | memoryview, size: int) -> SHMMetadata:
     try:
         shm_mv = memoryview(shm.buf)
         # Direct copy from buffer to shared memory (efficient)
-        shm_mv[:size] = buffer[:size] if isinstance(buffer, memoryview) else memoryview(buffer)[:size]
+        shm_mv[:size] = (
+            buffer[:size]
+            if isinstance(buffer, memoryview)
+            else memoryview(buffer)[:size]
+        )
         del shm_mv
         meta = SHMMetadata(name=shm.name, size=size)
         try:
@@ -51,38 +52,37 @@ def shm_write_buffer(buffer: bytes | memoryview, size: int) -> SHMMetadata:
         raise
 
 
-def shm_read_to_descriptors(
-    meta: SHMMetadata, descriptors: list[Descriptor]
-) -> None:
+def shm_read_to_descriptors(meta: SHMMetadata, descriptors: list[Descriptor]) -> None:
     """Read data from shared memory directly into descriptor buffers (zero-copy).
-    
+
     Supports both single segment (legacy) and multiple segments (new format).
     Each descriptor receives data from a corresponding SHM segment.
-    
+
     Args:
         meta: SHM metadata with segment info. If shm_segments is provided, uses
               multi-segment mode; otherwise uses legacy single-segment mode.
         descriptors: Pre-allocated buffers to receive data. Must match number
                      of segments in multi-segment mode.
-        
+
     Raises:
         ValueError: If descriptor count/size doesn't match segments.
-    """    
+    """
     # Read from each segment into corresponding descriptor
     for desc, segment_info in zip(descriptors, meta.shm_segments):
         segment_name = segment_info["name"]
         segment_size = segment_info["size"]
-        
+
         shm = _shm.SharedMemory(name=segment_name)
         try:
             shm_mv = memoryview(shm.buf)
             copy_size = min(desc.size, segment_size)
-            
+
             # Copy data into descriptor buffer
             if hasattr(desc, "_data_ref") and desc._data_ref is not None:
                 buffer = desc._data_ref
                 try:
                     import numpy as np
+
                     if isinstance(buffer, np.ndarray):
                         # numpy array - use memoryview for efficient copy
                         buffer_mv = memoryview(buffer)
@@ -94,13 +94,15 @@ def shm_read_to_descriptors(
                             buffer[:copy_size] = buffer_bytes
                         else:
                             import ctypes
+
                             ctypes.memmove(
                                 ctypes.addressof(ctypes.c_char.from_buffer(buffer, 0)),
                                 buffer_bytes,
-                                copy_size
+                                copy_size,
                             )
                 except ImportError:
                     import ctypes
+
                     buffer_bytes = shm_mv[:copy_size].tobytes()
                     if isinstance(buffer, bytearray):
                         buffer[:copy_size] = buffer_bytes
@@ -108,14 +110,15 @@ def shm_read_to_descriptors(
                         ctypes.memmove(
                             ctypes.addressof(ctypes.c_char.from_buffer(buffer, 0)),
                             buffer_bytes,
-                            copy_size
+                            copy_size,
                         )
             else:
                 # Use memory pointer directly
                 import ctypes
+
                 buffer_bytes = shm_mv[:copy_size].tobytes()
                 ctypes.memmove(desc.ptr, buffer_bytes, copy_size)
-            
+
             del shm_mv
         finally:
             # Cleanup shared memory segment
@@ -127,6 +130,7 @@ def shm_read_to_descriptors(
                 shm.unlink()
             except Exception:
                 pass
+
 
 class SHMRelay(Relay):
     """Shared memory relay for inter-stage data transfer.
@@ -194,15 +198,22 @@ class SHMRelay(Relay):
                 # Extract payload from descriptor buffer and write to shared memory
                 # Use unified shm_write_buffer for both numpy arrays and bytes (efficient)
                 import numpy as np
+
                 if isinstance(desc._data_ref, np.ndarray):
                     # Direct write: numpy array → shared memory (only 1 copy via memoryview)
-                    buffer_mv = memoryview(desc._data_ref[:desc.size])
+                    buffer_mv = memoryview(desc._data_ref[: desc.size])
                     segment_meta = shm_write_buffer(buffer_mv, desc.size)
                 else:
                     # Fallback: convert to bytes first
-                    payload_bytes = desc._data_ref.tobytes()[:desc.size] if hasattr(desc._data_ref, 'tobytes') else pickle.dumps(desc._data_ref)
+                    payload_bytes = (
+                        desc._data_ref.tobytes()[: desc.size]
+                        if hasattr(desc._data_ref, "tobytes")
+                        else pickle.dumps(desc._data_ref)
+                    )
                     segment_meta = shm_write_buffer(payload_bytes, len(payload_bytes))
-                shm_segments.append({"name": segment_meta.name, "size": segment_meta.size})
+                shm_segments.append(
+                    {"name": segment_meta.name, "size": segment_meta.size}
+                )
                 total_size += segment_meta.size
 
             # Create metadata with descriptors list (compatible with RdmaMetadata)
@@ -249,27 +260,29 @@ class SHMRelay(Relay):
             Operation object with wait_for_completion() method.
         """
         if not descriptors:
-            raise ValueError("descriptors cannot be empty. Descriptors are required for zero-copy data transfer.")
-        
+            raise ValueError(
+                "descriptors cannot be empty. Descriptors are required for zero-copy data transfer."
+            )
+
         try:
             # Read directly into descriptor buffers
             shm_read_to_descriptors(metadata, descriptors)
-            
+
             # Calculate total size from segments or legacy size
             if metadata.shm_segments:
                 total_size = sum(seg["size"] for seg in metadata.shm_segments)
             else:
                 total_size = metadata.size
-            
+
             self._metrics["gets"] += 1
-            
+
             logger.debug(
                 "SHMRelay get: total_size=%d, descriptors=%d, segments=%d",
                 total_size,
                 len(descriptors),
                 len(metadata.shm_segments) if metadata.shm_segments else 1,
             )
-            
+
             # Return operation
             return SHMReadOperation(size=total_size)
 
@@ -286,7 +299,7 @@ class SHMRelay(Relay):
         self, metadata: SHMMetadata, descriptors: list[Descriptor]
     ) -> SHMReadOperation:
         """Async version of get (SHM operations are fast, so just call sync).
-        
+
         Returns SHMReadOperation with unified interface supporting both
         legacy mode (pre-deserialized) and descriptor mode (zero-copy).
         """

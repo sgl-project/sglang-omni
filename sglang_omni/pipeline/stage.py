@@ -216,7 +216,7 @@ class Stage:
         try:
             # Extract remote descriptors from metadata to determine data size and structure
             remote_descriptors = msg.shm_metadata.to_descriptors()
-            
+
             # Handle both single Descriptor and list[Descriptor] cases
             if isinstance(remote_descriptors, list):
                 # Multiple descriptors - create buffers for each
@@ -224,20 +224,26 @@ class Stage:
                 for remote_desc in remote_descriptors:
                     # Create a buffer of the same size
                     buffer = np.empty(remote_desc.size, dtype=np.uint8)
-                    local_desc = Descriptor((buffer.ctypes.data, remote_desc.size, "cpu", buffer))
+                    local_desc = Descriptor(
+                        (buffer.ctypes.data, remote_desc.size, "cpu", buffer)
+                    )
                     local_descriptors.append(local_desc)
             else:
                 # Single descriptor
                 buffer = np.empty(remote_descriptors.size, dtype=np.uint8)
-                local_desc = Descriptor((buffer.ctypes.data, remote_descriptors.size, "cpu", buffer))
+                local_desc = Descriptor(
+                    (buffer.ctypes.data, remote_descriptors.size, "cpu", buffer)
+                )
                 local_descriptors = [local_desc]
-            
+
             # Unified interface: both SHMRelay and NIXLRelay use descriptors
-            read_op = await self.relay.get_async(metadata=msg.shm_metadata, descriptors=local_descriptors)
-            
+            read_op = await self.relay.get_async(
+                metadata=msg.shm_metadata, descriptors=local_descriptors
+            )
+
             # Wait for data transfer to complete (data is now in local_descriptors buffers)
             await read_op.wait_for_completion()
-            
+
             # Extract and deserialize data directly from local_descriptors buffers
             # This avoids going through read_op.data and eliminates an extra abstraction layer
             if len(local_descriptors) == 1:
@@ -250,7 +256,7 @@ class Stage:
                 for desc in local_descriptors:
                     buffer_parts.append(desc._data_ref.tobytes())
                 buffer_bytes = b"".join(buffer_parts)
-            
+
             # Deserialize the data (assuming it was pickled)
             data = pickle.loads(buffer_bytes)
         except Exception as e:

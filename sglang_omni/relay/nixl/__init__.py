@@ -5,10 +5,10 @@ from sglang_omni.relay.nixl.connector import (
     Connection,
     Connector,
     RdmaMetadata,
-    SHMMetadata,
     ReadableOperation,
     ReadOperation,
     Remote,
+    SHMMetadata,
     WritableOperation,
     WriteOperation,
 )

@@ -13,7 +13,6 @@ import numpy as np
 from sglang_omni.engines.base import Engine
 from sglang_omni.proto import CompleteMessage, DataReadyMessage
 from sglang_omni.relay.descriptor import Descriptor
-from sglang_omni.relay.relays.shm import SHMRelay
 
 if TYPE_CHECKING:
     from sglang_omni.pipeline.stage import Stage
@@ -108,19 +107,14 @@ class Worker:
             # This allows both SHMRelay and NIXLRelay to use the same descriptor format
             serialized_data = pickle.dumps(data)
             data_size = len(serialized_data)
-            
+
             # Create a numpy buffer to hold the serialized data
             # Use np.frombuffer to create a view, then copy to make it writable
             buffer = np.frombuffer(serialized_data, dtype=np.uint8).copy()
-            
+
             # Create descriptor with serialized data buffer
             # Both SHMRelay and NIXLRelay can use this format
-            descriptor = Descriptor((
-                buffer.ctypes.data,
-                data_size,
-                "cpu",
-                buffer
-            ))
+            descriptor = Descriptor((buffer.ctypes.data, data_size, "cpu", buffer))
 
             # Put data and get metadata
             readable_op = await self.stage.relay.put_async([descriptor])

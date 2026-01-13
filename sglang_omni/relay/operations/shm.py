@@ -46,5 +46,3 @@ class SHMReadOperation(BaseReadOperation):
 
     async def wait_for_completion(self) -> None:
         """Wait for the operation to complete. No-op for SHM (synchronous)."""
-
-
