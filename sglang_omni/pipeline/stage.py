@@ -10,6 +10,7 @@ from typing import Any, Callable
 
 import numpy as np
 
+from sglang_omni.pipeline.control_plane import StageControlPlane
 from sglang_omni.pipeline.input_handler import DirectInput, InputHandler
 from sglang_omni.pipeline.worker import Worker
 from sglang_omni.proto import (
@@ -22,7 +23,6 @@ from sglang_omni.relay.descriptor import Descriptor
 from sglang_omni.relay.relays.base import Relay
 from sglang_omni.relay.relays.nixl import NIXLRelay
 from sglang_omni.relay.relays.shm import SHMRelay
-from sglang_omni.transport.control_plane import StageControlPlane
 
 logger = logging.getLogger(__name__)
 
