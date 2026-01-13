@@ -10,20 +10,19 @@ from typing import Any, Callable
 
 import numpy as np
 
-from sglang_omni.pipeline.input_handler import DirectInput, InputHandler
-from sglang_omni.pipeline.worker import Worker
 from sglang_omni.core.types import (
     DataReadyMessage,
     ShutdownMessage,
     StageInfo,
     SubmitMessage,
 )
-from sglang_omni.transport.control_plane import StageControlPlane
+from sglang_omni.pipeline.input_handler import DirectInput, InputHandler
+from sglang_omni.pipeline.worker import Worker
+from sglang_omni.relay.descriptor import Descriptor
 from sglang_omni.relay.relays.base import Relay
 from sglang_omni.relay.relays.nixl import NIXLRelay
 from sglang_omni.relay.relays.shm import SHMRelay
-from sglang_omni.relay.nixl import RdmaMetadata
-from sglang_omni.relay.descriptor import Descriptor
+from sglang_omni.transport.control_plane import StageControlPlane
 
 logger = logging.getLogger(__name__)
 
@@ -80,7 +79,7 @@ class Stage:
             self.relay = NIXLRelay(relay_config)
         else:
             self.relay = SHMRelay()
-        
+
         self.control_plane = StageControlPlane(
             stage_name=name,
             recv_endpoint=recv_endpoint,
@@ -218,14 +217,16 @@ class Stage:
             # Determine relay type and prepare descriptors accordingly
             if isinstance(self.relay, SHMRelay):
                 # SHMRelay: descriptors can be empty, data is in read_op.data
-                read_op = await self.relay.get_async(metadata=msg.shm_metadata, descriptors=[])
+                read_op = await self.relay.get_async(
+                    metadata=msg.shm_metadata, descriptors=[]
+                )
                 await read_op.wait_for_completion()
                 data = read_op.data
             else:
                 # NIXLRelay: need to create descriptors from metadata
                 # Extract remote descriptors from metadata
                 remote_descriptors = msg.shm_metadata.to_descriptors()
-                
+
                 # Create local descriptors (buffers) to receive data
                 # Handle both single Descriptor and list[Descriptor] cases
                 if isinstance(remote_descriptors, list):
@@ -234,18 +235,23 @@ class Stage:
                     for remote_desc in remote_descriptors:
                         # Create a buffer of the same size
                         buffer = np.empty(remote_desc.size, dtype=np.uint8)
-                        local_desc = Descriptor((buffer.ctypes.data, remote_desc.size, "cpu", buffer))
+                        local_desc = Descriptor(
+                            (buffer.ctypes.data, remote_desc.size, "cpu", buffer)
+                        )
                         local_descriptors.append(local_desc)
                 else:
                     # Single descriptor
                     buffer = np.empty(remote_descriptors.size, dtype=np.uint8)
-                    local_desc = Descriptor((buffer.ctypes.data, remote_descriptors.size, "cpu", buffer))
+                    local_desc = Descriptor(
+                        (buffer.ctypes.data, remote_descriptors.size, "cpu", buffer)
+                    )
                     local_descriptors = [local_desc]
 
-                
-                read_op = await self.relay.get_async(metadata=msg.shm_metadata, descriptors=local_descriptors)
+                read_op = await self.relay.get_async(
+                    metadata=msg.shm_metadata, descriptors=local_descriptors
+                )
                 await read_op.wait_for_completion()
-                
+
                 # Extract data from buffer(s)
                 # For simple Python objects, data should be in the first buffer
                 if len(local_descriptors) > 0:

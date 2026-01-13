@@ -113,18 +113,13 @@ class Worker:
                 # Serialize the data to bytes
                 serialized_data = pickle.dumps(data)
                 data_size = len(serialized_data)
-                
+
                 # Create a numpy buffer to hold the serialized data
                 # Use np.frombuffer to create a view, then copy to make it writable
                 buffer = np.frombuffer(serialized_data, dtype=np.uint8).copy()
-                
+
                 # Create descriptor with correct size
-                descriptor = Descriptor((
-                    buffer.ctypes.data,
-                    data_size,
-                    "cpu",
-                    buffer
-                ))
+                descriptor = Descriptor((buffer.ctypes.data, data_size, "cpu", buffer))
 
             # Put data and get metadata
             readable_op = await self.stage.relay.put_async([descriptor])
@@ -161,8 +156,6 @@ class Worker:
             logger.error("Worker: failed to write data for req=%s: %s", request_id, e)
             await self._send_failure(request_id, f"Failed to write data: {e}")
             return
-
-
 
     async def _send_failure(self, request_id: str, error: str) -> None:
         """Send failure to coordinator."""

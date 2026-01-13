@@ -53,7 +53,7 @@ class SHMMetadata:
 @dataclass
 class DataReadyMessage:
     """Notify next stage that data is ready.
-    
+
     Supports both SHMMetadata (for SHMRelay) and RdmaMetadata (for NIXLRelay).
     """
 
@@ -73,8 +73,12 @@ class DataReadyMessage:
             metadata_dict["_type"] = "RdmaMetadata"  # Mark as RdmaMetadata
         else:
             # Fallback: try to convert to dict
-            metadata_dict = dict(self.shm_metadata) if hasattr(self.shm_metadata, "__dict__") else {}
-        
+            metadata_dict = (
+                dict(self.shm_metadata)
+                if hasattr(self.shm_metadata, "__dict__")
+                else {}
+            )
+
         return {
             "type": "data_ready",
             "request_id": self.request_id,
@@ -86,11 +90,12 @@ class DataReadyMessage:
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "DataReadyMessage":
         metadata_dict = d["shm_metadata"]
-        
+
         # Determine metadata type based on content
         if "_type" in metadata_dict and metadata_dict["_type"] == "RdmaMetadata":
             # RdmaMetadata
             from sglang_omni.relay.nixl import RdmaMetadata
+
             # Remove the type marker
             metadata_dict = {k: v for k, v in metadata_dict.items() if k != "_type"}
             metadata = RdmaMetadata(**metadata_dict)
@@ -98,6 +103,7 @@ class DataReadyMessage:
             # Looks like RdmaMetadata
             try:
                 from sglang_omni.relay.nixl import RdmaMetadata
+
                 metadata = RdmaMetadata(**metadata_dict)
             except Exception:
                 # Fallback to SHMMetadata if RdmaMetadata import fails
@@ -105,7 +111,7 @@ class DataReadyMessage:
         else:
             # SHMMetadata (has "name" and "size" fields)
             metadata = SHMMetadata.from_dict(metadata_dict)
-        
+
         return cls(
             request_id=d["request_id"],
             from_stage=d["from_stage"],

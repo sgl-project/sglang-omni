@@ -16,10 +16,7 @@ dependencies = [
     "numpy>=1.24.0",          # Array operations
     "pydantic>=2.0.0",        # Data validation and serialization
     "torch>=2.0.0",           # PyTorch for tensor operations
-]
-
-[project.optional-dependencies]
-dev = [
+    # Testing dependencies
     "pytest>=7.0.0",
     "pytest-asyncio>=0.21.0",
 ]
