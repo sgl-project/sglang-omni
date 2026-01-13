@@ -128,7 +128,7 @@ def receiver_process(relay_type, config, queue, done_event, num_transfers, resul
                     else:
                         # For SHM, metadata reconstruction depends on implementation
                         if isinstance(meta_obj, dict):
-                            from sglang_omni.relay.operations.shm import SHMMetadata
+                            from sglang_omni.core.types import SHMMetadata
 
                             metadata = SHMMetadata(**meta_obj)
                         else:

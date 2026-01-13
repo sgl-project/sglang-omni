@@ -46,10 +46,12 @@ except ImportError as e:
 try:
     import nixl._api as nixl_api
     import nixl._bindings as nixl_bindings
-except ImportError as e:
-    raise ImportError(
-        "NIXL Python bindings must be installed to use this module. Please install NIXL, ex: 'pip install nixl'."
-    ) from e
+
+    NIXL_AVAILABLE = True
+except ImportError:
+    nixl_api = None
+    nixl_bindings = None
+    NIXL_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
 
