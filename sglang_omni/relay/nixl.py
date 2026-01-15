@@ -5,10 +5,10 @@ import asyncio
 import logging
 import time
 import uuid
-import torch
+from typing import Any, Dict, Optional
+
 import numpy as np
-from typing import Any, Optional, Dict, List, Tuple
-from abc import ABC, abstractmethod
+import torch
 
 logger = logging.getLogger(__name__)
 
@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 
 from nixl._api import nixl_agent as NixlAgent
 from nixl._api import nixl_agent_config
+
 NIXL_AVAILABLE = True
 
 
@@ -41,24 +42,34 @@ class LinearAllocator:
     def reset(self):
         self.current_offset = 0
 
+
 class Connection:
     def __init__(self, engine_id: str, num_threads: int = 2):
         self.name = engine_id
         config = nixl_agent_config(num_threads=num_threads)
         self._nixl = NixlAgent(str(uuid.uuid4()), config)
-        self._remote_agents: Dict[str, str] = {} 
+        self._remote_agents: Dict[str, str] = {}
 
     def get_agent_metadata(self) -> bytes:
         return self._nixl.get_agent_metadata()
 
-    def ensure_remote_agent(self, remote_engine_id: str, remote_meta_bytes: bytes) -> str:
+    def ensure_remote_agent(
+        self, remote_engine_id: str, remote_meta_bytes: bytes
+    ) -> str:
         if remote_engine_id not in self._remote_agents:
             agent_name = self._nixl.add_remote_agent(remote_meta_bytes)
             self._remote_agents[remote_engine_id] = agent_name
         return self._remote_agents[remote_engine_id]
 
+
 class NixlOperation:
-    def __init__(self, connection: Connection, handle: Optional[int] = None, metadata: Any = None, expected_notification: Optional[bytes] = None):
+    def __init__(
+        self,
+        connection: Connection,
+        handle: Optional[int] = None,
+        metadata: Any = None,
+        expected_notification: Optional[bytes] = None,
+    ):
         self._conn = connection
         self._handle = handle
         self._metadata = metadata
@@ -70,20 +81,22 @@ class NixlOperation:
         return self._metadata
 
     def wait_for_completion(self, timeout: float = 30.0) -> None:
-        if self._completed: return
-        
+        if self._completed:
+            return
+
         # If there's a handle, wait for transfer completion
         if self._handle:
             while True:
                 state = self._conn._nixl.check_xfer_state(self._handle)
-                if state == "DONE": break
-                elif state != "PROC": raise RuntimeError(f"Transfer failed: {state}")
+                if state == "DONE":
+                    break
+                elif state != "PROC":
+                    raise RuntimeError(f"Transfer failed: {state}")
                 # Busy wait
-                pass
             if self._handle:
                 self._conn._nixl.release_xfer_handle(self._handle)
             self._completed = True
-        
+
         # If there's expected_notification, wait for notification
         elif self._expected_notification:
             start = time.time()
@@ -94,23 +107,28 @@ class NixlOperation:
                         self._completed = True
                         return
                 if time.time() - start > timeout:
-                    raise TimeoutError(f"Wait for {self._expected_notification} timed out")
+                    raise TimeoutError(
+                        f"Wait for {self._expected_notification} timed out"
+                    )
                 time.sleep(0.0001)
-        
+
     async def wait_for_completion_async(self, timeout: float = 30.0) -> None:
-        if self._completed: return
-        
+        if self._completed:
+            return
+
         # If there's a handle, wait for transfer completion
         if self._handle:
             while True:
                 state = self._conn._nixl.check_xfer_state(self._handle)
-                if state == "DONE": break
-                elif state != "PROC": raise RuntimeError(f"Transfer failed: {state}")
+                if state == "DONE":
+                    break
+                elif state != "PROC":
+                    raise RuntimeError(f"Transfer failed: {state}")
                 await asyncio.sleep(0.001)
             if self._handle:
                 self._conn._nixl.release_xfer_handle(self._handle)
             self._completed = True
-        
+
         # If there's expected_notification, wait for notification
         elif self._expected_notification:
             start = time.time()
@@ -121,8 +139,11 @@ class NixlOperation:
                         self._completed = True
                         return
                 if time.time() - start > timeout:
-                    raise TimeoutError(f"Wait for {self._expected_notification} timed out")
+                    raise TimeoutError(
+                        f"Wait for {self._expected_notification} timed out"
+                    )
                 await asyncio.sleep(0.001)
+
 
 # ==========================================
 # Core Class NixlRelay (Pool Implementation)
@@ -132,7 +153,7 @@ class NixlRelay:
         self.engine_id = engine_id
         self.device = device
         self.connection = Connection(engine_id)
-        
+
         # 1. Parse Device ID
         self.device_id = 0
         if "cuda" in device and ":" in device:
@@ -140,17 +161,19 @@ class NixlRelay:
                 self.device_id = int(device.split(":")[1])
             except ValueError:
                 self.device_id = 0
-        
+
         # 2. Initialize memory pool
         pool_bytes = pool_size_mb * 1024 * 1024
         self.pool_tensor = torch.zeros(pool_bytes, dtype=torch.uint8, device=device)
         self.pool_ptr = self.pool_tensor.data_ptr()
         self.pool_size = pool_bytes
-        
+
         self.allocator = LinearAllocator(self.pool_size, self.pool_ptr)
-        
+
         # 3. Register memory pool
-        logger.info(f"[{engine_id}] Registering Pool ({pool_size_mb} MB) on {device} (ID: {self.device_id})...")
+        logger.info(
+            f"[{engine_id}] Registering Pool ({pool_size_mb} MB) on {device} (ID: {self.device_id})..."
+        )
         if NIXL_AVAILABLE:
             mem_type = "VRAM" if "cuda" in device else "DRAM"
             reg_list = [(self.pool_ptr, self.pool_size, self.device_id, mem_type)]
@@ -161,40 +184,52 @@ class NixlRelay:
     def put(self, tensor: torch.Tensor, request_id: str = None) -> NixlOperation:
         size_bytes = tensor.numel() * tensor.element_size()
         offset = self.allocator.allocate(size_bytes)
-        
+
         # D2D Copy
         pool_slice = self.pool_tensor[offset : offset + size_bytes]
         tensor_view = tensor.view(torch.uint8).reshape(-1)
         pool_slice.copy_(tensor_view)
-        
+
         payload = {
             "engine_id": self.engine_id,
             "agent_meta": self.connection.get_agent_metadata(),
             "transfer_info": {
                 "offset": offset,
                 "size": size_bytes,
-                "ptr": self.pool_ptr + offset, 
-                "device_id": self.device_id  # Sender informs its own device_id
-            }
+                "ptr": self.pool_ptr + offset,
+                "device_id": self.device_id,  # Sender informs its own device_id
+            },
         }
         # Set expected notification so wait_for_completion() can wait for receiver to finish reading
         expected_notification = b"done"
-        return NixlOperation(self.connection, metadata=payload, expected_notification=expected_notification)
-    
+        return NixlOperation(
+            self.connection,
+            metadata=payload,
+            expected_notification=expected_notification,
+        )
+
     # Add async interface for compatibility with Stage code
-    async def put_async(self, tensor: torch.Tensor, request_id: str = None) -> NixlOperation:
+    async def put_async(
+        self, tensor: torch.Tensor, request_id: str = None
+    ) -> NixlOperation:
         return self.put(tensor, request_id)
-    
-    async def get_async(self, metadata: Any, dest_tensor: torch.Tensor, request_id: str = None) -> NixlOperation:
+
+    async def get_async(
+        self, metadata: Any, dest_tensor: torch.Tensor, request_id: str = None
+    ) -> NixlOperation:
         """Async version of get method for compatibility with stage.py"""
         # Run synchronous get method in event loop executor
         loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(None, self.get, metadata, dest_tensor, request_id)
+        return await loop.run_in_executor(
+            None, self.get, metadata, dest_tensor, request_id
+        )
 
-    def get(self, metadata: Any, dest_tensor: torch.Tensor, request_id: str = None) -> NixlOperation:
+    def get(
+        self, metadata: Any, dest_tensor: torch.Tensor, request_id: str = None
+    ) -> NixlOperation:
         remote_engine_id = metadata["engine_id"]
         remote_agent_meta = metadata["agent_meta"]
-        
+
         # Compatible with different metadata formats
         if "transfer_info" in metadata:
             xfer_info = metadata["transfer_info"]
@@ -213,49 +248,64 @@ class NixlRelay:
             if ":" in remote_device_str:
                 try:
                     remote_device_id = int(remote_device_str.split(":")[1])
-                except: pass
+                except:
+                    pass
         else:
             raise ValueError("Invalid metadata format")
-        
+
         local_offset = self.allocator.allocate(data_size)
-        remote_agent_name = self.connection.ensure_remote_agent(remote_engine_id, remote_agent_meta)
-        
+        remote_agent_name = self.connection.ensure_remote_agent(
+            remote_engine_id, remote_agent_meta
+        )
+
         mem_type = "VRAM" if "cuda" in self.device else "DRAM"
-        
+
         # Local DList
         local_phys_addr = self.pool_ptr + local_offset
-        local_descs = self.connection._nixl.get_xfer_descs([(local_phys_addr, data_size, self.device_id)], mem_type)
-        local_handle = self.connection._nixl.prep_xfer_dlist("NIXL_INIT_AGENT", local_descs)
-        
+        local_descs = self.connection._nixl.get_xfer_descs(
+            [(local_phys_addr, data_size, self.device_id)], mem_type
+        )
+        local_handle = self.connection._nixl.prep_xfer_dlist(
+            "NIXL_INIT_AGENT", local_descs
+        )
+
         # Remote DList
         # [Key fix] Use remote_device_id obtained from metadata
-        remote_descs = self.connection._nixl.get_xfer_descs([(remote_ptr, data_size, remote_device_id)], mem_type)
-        remote_handle = self.connection._nixl.prep_xfer_dlist(remote_agent_name, remote_descs)
-        
+        remote_descs = self.connection._nixl.get_xfer_descs(
+            [(remote_ptr, data_size, remote_device_id)], mem_type
+        )
+        remote_handle = self.connection._nixl.prep_xfer_dlist(
+            remote_agent_name, remote_descs
+        )
+
         indices = np.arange(1, dtype=np.int64)
         xfer_handle = self.connection._nixl.make_prepped_xfer(
-            "READ", local_handle, indices, remote_handle, indices, 
-            notif_msg=f"done".encode()
+            "READ",
+            local_handle,
+            indices,
+            remote_handle,
+            indices,
+            notif_msg=f"done".encode(),
         )
         self.connection._nixl.transfer(xfer_handle)
-        
+
         op = NixlOperation(self.connection, handle=xfer_handle)
         op.wait_for_completion()
-        
+
         # D2D Copy
         pool_slice = self.pool_tensor[local_offset : local_offset + data_size]
         dest_view = dest_tensor.view(torch.uint8).reshape(-1)
         dest_view.copy_(pool_slice)
-        
-        return op
 
+        return op
 
     def wait_for_notification(self, expected_msg: bytes, timeout: float = 30.0):
         start = time.time()
         while True:
             notifs = self.connection._nixl.get_new_notifs()
             for msgs in notifs.values():
-                if expected_msg in msgs: return
+                if expected_msg in msgs:
+                    return
             if time.time() - start > timeout:
                 raise TimeoutError(f"Wait for {expected_msg} timed out")
             time.sleep(0.0001)
@@ -269,7 +319,7 @@ class NixlRelay:
         pass
 
     def close(self):
-        if NIXL_AVAILABLE and hasattr(self, 'pool_handle'):
+        if NIXL_AVAILABLE and hasattr(self, "pool_handle"):
             try:
                 self.connection._nixl.deregister_memory(self.pool_handle)
             except:

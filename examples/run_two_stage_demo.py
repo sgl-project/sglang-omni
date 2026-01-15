@@ -329,7 +329,7 @@ def main():
         logger.info("Starting two-stage pipeline demo with NixlRelay...")
         # Check if NixlRelay is available
         try:
-            from sglang_omni.relay.nixl import NixlRelay
+            pass
 
             # Build NIXL config
             nixl_config = {

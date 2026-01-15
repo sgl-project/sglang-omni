@@ -5,7 +5,6 @@ from dataclasses import dataclass
 from typing import Any
 
 
-
 @dataclass
 class DataReadyMessage:
     """Notify next stage that data is ready.
@@ -56,7 +55,7 @@ class DataReadyMessage:
 
         # Determine metadata type based on _type field first
         metadata_type = metadata_dict.get("_type", "")
-        
+
         if metadata_type == "dict" or "transfer_info" in metadata_dict:
             # Simple dict format (current NixlRelay design)
             # Remove _type marker if present
@@ -65,8 +64,12 @@ class DataReadyMessage:
             # Try to import RdmaMetadata if available
             try:
                 from sglang_omni.relay.operations.nixl import RdmaMetadata
-                clean_dict = {k: v for k, v in metadata_dict.items() 
-                             if k not in ["_type", "shm_segments"]}
+
+                clean_dict = {
+                    k: v
+                    for k, v in metadata_dict.items()
+                    if k not in ["_type", "shm_segments"]
+                }
                 metadata = RdmaMetadata(**clean_dict)
             except (ImportError, Exception):
                 # Fallback to dict if RdmaMetadata not available
@@ -75,6 +78,7 @@ class DataReadyMessage:
             # Try to import SHMMetadata if available
             try:
                 from sglang_omni.relay.nixl import SHMMetadata
+
                 metadata = SHMMetadata.from_dict(metadata_dict)
             except (ImportError, Exception):
                 # Fallback to dict if SHMMetadata not available
@@ -83,8 +87,12 @@ class DataReadyMessage:
             # Has descriptors but no _type - try RdmaMetadata first, fallback to dict
             try:
                 from sglang_omni.relay.operations.nixl import RdmaMetadata
-                clean_dict = {k: v for k, v in metadata_dict.items() 
-                             if k not in ["_type", "shm_segments"]}
+
+                clean_dict = {
+                    k: v
+                    for k, v in metadata_dict.items()
+                    if k not in ["_type", "shm_segments"]
+                }
                 metadata = RdmaMetadata(**clean_dict)
             except (ImportError, Exception):
                 # Fallback to dict

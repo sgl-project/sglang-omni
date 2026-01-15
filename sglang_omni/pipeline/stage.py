@@ -8,7 +8,6 @@ import logging
 import pickle
 from typing import Any, Callable
 
-import numpy as np
 import torch
 
 from sglang_omni.pipeline.control_plane import StageControlPlane
@@ -226,25 +225,23 @@ class Stage:
             # Create receive tensor (uint8) on relay device
             device = self.relay.device if hasattr(self.relay, "device") else "cpu"
             recv_tensor = torch.zeros(data_size, dtype=torch.uint8, device=device)
-            
+
             # Call get_async to retrieve data
             read_op = await self.relay.get_async(
-                metadata=metadata,
-                dest_tensor=recv_tensor,
-                request_id=request_id
+                metadata=metadata, dest_tensor=recv_tensor, request_id=request_id
             )
-            
+
             # Deserialize: convert tensor back to CPU bytes
             if recv_tensor.is_cuda:
                 buffer_bytes = recv_tensor.cpu().numpy().tobytes()
             else:
                 buffer_bytes = recv_tensor.numpy().tobytes()
-            
+
             data = pickle.loads(buffer_bytes)
-            
+
             # Reset pool
             self.relay.reset_pool()
-                
+
             self.relay.cleanup(request_id)
 
         except Exception as e:
@@ -252,6 +249,7 @@ class Stage:
                 "Stage %s failed to get data for req=%s: %s", self.name, request_id, e
             )
             import traceback
+
             logger.error(traceback.format_exc())
             return
 

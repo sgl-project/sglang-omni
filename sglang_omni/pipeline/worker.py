@@ -105,15 +105,18 @@ class Worker:
         try:
             serialized_data = pickle.dumps(data)
             data_size = len(serialized_data)
-            
+
             # Wrap into tensor (uint8) on relay device
-            device = self.stage.relay.device if hasattr(self.stage.relay, "device") else "cpu"
+            device = (
+                self.stage.relay.device
+                if hasattr(self.stage.relay, "device")
+                else "cpu"
+            )
             data_np = np.frombuffer(serialized_data, dtype=np.uint8).copy()
             tensor_to_send = torch.tensor(data_np, dtype=torch.uint8, device=device)
 
             readable_op = await self.stage.relay.put_async(
-                tensor_to_send, 
-                request_id=request_id
+                tensor_to_send, request_id=request_id
             )
             metadata = readable_op.metadata()
 
@@ -149,6 +152,7 @@ class Worker:
         except Exception as e:
             logger.error("Worker: failed to write data for req=%s: %s", request_id, e)
             import traceback
+
             logger.error(traceback.format_exc())
             await self._send_failure(request_id, f"Failed to write data: {e}")
             return

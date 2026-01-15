@@ -6,7 +6,7 @@ between pipeline stages using RDMA.
 """
 
 from sglang_omni.relay.base import Relay
-from sglang_omni.relay.nixl import NixlRelay, NixlOperation, Connection, NIXL_AVAILABLE
+from sglang_omni.relay.nixl import NIXL_AVAILABLE, Connection, NixlOperation, NixlRelay
 
 __all__ = [
     "Relay",
