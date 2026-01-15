@@ -4,25 +4,30 @@
 from dataclasses import dataclass
 from typing import Any
 
-# Import metadata types from relay.nixl
-from sglang_omni.relay.nixl import RdmaMetadata, SHMMetadata
 
 
 @dataclass
 class DataReadyMessage:
     """Notify next stage that data is ready.
 
-    Supports both SHMMetadata (for SHMRelay) and RdmaMetadata (for NIXLRelay).
+    Supports different metadata formats:
+    - Simple dict (for current NixlRelay with transfer_info)
+    - SHMMetadata (for backward compatibility)
+    - RdmaMetadata (for other relay types)
     """
 
     request_id: str
     from_stage: str
     to_stage: str
-    shm_metadata: Any  # Can be SHMMetadata or RdmaMetadata
+    shm_metadata: Any  # Can be dict, SHMMetadata, or RdmaMetadata
 
     def to_dict(self) -> dict[str, Any]:
         # Handle different metadata types
-        if hasattr(self.shm_metadata, "to_dict"):
+        if isinstance(self.shm_metadata, dict):
+            # Simple dict (current NixlRelay format)
+            metadata_dict = self.shm_metadata.copy()
+            metadata_dict["_type"] = "dict"  # Mark as simple dict
+        elif hasattr(self.shm_metadata, "to_dict"):
             # SHMMetadata
             metadata_dict = self.shm_metadata.to_dict()
         elif hasattr(self.shm_metadata, "model_dump"):
@@ -51,34 +56,42 @@ class DataReadyMessage:
 
         # Determine metadata type based on _type field first
         metadata_type = metadata_dict.get("_type", "")
-
-        if metadata_type == "RdmaMetadata":
-            # RdmaMetadata: remove type marker and fields not in RdmaMetadata
-            clean_dict = {
-                k: v
-                for k, v in metadata_dict.items()
-                if k not in ["_type", "shm_segments"]
-            }
-            metadata = RdmaMetadata(**clean_dict)
-        elif metadata_type == "SHMMetadata" or "shm_segments" in metadata_dict:
-            # SHMMetadata (new format with descriptors and shm_segments, or legacy format)
-            metadata = SHMMetadata.from_dict(metadata_dict)
-        elif "descriptors" in metadata_dict:
-            # Has descriptors but no _type - try RdmaMetadata first, fallback to SHMMetadata
+        
+        if metadata_type == "dict" or "transfer_info" in metadata_dict:
+            # Simple dict format (current NixlRelay design)
+            # Remove _type marker if present
+            metadata = {k: v for k, v in metadata_dict.items() if k != "_type"}
+        elif metadata_type == "RdmaMetadata":
+            # Try to import RdmaMetadata if available
             try:
-                # Remove fields not in RdmaMetadata
-                clean_dict = {
-                    k: v
-                    for k, v in metadata_dict.items()
-                    if k not in ["_type", "shm_segments"]
-                }
+                from sglang_omni.relay.operations.nixl import RdmaMetadata
+                clean_dict = {k: v for k, v in metadata_dict.items() 
+                             if k not in ["_type", "shm_segments"]}
                 metadata = RdmaMetadata(**clean_dict)
-            except Exception:
-                # Fallback to SHMMetadata if RdmaMetadata fails
+            except (ImportError, Exception):
+                # Fallback to dict if RdmaMetadata not available
+                metadata = {k: v for k, v in metadata_dict.items() if k != "_type"}
+        elif metadata_type == "SHMMetadata" or "shm_segments" in metadata_dict:
+            # Try to import SHMMetadata if available
+            try:
+                from sglang_omni.relay.nixl import SHMMetadata
                 metadata = SHMMetadata.from_dict(metadata_dict)
+            except (ImportError, Exception):
+                # Fallback to dict if SHMMetadata not available
+                metadata = {k: v for k, v in metadata_dict.items() if k != "_type"}
+        elif "descriptors" in metadata_dict:
+            # Has descriptors but no _type - try RdmaMetadata first, fallback to dict
+            try:
+                from sglang_omni.relay.operations.nixl import RdmaMetadata
+                clean_dict = {k: v for k, v in metadata_dict.items() 
+                             if k not in ["_type", "shm_segments"]}
+                metadata = RdmaMetadata(**clean_dict)
+            except (ImportError, Exception):
+                # Fallback to dict
+                metadata = {k: v for k, v in metadata_dict.items() if k != "_type"}
         else:
-            # Legacy SHMMetadata format (has "name" and "size" fields)
-            metadata = SHMMetadata.from_dict(metadata_dict)
+            # Default: use as dict (for current NixlRelay)
+            metadata = {k: v for k, v in metadata_dict.items() if k != "_type"}
 
         return cls(
             request_id=d["request_id"],

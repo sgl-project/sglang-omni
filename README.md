@@ -16,16 +16,9 @@ uv pip install -v -e .
 You can execute the folloing commands to run the demos.
 
 ```bash
-# Use SHMRelay (default)
+# Use NixlRelay (default)
 python examples/run_two_stage_demo.py
 
-# Use NIXLRelay
-python examples/run_two_stage_demo.py --relay nixl
-
-
-# Use SHMRelay (default)
-python run_three_stage_demo.py
-
-# Use NIXLRelay
-python run_three_stage_demo.py --relay nixl
+# Use NixlRelay (default)
+python examples/run_three_stage_demo.py
 ```

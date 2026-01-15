@@ -12,13 +12,13 @@ Tests:
 4. Graceful shutdown
 
 Usage:
-    # Use SHMRelay (default)
+    # Use NixlRelay (default)
     python run_two_stage_demo.py
 
-    # Use NIXLRelay
+    # Use NixlRelay
     python run_two_stage_demo.py --relay nixl
 
-    # Use NIXLRelay with custom config
+    # Use NixlRelay with custom config
     python run_two_stage_demo.py --relay nixl --nixl-host 192.168.1.100 --nixl-metadata-server http://192.168.1.100:8080/metadata
 """
 
@@ -50,7 +50,7 @@ ENDPOINTS = {
     "stage2": STAGE2_ENDPOINT,
 }
 
-# Default NIXLRelay configuration
+# Default NixlRelay configuration
 DEFAULT_NIXL_CONFIG = {
     "host": "127.0.0.1",
     "metadata_server": "http://127.0.0.1:8080/metadata",
@@ -74,7 +74,7 @@ def run_stage(
     transform,
     delay: float,
     get_next,
-    relay_type: str = "shm",
+    relay_type: str = "nixl",
     nixl_config: dict[str, Any] | None = None,
     gpu_id: int = 0,
 ):
@@ -86,9 +86,9 @@ def run_stage(
         transform: Data transformation function
         delay: Processing delay (simulation)
         get_next: Routing function
-        relay_type: Relay type ("shm" or "nixl")
-        nixl_config: NIXLRelay configuration dict (required if relay_type="nixl")
-        gpu_id: GPU ID to use (for NIXLRelay, default: 0)
+        relay_type: Relay type ("nixl")
+        nixl_config: NixlRelay configuration dict
+        gpu_id: GPU ID to use (for NixlRelay, default: 0)
     """
     import asyncio
     import logging
@@ -103,25 +103,21 @@ def run_stage(
     engine = EchoEngine(transform=transform, delay=delay)
     worker = Worker(engine)
 
-    # Configure relay based on type
-    relay_config = None
-    if relay_type == "nixl":
-        if nixl_config is None:
-            raise ValueError("nixl_config is required when relay_type='nixl'")
-        # Add worker_id and gpu_id to config
-        relay_config = {
-            **nixl_config,
-            "worker_id": f"worker_{name}",
-            "gpu_id": gpu_id,
-        }
-        logger.info(
-            "Stage %s: Initializing with NIXLRelay (worker_id=%s, gpu_id=%d)",
-            name,
-            relay_config["worker_id"],
-            gpu_id,
-        )
-    else:
-        logger.info("Stage %s: Initializing with SHMRelay (default)", name)
+    # Configure relay - always use NixlRelay
+    if nixl_config is None:
+        nixl_config = DEFAULT_NIXL_CONFIG
+    # Add worker_id and gpu_id to config
+    relay_config = {
+        **nixl_config,
+        "worker_id": f"worker_{name}",
+        "gpu_id": gpu_id,
+    }
+    logger.info(
+        "Stage %s: Initializing with NixlRelay (worker_id=%s, gpu_id=%d)",
+        name,
+        relay_config["worker_id"],
+        gpu_id,
+    )
 
     stage = Stage(
         name=name,
@@ -130,7 +126,7 @@ def run_stage(
         coordinator_endpoint=COORDINATOR_ENDPOINT,
         abort_endpoint=ABORT_ENDPOINT,
         endpoints=ENDPOINTS,
-        relay_config=relay_config,  # None for SHMRelay (default), dict for NIXLRelay
+        relay_config=relay_config,  # Configuration dict for NixlRelay
     )
     stage.add_worker(worker)
 
@@ -191,7 +187,7 @@ async def run_coordinator_main(relay_type: str):
 
         # Test 1: Normal flow
         logger.info("=" * 50)
-        relay_label = f" ({relay_type.upper()}Relay)" if relay_type == "nixl" else ""
+        relay_label = " (NixlRelay)"
         logger.info("Test 1: Normal flow%s", relay_label)
         logger.info("=" * 50)
 
@@ -275,7 +271,7 @@ async def run_coordinator_main(relay_type: str):
         await asyncio.sleep(0.5)
         logger.info("Test 5 PASSED!")
 
-        relay_label = f" ({relay_type.upper()}Relay)" if relay_type == "nixl" else ""
+        relay_label = " (NixlRelay)"
         logger.info("=" * 50)
         logger.info("ALL TESTS PASSED!%s", relay_label)
         logger.info("=" * 50)
@@ -298,9 +294,9 @@ def parse_args():
     parser.add_argument(
         "--relay",
         type=str,
-        choices=["shm", "nixl"],
-        default="shm",
-        help="Relay backend to use (default: shm)",
+        choices=["nixl"],
+        default="nixl",
+        help="Relay backend to use (default: nixl)",
     )
     parser.add_argument(
         "--nixl-host",
@@ -328,11 +324,12 @@ def main():
     args = parse_args()
     relay_type = args.relay.lower()
 
-    if relay_type == "nixl":
-        logger.info("Starting two-stage pipeline demo with NIXLRelay...")
-        # Check if NIXLRelay is available
+    # Always use NixlRelay
+    if True:
+        logger.info("Starting two-stage pipeline demo with NixlRelay...")
+        # Check if NixlRelay is available
         try:
-            from sglang_omni.relay.relays.nixl import NIXLRelay
+            from sglang_omni.relay.nixl import NixlRelay
 
             # Build NIXL config
             nixl_config = {
@@ -342,23 +339,13 @@ def main():
             }
 
             # Try to create a test instance to verify NIXL is available
-            test_config = {**nixl_config, "worker_id": "test_worker"}
-            try:
-                test_relay = NIXLRelay(test_config)
-                logger.info("NIXLRelay is available and initialized successfully")
-                test_relay.close()
-            except ImportError as e:
-                logger.error("NIXLRelay requires dynamo.nixl_connect: %s", e)
-                raise
         except ImportError as e:
-            logger.error("Failed to import NIXLRelay: %s", e)
+            logger.error("Failed to import NixlRelay: %s", e)
             logger.error(
                 "Please ensure dynamo.nixl_connect is available and NIXL metadata server is running."
             )
             raise
-    else:
-        logger.info("Starting two-stage pipeline demo with SHMRelay...")
-        nixl_config = None
+    # nixl_config is already set above
 
     # Parse GPU IDs
     try:

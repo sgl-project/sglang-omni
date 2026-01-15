@@ -9,6 +9,7 @@ import pickle
 from typing import Any, Callable
 
 import numpy as np
+import torch
 
 from sglang_omni.pipeline.control_plane import StageControlPlane
 from sglang_omni.pipeline.input_handler import DirectInput, InputHandler
@@ -19,10 +20,8 @@ from sglang_omni.proto import (
     StageInfo,
     SubmitMessage,
 )
-from sglang_omni.relay.descriptor import Descriptor
-from sglang_omni.relay.relays.base import Relay
-from sglang_omni.relay.relays.nixl import NIXLRelay
-from sglang_omni.relay.relays.shm import SHMRelay
+from sglang_omni.relay.base import Relay
+from sglang_omni.relay.nixl import NixlRelay
 
 logger = logging.getLogger(__name__)
 
@@ -65,8 +64,8 @@ class Stage:
             abort_endpoint: ZMQ endpoint for abort broadcasts
             endpoints: Dict of stage_name -> endpoint for routing
             input_handler: Input handler for aggregation (default: DirectInput)
-            relay: Relay instance for data transfer (default: NIXLRelay if config provided, else SHMRelay)
-            relay_config: Configuration dict for NIXLRelay (if relay is None)
+            relay: Relay instance for data transfer (default: NixlRelay if config provided)
+            relay_config: Configuration dict for NixlRelay (if relay is None)
         """
         self.name = name
         self.get_next = get_next
@@ -74,11 +73,17 @@ class Stage:
         self.input_handler = input_handler or DirectInput()
 
         # Components
-        # Initialize relay: use provided relay, or create NIXLRelay if config provided, else SHMRelay
-        if relay_config is not None:
-            self.relay = NIXLRelay(relay_config)
+        # Initialize relay: use provided relay, or create NixlRelay if config provided
+        if relay is not None:
+            self.relay = relay
+        elif relay_config is not None:
+            # Extract engine_id and device from config, with defaults
+            engine_id = relay_config.get("worker_id", f"{name}_relay")
+            device = "cuda" if relay_config.get("gpu_id") is not None else "cpu"
+            self.relay = NixlRelay(engine_id=engine_id, device=device)
         else:
-            self.relay = SHMRelay()
+            # Default: create NixlRelay with default config
+            self.relay = NixlRelay(engine_id=f"{name}_relay")
 
         self.control_plane = StageControlPlane(
             stage_name=name,
@@ -117,6 +122,7 @@ class Stage:
             await self.request_queue.put(None)
 
         self.control_plane.close()
+        self.relay.close()
         logger.info("Stage %s stopped", self.name)
 
     async def run(self) -> None:
@@ -212,57 +218,41 @@ class Stage:
             self.relay.cleanup(request_id)
             return
 
-        # Read data using unified relay interface with descriptors
+        # Read data using unified relay interface
         try:
-            # Extract remote descriptors from metadata to determine data size and structure
-            remote_descriptors = msg.shm_metadata.to_descriptors()
+            metadata = msg.shm_metadata
+            data_size = metadata["transfer_info"]["size"]
 
-            # Handle both single Descriptor and list[Descriptor] cases
-            if isinstance(remote_descriptors, list):
-                # Multiple descriptors - create buffers for each
-                local_descriptors = []
-                for remote_desc in remote_descriptors:
-                    # Create a buffer of the same size
-                    buffer = np.empty(remote_desc.size, dtype=np.uint8)
-                    local_desc = Descriptor(
-                        (buffer.ctypes.data, remote_desc.size, "cpu", buffer)
-                    )
-                    local_descriptors.append(local_desc)
-            else:
-                # Single descriptor
-                buffer = np.empty(remote_descriptors.size, dtype=np.uint8)
-                local_desc = Descriptor(
-                    (buffer.ctypes.data, remote_descriptors.size, "cpu", buffer)
-                )
-                local_descriptors = [local_desc]
-
-            # Unified interface: both SHMRelay and NIXLRelay use descriptors
+            # Create receive tensor (uint8) on relay device
+            device = self.relay.device if hasattr(self.relay, "device") else "cpu"
+            recv_tensor = torch.zeros(data_size, dtype=torch.uint8, device=device)
+            
+            # Call get_async to retrieve data
             read_op = await self.relay.get_async(
-                metadata=msg.shm_metadata, descriptors=local_descriptors
+                metadata=metadata,
+                dest_tensor=recv_tensor,
+                request_id=request_id
             )
-
-            # Wait for data transfer to complete (data is now in local_descriptors buffers)
-            await read_op.wait_for_completion()
-
-            # Extract and deserialize data directly from local_descriptors buffers
-            # This avoids going through read_op.data and eliminates an extra abstraction layer
-            if len(local_descriptors) == 1:
-                # Single descriptor: extract directly
-                buffer = local_descriptors[0]._data_ref
-                buffer_bytes = buffer.tobytes()
+            
+            # Deserialize: convert tensor back to CPU bytes
+            if recv_tensor.is_cuda:
+                buffer_bytes = recv_tensor.cpu().numpy().tobytes()
             else:
-                # Multiple descriptors: concatenate data from all descriptors
-                buffer_parts = []
-                for desc in local_descriptors:
-                    buffer_parts.append(desc._data_ref.tobytes())
-                buffer_bytes = b"".join(buffer_parts)
-
-            # Deserialize the data (assuming it was pickled)
+                buffer_bytes = recv_tensor.numpy().tobytes()
+            
             data = pickle.loads(buffer_bytes)
+            
+            # Reset pool
+            self.relay.reset_pool()
+                
+            self.relay.cleanup(request_id)
+
         except Exception as e:
             logger.error(
                 "Stage %s failed to get data for req=%s: %s", self.name, request_id, e
             )
+            import traceback
+            logger.error(traceback.format_exc())
             return
 
         # Handle input aggregation

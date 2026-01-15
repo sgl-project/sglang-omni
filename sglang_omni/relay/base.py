@@ -48,51 +48,6 @@ class Relay(ABC):
         """
 
     @abstractmethod
-    async def put_async(self, descriptors: list[Any]) -> Any:
-        """
-        Put descriptors into the distributed store (asynchronous).
-
-        Parameters
-        ----------
-        descriptors : list[Any]
-            List of Descriptor objects containing tensor data
-
-        Returns
-        -------
-        Any
-            Operation object with metadata() and wait_for_completion() methods
-        """
-
-    @abstractmethod
-    async def get_async(self, metadata: Any, descriptors: list[Any]) -> Any:
-        """
-        Get data from the distributed store using metadata and descriptors (asynchronous).
-
-        Parameters
-        ----------
-        metadata : Any
-            Metadata from readable operation (returned by put)
-        descriptors : list[Any]
-            List of Descriptor objects for receiving data
-
-        Returns
-        -------
-        Any
-            Operation object with wait_for_completion() method
-        """
-
-    @abstractmethod
-    def cleanup(self, request_id: str) -> None:
-        """
-        Clean up resources for a request.
-
-        Parameters
-        ----------
-        request_id : str
-            Identifier for the request to clean up
-        """
-
-    @abstractmethod
     def health(self) -> dict[str, Any]:
         """
         Get connector health status.

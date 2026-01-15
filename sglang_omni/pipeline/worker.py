@@ -9,10 +9,10 @@ import pickle
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
+import torch
 
 from sglang_omni.engines.base import Engine
 from sglang_omni.proto import CompleteMessage, DataReadyMessage
-from sglang_omni.relay.descriptor import Descriptor
 
 if TYPE_CHECKING:
     from sglang_omni.pipeline.stage import Stage
@@ -103,21 +103,18 @@ class Worker:
 
         # Write using unified relay interface
         try:
-            # Unified approach: serialize data first for both relay types
-            # This allows both SHMRelay and NIXLRelay to use the same descriptor format
             serialized_data = pickle.dumps(data)
             data_size = len(serialized_data)
+            
+            # Wrap into tensor (uint8) on relay device
+            device = self.stage.relay.device if hasattr(self.stage.relay, "device") else "cpu"
+            data_np = np.frombuffer(serialized_data, dtype=np.uint8).copy()
+            tensor_to_send = torch.tensor(data_np, dtype=torch.uint8, device=device)
 
-            # Create a numpy buffer to hold the serialized data
-            # Use np.frombuffer to create a view, then copy to make it writable
-            buffer = np.frombuffer(serialized_data, dtype=np.uint8).copy()
-
-            # Create descriptor with serialized data buffer
-            # Both SHMRelay and NIXLRelay can use this format
-            descriptor = Descriptor((buffer.ctypes.data, data_size, "cpu", buffer))
-
-            # Put data and get metadata
-            readable_op = await self.stage.relay.put_async([descriptor])
+            readable_op = await self.stage.relay.put_async(
+                tensor_to_send, 
+                request_id=request_id
+            )
             metadata = readable_op.metadata()
 
             logger.debug(
@@ -133,7 +130,6 @@ class Worker:
                 await self._send_failure(request_id, f"Unknown stage: {next_stage}")
                 return
 
-            # Send notification
             await self.stage.control_plane.send_to_stage(
                 next_stage,
                 endpoint,
@@ -141,14 +137,19 @@ class Worker:
                     request_id=request_id,
                     from_stage=self.stage.name,
                     to_stage=next_stage,
-                    shm_metadata=metadata,  # Can be SHMMetadata or RdmaMetadata
+                    shm_metadata=metadata,
                 ),
             )
 
-            await readable_op.wait_for_completion()
+            await readable_op.wait_for_completion_async()
+
+            self.stage.relay.reset_pool()
+            self.stage.relay.cleanup(request_id)
 
         except Exception as e:
             logger.error("Worker: failed to write data for req=%s: %s", request_id, e)
+            import traceback
+            logger.error(traceback.format_exc())
             await self._send_failure(request_id, f"Failed to write data: {e}")
             return
 
