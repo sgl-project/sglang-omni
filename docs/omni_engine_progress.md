@@ -15,9 +15,9 @@ Tracking progress for implementing the OmniEngine framework as designed in [omni
 |------|--------|-------|
 | `engines/base.py` | ✅ Exists | Already has Engine ABC + EchoEngine |
 | `engines/omni/types.py` | ✅ Done | Request, RequestStatus, SchedulerOutput, RequestOutput, ModelRunnerOutput |
-| `engines/omni/policy/base.py` | ✅ Done | SchedulingPolicy, InputPreparer, OutputProcessor protocols |
+| `engines/omni/runtime/interfaces.py` | ✅ Done | BatchPlanner, ResourceManager, IterationController, Input/Output protocols |
 | `engines/omni/__init__.py` | ✅ Done | Exports types |
-| `engines/omni/policy/__init__.py` | ✅ Done | Exports protocols |
+| `engines/omni/runtime/__init__.py` | ✅ Done | Exports runtime components |
 
 ---
 
@@ -28,7 +28,7 @@ Tracking progress for implementing the OmniEngine framework as designed in [omni
 |------|--------|-------|
 | `engines/omni/scheduler.py` | ✅ Done | Generic Scheduler class |
 
-**Test**: Unit test with mock Policy
+**Test**: Unit test with mock runtime components
 
 ---
 
@@ -60,20 +60,20 @@ Tracking progress for implementing the OmniEngine framework as designed in [omni
 
 | File | Status | Notes |
 |------|--------|-------|
-| `engines/omni/policy/encoder.py` | ✅ Done | EncoderPolicy + data types + preparer + processor |
+| `engines/omni/runtime/encoder.py` | ✅ Done | EncoderBatchPlanner + data types + preparer + processor |
 | `engines/omni/factory.py` | ✅ Done | `create_encoder_engine()` |
 
 **Test**: Run with real BERT model
 
 ---
 
-### Milestone 6: Simple AR Support
+### Milestone 6: AR Support
 **Status**: ✅ Complete
 
 | File | Status | Notes |
 |------|--------|-------|
-| `engines/omni/policy/ar.py` | ✅ Done | SimpleARPolicy + data types + preparer + processor |
-| `engines/omni/factory.py` | ✅ Done | `create_simple_ar_engine()` |
+| `engines/omni/runtime/ar.py` | ✅ Done | ARBatchPlanner + data types + preparer + processor |
+| `engines/omni/factory.py` | ✅ Done | `create_ar_engine()` |
 
 **Test**: Run with small LLaMA/GPT-2
 
@@ -81,17 +81,9 @@ Tracking progress for implementing the OmniEngine framework as designed in [omni
 
 ## Next TODOs
 
-- [ ] Refactor `Scheduler` to use BatchPlanner/ResourceManager/IterationController protocols
-- [ ] Update InputPreparer to accept full `SchedulerOutput`
-- [ ] Migrate encoder/ar/dit runtime components to BatchPlanner + IterationController split
-- [ ] Add abort safety checks (aborted queue removal + update skip)
-- [ ] Add missing-output handling (logging + fallback strategy)
-- [ ] Rename `policy/` → `runtime/` (including `base.py` → `interfaces.py`)
-- [ ] Refresh tests for new protocols (scheduler, runner, basic engine)
-
----
-
-Note: current implementation still uses `policy/` paths; rename is tracked above.
+- [ ] Refresh tests for runtime protocols (scheduler, runner, engine)
+- [ ] Add step_id validation if/when multiple in-flight batches are enabled
+- [ ] Add batched AR support and paged KV cache manager
 
 ---
 
@@ -137,4 +129,4 @@ After OmniEngine is working:
 | 2026-01-19 | M3 | Generic ModelRunner implemented |
 | 2026-01-19 | M4 | OmniEngine implemented - Framework complete! |
 | 2026-01-19 | M5 | Encoder support implemented |
-| 2026-01-19 | M6 | Simple AR support implemented - All milestones complete! |
+| 2026-01-19 | M6 | AR support implemented - All milestones complete! |

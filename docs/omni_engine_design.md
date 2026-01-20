@@ -528,8 +528,10 @@ class SinglePassIterationController:
 
 class EosIterationController:
     """For AR - stop at EOS or max length."""
-    def __init__(self, eos_token_id: int, max_length: int = 2048):
-        self.eos_token_id = eos_token_id
+    def __init__(self, eos_token_id: int | list[int], max_length: int = 2048):
+        self.eos_token_ids = (
+            [eos_token_id] if isinstance(eos_token_id, int) else eos_token_id
+        )
         self.max_length = max_length
 
     def update_request(self, request: Request, output: RequestOutput) -> None:
@@ -547,10 +549,12 @@ class EosIterationController:
         token = output.data
         if isinstance(output.data, tuple):
             token, _ = output.data
-        return (
-            token == self.eos_token_id or
-            request.data.num_computed_tokens >= self.max_length
-        )
+        if token in self.eos_token_ids:
+            return True
+        if request.data.max_new_tokens is not None:
+            if len(request.data.output_ids) >= request.data.max_new_tokens:
+                return True
+        return request.data.num_computed_tokens >= self.max_length
 
 
 class FixedStepsIterationController:
@@ -918,6 +922,8 @@ class ARRequestData:
     input_ids: torch.Tensor
     output_ids: list[int] = field(default_factory=list)
     num_computed_tokens: int = 0
+    max_new_tokens: int | None = None
+    temperature: float = 0.0
 
     # For paged attention (optional, can start with simple KV cache)
     block_ids: list[int] = field(default_factory=list)
@@ -941,15 +947,12 @@ class ARBatchData:
     past_key_values_list: list[tuple] | None = None
 
 # ─────────────────────────────────────────────────────────────────────────────
-# BatchPlanner (Simple version - HF KV cache)
+# BatchPlanner (HF KV cache)
 # ─────────────────────────────────────────────────────────────────────────────
 
 class ARBatchPlanner:
     """
     AR BatchPlanner using HF-style KV cache.
-
-    For initial development. Prefill/decode separation is deferred to a
-    dedicated PD model runner.
     """
 
     def __init__(self, max_batch_size: int = 32, max_tokens: int = 8192):
@@ -1024,14 +1027,16 @@ class ARBatchPlanner:
             past_key_values_list=past_key_values_list,
         )
 
+# ResourceManager: ARResourceManager (runtime/ar.py)
+
 # IterationController: EosIterationController (runtime/common.py)
 
 # ─────────────────────────────────────────────────────────────────────────────
-# InputPreparer (Simple - single request for now)
+# InputPreparer (single request for now)
 # ─────────────────────────────────────────────────────────────────────────────
 
-class SimpleARInputPreparer:
-    """Simple AR input preparer for HF models (single request)."""
+class ARInputPreparer:
+    """AR input preparer for HF models (single request)."""
 
     def prepare(self, scheduler_output: SchedulerOutput, device: torch.device) -> dict:
         # For simplicity, assume single request
@@ -1054,8 +1059,8 @@ class SimpleARInputPreparer:
 # OutputProcessor
 # ─────────────────────────────────────────────────────────────────────────────
 
-class SimpleAROutputProcessor:
-    """Simple AR output processor with greedy sampling."""
+class AROutputProcessor:
+    """AR output processor with per-request sampling."""
 
     def process(
         self,
@@ -1065,11 +1070,15 @@ class SimpleAROutputProcessor:
         logits = model_output.logits  # [batch, seq, vocab]
         past_key_values = model_output.past_key_values
 
-        # Greedy sample from last position
-        next_token = logits[:, -1, :].argmax(dim=-1).item()
-
         # Single request for now
         request = scheduler_output.requests[0]
+        temperature = request.data.temperature
+
+        if temperature <= 0.0:
+            next_token = logits[:, -1, :].argmax(dim=-1).item()
+        else:
+            probs = torch.softmax(logits[:, -1, :] / temperature, dim=-1)
+            next_token = torch.multinomial(probs, num_samples=1).item()
 
         return {
             request.request_id: RequestOutput(
@@ -1273,34 +1282,35 @@ def create_ar_engine(
     device: str = "cuda",
 ) -> OmniEngine:
     """
-    Create a simple AR engine (single request, HF KV cache).
-
-    For initial development. Upgrade to batched/paged version later.
+    Create an AR engine (single request, HF KV cache).
 
     Example:
         engine = create_ar_engine(llama_model, tokenizer)
         await engine.start()
 
         input_ids = tokenizer.encode("Once upon a time", return_tensors="pt")
-        data = ARRequestData(input_ids=input_ids[0])
+        data = ARRequestData(
+            input_ids=input_ids[0],
+            max_new_tokens=256,
+            temperature=0.7,
+        )
 
         await engine.add_request("req-1", data)
         result = await engine.get_result("req-1")  # ARRequestData with output_ids
     """
     scheduler = Scheduler(
-        batch_planner=ARBatchPlanner(max_batch_size=1, max_tokens=max_seq_len),
-        resource_manager=SimpleResourceManager(1),  # Or PagedKVCacheManager
+        batch_planner=ARBatchPlanner(),
+        resource_manager=ARResourceManager(max_count=1),  # Or PagedKVCacheManager
         iteration_controller=EosIterationController(
             tokenizer.eos_token_id or 2,
             max_seq_len,
         ),
-        max_running=1,
     )
 
     model_runner = ModelRunner(
         model=model,
-        input_preparer=SimpleARInputPreparer(),
-        output_processor=SimpleAROutputProcessor(),
+        input_preparer=ARInputPreparer(),
+        output_processor=AROutputProcessor(),
         device=torch.device(device),
     )
 
@@ -1442,7 +1452,7 @@ So `runtime/encoder.py` doesn't contain BERT — it contains the logic to **sche
 3. **Phase 3**: `model_runner.py` - Generic ModelRunner
 4. **Phase 4**: `engine.py` - OmniEngine
 5. **Phase 5**: `runtime/encoder.py` + preparers/processors - Test with BERT
-6. **Phase 6**: `runtime/ar.py` (simple version) - Test with LLaMA
+6. **Phase 6**: `runtime/ar.py` (HF KV cache) - Test with LLaMA
 7. **Phase 7**: Upgrade AR to batched/paged attention
 8. **Phase 8**: `runtime/dit.py` - Test with DiT
 

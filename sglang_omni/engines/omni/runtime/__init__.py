@@ -4,10 +4,10 @@
 from .ar import (
     ARBatchData,
     ARBatchPlanner,
+    ARInputPreparer,
+    AROutputProcessor,
     ARRequestData,
-    SimpleARInputPreparer,
-    SimpleAROutputProcessor,
-    SimpleARResourceManager,
+    ARResourceManager,
 )
 from .common import (
     EosIterationController,
@@ -49,7 +49,7 @@ __all__ = [
     "ARRequestData",
     "ARBatchData",
     "ARBatchPlanner",
-    "SimpleARResourceManager",
-    "SimpleARInputPreparer",
-    "SimpleAROutputProcessor",
+    "ARResourceManager",
+    "ARInputPreparer",
+    "AROutputProcessor",
 ]

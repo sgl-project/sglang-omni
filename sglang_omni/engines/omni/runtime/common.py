@@ -40,13 +40,13 @@ class EosIterationController:
         self,
         eos_token_id: int | list[int],
         max_length: int = 2048,
-        max_new_tokens: int | None = None,
+        default_max_new_tokens: int | None = None,
     ):
         self._eos_token_ids = (
             [eos_token_id] if isinstance(eos_token_id, int) else eos_token_id
         )
         self._max_length = max_length
-        self._max_new_tokens = max_new_tokens
+        self._default_max_new_tokens = default_max_new_tokens
 
     def update_request(self, request: Request, output: RequestOutput) -> None:
         token = output.data
@@ -68,7 +68,10 @@ class EosIterationController:
         if token in self._eos_token_ids:
             return True
 
-        if self._max_new_tokens is not None and len(request.data.output_ids) >= self._max_new_tokens:
+        max_new_tokens = request.data.max_new_tokens
+        if max_new_tokens is None:
+            max_new_tokens = self._default_max_new_tokens
+        if max_new_tokens is not None and len(request.data.output_ids) >= max_new_tokens:
             return True
 
         return request.data.num_computed_tokens >= self._max_length

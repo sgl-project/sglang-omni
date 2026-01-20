@@ -11,9 +11,9 @@ from .engine import OmniEngine
 from .model_runner import ModelRunner
 from .runtime.ar import (
     ARBatchPlanner,
-    SimpleARInputPreparer,
-    SimpleAROutputProcessor,
-    SimpleARResourceManager,
+    ARInputPreparer,
+    AROutputProcessor,
+    ARResourceManager,
 )
 from .runtime.common import (
     EosIterationController,
@@ -89,21 +89,14 @@ def create_ar_engine(
     model: torch.nn.Module,
     tokenizer: Any = None,
     max_seq_len: int = 2048,
-    max_new_tokens: int = 256,
-    temperature: float = 0.0,
     device: str = "cuda",
 ) -> OmniEngine:
-    """Create a simple AR engine (single request, HF KV cache).
-
-    This is for initial development. Supports one request at a time
-    with HF's native past_key_values for KV cache.
+    """Create an AR engine (single request, HF KV cache).
 
     Args:
         model: The causal LM model (e.g., LLaMA, GPT-2)
         tokenizer: Tokenizer (used to get eos_token_id)
         max_seq_len: Maximum sequence length
-        max_new_tokens: Maximum new tokens to generate
-        temperature: Sampling temperature. 0.0 = greedy.
         device: Device to run on
 
     Returns:
@@ -120,7 +113,11 @@ def create_ar_engine(
 
         # Create request data
         input_ids = tokenizer.encode("Once upon a time", return_tensors="pt")
-        data = ARRequestData(input_ids=input_ids[0])
+        data = ARRequestData(
+            input_ids=input_ids[0],
+            max_new_tokens=256,
+            temperature=0.7,
+        )
 
         await engine.add_request("req-1", data)
         result = await engine.get_result("req-1")  # ARRequestData with output_ids
@@ -134,39 +131,19 @@ def create_ar_engine(
 
     scheduler = Scheduler(
         batch_planner=ARBatchPlanner(),
-        resource_manager=SimpleARResourceManager(max_count=1),
+        resource_manager=ARResourceManager(max_count=1),
         iteration_controller=EosIterationController(
             eos_token_id=eos_token_id,
             max_length=max_seq_len,
-            max_new_tokens=max_new_tokens,
         ),
     )
 
     # Create model runner
     model_runner = ModelRunner(
         model=model,
-        input_preparer=SimpleARInputPreparer(),
-        output_processor=SimpleAROutputProcessor(temperature=temperature),
+        input_preparer=ARInputPreparer(),
+        output_processor=AROutputProcessor(),
         device=device,
     )
 
     return OmniEngine(scheduler=scheduler, model_runner=model_runner)
-
-
-def create_simple_ar_engine(
-    model: torch.nn.Module,
-    tokenizer: Any = None,
-    max_seq_len: int = 2048,
-    max_new_tokens: int = 256,
-    temperature: float = 0.0,
-    device: str = "cuda",
-) -> OmniEngine:
-    """Backward-compatible wrapper for create_ar_engine."""
-    return create_ar_engine(
-        model=model,
-        tokenizer=tokenizer,
-        max_seq_len=max_seq_len,
-        max_new_tokens=max_new_tokens,
-        temperature=temperature,
-        device=device,
-    )

@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""AR (Autoregressive) model support - simple version with HF KV cache."""
+"""AR (Autoregressive) model support with HF KV cache."""
 
 from __future__ import annotations
 
@@ -25,6 +25,8 @@ class ARRequestData:
     input_ids: torch.Tensor
     output_ids: list[int] = field(default_factory=list)
     num_computed_tokens: int = 0
+    max_new_tokens: int | None = None
+    temperature: float = 0.0
 
     # For simple HF-style KV cache
     past_key_values: tuple | None = None
@@ -87,7 +89,7 @@ class ARBatchPlanner:
         )
 
 
-class SimpleARResourceManager(SimpleResourceManager):
+class ARResourceManager(SimpleResourceManager):
     """Resource manager that clears KV cache on free."""
 
     def free(self, request: Request) -> None:
@@ -100,8 +102,8 @@ class SimpleARResourceManager(SimpleResourceManager):
 # -----------------------------------------------------------------------------
 
 
-class SimpleARInputPreparer:
-    """Simple AR input preparer for HF models (single request)."""
+class ARInputPreparer:
+    """AR input preparer for HF models (single request)."""
 
     def prepare(
         self,
@@ -127,16 +129,8 @@ class SimpleARInputPreparer:
 # -----------------------------------------------------------------------------
 
 
-class SimpleAROutputProcessor:
-    """Simple AR output processor with greedy sampling."""
-
-    def __init__(self, temperature: float = 0.0):
-        """Initialize output processor.
-
-        Args:
-            temperature: Sampling temperature. 0.0 = greedy.
-        """
-        self.temperature = temperature
+class AROutputProcessor:
+    """AR output processor with per-request sampling."""
 
     def process(
         self,
@@ -152,14 +146,13 @@ class SimpleAROutputProcessor:
         # Sample from last position
         last_logits = logits[:, -1, :]  # [batch, vocab]
 
-        if self.temperature == 0.0:
+        request = scheduler_output.requests[0]
+        temperature = request.data.temperature
+        if temperature <= 0.0:
             next_token = last_logits.argmax(dim=-1).item()
         else:
-            probs = torch.softmax(last_logits / self.temperature, dim=-1)
+            probs = torch.softmax(last_logits / temperature, dim=-1)
             next_token = torch.multinomial(probs, num_samples=1).item()
-
-        # Single request
-        request = scheduler_output.requests[0]
 
         return {
             request.request_id: RequestOutput(

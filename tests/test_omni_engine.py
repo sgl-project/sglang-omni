@@ -1,0 +1,72 @@
+# SPDX-License-Identifier: Apache-2.0
+"""Engine smoke tests using Hugging Face models."""
+
+from __future__ import annotations
+
+import asyncio
+
+import torch
+
+from sglang_omni.engines.omni import (
+    ARRequestData,
+    EncoderRequestData,
+    create_ar_engine,
+    create_encoder_engine,
+)
+
+
+async def _run_encoder_engine() -> None:
+    from transformers import AutoModel, AutoTokenizer
+
+    model_id = "bert-base-uncased"
+    tokenizer = AutoTokenizer.from_pretrained(model_id)
+    model = AutoModel.from_pretrained(model_id)
+
+    engine = create_encoder_engine(model=model, tokenizer=tokenizer, device="cuda")
+    await engine.start()
+    try:
+        input_ids = tokenizer.encode("hello", return_tensors="pt")[0]
+        data = EncoderRequestData(input_ids=input_ids)
+        await engine.add_request("enc-1", data)
+        result = await engine.get_result("enc-1")
+        assert result.embeddings is not None
+    finally:
+        await engine.stop()
+
+
+def test_encoder_engine_runs() -> None:
+    asyncio.run(_run_encoder_engine())
+
+
+async def _run_llama8b_engine() -> None:
+    assert torch.cuda.is_available(), "CUDA is required for the Llama 8B test."
+
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+
+    model_id = "meta-llama/Meta-Llama-3-8B"
+    tokenizer = AutoTokenizer.from_pretrained(model_id)
+    model = AutoModelForCausalLM.from_pretrained(
+        model_id,
+        torch_dtype=torch.float16,
+    )
+
+    max_seq_len = getattr(model.config, "max_position_embeddings", 2048)
+    engine = create_ar_engine(
+        model=model,
+        tokenizer=tokenizer,
+        max_seq_len=max_seq_len,
+        device="cuda",
+    )
+    await engine.start()
+    try:
+        input_ids = tokenizer.encode("Hello", return_tensors="pt")[0]
+        data = ARRequestData(input_ids=input_ids, max_new_tokens=4, temperature=0.0)
+        await engine.add_request("llama-1", data)
+        result = await engine.get_result("llama-1")
+        assert result.output_ids
+    finally:
+        await engine.stop()
+
+
+def test_llama8b_engine_runs() -> None:
+    asyncio.run(_run_llama8b_engine())
