@@ -15,8 +15,10 @@ from sglang_omni.pipeline.input_handler import DirectInput, InputHandler
 from sglang_omni.pipeline.worker import Worker
 from sglang_omni.proto import (
     DataReadyMessage,
+    OmniRequest,
     ShutdownMessage,
     StageInfo,
+    StagePayload,
     SubmitMessage,
 )
 from sglang_omni.relay.base import Relay
@@ -28,6 +30,7 @@ logger = logging.getLogger(__name__)
 # Type alias for get_next function
 # Returns: next_stage_name or None for END
 GetNextFn = Callable[[str, Any], str | None]
+RequestBuilder = Callable[[str, Any], Any]
 
 
 class Stage:
@@ -49,6 +52,7 @@ class Stage:
         abort_endpoint: str,
         endpoints: dict[str, str],
         input_handler: InputHandler | None = None,
+        request_builder: RequestBuilder | None = None,
         relay: Relay | None = None,
         relay_config: dict[str, Any] | None = None,
     ):
@@ -63,6 +67,7 @@ class Stage:
             abort_endpoint: ZMQ endpoint for abort broadcasts
             endpoints: Dict of stage_name -> endpoint for routing
             input_handler: Input handler for aggregation (default: DirectInput)
+            request_builder: Builds engine input from payload (default: passthrough)
             relay: Relay instance for data transfer (default: NixlRelay if config provided)
             relay_config: Configuration dict for NixlRelay (if relay is None)
         """
@@ -70,6 +75,7 @@ class Stage:
         self.get_next = get_next
         self.endpoints = endpoints
         self.input_handler = input_handler or DirectInput()
+        self.request_builder = request_builder or self._default_request_builder
 
         # Components
         # Initialize relay: use provided relay, or create NixlRelay if config provided
@@ -199,6 +205,7 @@ class Stage:
 
         # Handle input (for DirectInput, just returns data)
         data = self.input_handler.receive(request_id, "coordinator", msg.data)
+        data = self._wrap_submit_data(data)
         if data is not None:
             await self.request_queue.put((request_id, data))
 
@@ -285,3 +292,15 @@ class Stage:
             "num_workers": len(self.workers),
             "relay": self.relay.health(),
         }
+
+    def _wrap_submit_data(self, data: Any) -> Any:
+        if isinstance(data, OmniRequest):
+            return StagePayload(request=data, data=data.inputs)
+        return data
+
+    @staticmethod
+    def _default_request_builder(request_id: str, data: Any) -> Any:
+        del request_id
+        if isinstance(data, StagePayload):
+            return data.data
+        return data

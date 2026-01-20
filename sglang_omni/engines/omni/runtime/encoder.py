@@ -8,7 +8,7 @@ from typing import Any
 
 import torch
 
-from ..types import Request, RequestOutput, SchedulerOutput
+from ..types import RequestOutput, SchedulerOutput, SchedulerRequest
 from .interfaces import ResourceManager
 
 
@@ -19,7 +19,7 @@ from .interfaces import ResourceManager
 
 @dataclass
 class EncoderRequestData:
-    """Encoder-specific request data (stored in Request.data)."""
+    """Encoder-specific request data (stored in SchedulerRequest.data)."""
 
     input_ids: torch.Tensor
     embeddings: torch.Tensor | None = None  # Filled after execution
@@ -46,12 +46,12 @@ class EncoderBatchPlanner:
 
     def select_requests(
         self,
-        waiting: list[Request],
-        running: list[Request],
+        waiting: list[SchedulerRequest],
+        running: list[SchedulerRequest],
         resource_manager: ResourceManager,
-    ) -> list[Request]:
+    ) -> list[SchedulerRequest]:
         del running
-        selected: list[Request] = []
+        selected: list[SchedulerRequest] = []
         for request in waiting:
             if len(selected) >= self.max_batch_size:
                 break
@@ -61,16 +61,20 @@ class EncoderBatchPlanner:
             selected.append(request)
         return selected
 
-    def build_batch(self, requests: list[Request]) -> EncoderBatchData:
+    def build_batch(self, requests: list[SchedulerRequest]) -> EncoderBatchData:
         return EncoderBatchData(
             input_ids_list=[r.data.input_ids for r in requests],
             seq_lens=[len(r.data.input_ids) for r in requests],
         )
 
-    def update_request(self, request: Request, output: RequestOutput) -> None:
+    def update_request(
+        self,
+        request: SchedulerRequest,
+        output: RequestOutput,
+    ) -> None:
         request.data.embeddings = output.data
 
-    def is_finished(self, request: Request, output: RequestOutput) -> bool:
+    def is_finished(self, request: SchedulerRequest, output: RequestOutput) -> bool:
         return True  # Encoder always done in one pass
 
 

@@ -17,6 +17,7 @@ from sglang_omni.proto import (
     AbortMessage,
     CompleteMessage,
     DataReadyMessage,
+    OmniRequest,
     RequestState,
     StageInfo,
 )
@@ -36,6 +37,7 @@ __all__ = [
     "AggregatedInput",
     # Types
     "RequestState",
+    "OmniRequest",
     "StageInfo",
     "DataReadyMessage",
     "AbortMessage",

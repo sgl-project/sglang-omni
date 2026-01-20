@@ -9,6 +9,7 @@ from sglang_omni.pipeline.control_plane import CoordinatorControlPlane
 from sglang_omni.proto import (
     AbortMessage,
     CompleteMessage,
+    OmniRequest,
     RequestInfo,
     RequestState,
     StageInfo,
@@ -91,12 +92,12 @@ class Coordinator:
             except Exception as e:
                 logger.warning("Failed to send shutdown to stage %s: %s", name, e)
 
-    async def submit(self, request_id: str, data: Any) -> Any:
+    async def submit(self, request_id: str, request: OmniRequest) -> Any:
         """Submit a request to the pipeline.
 
         Args:
             request_id: Unique request identifier
-            data: Input data
+            request: User-facing request with inputs and params
 
         Returns:
             Result from the pipeline
@@ -124,7 +125,7 @@ class Coordinator:
         await self.control_plane.submit_to_stage(
             self.entry_stage,
             entry_info.control_endpoint,
-            SubmitMessage(request_id=request_id, data=data),
+            SubmitMessage(request_id=request_id, data=request),
         )
 
         # Update state

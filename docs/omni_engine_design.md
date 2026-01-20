@@ -18,7 +18,7 @@ A unified, composable engine architecture for multi-modal model serving (Encoder
    - OutputProcessor: model outputs → RequestOutput
 
 3. **Opaque data passing**
-   - `Request.data`: model-specific, opaque to Scheduler
+   - `SchedulerRequest.data`: model-specific, opaque to Scheduler
    - `SchedulerOutput.batch_data`: built by BatchPlanner, consumed by InputPreparer
    - `RequestOutput.data`: model-specific output
 
@@ -45,7 +45,7 @@ See `docs/omni_engine_design_notes.md` for short decisions and constraints.
 │  ┌─────────────────────────────────────────────────────────────────────┐   │
 │  │                      Scheduler (Generic)                            │   │
 │  │                                                                      │   │
-│  │  - requests: dict[str, Request]                                     │   │
+│  │  - requests: dict[str, SchedulerRequest]                            │   │
 │  │  - waiting / running queues                                         │   │
 │  │  - delegates to BatchPlanner / ResourceManager / IterationController │   │
 │  │                                                                      │   │
@@ -54,7 +54,7 @@ See `docs/omni_engine_design_notes.md` for short decisions and constraints.
 │  └─────────────────────────────────────────────────────────────────────┘   │
 │                                           │                                 │
 │                                           │ SchedulerOutput                 │
-│                                           │   - requests: list[Request]     │
+│                                           │   - requests: list[SchedulerRequest] │
 │                                           │   - batch_data: Any (opaque)    │
 │                                           │   - step_id: int                │
 │                                           ▼                                 │
@@ -84,17 +84,17 @@ Model-Specific Components:
 
 | Component | Knows About | Doesn't Know About |
 |-----------|-------------|-------------------|
-| Scheduler | Request lifecycle, queues, abort | Tokens, tensors, resource details |
-| BatchPlanner | Selection strategy, batch_data layout | Request lifecycle management |
+| Scheduler | SchedulerRequest lifecycle, queues, abort | Tokens, tensors, resource details |
+| BatchPlanner | Selection strategy, batch_data layout | SchedulerRequest lifecycle management |
 | ResourceManager | Resource accounting (KV, memory) | Batch layout, model outputs |
 | IterationController | Per-request state updates, finish checks | Batch selection, resource allocation |
 | ModelRunner | How to call model | What batch_data contains |
 | InputPreparer | How to convert batch_data → tensors | Scheduling decisions |
-| OutputProcessor | How to extract per-request output | Request lifecycle |
+| OutputProcessor | How to extract per-request output | SchedulerRequest lifecycle |
 
 ---
 
-## Request Lifecycle
+## SchedulerRequest Lifecycle
 
 ```
                     add_request()
@@ -102,7 +102,7 @@ Model-Specific Components:
                          ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │                        WAITING                                   │
-│  - Request received, queued for scheduling                      │
+│  - SchedulerRequest received, queued for scheduling             │
 │  - BatchPlanner selects + ResourceManager allocates             │
 └───────┬───────────────────────────────┬─────────────────────────┘
         │ schedule() + allocate         │ abort()
@@ -184,14 +184,14 @@ from dataclasses import dataclass
 from enum import Enum, auto
 from typing import Any
 
-class RequestStatus(Enum):
+class SchedulerStatus(Enum):
     WAITING = auto()
     RUNNING = auto()
     FINISHED = auto()
     ABORTED = auto()
 
 @dataclass
-class Request:
+class SchedulerRequest:
     """
     Generic request container.
 
@@ -203,7 +203,7 @@ class Request:
     This includes per-request params and simple output lists (streaming deferred).
     """
     request_id: str
-    status: RequestStatus = RequestStatus.WAITING
+    status: SchedulerStatus = SchedulerStatus.WAITING
     data: Any = None  # Model-specific, opaque to Scheduler
 
     # Timestamps (generic)
@@ -218,7 +218,7 @@ class SchedulerOutput:
     - requests: which requests to process
     - batch_data: opaque, built by BatchPlanner, consumed by InputPreparer
     """
-    requests: list[Request]
+    requests: list[SchedulerRequest]
     batch_data: Any  # Opaque - built by BatchPlanner, consumed by InputPreparer
     step_id: int = 0  # For abort safety / stale updates
 
@@ -293,8 +293,8 @@ class Scheduler:
         self.iteration_controller = iteration_controller
         self.max_running = max_running
 
-        # Request state
-        self.requests: dict[str, Request] = {}
+        # Scheduler request state
+        self.requests: dict[str, SchedulerRequest] = {}
         self.waiting: deque[str] = deque()
         self.running: list[str] = []
 
@@ -309,7 +309,7 @@ class Scheduler:
 
     def add_request(self, request_id: str, data: Any) -> None:
         """Add a new request with model-specific data."""
-        request = Request(
+        request = SchedulerRequest(
             request_id=request_id,
             data=data,
             arrival_time=time.time(),
@@ -324,13 +324,13 @@ class Scheduler:
         if request is None:
             return
         self._aborted_this_step.add(request_id)
-        self._finish_request(request, status=RequestStatus.ABORTED)
+        self._finish_request(request, status=SchedulerStatus.ABORTED)
 
     def has_requests(self) -> bool:
         """Check if there are any requests to process."""
         return len(self.waiting) > 0 or len(self.running) > 0
 
-    async def get_result(self, request_id: str) -> Request:
+    async def get_result(self, request_id: str) -> SchedulerRequest:
         """Wait for a request to complete."""
         if request_id not in self.requests:
             raise KeyError(f"Unknown request: {request_id}")
@@ -341,7 +341,7 @@ class Scheduler:
 
         # If already finished or aborted, resolve immediately
         request = self.requests[request_id]
-        if request.status in (RequestStatus.FINISHED, RequestStatus.ABORTED):
+        if request.status in (SchedulerStatus.FINISHED, SchedulerStatus.ABORTED):
             return request
 
         return await self._futures[request_id]
@@ -376,7 +376,7 @@ class Scheduler:
             if req.request_id in self.waiting:
                 self.waiting.remove(req.request_id)
                 self.running.append(req.request_id)
-                req.status = RequestStatus.RUNNING
+                req.status = SchedulerStatus.RUNNING
 
         batch_data = self.batch_planner.build_batch(selected)
 
@@ -390,7 +390,7 @@ class Scheduler:
         self,
         scheduler_output: SchedulerOutput,
         model_output: ModelRunnerOutput
-    ) -> list[Request]:
+    ) -> list[SchedulerRequest]:
         """
         Update state from model output.
         Returns list of finished requests.
@@ -418,11 +418,11 @@ class Scheduler:
 
     def _finish_request(
         self,
-        request: Request,
-        status: RequestStatus = RequestStatus.FINISHED,
+        request: SchedulerRequest,
+        status: SchedulerStatus = SchedulerStatus.FINISHED,
     ) -> None:
         """Clean up finished/aborted request."""
-        was_running = request.status == RequestStatus.RUNNING
+        was_running = request.status == SchedulerStatus.RUNNING
         request.status = status
         request.finish_time = time.time()
 
@@ -458,10 +458,10 @@ class BatchPlanner(Protocol):
 
     def select_requests(
         self,
-        waiting: list[Request],
-        running: list[Request],
+        waiting: list[SchedulerRequest],
+        running: list[SchedulerRequest],
         resource_manager: "ResourceManager",
-    ) -> list[Request]:
+    ) -> list[SchedulerRequest]:
         """
         Select which requests to include in this batch.
         Also responsible for resource allocation via resource_manager.
@@ -472,7 +472,7 @@ class BatchPlanner(Protocol):
         """
         ...
 
-    def build_batch(self, requests: list[Request]) -> Any:
+    def build_batch(self, requests: list[SchedulerRequest]) -> Any:
         """Build model-specific batch data."""
         ...
 
@@ -480,16 +480,16 @@ class BatchPlanner(Protocol):
 class ResourceManager(Protocol):
     """Manages resources (memory, KV cache, etc.)."""
 
-    def can_allocate(self, request: Request) -> bool: ...
-    def allocate(self, request: Request) -> None: ...
-    def free(self, request: Request) -> None: ...
+    def can_allocate(self, request: SchedulerRequest) -> bool: ...
+    def allocate(self, request: SchedulerRequest) -> None: ...
+    def free(self, request: SchedulerRequest) -> None: ...
 
 
 class IterationController(Protocol):
     """Controls iteration (when is request done?)."""
 
-    def update_request(self, request: Request, output: RequestOutput) -> None: ...
-    def is_finished(self, request: Request, output: RequestOutput) -> bool: ...
+    def update_request(self, request: SchedulerRequest, output: RequestOutput) -> None: ...
+    def is_finished(self, request: SchedulerRequest, output: RequestOutput) -> bool: ...
 ```
 
 ---
@@ -507,22 +507,26 @@ class SimpleResourceManager:
         self.max_count = max_count
         self._count = 0
 
-    def can_allocate(self, request: Request) -> bool:
+    def can_allocate(self, request: SchedulerRequest) -> bool:
         return self._count < self.max_count
 
-    def allocate(self, request: Request) -> None:
+    def allocate(self, request: SchedulerRequest) -> None:
         self._count += 1
 
-    def free(self, request: Request) -> None:
+    def free(self, request: SchedulerRequest) -> None:
         self._count = max(0, self._count - 1)
 
 
 class SinglePassIterationController:
     """For Encoder - always done in one pass."""
-    def update_request(self, request: Request, output: RequestOutput) -> None:
+    def update_request(
+        self,
+        request: SchedulerRequest,
+        output: RequestOutput,
+    ) -> None:
         request.data.embeddings = output.data
 
-    def is_finished(self, request: Request, output: RequestOutput) -> bool:
+    def is_finished(self, request: SchedulerRequest, output: RequestOutput) -> bool:
         return True
 
 
@@ -534,7 +538,11 @@ class EosIterationController:
         )
         self.max_length = max_length
 
-    def update_request(self, request: Request, output: RequestOutput) -> None:
+    def update_request(
+        self,
+        request: SchedulerRequest,
+        output: RequestOutput,
+    ) -> None:
         token = output.data
         if isinstance(output.data, tuple):
             token, past_kv = output.data
@@ -545,7 +553,7 @@ class EosIterationController:
         else:
             request.data.num_computed_tokens += 1
 
-    def is_finished(self, request: Request, output: RequestOutput) -> bool:
+    def is_finished(self, request: SchedulerRequest, output: RequestOutput) -> bool:
         token = output.data
         if isinstance(output.data, tuple):
             token, _ = output.data
@@ -562,11 +570,15 @@ class FixedStepsIterationController:
     def __init__(self, num_steps: int):
         self.num_steps = num_steps
 
-    def update_request(self, request: Request, output: RequestOutput) -> None:
+    def update_request(
+        self,
+        request: SchedulerRequest,
+        output: RequestOutput,
+    ) -> None:
         request.data.latents = output.data
         request.data.current_step += 1
 
-    def is_finished(self, request: Request, output: RequestOutput) -> bool:
+    def is_finished(self, request: SchedulerRequest, output: RequestOutput) -> bool:
         return request.data.current_step >= self.num_steps
 ```
 
@@ -780,7 +792,7 @@ import torch
 
 @dataclass
 class EncoderRequestData:
-    """Encoder-specific request data (stored in Request.data)."""
+    """Encoder-specific request data (stored in SchedulerRequest.data)."""
     input_ids: torch.Tensor
     embeddings: torch.Tensor | None = None  # Filled after execution
 
@@ -809,10 +821,10 @@ class EncoderBatchPlanner:
 
     def select_requests(
         self,
-        waiting: list[Request],
-        running: list[Request],
+        waiting: list[SchedulerRequest],
+        running: list[SchedulerRequest],
         resource_manager: ResourceManager,
-    ) -> list[Request]:
+    ) -> list[SchedulerRequest]:
         selected = []
         for req in waiting:
             if len(selected) >= self.max_batch_size:
@@ -822,7 +834,7 @@ class EncoderBatchPlanner:
                 selected.append(req)
         return selected
 
-    def build_batch(self, requests: list[Request]) -> EncoderBatchData:
+    def build_batch(self, requests: list[SchedulerRequest]) -> EncoderBatchData:
         return EncoderBatchData(
             input_ids_list=[r.data.input_ids for r in requests],
             seq_lens=[len(r.data.input_ids) for r in requests],
@@ -918,7 +930,7 @@ import torch
 
 @dataclass
 class ARRequestData:
-    """AR-specific request data (stored in Request.data)."""
+    """AR-specific request data (stored in SchedulerRequest.data)."""
     input_ids: torch.Tensor
     output_ids: list[int] = field(default_factory=list)
     num_computed_tokens: int = 0
@@ -961,10 +973,10 @@ class ARBatchPlanner:
 
     def select_requests(
         self,
-        waiting: list[Request],
-        running: list[Request],
+        waiting: list[SchedulerRequest],
+        running: list[SchedulerRequest],
         resource_manager: ResourceManager,
-    ) -> list[Request]:
+    ) -> list[SchedulerRequest]:
         selected = []
         total_tokens = 0
 
@@ -990,7 +1002,7 @@ class ARBatchPlanner:
 
         return selected
 
-    def build_batch(self, requests: list[Request]) -> ARBatchData:
+    def build_batch(self, requests: list[SchedulerRequest]) -> ARBatchData:
         all_input_ids = []
         all_positions = []
         seq_lens = []
@@ -1105,7 +1117,7 @@ import torch
 
 @dataclass
 class DiTRequestData:
-    """DiT-specific request data (stored in Request.data)."""
+    """DiT-specific request data (stored in SchedulerRequest.data)."""
     latents: torch.Tensor            # Current latents
     condition: torch.Tensor | None   # Text/image condition
     current_step: int = 0
@@ -1136,10 +1148,10 @@ class DiTBatchPlanner:
 
     def select_requests(
         self,
-        waiting: list[Request],
-        running: list[Request],
+        waiting: list[SchedulerRequest],
+        running: list[SchedulerRequest],
         resource_manager: ResourceManager,
-    ) -> list[Request]:
+    ) -> list[SchedulerRequest]:
         selected = []
         for req in running:
             if len(selected) >= self.max_batch_size:
@@ -1154,7 +1166,7 @@ class DiTBatchPlanner:
                     selected.append(req)
         return selected
 
-    def build_batch(self, requests: list[Request]) -> DiTBatchData:
+    def build_batch(self, requests: list[SchedulerRequest]) -> DiTBatchData:
         latents = torch.stack([r.data.latents for r in requests])
         timesteps = torch.tensor([r.data.current_step for r in requests])
 
@@ -1330,8 +1342,8 @@ sglang_omni/
 │       ├── __init__.py                   # Public exports
 │       │
 │       ├── types.py                      # Generic types only
-│       │   - Request
-│       │   - RequestStatus
+│       │   - SchedulerRequest
+│       │   - SchedulerStatus
 │       │   - SchedulerOutput
 │       │   - RequestOutput
 │       │   - ModelRunnerOutput
@@ -1360,7 +1372,7 @@ sglang_omni/
 ```python
 # runtime/encoder.py - Everything needed to support Encoder models
 
-# 1. Data structures (what Request.data and batch_data contain)
+# 1. Data structures (what SchedulerRequest.data and batch_data contain)
 @dataclass
 class EncoderRequestData: ...
 
@@ -1410,7 +1422,7 @@ So `runtime/encoder.py` doesn't contain BERT — it contains the logic to **sche
 │    └── BatchPlanner.build_batch() → model-specific batch_data               │
 │                                                                              │
 │    Output: SchedulerOutput                                                  │
-│    ├── requests: [Request, ...]                                             │
+│    ├── requests: [SchedulerRequest, ...]                                    │
 │    └── batch_data: Any (opaque, model-specific)                             │
 └─────────────────────────────────────────────────────────────────────────────┘
                                       │
@@ -1433,7 +1445,7 @@ So `runtime/encoder.py` doesn't contain BERT — it contains the logic to **sche
 │                                                                              │
 │    scheduler.update(scheduler_output, model_output)                         │
 │    ├── For each request:                                                    │
-│    │   ├── IterationController.update_request() → update Request.data       │
+│    │   ├── IterationController.update_request() → update SchedulerRequest.data │
 │    │   └── if IterationController.is_finished(): _finish_request()          │
 │    │       └── ResourceManager.free() → free resources                      │
 │    └── Resolve futures for finished requests                                │

@@ -11,9 +11,9 @@ from typing import TYPE_CHECKING, Any
 
 from .types import (
     ModelRunnerOutput,
-    Request,
-    RequestStatus,
     SchedulerOutput,
+    SchedulerRequest,
+    SchedulerStatus,
 )
 
 if TYPE_CHECKING:
@@ -47,13 +47,13 @@ class Scheduler:
         self.resource_manager = resource_manager
         self.iteration_controller = iteration_controller
 
-        # Request state
-        self.requests: dict[str, Request] = {}
+        # Scheduler request state
+        self.requests: dict[str, SchedulerRequest] = {}
         self.waiting: deque[str] = deque()
         self.running: list[str] = []
 
         # Result futures (created lazily in get_result)
-        self._futures: dict[str, asyncio.Future[Request]] = {}
+        self._futures: dict[str, asyncio.Future[SchedulerRequest]] = {}
         self._step_id = 0
         self._aborted_this_step: set[str] = set()
 
@@ -63,7 +63,7 @@ class Scheduler:
 
     def add_request(self, request_id: str, data: Any) -> None:
         """Add a new request with model-specific data."""
-        request = Request(
+        request = SchedulerRequest(
             request_id=request_id,
             data=data,
             arrival_time=time.time(),
@@ -78,13 +78,13 @@ class Scheduler:
         if request is None:
             return
         self._aborted_this_step.add(request_id)
-        self._finish_request(request, status=RequestStatus.ABORTED)
+        self._finish_request(request, status=SchedulerStatus.ABORTED)
 
     def has_requests(self) -> bool:
         """Check if there are any requests to process."""
         return len(self.waiting) > 0 or len(self.running) > 0
 
-    async def get_result(self, request_id: str) -> Request:
+    async def get_result(self, request_id: str) -> SchedulerRequest:
         """Wait for a request to complete."""
         if request_id not in self.requests:
             raise KeyError(f"Unknown request: {request_id}")
@@ -95,7 +95,7 @@ class Scheduler:
 
         # If already finished or aborted, resolve immediately
         request = self.requests[request_id]
-        if request.status in (RequestStatus.FINISHED, RequestStatus.ABORTED):
+        if request.status in (SchedulerStatus.FINISHED, SchedulerStatus.ABORTED):
             return request
 
         return await self._futures[request_id]
@@ -128,7 +128,7 @@ class Scheduler:
             if request.request_id in self.waiting:
                 self.waiting.remove(request.request_id)
                 self.running.append(request.request_id)
-                request.status = RequestStatus.RUNNING
+                request.status = SchedulerStatus.RUNNING
 
         batch_data = self.batch_planner.build_batch(selected)
 
@@ -142,12 +142,12 @@ class Scheduler:
         self,
         scheduler_output: SchedulerOutput,
         model_output: ModelRunnerOutput,
-    ) -> list[Request]:
+    ) -> list[SchedulerRequest]:
         """Update state from model output.
 
         Returns list of finished requests.
         """
-        finished: list[Request] = []
+        finished: list[SchedulerRequest] = []
 
         for request in scheduler_output.requests:
             if request.request_id in self._aborted_this_step:
@@ -170,11 +170,11 @@ class Scheduler:
 
     def _finish_request(
         self,
-        request: Request,
-        status: RequestStatus = RequestStatus.FINISHED,
+        request: SchedulerRequest,
+        status: SchedulerStatus = SchedulerStatus.FINISHED,
     ) -> None:
         """Clean up finished request."""
-        was_running = request.status == RequestStatus.RUNNING
+        was_running = request.status == SchedulerStatus.RUNNING
         request.status = status
         request.finish_time = time.time()
 

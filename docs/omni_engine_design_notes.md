@@ -4,7 +4,7 @@ Short decisions and constraints for the OmniEngine v2 design.
 
 ## Decisions
 
-- Streaming outputs deferred; store simple output lists in `Request.data` for now.
+- Streaming outputs deferred; store simple output lists in `SchedulerRequest.data` for now.
 - BatchPlanner owns request selection; resource allocation happens inside `select_requests()`.
 - InputPreparer and OutputProcessor receive full `SchedulerOutput` for per-request params.
 - Stages are independent; a separate coordinator handles cross-stage flow.

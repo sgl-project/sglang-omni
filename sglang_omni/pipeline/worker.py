@@ -12,7 +12,7 @@ import numpy as np
 import torch
 
 from sglang_omni.engines.base import Engine
-from sglang_omni.proto import CompleteMessage, DataReadyMessage
+from sglang_omni.proto import CompleteMessage, DataReadyMessage, StagePayload
 
 if TYPE_CHECKING:
     from sglang_omni.pipeline.stage import Stage
@@ -61,8 +61,8 @@ class Worker:
     async def _process_request(self, request_id: str, data: Any) -> None:
         """Process a single request."""
         try:
-            # Process through engine
-            await self.engine.add_request(request_id, data)
+            engine_input = self.stage.request_builder(request_id, data)
+            await self.engine.add_request(request_id, engine_input)
             output = await self.engine.get_result(request_id)
 
             # Determine next stage
@@ -74,9 +74,15 @@ class Worker:
             # Route
             if next_stage is None:
                 # END - send completion
+                if isinstance(transformed, StagePayload):
+                    transformed = transformed.data
                 await self._send_complete(request_id, transformed)
             else:
                 # Send to next stage
+                if isinstance(data, StagePayload) and not isinstance(
+                    transformed, StagePayload
+                ):
+                    transformed = StagePayload(request=data.request, data=transformed)
                 await self._send_to_next(request_id, next_stage, transformed)
 
         except asyncio.CancelledError:

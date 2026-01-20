@@ -8,7 +8,7 @@ from typing import Any
 
 import torch
 
-from ..types import Request, RequestOutput, SchedulerOutput
+from ..types import RequestOutput, SchedulerOutput, SchedulerRequest
 from .common import SimpleResourceManager
 from .interfaces import ResourceManager
 
@@ -20,7 +20,7 @@ from .interfaces import ResourceManager
 
 @dataclass
 class ARRequestData:
-    """AR-specific request data (stored in Request.data)."""
+    """AR-specific request data (stored in SchedulerRequest.data)."""
 
     input_ids: torch.Tensor
     output_ids: list[int] = field(default_factory=list)
@@ -54,10 +54,10 @@ class ARBatchPlanner:
 
     def select_requests(
         self,
-        waiting: list[Request],
-        running: list[Request],
+        waiting: list[SchedulerRequest],
+        running: list[SchedulerRequest],
         resource_manager: ResourceManager,
-    ) -> list[Request]:
+    ) -> list[SchedulerRequest]:
         if running:
             return [running[0]]
 
@@ -71,7 +71,7 @@ class ARBatchPlanner:
         resource_manager.allocate(request)
         return [request]
 
-    def build_batch(self, requests: list[Request]) -> ARBatchData:
+    def build_batch(self, requests: list[SchedulerRequest]) -> ARBatchData:
         request = requests[0]
         data: ARRequestData = request.data
         is_prefill = data.num_computed_tokens == 0
@@ -92,7 +92,7 @@ class ARBatchPlanner:
 class ARResourceManager(SimpleResourceManager):
     """Resource manager that clears KV cache on free."""
 
-    def free(self, request: Request) -> None:
+    def free(self, request: SchedulerRequest) -> None:
         super().free(request)
         request.data.past_key_values = None
 

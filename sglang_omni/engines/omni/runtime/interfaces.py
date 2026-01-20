@@ -7,7 +7,7 @@ from typing import Any, Protocol
 
 import torch
 
-from ..types import Request, RequestOutput, SchedulerOutput
+from ..types import SchedulerOutput, SchedulerRequest, RequestOutput
 
 
 class BatchPlanner(Protocol):
@@ -15,14 +15,14 @@ class BatchPlanner(Protocol):
 
     def select_requests(
         self,
-        waiting: list[Request],
-        running: list[Request],
+        waiting: list[SchedulerRequest],
+        running: list[SchedulerRequest],
         resource_manager: "ResourceManager",
-    ) -> list[Request]:
+    ) -> list[SchedulerRequest]:
         """Select which requests to include in this batch."""
         ...
 
-    def build_batch(self, requests: list[Request]) -> Any:
+    def build_batch(self, requests: list[SchedulerRequest]) -> Any:
         """Build model-specific batch data from requests."""
         ...
 
@@ -30,23 +30,23 @@ class BatchPlanner(Protocol):
 class ResourceManager(Protocol):
     """Manage model resources (memory, KV cache, etc.)."""
 
-    def can_allocate(self, request: Request) -> bool:
+    def can_allocate(self, request: SchedulerRequest) -> bool:
         ...
 
-    def allocate(self, request: Request) -> None:
+    def allocate(self, request: SchedulerRequest) -> None:
         ...
 
-    def free(self, request: Request) -> None:
+    def free(self, request: SchedulerRequest) -> None:
         ...
 
 
 class IterationController(Protocol):
     """Update per-request state and decide when it finishes."""
 
-    def update_request(self, request: Request, output: RequestOutput) -> None:
+    def update_request(self, request: SchedulerRequest, output: RequestOutput) -> None:
         ...
 
-    def is_finished(self, request: Request, output: RequestOutput) -> bool:
+    def is_finished(self, request: SchedulerRequest, output: RequestOutput) -> bool:
         ...
 
 

@@ -9,16 +9,16 @@ from .runtime.encoder import EncoderRequestData
 from .scheduler import Scheduler
 from .types import (
     ModelRunnerOutput,
-    Request,
     RequestOutput,
-    RequestStatus,
     SchedulerOutput,
+    SchedulerRequest,
+    SchedulerStatus,
 )
 
 __all__ = [
     # Types
-    "Request",
-    "RequestStatus",
+    "SchedulerRequest",
+    "SchedulerStatus",
     "SchedulerOutput",
     "RequestOutput",
     "ModelRunnerOutput",

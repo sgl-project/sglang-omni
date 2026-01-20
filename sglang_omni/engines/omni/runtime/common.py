@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from ..types import Request, RequestOutput
+from ..types import RequestOutput, SchedulerRequest
 
 
 class SimpleResourceManager:
@@ -13,23 +13,23 @@ class SimpleResourceManager:
         self.max_count = max_count
         self._count = 0
 
-    def can_allocate(self, request: Request) -> bool:
+    def can_allocate(self, request: SchedulerRequest) -> bool:
         return self._count < self.max_count
 
-    def allocate(self, request: Request) -> None:
+    def allocate(self, request: SchedulerRequest) -> None:
         self._count += 1
 
-    def free(self, request: Request) -> None:
+    def free(self, request: SchedulerRequest) -> None:
         self._count = max(0, self._count - 1)
 
 
 class SinglePassIterationController:
     """Encoder-style: always done in one pass."""
 
-    def update_request(self, request: Request, output: RequestOutput) -> None:
+    def update_request(self, request: SchedulerRequest, output: RequestOutput) -> None:
         request.data.embeddings = output.data
 
-    def is_finished(self, request: Request, output: RequestOutput) -> bool:
+    def is_finished(self, request: SchedulerRequest, output: RequestOutput) -> bool:
         return True
 
 
@@ -48,7 +48,7 @@ class EosIterationController:
         self._max_length = max_length
         self._default_max_new_tokens = default_max_new_tokens
 
-    def update_request(self, request: Request, output: RequestOutput) -> None:
+    def update_request(self, request: SchedulerRequest, output: RequestOutput) -> None:
         token = output.data
         if isinstance(output.data, tuple):
             token, past_kv = output.data
@@ -60,7 +60,7 @@ class EosIterationController:
         else:
             request.data.num_computed_tokens += 1
 
-    def is_finished(self, request: Request, output: RequestOutput) -> bool:
+    def is_finished(self, request: SchedulerRequest, output: RequestOutput) -> bool:
         token = output.data
         if isinstance(output.data, tuple):
             token, _ = output.data

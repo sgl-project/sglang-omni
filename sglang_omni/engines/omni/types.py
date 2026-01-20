@@ -6,8 +6,8 @@ from enum import Enum, auto
 from typing import Any
 
 
-class RequestStatus(Enum):
-    """Request lifecycle status."""
+class SchedulerStatus(Enum):
+    """Scheduler request lifecycle status."""
 
     WAITING = auto()
     RUNNING = auto()
@@ -16,8 +16,8 @@ class RequestStatus(Enum):
 
 
 @dataclass
-class Request:
-    """Generic request container.
+class SchedulerRequest:
+    """Generic scheduler request container.
 
     The Scheduler only cares about:
     - request_id: identity
@@ -27,7 +27,7 @@ class Request:
     """
 
     request_id: str
-    status: RequestStatus = RequestStatus.WAITING
+    status: SchedulerStatus = SchedulerStatus.WAITING
     data: Any = None  # Model-specific, opaque to Scheduler
 
     # Timestamps
@@ -43,7 +43,7 @@ class SchedulerOutput:
     - batch_data: opaque, built by BatchPlanner, consumed by InputPreparer
     """
 
-    requests: list[Request]
+    requests: list[SchedulerRequest]
     batch_data: Any  # Opaque - built by BatchPlanner, consumed by InputPreparer
     step_id: int = 0
 

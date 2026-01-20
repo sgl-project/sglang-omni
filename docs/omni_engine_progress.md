@@ -14,7 +14,7 @@ Tracking progress for implementing the OmniEngine framework as designed in [omni
 | File | Status | Notes |
 |------|--------|-------|
 | `engines/base.py` | ✅ Exists | Already has Engine ABC + EchoEngine |
-| `engines/omni/types.py` | ✅ Done | Request, RequestStatus, SchedulerOutput, RequestOutput, ModelRunnerOutput |
+| `engines/omni/types.py` | ✅ Done | SchedulerRequest, SchedulerStatus, SchedulerOutput, RequestOutput, ModelRunnerOutput |
 | `engines/omni/runtime/interfaces.py` | ✅ Done | BatchPlanner, ResourceManager, IterationController, Input/Output protocols |
 | `engines/omni/__init__.py` | ✅ Done | Exports types |
 | `engines/omni/runtime/__init__.py` | ✅ Done | Exports runtime components |
