@@ -5,20 +5,18 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import pickle
 from typing import Any, Callable
 
-import torch
-
 from sglang_omni.pipeline.control_plane import StageControlPlane
+from sglang_omni.pipeline.data_plane import DataPlaneAdapter
 from sglang_omni.pipeline.input_handler import DirectInput, InputHandler
+from sglang_omni.pipeline.scheduler import StageScheduler
+from sglang_omni.pipeline.types import InputRef
 from sglang_omni.pipeline.worker import Worker
 from sglang_omni.proto import (
     DataReadyMessage,
-    OmniRequest,
     ShutdownMessage,
     StageInfo,
-    StagePayload,
     SubmitMessage,
 )
 from sglang_omni.relay.base import Relay
@@ -30,7 +28,6 @@ logger = logging.getLogger(__name__)
 # Type alias for get_next function
 # Returns: next_stage_name or None for END
 GetNextFn = Callable[[str, Any], str | None]
-RequestBuilder = Callable[[str, Any], Any]
 
 
 class Stage:
@@ -52,7 +49,6 @@ class Stage:
         abort_endpoint: str,
         endpoints: dict[str, str],
         input_handler: InputHandler | None = None,
-        request_builder: RequestBuilder | None = None,
         relay: Relay | None = None,
         relay_config: dict[str, Any] | None = None,
     ):
@@ -67,7 +63,6 @@ class Stage:
             abort_endpoint: ZMQ endpoint for abort broadcasts
             endpoints: Dict of stage_name -> endpoint for routing
             input_handler: Input handler for aggregation (default: DirectInput)
-            request_builder: Builds engine input from payload (default: passthrough)
             relay: Relay instance for data transfer (default: NixlRelay if config provided)
             relay_config: Configuration dict for NixlRelay (if relay is None)
         """
@@ -75,7 +70,6 @@ class Stage:
         self.get_next = get_next
         self.endpoints = endpoints
         self.input_handler = input_handler or DirectInput()
-        self.request_builder = request_builder or self._default_request_builder
 
         # Components
         # Initialize relay: use provided relay, or create NixlRelay if config provided
@@ -90,15 +84,15 @@ class Stage:
             # Default: create NixlRelay with default config
             self.relay = NixlRelay(engine_id=f"{name}_relay")
 
+        self.data_plane = DataPlaneAdapter(self.relay)
+        self.scheduler = StageScheduler()
+
         self.control_plane = StageControlPlane(
             stage_name=name,
             recv_endpoint=recv_endpoint,
             coordinator_endpoint=coordinator_endpoint,
             abort_endpoint=abort_endpoint,
         )
-
-        # Request queue for workers
-        self.request_queue: asyncio.Queue[tuple[str, Any] | None] = asyncio.Queue()
 
         # Workers
         self.workers: list[Worker] = []
@@ -109,7 +103,8 @@ class Stage:
 
     def add_worker(self, worker: Worker) -> None:
         """Add a worker to this stage."""
-        worker.bind(self)
+        queue = self.scheduler.add_worker()
+        worker.bind(self, queue)
         self.workers.append(worker)
 
     async def start(self) -> None:
@@ -123,8 +118,8 @@ class Stage:
         self._running = False
 
         # Signal workers to stop
-        for _ in self.workers:
-            await self.request_queue.put(None)
+        for worker in self.workers:
+            await worker.queue.put(None)
 
         self.control_plane.close()
         self.relay.close()
@@ -203,11 +198,10 @@ class Stage:
             logger.debug("Stage %s skipping aborted req=%s", self.name, request_id)
             return
 
-        # Handle input (for DirectInput, just returns data)
-        data = self.input_handler.receive(request_id, "coordinator", msg.data)
-        data = self._wrap_submit_data(data)
-        if data is not None:
-            await self.request_queue.put((request_id, data))
+        input_ref = InputRef.from_payload("coordinator", msg.data)
+        work = self.input_handler.receive(request_id, "coordinator", input_ref)
+        if work is not None:
+            self.scheduler.enqueue(work)
 
     async def _process_data_ready(self, msg: DataReadyMessage) -> None:
         """Process data ready notification from previous stage."""
@@ -221,60 +215,25 @@ class Stage:
 
         if request_id in self._aborted_requests:
             logger.debug("Stage %s skipping aborted req=%s", self.name, request_id)
-            self.relay.cleanup(request_id)
+            self.data_plane.cleanup(request_id)
             return
 
-        # Read data using unified relay interface
-        try:
-            metadata = msg.shm_metadata
-            data_size = metadata["transfer_info"]["size"]
-
-            # Create receive tensor (uint8) on relay device
-            device = self.relay.device if hasattr(self.relay, "device") else "cpu"
-            recv_tensor = torch.zeros(data_size, dtype=torch.uint8, device=device)
-
-            # Call get_async to retrieve data
-            read_op = await self.relay.get_async(
-                metadata=metadata, dest_tensor=recv_tensor, request_id=request_id
-            )
-
-            await read_op.wait_for_completion()
-
-            # Deserialize: convert tensor back to CPU bytes
-            if recv_tensor.is_cuda:
-                buffer_bytes = recv_tensor.cpu().numpy().tobytes()
-            else:
-                buffer_bytes = recv_tensor.numpy().tobytes()
-
-            data = pickle.loads(buffer_bytes)
-
-
-            self.relay.cleanup(request_id)
-
-        except Exception as e:
-            logger.error(
-                "Stage %s failed to get data for req=%s: %s", self.name, request_id, e
-            )
-            import traceback
-
-            logger.error(traceback.format_exc())
-            return
-
-        # Handle input aggregation
-        merged = self.input_handler.receive(request_id, msg.from_stage, data)
-        if merged is not None:
-            await self.request_queue.put((request_id, merged))
+        input_ref = InputRef.from_metadata(msg.from_stage, msg.shm_metadata)
+        work = self.input_handler.receive(request_id, msg.from_stage, input_ref)
+        if work is not None:
+            self.scheduler.enqueue(work)
 
     def _on_abort(self, request_id: str) -> None:
         """Handle abort for a request."""
         logger.debug("Stage %s: aborting req=%s", self.name, request_id)
         self._aborted_requests.add(request_id)
+        self.scheduler.clear_request(request_id)
         self.input_handler.cancel(request_id)
-        self.relay.cleanup(request_id)
+        self.data_plane.cleanup(request_id)
 
         # Notify workers' engines
         for worker in self.workers:
-            asyncio.create_task(worker.engine.abort(request_id))
+            asyncio.create_task(worker.executor.abort(request_id))
 
     def info(self) -> StageInfo:
         """Return stage info."""
@@ -288,19 +247,7 @@ class Stage:
         return {
             "name": self.name,
             "running": self._running,
-            "queue_size": self.request_queue.qsize(),
-            "num_workers": len(self.workers),
+            "queue_size": self.scheduler.queue_size(),
+            "num_workers": self.scheduler.num_workers(),
             "relay": self.relay.health(),
         }
-
-    def _wrap_submit_data(self, data: Any) -> Any:
-        if isinstance(data, OmniRequest):
-            return StagePayload(request=data, data=data.inputs)
-        return data
-
-    @staticmethod
-    def _default_request_builder(request_id: str, data: Any) -> Any:
-        del request_id
-        if isinstance(data, StagePayload):
-            return data.data
-        return data

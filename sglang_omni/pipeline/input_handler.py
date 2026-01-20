@@ -5,6 +5,9 @@ import logging
 from abc import ABC, abstractmethod
 from typing import Any, Callable
 
+from sglang_omni.pipeline.types import InputRef, WorkDescriptor
+from sglang_omni.proto import StagePayload
+
 logger = logging.getLogger(__name__)
 
 
@@ -17,7 +20,7 @@ class InputHandler(ABC):
     """
 
     @abstractmethod
-    def receive(self, request_id: str, from_stage: str, data: Any) -> Any | None:
+    def receive(self, request_id: str, from_stage: str, data: InputRef) -> WorkDescriptor | None:
         """Receive data from a stage.
 
         Returns:
@@ -34,8 +37,8 @@ class InputHandler(ABC):
 class DirectInput(InputHandler):
     """Direct pass-through. Single input, no aggregation."""
 
-    def receive(self, request_id: str, from_stage: str, data: Any) -> Any:
-        return data
+    def receive(self, request_id: str, from_stage: str, data: InputRef) -> WorkDescriptor:
+        return WorkDescriptor(request_id=request_id, inputs=[data])
 
     def cancel(self, request_id: str) -> None:
         pass  # Nothing to clean up
@@ -51,7 +54,7 @@ class AggregatedInput(InputHandler):
     def __init__(
         self,
         sources: set[str],
-        merge: Callable[[dict[str, Any]], Any],
+        merge: Callable[[dict[str, StagePayload]], StagePayload],
     ):
         """Initialize aggregated input handler.
 
@@ -61,11 +64,11 @@ class AggregatedInput(InputHandler):
         """
         self._sources = sources
         self._merge = merge
-        self._pending: dict[str, dict[str, Any]] = (
+        self._pending: dict[str, dict[str, InputRef]] = (
             {}
-        )  # request_id -> {from_stage: data}
+        )  # request_id -> {from_stage: input_ref}
 
-    def receive(self, request_id: str, from_stage: str, data: Any) -> Any | None:
+    def receive(self, request_id: str, from_stage: str, data: InputRef) -> WorkDescriptor | None:
         if from_stage not in self._sources:
             logger.warning(
                 "AggregatedInput: unexpected source %s for request %s",
@@ -85,13 +88,17 @@ class AggregatedInput(InputHandler):
         if set(self._pending[request_id].keys()) == self._sources:
             # All inputs received, merge and return
             inputs = self._pending.pop(request_id)
-            merged = self._merge(inputs)
             logger.debug(
                 "AggregatedInput: merged inputs for %s from %s",
                 request_id,
                 list(inputs.keys()),
             )
-            return merged
+            ordered = [inputs[source] for source in sorted(inputs.keys())]
+            return WorkDescriptor(
+                request_id=request_id,
+                inputs=ordered,
+                merge=self._merge,
+            )
 
         # Still waiting for more inputs
         logger.debug(

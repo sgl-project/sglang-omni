@@ -57,4 +57,10 @@ class ModelRunner:
             scheduler_output,
         )
 
-        return ModelRunnerOutput(outputs=request_outputs)
+        req_ids = [req.request_id for req in scheduler_output.requests]
+        req_id_to_index = {req_id: idx for idx, req_id in enumerate(req_ids)}
+        return ModelRunnerOutput(
+            outputs=request_outputs,
+            req_ids=req_ids,
+            req_id_to_index=req_id_to_index,
+        )

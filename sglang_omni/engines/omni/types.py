@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Core types for OmniEngine - generic, model-agnostic."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Any
 
@@ -74,4 +74,9 @@ class RequestOutput:
 class ModelRunnerOutput:
     """Generic output from ModelRunner."""
 
-    outputs: dict[str, RequestOutput]  # request_id -> output
+    # request_id -> output
+    outputs: dict[str, RequestOutput]
+    # Ordered request ids for this output batch.
+    req_ids: list[str] = field(default_factory=list)
+    # request_id -> index within req_ids
+    req_id_to_index: dict[str, int] = field(default_factory=dict)

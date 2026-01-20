@@ -103,14 +103,32 @@ def run_stage(
     import asyncio
     import logging
 
-    from sglang_omni import EchoEngine, Stage, Worker
+    from sglang_omni import Stage, Worker
+    from sglang_omni.proto import StagePayload
+    from sglang_omni.executors import FrontendExecutor
 
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
 
-    engine = EchoEngine(transform=transform, delay=delay)
+    def processor(payload: StagePayload) -> StagePayload:
+        if delay > 0:
+            time.sleep(delay)
+
+        value = payload.data
+        if isinstance(value, dict):
+            value = value.get("value", value.get("raw_inputs"))
+
+        result = transform(value)
+        if isinstance(payload.data, dict):
+            payload.data["value"] = result
+        else:
+            payload.data = {"raw_inputs": value, "value": result}
+
+        return payload
+
+    engine = FrontendExecutor(processor)
     worker = Worker(engine)
 
     # Configure relay - always use NixlRelay

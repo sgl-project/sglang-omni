@@ -35,10 +35,48 @@ class OmniRequest:
     params: dict[str, Any] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
 
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "_type": "OmniRequest",
+            "inputs": self.inputs,
+            "params": self.params,
+            "metadata": self.metadata,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "OmniRequest":
+        return cls(
+            inputs=data.get("inputs"),
+            params=data.get("params", {}),
+            metadata=data.get("metadata", {}),
+        )
+
 
 @dataclass
 class StagePayload:
     """Payload passed between stages with request context."""
 
+    request_id: str
     request: OmniRequest
     data: Any
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "_type": "StagePayload",
+            "request_id": self.request_id,
+            "request": self.request.to_dict(),
+            "data": self.data,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "StagePayload":
+        request = data.get("request", {})
+        if isinstance(request, dict) and request.get("_type") == "OmniRequest":
+            request_obj = OmniRequest.from_dict(request)
+        else:
+            request_obj = OmniRequest.from_dict(request)
+        return cls(
+            request_id=data.get("request_id", ""),
+            request=request_obj,
+            data=data.get("data"),
+        )

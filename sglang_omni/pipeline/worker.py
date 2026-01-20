@@ -5,13 +5,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import pickle
 from typing import TYPE_CHECKING, Any
 
-import numpy as np
-import torch
-
-from sglang_omni.engines.base import Engine
+from sglang_omni.executors.interface import Executor
+from sglang_omni.pipeline.types import WorkDescriptor
 from sglang_omni.proto import CompleteMessage, DataReadyMessage, StagePayload
 
 if TYPE_CHECKING:
@@ -23,21 +20,25 @@ logger = logging.getLogger(__name__)
 class Worker:
     """Worker that runs the processing loop.
 
-    Loop: get request -> engine.add_request -> engine.get_result -> route -> send
+    Loop: get work -> executor.add_request -> executor.get_result -> route -> send
     """
 
-    def __init__(self, engine: Engine):
-        self.engine = engine
+    def __init__(self, executor: Executor, role: str | None = None):
+        self.executor = executor
+        self.engine = executor  # Backward-compatible alias.
+        self.role = role
         self.stage: Stage | None = None
+        self.queue: asyncio.Queue[WorkDescriptor | None] | None = None
         self._running = False
 
-    def bind(self, stage: Stage) -> None:
+    def bind(self, stage: Stage, queue: asyncio.Queue[WorkDescriptor | None]) -> None:
         """Bind this worker to a stage."""
         self.stage = stage
+        self.queue = queue
 
     async def run(self) -> None:
         """Main processing loop."""
-        if self.stage is None:
+        if self.stage is None or self.queue is None:
             raise RuntimeError("Worker not bound to a stage")
 
         self._running = True
@@ -45,51 +46,87 @@ class Worker:
 
         try:
             while self._running:
-                # Get request from queue
-                item = await self.stage.request_queue.get()
-                if item is None:  # Shutdown signal
+                work = await self.queue.get()
+                if work is None:  # Shutdown signal
                     break
 
-                request_id, data = item
-                await self._process_request(request_id, data)
+                await self._process_request(work)
 
         except asyncio.CancelledError:
             logger.info("Worker cancelled for stage %s", self.stage.name)
         finally:
             self._running = False
 
-    async def _process_request(self, request_id: str, data: Any) -> None:
+    async def _process_request(self, work: WorkDescriptor) -> None:
         """Process a single request."""
+        request_id = work.request_id
         try:
-            engine_input = self.stage.request_builder(request_id, data)
-            await self.engine.add_request(request_id, engine_input)
-            output = await self.engine.get_result(request_id)
+            payloads = await self._load_inputs(work)
+            merged = self._merge_payloads(work, payloads)
+            if not isinstance(merged, StagePayload):
+                raise TypeError(f"Expected StagePayload, got {type(merged)}")
+            if merged.request_id != request_id:
+                raise ValueError(
+                    "Merged payload request_id mismatch "
+                    f"(expected={request_id} got={merged.request_id})"
+                )
+
+            await self.executor.add_request(merged)
+            output_payload = await self.executor.get_result()
+            if not isinstance(output_payload, StagePayload):
+                raise TypeError(
+                    "Executor must return StagePayload, "
+                    f"got {type(output_payload)}"
+                )
+            if output_payload.request_id != request_id:
+                raise ValueError(
+                    "Output payload request_id mismatch "
+                    f"(expected={request_id} got={output_payload.request_id})"
+                )
 
             # Determine next stage
-            next_stage = self.stage.get_next(request_id, output)
-
-            # Transform output
-            transformed = self.engine.transform_output(request_id, output, next_stage)
+            next_stage = self.stage.get_next(request_id, output_payload)
 
             # Route
             if next_stage is None:
                 # END - send completion
-                if isinstance(transformed, StagePayload):
-                    transformed = transformed.data
-                await self._send_complete(request_id, transformed)
+                await self._send_complete(request_id, output_payload.data)
             else:
                 # Send to next stage
-                if isinstance(data, StagePayload) and not isinstance(
-                    transformed, StagePayload
-                ):
-                    transformed = StagePayload(request=data.request, data=transformed)
-                await self._send_to_next(request_id, next_stage, transformed)
+                await self._send_to_next(request_id, next_stage, output_payload)
 
         except asyncio.CancelledError:
             logger.debug("Worker: request %s cancelled", request_id)
         except Exception as e:
             logger.error("Worker: request %s failed: %s", request_id, e)
             await self._send_failure(request_id, str(e))
+        finally:
+            if self.stage is not None:
+                self.stage.scheduler.clear_request(request_id)
+
+    async def _load_inputs(self, work: WorkDescriptor) -> dict[str, StagePayload]:
+        payloads: dict[str, StagePayload] = {}
+        for ref in work.inputs:
+            if ref.payload is not None:
+                payloads[ref.source] = ref.payload
+                continue
+            if ref.metadata is None:
+                raise ValueError(f"Missing metadata for source={ref.source}")
+            payloads[ref.source] = await self.stage.data_plane.read_payload(
+                work.request_id, ref.metadata
+            )
+        return payloads
+
+    @staticmethod
+    def _merge_payloads(
+        work: WorkDescriptor,
+        payloads: dict[str, StagePayload],
+    ) -> StagePayload:
+        if work.merge is not None:
+            return work.merge(payloads)
+        if len(payloads) != 1:
+            raise ValueError("Multiple inputs require a merge function")
+        return next(iter(payloads.values()))
 
     async def _send_complete(self, request_id: str, result: Any) -> None:
         """Send completion to coordinator."""
@@ -103,41 +140,21 @@ class Worker:
             )
         )
 
-    async def _send_to_next(self, request_id: str, next_stage: str, data: Any) -> None:
+    async def _send_to_next(
+        self, request_id: str, next_stage: str, payload: StagePayload
+    ) -> None:
         """Send data to next stage."""
         logger.debug("Worker: routing %s to %s", request_id, next_stage)
 
         # Write using unified relay interface
         try:
-            serialized_data = pickle.dumps(data)
-            data_size = len(serialized_data)
-
-            # Wrap into tensor (uint8) on relay device
-            device = (
-                self.stage.relay.device
-                if hasattr(self.stage.relay, "device")
-                else "cpu"
-            )
-            data_np = np.frombuffer(serialized_data, dtype=np.uint8).copy()
-            tensor_to_send = torch.tensor(data_np, dtype=torch.uint8, device=device)
-
-            readable_op = await self.stage.relay.put_async(
-                tensor_to_send, request_id=request_id
-            )
-            metadata = readable_op.metadata
-
-            logger.debug(
-                "Worker: data written from %s to %s for req=%s",
-                self.stage.name,
-                next_stage,
-                request_id,
-            )
-
-            # Get endpoint
             endpoint = self.stage.endpoints.get(next_stage)
             if endpoint is None:
                 await self._send_failure(request_id, f"Unknown stage: {next_stage}")
                 return
+            metadata, op = await self.stage.data_plane.write_payload(
+                request_id, payload
+            )
 
             await self.stage.control_plane.send_to_stage(
                 next_stage,
@@ -150,15 +167,11 @@ class Worker:
                 ),
             )
 
-            await readable_op.wait_for_completion()
-
-            self.stage.relay.cleanup(request_id)
+            await op.wait_for_completion()
+            self.stage.data_plane.cleanup(request_id)
 
         except Exception as e:
-            logger.error("Worker: failed to write data for req=%s: %s", request_id, e)
-            import traceback
-
-            logger.error(traceback.format_exc())
+            logger.exception("Worker: failed to write data for req=%s", request_id)
             await self._send_failure(request_id, f"Failed to write data: {e}")
             return
 

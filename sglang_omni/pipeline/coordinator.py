@@ -13,6 +13,7 @@ from sglang_omni.proto import (
     RequestInfo,
     RequestState,
     StageInfo,
+    StagePayload,
     SubmitMessage,
 )
 
@@ -92,7 +93,7 @@ class Coordinator:
             except Exception as e:
                 logger.warning("Failed to send shutdown to stage %s: %s", name, e)
 
-    async def submit(self, request_id: str, request: OmniRequest) -> Any:
+    async def submit(self, request_id: str, request: OmniRequest | Any) -> Any:
         """Submit a request to the pipeline.
 
         Args:
@@ -120,12 +121,21 @@ class Coordinator:
         future: asyncio.Future = loop.create_future()
         self._completion_futures[request_id] = future
 
+        if not isinstance(request, OmniRequest):
+            request = OmniRequest(inputs=request)
+
+        payload = StagePayload(
+            request_id=request_id,
+            request=request,
+            data={"raw_inputs": request.inputs},
+        )
+
         # Submit to entry stage
         entry_info = self._stages[self.entry_stage]
         await self.control_plane.submit_to_stage(
             self.entry_stage,
             entry_info.control_endpoint,
-            SubmitMessage(request_id=request_id, data=request),
+            SubmitMessage(request_id=request_id, data=payload),
         )
 
         # Update state

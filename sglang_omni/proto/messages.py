@@ -4,6 +4,7 @@
 from dataclasses import dataclass
 from typing import Any
 
+from sglang_omni.proto.request import StagePayload
 
 @dataclass
 class DataReadyMessage:
@@ -162,11 +163,17 @@ class SubmitMessage:
     data: Any
 
     def to_dict(self) -> dict[str, Any]:
-        return {"type": "submit", "request_id": self.request_id, "data": self.data}
+        data = self.data
+        if isinstance(self.data, StagePayload):
+            data = self.data.to_dict()
+        return {"type": "submit", "request_id": self.request_id, "data": data}
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "SubmitMessage":
-        return cls(request_id=d["request_id"], data=d["data"])
+        data = d["data"]
+        if isinstance(data, dict) and data.get("_type") == "StagePayload":
+            data = StagePayload.from_dict(data)
+        return cls(request_id=d["request_id"], data=data)
 
 
 @dataclass

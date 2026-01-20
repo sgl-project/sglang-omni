@@ -9,22 +9,28 @@ from sglang_omni.engines.omni.runtime import ARRequestData, EncoderRequestData
 from sglang_omni.proto import StagePayload
 
 
-def build_encoder_request(request_id: str, data: Any) -> EncoderRequestData:
-    """Build EncoderRequestData from StagePayload or raw input ids."""
-    del request_id
-    input_ids = data.data if isinstance(data, StagePayload) else data
+def _extract_input_ids(payload: StagePayload) -> tuple[Any, dict[str, Any]]:
+    params = payload.request.params
+    data = payload.data
+    if isinstance(data, dict):
+        input_ids = data.get("input_ids")
+        if input_ids is None:
+            input_ids = data.get("raw_inputs", data)
+    else:
+        input_ids = data
+
+    return input_ids, params
+
+
+def build_encoder_request(payload: StagePayload) -> EncoderRequestData:
+    """Build EncoderRequestData from StagePayload."""
+    input_ids, _ = _extract_input_ids(payload)
     return EncoderRequestData(input_ids=input_ids)
 
 
-def build_ar_request(request_id: str, data: Any) -> ARRequestData:
-    """Build ARRequestData from StagePayload or raw input ids."""
-    del request_id
-    params: dict[str, Any] = {}
-    input_ids = data
-    if isinstance(data, StagePayload):
-        input_ids = data.data
-        params = data.request.params
-
+def build_ar_request(payload: StagePayload) -> ARRequestData:
+    """Build ARRequestData from StagePayload."""
+    input_ids, params = _extract_input_ids(payload)
     return ARRequestData(
         input_ids=input_ids,
         max_new_tokens=params.get("max_new_tokens"),
