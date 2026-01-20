@@ -9,12 +9,7 @@ import time
 from collections import deque
 from typing import TYPE_CHECKING, Any
 
-from .types import (
-    ModelRunnerOutput,
-    SchedulerOutput,
-    SchedulerRequest,
-    SchedulerStatus,
-)
+from .types import ModelRunnerOutput, SchedulerOutput, SchedulerRequest, SchedulerStatus
 
 if TYPE_CHECKING:
     from .runtime.interfaces import BatchPlanner, IterationController, ResourceManager

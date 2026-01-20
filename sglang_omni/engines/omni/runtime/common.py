@@ -71,7 +71,10 @@ class EosIterationController:
         max_new_tokens = request.data.max_new_tokens
         if max_new_tokens is None:
             max_new_tokens = self._default_max_new_tokens
-        if max_new_tokens is not None and len(request.data.output_ids) >= max_new_tokens:
+        if (
+            max_new_tokens is not None
+            and len(request.data.output_ids) >= max_new_tokens
+        ):
             return True
 
         return request.data.num_computed_tokens >= self._max_length

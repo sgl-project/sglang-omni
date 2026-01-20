@@ -12,7 +12,6 @@ from ..types import RequestOutput, SchedulerOutput, SchedulerRequest
 from .common import SimpleResourceManager
 from .interfaces import ResourceManager
 
-
 # -----------------------------------------------------------------------------
 # Data Structures
 # -----------------------------------------------------------------------------

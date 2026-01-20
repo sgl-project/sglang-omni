@@ -11,7 +11,6 @@ import torch
 from ..types import RequestOutput, SchedulerOutput, SchedulerRequest
 from .interfaces import ResourceManager
 
-
 # -----------------------------------------------------------------------------
 # Data Structures
 # -----------------------------------------------------------------------------

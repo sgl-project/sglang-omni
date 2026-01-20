@@ -7,7 +7,7 @@ from typing import Any, Protocol
 
 import torch
 
-from ..types import SchedulerOutput, SchedulerRequest, RequestOutput
+from ..types import RequestOutput, SchedulerOutput, SchedulerRequest
 
 
 class BatchPlanner(Protocol):
@@ -30,24 +30,21 @@ class BatchPlanner(Protocol):
 class ResourceManager(Protocol):
     """Manage model resources (memory, KV cache, etc.)."""
 
-    def can_allocate(self, request: SchedulerRequest) -> bool:
-        ...
+    def can_allocate(self, request: SchedulerRequest) -> bool: ...
 
-    def allocate(self, request: SchedulerRequest) -> None:
-        ...
+    def allocate(self, request: SchedulerRequest) -> None: ...
 
-    def free(self, request: SchedulerRequest) -> None:
-        ...
+    def free(self, request: SchedulerRequest) -> None: ...
 
 
 class IterationController(Protocol):
     """Update per-request state and decide when it finishes."""
 
-    def update_request(self, request: SchedulerRequest, output: RequestOutput) -> None:
-        ...
+    def update_request(
+        self, request: SchedulerRequest, output: RequestOutput
+    ) -> None: ...
 
-    def is_finished(self, request: SchedulerRequest, output: RequestOutput) -> bool:
-        ...
+    def is_finished(self, request: SchedulerRequest, output: RequestOutput) -> bool: ...
 
 
 class InputPreparer(Protocol):
