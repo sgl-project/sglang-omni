@@ -11,13 +11,15 @@ A unified, composable engine architecture for multi-modal model serving (Encoder
    - ModelRunner doesn't know what `batch_data` contains
 
 2. **Model-specific logic lives in dedicated components**
-   - Policy: scheduling decisions, resource management
+   - BatchPlanner: request selection + batch_data layout
+   - ResourceManager: allocate/free model resources
+   - IterationController: update request state + completion checks
    - InputPreparer: batch_data → model inputs
    - OutputProcessor: model outputs → RequestOutput
 
 3. **Opaque data passing**
    - `Request.data`: model-specific, opaque to Scheduler
-   - `SchedulerOutput.batch_data`: built by Policy, consumed by InputPreparer
+   - `SchedulerOutput.batch_data`: built by BatchPlanner, consumed by InputPreparer
    - `RequestOutput.data`: model-specific output
 
 ### Learned from vLLM v2
@@ -28,6 +30,8 @@ A unified, composable engine architecture for multi-modal model serving (Encoder
 ### Learned from MiniSGL
 1. **Scheduler Owns State**: Single source of truth, runner is stateless
 2. **Simple Batch Lifecycle**: Rebuild per step (optimize later if needed)
+
+See `docs/omni_engine_design_notes.md` for short decisions and constraints.
 
 ---
 
@@ -43,7 +47,7 @@ A unified, composable engine architecture for multi-modal model serving (Encoder
 │  │                                                                      │   │
 │  │  - requests: dict[str, Request]                                     │   │
 │  │  - waiting / running queues                                         │   │
-│  │  - delegates to Policy for model-specific logic                     │   │
+│  │  - delegates to BatchPlanner / ResourceManager / IterationController │   │
 │  │                                                                      │   │
 │  │  schedule() → SchedulerOutput                                       │   │
 │  │  update(SchedulerOutput, ModelRunnerOutput)                         │   │
@@ -52,6 +56,7 @@ A unified, composable engine architecture for multi-modal model serving (Encoder
 │                                           │ SchedulerOutput                 │
 │                                           │   - requests: list[Request]     │
 │                                           │   - batch_data: Any (opaque)    │
+│                                           │   - step_id: int                │
 │                                           ▼                                 │
 │  ┌─────────────────────────────────────────────────────────────────────┐   │
 │  │                      ModelRunner (Generic)                          │   │
@@ -65,7 +70,9 @@ A unified, composable engine architecture for multi-modal model serving (Encoder
 └─────────────────────────────────────────────────────────────────────────────┘
 
 Model-Specific Components:
-├── Policy (can_schedule, build_batch, is_finished, ...)
+├── BatchPlanner (select_requests, build_batch)
+├── ResourceManager (can_allocate, allocate, free)
+├── IterationController (update_request, is_finished)
 ├── InputPreparer (batch_data → model inputs)
 ├── OutputProcessor (model outputs → RequestOutput)
 └── RequestData (EncoderRequestData, ARRequestData, DiTRequestData)
@@ -77,11 +84,13 @@ Model-Specific Components:
 
 | Component | Knows About | Doesn't Know About |
 |-----------|-------------|-------------------|
-| Scheduler | Request lifecycle, queues | Tokens, tensors, KV cache |
-| Policy | Model-specific batching, resources | Request lifecycle management |
+| Scheduler | Request lifecycle, queues, abort | Tokens, tensors, resource details |
+| BatchPlanner | Selection strategy, batch_data layout | Request lifecycle management |
+| ResourceManager | Resource accounting (KV, memory) | Batch layout, model outputs |
+| IterationController | Per-request state updates, finish checks | Batch selection, resource allocation |
 | ModelRunner | How to call model | What batch_data contains |
 | InputPreparer | How to convert batch_data → tensors | Scheduling decisions |
-| OutputProcessor | How to extract per-request output | Request state |
+| OutputProcessor | How to extract per-request output | Request lifecycle |
 
 ---
 
@@ -94,10 +103,10 @@ Model-Specific Components:
 ┌─────────────────────────────────────────────────────────────────┐
 │                        WAITING                                   │
 │  - Request received, queued for scheduling                      │
-│  - Policy.can_schedule() checks resource availability           │
-└─────────────────────────┬───────────────────────────────────────┘
-                          │ schedule() + Policy.on_schedule()
-                          ▼
+│  - BatchPlanner selects + ResourceManager allocates             │
+└───────┬───────────────────────────────┬─────────────────────────┘
+        │ schedule() + allocate         │ abort()
+        ▼                               ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │                        RUNNING                                   │
 │  - Actively being processed by ModelRunner                      │
@@ -105,12 +114,19 @@ Model-Specific Components:
 │  - For Encoder: single iteration                                │
 │  - For DiT: fixed N iterations                                  │
 └───────────────┬─────────────────────────────────────────────────┘
-                │ Policy.is_finished() returns True
+                │ IterationController.is_finished() returns True
                 ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │                        FINISHED                                  │
-│  - Policy.on_finish() called (free resources)                   │
+│  - ResourceManager.free() called (free resources)               │
 │  - Future resolved with result                                  │
+└─────────────────────────────────────────────────────────────────┘
+                ▲
+                │
+┌─────────────────────────────────────────────────────────────────┐
+│                        ABORTED                                   │
+│  - Resources freed (if allocated)                               │
+│  - Future resolved with abort                                   │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -184,6 +200,7 @@ class Request:
     - status: lifecycle state
 
     Everything else is stored in `data` (opaque to Scheduler).
+    This includes per-request params and simple output lists (streaming deferred).
     """
     request_id: str
     status: RequestStatus = RequestStatus.WAITING
@@ -199,10 +216,11 @@ class SchedulerOutput:
     Generic contract between Scheduler and ModelRunner.
 
     - requests: which requests to process
-    - batch_data: opaque, built by Policy, consumed by InputPreparer
+    - batch_data: opaque, built by BatchPlanner, consumed by InputPreparer
     """
     requests: list[Request]
-    batch_data: Any  # Opaque - built by Policy, consumed by InputPreparer
+    batch_data: Any  # Opaque - built by BatchPlanner, consumed by InputPreparer
+    step_id: int = 0  # For abort safety / stale updates
 
     @property
     def num_requests(self) -> int:
@@ -243,14 +261,18 @@ class ModelRunnerOutput:
 from collections import deque
 import asyncio
 import time
+import logging
+
+logger = logging.getLogger(__name__)
 
 class Scheduler:
     """
     Generic request scheduler.
 
     Responsibilities:
-    - Manage request lifecycle (WAITING → RUNNING → FINISHED)
-    - Delegate scheduling decisions to Policy
+    - Manage request lifecycle (WAITING → RUNNING → FINISHED/ABORTED)
+    - Delegate selection and resource usage to BatchPlanner/ResourceManager
+    - Delegate iteration updates to IterationController
     - Produce SchedulerOutput for ModelRunner
 
     Does NOT know about:
@@ -259,8 +281,16 @@ class Scheduler:
     - Resource details (KV cache, etc.)
     """
 
-    def __init__(self, policy: "SchedulingPolicy", max_running: int = 256):
-        self.policy = policy
+    def __init__(
+        self,
+        batch_planner: "BatchPlanner",
+        resource_manager: "ResourceManager",
+        iteration_controller: "IterationController",
+        max_running: int = 256,
+    ):
+        self.batch_planner = batch_planner
+        self.resource_manager = resource_manager
+        self.iteration_controller = iteration_controller
         self.max_running = max_running
 
         # Request state
@@ -270,6 +300,8 @@ class Scheduler:
 
         # Result futures (created lazily in get_result)
         self._futures: dict[str, asyncio.Future] = {}
+        self._step_id = 0
+        self._aborted_this_step: set[str] = set()
 
     # ─────────────────────────────────────────────────────────────────────────
     # Public API
@@ -288,10 +320,11 @@ class Scheduler:
 
     def abort_request(self, request_id: str) -> None:
         """Abort a request."""
-        if request_id in self.requests:
-            request = self.requests[request_id]
-            request.status = RequestStatus.ABORTED
-            self._finish_request(request)
+        request = self.requests.get(request_id)
+        if request is None:
+            return
+        self._aborted_this_step.add(request_id)
+        self._finish_request(request, status=RequestStatus.ABORTED)
 
     def has_requests(self) -> bool:
         """Check if there are any requests to process."""
@@ -306,9 +339,9 @@ class Scheduler:
         if request_id not in self._futures:
             self._futures[request_id] = asyncio.get_running_loop().create_future()
 
-        # If already finished, resolve immediately
+        # If already finished or aborted, resolve immediately
         request = self.requests[request_id]
-        if request.status == RequestStatus.FINISHED:
+        if request.status in (RequestStatus.FINISHED, RequestStatus.ABORTED):
             return request
 
         return await self._futures[request_id]
@@ -322,37 +355,36 @@ class Scheduler:
         if not self.waiting and not self.running:
             return None
 
-        to_schedule: list[Request] = []
+        self._step_id += 1
+        self._aborted_this_step.clear()
 
-        # 1. Continue running requests
-        for req_id in self.running:
-            to_schedule.append(self.requests[req_id])
+        waiting_reqs = [self.requests[req_id] for req_id in self.waiting]
+        running_reqs = [self.requests[req_id] for req_id in self.running]
 
-        # 2. Add waiting requests (if resources available)
-        to_move = []
-        for req_id in self.waiting:
-            if len(to_schedule) >= self.max_running:
-                break
+        # BatchPlanner handles selection AND resource allocation.
+        selected = self.batch_planner.select_requests(
+            waiting_reqs,
+            running_reqs,
+            self.resource_manager,
+        )
 
-            request = self.requests[req_id]
-            if self.policy.can_schedule(request):
-                self.policy.on_schedule(request)
-                request.status = RequestStatus.RUNNING
-                to_schedule.append(request)
-                to_move.append(req_id)
-
-        # Move from waiting to running
-        for req_id in to_move:
-            self.waiting.remove(req_id)
-            self.running.append(req_id)
-
-        if not to_schedule:
+        if not selected:
             return None
 
-        # Build batch using policy (model-specific)
-        batch_data = self.policy.build_batch(to_schedule)
+        # Move newly scheduled from waiting to running.
+        for req in selected:
+            if req.request_id in self.waiting:
+                self.waiting.remove(req.request_id)
+                self.running.append(req.request_id)
+                req.status = RequestStatus.RUNNING
 
-        return SchedulerOutput(requests=to_schedule, batch_data=batch_data)
+        batch_data = self.batch_planner.build_batch(selected)
+
+        return SchedulerOutput(
+            requests=selected,
+            batch_data=batch_data,
+            step_id=self._step_id,
+        )
 
     def update(
         self,
@@ -366,31 +398,42 @@ class Scheduler:
         finished = []
 
         for request in scheduler_output.requests:
-            output = model_output.outputs.get(request.request_id)
-            if output is None:
+            if request.request_id in self._aborted_this_step:
                 continue
 
-            # Update via policy (model-specific)
-            self.policy.update_request(request, output)
+            output = model_output.outputs.get(request.request_id)
+            if output is None:
+                logger.warning("No output for request_id=%s", request.request_id)
+                continue
 
-            # Check completion via policy
-            if self.policy.is_finished(request, output):
+            # Update via iteration controller (model-specific)
+            self.iteration_controller.update_request(request, output)
+
+            # Check completion via iteration controller
+            if self.iteration_controller.is_finished(request, output):
                 self._finish_request(request)
                 finished.append(request)
 
         return finished
 
-    def _finish_request(self, request: Request) -> None:
-        """Clean up finished request."""
-        request.status = RequestStatus.FINISHED
+    def _finish_request(
+        self,
+        request: Request,
+        status: RequestStatus = RequestStatus.FINISHED,
+    ) -> None:
+        """Clean up finished/aborted request."""
+        was_running = request.status == RequestStatus.RUNNING
+        request.status = status
         request.finish_time = time.time()
 
-        # Free resources via policy
-        self.policy.on_finish(request)
+        if was_running:
+            self.resource_manager.free(request)
 
-        # Remove from running
+        # Remove from queues
         if request.request_id in self.running:
             self.running.remove(request.request_id)
+        if request.request_id in self.waiting:
+            self.waiting.remove(request.request_id)
 
         # Resolve future if someone is waiting
         if request.request_id in self._futures:
@@ -401,72 +444,126 @@ class Scheduler:
 
 ---
 
-## Policy Protocol (Model-Specific Interface)
+## Runtime Protocols (Model-Specific Interfaces)
 
 ```python
 # ═══════════════════════════════════════════════════════════════════════════
-# policy/base.py - Policy protocol
+# runtime/interfaces.py - Model-specific protocols
 # ═══════════════════════════════════════════════════════════════════════════
 
-from typing import Protocol
+from typing import Protocol, Any
 
-class SchedulingPolicy(Protocol):
-    """
-    Model-specific scheduling logic.
+class BatchPlanner(Protocol):
+    """Selects requests and builds batch data."""
 
-    The Policy is responsible for:
-    1. Resource management (can we schedule this request?)
-    2. Batch building (how to batch requests together?)
-    3. Completion detection (is this request done?)
+    def select_requests(
+        self,
+        waiting: list[Request],
+        running: list[Request],
+        resource_manager: "ResourceManager",
+    ) -> list[Request]:
+        """
+        Select which requests to include in this batch.
+        Also responsible for resource allocation via resource_manager.
 
-    It is NOT responsible for:
-    - Request lifecycle (Scheduler does this)
-    - Input/output transformation (InputPreparer/OutputProcessor do this)
-    """
-
-    # ─────────────────────────────────────────────────────────────────────────
-    # Resource Management
-    # ─────────────────────────────────────────────────────────────────────────
-
-    def can_schedule(self, request: Request) -> bool:
-        """Can this request be scheduled? (resources available?)"""
+        - AR: separate prefill vs decode
+        - DiT: group by timestep
+        - Encoder: simple FCFS
+        """
         ...
-
-    def on_schedule(self, request: Request) -> None:
-        """Called when request moves WAITING → RUNNING. Allocate resources."""
-        ...
-
-    def on_finish(self, request: Request) -> None:
-        """Called when request finishes. Free resources."""
-        ...
-
-    # ─────────────────────────────────────────────────────────────────────────
-    # Batch Building
-    # ─────────────────────────────────────────────────────────────────────────
 
     def build_batch(self, requests: list[Request]) -> Any:
-        """
-        Build model-specific batch data from requests.
-
-        Returns opaque batch_data that will be passed to InputPreparer.
-
-        For Encoder: might return EncoderBatchData
-        For AR: might return ARBatchData with positions, block_table, etc.
-        For DiT: might return DiTBatchData with latents, timesteps, etc.
-        """
+        """Build model-specific batch data."""
         ...
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # State Update
-    # ─────────────────────────────────────────────────────────────────────────
 
+class ResourceManager(Protocol):
+    """Manages resources (memory, KV cache, etc.)."""
+
+    def can_allocate(self, request: Request) -> bool: ...
+    def allocate(self, request: Request) -> None: ...
+    def free(self, request: Request) -> None: ...
+
+
+class IterationController(Protocol):
+    """Controls iteration (when is request done?)."""
+
+    def update_request(self, request: Request, output: RequestOutput) -> None: ...
+    def is_finished(self, request: Request, output: RequestOutput) -> bool: ...
+```
+
+---
+
+## Reusable Implementations (Common)
+
+```python
+# ═══════════════════════════════════════════════════════════════════════════
+# runtime/common.py - Reusable components
+# ═══════════════════════════════════════════════════════════════════════════
+
+class SimpleResourceManager:
+    """Counting-based resource manager."""
+    def __init__(self, max_count: int = 32):
+        self.max_count = max_count
+        self._count = 0
+
+    def can_allocate(self, request: Request) -> bool:
+        return self._count < self.max_count
+
+    def allocate(self, request: Request) -> None:
+        self._count += 1
+
+    def free(self, request: Request) -> None:
+        self._count = max(0, self._count - 1)
+
+
+class SinglePassIterationController:
+    """For Encoder - always done in one pass."""
     def update_request(self, request: Request, output: RequestOutput) -> None:
-        """Update request state after model execution."""
-        ...
+        request.data.embeddings = output.data
 
     def is_finished(self, request: Request, output: RequestOutput) -> bool:
-        """Check if request is finished."""
-        ...
+        return True
+
+
+class EosIterationController:
+    """For AR - stop at EOS or max length."""
+    def __init__(self, eos_token_id: int, max_length: int = 2048):
+        self.eos_token_id = eos_token_id
+        self.max_length = max_length
+
+    def update_request(self, request: Request, output: RequestOutput) -> None:
+        token = output.data
+        if isinstance(output.data, tuple):
+            token, past_kv = output.data
+            request.data.past_key_values = past_kv
+        request.data.output_ids.append(token)
+        if request.data.num_computed_tokens == 0:
+            request.data.num_computed_tokens = len(request.data.input_ids)
+        else:
+            request.data.num_computed_tokens += 1
+
+    def is_finished(self, request: Request, output: RequestOutput) -> bool:
+        token = output.data
+        if isinstance(output.data, tuple):
+            token, _ = output.data
+        return (
+            token == self.eos_token_id or
+            request.data.num_computed_tokens >= self.max_length
+        )
+
+
+class FixedStepsIterationController:
+    """For DiT - fixed number of steps."""
+    def __init__(self, num_steps: int):
+        self.num_steps = num_steps
+
+    def update_request(self, request: Request, output: RequestOutput) -> None:
+        request.data.latents = output.data
+        request.data.current_step += 1
+
+    def is_finished(self, request: Request, output: RequestOutput) -> bool:
+        return request.data.current_step >= self.num_steps
 ```
 
 ---
@@ -482,9 +579,13 @@ import torch
 from typing import Protocol, Any
 
 class InputPreparer(Protocol):
-    """Converts SchedulerOutput.batch_data to model inputs."""
+    """Converts SchedulerOutput to model inputs (batch_data + request params)."""
 
-    def prepare(self, batch_data: Any, device: torch.device) -> dict[str, Any]:
+    def prepare(
+        self,
+        scheduler_output: SchedulerOutput,
+        device: torch.device,
+    ) -> dict[str, Any]:
         """
         Convert opaque batch_data to model input dict.
 
@@ -539,8 +640,8 @@ class ModelRunner:
         """Execute model on batch."""
         # 1. Prepare inputs (model-specific)
         model_inputs = self.input_preparer.prepare(
-            scheduler_output.batch_data,
-            self.device
+            scheduler_output,
+            self.device,
         )
 
         # 2. Forward pass
@@ -663,7 +764,7 @@ class OmniEngine(Engine):
 
 ```python
 # ═══════════════════════════════════════════════════════════════════════════
-# policy/encoder.py - Encoder-specific implementation
+# runtime/encoder.py - Encoder-specific implementation
 # ═══════════════════════════════════════════════════════════════════════════
 
 from dataclasses import dataclass
@@ -686,31 +787,36 @@ class EncoderBatchData:
     seq_lens: list[int]
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Policy
+# BatchPlanner
 # ─────────────────────────────────────────────────────────────────────────────
 
-class EncoderPolicy:
+class EncoderBatchPlanner:
     """
-    Scheduling policy for encoder models.
+    BatchPlanner for encoder models.
 
     Characteristics:
     - Single forward pass (no iteration)
     - No KV cache
-    - Simple resource tracking (just count)
+    - Simple FCFS selection
     """
 
     def __init__(self, max_batch_size: int = 32):
         self.max_batch_size = max_batch_size
-        self._count = 0
 
-    def can_schedule(self, request: Request) -> bool:
-        return self._count < self.max_batch_size
-
-    def on_schedule(self, request: Request) -> None:
-        self._count += 1
-
-    def on_finish(self, request: Request) -> None:
-        self._count = max(0, self._count - 1)
+    def select_requests(
+        self,
+        waiting: list[Request],
+        running: list[Request],
+        resource_manager: ResourceManager,
+    ) -> list[Request]:
+        selected = []
+        for req in waiting:
+            if len(selected) >= self.max_batch_size:
+                break
+            if resource_manager.can_allocate(req):
+                resource_manager.allocate(req)
+                selected.append(req)
+        return selected
 
     def build_batch(self, requests: list[Request]) -> EncoderBatchData:
         return EncoderBatchData(
@@ -718,11 +824,7 @@ class EncoderPolicy:
             seq_lens=[len(r.data.input_ids) for r in requests],
         )
 
-    def update_request(self, request: Request, output: RequestOutput) -> None:
-        request.data.embeddings = output.data
-
-    def is_finished(self, request: Request, output: RequestOutput) -> bool:
-        return True  # Encoder always done in one pass
+# IterationController: SinglePassIterationController (runtime/common.py)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # InputPreparer
@@ -734,7 +836,8 @@ class EncoderInputPreparer:
     def __init__(self, pad_token_id: int = 0):
         self.pad_token_id = pad_token_id
 
-    def prepare(self, batch_data: EncoderBatchData, device: torch.device) -> dict:
+    def prepare(self, scheduler_output: SchedulerOutput, device: torch.device) -> dict:
+        batch_data: EncoderBatchData = scheduler_output.batch_data
         max_len = max(batch_data.seq_lens)
         batch_size = len(batch_data.input_ids_list)
 
@@ -799,7 +902,7 @@ class EncoderOutputProcessor:
 
 ```python
 # ═══════════════════════════════════════════════════════════════════════════
-# policy/ar.py - AR-specific implementation
+# runtime/ar.py - AR-specific implementation
 # ═══════════════════════════════════════════════════════════════════════════
 
 from dataclasses import dataclass, field
@@ -838,37 +941,51 @@ class ARBatchData:
     past_key_values_list: list[tuple] | None = None
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Policy (Simple version - HF KV cache)
+# BatchPlanner (Simple version - HF KV cache)
 # ─────────────────────────────────────────────────────────────────────────────
 
-class SimpleARPolicy:
+class ARBatchPlanner:
     """
-    Simple AR policy using HF-style KV cache.
+    AR BatchPlanner using HF-style KV cache.
 
-    For initial development. Can upgrade to paged attention later.
+    For initial development. Prefill/decode separation is deferred to a
+    dedicated PD model runner.
     """
 
-    def __init__(
-        self,
-        max_batch_size: int = 32,
-        max_seq_len: int = 2048,
-        eos_token_id: int = 2,
-    ):
+    def __init__(self, max_batch_size: int = 32, max_tokens: int = 8192):
         self.max_batch_size = max_batch_size
-        self.max_seq_len = max_seq_len
-        self.eos_token_id = eos_token_id
-        self._count = 0
+        self.max_tokens = max_tokens
 
-    def can_schedule(self, request: Request) -> bool:
-        return self._count < self.max_batch_size
+    def select_requests(
+        self,
+        waiting: list[Request],
+        running: list[Request],
+        resource_manager: ResourceManager,
+    ) -> list[Request]:
+        selected = []
+        total_tokens = 0
 
-    def on_schedule(self, request: Request) -> None:
-        self._count += 1
+        # 1. Prioritize decode (running requests) - 1 token each
+        for req in running:
+            if len(selected) >= self.max_batch_size:
+                break
+            selected.append(req)
+            total_tokens += 1
 
-    def on_finish(self, request: Request) -> None:
-        self._count = max(0, self._count - 1)
-        # Clear KV cache
-        request.data.past_key_values = None
+        # 2. Add prefill (waiting) if no decode or if budget allows
+        if not selected:
+            for req in waiting:
+                if len(selected) >= self.max_batch_size:
+                    break
+                tokens_needed = len(req.data.input_ids)
+                if total_tokens + tokens_needed > self.max_tokens:
+                    break
+                if resource_manager.can_allocate(req):
+                    resource_manager.allocate(req)
+                    selected.append(req)
+                    total_tokens += tokens_needed
+
+        return selected
 
     def build_batch(self, requests: list[Request]) -> ARBatchData:
         all_input_ids = []
@@ -907,29 +1024,7 @@ class SimpleARPolicy:
             past_key_values_list=past_key_values_list,
         )
 
-    def update_request(self, request: Request, output: RequestOutput) -> None:
-        data: ARRequestData = request.data
-
-        # output.data = (sampled_token, new_past_key_values)
-        token, past_kv = output.data
-
-        data.output_ids.append(token)
-        data.past_key_values = past_kv
-
-        if data.num_computed_tokens == 0:
-            data.num_computed_tokens = len(data.input_ids)
-        else:
-            data.num_computed_tokens += 1
-
-    def is_finished(self, request: Request, output: RequestOutput) -> bool:
-        data: ARRequestData = request.data
-        token, _ = output.data
-
-        if token == self.eos_token_id:
-            return True
-        if data.num_computed_tokens >= self.max_seq_len:
-            return True
-        return False
+# IterationController: EosIterationController (runtime/common.py)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # InputPreparer (Simple - single request for now)
@@ -938,10 +1033,11 @@ class SimpleARPolicy:
 class SimpleARInputPreparer:
     """Simple AR input preparer for HF models (single request)."""
 
-    def prepare(self, batch_data: ARBatchData, device: torch.device) -> dict:
+    def prepare(self, scheduler_output: SchedulerOutput, device: torch.device) -> dict:
         # For simplicity, assume single request
         # TODO: Handle batching with attention masks
 
+        batch_data: ARBatchData = scheduler_output.batch_data
         input_ids = batch_data.input_ids.unsqueeze(0).to(device)
 
         past_kv = None
@@ -979,7 +1075,7 @@ class SimpleAROutputProcessor:
             request.request_id: RequestOutput(
                 request_id=request.request_id,
                 data=(next_token, past_key_values),
-                finished=False,  # Policy decides this
+                finished=False,  # IterationController decides this
             )
         }
 ```
@@ -988,7 +1084,7 @@ class SimpleAROutputProcessor:
 
 ```python
 # ═══════════════════════════════════════════════════════════════════════════
-# policy/dit.py - DiT-specific implementation
+# runtime/dit.py - DiT-specific implementation
 # ═══════════════════════════════════════════════════════════════════════════
 
 from dataclasses import dataclass
@@ -1013,32 +1109,41 @@ class DiTBatchData:
     conditions: torch.Tensor | None  # [batch, seq, hidden]
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Policy
+# BatchPlanner
 # ─────────────────────────────────────────────────────────────────────────────
 
-class DiTPolicy:
+class DiTBatchPlanner:
     """
-    Scheduling policy for Diffusion Transformer models.
+    BatchPlanner for Diffusion Transformer models.
 
     Characteristics:
     - Fixed number of denoising steps
     - No KV cache
-    - Can batch by step number
+    - Can group by step number
     """
 
-    def __init__(self, num_steps: int = 50, max_batch_size: int = 16):
-        self.num_steps = num_steps
+    def __init__(self, max_batch_size: int = 16):
         self.max_batch_size = max_batch_size
-        self._count = 0
 
-    def can_schedule(self, request: Request) -> bool:
-        return self._count < self.max_batch_size
-
-    def on_schedule(self, request: Request) -> None:
-        self._count += 1
-
-    def on_finish(self, request: Request) -> None:
-        self._count = max(0, self._count - 1)
+    def select_requests(
+        self,
+        waiting: list[Request],
+        running: list[Request],
+        resource_manager: ResourceManager,
+    ) -> list[Request]:
+        selected = []
+        for req in running:
+            if len(selected) >= self.max_batch_size:
+                break
+            selected.append(req)
+        if not selected:
+            for req in waiting:
+                if len(selected) >= self.max_batch_size:
+                    break
+                if resource_manager.can_allocate(req):
+                    resource_manager.allocate(req)
+                    selected.append(req)
+        return selected
 
     def build_batch(self, requests: list[Request]) -> DiTBatchData:
         latents = torch.stack([r.data.latents for r in requests])
@@ -1054,12 +1159,7 @@ class DiTPolicy:
             conditions=conditions,
         )
 
-    def update_request(self, request: Request, output: RequestOutput) -> None:
-        request.data.latents = output.data  # Updated latents
-        request.data.current_step += 1
-
-    def is_finished(self, request: Request, output: RequestOutput) -> bool:
-        return request.data.current_step >= self.num_steps
+# IterationController: FixedStepsIterationController (runtime/common.py)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # InputPreparer
@@ -1071,7 +1171,8 @@ class DiTInputPreparer:
     def __init__(self, scheduler: Any):  # Diffusion scheduler
         self.scheduler = scheduler
 
-    def prepare(self, batch_data: DiTBatchData, device: torch.device) -> dict:
+    def prepare(self, scheduler_output: SchedulerOutput, device: torch.device) -> dict:
+        batch_data: DiTBatchData = scheduler_output.batch_data
         # Convert step index to actual timestep value
         timesteps = self.scheduler.timesteps[batch_data.timesteps]
 
@@ -1147,8 +1248,12 @@ def create_encoder_engine(
         await engine.add_request("req-1", data)
         result = await engine.get_result("req-1")
     """
-    policy = EncoderPolicy(max_batch_size=max_batch_size)
-    scheduler = Scheduler(policy=policy, max_running=max_batch_size)
+    scheduler = Scheduler(
+        batch_planner=EncoderBatchPlanner(max_batch_size),
+        resource_manager=SimpleResourceManager(max_batch_size),
+        iteration_controller=SinglePassIterationController(),
+        max_running=max_batch_size,
+    )
 
     model_runner = ModelRunner(
         model=model,
@@ -1161,8 +1266,7 @@ def create_encoder_engine(
 
     return OmniEngine(scheduler=scheduler, model_runner=model_runner)
 
-
-def create_simple_ar_engine(
+def create_ar_engine(
     model: torch.nn.Module,
     tokenizer: Any,
     max_seq_len: int = 2048,
@@ -1174,7 +1278,7 @@ def create_simple_ar_engine(
     For initial development. Upgrade to batched/paged version later.
 
     Example:
-        engine = create_simple_ar_engine(llama_model, tokenizer)
+        engine = create_ar_engine(llama_model, tokenizer)
         await engine.start()
 
         input_ids = tokenizer.encode("Once upon a time", return_tensors="pt")
@@ -1183,12 +1287,15 @@ def create_simple_ar_engine(
         await engine.add_request("req-1", data)
         result = await engine.get_result("req-1")  # ARRequestData with output_ids
     """
-    policy = SimpleARPolicy(
-        max_batch_size=1,  # Single request for now
-        max_seq_len=max_seq_len,
-        eos_token_id=tokenizer.eos_token_id or 2,
+    scheduler = Scheduler(
+        batch_planner=ARBatchPlanner(max_batch_size=1, max_tokens=max_seq_len),
+        resource_manager=SimpleResourceManager(1),  # Or PagedKVCacheManager
+        iteration_controller=EosIterationController(
+            tokenizer.eos_token_id or 2,
+            max_seq_len,
+        ),
+        max_running=1,
     )
-    scheduler = Scheduler(policy=policy, max_running=1)
 
     model_runner = ModelRunner(
         model=model,
@@ -1227,9 +1334,10 @@ sglang_omni/
 │       │
 │       ├── engine.py                     # OmniEngine
 │       │
-│       ├── policy/                       # Model-type-specific support
+│       ├── runtime/                      # Model-type-specific support
 │       │   ├── __init__.py
-│       │   ├── base.py                   # SchedulingPolicy protocol
+│       │   ├── interfaces.py             # BatchPlanner/ResourceManager/IterationController protocols
+│       │   ├── common.py                 # Reusable implementations
 │       │   ├── encoder.py                # Encoder support (see below)
 │       │   ├── ar.py                     # AR support
 │       │   └── dit.py                    # DiT support
@@ -1237,10 +1345,10 @@ sglang_omni/
 │       └── factory.py                    # create_*_engine functions
 ```
 
-### What Each Policy File Contains
+### What Each Runtime File Contains
 
 ```python
-# policy/encoder.py - Everything needed to support Encoder models
+# runtime/encoder.py - Everything needed to support Encoder models
 
 # 1. Data structures (what Request.data and batch_data contain)
 @dataclass
@@ -1249,8 +1357,8 @@ class EncoderRequestData: ...
 @dataclass
 class EncoderBatchData: ...
 
-# 2. Scheduling logic (when/how to batch)
-class EncoderPolicy: ...
+# 2. Selection logic (when/how to batch)
+class EncoderBatchPlanner: ...
 
 # 3. Input/Output transformation (batch_data ↔ tensors)
 class EncoderInputPreparer: ...
@@ -1271,7 +1379,7 @@ engine = create_encoder_engine(
 )
 ```
 
-So `policy/encoder.py` doesn't contain BERT — it contains the logic to **schedule and batch requests** for any encoder model.
+So `runtime/encoder.py` doesn't contain BERT — it contains the logic to **schedule and batch requests** for any encoder model.
 
 ---
 
@@ -1287,10 +1395,9 @@ So `policy/encoder.py` doesn't contain BERT — it contains the logic to **sched
 │ 1. SCHEDULE                                                                  │
 │                                                                              │
 │    scheduler.schedule()                                                      │
-│    ├── Check waiting requests                                               │
-│    ├── policy.can_schedule() → resource check                               │
-│    ├── policy.on_schedule() → allocate resources                            │
-│    └── policy.build_batch() → model-specific batch_data                     │
+│    ├── BatchPlanner.select_requests()                                       │
+│    │   └── ResourceManager.allocate()                                       │
+│    └── BatchPlanner.build_batch() → model-specific batch_data               │
 │                                                                              │
 │    Output: SchedulerOutput                                                  │
 │    ├── requests: [Request, ...]                                             │
@@ -1316,9 +1423,9 @@ So `policy/encoder.py` doesn't contain BERT — it contains the logic to **sched
 │                                                                              │
 │    scheduler.update(scheduler_output, model_output)                         │
 │    ├── For each request:                                                    │
-│    │   ├── policy.update_request() → update Request.data                    │
-│    │   └── if policy.is_finished(): _finish_request()                       │
-│    │       └── policy.on_finish() → free resources                          │
+│    │   ├── IterationController.update_request() → update Request.data       │
+│    │   └── if IterationController.is_finished(): _finish_request()          │
+│    │       └── ResourceManager.free() → free resources                      │
 │    └── Resolve futures for finished requests                                │
 └─────────────────────────────────────────────────────────────────────────────┘
                                       │
@@ -1334,10 +1441,10 @@ So `policy/encoder.py` doesn't contain BERT — it contains the logic to **sched
 2. **Phase 2**: `scheduler.py` - Generic Scheduler
 3. **Phase 3**: `model_runner.py` - Generic ModelRunner
 4. **Phase 4**: `engine.py` - OmniEngine
-5. **Phase 5**: `policy/encoder.py` + preparers/processors - Test with BERT
-6. **Phase 6**: `policy/ar.py` (simple version) - Test with LLaMA
+5. **Phase 5**: `runtime/encoder.py` + preparers/processors - Test with BERT
+6. **Phase 6**: `runtime/ar.py` (simple version) - Test with LLaMA
 7. **Phase 7**: Upgrade AR to batched/paged attention
-8. **Phase 8**: `policy/dit.py` - Test with DiT
+8. **Phase 8**: `runtime/dit.py` - Test with DiT
 
 ---
 

@@ -10,7 +10,7 @@ import torch
 from .types import ModelRunnerOutput, SchedulerOutput
 
 if TYPE_CHECKING:
-    from .policy.base import InputPreparer, OutputProcessor
+    from .runtime.interfaces import InputPreparer, OutputProcessor
 
 
 class ModelRunner:
@@ -45,10 +45,7 @@ class ModelRunner:
     def execute(self, scheduler_output: SchedulerOutput) -> ModelRunnerOutput:
         """Execute model on batch."""
         # 1. Prepare inputs (model-specific)
-        model_inputs = self.input_preparer.prepare(
-            scheduler_output.batch_data,
-            self.device,
-        )
+        model_inputs = self.input_preparer.prepare(scheduler_output, self.device)
 
         # 2. Forward pass
         with torch.inference_mode():

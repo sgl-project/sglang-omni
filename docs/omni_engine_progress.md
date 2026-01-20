@@ -79,6 +79,22 @@ Tracking progress for implementing the OmniEngine framework as designed in [omni
 
 ---
 
+## Next TODOs
+
+- [ ] Refactor `Scheduler` to use BatchPlanner/ResourceManager/IterationController protocols
+- [ ] Update InputPreparer to accept full `SchedulerOutput`
+- [ ] Migrate encoder/ar/dit runtime components to BatchPlanner + IterationController split
+- [ ] Add abort safety checks (aborted queue removal + update skip)
+- [ ] Add missing-output handling (logging + fallback strategy)
+- [ ] Rename `policy/` → `runtime/` (including `base.py` → `interfaces.py`)
+- [ ] Refresh tests for new protocols (scheduler, runner, basic engine)
+
+---
+
+Note: current implementation still uses `policy/` paths; rename is tracked above.
+
+---
+
 ## File Structure (Target)
 
 ```
@@ -94,9 +110,10 @@ sglang_omni/engines/
     ├── engine.py              # M4
     ├── factory.py             # M5, M6
     │
-    └── policy/
+    └── runtime/
         ├── __init__.py
-        ├── base.py            # M1
+        ├── interfaces.py      # M1
+        ├── common.py          # M1
         ├── encoder.py         # M5
         └── ar.py              # M6
 ```
@@ -106,7 +123,7 @@ sglang_omni/engines/
 ## Cleanup Plan
 
 After OmniEngine is working:
-- [ ] Remove `engines/encoder/` (replaced by `engines/omni/policy/encoder.py`)
+- [ ] Remove `engines/encoder/` (replaced by `engines/omni/runtime/encoder.py`)
 - [ ] Update `engines/__init__.py` to export OmniEngine
 
 ---

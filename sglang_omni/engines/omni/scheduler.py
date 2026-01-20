@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from collections import deque
 from typing import TYPE_CHECKING, Any
@@ -16,15 +17,18 @@ from .types import (
 )
 
 if TYPE_CHECKING:
-    from .policy.base import SchedulingPolicy
+    from .runtime.interfaces import BatchPlanner, IterationController, ResourceManager
+
+logger = logging.getLogger(__name__)
 
 
 class Scheduler:
     """Generic request scheduler.
 
     Responsibilities:
-    - Manage request lifecycle (WAITING -> RUNNING -> FINISHED)
-    - Delegate scheduling decisions to Policy
+    - Manage request lifecycle (WAITING -> RUNNING -> FINISHED/ABORTED)
+    - Delegate selection to BatchPlanner and allocation to ResourceManager
+    - Delegate per-request updates to IterationController
     - Produce SchedulerOutput for ModelRunner
 
     Does NOT know about:
@@ -33,9 +37,15 @@ class Scheduler:
     - Resource details (KV cache, etc.)
     """
 
-    def __init__(self, policy: SchedulingPolicy, max_running: int = 256):
-        self.policy = policy
-        self.max_running = max_running
+    def __init__(
+        self,
+        batch_planner: BatchPlanner,
+        resource_manager: ResourceManager,
+        iteration_controller: IterationController,
+    ):
+        self.batch_planner = batch_planner
+        self.resource_manager = resource_manager
+        self.iteration_controller = iteration_controller
 
         # Request state
         self.requests: dict[str, Request] = {}
@@ -44,6 +54,8 @@ class Scheduler:
 
         # Result futures (created lazily in get_result)
         self._futures: dict[str, asyncio.Future[Request]] = {}
+        self._step_id = 0
+        self._aborted_this_step: set[str] = set()
 
     # -------------------------------------------------------------------------
     # Public API
@@ -62,12 +74,11 @@ class Scheduler:
 
     def abort_request(self, request_id: str) -> None:
         """Abort a request."""
-        if request_id not in self.requests:
+        request = self.requests.get(request_id)
+        if request is None:
             return
-
-        request = self.requests[request_id]
-        request.status = RequestStatus.ABORTED
-        self._finish_request(request)
+        self._aborted_this_step.add(request_id)
+        self._finish_request(request, status=RequestStatus.ABORTED)
 
     def has_requests(self) -> bool:
         """Check if there are any requests to process."""
@@ -82,7 +93,7 @@ class Scheduler:
         if request_id not in self._futures:
             self._futures[request_id] = asyncio.get_running_loop().create_future()
 
-        # If already finished, resolve immediately
+        # If already finished or aborted, resolve immediately
         request = self.requests[request_id]
         if request.status in (RequestStatus.FINISHED, RequestStatus.ABORTED):
             return request
@@ -98,37 +109,34 @@ class Scheduler:
         if not self.waiting and not self.running:
             return None
 
-        to_schedule: list[Request] = []
+        self._step_id += 1
+        self._aborted_this_step.clear()
 
-        # 1. Continue running requests
-        for req_id in self.running:
-            to_schedule.append(self.requests[req_id])
+        waiting_reqs = [self.requests[req_id] for req_id in self.waiting]
+        running_reqs = [self.requests[req_id] for req_id in self.running]
 
-        # 2. Add waiting requests (if resources available)
-        to_move: list[str] = []
-        for req_id in self.waiting:
-            if len(to_schedule) >= self.max_running:
-                break
+        selected = self.batch_planner.select_requests(
+            waiting_reqs,
+            running_reqs,
+            self.resource_manager,
+        )
 
-            request = self.requests[req_id]
-            if self.policy.can_schedule(request):
-                self.policy.on_schedule(request)
-                request.status = RequestStatus.RUNNING
-                to_schedule.append(request)
-                to_move.append(req_id)
-
-        # Move from waiting to running
-        for req_id in to_move:
-            self.waiting.remove(req_id)
-            self.running.append(req_id)
-
-        if not to_schedule:
+        if not selected:
             return None
 
-        # Build batch using policy (model-specific)
-        batch_data = self.policy.build_batch(to_schedule)
+        for request in selected:
+            if request.request_id in self.waiting:
+                self.waiting.remove(request.request_id)
+                self.running.append(request.request_id)
+                request.status = RequestStatus.RUNNING
 
-        return SchedulerOutput(requests=to_schedule, batch_data=batch_data)
+        batch_data = self.batch_planner.build_batch(selected)
+
+        return SchedulerOutput(
+            requests=selected,
+            batch_data=batch_data,
+            step_id=self._step_id,
+        )
 
     def update(
         self,
@@ -142,32 +150,42 @@ class Scheduler:
         finished: list[Request] = []
 
         for request in scheduler_output.requests:
-            output = model_output.outputs.get(request.request_id)
-            if output is None:
+            if request.request_id in self._aborted_this_step:
                 continue
 
-            # Update via policy (model-specific)
-            self.policy.update_request(request, output)
+            output = model_output.outputs.get(request.request_id)
+            if output is None:
+                logger.warning("Missing output for request_id=%s", request.request_id)
+                continue
 
-            # Check completion via policy
-            if self.policy.is_finished(request, output):
+            # Update via iteration controller (model-specific)
+            self.iteration_controller.update_request(request, output)
+
+            # Check completion via iteration controller
+            if self.iteration_controller.is_finished(request, output):
                 self._finish_request(request)
                 finished.append(request)
 
         return finished
 
-    def _finish_request(self, request: Request) -> None:
+    def _finish_request(
+        self,
+        request: Request,
+        status: RequestStatus = RequestStatus.FINISHED,
+    ) -> None:
         """Clean up finished request."""
-        if request.status not in (RequestStatus.FINISHED, RequestStatus.ABORTED):
-            request.status = RequestStatus.FINISHED
+        was_running = request.status == RequestStatus.RUNNING
+        request.status = status
         request.finish_time = time.time()
 
-        # Free resources via policy
-        self.policy.on_finish(request)
+        if was_running:
+            self.resource_manager.free(request)
 
-        # Remove from running
+        # Remove from queues
         if request.request_id in self.running:
             self.running.remove(request.request_id)
+        if request.request_id in self.waiting:
+            self.waiting.remove(request.request_id)
 
         # Resolve future if someone is waiting
         if request.request_id in self._futures:

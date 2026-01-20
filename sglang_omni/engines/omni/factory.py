@@ -9,15 +9,21 @@ import torch
 
 from .engine import OmniEngine
 from .model_runner import ModelRunner
-from .policy.ar import (
+from .runtime.ar import (
+    ARBatchPlanner,
     SimpleARInputPreparer,
     SimpleAROutputProcessor,
-    SimpleARPolicy,
+    SimpleARResourceManager,
 )
-from .policy.encoder import (
+from .runtime.common import (
+    EosIterationController,
+    SimpleResourceManager,
+    SinglePassIterationController,
+)
+from .runtime.encoder import (
+    EncoderBatchPlanner,
     EncoderInputPreparer,
     EncoderOutputProcessor,
-    EncoderPolicy,
 )
 from .scheduler import Scheduler
 
@@ -62,11 +68,11 @@ def create_encoder_engine(
     if tokenizer is not None:
         pad_token_id = getattr(tokenizer, "pad_token_id", None) or 0
 
-    # Create policy
-    policy = EncoderPolicy(max_batch_size=max_batch_size)
-
-    # Create scheduler
-    scheduler = Scheduler(policy=policy, max_running=max_batch_size)
+    scheduler = Scheduler(
+        batch_planner=EncoderBatchPlanner(max_batch_size=max_batch_size),
+        resource_manager=SimpleResourceManager(max_count=max_batch_size),
+        iteration_controller=SinglePassIterationController(),
+    )
 
     # Create model runner
     model_runner = ModelRunner(
@@ -79,7 +85,7 @@ def create_encoder_engine(
     return OmniEngine(scheduler=scheduler, model_runner=model_runner)
 
 
-def create_simple_ar_engine(
+def create_ar_engine(
     model: torch.nn.Module,
     tokenizer: Any = None,
     max_seq_len: int = 2048,
@@ -109,7 +115,7 @@ def create_simple_ar_engine(
         model = AutoModelForCausalLM.from_pretrained("gpt2")
         tokenizer = AutoTokenizer.from_pretrained("gpt2")
 
-        engine = create_simple_ar_engine(model, tokenizer)
+        engine = create_ar_engine(model, tokenizer)
         await engine.start()
 
         # Create request data
@@ -126,15 +132,15 @@ def create_simple_ar_engine(
     if tokenizer is not None:
         eos_token_id = getattr(tokenizer, "eos_token_id", None) or 2
 
-    # Create policy
-    policy = SimpleARPolicy(
-        max_seq_len=max_seq_len,
-        max_new_tokens=max_new_tokens,
-        eos_token_id=eos_token_id,
+    scheduler = Scheduler(
+        batch_planner=ARBatchPlanner(),
+        resource_manager=SimpleARResourceManager(max_count=1),
+        iteration_controller=EosIterationController(
+            eos_token_id=eos_token_id,
+            max_length=max_seq_len,
+            max_new_tokens=max_new_tokens,
+        ),
     )
-
-    # Create scheduler (single request)
-    scheduler = Scheduler(policy=policy, max_running=1)
 
     # Create model runner
     model_runner = ModelRunner(
@@ -145,3 +151,22 @@ def create_simple_ar_engine(
     )
 
     return OmniEngine(scheduler=scheduler, model_runner=model_runner)
+
+
+def create_simple_ar_engine(
+    model: torch.nn.Module,
+    tokenizer: Any = None,
+    max_seq_len: int = 2048,
+    max_new_tokens: int = 256,
+    temperature: float = 0.0,
+    device: str = "cuda",
+) -> OmniEngine:
+    """Backward-compatible wrapper for create_ar_engine."""
+    return create_ar_engine(
+        model=model,
+        tokenizer=tokenizer,
+        max_seq_len=max_seq_len,
+        max_new_tokens=max_new_tokens,
+        temperature=temperature,
+        device=device,
+    )

@@ -40,11 +40,12 @@ class SchedulerOutput:
     """Generic contract between Scheduler and ModelRunner.
 
     - requests: which requests to process
-    - batch_data: opaque, built by Policy, consumed by InputPreparer
+    - batch_data: opaque, built by BatchPlanner, consumed by InputPreparer
     """
 
     requests: list[Request]
-    batch_data: Any  # Opaque - built by Policy, consumed by InputPreparer
+    batch_data: Any  # Opaque - built by BatchPlanner, consumed by InputPreparer
+    step_id: int = 0
 
     @property
     def num_requests(self) -> int:

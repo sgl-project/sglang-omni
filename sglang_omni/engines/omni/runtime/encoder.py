@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Encoder model support - Policy, InputPreparer, OutputProcessor."""
+"""Encoder model support - BatchPlanner, InputPreparer, OutputProcessor."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ from typing import Any
 import torch
 
 from ..types import Request, RequestOutput, SchedulerOutput
+from .interfaces import ResourceManager
 
 
 # -----------------------------------------------------------------------------
@@ -33,31 +34,32 @@ class EncoderBatchData:
 
 
 # -----------------------------------------------------------------------------
-# Policy
+# BatchPlanner
 # -----------------------------------------------------------------------------
 
 
-class EncoderPolicy:
-    """Scheduling policy for encoder models.
-
-    Characteristics:
-    - Single forward pass (no iteration)
-    - No KV cache
-    - Simple resource tracking (just count)
-    """
+class EncoderBatchPlanner:
+    """Batch planner for encoder models."""
 
     def __init__(self, max_batch_size: int = 32):
         self.max_batch_size = max_batch_size
-        self._count = 0
 
-    def can_schedule(self, request: Request) -> bool:
-        return self._count < self.max_batch_size
-
-    def on_schedule(self, request: Request) -> None:
-        self._count += 1
-
-    def on_finish(self, request: Request) -> None:
-        self._count = max(0, self._count - 1)
+    def select_requests(
+        self,
+        waiting: list[Request],
+        running: list[Request],
+        resource_manager: ResourceManager,
+    ) -> list[Request]:
+        del running
+        selected: list[Request] = []
+        for request in waiting:
+            if len(selected) >= self.max_batch_size:
+                break
+            if not resource_manager.can_allocate(request):
+                break
+            resource_manager.allocate(request)
+            selected.append(request)
+        return selected
 
     def build_batch(self, requests: list[Request]) -> EncoderBatchData:
         return EncoderBatchData(
@@ -84,8 +86,11 @@ class EncoderInputPreparer:
         self.pad_token_id = pad_token_id
 
     def prepare(
-        self, batch_data: EncoderBatchData, device: torch.device
+        self,
+        scheduler_output: SchedulerOutput,
+        device: torch.device,
     ) -> dict[str, Any]:
+        batch_data: EncoderBatchData = scheduler_output.batch_data
         max_len = max(batch_data.seq_lens)
         batch_size = len(batch_data.input_ids_list)
 
@@ -131,12 +136,11 @@ class EncoderOutputProcessor:
         scheduler_output: SchedulerOutput,
     ) -> dict[str, RequestOutput]:
         # Handle different output formats
-        if hasattr(model_output, "last_hidden_state"):
-            hidden_states = model_output.last_hidden_state  # [batch, seq, hidden]
-        elif isinstance(model_output, torch.Tensor):
+        hidden_states = getattr(model_output, "last_hidden_state", None)
+        if hidden_states is None:
+            if not isinstance(model_output, torch.Tensor):
+                raise ValueError(f"Unexpected model output type: {type(model_output)}")
             hidden_states = model_output
-        else:
-            raise ValueError(f"Unexpected model output type: {type(model_output)}")
 
         batch_data: EncoderBatchData = scheduler_output.batch_data
 
