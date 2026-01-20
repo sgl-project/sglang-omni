@@ -231,6 +231,8 @@ class Stage:
                 metadata=metadata, dest_tensor=recv_tensor, request_id=request_id
             )
 
+            await read_op.wait_for_completion()
+
             # Deserialize: convert tensor back to CPU bytes
             if recv_tensor.is_cuda:
                 buffer_bytes = recv_tensor.cpu().numpy().tobytes()
@@ -239,8 +241,6 @@ class Stage:
 
             data = pickle.loads(buffer_bytes)
 
-            # Reset pool
-            self.relay.reset_pool()
 
             self.relay.cleanup(request_id)
 

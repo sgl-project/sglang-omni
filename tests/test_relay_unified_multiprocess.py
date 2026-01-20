@@ -2,13 +2,14 @@
 """Multiprocess tests for relay implementations (NixlRelay) with Tensor interface.
 
 This test follows the same pattern as stage.py and worker.py:
-- Sender: wraps serialized data in Tensor, uses put
-- Receiver: allocates Tensor, uses get, extracts data
+- Sender: wraps serialized data in Tensor, uses put_async
+- Receiver: allocates Tensor, uses get_async, extracts data
 """
 
 import multiprocessing
 import pickle
 import time
+import asyncio
 from queue import Empty
 
 import numpy as np
@@ -22,7 +23,7 @@ if torch.cuda.is_available():
             multiprocessing.set_start_method("spawn", force=True)
     except RuntimeError:
         pass
-
+    
 from sglang_omni.relay.nixl import NixlRelay
 
 
@@ -43,85 +44,94 @@ def sender_process(config, meta_queue, num_transfers, data_size, results):
         else "cpu"
     )
 
-    try:
-        print(f"[Sender] Starting {num_transfers} transfers...")
+    async def _async_sender():
+        try:
+            print(f"[Sender] Starting {num_transfers} transfers...")
 
-        # Estimate maximum buffer size
-        test_tensor = torch.randn(data_size, dtype=torch.bfloat16, device=tensor_device)
-        test_serialized = pickle.dumps(test_tensor)
-        max_buffer_size = len(test_serialized) + 4096
+            # Estimate maximum buffer size
+            test_tensor = torch.randn(data_size, dtype=torch.bfloat16, device=tensor_device)
+            test_serialized = pickle.dumps(test_tensor)
+            max_buffer_size = len(test_serialized) + 4096
 
-        # Create a reusable ByteTensor as transport container
-        transport_tensor = torch.zeros(
-            max_buffer_size, dtype=torch.uint8, device=tensor_device
-        )
-
-        for i in range(num_transfers):
-            data_tensor = torch.randn(
-                data_size, dtype=torch.bfloat16, device=tensor_device
+            # Create a reusable ByteTensor as transport container
+            transport_tensor = torch.zeros(
+                max_buffer_size, dtype=torch.uint8, device=tensor_device
             )
-            original = data_tensor.cpu().clone()
 
-            serialized_data = pickle.dumps(data_tensor)
-            data_len = len(serialized_data)
+            for i in range(num_transfers):
+                data_tensor = torch.randn(
+                    data_size, dtype=torch.bfloat16, device=tensor_device
+                )
+                original = data_tensor.cpu().clone()
 
-            if data_len > max_buffer_size:
-                raise ValueError(
-                    f"Data size {data_len} exceeds buffer {max_buffer_size}"
+                serialized_data = pickle.dumps(data_tensor)
+                data_len = len(serialized_data)
+
+                if data_len > max_buffer_size:
+                    raise ValueError(
+                        f"Data size {data_len} exceeds buffer {max_buffer_size}"
+                    )
+
+                # Fill transport tensor with serialized data
+                data_np = np.frombuffer(serialized_data, dtype=np.uint8)
+                transport_tensor[:data_len].copy_(torch.from_numpy(data_np))
+
+                tensor_to_send = transport_tensor[:data_len]
+                req_id = f"req_{i}"
+
+                # Await put_async to get the Operation object
+                readable_op = await connector.put_async(tensor_to_send, request_id=req_id)
+                
+                # Check compatibility with both dict/obj metadata
+                metadata = readable_op.metadata
+                if callable(metadata):
+                    metadata = metadata()
+
+                if not isinstance(metadata, dict):
+                    meta_dict = {
+                        "engine_id": getattr(metadata, "engine_id", None),
+                        "agent_meta": getattr(metadata, "agent_meta", None),
+                        "descriptors": getattr(metadata, "descriptors", None),
+                        "transfer_info": getattr(
+                            metadata,
+                            "transfer_info",
+                            (
+                                metadata.get("transfer_info")
+                                if hasattr(metadata, "get")
+                                else None
+                            ),
+                        ),
+                    }
+                else:
+                    meta_dict = metadata
+
+                meta_queue.put(
+                    {
+                        "metadata": meta_dict,
+                        "original": pickle.dumps(original),
+                    }
                 )
 
-            # Fill transport tensor with serialized data
-            data_np = np.frombuffer(serialized_data, dtype=np.uint8)
-            transport_tensor[:data_len].copy_(torch.from_numpy(data_np))
+                # Simplified wait call
+                await readable_op.wait_for_completion()
 
-            tensor_to_send = transport_tensor[:data_len]
-            req_id = f"req_{i}"
+                # Reset pool for reuse
+                if hasattr(connector, "reset_pool"):
+                    connector.reset_pool()
 
-            readable_op = connector.put(tensor_to_send, request_id=req_id)
-            metadata = readable_op.metadata()
+                # Cleanup (safe check)
+                if hasattr(connector, "cleanup"):
+                    connector.cleanup(req_id)
 
-            # Handle metadata format compatibility
-            if not isinstance(metadata, dict):
-                meta_dict = {
-                    "engine_id": getattr(metadata, "engine_id", None),
-                    "agent_meta": getattr(metadata, "agent_meta", None),
-                    "descriptors": getattr(metadata, "descriptors", None),
-                    "transfer_info": getattr(
-                        metadata,
-                        "transfer_info",
-                        (
-                            metadata.get("transfer_info")
-                            if hasattr(metadata, "get")
-                            else None
-                        ),
-                    ),
-                }
-            else:
-                meta_dict = metadata
+            meta_queue.put(None)  # Signal completion
 
-            meta_queue.put(
-                {
-                    "metadata": meta_dict,
-                    "original": pickle.dumps(original),
-                }
-            )
+        except Exception as e:
+            results["sender_error"] = str(e)
+            import traceback
+            results["sender_traceback"] = traceback.format_exc()
 
-            # Wait for receiver notification
-            readable_op.wait_for_completion()
-
-            # Reset pool for reuse
-            if hasattr(connector, "reset_pool"):
-                connector.reset_pool()
-
-            connector.cleanup(req_id)
-
-        meta_queue.put(None)  # Signal completion
-
-    except Exception as e:
-        results["sender_error"] = str(e)
-        import traceback
-
-        results["sender_traceback"] = traceback.format_exc()
+    try:
+        asyncio.run(_async_sender())
     finally:
         if "connector" in locals():
             connector.close()
@@ -138,75 +148,82 @@ def receiver_process(config, meta_queue, num_transfers, results):
         results["receiver_error"] = f"Init failed: {e}"
         return
 
-    try:
-        print(f"[Receiver] Ready to receive {num_transfers} transfers...")
-        count = 0
+    async def _async_receiver():
+        try:
+            print(f"[Receiver] Ready to receive {num_transfers} transfers...")
+            count = 0
 
-        while count < num_transfers:
-            try:
-                item = meta_queue.get(timeout=60)
-                if item is None:
+            while count < num_transfers:
+                try:
+                    # Blocking get is acceptable here for test harness
+                    item = meta_queue.get(timeout=60)
+                    if item is None:
+                        break
+
+                    remote_meta = item["metadata"]
+
+                    # Extract data size from metadata
+                    remote_descs_data = remote_meta.get("descriptors", [])
+                    if not remote_descs_data:
+                        # Compatible with transfer_info format
+                        data_size = remote_meta["transfer_info"]["size"]
+                    else:
+                        if not isinstance(remote_descs_data, list):
+                            remote_descs_data = [remote_descs_data]
+                        data_size = remote_descs_data[0]["size"]
+
+                    recv_tensor = torch.zeros(data_size, dtype=torch.uint8, device=device)
+                    req_id = f"req_{count}"
+
+                    # Await get_async to get the Operation object
+                    op = await connector.get_async(remote_meta, recv_tensor, request_id=req_id)
+                    
+                    # Simplified wait call
+                    await op.wait_for_completion()
+
+                    # Deserialize data
+                    buffer_bytes = recv_tensor.cpu().numpy().tobytes()
+                    received_data = pickle.loads(buffer_bytes)
+
+                    if isinstance(received_data, torch.Tensor):
+                        received = received_data.cpu()
+                    else:
+                        received = torch.tensor(received_data).cpu()
+
+                    original = pickle.loads(item["original"])
+
+                    assert original.shape == received.shape, "Shape mismatch"
+                    assert torch.allclose(
+                        original, received, rtol=1e-5, atol=1e-5
+                    ), "Data mismatch"
+
+                    if hasattr(connector, "reset_pool"):
+                        connector.reset_pool()
+
+                    if hasattr(connector, "cleanup"):
+                        connector.cleanup(req_id)
+                        
+                    print(f"[Receiver] Transfer {count+1}: Verified")
+                    count += 1
+
+                except Empty:
+                    results["receiver_error"] = "Queue timeout"
+                    break
+                except Exception as e:
+                    results["receiver_error"] = str(e)
+                    import traceback
+                    results["receiver_traceback"] = traceback.format_exc()
                     break
 
-                remote_meta = item["metadata"]
+            results["transfers_completed"] = count
 
-                # Extract data size from metadata
-                remote_descs_data = remote_meta.get("descriptors", [])
-                if not remote_descs_data:
-                    # Compatible with transfer_info format
-                    data_size = remote_meta["transfer_info"]["size"]
-                else:
-                    if not isinstance(remote_descs_data, list):
-                        remote_descs_data = [remote_descs_data]
-                    data_size = remote_descs_data[0]["size"]
+        except Exception as e:
+            results["receiver_error"] = str(e)
+            import traceback
+            results["receiver_traceback"] = traceback.format_exc()
 
-                recv_tensor = torch.zeros(data_size, dtype=torch.uint8, device=device)
-                req_id = f"req_{count}"
-
-                # Get data (handles pool allocation, RDMA read, D2D copy, and notification)
-                op = connector.get(remote_meta, recv_tensor, request_id=req_id)
-                op.wait_for_completion()
-
-                # Deserialize data
-                buffer_bytes = recv_tensor.cpu().numpy().tobytes()
-                received_data = pickle.loads(buffer_bytes)
-
-                if isinstance(received_data, torch.Tensor):
-                    received = received_data.cpu()
-                else:
-                    received = torch.tensor(received_data).cpu()
-
-                original = pickle.loads(item["original"])
-
-                assert original.shape == received.shape, "Shape mismatch"
-                assert torch.allclose(
-                    original, received, rtol=1e-5, atol=1e-5
-                ), "Data mismatch"
-
-                if hasattr(connector, "reset_pool"):
-                    connector.reset_pool()
-
-                connector.cleanup(req_id)
-                print(f"[Receiver] Transfer {count+1}: Verified")
-                count += 1
-
-            except Empty:
-                results["receiver_error"] = "Queue timeout"
-                break
-            except Exception as e:
-                results["receiver_error"] = str(e)
-                import traceback
-
-                results["receiver_traceback"] = traceback.format_exc()
-                break
-
-        results["transfers_completed"] = count
-
-    except Exception as e:
-        results["receiver_error"] = str(e)
-        import traceback
-
-        results["receiver_traceback"] = traceback.format_exc()
+    try:
+        asyncio.run(_async_receiver())
     finally:
         if "connector" in locals():
             connector.close()

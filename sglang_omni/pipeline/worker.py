@@ -118,7 +118,7 @@ class Worker:
             readable_op = await self.stage.relay.put_async(
                 tensor_to_send, request_id=request_id
             )
-            metadata = readable_op.metadata()
+            metadata = readable_op.metadata
 
             logger.debug(
                 "Worker: data written from %s to %s for req=%s",
@@ -144,9 +144,8 @@ class Worker:
                 ),
             )
 
-            await readable_op.wait_for_completion_async()
+            await readable_op.wait_for_completion()
 
-            self.stage.relay.reset_pool()
             self.stage.relay.cleanup(request_id)
 
         except Exception as e:
