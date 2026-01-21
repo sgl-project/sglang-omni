@@ -217,7 +217,9 @@ class NixlRelay:
         self.allocator = CreditAllocator(slot_bytes, credits, self.pool_ptr)
         
         # 3. Register memory pool
-        logger.info(f"[{engine_id}] Registering Pool ({total_pool_bytes / 1024**2:.2f} MB) on {device}...")
+        logger.info(
+            f"[{engine_id}] Registering Pool ({total_pool_bytes / 1024**2:.2f} MB) on {device}..."
+        )
         if NIXL_AVAILABLE:
             mem_type = "VRAM" if "cuda" in device else "DRAM"
             reg_list = [(self.pool_ptr, total_pool_bytes, self.device_id, mem_type)]
@@ -243,9 +245,11 @@ class NixlRelay:
             pool_slice.copy_(tensor_view)
             
             # 3. Prepare Metadata
+            mem_type = "VRAM" if "cuda" in self.device else "DRAM"
             payload = {
                 "engine_id": self.engine_id,
                 "agent_meta": self.connection.get_agent_metadata(),
+                "mem_type": mem_type,
                 "transfer_info": {
                     "offset": offset,
                     "size": size_bytes,
@@ -291,15 +295,20 @@ class NixlRelay:
         local_offset = await self.allocator.acquire_async()
 
         try:
-            remote_agent_name = self.connection.ensure_remote_agent(remote_engine_id, remote_agent_meta)
+            remote_agent_name = self.connection.ensure_remote_agent(
+                remote_engine_id, remote_agent_meta
+            )
             mem_type = "VRAM" if "cuda" in self.device else "DRAM"
+            remote_mem_type = metadata.get("mem_type", mem_type)
             
             # 2. Prepare RDMA
             local_phys_addr = self.pool_ptr + local_offset
             local_descs = self.connection._nixl.get_xfer_descs([(local_phys_addr, data_size, self.device_id)], mem_type)
             local_handle = self.connection._nixl.prep_xfer_dlist("NIXL_INIT_AGENT", local_descs)
             
-            remote_descs = self.connection._nixl.get_xfer_descs([(remote_ptr, data_size, remote_device_id)], mem_type)
+            remote_descs = self.connection._nixl.get_xfer_descs(
+                [(remote_ptr, data_size, remote_device_id)], remote_mem_type
+            )
             remote_handle = self.connection._nixl.prep_xfer_dlist(remote_agent_name, remote_descs)
             
             # 3. Trigger Transfer
