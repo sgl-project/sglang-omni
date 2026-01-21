@@ -5,6 +5,7 @@ from .messages import (
     CompleteMessage,
     DataReadyMessage,
     ShutdownMessage,
+    StreamMessage,
     SubmitMessage,
     parse_message,
 )
@@ -15,6 +16,7 @@ __all__ = [
     "DataReadyMessage",
     "AbortMessage",
     "CompleteMessage",
+    "StreamMessage",
     "SubmitMessage",
     "ShutdownMessage",
     "parse_message",

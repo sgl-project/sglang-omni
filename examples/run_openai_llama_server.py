@@ -1,11 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Four-stage Llama 3 8B pipeline demo.
-
-Stage 1: Template chat messages into a prompt
-Stage 2: Tokenize prompt text
-Stage 3: AR engine generate tokens
-Stage 4: Decode tokens to text
-"""
+"""Run a minimal OpenAI-compatible server for the Llama demo pipeline."""
 
 from __future__ import annotations
 
@@ -17,8 +11,11 @@ import time
 from typing import Any
 
 import torch
+import uvicorn
 
 from sglang_omni import Coordinator
+from sglang_omni.gateway import Gateway
+from sglang_omni.serve import create_app
 
 logging.basicConfig(
     level=logging.INFO,
@@ -73,18 +70,12 @@ def template_get_next(request_id: str, output: Any) -> str | None:
 
 def run_template_stage(model_id: str) -> None:
     import json
-    import logging
 
     from transformers import AutoTokenizer
 
     from sglang_omni import Stage, Worker
     from sglang_omni.executors import FrontendExecutor
     from sglang_omni.proto import StagePayload
-
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    )
 
     tokenizer = AutoTokenizer.from_pretrained(model_id)
 
@@ -133,18 +124,11 @@ def run_template_stage(model_id: str) -> None:
 
 
 def run_tokenize_stage(model_id: str) -> None:
-    import logging
-
     from transformers import AutoTokenizer
 
     from sglang_omni import Stage, Worker
     from sglang_omni.executors import FrontendExecutor
     from sglang_omni.proto import StagePayload
-
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    )
 
     tokenizer = AutoTokenizer.from_pretrained(model_id)
 
@@ -174,18 +158,11 @@ def run_tokenize_stage(model_id: str) -> None:
 
 
 def run_decode_stage(model_id: str) -> None:
-    import logging
-
     from transformers import AutoTokenizer
 
     from sglang_omni import Stage, Worker
     from sglang_omni.executors import FrontendExecutor
     from sglang_omni.proto import StagePayload
-
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    )
 
     tokenizer = AutoTokenizer.from_pretrained(model_id)
 
@@ -225,8 +202,6 @@ def run_engine_stage(
     max_seq_len: int | None,
     relay_device: str,
 ) -> None:
-    import logging
-
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
     from sglang_omni import Stage, Worker
@@ -234,11 +209,6 @@ def run_engine_stage(
     from sglang_omni.executors import EngineExecutor
     from sglang_omni.executors.engine_request_builders import build_ar_request
     from sglang_omni.proto import StagePayload
-
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    )
 
     tokenizer = AutoTokenizer.from_pretrained(model_id)
     model = AutoModelForCausalLM.from_pretrained(model_id, torch_dtype=dtype)
@@ -284,9 +254,7 @@ def run_engine_stage(
     asyncio.run(run())
 
 
-async def run_coordinator(args: argparse.Namespace) -> None:
-    from sglang_omni.proto import OmniRequest
-
+async def run_server(host: str, port: int) -> None:
     coordinator = Coordinator(
         completion_endpoint=COORDINATOR_ENDPOINT,
         abort_endpoint=ABORT_ENDPOINT,
@@ -301,24 +269,14 @@ async def run_coordinator(args: argparse.Namespace) -> None:
     await coordinator.start()
     completion_task = asyncio.create_task(coordinator.run_completion_loop())
 
+    gateway = Gateway(coordinator)
+    app = create_app(gateway)
+
+    config = uvicorn.Config(app, host=host, port=port, log_level="info")
+    server = uvicorn.Server(config)
+
     try:
-        await asyncio.sleep(1.0)
-
-        request = OmniRequest(
-            inputs=[{"role": "user", "content": args.prompt}],
-            params={
-                "max_new_tokens": args.max_new_tokens,
-                "temperature": args.temperature,
-            },
-        )
-        result = await coordinator.submit("llama-req-1", request)
-
-        if not isinstance(result, str):
-            raise RuntimeError(f"Unexpected result: {result}")
-        logger.info("Completion: %s", result)
-
-        await coordinator.shutdown_stages()
-        await asyncio.sleep(0.5)
+        await server.serve()
     finally:
         completion_task.cancel()
         try:
@@ -329,28 +287,11 @@ async def run_coordinator(args: argparse.Namespace) -> None:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Four-stage Llama 3 8B demo")
+    parser = argparse.ArgumentParser(description="OpenAI API server for Llama demo")
     parser.add_argument(
         "--model-id",
         default="meta-llama/Meta-Llama-3-8B",
         help="Hugging Face model id",
-    )
-    parser.add_argument(
-        "--prompt",
-        default="Hello, how are you?",
-        help="Input prompt",
-    )
-    parser.add_argument(
-        "--max-new-tokens",
-        type=int,
-        default=32,
-        help="Max new tokens",
-    )
-    parser.add_argument(
-        "--temperature",
-        type=float,
-        default=0.0,
-        help="Sampling temperature",
     )
     parser.add_argument(
         "--device",
@@ -373,6 +314,17 @@ def parse_args() -> argparse.Namespace:
         "--engine-relay-device",
         default="cpu",
         help="Relay device for engine stage (default: cpu)",
+    )
+    parser.add_argument(
+        "--host",
+        default="0.0.0.0",
+        help="Server host",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=8000,
+        help="Server port",
     )
     return parser.parse_args()
 
@@ -423,7 +375,7 @@ def main() -> None:
 
     try:
         time.sleep(1.0)
-        asyncio.run(run_coordinator(args))
+        asyncio.run(run_server(args.host, args.port))
     finally:
         stage1_proc.join(timeout=2)
         stage2_proc.join(timeout=2)

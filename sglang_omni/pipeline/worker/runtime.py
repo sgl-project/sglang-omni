@@ -10,7 +10,12 @@ from typing import TYPE_CHECKING, Any
 from sglang_omni.executors.interface import Executor
 from sglang_omni.pipeline.stage.work import WorkDescriptor
 from sglang_omni.pipeline.worker.data_plane import DataPlaneAdapter
-from sglang_omni.proto import CompleteMessage, DataReadyMessage, StagePayload
+from sglang_omni.proto import (
+    CompleteMessage,
+    DataReadyMessage,
+    StagePayload,
+    StreamMessage,
+)
 
 if TYPE_CHECKING:
     from sglang_omni.pipeline.stage.runtime import Stage
@@ -77,6 +82,16 @@ class Worker:
                 )
 
             await self.executor.add_request(merged)
+
+            stream_task: asyncio.Task[None] | None = None
+            stream_fn = getattr(self.executor, "stream", None)
+            if callable(stream_fn):
+                stream_iter = stream_fn(request_id)
+                if stream_iter is not None:
+                    stream_task = asyncio.create_task(
+                        self._forward_stream(request_id, stream_iter)
+                    )
+
             output_payload = await self.executor.get_result()
             if not isinstance(output_payload, StagePayload):
                 raise TypeError(
@@ -93,9 +108,13 @@ class Worker:
 
             # Route
             if next_stage is None:
+                if stream_task is not None:
+                    await self._finish_stream_task(stream_task)
                 # END - send completion
                 await self._send_complete(request_id, output_payload.data)
             else:
+                if stream_task is not None:
+                    await self._finish_stream_task(stream_task)
                 # Send to next stage
                 await self._send_to_next(request_id, next_stage, output_payload)
 
@@ -187,6 +206,40 @@ class Worker:
                 error=error,
             )
         )
+
+    async def _forward_stream(
+        self, request_id: str, stream_iter: Any
+    ) -> None:
+        """Forward streaming chunks to the coordinator."""
+        if self.stage is None:
+            return
+        try:
+            async for chunk in stream_iter:
+                if chunk is None:
+                    continue
+                await self.stage.control_plane.send_stream(
+                    StreamMessage(
+                        request_id=request_id,
+                        from_stage=self.stage.name,
+                        chunk=chunk,
+                        stage_name=self.stage.name,
+                    )
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.debug("Worker stream error for %s: %s", request_id, exc)
+
+    async def _finish_stream_task(self, task: asyncio.Task[None]) -> None:
+        """Wait for stream task to finish and cancel if it stalls."""
+        try:
+            await asyncio.wait_for(task, timeout=0.5)
+        except asyncio.TimeoutError:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
 
     def stop(self) -> None:
         """Stop the worker."""

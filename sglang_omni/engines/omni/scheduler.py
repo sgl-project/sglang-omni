@@ -7,9 +7,15 @@ import asyncio
 import logging
 import time
 from collections import deque
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, AsyncIterator, Callable
 
-from .types import ModelRunnerOutput, SchedulerOutput, SchedulerRequest, SchedulerStatus
+from .types import (
+    ModelRunnerOutput,
+    RequestOutput,
+    SchedulerOutput,
+    SchedulerRequest,
+    SchedulerStatus,
+)
 
 if TYPE_CHECKING:
     from .runtime.interfaces import BatchPlanner, IterationController, ResourceManager
@@ -37,10 +43,12 @@ class Scheduler:
         batch_planner: BatchPlanner,
         resource_manager: ResourceManager,
         iteration_controller: IterationController,
+        stream_adapter: Callable[[SchedulerRequest, RequestOutput], Any] | None = None,
     ):
         self.batch_planner = batch_planner
         self.resource_manager = resource_manager
         self.iteration_controller = iteration_controller
+        self._stream_adapter = stream_adapter
 
         # Scheduler request state
         self.requests: dict[str, SchedulerRequest] = {}
@@ -51,6 +59,8 @@ class Scheduler:
         self._futures: dict[str, asyncio.Future[SchedulerRequest]] = {}
         self._step_id = 0
         self._aborted_this_step: set[str] = set()
+        self._stream_queues: dict[str, asyncio.Queue[Any]] = {}
+        self._stream_done = object()
 
     # -------------------------------------------------------------------------
     # Public API
@@ -94,6 +104,27 @@ class Scheduler:
             return request
 
         return await self._futures[request_id]
+
+    async def stream(self, request_id: str) -> AsyncIterator[Any]:
+        """Yield per-step stream data for a request."""
+        queue = self._subscribe_stream(request_id)
+        while True:
+            item = await queue.get()
+            if item is self._stream_done:
+                return
+            yield item
+
+    def _subscribe_stream(self, request_id: str) -> asyncio.Queue[Any]:
+        if request_id not in self.requests:
+            raise KeyError(f"Unknown request: {request_id}")
+        queue = self._stream_queues.get(request_id)
+        if queue is None:
+            queue = asyncio.Queue()
+            self._stream_queues[request_id] = queue
+        request = self.requests[request_id]
+        if request.status in (SchedulerStatus.FINISHED, SchedulerStatus.ABORTED):
+            queue.put_nowait(self._stream_done)
+        return queue
 
     # -------------------------------------------------------------------------
     # Core Scheduling
@@ -155,6 +186,7 @@ class Scheduler:
 
             # Update via iteration controller (model-specific)
             self.iteration_controller.update_request(request, output)
+            self._emit_stream(request, output)
 
             # Check completion via iteration controller
             if self.iteration_controller.is_finished(request, output):
@@ -162,6 +194,17 @@ class Scheduler:
                 finished.append(request)
 
         return finished
+
+    def _emit_stream(self, request: SchedulerRequest, output: RequestOutput) -> None:
+        if self._stream_adapter is None:
+            return
+        queue = self._stream_queues.get(request.request_id)
+        if queue is None:
+            return
+        item = self._stream_adapter(request, output)
+        if item is None:
+            return
+        queue.put_nowait(item)
 
     def _finish_request(
         self,
@@ -187,3 +230,7 @@ class Scheduler:
             future = self._futures[request.request_id]
             if not future.done():
                 future.set_result(request)
+
+        queue = self._stream_queues.pop(request.request_id, None)
+        if queue is not None:
+            queue.put_nowait(self._stream_done)

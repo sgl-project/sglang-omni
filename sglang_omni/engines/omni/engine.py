@@ -50,6 +50,11 @@ class OmniEngine(Engine):
         request = await self.scheduler.get_result(request_id)
         return request.data
 
+    async def stream(self, request_id: str):
+        """Stream per-step outputs for a request."""
+        async for item in self.scheduler.stream(request_id):
+            yield item
+
     async def abort(self, request_id: str) -> None:
         """Abort a request."""
         self.scheduler.abort_request(request_id)

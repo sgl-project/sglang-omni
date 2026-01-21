@@ -129,6 +129,14 @@ def create_ar_engine(
     if tokenizer is not None:
         eos_token_id = getattr(tokenizer, "eos_token_id", None) or 2
 
+    def _stream_adapter(request, output):
+        token = output.data
+        if isinstance(token, tuple):
+            token = token[0]
+        if token is None:
+            return None
+        return int(token)
+
     scheduler = Scheduler(
         batch_planner=ARBatchPlanner(),
         resource_manager=ARResourceManager(max_count=1),
@@ -136,6 +144,7 @@ def create_ar_engine(
             eos_token_id=eos_token_id,
             max_length=max_seq_len,
         ),
+        stream_adapter=_stream_adapter,
     )
 
     # Create model runner

@@ -157,6 +157,40 @@ class CompleteMessage:
 
 
 @dataclass
+class StreamMessage:
+    """Send a partial output chunk to the coordinator."""
+
+    request_id: str
+    from_stage: str
+    chunk: Any
+    stage_id: int | None = None
+    stage_name: str | None = None
+    modality: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "type": "stream",
+            "request_id": self.request_id,
+            "from_stage": self.from_stage,
+            "chunk": self.chunk,
+            "stage_id": self.stage_id,
+            "stage_name": self.stage_name,
+            "modality": self.modality,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> "StreamMessage":
+        return cls(
+            request_id=d["request_id"],
+            from_stage=d["from_stage"],
+            chunk=d.get("chunk"),
+            stage_id=d.get("stage_id"),
+            stage_name=d.get("stage_name"),
+            modality=d.get("modality"),
+        )
+
+
+@dataclass
 class SubmitMessage:
     """Submit a new request to the entry stage."""
 
@@ -192,7 +226,12 @@ class ShutdownMessage:
 def parse_message(
     d: dict[str, Any],
 ) -> (
-    DataReadyMessage | AbortMessage | CompleteMessage | SubmitMessage | ShutdownMessage
+    DataReadyMessage
+    | AbortMessage
+    | CompleteMessage
+    | StreamMessage
+    | SubmitMessage
+    | ShutdownMessage
 ):
     """Parse a dict into the appropriate message type."""
     msg_type = d.get("type")
@@ -202,6 +241,8 @@ def parse_message(
         return AbortMessage.from_dict(d)
     elif msg_type == "complete":
         return CompleteMessage.from_dict(d)
+    elif msg_type == "stream":
+        return StreamMessage.from_dict(d)
     elif msg_type == "submit":
         return SubmitMessage.from_dict(d)
     elif msg_type == "shutdown":

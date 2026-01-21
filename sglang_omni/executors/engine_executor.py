@@ -21,10 +21,12 @@ class EngineExecutor(Executor):
         engine: Engine,
         request_builder: Callable[[StagePayload], Any],
         result_builder: Callable[[StagePayload, Any], StagePayload] | None = None,
+        stream_builder: Callable[[StagePayload | None, Any], Any] | None = None,
     ):
         self._engine = engine
         self._request_builder = request_builder
         self._result_builder = result_builder or self._default_result_builder
+        self._stream_builder = stream_builder or self._default_stream_builder
         self._pending: deque[str] = deque()
         self._payloads: dict[str, StagePayload] = {}
         self._aborted: set[str] = set()
@@ -72,6 +74,16 @@ class EngineExecutor(Executor):
             pass
         await self._engine.abort(request_id)
 
+    async def stream(self, request_id: str):
+        stream_fn = getattr(self._engine, "stream", None)
+        if not callable(stream_fn):
+            return
+        payload = self._payloads.get(request_id)
+        async for item in stream_fn(request_id):
+            if request_id in self._aborted:
+                break
+            yield self._stream_builder(payload, item)
+
     @staticmethod
     def _default_result_builder(payload: StagePayload, result: Any) -> StagePayload:
         if not isinstance(payload.data, dict):
@@ -80,3 +92,13 @@ class EngineExecutor(Executor):
 
         payload.data["model_output"] = result
         return payload
+
+    @staticmethod
+    def _default_stream_builder(payload: StagePayload | None, item: Any) -> Any:
+        if isinstance(item, dict):
+            return item
+        if isinstance(item, tuple) and item:
+            item = item[0]
+        if isinstance(item, int):
+            return {"token_ids": [item]}
+        return {"data": item}

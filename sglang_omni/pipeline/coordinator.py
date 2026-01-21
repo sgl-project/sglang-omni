@@ -3,7 +3,7 @@
 
 import asyncio
 import logging
-from typing import Any
+from typing import Any, AsyncIterator
 
 from sglang_omni.pipeline.control_plane import CoordinatorControlPlane
 from sglang_omni.proto import (
@@ -14,6 +14,7 @@ from sglang_omni.proto import (
     RequestState,
     StageInfo,
     StagePayload,
+    StreamMessage,
     SubmitMessage,
 )
 
@@ -58,6 +59,9 @@ class Coordinator:
         # Request tracking
         self._requests: dict[str, RequestInfo] = {}
         self._completion_futures: dict[str, asyncio.Future] = {}
+        self._stream_queues: dict[str, asyncio.Queue[CompleteMessage | StreamMessage]] = (
+            {}
+        )
 
         # State
         self._running = False
@@ -94,15 +98,41 @@ class Coordinator:
                 logger.warning("Failed to send shutdown to stage %s: %s", name, e)
 
     async def submit(self, request_id: str, request: OmniRequest | Any) -> Any:
-        """Submit a request to the pipeline.
+        """Submit a request to the pipeline and wait for completion."""
+        await self._submit_request(request_id, request)
 
-        Args:
-            request_id: Unique request identifier
-            request: User-facing request with inputs and params
+        future = self._completion_futures[request_id]
+        result = await future
+        del self._completion_futures[request_id]
+        return result
 
-        Returns:
-            Result from the pipeline
-        """
+    async def stream(
+        self, request_id: str, request: OmniRequest | Any
+    ) -> AsyncIterator[CompleteMessage | StreamMessage]:
+        """Submit a request and yield stream events until completion."""
+        if request_id in self._stream_queues:
+            raise ValueError(f"Request {request_id} already streaming")
+
+        queue: asyncio.Queue[CompleteMessage | StreamMessage] = asyncio.Queue()
+        self._stream_queues[request_id] = queue
+
+        await self._submit_request(request_id, request)
+
+        try:
+            while True:
+                msg = await queue.get()
+                if isinstance(msg, CompleteMessage):
+                    if msg.success:
+                        yield msg
+                        return
+                    raise RuntimeError(msg.error or "Unknown error")
+                yield msg
+        finally:
+            self._stream_queues.pop(request_id, None)
+            self._completion_futures.pop(request_id, None)
+
+    async def _submit_request(self, request_id: str, request: OmniRequest | Any) -> None:
+        """Submit a request without waiting for completion."""
         if request_id in self._requests:
             raise ValueError(f"Request {request_id} already exists")
 
@@ -143,14 +173,6 @@ class Coordinator:
 
         logger.debug("Coordinator submitted req=%s to %s", request_id, self.entry_stage)
 
-        # Wait for completion
-        result = await future
-
-        # Cleanup
-        del self._completion_futures[request_id]
-
-        return result
-
     async def abort(self, request_id: str) -> bool:
         """Abort a request.
 
@@ -182,6 +204,15 @@ class Coordinator:
             self._completion_futures[request_id].set_exception(
                 asyncio.CancelledError(f"Request {request_id} aborted")
             )
+        if request_id in self._stream_queues:
+            await self._stream_queues[request_id].put(
+                CompleteMessage(
+                    request_id=request_id,
+                    from_stage="coordinator",
+                    success=False,
+                    error="aborted",
+                )
+            )
 
         logger.info("Coordinator aborted req=%s", request_id)
         return True
@@ -193,8 +224,11 @@ class Coordinator:
         """
         try:
             while self._running:
-                msg = await self.control_plane.recv_completion()
-                await self._handle_completion(msg)
+                msg = await self.control_plane.recv_event()
+                if isinstance(msg, StreamMessage):
+                    await self._handle_stream(msg)
+                else:
+                    await self._handle_completion(msg)
         except asyncio.CancelledError:
             logger.info("Coordinator completion loop cancelled")
         except Exception as e:
@@ -234,6 +268,16 @@ class Coordinator:
                     future.set_result(msg.result)
                 else:
                     future.set_exception(RuntimeError(msg.error or "Unknown error"))
+
+        if request_id in self._stream_queues:
+            await self._stream_queues[request_id].put(msg)
+
+    async def _handle_stream(self, msg: StreamMessage) -> None:
+        """Handle a stream chunk from a stage."""
+        request_id = msg.request_id
+        if request_id not in self._stream_queues:
+            return
+        await self._stream_queues[request_id].put(msg)
 
     def get_request_info(self, request_id: str) -> RequestInfo | None:
         """Get info about a request."""

@@ -2,6 +2,16 @@
 """SGLang-Omni: Multi-stage pipeline framework for omni models."""
 
 from sglang_omni.engines.base import EchoEngine, Engine
+from sglang_omni.gateway import (
+    AbortLevel,
+    AbortResult,
+    Gateway,
+    GenerateChunk,
+    GenerateRequest,
+    Message,
+    SamplingParams,
+    UsageInfo,
+)
 from sglang_omni.pipeline.coordinator import Coordinator
 from sglang_omni.pipeline.stage import AggregatedInput, DirectInput, InputHandler, Stage
 from sglang_omni.pipeline.worker import Worker
@@ -26,6 +36,7 @@ __all__ = [
     "Worker",
     "Engine",
     "EchoEngine",
+    "Gateway",
     # Input handlers
     "InputHandler",
     "DirectInput",
@@ -37,4 +48,11 @@ __all__ = [
     "DataReadyMessage",
     "AbortMessage",
     "CompleteMessage",
+    "GenerateRequest",
+    "GenerateChunk",
+    "SamplingParams",
+    "Message",
+    "UsageInfo",
+    "AbortLevel",
+    "AbortResult",
 ]

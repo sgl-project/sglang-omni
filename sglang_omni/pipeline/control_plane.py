@@ -13,6 +13,7 @@ from sglang_omni.proto import (
     CompleteMessage,
     DataReadyMessage,
     ShutdownMessage,
+    StreamMessage,
     SubmitMessage,
     parse_message,
 )
@@ -21,7 +22,12 @@ logger = logging.getLogger(__name__)
 
 
 def serialize_message(
-    msg: DataReadyMessage | AbortMessage | CompleteMessage | SubmitMessage,
+    msg: DataReadyMessage
+    | AbortMessage
+    | CompleteMessage
+    | StreamMessage
+    | ShutdownMessage
+    | SubmitMessage,
 ) -> bytes:
     """Serialize a message to bytes."""
     return msgpack.packb(msg.to_dict(), use_bin_type=True)
@@ -29,7 +35,14 @@ def serialize_message(
 
 def deserialize_message(
     data: bytes,
-) -> DataReadyMessage | AbortMessage | CompleteMessage | SubmitMessage:
+) -> (
+    DataReadyMessage
+    | AbortMessage
+    | CompleteMessage
+    | StreamMessage
+    | ShutdownMessage
+    | SubmitMessage
+):
     """Deserialize bytes to a message."""
     d = msgpack.unpackb(data, raw=False)
     return parse_message(d)
@@ -71,7 +84,13 @@ class PushSocket:
         logger.debug("PUSH socket connected to %s", self.endpoint)
 
     async def send(
-        self, msg: DataReadyMessage | AbortMessage | CompleteMessage | SubmitMessage
+        self,
+        msg: DataReadyMessage
+        | AbortMessage
+        | CompleteMessage
+        | StreamMessage
+        | ShutdownMessage
+        | SubmitMessage,
     ) -> None:
         """Send a message."""
         if self._socket is None:
@@ -108,7 +127,14 @@ class PullSocket:
 
     async def recv(
         self,
-    ) -> DataReadyMessage | AbortMessage | CompleteMessage | SubmitMessage:
+    ) -> (
+        DataReadyMessage
+        | AbortMessage
+        | CompleteMessage
+        | StreamMessage
+        | ShutdownMessage
+        | SubmitMessage
+    ):
         """Receive a message (blocking)."""
         if self._socket is None:
             raise RuntimeError("Socket not started")
@@ -119,7 +145,15 @@ class PullSocket:
 
     async def recv_nowait(
         self,
-    ) -> DataReadyMessage | AbortMessage | CompleteMessage | SubmitMessage | None:
+    ) -> (
+        DataReadyMessage
+        | AbortMessage
+        | CompleteMessage
+        | StreamMessage
+        | ShutdownMessage
+        | SubmitMessage
+        | None
+    ):
         """Try to receive a message (non-blocking)."""
         if self._socket is None:
             raise RuntimeError("Socket not started")
@@ -275,6 +309,12 @@ class StageControlPlane:
             raise RuntimeError("Control plane not started")
         await self._coordinator_socket.send(msg)
 
+    async def send_stream(self, msg: StreamMessage) -> None:
+        """Send a stream chunk to coordinator."""
+        if self._coordinator_socket is None:
+            raise RuntimeError("Control plane not started")
+        await self._coordinator_socket.send(msg)
+
     async def recv_abort(self) -> AbortMessage:
         """Receive abort broadcast (blocking).
 
@@ -341,14 +381,14 @@ class CoordinatorControlPlane:
 
         await self._stage_sockets[stage_name].send(msg)
 
-    async def recv_completion(self) -> CompleteMessage:
-        """Receive completion from a stage."""
+    async def recv_event(self) -> CompleteMessage | StreamMessage:
+        """Receive completion or stream event from a stage."""
         if self._completion_socket is None:
             raise RuntimeError("Control plane not started")
         msg = await self._completion_socket.recv()
-        if isinstance(msg, CompleteMessage):
+        if isinstance(msg, (CompleteMessage, StreamMessage)):
             return msg
-        raise ValueError(f"Expected CompleteMessage, got {type(msg)}")
+        raise ValueError(f"Expected CompleteMessage or StreamMessage, got {type(msg)}")
 
     async def broadcast_abort(self, msg: AbortMessage) -> None:
         """Broadcast abort to all stages."""
