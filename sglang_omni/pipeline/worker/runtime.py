@@ -80,8 +80,7 @@ class Worker:
             output_payload = await self.executor.get_result()
             if not isinstance(output_payload, StagePayload):
                 raise TypeError(
-                    "Executor must return StagePayload, "
-                    f"got {type(output_payload)}"
+                    "Executor must return StagePayload, " f"got {type(output_payload)}"
                 )
             if output_payload.request_id != request_id:
                 raise ValueError(

@@ -3,7 +3,7 @@
 
 import logging
 from abc import ABC, abstractmethod
-from typing import Any, Callable
+from typing import Callable
 
 from sglang_omni.pipeline.stage.work import InputRef, WorkDescriptor
 from sglang_omni.proto import StagePayload
@@ -20,7 +20,9 @@ class InputHandler(ABC):
     """
 
     @abstractmethod
-    def receive(self, request_id: str, from_stage: str, data: InputRef) -> WorkDescriptor | None:
+    def receive(
+        self, request_id: str, from_stage: str, data: InputRef
+    ) -> WorkDescriptor | None:
         """Receive data from a stage.
 
         Returns:
@@ -37,7 +39,9 @@ class InputHandler(ABC):
 class DirectInput(InputHandler):
     """Direct pass-through. Single input, no aggregation."""
 
-    def receive(self, request_id: str, from_stage: str, data: InputRef) -> WorkDescriptor:
+    def receive(
+        self, request_id: str, from_stage: str, data: InputRef
+    ) -> WorkDescriptor:
         return WorkDescriptor(request_id=request_id, inputs=[data])
 
     def cancel(self, request_id: str) -> None:
@@ -68,7 +72,9 @@ class AggregatedInput(InputHandler):
             {}
         )  # request_id -> {from_stage: input_ref}
 
-    def receive(self, request_id: str, from_stage: str, data: InputRef) -> WorkDescriptor | None:
+    def receive(
+        self, request_id: str, from_stage: str, data: InputRef
+    ) -> WorkDescriptor | None:
         if from_stage not in self._sources:
             logger.warning(
                 "AggregatedInput: unexpected source %s for request %s",

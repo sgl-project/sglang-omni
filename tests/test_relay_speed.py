@@ -1,6 +1,7 @@
+import asyncio  # [New] Needed for async relay
 import multiprocessing
 import time
-import asyncio  # [New] Needed for async relay
+
 import numpy as np
 import torch
 
@@ -9,7 +10,7 @@ from sglang_omni.relay.nixl import NIXL_AVAILABLE, NixlRelay
 DATA_SIZE_MB = 1024  # Data size per transfer (MB)
 # Configure Pool based on Slots and Credits
 SLOT_SIZE_MB = 1024  # Size of one slot (must be >= DATA_SIZE_MB)
-POOL_CREDITS = 10    # Number of concurrent slots (Total Pool = 10 * 1024 = 10GB)
+POOL_CREDITS = 10  # Number of concurrent slots (Total Pool = 10 * 1024 = 10GB)
 
 NUM_ITERS = 20
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
@@ -26,9 +27,16 @@ def sender_process(meta_queue):
        - await op.wait_for_completion (Wait for 'done' -> Release Credit)
     """
     try:
-        print(f"[Sender] Initializing Relay (Slot: {SLOT_SIZE_MB} MB, Credits: {POOL_CREDITS}) on {DEVICE}...")
+        print(
+            f"[Sender] Initializing Relay (Slot: {SLOT_SIZE_MB} MB, Credits: {POOL_CREDITS}) on {DEVICE}..."
+        )
         # [Mod] New Init Signature
-        relay = NixlRelay("sender_engine", slot_size_mb=SLOT_SIZE_MB, credits=POOL_CREDITS, device=DEVICE)
+        relay = NixlRelay(
+            "sender_engine",
+            slot_size_mb=SLOT_SIZE_MB,
+            credits=POOL_CREDITS,
+            device=DEVICE,
+        )
 
         element_size = 2 if DEVICE == "cuda" else 4
         num_elements = (DATA_SIZE_MB * 1024 * 1024) // element_size
@@ -36,7 +44,7 @@ def sender_process(meta_queue):
 
         async def _sender_loop():
             print("[Sender] Starting Async Loop...")
-            
+
             # Pre-allocate source tensor to avoid malloc overhead inside loop
             src_tensor = torch.zeros(num_elements, dtype=dtype, device=DEVICE)
 
@@ -54,8 +62,9 @@ def sender_process(meta_queue):
 
                 # Metadata handling
                 metadata = op.metadata
-                if callable(metadata): metadata = metadata() # Compatibility check
-                
+                if callable(metadata):
+                    metadata = metadata()  # Compatibility check
+
                 meta_queue.put(metadata)
 
                 # [Mod] Wait for Receiver
@@ -73,9 +82,10 @@ def sender_process(meta_queue):
     except Exception as e:
         print(f"[Sender] Error: {e}")
         import traceback
+
         traceback.print_exc()
     finally:
-        if 'relay' in locals():
+        if "relay" in locals():
             relay.close()
 
 
@@ -90,8 +100,15 @@ def receiver_process(meta_queue):
        - Verify
     """
     try:
-        print(f"[Receiver] Initializing Relay (Slot: {SLOT_SIZE_MB} MB, Credits: {POOL_CREDITS}) on {DEVICE}...")
-        relay = NixlRelay("receiver_engine", slot_size_mb=SLOT_SIZE_MB, credits=POOL_CREDITS, device=DEVICE)
+        print(
+            f"[Receiver] Initializing Relay (Slot: {SLOT_SIZE_MB} MB, Credits: {POOL_CREDITS}) on {DEVICE}..."
+        )
+        relay = NixlRelay(
+            "receiver_engine",
+            slot_size_mb=SLOT_SIZE_MB,
+            credits=POOL_CREDITS,
+            device=DEVICE,
+        )
 
         element_size = 2 if DEVICE == "cuda" else 4
         num_elements = (DATA_SIZE_MB * 1024 * 1024) // element_size
@@ -127,13 +144,15 @@ def receiver_process(meta_queue):
                 if NIXL_AVAILABLE:
                     if DEVICE == "cuda":
                         torch.cuda.synchronize()
-                    
+
                     # check first element
                     val = dest_tensor[0].item()
                     expected_val = float(i + 1)
-                    
+
                     if val == expected_val:
-                        print(f"✅ [Iter {i}] Verified. Latency: {latencies[-1]:.2f} ms")
+                        print(
+                            f"✅ [Iter {i}] Verified. Latency: {latencies[-1]:.2f} ms"
+                        )
                     else:
                         print(f"❌ [Iter {i}] Failed! Exp: {expected_val}, Got: {val}")
                 else:
@@ -150,9 +169,10 @@ def receiver_process(meta_queue):
     except Exception as e:
         print(f"[Receiver] Error: {e}")
         import traceback
+
         traceback.print_exc()
     finally:
-        if 'relay' in locals():
+        if "relay" in locals():
             relay.close()
 
 
@@ -164,7 +184,7 @@ if __name__ == "__main__":
     p_receiver = multiprocessing.Process(target=receiver_process, args=(meta_queue,))
 
     p_sender.start()
-    time.sleep(2) 
+    time.sleep(2)
     p_receiver.start()
 
     p_receiver.join()

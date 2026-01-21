@@ -6,6 +6,7 @@ from typing import Any
 
 from sglang_omni.proto.request import StagePayload
 
+
 @dataclass
 class DataReadyMessage:
     """Notify next stage that data is ready.

@@ -7,6 +7,7 @@ This test follows the same pattern as stage.py and worker.py:
 """
 
 import pickle
+
 import numpy as np
 import pytest
 import torch
@@ -51,7 +52,7 @@ def _create_connectors(relay_class, configs):
 
 
 class TestRelayUnified:
-    
+
     @pytest.mark.asyncio
     async def test_transfer(self, relay_class, relay_configs):
         """Test asynchronous data transfer using Tensor interface."""
@@ -88,7 +89,9 @@ class TestRelayUnified:
             )
 
             # 6. Get data (Receiver side)
-            get_op = await connector1.get_async(metadata=metadata, dest_tensor=dest_tensor)
+            get_op = await connector1.get_async(
+                metadata=metadata, dest_tensor=dest_tensor
+            )
 
             # 7. Wait for Completion
             await get_op.wait_for_completion()
@@ -144,12 +147,12 @@ class TestRelayUnified:
             # Put Async 0
             op0 = await connector0.put_async(src_tensor0)
             meta0 = op0.metadata
-            
+
             size0 = meta0["transfer_info"]["size"]
             dest_tensor0 = torch.zeros(
                 size0, dtype=torch.uint8, device=connector2.device
             )
-            
+
             # Get Async 0
             get_op0 = await connector2.get_async(meta0, dest_tensor0)
 
@@ -167,14 +170,14 @@ class TestRelayUnified:
             dest_tensor1 = torch.zeros(
                 size1, dtype=torch.uint8, device=connector2.device
             )
-            
+
             # Get Async 1
             get_op1 = await connector2.get_async(meta1, dest_tensor1)
 
             # --- Wait for Completions ---
             await get_op0.wait_for_completion()
             await get_op1.wait_for_completion()
-            
+
             await op0.wait_for_completion()
             await op1.wait_for_completion()
 

@@ -94,8 +94,8 @@ def run_stage(
     import logging
 
     from sglang_omni import Stage, Worker
-    from sglang_omni.proto import StagePayload
     from sglang_omni.executors import FrontendExecutor
+    from sglang_omni.proto import StagePayload
 
     logging.basicConfig(
         level=logging.INFO,

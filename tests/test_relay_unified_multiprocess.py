@@ -6,10 +6,10 @@ This test follows the same pattern as stage.py and worker.py:
 - Receiver: allocates Tensor, uses get_async, extracts data
 """
 
+import asyncio
 import multiprocessing
 import pickle
 import time
-import asyncio
 from queue import Empty
 
 import numpy as np
@@ -23,7 +23,7 @@ if torch.cuda.is_available():
             multiprocessing.set_start_method("spawn", force=True)
     except RuntimeError:
         pass
-    
+
 from sglang_omni.relay.nixl import NixlRelay
 
 
@@ -49,7 +49,9 @@ def sender_process(config, meta_queue, num_transfers, data_size, results):
             print(f"[Sender] Starting {num_transfers} transfers...")
 
             # Estimate maximum buffer size
-            test_tensor = torch.randn(data_size, dtype=torch.bfloat16, device=tensor_device)
+            test_tensor = torch.randn(
+                data_size, dtype=torch.bfloat16, device=tensor_device
+            )
             test_serialized = pickle.dumps(test_tensor)
             max_buffer_size = len(test_serialized) + 4096
 
@@ -80,8 +82,10 @@ def sender_process(config, meta_queue, num_transfers, data_size, results):
                 req_id = f"req_{i}"
 
                 # Await put_async to get the Operation object
-                readable_op = await connector.put_async(tensor_to_send, request_id=req_id)
-                
+                readable_op = await connector.put_async(
+                    tensor_to_send, request_id=req_id
+                )
+
                 # Check compatibility with both dict/obj metadata
                 metadata = readable_op.metadata
                 if callable(metadata):
@@ -128,6 +132,7 @@ def sender_process(config, meta_queue, num_transfers, data_size, results):
         except Exception as e:
             results["sender_error"] = str(e)
             import traceback
+
             results["sender_traceback"] = traceback.format_exc()
 
     try:
@@ -172,12 +177,16 @@ def receiver_process(config, meta_queue, num_transfers, results):
                             remote_descs_data = [remote_descs_data]
                         data_size = remote_descs_data[0]["size"]
 
-                    recv_tensor = torch.zeros(data_size, dtype=torch.uint8, device=device)
+                    recv_tensor = torch.zeros(
+                        data_size, dtype=torch.uint8, device=device
+                    )
                     req_id = f"req_{count}"
 
                     # Await get_async to get the Operation object
-                    op = await connector.get_async(remote_meta, recv_tensor, request_id=req_id)
-                    
+                    op = await connector.get_async(
+                        remote_meta, recv_tensor, request_id=req_id
+                    )
+
                     # Simplified wait call
                     await op.wait_for_completion()
 
@@ -202,7 +211,7 @@ def receiver_process(config, meta_queue, num_transfers, results):
 
                     if hasattr(connector, "cleanup"):
                         connector.cleanup(req_id)
-                        
+
                     print(f"[Receiver] Transfer {count+1}: Verified")
                     count += 1
 
@@ -212,6 +221,7 @@ def receiver_process(config, meta_queue, num_transfers, results):
                 except Exception as e:
                     results["receiver_error"] = str(e)
                     import traceback
+
                     results["receiver_traceback"] = traceback.format_exc()
                     break
 
@@ -220,6 +230,7 @@ def receiver_process(config, meta_queue, num_transfers, results):
         except Exception as e:
             results["receiver_error"] = str(e)
             import traceback
+
             results["receiver_traceback"] = traceback.format_exc()
 
     try:
