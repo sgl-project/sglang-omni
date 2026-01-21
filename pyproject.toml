@@ -15,7 +15,9 @@ dependencies = [
     "msgpack>=1.0.0",         # Message serialization
     "numpy>=1.24.0",          # Array operations
     "pydantic>=2.0.0",        # Data validation and serialization
-    "torch>=2.0.0",           # PyTorch for tensor operations
+    "torch>=2.9.1",           # PyTorch for tensor operations
+    "transformers>=4.57.0",   # HF models/tokenizers
+    "huggingface-hub>=0.36.0",# HF model downloads
     # Testing dependencies
     "pytest>=7.0.0",
     "pytest-asyncio>=0.21.0",
