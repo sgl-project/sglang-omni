@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Shared pipeline types for metadata-only scheduling."""
+"""Shared pipeline work types for metadata-only scheduling."""
 
 from __future__ import annotations
 

@@ -1,14 +1,14 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Stage scheduler with per-request worker affinity."""
+"""Worker router with per-request affinity."""
 
 from __future__ import annotations
 
 import asyncio
 
-from sglang_omni.pipeline.types import WorkDescriptor
+from sglang_omni.pipeline.stage.work import WorkDescriptor
 
 
-class StageScheduler:
+class WorkerRouter:
     """Assign work to workers with sticky per-request affinity."""
 
     def __init__(self) -> None:

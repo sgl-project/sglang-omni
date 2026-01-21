@@ -8,11 +8,10 @@ import logging
 from typing import Any, Callable
 
 from sglang_omni.pipeline.control_plane import StageControlPlane
-from sglang_omni.pipeline.data_plane import DataPlaneAdapter
-from sglang_omni.pipeline.input_handler import DirectInput, InputHandler
-from sglang_omni.pipeline.scheduler import StageScheduler
-from sglang_omni.pipeline.types import InputRef
-from sglang_omni.pipeline.worker import Worker
+from sglang_omni.pipeline.stage.input import DirectInput, InputHandler
+from sglang_omni.pipeline.stage.router import WorkerRouter
+from sglang_omni.pipeline.stage.work import InputRef
+from sglang_omni.pipeline.worker.runtime import Worker
 from sglang_omni.proto import (
     DataReadyMessage,
     ShutdownMessage,
@@ -84,8 +83,7 @@ class Stage:
             # Default: create NixlRelay with default config
             self.relay = NixlRelay(engine_id=f"{name}_relay")
 
-        self.data_plane = DataPlaneAdapter(self.relay)
-        self.scheduler = StageScheduler()
+        self.router = WorkerRouter()
 
         self.control_plane = StageControlPlane(
             stage_name=name,
@@ -103,7 +101,7 @@ class Stage:
 
     def add_worker(self, worker: Worker) -> None:
         """Add a worker to this stage."""
-        queue = self.scheduler.add_worker()
+        queue = self.router.add_worker()
         worker.bind(self, queue)
         self.workers.append(worker)
 
@@ -201,7 +199,7 @@ class Stage:
         input_ref = InputRef.from_payload("coordinator", msg.data)
         work = self.input_handler.receive(request_id, "coordinator", input_ref)
         if work is not None:
-            self.scheduler.enqueue(work)
+            self.router.enqueue(work)
 
     async def _process_data_ready(self, msg: DataReadyMessage) -> None:
         """Process data ready notification from previous stage."""
@@ -215,21 +213,21 @@ class Stage:
 
         if request_id in self._aborted_requests:
             logger.debug("Stage %s skipping aborted req=%s", self.name, request_id)
-            self.data_plane.cleanup(request_id)
+            self.relay.cleanup(request_id)
             return
 
         input_ref = InputRef.from_metadata(msg.from_stage, msg.shm_metadata)
         work = self.input_handler.receive(request_id, msg.from_stage, input_ref)
         if work is not None:
-            self.scheduler.enqueue(work)
+            self.router.enqueue(work)
 
     def _on_abort(self, request_id: str) -> None:
         """Handle abort for a request."""
         logger.debug("Stage %s: aborting req=%s", self.name, request_id)
         self._aborted_requests.add(request_id)
-        self.scheduler.clear_request(request_id)
+        self.router.clear_request(request_id)
         self.input_handler.cancel(request_id)
-        self.data_plane.cleanup(request_id)
+        self.relay.cleanup(request_id)
 
         # Notify workers' engines
         for worker in self.workers:
@@ -247,7 +245,7 @@ class Stage:
         return {
             "name": self.name,
             "running": self._running,
-            "queue_size": self.scheduler.queue_size(),
-            "num_workers": self.scheduler.num_workers(),
+            "queue_size": self.router.queue_size(),
+            "num_workers": self.router.num_workers(),
             "relay": self.relay.health(),
         }

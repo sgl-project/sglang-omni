@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Helpers to build engine request data from pipeline payloads."""
+"""Helpers to build engine request data from StagePayloads."""
 
 from __future__ import annotations
 

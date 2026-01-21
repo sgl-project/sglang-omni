@@ -8,11 +8,12 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 from sglang_omni.executors.interface import Executor
-from sglang_omni.pipeline.types import WorkDescriptor
+from sglang_omni.pipeline.stage.work import WorkDescriptor
+from sglang_omni.pipeline.worker.data_plane import DataPlaneAdapter
 from sglang_omni.proto import CompleteMessage, DataReadyMessage, StagePayload
 
 if TYPE_CHECKING:
-    from sglang_omni.pipeline.stage import Stage
+    from sglang_omni.pipeline.stage.runtime import Stage
 
 logger = logging.getLogger(__name__)
 
@@ -28,17 +29,19 @@ class Worker:
         self.engine = executor  # Backward-compatible alias.
         self.role = role
         self.stage: Stage | None = None
+        self.data_plane: DataPlaneAdapter | None = None
         self.queue: asyncio.Queue[WorkDescriptor | None] | None = None
         self._running = False
 
     def bind(self, stage: Stage, queue: asyncio.Queue[WorkDescriptor | None]) -> None:
         """Bind this worker to a stage."""
         self.stage = stage
+        self.data_plane = DataPlaneAdapter(stage.relay)
         self.queue = queue
 
     async def run(self) -> None:
         """Main processing loop."""
-        if self.stage is None or self.queue is None:
+        if self.stage is None or self.queue is None or self.data_plane is None:
             raise RuntimeError("Worker not bound to a stage")
 
         self._running = True
@@ -61,6 +64,8 @@ class Worker:
         """Process a single request."""
         request_id = work.request_id
         try:
+            if self.data_plane is None:
+                raise RuntimeError("Worker not bound to a data plane")
             payloads = await self._load_inputs(work)
             merged = self._merge_payloads(work, payloads)
             if not isinstance(merged, StagePayload):
@@ -102,7 +107,7 @@ class Worker:
             await self._send_failure(request_id, str(e))
         finally:
             if self.stage is not None:
-                self.stage.scheduler.clear_request(request_id)
+                self.stage.router.clear_request(request_id)
 
     async def _load_inputs(self, work: WorkDescriptor) -> dict[str, StagePayload]:
         payloads: dict[str, StagePayload] = {}
@@ -112,7 +117,7 @@ class Worker:
                 continue
             if ref.metadata is None:
                 raise ValueError(f"Missing metadata for source={ref.source}")
-            payloads[ref.source] = await self.stage.data_plane.read_payload(
+            payloads[ref.source] = await self.data_plane.read_payload(
                 work.request_id, ref.metadata
             )
         return payloads
@@ -152,9 +157,7 @@ class Worker:
             if endpoint is None:
                 await self._send_failure(request_id, f"Unknown stage: {next_stage}")
                 return
-            metadata, op = await self.stage.data_plane.write_payload(
-                request_id, payload
-            )
+            metadata, op = await self.data_plane.write_payload(request_id, payload)
 
             await self.stage.control_plane.send_to_stage(
                 next_stage,
@@ -168,7 +171,7 @@ class Worker:
             )
 
             await op.wait_for_completion()
-            self.stage.data_plane.cleanup(request_id)
+            self.data_plane.cleanup(request_id)
 
         except Exception as e:
             logger.exception("Worker: failed to write data for req=%s", request_id)

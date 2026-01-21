@@ -5,7 +5,7 @@ import logging
 from abc import ABC, abstractmethod
 from typing import Any, Callable
 
-from sglang_omni.pipeline.types import InputRef, WorkDescriptor
+from sglang_omni.pipeline.stage.work import InputRef, WorkDescriptor
 from sglang_omni.proto import StagePayload
 
 logger = logging.getLogger(__name__)
