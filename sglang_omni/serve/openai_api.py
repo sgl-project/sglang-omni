@@ -45,6 +45,7 @@ def create_app(gateway: Gateway) -> FastAPI:
         gen_req = _build_generate_request(req)
 
         if req.stream:
+
             async def event_stream():
                 role_sent = False
                 async for chunk in gateway.generate(gen_req, request_id=request_id):

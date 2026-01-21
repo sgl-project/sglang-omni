@@ -22,12 +22,14 @@ logger = logging.getLogger(__name__)
 
 
 def serialize_message(
-    msg: DataReadyMessage
-    | AbortMessage
-    | CompleteMessage
-    | StreamMessage
-    | ShutdownMessage
-    | SubmitMessage,
+    msg: (
+        DataReadyMessage
+        | AbortMessage
+        | CompleteMessage
+        | StreamMessage
+        | ShutdownMessage
+        | SubmitMessage
+    ),
 ) -> bytes:
     """Serialize a message to bytes."""
     return msgpack.packb(msg.to_dict(), use_bin_type=True)
@@ -85,12 +87,14 @@ class PushSocket:
 
     async def send(
         self,
-        msg: DataReadyMessage
-        | AbortMessage
-        | CompleteMessage
-        | StreamMessage
-        | ShutdownMessage
-        | SubmitMessage,
+        msg: (
+            DataReadyMessage
+            | AbortMessage
+            | CompleteMessage
+            | StreamMessage
+            | ShutdownMessage
+            | SubmitMessage
+        ),
     ) -> None:
         """Send a message."""
         if self._socket is None:

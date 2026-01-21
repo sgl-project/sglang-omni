@@ -6,9 +6,6 @@ from __future__ import annotations
 import uuid
 from typing import Any, AsyncIterator, Callable
 
-from sglang_omni.pipeline.coordinator import Coordinator
-from sglang_omni.proto import OmniRequest, RequestState, StreamMessage
-
 from sglang_omni.gateway.types import (
     AbortLevel,
     AbortResult,
@@ -16,6 +13,8 @@ from sglang_omni.gateway.types import (
     GenerateRequest,
     UsageInfo,
 )
+from sglang_omni.pipeline.coordinator import Coordinator
+from sglang_omni.proto import OmniRequest, RequestState, StreamMessage
 
 
 class Gateway:

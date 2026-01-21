@@ -98,11 +98,11 @@ class GenerateRequest:
             "prompt_token_ids": self.prompt_token_ids,
             "messages": [m.to_dict() for m in self.messages] if self.messages else None,
             "sampling": self.sampling.to_dict(),
-            "stage_sampling": {
-                key: params.to_dict() for key, params in self.stage_sampling.items()
-            }
-            if self.stage_sampling
-            else None,
+            "stage_sampling": (
+                {key: params.to_dict() for key, params in self.stage_sampling.items()}
+                if self.stage_sampling
+                else None
+            ),
             "stage_params": self.stage_params,
             "stream": self.stream,
             "max_tokens": self.max_tokens,

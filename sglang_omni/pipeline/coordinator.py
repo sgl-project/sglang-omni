@@ -59,9 +59,9 @@ class Coordinator:
         # Request tracking
         self._requests: dict[str, RequestInfo] = {}
         self._completion_futures: dict[str, asyncio.Future] = {}
-        self._stream_queues: dict[str, asyncio.Queue[CompleteMessage | StreamMessage]] = (
-            {}
-        )
+        self._stream_queues: dict[
+            str, asyncio.Queue[CompleteMessage | StreamMessage]
+        ] = {}
 
         # State
         self._running = False
@@ -131,7 +131,9 @@ class Coordinator:
             self._stream_queues.pop(request_id, None)
             self._completion_futures.pop(request_id, None)
 
-    async def _submit_request(self, request_id: str, request: OmniRequest | Any) -> None:
+    async def _submit_request(
+        self, request_id: str, request: OmniRequest | Any
+    ) -> None:
         """Submit a request without waiting for completion."""
         if request_id in self._requests:
             raise ValueError(f"Request {request_id} already exists")

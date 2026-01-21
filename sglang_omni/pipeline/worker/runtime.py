@@ -207,9 +207,7 @@ class Worker:
             )
         )
 
-    async def _forward_stream(
-        self, request_id: str, stream_iter: Any
-    ) -> None:
+    async def _forward_stream(self, request_id: str, stream_iter: Any) -> None:
         """Forward streaming chunks to the coordinator."""
         if self.stage is None:
             return
