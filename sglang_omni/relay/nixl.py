@@ -5,11 +5,12 @@ import asyncio
 import logging
 import time
 import uuid
-from abc import ABC, abstractmethod
 from typing import Any, Callable, Dict
 
 import numpy as np
 import torch
+
+from .base import CreditAllocator, Relay, RelayOperation, register_relay
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +22,8 @@ try:
     from nixl._api import nixl_agent_config
 
     NIXL_AVAILABLE = True
-except ImportError:
+except ImportError as e:
+    logger.error(f"Failed to import nixl: {e}. NixlRelay will not work.")
     NIXL_AVAILABLE = False
 
     # Mock classes
@@ -65,31 +67,9 @@ except ImportError:
     def nixl_agent_config(**kwargs):
         return None
 
-
 # ==========================================
 # Helper Classes
 # ==========================================
-
-
-class CreditAllocator:
-    """Manages memory slots using an async queue (credit system)."""
-
-    def __init__(self, slot_size: int, credits: int, base_ptr: int):
-        self.slot_size = slot_size
-        self.total_size = slot_size * credits
-        self.base_ptr = base_ptr
-        self._free_slots = asyncio.Queue(maxsize=credits)
-        for i in range(credits):
-            self._free_slots.put_nowait(i * slot_size)
-
-    async def acquire_async(self) -> int:
-        return await self._free_slots.get()
-
-    def release(self, offset: int):
-        try:
-            self._free_slots.put_nowait(offset)
-        except asyncio.QueueFull:
-            logger.error("Attempted to release credit to a full pool!")
 
 
 class Connection:
@@ -116,7 +96,7 @@ class Connection:
 # ==========================================
 
 
-class NixlOperation(ABC):
+class NixlOperation(RelayOperation):
     """Base class for async operations."""
 
     def __init__(self, connection: Connection, metadata: Any = None):
@@ -127,11 +107,6 @@ class NixlOperation(ABC):
     @property
     def metadata(self) -> Any:
         return self._metadata
-
-    @abstractmethod
-    async def wait_for_completion(self, timeout: float = 30.0) -> None:
-        """Wait for operation completion asynchronously."""
-
 
 class PutOperation(NixlOperation):
     """
@@ -174,7 +149,7 @@ class PutOperation(NixlOperation):
                     )
 
                 # Non-blocking wait
-                await asyncio.sleep(0.001)
+                await asyncio.sleep(0.0001)
         finally:
             # Regardless of success or timeout, we mark complete.
             # In a real system, you might want distinct handling for timeout vs success.
@@ -221,7 +196,7 @@ class GetOperation(NixlOperation):
                 elif state != "PROC":
                     raise RuntimeError(f"Transfer failed with state: {state}")
 
-                await asyncio.sleep(0.001)
+                await asyncio.sleep(0.00001)
 
             # 2. Cleanup Handle
             self._conn._nixl.release_xfer_handle(self._handle)
@@ -245,7 +220,8 @@ class GetOperation(NixlOperation):
 # ==========================================
 
 
-class NixlRelay:
+@register_relay("nixl")
+class NixlRelay(Relay):
     def __init__(
         self,
         engine_id: str,
@@ -274,7 +250,9 @@ class NixlRelay:
         )
         self.pool_ptr = self.pool_tensor.data_ptr()
 
-        self.allocator = CreditAllocator(slot_bytes, credits, self.pool_ptr)
+        self.allocator = CreditAllocator(
+            credits=credits, slot_size=slot_bytes, base_ptr=self.pool_ptr
+        )
 
         # 3. Register memory pool
         logger.info(
@@ -288,7 +266,7 @@ class NixlRelay:
             self.pool_handle = 1
 
     async def put_async(
-        self, tensor: torch.Tensor, request_id: str = None
+        self, tensor: torch.Tensor, request_id: str = None, dst_rank: int = None
     ) -> PutOperation:
         """
         Asynchronously put tensor. Returns a PutOperation.

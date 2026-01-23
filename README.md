@@ -18,9 +18,13 @@ You can execute the following commands to run the demos.
 ```bash
 # Use NixlRelay (default)
 python examples/run_two_stage_demo.py
+python examples/run_two_stage_demo.py --relay shm
 
-# Use NixlRelay (default)
+# Three-stage demo
 python examples/run_three_stage_demo.py
+python examples/run_three_stage_demo.py --relay shm
+python examples/run_three_stage_demo.py --relay nixl --gpu-ids 0,1,2
+```
 
 # Four-stage Llama 3 8B pipeline (template -> tokenize -> engine -> decode)
 # Requires HF access to the model (e.g., `huggingface-cli login`)

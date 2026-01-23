@@ -18,8 +18,7 @@ from sglang_omni.proto import (
     StageInfo,
     SubmitMessage,
 )
-from sglang_omni.relay.base import Relay
-from sglang_omni.relay.nixl import NixlRelay
+from sglang_omni.relay.base import Relay, create_relay
 
 logger = logging.getLogger(__name__)
 
@@ -62,28 +61,13 @@ class Stage:
             abort_endpoint: ZMQ endpoint for abort broadcasts
             endpoints: Dict of stage_name -> endpoint for routing
             input_handler: Input handler for aggregation (default: DirectInput)
-            relay: Relay instance for data transfer (default: NixlRelay if config provided)
-            relay_config: Configuration dict for NixlRelay (if relay is None)
+            relay: Relay instance for data transfer (default: constructed from relay_config)
+            relay_config: Configuration dict for Relay (if relay is None)
         """
         self.name = name
         self.get_next = get_next
         self.endpoints = endpoints
         self.input_handler = input_handler or DirectInput()
-
-        # Components
-        # Initialize relay: use provided relay, or create NixlRelay if config provided
-        if relay is not None:
-            self.relay = relay
-        elif relay_config is not None:
-            # Extract engine_id and device from config, with defaults
-            engine_id = relay_config.get("worker_id", f"{name}_relay")
-            device = "cuda" if relay_config.get("gpu_id") is not None else "cpu"
-            self.relay = NixlRelay(engine_id=engine_id, device=device)
-        else:
-            # Default: create NixlRelay with default config
-            self.relay = NixlRelay(engine_id=f"{name}_relay")
-
-        self.router = WorkerRouter()
 
         self.control_plane = StageControlPlane(
             stage_name=name,
@@ -91,6 +75,43 @@ class Stage:
             coordinator_endpoint=coordinator_endpoint,
             abort_endpoint=abort_endpoint,
         )
+
+        # --- Relay Initialization ---
+        if relay is not None:
+            self.relay = relay
+        else:
+            config = relay_config or {}
+            engine_id = config.get("worker_id", f"{name}_relay")
+            relay_type = config.get("relay_type", "nixl").lower()
+
+            gpu_id = config.get("gpu_id")
+            if gpu_id is not None:
+                device = f"cuda:{gpu_id}"
+            else:
+                device = "cpu"
+                if relay_type == "nccl":
+                    logger.info("NcclRelay using default CUDA device selection.")
+                    device = "cuda"
+
+            logger.info(
+                "Initializing %s for stage %s (device=%s)", relay_type, name, device
+            )
+
+            relay_kwargs = {
+                "engine_id": engine_id,
+                "slot_size_mb": config.get("slot_size_mb", 64),
+                "credits": config.get("credits", 2),
+                "device": device,
+                # NCCL-specific parameters (ignored by Shm/Nixl)
+                "rank": config.get("rank"),
+                "world_size": config.get("world_size"),
+                "send_to_ranks": config.get("send_to_ranks", []),
+                "recv_from_ranks": config.get("recv_from_ranks", []),
+            }
+
+            self.relay = create_relay(relay_type, **relay_kwargs)
+
+        self.router = WorkerRouter()
 
         # Workers
         self.workers: list[Worker] = []
@@ -120,7 +141,10 @@ class Stage:
             await worker.queue.put(None)
 
         self.control_plane.close()
-        self.relay.close()
+
+        if hasattr(self.relay, "close"):
+            self.relay.close()
+
         logger.info("Stage %s stopped", self.name)
 
     async def run(self) -> None:
@@ -242,10 +266,17 @@ class Stage:
 
     def health(self) -> dict[str, Any]:
         """Return health status."""
+        relay_health = {}
+        if hasattr(self.relay, "health"):
+            try:
+                relay_health = self.relay.health()
+            except Exception:
+                relay_health = {"status": "error"}
+
         return {
             "name": self.name,
             "running": self._running,
             "queue_size": self.router.queue_size(),
             "num_workers": self.router.num_workers(),
-            "relay": self.relay.health(),
+            "relay": relay_health,
         }
