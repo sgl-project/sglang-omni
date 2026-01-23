@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from contextlib import suppress
+from operator import methodcaller
 from typing import Any, Callable
 
 from sglang_omni.pipeline.control_plane import StageControlPlane
@@ -266,12 +268,9 @@ class Stage:
 
     def health(self) -> dict[str, Any]:
         """Return health status."""
-        relay_health = {}
-        if hasattr(self.relay, "health"):
-            try:
-                relay_health = self.relay.health()
-            except Exception:
-                relay_health = {"status": "error"}
+        relay_health: dict[str, Any] = {"status": "error"}
+        with suppress(Exception):
+            relay_health = methodcaller("health")(self.relay)
 
         return {
             "name": self.name,
