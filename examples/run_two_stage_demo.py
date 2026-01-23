@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Two-stage pipeline demo with dynamic Relay selection (Nixl/Shm).
+"""Two-stage pipeline demo with dynamic Relay selection (Nixl/Shm/Nccl).
 
 This demonstrates:
 - Stage 1: Receives input, doubles it, sends to Stage 2
@@ -10,8 +10,9 @@ import argparse
 import asyncio
 import logging
 import multiprocessing as mp
-import time
-from typing import Any
+import os
+import socket
+from typing import Any, List
 
 from sglang_omni import Coordinator
 
@@ -34,6 +35,19 @@ ENDPOINTS = {
     "stage2": STAGE2_ENDPOINT,
 }
 
+# --- NCCL Topology Constants ---
+WORLD_SIZE = 2
+RANK_STAGE1 = 0
+RANK_STAGE2 = 1
+
+
+def find_free_port():
+    """Find a free port on localhost to avoid collisions."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("", 0))
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        return s.getsockname()[1]
+
 
 def stage1_get_next(request_id: str, output: Any) -> str | None:
     """Stage 1 always routes to Stage 2."""
@@ -53,18 +67,13 @@ def run_stage(
     get_next,
     relay_type: str = "shm",
     gpu_id: int | None = None,
+    rank: int = 0,
+    world_size: int = 1,
+    send_to_ranks: List[int] = [],
+    recv_from_ranks: List[int] = [],
 ):
-    """Generic stage runner.
-
-    Args:
-        name: Stage name
-        endpoint: ZMQ endpoint for receiving work
-        transform: Data transformation function
-        delay: Processing delay (simulation)
-        get_next: Routing function
-        relay_type: "nixl" or "shm"
-        gpu_id: GPU ID to use (or None for CPU)
-    """
+    """Generic stage runner."""
+    # Move imports here to avoid multiprocessing pickling issues
     import asyncio
     import logging
 
@@ -102,14 +111,20 @@ def run_stage(
         "worker_id": f"worker_{name}",
         "slot_size_mb": 64,
         "credits": 4,
-        "gpu_id": gpu_id,  # Pass GPU ID (or None for CPU fallback)
+        "gpu_id": gpu_id,
+        # NCCL topology parameters
+        "rank": rank,
+        "world_size": world_size,
+        "send_to_ranks": send_to_ranks,
+        "recv_from_ranks": recv_from_ranks,
     }
 
     logger.info(
-        "Stage %s initializing with %s (gpu_id=%s)",
+        "Stage %s initializing with %s (gpu_id=%s, rank=%s)",
         name,
         relay_type.upper(),
         gpu_id,
+        rank if relay_type == "nccl" else "N/A",
     )
 
     stage = Stage(
@@ -129,6 +144,11 @@ def run_stage(
 def run_stage1(relay_type: str, gpu_ids: list[int]):
     """Run Stage 1 in a separate process."""
     gpu = gpu_ids[0] if gpu_ids else None
+
+    # NCCL topology: Rank 0 sends to Rank 1
+    send_to = [RANK_STAGE2]
+    recv_from = []
+
     run_stage(
         name="stage1",
         endpoint=STAGE1_ENDPOINT,
@@ -137,12 +157,22 @@ def run_stage1(relay_type: str, gpu_ids: list[int]):
         get_next=stage1_get_next,
         relay_type=relay_type,
         gpu_id=gpu,
+        # NCCL Params
+        rank=RANK_STAGE1,
+        world_size=WORLD_SIZE,
+        send_to_ranks=send_to,
+        recv_from_ranks=recv_from,
     )
 
 
 def run_stage2(relay_type: str, gpu_ids: list[int]):
     """Run Stage 2 in a separate process."""
     gpu = gpu_ids[1] if len(gpu_ids) > 1 else (gpu_ids[0] if gpu_ids else None)
+
+    # NCCL topology: Rank 1 receives from Rank 0
+    send_to = []
+    recv_from = [RANK_STAGE1]
+
     run_stage(
         name="stage2",
         endpoint=STAGE2_ENDPOINT,
@@ -151,6 +181,11 @@ def run_stage2(relay_type: str, gpu_ids: list[int]):
         get_next=stage2_get_next,
         relay_type=relay_type,
         gpu_id=gpu,
+        # NCCL Params
+        rank=RANK_STAGE2,
+        world_size=WORLD_SIZE,
+        send_to_ranks=send_to,
+        recv_from_ranks=recv_from,
     )
 
 
@@ -173,8 +208,10 @@ async def run_coordinator_main(relay_type: str):
     completion_task = asyncio.create_task(coordinator.run_completion_loop())
 
     try:
-        # Give stages time to start
-        await asyncio.sleep(2.0)
+        # Give more time for NCCL warmup
+        wait_time = 4.0 if relay_type == "nccl" else 2.0
+        logger.info(f"Waiting {wait_time}s for stages to initialize and warm up...")
+        await asyncio.sleep(wait_time)
 
         logger.info("=" * 60)
         logger.info(f"Running Tests with Relay: {relay_type.upper()}")
@@ -189,7 +226,7 @@ async def run_coordinator_main(relay_type: str):
         assert result == expected
         logger.info(f"Test 1 PASSED: Input {input_value} -> Output {result}")
 
-        # Test 2: Multiple requests
+        # Test 2: Multiple sequential requests
         logger.info("--- Test 2: Multiple sequential requests ---")
         for i in range(3):
             input_val = (i + 1) * 5
@@ -243,9 +280,9 @@ def parse_args():
     parser.add_argument(
         "--relay",
         type=str,
-        choices=["nixl", "shm"],
-        default="nixl",  # Default to Nixl (Change to 'shm' if you prefer)
-        help="Relay backend to use (default: nixl)",
+        choices=["nixl", "shm", "nccl"],
+        default="nccl",
+        help="Relay backend to use (default: nccl)",
     )
     parser.add_argument(
         "--gpu-ids",
@@ -261,13 +298,25 @@ def main():
     args = parse_args()
     relay_type = args.relay.lower()
 
+    # Configure NCCL environment dynamically to avoid port conflicts
+    if relay_type == "nccl":
+        free_port = str(find_free_port())
+        os.environ["MASTER_ADDR"] = "127.0.0.1"
+        os.environ["MASTER_PORT"] = free_port
+        logger.info(f"Using NCCL Master Port: {free_port}")
+
     # Parse GPU IDs
     try:
         raw_ids = [int(x.strip()) for x in args.gpu_ids.split(",")]
         gpu_ids = [gid for gid in raw_ids if gid >= 0]
         if not gpu_ids:
-            logger.info("No valid GPU IDs provided, running on CPU.")
-            gpu_ids = []
+            if relay_type == "nccl":
+                logger.warning(
+                    "NCCL requires GPUs! Will attempt to use default CUDA device."
+                )
+            else:
+                logger.info("No valid GPU IDs provided, running on CPU.")
+                gpu_ids = []
     except ValueError:
         logger.warning("Invalid GPU IDs format, using default: 0,1")
         gpu_ids = [0, 1]
@@ -295,7 +344,6 @@ def main():
 
     try:
         # Give stages time to initialize
-        time.sleep(1.5)
         asyncio.run(run_coordinator_main(relay_type))
 
     except KeyboardInterrupt:
@@ -306,14 +354,19 @@ def main():
     finally:
         # Cleanup - wait for graceful shutdown first
         logger.info("Waiting for stage processes to exit...")
-        stage1_proc.join(timeout=2)
-        stage2_proc.join(timeout=2)
 
-        # Force kill if still alive
+        if stage1_proc.is_alive():
+            stage1_proc.join(timeout=2)
+        if stage2_proc.is_alive():
+            stage2_proc.join(timeout=2)
+
+        # Force termination if still alive
         if stage1_proc.is_alive():
             stage1_proc.terminate()
+            stage1_proc.join()
         if stage2_proc.is_alive():
             stage2_proc.terminate()
+            stage2_proc.join()
 
         logger.info("Done")
 
