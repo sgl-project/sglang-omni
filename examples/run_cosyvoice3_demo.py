@@ -17,8 +17,8 @@ from typing import Any
 import torch
 
 # Add CosyVoice to path
-sys.path.append("/opt/gpfs/home/tianteng/CosyVoice")
-sys.path.append("/opt/gpfs/home/tianteng/CosyVoice/third_party/Matcha-TTS")
+sys.path.append("../CosyVoice")
+sys.path.append("../CosyVoice/third_party/Matcha-TTS")
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from sglang_omni import Coordinator, Stage, Worker
@@ -30,6 +30,7 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 logger = logging.getLogger(__name__)
+ENABLE_SAVE_INTERMEDIATE = False
 
 # helpers
 def _to_cpu(x):
@@ -42,6 +43,8 @@ def _to_cpu(x):
     return x
 
 def save_stage_data(stage: str, data: Any) -> str:
+    if not ENABLE_SAVE_INTERMEDIATE:
+        return ""
     out_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "trae_output", "cosyvoice_debug")
     os.makedirs(out_dir, exist_ok=True)
     path = os.path.join(out_dir, f"{stage}_{int(time.time() * 1000)}.pt")
@@ -141,7 +144,7 @@ def run_frontend_stage(model_dir: str) -> None:
             model_inputs.append(model_input)
 
         payload.data = {"model_inputs": model_inputs}
-        save_stage_data("frontend", payload.data)
+        # save_stage_data("frontend", payload.data)
         return payload
 
     executor = FrontendExecutor(processor)
@@ -167,7 +170,14 @@ def llm_get_next(request_id: str, output: Any) -> str | None:
 
 def run_llm_stage(model_dir: str) -> None:
     import torch
+    import threading
+    import atexit
+    import gc
+    import signal
+    import sys
     from hyperpyyaml import load_hyperpyyaml
+    from cosyvoice.utils.file_utils import export_cosyvoice2_vllm
+    from vllm import EngineArgs, LLMEngine
 
     from sglang_omni import Stage, Worker
     from sglang_omni.executors import FrontendExecutor
@@ -192,7 +202,64 @@ def run_llm_stage(model_dir: str) -> None:
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     llm.load_state_dict(torch.load(f'{model_dir}/llm.pt', map_location=device), strict=True)
     llm.to(device).eval()
-    logger.info("CosyVoice3 LLM initialized successfully.")
+    logger.info("CosyVoice3 LLM (Torch) initialized successfully.")
+
+    vllm_dir = os.path.join(model_dir, "vllm")
+    export_cosyvoice2_vllm(llm, vllm_dir, device)
+    engine_args = EngineArgs(
+        model=vllm_dir,
+        skip_tokenizer_init=True,
+        enable_prompt_embeds=True,
+        gpu_memory_utilization=0.2,
+        kv_cache_dtype="auto",
+    )
+    llm.vllm = LLMEngine.from_engine_args(engine_args)
+    llm.lock = threading.Lock()
+    try:
+        del llm.llm.model.model.layers
+    except Exception:
+        pass
+    logger.info("CosyVoice3 LLM switched to vLLM backend successfully.")
+
+    def _cleanup_vllm():
+        try:
+            if hasattr(llm, "vllm") and llm.vllm is not None:
+                engine = llm.vllm
+                for method in ("shutdown", "close", "stop", "exit"):
+                    if hasattr(engine, method):
+                        try:
+                            getattr(engine, method)()
+                        except Exception:
+                            pass
+                try:
+                    llm.vllm = None
+                except Exception:
+                    pass
+        finally:
+            try:
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                    torch.cuda.current_stream().synchronize()
+            except Exception:
+                pass
+            try:
+                gc.collect()
+            except Exception:
+                pass
+
+    def _signal_handler(signum, frame):
+        _cleanup_vllm()
+        try:
+            sys.exit(0)
+        except SystemExit:
+            raise
+
+    atexit.register(_cleanup_vllm)
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            signal.signal(sig, _signal_handler)
+        except Exception:
+            pass
 
     def processor(payload: StagePayload) -> StagePayload:
         data = payload.data
@@ -215,11 +282,10 @@ def run_llm_stage(model_dir: str) -> None:
         text = text.to(device)
         text_len = text_len.to(device)
         prompt_text = prompt_text.to(device)
-        prompt_text_len = torch.tensor([prompt_text.shape[1]], dtype=torch.int32).to(device)
+        prompt_text_len = prompt_text_len.to(device)
         llm_prompt_speech_token = llm_prompt_speech_token.to(device)
-        llm_prompt_speech_token_len = torch.tensor([llm_prompt_speech_token.shape[1]], dtype=torch.int32).to(device)
+        llm_prompt_speech_token_len = llm_prompt_speech_token_len.to(device)
         llm_embedding = llm_embedding.to(device)
-
 
         tokens = []
         for tid in llm.inference(
@@ -232,12 +298,8 @@ def run_llm_stage(model_dir: str) -> None:
             embedding=llm_embedding,
         ):
             tokens.append(int(tid))
-        
-        # used for debug
-        # tokens = [29, 29, 31, 251, 503, 4912, 4856, 5099, 2903, 2902, 2569, 54, 28, 28, 28, 28, 28, 29, 28, 28, 29, 29, 110, 3137, 5057, 4085, 5748, 6378, 501, 5088, 5102, 4431, 4517, 4589, 4696, 5727, 1433, 1442, 6293, 4507, 4669, 4696, 5665, 5106, 2214, 4509, 57, 513, 4890, 5883, 3718, 2017, 1451, 1823, 5974, 4557, 3747, 18, 1001, 4862, 4507, 4695, 1287, 645, 2781, 5049, 2144, 1433, 6036, 2043, 4561, 5554, 1230, 6270, 6057, 5084, 5057, 6540, 4287, 2007, 2173, 2168, 4355, 3868, 2124, 3841, 1658, 1631, 1540, 730, 1730, 1271, 3458, 1757, 2189, 2188, 2241, 28, 28, 2322, 4590, 4590, 2376, 375, 1374, 2666, 4588, 2702, 2701, 6225, 3882, 937, 2270, 1145, 704, 1415, 2153, 3784, 1469, 6347, 2906, 5555, 1149, 1302, 6060, 567, 5751, 2162, 640, 549, 3546, 4833, 5076, 5022, 1631, 1883, 1883, 1919, 1191, 139, 4509, 4591, 109, 1634, 1544, 815, 4571, 5057, 5755, 6030, 1929, 2182, 5570, 5758, 6546, 321, 4263, 6279, 656, 5678, 1277, 1271, 1757, 1244, 4916, 3404, 1489, 1486, 1757, 1270, 1270, 32, 4428, 4428, 4509, 4591, 4591, 2296, 3572, 6277, 2426, 1532, 1469, 5125, 6003, 5454, 5050, 1658, 1856, 558, 700, 3572, 5982, 6125, 6382, 4204, 64, 2241, 2241, 2241, 28, 665, 5084, 5163, 6151, 3709, 2018, 323, 3239, 2396, 2400, 1827, 4803, 1896, 546, 2405, 218, 1919, 6013, 6015, 322, 557, 566, 1442, 713, 3620, 348, 4227, 5955, 4463, 4429, 5011, 5098, 6283, 3840, 2043, 6468, 5667, 5371, 4470, 4458, 2189, 29, 28, 29, 55, 2322, 4590, 4591, 2404, 2404, 5049, 3565, 5581, 2645, 5396, 5947, 1637, 3815, 5127, 5882, 3718, 1288, 307, 2242, 4509, 2322, 3056, 4058, 1790, 1493, 1487, 1487, 2243, 4406, 4406, 6131, 4697, 2903, 2906, 6542, 4355, 494, 4984, 4851, 1659, 483, 2843, 6541, 4854, 5343, 1536, 1001, 4889, 4939, 2834, 2591, 2208, 2196, 1, 2, 29, 28, 29, 29, 2]
         tts_speech_token = torch.tensor(tokens, dtype=torch.int32).unsqueeze(0)
-        # logger.info(f"LLM generated {len(tokens)} tokens.")
-        # logger.info(f"{tokens}")
+        logger.info(f"LLM generated {tts_speech_token.shape[1]} tokens.")
 
         # carry forward fields needed for diffusion
         payload.data = {
@@ -246,7 +308,7 @@ def run_llm_stage(model_dir: str) -> None:
             "prompt_speech_feat": model_input.get('prompt_speech_feat', torch.zeros(1, 0, 80)),
             "flow_embedding": model_input.get('flow_embedding', torch.zeros(0, 192)),
         }
-        save_stage_data("llm", payload.data)
+        # save_stage_data("llm", payload.data)
         return payload
 
     executor = FrontendExecutor(processor)
@@ -263,7 +325,10 @@ def run_llm_stage(model_dir: str) -> None:
     )
     stage.add_worker(worker)
 
-    asyncio.run(stage.run())
+    try:
+        asyncio.run(stage.run())
+    finally:
+        _cleanup_vllm()
 
 def flow_get_next(request_id: str, output: Any) -> str | None:
     return "vocoder"
@@ -327,7 +392,7 @@ def run_flow_stage(model_dir: str) -> None:
         )
         logger.info(f"Flow produced mel with shape: {tts_mel.shape}")
         payload.data = {"tts_mel": tts_mel}
-        save_stage_data("flow", payload.data)
+        # save_stage_data("flow", payload.data)
         return payload
 
     executor = FrontendExecutor(processor)
@@ -389,7 +454,7 @@ def run_vocoder_stage(model_dir: str) -> None:
         tts_speech, _ = hift.inference(speech_feat=tts_mel, finalize=True)
         logger.info(f"Vocoder produced speech with shape: {tts_speech.shape}")
         payload.data = {"tts_speech": tts_speech}
-        save_stage_data("vocoder", payload.data)
+        # save_stage_data("vocoder", payload.data)
         return payload
 
     executor = FrontendExecutor(processor)
@@ -452,7 +517,7 @@ def run_postprocess_stage(model_dir: str) -> None:
         torchaudio.save(path, audio, sample_rate)
         logger.info(f"Saved audio: {path}")
         payload.data = {"audio_path": path}
-        save_stage_data("postprocess", payload.data)
+        # save_stage_data("postprocess", payload.data)
         return payload
 
     executor = FrontendExecutor(processor)
@@ -488,7 +553,7 @@ async def run_coordinator(args: argparse.Namespace) -> None:
     completion_task = asyncio.create_task(coordinator.run_completion_loop())
 
     try:
-        await asyncio.sleep(2.0) # Wait for stages to connect
+        await asyncio.sleep(15.0) # Wait for stages to connect
 
         request = OmniRequest(
             inputs=[{
@@ -530,7 +595,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--tts-text",
         default="收到好友从远方寄来的生日礼物，那份意外的惊喜与深深的祝福让我心中充满了甜蜜的快乐，笑容如花儿般绽放。",
-        # default="你好，我是一个助手。",
         help="Text to synthesize",
     )
     parser.add_argument(
@@ -541,7 +605,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--prompt-audio",
         # Default to a known existing file found in previous steps
-        default="../CosyVoice/asset/zero_shot_prompt.wav", 
+        default="/opt/gpfs/home/tianteng/CosyVoice/asset/zero_shot_prompt.wav", 
         help="Path to prompt audio",
     )
     return parser.parse_args()
