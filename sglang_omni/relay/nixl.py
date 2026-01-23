@@ -67,6 +67,7 @@ except ImportError as e:
     def nixl_agent_config(**kwargs):
         return None
 
+
 # ==========================================
 # Helper Classes
 # ==========================================
@@ -107,6 +108,7 @@ class NixlOperation(RelayOperation):
     @property
     def metadata(self) -> Any:
         return self._metadata
+
 
 class PutOperation(NixlOperation):
     """

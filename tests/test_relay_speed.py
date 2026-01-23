@@ -33,7 +33,12 @@ def find_free_port() -> str:
 
 
 def sender_process(
-    meta_queue, barrier, relay_type: str, data_size_mb: int, master_addr: str, master_port: str
+    meta_queue,
+    barrier,
+    relay_type: str,
+    data_size_mb: int,
+    master_addr: str,
+    master_port: str,
 ):
     """Sender Process: Rank 0 for NCCL."""
     try:
@@ -72,12 +77,16 @@ def sender_process(
 
         element_size = 2 if "cuda" in str(relay_kwargs["device"]) else 4
         num_elements = (data_size_mb * 1024 * 1024) // element_size
-        dtype = torch.float16 if "cuda" in str(relay_kwargs["device"]) else torch.float32
+        dtype = (
+            torch.float16 if "cuda" in str(relay_kwargs["device"]) else torch.float32
+        )
 
         async def _sender_loop():
             print(f"[Sender] Warm-up {WARMUP_ITERS} iters...")
             for i in range(WARMUP_ITERS):
-                src_tensor = torch.zeros(num_elements, dtype=dtype, device=relay_kwargs["device"])
+                src_tensor = torch.zeros(
+                    num_elements, dtype=dtype, device=relay_kwargs["device"]
+                )
                 src_tensor[0] = i + 0.5
                 if "cuda" in str(relay_kwargs["device"]):
                     torch.cuda.synchronize()
@@ -89,7 +98,9 @@ def sender_process(
 
             print(f"[Sender] Measuring {NUM_ITERS} iters...")
             for i in range(NUM_ITERS):
-                src_tensor = torch.zeros(num_elements, dtype=dtype, device=relay_kwargs["device"])
+                src_tensor = torch.zeros(
+                    num_elements, dtype=dtype, device=relay_kwargs["device"]
+                )
                 src_tensor[0] = i + 1.0
                 if "cuda" in str(relay_kwargs["device"]):
                     torch.cuda.synchronize()
@@ -112,7 +123,12 @@ def sender_process(
 
 
 def receiver_process(
-    meta_queue, barrier, relay_type: str, data_size_mb: int, master_addr: str, master_port: str
+    meta_queue,
+    barrier,
+    relay_type: str,
+    data_size_mb: int,
+    master_addr: str,
+    master_port: str,
 ):
     """Receiver Process: Rank 1 for NCCL."""
     try:
@@ -149,7 +165,9 @@ def receiver_process(
 
         element_size = 2 if "cuda" in str(relay_kwargs["device"]) else 4
         num_elements = (data_size_mb * 1024 * 1024) // element_size
-        dtype = torch.float16 if "cuda" in str(relay_kwargs["device"]) else torch.float32
+        dtype = (
+            torch.float16 if "cuda" in str(relay_kwargs["device"]) else torch.float32
+        )
 
         latencies_ms: list[float] = []
         throughputs_gbs: list[float] = []
@@ -161,14 +179,18 @@ def receiver_process(
                 remote_meta = meta_queue.get()
                 if remote_meta is None:
                     return
-                dest_tensor = torch.zeros(num_elements, dtype=dtype, device=relay_kwargs["device"])
+                dest_tensor = torch.zeros(
+                    num_elements, dtype=dtype, device=relay_kwargs["device"]
+                )
                 op = await relay.get_async(remote_meta, dest_tensor)
                 await op.wait_for_completion()
                 if "cuda" in str(relay_kwargs["device"]):
                     torch.cuda.synchronize()
 
             print("[Receiver] Measuring...")
-            dest_tensor = torch.zeros(num_elements, dtype=dtype, device=relay_kwargs["device"])
+            dest_tensor = torch.zeros(
+                num_elements, dtype=dtype, device=relay_kwargs["device"]
+            )
             for i in range(NUM_ITERS):
                 remote_meta = meta_queue.get()
                 if remote_meta is None:
@@ -216,7 +238,9 @@ def receiver_process(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Relay Benchmark")
-    parser.add_argument("--type", type=str, default="nccl", choices=["nixl", "shm", "nccl"])
+    parser.add_argument(
+        "--type", type=str, default="nccl", choices=["nixl", "shm", "nccl"]
+    )
     parser.add_argument("--size", type=int, default=10, help="Data size in MB")
     args = parser.parse_args()
 

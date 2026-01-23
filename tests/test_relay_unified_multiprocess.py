@@ -30,7 +30,6 @@ if torch.cuda.is_available():
 import sglang_omni.relay.nccl  # noqa: F401
 import sglang_omni.relay.nixl  # noqa: F401 (Trigger @register_relay)
 import sglang_omni.relay.shm  # noqa: F401
-
 from sglang_omni.relay.base import create_relay
 
 
