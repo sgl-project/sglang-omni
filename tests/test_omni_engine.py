@@ -43,7 +43,7 @@ async def _run_qwen3_8b_engine() -> None:
 
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
-    model_id = "Qwen/Qwen3-8B"
+    model_id = "Qwen/Qwen3-0.6B"
     tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
     model = AutoModelForCausalLM.from_pretrained(
         model_id,
