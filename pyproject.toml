@@ -25,6 +25,7 @@ dependencies = [
     "pytest-asyncio>=0.21.0",
     "nixl",
     "logger",
+    "httpx",
 ]
 
 [tool.setuptools.packages.find]
