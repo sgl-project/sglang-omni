@@ -38,15 +38,16 @@ def test_encoder_engine_runs() -> None:
     asyncio.run(_run_encoder_engine())
 
 
-async def _run_llama8b_engine() -> None:
-    assert torch.cuda.is_available(), "CUDA is required for the Llama 8B test."
+async def _run_qwen3_8b_engine() -> None:
+    assert torch.cuda.is_available(), "CUDA is required for the Qwen3 8B test."
 
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
-    model_id = "meta-llama/Meta-Llama-3-8B"
-    tokenizer = AutoTokenizer.from_pretrained(model_id)
+    model_id = "Qwen/Qwen3-8B"
+    tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
     model = AutoModelForCausalLM.from_pretrained(
         model_id,
+        trust_remote_code=True,
         torch_dtype=torch.float16,
     )
 
@@ -61,12 +62,12 @@ async def _run_llama8b_engine() -> None:
     try:
         input_ids = tokenizer.encode("Hello", return_tensors="pt")[0]
         data = ARRequestData(input_ids=input_ids, max_new_tokens=4, temperature=0.0)
-        await engine.add_request("llama-1", data)
-        result = await engine.get_result("llama-1")
+        await engine.add_request("qwen-1", data)
+        result = await engine.get_result("qwen-1")
         assert result.output_ids
     finally:
         await engine.stop()
 
 
-def test_llama8b_engine_runs() -> None:
-    asyncio.run(_run_llama8b_engine())
+def test_qwen3_8b_engine_runs() -> None:
+    asyncio.run(_run_qwen3_8b_engine())
