@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import torch
+
 from ..types import RequestOutput, SchedulerRequest
 
 
@@ -50,15 +52,45 @@ class EosIterationController:
 
     def update_request(self, request: SchedulerRequest, output: RequestOutput) -> None:
         token = output.data
+        past_kv = None
+        extra_outputs = None
+
         if isinstance(output.data, tuple):
             token, past_kv = output.data
+        elif isinstance(output.data, dict):
+            token = output.data.get("token")
+            past_kv = output.data.get("past_key_values")
+            extra_outputs = output.data.get("extra_model_outputs")
+
+        if past_kv is not None:
             request.data.past_key_values = past_kv
+        if isinstance(extra_outputs, dict):
+            request.data.extra_model_outputs.update(extra_outputs)
 
         request.data.output_ids.append(token)
+        expected_len = len(request.data.input_ids) + len(request.data.output_ids)
+        attention_mask = request.data.attention_mask
+        if attention_mask is None or attention_mask.shape[0] == expected_len - 1:
+            if attention_mask is None:
+                attention_mask = request.data.input_ids.new_ones(expected_len)
+            else:
+                attention_mask = attention_mask.to(dtype=torch.long)
+                attention_mask = torch.cat(
+                    [attention_mask, attention_mask.new_ones(1)], dim=0
+                )
+            request.data.attention_mask = attention_mask
+        elif attention_mask.shape[0] != expected_len:
+            request.data.attention_mask = request.data.input_ids.new_ones(expected_len)
+
         if request.data.num_computed_tokens == 0:
             request.data.num_computed_tokens = len(request.data.input_ids)
+            # Prepare cache position for the first decode step.
+            request.data.cache_position = request.data.num_computed_tokens
+            # Free large prefill-only inputs once they are no longer needed.
+            request.data.model_inputs.clear()
         else:
             request.data.num_computed_tokens += 1
+            request.data.cache_position += 1
 
     def is_finished(self, request: SchedulerRequest, output: RequestOutput) -> bool:
         token = output.data
