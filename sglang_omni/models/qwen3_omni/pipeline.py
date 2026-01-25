@@ -10,6 +10,8 @@ from sglang_omni.config import (
     RelayConfig,
     StageConfig,
 )
+from sglang_omni.models.adapter_registry import register_adapter
+from sglang_omni.models.qwen3_omni.adapter import Qwen3OmniAdapter
 
 
 def create_text_first_pipeline_config(
@@ -24,6 +26,9 @@ def create_text_first_pipeline_config(
     dtype: str | None = None,
     relay_type: str = "shm",
 ) -> PipelineConfig:
+    adapter = register_adapter(Qwen3OmniAdapter(model_id=model_id))
+    adapter_name = adapter.name
+
     def _relay(device: str) -> RelayConfig:
         return RelayConfig(type=relay_type, device=device)
 
@@ -35,40 +40,50 @@ def create_text_first_pipeline_config(
                 name="frontend",
                 executor=ExecutorConfig(
                     factory="sglang_omni.models.qwen3_omni.executors.create_frontend_executor",
-                    args={"model_id": model_id},
+                    args={"model_id": model_id, "adapter_name": adapter_name},
                 ),
-                get_next="sglang_omni.models.qwen3_omni.routing.frontend_next",
+                get_next="sglang_omni.models.omni_generic.frontend_next",
                 relay=_relay(frontend_device),
             ),
             StageConfig(
                 name="image_encoder",
                 executor=ExecutorConfig(
                     factory="sglang_omni.models.qwen3_omni.executors.create_image_encoder_executor",
-                    args={"model_id": model_id, "device": image_device, "dtype": dtype},
+                    args={
+                        "model_id": model_id,
+                        "adapter_name": adapter_name,
+                        "device": image_device,
+                        "dtype": dtype,
+                    },
                 ),
-                get_next="sglang_omni.models.qwen3_omni.routing.image_next",
+                get_next="sglang_omni.models.omni_generic.encoder_next",
                 relay=_relay(image_device),
             ),
             StageConfig(
                 name="audio_encoder",
                 executor=ExecutorConfig(
                     factory="sglang_omni.models.qwen3_omni.executors.create_audio_encoder_executor",
-                    args={"model_id": model_id, "device": audio_device, "dtype": dtype},
+                    args={
+                        "model_id": model_id,
+                        "adapter_name": adapter_name,
+                        "device": audio_device,
+                        "dtype": dtype,
+                    },
                 ),
-                get_next="sglang_omni.models.qwen3_omni.routing.audio_next",
+                get_next="sglang_omni.models.omni_generic.encoder_next",
                 relay=_relay(audio_device),
             ),
             StageConfig(
                 name="mm_aggregate",
                 executor=ExecutorConfig(
                     factory="sglang_omni.models.qwen3_omni.executors.create_aggregate_executor",
-                    args={},
+                    args={"adapter_name": adapter_name},
                 ),
-                get_next="sglang_omni.models.qwen3_omni.routing.aggregate_next",
+                get_next="sglang_omni.models.omni_generic.aggregate_next",
                 input_handler=InputHandlerConfig(
                     type="aggregated",
                     sources=["frontend", "image_encoder", "audio_encoder"],
-                    merge_fn="sglang_omni.models.qwen3_omni.merge.merge_to_thinker",
+                    merge_fn="sglang_omni.models.omni_generic.merge_for_adapter",
                 ),
                 relay=_relay("cpu"),
             ),
@@ -78,21 +93,22 @@ def create_text_first_pipeline_config(
                     factory="sglang_omni.models.qwen3_omni.executors.create_thinker_executor",
                     args={
                         "model_id": model_id,
+                        "adapter_name": adapter_name,
                         "device": thinker_device,
                         "dtype": dtype,
                         "max_seq_len": thinker_max_seq_len,
                     },
                 ),
-                get_next="sglang_omni.models.qwen3_omni.routing.thinker_next",
+                get_next="sglang_omni.models.omni_generic.thinker_next",
                 relay=_relay(thinker_device),
             ),
             StageConfig(
                 name="decode",
                 executor=ExecutorConfig(
                     factory="sglang_omni.models.qwen3_omni.executors.create_decode_executor",
-                    args={"model_id": model_id},
+                    args={"model_id": model_id, "adapter_name": adapter_name},
                 ),
-                get_next="sglang_omni.models.qwen3_omni.routing.decode_next",
+                get_next="sglang_omni.models.omni_generic.decode_next",
                 relay=_relay("cpu"),
             ),
         ],

@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Engine helpers for Qwen3-Omni split stages."""
+"""Async engine wrapper for plain torch modules."""
 
 from __future__ import annotations
 

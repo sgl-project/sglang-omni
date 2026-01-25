@@ -11,8 +11,11 @@ from transformers.models.qwen3_omni_moe import modeling_qwen3_omni_moe as hf_mod
 
 
 def _resolve_dtype(dtype: str | torch.dtype | None) -> torch.dtype | None:
-    if dtype is None or isinstance(dtype, torch.dtype):
+    if isinstance(dtype, torch.dtype):
         return dtype
+    if dtype is None:
+        # Default to BF16 to avoid unintentionally loading FP32 weights.
+        return torch.bfloat16
     mapping = {
         "fp16": torch.float16,
         "float16": torch.float16,
@@ -67,4 +70,3 @@ def describe_registry() -> dict[str, Any]:
         "entries": [f"{model_id}:{dtype}" for (model_id, dtype) in _REGISTRY.keys()],
         "count": len(_REGISTRY),
     }
-
