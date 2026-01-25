@@ -28,6 +28,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--image-device", type=str, default="cuda:3")
     parser.add_argument("--audio-device", type=str, default="cuda:3")
     parser.add_argument("--thinker-device", type=str, default="cuda:3")
+    parser.add_argument("--image-path", type=str, default=None)
+    parser.add_argument("--audio-path", type=str, default=None)
+    parser.add_argument("--audio-target-sr", type=int, default=16000)
     return parser.parse_args()
 
 
@@ -46,12 +49,15 @@ async def main_async(args: argparse.Namespace) -> None:
 
     await runner.start()
     try:
+        images = [args.image_path] if args.image_path else []
+        audios = [args.audio_path] if args.audio_path else []
         request = {
             "messages": [
                 {"role": "user", "content": args.prompt},
             ],
-            "images": [],
-            "audios": [],
+            "images": images,
+            "audios": audios,
+            "audio_target_sr": args.audio_target_sr,
         }
         result = await coordinator.submit(
             "qwen3-omni-text-first",

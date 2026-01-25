@@ -134,6 +134,10 @@ class Qwen3OmniAdapter(OmniAdapter):
             image_out.get("image_grid_thw") if isinstance(image_out, dict) and image_out.get("image_grid_thw") is not None else mm_image.get("image_grid_thw"),
             dtype=torch.long,
         )
+        feature_attention_mask = _as_tensor(
+            mm_audio.get("feature_attention_mask"),
+            dtype=torch.long,
+        )
         audio_feature_lengths = _as_tensor(
             audio_out.get("audio_feature_lengths") if isinstance(audio_out, dict) and audio_out.get("audio_feature_lengths") is not None else mm_audio.get("audio_feature_lengths"),
             dtype=torch.long,
@@ -146,6 +150,8 @@ class Qwen3OmniAdapter(OmniAdapter):
             thinker_model_inputs["audio_embeds"] = audio_embeds
         if _non_empty(image_grid_thw):
             thinker_model_inputs["image_grid_thw"] = image_grid_thw
+        if _non_empty(feature_attention_mask):
+            thinker_model_inputs["feature_attention_mask"] = feature_attention_mask
         if _non_empty(audio_feature_lengths):
             thinker_model_inputs["audio_feature_lengths"] = audio_feature_lengths
 
