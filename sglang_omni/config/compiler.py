@@ -9,7 +9,13 @@ from typing import Any
 from sglang_omni.config.imports import import_string
 from sglang_omni.config.schema import InputHandlerConfig, PipelineConfig, StageConfig
 from sglang_omni.executors.interface import Executor
-from sglang_omni.pipeline import AggregatedInput, Coordinator, DirectInput, Stage, Worker
+from sglang_omni.pipeline import (
+    AggregatedInput,
+    Coordinator,
+    DirectInput,
+    Stage,
+    Worker,
+)
 from sglang_omni.pipeline.stage.input import InputHandler
 
 
@@ -44,7 +50,9 @@ def _compile_stage(
 ) -> Stage:
     factory = import_string(stage_cfg.executor.factory)
     if not callable(factory):
-        raise TypeError(f"Executor factory is not callable: {stage_cfg.executor.factory}")
+        raise TypeError(
+            f"Executor factory is not callable: {stage_cfg.executor.factory}"
+        )
 
     get_next = import_string(stage_cfg.get_next)
     if not callable(get_next):
@@ -170,9 +178,7 @@ def _validate_pipeline(config: PipelineConfig) -> None:
 
     for stage_cfg in config.stages:
         if stage_cfg.num_workers < 1:
-            raise ValueError(
-                f"Stage {stage_cfg.name!r} must have at least one worker"
-            )
+            raise ValueError(f"Stage {stage_cfg.name!r} must have at least one worker")
         if not stage_cfg.executor.factory:
             raise ValueError(f"Stage {stage_cfg.name!r} missing executor factory")
         if not stage_cfg.get_next:

@@ -35,9 +35,7 @@ class PipelineRunner:
             raise RuntimeError("PipelineRunner not started")
 
         tasks = [self._completion_task, *self._stage_tasks]
-        done, pending = await asyncio.wait(
-            tasks, return_when=asyncio.FIRST_EXCEPTION
-        )
+        done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_EXCEPTION)
         for task in pending:
             task.cancel()
         for task in done:

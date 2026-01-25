@@ -44,3 +44,41 @@ curl -s http://localhost:8000/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{"model":"test","messages":[{"role":"user","content":"hi"}]}'
 ```
+
+### Config-Driven Pipeline
+
+Minimal example using `PipelineConfig` + `compile_pipeline` + `PipelineRunner`:
+
+```python
+import asyncio
+
+from sglang_omni.config import ExecutorConfig, PipelineConfig, PipelineRunner, StageConfig
+from sglang_omni.config import compile_pipeline
+
+config = PipelineConfig(
+    name="demo_pipeline",
+    entry_stage="preprocess",
+    stages=[
+        StageConfig(
+            name="preprocess",
+            executor=ExecutorConfig(
+                factory="my_project.executors.create_preprocess_executor",
+                args={},
+            ),
+            get_next="my_project.routing.preprocess_next",
+        ),
+        StageConfig(
+            name="thinker",
+            executor=ExecutorConfig(
+                factory="my_project.executors.create_thinker_executor",
+                args={"model_path": "Qwen/Qwen3-Omni"},
+            ),
+            get_next="my_project.routing.end",
+        ),
+    ],
+)
+
+coordinator, stages = compile_pipeline(config)
+runner = PipelineRunner(coordinator, stages)
+asyncio.run(runner.run())
+```
