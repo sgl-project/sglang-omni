@@ -49,10 +49,11 @@ class Worker:
         if self.stage is None or self.queue is None or self.data_plane is None:
             raise RuntimeError("Worker not bound to a stage")
 
-        self._running = True
-        logger.info("Worker started for stage %s", self.stage.name)
-
         try:
+            await self.executor.start()
+            self._running = True
+            logger.info("Worker started for stage %s", self.stage.name)
+
             while self._running:
                 work = await self.queue.get()
                 if work is None:  # Shutdown signal
@@ -64,6 +65,7 @@ class Worker:
             logger.info("Worker cancelled for stage %s", self.stage.name)
         finally:
             self._running = False
+            await self.executor.stop()
 
     async def _process_request(self, work: WorkDescriptor) -> None:
         """Process a single request."""

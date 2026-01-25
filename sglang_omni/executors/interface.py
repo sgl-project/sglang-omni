@@ -14,6 +14,14 @@ class Executor(ABC):
     Uses StagePayload for both input and output.
     """
 
+    async def start(self) -> None:
+        """Optional lifecycle hook, called before processing."""
+        return None
+
+    async def stop(self) -> None:
+        """Optional lifecycle hook, called on shutdown."""
+        return None
+
     @abstractmethod
     async def add_request(self, payload: StagePayload) -> None:
         """Accept a request payload for processing."""

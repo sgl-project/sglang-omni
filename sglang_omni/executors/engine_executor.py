@@ -41,6 +41,16 @@ class EngineExecutor(Executor):
         engine_input = self._request_builder(payload)
         await self._engine.add_request(request_id, engine_input)
 
+    async def start(self) -> None:
+        start = getattr(self._engine, "start", None)
+        if callable(start):
+            await start()
+
+    async def stop(self) -> None:
+        stop = getattr(self._engine, "stop", None)
+        if callable(stop):
+            await stop()
+
     async def get_result(self) -> StagePayload:
         while self._pending:
             request_id = self._pending.popleft()
