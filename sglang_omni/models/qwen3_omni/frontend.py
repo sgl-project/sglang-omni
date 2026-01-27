@@ -16,8 +16,6 @@ from transformers.utils.hub import cached_file
 
 from sglang_omni.executors import FrontendExecutor
 from sglang_omni.frontends import (
-    append_modality_placeholders,
-    apply_chat_template,
     build_audio_mm_inputs,
     build_image_mm_inputs,
     ensure_audio_list,
@@ -113,11 +111,36 @@ class Qwen3OmniFrontend:
         self.tokenizer = self.processor.tokenizer
         ensure_chat_template(self.tokenizer, model_id=self.model_dir)
 
-    def _apply_chat_template(self, messages: list[dict[str, str]]) -> str:
-        prompt_text = apply_chat_template(self.tokenizer, messages)
-        if not prompt_text:
-            raise ValueError("Failed to build prompt_text from chat template")
-        return prompt_text
+    def _build_multimodal_messages(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        num_images: int,
+        num_audios: int,
+    ) -> list[dict[str, Any]]:
+        """Convert simple messages to HF's structured multimodal format."""
+        if num_images == 0 and num_audios == 0:
+            return messages
+
+        result: list[dict[str, Any]] = []
+        for i, msg in enumerate(messages):
+            role = msg.get("role", "user")
+            content = msg.get("content", "")
+
+            # Only inject placeholders into the last user message
+            if i == len(messages) - 1 and role == "user":
+                content_parts: list[dict[str, Any]] = []
+                # Placeholders come BEFORE text (Qwen3-Omni format)
+                for _ in range(num_images):
+                    content_parts.append({"type": "image"})
+                for _ in range(num_audios):
+                    content_parts.append({"type": "audio"})
+                content_parts.append({"type": "text", "text": content})
+                result.append({"role": role, "content": content_parts})
+            else:
+                result.append(msg)
+
+        return result
 
     def __call__(self, payload: StagePayload) -> StagePayload:
         inputs = payload.request.inputs
@@ -135,12 +158,16 @@ class Qwen3OmniFrontend:
             audios = []
 
         messages_norm = normalize_messages(messages)
-        messages_with_mm = append_modality_placeholders(
+        messages_mm = self._build_multimodal_messages(
             messages_norm,
-            placeholders={"image": IMAGE_PLACEHOLDER, "audio": AUDIO_PLACEHOLDER},
-            counts={"image": len(images), "audio": len(audios)},
+            num_images=len(images),
+            num_audios=len(audios),
         )
-        prompt_text = self._apply_chat_template(messages_with_mm)
+        prompt_text = self.processor.apply_chat_template(
+            messages_mm,
+            add_generation_prompt=True,
+            tokenize=False,
+        )
 
         hf_inputs = self.processor(
             text=prompt_text,
