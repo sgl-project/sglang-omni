@@ -13,7 +13,6 @@ from sglang_omni.models.qwen3_omni.adapter import IMAGE_STAGE
 from sglang_omni.models.qwen3_omni.common import (
     instantiate_module,
     load_thinker_config,
-    log_module_stats,
 )
 from sglang_omni.models.weight_loader import load_module, resolve_dtype
 
@@ -61,7 +60,6 @@ class Qwen3OmniImageEncoder(nn.Module):
             torch_dtype=torch_dtype,
             device=device,
         )
-        log_module_stats("qwen3_omni.visual", self.visual, device)
         self.spatial_merge_size = int(thinker_cfg.vision_config.spatial_merge_size)
 
     def forward(

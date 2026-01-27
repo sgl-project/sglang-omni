@@ -5,7 +5,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from functools import lru_cache
-import logging
 from typing import Any
 
 import torch
@@ -56,38 +55,3 @@ class Qwen3OmniSpec:
             spatial_merge_size=int(vision_cfg.spatial_merge_size),
         )
 
-
-def log_module_stats(name: str, module: nn.Module, device: str | torch.device) -> None:
-    logger = logging.getLogger(__name__)
-    try:
-        param_count = sum(p.numel() for p in module.parameters())
-        byte_count = sum(p.numel() * p.element_size() for p in module.parameters())
-    except Exception:
-        param_count = 0
-        byte_count = 0
-
-    gb = byte_count / (1024**3)
-    device_str = str(device)
-    if torch.cuda.is_available() and str(device).startswith("cuda"):
-        try:
-            torch_device = torch.device(device)
-            alloc = torch.cuda.memory_allocated(torch_device)
-            reserved = torch.cuda.memory_reserved(torch_device)
-            logger.warning(
-                "Loaded %s: params=%.2fB, param_bytes=%.2fGB, cuda_alloc=%.2fGB, cuda_reserved=%.2fGB",
-                name,
-                param_count / 1e9,
-                gb,
-                alloc / (1024**3),
-                reserved / (1024**3),
-            )
-            return
-        except Exception:
-            pass
-    logger.warning(
-        "Loaded %s: params=%.2fB, param_bytes=%.2fGB, device=%s",
-        name,
-        param_count / 1e9,
-        gb,
-        device_str,
-    )

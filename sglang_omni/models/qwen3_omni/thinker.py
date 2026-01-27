@@ -16,7 +16,6 @@ from sglang_omni.models.omni_generic import create_adapter_thinker_executor
 from sglang_omni.models.qwen3_omni.common import (
     instantiate_module,
     load_thinker_config,
-    log_module_stats,
 )
 from sglang_omni.models.weight_loader import load_module, resolve_dtype
 
@@ -40,10 +39,12 @@ def _concat_features(value: Any) -> torch.Tensor | None:
 
 
 def _should_tie_embeddings(config: Any) -> bool:
-    return bool(
-        getattr(config, "tie_word_embeddings", False)
-        or getattr(getattr(config, "text_config", None), "tie_word_embeddings", False)
-    )
+    # Prefer text_config.tie_word_embeddings when it exists, as nested configs
+    # may have different settings than the top-level config.
+    text_config = getattr(config, "text_config", None)
+    if text_config is not None:
+        return bool(getattr(text_config, "tie_word_embeddings", False))
+    return bool(getattr(config, "tie_word_embeddings", False))
 
 
 def _maybe_tie_weights(
@@ -135,8 +136,6 @@ class Qwen3OmniSplitThinker(nn.Module):
         # Move only the text model and LM head to the thinker device.
         self.thinker.model = self.thinker.model.to(self._device)
         self.thinker.lm_head = self.thinker.lm_head.to(self._device)
-        log_module_stats("qwen3_omni.text_model", self.thinker.model, device)
-        log_module_stats("qwen3_omni.lm_head", self.thinker.lm_head, device)
 
     def to(self, *args, **kwargs):  # type: ignore[override]
         """Move only the active text components; avoid meta tensor errors."""
