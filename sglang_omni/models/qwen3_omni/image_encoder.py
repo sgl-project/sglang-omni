@@ -1,0 +1,93 @@
+# SPDX-License-Identifier: Apache-2.0
+"""Image encoder component for Qwen3-Omni."""
+
+from __future__ import annotations
+
+import torch
+import torch.nn as nn
+from transformers.models.qwen3_omni_moe import modeling_qwen3_omni_moe as hf_modeling
+
+from sglang_omni.executors import EngineExecutor
+from sglang_omni.models.omni_generic import create_adapter_encoder_executor
+from sglang_omni.models.qwen3_omni.adapter import IMAGE_STAGE
+from sglang_omni.models.qwen3_omni.common import (
+    instantiate_module,
+    load_thinker_config,
+    log_module_stats,
+)
+from sglang_omni.models.weight_loader import load_module, resolve_dtype
+
+
+VISUAL_PREFIX = ("thinker.visual.", "visual.")
+VISUAL_CLASS = hf_modeling.Qwen3OmniMoeVisionEncoder
+
+
+def _build_visual(
+    model_id: str,
+    *,
+    thinker_cfg: object,
+    torch_dtype: torch.dtype | None,
+    device: str,
+) -> nn.Module:
+    vision_cfg = thinker_cfg.vision_config
+    visual = instantiate_module(VISUAL_CLASS, vision_cfg)
+    return load_module(
+        visual,
+        model_id,
+        prefix=VISUAL_PREFIX,
+        dtype=torch_dtype,
+        device=device,
+        strict=True,
+    )
+
+
+class Qwen3OmniImageEncoder(nn.Module):
+    """Vision tower extracted from the HF thinker."""
+
+    def __init__(
+        self,
+        model_id: str,
+        *,
+        device: str = "cuda",
+        dtype: str | torch.dtype | None = None,
+    ) -> None:
+        super().__init__()
+        torch_dtype = resolve_dtype(dtype)
+        thinker_cfg = load_thinker_config(model_id)
+        self._device = torch.device(device)
+        self.visual = _build_visual(
+            model_id,
+            thinker_cfg=thinker_cfg,
+            torch_dtype=torch_dtype,
+            device=device,
+        )
+        log_module_stats("qwen3_omni.visual", self.visual, device)
+        self.spatial_merge_size = int(thinker_cfg.vision_config.spatial_merge_size)
+
+    def forward(
+        self,
+        *,
+        pixel_values: torch.Tensor,
+        image_grid_thw: torch.Tensor,
+    ) -> dict[str, torch.Tensor]:
+        image_grid_thw = image_grid_thw.to(self._device, dtype=torch.long)
+        pixel_values = pixel_values.to(device=self._device, dtype=self.visual.dtype)
+        image_embeds, _ = self.visual(pixel_values, grid_thw=image_grid_thw)
+        merge = self.spatial_merge_size**2
+        image_token_counts = image_grid_thw.prod(-1) // merge
+        return {
+            "image_embeds": image_embeds,
+            "image_grid_thw": image_grid_thw,
+            "image_token_counts": image_token_counts.to(device=self._device),
+        }
+
+
+def create_image_encoder_executor(
+    model_id: str,
+    *,
+    adapter_name: str,
+    device: str = "cuda",
+    dtype: str | None = None,
+) -> EngineExecutor:
+    model = Qwen3OmniImageEncoder(model_id=model_id, device=device, dtype=dtype)
+    return create_adapter_encoder_executor(adapter_name, stage_name=IMAGE_STAGE, model=model)

@@ -14,6 +14,7 @@ from transformers.models.qwen3_omni_moe.processing_qwen3_omni_moe import (
 )
 from transformers.utils.hub import cached_file
 
+from sglang_omni.executors import FrontendExecutor
 from sglang_omni.frontends import (
     append_modality_placeholders,
     apply_chat_template,
@@ -24,6 +25,7 @@ from sglang_omni.frontends import (
     ensure_image_list,
     normalize_messages,
 )
+from sglang_omni.models.omni_generic import create_adapter_frontend_executor
 from sglang_omni.proto import StagePayload
 
 IMAGE_PLACEHOLDER = "<|vision_start|><|image_pad|><|vision_end|>"
@@ -144,6 +146,7 @@ class Qwen3OmniFrontend:
             text=prompt_text,
             images=images or None,
             audio=audios or None,
+            add_special_tokens=False,
             return_tensors="pt",
         )
 
@@ -173,3 +176,8 @@ class Qwen3OmniFrontend:
             },
         }
         return payload
+
+
+def create_frontend_executor(model_id: str, *, adapter_name: str) -> FrontendExecutor:
+    del model_id
+    return create_adapter_frontend_executor(adapter_name)

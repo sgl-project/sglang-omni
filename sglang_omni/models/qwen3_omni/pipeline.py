@@ -39,7 +39,7 @@ def create_text_first_pipeline_config(
             StageConfig(
                 name="frontend",
                 executor=ExecutorConfig(
-                    factory="sglang_omni.models.qwen3_omni.executors.create_frontend_executor",
+                    factory="sglang_omni.models.qwen3_omni.frontend.create_frontend_executor",
                     args={"model_id": model_id, "adapter_name": adapter_name},
                 ),
                 get_next="sglang_omni.models.omni_generic.frontend_next",
@@ -48,7 +48,7 @@ def create_text_first_pipeline_config(
             StageConfig(
                 name="image_encoder",
                 executor=ExecutorConfig(
-                    factory="sglang_omni.models.qwen3_omni.executors.create_image_encoder_executor",
+                    factory="sglang_omni.models.qwen3_omni.image_encoder.create_image_encoder_executor",
                     args={
                         "model_id": model_id,
                         "adapter_name": adapter_name,
@@ -62,7 +62,7 @@ def create_text_first_pipeline_config(
             StageConfig(
                 name="audio_encoder",
                 executor=ExecutorConfig(
-                    factory="sglang_omni.models.qwen3_omni.executors.create_audio_encoder_executor",
+                    factory="sglang_omni.models.qwen3_omni.audio_encoder.create_audio_encoder_executor",
                     args={
                         "model_id": model_id,
                         "adapter_name": adapter_name,
@@ -76,7 +76,7 @@ def create_text_first_pipeline_config(
             StageConfig(
                 name="mm_aggregate",
                 executor=ExecutorConfig(
-                    factory="sglang_omni.models.qwen3_omni.executors.create_aggregate_executor",
+                    factory="sglang_omni.models.qwen3_omni.adapter.create_aggregate_executor",
                     args={"adapter_name": adapter_name},
                 ),
                 get_next="sglang_omni.models.omni_generic.aggregate_next",
@@ -90,7 +90,7 @@ def create_text_first_pipeline_config(
             StageConfig(
                 name="thinker",
                 executor=ExecutorConfig(
-                    factory="sglang_omni.models.qwen3_omni.executors.create_thinker_executor",
+                    factory="sglang_omni.models.qwen3_omni.thinker.create_thinker_executor",
                     args={
                         "model_id": model_id,
                         "adapter_name": adapter_name,
@@ -105,7 +105,7 @@ def create_text_first_pipeline_config(
             StageConfig(
                 name="decode",
                 executor=ExecutorConfig(
-                    factory="sglang_omni.models.qwen3_omni.executors.create_decode_executor",
+                    factory="sglang_omni.models.qwen3_omni.adapter.create_decode_executor",
                     args={"model_id": model_id, "adapter_name": adapter_name},
                 ),
                 get_next="sglang_omni.models.omni_generic.decode_next",

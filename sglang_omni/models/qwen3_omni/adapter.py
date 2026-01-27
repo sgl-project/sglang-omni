@@ -7,7 +7,12 @@ from typing import Any, Iterable
 
 import torch
 
+from sglang_omni.executors import FrontendExecutor
 from sglang_omni.models.omni_adapter import FrontendOutput, OmniEvent, OmniAdapter, ThinkerOutput
+from sglang_omni.models.omni_generic import (
+    create_adapter_aggregate_executor,
+    create_adapter_decode_executor,
+)
 from sglang_omni.models.qwen3_omni.frontend import Qwen3OmniFrontend
 from sglang_omni.proto import OmniRequest, StagePayload
 
@@ -236,3 +241,12 @@ class Qwen3OmniAdapter(OmniAdapter):
         if not delta:
             return []
         return [OmniEvent(type="text_delta", modality="text", payload={"text": delta}, is_final=False)]
+
+
+def create_aggregate_executor(*, adapter_name: str) -> FrontendExecutor:
+    return create_adapter_aggregate_executor(adapter_name)
+
+
+def create_decode_executor(model_id: str, *, adapter_name: str) -> FrontendExecutor:
+    del model_id
+    return create_adapter_decode_executor(adapter_name)
