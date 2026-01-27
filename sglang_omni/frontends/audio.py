@@ -64,7 +64,9 @@ def _read_wav_bytes(path: str) -> tuple[np.ndarray, int]:
                 audio = (audio_i32.astype(np.float32) / 2147483648.0).astype(np.float32)
             elif bits_per_sample == 8:
                 audio_u8 = np.frombuffer(data_bytes, dtype="u1")
-                audio = ((audio_u8.astype(np.float32) - 128.0) / 128.0).astype(np.float32)
+                audio = ((audio_u8.astype(np.float32) - 128.0) / 128.0).astype(
+                    np.float32
+                )
             else:
                 raise ValueError(f"Unsupported PCM WAV bit depth: {bits_per_sample}")
         else:
@@ -111,8 +113,12 @@ def build_audio_mm_inputs(hf_inputs: dict[str, Any]) -> dict[str, Any]:
     """Extract standard audio tensors from HF processor outputs."""
     feature_attention_mask = hf_inputs.get("feature_attention_mask")
     audio_feature_lengths = hf_inputs.get("audio_feature_lengths")
-    if audio_feature_lengths is None and isinstance(feature_attention_mask, torch.Tensor):
-        audio_feature_lengths = torch.sum(feature_attention_mask, dim=1).to(dtype=torch.long)
+    if audio_feature_lengths is None and isinstance(
+        feature_attention_mask, torch.Tensor
+    ):
+        audio_feature_lengths = torch.sum(feature_attention_mask, dim=1).to(
+            dtype=torch.long
+        )
     return {
         "input_features": hf_inputs.get("input_features"),
         "feature_attention_mask": feature_attention_mask,

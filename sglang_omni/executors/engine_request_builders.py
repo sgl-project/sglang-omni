@@ -26,10 +26,9 @@ def _select_engine_inputs(payload: StagePayload) -> dict[str, Any] | None:
     if not isinstance(engine_inputs, dict):
         return engine_inputs if isinstance(engine_inputs, dict) else None
 
-    engine_key = (
-        payload.request.metadata.get("engine_input_key")
-        or payload.request.params.get("engine_input_key")
-    )
+    engine_key = payload.request.metadata.get(
+        "engine_input_key"
+    ) or payload.request.params.get("engine_input_key")
     if engine_key and engine_key in engine_inputs:
         selected = engine_inputs.get(engine_key)
         return selected if isinstance(selected, dict) else None

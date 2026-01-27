@@ -3,19 +3,17 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
 from typing import Any
 
 import torch
 
+from sglang_omni.engines.async_module import AsyncModuleEngine
 from sglang_omni.engines.omni import create_ar_engine
 from sglang_omni.engines.omni.runtime import ARRequestData
-from sglang_omni.engines.async_module import AsyncModuleEngine
 from sglang_omni.executors import EngineExecutor, FrontendExecutor
 from sglang_omni.models.adapter_registry import get_adapter, get_adapter_from_payload
 from sglang_omni.models.omni_adapter import FrontendOutput, OmniEvent, ThinkerOutput
 from sglang_omni.proto import OmniRequest, StagePayload
-
 
 AGGREGATE_STAGE_NAME = "mm_aggregate"
 THINKER_STAGE_NAME = "thinker"
@@ -104,13 +102,17 @@ def create_adapter_encoder_executor(
         data = _ensure_data(payload)
         encoder_outs = data.setdefault("encoder_outs", {})
         engine_outputs = data.setdefault("engine_outputs", {})
-        encoder_out = _to_cpu(result if isinstance(result, dict) else {"result": result})
+        encoder_out = _to_cpu(
+            result if isinstance(result, dict) else {"result": result}
+        )
         encoder_outs[stage_name] = encoder_out
         engine_outputs[stage_name] = encoder_out
         return payload
 
     engine = AsyncModuleEngine(model)
-    return EngineExecutor(engine=engine, request_builder=_request_builder, result_builder=_result_builder)
+    return EngineExecutor(
+        engine=engine, request_builder=_request_builder, result_builder=_result_builder
+    )
 
 
 def merge_for_adapter(payloads: dict[str, StagePayload]) -> StagePayload:
@@ -134,10 +136,15 @@ def merge_for_adapter(payloads: dict[str, StagePayload]) -> StagePayload:
             encoder_outs[stage_name] = stage_encoder_outs[stage_name]
             continue
         stage_engine_outputs = stage_data.get("engine_outputs")
-        if isinstance(stage_engine_outputs, dict) and stage_name in stage_engine_outputs:
+        if (
+            isinstance(stage_engine_outputs, dict)
+            and stage_name in stage_engine_outputs
+        ):
             encoder_outs[stage_name] = stage_engine_outputs[stage_name]
 
-    thinker_inputs = adapter.merge_for_thinker(frontend_out=frontend_out, encoder_outs=encoder_outs)
+    thinker_inputs = adapter.merge_for_thinker(
+        frontend_out=frontend_out, encoder_outs=encoder_outs
+    )
 
     data["encoder_outs"] = encoder_outs
     data["thinker_inputs"] = thinker_inputs
@@ -202,7 +209,11 @@ def create_adapter_thinker_executor(
 
         model_inputs = dict(thinker_inputs.get("model_inputs", {}))
         if not model_inputs:
-            model_inputs = {k: v for k, v in thinker_inputs.items() if k != "capture_model_output_keys"}
+            model_inputs = {
+                k: v
+                for k, v in thinker_inputs.items()
+                if k != "capture_model_output_keys"
+            }
         capture_keys = thinker_inputs.get("capture_model_output_keys", ())
         if "attention_mask" in model_inputs:
             model_inputs.pop("attention_mask", None)
@@ -211,7 +222,9 @@ def create_adapter_thinker_executor(
 
         return ARRequestData(
             input_ids=input_ids.to(dtype=torch.long),
-            attention_mask=attention_mask if isinstance(attention_mask, torch.Tensor) else None,
+            attention_mask=(
+                attention_mask if isinstance(attention_mask, torch.Tensor) else None
+            ),
             model_inputs=model_inputs,
             capture_model_output_keys=tuple(capture_keys) if capture_keys else (),
             max_new_tokens=payload.request.params.get("max_new_tokens"),
@@ -260,10 +273,20 @@ def create_adapter_thinker_executor(
         if not isinstance(frontend_out, dict):
             return {"token_id": token_id, "step": step}
 
-        thinker_out: ThinkerOutput = {"output_ids": [token_id], "step": step, "is_final": False}
-        events = list(adapter.decode_events(thinker_out=thinker_out, frontend_out=frontend_out, step=step))
+        thinker_out: ThinkerOutput = {
+            "output_ids": [token_id],
+            "step": step,
+            "is_final": False,
+        }
+        events = list(
+            adapter.decode_events(
+                thinker_out=thinker_out, frontend_out=frontend_out, step=step
+            )
+        )
         if eos_token_id is not None and token_id == eos_token_id and not events:
-            events = [OmniEvent(type="text_final", modality="text", payload={}, is_final=True)]
+            events = [
+                OmniEvent(type="text_final", modality="text", payload={}, is_final=True)
+            ]
         return {
             "events": [_event_to_dict(event) for event in events],
             "token_id": token_id,
@@ -299,14 +322,30 @@ def create_adapter_decode_executor(adapter_name: str) -> FrontendExecutor:
         if not isinstance(thinker_out, dict):
             thinker_out = data.get("engine_outputs", {}).get(THINKER_STAGE_NAME, {})
         if not isinstance(thinker_out, dict):
-            thinker_out = {"output_ids": [], "step": 0, "is_final": True, "extra_model_outputs": {}}
+            thinker_out = {
+                "output_ids": [],
+                "step": 0,
+                "is_final": True,
+                "extra_model_outputs": {},
+            }
 
         step = int(thinker_out.get("step") or len(thinker_out.get("output_ids", [])))
-        events = list(adapter.decode_events(thinker_out=thinker_out, frontend_out=frontend_out, step=step))
+        events = list(
+            adapter.decode_events(
+                thinker_out=thinker_out, frontend_out=frontend_out, step=step
+            )
+        )
         event_dicts = [_event_to_dict(event) for event in events]
 
         result: dict[str, Any] = {"events": event_dicts}
-        final_event = next((event for event in reversed(events) if event.is_final or event.type in {"text_final", "final"}), None)
+        final_event = next(
+            (
+                event
+                for event in reversed(events)
+                if event.is_final or event.type in {"text_final", "final"}
+            ),
+            None,
+        )
         if final_event is not None:
             result.update(final_event.payload)
             result.setdefault("modality", final_event.modality)
@@ -314,7 +353,11 @@ def create_adapter_decode_executor(adapter_name: str) -> FrontendExecutor:
         if "text" not in result:
             tokenizer = getattr(adapter, "tokenizer", None)
             output_ids = thinker_out.get("output_ids")
-            if callable(getattr(tokenizer, "decode", None)) and isinstance(output_ids, list) and output_ids:
+            if (
+                callable(getattr(tokenizer, "decode", None))
+                and isinstance(output_ids, list)
+                and output_ids
+            ):
                 result["text"] = tokenizer.decode(output_ids, skip_special_tokens=True)
                 result.setdefault("modality", "text")
 
@@ -358,8 +401,12 @@ def decode_next(request_id: str, output: Any) -> None:
     return None
 
 
-def build_frontend_payload(request_id: str, request: OmniRequest, *, adapter_name: str) -> StagePayload:
+def build_frontend_payload(
+    request_id: str, request: OmniRequest, *, adapter_name: str
+) -> StagePayload:
     """Helper for tests and debugging; not used by the pipeline directly."""
 
-    payload = StagePayload(request_id=request_id, request=request, data={"adapter_name": adapter_name})
+    payload = StagePayload(
+        request_id=request_id, request=request, data={"adapter_name": adapter_name}
+    )
     return payload

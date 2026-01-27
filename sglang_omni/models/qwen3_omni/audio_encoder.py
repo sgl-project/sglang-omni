@@ -10,12 +10,8 @@ from transformers.models.qwen3_omni_moe import modeling_qwen3_omni_moe as hf_mod
 from sglang_omni.executors import EngineExecutor
 from sglang_omni.models.omni_generic import create_adapter_encoder_executor
 from sglang_omni.models.qwen3_omni.adapter import AUDIO_STAGE
-from sglang_omni.models.qwen3_omni.common import (
-    instantiate_module,
-    load_thinker_config,
-)
+from sglang_omni.models.qwen3_omni.common import instantiate_module, load_thinker_config
 from sglang_omni.models.weight_loader import load_module, resolve_dtype
-
 
 AUDIO_TOWER_PREFIX = ("thinker.audio_tower.", "audio_tower.")
 AUDIO_TOWER_CLASS = hf_modeling.Qwen3OmniMoeAudioEncoder
@@ -77,7 +73,9 @@ class Qwen3OmniAudioEncoder(nn.Module):
                 .contiguous()
             )
         if audio_feature_lengths is None:
-            raise ValueError("audio_feature_lengths or feature_attention_mask is required")
+            raise ValueError(
+                "audio_feature_lengths or feature_attention_mask is required"
+            )
 
         audio_feature_lengths = audio_feature_lengths.to(self._device, dtype=torch.long)
         outputs = self.audio_tower(
@@ -101,4 +99,6 @@ def create_audio_encoder_executor(
     dtype: str | None = None,
 ) -> EngineExecutor:
     model = Qwen3OmniAudioEncoder(model_id=model_id, device=device, dtype=dtype)
-    return create_adapter_encoder_executor(adapter_name, stage_name=AUDIO_STAGE, model=model)
+    return create_adapter_encoder_executor(
+        adapter_name, stage_name=AUDIO_STAGE, model=model
+    )

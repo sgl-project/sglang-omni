@@ -13,12 +13,8 @@ from transformers.models.qwen3_omni_moe import modeling_qwen3_omni_moe as hf_mod
 
 from sglang_omni.executors import EngineExecutor
 from sglang_omni.models.omni_generic import create_adapter_thinker_executor
-from sglang_omni.models.qwen3_omni.common import (
-    instantiate_module,
-    load_thinker_config,
-)
+from sglang_omni.models.qwen3_omni.common import instantiate_module, load_thinker_config
 from sglang_omni.models.weight_loader import load_module, resolve_dtype
-
 
 TEXT_MODEL_PREFIX = ("thinker.model.", "model.")
 LM_HEAD_PREFIX = ("thinker.lm_head.", "lm_head.")
@@ -84,7 +80,11 @@ def _build_lm_head(
     thinker_cfg: Any,
     torch_dtype: torch.dtype | None,
 ) -> nn.Module:
-    lm_head = nn.Linear(thinker_cfg.text_config.hidden_size, thinker_cfg.text_config.vocab_size, bias=False)
+    lm_head = nn.Linear(
+        thinker_cfg.text_config.hidden_size,
+        thinker_cfg.text_config.vocab_size,
+        bias=False,
+    )
     if not _should_tie_embeddings(thinker_cfg):
         lm_head = load_module(
             lm_head,
@@ -97,7 +97,9 @@ def _build_lm_head(
     return lm_head
 
 
-def _build_thinker_shell(thinker_cfg: Any) -> hf_modeling.Qwen3OmniMoeThinkerForConditionalGeneration:
+def _build_thinker_shell(
+    thinker_cfg: Any,
+) -> hf_modeling.Qwen3OmniMoeThinkerForConditionalGeneration:
     with init_empty_weights():
         thinker = hf_modeling.Qwen3OmniMoeThinkerForConditionalGeneration(thinker_cfg)
     return thinker
@@ -180,7 +182,9 @@ class Qwen3OmniSplitThinker(nn.Module):
             inputs_embeds = inputs_embeds.masked_scatter(image_mask, image_embeds)
 
         if audio_embeds is not None:
-            audio_token_count = int((input_ids == self.thinker.config.audio_token_id).sum().item())
+            audio_token_count = int(
+                (input_ids == self.thinker.config.audio_token_id).sum().item()
+            )
             if audio_token_count != int(audio_embeds.shape[0]):
                 raise ValueError(
                     "Audio placeholder count mismatch: "
@@ -209,12 +213,22 @@ class Qwen3OmniSplitThinker(nn.Module):
         if inputs_embeds is not None:
             inputs_embeds = inputs_embeds.to(self._device)
 
-        if inputs_embeds is None and (image_embeds_t is not None or audio_embeds_t is not None):
-            inputs_embeds = self.thinker.get_input_embeddings()(input_ids.to(self._device))
+        if inputs_embeds is None and (
+            image_embeds_t is not None or audio_embeds_t is not None
+        ):
+            inputs_embeds = self.thinker.get_input_embeddings()(
+                input_ids.to(self._device)
+            )
 
-        if inputs_embeds is not None and (image_embeds_t is not None or audio_embeds_t is not None):
-            image_embeds_t = image_embeds_t.to(self._device) if image_embeds_t is not None else None
-            audio_embeds_t = audio_embeds_t.to(self._device) if audio_embeds_t is not None else None
+        if inputs_embeds is not None and (
+            image_embeds_t is not None or audio_embeds_t is not None
+        ):
+            image_embeds_t = (
+                image_embeds_t.to(self._device) if image_embeds_t is not None else None
+            )
+            audio_embeds_t = (
+                audio_embeds_t.to(self._device) if audio_embeds_t is not None else None
+            )
             inputs_embeds = self._merge_embeddings(
                 input_ids=input_ids.to(self._device),
                 inputs_embeds=inputs_embeds,
@@ -224,7 +238,11 @@ class Qwen3OmniSplitThinker(nn.Module):
 
         return self.thinker(
             input_ids=input_ids.to(self._device),
-            attention_mask=attention_mask.to(self._device) if isinstance(attention_mask, torch.Tensor) else None,
+            attention_mask=(
+                attention_mask.to(self._device)
+                if isinstance(attention_mask, torch.Tensor)
+                else None
+            ),
             inputs_embeds=inputs_embeds,
             **kwargs,
         )

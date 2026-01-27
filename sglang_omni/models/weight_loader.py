@@ -6,7 +6,6 @@ from __future__ import annotations
 import json
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
 
 import torch
 import torch.nn as nn
@@ -131,9 +130,7 @@ def _load_bin_single(model_path: Path, prefix: str) -> dict[str, torch.Tensor]:
         return {}
 
     all_weights = _load_bin_shard(str(single))
-    return {
-        k[len(prefix) :]: v for k, v in all_weights.items() if k.startswith(prefix)
-    }
+    return {k[len(prefix) :]: v for k, v in all_weights.items() if k.startswith(prefix)}
 
 
 def _normalize_prefixes(prefixes: str | tuple[str, ...] | list[str]) -> tuple[str, ...]:

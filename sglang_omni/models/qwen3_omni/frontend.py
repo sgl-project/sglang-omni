@@ -52,7 +52,9 @@ class _StubVideoProcessor:
         self.merge_size = merge_size
         self.temporal_patch_size = temporal_patch_size
 
-    def __call__(self, *args: Any, **kwargs: Any) -> Any:  # pragma: no cover - defensive
+    def __call__(
+        self, *args: Any, **kwargs: Any
+    ) -> Any:  # pragma: no cover - defensive
         raise NotImplementedError("Video inputs are not supported in this pipeline yet")
 
 

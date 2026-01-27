@@ -10,12 +10,8 @@ from transformers.models.qwen3_omni_moe import modeling_qwen3_omni_moe as hf_mod
 from sglang_omni.executors import EngineExecutor
 from sglang_omni.models.omni_generic import create_adapter_encoder_executor
 from sglang_omni.models.qwen3_omni.adapter import IMAGE_STAGE
-from sglang_omni.models.qwen3_omni.common import (
-    instantiate_module,
-    load_thinker_config,
-)
+from sglang_omni.models.qwen3_omni.common import instantiate_module, load_thinker_config
 from sglang_omni.models.weight_loader import load_module, resolve_dtype
-
 
 VISUAL_PREFIX = ("thinker.visual.", "visual.")
 VISUAL_CLASS = hf_modeling.Qwen3OmniMoeVisionEncoder
@@ -88,4 +84,6 @@ def create_image_encoder_executor(
     dtype: str | None = None,
 ) -> EngineExecutor:
     model = Qwen3OmniImageEncoder(model_id=model_id, device=device, dtype=dtype)
-    return create_adapter_encoder_executor(adapter_name, stage_name=IMAGE_STAGE, model=model)
+    return create_adapter_encoder_executor(
+        adapter_name, stage_name=IMAGE_STAGE, model=model
+    )

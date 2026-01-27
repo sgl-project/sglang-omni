@@ -7,7 +7,6 @@ from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any
 
-import torch
 import torch.nn as nn
 from transformers import AutoConfig
 from transformers.modeling_utils import no_init_weights
@@ -54,4 +53,3 @@ class Qwen3OmniSpec:
             image_token_id=int(thinker_cfg.image_token_id),
             spatial_merge_size=int(vision_cfg.spatial_merge_size),
         )
-

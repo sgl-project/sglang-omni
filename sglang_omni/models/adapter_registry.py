@@ -9,7 +9,6 @@ from typing import Any
 from sglang_omni.models.omni_adapter import OmniAdapter
 from sglang_omni.proto import StagePayload
 
-
 _ADAPTERS: dict[str, OmniAdapter] = {}
 _LOCK = Lock()
 
