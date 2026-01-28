@@ -82,6 +82,9 @@ def _create_encoder_executor(
             return {"_skip": True, "_result": {}}
         if inputs.get("_skip"):
             return inputs
+        # Skip if all values are None (e.g., no image provided)
+        if all(v is None for v in inputs.values()):
+            return {"_skip": True, "_result": {}}
         return inputs
 
     def _result_builder(payload: StagePayload, result: Any) -> StagePayload:
