@@ -3,10 +3,10 @@
 
 from __future__ import annotations
 
-from collections import OrderedDict
-from dataclasses import dataclass
 import hashlib
 import logging
+from collections import OrderedDict
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Iterable
 
 import torch
@@ -160,7 +160,9 @@ class EncoderModelRunner:
             while len(self._cache) > self.cache_size:
                 self._cache.popitem(last=False)
 
-    def _execute_batch(self, scheduler_output: SchedulerOutput) -> dict[str, RequestOutput]:
+    def _execute_batch(
+        self, scheduler_output: SchedulerOutput
+    ) -> dict[str, RequestOutput]:
         model_inputs = self.input_preparer.prepare(scheduler_output, self.device)
         with torch.inference_mode():
             model_output = self.model(**model_inputs)
@@ -253,4 +255,3 @@ class EncoderModelRunner:
             req_ids=req_ids,
             req_id_to_index=req_id_to_index,
         )
-
