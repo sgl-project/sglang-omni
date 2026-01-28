@@ -29,6 +29,17 @@ def _as_tensor(value: Any, dtype: torch.dtype | None = None) -> torch.Tensor | N
         return None
 
 
+def _as_tensor_list(value: Any) -> list[torch.Tensor] | None:
+    if value is None:
+        return None
+    if isinstance(value, torch.Tensor):
+        return [value]
+    if isinstance(value, (list, tuple)):
+        tensors = [v for v in value if isinstance(v, torch.Tensor)]
+        return tensors or None
+    return None
+
+
 def _non_empty(tensor: torch.Tensor | None) -> bool:
     return isinstance(tensor, torch.Tensor) and tensor.numel() > 0
 
@@ -77,6 +88,11 @@ def build_thinker_inputs(
     audio_out = encoder_outs.get(AUDIO_STAGE, {}) if isinstance(encoder_outs, dict) else {}
 
     image_embeds = _as_tensor(image_out.get("image_embeds")) if isinstance(image_out, dict) else None
+    deepstack_visual_embeds = (
+        _as_tensor_list(image_out.get("deepstack_visual_embeds"))
+        if isinstance(image_out, dict)
+        else None
+    )
     audio_embeds = _as_tensor(audio_out.get("audio_embeds")) if isinstance(audio_out, dict) else None
 
     image_grid_thw = _as_tensor(
@@ -99,6 +115,8 @@ def build_thinker_inputs(
     thinker_model_inputs: dict[str, Any] = {}
     if _non_empty(image_embeds):
         thinker_model_inputs["image_embeds"] = image_embeds
+    if deepstack_visual_embeds:
+        thinker_model_inputs["deepstack_visual_embeds"] = deepstack_visual_embeds
     if _non_empty(audio_embeds):
         thinker_model_inputs["audio_embeds"] = audio_embeds
     if _non_empty(image_grid_thw):
