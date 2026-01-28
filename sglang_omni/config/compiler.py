@@ -36,15 +36,12 @@ def compile_pipeline(config: PipelineConfig) -> tuple[Coordinator, list[Stage]]:
     )
 
     stage_endpoints = {
-        stage_cfg.name: endpoints[f"stage_{stage_cfg.name}"]
-        for stage_cfg in stages_cfg
+        stage_cfg.name: endpoints[f"stage_{stage_cfg.name}"] for stage_cfg in stages_cfg
     }
 
     stages: list[Stage] = []
     for stage_cfg in stages_cfg:
-        stage = _compile_stage(
-            stage_cfg, stage_endpoints, endpoints, name_map=name_map
-        )
+        stage = _compile_stage(stage_cfg, stage_endpoints, endpoints, name_map=name_map)
         coordinator.register_stage(stage.name, stage.control_plane.recv_endpoint)
         stages.append(stage)
 
@@ -261,7 +258,10 @@ def _apply_fusion(
             group = group_by_last[stage.name]
             first = stage_by_name[group[0]]
             executors = [
-                {"factory": stage_by_name[name].executor.factory, "args": stage_by_name[name].executor.args}
+                {
+                    "factory": stage_by_name[name].executor.factory,
+                    "args": stage_by_name[name].executor.args,
+                }
                 for name in group
             ]
             fused_stage = StageConfig(

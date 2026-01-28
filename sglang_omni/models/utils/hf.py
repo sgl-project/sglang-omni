@@ -22,7 +22,9 @@ def load_hf_config(
 ) -> Any:
     """Load the HF config, preferring the local cache."""
     try:
-        config_path = cached_file(model_id, "config.json", local_files_only=local_files_only)
+        config_path = cached_file(
+            model_id, "config.json", local_files_only=local_files_only
+        )
         cfg = AutoConfig.from_pretrained(
             str(Path(config_path).parent),
             trust_remote_code=trust_remote_code,

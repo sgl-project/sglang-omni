@@ -91,7 +91,9 @@ def _create_encoder_executor(
         data = _ensure_data(payload)
         encoder_outs = data.setdefault("encoder_outs", {})
         engine_outputs = data.setdefault("engine_outputs", {})
-        encoder_out = _to_cpu(result if isinstance(result, dict) else {"result": result})
+        encoder_out = _to_cpu(
+            result if isinstance(result, dict) else {"result": result}
+        )
         encoder_outs[stage_name] = encoder_out
         engine_outputs[stage_name] = encoder_out
         return payload
@@ -155,7 +157,9 @@ def create_thinker_executor(
         model_inputs = dict(thinker_inputs.get("model_inputs", {}))
         if not model_inputs:
             model_inputs = {
-                k: v for k, v in thinker_inputs.items() if k != "capture_model_output_keys"
+                k: v
+                for k, v in thinker_inputs.items()
+                if k != "capture_model_output_keys"
             }
         capture_keys = thinker_inputs.get("capture_model_output_keys", ())
         if "attention_mask" in model_inputs:
@@ -165,7 +169,9 @@ def create_thinker_executor(
 
         return ARRequestData(
             input_ids=input_ids.to(dtype=torch.long),
-            attention_mask=attention_mask if isinstance(attention_mask, torch.Tensor) else None,
+            attention_mask=(
+                attention_mask if isinstance(attention_mask, torch.Tensor) else None
+            ),
             model_inputs=model_inputs,
             capture_model_output_keys=tuple(capture_keys) if capture_keys else (),
             max_new_tokens=payload.request.params.get("max_new_tokens"),
@@ -225,7 +231,9 @@ def create_thinker_executor(
             )
         )
         if eos_token_id is not None and token_id == eos_token_id and not events:
-            events = [OmniEvent(type="text_final", modality="text", payload={}, is_final=True)]
+            events = [
+                OmniEvent(type="text_final", modality="text", payload={}, is_final=True)
+            ]
         return {
             "events": [_event_to_dict(event) for event in events],
             "token_id": token_id,

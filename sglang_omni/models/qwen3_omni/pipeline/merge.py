@@ -61,7 +61,10 @@ def merge_for_thinker(payloads: dict[str, StagePayload]) -> StagePayload:
             encoder_outs[stage_name] = stage_encoder_outs[stage_name]
             continue
         stage_engine_outputs = stage_data.get("engine_outputs")
-        if isinstance(stage_engine_outputs, dict) and stage_name in stage_engine_outputs:
+        if (
+            isinstance(stage_engine_outputs, dict)
+            and stage_name in stage_engine_outputs
+        ):
             encoder_outs[stage_name] = stage_engine_outputs[stage_name]
 
     thinker_inputs = build_thinker_inputs(data, encoder_outs)
@@ -84,21 +87,36 @@ def build_thinker_inputs(
     mm_image = mm_inputs.get("image", {}) if isinstance(mm_inputs, dict) else {}
     mm_audio = mm_inputs.get("audio", {}) if isinstance(mm_inputs, dict) else {}
 
-    image_out = encoder_outs.get(IMAGE_STAGE, {}) if isinstance(encoder_outs, dict) else {}
-    audio_out = encoder_outs.get(AUDIO_STAGE, {}) if isinstance(encoder_outs, dict) else {}
+    image_out = (
+        encoder_outs.get(IMAGE_STAGE, {}) if isinstance(encoder_outs, dict) else {}
+    )
+    audio_out = (
+        encoder_outs.get(AUDIO_STAGE, {}) if isinstance(encoder_outs, dict) else {}
+    )
 
-    image_embeds = _as_tensor(image_out.get("image_embeds")) if isinstance(image_out, dict) else None
+    image_embeds = (
+        _as_tensor(image_out.get("image_embeds"))
+        if isinstance(image_out, dict)
+        else None
+    )
     deepstack_visual_embeds = (
         _as_tensor_list(image_out.get("deepstack_visual_embeds"))
         if isinstance(image_out, dict)
         else None
     )
-    audio_embeds = _as_tensor(audio_out.get("audio_embeds")) if isinstance(audio_out, dict) else None
+    audio_embeds = (
+        _as_tensor(audio_out.get("audio_embeds"))
+        if isinstance(audio_out, dict)
+        else None
+    )
 
     image_grid_thw = _as_tensor(
-        image_out.get("image_grid_thw")
-        if isinstance(image_out, dict) and image_out.get("image_grid_thw") is not None
-        else mm_image.get("image_grid_thw"),
+        (
+            image_out.get("image_grid_thw")
+            if isinstance(image_out, dict)
+            and image_out.get("image_grid_thw") is not None
+            else mm_image.get("image_grid_thw")
+        ),
         dtype=torch.long,
     )
     feature_attention_mask = _as_tensor(
@@ -106,9 +124,12 @@ def build_thinker_inputs(
         dtype=torch.long,
     )
     audio_feature_lengths = _as_tensor(
-        audio_out.get("audio_feature_lengths")
-        if isinstance(audio_out, dict) and audio_out.get("audio_feature_lengths") is not None
-        else mm_audio.get("audio_feature_lengths"),
+        (
+            audio_out.get("audio_feature_lengths")
+            if isinstance(audio_out, dict)
+            and audio_out.get("audio_feature_lengths") is not None
+            else mm_audio.get("audio_feature_lengths")
+        ),
         dtype=torch.long,
     )
 
@@ -137,19 +158,29 @@ def _prune_frontend_for_thinker(
     mm_image = mm_inputs.get("image", {}) if isinstance(mm_inputs, dict) else {}
     mm_audio = mm_inputs.get("audio", {}) if isinstance(mm_inputs, dict) else {}
 
-    image_out = encoder_outs.get(IMAGE_STAGE, {}) if isinstance(encoder_outs, dict) else {}
-    audio_out = encoder_outs.get(AUDIO_STAGE, {}) if isinstance(encoder_outs, dict) else {}
+    image_out = (
+        encoder_outs.get(IMAGE_STAGE, {}) if isinstance(encoder_outs, dict) else {}
+    )
+    audio_out = (
+        encoder_outs.get(AUDIO_STAGE, {}) if isinstance(encoder_outs, dict) else {}
+    )
 
     image_grid_thw = _as_tensor(
-        image_out.get("image_grid_thw")
-        if isinstance(image_out, dict) and image_out.get("image_grid_thw") is not None
-        else mm_image.get("image_grid_thw"),
+        (
+            image_out.get("image_grid_thw")
+            if isinstance(image_out, dict)
+            and image_out.get("image_grid_thw") is not None
+            else mm_image.get("image_grid_thw")
+        ),
         dtype=torch.long,
     )
     audio_feature_lengths = _as_tensor(
-        audio_out.get("audio_feature_lengths")
-        if isinstance(audio_out, dict) and audio_out.get("audio_feature_lengths") is not None
-        else mm_audio.get("audio_feature_lengths"),
+        (
+            audio_out.get("audio_feature_lengths")
+            if isinstance(audio_out, dict)
+            and audio_out.get("audio_feature_lengths") is not None
+            else mm_audio.get("audio_feature_lengths")
+        ),
         dtype=torch.long,
     )
 
@@ -186,12 +217,26 @@ def decode_events(
         text = tokenizer.decode(tokens, skip_special_tokens=True) if tokens else ""
         stream_state["token_ids"] = tokens
         stream_state["text"] = text
-        return [OmniEvent(type="text_final", modality="text", payload={"text": text}, is_final=True)]
+        return [
+            OmniEvent(
+                type="text_final",
+                modality="text",
+                payload={"text": text},
+                is_final=True,
+            )
+        ]
 
     token_id = int(output_ids[-1])
     if eos_token_id is not None and token_id == int(eos_token_id):
         text = str(stream_state.get("text", ""))
-        return [OmniEvent(type="text_final", modality="text", payload={"text": text}, is_final=True)]
+        return [
+            OmniEvent(
+                type="text_final",
+                modality="text",
+                payload={"text": text},
+                is_final=True,
+            )
+        ]
 
     token_ids.append(token_id)
     decoded = tokenizer.decode(token_ids, skip_special_tokens=True)
@@ -200,4 +245,8 @@ def decode_events(
     else:
         delta = decoded
     stream_state["text"] = decoded
-    return [OmniEvent(type="text_delta", modality="text", payload={"text": delta}, is_final=False)]
+    return [
+        OmniEvent(
+            type="text_delta", modality="text", payload={"text": delta}, is_final=False
+        )
+    ]
