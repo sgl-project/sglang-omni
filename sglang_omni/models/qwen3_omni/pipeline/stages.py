@@ -40,16 +40,6 @@ def _event_to_dict(event: OmniEvent) -> dict[str, Any]:
     }
 
 
-def _to_cpu(value: Any) -> Any:
-    if isinstance(value, torch.Tensor):
-        return value.detach().cpu()
-    if isinstance(value, dict):
-        return {k: _to_cpu(v) for k, v in value.items()}
-    if isinstance(value, (list, tuple)):
-        return type(value)(_to_cpu(v) for v in value)
-    return value
-
-
 def create_frontend_executor(model_id: str) -> FrontendExecutor:
     frontend = Qwen3OmniFrontend(model_id=model_id)
 
@@ -98,15 +88,13 @@ def _create_encoder_executor(
         engine_outputs = data.setdefault("engine_outputs", {})
         if isinstance(result, EncoderRequestData):
             if result.output_dict is not None:
-                encoder_out = _to_cpu(result.output_dict)
+                encoder_out = result.output_dict
             elif result.embeddings is not None:
-                encoder_out = _to_cpu(result.embeddings)
+                encoder_out = result.embeddings
             else:
                 encoder_out = {}
         else:
-            encoder_out = _to_cpu(
-                result if isinstance(result, dict) else {"result": result}
-            )
+            encoder_out = result if isinstance(result, dict) else {"result": result}
         encoder_outs[stage_name] = encoder_out
         engine_outputs[stage_name] = encoder_out
         return payload
