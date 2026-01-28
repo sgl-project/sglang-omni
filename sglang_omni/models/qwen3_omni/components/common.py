@@ -4,34 +4,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from functools import lru_cache
 from typing import Any
 
-import torch.nn as nn
-from transformers import AutoConfig
-from transformers.modeling_utils import no_init_weights
-from transformers.utils.hub import cached_file
+from sglang_omni.models.utils.hf import load_hf_config
 
 
-@lru_cache(maxsize=4)
 def load_thinker_config(model_id: str) -> Any:
-    try:
-        config_path = cached_file(model_id, "config.json", local_files_only=True)
-        cfg = AutoConfig.from_pretrained(
-            str(config_path.parent),
-            trust_remote_code=True,
-            local_files_only=True,
-        )
-    except Exception:
-        cfg = AutoConfig.from_pretrained(model_id, trust_remote_code=True)
+    cfg = load_hf_config(model_id, trust_remote_code=True, local_files_only=True)
     return getattr(cfg, "thinker_config", cfg)
-
-
-def instantiate_module(module_cls: type[nn.Module], config: Any) -> nn.Module:
-    with no_init_weights():
-        if hasattr(module_cls, "_from_config"):
-            return module_cls._from_config(config)
-        return module_cls(config)
 
 
 @dataclass(frozen=True)

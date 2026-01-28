@@ -14,7 +14,6 @@ from transformers.models.qwen3_omni_moe.processing_qwen3_omni_moe import (
 )
 from transformers.utils.hub import cached_file
 
-from sglang_omni.executors import FrontendExecutor
 from sglang_omni.frontends import (
     build_audio_mm_inputs,
     build_image_mm_inputs,
@@ -23,11 +22,7 @@ from sglang_omni.frontends import (
     ensure_image_list,
     normalize_messages,
 )
-from sglang_omni.models.qwen3_omni.executors import create_adapter_frontend_executor
 from sglang_omni.proto import StagePayload
-
-IMAGE_PLACEHOLDER = "<|vision_start|><|image_pad|><|vision_end|>"
-AUDIO_PLACEHOLDER = "<|audio_start|><|audio_pad|><|audio_end|>"
 
 
 def _resolve_local_model_dir(model_id: str) -> str:
@@ -199,14 +194,10 @@ class Qwen3OmniFrontend:
                 "input_ids": input_ids,
                 "attention_mask": attention_mask,
             },
-            "engine_inputs": {
+            "encoder_inputs": {
                 "image_encoder": mm_inputs["image"],
                 "audio_encoder": mm_inputs["audio"],
             },
+            "stream_state": {"token_ids": [], "text": ""},
         }
         return payload
-
-
-def create_frontend_executor(model_id: str, *, adapter_name: str) -> FrontendExecutor:
-    del model_id
-    return create_adapter_frontend_executor(adapter_name)

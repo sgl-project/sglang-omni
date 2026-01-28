@@ -10,8 +10,14 @@ from sglang_omni.config import (
     RelayConfig,
     StageConfig,
 )
-from sglang_omni.models.qwen3_omni.registry import register_adapter
-from sglang_omni.models.qwen3_omni.adapter import Qwen3OmniAdapter
+from sglang_omni.models.qwen3_omni.pipeline.next_stage import (
+    AGGREGATE_STAGE,
+    AUDIO_STAGE,
+    DECODE_STAGE,
+    FRONTEND_STAGE,
+    IMAGE_STAGE,
+    THINKER_STAGE,
+)
 
 
 def create_text_first_pipeline_config(
@@ -27,90 +33,84 @@ def create_text_first_pipeline_config(
     relay_type: str = "shm",
     fused_stages: list[list[str]] | None = None,
 ) -> PipelineConfig:
-    adapter = register_adapter(Qwen3OmniAdapter(model_id=model_id))
-    adapter_name = adapter.name
-
     def _relay(device: str) -> RelayConfig:
         return RelayConfig(type=relay_type, device=device)
 
     return PipelineConfig(
         name=name,
-        entry_stage="frontend",
+        entry_stage=FRONTEND_STAGE,
         fused_stages=fused_stages or [],
         stages=[
             StageConfig(
-                name="frontend",
+                name=FRONTEND_STAGE,
                 executor=ExecutorConfig(
-                    factory="sglang_omni.models.qwen3_omni.frontend.create_frontend_executor",
-                    args={"model_id": model_id, "adapter_name": adapter_name},
+                    factory="sglang_omni.models.qwen3_omni.pipeline.stages.create_frontend_executor",
+                    args={"model_id": model_id},
                 ),
-                get_next="sglang_omni.models.qwen3_omni.executors.frontend_next",
+                get_next="sglang_omni.models.qwen3_omni.pipeline.next_stage.frontend_next",
                 relay=_relay(frontend_device),
             ),
             StageConfig(
-                name="image_encoder",
+                name=IMAGE_STAGE,
                 executor=ExecutorConfig(
-                    factory="sglang_omni.models.qwen3_omni.image_encoder.create_image_encoder_executor",
+                    factory="sglang_omni.models.qwen3_omni.pipeline.stages.create_image_encoder_executor",
                     args={
                         "model_id": model_id,
-                        "adapter_name": adapter_name,
                         "device": image_device,
                         "dtype": dtype,
                     },
                 ),
-                get_next="sglang_omni.models.qwen3_omni.executors.encoder_next",
+                get_next="sglang_omni.models.qwen3_omni.pipeline.next_stage.encoder_next",
                 relay=_relay(image_device),
             ),
             StageConfig(
-                name="audio_encoder",
+                name=AUDIO_STAGE,
                 executor=ExecutorConfig(
-                    factory="sglang_omni.models.qwen3_omni.audio_encoder.create_audio_encoder_executor",
+                    factory="sglang_omni.models.qwen3_omni.pipeline.stages.create_audio_encoder_executor",
                     args={
                         "model_id": model_id,
-                        "adapter_name": adapter_name,
                         "device": audio_device,
                         "dtype": dtype,
                     },
                 ),
-                get_next="sglang_omni.models.qwen3_omni.executors.encoder_next",
+                get_next="sglang_omni.models.qwen3_omni.pipeline.next_stage.encoder_next",
                 relay=_relay(audio_device),
             ),
             StageConfig(
-                name="mm_aggregate",
+                name=AGGREGATE_STAGE,
                 executor=ExecutorConfig(
-                    factory="sglang_omni.models.qwen3_omni.adapter.create_aggregate_executor",
-                    args={"adapter_name": adapter_name},
+                    factory="sglang_omni.models.qwen3_omni.pipeline.stages.create_aggregate_executor",
+                    args={},
                 ),
-                get_next="sglang_omni.models.qwen3_omni.executors.aggregate_next",
+                get_next="sglang_omni.models.qwen3_omni.pipeline.next_stage.aggregate_next",
                 input_handler=InputHandlerConfig(
                     type="aggregated",
-                    sources=["frontend", "image_encoder", "audio_encoder"],
-                    merge_fn="sglang_omni.models.qwen3_omni.executors.merge_for_adapter",
+                    sources=[FRONTEND_STAGE, IMAGE_STAGE, AUDIO_STAGE],
+                    merge_fn="sglang_omni.models.qwen3_omni.pipeline.merge.merge_for_thinker",
                 ),
                 relay=_relay("cpu"),
             ),
             StageConfig(
-                name="thinker",
+                name=THINKER_STAGE,
                 executor=ExecutorConfig(
-                    factory="sglang_omni.models.qwen3_omni.thinker.create_thinker_executor",
+                    factory="sglang_omni.models.qwen3_omni.pipeline.stages.create_thinker_executor",
                     args={
                         "model_id": model_id,
-                        "adapter_name": adapter_name,
                         "device": thinker_device,
                         "dtype": dtype,
                         "max_seq_len": thinker_max_seq_len,
                     },
                 ),
-                get_next="sglang_omni.models.qwen3_omni.executors.thinker_next",
+                get_next="sglang_omni.models.qwen3_omni.pipeline.next_stage.thinker_next",
                 relay=_relay(thinker_device),
             ),
             StageConfig(
-                name="decode",
+                name=DECODE_STAGE,
                 executor=ExecutorConfig(
-                    factory="sglang_omni.models.qwen3_omni.adapter.create_decode_executor",
-                    args={"model_id": model_id, "adapter_name": adapter_name},
+                    factory="sglang_omni.models.qwen3_omni.pipeline.stages.create_decode_executor",
+                    args={"model_id": model_id},
                 ),
-                get_next="sglang_omni.models.qwen3_omni.executors.decode_next",
+                get_next="sglang_omni.models.qwen3_omni.pipeline.next_stage.decode_next",
                 relay=_relay("cpu"),
             ),
         ],

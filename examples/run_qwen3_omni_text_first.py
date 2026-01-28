@@ -22,7 +22,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--prompt", type=str, default="Describe this input.")
     parser.add_argument("--dtype", type=str, default="bfloat16")
     parser.add_argument("--thinker-max-seq-len", type=int, default=8192)
-    parser.add_argument("--max-new-tokens", type=int, default=128)
+    parser.add_argument("--max-new-tokens", type=int, default=1024)
     parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument("--frontend-device", type=str, default="cpu")
     parser.add_argument("--image-device", type=str, default="cuda:3")

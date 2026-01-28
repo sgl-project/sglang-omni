@@ -7,10 +7,8 @@ import torch
 import torch.nn as nn
 from transformers.models.qwen3_omni_moe import modeling_qwen3_omni_moe as hf_modeling
 
-from sglang_omni.executors import EngineExecutor
-from sglang_omni.models.qwen3_omni.executors import create_adapter_encoder_executor
-from sglang_omni.models.qwen3_omni.adapter import AUDIO_STAGE
-from sglang_omni.models.qwen3_omni.common import instantiate_module, load_thinker_config
+from sglang_omni.models.qwen3_omni.components.common import load_thinker_config
+from sglang_omni.models.utils.hf import instantiate_module
 from sglang_omni.models.weight_loader import load_module, resolve_dtype
 
 AUDIO_TOWER_PREFIX = ("thinker.audio_tower.", "audio_tower.")
@@ -89,16 +87,3 @@ class Qwen3OmniAudioEncoder(nn.Module):
             "audio_feature_lengths": audio_feature_lengths,
             "audio_output_lengths": audio_output_lengths,
         }
-
-
-def create_audio_encoder_executor(
-    model_id: str,
-    *,
-    adapter_name: str,
-    device: str = "cuda",
-    dtype: str | None = None,
-) -> EngineExecutor:
-    model = Qwen3OmniAudioEncoder(model_id=model_id, device=device, dtype=dtype)
-    return create_adapter_encoder_executor(
-        adapter_name, stage_name=AUDIO_STAGE, model=model
-    )

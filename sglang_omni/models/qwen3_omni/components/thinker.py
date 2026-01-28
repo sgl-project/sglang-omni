@@ -8,12 +8,10 @@ from typing import Any
 import torch
 import torch.nn as nn
 from accelerate import init_empty_weights
-from transformers import AutoTokenizer
 from transformers.models.qwen3_omni_moe import modeling_qwen3_omni_moe as hf_modeling
 
-from sglang_omni.executors import EngineExecutor
-from sglang_omni.models.qwen3_omni.executors import create_adapter_thinker_executor
-from sglang_omni.models.qwen3_omni.common import instantiate_module, load_thinker_config
+from sglang_omni.models.qwen3_omni.components.common import load_thinker_config
+from sglang_omni.models.utils.hf import instantiate_module
 from sglang_omni.models.weight_loader import load_module, resolve_dtype
 
 TEXT_MODEL_PREFIX = ("thinker.model.", "model.")
@@ -246,22 +244,3 @@ class Qwen3OmniSplitThinker(nn.Module):
             inputs_embeds=inputs_embeds,
             **kwargs,
         )
-
-
-def create_thinker_executor(
-    model_id: str,
-    *,
-    adapter_name: str,
-    device: str = "cuda",
-    dtype: str | None = None,
-    max_seq_len: int = 8192,
-) -> EngineExecutor:
-    model = Qwen3OmniSplitThinker(model_id=model_id, device=device, dtype=dtype)
-    tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
-    return create_adapter_thinker_executor(
-        adapter_name,
-        model=model,
-        tokenizer=tokenizer,
-        max_seq_len=max_seq_len,
-        device=device,
-    )
