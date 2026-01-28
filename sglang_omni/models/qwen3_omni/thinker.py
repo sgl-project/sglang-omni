@@ -12,7 +12,7 @@ from transformers import AutoTokenizer
 from transformers.models.qwen3_omni_moe import modeling_qwen3_omni_moe as hf_modeling
 
 from sglang_omni.executors import EngineExecutor
-from sglang_omni.models.omni_generic import create_adapter_thinker_executor
+from sglang_omni.models.qwen3_omni.executors import create_adapter_thinker_executor
 from sglang_omni.models.qwen3_omni.common import instantiate_module, load_thinker_config
 from sglang_omni.models.weight_loader import load_module, resolve_dtype
 

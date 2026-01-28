@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Generic glue for omni adapters and staged pipelines."""
+"""Qwen3-Omni stage glue for staged pipelines."""
 
 from __future__ import annotations
 
@@ -11,8 +11,11 @@ from sglang_omni.engines.async_module import AsyncModuleEngine
 from sglang_omni.engines.omni import create_ar_engine
 from sglang_omni.engines.omni.runtime import ARRequestData
 from sglang_omni.executors import EngineExecutor, FrontendExecutor
-from sglang_omni.models.adapter_registry import get_adapter, get_adapter_from_payload
-from sglang_omni.models.omni_adapter import FrontendOutput, OmniEvent, ThinkerOutput
+from sglang_omni.models.qwen3_omni.registry import (
+    get_adapter,
+    get_adapter_from_payload,
+)
+from sglang_omni.models.qwen3_omni.types import FrontendOutput, OmniEvent, ThinkerOutput
 from sglang_omni.proto import OmniRequest, StagePayload
 
 AGGREGATE_STAGE_NAME = "mm_aggregate"
@@ -102,9 +105,7 @@ def create_adapter_encoder_executor(
         data = _ensure_data(payload)
         encoder_outs = data.setdefault("encoder_outs", {})
         engine_outputs = data.setdefault("engine_outputs", {})
-        encoder_out = _to_cpu(
-            result if isinstance(result, dict) else {"result": result}
-        )
+        encoder_out = _to_cpu(result if isinstance(result, dict) else {"result": result})
         encoder_outs[stage_name] = encoder_out
         engine_outputs[stage_name] = encoder_out
         return payload
@@ -136,10 +137,7 @@ def merge_for_adapter(payloads: dict[str, StagePayload]) -> StagePayload:
             encoder_outs[stage_name] = stage_encoder_outs[stage_name]
             continue
         stage_engine_outputs = stage_data.get("engine_outputs")
-        if (
-            isinstance(stage_engine_outputs, dict)
-            and stage_name in stage_engine_outputs
-        ):
+        if isinstance(stage_engine_outputs, dict) and stage_name in stage_engine_outputs:
             encoder_outs[stage_name] = stage_engine_outputs[stage_name]
 
     thinker_inputs = adapter.merge_for_thinker(
@@ -210,9 +208,7 @@ def create_adapter_thinker_executor(
         model_inputs = dict(thinker_inputs.get("model_inputs", {}))
         if not model_inputs:
             model_inputs = {
-                k: v
-                for k, v in thinker_inputs.items()
-                if k != "capture_model_output_keys"
+                k: v for k, v in thinker_inputs.items() if k != "capture_model_output_keys"
             }
         capture_keys = thinker_inputs.get("capture_model_output_keys", ())
         if "attention_mask" in model_inputs:

@@ -8,15 +8,15 @@ from typing import Any, Iterable
 import torch
 
 from sglang_omni.executors import FrontendExecutor
-from sglang_omni.models.omni_adapter import (
+from sglang_omni.models.qwen3_omni.executors import (
+    create_adapter_aggregate_executor,
+    create_adapter_decode_executor,
+)
+from sglang_omni.models.qwen3_omni.types import (
     FrontendOutput,
     OmniAdapter,
     OmniEvent,
     ThinkerOutput,
-)
-from sglang_omni.models.omni_generic import (
-    create_adapter_aggregate_executor,
-    create_adapter_decode_executor,
 )
 from sglang_omni.models.qwen3_omni.frontend import Qwen3OmniFrontend
 from sglang_omni.proto import OmniRequest, StagePayload

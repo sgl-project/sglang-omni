@@ -23,7 +23,7 @@ from sglang_omni.frontends import (
     ensure_image_list,
     normalize_messages,
 )
-from sglang_omni.models.omni_generic import create_adapter_frontend_executor
+from sglang_omni.models.qwen3_omni.executors import create_adapter_frontend_executor
 from sglang_omni.proto import StagePayload
 
 IMAGE_PLACEHOLDER = "<|vision_start|><|image_pad|><|vision_end|>"

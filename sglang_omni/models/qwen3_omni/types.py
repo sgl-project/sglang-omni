@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Adapter interface for staged omni pipelines."""
+"""Qwen3-Omni adapter types for staged pipelines."""
 
 from __future__ import annotations
 

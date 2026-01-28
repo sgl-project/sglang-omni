@@ -71,6 +71,7 @@ class PipelineConfig(BaseModel):
     name: str
     entry_stage: str
     stages: list[StageConfig]
+    fused_stages: list[list[str]] = Field(default_factory=list)
     endpoints: EndpointsConfig = Field(default_factory=EndpointsConfig)
     completion_endpoint: str | None = None
     abort_endpoint: str | None = None

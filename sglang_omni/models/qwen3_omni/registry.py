@@ -1,19 +1,25 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Process-local registry for omni adapters."""
+"""Process-local registry for Qwen3-Omni adapters."""
 
 from __future__ import annotations
 
 from threading import Lock
-from typing import Any
+from typing import Any, Protocol
 
-from sglang_omni.models.omni_adapter import OmniAdapter
 from sglang_omni.proto import StagePayload
 
-_ADAPTERS: dict[str, OmniAdapter] = {}
+
+class Adapter(Protocol):
+    """Minimal adapter protocol for registry typing."""
+
+    name: str
+
+
+_ADAPTERS: dict[str, Adapter] = {}
 _LOCK = Lock()
 
 
-def register_adapter(adapter: OmniAdapter) -> OmniAdapter:
+def register_adapter(adapter: Adapter) -> Adapter:
     """Register an adapter once per process."""
 
     with _LOCK:
@@ -24,7 +30,7 @@ def register_adapter(adapter: OmniAdapter) -> OmniAdapter:
         return adapter
 
 
-def get_adapter(name: str) -> OmniAdapter:
+def get_adapter(name: str) -> Adapter:
     """Fetch a previously registered adapter."""
 
     with _LOCK:
@@ -34,7 +40,7 @@ def get_adapter(name: str) -> OmniAdapter:
     return adapter
 
 
-def get_adapter_from_payload(payload: StagePayload) -> OmniAdapter:
+def get_adapter_from_payload(payload: StagePayload) -> Adapter:
     """Resolve adapter using payload metadata."""
 
     data = payload.data if isinstance(payload.data, dict) else {}
