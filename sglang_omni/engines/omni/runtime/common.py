@@ -29,7 +29,17 @@ class SinglePassIterationController:
     """Encoder-style: always done in one pass."""
 
     def update_request(self, request: SchedulerRequest, output: RequestOutput) -> None:
-        request.data.embeddings = output.data
+        if isinstance(output.data, dict) and hasattr(request.data, "output_dict"):
+            request.data.output_dict = output.data
+            return
+        if hasattr(request.data, "embeddings"):
+            request.data.embeddings = output.data
+            return
+        if isinstance(request.data, dict):
+            if isinstance(output.data, dict):
+                request.data["output_dict"] = output.data
+            else:
+                request.data["embeddings"] = output.data
 
     def is_finished(self, request: SchedulerRequest, output: RequestOutput) -> bool:
         return True

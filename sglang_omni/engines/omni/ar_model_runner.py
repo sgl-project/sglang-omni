@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Generic ModelRunner - stateless model executor."""
+"""AR ModelRunner - stateless model executor for autoregressive models."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ if TYPE_CHECKING:
     from .runtime.interfaces import InputPreparer, OutputProcessor
 
 
-class ModelRunner:
+class ARModelRunner:
     """Generic model executor.
 
     Responsibilities:

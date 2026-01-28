@@ -7,8 +7,9 @@ from typing import Any
 
 import torch
 
+from .ar_model_runner import ARModelRunner
+from .encoder_model_runner import EncoderModelRunner
 from .engine import OmniEngine
-from .model_runner import ModelRunner
 from .runtime.ar import (
     ARBatchPlanner,
     ARInputPreparer,
@@ -34,6 +35,8 @@ def create_encoder_engine(
     max_batch_size: int = 32,
     pooling: str = "last",
     device: str = "cuda",
+    use_cache: bool = False,
+    cache_size: int | None = None,
 ) -> OmniEngine:
     """Create an encoder engine.
 
@@ -43,6 +46,8 @@ def create_encoder_engine(
         max_batch_size: Maximum batch size for scheduling
         pooling: Pooling strategy - "last", "mean", or "cls"
         device: Device to run on
+        use_cache: Enable encoder output cache
+        cache_size: Max cache entries (None for unbounded)
 
     Returns:
         OmniEngine configured for encoder models
@@ -75,11 +80,13 @@ def create_encoder_engine(
     )
 
     # Create model runner
-    model_runner = ModelRunner(
+    model_runner = EncoderModelRunner(
         model=model,
         input_preparer=EncoderInputPreparer(pad_token_id=pad_token_id),
         output_processor=EncoderOutputProcessor(pooling=pooling),
         device=device,
+        use_cache=use_cache,
+        cache_size=cache_size,
     )
 
     return OmniEngine(scheduler=scheduler, model_runner=model_runner)
@@ -148,7 +155,7 @@ def create_ar_engine(
     )
 
     # Create model runner
-    model_runner = ModelRunner(
+    model_runner = ARModelRunner(
         model=model,
         input_preparer=ARInputPreparer(),
         output_processor=AROutputProcessor(),

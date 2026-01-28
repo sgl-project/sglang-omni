@@ -8,9 +8,8 @@ from typing import Any
 import torch
 from transformers import AutoTokenizer
 
-from sglang_omni.engines.async_module import AsyncModuleEngine
-from sglang_omni.engines.omni import create_ar_engine
-from sglang_omni.engines.omni.runtime import ARRequestData
+from sglang_omni.engines.omni import create_ar_engine, create_encoder_engine
+from sglang_omni.engines.omni.runtime import ARRequestData, EncoderRequestData
 from sglang_omni.executors import EngineExecutor, FrontendExecutor
 from sglang_omni.models.qwen3_omni.components.audio_encoder import Qwen3OmniAudioEncoder
 from sglang_omni.models.qwen3_omni.components.frontend import Qwen3OmniFrontend
@@ -71,34 +70,48 @@ def _create_encoder_executor(
     *,
     stage_name: str,
     model: torch.nn.Module,
+    device: str,
 ) -> EngineExecutor:
-    def _request_builder(payload: StagePayload) -> dict[str, Any]:
+    def _request_builder(payload: StagePayload) -> EncoderRequestData:
         data = _ensure_data(payload)
         encoder_inputs = data.get("encoder_inputs")
         if not isinstance(encoder_inputs, dict):
-            return {"_skip": True, "_result": {}}
+            return EncoderRequestData(input_dict={"_skip": True, "_result": {}})
         inputs = encoder_inputs.get(stage_name)
         if not isinstance(inputs, dict) or not inputs:
-            return {"_skip": True, "_result": {}}
+            return EncoderRequestData(input_dict={"_skip": True, "_result": {}})
         if inputs.get("_skip"):
-            return inputs
-        # Skip if all values are None (e.g., no image provided)
-        if all(v is None for v in inputs.values()):
-            return {"_skip": True, "_result": {}}
-        return inputs
+            skip_result = inputs.get("_result")
+            return EncoderRequestData(
+                input_dict=inputs,
+                output_dict=skip_result if isinstance(skip_result, dict) else {},
+            )
+        cache_key = inputs.get("cache_key")
+        return EncoderRequestData(
+            input_dict=inputs,
+            cache_key=str(cache_key) if cache_key is not None else None,
+        )
 
     def _result_builder(payload: StagePayload, result: Any) -> StagePayload:
         data = _ensure_data(payload)
         encoder_outs = data.setdefault("encoder_outs", {})
         engine_outputs = data.setdefault("engine_outputs", {})
-        encoder_out = _to_cpu(
-            result if isinstance(result, dict) else {"result": result}
-        )
+        if isinstance(result, EncoderRequestData):
+            if result.output_dict is not None:
+                encoder_out = _to_cpu(result.output_dict)
+            elif result.embeddings is not None:
+                encoder_out = _to_cpu(result.embeddings)
+            else:
+                encoder_out = {}
+        else:
+            encoder_out = _to_cpu(
+                result if isinstance(result, dict) else {"result": result}
+            )
         encoder_outs[stage_name] = encoder_out
         engine_outputs[stage_name] = encoder_out
         return payload
 
-    engine = AsyncModuleEngine(model)
+    engine = create_encoder_engine(model, device=device)
     return EngineExecutor(
         engine=engine, request_builder=_request_builder, result_builder=_result_builder
     )
@@ -111,7 +124,7 @@ def create_image_encoder_executor(
     dtype: str | None = None,
 ) -> EngineExecutor:
     model = Qwen3OmniImageEncoder(model_id=model_id, device=device, dtype=dtype)
-    return _create_encoder_executor(stage_name=IMAGE_STAGE, model=model)
+    return _create_encoder_executor(stage_name=IMAGE_STAGE, model=model, device=device)
 
 
 def create_audio_encoder_executor(
@@ -121,7 +134,7 @@ def create_audio_encoder_executor(
     dtype: str | None = None,
 ) -> EngineExecutor:
     model = Qwen3OmniAudioEncoder(model_id=model_id, device=device, dtype=dtype)
-    return _create_encoder_executor(stage_name=AUDIO_STAGE, model=model)
+    return _create_encoder_executor(stage_name=AUDIO_STAGE, model=model, device=device)
 
 
 def create_thinker_executor(

@@ -5,10 +5,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any
+from typing import Any, Union
 
 from ..base import Engine
-from .model_runner import ModelRunner
+from .ar_model_runner import ARModelRunner
+from .encoder_model_runner import EncoderModelRunner
 from .scheduler import Scheduler
 
 logger = logging.getLogger(__name__)
@@ -19,7 +20,7 @@ class OmniEngine(Engine):
 
     Combines:
     - Scheduler (owns state, makes scheduling decisions)
-    - ModelRunner (stateless executor)
+    - ModelRunner (ARModelRunner or EncoderModelRunner, stateless executor)
 
     Execution model:
     - Busy loop: schedule() -> execute() -> update()
@@ -29,7 +30,7 @@ class OmniEngine(Engine):
     def __init__(
         self,
         scheduler: Scheduler,
-        model_runner: ModelRunner,
+        model_runner: Union[ARModelRunner, EncoderModelRunner],
     ):
         self.scheduler = scheduler
         self.model_runner = model_runner
