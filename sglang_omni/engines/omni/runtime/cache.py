@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-import hashlib
 from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any
 
 import torch
+import xxhash
 
 from ..types import RequestOutput, SchedulerRequest
 
@@ -21,7 +21,7 @@ def _hash_tensor(value: torch.Tensor) -> str:
     cpu = value.detach().contiguous().cpu()
     payload = cpu.numpy().tobytes()
     meta = f"{cpu.dtype}|{tuple(cpu.shape)}".encode("utf-8")
-    return hashlib.sha256(meta + payload).hexdigest()
+    return xxhash.xxh3_64(b"tensor|" + meta + b"|" + payload).hexdigest()
 
 
 def _hash_value(value: Any) -> str | None:
@@ -33,7 +33,7 @@ def _hash_value(value: Any) -> str | None:
         parts = [_hash_value(v) for v in value]
         if any(p is None for p in parts):
             return None
-        return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()
+        return xxhash.xxh3_64(f"list|{'|'.join(parts)}".encode("utf-8")).hexdigest()
     if isinstance(value, dict):
         items = []
         for key in sorted(value.keys()):
@@ -41,9 +41,9 @@ def _hash_value(value: Any) -> str | None:
             if hashed is None:
                 return None
             items.append(f"{key}={hashed}")
-        return hashlib.sha256("|".join(items).encode("utf-8")).hexdigest()
+        return xxhash.xxh3_64(f"dict|{'|'.join(items)}".encode("utf-8")).hexdigest()
     try:
-        return hashlib.sha256(str(value).encode("utf-8")).hexdigest()
+        return xxhash.xxh3_64(f"scalar|{value}".encode("utf-8")).hexdigest()
     except Exception:
         return None
 
@@ -65,20 +65,17 @@ def _get_cache_key(request: SchedulerRequest) -> str | None:
     data = getattr(request, "data", None)
     if data is None:
         return None
+    # Priority 1: explicit cache_key (set by frontend)
     cache_key = getattr(data, "cache_key", None)
     if cache_key is None and isinstance(data, dict):
         cache_key = data.get("cache_key")
     if cache_key is not None:
         return str(cache_key)
+    # Priority 2: input_dict
     input_dict = getattr(data, "input_dict", None)
     if input_dict is None and isinstance(data, dict):
         input_dict = data.get("input_dict")
-    if input_dict is not None:
-        return _hash_value(input_dict)
-    input_ids = getattr(data, "input_ids", None)
-    if input_ids is None and isinstance(data, dict):
-        input_ids = data.get("input_ids")
-    return _hash_value(input_ids)
+    return _hash_value(input_dict)
 
 
 class SimpleCacheManager:

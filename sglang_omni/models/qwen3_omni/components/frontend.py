@@ -17,6 +17,8 @@ from transformers.utils.hub import cached_file
 from sglang_omni.frontends import (
     build_audio_mm_inputs,
     build_image_mm_inputs,
+    compute_audio_cache_key,
+    compute_image_cache_key,
     ensure_audio_list,
     ensure_chat_template,
     ensure_image_list,
@@ -143,16 +145,22 @@ class Qwen3OmniFrontend:
         inputs = payload.request.inputs
         if isinstance(inputs, dict):
             messages = inputs.get("messages", [])
-            images = ensure_image_list(inputs.get("images"))
+            raw_images = inputs.get("images")
+            raw_audios = inputs.get("audio") or inputs.get("audios")
             audio_target_sr = int(inputs.get("audio_target_sr", 16000))
-            audios = ensure_audio_list(
-                inputs.get("audio") or inputs.get("audios"),
-                target_sr=audio_target_sr,
-            )
+
+            # Compute cache keys BEFORE conversion (paths are cheap to hash)
+            image_cache_key = compute_image_cache_key(raw_images)
+            audio_cache_key = compute_audio_cache_key(raw_audios)
+
+            images = ensure_image_list(raw_images)
+            audios = ensure_audio_list(raw_audios, target_sr=audio_target_sr)
         else:
             messages = inputs
             images = []
             audios = []
+            image_cache_key = None
+            audio_cache_key = None
 
         messages_norm = normalize_messages(messages)
         messages_mm = self._build_multimodal_messages(
@@ -186,6 +194,15 @@ class Qwen3OmniFrontend:
             "audio": build_audio_mm_inputs(hf_inputs),
         }
 
+        # Build encoder_inputs with cache_key for efficient caching
+        image_encoder_inputs = {**mm_inputs["image"]}
+        if image_cache_key:
+            image_encoder_inputs["cache_key"] = image_cache_key
+
+        audio_encoder_inputs = {**mm_inputs["audio"]}
+        if audio_cache_key:
+            audio_encoder_inputs["cache_key"] = audio_cache_key
+
         payload.data = {
             "raw_inputs": inputs,
             "mm_inputs": mm_inputs,
@@ -195,8 +212,8 @@ class Qwen3OmniFrontend:
                 "attention_mask": attention_mask,
             },
             "encoder_inputs": {
-                "image_encoder": mm_inputs["image"],
-                "audio_encoder": mm_inputs["audio"],
+                "image_encoder": image_encoder_inputs,
+                "audio_encoder": audio_encoder_inputs,
             },
             "stream_state": {"token_ids": [], "text": ""},
         }

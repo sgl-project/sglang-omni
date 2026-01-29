@@ -29,6 +29,7 @@ dependencies = [
     "nixl",
     "logger",
     "httpx",
+    "xxhash>=3.0.0",
 ]
 
 [tool.setuptools.packages.find]
