@@ -3,11 +3,10 @@
 
 from __future__ import annotations
 
+import base64
 import pickle
-import struct
 from typing import Any
 
-import numpy as np
 import torch
 
 from sglang_omni.proto import StagePayload
@@ -103,7 +102,6 @@ class DataPlaneAdapter:
 
         # Serialize metadata (without tensors)
         metadata_bytes = pickle.dumps(payload_no_tensors)
-        metadata_size = len(metadata_bytes)
 
         # Concatenate all tensors into a single flat buffer
         if tensor_dict:
@@ -132,69 +130,44 @@ class DataPlaneAdapter:
             else:
                 all_tensors = torch.cat(tensor_buffers)
         else:
-            all_tensors = torch.tensor([], dtype=torch.uint8, device=device)
+            # Relay still expects a payload to transfer; use a 1-byte placeholder.
+            all_tensors = torch.zeros(1, dtype=torch.uint8, device=device)
             tensor_info = []
 
-        # Pack everything: [metadata_size (8 bytes)] [metadata_bytes] [tensor_bytes]
-        metadata_size_bytes = struct.pack("<Q", metadata_size)
-        metadata_tensor = torch.tensor(
-            np.frombuffer(metadata_size_bytes + metadata_bytes, dtype=np.uint8),
-            dtype=torch.uint8,
-            device=device,
-        )
-
-        # Combine metadata and tensors
-        combined = torch.cat([metadata_tensor, all_tensors])
-
         # Transfer via relay
-        op = await self._relay.put_async(combined, request_id=request_id)
-        metadata = op.metadata
+        op = await self._relay.put_async(all_tensors, request_id=request_id)
 
-        # Add tensor info to metadata
-        metadata["tensor_info"] = tensor_info
-
-        return metadata, op
+        # Send metadata via control plane
+        return {
+            "relay_info": op.metadata,
+            "payload_pickle": base64.b64encode(metadata_bytes).decode("ascii"),
+            "tensor_info": tensor_info,
+        }, op
 
     async def read_payload(
         self,
         request_id: str,
         metadata: dict[str, Any],
     ) -> StagePayload:
-        data_size = metadata["transfer_info"]["size"]
         device = self._relay.device if hasattr(self._relay, "device") else "cpu"
 
-        # Receive combined data
-        recv_tensor = torch.zeros(data_size, dtype=torch.uint8, device=device)
-        op = await self._relay.get_async(
-            metadata=metadata, dest_tensor=recv_tensor, request_id=request_id
-        )
-        await op.wait_for_completion()
+        # Deserialize payload (without tensors) from control-plane metadata
+        payload_bytes = base64.b64decode(metadata["payload_pickle"])
+        payload_no_tensors = pickle.loads(payload_bytes)
 
-        # Parse metadata size (first 8 bytes)
-        if recv_tensor.is_cuda:
-            metadata_size_bytes = recv_tensor[:8].cpu().numpy().tobytes()
-        else:
-            metadata_size_bytes = recv_tensor[:8].numpy().tobytes()
-
-        metadata_size = struct.unpack("<Q", metadata_size_bytes)[0]
-
-        # Extract metadata bytes
-        metadata_end = 8 + metadata_size
-        if recv_tensor.is_cuda:
-            metadata_bytes = recv_tensor[8:metadata_end].cpu().numpy().tobytes()
-        else:
-            metadata_bytes = recv_tensor[8:metadata_end].numpy().tobytes()
-
-        # Deserialize payload (without tensors)
-        payload_no_tensors = pickle.loads(metadata_bytes)
-
-        # Extract tensor data
+        relay_info = metadata["relay_info"]
         tensor_info = metadata.get("tensor_info", [])
         tensor_dict = {}
 
-        if tensor_info:
-            tensor_data = recv_tensor[metadata_end:]
+        # Receive tensor bytes via relay (even if empty) to complete transfer.
+        data_size = relay_info["transfer_info"]["size"]
+        recv_tensor = torch.zeros(data_size, dtype=torch.uint8, device=device)
+        op = await self._relay.get_async(
+            metadata=relay_info, dest_tensor=recv_tensor, request_id=request_id
+        )
+        await op.wait_for_completion()
 
+        if tensor_info:
             for info in tensor_info:
                 path = info["path"]
                 shape = info["shape"]
@@ -203,7 +176,7 @@ class DataPlaneAdapter:
                 size = info["size"]
 
                 # Extract tensor bytes
-                tensor_bytes = tensor_data[offset : offset + size]
+                tensor_bytes = recv_tensor[offset : offset + size]
 
                 # Parse dtype
                 dtype = getattr(torch, dtype_str.replace("torch.", ""))
