@@ -79,3 +79,19 @@ class OutputProcessor(Protocol):
         For DiT: extract denoised latents per request
         """
         ...
+
+
+class CacheManager(Protocol):
+    """Cache manager interface for output caching."""
+
+    def get(self, request: SchedulerRequest) -> RequestOutput | None:
+        """Get cached output, returns None if miss."""
+        ...
+
+    def put(self, request: SchedulerRequest, output: RequestOutput) -> None:
+        """Store output in cache."""
+        ...
+
+    def clear(self) -> None:
+        """Clear all cache."""
+        ...

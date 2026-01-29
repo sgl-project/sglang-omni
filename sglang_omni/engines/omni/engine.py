@@ -5,12 +5,16 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any, Union
+from typing import TYPE_CHECKING, Any, Union
 
 from ..base import Engine
 from .ar_model_runner import ARModelRunner
 from .encoder_model_runner import EncoderModelRunner
 from .scheduler import Scheduler
+from .types import SchedulerOutput
+
+if TYPE_CHECKING:
+    from .runtime.interfaces import CacheManager
 
 logger = logging.getLogger(__name__)
 
@@ -21,9 +25,10 @@ class OmniEngine(Engine):
     Combines:
     - Scheduler (owns state, makes scheduling decisions)
     - ModelRunner (ARModelRunner or EncoderModelRunner, stateless executor)
+    - CacheManager (optional, manages output caching)
 
     Execution model:
-    - Busy loop: schedule() -> execute() -> update()
+    - Busy loop: schedule() -> [check cache] -> execute() -> [update cache] -> update()
     - Async-friendly: add_request() and get_result() are async
     """
 
@@ -31,9 +36,11 @@ class OmniEngine(Engine):
         self,
         scheduler: Scheduler,
         model_runner: Union[ARModelRunner, EncoderModelRunner],
+        cache_manager: CacheManager | None = None,
     ):
         self.scheduler = scheduler
         self.model_runner = model_runner
+        self.cache_manager = cache_manager
 
         self._running = False
         self._loop_task: asyncio.Task[None] | None = None
@@ -107,7 +114,13 @@ class OmniEngine(Engine):
             await asyncio.sleep(0.001)  # Brief sleep when idle
             return False
 
-        # 2. Execute (run in executor to not block event loop)
+        # 2. Check cache (if enabled)
+        if self.cache_manager is not None:
+            scheduler_output = await self._filter_cached(scheduler_output)
+            if scheduler_output is None:
+                return True  # All cached, no execution needed
+
+        # 3. Execute (run in executor to not block event loop)
         loop = asyncio.get_running_loop()
         model_output = await loop.run_in_executor(
             None,
@@ -115,7 +128,11 @@ class OmniEngine(Engine):
             scheduler_output,
         )
 
-        # 3. Update state
+        # 4. Update cache (if enabled)
+        if self.cache_manager is not None:
+            await self._update_cache(scheduler_output, model_output)
+
+        # 5. Update state
         finished = self.scheduler.update(scheduler_output, model_output)
 
         if finished:
@@ -123,3 +140,51 @@ class OmniEngine(Engine):
                 logger.debug("Request %s finished", req.request_id)
 
         return True
+
+    async def _filter_cached(
+        self, scheduler_output: SchedulerOutput
+    ) -> SchedulerOutput | None:
+        """Check cache and filter out cached requests. Returns None if all cached."""
+        assert self.cache_manager is not None
+
+        cached_outputs = {}
+        uncached_requests = []
+
+        for request in scheduler_output.requests:
+            cached = self.cache_manager.get(request)
+            if cached is not None:
+                cached_outputs[request.request_id] = cached
+            else:
+                uncached_requests.append(request)
+
+        # If all cached, update scheduler directly and skip execution
+        if not uncached_requests:
+            from .types import ModelRunnerOutput
+
+            req_ids = [req.request_id for req in scheduler_output.requests]
+            req_id_to_index = {req_id: idx for idx, req_id in enumerate(req_ids)}
+            model_output = ModelRunnerOutput(
+                outputs=cached_outputs,
+                req_ids=req_ids,
+                req_id_to_index=req_id_to_index,
+            )
+            self.scheduler.update(scheduler_output, model_output)
+            return None
+
+        # Rebuild batch_data for uncached requests only
+        batch_data = self.scheduler.batch_planner.build_batch(uncached_requests)
+
+        return SchedulerOutput(
+            requests=uncached_requests,
+            batch_data=batch_data,
+            step_id=scheduler_output.step_id,
+        )
+
+    async def _update_cache(self, scheduler_output: SchedulerOutput, model_output: Any):
+        """Update cache with fresh model outputs."""
+        assert self.cache_manager is not None
+
+        for request in scheduler_output.requests:
+            output = model_output.outputs.get(request.request_id)
+            if output is not None:
+                self.cache_manager.put(request, output)

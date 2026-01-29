@@ -16,6 +16,7 @@ from .runtime.ar import (
     AROutputProcessor,
     ARResourceManager,
 )
+from .runtime.cache import SimpleCacheManager
 from .runtime.common import (
     EosIterationController,
     SimpleResourceManager,
@@ -79,17 +80,22 @@ def create_encoder_engine(
         iteration_controller=SinglePassIterationController(),
     )
 
-    # Create model runner
+    # Create model runner (stateless, no cache)
     model_runner = EncoderModelRunner(
         model=model,
         input_preparer=EncoderInputPreparer(pad_token_id=pad_token_id),
         output_processor=EncoderOutputProcessor(pooling=pooling),
         device=device,
-        use_cache=use_cache,
-        cache_size=cache_size,
     )
 
-    return OmniEngine(scheduler=scheduler, model_runner=model_runner)
+    # Create cache manager (if needed)
+    cache_manager = None
+    if use_cache:
+        cache_manager = SimpleCacheManager(max_size=cache_size)
+
+    return OmniEngine(
+        scheduler=scheduler, model_runner=model_runner, cache_manager=cache_manager
+    )
 
 
 def create_ar_engine(

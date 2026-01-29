@@ -23,6 +23,7 @@ from .encoder import (
 )
 from .interfaces import (
     BatchPlanner,
+    CacheManager,
     InputPreparer,
     IterationController,
     OutputProcessor,
@@ -32,6 +33,7 @@ from .interfaces import (
 __all__ = [
     # Protocols
     "BatchPlanner",
+    "CacheManager",
     "ResourceManager",
     "IterationController",
     "InputPreparer",
