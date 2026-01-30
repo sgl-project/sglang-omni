@@ -182,7 +182,7 @@ class DataPlaneAdapter:
                 dtype = getattr(torch, dtype_str.replace("torch.", ""))
 
                 # Reconstruct tensor (keep on original device)
-                tensor = tensor_bytes.view(dtype).reshape(shape)
+                tensor = tensor_bytes.clone().view(dtype).reshape(shape)
                 tensor_dict[path] = tensor
 
         # Restore tensors into payload

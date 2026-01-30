@@ -122,6 +122,8 @@ class EncoderBatchPlanner:
 class EncoderInputPreparer:
     """Converts EncoderBatchData to model inputs."""
 
+    EXCLUDED_KEYS = {"cache_key", "_skip", "_result"}
+
     def __init__(self, pad_token_id: int = 0):
         self.pad_token_id = pad_token_id
 
@@ -146,6 +148,9 @@ class EncoderInputPreparer:
                 "audio_feature_lengths",
             }
             for key, value in first.items():
+                # Skip metadata keys that shouldn't be passed to the model
+                if key in self.EXCLUDED_KEYS:
+                    continue
                 if isinstance(value, torch.Tensor):
                     tensors = [inp[key] for inp in active_inputs]
                     if value.dim() == 0:
