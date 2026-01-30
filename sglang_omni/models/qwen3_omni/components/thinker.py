@@ -214,6 +214,9 @@ class Qwen3OmniSplitThinker(nn.Module):
         if inputs_embeds is not None:
             inputs_embeds = inputs_embeds.to(self._device)
 
+        # Track whether we manually merged embeddings
+        manual_merge_done = False
+
         if inputs_embeds is None and (
             image_embeds_t is not None or audio_embeds_t is not None
         ):
@@ -236,10 +239,13 @@ class Qwen3OmniSplitThinker(nn.Module):
                 image_embeds=image_embeds_t,
                 audio_embeds=audio_embeds_t,
             )
+            manual_merge_done = True
         else:
             image_mask = None
 
-        if deepstack_visual_embeds is not None:
+        # Only pass deepstack_visual_embeds if we haven't already merged embeddings
+        # This avoids the HF model trying to merge visual features twice
+        if deepstack_visual_embeds is not None and not manual_merge_done:
             kwargs["deepstack_visual_embeds"] = deepstack_visual_embeds
             if visual_pos_masks is not None:
                 kwargs["visual_pos_masks"] = visual_pos_masks
