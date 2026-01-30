@@ -26,52 +26,6 @@ except ImportError as e:
     logger.error(f"Failed to import nixl: {e}. NixlRelay will not work.")
     NIXL_AVAILABLE = False
 
-    # Mock classes
-    class NixlAgent:
-        def __init__(self, *args):
-            pass
-
-        def get_agent_metadata(self):
-            return b"meta"
-
-        def add_remote_agent(self, *args):
-            return "agent"
-
-        def register_memory(self, *args):
-            return 1
-
-        def deregister_memory(self, *args):
-            pass
-
-        def check_xfer_state(self, *args):
-            return "DONE"
-
-        def release_xfer_handle(self, *args):
-            pass
-
-        def get_new_notifs(self):
-            return {}
-
-        def get_xfer_descs(self, *args):
-            return []
-
-        def prep_xfer_dlist(self, *args):
-            return 0
-
-        def make_prepped_xfer(self, *args, **kwargs):
-            return 0
-
-        def transfer(self, *args):
-            pass
-
-    def nixl_agent_config(**kwargs):
-        return None
-
-
-# ==========================================
-# Helper Classes
-# ==========================================
-
 
 class Connection:
     def __init__(self, engine_id: str, num_threads: int = 2):
@@ -90,11 +44,6 @@ class Connection:
             agent_name = self._nixl.add_remote_agent(remote_meta_bytes)
             self._remote_agents[remote_engine_id] = agent_name
         return self._remote_agents[remote_engine_id]
-
-
-# ==========================================
-# Operations Hierarchy
-# ==========================================
 
 
 class NixlOperation(RelayOperation):
