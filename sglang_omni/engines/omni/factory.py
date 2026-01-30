@@ -7,9 +7,8 @@ from typing import Any
 
 import torch
 
-from .ar_model_runner import ARModelRunner
-from .encoder_model_runner import EncoderModelRunner
 from .engine import OmniEngine
+from .model_runner import ModelRunner
 from .runtime.ar import (
     ARBatchPlanner,
     ARInputPreparer,
@@ -80,8 +79,8 @@ def create_encoder_engine(
         iteration_controller=SinglePassIterationController(),
     )
 
-    # Create model runner (stateless, no cache)
-    model_runner = EncoderModelRunner(
+    # Create model runner (stateless)
+    model_runner = ModelRunner(
         model=model,
         input_preparer=EncoderInputPreparer(pad_token_id=pad_token_id),
         output_processor=EncoderOutputProcessor(pooling=pooling),
@@ -161,7 +160,7 @@ def create_ar_engine(
     )
 
     # Create model runner
-    model_runner = ARModelRunner(
+    model_runner = ModelRunner(
         model=model,
         input_preparer=ARInputPreparer(),
         output_processor=AROutputProcessor(),

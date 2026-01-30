@@ -5,11 +5,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import TYPE_CHECKING, Any, Union
+from typing import TYPE_CHECKING, Any
 
 from ..base import Engine
-from .ar_model_runner import ARModelRunner
-from .encoder_model_runner import EncoderModelRunner
+from .model_runner import ModelRunner
 from .scheduler import Scheduler
 from .types import SchedulerOutput
 
@@ -24,7 +23,7 @@ class OmniEngine(Engine):
 
     Combines:
     - Scheduler (owns state, makes scheduling decisions)
-    - ModelRunner (ARModelRunner or EncoderModelRunner, stateless executor)
+    - ModelRunner (stateless executor)
     - CacheManager (optional, manages output caching)
 
     Execution model:
@@ -35,7 +34,7 @@ class OmniEngine(Engine):
     def __init__(
         self,
         scheduler: Scheduler,
-        model_runner: Union[ARModelRunner, EncoderModelRunner],
+        model_runner: ModelRunner,
         cache_manager: CacheManager | None = None,
     ):
         self.scheduler = scheduler

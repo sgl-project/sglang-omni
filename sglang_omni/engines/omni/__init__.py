@@ -1,10 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """OmniEngine - unified engine for all model types."""
 
-from .ar_model_runner import ARModelRunner
-from .encoder_model_runner import EncoderModelRunner
 from .engine import OmniEngine
 from .factory import create_ar_engine, create_encoder_engine
+from .model_runner import ModelRunner
 from .runtime.ar import ARRequestData
 from .runtime.encoder import EncoderRequestData
 from .scheduler import Scheduler
@@ -25,8 +24,7 @@ __all__ = [
     "ModelRunnerOutput",
     # Core components
     "Scheduler",
-    "ARModelRunner",
-    "EncoderModelRunner",
+    "ModelRunner",
     "OmniEngine",
     # Encoder
     "EncoderRequestData",
