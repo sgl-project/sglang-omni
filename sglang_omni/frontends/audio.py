@@ -10,7 +10,7 @@ from typing import Any
 import numpy as np
 import torch
 
-from .cache_key import compute_cache_key, hash_bytes
+from .cache_key import compute_media_cache_key
 
 
 def _read_wav_bytes(path: str) -> tuple[np.ndarray, int]:
@@ -134,24 +134,4 @@ def compute_audio_cache_key(audios: Any) -> str | None:
     This should be called BEFORE ensure_audio_list() to capture original
     paths which are much cheaper to hash than audio data.
     """
-
-    def _item_to_part(item: Any) -> str | None:
-        if isinstance(item, (str, Path)):
-            # Path: use string directly (very cheap)
-            return f"path:{item}"
-        if isinstance(item, np.ndarray):
-            # numpy array: hash dtype + shape + content
-            meta = f"{item.dtype}|{item.shape}"
-            content_hash = hash_bytes(item.tobytes())
-            return f"audio:{meta}:{content_hash}"
-        if isinstance(item, torch.Tensor):
-            # torch tensor: hash dtype + shape + content
-            cpu = item.detach().cpu()
-            meta = f"{cpu.dtype}|{tuple(cpu.shape)}"
-            content_hash = hash_bytes(cpu.numpy().tobytes())
-            return f"audio:{meta}:{content_hash}"
-        # Unknown type, skip cache
-        return None
-
-    key = compute_cache_key(audios, item_to_part=_item_to_part)
-    return f"audio:{key}" if key else None
+    return compute_media_cache_key(audios, prefix="audio")
