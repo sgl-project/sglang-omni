@@ -499,13 +499,12 @@ class AudioEncoderAttention(nn.Module):
         self.out_proj = nn.Linear(d_model, d_model, bias=True)
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        bsz, seq_len, _ = hidden_states.size()
-        q = self.q_proj(hidden_states).view(bsz, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
-        k = self.k_proj(hidden_states).view(bsz, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
-        v = self.v_proj(hidden_states).view(bsz, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
-
+        bsz, seq_length, _ = hidden_states.size()
+        q = self.q_proj(hidden_states).view(bsz, seq_length, self.num_heads, self.head_dim).transpose(1, 2)
+        k = self.k_proj(hidden_states).view(bsz, seq_length, self.num_heads, self.head_dim).transpose(1, 2)
+        v = self.v_proj(hidden_states).view(bsz, seq_length, self.num_heads, self.head_dim).transpose(1, 2)
         attn_output = F.scaled_dot_product_attention(q, k, v)
-        attn_output = attn_output.transpose(1, 2).contiguous().view(bsz, seq_len, -1)
+        attn_output = attn_output.transpose(1, 2).contiguous().view(bsz, seq_length, -1)
         return self.out_proj(attn_output)
 
 
@@ -889,12 +888,9 @@ class VisionAttention(nn.Module):
         for length in lengths:
             length = int(length)
             end = start + length
-            q = query_states[start:end] * self.scaling
-            k = key_states[start:end]
-            v = value_states[start:end]
-            q = q.transpose(0, 1).unsqueeze(0)
-            k = k.transpose(0, 1).unsqueeze(0)
-            v = v.transpose(0, 1).unsqueeze(0)
+            q = query_states[start:end].transpose(0, 1).unsqueeze(0)
+            k = key_states[start:end].transpose(0, 1).unsqueeze(0)
+            v = value_states[start:end].transpose(0, 1).unsqueeze(0)
             attn = F.scaled_dot_product_attention(
                 q, k, v, dropout_p=0.0, is_causal=False
             )

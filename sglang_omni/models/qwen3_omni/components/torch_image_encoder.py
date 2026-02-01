@@ -31,16 +31,17 @@ class Qwen3OmniTorchImageEncoder(nn.Module):
         vision_cfg = thinker_cfg.get("vision_config", thinker_cfg)
 
         self.visual = TorchVision(vision_cfg)
+        state_dict = load_weights_by_prefixes(
+            model_path,
+            prefixes=VISUAL_PREFIX,
+            device=str(self._device),
+            dtype=torch_dtype,
+        )
+        self.visual.load_state_dict(state_dict, strict=True, assign=True)
         if torch_dtype is not None:
             self.visual = self.visual.to(dtype=torch_dtype)
         self.visual = self.visual.to(self._device)
         self.visual.eval()
-
-        state_dict = load_weights_by_prefixes(
-            model_path,
-            prefixes=VISUAL_PREFIX,
-        )
-        self.visual.load_state_dict(state_dict, strict=True)
         self.spatial_merge_size = int(vision_cfg.get("spatial_merge_size", 1))
 
     def forward(

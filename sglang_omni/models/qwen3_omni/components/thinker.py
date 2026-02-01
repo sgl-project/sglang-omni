@@ -243,8 +243,6 @@ class Qwen3OmniSplitThinker(nn.Module):
         else:
             image_mask = None
 
-        # Only pass deepstack_visual_embeds if we haven't already merged embeddings
-        # This avoids the HF model trying to merge visual features twice
         if deepstack_visual_embeds is not None and not manual_merge_done:
             kwargs["deepstack_visual_embeds"] = deepstack_visual_embeds
             if visual_pos_masks is not None:
@@ -252,7 +250,7 @@ class Qwen3OmniSplitThinker(nn.Module):
             elif image_mask is not None:
                 kwargs["visual_pos_masks"] = image_mask
 
-        return self.thinker(
+        fwd_kwargs = dict(
             input_ids=input_ids.to(self._device),
             attention_mask=(
                 attention_mask.to(self._device)
@@ -262,3 +260,30 @@ class Qwen3OmniSplitThinker(nn.Module):
             inputs_embeds=inputs_embeds,
             **kwargs,
         )
+
+        # When embeddings are manually merged, the HF conditional generation
+        # model skips its own visual feature extraction (pixel_values is None)
+        # and passes deepstack_visual_embeds=None to the text model.  Override
+        # via a temporary forward hook so deepstack is still applied.
+        if deepstack_visual_embeds is not None and manual_merge_done:
+            _ds = deepstack_visual_embeds
+            _vpm = visual_pos_masks if visual_pos_masks is not None else image_mask
+            # _deepstack_process expects a 2D (B, S) boolean mask, but
+            # get_placeholder_mask returns 3D (B, S, H) for masked_scatter.
+            if _vpm is not None and _vpm.dim() > 2:
+                _vpm = _vpm[..., 0]
+            _orig = self.thinker.model.forward
+
+            def _with_deepstack(*a, **kw):
+                kw["deepstack_visual_embeds"] = _ds
+                if _vpm is not None:
+                    kw["visual_pos_masks"] = _vpm
+                return _orig(*a, **kw)
+
+            self.thinker.model.forward = _with_deepstack
+            try:
+                return self.thinker(**fwd_kwargs)
+            finally:
+                self.thinker.model.forward = _orig
+
+        return self.thinker(**fwd_kwargs)

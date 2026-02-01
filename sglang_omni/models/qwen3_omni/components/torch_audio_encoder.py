@@ -28,16 +28,17 @@ class Qwen3OmniTorchAudioEncoder(nn.Module):
         thinker_cfg = config.get("thinker_config", config)
         audio_cfg = thinker_cfg.get("audio_config", thinker_cfg)
         self.audio_tower = TorchAudio(audio_cfg)
+        state_dict = load_weights_by_prefixes(
+            model_path,
+            prefixes=("thinker.audio_tower.",),
+            device=str(self._device),
+            dtype=torch_dtype,
+        )
+        self.audio_tower.load_state_dict(state_dict, strict=True, assign=True)
         if torch_dtype is not None:
             self.audio_tower = self.audio_tower.to(dtype=torch_dtype)
         self.audio_tower = self.audio_tower.to(self._device)
         self.audio_tower.eval()
-
-        state_dict = load_weights_by_prefixes(
-            model_path,
-            prefixes=("thinker.audio_tower.",),
-        )
-        self.audio_tower.load_state_dict(state_dict, strict=True)
 
     def forward(
         self,

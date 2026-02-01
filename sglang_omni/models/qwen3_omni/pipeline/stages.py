@@ -18,11 +18,13 @@ from sglang_omni.models.qwen3_omni.components.torch_audio_encoder import (
     Qwen3OmniTorchAudioEncoder,
 )
 from sglang_omni.models.qwen3_omni.components.torch_image_encoder import (
+    VISUAL_PREFIX,
     Qwen3OmniTorchImageEncoder,
 )
 from sglang_omni.models.qwen3_omni.components.torch_thinker import (
     Qwen3OmniTorchThinker,
 )
+from sglang_omni.models.weight_loader import preload_weights, resolve_dtype
 from sglang_omni.models.qwen3_omni.io import OmniEvent, ThinkerOutput
 from sglang_omni.models.qwen3_omni.pipeline.engine_io import (
     apply_encoder_result,
@@ -65,6 +67,32 @@ def create_aggregate_executor() -> FrontendExecutor:
         return payload
 
     return FrontendExecutor(_identity)
+
+
+def preload_torch_weights(
+    *,
+    model_path: str,
+    image_device: str,
+    audio_device: str,
+    thinker_device: str,
+    dtype: str | None = None,
+) -> None:
+    """Preload torch-native weights into cache for faster component init."""
+    torch_dtype = resolve_dtype(dtype)
+    device_groups: dict[str, list[tuple[str, ...]]] = {}
+
+    device_groups.setdefault(str(image_device), []).append(VISUAL_PREFIX)
+    device_groups.setdefault(str(audio_device), []).append(("thinker.audio_tower.",))
+    device_groups.setdefault(str(thinker_device), []).append(("thinker.model.",))
+    device_groups.setdefault(str(thinker_device), []).append(("thinker.lm_head.",))
+
+    for device, prefix_groups in device_groups.items():
+        preload_weights(
+            model_path,
+            prefix_groups=prefix_groups,
+            device=device,
+            dtype=torch_dtype,
+        )
 
 
 def _create_encoder_executor(

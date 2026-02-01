@@ -471,10 +471,13 @@ class Qwen3OmniThinker(nn.Module):
         self.norm = nn.RMSNorm(self.hidden_size, eps=self.rms_norm_eps)
         self.lm_head = nn.Linear(self.hidden_size, self.vocab_size, bias=False)
 
+        rope_scaling = text_config.get("rope_scaling", {})
+        mrope_section = rope_scaling.get("mrope_section") if isinstance(rope_scaling, dict) else None
         self.rotary_emb = MRoPE(
             dim=self.head_dim,
             max_position_embeddings=self.max_position_embeddings,
             base=self.rope_theta,
+            mrope_section=mrope_section,
         )
 
         audio_config = thinker_config.get("audio_config")

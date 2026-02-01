@@ -59,10 +59,6 @@ class Qwen3OmniTorchThinker(nn.Module):
         self._device = torch.device(device)
         self.config = config
         self.thinker = TorchThinker(config)
-        if torch_dtype is not None:
-            self.thinker = self.thinker.to(dtype=torch_dtype)
-        self.thinker = self.thinker.to(self._device)
-        self.thinker.eval()
 
         thinker_cfg = config.get("thinker_config", config)
         self.audio_token_id = thinker_cfg.get("audio_token_id")
@@ -79,13 +75,21 @@ class Qwen3OmniTorchThinker(nn.Module):
         state_dict = load_weights_by_prefixes(
             model_path,
             prefixes="thinker.model.",
+            device=str(self._device),
+            dtype=torch_dtype,
         )
         lm_head_dict = load_weights_by_prefixes(
             model_path,
             prefixes="thinker.lm_head.",
+            device=str(self._device),
+            dtype=torch_dtype,
         )
         state_dict.update({f"lm_head.{k}": v for k, v in lm_head_dict.items()})
-        self.thinker.load_state_dict(state_dict, strict=True)
+        self.thinker.load_state_dict(state_dict, strict=True, assign=True)
+        if torch_dtype is not None:
+            self.thinker = self.thinker.to(dtype=torch_dtype)
+        self.thinker = self.thinker.to(self._device)
+        self.thinker.eval()
 
     def get_input_embeddings(self) -> nn.Embedding:
         return self.thinker.get_input_embeddings()
