@@ -12,7 +12,10 @@ from transformers import AutoFeatureExtractor, AutoImageProcessor, AutoTokenizer
 from transformers.models.qwen3_omni_moe.processing_qwen3_omni_moe import (
     Qwen3OmniMoeProcessor,
 )
-from transformers.utils.hub import cached_file
+try:
+    from transformers.video_processing_utils import BaseVideoProcessor
+except Exception:  # pragma: no cover - environment-dependent
+    from transformers.utils.dummy_torchvision_objects import BaseVideoProcessor
 
 from sglang_omni.frontends import (
     build_audio_mm_inputs,
@@ -28,12 +31,6 @@ from sglang_omni.models.qwen3_omni.io import PipelineState
 from sglang_omni.proto import StagePayload
 
 
-def _resolve_local_model_dir(model_id: str) -> str:
-    """Resolve the local snapshot directory for a cached model."""
-    config_path = cached_file(model_id, "config.json", local_files_only=True)
-    return str(Path(config_path).parent)
-
-
 def _load_preprocessor_config(model_dir: str) -> Mapping[str, Any]:
     cfg_path = Path(model_dir) / "preprocessor_config.json"
     with open(cfg_path, encoding="utf-8") as f:
@@ -43,20 +40,19 @@ def _load_preprocessor_config(model_dir: str) -> Mapping[str, Any]:
     return payload
 
 
-class _StubVideoProcessor:
+class _StubVideoProcessor(BaseVideoProcessor):
     """Minimal video processor to avoid remote downloads when video is unused."""
 
     def __init__(self, *, merge_size: int, temporal_patch_size: int):
-        self.merge_size = merge_size
-        self.temporal_patch_size = temporal_patch_size
+        super().__init__(merge_size=merge_size, temporal_patch_size=temporal_patch_size)
 
-    def __call__(
+    def preprocess(
         self, *args: Any, **kwargs: Any
     ) -> Any:  # pragma: no cover - defensive
         raise NotImplementedError("Video inputs are not supported in this pipeline yet")
 
 
-def _build_processor_local(model_dir: str, model_id: str) -> Qwen3OmniMoeProcessor:
+def _build_processor_local(model_dir: str) -> Qwen3OmniMoeProcessor:
     cfg = _load_preprocessor_config(model_dir)
     merge_size = int(cfg.get("merge_size", 2))
     temporal_patch_size = int(cfg.get("temporal_patch_size", 2))
@@ -95,9 +91,8 @@ def _build_processor_local(model_dir: str, model_id: str) -> Qwen3OmniMoeProcess
 class Qwen3OmniFrontend:
     """CPU-side preprocessing and tokenization using the HF processor."""
 
-    def __init__(self, model_id: str):
-        self.model_id = model_id
-        self.model_dir = _resolve_local_model_dir(model_id)
+    def __init__(self, model_path: str):
+        self.model_dir = model_path
         try:
             self.processor = Qwen3OmniMoeProcessor.from_pretrained(
                 self.model_dir,
@@ -107,7 +102,7 @@ class Qwen3OmniFrontend:
         except Exception:
             # The hub cache may not include video_preprocessor_config.json.
             # Build the processor locally with a stub video processor instead.
-            self.processor = _build_processor_local(self.model_dir, model_id)
+            self.processor = _build_processor_local(self.model_dir)
         self.tokenizer = self.processor.tokenizer
         ensure_chat_template(self.tokenizer, model_id=self.model_dir)
 

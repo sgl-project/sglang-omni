@@ -22,7 +22,7 @@ from sglang_omni.models.qwen3_omni.pipeline.next_stage import (
 
 def create_text_first_pipeline_config(
     *,
-    model_id: str,
+    model_path: str,
     name: str = "qwen3_omni_text_first",
     frontend_device: str = "cpu",
     image_device: str = "cuda:3",
@@ -33,7 +33,6 @@ def create_text_first_pipeline_config(
     relay_type: str = "shm",
     fused_stages: list[list[str]] | None = None,
     backend: str = "hf",
-    local_files_only: bool = False,
 ) -> PipelineConfig:
     def _relay(device: str) -> RelayConfig:
         return RelayConfig(type=relay_type, device=device)
@@ -64,7 +63,7 @@ def create_text_first_pipeline_config(
                 name=FRONTEND_STAGE,
                 executor=ExecutorConfig(
                     factory="sglang_omni.models.qwen3_omni.pipeline.stages.create_frontend_executor",
-                    args={"model_id": model_id},
+                    args={"model_path": model_path},
                 ),
                 get_next="sglang_omni.models.qwen3_omni.pipeline.next_stage.frontend_next",
                 relay=_relay(frontend_device),
@@ -74,10 +73,9 @@ def create_text_first_pipeline_config(
                 executor=ExecutorConfig(
                     factory=image_factory,
                     args={
-                        "model_id": model_id,
+                        "model_path": model_path,
                         "device": image_device,
                         "dtype": dtype,
-                        "local_files_only": local_files_only,
                     },
                 ),
                 get_next="sglang_omni.models.qwen3_omni.pipeline.next_stage.encoder_next",
@@ -88,10 +86,9 @@ def create_text_first_pipeline_config(
                 executor=ExecutorConfig(
                     factory=audio_factory,
                     args={
-                        "model_id": model_id,
+                        "model_path": model_path,
                         "device": audio_device,
                         "dtype": dtype,
-                        "local_files_only": local_files_only,
                     },
                 ),
                 get_next="sglang_omni.models.qwen3_omni.pipeline.next_stage.encoder_next",
@@ -116,11 +113,10 @@ def create_text_first_pipeline_config(
                 executor=ExecutorConfig(
                     factory=thinker_factory,
                     args={
-                        "model_id": model_id,
+                        "model_path": model_path,
                         "device": thinker_device,
                         "dtype": dtype,
                         "max_seq_len": thinker_max_seq_len,
-                        "local_files_only": local_files_only,
                     },
                 ),
                 get_next="sglang_omni.models.qwen3_omni.pipeline.next_stage.thinker_next",
@@ -130,7 +126,7 @@ def create_text_first_pipeline_config(
                 name=DECODE_STAGE,
                 executor=ExecutorConfig(
                     factory="sglang_omni.models.qwen3_omni.pipeline.stages.create_decode_executor",
-                    args={"model_id": model_id},
+                    args={"model_path": model_path},
                 ),
                 get_next="sglang_omni.models.qwen3_omni.pipeline.next_stage.decode_next",
                 relay=_relay("cpu"),

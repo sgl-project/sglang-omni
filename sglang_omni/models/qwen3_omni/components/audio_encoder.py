@@ -16,7 +16,7 @@ AUDIO_TOWER_CLASS = hf_modeling.Qwen3OmniMoeAudioEncoder
 
 
 def _build_audio_tower(
-    model_id: str,
+    model_path: str,
     *,
     thinker_cfg: object,
     torch_dtype: torch.dtype | None,
@@ -26,7 +26,7 @@ def _build_audio_tower(
     audio_tower = instantiate_module(AUDIO_TOWER_CLASS, audio_cfg)
     return load_module(
         audio_tower,
-        model_id,
+        model_path,
         prefix=AUDIO_TOWER_PREFIX,
         dtype=torch_dtype,
         device=device,
@@ -39,17 +39,17 @@ class Qwen3OmniAudioEncoder(nn.Module):
 
     def __init__(
         self,
-        model_id: str,
+        model_path: str,
         *,
         device: str = "cuda",
         dtype: str | torch.dtype | None = None,
     ) -> None:
         super().__init__()
         torch_dtype = resolve_dtype(dtype)
-        thinker_cfg = load_thinker_config(model_id)
+        thinker_cfg = load_thinker_config(model_path)
         self._device = torch.device(device)
         self.audio_tower = _build_audio_tower(
-            model_id,
+            model_path,
             thinker_cfg=thinker_cfg,
             torch_dtype=torch_dtype,
             device=device,

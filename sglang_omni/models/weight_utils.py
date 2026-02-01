@@ -16,15 +16,6 @@ def get_weight_files(model_path: str) -> list[str]:
     safetensors_files = glob.glob(os.path.join(model_path, "*.safetensors"))
     if safetensors_files:
         return sorted(safetensors_files)
-
-    pt_files = glob.glob(os.path.join(model_path, "*.bin"))
-    if pt_files:
-        return sorted(pt_files)
-
-    pt_files = glob.glob(os.path.join(model_path, "*.pt"))
-    if pt_files:
-        return sorted(pt_files)
-
     return []
 
 
@@ -43,17 +34,6 @@ def safetensors_weights_iterator(
                 yield name, f.get_tensor(name)
 
 
-def pt_weights_iterator(
-    files: list[str],
-) -> Iterator[tuple[str, torch.Tensor]]:
-    """Iterate over weights from PyTorch checkpoint files."""
-    for file in files:
-        state_dict = torch.load(file, map_location="cpu", weights_only=True)
-        for name, tensor in state_dict.items():
-            yield name, tensor
-        del state_dict
-
-
 def weights_iterator(
     model_path: str,
 ) -> Iterator[tuple[str, torch.Tensor]]:
@@ -61,11 +41,7 @@ def weights_iterator(
     files = get_weight_files(model_path)
     if not files:
         raise ValueError(f"No weight files found in {model_path}")
-
-    if files[0].endswith(".safetensors"):
-        yield from safetensors_weights_iterator(files)
-    else:
-        yield from pt_weights_iterator(files)
+    yield from safetensors_weights_iterator(files)
 
 
 def filter_weights(

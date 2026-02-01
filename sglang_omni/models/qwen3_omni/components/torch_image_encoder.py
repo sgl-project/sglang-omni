@@ -18,16 +18,15 @@ class Qwen3OmniTorchImageEncoder(nn.Module):
 
     def __init__(
         self,
-        model_id: str,
+        model_path: str,
         *,
         device: str = "cuda",
         dtype: str | torch.dtype | None = None,
-        local_files_only: bool = False,
     ) -> None:
         super().__init__()
         self._device = torch.device(device)
         torch_dtype = resolve_dtype(dtype)
-        config = load_config_dict(model_id, local_files_only=local_files_only)
+        config = load_config_dict(model_path)
         thinker_cfg = config.get("thinker_config", config)
         vision_cfg = thinker_cfg.get("vision_config", thinker_cfg)
 
@@ -38,9 +37,8 @@ class Qwen3OmniTorchImageEncoder(nn.Module):
         self.visual.eval()
 
         state_dict = load_weights_by_prefix(
-            model_id,
+            model_path,
             prefix=VISUAL_PREFIX,
-            local_files_only=local_files_only,
         )
         self.visual.load_state_dict(state_dict, strict=True)
         self.spatial_merge_size = int(vision_cfg.get("spatial_merge_size", 1))

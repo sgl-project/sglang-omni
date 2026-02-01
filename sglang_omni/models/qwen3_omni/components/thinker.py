@@ -55,7 +55,7 @@ def _maybe_tie_weights(
 
 
 def _build_text_model(
-    model_id: str,
+    model_path: str,
     *,
     thinker_cfg: Any,
     torch_dtype: torch.dtype | None,
@@ -64,7 +64,7 @@ def _build_text_model(
     text_model = instantiate_module(TEXT_MODEL_CLASS, text_cfg)
     return load_module(
         text_model,
-        model_id,
+        model_path,
         prefix=TEXT_MODEL_PREFIX,
         dtype=torch_dtype,
         device=None,
@@ -73,7 +73,7 @@ def _build_text_model(
 
 
 def _build_lm_head(
-    model_id: str,
+    model_path: str,
     *,
     thinker_cfg: Any,
     torch_dtype: torch.dtype | None,
@@ -86,7 +86,7 @@ def _build_lm_head(
     if not _should_tie_embeddings(thinker_cfg):
         lm_head = load_module(
             lm_head,
-            model_id,
+            model_path,
             prefix=LM_HEAD_PREFIX,
             dtype=torch_dtype,
             device=None,
@@ -108,7 +108,7 @@ class Qwen3OmniSplitThinker(nn.Module):
 
     def __init__(
         self,
-        model_id: str,
+        model_path: str,
         *,
         device: str = "cuda",
         dtype: str | torch.dtype | None = None,
@@ -116,15 +116,15 @@ class Qwen3OmniSplitThinker(nn.Module):
         super().__init__()
         self._device = torch.device(device)
         torch_dtype = resolve_dtype(dtype)
-        thinker_cfg = load_thinker_config(model_id)
+        thinker_cfg = load_thinker_config(model_path)
 
         text_model = _build_text_model(
-            model_id,
+            model_path,
             thinker_cfg=thinker_cfg,
             torch_dtype=torch_dtype,
         )
         lm_head = _build_lm_head(
-            model_id,
+            model_path,
             thinker_cfg=thinker_cfg,
             torch_dtype=torch_dtype,
         )

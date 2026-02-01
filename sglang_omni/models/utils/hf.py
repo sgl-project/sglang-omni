@@ -4,35 +4,25 @@
 from __future__ import annotations
 
 from functools import lru_cache
-from pathlib import Path
 from typing import Any
 
 import torch.nn as nn
 from transformers import AutoConfig
 from accelerate import init_empty_weights as no_init_weights
-from transformers.utils.hub import cached_file
 
 
 @lru_cache(maxsize=8)
 def load_hf_config(
-    model_id: str,
+    model_path: str,
     *,
     trust_remote_code: bool = True,
-    local_files_only: bool = True,
 ) -> Any:
-    """Load the HF config, preferring the local cache."""
-    try:
-        config_path = cached_file(
-            model_id, "config.json", local_files_only=local_files_only
-        )
-        cfg = AutoConfig.from_pretrained(
-            str(Path(config_path).parent),
-            trust_remote_code=trust_remote_code,
-            local_files_only=local_files_only,
-        )
-    except Exception:
-        cfg = AutoConfig.from_pretrained(model_id, trust_remote_code=trust_remote_code)
-    return cfg
+    """Load the HF config from a local model path."""
+    return AutoConfig.from_pretrained(
+        model_path,
+        trust_remote_code=trust_remote_code,
+        local_files_only=True,
+    )
 
 
 def instantiate_module(module_cls: type[nn.Module], config: Any) -> nn.Module:

@@ -6,17 +6,13 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
-from sglang_omni.models.weight_loader import resolve_model_path
 from sglang_omni.models.weight_utils import load_config
 
 
 def load_config_dict(
-    model_id: str,
-    *,
-    local_files_only: bool = False,
+    model_path: str,
 ) -> dict[str, Any]:
-    model_path = resolve_model_path(model_id, local_files_only=local_files_only)
-    return load_config(str(model_path))
+    return load_config(model_path)
 
 
 def strip_audio_config(config: dict[str, Any]) -> dict[str, Any]:

@@ -18,7 +18,7 @@ from sglang_omni.models.qwen3_omni.modeling import (
     _build_position_ids,
     _maybe_apply_causal_mask,
 )
-from sglang_omni.models.weight_loader import resolve_dtype, resolve_model_path
+from sglang_omni.models.weight_loader import resolve_dtype
 from sglang_omni.models.weight_utils import weights_iterator
 
 
@@ -47,15 +47,14 @@ class Qwen3OmniTorchThinker(nn.Module):
 
     def __init__(
         self,
-        model_id: str,
+        model_path: str,
         *,
         device: str = "cuda",
         dtype: str | torch.dtype | None = None,
-        local_files_only: bool = False,
     ) -> None:
         super().__init__()
         torch_dtype = resolve_dtype(dtype)
-        config = load_config_dict(model_id, local_files_only=local_files_only)
+        config = load_config_dict(model_path)
         config = strip_audio_config(config)
 
         self._device = torch.device(device)
@@ -78,8 +77,7 @@ class Qwen3OmniTorchThinker(nn.Module):
         self._rope_deltas: torch.Tensor | None = None
 
         # Load weights from checkpoint
-        model_path = resolve_model_path(model_id, local_files_only=local_files_only)
-        self.thinker.load_weights(weights_iterator(str(model_path)))
+        self.thinker.load_weights(weights_iterator(model_path))
 
     def get_input_embeddings(self) -> nn.Embedding:
         return self.thinker.get_input_embeddings()

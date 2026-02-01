@@ -48,10 +48,6 @@ def resolve_model_path(model_id: str, *, local_files_only: bool = False) -> Path
     return Path(snapshot_download(model_id, local_files_only=local_files_only))
 
 
-def _load_bin_shard(path: str) -> dict[str, torch.Tensor]:
-    return torch.load(path, map_location="cpu")
-
-
 def _read_safetensors_keys(path: Path, keys: list[str]) -> dict[str, torch.Tensor]:
     from safetensors import safe_open
 
@@ -102,37 +98,6 @@ def _load_safetensors_single(model_path: Path, prefix: str) -> dict[str, torch.T
     return state_dict
 
 
-def _load_bin_sharded(model_path: Path, prefix: str) -> dict[str, torch.Tensor]:
-    index_file = model_path / "pytorch_model.bin.index.json"
-    if not index_file.exists():
-        return {}
-
-    with index_file.open("r", encoding="utf-8") as f:
-        weight_map = json.load(f)["weight_map"]
-
-    shards: dict[str, list[str]] = {}
-    for key, shard in weight_map.items():
-        if key.startswith(prefix):
-            shards.setdefault(shard, []).append(key)
-
-    state_dict: dict[str, torch.Tensor] = {}
-    for shard, keys in shards.items():
-        shard_weights = _load_bin_shard(str(model_path / shard))
-        for key in keys:
-            new_key = key[len(prefix) :]
-            state_dict[new_key] = shard_weights[key]
-    return state_dict
-
-
-def _load_bin_single(model_path: Path, prefix: str) -> dict[str, torch.Tensor]:
-    single = model_path / "pytorch_model.bin"
-    if not single.exists():
-        return {}
-
-    all_weights = _load_bin_shard(str(single))
-    return {k[len(prefix) :]: v for k, v in all_weights.items() if k.startswith(prefix)}
-
-
 def _normalize_prefixes(prefixes: str | tuple[str, ...] | list[str]) -> tuple[str, ...]:
     if isinstance(prefixes, str):
         return (prefixes,)
@@ -140,13 +105,12 @@ def _normalize_prefixes(prefixes: str | tuple[str, ...] | list[str]) -> tuple[st
 
 
 def load_weights_by_prefix(
-    model_id: str,
+    model_path: str | Path,
     *,
     prefix: str | tuple[str, ...] | list[str],
-    local_files_only: bool = False,
 ) -> dict[str, torch.Tensor]:
-    """Load weights matching one of the prefixes, stripping the matched prefix."""
-    model_path = resolve_model_path(model_id, local_files_only=local_files_only)
+    """Load safetensors weights matching one of the prefixes, stripping the matched prefix."""
+    model_path = Path(model_path)
     prefixes = _normalize_prefixes(prefix)
 
     for prefix_item in prefixes:
@@ -156,33 +120,25 @@ def load_weights_by_prefix(
         state_dict = _load_safetensors_single(model_path, prefix_item)
         if state_dict:
             return state_dict
-        state_dict = _load_bin_sharded(model_path, prefix_item)
-        if state_dict:
-            return state_dict
-        state_dict = _load_bin_single(model_path, prefix_item)
-        if state_dict:
-            return state_dict
 
     raise FileNotFoundError(
-        f"No weights found for prefixes {list(prefixes)!r} under {model_path}"
+        f"No safetensors weights found for prefixes {list(prefixes)!r} under {model_path}"
     )
 
 
 def load_module(
     module: nn.Module,
-    model_id: str,
+    model_path: str | Path,
     *,
     prefix: str | tuple[str, ...] | list[str],
     dtype: torch.dtype | None = None,
     device: str | torch.device | None = None,
     strict: bool = True,
-    local_files_only: bool = False,
 ) -> nn.Module:
     """Load weights into module by prefix, optionally move to device."""
     state_dict = load_weights_by_prefix(
-        model_id,
+        model_path,
         prefix=prefix,
-        local_files_only=local_files_only,
     )
     module.load_state_dict(state_dict, strict=strict)
     module.eval()

@@ -8,11 +8,7 @@ import torch.nn as nn
 
 from sglang_omni.models.qwen3_omni.components.torch_common import load_config_dict
 from sglang_omni.models.qwen3_omni.modeling import Qwen3OmniAudioEncoder as TorchAudio
-from sglang_omni.models.weight_loader import (
-    load_weights_by_prefix,
-    resolve_dtype,
-    resolve_model_path,
-)
+from sglang_omni.models.weight_loader import load_weights_by_prefix, resolve_dtype
 
 
 class Qwen3OmniTorchAudioEncoder(nn.Module):
@@ -20,16 +16,15 @@ class Qwen3OmniTorchAudioEncoder(nn.Module):
 
     def __init__(
         self,
-        model_id: str,
+        model_path: str,
         *,
         device: str = "cuda",
         dtype: str | torch.dtype | None = None,
-        local_files_only: bool = False,
     ) -> None:
         super().__init__()
         self._device = torch.device(device)
         torch_dtype = resolve_dtype(dtype)
-        config = load_config_dict(model_id, local_files_only=local_files_only)
+        config = load_config_dict(model_path)
         self.audio_tower = TorchAudio(config)
         if torch_dtype is not None:
             self.audio_tower = self.audio_tower.to(dtype=torch_dtype)
@@ -37,9 +32,8 @@ class Qwen3OmniTorchAudioEncoder(nn.Module):
         self.audio_tower.eval()
 
         state_dict = load_weights_by_prefix(
-            model_id,
+            model_path,
             prefix=("thinker.audio_tower.", "audio_tower."),
-            local_files_only=local_files_only,
         )
         self.audio_tower.load_state_dict(state_dict, strict=True)
 

@@ -8,16 +8,19 @@ import asyncio
 
 from sglang_omni.config import PipelineRunner, compile_pipeline
 from sglang_omni.models.qwen3_omni import create_text_first_pipeline_config
+from sglang_omni.models.weight_loader import resolve_model_path
 from sglang_omni.proto import OmniRequest
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
+        "--model-path",
         "--model-id",
+        dest="model_path",
         type=str,
         default="Qwen/Qwen3-Omni-30B-A3B-Instruct",
-        help="Hugging Face model id",
+        help="Local model path or Hugging Face model id",
     )
     parser.add_argument("--prompt", type=str, default="Describe this input.")
     parser.add_argument("--dtype", type=str, default="bfloat16")
@@ -28,6 +31,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--image-device", type=str, default="cuda:3")
     parser.add_argument("--audio-device", type=str, default="cuda:3")
     parser.add_argument("--thinker-device", type=str, default="cuda:3")
+    parser.add_argument(
+        "--local-files-only",
+        action="store_true",
+        help="Only load models from the local HF cache (no downloads).",
+    )
     parser.add_argument("--image-path", type=str, default=None)
     parser.add_argument("--audio-path", type=str, default=None)
     parser.add_argument("--audio-target-sr", type=int, default=16000)
@@ -42,8 +50,11 @@ def parse_args() -> argparse.Namespace:
 
 
 async def main_async(args: argparse.Namespace) -> None:
+    model_path = resolve_model_path(
+        args.model_path, local_files_only=args.local_files_only
+    )
     config = create_text_first_pipeline_config(
-        model_id=args.model_id,
+        model_path=str(model_path),
         frontend_device=args.frontend_device,
         image_device=args.image_device,
         audio_device=args.audio_device,
