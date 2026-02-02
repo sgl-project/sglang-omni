@@ -12,8 +12,9 @@ import logging
 import multiprocessing as mp
 import os
 import socket
-from typing import Any, List
 import time
+from typing import Any, List
+
 from sglang_omni import Coordinator
 
 # Configure logging
