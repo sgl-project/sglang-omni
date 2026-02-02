@@ -120,6 +120,18 @@ def run_stage(
         "recv_from_ranks": recv_from_ranks,
     }
 
+    # Add Mooncake-specific configuration
+    if relay_type == "mooncake":
+        device_str = f"cuda:{gpu_id}" if gpu_id is not None else "cuda"
+        relay_config.update(
+            {
+                "engine_id": f"engine_{name}",  # Unique engine ID per stage
+                "device": device_str,
+                "protocol": "tcp",  # Default to TCP for compatibility
+                "hostname": None,  # Auto-detect
+            }
+        )
+
     logger.info(
         "Stage %s initializing with %s (gpu_id=%s, rank=%s)",
         name,
@@ -281,7 +293,7 @@ def parse_args():
     parser.add_argument(
         "--relay",
         type=str,
-        choices=["nixl", "shm", "nccl"],
+        choices=["nixl", "shm", "nccl", "mooncake"],
         default="nccl",
         help="Relay backend to use (default: nccl)",
     )

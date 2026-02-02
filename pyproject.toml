@@ -27,6 +27,7 @@ dependencies = [
     "pytest>=7.0.0",
     "pytest-asyncio>=0.21.0",
     "nixl",
+    "mooncake-transfer-engine>=0.3.0",
     "logger",
     "httpx",
     "xxhash>=3.0.0",

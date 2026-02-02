@@ -48,6 +48,8 @@ def create_relay(relay_type: str, **kwargs) -> Relay:
                 from .shm import ShmRelay  # noqa
             elif relay_type == "nixl":
                 from .nixl import NixlRelay  # noqa
+            elif relay_type == "mooncake":
+                from .mooncake import MooncakeRelay  # noqa
         except ImportError:
             pass
 
