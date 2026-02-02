@@ -28,7 +28,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dtype", type=str, default="bfloat16")
     parser.add_argument("--thinker-max-seq-len", type=int, default=81920)
     parser.add_argument("--max-new-tokens", type=int, default=2048)
-    parser.add_argument("--temperature", type=float, default=1.0)
+    parser.add_argument("--temperature", type=float, default=0)
     parser.add_argument("--frontend-device", type=str, default="cpu")
     parser.add_argument("--image-device", type=str, default="cuda:3")
     parser.add_argument("--audio-device", type=str, default="cuda:3")

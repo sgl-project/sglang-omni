@@ -47,9 +47,13 @@ class Qwen3OmniTorchImageEncoder(nn.Module):
     def forward(
         self,
         *,
-        pixel_values: torch.Tensor,
-        image_grid_thw: torch.Tensor,
+        pixel_values: torch.Tensor | list | None = None,
+        image_grid_thw: torch.Tensor | list | None = None,
     ) -> dict[str, torch.Tensor]:
+        if not isinstance(pixel_values, torch.Tensor):
+            return {}
+        if not isinstance(image_grid_thw, torch.Tensor):
+            return {}
         image_grid_thw = image_grid_thw.to(self._device, dtype=torch.long)
         dtype = next(self.visual.parameters()).dtype
         pixel_values = pixel_values.to(device=self._device, dtype=dtype)

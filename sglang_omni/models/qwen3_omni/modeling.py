@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Any, Iterable
 
 import math
+import re
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -31,6 +32,36 @@ from .modules import (
     VisionPatchMerger,
     VisionRotaryEmbedding,
 )
+
+_EXPERT_RE = re.compile(
+    r'(.*\.mlp\.experts)\.(\d+)\.(gate_proj|up_proj|down_proj)\.weight'
+)
+
+
+def _load_expert_weight(params_dict, name, weight):
+    """Write a per-expert checkpoint weight into the fused 3D parameter."""
+    m = _EXPERT_RE.match(name)
+    if m is None:
+        return False
+    layer_prefix, expert_str, proj = m.group(1), m.group(2), m.group(3)
+    expert_idx = int(expert_str)
+    inter = weight.shape[0]
+    if proj == "gate_proj":
+        key = f"{layer_prefix}.gate_up_proj"
+        if key in params_dict:
+            params_dict[key].data[expert_idx, :inter] = weight
+            return True
+    elif proj == "up_proj":
+        key = f"{layer_prefix}.gate_up_proj"
+        if key in params_dict:
+            params_dict[key].data[expert_idx, inter:] = weight
+            return True
+    elif proj == "down_proj":
+        key = f"{layer_prefix}.down_proj"
+        if key in params_dict:
+            params_dict[key].data[expert_idx] = weight
+            return True
+    return False
 
 
 # ---- Output Types ----
@@ -77,9 +108,9 @@ def _maybe_apply_causal_mask(
     allow_none: bool,
 ) -> torch.Tensor | None:
     if attention_mask is None:
-        return _build_causal_mask(seq_length, device) if allow_none else None
+        return None
     if attention_mask.dim() == 2:
-        return _build_causal_mask(seq_length, device)
+        return None
     return attention_mask
 
 
@@ -559,6 +590,10 @@ class Qwen3OmniThinker(nn.Module):
 
             if "rotary_emb.inv_freq" in name or "visual" in name:
                 skipped_count += 1
+                continue
+
+            if _load_expert_weight(params_dict, name, loaded_weight):
+                loaded_count += 1
                 continue
 
             if name in params_dict:
@@ -1171,6 +1206,10 @@ class Qwen3OmniTalker(nn.Module):
 
             if "rotary_emb.inv_freq" in name:
                 skipped_count += 1
+                continue
+
+            if _load_expert_weight(params_dict, name, loaded_weight):
+                loaded_count += 1
                 continue
 
             if name in params_dict:

@@ -59,14 +59,23 @@ class Qwen3OmniImageEncoder(nn.Module):
     def forward(
         self,
         *,
-        pixel_values: torch.Tensor,
-        image_grid_thw: torch.Tensor,
+        pixel_values: torch.Tensor | list | None = None,
+        image_grid_thw: torch.Tensor | list | None = None,
     ) -> dict[str, torch.Tensor]:
+        if not isinstance(pixel_values, torch.Tensor):
+            return {}
+        if not isinstance(image_grid_thw, torch.Tensor):
+            return {}
         image_grid_thw = image_grid_thw.to(self._device, dtype=torch.long)
         pixel_values = pixel_values.to(device=self._device, dtype=self.visual.dtype)
         output = self.visual(pixel_values, grid_thw=image_grid_thw)
-        image_embeds = output.pooler_output
-        image_embeds_multiscale = output.deepstack_features
+        # Newer transformers returns a ModelOutput dataclass; older versions
+        # return a plain tuple (hidden_states, deepstack_feature_lists).
+        if isinstance(output, tuple):
+            image_embeds, image_embeds_multiscale = output
+        else:
+            image_embeds = output.pooler_output
+            image_embeds_multiscale = output.deepstack_features
         merge = self.spatial_merge_size**2
         image_token_counts = image_grid_thw.prod(-1) // merge
         return {

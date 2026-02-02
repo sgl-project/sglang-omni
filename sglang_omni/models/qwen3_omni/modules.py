@@ -195,9 +195,11 @@ class Attention(nn.Module):
         if use_cache:
             past_key_value = (k, v)
 
+        is_causal = attention_mask is None and past_key_value is None
         attn_output = F.scaled_dot_product_attention(
             q, k, v,
             attn_mask=attention_mask,
+            is_causal=is_causal,
             enable_gqa=self.num_kv_groups > 1,
         )
         attn_output = attn_output.transpose(1, 2).contiguous()
@@ -229,8 +231,8 @@ class MLP(nn.Module):
 # ---- MoE Components ----
 
 
-class MoeExperts(nn.ModuleList):
-    """Collection of MoE experts with checkpoint-compatible naming."""
+class MoeExperts(nn.Module):
+    """Fused MoE experts matching HF's gate_up_proj layout."""
 
     def __init__(
         self,
@@ -239,11 +241,38 @@ class MoeExperts(nn.ModuleList):
         moe_intermediate_size: int,
         hidden_act: str = "silu",
     ):
-        super().__init__([
-            MLP(hidden_size, moe_intermediate_size, hidden_act)
-            for _ in range(num_experts)
-        ])
+        super().__init__()
         self.num_experts = num_experts
+        self.hidden_size = hidden_size
+        self.intermediate_size = moe_intermediate_size
+        self.gate_up_proj = nn.Parameter(
+            torch.empty(num_experts, 2 * moe_intermediate_size, hidden_size)
+        )
+        self.down_proj = nn.Parameter(
+            torch.empty(num_experts, hidden_size, moe_intermediate_size)
+        )
+        self.act_fn = nn.SiLU() if hidden_act == "silu" else nn.GELU()
+
+    def _load_from_state_dict(self, state_dict, prefix, local_metadata, strict,
+                              missing_keys, unexpected_keys, error_msgs):
+        # Checkpoint stores per-expert separate weights:
+        #   {prefix}0.gate_proj.weight, {prefix}0.up_proj.weight, {prefix}0.down_proj.weight
+        # Fuse them into gate_up_proj and down_proj 3D tensors.
+        key0 = f"{prefix}0.gate_proj.weight"
+        if key0 in state_dict:
+            gate_list, up_list, down_list = [], [], []
+            for i in range(self.num_experts):
+                gate_list.append(state_dict.pop(f"{prefix}{i}.gate_proj.weight"))
+                up_list.append(state_dict.pop(f"{prefix}{i}.up_proj.weight"))
+                down_list.append(state_dict.pop(f"{prefix}{i}.down_proj.weight"))
+            state_dict[f"{prefix}gate_up_proj"] = torch.cat(
+                [torch.stack(gate_list), torch.stack(up_list)], dim=1
+            )
+            state_dict[f"{prefix}down_proj"] = torch.stack(down_list)
+        super()._load_from_state_dict(
+            state_dict, prefix, local_metadata, strict,
+            missing_keys, unexpected_keys, error_msgs,
+        )
 
     def forward(
         self,
@@ -265,9 +294,13 @@ class MoeExperts(nn.ModuleList):
             top_k_pos, token_idx = torch.where(expert_mask[expert_idx])
             current_state = hidden_states[token_idx]
 
-            current_hidden = self[expert_idx](current_state)
+            gate, up = F.linear(current_state, self.gate_up_proj[expert_idx]).chunk(2, dim=-1)
+            current_hidden = self.act_fn(gate) * up
+            current_hidden = F.linear(current_hidden, self.down_proj[expert_idx])
             current_hidden = current_hidden * top_k_weights[token_idx, top_k_pos, None]
-            final_hidden_states.index_add_(0, token_idx, current_hidden)
+            final_hidden_states.index_add_(
+                0, token_idx, current_hidden.to(final_hidden_states.dtype)
+            )
 
         return final_hidden_states
 
@@ -298,7 +331,9 @@ class TopKRouter(nn.Module):
         )
         if self.norm_topk_prob:
             top_k_weights = top_k_weights / top_k_weights.sum(dim=-1, keepdim=True)
-        top_k_weights = top_k_weights.to(hidden_states.dtype)
+        # Keep routing weights in float32 (matching HF) so the expert
+        # weight multiplication preserves precision.  The cast to the
+        # hidden_states dtype happens after multiplication in MoeExperts.
         return router_logits, top_k_weights, top_k_index
 
 

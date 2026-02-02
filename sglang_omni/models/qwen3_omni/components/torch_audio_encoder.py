@@ -6,7 +6,10 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
-from sglang_omni.models.qwen3_omni.components.torch_common import load_config_dict
+from sglang_omni.models.qwen3_omni.components.torch_common import (
+    get_feat_extract_output_lengths,
+    load_config_dict,
+)
 from sglang_omni.models.qwen3_omni.modeling import Qwen3OmniAudioEncoder as TorchAudio
 from sglang_omni.models.weight_loader import load_weights_by_prefixes, resolve_dtype
 
@@ -75,9 +78,7 @@ class Qwen3OmniTorchAudioEncoder(nn.Module):
             input_features=input_features,
             feature_lens=audio_feature_lengths,
         )
-        audio_output_lengths = self.audio_tower._get_feat_extract_output_lengths(  # pylint: disable=protected-access
-            audio_feature_lengths
-        )
+        audio_output_lengths = get_feat_extract_output_lengths(audio_feature_lengths)
         return {
             "audio_embeds": audio_embeds,
             "audio_feature_lengths": audio_feature_lengths,
