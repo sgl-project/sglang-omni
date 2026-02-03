@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import time
 
 from sglang_omni.config import PipelineRunner, compile_pipeline
 from sglang_omni.models.qwen3_omni import create_text_first_pipeline_config
@@ -30,9 +29,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-new-tokens", type=int, default=2048)
     parser.add_argument("--temperature", type=float, default=0)
     parser.add_argument("--frontend-device", type=str, default="cpu")
-    parser.add_argument("--image-device", type=str, default="cuda:3")
-    parser.add_argument("--audio-device", type=str, default="cuda:3")
-    parser.add_argument("--thinker-device", type=str, default="cuda:3")
+    parser.add_argument("--image-device", type=str, default="cuda:0")
+    parser.add_argument("--audio-device", type=str, default="cuda:0")
+    parser.add_argument("--thinker-device", type=str, default="cuda:0")
     parser.add_argument(
         "--local-files-only",
         action="store_true",
@@ -55,9 +54,7 @@ async def main_async(args: argparse.Namespace) -> None:
     model_path = resolve_model_path(
         args.model_path, local_files_only=args.local_files_only
     )
-    t0 = time.perf_counter()
     if args.backend.lower() in {"torch", "torch_native", "native"}:
-        print("[timing] preloading weights ...")
         preload_torch_weights(
             model_path=str(model_path),
             image_device=args.image_device,
@@ -65,7 +62,6 @@ async def main_async(args: argparse.Namespace) -> None:
             thinker_device=args.thinker_device,
             dtype=args.dtype,
         )
-        print(f"[timing] preload done  ({time.perf_counter() - t0:.1f}s)")
     config = create_text_first_pipeline_config(
         model_path=str(model_path),
         frontend_device=args.frontend_device,
@@ -76,14 +72,9 @@ async def main_async(args: argparse.Namespace) -> None:
         dtype=args.dtype,
         backend=args.backend,
     )
-    print(f"[timing] compiling pipeline ...")
     coordinator, stages = compile_pipeline(config)
-    print(f"[timing] compile done  ({time.perf_counter() - t0:.1f}s)")
     runner = PipelineRunner(coordinator, stages)
-
-    print(f"[timing] starting pipeline ...")
     await runner.start()
-    print(f"[timing] pipeline started  ({time.perf_counter() - t0:.1f}s)")
     try:
         images = [args.image_path] if args.image_path else []
         audios = [args.audio_path] if args.audio_path else []

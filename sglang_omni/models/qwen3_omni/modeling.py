@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Any, Iterable
 
@@ -14,6 +15,8 @@ import torch.nn.functional as F
 
 from sglang_omni.models.weight_utils import default_weight_loader
 from sglang_omni.models.utils.sampling import sample_top_k_top_p
+
+logger = logging.getLogger(__name__)
 
 from .modules import (
     AudioEncoderLayer,
@@ -603,7 +606,7 @@ class Qwen3OmniThinker(nn.Module):
             else:
                 skipped_count += 1
 
-        print(f"[Qwen3OmniThinker] Loaded {loaded_count} weights, skipped {skipped_count}")
+        logger.info("Qwen3OmniThinker: loaded %d weights, skipped %d", loaded_count, skipped_count)
 
 
 # ---- Talker - Audio Codec Generator ----
@@ -1219,7 +1222,7 @@ class Qwen3OmniTalker(nn.Module):
             else:
                 skipped_count += 1
 
-        print(f"[Qwen3OmniTalker] Loaded {loaded_count} weights, skipped {skipped_count}")
+        logger.info("Qwen3OmniTalker: loaded %d weights, skipped %d", loaded_count, skipped_count)
 
 
 # ---- Code2Wav - Vocoder ----
@@ -1361,7 +1364,7 @@ class Qwen3OmniCode2Wav(nn.Module):
             else:
                 skipped_count += 1
 
-        print(f"[Qwen3OmniCode2Wav] Loaded {loaded_count} weights, skipped {skipped_count}")
+        logger.info("Qwen3OmniCode2Wav: loaded %d weights, skipped %d", loaded_count, skipped_count)
 
 
 # ---- Model Registry ----
@@ -1731,7 +1734,6 @@ def run_talker_generation(
         )
         residual_codes_list.append(residual_codes)
 
-    import numpy as np
     residual_codes = torch.cat(residual_codes_list[: codec_ids.shape[1]], dim=1)
     codec_tensor = torch.cat([codec_ids.unsqueeze(1), residual_codes.unsqueeze(0)], dim=1)
 
