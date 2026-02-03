@@ -71,6 +71,7 @@ def build_thinker_inputs(
     mm_inputs = state.mm_inputs
     mm_image = mm_inputs.get("image", {}) if isinstance(mm_inputs, dict) else {}
     mm_audio = mm_inputs.get("audio", {}) if isinstance(mm_inputs, dict) else {}
+    mm_video = mm_inputs.get("video", {}) if isinstance(mm_inputs, dict) else {}
 
     image_out = (
         encoder_outs.get(IMAGE_STAGE, {}) if isinstance(encoder_outs, dict) else {}
@@ -78,20 +79,31 @@ def build_thinker_inputs(
     audio_out = (
         encoder_outs.get(AUDIO_STAGE, {}) if isinstance(encoder_outs, dict) else {}
     )
+    video_out = image_out
 
     image_embeds = (
         _as_tensor(image_out.get("image_embeds"))
         if isinstance(image_out, dict)
         else None
     )
-    deepstack_visual_embeds = (
-        _as_tensor_list(image_out.get("deepstack_visual_embeds"))
+    image_deepstack_visual_embeds = (
+        _as_tensor_list(image_out.get("deepstack_visual_embeds_image"))
         if isinstance(image_out, dict)
+        else None
+    )
+    video_deepstack_visual_embeds = (
+        _as_tensor_list(video_out.get("deepstack_visual_embeds_video"))
+        if isinstance(video_out, dict)
         else None
     )
     audio_embeds = (
         _as_tensor(audio_out.get("audio_embeds"))
         if isinstance(audio_out, dict)
+        else None
+    )
+    video_embeds = (
+        _as_tensor(video_out.get("video_embeds"))
+        if isinstance(video_out, dict)
         else None
     )
 
@@ -101,6 +113,15 @@ def build_thinker_inputs(
             if isinstance(image_out, dict)
             and image_out.get("image_grid_thw") is not None
             else mm_image.get("image_grid_thw")
+        ),
+        dtype=torch.long,
+    )
+    video_grid_thw = _as_tensor(
+        (
+            video_out.get("video_grid_thw")
+            if isinstance(video_out, dict)
+            and video_out.get("video_grid_thw") is not None
+            else mm_video.get("video_grid_thw")
         ),
         dtype=torch.long,
     )
@@ -117,20 +138,48 @@ def build_thinker_inputs(
         ),
         dtype=torch.long,
     )
+    video_second_per_grid = _as_tensor(
+        mm_video.get("video_second_per_grid"),
+        dtype=torch.float,
+    )
 
     thinker_model_inputs: dict[str, Any] = {}
-    if _non_empty(image_embeds):
+    has_image = _non_empty(image_embeds)
+    has_video = _non_empty(video_embeds)
+    if has_image:
         thinker_model_inputs["image_embeds"] = image_embeds
-    if deepstack_visual_embeds:
-        thinker_model_inputs["deepstack_visual_embeds"] = deepstack_visual_embeds
+    if has_video:
+        thinker_model_inputs["video_embeds"] = video_embeds
+    if (
+        has_image
+        and image_deepstack_visual_embeds
+        and has_video
+        and video_deepstack_visual_embeds
+    ):
+        thinker_model_inputs["image_deepstack_visual_embeds"] = (
+            image_deepstack_visual_embeds
+        )
+        thinker_model_inputs["video_deepstack_visual_embeds"] = (
+            video_deepstack_visual_embeds
+        )
+    elif has_image and image_deepstack_visual_embeds:
+        thinker_model_inputs["deepstack_visual_embeds"] = image_deepstack_visual_embeds
+    elif has_video and video_deepstack_visual_embeds:
+        thinker_model_inputs["deepstack_visual_embeds"] = video_deepstack_visual_embeds
     if _non_empty(audio_embeds):
         thinker_model_inputs["audio_embeds"] = audio_embeds
     if _non_empty(image_grid_thw):
         thinker_model_inputs["image_grid_thw"] = image_grid_thw
+    if _non_empty(video_grid_thw):
+        thinker_model_inputs["video_grid_thw"] = video_grid_thw
     if _non_empty(feature_attention_mask):
         thinker_model_inputs["feature_attention_mask"] = feature_attention_mask
     if _non_empty(audio_feature_lengths):
         thinker_model_inputs["audio_feature_lengths"] = audio_feature_lengths
+    if _non_empty(video_second_per_grid):
+        thinker_model_inputs["video_second_per_grid"] = video_second_per_grid
+    if mm_video.get("use_audio_in_video") is True:
+        thinker_model_inputs["use_audio_in_video"] = True
 
     return {"model_inputs": thinker_model_inputs}
 
@@ -142,6 +191,7 @@ def _prune_frontend_for_thinker(
     mm_inputs = state.mm_inputs
     mm_image = mm_inputs.get("image", {}) if isinstance(mm_inputs, dict) else {}
     mm_audio = mm_inputs.get("audio", {}) if isinstance(mm_inputs, dict) else {}
+    mm_video = mm_inputs.get("video", {}) if isinstance(mm_inputs, dict) else {}
 
     image_out = (
         encoder_outs.get(IMAGE_STAGE, {}) if isinstance(encoder_outs, dict) else {}
@@ -149,6 +199,7 @@ def _prune_frontend_for_thinker(
     audio_out = (
         encoder_outs.get(AUDIO_STAGE, {}) if isinstance(encoder_outs, dict) else {}
     )
+    video_out = image_out
 
     image_grid_thw = _as_tensor(
         (
@@ -168,10 +219,29 @@ def _prune_frontend_for_thinker(
         ),
         dtype=torch.long,
     )
+    video_grid_thw = _as_tensor(
+        (
+            video_out.get("video_grid_thw")
+            if isinstance(video_out, dict)
+            and video_out.get("video_grid_thw") is not None
+            else mm_video.get("video_grid_thw")
+        ),
+        dtype=torch.long,
+    )
+    video_second_per_grid = _as_tensor(
+        mm_video.get("video_second_per_grid"),
+        dtype=torch.float,
+    )
+    use_audio_in_video = mm_video.get("use_audio_in_video")
 
     state.mm_inputs = {
         "image": {"image_grid_thw": image_grid_thw},
         "audio": {"audio_feature_lengths": audio_feature_lengths},
+        "video": {
+            "video_grid_thw": video_grid_thw,
+            "video_second_per_grid": video_second_per_grid,
+            "use_audio_in_video": use_audio_in_video,
+        },
     }
 
 

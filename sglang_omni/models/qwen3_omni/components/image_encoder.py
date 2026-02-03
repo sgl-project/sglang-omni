@@ -59,19 +59,51 @@ class Qwen3OmniImageEncoder(nn.Module):
     def forward(
         self,
         *,
-        pixel_values: torch.Tensor,
-        image_grid_thw: torch.Tensor,
+        pixel_values: torch.Tensor | None = None,
+        image_grid_thw: torch.Tensor | None = None,
+        pixel_values_videos: torch.Tensor | None = None,
+        video_grid_thw: torch.Tensor | None = None,
+        **_: object,
     ) -> dict[str, torch.Tensor]:
-        image_grid_thw = image_grid_thw.to(self._device, dtype=torch.long)
-        pixel_values = pixel_values.to(device=self._device, dtype=self.visual.dtype)
-        image_embeds, image_embeds_multiscale = self.visual(
-            pixel_values, grid_thw=image_grid_thw
-        )
+        outputs: dict[str, torch.Tensor] = {}
         merge = self.spatial_merge_size**2
-        image_token_counts = image_grid_thw.prod(-1) // merge
-        return {
-            "image_embeds": image_embeds,
-            "image_grid_thw": image_grid_thw,
-            "image_token_counts": image_token_counts.to(device=self._device),
-            "deepstack_visual_embeds": image_embeds_multiscale,
-        }
+
+        if isinstance(pixel_values, torch.Tensor) and isinstance(
+            image_grid_thw, torch.Tensor
+        ):
+            image_grid_thw = image_grid_thw.to(self._device, dtype=torch.long)
+            pixel_values = pixel_values.to(device=self._device, dtype=self.visual.dtype)
+            image_embeds, image_embeds_multiscale = self.visual(
+                pixel_values, grid_thw=image_grid_thw
+            )
+            image_token_counts = image_grid_thw.prod(-1) // merge
+            outputs.update(
+                {
+                    "image_embeds": image_embeds,
+                    "image_grid_thw": image_grid_thw,
+                    "image_token_counts": image_token_counts.to(device=self._device),
+                    "deepstack_visual_embeds_image": image_embeds_multiscale,
+                }
+            )
+
+        if isinstance(pixel_values_videos, torch.Tensor) and isinstance(
+            video_grid_thw, torch.Tensor
+        ):
+            video_grid_thw = video_grid_thw.to(self._device, dtype=torch.long)
+            pixel_values_videos = pixel_values_videos.to(
+                device=self._device, dtype=self.visual.dtype
+            )
+            video_embeds, video_embeds_multiscale = self.visual(
+                pixel_values_videos, grid_thw=video_grid_thw
+            )
+            video_token_counts = video_grid_thw.prod(-1) // merge
+            outputs.update(
+                {
+                    "video_embeds": video_embeds,
+                    "video_grid_thw": video_grid_thw,
+                    "video_token_counts": video_token_counts.to(device=self._device),
+                    "deepstack_visual_embeds_video": video_embeds_multiscale,
+                }
+            )
+
+        return outputs

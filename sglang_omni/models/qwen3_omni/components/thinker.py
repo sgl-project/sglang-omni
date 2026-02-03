@@ -164,23 +164,22 @@ class Qwen3OmniSplitThinker(nn.Module):
         input_ids: torch.Tensor,
         inputs_embeds: torch.Tensor,
         image_embeds: torch.Tensor | None,
+        video_embeds: torch.Tensor | None,
         audio_embeds: torch.Tensor | None,
-    ) -> tuple[torch.Tensor, torch.Tensor | None]:
-        image_mask, _, audio_mask = self.thinker.get_placeholder_mask(
-            input_ids,
-            inputs_embeds=inputs_embeds,
-            image_features=image_embeds,
-        )
-        image_mask_out = image_mask if image_embeds is not None else None
+    ) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor | None]:
+        # Follow HF implementation order: audio -> image -> video
+        # Get masks as needed, matching HF's pattern of calling get_placeholder_mask
+        # for each modality with updated inputs_embeds
 
-        if image_embeds is not None:
-            image_embeds = image_embeds.to(
-                device=inputs_embeds.device,
-                dtype=inputs_embeds.dtype,
-            )
-            inputs_embeds = inputs_embeds.masked_scatter(image_mask, image_embeds)
+        image_mask_out = None
+        video_mask_out = None
 
+        # 1. Process audio first (matches HF order)
         if audio_embeds is not None:
+            _, _, audio_mask = self.thinker.get_placeholder_mask(
+                input_ids,
+                inputs_embeds=inputs_embeds,
+            )
             audio_token_count = int(
                 (input_ids == self.thinker.config.audio_token_id).sum().item()
             )
@@ -195,7 +194,43 @@ class Qwen3OmniSplitThinker(nn.Module):
             )
             inputs_embeds = inputs_embeds.masked_scatter(audio_mask, audio_embeds)
 
-        return inputs_embeds, image_mask_out
+        # 2. Process image (matches HF order)
+        if image_embeds is not None:
+            image_mask, _, _ = self.thinker.get_placeholder_mask(
+                input_ids,
+                inputs_embeds=inputs_embeds,
+                image_features=image_embeds,
+            )
+            image_mask_out = image_mask
+            image_embeds = image_embeds.to(
+                device=inputs_embeds.device,
+                dtype=inputs_embeds.dtype,
+            )
+            inputs_embeds = inputs_embeds.masked_scatter(image_mask, image_embeds)
+
+        # 3. Process video last (matches HF order)
+        if video_embeds is not None:
+            _, video_mask, _ = self.thinker.get_placeholder_mask(
+                input_ids,
+                inputs_embeds=inputs_embeds,
+                video_features=video_embeds,
+            )
+            video_mask_out = video_mask
+            video_token_count = int(
+                (input_ids == self.thinker.config.video_token_id).sum().item()
+            )
+            if video_token_count != int(video_embeds.shape[0]):
+                raise ValueError(
+                    "Video placeholder count mismatch: "
+                    f"tokens={video_token_count} embeds={video_embeds.shape[0]}"
+                )
+            video_embeds = video_embeds.to(
+                device=inputs_embeds.device,
+                dtype=inputs_embeds.dtype,
+            )
+            inputs_embeds = inputs_embeds.masked_scatter(video_mask, video_embeds)
+
+        return inputs_embeds, image_mask_out, video_mask_out
 
     def forward(
         self,
@@ -203,12 +238,20 @@ class Qwen3OmniSplitThinker(nn.Module):
         attention_mask: torch.Tensor | None = None,
         inputs_embeds: torch.Tensor | None = None,
         image_embeds: torch.Tensor | list[torch.Tensor] | None = None,
+        video_embeds: torch.Tensor | list[torch.Tensor] | None = None,
         audio_embeds: torch.Tensor | list[torch.Tensor] | None = None,
         **kwargs: Any,
     ):
         image_embeds_t = _concat_features(image_embeds)
+        video_embeds_t = _concat_features(video_embeds)
         audio_embeds_t = _concat_features(audio_embeds)
         deepstack_visual_embeds = kwargs.pop("deepstack_visual_embeds", None)
+        image_deepstack_visual_embeds = kwargs.pop(
+            "image_deepstack_visual_embeds", None
+        )
+        video_deepstack_visual_embeds = kwargs.pop(
+            "video_deepstack_visual_embeds", None
+        )
         visual_pos_masks = kwargs.pop("visual_pos_masks", None)
 
         if inputs_embeds is not None:
@@ -218,30 +261,101 @@ class Qwen3OmniSplitThinker(nn.Module):
         manual_merge_done = False
 
         if inputs_embeds is None and (
-            image_embeds_t is not None or audio_embeds_t is not None
+            image_embeds_t is not None
+            or video_embeds_t is not None
+            or audio_embeds_t is not None
         ):
             inputs_embeds = self.thinker.get_input_embeddings()(
                 input_ids.to(self._device)
             )
 
         if inputs_embeds is not None and (
-            image_embeds_t is not None or audio_embeds_t is not None
+            image_embeds_t is not None
+            or video_embeds_t is not None
+            or audio_embeds_t is not None
         ):
             image_embeds_t = (
                 image_embeds_t.to(self._device) if image_embeds_t is not None else None
             )
+            video_embeds_t = (
+                video_embeds_t.to(self._device) if video_embeds_t is not None else None
+            )
             audio_embeds_t = (
                 audio_embeds_t.to(self._device) if audio_embeds_t is not None else None
             )
-            inputs_embeds, image_mask = self._merge_embeddings(
+            inputs_embeds, image_mask, video_mask = self._merge_embeddings(
                 input_ids=input_ids.to(self._device),
                 inputs_embeds=inputs_embeds,
                 image_embeds=image_embeds_t,
+                video_embeds=video_embeds_t,
                 audio_embeds=audio_embeds_t,
             )
             manual_merge_done = True
         else:
             image_mask = None
+            video_mask = None
+
+        if deepstack_visual_embeds is None and (
+            image_deepstack_visual_embeds or video_deepstack_visual_embeds
+        ):
+            if image_deepstack_visual_embeds and video_deepstack_visual_embeds:
+                if image_mask is None or video_mask is None:
+                    raise ValueError(
+                        "Missing visual masks for merged deepstack embeddings."
+                    )
+                # Follow HF implementation: visual_pos_masks = image_mask | video_mask
+                # Both masks have shape (batch_size, seq_len, hidden_size)
+                visual_pos_masks_local = image_mask | video_mask
+
+                # Extract boolean masks for visual positions only
+                # image_mask[visual_pos_masks_local] gives a 1D boolean array of length visual_pos_masks_local.sum()
+                # indicating which positions in the visual set are image positions
+                # This matches HF's implementation: image_mask_joint = image_mask[visual_pos_masks]
+                image_mask_joint = image_mask[visual_pos_masks_local]
+                video_mask_joint = video_mask[visual_pos_masks_local]
+
+                merged: list[torch.Tensor] = []
+                for img_embed, vid_embed in zip(
+                    image_deepstack_visual_embeds, video_deepstack_visual_embeds
+                ):
+                    # embed_joint length = visual_pos_masks_local.sum() (all visual positions)
+                    num_visual_pos = int(visual_pos_masks_local.sum().item())
+                    embed_joint = img_embed.new_zeros(
+                        num_visual_pos, img_embed.shape[-1]
+                    )
+                    # img_embed length should match image_mask_joint.sum() (image positions in visual set)
+                    # This should equal all image positions if all images are visual
+                    if image_mask_joint.any():
+                        num_image_in_visual = int(image_mask_joint.sum().item())
+                        if num_image_in_visual == img_embed.shape[0]:
+                            # All image positions are in visual set, direct assignment
+                            embed_joint[image_mask_joint, :] = img_embed
+                        else:
+                            raise ValueError(
+                                f"Image embed length mismatch: "
+                                f"img_embed.shape[0]={img_embed.shape[0]}, "
+                                f"image_mask_joint.sum()={num_image_in_visual}"
+                            )
+
+                    if video_mask_joint.any():
+                        num_video_in_visual = int(video_mask_joint.sum().item())
+                        if num_video_in_visual == vid_embed.shape[0]:
+                            # All video positions are in visual set, direct assignment
+                            embed_joint[video_mask_joint, :] = vid_embed
+                        else:
+                            raise ValueError(
+                                f"Video embed length mismatch: "
+                                f"vid_embed.shape[0]={vid_embed.shape[0]}, "
+                                f"video_mask_joint.sum()={num_video_in_visual}"
+                            )
+                    merged.append(embed_joint)
+                deepstack_visual_embeds = merged
+                if visual_pos_masks is None:
+                    visual_pos_masks = visual_pos_masks_local
+            elif image_deepstack_visual_embeds:
+                deepstack_visual_embeds = image_deepstack_visual_embeds
+            elif video_deepstack_visual_embeds:
+                deepstack_visual_embeds = video_deepstack_visual_embeds
 
         # Only pass deepstack_visual_embeds if we haven't already merged embeddings
         # This avoids the HF model trying to merge visual features twice
@@ -249,8 +363,13 @@ class Qwen3OmniSplitThinker(nn.Module):
             kwargs["deepstack_visual_embeds"] = deepstack_visual_embeds
             if visual_pos_masks is not None:
                 kwargs["visual_pos_masks"] = visual_pos_masks
-            elif image_mask is not None:
-                kwargs["visual_pos_masks"] = image_mask
+            elif image_mask is not None or video_mask is not None:
+                if image_mask is None:
+                    kwargs["visual_pos_masks"] = video_mask
+                elif video_mask is None:
+                    kwargs["visual_pos_masks"] = image_mask
+                else:
+                    kwargs["visual_pos_masks"] = image_mask | video_mask
 
         return self.thinker(
             input_ids=input_ids.to(self._device),

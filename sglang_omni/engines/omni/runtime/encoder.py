@@ -142,7 +142,9 @@ class EncoderInputPreparer:
             batched: dict[str, Any] = {}
             cat_keys = {
                 "pixel_values",
+                "pixel_values_videos",
                 "image_grid_thw",
+                "video_grid_thw",
                 "input_features",
                 "feature_attention_mask",
                 "audio_feature_lengths",
@@ -241,9 +243,11 @@ class EncoderOutputProcessor:
 
             image_counts = model_output.get("image_token_counts")
             audio_counts = model_output.get("audio_output_lengths")
+            video_counts = model_output.get("video_token_counts")
 
             image_sizes: list[int] = []
             audio_sizes: list[int] = []
+            video_sizes: list[int] = []
             for req_idx in active_indices:
                 inp = input_dicts[req_idx] if req_idx < len(input_dicts) else {}
                 grid = inp.get("image_grid_thw")
@@ -261,6 +265,16 @@ class EncoderOutputProcessor:
                     audio_sizes.append(int(lengths.numel()))
                 else:
                     audio_sizes.append(0)
+                video_grid = inp.get("video_grid_thw")
+                if isinstance(video_grid, torch.Tensor):
+                    if video_grid.dim() >= 2:
+                        video_sizes.append(int(video_grid.shape[0]))
+                    elif video_grid.numel() > 0:
+                        video_sizes.append(1)
+                    else:
+                        video_sizes.append(0)
+                else:
+                    video_sizes.append(0)
 
             def _split_by_sizes(
                 value: torch.Tensor, sizes: list[int]
@@ -299,6 +313,13 @@ class EncoderOutputProcessor:
                 embed_splits["audio_embeds"] = _split_by_counts(
                     model_output["audio_embeds"], audio_counts
                 )
+            if (
+                isinstance(video_counts, torch.Tensor)
+                and "video_embeds" in model_output
+            ):
+                embed_splits["video_embeds"] = _split_by_counts(
+                    model_output["video_embeds"], video_counts
+                )
 
             for out_idx, req_idx in enumerate(active_indices):
                 request = scheduler_output.requests[req_idx]
@@ -307,6 +328,16 @@ class EncoderOutputProcessor:
                     if key == "image_grid_thw" and isinstance(value, torch.Tensor):
                         if image_sizes and sum(image_sizes) == value.shape[0]:
                             out[key] = _split_by_sizes(value, image_sizes)[out_idx]
+                        else:
+                            out[key] = (
+                                value
+                                if len(active_indices) == 1
+                                else value[out_idx : out_idx + 1]
+                            )
+                        continue
+                    if key == "video_grid_thw" and isinstance(value, torch.Tensor):
+                        if video_sizes and sum(video_sizes) == value.shape[0]:
+                            out[key] = _split_by_sizes(value, video_sizes)[out_idx]
                         else:
                             out[key] = (
                                 value
@@ -329,6 +360,7 @@ class EncoderOutputProcessor:
                     if key in {
                         "image_token_counts",
                         "audio_output_lengths",
+                        "video_token_counts",
                     } and isinstance(value, torch.Tensor):
                         if value.dim() == 1 and value.shape[0] == len(active_indices):
                             out[key] = value[out_idx : out_idx + 1]
