@@ -10,7 +10,7 @@ from typing import Any
 import av
 import librosa
 import torch
-from qwen_omni_utils.v2_5 import vision_process as qwen_vision
+from qwen_vl_utils import vision_process as qwen_vision
 from torchvision.transforms import InterpolationMode
 from torchvision.transforms import functional as tv_f
 
@@ -145,7 +145,13 @@ def extract_audio_from_video_inputs(
         if not _check_if_video_has_audio(video_path):
             return _disable(f"Video {video_path} has no audio track.")
 
-        audio, _ = librosa.load(str(video_path), sr=target_sr)
-        extracted_audios.append(audio)
+        try:
+            audio, _ = librosa.load(str(video_path), sr=target_sr)
+            extracted_audios.append(audio)
+        except Exception as e:
+            return _disable(
+                f"Failed to extract audio from {video_path}: {e}. "
+                "This may require ffmpeg to be installed."
+            )
 
     return (extracted_audios, True) if extracted_audios else (None, False)

@@ -27,9 +27,9 @@ from sglang_omni.config import PipelineRunner, compile_pipeline
 from sglang_omni.models.qwen3_omni import create_text_first_pipeline_config
 from sglang_omni.proto import OmniRequest
 
-video_path = "/workdir/sglang_omni_dev/0203/omni/tests/data/draw.mp4"
-image_path = "/workdir/sglang_omni_dev/0203/omni/tests/data/cars.jpg"
-model_path = "/workdir/huggingface.co/Qwen/Qwen3-Omni-30B-A3B-Instruct"
+video_path = "/sgl-workspace/sglang-omni/tests/data/draw.mp4"
+image_path = "/sgl-workspace/sglang-omni/tests/data/cars.jpg"
+model_path = "Qwen/Qwen3-Omni-30B-A3B-Instruct"
 
 
 def parse_args() -> argparse.Namespace:
