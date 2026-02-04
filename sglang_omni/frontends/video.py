@@ -24,7 +24,6 @@ def ensure_video_list(
     *,
     fps: float | None = None,
 ) -> tuple[list[Any], list[float] | None]:
-    """Normalize video inputs into a list, sampling like qwen_omni_utils."""
     if videos is None:
         return [], None
     if isinstance(videos, list):
@@ -34,13 +33,13 @@ def ensure_video_list(
     normalized: list[Any] = []
     sample_fps_list: list[float] = []
     all_paths = True
-    for item in items:
-        if isinstance(item, (str, Path)) and Path(item).exists():
-            video, sample_fps = load_video_path(item, fps=fps)
+    for video_item in items:
+        if isinstance(video_item, (str, Path)) and Path(video_item).exists():
+            video, sample_fps = load_video_path(video_item, fps=fps)
             normalized.append(video)
             sample_fps_list.append(sample_fps)
         else:
-            normalized.append(item)
+            normalized.append(video_item)
             all_paths = False
     if all_paths:
         return normalized, sample_fps_list
@@ -93,10 +92,6 @@ def load_video_path(
 
 
 def build_video_mm_inputs(hf_inputs: dict[str, Any]) -> dict[str, Any]:
-    """Extract standard video tensors from HF processor outputs.
-
-    This is a placeholder schema; refine it after more models are integrated.
-    """
     return {
         "pixel_values_videos": hf_inputs.get("pixel_values_videos"),
         "video_grid_thw": hf_inputs.get("video_grid_thw"),
@@ -105,16 +100,10 @@ def build_video_mm_inputs(hf_inputs: dict[str, Any]) -> dict[str, Any]:
 
 
 def compute_video_cache_key(videos: Any) -> str | None:
-    """Compute cache key from raw video inputs (paths, URLs, tensors).
-
-    This should be called BEFORE ensure_video_list() to capture original
-    paths/URLs which are much cheaper to hash than decoded frames.
-    """
     return compute_media_cache_key(videos, prefix="video")
 
 
 def _check_if_video_has_audio(video_path: str | Path) -> bool:
-    """Check if a video file has an audio track."""
     try:
         container = av.open(str(video_path))
         audio_streams = [
@@ -130,61 +119,33 @@ def _check_if_video_has_audio(video_path: str | Path) -> bool:
 def extract_audio_from_video_inputs(
     videos: Any, *, use_audio_in_video: bool, target_sr: int = 16000
 ) -> tuple[list[Any] | None, bool]:
-    """Extract audio from local video paths when use_audio_in_video=True.
-
-    Returns (audio_list, use_audio_in_video) where:
-    - audio_list: List of numpy arrays (one per video) if extraction succeeds, None otherwise
-    - use_audio_in_video: Updated flag (False if extraction fails or videos are not local paths)
-
-    This follows the logic from qwen_omni_utils.v2_5.audio_process.process_audio_info.
-    """
     if not use_audio_in_video or not videos:
         return None, use_audio_in_video
 
+    def _disable(reason: str) -> tuple[list[Any] | None, bool]:
+        logger.warning(f"{reason} Falling back to use_audio_in_video=False")
+        return None, False
+
     # Normalize to list
-    if isinstance(videos, list):
-        video_items = videos
-    else:
-        video_items = [videos]
+    video_items = videos if isinstance(videos, list) else [videos]
 
     extracted_audios: list[Any] = []
     for item in video_items:
-        # Only extract from local file paths
         if not isinstance(item, (str, Path)):
-            logger.warning(
-                f"Video item {item} is not a local path, cannot extract audio. "
-                "Falling back to use_audio_in_video=False"
+            return _disable(
+                f"Video item {item} is not a local path, cannot extract audio."
             )
-            return None, False
 
         video_path = Path(item)
         if not video_path.exists():
-            logger.warning(
-                f"Video path {video_path} does not exist, cannot extract audio. "
-                "Falling back to use_audio_in_video=False"
+            return _disable(
+                f"Video path {video_path} does not exist, cannot extract audio."
             )
-            return None, False
 
-        # Check if video has audio track
         if not _check_if_video_has_audio(video_path):
-            logger.warning(
-                f"Video {video_path} has no audio track. "
-                "Falling back to use_audio_in_video=False"
-            )
-            return None, False
+            return _disable(f"Video {video_path} has no audio track.")
 
-        # Extract audio using librosa (same as qwen_omni_utils)
-        try:
-            audio, _ = librosa.load(str(video_path), sr=target_sr)
-            extracted_audios.append(audio)
-        except Exception as e:
-            logger.warning(
-                f"Failed to extract audio from video {video_path}: {e}. "
-                "Falling back to use_audio_in_video=False"
-            )
-            return None, False
+        audio, _ = librosa.load(str(video_path), sr=target_sr)
+        extracted_audios.append(audio)
 
-    if not extracted_audios:
-        return None, False
-
-    return extracted_audios, True
+    return (extracted_audios, True) if extracted_audios else (None, False)

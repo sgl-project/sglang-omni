@@ -8,22 +8,18 @@ import asyncio
 import logging
 import sys
 
-# 配置详细的日志输出
 logging.basicConfig(
-    level=logging.DEBUG,  # 改为 DEBUG 级别以显示更多信息
+    level=logging.DEBUG,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     stream=sys.stdout,
     force=True,
 )
 
-# 设置各个模块的日志级别
 logging.getLogger("sglang_omni").setLevel(logging.DEBUG)
 logging.getLogger("sglang_omni.pipeline").setLevel(logging.DEBUG)
 logging.getLogger("sglang_omni.engines").setLevel(logging.DEBUG)
 logging.getLogger("sglang_omni.relay").setLevel(logging.DEBUG)
-logging.getLogger("transformers").setLevel(
-    logging.INFO
-)  # transformers 日志太多，保持 INFO
+logging.getLogger("transformers").setLevel(logging.INFO)
 
 logger = logging.getLogger(__name__)
 
