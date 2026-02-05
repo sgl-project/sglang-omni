@@ -2,8 +2,8 @@
 /docker @FrankLeeeee
 /examples @FrankLeeeee @sleepcoo
 /sglang_omni/config @FrankLeeeee
-/sglang_omni/engines @shuaills @ocss884 @FlamingoPg
-/sglang_omni/executors @shuaills @ocss884 @FlamingoPg
+/sglang_omni/engines @shuaills @ocss884 @FlamingoPg @sleepcoo
+/sglang_omni/executors @shuaills @ocss884 @FlamingoPg @sleepcoo
 /sglang_omni/frontends @FrankLeeeee @shuaills
 /sglang_omni/gateway @shuaills
 /sglang_omni/models @FlamingoPg @shuaills @ocss884
