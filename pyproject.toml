@@ -16,6 +16,7 @@ dependencies = [
     "numpy>=1.24.0",          # Array operations
     "pydantic>=2.0.0",        # Data validation and serialization
     "torch>=2.9.1",           # PyTorch for tensor operations
+    "torchvision>=0.24.1",    # torchvision for vision processor
     "accelerate>=0.27.0",     # init_empty_weights for meta initialization
     "transformers>=4.57.0",   # HF models/tokenizers
     "safetensors>=0.4.3",     # Direct weight loading
