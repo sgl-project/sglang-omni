@@ -35,6 +35,18 @@ def encoder_next(request_id: str, output: Any) -> str:
     return AGGREGATE_STAGE
 
 
+def image_encoder_with_frontend_next(request_id: str, output: Any) -> list[str]:
+    """Next stage router for IMAGE_STAGE when using intra-stage overlap.
+
+    In overlap mode, IMAGE_STAGE contains both frontend and image encoder.
+    After processing, we need to route to both:
+    - AUDIO_STAGE: to process audio (if any)
+    - AGGREGATE_STAGE: to wait for all encoder outputs
+    """
+    del request_id, output
+    return [AUDIO_STAGE, AGGREGATE_STAGE]
+
+
 def aggregate_next(request_id: str, output: Any) -> str:
     del request_id, output
     return THINKER_STAGE

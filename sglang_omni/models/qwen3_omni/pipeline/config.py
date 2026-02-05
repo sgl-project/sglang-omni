@@ -32,15 +32,63 @@ def create_text_first_pipeline_config(
     dtype: str | None = None,
     relay_type: str = "shm",
     fused_stages: list[list[str]] | None = None,
+    enable_intra_stage_overlap: bool = False,
+    max_pending: int = 4,
 ) -> PipelineConfig:
     def _relay(device: str) -> RelayConfig:
         return RelayConfig(type=relay_type, device=device)
 
-    return PipelineConfig(
-        name=name,
-        entry_stage=FRONTEND_STAGE,
-        fused_stages=fused_stages or [],
-        stages=[
+    # Build image encoder stage - can be overlap or regular
+    if enable_intra_stage_overlap:
+        image_encoder_stage = StageConfig(
+            name=IMAGE_STAGE,
+            executor=ExecutorConfig(
+                factory="sglang_omni.executors.intra_stage_overlap_executor.create_intra_stage_overlap_executor",
+                args={
+                    "cpu_executor": {
+                        "factory": "sglang_omni.models.qwen3_omni.pipeline.stages.create_frontend_executor",
+                        "args": {
+                            "model_id": model_id,
+                            "use_thread_pool": True,
+                            "max_workers": 4,
+                        },
+                    },
+                    "gpu_executor": {
+                        "factory": "sglang_omni.models.qwen3_omni.pipeline.stages.create_image_encoder_executor",
+                        "args": {
+                            "model_id": model_id,
+                            "device": image_device,
+                            "dtype": dtype,
+                        },
+                    },
+                    "max_pending": max_pending,
+                },
+            ),
+            # In overlap mode, IMAGE_STAGE contains frontend, so it must route to
+            # both AUDIO_STAGE and AGGREGATE_STAGE (not just AGGREGATE_STAGE)
+            get_next="sglang_omni.models.qwen3_omni.pipeline.next_stage.image_encoder_with_frontend_next",
+            relay=_relay(image_device),
+        )
+    else:
+        image_encoder_stage = StageConfig(
+            name=IMAGE_STAGE,
+            executor=ExecutorConfig(
+                factory="sglang_omni.models.qwen3_omni.pipeline.stages.create_image_encoder_executor",
+                args={
+                    "model_id": model_id,
+                    "device": image_device,
+                    "dtype": dtype,
+                },
+            ),
+            get_next="sglang_omni.models.qwen3_omni.pipeline.next_stage.encoder_next",
+            relay=_relay(image_device),
+        )
+
+    # When using intra-stage overlap, frontend is merged into image_encoder
+    # so we skip the separate frontend stage
+    stages = []
+    if not enable_intra_stage_overlap:
+        stages.append(
             StageConfig(
                 name=FRONTEND_STAGE,
                 executor=ExecutorConfig(
@@ -49,20 +97,23 @@ def create_text_first_pipeline_config(
                 ),
                 get_next="sglang_omni.models.qwen3_omni.pipeline.next_stage.frontend_next",
                 relay=_relay(frontend_device),
-            ),
-            StageConfig(
-                name=IMAGE_STAGE,
-                executor=ExecutorConfig(
-                    factory="sglang_omni.models.qwen3_omni.pipeline.stages.create_image_encoder_executor",
-                    args={
-                        "model_id": model_id,
-                        "device": image_device,
-                        "dtype": dtype,
-                    },
-                ),
-                get_next="sglang_omni.models.qwen3_omni.pipeline.next_stage.encoder_next",
-                relay=_relay(image_device),
-            ),
+            )
+        )
+
+    # Aggregate stage sources depend on whether we have separate frontend
+    aggregate_sources = (
+        [IMAGE_STAGE, AUDIO_STAGE]
+        if enable_intra_stage_overlap
+        else [FRONTEND_STAGE, IMAGE_STAGE, AUDIO_STAGE]
+    )
+
+    return PipelineConfig(
+        name=name,
+        entry_stage=IMAGE_STAGE if enable_intra_stage_overlap else FRONTEND_STAGE,
+        fused_stages=fused_stages or [],
+        stages=stages
+        + [
+            image_encoder_stage,
             StageConfig(
                 name=AUDIO_STAGE,
                 executor=ExecutorConfig(
@@ -85,7 +136,7 @@ def create_text_first_pipeline_config(
                 get_next="sglang_omni.models.qwen3_omni.pipeline.next_stage.aggregate_next",
                 input_handler=InputHandlerConfig(
                     type="aggregated",
-                    sources=[FRONTEND_STAGE, IMAGE_STAGE, AUDIO_STAGE],
+                    sources=aggregate_sources,
                     merge_fn="sglang_omni.models.qwen3_omni.pipeline.merge.merge_for_thinker",
                 ),
                 relay=_relay("cpu"),

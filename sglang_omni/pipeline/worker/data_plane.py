@@ -124,11 +124,16 @@ class DataPlaneAdapter:
                 )
                 offset += flat.numel()
 
+            # Ensure all tensors are on the same device before concatenation
+            # Move all to the relay device (typically CPU for shm relay)
+            target_device = torch.device(device)
+            tensor_buffers = [
+                t.to(target_device) if t.device != target_device else t
+                for t in tensor_buffers
+            ]
+
             # Concatenate all tensors
-            if tensor_buffers[0].is_cuda:
-                all_tensors = torch.cat(tensor_buffers)
-            else:
-                all_tensors = torch.cat(tensor_buffers)
+            all_tensors = torch.cat(tensor_buffers)
         else:
             # Relay still expects a payload to transfer; use a 1-byte placeholder.
             all_tensors = torch.zeros(1, dtype=torch.uint8, device=device)

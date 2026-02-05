@@ -40,20 +40,37 @@ def _event_to_dict(event: OmniEvent) -> dict[str, Any]:
     }
 
 
-def create_frontend_executor(model_id: str) -> FrontendExecutor:
+def create_frontend_executor(
+    model_id: str,
+    *,
+    use_thread_pool: bool = False,
+    max_workers: int = 4,
+) -> FrontendExecutor:
     frontend = Qwen3OmniFrontend(model_id=model_id)
 
     def _frontend(payload: StagePayload) -> StagePayload:
         return frontend(payload)
 
-    return FrontendExecutor(_frontend)
+    return FrontendExecutor(
+        _frontend,
+        use_thread_pool=use_thread_pool,
+        max_workers=max_workers,
+    )
 
 
-def create_aggregate_executor() -> FrontendExecutor:
+def create_aggregate_executor(
+    *,
+    use_thread_pool: bool = False,
+    max_workers: int = 4,
+) -> FrontendExecutor:
     def _identity(payload: StagePayload) -> StagePayload:
         return payload
 
-    return FrontendExecutor(_identity)
+    return FrontendExecutor(
+        _identity,
+        use_thread_pool=use_thread_pool,
+        max_workers=max_workers,
+    )
 
 
 def _create_encoder_executor(
@@ -175,7 +192,12 @@ def create_thinker_executor(
     )
 
 
-def create_decode_executor(model_id: str) -> FrontendExecutor:
+def create_decode_executor(
+    model_id: str,
+    *,
+    use_thread_pool: bool = False,
+    max_workers: int = 4,
+) -> FrontendExecutor:
     tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
     eos_token_id = getattr(tokenizer, "eos_token_id", None)
 
@@ -228,4 +250,8 @@ def create_decode_executor(model_id: str) -> FrontendExecutor:
         payload.data = result
         return payload
 
-    return FrontendExecutor(_decode)
+    return FrontendExecutor(
+        _decode,
+        use_thread_pool=use_thread_pool,
+        max_workers=max_workers,
+    )

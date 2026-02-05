@@ -30,6 +30,8 @@ class EngineExecutor(Executor):
         self._pending: deque[str] = deque()
         self._payloads: dict[str, StagePayload] = {}
         self._aborted: set[str] = set()
+        self._has_pending = asyncio.Event()
+        self._shutdown = asyncio.Event()
 
     async def add_request(self, payload: StagePayload) -> None:
         request_id = payload.request_id
@@ -38,6 +40,7 @@ class EngineExecutor(Executor):
 
         self._pending.append(request_id)
         self._payloads[request_id] = payload
+        self._has_pending.set()
         engine_input = self._request_builder(payload)
         await self._engine.add_request(request_id, engine_input)
 
@@ -47,12 +50,26 @@ class EngineExecutor(Executor):
             await start()
 
     async def stop(self) -> None:
+        # Set shutdown flag to unblock any waiting get_result calls
+        self._shutdown.set()
+        self._has_pending.set()  # Wake up any waiting get_result
+
         stop = getattr(self._engine, "stop", None)
         if callable(stop):
             await stop()
 
     async def get_result(self) -> StagePayload:
-        while self._pending:
+        while True:
+            # Wait for pending requests if none available
+            while not self._pending:
+                if self._shutdown.is_set():
+                    raise RuntimeError("Executor is shutting down")
+                self._has_pending.clear()
+                await self._has_pending.wait()
+                # Check shutdown again after waking up
+                if self._shutdown.is_set() and not self._pending:
+                    raise RuntimeError("Executor is shutting down")
+
             request_id = self._pending.popleft()
             if request_id in self._aborted:
                 self._payloads.pop(request_id, None)
@@ -71,9 +88,6 @@ class EngineExecutor(Executor):
                     data=output,
                 )
             return output
-
-        await asyncio.sleep(0)
-        raise RuntimeError("No pending requests for get_result")
 
     async def abort(self, request_id: str) -> None:
         self._aborted.add(request_id)
