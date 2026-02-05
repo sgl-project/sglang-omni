@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import tempfile
 from pathlib import Path
 
 import pytest
@@ -19,30 +18,36 @@ from sglang_omni.frontends.video import _check_if_video_has_audio
 # Remote test resources
 VIDEO_URL = "https://qianwen-res.oss-cn-beijing.aliyuncs.com/Qwen3-Omni/demo/draw.mp4"
 IMAGE_URL = "https://qianwen-res.oss-cn-beijing.aliyuncs.com/Qwen3-Omni/demo/cars.jpg"
+CACHE_DIR = Path.home().joinpath(".cache/omni-ci")
+CACHE_DIR.mkdir(exist_ok=True)
 
 
 @pytest.fixture(scope="module")
 def video_path():
     """Download test video once for all tests."""
-    with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as f:
-        response = requests.get(VIDEO_URL, timeout=30)
-        response.raise_for_status()
-        f.write(response.content)
-        path = f.name
-    yield path
-    Path(path).unlink(missing_ok=True)
+    video_dir = CACHE_DIR.joinpath("test_video.mp4")
+    if video_dir.exists():
+        return video_dir
+    else:
+        with open(video_dir, "wb") as f:
+            response = requests.get(VIDEO_URL, timeout=30)
+            response.raise_for_status()
+            f.write(response.content)
+        return video_dir
 
 
 @pytest.fixture(scope="module")
 def image_path():
     """Download test image once for all tests."""
-    with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as f:
-        response = requests.get(IMAGE_URL, timeout=30)
-        response.raise_for_status()
-        f.write(response.content)
-        path = f.name
-    yield path
-    Path(path).unlink(missing_ok=True)
+    img_dir = CACHE_DIR.joinpath("test_image.jpg")
+    if img_dir.exists():
+        return img_dir
+    else:
+        with open(img_dir, "wb") as f:
+            response = requests.get(IMAGE_URL, timeout=30)
+            response.raise_for_status()
+            f.write(response.content)
+        return img_dir
 
 
 class TestVideoFrontend:
