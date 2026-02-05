@@ -90,9 +90,9 @@ class EnvFloat(EnvVar[float]):
             raise ValueError(f'"{value}" is not a valid float value')
 
 
-class Envs:
+class Environ:
     # singleton instance
-    _instance: Envs | None = None
+    _instance: Environ | None = None
 
     # logging
     SGLOMNI_LOG_LEVEL = EnvStr("INFO")
@@ -104,4 +104,4 @@ class Envs:
         return cls._instance
 
 
-envs = Envs()
+OMNIENV = Environ()
