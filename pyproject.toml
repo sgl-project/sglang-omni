@@ -31,7 +31,7 @@ dependencies = [
     "httpx",
     "xxhash>=3.0.0",
     "av>=16.1.0",
-    "qwen_vl_utils",
+    "qwen-vl-utils",
     "numba==0.63.1",
     "librosa>=0.11.0"
 ]
