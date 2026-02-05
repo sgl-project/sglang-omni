@@ -30,6 +30,7 @@ dependencies = [
     "logger",
     "httpx",
     "xxhash>=3.0.0",
+    "av>=16.1.0"
 ]
 
 [tool.setuptools.packages.find]
