@@ -66,12 +66,22 @@ class Gateway:
         return self._coordinator.health()
 
     @staticmethod
+    def _set_audio_data(chunk: GenerateChunk, data: dict[str, Any]) -> None:
+        audio_data = data.get("audio_data") or data.get("audio")
+        if audio_data is not None:
+            chunk.audio_data = audio_data
+            if chunk.modality == "text":
+                chunk.modality = "audio"
+
+    @staticmethod
     def _build_omni_request(request: GenerateRequest) -> OmniRequest:
         inputs = _extract_inputs(request)
         params = _build_params(request)
         metadata = dict(request.metadata)
         if request.model:
             metadata.setdefault("model", request.model)
+        if request.output_modalities:
+            metadata["output_modalities"] = request.output_modalities
         return OmniRequest(inputs=inputs, params=params, metadata=metadata)
 
     @staticmethod
@@ -100,6 +110,7 @@ class Gateway:
             modality = result.get("modality")
             if modality is not None:
                 chunk.modality = modality
+            Gateway._set_audio_data(chunk, result)
             chunk.usage = UsageInfo.from_dict(result.get("usage"))
             return chunk
         if isinstance(result, str):
@@ -146,6 +157,7 @@ class Gateway:
             modality = data.get("modality")
             if modality is not None:
                 chunk.modality = modality
+            Gateway._set_audio_data(chunk, data)
             return chunk
         if isinstance(data, str):
             chunk.text = data
@@ -172,7 +184,27 @@ def _extract_inputs(request: GenerateRequest) -> Any:
         return request.prompt
     if request.prompt_token_ids is not None:
         return list(request.prompt_token_ids)
-    return [msg.to_dict() for msg in request.messages or []]
+
+    # Build messages list
+    messages = [msg.to_dict() for msg in request.messages or []]
+
+    # Check if we have audios, images, or videos in metadata
+    audios = request.metadata.get("audios")
+    images = request.metadata.get("images")
+    videos = request.metadata.get("videos")
+
+    # If we have any media, return a dict with messages and media
+    # Otherwise, return just the messages list (for backward compatibility)
+    if audios or images or videos:
+        result = {"messages": messages}
+        if images:
+            result["images"] = images
+        if audios:
+            result["audios"] = audios
+        if videos:
+            result["videos"] = videos
+        return result
+    return messages
 
 
 def _build_params(request: GenerateRequest) -> dict[str, Any]:

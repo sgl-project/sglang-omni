@@ -89,6 +89,9 @@ class GenerateRequest:
     stream: bool = True
     max_tokens: int | None = None
 
+    # Multi-modal support
+    output_modalities: list[str] | None = None
+
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -106,6 +109,7 @@ class GenerateRequest:
             "stage_params": self.stage_params,
             "stream": self.stream,
             "max_tokens": self.max_tokens,
+            "output_modalities": self.output_modalities,
             "metadata": dict(self.metadata),
         }
 
@@ -124,6 +128,8 @@ class GenerateChunk:
     stage_id: int | None = None
     stage_name: str | None = None
     modality: str = "text"
+    # Multi-modal output data (e.g. audio waveform bytes, image bytes)
+    audio_data: Any = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -137,6 +143,7 @@ class GenerateChunk:
             "stage_id": self.stage_id,
             "stage_name": self.stage_name,
             "modality": self.modality,
+            "audio_data": self.audio_data,
         }
 
 
