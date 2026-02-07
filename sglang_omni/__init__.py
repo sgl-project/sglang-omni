@@ -26,9 +26,6 @@ from sglang_omni.proto import (
     StageInfo,
 )
 
-# Backward-compatible alias
-Gateway = Client
-
 __version__ = "0.1.0"
 
 __all__ = [
@@ -39,7 +36,6 @@ __all__ = [
     "Engine",
     "EchoEngine",
     "Client",
-    "Gateway",
     # Input handlers
     "InputHandler",
     "DirectInput",

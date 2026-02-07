@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field
 
 # ---------------------------------------------------------------------------
 # Shared / Common
@@ -91,14 +91,6 @@ class ChatCompletionRequest(BaseModel):
     # Misc
     request_id: str | None = None
     user: str | None = None
-    n: int = 1
-
-    @field_validator("n")
-    @classmethod
-    def _validate_n(cls, v: int) -> int:
-        if v != 1:
-            raise ValueError("Only n=1 is supported")
-        return v
 
     @property
     def effective_max_tokens(self) -> int | None:
