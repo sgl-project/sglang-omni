@@ -22,6 +22,7 @@ from sglang_omni.frontends.video import (
     build_video_mm_inputs,
     compute_video_cache_key,
     ensure_video_list,
+    extract_audio_from_video_inputs,
 )
 
 __all__ = [
@@ -33,6 +34,7 @@ __all__ = [
     "compute_audio_cache_key",
     "compute_image_cache_key",
     "compute_video_cache_key",
+    "extract_audio_from_video_inputs",
     "ensure_audio_list",
     "ensure_chat_template",
     "ensure_image_list",

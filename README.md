@@ -5,8 +5,26 @@ Multi-stage pipeline framework for omni models.
 ## Quick Start
 
 ```bash
+# we strongly recommend using our docker image for stable environment
+# NOTE: this docker image will be moved to lmsysorg upon release
+docker pull frankleeeee/sglang-omni:dev
+docker run -it \
+    --shm-size 32g \
+    --gpus all \
+    --ipc host \
+    --network host \
+    --privileged \
+    frankleeeee/sglang-omni:dev \
+    /bin/zsh
+
+
+# create a virtual environment in docker
 uv venv .venv -p 3.11
 source .venv/bin/activate
+
+# install sglang-omni
+git clone git@github.com:sgl-project-dev/sglang-omni.git
+cd sglang-omni
 uv pip install -v -e .
 ```
 

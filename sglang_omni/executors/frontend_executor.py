@@ -24,7 +24,7 @@ class FrontendExecutor(Executor):
         if request_id in self._aborted:
             return
 
-        result = self._frontend(payload)
+        result = await asyncio.to_thread(self._frontend, payload)
         if not isinstance(result, StagePayload):
             result = StagePayload(
                 request_id=request_id,

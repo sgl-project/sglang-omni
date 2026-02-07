@@ -55,8 +55,11 @@ class ModelRunner:
         model_inputs = self.input_preparer.prepare(scheduler_output, self.device)
 
         # 2. Forward pass
-        with torch.inference_mode():
-            model_output = self.model(**model_inputs)
+        if isinstance(model_inputs, dict) and model_inputs.get("_skip_all"):
+            model_output = {}
+        else:
+            with torch.inference_mode():
+                model_output = self.model(**model_inputs)
 
         # 3. Process outputs (model-specific via OutputProcessor)
         outputs: dict[str, RequestOutput] = self.output_processor.process(

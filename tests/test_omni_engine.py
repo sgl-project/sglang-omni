@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
 import torch
 
 from sglang_omni.engines.omni import (
@@ -69,5 +70,8 @@ async def _run_qwen3_8b_engine() -> None:
         await engine.stop()
 
 
+@pytest.mark.skip(
+    reason="Torch's bug will make this test hang, you can try upgrade cudnn to fix this: pip install nvidia-cudnn-cu12 --upgrade"
+)
 def test_qwen3_8b_engine_runs() -> None:
     asyncio.run(_run_qwen3_8b_engine())

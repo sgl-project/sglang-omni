@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 
 import torch
 
@@ -142,7 +142,9 @@ class EncoderInputPreparer:
             batched: dict[str, Any] = {}
             cat_keys = {
                 "pixel_values",
+                "pixel_values_videos",
                 "image_grid_thw",
+                "video_grid_thw",
                 "input_features",
                 "feature_attention_mask",
                 "audio_feature_lengths",
@@ -158,10 +160,7 @@ class EncoderInputPreparer:
                     elif key in cat_keys:
                         batched[key] = torch.cat(tensors, dim=0).to(device)
                     else:
-                        try:
-                            batched[key] = torch.stack(tensors).to(device)
-                        except Exception:
-                            batched[key] = torch.cat(tensors, dim=0).to(device)
+                        batched[key] = torch.stack(tensors).to(device)
                 else:
                     batched[key] = [inp.get(key) for inp in active_inputs]
             return batched
@@ -189,9 +188,43 @@ class EncoderInputPreparer:
         return {"input_ids": input_ids, "attention_mask": attention_mask}
 
 
-# -----------------------------------------------------------------------------
-# OutputProcessor
-# -----------------------------------------------------------------------------
+@dataclass
+class ModalityConfig:
+    """Configuration for a single modality (image/audio/video)."""
+
+    input_grid_key: str
+    input_size_key: str
+    embed_key: str
+    count_key: str
+    size_extractor: Callable[[dict[str, Any]], int]
+
+
+class ModalitySplitter:
+    """Utility for splitting tensors by sizes or counts."""
+
+    @staticmethod
+    def split_by_sizes(value: torch.Tensor, sizes: list[int]) -> list[torch.Tensor]:
+        """Split tensor by predetermined sizes."""
+        splits: list[torch.Tensor] = []
+        offset = 0
+        for size in sizes:
+            end = offset + int(size)
+            splits.append(value[offset:end])
+            offset = end
+        return splits
+
+    @staticmethod
+    def split_by_counts(
+        value: torch.Tensor, counts: torch.Tensor
+    ) -> list[torch.Tensor]:
+        """Split tensor by counts tensor."""
+        splits: list[torch.Tensor] = []
+        offset = 0
+        for count in counts.tolist():
+            end = offset + int(count)
+            splits.append(value[offset:end])
+            offset = end
+        return splits
 
 
 class EncoderOutputProcessor:
@@ -204,157 +237,96 @@ class EncoderOutputProcessor:
             pooling: Pooling strategy - "last", "mean", or "cls"
         """
         self.pooling = pooling
+        self.splitter = ModalitySplitter()
+        self.modality_configs = self._init_modality_configs()
+
+    def _init_modality_configs(self) -> dict[str, ModalityConfig]:
+        """Initialize modality configurations."""
+
+        def _extract_image_size(inp: dict[str, Any]) -> int:
+            grid = inp.get("image_grid_thw")
+            if isinstance(grid, torch.Tensor):
+                if grid.dim() >= 2:
+                    return int(grid.shape[0])
+                elif grid.numel() > 0:
+                    return 1
+            return 0
+
+        def _extract_audio_size(inp: dict[str, Any]) -> int:
+            lengths = inp.get("audio_feature_lengths")
+            if isinstance(lengths, torch.Tensor):
+                return int(lengths.numel())
+            return 0
+
+        def _extract_video_size(inp: dict[str, Any]) -> int:
+            video_grid = inp.get("video_grid_thw")
+            if isinstance(video_grid, torch.Tensor):
+                if video_grid.dim() >= 2:
+                    return int(video_grid.shape[0])
+                elif video_grid.numel() > 0:
+                    return 1
+            return 0
+
+        return {
+            "image": ModalityConfig(
+                input_grid_key="image_grid_thw",
+                input_size_key="image_grid_thw",
+                embed_key="image_embeds",
+                count_key="image_token_counts",
+                size_extractor=_extract_image_size,
+            ),
+            "audio": ModalityConfig(
+                input_grid_key="audio_feature_lengths",
+                input_size_key="audio_feature_lengths",
+                embed_key="audio_embeds",
+                count_key="audio_output_lengths",
+                size_extractor=_extract_audio_size,
+            ),
+            "video": ModalityConfig(
+                input_grid_key="video_grid_thw",
+                input_size_key="video_grid_thw",
+                embed_key="video_embeds",
+                count_key="video_token_counts",
+                size_extractor=_extract_video_size,
+            ),
+        }
 
     def process(
         self,
         model_output: Any,
         scheduler_output: SchedulerOutput,
     ) -> dict[str, RequestOutput]:
+        """Process model output and return per-request outputs.
+
+        Routes to either multimodal or text embedding processing based on batch_data type.
+        """
         batch_data: EncoderBatchData = scheduler_output.batch_data
+
         if batch_data.input_dicts is not None:
+            return self._process_multimodal(model_output, scheduler_output)
+        else:
+            return self._process_text_embedding(model_output, scheduler_output)
+
+    # -------------------------------------------------------------------------
+    # Multimodal Processing
+    # -------------------------------------------------------------------------
+
+    def _process_multimodal(
+        self,
+        model_output: Any,
+        scheduler_output: SchedulerOutput,
+    ) -> dict[str, RequestOutput]:
+        """Process multimodal encoder output (image/audio/video)."""
+        batch_data: EncoderBatchData = scheduler_output.batch_data
+        active_indices = batch_data.active_indices or []
+        skip_results = batch_data.skip_results or []
+        input_dicts = batch_data.input_dicts or []
+
+        # Handle all-skip case: directly return skip results
+        if not active_indices:
             outputs: dict[str, RequestOutput] = {}
-            active_indices = batch_data.active_indices or []
-            skip_results = batch_data.skip_results or []
-            input_dicts = batch_data.input_dicts or []
-
-            if not active_indices:
-                for i, request in enumerate(scheduler_output.requests):
-                    out = skip_results[i] or {}
-                    outputs[request.request_id] = RequestOutput(
-                        request_id=request.request_id,
-                        data=out,
-                        finished=True,
-                        finish_reason="stop",
-                    )
-                return outputs
-
-            if not isinstance(model_output, dict):
-                for i, request in enumerate(scheduler_output.requests):
-                    out = skip_results[i] or {"result": model_output}
-                    outputs[request.request_id] = RequestOutput(
-                        request_id=request.request_id,
-                        data=out,
-                        finished=True,
-                        finish_reason="stop",
-                    )
-                return outputs
-
-            image_counts = model_output.get("image_token_counts")
-            audio_counts = model_output.get("audio_output_lengths")
-
-            image_sizes: list[int] = []
-            audio_sizes: list[int] = []
-            for req_idx in active_indices:
-                inp = input_dicts[req_idx] if req_idx < len(input_dicts) else {}
-                grid = inp.get("image_grid_thw")
-                if isinstance(grid, torch.Tensor):
-                    if grid.dim() >= 2:
-                        image_sizes.append(int(grid.shape[0]))
-                    elif grid.numel() > 0:
-                        image_sizes.append(1)
-                    else:
-                        image_sizes.append(0)
-                else:
-                    image_sizes.append(0)
-                lengths = inp.get("audio_feature_lengths")
-                if isinstance(lengths, torch.Tensor):
-                    audio_sizes.append(int(lengths.numel()))
-                else:
-                    audio_sizes.append(0)
-
-            def _split_by_sizes(
-                value: torch.Tensor, sizes: list[int]
-            ) -> list[torch.Tensor]:
-                splits: list[torch.Tensor] = []
-                offset = 0
-                for size in sizes:
-                    end = offset + int(size)
-                    splits.append(value[offset:end])
-                    offset = end
-                return splits
-
-            def _split_by_counts(
-                value: torch.Tensor, counts: torch.Tensor
-            ) -> list[torch.Tensor]:
-                splits: list[torch.Tensor] = []
-                offset = 0
-                for count in counts.tolist():
-                    end = offset + int(count)
-                    splits.append(value[offset:end])
-                    offset = end
-                return splits
-
-            embed_splits: dict[str, list[torch.Tensor]] = {}
-            if (
-                isinstance(image_counts, torch.Tensor)
-                and "image_embeds" in model_output
-            ):
-                embed_splits["image_embeds"] = _split_by_counts(
-                    model_output["image_embeds"], image_counts
-                )
-            if (
-                isinstance(audio_counts, torch.Tensor)
-                and "audio_embeds" in model_output
-            ):
-                embed_splits["audio_embeds"] = _split_by_counts(
-                    model_output["audio_embeds"], audio_counts
-                )
-
-            for out_idx, req_idx in enumerate(active_indices):
-                request = scheduler_output.requests[req_idx]
-                out: dict[str, Any] = {}
-                for key, value in model_output.items():
-                    if key == "image_grid_thw" and isinstance(value, torch.Tensor):
-                        if image_sizes and sum(image_sizes) == value.shape[0]:
-                            out[key] = _split_by_sizes(value, image_sizes)[out_idx]
-                        else:
-                            out[key] = (
-                                value
-                                if len(active_indices) == 1
-                                else value[out_idx : out_idx + 1]
-                            )
-                        continue
-                    if key == "audio_feature_lengths" and isinstance(
-                        value, torch.Tensor
-                    ):
-                        if audio_sizes and sum(audio_sizes) == value.numel():
-                            out[key] = _split_by_sizes(value, audio_sizes)[out_idx]
-                        else:
-                            out[key] = (
-                                value
-                                if len(active_indices) == 1
-                                else value[out_idx : out_idx + 1]
-                            )
-                        continue
-                    if key in {
-                        "image_token_counts",
-                        "audio_output_lengths",
-                    } and isinstance(value, torch.Tensor):
-                        if value.dim() == 1 and value.shape[0] == len(active_indices):
-                            out[key] = value[out_idx : out_idx + 1]
-                        else:
-                            out[key] = value
-                        continue
-                    if key in embed_splits:
-                        out[key] = embed_splits[key][out_idx]
-                        continue
-                    if isinstance(value, torch.Tensor) and value.shape[0] == len(
-                        active_indices
-                    ):
-                        out[key] = value[out_idx]
-                    else:
-                        out[key] = value
-                outputs[request.request_id] = RequestOutput(
-                    request_id=request.request_id,
-                    data=out,
-                    finished=True,
-                    finish_reason="stop",
-                )
-
-            for idx, request in enumerate(scheduler_output.requests):
-                if idx in active_indices:
-                    continue
-                out = skip_results[idx] or {}
+            for i, request in enumerate(scheduler_output.requests):
+                out = skip_results[i] or {}
                 outputs[request.request_id] = RequestOutput(
                     request_id=request.request_id,
                     data=out,
@@ -363,25 +335,175 @@ class EncoderOutputProcessor:
                 )
             return outputs
 
-        # Handle different output formats
+        # Handle non-dict output (fallback case)
+        if not isinstance(model_output, dict):
+            outputs: dict[str, RequestOutput] = {}
+            for i, request in enumerate(scheduler_output.requests):
+                out = skip_results[i] or {"result": model_output}
+                outputs[request.request_id] = RequestOutput(
+                    request_id=request.request_id,
+                    data=out,
+                    finished=True,
+                    finish_reason="stop",
+                )
+            return outputs
+
+        # Extract modality sizes and split embeddings
+        modality_sizes = self._extract_modality_sizes(input_dicts, active_indices)
+        embed_splits = self._split_embeddings(model_output)
+
+        # Build outputs for active requests
+        outputs = self._build_active_outputs(
+            model_output,
+            scheduler_output,
+            active_indices,
+            modality_sizes,
+            embed_splits,
+        )
+
+        # Add skip outputs for inactive requests
+        for idx, request in enumerate(scheduler_output.requests):
+            if idx not in active_indices:
+                out = skip_results[idx] or {}
+                outputs[request.request_id] = RequestOutput(
+                    request_id=request.request_id,
+                    data=out,
+                    finished=True,
+                    finish_reason="stop",
+                )
+
+        return outputs
+
+    def _extract_modality_sizes(
+        self, input_dicts: list[dict[str, Any]], active_indices: list[int]
+    ) -> dict[str, list[int]]:
+        """Extract sizes for each modality from input dicts."""
+        modality_sizes: dict[str, list[int]] = {
+            name: [] for name in self.modality_configs
+        }
+
+        for req_idx in active_indices:
+            inp = input_dicts[req_idx] if req_idx < len(input_dicts) else {}
+            for name, config in self.modality_configs.items():
+                size = config.size_extractor(inp)
+                modality_sizes[name].append(size)
+
+        return modality_sizes
+
+    def _split_embeddings(
+        self, model_output: dict[str, Any]
+    ) -> dict[str, list[torch.Tensor]]:
+        """Split embeddings by counts for each modality."""
+        embed_splits: dict[str, list[torch.Tensor]] = {}
+
+        for config in self.modality_configs.values():
+            counts = model_output.get(config.count_key)
+            embeds = model_output.get(config.embed_key)
+
+            if isinstance(counts, torch.Tensor) and embeds is not None:
+                embed_splits[config.embed_key] = self.splitter.split_by_counts(
+                    embeds, counts
+                )
+
+        return embed_splits
+
+    def _build_active_outputs(
+        self,
+        model_output: dict[str, Any],
+        scheduler_output: SchedulerOutput,
+        active_indices: list[int],
+        modality_sizes: dict[str, list[int]],
+        embed_splits: dict[str, list[torch.Tensor]],
+    ) -> dict[str, RequestOutput]:
+        outputs: dict[str, RequestOutput] = {}
+
+        for out_idx, req_idx in enumerate(active_indices):
+            request = scheduler_output.requests[req_idx]
+            out: dict[str, Any] = {}
+
+            for key, value in model_output.items():
+                out[key] = self._extract_value_for_request(
+                    key,
+                    value,
+                    out_idx,
+                    active_indices,
+                    modality_sizes,
+                    embed_splits,
+                )
+
+            outputs[request.request_id] = RequestOutput(
+                request_id=request.request_id,
+                data=out,
+                finished=True,
+                finish_reason="stop",
+            )
+
+        return outputs
+
+    def _extract_value_for_request(
+        self,
+        key: str,
+        value: Any,
+        out_idx: int,
+        active_indices: list[int],
+        modality_sizes: dict[str, list[int]],
+        embed_splits: dict[str, list[torch.Tensor]],
+    ) -> Any:
+        """Extract the appropriate value for a specific request."""
+        if not isinstance(value, torch.Tensor):
+            return value
+
+        # Handle special grid keys (image_grid_thw, video_grid_thw)
+        if key in {"image_grid_thw", "video_grid_thw"}:
+            modality = "image" if key == "image_grid_thw" else "video"
+            sizes = modality_sizes[modality]
+            if sizes and sum(sizes) == value.shape[0]:
+                return self.splitter.split_by_sizes(value, sizes)[out_idx]
+            return value if len(active_indices) == 1 else value[out_idx : out_idx + 1]
+
+        # Handle audio_feature_lengths
+        if key == "audio_feature_lengths":
+            sizes = modality_sizes["audio"]
+            if sizes and sum(sizes) == value.numel():
+                return self.splitter.split_by_sizes(value, sizes)[out_idx]
+            return value if len(active_indices) == 1 else value[out_idx : out_idx + 1]
+
+        # Handle count keys
+        if key in {"image_token_counts", "audio_output_lengths", "video_token_counts"}:
+            if value.dim() == 1 and value.shape[0] == len(active_indices):
+                return value[out_idx : out_idx + 1]
+            return value
+
+        # Handle embeddings
+        if key in embed_splits:
+            return embed_splits[key][out_idx]
+
+        # Handle generic batched tensors
+        if value.shape[0] == len(active_indices):
+            return value[out_idx]
+
+        return value
+
+    def _process_text_embedding(
+        self,
+        model_output: Any,
+        scheduler_output: SchedulerOutput,
+    ) -> dict[str, RequestOutput]:
+        """Process text encoder output (embedding extraction with pooling)."""
+        batch_data: EncoderBatchData = scheduler_output.batch_data
+
+        # Extract hidden states
         hidden_states = getattr(model_output, "last_hidden_state", None)
         if hidden_states is None:
             if not isinstance(model_output, torch.Tensor):
                 raise ValueError(f"Unexpected model output type: {type(model_output)}")
             hidden_states = model_output
 
+        # Apply pooling and build outputs
         outputs = {}
         for i, request in enumerate(scheduler_output.requests):
             seq_len = batch_data.seq_lens[i]
-
-            if self.pooling == "last":
-                emb = hidden_states[i, seq_len - 1]
-            elif self.pooling == "mean":
-                emb = hidden_states[i, :seq_len].mean(dim=0)
-            elif self.pooling == "cls":
-                emb = hidden_states[i, 0]
-            else:
-                raise ValueError(f"Unknown pooling: {self.pooling}")
+            emb = self._apply_pooling(hidden_states[i], seq_len)
 
             outputs[request.request_id] = RequestOutput(
                 request_id=request.request_id,
@@ -391,3 +513,14 @@ class EncoderOutputProcessor:
             )
 
         return outputs
+
+    def _apply_pooling(self, hidden_state: torch.Tensor, seq_len: int) -> torch.Tensor:
+        """Apply pooling strategy to extract embedding."""
+        if self.pooling == "last":
+            return hidden_state[seq_len - 1]
+        elif self.pooling == "mean":
+            return hidden_state[:seq_len].mean(dim=0)
+        elif self.pooling == "cls":
+            return hidden_state[0]
+        else:
+            raise ValueError(f"Unknown pooling: {self.pooling}")

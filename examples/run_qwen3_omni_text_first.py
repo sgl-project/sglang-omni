@@ -5,10 +5,17 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import logging
+import os
 
 from sglang_omni.config import PipelineRunner, compile_pipeline
 from sglang_omni.models.qwen3_omni import create_text_first_pipeline_config
 from sglang_omni.proto import OmniRequest
+
+logging.basicConfig(
+    level=os.environ.get("LOGLEVEL", "DEBUG").upper(),
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -29,6 +36,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--audio-device", type=str, default="cuda:3")
     parser.add_argument("--thinker-device", type=str, default="cuda:3")
     parser.add_argument("--image-path", type=str, default=None)
+    parser.add_argument("--video-path", type=str, default=None)
+    parser.add_argument("--video-fps", type=float, default=2.0)
+    parser.add_argument("--use-audio-in-video", action="store_true")
     parser.add_argument("--audio-path", type=str, default=None)
     parser.add_argument("--audio-target-sr", type=int, default=16000)
     return parser.parse_args()
@@ -50,12 +60,16 @@ async def main_async(args: argparse.Namespace) -> None:
     await runner.start()
     try:
         images = [args.image_path] if args.image_path else []
+        videos = [args.video_path] if args.video_path else []
         audios = [args.audio_path] if args.audio_path else []
         request = {
             "messages": [
                 {"role": "user", "content": args.prompt},
             ],
             "images": images,
+            "videos": videos,
+            "video_fps": args.video_fps,
+            "use_audio_in_video": args.use_audio_in_video,
             "audios": audios,
             "audio_target_sr": args.audio_target_sr,
         }
