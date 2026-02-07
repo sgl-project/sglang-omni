@@ -183,7 +183,6 @@ async def _chat_non_stream(
         message["audio"] = {
             "id": result.audio.id,
             "data": result.audio.data,
-            "expires_at": created + 3600,
             "transcript": result.audio.transcript,
         }
 
