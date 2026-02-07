@@ -70,7 +70,7 @@ def run_stage(
     import logging
 
     from sglang_omni import Stage, Worker
-    from sglang_omni.executors import FrontendExecutor
+    from sglang_omni.executors import PreprocessingExecutor
     from sglang_omni.proto import StagePayload
 
     # Configure logging for child process
@@ -95,7 +95,7 @@ def run_stage(
 
         return payload
 
-    engine = FrontendExecutor(processor)
+    engine = PreprocessingExecutor(processor)
     worker = Worker(engine)
 
     # --- Build Unified Relay Config ---

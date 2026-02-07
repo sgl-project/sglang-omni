@@ -15,8 +15,8 @@ class PromptInputs(TypedDict):
     prompt_text: str
 
 
-class FrontendData(TypedDict, total=False):
-    """Frontend outputs stored on StagePayload.data."""
+class PreprocessingData(TypedDict, total=False):
+    """Preprocessing outputs stored on StagePayload.data."""
 
     raw_inputs: Any
     prompt: PromptInputs

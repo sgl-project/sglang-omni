@@ -14,8 +14,8 @@ from sglang_omni.models.qwen3_omni.pipeline.next_stage import (
     AGGREGATE_STAGE,
     AUDIO_STAGE,
     DECODE_STAGE,
-    FRONTEND_STAGE,
     IMAGE_STAGE,
+    PREPROCESSING_STAGE,
     THINKER_STAGE,
 )
 
@@ -24,7 +24,7 @@ def create_text_first_pipeline_config(
     *,
     model_id: str,
     name: str = "qwen3_omni_text_first",
-    frontend_device: str = "cpu",
+    preprocessing_device: str = "cpu",
     image_device: str = "cuda:0",
     audio_device: str = "cuda:0",
     thinker_device: str = "cuda:0",
@@ -38,17 +38,17 @@ def create_text_first_pipeline_config(
 
     return PipelineConfig(
         name=name,
-        entry_stage=FRONTEND_STAGE,
+        entry_stage=PREPROCESSING_STAGE,
         fused_stages=fused_stages or [],
         stages=[
             StageConfig(
-                name=FRONTEND_STAGE,
+                name=PREPROCESSING_STAGE,
                 executor=ExecutorConfig(
-                    factory="sglang_omni.models.qwen3_omni.pipeline.stages.create_frontend_executor",
+                    factory="sglang_omni.models.qwen3_omni.pipeline.stages.create_preprocessing_executor",
                     args={"model_id": model_id},
                 ),
-                get_next="sglang_omni.models.qwen3_omni.pipeline.next_stage.frontend_next",
-                relay=_relay(frontend_device),
+                get_next="sglang_omni.models.qwen3_omni.pipeline.next_stage.preprocessing_next",
+                relay=_relay(preprocessing_device),
             ),
             StageConfig(
                 name=IMAGE_STAGE,
@@ -85,7 +85,7 @@ def create_text_first_pipeline_config(
                 get_next="sglang_omni.models.qwen3_omni.pipeline.next_stage.aggregate_next",
                 input_handler=InputHandlerConfig(
                     type="aggregated",
-                    sources=[FRONTEND_STAGE, IMAGE_STAGE, AUDIO_STAGE],
+                    sources=[PREPROCESSING_STAGE, IMAGE_STAGE, AUDIO_STAGE],
                     merge_fn="sglang_omni.models.qwen3_omni.pipeline.merge.merge_for_thinker",
                 ),
                 relay=_relay("cpu"),

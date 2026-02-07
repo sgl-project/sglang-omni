@@ -39,8 +39,8 @@ def _non_empty(tensor: torch.Tensor | None) -> bool:
 
 
 def merge_for_thinker(payloads: dict[str, StagePayload]) -> StagePayload:
-    """Aggregate frontend + encoder outputs into thinker inputs."""
-    base = payloads.get("frontend") or next(iter(payloads.values()))
+    """Aggregate preprocessing + encoder outputs into thinker inputs."""
+    base = payloads.get("preprocessing") or next(iter(payloads.values()))
     state = PipelineState.from_dict(base.data)
     encoder_outs: dict[str, Any] = {}
     if state.encoder_outs:
@@ -59,7 +59,7 @@ def merge_for_thinker(payloads: dict[str, StagePayload]) -> StagePayload:
     state.encoder_outs = encoder_outs
     state.thinker_inputs = thinker_inputs
     state.encoder_inputs = {}
-    _prune_frontend_for_thinker(state, encoder_outs)
+    _prune_preprocessing_for_thinker(state, encoder_outs)
     base.data = state.to_dict()
     return base
 
@@ -184,7 +184,7 @@ def build_thinker_inputs(
     return {"model_inputs": thinker_model_inputs}
 
 
-def _prune_frontend_for_thinker(
+def _prune_preprocessing_for_thinker(
     state: PipelineState,
     encoder_outs: dict[str, Any],
 ) -> None:

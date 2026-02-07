@@ -31,7 +31,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--thinker-max-seq-len", type=int, default=8192)
     parser.add_argument("--max-new-tokens", type=int, default=1024)
     parser.add_argument("--temperature", type=float, default=0.8)
-    parser.add_argument("--frontend-device", type=str, default="cpu")
+    parser.add_argument("--preprocessing-device", type=str, default="cpu")
     parser.add_argument("--image-device", type=str, default="cuda:0")
     parser.add_argument("--audio-device", type=str, default="cuda:0")
     parser.add_argument("--thinker-device", type=str, default="cuda:0")
@@ -47,7 +47,7 @@ def parse_args() -> argparse.Namespace:
 async def main_async(args: argparse.Namespace) -> None:
     config = create_text_first_pipeline_config(
         model_id=args.model_id,
-        frontend_device=args.frontend_device,
+        preprocessing_device=args.preprocessing_device,
         image_device=args.image_device,
         audio_device=args.audio_device,
         thinker_device=args.thinker_device,

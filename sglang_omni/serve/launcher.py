@@ -232,7 +232,7 @@ examples:
         help="Hugging Face model id (required with --pipeline).",
     )
     parser.add_argument("--dtype", type=str, default=None, help="Model dtype.")
-    parser.add_argument("--frontend-device", type=str, default=None)
+    parser.add_argument("--preprocessing-device", type=str, default=None)
     parser.add_argument("--image-device", type=str, default=None)
     parser.add_argument("--audio-device", type=str, default=None)
     parser.add_argument("--thinker-device", type=str, default=None)
@@ -299,7 +299,7 @@ examples:
         factory_kwargs: dict[str, Any] = {}
         for key in (
             "dtype",
-            "frontend_device",
+            "preprocessing_device",
             "image_device",
             "audio_device",
             "thinker_device",

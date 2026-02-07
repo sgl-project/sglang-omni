@@ -50,7 +50,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dtype", type=str, default="bfloat16")
 
     # Device placement
-    parser.add_argument("--frontend-device", type=str, default="cpu")
+    parser.add_argument("--preprocessing-device", type=str, default="cpu")
     parser.add_argument("--image-device", type=str, default="cuda:0")
     parser.add_argument("--audio-device", type=str, default="cuda:0")
     parser.add_argument("--thinker-device", type=str, default="cuda:0")
@@ -84,7 +84,7 @@ def main() -> None:
     # Build pipeline config
     config = create_text_first_pipeline_config(
         model_id=args.model_id,
-        frontend_device=args.frontend_device,
+        preprocessing_device=args.preprocessing_device,
         image_device=args.image_device,
         audio_device=args.audio_device,
         thinker_device=args.thinker_device,

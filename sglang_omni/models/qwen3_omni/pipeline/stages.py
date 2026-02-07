@@ -9,10 +9,10 @@ import torch
 from transformers import AutoTokenizer
 
 from sglang_omni.engines.omni import create_ar_engine, create_encoder_engine
-from sglang_omni.executors import EngineExecutor, FrontendExecutor
+from sglang_omni.executors import EngineExecutor, PreprocessingExecutor
 from sglang_omni.models.qwen3_omni.components.audio_encoder import Qwen3OmniAudioEncoder
-from sglang_omni.models.qwen3_omni.components.frontend import Qwen3OmniFrontend
 from sglang_omni.models.qwen3_omni.components.image_encoder import Qwen3OmniImageEncoder
+from sglang_omni.models.qwen3_omni.components.preprocessor import Qwen3OmniPreprocessor
 from sglang_omni.models.qwen3_omni.components.thinker import Qwen3OmniSplitThinker
 from sglang_omni.models.qwen3_omni.io import OmniEvent, ThinkerOutput
 from sglang_omni.models.qwen3_omni.pipeline.engine_io import (
@@ -40,20 +40,20 @@ def _event_to_dict(event: OmniEvent) -> dict[str, Any]:
     }
 
 
-def create_frontend_executor(model_id: str) -> FrontendExecutor:
-    frontend = Qwen3OmniFrontend(model_id=model_id)
+def create_preprocessing_executor(model_id: str) -> PreprocessingExecutor:
+    preprocessor = Qwen3OmniPreprocessor(model_id=model_id)
 
-    def _frontend(payload: StagePayload) -> StagePayload:
-        return frontend(payload)
+    def _preprocess(payload: StagePayload) -> StagePayload:
+        return preprocessor(payload)
 
-    return FrontendExecutor(_frontend)
+    return PreprocessingExecutor(_preprocess)
 
 
-def create_aggregate_executor() -> FrontendExecutor:
+def create_aggregate_executor() -> PreprocessingExecutor:
     def _identity(payload: StagePayload) -> StagePayload:
         return payload
 
-    return FrontendExecutor(_identity)
+    return PreprocessingExecutor(_identity)
 
 
 def _create_encoder_executor(
@@ -175,7 +175,7 @@ def create_thinker_executor(
     )
 
 
-def create_decode_executor(model_id: str) -> FrontendExecutor:
+def create_decode_executor(model_id: str) -> PreprocessingExecutor:
     tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
     eos_token_id = getattr(tokenizer, "eos_token_id", None)
 
@@ -228,4 +228,4 @@ def create_decode_executor(model_id: str) -> FrontendExecutor:
         payload.data = result
         return payload
 
-    return FrontendExecutor(_decode)
+    return PreprocessingExecutor(_decode)

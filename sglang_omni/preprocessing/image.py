@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Model-agnostic image frontend utilities."""
+"""Model-agnostic image preprocessing utilities."""
 
 from __future__ import annotations
 

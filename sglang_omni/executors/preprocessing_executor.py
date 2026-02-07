@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""FrontendExecutor for CPU-bound worker roles."""
+"""PreprocessingExecutor for CPU-bound worker roles."""
 
 from __future__ import annotations
 
@@ -11,11 +11,11 @@ from sglang_omni.executors.interface import Executor
 from sglang_omni.proto import StagePayload
 
 
-class FrontendExecutor(Executor):
+class PreprocessingExecutor(Executor):
     """Run synchronous CPU processing inside an async interface."""
 
-    def __init__(self, frontend: Callable[[StagePayload], StagePayload | Any]):
-        self._frontend = frontend
+    def __init__(self, processor: Callable[[StagePayload], StagePayload | Any]):
+        self._processor = processor
         self._results: asyncio.Queue[StagePayload] = asyncio.Queue()
         self._aborted: set[str] = set()
 
@@ -24,7 +24,7 @@ class FrontendExecutor(Executor):
         if request_id in self._aborted:
             return
 
-        result = await asyncio.to_thread(self._frontend, payload)
+        result = await asyncio.to_thread(self._processor, payload)
         if not isinstance(result, StagePayload):
             result = StagePayload(
                 request_id=request_id,

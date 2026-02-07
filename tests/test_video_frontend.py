@@ -50,8 +50,8 @@ def image_path():
         return img_dir
 
 
-class TestVideoFrontend:
-    """Test core video frontend functionality."""
+class TestVideoPreprocessing:
+    """Test core video preprocessing functionality."""
 
     def test_video_loading_and_normalization(self, video_path):
         """Test loading video from path and normalizing to tensor."""

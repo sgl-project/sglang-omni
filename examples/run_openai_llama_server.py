@@ -74,7 +74,7 @@ def run_template_stage(model_id: str) -> None:
     from transformers import AutoTokenizer
 
     from sglang_omni import Stage, Worker
-    from sglang_omni.executors import FrontendExecutor
+    from sglang_omni.executors import PreprocessingExecutor
     from sglang_omni.proto import StagePayload
 
     tokenizer = AutoTokenizer.from_pretrained(model_id)
@@ -106,7 +106,7 @@ def run_template_stage(model_id: str) -> None:
         payload.data = {"prompt": prompt}
         return payload
 
-    executor = FrontendExecutor(processor)
+    executor = PreprocessingExecutor(processor)
     worker = Worker(executor, role="template")
 
     stage = Stage(
@@ -127,7 +127,7 @@ def run_tokenize_stage(model_id: str) -> None:
     from transformers import AutoTokenizer
 
     from sglang_omni import Stage, Worker
-    from sglang_omni.executors import FrontendExecutor
+    from sglang_omni.executors import PreprocessingExecutor
     from sglang_omni.proto import StagePayload
 
     tokenizer = AutoTokenizer.from_pretrained(model_id)
@@ -140,7 +140,7 @@ def run_tokenize_stage(model_id: str) -> None:
         payload.data = {"input_ids": input_ids}
         return payload
 
-    executor = FrontendExecutor(processor)
+    executor = PreprocessingExecutor(processor)
     worker = Worker(executor, role="tokenize")
 
     stage = Stage(
@@ -161,7 +161,7 @@ def run_decode_stage(model_id: str) -> None:
     from transformers import AutoTokenizer
 
     from sglang_omni import Stage, Worker
-    from sglang_omni.executors import FrontendExecutor
+    from sglang_omni.executors import PreprocessingExecutor
     from sglang_omni.proto import StagePayload
 
     tokenizer = AutoTokenizer.from_pretrained(model_id)
@@ -178,7 +178,7 @@ def run_decode_stage(model_id: str) -> None:
         payload.data = text
         return payload
 
-    executor = FrontendExecutor(processor)
+    executor = PreprocessingExecutor(processor)
     worker = Worker(executor, role="decode")
 
     stage = Stage(
