@@ -269,8 +269,8 @@ async def run_server(host: str, port: int) -> None:
     await coordinator.start()
     completion_task = asyncio.create_task(coordinator.run_completion_loop())
 
-    gateway = Client(coordinator)
-    app = create_app(gateway)
+    client = Client(coordinator)
+    app = create_app(client)
 
     config = uvicorn.Config(app, host=host, port=port, log_level="info")
     server = uvicorn.Server(config)

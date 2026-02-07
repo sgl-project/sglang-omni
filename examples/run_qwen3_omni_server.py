@@ -4,7 +4,10 @@
 Usage::
 
     python examples/run_qwen3_omni_server.py \
-        --model-id /workdir/huggingface.co/Qwen/Qwen3-Omni-30B-A3B-Instruct \
+        --model-id Qwen/Qwen3-Omni-30B-A3B-Instruct \
+        --thinker-device cuda:0 \
+        --image-device cuda:1 \
+        --audio-device cuda:1 \
         --port 8000
 
 Then test with::
@@ -17,57 +20,6 @@ Then test with::
             "max_tokens": 256,
             "stream": true
         }'
-
-   test with image:
-
-        curl http://localhost:8000/v1/chat/completions   -H "Content-Type: application/json"   -d '{
-    "model": "qwen3-omni",
-    "messages": [
-      {
-        "role": "user",
-        "content": "请帮我描述这个图片"
-      }
-    ],
-    "images": [
-      "/workdir/sglang_omni_dev/0206/omni/tests/data/cars.jpg"
-    ],
-    "max_tokens": 256,
-    "temperature": 0.7
-  }'
-
-   test with audio:
-
-        curl http://localhost:8000/v1/chat/completions   -H "Content-Type: application/json"   -d '{
-    "model": "qwen3-omni",
-    "messages": [
-      {
-        "role": "user",
-        "content": "请详细描述这个声音的特征"
-      }
-    ],
-    "audios": [
-      "/workdir/sglang_omni_dev/0206/omni/tests/data/cough.wav"
-    ],
-    "max_tokens": 256,
-    "temperature": 0.7
-  }'
-
-   test with video:
-
-        curl http://localhost:8000/v1/chat/completions   -H "Content-Type: application/json"   -d '{
-    "model": "qwen3-omni",
-    "messages": [
-      {
-        "role": "user",
-        "content": "请详细描述这个视频中的内容"
-      }
-    ],
-    "videos": [
-      "/workdir/sglang_omni_dev/0206/omni/tests/data/draw.mp4"
-    ],
-    "max_tokens": 512,
-    "temperature": 0.7
-  }'
 """
 
 from __future__ import annotations
@@ -99,9 +51,9 @@ def parse_args() -> argparse.Namespace:
 
     # Device placement
     parser.add_argument("--frontend-device", type=str, default="cpu")
-    parser.add_argument("--image-device", type=str, default="cuda:3")
-    parser.add_argument("--audio-device", type=str, default="cuda:3")
-    parser.add_argument("--thinker-device", type=str, default="cuda:3")
+    parser.add_argument("--image-device", type=str, default="cuda:0")
+    parser.add_argument("--audio-device", type=str, default="cuda:0")
+    parser.add_argument("--thinker-device", type=str, default="cuda:0")
     parser.add_argument("--thinker-max-seq-len", type=int, default=8192)
 
     # Pipeline options
