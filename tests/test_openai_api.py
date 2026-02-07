@@ -8,11 +8,7 @@ from typing import Any
 
 from fastapi.testclient import TestClient
 
-from sglang_omni.client import (
-    CompletionResult,
-    CompletionStreamChunk,
-    GenerateChunk,
-)
+from sglang_omni.client import CompletionResult, CompletionStreamChunk, GenerateChunk
 from sglang_omni.serve import create_app
 
 
@@ -99,7 +95,7 @@ def test_chat_completions_stream() -> None:
         for line in resp.iter_lines():
             if not line or not line.startswith("data: "):
                 continue
-            payload = line[len("data: "):]
+            payload = line[len("data: ") :]
             if payload == "[DONE]":
                 break
             events.append(json.loads(payload))

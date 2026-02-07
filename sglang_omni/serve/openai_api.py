@@ -19,7 +19,13 @@ from typing import Any
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
-from sglang_omni.client import Client, ClientError, GenerateRequest, Message, SamplingParams
+from sglang_omni.client import (
+    Client,
+    ClientError,
+    GenerateRequest,
+    Message,
+    SamplingParams,
+)
 from sglang_omni.serve.protocol import (
     ChatCompletionAudio,
     ChatCompletionChoice,
@@ -138,14 +144,26 @@ def _register_chat_completions(app: FastAPI) -> None:
         if req.stream:
             return StreamingResponse(
                 _chat_stream(
-                    client, gen_req, request_id, response_id, created, model, req,
+                    client,
+                    gen_req,
+                    request_id,
+                    response_id,
+                    created,
+                    model,
+                    req,
                     audio_format,
                 ),
                 media_type="text/event-stream",
             )
 
         return await _chat_non_stream(
-            client, gen_req, request_id, response_id, created, model, req,
+            client,
+            gen_req,
+            request_id,
+            response_id,
+            created,
+            model,
+            req,
             audio_format,
         )
 
@@ -163,7 +181,9 @@ async def _chat_non_stream(
     """Handle non-streaming chat completions."""
     try:
         result = await client.completion(
-            gen_req, request_id=request_id, audio_format=audio_format,
+            gen_req,
+            request_id=request_id,
+            audio_format=audio_format,
         )
     except ClientError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
@@ -230,7 +250,9 @@ async def _chat_stream(
     requested_modalities = req.modalities or ["text"]
 
     async for chunk in client.completion_stream(
-        gen_req, request_id=request_id, audio_format=audio_format,
+        gen_req,
+        request_id=request_id,
+        audio_format=audio_format,
     ):
         delta = ChatCompletionStreamDelta()
         emit = False
