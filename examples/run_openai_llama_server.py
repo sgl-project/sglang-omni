@@ -290,7 +290,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="OpenAI API server for Llama demo")
     parser.add_argument(
         "--model-id",
-        default="meta-llama/Meta-Llama-3-8B",
+        default="meta-llama/Meta-Llama-3-8B-Instruct",
         help="Hugging Face model id",
     )
     parser.add_argument(

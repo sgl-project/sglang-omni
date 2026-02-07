@@ -15,7 +15,7 @@ from transformers.models.qwen3_omni_moe.processing_qwen3_omni_moe import (
 )
 from transformers.utils.hub import cached_file
 
-from sglang_omni.frontends import (
+from sglang_omni.preprocessing import (
     build_audio_mm_inputs,
     build_image_mm_inputs,
     build_video_mm_inputs,
