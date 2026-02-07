@@ -125,7 +125,11 @@ def run_template_stage(model_id: str) -> None:
         coordinator_endpoint=COORDINATOR_ENDPOINT,
         abort_endpoint=ABORT_ENDPOINT,
         endpoints=ENDPOINTS,
-        relay_config={"worker_id": "template_worker", "gpu_id": None},
+        relay_config={
+            "worker_id": "template_worker",
+            "gpu_id": None,
+            "relay_type": "shm",
+        },
     )
     stage.add_worker(worker)
 
@@ -166,7 +170,11 @@ def run_tokenize_stage(model_id: str) -> None:
         coordinator_endpoint=COORDINATOR_ENDPOINT,
         abort_endpoint=ABORT_ENDPOINT,
         endpoints=ENDPOINTS,
-        relay_config={"worker_id": "tokenize_worker", "gpu_id": None},
+        relay_config={
+            "worker_id": "tokenize_worker",
+            "gpu_id": None,
+            "relay_type": "shm",
+        },
     )
     stage.add_worker(worker)
 
@@ -211,7 +219,11 @@ def run_decode_stage(model_id: str) -> None:
         coordinator_endpoint=COORDINATOR_ENDPOINT,
         abort_endpoint=ABORT_ENDPOINT,
         endpoints=ENDPOINTS,
-        relay_config={"worker_id": "decode_worker", "gpu_id": None},
+        relay_config={
+            "worker_id": "decode_worker",
+            "gpu_id": None,
+            "relay_type": "shm",
+        },
     )
     stage.add_worker(worker)
 
@@ -270,6 +282,7 @@ def run_engine_stage(
         relay_config={
             "worker_id": "engine_worker",
             "gpu_id": _gpu_id_from_device(relay_device),
+            "relay_type": "shm",
         },
     )
     stage.add_worker(worker)
