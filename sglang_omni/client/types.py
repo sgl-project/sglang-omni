@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Gateway request and streaming types."""
+"""Client request, streaming, and result types."""
 
 from __future__ import annotations
 
@@ -75,7 +75,7 @@ class SamplingParams:
 
 @dataclass
 class GenerateRequest:
-    """Gateway-level request (API-agnostic)."""
+    """Client-level request (API-agnostic)."""
 
     model: str | None = None
 
@@ -116,7 +116,7 @@ class GenerateRequest:
 
 @dataclass
 class GenerateChunk:
-    """Streaming chunk from the gateway."""
+    """Streaming chunk from the client."""
 
     request_id: str
     index: int = 0
@@ -156,8 +156,59 @@ class AbortLevel(Enum):
 
 @dataclass
 class AbortResult:
-    """Abort response from the gateway."""
+    """Abort response from the client."""
 
     success: bool
     level_applied: AbortLevel
     partial_output: GenerateChunk | None = None
+
+
+# ---------------------------------------------------------------------------
+# High-level result types
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class CompletionAudio:
+    """Audio data from a non-streaming completion."""
+
+    id: str
+    data: str  # base64
+    transcript: str | None = None
+
+
+@dataclass
+class CompletionResult:
+    """Result of a non-streaming completion call."""
+
+    request_id: str
+    text: str
+    audio: CompletionAudio | None = None
+    finish_reason: str = "stop"
+    usage: UsageInfo | None = None
+
+
+@dataclass
+class CompletionStreamChunk:
+    """A single chunk from a streaming completion call."""
+
+    request_id: str
+    text: str = ""
+    modality: str = "text"
+    audio_b64: str | None = None  # already base64-encoded
+    finish_reason: str | None = None
+    usage: UsageInfo | None = None
+    stage_name: str | None = None
+
+
+@dataclass
+class SpeechResult:
+    """Result of a text-to-speech call."""
+
+    audio_bytes: bytes
+    mime_type: str
+    format: str  # actual format used
+
+
+class ClientError(Exception):
+    """Error raised by the Client layer."""

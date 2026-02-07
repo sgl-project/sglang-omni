@@ -1,24 +1,37 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Gateway wrapper for coordinator-based pipelines."""
+"""Client wrapper for coordinator-based pipelines."""
 
 from __future__ import annotations
 
 import uuid
 from typing import Any, AsyncIterator, Callable
 
-from sglang_omni.gateway.types import (
+import numpy as np
+
+from sglang_omni.client.audio import (
+    FORMAT_MIME_TYPES,
+    audio_to_base64,
+    encode_audio,
+    to_numpy,
+)
+from sglang_omni.client.types import (
     AbortLevel,
     AbortResult,
+    ClientError,
+    CompletionAudio,
+    CompletionResult,
+    CompletionStreamChunk,
     GenerateChunk,
     GenerateRequest,
+    SpeechResult,
     UsageInfo,
 )
 from sglang_omni.pipeline.coordinator import Coordinator
 from sglang_omni.proto import OmniRequest, RequestState, StreamMessage
 
 
-class Gateway:
-    """Internal gateway used by API adapters."""
+class Client:
+    """Internal client used by API adapters."""
 
     def __init__(
         self,
@@ -29,6 +42,10 @@ class Gateway:
         self._coordinator = coordinator
         self._result_builder = result_builder or self._default_result_builder
         self._stream_builder = stream_builder or self._default_stream_builder
+
+    # ------------------------------------------------------------------
+    # Low-level generate (backward compatible)
+    # ------------------------------------------------------------------
 
     async def generate(
         self,
@@ -48,6 +65,150 @@ class Gateway:
         result = await self._coordinator.submit(req_id, omni_request)
         yield self._result_builder(req_id, result)
 
+    # ------------------------------------------------------------------
+    # High-level: non-streaming completion
+    # ------------------------------------------------------------------
+
+    async def completion(
+        self,
+        request: GenerateRequest,
+        *,
+        request_id: str,
+        audio_format: str = "wav",
+    ) -> CompletionResult:
+        """Run a non-streaming completion and return an aggregated result.
+
+        Iterates ``generate()``, accumulates text, concatenates audio chunks,
+        and encodes audio to base64.
+
+        Raises:
+            ClientError: If the pipeline produces no response at all.
+        """
+        text_parts: list[str] = []
+        audio_chunks: list[Any] = []
+        last_chunk: GenerateChunk | None = None
+        finish_reason: str | None = None
+
+        async for chunk in self.generate(request, request_id=request_id):
+            last_chunk = chunk
+            if chunk.modality == "text" and chunk.text:
+                text_parts.append(chunk.text)
+            if chunk.modality == "audio" and chunk.audio_data is not None:
+                audio_chunks.append(chunk.audio_data)
+            if chunk.finish_reason is not None:
+                finish_reason = chunk.finish_reason
+
+        if last_chunk is None:
+            raise ClientError("No response from pipeline")
+
+        full_text = "".join(text_parts)
+
+        audio: CompletionAudio | None = None
+        if audio_chunks:
+            if len(audio_chunks) == 1:
+                combined = audio_chunks[0]
+            else:
+                combined = np.concatenate([to_numpy(c) for c in audio_chunks])
+            audio_b64 = audio_to_base64(combined, output_format=audio_format)
+            audio = CompletionAudio(
+                id=f"audio-{request_id}",
+                data=audio_b64,
+                transcript=full_text if full_text else None,
+            )
+
+        return CompletionResult(
+            request_id=request_id,
+            text=full_text,
+            audio=audio,
+            finish_reason=finish_reason or "stop",
+            usage=last_chunk.usage,
+        )
+
+    # ------------------------------------------------------------------
+    # High-level: streaming completion
+    # ------------------------------------------------------------------
+
+    async def completion_stream(
+        self,
+        request: GenerateRequest,
+        *,
+        request_id: str,
+        audio_format: str = "wav",
+    ) -> AsyncIterator[CompletionStreamChunk]:
+        """Iterate ``generate()`` and yield high-level stream chunks.
+
+        Audio data is base64-encoded before yielding so that callers never
+        need to touch numpy / raw bytes.
+        """
+        async for chunk in self.generate(request, request_id=request_id):
+            audio_b64: str | None = None
+            if chunk.modality == "audio" and chunk.audio_data is not None:
+                audio_b64 = audio_to_base64(
+                    chunk.audio_data, output_format=audio_format
+                )
+
+            yield CompletionStreamChunk(
+                request_id=request_id,
+                text=chunk.text,
+                modality=chunk.modality,
+                audio_b64=audio_b64,
+                finish_reason=chunk.finish_reason,
+                usage=chunk.usage,
+                stage_name=chunk.stage_name,
+            )
+
+    # ------------------------------------------------------------------
+    # High-level: text-to-speech
+    # ------------------------------------------------------------------
+
+    async def speech(
+        self,
+        request: GenerateRequest,
+        *,
+        request_id: str,
+        response_format: str = "wav",
+        speed: float = 1.0,
+    ) -> SpeechResult:
+        """Run a TTS request and return encoded audio bytes.
+
+        Raises:
+            ClientError: If the pipeline produces no audio output.
+        """
+        audio_data: Any = None
+
+        async for chunk in self.generate(request, request_id=request_id):
+            if chunk.audio_data is not None:
+                audio_data = chunk.audio_data
+            elif chunk.modality == "audio" and chunk.text:
+                audio_data = chunk.text
+
+        if audio_data is None:
+            raise ClientError("No audio output generated from the pipeline.")
+
+        audio_bytes, mime_type = encode_audio(
+            audio_data,
+            response_format=response_format,
+            speed=speed,
+        )
+
+        # Derive actual format from MIME type (encode_audio may fall back
+        # to WAV if the requested codec is unavailable).
+        actual_format = response_format
+        for ext, mt in FORMAT_MIME_TYPES.items():
+            if mt == mime_type:
+                actual_format = ext
+                break
+
+        return SpeechResult(
+            audio_bytes=audio_bytes,
+            mime_type=mime_type,
+            format=actual_format,
+        )
+
+    # ------------------------------------------------------------------
+    # Other operations
+    # ------------------------------------------------------------------
+
     async def abort(
         self,
         request_id: str,
@@ -64,6 +225,10 @@ class Gateway:
 
     def health(self) -> dict[str, Any]:
         return self._coordinator.health()
+
+    # ------------------------------------------------------------------
+    # Internals
+    # ------------------------------------------------------------------
 
     @staticmethod
     def _set_audio_data(chunk: GenerateChunk, data: dict[str, Any]) -> None:
@@ -110,7 +275,7 @@ class Gateway:
             modality = result.get("modality")
             if modality is not None:
                 chunk.modality = modality
-            Gateway._set_audio_data(chunk, result)
+            Client._set_audio_data(chunk, result)
             chunk.usage = UsageInfo.from_dict(result.get("usage"))
             return chunk
         if isinstance(result, str):
@@ -157,7 +322,7 @@ class Gateway:
             modality = data.get("modality")
             if modality is not None:
                 chunk.modality = modality
-            Gateway._set_audio_data(chunk, data)
+            Client._set_audio_data(chunk, data)
             return chunk
         if isinstance(data, str):
             chunk.text = data

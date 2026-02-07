@@ -4,27 +4,64 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 
 from fastapi.testclient import TestClient
 
-from sglang_omni.gateway import GenerateChunk
+from sglang_omni.client import (
+    CompletionResult,
+    CompletionStreamChunk,
+    GenerateChunk,
+)
 from sglang_omni.serve import create_app
 
 
-class DummyGateway:
+class DummyClient:
+    """Minimal stand-in for ``Client`` that replays pre-built chunks."""
+
     def __init__(self, chunks: list[GenerateChunk]):
         self._chunks = chunks
 
-    async def generate(self, request, request_id=None):
+    async def generate(self, request: Any, request_id: str | None = None):
         for chunk in self._chunks:
             yield chunk
 
+    async def completion(
+        self, request: Any, *, request_id: str, audio_format: str = "wav"
+    ) -> CompletionResult:
+        text_parts: list[str] = []
+        finish_reason: str | None = None
+        async for chunk in self.generate(request, request_id=request_id):
+            if chunk.text:
+                text_parts.append(chunk.text)
+            if chunk.finish_reason is not None:
+                finish_reason = chunk.finish_reason
+        return CompletionResult(
+            request_id=request_id,
+            text="".join(text_parts),
+            finish_reason=finish_reason or "stop",
+        )
+
+    async def completion_stream(
+        self, request: Any, *, request_id: str, audio_format: str = "wav"
+    ):
+        async for chunk in self.generate(request, request_id=request_id):
+            yield CompletionStreamChunk(
+                request_id=request_id,
+                text=chunk.text,
+                modality=chunk.modality,
+                finish_reason=chunk.finish_reason,
+            )
+
+    def health(self) -> dict[str, Any]:
+        return {"running": True}
+
 
 def test_chat_completions_non_stream() -> None:
-    gateway = DummyGateway(
+    dummy = DummyClient(
         [GenerateChunk(request_id="req-1", text="hello", finish_reason="stop")]
     )
-    client = TestClient(create_app(gateway))
+    client = TestClient(create_app(dummy))
 
     resp = client.post(
         "/v1/chat/completions",
@@ -39,13 +76,13 @@ def test_chat_completions_non_stream() -> None:
 
 
 def test_chat_completions_stream() -> None:
-    gateway = DummyGateway(
+    dummy = DummyClient(
         [
             GenerateChunk(request_id="req-1", text="hi"),
             GenerateChunk(request_id="req-1", finish_reason="stop"),
         ]
     )
-    client = TestClient(create_app(gateway))
+    client = TestClient(create_app(dummy))
 
     with client.stream(
         "POST",
@@ -62,7 +99,7 @@ def test_chat_completions_stream() -> None:
         for line in resp.iter_lines():
             if not line or not line.startswith("data: "):
                 continue
-            payload = line[len("data: ") :]
+            payload = line[len("data: "):]
             if payload == "[DONE]":
                 break
             events.append(json.loads(payload))

@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Audio encoding utilities for the API server.
+"""Audio encoding utilities.
 
 Converts raw audio data (numpy arrays, torch tensors, or raw bytes) into
 various output formats (WAV, MP3, FLAC, etc.) for API responses.
@@ -65,8 +65,13 @@ def apply_speed(
     """Apply speed adjustment by resampling.
 
     Returns (adjusted_audio, adjusted_sample_rate).
+
+    Raises:
+        ValueError: If *speed* is zero or negative.
     """
-    if speed == 1.0 or speed <= 0.0:
+    if speed <= 0.0:
+        raise ValueError(f"speed must be positive, got {speed}")
+    if speed == 1.0:
         return audio, sample_rate
 
     # Speed up/slow down by changing the effective sample rate
@@ -148,8 +153,12 @@ def encode_audio(
     if arr.ndim > 1:
         arr = arr.squeeze()
     if arr.ndim > 1:
-        # Take first channel
-        arr = arr[0] if arr.shape[0] < arr.shape[-1] else arr[:, 0]
+        # Multi-channel: take first channel.
+        # Handle both (channels, samples) and (samples, channels).
+        if arr.shape[0] < arr.shape[-1]:
+            arr = arr[0]
+        else:
+            arr = arr[:, 0]
 
     # Apply speed
     if speed != 1.0:
@@ -195,7 +204,7 @@ def encode_audio(
             )
             return encode_wav(arr, sample_rate), FORMAT_MIME_TYPES["wav"]
 
-    # Unknown format → fall back to WAV
+    # Unknown format -> fall back to WAV
     logger.warning("Unknown audio format '%s'; falling back to WAV", fmt)
     return encode_wav(arr, sample_rate), FORMAT_MIME_TYPES["wav"]
 

@@ -19,8 +19,7 @@ from typing import Any
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
-from sglang_omni.gateway import Gateway, GenerateRequest, Message, SamplingParams
-from sglang_omni.serve.audio_utils import audio_to_base64, encode_audio
+from sglang_omni.client import Client, ClientError, GenerateRequest, Message, SamplingParams
 from sglang_omni.serve.protocol import (
     ChatCompletionAudio,
     ChatCompletionChoice,
@@ -44,14 +43,14 @@ logger = logging.getLogger(__name__)
 
 
 def create_app(
-    gateway: Gateway,
+    client: Client,
     *,
     model_name: str | None = None,
 ) -> FastAPI:
     """Create a FastAPI application with OpenAI-compatible endpoints.
 
     Args:
-        gateway: Gateway instance connected to the pipeline coordinator.
+        client: Client instance connected to the pipeline coordinator.
         model_name: Default model name to report in responses and /v1/models.
 
     Returns:
@@ -60,7 +59,7 @@ def create_app(
     app = FastAPI(title="sglang-omni", version="0.1.0")
 
     # Store references in app state for access from route handlers
-    app.state.gateway = gateway
+    app.state.client = client
     app.state.model_name = model_name or "sglang-omni"
 
     # Register all routes
@@ -81,8 +80,8 @@ def _register_health(app: FastAPI) -> None:
     @app.get("/health")
     async def health() -> JSONResponse:
         """Health check endpoint."""
-        gateway: Gateway = app.state.gateway
-        info = gateway.health()
+        client: Client = app.state.client
+        info = client.health()
         is_running = info.get("running", False)
         status_code = 200 if is_running else 503
         return JSONResponse(
@@ -121,7 +120,7 @@ def _register_models(app: FastAPI) -> None:
 def _register_chat_completions(app: FastAPI) -> None:
     @app.post("/v1/chat/completions")
     async def chat_completions(req: ChatCompletionRequest) -> Response:
-        gateway: Gateway = app.state.gateway
+        client: Client = app.state.client
         default_model: str = app.state.model_name
 
         request_id = req.request_id or str(uuid.uuid4())
@@ -131,86 +130,73 @@ def _register_chat_completions(app: FastAPI) -> None:
 
         gen_req = _build_chat_generate_request(req)
 
+        # Determine audio format from request
+        audio_format = "wav"
+        if req.audio and isinstance(req.audio, dict):
+            audio_format = req.audio.get("format", "wav")
+
         if req.stream:
             return StreamingResponse(
                 _chat_stream(
-                    gateway, gen_req, request_id, response_id, created, model, req
+                    client, gen_req, request_id, response_id, created, model, req,
+                    audio_format,
                 ),
                 media_type="text/event-stream",
             )
 
         return await _chat_non_stream(
-            gateway, gen_req, request_id, response_id, created, model, req
+            client, gen_req, request_id, response_id, created, model, req,
+            audio_format,
         )
 
 
 async def _chat_non_stream(
-    gateway: Gateway,
+    client: Client,
     gen_req: GenerateRequest,
     request_id: str,
     response_id: str,
     created: int,
     model: str,
     req: ChatCompletionRequest,
+    audio_format: str,
 ) -> JSONResponse:
     """Handle non-streaming chat completions."""
-    text_parts: list[str] = []
-    audio_chunks: list[Any] = []
-    last_chunk = None
-    finish_reason: str | None = None
-
-    async for chunk in gateway.generate(gen_req, request_id=request_id):
-        last_chunk = chunk
-        if chunk.modality == "text" and chunk.text:
-            text_parts.append(chunk.text)
-        if chunk.modality == "audio" and chunk.audio_data is not None:
-            audio_chunks.append(chunk.audio_data)
-        if chunk.finish_reason is not None:
-            finish_reason = chunk.finish_reason
-
-    if last_chunk is None:
-        raise HTTPException(status_code=500, detail="No response from pipeline")
-
-    # Build message content
-    message: dict[str, Any] = {"role": "assistant"}
-    full_text = "".join(text_parts)
+    try:
+        result = await client.completion(
+            gen_req, request_id=request_id, audio_format=audio_format,
+        )
+    except ClientError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("Error generating response for request %s", request_id)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     requested_modalities = req.modalities or ["text"]
 
-    if "text" in requested_modalities and full_text:
-        message["content"] = full_text
+    # Build message content
+    message: dict[str, Any] = {"role": "assistant"}
 
-    if "audio" in requested_modalities and audio_chunks:
-        # Determine audio format from request
-        audio_format = "wav"
-        if req.audio and isinstance(req.audio, dict):
-            audio_format = req.audio.get("format", "wav")
+    if "text" in requested_modalities and result.text:
+        message["content"] = result.text
 
-        # Combine all audio data and encode to base64
-        combined_audio = audio_chunks[-1]  # Use last (most complete) audio chunk
-        audio_b64 = audio_to_base64(
-            combined_audio,
-            output_format=audio_format,
-        )
-
+    if "audio" in requested_modalities and result.audio is not None:
         message["audio"] = {
-            "id": f"audio-{request_id}",
-            "data": audio_b64,
+            "id": result.audio.id,
+            "data": result.audio.data,
             "expires_at": created + 3600,
-            "transcript": full_text if full_text else None,
+            "transcript": result.audio.transcript,
         }
 
     if "content" not in message and "audio" not in message:
-        # Fallback: always include content
-        message["content"] = full_text
+        message["content"] = result.text
 
     # Build usage
     usage = None
-    if last_chunk.usage is not None:
+    if result.usage is not None:
         usage = UsageResponse(
-            prompt_tokens=last_chunk.usage.prompt_tokens or 0,
-            completion_tokens=last_chunk.usage.completion_tokens or 0,
-            total_tokens=last_chunk.usage.total_tokens or 0,
+            prompt_tokens=result.usage.prompt_tokens or 0,
+            completion_tokens=result.usage.completion_tokens or 0,
+            total_tokens=result.usage.total_tokens or 0,
         )
 
     response = ChatCompletionResponse(
@@ -221,7 +207,7 @@ async def _chat_non_stream(
             ChatCompletionChoice(
                 index=0,
                 message=message,
-                finish_reason=finish_reason or "stop",
+                finish_reason=result.finish_reason,
             )
         ],
         usage=usage,
@@ -231,24 +217,22 @@ async def _chat_non_stream(
 
 
 async def _chat_stream(
-    gateway: Gateway,
+    client: Client,
     gen_req: GenerateRequest,
     request_id: str,
     response_id: str,
     created: int,
     model: str,
     req: ChatCompletionRequest,
+    audio_format: str,
 ):
     """Streaming chat completion generator (yields SSE events)."""
     role_sent = False
     requested_modalities = req.modalities or ["text"]
 
-    # Determine audio format
-    audio_format = "wav"
-    if req.audio and isinstance(req.audio, dict):
-        audio_format = req.audio.get("format", "wav")
-
-    async for chunk in gateway.generate(gen_req, request_id=request_id):
+    async for chunk in client.completion_stream(
+        gen_req, request_id=request_id, audio_format=audio_format,
+    ):
         delta = ChatCompletionStreamDelta()
         emit = False
 
@@ -266,16 +250,12 @@ async def _chat_stream(
         # Audio chunk
         if (
             chunk.modality == "audio"
-            and chunk.audio_data is not None
+            and chunk.audio_b64 is not None
             and "audio" in requested_modalities
         ):
-            audio_b64 = audio_to_base64(
-                chunk.audio_data,
-                output_format=audio_format,
-            )
             delta.audio = ChatCompletionAudio(
                 id=f"audio-{request_id}",
-                data=audio_b64,
+                data=chunk.audio_b64,
             )
             emit = True
 
@@ -314,7 +294,7 @@ async def _chat_stream(
 
 
 def _build_chat_generate_request(req: ChatCompletionRequest) -> GenerateRequest:
-    """Convert a ChatCompletionRequest into a gateway GenerateRequest."""
+    """Convert a ChatCompletionRequest into a client GenerateRequest."""
     # Parse stop sequences
     stop: list[str] = []
     if isinstance(req.stop, str):
@@ -394,44 +374,31 @@ def _build_chat_generate_request(req: ChatCompletionRequest) -> GenerateRequest:
 def _register_speech(app: FastAPI) -> None:
     @app.post("/v1/audio/speech")
     async def create_speech(req: CreateSpeechRequest) -> Response:
-        gateway: Gateway = app.state.gateway
+        client: Client = app.state.client
         default_model: str = app.state.model_name
 
         request_id = f"speech-{uuid.uuid4()}"
 
         gen_req = _build_speech_generate_request(req, default_model)
 
-        # Collect the final audio output
-        audio_data: Any = None
-        last_chunk = None
-
-        async for chunk in gateway.generate(gen_req, request_id=request_id):
-            last_chunk = chunk
-            # Collect audio data from any modality
-            if chunk.audio_data is not None:
-                audio_data = chunk.audio_data
-            elif chunk.modality == "audio" and chunk.text:
-                # Some pipelines might return audio as encoded text
-                audio_data = chunk.text
-
-        if audio_data is None:
-            raise HTTPException(
-                status_code=500,
-                detail="No audio output generated from the pipeline.",
+        try:
+            result = await client.speech(
+                gen_req,
+                request_id=request_id,
+                response_format=req.response_format,
+                speed=req.speed,
             )
-
-        # Encode to requested format
-        audio_bytes, mime_type = encode_audio(
-            audio_data,
-            response_format=req.response_format,
-            speed=req.speed,
-        )
+        except ClientError as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+        except Exception as exc:
+            logger.exception("Error generating speech for request %s", request_id)
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
 
         return Response(
-            content=audio_bytes,
-            media_type=mime_type,
+            content=result.audio_bytes,
+            media_type=result.mime_type,
             headers={
-                "Content-Disposition": f'attachment; filename="speech.{req.response_format}"',
+                "Content-Disposition": f'attachment; filename="speech.{result.format}"',
             },
         )
 
@@ -440,7 +407,7 @@ def _build_speech_generate_request(
     req: CreateSpeechRequest,
     default_model: str,
 ) -> GenerateRequest:
-    """Convert a CreateSpeechRequest into a gateway GenerateRequest."""
+    """Convert a CreateSpeechRequest into a client GenerateRequest."""
 
     # Build TTS-specific parameters to pass through the pipeline
     tts_params: dict[str, Any] = {

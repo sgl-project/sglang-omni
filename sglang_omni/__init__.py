@@ -1,22 +1,21 @@
 # SPDX-License-Identifier: Apache-2.0
 """SGLang-Omni: Multi-stage pipeline framework for omni models."""
 
-from sglang_omni.engines.base import EchoEngine, Engine
-from sglang_omni.gateway import (
+from sglang_omni.client import (
     AbortLevel,
     AbortResult,
-    Gateway,
+    Client,
     GenerateChunk,
     GenerateRequest,
     Message,
     SamplingParams,
     UsageInfo,
 )
+from sglang_omni.engines.base import EchoEngine, Engine
 from sglang_omni.pipeline.coordinator import Coordinator
 from sglang_omni.pipeline.stage import AggregatedInput, DirectInput, InputHandler, Stage
 from sglang_omni.pipeline.worker import Worker
 
-# Re-export from submodules for convenience
 # Re-export from submodules for convenience
 from sglang_omni.proto import (
     AbortMessage,
@@ -27,6 +26,9 @@ from sglang_omni.proto import (
     StageInfo,
 )
 
+# Backward-compatible alias
+Gateway = Client
+
 __version__ = "0.1.0"
 
 __all__ = [
@@ -36,6 +38,7 @@ __all__ = [
     "Worker",
     "Engine",
     "EchoEngine",
+    "Client",
     "Gateway",
     # Input handlers
     "InputHandler",

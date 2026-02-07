@@ -32,8 +32,8 @@ from typing import Any
 
 import uvicorn
 
+from sglang_omni.client import Client
 from sglang_omni.config import PipelineConfig, PipelineRunner, compile_pipeline
-from sglang_omni.gateway import Gateway
 from sglang_omni.serve.openai_api import create_app
 
 logger = logging.getLogger(__name__)
@@ -88,7 +88,7 @@ async def _run_server(
     port: int = 8000,
     model_name: str | None = None,
     log_level: str = "info",
-    gateway_kwargs: dict[str, Any] | None = None,
+    client_kwargs: dict[str, Any] | None = None,
 ) -> None:
     """Compile the pipeline, start stages, and run the OpenAI server.
 
@@ -106,10 +106,10 @@ async def _run_server(
         len(stages),
     )
 
-    # 3. Build Gateway -> FastAPI app
-    gw_kwargs = gateway_kwargs or {}
-    gateway = Gateway(coordinator, **gw_kwargs)
-    app = create_app(gateway, model_name=model_name or pipeline_config.name)
+    # 3. Build Client -> FastAPI app
+    cl_kwargs = client_kwargs or {}
+    client = Client(coordinator, **cl_kwargs)
+    app = create_app(client, model_name=model_name or pipeline_config.name)
 
     # 4. Run uvicorn
     config = uvicorn.Config(app, host=host, port=port, log_level=log_level)
@@ -130,7 +130,7 @@ def launch_server(
     port: int = 8000,
     model_name: str | None = None,
     log_level: str = "info",
-    gateway_kwargs: dict[str, Any] | None = None,
+    client_kwargs: dict[str, Any] | None = None,
 ) -> None:
     """Blocking helper: compile pipeline and start the OpenAI-compatible server.
 
@@ -141,8 +141,8 @@ def launch_server(
         model_name: Model name reported in ``/v1/models`` responses.
             Defaults to the pipeline name.
         log_level: Uvicorn log level.
-        gateway_kwargs: Extra keyword arguments forwarded to
-            :class:`~sglang_omni.gateway.Gateway`.
+        client_kwargs: Extra keyword arguments forwarded to
+            :class:`~sglang_omni.client.Client`.
     """
     asyncio.run(
         _run_server(
@@ -151,7 +151,7 @@ def launch_server(
             port=port,
             model_name=model_name,
             log_level=log_level,
-            gateway_kwargs=gateway_kwargs,
+            client_kwargs=client_kwargs,
         )
     )
 
