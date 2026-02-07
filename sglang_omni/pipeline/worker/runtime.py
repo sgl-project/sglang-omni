@@ -26,7 +26,13 @@ logger = logging.getLogger(__name__)
 class Worker:
     """Worker that runs the processing loop.
 
-    Loop: get work -> executor.add_request -> executor.get_result -> route -> send
+    Requests are processed concurrently: each dequeued work item becomes an
+    independent task.  A dedicated dispatcher task consumes results from the
+    executor (in completion order) and routes them to the corresponding request
+    task via per-request :class:`asyncio.Future` objects.
+
+    Back-pressure is provided naturally by the work queue (upstream) and by
+    the executor's ``add_request`` (downstream).
     """
 
     def __init__(self, executor: Executor, role: str | None = None):
@@ -37,6 +43,7 @@ class Worker:
         self.data_plane: DataPlaneAdapter | None = None
         self.queue: asyncio.Queue[WorkDescriptor | None] | None = None
         self._running = False
+        self._result_waiters: dict[str, asyncio.Future[StagePayload]] = {}
 
     def bind(self, stage: Stage, queue: asyncio.Queue[WorkDescriptor | None]) -> None:
         """Bind this worker to a stage."""
@@ -54,18 +61,53 @@ class Worker:
             self._running = True
             logger.info("Worker started for stage %s", self.stage.name)
 
-            while self._running:
-                work = await self.queue.get()
-                if work is None:  # Shutdown signal
-                    break
+            inflight: set[asyncio.Task[None]] = set()
+            dispatcher = asyncio.create_task(self._dispatch_results())
 
-                await self._process_request(work)
+            try:
+                while self._running:
+                    work = await self.queue.get()
+                    if work is None:
+                        break
+
+                    task = asyncio.create_task(self._process_request(work))
+                    inflight.add(task)
+                    task.add_done_callback(inflight.discard)
+
+                if inflight:
+                    await asyncio.gather(*inflight, return_exceptions=True)
+            finally:
+                dispatcher.cancel()
+                try:
+                    await dispatcher
+                except asyncio.CancelledError:
+                    pass
 
         except asyncio.CancelledError:
             logger.info("Worker cancelled for stage %s", self.stage.name)
         finally:
             self._running = False
             await self.executor.stop()
+
+    async def _dispatch_results(self) -> None:
+        """Single consumer that routes executor results to per-request futures."""
+        while True:
+            try:
+                result = await self.executor.get_result()
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                logger.exception("Worker dispatcher: get_result error")
+                continue
+
+            fut = self._result_waiters.pop(result.request_id, None)
+            if fut is not None and not fut.done():
+                fut.set_result(result)
+            else:
+                logger.warning(
+                    "Worker dispatcher: no waiter for request %s",
+                    result.request_id,
+                )
 
     async def _process_request(self, work: WorkDescriptor) -> None:
         """Process a single request."""
@@ -83,6 +125,12 @@ class Worker:
                     f"(expected={request_id} got={merged.request_id})"
                 )
 
+            # Register future BEFORE add_request so the dispatcher can
+            # route the result even if the executor completes synchronously.
+            loop = asyncio.get_running_loop()
+            fut: asyncio.Future[StagePayload] = loop.create_future()
+            self._result_waiters[request_id] = fut
+
             await self.executor.add_request(merged)
 
             stream_task: asyncio.Task[None] | None = None
@@ -94,7 +142,8 @@ class Worker:
                         self._forward_stream(request_id, stream_iter)
                     )
 
-            output_payload = await self.executor.get_result()
+            output_payload = await fut
+
             if not isinstance(output_payload, StagePayload):
                 raise TypeError(
                     "Executor must return StagePayload, " f"got {type(output_payload)}"
@@ -105,30 +154,32 @@ class Worker:
                     f"(expected={request_id} got={output_payload.request_id})"
                 )
 
-            # Determine next stage(s).
+            # Route
             next_stage = self.stage.get_next(request_id, output_payload)
 
-            # Route
             if next_stage is None:
                 if stream_task is not None:
                     await self._finish_stream_task(stream_task)
-                # END - send completion
                 await self._send_complete(request_id, output_payload.data)
             else:
                 if stream_task is not None:
                     await self._finish_stream_task(stream_task)
-                # Fan-out: send the same payload to multiple stages.
                 for stage_name in self._normalize_next_stages(next_stage):
                     await self._send_to_next(request_id, stage_name, output_payload)
 
         except asyncio.CancelledError:
             logger.debug("Worker: request %s cancelled", request_id)
-        except Exception as e:
+        except Exception:
             logger.exception("Worker: request %s failed", request_id)
-            await self._send_failure(request_id, str(e))
+            await self._send_failure(request_id, str(request_id))
         finally:
+            self._result_waiters.pop(request_id, None)
             if self.stage is not None:
                 self.stage.router.clear_request(request_id)
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
 
     async def _load_inputs(self, work: WorkDescriptor) -> dict[str, StagePayload]:
         payloads: dict[str, StagePayload] = {}
@@ -186,7 +237,6 @@ class Worker:
         """Send data to next stage."""
         logger.debug("Worker: routing %s to %s", request_id, next_stage)
 
-        # Write using unified relay interface
         try:
             endpoint = self.stage.endpoints.get(next_stage)
             if endpoint is None:
