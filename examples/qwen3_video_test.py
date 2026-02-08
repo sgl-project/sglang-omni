@@ -27,9 +27,11 @@ from sglang_omni.config import PipelineRunner, compile_pipeline
 from sglang_omni.models.qwen3_omni import create_text_first_pipeline_config
 from sglang_omni.proto import OmniRequest
 
-video_path = "/sgl-workspace/sglang-omni/tests/data/draw.mp4"
-image_path = "/sgl-workspace/sglang-omni/tests/data/cars.jpg"
+video_path = "https://qianwen-res.oss-cn-beijing.aliyuncs.com/Qwen3-Omni/demo/draw.mp4"
+image_path = "https://qianwen-res.oss-cn-beijing.aliyuncs.com/Qwen3-Omni/demo/cars.jpg"
+audio_path = "https://qianwen-res.oss-cn-beijing.aliyuncs.com/Qwen3-Omni/demo/cough.wav"
 model_path = "Qwen/Qwen3-Omni-30B-A3B-Instruct"
+# model_path = "/workdir/huggingface.co/Qwen/Qwen3-Omni-30B-A3B-Instruct"
 
 
 def parse_args() -> argparse.Namespace:
@@ -40,9 +42,7 @@ def parse_args() -> argparse.Namespace:
         default=model_path,
         help="Hugging Face model id",
     )
-    parser.add_argument(
-        "--prompt", type=str, default="What do you see and hear in the video?"
-    )
+    parser.add_argument("--prompt", type=str, default="What do you hear in the audio?")
     parser.add_argument("--dtype", type=str, default="bfloat16")
     parser.add_argument("--thinker-max-seq-len", type=int, default=8192)
     parser.add_argument("--max-new-tokens", type=int, default=1024)
@@ -52,9 +52,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--audio-device", type=str, default="cuda:3")
     parser.add_argument("--thinker-device", type=str, default="cuda:3")
     parser.add_argument("--image-path", type=str, default=None)
-    parser.add_argument("--audio-path", type=str, default=None)
+    parser.add_argument("--audio-path", type=str, default=audio_path)
     parser.add_argument("--audio-target-sr", type=int, default=16000)
-    parser.add_argument("--video-path", type=str, default=video_path)
+    parser.add_argument("--video-path", type=str, default=None)
     parser.add_argument("--video-fps", type=float, default=2.0)
     parser.add_argument("--use-audio-in-video", action="store_true")
     return parser.parse_args()

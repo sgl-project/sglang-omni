@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
+import base64
 import logging
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -14,16 +16,83 @@ from qwen_vl_utils import vision_process as qwen_vision
 from torchvision.transforms import InterpolationMode
 from torchvision.transforms import functional as tv_f
 
+from .base import MediaIO, _is_url
 from .cache_key import compute_media_cache_key
 
 logger = logging.getLogger(__name__)
+
+
+class VideoMediaIO(MediaIO[tuple[torch.Tensor, float]]):
+    """MediaIO implementation for video files."""
+
+    def __init__(
+        self,
+        *,
+        fps: float | None = None,
+        image_mode: str = "RGB",
+        **kwargs,
+    ) -> None:
+        """Initialize VideoMediaIO.
+
+        Args:
+            fps: Target FPS for video loading.
+            image_mode: Target image mode (default: "RGB").
+            **kwargs: Additional arguments (for compatibility with MediaConnector).
+        """
+        super().__init__()
+        self.fps = fps
+        self.image_mode = image_mode
+        self.kwargs = kwargs
+
+    def load_bytes(self, data: bytes) -> tuple[torch.Tensor, float]:
+        """Load video from raw bytes."""
+        # qwen_vision._read_video_torchvision requires a file path,
+        # so we need to write to a temporary file
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp_file:
+            tmp_path = tmp_file.name
+            tmp_file.write(data)
+
+        try:
+            return load_video_path(tmp_path, fps=self.fps)
+        finally:
+            # Clean up temporary file
+            Path(tmp_path).unlink(missing_ok=True)
+
+    def load_base64(
+        self,
+        media_type: str,
+        data: str,
+    ) -> tuple[torch.Tensor, float]:
+        """Load video from base64-encoded data."""
+        return self.load_bytes(base64.b64decode(data))
+
+    def load_file(self, filepath: Path) -> tuple[torch.Tensor, float]:
+        """Load video from a local file path."""
+        return load_video_path(filepath, fps=self.fps)
 
 
 def ensure_video_list(
     videos: Any,
     *,
     fps: float | None = None,
+    image_mode: str = "RGB",
+    media_connector: Any | None = None,
 ) -> tuple[list[Any], list[float] | None]:
+    """Normalize video inputs into a list.
+
+    Supports local file paths, URLs (HTTP/HTTPS, data URLs, file URLs),
+    and torch Tensors.
+
+    Args:
+        videos: Video input(s) - can be a path, URL, torch Tensor, or list.
+        fps: Target FPS for video loading.
+        image_mode: Target image mode (default: "RGB").
+        media_connector: Optional MediaConnector instance. If None, uses
+                        the global connector.
+
+    Returns:
+        Tuple of (normalized video list, sample_fps_list or None).
+    """
     if videos is None:
         return [], None
     if isinstance(videos, list):
@@ -33,14 +102,36 @@ def ensure_video_list(
     normalized: list[Any] = []
     sample_fps_list: list[float] = []
     all_paths = True
+
+    # Import here to avoid circular dependency
+    if media_connector is None:
+        from .media_connector import get_global_media_connector
+
+        media_connector = get_global_media_connector()
+
     for video_item in items:
-        if isinstance(video_item, (str, Path)) and Path(video_item).exists():
-            video, sample_fps = load_video_path(video_item, fps=fps)
-            normalized.append(video)
-            sample_fps_list.append(sample_fps)
+        if isinstance(video_item, (str, Path)):
+            if _is_url(video_item):
+                # Load from URL
+                video, sample_fps = media_connector.fetch_video(
+                    str(video_item), fps=fps, image_mode=image_mode
+                )
+                normalized.append(video)
+                sample_fps_list.append(sample_fps)
+            elif Path(video_item).exists():
+                # Load from local path
+                video, sample_fps = load_video_path(video_item, fps=fps)
+                normalized.append(video)
+                sample_fps_list.append(sample_fps)
+            else:
+                # Path doesn't exist, treat as already processed
+                normalized.append(video_item)
+                all_paths = False
         else:
+            # Already processed (torch Tensor, etc.)
             normalized.append(video_item)
             all_paths = False
+
     if all_paths:
         return normalized, sample_fps_list
     return normalized, None
