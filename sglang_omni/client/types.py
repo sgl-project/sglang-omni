@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Gateway request and streaming types."""
+"""Client request, streaming, and result types."""
 
 from __future__ import annotations
 
@@ -75,7 +75,7 @@ class SamplingParams:
 
 @dataclass
 class GenerateRequest:
-    """Gateway-level request (API-agnostic)."""
+    """Client-level request (API-agnostic)."""
 
     model: str | None = None
 
@@ -88,6 +88,9 @@ class GenerateRequest:
     stage_params: dict[str, dict[str, Any]] | None = None
     stream: bool = True
     max_tokens: int | None = None
+
+    # Multi-modal support
+    output_modalities: list[str] | None = None
 
     metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -106,13 +109,14 @@ class GenerateRequest:
             "stage_params": self.stage_params,
             "stream": self.stream,
             "max_tokens": self.max_tokens,
+            "output_modalities": self.output_modalities,
             "metadata": dict(self.metadata),
         }
 
 
 @dataclass
 class GenerateChunk:
-    """Streaming chunk from the gateway."""
+    """Streaming chunk from the client."""
 
     request_id: str
     index: int = 0
@@ -124,6 +128,8 @@ class GenerateChunk:
     stage_id: int | None = None
     stage_name: str | None = None
     modality: str = "text"
+    # Multi-modal output data (e.g. audio waveform bytes, image bytes)
+    audio_data: Any = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -137,6 +143,7 @@ class GenerateChunk:
             "stage_id": self.stage_id,
             "stage_name": self.stage_name,
             "modality": self.modality,
+            "audio_data": self.audio_data,
         }
 
 
@@ -149,8 +156,59 @@ class AbortLevel(Enum):
 
 @dataclass
 class AbortResult:
-    """Abort response from the gateway."""
+    """Abort response from the client."""
 
     success: bool
     level_applied: AbortLevel
     partial_output: GenerateChunk | None = None
+
+
+# ---------------------------------------------------------------------------
+# High-level result types
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class CompletionAudio:
+    """Audio data from a non-streaming completion."""
+
+    id: str
+    data: str  # base64
+    transcript: str | None = None
+
+
+@dataclass
+class CompletionResult:
+    """Result of a non-streaming completion call."""
+
+    request_id: str
+    text: str
+    audio: CompletionAudio | None = None
+    finish_reason: str = "stop"
+    usage: UsageInfo | None = None
+
+
+@dataclass
+class CompletionStreamChunk:
+    """A single chunk from a streaming completion call."""
+
+    request_id: str
+    text: str = ""
+    modality: str = "text"
+    audio_b64: str | None = None  # already base64-encoded
+    finish_reason: str | None = None
+    usage: UsageInfo | None = None
+    stage_name: str | None = None
+
+
+@dataclass
+class SpeechResult:
+    """Result of a text-to-speech call."""
+
+    audio_bytes: bytes
+    mime_type: str
+    format: str  # actual format used
+
+
+class ClientError(Exception):
+    """Error raised by the Client layer."""

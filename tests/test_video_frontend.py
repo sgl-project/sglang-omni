@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Unit tests for video frontend processing."""
+"""Unit tests for video preprocessing."""
 
 from __future__ import annotations
 
@@ -8,12 +8,12 @@ from pathlib import Path
 import pytest
 import requests
 
-from sglang_omni.frontends import (
+from sglang_omni.preprocessing import (
     compute_video_cache_key,
     ensure_video_list,
     extract_audio_from_video_inputs,
 )
-from sglang_omni.frontends.video import _check_if_video_has_audio
+from sglang_omni.preprocessing.video import _check_if_video_has_audio
 
 # Remote test resources
 VIDEO_URL = "https://qianwen-res.oss-cn-beijing.aliyuncs.com/Qwen3-Omni/demo/draw.mp4"
@@ -50,8 +50,8 @@ def image_path():
         return img_dir
 
 
-class TestVideoFrontend:
-    """Test core video frontend functionality."""
+class TestVideoPreprocessing:
+    """Test core video preprocessing functionality."""
 
     def test_video_loading_and_normalization(self, video_path):
         """Test loading video from path and normalizing to tensor."""

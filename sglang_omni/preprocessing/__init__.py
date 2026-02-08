@@ -1,31 +1,31 @@
 # SPDX-License-Identifier: Apache-2.0
-"""High-level frontend utilities (model-agnostic)."""
+"""High-level preprocessing utilities (model-agnostic)."""
 
-from sglang_omni.frontends.audio import (
+from sglang_omni.preprocessing.audio import (
     AudioMediaIO,
     build_audio_mm_inputs,
     compute_audio_cache_key,
     ensure_audio_list,
 )
-from sglang_omni.frontends.base import MediaIO
-from sglang_omni.frontends.image import (
+from sglang_omni.preprocessing.base import MediaIO
+from sglang_omni.preprocessing.image import (
     ImageMediaIO,
     build_image_mm_inputs,
     compute_image_cache_key,
     ensure_image_list,
 )
-from sglang_omni.frontends.media_connector import (
+from sglang_omni.preprocessing.media_connector import (
     MediaConnector,
     get_global_media_connector,
 )
-from sglang_omni.frontends.text import (
+from sglang_omni.preprocessing.text import (
     append_modality_placeholders,
     apply_chat_template,
     ensure_chat_template,
     load_chat_template,
     normalize_messages,
 )
-from sglang_omni.frontends.video import (
+from sglang_omni.preprocessing.video import (
     VideoMediaIO,
     build_video_mm_inputs,
     compute_video_cache_key,

@@ -8,7 +8,7 @@ from typing import Any
 from sglang_omni.models.qwen3_omni.io import PipelineState
 from sglang_omni.proto import StagePayload
 
-FRONTEND_STAGE = "frontend"
+PREPROCESSING_STAGE = "preprocessing"
 IMAGE_STAGE = "image_encoder"
 AUDIO_STAGE = "audio_encoder"
 AGGREGATE_STAGE = "mm_aggregate"
@@ -16,7 +16,7 @@ THINKER_STAGE = "thinker"
 DECODE_STAGE = "decode"
 
 
-def frontend_next(request_id: str, output: Any) -> list[str]:
+def preprocessing_next(request_id: str, output: Any) -> list[str]:
     del request_id
     if not isinstance(output, StagePayload):
         return [AGGREGATE_STAGE]

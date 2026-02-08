@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Model-agnostic text frontend utilities."""
+"""Model-agnostic text preprocessing utilities."""
 
 from __future__ import annotations
 
@@ -40,7 +40,7 @@ def ensure_chat_template(tokenizer: Any, *, model_id: str) -> None:
 def normalize_messages(messages: Any) -> list[dict[str, str]]:
     """Normalize chat messages into a list of {role, content} dicts."""
     if not isinstance(messages, list):
-        raise ValueError("Frontend expects a list of chat messages")
+        raise ValueError("Preprocessing expects a list of chat messages")
 
     normalized: list[dict[str, str]] = []
     for message in messages:

@@ -78,7 +78,7 @@ def run_template_stage(model_id: str) -> None:
     from transformers import AutoTokenizer
 
     from sglang_omni import Stage, Worker
-    from sglang_omni.executors import FrontendExecutor
+    from sglang_omni.executors import PreprocessingExecutor
     from sglang_omni.proto import StagePayload
 
     logging.basicConfig(
@@ -115,7 +115,7 @@ def run_template_stage(model_id: str) -> None:
         payload.data = {"prompt": prompt}
         return payload
 
-    executor = FrontendExecutor(processor)
+    executor = PreprocessingExecutor(processor)
     worker = Worker(executor, role="template")
 
     stage = Stage(
@@ -125,7 +125,11 @@ def run_template_stage(model_id: str) -> None:
         coordinator_endpoint=COORDINATOR_ENDPOINT,
         abort_endpoint=ABORT_ENDPOINT,
         endpoints=ENDPOINTS,
-        relay_config={"worker_id": "template_worker", "gpu_id": None},
+        relay_config={
+            "worker_id": "template_worker",
+            "gpu_id": None,
+            "relay_type": "shm",
+        },
     )
     stage.add_worker(worker)
 
@@ -138,7 +142,7 @@ def run_tokenize_stage(model_id: str) -> None:
     from transformers import AutoTokenizer
 
     from sglang_omni import Stage, Worker
-    from sglang_omni.executors import FrontendExecutor
+    from sglang_omni.executors import PreprocessingExecutor
     from sglang_omni.proto import StagePayload
 
     logging.basicConfig(
@@ -156,7 +160,7 @@ def run_tokenize_stage(model_id: str) -> None:
         payload.data = {"input_ids": input_ids}
         return payload
 
-    executor = FrontendExecutor(processor)
+    executor = PreprocessingExecutor(processor)
     worker = Worker(executor, role="tokenize")
 
     stage = Stage(
@@ -166,7 +170,11 @@ def run_tokenize_stage(model_id: str) -> None:
         coordinator_endpoint=COORDINATOR_ENDPOINT,
         abort_endpoint=ABORT_ENDPOINT,
         endpoints=ENDPOINTS,
-        relay_config={"worker_id": "tokenize_worker", "gpu_id": None},
+        relay_config={
+            "worker_id": "tokenize_worker",
+            "gpu_id": None,
+            "relay_type": "shm",
+        },
     )
     stage.add_worker(worker)
 
@@ -179,7 +187,7 @@ def run_decode_stage(model_id: str) -> None:
     from transformers import AutoTokenizer
 
     from sglang_omni import Stage, Worker
-    from sglang_omni.executors import FrontendExecutor
+    from sglang_omni.executors import PreprocessingExecutor
     from sglang_omni.proto import StagePayload
 
     logging.basicConfig(
@@ -201,7 +209,7 @@ def run_decode_stage(model_id: str) -> None:
         payload.data = text
         return payload
 
-    executor = FrontendExecutor(processor)
+    executor = PreprocessingExecutor(processor)
     worker = Worker(executor, role="decode")
 
     stage = Stage(
@@ -211,7 +219,11 @@ def run_decode_stage(model_id: str) -> None:
         coordinator_endpoint=COORDINATOR_ENDPOINT,
         abort_endpoint=ABORT_ENDPOINT,
         endpoints=ENDPOINTS,
-        relay_config={"worker_id": "decode_worker", "gpu_id": None},
+        relay_config={
+            "worker_id": "decode_worker",
+            "gpu_id": None,
+            "relay_type": "shm",
+        },
     )
     stage.add_worker(worker)
 
@@ -270,6 +282,7 @@ def run_engine_stage(
         relay_config={
             "worker_id": "engine_worker",
             "gpu_id": _gpu_id_from_device(relay_device),
+            "relay_type": "shm",
         },
     )
     stage.add_worker(worker)
@@ -332,7 +345,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Four-stage Llama 3 8B demo")
     parser.add_argument(
         "--model-id",
-        default="meta-llama/Meta-Llama-3-8B",
+        default="meta-llama/Meta-Llama-3-8B-Instruct",
         help="Hugging Face model id",
     )
     parser.add_argument(

@@ -65,7 +65,7 @@ def _get_cache_key(request: SchedulerRequest) -> str | None:
     data = getattr(request, "data", None)
     if data is None:
         return None
-    # Priority 1: explicit cache_key (set by frontend)
+    # Priority 1: explicit cache_key (set by preprocessing)
     cache_key = getattr(data, "cache_key", None)
     if cache_key is None and isinstance(data, dict):
         cache_key = data.get("cache_key")

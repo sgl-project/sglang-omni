@@ -14,7 +14,7 @@ import torch
 import uvicorn
 
 from sglang_omni import Coordinator
-from sglang_omni.gateway import Gateway
+from sglang_omni.client import Client
 from sglang_omni.serve import create_app
 
 logging.basicConfig(
@@ -74,7 +74,7 @@ def run_template_stage(model_id: str) -> None:
     from transformers import AutoTokenizer
 
     from sglang_omni import Stage, Worker
-    from sglang_omni.executors import FrontendExecutor
+    from sglang_omni.executors import PreprocessingExecutor
     from sglang_omni.proto import StagePayload
 
     tokenizer = AutoTokenizer.from_pretrained(model_id)
@@ -106,7 +106,7 @@ def run_template_stage(model_id: str) -> None:
         payload.data = {"prompt": prompt}
         return payload
 
-    executor = FrontendExecutor(processor)
+    executor = PreprocessingExecutor(processor)
     worker = Worker(executor, role="template")
 
     stage = Stage(
@@ -127,7 +127,7 @@ def run_tokenize_stage(model_id: str) -> None:
     from transformers import AutoTokenizer
 
     from sglang_omni import Stage, Worker
-    from sglang_omni.executors import FrontendExecutor
+    from sglang_omni.executors import PreprocessingExecutor
     from sglang_omni.proto import StagePayload
 
     tokenizer = AutoTokenizer.from_pretrained(model_id)
@@ -140,7 +140,7 @@ def run_tokenize_stage(model_id: str) -> None:
         payload.data = {"input_ids": input_ids}
         return payload
 
-    executor = FrontendExecutor(processor)
+    executor = PreprocessingExecutor(processor)
     worker = Worker(executor, role="tokenize")
 
     stage = Stage(
@@ -161,7 +161,7 @@ def run_decode_stage(model_id: str) -> None:
     from transformers import AutoTokenizer
 
     from sglang_omni import Stage, Worker
-    from sglang_omni.executors import FrontendExecutor
+    from sglang_omni.executors import PreprocessingExecutor
     from sglang_omni.proto import StagePayload
 
     tokenizer = AutoTokenizer.from_pretrained(model_id)
@@ -178,7 +178,7 @@ def run_decode_stage(model_id: str) -> None:
         payload.data = text
         return payload
 
-    executor = FrontendExecutor(processor)
+    executor = PreprocessingExecutor(processor)
     worker = Worker(executor, role="decode")
 
     stage = Stage(
@@ -269,8 +269,8 @@ async def run_server(host: str, port: int) -> None:
     await coordinator.start()
     completion_task = asyncio.create_task(coordinator.run_completion_loop())
 
-    gateway = Gateway(coordinator)
-    app = create_app(gateway)
+    client = Client(coordinator)
+    app = create_app(client)
 
     config = uvicorn.Config(app, host=host, port=port, log_level="info")
     server = uvicorn.Server(config)
@@ -290,7 +290,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="OpenAI API server for Llama demo")
     parser.add_argument(
         "--model-id",
-        default="meta-llama/Meta-Llama-3-8B",
+        default="meta-llama/Meta-Llama-3-8B-Instruct",
         help="Hugging Face model id",
     )
     parser.add_argument(

@@ -51,7 +51,9 @@ def sender_process(
             "engine_id": "sender_engine",
             "slot_size_mb": data_size_mb,
             "credits": POOL_CREDITS,
-            "device": "cuda:0" if relay_type.lower() == "nccl" else DEVICE,
+            "device": (
+                "cuda:0" if relay_type.lower() in ["nccl", "mooncake"] else DEVICE
+            ),
         }
 
         # NCCL-specific parameters (ignored by Shm/Nixl)
@@ -65,6 +67,8 @@ def sender_process(
             from sglang_omni.relay.shm import ShmRelay as RelayCls
         elif relay_type.lower() == "nccl":
             from sglang_omni.relay.nccl import NcclRelay as RelayCls
+        elif relay_type.lower() == "mooncake":
+            from sglang_omni.relay.mooncake import MooncakeRelay as RelayCls
         else:
             raise ValueError(f"Unknown relay type: {relay_type}")
 
@@ -141,7 +145,9 @@ def receiver_process(
             "engine_id": "receiver_engine",
             "slot_size_mb": data_size_mb,
             "credits": POOL_CREDITS,
-            "device": "cuda:1" if relay_type.lower() == "nccl" else DEVICE,
+            "device": (
+                "cuda:1" if relay_type.lower() in ["nccl", "mooncake"] else DEVICE
+            ),
         }
 
         relay_kwargs.update(
@@ -154,6 +160,8 @@ def receiver_process(
             from sglang_omni.relay.shm import ShmRelay as RelayCls
         elif relay_type.lower() == "nccl":
             from sglang_omni.relay.nccl import NcclRelay as RelayCls
+        elif relay_type.lower() == "mooncake":
+            from sglang_omni.relay.mooncake import MooncakeRelay as RelayCls
         else:
             raise ValueError(f"Unknown relay type: {relay_type}")
 
@@ -239,7 +247,7 @@ def receiver_process(
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Relay Benchmark")
     parser.add_argument(
-        "--type", type=str, default="nccl", choices=["nixl", "shm", "nccl"]
+        "--type", type=str, default="nccl", choices=["nixl", "shm", "nccl", "mooncake"]
     )
     parser.add_argument("--size", type=int, default=10, help="Data size in MB")
     args = parser.parse_args()

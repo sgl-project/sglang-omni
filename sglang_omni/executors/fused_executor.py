@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
 from typing import Any
 
@@ -23,6 +24,7 @@ class FusedExecutor(Executor):
         if not executors:
             raise ValueError("FusedExecutor requires at least one executor")
         self._executors = executors
+        self._pipeline_lock = asyncio.Lock()
         self._aborted: set[str] = set()
 
     async def start(self) -> None:
@@ -38,10 +40,14 @@ class FusedExecutor(Executor):
         if request_id in self._aborted:
             return
 
+        # Serialize intermediate stages so concurrent add_request calls
+        # don't race on sub-executor get_result.  Only the last executor
+        # (typically an engine) runs requests concurrently.
         current = payload
-        for executor in self._executors[:-1]:
-            await executor.add_request(current)
-            current = await executor.get_result()
+        async with self._pipeline_lock:
+            for executor in self._executors[:-1]:
+                await executor.add_request(current)
+                current = await executor.get_result()
 
         await self._executors[-1].add_request(current)
 

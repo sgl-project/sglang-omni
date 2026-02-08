@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Model-specific frontend preprocessing for Qwen3-Omni."""
+"""Model-specific preprocessor for Qwen3-Omni."""
 
 from __future__ import annotations
 
@@ -15,7 +15,8 @@ from transformers.models.qwen3_omni_moe.processing_qwen3_omni_moe import (
 )
 from transformers.utils.hub import cached_file
 
-from sglang_omni.frontends import (
+from sglang_omni.models.qwen3_omni.io import PipelineState
+from sglang_omni.preprocessing import (
     build_audio_mm_inputs,
     build_image_mm_inputs,
     build_video_mm_inputs,
@@ -29,7 +30,6 @@ from sglang_omni.frontends import (
     extract_audio_from_video_inputs,
     normalize_messages,
 )
-from sglang_omni.models.qwen3_omni.io import PipelineState
 from sglang_omni.proto import StagePayload
 
 logger = logging.getLogger(__name__)
@@ -99,7 +99,7 @@ def _build_processor_local(model_dir: str, model_id: str) -> Qwen3OmniMoeProcess
     return processor
 
 
-class Qwen3OmniFrontend:
+class Qwen3OmniPreprocessor:
     """CPU-side preprocessing and tokenization using the HF processor."""
 
     def __init__(self, model_id: str):

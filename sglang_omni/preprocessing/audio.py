@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Model-agnostic audio frontend utilities."""
+"""Model-agnostic audio preprocessing utilities."""
 
 from __future__ import annotations
 
