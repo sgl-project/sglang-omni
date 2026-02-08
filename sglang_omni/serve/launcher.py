@@ -106,16 +106,16 @@ async def _run_server(
         len(stages),
     )
 
-    # 3. Build Client -> FastAPI app
-    cl_kwargs = client_kwargs or {}
-    client = Client(coordinator, **cl_kwargs)
-    app = create_app(client, model_name=model_name or pipeline_config.name)
-
-    # 4. Run uvicorn
-    config = uvicorn.Config(app, host=host, port=port, log_level=log_level)
-    server = uvicorn.Server(config)
-
     try:
+        # 3. Build Client -> FastAPI app
+        cl_kwargs = client_kwargs or {}
+        client = Client(coordinator, **cl_kwargs)
+        app = create_app(client, model_name=model_name or pipeline_config.name)
+
+        # 4. Run uvicorn
+        config = uvicorn.Config(app, host=host, port=port, log_level=log_level)
+        server = uvicorn.Server(config)
+
         await server.serve()
     finally:
         logger.info("Shutting down pipeline …")
