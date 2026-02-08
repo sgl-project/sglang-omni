@@ -5,15 +5,14 @@ from __future__ import annotations
 
 import asyncio
 import atexit
-import base64
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, TypeVar
+from urllib.parse import urlparse
+from urllib.request import url2pathname
 
 import httpx
 import numpy.typing as npt
-from urllib.parse import urlparse
-from urllib.request import url2pathname
 
 from .base import MediaIO
 
@@ -216,7 +215,9 @@ class MediaConnector:
             self._assert_url_in_allowed_media_domains(url_spec)
 
             timeout = fetch_timeout if fetch_timeout is not None else 30.0
-            async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+            async with httpx.AsyncClient(
+                timeout=timeout, follow_redirects=True
+            ) as client:
                 response = await client.get(url)
                 response.raise_for_status()
                 data = response.content
@@ -300,7 +301,8 @@ class MediaConnector:
         Returns:
             PIL Image object.
         """
-        from PIL import Image, UnidentifiedImageError
+        from PIL import UnidentifiedImageError
+
         from .image import ImageMediaIO
 
         image_io = ImageMediaIO(
@@ -328,7 +330,8 @@ class MediaConnector:
         Returns:
             PIL Image object.
         """
-        from PIL import Image, UnidentifiedImageError
+        from PIL import UnidentifiedImageError
+
         from .image import ImageMediaIO
 
         image_io = ImageMediaIO(
@@ -402,4 +405,3 @@ def get_global_media_connector() -> MediaConnector:
     if _global_media_connector is None:
         _global_media_connector = MediaConnector()
     return _global_media_connector
-

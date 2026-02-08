@@ -13,7 +13,7 @@ _M = TypeVar("_M")
 
 def _is_url(path: str | Path) -> bool:
     """Check if a string is a URL (HTTP, data, or file URL).
-    
+
     This is a shared utility function used by audio, image, and video frontends.
     """
     if not isinstance(path, str):
@@ -65,4 +65,3 @@ class MediaIO(ABC, Generic[_M]):
             Loaded media object (type depends on subclass).
         """
         raise NotImplementedError
-
