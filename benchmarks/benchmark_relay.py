@@ -2,7 +2,14 @@
 """
 Relay benchmark helper.
 
-This is intentionally guarded by `if __name__ == "__main__"` so it won't run under pytest.
+Usage:
+
+```bash
+python benchmarks/benchmark_relay.py --type nixl --size 10
+python benchmarks/benchmark_relay.py --type shm --size 10
+python benchmarks/benchmark_relay.py --type nccl --size 10
+python benchmarks/benchmark_relay.py --type mooncake --size 10
+```
 """
 
 from __future__ import annotations
