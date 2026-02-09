@@ -10,8 +10,10 @@ Provides the following endpoints:
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
+import os
 import time
 import uuid
 from typing import Any
@@ -41,6 +43,19 @@ from sglang_omni.serve.protocol import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+_UPLOAD_DIR = "/tmp/sglang_omni_uploads"
+
+_MIME_EXT = {
+    "image/jpeg": ".jpg",
+    "image/jpg": ".jpg",
+    "image/png": ".png",
+    "image/webp": ".webp",
+    "image/gif": ".gif",
+    "image/bmp": ".bmp",
+    "image/tiff": ".tiff",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -314,6 +329,114 @@ async def _chat_stream(
     yield "data: [DONE]\n\n"
 
 
+def _dedupe_keep_order(xs: list[str]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for x in xs:
+        if not x:
+            continue
+        if x in seen:
+            continue
+        seen.add(x)
+        out.append(x)
+    return out
+
+
+def _save_data_url_image(data_url: str) -> str:
+    """
+    Accept:
+      data:image/png;base64,....
+    Save to /tmp/sglang_omni_uploads and return local path.
+    """
+    os.makedirs(_UPLOAD_DIR, exist_ok=True)
+
+    if not data_url.startswith("data:"):
+        raise ValueError("Not a data URL")
+
+    header, b64data = data_url.split(",", 1)
+    # header: data:image/png;base64
+    mime = "application/octet-stream"
+    if ";" in header:
+        mime = header[5:].split(";", 1)[0]  # strip 'data:'
+
+    ext = _MIME_EXT.get(mime.lower(), ".img")
+
+    try:
+        raw = base64.b64decode(b64data)
+    except Exception as e:
+        raise ValueError(f"Invalid base64 data URL: {e}") from e
+
+    path = os.path.join(_UPLOAD_DIR, f"{uuid.uuid4().hex}{ext}")
+    with open(path, "wb") as f:
+        f.write(raw)
+    return path
+
+
+def _extract_text_and_images_from_content(content: Any) -> tuple[Any, list[str]]:
+    """
+    OpenAI Chat Completions:
+      content can be:
+        - string
+        - array of content parts [{type:"text", text:"..."}, {type:"image_url", image_url:{url:"..."}} ...]
+    We normalize content -> plain text (string) and separately collect images.
+    """
+    if content is None or isinstance(content, str):
+        return content, []
+
+    if not isinstance(content, list):
+        # Fallback: keep original, but don't treat it as image parts
+        return content, []
+
+    texts: list[str] = []
+    images: list[str] = []
+
+    for part in content:
+        if not isinstance(part, dict):
+            continue
+        ptype = part.get("type")
+
+        if ptype == "text":
+            t = part.get("text")
+            if isinstance(t, str) and t:
+                texts.append(t)
+
+        elif ptype == "image_url":
+            img = part.get("image_url")
+            # Handle both object form {url: "..."} and legacy string form
+            url: str | None = None
+            if isinstance(img, dict):
+                url = img.get("url")
+            elif isinstance(img, str):
+                url = img
+
+            if isinstance(url, str) and url:
+                # Support data URL (OpenAI allows base64-encoded images as data URL in many examples):contentReference[oaicite:1]{index=1}
+                if url.startswith("data:image/"):
+                    try:
+                        url = _save_data_url_image(url)
+                    except Exception as e:
+                        raise ValueError(f"Invalid data URL image: {e}") from e
+                images.append(url)
+
+        elif ptype == "image_file":
+            # OpenAI allows image_file reference to uploaded File（file_id）:contentReference[oaicite:2]{index=2}
+            # Currently report 400
+            imgf = part.get("image_file")
+            file_id = imgf.get("file_id") if isinstance(imgf, dict) else None
+            raise ValueError(
+                f"image_file is not supported yet (file_id={file_id}). "
+                "Implement File upload/resolve or use image_url."
+            )
+
+        else:
+            # Unknown part types are ignored for now
+            continue
+
+    # Preserve text order; join by newline to avoid accidental concatenation
+    normalized_text = "\n".join(texts) if texts else ""
+    return normalized_text, images
+
+
 def _build_chat_generate_request(req: ChatCompletionRequest) -> GenerateRequest:
     """Convert a ChatCompletionRequest into a client GenerateRequest."""
     # Parse stop sequences
@@ -350,18 +473,26 @@ def _build_chat_generate_request(req: ChatCompletionRequest) -> GenerateRequest:
         for stage_name, params_dict in req.stage_sampling.items():
             stage_sampling[stage_name] = SamplingParams(**params_dict)
 
-    # Extract audios, images, and videos from request
-    audios: list[str] | None = None
-    if req.audios:
-        audios = req.audios
+    # Parse OpenAI content-parts, normalize messages, extract images ----
+    extracted_images: list[str] = []
+    messages: list[Message] = []
 
-    images: list[str] | None = None
-    if req.images:
-        images = req.images
+    for m in req.messages:
+        try:
+            normalized_content, imgs = _extract_text_and_images_from_content(m.content)
+        except ValueError as e:
+            # Make it a 400, not a 500
+            raise HTTPException(status_code=400, detail=str(e))
 
-    videos: list[str] | None = None
-    if req.videos:
-        videos = req.videos
+        extracted_images.extend(imgs)
+        messages.append(Message(role=m.role, content=normalized_content))
+
+    # ---- Merge with extensions (top-level images/audios/videos) ----
+    top_images = req.images or []
+    images = _dedupe_keep_order([*_dedupe_keep_order(top_images), *extracted_images])
+
+    audios = req.audios if req.audios else None
+    videos = req.videos if req.videos else None
 
     # Merge audio config, audios, images, and videos into metadata
     metadata: dict[str, Any] = {}

@@ -92,6 +92,9 @@ class ChatCompletionRequest(BaseModel):
     request_id: str | None = None
     user: str | None = None
 
+    # Pass-through kwargs for chat template
+    chat_template_kwargs: dict[str, Any] | None = None
+
     @property
     def effective_max_tokens(self) -> int | None:
         return self.max_completion_tokens or self.max_tokens
