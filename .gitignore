@@ -33,3 +33,4 @@ htmlcov/
 Thumbs.db
 .ruff_cache/
 uv.lock
+results/
