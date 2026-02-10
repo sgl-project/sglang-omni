@@ -61,9 +61,9 @@
 
       <!-- Column 2: Media input and prompt -->
       <section class="card io-panel">
-        <div class="io-section">
+        <div class="io-section audio">
           <div class="io-header">Record / Upload Audio</div>
-          <div class="io-controls">
+          <div class="io-controls" id="audio-controls">
             <button type="button" id="mic-toggle" class="pill pill-primary">Record</button>
             <span id="mic-status" class="status-text"></span>
             <label class="pill pill-ghost">
@@ -71,11 +71,17 @@
               <input type="file" id="audio-input" accept="audio/*" />
             </label>
           </div>
+          <div id="record-row" class="record-row hidden">
+            <button type="button" id="mic-stop" class="pill pill-secondary pill-stop" title="Stop recording" aria-label="Stop recording">■</button>
+            <div id="audio-visualizer-wrap" class="visualizer">
+              <canvas id="audio-visualizer" width="600" height="60"></canvas>
+            </div>
+          </div>
           <div class="preview-grid" id="audio-previews"></div>
           <div class="preview-grid" id="mic-previews"></div>
         </div>
 
-        <div class="io-section">
+        <div class="io-section video">
           <div class="io-header">Record / Upload Video or Image</div>
           <div class="io-controls">
             <button type="button" id="webcam-toggle" class="pill pill-primary">Access webcam</button>
@@ -116,5 +122,7 @@
     </div>
   </div>
   <script src="app.js"></script>
+  <!-- Live reload for development; run `npx livereload . -p 35729` in this folder -->
+  <script src="http://localhost:35729/livereload.js?snipver=1"></script>
 </body>
 </html>
