@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SGLang-Omni Playground</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="app">
+    <header class="header">
+      <h1>Qwen3-Omni Demo</h1>
+      <p class="subtitle">Interact with the model through text, audio, images, or video. Record or upload media, adjust parameters, then submit to stream results.</p>
+    </header>
+
+    <div class="layout">
+      <!-- Column 1: Parameters -->
+      <aside class="card params">
+        <div class="card-title">Parameters</div>
+        <label for="api-url">API Base URL</label>
+        <input type="text" id="api-url" value="http://localhost:8000" />
+
+        <label for="model-select">Model</label>
+        <select id="model-select">
+          <option value="">Default</option>
+          <option value="Qwen/Qwen3-Omni-30B-A3B-Instruct">Qwen3-Omni-30B-A3B</option>
+        </select>
+
+        <label for="system-prompt">System Prompt</label>
+        <textarea id="system-prompt" rows="4" placeholder="e.g., You are a helpful assistant"></textarea>
+
+        <label class="checkbox">
+          <input type="checkbox" id="return-audio" />
+          <span>Return audio</span>
+        </label>
+
+        <div class="slider-block">
+          <div class="slider-label">
+            <span>Temperature</span>
+            <span id="temperature-value">0.60</span>
+          </div>
+          <input type="range" id="temperature" min="0.1" max="2" step="0.1" value="0.6" />
+        </div>
+
+        <div class="slider-block">
+          <div class="slider-label">
+            <span>Top P</span>
+            <span id="top-p-value">0.95</span>
+          </div>
+          <input type="range" id="top-p" min="0.05" max="1" step="0.05" value="0.95" />
+        </div>
+
+        <div class="slider-block">
+          <div class="slider-label">
+            <span>Top K</span>
+            <span id="top-k-value">20</span>
+          </div>
+          <input type="range" id="top-k" min="1" max="100" step="1" value="20" />
+        </div>
+      </aside>
+
+      <!-- Column 2: Media input and prompt -->
+      <section class="card io-panel">
+        <div class="io-section">
+          <div class="io-header">Record / Upload Audio</div>
+          <div class="io-controls">
+            <button type="button" id="mic-toggle" class="pill pill-primary">Record</button>
+            <span id="mic-status" class="status-text"></span>
+            <label class="pill pill-ghost">
+              Upload audio
+              <input type="file" id="audio-input" accept="audio/*" />
+            </label>
+          </div>
+          <div class="preview-grid" id="audio-previews"></div>
+          <div class="preview-grid" id="mic-previews"></div>
+        </div>
+
+        <div class="io-section">
+          <div class="io-header">Record / Upload Video or Image</div>
+          <div class="io-controls">
+            <button type="button" id="webcam-toggle" class="pill pill-primary">Access webcam</button>
+            <button type="button" id="webcam-capture" class="pill pill-secondary hidden">Stop &amp; add</button>
+            <label class="pill pill-ghost">
+              Upload video
+              <input type="file" id="video-input" accept="video/*" />
+            </label>
+            <label class="pill pill-ghost">
+              Upload image
+              <input type="file" id="image-input" accept="image/*" multiple />
+            </label>
+          </div>
+          <video id="webcam-preview" muted playsinline class="webcam hidden"></video>
+          <div class="preview-grid" id="video-previews"></div>
+          <div class="preview-grid" id="webcam-previews"></div>
+          <div class="preview-grid" id="image-previews"></div>
+        </div>
+
+        <label class="prompt-label" for="user-prompt">User Prompt</label>
+        <textarea id="user-prompt" rows="3" placeholder="Enter your question or instruction..."></textarea>
+
+        <div class="actions-stack">
+          <button type="button" id="send-btn" class="btn-primary">Submit</button>
+          <button type="button" id="stop-btn" class="btn-secondary hidden">Stop</button>
+          <button type="button" id="clear-btn" class="btn-tertiary">Clear History</button>
+        </div>
+      </section>
+
+      <!-- Column 3: Chat history -->
+      <section class="card chat-panel">
+        <div class="chat-title">Chat History</div>
+        <div class="chat-area" id="chat-area">
+          <div class="chat-placeholder" id="chat-placeholder">Media appears first, followed by your prompt, then streaming assistant text.</div>
+          <div class="messages" id="messages"></div>
+        </div>
+      </section>
+    </div>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>
