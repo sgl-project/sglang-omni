@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import socket
 from contextlib import suppress
 from operator import methodcaller
 from typing import Any, Callable
@@ -14,8 +16,11 @@ from sglang_omni.pipeline.stage.input import DirectInput, InputHandler
 from sglang_omni.pipeline.stage.router import WorkerRouter
 from sglang_omni.pipeline.stage.work import InputRef
 from sglang_omni.pipeline.worker.runtime import Worker
+from sglang_omni.profiler.torch_profiler import TorchProfiler
 from sglang_omni.proto import (
     DataReadyMessage,
+    ProfilerStartMessage,
+    ProfilerStopMessage,
     ShutdownMessage,
     StageInfo,
     SubmitMessage,
@@ -122,6 +127,77 @@ class Stage:
         self._running = False
         self._aborted_requests: set[str] = set()
 
+        # Profiler
+        self._profiler_run_id: str | None = None
+        self._profiler_trace_template: str | None = None
+
+    async def _on_profiler_start(self, msg: ProfilerStartMessage) -> None:
+        if TorchProfiler.is_active():
+            if self._profiler_run_id == msg.run_id:
+                logger.info(
+                    "Stage %s profiler already active for run_id=%s",
+                    self.name,
+                    msg.run_id,
+                )
+                return
+            logger.warning(
+                "Stage %s profiler already active (run_id=%s), ignoring new start run_id=%s",
+                self.name,
+                self._profiler_run_id,
+                msg.run_id,
+            )
+            return
+
+        run_id = msg.run_id
+        template = msg.trace_path_template.format(run_id=run_id, stage=self.name)
+
+        prof_dir = os.environ.get("SGLANG_TORCH_PROFILER_DIR")
+        if prof_dir and not os.path.isabs(template):
+            template = os.path.join(prof_dir, template)
+
+        logger.info(
+            "Stage %s starting torch profiler run_id=%s template=%s",
+            self.name,
+            run_id,
+            template,
+        )
+        trace_path = TorchProfiler.start(template)
+
+        self._profiler_run_id = run_id
+        self._profiler_trace_template = template
+        logger.info(
+            "Stage %s torch profiler started, expected trace=%s (host=%s)",
+            self.name,
+            trace_path,
+            socket.gethostname(),
+        )
+
+    async def _on_profiler_stop(self, msg: ProfilerStopMessage) -> None:
+        if not TorchProfiler.is_active():
+            logger.info(
+                "Stage %s profiler not active; ignore stop run_id=%s",
+                self.name,
+                msg.run_id,
+            )
+            self._profiler_run_id = None
+            self._profiler_trace_template = None
+            return
+
+        if self._profiler_run_id is not None and msg.run_id != self._profiler_run_id:
+            logger.warning(
+                "Stage %s profiler run_id mismatch: active=%s stop=%s; still stopping",
+                self.name,
+                self._profiler_run_id,
+                msg.run_id,
+            )
+
+        logger.info("Stage %s stopping torch profiler run_id=%s", self.name, msg.run_id)
+        result = TorchProfiler.stop()
+        logger.info("Stage %s torch profiler stopped, result=%s", self.name, result)
+
+        self._profiler_run_id = None
+        self._profiler_trace_template = None
+
     def add_worker(self, worker: Worker) -> None:
         """Add a worker to this stage."""
         queue = self.router.add_worker()
@@ -202,12 +278,24 @@ class Stage:
         except Exception as e:
             logger.error("Stage %s abort listener error: %s", self.name, e)
 
-    async def _handle_message(self, msg: DataReadyMessage | SubmitMessage) -> None:
+    async def _handle_message(
+        self,
+        msg: (
+            DataReadyMessage
+            | SubmitMessage
+            | ProfilerStartMessage
+            | ProfilerStopMessage
+        ),
+    ) -> None:
         """Handle an incoming message."""
         if isinstance(msg, SubmitMessage):
             await self._process_submit(msg)
         elif isinstance(msg, DataReadyMessage):
             await self._process_data_ready(msg)
+        elif isinstance(msg, ProfilerStartMessage):
+            await self._on_profiler_start(msg)
+        elif isinstance(msg, ProfilerStopMessage):
+            await self._on_profiler_stop(msg)
         else:
             logger.warning(
                 "Stage %s received unexpected message: %s", self.name, type(msg)

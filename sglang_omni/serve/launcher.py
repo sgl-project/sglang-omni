@@ -27,13 +27,18 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
+import time
 from pathlib import Path
 from typing import Any
 
 import uvicorn
+from fastapi import APIRouter
+from pydantic import BaseModel
 
 from sglang_omni.client import Client
 from sglang_omni.config import PipelineConfig, PipelineRunner, compile_pipeline
+from sglang_omni.profiler.profiler_control import ProfilerControlClient
 from sglang_omni.serve.openai_api import create_app
 from sglang_omni.utils import import_string
 
@@ -46,6 +51,14 @@ logger = logging.getLogger(__name__)
 _BUILTIN_PIPELINES: dict[str, str] = {
     "qwen3-omni": "sglang_omni.models.qwen3_omni.create_text_first_pipeline_config",
 }
+
+
+def _default_run_id() -> str:
+    return time.strftime("run_%Y%m%d_%H%M%S")
+
+
+def _default_template(profiler_dir: str, run_id: str) -> str:
+    return os.path.join(profiler_dir, run_id, "trace")
 
 
 def _resolve_builtin(
@@ -80,6 +93,59 @@ def _resolve_builtin(
 # ---------------------------------------------------------------------------
 
 
+def _collect_stage_control_endpoints(stages) -> dict[str, str]:
+    """Derive {stage_name: control_plane_recv_endpoint} from runtime Stage objects."""
+    out: dict[str, str] = {}
+    for st in stages:
+        cp = getattr(st, "control_plane", None)
+        ep = getattr(cp, "recv_endpoint", None) if cp is not None else None
+
+        if not ep:
+            ep = getattr(st, "recv_endpoint", None)
+
+        if not ep:
+            raise RuntimeError(
+                f"Cannot resolve control endpoint for stage={getattr(st, 'name', st)}"
+            )
+        out[st.name] = ep
+    return out
+
+
+class StartReq(BaseModel):
+    run_id: str | None = None
+    trace_path_template: str | None = None
+    config: dict[str, Any] | None = None
+
+
+class StopReq(BaseModel):
+    run_id: str | None = None
+
+
+def _mount_profiler_routes(
+    app, profiler_ctl: ProfilerControlClient, profiler_dir: str
+) -> None:
+    router = APIRouter(prefix="/debug/profiler", tags=["debug"])
+
+    @router.post("/start")
+    async def start(req: StartReq):
+        run_id = req.run_id or _default_run_id()
+        tpl = req.trace_path_template or _default_template(profiler_dir, run_id)
+        await profiler_ctl.broadcast_start(
+            run_id=run_id,
+            trace_path_template=tpl,
+            config=req.config,
+        )
+        return {"run_id": run_id, "trace_path_template": tpl}
+
+    @router.post("/stop")
+    async def stop(req: StopReq):
+        run_id = req.run_id or "default"
+        await profiler_ctl.broadcast_stop(run_id=run_id)
+        return {"run_id": run_id}
+
+    app.include_router(router)
+
+
 async def _run_server(
     pipeline_config: PipelineConfig,
     *,
@@ -95,6 +161,7 @@ async def _run_server(
     """
     # 1. Compile pipeline config -> Coordinator + Stages
     coordinator, stages = compile_pipeline(pipeline_config)
+    stage_endpoints = _collect_stage_control_endpoints(stages)
     runner = PipelineRunner(coordinator, stages)
 
     # 2. Start the pipeline (coordinator + all stages as async tasks)
@@ -110,6 +177,10 @@ async def _run_server(
         cl_kwargs = client_kwargs or {}
         client = Client(coordinator, **cl_kwargs)
         app = create_app(client, model_name=model_name or pipeline_config.name)
+
+        profiler_dir = os.environ.get("SGLANG_TORCH_PROFILER_DIR", "/tmp/profiles")
+        profiler_ctl = ProfilerControlClient(stage_endpoints)
+        _mount_profiler_routes(app, profiler_ctl, profiler_dir)
 
         # 4. Run uvicorn
         config = uvicorn.Config(app, host=host, port=port, log_level=log_level)
