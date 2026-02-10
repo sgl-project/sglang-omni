@@ -43,8 +43,8 @@ def _event_to_dict(event: OmniEvent) -> dict[str, Any]:
 def create_preprocessing_executor(model_id: str) -> PreprocessingExecutor:
     preprocessor = Qwen3OmniPreprocessor(model_id=model_id)
 
-    def _preprocess(payload: StagePayload) -> StagePayload:
-        return preprocessor(payload)
+    async def _preprocess(payload: StagePayload) -> StagePayload:
+        return await preprocessor(payload)
 
     return PreprocessingExecutor(_preprocess)
 

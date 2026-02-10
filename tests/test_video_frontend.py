@@ -8,11 +8,7 @@ from pathlib import Path
 import pytest
 import requests
 
-from sglang_omni.preprocessing import (
-    compute_video_cache_key,
-    ensure_video_list,
-    extract_audio_from_video_inputs,
-)
+from sglang_omni.preprocessing import compute_video_cache_key, ensure_video_list_async
 from sglang_omni.preprocessing.video import _check_if_video_has_audio
 
 # Remote test resources
@@ -53,32 +49,34 @@ def image_path():
 class TestVideoPreprocessing:
     """Test core video preprocessing functionality."""
 
-    def test_video_loading_and_normalization(self, video_path):
+    @pytest.mark.asyncio
+    async def test_video_loading_and_normalization(self, video_path):
         """Test loading video from path and normalizing to tensor."""
-        videos, fps = ensure_video_list(video_path, fps=2.0)
+        videos, fps_list, _ = await ensure_video_list_async(video_path, fps=2.0)
 
         assert len(videos) == 1
         assert videos[0].dim() == 4  # (T, C, H, W)
         assert videos[0].shape[1] == 3  # RGB channels
-        assert fps is not None
-        assert len(fps) == 1
-        assert fps[0] > 0
+        assert fps_list is not None
+        assert len(fps_list) == 1
+        assert fps_list[0] > 0
 
-    def test_audio_extraction_from_video(self, video_path):
-        """Test extracting audio from video when use_audio_in_video=True."""
+    @pytest.mark.asyncio
+    async def test_audio_extraction_from_video(self, video_path):
+        """Test extracting audio from video when extract_audio=True."""
         has_audio = _check_if_video_has_audio(video_path)
-        audios, flag = extract_audio_from_video_inputs(
-            video_path, use_audio_in_video=True, target_sr=16000
+        videos, fps_list, audios = await ensure_video_list_async(
+            video_path, extract_audio=True, audio_target_sr=16000
         )
 
+        assert len(videos) == 1
         if has_audio:
-            if audios is not None:
-                assert len(audios) == 1
-                assert audios[0].ndim == 1
-                assert flag is True
+            assert audios is not None
+            assert len(audios) == 1
+            assert audios[0] is not None
+            assert audios[0].ndim == 1
         else:
-            assert audios is None
-            assert flag is False
+            assert audios is None or (len(audios) == 1 and audios[0] is None)
 
     def test_video_cache_key(self, video_path):
         """Test cache key generation for videos."""
@@ -92,27 +90,28 @@ class TestVideoPreprocessing:
         key2 = compute_video_cache_key(video_path)
         assert key == key2
 
-    def test_complete_video_pipeline(self, video_path):
+    @pytest.mark.asyncio
+    async def test_complete_video_pipeline(self, video_path):
         """Test complete video processing pipeline without model inference."""
         # 1. Compute cache key
         cache_key = compute_video_cache_key(video_path)
         assert cache_key is not None
 
-        # 2. Load and normalize video
-        videos, fps = ensure_video_list(video_path, fps=2.0)
+        # 2. Load and normalize video with audio extraction
+        has_audio = _check_if_video_has_audio(video_path)
+        videos, fps_list, audios = await ensure_video_list_async(
+            video_path, fps=2.0, extract_audio=True
+        )
         assert len(videos) == 1
         assert videos[0].dim() == 4
 
-        # 3. Extract audio if available
-        has_audio = _check_if_video_has_audio(video_path)
-        audios, use_audio = extract_audio_from_video_inputs(
-            video_path, use_audio_in_video=True
-        )
-
+        # 3. Verify audio extraction
         if has_audio:
-            assert (audios is not None and use_audio is True) or (
-                audios is None and use_audio is False
-            )
+            assert audios is not None
+            assert len(audios) == 1
+            assert audios[0] is not None
+        else:
+            assert audios is None or (len(audios) == 1 and audios[0] is None)
 
 
 if __name__ == "__main__":

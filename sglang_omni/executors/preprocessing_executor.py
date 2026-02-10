@@ -4,7 +4,8 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
+import inspect
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from sglang_omni.executors.interface import Executor
@@ -12,10 +13,16 @@ from sglang_omni.proto import StagePayload
 
 
 class PreprocessingExecutor(Executor):
-    """Run synchronous CPU processing inside an async interface."""
+    """Run synchronous or asynchronous CPU processing inside an async interface."""
 
-    def __init__(self, processor: Callable[[StagePayload], StagePayload | Any]):
+    def __init__(
+        self,
+        processor: Callable[
+            [StagePayload], StagePayload | Any | Awaitable[StagePayload | Any]
+        ],
+    ):
         self._processor = processor
+        self._is_async = inspect.iscoroutinefunction(processor)
         self._results: asyncio.Queue[StagePayload] = asyncio.Queue()
         self._aborted: set[str] = set()
 
@@ -24,7 +31,13 @@ class PreprocessingExecutor(Executor):
         if request_id in self._aborted:
             return
 
-        result = await asyncio.to_thread(self._processor, payload)
+        # Run processor - async or sync
+        if self._is_async:
+            result = await self._processor(payload)
+        else:
+            # Run synchronous processor in thread pool
+            result = await asyncio.to_thread(self._processor, payload)
+
         if not isinstance(result, StagePayload):
             result = StagePayload(
                 request_id=request_id,

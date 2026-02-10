@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 from io import BytesIO
 from pathlib import Path
@@ -27,7 +28,7 @@ class ImageMediaIO(MediaIO[Image.Image]):
 
         Args:
             image_mode: Target image mode (default: "RGB").
-            **kwargs: Additional arguments (for compatibility with MediaConnector).
+            **kwargs: Additional arguments (for compatibility with MultiModalResourceConnector).
         """
         super().__init__()
         self.image_mode = image_mode
@@ -65,21 +66,18 @@ def compute_image_cache_key(images: Any) -> str | None:
     return compute_media_cache_key(images, prefix="image")
 
 
-def ensure_image_list(
+async def ensure_image_list_async(
     images: Any,
     *,
     image_mode: str = "RGB",
     media_connector: Any | None = None,
 ) -> list[Any]:
-    """Normalize image inputs into a list.
-
-    Supports local file paths, URLs (HTTP/HTTPS, data URLs, file URLs),
-    and PIL Images.
+    """Asynchronously normalize image inputs into a list.
 
     Args:
         images: Image input(s) - can be a path, URL, PIL Image, or list.
         image_mode: Target image mode (default: "RGB").
-        media_connector: Optional MediaConnector instance. If None, uses
+        media_connector: Optional MultiModalResourceConnector instance. If None, uses
                         the global connector.
 
     Returns:
@@ -88,27 +86,43 @@ def ensure_image_list(
     if images is None:
         return []
     items = images if isinstance(images, list) else [images]
-    normalized: list[Any] = []
 
     # Import here to avoid circular dependency
     if media_connector is None:
-        from .media_connector import get_global_media_connector
+        from .resource_connector import get_global_resource_connector
 
-        media_connector = get_global_media_connector()
+        media_connector = get_global_resource_connector()
 
-    for item in items:
+    # Collect coroutines for URL items
+    coroutines: list[asyncio.Task[Any] | None] = []
+    url_indices: list[int] = []
+    normalized: list[Any] = []
+
+    # First pass: identify URL items and create coroutines
+    for idx, item in enumerate(items):
         if isinstance(item, (str, Path)):
             if _is_url(item):
-                # Load from URL
-                image = media_connector.fetch_image(str(item), image_mode=image_mode)
-                normalized.append(image)
+                # Create coroutine for async URL fetching
+                coro = media_connector.fetch_image_async(
+                    str(item), image_mode=image_mode
+                )
+                task = asyncio.create_task(coro)
+                coroutines.append(task)
+                url_indices.append(idx)
+                normalized.append(None)  # Placeholder
             else:
-                # Load from local path
-                # Note: load_image_path always converts to RGB, which matches default image_mode
                 normalized.append(load_image_path(item))
         else:
             # Already processed (PIL Image, etc.)
             normalized.append(item)
+
+    # Wait for all URL fetches to complete
+    if coroutines:
+        results = await asyncio.gather(*coroutines)
+        # Fill in the results at the correct indices
+        for url_idx, result in zip(url_indices, results):
+            normalized[url_idx] = result
+
     return normalized
 
 

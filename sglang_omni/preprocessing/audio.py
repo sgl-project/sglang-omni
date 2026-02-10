@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import struct
 from pathlib import Path
@@ -120,7 +121,7 @@ class AudioMediaIO(MediaIO[tuple[npt.NDArray, float]]):
 
         Args:
             target_sr: Target sample rate for resampling.
-            **kwargs: Additional arguments (for compatibility with MediaConnector).
+            **kwargs: Additional arguments (for compatibility with MultiModalResourceConnector).
         """
         super().__init__()
         self.target_sr = target_sr
@@ -147,21 +148,18 @@ class AudioMediaIO(MediaIO[tuple[npt.NDArray, float]]):
         return resampled, float(self.target_sr)
 
 
-def ensure_audio_list(
+async def ensure_audio_list_async(
     audios: Any,
     *,
     target_sr: int = 16000,
-    media_connector: Any | None = None,
+    resource_connector: Any | None = None,
 ) -> list[Any]:
-    """Normalize audio inputs into a list.
-
-    Supports local file paths, URLs (HTTP/HTTPS, data URLs, file URLs),
-    and numpy arrays.
+    """Asynchronously normalize audio inputs into a list.
 
     Args:
         audios: Audio input(s) - can be a path, URL, numpy array, or list.
         target_sr: Target sample rate for resampling.
-        media_connector: Optional MediaConnector instance. If None, uses
+        media_connector: Optional MultiModalResourceConnector instance. If None, uses
                         the global connector.
 
     Returns:
@@ -170,26 +168,44 @@ def ensure_audio_list(
     if audios is None:
         return []
     items = audios if isinstance(audios, list) else [audios]
-    normalized: list[Any] = []
 
     # Import here to avoid circular dependency
-    if media_connector is None:
-        from .media_connector import get_global_media_connector
+    if resource_connector is None:
+        from .resource_connector import get_global_resource_connector
 
-        media_connector = get_global_media_connector()
+        resource_connector = get_global_resource_connector()
 
-    for item in items:
+    # Collect coroutines for URL items
+    coroutines: list[asyncio.Task[tuple[npt.NDArray, float]] | None] = []
+    url_indices: list[int] = []
+    normalized: list[Any] = []
+
+    # First pass: identify URL items and create coroutines
+    for idx, item in enumerate(items):
         if isinstance(item, (str, Path)):
             if _is_url(item):
-                # Load from URL
-                audio, _ = media_connector.fetch_audio(str(item), target_sr=target_sr)
-                normalized.append(audio)
+                # Create coroutine for async URL fetching
+                coro = resource_connector.fetch_audio_async(
+                    str(item), target_sr=target_sr
+                )
+                task = asyncio.create_task(coro)
+                coroutines.append(task)
+                url_indices.append(idx)
+                normalized.append(None)  # Placeholder
             else:
-                # Load from local path
+                # Local path - can be loaded synchronously
                 normalized.append(load_audio_path(item, target_sr=target_sr))
         else:
             # Already processed (numpy array, etc.)
             normalized.append(item)
+
+    # Wait for all URL fetches to complete
+    if coroutines:
+        results = await asyncio.gather(*coroutines)
+        # Fill in the results at the correct indices (extract audio array, ignore sample rate)
+        for url_idx, (audio, _) in zip(url_indices, results):
+            normalized[url_idx] = audio
+
     return normalized
 
 
