@@ -54,7 +54,7 @@ python examples/run_two_stage_llama_demo.py --prompt "Hello, how are you?"
 The OpenAI adapter uses FastAPI + Uvicorn (installed via `uv pip install -e .`).
 
 ```bash
-python examples/run_openai_llama_server.py --model-id meta-llama/Meta-Llama-3-8B
+python examples/run_openai_llama_server.py --model-id meta-llama/Meta-Llama-3-8B-Instruct
 ```
 
 ```bash
