@@ -9,7 +9,7 @@
 <body>
   <div class="app">
     <header class="header">
-      <h1>Qwen3-Omni Demo</h1>
+      <h1>SGLang-Omni Demo</h1>
       <p class="subtitle">Interact with the model through text, audio, images, or video. Record or upload media, adjust parameters, then submit to stream results.</p>
     </header>
 
@@ -17,9 +17,6 @@
       <!-- Column 1: Parameters -->
       <aside class="card params">
         <div class="card-title">Parameters</div>
-        <label for="api-url">API Base URL</label>
-        <input type="text" id="api-url" value="http://localhost:8000" />
-
         <label for="model-select">Model</label>
         <select id="model-select">
           <option value="">Default</option>
@@ -27,7 +24,7 @@
         </select>
 
         <label for="system-prompt">System Prompt</label>
-        <textarea id="system-prompt" rows="4" placeholder="e.g., You are a helpful assistant"></textarea>
+        <textarea id="system-prompt" rows="8" placeholder="e.g., You are a helpful assistant"></textarea>
 
         <label class="checkbox">
           <input type="checkbox" id="return-audio" />
@@ -76,26 +73,29 @@
             <div id="audio-visualizer-wrap" class="visualizer">
               <canvas id="audio-visualizer" width="600" height="60"></canvas>
             </div>
+            <div class="preview-grid hidden" id="mic-previews"></div>
           </div>
           <div class="preview-grid" id="audio-previews"></div>
-          <div class="preview-grid" id="mic-previews"></div>
         </div>
 
         <div class="io-section video">
           <div class="io-header">Record / Upload Video or Image</div>
           <div class="io-controls">
-            <button type="button" id="webcam-toggle" class="pill pill-primary">Access webcam</button>
-            <button type="button" id="webcam-capture" class="pill pill-secondary hidden">Stop &amp; add</button>
-            <label class="pill pill-ghost">
-              Upload video
-              <input type="file" id="video-input" accept="video/*" />
-            </label>
-            <label class="pill pill-ghost">
-              Upload image
-              <input type="file" id="image-input" accept="image/*" multiple />
-            </label>
+            <div class="video-controls" id="video-controls">
+              <button type="button" id="webcam-toggle" class="pill pill-primary">Access webcam</button>
+              <label class="pill pill-ghost">
+                Upload media
+                <input type="file" id="video-input" accept="video/*,image/*" multiple />
+              </label>
+            </div>
+            <div class="video-preview-wrap hidden" id="video-preview-wrap">
+              <video id="webcam-preview" muted playsinline class="webcam"></video>
+              <button type="button" id="video-clear" class="video-clear-btn" title="Remove video" aria-label="Remove video">×</button>
+            </div>
+            <div id="video-record-row" class="video-record-row hidden">
+              <button type="button" id="webcam-stop" class="pill pill-secondary">Stop</button>
+            </div>
           </div>
-          <video id="webcam-preview" muted playsinline class="webcam hidden"></video>
           <div class="preview-grid" id="video-previews"></div>
           <div class="preview-grid" id="webcam-previews"></div>
           <div class="preview-grid" id="image-previews"></div>

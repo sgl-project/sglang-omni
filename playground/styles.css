@@ -83,6 +83,11 @@ body {
 .params textarea,
 #user-prompt { resize: vertical; }
 
+#system-prompt {
+  /* Make the system prompt comfortably editable without dragging. */
+  min-height: 160px;
+}
+
 .checkbox {
   display: flex;
   align-items: center;
@@ -117,16 +122,20 @@ body {
   min-height: 150px;
 }
 .io-section.audio {
-  align-items: center;
+  align-items: flex-start;
   justify-content: flex-start;
-  height: 150px;
-  min-height: 150px;
-  max-height: 150px;
+  /* Keep audio box height stable regardless of which child rows are visible. */
+  height: 280px;
+  min-height: 280px;
+  max-height: 280px;
+  position: relative;
 }
 .io-section.video {
-  height: 180px;
-  max-height: 180px;
+  height: 280px;
+  min-height: 280px;
+  max-height: 280px;
   justify-content: flex-start;
+  position: relative;
 }
 .io-header { font-weight: 600; font-size: 14px; margin-bottom: 10px; width: 100%; }
 .io-section.audio .io-header { text-align: left; }
@@ -136,6 +145,10 @@ body {
   align-items: center;
   gap: 8px;
   justify-content: flex-start;
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
 }
 .io-section.audio .pill-primary,
 .io-section.audio .pill-ghost {
@@ -153,6 +166,49 @@ body {
   justify-content: center;
   width: 100%;
 }
+.video-controls {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+}
+.video-controls.hidden { display: none; }
+.video-preview-wrap {
+  position: relative;
+  width: 100%;
+}
+.video-preview-wrap.hidden { display: none; }
+.video-preview-wrap .webcam {
+  margin-top: 0;
+}
+.video-clear-btn {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(0,0,0,0.6);
+  color: #fff;
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+}
+.video-record-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  margin-top: 8px;
+}
+.video-record-row.hidden { display: none; }
 .io-section.video .pill {
   flex: 0 0 auto;
   text-align: center;
@@ -180,12 +236,21 @@ body {
 .record-row {
   width: 100%;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 8px;
   margin-top: 8px;
   justify-content: flex-start;
 }
 .record-row.hidden { display: none; }
+.record-row #mic-previews {
+  margin-top: 0;
+  flex: 1;
+  min-height: 60px;
+  max-height: none;
+}
+.record-row #mic-previews.hidden {
+  display: none;
+}
 /* Stop button: same shape as streaming bar (rounded rect) but narrow */
 .pill-stop {
   flex: 0 0 auto;
@@ -250,11 +315,29 @@ body {
   width: 100%;
 }
 #audio-previews,
-#mic-previews {
-  grid-template-columns: 1fr;
-  max-height: 90px;
-  min-height: 90px;
-  overflow: hidden;
+#mic-previews { grid-template-columns: 1fr; }
+
+/* Audio: make preview area consume remaining height; let the preview card stretch to bottom. */
+.io-section.audio {
+  display: flex;
+  flex-direction: column;
+}
+.io-section.audio #record-row {
+  flex: 0 0 auto;
+  width: 100%;
+}
+.io-section.audio #audio-previews {
+  flex: 1 1 auto;
+  min-height: 0; /* allow shrinking within fixed-height parent */
+  overflow: auto;
+}
+.io-section.audio #audio-previews > .preview-wrap:only-child {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+.io-section.audio #audio-previews > .preview-wrap:only-child .audio-preview-controls {
+  margin-top: auto; /* pin transport controls to bottom */
 }
 #video-previews,
 #webcam-previews,
@@ -332,6 +415,11 @@ body {
   justify-content: center;
   font-size: 12px;
 }
+.audio-icon svg {
+  width: 16px;
+  height: 16px;
+  display: block;
+}
 .audio-icon-btn:hover,
 .audio-icon-btn.active {
   color: var(--text);
@@ -368,8 +456,14 @@ body {
   filter: brightness(1.1);
 }
 .audio-play-btn .audio-play-icon {
-  font-size: 14px;
-  margin-left: 2px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.audio-play-btn .audio-play-icon svg {
+  width: 18px;
+  height: 18px;
+  display: block;
 }
 .audio-ctrl-btn {
   padding: 4px 10px;

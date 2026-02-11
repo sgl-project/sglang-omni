@@ -10,7 +10,6 @@
   const $ = (id) => document.getElementById(id);
 
   // DOM refs
-  const apiUrlEl = $("api-url");
   const modelSelect = $("model-select");
   const systemPromptEl = $("system-prompt");
   const userPromptEl = $("user-prompt");
@@ -22,7 +21,6 @@
   const topKValueEl = $("top-k-value");
   const returnAudioEl = $("return-audio");
 
-  const imageInput = $("image-input");
   const videoInput = $("video-input");
   const audioInput = $("audio-input");
   const audioControls = $("audio-controls");
@@ -34,11 +32,15 @@
   const imagePreviews = $("image-previews");
   const videoPreviews = $("video-previews");
   const audioPreviews = $("audio-previews");
+  const videoControls = $("video-controls");
 
   const webcamToggle = $("webcam-toggle");
   const webcamPreview = $("webcam-preview");
-  const webcamCapture = $("webcam-capture");
+  const videoPreviewWrap = $("video-preview-wrap");
+  const videoClearBtn = $("video-clear");
+  const webcamStop = $("webcam-stop");
   const webcamPreviews = $("webcam-previews");
+  const videoRecordRow = $("video-record-row");
 
   const micToggle = $("mic-toggle");
   const micStatus = $("mic-status");
@@ -77,6 +79,52 @@
     analyserData: null,
     vizAnim: 0,
   };
+
+  function getPrimaryVideo() {
+    if (state.webcamVideos.length > 0) {
+      return { list: state.webcamVideos, index: state.webcamVideos.length - 1, item: state.webcamVideos[state.webcamVideos.length - 1] };
+    }
+    if (state.videos.length > 0) {
+      return { list: state.videos, index: state.videos.length - 1, item: state.videos[state.videos.length - 1] };
+    }
+    return null;
+  }
+
+  function updateWebcamPreviewVisibility() {
+    if (!webcamPreview) return;
+    if (state.webcamStream) {
+      webcamPreview.controls = false;
+      if (videoPreviewWrap) videoPreviewWrap.classList.remove("hidden");
+      if (videoControls) videoControls.classList.add("hidden");
+      return;
+    }
+    const primary = getPrimaryVideo();
+    if (primary) {
+      const latest = primary.item;
+      webcamPreview.pause();
+      webcamPreview.srcObject = null;
+      if (webcamPreview.src !== latest.url) {
+        webcamPreview.src = latest.url;
+      }
+      webcamPreview.controls = true;
+      if (videoPreviewWrap) videoPreviewWrap.classList.remove("hidden");
+      if (videoControls) videoControls.classList.add("hidden");
+      return;
+    }
+    webcamPreview.pause();
+    webcamPreview.srcObject = null;
+    webcamPreview.removeAttribute("src");
+    if (videoPreviewWrap) videoPreviewWrap.classList.add("hidden");
+    if (videoControls) videoControls.classList.remove("hidden");
+  }
+
+  function updateWebcamRecordingUI() {
+    const recording = state.webcamRecorder && state.webcamRecorder.state === "recording";
+    const hasPrimary = Boolean(getPrimaryVideo());
+    if (videoRecordRow) videoRecordRow.classList.toggle("hidden", !recording);
+    if (videoControls) videoControls.classList.toggle("hidden", recording || hasPrimary);
+    if (videoClearBtn) videoClearBtn.classList.toggle("hidden", recording || !hasPrimary);
+  }
 
   function escapeHtml(text) {
     const div = document.createElement("div");
@@ -183,7 +231,6 @@
     state.audios = [];
     state.webcamVideos = [];
     state.micAudios = [];
-    if (imageInput) imageInput.value = "";
     if (videoInput) videoInput.value = "";
     if (audioInput) audioInput.value = "";
     renderAllPreviews();
@@ -279,8 +326,44 @@
           timeCurrent.textContent = formatTime(0);
         });
 
-        const playIcon = "<span class=\"audio-play-icon\">▶</span>";
-        const pauseIcon = "<span class=\"audio-play-icon\">❚❚</span>";
+        const iconVolume =
+          "<svg viewBox=\"0 0 24 24\" aria-hidden=\"true\">" +
+          "<path d=\"M11 5l-5 4H3v6h3l5 4V5z\" fill=\"currentColor\"></path>" +
+          "<path d=\"M15 9a4 4 0 0 1 0 6\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.7\" stroke-linecap=\"round\"></path>" +
+          "<path d=\"M17.5 7a7 7 0 0 1 0 10\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.7\" stroke-linecap=\"round\"></path>" +
+          "</svg>";
+        const iconRewind =
+          "<svg viewBox=\"0 0 24 24\" aria-hidden=\"true\">" +
+          "<path d=\"M11 18l-7-6 7-6v12z\" fill=\"currentColor\"></path>" +
+          "<path d=\"M20 18l-7-6 7-6v12z\" fill=\"currentColor\"></path>" +
+          "</svg>";
+        const iconForward =
+          "<svg viewBox=\"0 0 24 24\" aria-hidden=\"true\">" +
+          "<path d=\"M13 6l7 6-7 6V6z\" fill=\"currentColor\"></path>" +
+          "<path d=\"M4 6l7 6-7 6V6z\" fill=\"currentColor\"></path>" +
+          "</svg>";
+        const iconPlay =
+          "<svg viewBox=\"0 0 24 24\" aria-hidden=\"true\">" +
+          "<path d=\"M8 5l12 7-12 7V5z\" fill=\"currentColor\"></path>" +
+          "</svg>";
+        const iconPause =
+          "<svg viewBox=\"0 0 24 24\" aria-hidden=\"true\">" +
+          "<rect x=\"7\" y=\"5\" width=\"4\" height=\"14\" fill=\"currentColor\"></rect>" +
+          "<rect x=\"13\" y=\"5\" width=\"4\" height=\"14\" fill=\"currentColor\"></rect>" +
+          "</svg>";
+        const iconStop =
+          "<svg viewBox=\"0 0 24 24\" aria-hidden=\"true\">" +
+          "<rect x=\"7\" y=\"7\" width=\"10\" height=\"10\" fill=\"currentColor\"></rect>" +
+          "</svg>";
+        const iconLoop =
+          "<svg viewBox=\"0 0 24 24\" aria-hidden=\"true\">" +
+          "<path d=\"M4 12a6 6 0 0 1 10-4\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.7\" stroke-linecap=\"round\"></path>" +
+          "<path d=\"M14 4h4v4\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.7\" stroke-linecap=\"round\" stroke-linejoin=\"round\"></path>" +
+          "<path d=\"M20 12a6 6 0 0 1-10 4\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.7\" stroke-linecap=\"round\"></path>" +
+          "<path d=\"M10 20H6v-4\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.7\" stroke-linecap=\"round\" stroke-linejoin=\"round\"></path>" +
+          "</svg>";
+        const playIcon = "<span class=\"audio-play-icon\">" + iconPlay + "</span>";
+        const pauseIcon = "<span class=\"audio-play-icon\">" + iconPause + "</span>";
         const playBtn = document.createElement("button");
         playBtn.type = "button";
         playBtn.className = "audio-play-btn";
@@ -306,7 +389,7 @@
         volBtn.type = "button";
         volBtn.className = "audio-icon-btn";
         volBtn.title = "Volume";
-        volBtn.innerHTML = "<span class=\"audio-icon\">🔊</span>";
+        volBtn.innerHTML = "<span class=\"audio-icon\">" + iconVolume + "</span>";
         const speedBtn = document.createElement("button");
         speedBtn.type = "button";
         speedBtn.className = "audio-speed-btn";
@@ -323,7 +406,7 @@
         rewindBtn.type = "button";
         rewindBtn.className = "audio-icon-btn";
         rewindBtn.title = "Rewind";
-        rewindBtn.innerHTML = "<span class=\"audio-icon\">⏪</span>";
+        rewindBtn.innerHTML = "<span class=\"audio-icon\">" + iconRewind + "</span>";
         rewindBtn.addEventListener("click", () => {
           audioEl.currentTime = Math.max(0, audioEl.currentTime - 5);
         });
@@ -331,7 +414,7 @@
         ffBtn.type = "button";
         ffBtn.className = "audio-icon-btn";
         ffBtn.title = "Forward";
-        ffBtn.innerHTML = "<span class=\"audio-icon\">⏩</span>";
+        ffBtn.innerHTML = "<span class=\"audio-icon\">" + iconForward + "</span>";
         ffBtn.addEventListener("click", () => {
           audioEl.currentTime = Math.min(audioEl.duration || 0, audioEl.currentTime + 5);
         });
@@ -339,7 +422,7 @@
         stopBtn.type = "button";
         stopBtn.className = "audio-icon-btn";
         stopBtn.title = "Stop";
-        stopBtn.innerHTML = "<span class=\"audio-icon\">⏹</span>";
+        stopBtn.innerHTML = "<span class=\"audio-icon\">" + iconStop + "</span>";
         stopBtn.addEventListener("click", () => {
           audioEl.pause();
           audioEl.currentTime = 0;
@@ -352,7 +435,7 @@
         loopBtn.type = "button";
         loopBtn.className = "audio-icon-btn";
         loopBtn.title = "Loop";
-        loopBtn.innerHTML = "<span class=\"audio-icon\">🔁</span>";
+        loopBtn.innerHTML = "<span class=\"audio-icon\">" + iconLoop + "</span>";
         loopBtn.addEventListener("click", () => {
           audioEl.loop = !audioEl.loop;
           loopBtn.classList.toggle("active", audioEl.loop);
@@ -384,11 +467,14 @@
 
   function renderAllPreviews() {
     renderPreviewList(imagePreviews, state.images, "image");
-    renderPreviewList(videoPreviews, state.videos, "video");
+    const hasPrimary = Boolean(getPrimaryVideo());
+    renderPreviewList(videoPreviews, hasPrimary ? [] : state.videos, "video");
     renderPreviewList(audioPreviews, state.audios, "audio");
-    renderPreviewList(webcamPreviews, state.webcamVideos, "video");
+    renderPreviewList(webcamPreviews, hasPrimary ? [] : state.webcamVideos, "video");
     renderPreviewList(micPreviews, state.micAudios, "audio");
     updateAudioControlsVisibility();
+    updateWebcamPreviewVisibility();
+    updateWebcamRecordingUI();
   }
 
   function hasAnyAudio() {
@@ -406,8 +492,11 @@
       if (uploadLabel) uploadLabel.classList.remove("hidden");
       if (micStatus) micStatus.classList.add("hidden");
     }
-    if (recordRow) recordRow.classList.toggle("hidden", !recording);
+    const hasMicPreview = state.micAudios.length > 0;
+    if (recordRow) recordRow.classList.toggle("hidden", !recording && !hasMicPreview);
+    if (micStopBtn) micStopBtn.classList.toggle("hidden", !recording);
     if (audioVisualizerWrap) audioVisualizerWrap.classList.toggle("hidden", !recording);
+    if (micPreviews) micPreviews.classList.toggle("hidden", recording || !hasMicPreview);
   }
 
   async function initVisualizer(stream) {
@@ -542,20 +631,16 @@
   }
   updateAudioControlsVisibility();
 
-  // File uploads
-  if (imageInput) {
-    imageInput.addEventListener("change", () => {
-      const files = imageInput.files ? Array.from(imageInput.files) : [];
-      files.forEach((file) => state.images.push(createPreviewItem(file, "image")));
-      imageInput.value = "";
-      renderAllPreviews();
-    });
-  }
-
   if (videoInput) {
     videoInput.addEventListener("change", () => {
       const files = videoInput.files ? Array.from(videoInput.files) : [];
-      files.forEach((file) => state.videos.push(createPreviewItem(file, "video")));
+      files.forEach((file) => {
+        if (file.type && file.type.startsWith("image/")) {
+          state.images.push(createPreviewItem(file, "image"));
+        } else if (file.type && file.type.startsWith("video/")) {
+          state.videos.push(createPreviewItem(file, "video"));
+        }
+      });
       videoInput.value = "";
       renderAllPreviews();
     });
@@ -583,8 +668,11 @@
       const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
       state.webcamStream = stream;
       if (webcamPreview) {
+        webcamPreview.pause();
+        webcamPreview.removeAttribute("src");
         webcamPreview.srcObject = stream;
-        webcamPreview.classList.remove("hidden");
+        webcamPreview.controls = false;
+        if (videoPreviewWrap) videoPreviewWrap.classList.remove("hidden");
         await webcamPreview.play();
       }
       state.webcamChunks = [];
@@ -601,8 +689,8 @@
       };
       state.webcamRecorder.start();
       if (webcamToggle) webcamToggle.classList.add("recording");
-      if (webcamCapture) webcamCapture.classList.remove("hidden");
       if (webcamToggle) webcamToggle.textContent = "Stop webcam";
+      updateWebcamRecordingUI();
     } catch (err) {
       console.error("Webcam access failed:", err);
       stopWebcamStream();
@@ -620,11 +708,11 @@
     if (webcamPreview) {
       webcamPreview.pause();
       webcamPreview.srcObject = null;
-      webcamPreview.classList.add("hidden");
     }
     if (webcamToggle) webcamToggle.classList.remove("recording");
-    if (webcamCapture) webcamCapture.classList.add("hidden");
     if (webcamToggle) webcamToggle.textContent = "Access webcam";
+    updateWebcamRecordingUI();
+    updateWebcamPreviewVisibility();
   }
 
   if (webcamToggle) {
@@ -637,13 +725,24 @@
     });
   }
 
-  if (webcamCapture) {
-    webcamCapture.addEventListener("click", () => {
-      if (state.webcamRecorder && state.webcamRecorder.state !== "inactive") {
+  if (webcamStop) {
+    webcamStop.addEventListener("click", () => {
+      if (state.webcamRecorder && state.webcamRecorder.state === "recording") {
         state.webcamRecorder.stop();
       } else {
         stopWebcamStream();
       }
+    });
+  }
+
+  if (videoClearBtn) {
+    videoClearBtn.addEventListener("click", () => {
+      const primary = getPrimaryVideo();
+      if (!primary) return;
+      const item = primary.item;
+      if (item && item.url) URL.revokeObjectURL(item.url);
+      primary.list.splice(primary.index, 1);
+      renderAllPreviews();
     });
   }
 
@@ -749,7 +848,14 @@
   }
 
   async function* streamChatCompletion(payload) {
-    const apiBase = (apiUrlEl && apiUrlEl.value ? apiUrlEl.value : "").replace(/\/$/, "");
+    // API base URL: default to same-origin when served via http(s),
+    // otherwise fall back to localhost dev server.
+    const defaultBase = "http://localhost:8000";
+    const globalBase = (typeof window !== "undefined" && window.SGLANG_OMNI_API_BASE) ? String(window.SGLANG_OMNI_API_BASE).trim() : "";
+    const base =
+      globalBase ||
+      ((typeof location !== "undefined" && /^https?:$/.test(location.protocol)) ? location.origin : defaultBase);
+    const apiBase = base.replace(/\/$/, "");
     const url = apiBase + "/v1/chat/completions";
     const controller = new AbortController();
     state.abortController = controller;
