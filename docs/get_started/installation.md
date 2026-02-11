@@ -2,7 +2,7 @@
 
 ## 📦 Installation
 
-We highlight recommend to use our [Docker Image](#-use-docker) for development or production environment. Otherwise, please make sure you have built and installed [`ucx`](https://github.com/openucx/ucx) in your environment.
+We highly recommend to use our [Docker Image](#🐳-use-docker) for development or production environment. Otherwise, please make sure you have built and installed [`ucx`](https://github.com/openucx/ucx) in your environment.
 
 ```bash
 # create a virtual environment in docker
