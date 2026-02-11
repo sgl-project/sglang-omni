@@ -173,8 +173,6 @@ intersphinx_mapping = {
     "torch": ("https://pytorch.org/docs/stable", None),
 }
 
-html_theme = "sphinx_book_theme"
-
 
 nbsphinx_prolog = """
 .. raw:: html
