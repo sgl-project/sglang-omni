@@ -1,7 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """Shared omni-model abstractions and helpers."""
 
-from sglang_omni.models.omni_base.io import OmniEvent, PromptInputs, ThinkerOutput
 from sglang_omni.models.omni_base.merge import (
     create_standard_merge_fn,
     default_build_thinker_inputs,
@@ -13,6 +12,7 @@ from sglang_omni.models.omni_base.stages import (
     create_thinker_executor,
     event_to_dict,
 )
+from sglang_omni.models.omni_base.types import OmniEvent, PromptInputs, ThinkerOutput
 
 __all__ = [
     # IO types

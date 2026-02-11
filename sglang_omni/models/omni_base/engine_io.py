@@ -8,7 +8,7 @@ from typing import Any
 import torch
 
 from sglang_omni.engines.omni.runtime import ARRequestData, EncoderRequestData
-from sglang_omni.models.omni_base.io import ThinkerOutput
+from sglang_omni.models.omni_base.types import ThinkerOutput
 from sglang_omni.proto import StagePayload
 
 

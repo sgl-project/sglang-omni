@@ -7,13 +7,13 @@ from typing import Any, Iterable
 
 import torch
 
-from sglang_omni.models.omni_base.io import OmniEvent, ThinkerOutput
 from sglang_omni.models.omni_base.merge import (
     as_tensor,
     as_tensor_list,
     create_standard_merge_fn,
     is_non_empty,
 )
+from sglang_omni.models.omni_base.types import OmniEvent, ThinkerOutput
 from sglang_omni.models.qwen3_omni.pipeline.next_stage import (
     AUDIO_STAGE,
     IMAGE_STAGE,

@@ -1,9 +1,14 @@
 # SPDX-License-Identifier: Apache-2.0
 """Request state and tracking."""
 
+from __future__ import annotations
+
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from sglang_omni.models.omni_base.types import PromptInputs
 
 
 class RequestState(Enum):
@@ -67,7 +72,7 @@ class StagePayload:
 
     # Pipeline state fields (flattened for efficient access)
     raw_inputs: Any | None = None
-    prompt: dict[str, Any] | None = None
+    prompt: PromptInputs | None = None
     mm_inputs: dict[str, Any] | None = None
     encoder_inputs: dict[str, dict[str, Any]] | None = None
     encoder_outs: dict[str, Any] | None = None

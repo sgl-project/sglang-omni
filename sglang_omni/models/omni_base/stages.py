@@ -20,7 +20,7 @@ from sglang_omni.models.omni_base.engine_io import (
     build_encoder_request,
     build_thinker_request,
 )
-from sglang_omni.models.omni_base.io import OmniEvent, ThinkerOutput
+from sglang_omni.models.omni_base.types import OmniEvent, ThinkerOutput
 from sglang_omni.proto import StagePayload
 
 # Type alias for the model-specific decode callback
