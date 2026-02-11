@@ -113,6 +113,26 @@ class TestVideoPreprocessing:
         else:
             assert audios is None or (len(audios) == 1 and audios[0] is None)
 
+    @pytest.mark.asyncio
+    async def test_video_loading_from_url(self):
+        """Test loading video directly from URL (network download) with audio extraction."""
+        videos, fps_list, audios = await ensure_video_list_async(
+            VIDEO_URL, fps=2.0, extract_audio=True, audio_target_sr=16000
+        )
+
+        assert len(videos) == 1
+        assert videos[0].dim() == 4  # (T, C, H, W)
+        assert videos[0].shape[1] == 3  # RGB channels
+        assert fps_list is not None
+        assert len(fps_list) == 1
+        assert fps_list[0] > 0
+
+        # Verify audio extraction
+        assert audios is not None
+        assert len(audios) == 1
+        assert audios[0] is not None
+        assert audios[0].ndim == 1
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v", "-s"])
