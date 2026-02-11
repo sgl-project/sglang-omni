@@ -42,8 +42,12 @@ def stage1_get_next(request_id: str, output: Any) -> str | None:
 
 
 def stage2_get_next(request_id: str, output: Any) -> str | None:
-    if isinstance(output, (int, float)) and output < 0:
-        logger.info("Encoder: output=%s is negative, early exit!", output)
+    # Extract value from payload.data (output is always StagePayload with dict data)
+    data = output.data
+    value = data.get("value")
+
+    if isinstance(value, (int, float)) and value < 0:
+        logger.info("Encoder: output=%s is negative, early exit!", value)
         return None
     return "decoder"
 
@@ -241,16 +245,22 @@ async def run_coordinator_main(relay_type: str):
         # 5 -> 45 -> 2025 -> 3025
         expected = 3025
         result = await coordinator.submit("req-1", input_val)
-        assert result == expected
-        logger.info(f"Test 1 Passed: Input {input_val} -> Output {result}")
+        # Extract value from result dict
+        result_value = result.get("value")
+        assert result_value == expected
+        logger.info(f"Test 1 Passed: Input {input_val} -> Output {result_value}")
 
         # Test 2: Early Exit
         input_val = 0
         # 0 -> -5 -> -5 (Early Exit)
         expected = -5
         result = await coordinator.submit("req-2", input_val)
-        assert result == expected
-        logger.info(f"Test 2 Passed (Early Exit): Input {input_val} -> Output {result}")
+        # Extract value from result dict
+        result_value = result.get("value")
+        assert result_value == expected
+        logger.info(
+            f"Test 2 Passed (Early Exit): Input {input_val} -> Output {result_value}"
+        )
 
         logger.info("All tests passed!")
 
