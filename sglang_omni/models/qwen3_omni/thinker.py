@@ -10,7 +10,6 @@ from transformers import PretrainedConfig
 
 from sglang_omni.config.qwen3_omni import Qwen3OmniMoeTextConfig
 from sglang_omni.vendor.sglang.distributed import (
-    get_moe_expert_parallel_world_size,
     get_tensor_model_parallel_rank,
     get_tensor_model_parallel_world_size,
     tensor_model_parallel_all_reduce,
@@ -31,7 +30,6 @@ from sglang_omni.vendor.sglang.layers import (
     get_attention_tp_rank,
     get_attention_tp_size,
     get_layer_id,
-    get_moe_a2a_backend,
     get_moe_impl_class,
     get_rope,
     should_use_flashinfer_cutlass_moe_fp4_allgather,
@@ -432,14 +430,6 @@ class Qwen3OmniMoeThinkerTextSparseMoeBlock(nn.Module):
             quant_config=None,
             prefix=add_prefix("gate", prefix),
         )
-
-        if get_moe_a2a_backend().is_deepep():
-            # TODO: we will support tp < ep in the future
-            self.ep_size = get_moe_expert_parallel_world_size()
-            self.num_experts = (
-                config.num_experts + get_global_server_args().ep_num_redundant_experts
-            )
-            self.top_k = config.num_experts_per_tok
 
     def forward(
         self,
