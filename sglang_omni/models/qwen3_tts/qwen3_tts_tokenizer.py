@@ -167,10 +167,10 @@ class Qwen3TTSSpeechTokenizer:
             sampling_rate=int(self.feature_extractor.sampling_rate),
             return_tensors="pt",
         )
-        inputs = inputs.to(self.device).to(self.model.dtype)
+        inputs = inputs.to(self.device)
         with torch.inference_mode():
             enc = self.model.encode(
-                inputs["input_values"].squeeze(1),
+                inputs["input_values"].squeeze(1).to(self.model.dtype),
                 inputs["padding_mask"].squeeze(1),
                 return_dict=return_dict,
             )
