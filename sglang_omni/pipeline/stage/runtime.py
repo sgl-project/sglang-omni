@@ -6,7 +6,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import socket
 from contextlib import suppress
 from operator import methodcaller
 from typing import Any, Callable
@@ -133,7 +132,8 @@ class Stage:
 
     async def _on_profiler_start(self, msg: ProfilerStartMessage) -> None:
         if TorchProfiler.is_active():
-            if self._profiler_run_id == msg.run_id:
+            active = TorchProfiler.get_active_run_id()
+            if active == msg.run_id:
                 logger.info(
                     "Stage %s profiler already active for run_id=%s",
                     self.name,
@@ -141,15 +141,16 @@ class Stage:
                 )
                 return
             logger.warning(
-                "Stage %s profiler already active (run_id=%s), ignoring new start run_id=%s",
+                "Stage %s profiler already active (run_id=%s), ignoring new profiler (run_id=%s)",
                 self.name,
-                self._profiler_run_id,
+                active,
                 msg.run_id,
             )
             return
 
         run_id = msg.run_id
-        template = msg.trace_path_template.format(run_id=run_id, stage=self.name)
+        base_tpl = msg.trace_path_template.format(run_id=run_id, stage=self.name)
+        template = f"{base_tpl}_pid{os.getpid()}"
 
         prof_dir = os.environ.get("SGLANG_TORCH_PROFILER_DIR")
         if prof_dir and not os.path.isabs(template):
@@ -161,15 +162,16 @@ class Stage:
             run_id,
             template,
         )
-        trace_path = TorchProfiler.start(template)
+        trace_path = TorchProfiler.start(template, run_id=msg.run_id)
 
         self._profiler_run_id = run_id
         self._profiler_trace_template = template
         logger.info(
-            "Stage %s torch profiler started, expected trace=%s (host=%s)",
+            "Stage %s starting torch profiler run_id=%s template=%s expected_trace=%s",
             self.name,
+            msg.run_id,
+            template,
             trace_path,
-            socket.gethostname(),
         )
 
     async def _on_profiler_stop(self, msg: ProfilerStopMessage) -> None:
@@ -183,17 +185,24 @@ class Stage:
             self._profiler_trace_template = None
             return
 
-        if self._profiler_run_id is not None and msg.run_id != self._profiler_run_id:
+        active = TorchProfiler.get_active_run_id()
+        if active != msg.run_id:
             logger.warning(
-                "Stage %s profiler run_id mismatch: active=%s stop=%s; still stopping",
+                "Stage %s profiler active_run_id=%s; ignoring stop for run_id=%s",
                 self.name,
-                self._profiler_run_id,
+                active,
                 msg.run_id,
             )
+            return
 
         logger.info("Stage %s stopping torch profiler run_id=%s", self.name, msg.run_id)
-        result = TorchProfiler.stop()
-        logger.info("Stage %s torch profiler stopped, result=%s", self.name, result)
+        result = TorchProfiler.stop(run_id=msg.run_id)
+        logger.info(
+            "Stage %s stopping torch profiler run_id=%s result=%s",
+            self.name,
+            msg.run_id,
+            result,
+        )
 
         self._profiler_run_id = None
         self._profiler_trace_template = None

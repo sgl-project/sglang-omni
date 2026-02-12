@@ -124,9 +124,9 @@ class StopReq(BaseModel):
 def _mount_profiler_routes(
     app, profiler_ctl: ProfilerControlClient, profiler_dir: str
 ) -> None:
-    router = APIRouter(prefix="/debug/profiler", tags=["debug"])
+    router = APIRouter()
 
-    @router.post("/start")
+    @router.post("/start_profile")
     async def start(req: StartReq):
         run_id = req.run_id or _default_run_id()
         tpl = req.trace_path_template or _default_template(profiler_dir, run_id)
@@ -137,7 +137,7 @@ def _mount_profiler_routes(
         )
         return {"run_id": run_id, "trace_path_template": tpl}
 
-    @router.post("/stop")
+    @router.post("/stop_profile")
     async def stop(req: StopReq):
         run_id = req.run_id or "default"
         await profiler_ctl.broadcast_stop(run_id=run_id)
