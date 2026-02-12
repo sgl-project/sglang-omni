@@ -5,8 +5,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from sglang_omni.models.qwen3_asr.modeling.configuration_qwen3_asr import Qwen3ASRThinkerConfig
-from sglang_omni.models.utils.hf import load_hf_config
+from sglang_omni.models.qwen3_asr.modeling.configuration_qwen3_asr import (
+    Qwen3ASRThinkerConfig,
+)
 
 
 def load_thinker_config(model_id: str) -> Any:

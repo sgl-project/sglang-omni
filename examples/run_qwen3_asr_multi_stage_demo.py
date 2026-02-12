@@ -14,23 +14,20 @@ import asyncio
 import logging
 import multiprocessing as mp
 import time
-from typing import Any
 
 import torch
-import numpy as np
 
 from sglang_omni import Coordinator, Stage, Worker
+from sglang_omni.models.qwen3_asr.io import PipelineState
 from sglang_omni.models.qwen3_asr.pipeline.next_stage import (
     AUDIO_STAGE,
-    THINKER_STAGE,
     PREPROCESSING_STAGE,
-    DECODE_STAGE,
-    preprocessing_next,
-    encoder_next,
-    thinker_next,
+    THINKER_STAGE,
     decode_next,
+    encoder_next,
+    preprocessing_next,
+    thinker_next,
 )
-from sglang_omni.models.qwen3_asr.io import PipelineState
 
 logging.basicConfig(
     level=logging.INFO,
@@ -53,11 +50,15 @@ ENDPOINTS = {
     "decode": STAGE_DECODE_ENDPOINT,
 }
 
+
 def run_preprocess_stage(model_id: str):
-    from sglang_omni.models.qwen3_asr.pipeline.stages import create_preprocessing_executor
+    from sglang_omni.models.qwen3_asr.pipeline.stages import (
+        create_preprocessing_executor,
+    )
+
     executor = create_preprocessing_executor(model_id)
     worker = Worker(executor, role="preprocess")
-    
+
     stage = Stage(
         name=PREPROCESSING_STAGE,
         get_next=preprocessing_next,
@@ -70,11 +71,15 @@ def run_preprocess_stage(model_id: str):
     stage.add_worker(worker)
     asyncio.run(stage.run())
 
+
 def run_audio_stage(model_id: str, device: str, dtype: str):
-    from sglang_omni.models.qwen3_asr.pipeline.stages import create_audio_encoder_executor
+    from sglang_omni.models.qwen3_asr.pipeline.stages import (
+        create_audio_encoder_executor,
+    )
+
     executor = create_audio_encoder_executor(model_id, device=device, dtype=dtype)
     worker = Worker(executor, role="audio_encoder")
-    
+
     stage = Stage(
         name=AUDIO_STAGE,
         get_next=encoder_next,
@@ -82,16 +87,22 @@ def run_audio_stage(model_id: str, device: str, dtype: str):
         coordinator_endpoint=COORDINATOR_ENDPOINT,
         abort_endpoint=ABORT_ENDPOINT,
         endpoints=ENDPOINTS,
-        relay_config={"worker_id": "audio_worker", "relay_type": "shm", "gpu_id": 0 if "cuda" in device else None},
+        relay_config={
+            "worker_id": "audio_worker",
+            "relay_type": "shm",
+            "gpu_id": 0 if "cuda" in device else None,
+        },
     )
     stage.add_worker(worker)
     asyncio.run(stage.run())
 
+
 def run_thinker_stage(model_id: str, device: str, dtype: str):
     from sglang_omni.models.qwen3_asr.pipeline.stages import create_thinker_executor
+
     executor = create_thinker_executor(model_id, device=device, dtype=dtype)
     worker = Worker(executor, role="thinker")
-    
+
     stage = Stage(
         name=THINKER_STAGE,
         get_next=thinker_next,
@@ -99,18 +110,24 @@ def run_thinker_stage(model_id: str, device: str, dtype: str):
         coordinator_endpoint=COORDINATOR_ENDPOINT,
         abort_endpoint=ABORT_ENDPOINT,
         endpoints=ENDPOINTS,
-        relay_config={"worker_id": "thinker_worker", "relay_type": "shm", "gpu_id": 0 if "cuda" in device else None},
+        relay_config={
+            "worker_id": "thinker_worker",
+            "relay_type": "shm",
+            "gpu_id": 0 if "cuda" in device else None,
+        },
     )
     stage.add_worker(worker)
     asyncio.run(stage.run())
 
+
 def run_decode_stage(model_id: str):
     from transformers import AutoTokenizer
+
     from sglang_omni.executors import PreprocessingExecutor
     from sglang_omni.proto import StagePayload
-    
+
     tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
-    
+
     def decoder(payload: StagePayload) -> StagePayload:
         state = PipelineState.from_dict(payload.data)
         if state.thinker_out and "output_ids" in state.thinker_out:
@@ -121,7 +138,7 @@ def run_decode_stage(model_id: str):
 
     executor = PreprocessingExecutor(decoder)
     worker = Worker(executor, role="decode")
-    
+
     stage = Stage(
         name="decode",
         get_next=decode_next,
@@ -134,38 +151,43 @@ def run_decode_stage(model_id: str):
     stage.add_worker(worker)
     asyncio.run(stage.run())
 
+
 async def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model-id", type=str, default="Qwen3-ASR/Qwen3-ASR-0.6B")
-    parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
-    parser.add_argument("--dtype", type=str, default="fp16" if torch.cuda.is_available() else "fp32")
+    parser.add_argument(
+        "--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu"
+    )
+    parser.add_argument(
+        "--dtype", type=str, default="fp16" if torch.cuda.is_available() else "fp32"
+    )
     args = parser.parse_args()
 
     # Start stages in separate processes
     ctx = mp.get_context("spawn")
     processes = []
-    
+
     stages = [
         (run_preprocess_stage, (args.model_id,)),
         (run_audio_stage, (args.model_id, args.device, args.dtype)),
         (run_thinker_stage, (args.model_id, args.device, args.dtype)),
         (run_decode_stage, (args.model_id,)),
     ]
-    
+
     for func, fargs in stages:
         p = ctx.Process(target=func, args=fargs)
         p.start()
         processes.append(p)
-    
+
     # Wait for stages to initialize
     await asyncio.sleep(5)
-    
+
     coordinator = Coordinator(
         completion_endpoint=COORDINATOR_ENDPOINT,
         abort_endpoint=ABORT_ENDPOINT,
         entry_stage=PREPROCESSING_STAGE,
     )
-    
+
     coordinator.register_stage(PREPROCESSING_STAGE, STAGE_PREPROCESS_ENDPOINT)
     coordinator.register_stage(AUDIO_STAGE, STAGE_AUDIO_ENDPOINT)
     coordinator.register_stage(THINKER_STAGE, STAGE_THINKER_ENDPOINT)
@@ -173,33 +195,31 @@ async def main():
 
     await coordinator.start()
     completion_task = asyncio.create_task(coordinator.run_completion_loop())
-    
+
     import librosa
+
     audio_path = "examples/asr_en.wav"
     dummy_audio, _ = librosa.load(audio_path, sr=16000)
     dummy_audio = dummy_audio.tolist()
-    
+
     from sglang_omni.proto import OmniRequest
-    request = OmniRequest(
-                inputs={
-                    "text": "Audio recognition",
-                    "audio": dummy_audio 
-                }
-            )
-    
+
+    request = OmniRequest(inputs={"text": "Audio recognition", "audio": dummy_audio})
+
     logger.info("Sending request to pipeline...")
     start_time = time.time()
     result = await coordinator.submit("qwen3-asr-test-001", request)
     elapsed = time.time() - start_time
-    
+
     logger.info(f"Result received in {elapsed:.2f}s: {result}")
-    
+
     # Cleanup
     completion_task.cancel()
     await coordinator.stop()
     for p in processes:
         p.terminate()
         p.join()
+
 
 if __name__ == "__main__":
     asyncio.run(main())

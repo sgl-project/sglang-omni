@@ -15,11 +15,11 @@ def build_encoder_request(
     state: PipelineState, *, stage_name: str
 ) -> EncoderRequestData:
 
-    inputs = state.mm_inputs.get(stage_name)  
-    
+    inputs = state.mm_inputs.get(stage_name)
+
     if not isinstance(inputs, dict) or not inputs:
         return EncoderRequestData(input_dict={"_skip": True, "_result": {}})
-        
+
     if inputs.get("_skip"):
         skip_result = inputs.get("_result")
         return EncoderRequestData(

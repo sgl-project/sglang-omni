@@ -18,10 +18,7 @@ from sglang_omni.models.qwen3_asr.pipeline.engine_io import (
     build_encoder_request,
     build_thinker_request,
 )
-from sglang_omni.models.qwen3_asr.pipeline.next_stage import (
-    AUDIO_STAGE,
-    THINKER_STAGE,
-)
+from sglang_omni.models.qwen3_asr.pipeline.next_stage import AUDIO_STAGE, THINKER_STAGE
 from sglang_omni.models.qwen3_asr.pipeline.state_io import load_state, store_state
 from sglang_omni.proto import StagePayload
 
@@ -67,6 +64,7 @@ def create_audio_encoder_executor(
 
 
 from transformers import AutoTokenizer
+
 
 def create_thinker_executor(
     model_id: str,

@@ -3,8 +3,6 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 import torch
 
 
@@ -19,19 +17,20 @@ def merge_encoder_outputs(
     if audio_embeds is not None:
         # Create mask for audio tokens
         audio_mask = input_ids == audio_token_id
-        
+
         # Verify counts
         audio_token_count = int(audio_mask.sum().item())
         if audio_token_count != int(audio_embeds.shape[0]):
             raise ValueError(
                 f"Audio placeholder count mismatch: tokens={audio_token_count} embeds={audio_embeds.shape[0]}"
             )
-            
+
         # Merge
-        audio_embeds = audio_embeds.to(device=inputs_embeds.device, dtype=inputs_embeds.dtype)
-        inputs_embeds = inputs_embeds.masked_scatter(
-            audio_mask.unsqueeze(-1).expand_as(inputs_embeds), 
-            audio_embeds
+        audio_embeds = audio_embeds.to(
+            device=inputs_embeds.device, dtype=inputs_embeds.dtype
         )
-        
+        inputs_embeds = inputs_embeds.masked_scatter(
+            audio_mask.unsqueeze(-1).expand_as(inputs_embeds), audio_embeds
+        )
+
     return inputs_embeds

@@ -7,7 +7,6 @@ from typing import Any
 
 import torch
 import torch.nn as nn
-from accelerate import init_empty_weights
 
 from sglang_omni.models.qwen3_asr.components.common import load_thinker_config
 from sglang_omni.models.qwen3_asr.modeling import modeling_qwen3_asr as hf_modeling
@@ -158,7 +157,9 @@ class Qwen3ASRSplitThinker(hf_modeling.Qwen3ASRThinkerForConditionalGeneration):
         **kwargs: Any,
     ) -> hf_modeling.Qwen3ASRThinkerCausalLMOutputWithPast:
         # Map audio_embeds or input_features to the expected parameter name
-        final_input_features = audio_embeds if audio_embeds is not None else input_features
+        final_input_features = (
+            audio_embeds if audio_embeds is not None else input_features
+        )
         if final_input_features is not None:
             kwargs["input_features"] = _concat_features(final_input_features)
 
@@ -187,7 +188,9 @@ class Qwen3ASRSplitThinker(hf_modeling.Qwen3ASRThinkerForConditionalGeneration):
         **kwargs,
     ):
         # Prefer audio_embeds but fall back to input_features
-        final_input_features = audio_embeds if audio_embeds is not None else input_features
+        final_input_features = (
+            audio_embeds if audio_embeds is not None else input_features
+        )
         if final_input_features is not None:
             kwargs["input_features"] = final_input_features
 
@@ -210,4 +213,3 @@ class Qwen3ASRSplitThinker(hf_modeling.Qwen3ASRThinkerForConditionalGeneration):
             model_inputs["input_features"] = None
 
         return model_inputs
-

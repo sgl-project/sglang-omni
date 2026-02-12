@@ -3,12 +3,7 @@
 
 from __future__ import annotations
 
-from sglang_omni.config import (
-    ExecutorConfig,
-    PipelineConfig,
-    RelayConfig,
-    StageConfig,
-)
+from sglang_omni.config import ExecutorConfig, PipelineConfig, RelayConfig, StageConfig
 from sglang_omni.models.qwen3_asr.pipeline.next_stage import (
     AUDIO_STAGE,
     PREPROCESSING_STAGE,

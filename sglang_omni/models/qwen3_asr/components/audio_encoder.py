@@ -71,7 +71,6 @@ class Qwen3ASRAudioEncoder(nn.Module):
             # We need to handle the case where input_features is padded and we want to pass only active parts
             # or pass the whole thing with lengths.
             # Qwen3-ASR audio_tower forward: forward(self, input_features, feature_lens=None, aftercnn_lens=None)
-            pass
 
         if audio_feature_lengths is None:
             raise ValueError(
@@ -80,24 +79,26 @@ class Qwen3ASRAudioEncoder(nn.Module):
 
         audio_feature_lengths = audio_feature_lengths.to(self._device, dtype=torch.long)
         # Ensure input_features is on the right device and dtype
-        input_features = input_features.to(device=self._device, dtype=self.audio_tower.dtype)
-        
+        input_features = input_features.to(
+            device=self._device, dtype=self.audio_tower.dtype
+        )
+
         # Qwen3-ASR audio encoder does not support batch inference to keep precision
         # We loop over batches as in the original HF implementation
         all_audio_embeds = []
         for i in range(input_features.shape[0]):
-            feat = input_features[i, :, :audio_feature_lengths[i]]
+            feat = input_features[i, :, : audio_feature_lengths[i]]
             outputs = self.audio_tower(
                 feat,
                 feature_lens=audio_feature_lengths[i].unsqueeze(0),
             )
             all_audio_embeds.append(outputs.last_hidden_state)
-        
+
         # Concatenate all features into a single sequence (flat list of tokens)
         # sglang-omni expects (num_total_tokens, hidden_size) or (batch, seq, hidden)
         # but the merge_embeddings logic in thinker.py expects them to be cat'd or handled correctly.
         # Usually sglang-omni components return a dict that pipeline stages use.
-        
+
         audio_embeds = torch.cat(all_audio_embeds, dim=0)
         audio_output_lengths = self._downsample_lengths(audio_feature_lengths)
 

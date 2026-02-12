@@ -15,7 +15,6 @@
 from transformers.configuration_utils import PretrainedConfig
 from transformers.utils import logging
 
-
 logger = logging.get_logger(__name__)
 
 
@@ -114,7 +113,9 @@ class Qwen3ASRAudioEncoderConfig(PretrainedConfig):
         self.activation_dropout = activation_dropout
         self.num_hidden_layers = encoder_layers
         self.initializer_range = initializer_range
-        self.scale_embedding = scale_embedding  # scale factor will be sqrt(d_model) if True
+        self.scale_embedding = (
+            scale_embedding  # scale factor will be sqrt(d_model) if True
+        )
         self.max_source_positions = max_source_positions
         self.n_window = n_window
         self.output_dim = output_dim
@@ -342,10 +343,14 @@ class Qwen3ASRThinkerConfig(PretrainedConfig):
                 audio_config = audio_config or config_data.get("audio_config")
                 text_config = text_config or config_data.get("text_config")
                 audio_token_id = config_data.get("audio_token_id", audio_token_id)
-                audio_start_token_id = config_data.get("audio_start_token_id", audio_start_token_id)
+                audio_start_token_id = config_data.get(
+                    "audio_start_token_id", audio_start_token_id
+                )
                 user_token_id = config_data.get("user_token_id", user_token_id)
-                initializer_range = config_data.get("initializer_range", initializer_range)
-        
+                initializer_range = config_data.get(
+                    "initializer_range", initializer_range
+                )
+
         super().__init__(**kwargs)
         self.user_token_id = user_token_id
         self.audio_start_token_id = audio_start_token_id

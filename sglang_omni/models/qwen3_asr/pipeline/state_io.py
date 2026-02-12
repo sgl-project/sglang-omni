@@ -3,8 +3,6 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 from sglang_omni.models.qwen3_asr.io import PipelineState
 from sglang_omni.proto import StagePayload
 
