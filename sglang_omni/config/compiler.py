@@ -6,12 +6,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from sglang_omni.config.schema import (
-    ExecutorConfig,
-    InputHandlerConfig,
-    PipelineConfig,
-    StageConfig,
-)
+from sglang_omni.config.schema import InputHandlerConfig, PipelineConfig, StageConfig
 from sglang_omni.executors.interface import Executor
 from sglang_omni.pipeline import (
     AggregatedInput,
@@ -25,16 +20,23 @@ from sglang_omni.utils import import_string
 
 
 def compile_pipeline(config: PipelineConfig) -> tuple[Coordinator, list[Stage]]:
-    _validate_pipeline(config)
-    stages_cfg, name_map, entry_stage = _apply_fusion(config)
+    """
+    Build the coordinator and stage objects from the pipeline configuration.
+    """
+    # 1. apply stage fusion if enabled
+    stages_cfg, name_map, entry_stage = config.apply_fusion()
+
+    # 3. allocate ZMQ endpoints
     endpoints = _allocate_endpoints(config, stages=stages_cfg)
 
+    # 4. create coordinator
     coordinator = Coordinator(
         completion_endpoint=endpoints["completion"],
         abort_endpoint=endpoints["abort"],
         entry_stage=entry_stage,
     )
 
+    # 5. create each stage in order
     stage_endpoints = {
         stage_cfg.name: endpoints[f"stage_{stage_cfg.name}"] for stage_cfg in stages_cfg
     }
@@ -174,113 +176,6 @@ def _allocate_endpoints(
         return endpoints
 
     raise ValueError(f"Unknown endpoint scheme: {config.endpoints.scheme}")
-
-
-def _validate_pipeline(config: PipelineConfig) -> None:
-    if not config.name:
-        raise ValueError("Pipeline name is required")
-
-    stage_names = [stage_cfg.name for stage_cfg in config.stages]
-    if not stage_names:
-        raise ValueError("Pipeline must define at least one stage")
-
-    if len(stage_names) != len(set(stage_names)):
-        raise ValueError("Stage names must be unique")
-
-    if config.entry_stage not in stage_names:
-        raise ValueError(f"entry_stage {config.entry_stage!r} is not defined")
-
-    for stage_cfg in config.stages:
-        if stage_cfg.num_workers < 1:
-            raise ValueError(f"Stage {stage_cfg.name!r} must have at least one worker")
-        if not stage_cfg.executor.factory:
-            raise ValueError(f"Stage {stage_cfg.name!r} missing executor factory")
-        if not stage_cfg.get_next:
-            raise ValueError(f"Stage {stage_cfg.name!r} missing get_next")
-        if stage_cfg.input_handler.type == "aggregated":
-            sources = stage_cfg.input_handler.sources or []
-            unknown = set(sources) - set(stage_names)
-            if unknown:
-                raise ValueError(
-                    f"Stage {stage_cfg.name!r} has unknown sources: {sorted(unknown)}"
-                )
-
-    _validate_fusion(config, stage_names)
-
-
-def _validate_fusion(config: PipelineConfig, stage_names: list[str]) -> None:
-    fused = config.fused_stages or []
-    if not fused:
-        return
-    index_map = {name: idx for idx, name in enumerate(stage_names)}
-    seen: set[str] = set()
-    for group in fused:
-        if not group or len(group) < 2:
-            raise ValueError("fused_stages groups must have at least 2 stage names")
-        for name in group:
-            if name not in index_map:
-                raise ValueError(f"fused stage {name!r} is not defined")
-            if name in seen:
-                raise ValueError(f"stage {name!r} appears in multiple fused groups")
-            seen.add(name)
-
-        indices = [index_map[name] for name in group]
-        if indices != sorted(indices):
-            raise ValueError(f"fused group is out of order: {group}")
-        if indices != list(range(indices[0], indices[0] + len(indices))):
-            raise ValueError(f"fused group must be adjacent: {group}")
-        ordered = [stage_names[i] for i in indices]
-        if ordered != group:
-            raise ValueError(f"fused group order mismatch: {group}")
-
-
-def _apply_fusion(
-    config: PipelineConfig,
-) -> tuple[list[StageConfig], dict[str, str], str]:
-    stage_by_name = {stage.name: stage for stage in config.stages}
-    fused_groups = config.fused_stages or []
-
-    name_map = {name: name for name in stage_by_name}
-    group_by_last: dict[str, list[str]] = {}
-
-    for group in fused_groups:
-        last = group[-1]
-        group_by_last[last] = group
-        for name in group:
-            name_map[name] = last
-
-    stages_out: list[StageConfig] = []
-    for stage in config.stages:
-        mapped = name_map.get(stage.name, stage.name)
-        if mapped != stage.name:
-            continue  # fused into another stage
-        if stage.name in group_by_last:
-            group = group_by_last[stage.name]
-            first = stage_by_name[group[0]]
-            executors = [
-                {
-                    "factory": stage_by_name[name].executor.factory,
-                    "args": stage_by_name[name].executor.args,
-                }
-                for name in group
-            ]
-            fused_stage = StageConfig(
-                name=stage.name,
-                executor=ExecutorConfig(
-                    factory="sglang_omni.executors.fused_executor.create_fused_executor",
-                    args={"executors": executors},
-                ),
-                get_next=stage.get_next,
-                input_handler=first.input_handler,
-                relay=first.relay,
-                num_workers=first.num_workers,
-            )
-            stages_out.append(fused_stage)
-        else:
-            stages_out.append(stage)
-
-    entry_stage = _map_stage_name(name_map, config.entry_stage)
-    return stages_out, name_map, entry_stage
 
 
 def _wrap_get_next(get_next: Any, name_map: dict[str, str]):
