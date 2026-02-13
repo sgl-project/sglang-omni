@@ -23,6 +23,8 @@
 
   const videoInput = $("video-input");
   const audioInput = $("audio-input");
+  const audioServerBtn = $("audio-server-btn");
+  const mediaServerBtn = $("media-server-btn");
   const audioControls = $("audio-controls");
   const audioVisualizerWrap = $("audio-visualizer-wrap");
   const audioVisualizer = $("audio-visualizer");
@@ -50,10 +52,16 @@
   const chatArea = $("chat-area");
   const chatPlaceholder = $("chat-placeholder");
   const messagesEl = $("messages");
+  const fsPathInput = $("fs-path");
+  const fsRefreshBtn = $("fs-refresh");
+  const fsCurrentEl = $("fs-current");
+  const fsErrorEl = $("fs-error");
+  const fsListEl = $("fs-list");
 
   const sendBtn = $("send-btn");
   const stopBtn = $("stop-btn");
   const clearBtn = $("clear-btn");
+  const defaultFsRoot = "/sgl-workspace/sglang";
   if (micToggle) micToggle.textContent = "Record audio";
   if (webcamToggle) webcamToggle.textContent = "Access webcam";
   if (micStatus) micStatus.classList.add("hidden");
@@ -78,6 +86,7 @@
     analyser: null,
     analyserData: null,
     vizAnim: 0,
+    fsMode: "all",
   };
 
   function getPrimaryVideo() {
@@ -130,6 +139,159 @@
     const div = document.createElement("div");
     div.textContent = text;
     return div.innerHTML;
+  }
+
+  function getChatApiBase() {
+    const defaultBase = "http://localhost:8000";
+    const globalBase = (typeof window !== "undefined" && window.SGLANG_OMNI_API_BASE) ? String(window.SGLANG_OMNI_API_BASE).trim() : "";
+    const sameOriginIsBackend =
+      typeof location !== "undefined" &&
+      /^https?:$/.test(location.protocol) &&
+      (location.port === "8000" || (location.protocol === "http:" && location.port === ""));
+    const base = globalBase || (sameOriginIsBackend ? location.origin : defaultBase);
+    return base.replace(/\/$/, "");
+  }
+
+  function getFsApiBase() {
+    const defaultBase = "http://localhost:8001";
+    const globalBase = (typeof window !== "undefined" && window.SGLANG_OMNI_FS_API_BASE) ? String(window.SGLANG_OMNI_FS_API_BASE).trim() : "";
+    const sameOriginIsFs =
+      typeof location !== "undefined" &&
+      /^https?:$/.test(location.protocol) &&
+      (location.port === "8001" || (location.protocol === "http:" && location.port === ""));
+    const base = globalBase || (sameOriginIsFs ? location.origin : defaultBase);
+    return base.replace(/\/$/, "");
+  }
+
+  function getContainerFileUrl(path) {
+    return getFsApiBase() + "/v1/fs/file?path=" + encodeURIComponent(path);
+  }
+
+  function inferContainerKind(path) {
+    const lower = String(path || "").toLowerCase();
+    if (/\.(png|jpg|jpeg|webp|gif|bmp)$/.test(lower)) return "image";
+    if (/\.(mp4|mov|avi|mkv|webm)$/.test(lower)) return "video";
+    if (/\.(wav|mp3|flac|m4a|aac|ogg|webm)$/.test(lower)) return "audio";
+    return "other";
+  }
+
+  function createContainerPreviewItem(containerPath, kind) {
+    const parts = String(containerPath).split("/");
+    const name = parts.length ? parts[parts.length - 1] : containerPath;
+    return {
+      kind,
+      file: null,
+      blob: null,
+      url: getContainerFileUrl(containerPath),
+      name: name || containerPath,
+      containerPath,
+    };
+  }
+
+  function addContainerFile(containerPath, explicitKind) {
+    const kind = explicitKind || inferContainerKind(containerPath);
+    if (kind === "other") return;
+
+    const item = createContainerPreviewItem(containerPath, kind);
+    if (kind === "audio") {
+      if (hasAnyAudio()) return;
+      state.audios.push(item);
+    } else if (kind === "image") {
+      state.images.push(item);
+    } else if (kind === "video") {
+      state.videos.push(item);
+    }
+    renderAllPreviews();
+  }
+
+  function setFsError(message) {
+    if (!fsErrorEl) return;
+    if (!message) {
+      fsErrorEl.textContent = "";
+      fsErrorEl.classList.add("hidden");
+      return;
+    }
+    fsErrorEl.textContent = message;
+    fsErrorEl.classList.remove("hidden");
+  }
+
+  function renderFsEntries(payload) {
+    if (!fsListEl) return;
+    fsListEl.innerHTML = "";
+
+    if (fsCurrentEl) fsCurrentEl.textContent = payload.current_path || "";
+    if (fsPathInput && payload.current_path) fsPathInput.value = payload.current_path;
+
+    const entries = payload.entries || [];
+    if (payload.parent_path) {
+      const upRow = document.createElement("div");
+      upRow.className = "fs-entry";
+      upRow.innerHTML = '<div class="fs-entry-name">..</div><div class="fs-entry-meta"><span class="fs-pill">dir</span></div>';
+      const openBtn = document.createElement("button");
+      openBtn.type = "button";
+      openBtn.className = "fs-action";
+      openBtn.textContent = "Open";
+      openBtn.addEventListener("click", () => loadContainerFiles(payload.parent_path));
+      upRow.querySelector(".fs-entry-meta").appendChild(openBtn);
+      fsListEl.appendChild(upRow);
+    }
+
+    entries.forEach((entry) => {
+      if (!entry.is_dir && state.fsMode === "audio" && entry.kind !== "audio") return;
+      if (!entry.is_dir && state.fsMode === "media" && entry.kind !== "image" && entry.kind !== "video") return;
+
+      const row = document.createElement("div");
+      row.className = "fs-entry";
+
+      const name = document.createElement("div");
+      name.className = "fs-entry-name";
+      name.textContent = entry.name;
+      row.appendChild(name);
+
+      const meta = document.createElement("div");
+      meta.className = "fs-entry-meta";
+      const kind = entry.kind || (entry.is_dir ? "dir" : "other");
+      const badge = document.createElement("span");
+      badge.className = "fs-pill";
+      badge.textContent = kind;
+      meta.appendChild(badge);
+
+      const action = document.createElement("button");
+      action.type = "button";
+      action.className = "fs-action";
+      if (entry.is_dir) {
+        action.textContent = "Open";
+        action.addEventListener("click", () => loadContainerFiles(entry.path));
+      } else if (kind === "audio" || kind === "image" || kind === "video") {
+        action.textContent = "Use";
+        action.addEventListener("click", () => addContainerFile(entry.path, kind));
+      } else {
+        action.textContent = "Skip";
+        action.disabled = true;
+      }
+      meta.appendChild(action);
+      row.appendChild(meta);
+      fsListEl.appendChild(row);
+    });
+  }
+
+  async function loadContainerFiles(path) {
+    if (!fsListEl) return;
+    const target = String(path || (fsPathInput ? fsPathInput.value : "")).trim();
+    const apiBase = getFsApiBase();
+    const url = apiBase + "/v1/fs/list" + (target ? ("?path=" + encodeURIComponent(target)) : "");
+    setFsError("");
+    try {
+      const res = await fetch(url);
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        throw new Error(text || ("HTTP " + res.status));
+      }
+      const payload = await res.json();
+      renderFsEntries(payload);
+    } catch (err) {
+      setFsError("Failed to list container files: " + (err && err.message ? err.message : String(err)));
+    }
   }
 
   function renderMediaInMessage(container, mediaItems) {
@@ -216,7 +378,7 @@
 
   function revokeUrls(list) {
     list.forEach((item) => {
-      if (item.url) URL.revokeObjectURL(item.url);
+      if (item.url && String(item.url).startsWith("blob:")) URL.revokeObjectURL(item.url);
     });
   }
 
@@ -455,7 +617,9 @@
       delBtn.className = "del-btn";
       delBtn.textContent = "×";
       delBtn.addEventListener("click", () => {
-        URL.revokeObjectURL(item.url);
+        if (item.url && String(item.url).startsWith("blob:")) {
+          URL.revokeObjectURL(item.url);
+        }
         list.splice(index, 1);
         renderAllPreviews();
         updateAudioControlsVisibility();
@@ -740,7 +904,9 @@
       const primary = getPrimaryVideo();
       if (!primary) return;
       const item = primary.item;
-      if (item && item.url) URL.revokeObjectURL(item.url);
+      if (item && item.url && String(item.url).startsWith("blob:")) {
+        URL.revokeObjectURL(item.url);
+      }
       primary.list.splice(primary.index, 1);
       renderAllPreviews();
     });
@@ -812,6 +978,39 @@
     });
   }
 
+  if (fsRefreshBtn) {
+    fsRefreshBtn.addEventListener("click", () => {
+      state.fsMode = "all";
+      loadContainerFiles(fsPathInput ? fsPathInput.value : "");
+    });
+  }
+  if (fsPathInput) {
+    fsPathInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        state.fsMode = "all";
+        loadContainerFiles(fsPathInput.value);
+      }
+    });
+    loadContainerFiles(fsPathInput.value);
+  }
+
+  if (audioServerBtn) {
+    audioServerBtn.addEventListener("click", () => {
+      state.fsMode = "audio";
+      if (fsPathInput) fsPathInput.value = defaultFsRoot;
+      loadContainerFiles(defaultFsRoot);
+    });
+  }
+
+  if (mediaServerBtn) {
+    mediaServerBtn.addEventListener("click", () => {
+      state.fsMode = "media";
+      if (fsPathInput) fsPathInput.value = defaultFsRoot;
+      loadContainerFiles(defaultFsRoot);
+    });
+  }
+
   async function fileToDataUrl(file) {
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
@@ -826,18 +1025,30 @@
     const videos = [];
     const audios = [];
 
-    const imageFiles = state.images.map((item) => item.file).filter(Boolean);
-    const videoFiles = state.videos.concat(state.webcamVideos).map((item) => item.file).filter(Boolean);
-    const audioFiles = state.audios.concat(state.micAudios).map((item) => item.file).filter(Boolean);
+    const imageItems = state.images;
+    const videoItems = state.videos.concat(state.webcamVideos);
+    const audioItems = state.audios.concat(state.micAudios);
 
-    for (const file of imageFiles) {
-      images.push(await fileToDataUrl(file));
+    for (const item of imageItems) {
+      if (item.containerPath) {
+        images.push(item.containerPath);
+      } else if (item.file) {
+        images.push(await fileToDataUrl(item.file));
+      }
     }
-    for (const file of videoFiles) {
-      videos.push(await fileToDataUrl(file));
+    for (const item of videoItems) {
+      if (item.containerPath) {
+        videos.push(item.containerPath);
+      } else if (item.file) {
+        videos.push(await fileToDataUrl(item.file));
+      }
     }
-    for (const file of audioFiles) {
-      audios.push(await fileToDataUrl(file));
+    for (const item of audioItems) {
+      if (item.containerPath) {
+        audios.push(item.containerPath);
+      } else if (item.file) {
+        audios.push(await fileToDataUrl(item.file));
+      }
     }
 
     return { images, videos, audios };
@@ -848,14 +1059,7 @@
   }
 
   async function* streamChatCompletion(payload) {
-    // API base URL: default to same-origin when served via http(s),
-    // otherwise fall back to localhost dev server.
-    const defaultBase = "http://localhost:8000";
-    const globalBase = (typeof window !== "undefined" && window.SGLANG_OMNI_API_BASE) ? String(window.SGLANG_OMNI_API_BASE).trim() : "";
-    const base =
-      globalBase ||
-      ((typeof location !== "undefined" && /^https?:$/.test(location.protocol)) ? location.origin : defaultBase);
-    const apiBase = base.replace(/\/$/, "");
+    const apiBase = getChatApiBase();
     const url = apiBase + "/v1/chat/completions";
     const controller = new AbortController();
     state.abortController = controller;

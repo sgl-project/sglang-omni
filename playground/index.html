@@ -67,6 +67,7 @@
               Upload audio
               <input type="file" id="audio-input" accept="audio/*" />
             </label>
+            <button type="button" id="audio-server-btn" class="pill pill-ghost">Server files</button>
           </div>
           <div id="record-row" class="record-row hidden">
             <button type="button" id="mic-stop" class="pill pill-secondary pill-stop" title="Stop recording" aria-label="Stop recording">■</button>
@@ -87,6 +88,7 @@
                 Upload media
                 <input type="file" id="video-input" accept="video/*,image/*" multiple />
               </label>
+              <button type="button" id="media-server-btn" class="pill pill-ghost">Server files</button>
             </div>
             <div class="video-preview-wrap hidden" id="video-preview-wrap">
               <video id="webcam-preview" muted playsinline class="webcam"></video>
@@ -99,6 +101,23 @@
           <div class="preview-grid" id="video-previews"></div>
           <div class="preview-grid" id="webcam-previews"></div>
           <div class="preview-grid" id="image-previews"></div>
+        </div>
+
+        <div class="io-section container-fs">
+          <div class="io-header">Container Files</div>
+          <div class="fs-controls">
+            <input
+              id="fs-path"
+              class="fs-path-input"
+              type="text"
+              value="/sgl-workspace/sglang"
+              placeholder="Container path"
+            />
+            <button type="button" id="fs-refresh" class="pill pill-ghost">Browse</button>
+          </div>
+          <div id="fs-current" class="fs-current"></div>
+          <div id="fs-error" class="fs-error hidden"></div>
+          <div id="fs-list" class="fs-list"></div>
         </div>
 
         <label class="prompt-label" for="user-prompt">User Prompt</label>

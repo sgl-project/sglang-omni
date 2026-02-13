@@ -9,7 +9,7 @@ from typing import Any
 
 import torch.nn as nn
 from transformers import AutoConfig
-from transformers.modeling_utils import no_init_weights
+from transformers.initialization import no_init_weights
 from transformers.utils.hub import cached_file
 
 

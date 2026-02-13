@@ -13,9 +13,9 @@ from transformers import AutoFeatureExtractor, AutoImageProcessor, AutoTokenizer
 from transformers.models.qwen3_omni_moe.processing_qwen3_omni_moe import (
     Qwen3OmniMoeProcessor,
 )
-from transformers.utils.hub import cached_file
 
 from sglang_omni.models.qwen3_omni.io import PipelineState
+from sglang_omni.models.weight_loader import resolve_model_path
 from sglang_omni.preprocessing import (
     build_audio_mm_inputs,
     build_image_mm_inputs,
@@ -36,9 +36,8 @@ logger = logging.getLogger(__name__)
 
 
 def _resolve_local_model_dir(model_id: str) -> str:
-    """Resolve the local snapshot directory for a cached model."""
-    config_path = cached_file(model_id, "config.json", local_files_only=True)
-    return str(Path(config_path).parent)
+    """Resolve a local model directory, downloading snapshot when needed."""
+    return str(resolve_model_path(model_id, local_files_only=False))
 
 
 def _load_preprocessor_config(model_dir: str) -> Mapping[str, Any]:

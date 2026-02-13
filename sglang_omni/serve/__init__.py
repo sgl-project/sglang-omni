@@ -2,6 +2,7 @@
 """HTTP serving utilities."""
 
 from sglang_omni.serve.launcher import launch_server
+from sglang_omni.serve.fs_api import create_fs_app
 from sglang_omni.serve.openai_api import create_app
 
-__all__ = ["create_app", "launch_server"]
+__all__ = ["create_app", "create_fs_app", "launch_server"]
