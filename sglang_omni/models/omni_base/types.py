@@ -29,15 +29,17 @@ class ThinkerOutput(TypedDict, total=False):
 
 
 OmniEventType = Literal[
+    # Currently used:
     "text_delta",
     "text_final",
+    "final",
+    # Reserved for future use:
     "audio_chunk",
     "audio_final",
     "image",
     "video_chunk",
     "video_final",
     "debug",
-    "final",
 ]
 
 
