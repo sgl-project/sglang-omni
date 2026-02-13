@@ -65,7 +65,7 @@
   const sendBtn = $("send-btn");
   const stopBtn = $("stop-btn");
   const clearBtn = $("clear-btn");
-  const defaultFsRoot = "/sgl-workspace/sglang";
+  let defaultFsRoot = (fsPathInput && fsPathInput.value ? String(fsPathInput.value).trim() : "") || "/";
   if (micToggle) micToggle.textContent = "Record audio";
   if (webcamToggle) webcamToggle.textContent = "Access webcam";
   if (micStatus) micStatus.classList.add("hidden");
@@ -93,7 +93,21 @@
     fsMode: "all",
   };
 
-  function openFsModal(mode) {
+  async function resolveDefaultFsRoot() {
+    if (defaultFsRoot && defaultFsRoot !== "/") return defaultFsRoot;
+    try {
+      const res = await fetch(getFsApiBase() + "/health");
+      if (!res.ok) return defaultFsRoot;
+      const payload = await res.json();
+      const rootPath = payload && payload.root_path ? String(payload.root_path).trim() : "";
+      if (rootPath) defaultFsRoot = rootPath;
+    } catch (err) {
+      // keep fallback root if fs api health is unavailable
+    }
+    return defaultFsRoot;
+  }
+
+  async function openFsModal(mode) {
     state.fsMode = mode || "all";
     if (fsModalTitle) {
       fsModalTitle.textContent = state.fsMode === "audio"
@@ -102,9 +116,10 @@
         ? "Select image/video from server"
         : "Select file from server";
     }
-    if (fsPathInput) fsPathInput.value = defaultFsRoot;
+    const root = await resolveDefaultFsRoot();
+    if (fsPathInput) fsPathInput.value = root;
     if (fsModal) fsModal.classList.remove("hidden");
-    loadContainerFiles(defaultFsRoot);
+    loadContainerFiles(root);
   }
 
   function closeFsModal() {

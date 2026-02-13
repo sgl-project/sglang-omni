@@ -17,7 +17,6 @@ from fastapi.responses import FileResponse, JSONResponse
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_FS_ROOT = "/sgl-workspace/sglang"
 MEDIA_SUFFIXES = {
     "audio": {".wav", ".mp3", ".flac", ".m4a", ".aac", ".ogg", ".webm"},
     "image": {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif"},
@@ -25,8 +24,16 @@ MEDIA_SUFFIXES = {
 }
 
 
+def _default_fs_root() -> Path:
+    # fs_api.py -> serve -> sglang_omni -> sglang-omni (parent of playground/)
+    return Path(__file__).resolve().parents[2]
+
+
 def _filesystem_root() -> Path:
-    return Path(os.getenv("SGLANG_OMNI_FS_ROOT", DEFAULT_FS_ROOT)).resolve()
+    configured = os.getenv("SGLANG_OMNI_FS_ROOT")
+    if configured and configured.strip():
+        return Path(configured).resolve()
+    return _default_fs_root()
 
 
 def _is_within_root(path: Path, root: Path) -> bool:
