@@ -132,19 +132,20 @@
         <button type="button" id="fs-modal-close" class="modal-close" aria-label="Close">×</button>
       </div>
       <div class="modal-body">
-        <div class="fs-controls">
-          <input
-            id="fs-path"
-            class="fs-path-input"
-            type="text"
-            value="/"
-            placeholder="Container path"
-          />
-          <button type="button" id="fs-refresh" class="pill pill-ghost">Browse</button>
+        <div class="fs-toolbar" role="toolbar" aria-label="File navigation">
+          <button type="button" id="fs-back" class="fs-nav-btn" aria-label="Back">Back</button>
+          <button type="button" id="fs-up" class="fs-nav-btn" aria-label="Up">Up</button>
+          <button type="button" id="fs-home" class="fs-nav-btn" aria-label="Root">Home</button>
+          <button type="button" id="fs-refresh" class="fs-nav-btn" aria-label="Refresh">Refresh</button>
+          <div id="fs-breadcrumb" class="fs-breadcrumb" aria-label="Current path"></div>
         </div>
-        <div id="fs-current" class="fs-current"></div>
-        <div id="fs-error" class="fs-error hidden"></div>
-        <div id="fs-list" class="fs-list"></div>
+        <div class="fs-browser">
+          <section class="fs-main">
+            <div id="fs-current" class="fs-current"></div>
+            <div id="fs-error" class="fs-error hidden"></div>
+            <div id="fs-list" class="fs-list"></div>
+          </section>
+        </div>
       </div>
     </div>
   </div>

@@ -52,8 +52,11 @@
   const chatArea = $("chat-area");
   const chatPlaceholder = $("chat-placeholder");
   const messagesEl = $("messages");
-  const fsPathInput = $("fs-path");
+  const fsBackBtn = $("fs-back");
+  const fsUpBtn = $("fs-up");
+  const fsHomeBtn = $("fs-home");
   const fsRefreshBtn = $("fs-refresh");
+  const fsBreadcrumbEl = $("fs-breadcrumb");
   const fsCurrentEl = $("fs-current");
   const fsErrorEl = $("fs-error");
   const fsListEl = $("fs-list");
@@ -65,7 +68,7 @@
   const sendBtn = $("send-btn");
   const stopBtn = $("stop-btn");
   const clearBtn = $("clear-btn");
-  let defaultFsRoot = (fsPathInput && fsPathInput.value ? String(fsPathInput.value).trim() : "") || "/";
+  let defaultFsRoot = "/";
   if (micToggle) micToggle.textContent = "Record audio";
   if (webcamToggle) webcamToggle.textContent = "Access webcam";
   if (micStatus) micStatus.classList.add("hidden");
@@ -91,6 +94,11 @@
     analyserData: null,
     vizAnim: 0,
     fsMode: "all",
+    fsHistory: [],
+    fsHistoryIndex: -1,
+    fsRootPath: "/",
+    fsCurrentPath: "/",
+    fsParentPath: null,
   };
 
   async function resolveDefaultFsRoot() {
@@ -117,7 +125,8 @@
         : "Select file from server";
     }
     const root = await resolveDefaultFsRoot();
-    if (fsPathInput) fsPathInput.value = root;
+    state.fsHistory = [];
+    state.fsHistoryIndex = -1;
     if (fsModal) fsModal.classList.remove("hidden");
     loadContainerFiles(root);
   }
@@ -252,37 +261,81 @@
     fsErrorEl.classList.remove("hidden");
   }
 
+  function updateFsNavButtons() {
+    if (fsBackBtn) fsBackBtn.disabled = state.fsHistoryIndex <= 0;
+    if (fsUpBtn) fsUpBtn.disabled = !state.fsParentPath;
+  }
+
+  function pushFsHistory(path) {
+    const normalized = String(path || "").trim() || "/";
+    const current = state.fsHistory[state.fsHistoryIndex];
+    if (current === normalized) return;
+    if (state.fsHistoryIndex < state.fsHistory.length - 1) {
+      state.fsHistory = state.fsHistory.slice(0, state.fsHistoryIndex + 1);
+    }
+    state.fsHistory.push(normalized);
+    state.fsHistoryIndex = state.fsHistory.length - 1;
+    updateFsNavButtons();
+  }
+
+  function renderFsBreadcrumb(currentPath) {
+    if (!fsBreadcrumbEl) return;
+    fsBreadcrumbEl.innerHTML = "";
+    const normalized = String(currentPath || "/").trim() || "/";
+    const parts = normalized.split("/").filter(Boolean);
+
+    const rootBtn = document.createElement("button");
+    rootBtn.type = "button";
+    rootBtn.className = "fs-crumb";
+    rootBtn.textContent = "/";
+    rootBtn.addEventListener("click", () => loadContainerFiles("/"));
+    fsBreadcrumbEl.appendChild(rootBtn);
+
+    let running = "";
+    parts.forEach((part) => {
+      running += "/" + part;
+      const sep = document.createElement("span");
+      sep.className = "fs-crumb-sep";
+      sep.textContent = ">";
+      fsBreadcrumbEl.appendChild(sep);
+
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "fs-crumb";
+      btn.textContent = part;
+      const targetPath = running;
+      btn.addEventListener("click", () => loadContainerFiles(targetPath));
+      fsBreadcrumbEl.appendChild(btn);
+    });
+  }
+
   function renderFsEntries(payload) {
     if (!fsListEl) return;
     fsListEl.innerHTML = "";
+    state.fsRootPath = payload.root_path || state.fsRootPath;
+    state.fsCurrentPath = payload.current_path || state.fsCurrentPath;
+    state.fsParentPath = payload.parent_path || null;
+    defaultFsRoot = state.fsRootPath || defaultFsRoot;
 
-    if (fsCurrentEl) fsCurrentEl.textContent = payload.current_path || "";
-    if (fsPathInput && payload.current_path) fsPathInput.value = payload.current_path;
+    if (fsCurrentEl) fsCurrentEl.textContent = state.fsCurrentPath || "";
+    renderFsBreadcrumb(state.fsCurrentPath);
+    updateFsNavButtons();
 
     const entries = payload.entries || [];
-    if (payload.parent_path) {
-      const upRow = document.createElement("div");
-      upRow.className = "fs-entry";
-      upRow.innerHTML = '<div class="fs-entry-name">..</div><div class="fs-entry-meta"><span class="fs-pill">dir</span></div>';
-      const openBtn = document.createElement("button");
-      openBtn.type = "button";
-      openBtn.className = "fs-action";
-      openBtn.textContent = "Open";
-      openBtn.addEventListener("click", () => loadContainerFiles(payload.parent_path));
-      upRow.querySelector(".fs-entry-meta").appendChild(openBtn);
-      fsListEl.appendChild(upRow);
-    }
 
     entries.forEach((entry) => {
       if (!entry.is_dir && state.fsMode === "audio" && entry.kind !== "audio") return;
       if (!entry.is_dir && state.fsMode === "media" && entry.kind !== "image" && entry.kind !== "video") return;
 
       const row = document.createElement("div");
-      row.className = "fs-entry";
+      row.className = "fs-entry" + (entry.is_dir ? " openable" : "");
 
       const name = document.createElement("div");
       name.className = "fs-entry-name";
       name.textContent = entry.name;
+      if (entry.is_dir) {
+        name.addEventListener("click", () => loadContainerFiles(entry.path));
+      }
       row.appendChild(name);
 
       const meta = document.createElement("div");
@@ -300,7 +353,7 @@
         action.textContent = "Open";
         action.addEventListener("click", () => loadContainerFiles(entry.path));
       } else if (kind === "audio" || kind === "image" || kind === "video") {
-        action.textContent = "Use";
+        action.textContent = "Select";
         action.addEventListener("click", () => {
           addContainerFile(entry.path, kind);
           closeFsModal();
@@ -311,13 +364,22 @@
       }
       meta.appendChild(action);
       row.appendChild(meta);
+      if (entry.is_dir) {
+        row.addEventListener("dblclick", () => loadContainerFiles(entry.path));
+      } else if (kind === "audio" || kind === "image" || kind === "video") {
+        row.addEventListener("dblclick", () => {
+          addContainerFile(entry.path, kind);
+          closeFsModal();
+        });
+      }
       fsListEl.appendChild(row);
     });
   }
 
-  async function loadContainerFiles(path) {
+  async function loadContainerFiles(path, options) {
     if (!fsListEl) return;
-    const target = String(path || (fsPathInput ? fsPathInput.value : "")).trim();
+    const opts = options || {};
+    const target = String(path || state.fsCurrentPath || defaultFsRoot || "/").trim();
     const apiBase = getFsApiBase();
     const url = apiBase + "/v1/fs/list" + (target ? ("?path=" + encodeURIComponent(target)) : "");
     setFsError("");
@@ -329,6 +391,9 @@
       }
       const payload = await res.json();
       renderFsEntries(payload);
+      if (opts.pushHistory !== false && payload.current_path) {
+        pushFsHistory(payload.current_path);
+      }
     } catch (err) {
       setFsError("Failed to list container files: " + (err && err.message ? err.message : String(err)));
     }
@@ -1020,15 +1085,26 @@
 
   if (fsRefreshBtn) {
     fsRefreshBtn.addEventListener("click", () => {
-      loadContainerFiles(fsPathInput ? fsPathInput.value : "");
+      loadContainerFiles(state.fsCurrentPath, { pushHistory: false });
     });
   }
-  if (fsPathInput) {
-    fsPathInput.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") {
-        e.preventDefault();
-        loadContainerFiles(fsPathInput.value);
-      }
+  if (fsBackBtn) {
+    fsBackBtn.addEventListener("click", () => {
+      if (state.fsHistoryIndex <= 0) return;
+      state.fsHistoryIndex -= 1;
+      loadContainerFiles(state.fsHistory[state.fsHistoryIndex], { pushHistory: false });
+      updateFsNavButtons();
+    });
+  }
+  if (fsUpBtn) {
+    fsUpBtn.addEventListener("click", () => {
+      if (!state.fsParentPath) return;
+      loadContainerFiles(state.fsParentPath);
+    });
+  }
+  if (fsHomeBtn) {
+    fsHomeBtn.addEventListener("click", () => {
+      loadContainerFiles(state.fsRootPath || defaultFsRoot || "/");
     });
   }
 

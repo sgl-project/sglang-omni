@@ -216,40 +216,92 @@ body {
   width: 70%;
   max-width: 220px;
 }
-.fs-controls {
+.fs-toolbar {
   width: 100%;
   display: flex;
-  gap: 8px;
   align-items: center;
+  gap: 8px;
 }
-.fs-path-input {
+.fs-nav-btn {
+  border: 1px solid var(--border);
+  background: #fff;
+  border-radius: var(--radius-sm);
+  min-width: 48px;
+  padding: 0 8px;
+  height: 30px;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+.fs-nav-btn:hover:not(:disabled) {
+  background: #f7f8fb;
+}
+.fs-nav-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.fs-breadcrumb {
   flex: 1;
   min-width: 0;
-  padding: 8px 10px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  font-size: 13px;
+  padding: 6px 8px;
+  font-size: 12px;
+  overflow-x: auto;
+  white-space: nowrap;
+}
+.fs-crumb {
+  border: none;
+  background: transparent;
+  color: var(--text);
+  padding: 2px 4px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.fs-crumb:hover {
+  background: #f2f4f8;
+}
+.fs-crumb-sep {
+  color: #99a1b2;
+}
+.fs-browser {
+  width: 100%;
+  margin-top: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  display: block;
+  min-height: 320px;
+  max-height: 56vh;
+  overflow: hidden;
+}
+.fs-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
 }
 .fs-current,
 .fs-error {
-  margin-top: 8px;
+  margin: 8px 10px 0;
   font-size: 12px;
   color: var(--muted);
-  width: 100%;
+  width: auto;
   word-break: break-all;
 }
 .fs-error {
   color: #b42318;
 }
 .fs-list {
-  width: 100%;
-  margin-top: 8px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
+  width: auto;
+  margin: 8px 10px 10px;
+  border: 1px solid #edf0f5;
+  border-radius: 10px;
   background: #fff;
   overflow: auto;
   flex: 1 1 auto;
-  min-height: 120px;
+  min-height: 220px;
 }
 .fs-entry {
   display: flex;
@@ -296,6 +348,12 @@ body {
   border-color: var(--primary);
   color: var(--primary);
 }
+.fs-entry.openable .fs-entry-name {
+  cursor: pointer;
+}
+.fs-entry.openable .fs-entry-name:hover {
+  color: var(--primary);
+}
 
 .modal {
   position: fixed;
@@ -313,7 +371,7 @@ body {
 .modal-card {
   position: relative;
   width: min(900px, 94vw);
-  max-height: 86vh;
+  height: min(720px, 86vh);
   background: #fff;
   border: 1px solid var(--border);
   border-radius: var(--radius);
@@ -348,10 +406,16 @@ body {
   padding: 14px 16px 16px;
   display: flex;
   flex-direction: column;
-  min-height: 280px;
+  min-height: 0;
+  overflow-y: auto;
 }
 .modal .fs-list {
-  max-height: 56vh;
+  max-height: none;
+}
+@media (max-width: 880px) {
+  .fs-browser {
+    max-height: 62vh;
+  }
 }
 
 .visualizer {
