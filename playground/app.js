@@ -107,8 +107,12 @@
       const res = await fetch(getFsApiBase() + "/health");
       if (!res.ok) return defaultFsRoot;
       const payload = await res.json();
+      const browseStartPath = payload && payload.browse_start_path
+        ? String(payload.browse_start_path).trim()
+        : "";
       const rootPath = payload && payload.root_path ? String(payload.root_path).trim() : "";
-      if (rootPath) defaultFsRoot = rootPath;
+      if (browseStartPath) defaultFsRoot = browseStartPath;
+      else if (rootPath) defaultFsRoot = rootPath;
     } catch (err) {
       // keep fallback root if fs api health is unavailable
     }
@@ -315,7 +319,7 @@
     state.fsRootPath = payload.root_path || state.fsRootPath;
     state.fsCurrentPath = payload.current_path || state.fsCurrentPath;
     state.fsParentPath = payload.parent_path || null;
-    defaultFsRoot = state.fsRootPath || defaultFsRoot;
+    if (!defaultFsRoot) defaultFsRoot = state.fsRootPath || "/";
 
     if (fsCurrentEl) fsCurrentEl.textContent = state.fsCurrentPath || "";
     renderFsBreadcrumb(state.fsCurrentPath);

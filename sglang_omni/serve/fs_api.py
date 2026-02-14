@@ -25,15 +25,25 @@ MEDIA_SUFFIXES = {
 
 
 def _default_fs_root() -> Path:
+    # Default to container root when SGLANG_OMNI_FS_ROOT is unset.
+    return Path("/")
+
+
+def _default_browse_start_path() -> Path:
     # fs_api.py -> serve -> sglang_omni -> sglang-omni (parent of playground/)
     return Path(__file__).resolve().parents[2]
 
 
 def _filesystem_root() -> Path:
+    # Always allow full container filesystem access.
+    return _default_fs_root()
+
+
+def _browse_start_path() -> Path:
     configured = os.getenv("SGLANG_OMNI_FS_ROOT")
     if configured and configured.strip():
         return Path(configured).resolve()
-    return _default_fs_root()
+    return _default_browse_start_path()
 
 
 def _is_within_root(path: Path, root: Path) -> bool:
@@ -83,10 +93,12 @@ def create_fs_app() -> FastAPI:
     @app.get("/health")
     async def health() -> JSONResponse:
         root = _filesystem_root()
+        browse_start = _browse_start_path()
         return JSONResponse(
             content={
                 "status": "healthy",
                 "root_path": str(root),
+                "browse_start_path": str(browse_start),
                 "root_exists": root.exists() and root.is_dir(),
             }
         )
@@ -167,7 +179,7 @@ def main() -> None:
         "--root",
         type=str,
         default=None,
-        help="Allowed filesystem root (overrides SGLANG_OMNI_FS_ROOT).",
+        help="Default browse start path (sets SGLANG_OMNI_FS_ROOT).",
     )
     args = parser.parse_args()
 
