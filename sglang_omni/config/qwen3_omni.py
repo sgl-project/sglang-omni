@@ -1,151 +1,86 @@
 from transformers import PretrainedConfig
 
+class Qwen3OmniMoeAudioEncoderConfig(PretrainedConfig):
+    def __init__(
+        self,
+        num_mel_bins=128,
+        encoder_layers=32,
+        encoder_attention_heads=20,
+        encoder_ffn_dim=5120,
+        d_model=1280,
+        dropout=0,
+        attention_dropout=0,
+        activation_function="gelu",
+        activation_dropout=0,
+        scale_embedding=False,
+        initializer_range=0.02,
+        max_source_positions=1500,
+        n_window=100,
+        output_dim=3584,
+        n_window_infer=400,
+        conv_chunksize=500,
+        downsample_hidden_size=480,
+        **kwargs,
+    ):
+        super().__init__(**kwargs)
+
+        self.num_mel_bins = num_mel_bins
+        self.d_model = d_model
+        self.encoder_layers = encoder_layers
+        self.encoder_attention_heads = encoder_attention_heads
+        self.encoder_ffn_dim = encoder_ffn_dim
+        self.dropout = dropout
+        self.attention_dropout = attention_dropout
+        self.activation_function = activation_function
+        self.activation_dropout = activation_dropout
+        self.num_hidden_layers = encoder_layers
+        self.initializer_range = initializer_range
+        self.scale_embedding = (
+            scale_embedding  # scale factor will be sqrt(d_model) if True
+        )
+        self.max_source_positions = max_source_positions
+        self.n_window = n_window
+        self.output_dim = output_dim
+        self.n_window_infer = n_window_infer
+        self.conv_chunksize = conv_chunksize
+        self.downsample_hidden_size = downsample_hidden_size
+
+class Qwen3OmniMoeVisionEncoderConfig(PretrainedConfig):
+    def __init__(
+        self,
+        depth=27,
+        hidden_size=1152,
+        hidden_act="gelu_pytorch_tanh",
+        intermediate_size=4304,
+        num_heads=16,
+        in_channels=3,
+        patch_size=16,
+        spatial_merge_size=2,
+        temporal_patch_size=2,
+        out_hidden_size=3584,
+        num_position_embeddings=2304,
+        deepstack_visual_indexes=[8, 16, 24],
+        initializer_range=0.02,
+        **kwargs,
+    ):
+        super().__init__(**kwargs)
+
+        self.depth = depth
+        self.hidden_size = hidden_size
+        self.hidden_act = hidden_act
+        self.intermediate_size = intermediate_size
+        self.num_heads = num_heads
+        self.in_channels = in_channels
+        self.patch_size = patch_size
+        self.spatial_merge_size = spatial_merge_size
+        self.temporal_patch_size = temporal_patch_size
+        self.out_hidden_size = out_hidden_size
+        self.num_position_embeddings = num_position_embeddings
+        self.initializer_range = initializer_range
+        self.deepstack_visual_indexes = deepstack_visual_indexes
+
 
 class Qwen3OmniMoeTextConfig(PretrainedConfig):
-    r"""
-    This is the configuration class to store the configuration of a [`Qwen3OmniMoeTextModel`]. It is used to instantiate a
-    Qwen3OmniMoeText model according to the specified arguments, defining the model architecture. Instantiating a configuration
-    with the defaults will yield a similar configuration to that of [Qwen/Qwen3-15B-A2B](https://huggingface.co/Qwen/Qwen3-15B-A2B).
-
-    Configuration objects inherit from [`PretrainedConfig`] and can be used to control the model outputs. Read the
-    documentation from [`PretrainedConfig`] for more information.
-
-
-    Args:
-        vocab_size (`int`, *optional*, defaults to 151936):
-            Vocabulary size of the Qwen3OmniMoeText model. Defines the number of different tokens that can be represented by the
-            `inputs_ids` passed when calling [`Qwen3OmniMoeTextModel`]
-        hidden_size (`int`, *optional*, defaults to 2048):
-            Dimension of the hidden representations.
-        intermediate_size (`int`, *optional*, defaults to 6144):
-            Dimension of the MLP representations.
-        num_hidden_layers (`int`, *optional*, defaults to 24):
-            Number of hidden layers in the Transformer encoder.
-        num_attention_heads (`int`, *optional*, defaults to 32):
-            Number of attention heads for each attention layer in the Transformer encoder.
-        num_key_value_heads (`int`, *optional*, defaults to 4):
-            This is the number of key_value heads that should be used to implement Grouped Query Attention. If
-            `num_key_value_heads=num_attention_heads`, the model will use Multi Head Attention (MHA), if
-            `num_key_value_heads=1` the model will use Multi Query Attention (MQA) otherwise GQA is used. When
-            converting a multi-head checkpoint to a GQA checkpoint, each group key and value head should be constructed
-            by meanpooling all the original heads within that group. For more details, check out [this
-            paper](https://huggingface.co/papers/2305.13245). If it is not specified, will default to `32`.
-
-        hidden_act (`str` or `function`, *optional*, defaults to `"silu"`):
-            The non-linear activation function (function or string) in the decoder.
-        max_position_embeddings (`int`, *optional*, defaults to 32768):
-            The maximum sequence length that this model might ever be used with.
-        initializer_range (`float`, *optional*, defaults to 0.02):
-            The standard deviation of the truncated_normal_initializer for initializing all weight matrices.
-        rms_norm_eps (`float`, *optional*, defaults to 1e-06):
-            The epsilon used by the rms normalization layers.
-        use_cache (`bool`, *optional*, defaults to `True`):
-            Whether or not the model should return the last key/values attentions (not used by all models). Only
-            relevant if `config.is_decoder=True`.
-        tie_word_embeddings (`bool`, *optional*, defaults to `False`):
-            Whether the model's input and output word embeddings should be tied.
-        rope_theta (`float`, *optional*, defaults to 10000.0):
-            The base period of the RoPE embeddings.
-        rope_scaling (`Dict`, *optional*):
-            Dictionary containing the scaling configuration for the RoPE embeddings. NOTE: if you apply new rope type
-            and you expect the model to work on longer `max_position_embeddings`, we recommend you to update this value
-            accordingly.
-            Expected contents:
-                `rope_type` (`str`):
-                    The sub-variant of RoPE to use. Can be one of ['default', 'linear', 'dynamic', 'yarn', 'longrope',
-                    'llama3'], with 'default' being the original RoPE implementation.
-                `factor` (`float`, *optional*):
-                    Used with all rope types except 'default'. The scaling factor to apply to the RoPE embeddings. In
-                    most scaling types, a `factor` of x will enable the model to handle sequences of length x *
-                    original maximum pre-trained length.
-                `original_max_position_embeddings` (`int`, *optional*):
-                    Used with 'dynamic', 'longrope' and 'llama3'. The original max position embeddings used during
-                    pretraining.
-                `attention_factor` (`float`, *optional*):
-                    Used with 'yarn' and 'longrope'. The scaling factor to be applied on the attention
-                    computation. If unspecified, it defaults to value recommended by the implementation, using the
-                    `factor` field to infer the suggested value.
-                `beta_fast` (`float`, *optional*):
-                    Only used with 'yarn'. Parameter to set the boundary for extrapolation (only) in the linear
-                    ramp function. If unspecified, it defaults to 32.
-                `beta_slow` (`float`, *optional*):
-                    Only used with 'yarn'. Parameter to set the boundary for interpolation (only) in the linear
-                    ramp function. If unspecified, it defaults to 1.
-                `short_factor` (`list[float]`, *optional*):
-                    Only used with 'longrope'. The scaling factor to be applied to short contexts (<
-                    `original_max_position_embeddings`). Must be a list of numbers with the same length as the hidden
-                    size divided by the number of attention heads divided by 2
-                `long_factor` (`list[float]`, *optional*):
-                    Only used with 'longrope'. The scaling factor to be applied to long contexts (<
-                    `original_max_position_embeddings`). Must be a list of numbers with the same length as the hidden
-                    size divided by the number of attention heads divided by 2
-                `low_freq_factor` (`float`, *optional*):
-                    Only used with 'llama3'. Scaling factor applied to low frequency components of the RoPE
-                `high_freq_factor` (`float`, *optional*):
-                    Only used with 'llama3'. Scaling factor applied to high frequency components of the RoPE
-        attention_bias (`bool`, defaults to `False`, *optional*, defaults to `False`):
-            Whether to use a bias in the query, key, value and output projection layers during self-attention.
-        use_sliding_window (`bool`, *optional*, defaults to `False`):
-            Whether to use sliding window attention.
-        sliding_window (`int`, *optional*, defaults to 4096):
-            Sliding window attention (SWA) window size. If not specified, will default to `4096`.
-        attention_dropout (`float`, *optional*, defaults to 0.0):
-            The dropout ratio for the attention probabilities.
-        decoder_sparse_step (`int`, *optional*, defaults to 1):
-            The frequency of the MoE layer.
-        moe_intermediate_size (`int`, *optional*, defaults to 768):
-            Intermediate size of the routed expert.
-        num_experts_per_tok (`int`, *optional*, defaults to 8):
-            Number of selected experts.
-        num_experts (`int`, *optional*, defaults to 128):
-            Number of routed experts.
-        norm_topk_prob (`bool`, *optional*, defaults to `False`):
-            Whether to normalize the topk probabilities.
-        output_router_logits (`bool`, *optional*, defaults to `False`):
-            Whether or not the router logits should be returned by the model. Enabling this will also
-            allow the model to output the auxiliary loss, including load balancing loss and router z-loss.
-        router_aux_loss_coef (`float`, *optional*, defaults to 0.001):
-            The aux loss factor for the total loss.
-        mlp_only_layers (`list[int]`, *optional*, defaults to `[]`):
-            Indicate which layers use Qwen3OmniMoeTextMLP rather than Qwen3OmniMoeTextSparseMoeBlock
-            The list contains layer index, from 0 to num_layers-1 if we have num_layers layers
-            If `mlp_only_layers` is empty, `decoder_sparse_step` is used to determine the sparsity.
-
-    ```python
-    >>> from transformers import Qwen3OmniMoeTextModel, Qwen3OmniMoeTextConfig
-
-    >>> # Initializing a Qwen3OmniMoeText style configuration
-    >>> configuration = Qwen3OmniMoeTextConfig()
-
-    >>> # Initializing a model from the Qwen3-15B-A2B" style configuration
-    >>> model = Qwen3OmniMoeTextModel(configuration)
-
-    >>> # Accessing the model configuration
-    >>> configuration = model.config
-    ```"""
-
-    model_type = "qwen3_omni_moe_text"
-    keys_to_ignore_at_inference = ["past_key_values"]
-
-    # Default tensor parallel plan for base model `Qwen3OmniMoeText`
-    base_model_tp_plan = {
-        "layers.*.self_attn.q_proj": "colwise",
-        "layers.*.self_attn.k_proj": "colwise",
-        "layers.*.self_attn.v_proj": "colwise",
-        "layers.*.self_attn.o_proj": "rowwise",
-        "layers.*.mlp.experts.*.gate_proj": "colwise",
-        "layers.*.mlp.experts.*.up_proj": "colwise",
-        "layers.*.mlp.experts.*.down_proj": "rowwise",
-        "layers.*.mlp.gate_proj": "colwise",
-        "layers.*.mlp.up_proj": "colwise",
-        "layers.*.mlp.down_proj": "rowwise",
-    }
-    base_model_pp_plan = {
-        "embed_tokens": (["input_ids"], ["inputs_embeds"]),
-        "layers": (["hidden_states", "attention_mask"], ["hidden_states"]),
-        "norm": (["hidden_states"], ["hidden_states"]),
-    }
-
     def __init__(
         self,
         vocab_size=3584,
@@ -210,3 +145,45 @@ class Qwen3OmniMoeTextConfig(PretrainedConfig):
         self.output_router_logits = output_router_logits
         self.router_aux_loss_coef = router_aux_loss_coef
         self.mlp_only_layers = [] if mlp_only_layers is None else mlp_only_layers
+        
+class Qwen3OmniMoeThinkerConfig(PretrainedConfig):
+    def __init__(
+        self,
+        audio_config=None,
+        vision_config=None,
+        text_config=None,
+        audio_token_id=151646,
+        image_token_id=151655,
+        video_token_id=151656,
+        position_id_per_seconds=25,
+        audio_start_token_id=151647,
+        user_token_id=872,
+        initializer_range=0.02,
+        **kwargs,
+    ):
+        super().__init__(**kwargs)
+        self.user_token_id = user_token_id
+        self.position_id_per_seconds = position_id_per_seconds
+        self.audio_start_token_id = audio_start_token_id
+        self.initializer_range = initializer_range
+
+        if isinstance(vision_config, dict):
+            vision_config = Qwen3OmniMoeVisionEncoderConfig(**vision_config)
+        elif vision_config is None:
+            vision_config = Qwen3OmniMoeVisionEncoderConfig()
+        self.vision_config = vision_config
+
+        if isinstance(audio_config, dict):
+            audio_config = Qwen3OmniMoeAudioEncoderConfig(**audio_config)
+        elif audio_config is None:
+            audio_config = Qwen3OmniMoeAudioEncoderConfig()
+        self.audio_config = audio_config
+
+        if isinstance(text_config, dict):
+            text_config = Qwen3OmniMoeTextConfig(**text_config)
+        elif text_config is None:
+            text_config = Qwen3OmniMoeTextConfig()
+        self.text_config = text_config
+        self.audio_token_id = audio_token_id
+        self.image_token_id = image_token_id
+        self.video_token_id = video_token_id
