@@ -1,14 +1,17 @@
+import logging
 import math
+import re
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import torch
 from sgl_kernel import fused_qk_norm_rope
-from sglang.srt.layers.vocab_parallel_embedding import VocabParallelEmbedding
-from sglang.srt.utils import add_prefix
 from torch import nn
 from transformers import PretrainedConfig
 
 from sglang_omni.config.qwen3_omni import Qwen3OmniMoeTextConfig
+from sglang_omni.models.utils import add_prefix
+from sglang_omni.models.weight_loader import default_weight_loader
+from sglang_omni.vendor.sglang.core import ForwardBatch
 from sglang_omni.vendor.sglang.distributed import (
     get_tensor_model_parallel_rank,
     get_tensor_model_parallel_world_size,
@@ -26,15 +29,13 @@ from sglang_omni.vendor.sglang.layers import (
     RoutingMethodType,
     RowParallelLinear,
     TopK,
-    filter_moe_weight_param_global_expert,
+    VocabParallelEmbedding,
     get_attention_tp_rank,
     get_attention_tp_size,
-    get_layer_id,
     get_moe_impl_class,
     get_rope,
     should_use_flashinfer_cutlass_moe_fp4_allgather,
 )
-from sglang_omni.vendor.sglang.model_executor import ForwardBatch
 from sglang_omni.vendor.sglang.models import (
     apply_qk_norm,
     create_fused_set_kv_buffer_arg,
@@ -42,6 +43,8 @@ from sglang_omni.vendor.sglang.models import (
 )
 from sglang_omni.vendor.sglang.server_args import get_global_server_args
 from sglang_omni.vendor.sglang.utils import make_layers
+
+logger = logging.getLogger(__name__)
 
 
 def compute_yarn_parameters(
@@ -131,28 +134,6 @@ def compute_yarn_parameters(
         beta_fast, beta_slow, dim, base, original_max_position_embeddings, truncate
     )
 
-    # These parts are implemented in the fusedQKNormRopeKernel.cu
-    # # def linear_ramp_factor(min, max, dim):
-    # #     if min == max:
-    # #         max += 0.001  # Prevent singularity
-
-    # #     linear_func = (torch.arange(dim, dtype=torch.float32) - min) / (max - min)
-    # #     ramp_func = torch.clamp(linear_func, 0, 1)
-    # #     return ramp_func
-
-    # # Note on variable naming: "interpolation" comes from the original technique, where we interpolate the position IDs
-    # # to expand the possible context length. In other words, interpolation = apply scaling factor.
-    # # pos_freqs = base ** (torch.arange(0, dim, 2).to(device=device, dtype=torch.float) / dim)
-    # # inv_freq_extrapolation = 1.0 / pos_freqs
-    # # inv_freq_interpolation = 1.0 / (factor * pos_freqs)
-
-    # # # Get n-dimensional rotational scaling corrected for extrapolation
-    # # inv_freq_extrapolation_factor = 1 - linear_ramp_factor(low, high, dim // 2).to(device=device, dtype=torch.float)
-    # # inv_freq = (
-    # #     inv_freq_interpolation * (1 - inv_freq_extrapolation_factor)
-    # #     + inv_freq_extrapolation * inv_freq_extrapolation_factor
-    # # )
-    # # return inv_freq, attention_factor
     return factor, low, high, attention_factor
 
 
@@ -173,7 +154,7 @@ class Qwen3OmniMoeThinkerTextAttention(nn.Module):
         head_dim: Optional[int] = None,
         rms_norm_eps: float = 1e-06,
         attention_bias: bool = False,
-        config: Optional[TConfig] = None,
+        config: Optional[PretrainedConfig] = None,
         quant_config: Optional[QuantizationConfig] = None,
         prefix: str = "",
         dual_chunk_attention_config: Optional[dict[str, Any]] = None,
@@ -443,16 +424,6 @@ class Qwen3OmniMoeThinkerTextSparseMoeBlock(nn.Module):
             hidden_states, should_allreduce_fusion, use_reduce_scatter
         )
 
-    def get_moe_weights(self):
-        return [
-            x.data
-            for name, x in self.experts.named_parameters()
-            if name not in ["correction_bias"]
-            and filter_moe_weight_param_global_expert(
-                name, x, self.experts.num_local_experts
-            )
-        ]
-
     def forward_normal(
         self,
         hidden_states: torch.Tensor,
@@ -477,7 +448,6 @@ class Qwen3OmniMoeThinkerTextSparseMoeBlock(nn.Module):
         return final_hidden_states.view(num_tokens, hidden_dim)
 
 
-# Qwen3OmniMoeThinkerTextDecoderLayer = Qwen3MoeDecoderLayer
 class Qwen3OmniMoeThinkerTextDecoderLayer(nn.Module):
     def __init__(
         self,
@@ -619,6 +589,10 @@ class Qwen3OmniMoeThinkerTextDecoderLayer(nn.Module):
 
 
 class Qwen3OmniMoeThinkerTextModel(nn.Module):
+    """
+    Qwen3 omni text thinker only (without AuT and ViT)
+    """
+
     def __init__(
         self,
         config: Qwen3OmniMoeTextConfig,
@@ -720,11 +694,110 @@ class Qwen3OmniMoeThinkerTextModel(nn.Module):
         (model): Qwen3OmniMoeThinkerTextModel
         (lm_head): lm_head
         """
-
         # Cache params_dict to avoid repeated expensive traversal of model parameters
         if not hasattr(self, "_cached_params_dict"):
             self._cached_params_dict = dict(self.named_parameters())
         params_dict = self._cached_params_dict
 
         for name, loaded_weight in weights:
-            layer_id = get_layer_id(name)
+            if maybe_update_fused_qkv_proj(
+                params_dict=params_dict,
+                name=name,
+                loaded_weight=loaded_weight,
+            ):
+                continue
+            elif maybe_update_fused_moe_proj(
+                params_dict=params_dict,
+                name=name,
+                loaded_weight=loaded_weight,
+                config=self.config,
+            ):
+                continue
+            else:
+                if name in params_dict.keys():
+                    param = params_dict[name]
+                    weight_loader = getattr(
+                        param, "weight_loader", default_weight_loader
+                    )
+                    weight_loader(param, loaded_weight)
+                    continue
+            logger.warning(f"Parameter {name} not found in params_dict")
+
+
+def maybe_update_fused_qkv_proj(
+    params_dict,
+    name,
+    loaded_weight,
+):
+    stacked_params_mapping = {
+        "q_proj": ("qkv_proj", "q"),
+        "k_proj": ("qkv_proj", "k"),
+        "v_proj": ("qkv_proj", "v"),
+        "gate_proj": ("gate_up_proj", 0),
+        "up_proj": ("gate_up_proj", 1),
+    }
+
+    for shard_name in stacked_params_mapping:
+        if shard_name in name:
+            fused_param_name, shard_id = stacked_params_mapping[shard_name]
+
+            name = name.replace(shard_name, fused_param_name)
+            param = params_dict[name]
+            param.weight_loader(param, loaded_weight, shard_id)
+            return True
+    return False
+
+
+def maybe_update_fused_moe_proj(params_dict, name, loaded_weight, config):
+    # replace FusedMoE.make_expert_params_mapping
+    if res := extract_fused_experts(
+        name=name,
+        ckpt_gate_proj_name="gate_proj",
+        ckpt_down_proj_name="down_proj",
+        ckpt_up_proj_name="up_proj",
+        num_experts=config.num_experts,
+    ):
+        param_name, weight_name, expert_id, shard_id = res
+
+        name = name.replace(weight_name, param_name)
+
+        if name in params_dict:
+            param = params_dict[name]
+            param.weight_loader(
+                param,
+                loaded_weight,
+                name,
+                shard_id=shard_id,
+                expert_id=expert_id,
+            )
+            return True
+    return False
+
+
+def extract_fused_experts(
+    name,
+    ckpt_gate_proj_name: str,
+    ckpt_down_proj_name: str,
+    ckpt_up_proj_name: str,
+    num_experts: int,
+):
+    pattern = rf"experts\.(\d+)\.({ckpt_gate_proj_name}|{ckpt_down_proj_name}|{ckpt_up_proj_name})"
+
+    match = re.search(pattern, name)
+    if match:
+        expert_id = int(match.group(1))
+        weight_type = match.group(2)
+        if expert_id < num_experts:
+            # Determine param_name based on weight_type
+            param_name = (
+                "experts.w2_" if weight_type == ckpt_down_proj_name else "experts.w13_"
+            )
+            if weight_type == ckpt_gate_proj_name:
+                shard_id = "w1"
+            elif weight_type == ckpt_down_proj_name:
+                shard_id = "w2"
+            elif weight_type == ckpt_up_proj_name:
+                shard_id = "w3"
+            return param_name, f"experts.{expert_id}.{weight_type}", expert_id, shard_id
+
+    return None
