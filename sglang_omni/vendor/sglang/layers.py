@@ -19,21 +19,20 @@ from sglang.srt.layers.moe import (
 )
 from sglang.srt.layers.moe.ep_moe.layer import get_moe_impl_class
 from sglang.srt.layers.moe.topk import TopK
+from sglang.srt.layers.vocab_parallel_embedding import VocabParallelEmbedding
 from sglang.srt.layers.moe.utils import (
     RoutingMethodType,
-    filter_moe_weight_param_global_expert,
 )
 from sglang.srt.layers.quantization.base_config import QuantizationConfig
 from sglang.srt.layers.radix_attention import RadixAttention
 from sglang.srt.layers.rotary_embedding import MRotaryEmbedding, get_rope
 from sglang.srt.layers.utils import get_layer_id
+from sglang.srt.layers.moe.fused_moe_triton.layer import FusedMoE
 
-# Optional monkey patches (example):
-# def get_layer_id(*args, **kwargs):
-#     return 0
 
 __all__ = [
     "RadixAttention",
+    "VocabParallelEmbedding",
     "MRotaryEmbedding",
     "get_rope",
     "get_layer_id",
@@ -46,10 +45,10 @@ __all__ = [
     "should_use_flashinfer_cutlass_moe_fp4_allgather",
     "get_moe_impl_class",
     "RoutingMethodType",
-    "filter_moe_weight_param_global_expert",
     "get_attention_tp_rank",
     "get_attention_tp_size",
     "QuantizationConfig",
     "LayerCommunicator",
     "LayerScatterModes",
+    "FusedMoE",
 ]
