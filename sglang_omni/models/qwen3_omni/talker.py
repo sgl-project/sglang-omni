@@ -7,7 +7,7 @@ Simplified implementation:
 
 from __future__ import annotations
 
-from typing import Iterable, List, Optional, Tuple
+from typing import Iterable, Optional, Tuple
 
 import torch
 from sglang.srt.model_loader.weight_utils import default_weight_loader
@@ -18,23 +18,6 @@ from sglang_omni.config.qwen3_omni import (
     Qwen3OmniMoeTalkerConfig,
     Qwen3OmniMoeTalkerTextConfig,
 )
-from sglang_omni.vendor.sglang.distributed import (
-    get_tensor_model_parallel_world_size,
-    tensor_model_parallel_all_reduce,
-)
-from sglang_omni.vendor.sglang.layers import (
-    MergedColumnParallelLinear,
-    QuantizationConfig,
-    ReplicatedLinear,
-    RMSNorm,
-    RowParallelLinear,
-    SiluAndMul,
-    get_layer_id,
-    should_use_flashinfer_cutlass_moe_fp4_allgather,
-    top_k_top_p_sampling_from_probs,
-)
-from sglang_omni.vendor.sglang.model_executor import ForwardBatch
-from sglang_omni.vendor.sglang.utils import make_layers
 
 # Reuse Thinker's components
 from sglang_omni.models.qwen3_omni.thinker import (
@@ -42,6 +25,19 @@ from sglang_omni.models.qwen3_omni.thinker import (
     Qwen3OmniMoeThinkerTextDecoderLayer,
     Qwen3OmniMoeThinkerTextSparseMoeBlock,
 )
+from sglang_omni.vendor.sglang.distributed import tensor_model_parallel_all_reduce
+from sglang_omni.vendor.sglang.layers import (
+    MergedColumnParallelLinear,
+    QuantizationConfig,
+    ReplicatedLinear,
+    RMSNorm,
+    RowParallelLinear,
+    SiluAndMul,
+    should_use_flashinfer_cutlass_moe_fp4_allgather,
+    top_k_top_p_sampling_from_probs,
+)
+from sglang_omni.vendor.sglang.model_executor import ForwardBatch
+from sglang_omni.vendor.sglang.utils import make_layers
 
 # ---------------------------------------------------------------------------
 # Common building blocks
@@ -50,7 +46,7 @@ from sglang_omni.models.qwen3_omni.thinker import (
 
 class ResizeMLP(nn.Module):
     """Simple Linear-SiLU-Linear projection (used for text/hidden projection).
-    
+
     Field names match HF checkpoint: linear_fc1, linear_fc2.
     """
 
@@ -162,10 +158,10 @@ class Qwen3OmniMoeTalkerSharedExpertMLP(nn.Module):
 
 class Qwen3OmniMoeTalkerSparseMoeBlock(Qwen3OmniMoeThinkerTextSparseMoeBlock):
     """MoE block with Shared Expert (Talker-specific).
-    
+
     Inherits from Thinker's MoE for routed experts (topk, experts, gate).
     Adds shared expert with gated output.
-    
+
     All-reduce is unified: both routed and shared expert outputs stay as
     per-rank partial sums until combined, then a single all-reduce is applied.
     """
@@ -274,7 +270,7 @@ class Qwen3OmniMoeTalkerDecoderLayer(Qwen3OmniMoeThinkerTextDecoderLayer):
 
 class Qwen3OmniMoeTalkerTextModel(nn.Module):
     """Talker's MoE text backbone (20-layer, with shared expert).
-    
+
     Uses codec_embedding instead of embed_tokens.
     """
 
@@ -350,7 +346,7 @@ class Qwen3OmniMoeTalkerTextModel(nn.Module):
 
 class Qwen3OmniMoeTalkerCodePredictor(nn.Module):
     """Code predictor for generating RVQ codes (layers 1 to N-1, N=num_code_groups).
-    
+
     Matches HF checkpoint structure:
     - code_predictor.model.codec_embedding: ModuleList[N-1]  (15 embeddings)
     - code_predictor.model.layers: ModuleList[num_layers]     (5 dense decoder layers)
@@ -372,10 +368,12 @@ class Qwen3OmniMoeTalkerCodePredictor(nn.Module):
         self.model = nn.Module()
 
         # Codec embeddings: 15 embeddings for layers 1-15 (layer 0 uses TextModel's codec_head)
-        self.model.codec_embedding = nn.ModuleList([
-            nn.Embedding(cp_config.vocab_size, cp_config.hidden_size)
-            for _ in range(config.num_code_groups - 1)
-        ])
+        self.model.codec_embedding = nn.ModuleList(
+            [
+                nn.Embedding(cp_config.vocab_size, cp_config.hidden_size)
+                for _ in range(config.num_code_groups - 1)
+            ]
+        )
 
         # 5 dense decoder layers
         alt_stream = torch.cuda.Stream()
@@ -390,8 +388,14 @@ class Qwen3OmniMoeTalkerCodePredictor(nn.Module):
                 layer_id=idx,
                 rope_theta=getattr(cp_config, "rope_theta", 1000000.0),
                 rope_scaling=getattr(cp_config, "rope_scaling", None),
-                max_position_embeddings=getattr(cp_config, "max_position_embeddings", 32768),
-                head_dim=getattr(cp_config, "head_dim", cp_config.hidden_size // cp_config.num_attention_heads),
+                max_position_embeddings=getattr(
+                    cp_config, "max_position_embeddings", 32768
+                ),
+                head_dim=getattr(
+                    cp_config,
+                    "head_dim",
+                    cp_config.hidden_size // cp_config.num_attention_heads,
+                ),
                 rms_norm_eps=cp_config.rms_norm_eps,
                 attention_bias=cp_config.attention_bias,
                 config=cp_config,
@@ -406,23 +410,29 @@ class Qwen3OmniMoeTalkerCodePredictor(nn.Module):
                 quant_config=quant_config,
                 prefix=add_prefix(f"model.layers.{idx}.mlp", prefix),
             )
-            layer.input_layernorm = RMSNorm(cp_config.hidden_size, eps=cp_config.rms_norm_eps)
-            layer.post_attention_layernorm = RMSNorm(cp_config.hidden_size, eps=cp_config.rms_norm_eps)
+            layer.input_layernorm = RMSNorm(
+                cp_config.hidden_size, eps=cp_config.rms_norm_eps
+            )
+            layer.post_attention_layernorm = RMSNorm(
+                cp_config.hidden_size, eps=cp_config.rms_norm_eps
+            )
             self.model.layers.append(layer)
 
         self.model.norm = RMSNorm(cp_config.hidden_size, eps=cp_config.rms_norm_eps)
 
         # 15 LM heads for predicting layers 1-15
-        self.lm_head = nn.ModuleList([
-            ReplicatedLinear(
-                cp_config.hidden_size,
-                cp_config.vocab_size,
-                bias=False,
-                quant_config=quant_config,
-                prefix=add_prefix(f"lm_head.{i}", prefix),
-            )
-            for i in range(config.num_code_groups - 1)
-        ])
+        self.lm_head = nn.ModuleList(
+            [
+                ReplicatedLinear(
+                    cp_config.hidden_size,
+                    cp_config.vocab_size,
+                    bias=False,
+                    quant_config=quant_config,
+                    prefix=add_prefix(f"lm_head.{i}", prefix),
+                )
+                for i in range(config.num_code_groups - 1)
+            ]
+        )
 
     def forward(
         self,
@@ -432,12 +442,12 @@ class Qwen3OmniMoeTalkerCodePredictor(nn.Module):
     ):
         """
         Forward through the code predictor (matches vLLM-Omni's mtp_block pattern).
-        
+
         Args:
             inputs_embeds: [batch, seq_len, hidden_size]
             positions: [total_tokens] position indices
             forward_batch: SGLang's forward batch info
-            
+
         Returns:
             hidden_states: [batch, seq_len, hidden_size] - final hidden states
         """
@@ -524,10 +534,10 @@ class Qwen3OmniTalker(nn.Module):
         is_multimodal_mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Project thinker outputs to talker's hidden dimension.
-        
+
         - Text positions:       text_projection(thinker_embeds)
         - Multimodal positions:  hidden_projection(thinker_hidden_states)
-        
+
         If no mask is provided, all positions use text_projection.
         """
         if thinker_hidden_states is None or is_multimodal_mask is None:
@@ -558,13 +568,13 @@ class Qwen3OmniTalker(nn.Module):
         inputs_embeds: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Forward pass through the talker MoE backbone.
-        
+
         Args:
             input_ids: codec token ids (used when inputs_embeds is None)
             positions: position indices
             forward_batch: SGLang's forward batch info
             inputs_embeds: pre-computed input embeddings (from prepare_input_embeds)
-            
+
         Returns:
             hidden_states from the talker backbone
         """
@@ -587,16 +597,16 @@ class Qwen3OmniTalker(nn.Module):
         talker_hidden: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Generate residual RVQ codes (layers 1 to N-1) for each position.
-        
+
         Matches vLLM-Omni's code_predictor_forward:
         - Per-position autoregressive loop
         - Growing sequence: [talker_hidden, layer0_embed, layer1_embed, ...]
         - Last-token hidden state → lm_head → predicted code
-        
+
         Args:
             layer0_codes: [batch, seq_len] - layer-0 codec codes from argmax/sample
             talker_hidden: [batch, seq_len, hidden] - hidden states from talker backbone
-            
+
         Returns:
             result_codes: [batch, num_code_groups, seq_len] - all codes (layer 0 + predicted)
             summed_embeddings: [batch, seq_len, hidden] - sum of all layer embeddings
@@ -607,12 +617,14 @@ class Qwen3OmniTalker(nn.Module):
         all_summed_per_pos = []
 
         for pos in range(seq_len):
-            layer0_code = layer0_codes[:, pos:pos + 1]              # [batch, 1]
+            layer0_code = layer0_codes[:, pos : pos + 1]  # [batch, 1]
             layer0_embed = self.model.codec_embedding(layer0_code)  # [batch, 1, hidden]
-            last_hidden = talker_hidden[:, pos:pos + 1, :]          # [batch, 1, hidden]
+            last_hidden = talker_hidden[:, pos : pos + 1, :]  # [batch, 1, hidden]
 
             # Initial input: [talker_hidden_at_pos, layer0_embed]
-            current_input = torch.cat([last_hidden, layer0_embed], dim=1)  # [batch, 2, hidden]
+            current_input = torch.cat(
+                [last_hidden, layer0_embed], dim=1
+            )  # [batch, 2, hidden]
             pos_codes = [layer0_code]
 
             # Predict layers 1 to N-1 autoregressively
@@ -631,7 +643,9 @@ class Qwen3OmniTalker(nn.Module):
                     predictor_hidden[:, -1:, :]
                 )
                 probs = torch.softmax(logits[:, -1, :], dim=-1)
-                code = top_k_top_p_sampling_from_probs(probs, top_k=50, top_p=0.8)  # [batch, 1]
+                code = top_k_top_p_sampling_from_probs(
+                    probs, top_k=50, top_p=0.8
+                )  # [batch, 1]
                 pos_codes.append(code)
 
                 # Append new embedding to growing sequence
@@ -645,7 +659,7 @@ class Qwen3OmniTalker(nn.Module):
             # current_input = [talker_hidden, l0_embed, l1_embed, ..., lN-1_embed]
             # We want sum of all codec embeddings: l0 + l1 + ... + lN-1
             # That's current_input[:, 1:, :] (skip the talker_hidden at index 0)
-            codec_embeds = current_input[:, 1:, :]         # [batch, num_code_groups, hidden]
+            codec_embeds = current_input[:, 1:, :]  # [batch, num_code_groups, hidden]
             pos_summed = codec_embeds.sum(dim=1, keepdim=True)  # [batch, 1, hidden]
             all_summed_per_pos.append(pos_summed)
 
@@ -685,7 +699,7 @@ class Qwen3OmniTalker(nn.Module):
             # Strip "talker." prefix if present
             if not name.startswith("talker."):
                 continue
-            name = name[len("talker."):]
+            name = name[len("talker.") :]
 
             # 1. Handle stacked parameters (qkv_proj, gate_up_proj)
             handled = False
@@ -693,7 +707,9 @@ class Qwen3OmniTalker(nn.Module):
                 if weight_name in name and "mlp.experts" not in name:
                     param = params_dict.get(name.replace(weight_name, param_name))
                     if param is not None:
-                        weight_loader = getattr(param, "weight_loader", default_weight_loader)
+                        weight_loader = getattr(
+                            param, "weight_loader", default_weight_loader
+                        )
                         weight_loader(param, loaded_weight, shard_id)
                         handled = True
                         break
@@ -706,8 +722,16 @@ class Qwen3OmniTalker(nn.Module):
                     mapped = name.replace(weight_name, param_name)
                     param = params_dict.get(mapped)
                     if param is not None:
-                        weight_loader = getattr(param, "weight_loader", default_weight_loader)
-                        weight_loader(param, loaded_weight, mapped, shard_id=shard_id, expert_id=expert_id)
+                        weight_loader = getattr(
+                            param, "weight_loader", default_weight_loader
+                        )
+                        weight_loader(
+                            param,
+                            loaded_weight,
+                            mapped,
+                            shard_id=shard_id,
+                            expert_id=expert_id,
+                        )
                         handled = True
                         break
             if handled:
@@ -718,4 +742,3 @@ class Qwen3OmniTalker(nn.Module):
             if param is not None:
                 weight_loader = getattr(param, "weight_loader", default_weight_loader)
                 weight_loader(param, loaded_weight)
-

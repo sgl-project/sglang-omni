@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from transformers import PretrainedConfig
 
+
 class Qwen3OmniMoeAudioEncoderConfig(PretrainedConfig):
     def __init__(
         self,
@@ -46,6 +47,7 @@ class Qwen3OmniMoeAudioEncoderConfig(PretrainedConfig):
         self.n_window_infer = n_window_infer
         self.conv_chunksize = conv_chunksize
         self.downsample_hidden_size = downsample_hidden_size
+
 
 class Qwen3OmniMoeVisionEncoderConfig(PretrainedConfig):
     def __init__(
@@ -147,7 +149,8 @@ class Qwen3OmniMoeTextConfig(PretrainedConfig):
         self.output_router_logits = output_router_logits
         self.router_aux_loss_coef = router_aux_loss_coef
         self.mlp_only_layers = [] if mlp_only_layers is None else mlp_only_layers
-        
+
+
 class Qwen3OmniMoeThinkerConfig(PretrainedConfig):
     def __init__(
         self,
@@ -190,6 +193,7 @@ class Qwen3OmniMoeThinkerConfig(PretrainedConfig):
         self.image_token_id = image_token_id
         self.video_token_id = video_token_id
 
+
 # ---------------------------------------------------------------------------
 # Talker configs
 # ---------------------------------------------------------------------------
@@ -197,7 +201,7 @@ class Qwen3OmniMoeThinkerConfig(PretrainedConfig):
 
 class Qwen3OmniMoeTalkerTextConfig(Qwen3OmniMoeTextConfig):
     """Text config for the talker MoE backbone (20-layer, shared expert).
-    
+
     Inherits from Qwen3OmniMoeTextConfig, adds shared_expert_intermediate_size.
     """
 
@@ -263,7 +267,7 @@ class Qwen3OmniMoeTalkerTextConfig(Qwen3OmniMoeTextConfig):
             mlp_only_layers=mlp_only_layers,
             **kwargs,
         )
-        
+
         # Add Talker-specific field
         self.head_dim = head_dim
         self.shared_expert_intermediate_size = shared_expert_intermediate_size
@@ -328,7 +332,9 @@ class Qwen3OmniMoeTalkerConfig(PretrainedConfig):
     def __init__(
         self,
         text_config: dict | Qwen3OmniMoeTalkerTextConfig | None = None,
-        code_predictor_config: dict | Qwen3OmniMoeTalkerCodePredictorConfig | None = None,
+        code_predictor_config: (
+            dict | Qwen3OmniMoeTalkerCodePredictorConfig | None
+        ) = None,
         num_code_groups=16,
         thinker_hidden_size=2048,
         accept_hidden_layer=24,

@@ -1,18 +1,22 @@
-import re
-import math
 import logging
+import math
+import re
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import torch
+from sgl_kernel import fused_qk_norm_rope
 from torch import nn
 from transformers import PretrainedConfig
 
+from sglang_omni.config.qwen3_omni import Qwen3OmniMoeTextConfig
+from sglang_omni.models.utils import add_prefix
+from sglang_omni.models.weight_loader import default_weight_loader
+from sglang_omni.vendor.sglang.core import ForwardBatch
 from sglang_omni.vendor.sglang.distributed import (
     get_tensor_model_parallel_rank,
     get_tensor_model_parallel_world_size,
     tensor_model_parallel_all_reduce,
 )
-
 from sglang_omni.vendor.sglang.layers import (
     LayerCommunicator,
     LayerScatterModes,
@@ -32,7 +36,6 @@ from sglang_omni.vendor.sglang.layers import (
     get_rope,
     should_use_flashinfer_cutlass_moe_fp4_allgather,
 )
-from sglang_omni.vendor.sglang.core import ForwardBatch
 from sglang_omni.vendor.sglang.models import (
     apply_qk_norm,
     create_fused_set_kv_buffer_arg,
@@ -40,20 +43,9 @@ from sglang_omni.vendor.sglang.models import (
 )
 from sglang_omni.vendor.sglang.server_args import get_global_server_args
 from sglang_omni.vendor.sglang.utils import make_layers
-from sgl_kernel import fused_qk_norm_rope
-
-from sglang_omni.config.qwen3_omni import (
-    Qwen3OmniMoeAudioEncoderConfig,
-    Qwen3OmniMoeVisionEncoderConfig,
-    Qwen3OmniMoeTextConfig
-)
-from sglang_omni.models.utils import (
-    get_layer_id,
-    add_prefix
-)
-from sglang_omni.models.weight_loader import default_weight_loader
 
 logger = logging.getLogger(__name__)
+
 
 def compute_yarn_parameters(
     config: PretrainedConfig,
@@ -455,6 +447,7 @@ class Qwen3OmniMoeThinkerTextSparseMoeBlock(nn.Module):
 
         return final_hidden_states.view(num_tokens, hidden_dim)
 
+
 class Qwen3OmniMoeThinkerTextDecoderLayer(nn.Module):
     def __init__(
         self,
@@ -599,6 +592,7 @@ class Qwen3OmniMoeThinkerTextModel(nn.Module):
     """
     Qwen3 omni text thinker only (without AuT and ViT)
     """
+
     def __init__(
         self,
         config: Qwen3OmniMoeTextConfig,
@@ -716,7 +710,7 @@ class Qwen3OmniMoeThinkerTextModel(nn.Module):
                 params_dict=params_dict,
                 name=name,
                 loaded_weight=loaded_weight,
-                config=self.config
+                config=self.config,
             ):
                 continue
             else:
@@ -728,6 +722,7 @@ class Qwen3OmniMoeThinkerTextModel(nn.Module):
                     weight_loader(param, loaded_weight)
                     continue
             logger.warning(f"Parameter {name} not found in params_dict")
+
 
 def maybe_update_fused_qkv_proj(
     params_dict,
@@ -745,26 +740,22 @@ def maybe_update_fused_qkv_proj(
     for shard_name in stacked_params_mapping:
         if shard_name in name:
             fused_param_name, shard_id = stacked_params_mapping[shard_name]
-            
+
             name = name.replace(shard_name, fused_param_name)
-            param = params_dict[name]        
+            param = params_dict[name]
             param.weight_loader(param, loaded_weight, shard_id)
             return True
     return False
- 
-def maybe_update_fused_moe_proj(
-    params_dict,
-    name,
-    loaded_weight,
-    config
-):
+
+
+def maybe_update_fused_moe_proj(params_dict, name, loaded_weight, config):
     # replace FusedMoE.make_expert_params_mapping
     if res := extract_fused_experts(
         name=name,
         ckpt_gate_proj_name="gate_proj",
         ckpt_down_proj_name="down_proj",
         ckpt_up_proj_name="up_proj",
-        num_experts=config.num_experts
+        num_experts=config.num_experts,
     ):
         param_name, weight_name, expert_id, shard_id = res
 
@@ -782,14 +773,15 @@ def maybe_update_fused_moe_proj(
             return True
     return False
 
+
 def extract_fused_experts(
     name,
     ckpt_gate_proj_name: str,
     ckpt_down_proj_name: str,
     ckpt_up_proj_name: str,
-    num_experts: int
+    num_experts: int,
 ):
-    pattern = rf'experts\.(\d+)\.({ckpt_gate_proj_name}|{ckpt_down_proj_name}|{ckpt_up_proj_name})'
+    pattern = rf"experts\.(\d+)\.({ckpt_gate_proj_name}|{ckpt_down_proj_name}|{ckpt_up_proj_name})"
 
     match = re.search(pattern, name)
     if match:
@@ -797,13 +789,15 @@ def extract_fused_experts(
         weight_type = match.group(2)
         if expert_id < num_experts:
             # Determine param_name based on weight_type
-            param_name = 'experts.w2_' if weight_type == ckpt_down_proj_name else 'experts.w13_'
+            param_name = (
+                "experts.w2_" if weight_type == ckpt_down_proj_name else "experts.w13_"
+            )
             if weight_type == ckpt_gate_proj_name:
-                shard_id = 'w1'
+                shard_id = "w1"
             elif weight_type == ckpt_down_proj_name:
-                shard_id = 'w2'
+                shard_id = "w2"
             elif weight_type == ckpt_up_proj_name:
-                shard_id = 'w3'
+                shard_id = "w3"
             return param_name, f"experts.{expert_id}.{weight_type}", expert_id, shard_id
 
     return None

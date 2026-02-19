@@ -7,5 +7,4 @@ from __future__ import annotations
 
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch
 
-
 __all__ = ["ForwardBatch"]
