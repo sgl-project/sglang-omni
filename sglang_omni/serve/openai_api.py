@@ -276,8 +276,14 @@ async def _chat_stream(
             role_sent = True
             emit = True
 
-        # Text chunk
-        if chunk.modality == "text" and chunk.text and "text" in requested_modalities:
+        # Text chunk – skip content on the final chunk (finish_reason set)
+        # to avoid duplicating the full text that was already streamed.
+        if (
+            chunk.modality == "text"
+            and chunk.text
+            and "text" in requested_modalities
+            and chunk.finish_reason is None
+        ):
             delta.content = chunk.text
             emit = True
 

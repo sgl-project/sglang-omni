@@ -33,6 +33,36 @@ class _FakeTokenizer:
         return "".join(chr(ord("a") + (t % 26)) for t in token_ids)
 
 
+class _MultiByteFakeTokenizer:
+    """Tokenizer that simulates multi-byte character behavior.
+
+    Token 50 alone decodes to the replacement character (incomplete sequence).
+    Tokens [50, 51] together decode to a complete emoji.
+    All other tokens map to single ASCII characters.
+    """
+
+    eos_token_id = 99
+
+    def decode(self, token_ids: list[int], skip_special_tokens: bool = True) -> str:
+        parts: list[str] = []
+        i = 0
+        while i < len(token_ids):
+            tid = token_ids[i]
+            if tid == 50 and i + 1 < len(token_ids) and token_ids[i + 1] == 51:
+                parts.append("\U0001f60a")  # 😊
+                i += 2
+            elif tid == 50:
+                parts.append("\ufffd")  # incomplete
+                i += 1
+            elif tid == 51:
+                parts.append("\ufffd")
+                i += 1
+            else:
+                parts.append(chr(ord("a") + (tid % 26)))
+                i += 1
+        return "".join(parts)
+
+
 def _build_stream_dict(events: list[OmniEvent], token_id: int, step: int) -> dict[str, Any]:
     """Reproduce the _stream_builder text-extraction logic from stages.py."""
     text_delta = ""
@@ -181,3 +211,138 @@ def test_finish_reason_in_sse_chunks() -> None:
                 assert "finish_reason" in choice, (
                     "Every SSE chunk must include finish_reason (null or string)"
                 )
+
+
+def test_final_chunk_no_duplicate_content() -> None:
+    """The finish_reason='stop' SSE chunk must NOT repeat the full text."""
+    from fastapi.testclient import TestClient
+
+    from sglang_omni.serve import create_app
+
+    class _DummyClient:
+        async def completion_stream(self, request, *, request_id, audio_format="wav"):
+            from sglang_omni.client.types import CompletionStreamChunk
+
+            yield CompletionStreamChunk(request_id=request_id, text="hello")
+            yield CompletionStreamChunk(request_id=request_id, text=" world")
+            # Final chunk: has full text AND finish_reason (like _result_builder)
+            yield CompletionStreamChunk(
+                request_id=request_id, text="hello world", finish_reason="stop"
+            )
+
+        def health(self):
+            return {"running": True}
+
+    client = TestClient(create_app(_DummyClient()))
+
+    with client.stream(
+        "POST",
+        "/v1/chat/completions",
+        json={
+            "model": "test",
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": True,
+        },
+    ) as resp:
+        events = []
+        for line in resp.iter_lines():
+            if not line or not line.startswith("data: "):
+                continue
+            payload = line[len("data: "):]
+            if payload == "[DONE]":
+                break
+            events.append(json.loads(payload))
+
+    # Find the final chunk with finish_reason
+    final_chunks = [
+        e for e in events
+        if e["choices"][0].get("finish_reason") == "stop"
+    ]
+    assert final_chunks, "Must have a chunk with finish_reason='stop'"
+    final_delta = final_chunks[-1]["choices"][0]["delta"]
+
+    # The final chunk must NOT contain the full text
+    assert final_delta.get("content") is None, (
+        f"Final chunk should have empty delta, got content={final_delta.get('content')!r}"
+    )
+
+
+def test_multibyte_char_no_resend() -> None:
+    """Multi-byte characters (emoji) must not trigger full text re-sends."""
+    tokenizer = _MultiByteFakeTokenizer()
+    state = PipelineState()
+
+    all_events: list[OmniEvent] = []
+
+    # Token 0 -> 'a'
+    events = list(
+        decode_events(
+            thinker_out={"output_ids": [0], "step": 1, "is_final": False},
+            state=state,
+            tokenizer=tokenizer,
+            eos_token_id=tokenizer.eos_token_id,
+            step=1,
+        )
+    )
+    all_events.extend(events)
+
+    # Token 50 -> incomplete multi-byte (should be buffered, no event)
+    events = list(
+        decode_events(
+            thinker_out={"output_ids": [50], "step": 2, "is_final": False},
+            state=state,
+            tokenizer=tokenizer,
+            eos_token_id=tokenizer.eos_token_id,
+            step=2,
+        )
+    )
+    all_events.extend(events)
+
+    # Token 51 -> completes the emoji
+    events = list(
+        decode_events(
+            thinker_out={"output_ids": [51], "step": 3, "is_final": False},
+            state=state,
+            tokenizer=tokenizer,
+            eos_token_id=tokenizer.eos_token_id,
+            step=3,
+        )
+    )
+    all_events.extend(events)
+
+    # Token 2 -> 'c'
+    events = list(
+        decode_events(
+            thinker_out={"output_ids": [2], "step": 4, "is_final": False},
+            state=state,
+            tokenizer=tokenizer,
+            eos_token_id=tokenizer.eos_token_id,
+            step=4,
+        )
+    )
+    all_events.extend(events)
+
+    # Collect all emitted text
+    emitted_texts = []
+    for event in all_events:
+        if not event.is_final:
+            t = event.payload.get("text", "")
+            emitted_texts.append(t)
+
+    full_text = "".join(emitted_texts)
+    expected = tokenizer.decode([0, 50, 51, 2])  # "a😊c"
+
+    # No replacement characters should reach the client
+    assert "\ufffd" not in full_text, (
+        f"Replacement character leaked to client: {full_text!r}"
+    )
+    # Concatenated deltas should reconstruct the correct text
+    assert full_text == expected, (
+        f"Expected {expected!r}, got {full_text!r}"
+    )
+    # Should NOT have a single event containing the full text (no re-sends)
+    for event in all_events:
+        if not event.is_final:
+            assert event.payload.get("text") != expected, (
+                "Full text appeared in a single event — indicates a re-send bug"
+            )
