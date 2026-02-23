@@ -309,9 +309,7 @@ async def _chat_stream(
             ],
         )
 
-        # Serialize with exclude_none for the delta (avoid sending content:null,
-        # audio:null, etc.) but always keep finish_reason per OpenAI spec —
-        # intermediate chunks must have "finish_reason": null explicitly.
+        # Always keep finish_reason per OpenAI spec.
         data = stream_resp.model_dump(exclude_none=True)
         for choice in data.get("choices", []):
             choice.setdefault("finish_reason", None)
