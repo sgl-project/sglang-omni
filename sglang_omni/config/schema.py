@@ -76,7 +76,7 @@ class PipelineConfig(BaseModel):
     completion_endpoint: str | None = None
     abort_endpoint: str | None = None
 
-    def model_post_init(self) -> None:
+    def model_post_init(self, __context: Any = None) -> None:
         self._validate_general()
         self._validate_fusion()
 
@@ -143,7 +143,7 @@ class PipelineConfig(BaseModel):
                     f"stages in the fused group are not adjacent: {group}, please ensure that the stages are adjacent and in order"
                 )
 
-    def _apply_fusion(self) -> tuple[list[StageConfig], dict[str, str], str]:
+    def apply_fusion(self) -> tuple[list[StageConfig], dict[str, str], str]:
         stage_by_name = {stage.name: stage for stage in self.stages}
         fused_groups = self.fused_stages or []
 
