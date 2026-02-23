@@ -154,10 +154,7 @@ def create_thinker_executor(
                 OmniEvent(type="text_final", modality="text", payload={}, is_final=True)
             ]
 
-        # Extract text delta from events so the client stream builder can
-        # find it at the top level via data["text"].  Only use text_delta
-        # events (incremental); text_final carries the full accumulated
-        # text which would duplicate the CompleteMessage result.
+        # Surface incremental text at top level for the client stream builder.
         text_delta = ""
         for event in events:
             if event.is_final:
