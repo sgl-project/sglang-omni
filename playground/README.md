@@ -43,7 +43,7 @@ It also includes a server-side file browser so users can pick media directly fro
 Run everything (backend + frontend + FS API) with one command:
 
 ```bash
-CUDA_VISIBLE_DEVICES=5 ./playground/start_playground.sh \
+./playground/start_playground.sh \
   --pipeline qwen3-omni \
   --model-id Qwen/Qwen3-Omni-30B-A3B-Instruct
 ```
