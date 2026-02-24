@@ -12,7 +12,7 @@ It also includes a server-side file browser so users can pick media directly fro
 
 1. Prompting and chat
 - Set system prompt and user prompt.
-- View conversation history and clear it.
+- Multi-turn conversation history with media context.
 
 2. Multimodal input
 - Upload audio, image, and video files from local machine.
@@ -21,11 +21,11 @@ It also includes a server-side file browser so users can pick media directly fro
 - Pick media files from server/container filesystem via FS API modal.
 
 3. Generation controls
-- Configure model generation parameters (for example temperature/top-p/top-k in the UI).
-- Optionally request audio output when supported by backend.
+- Configure model generation parameters (temperature, top-p, top-k).
+- Output modality selector (text only; audio options available when talker stage is implemented).
 
 4. Streaming output
-- Receive assistant responses in streaming mode.
+- Receive assistant responses in streaming mode (SSE).
 - Display text output and returned media in chat history.
 
 5. Filesystem service integration
@@ -35,38 +35,69 @@ It also includes a server-side file browser so users can pick media directly fro
 ## Components
 
 1. Frontend static page (`index.html` + `app.js` + `styles.css`)
-2. Filesystem API (`playground/fs_api.py`, default port `8001`) (used to list the filesystem of the server that hosts sglang omni so that you can upload data from it)
+2. Filesystem API (`playground/fs_api.py`, default port `8001`)
+3. Backend API server (`sglang_omni/serve/openai_api.py`, default port `8000`)
 
-## How to Start
+## Quick Start
 
-### Start frontend + FS API together (recommended)
+Run everything (backend + frontend + FS API) with one command:
 
-Run from repository root:
+```bash
+CUDA_VISIBLE_DEVICES=5 ./playground/start_playground.sh \
+  --pipeline qwen3-omni \
+  --model-id Qwen/Qwen3-Omni-30B-A3B-Instruct
+```
+
+Then open `http://localhost:3000` in your browser.
+
+### Custom ports
+
+```bash
+./playground/start_playground.sh \
+  --pipeline qwen3-omni \
+  --model-id Qwen/Qwen3-Omni-30B-A3B-Instruct \
+  --backend-port 8080 \
+  --frontend-port 3001
+```
+
+### SSH tunnel (for remote servers / Docker)
+
+From your local machine:
+
+```bash
+ssh -L 3000:localhost:3000 -L 8000:localhost:8000 -L 8001:localhost:8001 user@host
+```
+
+## Start Separately
+
+If you prefer to manage processes individually:
+
+Backend:
+
+```bash
+CUDA_VISIBLE_DEVICES=5 sglang-omni-server \
+  --pipeline qwen3-omni \
+  --model-id Qwen/Qwen3-Omni-30B-A3B-Instruct \
+  --port 8000
+```
+
+Frontend + FS API:
 
 ```bash
 ./playground/start_playground_and_fs.sh
 ```
 
-Default ports:
-- Frontend: `3000`
-- FS API: `8001`
-
-You can pass custom ports:
-
-```bash
-./playground/start_playground_and_fs.sh 3001 9001
-```
-
-### Start separately
-
-Frontend:
+Or manually:
 
 ```bash
 python -m http.server 3000 --directory playground
-```
-
-FS API:
-
-```bash
 python -m playground.fs_api --host 0.0.0.0 --port 8001
 ```
+
+## Default Ports
+
+| Service | Port | Env var |
+|---------|------|---------|
+| Backend API | 8000 | `BACKEND_PORT` |
+| Frontend | 3000 | `FRONTEND_PORT` |
+| FS API | 8001 | `FS_PORT` |
