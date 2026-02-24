@@ -1,10 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Tests for the streaming data path: decode_events -> _stream_builder -> _default_stream_builder.
-
-These tests verify that incremental text produced by the thinker stage
-reaches the client as ``GenerateChunk.text`` -- the integration seam that
-was broken before fix/serving.
-"""
+"""Tests for the streaming data path."""
 
 from __future__ import annotations
 
@@ -17,7 +12,6 @@ from sglang_omni.models.qwen3_omni.io import OmniEvent, PipelineState
 from sglang_omni.models.qwen3_omni.pipeline.merge import decode_events
 from sglang_omni.models.qwen3_omni.pipeline.stages import _event_to_dict
 from sglang_omni.proto import StreamMessage
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -63,7 +57,9 @@ class _MultiByteFakeTokenizer:
         return "".join(parts)
 
 
-def _build_stream_dict(events: list[OmniEvent], token_id: int, step: int) -> dict[str, Any]:
+def _build_stream_dict(
+    events: list[OmniEvent], token_id: int, step: int
+) -> dict[str, Any]:
     """Reproduce the _stream_builder text-extraction logic from stages.py."""
     text_delta = ""
     for event in events:
@@ -113,9 +109,9 @@ def test_text_delta_reaches_client() -> None:
         stream_dict = _build_stream_dict(events, token_id, step)
 
         # Key assertion: top-level "text" must exist
-        assert "text" in stream_dict, (
-            "stream_builder must surface text at top level for the client"
-        )
+        assert (
+            "text" in stream_dict
+        ), "stream_builder must surface text at top level for the client"
 
         # Feed through _default_stream_builder (the real consumer)
         msg = StreamMessage(
@@ -153,7 +149,11 @@ def test_final_event_excluded_from_text_delta() -> None:
     # Now emit the EOS token -> should produce a text_final event
     events = list(
         decode_events(
-            thinker_out={"output_ids": [tokenizer.eos_token_id], "step": 3, "is_final": False},
+            thinker_out={
+                "output_ids": [tokenizer.eos_token_id],
+                "step": 3,
+                "is_final": False,
+            },
             state=state,
             tokenizer=tokenizer,
             eos_token_id=tokenizer.eos_token_id,
@@ -166,9 +166,9 @@ def test_final_event_excluded_from_text_delta() -> None:
     stream_dict = _build_stream_dict(events, tokenizer.eos_token_id, 3)
 
     # Final events should NOT produce a top-level "text" (that would duplicate)
-    assert "text" not in stream_dict, (
-        "text_final events must be excluded to prevent duplicate full text"
-    )
+    assert (
+        "text" not in stream_dict
+    ), "text_final events must be excluded to prevent duplicate full text"
 
 
 def test_finish_reason_in_sse_chunks() -> None:
@@ -182,9 +182,7 @@ def test_finish_reason_in_sse_chunks() -> None:
             from sglang_omni.client.types import CompletionStreamChunk
 
             yield CompletionStreamChunk(request_id=request_id, text="hi")
-            yield CompletionStreamChunk(
-                request_id=request_id, finish_reason="stop"
-            )
+            yield CompletionStreamChunk(request_id=request_id, finish_reason="stop")
 
         def health(self):
             return {"running": True}
@@ -203,18 +201,18 @@ def test_finish_reason_in_sse_chunks() -> None:
         for line in resp.iter_lines():
             if not line or not line.startswith("data: "):
                 continue
-            payload = line[len("data: "):]
+            payload = line[len("data: ") :]
             if payload == "[DONE]":
                 break
             data = json.loads(payload)
             for choice in data["choices"]:
-                assert "finish_reason" in choice, (
-                    "Every SSE chunk must include finish_reason (null or string)"
-                )
+                assert (
+                    "finish_reason" in choice
+                ), "Every SSE chunk must include finish_reason (null or string)"
 
 
-def test_final_chunk_no_duplicate_content() -> None:
-    """The finish_reason='stop' SSE chunk must NOT repeat the full text."""
+def test_finish_chunk_is_separate() -> None:
+    """finish_reason='stop' must be in a dedicated chunk with empty delta."""
     from fastapi.testclient import TestClient
 
     from sglang_omni.serve import create_app
@@ -225,7 +223,7 @@ def test_final_chunk_no_duplicate_content() -> None:
 
             yield CompletionStreamChunk(request_id=request_id, text="hello")
             yield CompletionStreamChunk(request_id=request_id, text=" world")
-            # Final chunk: has full text AND finish_reason (like _result_builder)
+            # Pipeline finish chunk: full text + finish_reason.
             yield CompletionStreamChunk(
                 request_id=request_id, text="hello world", finish_reason="stop"
             )
@@ -248,23 +246,30 @@ def test_final_chunk_no_duplicate_content() -> None:
         for line in resp.iter_lines():
             if not line or not line.startswith("data: "):
                 continue
-            payload = line[len("data: "):]
+            payload = line[len("data: ") :]
             if payload == "[DONE]":
                 break
             events.append(json.loads(payload))
 
-    # Find the final chunk with finish_reason
-    final_chunks = [
-        e for e in events
-        if e["choices"][0].get("finish_reason") == "stop"
-    ]
-    assert final_chunks, "Must have a chunk with finish_reason='stop'"
-    final_delta = final_chunks[-1]["choices"][0]["delta"]
+    # Content chunks must all have finish_reason: null
+    content_chunks = [e for e in events if e["choices"][0].get("finish_reason") is None]
+    for chunk in content_chunks:
+        delta = chunk["choices"][0]["delta"]
+        assert (
+            delta.get("content") is not None or delta.get("role") is not None
+        ), "Content chunks must carry role or text"
 
-    # The final chunk must NOT contain the full text
-    assert final_delta.get("content") is None, (
-        f"Final chunk should have empty delta, got content={final_delta.get('content')!r}"
-    )
+    # Exactly one finish chunk with empty delta
+    finish_chunks = [
+        e for e in events if e["choices"][0].get("finish_reason") == "stop"
+    ]
+    assert (
+        len(finish_chunks) == 1
+    ), f"Expected exactly 1 finish chunk, got {len(finish_chunks)}"
+    final_delta = finish_chunks[0]["choices"][0]["delta"]
+    assert (
+        final_delta.get("content") is None
+    ), f"Finish chunk should have empty delta, got content={final_delta.get('content')!r}"
 
 
 def test_multibyte_char_no_resend() -> None:
@@ -333,16 +338,14 @@ def test_multibyte_char_no_resend() -> None:
     expected = tokenizer.decode([0, 50, 51, 2])  # "a😊c"
 
     # No replacement characters should reach the client
-    assert "\ufffd" not in full_text, (
-        f"Replacement character leaked to client: {full_text!r}"
-    )
+    assert (
+        "\ufffd" not in full_text
+    ), f"Replacement character leaked to client: {full_text!r}"
     # Concatenated deltas should reconstruct the correct text
-    assert full_text == expected, (
-        f"Expected {expected!r}, got {full_text!r}"
-    )
+    assert full_text == expected, f"Expected {expected!r}, got {full_text!r}"
     # Should NOT have a single event containing the full text (no re-sends)
     for event in all_events:
         if not event.is_final:
-            assert event.payload.get("text") != expected, (
-                "Full text appeared in a single event — indicates a re-send bug"
-            )
+            assert (
+                event.payload.get("text") != expected
+            ), "Full text appeared in a single event — indicates a re-send bug"

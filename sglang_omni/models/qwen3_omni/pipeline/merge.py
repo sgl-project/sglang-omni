@@ -261,7 +261,7 @@ def decode_events(
     if not stream_state:
         stream_state.update({"token_ids": [], "text": "", "emitted_text": ""})
     token_ids = stream_state.setdefault("token_ids", [])
-    prev_text = str(stream_state.setdefault("text", ""))
+    stream_state.setdefault("text", "")
     stream_state.setdefault("emitted_text", "")
 
     is_final = bool(thinker_out.get("is_final"))

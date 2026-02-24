@@ -248,12 +248,25 @@ async def _chat_stream(
     """Streaming chat completion generator (yields SSE events)."""
     role_sent = False
     requested_modalities = req.modalities or ["text"]
+    finish_reason: str | None = None
+    final_usage: UsageResponse | None = None
 
     async for chunk in client.completion_stream(
         gen_req,
         request_id=request_id,
         audio_format=audio_format,
     ):
+        # Capture finish info for the dedicated finish chunk after the loop.
+        if chunk.finish_reason is not None:
+            finish_reason = chunk.finish_reason
+            if chunk.usage is not None:
+                final_usage = UsageResponse(
+                    prompt_tokens=chunk.usage.prompt_tokens or 0,
+                    completion_tokens=chunk.usage.completion_tokens or 0,
+                    total_tokens=chunk.usage.total_tokens or 0,
+                )
+            continue
+
         delta = ChatCompletionStreamDelta()
         emit = False
 
@@ -263,14 +276,8 @@ async def _chat_stream(
             role_sent = True
             emit = True
 
-        # Text chunk – skip content on the final chunk (finish_reason set)
-        # to avoid duplicating the full text that was already streamed.
-        if (
-            chunk.modality == "text"
-            and chunk.text
-            and "text" in requested_modalities
-            and chunk.finish_reason is None
-        ):
+        # Text chunk
+        if chunk.modality == "text" and chunk.text and "text" in requested_modalities:
             delta.content = chunk.text
             emit = True
 
@@ -286,20 +293,8 @@ async def _chat_stream(
             )
             emit = True
 
-        # Finish reason
-        finish_reason = chunk.finish_reason
-
-        if not emit and finish_reason is None:
+        if not emit:
             continue
-
-        # Build usage for final chunk
-        usage = None
-        if finish_reason is not None and chunk.usage is not None:
-            usage = UsageResponse(
-                prompt_tokens=chunk.usage.prompt_tokens or 0,
-                completion_tokens=chunk.usage.completion_tokens or 0,
-                total_tokens=chunk.usage.total_tokens or 0,
-            )
 
         stream_resp = ChatCompletionStreamResponse(
             id=response_id,
@@ -309,17 +304,34 @@ async def _chat_stream(
                 ChatCompletionStreamChoice(
                     index=0,
                     delta=delta,
-                    finish_reason=finish_reason,
+                    finish_reason=None,
                 )
             ],
-            usage=usage,
         )
 
-        # Always keep finish_reason per OpenAI spec.
         data = stream_resp.model_dump(exclude_none=True)
         for choice in data.get("choices", []):
             choice.setdefault("finish_reason", None)
         yield f"data: {json.dumps(data)}\n\n"
+
+    # Finish chunk: empty delta + finish_reason.
+    finish_resp = ChatCompletionStreamResponse(
+        id=response_id,
+        created=created,
+        model=model,
+        choices=[
+            ChatCompletionStreamChoice(
+                index=0,
+                delta=ChatCompletionStreamDelta(),
+                finish_reason=finish_reason or "stop",
+            )
+        ],
+        usage=final_usage,
+    )
+    data = finish_resp.model_dump(exclude_none=True)
+    for choice in data.get("choices", []):
+        choice.setdefault("finish_reason", None)
+    yield f"data: {json.dumps(data)}\n\n"
 
     yield "data: [DONE]\n\n"
 
