@@ -178,7 +178,7 @@ async def _run_server(
         client = Client(coordinator, **cl_kwargs)
         app = create_app(client, model_name=model_name or pipeline_config.name)
 
-        profiler_dir = os.environ.get("SGLANG_TORCH_PROFILER_DIR", "/tmp/profiles")
+        profiler_dir = os.environ.get("SGLANG_TORCH_PROFILER_DIR")
         profiler_ctl = ProfilerControlClient(stage_endpoints)
         _mount_profiler_routes(app, profiler_ctl, profiler_dir)
 
