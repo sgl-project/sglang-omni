@@ -44,7 +44,7 @@ It also includes a server-side file browser so users can pick media directly fro
 Run from repository root:
 
 ```bash
-./scripts/start_playground_and_fs.sh
+./playground/start_playground_and_fs.sh
 ```
 
 Default ports:
@@ -54,7 +54,7 @@ Default ports:
 You can pass custom ports:
 
 ```bash
-./scripts/start_playground_and_fs.sh 3001 9001
+./playground/start_playground_and_fs.sh 3001 9001
 ```
 
 ### Start separately
