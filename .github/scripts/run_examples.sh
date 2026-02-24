@@ -1,9 +1,5 @@
 # Run examples
+# we only run two stage examples for now cuz the CI only has 2 GPUs
 python examples/run_two_stage_demo.py
 python examples/run_two_stage_demo.py --relay shm
-
-python examples/run_three_stage_demo.py
-python examples/run_three_stage_demo.py --relay shm
-python examples/run_three_stage_demo.py --relay nixl
-
-python examples/run_two_stage_llama_demo.py --prompt "Hello, how are you?"
+python examples/run_two_stage_llama_demo.py --prompt "Hello, how are you?" --model-id meta-llama/Llama-3.2-1B-Instruct
