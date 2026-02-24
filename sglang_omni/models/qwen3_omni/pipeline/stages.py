@@ -153,8 +153,6 @@ def create_thinker_executor(
             events = [
                 OmniEvent(type="text_final", modality="text", payload={}, is_final=True)
             ]
-
-        # Surface incremental text at top level for the client stream builder.
         text_delta = ""
         for event in events:
             if event.is_final:

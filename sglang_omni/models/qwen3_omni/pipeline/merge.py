@@ -300,9 +300,6 @@ def decode_events(
     decoded = tokenizer.decode(token_ids, skip_special_tokens=True)
     stream_state["text"] = decoded
 
-    # Buffer incomplete multi-byte sequences (replacement char U+FFFD)
-    # to avoid emitting garbage or triggering a full text re-send when
-    # the completed character no longer prefix-matches the previous text.
     if "\ufffd" in decoded:
         return []
 
