@@ -1,0 +1,58 @@
+name: PR Test (Examples)
+
+on:
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+concurrency:
+  group: pr-test-examples-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  unit-test:
+    runs-on: [self-hosted]
+    container:
+      image: frankleeeee/sglang-omni:dev # we lock to this version to avoid repeated docker pull
+      options: --gpus all --shm-size=2g --rm -v /dev/shm
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Restore cache
+        run: |
+          if [ -d /github/home/omni ] && [ ! -z "$(ls -A /github/home/omni/)" ]; then
+            cp -p -r /github/home/omni ./
+          fi
+
+      - name: Remove flashinfer # this is needed to avoid flashinfer jit compilation makes the program hang
+        run: |
+          rm -rf /github/home/.cache/flashinfer
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          # if sf venv does not exist, create it
+          if [ ! -d sf ]; then
+            uv venv omni -p 3.11
+          fi
+          source omni/bin/activate
+          uv pip install -v .
+          uv pip install pytest
+
+      - name: Run test
+        timeout-minutes: 30
+        shell: bash
+        run: |
+          source omni/bin/activate
+          export PYTHONPATH=$PWD
+          bash .github/scripts/run_examples.sh
+        env:
+          HF_ENDPOINT: https://hf-mirror.com
+
+      - name: Save cache
+        run: |
+          cp -p -r omni /github/home/
