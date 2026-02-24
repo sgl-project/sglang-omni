@@ -16,7 +16,6 @@ from transformers.models.qwen3_omni_moe.processing_qwen3_omni_moe import (
 )
 from transformers.utils.hub import cached_file
 
-from sglang_omni.models.qwen3_omni.io import PipelineState
 from sglang_omni.preprocessing import (
     build_audio_mm_inputs,
     build_image_mm_inputs,
@@ -321,16 +320,14 @@ class Qwen3OmniPreprocessor:
         else:
             encoder_inputs["audio_encoder"] = {"_skip": True, "_result": {}}
 
-        state = PipelineState(
-            raw_inputs=inputs,
-            mm_inputs=mm_inputs,
-            prompt={
-                "prompt_text": prompt_text,
-                "input_ids": input_ids,
-                "attention_mask": attention_mask,
-            },
-            encoder_inputs=encoder_inputs,
-            stream_state={"token_ids": [], "text": ""},
-        )
-        payload.data = state.to_dict()
+        # Directly populate payload fields (avoid extra state wrapper/serialization)
+        payload.raw_inputs = inputs
+        payload.mm_inputs = mm_inputs
+        payload.prompt = {
+            "prompt_text": prompt_text,
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
+        }
+        payload.encoder_inputs = encoder_inputs
+        payload.stream_state = {"token_ids": [], "text": ""}
         return payload

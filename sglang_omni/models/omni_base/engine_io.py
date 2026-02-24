@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Engine request/response helpers for Qwen3-Omni stages."""
+"""Engine request/response helpers shared by omni pipelines."""
 
 from __future__ import annotations
 
@@ -8,21 +8,34 @@ from typing import Any
 import torch
 
 from sglang_omni.engines.omni.runtime import ARRequestData, EncoderRequestData
-from sglang_omni.models.qwen3_omni.io import PipelineState, ThinkerOutput
+from sglang_omni.models.omni_base.types import ThinkerOutput
+from sglang_omni.proto import StagePayload
+
+
+def _ensure_engine_outputs(payload: StagePayload) -> dict[str, Any]:
+    """Ensure engine_outputs dict exists and return it."""
+    if payload.engine_outputs is None:
+        payload.engine_outputs = {}
+    return payload.engine_outputs
 
 
 def build_encoder_request(
-    state: PipelineState, *, stage_name: str
+    payload: StagePayload, *, stage_name: str
 ) -> EncoderRequestData:
-    inputs = state.encoder_inputs.get(stage_name)
+    """Build encoder request from payload."""
+    encoder_inputs = payload.encoder_inputs or {}
+    inputs = encoder_inputs.get(stage_name)
+
     if not isinstance(inputs, dict) or not inputs:
         return EncoderRequestData(input_dict={"_skip": True, "_result": {}})
+
     if inputs.get("_skip"):
         skip_result = inputs.get("_result")
         return EncoderRequestData(
             input_dict=inputs,
             output_dict=skip_result if isinstance(skip_result, dict) else {},
         )
+
     cache_key = inputs.get("cache_key")
     return EncoderRequestData(
         input_dict=inputs,
@@ -31,31 +44,32 @@ def build_encoder_request(
 
 
 def apply_encoder_result(
-    state: PipelineState,
+    payload: StagePayload,
     *,
     stage_name: str,
     result: Any,
 ) -> None:
+    """Apply encoder result to payload."""
     if isinstance(result, EncoderRequestData):
-        if result.output_dict is not None:
-            encoder_out = result.output_dict
-        elif result.embeddings is not None:
-            encoder_out = result.embeddings
-        else:
-            encoder_out = {}
+        encoder_out = result.output_dict or result.embeddings or {}
     else:
         encoder_out = result if isinstance(result, dict) else {"result": result}
 
-    state.encoder_outs[stage_name] = encoder_out
-    state.engine_outputs[stage_name] = encoder_out
+    # Lazy initialization
+    if payload.encoder_outs is None:
+        payload.encoder_outs = {}
+
+    payload.encoder_outs[stage_name] = encoder_out
+    _ensure_engine_outputs(payload)[stage_name] = encoder_out
 
 
 def build_thinker_request(
-    state: PipelineState,
+    payload: StagePayload,
     *,
     params: dict[str, Any],
 ) -> ARRequestData:
-    prompt = state.prompt
+    """Build thinker request from payload."""
+    prompt = payload.prompt
     if not isinstance(prompt, dict):
         raise TypeError("prompt missing for thinker request")
 
@@ -64,7 +78,7 @@ def build_thinker_request(
         raise TypeError("prompt.input_ids must be a torch.Tensor")
 
     attention_mask = prompt.get("attention_mask")
-    thinker_inputs = state.thinker_inputs or {}
+    thinker_inputs = payload.thinker_inputs or {}
 
     model_inputs = dict(thinker_inputs.get("model_inputs", {}))
     if not model_inputs:
@@ -89,11 +103,12 @@ def build_thinker_request(
 
 
 def apply_thinker_result(
-    state: PipelineState,
+    payload: StagePayload,
     *,
     stage_name: str,
     result: Any,
 ) -> ThinkerOutput:
+    """Apply thinker result to payload."""
     if isinstance(result, ARRequestData):
         output_ids = list(result.output_ids)
         thinker_out: ThinkerOutput = {
@@ -110,6 +125,7 @@ def apply_thinker_result(
             "extra_model_outputs": {"result": result},
         }
 
-    state.thinker_out = thinker_out
-    state.engine_outputs[stage_name] = thinker_out
+    payload.thinker_out = thinker_out
+    _ensure_engine_outputs(payload)[stage_name] = thinker_out
+
     return thinker_out

@@ -35,6 +35,12 @@ def load_hf_config(
     return cfg
 
 
+def load_thinker_config(model_id: str) -> Any:
+    """Load thinker config from HF model config."""
+    cfg = load_hf_config(model_id, trust_remote_code=True, local_files_only=True)
+    return getattr(cfg, "thinker_config", cfg)
+
+
 def instantiate_module(module_cls: type[nn.Module], config: Any) -> nn.Module:
     """Instantiate a module without allocating its parameters."""
     with no_init_weights():

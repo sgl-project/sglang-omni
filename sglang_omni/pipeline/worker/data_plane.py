@@ -90,18 +90,12 @@ class DataPlaneAdapter:
     ) -> tuple[dict[str, Any], Any]:
         device = self._relay.device if hasattr(self._relay, "device") else "cpu"
 
-        # Extract tensors from payload.data
-        modified_data, tensor_dict = _extract_tensors(payload.data)
-
-        # Create a payload copy with tensors replaced by placeholders
-        payload_no_tensors = StagePayload(
-            request_id=payload.request_id,
-            request=payload.request,
-            data=modified_data,
-        )
+        # Extract tensors from entire payload (including pipeline state fields)
+        payload_dict = payload.to_dict()
+        modified_payload_dict, tensor_dict = _extract_tensors(payload_dict)
 
         # Serialize metadata (without tensors)
-        metadata_bytes = pickle.dumps(payload_no_tensors)
+        metadata_bytes = pickle.dumps(modified_payload_dict)
 
         # Concatenate all tensors into a single flat buffer
         if tensor_dict:
@@ -151,9 +145,9 @@ class DataPlaneAdapter:
     ) -> StagePayload:
         device = self._relay.device if hasattr(self._relay, "device") else "cpu"
 
-        # Deserialize payload (without tensors) from control-plane metadata
+        # Deserialize payload dict (without tensors) from control-plane metadata
         payload_bytes = base64.b64decode(metadata["payload_pickle"])
-        payload_no_tensors = pickle.loads(payload_bytes)
+        payload_dict_no_tensors = pickle.loads(payload_bytes)
 
         relay_info = metadata["relay_info"]
         tensor_info = metadata.get("tensor_info", [])
@@ -185,13 +179,11 @@ class DataPlaneAdapter:
                 tensor = tensor_bytes.clone().view(dtype).reshape(shape)
                 tensor_dict[path] = tensor
 
-        # Restore tensors into payload
-        restored_data = _restore_tensors(payload_no_tensors.data, tensor_dict)
-        payload = StagePayload(
-            request_id=payload_no_tensors.request_id,
-            request=payload_no_tensors.request,
-            data=restored_data,
-        )
+        # Restore tensors into payload dict
+        restored_payload_dict = _restore_tensors(payload_dict_no_tensors, tensor_dict)
+
+        # Reconstruct StagePayload from dict
+        payload = StagePayload.from_dict(restored_payload_dict)
 
         self._relay.cleanup(request_id)
 
