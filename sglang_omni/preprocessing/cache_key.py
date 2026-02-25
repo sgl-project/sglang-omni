@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+
+import os
 from pathlib import Path
 from typing import Any, Callable
 
@@ -58,9 +60,13 @@ def hash_media_item(item: Any) -> str | None:
     # File path or URL
     if isinstance(item, (str, Path)):
         p = Path(item)
-        if p.exists() and p.is_file():
-            return f"file:{hash_file_sampled(p)}"
-        # URL or non-existent path
+        try:
+            if p.exists() and p.is_file():
+                return f"file:{hash_file_sampled(p)}"
+        except OSError:
+            # Invalid/unsupported path shape or string with too long length (e.g.base64URI), fall back to string hash.
+            pass
+        #URL or nonexistent file path
         return f"url:{hash_bytes(str(item).encode())}"
 
     # PIL Image
