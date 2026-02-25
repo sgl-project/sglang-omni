@@ -57,26 +57,39 @@ cleanup() {
 
 trap cleanup INT TERM EXIT
 
-echo "[start] backend:  http://localhost:${BACKEND_PORT}  (loading model...)"
-echo "[start] frontend: http://localhost:${FRONTEND_PORT}"
-echo "[start] fs api:   http://localhost:${FS_PORT}"
+echo "============================================================"
+echo "  SGLang-Omni Playground"
+echo "============================================================"
 echo ""
-
-# Start backend API server
-"${PYTHON_BIN}" -m sglang_omni.serve.launcher \
-  "${BACKEND_ARGS[@]}" \
-  --port "${BACKEND_PORT}" &
-BACKEND_PID=$!
+echo "  Frontend :  http://localhost:${FRONTEND_PORT}"
+echo "  FS API   :  http://localhost:${FS_PORT}"
+echo "  Backend  :  http://localhost:${BACKEND_PORT}"
+echo ""
+echo "============================================================"
+echo ""
 
 # Start frontend static file server
 "${PYTHON_BIN}" -m http.server "${FRONTEND_PORT}" \
   --directory "${ROOT_DIR}/playground" &
 FRONTEND_PID=$!
+echo "[playground] frontend started  (pid ${FRONTEND_PID})"
 
 # Start filesystem API
 "${PYTHON_BIN}" -m playground.fs_api \
   --host "${FS_HOST}" --port "${FS_PORT}" &
 FS_PID=$!
+echo "[playground] fs api started    (pid ${FS_PID})"
+
+# Start backend API server (model loading — this takes a while)
+echo "[playground] starting backend (model loading may take a few minutes)..."
+"${PYTHON_BIN}" -m sglang_omni.serve.launcher \
+  "${BACKEND_ARGS[@]}" \
+  --port "${BACKEND_PORT}" &
+BACKEND_PID=$!
+
+echo ""
+echo "[playground] all processes launched. Ctrl+C to stop."
+echo ""
 
 # Wait for any process to exit
 wait -n "${BACKEND_PID}" "${FRONTEND_PID}" "${FS_PID}"

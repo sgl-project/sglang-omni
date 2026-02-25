@@ -17,6 +17,44 @@ from .base import MediaIO, _is_url
 from .cache_key import compute_media_cache_key
 
 
+def _decode_audio_bytes_av(data: bytes) -> tuple[np.ndarray, int]:
+    """Decode audio bytes using PyAV (supports WebM/Opus, MP3, OGG, FLAC, etc.)."""
+    import io
+
+    import av
+
+    container = av.open(io.BytesIO(data))
+    try:
+        audio_stream = next(
+            (s for s in container.streams if s.type == "audio"), None
+        )
+        if audio_stream is None:
+            raise ValueError("No audio stream found in data")
+
+        sample_rate = audio_stream.rate
+        frames = []
+        for frame in container.decode(audio_stream):
+            arr = frame.to_ndarray()  # shape varies by format
+            if arr.ndim == 2:
+                # Planar formats (fltp, s16p, etc.): shape is (channels, samples)
+                # Average channels to mono
+                arr = arr.mean(axis=0)
+            frames.append(arr.flatten().astype(np.float32))
+    finally:
+        container.close()
+
+    if not frames:
+        raise ValueError("No audio frames decoded")
+
+    audio = np.concatenate(frames)
+    # Normalize integer formats to [-1, 1] float range
+    if audio.max() > 1.0 or audio.min() < -1.0:
+        peak = max(abs(audio.max()), abs(audio.min()))
+        if peak > 0:
+            audio = audio / peak
+    return audio, int(sample_rate)
+
+
 def _parse_wav_bytes(data: bytes, source: str = "bytes") -> tuple[np.ndarray, int]:
     """Parse PCM/IEEE-float WAV from bytes without external deps."""
     if len(data) < 12:
@@ -109,7 +147,12 @@ def _resample_linear(audio: np.ndarray, orig_sr: int, target_sr: int) -> np.ndar
 
 
 def load_audio_path(path: str | Path, *, target_sr: int = 16000) -> np.ndarray:
-    audio, sr = _read_wav_bytes(str(path))
+    with open(path, "rb") as f:
+        data = f.read()
+    try:
+        audio, sr = _parse_wav_bytes(data, source=str(path))
+    except ValueError:
+        audio, sr = _decode_audio_bytes_av(data)
     return _resample_linear(audio, sr, target_sr)
 
 
@@ -128,8 +171,11 @@ class AudioMediaIO(MediaIO[tuple[npt.NDArray, float]]):
         self.kwargs = kwargs
 
     def load_bytes(self, data: bytes) -> tuple[npt.NDArray, float]:
-        """Load audio from raw bytes."""
-        audio, sr = _parse_wav_bytes(data, source="bytes")
+        """Load audio from raw bytes (WAV, WebM/Opus, MP3, OGG, FLAC, etc.)."""
+        try:
+            audio, sr = _parse_wav_bytes(data, source="bytes")
+        except ValueError:
+            audio, sr = _decode_audio_bytes_av(data)
         resampled = _resample_linear(audio, sr, self.target_sr)
         return resampled, float(self.target_sr)
 
@@ -142,8 +188,13 @@ class AudioMediaIO(MediaIO[tuple[npt.NDArray, float]]):
         return self.load_bytes(base64.b64decode(data))
 
     def load_file(self, filepath: Path) -> tuple[npt.NDArray, float]:
-        """Load audio from a local file path."""
-        audio, sr = _read_wav_bytes(str(filepath))
+        """Load audio from a local file path (WAV, WebM/Opus, MP3, OGG, FLAC, etc.)."""
+        with open(filepath, "rb") as f:
+            data = f.read()
+        try:
+            audio, sr = _parse_wav_bytes(data, source=str(filepath))
+        except ValueError:
+            audio, sr = _decode_audio_bytes_av(data)
         resampled = _resample_linear(audio, sr, self.target_sr)
         return resampled, float(self.target_sr)
 
