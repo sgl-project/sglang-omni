@@ -5,14 +5,19 @@
 We highly recommend to use our [Docker Image](#🐳-use-docker) for development or production environment. Otherwise, please make sure you have built and installed [`ucx`](https://github.com/openucx/ucx) in your environment.
 
 ```bash
+# clone this repository
+git clone git@github.com:sgl-project-dev/sglang-omni.git
+cd sglang-omni
+
 # create a virtual environment in docker
 uv venv .venv -p 3.11
 source .venv/bin/activate
 
-# install sglang-omni
-git clone git@github.com:sgl-project-dev/sglang-omni.git
-cd sglang-omni
-uv pip install -v -e .
+# install
+uv pip install -v .
+
+# install for development
+uv pip install -v -e ".[dev]"
 ```
 
 

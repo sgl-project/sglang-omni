@@ -15,8 +15,8 @@ dependencies = [
     "msgpack>=1.0.0",         # Message serialization
     "numpy>=1.24.0",          # Array operations
     "pydantic>=2.0.0",        # Data validation and serialization
-    "torch>=2.9.1",          # PyTorch for tensor operations
-    "torchvision>=0.24.1",    # torchvision for vision processor
+    "torch==2.9.1",          # PyTorch for tensor operations
+    "torchvision==0.24.1",    # torchvision for vision processor
     "accelerate>=0.27.0",     # init_empty_weights for meta initialization
     "transformers<5.0",   # HF models/tokenizers
     "safetensors>=0.4.3",     # Direct weight loading
@@ -24,9 +24,6 @@ dependencies = [
     "huggingface-hub>=0.36.0",# HF model downloads
     "fastapi>=0.110.0",       # OpenAI-compatible API adapter
     "uvicorn>=0.23.0",        # ASGI server for FastAPI
-    # Testing dependencies
-    "pytest>=7.0.0",
-    "pytest-asyncio>=0.21.0",
     "nixl",
     "mooncake-transfer-engine>=0.3.0",
     "logger",
@@ -38,6 +35,13 @@ dependencies = [
     "librosa>=0.11.0",
     "pandas",
     "tabulate"
+]
+
+[project.optional-dependencies]
+dev = [
+    # Testing dependencies
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
 ]
 
 [project.scripts]

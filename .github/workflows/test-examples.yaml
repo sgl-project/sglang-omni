@@ -40,8 +40,7 @@ jobs:
             uv venv omni -p 3.11
           fi
           source omni/bin/activate
-          uv pip install -v .
-          uv pip install pytest
+          uv pip install -v -e ".[dev]"
 
       - name: Run test
         timeout-minutes: 30
