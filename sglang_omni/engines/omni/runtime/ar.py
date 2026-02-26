@@ -11,6 +11,12 @@ import torch
 from ..types import RequestOutput, SchedulerOutput, SchedulerRequest
 from .common import SimpleResourceManager
 from .interfaces import ResourceManager
+from .logits_processor import (
+    LogitsProcessorPipeline,
+    SamplingContext,
+    default_logits_pipeline,
+)
+from .sampler import ArgmaxSampler, MultinomialSampler, Sampler
 
 # -----------------------------------------------------------------------------
 # Data Structures
@@ -34,7 +40,17 @@ class ARRequestData:
     output_ids: list[int] = field(default_factory=list)
     num_computed_tokens: int = 0
     max_new_tokens: int | None = None
+
+    # Sampling parameters (forwarded into SamplingContext per step)
     temperature: float = 0.0
+    top_p: float = 1.0
+    top_k: int = -1
+    repetition_penalty: float = 1.0
+    frequency_penalty: float = 0.0
+    # Per-request custom metadata, mirrors SGLang's custom_params passthrough.
+    # Values here are copied into SamplingContext.metadata each step, allowing
+    # logits processors to read request-level config without schema changes.
+    custom_params: dict[str, Any] = field(default_factory=dict)
 
     # For simple HF-style KV cache
     past_key_values: tuple | None = None
