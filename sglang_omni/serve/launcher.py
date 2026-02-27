@@ -51,6 +51,7 @@ DEFAULT_BUILTIN_PIPELINE = "qwen3-omni"
 
 _BUILTIN_PIPELINES: dict[str, str] = {
     "qwen3-omni": "sglang_omni.models.qwen3_omni.create_text_first_pipeline_config",
+    "fishaudio-s1": "sglang_omni.models.fishaudio_s1.create_tts_pipeline_config",
 }
 
 
