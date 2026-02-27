@@ -36,7 +36,7 @@ from sglang_omni.vendor.sglang.layers import (
     should_use_flashinfer_cutlass_moe_fp4_allgather,
     top_k_top_p_sampling_from_probs,
 )
-from sglang_omni.vendor.sglang.model_executor import ForwardBatch
+from sglang_omni.vendor.sglang.core import ForwardBatch
 from sglang_omni.vendor.sglang.utils import make_layers
 
 # ---------------------------------------------------------------------------
@@ -451,7 +451,11 @@ class Qwen3OmniMoeTalkerCodePredictor(nn.Module):
         Returns:
             hidden_states: [batch, seq_len, hidden_size] - final hidden states
         """
-        hidden_states = inputs_embeds
+        batch_size, seq_len, hidden_size = inputs_embeds.shape
+        hidden_states = inputs_embeds.view(-1, hidden_size)
+
+        if positions.numel() == seq_len:
+            positions = positions.repeat(batch_size)
 
         for layer in self.model.layers:
             # Pre-norm self-attention with residual
@@ -472,7 +476,7 @@ class Qwen3OmniMoeTalkerCodePredictor(nn.Module):
 
         # Final norm
         hidden_states = self.model.norm(hidden_states)
-        return hidden_states
+        return hidden_states.view(batch_size, seq_len, hidden_size)
 
 
 # ---------------------------------------------------------------------------
@@ -595,6 +599,7 @@ class Qwen3OmniTalker(nn.Module):
         self,
         layer0_codes: torch.Tensor,
         talker_hidden: torch.Tensor,
+        forward_batch: Optional[ForwardBatch] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Generate residual RVQ codes (layers 1 to N-1) for each position.
 
@@ -635,7 +640,7 @@ class Qwen3OmniTalker(nn.Module):
                     positions=torch.arange(
                         current_input.shape[1], device=current_input.device
                     ),
-                    forward_batch=None,
+                    forward_batch=forward_batch,
                 )
 
                 # Predict from last token's hidden state (top_k=50, top_p=0.8 matching HF/vLLM-Omni)
@@ -645,7 +650,7 @@ class Qwen3OmniTalker(nn.Module):
                 probs = torch.softmax(logits[:, -1, :], dim=-1)
                 code = top_k_top_p_sampling_from_probs(
                     probs, top_k=50, top_p=0.8
-                )  # [batch, 1]
+                ).unsqueeze(-1)  # [batch, 1]
                 pos_codes.append(code)
 
                 # Append new embedding to growing sequence
