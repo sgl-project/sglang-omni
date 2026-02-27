@@ -160,6 +160,7 @@ class RepetitionPenaltyProcessor:
         if prev.dim() == 1:
             prev = prev.unsqueeze(0).expand(logits.shape[0], -1)
 
+        logits = logits.clone()
         scores = torch.gather(logits, dim=-1, index=prev)
         scores = torch.where(
             scores < 0, scores * penalty, scores / penalty

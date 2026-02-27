@@ -21,22 +21,11 @@ from .runtime.common import (
     SimpleResourceManager,
     SinglePassIterationController,
 )
-from .runtime.dual_ar import (
-    DualARBatchPlanner,
-    DualARInputPreparer,
-    DualARIterationController,
-    DualAROutputProcessor,
-    DualARResourceManager,
-)
 from .runtime.encoder import (
     EncoderBatchPlanner,
     EncoderInputPreparer,
     EncoderOutputProcessor,
 )
-from .runtime.logits_processor import LogitsProcessor, LogitsProcessorPipeline, default_logits_pipeline
-from .runtime.radix_cache import DualARRadixCache
-from .runtime.sampler import MultinomialNoSyncSampler, Sampler
-from .runtime.tokenizer import wrap_tokenizer
 from .scheduler import Scheduler
 
 
@@ -179,128 +168,3 @@ def create_ar_engine(
     )
 
     return OmniEngine(scheduler=scheduler, model_runner=model_runner)
-
-
-def create_dual_ar_engine(
-    model: torch.nn.Module,
-    tokenizer: Any = None,
-    *,
-    num_codebooks: int = 4,
-    codebook_size: int = 1024,
-    max_new_tokens: int = 2048,
-    device: str = "cuda",
-    logits_processors: list[LogitsProcessor] | None = None,
-    sampler: Sampler | None = None,
-    use_radix_cache: bool = False,
-    radix_cache_size: int = 256,
-    use_cuda_graph: bool = False,
-) -> OmniEngine:
-    """Create an engine for DualARTransformer (FishAudio-S1) models.
-
-    Args:
-        model: A ``DualARTransformer`` instance (already loaded).
-        tokenizer: ``FishTokenizer`` or any object with ``get_token_id()``.
-        num_codebooks: Number of VQ codebooks (default 4).
-        codebook_size: Size of each codebook (default 1024).
-        max_new_tokens: Maximum decode steps.
-        device: Device to run on.
-        logits_processors: Optional extra logits processors (appended to
-            the default pipeline).
-        sampler: Override the default ``MultinomialNoSyncSampler``.
-        use_radix_cache: Enable radix-tree prefix cache for voice
-            cloning reference reuse.
-        radix_cache_size: Maximum radix cache entries.
-        use_cuda_graph: Capture CUDA Graphs for the decode step.
-
-    Returns:
-        ``OmniEngine`` configured for DualAR TTS.
-
-    Example::
-
-        from fish_speech.models.text2semantic.llama import DualARTransformer
-        from fish_speech.tokenizer import FishTokenizer
-
-        model = DualARTransformer.from_pretrained("checkpoints/openaudio-s1-mini", load_weights=True)
-        tokenizer = FishTokenizer.from_pretrained("checkpoints/openaudio-s1-mini")
-
-        engine = create_dual_ar_engine(model, tokenizer, device="cuda")
-        await engine.start()
-
-        adapter = FishTokenizerAdapter(tokenizer)
-        values, audio_masks, audio_parts = adapter.build_prompt("Hello world")
-        data = DualARRequestData(
-            input_values=values,
-            audio_masks=audio_masks,
-            audio_parts=audio_parts,
-            max_new_tokens=1024,
-        )
-        await engine.add_request("req-1", data)
-        result = await engine.get_result("req-1")  # DualARRequestData with output_codes
-    """
-    adapter = wrap_tokenizer(tokenizer)
-    im_end_id = adapter.eos_token_ids[0]
-
-    semantic_begin_id = 0
-    if hasattr(adapter, "semantic_begin_id"):
-        semantic_begin_id = adapter.semantic_begin_id
-
-    # Build logits pipeline
-    slow_pipeline = default_logits_pipeline()
-    fast_pipeline = default_logits_pipeline()
-    if logits_processors:
-        for proc in logits_processors:
-            slow_pipeline.add(proc)
-            fast_pipeline.add(proc)
-
-    sampler = sampler or MultinomialNoSyncSampler()
-
-    # Optionally wrap model with CUDA Graph runner
-    actual_model = model
-    if use_cuda_graph and torch.cuda.is_available():
-        from .runtime.cuda_graph import DualARCudaGraphRunner
-
-        actual_model = DualARCudaGraphRunner(
-            model, num_codebooks=num_codebooks,
-            codebook_size=codebook_size, device=device,
-        )
-
-    def _stream_adapter(request, output):
-        step_out = output.data
-        if step_out is None or not hasattr(step_out, "codes"):
-            return None
-        return step_out.codes
-
-    scheduler = Scheduler(
-        batch_planner=DualARBatchPlanner(),
-        resource_manager=DualARResourceManager(max_count=1),
-        iteration_controller=DualARIterationController(
-            im_end_token_id=im_end_id,
-            max_new_tokens=max_new_tokens,
-        ),
-        stream_adapter=_stream_adapter,
-    )
-
-    model_runner = ModelRunner(
-        model=model,
-        input_preparer=DualARInputPreparer(),
-        output_processor=DualAROutputProcessor(
-            model=model,
-            slow_pipeline=slow_pipeline,
-            fast_pipeline=fast_pipeline,
-            sampler=sampler,
-            num_codebooks=num_codebooks,
-            codebook_size=codebook_size,
-            semantic_begin_id=semantic_begin_id,
-        ),
-        device=device,
-    )
-
-    cache_manager = None
-    if use_radix_cache:
-        cache_manager = DualARRadixCache(max_entries=radix_cache_size)
-
-    return OmniEngine(
-        scheduler=scheduler,
-        model_runner=model_runner,
-        cache_manager=cache_manager,
-    )
