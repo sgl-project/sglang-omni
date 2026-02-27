@@ -68,7 +68,35 @@
   const sendBtn = $("send-btn");
   const stopBtn = $("stop-btn");
   const clearBtn = $("clear-btn");
+  const themeToggle = $("theme-toggle");
   let defaultFsRoot = "/";
+
+  // ── Theme toggle ──────────────────────────────────────────────
+  function getTheme() {
+    return document.documentElement.getAttribute("data-theme") || "dark";
+  }
+  function setTheme(theme) {
+    if (theme === "dark") {
+      document.documentElement.removeAttribute("data-theme");
+    } else {
+      document.documentElement.setAttribute("data-theme", theme);
+    }
+    try { localStorage.setItem("sglang-theme", theme); } catch (_) {}
+  }
+  // Restore saved preference
+  try {
+    const saved = localStorage.getItem("sglang-theme");
+    if (saved === "light") setTheme("light");
+  } catch (_) {}
+  if (themeToggle) {
+    themeToggle.addEventListener("click", () => {
+      setTheme(getTheme() === "dark" ? "light" : "dark");
+    });
+  }
+  /** Read a CSS custom property value (for canvas drawing). */
+  function cssVar(name) {
+    return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  }
   if (micToggle) micToggle.textContent = "Record audio";
   if (webcamToggle) webcamToggle.textContent = "Access webcam";
   if (micStatus) micStatus.classList.add("hidden");
@@ -105,7 +133,7 @@
   async function resolveDefaultFsRoot() {
     if (defaultFsRoot && defaultFsRoot !== "/") return defaultFsRoot;
     try {
-      const res = await fetch(getFsApiBase() + "/health");
+      const res = await fetch(getChatApiBase() + "/health");
       if (!res.ok) return defaultFsRoot;
       const payload = await res.json();
       const browseStartPath = payload && payload.browse_start_path
@@ -195,27 +223,16 @@
   function getChatApiBase() {
     const defaultBase = "http://localhost:8000";
     const globalBase = (typeof window !== "undefined" && window.SGLANG_OMNI_API_BASE) ? String(window.SGLANG_OMNI_API_BASE).trim() : "";
+    // When served by the backend itself (--serve-playground), use same origin.
     const sameOriginIsBackend =
       typeof location !== "undefined" &&
-      /^https?:$/.test(location.protocol) &&
-      (location.port === "8000" || (location.protocol === "http:" && location.port === ""));
+      /^https?:$/.test(location.protocol);
     const base = globalBase || (sameOriginIsBackend ? location.origin : defaultBase);
     return base.replace(/\/$/, "");
   }
 
-  function getFsApiBase() {
-    const defaultBase = "http://localhost:8001";
-    const globalBase = (typeof window !== "undefined" && window.SGLANG_OMNI_FS_API_BASE) ? String(window.SGLANG_OMNI_FS_API_BASE).trim() : "";
-    const sameOriginIsFs =
-      typeof location !== "undefined" &&
-      /^https?:$/.test(location.protocol) &&
-      (location.port === "8001" || (location.protocol === "http:" && location.port === ""));
-    const base = globalBase || (sameOriginIsFs ? location.origin : defaultBase);
-    return base.replace(/\/$/, "");
-  }
-
   function getContainerFileUrl(path) {
-    return getFsApiBase() + "/v1/fs/file?path=" + encodeURIComponent(path);
+    return getChatApiBase() + "/v1/fs/file?path=" + encodeURIComponent(path);
   }
 
   function inferContainerKind(path) {
@@ -385,7 +402,7 @@
     if (!fsListEl) return;
     const opts = options || {};
     const target = String(path || state.fsCurrentPath || defaultFsRoot || "/").trim();
-    const apiBase = getFsApiBase();
+    const apiBase = getChatApiBase();
     const url = apiBase + "/v1/fs/list" + (target ? ("?path=" + encodeURIComponent(target)) : "");
     setFsError("");
     try {
@@ -794,10 +811,10 @@
     const height = audioVisualizer.height;
     state.vizAnim = requestAnimationFrame(drawVisualizer);
     state.analyser.getByteTimeDomainData(state.analyserData);
-    canvasCtx.fillStyle = "#eef0ff";
+    canvasCtx.fillStyle = cssVar("--canvas-bg");
     canvasCtx.fillRect(0, 0, width, height);
     canvasCtx.lineWidth = 2;
-    canvasCtx.strokeStyle = "#5c6bc0";
+    canvasCtx.strokeStyle = cssVar("--canvas-wave");
     canvasCtx.beginPath();
     const sliceWidth = width / state.analyserData.length;
     let x = 0;
@@ -853,13 +870,13 @@
       const height = canvas.height;
       const canvasCtx = canvas.getContext("2d");
       canvasCtx.clearRect(0, 0, width, height);
-      canvasCtx.fillStyle = "#fff";
+      canvasCtx.fillStyle = cssVar("--canvas-bg");
       canvasCtx.fillRect(0, 0, width, height);
       const centerY = height / 2;
       const barCount = Math.min(width, 120);
       const barWidth = Math.max(1, (width / barCount) - 1);
       const blockSize = Math.max(1, Math.floor(raw.length / barCount));
-      canvasCtx.fillStyle = "#9ca3af";
+      canvasCtx.fillStyle = cssVar("--canvas-bar");
       for (let i = 0; i < barCount; i++) {
         const blockStart = i * blockSize;
         let sum = 0;
@@ -873,7 +890,7 @@
         canvasCtx.fillRect(x, centerY, barWidth, barHeight);
       }
       canvasCtx.setLineDash([4, 4]);
-      canvasCtx.strokeStyle = "#d1d5db";
+      canvasCtx.strokeStyle = cssVar("--canvas-line");
       canvasCtx.lineWidth = 1;
       canvasCtx.beginPath();
       canvasCtx.moveTo(0, centerY);

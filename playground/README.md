@@ -1,12 +1,12 @@
 # Playground
 
-This directory contains the SGLang-Omni frontend demo and filesystem API.
+This directory contains the SGLang-Omni frontend demo.
 
 ## Overview
 
 The playground is a browser UI for testing multimodal model interactions end to end.
 It lets you send text, audio, image, and video inputs, then view streamed model responses in one place.
-It also includes a server-side file browser so users can pick media directly from files already inside the container.
+It also includes a built-in file browser so users can pick media files from the server filesystem.
 
 ## Functions
 
@@ -18,7 +18,7 @@ It also includes a server-side file browser so users can pick media directly fro
 - Upload audio, image, and video files from local machine.
 - Record audio from microphone.
 - Capture video from webcam.
-- Pick media files from server/container filesystem via FS API modal.
+- Pick media files from server/container filesystem via built-in file browser.
 
 3. Generation controls
 - Configure model generation parameters (temperature, top-p, top-k).
@@ -28,19 +28,9 @@ It also includes a server-side file browser so users can pick media directly fro
 - Receive assistant responses in streaming mode (SSE).
 - Display text output and returned media in chat history.
 
-5. Filesystem service integration
-- Browse directories and select files through `playground/fs_api.py`.
-- Separate allowed filesystem scope from default browse start path.
-
-## Components
-
-1. Frontend static page (`index.html` + `app.js` + `styles.css`)
-2. Filesystem API (`playground/fs_api.py`, default port `8001`)
-3. Backend API server (`sglang_omni/serve/openai_api.py`, default port `8000`)
-
 ## Quick Start
 
-Run everything (backend + frontend + FS API) with one command:
+Run everything with one command:
 
 ```bash
 ./playground/start_playground.sh \
@@ -48,16 +38,15 @@ Run everything (backend + frontend + FS API) with one command:
   --model-id Qwen/Qwen3-Omni-30B-A3B-Instruct
 ```
 
-Then open `http://localhost:3000` in your browser.
+Then open `http://localhost:8000` in your browser.
 
-### Custom ports
+### Custom port
 
 ```bash
 ./playground/start_playground.sh \
   --pipeline qwen3-omni \
   --model-id Qwen/Qwen3-Omni-30B-A3B-Instruct \
-  --backend-port 8080 \
-  --frontend-port 3001
+  --port 8080
 ```
 
 ### SSH tunnel (for remote servers / Docker)
@@ -65,39 +54,29 @@ Then open `http://localhost:3000` in your browser.
 From your local machine:
 
 ```bash
-ssh -L 3000:localhost:3000 -L 8000:localhost:8000 -L 8001:localhost:8001 user@host
+ssh -L 8000:localhost:8000 user@host
 ```
 
-## Start Separately
-
-If you prefer to manage processes individually:
-
-Backend:
+## Start Manually
 
 ```bash
-CUDA_VISIBLE_DEVICES=5 sglang-omni-server \
+sglang-omni-server \
   --pipeline qwen3-omni \
   --model-id Qwen/Qwen3-Omni-30B-A3B-Instruct \
-  --port 8000
+  --port 8000 \
+  --serve-playground playground/
 ```
 
-Frontend + FS API:
+## Architecture
 
-```bash
-./playground/start_playground_and_fs.sh
-```
+Everything is served from a single FastAPI process:
 
-Or manually:
-
-```bash
-python -m http.server 3000 --directory playground
-python -m playground.fs_api --host 0.0.0.0 --port 8001
-```
-
-## Default Ports
-
-| Service | Port | Env var |
-|---------|------|---------|
-| Backend API | 8000 | `BACKEND_PORT` |
-| Frontend | 3000 | `FRONTEND_PORT` |
-| FS API | 8001 | `FS_PORT` |
+| Endpoint | Description |
+|----------|-------------|
+| `/` | Playground UI (index.html, app.js, styles.css) |
+| `/v1/chat/completions` | Chat completions (text + audio, streaming) |
+| `/v1/audio/speech` | Text-to-speech |
+| `/v1/models` | List available models |
+| `/v1/fs/list` | Browse server filesystem |
+| `/v1/fs/file` | Download a server file |
+| `/health` | Health check |
