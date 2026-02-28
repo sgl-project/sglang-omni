@@ -220,13 +220,14 @@ class Stage:
         logger.info("Stage %s started", self.name)
 
     async def stop(self) -> None:
-        """Stop the stage."""
+        """Stop the stage (signal workers; resources are closed by run())."""
         self._running = False
 
-        # Signal workers to stop
         for worker in self.workers:
             await worker.queue.put(None)
 
+    def _close_resources(self) -> None:
+        """Close control plane and relay. Must be called after workers finish."""
         self.control_plane.close()
 
         if hasattr(self.relay, "close"):
@@ -261,20 +262,20 @@ class Stage:
             logger.error("Stage %s error: %s", self.name, e)
             raise
         finally:
-            # Stop
             await self.stop()
 
-            # Cancel abort listener
             abort_task.cancel()
-            try:
+            with suppress(asyncio.CancelledError):
                 await abort_task
-            except asyncio.CancelledError:
-                pass
 
-            # Wait for workers
-            for task in worker_tasks:
+            _done, pending = await asyncio.wait(
+                worker_tasks, timeout=5.0,
+            )
+            for task in pending:
                 task.cancel()
-            await asyncio.gather(*worker_tasks, return_exceptions=True)
+            await asyncio.gather(*pending, return_exceptions=True)
+
+            self._close_resources()
 
     async def _abort_listener(self) -> None:
         """Background task to listen for abort broadcasts."""
