@@ -838,7 +838,7 @@
     if (state.audioCtx) {
       try {
         state.audioCtx.close();
-      } catch (e) {}
+      } catch (e) { console.warn("Error closing AudioContext:", e); }
     }
     state.audioCtx = null;
     state.analyser = null;
@@ -1077,11 +1077,11 @@
       };
       state.isRecording = true;
       state.micRecorder.start();
-    if (micToggle) micToggle.classList.add("recording");
-    if (micStatus) {
-      micStatus.textContent = "Recording...";
-      micStatus.classList.remove("hidden");
-    }
+      if (micToggle) micToggle.classList.add("recording");
+      if (micStatus) {
+        micStatus.textContent = "Recording...";
+        micStatus.classList.remove("hidden");
+      }
       updateAudioControlsVisibility();
   } catch (err) {
       console.error("Mic access failed:", err);
@@ -1350,23 +1350,6 @@
       assistantMsg.classList.remove("streaming");
       setStreamingState(false);
     }
-  }
-
-  // Mock token streaming helper for fallback UX
-  function mockStreamTokens(fullText, onChunk) {
-    return new Promise((resolve) => {
-      let i = 0;
-      function tick() {
-        if (i < fullText.length) {
-          onChunk(fullText[i]);
-          i += 1;
-          setTimeout(tick, 20);
-        } else {
-          resolve();
-        }
-      }
-      tick();
-    });
   }
 
   function handleStop() {
