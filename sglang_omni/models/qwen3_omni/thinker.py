@@ -801,3 +801,6 @@ def extract_fused_experts(
             return param_name, f"experts.{expert_id}.{weight_type}", expert_id, shard_id
 
     return None
+
+
+EntryClass = Qwen3OmniMoeThinkerTextModel

@@ -36,7 +36,7 @@ from sglang_omni.vendor.sglang.layers import (
     should_use_flashinfer_cutlass_moe_fp4_allgather,
     top_k_top_p_sampling_from_probs,
 )
-from sglang_omni.vendor.sglang.model_executor import ForwardBatch
+from sglang_omni.vendor.sglang.core import ForwardBatch
 from sglang_omni.vendor.sglang.utils import make_layers
 
 # ---------------------------------------------------------------------------
