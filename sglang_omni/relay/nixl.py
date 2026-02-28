@@ -5,7 +5,7 @@ import asyncio
 import logging
 import time
 import uuid
-from typing import Any, Callable, Dict
+from typing import Any, Callable, Dict, List
 
 import numpy as np
 import torch
@@ -124,6 +124,7 @@ class GetOperation(NixlOperation):
         dest_tensor: torch.Tensor,
         copy_size: int,
         on_completion_cb: Callable[[], None],
+        dlist_handles: List[Any] = None,
     ):
         super().__init__(
             connection, metadata=None
@@ -133,6 +134,8 @@ class GetOperation(NixlOperation):
         self._dest_tensor = dest_tensor
         self._copy_size = copy_size
         self._on_completion_cb = on_completion_cb
+        # Keep dlist handles alive to prevent premature GC while RDMA is in-flight
+        self._dlist_handles = dlist_handles or []
 
     async def wait_for_completion(self, timeout: float = 30.0) -> None:
         if self._completed:
@@ -160,10 +163,21 @@ class GetOperation(NixlOperation):
             dest_view = self._dest_tensor.view(torch.uint8).reshape(-1)
             dest_view.copy_(src_view)
 
+            # 4. Release prepped dlist handles now that RDMA and copy are done
+            self._release_dlist_handles()
+
         finally:
             self._completed = True
-            # 4. Release Local Credit (Buffer is now free)
+            # Release dlist handles on exception path as well
+            self._release_dlist_handles()
+            # 5. Release Local Credit (Buffer is now free)
             self._on_completion_cb()
+
+    def _release_dlist_handles(self) -> None:
+        """Explicitly release prepped dlist handles to free NIXL descriptor resources."""
+        for handle in self._dlist_handles:
+            handle.release()
+        self._dlist_handles = []
 
 
 # ==========================================
@@ -234,6 +248,9 @@ class NixlRelay(Relay):
             pool_slice = self.pool_tensor[offset : offset + size_bytes]
             tensor_view = tensor.view(torch.uint8).reshape(-1)
             pool_slice.copy_(tensor_view)
+            # Ensure GPU copy is visible before RDMA reads the data
+            if "cuda" in self.device:
+                torch.cuda.synchronize()
 
             # 3. Prepare Metadata
             mem_type = "VRAM" if "cuda" in self.device else "DRAM"
@@ -333,6 +350,7 @@ class NixlRelay(Relay):
                 dest_tensor=dest_tensor,
                 copy_size=data_size,
                 on_completion_cb=lambda: self.allocator.release(local_offset),
+                dlist_handles=[local_handle, remote_handle],
             )
 
         except Exception as e:
