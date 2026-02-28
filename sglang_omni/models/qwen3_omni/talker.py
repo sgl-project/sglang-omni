@@ -25,6 +25,7 @@ from sglang_omni.models.qwen3_omni.thinker import (
     Qwen3OmniMoeThinkerTextDecoderLayer,
     Qwen3OmniMoeThinkerTextSparseMoeBlock,
 )
+from sglang_omni.vendor.sglang.core import ForwardBatch
 from sglang_omni.vendor.sglang.distributed import tensor_model_parallel_all_reduce
 from sglang_omni.vendor.sglang.layers import (
     MergedColumnParallelLinear,
@@ -36,7 +37,6 @@ from sglang_omni.vendor.sglang.layers import (
     should_use_flashinfer_cutlass_moe_fp4_allgather,
     top_k_top_p_sampling_from_probs,
 )
-from sglang_omni.vendor.sglang.core import ForwardBatch
 from sglang_omni.vendor.sglang.utils import make_layers
 
 # ---------------------------------------------------------------------------

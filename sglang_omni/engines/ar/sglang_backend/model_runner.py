@@ -1,14 +1,14 @@
 from __future__ import annotations
 
 import os
-from typing import TYPE_CHECKING
 
 from sglang_omni.vendor.sglang.core import (
-    ServerArgs,
-    PortArgs,
     ModelConfig,
-    ModelRunner
+    ModelRunner,
+    PortArgs,
+    ServerArgs,
 )
+
 
 class SGLModelRunner(ModelRunner):
     """Thin wrapper to bootstrap SGLang ModelRunner from backend args."""
@@ -28,12 +28,12 @@ class SGLModelRunner(ModelRunner):
         self.model_config = model_config
         self.server_args = server_args
         self.gpu_id = gpu_id
-        
+
         self._register_omni_model()
 
         model_config = server_args.get_model_config()
         port_args = PortArgs.init_new(server_args)
-        
+
         tp_size = server_args.tp_size
 
         self.nccl_port = port_args.nccl_port
@@ -51,9 +51,8 @@ class SGLModelRunner(ModelRunner):
             nccl_port=nccl_port,
             server_args=server_args,
         )
-        
+
     def _register_omni_model(self):
         # Ensure sglang_omni.models` custom modeling classes
         # are injected into the model registry before runner initialization.
         os.environ.setdefault("SGLANG_EXTERNAL_MODEL_PACKAGE", "sglang_omni.models")
-

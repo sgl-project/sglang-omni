@@ -1,9 +1,11 @@
 import pickle
 import random
+from typing import Any, List, Optional
+
 import numpy as np
 import torch
 import torch.distributed as dist
-from typing import Any, List, Optional
+
 
 def set_random_seed(seed: int) -> None:
     """Set the random seed for all libraries."""
@@ -12,6 +14,7 @@ def set_random_seed(seed: int) -> None:
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
+
 
 def broadcast_pyobj(
     data: List[Any],
@@ -31,7 +34,7 @@ def broadcast_pyobj(
         else:
             serialized_data = pickle.dumps(data)
             size = len(serialized_data)
-            
+
             tensor_data = torch.ByteTensor(
                 np.frombuffer(serialized_data, dtype=np.uint8)
             ).to(device)

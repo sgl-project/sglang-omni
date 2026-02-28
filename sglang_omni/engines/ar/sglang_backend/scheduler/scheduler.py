@@ -1,55 +1,54 @@
 import logging
+
 import torch
 from torch.cuda import Stream as CudaStream
 from torch.cuda import StreamContext as CudaStreamContext
-from .prefill import PrefillManager
+
+from sglang_omni.vendor.sglang.core import ServerArgs
+
 from .decode import DecodeManager
-from sglang_omni.vendor.sglang.core import (
-    ServerArgs,
-    ModelConfig
-)
+from .prefill import PrefillManager
 
 logger = logging.getLogger(__name__)
+
 
 class SchedulerConfig:
     pass
 
+
 class Scheduler:
-    def __init__(
-        self,
-        config: SchedulerConfig,
-        server_args, ServerArgs,
-        device
-    ):
-        self.device  = device
+    def __init__(self, config: SchedulerConfig, server_args: ServerArgs, device):
+        self.device = device
         self.prefill_manager = PrefillManager()
         self.decode_manager = DecodeManager()
-    
+
     def init_overlap(self):
         self.device_module = torch.get_device_module(self.device)
-        self.default_stream: CudaStream = self.
+        self.default_stream: CudaStream = self.device_module.current_stream()
+        self.forward_stream: CudaStream = self.device_module.Stream()
         self.forward_stream_ctx: CudaStreamContext = self.device_module.stream(
             self.forward_stream
         )
-    def receive_msg():
-    
+
+    def receive_msg(self, blocking=False):
+        pass
+
     def normal_loop(self) -> None:
         """A normal scheduler loop."""
         while True:
             recv_reqs = self.recv_requests()
             self.process_requess(recv_reqs)
-            
+
             batch = self.get_next_batch_to_run()
-            
-        
+
         blocking = not (self.prefill_manager.runnable or self.decode_manager.runnable)
-        
+
         scheduler_batch = self
-        
+
     def _schedule_next_batch(self):
         # Implement the logic to schedule the next batch of tasks based on the state of the prefill and decode managers
         pass
-    
+
     def event_loop(self) -> None:
         blocking = not (self.prefill_manager.runnable or self.decode_manager.runnable)
         for msg in self.receive_msg(blocking=blocking):

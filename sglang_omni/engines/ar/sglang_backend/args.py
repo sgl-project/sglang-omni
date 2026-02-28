@@ -1,12 +1,12 @@
 import argparse
 import logging
-from typing import Any, Dict, List, Optional
 from dataclasses import dataclass, fields
-from sglang_omni.vendor.sglang.core import (
-    ServerArgs,
-)
+from typing import List, Optional
+
+from sglang_omni.vendor.sglang.core import ServerArgs
 
 logger = logging.getLogger(__name__)
+
 
 @dataclass
 class SGLangBackendArgs:
@@ -14,10 +14,10 @@ class SGLangBackendArgs:
 
     @staticmethod
     def add_cli_args(parser: argparse.ArgumentParser) -> None:
-        
+
         # SGLang arguments
         ServerArgs.add_cli_args(parser)
-        
+
         # sglang-omni extra arguments
         parser.add_argument(
             "--disabled-args",
@@ -39,10 +39,8 @@ class SGLangBackendArgs:
             arg = raw_arg.lstrip("-").replace("-", "_")
             if hasattr(args, arg):
                 delattr(args, arg)
-                logger.warning(
-                    f"SGLang Argument `{raw_arg}` is disabled."
-                )
-        
+                logger.warning(f"SGLang Argument `{raw_arg}` is disabled.")
+
         return args
 
     @staticmethod
@@ -55,6 +53,7 @@ class SGLangBackendArgs:
         }
         return argparse.Namespace(**stripped)
 
+
 def prepare_sgl_server_args(argv: List[str]) -> ServerArgs:
     parser = argparse.ArgumentParser()
     SGLangBackendArgs.add_cli_args(parser)
@@ -62,7 +61,7 @@ def prepare_sgl_server_args(argv: List[str]) -> ServerArgs:
     raw_args = parser.parse_args(argv)
     SGLangBackendArgs._remove_disabled_args(raw_args)
     cli_server_args = SGLangBackendArgs._strip_backend_args(raw_args)
-    
+
     server_args = ServerArgs.from_cli_args(cli_server_args)
-    
+
     return server_args
