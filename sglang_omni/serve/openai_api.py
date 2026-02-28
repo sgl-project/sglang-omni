@@ -14,16 +14,13 @@ from __future__ import annotations
 
 import json
 import logging
-import mimetypes
-import os
 import time
 import uuid
-from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from sglang_omni.client import (
     Client,
@@ -91,21 +88,6 @@ def create_app(
     _register_models(app)
     _register_chat_completions(app)
     _register_speech(app)
-    _register_filesystem(app)
-
-    # Serve playground static files (must be last so API routes take priority)
-    if serve_playground:
-        from fastapi.staticfiles import StaticFiles
-
-        playground_dir = Path(serve_playground).resolve()
-        if playground_dir.is_dir():
-            app.mount("/", StaticFiles(directory=str(playground_dir), html=True))
-            logger.info("Serving playground UI from %s", playground_dir)
-        else:
-            logger.warning(
-                "Playground directory %s does not exist, skipping static mount",
-                playground_dir,
-            )
 
     return app
 
@@ -127,8 +109,6 @@ def _register_health(app: FastAPI) -> None:
             content={
                 "status": "healthy" if is_running else "unhealthy",
                 **info,
-                "root_path": str(_fs_root()),
-                "browse_start_path": str(_fs_browse_start()),
             },
             status_code=status_code,
         )
@@ -372,133 +352,6 @@ async def _chat_stream(
     yield f"data: {json.dumps(data)}\n\n"
 
     yield "data: [DONE]\n\n"
-
-
-# ---------------------------------------------------------------------------
-# Filesystem browser API (/v1/fs/*)
-# ---------------------------------------------------------------------------
-
-_MEDIA_SUFFIXES = {
-    "audio": {".wav", ".mp3", ".flac", ".m4a", ".aac", ".ogg", ".webm"},
-    "image": {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif"},
-    "video": {".mp4", ".mov", ".avi", ".mkv", ".webm"},
-}
-
-
-def _fs_root() -> Path:
-    """Filesystem root — always container root ``/``."""
-    return Path("/")
-
-
-def _fs_browse_start() -> Path:
-    """Default directory shown when the file browser opens."""
-    configured = os.getenv("SGLANG_OMNI_FS_ROOT")
-    if configured and configured.strip():
-        return Path(configured).resolve()
-    # Default: sglang-omni repo root (two levels up from this file)
-    return Path(__file__).resolve().parents[2]
-
-
-def _fs_resolve(root: Path, raw_path: str | None) -> Path:
-    if raw_path is None or raw_path.strip() == "":
-        candidate = root
-    else:
-        requested = Path(raw_path.strip())
-        candidate = (
-            requested.resolve()
-            if requested.is_absolute()
-            else (root / requested).resolve()
-        )
-    try:
-        candidate.relative_to(root)
-    except ValueError:
-        raise HTTPException(
-            status_code=403,
-            detail=f"Path is outside allowed root: {root}",
-        )
-    return candidate
-
-
-def _fs_classify(path: Path) -> str:
-    suffix = path.suffix.lower()
-    for kind, suffixes in _MEDIA_SUFFIXES.items():
-        if suffix in suffixes:
-            return kind
-    return "other"
-
-
-def _register_filesystem(app: FastAPI) -> None:
-    @app.get("/v1/fs/list")
-    async def list_files(
-        path: str | None = Query(default=None),
-    ) -> JSONResponse:
-        """List directory contents for the file browser."""
-        root = _fs_root()
-        current = _fs_resolve(root, path)
-        if not root.exists() or not root.is_dir():
-            raise HTTPException(
-                status_code=500,
-                detail=f"Filesystem root does not exist: {root}",
-            )
-        if not current.exists():
-            raise HTTPException(status_code=404, detail=f"Path not found: {current}")
-        if not current.is_dir():
-            raise HTTPException(status_code=400, detail=f"Not a directory: {current}")
-
-        entries: list[dict[str, Any]] = []
-        for child in sorted(
-            current.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower())
-        ):
-            try:
-                resolved = child.resolve()
-            except OSError:
-                continue
-            try:
-                resolved.relative_to(root)
-            except ValueError:
-                continue
-            is_dir = child.is_dir()
-            item: dict[str, Any] = {
-                "name": child.name,
-                "path": str(resolved),
-                "is_dir": is_dir,
-                "kind": "dir" if is_dir else _fs_classify(child),
-            }
-            if not is_dir:
-                try:
-                    item["size"] = child.stat().st_size
-                except OSError:
-                    item["size"] = None
-            entries.append(item)
-
-        parent_path = str(current.parent) if current != root else None
-        return JSONResponse(
-            content={
-                "root_path": str(root),
-                "current_path": str(current),
-                "parent_path": parent_path,
-                "entries": entries,
-            }
-        )
-
-    @app.get("/v1/fs/file")
-    async def read_file(path: str = Query(..., min_length=1)) -> FileResponse:
-        """Download a file from the container filesystem."""
-        root = _fs_root()
-        if not root.exists() or not root.is_dir():
-            raise HTTPException(
-                status_code=500,
-                detail=f"Filesystem root does not exist: {root}",
-            )
-        file_path = _fs_resolve(root, path)
-        if not file_path.exists() or not file_path.is_file():
-            raise HTTPException(status_code=404, detail=f"File not found: {file_path}")
-        media_type, _ = mimetypes.guess_type(file_path.name)
-        return FileResponse(
-            path=file_path,
-            media_type=media_type or "application/octet-stream",
-            filename=file_path.name,
-        )
 
 
 # ---------------------------------------------------------------------------

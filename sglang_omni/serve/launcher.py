@@ -122,7 +122,6 @@ async def _run_server(
     model_name: str | None = None,
     log_level: str = "info",
     client_kwargs: dict[str, Any] | None = None,
-    serve_playground: str | None = None,
 ) -> None:
     """Compile the pipeline, start stages, and run the OpenAI server.
 
@@ -148,7 +147,6 @@ async def _run_server(
         app = create_app(
             client,
             model_name=model_name or pipeline_config.name,
-            serve_playground=serve_playground,
         )
 
         profiler_dir = os.environ.get("SGLANG_TORCH_PROFILER_DIR")
@@ -174,7 +172,6 @@ def launch_server(
     model_name: str | None = None,
     log_level: str = "info",
     client_kwargs: dict[str, Any] | None = None,
-    serve_playground: str | None = None,
 ) -> None:
     """Blocking helper: compile pipeline and start the OpenAI-compatible server.
 
@@ -199,7 +196,6 @@ def launch_server(
             model_name=model_name,
             log_level=log_level,
             client_kwargs=client_kwargs,
-            serve_playground=serve_playground,
         )
     )
 

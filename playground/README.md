@@ -43,8 +43,7 @@ pip install "sglang-omni[gradio]"
 
 ```bash
 ./playground/gradio/start.sh \
-  --pipeline qwen3-omni \
-  --model-id Qwen/Qwen3-Omni-30B-A3B-Instruct
+  --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct
 ```
 
 Backend runs on `http://localhost:8000`, Gradio UI on `http://localhost:7860`. Use `--port` / `--gradio-port` to change, `--share` for a public link.
