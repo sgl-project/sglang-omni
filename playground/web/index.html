@@ -33,8 +33,12 @@
         <textarea id="system-prompt" rows="8" placeholder="e.g., You are a helpful assistant"></textarea>
 
         <label for="output-modality">Output</label>
-        <select id="output-modality">
+        <select id="output-modality" disabled>
           <option value="text">Text only</option>
+          <!-- TODO: enable after talker is wired -->
+          <!-- <option value="audio">Audio only</option> -->
+          <!-- <option value="both">Text + Audio</option> -->
+          <!-- <option value="auto">Auto</option> -->
         </select>
 
         <div class="slider-block">

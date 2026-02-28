@@ -5,13 +5,13 @@ set -euo pipefail
 # Start the playground: single-process backend serving API + UI + file browser.
 #
 # Usage:
-#   ./playground/start_playground.sh --pipeline qwen3-omni --model-id Qwen/Qwen3-Omni-30B-A3B-Instruct
-#   CUDA_VISIBLE_DEVICES=5 ./playground/start_playground.sh --pipeline qwen3-omni --model-id <id>
-#   ./playground/start_playground.sh --pipeline qwen3-omni --model-id <id> --port 8080
+#   ./playground/web/start.sh --pipeline qwen3-omni --model-id Qwen/Qwen3-Omni-30B-A3B-Instruct
+#   CUDA_VISIBLE_DEVICES=5 ./playground/web/start.sh --pipeline qwen3-omni --model-id <id>
+#   ./playground/web/start.sh --pipeline qwen3-omni --model-id <id> --port 8080
 # ---------------------------------------------------------------------------
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PLAYGROUND_DIR="${ROOT_DIR}/playground"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+PLAYGROUND_DIR="${ROOT_DIR}/playground/web"
 
 PORT="${PORT:-8000}"
 PYTHON_BIN="${PYTHON_BIN:-python}"
