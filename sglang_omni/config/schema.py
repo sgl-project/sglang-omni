@@ -44,7 +44,6 @@ class StageConfig(BaseModel):
     """Single pipeline stage configuration."""
 
     model_config = ConfigDict(extra="forbid")
-
     name: str
     executor: ExecutorConfig
     get_next: str
@@ -68,9 +67,10 @@ class PipelineConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    name: str
+    model_path: str
     entry_stage: str
     stages: list[StageConfig]
+    name: str = "model"
     fused_stages: list[list[str]] = Field(default_factory=list)
     endpoints: EndpointsConfig = Field(default_factory=EndpointsConfig)
     completion_endpoint: str | None = None
@@ -81,8 +81,8 @@ class PipelineConfig(BaseModel):
         self._validate_fusion()
 
     def _validate_general(self) -> None:
-        if not self.name:
-            raise ValueError("Pipeline name is required")
+        if not self.model_path:
+            raise ValueError("Model path is required")
 
         stage_names = [stage_cfg.name for stage_cfg in self.stages]
         if not stage_names:

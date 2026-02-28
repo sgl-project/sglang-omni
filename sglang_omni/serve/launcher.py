@@ -35,23 +35,19 @@ from typing import Any
 import uvicorn
 from fastapi import APIRouter
 from pydantic import BaseModel
+from transformers import AutoConfig
 
 from sglang_omni.client import Client
 from sglang_omni.config import PipelineConfig, PipelineRunner, compile_pipeline
+from sglang_omni.models.registry import PipelineConfigRegistry
 from sglang_omni.profiler.profiler_control import ProfilerControlClient
 from sglang_omni.serve.openai_api import create_app
-from sglang_omni.utils import import_string
 
 logger = logging.getLogger(__name__)
-DEFAULT_BUILTIN_PIPELINE = "qwen3-omni"
 
 # ---------------------------------------------------------------------------
 # Built-in pipeline registry
 # ---------------------------------------------------------------------------
-
-_BUILTIN_PIPELINES: dict[str, str] = {
-    "qwen3-omni": "sglang_omni.models.qwen3_omni.create_text_first_pipeline_config",
-}
 
 
 def _default_run_id() -> str:
@@ -60,33 +56,6 @@ def _default_run_id() -> str:
 
 def _default_template(profiler_dir: str, run_id: str) -> str:
     return os.path.join(profiler_dir, run_id, "trace")
-
-
-def _resolve_builtin(
-    pipeline_name: str,
-    *,
-    model_id: str,
-    extra_kwargs: dict[str, Any] | None = None,
-) -> PipelineConfig:
-    """Instantiate a built-in pipeline config by name."""
-    if pipeline_name not in _BUILTIN_PIPELINES:
-        available = ", ".join(sorted(_BUILTIN_PIPELINES))
-        raise ValueError(
-            f"Unknown built-in pipeline: {pipeline_name!r}. " f"Available: {available}"
-        )
-
-    factory_path = _BUILTIN_PIPELINES[pipeline_name]
-    factory = import_string(factory_path)
-    kwargs: dict[str, Any] = {"model_id": model_id}
-    if extra_kwargs:
-        kwargs.update(extra_kwargs)
-    config = factory(**kwargs)
-    if not isinstance(config, PipelineConfig):
-        raise TypeError(
-            f"Pipeline factory {factory_path} returned {type(config)}, "
-            "expected PipelineConfig"
-        )
-    return config
 
 
 # ---------------------------------------------------------------------------
@@ -291,14 +260,6 @@ examples:
         type=str,
         help="Path to a pipeline config JSON file.",
     )
-    source.add_argument(
-        "--pipeline",
-        type=str,
-        default=DEFAULT_BUILTIN_PIPELINE,
-        choices=sorted(_BUILTIN_PIPELINES),
-        help=f"Name of a built-in pipeline (default: {DEFAULT_BUILTIN_PIPELINE}).",
-    )
-
     # --- Pipeline factory args (used with --pipeline) ---
     parser.add_argument(
         "--model-id",
@@ -367,30 +328,9 @@ examples:
         config = load_pipeline_config(args.config)
     else:
         # --pipeline mode
-        pipeline_name = args.pipeline or DEFAULT_BUILTIN_PIPELINE
-        if not args.model_id:
-            parser.error("--model-id is required when using --pipeline")
-
-        # Collect non-None kwargs to forward to the factory
-        factory_kwargs: dict[str, Any] = {}
-        for key in (
-            "dtype",
-            "preprocessing_device",
-            "image_device",
-            "audio_device",
-            "thinker_device",
-            "thinker_max_seq_len",
-            "relay_type",
-        ):
-            val = getattr(args, key, None)
-            if val is not None:
-                factory_kwargs[key] = val
-
-        config = _resolve_builtin(
-            pipeline_name,
-            model_id=args.model_id,
-            extra_kwargs=factory_kwargs,
-        )
+        config = AutoConfig.from_pretrained(args.model_id)
+        pipeline_cls = PipelineConfigRegistry.get_config(config.architectures[0])
+        config = pipeline_cls(model_path=args.model_id)
 
     # --- Export or serve ---
     if args.export_config:
