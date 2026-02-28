@@ -169,9 +169,9 @@ class Worker:
 
         except asyncio.CancelledError:
             logger.debug("Worker: request %s cancelled", request_id)
-        except Exception:
+        except Exception as e:
             logger.exception("Worker: request %s failed", request_id)
-            await self._send_failure(request_id, str(request_id))
+            await self._send_failure(request_id, str(e))
         finally:
             self._result_waiters.pop(request_id, None)
             if self.stage is not None:

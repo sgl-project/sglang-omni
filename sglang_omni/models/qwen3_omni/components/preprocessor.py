@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from pathlib import Path
@@ -13,9 +14,9 @@ from transformers import AutoFeatureExtractor, AutoImageProcessor, AutoTokenizer
 from transformers.models.qwen3_omni_moe.processing_qwen3_omni_moe import (
     Qwen3OmniMoeProcessor,
 )
-from transformers.utils.hub import cached_file
 
 from sglang_omni.models.qwen3_omni.io import PipelineState
+from sglang_omni.models.weight_loader import resolve_model_path
 from sglang_omni.preprocessing import (
     build_audio_mm_inputs,
     build_image_mm_inputs,
@@ -23,11 +24,10 @@ from sglang_omni.preprocessing import (
     compute_audio_cache_key,
     compute_image_cache_key,
     compute_video_cache_key,
-    ensure_audio_list,
+    ensure_audio_list_async,
     ensure_chat_template,
-    ensure_image_list,
-    ensure_video_list,
-    extract_audio_from_video_inputs,
+    ensure_image_list_async,
+    ensure_video_list_async,
     normalize_messages,
 )
 from sglang_omni.proto import StagePayload
@@ -36,9 +36,8 @@ logger = logging.getLogger(__name__)
 
 
 def _resolve_local_model_dir(model_id: str) -> str:
-    """Resolve the local snapshot directory for a cached model."""
-    config_path = cached_file(model_id, "config.json", local_files_only=True)
-    return str(Path(config_path).parent)
+    """Resolve a local model directory, downloading snapshot when needed."""
+    return str(resolve_model_path(model_id, local_files_only=False))
 
 
 def _load_preprocessor_config(model_dir: str) -> Mapping[str, Any]:
@@ -152,7 +151,7 @@ class Qwen3OmniPreprocessor:
 
         return result
 
-    def __call__(self, payload: StagePayload) -> StagePayload:
+    async def __call__(self, payload: StagePayload) -> StagePayload:
         inputs = payload.request.inputs
         if isinstance(inputs, dict):
             messages = inputs.get("messages", [])
@@ -178,30 +177,42 @@ class Qwen3OmniPreprocessor:
                     len(raw_audios) if isinstance(raw_audios, list) else 1
                 )
 
-            # Extract audio from videos if requested (can be combined with explicit audio)
-            extracted_audio_from_video = None
-            if use_audio_in_video and raw_videos:
-                extracted_audio_from_video, use_audio_in_video = (
-                    extract_audio_from_video_inputs(
-                        raw_videos,
-                        use_audio_in_video=use_audio_in_video,
-                        target_sr=audio_target_sr,
-                    )
-                )
+            # Use async versions for concurrent loading
+            # If we need audio from video, extract it during video loading to avoid duplicate downloads
+            extract_audio_from_video_flag = bool(use_audio_in_video and raw_videos)
+
+            images, videos_result, audios_result = await asyncio.gather(
+                ensure_image_list_async(raw_images),
+                ensure_video_list_async(
+                    raw_videos,
+                    fps=video_fps,
+                    extract_audio=extract_audio_from_video_flag,
+                    audio_target_sr=audio_target_sr,
+                ),
+                ensure_audio_list_async(raw_audios, target_sr=audio_target_sr),
+            )
+            videos, sampled_video_fps, extracted_audio_from_video = videos_result
+
+            # Merge extracted audio from videos with explicit audio (if any)
+            if extracted_audio_from_video:
+                # Filter out None values (videos without audio)
+                extracted_audio_from_video = [
+                    audio for audio in extracted_audio_from_video if audio is not None
+                ]
                 if extracted_audio_from_video:
                     audio_from_video = True
-                    # Merge extracted audio with explicit audio (if any)
-                    if raw_audios:
-                        if isinstance(raw_audios, list):
-                            raw_audios = raw_audios + extracted_audio_from_video
+                    # Merge with explicit audio
+                    if audios_result:
+                        if isinstance(audios_result, list):
+                            audios = audios_result + extracted_audio_from_video
                         else:
-                            raw_audios = [raw_audios] + extracted_audio_from_video
+                            audios = [audios_result] + extracted_audio_from_video
                     else:
-                        raw_audios = extracted_audio_from_video
-
-            images = ensure_image_list(raw_images)
-            videos, sampled_video_fps = ensure_video_list(raw_videos, fps=video_fps)
-            audios = ensure_audio_list(raw_audios, target_sr=audio_target_sr)
+                        audios = extracted_audio_from_video
+                else:
+                    audios = audios_result
+            else:
+                audios = audios_result
         else:
             messages = inputs
             images = []

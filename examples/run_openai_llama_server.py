@@ -330,6 +330,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
+    mp.set_start_method("spawn", force=True)
     args = parse_args()
     dtype = DTYPE_MAP[args.dtype]
 

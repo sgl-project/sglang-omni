@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SGLang-Omni Playground</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="app">
+    <header class="header">
+      <div class="header-row">
+        <h1>SGLang-Omni Demo</h1>
+        <button type="button" id="theme-toggle" class="theme-toggle" title="Toggle light/dark theme" aria-label="Toggle theme">
+          <svg class="theme-icon theme-icon-sun" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
+          <svg class="theme-icon theme-icon-moon" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+        </button>
+      </div>
+      <p class="subtitle">Interact with the model through text, audio, images, or video. Record or upload media, adjust parameters, then submit to stream results.</p>
+    </header>
+
+    <div class="layout">
+      <!-- Column 1: Parameters -->
+      <aside class="card params">
+        <div class="card-title">Parameters</div>
+        <label for="model-select">Model</label>
+        <select id="model-select">
+          <option value="">Default</option>
+          <option value="Qwen/Qwen3-Omni-30B-A3B-Instruct">Qwen3-Omni-30B-A3B</option>
+        </select>
+
+        <label for="system-prompt">System Prompt</label>
+        <textarea id="system-prompt" rows="8" placeholder="e.g., You are a helpful assistant"></textarea>
+
+        <label for="output-modality">Output</label>
+        <select id="output-modality" disabled>
+          <option value="text">Text only</option>
+          <!-- TODO: enable after talker is wired -->
+          <!-- <option value="audio">Audio only</option> -->
+          <!-- <option value="both">Text + Audio</option> -->
+          <!-- <option value="auto">Auto</option> -->
+        </select>
+
+        <div class="slider-block">
+          <div class="slider-label">
+            <span>Temperature</span>
+            <span id="temperature-value">0.60</span>
+          </div>
+          <input type="range" id="temperature" min="0.1" max="2" step="0.1" value="0.6" />
+        </div>
+
+        <div class="slider-block">
+          <div class="slider-label">
+            <span>Top P</span>
+            <span id="top-p-value">0.95</span>
+          </div>
+          <input type="range" id="top-p" min="0.05" max="1" step="0.05" value="0.95" />
+        </div>
+
+        <div class="slider-block">
+          <div class="slider-label">
+            <span>Top K</span>
+            <span id="top-k-value">20</span>
+          </div>
+          <input type="range" id="top-k" min="1" max="100" step="1" value="20" />
+        </div>
+      </aside>
+
+      <!-- Column 2: Media input and prompt -->
+      <section class="card io-panel">
+        <div class="io-section audio">
+          <div class="io-header">Record / Upload Audio</div>
+          <div class="io-controls" id="audio-controls">
+            <button type="button" id="mic-toggle" class="pill pill-primary">Record</button>
+            <span id="mic-status" class="status-text"></span>
+            <label class="pill pill-ghost">
+              Upload audio
+              <input type="file" id="audio-input" accept="audio/*" />
+            </label>
+            <button type="button" id="audio-server-btn" class="pill pill-ghost">Server files</button>
+          </div>
+          <div id="record-row" class="record-row hidden">
+            <button type="button" id="mic-stop" class="pill pill-secondary pill-stop" title="Stop recording" aria-label="Stop recording">■</button>
+            <div id="audio-visualizer-wrap" class="visualizer">
+              <canvas id="audio-visualizer" width="600" height="60"></canvas>
+            </div>
+            <div class="preview-grid hidden" id="mic-previews"></div>
+          </div>
+          <div class="preview-grid" id="audio-previews"></div>
+        </div>
+
+        <div class="io-section video">
+          <div class="io-header">Record / Upload Video or Image</div>
+          <div class="io-controls">
+            <div class="video-controls" id="video-controls">
+              <button type="button" id="webcam-toggle" class="pill pill-primary">Access webcam</button>
+              <label class="pill pill-ghost">
+                Upload media
+                <input type="file" id="video-input" accept="video/*,image/*" multiple />
+              </label>
+              <button type="button" id="media-server-btn" class="pill pill-ghost">Server files</button>
+            </div>
+            <div class="video-preview-wrap hidden" id="video-preview-wrap">
+              <video id="webcam-preview" muted playsinline class="webcam"></video>
+              <button type="button" id="video-clear" class="video-clear-btn" title="Remove video" aria-label="Remove video">×</button>
+            </div>
+            <div id="video-record-row" class="video-record-row hidden">
+              <button type="button" id="webcam-stop" class="pill pill-secondary">Stop</button>
+            </div>
+          </div>
+          <div class="preview-grid" id="video-previews"></div>
+          <div class="preview-grid" id="webcam-previews"></div>
+          <div class="preview-grid" id="image-previews"></div>
+        </div>
+
+        <label class="prompt-label" for="user-prompt">User Prompt</label>
+        <textarea id="user-prompt" rows="3" placeholder="Enter your question or instruction..."></textarea>
+
+        <div class="actions-stack">
+          <button type="button" id="send-btn" class="btn-primary">Submit</button>
+          <button type="button" id="stop-btn" class="btn-secondary hidden">Stop</button>
+          <button type="button" id="clear-btn" class="btn-tertiary">Clear History</button>
+        </div>
+      </section>
+
+      <!-- Column 3: Chat history -->
+      <section class="card chat-panel">
+        <div class="chat-title">Chat History</div>
+        <div class="chat-area" id="chat-area">
+          <div class="chat-placeholder" id="chat-placeholder">Media appears first, followed by your prompt, then streaming assistant text.</div>
+          <div class="messages" id="messages"></div>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <div id="fs-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="fs-modal-title">
+    <div class="modal-backdrop" id="fs-modal-backdrop"></div>
+    <div class="modal-card">
+      <div class="modal-header">
+        <h2 id="fs-modal-title">Server files</h2>
+        <button type="button" id="fs-modal-close" class="modal-close" aria-label="Close">×</button>
+      </div>
+      <div class="modal-body">
+        <div class="fs-toolbar" role="toolbar" aria-label="File navigation">
+          <button type="button" id="fs-back" class="fs-nav-btn" aria-label="Back">Back</button>
+          <button type="button" id="fs-up" class="fs-nav-btn" aria-label="Up">Up</button>
+          <button type="button" id="fs-home" class="fs-nav-btn" aria-label="Root">Home</button>
+          <button type="button" id="fs-refresh" class="fs-nav-btn" aria-label="Refresh">Refresh</button>
+          <div id="fs-breadcrumb" class="fs-breadcrumb" aria-label="Current path"></div>
+        </div>
+        <div class="fs-browser">
+          <section class="fs-main">
+            <div id="fs-current" class="fs-current"></div>
+            <div id="fs-error" class="fs-error hidden"></div>
+            <div id="fs-list" class="fs-list"></div>
+          </section>
+        </div>
+      </div>
+    </div>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>

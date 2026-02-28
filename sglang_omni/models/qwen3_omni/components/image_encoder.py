@@ -8,8 +8,8 @@ import torch.nn as nn
 from transformers.models.qwen3_omni_moe import modeling_qwen3_omni_moe as hf_modeling
 
 from sglang_omni.models.qwen3_omni.components.common import load_thinker_config
-from sglang_omni.models.utils.hf import instantiate_module
 from sglang_omni.models.weight_loader import load_module, resolve_dtype
+from sglang_omni.utils import instantiate_module
 
 VISUAL_PREFIX = ("thinker.visual.", "visual.")
 VISUAL_CLASS = hf_modeling.Qwen3OmniMoeVisionEncoder

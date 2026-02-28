@@ -11,8 +11,8 @@ from accelerate import init_empty_weights
 from transformers.models.qwen3_omni_moe import modeling_qwen3_omni_moe as hf_modeling
 
 from sglang_omni.models.qwen3_omni.components.common import load_thinker_config
-from sglang_omni.models.utils.hf import instantiate_module
 from sglang_omni.models.weight_loader import load_module, resolve_dtype
+from sglang_omni.utils import instantiate_module
 
 TEXT_MODEL_PREFIX = ("thinker.model.", "model.")
 LM_HEAD_PREFIX = ("thinker.lm_head.", "lm_head.")

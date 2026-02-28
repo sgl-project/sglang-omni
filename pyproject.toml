@@ -15,19 +15,16 @@ dependencies = [
     "msgpack>=1.0.0",         # Message serialization
     "numpy>=1.24.0",          # Array operations
     "pydantic>=2.0.0",        # Data validation and serialization
-    "torch>=2.9.1",          # PyTorch for tensor operations
-    "torchvision>=0.24.1",    # torchvision for vision processor
+    "torch==2.9.1",          # PyTorch for tensor operations
+    "torchvision==0.24.1",    # torchvision for vision processor
     "accelerate>=0.27.0",     # init_empty_weights for meta initialization
-    "transformers>=4.57.0",   # HF models/tokenizers
+    "transformers<5.0",   # HF models/tokenizers
     "safetensors>=0.4.3",     # Direct weight loading
     "pillow>=10.0.0",         # Required by AutoImageProcessor
     "huggingface-hub>=0.36.0",# HF model downloads
     "fastapi>=0.110.0",       # OpenAI-compatible API adapter
     "uvicorn>=0.23.0",        # ASGI server for FastAPI
     "sglang==0.5.8",
-    # Testing dependencies
-    "pytest>=7.0.0",
-    "pytest-asyncio>=0.21.0",
     "nixl",
     "mooncake-transfer-engine>=0.3.0",
     "logger",
@@ -41,8 +38,16 @@ dependencies = [
     "tabulate"
 ]
 
+[project.optional-dependencies]
+dev = [
+    # Testing dependencies
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+]
+gradio = ["gradio>=4.0.0"]
+
 [project.scripts]
-sglang-omni-server = "sglang_omni.serve.launcher:main"
+sgl-omni = "sglang_omni.cli.cli:app"
 
 [tool.setuptools.packages.find]
 where = ["."]

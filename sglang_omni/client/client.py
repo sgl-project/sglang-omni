@@ -174,16 +174,19 @@ class Client:
         Raises:
             ClientError: If the pipeline produces no audio output.
         """
-        audio_data: Any = None
+        audio_chunks: list[Any] = []
 
         async for chunk in self.generate(request, request_id=request_id):
             if chunk.audio_data is not None:
-                audio_data = chunk.audio_data
-            elif chunk.modality == "audio" and chunk.text:
-                audio_data = chunk.text
+                audio_chunks.append(chunk.audio_data)
 
-        if audio_data is None:
+        if not audio_chunks:
             raise ClientError("No audio output generated from the pipeline.")
+
+        if len(audio_chunks) == 1:
+            audio_data = audio_chunks[0]
+        else:
+            audio_data = np.concatenate([to_numpy(c) for c in audio_chunks])
 
         audio_bytes, mime_type = encode_audio(
             audio_data,
@@ -215,7 +218,7 @@ class Client:
         level: AbortLevel = AbortLevel.SOFT,
     ) -> AbortResult:
         success = await self._coordinator.abort(request_id)
-        return AbortResult(success=success, level_applied=AbortLevel.SOFT)
+        return AbortResult(success=success, level_applied=level)
 
     async def get_status(self, request_id: str) -> RequestState | None:
         info = self._coordinator.get_request_info(request_id)
@@ -294,6 +297,13 @@ class Client:
 
         data = msg.chunk
         if isinstance(data, GenerateChunk):
+            data.request_id = request_id
+            if data.stage_name is None:
+                data.stage_name = chunk.stage_name
+            if data.stage_id is None:
+                data.stage_id = chunk.stage_id
+            if not data.modality and chunk.modality:
+                data.modality = chunk.modality
             return data
         if isinstance(data, dict):
             text = data.get("text")

@@ -6,7 +6,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from sglang_omni.models.utils.hf import load_hf_config
+from sglang_omni.utils import load_hf_config
 
 
 def load_thinker_config(model_id: str) -> Any:

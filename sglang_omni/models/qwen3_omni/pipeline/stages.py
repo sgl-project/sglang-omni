@@ -43,8 +43,8 @@ def _event_to_dict(event: OmniEvent) -> dict[str, Any]:
 def create_preprocessing_executor(model_id: str) -> PreprocessingExecutor:
     preprocessor = Qwen3OmniPreprocessor(model_id=model_id)
 
-    def _preprocess(payload: StagePayload) -> StagePayload:
-        return preprocessor(payload)
+    async def _preprocess(payload: StagePayload) -> StagePayload:
+        return await preprocessor(payload)
 
     return PreprocessingExecutor(_preprocess)
 
@@ -153,12 +153,23 @@ def create_thinker_executor(
             events = [
                 OmniEvent(type="text_final", modality="text", payload={}, is_final=True)
             ]
-        return {
+        text_delta = ""
+        for event in events:
+            if event.is_final:
+                continue
+            t = event.payload.get("text")
+            if event.modality == "text" and t:
+                text_delta += t
+
+        result: dict[str, Any] = {
             "events": [_event_to_dict(event) for event in events],
             "token_id": token_id,
             "step": step,
             "stage": THINKER_STAGE,
         }
+        if text_delta:
+            result["text"] = text_delta
+        return result
 
     engine = create_ar_engine(
         model=model,
