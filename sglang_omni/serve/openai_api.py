@@ -55,7 +55,6 @@ def create_app(
     client: Client,
     *,
     model_name: str | None = None,
-    serve_playground: str | None = None,
 ) -> FastAPI:
     """Create a FastAPI application with OpenAI-compatible endpoints.
 

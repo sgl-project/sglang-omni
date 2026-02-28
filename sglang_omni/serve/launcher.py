@@ -184,9 +184,6 @@ def launch_server(
         log_level: Uvicorn log level.
         client_kwargs: Extra keyword arguments forwarded to
             :class:`~sglang_omni.client.Client`.
-        serve_playground: Path to the ``playground/`` directory.  When set,
-            the server also serves the frontend UI and filesystem browser
-            on the same port.
     """
     asyncio.run(
         _run_server(

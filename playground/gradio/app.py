@@ -44,9 +44,7 @@ def file_to_data_uri(file_path: str) -> str:
     return f"data:{mime};base64,{b64}"
 
 
-def stream_chat_completion(
-    api_base: str, payload: dict
-) -> Generator[dict, None, None]:
+def stream_chat_completion(api_base: str, payload: dict) -> Generator[dict, None, None]:
     """POST /v1/chat/completions with stream=True.
 
     Yields dicts: ``{"type": "text", "value": "..."}``
@@ -64,7 +62,7 @@ def stream_chat_completion(
         for line in resp.iter_lines():
             if not line.startswith("data: "):
                 continue
-            data_str = line[len("data: "):]
+            data_str = line[len("data: ") :]
             if data_str.strip() == "[DONE]":
                 break
             chunk = json.loads(data_str)
@@ -185,9 +183,7 @@ def make_chat_handler(api_base: str):
                     yield display_out, new_api_history, audio_path
                 elif chunk["type"] == "audio":
                     raw = base64.b64decode(chunk["value"])
-                    tmp = tempfile.NamedTemporaryFile(
-                        suffix=".wav", delete=False
-                    )
+                    tmp = tempfile.NamedTemporaryFile(suffix=".wav")
                     tmp.write(raw)
                     tmp.close()
                     audio_path = tmp.name
