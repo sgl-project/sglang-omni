@@ -7,7 +7,7 @@ import typer
 import yaml
 
 from sglang_omni.config.manager import ConfigManager
-from sglang_omni.serve.launcher import launch_server, load_pipeline_config
+from sglang_omni.serve.launcher import launch_server
 
 logger = logging.getLogger(__name__)
 
@@ -43,13 +43,14 @@ def serve(
 
     # --- Resolve config ---
     if config:
-        config = load_pipeline_config(config)
+        config_manager = ConfigManager.from_file(config)
     else:
-        # we use ctx to capture the arguments that are used to modify the configuration on the fly
-        # we do expect the extra arguments to be pairs of names and values
-        config_manager = ConfigManager()
-        extra_args = config_manager.parse_extra_args(ctx.args)
-        merged_config = config_manager.merge_config(model_path, extra_args)
+        config_manager = ConfigManager.from_model_path(model_path)
+
+    # we use ctx to capture the arguments that are used to modify the configuration on the fly
+    # we do expect the extra arguments to be pairs of names and values
+    extra_args = config_manager.parse_extra_args(ctx.args)
+    merged_config = config_manager.merge_config(extra_args)
 
     # print merged configuration
     print("=" * 20, "Merged Configuration", "=" * 20)

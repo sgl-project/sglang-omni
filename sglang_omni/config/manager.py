@@ -1,5 +1,6 @@
 from typing import Any
 
+import yaml
 from transformers import AutoConfig
 
 from sglang_omni.config.schema import PipelineConfig
@@ -13,6 +14,9 @@ class ConfigManager:
     list of arguments is not feasible. Thus, we take reference from the TorchTitan's configuration management system to allow users to
     dynamically configure their runtime settings.
     """
+
+    def __init__(self, config: PipelineConfig | None = None):
+        self.config = config
 
     def parse_extra_args(self, args: list[str]) -> dict[str, Any]:
         """
@@ -55,25 +59,20 @@ class ConfigManager:
                 extra_args[key] = value
         return extra_args
 
-    def merge_config(
-        self, model_path: str, extra_args: dict[str, Any]
-    ) -> PipelineConfig:
+    def merge_config(self, extra_args: dict[str, Any]) -> PipelineConfig:
         """
         Merge the configuration and the extra arguments.
         """
-        hf_config = AutoConfig.from_pretrained(model_path)
-        print(PIPELINE_CONFIG_REGISTRY.get_supported_archs())
-        config_cls = PIPELINE_CONFIG_REGISTRY.get_config(hf_config.architectures[0])
-        config = config_cls(model_path=model_path)
         extra_args = self._convert_types(extra_args)
 
         # we then update the configuration
         # note that the key of the extra argumeents is in the chained format, e.g. "stages.0.executor.args.dtype"
         # we need to update the configuration in place
-        config_data = config.model_dump()
+        config_data = self.config.model_dump()
+        config_cls = type(self.config)
 
         for key, value in extra_args.items():
-            current = config_data
+            current = self.config.model_dump()
             keys = key.split(".")
             for k in keys[:-1]:
                 # if k is an digit, treat it as an index
@@ -85,5 +84,28 @@ class ConfigManager:
             current[keys[-1]] = value
 
         # validate the configuration
-        merged_config = config_cls.from_dict(config_data)
+        merged_config = config_cls(**config_data)
         return merged_config
+
+    @staticmethod
+    def from_model_path(model_path: str) -> PipelineConfig:
+        """
+        Load the configuration from the model path.
+        """
+        hf_config = AutoConfig.from_pretrained(model_path)
+        config_cls = PIPELINE_CONFIG_REGISTRY.get_config(hf_config.architectures[0])
+        config = config_cls(model_path=model_path)
+        return ConfigManager(config)
+
+    @staticmethod
+    def from_file(file_path: str) -> PipelineConfig:
+        """
+        Load the configuration from the file path.
+        """
+        with open(file_path, "r") as f:
+            data = yaml.safe_load(f)
+
+        config_cls_str = data["config_cls"]
+        config_cls = PIPELINE_CONFIG_REGISTRY.get_config_cls_by_name(config_cls_str)
+        config = config_cls(**data)
+        return ConfigManager(config)

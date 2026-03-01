@@ -1,0 +1,129 @@
+model_path: Qwen/Qwen3-Omni-30B-A3B-Instruct
+entry_stage: preprocessing
+stages:
+- name: preprocessing
+  executor:
+    factory: sglang_omni.models.qwen3_omni.pipeline.stages.create_preprocessing_executor
+    args:
+      model_id: Qwen/Qwen3-Omni-30B-A3B-Instruct
+  get_next: sglang_omni.models.qwen3_omni.pipeline.next_stage.preprocessing_next
+  input_handler:
+    type: direct
+    sources: null
+    merge_fn: null
+  relay:
+    type: shm
+    slot_size_mb: 64
+    credits: 2
+    rank: null
+    world_size: null
+    device: cpu
+  num_workers: 1
+- name: image_encoder
+  executor:
+    factory: sglang_omni.models.qwen3_omni.pipeline.stages.create_image_encoder_executor
+    args:
+      device: cuda
+      dtype: null
+      model_id: Qwen/Qwen3-Omni-30B-A3B-Instruct
+  get_next: sglang_omni.models.qwen3_omni.pipeline.next_stage.encoder_next
+  input_handler:
+    type: direct
+    sources: null
+    merge_fn: null
+  relay:
+    type: shm
+    slot_size_mb: 64
+    credits: 2
+    rank: null
+    world_size: null
+    device: cuda
+  num_workers: 1
+- name: audio_encoder
+  executor:
+    factory: sglang_omni.models.qwen3_omni.pipeline.stages.create_audio_encoder_executor
+    args:
+      device: cuda
+      dtype: null
+      model_id: Qwen/Qwen3-Omni-30B-A3B-Instruct
+  get_next: sglang_omni.models.qwen3_omni.pipeline.next_stage.encoder_next
+  input_handler:
+    type: direct
+    sources: null
+    merge_fn: null
+  relay:
+    type: shm
+    slot_size_mb: 64
+    credits: 2
+    rank: null
+    world_size: null
+    device: cuda
+  num_workers: 1
+- name: mm_aggregate
+  executor:
+    factory: sglang_omni.models.qwen3_omni.pipeline.stages.create_aggregate_executor
+    args: {}
+  get_next: sglang_omni.models.qwen3_omni.pipeline.next_stage.aggregate_next
+  input_handler:
+    type: aggregated
+    sources:
+    - preprocessing
+    - image_encoder
+    - audio_encoder
+    merge_fn: sglang_omni.models.qwen3_omni.pipeline.merge.merge_for_thinker
+  relay:
+    type: shm
+    slot_size_mb: 64
+    credits: 2
+    rank: null
+    world_size: null
+    device: cpu
+  num_workers: 1
+- name: thinker
+  executor:
+    factory: sglang_omni.models.qwen3_omni.pipeline.stages.create_thinker_executor
+    args:
+      device: cuda
+      dtype: null
+      max_seq_len: 8192
+      model_id: Qwen/Qwen3-Omni-30B-A3B-Instruct
+  get_next: sglang_omni.models.qwen3_omni.pipeline.next_stage.thinker_next
+  input_handler:
+    type: direct
+    sources: null
+    merge_fn: null
+  relay:
+    type: shm
+    slot_size_mb: 64
+    credits: 2
+    rank: null
+    world_size: null
+    device: cuda
+  num_workers: 1
+- name: decode
+  executor:
+    factory: sglang_omni.models.qwen3_omni.pipeline.stages.create_decode_executor
+    args:
+      model_id: Qwen/Qwen3-Omni-30B-A3B-Instruct
+  get_next: sglang_omni.models.qwen3_omni.pipeline.next_stage.decode_next
+  input_handler:
+    type: direct
+    sources: null
+    merge_fn: null
+  relay:
+    type: shm
+    slot_size_mb: 64
+    credits: 2
+    rank: null
+    world_size: null
+    device: cpu
+  num_workers: 1
+name: model
+fused_stages: []
+endpoints:
+  scheme: ipc
+  base_path: /tmp/sglang_omni
+  base_port: 16000
+completion_endpoint: null
+abort_endpoint: null
+config_cls: Qwen3OmniPipelineConfig

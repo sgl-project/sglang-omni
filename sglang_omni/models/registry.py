@@ -79,6 +79,14 @@ class _PipelineConfigRegistry:
             )
         return self.configs[arch]
 
+    def get_config_cls_by_name(self, name: str) -> Type[PipelineConfig]:
+        for config_cls in self.configs.values():
+            if config_cls.__name__ == name:
+                return config_cls
+        raise ValueError(
+            f"Config class {name} not found in the pipeline config registry"
+        )
+
 
 PIPELINE_CONFIG_REGISTRY = _PipelineConfigRegistry()
 PIPELINE_CONFIG_REGISTRY.register_config("sglang_omni.models", "config")

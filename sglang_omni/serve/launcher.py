@@ -25,7 +25,6 @@ Export a config to JSON::
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import os
 import time
@@ -33,11 +32,14 @@ from pathlib import Path
 from typing import Any
 
 import uvicorn
+import yaml
 from fastapi import APIRouter
 from pydantic import BaseModel
+from transformers import AutoConfig
 
 from sglang_omni.client import Client
 from sglang_omni.config import PipelineConfig, PipelineRunner, compile_pipeline
+from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
 from sglang_omni.profiler.profiler_control import ProfilerControlClient
 from sglang_omni.serve.openai_api import create_app
 
@@ -197,7 +199,7 @@ def launch_server(
     )
 
 
-def load_pipeline_config(path: str | Path) -> PipelineConfig:
+def load_pipeline_config_from_file(path: str | Path) -> PipelineConfig:
     """Load a PipelineConfig from a JSON file.
 
     Args:
@@ -206,6 +208,15 @@ def load_pipeline_config(path: str | Path) -> PipelineConfig:
     Returns:
         Parsed PipelineConfig instance.
     """
-    text = Path(path).read_text(encoding="utf-8")
-    data = json.loads(text)
+    # read the yaml and load it as a PipelineConfig
+    with open(path, "r") as f:
+        data = yaml.safe_load(f)
     return PipelineConfig(**data)
+
+
+def load_pipeline_config_from_model_path(model_path: str) -> PipelineConfig:
+    """Load a PipelineConfig from a dictionary."""
+    model_cfg = AutoConfig.from_pretrained(model_path)
+    config_cls = PIPELINE_CONFIG_REGISTRY.get_config(model_cfg.architectures[0])
+    config = config_cls(model_path=model_path)
+    return config

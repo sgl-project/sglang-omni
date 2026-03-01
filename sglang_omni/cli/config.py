@@ -36,6 +36,7 @@ def view(
             sort_keys=False,  # preserve order
             default_flow_style=False,  # use block style (not inline)
             indent=2,  # control indentation
+            allow_unicode=True,
         )
     )
 
@@ -70,5 +71,6 @@ def export(
             sort_keys=False,
             default_flow_style=False,
             indent=2,
+            allow_unicode=True,
         )
     print(f"Pipeline config exported to {output_path}")
