@@ -8,6 +8,11 @@ from sglang_omni.vendor.sglang.core import (
 
 logger = logging.getLogger(__name__)
 
+OMNI_DISABLED_OR_NOT_IMPLEMENTED_SERVER_ARGS = [
+    "enable_mixed_chunk",
+    "enable_dynamic_chunking",
+]
+
 @dataclass
 class SGLangBackendArgs:
     disabled_args: Optional[List[str]] = None
@@ -35,7 +40,8 @@ class SGLangBackendArgs:
         if not args.disabled_args:
             return args
 
-        for raw_arg in args.disabled_args:
+        disaged_args_list = set(args.disabled_args + OMNI_DISABLED_OR_NOT_IMPLEMENTED_SERVER_ARGS)
+        for raw_arg in disaged_args_list:
             arg = raw_arg.lstrip("-").replace("-", "_")
             if hasattr(args, arg):
                 delattr(args, arg)

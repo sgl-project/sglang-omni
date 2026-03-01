@@ -1,4 +1,4 @@
-
+from dataclasses import dataclass
 from .model_runner import SGLModelRunner
 from sglang_omni.vendor.sglang.core import (
     ServerArgs,
@@ -10,9 +10,14 @@ from sglang_omni.utils import (
     broadcast_pyobj,
 )
 
-class RunnerAdapter:
+@dataclass
+class ModelWorkerConfig:
+    pass
+
+class ModelWorker:
     def __init__(
         self,
+        config: ModelWorkerConfig,
         server_args: ServerArgs,
         gpu_id: int,
         tp_rank: int = 0,

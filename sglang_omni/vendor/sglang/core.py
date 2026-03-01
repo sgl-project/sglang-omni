@@ -9,7 +9,12 @@ from sglang.srt.managers.scheduler import GenerationBatchResult
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch
 from sglang.srt.model_executor.model_runner import ModelRunner
 from sglang.srt.configs.model_config import ModelConfig
-from sglang.srt.managers.schedule_batch import Req
+from sglang.srt.managers.schedule_batch import (
+    Req,
+    ScheduleBatch
+)
+from sglang.srt.environ import envs
+from sglang.srt.managers.schedule_policy import PrefillAdder
 from sglang.srt.server_args import (
     get_global_server_args,
     ServerArgs,
@@ -19,12 +24,15 @@ from sglang.srt.server_args import (
 
 __all__ = [
     "Req",
+    "envs"
+    "ScheduleBatch",
+    "PrefillAdder",
     "ForwardBatch",
     "ModelRunner",
     "ModelConfig",
     "get_global_server_args",
     "ServerArgs",
     "PortArgs",
-    "ATTENTION_BACKEND_CHOICES"
+    "ATTENTION_BACKEND_CHOICES",
     "GenerationBatchResult"
 ]
