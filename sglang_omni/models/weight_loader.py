@@ -184,7 +184,11 @@ def load_module(
         prefix=prefix,
         local_files_only=local_files_only,
     )
-    module.load_state_dict(state_dict, strict=strict)
+    # Prefer assign=True to avoid expensive in-place tensor copies during load.
+    try:
+        module.load_state_dict(state_dict, strict=strict, assign=True)
+    except (TypeError, RuntimeError):
+        module.load_state_dict(state_dict, strict=strict)
     module.eval()
     if device is not None or dtype is not None:
         if device is not None and dtype is not None:
