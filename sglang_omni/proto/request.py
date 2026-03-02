@@ -70,9 +70,16 @@ class StagePayload:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "StagePayload":
-        request = data.get("request", {})
-        if isinstance(request, dict) and request.get("_type") == "OmniRequest":
-            request_obj = OmniRequest.from_dict(request)
+        request_data = data.get("request", {})
+        if (
+            isinstance(request_data, dict)
+            and request_data.get("_type") == "OmniRequest"
+        ):
+            request_obj = OmniRequest.from_dict(request_data)
+        else:
+            raise ValueError(
+                f"Invalid or missing OmniRequest in StagePayload: {request_data}"
+            )
         return cls(
             request_id=data.get("request_id", ""),
             request=request_obj,
