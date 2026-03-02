@@ -98,5 +98,13 @@ class Qwen3OmniPipelineConfig(PipelineConfig):
         ),
     ]
 
+    def model_post_init(self, __context: Any = None) -> None:
+        super().model_post_init(__context)
+
+        # TODO: we need to refactor this factory pattern to avoid
+        for stage in self.stages:
+            if stage.name != AGGREGATE_STAGE:
+                stage.executor.args["model_path"] = self.model_path
+
 
 EntryClass = Qwen3OmniPipelineConfig
