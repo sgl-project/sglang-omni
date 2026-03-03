@@ -9,7 +9,7 @@ import logging
 import os
 
 from sglang_omni.config import PipelineRunner, compile_pipeline
-from sglang_omni.models.qwen3_omni import create_text_first_pipeline_config
+from sglang_omni.models.qwen3_omni.config import Qwen3OmniPipelineConfig
 from sglang_omni.proto import OmniRequest
 
 logging.basicConfig(
@@ -21,7 +21,7 @@ logging.basicConfig(
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--model-id",
+        "--model-path",
         type=str,
         default="Qwen/Qwen3-Omni-30B-A3B-Instruct",
         help="Hugging Face model id",
@@ -31,10 +31,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--thinker-max-seq-len", type=int, default=8192)
     parser.add_argument("--max-new-tokens", type=int, default=1024)
     parser.add_argument("--temperature", type=float, default=0.8)
-    parser.add_argument("--preprocessing-device", type=str, default="cpu")
-    parser.add_argument("--image-device", type=str, default="cuda:0")
-    parser.add_argument("--audio-device", type=str, default="cuda:0")
-    parser.add_argument("--thinker-device", type=str, default="cuda:0")
     parser.add_argument("--image-path", type=str, default=None)
     parser.add_argument("--video-path", type=str, default=None)
     parser.add_argument("--video-fps", type=float, default=2.0)
@@ -45,14 +41,8 @@ def parse_args() -> argparse.Namespace:
 
 
 async def main_async(args: argparse.Namespace) -> None:
-    config = create_text_first_pipeline_config(
+    config = Qwen3OmniPipelineConfig(
         model_path=args.model_path,
-        preprocessing_device=args.preprocessing_device,
-        image_device=args.image_device,
-        audio_device=args.audio_device,
-        thinker_device=args.thinker_device,
-        thinker_max_seq_len=args.thinker_max_seq_len,
-        dtype=args.dtype,
     )
     coordinator, stages = compile_pipeline(config)
     runner = PipelineRunner(coordinator, stages)
