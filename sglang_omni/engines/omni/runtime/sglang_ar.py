@@ -9,7 +9,7 @@ DecodeManager, and ModelWorker.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 import torch
@@ -137,10 +137,9 @@ class SGLangBatchPlanner:
         keep_indices: list[int] = []
         for i, req in enumerate(schedule_batch.reqs):
             sched_req = self.req_id_map.get(req.rid)
-            if (
-                sched_req is not None
-                and sched_req.status
-                not in (SchedulerStatus.FINISHED, SchedulerStatus.ABORTED)
+            if sched_req is not None and sched_req.status not in (
+                SchedulerStatus.FINISHED,
+                SchedulerStatus.ABORTED,
             ):
                 keep_indices.append(i)
                 selected.append(sched_req)
@@ -172,7 +171,9 @@ class SGLangBatchPlanner:
             # Reuse req_to_token slot across chunk rounds; otherwise long chunked
             # prompts can exhaust req_to_token_pool entries.
             if getattr(active_chunked_req, "req_pool_idx", None) is not None:
-                self.prefill_manager.req_to_token_pool.free(active_chunked_req.req_pool_idx)
+                self.prefill_manager.req_to_token_pool.free(
+                    active_chunked_req.req_pool_idx
+                )
 
         if self.last_batch is None:
             return
@@ -231,9 +232,9 @@ class SGLangBatchPlanner:
         """Prune stale request mappings and remove inactive reqs from SGLang queues."""
         inactive_rids: set[str] = set()
         for rid, sched_req in list(self.req_id_map.items()):
-            if (
-                sched_req.request_id not in active_request_ids
-                or sched_req.status in (SchedulerStatus.FINISHED, SchedulerStatus.ABORTED)
+            if sched_req.request_id not in active_request_ids or sched_req.status in (
+                SchedulerStatus.FINISHED,
+                SchedulerStatus.ABORTED,
             ):
                 inactive_rids.add(rid)
                 del self.req_id_map[rid]
@@ -243,14 +244,18 @@ class SGLangBatchPlanner:
 
         if self.prefill_manager.waiting_queue:
             self.prefill_manager.waiting_queue = [
-                req for req in self.prefill_manager.waiting_queue if req.rid not in inactive_rids
+                req
+                for req in self.prefill_manager.waiting_queue
+                if req.rid not in inactive_rids
             ]
 
         running_batch = self.decode_manager.running_batch
         if running_batch is None or running_batch.is_empty():
             return
         keep_indices = [
-            i for i, req in enumerate(running_batch.reqs) if req.rid not in inactive_rids
+            i
+            for i, req in enumerate(running_batch.reqs)
+            if req.rid not in inactive_rids
         ]
         if len(keep_indices) == len(running_batch.reqs):
             return
@@ -259,7 +264,9 @@ class SGLangBatchPlanner:
         else:
             from sglang.srt.managers.schedule_batch import ScheduleBatch
 
-            self.decode_manager.running_batch = ScheduleBatch(reqs=[], batch_is_full=False)
+            self.decode_manager.running_batch = ScheduleBatch(
+                reqs=[], batch_is_full=False
+            )
 
 
 # -----------------------------------------------------------------------------
@@ -336,9 +343,7 @@ class SGLangIterationController:
     def __init__(self, tree_cache):
         self.tree_cache = tree_cache
 
-    def update_request(
-        self, request: SchedulerRequest, output: RequestOutput
-    ) -> None:
+    def update_request(self, request: SchedulerRequest, output: RequestOutput) -> None:
         data: SGLangARRequestData = request.data
         req = data.req
 
@@ -359,9 +364,7 @@ class SGLangIterationController:
             if not req.finished() and getattr(req, "decode_batch_idx", 0) == 0:
                 self.tree_cache.cache_unfinished_req(req)
 
-    def is_finished(
-        self, request: SchedulerRequest, output: RequestOutput
-    ) -> bool:
+    def is_finished(self, request: SchedulerRequest, output: RequestOutput) -> bool:
         return request.data.req.finished()
 
 
