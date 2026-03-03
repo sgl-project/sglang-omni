@@ -25,8 +25,8 @@ from ..types import (
 from .ar import ARRequestData
 
 if TYPE_CHECKING:
-    from sglang.srt.managers.schedule_batch import Req, ScheduleBatch
     from sglang.srt.server_args import ServerArgs
+
     from sglang_omni.engines.ar.sglang_backend.model_worker import ModelWorker
     from sglang_omni.engines.ar.sglang_backend.scheduler.decode import DecodeManager
     from sglang_omni.engines.ar.sglang_backend.scheduler.prefill import PrefillManager

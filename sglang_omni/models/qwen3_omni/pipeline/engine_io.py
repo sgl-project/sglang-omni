@@ -104,9 +104,9 @@ def build_sglang_thinker_request(
     Constructs a SGLang Req with normalized SamplingParams, then wraps it
     in SGLangARRequestData (which inherits ARRequestData).
     """
+    from sglang.srt.managers.schedule_batch import Req
     from sglang.srt.sampling.sampling_params import SamplingParams
 
-    from sglang.srt.managers.schedule_batch import Req
     from sglang_omni.engines.omni.runtime.sglang_ar import SGLangARRequestData
 
     prompt = state.prompt

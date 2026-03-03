@@ -91,9 +91,9 @@ def build_sglang_ar_request(
     Creates a SGLang Req with normalized SamplingParams, wrapped in
     SGLangARRequestData for use with the SGLang backend engine.
     """
+    from sglang.srt.managers.schedule_batch import Req
     from sglang.srt.sampling.sampling_params import SamplingParams
 
-    from sglang.srt.managers.schedule_batch import Req
     from sglang_omni.engines.omni.runtime.sglang_ar import SGLangARRequestData
 
     input_ids, params = _extract_input_ids(payload)
