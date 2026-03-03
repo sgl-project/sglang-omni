@@ -77,11 +77,9 @@ class Qwen3OmniPipelineConfig(PipelineConfig):
         StageConfig(
             name=THINKER_STAGE,
             executor=ExecutorConfig(
-                factory="sglang_omni.models.qwen3_omni.pipeline.stages.create_thinker_executor",
+                factory="sglang_omni.models.qwen3_omni.pipeline.stages.create_sglang_thinker_executor_from_config",
                 args={
-                    "device": "cuda",
-                    "dtype": None,
-                    "max_seq_len": 8192,
+                    "thinker_max_seq_len": 8192,
                 },
             ),
             get_next="sglang_omni.models.qwen3_omni.pipeline.next_stage.thinker_next",

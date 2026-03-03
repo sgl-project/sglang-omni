@@ -3,12 +3,15 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import torch
 
 from sglang_omni.engines.omni.runtime import ARRequestData, EncoderRequestData
 from sglang_omni.models.qwen3_omni.io import PipelineState, ThinkerOutput
+
+if TYPE_CHECKING:
+    from sglang_omni.engines.omni.runtime.sglang_ar import SGLangARRequestData
 
 
 def build_encoder_request(
@@ -86,6 +89,83 @@ def build_thinker_request(
         max_new_tokens=params.get("max_new_tokens"),
         temperature=params.get("temperature", 0.0),
     )
+
+
+def build_sglang_thinker_request(
+    state: PipelineState,
+    *,
+    params: dict[str, Any],
+    tokenizer: Any,
+    vocab_size: int,
+    request_id: str | None = None,
+) -> "SGLangARRequestData":
+    """Build SGLangARRequestData from pipeline state.
+
+    Constructs a SGLang Req with normalized SamplingParams, then wraps it
+    in SGLangARRequestData (which inherits ARRequestData).
+    """
+    from sglang.srt.managers.schedule_batch import Req
+    from sglang.srt.sampling.sampling_params import SamplingParams
+
+    from sglang_omni.engines.omni.runtime.sglang_ar import SGLangARRequestData
+
+    prompt = state.prompt
+    if not isinstance(prompt, dict):
+        raise TypeError("prompt missing for thinker request")
+
+    input_ids = prompt.get("input_ids")
+    if not isinstance(input_ids, torch.Tensor):
+        raise TypeError("prompt.input_ids must be a torch.Tensor")
+
+    input_ids_list = input_ids.to(dtype=torch.long).tolist()
+
+    attention_mask = prompt.get("attention_mask")
+    thinker_inputs = state.thinker_inputs or {}
+
+    model_inputs = dict(thinker_inputs.get("model_inputs", {}))
+    if not model_inputs:
+        model_inputs = {
+            k: v for k, v in thinker_inputs.items() if k != "capture_model_output_keys"
+        }
+    capture_keys = thinker_inputs.get("capture_model_output_keys", ())
+    if "attention_mask" in model_inputs:
+        model_inputs.pop("attention_mask", None)
+
+    max_new_tokens = params.get("max_new_tokens", 2048)
+    temperature = params.get("temperature", 0.0)
+
+    # Build SGLang SamplingParams and normalize
+    sampling_params = SamplingParams(
+        max_new_tokens=max_new_tokens,
+        temperature=temperature,
+    )
+    sampling_params.normalize(tokenizer)
+    sampling_params.verify(vocab_size)
+
+    # Build SGLang Req
+    rid = request_id or "req-0"
+    req = Req(
+        rid=rid,
+        origin_input_text="",
+        origin_input_ids=input_ids_list,
+        sampling_params=sampling_params,
+        vocab_size=vocab_size,
+    )
+
+    # Build SGLangARRequestData — output_ids points to req.output_ids
+    data = SGLangARRequestData(
+        input_ids=input_ids.to(dtype=torch.long),
+        attention_mask=(
+            attention_mask if isinstance(attention_mask, torch.Tensor) else None
+        ),
+        model_inputs=model_inputs,
+        capture_model_output_keys=tuple(capture_keys) if capture_keys else (),
+        max_new_tokens=max_new_tokens,
+        temperature=temperature,
+        output_ids=req.output_ids,
+        req=req,
+    )
+    return data
 
 
 def apply_thinker_result(

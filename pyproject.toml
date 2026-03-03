@@ -24,6 +24,7 @@ dependencies = [
     "huggingface-hub>=0.36.0",# HF model downloads
     "fastapi>=0.110.0",       # OpenAI-compatible API adapter
     "uvicorn>=0.23.0",        # ASGI server for FastAPI
+    "sglang==0.5.8",
     "nixl",
     "mooncake-transfer-engine>=0.3.0",
     "logger",
@@ -34,7 +35,7 @@ dependencies = [
     "numba==0.63.1",
     "librosa>=0.11.0",
     "pandas",
-    "tabulate",
+    "tabulate"
 ]
 
 [project.optional-dependencies]

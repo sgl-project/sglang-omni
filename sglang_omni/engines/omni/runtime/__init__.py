@@ -30,6 +30,15 @@ from .interfaces import (
     ResourceManager,
 )
 
+_SGLANG_EXPORTS = {
+    "SGLangARRequestData",
+    "SGLangBatchPlanner",
+    "SGLangResourceManager",
+    "SGLangOutputProcessor",
+    "SGLangIterationController",
+    "SGLangModelRunner",
+}
+
 __all__ = [
     # Protocols
     "BatchPlanner",
@@ -54,4 +63,19 @@ __all__ = [
     "ARResourceManager",
     "ARInputPreparer",
     "AROutputProcessor",
+    # AR (SGLang)
+    "SGLangARRequestData",
+    "SGLangBatchPlanner",
+    "SGLangResourceManager",
+    "SGLangOutputProcessor",
+    "SGLangIterationController",
+    "SGLangModelRunner",
 ]
+
+
+def __getattr__(name: str):
+    if name in _SGLANG_EXPORTS:
+        from . import sglang_ar
+
+        return getattr(sglang_ar, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
