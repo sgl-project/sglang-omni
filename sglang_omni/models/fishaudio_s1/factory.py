@@ -42,6 +42,7 @@ class _InferenceWrapper(torch.nn.Module):
         *,
         max_batch_size: int,
         max_seq_len: int,
+        device: str | torch.device = "cpu",
     ) -> None:
         super().__init__()
         self._model = model
@@ -50,6 +51,10 @@ class _InferenceWrapper(torch.nn.Module):
             max_seq_len=max_seq_len,
             dtype=torch.bfloat16,
         )
+        # KV caches are created on CPU; move entire model to target device
+        # so that cache buffers live on the same device as model weights.
+        if device != "cpu":
+            model.to(device)
 
     def forward(
         self, x: torch.Tensor, input_pos=None, audio_masks=None, audio_parts=None
@@ -152,6 +157,7 @@ def create_dual_ar_engine(
         model,
         max_batch_size=1,
         max_seq_len=max_seq_len,
+        device=device,
     )
 
     # Create radix cache (integrated directly into DualAR components,
