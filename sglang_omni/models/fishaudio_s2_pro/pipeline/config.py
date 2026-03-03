@@ -63,6 +63,7 @@ def create_tts_pipeline_config(
 
     return PipelineConfig(
         name="fishaudio_s2_pro_tts",
+        model_path=model_id,
         entry_stage=PREPROCESSING_STAGE,
         fused_stages=fused_stages or [],
         stages=[
