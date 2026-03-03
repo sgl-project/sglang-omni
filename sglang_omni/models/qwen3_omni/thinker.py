@@ -9,8 +9,8 @@ from torch import nn
 from transformers import PretrainedConfig
 
 from sglang_omni.config.qwen3_omni import Qwen3OmniMoeTextConfig
-from sglang_omni.models.utils import add_prefix
 from sglang_omni.models.weight_loader import default_weight_loader
+from sglang_omni.utils import add_prefix
 from sglang_omni.vendor.sglang.core import ForwardBatch
 from sglang_omni.vendor.sglang.distributed import (
     get_tensor_model_parallel_rank,
