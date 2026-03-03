@@ -168,3 +168,97 @@ def create_ar_engine(
     )
 
     return OmniEngine(scheduler=scheduler, model_runner=model_runner)
+
+
+def create_sglang_ar_engine(
+    server_args: Any,
+    gpu_id: int = 0,
+) -> OmniEngine:
+    """Create an AR engine backed by SGLang's ModelWorker and KV cache.
+
+    Uses SGLang's PrefillManager, DecodeManager, and paged KV cache for
+    continuous batching with chunked prefill support.
+
+    Args:
+        server_args: SGLang ServerArgs configuration
+        gpu_id: GPU device ID
+
+    Returns:
+        OmniEngine configured with SGLang backend
+    """
+    from sglang_omni.engines.ar.sglang_backend.model_worker import (
+        ModelWorker,
+        ModelWorkerConfig,
+    )
+    from sglang_omni.engines.ar.sglang_backend.scheduler.cache import create_tree_cache
+    from sglang_omni.engines.ar.sglang_backend.scheduler.decode import DecodeManager
+    from sglang_omni.engines.ar.sglang_backend.scheduler.prefill import PrefillManager
+
+    from .runtime.sglang_ar import (
+        SGLangBatchPlanner,
+        SGLangIterationController,
+        SGLangModelRunner,
+        SGLangOutputProcessor,
+        SGLangResourceManager,
+    )
+
+    # Initialize model worker
+    model_worker = ModelWorker(
+        config=ModelWorkerConfig(),
+        server_args=server_args,
+        gpu_id=gpu_id,
+    )
+
+    # Get memory pools
+    req_to_token_pool, token_to_kv_pool_allocator = model_worker.get_memory_pool()
+
+    # Create tree cache
+    tree_cache = create_tree_cache(
+        server_args,
+        req_to_token_pool,
+        token_to_kv_pool_allocator,
+        server_args.page_size,
+    )
+
+    # Create prefill and decode managers
+    prefill_mgr = PrefillManager(
+        page_size=server_args.page_size,
+        chunked_prefill_size=server_args.chunked_prefill_size,
+        max_prefill_tokens=server_args.max_prefill_tokens,
+        req_to_token_pool=req_to_token_pool,
+        token_to_kv_pool_allocator=token_to_kv_pool_allocator,
+        tree_cache=tree_cache,
+        model_config=model_worker.model_config,
+        enable_overlap=False,
+    )
+    decode_mgr = DecodeManager(
+        server_args=server_args,
+        token_to_kv_pool_allocator=token_to_kv_pool_allocator,
+        on_retract=lambda req: prefill_mgr.add_one_request(req),
+    )
+
+    # Assemble SGLang-specific components
+    batch_planner = SGLangBatchPlanner(prefill_mgr, decode_mgr, server_args)
+    resource_mgr = SGLangResourceManager(
+        token_to_kv_pool_allocator, req_to_token_pool, tree_cache
+    )
+    iteration_ctrl = SGLangIterationController(tree_cache)
+    output_proc = SGLangOutputProcessor()
+
+    def _stream_adapter(request, output):
+        if request.data.req.is_chunked > 0:
+            return None
+        token = output.data
+        return int(token) if token is not None else None
+
+    scheduler = Scheduler(
+        batch_planner=batch_planner,
+        resource_manager=resource_mgr,
+        iteration_controller=iteration_ctrl,
+        stream_adapter=_stream_adapter,
+    )
+    sglang_model_runner = SGLangModelRunner(
+        model_worker, output_proc, batch_planner=batch_planner
+    )
+
+    return OmniEngine(scheduler=scheduler, model_runner=sglang_model_runner)

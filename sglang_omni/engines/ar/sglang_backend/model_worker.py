@@ -1,11 +1,9 @@
 from dataclasses import dataclass
 
-from sglang_omni.utils import broadcast_pyobj, set_random_seed
-from sglang_omni.vendor.sglang.core import (
-    GenerationBatchResult,
-    ModelConfig,
-    ServerArgs,
-)
+from sglang.srt.configs.model_config import ModelConfig
+from sglang.srt.managers.scheduler import GenerationBatchResult
+from sglang.srt.server_args import ServerArgs
+from sglang.srt.utils import broadcast_pyobj, set_random_seed
 
 from .model_runner import SGLModelRunner
 

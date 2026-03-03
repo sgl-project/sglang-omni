@@ -93,17 +93,24 @@ class Scheduler:
         """Wait for a request to complete."""
         if request_id not in self.requests:
             raise KeyError(f"Unknown request: {request_id}")
+        loop = asyncio.get_running_loop()
 
-        # Create future lazily (requires running event loop)
-        if request_id not in self._futures:
-            self._futures[request_id] = asyncio.get_running_loop().create_future()
+        while True:
+            # If already finished or aborted, resolve immediately.
+            request = self.requests[request_id]
+            if request.status in (SchedulerStatus.FINISHED, SchedulerStatus.ABORTED):
+                return request
 
-        # If already finished or aborted, resolve immediately
-        request = self.requests[request_id]
-        if request.status in (SchedulerStatus.FINISHED, SchedulerStatus.ABORTED):
-            return request
+            # Create future lazily, and recover from stale canceled futures.
+            future = self._futures.get(request_id)
+            if future is None or future.cancelled():
+                future = loop.create_future()
+                self._futures[request_id] = future
 
-        return await self._futures[request_id]
+            # Protect shared request future from caller cancellation
+            # (e.g. asyncio.wait_for timeout), so one cancelled waiter does not
+            # poison future completion for other waiters.
+            await asyncio.shield(future)
 
     async def stream(self, request_id: str) -> AsyncIterator[Any]:
         """Yield per-step stream data for a request."""

@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from typing import List, Optional
 
-from sglang_omni.vendor.sglang.core import PrefillAdder, Req, ScheduleBatch
+from sglang.srt.managers.schedule_batch import Req, ScheduleBatch
+from sglang.srt.managers.schedule_policy import PrefillAdder
+from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
 
 
 class PrefillManager:
@@ -10,6 +12,7 @@ class PrefillManager:
         self,
         page_size,
         chunked_prefill_size,
+        max_prefill_tokens,
         req_to_token_pool,
         token_to_kv_pool_allocator,
         tree_cache,
@@ -18,6 +21,7 @@ class PrefillManager:
     ):
         self.page_size = page_size
         self.chunked_prefill_size = chunked_prefill_size
+        self.max_prefill_tokens = max_prefill_tokens
         self.req_to_token_pool = req_to_token_pool
         self.token_to_kv_pool_allocator = token_to_kv_pool_allocator
         self.tree_cache = tree_cache
@@ -34,10 +38,17 @@ class PrefillManager:
         self.waiting_queue.append(req)
 
     def schedule_next_batch(
-        self, running_batch: Optional[ScheduleBatch], num_allocatable_reqs: int
+        self,
+        running_batch: Optional[ScheduleBatch],
+        num_allocatable_reqs: int,
+        new_token_ratio: float = 0.5,
     ):
         # Implement the logic to schedule the next batch of tasks based on the waiting queue
-        if len(self.waiting_queue) == 0:
+        # Keep scheduling an unfinished chunked request even when no new waiting
+        # requests are available or allocatable.
+        if self.chunked_req is None and (
+            len(self.waiting_queue) == 0 or num_allocatable_reqs <= 0
+        ):
             return None
 
         adder = PrefillAdder(
@@ -45,9 +56,9 @@ class PrefillManager:
             tree_cache=self.tree_cache,
             token_to_kv_pool_allocator=self.token_to_kv_pool_allocator,
             running_batch=running_batch,
-            new_token_ratio=0.5,  # TODO(ocs884): figure out the best new_token_ratio
-            rem_input_tokens=self.chunked_prefill_size,
-            rem_chunk_tokens=0,
+            new_token_ratio=new_token_ratio,
+            rem_input_tokens=self.max_prefill_tokens,
+            rem_chunk_tokens=self.chunked_prefill_size,
         )
 
         # if there is ongoing chunked prefill to complete
@@ -60,7 +71,9 @@ class PrefillManager:
         for req in self.waiting_queue:
 
             if len(adder.can_run_list) >= num_allocatable_reqs:
-                running_batch.batch_is_full = True
+                if running_batch is not None:
+                    running_batch.batch_is_full = True
+                break
 
             req.init_next_round_input(self.tree_cache)
             res = adder.add_one_req(
@@ -96,7 +109,7 @@ class PrefillManager:
             tree_cache=self.tree_cache,
             model_config=self.model_config,
             enable_overlap=self.enable_overlap,
-            spec_algorithm=None,
+            spec_algorithm=SpeculativeAlgorithm.NONE,
             chunked_req=self.chunked_req,
         )
         new_batch.prepare_for_extend()

@@ -3,7 +3,7 @@ import logging
 from dataclasses import dataclass, fields
 from typing import List, Optional
 
-from sglang_omni.vendor.sglang.core import ServerArgs
+from sglang.srt.server_args import ServerArgs
 
 logger = logging.getLogger(__name__)
 

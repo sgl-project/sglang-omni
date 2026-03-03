@@ -6,9 +6,14 @@ from __future__ import annotations
 from typing import Any
 
 import torch
+from sglang.srt.server_args import ServerArgs
 from transformers import AutoTokenizer
 
-from sglang_omni.engines.omni import create_ar_engine, create_encoder_engine
+from sglang_omni.engines.omni import (
+    create_ar_engine,
+    create_encoder_engine,
+    create_sglang_ar_engine,
+)
 from sglang_omni.executors import EngineExecutor, PreprocessingExecutor
 from sglang_omni.models.qwen3_omni.components.audio_encoder import Qwen3OmniAudioEncoder
 from sglang_omni.models.qwen3_omni.components.image_encoder import Qwen3OmniImageEncoder
@@ -19,6 +24,7 @@ from sglang_omni.models.qwen3_omni.pipeline.engine_io import (
     apply_encoder_result,
     apply_thinker_result,
     build_encoder_request,
+    build_sglang_thinker_request,
     build_thinker_request,
 )
 from sglang_omni.models.qwen3_omni.pipeline.merge import decode_events
@@ -183,6 +189,124 @@ def create_thinker_executor(
         request_builder=_request_builder,
         result_builder=_result_builder,
         stream_builder=_stream_builder,
+    )
+
+
+def create_sglang_thinker_executor(
+    server_args: Any,
+    model_path: str,
+    *,
+    gpu_id: int = 0,
+) -> EngineExecutor:
+    """Create a thinker executor backed by SGLang's ModelWorker."""
+    tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
+    eos_token_id = getattr(tokenizer, "eos_token_id", None)
+    vocab_size = getattr(tokenizer, "vocab_size", 32000)
+
+    step_counters: dict[str, int] = {}
+
+    def _request_builder(payload: StagePayload):
+        state = load_state(payload)
+        step_counters.pop(payload.request_id, None)
+        return build_sglang_thinker_request(
+            state,
+            params=payload.request.params,
+            tokenizer=tokenizer,
+            vocab_size=vocab_size,
+            request_id=payload.request_id,
+        )
+
+    def _result_builder(payload: StagePayload, result: Any) -> StagePayload:
+        state = load_state(payload)
+        apply_thinker_result(state, stage_name=THINKER_STAGE, result=result)
+        step_counters.pop(payload.request_id, None)
+        return store_state(payload, state)
+
+    def _stream_builder(payload: StagePayload | None, item: Any) -> Any:
+        if payload is None:
+            return None
+        request_id = payload.request_id
+        step = step_counters.get(request_id, 0) + 1
+        step_counters[request_id] = step
+
+        try:
+            token_id = int(item)
+        except Exception:
+            return {"token_id": item, "step": step}
+
+        state = load_state(payload)
+        thinker_out: ThinkerOutput = {
+            "output_ids": [token_id],
+            "step": step,
+            "is_final": False,
+        }
+        events = list(
+            decode_events(
+                thinker_out=thinker_out,
+                state=state,
+                tokenizer=tokenizer,
+                eos_token_id=eos_token_id,
+                step=step,
+            )
+        )
+        store_state(payload, state)
+        if eos_token_id is not None and token_id == eos_token_id and not events:
+            events = [
+                OmniEvent(type="text_final", modality="text", payload={}, is_final=True)
+            ]
+        return {
+            "events": [_event_to_dict(event) for event in events],
+            "token_id": token_id,
+            "step": step,
+            "stage": THINKER_STAGE,
+        }
+
+    engine = create_sglang_ar_engine(
+        server_args=server_args,
+        gpu_id=gpu_id,
+    )
+
+    return EngineExecutor(
+        engine=engine,
+        request_builder=_request_builder,
+        result_builder=_result_builder,
+        stream_builder=_stream_builder,
+    )
+
+
+def create_sglang_thinker_executor_from_config(
+    model_path: str,
+    *,
+    gpu_id: int = 0,
+    thinker_max_seq_len: int = 8192,
+    server_args_overrides: dict[str, Any] | None = None,
+) -> EngineExecutor:
+    """Create a SGLang thinker executor from JSON-serializable config args.
+
+    This keeps pipeline config args plain dict types while still constructing
+    a typed ServerArgs object internally.
+    """
+    server_args_kwargs: dict[str, Any] = {
+        "model_path": model_path,
+        "trust_remote_code": True,
+        "tp_size": 1,
+        "pp_size": 1,
+        "disable_cuda_graph": True,
+        "chunked_prefill_size": 128,
+        "max_prefill_tokens": 4096,
+        "max_running_requests": 16,
+        "mem_fraction_static": 0.7,
+        "random_seed": 123,
+        "context_length": thinker_max_seq_len,
+    }
+    if server_args_overrides:
+        server_args_kwargs.update(server_args_overrides)
+
+    server_args = ServerArgs(**server_args_kwargs)
+    return create_sglang_thinker_executor(
+        server_args=server_args,
+        model_path=model_path,
+        gpu_id=gpu_id,
     )
 
 

@@ -1,6 +1,9 @@
 import logging
+from typing import Callable
 
-from sglang_omni.vendor.sglang.core import ScheduleBatch, ServerArgs, envs
+from sglang.srt.environ import envs
+from sglang.srt.managers.schedule_batch import Req, ScheduleBatch
+from sglang.srt.server_args import ServerArgs
 
 logger = logging.getLogger(__name__)
 
@@ -13,9 +16,12 @@ class DecodeManager:
         self,
         server_args: ServerArgs,
         token_to_kv_pool_allocator,
+        on_retract: Callable[[Req], None],
     ):
         self.server_args = server_args
         self.token_to_kv_pool_allocator = token_to_kv_pool_allocator
+        self.on_retract = on_retract
+        self.new_token_ratio = 1.0
         self.running_batch: ScheduleBatch = ScheduleBatch(reqs=[], batch_is_full=False)
 
     def schedule_next_batch(
@@ -69,7 +75,7 @@ class DecodeManager:
             logger.warning(msg_prefix + msg_details)
 
             for req in retracted_reqs:
-                self._add_request_to_queue(req, is_retracted=True)
+                self.on_retract(req)
 
         if self.running_batch.batch_size() < initial_bs:
             self.running_batch.batch_is_full = False
@@ -78,4 +84,6 @@ class DecodeManager:
 
     @property
     def runnable(self) -> bool:
-        return len(self.running_batch) > 0
+        if hasattr(self.running_batch, "batch_size"):
+            return self.running_batch.batch_size() > 0
+        return len(getattr(self.running_batch, "reqs", [])) > 0

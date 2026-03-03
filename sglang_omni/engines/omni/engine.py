@@ -119,13 +119,27 @@ class OmniEngine(Engine):
             if scheduler_output is None:
                 return True  # All cached, no execution needed
 
-        # 3. Execute (run in executor to not block event loop)
-        loop = asyncio.get_running_loop()
-        model_output = await loop.run_in_executor(
-            None,
-            self.model_runner.execute,
-            scheduler_output,
-        )
+        # 3. Execute
+        # Run CPU model runners inline to avoid threadpool hangs with
+        # non-thread-safe mock/model outputs. Keep threaded execution for
+        # accelerator-backed runners by default.
+        execute_in_thread = getattr(self.model_runner, "execute_in_thread", None)
+        if execute_in_thread is None:
+            device = getattr(self.model_runner, "device", None)
+            device_type = getattr(
+                device, "type", str(device) if device is not None else ""
+            )
+            execute_in_thread = str(device_type) != "cpu"
+
+        if execute_in_thread:
+            loop = asyncio.get_running_loop()
+            model_output = await loop.run_in_executor(
+                None,
+                self.model_runner.execute,
+                scheduler_output,
+            )
+        else:
+            model_output = self.model_runner.execute(scheduler_output)
 
         # 4. Update cache (if enabled)
         if self.cache_manager is not None:

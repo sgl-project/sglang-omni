@@ -2,12 +2,9 @@ from __future__ import annotations
 
 import os
 
-from sglang_omni.vendor.sglang.core import (
-    ModelConfig,
-    ModelRunner,
-    PortArgs,
-    ServerArgs,
-)
+from sglang.srt.configs.model_config import ModelConfig
+from sglang.srt.model_executor.model_runner import ModelRunner
+from sglang.srt.server_args import PortArgs, ServerArgs
 
 
 class SGLModelRunner(ModelRunner):
