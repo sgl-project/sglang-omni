@@ -5,6 +5,8 @@ from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import AbstractSet, Dict, Type
 
+from transformers import AutoConfig
+
 from sglang_omni.config import PipelineConfig
 
 logger = logging.getLogger(__name__)
@@ -86,6 +88,10 @@ class _PipelineConfigRegistry:
         raise ValueError(
             f"Config class {name} not found in the pipeline config registry"
         )
+
+    def get_config_from_model_path(self, model_path: str) -> Type[PipelineConfig]:
+        model_config = AutoConfig.from_pretrained(model_path)
+        return self.get_config(model_config.architectures[0])
 
 
 PIPELINE_CONFIG_REGISTRY = _PipelineConfigRegistry()

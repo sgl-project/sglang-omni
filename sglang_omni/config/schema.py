@@ -32,7 +32,7 @@ class RelayConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    slot_size_mb: int = 64
+    slot_size_mb: int = 512
     credits: int = 2
     rank: int | None = None
     world_size: int | None = None
