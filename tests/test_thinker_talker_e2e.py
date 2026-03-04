@@ -145,12 +145,12 @@ async def run_e2e(
     assert talker_inputs, "talker_inputs not populated by thinker result_builder"
     thinker_embed = talker_inputs.get("thinker_embed")
     thinker_hidden = talker_inputs.get("thinker_hidden")
-    assert isinstance(thinker_embed, torch.Tensor), (
-        f"thinker_embed missing or wrong type: {type(thinker_embed)}"
-    )
-    assert isinstance(thinker_hidden, torch.Tensor), (
-        f"thinker_hidden missing or wrong type: {type(thinker_hidden)}"
-    )
+    assert isinstance(
+        thinker_embed, torch.Tensor
+    ), f"thinker_embed missing or wrong type: {type(thinker_embed)}"
+    assert isinstance(
+        thinker_hidden, torch.Tensor
+    ), f"thinker_hidden missing or wrong type: {type(thinker_hidden)}"
     logger.info(
         "thinker_embed shape: %s, thinker_hidden shape: %s",
         thinker_embed.shape,
