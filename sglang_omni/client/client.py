@@ -91,9 +91,9 @@ class Client:
 
         async for chunk in self.generate(request, request_id=request_id):
             last_chunk = chunk
-            if chunk.modality == "text" and chunk.text:
+            if chunk.text:
                 text_parts.append(chunk.text)
-            if chunk.modality == "audio" and chunk.audio_data is not None:
+            if chunk.audio_data is not None:
                 audio_chunks.append(chunk.audio_data)
             if chunk.finish_reason is not None:
                 finish_reason = chunk.finish_reason

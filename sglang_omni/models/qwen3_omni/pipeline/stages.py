@@ -553,6 +553,9 @@ def create_decode_executor(model_path: str) -> PreprocessingExecutor:
             if codec_codes:
                 result["codec_codes"] = codec_codes
                 result.setdefault("modality", "audio")
+                # Expose codec_codes as audio_data so the client can
+                # surface them in the API response.
+                result["audio_data"] = codec_codes
 
         event_dicts = [_event_to_dict(event) for event in events]
         result["events"] = event_dicts
