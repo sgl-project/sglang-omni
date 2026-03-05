@@ -14,6 +14,7 @@ from sglang_omni.pipeline.control_plane import StageControlPlane
 from sglang_omni.pipeline.stage.input import DirectInput, InputHandler
 from sglang_omni.pipeline.stage.router import WorkerRouter
 from sglang_omni.pipeline.stage.work import InputRef
+from sglang_omni.pipeline.worker.data_plane import DataPlaneAdapter
 from sglang_omni.pipeline.worker.runtime import Worker
 from sglang_omni.profiler.torch_profiler import TorchProfiler
 from sglang_omni.proto import (
@@ -118,6 +119,7 @@ class Stage:
             self.relay = create_relay(relay_type, **relay_kwargs)
 
         self.router = WorkerRouter()
+        self._data_plane = DataPlaneAdapter(self.relay)
 
         # Workers
         self.workers: list[Worker] = []
@@ -325,7 +327,12 @@ class Stage:
             self.router.enqueue(work)
 
     async def _process_data_ready(self, msg: DataReadyMessage) -> None:
-        """Process data ready notification from previous stage."""
+        """Process data ready notification from previous stage.
+
+        Eagerly reads relay data so the sender's credit is released immediately.
+        This prevents timeouts when an AggregatedInput handler defers processing
+        until all sources arrive.
+        """
         request_id = msg.request_id
         logger.debug(
             "Stage %s received data_ready: req=%s from %s",
@@ -339,7 +346,24 @@ class Stage:
             self.relay.cleanup(request_id)
             return
 
-        input_ref = InputRef.from_metadata(msg.from_stage, msg.shm_metadata)
+        # Eagerly read from relay to release sender's credit/notification.
+        if msg.shm_metadata:
+            try:
+                payload = await self._data_plane.read_payload(
+                    request_id, msg.shm_metadata
+                )
+                input_ref = InputRef.from_payload(msg.from_stage, payload)
+            except Exception:
+                logger.exception(
+                    "Stage %s: eager relay read failed for req=%s from %s",
+                    self.name,
+                    request_id,
+                    msg.from_stage,
+                )
+                input_ref = InputRef.from_metadata(msg.from_stage, msg.shm_metadata)
+        else:
+            input_ref = InputRef.from_metadata(msg.from_stage, msg.shm_metadata)
+
         work = self.input_handler.receive(request_id, msg.from_stage, input_ref)
         if work is not None:
             self.router.enqueue(work)
