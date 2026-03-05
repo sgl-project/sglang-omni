@@ -85,6 +85,14 @@ class Scheduler:
         self._aborted_this_step.add(request_id)
         self._finish_request(request, status=SchedulerStatus.ABORTED)
 
+    def fail_request(self, request_id: str, error: Exception) -> None:
+        """Fail a request with an error, propagating it to any waiting caller."""
+        request = self.requests.get(request_id)
+        if request is None:
+            return
+        self._aborted_this_step.add(request_id)
+        self._finish_request(request, status=SchedulerStatus.ABORTED, error=error)
+
     def has_requests(self) -> bool:
         """Check if there are any requests to process."""
         return len(self.waiting) > 0 or len(self.running) > 0
@@ -217,6 +225,7 @@ class Scheduler:
         self,
         request: SchedulerRequest,
         status: SchedulerStatus = SchedulerStatus.FINISHED,
+        error: Exception | None = None,
     ) -> None:
         """Clean up finished request."""
         was_running = request.status == SchedulerStatus.RUNNING
@@ -236,7 +245,10 @@ class Scheduler:
         if request.request_id in self._futures:
             future = self._futures[request.request_id]
             if not future.done():
-                future.set_result(request)
+                if error is not None:
+                    future.set_exception(error)
+                else:
+                    future.set_result(request)
 
         queue = self._stream_queues.pop(request.request_id, None)
         if queue is not None:
