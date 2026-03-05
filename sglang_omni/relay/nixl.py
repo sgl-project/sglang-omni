@@ -94,9 +94,10 @@ class PutOperation(NixlOperation):
                 if found:
                     break
 
-                if time.time() - start > timeout:
+                cur_time = time.time()
+                if cur_time - start > timeout:
                     raise TimeoutError(
-                        f"PutOperation timed out waiting for {self._expected_notification}"
+                        f"PutOperation timed out after {cur_time - start} seconds,  waiting for {self._expected_notification}"
                     )
 
                 # Non-blocking wait
