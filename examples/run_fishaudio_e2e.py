@@ -84,6 +84,7 @@ async def _run_single_request(coordinator, args):
             "max_new_tokens": args.max_new_tokens,
             "temperature": args.temperature,
             "top_p": args.top_p,
+            "repetition_penalty": args.repetition_penalty,
         },
     )
 
@@ -189,6 +190,7 @@ def main():
     parser.add_argument("--max-new-tokens", type=int, default=1024)
     parser.add_argument("--temperature", type=float, default=0.8)
     parser.add_argument("--top-p", type=float, default=0.8)
+    parser.add_argument("--repetition-penalty", type=float, default=1.5)
     parser.add_argument(
         "--reference-audio",
         type=str,
