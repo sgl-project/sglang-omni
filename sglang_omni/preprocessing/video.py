@@ -256,7 +256,12 @@ def load_video_path(
     ele: dict[str, Any] = {"video": str(path)}
     if fps is not None:
         ele["fps"] = float(fps)
-    video, sample_fps = qwen_vision._read_video_torchvision(ele)
+    backend = qwen_vision.get_video_reader_backend()
+    try:
+        video, sample_fps = qwen_vision.VIDEO_READER_BACKENDS[backend](ele)
+    except Exception:
+        logger.warning("Video reader %s failed, falling back to torchvision", backend)
+        video, sample_fps = qwen_vision.VIDEO_READER_BACKENDS["torchvision"](ele)
     nframes, _, height, width = video.shape
     min_pixels = ele.get("min_pixels", qwen_vision.VIDEO_MIN_PIXELS)
     total_pixels = ele.get("total_pixels", qwen_vision.VIDEO_TOTAL_PIXELS)

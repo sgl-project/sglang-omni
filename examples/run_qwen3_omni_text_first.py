@@ -43,6 +43,7 @@ def parse_args() -> argparse.Namespace:
 async def main_async(args: argparse.Namespace) -> None:
     config = Qwen3OmniPipelineConfig(
         model_path=args.model_path,
+        relay_backend="shm",
     )
     coordinator, stages = compile_pipeline(config)
     runner = PipelineRunner(coordinator, stages)
