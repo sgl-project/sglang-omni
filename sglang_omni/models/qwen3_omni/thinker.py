@@ -638,10 +638,22 @@ class Qwen3OmniMoeThinkerTextModel(nn.Module):
         visual_pos_masks: Optional[torch.Tensor] = None,
         deepstack_visual_embeds: Optional[list[torch.Tensor]] = None,
     ):
+        # Read pre-merged input_embeds from forward_batch (set by SGLangModelRunner)
+        if input_embeds is None:
+            input_embeds = getattr(forward_batch, "omni_input_embeds", None)
+
         if input_embeds is None:
             hidden_states = self.embed_tokens(input_ids)
         else:
             hidden_states = input_embeds
+
+        # Read deepstack data from forward_batch if not passed directly
+        if deepstack_visual_embeds is None:
+            deepstack_visual_embeds = getattr(
+                forward_batch, "omni_deepstack_visual_embeds", None
+            )
+        if visual_pos_masks is None:
+            visual_pos_masks = getattr(forward_batch, "omni_visual_pos_masks", None)
 
         residual = None
         aux_hidden_states = []
@@ -678,7 +690,9 @@ class Qwen3OmniMoeThinkerTextModel(nn.Module):
         return hidden_states, aux_hidden_states
 
     def _deepstack_process(self, hidden_states, visual_pos_masks, visual_embeds):
-        visual_pos_masks = visual_pos_masks[..., 0]
+        # visual_pos_masks may be 1D boolean (SGLang path) or multi-dim (HF path)
+        if visual_pos_masks.dim() > 1:
+            visual_pos_masks = visual_pos_masks[..., 0]
         visual_pos_masks = visual_pos_masks.to(hidden_states.device)
         visual_embeds = visual_embeds.to(hidden_states.device, hidden_states.dtype)
         local_this = hidden_states[visual_pos_masks, :].clone() + visual_embeds

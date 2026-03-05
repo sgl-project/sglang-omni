@@ -199,9 +199,12 @@ def create_sglang_thinker_executor(
     gpu_id: int = 0,
 ) -> EngineExecutor:
     """Create a thinker executor backed by SGLang's ModelWorker."""
+    from sglang_omni.models.qwen3_omni.components.common import load_thinker_config
+
     tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
     eos_token_id = getattr(tokenizer, "eos_token_id", None)
     vocab_size = getattr(tokenizer, "vocab_size", 32000)
+    thinker_config = load_thinker_config(model_path)
 
     step_counters: dict[str, int] = {}
 
@@ -214,6 +217,7 @@ def create_sglang_thinker_executor(
             tokenizer=tokenizer,
             vocab_size=vocab_size,
             request_id=payload.request_id,
+            thinker_config=thinker_config,
         )
 
     def _result_builder(payload: StagePayload, result: Any) -> StagePayload:
