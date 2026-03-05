@@ -371,6 +371,7 @@ class SGLangIterationController:
                 self.tree_cache.cache_unfinished_req(req)
 
     def is_finished(self, request: SchedulerRequest, output: RequestOutput) -> bool:
+        # TODO (chenyang): This looks a bit weird, how to refactor
         is_done = request.data.req.finished()
         if is_done:
             self._finalize_hidden_states(request)
@@ -379,23 +380,17 @@ class SGLangIterationController:
     def _finalize_hidden_states(self, request: SchedulerRequest) -> None:
         """Concatenate accumulated hidden state chunks into final tensors.
 
-        Stores results as ``thinker_embed`` and ``thinker_hidden`` in
-        ``request.data.extra_model_outputs`` for relay to the talker stage.
+        thinker_embed and thinker_hidden are stored in
+        request.data.extra_model_outputs for the talker.
         """
         data: SGLangARRequestData = request.data
         if not data.hidden_states_buffer:
             return
-
         for layer_idx, chunks in data.hidden_states_buffer.items():
             key = self.HIDDEN_LAYER_KEY_MAP.get(layer_idx, f"hidden_layer_{layer_idx}")
             if chunks:
                 data.extra_model_outputs[key] = torch.cat(chunks, dim=0)
         data.hidden_states_buffer.clear()
-
-
-# -----------------------------------------------------------------------------
-# Hidden State Capture via Forward Hooks
-# -----------------------------------------------------------------------------
 
 
 class HiddenStateCaptureHook:
