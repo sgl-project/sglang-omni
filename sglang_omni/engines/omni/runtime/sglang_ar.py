@@ -457,45 +457,44 @@ class HiddenStateCaptureHook:
 
 
 def _get_inner_text_model(model: Any) -> Any | None:
-    """Navigate model wrappers to find the inner text model with layers + embed_tokens.
+    """Navigate model wrappers to find the inner text model with ``layers``.
 
-    Handles various nesting patterns:
+    Traversal paths:
       - model.layers                       (direct)
-      - model.model.layers                 (e.g., LlamaForCausalLM)
+      - model.model.layers                 (e.g. LlamaForCausalLM)
       - model.model.model.layers           (deeper wrappers)
       - model.thinker.model.layers         (Qwen3OmniMoeForConditionalGeneration)
     """
-    candidates = [
-        model,
-        getattr(model, "model", None),
-        getattr(getattr(model, "model", None), "model", None),
-        # Qwen3-Omni: model.thinker.model has layers + embed_tokens
-        getattr(getattr(model, "thinker", None), "model", None),
+    _candidates = [
+        lambda: model,
+        lambda: model.model,
+        lambda: model.model.model,
+        lambda: model.thinker.model,
     ]
-    for candidate in candidates:
-        if candidate is None:
-            continue
-        if getattr(candidate, "layers", None) is not None:
+    for candidate_fn in _candidates:
+        try:
+            candidate = candidate_fn()
+            _ = candidate.layers
             return candidate
+        except AttributeError:
+            continue
     return None
 
 
-def _get_model_layers(model: Any) -> Any | None:
-    """Navigate model wrapper to find the decoder layers list."""
+def _get_model_layers(model: Any) -> list | None:
+    """Return the decoder layers list, or ``None``."""
     inner = _get_inner_text_model(model)
-    if inner is not None:
-        layers = getattr(inner, "layers", None)
-        if layers is not None and hasattr(layers, "__len__"):
-            return layers
-    return None
+    if inner is None:
+        return None
+    return inner.layers
 
 
 def _get_embed_tokens(model: Any) -> Any | None:
-    """Navigate model wrapper to find the embed_tokens module."""
+    """Return the ``embed_tokens`` module, or ``None``."""
     inner = _get_inner_text_model(model)
-    if inner is not None:
-        return getattr(inner, "embed_tokens", None)
-    return None
+    if inner is None:
+        return None
+    return inner.embed_tokens
 
 
 class SGLangModelRunner:
