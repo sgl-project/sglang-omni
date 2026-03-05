@@ -628,24 +628,14 @@ class SGLangModelRunner:
         # Get pre-merged embeddings
         input_embeds = forward_batch.omni_input_embeds
 
-        # Build deepstack kwarg if present (convert list-of-tensors to concatenated format)
-        kwargs = {}
-        ds_embeds_list = getattr(forward_batch, "omni_deepstack_visual_embeds", None)
-        if ds_embeds_list is not None and isinstance(ds_embeds_list, list):
-            # Upstream expects [num_visual_tokens, hidden_size * num_layers]
-            ds_on_device = [
-                e.to(device=input_embeds.device, dtype=input_embeds.dtype)
-                for e in ds_embeds_list
-            ]
-            kwargs["input_deepstack_embeds"] = torch.cat(ds_on_device, dim=-1)
-
         # Call inner language model directly with input_embeds
+        # NOTE: deepstack is skipped for now — it requires matching the extend
+        # chunk's visual token subset, which needs additional offset tracking.
         hidden_states = language_model(
             input_ids=None,
             positions=positions,
             forward_batch=forward_batch,
             input_embeds=input_embeds,
-            **kwargs,
         )
 
         # Compute logits
