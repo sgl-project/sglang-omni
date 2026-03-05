@@ -531,26 +531,19 @@ class SGLangModelRunner:
         if schedule_batch is None:
             return ModelRunnerOutput(outputs={}, req_ids=[], req_id_to_index={})
 
-        # 1. Get ModelWorkerBatch from ScheduleBatch
         model_worker_batch = schedule_batch.get_model_worker_batch()
 
-        # 2. Create ForwardBatch
         forward_batch = ForwardBatch.init_new(
             model_worker_batch, self.model_worker.model_runner
         )
 
-        # 3. Forward pass
         batch_result = self.model_worker.forward_batch_generation(forward_batch)
 
-        # 3a. Capture hidden states if hooks are registered
         if self._hidden_hook is not None:
             captured = self._hidden_hook.pop_captured()
             if captured:
                 self._store_captured_hidden(captured, scheduler_output, schedule_batch)
 
-        # 4. Produce per-request next tokens and store them on ScheduleBatch.
-        # Decode preparation relies on schedule_batch.output_ids from the
-        # previous step; without this, the next decode step cannot run.
         if schedule_batch.is_prefill_only:
             batch_result.next_token_ids = torch.zeros(
                 len(model_worker_batch.seq_lens),
@@ -563,11 +556,9 @@ class SGLangModelRunner:
             )
         schedule_batch.output_ids = batch_result.next_token_ids
 
-        # 5. Record last batch for post-step operations
         if self.batch_planner is not None:
             self.batch_planner.record_last_batch(schedule_batch)
 
-        # 6. Process outputs
         outputs = self.output_processor.process(batch_result, scheduler_output)
 
         req_ids = [req.request_id for req in scheduler_output.requests]
@@ -585,12 +576,7 @@ class SGLangModelRunner:
         scheduler_output: SchedulerOutput,
         schedule_batch: Any,
     ) -> None:
-        """Accumulate captured hidden states onto per-request data buffers.
-
-        Each captured tensor has shape [total_tokens, hidden_size].  For
-        batched prefill / decode the tokens are concatenated across requests
-        in ScheduleBatch order.  We slice per-request using seq_lens.
-        """
+        """Accumulate captured hidden states onto per-request data buffers."""
         seq_lens = list(schedule_batch.seq_lens)
         offsets: list[int] = []
         running_offset = 0
