@@ -8,7 +8,6 @@ from pathlib import Path
 from typing import Any
 
 from sglang_omni.config.schema import InputHandlerConfig, PipelineConfig, StageConfig
-from sglang_omni.executors.interface import Executor
 from sglang_omni.pipeline import (
     AggregatedInput,
     Coordinator,
@@ -16,6 +15,7 @@ from sglang_omni.pipeline import (
     Stage,
     Worker,
 )
+from sglang_omni.pipeline.executor.interface import Executor
 from sglang_omni.pipeline.stage.input import InputHandler
 from sglang_omni.utils import import_string
 

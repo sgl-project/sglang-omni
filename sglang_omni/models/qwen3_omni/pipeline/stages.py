@@ -34,6 +34,7 @@ from sglang_omni.models.qwen3_omni.pipeline.next_stage import (
     THINKER_STAGE,
 )
 from sglang_omni.models.qwen3_omni.pipeline.state_io import load_state, store_state
+from sglang_omni.pipeline.executor import EngineExecutor, PreprocessingExecutor
 from sglang_omni.proto import StagePayload
 
 

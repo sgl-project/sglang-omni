@@ -75,7 +75,7 @@ def run_stage(
     import logging
 
     from sglang_omni import Stage, Worker
-    from sglang_omni.executors import PreprocessingExecutor
+    from sglang_omni.pipeline.executor import PreprocessingExecutor
     from sglang_omni.proto import StagePayload
 
     # Configure logging for child process

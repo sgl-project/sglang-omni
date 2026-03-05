@@ -7,7 +7,7 @@ import asyncio
 import logging
 from typing import TYPE_CHECKING, Any
 
-from sglang_omni.executors.interface import Executor
+from sglang_omni.pipeline.executor.interface import Executor
 from sglang_omni.pipeline.stage.work import WorkDescriptor
 from sglang_omni.pipeline.worker.data_plane import DataPlaneAdapter
 from sglang_omni.proto import (

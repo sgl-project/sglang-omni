@@ -185,7 +185,7 @@ class PipelineConfig(BaseModel):
                 fused_stage = StageConfig(
                     name=stage.name,
                     executor=ExecutorConfig(
-                        factory="sglang_omni.executors.fused_executor.create_fused_executor",
+                        factory="sglang_omni.pipeline.executor.fused_executor.create_fused_executor",
                         args={"executors": executors},
                     ),
                     get_next=stage.get_next,

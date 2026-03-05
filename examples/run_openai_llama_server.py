@@ -74,7 +74,7 @@ def run_template_stage(model_path: str) -> None:
     from transformers import AutoTokenizer
 
     from sglang_omni import Stage, Worker
-    from sglang_omni.executors import PreprocessingExecutor
+    from sglang_omni.pipeline.executor import PreprocessingExecutor
     from sglang_omni.proto import StagePayload
 
     tokenizer = AutoTokenizer.from_pretrained(model_path)
@@ -127,7 +127,7 @@ def run_tokenize_stage(model_path: str) -> None:
     from transformers import AutoTokenizer
 
     from sglang_omni import Stage, Worker
-    from sglang_omni.executors import PreprocessingExecutor
+    from sglang_omni.pipeline.executor import PreprocessingExecutor
     from sglang_omni.proto import StagePayload
 
     tokenizer = AutoTokenizer.from_pretrained(model_path)
@@ -161,7 +161,7 @@ def run_decode_stage(model_path: str) -> None:
     from transformers import AutoTokenizer
 
     from sglang_omni import Stage, Worker
-    from sglang_omni.executors import PreprocessingExecutor
+    from sglang_omni.pipeline.executor import PreprocessingExecutor
     from sglang_omni.proto import StagePayload
 
     tokenizer = AutoTokenizer.from_pretrained(model_path)
@@ -206,8 +206,8 @@ def run_engine_stage(
 
     from sglang_omni import Stage, Worker
     from sglang_omni.engines.omni import create_ar_engine
-    from sglang_omni.executors import EngineExecutor
-    from sglang_omni.executors.engine_request_builders import build_ar_request
+    from sglang_omni.pipeline.executor import EngineExecutor
+    from sglang_omni.pipeline.executor.engine_request_builders import build_ar_request
     from sglang_omni.proto import StagePayload
 
     tokenizer = AutoTokenizer.from_pretrained(model_path)

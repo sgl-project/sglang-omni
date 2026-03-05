@@ -8,7 +8,7 @@ import inspect
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from sglang_omni.executors.interface import Executor
+from sglang_omni.pipeline.executor.interface import Executor
 from sglang_omni.proto import StagePayload
 
 

@@ -8,7 +8,7 @@ from collections.abc import Callable
 from typing import Any
 
 from sglang_omni.engines.base import Engine
-from sglang_omni.executors.interface import Executor
+from sglang_omni.pipeline.executor.interface import Executor
 from sglang_omni.proto import StagePayload
 
 

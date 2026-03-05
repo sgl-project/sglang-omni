@@ -14,7 +14,7 @@ from .base import CreditAllocator, Relay, RelayOperation, register_relay
 
 logger = logging.getLogger(__name__)
 
-NIXL_AVAILABLE = dist.is_available()
+NCCL_AVAILABLE = dist.is_available()
 
 
 class Connection:
