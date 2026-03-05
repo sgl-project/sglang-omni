@@ -1,11 +1,4 @@
 # SPDX-License-Identifier: Apache-2.0
-"""SGLang AR backend integration into OmniEngine's Protocol system.
-
-Provides BatchPlanner, ResourceManager, OutputProcessor, IterationController,
-and ModelRunner implementations that delegate to SGLang's PrefillManager,
-DecodeManager, and ModelWorker.
-"""
-
 from __future__ import annotations
 
 import logging
@@ -34,34 +27,13 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-# -----------------------------------------------------------------------------
-# Data Structures
-# -----------------------------------------------------------------------------
-
-
 @dataclass
 class SGLangARRequestData(ARRequestData):
-    """SGLang-specific AR request data.
-
-    Subclasses ARRequestData so isinstance(result, ARRequestData) passes
-    and all existing field accesses (.output_ids, .extra_model_outputs) work.
-    """
-
     req: Any = None
     synced: bool = False
 
 
-# -----------------------------------------------------------------------------
-# BatchPlanner
-# -----------------------------------------------------------------------------
-
-
 class SGLangBatchPlanner:
-    """Batch planner that delegates to SGLang's PrefillManager and DecodeManager.
-
-    Implements the BatchPlanner protocol (select_requests, build_batch).
-    """
-
     def __init__(
         self,
         prefill_manager: "PrefillManager",
@@ -73,7 +45,6 @@ class SGLangBatchPlanner:
         self.server_args = server_args
         self.last_batch: Any | None = None
         self.forward_ct: int = 0
-        # Maps SGLang req.rid -> OmniEngine SchedulerRequest
         self.req_id_map: dict[str, SchedulerRequest] = {}
         self._cached_schedule_batch: Any | None = None
 
@@ -83,13 +54,11 @@ class SGLangBatchPlanner:
         running: list[SchedulerRequest],
         resource_manager: Any,
     ) -> list[SchedulerRequest]:
-        # 1. Post-step from previous batch
         self._post_step_operations()
         active_request_ids = {req.request_id for req in waiting}
         active_request_ids.update(req.request_id for req in running)
         self._prune_inactive_state(active_request_ids)
 
-        # 2. Sync new SchedulerRequests to PrefillManager
         for sched_req in waiting:
             data: SGLangARRequestData = sched_req.data
             if not data.synced:
@@ -97,7 +66,6 @@ class SGLangBatchPlanner:
                 data.synced = True
                 self.req_id_map[data.req.rid] = sched_req
 
-        # 3. Try prefill first
         running_batch = self.decode_manager.running_batch
         running_bs = running_batch.batch_size()
         num_allocatable_reqs = max(
@@ -117,7 +85,6 @@ class SGLangBatchPlanner:
             new_token_ratio=self.decode_manager.new_token_ratio,
         )
 
-        # 4. Fallback to decode
         if schedule_batch is None and self.decode_manager.runnable:
             schedule_batch = self.decode_manager.schedule_next_batch(self.forward_ct)
 
@@ -128,7 +95,6 @@ class SGLangBatchPlanner:
         self._cached_schedule_batch = schedule_batch
         self.forward_ct += 1
 
-        # Map ScheduleBatch reqs back to SchedulerRequests
         selected: list[SchedulerRequest] = []
         keep_indices: list[int] = []
         for i, req in enumerate(schedule_batch.reqs):
@@ -156,7 +122,6 @@ class SGLangBatchPlanner:
         return self._cached_schedule_batch
 
     def _post_step_operations(self):
-        """Handle post-step merging from last prefill batch into decode batch."""
         chunked_req_to_exclude = set()
         active_chunked_req = self.prefill_manager.chunked_req
         if active_chunked_req is not None:
@@ -164,8 +129,6 @@ class SGLangBatchPlanner:
             self.prefill_manager.tree_cache.cache_unfinished_req(
                 active_chunked_req, chunked=True
             )
-            # Reuse req_to_token slot across chunk rounds; otherwise long chunked
-            # prompts can exhaust req_to_token_pool entries.
             if active_chunked_req.req_pool_idx is not None:
                 self.prefill_manager.req_to_token_pool.free(
                     active_chunked_req.req_pool_idx
@@ -191,7 +154,6 @@ class SGLangBatchPlanner:
                 else:
                     self.decode_manager.running_batch.merge_batch(self.last_batch)
 
-        # Filter finished requests from decode running_batch
         if not self.decode_manager.running_batch.is_empty():
             finished_indices = []
             for i, req in enumerate(self.decode_manager.running_batch.reqs):
@@ -221,11 +183,9 @@ class SGLangBatchPlanner:
         self.last_batch = None
 
     def record_last_batch(self, schedule_batch: Any):
-        """Called after model execution to record the last batch for post-step."""
         self.last_batch = schedule_batch
 
     def _prune_inactive_state(self, active_request_ids: set[str]) -> None:
-        """Prune stale request mappings and remove inactive reqs from SGLang queues."""
         inactive_rids: set[str] = set()
         for rid, sched_req in list(self.req_id_map.items()):
             if sched_req.request_id not in active_request_ids or sched_req.status in (
@@ -265,18 +225,7 @@ class SGLangBatchPlanner:
             )
 
 
-# -----------------------------------------------------------------------------
-# ResourceManager
-# -----------------------------------------------------------------------------
-
-
 class SGLangResourceManager:
-    """Resource manager that delegates KV cache management to SGLang internals.
-
-    PrefillAdder handles real allocation checks internally, so can_allocate/allocate
-    are pass-throughs. KV release happens only in free().
-    """
-
     def __init__(self, token_to_kv_pool_allocator, req_to_token_pool, tree_cache):
         self.token_to_kv_pool_allocator = token_to_kv_pool_allocator
         self.req_to_token_pool = req_to_token_pool
@@ -294,14 +243,7 @@ class SGLangResourceManager:
             release_kv_cache(data.req, self.tree_cache)
 
 
-# -----------------------------------------------------------------------------
-# OutputProcessor
-# -----------------------------------------------------------------------------
-
-
 class SGLangOutputProcessor:
-    """Converts GenerationBatchResult to per-request RequestOutputs."""
-
     def process(
         self,
         model_output: Any,
@@ -324,18 +266,7 @@ class SGLangOutputProcessor:
         return outputs
 
 
-# -----------------------------------------------------------------------------
-# IterationController
-# -----------------------------------------------------------------------------
-
-
 class SGLangIterationController:
-    """Handles per-request state updates with chunked prefill semantics.
-
-    Chunked prefill: req.is_chunked > 0 means the request is still in
-    chunked prefill — decrement counter, do NOT append token or check finish.
-    """
-
     def __init__(self, tree_cache):
         self.tree_cache = tree_cache
 
@@ -344,19 +275,14 @@ class SGLangIterationController:
         req = data.req
 
         if req.is_chunked > 0:
-            # Suppress stream emission for this chunk. Scheduler emits stream
-            # after update_request(), so marking output None here avoids races.
             output.data = None
             req.is_chunked -= 1
             return
 
         token_id = output.data
         if token_id is not None:
-            # output_ids is shared: req.output_ids IS data.output_ids
             req.output_ids.append(token_id)
             req.check_finished()
-            # Mirror upstream prefill behavior: unfinished prefill requests
-            # should insert/update prefix cache after extend step.
             if not req.finished() and req.decode_batch_idx == 0:
                 self.tree_cache.cache_unfinished_req(req)
 
@@ -364,16 +290,10 @@ class SGLangIterationController:
         return request.data.req.finished()
 
 
-# -----------------------------------------------------------------------------
-# SGLangModelRunner (duck-typed replacement for ModelRunner)
-# -----------------------------------------------------------------------------
-
-
 class SGLangModelRunner:
-    """Model runner that uses SGLang's ModelWorker for execution.
-
-    Replaces the generic ModelRunner — handles ScheduleBatch → ForwardBatch
-    conversion, forward pass, and conditional sampling.
+    """Bypasses outer Qwen3VLForConditionalGeneration (which doesn't accept
+    input_embeds) by calling the inner language model directly for multimodal
+    prefills. Decode steps use the standard SGLang path.
     """
 
     def __init__(
@@ -386,54 +306,29 @@ class SGLangModelRunner:
         self.output_processor = output_processor
         self.batch_planner = batch_planner
 
-        # Resolve inner model components once.
-        # The SGLang-loaded model is Qwen3VLForConditionalGeneration (outer wrapper).
-        # We need the inner language model for embedding lookup and custom forward.
         model = model_worker.model_runner.model
         self._embed_tokens, self._inner_model = self._get_inner_model_components(model)
 
     @staticmethod
     def _get_inner_model_components(model):
-        """Resolve embed_tokens and the outer model (with .model, .lm_head, .logits_processor).
-
-        Model hierarchy: Qwen3VLForConditionalGeneration (or .thinker variant)
-          -> .model (language model with embed_tokens)
-          -> .lm_head, .logits_processor
-        """
         outer = model.thinker if hasattr(model, "thinker") else model
-        language_model = outer.model
-        embed_tokens = language_model.embed_tokens
-        return embed_tokens, outer
+        return outer.model.embed_tokens, outer
 
     def _inject_multimodal_embeds(
         self, forward_batch: Any, schedule_batch: Any
     ) -> tuple[torch.Tensor | None, list | None, torch.Tensor | None]:
-        """Merge image/video/audio embeddings into text embeddings.
-
-        Returns (input_embeds, deepstack_visual_embeds, visual_pos_masks).
-        All None if no multimodal content found.
-        """
-        has_multimodal = any(
-            req.omni_model_inputs is not None for req in schedule_batch.reqs
-        )
-
-        if not has_multimodal:
+        """Returns (input_embeds, deepstack_visual_embeds, visual_pos_masks)."""
+        if not any(req.omni_model_inputs is not None for req in schedule_batch.reqs):
             return None, None, None
 
-        embed_tokens = self._embed_tokens
         device = forward_batch.input_ids.device
-
-        # Token IDs for multimodal placeholders (Qwen3-Omni defaults)
         hf_config = self.model_worker.model_runner.model_config.hf_config
         image_token_id = hf_config.image_token_id
         video_token_id = hf_config.video_token_id
         audio_token_id = hf_config.audio_token_id
 
-        # Compute text embeddings for the full batch
-        input_embeds = embed_tokens(forward_batch.input_ids)
+        input_embeds = self._embed_tokens(forward_batch.input_ids)
 
-        # Build per-request offset mapping using extend_seq_lens
-        # (input_ids only contains extend tokens, not cached prefix)
         extend_lens = forward_batch.extend_seq_lens_cpu
         offsets = []
         pos = 0
@@ -441,7 +336,6 @@ class SGLangModelRunner:
             offsets.append(pos)
             pos += length
 
-        # Scatter multimodal embeddings and collect deepstack data
         deepstack_visual_embeds_list = []
         visual_pos_masks_list = []
         has_deepstack = False
@@ -454,76 +348,45 @@ class SGLangModelRunner:
             start = offsets[i]
             end = start + extend_lens[i]
             req_input_ids = forward_batch.input_ids[start:end]
-
-            # For chunked prefill, we need to know which subset of the
-            # full embeddings corresponds to the current chunk's tokens.
-            # Track consumed offsets per modality using a counter on the req.
             consumed = req._omni_consumed or {}
 
-            # Scatter image embeddings
-            image_embeds = omni_inputs.get("image_embeds")
-            if image_embeds is not None:
-                mask = req_input_ids == image_token_id
-                if mask.any():
-                    n_tokens = int(mask.sum().item())
-                    offset = consumed.get("image", 0)
-                    chunk_embeds = image_embeds[offset : offset + n_tokens].to(
-                        device=device, dtype=input_embeds.dtype
-                    )
-                    global_indices = torch.where(mask)[0] + start
-                    input_embeds[global_indices] = chunk_embeds
-                    consumed["image"] = offset + n_tokens
-
-            # Scatter video embeddings
-            video_embeds = omni_inputs.get("video_embeds")
-            if video_embeds is not None:
-                mask = req_input_ids == video_token_id
-                if mask.any():
-                    n_tokens = int(mask.sum().item())
-                    offset = consumed.get("video", 0)
-                    chunk_embeds = video_embeds[offset : offset + n_tokens].to(
-                        device=device, dtype=input_embeds.dtype
-                    )
-                    global_indices = torch.where(mask)[0] + start
-                    input_embeds[global_indices] = chunk_embeds
-                    consumed["video"] = offset + n_tokens
-
-            # Scatter audio embeddings
-            audio_embeds = omni_inputs.get("audio_embeds")
-            if audio_embeds is not None:
-                mask = req_input_ids == audio_token_id
-                if mask.any():
-                    n_tokens = int(mask.sum().item())
-                    offset = consumed.get("audio", 0)
-                    chunk_embeds = audio_embeds[offset : offset + n_tokens].to(
-                        device=device, dtype=input_embeds.dtype
-                    )
-                    global_indices = torch.where(mask)[0] + start
-                    input_embeds[global_indices] = chunk_embeds
-                    consumed["audio"] = offset + n_tokens
+            for modality, token_id in [
+                ("image", image_token_id),
+                ("video", video_token_id),
+                ("audio", audio_token_id),
+            ]:
+                embeds = omni_inputs.get(f"{modality}_embeds")
+                if embeds is None:
+                    continue
+                mask = req_input_ids == token_id
+                if not mask.any():
+                    continue
+                n_tokens = int(mask.sum().item())
+                offset = consumed.get(modality, 0)
+                chunk_embeds = embeds[offset : offset + n_tokens].to(
+                    device=device, dtype=input_embeds.dtype
+                )
+                input_embeds[torch.where(mask)[0] + start] = chunk_embeds
+                consumed[modality] = offset + n_tokens
 
             req._omni_consumed = consumed
 
-            # Collect deepstack visual embeddings
             ds_embeds = omni_inputs.get("deepstack_visual_embeds")
             image_ds = omni_inputs.get("image_deepstack_visual_embeds")
             video_ds = omni_inputs.get("video_deepstack_visual_embeds")
 
             if ds_embeds is not None or image_ds is not None or video_ds is not None:
                 has_deepstack = True
-                # Compute visual_pos_masks for this request
                 img_mask = req_input_ids == image_token_id
                 vid_mask = req_input_ids == video_token_id
                 visual_mask = img_mask | vid_mask
 
                 if ds_embeds is None:
                     if image_ds and video_ds:
-                        # Merge image and video deepstack embeds
                         merged = []
                         for img_e, vid_e in zip(image_ds, video_ds):
                             num_visual = int(visual_mask.sum().item())
                             joint = img_e.new_zeros(num_visual, img_e.shape[-1])
-                            # Image positions within the visual set
                             img_in_visual = img_mask[visual_mask]
                             vid_in_visual = vid_mask[visual_mask]
                             if img_in_visual.any():
@@ -538,7 +401,6 @@ class SGLangModelRunner:
                         ds_embeds = video_ds
 
                 if ds_embeds is not None:
-                    # Build a global visual_pos_mask (indexed into the batch)
                     global_mask = torch.zeros(
                         len(forward_batch.input_ids),
                         dtype=torch.bool,
@@ -548,12 +410,10 @@ class SGLangModelRunner:
                     deepstack_visual_embeds_list.append(ds_embeds)
                     visual_pos_masks_list.append(global_mask)
 
-            # Clean up: free model_inputs after final prefill chunk to save memory
             if req.is_chunked == 0:
                 req.omni_model_inputs = None
                 req._omni_consumed = None
 
-        # Build deepstack outputs
         ds_embeds_out = None
         visual_masks_out = None
         if has_deepstack and deepstack_visual_embeds_list:
@@ -561,7 +421,6 @@ class SGLangModelRunner:
                 ds_embeds_out = deepstack_visual_embeds_list[0]
                 visual_masks_out = visual_pos_masks_list[0]
             else:
-                # Merge: combine visual masks and deepstack embeds
                 combined_mask = torch.zeros(
                     len(forward_batch.input_ids), dtype=torch.bool, device=device
                 )
@@ -587,29 +446,18 @@ class SGLangModelRunner:
         deepstack_visual_embeds: list | None = None,
         visual_pos_masks: torch.Tensor | None = None,
     ) -> Any:
-        """Run forward pass with pre-merged multimodal embeddings.
-
-        Bypasses the outer Qwen3VLForConditionalGeneration.forward() (which
-        doesn't accept input_embeds) and calls the inner language model directly.
-        """
         from sglang.srt.managers.scheduler import GenerationBatchResult
 
         model_runner = self.model_worker.model_runner
         outer = self._inner_model
-        language_model = outer.model
-        lm_head = outer.lm_head
-        logits_processor = outer.logits_processor
 
-        # Init attention backend metadata (normally done inside forward_extend)
         model_runner.attn_backend.init_forward_metadata(forward_batch)
 
-        # Compute positions (use mrope if enabled)
         positions = forward_batch.positions
         if forward_batch.mrope_positions is not None:
             positions = forward_batch.mrope_positions
 
-        # Call inner language model directly with input_embeds
-        hidden_states = language_model(
+        hidden_states = outer.model(
             input_ids=None,
             positions=positions,
             forward_batch=forward_batch,
@@ -618,11 +466,10 @@ class SGLangModelRunner:
             visual_pos_masks=visual_pos_masks,
         )
 
-        # Compute logits
-        logits_output = logits_processor(
+        logits_output = outer.logits_processor(
             forward_batch.input_ids,
             hidden_states,
-            lm_head,
+            outer.lm_head,
             forward_batch,
         )
 
@@ -639,24 +486,16 @@ class SGLangModelRunner:
         if schedule_batch is None:
             return ModelRunnerOutput(outputs={}, req_ids=[], req_id_to_index={})
 
-        # 1. Get ModelWorkerBatch from ScheduleBatch
         model_worker_batch = schedule_batch.get_model_worker_batch()
-
-        # 2. Create ForwardBatch
         forward_batch = ForwardBatch.init_new(
             model_worker_batch, self.model_worker.model_runner
         )
 
-        # 2.5. Inject image/video/audio embeddings into input_embeds for prefill
         omni_embeds = None
         if schedule_batch.forward_mode.is_extend():
             omni_embeds = self._inject_multimodal_embeds(forward_batch, schedule_batch)
 
-        # 3. Forward pass
         if omni_embeds is not None and omni_embeds[0] is not None:
-            # Custom forward: Qwen3VLForConditionalGeneration.forward() doesn't
-            # accept input_embeds kwarg. We bypass it and call the inner language
-            # model directly with our pre-merged embeddings.
             input_embeds, ds_embeds, vis_masks = omni_embeds
             batch_result = self._forward_with_omni_embeds(
                 forward_batch, input_embeds, ds_embeds, vis_masks
@@ -664,9 +503,6 @@ class SGLangModelRunner:
         else:
             batch_result = self.model_worker.forward_batch_generation(forward_batch)
 
-        # 4. Produce per-request next tokens and store them on ScheduleBatch.
-        # Decode preparation relies on schedule_batch.output_ids from the
-        # previous step; without this, the next decode step cannot run.
         if schedule_batch.is_prefill_only:
             batch_result.next_token_ids = torch.zeros(
                 len(model_worker_batch.seq_lens),
@@ -679,13 +515,10 @@ class SGLangModelRunner:
             )
         schedule_batch.output_ids = batch_result.next_token_ids
 
-        # 5. Record last batch for post-step operations
         if self.batch_planner is not None:
             self.batch_planner.record_last_batch(schedule_batch)
 
-        # 6. Process outputs
         outputs = self.output_processor.process(batch_result, scheduler_output)
-
         req_ids = [req.request_id for req in scheduler_output.requests]
         req_id_to_index = {req_id: idx for idx, req_id in enumerate(req_ids)}
 
