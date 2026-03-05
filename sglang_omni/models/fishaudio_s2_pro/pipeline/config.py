@@ -71,7 +71,7 @@ def create_tts_pipeline_config(
                 name=PREPROCESSING_STAGE,
                 executor=ExecutorConfig(
                     factory=f"{_s2_pkg}.stages.create_preprocessing_executor",
-                    args={"model_id": model_id},
+                    args={"model_id": model_id, "vqgan_device": tts_device},
                 ),
                 get_next=f"{_s2_pkg}.next_stage.preprocessing_next",
                 relay=_relay("cpu"),

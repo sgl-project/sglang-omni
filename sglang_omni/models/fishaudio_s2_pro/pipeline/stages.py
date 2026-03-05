@@ -48,7 +48,9 @@ def _store_state(payload: StagePayload, state: S2ProState) -> StagePayload:
 # ---------------------------------------------------------------------------
 
 
-def create_preprocessing_executor(model_id: str) -> PreprocessingExecutor:
+def create_preprocessing_executor(
+    model_id: str, *, vqgan_device: str = "cpu"
+) -> PreprocessingExecutor:
     """Build the Qwen3 chat-format prompt with reference audio.
 
     Loads the HuggingFace tokenizer and DAC VQGAN codec, then for each
@@ -68,34 +70,32 @@ def create_preprocessing_executor(model_id: str) -> PreprocessingExecutor:
 
     _vqgan_cache: dict[str, Any] = {}
 
-    def _get_vqgan(device: str = "cpu"):
+    def _get_vqgan():
         if "model" not in _vqgan_cache:
             from fish_speech.models.dac.vqgan import load_model as load_vqgan_model
 
             codec_path = os.path.join(checkpoint_dir, "codec.pth")
-            logger.info("Loading VQGAN codec from %s", codec_path)
+            logger.info("Loading VQGAN codec from %s on %s", codec_path, vqgan_device)
             t0 = time.perf_counter()
             model = load_vqgan_model(
                 config_name="modded_dac_vq",
                 checkpoint_path=codec_path,
-                device=device,
+                device=vqgan_device,
             )
             _vqgan_cache["model"] = model
             logger.info("VQGAN loaded in %.2fs", time.perf_counter() - t0)
         return _vqgan_cache["model"]
 
-    def _encode_reference_audio(
-        audio_path: str, device: str = "cpu"
-    ) -> torch.Tensor:
+    def _encode_reference_audio(audio_path: str) -> torch.Tensor:
         from fish_speech.models.dac.vqgan import batch_encode as vqgan_encode
 
-        vqgan_model = _get_vqgan(device)
+        vqgan_model = _get_vqgan()
         with open(audio_path, "rb") as f:
             audio_bytes = f.read()
         features = vqgan_encode(vqgan_model, [audio_bytes])
         return torch.cat(features, dim=1)
 
-    def _preprocess(payload: StagePayload) -> StagePayload:
+    async def _preprocess(payload: StagePayload) -> StagePayload:
         inputs = payload.request.inputs or {}
         params = payload.request.params or {}
 
@@ -144,9 +144,10 @@ def create_preprocessing_executor(model_id: str) -> PreprocessingExecutor:
             vq_parts=vq_parts,
             vq_mask_tokens=vq_mask_tokens,
             max_new_tokens=params.get("max_new_tokens", 2048),
-            temperature=params.get("temperature", 0.7),
-            top_p=params.get("top_p", 0.7),
+            temperature=params.get("temperature", 1.0),
+            top_p=params.get("top_p", 0.9),
             top_k=params.get("top_k", 30),
+            seed=params.get("seed"),
         )
         return _store_state(payload, state)
 
@@ -196,7 +197,7 @@ def create_tts_engine_executor(
         "FishQwen3OmniForCausalLM loaded in %.2fs", time.perf_counter() - t0
     )
 
-    def _generate(payload: StagePayload) -> StagePayload:
+    async def _generate(payload: StagePayload) -> StagePayload:
         state = _load_state(payload)
 
         input_ids = state.input_ids
@@ -230,6 +231,7 @@ def create_tts_engine_executor(
             constrain_to_semantic=True,
             vq_parts=vq_parts_for_embed,
             vq_mask_tokens=vq_mask,
+            seed=state.seed,
         )
 
         sample = result.samples[0]
@@ -244,7 +246,7 @@ def create_tts_engine_executor(
 
         return _store_state(payload, state)
 
-    return PreprocessingExecutor(_generate)
+    return PreprocessingExecutor(_generate)  # async → runs in event loop
 
 
 # ---------------------------------------------------------------------------
@@ -273,7 +275,7 @@ def create_vocoder_executor(
         device=device,
     )
 
-    def _vocode(payload: StagePayload) -> StagePayload:
+    async def _vocode(payload: StagePayload) -> StagePayload:
         state = _load_state(payload)
 
         output_codes = state.output_codes

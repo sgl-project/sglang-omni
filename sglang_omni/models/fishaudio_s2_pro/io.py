@@ -26,9 +26,10 @@ class S2ProState:
 
     # -- Generation params -------------------------------------------------
     max_new_tokens: int = 2048
-    temperature: float = 0.7
-    top_p: float = 0.7
+    temperature: float = 1.0
+    top_p: float = 0.9
     top_k: int = 30
+    seed: int | None = None
 
     # -- From TTS engine ---------------------------------------------------
     output_codes: Any = None  # [num_semantic, num_codebooks] VQ codes
@@ -56,6 +57,8 @@ class S2ProState:
         data["temperature"] = self.temperature
         data["top_p"] = self.top_p
         data["top_k"] = self.top_k
+        if self.seed is not None:
+            data["seed"] = self.seed
         if self.output_codes is not None:
             data["output_codes"] = self._tensor_to_list(self.output_codes)
         data["num_semantic_tokens"] = self.num_semantic_tokens
@@ -73,9 +76,10 @@ class S2ProState:
             vq_parts=data.get("vq_parts"),
             vq_mask_tokens=data.get("vq_mask_tokens"),
             max_new_tokens=data.get("max_new_tokens", 2048),
-            temperature=data.get("temperature", 0.7),
-            top_p=data.get("top_p", 0.7),
+            temperature=data.get("temperature", 1.0),
+            top_p=data.get("top_p", 0.9),
             top_k=data.get("top_k", 30),
+            seed=data.get("seed"),
             output_codes=data.get("output_codes"),
             num_semantic_tokens=data.get("num_semantic_tokens", 0),
             audio_samples=data.get("audio_samples"),
