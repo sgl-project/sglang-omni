@@ -11,6 +11,7 @@ from .factory import (
 from .model_runner import ModelRunner
 from .runtime.ar import ARRequestData
 from .runtime.encoder import EncoderRequestData
+from .runtime.sglang_ar import SGLangARRequestData
 from .scheduler import Scheduler
 from .types import (
     ModelRunnerOutput,
@@ -43,18 +44,3 @@ __all__ = [
     # Talker
     "create_talker_codec_engine",
 ]
-
-
-_LAZY_EXPORTS = {
-    "SGLangARRequestData": ".runtime.sglang_ar",
-}
-
-
-def __getattr__(name: str):
-    module_path = _LAZY_EXPORTS.get(name)
-    if module_path is not None:
-        import importlib
-
-        mod = importlib.import_module(module_path, package=__name__)
-        return getattr(mod, name)
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
