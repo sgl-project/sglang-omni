@@ -107,14 +107,14 @@ def _compute_mrope_positions(
     if image_grid_thw is None and video_grid_thw is None:
         return None
 
-    spatial_merge_size = getattr(thinker_config.vision_config, "spatial_merge_size", 2)
+    spatial_merge_size = thinker_config.vision_config.spatial_merge_size
     image_token_id = thinker_config.image_token_id
     video_token_id = thinker_config.video_token_id
-    vision_start_token_id = getattr(thinker_config, "vision_start_token_id", 151652)
-    tokens_per_second = getattr(thinker_config.vision_config, "tokens_per_second", None)
+    vision_start_token_id = thinker_config.vision_start_token_id
+    tokens_per_second = thinker_config.vision_config.tokens_per_second
     audio_token_id = thinker_config.audio_token_id
     audio_start_token_id = thinker_config.audio_start_token_id
-    position_id_per_seconds = getattr(thinker_config, "position_id_per_seconds", 25)
+    position_id_per_seconds = thinker_config.position_id_per_seconds
     use_audio_in_video = model_inputs.get("use_audio_in_video", False)
     audio_feature_lengths = model_inputs.get("audio_feature_lengths")
 

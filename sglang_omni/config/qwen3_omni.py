@@ -64,6 +64,7 @@ class Qwen3OmniMoeVisionEncoderConfig(PretrainedConfig):
         out_hidden_size=3584,
         num_position_embeddings=2304,
         deepstack_visual_indexes=[8, 16, 24],
+        tokens_per_second=None,
         initializer_range=0.02,
         **kwargs,
     ):
@@ -82,6 +83,7 @@ class Qwen3OmniMoeVisionEncoderConfig(PretrainedConfig):
         self.num_position_embeddings = num_position_embeddings
         self.initializer_range = initializer_range
         self.deepstack_visual_indexes = deepstack_visual_indexes
+        self.tokens_per_second = tokens_per_second
 
 
 class Qwen3OmniMoeTextConfig(PretrainedConfig):
@@ -160,6 +162,7 @@ class Qwen3OmniMoeThinkerConfig(PretrainedConfig):
         audio_token_id=151646,
         image_token_id=151655,
         video_token_id=151656,
+        vision_start_token_id=151652,
         position_id_per_seconds=25,
         audio_start_token_id=151647,
         user_token_id=872,
@@ -168,6 +171,7 @@ class Qwen3OmniMoeThinkerConfig(PretrainedConfig):
     ):
         super().__init__(**kwargs)
         self.user_token_id = user_token_id
+        self.vision_start_token_id = vision_start_token_id
         self.position_id_per_seconds = position_id_per_seconds
         self.audio_start_token_id = audio_start_token_id
         self.initializer_range = initializer_range
