@@ -11,7 +11,6 @@ from .factory import (
 from .model_runner import ModelRunner
 from .runtime.ar import ARRequestData
 from .runtime.encoder import EncoderRequestData
-from .runtime.sglang_ar import SGLangARRequestData
 from .scheduler import Scheduler
 from .types import (
     ModelRunnerOutput,
@@ -39,7 +38,6 @@ __all__ = [
     "ARRequestData",
     "create_ar_engine",
     # AR (SGLang)
-    "SGLangARRequestData",
     "create_sglang_ar_engine",
     # Talker
     "create_talker_codec_engine",
