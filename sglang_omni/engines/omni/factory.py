@@ -395,7 +395,7 @@ class TalkerCodecRunner:
         seq_len = input_embeds.shape[1]
         flat_embeds = input_embeds.squeeze(0)
         positions = torch.arange(seq_len, device=self.device)
-        forward_batch = _build_mock_forward_batch(seq_len, self.device)
+        forward_batch = _MockForwardBatch(seq_len, self.device)
 
         hidden_states = self.talker_model.forward(
             input_ids=torch.zeros(seq_len, dtype=torch.long, device=self.device),
@@ -506,8 +506,12 @@ class _ExtendForwardMode:
 class _MockForwardBatch:
     """Minimal ForwardBatch substitute for the SDPA-patched talker backbone.
 
-    Provides enough interface for the decoder layer's ``forward_prepare``
-    and ``LayerCommunicator`` to proceed without crashing.
+    Note (chenyang): The talker backbone does not use SGLang's inference
+    pipeline fully, including KV cache, radix tree, etc.  The attention layers
+    have been patched to plain SDPA (Scaled Dot-Product Attention ).  However
+    the decoder layer forward() signature still expects a ForwardBatch
+    object, so we provide this mock with the minimal fields required by
+    forward_prepare and LayerCommunicator.
     """
 
     def __init__(self, seq_len: int, device: torch.device) -> None:
@@ -534,8 +538,3 @@ class _MockForwardBatch:
         self.mrope_positions = None
         self.spec_info = None
         self.capture_hidden_mode = None
-
-
-def _build_mock_forward_batch(seq_len: int, device: torch.device) -> _MockForwardBatch:
-    """Build a minimal mock ForwardBatch for the talker backbone."""
-    return _MockForwardBatch(seq_len, device)
