@@ -98,10 +98,7 @@ class OmniEngine(Engine):
     async def _run_loop(self) -> None:
         """Main processing loop."""
         while self._running:
-            try:
-                await self._step()
-            except Exception:
-                logger.exception("Error in OmniEngine step")
+            await self._step()
             await asyncio.sleep(0)  # Yield to other coroutines
 
     async def _step(self) -> bool:
@@ -113,44 +110,57 @@ class OmniEngine(Engine):
             await asyncio.sleep(0.001)  # Brief sleep when idle
             return False
 
-        # 2. Check cache (if enabled)
-        if self.cache_manager is not None:
-            scheduler_output = await self._filter_cached(scheduler_output)
-            if scheduler_output is None:
-                return True  # All cached, no execution needed
+        try:
+            # 2. Check cache (if enabled)
+            if self.cache_manager is not None:
+                scheduler_output = await self._filter_cached(scheduler_output)
+                if scheduler_output is None:
+                    return True  # All cached, no execution needed
 
-        # 3. Execute
-        # Run CPU model runners inline to avoid threadpool hangs with
-        # non-thread-safe mock/model outputs. Keep threaded execution for
-        # accelerator-backed runners by default.
-        execute_in_thread = getattr(self.model_runner, "execute_in_thread", None)
-        if execute_in_thread is None:
-            device = getattr(self.model_runner, "device", None)
-            device_type = getattr(
-                device, "type", str(device) if device is not None else ""
+            # 3. Execute
+            # Run CPU model runners inline to avoid threadpool hangs with
+            # non-thread-safe mock/model outputs. Keep threaded execution for
+            # accelerator-backed runners by default.
+            execute_in_thread = getattr(self.model_runner, "execute_in_thread", None)
+            if execute_in_thread is None:
+                device = getattr(self.model_runner, "device", None)
+                device_type = getattr(
+                    device, "type", str(device) if device is not None else ""
+                )
+                execute_in_thread = str(device_type) != "cpu"
+
+            if execute_in_thread:
+                loop = asyncio.get_running_loop()
+                model_output = await loop.run_in_executor(
+                    None,
+                    self.model_runner.execute,
+                    scheduler_output,
+                )
+            else:
+                model_output = self.model_runner.execute(scheduler_output)
+
+            # 4. Update cache (if enabled)
+            if self.cache_manager is not None:
+                await self._update_cache(scheduler_output, model_output)
+
+            # 5. Update state
+            finished = self.scheduler.update(scheduler_output, model_output)
+
+            if finished:
+                for req in finished:
+                    logger.debug("Request %s finished", req.request_id)
+
+        except Exception as e:
+            logger.exception(
+                "OmniEngine step failed, failing %d request(s)",
+                len(scheduler_output.requests),
             )
-            execute_in_thread = str(device_type) != "cpu"
-
-        if execute_in_thread:
-            loop = asyncio.get_running_loop()
-            model_output = await loop.run_in_executor(
-                None,
-                self.model_runner.execute,
-                scheduler_output,
-            )
-        else:
-            model_output = self.model_runner.execute(scheduler_output)
-
-        # 4. Update cache (if enabled)
-        if self.cache_manager is not None:
-            await self._update_cache(scheduler_output, model_output)
-
-        # 5. Update state
-        finished = self.scheduler.update(scheduler_output, model_output)
-
-        if finished:
-            for req in finished:
-                logger.debug("Request %s finished", req.request_id)
+            for request in scheduler_output.requests:
+                try:
+                    self.scheduler.fail_request(request.request_id, e)
+                except Exception:
+                    pass
+            return False
 
         return True
 
