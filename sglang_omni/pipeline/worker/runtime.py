@@ -96,7 +96,13 @@ class Worker:
                 result = await self.executor.get_result()
             except asyncio.CancelledError:
                 break
-            except Exception:
+            except Exception as e:
+                request_id = getattr(e, "request_id", None)
+                if request_id is not None:
+                    fut = self._result_waiters.pop(request_id, None)
+                    if fut is not None and not fut.done():
+                        fut.set_exception(e)
+                        continue
                 logger.exception("Worker dispatcher: get_result error")
                 continue
 

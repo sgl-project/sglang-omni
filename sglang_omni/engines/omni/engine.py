@@ -98,10 +98,7 @@ class OmniEngine(Engine):
     async def _run_loop(self) -> None:
         """Main processing loop."""
         while self._running:
-            try:
-                await self._step()
-            except Exception:
-                logger.exception("Error in OmniEngine step")
+            await self._step()
             await asyncio.sleep(0)  # Yield to other coroutines
 
     async def _step(self) -> bool:

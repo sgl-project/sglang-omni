@@ -69,7 +69,11 @@ class EngineExecutor(Executor):
             if task is None:
                 continue
             self._payloads.pop(request_id, None)
-            return await task
+            try:
+                return await task
+            except Exception as e:
+                e.request_id = request_id
+                raise
 
     async def abort(self, request_id: str) -> None:
         self._aborted.add(request_id)
