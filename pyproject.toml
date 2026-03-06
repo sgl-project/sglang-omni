@@ -35,7 +35,9 @@ dependencies = [
     "numba==0.63.1",
     "librosa>=0.11.0",
     "pandas",
-    "tabulate"
+    "tabulate",
+    "openai==2.6.1",
+    "openai-harmony==0.0.4"
 ]
 
 [project.optional-dependencies]
