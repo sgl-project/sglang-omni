@@ -467,10 +467,6 @@ class SGLangModelRunner:
         if forward_batch.mrope_positions is not None:
             positions = forward_batch.mrope_positions
 
-        # Convert per-layer deepstack list into the concatenated 2D tensor
-        # expected by the SGLang language model.  ``get_deepstack_embeds``
-        # slices ``input_deepstack_embeds[:, hidden_size*i : hidden_size*(i+1)]``
-        # for layer *i*, so we concatenate along dim=-1.
         ds_input = None
         if deepstack_visual_embeds is not None and visual_pos_masks is not None:
             device = input_embeds.device
@@ -480,8 +476,6 @@ class SGLangModelRunner:
             ]
             ds_input = torch.cat(layer_tensors, dim=-1)
 
-            # Expand from visual-only tokens to the full sequence length so
-            # that the model can index with visual_pos_masks.
             full_ds = torch.zeros(
                 input_embeds.shape[0],
                 ds_input.shape[-1],
