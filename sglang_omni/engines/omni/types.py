@@ -29,6 +29,7 @@ class SchedulerRequest:
     request_id: str
     status: SchedulerStatus = SchedulerStatus.WAITING
     data: Any = None  # Model-specific, opaque to Scheduler
+    error: Exception | None = None  # Set when request fails
 
     # Timestamps
     arrival_time: float = 0.0
