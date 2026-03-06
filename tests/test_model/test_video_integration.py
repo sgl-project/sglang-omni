@@ -15,6 +15,7 @@ import signal
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 import pytest
 import requests
@@ -23,34 +24,17 @@ import requests
 # Configuration
 # ---------------------------------------------------------------------------
 
-MODEL_PATH = os.environ.get("QWEN3_OMNI_MODEL", "Qwen/Qwen3-Omni-30B-A3B-Instruct")
-SERVER_PORT = int(os.environ.get("TEST_SERVER_PORT", "18899"))
+MODEL_PATH = "Qwen/Qwen3-Omni-30B-A3B-Instruct"
+SERVER_PORT = 18899
 API_BASE = f"http://localhost:{SERVER_PORT}"
-VIDEO_PATH = os.path.join(os.path.dirname(__file__), "..", "test_file.webm")
-# Allow both the project root and sglang_omni/ locations
-if not os.path.isfile(VIDEO_PATH):
-    VIDEO_PATH = os.path.join(
-        os.path.dirname(__file__), "..", "sglang_omni", "test_file.webm"
-    )
+VIDEO_PATH = Path(__file__).parent.parent.joinpath("data/draw.mp4")
 
 # Keywords that indicate the model understood the video content.
 # The video shows a transit hub (airport/train station) with a gate number "12",
 # a "UCI Health" advertisement, seating areas, and large arched architecture.
 EXPECTED_KEYWORDS = [
-    "airport",
-    "terminal",
-    "train",
-    "station",
-    "gate",
-    "12",
-    "uci",
-    "uci health",
-    "platform",
-    "departure",
-    "arrival",
-    "boarding",
-    "grren",
-    "white",
+    "stylus",
+    "guitar",
 ]
 
 STARTUP_TIMEOUT = 600  # seconds
@@ -60,8 +44,6 @@ REQUEST_TIMEOUT = 300  # seconds
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
-
-
 @pytest.fixture(scope="module")
 def server_process():
     """Start the sglang-omni backend server and wait until healthy."""
@@ -75,7 +57,7 @@ def server_process():
         "--model-path",
         MODEL_PATH,
         "--relay-backend",
-        "shm",
+        "nixl",
         "--port",
         str(SERVER_PORT),
     ]
@@ -147,7 +129,7 @@ def test_two_round_conversation(server_process):
     # Round 1: location question
     # ------------------------------------------------------------------
     round1_messages = [
-        {"role": "user", "content": "Where am I right now?"},
+        {"role": "user", "content": "What is the girl holding in her hand?"},
     ]
     payload_r1 = {
         "model": "qwen3-omni",
@@ -191,9 +173,9 @@ def test_two_round_conversation(server_process):
     # Round 2: follow-up about the school (multi-turn with context)
     # ------------------------------------------------------------------
     round2_messages = [
-        {"role": "user", "content": "Where am I right now?"},
+        {"role": "user", "content": "What is the girl holding in her hand?"},
         {"role": "assistant", "content": content_r1},
-        {"role": "user", "content": "Is there a specific school shown in the video?"},
+        {"role": "user", "content": "What is the girl drawing?"},
     ]
     payload_r2 = {
         "model": "qwen3-omni",
