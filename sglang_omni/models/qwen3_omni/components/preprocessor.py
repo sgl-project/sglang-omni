@@ -295,10 +295,15 @@ class Qwen3OmniPreprocessor:
         if use_audio_in_video is not None:
             mm_inputs["video"]["use_audio_in_video"] = bool(use_audio_in_video)
 
-        # Build encoder_inputs with cache_key for efficient caching
+        # Build encoder_inputs with cache_key for efficient caching.
+        # The image encoder handles both images and videos, so combine both
+        # cache keys when available.
         image_encoder_inputs = {**mm_inputs["image"], **mm_inputs["video"]}
-        if image_cache_key:
-            image_encoder_inputs["cache_key"] = image_cache_key
+        combined_cache_key = image_cache_key or video_cache_key
+        if image_cache_key and video_cache_key:
+            combined_cache_key = f"{image_cache_key}|{video_cache_key}"
+        if combined_cache_key:
+            image_encoder_inputs["cache_key"] = combined_cache_key
 
         audio_encoder_inputs = {**mm_inputs["audio"]}
         if audio_cache_key:

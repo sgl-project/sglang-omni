@@ -67,6 +67,8 @@ def _create_encoder_executor(
     stage_name: str,
     model: torch.nn.Module,
     device: str,
+    use_cache: bool = True,
+    cache_size: int | None = 64,
 ) -> EngineExecutor:
     def _request_builder(payload: StagePayload):
         state = load_state(payload)
@@ -77,7 +79,9 @@ def _create_encoder_executor(
         apply_encoder_result(state, stage_name=stage_name, result=result)
         return store_state(payload, state)
 
-    engine = create_encoder_engine(model, device=device)
+    engine = create_encoder_engine(
+        model, device=device, use_cache=use_cache, cache_size=cache_size
+    )
     return EngineExecutor(
         engine=engine, request_builder=_request_builder, result_builder=_result_builder
     )
