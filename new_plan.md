@@ -2,146 +2,185 @@
 
 ## 1. Background: How Qwen3-Omni's Thinker Expects Visual Data
 
-Qwen3-Omni uses a two-channel mechanism to feed visual information into the thinker (language model):
+Qwen3-Omni feeds visual information into the thinker (language model) through **two complementary channels**. Both must work together for the model to fully understand visual content.
 
-**Channel A — Input Embedding Replacement (Layer 0)**:
-The preprocessor tokenizes video frames into placeholder tokens (`<video>`, token ID 151656). During prefill, `_inject_multimodal_embeds()` replaces these placeholders with the actual `video_embeds` from the image encoder. This gives the model visual information at the input embedding layer only.
+### Channel A — Input Embedding Replacement (Layer 0) — ALREADY WORKING
 
-**Channel B — Deepstack Intermediate-Layer Injection (Layers 0, 1, 2, ...)**:
-The image encoder also produces `deepstack_visual_embeds` — a list of per-layer visual feature tensors. These are meant to be injected as additive residuals at intermediate transformer layers (controlled by `deepstack_visual_indexes` in the model config, typically layers 0, 1, 2). This multi-layer injection is how Qwen3-Omni is architecturally designed to process vision — the model receives progressively refined visual features at multiple depths.
+When a user sends a video, the preprocessor tokenizes the video frames into placeholder tokens (`<video>`, token ID 151656) in the prompt. During prefill, `_inject_multimodal_embeds()` scans the token sequence, finds these placeholders, and replaces them with the actual `video_embeds` produced by the image encoder. The result is an `input_embeds` tensor where visual positions contain real visual features instead of placeholder embeddings.
 
-In the **native SGLang path** (when SGLang runs Qwen3-Omni directly without the sglang_omni pipeline), both channels work correctly. The function `general_mm_embed_routine()` in `sglang/srt/managers/mm_utils.py` handles this:
+**This channel is fully implemented and working.** The entire upstream pipeline is correct:
+- Image encoder produces `video_embeds` ✅
+- Merge stage packs them into `thinker_inputs["model_inputs"]` ✅
+- `build_sglang_thinker_request` attaches them to `req.omni_model_inputs` ✅
+- `_inject_multimodal_embeds()` replaces placeholders in `input_embeds` ✅
+- `_forward_with_omni_embeds()` passes `input_embeds` to `outer.model()` ✅
+
+The model sees visual information at the input layer. This alone allows the model to produce visually-grounded responses (it can identify objects, text, scenes).
+
+### Channel B — Deepstack Intermediate-Layer Injection — BROKEN
+
+In addition to the flat embeddings at layer 0, the image encoder produces **deepstack visual embeddings** — a list of per-layer visual feature tensors. These are designed to be injected as additive residuals at **intermediate transformer layers** (typically layers 0, 1, 2, controlled by `deepstack_visual_indexes` in the model config).
+
+Think of it this way: Channel A gives the model one "look" at the video at the very beginning (layer 0). Channel B gives it additional "looks" at deeper layers, with progressively refined visual features. This multi-layer injection is a core architectural design of Qwen3-Omni for robust visual understanding.
+
+**This channel is broken.** The deepstack data is correctly produced by the upstream pipeline and arrives at `_forward_with_omni_embeds()`, but is silently dropped there — it never reaches the language model. All intermediate-layer visual injection is lost.
+
+### How the Native SGLang Path Handles Both Channels
+
+> **IMPORTANT FOR THE IMPLEMENTING AGENT**: The code snippets below were verified against SGLang v0.5.8 at the time of writing, but they may become outdated. **You MUST clone the exact SGLang version used by this project and verify all referenced APIs and code paths yourself before implementing.** Do not blindly trust the snippets below.
+>
+> ```bash
+> # SGLang Omni uses SGLang 0.5.8. Clone it to verify:
+> git clone --depth 1 --branch v0.5.8 https://github.com/sgl-project/sglang.git /tmp/sglang-v0.5.8
+> # Then check the actual code at:
+> #   python/sglang/srt/managers/mm_utils.py          — general_mm_embed_routine
+> #   python/sglang/srt/models/qwen3_vl_moe.py        — Qwen3MoeLLMModel, get_deepstack_embeds
+> #   python/sglang/srt/models/qwen3_vl.py             — Qwen3VLForConditionalGeneration.forward
+> #   python/sglang/srt/models/qwen3_omni_moe.py       — Qwen3OmniMoeForConditionalGeneration
+> ```
+
+When SGLang runs Qwen3-Omni directly (without the sglang_omni pipeline), the `forward()` method of `Qwen3VLForConditionalGeneration` (`python/sglang/srt/models/qwen3_vl.py`, line 888) calls `general_mm_embed_routine()`:
 
 ```python
-# From general_mm_embed_routine (native SGLang):
-input_embeds, other_info = embed_mm_inputs(...)    # Channel A
-if use_deepstack:
-    kwargs["input_deepstack_embeds"] = other_info["input_deepstack_embeds"]  # Channel B
-
-hidden_states = language_model(
-    input_ids=None,
+# qwen3_vl.py line 921-929:
+hidden_states = general_mm_embed_routine(
+    input_ids=input_ids,
     forward_batch=forward_batch,
-    input_embeds=input_embeds,
-    **kwargs,  # ← input_deepstack_embeds reaches the language model here
+    language_model=self.model,
+    multimodal_model=self,
+    positions=positions,
+    use_deepstack=self.use_deepstack,   # {Modality.IMAGE: True, Modality.VIDEO: True}
+    pp_proxy_tensors=pp_proxy_tensors,
 )
 ```
 
-Inside the language model (`Qwen3MoeLLMModel.forward()`), the deepstack data is consumed per-layer:
+Inside `general_mm_embed_routine()` (file: `python/sglang/srt/managers/mm_utils.py`, line 1045), both channels are handled:
 
 ```python
-# Qwen3MoeLLMModel.forward():
-for layer_idx, layer in enumerate(self.layers[...]):
-    deepstack_embeds = self.get_deepstack_embeds(layer_idx - 1, input_deepstack_embeds)
+# mm_utils.py line 1091-1104:
+input_embeds, other_info = embed_mm_inputs(...)    # Channel A: embedding replacement
+# add for qwen3_vl deepstack
+if use_deepstack:
+    kwargs["input_deepstack_embeds"] = other_info["input_deepstack_embeds"]  # Channel B
+
+# mm_utils.py line 1130-1135:
+hidden_states = language_model(
+    input_ids=None,
+    forward_batch=forward_batch,
+    input_embeds=input_embeds,      # Channel A data
+    **kwargs,                        # Contains input_deepstack_embeds for Channel B
+)
+```
+
+Inside the language model `Qwen3MoeLLMModel` (file: `python/sglang/srt/models/qwen3_vl_moe.py`, line 69), the deepstack data is consumed at each transformer layer:
+
+```python
+# qwen3_vl_moe.py line 90-113:
+for layer_idx, layer in enumerate(self.layers[self.start_layer : self.end_layer]):
+    layer_idx += self.start_layer
+    # ...
+    deepstack_embeds = self.get_deepstack_embeds(
+        layer_idx - 1, input_deepstack_embeds      # Slice per-layer features
+    )
     hidden_states, residual = layer(
         positions, hidden_states, forward_batch, residual,
-        post_residual_addition=deepstack_embeds,  # ← added to residual at this layer
+        post_residual_addition=deepstack_embeds,    # Added to residual at this layer
     )
 ```
 
-And `get_deepstack_embeds` slices the concatenated tensor:
+And `get_deepstack_embeds` (line 57) slices the concatenated tensor:
 
 ```python
+# qwen3_vl_moe.py line 57-67:
 def get_deepstack_embeds(self, layer_idx, input_deepstack_embeds):
-    if input_deepstack_embeds is None:
+    if input_deepstack_embeds is None or layer_idx not in self.deepstack_embed_to_decoder_layer:
         return None
     sep = self.hidden_size * layer_idx
     return input_deepstack_embeds[:, sep : sep + self.hidden_size]
 ```
 
-The expected format of `input_deepstack_embeds` is a **2D tensor** of shape `[seq_len, hidden_size * num_deepstack_layers]`. Layer *i*'s features occupy columns `[hidden_size*i : hidden_size*(i+1)]`. Non-visual token positions are zeros.
+Where `self.deepstack_embed_to_decoder_layer = range(3)` (line 52), meaning layers 0, 1, 2 receive deepstack residuals.
 
-## 2. Current State: Channel B Is Broken
+## 2. What's Broken: The Last-Mile Drop
 
-In the sglang_omni pipeline, `_forward_with_omni_embeds()` in `sglang_omni/engines/omni/runtime/sglang_ar.py` bypasses `general_mm_embed_routine` and calls the language model directly. It correctly implements Channel A (embedding replacement), but **Channel B is broken**.
+The sglang_omni pipeline bypasses `general_mm_embed_routine` and calls the language model directly via `_forward_with_omni_embeds()`. This method implements Channel A correctly, but **drops Channel B at the last step**.
 
-The original code (commit `d609c32`, before any fix):
+Here is the broken code in `sglang_omni/engines/omni/runtime/sglang_ar.py` (commit `d609c32`):
 
 ```python
 def _forward_with_omni_embeds(self, forward_batch, input_embeds,
-                               deepstack_visual_embeds=None,    # ← RECEIVED from upstream
-                               visual_pos_masks=None):          # ← RECEIVED from upstream
+                               deepstack_visual_embeds=None,    # ← arrives from upstream (CORRECT)
+                               visual_pos_masks=None):          # ← arrives from upstream (CORRECT)
     ...
     hidden_states = outer.model(
         input_ids=None,
         positions=positions,
         forward_batch=forward_batch,
-        input_embeds=input_embeds,
-        # input_deepstack_embeds is NEVER passed
-        # deepstack_visual_embeds is silently dropped
+        input_embeds=input_embeds,         # ← Channel A: passed correctly ✅
+        # input_deepstack_embeds=???       # ← Channel B: MISSING ❌
     )
 ```
 
-The upstream pipeline correctly produces deepstack data:
-- Image encoder (`components/image_encoder.py`) produces `deepstack_visual_embeds_video` (line 105)
-- Merge function (`pipeline/merge.py`) packs it into `thinker_inputs["model_inputs"]`
-- `_inject_multimodal_embeds()` extracts it and returns it as the second element of the tuple
+The upstream pipeline is fine — every stage correctly produces and forwards the deepstack data:
 
-But `_forward_with_omni_embeds` receives this data and discards it. The language model's `get_deepstack_embeds()` always returns `None`, and `post_residual_addition` is never applied at any intermediate layer.
+| Stage | Deepstack Status |
+|-------|-----------------|
+| Image encoder → `deepstack_visual_embeds_video` | ✅ Produced correctly |
+| Merge → `thinker_inputs["model_inputs"]["deepstack_visual_embeds"]` | ✅ Packed correctly |
+| `_inject_multimodal_embeds()` → returns `(input_embeds, ds_embeds, vis_masks)` | ✅ Extracted correctly |
+| `_forward_with_omni_embeds(forward_batch, input_embeds, ds_embeds, vis_masks)` | ✅ Received correctly |
+| `outer.model(input_ids=None, ..., input_embeds=input_embeds)` | ❌ **ds_embeds dropped here** |
 
-**Result**: The model only sees visual information at layer 0 (via flat embedding replacement). All intermediate-layer deepstack injection is lost.
+Because `input_deepstack_embeds` is never passed, `get_deepstack_embeds()` always returns `None`, and `post_residual_addition` is never applied at any intermediate layer.
 
-## 3. The Fix
+## 3. The Fix: Bridge the Last-Mile Gap
 
-### 3.1 What Needs to Change
+### 3.1 Scope
 
-Only one method needs modification: `_forward_with_omni_embeds()` in `sglang_omni/engines/omni/runtime/sglang_ar.py`.
+Only **one method** in **one file** needs to change:
+- **File**: `sglang_omni/engines/omni/runtime/sglang_ar.py`
+- **Method**: `_forward_with_omni_embeds()`
 
-The fix has two parts:
+Do NOT touch any upstream code (encoder, merge, `_inject_multimodal_embeds`, request builder). They are all correct. Do NOT touch `outer.model()` or any SGLang internals. The only change is: convert the deepstack data into the format the language model expects, and pass it through.
 
-**Part A — Format conversion**: Convert the pipeline's per-layer list of tensors into the concatenated 2D tensor that SGLang's `get_deepstack_embeds` expects.
+### 3.2 Format Conversion
 
-- Input from pipeline: `deepstack_visual_embeds` = list of `N` tensors, each `[num_visual_tokens, hidden_size]`
-- Required output: `input_deepstack_embeds` = tensor `[seq_len, hidden_size * N]`
-- `visual_pos_masks` (boolean tensor `[seq_len]`) indicates which positions in the full sequence are visual tokens
-- Non-visual positions must be zero
+The pipeline and the language model use different formats for deepstack data. You need to bridge them:
 
-**Part B — Passthrough**: Pass the converted tensor as `input_deepstack_embeds` to `outer.model()`.
+**Pipeline format** (what `_forward_with_omni_embeds` receives):
+- `deepstack_visual_embeds`: a Python list of `N` tensors, each `[num_visual_tokens, hidden_size]` — one tensor per deepstack layer
+- `visual_pos_masks`: a boolean tensor `[seq_len]` — `True` at visual token positions
 
-### 3.2 Detailed Steps
+**SGLang format** (what `outer.model()` expects as `input_deepstack_embeds`):
+- A single 2D tensor `[seq_len, hidden_size * N]`
+- Layer *i*'s features occupy columns `[hidden_size*i : hidden_size*(i+1)]`
+- Non-visual positions (where `visual_pos_masks` is `False`) must be zeros
 
-1. Read the current `_forward_with_omni_embeds` method in `sglang_omni/engines/omni/runtime/sglang_ar.py`.
+Conversion steps:
+1. Concatenate the list along `dim=-1` → `[num_visual_tokens, hidden_size * N]`
+2. Create a zero tensor of shape `[seq_len, hidden_size * N]`
+3. Scatter the visual-only data into the full-sequence tensor using `visual_pos_masks`
+4. Pass the result as `input_deepstack_embeds` to `outer.model()`
 
-2. Between the `positions` computation and the `outer.model()` call, add:
-   - Guard: if `deepstack_visual_embeds is None` or `visual_pos_masks is None`, set `ds_input = None`.
-   - Otherwise:
-     a. Move each per-layer tensor to the correct device/dtype (matching `input_embeds`).
-     b. Concatenate along `dim=-1` → shape `[num_visual_tokens, hidden_size * num_layers]`.
-     c. Create a zero tensor of shape `[seq_len, hidden_size * num_layers]` where `seq_len = input_embeds.shape[0]`.
-     d. Index-assign: `full_ds[visual_pos_masks] = concatenated_ds`.
-     e. Set `ds_input = full_ds`.
+### 3.3 Verification: How SGLang Consumes the Tensor
 
-3. Add `input_deepstack_embeds=ds_input` to the `outer.model()` call.
-
-4. Do NOT change any other method or file. The upstream pipeline and the language model already have the correct interfaces — only this last-mile passthrough is missing.
-
-### 3.3 Format Reference
-
-For verification, here is how the native SGLang model consumes the tensor:
+For reference (verified against SGLang v0.5.8, `python/sglang/srt/models/qwen3_vl_moe.py` line 52-67):
 
 ```python
 # Qwen3MoeLLMModel:
 self.deepstack_embed_to_decoder_layer = range(3)  # layers 0, 1, 2
 
 def get_deepstack_embeds(self, layer_idx, input_deepstack_embeds):
-    if input_deepstack_embeds is None:
-        return None
-    if layer_idx not in self.deepstack_embed_to_decoder_layer:
+    if input_deepstack_embeds is None or layer_idx not in self.deepstack_embed_to_decoder_layer:
         return None
     sep = self.hidden_size * layer_idx
     return input_deepstack_embeds[:, sep : sep + self.hidden_size]
-    # Returns [seq_len, hidden_size] for the given layer
+    # Returns [seq_len, hidden_size] — added to residual at this transformer layer
 ```
-
-This returned tensor is then passed as `post_residual_addition` to the transformer layer, where it is added to the residual stream inside `LayerCommunicator.prepare_attn()` → `RMSNorm(hidden_states, residual, post_residual_addition)`.
 
 ## 4. Code Style Requirements
 
-Follow the code style agent rules (see `/data/chenyang/.claude/agents/code-style-agent.md`):
-
-- **P0 Correctness**: Guard against `None` inputs. Do not wrap in broad try/except.
-- **P1 Performance**: The conversion happens once per prefill step (not per decode step), so it is not on the hottest path. Still, avoid unnecessary copies — use `.to(device=..., dtype=...)` in a single call, not separate `.to(device)` then `.to(dtype)`.
-- **P2 Maintainability**: Add a brief comment explaining the format conversion (why concatenate along dim=-1, why zero-pad to seq_len). Keep it under 20 lines of new code.
-- **P3 Style**: Match the existing code style in `sglang_ar.py` — no type annotations beyond what's already there, use `| None` not `Optional`, consistent variable naming with the surrounding code.
+The fix **must strictly follow** the complete style guidelines defined in `/data/chenyang/.claude/agents/code-style-agent.md`. Use the Code Style Agent to write and self-review the implementation against all priority levels (P0 through P4).
 
 ## 5. Validation
 
@@ -151,21 +190,15 @@ The fix must pass the existing integration test:
 python tests/test_video_integration.py
 ```
 
-This test:
-- Starts the sglang-omni server with `Qwen/Qwen3-Omni-30B-A3B-Instruct`
-- Sends a video (`test_file.webm`) + text prompt to `/v1/chat/completions`
-- Round 1: "Where am I right now?" → expects keywords like station, gate, 12, UCI, etc.
-- Round 2: "Is there a specific school shown in the video?" → expects "UCI" in response
-- Checks server stability (no crash, health endpoint OK)
-
-The test should continue to pass. The model's output may improve in visual detail (due to deepstack being active), but the keyword assertions should still match.
+This test starts the server, sends a video with text prompts across two conversation rounds, and validates the responses. The model's output may improve in visual detail with deepstack active, but the keyword assertions will still match.
 
 **Do NOT modify the test file.**
 
-## 6. Files to Modify
+## 6. Summary
 
-| File | Change |
+| What | Status |
 |------|--------|
-| `sglang_omni/engines/omni/runtime/sglang_ar.py` | Add deepstack format conversion + passthrough in `_forward_with_omni_embeds` |
-
-No other files need modification.
+| Channel A (layer 0 embedding replacement) | ✅ Working — no changes needed |
+| Upstream deepstack production (encoder → merge → request builder → `_inject_multimodal_embeds`) | ✅ Working — no changes needed |
+| Channel B last-mile passthrough (`_forward_with_omni_embeds` → `outer.model()`) | ❌ **Broken — this is what you fix** |
+| Language model deepstack consumption (`get_deepstack_embeds` → `post_residual_addition`) | ✅ Working — no changes needed |
