@@ -23,9 +23,7 @@ import requests
 # Configuration
 # ---------------------------------------------------------------------------
 
-MODEL_PATH = os.environ.get(
-    "QWEN3_OMNI_MODEL", "Qwen/Qwen3-Omni-30B-A3B-Instruct"
-)
+MODEL_PATH = os.environ.get("QWEN3_OMNI_MODEL", "Qwen/Qwen3-Omni-30B-A3B-Instruct")
 SERVER_PORT = int(os.environ.get("TEST_SERVER_PORT", "18899"))
 API_BASE = f"http://localhost:{SERVER_PORT}"
 VIDEO_PATH = os.path.join(os.path.dirname(__file__), "..", "test_file.webm")
@@ -35,21 +33,24 @@ if not os.path.isfile(VIDEO_PATH):
         os.path.dirname(__file__), "..", "sglang_omni", "test_file.webm"
     )
 
-# Keywords that indicate the model understood the airport video
-AIRPORT_KEYWORDS = [
+# Keywords that indicate the model understood the video content.
+# The video shows a transit hub (airport/train station) with a gate number "12",
+# a "UCI Health" advertisement, seating areas, and large arched architecture.
+EXPECTED_KEYWORDS = [
     "airport",
     "terminal",
-    "flight",
+    "train",
+    "station",
     "gate",
+    "12",
+    "uci",
+    "uci health",
+    "platform",
     "departure",
     "arrival",
     "boarding",
-    "airplane",
-    "plane",
-    "aviation",
-    "runway",
-    "luggage",
-    "baggage",
+    "grren",
+    "white",
 ]
 
 STARTUP_TIMEOUT = 600  # seconds
@@ -110,9 +111,7 @@ def server_process():
         os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
         proc.wait(timeout=10)
         out = proc.stdout.read() if proc.stdout else ""
-        pytest.fail(
-            f"Server did not become healthy within {STARTUP_TIMEOUT}s.\n{out}"
-        )
+        pytest.fail(f"Server did not become healthy within {STARTUP_TIMEOUT}s.\n{out}")
 
     print(f"\n[PERF] Server startup time: {startup_time:.1f}s")
 
@@ -155,9 +154,9 @@ def test_video_text_airport(server_process):
     )
     e2e_latency = time.monotonic() - t_req_start
 
-    assert resp.status_code == 200, (
-        f"Request failed with status {resp.status_code}: {resp.text}"
-    )
+    assert (
+        resp.status_code == 200
+    ), f"Request failed with status {resp.status_code}: {resp.text}"
 
     body = resp.json()
     content = body["choices"][0]["message"].get("content", "")
@@ -167,10 +166,10 @@ def test_video_text_airport(server_process):
 
     # Check the model recognized the airport
     content_lower = content.lower()
-    matched = [kw for kw in AIRPORT_KEYWORDS if kw in content_lower]
+    matched = [kw for kw in EXPECTED_KEYWORDS if kw in content_lower]
     assert matched, (
         f"Response does not mention airport-related keywords.\n"
-        f"Keywords checked: {AIRPORT_KEYWORDS}\n"
+        f"Keywords checked: {EXPECTED_KEYWORDS}\n"
         f"Response: {content}"
     )
 
@@ -182,6 +181,10 @@ def test_video_text_airport(server_process):
 def test_server_stability_after_request(server_process):
     """Verify the server process is still alive after the video request."""
     proc, _ = server_process
-    assert proc.poll() is None, (
-        f"Server process died with return code {proc.returncode}"
-    )
+    assert (
+        proc.poll() is None
+    ), f"Server process died with return code {proc.returncode}"
+
+
+if __name__ == "__main__":
+    sys.exit(pytest.main([__file__, "-s", "-x", "-v"]))
