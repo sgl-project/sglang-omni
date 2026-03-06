@@ -6,7 +6,6 @@ from __future__ import annotations
 from typing import Any
 
 import torch
-from sglang.srt.server_args import ServerArgs
 from transformers import AutoTokenizer
 
 from sglang_omni.engines.omni import (
@@ -310,6 +309,8 @@ def create_sglang_thinker_executor_from_config(
     This keeps pipeline config args plain dict types while still constructing
     a typed ServerArgs object internally.
     """
+    from sglang.srt.server_args import ServerArgs
+
     server_args_kwargs: dict[str, Any] = {
         "model_path": model_path,
         "trust_remote_code": True,
