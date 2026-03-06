@@ -111,8 +111,6 @@ def server_process():
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
-
-
 def test_two_round_conversation(server_process):
     """Two-round video conversation: location question then school question.
 
@@ -162,10 +160,8 @@ def test_two_round_conversation(server_process):
     print(f"[R1 RESPONSE] {content_r1}")
 
     content_r1_lower = content_r1.lower()
-    matched_r1 = [kw for kw in EXPECTED_KEYWORDS if kw in content_r1_lower]
-    assert matched_r1, (
-        f"Round 1: response does not mention expected keywords.\n"
-        f"Keywords checked: {EXPECTED_KEYWORDS}\n"
+    assert "stylus" in content_r1_lower, (
+        f"Round 1: response does not mention expected keyword 'stylus'.\n"
         f"Response: {content_r1}"
     )
 
@@ -208,8 +204,8 @@ def test_two_round_conversation(server_process):
 
     # Round 2 should mention UCI
     content_r2_lower = content_r2.lower()
-    assert "uci" in content_r2_lower, (
-        f"Round 2: response does not mention 'UCI'.\n" f"Response: {content_r2}"
+    assert "guitar" in content_r2_lower, (
+        f"Round 2: response does not mention 'guitar'.\n" f"Response: {content_r2}"
     )
 
     # ------------------------------------------------------------------

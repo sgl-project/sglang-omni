@@ -37,6 +37,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--use-audio-in-video", action="store_true")
     parser.add_argument("--audio-path", type=str, default=None)
     parser.add_argument("--audio-target-sr", type=int, default=16000)
+    parser.add_argument(
+        "--relay-backend", type=str, default="nixl", choices=["nixl", "shm"]
+    )
     return parser.parse_args()
 
 
