@@ -80,8 +80,9 @@ class Timer:
 def build_thinker_and_processor(model_path: str):
     model = Qwen3OmniMoeThinkerForConditionalGeneration.from_pretrained(
         model_path,
-        dtype="auto",
+        dtype="bfloat16",
         device_map="cuda",
+        attn_implementation="flash_attention_2",
     )
     processor = Qwen3OmniMoeProcessor.from_pretrained(model_path)
     return model, processor
@@ -147,7 +148,7 @@ def main():
                     **inputs,
                     use_audio_in_video=True,
                     generation_config=GenerationConfig(
-                        max_new_tokens=1024, early_stopping=True
+                        max_new_tokens=256, early_stopping=True
                     ),
                 )
                 input_ids_length = inputs["input_ids"].shape[1]
