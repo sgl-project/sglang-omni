@@ -10,6 +10,7 @@ import zmq.asyncio
 
 from sglang_omni.proto import (
     AbortMessage,
+    ChunkReadyMessage,
     CompleteMessage,
     DataReadyMessage,
     ProfilerStartMessage,
@@ -26,6 +27,7 @@ logger = logging.getLogger(__name__)
 def serialize_message(
     msg: (
         DataReadyMessage
+        | ChunkReadyMessage
         | AbortMessage
         | CompleteMessage
         | StreamMessage
@@ -43,6 +45,7 @@ def deserialize_message(
     data: bytes,
 ) -> (
     DataReadyMessage
+    | ChunkReadyMessage
     | AbortMessage
     | CompleteMessage
     | StreamMessage
@@ -297,6 +300,7 @@ class StageControlPlane:
         self,
     ) -> (
         DataReadyMessage
+        | ChunkReadyMessage
         | SubmitMessage
         | ShutdownMessage
         | ProfilerStartMessage
@@ -310,6 +314,7 @@ class StageControlPlane:
             msg,
             (
                 DataReadyMessage,
+                ChunkReadyMessage,
                 SubmitMessage,
                 ShutdownMessage,
                 ProfilerStartMessage,
@@ -320,7 +325,7 @@ class StageControlPlane:
         raise ValueError(f"Unexpected message type: {type(msg)}")
 
     async def send_to_stage(
-        self, next_stage: str, next_stage_endpoint: str, msg: DataReadyMessage
+        self, next_stage: str, next_stage_endpoint: str, msg: DataReadyMessage | ChunkReadyMessage
     ) -> None:
         """Send data ready notification to next stage."""
         if next_stage not in self._next_stage_sockets:

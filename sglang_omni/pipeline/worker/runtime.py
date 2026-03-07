@@ -44,6 +44,14 @@ class Worker:
         self.queue: asyncio.Queue[WorkDescriptor | None] | None = None
         self._running = False
         self._result_waiters: dict[str, asyncio.Future[StagePayload]] = {}
+        self.chunk_receiver: Any | None = None  # Set externally for chunk-receiving stages
+
+    def deliver_chunk(self, msg) -> None:
+        """Deliver a chunk notification to this worker's chunk receiver."""
+        if self.chunk_receiver is None:
+            logger.warning("Worker has no chunk_receiver, dropping chunk for %s", msg.request_id)
+            return
+        asyncio.create_task(self.chunk_receiver.deliver(msg))
 
     def bind(self, stage: Stage, queue: asyncio.Queue[WorkDescriptor | None]) -> None:
         """Bind this worker to a stage."""
@@ -118,10 +126,12 @@ class Worker:
     async def _process_request(self, work: WorkDescriptor) -> None:
         """Process a single request."""
         request_id = work.request_id
+        logger.debug("Worker %s: processing request %s", self.stage.name, request_id)
         try:
             if self.data_plane is None:
                 raise RuntimeError("Worker not bound to a data plane")
             payloads = await self._load_inputs(work)
+            logger.debug("Worker %s: loaded inputs for %s", self.stage.name, request_id)
             merged = self._merge_payloads(work, payloads)
             if not isinstance(merged, StagePayload):
                 raise TypeError(f"Expected StagePayload, got {type(merged)}")
@@ -131,13 +141,21 @@ class Worker:
                     f"(expected={request_id} got={merged.request_id})"
                 )
 
+            bootstrap_targets = self._get_chunk_bootstrap_targets()
+            for stage_name in bootstrap_targets:
+                sent = await self._send_to_next(request_id, stage_name, merged)
+                if not sent:
+                    return
+
             # Register future BEFORE add_request so the dispatcher can
             # route the result even if the executor completes synchronously.
             loop = asyncio.get_running_loop()
             fut: asyncio.Future[StagePayload] = loop.create_future()
             self._result_waiters[request_id] = fut
 
+            logger.debug("Worker %s: adding request %s to executor", self.stage.name, request_id)
             await self.executor.add_request(merged)
+            logger.debug("Worker %s: request %s added, waiting for result", self.stage.name, request_id)
 
             stream_task: asyncio.Task[None] | None = None
             stream_fn = getattr(self.executor, "stream", None)
@@ -149,6 +167,7 @@ class Worker:
                     )
 
             output_payload = await fut
+            logger.debug("Worker %s: got result for %s", self.stage.name, request_id)
 
             if not isinstance(output_payload, StagePayload):
                 raise TypeError(
@@ -163,25 +182,36 @@ class Worker:
             # Route
             next_stage = self.stage.get_next(request_id, output_payload)
 
+            logger.debug("Worker %s: next_stage=%s for %s", self.stage.name, next_stage, request_id)
             if next_stage is None:
                 if stream_task is not None:
                     await self._finish_stream_task(stream_task)
                 await self._send_complete(request_id, output_payload.data)
+                logger.debug("Worker %s: sent complete for %s", self.stage.name, request_id)
             else:
                 if stream_task is not None:
                     await self._finish_stream_task(stream_task)
                 for stage_name in self._normalize_next_stages(next_stage):
-                    await self._send_to_next(request_id, stage_name, output_payload)
+                    if stage_name in bootstrap_targets:
+                        continue
+                    sent = await self._send_to_next(request_id, stage_name, output_payload)
+                    if not sent:
+                        return
+                    logger.debug("Worker %s: routed %s to %s", self.stage.name, request_id, stage_name)
 
         except asyncio.CancelledError:
             logger.debug("Worker: request %s cancelled", request_id)
         except Exception as e:
             logger.exception("Worker: request %s failed", request_id)
+            self._notify_chunk_transfer_error(request_id, str(e))
             await self._send_failure(request_id, str(e))
         finally:
             self._result_waiters.pop(request_id, None)
             if self.stage is not None:
                 self.stage.router.clear_request(request_id)
+                # Close chunk mailbox for completed request
+                if hasattr(self.stage, "chunk_mailbox") and self.stage.chunk_mailbox is not None:
+                    self.stage.chunk_mailbox.close(request_id)
 
     # ------------------------------------------------------------------
     # Helpers
@@ -239,7 +269,7 @@ class Worker:
 
     async def _send_to_next(
         self, request_id: str, next_stage: str, payload: StagePayload
-    ) -> None:
+    ) -> bool:
         """Send data to next stage."""
         logger.debug("Worker: routing %s to %s", request_id, next_stage)
 
@@ -247,7 +277,7 @@ class Worker:
             endpoint = self.stage.endpoints.get(next_stage)
             if endpoint is None:
                 await self._send_failure(request_id, f"Unknown stage: {next_stage}")
-                return
+                return False
             metadata, op = await self.data_plane.write_payload(request_id, payload)
 
             await self.stage.control_plane.send_to_stage(
@@ -263,11 +293,12 @@ class Worker:
 
             await op.wait_for_completion()
             self.data_plane.cleanup(request_id)
+            return True
 
         except Exception as e:
             logger.exception("Worker: failed to write data for req=%s", request_id)
             await self._send_failure(request_id, f"Failed to write data: {e}")
-            return
+            return False
 
     async def _send_failure(self, request_id: str, error: str) -> None:
         """Send failure to coordinator."""
@@ -311,6 +342,28 @@ class Worker:
                 await task
             except asyncio.CancelledError:
                 pass
+
+    def _get_chunk_bootstrap_targets(self) -> list[str]:
+        """Return chunk-consuming downstream stages that can start immediately."""
+        if self.stage is None:
+            return []
+        targets = getattr(self.stage, "chunk_transfer_targets", ())
+        return list(targets)
+
+    def _notify_chunk_transfer_error(self, request_id: str, error: str) -> None:
+        """Fail any chunk-consuming downstream stages waiting on this request."""
+        if self.stage is None:
+            return
+        for sender in getattr(self.stage, "chunk_senders", []):
+            enqueue_error = getattr(sender, "enqueue_error", None)
+            if not callable(enqueue_error):
+                continue
+            try:
+                enqueue_error(request_id, error)
+            except Exception:
+                logger.debug(
+                    "Worker: failed to propagate chunk error for %s", request_id
+                )
 
     def stop(self) -> None:
         """Stop the worker."""

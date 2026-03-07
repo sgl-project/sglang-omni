@@ -33,6 +33,10 @@ class WorkerRouter:
 
         self._queues[idx].put_nowait(work)
 
+    def get_worker_index(self, request_id: str) -> int | None:
+        """Return the worker index for a request, or None if not assigned."""
+        return self._affinity.get(request_id)
+
     def clear_request(self, request_id: str) -> None:
         self._affinity.pop(request_id, None)
 
