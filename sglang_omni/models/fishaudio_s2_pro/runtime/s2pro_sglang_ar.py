@@ -1,13 +1,14 @@
 # SPDX-License-Identifier: Apache-2.0
-"""S2-Pro SGLang runtime: paged-attention text model + static-cache audio decoder.
+"""S2-Pro SGLang runtime: paged-attention text model + batched audio decoder.
 
 Adapts the SGLang batch planner / model runner / resource manager pattern
 (from sglang_ar.py) for S2-Pro's two-stage decode:
-  1. Text model forward via ForwardBatch (paged KV, RadixAttention)
-  2. Audio decoder codebook loop per-request (static KVCache, 11 tokens)
+  1. Text model forward via ForwardBatch (paged KV, RadixAttention) — batched
+  2. Audio decoder codebook loop (static KVCache) — batched across requests
 
-Phase 1 is single-request only. The audio decoder runs per-request after
-the batched text model forward.
+Both phases run batched: the text model via SGLang's continuous batching,
+and the audio decoder codebook loop processes all active requests in a
+single batched forward pass.
 """
 
 from __future__ import annotations
@@ -93,7 +94,14 @@ def _codebook_loop_impl(
     codebook_size: int,
     semantic_begin_id: int,
 ) -> Tensor:
-    """Generate codebook tokens from audio decoder. Compilable with fullgraph=True."""
+    """Generate codebook tokens from audio decoder.
+
+    Supports batched input: when ``hidden_states`` has shape ``[bs, 1, dim]``
+    and ``semantic_token`` has shape ``[bs, 1]``, all requests are processed
+    in a single pass through the audio decoder.
+
+    Returns ``[num_codebooks+1, bs]`` (or ``[num_codebooks+1, 1]`` for single).
+    """
     audio_decoder.reset_caches()
 
     fast_input = audio_decoder.project_in(hidden_states.squeeze(1))
@@ -113,7 +121,7 @@ def _codebook_loop_impl(
         cb_hidden = audio_decoder.embeddings(cb_token.squeeze(-1)).unsqueeze(1)
         codebooks.append(cb_token.squeeze(-1))
 
-    return torch.stack(codebooks, dim=1).T  # [num_codebooks+1, 1]
+    return torch.stack(codebooks, dim=1).T  # [num_codebooks+1, bs]
 
 
 # ---------------------------------------------------------------------------
@@ -122,11 +130,12 @@ def _codebook_loop_impl(
 
 
 class S2ProSGLangOutputProcessor:
-    """Two-stage output processor for S2-Pro on SGLang backend.
+    """Batched two-stage output processor for S2-Pro on SGLang backend.
 
     After the text model produces logits + hidden states via ForwardBatch,
-    applies constrained decoding + RAS + codebook generation using the
-    audio decoder's static KVCache.
+    processes ALL active requests in a single batch:
+      1. Batch semantic token sampling (with per-request RAS)
+      2. Batch codebook generation through the audio decoder
     """
 
     def __init__(
@@ -158,7 +167,7 @@ class S2ProSGLangOutputProcessor:
 
         import functools
 
-        _cb_fn = functools.partial(
+        self._codebook_fn_eager = functools.partial(
             _codebook_loop_impl,
             audio_decoder,
             num_codebooks=num_codebooks,
@@ -167,10 +176,10 @@ class S2ProSGLangOutputProcessor:
         )
         if use_torch_compile:
             self._codebook_fn = torch.compile(
-                _cb_fn, mode="max-autotune", fullgraph=True
+                self._codebook_fn_eager, mode="max-autotune", fullgraph=True
             )
         else:
-            self._codebook_fn = _cb_fn
+            self._codebook_fn = self._codebook_fn_eager
 
     def _get_semantic_bias(self, logits: Tensor) -> Tensor:
         if self._semantic_bias is None:
@@ -190,93 +199,148 @@ class S2ProSGLangOutputProcessor:
         model_output: Any,
         scheduler_output: SchedulerOutput,
     ) -> dict[str, RequestOutput]:
-        """Process text model output into S2-Pro step outputs with codebooks."""
-        outputs = {}
+        """Process text model output into S2-Pro step outputs with codebooks.
 
-        # model_output is GenerationBatchResult from SGLang
-        # We need logits and hidden states from the text model
+        All active (non-chunked) requests are processed in a single batched
+        pass through semantic sampling and the audio decoder codebook loop.
+        """
+        outputs: dict[str, RequestOutput] = {}
+
         logits_output = model_output.logits_output
-        # logits_output.next_token_logits: (batch, vocab)
-        # logits_output.hidden_states: (batch, dim) — last-token hidden states
-        next_token_logits = logits_output.next_token_logits
-        hidden_states = logits_output.hidden_states
+        next_token_logits = logits_output.next_token_logits  # [batch, vocab]
+        hidden_states = logits_output.hidden_states  # [batch, dim]
+
+        active_indices: list[int] = []
+        active_requests: list[SchedulerRequest] = []
 
         for i, sched_req in enumerate(scheduler_output.requests):
             data: S2ProSGLangRequestData = sched_req.data
-
-            # Skip chunked prefill steps
             if data.req.is_chunked > 0:
                 outputs[sched_req.request_id] = RequestOutput(
-                    request_id=sched_req.request_id,
-                    data=None,
-                    finished=False,
+                    request_id=sched_req.request_id, data=None, finished=False
                 )
-                continue
+            else:
+                active_indices.append(i)
+                active_requests.append(sched_req)
 
-            token_logits = next_token_logits[i : i + 1]  # [1, vocab]
-            token_hidden = hidden_states[i : i + 1].unsqueeze(1)  # [1, 1, dim]
+        if not active_requests:
+            return outputs
 
-            codes = self._two_stage_decode(token_logits, token_hidden, data)
+        # Gather logits and hidden states for active requests
+        device = next_token_logits.device
+        if len(active_indices) == 1:
+            idx = active_indices[0]
+            batch_logits = next_token_logits[idx : idx + 1]
+            batch_hidden = hidden_states[idx : idx + 1].unsqueeze(1)
+        else:
+            idx_t = torch.tensor(active_indices, device=device)
+            batch_logits = next_token_logits[idx_t]
+            batch_hidden = hidden_states[idx_t].unsqueeze(1)
 
+        # Batched two-stage decode
+        all_codes = self._batched_two_stage_decode(
+            batch_logits, batch_hidden, active_requests
+        )  # [num_codebooks+1, active_bs]
+
+        for j, sched_req in enumerate(active_requests):
             outputs[sched_req.request_id] = RequestOutput(
                 request_id=sched_req.request_id,
-                data=S2ProStepOutput(codes=codes),
+                data=S2ProStepOutput(codes=all_codes[:, j : j + 1]),
                 finished=False,
             )
 
         return outputs
 
     @torch.no_grad()
-    def _two_stage_decode(
+    def _batched_two_stage_decode(
         self,
-        token_logits: Tensor,
-        hidden_states: Tensor,
-        data: S2ProSGLangRequestData,
+        batch_logits: Tensor,
+        batch_hidden: Tensor,
+        active_requests: list[SchedulerRequest],
     ) -> Tensor:
-        """Semantic token sampling + codebook generation."""
-        device = token_logits.device
+        """Batched semantic token sampling + codebook generation.
 
-        # Constrained decoding: mask non-semantic tokens
-        semantic_bias = self._get_semantic_bias(token_logits)
-        token_logits = token_logits + semantic_bias
+        Args:
+            batch_logits: [bs, vocab] text model logits for active requests
+            batch_hidden: [bs, 1, dim] last-token hidden states
+            active_requests: list of SchedulerRequest (non-chunked)
 
-        # RAS check
-        use_ras = False
-        if len(data._previous_semantic_tokens) > 0:
-            recent = data._previous_semantic_tokens[-self._ras_window :]
-            if len(recent) >= 2 and len(set(recent[-4:])) < len(recent[-4:]):
-                use_ras = True
+        Returns:
+            [num_codebooks+1, bs] codes for all active requests
+        """
+        bs = batch_logits.shape[0]
+        device = batch_logits.device
+        dtype = batch_logits.dtype
 
-        if use_ras:
-            temperature = torch.tensor([self._ras_temperature], device=device)
-            top_p = torch.tensor([self._ras_top_p], device=device)
-        else:
-            temperature = torch.tensor([data.temperature], device=device)
-            top_p = torch.tensor([data.top_p], device=device)
+        # Constrained decoding: mask non-semantic tokens (same bias for all)
+        semantic_bias = self._get_semantic_bias(batch_logits)
+        batch_logits = batch_logits + semantic_bias
 
-        rep_penalty = torch.tensor([data.repetition_penalty], device=device)
-        prev_tokens = None
-        if data._previous_semantic_tokens:
-            prev_tokens = torch.tensor(
-                data._previous_semantic_tokens[-16:],
-                device=device,
-                dtype=torch.long,
-            ).unsqueeze(0)
+        # Build per-request sampling parameters
+        temperatures = []
+        top_ps = []
+        rep_penalties = []
+        prev_tokens_list: list[list[int]] = []
+        max_prev_len = 0
 
-        # Sample semantic token
-        semantic_token = _sample_with_topk(
-            token_logits,
-            temperature,
-            top_p,
-            top_k=data.top_k,
-            repetition_penalty=rep_penalty,
+        for sched_req in active_requests:
+            data: S2ProSGLangRequestData = sched_req.data
+
+            # RAS: use higher temperature if recent tokens show repetition
+            use_ras = False
+            if len(data._previous_semantic_tokens) > 0:
+                recent = data._previous_semantic_tokens[-self._ras_window :]
+                if len(recent) >= 2 and len(set(recent[-4:])) < len(recent[-4:]):
+                    use_ras = True
+
+            if use_ras:
+                temperatures.append(self._ras_temperature)
+                top_ps.append(self._ras_top_p)
+            else:
+                temperatures.append(data.temperature)
+                top_ps.append(data.top_p)
+
+            if data._previous_semantic_tokens:
+                rep_penalties.append(data.repetition_penalty)
+                prev = data._previous_semantic_tokens[-16:]
+                prev_tokens_list.append(prev)
+                max_prev_len = max(max_prev_len, len(prev))
+            else:
+                rep_penalties.append(1.0)
+                prev_tokens_list.append([])
+
+        temp_t = torch.tensor(temperatures, device=device, dtype=dtype).unsqueeze(-1)
+        top_p_t = torch.tensor(top_ps, device=device, dtype=dtype).unsqueeze(-1)
+        rep_t = torch.tensor(rep_penalties, device=device, dtype=dtype).unsqueeze(-1)
+
+        # Build padded previous-tokens tensor for repetition penalty
+        prev_tokens: Tensor | None = None
+        if max_prev_len > 0:
+            padded = []
+            for prev in prev_tokens_list:
+                pad_len = max_prev_len - len(prev)
+                padded.append([0] * pad_len + prev)
+            prev_tokens = torch.tensor(padded, device=device, dtype=torch.long)
+
+        # Batch sample semantic tokens
+        top_k = active_requests[0].data.top_k
+        semantic_tokens = _sample_with_topk(
+            batch_logits,
+            temp_t,
+            top_p_t,
+            top_k=top_k,
+            repetition_penalty=rep_t,
             previous_tokens=prev_tokens,
-        )  # [1, 1]
+        )  # [bs, 1]
 
-        # Codebook generation (compiled or eager)
-        return self._codebook_fn(
-            hidden_states, semantic_token, temperature, top_p, data.top_k
-        )
+        # Batch codebook generation through audio decoder
+        # Use eager (non-compiled) path for batch to avoid shape recompilation
+        cb_fn = self._codebook_fn if bs == 1 else self._codebook_fn_eager
+        codes = cb_fn(
+            batch_hidden, semantic_tokens, temp_t, top_p_t, top_k
+        )  # [num_codebooks+1, bs]
+
+        return codes
 
 
 # ---------------------------------------------------------------------------
@@ -434,10 +498,12 @@ class S2ProSGLangModelRunner:
 
                 offset += req_len
         else:
-            # Decode: apply embed_one_token for semantic tokens
+            # Decode: batch embed_one_token for all semantic tokens
             semantic_begin = self.output_processor._semantic_begin_id
             semantic_end = self.output_processor._semantic_end_id
 
+            semantic_indices = []
+            vq_parts_batch = []
             for i, sched_req in enumerate(scheduler_output.requests):
                 data: S2ProSGLangRequestData = sched_req.data
                 if data._last_codebook_values is not None:
@@ -445,16 +511,23 @@ class S2ProSGLangModelRunner:
                     is_semantic = (token_id >= semantic_begin) & (
                         token_id <= semantic_end
                     )
-
                     if is_semantic:
-                        vq_parts = data._last_codebook_values.to(device).unsqueeze(0)
-                        token_embed = text_embeds[i : i + 1]
-                        combined = audio_decoder.embed_one_token(
-                            token_embed,
-                            vq_parts,
-                            torch.tensor([True], device=device),
+                        semantic_indices.append(i)
+                        vq_parts_batch.append(
+                            data._last_codebook_values.to(device)
                         )
-                        text_embeds[i] = combined.squeeze(0)
+
+            if semantic_indices:
+                idx_t = torch.tensor(semantic_indices, device=device)
+                batch_vq = torch.stack(vq_parts_batch)  # [n, num_codebooks]
+                batch_embeds = text_embeds[idx_t]  # [n, dim]
+                batch_mask = torch.ones(
+                    len(semantic_indices), dtype=torch.bool, device=device
+                )
+                combined = audio_decoder.embed_one_token(
+                    batch_embeds, batch_vq, batch_mask
+                )
+                text_embeds[idx_t] = combined.to(text_embeds.dtype)
 
         model_worker_batch.input_embeds = text_embeds
 
