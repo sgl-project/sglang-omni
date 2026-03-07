@@ -85,6 +85,7 @@ def create_s2pro_sglang_engine(
     ras_temperature: float = 1.5,
     ras_top_p: float = 0.95,
     use_torch_compile: bool = True,
+    max_batch_size: int = 64,
 ) -> OmniEngine:
     """Create a paged-attention S2-Pro engine using SGLang backend."""
     from sglang_omni.engines.ar.sglang_backend.model_worker import (
@@ -104,6 +105,9 @@ def create_s2pro_sglang_engine(
     # output that compounds through 36 layers and causes early EOS for some inputs.
     if server_args.attention_backend is None:
         server_args.attention_backend = "fa3"
+
+    # (Re-)initialize audio decoder caches for batched codebook generation
+    audio_decoder.setup_caches(max_batch_size=max_batch_size, dtype=torch.bfloat16)
 
     adapter = S2ProTokenizerAdapter(tokenizer)
     im_end_id = adapter.eos_token_ids[0]

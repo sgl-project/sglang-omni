@@ -78,7 +78,7 @@ def load_audio_decoder(checkpoint: str, device: str):
     full_model = full_model.to(device=device, dtype=torch.bfloat16).eval()
 
     audio_decoder = full_model.audio_decoder
-    audio_decoder.setup_caches(max_batch_size=1, dtype=torch.bfloat16)
+    # setup_caches is called by create_s2pro_sglang_engine with the right batch size
     audio_decoder._parent_ref = full_model
     return audio_decoder, config
 
@@ -92,6 +92,7 @@ def create_sglang_engine(
     max_new_tokens,
     top_k,
     use_torch_compile=False,
+    max_batch_size=64,
 ):
     from sglang.srt.server_args import ServerArgs
 
@@ -107,7 +108,7 @@ def create_sglang_engine(
         dtype="bfloat16",
         mem_fraction_static=0.85,
         chunked_prefill_size=8192,
-        max_running_requests=64,
+        max_running_requests=max_batch_size,
         disable_cuda_graph=True,
     )
     return create_s2pro_sglang_engine(
@@ -120,6 +121,7 @@ def create_sglang_engine(
         max_new_tokens=max_new_tokens,
         top_k=top_k,
         use_torch_compile=use_torch_compile,
+        max_batch_size=max_batch_size,
     )
 
 

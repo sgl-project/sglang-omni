@@ -228,7 +228,7 @@ def create_sglang_tts_engine_executor(
     codebook_size = model.config.audio_decoder_config.vocab_size
 
     audio_decoder = model.audio_decoder
-    audio_decoder.setup_caches(max_batch_size=1, dtype=torch.bfloat16)
+    # setup_caches is called by create_s2pro_sglang_engine with the right batch size
     audio_decoder._parent_ref = model  # prevent GC of shared embeddings
 
     _patch_fish_config_for_sglang(checkpoint_dir)
