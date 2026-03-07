@@ -37,6 +37,8 @@ dependencies = [
     "pandas",
     "tabulate",
     "typer>=0.9.0",
+    "openai==2.6.1",
+    "openai-harmony==0.0.4"
 ]
 
 [project.optional-dependencies]

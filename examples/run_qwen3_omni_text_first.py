@@ -37,12 +37,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--use-audio-in-video", action="store_true")
     parser.add_argument("--audio-path", type=str, default=None)
     parser.add_argument("--audio-target-sr", type=int, default=16000)
+    parser.add_argument(
+        "--relay-backend", type=str, default="nixl", choices=["nixl", "shm"]
+    )
     return parser.parse_args()
 
 
 async def main_async(args: argparse.Namespace) -> None:
     config = Qwen3OmniPipelineConfig(
         model_path=args.model_path,
+        relay_backend=args.relay_backend,
     )
     coordinator, stages = compile_pipeline(config)
     runner = PipelineRunner(coordinator, stages)

@@ -91,6 +91,69 @@ def build_thinker_request(
     )
 
 
+def _compute_mrope_positions(
+    input_ids: torch.Tensor,
+    model_inputs: dict[str, Any],
+    thinker_config: Any,
+) -> torch.Tensor | None:
+    """Compute M-RoPE positions for multimodal inputs."""
+    from sglang.srt.layers.rotary_embedding import MRotaryEmbedding
+
+    image_grid_thw = model_inputs.get("image_grid_thw")
+    video_grid_thw = model_inputs.get("video_grid_thw")
+    if image_grid_thw is None and video_grid_thw is None:
+        return None
+
+    spatial_merge_size = thinker_config.vision_config.spatial_merge_size
+    image_token_id = thinker_config.image_token_id
+    video_token_id = thinker_config.video_token_id
+    vision_start_token_id = thinker_config.vision_start_token_id
+    tokens_per_second = thinker_config.vision_config.tokens_per_second
+    audio_token_id = thinker_config.audio_token_id
+    audio_start_token_id = thinker_config.audio_start_token_id
+    position_id_per_seconds = thinker_config.position_id_per_seconds
+    use_audio_in_video = model_inputs.get("use_audio_in_video", False)
+    audio_feature_lengths = model_inputs.get("audio_feature_lengths")
+
+    ids_2d = input_ids.unsqueeze(0) if input_ids.dim() == 1 else input_ids
+
+    # Move all tensors to CPU — get_rope_index creates CPU tensors internally
+    ids_2d = ids_2d.cpu()
+    if isinstance(image_grid_thw, torch.Tensor):
+        image_grid_thw = image_grid_thw.cpu()
+    if isinstance(video_grid_thw, torch.Tensor):
+        video_grid_thw = video_grid_thw.cpu()
+    second_per_grid_ts = model_inputs.get("video_second_per_grid")
+    if isinstance(second_per_grid_ts, torch.Tensor):
+        second_per_grid_ts = second_per_grid_ts.cpu()
+    if isinstance(audio_feature_lengths, torch.Tensor):
+        audio_feature_lengths = audio_feature_lengths.cpu()
+
+    kwargs: dict[str, Any] = {
+        "audio_token_id": audio_token_id,
+        "audio_start_token_id": audio_start_token_id,
+        "position_id_per_seconds": position_id_per_seconds,
+        "use_audio_in_video": use_audio_in_video,
+        "audio_seqlens": audio_feature_lengths,
+    }
+
+    mrope_positions, mrope_position_delta = MRotaryEmbedding.get_rope_index(
+        spatial_merge_size=spatial_merge_size,
+        image_token_id=image_token_id,
+        video_token_id=video_token_id,
+        vision_start_token_id=vision_start_token_id,
+        model_type="qwen3_omni_moe",
+        tokens_per_second=tokens_per_second,
+        input_ids=ids_2d,
+        image_grid_thw=image_grid_thw,
+        video_grid_thw=video_grid_thw,
+        second_per_grid_ts=second_per_grid_ts,
+        **kwargs,
+    )
+    # mrope_positions: [3, 1, seq_len] -> [3, seq_len]
+    return mrope_positions.squeeze(1), mrope_position_delta
+
+
 def build_sglang_thinker_request(
     state: PipelineState,
     *,
@@ -98,13 +161,14 @@ def build_sglang_thinker_request(
     tokenizer: Any,
     vocab_size: int,
     request_id: str | None = None,
+    thinker_config: Any = None,
 ) -> "SGLangARRequestData":
     """Build SGLangARRequestData from pipeline state.
 
     Constructs a SGLang Req with normalized SamplingParams, then wraps it
     in SGLangARRequestData (which inherits ARRequestData).
     """
-    from sglang.srt.managers.schedule_batch import Req
+    from sglang.srt.managers.schedule_batch import MultimodalInputs, Req
     from sglang.srt.sampling.sampling_params import SamplingParams
 
     from sglang_omni.engines.omni.runtime.sglang_ar import SGLangARRequestData
@@ -151,6 +215,23 @@ def build_sglang_thinker_request(
         sampling_params=sampling_params,
         vocab_size=vocab_size,
     )
+
+    # Compute M-RoPE positions and attach multimodal_inputs to Req
+    if thinker_config is not None and model_inputs:
+        mrope_result = _compute_mrope_positions(
+            input_ids.to(dtype=torch.long), model_inputs, thinker_config
+        )
+        if mrope_result is not None:
+            mrope_positions, mrope_position_delta = mrope_result
+            mm_inputs = MultimodalInputs(mm_items=[])
+            mm_inputs.mrope_positions = mrope_positions
+            mm_inputs.mrope_position_delta = mrope_position_delta
+            req.multimodal_inputs = mm_inputs
+
+    # Attach model_inputs to Req for image embedding merge in SGLangModelRunner.
+    # Always initialize both attributes so downstream code can access directly.
+    req.omni_model_inputs = model_inputs if model_inputs else None
+    req._omni_consumed = None
 
     # Build SGLangARRequestData — output_ids points to req.output_ids
     data = SGLangARRequestData(

@@ -67,6 +67,8 @@ def _create_encoder_executor(
     stage_name: str,
     model: torch.nn.Module,
     device: str,
+    use_cache: bool = True,
+    cache_size: int | None = 64,
 ) -> EngineExecutor:
     def _request_builder(payload: StagePayload):
         state = load_state(payload)
@@ -77,7 +79,9 @@ def _create_encoder_executor(
         apply_encoder_result(state, stage_name=stage_name, result=result)
         return store_state(payload, state)
 
-    engine = create_encoder_engine(model, device=device)
+    engine = create_encoder_engine(
+        model, device=device, use_cache=use_cache, cache_size=cache_size
+    )
     return EngineExecutor(
         engine=engine, request_builder=_request_builder, result_builder=_result_builder
     )
@@ -199,9 +203,12 @@ def create_sglang_thinker_executor(
     gpu_id: int = 0,
 ) -> EngineExecutor:
     """Create a thinker executor backed by SGLang's ModelWorker."""
+    from sglang_omni.models.qwen3_omni.components.common import load_thinker_config
+
     tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
     eos_token_id = getattr(tokenizer, "eos_token_id", None)
     vocab_size = getattr(tokenizer, "vocab_size", 32000)
+    thinker_config = load_thinker_config(model_path)
 
     step_counters: dict[str, int] = {}
 
@@ -214,6 +221,7 @@ def create_sglang_thinker_executor(
             tokenizer=tokenizer,
             vocab_size=vocab_size,
             request_id=payload.request_id,
+            thinker_config=thinker_config,
         )
 
     def _result_builder(payload: StagePayload, result: Any) -> StagePayload:
@@ -308,8 +316,8 @@ def create_sglang_thinker_executor_from_config(
         "tp_size": 1,
         "pp_size": 1,
         "disable_cuda_graph": True,
-        "chunked_prefill_size": 128,
-        "max_prefill_tokens": 4096,
+        "chunked_prefill_size": 8192,
+        "max_prefill_tokens": 16384,
         "max_running_requests": 16,
         "mem_fraction_static": 0.7,
         "random_seed": 123,

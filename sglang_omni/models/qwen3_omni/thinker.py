@@ -678,7 +678,9 @@ class Qwen3OmniMoeThinkerTextModel(nn.Module):
         return hidden_states, aux_hidden_states
 
     def _deepstack_process(self, hidden_states, visual_pos_masks, visual_embeds):
-        visual_pos_masks = visual_pos_masks[..., 0]
+        # visual_pos_masks may be 1D boolean (SGLang path) or multi-dim (HF path)
+        if visual_pos_masks.dim() > 1:
+            visual_pos_masks = visual_pos_masks[..., 0]
         visual_pos_masks = visual_pos_masks.to(hidden_states.device)
         visual_embeds = visual_embeds.to(hidden_states.device, hidden_states.dtype)
         local_this = hidden_states[visual_pos_masks, :].clone() + visual_embeds
