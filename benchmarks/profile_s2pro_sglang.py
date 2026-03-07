@@ -478,7 +478,8 @@ async def run_profiling(args):
     adapter = S2ProTokenizerAdapter(tokenizer)
 
     # Create engine
-    logger.info("Creating SGLang engine (compile=%s)...", args.compile)
+    use_compile = not args.no_compile
+    logger.info("Creating SGLang engine (compile=%s)...", use_compile)
     engine = create_sglang_engine(
         args.checkpoint,
         audio_decoder,
@@ -487,7 +488,7 @@ async def run_profiling(args):
         codebook_size,
         args.max_new_tokens,
         args.top_k,
-        use_torch_compile=args.compile,
+        use_torch_compile=use_compile,
     )
     await engine.start()
 
@@ -698,9 +699,9 @@ def parse_args():
         "--batch-sizes", default="1,2,4", help="Comma-separated batch sizes to test"
     )
     p.add_argument(
-        "--compile",
+        "--no-compile",
         action="store_true",
-        help="Enable torch.compile on codebook loop (EXPERIMENTAL: may produce incorrect audio)",
+        help="Disable torch.compile on codebook loop (enabled by default)",
     )
     p.add_argument(
         "--test-cache-hit", action="store_true", help="Test radix cache hit TTFB"

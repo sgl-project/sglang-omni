@@ -1,0 +1,2 @@
+config_cls: S2ProPipelineConfig
+model_path: /root/.cache/huggingface/s2-pro/s2-pro

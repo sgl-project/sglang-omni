@@ -14,7 +14,7 @@ from sglang_omni.executors import EngineExecutor, PreprocessingExecutor
 from sglang_omni.models.fishaudio_s2_pro.io import S2ProState
 from sglang_omni.models.fishaudio_s2_pro.pipeline.engine_io import (
     apply_tts_result,
-    build_tts_request,
+    build_sglang_tts_request,
 )
 from sglang_omni.models.fishaudio_s2_pro.pipeline.state_io import (
     load_state,
@@ -101,13 +101,13 @@ def _load_codec(checkpoint_dir: str, device: str):
 # ---------------------------------------------------------------------------
 
 
-def create_preprocessing_executor(model_id: str) -> PreprocessingExecutor:
+def create_preprocessing_executor(model_path: str) -> PreprocessingExecutor:
     """Factory for the S2-Pro preprocessing stage.
 
     Loads HF tokenizer and DAC codec. Tokenizes text, encodes reference audio,
     and builds the S2-Pro prompt using ContentSequence.encode().
     """
-    checkpoint_dir = _resolve_checkpoint(model_id)
+    checkpoint_dir = _resolve_checkpoint(model_path)
 
     from transformers import PreTrainedTokenizerFast
 
@@ -213,41 +213,57 @@ def create_preprocessing_executor(model_id: str) -> PreprocessingExecutor:
 # ---------------------------------------------------------------------------
 
 
-def create_tts_engine_executor(
-    model_id: str,
+def create_sglang_tts_engine_executor(
+    model_path: str,
     *,
     device: str = "cuda:0",
     max_new_tokens: int = 2048,
-    max_seq_len: int = 4096,
-    use_compile: bool = False,
-    use_radix_cache: bool = False,
+    top_k: int = 30,
 ) -> EngineExecutor:
-    """Factory for the S2-Pro TTS engine stage.
+    """Factory for the S2-Pro TTS engine stage using SGLang paged attention."""
+    from sglang.srt.server_args import ServerArgs
 
-    Loads FishQwen3OmniForCausalLM and creates an OmniEngine via
-    create_s2pro_engine.
-    """
-    from sglang_omni.models.fishaudio_s2_pro.factory import create_s2pro_engine
+    from sglang_omni.models.fishaudio_s2_pro.factory import (
+        _patch_fish_config_for_sglang,
+        create_s2pro_sglang_engine,
+    )
 
-    model, tokenizer, _checkpoint_dir = _load_s2pro_model(model_id, device)
+    # Load full model to extract audio_decoder, then let text model be GC'd
+    # (ModelWorker inside create_s2pro_sglang_engine loads its own text model)
+    model, tokenizer, checkpoint_dir = _load_s2pro_model(model_path, device)
 
-    # Get codebook config from audio_decoder
     num_codebooks = model.config.audio_decoder_config.num_codebooks
     codebook_size = model.config.audio_decoder_config.vocab_size
 
-    engine = create_s2pro_engine(
-        model=model,
+    audio_decoder = model.audio_decoder
+    audio_decoder.setup_caches(max_batch_size=1, dtype=torch.bfloat16)
+    audio_decoder._parent_ref = model  # prevent GC of shared embeddings
+
+    _patch_fish_config_for_sglang(checkpoint_dir)
+    server_args = ServerArgs(
+        model_path=checkpoint_dir,
+        tp_size=1,
+        dtype="bfloat16",
+        mem_fraction_static=0.85,
+        chunked_prefill_size=8192,
+        max_running_requests=64,
+        disable_cuda_graph=True,
+    )
+
+    engine = create_s2pro_sglang_engine(
+        server_args=server_args,
+        audio_decoder=audio_decoder,
         tokenizer=tokenizer,
+        gpu_id=int(device.split(":")[-1]) if ":" in device else 0,
         num_codebooks=num_codebooks,
         codebook_size=codebook_size,
         max_new_tokens=max_new_tokens,
-        max_seq_len=max_seq_len,
-        device=device,
+        top_k=top_k,
     )
 
     def _request_builder(payload: StagePayload):
         state = load_state(payload)
-        return build_tts_request(state)
+        return build_sglang_tts_request(state, tokenizer)
 
     def _result_builder(payload: StagePayload, result: Any) -> StagePayload:
         state = load_state(payload)
@@ -267,12 +283,12 @@ def create_tts_engine_executor(
 
 
 def create_vocoder_executor(
-    model_id: str,
+    model_path: str,
     *,
     device: str = "cuda:0",
 ) -> PreprocessingExecutor:
     """Factory for the vocoder stage. Same codec as S1."""
-    checkpoint_dir = _resolve_checkpoint(model_id)
+    checkpoint_dir = _resolve_checkpoint(model_path)
     codec = _load_codec(checkpoint_dir, device)
 
     def _vocode(payload: StagePayload) -> StagePayload:

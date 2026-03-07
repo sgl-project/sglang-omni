@@ -8,14 +8,24 @@ from typing import Any
 import torch
 
 from sglang_omni.models.fishaudio_s2_pro.io import S2ProState
-from sglang_omni.models.fishaudio_s2_pro.runtime.s2pro_ar import S2ProRequestData
+from sglang_omni.models.fishaudio_s2_pro.runtime.s2pro_sglang_ar import (
+    S2ProSGLangRequestData,
+)
 
 
-def build_tts_request(state: S2ProState) -> S2ProRequestData:
-    """Convert pipeline state into an S2ProRequestData for the engine."""
+def build_sglang_tts_request(
+    state: S2ProState, tokenizer: Any
+) -> S2ProSGLangRequestData:
+    """Convert pipeline state into S2ProSGLangRequestData for the SGLang engine."""
+    from sglang.srt.managers.schedule_batch import Req
+    from sglang.srt.sampling.sampling_params import SamplingParams
+
     input_ids = state.input_ids
-    if not isinstance(input_ids, torch.Tensor):
-        input_ids = torch.tensor(input_ids, dtype=torch.long)
+    if isinstance(input_ids, torch.Tensor):
+        input_ids_list = input_ids.tolist()
+    else:
+        input_ids_list = list(input_ids)
+        input_ids = torch.tensor(input_ids_list, dtype=torch.long)
 
     vq_mask_tokens = state.vq_mask_tokens
     if vq_mask_tokens is not None and not isinstance(vq_mask_tokens, torch.Tensor):
@@ -27,8 +37,23 @@ def build_tts_request(state: S2ProState) -> S2ProRequestData:
             p if isinstance(p, torch.Tensor) else torch.tensor(p) for p in vq_parts
         ]
 
-    return S2ProRequestData(
+    sampling_params = SamplingParams(
+        max_new_tokens=state.max_new_tokens, temperature=state.temperature
+    )
+    sampling_params.normalize(tokenizer)
+    sampling_params.verify(tokenizer.vocab_size)
+
+    req = Req(
+        rid="",
+        origin_input_text="",
+        origin_input_ids=input_ids_list,
+        sampling_params=sampling_params,
+        vocab_size=tokenizer.vocab_size,
+    )
+
+    return S2ProSGLangRequestData(
         input_ids=input_ids,
+        req=req,
         vq_mask_tokens=vq_mask_tokens,
         vq_parts=vq_parts,
         num_codebooks=state.num_codebooks,
@@ -41,13 +66,9 @@ def build_tts_request(state: S2ProState) -> S2ProRequestData:
     )
 
 
-def apply_tts_result(state: S2ProState, result: Any) -> None:
+def apply_tts_result(state: S2ProState, result: S2ProSGLangRequestData) -> None:
     """Extract output codes from engine result and store in pipeline state."""
-    if isinstance(result, S2ProRequestData):
-        if result.output_codes:
-            all_codes = torch.cat(result.output_codes, dim=1)
-            state.output_codes = all_codes
-        else:
-            state.output_codes = None
+    if result.output_codes:
+        state.output_codes = torch.cat(result.output_codes, dim=1)
     else:
-        state.output_codes = result
+        state.output_codes = None

@@ -8,17 +8,8 @@ from typing import Any
 import torch
 
 from sglang_omni.engines.omni.engine import OmniEngine
-from sglang_omni.engines.omni.model_runner import ModelRunner
 from sglang_omni.engines.omni.scheduler import Scheduler
 
-from .runtime.radix_cache import S2ProRadixCache
-from .runtime.s2pro_ar import (
-    S2ProBatchPlanner,
-    S2ProInputPreparer,
-    S2ProIterationController,
-    S2ProOutputProcessor,
-    S2ProResourceManager,
-)
 from .runtime.s2pro_sglang_ar import (
     S2ProSGLangIterationController,
     S2ProSGLangModelRunner,
@@ -74,159 +65,6 @@ def _patch_fish_config_for_sglang(model_path: str) -> None:
     FishQwen3OmniConfig.__init__ = _patched_omni_init
 
 
-class _S2ProInferenceWrapper(torch.nn.Module):
-    """Thin wrapper that routes ``forward()`` to ``forward_kvcached()``.
-
-    ``ModelRunner`` calls ``model(**inputs)`` which dispatches to ``forward()``.
-    During inference the KV-cache-aware ``forward_kvcached`` must be used.
-    This wrapper also calls ``setup_caches`` once at construction.
-    """
-
-    def __init__(
-        self,
-        model: torch.nn.Module,
-        *,
-        max_batch_size: int,
-        max_seq_len: int,
-        device: str | torch.device = "cpu",
-    ) -> None:
-        super().__init__()
-        self._model = model
-        model.setup_caches(
-            max_batch_size=max_batch_size,
-            max_seq_len=max_seq_len,
-            dtype=torch.bfloat16,
-        )
-        if device != "cpu":
-            model.to(device)
-
-    def forward(
-        self,
-        input_ids: torch.Tensor,
-        input_pos: torch.Tensor,
-        input_embeds: torch.Tensor | None = None,
-    ):
-        return self._model.forward_kvcached(
-            input_ids=input_ids,
-            input_pos=input_pos,
-            input_embeds=input_embeds,
-        )
-
-    def __getattr__(self, name: str):
-        if name == "_model":
-            return super().__getattr__(name)
-        try:
-            return super().__getattr__(name)
-        except AttributeError:
-            return getattr(self._model, name)
-
-
-def create_s2pro_engine(
-    model: torch.nn.Module,
-    tokenizer: Any = None,
-    *,
-    num_codebooks: int = 10,
-    codebook_size: int = 4096,
-    max_new_tokens: int = 2048,
-    max_seq_len: int = 4096,
-    device: str = "cuda",
-    top_k: int = 30,
-    ras_window: int = 16,
-    ras_temperature: float = 1.5,
-    ras_top_p: float = 0.95,
-    enable_radix_cache: bool = False,
-    radix_cache_max_tokens: int = 50000,
-) -> OmniEngine:
-    """Create an engine for FishQwen3OmniForCausalLM (S2-Pro) models.
-
-    Args:
-        model: A ``FishQwen3OmniForCausalLM`` instance (already loaded).
-        tokenizer: ``PreTrainedTokenizerFast`` instance.
-        num_codebooks: Number of VQ codebooks (default 10).
-        codebook_size: Size of each codebook (default 4096).
-        max_new_tokens: Maximum decode steps.
-        max_seq_len: Maximum sequence length for KV cache.
-        device: Device to run on.
-        top_k: Top-k sampling parameter.
-        ras_window: RAS window size for repetition detection.
-        ras_temperature: Temperature when RAS triggers.
-        ras_top_p: Top-p when RAS triggers.
-        enable_radix_cache: Enable radix-tree prefix cache for voice
-            cloning reference reuse.
-        radix_cache_max_tokens: Maximum tokens stored in the radix cache.
-
-    Returns:
-        ``OmniEngine`` configured for S2-Pro TTS.
-    """
-    adapter = S2ProTokenizerAdapter(tokenizer)
-    im_end_id = adapter.eos_token_ids[0]
-    semantic_begin_id = adapter.semantic_begin_id
-    semantic_end_id = adapter.semantic_end_id
-
-    # Wrap model for inference
-    actual_model = _S2ProInferenceWrapper(
-        model,
-        max_batch_size=1,
-        max_seq_len=max_seq_len,
-        device=device,
-    )
-
-    # Radix cache (optional)
-    radix_cache: S2ProRadixCache | None = None
-    if enable_radix_cache:
-        radix_cache = S2ProRadixCache(max_tokens=radix_cache_max_tokens)
-
-    def _stream_adapter(request, output):
-        step_out = output.data
-        if step_out is None or not hasattr(step_out, "codes"):
-            return None
-        return step_out.codes
-
-    scheduler = Scheduler(
-        batch_planner=S2ProBatchPlanner(),
-        resource_manager=S2ProResourceManager(
-            max_count=1,
-            radix_cache=radix_cache,
-        ),
-        iteration_controller=S2ProIterationController(
-            im_end_token_id=im_end_id,
-            max_new_tokens=max_new_tokens,
-            radix_cache=radix_cache,
-            model=actual_model,
-        ),
-        stream_adapter=_stream_adapter,
-    )
-
-    output_processor = S2ProOutputProcessor(
-        model=actual_model,
-        num_codebooks=num_codebooks,
-        codebook_size=codebook_size,
-        semantic_begin_id=semantic_begin_id,
-        semantic_end_id=semantic_end_id,
-        im_end_id=im_end_id,
-        top_k=top_k,
-        ras_window=ras_window,
-        ras_temperature=ras_temperature,
-        ras_top_p=ras_top_p,
-    )
-
-    model_runner = ModelRunner(
-        model=actual_model,
-        input_preparer=S2ProInputPreparer(
-            model=actual_model,
-            radix_cache=radix_cache,
-        ),
-        output_processor=output_processor,
-        device=device,
-    )
-
-    engine = OmniEngine(
-        scheduler=scheduler,
-        model_runner=model_runner,
-    )
-    return engine
-
-
 def _truncate_rope_to_bf16(model: torch.nn.Module) -> None:
     """Truncate RotaryEmbedding cos/sin caches to bf16 precision.
 
@@ -257,7 +95,7 @@ def create_s2pro_sglang_engine(
     ras_window: int = 16,
     ras_temperature: float = 1.5,
     ras_top_p: float = 0.95,
-    use_torch_compile: bool = False,
+    use_torch_compile: bool = True,
 ) -> OmniEngine:
     """Create a paged-attention S2-Pro engine using SGLang backend.
 
@@ -280,7 +118,7 @@ def create_s2pro_sglang_engine(
         ras_temperature: Temperature when RAS triggers.
         ras_top_p: Top-p when RAS triggers.
         use_torch_compile: Compile the audio decoder codebook loop
-            with ``torch.compile`` (default False, experimental).
+            with ``torch.compile`` (default True).
 
     Returns:
         ``OmniEngine`` configured for paged-attention S2-Pro TTS.

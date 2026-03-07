@@ -173,10 +173,7 @@ class S2ProSGLangOutputProcessor:
             self._codebook_fn = _cb_fn
 
     def _get_semantic_bias(self, logits: Tensor) -> Tensor:
-        if (
-            self._semantic_bias is None
-            or self._semantic_bias.shape[-1] != logits.shape[-1]
-        ):
+        if self._semantic_bias is None:
             bias = torch.full(
                 (logits.shape[-1],),
                 -float("inf"),
@@ -208,7 +205,7 @@ class S2ProSGLangOutputProcessor:
             data: S2ProSGLangRequestData = sched_req.data
 
             # Skip chunked prefill steps
-            if data.req is not None and data.req.is_chunked > 0:
+            if data.req.is_chunked > 0:
                 outputs[sched_req.request_id] = RequestOutput(
                     request_id=sched_req.request_id,
                     data=None,
@@ -332,7 +329,7 @@ class S2ProSGLangIterationController:
         req.output_ids.append(semantic_token)
 
         # Update prefix cache on unfinished extend
-        if not req.finished() and getattr(req, "decode_batch_idx", 0) == 0:
+        if not req.finished() and req.decode_batch_idx == 0:
             self.tree_cache.cache_unfinished_req(req)
 
     def is_finished(self, request: SchedulerRequest, output: RequestOutput) -> bool:
@@ -399,36 +396,23 @@ class S2ProSGLangModelRunner:
             offset = 0
             for sched_req in scheduler_output.requests:
                 data: S2ProSGLangRequestData = sched_req.data
-                req_len = (
-                    data.req.extend_input_len
-                    if hasattr(data.req, "extend_input_len")
-                    else len(data.req.origin_input_ids)
-                )
+                req_len = data.req.extend_input_len
 
                 if (
                     data.vq_mask_tokens is not None
                     and data.vq_parts is not None
                     and len(data.vq_parts) > 0
                 ):
-                    # Build VQ mask for this request's slice of the flattened batch
                     vq_mask = data.vq_mask_tokens.to(device)
                     if vq_mask.dim() == 2:
                         vq_mask = vq_mask.squeeze(0)
 
-                    # Only keep mask positions within the current input window
-                    # For chunked prefill, req_len may be less than full seq
-                    full_len = len(vq_mask)
-                    # Compute which part of the sequence is being processed
+                    # Slice mask to current input window (chunked prefill)
                     prefix_len = len(data.req.prefix_indices)
-                    # Slice mask to match current input
                     mask_slice = vq_mask[prefix_len : prefix_len + req_len]
 
-                    # Flatten VQ parts
-                    parts = []
-                    for p in data.vq_parts:
-                        p = p.to(device)
-                        if p.dim() == 2:
-                            parts.append(p.T)  # [T_i, num_codebooks]
+                    # Flatten VQ parts: [T_i, num_codebooks] each
+                    parts = [p.to(device).T for p in data.vq_parts if p.dim() == 2]
                     vq_parts_flat = torch.cat(parts, dim=0) if parts else None
 
                     if vq_parts_flat is not None and mask_slice.any():
@@ -436,22 +420,17 @@ class S2ProSGLangModelRunner:
                             vq_mask[:prefix_len].sum().item() if prefix_len > 0 else 0
                         )
                         num_vq_in_slice = mask_slice.sum().item()
-
-                        if num_vq_in_slice > 0 and vq_before + num_vq_in_slice <= len(
-                            vq_parts_flat
-                        ):
-                            vq_slice = vq_parts_flat[
-                                vq_before : vq_before + num_vq_in_slice
-                            ]
-                            req_embeds = text_embeds[offset : offset + req_len]
-                            vq_embeds = audio_decoder.embed_text_dim(
-                                req_embeds.unsqueeze(0),
-                                vq_slice,
-                                mask_slice.unsqueeze(0),
-                            )
-                            # Build absolute indices for in-place assignment
-                            mask_indices = mask_slice.nonzero(as_tuple=True)[0] + offset
-                            text_embeds[mask_indices] = vq_embeds.to(text_embeds.dtype)
+                        vq_slice = vq_parts_flat[
+                            vq_before : vq_before + num_vq_in_slice
+                        ]
+                        req_embeds = text_embeds[offset : offset + req_len]
+                        vq_embeds = audio_decoder.embed_text_dim(
+                            req_embeds.unsqueeze(0),
+                            vq_slice,
+                            mask_slice.unsqueeze(0),
+                        )
+                        mask_indices = mask_slice.nonzero(as_tuple=True)[0] + offset
+                        text_embeds[mask_indices] = vq_embeds.to(text_embeds.dtype)
 
                 offset += req_len
         else:
@@ -505,15 +484,6 @@ class S2ProSGLangModelRunner:
                 device=model_worker_batch.input_ids.device,
             )
 
-        schedule_batch.output_ids = (
-            batch_result.next_token_ids
-            if hasattr(batch_result, "next_token_ids")
-            and batch_result.next_token_ids is not None
-            else torch.zeros(
-                len(scheduler_output.requests), dtype=torch.long, device="cuda"
-            )
-        )
-
         # Record last batch for post-step
         if self.batch_planner is not None:
             self.batch_planner.record_last_batch(schedule_batch)
@@ -521,11 +491,11 @@ class S2ProSGLangModelRunner:
         # Two-stage output processing (semantic + codebooks)
         outputs = self.output_processor.process(batch_result, scheduler_output)
 
-        # Update output_ids from sampled semantic tokens for SGLang decode prep
+        # Set output_ids from sampled semantic tokens for SGLang decode prep
         next_token_ids = []
         for sched_req in scheduler_output.requests:
             out = outputs.get(sched_req.request_id)
-            if out and out.data is not None and isinstance(out.data, S2ProStepOutput):
+            if out and out.data is not None:
                 next_token_ids.append(out.data.codes[0, -1].item())
             else:
                 next_token_ids.append(0)
@@ -553,11 +523,6 @@ class S2ProSGLangResourceManager(SGLangResourceManager):
 
     def free(self, request: SchedulerRequest) -> None:
         data: S2ProSGLangRequestData = request.data
-
-        # Release SGLang KV cache
-        if data.req is not None:
-            release_kv_cache(data.req, self.tree_cache)
-
-        # Clear runtime state but keep output_codes for the caller
+        release_kv_cache(data.req, self.tree_cache)
         data._previous_semantic_tokens.clear()
         data._last_codebook_values = None
