@@ -159,6 +159,8 @@ curl -s http://localhost:8000/v1/chat/completions \
   }'
 ```
 
+The `videos`, `images`, and `audios` fields accept either local file paths or HTTP(S) URLs.
+
 ## Text-to-Speech
 
 The server also exposes `POST /v1/audio/speech`.
@@ -179,6 +181,19 @@ Two things to remember:
 
 - the response body is audio bytes, not JSON
 - the actual output format may differ from the requested one if the encoder falls back to another supported codec
+
+## Common Errors
+
+When requests fail, the server returns standard HTTP error codes:
+
+- `400 Bad Request`: malformed request body or invalid parameters
+- `500 Internal Server Error`: runtime error during generation (check server logs for details)
+- `503 Service Unavailable`: the runtime is not healthy (verify with `/health`)
+
+If you see a 500 error, check the server logs for the full traceback. Common issues include:
+- unsupported media formats
+- out-of-memory errors
+- missing model files
 
 ## Next Reading
 
