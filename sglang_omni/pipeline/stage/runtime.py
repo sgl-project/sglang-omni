@@ -18,6 +18,7 @@ from sglang_omni.pipeline.worker.data_plane import DataPlaneAdapter
 from sglang_omni.pipeline.worker.runtime import Worker
 from sglang_omni.profiler.torch_profiler import TorchProfiler
 from sglang_omni.proto import (
+    ChunkReadyMessage,
     DataReadyMessage,
     ProfilerStartMessage,
     ProfilerStopMessage,
@@ -127,6 +128,7 @@ class Stage:
         # State
         self._running = False
         self._aborted_requests: set[str] = set()
+        self._pending_chunks: dict[str, list[ChunkReadyMessage]] = {}
 
         # Profiler
         self._profiler_run_id: str | None = None
@@ -218,12 +220,19 @@ class Stage:
     async def start(self) -> None:
         """Start the stage."""
         await self.control_plane.start()
+        # Start chunk senders
+        for sender in getattr(self, "chunk_senders", []):
+            await sender.start()
         self._running = True
         logger.info("Stage %s started", self.name)
 
     async def stop(self) -> None:
         """Stop the stage."""
         self._running = False
+
+        # Stop chunk senders
+        for sender in getattr(self, "chunk_senders", []):
+            await sender.stop()
 
         # Signal workers to stop
         for worker in self.workers:
@@ -250,6 +259,7 @@ class Stage:
             while self._running:
                 # Receive work
                 msg = await self.control_plane.recv()
+                logger.info("Stage %s received msg: %s", self.name, type(msg).__name__)
 
                 if isinstance(msg, ShutdownMessage):
                     logger.info("Stage %s received shutdown", self.name)
@@ -293,6 +303,7 @@ class Stage:
         self,
         msg: (
             DataReadyMessage
+            | ChunkReadyMessage
             | SubmitMessage
             | ProfilerStartMessage
             | ProfilerStopMessage
@@ -303,6 +314,8 @@ class Stage:
             await self._process_submit(msg)
         elif isinstance(msg, DataReadyMessage):
             await self._process_data_ready(msg)
+        elif isinstance(msg, ChunkReadyMessage):
+            await self._process_chunk_ready(msg)
         elif isinstance(msg, ProfilerStartMessage):
             await self._on_profiler_start(msg)
         elif isinstance(msg, ProfilerStopMessage):
@@ -320,6 +333,10 @@ class Stage:
         if request_id in self._aborted_requests:
             logger.debug("Stage %s skipping aborted req=%s", self.name, request_id)
             return
+
+        # Open chunk mailbox for this request if stage has one
+        if hasattr(self, "chunk_mailbox") and self.chunk_mailbox is not None:
+            self.chunk_mailbox.open(request_id)
 
         input_ref = InputRef.from_payload("coordinator", msg.data)
         work = self.input_handler.receive(request_id, "coordinator", input_ref)
@@ -346,6 +363,10 @@ class Stage:
             self.relay.cleanup(request_id)
             return
 
+        # Open chunk mailbox for this request if stage has one
+        if hasattr(self, "chunk_mailbox") and self.chunk_mailbox is not None:
+            self.chunk_mailbox.open(request_id)
+
         # Eagerly read from relay to release sender's credit/notification.
         if msg.shm_metadata:
             try:
@@ -367,6 +388,28 @@ class Stage:
         work = self.input_handler.receive(request_id, msg.from_stage, input_ref)
         if work is not None:
             self.router.enqueue(work)
+            # Flush any chunks that arrived before this request was assigned
+            pending = self._pending_chunks.pop(request_id, [])
+            if pending:
+                worker_idx = self.router.get_worker_index(request_id)
+                if worker_idx is not None:
+                    worker = self.workers[worker_idx]
+                    for chunk_msg in pending:
+                        worker.deliver_chunk(chunk_msg)
+
+    async def _process_chunk_ready(self, msg: ChunkReadyMessage) -> None:
+        """Route chunk notification to the worker handling this request."""
+        request_id = msg.request_id
+        if request_id in self._aborted_requests:
+            return
+        worker_idx = self.router.get_worker_index(request_id)
+        if worker_idx is None:
+            # Chunk may arrive before DataReady/work assignment; buffer instead of drop.
+            self._pending_chunks.setdefault(request_id, []).append(msg)
+            logger.debug("Stage %s: buffered early chunk for %s", self.name, request_id)
+            return
+        worker = self.workers[worker_idx]
+        worker.deliver_chunk(msg)
 
     def _on_abort(self, request_id: str) -> None:
         """Handle abort for a request."""
@@ -375,6 +418,10 @@ class Stage:
         self.router.clear_request(request_id)
         self.input_handler.cancel(request_id)
         self.relay.cleanup(request_id)
+
+        # Close chunk mailbox
+        if hasattr(self, "chunk_mailbox") and self.chunk_mailbox is not None:
+            self.chunk_mailbox.close(request_id)
 
         # Notify workers' engines
         for worker in self.workers:

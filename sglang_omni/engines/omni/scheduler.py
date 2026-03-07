@@ -97,6 +97,14 @@ class Scheduler:
         """Check if there are any requests to process."""
         return len(self.waiting) > 0 or len(self.running) > 0
 
+    def resume_request(self, request_id: str) -> None:
+        """Resume a WAITING_FEEDBACK request back to RUNNING."""
+        request = self.requests.get(request_id)
+        if request is None:
+            return
+        if request.status == SchedulerStatus.WAITING_FEEDBACK:
+            request.status = SchedulerStatus.RUNNING
+
     async def get_result(self, request_id: str) -> SchedulerRequest:
         """Wait for a request to complete."""
         if request_id not in self.requests:
@@ -156,7 +164,11 @@ class Scheduler:
         self._aborted_this_step.clear()
 
         waiting_reqs = [self.requests[req_id] for req_id in self.waiting]
-        running_reqs = [self.requests[req_id] for req_id in self.running]
+        running_reqs = [
+            self.requests[req_id]
+            for req_id in self.running
+            if self.requests[req_id].status != SchedulerStatus.WAITING_FEEDBACK
+        ]
 
         selected = self.batch_planner.select_requests(
             waiting_reqs,

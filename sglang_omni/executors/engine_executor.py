@@ -25,11 +25,16 @@ class EngineExecutor(Executor):
         request_builder: Callable[[StagePayload], Any],
         result_builder: Callable[[StagePayload, Any], StagePayload] | None = None,
         stream_builder: Callable[[StagePayload | None, Any], Any] | None = None,
+        chunk_mailbox: Any | None = None,
+        chunk_prefetch_count: int | None = None,
     ):
         self._engine = engine
         self._request_builder = request_builder
         self._result_builder = result_builder or self._default_result_builder
         self._stream_builder = stream_builder or self._default_stream_builder
+        self._chunk_mailbox = chunk_mailbox
+        self._chunk_prefetch_count = chunk_prefetch_count
+        self._chunk_senders: list[Any] = []
         self._done: asyncio.Queue[str] = asyncio.Queue()
         self._tasks: dict[str, asyncio.Task[StagePayload]] = {}
         self._payloads: dict[str, StagePayload] = {}
@@ -39,6 +44,18 @@ class EngineExecutor(Executor):
         request_id = payload.request_id
         if request_id in self._aborted:
             return
+
+        # Pre-fetch chunks from mailbox (async) before calling sync request_builder
+        if self._chunk_mailbox is not None and self._chunk_prefetch_count:
+            chunks = []
+            for _ in range(self._chunk_prefetch_count):
+                item = await self._chunk_mailbox.get(request_id)
+                if item is None:  # EOS
+                    break
+                chunks.append(item)
+            payload.prefetched_chunks = chunks
+        else:
+            payload.prefetched_chunks = None
 
         self._payloads[request_id] = payload
         engine_input = self._request_builder(payload)
@@ -57,6 +74,11 @@ class EngineExecutor(Executor):
         stop = getattr(self._engine, "stop", None)
         if callable(stop):
             await stop()
+
+    def set_feedback_mailbox(self, mailbox: Any) -> None:
+        """Attach a feedback mailbox to engines that support WAITING_FEEDBACK."""
+        if hasattr(self._engine, "_feedback_mailbox"):
+            self._engine._feedback_mailbox = mailbox
 
     async def get_result(self) -> StagePayload:
         while True:
@@ -96,6 +118,12 @@ class EngineExecutor(Executor):
     async def _await_result(self, payload: StagePayload) -> StagePayload:
         request_id = payload.request_id
         result = await self._engine.get_result(request_id)
+
+        # Signal EOS to downstream chunk receivers
+        for sender in self._chunk_senders:
+            if hasattr(sender, "enqueue_chunks_done"):
+                sender.enqueue_chunks_done(request_id)
+
         output = self._result_builder(payload, result)
         if not isinstance(output, StagePayload):
             output = StagePayload(

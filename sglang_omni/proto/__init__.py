@@ -2,6 +2,7 @@
 # Import SHMMetadata from relay.nixl (kept for backward compatibility)
 from .messages import (
     AbortMessage,
+    ChunkReadyMessage,
     CompleteMessage,
     DataReadyMessage,
     ProfilerStartMessage,
@@ -15,6 +16,7 @@ from .request import OmniRequest, RequestInfo, RequestState, StagePayload
 from .stage import StageInfo
 
 __all__ = [
+    "ChunkReadyMessage",
     "DataReadyMessage",
     "AbortMessage",
     "CompleteMessage",

@@ -35,6 +35,7 @@ def compile_pipeline(config: PipelineConfig) -> tuple[Coordinator, list[Stage]]:
         completion_endpoint=endpoints["completion"],
         abort_endpoint=endpoints["abort"],
         entry_stage=entry_stage,
+        terminal_stages=config.terminal_stages or None,
     )
 
     # 5. create each stage in order
@@ -49,6 +50,14 @@ def compile_pipeline(config: PipelineConfig) -> tuple[Coordinator, list[Stage]]:
         )
         coordinator.register_stage(stage.name, stage.control_plane.recv_endpoint)
         stages.append(stage)
+
+    # 6. wire chunk transfers
+    stage_map = {stage.name: stage for stage in stages}
+    for stage_cfg in stages_cfg:
+        stage = stage_map.get(stage_cfg.name)
+        if stage is None:
+            continue
+        _wire_chunk_transfers(stage, stage_cfg, stage_map, stage_endpoints)
 
     return coordinator, stages
 
@@ -92,6 +101,14 @@ def _compile_stage(
         and "model_path" not in stage_cfg.executor.args
     ):
         stage_cfg.executor.args["model_path"] = global_cfg.model_path
+
+    # Inject gpu_id from gpu_placement map
+    if (
+        "gpu_id" in inspect.signature(factory).parameters
+        and "gpu_id" not in stage_cfg.executor.args
+    ):
+        gpu_id = global_cfg.gpu_placement.get(stage_cfg.name, 0)
+        stage_cfg.executor.args["gpu_id"] = gpu_id
 
     for _ in range(stage_cfg.num_workers):
         executor = factory(**stage_cfg.executor.args)
@@ -224,3 +241,81 @@ def _dedupe_list(items: list[str]) -> list[str]:
         seen.add(item)
         result.append(item)
     return result
+
+
+def _wire_chunk_transfers(
+    sender_stage: Stage,
+    sender_cfg: StageConfig,
+    stage_map: dict[str, Stage],
+    stage_endpoints: dict[str, str],
+) -> None:
+    """Wire chunk transfer infrastructure between stages."""
+    from sglang_omni.pipeline.chunk.mailbox import ChunkMailbox
+    from sglang_omni.pipeline.chunk.receiver import ChunkReceiver
+    from sglang_omni.pipeline.chunk.sender import ChunkTransferAdapter
+    from sglang_omni.pipeline.worker.data_plane import DataPlaneAdapter
+
+    transfers = sender_cfg.chunk_transfers
+    if not transfers:
+        sender_stage.chunk_senders = []
+        sender_stage.chunk_transfer_targets = set()
+        return
+
+    sender_stage.chunk_transfer_targets = {
+        ct["to_stage"] for ct in transfers if ct.get("bootstrap", True)
+    }
+    senders = []
+    for ct in transfers:
+        to_stage_name = ct["to_stage"]
+        receiver_stage = stage_map.get(to_stage_name)
+        if receiver_stage is None:
+            continue
+
+        to_stage_endpoint = stage_endpoints.get(to_stage_name, "")
+
+        # Create sender-side adapter
+        sender_data_plane = DataPlaneAdapter(sender_stage.relay)
+        chunk_sender = ChunkTransferAdapter(
+            data_plane=sender_data_plane,
+            control_plane=sender_stage.control_plane,
+            to_stage=to_stage_name,
+            to_stage_endpoint=to_stage_endpoint,
+            from_stage=sender_stage.name,
+        )
+        senders.append(chunk_sender)
+
+        # Wire sender's enqueue to each worker executor that has set_chunk_enqueue_fn
+        for worker in sender_stage.workers:
+            set_fn = getattr(worker.executor, "set_chunk_enqueue_fn", None)
+            if callable(set_fn):
+                set_fn(chunk_sender.enqueue)
+            # Store sender reference for EOS signaling
+            senders_list = getattr(worker.executor, "_chunk_senders", None)
+            if senders_list is not None:
+                senders_list.append(chunk_sender)
+            else:
+                worker.executor._chunk_senders = [chunk_sender]
+
+        # Create receiver-side: mailbox + receiver per worker
+        if not hasattr(receiver_stage, "chunk_mailbox") or receiver_stage.chunk_mailbox is None:
+            mailbox = ChunkMailbox(max_pending=4096)
+            receiver_stage.chunk_mailbox = mailbox
+        else:
+            mailbox = receiver_stage.chunk_mailbox
+
+        for worker in receiver_stage.workers:
+            if worker.chunk_receiver is None:
+                receiver_data_plane = DataPlaneAdapter(receiver_stage.relay)
+                worker.chunk_receiver = ChunkReceiver(
+                    data_plane=receiver_data_plane,
+                    mailbox=mailbox,
+                )
+            # Set chunk_mailbox on executor for async prefetch
+            worker.executor._chunk_mailbox = mailbox
+            if not hasattr(worker.executor, "_chunk_prefetch_count") or worker.executor._chunk_prefetch_count is None:
+                worker.executor._chunk_prefetch_count = 4096  # default: drain until EOS
+            set_feedback_mailbox = getattr(worker.executor, "set_feedback_mailbox", None)
+            if callable(set_feedback_mailbox):
+                set_feedback_mailbox(mailbox)
+
+    sender_stage.chunk_senders = senders
