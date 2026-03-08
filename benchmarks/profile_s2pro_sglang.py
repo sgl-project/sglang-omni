@@ -407,7 +407,109 @@ async def profile_batch(
     return list(results)
 
 
-def print_metrics(label: str, metrics: list[RequestMetrics]):
+async def profile_continuous(
+    engine,
+    samples,
+    adapter,
+    codec,
+    tokenizer,
+    num_codebooks,
+    codebook_size,
+    max_new_tokens,
+    device,
+    request_rate: float = 10.0,
+) -> tuple[list[RequestMetrics], float]:
+    """Submit requests with Poisson inter-arrival times and measure wall-clock throughput.
+
+    Returns (metrics_list, wall_clock_seconds).
+    """
+    requests = []
+    for i, sample in enumerate(samples):
+        data = build_request_data(
+            sample,
+            adapter,
+            codec,
+            tokenizer,
+            num_codebooks,
+            codebook_size,
+            max_new_tokens,
+            device,
+        )
+        rid = f"cont-{i}-{sample['id']}"
+        data.req.rid = rid
+        requests.append((rid, data, sample))
+
+    results_map: dict[str, RequestMetrics] = {}
+    pending_tasks: list[asyncio.Task] = []
+
+    async def collect_one(rid, data, sample, t_submit):
+        ttft = None
+        t_10th_token = None
+        token_count = 0
+        async for codes in engine.stream(rid):
+            if ttft is None:
+                ttft = time.perf_counter() - t_submit
+            token_count += 1
+            if token_count == 10 and t_10th_token is None:
+                t_10th_token = time.perf_counter() - t_submit
+
+        total = time.perf_counter() - t_submit
+        n_codes = len(data.output_codes)
+        tok_per_s = n_codes / total if total > 0 else 0
+
+        audio_dur = 0.0
+        vocoder_time = 0.0
+        if n_codes > 0:
+            all_codes = torch.cat(data.output_codes, dim=-1)
+            codebook_codes = all_codes[1:].to(device)
+            if n_codes >= 10:
+                first_10_codes = torch.cat(data.output_codes[:10], dim=-1)
+                first_10_cb = first_10_codes[1:].to(device)
+                torch.cuda.synchronize()
+                t_voc = time.perf_counter()
+                with torch.no_grad():
+                    codec.from_indices(first_10_cb[None])
+                torch.cuda.synchronize()
+                vocoder_time = time.perf_counter() - t_voc
+            with torch.no_grad():
+                audio_out = codec.from_indices(codebook_codes[None])
+            audio_dur = audio_out.shape[-1] / codec.sample_rate
+
+        ttfb = (t_10th_token or ttft or total) + vocoder_time
+
+        results_map[rid] = RequestMetrics(
+            request_id=rid,
+            text=sample["text"][:60],
+            prompt_tokens=len(data.input_ids),
+            gen_tokens=n_codes,
+            ttft_s=ttft if ttft is not None else total,
+            ttfb_s=ttfb,
+            total_s=total,
+            tok_per_s=tok_per_s,
+            audio_duration_s=audio_dur,
+            rtf=total / audio_dur if audio_dur > 0 else float("inf"),
+        )
+
+    t_wall_start = time.perf_counter()
+
+    for rid, data, sample in requests:
+        if request_rate < float("inf"):
+            delay = np.random.exponential(1.0 / request_rate)
+            await asyncio.sleep(delay)
+
+        t_submit = time.perf_counter()
+        await engine.add_request(rid, data)
+        task = asyncio.create_task(collect_one(rid, data, sample, t_submit))
+        pending_tasks.append(task)
+
+    await asyncio.gather(*pending_tasks)
+    wall_time = time.perf_counter() - t_wall_start
+
+    ordered = [results_map[rid] for rid, _, _ in requests]
+    return ordered, wall_time
+
+
+def print_metrics(label: str, metrics: list[RequestMetrics], wall_time_s: float | None = None):
     if not metrics:
         print(f"\n{label}: No results")
         return
@@ -420,8 +522,12 @@ def print_metrics(label: str, metrics: list[RequestMetrics]):
     gen_tokens = [m.gen_tokens for m in metrics]
 
     total_tokens = sum(gen_tokens)
-    total_wall = sum(totals)
-    agg_tok_per_s = total_tokens / total_wall if total_wall > 0 else 0
+
+    if wall_time_s is not None:
+        agg_tok_per_s = total_tokens / wall_time_s if wall_time_s > 0 else 0
+    else:
+        total_wall = sum(totals)
+        agg_tok_per_s = total_tokens / total_wall if total_wall > 0 else 0
 
     print(f"\n{'='*64}")
     print(f"  {label}")
@@ -436,6 +542,8 @@ def print_metrics(label: str, metrics: list[RequestMetrics]):
     print(f"  TTFB p95:        {np.percentile(ttfbs, 95)*1000:.1f}ms")
     print(f"  Tok/s (per-req): {np.mean(toks):.1f} mean, {np.median(toks):.1f} median")
     print(f"  Tok/s (agg):     {agg_tok_per_s:.1f}")
+    if wall_time_s is not None:
+        print(f"  Wall time:       {wall_time_s:.3f}s")
     print(f"  Gen tokens:      {np.mean(gen_tokens):.0f} mean, {sum(gen_tokens)} total")
     print(f"  Latency mean:    {np.mean(totals):.3f}s")
     if rtfs:
@@ -452,6 +560,7 @@ def print_metrics(label: str, metrics: list[RequestMetrics]):
         "ttfb_p95_ms": float(np.percentile(ttfbs, 95)) * 1000,
         "tok_per_s_mean": float(np.mean(toks)),
         "tok_per_s_agg": agg_tok_per_s,
+        "wall_time_s": wall_time_s,
         "gen_tokens_mean": float(np.mean(gen_tokens)),
         "latency_mean": float(np.mean(totals)),
         "rtf_mean": float(np.mean(rtfs)) if rtfs else None,
@@ -606,22 +715,104 @@ async def run_profiling(args):
 
         batch_sizes = [b for b in batch_sizes if b != 1]
 
-    # Batched-request profiling
-    for bs in batch_sizes:
-        if bs <= 1:
-            continue
-        logger.info("Profiling batch_size=%d...", bs)
-        batch_metrics = []
+    is_continuous = args.request_rate < float("inf")
 
-        # Run batches of `bs` samples
-        for start in range(0, len(samples), bs):
-            batch_samples = samples[start : start + bs]
-            if len(batch_samples) < bs:
-                break
+    if is_continuous:
+        # Continuous batching: submit all samples with Poisson inter-arrival
+        logger.info(
+            "Profiling continuous batching (rate=%.1f req/s, %d samples)...",
+            args.request_rate,
+            len(samples),
+        )
+        try:
+            cont_metrics, wall_time = await profile_continuous(
+                engine,
+                samples,
+                adapter,
+                codec,
+                tokenizer,
+                num_codebooks,
+                codebook_size,
+                args.max_new_tokens,
+                device,
+                request_rate=args.request_rate,
+            )
+            for m in cont_metrics:
+                logger.info(
+                    "  %s: TTFT=%.1fms, %d tok, %.1f tok/s",
+                    m.request_id,
+                    m.ttft_s * 1000,
+                    m.gen_tokens,
+                    m.tok_per_s,
+                )
+            all_results["continuous"] = print_metrics(
+                f"Continuous (rate={args.request_rate:.1f} req/s)",
+                cont_metrics,
+                wall_time_s=wall_time,
+            )
+        except Exception as e:
+            logger.error("Continuous profiling FAILED: %s", e)
+    else:
+        # Closed-loop batched-request profiling
+        for bs in batch_sizes:
+            if bs <= 1:
+                continue
+            logger.info("Profiling batch_size=%d...", bs)
+            batch_metrics = []
+
+            for start in range(0, len(samples), bs):
+                batch_samples = samples[start : start + bs]
+                if len(batch_samples) < bs:
+                    break
+                try:
+                    metrics = await profile_batch(
+                        engine,
+                        batch_samples,
+                        adapter,
+                        codec,
+                        tokenizer,
+                        num_codebooks,
+                        codebook_size,
+                        args.max_new_tokens,
+                        device,
+                    )
+                    batch_metrics.extend(metrics)
+                    for m in metrics:
+                        logger.info(
+                            "  %s: TTFT=%.4fs, %d tok, %.1f tok/s",
+                            m.request_id,
+                            m.ttft_s,
+                            m.gen_tokens,
+                            m.tok_per_s,
+                        )
+                except Exception as e:
+                    logger.error("Batch starting at %d FAILED: %s", start, e)
+
+            all_results[f"batch_{bs}"] = print_metrics(
+                f"Batch Size {bs}", batch_metrics
+            )
+
+    # Shared-prefix test: same ref audio, different texts
+    if args.test_shared_prefix and len(samples) >= 2:
+        logger.info("Testing shared-prefix cache (same ref audio, different texts)...")
+        shared_ref = samples[0]
+        shared_samples = []
+        for s in samples[1 : min(11, len(samples))]:
+            shared_samples.append(
+                {
+                    "id": f"shpfx-{s['id']}",
+                    "ref_text": shared_ref["ref_text"],
+                    "ref_audio": shared_ref["ref_audio"],
+                    "text": s["text"],
+                }
+            )
+
+        prefix_metrics = []
+        for i, sample in enumerate(shared_samples):
             try:
-                metrics = await profile_batch(
+                m = await profile_single_request(
                     engine,
-                    batch_samples,
+                    sample,
                     adapter,
                     codec,
                     tokenizer,
@@ -630,19 +821,44 @@ async def run_profiling(args):
                     args.max_new_tokens,
                     device,
                 )
-                batch_metrics.extend(metrics)
-                for m in metrics:
-                    logger.info(
-                        "  %s: TTFT=%.4fs, %d tok, %.1f tok/s",
-                        m.request_id,
-                        m.ttft_s,
-                        m.gen_tokens,
-                        m.tok_per_s,
-                    )
+                prefix_metrics.append(m)
+                tag = "MISS" if i == 0 else "HIT"
+                logger.info(
+                    "[shared-prefix %d/%d %s] TTFT=%.1fms TTFB=%.1fms %.1f tok/s",
+                    i + 1,
+                    len(shared_samples),
+                    tag,
+                    m.ttft_s * 1000,
+                    m.ttfb_s * 1000,
+                    m.tok_per_s,
+                )
             except Exception as e:
-                logger.error("Batch starting at %d FAILED: %s", start, e)
+                logger.error("[shared-prefix %d] FAILED: %s", i + 1, e)
 
-        all_results[f"batch_{bs}"] = print_metrics(f"Batch Size {bs}", batch_metrics)
+        if len(prefix_metrics) >= 2:
+            miss = prefix_metrics[0]
+            hits = prefix_metrics[1:]
+            hit_ttfts = [m.ttft_s for m in hits]
+            print(f"\n{'='*64}")
+            print("  Shared-Prefix Cache Test")
+            print(f"{'='*64}")
+            print(f"  Ref audio:       {shared_ref['ref_audio']}")
+            print(f"  First (miss):    TTFT={miss.ttft_s*1000:.1f}ms")
+            print(
+                f"  Cached (hits):   TTFT={np.mean(hit_ttfts)*1000:.1f}ms mean "
+                f"({np.median(hit_ttfts)*1000:.1f}ms median)"
+            )
+            speedup = miss.ttft_s / np.mean(hit_ttfts) if np.mean(hit_ttfts) > 0 else 0
+            print(f"  TTFT speedup:    {speedup:.2f}x")
+            print(f"{'='*64}")
+            all_results["shared_prefix"] = {
+                "miss_ttft_ms": miss.ttft_s * 1000,
+                "hit_ttft_mean_ms": float(np.mean(hit_ttfts)) * 1000,
+                "ttft_speedup": speedup,
+            }
+        all_results["shared_prefix_detail"] = print_metrics(
+            "Shared-Prefix (all)", prefix_metrics
+        )
 
     await engine.stop()
 
@@ -726,6 +942,18 @@ def parse_args():
     )
     p.add_argument(
         "--test-cache-hit", action="store_true", help="Test radix cache hit TTFB"
+    )
+    p.add_argument(
+        "--test-shared-prefix",
+        action="store_true",
+        help="Test prefix cache with shared ref audio across different texts",
+    )
+    p.add_argument(
+        "--request-rate",
+        type=float,
+        default=float("inf"),
+        help="Request arrival rate (req/s). inf = burst (default). "
+        "Finite values use Poisson inter-arrival for continuous batching.",
     )
     p.add_argument(
         "--save-audio",
