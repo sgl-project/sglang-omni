@@ -21,8 +21,8 @@ from .tokenizer import S2ProTokenizerAdapter
 
 def _patch_fish_config_for_sglang(model_path: str) -> None:
     """Patch FishQwen3Config to add standard HF attribute aliases for SGLang."""
-    import fish_speech.models.text2semantic.modeling  # registers AutoConfig
-    from fish_speech.models.text2semantic.modeling import (
+    import sglang_omni.models.fishaudio_s2_pro.fish_speech.models.text2semantic.modeling  # registers AutoConfig
+    from sglang_omni.models.fishaudio_s2_pro.fish_speech.models.text2semantic.modeling import (
         FishQwen3Config,
         FishQwen3OmniConfig,
     )

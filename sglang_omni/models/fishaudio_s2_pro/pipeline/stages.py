@@ -39,8 +39,8 @@ def _resolve_checkpoint(checkpoint: str) -> str:
 
 
 def _load_s2pro_model(checkpoint: str, device: str):
-    from fish_speech.models.text2semantic.configuration import FishQwen3OmniConfig
-    from fish_speech.models.text2semantic.modeling import FishQwen3OmniForCausalLM
+    from sglang_omni.models.fishaudio_s2_pro.fish_speech.models.text2semantic.configuration import FishQwen3OmniConfig
+    from sglang_omni.models.fishaudio_s2_pro.fish_speech.models.text2semantic.modeling import FishQwen3OmniForCausalLM
     from transformers import PreTrainedTokenizerFast
 
     checkpoint = _resolve_checkpoint(checkpoint)
@@ -66,7 +66,7 @@ def _load_codec(checkpoint_dir: str, device: str):
     logger.info("Loading DAC codec from %s …", codec_path)
     t0 = time.perf_counter()
 
-    import fish_speech.models.dac.modded_dac as _dac_mod
+    import sglang_omni.models.fishaudio_s2_pro.fish_speech.models.dac.modded_dac as _dac_mod
 
     configs_dir = os.path.join(
         os.path.dirname(os.path.dirname(os.path.dirname(_dac_mod.__file__))),

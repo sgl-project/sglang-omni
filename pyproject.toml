@@ -48,6 +48,15 @@ dev = [
     "pytest>=7.0.0",
     "pytest-asyncio>=0.21.0",
 ]
+s2pro = [
+    "tiktoken",
+    "hydra-core",
+    "omegaconf",
+    "descript-audiotools",
+    "descript-audio-codec",
+    "torchaudio",
+    "flash-attn>=2.7.0",
+]
 gradio = ["gradio>=4.0.0"]
 
 [project.scripts]
