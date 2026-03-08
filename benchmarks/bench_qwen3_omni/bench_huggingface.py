@@ -34,6 +34,10 @@ from transformers import (
     Qwen3OmniMoeProcessor,
     Qwen3OmniMoeThinkerForConditionalGeneration,
 )
+from transformers.generation.stopping_criteria import (
+    EosTokenCriteria,
+    StoppingCriteriaList,
+)
 
 ROOT_DIR = Path(__file__).parent.parent.parent
 TEST_DATA_DIR = ROOT_DIR.joinpath("tests/data")
@@ -122,6 +126,11 @@ def main():
         },
     ]
 
+    stopping_criteria = StoppingCriteriaList()
+    stopping_criteria.append(
+        EosTokenCriteria(eos_token_id=processor.tokenizer.eos_token_id)
+    )
+
     for idx in range(5):
         with Timer("end-to-end") as end_to_end_timer:
             with Timer("preprocessing") as processing_timer:
@@ -148,7 +157,7 @@ def main():
                     **inputs,
                     use_audio_in_video=True,
                     generation_config=GenerationConfig(
-                        max_new_tokens=256, early_stopping=True
+                        max_new_tokens=256, temperature=0.8
                     ),
                 )
                 input_ids_length = inputs["input_ids"].shape[1]

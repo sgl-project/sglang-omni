@@ -74,7 +74,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--dtype", type=str, default="bfloat16")
     parser.add_argument("--thinker-max-seq-len", type=int, default=2048)
-    parser.add_argument("--max-new-tokens", type=int, default=2048)
+    parser.add_argument("--max-new-tokens", type=int, default=256)
     parser.add_argument("--temperature", type=float, default=0.8)
     parser.add_argument("--image-path", type=str, default=None)
     parser.add_argument("--video-path", type=str, default=None)
