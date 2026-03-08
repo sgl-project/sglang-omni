@@ -89,6 +89,7 @@ class DataPlaneAdapter:
         payload: StagePayload,
     ) -> tuple[dict[str, Any], Any]:
         device = self._relay.device if hasattr(self._relay, "device") else "cpu"
+        transport_device = torch.device(device)
 
         # Extract tensors from payload.data
         modified_data, tensor_dict = _extract_tensors(payload.data)
@@ -112,6 +113,8 @@ class DataPlaneAdapter:
             for path, tensor in tensor_dict.items():
                 # Flatten tensor to bytes
                 flat = tensor.contiguous().view(torch.uint8).reshape(-1)
+                if flat.device != transport_device:
+                    flat = flat.to(device=transport_device)
                 tensor_buffers.append(flat)
                 tensor_info.append(
                     {
@@ -125,10 +128,7 @@ class DataPlaneAdapter:
                 offset += flat.numel()
 
             # Concatenate all tensors
-            if tensor_buffers[0].is_cuda:
-                all_tensors = torch.cat(tensor_buffers)
-            else:
-                all_tensors = torch.cat(tensor_buffers)
+            all_tensors = torch.cat(tensor_buffers)
         else:
             # Relay still expects a payload to transfer; use a 1-byte placeholder.
             all_tensors = torch.zeros(1, dtype=torch.uint8, device=device)
@@ -198,6 +198,47 @@ class DataPlaneAdapter:
         if not isinstance(payload, StagePayload):
             raise TypeError(f"Expected StagePayload, got {type(payload)}")
         return payload
+
+    async def write_blob(
+        self,
+        key: str,
+        tensor: torch.Tensor,
+    ) -> tuple[dict[str, Any], Any]:
+        """Write a raw tensor via relay (no StagePayload wrapping).
+
+        Returns (metadata_dict, relay_operation).
+        metadata_dict is sent via control plane; receiver uses it in read_blob.
+        """
+        flat = tensor.contiguous().view(torch.uint8).reshape(-1)
+        op = await self._relay.put_async(flat, request_id=key)
+        metadata = {
+            "relay_info": op.metadata,
+            "tensor_shape": list(tensor.shape),
+            "tensor_dtype": str(tensor.dtype),
+        }
+        return metadata, op
+
+    async def read_blob(
+        self,
+        key: str,
+        metadata: dict[str, Any],
+    ) -> torch.Tensor:
+        """Read a raw tensor from relay using metadata from write_blob."""
+        device = self._relay.device if hasattr(self._relay, "device") else "cpu"
+        relay_info = metadata["relay_info"]
+        shape = metadata["tensor_shape"]
+        dtype_str = metadata["tensor_dtype"]
+
+        data_size = relay_info["transfer_info"]["size"]
+        recv_buf = torch.zeros(data_size, dtype=torch.uint8, device=device)
+        op = await self._relay.get_async(
+            metadata=relay_info, dest_tensor=recv_buf, request_id=key
+        )
+        await op.wait_for_completion()
+
+        dtype = getattr(torch, dtype_str.replace("torch.", ""))
+        tensor = recv_buf.view(dtype).reshape(shape)
+        return tensor
 
     def cleanup(self, request_id: str) -> None:
         self._relay.cleanup(request_id)

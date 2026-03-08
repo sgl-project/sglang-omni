@@ -10,10 +10,12 @@ from typing import TYPE_CHECKING, Any
 from ..base import Engine
 from .model_runner import ModelRunner
 from .scheduler import Scheduler
-from .types import SchedulerOutput
+from .types import SchedulerOutput, SchedulerStatus
 
 if TYPE_CHECKING:
     from .runtime.interfaces import CacheManager
+
+    from sglang_omni.pipeline.chunk.mailbox import ChunkMailbox
 
 logger = logging.getLogger(__name__)
 
@@ -36,10 +38,12 @@ class OmniEngine(Engine):
         scheduler: Scheduler,
         model_runner: ModelRunner,
         cache_manager: CacheManager | None = None,
+        feedback_mailbox: ChunkMailbox | None = None,
     ):
         self.scheduler = scheduler
         self.model_runner = model_runner
         self.cache_manager = cache_manager
+        self._feedback_mailbox = feedback_mailbox
 
         self._running = False
         self._loop_task: asyncio.Task[None] | None = None
@@ -107,6 +111,9 @@ class OmniEngine(Engine):
         scheduler_output = self.scheduler.schedule()
 
         if scheduler_output is None:
+            # Check for arrived feedback even when idle
+            if self._feedback_mailbox is not None:
+                self._check_feedback()
             await asyncio.sleep(0.001)  # Brief sleep when idle
             return False
 
@@ -162,6 +169,23 @@ class OmniEngine(Engine):
                     pass
             return False
 
+        # 6. Check feedback needs — set WAITING_FEEDBACK for requests needing it
+        iter_ctrl = self.scheduler.iteration_controller
+        if hasattr(iter_ctrl, "needs_feedback"):
+            for request in scheduler_output.requests:
+                if request.status in (
+                    SchedulerStatus.FINISHED,
+                    SchedulerStatus.ABORTED,
+                ):
+                    continue
+                output = model_output.outputs.get(request.request_id)
+                if output is not None and iter_ctrl.needs_feedback(request, output):
+                    request.status = SchedulerStatus.WAITING_FEEDBACK
+
+        # 7. Check for arrived feedback — resume WAITING_FEEDBACK requests
+        if self._feedback_mailbox is not None:
+            self._check_feedback()
+
         return True
 
     async def _filter_cached(
@@ -202,6 +226,37 @@ class OmniEngine(Engine):
             batch_data=batch_data,
             step_id=scheduler_output.step_id,
         )
+
+    def _check_feedback(self) -> None:
+        """Check feedback mailbox for arrived feedback and resume requests."""
+        assert self._feedback_mailbox is not None
+        for req_id, request in list(self.scheduler.requests.items()):
+            if request.status != SchedulerStatus.WAITING_FEEDBACK:
+                continue
+            if not self._feedback_mailbox.has(req_id):
+                continue
+            # Try non-blocking get from the queue
+            queue = self._feedback_mailbox._queues.get(req_id)
+            if queue is not None and not queue.empty():
+                try:
+                    item = queue.get_nowait()
+                    from sglang_omni.pipeline.chunk.mailbox import ChunkSignal, _SENTINEL_DONE
+                    if item is _SENTINEL_DONE or isinstance(item, BaseException):
+                        continue
+                    if isinstance(item, ChunkSignal):
+                        if item.is_chunks_done or item.error is not None:
+                            continue
+                        if not hasattr(item, "tensor"):
+                            continue
+                    if not hasattr(item, "tensor"):
+                        continue
+                    # Apply feedback
+                    iter_ctrl = self.scheduler.iteration_controller
+                    if hasattr(iter_ctrl, "apply_feedback"):
+                        iter_ctrl.apply_feedback(request, item.tensor)
+                    self.scheduler.resume_request(req_id)
+                except Exception:
+                    logger.exception("Feedback resume failed rid=%s", req_id)
 
     async def _update_cache(self, scheduler_output: SchedulerOutput, model_output: Any):
         """Update cache with fresh model outputs."""

@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import Iterable, Optional, Tuple
 
 import torch
+from sglang.srt.layers.logits_processor import LogitsProcessorOutput
 from sglang.srt.model_loader.weight_utils import default_weight_loader
 from sglang.srt.utils import add_prefix
 from torch import nn
@@ -37,11 +38,23 @@ from sglang_omni.vendor.sglang.layers import (
     should_use_flashinfer_cutlass_moe_fp4_allgather,
     top_k_top_p_sampling_from_probs,
 )
+from sglang_omni.vendor.sglang.models import apply_qk_norm
 from sglang_omni.vendor.sglang.utils import make_layers
 
 # ---------------------------------------------------------------------------
 # Common building blocks
 # ---------------------------------------------------------------------------
+
+
+def _repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
+    """Repeat KV heads to match the number of query heads."""
+    batch, num_kv_heads, seq_len, head_dim = hidden_states.shape
+    if n_rep == 1:
+        return hidden_states
+    hidden_states = hidden_states[:, :, None, :, :].expand(
+        batch, num_kv_heads, n_rep, seq_len, head_dim
+    )
+    return hidden_states.reshape(batch, num_kv_heads * n_rep, seq_len, head_dim)
 
 
 class ResizeMLP(nn.Module):
@@ -308,6 +321,9 @@ class Qwen3OmniMoeTalkerTextModel(nn.Module):
         self.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.layers_to_capture = []
 
+    def get_input_embeddings(self):
+        return self.codec_embedding
+
     def forward(
         self,
         input_ids: torch.Tensor,
@@ -444,14 +460,23 @@ class Qwen3OmniMoeTalkerCodePredictor(nn.Module):
         Forward through the code predictor (matches vLLM-Omni's mtp_block pattern).
 
         Args:
-            inputs_embeds: [batch, seq_len, hidden_size]
+            inputs_embeds: [batch, seq_len, hidden_size] or [total_tokens, hidden_size]
             positions: [total_tokens] position indices
-            forward_batch: SGLang's forward batch info
+            forward_batch: SGLang's forward batch info (None for direct call)
 
         Returns:
-            hidden_states: [batch, seq_len, hidden_size] - final hidden states
+            hidden_states: same shape as inputs_embeds
         """
-        hidden_states = inputs_embeds
+        if forward_batch is None:
+            return self._forward_direct(inputs_embeds=inputs_embeds, positions=positions)
+
+        # SGLang layers expect 2D [total_tokens, hidden]; reshape if 3D
+        needs_reshape = inputs_embeds.ndim == 3
+        if needs_reshape:
+            batch_size, seq_len, hidden_size = inputs_embeds.shape
+            hidden_states = inputs_embeds.reshape(-1, hidden_size)
+        else:
+            hidden_states = inputs_embeds
 
         for layer in self.model.layers:
             # Pre-norm self-attention with residual
@@ -472,7 +497,127 @@ class Qwen3OmniMoeTalkerCodePredictor(nn.Module):
 
         # Final norm
         hidden_states = self.model.norm(hidden_states)
+
+        if needs_reshape:
+            hidden_states = hidden_states.reshape(batch_size, seq_len, -1)
         return hidden_states
+
+    def _forward_direct(
+        self,
+        inputs_embeds: torch.Tensor,
+        positions: torch.Tensor,
+    ) -> torch.Tensor:
+        """Run the code predictor without SGLang runtime state.
+
+        The streaming code predictor executor invokes this model directly, so there is
+        no `ForwardBatch` and no KV-cache backend. Fall back to a small eager causal
+        attention path that reuses the loaded SGLang weights.
+        """
+        needs_reshape = inputs_embeds.ndim == 3
+        if needs_reshape:
+            hidden_states = inputs_embeds
+        else:
+            hidden_states = inputs_embeds.unsqueeze(0)
+
+        batch_size, seq_len, hidden_size = hidden_states.shape
+        flat_positions = self._flatten_positions(
+            positions=positions,
+            batch_size=batch_size,
+            seq_len=seq_len,
+            device=hidden_states.device,
+        )
+
+        for layer in self.model.layers:
+            residual = hidden_states
+            normed = layer.input_layernorm(hidden_states.reshape(-1, hidden_size))
+            normed = normed.reshape(batch_size, seq_len, hidden_size)
+            attn_out = self._direct_self_attention(
+                attn=layer.self_attn,
+                hidden_states=normed,
+                positions=flat_positions,
+            )
+            hidden_states = residual + attn_out
+
+            residual = hidden_states
+            normed = layer.post_attention_layernorm(hidden_states.reshape(-1, hidden_size))
+            mlp_out = layer.mlp(normed).reshape(batch_size, seq_len, hidden_size)
+            hidden_states = residual + mlp_out
+
+        hidden_states = self.model.norm(hidden_states.reshape(-1, hidden_size))
+        hidden_states = hidden_states.reshape(batch_size, seq_len, hidden_size)
+        if needs_reshape:
+            return hidden_states
+        return hidden_states.squeeze(0)
+
+    def _flatten_positions(
+        self,
+        *,
+        positions: torch.Tensor,
+        batch_size: int,
+        seq_len: int,
+        device: torch.device,
+    ) -> torch.Tensor:
+        if positions.ndim == 1:
+            if positions.numel() == seq_len and batch_size > 1:
+                positions = positions.unsqueeze(0).expand(batch_size, -1)
+            elif positions.numel() != batch_size * seq_len:
+                raise ValueError(
+                    f"Unexpected positions shape {tuple(positions.shape)} for "
+                    f"batch_size={batch_size}, seq_len={seq_len}"
+                )
+        elif positions.ndim == 2:
+            if tuple(positions.shape) != (batch_size, seq_len):
+                raise ValueError(
+                    f"Unexpected positions shape {tuple(positions.shape)} for "
+                    f"batch_size={batch_size}, seq_len={seq_len}"
+                )
+        else:
+            raise ValueError(f"Unsupported positions rank: {positions.ndim}")
+        return positions.to(device=device, dtype=torch.long).reshape(-1)
+
+    def _direct_self_attention(
+        self,
+        *,
+        attn: Qwen3OmniMoeThinkerTextAttention,
+        hidden_states: torch.Tensor,
+        positions: torch.Tensor,
+    ) -> torch.Tensor:
+        batch_size, seq_len, hidden_size = hidden_states.shape
+        flat_hidden = hidden_states.reshape(-1, hidden_size)
+
+        qkv, _ = attn.qkv_proj(flat_hidden)
+        q, k, v = qkv.split([attn.q_size, attn.kv_size, attn.kv_size], dim=-1)
+        q, k = apply_qk_norm(
+            q=q,
+            k=k,
+            q_norm=attn.q_norm,
+            k_norm=attn.k_norm,
+            head_dim=attn.head_dim,
+            alt_stream=attn.alt_stream,
+        )
+        q, k = attn.rotary_emb(positions, q, k, fused_set_kv_buffer_arg=None)
+
+        q = q.reshape(batch_size, seq_len, attn.num_heads, attn.head_dim).transpose(1, 2)
+        k = k.reshape(batch_size, seq_len, attn.num_kv_heads, attn.head_dim).transpose(1, 2)
+        v = v.reshape(batch_size, seq_len, attn.num_kv_heads, attn.head_dim).transpose(1, 2)
+
+        num_kv_groups = attn.num_heads // attn.num_kv_heads
+        k = _repeat_kv(k, num_kv_groups)
+        v = _repeat_kv(v, num_kv_groups)
+
+        attn_weights = torch.matmul(q, k.transpose(2, 3)) * attn.scaling
+        causal_mask = torch.triu(
+            torch.ones(seq_len, seq_len, device=attn_weights.device, dtype=torch.bool),
+            diagonal=1,
+        )
+        attn_weights = attn_weights.masked_fill(causal_mask, float("-inf"))
+        attn_weights = torch.softmax(attn_weights, dim=-1, dtype=torch.float32).to(q.dtype)
+        attn_output = torch.matmul(attn_weights, v)
+        attn_output = attn_output.transpose(1, 2).reshape(
+            batch_size * seq_len, attn.num_heads * attn.head_dim
+        )
+        attn_output, _ = attn.o_proj(attn_output)
+        return attn_output.reshape(batch_size, seq_len, hidden_size)
 
 
 # ---------------------------------------------------------------------------
@@ -485,11 +630,17 @@ class Qwen3OmniTalker(nn.Module):
 
     def __init__(
         self,
-        config: Qwen3OmniMoeTalkerConfig,
+        config,
         quant_config: Optional[QuantizationConfig] = None,
         prefix: str = "",
     ):
         super().__init__()
+        # SGLang passes the top-level HF config; extract the talker sub-config
+        if not isinstance(config, Qwen3OmniMoeTalkerConfig):
+            if hasattr(config, "talker_config"):
+                config = config.talker_config
+            else:
+                config = Qwen3OmniMoeTalkerConfig()
         self.config = config
 
         # Projection MLPs (thinker hidden -> talker hidden)
@@ -527,6 +678,14 @@ class Qwen3OmniTalker(nn.Module):
             prefix=add_prefix("code_predictor", prefix),
         )
 
+        # LogitsProcessor for SGLang pipeline integration
+        from sglang.srt.layers.logits_processor import LogitsProcessor as SGLangLogitsProcessor
+
+        self.logits_processor = SGLangLogitsProcessor(config.text_config)
+
+    def get_input_embeddings(self):
+        return self.model.get_input_embeddings()
+
     def prepare_input_embeds(
         self,
         thinker_embeds: Optional[torch.Tensor] = None,
@@ -560,31 +719,94 @@ class Qwen3OmniTalker(nn.Module):
             output[text_mask] = self.text_projection(thinker_embeds[text_mask])
         return output
 
+    @torch.no_grad()
     def forward(
         self,
         input_ids: torch.Tensor,
         positions: torch.Tensor,
         forward_batch: ForwardBatch,
-        inputs_embeds: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
+        input_embeds: Optional[torch.Tensor] = None,
+        input_deepstack_embeds: Optional[torch.Tensor] = None,
+        input_deepstack_mask: Optional[torch.Tensor] = None,
+        input_embeds_are_projected: bool = False,
+    ):
         """Forward pass through the talker MoE backbone.
 
+        When input_embeds is provided (prefill with thinker hidden states),
+        project them via prepare_input_embeds before running the backbone.
+
         Args:
-            input_ids: codec token ids (used when inputs_embeds is None)
+            input_ids: codec token ids (used during decode)
             positions: position indices
             forward_batch: SGLang's forward batch info
-            inputs_embeds: pre-computed input embeddings (from prepare_input_embeds)
+            input_embeds: thinker hidden states [total_tokens, thinker_hidden_size]
+                          (provided by SGLang when Req.input_embeds is set)
+            input_deepstack_embeds: optional layer-N thinker hidden states
+            input_deepstack_mask: positions that should use hidden_projection
+            input_embeds_are_projected: whether `input_embeds` is already in talker space
 
         Returns:
-            hidden_states from the talker backbone
+            LogitsProcessorOutput with codec logits
         """
+        if input_embeds is not None and not input_embeds_are_projected:
+            # Prefill: project thinker hidden states → talker dimension
+            deepstack_hidden = input_deepstack_embeds
+            deepstack_mask = input_deepstack_mask
+            if deepstack_hidden is not None and deepstack_mask is not None:
+                input_embeds = self.prepare_input_embeds(
+                    thinker_embeds=input_embeds,
+                    thinker_hidden_states=deepstack_hidden,
+                    is_multimodal_mask=deepstack_mask,
+                )
+            else:
+                input_embeds = self.prepare_input_embeds(thinker_embeds=input_embeds)
+
         hidden_states = self.model(
             input_ids=input_ids,
             positions=positions,
             forward_batch=forward_batch,
-            input_embeds=inputs_embeds,
+            input_embeds=input_embeds,
         )
-        return hidden_states
+        if forward_batch.forward_mode.is_extend() and input_embeds is not None:
+            return self._manual_extend_logits(hidden_states, forward_batch)
+        return self.logits_processor(
+            input_ids, hidden_states, self.codec_head, forward_batch
+        )
+
+    def _manual_extend_logits(
+        self,
+        hidden_states: torch.Tensor,
+        forward_batch: ForwardBatch,
+    ) -> LogitsProcessorOutput:
+        """Compute next-token logits for talker prefill without LogitsProcessor.
+
+        The projected-prompt prefill path only needs next-token logits. Using a
+        tiny local implementation avoids the generic SGLang logits processor path
+        that currently fails on this extend batch.
+        """
+        last_index = self._extend_last_index(forward_batch, hidden_states.device)
+        pruned_states = hidden_states[last_index]
+        next_token_logits, _ = self.codec_head(pruned_states)
+        return LogitsProcessorOutput(
+            next_token_logits=next_token_logits,
+            hidden_states=pruned_states,
+        )
+
+    def _extend_last_index(
+        self,
+        forward_batch: ForwardBatch,
+        device: torch.device,
+    ) -> torch.Tensor:
+        extend_seq_lens = getattr(forward_batch, "extend_seq_lens", None)
+        if extend_seq_lens is None:
+            return torch.tensor([forward_batch.input_ids.shape[0] - 1], device=device)
+
+        if forward_batch.padded_static_len is not None and forward_batch.padded_static_len >= 0:
+            idx = torch.arange(len(extend_seq_lens), device=device, dtype=extend_seq_lens.dtype)
+            return idx * forward_batch.padded_static_len + extend_seq_lens.to(device=device) - 1
+
+        seq_lens = extend_seq_lens.to(device=device)
+        return torch.cumsum(seq_lens, dim=0) - 1
 
     def compute_logits(self, hidden_states: torch.Tensor) -> torch.Tensor:
         """Compute layer-0 codec logits."""
@@ -645,11 +867,15 @@ class Qwen3OmniTalker(nn.Module):
                 probs = torch.softmax(logits[:, -1, :], dim=-1)
                 code = top_k_top_p_sampling_from_probs(
                     probs, top_k=50, top_p=0.8
-                )  # [batch, 1]
+                )
+                if code.ndim == 1:
+                    code = code.unsqueeze(-1)
                 pos_codes.append(code)
 
                 # Append new embedding to growing sequence
                 new_embed = self.code_predictor.model.codec_embedding[layer_idx](code)
+                if new_embed.ndim == 2:
+                    new_embed = new_embed.unsqueeze(1)
                 current_input = torch.cat([current_input, new_embed], dim=1)
 
             # Stack all layers for this position: [batch, num_code_groups, 1]
@@ -696,10 +922,11 @@ class Qwen3OmniTalker(nn.Module):
         )
 
         for name, loaded_weight in weights:
-            # Strip "talker." prefix if present
-            if not name.startswith("talker."):
+            # Support both monolithic (talker.xxx) and split (xxx) checkpoints
+            if name.startswith("talker."):
+                name = name[len("talker."):]
+            elif "." in name and name.split(".")[0] in ("thinker", "code2wav"):
                 continue
-            name = name[len("talker.") :]
 
             # 1. Handle stacked parameters (qkv_proj, gate_up_proj)
             handled = False

@@ -1,6 +1,7 @@
 import logging
 import math
 import re
+from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import torch
@@ -230,6 +231,8 @@ class Qwen3OmniMoeThinkerTextAttention(nn.Module):
             and self.compatible_with_fused_qk_norm_rope
         )
         self._used_fused_qk_norm_rope_last_call = False
+        self._used_fused_set_kv_buffer_last_call = False
+        self._sglang_omni_disable_fused_set_kv = False
 
         self.attn = RadixAttention(
             self.num_heads,
@@ -295,6 +298,11 @@ class Qwen3OmniMoeThinkerTextAttention(nn.Module):
                 head_dim=self.head_dim,
                 alt_stream=self.alt_stream,
             )
+            use_fused_set_kv_buffer = (
+                enable_fused_set_kv_buffer(forward_batch)
+                and self.compatible_with_fused_kv_buffer
+                and not getattr(self, "_sglang_omni_disable_fused_set_kv", False)
+            )
             q, k = self.rotary_emb(
                 positions,
                 q,
@@ -305,12 +313,14 @@ class Qwen3OmniMoeThinkerTextAttention(nn.Module):
                         layer=self.attn,
                         forward_batch=forward_batch,
                     )
-                    if enable_fused_set_kv_buffer(forward_batch)
-                    and self.compatible_with_fused_kv_buffer
+                    if use_fused_set_kv_buffer
                     else None
                 ),
             )
             self._used_fused_qk_norm_rope_last_call = False
+            self._used_fused_set_kv_buffer_last_call = use_fused_set_kv_buffer
+        if use_fused:
+            self._used_fused_set_kv_buffer_last_call = False
         return q, k, v
 
     def forward_prepare(
@@ -321,12 +331,11 @@ class Qwen3OmniMoeThinkerTextAttention(nn.Module):
     ):
         if hidden_states.shape[0] == 0:
             return hidden_states, forward_batch, None
-        if forward_batch.forward_mode.is_extend():
-            return self.forward_prepare_native(
-                positions=positions,
-                hidden_states=hidden_states,
-                forward_batch=forward_batch,
-            )
+        return self.forward_prepare_native(
+            positions=positions,
+            hidden_states=hidden_states,
+            forward_batch=forward_batch,
+        )
 
     def forward_core(self, intermediate_state):
         hidden_states, forward_batch, inner_state = intermediate_state
@@ -336,10 +345,7 @@ class Qwen3OmniMoeThinkerTextAttention(nn.Module):
         q, k, v, fb = inner_state
 
         must_save_kv = self._used_fused_qk_norm_rope_last_call
-        save_kv_cache = must_save_kv or not (
-            enable_fused_set_kv_buffer(forward_batch)
-            and self.compatible_with_fused_kv_buffer
-        )
+        save_kv_cache = must_save_kv or not self._used_fused_set_kv_buffer_last_call
         attn_output = self.attn(
             q,
             k,
@@ -348,6 +354,106 @@ class Qwen3OmniMoeThinkerTextAttention(nn.Module):
             save_kv_cache=save_kv_cache,
         )
         output, _ = self.o_proj(attn_output)
+        debug_ctx = getattr(self, "_sglang_omni_debug_capture_attn", None)
+        if debug_ctx:
+            try:
+                row_indices = debug_ctx.get("row_indices", [])
+                request_ids = debug_ctx.get("request_ids", [])
+                generation_steps = debug_ctx.get("generation_steps", [])
+                decode_batch_indices = debug_ctx.get("decode_batch_indices", [])
+                input_tokens = debug_ctx.get("input_tokens", [])
+                positions_list = debug_ctx.get("positions", [])
+                dump_paths = debug_ctx.get("dump_paths", [])
+                key_buffer, value_buffer = fb.token_to_kv_pool.get_kv_buffer(
+                    self.attn.layer_id
+                )
+                req_to_token = fb.req_to_token_pool.req_to_token
+                for i, row_idx in enumerate(row_indices):
+                    if row_idx >= attn_output.shape[0] or row_idx >= output.shape[0]:
+                        continue
+                    req_pool_idx = (
+                        int(fb.req_pool_indices[row_idx].item())
+                        if row_idx < fb.req_pool_indices.shape[0]
+                        else None
+                    )
+                    seq_len = (
+                        int(fb.seq_lens[row_idx].item())
+                        if row_idx < fb.seq_lens.shape[0]
+                        else None
+                    )
+                    current_cache_loc = (
+                        int(fb.out_cache_loc[row_idx].item())
+                        if getattr(fb, "out_cache_loc", None) is not None
+                        and row_idx < fb.out_cache_loc.shape[0]
+                        else None
+                    )
+                    kv_indices = None
+                    cache_k = None
+                    cache_v = None
+                    current_cache_k = None
+                    current_cache_v = None
+                    if req_pool_idx is not None and seq_len is not None:
+                        kv_indices = req_to_token[req_pool_idx, :seq_len].to(
+                            dtype=torch.int64
+                        )
+                        cache_k = key_buffer[kv_indices]
+                        cache_v = value_buffer[kv_indices]
+                    if current_cache_loc is not None:
+                        current_cache_k = key_buffer[current_cache_loc]
+                        current_cache_v = value_buffer[current_cache_loc]
+                    dump = {
+                        "request_id": request_ids[i] if i < len(request_ids) else None,
+                        "generation_steps": generation_steps[i]
+                        if i < len(generation_steps)
+                        else None,
+                        "decode_batch_idx": decode_batch_indices[i]
+                        if i < len(decode_batch_indices)
+                        else None,
+                        "input_token": input_tokens[i] if i < len(input_tokens) else None,
+                        "positions": positions_list[i] if i < len(positions_list) else None,
+                        "used_fused_qk_norm_rope": self._used_fused_qk_norm_rope_last_call,
+                        "used_fused_set_kv_buffer": self._used_fused_set_kv_buffer_last_call,
+                        "disable_fused_set_kv_flag": getattr(
+                            self, "_sglang_omni_disable_fused_set_kv", False
+                        ),
+                        "req_pool_idx": req_pool_idx,
+                        "seq_len": seq_len,
+                        "current_cache_loc": current_cache_loc,
+                        "kv_indices": kv_indices.detach().cpu()
+                        if isinstance(kv_indices, torch.Tensor)
+                        else None,
+                        "current_k_after_rope": k[row_idx].detach().cpu(),
+                        "current_v": v[row_idx].detach().cpu(),
+                        "current_cache_k": current_cache_k.detach().cpu()
+                        if isinstance(current_cache_k, torch.Tensor)
+                        else None,
+                        "current_cache_v": current_cache_v.detach().cpu()
+                        if isinstance(current_cache_v, torch.Tensor)
+                        else None,
+                        "cache_k": cache_k.detach().cpu()
+                        if isinstance(cache_k, torch.Tensor)
+                        else None,
+                        "cache_v": cache_v.detach().cpu()
+                        if isinstance(cache_v, torch.Tensor)
+                        else None,
+                        "attn_output_before_o_proj": attn_output[row_idx].detach().cpu(),
+                        "attn_output_after_o_proj": output[row_idx].detach().cpu(),
+                    }
+                    dump_path = Path(
+                        dump_paths[i]
+                        if i < len(dump_paths)
+                        else f"/tmp/talker_decode_layer0_attn_{request_ids[i]}.pt"
+                    )
+                    torch.save(dump, dump_path)
+                    logger.info(
+                        "Talker decode layer0 attn dump saved rid=%s path=%s",
+                        dump.get("request_id"),
+                        dump_path,
+                    )
+            except Exception:
+                logger.exception("Failed to dump talker decode layer0 attention debug")
+            finally:
+                self._sglang_omni_debug_capture_attn = None
         return output
 
     def forward(
@@ -645,6 +751,11 @@ class Qwen3OmniMoeThinkerTextModel(nn.Module):
 
         residual = None
         aux_hidden_states = []
+
+        # Capture word embeddings (before any transformer layer) if requested
+        if "embed" in self.layers_to_capture:
+            aux_hidden_states.append(("embed", hidden_states.clone()))
+
         for layer_idx in range(self.start_layer, self.end_layer):
             layer = self.layers[layer_idx]
             hidden_states, residual = layer(

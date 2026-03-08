@@ -246,6 +246,50 @@ class ProfilerStartMessage:
 
 
 @dataclass
+class ChunkReadyMessage:
+    """Notify downstream stage that a streaming chunk is ready.
+
+    Used for per-step hidden state transfer (e.g., Thinker → Talker).
+    Unlike DataReadyMessage (one per request), ChunkReadyMessage is sent
+    multiple times per request — once per decode step.
+    """
+
+    request_id: str
+    from_stage: str
+    to_stage: str
+    chunk_id: int  # monotonically increasing per request
+    relay_metadata: dict[str, Any]  # for read_blob on receiver side
+    is_chunks_done: bool = False  # no more chunks for this request
+    error: str | None = None  # error message
+
+    def to_dict(self) -> dict[str, Any]:
+        d = {
+            "type": "chunk_ready",
+            "request_id": self.request_id,
+            "from_stage": self.from_stage,
+            "to_stage": self.to_stage,
+            "chunk_id": self.chunk_id,
+            "relay_metadata": self.relay_metadata,
+            "is_chunks_done": self.is_chunks_done,
+        }
+        if self.error is not None:
+            d["error"] = self.error
+        return d
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "ChunkReadyMessage":
+        return cls(
+            request_id=data["request_id"],
+            from_stage=data["from_stage"],
+            to_stage=data["to_stage"],
+            chunk_id=data["chunk_id"],
+            relay_metadata=data["relay_metadata"],
+            is_chunks_done=data.get("is_chunks_done", False),
+            error=data.get("error"),
+        )
+
+
+@dataclass
 class ProfilerStopMessage:
     """Profiler stop for an entry."""
 
@@ -269,12 +313,15 @@ def parse_message(
     | SubmitMessage
     | ShutdownMessage
     | ProfilerStartMessage
+    | ChunkReadyMessage
     | ProfilerStopMessage
 ):
     """Parse a dict into the appropriate message type."""
     msg_type = d.get("type")
     if msg_type == "data_ready":
         return DataReadyMessage.from_dict(d)
+    elif msg_type == "chunk_ready":
+        return ChunkReadyMessage.from_dict(d)
     elif msg_type == "abort":
         return AbortMessage.from_dict(d)
     elif msg_type == "complete":
