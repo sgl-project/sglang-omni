@@ -111,7 +111,7 @@ It also includes `sglang-omni` extensions such as:
 
 ### Conversion into `GenerateRequest`
 
-`_build_chat_generate_request()` in `openai_api.py:361` is the key translation point. It:
+`_build_chat_generate_request()` in `openai_api.py` is the key translation point. It:
 
 - normalizes stop sequences
 - builds `SamplingParams`
