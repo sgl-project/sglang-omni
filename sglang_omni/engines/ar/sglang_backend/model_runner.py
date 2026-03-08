@@ -7,7 +7,7 @@ from sglang.srt.model_executor.model_runner import ModelRunner
 from sglang.srt.server_args import PortArgs, ServerArgs
 
 
-class SGLModelRunner(ModelRunner):
+class SGLangModelRunner(ModelRunner):
     """Thin wrapper to bootstrap SGLang ModelRunner from backend args."""
 
     def __init__(

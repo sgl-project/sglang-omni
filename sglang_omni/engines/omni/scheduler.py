@@ -77,6 +77,11 @@ class Scheduler:
         self.waiting.append(request_id)
         # Note: Future created lazily in get_result() to avoid event loop issues
 
+        logger.info(
+            "sched.add_request id=%s waiting=%d running=%d total=%d",
+            request_id, len(self.waiting), len(self.running), len(self.requests)
+        )
+
     def abort_request(self, request_id: str) -> None:
         """Abort a request."""
         request = self.requests.get(request_id)
@@ -103,6 +108,8 @@ class Scheduler:
             raise KeyError(f"Unknown request: {request_id}")
         loop = asyncio.get_running_loop()
 
+        logger.info("sched.get_result wait id=%s", request_id)
+
         while True:
             # If already finished or aborted, resolve immediately.
             request = self.requests[request_id]
@@ -116,6 +123,7 @@ class Scheduler:
             if future is None or future.cancelled():
                 future = loop.create_future()
                 self._futures[request_id] = future
+                logger.info("sched.get_result create_future id=%s", request_id)
 
             # Protect shared request future from caller cancellation
             # (e.g. asyncio.wait_for timeout), so one cancelled waiter does not
@@ -167,11 +175,18 @@ class Scheduler:
         if not selected:
             return None
 
+        moved = 0
         for request in selected:
             if request.request_id in self.waiting:
                 self.waiting.remove(request.request_id)
                 self.running.append(request.request_id)
                 request.status = SchedulerStatus.RUNNING
+                moved += 1
+            logger.info(
+                "sched.schedule step=%d moved_to_running=%d waiting=%d running=%d",
+                self._step_id, moved, len(self.waiting), len(self.running)
+            )
+
 
         batch_data = self.batch_planner.build_batch(selected)
 

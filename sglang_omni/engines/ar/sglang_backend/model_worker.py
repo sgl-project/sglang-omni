@@ -5,7 +5,7 @@ from sglang.srt.managers.scheduler import GenerationBatchResult
 from sglang.srt.server_args import ServerArgs
 from sglang.srt.utils import broadcast_pyobj, set_random_seed
 
-from .model_runner import SGLModelRunner
+from .model_runner import SGLangModelRunner
 
 
 @dataclass
@@ -52,7 +52,7 @@ class ModelWorker:
         )
 
     def _init_model_runner(self):
-        self.model_runner = SGLModelRunner(
+        self.model_runner = SGLangModelRunner(
             model_config=self.model_config,
             server_args=self.server_args,
             gpu_id=self.gpu_id,
