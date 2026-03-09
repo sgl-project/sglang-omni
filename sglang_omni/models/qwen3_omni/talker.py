@@ -7,6 +7,8 @@ Simplified implementation:
 
 from __future__ import annotations
 
+import logging
+from pathlib import Path
 from typing import Iterable, Optional, Tuple
 
 import torch
@@ -40,6 +42,9 @@ from sglang_omni.vendor.sglang.layers import (
 )
 from sglang_omni.vendor.sglang.models import apply_qk_norm
 from sglang_omni.vendor.sglang.utils import make_layers
+from sglang.srt.layers.moe.fused_moe_native import moe_forward_native
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Common building blocks
@@ -217,19 +222,92 @@ class Qwen3OmniMoeTalkerSparseMoeBlock(Qwen3OmniMoeThinkerTextSparseMoeBlock):
         use_reduce_scatter: bool = False,
     ) -> torch.Tensor:
         num_tokens, hidden_dim = hidden_states.shape
+        debug_ctx = getattr(self, "_sglang_omni_debug_capture_mlp", None)
+        pre_gate_rows = {}
+        if debug_ctx:
+            for row_idx in debug_ctx.get("row_indices", []):
+                if 0 <= row_idx < hidden_states.shape[0]:
+                    pre_gate_rows[row_idx] = hidden_states[row_idx].detach().cpu().clone()
 
-        # --- Routed experts (no all-reduce yet) ---
-        router_logits, _ = self.gate(hidden_states)
-        topk_output = self.topk(hidden_states, router_logits)
-        routed_output = self.experts(hidden_states, topk_output)
-
-        # --- Shared expert (no all-reduce, reduce_results=False) ---
+        # Shared branch must consume the original MLP input before routed experts.
+        # The fused MoE implementation mutates `hidden_states` in-place.
         shared_output = self.shared_expert(hidden_states)
         shared_gate, _ = self.shared_expert_gate(hidden_states)
         shared_output = shared_output * torch.sigmoid(shared_gate)
 
+        # --- Routed experts (no all-reduce yet) ---
+        router_logits, _ = self.gate(hidden_states)
+        router_logits_pre_topk = router_logits.detach().clone()
+        topk_output = self.topk(hidden_states, router_logits)
+        # Talker parity depends on the native MoE path here. The fused routed-expert
+        # path diverges from HF on exact layer inputs, while the native path matches.
+        routed_output = moe_forward_native(
+            self.experts,
+            hidden_states,
+            topk_output,
+            self.experts.moe_runner_config,
+        )
+
         # --- Combine then unified all-reduce ---
         final_hidden_states = routed_output + shared_output
+        if debug_ctx:
+            try:
+                row_indices = debug_ctx.get("row_indices", [])
+                request_ids = debug_ctx.get("request_ids", [])
+                generation_steps = debug_ctx.get("generation_steps", [])
+                decode_batch_indices = debug_ctx.get("decode_batch_indices", [])
+                input_tokens = debug_ctx.get("input_tokens", [])
+                dump_paths = debug_ctx.get("dump_paths", [])
+                for i, row_idx in enumerate(row_indices):
+                    if row_idx >= hidden_states.shape[0] or row_idx >= final_hidden_states.shape[0]:
+                        continue
+                    dump = {
+                        "request_id": request_ids[i] if i < len(request_ids) else None,
+                        "generation_steps": generation_steps[i]
+                        if i < len(generation_steps)
+                        else None,
+                        "decode_batch_idx": decode_batch_indices[i]
+                        if i < len(decode_batch_indices)
+                        else None,
+                        "input_token": input_tokens[i] if i < len(input_tokens) else None,
+                        "mlp_input_pre_gate": pre_gate_rows.get(row_idx),
+                        "mlp_input": pre_gate_rows.get(row_idx),
+                        "mlp_input_post_experts": hidden_states[row_idx].detach().cpu(),
+                        "router_logits_pre_topk": router_logits_pre_topk[row_idx].detach().cpu(),
+                        "router_logits": router_logits[row_idx].detach().cpu(),
+                        "gate_weight": self.gate.weight.detach().cpu(),
+                        "routed_output": routed_output[row_idx].detach().cpu(),
+                        "shared_output": shared_output[row_idx].detach().cpu(),
+                        "shared_gate": shared_gate[row_idx].detach().cpu(),
+                        "shared_gate_weight": self.shared_expert_gate.weight.detach().cpu(),
+                        "mlp_output_before_allreduce": final_hidden_states[row_idx].detach().cpu(),
+                        "topk_ids": (
+                            topk_output.topk_ids[row_idx].detach().cpu()
+                            if hasattr(topk_output, "topk_ids")
+                            else None
+                        ),
+                        "topk_weights": (
+                            topk_output.topk_weights[row_idx].detach().cpu()
+                            if hasattr(topk_output, "topk_weights")
+                            else None
+                        ),
+                    }
+                    dump_path = Path(
+                        dump_paths[i]
+                        if i < len(dump_paths)
+                        else f"/tmp/talker_layer{self.layer_id}_mlp_{request_ids[i]}.pt"
+                    )
+                    torch.save(dump, dump_path)
+                    logger.info(
+                        "Talker decode layer%s mlp dump saved rid=%s path=%s",
+                        self.layer_id,
+                        dump.get("request_id"),
+                        dump_path,
+                    )
+            except Exception:
+                logger.exception("Failed to dump talker decode layer%s mlp debug", self.layer_id)
+            finally:
+                self._sglang_omni_debug_capture_mlp = None
 
         if (
             self.tp_size > 1
@@ -337,6 +415,14 @@ class Qwen3OmniMoeTalkerTextModel(nn.Module):
             hidden_states = input_embeds
 
         residual = None
+        capture_layers = set(self.layers_to_capture or [])
+        aux_hidden_states = []
+
+        # Match the hidden-capture contract used by the compare tooling:
+        # layer 0 is the embedding output (input to the first transformer layer).
+        if 0 in capture_layers or "embed" in capture_layers:
+            aux_hidden_states.append(hidden_states.clone())
+
         for i in range(self.start_layer, self.end_layer):
             layer = self.layers[i]
             hidden_states, residual = layer(
@@ -344,6 +430,11 @@ class Qwen3OmniMoeTalkerTextModel(nn.Module):
                 hidden_states=hidden_states,
                 forward_batch=forward_batch,
                 residual=residual,
+                captured_last_layer_outputs=(
+                    aux_hidden_states
+                    if i in capture_layers and i != 0
+                    else None
+                ),
             )
 
         if hidden_states.shape[0] != 0:
@@ -352,6 +443,8 @@ class Qwen3OmniMoeTalkerTextModel(nn.Module):
             else:
                 hidden_states, _ = self.norm(hidden_states, residual)
 
+        if aux_hidden_states:
+            return hidden_states, aux_hidden_states
         return hidden_states
 
 

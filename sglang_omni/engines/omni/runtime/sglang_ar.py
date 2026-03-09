@@ -337,8 +337,10 @@ class SGLangOutputProcessor:
 
         # Extract hidden states if configured and available
         hidden_states_dict = None
+        stream_hidden_states = None
         if self._capture_hidden:
             hidden_states_dict = self._extract_hidden_states(model_output)
+            stream_hidden_states = self._extract_stream_hidden_states(model_output)
 
         outputs = {}
         for i, sched_req in enumerate(scheduler_output.requests):
@@ -352,6 +354,12 @@ class SGLangOutputProcessor:
                     for key, tensor in hidden_states_dict.items():
                         per_req[key] = tensor[i] if tensor.ndim >= 2 else tensor
                     extra = {"hidden_states": per_req}
+                    if stream_hidden_states is not None:
+                        extra["stream_hidden_states"] = (
+                            stream_hidden_states[i]
+                            if stream_hidden_states.ndim >= 2
+                            else stream_hidden_states
+                        )
             outputs[sched_req.request_id] = RequestOutput(
                 request_id=sched_req.request_id,
                 data=token_id,
@@ -394,6 +402,13 @@ class SGLangOutputProcessor:
         elif isinstance(raw_hidden, torch.Tensor):
             return {"_single": raw_hidden}
         return None
+
+    def _extract_stream_hidden_states(self, model_output: Any) -> torch.Tensor | None:
+        logits_output = getattr(model_output, "logits_output", None)
+        if logits_output is None:
+            return None
+        raw_hidden = getattr(logits_output, "hidden_states", None)
+        return raw_hidden if isinstance(raw_hidden, torch.Tensor) else None
 
 
 class SGLangIterationController:
@@ -529,6 +544,24 @@ class SGLangModelRunner:
         self._image_token_id = thinker_cfg.image_token_id
         self._video_token_id = thinker_cfg.video_token_id
         self._audio_token_id = thinker_cfg.audio_token_id
+        self._talker_layer_input_debug_handles: list[Any] = []
+        self._talker_layer_input_debug_state: dict[str, Any] | None = None
+
+    @staticmethod
+    def _parse_debug_layer_list(env_name: str) -> list[int]:
+        raw = os.environ.get(env_name)
+        if not raw:
+            return []
+        result = []
+        for part in raw.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            try:
+                result.append(int(part))
+            except ValueError:
+                continue
+        return result
 
     @staticmethod
     def _get_inner_model_components(model):
@@ -1131,6 +1164,67 @@ class SGLangModelRunner:
             request_summaries,
         )
 
+    def _dump_talker_decode_logits_debug(
+        self,
+        *,
+        scheduler_output: SchedulerOutput,
+        logits_output: Any,
+        raw_logits: torch.Tensor | None = None,
+    ) -> None:
+        if os.environ.get("SGLANG_OMNI_DUMP_TALKER_LOGITS") != "1":
+            return
+        logits = getattr(logits_output, "next_token_logits", None)
+        if logits is None or logits.ndim != 2 or logits.shape[0] == 0:
+            return
+        try:
+            max_step = max(
+                int(os.environ.get("SGLANG_OMNI_DUMP_TALKER_LOGITS_MAX_STEP", "4")),
+                0,
+            )
+        except ValueError:
+            max_step = 4
+        top_k = min(10, logits.shape[1])
+        for row_idx, sched_req in enumerate(scheduler_output.requests):
+            data = getattr(sched_req, "data", None)
+            generation_steps = int(getattr(data, "generation_steps", -1))
+            if generation_steps < 0 or generation_steps > max_step:
+                continue
+            processed = logits[row_idx].detach().cpu()
+            raw = None
+            if isinstance(raw_logits, torch.Tensor) and row_idx < raw_logits.shape[0]:
+                raw = raw_logits[row_idx].detach().cpu()
+            processed_values, processed_ids = torch.topk(processed.float(), k=top_k)
+            dump = {
+                "request_id": sched_req.request_id,
+                "generation_steps": generation_steps,
+                "raw_logits": raw,
+                "processed_logits": processed,
+                "processed_topk_ids": processed_ids.tolist(),
+                "processed_topk_scores": [float(v) for v in processed_values.tolist()],
+            }
+            if raw is not None:
+                raw_values, raw_ids = torch.topk(raw.float(), k=top_k)
+                dump["raw_topk_ids"] = raw_ids.tolist()
+                dump["raw_topk_scores"] = [float(v) for v in raw_values.tolist()]
+            dump_path = Path("/tmp") / (
+                f"talker_decode_logits_{sched_req.request_id}_step{generation_steps}.pt"
+            )
+            try:
+                torch.save(dump, dump_path)
+                logger.info(
+                    "Talker decode logits dump saved rid=%s step=%s path=%s topk=%s",
+                    sched_req.request_id,
+                    generation_steps,
+                    dump_path,
+                    dump["processed_topk_ids"],
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to dump talker decode logits for %s step=%s",
+                    sched_req.request_id,
+                    generation_steps,
+                )
+
     def _dump_talker_decode_layer0_qk_debug(
         self,
         *,
@@ -1143,10 +1237,19 @@ class SGLangModelRunner:
         if feedback_input_embeds is None or not self._is_talker_model:
             return
 
+        try:
+            max_step = max(
+                int(os.environ.get("SGLANG_OMNI_DUMP_TALKER_QK_MAX_STEP", "1")),
+                1,
+            )
+        except ValueError:
+            max_step = 1
+
         active = [
             sched_req
             for sched_req in scheduler_output.requests
-            if int(getattr(getattr(sched_req, "data", None), "generation_steps", -1)) <= 1
+            if int(getattr(getattr(sched_req, "data", None), "generation_steps", -1))
+            <= max_step
         ]
         if not active:
             return
@@ -1159,8 +1262,15 @@ class SGLangModelRunner:
         try:
             from sglang_omni.models.qwen3_omni.talker import apply_qk_norm
 
-            layer0 = text_model.layers[0]
-            attn = layer0.self_attn
+            try:
+                layer_idx = int(os.environ.get("SGLANG_OMNI_DUMP_TALKER_QK_LAYER", "0"))
+            except ValueError:
+                layer_idx = 0
+            if layer_idx < 0 or layer_idx >= len(text_model.layers):
+                return
+
+            layer = text_model.layers[layer_idx]
+            attn = layer.self_attn
             model_dtype = next(text_model.parameters()).dtype
             positions = getattr(forward_batch, "mrope_positions", None)
             if positions is None:
@@ -1172,8 +1282,8 @@ class SGLangModelRunner:
                 device=forward_batch.input_ids.device,
                 dtype=model_dtype,
             )
-            layer0_input_ln = layer0.input_layernorm(hidden_states)
-            qkv, _ = attn.qkv_proj(layer0_input_ln)
+            layer_input_ln = layer.input_layernorm(hidden_states)
+            qkv, _ = attn.qkv_proj(layer_input_ln)
             q, k, v = qkv.split([attn.q_size, attn.kv_size, attn.kv_size], dim=-1)
             q, k = apply_qk_norm(
                 q=q,
@@ -1193,7 +1303,7 @@ class SGLangModelRunner:
             for row_idx, sched_req in enumerate(scheduler_output.requests):
                 data = getattr(sched_req, "data", None)
                 generation_steps = int(getattr(data, "generation_steps", -1))
-                if generation_steps > 1:
+                if generation_steps > max_step:
                     continue
 
                 req = getattr(data, "req", None)
@@ -1215,18 +1325,22 @@ class SGLangModelRunner:
                         else row_positions
                     ),
                     "feedback_input_embeds": hidden_states[row_idx].detach().cpu(),
-                    "layer0_input_ln": layer0_input_ln[row_idx].detach().cpu(),
-                    "layer0_q_after_rope": q[row_idx].detach().cpu(),
-                    "layer0_k_after_rope": k[row_idx].detach().cpu(),
-                    "layer0_v": v[row_idx].detach().cpu(),
+                    f"layer{layer_idx}_input_ln": layer_input_ln[row_idx].detach().cpu(),
+                    f"layer{layer_idx}_q_after_rope": q[row_idx].detach().cpu(),
+                    f"layer{layer_idx}_k_after_rope": k[row_idx].detach().cpu(),
+                    f"layer{layer_idx}_v": v[row_idx].detach().cpu(),
                 }
                 dump_path = (
                     Path("/tmp")
-                    / f"talker_decode_layer0_qk_{sched_req.request_id}.pt"
+                    / (
+                        f"talker_decode_layer{layer_idx}_qk_{sched_req.request_id}_"
+                        f"step{generation_steps}.pt"
+                    )
                 )
                 torch.save(dump, dump_path)
                 logger.info(
-                    "Talker decode layer0 qk dump saved rid=%s path=%s",
+                    "Talker decode layer%s qk dump saved rid=%s path=%s",
+                    layer_idx,
                     sched_req.request_id,
                     dump_path,
                 )
@@ -1249,7 +1363,21 @@ class SGLangModelRunner:
         if text_model is None or not getattr(text_model, "layers", None):
             return
 
-        layer0_attn = text_model.layers[0].self_attn
+        try:
+            max_step = max(
+                int(os.environ.get("SGLANG_OMNI_DUMP_TALKER_ATTN_MAX_STEP", "1")),
+                1,
+            )
+        except ValueError:
+            max_step = 1
+        try:
+            layer_idx = int(os.environ.get("SGLANG_OMNI_DUMP_TALKER_ATTN_LAYER", "0"))
+        except ValueError:
+            layer_idx = 0
+        if layer_idx < 0 or layer_idx >= len(text_model.layers):
+            return
+
+        layer_attn = text_model.layers[layer_idx].self_attn
         row_indices: list[int] = []
         request_ids: list[str] = []
         generation_steps: list[int] = []
@@ -1266,7 +1394,7 @@ class SGLangModelRunner:
             data = getattr(sched_req, "data", None)
             req = getattr(data, "req", None)
             step = int(getattr(data, "generation_steps", -1))
-            if step > 1:
+            if step > max_step:
                 continue
             row_indices.append(row_idx)
             request_ids.append(sched_req.request_id)
@@ -1289,16 +1417,23 @@ class SGLangModelRunner:
                 pos_value = None
             positions.append(pos_value)
             dump_paths.append(
-                str(Path("/tmp") / f"talker_decode_layer0_attn_{sched_req.request_id}.pt")
+                str(
+                    Path("/tmp")
+                    / (
+                        f"talker_decode_layer{layer_idx}_attn_{sched_req.request_id}_"
+                        f"step{step}.pt"
+                    )
+                )
             )
 
         if not row_indices:
             return
 
         setattr(
-            layer0_attn,
+            layer_attn,
             "_sglang_omni_debug_capture_attn",
             {
+                "layer_idx": layer_idx,
                 "row_indices": row_indices,
                 "request_ids": request_ids,
                 "generation_steps": generation_steps,
@@ -1316,9 +1451,343 @@ class SGLangModelRunner:
         text_model = getattr(talker, "model", None)
         if text_model is None or not getattr(text_model, "layers", None):
             return
-        layer0_attn = text_model.layers[0].self_attn
-        if hasattr(layer0_attn, "_sglang_omni_debug_capture_attn"):
-            setattr(layer0_attn, "_sglang_omni_debug_capture_attn", None)
+        try:
+            layer_idx = int(os.environ.get("SGLANG_OMNI_DUMP_TALKER_ATTN_LAYER", "0"))
+        except ValueError:
+            layer_idx = 0
+        if layer_idx < 0 or layer_idx >= len(text_model.layers):
+            return
+        layer_attn = text_model.layers[layer_idx].self_attn
+        if hasattr(layer_attn, "_sglang_omni_debug_capture_attn"):
+            setattr(layer_attn, "_sglang_omni_debug_capture_attn", None)
+
+    def _set_talker_mlp_debug_context(
+        self,
+        *,
+        scheduler_output: SchedulerOutput,
+    ) -> None:
+        if os.environ.get("SGLANG_OMNI_DUMP_TALKER_MLP") != "1":
+            return
+        if not self._is_talker_model:
+            return
+        try:
+            max_step = max(
+                int(os.environ.get("SGLANG_OMNI_DUMP_TALKER_MLP_MAX_STEP", "1")),
+                1,
+            )
+        except ValueError:
+            max_step = 1
+
+        talker = self._inner_model
+        text_model = getattr(talker, "model", None)
+        if text_model is None or not getattr(text_model, "layers", None):
+            return
+        try:
+            layer_idx = int(os.environ.get("SGLANG_OMNI_DUMP_TALKER_MLP_LAYER", "0"))
+        except ValueError:
+            layer_idx = 0
+        if layer_idx < 0 or layer_idx >= len(text_model.layers):
+            return
+
+        row_indices = []
+        request_ids = []
+        generation_steps = []
+        decode_batch_indices = []
+        input_tokens = []
+        dump_paths = []
+        for row_idx, sched_req in enumerate(scheduler_output.requests):
+            data = getattr(sched_req, "data", None)
+            req = getattr(data, "req", None)
+            step = int(getattr(data, "generation_steps", -1))
+            if step > max_step:
+                continue
+            row_indices.append(row_idx)
+            request_ids.append(sched_req.request_id)
+            generation_steps.append(step)
+            decode_batch_indices.append(int(getattr(req, "decode_batch_idx", -1)))
+            input_tokens.append(
+                int(sched_req.data.req.input_ids[-1])
+                if getattr(getattr(sched_req, "data", None), "req", None) is not None
+                and getattr(sched_req.data.req, "input_ids", None)
+                else None
+            )
+            dump_paths.append(
+                str(
+                    Path("/tmp")
+                    / f"talker_decode_layer{layer_idx}_mlp_{sched_req.request_id}_step{step}.pt"
+                )
+            )
+        if not row_indices:
+            return
+
+        layer_mlp = text_model.layers[layer_idx].mlp
+        setattr(
+            layer_mlp,
+            "_sglang_omni_debug_capture_mlp",
+            {
+                "row_indices": row_indices,
+                "request_ids": request_ids,
+                "generation_steps": generation_steps,
+                "decode_batch_indices": decode_batch_indices,
+                "input_tokens": input_tokens,
+                "dump_paths": dump_paths,
+            },
+        )
+
+    def _clear_talker_mlp_debug_context(self) -> None:
+        if not self._is_talker_model:
+            return
+        talker = self._inner_model
+        text_model = getattr(talker, "model", None)
+        if text_model is None or not getattr(text_model, "layers", None):
+            return
+        try:
+            layer_idx = int(os.environ.get("SGLANG_OMNI_DUMP_TALKER_MLP_LAYER", "0"))
+        except ValueError:
+            layer_idx = 0
+        if layer_idx < 0 or layer_idx >= len(text_model.layers):
+            return
+        layer_mlp = text_model.layers[layer_idx].mlp
+        if hasattr(layer_mlp, "_sglang_omni_debug_capture_mlp"):
+            setattr(layer_mlp, "_sglang_omni_debug_capture_mlp", None)
+
+    def _set_talker_layer_input_debug_context(
+        self,
+        *,
+        scheduler_output: SchedulerOutput,
+    ) -> None:
+        if os.environ.get("SGLANG_OMNI_DUMP_TALKER_LAYER_INPUTS") != "1":
+            return
+        if not self._is_talker_model:
+            return
+
+        capture_layers = self._parse_debug_layer_list(
+            "SGLANG_OMNI_DUMP_TALKER_LAYER_INPUTS_LAYERS"
+        )
+        if not capture_layers:
+            return
+
+        try:
+            max_step = max(
+                int(os.environ.get("SGLANG_OMNI_DUMP_TALKER_LAYER_INPUTS_MAX_STEP", "1")),
+                1,
+            )
+        except ValueError:
+            max_step = 1
+
+        talker = self._inner_model
+        text_model = getattr(talker, "model", None)
+        if text_model is None or not getattr(text_model, "layers", None):
+            return
+
+        row_indices: list[int] = []
+        request_meta: dict[str, dict[str, Any]] = {}
+        for row_idx, sched_req in enumerate(scheduler_output.requests):
+            data = getattr(sched_req, "data", None)
+            req = getattr(data, "req", None)
+            step = int(getattr(data, "generation_steps", -1))
+            if step > max_step:
+                continue
+            row_indices.append(row_idx)
+            request_meta[sched_req.request_id] = {
+                "row_idx": row_idx,
+                "generation_steps": step,
+                "decode_batch_idx": int(getattr(req, "decode_batch_idx", -1)),
+                "input_token": (
+                    int(sched_req.data.req.input_ids[-1])
+                    if getattr(getattr(sched_req, "data", None), "req", None) is not None
+                    and getattr(sched_req.data.req, "input_ids", None)
+                    else None
+                ),
+            }
+
+        if not row_indices:
+            return
+
+        capture_state: dict[str, Any] = {
+            "capture_layers": capture_layers,
+            "request_meta": request_meta,
+            "captured": {rid: {} for rid in request_meta},
+            "decoder_hidden": {rid: {} for rid in request_meta},
+            "decoder_residual": {rid: {} for rid in request_meta},
+            "decoder_effective": {rid: {} for rid in request_meta},
+            "decoder_output_hidden": {rid: {} for rid in request_meta},
+            "decoder_output_residual": {rid: {} for rid in request_meta},
+            "decoder_output_effective": {rid: {} for rid in request_meta},
+            "mlp_inputs": {rid: {} for rid in request_meta},
+            "mlp_outputs": {rid: {} for rid in request_meta},
+        }
+
+        handles = []
+        for layer_idx in capture_layers:
+            if layer_idx < 0 or layer_idx >= len(text_model.layers):
+                continue
+            layer = text_model.layers[layer_idx]
+            attn_module = layer.self_attn
+
+            def _layer_pre_hook(module, args, kwargs, *, layer_idx=layer_idx):
+                hidden_states = kwargs.get("hidden_states")
+                residual = kwargs.get("residual")
+                if hidden_states is None and len(args) > 1:
+                    hidden_states = args[1]
+                if residual is None and len(args) > 3:
+                    residual = args[3]
+                if not isinstance(hidden_states, torch.Tensor):
+                    return
+                for request_id, meta in capture_state["request_meta"].items():
+                    row_idx = meta["row_idx"]
+                    if row_idx >= hidden_states.shape[0]:
+                        continue
+                    hidden_row = hidden_states[row_idx].detach().cpu()
+                    capture_state["decoder_hidden"].setdefault(request_id, {})[
+                        layer_idx
+                    ] = hidden_row
+                    if isinstance(residual, torch.Tensor) and row_idx < residual.shape[0]:
+                        residual_row = residual[row_idx].detach().cpu()
+                        capture_state["decoder_residual"].setdefault(request_id, {})[
+                            layer_idx
+                        ] = residual_row
+                        capture_state["decoder_effective"].setdefault(request_id, {})[
+                            layer_idx
+                        ] = (hidden_row.float() + residual_row.float()).to(
+                            dtype=hidden_row.dtype
+                        )
+                    else:
+                        capture_state["decoder_effective"].setdefault(request_id, {})[
+                            layer_idx
+                        ] = hidden_row
+
+            def _pre_hook(module, args, kwargs, *, layer_idx=layer_idx):
+                hidden_states = kwargs.get("hidden_states")
+                if hidden_states is None and len(args) > 1:
+                    hidden_states = args[1]
+                if not isinstance(hidden_states, torch.Tensor):
+                    return
+                for request_id, meta in capture_state["request_meta"].items():
+                    row_idx = meta["row_idx"]
+                    if row_idx >= hidden_states.shape[0]:
+                        continue
+                    capture_state["captured"].setdefault(request_id, {})[layer_idx] = (
+                        hidden_states[row_idx].detach().cpu()
+                    )
+
+            def _post_hook(module, args, kwargs, output, *, layer_idx=layer_idx):
+                if not isinstance(output, tuple) or len(output) < 2:
+                    return
+                hidden_states, residual = output[:2]
+                if not isinstance(hidden_states, torch.Tensor):
+                    return
+                for request_id, meta in capture_state["request_meta"].items():
+                    row_idx = meta["row_idx"]
+                    if row_idx >= hidden_states.shape[0]:
+                        continue
+                    hidden_row = hidden_states[row_idx].detach().cpu()
+                    capture_state["decoder_output_hidden"].setdefault(request_id, {})[
+                        layer_idx
+                    ] = hidden_row
+                    if isinstance(residual, torch.Tensor) and row_idx < residual.shape[0]:
+                        residual_row = residual[row_idx].detach().cpu()
+                        capture_state["decoder_output_residual"].setdefault(
+                            request_id, {}
+                        )[layer_idx] = residual_row
+                        capture_state["decoder_output_effective"].setdefault(
+                            request_id, {}
+                        )[layer_idx] = (hidden_row.float() + residual_row.float()).to(
+                            dtype=hidden_row.dtype
+                        )
+                    else:
+                        capture_state["decoder_output_effective"].setdefault(
+                            request_id, {}
+                        )[layer_idx] = hidden_row
+
+            def _mlp_pre_hook(module, args, kwargs, *, layer_idx=layer_idx):
+                hidden_states = args[0] if args and isinstance(args[0], torch.Tensor) else None
+                if not isinstance(hidden_states, torch.Tensor):
+                    return
+                for request_id, meta in capture_state["request_meta"].items():
+                    row_idx = meta["row_idx"]
+                    if row_idx >= hidden_states.shape[0]:
+                        continue
+                    capture_state["mlp_inputs"].setdefault(request_id, {})[layer_idx] = (
+                        hidden_states[row_idx].detach().cpu()
+                    )
+
+            def _mlp_post_hook(module, args, kwargs, output, *, layer_idx=layer_idx):
+                hidden_states = output[0] if isinstance(output, tuple) else output
+                if not isinstance(hidden_states, torch.Tensor):
+                    return
+                for request_id, meta in capture_state["request_meta"].items():
+                    row_idx = meta["row_idx"]
+                    if row_idx >= hidden_states.shape[0]:
+                        continue
+                    capture_state["mlp_outputs"].setdefault(request_id, {})[layer_idx] = (
+                        hidden_states[row_idx].detach().cpu()
+                    )
+
+            handles.append(layer.register_forward_pre_hook(_layer_pre_hook, with_kwargs=True))
+            handles.append(layer.register_forward_hook(_post_hook, with_kwargs=True))
+            handles.append(layer.mlp.register_forward_pre_hook(_mlp_pre_hook, with_kwargs=True))
+            handles.append(layer.mlp.register_forward_hook(_mlp_post_hook, with_kwargs=True))
+            handles.append(
+                attn_module.register_forward_pre_hook(_pre_hook, with_kwargs=True)
+            )
+
+        self._talker_layer_input_debug_handles = handles
+        self._talker_layer_input_debug_state = capture_state
+
+    def _flush_talker_layer_input_debug_context(self) -> None:
+        state = self._talker_layer_input_debug_state
+        if not state:
+            return
+        for request_id, meta in state["request_meta"].items():
+            captured = state["captured"].get(request_id, {})
+            if not captured:
+                continue
+            dump_path = (
+                Path("/tmp")
+                / f"talker_layer_inputs_{request_id}_step{meta['generation_steps']}.pt"
+            )
+            torch.save(
+                {
+                    "request_id": request_id,
+                    "generation_steps": meta["generation_steps"],
+                    "decode_batch_idx": meta["decode_batch_idx"],
+                    "input_token": meta["input_token"],
+                    "capture_point": "self_attn_input",
+                    "layer_inputs": captured,
+                    "decoder_hidden_states": state["decoder_hidden"].get(request_id, {}),
+                    "decoder_residuals": state["decoder_residual"].get(request_id, {}),
+                    "decoder_effective_inputs": state["decoder_effective"].get(
+                        request_id, {}
+                    ),
+                    "decoder_output_hidden_states": state["decoder_output_hidden"].get(
+                        request_id, {}
+                    ),
+                    "decoder_output_residuals": state["decoder_output_residual"].get(
+                        request_id, {}
+                    ),
+                    "decoder_output_effective_inputs": state[
+                        "decoder_output_effective"
+                    ].get(request_id, {}),
+                    "mlp_inputs": state["mlp_inputs"].get(request_id, {}),
+                    "mlp_outputs": state["mlp_outputs"].get(request_id, {}),
+                },
+                dump_path,
+            )
+            logger.info(
+                "Talker layer-input dump saved rid=%s path=%s",
+                request_id,
+                dump_path,
+            )
+
+    def _clear_talker_layer_input_debug_context(self) -> None:
+        for handle in self._talker_layer_input_debug_handles:
+            try:
+                handle.remove()
+            except Exception:
+                pass
+        self._talker_layer_input_debug_handles = []
+        self._talker_layer_input_debug_state = None
 
     def _set_talker_disable_fused_set_kv(self, disabled: bool) -> None:
         if os.environ.get("SGLANG_OMNI_DISABLE_TALKER_FUSED_SET_KV") != "1":
@@ -1409,15 +1878,28 @@ class SGLangModelRunner:
                 projected_input_embeds = request_prefill_input_embeds
             if projected_input_embeds is None:
                 raise RuntimeError("Projected talker prefill requested without input_embeds")
-            batch_result = self._forward_talker(
-                forward_batch,
-                input_embeds=projected_input_embeds,
-                input_embeds_are_projected=True,
+            self._set_talker_layer_input_debug_context(
+                scheduler_output=scheduler_output,
             )
+            try:
+                batch_result = self._forward_talker(
+                    forward_batch,
+                    input_embeds=projected_input_embeds,
+                    input_embeds_are_projected=True,
+                )
+            finally:
+                self._flush_talker_layer_input_debug_context()
+                self._clear_talker_layer_input_debug_context()
         elif feedback_input_embeds is not None:
             self._set_talker_layer0_attn_debug_context(
                 scheduler_output=scheduler_output,
                 forward_batch=forward_batch,
+            )
+            self._set_talker_mlp_debug_context(
+                scheduler_output=scheduler_output,
+            )
+            self._set_talker_layer_input_debug_context(
+                scheduler_output=scheduler_output,
             )
             self._set_talker_disable_fused_set_kv(True)
             try:
@@ -1429,6 +1911,9 @@ class SGLangModelRunner:
             finally:
                 self._set_talker_disable_fused_set_kv(False)
                 self._clear_talker_layer0_attn_debug_context()
+                self._clear_talker_mlp_debug_context()
+                self._flush_talker_layer_input_debug_context()
+                self._clear_talker_layer_input_debug_context()
         else:
             batch_result = self.model_worker.forward_batch_generation(forward_batch)
 
@@ -1439,8 +1924,20 @@ class SGLangModelRunner:
                 device=model_worker_batch.input_ids.device,
             )
         else:
+            raw_logits = None
+            logits = getattr(batch_result.logits_output, "next_token_logits", None)
+            if (
+                os.environ.get("SGLANG_OMNI_DUMP_TALKER_LOGITS") == "1"
+                and isinstance(logits, torch.Tensor)
+            ):
+                raw_logits = logits.detach().cpu().clone()
             self._apply_codec_suppress_tokens(
                 batch_result.logits_output, scheduler_output.requests
+            )
+            self._dump_talker_decode_logits_debug(
+                scheduler_output=scheduler_output,
+                logits_output=batch_result.logits_output,
+                raw_logits=raw_logits,
             )
             if projected_prefill:
                 self._log_talker_prefill_topk(
