@@ -357,6 +357,7 @@ class Qwen3OmniMoeThinkerTextAttention(nn.Module):
         debug_ctx = getattr(self, "_sglang_omni_debug_capture_attn", None)
         if debug_ctx:
             try:
+                layer_idx = int(debug_ctx.get("layer_idx", self.attn.layer_id))
                 row_indices = debug_ctx.get("row_indices", [])
                 request_ids = debug_ctx.get("request_ids", [])
                 generation_steps = debug_ctx.get("generation_steps", [])
@@ -422,6 +423,7 @@ class Qwen3OmniMoeThinkerTextAttention(nn.Module):
                         "kv_indices": kv_indices.detach().cpu()
                         if isinstance(kv_indices, torch.Tensor)
                         else None,
+                        "current_q_after_rope": q[row_idx].detach().cpu(),
                         "current_k_after_rope": k[row_idx].detach().cpu(),
                         "current_v": v[row_idx].detach().cpu(),
                         "current_cache_k": current_cache_k.detach().cpu()
@@ -442,11 +444,12 @@ class Qwen3OmniMoeThinkerTextAttention(nn.Module):
                     dump_path = Path(
                         dump_paths[i]
                         if i < len(dump_paths)
-                        else f"/tmp/talker_decode_layer0_attn_{request_ids[i]}.pt"
+                        else f"/tmp/talker_decode_layer{layer_idx}_attn_{request_ids[i]}.pt"
                     )
                     torch.save(dump, dump_path)
                     logger.info(
-                        "Talker decode layer0 attn dump saved rid=%s path=%s",
+                        "Talker decode layer%s attn dump saved rid=%s path=%s",
+                        layer_idx,
                         dump.get("request_id"),
                         dump_path,
                     )
@@ -543,6 +546,57 @@ class Qwen3OmniMoeThinkerTextSparseMoeBlock(nn.Module):
         router_logits, _ = self.gate(hidden_states)
         topk_output = self.topk(hidden_states, router_logits)
         final_hidden_states = self.experts(hidden_states, topk_output)
+        debug_ctx = getattr(self, "_sglang_omni_debug_capture_mlp", None)
+        if debug_ctx:
+            try:
+                row_indices = debug_ctx.get("row_indices", [])
+                request_ids = debug_ctx.get("request_ids", [])
+                generation_steps = debug_ctx.get("generation_steps", [])
+                decode_batch_indices = debug_ctx.get("decode_batch_indices", [])
+                input_tokens = debug_ctx.get("input_tokens", [])
+                dump_paths = debug_ctx.get("dump_paths", [])
+                for i, row_idx in enumerate(row_indices):
+                    if row_idx >= hidden_states.shape[0] or row_idx >= final_hidden_states.shape[0]:
+                        continue
+                    dump = {
+                        "request_id": request_ids[i] if i < len(request_ids) else None,
+                        "generation_steps": generation_steps[i]
+                        if i < len(generation_steps)
+                        else None,
+                        "decode_batch_idx": decode_batch_indices[i]
+                        if i < len(decode_batch_indices)
+                        else None,
+                        "input_token": input_tokens[i] if i < len(input_tokens) else None,
+                        "mlp_input": hidden_states[row_idx].detach().cpu(),
+                        "router_logits": router_logits[row_idx].detach().cpu(),
+                        "mlp_output": final_hidden_states[row_idx].detach().cpu(),
+                        "topk_ids": (
+                            topk_output.topk_ids[row_idx].detach().cpu()
+                            if hasattr(topk_output, "topk_ids")
+                            else None
+                        ),
+                        "topk_weights": (
+                            topk_output.topk_weights[row_idx].detach().cpu()
+                            if hasattr(topk_output, "topk_weights")
+                            else None
+                        ),
+                    }
+                    dump_path = Path(
+                        dump_paths[i]
+                        if i < len(dump_paths)
+                        else f"/tmp/talker_layer{self.layer_id}_mlp_{request_ids[i]}.pt"
+                    )
+                    torch.save(dump, dump_path)
+                    logger.info(
+                        "Talker decode layer%s mlp dump saved rid=%s path=%s",
+                        self.layer_id,
+                        dump.get("request_id"),
+                        dump_path,
+                    )
+            except Exception:
+                logger.exception("Failed to dump talker decode layer%s mlp debug", self.layer_id)
+            finally:
+                self._sglang_omni_debug_capture_mlp = None
         if (
             self.tp_size > 1
             and not should_allreduce_fusion

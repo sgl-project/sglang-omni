@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
 from typing import Any
 
 import torch
@@ -50,6 +52,19 @@ def _event_to_dict(event: OmniEvent) -> dict[str, Any]:
         "payload": dict(event.payload),
         "is_final": bool(event.is_final),
     }
+
+
+def _parse_capture_layers_env(env_name: str) -> list[int] | None:
+    raw = os.environ.get(env_name)
+    if not raw:
+        return None
+    result = []
+    for part in raw.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        result.append(int(part))
+    return result or None
 
 
 def create_preprocessing_executor(model_path: str) -> PreprocessingExecutor:
@@ -438,17 +453,60 @@ def make_thinker_stream_adapter(chunk_enqueue_fn=None):
 def make_talker_ar_stream_adapter(chunk_enqueue_fn=None):
     """Talker AR stream adapter: relay codec code + hidden to Code Predictor."""
 
+    def _maybe_dump_captured_hidden(request, output, hidden) -> None:
+        if not isinstance(hidden, dict):
+            return
+        if os.environ.get("SGLANG_OMNI_DUMP_TALKER_CAPTURED_HIDDEN") != "1":
+            return
+
+        generation_steps = int(getattr(request.data, "generation_steps", 0))
+        max_step = int(os.environ.get("SGLANG_OMNI_DUMP_TALKER_CAPTURED_HIDDEN_MAX_STEP", "0"))
+        if generation_steps > max_step:
+            return
+
+        stream_hidden = None
+        if output.extra is not None:
+            stream_hidden = output.extra.get("stream_hidden_states")
+
+        try:
+            dump_path = (
+                Path("/tmp")
+                / f"talker_hidden_layers_{request.request_id}_step{generation_steps}.pt"
+            )
+            torch.save(
+                {
+                    "request_id": request.request_id,
+                    "generation_steps": generation_steps,
+                    "codec_code": int(output.data) if output.data is not None else None,
+                    "captured_hidden_states": {
+                        key: value.detach().cpu()
+                        for key, value in hidden.items()
+                        if isinstance(value, torch.Tensor)
+                    },
+                    "stream_hidden_states": (
+                        stream_hidden.detach().cpu()
+                        if isinstance(stream_hidden, torch.Tensor)
+                        else None
+                    ),
+                },
+                dump_path,
+            )
+        except Exception:
+            pass
+
     def _stream_adapter(request, output):
         if request.data.req.is_chunked > 0:
             return None
         token = output.data
         if chunk_enqueue_fn is not None and output.extra is not None:
             hidden = output.extra.get("hidden_states")
-            if hidden is not None:
+            stream_hidden = output.extra.get("stream_hidden_states", hidden)
+            _maybe_dump_captured_hidden(request, output, hidden)
+            if isinstance(stream_hidden, torch.Tensor):
                 codec_code = int(token) if token is not None else None
                 chunk_enqueue_fn(
                     request.request_id,
-                    hidden,
+                    stream_hidden,
                     metadata={"codec_code": codec_code},
                 )
         return int(token) if token is not None else None
@@ -524,12 +582,18 @@ def create_talker_ar_executor(
         if speech_enabled
         else None
     )
+    capture_layers = (
+        _parse_capture_layers_env("SGLANG_OMNI_TALKER_CAPTURE_LAYERS")
+        if speech_enabled
+        else None
+    )
 
     engine = create_sglang_ar_engine(
         server_args=server_args,
         gpu_id=gpu_id,
         stream_adapter=stream_adapter,
         capture_hidden=speech_enabled,
+        capture_hidden_layers=capture_layers,
         model_arch_override="Qwen3OmniTalker",
         weight_prefix=weight_prefix,
         feedback_enabled=feedback_enabled,
