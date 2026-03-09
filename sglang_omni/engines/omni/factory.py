@@ -276,6 +276,7 @@ def create_sglang_ar_engine(
     )
 
     if stream_adapter is None:
+
         def stream_adapter(request, output):
             if request.data.req.is_chunked > 0:
                 return None

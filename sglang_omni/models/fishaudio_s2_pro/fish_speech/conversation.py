@@ -6,14 +6,17 @@ import torch
 from transformers import PreTrainedTokenizerFast
 
 from sglang_omni.models.fishaudio_s2_pro.fish_speech.content_sequence import (
-    AudioPart,
     BasePart,
     ContentSequence,
     EncodedMessage,
     TextPart,
     VQPart,
 )
-from sglang_omni.models.fishaudio_s2_pro.fish_speech.tokenizer import IM_END_TOKEN, IM_START_TOKEN, MODALITY_TOKENS
+from sglang_omni.models.fishaudio_s2_pro.fish_speech.tokenizer import (
+    IM_END_TOKEN,
+    IM_START_TOKEN,
+    MODALITY_TOKENS,
+)
 
 
 @dataclass(kw_only=True)

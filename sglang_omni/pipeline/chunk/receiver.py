@@ -37,7 +37,9 @@ class ChunkReceiver:
             tensor = await self._data_plane.read_blob(blob_key, msg.relay_metadata)
             chunk_metadata = msg.relay_metadata.get("chunk_metadata")
             metadata_tensor_blobs = msg.relay_metadata.get("chunk_metadata_tensors")
-            if isinstance(chunk_metadata, dict) and isinstance(metadata_tensor_blobs, dict):
+            if isinstance(chunk_metadata, dict) and isinstance(
+                metadata_tensor_blobs, dict
+            ):
                 tensor_dict = {}
                 for path, info in metadata_tensor_blobs.items():
                     if not isinstance(path, str) or not isinstance(info, dict):

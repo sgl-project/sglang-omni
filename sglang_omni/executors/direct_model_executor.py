@@ -125,12 +125,16 @@ class DirectModelExecutor(Executor):
             # Enqueue result as chunk to downstream
             if self._chunk_enqueue_fn is not None:
                 chunk_tensor, chunk_metadata = self._extract_chunk_output(output)
-                self._chunk_enqueue_fn(request_id, chunk_tensor, metadata=chunk_metadata)
+                self._chunk_enqueue_fn(
+                    request_id, chunk_tensor, metadata=chunk_metadata
+                )
 
             chunk_count += 1
 
         # Send EOS to downstream
-        if self._chunk_sender is not None and hasattr(self._chunk_sender, "enqueue_chunks_done"):
+        if self._chunk_sender is not None and hasattr(
+            self._chunk_sender, "enqueue_chunks_done"
+        ):
             self._chunk_sender.enqueue_chunks_done(request_id)
 
         # Emit summary result for the pipeline

@@ -403,14 +403,20 @@ class Qwen3OmniMoeThinkerTextAttention(nn.Module):
                         current_cache_v = value_buffer[current_cache_loc]
                     dump = {
                         "request_id": request_ids[i] if i < len(request_ids) else None,
-                        "generation_steps": generation_steps[i]
-                        if i < len(generation_steps)
-                        else None,
-                        "decode_batch_idx": decode_batch_indices[i]
-                        if i < len(decode_batch_indices)
-                        else None,
-                        "input_token": input_tokens[i] if i < len(input_tokens) else None,
-                        "positions": positions_list[i] if i < len(positions_list) else None,
+                        "generation_steps": (
+                            generation_steps[i] if i < len(generation_steps) else None
+                        ),
+                        "decode_batch_idx": (
+                            decode_batch_indices[i]
+                            if i < len(decode_batch_indices)
+                            else None
+                        ),
+                        "input_token": (
+                            input_tokens[i] if i < len(input_tokens) else None
+                        ),
+                        "positions": (
+                            positions_list[i] if i < len(positions_list) else None
+                        ),
                         "used_fused_qk_norm_rope": self._used_fused_qk_norm_rope_last_call,
                         "used_fused_set_kv_buffer": self._used_fused_set_kv_buffer_last_call,
                         "disable_fused_set_kv_flag": getattr(
@@ -419,24 +425,36 @@ class Qwen3OmniMoeThinkerTextAttention(nn.Module):
                         "req_pool_idx": req_pool_idx,
                         "seq_len": seq_len,
                         "current_cache_loc": current_cache_loc,
-                        "kv_indices": kv_indices.detach().cpu()
-                        if isinstance(kv_indices, torch.Tensor)
-                        else None,
+                        "kv_indices": (
+                            kv_indices.detach().cpu()
+                            if isinstance(kv_indices, torch.Tensor)
+                            else None
+                        ),
                         "current_k_after_rope": k[row_idx].detach().cpu(),
                         "current_v": v[row_idx].detach().cpu(),
-                        "current_cache_k": current_cache_k.detach().cpu()
-                        if isinstance(current_cache_k, torch.Tensor)
-                        else None,
-                        "current_cache_v": current_cache_v.detach().cpu()
-                        if isinstance(current_cache_v, torch.Tensor)
-                        else None,
-                        "cache_k": cache_k.detach().cpu()
-                        if isinstance(cache_k, torch.Tensor)
-                        else None,
-                        "cache_v": cache_v.detach().cpu()
-                        if isinstance(cache_v, torch.Tensor)
-                        else None,
-                        "attn_output_before_o_proj": attn_output[row_idx].detach().cpu(),
+                        "current_cache_k": (
+                            current_cache_k.detach().cpu()
+                            if isinstance(current_cache_k, torch.Tensor)
+                            else None
+                        ),
+                        "current_cache_v": (
+                            current_cache_v.detach().cpu()
+                            if isinstance(current_cache_v, torch.Tensor)
+                            else None
+                        ),
+                        "cache_k": (
+                            cache_k.detach().cpu()
+                            if isinstance(cache_k, torch.Tensor)
+                            else None
+                        ),
+                        "cache_v": (
+                            cache_v.detach().cpu()
+                            if isinstance(cache_v, torch.Tensor)
+                            else None
+                        ),
+                        "attn_output_before_o_proj": attn_output[row_idx]
+                        .detach()
+                        .cpu(),
                         "attn_output_after_o_proj": output[row_idx].detach().cpu(),
                     }
                     dump_path = Path(

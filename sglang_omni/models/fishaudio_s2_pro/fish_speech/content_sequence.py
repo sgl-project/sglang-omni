@@ -5,7 +5,9 @@ import numpy as np
 import torch
 from transformers import PreTrainedTokenizerFast
 
-from sglang_omni.models.fishaudio_s2_pro.fish_speech.models.text2semantic.modeling import _get_feat_extract_output_lengths
+from sglang_omni.models.fishaudio_s2_pro.fish_speech.models.text2semantic.modeling import (
+    _get_feat_extract_output_lengths,
+)
 from sglang_omni.models.fishaudio_s2_pro.fish_speech.tokenizer import (
     AUDIO_EMBED_TOKEN,
     AUDIO_END_TOKEN,

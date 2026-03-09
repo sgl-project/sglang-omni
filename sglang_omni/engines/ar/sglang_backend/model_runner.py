@@ -19,7 +19,7 @@ def filter_weights_by_prefix(
         return
     for name, tensor in weights:
         if name.startswith(prefix):
-            yield name[len(prefix):], tensor
+            yield name[len(prefix) :], tensor
 
 
 class SGLModelRunner(ModelRunner):

@@ -16,11 +16,6 @@ import torch
 logger = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------
-# Protocol
-# ---------------------------------------------------------------------------
-
-
 @runtime_checkable
 class TokenizerAdapter(Protocol):
     """Minimal contract between the engine and any tokenizer."""
@@ -62,11 +57,6 @@ class PromptBuilder(Protocol):
         ...
 
 
-# ---------------------------------------------------------------------------
-# HuggingFace adapter
-# ---------------------------------------------------------------------------
-
-
 class HFTokenizerAdapter:
     """Wraps any HuggingFace ``PreTrainedTokenizer``."""
 
@@ -89,11 +79,6 @@ class HFTokenizerAdapter:
 
     def decode(self, token_ids: list[int]) -> str:
         return self._tok.decode(token_ids)
-
-
-# ---------------------------------------------------------------------------
-# Auto-detection helper
-# ---------------------------------------------------------------------------
 
 
 def wrap_tokenizer(tokenizer: Any) -> TokenizerAdapter:

@@ -13,9 +13,9 @@ from .scheduler import Scheduler
 from .types import SchedulerOutput, SchedulerStatus
 
 if TYPE_CHECKING:
-    from .runtime.interfaces import CacheManager
-
     from sglang_omni.pipeline.chunk.mailbox import ChunkMailbox
+
+    from .runtime.interfaces import CacheManager
 
 logger = logging.getLogger(__name__)
 
@@ -240,7 +240,11 @@ class OmniEngine(Engine):
             if queue is not None and not queue.empty():
                 try:
                     item = queue.get_nowait()
-                    from sglang_omni.pipeline.chunk.mailbox import ChunkSignal, _SENTINEL_DONE
+                    from sglang_omni.pipeline.chunk.mailbox import (
+                        _SENTINEL_DONE,
+                        ChunkSignal,
+                    )
+
                     if item is _SENTINEL_DONE or isinstance(item, BaseException):
                         continue
                     if isinstance(item, ChunkSignal):

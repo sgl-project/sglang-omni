@@ -70,8 +70,12 @@ def parse_meta_lst(path: str, max_samples: int | None = None) -> list[dict]:
 
 
 def load_audio_decoder(checkpoint: str, device: str):
-    from sglang_omni.models.fishaudio_s2_pro.fish_speech.models.text2semantic.configuration import FishQwen3OmniConfig
-    from sglang_omni.models.fishaudio_s2_pro.fish_speech.models.text2semantic.modeling import FishQwen3OmniForCausalLM
+    from sglang_omni.models.fishaudio_s2_pro.fish_speech.models.text2semantic.configuration import (
+        FishQwen3OmniConfig,
+    )
+    from sglang_omni.models.fishaudio_s2_pro.fish_speech.models.text2semantic.modeling import (
+        FishQwen3OmniForCausalLM,
+    )
 
     config = FishQwen3OmniConfig.from_pretrained(checkpoint)
     full_model = FishQwen3OmniForCausalLM.from_pretrained(checkpoint, config=config)

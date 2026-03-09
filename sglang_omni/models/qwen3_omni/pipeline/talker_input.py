@@ -32,7 +32,11 @@ def segment_chat_template(
         role_token = ids[pos + 1] if pos + 1 < len(ids) else None
         role = role_map.get(role_token, "unknown")
         start = pos
-        end = im_start_positions[idx + 1] if idx + 1 < len(im_start_positions) else len(ids)
+        end = (
+            im_start_positions[idx + 1]
+            if idx + 1 < len(im_start_positions)
+            else len(ids)
+        )
         segments.append({"role": role, "start": start, "end": end})
 
     return segments
@@ -89,30 +93,45 @@ def build_assistant_part(
         if projected.shape[0] > 3
         else torch.zeros((1, projected.shape[-1]), device=device, dtype=dtype)
     )
-    text_hidden = torch.cat([
-        projected[:3],
-        tts_pad_embed.expand(4, -1),
-        tts_bos_embed,
-        fourth_token,
-    ], dim=0)  # [9, hidden]
+    text_hidden = torch.cat(
+        [
+            projected[:3],
+            tts_pad_embed.expand(4, -1),
+            tts_bos_embed,
+            fourth_token,
+        ],
+        dim=0,
+    )  # [9, hidden]
 
     # Codec side: [3x zeros] + [embed(6 special tokens)]
     codec_special_ids = torch.tensor(
-        [codec_nothink_id, codec_think_bos_id, codec_think_eos_id,
-         speaker_id, codec_pad_id, codec_bos_id],
-        device=device, dtype=torch.long,
+        [
+            codec_nothink_id,
+            codec_think_bos_id,
+            codec_think_eos_id,
+            speaker_id,
+            codec_pad_id,
+            codec_bos_id,
+        ],
+        device=device,
+        dtype=torch.long,
     )
     codec_embeds = codec_embed_fn(codec_special_ids)  # [6, hidden]
-    codec_hidden = torch.cat([
-        torch.zeros((3, text_hidden.shape[-1]), device=device, dtype=dtype),
-        codec_embeds,
-    ], dim=0)  # [9, hidden]
+    codec_hidden = torch.cat(
+        [
+            torch.zeros((3, text_hidden.shape[-1]), device=device, dtype=dtype),
+            codec_embeds,
+        ],
+        dim=0,
+    )  # [9, hidden]
 
     input_embeds = text_hidden + codec_hidden
 
     input_ids = torch.full(
-        (text_hidden.shape[0],), tts_pad_token_id,
-        dtype=torch.long, device=device,
+        (text_hidden.shape[0],),
+        tts_pad_token_id,
+        dtype=torch.long,
+        device=device,
     )
 
     # trailing_text_hidden: tokens after first 4 + tts_eos
@@ -168,7 +187,9 @@ def build_prefill_input(
     assistant_segment_indices = [
         idx for idx, seg in enumerate(segments) if seg["role"] == "assistant"
     ]
-    last_assistant_idx = assistant_segment_indices[-1] if assistant_segment_indices else None
+    last_assistant_idx = (
+        assistant_segment_indices[-1] if assistant_segment_indices else None
+    )
 
     for seg_idx, seg in enumerate(segments):
         if seg["role"] == "system":
@@ -217,7 +238,11 @@ def build_prefill_input(
                 )
             )
             trailing = assistant_result["trailing_text_hidden"]
-            if not include_assistant_eos and trailing is not None and trailing.shape[0] > 0:
+            if (
+                not include_assistant_eos
+                and trailing is not None
+                and trailing.shape[0] > 0
+            ):
                 trailing = trailing[:-1]
 
     return {

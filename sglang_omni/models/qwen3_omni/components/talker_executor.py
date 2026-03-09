@@ -16,9 +16,7 @@ from safetensors import safe_open
 from sglang_omni.engines.omni.types import SchedulerStatus
 from sglang_omni.executors.interface import Executor
 from sglang_omni.models.qwen3_omni.io import PipelineState
-from sglang_omni.models.qwen3_omni.pipeline.engine_io import (
-    build_sglang_talker_request,
-)
+from sglang_omni.models.qwen3_omni.pipeline.engine_io import build_sglang_talker_request
 from sglang_omni.models.qwen3_omni.pipeline.next_stage import (
     CODE_PREDICTOR_STAGE,
     THINKER_STAGE,
@@ -27,8 +25,8 @@ from sglang_omni.models.qwen3_omni.pipeline.talker_input import (
     build_assistant_part,
     build_prefill_input,
 )
-from sglang_omni.pipeline.chunk.mailbox import ChunkItem, ChunkMailbox, ChunkSignal
 from sglang_omni.models.weight_loader import resolve_model_path
+from sglang_omni.pipeline.chunk.mailbox import ChunkItem, ChunkMailbox, ChunkSignal
 from sglang_omni.proto import StagePayload
 
 logger = logging.getLogger(__name__)
@@ -169,7 +167,9 @@ class TalkerStreamingExecutor(Executor):
         self._payloads: dict[str, StagePayload] = {}
         self._states: dict[str, _TalkerRequestState] = {}
         self._aborted: set[str] = set()
-        self._tts_special_cache: tuple[torch.Tensor, torch.Tensor, torch.Tensor] | None = None
+        self._tts_special_cache: (
+            tuple[torch.Tensor, torch.Tensor, torch.Tensor] | None
+        ) = None
 
     async def start(self) -> None:
         start = getattr(self._engine, "start", None)
@@ -406,16 +406,15 @@ class TalkerStreamingExecutor(Executor):
         if not thinker_chunks:
             raise ValueError("prompt prefill requires at least one thinker chunk")
 
-        prompt_ids, prompt_embed, prompt_hidden = self._reconstruct_prompt_states(payload)
+        prompt_ids, prompt_embed, prompt_hidden = self._reconstruct_prompt_states(
+            payload
+        )
         assistant_token_ids = self._extract_thinker_chunk_token_ids(thinker_chunks)
         assistant_embed = torch.stack(
             [chunk.tensor for chunk in thinker_chunks], dim=0
         ).to(device=self._device, dtype=self._dtype)
         assistant_hidden = torch.stack(
-            [
-                self._chunk_layer_hidden_or_embed(chunk)
-                for chunk in thinker_chunks
-            ],
+            [self._chunk_layer_hidden_or_embed(chunk) for chunk in thinker_chunks],
             dim=0,
         ).to(device=self._device, dtype=self._dtype)
 
@@ -546,8 +545,7 @@ class TalkerStreamingExecutor(Executor):
         )
 
         trailing_list = [
-            self._project_assistant_chunk(chunk).cpu()
-            for chunk in thinker_chunks[4:]
+            self._project_assistant_chunk(chunk).cpu() for chunk in thinker_chunks[4:]
         ]
         if thinker_done:
             trailing_list.append(tts_eos_embed[0].detach().cpu())
@@ -585,16 +583,14 @@ class TalkerStreamingExecutor(Executor):
             return next(iter(self._speaker_map.values()))
         return int(payload.request.params.get("speaker_id", 0))
 
-    def _resolve_talker_sampling_config(
-        self, payload: StagePayload
-    ) -> dict[str, Any]:
+    def _resolve_talker_sampling_config(self, payload: StagePayload) -> dict[str, Any]:
         params = payload.request.params
-        codec_eos_id = int(
-            getattr(self._talker_model.config, "codec_eos_token_id", -1)
-        )
+        codec_eos_id = int(getattr(self._talker_model.config, "codec_eos_token_id", -1))
         suppress_tokens = [
             token_id
-            for token_id in range(max(self._codec_vocab_size - 1024, 0), self._codec_vocab_size)
+            for token_id in range(
+                max(self._codec_vocab_size - 1024, 0), self._codec_vocab_size
+            )
             if token_id != codec_eos_id
         ]
         return {
@@ -602,9 +598,7 @@ class TalkerStreamingExecutor(Executor):
             "temperature": float(params.get("talker_temperature", 0.9)),
             "top_k": int(params.get("talker_top_k", 50)),
             "top_p": float(params.get("talker_top_p", 1.0)),
-            "repetition_penalty": float(
-                params.get("talker_repetition_penalty", 1.05)
-            ),
+            "repetition_penalty": float(params.get("talker_repetition_penalty", 1.05)),
             "codec_eos_id": codec_eos_id if codec_eos_id >= 0 else None,
             "suppress_tokens": suppress_tokens,
         }
@@ -827,9 +821,14 @@ class TalkerStreamingExecutor(Executor):
         layer_hidden = prompt_hidden.get(self._accept_hidden_layer)
         if not isinstance(layer_hidden, torch.Tensor):
             layer_hidden = prompt_hidden.get(str(self._accept_hidden_layer))
-        if not isinstance(embed, torch.Tensor) or not isinstance(layer_hidden, torch.Tensor):
+        if not isinstance(embed, torch.Tensor) or not isinstance(
+            layer_hidden, torch.Tensor
+        ):
             return None
-        if embed.shape[0] != expected_seq_len or layer_hidden.shape[0] != expected_seq_len:
+        if (
+            embed.shape[0] != expected_seq_len
+            or layer_hidden.shape[0] != expected_seq_len
+        ):
             logger.warning(
                 "Captured prompt hidden length mismatch: embed=%s layer=%s expected=%s",
                 tuple(embed.shape),
@@ -965,7 +964,9 @@ class TalkerStreamingExecutor(Executor):
         return [row.detach().cpu() for row in tensor]
 
     def _project_assistant_chunk(self, chunk: ChunkItem) -> torch.Tensor:
-        chunk_tensor = chunk.tensor.to(device=self._device, dtype=self._dtype).unsqueeze(0)
+        chunk_tensor = chunk.tensor.to(
+            device=self._device, dtype=self._dtype
+        ).unsqueeze(0)
         projected = self._talker_model.text_projection(chunk_tensor)
         return projected[0].detach()
 

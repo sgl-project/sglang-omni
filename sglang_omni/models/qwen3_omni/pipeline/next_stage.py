@@ -48,7 +48,9 @@ def thinker_next(request_id: str, output: Any) -> str:
     return DECODE_STAGE
 
 
-def make_thinker_next(speech_enabled: bool = False) -> Callable[[str, Any], str | list[str]]:
+def make_thinker_next(
+    speech_enabled: bool = False,
+) -> Callable[[str, Any], str | list[str]]:
     """Create a thinker_next function with optional speech fan-out.
 
     When speech_enabled=True, returns [DECODE_STAGE, TALKER_AR_STAGE] (fan-out).

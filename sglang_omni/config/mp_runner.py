@@ -17,8 +17,6 @@ from sglang_omni.config.compiler import (
     _allocate_endpoints,
     _build_relay_config,
     _create_input_handler,
-    _dedupe_list,
-    _map_stage_name,
     _wrap_get_next,
 )
 from sglang_omni.config.schema import PipelineConfig, StageConfig
@@ -205,7 +203,9 @@ def _wire_chunk_transfers_local(
                 or worker.executor._chunk_prefetch_count is None
             ):
                 worker.executor._chunk_prefetch_count = 4096
-            set_feedback_mailbox = getattr(worker.executor, "set_feedback_mailbox", None)
+            set_feedback_mailbox = getattr(
+                worker.executor, "set_feedback_mailbox", None
+            )
             if callable(set_feedback_mailbox):
                 set_feedback_mailbox(mailbox)
 
@@ -243,9 +243,7 @@ def _stage_process_entry(
         name_map.update(fused_name_map)
 
         # Find this stage's config
-        stage_cfg = next(
-            (s for s in stages_cfg if s.name == stage_name), None
-        )
+        stage_cfg = next((s for s in stages_cfg if s.name == stage_name), None)
         if stage_cfg is None:
             log.error("Stage %s not found in config", stage_name)
             return
@@ -258,9 +256,7 @@ def _stage_process_entry(
         )
 
         # Wire chunk transfers
-        _wire_chunk_transfers_local(
-            stage, stage_cfg, stages_cfg, stage_endpoints
-        )
+        _wire_chunk_transfers_local(stage, stage_cfg, stages_cfg, stage_endpoints)
 
         log.info("Stage %s ready", stage_name)
         ready_event.set()
@@ -309,9 +305,7 @@ class MultiProcessPipelineRunner:
         stages_cfg, name_map, entry_stage = self._config.apply_fusion()
         endpoints = _allocate_endpoints(self._config, stages=stages_cfg)
 
-        stage_endpoints = {
-            s.name: endpoints[f"stage_{s.name}"] for s in stages_cfg
-        }
+        stage_endpoints = {s.name: endpoints[f"stage_{s.name}"] for s in stages_cfg}
 
         # 2. Create Coordinator in main process (binds ZMQ first)
         self._coordinator = Coordinator(

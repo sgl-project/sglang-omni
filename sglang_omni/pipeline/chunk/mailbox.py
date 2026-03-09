@@ -63,9 +63,7 @@ class ChunkMailbox:
     def put_chunks_done(self, request_id: str, from_stage: str | None = None) -> None:
         queue = self._queues.get(request_id)
         if queue is not None:
-            queue.put_nowait(
-                ChunkSignal(from_stage=from_stage, is_chunks_done=True)
-            )
+            queue.put_nowait(ChunkSignal(from_stage=from_stage, is_chunks_done=True))
 
     def put_error(
         self, request_id: str, error: BaseException, from_stage: str | None = None

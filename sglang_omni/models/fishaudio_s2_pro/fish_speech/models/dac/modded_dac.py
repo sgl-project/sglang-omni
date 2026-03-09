@@ -5,7 +5,6 @@ from typing import List, Optional, Union
 
 import numpy as np
 import torch
-from audiotools import AudioSignal
 from audiotools.ml import BaseModel
 from dac.model.base import CodecMixin
 from dac.nn.layers import Snake1d, WNConv1d, WNConvTranspose1d

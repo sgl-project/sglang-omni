@@ -325,7 +325,10 @@ class StageControlPlane:
         raise ValueError(f"Unexpected message type: {type(msg)}")
 
     async def send_to_stage(
-        self, next_stage: str, next_stage_endpoint: str, msg: DataReadyMessage | ChunkReadyMessage
+        self,
+        next_stage: str,
+        next_stage_endpoint: str,
+        msg: DataReadyMessage | ChunkReadyMessage,
     ) -> None:
         """Send data ready notification to next stage."""
         if next_stage not in self._next_stage_sockets:

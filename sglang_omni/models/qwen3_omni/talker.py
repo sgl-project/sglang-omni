@@ -468,7 +468,9 @@ class Qwen3OmniMoeTalkerCodePredictor(nn.Module):
             hidden_states: same shape as inputs_embeds
         """
         if forward_batch is None:
-            return self._forward_direct(inputs_embeds=inputs_embeds, positions=positions)
+            return self._forward_direct(
+                inputs_embeds=inputs_embeds, positions=positions
+            )
 
         # SGLang layers expect 2D [total_tokens, hidden]; reshape if 3D
         needs_reshape = inputs_embeds.ndim == 3
@@ -539,7 +541,9 @@ class Qwen3OmniMoeTalkerCodePredictor(nn.Module):
             hidden_states = residual + attn_out
 
             residual = hidden_states
-            normed = layer.post_attention_layernorm(hidden_states.reshape(-1, hidden_size))
+            normed = layer.post_attention_layernorm(
+                hidden_states.reshape(-1, hidden_size)
+            )
             mlp_out = layer.mlp(normed).reshape(batch_size, seq_len, hidden_size)
             hidden_states = residual + mlp_out
 
@@ -597,9 +601,15 @@ class Qwen3OmniMoeTalkerCodePredictor(nn.Module):
         )
         q, k = attn.rotary_emb(positions, q, k, fused_set_kv_buffer_arg=None)
 
-        q = q.reshape(batch_size, seq_len, attn.num_heads, attn.head_dim).transpose(1, 2)
-        k = k.reshape(batch_size, seq_len, attn.num_kv_heads, attn.head_dim).transpose(1, 2)
-        v = v.reshape(batch_size, seq_len, attn.num_kv_heads, attn.head_dim).transpose(1, 2)
+        q = q.reshape(batch_size, seq_len, attn.num_heads, attn.head_dim).transpose(
+            1, 2
+        )
+        k = k.reshape(batch_size, seq_len, attn.num_kv_heads, attn.head_dim).transpose(
+            1, 2
+        )
+        v = v.reshape(batch_size, seq_len, attn.num_kv_heads, attn.head_dim).transpose(
+            1, 2
+        )
 
         num_kv_groups = attn.num_heads // attn.num_kv_heads
         k = _repeat_kv(k, num_kv_groups)
@@ -611,7 +621,9 @@ class Qwen3OmniMoeTalkerCodePredictor(nn.Module):
             diagonal=1,
         )
         attn_weights = attn_weights.masked_fill(causal_mask, float("-inf"))
-        attn_weights = torch.softmax(attn_weights, dim=-1, dtype=torch.float32).to(q.dtype)
+        attn_weights = torch.softmax(attn_weights, dim=-1, dtype=torch.float32).to(
+            q.dtype
+        )
         attn_output = torch.matmul(attn_weights, v)
         attn_output = attn_output.transpose(1, 2).reshape(
             batch_size * seq_len, attn.num_heads * attn.head_dim
@@ -679,7 +691,9 @@ class Qwen3OmniTalker(nn.Module):
         )
 
         # LogitsProcessor for SGLang pipeline integration
-        from sglang.srt.layers.logits_processor import LogitsProcessor as SGLangLogitsProcessor
+        from sglang.srt.layers.logits_processor import (
+            LogitsProcessor as SGLangLogitsProcessor,
+        )
 
         self.logits_processor = SGLangLogitsProcessor(config.text_config)
 
@@ -801,9 +815,18 @@ class Qwen3OmniTalker(nn.Module):
         if extend_seq_lens is None:
             return torch.tensor([forward_batch.input_ids.shape[0] - 1], device=device)
 
-        if forward_batch.padded_static_len is not None and forward_batch.padded_static_len >= 0:
-            idx = torch.arange(len(extend_seq_lens), device=device, dtype=extend_seq_lens.dtype)
-            return idx * forward_batch.padded_static_len + extend_seq_lens.to(device=device) - 1
+        if (
+            forward_batch.padded_static_len is not None
+            and forward_batch.padded_static_len >= 0
+        ):
+            idx = torch.arange(
+                len(extend_seq_lens), device=device, dtype=extend_seq_lens.dtype
+            )
+            return (
+                idx * forward_batch.padded_static_len
+                + extend_seq_lens.to(device=device)
+                - 1
+            )
 
         seq_lens = extend_seq_lens.to(device=device)
         return torch.cumsum(seq_lens, dim=0) - 1
@@ -865,9 +888,7 @@ class Qwen3OmniTalker(nn.Module):
                     predictor_hidden[:, -1:, :]
                 )
                 probs = torch.softmax(logits[:, -1, :], dim=-1)
-                code = top_k_top_p_sampling_from_probs(
-                    probs, top_k=50, top_p=0.8
-                )
+                code = top_k_top_p_sampling_from_probs(probs, top_k=50, top_p=0.8)
                 if code.ndim == 1:
                     code = code.unsqueeze(-1)
                 pos_codes.append(code)
@@ -924,7 +945,7 @@ class Qwen3OmniTalker(nn.Module):
         for name, loaded_weight in weights:
             # Support both monolithic (talker.xxx) and split (xxx) checkpoints
             if name.startswith("talker."):
-                name = name[len("talker."):]
+                name = name[len("talker.") :]
             elif "." in name and name.split(".")[0] in ("thinker", "code2wav"):
                 continue
 

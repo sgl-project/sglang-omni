@@ -17,17 +17,17 @@ import numpy as np
 import torch
 import torch.distributed as dist
 import torch.nn as nn
+
 # liger_kernel removed for inference
 from torch import Tensor
 from torch.nn import functional as F
 from torch.utils.checkpoint import checkpoint
 from transformers import AutoConfig, AutoModel, PreTrainedModel
-from transformers.modeling_outputs import (
-    CausalLMOutputWithPast,
-    SequenceClassifierOutputWithPast,
-)
+from transformers.modeling_outputs import SequenceClassifierOutputWithPast
 
-from sglang_omni.models.fishaudio_s2_pro.fish_speech.models.kernels.functional import triton_grouped_gemm
+from sglang_omni.models.fishaudio_s2_pro.fish_speech.models.kernels.functional import (
+    triton_grouped_gemm,
+)
 from sglang_omni.models.fishaudio_s2_pro.fish_speech.models.text2semantic.configuration import (
     FishQwen3AudioDecoderConfig,
     FishQwen3AudioEncoderConfig,

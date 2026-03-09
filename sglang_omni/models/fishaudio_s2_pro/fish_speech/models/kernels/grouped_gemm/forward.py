@@ -6,12 +6,7 @@ import torch
 import triton
 import triton.language as tl
 
-from .autotuning import (
-    get_autotune_configs,
-    get_autotune_keys,
-    get_num_sms,
-    prune_configs,
-)
+from .autotuning import get_autotune_keys, get_num_sms
 
 # This is the preconfigured best config for B200 GPUs
 configs = [

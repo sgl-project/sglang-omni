@@ -178,7 +178,9 @@ class _CodePredictorStreamingExecutor(Executor):
         payload.data = {"chunk_count": chunk_count}
         await self._results.put(payload)
 
-    def _dispatch_outputs(self, request_id: str, output: dict[str, torch.Tensor]) -> None:
+    def _dispatch_outputs(
+        self, request_id: str, output: dict[str, torch.Tensor]
+    ) -> None:
         codes = output["codes"]
         summed_embeddings = output["summed_embeddings"]
 

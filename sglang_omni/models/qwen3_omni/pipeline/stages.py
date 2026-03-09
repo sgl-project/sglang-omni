@@ -13,9 +13,8 @@ from sglang_omni.engines.ar.sglang_backend.server_args_builder import (
 )
 from sglang_omni.engines.omni import (
     create_ar_engine,
-    create_encoder_engine,
-    create_single_pass_engine,
     create_sglang_ar_engine,
+    create_single_pass_engine,
 )
 from sglang_omni.executors import EngineExecutor, PreprocessingExecutor
 from sglang_omni.models.qwen3_omni.components.audio_encoder import Qwen3OmniAudioEncoder
@@ -299,7 +298,11 @@ def create_sglang_thinker_executor(
             result["text"] = text_to_add
         return result
 
-    stream_adapter = make_thinker_stream_adapter(chunk_enqueue_fn=_enqueue_chunk) if speech_enabled else None
+    stream_adapter = (
+        make_thinker_stream_adapter(chunk_enqueue_fn=_enqueue_chunk)
+        if speech_enabled
+        else None
+    )
 
     # Dual-layer capture: embed (layer 0 input) + accept_hidden_layer (layer 24 input)
     # Layer 0 captures embed output; layer 24 captures output of transformer layer 23
@@ -548,10 +551,18 @@ def create_talker_ar_executor(
         system_token_id=getattr(hf_config, "system_token_id", 8948),
         user_token_id=getattr(hf_config, "user_token_id", 872),
         assistant_token_id=getattr(hf_config, "assistant_token_id", 77091),
-        accept_hidden_layer=getattr(talker_cfg, "accept_hidden_layer", 24) if talker_cfg else 24,
-        audio_token_id=getattr(getattr(hf_config, "thinker_config", None), "audio_token_id", None),
-        image_token_id=getattr(getattr(hf_config, "thinker_config", None), "image_token_id", None),
-        video_token_id=getattr(getattr(hf_config, "thinker_config", None), "video_token_id", None),
+        accept_hidden_layer=(
+            getattr(talker_cfg, "accept_hidden_layer", 24) if talker_cfg else 24
+        ),
+        audio_token_id=getattr(
+            getattr(hf_config, "thinker_config", None), "audio_token_id", None
+        ),
+        image_token_id=getattr(
+            getattr(hf_config, "thinker_config", None), "image_token_id", None
+        ),
+        video_token_id=getattr(
+            getattr(hf_config, "thinker_config", None), "video_token_id", None
+        ),
         speaker_map=getattr(talker_cfg, "speaker_id", None),
         enqueue_fn_holder=enqueue_fn_holder,
         thinker_config=getattr(hf_config, "thinker_config", None),

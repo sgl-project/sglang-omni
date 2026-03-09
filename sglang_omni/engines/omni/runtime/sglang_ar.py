@@ -150,24 +150,59 @@ class SGLangBatchPlanner:
             {
                 "rid": sched_req.request_id,
                 "status": sched_req.status.name,
-                "generation_steps": int(getattr(sched_req.data, "generation_steps", -1)),
+                "generation_steps": int(
+                    getattr(sched_req.data, "generation_steps", -1)
+                ),
                 "data_projected": bool(
                     getattr(sched_req.data, "input_embeds_are_projected", False)
                 ),
                 "req_projected": bool(
-                    getattr(getattr(sched_req.data, "req", None), "_input_embeds_are_projected", False)
+                    getattr(
+                        getattr(sched_req.data, "req", None),
+                        "_input_embeds_are_projected",
+                        False,
+                    )
                 ),
                 "req_embed_len": (
-                    len(getattr(getattr(sched_req.data, "req", None), "input_embeds", None))
-                    if isinstance(getattr(getattr(sched_req.data, "req", None), "input_embeds", None), list)
+                    len(
+                        getattr(
+                            getattr(sched_req.data, "req", None), "input_embeds", None
+                        )
+                    )
+                    if isinstance(
+                        getattr(
+                            getattr(sched_req.data, "req", None), "input_embeds", None
+                        ),
+                        list,
+                    )
                     else None
                 ),
-                "req_output_len": len(getattr(getattr(sched_req.data, "req", None), "output_ids", [])),
-                "req_is_chunked": int(getattr(getattr(sched_req.data, "req", None), "is_chunked", -1)),
-                "batch_forward_mode": getattr(schedule_batch.forward_mode, "name", str(schedule_batch.forward_mode)),
-                "extend_input_len": int(getattr(getattr(sched_req.data, "req", None), "extend_input_len", -1)),
-                "decode_batch_idx": int(getattr(getattr(sched_req.data, "req", None), "decode_batch_idx", -1)),
-                "extend_batch_idx": int(getattr(getattr(sched_req.data, "req", None), "extend_batch_idx", -1)),
+                "req_output_len": len(
+                    getattr(getattr(sched_req.data, "req", None), "output_ids", [])
+                ),
+                "req_is_chunked": int(
+                    getattr(getattr(sched_req.data, "req", None), "is_chunked", -1)
+                ),
+                "batch_forward_mode": getattr(
+                    schedule_batch.forward_mode,
+                    "name",
+                    str(schedule_batch.forward_mode),
+                ),
+                "extend_input_len": int(
+                    getattr(
+                        getattr(sched_req.data, "req", None), "extend_input_len", -1
+                    )
+                ),
+                "decode_batch_idx": int(
+                    getattr(
+                        getattr(sched_req.data, "req", None), "decode_batch_idx", -1
+                    )
+                ),
+                "extend_batch_idx": int(
+                    getattr(
+                        getattr(sched_req.data, "req", None), "extend_batch_idx", -1
+                    )
+                ),
             }
             for sched_req in selected
         ]
@@ -323,7 +358,6 @@ class SGLangOutputProcessor:
         self._capture_hidden_layers = capture_hidden_layers
         self._model = model
 
-
     def process(
         self,
         model_output: Any,
@@ -458,7 +492,9 @@ class SGLangIterationController:
                     existing = store.get("_single")
                     tensor = prefill_hidden.detach().cpu()
                     store["_single"] = (
-                        tensor if existing is None else torch.cat([existing, tensor], dim=0)
+                        tensor
+                        if existing is None
+                        else torch.cat([existing, tensor], dim=0)
                     )
                 elif isinstance(prefill_hidden, dict):
                     for key, value in prefill_hidden.items():
@@ -467,7 +503,9 @@ class SGLangIterationController:
                         existing = store.get(key)
                         tensor = value.detach().cpu()
                         store[key] = (
-                            tensor if existing is None else torch.cat([existing, tensor], dim=0)
+                            tensor
+                            if existing is None
+                            else torch.cat([existing, tensor], dim=0)
                         )
 
         if req.is_chunked > 0:
@@ -840,10 +878,12 @@ class SGLangModelRunner:
                             "decode_batch_idx": int(
                                 getattr(req, "decode_batch_idx", -1)
                             ),
-                            "input_token": int(forward_batch.input_ids[idx].item())
-                            if getattr(forward_batch, "input_ids", None) is not None
-                            and idx < len(forward_batch.input_ids)
-                            else None,
+                            "input_token": (
+                                int(forward_batch.input_ids[idx].item())
+                                if getattr(forward_batch, "input_ids", None) is not None
+                                and idx < len(forward_batch.input_ids)
+                                else None
+                            ),
                             "raw_feedback_embeds": feedback.detach().cpu(),
                             "trailing_len": trailing_len,
                             "thinker_chunks_done": thinker_chunks_done,
@@ -990,8 +1030,12 @@ class SGLangModelRunner:
         schedule_summaries = None
         if self.batch_planner is not None:
             schedule_source = getattr(self.batch_planner, "_last_schedule_source", None)
-            schedule_waiting = getattr(self.batch_planner, "_last_schedule_waiting", None)
-            schedule_running = getattr(self.batch_planner, "_last_schedule_running", None)
+            schedule_waiting = getattr(
+                self.batch_planner, "_last_schedule_waiting", None
+            )
+            schedule_running = getattr(
+                self.batch_planner, "_last_schedule_running", None
+            )
             schedule_summaries = getattr(
                 self.batch_planner, "_last_schedule_summaries", None
             )
@@ -1035,8 +1079,7 @@ class SGLangModelRunner:
             )
             try:
                 dump_path = (
-                    Path("/tmp")
-                    / f"talker_prefill_logits_{sched_req.request_id}.pt"
+                    Path("/tmp") / f"talker_prefill_logits_{sched_req.request_id}.pt"
                 )
                 torch.save(
                     {
@@ -1083,10 +1126,12 @@ class SGLangModelRunner:
                     "generation_steps": generation_steps,
                     "decode_batch_idx": decode_batch_idx,
                     "seq_len": seq_len,
-                    "input_token": int(forward_batch.input_ids[len(request_summaries)].item())
-                    if getattr(forward_batch, "input_ids", None) is not None
-                    and len(request_summaries) < len(forward_batch.input_ids)
-                    else None,
+                    "input_token": (
+                        int(forward_batch.input_ids[len(request_summaries)].item())
+                        if getattr(forward_batch, "input_ids", None) is not None
+                        and len(request_summaries) < len(forward_batch.input_ids)
+                        else None
+                    ),
                 }
             )
             if generation_steps <= 1 or decode_batch_idx <= 1:
@@ -1146,7 +1191,8 @@ class SGLangModelRunner:
         active = [
             sched_req
             for sched_req in scheduler_output.requests
-            if int(getattr(getattr(sched_req, "data", None), "generation_steps", -1)) <= 1
+            if int(getattr(getattr(sched_req, "data", None), "generation_steps", -1))
+            <= 1
         ]
         if not active:
             return
@@ -1221,8 +1267,7 @@ class SGLangModelRunner:
                     "layer0_v": v[row_idx].detach().cpu(),
                 }
                 dump_path = (
-                    Path("/tmp")
-                    / f"talker_decode_layer0_qk_{sched_req.request_id}.pt"
+                    Path("/tmp") / f"talker_decode_layer0_qk_{sched_req.request_id}.pt"
                 )
                 torch.save(dump, dump_path)
                 logger.info(
@@ -1289,7 +1334,10 @@ class SGLangModelRunner:
                 pos_value = None
             positions.append(pos_value)
             dump_paths.append(
-                str(Path("/tmp") / f"talker_decode_layer0_attn_{sched_req.request_id}.pt")
+                str(
+                    Path("/tmp")
+                    / f"talker_decode_layer0_attn_{sched_req.request_id}.pt"
+                )
             )
 
         if not row_indices:
@@ -1353,7 +1401,6 @@ class SGLangModelRunner:
         if self.output_processor._capture_hidden:
             model_worker_batch.capture_hidden_mode = CaptureHiddenMode.LAST
 
-
         forward_batch = ForwardBatch.init_new(
             model_worker_batch, self.model_worker.model_runner
         )
@@ -1369,10 +1416,13 @@ class SGLangModelRunner:
             if schedule_batch.forward_mode.is_extend()
             else None
         )
-        has_projected_prefill = any(
-            self._request_uses_projected_prefill(req)
-            for req in scheduler_output.requests
-        ) or request_prefill_input_embeds is not None
+        has_projected_prefill = (
+            any(
+                self._request_uses_projected_prefill(req)
+                for req in scheduler_output.requests
+            )
+            or request_prefill_input_embeds is not None
+        )
         projected_prefill = (
             self._is_talker_model
             and schedule_batch.forward_mode.is_extend()
@@ -1408,7 +1458,9 @@ class SGLangModelRunner:
             if projected_input_embeds is None:
                 projected_input_embeds = request_prefill_input_embeds
             if projected_input_embeds is None:
-                raise RuntimeError("Projected talker prefill requested without input_embeds")
+                raise RuntimeError(
+                    "Projected talker prefill requested without input_embeds"
+                )
             batch_result = self._forward_talker(
                 forward_batch,
                 input_embeds=projected_input_embeds,
