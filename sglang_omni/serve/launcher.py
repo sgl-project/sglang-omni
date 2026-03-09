@@ -27,6 +27,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import socket
 import time
 from typing import Any
 
@@ -44,6 +45,22 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Built-in pipeline registry
 # ---------------------------------------------------------------------------
+
+
+def _find_available_port(host: str, port: int) -> int:
+    """Return *port* if available, otherwise find a free port and warn."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind((host, port))
+            return port
+    except OSError:
+        pass
+    logger.warning("Port %d is already in use on %s.", port, host)
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind((host, 0))
+        free_port = s.getsockname()[1]
+    logger.warning("Using port %d instead.", free_port)
+    return free_port
 
 
 def _default_run_id() -> str:
@@ -125,6 +142,9 @@ async def _run_server(
 
     This is the async entry point.  For a blocking call use :func:`launch_server`.
     """
+    # 0. Check port availability before loading models
+    port = _find_available_port(host, port)
+
     # 1. Compile pipeline config -> Coordinator + Stages
     coordinator, stages = compile_pipeline(pipeline_config)
     stage_endpoints = _collect_stage_control_endpoints(stages)

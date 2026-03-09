@@ -51,6 +51,7 @@ def serve(
     # we do expect the extra arguments to be pairs of names and values
     extra_args = config_manager.parse_extra_args(ctx.args)
     merged_config = config_manager.merge_config(extra_args)
+    merged_config = merged_config.model_copy(update={"model_path": model_path})
 
     # print merged configuration
     print("=" * 20, "Merged Configuration", "=" * 20)

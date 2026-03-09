@@ -493,14 +493,32 @@ def _build_speech_generate_request(
     if req.seed is not None:
         tts_params["seed"] = req.seed
 
-    # Sampling params
-    sampling = SamplingParams()
+    # Sampling params — use S2-Pro-tuned defaults
+    sampling = SamplingParams(
+        temperature=0.8, top_p=0.8, top_k=30, repetition_penalty=1.1
+    )
     if req.max_new_tokens is not None:
         sampling.max_new_tokens = req.max_new_tokens
+    if req.temperature is not None:
+        sampling.temperature = req.temperature
+    if req.top_p is not None:
+        sampling.top_p = req.top_p
+    if req.top_k is not None:
+        sampling.top_k = req.top_k
+    if req.repetition_penalty is not None:
+        sampling.repetition_penalty = req.repetition_penalty
+
+    # Build prompt: plain string if no references, dict otherwise
+    prompt: Any = req.input
+    if req.ref_audio is not None:
+        ref = {"audio_path": req.ref_audio}
+        if req.ref_text is not None:
+            ref["text"] = req.ref_text
+        prompt = {"text": req.input, "references": [ref]}
 
     return GenerateRequest(
         model=req.model or default_model,
-        prompt=req.input,
+        prompt=prompt,
         sampling=sampling,
         stage_params=req.stage_params,
         stream=False,  # TTS returns complete audio, no streaming

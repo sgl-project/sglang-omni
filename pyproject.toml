@@ -36,8 +36,10 @@ dependencies = [
     "librosa>=0.11.0",
     "pandas",
     "tabulate",
+    "typer>=0.9.0",
     "openai==2.6.1",
-    "openai-harmony==0.0.4"
+    "openai-harmony==0.0.4",
+    "soundfile>=0.12.0"
 ]
 
 [project.optional-dependencies]
@@ -46,10 +48,25 @@ dev = [
     "pytest>=7.0.0",
     "pytest-asyncio>=0.21.0",
 ]
+s2pro = [
+    "tiktoken",
+    "hydra-core",
+    "omegaconf",
+    "descript-audiotools",
+    "descript-audio-codec",
+    "torchaudio",
+    "gradio>=4.0.0",
+    # flash-attn: install separately via prebuilt wheel (see install instructions below)
+]
 gradio = ["gradio>=4.0.0"]
 
 [project.scripts]
 sgl-omni = "sglang_omni.cli.cli:app"
+
+[tool.uv]
+override-dependencies = [
+    "protobuf>=6.31.1,<7.0.0",
+]
 
 [tool.setuptools.packages.find]
 where = ["."]

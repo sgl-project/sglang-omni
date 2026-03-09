@@ -173,8 +173,12 @@ class CreateSpeechRequest(BaseModel):
     ref_audio: str | None = None  # path or URL to reference audio
     ref_text: str | None = None  # transcript of reference audio
 
-    # Generation limits
+    # Generation parameters
     max_new_tokens: int | None = None
+    temperature: float | None = None
+    top_p: float | None = None
+    top_k: int | None = None
+    repetition_penalty: float | None = None
     seed: int | None = None
 
     # Per-stage overrides (sglang-omni specific)

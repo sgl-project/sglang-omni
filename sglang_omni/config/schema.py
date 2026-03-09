@@ -70,7 +70,7 @@ class PipelineConfig(BaseModel):
     entry_stage: str
     stages: list[StageConfig]
     name: str = "model"  # default for all
-    relay_backend: Literal["shm", "nccl", "nixl", "mooncake"] = "nixl"
+    relay_backend: Literal["shm", "nccl", "nixl", "mooncake"] = "shm"
     fused_stages: list[list[str]] = Field(default_factory=list)
     endpoints: EndpointsConfig = Field(default_factory=EndpointsConfig)
     completion_endpoint: str | None = None
