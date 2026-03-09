@@ -423,6 +423,142 @@ The strongest current statement is now:
 This is a narrower and more reliable target than the earlier "late-layer Talker
 numerics" summary.
 
+### Same-run layer-7 sub-op replay on the fixed speech prompt
+
+The next pass re-ran the fixed prompt with dedicated step-1 layer-7 probes on a
+single clean RID (`runtime-greedy-1773041527`) and compared those exact saved
+runtime tensors against HF.
+
+Artifacts:
+
+- `/tmp/talker_decode_layer7_qk_runtime-greedy-1773041527_step1.pt`
+- `/tmp/talker_decode_layer7_attn_runtime-greedy-1773041527_step1.pt`
+- `/tmp/talker_decode_layer7_mlp_runtime-greedy-1773041527_step1.pt`
+
+What held up under exact same-run replay:
+
+- layer-7 cached attention output matches HF very closely
+  - `attn_output_before_o_proj cosine = 0.9998955`
+  - `attn_output_after_o_proj cosine = 0.9999439`
+- layer-7 current-token KV write also matches closely
+  - `cache_k_last cosine = 0.9999923`
+  - `cache_v_last cosine = 0.9999150`
+- layer-7 MLP math is again effectively exact when replayed directly from the
+  saved runtime `mlp_input_pre_gate`
+  - router logits: exact within dump precision
+  - routed output: `cosine = 0.9999868`
+  - shared output: `cosine = 0.9999935`
+  - final MLP output: `cosine = 0.9999915`
+
+That means the earlier "layer-7 to layer-8 handoff" observation should be read
+carefully:
+
+- the aggregate layer dump still shows a bigger cosine drop by layer `8`
+- but the dedicated same-run probes do **not** support "layer-7 attention is
+  wrong" or "layer-7 MLP is wrong"
+
+The more defensible interpretation now is:
+
+> The fixed-prompt speech drift is no longer localized to a concrete layer-7
+> sub-op bug. Layer-7 attention and MLP both replay essentially exactly against
+> HF on the exact runtime step-1 input. The remaining mismatch is more likely a
+> cumulative small-input drift or a decoder-boundary bookkeeping issue than a
+> single local layer-7 kernel error.
+
+One practical note from this pass:
+
+- generic module-hook captures around HF `layer.mlp` were misleading enough that
+  they should not be treated as primary evidence
+- the reliable evidence is the dedicated saved runtime tensor replay against HF
+  math, not generic hook outputs alone
+
+### Top-down parity matrix on the fixed prompt
+
+To avoid over-focusing on layer-local probes too early, the current debugging
+strategy has been reset to a top-down parity tree on one fixed prompt and one
+fixed runtime RID.
+
+For runtime RID `runtime-greedy-1773041527`, the current top-down matrix is:
+
+- Thinker text contract: pass
+  - runtime generated token count `= 19`
+  - HF generated token count `= 19`
+  - token IDs match
+  - final text matches
+- Code Predictor full-code-row contract: fail first
+  - step `0`: full 16-code row matches exactly
+  - step `1`: full 16-code row diverges
+- Talker layer-0 sequence contract: fails later
+  - common prefix length `= 2`
+  - first mismatch at step `2`
+    - runtime token `207`
+    - HF token `1484`
+- End-to-end audio contract: fails later
+  - runtime duration `20.456875s`
+  - HF duration `6.136875s`
+
+So the highest-level reliable statement on the fixed prompt is now:
+
+> Thinker is exact, and the first observable downstream contract failure is the
+> full Code Predictor row at step `1`. The Talker layer-0 token sequence only
+> diverges after that, and the end-to-end audio mismatch is a later effect.
+
+That does **not** yet prove the Code Predictor implementation is wrong by
+itself. It only proves that, in the full system-level bisect, the first visible
+contract break on this prompt is at that boundary. The next recursive split
+should therefore stay at the Code Predictor / Talker-step interface before
+descending into deeper layer-local probes again.
+
+### Recursive split inside the Code Predictor boundary
+
+The next recursive split checked whether the predictor boundary was failing
+because the predictor implementation itself was wrong, or because the predictor
+was being fed a slightly different hidden state from Talker.
+
+For the fixed prompt:
+
+- predictor input hidden parity vs HF capture
+  - step `0`: `cosine = 0.9999862`
+  - step `1`: `cosine = 0.9998504`
+
+Standalone predictor replay on the saved runtime hidden states showed:
+
+- step `0` with `manual_seed(123)` reproduces the runtime row exactly
+- step `1` with a fresh `manual_seed(123)` does **not** reproduce the runtime row
+- step `1` with the real sequential RNG state after step `0` reproduces the
+  runtime row exactly
+
+Concretely:
+
+- runtime hidden, sequential seed:
+  - step `0`: exact runtime row
+  - step `1`: exact runtime row
+- HF capture:
+  - step `0`: exact runtime row
+  - step `1`: different sampled row
+
+The feedback side confirms the same split:
+
+- runtime saved feedback vs feedback rebuilt from the runtime step-1 code row:
+  exact
+- runtime saved feedback vs feedback rebuilt from the HF step-1 code row on the
+  runtime hidden:
+  - `cosine = 0.4771530`
+
+So the stronger statement is now:
+
+> Inside the first failing high-level contract, the Code Predictor
+> implementation still behaves self-consistently. Given the runtime hidden and
+> the real sequential RNG state, it reproduces the runtime step-1 row exactly.
+> The remaining failing sub-contract is therefore the predictor input hidden
+> coming from Talker, not the predictor sampling loop itself.
+
+That moves the next recursive top-down split to:
+
+- `Talker hidden into Code Predictor`
+
+rather than deeper sampling internals inside the predictor.
+
 ## Fix status
 
 The runtime fix is in
@@ -1350,25 +1486,209 @@ Current ad-hoc comparisons rely on artifacts written under `/tmp`:
 
 These are diagnostic dumps, not stable interfaces.
 
+## Repo-tracked parity harness
+
+The ad-hoc `/tmp` scripts used earlier in the investigation have now been promoted
+into repo-tracked harnesses under
+[scripts/qwen3_omni_parity](/omni/sglang-omni/scripts/qwen3_omni_parity):
+
+- [runtime_capture.py](/omni/sglang-omni/scripts/qwen3_omni_parity/runtime_capture.py)
+  captures one canonical runtime RID plus copied `/tmp` artifacts
+- [hf_capture.py](/omni/sglang-omni/scripts/qwen3_omni_parity/hf_capture.py)
+  captures the official HF reference on the same fixed prompt
+- [topdown_matrix.py](/omni/sglang-omni/scripts/qwen3_omni_parity/topdown_matrix.py)
+  reports the first failing high-level contract
+- [predictor_boundary_matrix.py](/omni/sglang-omni/scripts/qwen3_omni_parity/predictor_boundary_matrix.py)
+  recursively splits the first failing predictor boundary
+- [talker_hidden_boundary.py](/omni/sglang-omni/scripts/qwen3_omni_parity/talker_hidden_boundary.py)
+  replays HF Talker on exact runtime prefill and per-step feedback tensors
+
+A lightweight regression test for the top-down matrix is also checked in at
+[test_qwen3_omni_parity_matrix.py](/omni/sglang-omni/tests/test_model/test_qwen3_omni_parity_matrix.py).
+
+## Current harness results
+
+Using the fixed prompt artifacts currently stored under `/tmp`:
+
+- top-down matrix:
+  - Thinker text: `unknown` on the older scratch runtime summary because that JSON
+    did not save generated token IDs
+  - text content still matches HF exactly
+  - first failing high-level contract: `code_predictor_full_code_rows`
+  - step `0` full 16-code row matches exactly
+  - step `1` full 16-code row diverges
+- predictor boundary matrix:
+  - step `0` Talker hidden into predictor vs HF: `cosine = 0.9999862`
+  - step `1` Talker hidden into predictor vs HF: `cosine = 0.9998504`
+  - standalone predictor replay on runtime hidden reproduces runtime exactly when
+    sequential RNG state is preserved
+  - first failing sub-contract: `talker_hidden_into_predictor`
+- exact-runtime-input Talker hidden replay:
+  - newer RID `runtime-greedy-1773041527` only retained prefill and code-predictor
+    dumps, so it validates `step 0` only
+  - older full-step RID `runtime-greedy-1773032338` retained the per-step feedback
+    dumps and shows:
+    - `step 0`: `cosine = 0.9999807`
+    - `step 1`: `cosine = 0.9998710`
+    - `step 2`: `cosine = 0.9999136`
+    - `step 3`: `cosine = 0.9999126`
+    - `step 4`: `cosine = 0.9994275`
+
+The key current statement is therefore:
+
+> On the fixed prompt, the first reliable high-level failure is still the full
+> Code Predictor row at step `1`, and the first failing recursive sub-contract
+> inside that boundary is still the Talker hidden state fed into the predictor.
+
+## Canonical step-1 layer-boundary capture
+
+The repo harness now includes a targeted layer-boundary comparator:
+
+- [talker_layer_boundary_matrix.py](/omni/sglang-omni/scripts/qwen3_omni_parity/talker_layer_boundary_matrix.py)
+
+To avoid another long full-length speech run, a short fixed-prompt capture was run
+with:
+
+- `talker_max_new_tokens = 4`
+- `SGLANG_OMNI_DUMP_TALKER_FEEDBACK_INPUTS=1`
+- `SGLANG_OMNI_DUMP_TALKER_LAYER_INPUTS=1`
+- `SGLANG_OMNI_DUMP_TALKER_LAYER_INPUTS_LAYERS=0,4,8,12,16,19`
+- `SGLANG_OMNI_DUMP_TALKER_LAYER_INPUTS_MAX_STEP=1`
+
+Artifacts:
+
+- runtime capture:
+  `/tmp/qwen3_omni_parity/layercap_step1/runtime_capture_runtime-layercap-step1-20260309-1.json`
+- runtime layer dump:
+  `/tmp/qwen3_omni_parity/layercap_step1/talker_layer_inputs_runtime-layercap-step1-20260309-1_step1.pt`
+- boundary compare output:
+  `/tmp/qwen3_omni_parity/layercap_step1/talker_layer_boundary_runtime-layercap-step1-20260309-1.json`
+
+On that clean step-1 replay, the sampled layer boundaries compare to HF as follows:
+
+- `decoder_effective_inputs`
+  - layer `0`: `cosine = 1.0000002`
+  - layer `4`: `0.9999822`
+  - layer `8`: `0.9992896`
+  - layer `12`: `0.9994183`
+  - layer `16`: `0.9996969`
+  - layer `19`: `0.9998310`
+- `layer_inputs` (self-attn input)
+  - layer `0`: `0.9999952`
+  - layer `4`: `0.9999477`
+  - layer `8`: `0.9957954`
+  - layer `12`: `0.9993498`
+  - layer `16`: `0.9996644`
+  - layer `19`: `0.9997877`
+- `mlp_inputs`
+  - layer `0`: `0.9999913`
+  - layer `4`: `0.9999226`
+  - layer `8`: `0.9965754`
+  - layer `12`: `0.9986726`
+  - layer `16`: `0.9995217`
+  - layer `19`: `0.9997990`
+
+The first failing boundary on this sampled-layer bisect is:
+
+- `decoder_effective_inputs`, layer `8`
+  - `cosine = 0.9992896`
+
+So the clean canonical step-1 result is consistent with the earlier narrower
+investigation:
+
+> the first visible later-layer drift enters by the layer-8 decoder effective-input
+> handoff, and that drift then becomes more obvious at the layer-8 attention / MLP
+> input boundaries.
+
+## Latest same-run layer-7 / layer-8 split
+
+The next targeted capture narrowed the step-1 problem further using one same-run RID
+with:
+
+- `SGLANG_OMNI_DUMP_TALKER_LAYER_INPUTS_LAYERS=7,8`
+- `SGLANG_OMNI_DUMP_TALKER_ATTN_LAYER=7`
+- `SGLANG_OMNI_DUMP_TALKER_MLP_LAYER=7`
+
+Artifacts:
+
+- runtime capture:
+  `/tmp/qwen3_omni_parity/layer7_step1/runtime_capture_runtime-layer7-step1-20260309-2.json`
+- runtime boundary compare:
+  `/tmp/qwen3_omni_parity/layer7_step1/talker_layer_boundary_runtime-layer7-step1-20260309-2.json`
+- runtime layer-7 attention dump:
+  `/tmp/qwen3_omni_parity/layer7_step1/talker_decode_layer7_attn_runtime-layer7-step1-20260309-2_step1.pt`
+- runtime layer-7 MLP dump:
+  `/tmp/qwen3_omni_parity/layer7_step1/talker_decode_layer7_mlp_runtime-layer7-step1-20260309-2_step1.pt`
+
+The same-run boundary result stayed consistent:
+
+- layer `7` decoder effective input: `0.9999700`
+- layer `7` self-attn input: `0.9999312`
+- layer `7` MLP input: `0.9999084`
+- layer `7` MLP output: `0.9905930`
+- layer `8` decoder effective input: `0.9992896`
+
+At first glance that looked like a `layer7.mlp` bug, but the next exact-input splits
+showed that interpretation was too narrow.
+
+### Important probe correction
+
+The env-gated `talker_decode_layer<N>_qk_*.pt` helper is only semantically valid for
+layer `0`.
+
+For `layer > 0`, the current debug helper in
+[sglang_ar.py](/omni/sglang-omni/sglang_omni/engines/omni/runtime/sglang_ar.py)
+rebuilds `layer<N>_input_ln` from the raw `feedback_input_embeds`, not from the true
+decoder effective input for that layer. So later-layer `qk` dumps should not be used
+as parity evidence.
+
+### What is actually aligned now
+
+Using the exact same step-1 runtime capture:
+
+- layer-7 attention replay vs runtime:
+  - `attn_output_before_o_proj`: `0.9998955`
+  - `attn_output_after_o_proj`: `0.9999439`
+- layer-7 MLP input from full HF replay vs runtime:
+  - `mlp_input`: `0.9999084`
+- direct HF `post_attention_layernorm` on the saved runtime
+  `decoder_effective_input + attn_output_after_o_proj` vs runtime MLP input:
+  - `0.9999939`
+- direct HF `layer7.mlp` on the saved runtime `mlp_input` vs runtime MLP output:
+  - `0.9999915`
+
+So the correct updated statement is:
+
+> layer-7 attention math is not the remaining bug, and layer-7 MLP math is also not
+> the remaining bug when it is fed the exact runtime MLP input.
+
+What remains is the slightly different tensor entering the layer-7 MLP in the full
+HF replay. That tensor is close (`0.9999084` cosine), but the Talker MoE router is
+sensitive enough that this small difference flips the effective MLP output and then
+shows up more clearly at the layer-8 handoff.
+
+This is consistent with the higher-level diagnosis:
+
+> the remaining issue is in decoder hidden/residual/handoff semantics that feed the
+> layer-7 post-attention path, not in the local layer-7 attention kernel or the local
+> layer-7 MLP implementation itself.
+
 ## Recommended next step
 
-The next most valuable experiment is now:
+Continue the top-down recursion instead of returning to operator-first debugging:
 
-1. treat the exact-runtime-input HF full-sequence replay as the control reference,
-   since it removes code predictor sampling and decode-cache effects from the test
-2. focus on the boundary that forms the layer-1 decoder effective input, not on
-   cached decode kernels, `qkv/rope`, or `input_layernorm`
-3. compare runtime vs HF on `step-3+` for:
-   - decoder-layer `hidden_states`
-   - decoder-layer `residual`
-   - decoder-layer `effective_input = hidden_states + residual`
-4. determine whether the first mismatch enters through the residual stream itself,
-   through the pre-residual hidden stream, or through their combination semantics
-5. do **not** rely on the old generalized layer-1 qk dump or the hidden-capture side
-   channel for this, since neither is aligned with the live later-step runtime
-   boundary
+1. keep using one canonical runtime capture and one matching HF capture per split
+2. treat later-layer `qk` debug dumps as invalid unless the helper is fixed to use
+   the true decoder effective input for that layer
+3. descend one step earlier than `layer7.mlp`:
+   - compare the exact tensor used to form the layer-7 post-attention residual sum
+   - compare the full HF replay sum vs the runtime sum before `post_attention_layernorm`
+   - audit the runtime `prepare_mlp` / `postprocess_layer` handoff path in
+     `LayerCommunicator`
+4. only if that boundary is clean should the investigation move deeper again
 
-At this point, the investigation has moved away from "first cached decode backend
-parity", away from "layer-1 attention math", and away from `input_layernorm` itself.
-The current target is now **later-step layer-1 residual / effective-input semantics
-before `prepare_attn`**.
+At this point, the investigation target is no longer "cached decode backend parity"
+or "layer-1 attention in isolation". The correct active target is the higher-level
+Talker hidden/residual contract feeding predictor call `1` on the fixed speech
+prompt, with the current best layer-local entry point just before the layer-7 MLP
+input and the downstream visible failure at the layer-8 decoder handoff on step `1`.
