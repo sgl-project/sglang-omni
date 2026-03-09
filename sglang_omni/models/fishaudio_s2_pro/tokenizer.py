@@ -34,10 +34,8 @@ class Reference:
 
 
 class S2ProTokenizerAdapter:
-    """Wraps HuggingFace ``PreTrainedTokenizerFast`` for sglang-omni.
-
-    Builds Qwen3 chat-format prompts using the ``Conversation`` class,
-    matching the official s2-pro-alpha inference format.
+    """
+    Builds Qwen3 chat-format prompts using the ``Conversation`` class
     """
 
     def __init__(self, hf_tokenizer: PreTrainedTokenizerFast) -> None:
@@ -136,7 +134,6 @@ class S2ProTokenizerAdapter:
         )
 
         encoded = conversation.encode(self._tok, add_shift=False)
-
         vq_parts_list = encoded.vq_parts  # list of [num_codebooks, T_i]
 
         return {

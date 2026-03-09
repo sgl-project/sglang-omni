@@ -90,12 +90,9 @@ def create_s2pro_sglang_engine(
     from sglang_omni.engines.ar.sglang_backend.scheduler.prefill import PrefillManager
     from sglang_omni.engines.omni.runtime.sglang_ar import SGLangBatchPlanner
 
-    # Patch fish_speech config for SGLang compatibility
     _patch_fish_config_for_sglang(server_args.model_path)
 
-    # Use FlashAttention backend (fa3) to match fish_speech's flash_attn_with_kvcache.
-    # The default flashinfer backend produces numerically different attention
-    # output that compounds through 36 layers and causes early EOS for some inputs.
+    # Use FlashAttention backend (fa3) to match fish_speech's flash_attn_with_kvcache. Refer to day0 support blog
     if server_args.attention_backend is None:
         server_args.attention_backend = "fa3"
 
@@ -111,11 +108,7 @@ def create_s2pro_sglang_engine(
         gpu_id=gpu_id,
     )
 
-    # Match fish_speech's bf16 RoPE precision.
-    # fish_speech precomputes cos/sin in bf16 during training, so the model's
-    # attention patterns are calibrated to bf16-truncated rotary values.
-    # SGLang uses float32 cos/sin by default, causing logit divergence that
-    # leads to non-deterministic early EOS (1-2 token generation).
+    # Match fish_speech's bf16 RoPE precision. Refer to day0 support blog
     _truncate_rope_to_bf16(model_worker.model_runner.model)
 
     # Get memory pools
@@ -129,7 +122,6 @@ def create_s2pro_sglang_engine(
         server_args.page_size,
     )
 
-    # Create prefill and decode managers
     prefill_mgr = PrefillManager(
         page_size=server_args.page_size,
         chunked_prefill_size=server_args.chunked_prefill_size,

@@ -18,7 +18,7 @@ PYTHON_BIN="${PYTHON_BIN:-python}"
 BACKEND_PORT="${PORT:-8000}"
 GRADIO_PORT="7899"
 GRADIO_SHARE=""
-MODEL_PATH="${MODEL_PATH:-/root/.cache/huggingface/s2-pro/s2-pro}"
+MODEL_PATH="${MODEL_PATH:-fishaudio/s2-pro}"
 CONFIG_PATH="${REPO_DIR}/examples/configs/s2pro_tts.yaml"
 
 while [[ $# -gt 0 ]]; do

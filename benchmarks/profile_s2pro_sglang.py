@@ -10,7 +10,7 @@ Tests single-request and batched-request scenarios.
 
 Usage:
     CUDA_VISIBLE_DEVICES=0 python benchmarks/profile_s2pro_sglang.py \
-        --checkpoint /root/.cache/huggingface/s2-pro/s2-pro \
+        --checkpoint fishaudio/s2-pro \
         --testset /tmp/seed-tts-eval/seedtts_testset/en/meta.lst \
         --max-samples 10 --batch-sizes 1,2,4
 """
@@ -36,7 +36,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-CHECKPOINT = "/root/.cache/huggingface/s2-pro/s2-pro"
+CHECKPOINT = "fishaudio/s2-pro"
 TESTSET = "/tmp/seed-tts-eval/seedtts_testset/en/meta.lst"
 
 
@@ -694,7 +694,7 @@ def parse_args():
     p.add_argument("--checkpoint", default=CHECKPOINT)
     p.add_argument("--testset", default=TESTSET)
     p.add_argument("--output-dir", default="results/s2pro_sglang_profile")
-    p.add_argument("--max-samples", type=int, default=10)
+    p.add_argument("--max-samples", type=int, default=0)
     p.add_argument("--max-new-tokens", type=int, default=2048)
     p.add_argument("--top-k", type=int, default=30)
     p.add_argument(

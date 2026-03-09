@@ -197,7 +197,7 @@ def create_preprocessing_executor(model_path: str) -> PreprocessingExecutor:
 def create_sglang_tts_engine_executor(
     model_path: str,
     *,
-    device: str = "cuda:0",
+    device: str = "cuda",
     max_new_tokens: int = 2048,
     top_k: int = 30,
 ) -> EngineExecutor:
@@ -210,7 +210,6 @@ def create_sglang_tts_engine_executor(
     )
 
     # Load full model to extract audio_decoder, then let text model be GC'd
-    # (ModelWorker inside create_s2pro_sglang_engine loads its own text model)
     model, tokenizer, checkpoint_dir = _load_s2pro_model(model_path, device)
 
     num_codebooks = model.config.audio_decoder_config.num_codebooks
@@ -218,7 +217,7 @@ def create_sglang_tts_engine_executor(
 
     audio_decoder = model.audio_decoder
     audio_decoder.setup_caches(max_batch_size=1, dtype=torch.bfloat16)
-    audio_decoder._parent_ref = model  # prevent GC of shared embeddings
+    audio_decoder._parent_ref = model
 
     _patch_fish_config_for_sglang(checkpoint_dir)
     server_args = ServerArgs(
@@ -266,7 +265,7 @@ def create_sglang_tts_engine_executor(
 def create_vocoder_executor(
     model_path: str,
     *,
-    device: str = "cuda:0",
+    device: str = "cuda",
 ) -> PreprocessingExecutor:
     """Factory for the vocoder stage."""
     checkpoint_dir = _resolve_checkpoint(model_path)
@@ -276,8 +275,7 @@ def create_vocoder_executor(
         state = load_state(payload)
         output_codes = state.output_codes
 
-        # output_codes: [num_codebooks+1, T] — rows 1..N are codebook indices
-        codebook_codes = output_codes[1:].to(device)  # [num_codebooks, T]
+        codebook_codes = output_codes[1:].to(device)
 
         with torch.no_grad():
             audio = codec.from_indices(codebook_codes[None])
