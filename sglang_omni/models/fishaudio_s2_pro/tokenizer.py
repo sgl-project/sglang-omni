@@ -14,8 +14,12 @@ from dataclasses import dataclass
 from typing import Any
 
 import torch
-from sglang_omni.models.fishaudio_s2_pro.fish_speech.tokenizer import IM_END_TOKEN, SEMANTIC_TOKEN_TEMPLATE
 from transformers import PreTrainedTokenizerFast
+
+from sglang_omni.models.fishaudio_s2_pro.fish_speech.tokenizer import (
+    IM_END_TOKEN,
+    SEMANTIC_TOKEN_TEMPLATE,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -51,16 +55,6 @@ class S2ProTokenizerAdapter:
     def semantic_end_id(self) -> int:
         return self._tok.convert_tokens_to_ids(SEMANTIC_TOKEN_TEMPLATE.format(i=4095))
 
-    @property
-    def vocab_size(self) -> int:
-        return len(self._tok)
-
-    def encode(self, text: str) -> list[int]:
-        return self._tok.encode(text, add_special_tokens=False)
-
-    def decode(self, token_ids: list[int]) -> str:
-        return self._tok.decode(token_ids)
-
     def build_prompt(
         self,
         text: str,
@@ -71,8 +65,14 @@ class S2ProTokenizerAdapter:
         **kwargs: Any,
     ) -> dict[str, Any]:
         """Build an S2-Pro prompt using Qwen3 chat format."""
-        from sglang_omni.models.fishaudio_s2_pro.fish_speech.content_sequence import TextPart, VQPart
-        from sglang_omni.models.fishaudio_s2_pro.fish_speech.conversation import Conversation, Message
+        from sglang_omni.models.fishaudio_s2_pro.fish_speech.content_sequence import (
+            TextPart,
+            VQPart,
+        )
+        from sglang_omni.models.fishaudio_s2_pro.fish_speech.conversation import (
+            Conversation,
+            Message,
+        )
 
         conversation = Conversation()
 

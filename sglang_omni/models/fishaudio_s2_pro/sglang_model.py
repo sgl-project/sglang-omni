@@ -406,32 +406,6 @@ class S2ProSGLangTextModel(nn.Module):
         return True
 
 
-class S2ProSGLangModel(nn.Module):
-    """Composite model: paged text model + static-cache audio decoder.
-
-    The text model uses SGLang's RadixAttention for paged KV.
-    The audio decoder keeps its original fish_speech static KVCache.
-    """
-
-    def __init__(
-        self,
-        text_model: S2ProSGLangTextModel,
-        audio_decoder: nn.Module,
-    ) -> None:
-        super().__init__()
-        self.text_model = text_model
-        self.audio_decoder = audio_decoder
-
-    def forward(
-        self,
-        input_ids: Tensor,
-        positions: Tensor,
-        forward_batch: ForwardBatch,
-        input_embeds: Optional[Tensor] = None,
-    ):
-        return self.text_model(input_ids, positions, forward_batch, input_embeds)
-
-
 def _default_weight_loader(param: nn.Parameter, loaded_weight: Tensor):
     param.data.copy_(loaded_weight)
 

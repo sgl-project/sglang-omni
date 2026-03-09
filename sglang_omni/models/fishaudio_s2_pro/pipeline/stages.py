@@ -280,7 +280,6 @@ def create_vocoder_executor(
         codebook_codes = output_codes[1:].to(device)  # [num_codebooks, T]
 
         with torch.no_grad():
-            # s2-pro-alpha codec: from_indices([B, N, T]) -> [B, 1, samples]
             audio = codec.from_indices(codebook_codes[None])
 
         audio_np = audio[0, 0].float().cpu()
