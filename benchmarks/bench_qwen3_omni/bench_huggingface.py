@@ -3,29 +3,25 @@ Benchmark Qwen3-Omni with Hugging Face.
 
 Usage:
 # image only
-python bench_huggingface.py --enable-image
+python bench_huggingface.py --image-path ../../tests/data/cars.jpg
 
 # video only
-python bench_huggingface.py --enable-video
+python bench_huggingface.py --video-path ../../tests/data/draw.mp4
 
 # audio only
-python bench_huggingface.py --enable-audio
+python bench_huggingface.py --audio-path ../../tests/data/cough.wav
 
 # all modalities
-python bench_huggingface.py --enable-image --enable-video --enable-audio
+python bench_huggingface.py --image-path ../../tests/data/cars.jpg --video-path ../../tests/data/draw.mp4 --audio-path ../../tests/data/cough.wav
 
 Options:
   --img-path TEXT        Path to the image file
   --video-path TEXT      Path to the video file
   --audio-path TEXT      Path to the audio file
-  --enable-image         Enable image input
-  --enable-video         Enable video input
-  --enable-audio         Enable audio input
 """
 
 import argparse
 import time
-from pathlib import Path
 
 import numpy as np
 import torch
@@ -39,21 +35,14 @@ from transformers.generation.stopping_criteria import (
     StoppingCriteriaList,
 )
 
-ROOT_DIR = Path(__file__).parent.parent.parent
-TEST_DATA_DIR = ROOT_DIR.joinpath("tests/data")
-SAMPLE_IMG_PATH = TEST_DATA_DIR.joinpath("cars.jpg")
-SAMPLE_VIDEO_PATH = TEST_DATA_DIR.joinpath("draw.mp4")
-SAMPLE_AUDIO_PATH = TEST_DATA_DIR.joinpath("cough.wav")
-
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--img-path", type=str, default=str(SAMPLE_IMG_PATH))
-    parser.add_argument("--video-path", type=str, default=str(SAMPLE_VIDEO_PATH))
-    parser.add_argument("--audio-path", type=str, default=str(SAMPLE_AUDIO_PATH))
-    parser.add_argument("--enable-image", action="store_true")
-    parser.add_argument("--enable-video", action="store_true")
-    parser.add_argument("--enable-audio", action="store_true")
+    parser.add_argument("--image-path", type=str, default=None)
+    parser.add_argument("--video-path", type=str, default=None)
+    parser.add_argument("--audio-path", type=str, default=None)
+    parser.add_argument("--max-new-tokens", type=int, default=256)
+    parser.add_argument("--temperature", type=float, default=0.0)
     return parser.parse_args()
 
 
@@ -86,7 +75,7 @@ def build_thinker_and_processor(model_path: str):
         model_path,
         dtype="bfloat16",
         device_map="cuda",
-        attn_implementation="flash_attention_2",
+        attn_implementation="sdpa",
     )
     processor = Qwen3OmniMoeProcessor.from_pretrained(model_path)
     return model, processor
@@ -97,11 +86,11 @@ def main():
     args = parse_args()
     content = []
 
-    if args.enable_image:
-        content.append({"type": "image", "image": args.img_path})
-    if args.enable_video:
+    if args.image_path:
+        content.append({"type": "image", "image": args.image_path})
+    if args.video_path:
         content.append({"type": "video", "video": args.video_path})
-    if args.enable_audio:
+    if args.audio_path:
         content.append({"type": "audio", "audio": args.audio_path})
 
     end_to_end_time_list = []
@@ -121,7 +110,10 @@ def main():
             "role": "user",
             "content": [
                 *content,
-                {"type": "text", "text": "What is in the content of these files?"},
+                {
+                    "type": "text",
+                    "text": "Can you describe the content of these files in detail?",
+                },
             ],
         },
     ]
@@ -149,7 +141,7 @@ def main():
                 ).to(model.device)
 
             with Timer("generation") as generation_timer:
-                if args.enable_audio:
+                if args.audio_path:
                     inputs["input_features"] = inputs["input_features"].to(
                         torch.bfloat16
                     )
@@ -157,7 +149,7 @@ def main():
                     **inputs,
                     use_audio_in_video=True,
                     generation_config=GenerationConfig(
-                        max_new_tokens=256, temperature=0.8
+                        max_new_tokens=args.max_new_tokens, temperature=args.temperature
                     ),
                 )
                 input_ids_length = inputs["input_ids"].shape[1]

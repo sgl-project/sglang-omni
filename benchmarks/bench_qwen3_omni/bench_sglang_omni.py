@@ -70,12 +70,14 @@ def parse_args() -> argparse.Namespace:
         help="Hugging Face model id",
     )
     parser.add_argument(
-        "--prompt", type=str, default="What is in the content of these files?"
+        "--prompt",
+        type=str,
+        default="Can you describe the content of these files in detail?",
     )
     parser.add_argument("--dtype", type=str, default="bfloat16")
     parser.add_argument("--thinker-max-seq-len", type=int, default=2048)
     parser.add_argument("--max-new-tokens", type=int, default=256)
-    parser.add_argument("--temperature", type=float, default=0.8)
+    parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument("--image-path", type=str, default=None)
     parser.add_argument("--video-path", type=str, default=None)
     parser.add_argument("--video-fps", type=float, default=2.0)
@@ -101,6 +103,15 @@ async def main_async(args: argparse.Namespace) -> None:
     audios = [args.audio_path] if args.audio_path else []
     request = {
         "messages": [
+            {
+                "role": "system",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "You are Qwen, a virtual human developed by the Qwen Team, Alibaba Group, capable of perceiving auditory and visual inputs, as well as generating text and speech.",
+                    }
+                ],
+            },
             {"role": "user", "content": args.prompt},
         ],
         "images": images,
@@ -110,7 +121,7 @@ async def main_async(args: argparse.Namespace) -> None:
         "audios": audios,
         "audio_target_sr": args.audio_target_sr,
     }
-
+    number_gen_tokens = -1
     with Timer("Run inference") as inference_timer:
         try:
             result = await coordinator.submit(
@@ -123,10 +134,16 @@ async def main_async(args: argparse.Namespace) -> None:
                     },
                 ),
             )
-            print(result)
+            number_gen_tokens = result["usage"]["completion_tokens"]
         finally:
             await runner.stop()
     print(f"Inference latency: {inference_timer.elapsed_time} seconds")
+    if number_gen_tokens == -1:
+        print("Failed to get number of generated tokens")
+    else:
+        print(f"Number of generated tokens: {number_gen_tokens}")
+        avg_throughput = number_gen_tokens / inference_timer.elapsed_time
+        print(f"Average throughput: {avg_throughput} tokens/second")
 
 
 def main() -> None:
