@@ -175,10 +175,13 @@ class Client:
             ClientError: If the pipeline produces no audio output.
         """
         audio_chunks: list[Any] = []
+        sample_rate: int | None = None
 
         async for chunk in self.generate(request, request_id=request_id):
             if chunk.audio_data is not None:
                 audio_chunks.append(chunk.audio_data)
+            if chunk.sample_rate is not None:
+                sample_rate = chunk.sample_rate
 
         if not audio_chunks:
             raise ClientError("No audio output generated from the pipeline.")
@@ -188,11 +191,14 @@ class Client:
         else:
             audio_data = np.concatenate([to_numpy(c) for c in audio_chunks])
 
-        audio_bytes, mime_type = encode_audio(
-            audio_data,
-            response_format=response_format,
-            speed=speed,
-        )
+        encode_kwargs: dict[str, Any] = {
+            "response_format": response_format,
+            "speed": speed,
+        }
+        if sample_rate is not None:
+            encode_kwargs["sample_rate"] = sample_rate
+
+        audio_bytes, mime_type = encode_audio(audio_data, **encode_kwargs)
 
         # Derive actual format from MIME type (encode_audio may fall back
         # to WAV if the requested codec is unavailable).
@@ -240,6 +246,9 @@ class Client:
             chunk.audio_data = audio_data
             if chunk.modality == "text":
                 chunk.modality = "audio"
+        sample_rate = data.get("sample_rate")
+        if sample_rate is not None:
+            chunk.sample_rate = sample_rate
 
     @staticmethod
     def _build_omni_request(request: GenerateRequest) -> OmniRequest:

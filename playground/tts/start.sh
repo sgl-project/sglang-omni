@@ -2,44 +2,35 @@
 set -euo pipefail
 
 # ---------------------------------------------------------------------------
-# Start the Gradio playground: launches the backend server, waits for it to
-# become healthy, then starts the Gradio UI.  One command, one terminal.
-#
-# Prerequisites:
-#   pip install "sglang-omni[gradio]"   # or: pip install gradio httpx
+# Start the S2-Pro TTS playground: launches the backend, waits for health,
+# then starts the Gradio UI.
 #
 # Usage:
-#   ./playground/gradio/start.sh --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct
-#   CUDA_VISIBLE_DEVICES=0 ./playground/gradio/start.sh --model-path <path>
-#   ./playground/gradio/start.sh --model-path <path> --port 8080 --gradio-port 7861
+#   CUDA_VISIBLE_DEVICES=0 ./playground/tts/start.sh
+#   ./playground/tts/start.sh --port 8080 --gradio-port 7861 --share
+#   ./playground/tts/start.sh --model-path /path/to/s2-pro
 # ---------------------------------------------------------------------------
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 PYTHON_BIN="${PYTHON_BIN:-python}"
 
 BACKEND_PORT="${PORT:-8000}"
-GRADIO_PORT="7860"
+GRADIO_PORT="7899"
 GRADIO_SHARE=""
+MODEL_PATH="${S2PRO_CKPT:-${MODEL_PATH:-fishaudio/s2-pro}}"
+CONFIG_PATH="${REPO_DIR}/examples/configs/s2pro_tts.yaml"
 
-# Parse arguments: split into backend args vs gradio-specific flags
-BACKEND_ARGS=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --model-path)    MODEL_PATH="$2"; shift 2 ;;
     --port)          BACKEND_PORT="$2"; shift 2 ;;
     --gradio-port)   GRADIO_PORT="$2"; shift 2 ;;
     --share)         GRADIO_SHARE="--share"; shift ;;
-    --pipeline)      shift 2 ;;
-    *)               BACKEND_ARGS+=("$1"); shift ;;
+    --config)        CONFIG_PATH="$2"; shift 2 ;;
+    *)               echo "Unknown arg: $1"; exit 1 ;;
   esac
 done
-
-if [[ ${#BACKEND_ARGS[@]} -eq 0 ]]; then
-  echo "Usage: $0 --model-path <model> [--port PORT] [--gradio-port PORT] [--share]"
-  echo ""
-  echo "Example:"
-  echo "  CUDA_VISIBLE_DEVICES=0 $0 --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct"
-  exit 1
-fi
 
 # Check port availability before loading models (try actual bind)
 if ! python -c "import socket; s=socket.socket(); s.bind(('0.0.0.0',${BACKEND_PORT})); s.close()" 2>/dev/null; then
@@ -50,7 +41,6 @@ fi
 
 API_BASE="http://localhost:${BACKEND_PORT}"
 
-# Clean up background server on exit
 cleanup() {
   if [[ -n "${SERVER_PID:-}" ]]; then
     kill "${SERVER_PID}" 2>/dev/null || true
@@ -60,41 +50,42 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 echo "============================================================"
-echo "  SGLang-Omni Gradio Playground"
+echo "  S2-Pro TTS Playground"
 echo "============================================================"
 echo ""
-echo "  Backend API:  ${API_BASE}"
-echo "  Gradio UI:    http://localhost:${GRADIO_PORT}"
+echo "  Model:       ${MODEL_PATH}"
+echo "  Backend API: ${API_BASE}"
+echo "  Gradio UI:   http://localhost:${GRADIO_PORT}"
 echo ""
 echo "============================================================"
-echo ""
 
-# 1. Start the backend server in the background
-echo "[1/2] Starting backend server with arguments: ${BACKEND_ARGS[@]}"
+# 1. Start backend
+echo "[1/2] Starting S2-Pro server..."
 "${PYTHON_BIN}" -m sglang_omni.cli.cli serve \
-  "${BACKEND_ARGS[@]}" \
+  --model-path "${MODEL_PATH}" \
+  --config "${CONFIG_PATH}" \
   --port "${BACKEND_PORT}" &
 SERVER_PID=$!
 
-# 2. Wait for the server to become healthy
-echo "[2/2] Waiting for server to be ready..."
+# 2. Wait for health
+echo "[2/2] Waiting for server..."
 for i in $(seq 1 120); do
   if ! kill -0 "${SERVER_PID}" 2>/dev/null; then
-    echo "ERROR: Backend server exited unexpectedly."
+    echo "ERROR: Server exited unexpectedly."
     exit 1
   fi
-  if curl -s "${API_BASE}/health" 2>/dev/null | grep -q "healthy"; then
+  if curl -s "${API_BASE}/health" 2>/dev/null | grep -q "ok\|healthy\|true"; then
     echo "Server is ready."
     break
   fi
   if [[ $i -eq 120 ]]; then
-    echo "ERROR: Server did not become healthy within 600s."
+    echo "ERROR: Server did not start within 600s."
     exit 1
   fi
   sleep 5
 done
 
-# 3. Launch the Gradio UI (foreground — Ctrl-C stops everything via trap)
+# 3. Launch Gradio
 echo ""
 echo "============================================================"
 echo "  Server is ready!"

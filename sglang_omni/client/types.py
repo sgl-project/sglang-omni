@@ -130,6 +130,7 @@ class GenerateChunk:
     modality: str = "text"
     # Multi-modal output data (e.g. audio waveform bytes, image bytes)
     audio_data: Any = None
+    sample_rate: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -144,6 +145,7 @@ class GenerateChunk:
             "stage_name": self.stage_name,
             "modality": self.modality,
             "audio_data": self.audio_data,
+            "sample_rate": self.sample_rate,
         }
 
 

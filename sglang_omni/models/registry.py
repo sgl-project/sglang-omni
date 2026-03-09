@@ -37,9 +37,7 @@ def import_pipeline_configs(
                 config_cls = getattr(config_module, "EntryClass")
                 model_arch_to_config_cls[config_cls.architecture] = config_cls
             else:
-                raise ValueError(
-                    f"Config module {module.__name__} does not have a submodule {config_path}"
-                )
+                logger.debug(f"Skipping {module.__name__}: no submodule {config_path}")
     return model_arch_to_config_cls
 
 
