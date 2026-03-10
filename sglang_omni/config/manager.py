@@ -55,10 +55,14 @@ class ConfigManager:
                 extra_args[key] = False
             elif value.lower() == "none":
                 extra_args[key] = None
-            elif value.isnumeric():
-                extra_args[key] = float(value) if "." in value else int(value)
             else:
-                extra_args[key] = value
+                try:
+                    extra_args[key] = int(value)
+                except ValueError:
+                    try:
+                        extra_args[key] = float(value)
+                    except ValueError:
+                        extra_args[key] = value
         return extra_args
 
     def merge_config(self, extra_args: dict[str, Any]) -> PipelineConfig:
