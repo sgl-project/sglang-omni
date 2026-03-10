@@ -6,7 +6,6 @@ from __future__ import annotations
 from typing import Any
 
 import torch
-from sglang.srt.server_args import ServerArgs
 from transformers import AutoTokenizer
 
 from sglang_omni.engines.omni import (
@@ -310,6 +309,8 @@ def create_sglang_thinker_executor_from_config(
     This keeps pipeline config args plain dict types while still constructing
     a typed ServerArgs object internally.
     """
+    from sglang.srt.server_args import ServerArgs
+
     server_args_kwargs: dict[str, Any] = {
         "model_path": model_path,
         "trust_remote_code": True,
@@ -383,6 +384,26 @@ def create_decode_executor(model_path: str) -> PreprocessingExecutor:
             ):
                 result["text"] = tokenizer.decode(output_ids, skip_special_tokens=True)
                 result.setdefault("modality", "text")
+
+        prompt_tokens = 0
+        prompt = state.prompt
+        if isinstance(prompt, dict):
+            input_ids = prompt.get("input_ids")
+            try:
+                prompt_tokens = len(input_ids)
+            except TypeError:
+                pass
+
+        output_ids = (
+            thinker_out.get("output_ids") if isinstance(thinker_out, dict) else None
+        )
+        completion_tokens = len(output_ids) if isinstance(output_ids, list) else 0
+
+        result["usage"] = {
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": prompt_tokens + completion_tokens,
+        }
 
         payload.data = result
         return payload
