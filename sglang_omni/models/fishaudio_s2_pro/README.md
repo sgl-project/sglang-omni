@@ -1,10 +1,12 @@
 # SGLang Day-0 Support for FishAudio S2 Text-to-Speech
 
-## TLDR
+## TL;DR
 
 We are excited to announce SGLang's day-0 support for FishAudio S2, a frontier text-to-speech model with high-quality voice cloning capabilities. By integrating S2's backbone into SGLang, we achieve an RTF of 0.34 and 63.3 tok/s on single H200 GPU at single batch size.
 
 This work is a collaboration between the SGLang Omni Team and [FishAudio Team](https://fish.audio). We thank the FishAudio team for their support in model architecture and implementation detais.
+
+Acknowledgments: Jingwen Gu, Yitong Guan, Xiaole Guo, Shidong Li, Shuai Shi, Junrong Lin, Fan Yin, Leng Yue, Shenggui Li, Chenyang Zhao
 
 ## Background and Motivation
 
@@ -153,27 +155,5 @@ def _truncate_rope_to_bf16(model: torch.nn.Module) -> None:
 ### Attention Backend Divergence Causing Early Stopping
 
 SGLang defaults to flashinfer for attention, but S2 was trained with FlashAttention. When future engineering meet early EOS token issue, this could suggest the fix.
-
-
-### BF16 RoPE Precision Mismatch
-
-SGLang's default RoPE implementation precomputes `cos_sin_cache` in float32, but S2's model was trained entirely in bfloat16 including the RoPE frequencies. The precision difference caused logit divergence producing garbled audio with abnormal long sequence of tokens.
-
-It's worth attention for any future engineering for fish audio inference infrastructure, since it's uncommon and hard to debug when accuracy of inference engine is higher than the precision of the model. Below is a simple fix once problem identified.
-
-```python
-def _truncate_rope_to_bf16(model: torch.nn.Module) -> None:
-    for module in model.modules():
-        if hasattr(module, "cos_sin_cache"):
-            module.cos_sin_cache.data = module.cos_sin_cache.data.to(torch.bfloat16).to(
-                torch.float32
-            )
-```
-
-### Attention Backend Divergence Causing Early Stopping
-
-SGLang defaults to flashinfer for attention, but S2 was trained with FlashAttention. When future engineering meet early EOS token issue, this could suggest the fix.
-
-
 
 </details>
