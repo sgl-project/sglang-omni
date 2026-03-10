@@ -6,8 +6,10 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 import torch
+from sglang.srt.managers.schedule_batch import ScheduleBatch
 from sglang.srt.managers.scheduler import GenerationBatchResult
 from sglang.srt.mem_cache.common import release_kv_cache
+from sglang.srt.model_executor.forward_batch_info import ForwardBatch
 
 from ..types import (
     ModelRunnerOutput,
@@ -44,8 +46,14 @@ class SGLangBatchPlanner:
         self.prefill_manager = prefill_manager
         self.decode_manager = decode_manager
         self.server_args = server_args
+
+        # The ScheduleBatch from the *previous* step, needed for batch merging.
         self.last_batch: Any | None = None
         self.forward_ct: int = 0
+
+        # SGLang rid → OmniEngine SchedulerRequest.
+        # SGLang's ScheduleBatch exposes reqs by rid,
+        # OmniEngine tracks requests by request_id.
         self.req_id_map: dict[str, SchedulerRequest] = {}
         self._cached_schedule_batch: Any | None = None
 
@@ -60,6 +68,7 @@ class SGLangBatchPlanner:
         active_request_ids.update(req.request_id for req in running)
         self._prune_inactive_state(active_request_ids)
 
+        # --- Sync new waiting requests into PrefillManager ---
         for sched_req in waiting:
             data: SGLangARRequestData = sched_req.data
             if not data.synced:
@@ -73,6 +82,8 @@ class SGLangBatchPlanner:
             self.server_args.max_running_requests - running_bs, 0
         )
 
+        # Pass None when running_batch is empty so PrefillManager doesn't
+        # try to account for decode slots that don't exist yet.
         running_batch_for_prefill = self.decode_manager.running_batch
         if (
             running_batch_for_prefill is not None
@@ -80,12 +91,14 @@ class SGLangBatchPlanner:
         ):
             running_batch_for_prefill = None
 
+        # Prefill first scheduling
         schedule_batch = self.prefill_manager.schedule_next_batch(
             running_batch_for_prefill,
             num_allocatable_reqs,
             new_token_ratio=self.decode_manager.new_token_ratio,
         )
 
+        # Fallback to decode
         if schedule_batch is None and self.decode_manager.runnable:
             schedule_batch = self.decode_manager.schedule_next_batch(self.forward_ct)
 
@@ -96,6 +109,7 @@ class SGLangBatchPlanner:
         self._cached_schedule_batch = schedule_batch
         self.forward_ct += 1
 
+        # Map SGLang reqs back to SchedulerRequest, filter stale entries.
         selected: list[SchedulerRequest] = []
         keep_indices: list[int] = []
         for i, req in enumerate(schedule_batch.reqs):
@@ -109,6 +123,7 @@ class SGLangBatchPlanner:
             elif sched_req is None:
                 logger.warning("SGLang req %s not found in req_id_map", req.rid)
 
+        # If some reqs were filtered, shrink the ScheduleBatch accordingly.
         if len(keep_indices) != len(schedule_batch.reqs):
             if keep_indices:
                 schedule_batch.filter_batch(keep_indices=keep_indices)
@@ -120,9 +135,17 @@ class SGLangBatchPlanner:
         return selected
 
     def build_batch(self, requests: list[SchedulerRequest]) -> Any:
+        """The ScheduleBatch is built during select_requests().
+        It is passed through SchedulerOutput.batch_data to ModelRunner,
+        being opaque to Scheduler and Engine.
+        """
         return self._cached_schedule_batch
 
     def _post_step_operations(self):
+        """Post-step cleanup: handle chunked prefill state, merge extend
+        batches into the decode running batch, and evict finished requests
+        from the running batch.
+        """
         chunked_req_to_exclude = set()
         active_chunked_req = self.prefill_manager.chunked_req
         if active_chunked_req is not None:
@@ -138,6 +161,7 @@ class SGLangBatchPlanner:
         if self.last_batch is None:
             return
 
+        # Merge extend (prefill) batch into running (decode) batch.
         if self.last_batch.forward_mode.is_extend():
             if self.last_batch.chunked_req is not None:
                 chunked_req_to_exclude.add(self.last_batch.chunked_req)
@@ -155,6 +179,7 @@ class SGLangBatchPlanner:
                 else:
                     self.decode_manager.running_batch.merge_batch(self.last_batch)
 
+        # Evict finished requests from the running batch.
         if not self.decode_manager.running_batch.is_empty():
             finished_indices = []
             for i, req in enumerate(self.decode_manager.running_batch.reqs):
@@ -175,8 +200,6 @@ class SGLangBatchPlanner:
                 if keep:
                     self.decode_manager.running_batch.filter_batch(keep_indices=keep)
                 else:
-                    from sglang.srt.managers.schedule_batch import ScheduleBatch
-
                     self.decode_manager.running_batch = ScheduleBatch(
                         reqs=[], batch_is_full=False
                     )
@@ -187,6 +210,11 @@ class SGLangBatchPlanner:
         self.last_batch = schedule_batch
 
     def _prune_inactive_state(self, active_request_ids: set[str]) -> None:
+        """Remove finished/aborted requests from internal tracking structures.
+
+        Cleans req_id_map, PrefillManager.waiting_queue, and the decode
+        running batch so that stale entries don't accumulate.
+        """
         inactive_rids: set[str] = set()
         for rid, sched_req in list(self.req_id_map.items()):
             if sched_req.request_id not in active_request_ids or sched_req.status in (
@@ -199,6 +227,7 @@ class SGLangBatchPlanner:
         if not inactive_rids:
             return
 
+        # Prune PrefillManager waiting queue
         if self.prefill_manager.waiting_queue:
             self.prefill_manager.waiting_queue = [
                 req
@@ -206,6 +235,7 @@ class SGLangBatchPlanner:
                 if req.rid not in inactive_rids
             ]
 
+        # Prune decode running batch
         running_batch = self.decode_manager.running_batch
         if running_batch is None or running_batch.is_empty():
             return
@@ -219,8 +249,6 @@ class SGLangBatchPlanner:
         if keep_indices:
             running_batch.filter_batch(keep_indices=keep_indices)
         else:
-            from sglang.srt.managers.schedule_batch import ScheduleBatch
-
             self.decode_manager.running_batch = ScheduleBatch(
                 reqs=[], batch_is_full=False
             )
@@ -275,6 +303,7 @@ class SGLangIterationController:
         data: SGLangARRequestData = request.data
         req = data.req
 
+        # Chunked prefill
         if req.is_chunked > 0:
             output.data = None
             req.is_chunked -= 1
@@ -320,6 +349,14 @@ class SGLangModelRunner:
         self._image_token_id = thinker_cfg.image_token_id
         self._video_token_id = thinker_cfg.video_token_id
         self._audio_token_id = thinker_cfg.audio_token_id
+
+    @property
+    def device(self) -> torch.device:
+        """OmniEngine._step() depends on this property to decide whether to
+        use thread pool to execute forward pass. Provide device to avoid
+        to enter fallback path.
+        """
+        return self.model_worker.device
 
     @staticmethod
     def _get_inner_model_components(model):
@@ -506,9 +543,7 @@ class SGLangModelRunner:
         )
 
     def execute(self, scheduler_output: SchedulerOutput) -> ModelRunnerOutput:
-        from sglang.srt.model_executor.forward_batch_info import ForwardBatch
-
-        schedule_batch = scheduler_output.batch_data
+        schedule_batch: ScheduleBatch | None = scheduler_output.batch_data
 
         if schedule_batch is None:
             return ModelRunnerOutput(outputs={}, req_ids=[], req_id_to_index={})
