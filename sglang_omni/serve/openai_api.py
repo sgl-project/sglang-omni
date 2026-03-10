@@ -417,6 +417,18 @@ def _build_chat_generate_request(req: ChatCompletionRequest) -> GenerateRequest:
         metadata["images"] = images
     if videos:
         metadata["videos"] = videos
+    if req.use_audio_in_video is not None:
+        metadata["use_audio_in_video"] = req.use_audio_in_video
+    if req.video_fps is not None:
+        metadata["video_fps"] = req.video_fps
+    if req.sampled_video_fps is not None:
+        metadata["sampled_video_fps"] = req.sampled_video_fps
+    if req.video_seconds_per_chunk is not None:
+        metadata["video_seconds_per_chunk"] = req.video_seconds_per_chunk
+    if req.video_position_id_per_seconds is not None:
+        metadata["video_position_id_per_seconds"] = req.video_position_id_per_seconds
+    if req.audio_target_sr is not None:
+        metadata["audio_target_sr"] = req.audio_target_sr
 
     return GenerateRequest(
         model=req.model,

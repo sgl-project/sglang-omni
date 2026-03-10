@@ -376,10 +376,11 @@ def _extract_inputs(request: GenerateRequest) -> Any:
     audios = request.metadata.get("audios")
     images = request.metadata.get("images")
     videos = request.metadata.get("videos")
+    use_audio_in_video = request.metadata.get("use_audio_in_video")
 
-    # If we have any media, return a dict with messages and media
+    # If we have any media or preprocessing options, return a structured dict.
     # Otherwise, return just the messages list (for backward compatibility)
-    if audios or images or videos:
+    if audios or images or videos or use_audio_in_video is not None:
         result = {"messages": messages}
         if images:
             result["images"] = images
@@ -387,6 +388,8 @@ def _extract_inputs(request: GenerateRequest) -> Any:
             result["audios"] = audios
         if videos:
             result["videos"] = videos
+        if use_audio_in_video is not None:
+            result["use_audio_in_video"] = use_audio_in_video
         return result
     return messages
 
