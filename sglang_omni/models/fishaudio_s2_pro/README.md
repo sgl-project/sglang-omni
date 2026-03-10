@@ -2,11 +2,11 @@
 
 ## TL;DR
 
-We are excited to announce SGLang's day-0 support for FishAudio S2, a frontier text-to-speech model with high-quality voice cloning capabilities. By integrating S2's backbone into SGLang, we achieve an RTF of 0.34 and 63.3 tok/s on single H200 GPU at single batch size.
+We are excited to announce SGLang's day-0 support for [Fish Audio S2](https://fish.audio/blog/fish-audio-open-sources-s2/), a frontier text-to-speech model with high-quality voice cloning capabilities. By integrating S2's backbone into SGLang, we achieve an RTF of 0.34 and 63.3 tok/s on single H200 GPU at single batch size.
 
-This work is a collaboration between the SGLang Omni Team and [FishAudio Team](https://fish.audio). We thank the FishAudio team for their support in model architecture and implementation detais.
+This work is a collaboration between the SGLang Omni Team and [Fish Audio Team](https://fish.audio). We thank the FishAudio team for their support in model architecture and implementation detais.
 
-Acknowledgments: Jingwen Gu, Yitong Guan, Xiaole Guo, Shidong Li, Shuai Shi, Junrong Lin, Fan Yin, Leng Yue, Shenggui Li, Chenyang Zhao
+Acknowledgments: Jingwen Gu, Yitong Guan, Xiaole Guo, Shidong Li, Shuai Shi, Junrong Lin, Fan Yin, Shijia Liao, Shenggui Li, Chenyang Zhao
 
 ## Background and Motivation
 
