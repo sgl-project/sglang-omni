@@ -361,6 +361,8 @@ class SGLangModelRunner:
             req_input_ids = forward_batch.input_ids[start:end]
             consumed = req._omni_consumed or {}
 
+            visual_pad_value = omni_inputs.get("_visual_pad_value")
+
             for modality, token_id in [
                 ("image", image_token_id),
                 ("video", video_token_id),
@@ -369,7 +371,10 @@ class SGLangModelRunner:
                 embeds = omni_inputs.get(f"{modality}_embeds")
                 if embeds is None:
                     continue
-                mask = req_input_ids == token_id
+                detect_id = (
+                    visual_pad_value if visual_pad_value is not None else token_id
+                )
+                mask = req_input_ids == detect_id
                 if not mask.any():
                     continue
                 n_tokens = int(mask.sum().item())
@@ -388,9 +393,14 @@ class SGLangModelRunner:
 
             if ds_embeds is not None or image_ds is not None or video_ds is not None:
                 has_deepstack = True
-                img_mask = req_input_ids == image_token_id
-                vid_mask = req_input_ids == video_token_id
-                visual_mask = img_mask | vid_mask
+                if visual_pad_value is not None:
+                    visual_mask = req_input_ids == visual_pad_value
+                    img_mask = visual_mask
+                    vid_mask = visual_mask
+                else:
+                    img_mask = req_input_ids == image_token_id
+                    vid_mask = req_input_ids == video_token_id
+                    visual_mask = img_mask | vid_mask
 
                 if ds_embeds is None:
                     if image_ds and video_ds:

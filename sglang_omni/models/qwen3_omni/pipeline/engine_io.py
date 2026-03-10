@@ -154,6 +154,26 @@ def _compute_mrope_positions(
     return mrope_positions.squeeze(1), mrope_position_delta
 
 
+def _substitute_visual_tokens(
+    input_ids_list: list[int],
+    visual_hash: int,
+    thinker_config: Any,
+) -> list[int]:
+    """Replace visual placeholder token IDs with a hash value."""
+    token_ids_to_replace = set()
+    for attr in ("image_token_id", "video_token_id", "audio_token_id"):
+        token_id = getattr(thinker_config, attr, None)
+        if token_id is not None:
+            token_ids_to_replace.add(token_id)
+
+    if not token_ids_to_replace:
+        return input_ids_list
+
+    return [
+        visual_hash if tok in token_ids_to_replace else tok for tok in input_ids_list
+    ]
+
+
 def build_sglang_thinker_request(
     state: PipelineState,
     *,
@@ -208,10 +228,21 @@ def build_sglang_thinker_request(
 
     # Build SGLang Req
     rid = request_id or "req-0"
+
+    padded_input_ids = input_ids_list
+    visual_cache_key = thinker_inputs.get("visual_cache_key")
+    if thinker_config is not None and visual_cache_key is not None:
+        visual_hash = hash(visual_cache_key) % max(vocab_size, 1)
+        padded_input_ids = _substitute_visual_tokens(
+            input_ids_list, visual_hash, thinker_config
+        )
+        model_inputs = dict(model_inputs)
+        model_inputs["_visual_pad_value"] = visual_hash
+
     req = Req(
         rid=rid,
         origin_input_text="",
-        origin_input_ids=input_ids_list,
+        origin_input_ids=padded_input_ids,
         sampling_params=sampling_params,
         vocab_size=vocab_size,
     )
