@@ -26,6 +26,47 @@ from sglang_omni.proto import StagePayload
 logger = logging.getLogger(__name__)
 
 
+class _DecodeOnlyRVQ(torch.nn.Module):
+    """Minimal RVQ path needed by DAC.from_indices()."""
+
+    def __init__(self, quantizer: torch.nn.Module) -> None:
+        super().__init__()
+        self.semantic_quantizer = quantizer.semantic_quantizer
+        self.quantizer = quantizer.quantizer
+        self.post_module = quantizer.post_module
+        self.upsample = quantizer.upsample
+
+    def decode(self, indices: torch.Tensor) -> torch.Tensor:
+        indices = indices.clone()
+        indices[:, 0] = torch.clamp(
+            indices[:, 0], max=self.semantic_quantizer.codebook_size - 1
+        )
+        indices[:, 1:] = torch.clamp(
+            indices[:, 1:], max=self.quantizer.codebook_size - 1
+        )
+
+        z_q_semantic = self.semantic_quantizer.from_codes(indices[:, :1])[0]
+        z_q_residual = self.quantizer.from_codes(indices[:, 1:])[0]
+        z_q = z_q_semantic + z_q_residual
+        z_q = self.post_module(z_q)
+        z_q = self.upsample(z_q)
+        return z_q
+
+
+class _DecodeOnlyDAC(torch.nn.Module):
+    """Minimal DAC wrapper for inference from discrete codes."""
+
+    def __init__(self, codec: torch.nn.Module) -> None:
+        super().__init__()
+        self.quantizer = _DecodeOnlyRVQ(codec.quantizer)
+        self.decoder = codec.decoder
+        self.sample_rate = codec.sample_rate
+
+    def from_indices(self, indices: torch.Tensor) -> torch.Tensor:
+        z = self.quantizer.decode(indices)
+        return self.decoder(z)
+
+
 # ---------------------------------------------------------------------------
 # Helpers (model loading)
 # ---------------------------------------------------------------------------
@@ -82,7 +123,13 @@ def _load_audio_decoder(
     return audio_decoder, num_codebooks, codebook_size, tokenizer, checkpoint
 
 
-def _load_codec(checkpoint_dir: str, device: str):
+def _load_codec(
+    checkpoint_dir: str,
+    device: str,
+    *,
+    decode_only: bool = False,
+    dtype: torch.dtype | None = None,
+):
     from hydra.utils import instantiate
     from omegaconf import OmegaConf
 
@@ -105,8 +152,10 @@ def _load_codec(checkpoint_dir: str, device: str):
         codec_path, map_location=device, mmap=True, weights_only=True
     )
     codec.load_state_dict(state_dict, strict=False, assign=True)
+    if decode_only:
+        codec = _DecodeOnlyDAC(codec)
     codec.eval()
-    codec.to(device)
+    codec.to(device=device, dtype=dtype)
     logger.info("DAC codec loaded in %.2fs", time.perf_counter() - t0)
     return codec
 
@@ -296,7 +345,13 @@ def create_vocoder_executor(
 ) -> PreprocessingExecutor:
     """Factory for the vocoder stage."""
     checkpoint_dir = _resolve_checkpoint(model_path)
-    codec = _load_codec(checkpoint_dir, device)
+    codec_dtype = torch.bfloat16 if device.startswith("cuda") else None
+    codec = _load_codec(
+        checkpoint_dir,
+        device,
+        decode_only=True,
+        dtype=codec_dtype,
+    )
 
     def _vocode(payload: StagePayload) -> StagePayload:
         state = load_state(payload)
