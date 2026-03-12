@@ -51,10 +51,16 @@ class S2ProAttention(nn.Module):
         self.scaling = head_dim**-0.5
 
         self.qkv_proj = QKVParallelLinear(
-            hidden_size, head_dim, num_heads, num_kv_heads, bias=False,
+            hidden_size,
+            head_dim,
+            num_heads,
+            num_kv_heads,
+            bias=False,
         )
         self.o_proj = RowParallelLinear(
-            num_heads * head_dim, hidden_size, bias=False,
+            num_heads * head_dim,
+            hidden_size,
+            bias=False,
         )
         self.rotary_emb = get_rope(
             head_dim,
@@ -64,8 +70,11 @@ class S2ProAttention(nn.Module):
             is_neox_style=False,
         )
         self.attn = RadixAttention(
-            num_heads, head_dim, self.scaling,
-            num_kv_heads=num_kv_heads, layer_id=layer_id,
+            num_heads,
+            head_dim,
+            self.scaling,
+            num_kv_heads=num_kv_heads,
+            layer_id=layer_id,
         )
         self.qk_norm = qk_norm
         if qk_norm:
@@ -73,7 +82,10 @@ class S2ProAttention(nn.Module):
             self.k_norm = RMSNorm(head_dim, eps=rms_norm_eps)
 
     def forward(
-        self, positions: Tensor, hidden_states: Tensor, forward_batch: ForwardBatch,
+        self,
+        positions: Tensor,
+        hidden_states: Tensor,
+        forward_batch: ForwardBatch,
     ) -> Tensor:
         qkv, _ = self.qkv_proj(hidden_states)
         q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
@@ -101,17 +113,25 @@ class S2ProDecoderLayer(nn.Module):
     ) -> None:
         super().__init__()
         self.self_attn = S2ProAttention(
-            hidden_size=hidden_size, num_heads=num_heads,
-            num_kv_heads=num_kv_heads, head_dim=head_dim,
-            layer_id=layer_id, rope_base=rope_base,
+            hidden_size=hidden_size,
+            num_heads=num_heads,
+            num_kv_heads=num_kv_heads,
+            head_dim=head_dim,
+            layer_id=layer_id,
+            rope_base=rope_base,
             max_position_embeddings=max_position_embeddings,
-            rms_norm_eps=rms_norm_eps, qk_norm=qk_norm,
+            rms_norm_eps=rms_norm_eps,
+            qk_norm=qk_norm,
         )
         self.gate_up_proj = MergedColumnParallelLinear(
-            hidden_size, [intermediate_size, intermediate_size], bias=False,
+            hidden_size,
+            [intermediate_size, intermediate_size],
+            bias=False,
         )
         self.down_proj = RowParallelLinear(
-            intermediate_size, hidden_size, bias=False,
+            intermediate_size,
+            hidden_size,
+            bias=False,
         )
         self.input_layernorm = RMSNorm(hidden_size, eps=rms_norm_eps)
         self.post_attention_layernorm = RMSNorm(hidden_size, eps=rms_norm_eps)
@@ -190,11 +210,16 @@ class S2ProSGLangTextModel(nn.Module):
         self.layers = make_layers(
             num_layers,
             lambda idx, prefix: S2ProDecoderLayer(
-                hidden_size=hidden_size, intermediate_size=intermediate_size,
-                num_heads=num_heads, num_kv_heads=num_kv_heads,
-                head_dim=head_dim, layer_id=idx, rope_base=rope_base,
+                hidden_size=hidden_size,
+                intermediate_size=intermediate_size,
+                num_heads=num_heads,
+                num_kv_heads=num_kv_heads,
+                head_dim=head_dim,
+                layer_id=idx,
+                rope_base=rope_base,
                 max_position_embeddings=max_position_embeddings,
-                rms_norm_eps=rms_norm_eps, qk_norm=qk_norm,
+                rms_norm_eps=rms_norm_eps,
+                qk_norm=qk_norm,
             ),
             prefix="layers",
         )
@@ -202,6 +227,7 @@ class S2ProSGLangTextModel(nn.Module):
 
         if not tie_word_embeddings:
             from sglang.srt.layers.vocab_parallel_embedding import ParallelLMHead
+
             self.lm_head = ParallelLMHead(vocab_size, hidden_size)
 
     # ------------------------------------------------------------------
@@ -219,8 +245,7 @@ class S2ProSGLangTextModel(nn.Module):
         im_end_id: int,
         max_batch_size: int,
     ) -> None:
-        """Attach audio decoder and allocate persistent GPU buffers.
-        """
+        """Attach audio decoder and allocate persistent GPU buffers."""
         device = self.embed_tokens.weight.device
 
         # Audio decoder (fast head)
@@ -306,9 +331,7 @@ class S2ProSGLangTextModel(nn.Module):
 
         # Logits
         if self.tie_word_embeddings:
-            logits = torch.nn.functional.linear(
-                hidden_states, self.embed_tokens.weight
-            )
+            logits = torch.nn.functional.linear(hidden_states, self.embed_tokens.weight)
         else:
             logits = self.lm_head(hidden_states)
 
@@ -323,8 +346,7 @@ class S2ProSGLangTextModel(nn.Module):
 
     @torch.no_grad()
     def _decode_codebooks(self, logits: Tensor, hidden_states: Tensor) -> None:
-        """Constrained semantic sampling + batched codebook generation.
-        """
+        """Constrained semantic sampling + batched codebook generation."""
         bs = logits.shape[0]
 
         # Constrained decode: mask non-semantic tokens
@@ -382,7 +404,9 @@ class S2ProSGLangTextModel(nn.Module):
                 logger.debug("Skipping weight: %s", name)
 
     def _load_remapped_weight(
-        self, name: str, loaded_weight: Tensor,
+        self,
+        name: str,
+        loaded_weight: Tensor,
         params_dict: dict[str, nn.Parameter],
     ) -> bool:
         remap = {
@@ -418,7 +442,9 @@ class S2ProSGLangTextModel(nn.Module):
         return False
 
     def _load_fused_qkv(
-        self, prefix: str, wqkv: Tensor,
+        self,
+        prefix: str,
+        wqkv: Tensor,
         params_dict: dict[str, nn.Parameter],
     ) -> bool:
         target_name = prefix + "self_attn.qkv_proj.weight"

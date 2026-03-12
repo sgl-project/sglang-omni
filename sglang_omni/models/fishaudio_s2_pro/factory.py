@@ -170,7 +170,10 @@ def create_s2pro_sglang_engine(
         stream_adapter=_stream_adapter,
     )
     model_runner = S2ProSGLangModelRunner(
-        model_worker, batch_planner, semantic_begin_id, semantic_end_id,
+        model_worker,
+        batch_planner,
+        semantic_begin_id,
+        semantic_end_id,
     )
 
     return OmniEngine(scheduler=scheduler, model_runner=model_runner)

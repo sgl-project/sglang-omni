@@ -28,10 +28,10 @@ CHECKPOINT = os.environ.get("S2PRO_CKPT", "fishaudio/s2-pro")
 TESTSET = os.environ.get("S2PRO_TESTSET", "")
 
 
-
 # ---------------------------------------------------------------------------
 # Model loading
 # ---------------------------------------------------------------------------
+
 
 def load_audio_decoder(checkpoint: str, device: str):
     from sglang_omni.models.fishaudio_s2_pro.fish_speech.models.text2semantic.configuration import (
@@ -57,6 +57,7 @@ def load_audio_decoder(checkpoint: str, device: str):
 
 def load_codec(checkpoint: str, device: str):
     from sglang_omni.models.fishaudio_s2_pro.pipeline.stages import _load_codec
+
     return _load_codec(checkpoint, device)
 
 
@@ -102,6 +103,7 @@ def create_engine(
 # Test data
 # ---------------------------------------------------------------------------
 
+
 def parse_meta_lst(path: str, max_samples: int | None = None) -> list[dict]:
     base_dir = os.path.dirname(path)
     samples = []
@@ -113,22 +115,35 @@ def parse_meta_lst(path: str, max_samples: int | None = None) -> list[dict]:
             parts = line.split("|")
             if len(parts) < 4:
                 continue
-            samples.append({
-                "id": parts[0],
-                "ref_text": parts[1],
-                "ref_audio": os.path.join(base_dir, parts[2]),
-                "text": parts[3],
-            })
+            samples.append(
+                {
+                    "id": parts[0],
+                    "ref_text": parts[1],
+                    "ref_audio": os.path.join(base_dir, parts[2]),
+                    "text": parts[3],
+                }
+            )
             if max_samples and len(samples) >= max_samples:
                 break
     return samples
 
 
-def build_request_data(sample, adapter, codec, tokenizer, num_codebooks, codebook_size, max_new_tokens, device):
+def build_request_data(
+    sample,
+    adapter,
+    codec,
+    tokenizer,
+    num_codebooks,
+    codebook_size,
+    max_new_tokens,
+    device,
+):
     from sglang.srt.managers.schedule_batch import Req
     from sglang.srt.sampling.sampling_params import SamplingParams
 
-    from sglang_omni.models.fishaudio_s2_pro.runtime.s2pro_sglang_ar import S2ProSGLangRequestData
+    from sglang_omni.models.fishaudio_s2_pro.runtime.s2pro_sglang_ar import (
+        S2ProSGLangRequestData,
+    )
     from sglang_omni.models.fishaudio_s2_pro.tokenizer import Reference
 
     refs = None
@@ -143,13 +158,17 @@ def build_request_data(sample, adapter, codec, tokenizer, num_codebooks, codeboo
             indices, _ = codec.encode(audios, audio_lengths)
             if indices.ndim == 3:
                 indices = indices[0]
-        refs = [Reference(audio_bytes=b"", text=sample["ref_text"], vq_codes=indices.cpu())]
+        refs = [
+            Reference(audio_bytes=b"", text=sample["ref_text"], vq_codes=indices.cpu())
+        ]
 
     prompt = adapter.build_prompt(
         sample["text"], references=refs, num_codebooks=num_codebooks
     )
     input_ids = prompt["input_ids"]
-    input_ids_list = input_ids.tolist() if isinstance(input_ids, torch.Tensor) else input_ids
+    input_ids_list = (
+        input_ids.tolist() if isinstance(input_ids, torch.Tensor) else input_ids
+    )
 
     sampling_params = SamplingParams(max_new_tokens=max_new_tokens, temperature=0.8)
     sampling_params.normalize(tokenizer)
@@ -185,6 +204,7 @@ def build_request_data(sample, adapter, codec, tokenizer, num_codebooks, codeboo
 # Profiling
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class RequestMetrics:
     request_id: str
@@ -200,13 +220,26 @@ class RequestMetrics:
 
 
 async def profile_request(
-    engine, sample, adapter, codec, tokenizer,
-    num_codebooks, codebook_size, max_new_tokens,
-    device, audio_dir=None,
+    engine,
+    sample,
+    adapter,
+    codec,
+    tokenizer,
+    num_codebooks,
+    codebook_size,
+    max_new_tokens,
+    device,
+    audio_dir=None,
 ) -> RequestMetrics:
     data = build_request_data(
-        sample, adapter, codec, tokenizer,
-        num_codebooks, codebook_size, max_new_tokens, device,
+        sample,
+        adapter,
+        codec,
+        tokenizer,
+        num_codebooks,
+        codebook_size,
+        max_new_tokens,
+        device,
     )
     rid = f"prof-{sample['id']}"
     data.req.rid = rid
@@ -301,8 +334,12 @@ def print_summary(label: str, metrics: list[RequestMetrics]) -> dict | None:
     print(f"  {label}")
     print(f"{'='*64}")
     print(f"  Requests:        {len(metrics)}")
-    print(f"  TTFT mean:       {np.mean(ttfts)*1000:.1f}ms (median {np.median(ttfts)*1000:.1f}ms)")
-    print(f"  TTFB mean:       {np.mean(ttfbs)*1000:.1f}ms (median {np.median(ttfbs)*1000:.1f}ms)")
+    print(
+        f"  TTFT mean:       {np.mean(ttfts)*1000:.1f}ms (median {np.median(ttfts)*1000:.1f}ms)"
+    )
+    print(
+        f"  TTFB mean:       {np.mean(ttfbs)*1000:.1f}ms (median {np.median(ttfbs)*1000:.1f}ms)"
+    )
     print(f"  TTFB p95:        {np.percentile(ttfbs, 95)*1000:.1f}ms")
     print(f"  Tok/s (per-req): {np.mean(toks):.1f} mean, {np.median(toks):.1f} median")
     print(f"  Tok/s (agg):     {agg_tok_per_s:.1f}")
@@ -332,35 +369,46 @@ def print_summary(label: str, metrics: list[RequestMetrics]) -> dict | None:
 # Main
 # ---------------------------------------------------------------------------
 
+
 async def run(args):
     device = "cuda"
 
     # Load components
     logger.info("Loading audio decoder from %s ...", args.checkpoint)
-    audio_decoder, num_codebooks, codebook_size = load_audio_decoder(args.checkpoint, device)
+    audio_decoder, num_codebooks, codebook_size = load_audio_decoder(
+        args.checkpoint, device
+    )
 
     from transformers import PreTrainedTokenizerFast
+
     tokenizer = PreTrainedTokenizerFast.from_pretrained(args.checkpoint)
 
     logger.info("Loading DAC codec...")
     codec = load_codec(args.checkpoint, device)
 
     from sglang_omni.models.fishaudio_s2_pro.tokenizer import S2ProTokenizerAdapter
+
     adapter = S2ProTokenizerAdapter(tokenizer)
 
     # Create engine
     logger.info("Creating SGLang engine (unified decode, CUDA graph)...")
     engine = create_engine(
-        args.checkpoint, audio_decoder, tokenizer,
-        num_codebooks, codebook_size,
-        args.max_new_tokens, args.top_k,
+        args.checkpoint,
+        audio_decoder,
+        tokenizer,
+        num_codebooks,
+        codebook_size,
+        args.max_new_tokens,
+        args.top_k,
     )
     await engine.start()
 
     # Load samples
     if args.prompts:
-        samples = [{"id": f"prompt-{i}", "text": t, "ref_audio": None, "ref_text": None}
-                    for i, t in enumerate(args.prompts)]
+        samples = [
+            {"id": f"prompt-{i}", "text": t, "ref_audio": None, "ref_text": None}
+            for i, t in enumerate(args.prompts)
+        ]
         logger.info("Using %d text prompts (no ref audio)", len(samples))
     elif args.testset and os.path.isfile(args.testset):
         samples = parse_meta_lst(args.testset, args.max_samples)
@@ -375,8 +423,14 @@ async def run(args):
     for i in range(args.warmup):
         s = samples[i % len(samples)]
         data = build_request_data(
-            s, adapter, codec, tokenizer,
-            num_codebooks, codebook_size, args.max_new_tokens, device,
+            s,
+            adapter,
+            codec,
+            tokenizer,
+            num_codebooks,
+            codebook_size,
+            args.max_new_tokens,
+            device,
         )
         rid = f"warmup-{i}"
         data.req.rid = rid
@@ -401,16 +455,27 @@ async def run(args):
     for i, sample in enumerate(samples):
         try:
             m = await profile_request(
-                engine, sample, adapter, codec, tokenizer,
-                num_codebooks, codebook_size, args.max_new_tokens,
-                device, audio_dir=audio_dir,
+                engine,
+                sample,
+                adapter,
+                codec,
+                tokenizer,
+                num_codebooks,
+                codebook_size,
+                args.max_new_tokens,
+                device,
+                audio_dir=audio_dir,
             )
             metrics.append(m)
             logger.info(
                 "[%d/%d] TTFT=%.1fms TTFB=%.1fms %d tok %.1f tok/s RTF=%.3f  %s",
-                i + 1, len(samples),
-                m.ttft_s * 1000, m.ttfb_s * 1000,
-                m.gen_tokens, m.tok_per_s, m.rtf,
+                i + 1,
+                len(samples),
+                m.ttft_s * 1000,
+                m.ttfb_s * 1000,
+                m.gen_tokens,
+                m.tok_per_s,
+                m.rtf,
                 m.text[:50],
             )
         except Exception as e:
@@ -458,32 +523,59 @@ async def run(args):
 
         # CSV for downstream eval compatibility
         import csv
+
         csv_path = out_dir / "results.csv"
         with open(csv_path, "w", newline="") as f:
             w = csv.writer(f)
-            w.writerow(["id", "text", "latency_s", "audio_duration_s", "rtf",
-                         "gen_tokens", "tok_per_s", "ttft_ms", "ttfb_ms"])
+            w.writerow(
+                [
+                    "id",
+                    "text",
+                    "latency_s",
+                    "audio_duration_s",
+                    "rtf",
+                    "gen_tokens",
+                    "tok_per_s",
+                    "ttft_ms",
+                    "ttfb_ms",
+                ]
+            )
             for m in metrics:
-                w.writerow([
-                    m.request_id, m.text,
-                    f"{m.total_s:.4f}", f"{m.audio_duration_s:.4f}", f"{m.rtf:.4f}",
-                    m.gen_tokens, f"{m.tok_per_s:.1f}",
-                    f"{m.ttft_s*1000:.1f}", f"{m.ttfb_s*1000:.1f}",
-                ])
+                w.writerow(
+                    [
+                        m.request_id,
+                        m.text,
+                        f"{m.total_s:.4f}",
+                        f"{m.audio_duration_s:.4f}",
+                        f"{m.rtf:.4f}",
+                        m.gen_tokens,
+                        f"{m.tok_per_s:.1f}",
+                        f"{m.ttft_s*1000:.1f}",
+                        f"{m.ttfb_s*1000:.1f}",
+                    ]
+                )
         logger.info("CSV saved to %s", csv_path)
 
 
 def main():
     parser = argparse.ArgumentParser(description="S2-Pro TTS speed benchmark")
     parser.add_argument("--checkpoint", default=CHECKPOINT)
-    parser.add_argument("--testset", default=TESTSET, help="seed-tts-eval meta.lst path (voice cloning mode)")
-    parser.add_argument("--prompts", nargs="+", help="Plain text prompts (no ref audio mode)")
+    parser.add_argument(
+        "--testset",
+        default=TESTSET,
+        help="seed-tts-eval meta.lst path (voice cloning mode)",
+    )
+    parser.add_argument(
+        "--prompts", nargs="+", help="Plain text prompts (no ref audio mode)"
+    )
     parser.add_argument("--output-dir", default="results/s2pro_speed")
     parser.add_argument("--max-samples", type=int, default=10)
     parser.add_argument("--max-new-tokens", type=int, default=2048)
     parser.add_argument("--top-k", type=int, default=30)
     parser.add_argument("--warmup", type=int, default=1)
-    parser.add_argument("--save-audio", action="store_true", help="Save generated WAV files")
+    parser.add_argument(
+        "--save-audio", action="store_true", help="Save generated WAV files"
+    )
     args = parser.parse_args()
 
     args.checkpoint = _resolve_checkpoint(args.checkpoint)
@@ -494,6 +586,7 @@ def _resolve_checkpoint(checkpoint: str) -> str:
     if os.path.isdir(checkpoint):
         return checkpoint
     from huggingface_hub import snapshot_download
+
     return snapshot_download(checkpoint)
 
 

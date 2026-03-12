@@ -190,9 +190,7 @@ class S2ProSGLangModelRunner:
                         vq_mask[:prefix_len].sum().item() if prefix_len > 0 else 0
                     )
                     num_vq_in_slice = mask_slice.sum().item()
-                    vq_slice = vq_parts_flat[
-                        vq_before : vq_before + num_vq_in_slice
-                    ]
+                    vq_slice = vq_parts_flat[vq_before : vq_before + num_vq_in_slice]
                     req_embeds = text_embeds[offset : offset + req_len]
                     vq_embeds = audio_decoder.embed_text_dim(
                         req_embeds.unsqueeze(0),
