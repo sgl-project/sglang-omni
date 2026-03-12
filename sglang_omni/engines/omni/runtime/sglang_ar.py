@@ -338,7 +338,11 @@ class SGLangModelRunner:
         video_token_id = self._video_token_id
         audio_token_id = self._audio_token_id
 
-        input_embeds = self._embed_tokens(forward_batch.input_ids)
+        embed_vocab_size = int(self._embed_tokens.weight.shape[0])
+        lookup_input_ids = forward_batch.input_ids.clamp(
+            min=0, max=embed_vocab_size - 1
+        )
+        input_embeds = self._embed_tokens(lookup_input_ids)
 
         extend_lens = forward_batch.extend_seq_lens_cpu
         offsets = []

@@ -86,11 +86,6 @@ class ChatCompletionRequest(BaseModel):
 
     # Video/audio preprocessing options (sglang-omni extension)
     use_audio_in_video: bool | None = None
-    video_fps: float | list[float] | None = None
-    sampled_video_fps: list[float] | None = None
-    video_seconds_per_chunk: float | None = None
-    video_position_id_per_seconds: float | None = None
-    audio_target_sr: int | None = None
 
     # Per-stage sampling overrides (sglang-omni specific)
     stage_sampling: dict[str, dict[str, Any]] | None = None

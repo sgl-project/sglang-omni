@@ -13,6 +13,8 @@ from sglang_omni.models.qwen3_omni.io import PipelineState, ThinkerOutput
 if TYPE_CHECKING:
     from sglang_omni.engines.omni.runtime.sglang_ar import SGLangARRequestData
 
+MM_HASH_SPACE = 1 << 30
+
 
 def build_encoder_request(
     state: PipelineState, *, stage_name: str
@@ -223,14 +225,13 @@ def build_sglang_thinker_request(
     video_cache_key = thinker_inputs.get("video_cache_key")
     audio_cache_key = thinker_inputs.get("audio_cache_key")
     if thinker_config is not None:
-        vocab_bound = max(vocab_size, 1)
         modality_hashes: dict[str, int] = {}
         if image_cache_key is not None:
-            modality_hashes["image"] = hash(image_cache_key) % vocab_bound
+            modality_hashes["image"] = hash(image_cache_key) % MM_HASH_SPACE
         if video_cache_key is not None:
-            modality_hashes["video"] = hash(video_cache_key) % vocab_bound
+            modality_hashes["video"] = hash(video_cache_key) % MM_HASH_SPACE
         if audio_cache_key is not None:
-            modality_hashes["audio"] = hash(audio_cache_key) % vocab_bound
+            modality_hashes["audio"] = hash(audio_cache_key) % MM_HASH_SPACE
 
         token_hash_map: dict[int, int] = {}
         for modality in ("image", "video", "audio"):
