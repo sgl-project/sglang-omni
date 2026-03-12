@@ -91,8 +91,9 @@ def create_s2pro_sglang_engine(
     if server_args.attention_backend is None:
         server_args.attention_backend = "fa3"
 
-    # Enable CUDA graph + hidden state capture for unified decode
-    if not server_args.disable_cuda_graph:
+    # Enable hidden state capture for unified decode
+    want_cuda_graph = not server_args.disable_cuda_graph
+    if want_cuda_graph:
         server_args.enable_return_hidden_states = True
         server_args.enable_torch_compile = True
 
@@ -101,11 +102,16 @@ def create_s2pro_sglang_engine(
     semantic_begin_id = adapter.semantic_begin_id
     semantic_end_id = adapter.semantic_end_id
 
+    # Defer CUDA graph capture: ModelWorker.__init__ captures graphs, but
+    # setup_vq_decode (which attaches the audio decoder / codebook loop)
+    # must run first so the graph includes _decode_codebooks.
+    server_args.disable_cuda_graph = True
     model_worker = ModelWorker(
         config=ModelWorkerConfig(),
         server_args=server_args,
         gpu_id=gpu_id,
     )
+    server_args.disable_cuda_graph = not want_cuda_graph
 
     _truncate_rope_to_bf16(model_worker.model_runner.model)
 
@@ -122,6 +128,10 @@ def create_s2pro_sglang_engine(
         im_end_id=im_end_id,
         max_batch_size=max_bs,
     )
+
+    # Now capture CUDA graphs with _decode_codebooks in the graph
+    if want_cuda_graph:
+        model_worker.model_runner.init_device_graphs()
 
     req_to_token_pool, token_to_kv_pool_allocator = model_worker.get_memory_pool()
 
