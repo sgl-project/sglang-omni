@@ -37,7 +37,9 @@ def replay_predictor_rows(
     rows: list[list[int]] = []
     if mode == "sequential":
         torch.manual_seed(seed)
-    for idx, (hidden_row, layer0_code) in enumerate(zip(hidden_rows, layer0_codes, strict=False)):
+    for idx, (hidden_row, layer0_code) in enumerate(
+        zip(hidden_rows, layer0_codes, strict=False)
+    ):
         if mode == "fresh":
             torch.manual_seed(seed)
         hidden = hidden_row.to(device=device, dtype=dtype).view(1, 1, -1)
@@ -52,11 +54,23 @@ def replay_predictor_rows(
             output_hidden_states=True,
             return_dict_in_generate=True,
         )
-        rows.append(torch.cat((code, out.sequences.to(code.device)), dim=-1).view(-1).cpu().tolist())
+        rows.append(
+            torch.cat((code, out.sequences.to(code.device)), dim=-1)
+            .view(-1)
+            .cpu()
+            .tolist()
+        )
     return rows
 
 
-def rebuild_feedback_from_row(model: Any, hidden_row: torch.Tensor, full_row: list[int], *, device: str, dtype: torch.dtype) -> torch.Tensor:
+def rebuild_feedback_from_row(
+    model: Any,
+    hidden_row: torch.Tensor,
+    full_row: list[int],
+    *,
+    device: str,
+    dtype: torch.dtype,
+) -> torch.Tensor:
     del hidden_row  # Hidden is unused in the current HF-compatible reconstruction.
     codes = torch.tensor(full_row, device=device, dtype=torch.long).view(1, -1)
     layer0_embed = model.get_input_embeddings()(codes[:, :1])
@@ -84,7 +98,10 @@ def analyze_predictor_boundary(
     steps: int,
 ) -> dict[str, Any]:
     model = load_hf_talker_model(model_path, device=device, dtype=torch.bfloat16)
-    runtime_hidden_rows = [runtime_cp_dump["talker_hidden"][idx] for idx in range(min(steps, runtime_cp_dump["talker_hidden"].shape[0]))]
+    runtime_hidden_rows = [
+        runtime_cp_dump["talker_hidden"][idx]
+        for idx in range(min(steps, runtime_cp_dump["talker_hidden"].shape[0]))
+    ]
     hf_hidden_rows = [
         torch.tensor(hf_predictor_capture["predictor_calls"][idx]["talker_hidden"])
         for idx in range(min(steps, len(hf_predictor_capture["predictor_calls"])))
@@ -121,7 +138,8 @@ def analyze_predictor_boundary(
 
     runtime_rows = runtime_cp_dump["output_codes"][:steps].tolist()
     hf_rows = [
-        [layer0_codes[idx]] + hf_predictor_capture["predictor_calls"][idx]["sequences"][0]
+        [layer0_codes[idx]]
+        + hf_predictor_capture["predictor_calls"][idx]["sequences"][0]
         for idx in range(min(steps, len(hf_predictor_capture["predictor_calls"])))
     ]
 
@@ -153,8 +171,12 @@ def analyze_predictor_boundary(
         feedback_metrics.append(
             {
                 "step": idx,
-                "runtime_feedback_vs_rebuilt_runtime_row": metric(runtime_feedback, rebuilt_runtime),
-                "runtime_feedback_vs_rebuilt_hf_row_on_runtime_hidden": metric(runtime_feedback, rebuilt_hf),
+                "runtime_feedback_vs_rebuilt_runtime_row": metric(
+                    runtime_feedback, rebuilt_runtime
+                ),
+                "runtime_feedback_vs_rebuilt_hf_row_on_runtime_hidden": metric(
+                    runtime_feedback, rebuilt_hf
+                ),
             }
         )
 

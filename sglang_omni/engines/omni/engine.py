@@ -7,6 +7,8 @@ import asyncio
 import logging
 from typing import TYPE_CHECKING, Any
 
+from sglang_omni.pipeline.chunk.mailbox import ChunkItem
+
 from ..base import Engine
 from .model_runner import ModelRunner
 from .scheduler import Scheduler
@@ -228,38 +230,25 @@ class OmniEngine(Engine):
         )
 
     def _check_feedback(self) -> None:
-        """Check feedback mailbox for arrived feedback and resume requests."""
-        assert self._feedback_mailbox is not None
+        """Check feedback mailbox and resume WAITING_FEEDBACK requests."""
+        mb = self._feedback_mailbox
+        assert mb is not None
+        iter_ctrl = self.scheduler.iteration_controller
         for req_id, request in list(self.scheduler.requests.items()):
             if request.status != SchedulerStatus.WAITING_FEEDBACK:
                 continue
-            if not self._feedback_mailbox.has(req_id):
-                continue
-            queue = self._feedback_mailbox._queues.get(req_id)
+            queue = mb._queues.get(req_id)
             if queue is None or queue.empty():
                 continue
             try:
                 item = queue.get_nowait()
-                from sglang_omni.pipeline.chunk.mailbox import (
-                    _SENTINEL_DONE,
-                    ChunkSignal,
-                )
-
-                if item is _SENTINEL_DONE or isinstance(item, BaseException):
-                    continue
-                if isinstance(item, ChunkSignal):
-                    if item.is_chunks_done or item.error is not None:
-                        continue
-                    if not hasattr(item, "tensor"):
-                        continue
-                if not hasattr(item, "tensor"):
-                    continue
-                iter_ctrl = self.scheduler.iteration_controller
-                if hasattr(iter_ctrl, "apply_feedback"):
-                    iter_ctrl.apply_feedback(request, item.tensor)
-                self.scheduler.resume_request(req_id)
             except Exception:
-                logger.exception("Feedback resume failed rid=%s", req_id)
+                continue
+            if not isinstance(item, ChunkItem):
+                continue
+            if hasattr(iter_ctrl, "apply_feedback"):
+                iter_ctrl.apply_feedback(request, item.tensor)
+            self.scheduler.resume_request(req_id)
 
     async def _update_cache(self, scheduler_output: SchedulerOutput, model_output: Any):
         """Update cache with fresh model outputs."""

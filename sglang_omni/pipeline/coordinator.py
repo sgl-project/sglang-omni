@@ -49,7 +49,9 @@ class Coordinator:
                 the coordinator waits for all to complete before resolving.
         """
         self.entry_stage = entry_stage
-        self._terminal_stages: set[str] = set(terminal_stages) if terminal_stages else set()
+        self._terminal_stages: set[str] = (
+            set(terminal_stages) if terminal_stages else set()
+        )
         self._partial_results: dict[str, dict[str, Any]] = {}
 
         # Control plane
@@ -132,7 +134,10 @@ class Coordinator:
                         raise RuntimeError(msg.error or "Unknown error")
                     yield msg
                     completed_stages.add(msg.from_stage)
-                    if not self._terminal_stages or completed_stages >= self._terminal_stages:
+                    if (
+                        not self._terminal_stages
+                        or completed_stages >= self._terminal_stages
+                    ):
                         return
                 else:
                     yield msg
@@ -182,7 +187,12 @@ class Coordinator:
         # Update state
         self._requests[request_id].state = RequestState.RUNNING
 
-        logger.info("Coordinator submitted req=%s to %s at %s", request_id, self.entry_stage, entry_info.control_endpoint)
+        logger.info(
+            "Coordinator submitted req=%s to %s at %s",
+            request_id,
+            self.entry_stage,
+            entry_info.control_endpoint,
+        )
 
     async def abort(self, request_id: str) -> bool:
         """Abort a request.

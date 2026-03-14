@@ -84,9 +84,7 @@ class PrefillManager:
             running_batch=running_batch,
             new_token_ratio=new_token_ratio,
             rem_input_tokens=self.max_prefill_tokens,
-            rem_chunk_tokens=(
-                None if disable_chunking else self.chunked_prefill_size
-            ),
+            rem_chunk_tokens=(None if disable_chunking else self.chunked_prefill_size),
         )
 
         # if there is ongoing chunked prefill to complete

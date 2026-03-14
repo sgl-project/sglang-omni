@@ -9,8 +9,8 @@ from typing import Any
 
 import torch
 
-from sglang_omni.proto.messages import ChunkReadyMessage
 from sglang_omni.pipeline.worker.data_plane import _extract_tensors
+from sglang_omni.proto.messages import ChunkReadyMessage
 
 logger = logging.getLogger(__name__)
 
@@ -66,24 +66,32 @@ class ChunkTransferAdapter:
             except asyncio.CancelledError:
                 pass
 
-    def enqueue(self, request_id: str, tensor: torch.Tensor, metadata: dict | None = None) -> None:
+    def enqueue(
+        self, request_id: str, tensor: torch.Tensor, metadata: dict | None = None
+    ) -> None:
         """Enqueue a chunk for async transfer. Safe to call from sync context."""
         try:
-            self._queue.put_nowait(_PendingChunk(request_id=request_id, tensor=tensor, metadata=metadata))
+            self._queue.put_nowait(
+                _PendingChunk(request_id=request_id, tensor=tensor, metadata=metadata)
+            )
         except asyncio.QueueFull:
             raise RuntimeError(f"chunk sender queue full for {request_id}")
 
     def enqueue_chunks_done(self, request_id: str) -> None:
         """Signal that no more chunks will be sent for this request."""
         try:
-            self._queue.put_nowait(_PendingChunk(request_id=request_id, tensor=None, is_chunks_done=True))
+            self._queue.put_nowait(
+                _PendingChunk(request_id=request_id, tensor=None, is_chunks_done=True)
+            )
         except asyncio.QueueFull:
             raise RuntimeError(f"chunk sender queue full for {request_id}")
 
     def enqueue_error(self, request_id: str, error: str) -> None:
         """Signal error for a request."""
         try:
-            self._queue.put_nowait(_PendingChunk(request_id=request_id, tensor=None, error=error))
+            self._queue.put_nowait(
+                _PendingChunk(request_id=request_id, tensor=None, error=error)
+            )
         except asyncio.QueueFull:
             raise RuntimeError(f"chunk sender queue full for {request_id}")
 

@@ -14,7 +14,6 @@ if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from scripts.qwen3_omni_parity.common import (
-    DEFAULT_MODEL_PATH,
     DEFAULT_OUT_DIR,
     DEFAULT_PROMPT,
     DEFAULT_SAMPLE_RATE,
@@ -60,12 +59,20 @@ def build_talker_prefill(
     ).to(model.talker.device)
 
     talker_special_tokens = torch.tensor(
-        [[model.config.tts_bos_token_id, model.config.tts_eos_token_id, model.config.tts_pad_token_id]],
+        [
+            [
+                model.config.tts_bos_token_id,
+                model.config.tts_eos_token_id,
+                model.config.tts_pad_token_id,
+            ]
+        ],
         device=model.thinker.device,
         dtype=input_ids.dtype,
     )
     tts_bos_embed, tts_eos_embed, tts_pad_embed = (
-        model.talker.text_projection(model.thinker.get_input_embeddings()(talker_special_tokens))
+        model.talker.text_projection(
+            model.thinker.get_input_embeddings()(talker_special_tokens)
+        )
         .to(model.talker.device)
         .chunk(3, dim=1)
     )
@@ -92,7 +99,10 @@ def build_talker_prefill(
             talker_input_ids.append(
                 thinker_result.sequences[:, im_start_index:segment_end_index]
             )
-        elif role_token == model.config.assistant_token_id and i == len(im_start_indexes) - 2:
+        elif (
+            role_token == model.config.assistant_token_id
+            and i == len(im_start_indexes) - 2
+        ):
             (
                 talker_assistant_embeds,
                 talker_assistant_ids,
@@ -206,7 +216,9 @@ def main() -> None:
             thinker_hidden,
             speaker=args.speaker,
         )
-        talker_prefill_path = out_dir / f"hf_talker_prefill_{prompt_id}_seed{args.seed}.pt"
+        talker_prefill_path = (
+            out_dir / f"hf_talker_prefill_{prompt_id}_seed{args.seed}.pt"
+        )
         torch.save(talker_prefill, talker_prefill_path)
 
         suppress_tokens = [
@@ -220,14 +232,20 @@ def main() -> None:
 
         torch.manual_seed(args.seed)
         talker_result = model.talker.generate(
-            inputs_embeds=talker_prefill["input_embeds"].unsqueeze(0).to(model.talker.device),
+            inputs_embeds=talker_prefill["input_embeds"]
+            .unsqueeze(0)
+            .to(model.talker.device),
             trailing_text_hidden=(
-                talker_prefill["trailing_text_hidden"].unsqueeze(0).to(model.talker.device)
+                talker_prefill["trailing_text_hidden"]
+                .unsqueeze(0)
+                .to(model.talker.device)
                 if isinstance(talker_prefill["trailing_text_hidden"], torch.Tensor)
                 else None
             ),
             tts_pad_embed=talker_prefill["tts_pad_embed"].to(model.talker.device),
-            talker_input_ids=talker_prefill["input_ids"].unsqueeze(0).to(model.talker.device),
+            talker_input_ids=talker_prefill["input_ids"]
+            .unsqueeze(0)
+            .to(model.talker.device),
             max_new_tokens=args.talker_max_new_tokens,
             do_sample=False,
             top_k=1,
@@ -241,9 +259,13 @@ def main() -> None:
         )
 
         layer0_codes = talker_result.sequences[0].detach().cpu()
-        residual_rows = [hid[-1] for hid in talker_result.hidden_states if hid[-1] is not None]
+        residual_rows = [
+            hid[-1] for hid in talker_result.hidden_states if hid[-1] is not None
+        ]
         full_codes = torch.stack(residual_rows, dim=1).transpose(1, 2).detach().cpu()
-        wav = model.code2wav.chunked_decode(full_codes.to(model.talker.device), chunk_size=300, left_context_size=25)
+        wav = model.code2wav.chunked_decode(
+            full_codes.to(model.talker.device), chunk_size=300, left_context_size=25
+        )
 
     generated_ids = thinker_result.sequences[0, prompt_len:].detach().cpu().tolist()
     generated_text = processor.tokenizer.decode(generated_ids, skip_special_tokens=True)
@@ -254,7 +276,9 @@ def main() -> None:
 
     predictor_path = None
     if args.capture_predictor:
-        predictor_path = out_dir / f"hf_predictor_capture_{prompt_id}_seed{args.seed}.json"
+        predictor_path = (
+            out_dir / f"hf_predictor_capture_{prompt_id}_seed{args.seed}.json"
+        )
         save_json(
             {
                 "seed": args.seed,
@@ -283,7 +307,9 @@ def main() -> None:
         "audio_path": str(wav_path),
         "audio_sha256": file_sha256(wav_path),
         "talker_prefill_path": str(talker_prefill_path),
-        "predictor_capture_path": str(predictor_path) if predictor_path is not None else None,
+        "predictor_capture_path": (
+            str(predictor_path) if predictor_path is not None else None
+        ),
         "trailing_len": (
             int(talker_prefill["trailing_text_hidden"].shape[0])
             if isinstance(talker_prefill["trailing_text_hidden"], torch.Tensor)

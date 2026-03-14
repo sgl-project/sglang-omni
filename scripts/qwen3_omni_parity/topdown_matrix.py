@@ -44,8 +44,14 @@ def _tensor_metric_or_mismatch(
     if runtime_tensor is None or hf_tensor is None:
         return None, {
             "status": "missing",
-            "runtime_shape": list(runtime_tensor.shape) if isinstance(runtime_tensor, torch.Tensor) else None,
-            "hf_shape": list(hf_tensor.shape) if isinstance(hf_tensor, torch.Tensor) else None,
+            "runtime_shape": (
+                list(runtime_tensor.shape)
+                if isinstance(runtime_tensor, torch.Tensor)
+                else None
+            ),
+            "hf_shape": (
+                list(hf_tensor.shape) if isinstance(hf_tensor, torch.Tensor) else None
+            ),
         }
     if tuple(runtime_tensor.shape) != tuple(hf_tensor.shape):
         return None, {
@@ -73,9 +79,12 @@ def build_topdown_matrix(
     runtime_ids = runtime_capture.get("thinker_generated_ids")
     hf_ids = hf_capture.get("generated_ids", [])
     thinker_text_checks = {
-        "text_match": runtime_capture.get("runtime_delta_text") == hf_capture.get("generated_text"),
-        "final_text_match": runtime_capture.get("runtime_final_text_from_event") == hf_capture.get("generated_text"),
-        "decode_complete_match": runtime_capture.get("runtime_decode_complete_text") == hf_capture.get("generated_text"),
+        "text_match": runtime_capture.get("runtime_delta_text")
+        == hf_capture.get("generated_text"),
+        "final_text_match": runtime_capture.get("runtime_final_text_from_event")
+        == hf_capture.get("generated_text"),
+        "decode_complete_match": runtime_capture.get("runtime_decode_complete_text")
+        == hf_capture.get("generated_text"),
     }
     if runtime_ids is None:
         thinker_status = "unknown" if all(thinker_text_checks.values()) else "fail"
@@ -84,7 +93,9 @@ def build_topdown_matrix(
     else:
         token_ids_match = runtime_ids == hf_ids
         runtime_num_tokens = len(runtime_ids)
-        thinker_status = "pass" if token_ids_match and all(thinker_text_checks.values()) else "fail"
+        thinker_status = (
+            "pass" if token_ids_match and all(thinker_text_checks.values()) else "fail"
+        )
     result["contracts"]["thinker_text"] = {
         "status": thinker_status,
         "details": {
@@ -97,18 +108,28 @@ def build_topdown_matrix(
 
     if runtime_prefill_dump is not None and hf_prefill_dump is not None:
         prefill_metrics = {
-            "input_embeds": metric(runtime_prefill_dump["input_embeds"], hf_prefill_dump["input_embeds"]),
-            "tts_pad_embed": metric(runtime_prefill_dump["tts_pad_embed"], hf_prefill_dump["tts_pad_embed"]),
+            "input_embeds": metric(
+                runtime_prefill_dump["input_embeds"], hf_prefill_dump["input_embeds"]
+            ),
+            "tts_pad_embed": metric(
+                runtime_prefill_dump["tts_pad_embed"], hf_prefill_dump["tts_pad_embed"]
+            ),
         }
         runtime_trailing = runtime_prefill_dump.get("trailing_text_hidden")
         hf_trailing = hf_prefill_dump.get("trailing_text_hidden")
-        trailing_metric, trailing_mismatch = _tensor_metric_or_mismatch(runtime_trailing, hf_trailing)
+        trailing_metric, trailing_mismatch = _tensor_metric_or_mismatch(
+            runtime_trailing, hf_trailing
+        )
         if trailing_metric is not None:
             prefill_metrics["trailing_text_hidden"] = trailing_metric
-        ids_match = torch.equal(runtime_prefill_dump["input_ids"], hf_prefill_dump["input_ids"])
+        ids_match = torch.equal(
+            runtime_prefill_dump["input_ids"], hf_prefill_dump["input_ids"]
+        )
         prefill_status = (
             "pass"
-            if ids_match and trailing_mismatch is None and _float_contract_status(prefill_metrics) == "pass"
+            if ids_match
+            and trailing_mismatch is None
+            and _float_contract_status(prefill_metrics) == "pass"
             else "fail"
         )
         result["contracts"]["talker_prefill"] = {
@@ -116,7 +137,8 @@ def build_topdown_matrix(
             "details": {
                 "input_ids_match": bool(ids_match),
                 **prefill_metrics,
-                "trailing_text_hidden": trailing_mismatch or prefill_metrics.get("trailing_text_hidden"),
+                "trailing_text_hidden": trailing_mismatch
+                or prefill_metrics.get("trailing_text_hidden"),
             },
         }
     else:
@@ -135,7 +157,9 @@ def build_topdown_matrix(
         row_prefix = common_prefix_len(runtime_rows, hf_rows)
 
         result["contracts"]["code_predictor_full_code_rows"] = {
-            "status": "pass" if row_prefix == min(len(runtime_rows), len(hf_rows)) else "fail",
+            "status": (
+                "pass" if row_prefix == min(len(runtime_rows), len(hf_rows)) else "fail"
+            ),
             "details": {
                 "runtime_steps": len(runtime_rows),
                 "hf_steps": len(hf_rows),
@@ -147,15 +171,25 @@ def build_topdown_matrix(
             },
         }
         result["contracts"]["talker_layer0_sequence"] = {
-            "status": "pass" if layer0_prefix == min(len(runtime_layer0), len(hf_layer0)) else "fail",
+            "status": (
+                "pass"
+                if layer0_prefix == min(len(runtime_layer0), len(hf_layer0))
+                else "fail"
+            ),
             "details": {
                 "runtime_len": len(runtime_layer0),
                 "hf_len": len(hf_layer0),
                 "common_prefix_len": layer0_prefix,
                 "first_runtime_tokens": runtime_layer0[:16],
                 "first_hf_tokens": hf_layer0[:16],
-                "first_runtime_mismatch_token": runtime_layer0[layer0_prefix] if layer0_prefix < len(runtime_layer0) else None,
-                "first_hf_mismatch_token": hf_layer0[layer0_prefix] if layer0_prefix < len(hf_layer0) else None,
+                "first_runtime_mismatch_token": (
+                    runtime_layer0[layer0_prefix]
+                    if layer0_prefix < len(runtime_layer0)
+                    else None
+                ),
+                "first_hf_mismatch_token": (
+                    hf_layer0[layer0_prefix] if layer0_prefix < len(hf_layer0) else None
+                ),
             },
         }
     else:
@@ -169,7 +203,9 @@ def build_topdown_matrix(
         }
 
     same_prompt = runtime_capture.get("prompt") == hf_capture.get("prompt")
-    text_match = runtime_capture.get("runtime_decode_complete_text") == hf_capture.get("generated_text")
+    text_match = runtime_capture.get("runtime_decode_complete_text") == hf_capture.get(
+        "generated_text"
+    )
     audio_match = (
         runtime_capture.get("audio_sha256")
         and hf_capture.get("audio_sha256")
@@ -183,8 +219,10 @@ def build_topdown_matrix(
             "runtime_duration_sec": runtime_capture.get("duration_sec"),
             "hf_duration_sec": hf_capture.get("wav_duration_sec"),
             "duration_ratio": (
-                float(runtime_capture.get("duration_sec")) / float(hf_capture.get("wav_duration_sec"))
-                if runtime_capture.get("duration_sec") and hf_capture.get("wav_duration_sec")
+                float(runtime_capture.get("duration_sec"))
+                / float(hf_capture.get("wav_duration_sec"))
+                if runtime_capture.get("duration_sec")
+                and hf_capture.get("wav_duration_sec")
                 else None
             ),
             "audio_sha_match": bool(audio_match),
@@ -218,7 +256,9 @@ def main() -> None:
 
     runtime_capture = load_json(args.runtime_capture)
     hf_capture = load_json(args.hf_capture)
-    runtime_cp_path = resolve_runtime_cp_path(runtime_capture, str(args.runtime_cp_dump) if args.runtime_cp_dump else None)
+    runtime_cp_path = resolve_runtime_cp_path(
+        runtime_capture, str(args.runtime_cp_dump) if args.runtime_cp_dump else None
+    )
     try:
         runtime_prefill_path = resolve_runtime_prefill_path(
             runtime_capture,
@@ -226,7 +266,9 @@ def main() -> None:
         )
     except FileNotFoundError:
         runtime_prefill_path = None
-    hf_prefill_path = resolve_hf_prefill_path(hf_capture, str(args.hf_prefill) if args.hf_prefill else None)
+    hf_prefill_path = resolve_hf_prefill_path(
+        hf_capture, str(args.hf_prefill) if args.hf_prefill else None
+    )
 
     result = build_topdown_matrix(
         runtime_capture,
@@ -237,7 +279,11 @@ def main() -> None:
             if runtime_prefill_path and runtime_prefill_path.exists()
             else None
         ),
-        hf_prefill_dump=torch.load(hf_prefill_path, map_location="cpu") if hf_prefill_path and hf_prefill_path.exists() else None,
+        hf_prefill_dump=(
+            torch.load(hf_prefill_path, map_location="cpu")
+            if hf_prefill_path and hf_prefill_path.exists()
+            else None
+        ),
     )
     if args.out:
         save_json(result, args.out)

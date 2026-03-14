@@ -297,7 +297,10 @@ def _wire_chunk_transfers(
                 worker.executor._chunk_senders = [chunk_sender]
 
         # Create receiver-side: mailbox + receiver per worker
-        if not hasattr(receiver_stage, "chunk_mailbox") or receiver_stage.chunk_mailbox is None:
+        if (
+            not hasattr(receiver_stage, "chunk_mailbox")
+            or receiver_stage.chunk_mailbox is None
+        ):
             mailbox = ChunkMailbox(max_pending=4096)
             receiver_stage.chunk_mailbox = mailbox
         else:
@@ -312,9 +315,14 @@ def _wire_chunk_transfers(
                 )
             # Set chunk_mailbox on executor for async prefetch
             worker.executor._chunk_mailbox = mailbox
-            if not hasattr(worker.executor, "_chunk_prefetch_count") or worker.executor._chunk_prefetch_count is None:
+            if (
+                not hasattr(worker.executor, "_chunk_prefetch_count")
+                or worker.executor._chunk_prefetch_count is None
+            ):
                 worker.executor._chunk_prefetch_count = 4096  # default: drain until EOS
-            set_feedback_mailbox = getattr(worker.executor, "set_feedback_mailbox", None)
+            set_feedback_mailbox = getattr(
+                worker.executor, "set_feedback_mailbox", None
+            )
             if callable(set_feedback_mailbox):
                 set_feedback_mailbox(mailbox)
 

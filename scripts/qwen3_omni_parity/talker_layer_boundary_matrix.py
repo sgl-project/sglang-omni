@@ -33,13 +33,17 @@ def load_feedback_step_dumps(
 ) -> dict[int, dict[str, Any]]:
     step_dumps: dict[int, dict[str, Any]] = {}
     if runtime_capture is not None:
-        for path_str in runtime_capture.get("artifacts", {}).get("talker_feedback_input_steps", []):
+        for path_str in runtime_capture.get("artifacts", {}).get(
+            "talker_feedback_input_steps", []
+        ):
             path = Path(path_str)
             step = int(path.stem.rsplit("step", 1)[-1])
             step_dumps[step] = torch.load(path, map_location="cpu")
         if step_dumps:
             return step_dumps
-    for path in sorted(artifacts_dir.glob(f"talker_feedback_input_{request_id}_step*.pt")):
+    for path in sorted(
+        artifacts_dir.glob(f"talker_feedback_input_{request_id}_step*.pt")
+    ):
         step = int(path.stem.rsplit("step", 1)[-1])
         step_dumps[step] = torch.load(path, map_location="cpu")
     return step_dumps
@@ -135,18 +139,28 @@ def capture_hf_layer_boundaries(
                 )
 
         handles.append(layer.register_forward_pre_hook(_layer_pre, with_kwargs=True))
-        handles.append(layer.self_attn.register_forward_pre_hook(_attn_pre, with_kwargs=True))
+        handles.append(
+            layer.self_attn.register_forward_pre_hook(_attn_pre, with_kwargs=True)
+        )
         handles.append(layer.mlp.register_forward_pre_hook(_mlp_pre, with_kwargs=True))
         handles.append(layer.mlp.register_forward_hook(_mlp_post, with_kwargs=True))
         handles.append(layer.register_forward_hook(_layer_post, with_kwargs=True))
 
-    input_embeds = runtime_prefill_dump["input_embeds"].unsqueeze(0).to(device=device, dtype=torch.bfloat16)
+    input_embeds = (
+        runtime_prefill_dump["input_embeds"]
+        .unsqueeze(0)
+        .to(device=device, dtype=torch.bfloat16)
+    )
     input_ids = runtime_prefill_dump["input_ids"].unsqueeze(0).to(device=device)
     trailing = runtime_prefill_dump.get("trailing_text_hidden")
     if isinstance(trailing, torch.Tensor):
         trailing = trailing.unsqueeze(0).to(device=device, dtype=torch.bfloat16)
-    tts_pad_embed = runtime_prefill_dump["tts_pad_embed"].to(device=device, dtype=torch.bfloat16)
-    attention_mask = torch.ones((1, input_embeds.shape[1]), device=device, dtype=torch.long)
+    tts_pad_embed = runtime_prefill_dump["tts_pad_embed"].to(
+        device=device, dtype=torch.bfloat16
+    )
+    attention_mask = torch.ones(
+        (1, input_embeds.shape[1]), device=device, dtype=torch.long
+    )
     runtime_tokens = runtime_cp_dump["layer0_codes"].tolist()
 
     with torch.no_grad():
@@ -165,11 +179,17 @@ def capture_hf_layer_boundaries(
 
         for step in range(1, target_step + 1):
             step_dump = feedback_step_dumps[step]
-            token_ids = torch.tensor([[runtime_tokens[step - 1]]], device=device, dtype=torch.long)
-            feedback_input = step_dump["combined_feedback_input_embeds"].to(
-                device=device,
-                dtype=torch.bfloat16,
-            ).view(1, 1, -1)
+            token_ids = torch.tensor(
+                [[runtime_tokens[step - 1]]], device=device, dtype=torch.long
+            )
+            feedback_input = (
+                step_dump["combined_feedback_input_embeds"]
+                .to(
+                    device=device,
+                    dtype=torch.bfloat16,
+                )
+                .view(1, 1, -1)
+            )
             attention_mask = torch.cat(
                 [attention_mask, torch.ones((1, 1), device=device, dtype=torch.long)],
                 dim=1,
@@ -215,7 +235,9 @@ def analyze_layer_boundary(
     layer_dump = load_layer_input_dump(layer_dump_path)
     capture_layers = sorted(layer_dump.get("layer_inputs", {}).keys())
     target_step = int(layer_dump.get("generation_steps", 0))
-    feedback_step_dumps = load_feedback_step_dumps(runtime_capture, request_id, artifacts_dir)
+    feedback_step_dumps = load_feedback_step_dumps(
+        runtime_capture, request_id, artifacts_dir
+    )
     if target_step not in feedback_step_dumps:
         raise FileNotFoundError(
             f"Missing feedback dump for step {target_step} under request {request_id}"
@@ -248,7 +270,10 @@ def analyze_layer_boundary(
         for layer_idx in capture_layers:
             if layer_idx not in runtime_section or layer_idx not in hf_section:
                 continue
-            row = {"layer": layer_idx, **metric(runtime_section[layer_idx], hf_section[layer_idx])}
+            row = {
+                "layer": layer_idx,
+                **metric(runtime_section[layer_idx], hf_section[layer_idx]),
+            }
             rows.append(row)
             if first_failure is None and row["cosine"] < FLOAT_PASS_THRESHOLD:
                 first_failure = {"boundary": runtime_key, "layer": layer_idx, **row}
@@ -291,7 +316,11 @@ def main() -> None:
             str(args.runtime_prefill) if args.runtime_prefill else None,
         )
     else:
-        if args.request_id is None or args.runtime_prefill is None or args.runtime_cp_dump is None:
+        if (
+            args.request_id is None
+            or args.runtime_prefill is None
+            or args.runtime_cp_dump is None
+        ):
             raise ValueError(
                 "Either --runtime-capture or all of --request-id/--runtime-prefill/--runtime-cp-dump are required"
             )

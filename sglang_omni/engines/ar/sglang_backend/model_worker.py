@@ -103,7 +103,9 @@ class ModelWorker:
             moe_ep_size=1,
             pp_rank=0,
             pp_size=1,
-            nccl_port=self.nccl_port if self.nccl_port is not None else _find_free_port(),
+            nccl_port=(
+                self.nccl_port if self.nccl_port is not None else _find_free_port()
+            ),
             model_arch_override=self.model_arch_override,
             weight_prefix=self.weight_prefix,
         )

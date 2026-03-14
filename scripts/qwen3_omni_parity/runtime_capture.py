@@ -174,7 +174,11 @@ async def run_capture(args: argparse.Namespace) -> dict:
             "duration_sec": float(full_audio.shape[0] / DEFAULT_SAMPLE_RATE),
             "sample_rate": DEFAULT_SAMPLE_RATE,
             "max_abs": float(np.abs(full_audio).max()) if full_audio.size else 0.0,
-            "rms": float(np.sqrt(np.mean(np.square(full_audio)))) if full_audio.size else 0.0,
+            "rms": (
+                float(np.sqrt(np.mean(np.square(full_audio))))
+                if full_audio.size
+                else 0.0
+            ),
             "artifacts": artifacts,
         }
         save_json(summary, out_dir / f"runtime_capture_{request_id}.json")

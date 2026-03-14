@@ -15,7 +15,6 @@ from typing import Any, Iterable
 import numpy as np
 import torch
 
-
 DEFAULT_MODEL_PATH = Path(
     "/root/.cache/huggingface/hub/models--Qwen--Qwen3-Omni-30B-A3B-Instruct/"
     "snapshots/26291f793822fb6be9555850f06dfe95f2d7e695"
@@ -80,7 +79,9 @@ def load_json(path: str | Path) -> Any:
     return json.loads(Path(path).read_text())
 
 
-def metric(a: torch.Tensor | Iterable[float], b: torch.Tensor | Iterable[float]) -> dict[str, float]:
+def metric(
+    a: torch.Tensor | Iterable[float], b: torch.Tensor | Iterable[float]
+) -> dict[str, float]:
     if not isinstance(a, torch.Tensor):
         a = torch.tensor(list(a))
     if not isinstance(b, torch.Tensor):
@@ -120,7 +121,10 @@ def normalize_codec_rows(codec_codes: list[list[int]]) -> list[list[int]]:
         return []
     num_codebooks = len(codec_codes)
     num_steps = len(codec_codes[0])
-    return [[codec_codes[cb][step] for cb in range(num_codebooks)] for step in range(num_steps)]
+    return [
+        [codec_codes[cb][step] for cb in range(num_codebooks)]
+        for step in range(num_steps)
+    ]
 
 
 def find_base_port() -> int:
@@ -168,7 +172,9 @@ def copy_file_if_exists(src: str | Path, dst_dir: str | Path) -> str | None:
     return str(dst)
 
 
-def collect_runtime_artifacts(request_id: str, out_dir: str | Path, temp_dir: str | Path = "/tmp") -> dict[str, Any]:
+def collect_runtime_artifacts(
+    request_id: str, out_dir: str | Path, temp_dir: str | Path = "/tmp"
+) -> dict[str, Any]:
     temp_dir = Path(temp_dir)
     out_dir = ensure_dir(Path(out_dir))
     artifacts: dict[str, Any] = {}
@@ -204,17 +210,23 @@ def collect_runtime_artifacts(request_id: str, out_dir: str | Path, temp_dir: st
     return artifacts
 
 
-def resolve_runtime_cp_path(runtime_capture: dict[str, Any], explicit: str | None = None) -> Path:
+def resolve_runtime_cp_path(
+    runtime_capture: dict[str, Any], explicit: str | None = None
+) -> Path:
     if explicit:
         return Path(explicit)
     artifacts = runtime_capture.get("artifacts", {})
     path = artifacts.get("code_predictor_debug")
     if not path:
-        raise FileNotFoundError("Runtime capture does not reference code_predictor_debug")
+        raise FileNotFoundError(
+            "Runtime capture does not reference code_predictor_debug"
+        )
     return Path(path)
 
 
-def resolve_runtime_prefill_path(runtime_capture: dict[str, Any], explicit: str | None = None) -> Path:
+def resolve_runtime_prefill_path(
+    runtime_capture: dict[str, Any], explicit: str | None = None
+) -> Path:
     if explicit:
         return Path(explicit)
     artifacts = runtime_capture.get("artifacts", {})
@@ -224,7 +236,9 @@ def resolve_runtime_prefill_path(runtime_capture: dict[str, Any], explicit: str 
     return Path(path)
 
 
-def resolve_hf_prefill_path(hf_capture: dict[str, Any], explicit: str | None = None) -> Path | None:
+def resolve_hf_prefill_path(
+    hf_capture: dict[str, Any], explicit: str | None = None
+) -> Path | None:
     if explicit:
         return Path(explicit)
     path = hf_capture.get("talker_prefill_path")
@@ -238,7 +252,9 @@ def load_hf_talker_model(
     dtype: torch.dtype = torch.bfloat16,
 ):
     from transformers import AutoConfig
-    from transformers.models.qwen3_omni_moe import modeling_qwen3_omni_moe as hf_modeling
+    from transformers.models.qwen3_omni_moe import (
+        modeling_qwen3_omni_moe as hf_modeling,
+    )
 
     from sglang_omni.models.weight_loader import load_module
 

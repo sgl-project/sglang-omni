@@ -13,6 +13,7 @@ from typing import Iterable, Optional, Tuple
 
 import torch
 from sglang.srt.layers.logits_processor import LogitsProcessorOutput
+from sglang.srt.layers.moe.fused_moe_native import moe_forward_native
 from sglang.srt.model_loader.weight_utils import default_weight_loader
 from sglang.srt.utils import add_prefix
 from torch import nn
@@ -42,7 +43,6 @@ from sglang_omni.vendor.sglang.layers import (
 )
 from sglang_omni.vendor.sglang.models import apply_qk_norm
 from sglang_omni.vendor.sglang.utils import make_layers
-from sglang.srt.layers.moe.fused_moe_native import moe_forward_native
 
 logger = logging.getLogger(__name__)
 
@@ -227,7 +227,9 @@ class Qwen3OmniMoeTalkerSparseMoeBlock(Qwen3OmniMoeThinkerTextSparseMoeBlock):
         if debug_ctx:
             for row_idx in debug_ctx.get("row_indices", []):
                 if 0 <= row_idx < hidden_states.shape[0]:
-                    pre_gate_rows[row_idx] = hidden_states[row_idx].detach().cpu().clone()
+                    pre_gate_rows[row_idx] = (
+                        hidden_states[row_idx].detach().cpu().clone()
+                    )
 
         # Shared branch must consume the original MLP input before routed experts.
         # The fused MoE implementation mutates `hidden_states` in-place.
@@ -259,28 +261,39 @@ class Qwen3OmniMoeTalkerSparseMoeBlock(Qwen3OmniMoeThinkerTextSparseMoeBlock):
                 input_tokens = debug_ctx.get("input_tokens", [])
                 dump_paths = debug_ctx.get("dump_paths", [])
                 for i, row_idx in enumerate(row_indices):
-                    if row_idx >= hidden_states.shape[0] or row_idx >= final_hidden_states.shape[0]:
+                    if (
+                        row_idx >= hidden_states.shape[0]
+                        or row_idx >= final_hidden_states.shape[0]
+                    ):
                         continue
                     dump = {
                         "request_id": request_ids[i] if i < len(request_ids) else None,
-                        "generation_steps": generation_steps[i]
-                        if i < len(generation_steps)
-                        else None,
-                        "decode_batch_idx": decode_batch_indices[i]
-                        if i < len(decode_batch_indices)
-                        else None,
-                        "input_token": input_tokens[i] if i < len(input_tokens) else None,
+                        "generation_steps": (
+                            generation_steps[i] if i < len(generation_steps) else None
+                        ),
+                        "decode_batch_idx": (
+                            decode_batch_indices[i]
+                            if i < len(decode_batch_indices)
+                            else None
+                        ),
+                        "input_token": (
+                            input_tokens[i] if i < len(input_tokens) else None
+                        ),
                         "mlp_input_pre_gate": pre_gate_rows.get(row_idx),
                         "mlp_input": pre_gate_rows.get(row_idx),
                         "mlp_input_post_experts": hidden_states[row_idx].detach().cpu(),
-                        "router_logits_pre_topk": router_logits_pre_topk[row_idx].detach().cpu(),
+                        "router_logits_pre_topk": router_logits_pre_topk[row_idx]
+                        .detach()
+                        .cpu(),
                         "router_logits": router_logits[row_idx].detach().cpu(),
                         "gate_weight": self.gate.weight.detach().cpu(),
                         "routed_output": routed_output[row_idx].detach().cpu(),
                         "shared_output": shared_output[row_idx].detach().cpu(),
                         "shared_gate": shared_gate[row_idx].detach().cpu(),
                         "shared_gate_weight": self.shared_expert_gate.weight.detach().cpu(),
-                        "mlp_output_before_allreduce": final_hidden_states[row_idx].detach().cpu(),
+                        "mlp_output_before_allreduce": final_hidden_states[row_idx]
+                        .detach()
+                        .cpu(),
                         "topk_ids": (
                             topk_output.topk_ids[row_idx].detach().cpu()
                             if hasattr(topk_output, "topk_ids")
@@ -305,7 +318,9 @@ class Qwen3OmniMoeTalkerSparseMoeBlock(Qwen3OmniMoeThinkerTextSparseMoeBlock):
                         dump_path,
                     )
             except Exception:
-                logger.exception("Failed to dump talker decode layer%s mlp debug", self.layer_id)
+                logger.exception(
+                    "Failed to dump talker decode layer%s mlp debug", self.layer_id
+                )
             finally:
                 self._sglang_omni_debug_capture_mlp = None
 
@@ -431,9 +446,7 @@ class Qwen3OmniMoeTalkerTextModel(nn.Module):
                 forward_batch=forward_batch,
                 residual=residual,
                 captured_last_layer_outputs=(
-                    aux_hidden_states
-                    if i in capture_layers and i != 0
-                    else None
+                    aux_hidden_states if i in capture_layers and i != 0 else None
                 ),
             )
 
@@ -561,7 +574,9 @@ class Qwen3OmniMoeTalkerCodePredictor(nn.Module):
             hidden_states: same shape as inputs_embeds
         """
         if forward_batch is None:
-            return self._forward_direct(inputs_embeds=inputs_embeds, positions=positions)
+            return self._forward_direct(
+                inputs_embeds=inputs_embeds, positions=positions
+            )
 
         # SGLang layers expect 2D [total_tokens, hidden]; reshape if 3D
         needs_reshape = inputs_embeds.ndim == 3
@@ -632,7 +647,9 @@ class Qwen3OmniMoeTalkerCodePredictor(nn.Module):
             hidden_states = residual + attn_out
 
             residual = hidden_states
-            normed = layer.post_attention_layernorm(hidden_states.reshape(-1, hidden_size))
+            normed = layer.post_attention_layernorm(
+                hidden_states.reshape(-1, hidden_size)
+            )
             mlp_out = layer.mlp(normed).reshape(batch_size, seq_len, hidden_size)
             hidden_states = residual + mlp_out
 
@@ -690,9 +707,15 @@ class Qwen3OmniMoeTalkerCodePredictor(nn.Module):
         )
         q, k = attn.rotary_emb(positions, q, k, fused_set_kv_buffer_arg=None)
 
-        q = q.reshape(batch_size, seq_len, attn.num_heads, attn.head_dim).transpose(1, 2)
-        k = k.reshape(batch_size, seq_len, attn.num_kv_heads, attn.head_dim).transpose(1, 2)
-        v = v.reshape(batch_size, seq_len, attn.num_kv_heads, attn.head_dim).transpose(1, 2)
+        q = q.reshape(batch_size, seq_len, attn.num_heads, attn.head_dim).transpose(
+            1, 2
+        )
+        k = k.reshape(batch_size, seq_len, attn.num_kv_heads, attn.head_dim).transpose(
+            1, 2
+        )
+        v = v.reshape(batch_size, seq_len, attn.num_kv_heads, attn.head_dim).transpose(
+            1, 2
+        )
 
         num_kv_groups = attn.num_heads // attn.num_kv_heads
         k = _repeat_kv(k, num_kv_groups)
@@ -704,7 +727,9 @@ class Qwen3OmniMoeTalkerCodePredictor(nn.Module):
             diagonal=1,
         )
         attn_weights = attn_weights.masked_fill(causal_mask, float("-inf"))
-        attn_weights = torch.softmax(attn_weights, dim=-1, dtype=torch.float32).to(q.dtype)
+        attn_weights = torch.softmax(attn_weights, dim=-1, dtype=torch.float32).to(
+            q.dtype
+        )
         attn_output = torch.matmul(attn_weights, v)
         attn_output = attn_output.transpose(1, 2).reshape(
             batch_size * seq_len, attn.num_heads * attn.head_dim
@@ -772,7 +797,9 @@ class Qwen3OmniTalker(nn.Module):
         )
 
         # LogitsProcessor for SGLang pipeline integration
-        from sglang.srt.layers.logits_processor import LogitsProcessor as SGLangLogitsProcessor
+        from sglang.srt.layers.logits_processor import (
+            LogitsProcessor as SGLangLogitsProcessor,
+        )
 
         self.logits_processor = SGLangLogitsProcessor(config.text_config)
 
@@ -894,9 +921,18 @@ class Qwen3OmniTalker(nn.Module):
         if extend_seq_lens is None:
             return torch.tensor([forward_batch.input_ids.shape[0] - 1], device=device)
 
-        if forward_batch.padded_static_len is not None and forward_batch.padded_static_len >= 0:
-            idx = torch.arange(len(extend_seq_lens), device=device, dtype=extend_seq_lens.dtype)
-            return idx * forward_batch.padded_static_len + extend_seq_lens.to(device=device) - 1
+        if (
+            forward_batch.padded_static_len is not None
+            and forward_batch.padded_static_len >= 0
+        ):
+            idx = torch.arange(
+                len(extend_seq_lens), device=device, dtype=extend_seq_lens.dtype
+            )
+            return (
+                idx * forward_batch.padded_static_len
+                + extend_seq_lens.to(device=device)
+                - 1
+            )
 
         seq_lens = extend_seq_lens.to(device=device)
         return torch.cumsum(seq_lens, dim=0) - 1
@@ -958,9 +994,7 @@ class Qwen3OmniTalker(nn.Module):
                     predictor_hidden[:, -1:, :]
                 )
                 probs = torch.softmax(logits[:, -1, :], dim=-1)
-                code = top_k_top_p_sampling_from_probs(
-                    probs, top_k=50, top_p=0.8
-                )
+                code = top_k_top_p_sampling_from_probs(probs, top_k=50, top_p=0.8)
                 if code.ndim == 1:
                     code = code.unsqueeze(-1)
                 pos_codes.append(code)
@@ -1017,7 +1051,7 @@ class Qwen3OmniTalker(nn.Module):
         for name, loaded_weight in weights:
             # Support both monolithic (talker.xxx) and split (xxx) checkpoints
             if name.startswith("talker."):
-                name = name[len("talker."):]
+                name = name[len("talker.") :]
             elif "." in name and name.split(".")[0] in ("thinker", "code2wav"):
                 continue
 

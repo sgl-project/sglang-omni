@@ -35,7 +35,9 @@ def load_code2wav_model(
     if code2wav_config is None:
         raise ValueError(f"No code2wav_config found in {model_path}")
 
-    from transformers.models.qwen3_omni_moe.modeling_qwen3_omni_moe import Qwen3OmniMoeCode2Wav
+    from transformers.models.qwen3_omni_moe.modeling_qwen3_omni_moe import (
+        Qwen3OmniMoeCode2Wav,
+    )
 
     model = Qwen3OmniMoeCode2Wav._from_config(code2wav_config)
 
@@ -230,7 +232,9 @@ class _Code2WavStreamingExecutor(Executor):
             dump_path = Path("/tmp") / f"code2wav_codes_{request_id}.pt"
             codes = torch.stack(code_chunks, dim=0).transpose(0, 1).unsqueeze(0).cpu()
             torch.save({"request_id": request_id, "codes": codes}, dump_path)
-            logger.info("Code2Wav codes dump saved rid=%s path=%s", request_id, dump_path)
+            logger.info(
+                "Code2Wav codes dump saved rid=%s path=%s", request_id, dump_path
+            )
         except Exception:
             logger.exception("Failed to dump code2wav codes for %s", request_id)
 

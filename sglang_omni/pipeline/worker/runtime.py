@@ -44,12 +44,16 @@ class Worker:
         self.queue: asyncio.Queue[WorkDescriptor | None] | None = None
         self._running = False
         self._result_waiters: dict[str, asyncio.Future[StagePayload]] = {}
-        self.chunk_receiver: Any | None = None  # Set externally for chunk-receiving stages
+        self.chunk_receiver: Any | None = (
+            None  # Set externally for chunk-receiving stages
+        )
 
     def deliver_chunk(self, msg) -> None:
         """Deliver a chunk notification to this worker's chunk receiver."""
         if self.chunk_receiver is None:
-            logger.warning("Worker has no chunk_receiver, dropping chunk for %s", msg.request_id)
+            logger.warning(
+                "Worker has no chunk_receiver, dropping chunk for %s", msg.request_id
+            )
             return
         asyncio.create_task(self.chunk_receiver.deliver(msg))
 
@@ -153,9 +157,15 @@ class Worker:
             fut: asyncio.Future[StagePayload] = loop.create_future()
             self._result_waiters[request_id] = fut
 
-            logger.debug("Worker %s: adding request %s to executor", self.stage.name, request_id)
+            logger.debug(
+                "Worker %s: adding request %s to executor", self.stage.name, request_id
+            )
             await self.executor.add_request(merged)
-            logger.debug("Worker %s: request %s added, waiting for result", self.stage.name, request_id)
+            logger.debug(
+                "Worker %s: request %s added, waiting for result",
+                self.stage.name,
+                request_id,
+            )
 
             stream_task: asyncio.Task[None] | None = None
             stream_fn = getattr(self.executor, "stream", None)
@@ -182,22 +192,36 @@ class Worker:
             # Route
             next_stage = self.stage.get_next(request_id, output_payload)
 
-            logger.debug("Worker %s: next_stage=%s for %s", self.stage.name, next_stage, request_id)
+            logger.debug(
+                "Worker %s: next_stage=%s for %s",
+                self.stage.name,
+                next_stage,
+                request_id,
+            )
             if next_stage is None:
                 if stream_task is not None:
                     await self._finish_stream_task(stream_task)
                 await self._send_complete(request_id, output_payload.data)
-                logger.debug("Worker %s: sent complete for %s", self.stage.name, request_id)
+                logger.debug(
+                    "Worker %s: sent complete for %s", self.stage.name, request_id
+                )
             else:
                 if stream_task is not None:
                     await self._finish_stream_task(stream_task)
                 for stage_name in self._normalize_next_stages(next_stage):
                     if stage_name in bootstrap_targets:
                         continue
-                    sent = await self._send_to_next(request_id, stage_name, output_payload)
+                    sent = await self._send_to_next(
+                        request_id, stage_name, output_payload
+                    )
                     if not sent:
                         return
-                    logger.debug("Worker %s: routed %s to %s", self.stage.name, request_id, stage_name)
+                    logger.debug(
+                        "Worker %s: routed %s to %s",
+                        self.stage.name,
+                        request_id,
+                        stage_name,
+                    )
 
         except asyncio.CancelledError:
             logger.debug("Worker: request %s cancelled", request_id)
@@ -210,7 +234,10 @@ class Worker:
             if self.stage is not None:
                 self.stage.router.clear_request(request_id)
                 # Close chunk mailbox for completed request
-                if hasattr(self.stage, "chunk_mailbox") and self.stage.chunk_mailbox is not None:
+                if (
+                    hasattr(self.stage, "chunk_mailbox")
+                    and self.stage.chunk_mailbox is not None
+                ):
                     self.stage.chunk_mailbox.close(request_id)
 
     # ------------------------------------------------------------------
