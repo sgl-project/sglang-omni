@@ -23,7 +23,6 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
-from sglang_omni.client.audio import DEFAULT_SAMPLE_RATE, encode_audio
 from sglang_omni.client import (
     Client,
     ClientError,
@@ -31,6 +30,7 @@ from sglang_omni.client import (
     Message,
     SamplingParams,
 )
+from sglang_omni.client.audio import DEFAULT_SAMPLE_RATE, encode_audio
 from sglang_omni.serve.protocol import (
     ChatCompletionAudio,
     ChatCompletionChoice,

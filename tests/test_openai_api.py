@@ -236,5 +236,7 @@ def test_speech_endpoint_stream_returns_sse_audio_chunks() -> None:
                 break
             events.append(json.loads(payload))
 
-    assert any(event.get("audio", {}).get("data") for event in events if event.get("audio"))
+    assert any(
+        event.get("audio", {}).get("data") for event in events if event.get("audio")
+    )
     assert events[-1]["finish_reason"] == "stop"
