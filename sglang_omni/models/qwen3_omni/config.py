@@ -216,4 +216,9 @@ class Qwen3OmniSpeechPipelineConfig(PipelineConfig):
     ]
 
 
-EntryClass = Qwen3OmniPipelineConfig
+EntryClass = Qwen3OmniSpeechPipelineConfig
+
+Variants = {
+    "text": Qwen3OmniPipelineConfig,
+    "speech": Qwen3OmniSpeechPipelineConfig,
+}

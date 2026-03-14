@@ -183,10 +183,15 @@ def make_chat_handler(api_base: str):
                     yield display_out, new_api_history, audio_path
                 elif chunk["type"] == "audio":
                     raw = base64.b64decode(chunk["value"])
-                    tmp = tempfile.NamedTemporaryFile(suffix=".wav")
+                    tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
                     tmp.write(raw)
                     tmp.close()
                     audio_path = tmp.name
+                    if not assistant_text:
+                        display_out[-1] = {
+                            "role": "assistant",
+                            "content": "[Audio response]",
+                        }
                     yield display_out, new_api_history, audio_path
         except Exception as exc:
             error_msg = f"Error: {exc}"
@@ -238,13 +243,12 @@ def create_demo(api_base: str) -> gr.Blocks:
                     label="Output",
                     choices=[
                         ("Text only", "text"),
-                        # TODO: enable after talker is wired
-                        # ("Audio only", "audio"),
-                        # ("Text + Audio", "both"),
-                        # ("Auto", "auto"),
+                        ("Audio only", "audio"),
+                        ("Text + Audio", "both"),
+                        ("Auto", "auto"),
                     ],
                     value="text",
-                    interactive=False,
+                    interactive=True,
                 )
 
                 media_input = gr.File(

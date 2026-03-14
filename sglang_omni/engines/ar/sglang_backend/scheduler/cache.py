@@ -25,7 +25,7 @@ def create_tree_cache(
         chunked_prefill_size=server_args.chunked_prefill_size,
     )
 
-    if server_args.chunked_prefill_size is not None and server_args.disable_radix_cache:
+    if server_args.disable_radix_cache:
         from sglang.srt.mem_cache.chunk_cache import ChunkCache
 
         return ChunkCache(params)

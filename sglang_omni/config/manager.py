@@ -1,3 +1,4 @@
+import importlib
 from copy import deepcopy
 from typing import Any
 
@@ -91,12 +92,21 @@ class ConfigManager:
         return merged_config
 
     @staticmethod
-    def from_model_path(model_path: str) -> "ConfigManager":
-        """
-        Load the configuration from the model path.
-        """
+    def from_model_path(model_path: str, variant: str | None = None) -> "ConfigManager":
+        """Load config from model path, optionally selecting a variant."""
         hf_config = AutoConfig.from_pretrained(model_path)
         config_cls = PIPELINE_CONFIG_REGISTRY.get_config(hf_config.architectures[0])
+
+        if variant:
+            module = importlib.import_module(config_cls.__module__)
+            variants = getattr(module, "Variants", None)
+            if variants and variant in variants:
+                config_cls = variants[variant]
+            else:
+                raise ValueError(
+                    f"Unknown variant '{variant}' for {config_cls.__name__}"
+                )
+
         config = config_cls(model_path=model_path)
         return ConfigManager(config)
 
@@ -109,6 +119,10 @@ class ConfigManager:
             data = yaml.safe_load(f)
 
         config_cls_str = data["config_cls"]
-        config_cls = PIPELINE_CONFIG_REGISTRY.get_config_cls_by_name(config_cls_str)
+        if "." in config_cls_str:
+            module_path, cls_name = config_cls_str.rsplit(".", 1)
+            config_cls = getattr(importlib.import_module(module_path), cls_name)
+        else:
+            config_cls = PIPELINE_CONFIG_REGISTRY.get_config_cls_by_name(config_cls_str)
         config = config_cls(**data)
         return ConfigManager(config)

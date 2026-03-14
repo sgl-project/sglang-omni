@@ -13,9 +13,9 @@ from .scheduler import Scheduler
 from .types import SchedulerOutput, SchedulerStatus
 
 if TYPE_CHECKING:
-    from .runtime.interfaces import CacheManager
-
     from sglang_omni.pipeline.chunk.mailbox import ChunkMailbox
+
+    from .runtime.interfaces import CacheManager
 
 logger = logging.getLogger(__name__)
 
@@ -155,7 +155,7 @@ class OmniEngine(Engine):
 
             if finished:
                 for req in finished:
-                    logger.debug("Request %s finished", req.request_id)
+                    logger.info("Request %s finished", req.request_id)
 
         except Exception as e:
             logger.exception(
@@ -235,28 +235,31 @@ class OmniEngine(Engine):
                 continue
             if not self._feedback_mailbox.has(req_id):
                 continue
-            # Try non-blocking get from the queue
             queue = self._feedback_mailbox._queues.get(req_id)
-            if queue is not None and not queue.empty():
-                try:
-                    item = queue.get_nowait()
-                    from sglang_omni.pipeline.chunk.mailbox import ChunkSignal, _SENTINEL_DONE
-                    if item is _SENTINEL_DONE or isinstance(item, BaseException):
+            if queue is None or queue.empty():
+                continue
+            try:
+                item = queue.get_nowait()
+                from sglang_omni.pipeline.chunk.mailbox import (
+                    _SENTINEL_DONE,
+                    ChunkSignal,
+                )
+
+                if item is _SENTINEL_DONE or isinstance(item, BaseException):
+                    continue
+                if isinstance(item, ChunkSignal):
+                    if item.is_chunks_done or item.error is not None:
                         continue
-                    if isinstance(item, ChunkSignal):
-                        if item.is_chunks_done or item.error is not None:
-                            continue
-                        if not hasattr(item, "tensor"):
-                            continue
                     if not hasattr(item, "tensor"):
                         continue
-                    # Apply feedback
-                    iter_ctrl = self.scheduler.iteration_controller
-                    if hasattr(iter_ctrl, "apply_feedback"):
-                        iter_ctrl.apply_feedback(request, item.tensor)
-                    self.scheduler.resume_request(req_id)
-                except Exception:
-                    logger.exception("Feedback resume failed rid=%s", req_id)
+                if not hasattr(item, "tensor"):
+                    continue
+                iter_ctrl = self.scheduler.iteration_controller
+                if hasattr(iter_ctrl, "apply_feedback"):
+                    iter_ctrl.apply_feedback(request, item.tensor)
+                self.scheduler.resume_request(req_id)
+            except Exception:
+                logger.exception("Feedback resume failed rid=%s", req_id)
 
     async def _update_cache(self, scheduler_output: SchedulerOutput, model_output: Any):
         """Update cache with fresh model outputs."""

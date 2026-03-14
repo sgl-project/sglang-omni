@@ -15,9 +15,8 @@ from sglang_omni.engines.ar.sglang_backend.server_args_builder import (
 )
 from sglang_omni.engines.omni import (
     create_ar_engine,
-    create_encoder_engine,
-    create_single_pass_engine,
     create_sglang_ar_engine,
+    create_single_pass_engine,
 )
 from sglang_omni.executors import EngineExecutor, PreprocessingExecutor
 from sglang_omni.models.qwen3_omni.components.audio_encoder import Qwen3OmniAudioEncoder
@@ -314,7 +313,11 @@ def create_sglang_thinker_executor(
             result["text"] = text_to_add
         return result
 
-    stream_adapter = make_thinker_stream_adapter(chunk_enqueue_fn=_enqueue_chunk) if speech_enabled else None
+    stream_adapter = (
+        make_thinker_stream_adapter(chunk_enqueue_fn=_enqueue_chunk)
+        if speech_enabled
+        else None
+    )
 
     # Dual-layer capture: embed (layer 0 input) + accept_hidden_layer (layer 24 input)
     # Layer 0 captures embed output; layer 24 captures output of transformer layer 23
@@ -356,8 +359,11 @@ def create_sglang_thinker_executor_from_config(
     This keeps pipeline config args plain dict types while still constructing
     a typed ServerArgs object internally.
     """
+    overrides = {"mem_fraction_static": 0.85}
+    if server_args_overrides:
+        overrides.update(server_args_overrides)
     server_args = build_sglang_server_args(
-        model_path, context_length=thinker_max_seq_len, **(server_args_overrides or {})
+        model_path, context_length=thinker_max_seq_len, **overrides
     )
     return create_sglang_thinker_executor(
         server_args=server_args,
@@ -460,7 +466,9 @@ def make_talker_ar_stream_adapter(chunk_enqueue_fn=None):
             return
 
         generation_steps = int(getattr(request.data, "generation_steps", 0))
-        max_step = int(os.environ.get("SGLANG_OMNI_DUMP_TALKER_CAPTURED_HIDDEN_MAX_STEP", "0"))
+        max_step = int(
+            os.environ.get("SGLANG_OMNI_DUMP_TALKER_CAPTURED_HIDDEN_MAX_STEP", "0")
+        )
         if generation_steps > max_step:
             return
 
@@ -577,6 +585,8 @@ def create_talker_ar_executor(
         if fn is not None:
             fn(request_id, chunk_data, metadata=metadata)
 
+    server_args.disable_radix_cache = True
+
     stream_adapter = (
         make_talker_ar_stream_adapter(chunk_enqueue_fn=_enqueue_chunk)
         if speech_enabled
@@ -612,10 +622,18 @@ def create_talker_ar_executor(
         system_token_id=getattr(hf_config, "system_token_id", 8948),
         user_token_id=getattr(hf_config, "user_token_id", 872),
         assistant_token_id=getattr(hf_config, "assistant_token_id", 77091),
-        accept_hidden_layer=getattr(talker_cfg, "accept_hidden_layer", 24) if talker_cfg else 24,
-        audio_token_id=getattr(getattr(hf_config, "thinker_config", None), "audio_token_id", None),
-        image_token_id=getattr(getattr(hf_config, "thinker_config", None), "image_token_id", None),
-        video_token_id=getattr(getattr(hf_config, "thinker_config", None), "video_token_id", None),
+        accept_hidden_layer=(
+            getattr(talker_cfg, "accept_hidden_layer", 24) if talker_cfg else 24
+        ),
+        audio_token_id=getattr(
+            getattr(hf_config, "thinker_config", None), "audio_token_id", None
+        ),
+        image_token_id=getattr(
+            getattr(hf_config, "thinker_config", None), "image_token_id", None
+        ),
+        video_token_id=getattr(
+            getattr(hf_config, "thinker_config", None), "video_token_id", None
+        ),
         speaker_map=getattr(talker_cfg, "speaker_id", None),
         enqueue_fn_holder=enqueue_fn_holder,
         thinker_config=getattr(hf_config, "thinker_config", None),

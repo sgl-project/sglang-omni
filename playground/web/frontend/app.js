@@ -1324,20 +1324,22 @@
           assistantText += chunk.value;
           updateAssistantMessage(assistantMsg, assistantText);
         } else if (chunk.type === "audio") {
-          const audioUrl = `data:audio/wav;base64,${chunk.value}`;
+          const raw = atob(chunk.value);
+          const bytes = new Uint8Array(raw.length);
+          for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+          const blob = new Blob([bytes], { type: "audio/wav" });
+          const audioUrl = URL.createObjectURL(blob);
           addAssistantAudio(assistantMsg, audioUrl);
         }
       }
 
-      // Only append to history if we got a real response
-      if (assistantText) {
-        const userEntry = { role: "user", content: userText || " " };
-        if (mediaPayload.images.length) userEntry.images = mediaPayload.images;
-        if (mediaPayload.videos.length) userEntry.videos = mediaPayload.videos;
-        if (mediaPayload.audios.length) userEntry.audios = mediaPayload.audios;
-        state.conversationHistory.push(userEntry);
-        state.conversationHistory.push({ role: "assistant", content: assistantText });
-      }
+      // Append to history for multi-turn context
+      const userEntry = { role: "user", content: userText || " " };
+      if (mediaPayload.images.length) userEntry.images = mediaPayload.images;
+      if (mediaPayload.videos.length) userEntry.videos = mediaPayload.videos;
+      if (mediaPayload.audios.length) userEntry.audios = mediaPayload.audios;
+      state.conversationHistory.push(userEntry);
+      state.conversationHistory.push({ role: "assistant", content: assistantText || "[audio]" });
     } catch (err) {
       if (err && err.name === "AbortError") {
         if (!assistantText) updateAssistantMessage(assistantMsg, "[stopped]");

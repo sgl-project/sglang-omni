@@ -11,14 +11,14 @@ import asyncio
 import inspect
 import logging
 import multiprocessing
+import multiprocessing.synchronize
+import os
 from typing import Any
 
 from sglang_omni.config.compiler import (
     _allocate_endpoints,
     _build_relay_config,
     _create_input_handler,
-    _dedupe_list,
-    _map_stage_name,
     _wrap_get_next,
 )
 from sglang_omni.config.schema import PipelineConfig, StageConfig
@@ -61,19 +61,11 @@ def _build_stage_process_config(
 def _resolve_relay_config(
     stage_cfg: StageConfig, global_cfg: PipelineConfig
 ) -> dict[str, Any]:
-    """Build relay config with gpu_id from gpu_placement (not relay.device).
-
-    The base _build_relay_config uses relay.device to determine gpu_id,
-    which defaults to 0 for "cuda". For multi-process deployment, we
-    override with the actual gpu_placement value.
-    """
+    """Build relay config for multi-process mode (gpu_id=0, CUDA remapped)."""
     relay_config = _build_relay_config(stage_cfg, global_cfg)
 
-    # Override gpu_id from gpu_placement when relay is on CUDA
     if stage_cfg.relay.device != "cpu":
-        placement_gpu = global_cfg.gpu_placement.get(stage_cfg.name)
-        if placement_gpu is not None:
-            relay_config["gpu_id"] = placement_gpu
+        relay_config["gpu_id"] = 0
 
     return relay_config
 
@@ -123,8 +115,7 @@ def _compile_stage_local(
         "gpu_id" in inspect.signature(factory).parameters
         and "gpu_id" not in stage_cfg.executor.args
     ):
-        gpu_id = global_cfg.gpu_placement.get(stage_cfg.name, 0)
-        stage_cfg.executor.args["gpu_id"] = gpu_id
+        stage_cfg.executor.args["gpu_id"] = 0
 
     for _ in range(stage_cfg.num_workers):
         executor = factory(**stage_cfg.executor.args)
@@ -205,7 +196,9 @@ def _wire_chunk_transfers_local(
                 or worker.executor._chunk_prefetch_count is None
             ):
                 worker.executor._chunk_prefetch_count = 4096
-            set_feedback_mailbox = getattr(worker.executor, "set_feedback_mailbox", None)
+            set_feedback_mailbox = getattr(
+                worker.executor, "set_feedback_mailbox", None
+            )
             if callable(set_feedback_mailbox):
                 set_feedback_mailbox(mailbox)
 
@@ -223,10 +216,27 @@ def _stage_process_entry(
     5. Signal ready
     6. Run stage.run() until shutdown
     """
+    import ctypes
+    import ctypes.util
     import logging
+    import os
+    import signal
     import sys
 
-    logging.basicConfig(level=logging.INFO, stream=sys.stdout)
+    try:
+        libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
+        PR_SET_PDEATHSIG = 1
+        libc.prctl(PR_SET_PDEATHSIG, signal.SIGKILL)
+    except Exception:
+        pass
+
+    sys.stdout = os.fdopen(sys.stdout.fileno(), "w", buffering=1)
+    logging.basicConfig(
+        level=logging.INFO,
+        stream=sys.stdout,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        force=True,
+    )
     log = logging.getLogger(f"stage.{config_dict['stage_name']}")
 
     try:
@@ -243,13 +253,16 @@ def _stage_process_entry(
         name_map.update(fused_name_map)
 
         # Find this stage's config
-        stage_cfg = next(
-            (s for s in stages_cfg if s.name == stage_name), None
-        )
+        stage_cfg = next((s for s in stages_cfg if s.name == stage_name), None)
         if stage_cfg is None:
             log.error("Stage %s not found in config", stage_name)
             return
 
+        log.info(
+            "Stage %s: CUDA_VISIBLE_DEVICES=%s",
+            stage_name,
+            os.environ.get("CUDA_VISIBLE_DEVICES", "<not set>"),
+        )
         log.info("Compiling stage %s...", stage_name)
 
         # Compile stage (creates relay, loads executor/model, adds workers)
@@ -258,9 +271,7 @@ def _stage_process_entry(
         )
 
         # Wire chunk transfers
-        _wire_chunk_transfers_local(
-            stage, stage_cfg, stages_cfg, stage_endpoints
-        )
+        _wire_chunk_transfers_local(stage, stage_cfg, stages_cfg, stage_endpoints)
 
         log.info("Stage %s ready", stage_name)
         ready_event.set()
@@ -309,9 +320,7 @@ class MultiProcessPipelineRunner:
         stages_cfg, name_map, entry_stage = self._config.apply_fusion()
         endpoints = _allocate_endpoints(self._config, stages=stages_cfg)
 
-        stage_endpoints = {
-            s.name: endpoints[f"stage_{s.name}"] for s in stages_cfg
-        }
+        stage_endpoints = {s.name: endpoints[f"stage_{s.name}"] for s in stages_cfg}
 
         # 2. Create Coordinator in main process (binds ZMQ first)
         self._coordinator = Coordinator(
@@ -325,36 +334,78 @@ class MultiProcessPipelineRunner:
             self._coordinator.run_completion_loop()
         )
 
-        # 3. Spawn one subprocess per stage
-        ready_events: list[multiprocessing.Event] = []
+        # 3. Spawn one subprocess per stage, grouped by GPU
+        ctx = multiprocessing.get_context("spawn")
 
-        for stage_cfg in stages_cfg:
-            ready = multiprocessing.Event()
-            config_dict = _build_stage_process_config(
-                pipeline_config=self._config,
-                stage_name=stage_cfg.name,
-                stage_endpoints=stage_endpoints,
-                all_endpoints=endpoints,
-                name_map=name_map,
-            )
-            p = multiprocessing.Process(
-                target=_stage_process_entry,
-                args=(config_dict, ready),
-                name=f"stage-{stage_cfg.name}",
-                daemon=True,
-            )
-            p.start()
-            self._processes.append(p)
-            ready_events.append(ready)
+        # Group stages by GPU placement
+        gpu_groups: dict[int, list[int]] = {}
+        for idx, stage_cfg in enumerate(stages_cfg):
+            gpu = self._config.gpu_placement.get(stage_cfg.name, -1)
+            gpu_groups.setdefault(gpu, []).append(idx)
 
-        # 4. Wait for all stages to be ready
-        for i, event in enumerate(ready_events):
-            stage_name = stages_cfg[i].name
-            if not event.wait(timeout=timeout):
-                raise TimeoutError(
-                    f"Stage {stage_name} did not become ready within {timeout}s"
+        # Sort GPU groups: CPU stages (-1) first, then each GPU
+        sorted_gpus = sorted(gpu_groups.keys())
+
+        ready_events: list[multiprocessing.synchronize.Event | None] = [None] * len(
+            stages_cfg
+        )
+
+        for gpu_id in sorted_gpus:
+            group_indices = gpu_groups[gpu_id]
+            for idx in group_indices:
+                stage_cfg = stages_cfg[idx]
+                ready = ctx.Event()
+                config_dict = _build_stage_process_config(
+                    pipeline_config=self._config,
+                    stage_name=stage_cfg.name,
+                    stage_endpoints=stage_endpoints,
+                    all_endpoints=endpoints,
+                    name_map=name_map,
                 )
-            logger.info("Stage %s ready", stage_name)
+
+                stage_gpu = self._config.gpu_placement.get(stage_cfg.name)
+                if stage_gpu is not None:
+                    parent_devices = os.environ.get("CUDA_VISIBLE_DEVICES", "")
+                    if parent_devices:
+                        physical_ids = parent_devices.split(",")
+                        if stage_gpu < len(physical_ids):
+                            config_dict["cuda_visible_devices"] = physical_ids[
+                                stage_gpu
+                            ]
+                        else:
+                            config_dict["cuda_visible_devices"] = str(stage_gpu)
+                    else:
+                        config_dict["cuda_visible_devices"] = str(stage_gpu)
+
+                # Parent-env-override: set before spawn, restore after start
+                child_cuda_vis = config_dict.get("cuda_visible_devices")
+                saved_cuda_vis = os.environ.get("CUDA_VISIBLE_DEVICES")
+                if child_cuda_vis is not None:
+                    os.environ["CUDA_VISIBLE_DEVICES"] = child_cuda_vis
+
+                from sglang_omni.config._stage_launcher import stage_process_entry
+
+                p = ctx.Process(
+                    target=stage_process_entry,
+                    args=(config_dict, ready),
+                    name=f"stage-{stage_cfg.name}",
+                    daemon=True,
+                )
+                p.start()
+
+                if saved_cuda_vis is not None:
+                    os.environ["CUDA_VISIBLE_DEVICES"] = saved_cuda_vis
+                elif "CUDA_VISIBLE_DEVICES" in os.environ:
+                    del os.environ["CUDA_VISIBLE_DEVICES"]
+                self._processes.append(p)
+                ready_events[idx] = ready
+
+                if not ready.wait(timeout=timeout):
+                    raise TimeoutError(
+                        f"Stage {stage_cfg.name} did not become ready "
+                        f"within {timeout}s"
+                    )
+                logger.info("Stage %s ready", stage_cfg.name)
 
         # 5. Check for early process failures
         for i, p in enumerate(self._processes):
