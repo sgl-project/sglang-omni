@@ -164,6 +164,17 @@ def test_build_speech_request_keeps_ref_audio_compatibility() -> None:
     ]
 
 
+def test_build_speech_request_preserves_stream_flag() -> None:
+    req = CreateSpeechRequest(
+        model="s2-pro",
+        input="hello",
+        stream=True,
+    )
+
+    gen_req = _build_speech_generate_request(req, default_model="fallback-model")
+    assert gen_req.stream is True
+
+
 def test_speech_endpoint_e2e_with_mock_pipeline_references() -> None:
     coordinator = MockSpeechCoordinator()
     client = Client(coordinator=coordinator)
@@ -187,3 +198,43 @@ def test_speech_endpoint_e2e_with_mock_pipeline_references() -> None:
         "text": "hello",
         "references": [{"audio_path": "nan1.wav", "text": "male voice reference"}],
     }
+
+
+def test_speech_endpoint_stream_returns_sse_audio_chunks() -> None:
+    dummy = DummyClient(
+        [
+            GenerateChunk(
+                request_id="speech-1",
+                modality="audio",
+                audio_data=[0.0, 0.1, -0.1, 0.0],
+                sample_rate=24000,
+            ),
+            GenerateChunk(request_id="speech-1", finish_reason="stop"),
+        ]
+    )
+    client = TestClient(create_app(dummy, model_name="s2-pro"))
+
+    with client.stream(
+        "POST",
+        "/v1/audio/speech",
+        json={
+            "model": "s2-pro",
+            "input": "hello",
+            "stream": True,
+            "response_format": "wav",
+        },
+        timeout=5.0,
+    ) as resp:
+        assert resp.status_code == 200
+        assert resp.headers["content-type"].startswith("text/event-stream")
+        events = []
+        for line in resp.iter_lines():
+            if not line or not line.startswith("data: "):
+                continue
+            payload = line[len("data: ") :]
+            if payload == "[DONE]":
+                break
+            events.append(json.loads(payload))
+
+    assert any(event.get("audio", {}).get("data") for event in events if event.get("audio"))
+    assert events[-1]["finish_reason"] == "stop"

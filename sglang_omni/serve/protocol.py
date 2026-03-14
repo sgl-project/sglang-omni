@@ -171,6 +171,7 @@ class CreateSpeechRequest(BaseModel):
     voice: str = "default"
     response_format: str = "wav"
     speed: float = 1.0
+    stream: bool = False
 
     # Advanced TTS extensions
     task_type: str | None = None  # e.g. "Base", "CustomVoice", "VoiceDesign"

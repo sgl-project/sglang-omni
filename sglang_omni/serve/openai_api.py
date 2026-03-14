@@ -12,6 +12,7 @@ Provides the following endpoints:
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import time
@@ -22,6 +23,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
+from sglang_omni.client.audio import DEFAULT_SAMPLE_RATE, encode_audio
 from sglang_omni.client import (
     Client,
     ClientError,
@@ -445,6 +447,17 @@ def _register_speech(app: FastAPI) -> None:
         request_id = f"speech-{uuid.uuid4()}"
 
         gen_req = _build_speech_generate_request(req, default_model)
+        if req.stream:
+            return StreamingResponse(
+                _speech_stream(
+                    client=client,
+                    gen_req=gen_req,
+                    request_id=request_id,
+                    response_format=req.response_format,
+                    speed=req.speed,
+                ),
+                media_type="text/event-stream",
+            )
 
         try:
             result = await client.speech(
@@ -466,6 +479,63 @@ def _register_speech(app: FastAPI) -> None:
                 "Content-Disposition": f'attachment; filename="speech.{result.format}"',
             },
         )
+
+
+async def _speech_stream(
+    client: Client,
+    gen_req: GenerateRequest,
+    request_id: str,
+    response_format: str,
+    speed: float,
+):
+    """Streaming speech generator (yields SSE events with audio chunks)."""
+    chunk_index = 0
+    finish_reason: str | None = None
+
+    try:
+        async for chunk in client.generate(gen_req, request_id=request_id):
+            if chunk.finish_reason is not None:
+                finish_reason = chunk.finish_reason
+
+            if chunk.audio_data is None:
+                continue
+
+            sample_rate = chunk.sample_rate or DEFAULT_SAMPLE_RATE
+            audio_bytes, mime_type = encode_audio(
+                chunk.audio_data,
+                response_format=response_format,
+                sample_rate=sample_rate,
+                speed=speed,
+            )
+            payload = {
+                "id": f"speech-{request_id}",
+                "object": "audio.speech.chunk",
+                "index": chunk_index,
+                "audio": {
+                    "data": base64.b64encode(audio_bytes).decode("ascii"),
+                    "format": response_format,
+                    "mime_type": mime_type,
+                    "sample_rate": sample_rate,
+                },
+                "finish_reason": None,
+            }
+            yield f"data: {json.dumps(payload)}\n\n"
+            chunk_index += 1
+    except ClientError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("Error streaming speech for request %s", request_id)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    final_payload = {
+        "id": f"speech-{request_id}",
+        "object": "audio.speech.chunk",
+        "index": chunk_index,
+        "audio": None,
+        "finish_reason": finish_reason or "stop",
+    }
+    yield f"data: {json.dumps(final_payload)}\n\n"
+    yield "data: [DONE]\n\n"
 
 
 def _build_speech_generate_request(
@@ -531,7 +601,7 @@ def _build_speech_generate_request(
         prompt=prompt,
         sampling=sampling,
         stage_params=req.stage_params,
-        stream=False,  # TTS returns complete audio, no streaming
+        stream=req.stream,
         output_modalities=["audio"],
         metadata={
             "task": "tts",
