@@ -247,14 +247,22 @@ class OmniEngine(Engine):
                 )
 
                 # While GPU is busy, process previous step's result on CPU
-                if self._last_scheduler_output is not None and self._result_queue:
+                if self._result_queue:
                     self._process_pending_result()
 
                 # Now wait for GPU to finish
                 model_output = await execute_future
             else:
                 # ═══ SYNCHRONOUS PATH ═══
-                # Either CPU device or overlap disabled
+                # Either CPU device or overlap disabled for this step.
+                # Process pending results BEFORE execution to minimize latency.
+                if (
+                    not disable_overlap
+                    and self._last_scheduler_output is not None
+                    and self._result_queue
+                ):
+                    self._process_pending_result()
+
                 if execute_in_thread:
                     loop = asyncio.get_running_loop()
                     model_output = await loop.run_in_executor(
@@ -265,19 +273,9 @@ class OmniEngine(Engine):
                 else:
                     model_output = self.model_runner.execute(scheduler_output)
 
-                # Process previous result after execution (no overlap)
-                if (
-                    not disable_overlap
-                    and self._last_scheduler_output is not None
-                    and self._result_queue
-                ):
-                    self._process_pending_result()
-
-            # 6. Update cache
-            if self.cache_manager is not None:
-                self._update_cache_sync(scheduler_output, model_output)
-
-            # 7. Buffer current result for next step
+            # 6. Buffer current result for next step's CPU processing
+            #    (cache update is deferred to _process_pending_result to keep
+            #     it co-located with scheduler.update for consistency)
             self._result_queue.append(
                 _PendingResult(
                     scheduler_output=scheduler_output,
@@ -285,7 +283,7 @@ class OmniEngine(Engine):
                 )
             )
 
-            # 8. Track last output
+            # 7. Track last output for prefill-detection heuristic
             self._last_scheduler_output = scheduler_output
 
         except Exception as e:

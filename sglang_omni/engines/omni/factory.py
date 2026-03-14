@@ -172,7 +172,11 @@ def create_ar_engine(
         device=device,
     )
 
-    return OmniEngine(scheduler=scheduler, model_runner=model_runner)
+    return OmniEngine(
+        scheduler=scheduler,
+        model_runner=model_runner,
+        enable_overlap=enable_overlap,
+    )
 
 
 def create_sglang_ar_engine(
