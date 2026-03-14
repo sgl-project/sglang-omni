@@ -93,7 +93,10 @@ def create_encoder_engine(
         cache_manager = SimpleCacheManager(max_size=cache_size)
 
     return OmniEngine(
-        scheduler=scheduler, model_runner=model_runner, cache_manager=cache_manager
+        scheduler=scheduler,
+        model_runner=model_runner,
+        cache_manager=cache_manager,
+        enable_overlap=False,
     )
 
 
@@ -102,6 +105,7 @@ def create_ar_engine(
     tokenizer: Any = None,
     max_seq_len: int = 2048,
     device: str = "cuda",
+    enable_overlap: bool = False,
 ) -> OmniEngine:
     """Create an AR engine (single request, HF KV cache).
 
@@ -110,6 +114,7 @@ def create_ar_engine(
         tokenizer: Tokenizer (used to get eos_token_id)
         max_seq_len: Maximum sequence length
         device: Device to run on
+        enable_overlap: Enable overlap scheduling (GPU/CPU pipelining)
 
     Returns:
         OmniEngine configured for AR models
@@ -120,7 +125,7 @@ def create_ar_engine(
         model = AutoModelForCausalLM.from_pretrained("gpt2")
         tokenizer = AutoTokenizer.from_pretrained("gpt2")
 
-        engine = create_ar_engine(model, tokenizer)
+        engine = create_ar_engine(model, tokenizer, enable_overlap=True)
         await engine.start()
 
         # Create request data
@@ -173,6 +178,7 @@ def create_ar_engine(
 def create_sglang_ar_engine(
     server_args: Any,
     gpu_id: int = 0,
+    enable_overlap: bool | None = None,
 ) -> OmniEngine:
     """Create an AR engine backed by SGLang's ModelWorker and KV cache.
 
@@ -182,6 +188,8 @@ def create_sglang_ar_engine(
     Args:
         server_args: SGLang ServerArgs configuration
         gpu_id: GPU device ID
+        enable_overlap: Enable overlap scheduling. If None, uses the value
+                       from server_args (not server_args.disable_overlap_schedule).
 
     Returns:
         OmniEngine configured with SGLang backend
@@ -201,6 +209,10 @@ def create_sglang_ar_engine(
         SGLangOutputProcessor,
         SGLangResourceManager,
     )
+
+    # Determine overlap setting
+    if enable_overlap is None:
+        enable_overlap = not getattr(server_args, "disable_overlap_schedule", False)
 
     # Initialize model worker
     model_worker = ModelWorker(
@@ -229,7 +241,7 @@ def create_sglang_ar_engine(
         token_to_kv_pool_allocator=token_to_kv_pool_allocator,
         tree_cache=tree_cache,
         model_config=model_worker.model_config,
-        enable_overlap=False,
+        enable_overlap=enable_overlap,
     )
     decode_mgr = DecodeManager(
         server_args=server_args,
@@ -261,4 +273,8 @@ def create_sglang_ar_engine(
         model_worker, output_proc, batch_planner=batch_planner
     )
 
-    return OmniEngine(scheduler=scheduler, model_runner=sglang_model_runner)
+    return OmniEngine(
+        scheduler=scheduler,
+        model_runner=sglang_model_runner,
+        enable_overlap=enable_overlap,
+    )
