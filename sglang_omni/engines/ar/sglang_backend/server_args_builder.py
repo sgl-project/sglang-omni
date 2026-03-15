@@ -23,7 +23,7 @@ def build_sglang_server_args(
         "trust_remote_code": True,
         "tp_size": 1,
         "pp_size": 1,
-        "disable_cuda_graph": True,
+        "disable_cuda_graph": False,
         "chunked_prefill_size": chunked_prefill_size,
         "max_prefill_tokens": max_prefill_tokens,
         "max_running_requests": max_running_requests,

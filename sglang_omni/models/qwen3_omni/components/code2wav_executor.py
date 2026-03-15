@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -171,8 +170,6 @@ class _Code2WavStreamingExecutor(Executor):
 
             await queue.put(None)
 
-            self._dump_code_debug(request_id, code_chunks)
-
             if audio_chunks:
                 full_audio = np.concatenate(audio_chunks).astype(np.float32, copy=False)
             else:
@@ -222,21 +219,6 @@ class _Code2WavStreamingExecutor(Executor):
         if trim:
             wav = wav[..., trim:]
         return wav.reshape(-1).detach().cpu().float().numpy().copy()
-
-    def _dump_code_debug(
-        self, request_id: str, code_chunks: list[torch.Tensor]
-    ) -> None:
-        if not code_chunks:
-            return
-        try:
-            dump_path = Path("/tmp") / f"code2wav_codes_{request_id}.pt"
-            codes = torch.stack(code_chunks, dim=0).transpose(0, 1).unsqueeze(0).cpu()
-            torch.save({"request_id": request_id, "codes": codes}, dump_path)
-            logger.info(
-                "Code2Wav codes dump saved rid=%s path=%s", request_id, dump_path
-            )
-        except Exception:
-            logger.exception("Failed to dump code2wav codes for %s", request_id)
 
     def _build_audio_payload(self, audio: np.ndarray) -> dict[str, Any]:
         audio = audio.astype(np.float32, copy=False)

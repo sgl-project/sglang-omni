@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
 from typing import Any
 
 import torch
@@ -359,7 +358,7 @@ def create_sglang_thinker_executor_from_config(
     This keeps pipeline config args plain dict types while still constructing
     a typed ServerArgs object internally.
     """
-    overrides = {"mem_fraction_static": 0.85}
+    overrides = {"mem_fraction_static": 0.80}
     if server_args_overrides:
         overrides.update(server_args_overrides)
     server_args = build_sglang_server_args(
@@ -459,57 +458,14 @@ def make_thinker_stream_adapter(chunk_enqueue_fn=None):
 def make_talker_ar_stream_adapter(chunk_enqueue_fn=None):
     """Talker AR stream adapter: relay codec code + hidden to Code Predictor."""
 
-    def _maybe_dump_captured_hidden(request, output, hidden) -> None:
-        if not isinstance(hidden, dict):
-            return
-        if os.environ.get("SGLANG_OMNI_DUMP_TALKER_CAPTURED_HIDDEN") != "1":
-            return
-
-        generation_steps = int(getattr(request.data, "generation_steps", 0))
-        max_step = int(
-            os.environ.get("SGLANG_OMNI_DUMP_TALKER_CAPTURED_HIDDEN_MAX_STEP", "0")
-        )
-        if generation_steps > max_step:
-            return
-
-        stream_hidden = None
-        if output.extra is not None:
-            stream_hidden = output.extra.get("stream_hidden_states")
-
-        try:
-            dump_path = (
-                Path("/tmp")
-                / f"talker_hidden_layers_{request.request_id}_step{generation_steps}.pt"
-            )
-            torch.save(
-                {
-                    "request_id": request.request_id,
-                    "generation_steps": generation_steps,
-                    "codec_code": int(output.data) if output.data is not None else None,
-                    "captured_hidden_states": {
-                        key: value.detach().cpu()
-                        for key, value in hidden.items()
-                        if isinstance(value, torch.Tensor)
-                    },
-                    "stream_hidden_states": (
-                        stream_hidden.detach().cpu()
-                        if isinstance(stream_hidden, torch.Tensor)
-                        else None
-                    ),
-                },
-                dump_path,
-            )
-        except Exception:
-            pass
-
     def _stream_adapter(request, output):
         if request.data.req.is_chunked > 0:
             return None
         token = output.data
         if chunk_enqueue_fn is not None and output.extra is not None:
-            hidden = output.extra.get("hidden_states")
-            stream_hidden = output.extra.get("stream_hidden_states", hidden)
-            _maybe_dump_captured_hidden(request, output, hidden)
+            stream_hidden = output.extra.get("stream_hidden_states")
+            if stream_hidden is None:
+                stream_hidden = output.extra.get("hidden_states")
             if isinstance(stream_hidden, torch.Tensor):
                 codec_code = int(token) if token is not None else None
                 chunk_enqueue_fn(
@@ -653,8 +609,11 @@ def create_talker_ar_executor_from_config(
     feedback_mailbox=None,
 ) -> EngineExecutor:
     """Create a Talker AR executor from config args."""
+    talker_overrides = {"disable_cuda_graph": True}
+    if server_args_overrides:
+        talker_overrides.update(server_args_overrides)
     server_args = build_sglang_server_args(
-        model_path, context_length=talker_max_seq_len, **(server_args_overrides or {})
+        model_path, context_length=talker_max_seq_len, **talker_overrides
     )
     return create_talker_ar_executor(
         server_args=server_args,

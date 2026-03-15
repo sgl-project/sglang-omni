@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from pathlib import Path
 from typing import Any
 
 import torch
@@ -135,10 +134,6 @@ class _CodePredictorStreamingExecutor(Executor):
 
         loop = asyncio.get_running_loop()
         chunk_count = 0
-        debug_hidden_inputs: list[torch.Tensor] = []
-        debug_layer0_codes: list[torch.Tensor] = []
-        debug_output_codes: list[torch.Tensor] = []
-        debug_feedbacks: list[torch.Tensor] = []
 
         while True:
             if request_id in self._aborted:
@@ -157,10 +152,6 @@ class _CodePredictorStreamingExecutor(Executor):
                 ),
             }
             output = await loop.run_in_executor(None, self._run_model, model_inputs)
-            debug_hidden_inputs.append(model_inputs["talker_hidden"].detach().cpu())
-            debug_layer0_codes.append(model_inputs["layer0_code"].detach().cpu())
-            debug_output_codes.append(output["codes"].detach().cpu())
-            debug_feedbacks.append(output["summed_embeddings"].detach().cpu())
             self._dispatch_outputs(request_id, output)
             chunk_count += 1
 
@@ -168,13 +159,6 @@ class _CodePredictorStreamingExecutor(Executor):
             if hasattr(sender, "enqueue_chunks_done"):
                 sender.enqueue_chunks_done(request_id)
 
-        self._dump_debug(
-            request_id,
-            hidden_inputs=debug_hidden_inputs,
-            layer0_codes=debug_layer0_codes,
-            output_codes=debug_output_codes,
-            feedbacks=debug_feedbacks,
-        )
         payload.data = {"chunk_count": chunk_count}
         await self._results.put(payload)
 
@@ -198,37 +182,6 @@ class _CodePredictorStreamingExecutor(Executor):
         if self._device.type == "cuda":
             torch.cuda.set_device(self._device)
         return self._model(**inputs)
-
-    def _dump_debug(
-        self,
-        request_id: str,
-        *,
-        hidden_inputs: list[torch.Tensor],
-        layer0_codes: list[torch.Tensor],
-        output_codes: list[torch.Tensor],
-        feedbacks: list[torch.Tensor],
-    ) -> None:
-        if not hidden_inputs:
-            return
-        try:
-            dump_path = Path("/tmp") / f"code_predictor_debug_{request_id}.pt"
-            torch.save(
-                {
-                    "request_id": request_id,
-                    "talker_hidden": torch.stack(hidden_inputs, dim=0),
-                    "layer0_codes": torch.stack(layer0_codes, dim=0).view(-1),
-                    "output_codes": torch.stack(output_codes, dim=0),
-                    "feedbacks": torch.stack(feedbacks, dim=0),
-                },
-                dump_path,
-            )
-            logger.info(
-                "Code predictor debug dump saved rid=%s path=%s",
-                request_id,
-                dump_path,
-            )
-        except Exception:
-            logger.exception("Failed to dump code predictor debug for %s", request_id)
 
     async def get_result(self) -> StagePayload:
         while True:

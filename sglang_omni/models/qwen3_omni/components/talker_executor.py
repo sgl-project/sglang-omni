@@ -426,11 +426,6 @@ class TalkerStreamingExecutor(Executor):
             [self._chunk_layer_hidden_or_embed(chunk) for chunk in thinker_chunks],
             dim=0,
         ).to(device=self._device, dtype=self._dtype)
-        self._dump_inbound_thinker_chunks(
-            request_id=request_id,
-            thinker_chunks=thinker_chunks,
-        )
-
         thinker_input_ids = torch.cat([prompt_ids, assistant_token_ids], dim=0)
         thinker_embed = torch.cat([prompt_embed, assistant_embed], dim=0)
         thinker_hidden = torch.cat([prompt_hidden, assistant_hidden], dim=0)
@@ -469,13 +464,6 @@ class TalkerStreamingExecutor(Executor):
             tts_bos_embed=tts_bos_embed,
             tts_pad_embed=tts_pad_embed,
             assembled_input_embeds=prefill["input_embeds"],
-        )
-        self._dump_prefill_debug_tensors(
-            request_id=request_id,
-            input_ids=prefill["input_ids"],
-            input_embeds=prefill["input_embeds"],
-            trailing_text_hidden=prefill["trailing_text_hidden"],
-            tts_pad_embed=tts_pad_embed[0],
         )
         self._log_prefill_summary(
             request_id=request_id,
@@ -524,10 +512,6 @@ class TalkerStreamingExecutor(Executor):
         assistant_token_ids = self._extract_thinker_chunk_token_ids(thinker_chunks[:4])
         assistant_embed = self._load_prompt_token_embeddings(assistant_token_ids).to(
             device=self._device, dtype=self._dtype
-        )
-        self._dump_inbound_thinker_chunks(
-            request_id=request_id,
-            thinker_chunks=thinker_chunks[:4],
         )
         speaker_id = self._resolve_speaker_id(payload)
         assistant_result = build_assistant_part(
@@ -781,80 +765,6 @@ class TalkerStreamingExecutor(Executor):
             float(codec_special_embeds[-2].float().norm().item()),
             float(assembled_input_embeds[-1].float().norm().item()),
         )
-
-    def _dump_prefill_debug_tensors(
-        self,
-        *,
-        request_id: str,
-        input_ids: torch.Tensor,
-        input_embeds: torch.Tensor,
-        trailing_text_hidden: torch.Tensor | None,
-        tts_pad_embed: torch.Tensor,
-    ) -> None:
-        try:
-            dump_path = Path("/tmp") / f"talker_prefill_{request_id}.pt"
-            torch.save(
-                {
-                    "request_id": request_id,
-                    "input_ids": input_ids.detach().cpu(),
-                    "input_embeds": input_embeds.detach().cpu(),
-                    "trailing_text_hidden": (
-                        trailing_text_hidden.detach().cpu()
-                        if trailing_text_hidden is not None
-                        else None
-                    ),
-                    "tts_pad_embed": tts_pad_embed.detach().cpu(),
-                },
-                dump_path,
-            )
-            logger.info(
-                "Talker prefill dump saved rid=%s path=%s", request_id, dump_path
-            )
-        except Exception:
-            logger.exception("Failed to dump talker prefill tensors for %s", request_id)
-
-    def _dump_inbound_thinker_chunks(
-        self,
-        *,
-        request_id: str,
-        thinker_chunks: list[ChunkItem],
-    ) -> None:
-        if os.environ.get("SGLANG_OMNI_DUMP_INBOUND_THINKER_CHUNKS") != "1":
-            return
-        if not thinker_chunks:
-            return
-        try:
-            dump_path = Path("/tmp") / f"talker_inbound_chunks_{request_id}.pt"
-            rows = []
-            for idx, chunk in enumerate(thinker_chunks):
-                metadata = chunk.metadata if isinstance(chunk.metadata, dict) else {}
-                layer_hidden = metadata.get("layer_hidden")
-                rows.append(
-                    {
-                        "index": idx,
-                        "token_id": metadata.get("token_id"),
-                        "chunk_tensor": chunk.tensor.detach().cpu(),
-                        "layer_hidden": (
-                            layer_hidden.detach().cpu()
-                            if isinstance(layer_hidden, torch.Tensor)
-                            else None
-                        ),
-                    }
-                )
-            torch.save(
-                {
-                    "request_id": request_id,
-                    "rows": rows,
-                },
-                dump_path,
-            )
-            logger.info(
-                "Talker inbound thinker chunk dump saved rid=%s path=%s",
-                request_id,
-                dump_path,
-            )
-        except Exception:
-            logger.exception("Failed to dump inbound thinker chunks for %s", request_id)
 
     def _get_prompt_model_inputs(self, payload: StagePayload) -> dict[str, Any]:
         state = PipelineState.from_dict(payload.data)
@@ -1177,38 +1087,7 @@ class TalkerStreamingExecutor(Executor):
         if not isinstance(trailing, list):
             return
         projected = self._project_assistant_chunk(chunk).cpu()
-        trailing_index = len(trailing)
         trailing.append(projected)
-        if os.environ.get("SGLANG_OMNI_DUMP_TALKER_TRAILING_EVENTS") == "1":
-            metadata = chunk.metadata if isinstance(chunk.metadata, dict) else {}
-            try:
-                dump_path = (
-                    Path("/tmp")
-                    / f"talker_trailing_event_{request_id}_idx{trailing_index}.pt"
-                )
-                torch.save(
-                    {
-                        "request_id": request_id,
-                        "event": "append_trailing_chunk",
-                        "trailing_index": trailing_index,
-                        "chunk_id": getattr(chunk, "chunk_id", None),
-                        "from_stage": getattr(chunk, "from_stage", None),
-                        "token_id": metadata.get("token_id"),
-                        "projected_chunk": projected,
-                    },
-                    dump_path,
-                )
-                logger.info(
-                    "Talker trailing event dump saved rid=%s event=%s idx=%s path=%s",
-                    request_id,
-                    "append_trailing_chunk",
-                    trailing_index,
-                    dump_path,
-                )
-            except Exception:
-                logger.exception(
-                    "Failed to dump trailing append event for %s", request_id
-                )
 
     def _mark_thinker_done(self, request_id: str) -> None:
         request = self._engine.scheduler.requests.get(request_id)
@@ -1220,38 +1099,8 @@ class TalkerStreamingExecutor(Executor):
         trailing = getattr(request.data, "trailing_text_hidden", None)
         tts_eos_embed = getattr(request.data, "tts_eos_embed", None)
         if isinstance(trailing, list) and isinstance(tts_eos_embed, torch.Tensor):
-            trailing_index = len(trailing)
             eos_embed = tts_eos_embed.detach().cpu()
             trailing.append(eos_embed)
-            if os.environ.get("SGLANG_OMNI_DUMP_TALKER_TRAILING_EVENTS") == "1":
-                try:
-                    dump_path = (
-                        Path("/tmp")
-                        / f"talker_trailing_event_{request_id}_idx{trailing_index}.pt"
-                    )
-                    torch.save(
-                        {
-                            "request_id": request_id,
-                            "event": "append_tts_eos",
-                            "trailing_index": trailing_index,
-                            "chunk_id": None,
-                            "from_stage": THINKER_STAGE,
-                            "token_id": None,
-                            "projected_chunk": eos_embed,
-                        },
-                        dump_path,
-                    )
-                    logger.info(
-                        "Talker trailing event dump saved rid=%s event=%s idx=%s path=%s",
-                        request_id,
-                        "append_tts_eos",
-                        trailing_index,
-                        dump_path,
-                    )
-                except Exception:
-                    logger.exception(
-                        "Failed to dump trailing eos event for %s", request_id
-                    )
 
     def _flush_feedback(self, request_id: str) -> None:
         state = self._states.get(request_id)

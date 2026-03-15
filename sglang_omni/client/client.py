@@ -55,11 +55,17 @@ class Client:
         req_id = request_id or str(uuid.uuid4())
         omni_request = self._build_omni_request(request)
         if request.stream:
+            streamed_text = False
             async for msg in self._coordinator.stream(req_id, omni_request):
                 if isinstance(msg, StreamMessage):
+                    streamed_text = True
                     yield self._stream_builder(req_id, msg)
                 else:
-                    yield self._result_builder(req_id, msg.result)
+                    chunk = self._result_builder(req_id, msg.result)
+                    # Text was already emitted via StreamMessages — don't duplicate
+                    if streamed_text:
+                        chunk.text = None
+                    yield chunk
             return
 
         result = await self._coordinator.submit(req_id, omni_request)

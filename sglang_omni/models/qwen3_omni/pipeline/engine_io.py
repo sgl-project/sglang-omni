@@ -228,9 +228,18 @@ def build_sglang_thinker_request(
             req.multimodal_inputs = mm_inputs
 
     # Attach model_inputs to Req for image embedding merge in SGLangModelRunner.
-    # Always initialize both attributes so downstream code can access directly.
     req.omni_model_inputs = model_inputs if model_inputs else None
     req._omni_consumed = None
+
+    # Radix cache isolation: different multimodal content with identical placeholder
+    # token IDs must not share KV cache. Combine per-encoder cache keys into extra_key.
+    mm_parts = []
+    for enc in ("image_encoder", "audio_encoder"):
+        ck = (state.encoder_inputs.get(enc) or {}).get("cache_key")
+        if ck:
+            mm_parts.append(str(ck))
+    if mm_parts:
+        req.extra_key = "|".join(mm_parts)
 
     # Build SGLangARRequestData — output_ids points to req.output_ids
     data = SGLangARRequestData(
