@@ -1,3 +1,5 @@
+import os
+import socket
 from dataclasses import dataclass
 
 from sglang.srt.configs.model_config import ModelConfig
@@ -52,6 +54,7 @@ class ModelWorker:
         )
 
     def _init_model_runner(self):
+        nccl_port = _resolve_nccl_port()
         self.model_runner = SGLModelRunner(
             model_config=self.model_config,
             server_args=self.server_args,
@@ -61,7 +64,7 @@ class ModelWorker:
             moe_ep_size=1,
             pp_rank=0,
             pp_size=1,
-            nccl_port=30000,
+            nccl_port=nccl_port,
         )
 
     def forward_batch_generation(
@@ -76,3 +79,17 @@ class ModelWorker:
             expert_distribution_metrics=out.expert_distribution_metrics,
         )
         return batch_result
+
+
+def _resolve_nccl_port() -> int:
+    master_port = os.environ.get("MASTER_PORT")
+    if master_port:
+        return int(master_port)
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("", 0))
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        port = sock.getsockname()[1]
+
+    os.environ["MASTER_PORT"] = str(port)
+    return port
