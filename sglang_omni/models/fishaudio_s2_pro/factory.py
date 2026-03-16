@@ -85,8 +85,12 @@ def _warmup_codebook_fn(
         # project_in may be nn.Identity (when text_dim==dim), so we read it
         # directly from the config rather than from project_in.weight.
         hidden_dim = int(audio_decoder.config.text_dim)
-        dummy_hidden = torch.zeros(1, 1, hidden_dim, device=device, dtype=torch.bfloat16)
-        dummy_sem = torch.full((1, 1), semantic_begin_id, dtype=torch.long, device=device)
+        dummy_hidden = torch.zeros(
+            1, 1, hidden_dim, device=device, dtype=torch.bfloat16
+        )
+        dummy_sem = torch.full(
+            (1, 1), semantic_begin_id, dtype=torch.long, device=device
+        )
         dummy_temp = torch.tensor([0.8], device=device)
         dummy_top_p = torch.tensor([0.8], device=device)
         logger.info("Warming up codebook_fn (torch.compile) on %s …", device)

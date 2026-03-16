@@ -313,7 +313,9 @@ def create_sglang_tts_engine_executor(
     )
     audio_decoder.setup_caches(max_batch_size=1, dtype=torch.bfloat16)
     stream_codec = _load_codec(checkpoint_dir, stream_vocoder_device)
-    _warmup_codec(stream_codec, num_codebooks=num_codebooks, device=stream_vocoder_device)
+    _warmup_codec(
+        stream_codec, num_codebooks=num_codebooks, device=stream_vocoder_device
+    )
 
     _patch_fish_config_for_sglang(checkpoint_dir)
     server_args = ServerArgs(
@@ -349,7 +351,9 @@ def create_sglang_tts_engine_executor(
         apply_tts_result(state, result)
         return store_state(payload, state)
 
-    def _stream_builder(payload: StagePayload | None, item: Any) -> dict[str, Any] | None:
+    def _stream_builder(
+        payload: StagePayload | None, item: Any
+    ) -> dict[str, Any] | None:
         if payload is None:
             return None
         return _maybe_build_incremental_audio_chunk(
