@@ -125,21 +125,33 @@ class Scheduler:
     async def stream(self, request_id: str) -> AsyncIterator[Any]:
         """Yield per-step stream data for a request."""
         queue = self._subscribe_stream(request_id)
-        while True:
-            item = await queue.get()
-            if item is self._stream_done:
-                return
-            yield item
+        try:
+            while True:
+                item = await queue.get()
+                if item is self._stream_done:
+                    return
+                yield item
+        finally:
+            self._stream_queues.pop(request_id, None)
+
+    def prepare_stream(self, request_id: str) -> None:
+        """Pre-register a stream queue before request submission."""
+        self._subscribe_stream(request_id)
+
+    def discard_stream(self, request_id: str) -> None:
+        """Drop any pre-registered stream queue for a failed submission."""
+        self._stream_queues.pop(request_id, None)
 
     def _subscribe_stream(self, request_id: str) -> asyncio.Queue[Any]:
-        if request_id not in self.requests:
-            raise KeyError(f"Unknown request: {request_id}")
         queue = self._stream_queues.get(request_id)
         if queue is None:
             queue = asyncio.Queue()
             self._stream_queues[request_id] = queue
-        request = self.requests[request_id]
-        if request.status in (SchedulerStatus.FINISHED, SchedulerStatus.ABORTED):
+        request = self.requests.get(request_id)
+        if request is not None and request.status in (
+            SchedulerStatus.FINISHED,
+            SchedulerStatus.ABORTED,
+        ):
             queue.put_nowait(self._stream_done)
         return queue
 
@@ -253,6 +265,6 @@ class Scheduler:
                 else:
                     future.set_result(request)
 
-        queue = self._stream_queues.pop(request.request_id, None)
+        queue = self._stream_queues.get(request.request_id)
         if queue is not None:
             queue.put_nowait(self._stream_done)
