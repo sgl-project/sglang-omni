@@ -30,7 +30,7 @@ from sglang_omni.client import (
     Message,
     SamplingParams,
 )
-from sglang_omni.client.audio import DEFAULT_SAMPLE_RATE, encode_audio
+from sglang_omni.client.audio import DEFAULT_SAMPLE_RATE, encode_audio, to_numpy
 from sglang_omni.serve.protocol import (
     ChatCompletionAudio,
     ChatCompletionChoice,
@@ -490,6 +490,7 @@ async def _speech_stream(
 ):
     """Streaming speech generator (yields SSE events with audio chunks)."""
     chunk_index = 0
+    emitted_samples = 0
     finish_reason: str | None = None
 
     try:
@@ -501,8 +502,16 @@ async def _speech_stream(
                 continue
 
             sample_rate = chunk.sample_rate or DEFAULT_SAMPLE_RATE
-            audio_bytes, mime_type = encode_audio(
+            audio_data, emitted_samples = _select_speech_audio_delta(
                 chunk.audio_data,
+                emitted_samples=emitted_samples,
+                is_terminal=chunk.finish_reason is not None,
+            )
+            if audio_data is None:
+                continue
+
+            audio_bytes, mime_type = encode_audio(
+                audio_data,
                 response_format=response_format,
                 sample_rate=sample_rate,
                 speed=speed,
@@ -536,6 +545,29 @@ async def _speech_stream(
     }
     yield f"data: {json.dumps(final_payload)}\n\n"
     yield "data: [DONE]\n\n"
+
+
+def _select_speech_audio_delta(
+    audio_data: Any,
+    *,
+    emitted_samples: int,
+    is_terminal: bool,
+) -> tuple[Any | None, int]:
+    audio = to_numpy(audio_data)
+    if audio.ndim > 1:
+        audio = audio.squeeze()
+    if audio.ndim > 1:
+        if audio.shape[0] < audio.shape[-1]:
+            audio = audio[0]
+        else:
+            audio = audio[:, 0]
+
+    total_samples = int(audio.shape[-1]) if audio.ndim else 0
+    if not is_terminal:
+        return audio, emitted_samples + total_samples
+    if total_samples <= emitted_samples:
+        return None, emitted_samples
+    return audio[emitted_samples:], total_samples
 
 
 def _build_speech_generate_request(
