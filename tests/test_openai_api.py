@@ -3,7 +3,11 @@
 
 from __future__ import annotations
 
+import base64
+import io
 import json
+import wave
+from types import SimpleNamespace
 from typing import Any
 
 from fastapi.testclient import TestClient
@@ -13,6 +17,10 @@ from sglang_omni.client import (
     CompletionResult,
     CompletionStreamChunk,
     GenerateChunk,
+)
+from sglang_omni.models.fishaudio_s2_pro.pipeline.next_stage import (
+    VOCODER_STAGE,
+    tts_engine_next,
 )
 from sglang_omni.serve import create_app
 from sglang_omni.serve.openai_api import _build_speech_generate_request
@@ -209,7 +217,13 @@ def test_speech_endpoint_stream_returns_sse_audio_chunks() -> None:
                 audio_data=[0.0, 0.1, -0.1, 0.0],
                 sample_rate=24000,
             ),
-            GenerateChunk(request_id="speech-1", finish_reason="stop"),
+            GenerateChunk(
+                request_id="speech-1",
+                modality="audio",
+                audio_data=[0.0, 0.1, -0.1, 0.0, 0.2, -0.2],
+                sample_rate=24000,
+                finish_reason="stop",
+            ),
         ]
     )
     client = TestClient(create_app(dummy, model_name="s2-pro"))
@@ -236,7 +250,24 @@ def test_speech_endpoint_stream_returns_sse_audio_chunks() -> None:
                 break
             events.append(json.loads(payload))
 
-    assert any(
-        event.get("audio", {}).get("data") for event in events if event.get("audio")
-    )
+    audio_events = [event for event in events if event.get("audio")]
+    assert len(audio_events) == 2
+    sample_counts = [
+        _decode_wav_frame_count(event["audio"]["data"]) for event in audio_events
+    ]
+    assert sample_counts == [4, 2]
     assert events[-1]["finish_reason"] == "stop"
+
+
+def _decode_wav_frame_count(audio_b64: str) -> int:
+    wav_bytes = base64.b64decode(audio_b64)
+    with wave.open(io.BytesIO(wav_bytes), "rb") as wav_file:
+        return wav_file.getnframes()
+
+
+def test_tts_engine_next_skips_vocoder_for_stream_requests() -> None:
+    stream_output = SimpleNamespace(request=SimpleNamespace(params={"stream": True}))
+    non_stream_output = SimpleNamespace(request=SimpleNamespace(params={"stream": False}))
+
+    assert tts_engine_next("req-stream", stream_output) == VOCODER_STAGE
+    assert tts_engine_next("req-non-stream", non_stream_output) == VOCODER_STAGE
