@@ -1,5 +1,4 @@
 # SPDX-License-Identifier: Apache-2.0
-# Import SHMMetadata from relay.nixl (kept for backward compatibility)
 from .messages import (
     AbortMessage,
     CompleteMessage,
