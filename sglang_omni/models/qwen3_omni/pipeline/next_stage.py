@@ -15,7 +15,7 @@ AGGREGATE_STAGE = "mm_aggregate"
 THINKER_STAGE = "thinker"
 DECODE_STAGE = "decode"
 TALKER_AR_STAGE = "talker_ar"
-CODE_PREDICTOR_STAGE = "code_predictor"
+CODE_PREDICTOR_STAGE = "code_predictor"  # used as feedback source label
 CODE2WAV_STAGE = "code2wav"
 
 
@@ -73,11 +73,6 @@ def thinker_next_speech(request_id: str, output: Any) -> list[str]:
 
 
 def talker_ar_next(request_id: str, output: Any) -> str:
-    del request_id, output
-    return CODE_PREDICTOR_STAGE
-
-
-def code_predictor_next(request_id: str, output: Any) -> str:
     del request_id, output
     return CODE2WAV_STAGE
 

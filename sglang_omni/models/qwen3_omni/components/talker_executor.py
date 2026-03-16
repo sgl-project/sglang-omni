@@ -116,7 +116,6 @@ class TalkerStreamingExecutor(Executor):
         image_token_id: int | None,
         video_token_id: int | None,
         speaker_map: dict[str, int] | None,
-        enqueue_fn_holder: dict[str, Any],
         thinker_config: Any = None,
     ):
         self._engine = engine
@@ -149,7 +148,6 @@ class TalkerStreamingExecutor(Executor):
         self._speaker_map = {
             str(k).lower(): int(v) for k, v in (speaker_map or {}).items()
         }
-        self._enqueue_fn_holder = enqueue_fn_holder
         self._thinker_config = thinker_config
 
         self._talker_model = engine.model_runner._inner_model
@@ -182,9 +180,6 @@ class TalkerStreamingExecutor(Executor):
         stop = getattr(self._engine, "stop", None)
         if callable(stop):
             await stop()
-
-    def set_chunk_enqueue_fn(self, fn) -> None:
-        self._enqueue_fn_holder["fn"] = fn
 
     def set_feedback_mailbox(self, mailbox: Any) -> None:
         # Receiver wiring uses one shared inbound mailbox for thinker + feedback.
@@ -281,7 +276,7 @@ class TalkerStreamingExecutor(Executor):
     ) -> StagePayload:
         request_id = payload.request_id
         try:
-            result = await self._engine.get_result(request_id)
+            await self._engine.get_result(request_id)
         finally:
             if bridge_task is not None:
                 bridge_task.cancel()
@@ -291,11 +286,12 @@ class TalkerStreamingExecutor(Executor):
                     pass
             self._engine_feedback_mailbox.close(request_id)
 
+        # Signal code2wav that no more codes are coming
         for sender in self._chunk_senders:
             if hasattr(sender, "enqueue_chunks_done"):
                 sender.enqueue_chunks_done(request_id)
 
-        payload.data = {"codec_codes": getattr(result, "output_ids", [])}
+        payload.data = {}
         return payload
 
     async def _collect_initial_chunks(
@@ -1101,6 +1097,22 @@ class TalkerStreamingExecutor(Executor):
         if isinstance(trailing, list) and isinstance(tts_eos_embed, torch.Tensor):
             eos_embed = tts_eos_embed.detach().cpu()
             trailing.append(eos_embed)
+
+    def _handle_fused_output(
+        self,
+        request_id: str,
+        codes: torch.Tensor,
+        summed_embeddings: torch.Tensor,
+    ) -> None:
+        """Send RVQ codes to code2wav via chunk sender, buffer feedback."""
+        state = self._states.get(request_id)
+        if state is None:
+            return
+        # Fire-and-forget: send codes to code2wav via IPC
+        for sender in self._chunk_senders:
+            sender.enqueue(request_id, codes.detach())
+        # Keep feedback in-process for talker
+        state.pending_feedbacks.append(summed_embeddings.detach().cpu())
 
     def _flush_feedback(self, request_id: str) -> None:
         state = self._states.get(request_id)

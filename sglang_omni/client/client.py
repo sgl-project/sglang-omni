@@ -56,15 +56,21 @@ class Client:
         omni_request = self._build_omni_request(request)
         if request.stream:
             streamed_text = False
+            streamed_audio = False
             async for msg in self._coordinator.stream(req_id, omni_request):
                 if isinstance(msg, StreamMessage):
                     streamed_text = True
-                    yield self._stream_builder(req_id, msg)
+                    built = self._stream_builder(req_id, msg)
+                    if built.modality == "audio" and built.audio_data is not None:
+                        streamed_audio = True
+                    yield built
                 else:
                     chunk = self._result_builder(req_id, msg.result)
-                    # Text was already emitted via StreamMessages — don't duplicate
                     if streamed_text:
                         chunk.text = None
+                    if streamed_audio:
+                        chunk.audio_data = None
+                        chunk.modality = None
                     yield chunk
             return
 

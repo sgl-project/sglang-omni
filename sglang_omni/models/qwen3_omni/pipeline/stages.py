@@ -455,27 +455,51 @@ def make_thinker_stream_adapter(chunk_enqueue_fn=None):
     return _stream_adapter
 
 
-def make_talker_ar_stream_adapter(chunk_enqueue_fn=None):
-    """Talker AR stream adapter: relay codec code + hidden to Code Predictor."""
+def _make_talker_ar_stream_adapter(state_holder):
+    """Stream adapter: runs code_predictor inline on each talker token.
 
-    def _stream_adapter(request, output):
+    Calls code_predictor_forward() synchronously, buffers RVQ codes for
+    code2wav, and deposits feedback for the next step.
+    """
+
+    @torch.no_grad()
+    def _fused_adapter(request, output):
         if request.data.req.is_chunked > 0:
             return None
         token = output.data
-        if chunk_enqueue_fn is not None and output.extra is not None:
+        if token is None:
+            return None
+
+        executor = state_holder.get("executor")
+        if executor is None:
+            return int(token)
+
+        stream_hidden = None
+        if output.extra is not None:
             stream_hidden = output.extra.get("stream_hidden_states")
             if stream_hidden is None:
                 stream_hidden = output.extra.get("hidden_states")
-            if isinstance(stream_hidden, torch.Tensor):
-                codec_code = int(token) if token is not None else None
-                chunk_enqueue_fn(
-                    request.request_id,
-                    stream_hidden,
-                    metadata={"codec_code": codec_code},
-                )
-        return int(token) if token is not None else None
 
-    return _stream_adapter
+        if isinstance(stream_hidden, torch.Tensor):
+            codec_code = int(token)
+            device = stream_hidden.device
+            layer0_codes = torch.tensor([[codec_code]], dtype=torch.long, device=device)
+            hidden_input = stream_hidden.unsqueeze(0).unsqueeze(0)
+            result_codes, summed_embeddings = (
+                executor._talker_model.code_predictor_forward(
+                    layer0_codes, hidden_input
+                )
+            )
+            # result_codes: [1, 16, 1], summed_embeddings: [1, 1, hidden]
+            executor._handle_fused_output(
+                request.request_id,
+                result_codes[0, :, 0],
+                summed_embeddings[0, 0],
+            )
+
+        return int(token)
+
+    return _fused_adapter
 
 
 def build_talker_ar_request(payload: StagePayload) -> dict:
@@ -520,13 +544,11 @@ def create_talker_ar_executor(
     model_path: str,
     *,
     gpu_id: int = 0,
-    chunk_enqueue_fn=None,
     speech_enabled: bool = True,
     weight_prefix: str | None = None,
-    feedback_enabled: bool = False,
     feedback_mailbox=None,
 ) -> EngineExecutor:
-    """Talker AR executor backed by SGLang AR engine."""
+    """Talker AR executor with fused code_predictor + code2wav."""
     from transformers import AutoConfig
 
     tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
@@ -534,19 +556,11 @@ def create_talker_ar_executor(
     talker_cfg = getattr(hf_config, "talker_config", None)
     codec_vocab_size = getattr(talker_cfg, "vocab_size", 2178) if talker_cfg else 2178
 
-    enqueue_fn_holder: dict[str, Any] = {"fn": chunk_enqueue_fn}
-
-    def _enqueue_chunk(request_id: str, chunk_data, metadata=None):
-        fn = enqueue_fn_holder["fn"]
-        if fn is not None:
-            fn(request_id, chunk_data, metadata=metadata)
-
     server_args.disable_radix_cache = True
 
+    state_holder: dict[str, Any] = {}
     stream_adapter = (
-        make_talker_ar_stream_adapter(chunk_enqueue_fn=_enqueue_chunk)
-        if speech_enabled
-        else None
+        _make_talker_ar_stream_adapter(state_holder) if speech_enabled else None
     )
     capture_layers = (
         _parse_capture_layers_env("SGLANG_OMNI_TALKER_CAPTURE_LAYERS")
@@ -562,11 +576,11 @@ def create_talker_ar_executor(
         capture_hidden_layers=capture_layers,
         model_arch_override="Qwen3OmniTalker",
         weight_prefix=weight_prefix,
-        feedback_enabled=feedback_enabled,
+        feedback_enabled=True,
         feedback_mailbox=feedback_mailbox,
     )
 
-    return TalkerStreamingExecutor(
+    executor = TalkerStreamingExecutor(
         engine=engine,
         model_path=model_path,
         tokenizer=tokenizer,
@@ -591,9 +605,11 @@ def create_talker_ar_executor(
             getattr(hf_config, "thinker_config", None), "video_token_id", None
         ),
         speaker_map=getattr(talker_cfg, "speaker_id", None),
-        enqueue_fn_holder=enqueue_fn_holder,
         thinker_config=getattr(hf_config, "thinker_config", None),
     )
+
+    state_holder["executor"] = executor
+    return executor
 
 
 def create_talker_ar_executor_from_config(
@@ -603,9 +619,7 @@ def create_talker_ar_executor_from_config(
     talker_max_seq_len: int = 4096,
     server_args_overrides: dict[str, Any] | None = None,
     speech_enabled: bool = True,
-    chunk_enqueue_fn=None,
     weight_prefix: str = "talker.",
-    feedback_enabled: bool = False,
     feedback_mailbox=None,
 ) -> EngineExecutor:
     """Create a Talker AR executor from config args."""
@@ -619,10 +633,8 @@ def create_talker_ar_executor_from_config(
         server_args=server_args,
         model_path=model_path,
         gpu_id=gpu_id,
-        chunk_enqueue_fn=chunk_enqueue_fn,
         speech_enabled=speech_enabled,
         weight_prefix=weight_prefix,
-        feedback_enabled=feedback_enabled,
         feedback_mailbox=feedback_mailbox,
     )
 

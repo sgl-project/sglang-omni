@@ -16,7 +16,6 @@ from sglang_omni.models.qwen3_omni.pipeline.next_stage import (
     AGGREGATE_STAGE,
     AUDIO_STAGE,
     CODE2WAV_STAGE,
-    CODE_PREDICTOR_STAGE,
     DECODE_STAGE,
     IMAGE_STAGE,
     PREPROCESSING_STAGE,
@@ -101,7 +100,11 @@ class Qwen3OmniPipelineConfig(PipelineConfig):
 
 
 class Qwen3OmniSpeechPipelineConfig(PipelineConfig):
-    """9-stage pipeline config for Qwen3 Omni with text + speech output."""
+    """8-stage pipeline config for Qwen3 Omni with text + speech output.
+
+    MTP (code predictor) is fused into talker_ar for zero-latency feedback.
+    RVQ codes are sent to code2wav via fire-and-forget IPC for streaming audio.
+    """
 
     architecture: ClassVar[str] = "Qwen3OmniMoeForConditionalGeneration"
 
@@ -111,12 +114,10 @@ class Qwen3OmniSpeechPipelineConfig(PipelineConfig):
     gpu_placement: dict[str, int] = {
         "thinker": 0,
         "talker_ar": 1,
-        "code_predictor": 1,
         "code2wav": 1,
     }
 
     stages: list[StageConfig] = [
-        # Stages 1-4: same as text-only
         StageConfig(
             name=PREPROCESSING_STAGE,
             executor=ExecutorConfig(
@@ -157,7 +158,7 @@ class Qwen3OmniSpeechPipelineConfig(PipelineConfig):
             ),
             relay=RelayConfig(device="cpu"),
         ),
-        # Stage 5: Thinker (speech_enabled, fan-out)
+        # Thinker: fan-out to decode + talker_ar
         StageConfig(
             name=THINKER_STAGE,
             executor=ExecutorConfig(
@@ -168,7 +169,7 @@ class Qwen3OmniSpeechPipelineConfig(PipelineConfig):
             relay=RelayConfig(device="cuda"),
             chunk_transfers=[{"to_stage": TALKER_AR_STAGE}],
         ),
-        # Stage 6: Decode (terminal)
+        # Decode (terminal)
         StageConfig(
             name=DECODE_STAGE,
             executor=ExecutorConfig(
@@ -178,37 +179,26 @@ class Qwen3OmniSpeechPipelineConfig(PipelineConfig):
             get_next="sglang_omni.models.qwen3_omni.pipeline.next_stage.decode_next",
             relay=RelayConfig(device="cpu"),
         ),
-        # Stage 7: Talker AR
+        # Talker AR with fused MTP, sends RVQ codes to code2wav
         StageConfig(
             name=TALKER_AR_STAGE,
             executor=ExecutorConfig(
                 factory="sglang_omni.models.qwen3_omni.pipeline.stages.create_talker_ar_executor_from_config",
-                args={"talker_max_seq_len": 4096, "speech_enabled": True},
+                args={
+                    "talker_max_seq_len": 4096,
+                    "speech_enabled": True,
+                },
             ),
             get_next="sglang_omni.models.qwen3_omni.pipeline.next_stage.talker_ar_next",
             relay=RelayConfig(device="cuda"),
-            chunk_transfers=[{"to_stage": CODE_PREDICTOR_STAGE}],
+            chunk_transfers=[{"to_stage": CODE2WAV_STAGE}],
         ),
-        # Stage 8: Code Predictor (streaming: consumes chunks from Talker, sends chunks to Code2Wav)
-        StageConfig(
-            name=CODE_PREDICTOR_STAGE,
-            executor=ExecutorConfig(
-                factory="sglang_omni.models.qwen3_omni.components.code_predictor_executor.create_code_predictor_executor_from_config",
-                args={"code_predictor_max_seq_len": 256},
-            ),
-            get_next="sglang_omni.models.qwen3_omni.pipeline.next_stage.code_predictor_next",
-            relay=RelayConfig(device="cuda"),
-            chunk_transfers=[
-                {"to_stage": CODE2WAV_STAGE},
-                {"to_stage": TALKER_AR_STAGE, "bootstrap": False},
-            ],
-        ),
-        # Stage 9: Code2Wav (terminal)
+        # Code2Wav streaming decoder (terminal)
         StageConfig(
             name=CODE2WAV_STAGE,
             executor=ExecutorConfig(
                 factory="sglang_omni.models.qwen3_omni.components.code2wav_executor.create_code2wav_executor",
-                args={"device": "cuda"},
+                args={},
             ),
             get_next="sglang_omni.models.qwen3_omni.pipeline.next_stage.code2wav_next",
             relay=RelayConfig(device="cuda"),

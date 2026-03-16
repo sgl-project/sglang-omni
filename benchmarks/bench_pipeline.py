@@ -7,7 +7,8 @@ Server output goes directly to stdout so you can see everything.
 Metrics:
     Thinker TTFT:  request → first text token (preprocessing + encoding + prefill)
     Thinker TPS:   text token decode throughput
-    RTF:           (t_last_text → t_done) / audio_duration  (entire talker pipeline)
+    RTF:           per_token_decode_time / 80ms  (Qwen3-Omni paper convention)
+                   = (t_first_text → t_done) / audio_duration
 
 Usage:
     CUDA_VISIBLE_DEVICES=0 python bench_pipeline.py --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct --text-only -N 5
@@ -41,6 +42,7 @@ class Run:
     t_start: float = 0.0
     t_first_text: float | None = None
     t_last_text: float | None = None
+    t_first_audio: float | None = None
     t_done: float = 0.0
     n_text: int = 0
     n_audio: int = 0
@@ -54,6 +56,13 @@ class Run:
         return (self.t_first_text - self.t_start) * 1000
 
     @property
+    def first_packet_latency(self) -> float | None:
+        """Time from request to first audio chunk (ms). Paper reports 234ms."""
+        if self.t_first_audio is None:
+            return None
+        return (self.t_first_audio - self.t_start) * 1000
+
+    @property
     def thinker_tps(self) -> float | None:
         if self.t_first_text is None or self.t_last_text is None or self.n_text < 2:
             return None
@@ -61,10 +70,11 @@ class Run:
         return (self.n_text - 1) / dt if dt > 0 else None
 
     @property
-    def talker_time(self) -> float | None:
-        if self.t_last_text is None or self.n_audio == 0:
+    def decode_time(self) -> float | None:
+        """Full decode time: thinker + talker + MTP + codec decoder."""
+        if self.t_first_text is None:
             return None
-        return self.t_done - self.t_last_text
+        return self.t_done - self.t_first_text
 
     @property
     def audio_duration(self) -> float | None:
@@ -72,24 +82,22 @@ class Run:
 
     @property
     def rtf(self) -> float | None:
-        tt = self.talker_time
+        """RTF per Qwen3-Omni paper: per_token_decode_time / 80ms.
+
+        Equivalent to decode_time / audio_duration since each codec token = 80ms.
+        """
+        dt = self.decode_time
         dur = self.audio_duration
-        if tt is None or dur is None or dur <= 0 or tt <= 0:
+        if dt is None or dur is None or dur <= 0 or dt <= 0:
             return None
-        return tt / dur
+        return dt / dur
 
     @property
     def e2e(self) -> float:
         return (self.t_done - self.t_start) * 1000
 
 
-def _wav_duration(b64_chunks: list[str]) -> float | None:
-    if not b64_chunks:
-        return None
-    try:
-        raw = base64.b64decode("".join(b64_chunks))
-    except Exception:
-        return None
+def _single_wav_duration(raw: bytes) -> float | None:
     if len(raw) < 44:
         return None
     try:
@@ -118,6 +126,22 @@ def _wav_duration(b64_chunks: list[str]) -> float | None:
                 buf.read(csz)
     except Exception:
         return None
+
+
+def _wav_duration(b64_chunks: list[str]) -> float | None:
+    """Sum durations of individually-encoded WAV chunks."""
+    if not b64_chunks:
+        return None
+    total = 0.0
+    for chunk in b64_chunks:
+        try:
+            raw = base64.b64decode(chunk)
+        except Exception:
+            continue
+        dur = _single_wav_duration(raw)
+        if dur is not None:
+            total += dur
+    return total if total > 0 else None
 
 
 def start_server(model_path: str, port: int, text_only: bool) -> subprocess.Popen:
@@ -222,6 +246,8 @@ def run_once(url: str, prompt: str, max_tokens: int, text_only: bool) -> Run:
         audio = delta.get("audio")
         if isinstance(audio, dict) and audio.get("data"):
             r.n_audio += 1
+            if r.t_first_audio is None:
+                r.t_first_audio = t
             r.audio_b64.append(audio["data"])
 
     r.t_done = time.perf_counter()
@@ -254,6 +280,9 @@ def print_table(runs: list[Run], text_only: bool) -> None:
     print(f"{'Thinker TTFT (ms)':<25} {_cell(lambda r: r.thinker_ttft, runs):>20}")
     print(f"{'Thinker TPS (tok/s)':<25} {_cell(lambda r: r.thinker_tps, runs):>20}")
     if not text_only:
+        print(
+            f"{'First-packet (ms)':<25} {_cell(lambda r: r.first_packet_latency, runs):>20}"
+        )
         print(f"{'RTF':<25} {_cell(lambda r: r.rtf, runs, 3):>20}")
         print(
             f"{'Audio duration (s)':<25} {_cell(lambda r: r.audio_duration, runs, 2):>20}"
@@ -266,6 +295,7 @@ def print_table(runs: list[Run], text_only: bool) -> None:
         parts.append(f"ttft={_fmt(r.thinker_ttft)}ms")
         parts.append(f"tps={_fmt(r.thinker_tps)}")
         if not text_only:
+            parts.append(f"first_pkt={_fmt(r.first_packet_latency)}ms")
             parts.append(f"rtf={_fmt(r.rtf, 3)}")
             parts.append(f"audio={_fmt(r.audio_duration, 2)}s")
         parts.append(f"e2e={_fmt(r.e2e)}ms")
@@ -310,6 +340,7 @@ def main() -> None:
             print(
                 f"run {i + 1}/{args.iterations}: "
                 f"ttft={_fmt(r.thinker_ttft)}ms tps={_fmt(r.thinker_tps)} "
+                f"first_pkt={_fmt(r.first_packet_latency)}ms "
                 f"rtf={_fmt(r.rtf, 3)} audio={_fmt(r.audio_duration, 2)}s "
                 f"e2e={_fmt(r.e2e)}ms"
             )
@@ -328,6 +359,7 @@ def main() -> None:
                 {
                     "thinker_ttft_ms": r.thinker_ttft,
                     "thinker_tps": r.thinker_tps,
+                    "first_packet_latency_ms": r.first_packet_latency,
                     "rtf": r.rtf,
                     "audio_duration_s": r.audio_duration,
                     "e2e_ms": r.e2e,
