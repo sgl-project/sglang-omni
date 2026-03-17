@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import logging
 from typing import List, Optional
 
 from sglang.srt.managers.schedule_batch import Req, ScheduleBatch
 from sglang.srt.managers.schedule_policy import PrefillAdder
 from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
+
+logger = logging.getLogger(__name__)
 
 
 class PrefillManager:
@@ -37,6 +40,14 @@ class PrefillManager:
         # TODO(ocs884): whether to use the Req cls from sglang
         self.waiting_queue.append(req)
 
+    @staticmethod
+    def _needs_full_prefill(req: Req | None) -> bool:
+        if req is None:
+            return False
+        if getattr(req, "_input_embeds_are_projected", False):
+            return True
+        return False
+
     def schedule_next_batch(
         self,
         running_batch: Optional[ScheduleBatch],
@@ -51,6 +62,21 @@ class PrefillManager:
         ):
             return None
 
+        disable_chunking = self._needs_full_prefill(self.chunked_req) or any(
+            self._needs_full_prefill(req) for req in self.waiting_queue
+        )
+        if disable_chunking:
+            logger.info(
+                "Disable chunked prefill for projected input-embeds request(s): "
+                "chunked_req=%s waiting=%s",
+                None if self.chunked_req is None else self.chunked_req.rid,
+                [
+                    req.rid
+                    for req in self.waiting_queue
+                    if self._needs_full_prefill(req)
+                ],
+            )
+
         adder = PrefillAdder(
             page_size=self.page_size,
             tree_cache=self.tree_cache,
@@ -58,7 +84,7 @@ class PrefillManager:
             running_batch=running_batch,
             new_token_ratio=new_token_ratio,
             rem_input_tokens=self.max_prefill_tokens,
-            rem_chunk_tokens=self.chunked_prefill_size,
+            rem_chunk_tokens=(None if disable_chunking else self.chunked_prefill_size),
         )
 
         # if there is ongoing chunked prefill to complete
@@ -97,6 +123,12 @@ class PrefillManager:
             # Update chunked prefill
             assert self.chunked_req is None
             self.chunked_req = adder.new_chunked_req
+            logger.info(
+                "Chunked prefill scheduled: rid=%s projected=%s extend_input_len=%s",
+                self.chunked_req.rid,
+                bool(getattr(self.chunked_req, "_input_embeds_are_projected", False)),
+                getattr(self.chunked_req, "extend_input_len", None),
+            )
 
         if self.chunked_req is not None:
             self.chunked_req.is_chunked += 1
