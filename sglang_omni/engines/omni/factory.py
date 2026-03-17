@@ -232,9 +232,11 @@ def create_sglang_ar_engine(
     if enable_overlap is None:
         enable_overlap = not getattr(server_args, "disable_overlap_schedule", False)
 
-    # Note: feedback-gated engines (Talker AR) are compatible with overlap
-    # because _step_overlap() processes pending results (including feedback
-    # state transitions) BEFORE scheduling the next batch.
+    # Feedback-gated engines (e.g. Talker AR) require synchronous step processing
+    # because overlap scheduling can execute one step ahead of the feedback check.
+    if feedback_enabled and enable_overlap:
+        logger.debug("Disabling overlap for feedback-enabled engine")
+        enable_overlap = False
 
     # Initialize model worker
     model_worker = ModelWorker(
