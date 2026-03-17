@@ -29,6 +29,9 @@ class S2ProState:
 
     # -- From TTS engine ---------------------------------------------------
     output_codes: Any | None = None  # [num_codebooks+1, T] as nested list
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    engine_time_s: float = 0.0
 
     # -- From vocoder ------------------------------------------------------
     audio_samples: Any | None = None
@@ -59,6 +62,12 @@ class S2ProState:
         data["repetition_penalty"] = self.repetition_penalty
         if self.output_codes is not None:
             data["output_codes"] = self._tensor_to_list(self.output_codes)
+        if self.prompt_tokens:
+            data["prompt_tokens"] = self.prompt_tokens
+        if self.completion_tokens:
+            data["completion_tokens"] = self.completion_tokens
+        if self.engine_time_s:
+            data["engine_time_s"] = self.engine_time_s
         if self.audio_samples is not None:
             data["audio_samples"] = self._tensor_to_list(self.audio_samples)
         data["sample_rate"] = self.sample_rate
@@ -83,6 +92,9 @@ class S2ProState:
             output_codes=(
                 torch.tensor(data["output_codes"]) if "output_codes" in data else None
             ),
+            prompt_tokens=data.get("prompt_tokens", 0),
+            completion_tokens=data.get("completion_tokens", 0),
+            engine_time_s=data.get("engine_time_s", 0.0),
             audio_samples=data.get("audio_samples"),
             sample_rate=data.get("sample_rate", 44100),
         )

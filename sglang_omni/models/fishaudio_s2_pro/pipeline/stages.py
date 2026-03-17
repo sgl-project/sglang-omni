@@ -291,6 +291,15 @@ def create_vocoder_executor(
         payload.data["audio_data"] = audio_np.tolist()
         payload.data["sample_rate"] = codec.sample_rate
         payload.data["modality"] = "audio"
+        if state.prompt_tokens or state.completion_tokens:
+            usage = {
+                "prompt_tokens": state.prompt_tokens,
+                "completion_tokens": state.completion_tokens,
+                "total_tokens": state.prompt_tokens + state.completion_tokens,
+            }
+            if state.engine_time_s:
+                usage["engine_time_s"] = round(state.engine_time_s, 6)
+            payload.data["usage"] = usage
         return payload
 
     return PreprocessingExecutor(_vocode)

@@ -459,12 +459,21 @@ def _register_speech(app: FastAPI) -> None:
             logger.exception("Error generating speech for request %s", request_id)
             raise HTTPException(status_code=500, detail=str(exc)) from exc
 
+        headers = {
+            "Content-Disposition": f'attachment; filename="speech.{result.format}"',
+        }
+        if result.usage is not None:
+            if result.usage.prompt_tokens is not None:
+                headers["X-Prompt-Tokens"] = str(result.usage.prompt_tokens)
+            if result.usage.completion_tokens is not None:
+                headers["X-Completion-Tokens"] = str(result.usage.completion_tokens)
+            if result.usage.engine_time_s is not None:
+                headers["X-Engine-Time"] = str(result.usage.engine_time_s)
+
         return Response(
             content=result.audio_bytes,
             media_type=result.mime_type,
-            headers={
-                "Content-Disposition": f'attachment; filename="speech.{result.format}"',
-            },
+            headers=headers,
         )
 
 
