@@ -17,6 +17,7 @@ import torch
 from sglang.srt.layers.logits_processor import LogitsProcessorOutput
 from torch import Tensor, nn
 
+from sglang_omni.utils import add_prefix
 from sglang_omni.vendor.sglang.core import ForwardBatch
 from sglang_omni.vendor.sglang.layers import (
     MergedColumnParallelLinear,
@@ -51,6 +52,8 @@ class S2ProAttention(nn.Module):
         max_position_embeddings: int = 32768,
         rms_norm_eps: float = 1e-6,
         qk_norm: bool = True,
+        quant_config: Any = None,
+        prefix: str = "",
     ) -> None:
         super().__init__()
         self.hidden_size = hidden_size
@@ -67,11 +70,15 @@ class S2ProAttention(nn.Module):
             num_heads,
             num_kv_heads,
             bias=False,
+            quant_config=quant_config,
+            prefix=add_prefix("attention.wqkv", prefix),
         )
         self.o_proj = RowParallelLinear(
             num_heads * head_dim,
             hidden_size,
             bias=False,
+            quant_config=quant_config,
+            prefix=add_prefix("attention.wo", prefix),
         )
         self.rotary_emb = get_rope(
             head_dim,
@@ -126,6 +133,8 @@ class S2ProDecoderLayer(nn.Module):
         max_position_embeddings: int = 32768,
         rms_norm_eps: float = 1e-6,
         qk_norm: bool = True,
+        quant_config: Any = None,
+        prefix: str = "",
     ) -> None:
         super().__init__()
         self.self_attn = S2ProAttention(
@@ -138,17 +147,23 @@ class S2ProDecoderLayer(nn.Module):
             max_position_embeddings=max_position_embeddings,
             rms_norm_eps=rms_norm_eps,
             qk_norm=qk_norm,
+            quant_config=quant_config,
+            prefix=prefix,
         )
         # SwiGLU: gate_proj (w1) and up_proj (w3) merged, down_proj (w2)
         self.gate_up_proj = MergedColumnParallelLinear(
             hidden_size,
             [intermediate_size, intermediate_size],
             bias=False,
+            quant_config=quant_config,
+            prefix=add_prefix("feed_forward.gate_up_proj", prefix),
         )
         self.down_proj = RowParallelLinear(
             intermediate_size,
             hidden_size,
             bias=False,
+            quant_config=quant_config,
+            prefix=add_prefix("feed_forward.w2", prefix),
         )
         self.input_layernorm = RMSNorm(hidden_size, eps=rms_norm_eps)
         self.post_attention_layernorm = RMSNorm(hidden_size, eps=rms_norm_eps)
@@ -227,7 +242,6 @@ class S2ProSGLangTextModel(nn.Module):
         self.hidden_size = hidden_size
         self.num_layers = num_layers
         self.tie_word_embeddings = tie_word_embeddings
-
         self.embed_tokens = VocabParallelEmbedding(vocab_size, hidden_size)
         self.start_layer = 0
         self.end_layer = num_layers
@@ -244,6 +258,8 @@ class S2ProSGLangTextModel(nn.Module):
                 max_position_embeddings=max_position_embeddings,
                 rms_norm_eps=rms_norm_eps,
                 qk_norm=qk_norm,
+                quant_config=quant_config,
+                prefix=f"text_model.model.layers.{idx}",
             ),
             prefix="layers",
         )
@@ -303,32 +319,28 @@ class S2ProSGLangTextModel(nn.Module):
 
         Checkpoint keys (text_model only):
             text_model.model.embeddings.weight
-            text_model.model.layers.N.attention.wqkv.weight   → split into q/k/v
+            text_model.model.layers.N.attention.wqkv.{weight,qweight,qzeros,scales,g_idx}
             text_model.model.layers.N.attention.wo.weight      → o_proj
             text_model.model.layers.N.attention.q_norm.weight  → q_norm
             text_model.model.layers.N.attention.k_norm.weight  → k_norm
             text_model.model.layers.N.attention_norm.weight    → input_layernorm
             text_model.model.layers.N.ffn_norm.weight          → post_attention_layernorm
-            text_model.model.layers.N.feed_forward.w1.weight   → gate_up_proj (shard 0)
-            text_model.model.layers.N.feed_forward.w3.weight   → gate_up_proj (shard 1)
-            text_model.model.layers.N.feed_forward.w2.weight   → down_proj
+            text_model.model.layers.N.feed_forward.w1.*        → gate_up_proj (shard 0)
+            text_model.model.layers.N.feed_forward.w3.*        → gate_up_proj (shard 1)
+            text_model.model.layers.N.feed_forward.w2.*        → down_proj
             text_model.model.norm.weight
         """
-        params_dict = dict(self.named_parameters())
+        if not hasattr(self, "_cached_params_dict"):
+            self._cached_params_dict = dict(self.named_parameters())
+        params_dict = self._cached_params_dict
 
         for name, loaded_weight in weights:
-            # Strip text_model.model. prefix
-            if name.startswith("text_model.model."):
-                name = name[len("text_model.model.") :]
-            else:
-                # Skip non-text-model weights (audio_decoder, etc.)
+            if not name.startswith("text_model.model."):
                 continue
 
-            # Remap checkpoint names to SGLang model names
             if self._load_remapped_weight(name, loaded_weight, params_dict):
                 continue
 
-            # Direct match
             if name in params_dict:
                 param = params_dict[name]
                 weight_loader = getattr(param, "weight_loader", _default_weight_loader)
@@ -342,68 +354,59 @@ class S2ProSGLangTextModel(nn.Module):
         loaded_weight: Tensor,
         params_dict: dict[str, nn.Parameter],
     ) -> bool:
-        # Remap table: checkpoint suffix → (target suffix, shard_id or None)
-        remap = {
-            "attention.wqkv.weight": None,  # handled specially
-            "attention.wo.weight": "self_attn.o_proj.weight",
-            "attention.q_norm.weight": "self_attn.q_norm.weight",
-            "attention.k_norm.weight": "self_attn.k_norm.weight",
-            "attention_norm.weight": "input_layernorm.weight",
-            "ffn_norm.weight": "post_attention_layernorm.weight",
-            "feed_forward.w1.weight": ("gate_up_proj.weight", 0),
-            "feed_forward.w3.weight": ("gate_up_proj.weight", 1),
-            "feed_forward.w2.weight": "down_proj.weight",
-            "embeddings.weight": "embed_tokens.weight",
-            "norm.weight": "norm.weight",
+        direct_remap = {
+            "text_model.model.embeddings.weight": "embed_tokens.weight",
+            "text_model.model.norm.weight": "norm.weight",
         }
+        if name in direct_remap:
+            target_name = direct_remap[name]
+            param = params_dict.get(target_name)
+            if param is None:
+                return False
+            weight_loader = getattr(param, "weight_loader", _default_weight_loader)
+            weight_loader(param, loaded_weight)
+            return True
 
-        for ckpt_suffix, target in remap.items():
-            if not name.endswith(ckpt_suffix):
+        layered_direct_remap = {
+            ".attention.wqkv.": ".self_attn.qkv_proj.",
+            ".attention.wo.": ".self_attn.o_proj.",
+            ".attention.q_norm.weight": ".self_attn.q_norm.weight",
+            ".attention.k_norm.weight": ".self_attn.k_norm.weight",
+            ".attention_norm.weight": ".input_layernorm.weight",
+            ".ffn_norm.weight": ".post_attention_layernorm.weight",
+            ".feed_forward.w2.": ".down_proj.",
+        }
+        for ckpt_part, target_part in layered_direct_remap.items():
+            if ckpt_part not in name:
                 continue
+            target_name = name.replace("text_model.model.", "", 1).replace(
+                ckpt_part, target_part, 1
+            )
+            param = params_dict.get(target_name)
+            if param is None:
+                return False
+            weight_loader = getattr(param, "weight_loader", _default_weight_loader)
+            weight_loader(param, loaded_weight)
+            return True
 
-            prefix = name[: -len(ckpt_suffix)]
-
-            # Special case: fused wqkv → split into q, k, v shards
-            if target is None:
-                return self._load_fused_qkv(prefix, loaded_weight, params_dict)
-
-            if isinstance(target, tuple):
-                target_suffix, shard_id = target
-            else:
-                target_suffix = target
-                shard_id = None
-
-            target_name = prefix + target_suffix
-            param = params_dict[target_name]
-            if shard_id is not None:
-                param.weight_loader(param, loaded_weight, shard_id)
-            else:
-                weight_loader = getattr(param, "weight_loader", _default_weight_loader)
-                weight_loader(param, loaded_weight)
+        stacked_remap = {
+            ".feed_forward.w1.": (".gate_up_proj.", 0),
+            ".feed_forward.w3.": (".gate_up_proj.", 1),
+        }
+        for ckpt_part, (target_part, shard_id) in stacked_remap.items():
+            if ckpt_part not in name:
+                continue
+            target_name = name.replace("text_model.model.", "", 1).replace(
+                ckpt_part, target_part, 1
+            )
+            param = params_dict.get(target_name)
+            if param is None:
+                return False
+            weight_loader = getattr(param, "weight_loader", _default_weight_loader)
+            weight_loader(param, loaded_weight, shard_id)
             return True
 
         return False
-
-    def _load_fused_qkv(
-        self,
-        prefix: str,
-        wqkv: Tensor,
-        params_dict: dict[str, nn.Parameter],
-    ) -> bool:
-        target_name = prefix + "self_attn.qkv_proj.weight"
-        if target_name not in params_dict:
-            return True
-
-        param = params_dict[target_name]
-        # Fish_speech wqkv layout: [q || k || v]
-        layer = self.layers[int(prefix.split(".")[1])]
-        q_size = layer.self_attn.q_size
-        kv_size = layer.self_attn.kv_size
-
-        q, k, v = wqkv.split([q_size, kv_size, kv_size], dim=0)
-        for shard_id, weight in [("q", q), ("k", k), ("v", v)]:
-            param.weight_loader(param, weight, shard_id)
-        return True
 
 
 def _default_weight_loader(param: nn.Parameter, loaded_weight: Tensor):

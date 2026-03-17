@@ -11,6 +11,7 @@ from typing import Any
 import torch
 
 from sglang_omni.executors import EngineExecutor, PreprocessingExecutor
+from sglang_omni.models.weight_loader import load_module
 from sglang_omni.models.fishaudio_s2_pro.io import S2ProState
 from sglang_omni.models.fishaudio_s2_pro.pipeline.engine_io import (
     apply_tts_result,
@@ -23,6 +24,47 @@ from sglang_omni.models.fishaudio_s2_pro.pipeline.state_io import (
 from sglang_omni.proto import StagePayload
 
 logger = logging.getLogger(__name__)
+
+
+class _DecodeOnlyRVQ(torch.nn.Module):
+    """Minimal RVQ path needed by DAC.from_indices()."""
+
+    def __init__(self, quantizer: torch.nn.Module) -> None:
+        super().__init__()
+        self.semantic_quantizer = quantizer.semantic_quantizer
+        self.quantizer = quantizer.quantizer
+        self.post_module = quantizer.post_module
+        self.upsample = quantizer.upsample
+
+    def decode(self, indices: torch.Tensor) -> torch.Tensor:
+        indices = indices.clone()
+        indices[:, 0] = torch.clamp(
+            indices[:, 0], max=self.semantic_quantizer.codebook_size - 1
+        )
+        indices[:, 1:] = torch.clamp(
+            indices[:, 1:], max=self.quantizer.codebook_size - 1
+        )
+
+        z_q_semantic = self.semantic_quantizer.from_codes(indices[:, :1])[0]
+        z_q_residual = self.quantizer.from_codes(indices[:, 1:])[0]
+        z_q = z_q_semantic + z_q_residual
+        z_q = self.post_module(z_q)
+        z_q = self.upsample(z_q)
+        return z_q
+
+
+class _DecodeOnlyDAC(torch.nn.Module):
+    """Minimal DAC wrapper for inference from discrete codes."""
+
+    def __init__(self, codec: torch.nn.Module) -> None:
+        super().__init__()
+        self.quantizer = _DecodeOnlyRVQ(codec.quantizer)
+        self.decoder = codec.decoder
+        self.sample_rate = codec.sample_rate
+
+    def from_indices(self, indices: torch.Tensor) -> torch.Tensor:
+        z = self.quantizer.decode(indices)
+        return self.decoder(z)
 
 
 # ---------------------------------------------------------------------------
@@ -38,30 +80,42 @@ def _resolve_checkpoint(checkpoint: str) -> str:
     return snapshot_download(checkpoint)
 
 
-def _load_audio_decoder(checkpoint: str, device: str):
+def _load_audio_decoder(
+    checkpoint: str,
+    device: str,
+):
     from transformers import PreTrainedTokenizerFast
 
     from sglang_omni.models.fishaudio_s2_pro.fish_speech.models.text2semantic.configuration import (
+        FishQwen3AudioDecoderConfig,
         FishQwen3OmniConfig,
     )
     from sglang_omni.models.fishaudio_s2_pro.fish_speech.models.text2semantic.modeling import (
-        FishQwen3OmniForCausalLM,
+        FishQwen3AudioDecoder,
     )
 
     checkpoint = _resolve_checkpoint(checkpoint)
-    logger.info("Loading S2-Pro model from %s …", checkpoint)
+    logger.info("Loading S2-Pro audio decoder from %s …", checkpoint)
     t0 = time.perf_counter()
 
     config = FishQwen3OmniConfig.from_pretrained(checkpoint)
-    model = FishQwen3OmniForCausalLM.from_pretrained(checkpoint, config=config)
-    model = model.to(dtype=torch.bfloat16).eval()
+    if config.audio_decoder_config is None:
+        raise ValueError(f"{checkpoint} does not contain audio_decoder_config")
 
-    audio_decoder = model.audio_decoder
-    audio_decoder.to(device=device)
+    decoder_config = FishQwen3AudioDecoderConfig(**config.audio_decoder_config.to_dict())
+    audio_decoder = FishQwen3AudioDecoder(decoder_config)
+    load_module(
+        audio_decoder,
+        checkpoint,
+        prefix="audio_decoder.",
+        dtype=torch.bfloat16,
+        device=device,
+        strict=True,
+    )
+
     num_codebooks = config.audio_decoder_config.num_codebooks
     codebook_size = config.audio_decoder_config.vocab_size
 
-    del model
     torch.cuda.empty_cache()
     logger.info("Audio decoder loaded in %.2fs", time.perf_counter() - t0)
 
@@ -69,7 +123,13 @@ def _load_audio_decoder(checkpoint: str, device: str):
     return audio_decoder, num_codebooks, codebook_size, tokenizer, checkpoint
 
 
-def _load_codec(checkpoint_dir: str, device: str):
+def _load_codec(
+    checkpoint_dir: str,
+    device: str,
+    *,
+    decode_only: bool = False,
+    dtype: torch.dtype | None = None,
+):
     from hydra.utils import instantiate
     from omegaconf import OmegaConf
 
@@ -92,8 +152,10 @@ def _load_codec(checkpoint_dir: str, device: str):
         codec_path, map_location=device, mmap=True, weights_only=True
     )
     codec.load_state_dict(state_dict, strict=False, assign=True)
+    if decode_only:
+        codec = _DecodeOnlyDAC(codec)
     codec.eval()
-    codec.to(device)
+    codec.to(device=device, dtype=dtype)
     logger.info("DAC codec loaded in %.2fs", time.perf_counter() - t0)
     return codec
 
@@ -208,6 +270,12 @@ def create_sglang_tts_engine_executor(
     device: str = "cuda",
     max_new_tokens: int = 2048,
     top_k: int = 30,
+    mem_fraction_static: float = 0.85,
+    max_total_tokens: int | None = None,
+    max_prefill_tokens: int | None = None,
+    chunked_prefill_size: int = 8192,
+    max_running_requests: int = 64,
+    disable_cuda_graph: bool = True,
 ) -> EngineExecutor:
     """Factory for the S2-Pro TTS engine stage."""
     from sglang.srt.server_args import ServerArgs
@@ -223,15 +291,20 @@ def create_sglang_tts_engine_executor(
     audio_decoder.setup_caches(max_batch_size=1, dtype=torch.bfloat16)
 
     _patch_fish_config_for_sglang(checkpoint_dir)
-    server_args = ServerArgs(
-        model_path=checkpoint_dir,
-        tp_size=1,
-        dtype="bfloat16",
-        mem_fraction_static=0.85,
-        chunked_prefill_size=8192,
-        max_running_requests=64,
-        disable_cuda_graph=True,
-    )
+    server_args_kwargs: dict[str, Any] = {
+        "model_path": checkpoint_dir,
+        "tp_size": 1,
+        "dtype": "bfloat16",
+        "mem_fraction_static": mem_fraction_static,
+        "chunked_prefill_size": chunked_prefill_size,
+        "max_running_requests": max_running_requests,
+        "disable_cuda_graph": disable_cuda_graph,
+    }
+    if max_total_tokens is not None:
+        server_args_kwargs["max_total_tokens"] = max_total_tokens
+    if max_prefill_tokens is not None:
+        server_args_kwargs["max_prefill_tokens"] = max_prefill_tokens
+    server_args = ServerArgs(**server_args_kwargs)
 
     engine = create_s2pro_sglang_engine(
         server_args=server_args,
@@ -272,7 +345,13 @@ def create_vocoder_executor(
 ) -> PreprocessingExecutor:
     """Factory for the vocoder stage."""
     checkpoint_dir = _resolve_checkpoint(model_path)
-    codec = _load_codec(checkpoint_dir, device)
+    codec_dtype = torch.bfloat16 if device.startswith("cuda") else None
+    codec = _load_codec(
+        checkpoint_dir,
+        device,
+        decode_only=True,
+        dtype=codec_dtype,
+    )
 
     def _vocode(payload: StagePayload) -> StagePayload:
         state = load_state(payload)

@@ -19,7 +19,7 @@ from sgl_kernel.flash_attn import flash_attn_with_kvcache
 # liger_kernel removed for inference
 from torch import Tensor
 from torch.nn import functional as F
-from transformers import AutoConfig, AutoModel, PreTrainedModel
+from transformers import AutoConfig, AutoModel, AutoModelForCausalLM, PreTrainedModel
 
 from sglang_omni.models.fishaudio_s2_pro.fish_speech.models.text2semantic.configuration import (
     FishQwen3AudioDecoderConfig,
@@ -170,6 +170,7 @@ class Attention(nn.Module):
         freqs_cis: Tensor,
         cumsum_lengths: Optional[Tensor] = None,
         max_length: Optional[int] = None,
+        **_: object,
     ) -> Tensor:
         """
         Forward pass.
@@ -205,23 +206,41 @@ class Attention(nn.Module):
             assert bsz == 1, "Cumsum lengths only supported in single sample mode"
             q, k, v = q.squeeze(0), k.squeeze(0), v.squeeze(0)
 
-            kwargs = {}
-            if FLASH_ATTN_VERSION == 3 and FISH_BATCH_INVARIANT:
-                kwargs["num_splits"] = True
+            if flash_attn_varlen_func is None:
+                ys = []
+                for start, end in zip(cumsum_lengths[:-1], cumsum_lengths[1:]):
+                    start_idx = int(start.item())
+                    end_idx = int(end.item())
+                    q_seg = q[start_idx:end_idx].permute(1, 0, 2).unsqueeze(0)
+                    k_seg = k[start_idx:end_idx].permute(1, 0, 2).unsqueeze(0)
+                    v_seg = v[start_idx:end_idx].permute(1, 0, 2).unsqueeze(0)
+                    k_seg = k_seg.repeat_interleave(
+                        self.n_head // self.n_local_heads, dim=1
+                    )
+                    v_seg = v_seg.repeat_interleave(
+                        self.n_head // self.n_local_heads, dim=1
+                    )
+                    y_seg = self._scaled_dot_product_attention(q_seg, k_seg, v_seg)
+                    ys.append(y_seg.squeeze(0).permute(1, 0, 2))
+                y = torch.cat(ys, dim=0)
+            else:
+                kwargs = {}
+                if FLASH_ATTN_VERSION == 3 and FISH_BATCH_INVARIANT:
+                    kwargs["num_splits"] = True
 
-            # Force cast to bfloat16 for flash attention
-            y = flash_attn_varlen_func(
-                q=q.to(torch.bfloat16),
-                k=k.to(torch.bfloat16),
-                v=v.to(torch.bfloat16),
-                cu_seqlens_q=cumsum_lengths,
-                cu_seqlens_k=cumsum_lengths,
-                max_seqlen_q=max_length,
-                max_seqlen_k=max_length,
-                causal=True,
-                deterministic=FISH_BATCH_INVARIANT,
-                **kwargs,
-            )
+                # Force cast to bfloat16 for flash attention
+                y = flash_attn_varlen_func(
+                    q=q.to(torch.bfloat16),
+                    k=k.to(torch.bfloat16),
+                    v=v.to(torch.bfloat16),
+                    cu_seqlens_q=cumsum_lengths,
+                    cu_seqlens_k=cumsum_lengths,
+                    max_seqlen_q=max_length,
+                    max_seqlen_k=max_length,
+                    causal=True,
+                    deterministic=FISH_BATCH_INVARIANT,
+                    **kwargs,
+                )
         else:
             q = q.transpose(1, 2)
             k = k.transpose(1, 2)
@@ -368,7 +387,7 @@ class FeedForward(nn.Module):
         self.w3 = nn.Linear(dim, intermediate_size, bias=False)
         self.w2 = nn.Linear(intermediate_size, dim, bias=False)
 
-    def forward(self, x: Tensor) -> Tensor:
+    def forward(self, x: Tensor, **_: object) -> Tensor:
         x1, x3 = self.w1(x), self.w3(x)
         if FISH_BATCH_INVARIANT is False:
             return self.w2(F.silu(x1) * x3)
@@ -394,6 +413,7 @@ class TransformerBlock(nn.Module):
         freqs_cis: Tensor,
         cumsum_lengths: Optional[Tensor] = None,
         max_length: Optional[int] = None,
+        **_: object,
     ) -> Tensor:
         h = x + self.attention(
             self.attention_norm(x),
@@ -543,6 +563,18 @@ class FishQwen3Model(FishQwen3PreTrainedModel):
                 layer.attention.kv_cache.k_cache.zero_()
                 layer.attention.kv_cache.v_cache.zero_()
 
+    def _get_freqs_cis(self, device: torch.device) -> Tensor:
+        freqs_cis = self.freqs_cis
+        if freqs_cis.device.type == "meta":
+            freqs_cis = precompute_freqs_cis(
+                self.config.max_seq_len,
+                self.config.head_dim,
+                self.config.rope_base,
+            )
+        if freqs_cis.device != device:
+            freqs_cis = freqs_cis.to(device=device)
+        return freqs_cis
+
     def forward_kvcached(
         self,
         input_ids: Tensor,
@@ -572,7 +604,7 @@ class FishQwen3Model(FishQwen3PreTrainedModel):
         bsz = x.shape[0]
 
         # Get RoPE frequencies for current positions
-        freqs_cis = self.freqs_cis[input_pos]
+        freqs_cis = self._get_freqs_cis(x.device)[input_pos]
 
         # Compute cache_seqlens from input_pos
         # input_pos contains the position indices, cache_seqlens should be the starting position
@@ -588,9 +620,12 @@ class FishQwen3Model(FishQwen3PreTrainedModel):
             if expert_indices is not None and layer_idx < len(expert_indices):
                 layer_expert_indices = expert_indices[layer_idx]
 
-            result = layer.forward_kvcached(
-                x, freqs_cis, cache_seqlens, expert_indices=layer_expert_indices
-            )
+            if self.config.use_moe:
+                result = layer.forward_kvcached(
+                    x, freqs_cis, cache_seqlens, expert_indices=layer_expert_indices
+                )
+            else:
+                result = layer.forward_kvcached(x, freqs_cis, cache_seqlens)
 
             if self.config.use_moe:
                 x, layer_router_logits, layer_expert_indices_out = result
@@ -615,6 +650,7 @@ class FishQwen3Model(FishQwen3PreTrainedModel):
         input_ids: Optional[Tensor] = None,
         input_embeds: Optional[Tensor] = None,
         expert_indices: Optional[tuple] = None,
+        **_: object,
     ) -> Tensor | tuple[Tensor, tuple, tuple]:
         """
         Forward pass.
@@ -633,6 +669,19 @@ class FishQwen3Model(FishQwen3PreTrainedModel):
             Hidden states of shape (seq_len, hidden_size)
             If use_moe, returns tuple of (hidden_states, router_logits, expert_indices)
         """
+        lengths = lengths.reshape(-1)
+        if cumsum_lengths is not None:
+            cumsum_lengths = cumsum_lengths.reshape(-1)
+        if position_ids is not None:
+            position_ids = position_ids.reshape(-1)
+        if input_ids is not None and input_ids.ndim > 1:
+            if input_ids.shape[0] != 1:
+                raise ValueError("FishQwen3Model.forward only supports batch_size=1 during GPTQ calibration.")
+            input_ids = input_ids.reshape(-1)
+        if input_embeds is not None and input_embeds.ndim > 2:
+            if input_embeds.shape[0] != 1:
+                raise ValueError("FishQwen3Model.forward only supports batch_size=1 during GPTQ calibration.")
+            input_embeds = input_embeds.reshape(-1, input_embeds.shape[-1])
 
         if input_embeds is not None:
             x = input_embeds
@@ -659,7 +708,7 @@ class FishQwen3Model(FishQwen3PreTrainedModel):
                 [torch.arange(i, dtype=torch.int) for i in lengths]
             ).to(lengths.device)
 
-        freqs_cis = self.freqs_cis[position_ids]
+        freqs_cis = self._get_freqs_cis(x.device)[position_ids]
 
         # Apply transformer layers
         router_logits = tuple() if self.config.use_moe else None
@@ -671,23 +720,41 @@ class FishQwen3Model(FishQwen3PreTrainedModel):
                 layer_expert_indices = expert_indices[layer_idx]
 
             if self.config.use_gradient_checkpointing and self.training:
-                result = checkpoint(
-                    layer,
-                    x,
-                    freqs_cis,
-                    cumsum_lengths,
-                    max_length,
-                    layer_expert_indices,
-                    use_reentrant=True,
-                )
+                if self.config.use_moe:
+                    result = checkpoint(
+                        layer,
+                        x,
+                        freqs_cis,
+                        cumsum_lengths,
+                        max_length,
+                        layer_expert_indices,
+                        use_reentrant=True,
+                    )
+                else:
+                    result = checkpoint(
+                        layer,
+                        x,
+                        freqs_cis,
+                        cumsum_lengths,
+                        max_length,
+                        use_reentrant=True,
+                    )
             else:
-                result = layer(
-                    x,
-                    freqs_cis,
-                    cumsum_lengths,
-                    max_length,
-                    expert_indices=layer_expert_indices,
-                )
+                if self.config.use_moe:
+                    result = layer(
+                        x,
+                        freqs_cis=freqs_cis,
+                        cumsum_lengths=cumsum_lengths,
+                        max_length=max_length,
+                        expert_indices=layer_expert_indices,
+                    )
+                else:
+                    result = layer(
+                        x,
+                        freqs_cis=freqs_cis,
+                        cumsum_lengths=cumsum_lengths,
+                        max_length=max_length,
+                    )
 
             # Handle MoE router logits and expert indices
             if self.config.use_moe:
@@ -1482,3 +1549,5 @@ AutoConfig.register("fish_qwen3_omni", FishQwen3OmniConfig)
 
 AutoModel.register(FishQwen3Config, FishQwen3ForCausalLM)
 AutoModel.register(FishQwen3OmniConfig, FishQwen3OmniForCausalLM)
+AutoModelForCausalLM.register(FishQwen3Config, FishQwen3ForCausalLM)
+AutoModelForCausalLM.register(FishQwen3OmniConfig, FishQwen3OmniForCausalLM)
