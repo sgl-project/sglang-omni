@@ -904,19 +904,6 @@ class SGLangModelRunner:
             scores = torch.where(scores > 0, scores / penalty, scores * penalty)
             logits[row_idx, idx] = scores
 
-        model = model_worker.model_runner.model
-        self._embed_tokens, self._inner_model = self._get_inner_model_components(model)
-
-        hf_config = model_worker.model_runner.model_config.hf_config
-        thinker_cfg = (
-            hf_config.thinker_config
-            if hasattr(hf_config, "thinker_config")
-            else hf_config
-        )
-        self._image_token_id = thinker_cfg.image_token_id
-        self._video_token_id = thinker_cfg.video_token_id
-        self._audio_token_id = thinker_cfg.audio_token_id
-
     @staticmethod
     def _get_inner_model_components(model):
         outer = model.thinker if hasattr(model, "thinker") else model
