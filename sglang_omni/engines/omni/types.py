@@ -11,6 +11,7 @@ class SchedulerStatus(Enum):
 
     WAITING = auto()
     RUNNING = auto()
+    WAITING_FEEDBACK = auto()
     FINISHED = auto()
     ABORTED = auto()
 
@@ -69,6 +70,9 @@ class RequestOutput:
     data: Any = None  # Model-specific output
     finished: bool = False
     finish_reason: str | None = None  # "stop", "length", "abort"
+    extra: dict[str, Any] | None = (
+        None  # Optional per-step extra data (e.g. hidden states)
+    )
 
 
 @dataclass

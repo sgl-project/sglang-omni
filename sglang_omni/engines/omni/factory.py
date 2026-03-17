@@ -100,6 +100,10 @@ def create_encoder_engine(
     )
 
 
+# Alias: generic name for non-AR single-pass engines
+create_single_pass_engine = create_encoder_engine
+
+
 def create_ar_engine(
     model: torch.nn.Module,
     tokenizer: Any = None,
@@ -183,6 +187,13 @@ def create_sglang_ar_engine(
     server_args: Any,
     gpu_id: int = 0,
     enable_overlap: bool | None = None,
+    stream_adapter=None,
+    capture_hidden: bool = False,
+    capture_hidden_layers: list[int] | None = None,
+    model_arch_override: str | None = None,
+    weight_prefix: str | None = None,
+    feedback_enabled: bool = False,
+    feedback_mailbox: Any | None = None,
 ) -> OmniEngine:
     """Create an AR engine backed by SGLang's ModelWorker and KV cache.
 
@@ -220,10 +231,23 @@ def create_sglang_ar_engine(
 
     # Initialize model worker
     model_worker = ModelWorker(
-        config=ModelWorkerConfig(),
+        config=ModelWorkerConfig(
+            model_arch_override=model_arch_override,
+            weight_prefix=weight_prefix,
+        ),
         server_args=server_args,
         gpu_id=gpu_id,
     )
+
+    # Configure multi-layer hidden state capture (e.g., [0, 24] for embed + layer-24)
+    # Uses forward hooks to capture intermediate hidden states from transformer layers.
+    # The VL wrapper doesn't support layers_to_capture directly, so we hook into the
+    # text model's layers and store captured states on the model instance.
+    if capture_hidden_layers:
+        from .runtime._hidden_capture import install_hidden_capture_hooks
+
+        model = model_worker.model_runner.model
+        install_hidden_capture_hooks(model, capture_hidden_layers)
 
     # Get memory pools
     req_to_token_pool, token_to_kv_pool_allocator = model_worker.get_memory_pool()
@@ -258,21 +282,32 @@ def create_sglang_ar_engine(
     resource_mgr = SGLangResourceManager(
         token_to_kv_pool_allocator, req_to_token_pool, tree_cache
     )
-    iteration_ctrl = SGLangIterationController(tree_cache)
-    output_proc = SGLangOutputProcessor()
+    iteration_ctrl = SGLangIterationController(
+        tree_cache, feedback_enabled=feedback_enabled
+    )
+    output_proc = SGLangOutputProcessor(
+        capture_hidden=capture_hidden,
+        capture_hidden_layers=capture_hidden_layers,
+        model=model_worker.model_runner.model if capture_hidden_layers else None,
+    )
 
-    def _stream_adapter(request, output):
-        if request.data.req.is_chunked > 0:
-            return None
-        token = output.data
-        return int(token) if token is not None else None
+    if stream_adapter is None:
+
+        def stream_adapter(request, output):
+            if request.data.req.is_chunked > 0:
+                return None
+            token = output.data
+            return int(token) if token is not None else None
 
     scheduler = Scheduler(
         batch_planner=batch_planner,
         resource_manager=resource_mgr,
         iteration_controller=iteration_ctrl,
-        stream_adapter=_stream_adapter,
+        stream_adapter=stream_adapter,
     )
+    # Wire abort callback so feedback-timeout aborts go through the
+    # scheduler's proper cleanup path (free resources, notify waiters).
+    batch_planner._abort_callback = scheduler.abort_request
     sglang_model_runner = SGLangModelRunner(
         model_worker, output_proc, batch_planner=batch_planner
     )
@@ -281,4 +316,5 @@ def create_sglang_ar_engine(
         scheduler=scheduler,
         model_runner=sglang_model_runner,
         enable_overlap=enable_overlap,
+        feedback_mailbox=feedback_mailbox,
     )
