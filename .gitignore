@@ -34,3 +34,5 @@ Thumbs.db
 .ruff_cache/
 uv.lock
 results/
+.humanize/
+.humanize/

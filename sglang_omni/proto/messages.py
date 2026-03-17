@@ -21,6 +21,9 @@ class DataReadyMessage:
     from_stage: str
     to_stage: str
     shm_metadata: Any  # Can be dict, SHMMetadata, or RdmaMetadata
+    chunk_id: int | None = None
+    is_done: bool = False
+    error: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         # Handle different metadata types
@@ -43,13 +46,20 @@ class DataReadyMessage:
                 else {}
             )
 
-        return {
+        d = {
             "type": "data_ready",
             "request_id": self.request_id,
             "from_stage": self.from_stage,
             "to_stage": self.to_stage,
             "shm_metadata": metadata_dict,
         }
+        if self.chunk_id is not None:
+            d["chunk_id"] = self.chunk_id
+        if self.is_done:
+            d["is_done"] = True
+        if self.error is not None:
+            d["error"] = self.error
+        return d
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "DataReadyMessage":
@@ -108,6 +118,9 @@ class DataReadyMessage:
             from_stage=d["from_stage"],
             to_stage=d["to_stage"],
             shm_metadata=metadata,
+            chunk_id=d.get("chunk_id"),
+            is_done=d.get("is_done", False),
+            error=d.get("error"),
         )
 
 

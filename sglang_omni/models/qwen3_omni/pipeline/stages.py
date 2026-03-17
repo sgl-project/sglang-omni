@@ -6,18 +6,23 @@ from __future__ import annotations
 from typing import Any
 
 import torch
-from sglang.srt.server_args import ServerArgs
 from transformers import AutoTokenizer
 
+from sglang_omni.engines.ar.sglang_backend.server_args_builder import (
+    build_sglang_server_args,
+)
 from sglang_omni.engines.omni import (
     create_ar_engine,
-    create_encoder_engine,
     create_sglang_ar_engine,
+    create_single_pass_engine,
 )
 from sglang_omni.executors import EngineExecutor, PreprocessingExecutor
 from sglang_omni.models.qwen3_omni.components.audio_encoder import Qwen3OmniAudioEncoder
 from sglang_omni.models.qwen3_omni.components.image_encoder import Qwen3OmniImageEncoder
 from sglang_omni.models.qwen3_omni.components.preprocessor import Qwen3OmniPreprocessor
+from sglang_omni.models.qwen3_omni.components.talker_executor import (
+    TalkerStreamingExecutor,
+)
 from sglang_omni.models.qwen3_omni.components.thinker import Qwen3OmniSplitThinker
 from sglang_omni.models.qwen3_omni.io import OmniEvent, ThinkerOutput
 from sglang_omni.models.qwen3_omni.pipeline.engine_io import (
@@ -30,7 +35,9 @@ from sglang_omni.models.qwen3_omni.pipeline.engine_io import (
 from sglang_omni.models.qwen3_omni.pipeline.merge import decode_events
 from sglang_omni.models.qwen3_omni.pipeline.next_stage import (
     AUDIO_STAGE,
+    CODE_PREDICTOR_STAGE,
     IMAGE_STAGE,
+    TALKER_AR_STAGE,
     THINKER_STAGE,
 )
 from sglang_omni.models.qwen3_omni.pipeline.state_io import load_state, store_state
@@ -79,9 +86,7 @@ def _create_encoder_executor(
         apply_encoder_result(state, stage_name=stage_name, result=result)
         return store_state(payload, state)
 
-    engine = create_encoder_engine(
-        model, device=device, use_cache=use_cache, cache_size=cache_size
-    )
+    engine = create_single_pass_engine(model, device=device)
     return EngineExecutor(
         engine=engine, request_builder=_request_builder, result_builder=_result_builder
     )
@@ -201,6 +206,8 @@ def create_sglang_thinker_executor(
     model_path: str,
     *,
     gpu_id: int = 0,
+    stream_fn=None,
+    speech_enabled: bool = False,
 ) -> EngineExecutor:
     """Create a thinker executor backed by SGLang's ModelWorker."""
     from sglang_omni.models.qwen3_omni.components.common import load_thinker_config
@@ -211,11 +218,17 @@ def create_sglang_thinker_executor(
     thinker_config = load_thinker_config(model_path)
 
     step_counters: dict[str, int] = {}
+    enqueue_fn_holder: dict[str, Any] = {"fn": stream_fn}
+
+    def _enqueue_stream(request_id: str, hidden, metadata=None):
+        fn = enqueue_fn_holder["fn"]
+        if fn is not None:
+            fn(request_id, hidden, TALKER_AR_STAGE, metadata=metadata)
 
     def _request_builder(payload: StagePayload):
         state = load_state(payload)
         step_counters.pop(payload.request_id, None)
-        return build_sglang_thinker_request(
+        data = build_sglang_thinker_request(
             state,
             params=payload.request.params,
             tokenizer=tokenizer,
@@ -223,6 +236,7 @@ def create_sglang_thinker_executor(
             request_id=payload.request_id,
             thinker_config=thinker_config,
         )
+        return data
 
     def _result_builder(payload: StagePayload, result: Any) -> StagePayload:
         state = load_state(payload)
@@ -285,17 +299,37 @@ def create_sglang_thinker_executor(
             result["text"] = text_to_add
         return result
 
+    stream_adapter = (
+        make_thinker_stream_adapter(stream_fn=_enqueue_stream)
+        if speech_enabled
+        else None
+    )
+
+    # Dual-layer capture: embed (layer 0 input) + accept_hidden_layer (layer 24 input)
+    # Layer 0 captures embed output; layer 24 captures output of transformer layer 23
+    # (matching HF hidden_states[24] = accept_hidden_layer)
+    capture_layers = [0, 24] if speech_enabled else None
+
     engine = create_sglang_ar_engine(
         server_args=server_args,
         gpu_id=gpu_id,
+        stream_adapter=stream_adapter,
+        capture_hidden=speech_enabled,
+        capture_hidden_layers=capture_layers,
     )
 
-    return EngineExecutor(
+    executor = EngineExecutor(
         engine=engine,
         request_builder=_request_builder,
         result_builder=_result_builder,
         stream_builder=_stream_builder,
     )
+
+    def _set_stream_fn(fn) -> None:
+        enqueue_fn_holder["fn"] = fn
+
+    setattr(executor, "set_stream_fn", _set_stream_fn)
+    return executor
 
 
 def create_sglang_thinker_executor_from_config(
@@ -304,33 +338,265 @@ def create_sglang_thinker_executor_from_config(
     gpu_id: int = 0,
     thinker_max_seq_len: int = 8192,
     server_args_overrides: dict[str, Any] | None = None,
+    speech_enabled: bool = False,
 ) -> EngineExecutor:
     """Create a SGLang thinker executor from JSON-serializable config args.
 
     This keeps pipeline config args plain dict types while still constructing
     a typed ServerArgs object internally.
     """
-    server_args_kwargs: dict[str, Any] = {
-        "model_path": model_path,
-        "trust_remote_code": True,
-        "tp_size": 1,
-        "pp_size": 1,
-        "disable_cuda_graph": True,
-        "chunked_prefill_size": 8192,
-        "max_prefill_tokens": 16384,
-        "max_running_requests": 16,
-        "mem_fraction_static": 0.7,
-        "random_seed": 123,
-        "context_length": thinker_max_seq_len,
-    }
-    if server_args_overrides:
-        server_args_kwargs.update(server_args_overrides)
-
-    server_args = ServerArgs(**server_args_kwargs)
+    server_args = build_sglang_server_args(
+        model_path, context_length=thinker_max_seq_len, **(server_args_overrides or {})
+    )
     return create_sglang_thinker_executor(
         server_args=server_args,
         model_path=model_path,
         gpu_id=gpu_id,
+        speech_enabled=speech_enabled,
+    )
+
+
+def make_thinker_stream_adapter(stream_fn=None):
+    """Create a Thinker stream adapter with optional hidden state side-channel.
+
+    Args:
+        stream_fn: Optional callable(request_id, hidden_tensor, metadata=None).
+            Called synchronously on each decode step that produces hidden states.
+
+    When dual-layer hidden states are available (dict with "embed" and layer index),
+    the embed tensor is sent as the main data and the layer hidden is sent in metadata.
+    """
+
+    def _split_dual_layer_hidden(
+        hidden: dict[str | int, torch.Tensor] | torch.Tensor | None,
+    ) -> tuple[torch.Tensor | None, torch.Tensor | None]:
+        if isinstance(hidden, torch.Tensor):
+            return hidden, None
+        if not isinstance(hidden, dict):
+            return None, None
+
+        embed = hidden.get("embed")
+        if embed is None:
+            embed = hidden.get(0)
+        if embed is None:
+            embed = hidden.get("0")
+
+        layer_hidden = None
+        for key, value in hidden.items():
+            if key in ("embed", 0, "0"):
+                continue
+            if isinstance(value, torch.Tensor):
+                layer_hidden = value
+                break
+        return embed, layer_hidden
+
+    def _stream_adapter(request, output):
+        if request.data.req.is_chunked > 0:
+            return None
+        if output.data is None:
+            return None  # chunked prefill final round, no token yet
+
+        token = output.data
+
+        # Side-channel: send hidden states to stream target (sync)
+        if stream_fn is not None and output.extra is not None:
+            hidden = output.extra.get("hidden_states")
+            if hidden is not None:
+                embed, layer_hidden = _split_dual_layer_hidden(hidden)
+                if embed is not None:
+                    token_id = int(token) if token is not None else None
+                    stream_fn(
+                        request.request_id,
+                        embed,
+                        metadata={
+                            "layer_hidden": layer_hidden,
+                            "token_id": token_id,
+                        },
+                    )
+                elif layer_hidden is not None:
+                    token_id = int(token) if token is not None else None
+                    stream_fn(
+                        request.request_id,
+                        layer_hidden,
+                        metadata={"token_id": token_id},
+                    )
+
+        return int(token) if token is not None else None
+
+    return _stream_adapter
+
+
+def make_talker_ar_stream_adapter(stream_fn=None):
+    """Talker AR stream adapter: relay codec code + hidden to Code Predictor."""
+
+    def _stream_adapter(request, output):
+        if request.data.req.is_chunked > 0:
+            return None
+        if output.data is None:
+            return None  # chunked prefill final round, no token yet
+        token = output.data
+        if stream_fn is not None and output.extra is not None:
+            hidden = output.extra.get("hidden_states")
+            stream_hidden = output.extra.get("stream_hidden_states", hidden)
+            if isinstance(stream_hidden, torch.Tensor):
+                codec_code = int(token) if token is not None else None
+                stream_fn(
+                    request.request_id,
+                    stream_hidden,
+                    metadata={"codec_code": codec_code},
+                )
+        return int(token) if token is not None else None
+
+    return _stream_adapter
+
+
+def build_talker_ar_request(payload: StagePayload) -> dict:
+    """Build Talker AR engine input from prefetched thinker hidden state chunks.
+
+    Supports dual-layer chunks (embed in tensor, layer_hidden in metadata)
+    and single-tensor chunks (legacy).
+    """
+    chunks = getattr(payload, "prefetched_chunks", None) or []
+    if chunks:
+        thinker_hidden_states = torch.stack([c.data for c in chunks], dim=0)
+        thinker_token_ids = [
+            c.metadata["token_id"]
+            for c in chunks
+            if c.metadata is not None and c.metadata.get("token_id") is not None
+        ]
+        # Check for dual-layer data
+        if chunks[0].metadata and "layer_hidden" in chunks[0].metadata:
+            thinker_layer_hidden = torch.stack(
+                [c.metadata["layer_hidden"] for c in chunks], dim=0
+            )
+        else:
+            thinker_layer_hidden = None
+    else:
+        thinker_hidden_states = torch.empty(0)
+        thinker_token_ids = []
+        thinker_layer_hidden = None
+
+    result = {
+        "thinker_hidden_states": thinker_hidden_states,
+        "request_id": payload.request_id,
+    }
+    if thinker_token_ids:
+        result["thinker_token_ids"] = thinker_token_ids
+    if thinker_layer_hidden is not None:
+        result["thinker_layer_hidden"] = thinker_layer_hidden
+    return result
+
+
+def create_talker_ar_executor(
+    server_args: Any,
+    model_path: str,
+    *,
+    gpu_id: int = 0,
+    stream_fn=None,
+    speech_enabled: bool = True,
+    weight_prefix: str | None = None,
+    feedback_enabled: bool = False,
+    feedback_mailbox=None,
+) -> EngineExecutor:
+    """Talker AR executor backed by SGLang AR engine."""
+    from transformers import AutoConfig
+
+    tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
+    hf_config = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
+    talker_cfg = getattr(hf_config, "talker_config", None)
+    talker_text_cfg = getattr(talker_cfg, "text_config", None)
+    codec_vocab_size = (
+        (
+            getattr(talker_text_cfg, "vocab_size", None)
+            or getattr(talker_cfg, "vocab_size", None)
+            or 3072
+        )
+        if talker_cfg
+        else 3072
+    )
+
+    enqueue_fn_holder: dict[str, Any] = {"fn": stream_fn}
+
+    def _enqueue_stream(request_id: str, chunk_data, metadata=None):
+        fn = enqueue_fn_holder["fn"]
+        if fn is not None:
+            fn(request_id, chunk_data, CODE_PREDICTOR_STAGE, metadata=metadata)
+
+    stream_adapter = (
+        make_talker_ar_stream_adapter(stream_fn=_enqueue_stream)
+        if speech_enabled
+        else None
+    )
+    capture_layers = None
+
+    engine = create_sglang_ar_engine(
+        server_args=server_args,
+        gpu_id=gpu_id,
+        stream_adapter=stream_adapter,
+        capture_hidden=speech_enabled,
+        capture_hidden_layers=capture_layers,
+        model_arch_override="Qwen3OmniTalker",
+        weight_prefix=weight_prefix,
+        feedback_enabled=feedback_enabled,
+        feedback_mailbox=feedback_mailbox,
+    )
+
+    return TalkerStreamingExecutor(
+        engine=engine,
+        model_path=model_path,
+        tokenizer=tokenizer,
+        codec_vocab_size=codec_vocab_size,
+        tts_bos_token_id=getattr(hf_config, "tts_bos_token_id", 151672),
+        tts_eos_token_id=getattr(hf_config, "tts_eos_token_id", 151673),
+        tts_pad_token_id=getattr(hf_config, "tts_pad_token_id", 151671),
+        im_start_token_id=getattr(hf_config, "im_start_token_id", 151644),
+        im_end_token_id=getattr(hf_config, "im_end_token_id", 151645),
+        system_token_id=getattr(hf_config, "system_token_id", 8948),
+        user_token_id=getattr(hf_config, "user_token_id", 872),
+        assistant_token_id=getattr(hf_config, "assistant_token_id", 77091),
+        accept_hidden_layer=(
+            getattr(talker_cfg, "accept_hidden_layer", 24) if talker_cfg else 24
+        ),
+        audio_token_id=getattr(
+            getattr(hf_config, "thinker_config", None), "audio_token_id", None
+        ),
+        image_token_id=getattr(
+            getattr(hf_config, "thinker_config", None), "image_token_id", None
+        ),
+        video_token_id=getattr(
+            getattr(hf_config, "thinker_config", None), "video_token_id", None
+        ),
+        speaker_map=getattr(talker_cfg, "speaker_id", None),
+        enqueue_fn_holder=enqueue_fn_holder,
+        thinker_config=getattr(hf_config, "thinker_config", None),
+    )
+
+
+def create_talker_ar_executor_from_config(
+    model_path: str,
+    *,
+    gpu_id: int = 0,
+    talker_max_seq_len: int = 4096,
+    server_args_overrides: dict[str, Any] | None = None,
+    speech_enabled: bool = True,
+    stream_fn=None,
+    weight_prefix: str = "talker.",
+    feedback_enabled: bool = False,
+    feedback_mailbox=None,
+) -> EngineExecutor:
+    """Create a Talker AR executor from config args."""
+    server_args = build_sglang_server_args(
+        model_path, context_length=talker_max_seq_len, **(server_args_overrides or {})
+    )
+    return create_talker_ar_executor(
+        server_args=server_args,
+        model_path=model_path,
+        gpu_id=gpu_id,
+        stream_fn=stream_fn,
+        speech_enabled=speech_enabled,
+        weight_prefix=weight_prefix,
+        feedback_enabled=feedback_enabled,
+        feedback_mailbox=feedback_mailbox,
     )
 
 

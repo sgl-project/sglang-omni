@@ -101,9 +101,6 @@ def _compute_mrope_positions(
 
     image_grid_thw = model_inputs.get("image_grid_thw")
     video_grid_thw = model_inputs.get("video_grid_thw")
-    if image_grid_thw is None and video_grid_thw is None:
-        return None
-
     spatial_merge_size = thinker_config.vision_config.spatial_merge_size
     image_token_id = thinker_config.image_token_id
     video_token_id = thinker_config.video_token_id
@@ -246,6 +243,153 @@ def build_sglang_thinker_request(
         output_ids=req.output_ids,
         req=req,
     )
+    return data
+
+
+def build_sglang_talker_request(
+    thinker_hidden_states: torch.Tensor,
+    *,
+    tokenizer: Any,
+    codec_vocab_size: int,
+    max_new_tokens: int = 2048,
+    temperature: float = 0.7,
+    top_k: int = 50,
+    top_p: float = 1.0,
+    repetition_penalty: float = 1.05,
+    request_id: str | None = None,
+    codec_bos_id: int = 2149,
+    codec_eos_id: int | None = None,
+    suppress_tokens: list[int] | None = None,
+    thinker_layer_hidden: torch.Tensor | None = None,
+    thinker_token_ids: list[int] | torch.Tensor | None = None,
+    audio_token_id: int | None = None,
+    image_token_id: int | None = None,
+    video_token_id: int | None = None,
+    talker_input_embeds: torch.Tensor | None = None,
+    talker_input_ids: torch.Tensor | list[int] | None = None,
+    input_embeds_are_projected: bool = False,
+    trailing_text_hidden: list[torch.Tensor] | torch.Tensor | None = None,
+    tts_pad_embed: torch.Tensor | None = None,
+    thinker_chunks_done: bool = True,
+    thinker_config: Any = None,
+    talker_model_inputs: dict[str, Any] | None = None,
+) -> "SGLangARRequestData":
+    """Build SGLang AR request for the Talker from thinker hidden states.
+
+    Stores thinker hidden states as Req.input_embeds so SGLang's pipeline
+    passes them through ForwardBatch.input_embeds -> model.forward(input_embeds=...).
+    Uses dummy input_ids of matching length for position tracking.
+
+    Args:
+        thinker_hidden_states: Embed layer hidden states [seq_len, hidden_size].
+        thinker_layer_hidden: Optional layer-N hidden states for dual-layer mode.
+        thinker_token_ids: Optional thinker output token ids aligned with hidden states.
+    """
+    from sglang.srt.managers.schedule_batch import MultimodalInputs, Req
+    from sglang.srt.sampling.sampling_params import SamplingParams
+
+    from sglang_omni.engines.omni.runtime.sglang_ar import SGLangARRequestData
+
+    if talker_input_embeds is not None:
+        input_embeds = talker_input_embeds.float().cpu().tolist()
+        if talker_input_ids is None:
+            raise ValueError("talker_input_ids is required with talker_input_embeds")
+        input_ids_tensor = torch.as_tensor(talker_input_ids, dtype=torch.long)
+        input_ids_list = input_ids_tensor.tolist()
+        seq_len = len(input_ids_list)
+    else:
+        # thinker_hidden_states: [seq_len, thinker_hidden_size]
+        seq_len = thinker_hidden_states.shape[0]
+
+        # Dummy input_ids — codec BOS token repeated for each position
+        input_ids_list = [codec_bos_id] * seq_len
+        input_ids_tensor = torch.tensor(input_ids_list, dtype=torch.long)
+
+        # Convert hidden states to list-of-lists for Req.input_embeds
+        input_embeds = thinker_hidden_states.float().cpu().tolist()
+
+    sampling_params = SamplingParams(
+        max_new_tokens=max_new_tokens,
+        temperature=temperature,
+        top_k=top_k,
+        top_p=top_p,
+        repetition_penalty=repetition_penalty,
+        stop_token_ids=[int(codec_eos_id)] if codec_eos_id is not None else None,
+        # SGLang currently materializes logit_bias against the scheduler vocab
+        # width, which is the text tokenizer vocab rather than the codec vocab
+        # for talker requests. Passing suppress_tokens here therefore produces a
+        # shape mismatch in sampling. Keep the HF-aligned talker sampling knobs
+        # that are safe in the codec path and leave special-token suppression to
+        # a future codec-aware sampler integration.
+        logit_bias=None,
+    )
+    sampling_params.normalize(tokenizer)
+    sampling_params.verify(codec_vocab_size)
+
+    rid = request_id or "talker-req-0"
+    req = Req(
+        rid=rid,
+        origin_input_text="",
+        origin_input_ids=input_ids_list,
+        sampling_params=sampling_params,
+        input_embeds=input_embeds,
+        eos_token_ids={int(codec_eos_id)} if codec_eos_id is not None else None,
+        vocab_size=codec_vocab_size,
+    )
+    req.omni_model_inputs = None
+    req._omni_consumed = None
+    req._input_embeds_are_projected = bool(input_embeds_are_projected)
+    req._codec_suppress_tokens = (
+        tuple(int(token_id) for token_id in suppress_tokens)
+        if suppress_tokens
+        else None
+    )
+    if thinker_config is not None:
+        mrope_positions, mrope_position_delta = _compute_mrope_positions(
+            input_ids_tensor.to(dtype=torch.long),
+            talker_model_inputs or {},
+            thinker_config,
+        )
+        mm_inputs = MultimodalInputs(mm_items=[])
+        mm_inputs.mrope_positions = mrope_positions
+        mm_inputs.mrope_position_delta = mrope_position_delta
+        req.multimodal_inputs = mm_inputs
+
+    multimodal_mask: torch.Tensor | None = None
+    if thinker_token_ids is not None:
+        token_ids = torch.as_tensor(thinker_token_ids, dtype=torch.long)
+        if token_ids.numel() == seq_len:
+            mask = torch.zeros(seq_len, dtype=torch.bool)
+            for token_id in (audio_token_id, image_token_id, video_token_id):
+                if token_id is not None:
+                    mask |= token_ids == int(token_id)
+            multimodal_mask = mask
+
+    if thinker_layer_hidden is not None:
+        req.omni_model_inputs = {
+            "talker_layer_hidden_states": thinker_layer_hidden,
+            "talker_multimodal_mask": multimodal_mask,
+        }
+
+    data = SGLangARRequestData(
+        input_ids=input_ids_tensor,
+        max_new_tokens=max_new_tokens,
+        temperature=temperature,
+        output_ids=req.output_ids,
+        req=req,
+    )
+    data.suppress_tokens = list(req._codec_suppress_tokens or [])
+    data.talker_model_inputs = dict(talker_model_inputs or {})
+    if thinker_layer_hidden is not None:
+        data.extra_model_outputs["thinker_layer_hidden"] = thinker_layer_hidden
+    if multimodal_mask is not None:
+        data.extra_model_outputs["talker_multimodal_mask"] = multimodal_mask
+    data.input_embeds_are_projected = bool(input_embeds_are_projected)
+    data.thinker_chunks_done = bool(thinker_chunks_done)
+    if trailing_text_hidden is not None:
+        data.trailing_text_hidden = trailing_text_hidden
+    if tts_pad_embed is not None:
+        data.tts_pad_embed = tts_pad_embed
     return data
 
 

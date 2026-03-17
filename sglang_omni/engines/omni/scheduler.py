@@ -58,7 +58,11 @@ class Scheduler:
         # Result futures (created lazily in get_result)
         self._futures: dict[str, asyncio.Future[SchedulerRequest]] = {}
         self._step_id = 0
-        self._aborted_this_step: set[str] = set()
+
+        # Track aborted request IDs persistently so that overlap-deferred
+        # update() calls still see the abort.  Entries are cleaned up when
+        # the request is fully removed from self.requests.
+        self._aborted_ids: set[str] = set()
         self._stream_queues: dict[str, asyncio.Queue[Any]] = {}
         self._stream_done = object()
 
@@ -82,7 +86,7 @@ class Scheduler:
         request = self.requests.get(request_id)
         if request is None:
             return
-        self._aborted_this_step.add(request_id)
+        self._aborted_ids.add(request_id)
         self._finish_request(request, status=SchedulerStatus.ABORTED)
 
     def fail_request(self, request_id: str, error: Exception) -> None:
@@ -90,12 +94,20 @@ class Scheduler:
         request = self.requests.get(request_id)
         if request is None:
             return
-        self._aborted_this_step.add(request_id)
+        self._aborted_ids.add(request_id)
         self._finish_request(request, status=SchedulerStatus.ABORTED, error=error)
 
     def has_requests(self) -> bool:
         """Check if there are any requests to process."""
         return len(self.waiting) > 0 or len(self.running) > 0
+
+    def resume_request(self, request_id: str) -> None:
+        """Resume a WAITING_FEEDBACK request back to RUNNING."""
+        request = self.requests.get(request_id)
+        if request is None:
+            return
+        if request.status == SchedulerStatus.WAITING_FEEDBACK:
+            request.status = SchedulerStatus.RUNNING
 
     async def get_result(self, request_id: str) -> SchedulerRequest:
         """Wait for a request to complete."""
@@ -153,10 +165,13 @@ class Scheduler:
             return None
 
         self._step_id += 1
-        self._aborted_this_step.clear()
 
         waiting_reqs = [self.requests[req_id] for req_id in self.waiting]
-        running_reqs = [self.requests[req_id] for req_id in self.running]
+        running_reqs = [
+            self.requests[req_id]
+            for req_id in self.running
+            if self.requests[req_id].status != SchedulerStatus.WAITING_FEEDBACK
+        ]
 
         selected = self.batch_planner.select_requests(
             waiting_reqs,
@@ -189,11 +204,24 @@ class Scheduler:
         """Update state from model output.
 
         Returns list of finished requests.
+
+        Note: In overlap mode, update() for step N-1 may be called after
+        schedule() for step N. Therefore we must guard against requests
+        that have been finished, aborted, or re-scheduled since this
+        SchedulerOutput was created.
         """
         finished: list[SchedulerRequest] = []
 
         for request in scheduler_output.requests:
-            if request.request_id in self._aborted_this_step:
+            # ── overlap-safety: skip requests that are no longer RUNNING ──
+            # In overlap mode, between when this batch was scheduled and now,
+            # the request may have been:
+            #   - aborted by the user  (status == ABORTED)
+            #   - finished by a prior overlapped update  (status == FINISHED)
+            #   - failed by error handling  (status == ABORTED)
+            if request.request_id in self._aborted_ids:
+                continue
+            if request.status != SchedulerStatus.RUNNING:
                 continue
 
             output = model_output.outputs.get(request.request_id)
@@ -230,12 +258,15 @@ class Scheduler:
         error: Exception | None = None,
     ) -> None:
         """Clean up finished request."""
-        was_running = request.status == SchedulerStatus.RUNNING
+        had_resources = request.status in (
+            SchedulerStatus.RUNNING,
+            SchedulerStatus.WAITING_FEEDBACK,
+        )
         request.status = status
         request.error = error
         request.finish_time = time.time()
 
-        if was_running:
+        if had_resources:
             self.resource_manager.free(request)
 
         # Remove from queues
@@ -243,6 +274,9 @@ class Scheduler:
             self.running.remove(request.request_id)
         if request.request_id in self.waiting:
             self.waiting.remove(request.request_id)
+
+        # Clean up abort tracking (request is fully done now)
+        self._aborted_ids.discard(request.request_id)
 
         # Resolve future if someone is waiting
         if request.request_id in self._futures:

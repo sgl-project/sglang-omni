@@ -1,10 +1,24 @@
 from __future__ import annotations
 
-import os
+from collections.abc import Iterator
+from typing import Any
 
 from sglang.srt.configs.model_config import ModelConfig
 from sglang.srt.model_executor.model_runner import ModelRunner
 from sglang.srt.server_args import PortArgs, ServerArgs
+
+
+def filter_weights_by_prefix(
+    weights: Iterator[tuple[str, Any]],
+    prefix: str | None,
+) -> Iterator[tuple[str, Any]]:
+    """Filter weight iterator by prefix, stripping matched prefix from names."""
+    if not prefix:
+        yield from weights
+        return
+    for name, tensor in weights:
+        if name.startswith(prefix):
+            yield name[len(prefix) :], tensor
 
 
 class SGLModelRunner(ModelRunner):
@@ -21,19 +35,18 @@ class SGLModelRunner(ModelRunner):
         pp_rank: int,
         pp_size: int,
         nccl_port: int,
+        model_arch_override: str | None = None,
+        weight_prefix: str | None = None,
     ) -> None:
-        self.model_config = model_config
-        self.server_args = server_args
-        self.gpu_id = gpu_id
-
+        self._weight_prefix = weight_prefix
         self._register_omni_model()
 
-        model_config = server_args.get_model_config()
         port_args = PortArgs.init_new(server_args)
-
         tp_size = server_args.tp_size
-
         self.nccl_port = port_args.nccl_port
+
+        # model_config is already fully configured by ModelWorker._init_model_config()
+        # (architecture override, text_config swap, etc. are all done there)
 
         super().__init__(
             model_config=model_config,
@@ -50,6 +63,9 @@ class SGLModelRunner(ModelRunner):
         )
 
     def _register_omni_model(self):
-        # Ensure sglang_omni.models` custom modeling classes
-        # are injected into the model registry before runner initialization.
-        os.environ.setdefault("SGLANG_EXTERNAL_MODEL_PACKAGE", "sglang_omni.models")
+        # Register sglang_omni model classes directly in SGLang's model registry.
+        from sglang.srt.models.registry import ModelRegistry
+
+        from sglang_omni.models.qwen3_omni.talker import Qwen3OmniTalker
+
+        ModelRegistry.models["Qwen3OmniTalker"] = Qwen3OmniTalker

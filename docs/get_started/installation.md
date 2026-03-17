@@ -6,7 +6,7 @@ We highly recommend to use our [Docker Image](#🐳-use-docker) for development 
 
 ```bash
 # clone this repository
-git clone git@github.com:sgl-project-dev/sglang-omni.git
+git clone git@github.com:sgl-project/sglang-omni.git
 cd sglang-omni
 
 # create a virtual environment in docker
