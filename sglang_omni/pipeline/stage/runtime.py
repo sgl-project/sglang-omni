@@ -13,8 +13,13 @@ from typing import Any, Callable
 from sglang_omni.pipeline.control_plane import StageControlPlane
 from sglang_omni.pipeline.stage.input import DirectInput, InputHandler
 from sglang_omni.pipeline.stage.router import WorkerRouter
+from sglang_omni.pipeline.stage.stream_queue import (
+    StreamItem,
+    StreamQueue,
+    StreamSignal,
+)
 from sglang_omni.pipeline.stage.work import InputRef
-from sglang_omni.pipeline.worker.data_plane import DataPlaneAdapter
+from sglang_omni.pipeline.worker.data_plane import DataPlaneAdapter, _restore_tensors
 from sglang_omni.pipeline.worker.runtime import Worker
 from sglang_omni.profiler.torch_profiler import TorchProfiler
 from sglang_omni.proto import (
@@ -127,6 +132,10 @@ class Stage:
         # State
         self._running = False
         self._aborted_requests: set[str] = set()
+        self._stream_queue: StreamQueue | None = (
+            None  # Set by compiler for streaming-receiving stages
+        )
+        self._pending_stream_data: dict[str, list[StreamItem | StreamSignal]] = {}
 
         # Profiler
         self._profiler_run_id: str | None = None
@@ -216,7 +225,9 @@ class Stage:
         self.workers.append(worker)
 
     async def start(self) -> None:
-        """Start the stage."""
+        """Start the stage (idempotent — safe to call more than once)."""
+        if self._running:
+            return
         await self.control_plane.start()
         self._running = True
         logger.info("Stage %s started", self.name)
@@ -250,6 +261,7 @@ class Stage:
             while self._running:
                 # Receive work
                 msg = await self.control_plane.recv()
+                logger.info("Stage %s received msg: %s", self.name, type(msg).__name__)
 
                 if isinstance(msg, ShutdownMessage):
                     logger.info("Stage %s received shutdown", self.name)
@@ -302,7 +314,12 @@ class Stage:
         if isinstance(msg, SubmitMessage):
             await self._process_submit(msg)
         elif isinstance(msg, DataReadyMessage):
-            await self._process_data_ready(msg)
+            if msg.is_done or msg.error:
+                self._handle_stream_signal(msg)
+            elif msg.chunk_id is not None:
+                await self._handle_stream_chunk(msg)
+            else:
+                await self._process_data_ready(msg)
         elif isinstance(msg, ProfilerStartMessage):
             await self._on_profiler_start(msg)
         elif isinstance(msg, ProfilerStopMessage):
@@ -320,6 +337,10 @@ class Stage:
         if request_id in self._aborted_requests:
             logger.debug("Stage %s skipping aborted req=%s", self.name, request_id)
             return
+
+        # Open stream queue for this request if stage has one
+        if self._stream_queue is not None and not self._stream_queue.has(request_id):
+            self._stream_queue.open(request_id)
 
         input_ref = InputRef.from_payload("coordinator", msg.data)
         work = self.input_handler.receive(request_id, "coordinator", input_ref)
@@ -346,6 +367,10 @@ class Stage:
             self.relay.cleanup(request_id)
             return
 
+        # Open stream queue for this request if stage has one
+        if self._stream_queue is not None and not self._stream_queue.has(request_id):
+            self._stream_queue.open(request_id)
+
         # Eagerly read from relay to release sender's credit/notification.
         if msg.shm_metadata:
             try:
@@ -367,6 +392,164 @@ class Stage:
         work = self.input_handler.receive(request_id, msg.from_stage, input_ref)
         if work is not None:
             self.router.enqueue(work)
+            # Flush pending stream data that arrived before this request was assigned
+            pending_stream = self._pending_stream_data.pop(request_id, [])
+            for pending in pending_stream:
+                if self._stream_queue is not None:
+                    if isinstance(pending, StreamItem):
+                        self._stream_queue.put(request_id, pending)
+                    elif isinstance(pending, StreamSignal):
+                        if pending.error:
+                            self._stream_queue.put_error(request_id, pending.error)
+                        elif pending.is_done:
+                            self._stream_queue.put_done(
+                                request_id, from_stage=pending.from_stage
+                            )
+
+    async def _handle_stream_chunk(self, msg: DataReadyMessage) -> None:
+        """Handle a streaming data chunk from an upstream stage."""
+        request_id = msg.request_id
+        if request_id in self._aborted_requests:
+            return
+
+        # ── Same-GPU CUDA IPC path: deserialize tensor directly (zero copy) ──
+        if isinstance(msg.shm_metadata, dict) and msg.shm_metadata.get("_ipc"):
+            try:
+                item = self._deserialize_ipc_chunk(msg)
+            except Exception as exc:
+                logger.error(
+                    "Stage %s: IPC stream chunk deserialize failed for %s: %s",
+                    self.name,
+                    request_id,
+                    exc,
+                )
+                if self._stream_queue is not None and self._stream_queue.has(
+                    request_id
+                ):
+                    self._stream_queue.put_error(request_id, exc)
+                return
+            self._route_stream_item(request_id, item)
+            return
+
+        # ── Cross-GPU: read from relay (existing path) ──
+        # blob_key must match the sender format in worker/runtime.py _do_stream_send
+        blob_key = f"{request_id}:stream:{msg.from_stage}:{msg.to_stage}:{msg.chunk_id}"
+        try:
+            data = await self._data_plane.read_blob(blob_key, msg.shm_metadata)
+
+            # Restore metadata tensors from relay
+            metadata: dict[str, Any] = {}
+            chunk_metadata = (
+                msg.shm_metadata.get("chunk_metadata")
+                if isinstance(msg.shm_metadata, dict)
+                else None
+            )
+            if isinstance(chunk_metadata, dict):
+                metadata.update(chunk_metadata)
+            metadata_tensor_blobs = (
+                msg.shm_metadata.get("chunk_metadata_tensors", {})
+                if isinstance(msg.shm_metadata, dict)
+                else {}
+            )
+            if isinstance(metadata_tensor_blobs, dict):
+                tensor_dict: dict[str, Any] = {}
+                for path, info in metadata_tensor_blobs.items():
+                    if not isinstance(path, str) or not isinstance(info, dict):
+                        continue
+                    meta_blob_key = info.get("blob_key")
+                    meta_metadata = info.get("relay_metadata")
+                    if not isinstance(meta_blob_key, str) or not isinstance(
+                        meta_metadata, dict
+                    ):
+                        continue
+                    tensor_dict[path] = await self._data_plane.read_blob(
+                        meta_blob_key, meta_metadata
+                    )
+                if tensor_dict:
+                    metadata = _restore_tensors(metadata, tensor_dict)
+        except Exception as exc:
+            logger.error(
+                "Stage %s: stream chunk read failed for %s: %s",
+                self.name,
+                request_id,
+                exc,
+            )
+            if self._stream_queue is not None and self._stream_queue.has(request_id):
+                self._stream_queue.put_error(request_id, exc)
+            return
+
+        item = StreamItem(
+            chunk_id=msg.chunk_id,
+            data=data,
+            from_stage=msg.from_stage,
+            metadata=metadata or None,
+        )
+        self._route_stream_item(request_id, item)
+
+    @staticmethod
+    def _deserialize_ipc_chunk(msg: DataReadyMessage) -> StreamItem:
+        """Deserialize a same-GPU CUDA IPC stream chunk from control-plane metadata.
+
+        Uses ``pickle.loads`` which reconstructs CUDA tensors via
+        ``cudaIpcOpenMemHandle`` — zero data copy, the returned tensor
+        points directly to the sender's GPU memory.
+        """
+        import pickle as _pickle
+
+        ipc_meta = msg.shm_metadata
+        data = _pickle.loads(ipc_meta["tensor_bytes"])
+
+        metadata: dict[str, Any] = {}
+        raw_meta = ipc_meta.get("metadata", {})
+        if isinstance(raw_meta, dict):
+            for key, value in raw_meta.items():
+                if isinstance(value, dict) and "_ipc_tensor" in value:
+                    metadata[key] = _pickle.loads(value["_ipc_tensor"])
+                else:
+                    metadata[key] = value
+
+        return StreamItem(
+            chunk_id=msg.chunk_id,
+            data=data,
+            from_stage=msg.from_stage,
+            metadata=metadata or None,
+        )
+
+    def _route_stream_item(self, request_id: str, item: StreamItem) -> None:
+        """Route a stream item to the queue or buffer it if the worker is not assigned yet."""
+        worker_idx = self.router.get_worker_index(request_id)
+        if worker_idx is None:
+            self._pending_stream_data.setdefault(request_id, []).append(item)
+            logger.debug(
+                "Stage %s: buffered early stream chunk for %s", self.name, request_id
+            )
+            return
+
+        if self._stream_queue is not None:
+            self._stream_queue.put(request_id, item)
+
+    def _handle_stream_signal(self, msg: DataReadyMessage) -> None:
+        """Handle a streaming EOS or error signal."""
+        request_id = msg.request_id
+        if request_id in self._aborted_requests:
+            return
+        if self._stream_queue is None or not self._stream_queue.has(request_id):
+            # Buffer signal if queue not open yet
+            if msg.error:
+                self._pending_stream_data.setdefault(request_id, []).append(
+                    StreamSignal(
+                        from_stage=msg.from_stage, error=RuntimeError(msg.error)
+                    )
+                )
+            elif msg.is_done:
+                self._pending_stream_data.setdefault(request_id, []).append(
+                    StreamSignal(from_stage=msg.from_stage, is_done=True)
+                )
+            return
+        if msg.error:
+            self._stream_queue.put_error(request_id, RuntimeError(msg.error))
+        elif msg.is_done:
+            self._stream_queue.put_done(request_id, from_stage=msg.from_stage)
 
     def _on_abort(self, request_id: str) -> None:
         """Handle abort for a request."""
@@ -375,6 +558,11 @@ class Stage:
         self.router.clear_request(request_id)
         self.input_handler.cancel(request_id)
         self.relay.cleanup(request_id)
+
+        # Close stream queue and discard buffered stream data
+        if self._stream_queue is not None:
+            self._stream_queue.close(request_id)
+        self._pending_stream_data.pop(request_id, None)
 
         # Notify workers' engines
         for worker in self.workers:

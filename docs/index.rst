@@ -32,3 +32,4 @@ Our core features include:
 
    developer_reference/architecture.md
    developer_reference/relay_design.md
+   developer_reference/talker_decode_parity.md
