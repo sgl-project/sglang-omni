@@ -8,7 +8,7 @@ from sgl_kernel import fused_qk_norm_rope
 from torch import nn
 from transformers import PretrainedConfig
 
-from sglang_omni.config.qwen3_omni import Qwen3OmniMoeTextConfig
+from sglang_omni.models.qwen3_omni.hf_config import Qwen3OmniMoeTextConfig
 from sglang_omni.models.weight_loader import default_weight_loader
 from sglang_omni.utils import add_prefix
 from sglang_omni.vendor.sglang.core import ForwardBatch
@@ -162,6 +162,7 @@ class Qwen3OmniMoeThinkerTextAttention(nn.Module):
     ) -> None:
         super().__init__()
         self.hidden_size = hidden_size
+        self.layer_id = layer_id
 
         attn_tp_rank = get_attention_tp_rank()
         attn_tp_size = get_attention_tp_size()
@@ -230,6 +231,7 @@ class Qwen3OmniMoeThinkerTextAttention(nn.Module):
             and self.compatible_with_fused_qk_norm_rope
         )
         self._used_fused_qk_norm_rope_last_call = False
+        self._used_fused_set_kv_buffer_last_call = False
 
         self.attn = RadixAttention(
             self.num_heads,
@@ -284,16 +286,23 @@ class Qwen3OmniMoeThinkerTextAttention(nn.Module):
             )
             q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
             self._used_fused_qk_norm_rope_last_call = True
+            self._used_fused_set_kv_buffer_last_call = False
         else:
             # Fallback to non-fused QK Norm & RoPE implementation
-            q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
+            q_linear, k_linear, v = qkv.split(
+                [self.q_size, self.kv_size, self.kv_size], dim=-1
+            )
             q, k = apply_qk_norm(
-                q=q,
-                k=k,
+                q=q_linear,
+                k=k_linear,
                 q_norm=self.q_norm,
                 k_norm=self.k_norm,
                 head_dim=self.head_dim,
                 alt_stream=self.alt_stream,
+            )
+            use_fused_set_kv_buffer = (
+                enable_fused_set_kv_buffer(forward_batch)
+                and self.compatible_with_fused_kv_buffer
             )
             q, k = self.rotary_emb(
                 positions,
@@ -305,12 +314,12 @@ class Qwen3OmniMoeThinkerTextAttention(nn.Module):
                         layer=self.attn,
                         forward_batch=forward_batch,
                     )
-                    if enable_fused_set_kv_buffer(forward_batch)
-                    and self.compatible_with_fused_kv_buffer
+                    if use_fused_set_kv_buffer
                     else None
                 ),
             )
             self._used_fused_qk_norm_rope_last_call = False
+            self._used_fused_set_kv_buffer_last_call = use_fused_set_kv_buffer
         return q, k, v
 
     def forward_prepare(
@@ -321,12 +330,11 @@ class Qwen3OmniMoeThinkerTextAttention(nn.Module):
     ):
         if hidden_states.shape[0] == 0:
             return hidden_states, forward_batch, None
-        if forward_batch.forward_mode.is_extend():
-            return self.forward_prepare_native(
-                positions=positions,
-                hidden_states=hidden_states,
-                forward_batch=forward_batch,
-            )
+        return self.forward_prepare_native(
+            positions=positions,
+            hidden_states=hidden_states,
+            forward_batch=forward_batch,
+        )
 
     def forward_core(self, intermediate_state):
         hidden_states, forward_batch, inner_state = intermediate_state
@@ -336,10 +344,7 @@ class Qwen3OmniMoeThinkerTextAttention(nn.Module):
         q, k, v, fb = inner_state
 
         must_save_kv = self._used_fused_qk_norm_rope_last_call
-        save_kv_cache = must_save_kv or not (
-            enable_fused_set_kv_buffer(forward_batch)
-            and self.compatible_with_fused_kv_buffer
-        )
+        save_kv_cache = must_save_kv or not self._used_fused_set_kv_buffer_last_call
         attn_output = self.attn(
             q,
             k,
@@ -347,6 +352,8 @@ class Qwen3OmniMoeThinkerTextAttention(nn.Module):
             fb,
             save_kv_cache=save_kv_cache,
         )
+        if attn_output.dtype != self.o_proj.weight.dtype:
+            attn_output = attn_output.to(dtype=self.o_proj.weight.dtype)
         output, _ = self.o_proj(attn_output)
         return output
 
@@ -541,7 +548,6 @@ class Qwen3OmniMoeThinkerTextDecoderLayer(nn.Module):
         captured_last_layer_outputs: Optional[List[torch.Tensor]] = None,
         **kwargs,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-
         hidden_states, residual = (
             self.layer_communicator.prepare_attn_and_capture_last_layer_outputs(
                 hidden_states,
@@ -645,6 +651,11 @@ class Qwen3OmniMoeThinkerTextModel(nn.Module):
 
         residual = None
         aux_hidden_states = []
+
+        # Capture word embeddings (before any transformer layer) if requested
+        if "embed" in self.layers_to_capture:
+            aux_hidden_states.append(("embed", hidden_states.clone()))
+
         for layer_idx in range(self.start_layer, self.end_layer):
             layer = self.layers[layer_idx]
             hidden_states, residual = layer(
