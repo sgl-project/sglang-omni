@@ -109,9 +109,11 @@ class Coordinator:
         await self._submit_request(request_id, request)
 
         future = self._completion_futures[request_id]
-        result = await future
-        del self._completion_futures[request_id]
-        return result
+        try:
+            result = await future
+            return result
+        finally:
+            self._completion_futures.pop(request_id, None)
 
     async def stream(
         self, request_id: str, request: OmniRequest | Any
@@ -163,7 +165,7 @@ class Coordinator:
         )
 
         # Create future for completion
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         future: asyncio.Future = loop.create_future()
         self._completion_futures[request_id] = future
 
@@ -235,6 +237,10 @@ class Coordinator:
                 )
             )
 
+        # Cleanup request tracking
+        self._requests.pop(request_id, None)
+        self._partial_results.pop(request_id, None)
+
         logger.info("Coordinator aborted req=%s", request_id)
         return True
 
@@ -285,6 +291,7 @@ class Coordinator:
                     future.set_exception(RuntimeError(msg.error or "Unknown error"))
             if request_id in self._stream_queues:
                 await self._stream_queues[request_id].put(msg)
+            self._requests.pop(request_id, None)
             return
 
         # Single terminal (original behavior) or no terminal_stages configured
@@ -297,6 +304,7 @@ class Coordinator:
                     future.set_result(msg.result)
             if request_id in self._stream_queues:
                 await self._stream_queues[request_id].put(msg)
+            self._requests.pop(request_id, None)
             return
 
         # Multi-terminal: collect partial results
@@ -320,6 +328,7 @@ class Coordinator:
             future = self._completion_futures[request_id]
             if not future.done():
                 future.set_result(merged)
+        self._requests.pop(request_id, None)
 
     async def _handle_stream(self, msg: StreamMessage) -> None:
         """Handle a stream chunk from a stage."""

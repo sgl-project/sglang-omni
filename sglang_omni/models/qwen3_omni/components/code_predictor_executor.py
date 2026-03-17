@@ -236,6 +236,12 @@ class _CodePredictorStreamingExecutor(Executor):
 
     async def abort(self, request_id: str) -> None:
         self._aborted.add(request_id)
+        # Unblock any pending get() on the stream queue
+        if self._stream_queue is not None:
+            try:
+                self._stream_queue.close(request_id)
+            except Exception:
+                pass
 
 
 def create_code_predictor_executor(
