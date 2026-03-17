@@ -116,9 +116,8 @@ class Coordinator:
         queue: asyncio.Queue[CompleteMessage | StreamMessage] = asyncio.Queue()
         self._stream_queues[request_id] = queue
 
-        await self._submit_request(request_id, request)
-
         try:
+            await self._submit_request(request_id, request)
             while True:
                 msg = await queue.get()
                 if isinstance(msg, CompleteMessage):
@@ -170,6 +169,10 @@ class Coordinator:
                 entry_info.control_endpoint,
                 SubmitMessage(request_id=request_id, data=payload),
             )
+        except asyncio.CancelledError:
+            self._completion_futures.pop(request_id, None)
+            self._requests.pop(request_id, None)
+            raise
         except Exception:
             self._completion_futures.pop(request_id, None)
             self._requests.pop(request_id, None)
