@@ -95,7 +95,6 @@ def create_s2pro_sglang_engine(
     want_cuda_graph = not server_args.disable_cuda_graph
     if want_cuda_graph:
         server_args.enable_return_hidden_states = True
-        server_args.enable_torch_compile = True
 
     adapter = S2ProTokenizerAdapter(tokenizer)
     im_end_id = adapter.eos_token_ids[0]
