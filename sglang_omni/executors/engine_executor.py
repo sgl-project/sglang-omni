@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import Callable
 from typing import Any
 
@@ -39,6 +40,7 @@ class EngineExecutor(Executor):
         self._done: asyncio.Queue[str] = asyncio.Queue()
         self._tasks: dict[str, asyncio.Task[StagePayload]] = {}
         self._payloads: dict[str, StagePayload] = {}
+        self._submit_times: dict[str, float] = {}
         self._aborted: set[str] = set()
 
     async def add_request(self, payload: StagePayload) -> None:
@@ -61,6 +63,7 @@ class EngineExecutor(Executor):
         self._payloads[request_id] = payload
         engine_input = self._request_builder(payload)
         await self._engine.add_request(request_id, engine_input)
+        self._submit_times[request_id] = time.perf_counter()
 
         task = asyncio.create_task(self._await_result(payload))
         self._tasks[request_id] = task
@@ -123,6 +126,8 @@ class EngineExecutor(Executor):
     async def _await_result(self, payload: StagePayload) -> StagePayload:
         request_id = payload.request_id
         result = await self._engine.get_result(request_id)
+        t_submit = self._submit_times.pop(request_id, None)
+        engine_time_s = time.perf_counter() - t_submit if t_submit else None
 
         output = self._result_builder(payload, result)
         if not isinstance(output, StagePayload):
@@ -131,6 +136,8 @@ class EngineExecutor(Executor):
                 request=payload.request,
                 data=output,
             )
+        if engine_time_s is not None and isinstance(output.data, dict):
+            output.data["engine_time_s"] = engine_time_s
         return output
 
     @staticmethod

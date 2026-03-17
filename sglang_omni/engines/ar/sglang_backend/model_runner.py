@@ -66,6 +66,10 @@ class SGLModelRunner(ModelRunner):
         # Register sglang_omni model classes directly in SGLang's model registry.
         from sglang.srt.models.registry import ModelRegistry
 
+        from sglang_omni.models.fishaudio_s2_pro.sglang_model import (
+            S2ProSGLangTextModel,
+        )
         from sglang_omni.models.qwen3_omni.talker import Qwen3OmniTalker
 
+        ModelRegistry.models["S2ProSGLangTextModel"] = S2ProSGLangTextModel
         ModelRegistry.models["Qwen3OmniTalker"] = Qwen3OmniTalker

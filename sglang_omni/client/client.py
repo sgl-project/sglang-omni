@@ -176,12 +176,14 @@ class Client:
         """
         audio_chunks: list[Any] = []
         sample_rate: int | None = None
+        last_chunk: GenerateChunk | None = None
 
         async for chunk in self.generate(request, request_id=request_id):
             if chunk.audio_data is not None:
                 audio_chunks.append(chunk.audio_data)
             if chunk.sample_rate is not None:
                 sample_rate = chunk.sample_rate
+            last_chunk = chunk
 
         if not audio_chunks:
             raise ClientError("No audio output generated from the pipeline.")
@@ -212,6 +214,7 @@ class Client:
             audio_bytes=audio_bytes,
             mime_type=mime_type,
             format=actual_format,
+            usage=last_chunk.usage if last_chunk else None,
         )
 
     # ------------------------------------------------------------------
