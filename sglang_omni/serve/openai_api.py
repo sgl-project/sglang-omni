@@ -510,11 +510,21 @@ def _build_speech_generate_request(
 
     # Build prompt: plain string if no references, dict otherwise
     prompt: Any = req.input
+    references: list[dict[str, Any]] = []
+    if req.references:
+        references.extend(
+            [reference.model_dump(exclude_none=True) for reference in req.references]
+        )
+
+    # Backward compatibility with ref_audio/ref_text form.
     if req.ref_audio is not None:
-        ref = {"audio_path": req.ref_audio}
+        ref: dict[str, Any] = {"audio_path": req.ref_audio}
         if req.ref_text is not None:
             ref["text"] = req.ref_text
-        prompt = {"text": req.input, "references": [ref]}
+        references.append(ref)
+
+    if references:
+        prompt = {"text": req.input, "references": references}
 
     return GenerateRequest(
         model=req.model or default_model,

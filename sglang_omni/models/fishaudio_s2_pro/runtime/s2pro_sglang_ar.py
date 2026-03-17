@@ -143,6 +143,7 @@ class S2ProSGLangOutputProcessor:
         ras_temperature: float = 1.5,
         ras_top_p: float = 0.95,
         use_torch_compile: bool = False,
+        align_logits_to_bf16: bool = True,
     ) -> None:
         self._audio_decoder = audio_decoder
         self._num_codebooks = num_codebooks
@@ -154,6 +155,7 @@ class S2ProSGLangOutputProcessor:
         self._ras_window = ras_window
         self._ras_temperature = ras_temperature
         self._ras_top_p = ras_top_p
+        self._align_logits_to_bf16 = align_logits_to_bf16
         self._semantic_bias: Tensor | None = None
 
         import functools
@@ -166,11 +168,28 @@ class S2ProSGLangOutputProcessor:
             semantic_begin_id=semantic_begin_id,
         )
         if use_torch_compile:
-            self._codebook_fn = torch.compile(
-                _cb_fn, mode="max-autotune", fullgraph=True
-            )
+            # Avoid CUDA-graph capture inside inductor for sampling stability.
+            compile_mode = "max-autotune-no-cudagraphs"
+            try:
+                self._codebook_fn = torch.compile(
+                    _cb_fn, mode=compile_mode, fullgraph=True
+                )
+            except Exception:
+                logger.warning(
+                    "torch.compile mode '%s' unavailable; fallback to max-autotune.",
+                    compile_mode,
+                )
+                self._codebook_fn = torch.compile(
+                    _cb_fn, mode="max-autotune", fullgraph=True
+                )
         else:
             self._codebook_fn = _cb_fn
+
+    @staticmethod
+    def _truncate_to_bf16(logits: Tensor) -> Tensor:
+        # Match fish-speech training/inference numerics:
+        # keep fp32 sampling math but quantize logits to bf16 grid first.
+        return logits.to(torch.bfloat16).to(torch.float32)
 
     def _get_semantic_bias(self, logits: Tensor) -> Tensor:
         if self._semantic_bias is None:
@@ -214,6 +233,8 @@ class S2ProSGLangOutputProcessor:
                 continue
 
             token_logits = next_token_logits[i : i + 1]  # [1, vocab]
+            if self._align_logits_to_bf16 and token_logits.is_floating_point():
+                token_logits = self._truncate_to_bf16(token_logits)
             token_hidden = hidden_states[i : i + 1].unsqueeze(1)  # [1, 1, dim]
 
             codes = self._two_stage_decode(token_logits, token_hidden, data)

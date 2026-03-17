@@ -81,6 +81,7 @@ def create_s2pro_sglang_engine(
     ras_temperature: float = 1.5,
     ras_top_p: float = 0.95,
     use_torch_compile: bool = True,
+    align_logits_to_bf16: bool = True,
 ) -> OmniEngine:
     """Create a paged-attention S2-Pro engine using SGLang backend."""
     from sglang_omni.engines.ar.sglang_backend.model_worker import (
@@ -157,6 +158,7 @@ def create_s2pro_sglang_engine(
         ras_temperature=ras_temperature,
         ras_top_p=ras_top_p,
         use_torch_compile=use_torch_compile,
+        align_logits_to_bf16=align_logits_to_bf16,
     )
     iteration_ctrl = S2ProSGLangIterationController(
         tree_cache=tree_cache,

@@ -8,8 +8,15 @@ from typing import Any
 
 from fastapi.testclient import TestClient
 
-from sglang_omni.client import CompletionResult, CompletionStreamChunk, GenerateChunk
+from sglang_omni.client import (
+    Client,
+    CompletionResult,
+    CompletionStreamChunk,
+    GenerateChunk,
+)
 from sglang_omni.serve import create_app
+from sglang_omni.serve.openai_api import _build_speech_generate_request
+from sglang_omni.serve.protocol import CreateSpeechRequest
 
 
 class DummyClient:
@@ -48,6 +55,27 @@ class DummyClient:
                 modality=chunk.modality,
                 finish_reason=chunk.finish_reason,
             )
+
+    def health(self) -> dict[str, Any]:
+        return {"running": True}
+
+
+class MockSpeechCoordinator:
+    """Minimal coordinator mock for speech E2E tests."""
+
+    def __init__(self) -> None:
+        self.last_request = None
+        self.last_request_id = None
+
+    async def submit(self, request_id: str, request: Any) -> dict[str, Any]:
+        self.last_request_id = request_id
+        self.last_request = request
+        return {
+            "audio_data": [0.0, 0.1, -0.1, 0.0],
+            "sample_rate": 24000,
+            "modality": "audio",
+            "finish_reason": "stop",
+        }
 
     def health(self) -> dict[str, Any]:
         return {"running": True}
@@ -102,3 +130,60 @@ def test_chat_completions_stream() -> None:
 
     deltas = [event["choices"][0]["delta"] for event in events]
     assert any("content" in delta for delta in deltas)
+
+
+def test_build_speech_request_supports_references() -> None:
+    req = CreateSpeechRequest(
+        model="s2-pro",
+        input="hello",
+        references=[{"audio_path": "nan1.wav", "text": "male voice reference"}],
+    )
+
+    gen_req = _build_speech_generate_request(req, default_model="fallback-model")
+
+    assert isinstance(gen_req.prompt, dict)
+    assert gen_req.prompt["text"] == "hello"
+    assert gen_req.prompt["references"] == [
+        {"audio_path": "nan1.wav", "text": "male voice reference"}
+    ]
+
+
+def test_build_speech_request_keeps_ref_audio_compatibility() -> None:
+    req = CreateSpeechRequest(
+        model="s2-pro",
+        input="hello",
+        ref_audio="ref.wav",
+        ref_text="reference transcript",
+    )
+
+    gen_req = _build_speech_generate_request(req, default_model="fallback-model")
+
+    assert isinstance(gen_req.prompt, dict)
+    assert gen_req.prompt["references"] == [
+        {"audio_path": "ref.wav", "text": "reference transcript"}
+    ]
+
+
+def test_speech_endpoint_e2e_with_mock_pipeline_references() -> None:
+    coordinator = MockSpeechCoordinator()
+    client = Client(coordinator=coordinator)
+    app_client = TestClient(create_app(client, model_name="s2-pro"))
+
+    response = app_client.post(
+        "/v1/audio/speech",
+        json={
+            "model": "s2-pro",
+            "input": "hello",
+            "references": [{"audio_path": "nan1.wav", "text": "male voice reference"}],
+            "response_format": "wav",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("audio/wav")
+    assert response.content.startswith(b"RIFF")
+    assert coordinator.last_request is not None
+    assert coordinator.last_request.inputs == {
+        "text": "hello",
+        "references": [{"audio_path": "nan1.wav", "text": "male voice reference"}],
+    }
