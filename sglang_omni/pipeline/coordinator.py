@@ -99,12 +99,12 @@ class Coordinator:
 
     async def submit(self, request_id: str, request: OmniRequest | Any) -> Any:
         """Submit a request to the pipeline and wait for completion."""
-        await self._submit_request(request_id, request)
-
-        future = self._completion_futures[request_id]
-        result = await future
-        del self._completion_futures[request_id]
-        return result
+        try:
+            await self._submit_request(request_id, request)
+            future = self._completion_futures[request_id]
+            return await future
+        finally:
+            self._completion_futures.pop(request_id, None)
 
     async def stream(
         self, request_id: str, request: OmniRequest | Any
@@ -164,11 +164,16 @@ class Coordinator:
 
         # Submit to entry stage
         entry_info = self._stages[self.entry_stage]
-        await self.control_plane.submit_to_stage(
-            self.entry_stage,
-            entry_info.control_endpoint,
-            SubmitMessage(request_id=request_id, data=payload),
-        )
+        try:
+            await self.control_plane.submit_to_stage(
+                self.entry_stage,
+                entry_info.control_endpoint,
+                SubmitMessage(request_id=request_id, data=payload),
+            )
+        except Exception:
+            self._completion_futures.pop(request_id, None)
+            self._requests.pop(request_id, None)
+            raise
 
         # Update state
         self._requests[request_id].state = RequestState.RUNNING
