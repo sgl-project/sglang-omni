@@ -91,9 +91,9 @@ class Client:
 
         async for chunk in self.generate(request, request_id=request_id):
             last_chunk = chunk
-            if chunk.modality == "text" and chunk.text:
+            if chunk.text:
                 text_parts.append(chunk.text)
-            if chunk.modality == "audio" and chunk.audio_data is not None:
+            if chunk.audio_data is not None:
                 audio_chunks.append(chunk.audio_data)
             if chunk.finish_reason is not None:
                 finish_reason = chunk.finish_reason
@@ -242,10 +242,19 @@ class Client:
     @staticmethod
     def _set_audio_data(chunk: GenerateChunk, data: dict[str, Any]) -> None:
         audio_data = data.get("audio_data") or data.get("audio")
+        if audio_data is None and data.get("audio_waveform") is not None:
+            raw = data.get("audio_waveform")
+            if isinstance(raw, memoryview):
+                raw = raw.tobytes()
+            dtype = np.dtype(data.get("audio_waveform_dtype", "float32"))
+            arr = np.frombuffer(raw, dtype=dtype)
+            shape = data.get("audio_waveform_shape")
+            if shape:
+                arr = arr.reshape(shape)
+            audio_data = arr.copy()
         if audio_data is not None:
             chunk.audio_data = audio_data
-            if chunk.modality == "text":
-                chunk.modality = "audio"
+            chunk.modality = "audio"
         sample_rate = data.get("sample_rate")
         if sample_rate is not None:
             chunk.sample_rate = sample_rate
@@ -268,6 +277,15 @@ class Client:
             result.request_id = request_id
             return result
         if isinstance(result, dict):
+            # Multi-terminal merged result: {"decode": {...}, "code2wav": {...}}
+            if "decode" in result and "code2wav" in result:
+                decode_result = result["decode"] or {}
+                c2w_result = result["code2wav"] or {}
+                text = decode_result.get("text")
+                if isinstance(text, str):
+                    chunk.text = text
+                Client._set_audio_data(chunk, c2w_result)
+                return chunk
             text = result.get("text")
             if isinstance(text, str):
                 chunk.text = text

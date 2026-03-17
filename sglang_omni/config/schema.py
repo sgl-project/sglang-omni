@@ -39,6 +39,14 @@ class RelayConfig(BaseModel):
     device: str = "cpu"
 
 
+class StreamTargetConfig(BaseModel):
+    """Streaming target for inter-stage streaming data transfer."""
+
+    model_config = ConfigDict(extra="forbid")
+    to_stage: str
+    bootstrap: bool = True
+
+
 class StageConfig(BaseModel):
     """Single pipeline stage configuration."""
 
@@ -49,6 +57,7 @@ class StageConfig(BaseModel):
     input_handler: InputHandlerConfig = Field(default_factory=InputHandlerConfig)
     relay: RelayConfig = Field(default_factory=RelayConfig)
     num_workers: int = 1
+    stream_to: list[StreamTargetConfig] = Field(default_factory=list)
 
 
 class EndpointsConfig(BaseModel):
@@ -70,9 +79,11 @@ class PipelineConfig(BaseModel):
     entry_stage: str
     stages: list[StageConfig]
     name: str = "model"  # default for all
+    terminal_stages: list[str] = Field(default_factory=list)
     relay_backend: Literal["shm", "nccl", "nixl", "mooncake"] = "shm"
     fused_stages: list[list[str]] = Field(default_factory=list)
     endpoints: EndpointsConfig = Field(default_factory=EndpointsConfig)
+    gpu_placement: dict[str, int] = Field(default_factory=dict)
     completion_endpoint: str | None = None
     abort_endpoint: str | None = None
     config_cls: str | None = None
@@ -120,6 +131,15 @@ class PipelineConfig(BaseModel):
                 if unknown:
                     raise ValueError(
                         f"Stage {stage_cfg.name!r} has unknown sources: {sorted(unknown)}"
+                    )
+
+        # Validate stream_to targets
+        for stage_cfg in self.stages:
+            for st in stage_cfg.stream_to:
+                if st.to_stage not in stage_names:
+                    raise ValueError(
+                        f"Stage {stage_cfg.name!r} stream_to references "
+                        f"unknown stage {st.to_stage!r}"
                     )
 
     def _validate_fusion(self) -> None:
@@ -192,6 +212,7 @@ class PipelineConfig(BaseModel):
                     input_handler=first.input_handler,
                     relay=first.relay,
                     num_workers=first.num_workers,
+                    stream_to=first.stream_to,
                 )
                 stages_out.append(fused_stage)
             else:

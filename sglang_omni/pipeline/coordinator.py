@@ -37,6 +37,7 @@ class Coordinator:
         completion_endpoint: str,
         abort_endpoint: str,
         entry_stage: str,
+        terminal_stages: list[str] | None = None,
     ):
         """Initialize coordinator.
 
@@ -44,8 +45,14 @@ class Coordinator:
             completion_endpoint: ZMQ endpoint to receive completions
             abort_endpoint: ZMQ endpoint for abort broadcasts
             entry_stage: Name of the entry stage for new requests
+            terminal_stages: Terminal stage names. When multiple are given,
+                the coordinator waits for all to complete before resolving.
         """
         self.entry_stage = entry_stage
+        self._terminal_stages: set[str] = (
+            set(terminal_stages) if terminal_stages else set()
+        )
+        self._partial_results: dict[str, dict[str, Any]] = {}
 
         # Control plane
         self.control_plane = CoordinatorControlPlane(
@@ -118,15 +125,22 @@ class Coordinator:
 
         await self._submit_request(request_id, request)
 
+        completed_stages: set[str] = set()
         try:
             while True:
                 msg = await queue.get()
                 if isinstance(msg, CompleteMessage):
-                    if msg.success:
-                        yield msg
+                    if not msg.success:
+                        raise RuntimeError(msg.error or "Unknown error")
+                    yield msg
+                    completed_stages.add(msg.from_stage)
+                    if (
+                        not self._terminal_stages
+                        or completed_stages >= self._terminal_stages
+                    ):
                         return
-                    raise RuntimeError(msg.error or "Unknown error")
-                yield msg
+                else:
+                    yield msg
         finally:
             self._stream_queues.pop(request_id, None)
             self._completion_futures.pop(request_id, None)
@@ -173,7 +187,12 @@ class Coordinator:
         # Update state
         self._requests[request_id].state = RequestState.RUNNING
 
-        logger.debug("Coordinator submitted req=%s to %s", request_id, self.entry_stage)
+        logger.info(
+            "Coordinator submitted req=%s to %s at %s",
+            request_id,
+            self.entry_stage,
+            entry_info.control_endpoint,
+        )
 
     async def abort(self, request_id: str) -> bool:
         """Abort a request.
@@ -255,24 +274,52 @@ class Coordinator:
 
         info = self._requests[request_id]
 
-        if msg.success:
-            info.state = RequestState.COMPLETED
-            info.result = msg.result
-        else:
+        # Fail-fast: any terminal failure -> fail entire request
+        if not msg.success:
             info.state = RequestState.FAILED
             info.error = msg.error
+            self._partial_results.pop(request_id, None)
+            if request_id in self._completion_futures:
+                future = self._completion_futures[request_id]
+                if not future.done():
+                    future.set_exception(RuntimeError(msg.error or "Unknown error"))
+            if request_id in self._stream_queues:
+                await self._stream_queues[request_id].put(msg)
+            return
 
-        # Resolve future (if not already done, e.g., by abort)
+        # Single terminal (original behavior) or no terminal_stages configured
+        if len(self._terminal_stages) <= 1:
+            info.state = RequestState.COMPLETED
+            info.result = msg.result
+            if request_id in self._completion_futures:
+                future = self._completion_futures[request_id]
+                if not future.done():
+                    future.set_result(msg.result)
+            if request_id in self._stream_queues:
+                await self._stream_queues[request_id].put(msg)
+            return
+
+        # Multi-terminal: collect partial results
+        partials = self._partial_results.setdefault(request_id, {})
+        partials[msg.from_stage] = msg.result
+
+        # Forward stream completion per-stage
+        if request_id in self._stream_queues:
+            await self._stream_queues[request_id].put(msg)
+
+        if len(partials) < len(self._terminal_stages):
+            return  # still waiting
+
+        # All terminal stages done -> merge and resolve
+        merged = dict(partials)
+        self._partial_results.pop(request_id)
+        info.state = RequestState.COMPLETED
+        info.result = merged
+
         if request_id in self._completion_futures:
             future = self._completion_futures[request_id]
             if not future.done():
-                if msg.success:
-                    future.set_result(msg.result)
-                else:
-                    future.set_exception(RuntimeError(msg.error or "Unknown error"))
-
-        if request_id in self._stream_queues:
-            await self._stream_queues[request_id].put(msg)
+                future.set_result(merged)
 
     async def _handle_stream(self, msg: StreamMessage) -> None:
         """Handle a stream chunk from a stage."""
@@ -307,6 +354,7 @@ async def run_coordinator(
     abort_endpoint: str,
     entry_stage: str,
     stages: dict[str, str],  # name -> endpoint
+    terminal_stages: list[str] | None = None,
 ) -> Coordinator:
     """Create and start a coordinator.
 
@@ -315,6 +363,7 @@ async def run_coordinator(
         abort_endpoint: ZMQ endpoint for abort broadcasts
         entry_stage: Name of the entry stage
         stages: Dict of stage_name -> stage_endpoint
+        terminal_stages: Optional list of terminal stage names for multi-terminal merge
 
     Returns:
         Started Coordinator instance
@@ -323,6 +372,7 @@ async def run_coordinator(
         completion_endpoint=completion_endpoint,
         abort_endpoint=abort_endpoint,
         entry_stage=entry_stage,
+        terminal_stages=terminal_stages,
     )
 
     # Register stages
