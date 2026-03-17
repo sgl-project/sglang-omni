@@ -253,16 +253,19 @@ class OmniEngine(Engine):
         - GPU: executing current step's forward pass
         - CPU: processing previous step's update (token append, finish check, etc.)
         """
+        # 0. Process previous result BEFORE scheduling so that feedback
+        #    state (WAITING_FEEDBACK) is up-to-date when the scheduler runs.
+        #    This allows overlap to coexist with feedback-gated engines.
+        if self._result_queue:
+            self._process_pending_result()
+        elif self._feedback_mailbox is not None:
+            self._check_feedback()
+
         # 1. Schedule next batch
         scheduler_output = self.scheduler.schedule()
 
         if scheduler_output is None:
-            # No new work. Process any pending results.
-            if self._result_queue:
-                self._process_pending_result()
-            elif self._feedback_mailbox is not None:
-                # Still check for arrived feedback even when idle
-                self._check_feedback()
+            if self._feedback_mailbox is not None:
                 await asyncio.sleep(0.001)
             else:
                 await asyncio.sleep(0.001)
