@@ -78,6 +78,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+WAV_HEADER_SIZE = 44
+TEXT_PREVIEW_LENGTH = 60
+SUMMARY_LABEL_WIDTH = 30
+SUMMARY_LINE_WIDTH = 60
+
 
 @dataclass
 class RequestFuncInput:
@@ -98,7 +103,7 @@ class RequestFuncInput:
 class RequestFuncOutput:
     request_id: str = ""
     text: str = ""
-    success: bool = False
+    is_success: bool = False
     latency: float = 0.0
     audio_duration_s: float = 0.0
     rtf: float = 0.0
@@ -139,18 +144,55 @@ def parse_meta_lst(path: str, max_samples: int | None = None) -> list[dict]:
     return samples
 
 
-def _wav_duration(data: bytes) -> float:
+def _wav_duration(wav_bytes: bytes) -> float:
     """Return duration in seconds from a WAV byte buffer, or 0.0 on error."""
-    if len(data) <= 44:
+    if len(wav_bytes) <= WAV_HEADER_SIZE:
         return 0.0
-    sample_rate = struct.unpack_from("<I", data, 24)[0]
-    num_channels = struct.unpack_from("<H", data, 22)[0]
-    bits_per_sample = struct.unpack_from("<H", data, 34)[0]
+    sample_rate = struct.unpack_from("<I", wav_bytes, 24)[0]
+    num_channels = struct.unpack_from("<H", wav_bytes, 22)[0]
+    bits_per_sample = struct.unpack_from("<H", wav_bytes, 34)[0]
     if sample_rate == 0 or num_channels == 0 or bits_per_sample == 0:
         return 0.0
     bytes_per_sample = num_channels * bits_per_sample // 8
-    data_size = len(data) - 44
-    return data_size / (sample_rate * bytes_per_sample)
+    pcm_size = len(wav_bytes) - WAV_HEADER_SIZE
+    return pcm_size / (sample_rate * bytes_per_sample)
+
+
+def _build_tts_payload(request: RequestFuncInput) -> dict:
+    """Build the JSON payload for a TTS API request."""
+    payload: dict = {
+        "model": request.model,
+        "input": request.text,
+        "response_format": "wav",
+    }
+    optional_fields = {
+        "ref_audio": request.ref_audio,
+        "ref_text": request.ref_text,
+        "max_new_tokens": request.max_new_tokens,
+        "temperature": request.temperature,
+        "top_p": request.top_p,
+        "top_k": request.top_k,
+        "repetition_penalty": request.repetition_penalty,
+    }
+    for key, value in optional_fields.items():
+        if value is not None:
+            payload[key] = value
+    return payload
+
+
+def _parse_response_headers(output: RequestFuncOutput, headers: dict) -> None:
+    """Extract token counts and engine time from response headers."""
+    prompt_tok = headers.get("X-Prompt-Tokens")
+    comp_tok = headers.get("X-Completion-Tokens")
+    eng_time = headers.get("X-Engine-Time")
+    if prompt_tok is not None:
+        output.prompt_tokens = int(prompt_tok)
+    if comp_tok is not None:
+        output.completion_tokens = int(comp_tok)
+    if eng_time is not None:
+        output.engine_time_s = float(eng_time)
+    if output.completion_tokens > 0 and output.engine_time_s > 0:
+        output.tok_per_s = output.completion_tokens / output.engine_time_s
 
 
 async def send_tts_request(
@@ -159,61 +201,37 @@ async def send_tts_request(
     save_audio_dir: str | None = None,
     pbar: tqdm | None = None,
 ) -> RequestFuncOutput:
-    output = RequestFuncOutput(request_id=request.request_id, text=request.text[:60])
-
-    payload: dict = {
-        "model": request.model,
-        "input": request.text,
-        "response_format": "wav",
-    }
-    if request.ref_audio is not None:
-        payload["ref_audio"] = request.ref_audio
-    if request.ref_text is not None:
-        payload["ref_text"] = request.ref_text
-    if request.max_new_tokens is not None:
-        payload["max_new_tokens"] = request.max_new_tokens
-    if request.temperature is not None:
-        payload["temperature"] = request.temperature
-    if request.top_p is not None:
-        payload["top_p"] = request.top_p
-    if request.top_k is not None:
-        payload["top_k"] = request.top_k
-    if request.repetition_penalty is not None:
-        payload["repetition_penalty"] = request.repetition_penalty
+    output = RequestFuncOutput(
+        request_id=request.request_id,
+        text=request.text[:TEXT_PREVIEW_LENGTH],
+    )
+    payload = _build_tts_payload(request)
 
     start_time = time.perf_counter()
     try:
         async with session.post(request.api_url, json=payload) as response:
-            if response.status == 200:
+            if response.status != 200:
+                output.error = f"HTTP {response.status}: {await response.text()}"
+            else:
                 audio_bytes = await response.read()
-                output.latency = time.perf_counter() - start_time
-                output.success = True
+                output.is_success = True
                 output.audio_duration_s = _wav_duration(audio_bytes)
+                elapsed = time.perf_counter() - start_time
                 if output.audio_duration_s > 0:
-                    output.rtf = output.latency / output.audio_duration_s
+                    output.rtf = elapsed / output.audio_duration_s
                 else:
                     output.rtf = float("inf")
-                prompt_tok = response.headers.get("X-Prompt-Tokens")
-                comp_tok = response.headers.get("X-Completion-Tokens")
-                eng_time = response.headers.get("X-Engine-Time")
-                if prompt_tok is not None:
-                    output.prompt_tokens = int(prompt_tok)
-                if comp_tok is not None:
-                    output.completion_tokens = int(comp_tok)
-                if eng_time is not None:
-                    output.engine_time_s = float(eng_time)
-                if output.completion_tokens > 0 and output.engine_time_s > 0:
-                    output.tok_per_s = output.completion_tokens / output.engine_time_s
+                _parse_response_headers(output, response.headers)
                 if save_audio_dir and audio_bytes:
-                    path = os.path.join(save_audio_dir, f"{request.request_id}.wav")
-                    with open(path, "wb") as f:
+                    audio_path = os.path.join(
+                        save_audio_dir, f"{request.request_id}.wav"
+                    )
+                    with open(audio_path, "wb") as f:
                         f.write(audio_bytes)
-            else:
-                output.latency = time.perf_counter() - start_time
-                output.error = f"HTTP {response.status}: {await response.text()}"
-    except Exception as e:
+    except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+        output.error = str(exc)
+    finally:
         output.latency = time.perf_counter() - start_time
-        output.error = str(e)
 
     if pbar:
         pbar.update(1)
@@ -238,27 +256,40 @@ def wait_for_service(base_url: str, timeout: int = 1200) -> None:
         time.sleep(1)
 
 
+def _compute_token_metrics(
+    successes: list[RequestFuncOutput],
+) -> dict:
+    """Compute optional token throughput metrics from successful outputs."""
+    tokens_per_sec = [o.tok_per_s for o in successes if o.tok_per_s > 0]
+    gen_token_counts = [
+        o.completion_tokens for o in successes if o.completion_tokens > 0
+    ]
+    total_tokens = sum(gen_token_counts)
+    total_engine_time = sum(o.engine_time_s for o in successes if o.engine_time_s > 0)
+
+    token_metrics: dict = {}
+    if tokens_per_sec:
+        token_metrics["tok_per_s_mean"] = round(float(np.mean(tokens_per_sec)), 1)
+        token_metrics["tok_per_s_median"] = round(float(np.median(tokens_per_sec)), 1)
+    if total_engine_time > 0 and total_tokens > 0:
+        token_metrics["tok_per_s_agg"] = round(total_tokens / total_engine_time, 1)
+    if gen_token_counts:
+        token_metrics["gen_tokens_mean"] = round(float(np.mean(gen_token_counts)), 0)
+        token_metrics["gen_tokens_total"] = total_tokens
+    return token_metrics
+
+
 def calculate_metrics(outputs: list[RequestFuncOutput]) -> dict:
-    successes = [o for o in outputs if o.success]
+    successes = [o for o in outputs if o.is_success]
     if not successes:
         return {"completed_requests": 0, "failed_requests": len(outputs)}
 
     latencies = [o.latency for o in successes]
     rtfs = [o.rtf for o in successes if o.rtf < float("inf")]
-    audio_durs = [o.audio_duration_s for o in successes]
-    toks = [o.tok_per_s for o in successes if o.tok_per_s > 0]
-    gen_tokens = [o.completion_tokens for o in successes if o.completion_tokens > 0]
-
+    audio_durations = [o.audio_duration_s for o in successes]
     total_wall = sum(latencies)
-    total_tokens = sum(gen_tokens)
-    total_engine_time = sum(o.engine_time_s for o in successes if o.engine_time_s > 0)
-    agg_tok_per_s = (
-        total_tokens / total_engine_time
-        if total_engine_time > 0 and total_tokens > 0
-        else 0
-    )
 
-    result = {
+    metrics_summary: dict = {
         "completed_requests": len(successes),
         "failed_requests": len(outputs) - len(successes),
         "latency_mean_s": round(float(np.mean(latencies)), 3),
@@ -266,81 +297,65 @@ def calculate_metrics(outputs: list[RequestFuncOutput]) -> dict:
         "latency_p95_s": round(float(np.percentile(latencies, 95)), 3),
         "latency_p99_s": round(float(np.percentile(latencies, 99)), 3),
         "audio_duration_mean_s": (
-            round(float(np.mean(audio_durs)), 3) if audio_durs else 0
+            round(float(np.mean(audio_durations)), 3) if audio_durations else 0
         ),
         "rtf_mean": round(float(np.mean(rtfs)), 4) if rtfs else None,
         "rtf_median": round(float(np.median(rtfs)), 4) if rtfs else None,
         "throughput_qps": (
             round(len(successes) / total_wall, 3) if total_wall > 0 else 0
         ),
+        **_compute_token_metrics(successes),
     }
-    if toks:
-        result["tok_per_s_mean"] = round(float(np.mean(toks)), 1)
-        result["tok_per_s_median"] = round(float(np.median(toks)), 1)
-    if agg_tok_per_s > 0:
-        result["tok_per_s_agg"] = round(agg_tok_per_s, 1)
-    if gen_tokens:
-        result["gen_tokens_mean"] = round(float(np.mean(gen_tokens)), 0)
-        result["gen_tokens_total"] = total_tokens
-    return result
+    return metrics_summary
 
 
 def print_summary(metrics: dict, args: argparse.Namespace) -> None:
-    w = 60
+    lw = SUMMARY_LABEL_WIDTH
+    w = SUMMARY_LINE_WIDTH
     print(f"\n{'=' * w}")
     print(f"{'TTS Benchmark Result':^{w}}")
     print(f"{'=' * w}")
-    print(f"  {'Model:':<30} {args.model}")
-    print(f"  {'Completed requests:':<30} {metrics['completed_requests']}")
-    print(f"  {'Failed requests:':<30} {metrics['failed_requests']}")
+    print(f"  {'Model:':<{lw}} {args.model}")
+    print(f"  {'Completed requests:':<{lw}} {metrics['completed_requests']}")
+    print(f"  {'Failed requests:':<{lw}} {metrics['failed_requests']}")
     print(f"{'-' * w}")
-    print(f"  {'Latency mean (s):':<30} {metrics.get('latency_mean_s', 'N/A')}")
-    print(f"  {'Latency median (s):':<30} {metrics.get('latency_median_s', 'N/A')}")
-    print(f"  {'Latency p95 (s):':<30} {metrics.get('latency_p95_s', 'N/A')}")
-    print(f"  {'Latency p99 (s):':<30} {metrics.get('latency_p99_s', 'N/A')}")
+    print(f"  {'Latency mean (s):':<{lw}} {metrics.get('latency_mean_s', 'N/A')}")
+    print(f"  {'Latency median (s):':<{lw}} {metrics.get('latency_median_s', 'N/A')}")
+    print(f"  {'Latency p95 (s):':<{lw}} {metrics.get('latency_p95_s', 'N/A')}")
+    print(f"  {'Latency p99 (s):':<{lw}} {metrics.get('latency_p99_s', 'N/A')}")
     if metrics.get("rtf_mean") is not None:
-        print(f"  {'RTF mean:':<30} {metrics['rtf_mean']}")
-        print(f"  {'RTF median:':<30} {metrics['rtf_median']}")
+        print(f"  {'RTF mean:':<{lw}} {metrics['rtf_mean']}")
+        print(f"  {'RTF median:':<{lw}} {metrics['rtf_median']}")
     if metrics.get("audio_duration_mean_s"):
-        print(f"  {'Audio duration mean (s):':<30} {metrics['audio_duration_mean_s']}")
+        print(
+            f"  {'Audio duration mean (s):':<{lw}} {metrics['audio_duration_mean_s']}"
+        )
     if metrics.get("tok_per_s_mean") is not None:
-        print(f"  {'Tok/s (per-req mean):':<30} {metrics['tok_per_s_mean']}")
-        print(f"  {'Tok/s (per-req median):':<30} {metrics['tok_per_s_median']}")
+        print(f"  {'Tok/s (per-req mean):':<{lw}} {metrics['tok_per_s_mean']}")
+        print(f"  {'Tok/s (per-req median):':<{lw}} {metrics['tok_per_s_median']}")
     if metrics.get("tok_per_s_agg") is not None:
-        print(f"  {'Tok/s (aggregate):':<30} {metrics['tok_per_s_agg']}")
+        print(f"  {'Tok/s (aggregate):':<{lw}} {metrics['tok_per_s_agg']}")
     if metrics.get("gen_tokens_mean") is not None:
-        print(f"  {'Gen tokens (mean):':<30} {metrics['gen_tokens_mean']:.0f}")
-        print(f"  {'Gen tokens (total):':<30} {metrics['gen_tokens_total']}")
-    print(f"  {'Throughput (req/s):':<30} {metrics.get('throughput_qps', 'N/A')}")
+        print(f"  {'Gen tokens (mean):':<{lw}} {metrics['gen_tokens_mean']:.0f}")
+        print(f"  {'Gen tokens (total):':<{lw}} {metrics['gen_tokens_total']}")
+    print(f"  {'Throughput (req/s):':<{lw}} {metrics.get('throughput_qps', 'N/A')}")
     print(f"{'=' * w}")
 
 
-async def benchmark(args: argparse.Namespace) -> None:
-    base_url = args.base_url or f"http://{args.host}:{args.port}"
-    api_url = f"{base_url}/v1/audio/speech"
-
-    wait_for_service(base_url)
-
-    if not os.path.isfile(args.testset):
-        logger.error("Testset not found: %s", args.testset)
-        return
-
-    samples = parse_meta_lst(args.testset, args.max_samples)
-    if args.no_ref_audio:
-        for s in samples:
-            s["ref_audio"] = None
-            s["ref_text"] = None
-
-    logger.info("Prepared %d requests", len(samples))
-
-    requests_list = [
+def _build_requests(
+    samples: list[dict],
+    api_url: str,
+    args: argparse.Namespace,
+) -> list[RequestFuncInput]:
+    """Convert parsed samples into RequestFuncInput objects."""
+    return [
         RequestFuncInput(
             request_id=s["id"],
             text=s["text"],
             api_url=api_url,
             model=args.model,
-            ref_audio=s.get("ref_audio"),
-            ref_text=s.get("ref_text"),
+            ref_audio=None if args.no_ref_audio else s.get("ref_audio"),
+            ref_text=None if args.no_ref_audio else s.get("ref_text"),
             max_new_tokens=args.max_new_tokens,
             temperature=args.temperature,
             top_p=args.top_p,
@@ -350,25 +365,26 @@ async def benchmark(args: argparse.Namespace) -> None:
         for s in samples
     ]
 
-    save_audio_dir = None
-    if args.save_audio and args.output_dir:
-        save_audio_dir = os.path.join(args.output_dir, "audio")
-        os.makedirs(save_audio_dir, exist_ok=True)
 
-    if args.warmup > 0:
-        logger.info("Warmup (%d requests)...", args.warmup)
-        async with aiohttp.ClientSession() as session:
-            for i in range(min(args.warmup, len(requests_list))):
-                result = await send_tts_request(requests_list[i], session)
-                status = "ok" if result.success else result.error
-                logger.info("  warmup %d/%d: %s", i + 1, args.warmup, status)
+async def _run_warmup(
+    requests_list: list[RequestFuncInput],
+    warmup_count: int,
+) -> None:
+    """Send warmup requests sequentially."""
+    logger.info("Warmup (%d requests)...", warmup_count)
+    async with aiohttp.ClientSession() as session:
+        for i in range(min(warmup_count, len(requests_list))):
+            warmup_output = await send_tts_request(requests_list[i], session)
+            status = "ok" if warmup_output.is_success else warmup_output.error
+            logger.info("  warmup %d/%d: %s", i + 1, warmup_count, status)
 
-    logger.info(
-        "Benchmarking %d requests (max_concurrency=%s)...",
-        len(requests_list),
-        args.max_concurrency,
-    )
 
+async def _run_benchmark_requests(
+    requests_list: list[RequestFuncInput],
+    args: argparse.Namespace,
+    save_audio_dir: str | None,
+) -> list[RequestFuncOutput]:
+    """Send all benchmark requests with concurrency and rate limiting."""
     semaphore = (
         asyncio.Semaphore(args.max_concurrency) if args.max_concurrency else None
     )
@@ -384,7 +400,6 @@ async def benchmark(args: argparse.Namespace) -> None:
         return await send_tts_request(req, session, save_audio_dir, pbar)
 
     pbar_obj = tqdm(total=len(requests_list), disable=args.disable_tqdm)
-
     async with aiohttp.ClientSession() as session:
         tasks = []
         for req in requests_list:
@@ -393,8 +408,38 @@ async def benchmark(args: argparse.Namespace) -> None:
                 await asyncio.sleep(interval)
             tasks.append(asyncio.create_task(_limited_request(req, session, pbar_obj)))
         outputs: list[RequestFuncOutput] = await asyncio.gather(*tasks)
-
     pbar_obj.close()
+    return outputs
+
+
+async def benchmark(args: argparse.Namespace) -> None:
+    base_url = args.base_url or f"http://{args.host}:{args.port}"
+    api_url = f"{base_url}/v1/audio/speech"
+
+    wait_for_service(base_url)
+
+    if not os.path.isfile(args.testset):
+        logger.error("Testset not found: %s", args.testset)
+        return
+
+    samples = parse_meta_lst(args.testset, args.max_samples)
+    requests_list = _build_requests(samples, api_url, args)
+    logger.info("Prepared %d requests", len(requests_list))
+
+    save_audio_dir = None
+    if args.save_audio and args.output_dir:
+        save_audio_dir = os.path.join(args.output_dir, "audio")
+        os.makedirs(save_audio_dir, exist_ok=True)
+
+    if args.warmup > 0:
+        await _run_warmup(requests_list, args.warmup)
+
+    logger.info(
+        "Benchmarking %d requests (max_concurrency=%s)...",
+        len(requests_list),
+        args.max_concurrency,
+    )
+    outputs = await _run_benchmark_requests(requests_list, args, save_audio_dir)
 
     metrics = calculate_metrics(outputs)
     print_summary(metrics, args)
@@ -403,15 +448,14 @@ async def benchmark(args: argparse.Namespace) -> None:
         _save_results(outputs, metrics, args, base_url)
 
 
-def _save_results(
+def _save_json_results(
     outputs: list[RequestFuncOutput],
     metrics: dict,
     args: argparse.Namespace,
     base_url: str,
 ) -> None:
-    os.makedirs(args.output_dir, exist_ok=True)
-
-    results = {
+    """Write benchmark results as JSON."""
+    json_results = {
         "summary": metrics,
         "config": {
             "model": args.model,
@@ -428,7 +472,7 @@ def _save_results(
             {
                 "id": o.request_id,
                 "text": o.text,
-                "success": o.success,
+                "is_success": o.is_success,
                 "latency_s": round(o.latency, 4),
                 "audio_duration_s": round(o.audio_duration_s, 4),
                 "rtf": round(o.rtf, 4) if o.rtf < float("inf") else None,
@@ -442,10 +486,16 @@ def _save_results(
     }
     json_path = os.path.join(args.output_dir, "speed_results.json")
     with open(json_path, "w") as f:
-        json.dump(results, f, indent=2, ensure_ascii=False)
+        json.dump(json_results, f, indent=2, ensure_ascii=False)
     logger.info("Results saved to %s", json_path)
 
-    csv_path = os.path.join(args.output_dir, "results.csv")
+
+def _save_csv_results(
+    outputs: list[RequestFuncOutput],
+    output_dir: str,
+) -> None:
+    """Write per-request results as CSV."""
+    csv_path = os.path.join(output_dir, "results.csv")
     with open(csv_path, "w", newline="") as f:
         writer = csv.writer(f)
         writer.writerow(
@@ -457,7 +507,7 @@ def _save_results(
                 "rtf",
                 "completion_tokens",
                 "tok_per_s",
-                "success",
+                "is_success",
                 "error",
             ]
         )
@@ -471,14 +521,25 @@ def _save_results(
                     f"{o.rtf:.4f}" if o.rtf < float("inf") else "",
                     o.completion_tokens or "",
                     f"{o.tok_per_s:.1f}" if o.tok_per_s > 0 else "",
-                    o.success,
+                    o.is_success,
                     o.error or "",
                 ]
             )
     logger.info("CSV saved to %s", csv_path)
 
 
-def main():
+def _save_results(
+    outputs: list[RequestFuncOutput],
+    metrics: dict,
+    args: argparse.Namespace,
+    base_url: str,
+) -> None:
+    os.makedirs(args.output_dir, exist_ok=True)
+    _save_json_results(outputs, metrics, args, base_url)
+    _save_csv_results(outputs, args.output_dir)
+
+
+def main() -> None:
     parser = argparse.ArgumentParser(
         description="Benchmark online serving for TTS models."
     )
