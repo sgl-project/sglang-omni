@@ -15,18 +15,16 @@ dependencies = [
     "msgpack>=1.0.0",         # Message serialization
     "numpy>=1.24.0",          # Array operations
     "pydantic>=2.0.0",        # Data validation and serialization
-    "torch>=2.9.1",          # PyTorch for tensor operations
-    "torchvision>=0.24.1",    # torchvision for vision processor
+    "torch==2.9.1",          # PyTorch for tensor operations
+    "torchvision==0.24.1",    # torchvision for vision processor
     "accelerate>=0.27.0",     # init_empty_weights for meta initialization
-    "transformers>=4.57.0",   # HF models/tokenizers
+    "transformers<5.0",   # HF models/tokenizers
     "safetensors>=0.4.3",     # Direct weight loading
     "pillow>=10.0.0",         # Required by AutoImageProcessor
     "huggingface-hub>=0.36.0",# HF model downloads
     "fastapi>=0.110.0",       # OpenAI-compatible API adapter
     "uvicorn>=0.23.0",        # ASGI server for FastAPI
-    # Testing dependencies
-    "pytest>=7.0.0",
-    "pytest-asyncio>=0.21.0",
+    "sglang==0.5.8",
     "nixl",
     "mooncake-transfer-engine>=0.3.0",
     "logger",
@@ -37,11 +35,38 @@ dependencies = [
     "numba==0.63.1",
     "librosa>=0.11.0",
     "pandas",
-    "tabulate"
+    "tabulate",
+    "typer>=0.9.0",
+    "openai==2.6.1",
+    "openai-harmony==0.0.4",
+    "soundfile>=0.12.0"
 ]
 
+[project.optional-dependencies]
+dev = [
+    # Testing dependencies
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+]
+s2pro = [
+    "tiktoken",
+    "hydra-core",
+    "omegaconf",
+    "descript-audiotools",
+    "descript-audio-codec",
+    "torchaudio",
+    "gradio>=4.0.0",
+    # flash-attn: install separately via prebuilt wheel (see install instructions below)
+]
+gradio = ["gradio>=4.0.0"]
+
 [project.scripts]
-sglang-omni-server = "sglang_omni.serve.launcher:main"
+sgl-omni = "sglang_omni.cli.cli:app"
+
+[tool.uv]
+override-dependencies = [
+    "protobuf>=6.31.1,<7.0.0",
+]
 
 [tool.setuptools.packages.find]
 where = ["."]

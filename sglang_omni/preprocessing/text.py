@@ -9,10 +9,10 @@ from typing import Any, Mapping
 from transformers.utils.hub import cached_file
 
 
-def load_chat_template(model_id: str) -> str | None:
+def load_chat_template(model_path: str) -> str | None:
     """Load chat_template.json from the local HF cache if available."""
     try:
-        path = cached_file(model_id, "chat_template.json", local_files_only=True)
+        path = cached_file(model_path, "chat_template.json", local_files_only=True)
     except Exception:
         return None
 
@@ -28,11 +28,11 @@ def load_chat_template(model_id: str) -> str | None:
     return template if isinstance(template, str) and template else None
 
 
-def ensure_chat_template(tokenizer: Any, *, model_id: str) -> None:
+def ensure_chat_template(tokenizer: Any, *, model_path: str) -> None:
     """Ensure tokenizer.chat_template is populated when possible."""
     if getattr(tokenizer, "chat_template", None):
         return
-    template = load_chat_template(model_id)
+    template = load_chat_template(model_path)
     if template:
         tokenizer.chat_template = template
 

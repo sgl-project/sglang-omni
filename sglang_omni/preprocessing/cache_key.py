@@ -2,11 +2,18 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any, Callable
+from urllib.parse import urlparse
 
 import numpy as np
 import torch
 import xxhash
 from PIL import Image
+
+
+def _is_url_like(s: str) -> bool:
+    """Quick check if a string is a URL (http, https, data, file)."""
+    parsed = urlparse(s)
+    return bool(parsed.scheme and parsed.scheme in ("http", "https", "data", "file"))
 
 
 def _hash_joined(parts: list[str]) -> str:
@@ -57,11 +64,13 @@ def hash_media_item(item: Any) -> str | None:
     """
     # File path or URL
     if isinstance(item, (str, Path)):
-        p = Path(item)
+        s = str(item)
+        if _is_url_like(s):
+            return f"url:{hash_bytes(s.encode())}"
+        p = Path(s)
         if p.exists() and p.is_file():
             return f"file:{hash_file_sampled(p)}"
-        # URL or non-existent path
-        return f"url:{hash_bytes(str(item).encode())}"
+        return f"url:{hash_bytes(s.encode())}"
 
     # PIL Image
     if isinstance(item, Image.Image):

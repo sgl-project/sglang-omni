@@ -71,7 +71,7 @@ def template_get_next(request_id: str, output: Any) -> str | None:
     return "tokenize"
 
 
-def run_template_stage(model_id: str) -> None:
+def run_template_stage(model_path: str) -> None:
     import json
     import logging
 
@@ -86,7 +86,7 @@ def run_template_stage(model_id: str) -> None:
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
 
-    tokenizer = AutoTokenizer.from_pretrained(model_id)
+    tokenizer = AutoTokenizer.from_pretrained(model_path)
 
     def processor(payload: StagePayload) -> StagePayload:
         messages = payload.request.inputs
@@ -136,7 +136,7 @@ def run_template_stage(model_id: str) -> None:
     asyncio.run(stage.run())
 
 
-def run_tokenize_stage(model_id: str) -> None:
+def run_tokenize_stage(model_path: str) -> None:
     import logging
 
     from transformers import AutoTokenizer
@@ -150,7 +150,7 @@ def run_tokenize_stage(model_id: str) -> None:
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
 
-    tokenizer = AutoTokenizer.from_pretrained(model_id)
+    tokenizer = AutoTokenizer.from_pretrained(model_path)
 
     def processor(payload: StagePayload) -> StagePayload:
         text = payload.request.inputs
@@ -181,7 +181,7 @@ def run_tokenize_stage(model_id: str) -> None:
     asyncio.run(stage.run())
 
 
-def run_decode_stage(model_id: str) -> None:
+def run_decode_stage(model_path: str) -> None:
     import logging
 
     from transformers import AutoTokenizer
@@ -195,7 +195,7 @@ def run_decode_stage(model_id: str) -> None:
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
 
-    tokenizer = AutoTokenizer.from_pretrained(model_id)
+    tokenizer = AutoTokenizer.from_pretrained(model_path)
 
     def processor(payload: StagePayload) -> StagePayload:
         data = payload.data
@@ -231,7 +231,7 @@ def run_decode_stage(model_id: str) -> None:
 
 
 def run_engine_stage(
-    model_id: str,
+    model_path: str,
     device: str,
     dtype: torch.dtype,
     max_seq_len: int | None,
@@ -252,8 +252,8 @@ def run_engine_stage(
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
 
-    tokenizer = AutoTokenizer.from_pretrained(model_id)
-    model = AutoModelForCausalLM.from_pretrained(model_id, torch_dtype=dtype)
+    tokenizer = AutoTokenizer.from_pretrained(model_path)
+    model = AutoModelForCausalLM.from_pretrained(model_path, torch_dtype=dtype)
 
     if max_seq_len is None:
         max_seq_len = getattr(model.config, "max_position_embeddings", 2048)
@@ -344,7 +344,7 @@ async def run_coordinator(args: argparse.Namespace) -> None:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Four-stage Llama 3 8B demo")
     parser.add_argument(
-        "--model-id",
+        "--model-path",
         default="meta-llama/Meta-Llama-3-8B-Instruct",
         help="Hugging Face model id",
     )
@@ -397,18 +397,18 @@ def main() -> None:
     stage1_proc = mp.Process(
         target=run_template_stage,
         name="TemplateStage",
-        args=(args.model_id,),
+        args=(args.model_path,),
     )
     stage2_proc = mp.Process(
         target=run_tokenize_stage,
         name="TokenizerStage",
-        args=(args.model_id,),
+        args=(args.model_path,),
     )
     stage3_proc = mp.Process(
         target=run_engine_stage,
         name="EngineStage",
         args=(
-            args.model_id,
+            args.model_path,
             args.device,
             dtype,
             args.max_seq_len,
@@ -418,7 +418,7 @@ def main() -> None:
     stage4_proc = mp.Process(
         target=run_decode_stage,
         name="DecodeStage",
-        args=(args.model_id,),
+        args=(args.model_path,),
     )
 
     stage1_proc.start()

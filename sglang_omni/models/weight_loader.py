@@ -34,18 +34,18 @@ def resolve_dtype(dtype: str | torch.dtype | None) -> torch.dtype | None:
 
 
 @lru_cache(maxsize=4)
-def resolve_model_path(model_id: str, *, local_files_only: bool = False) -> Path:
-    """Resolve a model_id to a local path, downloading if needed."""
-    path = Path(model_id)
+def resolve_model_path(model_path: str, *, local_files_only: bool = False) -> Path:
+    """Resolve a model_path to a local path, downloading if needed."""
+    path = Path(model_path)
     if path.exists():
         return path
     try:
-        config_path = cached_file(model_id, "config.json", local_files_only=True)
+        config_path = cached_file(model_path, "config.json", local_files_only=True)
         return Path(config_path).parent
     except Exception:
         if local_files_only:
             raise
-    return Path(snapshot_download(model_id, local_files_only=local_files_only))
+    return Path(snapshot_download(model_path, local_files_only=local_files_only))
 
 
 def _load_bin_shard(path: str) -> dict[str, torch.Tensor]:
@@ -140,13 +140,13 @@ def _normalize_prefixes(prefixes: str | tuple[str, ...] | list[str]) -> tuple[st
 
 
 def load_weights_by_prefix(
-    model_id: str,
+    model_path: str,
     *,
     prefix: str | tuple[str, ...] | list[str],
     local_files_only: bool = False,
 ) -> dict[str, torch.Tensor]:
     """Load weights matching one of the prefixes, stripping the matched prefix."""
-    model_path = resolve_model_path(model_id, local_files_only=local_files_only)
+    model_path = resolve_model_path(model_path, local_files_only=local_files_only)
     prefixes = _normalize_prefixes(prefix)
 
     for prefix_item in prefixes:
@@ -170,7 +170,7 @@ def load_weights_by_prefix(
 
 def load_module(
     module: nn.Module,
-    model_id: str,
+    model_path: str,
     *,
     prefix: str | tuple[str, ...] | list[str],
     dtype: torch.dtype | None = None,
@@ -180,11 +180,15 @@ def load_module(
 ) -> nn.Module:
     """Load weights into module by prefix, optionally move to device."""
     state_dict = load_weights_by_prefix(
-        model_id,
+        model_path,
         prefix=prefix,
         local_files_only=local_files_only,
     )
-    module.load_state_dict(state_dict, strict=strict)
+    # Prefer assign=True to avoid expensive in-place tensor copies during load.
+    try:
+        module.load_state_dict(state_dict, strict=strict, assign=True)
+    except (TypeError, RuntimeError):
+        module.load_state_dict(state_dict, strict=strict)
     module.eval()
     if device is not None or dtype is not None:
         if device is not None and dtype is not None:
@@ -194,3 +198,25 @@ def load_module(
         else:
             module = module.to(dtype=dtype)
     return module
+
+
+# picked from sglang.srt.model_loader.weight_utils.py
+def default_weight_loader(param: torch.Tensor, loaded_weight: torch.Tensor) -> None:
+    """Default weight loader."""
+    try:
+        if param.numel() == 1 and loaded_weight.numel() == 1:
+            # Sometimes scalar values aren't considered tensors with shapes
+            # so if both param and loaded_weight are a scalar,
+            # "broadcast" instead of copy
+            param.data.fill_(loaded_weight.item())
+        else:
+            assert param.size() == loaded_weight.size(), (
+                f"Attempted to load weight ({loaded_weight.size()}) "
+                f"into parameter ({param.size()})"
+            )
+
+            param.data.copy_(loaded_weight)
+    except Exception:
+        # NOTE: This exception is added for the purpose of setting breakpoint to
+        # debug weight loading issues.
+        raise

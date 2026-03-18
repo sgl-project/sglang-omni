@@ -11,7 +11,7 @@ from sglang_omni.client import (
     SamplingParams,
     UsageInfo,
 )
-from sglang_omni.engines.base import EchoEngine, Engine
+from sglang_omni.engines.base import Engine
 from sglang_omni.pipeline.coordinator import Coordinator
 from sglang_omni.pipeline.stage import AggregatedInput, DirectInput, InputHandler, Stage
 from sglang_omni.pipeline.worker import Worker
@@ -34,7 +34,6 @@ __all__ = [
     "Stage",
     "Worker",
     "Engine",
-    "EchoEngine",
     "Client",
     # Input handlers
     "InputHandler",

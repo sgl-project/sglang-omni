@@ -12,6 +12,8 @@ from sglang_omni.proto import (
     AbortMessage,
     CompleteMessage,
     DataReadyMessage,
+    ProfilerStartMessage,
+    ProfilerStopMessage,
     ShutdownMessage,
     StreamMessage,
     SubmitMessage,
@@ -29,6 +31,8 @@ def serialize_message(
         | StreamMessage
         | ShutdownMessage
         | SubmitMessage
+        | ProfilerStartMessage
+        | ProfilerStopMessage
     ),
 ) -> bytes:
     """Serialize a message to bytes."""
@@ -44,6 +48,8 @@ def deserialize_message(
     | StreamMessage
     | ShutdownMessage
     | SubmitMessage
+    | ProfilerStartMessage
+    | ProfilerStopMessage
 ):
     """Deserialize bytes to a message."""
     d = msgpack.unpackb(data, raw=False)
@@ -287,12 +293,29 @@ class StageControlPlane:
 
         logger.info("Stage %s control plane started", self.stage_name)
 
-    async def recv(self) -> DataReadyMessage | SubmitMessage | ShutdownMessage:
+    async def recv(
+        self,
+    ) -> (
+        DataReadyMessage
+        | SubmitMessage
+        | ShutdownMessage
+        | ProfilerStartMessage
+        | ProfilerStopMessage
+    ):
         """Receive work from previous stage or coordinator."""
         if self._recv_socket is None:
             raise RuntimeError("Control plane not started")
         msg = await self._recv_socket.recv()
-        if isinstance(msg, (DataReadyMessage, SubmitMessage, ShutdownMessage)):
+        if isinstance(
+            msg,
+            (
+                DataReadyMessage,
+                SubmitMessage,
+                ShutdownMessage,
+                ProfilerStartMessage,
+                ProfilerStopMessage,
+            ),
+        ):
             return msg
         raise ValueError(f"Unexpected message type: {type(msg)}")
 

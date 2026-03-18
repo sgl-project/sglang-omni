@@ -3,16 +3,11 @@
 
 from __future__ import annotations
 
+import inspect
 from pathlib import Path
 from typing import Any
 
-from sglang_omni.config.imports import import_string
-from sglang_omni.config.schema import (
-    ExecutorConfig,
-    InputHandlerConfig,
-    PipelineConfig,
-    StageConfig,
-)
+from sglang_omni.config.schema import InputHandlerConfig, PipelineConfig, StageConfig
 from sglang_omni.executors.interface import Executor
 from sglang_omni.pipeline import (
     AggregatedInput,
@@ -22,34 +17,61 @@ from sglang_omni.pipeline import (
     Worker,
 )
 from sglang_omni.pipeline.stage.input import InputHandler
+from sglang_omni.utils import import_string
 
 
 def compile_pipeline(config: PipelineConfig) -> tuple[Coordinator, list[Stage]]:
-    _validate_pipeline(config)
-    stages_cfg, name_map, entry_stage = _apply_fusion(config)
+    """
+    Build the coordinator and stage objects from the pipeline configuration.
+    """
+    # 1. apply stage fusion if enabled
+    stages_cfg, name_map, entry_stage = config.apply_fusion()
+
+    # 3. allocate ZMQ endpoints
     endpoints = _allocate_endpoints(config, stages=stages_cfg)
 
+    # 4. create coordinator
     coordinator = Coordinator(
         completion_endpoint=endpoints["completion"],
         abort_endpoint=endpoints["abort"],
         entry_stage=entry_stage,
+        terminal_stages=config.terminal_stages or None,
     )
 
+    # 5. create each stage in order
     stage_endpoints = {
         stage_cfg.name: endpoints[f"stage_{stage_cfg.name}"] for stage_cfg in stages_cfg
     }
 
     stages: list[Stage] = []
     for stage_cfg in stages_cfg:
-        stage = _compile_stage(stage_cfg, stage_endpoints, endpoints, name_map=name_map)
+        stage = _compile_stage(
+            stage_cfg, config, stage_endpoints, endpoints, name_map=name_map
+        )
         coordinator.register_stage(stage.name, stage.control_plane.recv_endpoint)
         stages.append(stage)
+
+    # 6. wire stream targets
+    stage_map = {stage.name: stage for stage in stages}
+    cfg_map = {s.name: s for s in stages_cfg}
+    for stage_cfg in stages_cfg:
+        stage = stage_map.get(stage_cfg.name)
+        if stage is None:
+            continue
+        _wire_stream_targets(
+            stage,
+            stage_cfg,
+            stage_map,
+            gpu_placement=config.gpu_placement,
+            cfg_map=cfg_map,
+        )
 
     return coordinator, stages
 
 
 def _compile_stage(
     stage_cfg: StageConfig,
+    global_cfg: PipelineConfig,
     stage_endpoints: dict[str, str],
     endpoints: dict[str, str],
     *,
@@ -76,8 +98,24 @@ def _compile_stage(
         abort_endpoint=endpoints["abort"],
         endpoints=stage_endpoints,
         input_handler=input_handler,
-        relay_config=_build_relay_config(stage_cfg),
+        relay_config=_build_relay_config(stage_cfg, global_cfg),
     )
+
+    # check if factory has the signature of model_path and the user does not provide the model path
+    # if yes, use the one in global config
+    if (
+        "model_path" in inspect.signature(factory).parameters
+        and "model_path" not in stage_cfg.executor.args
+    ):
+        stage_cfg.executor.args["model_path"] = global_cfg.model_path
+
+    # Inject gpu_id from gpu_placement map
+    if (
+        "gpu_id" in inspect.signature(factory).parameters
+        and "gpu_id" not in stage_cfg.executor.args
+    ):
+        gpu_id = global_cfg.gpu_placement.get(stage_cfg.name, 0)
+        stage_cfg.executor.args["gpu_id"] = gpu_id
 
     for _ in range(stage_cfg.num_workers):
         executor = factory(**stage_cfg.executor.args)
@@ -111,10 +149,12 @@ def _create_input_handler(
     return AggregatedInput(sources=set(sources), merge=merge_fn)
 
 
-def _build_relay_config(stage_cfg: StageConfig) -> dict[str, Any]:
+def _build_relay_config(
+    stage_cfg: StageConfig, global_cfg: PipelineConfig
+) -> dict[str, Any]:
     relay_cfg = stage_cfg.relay
     return {
-        "relay_type": relay_cfg.type,
+        "relay_type": global_cfg.relay_backend,
         "slot_size_mb": relay_cfg.slot_size_mb,
         "credits": relay_cfg.credits,
         "rank": relay_cfg.rank,
@@ -176,113 +216,6 @@ def _allocate_endpoints(
     raise ValueError(f"Unknown endpoint scheme: {config.endpoints.scheme}")
 
 
-def _validate_pipeline(config: PipelineConfig) -> None:
-    if not config.name:
-        raise ValueError("Pipeline name is required")
-
-    stage_names = [stage_cfg.name for stage_cfg in config.stages]
-    if not stage_names:
-        raise ValueError("Pipeline must define at least one stage")
-
-    if len(stage_names) != len(set(stage_names)):
-        raise ValueError("Stage names must be unique")
-
-    if config.entry_stage not in stage_names:
-        raise ValueError(f"entry_stage {config.entry_stage!r} is not defined")
-
-    for stage_cfg in config.stages:
-        if stage_cfg.num_workers < 1:
-            raise ValueError(f"Stage {stage_cfg.name!r} must have at least one worker")
-        if not stage_cfg.executor.factory:
-            raise ValueError(f"Stage {stage_cfg.name!r} missing executor factory")
-        if not stage_cfg.get_next:
-            raise ValueError(f"Stage {stage_cfg.name!r} missing get_next")
-        if stage_cfg.input_handler.type == "aggregated":
-            sources = stage_cfg.input_handler.sources or []
-            unknown = set(sources) - set(stage_names)
-            if unknown:
-                raise ValueError(
-                    f"Stage {stage_cfg.name!r} has unknown sources: {sorted(unknown)}"
-                )
-
-    _validate_fusion(config, stage_names)
-
-
-def _validate_fusion(config: PipelineConfig, stage_names: list[str]) -> None:
-    fused = config.fused_stages or []
-    if not fused:
-        return
-    index_map = {name: idx for idx, name in enumerate(stage_names)}
-    seen: set[str] = set()
-    for group in fused:
-        if not group or len(group) < 2:
-            raise ValueError("fused_stages groups must have at least 2 stage names")
-        for name in group:
-            if name not in index_map:
-                raise ValueError(f"fused stage {name!r} is not defined")
-            if name in seen:
-                raise ValueError(f"stage {name!r} appears in multiple fused groups")
-            seen.add(name)
-
-        indices = [index_map[name] for name in group]
-        if indices != sorted(indices):
-            raise ValueError(f"fused group is out of order: {group}")
-        if indices != list(range(indices[0], indices[0] + len(indices))):
-            raise ValueError(f"fused group must be adjacent: {group}")
-        ordered = [stage_names[i] for i in indices]
-        if ordered != group:
-            raise ValueError(f"fused group order mismatch: {group}")
-
-
-def _apply_fusion(
-    config: PipelineConfig,
-) -> tuple[list[StageConfig], dict[str, str], str]:
-    stage_by_name = {stage.name: stage for stage in config.stages}
-    fused_groups = config.fused_stages or []
-
-    name_map = {name: name for name in stage_by_name}
-    group_by_last: dict[str, list[str]] = {}
-
-    for group in fused_groups:
-        last = group[-1]
-        group_by_last[last] = group
-        for name in group:
-            name_map[name] = last
-
-    stages_out: list[StageConfig] = []
-    for stage in config.stages:
-        mapped = name_map.get(stage.name, stage.name)
-        if mapped != stage.name:
-            continue  # fused into another stage
-        if stage.name in group_by_last:
-            group = group_by_last[stage.name]
-            first = stage_by_name[group[0]]
-            executors = [
-                {
-                    "factory": stage_by_name[name].executor.factory,
-                    "args": stage_by_name[name].executor.args,
-                }
-                for name in group
-            ]
-            fused_stage = StageConfig(
-                name=stage.name,
-                executor=ExecutorConfig(
-                    factory="sglang_omni.executors.fused_executor.create_fused_executor",
-                    args={"executors": executors},
-                ),
-                get_next=stage.get_next,
-                input_handler=first.input_handler,
-                relay=first.relay,
-                num_workers=first.num_workers,
-            )
-            stages_out.append(fused_stage)
-        else:
-            stages_out.append(stage)
-
-    entry_stage = _map_stage_name(name_map, config.entry_stage)
-    return stages_out, name_map, entry_stage
-
-
 def _wrap_get_next(get_next: Any, name_map: dict[str, str]):
     def _wrapped(request_id: str, output: Any):
         result = get_next(request_id, output)
@@ -315,3 +248,111 @@ def _dedupe_list(items: list[str]) -> list[str]:
         seen.add(item)
         result.append(item)
     return result
+
+
+def _wire_stream_targets(
+    sender_stage: Stage,
+    sender_cfg: StageConfig,
+    stage_map: dict[str, Stage],
+    *,
+    gpu_placement: dict[str, int] | None = None,
+    cfg_map: dict[str, StageConfig] | None = None,
+) -> None:
+    """Wire stream_to targets between stages.
+
+    For each stream_to entry on the sender:
+    1. Set worker._stream_targets and worker._bootstrap_targets
+    2. Detect same-GPU targets and set worker._same_gpu_targets (CUDA IPC)
+    3. Create StreamQueue on receiver stages
+    4. Set executor._stream_queue on receiver executors
+    5. Wire set_stream_fn on sender executors
+    """
+    from sglang_omni.pipeline.stage.stream_queue import StreamQueue
+
+    targets = sender_cfg.stream_to
+    if not targets:
+        return
+
+    # Collect target stage names and bootstrap targets
+    all_targets = [t.to_stage for t in targets]
+    bootstrap_targets = {t.to_stage for t in targets if t.bootstrap}
+
+    # Detect same-GPU targets for CUDA IPC zero-copy
+    same_gpu_targets = _detect_same_gpu_targets(
+        sender_cfg,
+        targets,
+        gpu_placement=gpu_placement,
+        cfg_map=cfg_map,
+    )
+
+    # Set stream targets on sender workers and wire stream_fn.
+    for worker in sender_stage.workers:
+        worker._stream_targets = all_targets
+        worker._bootstrap_targets = bootstrap_targets
+        worker._same_gpu_targets = same_gpu_targets
+        # Wire stream_fn: executor calls worker._enqueue_stream
+        set_fn = getattr(worker.executor, "set_stream_fn", None)
+        if callable(set_fn):
+            set_fn(worker._enqueue_stream)
+
+    # Set up receiver side: create StreamQueue on receiver stages
+    for target_cfg in targets:
+        receiver_stage = stage_map.get(target_cfg.to_stage)
+        if receiver_stage is None:
+            continue
+
+        # Create a shared StreamQueue for the receiver stage if not already present
+        if receiver_stage._stream_queue is None:
+            queue = StreamQueue(max_pending=4096)
+            receiver_stage._stream_queue = queue
+        else:
+            queue = receiver_stage._stream_queue
+
+        # Wire stream queue to receiver executors
+        for worker in receiver_stage.workers:
+            worker.executor._stream_queue = queue
+            # Wire feedback mailbox for executors that support it
+            set_feedback_mailbox = getattr(
+                worker.executor, "set_feedback_mailbox", None
+            )
+            if callable(set_feedback_mailbox):
+                set_feedback_mailbox(queue)
+
+
+def _detect_same_gpu_targets(
+    sender_cfg: StageConfig,
+    targets: list,
+    *,
+    gpu_placement: dict[str, int] | None = None,
+    cfg_map: dict[str, StageConfig] | None = None,
+) -> set[str]:
+    """Return the set of target stage names that share a GPU with the sender.
+
+    Same-GPU streaming uses CUDA IPC (zero data copy) instead of the relay.
+    Both the sender and receiver must use CUDA relays and be placed on the
+    same GPU (per ``gpu_placement``) for this to activate.
+    """
+    if not gpu_placement or not cfg_map:
+        return set()
+
+    sender_gpu = gpu_placement.get(sender_cfg.name)
+    if sender_gpu is None:
+        return set()
+
+    # Sender must have a CUDA relay
+    if sender_cfg.relay.device == "cpu":
+        return set()
+
+    same: set[str] = set()
+    for target in targets:
+        receiver_cfg = cfg_map.get(target.to_stage)
+        if receiver_cfg is None:
+            continue
+        # Receiver must also have a CUDA relay
+        if receiver_cfg.relay.device == "cpu":
+            continue
+        receiver_gpu = gpu_placement.get(target.to_stage)
+        if receiver_gpu is not None and receiver_gpu == sender_gpu:
+            same.add(target.to_stage)
+
+    return same

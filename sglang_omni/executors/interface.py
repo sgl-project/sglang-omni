@@ -36,3 +36,7 @@ class Executor(ABC):
     async def abort(self, request_id: str) -> None:
         """Abort a request if possible."""
         ...
+
+    def set_stream_fn(self, fn) -> None:
+        """Set the streaming output callback. Sync, non-blocking."""
+        pass  # Default no-op; streaming executors override

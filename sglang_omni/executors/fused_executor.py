@@ -7,9 +7,9 @@ import asyncio
 from collections.abc import Callable
 from typing import Any
 
-from sglang_omni.config.imports import import_string
 from sglang_omni.executors.interface import Executor
 from sglang_omni.proto import StagePayload
+from sglang_omni.utils import import_string
 
 
 class FusedExecutor(Executor):

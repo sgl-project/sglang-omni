@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from pathlib import Path
@@ -13,9 +14,9 @@ from transformers import AutoFeatureExtractor, AutoImageProcessor, AutoTokenizer
 from transformers.models.qwen3_omni_moe.processing_qwen3_omni_moe import (
     Qwen3OmniMoeProcessor,
 )
-from transformers.utils.hub import cached_file
 
 from sglang_omni.models.qwen3_omni.io import PipelineState
+from sglang_omni.models.weight_loader import resolve_model_path
 from sglang_omni.preprocessing import (
     build_audio_mm_inputs,
     build_image_mm_inputs,
@@ -23,11 +24,10 @@ from sglang_omni.preprocessing import (
     compute_audio_cache_key,
     compute_image_cache_key,
     compute_video_cache_key,
-    ensure_audio_list,
+    ensure_audio_list_async,
     ensure_chat_template,
-    ensure_image_list,
-    ensure_video_list,
-    extract_audio_from_video_inputs,
+    ensure_image_list_async,
+    ensure_video_list_async,
     normalize_messages,
 )
 from sglang_omni.proto import StagePayload
@@ -35,10 +35,9 @@ from sglang_omni.proto import StagePayload
 logger = logging.getLogger(__name__)
 
 
-def _resolve_local_model_dir(model_id: str) -> str:
-    """Resolve the local snapshot directory for a cached model."""
-    config_path = cached_file(model_id, "config.json", local_files_only=True)
-    return str(Path(config_path).parent)
+def _resolve_local_model_dir(model_path: str) -> str:
+    """Resolve a local model directory, downloading snapshot when needed."""
+    return str(resolve_model_path(model_path, local_files_only=False))
 
 
 def _load_preprocessor_config(model_dir: str) -> Mapping[str, Any]:
@@ -63,7 +62,7 @@ class _StubVideoProcessor:
         raise NotImplementedError("Video inputs are not supported in this pipeline yet")
 
 
-def _build_processor_local(model_dir: str, model_id: str) -> Qwen3OmniMoeProcessor:
+def _build_processor_local(model_dir: str, model_path: str) -> Qwen3OmniMoeProcessor:
     cfg = _load_preprocessor_config(model_dir)
     merge_size = int(cfg.get("merge_size", 2))
     temporal_patch_size = int(cfg.get("temporal_patch_size", 2))
@@ -73,7 +72,7 @@ def _build_processor_local(model_dir: str, model_id: str) -> Qwen3OmniMoeProcess
         trust_remote_code=True,
         local_files_only=True,
     )
-    ensure_chat_template(tokenizer, model_id=model_dir)
+    ensure_chat_template(tokenizer, model_path=model_dir)
 
     image_processor = AutoImageProcessor.from_pretrained(
         model_dir,
@@ -95,16 +94,16 @@ def _build_processor_local(model_dir: str, model_id: str) -> Qwen3OmniMoeProcess
         feature_extractor=feature_extractor,
         tokenizer=tokenizer,
     )
-    ensure_chat_template(processor.tokenizer, model_id=model_dir)
+    ensure_chat_template(processor.tokenizer, model_path=model_dir)
     return processor
 
 
 class Qwen3OmniPreprocessor:
     """CPU-side preprocessing and tokenization using the HF processor."""
 
-    def __init__(self, model_id: str):
-        self.model_id = model_id
-        self.model_dir = _resolve_local_model_dir(model_id)
+    def __init__(self, model_path: str):
+        self.model_path = model_path
+        self.model_dir = _resolve_local_model_dir(model_path)
         try:
             self.processor = Qwen3OmniMoeProcessor.from_pretrained(
                 self.model_dir,
@@ -114,9 +113,9 @@ class Qwen3OmniPreprocessor:
         except Exception:
             # The hub cache may not include video_preprocessor_config.json.
             # Build the processor locally with a stub video processor instead.
-            self.processor = _build_processor_local(self.model_dir, model_id)
+            self.processor = _build_processor_local(self.model_dir, model_path)
         self.tokenizer = self.processor.tokenizer
-        ensure_chat_template(self.tokenizer, model_id=self.model_dir)
+        ensure_chat_template(self.tokenizer, model_path=self.model_dir)
 
     def _build_multimodal_messages(
         self,
@@ -152,7 +151,7 @@ class Qwen3OmniPreprocessor:
 
         return result
 
-    def __call__(self, payload: StagePayload) -> StagePayload:
+    async def __call__(self, payload: StagePayload) -> StagePayload:
         inputs = payload.request.inputs
         if isinstance(inputs, dict):
             messages = inputs.get("messages", [])
@@ -178,30 +177,42 @@ class Qwen3OmniPreprocessor:
                     len(raw_audios) if isinstance(raw_audios, list) else 1
                 )
 
-            # Extract audio from videos if requested (can be combined with explicit audio)
-            extracted_audio_from_video = None
-            if use_audio_in_video and raw_videos:
-                extracted_audio_from_video, use_audio_in_video = (
-                    extract_audio_from_video_inputs(
-                        raw_videos,
-                        use_audio_in_video=use_audio_in_video,
-                        target_sr=audio_target_sr,
-                    )
-                )
+            # Use async versions for concurrent loading
+            # If we need audio from video, extract it during video loading to avoid duplicate downloads
+            extract_audio_from_video_flag = bool(use_audio_in_video and raw_videos)
+
+            images, videos_result, audios_result = await asyncio.gather(
+                ensure_image_list_async(raw_images),
+                ensure_video_list_async(
+                    raw_videos,
+                    fps=video_fps,
+                    extract_audio=extract_audio_from_video_flag,
+                    audio_target_sr=audio_target_sr,
+                ),
+                ensure_audio_list_async(raw_audios, target_sr=audio_target_sr),
+            )
+            videos, sampled_video_fps, extracted_audio_from_video = videos_result
+
+            # Merge extracted audio from videos with explicit audio (if any)
+            if extracted_audio_from_video:
+                # Filter out None values (videos without audio)
+                extracted_audio_from_video = [
+                    audio for audio in extracted_audio_from_video if audio is not None
+                ]
                 if extracted_audio_from_video:
                     audio_from_video = True
-                    # Merge extracted audio with explicit audio (if any)
-                    if raw_audios:
-                        if isinstance(raw_audios, list):
-                            raw_audios = raw_audios + extracted_audio_from_video
+                    # Merge with explicit audio
+                    if audios_result:
+                        if isinstance(audios_result, list):
+                            audios = audios_result + extracted_audio_from_video
                         else:
-                            raw_audios = [raw_audios] + extracted_audio_from_video
+                            audios = [audios_result] + extracted_audio_from_video
                     else:
-                        raw_audios = extracted_audio_from_video
-
-            images = ensure_image_list(raw_images)
-            videos, sampled_video_fps = ensure_video_list(raw_videos, fps=video_fps)
-            audios = ensure_audio_list(raw_audios, target_sr=audio_target_sr)
+                        audios = extracted_audio_from_video
+                else:
+                    audios = audios_result
+            else:
+                audios = audios_result
         else:
             messages = inputs
             images = []
@@ -284,10 +295,15 @@ class Qwen3OmniPreprocessor:
         if use_audio_in_video is not None:
             mm_inputs["video"]["use_audio_in_video"] = bool(use_audio_in_video)
 
-        # Build encoder_inputs with cache_key for efficient caching
+        # Build encoder_inputs with cache_key for efficient caching.
+        # The image encoder handles both images and videos, so combine both
+        # cache keys when available.
         image_encoder_inputs = {**mm_inputs["image"], **mm_inputs["video"]}
-        if image_cache_key:
-            image_encoder_inputs["cache_key"] = image_cache_key
+        combined_cache_key = image_cache_key or video_cache_key
+        if image_cache_key and video_cache_key:
+            combined_cache_key = f"{image_cache_key}|{video_cache_key}"
+        if combined_cache_key:
+            image_encoder_inputs["cache_key"] = combined_cache_key
 
         audio_encoder_inputs = {**mm_inputs["audio"]}
         if audio_cache_key:

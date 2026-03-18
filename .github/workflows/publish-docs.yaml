@@ -1,0 +1,54 @@
+name: Release Documentation
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "docs/**"
+  workflow_dispatch:
+
+concurrency:
+  group: release-docs-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deploy-github-pages:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update && sudo apt-get install -y pandoc parallel retry
+          pip install -r docs/requirements.txt
+
+      - name: Build documentation
+        run: |
+          cd docs
+          make compile
+          make html
+
+      - name: Add .nojekyll file
+        run: |
+          touch ./docs/_build/html/.nojekyll
+
+      - name: Deploy
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./docs/_build/html

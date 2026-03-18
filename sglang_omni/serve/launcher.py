@@ -25,15 +25,19 @@ Export a config to JSON::
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
-from pathlib import Path
+import os
+import socket
+import time
 from typing import Any
 
 import uvicorn
+from fastapi import APIRouter
+from pydantic import BaseModel
 
 from sglang_omni.client import Client
 from sglang_omni.config import PipelineConfig, PipelineRunner, compile_pipeline
+from sglang_omni.profiler.profiler_control import ProfilerControlClient
 from sglang_omni.serve.openai_api import create_app
 
 logger = logging.getLogger(__name__)
@@ -48,38 +52,86 @@ _BUILTIN_PIPELINES: dict[str, str] = {
 }
 
 
-def _resolve_builtin(
-    pipeline_name: str,
-    *,
-    model_id: str,
-    extra_kwargs: dict[str, Any] | None = None,
-) -> PipelineConfig:
-    """Instantiate a built-in pipeline config by name."""
-    if pipeline_name not in _BUILTIN_PIPELINES:
-        available = ", ".join(sorted(_BUILTIN_PIPELINES))
-        raise ValueError(
-            f"Unknown built-in pipeline: {pipeline_name!r}. " f"Available: {available}"
-        )
+def _find_available_port(host: str, port: int) -> int:
+    """Return *port* if available, otherwise find a free port and warn."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind((host, port))
+            return port
+    except OSError:
+        pass
+    logger.warning("Port %d is already in use on %s.", port, host)
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind((host, 0))
+        free_port = s.getsockname()[1]
+    logger.warning("Using port %d instead.", free_port)
+    return free_port
 
-    from sglang_omni.config.imports import import_string
 
-    factory_path = _BUILTIN_PIPELINES[pipeline_name]
-    factory = import_string(factory_path)
-    kwargs: dict[str, Any] = {"model_id": model_id}
-    if extra_kwargs:
-        kwargs.update(extra_kwargs)
-    config = factory(**kwargs)
-    if not isinstance(config, PipelineConfig):
-        raise TypeError(
-            f"Pipeline factory {factory_path} returned {type(config)}, "
-            "expected PipelineConfig"
-        )
-    return config
+def _default_run_id() -> str:
+    return time.strftime("run_%Y%m%d_%H%M%S")
+
+
+def _default_template(profiler_dir: str, run_id: str) -> str:
+    return os.path.join(profiler_dir, run_id, "trace")
 
 
 # ---------------------------------------------------------------------------
 # Server lifecycle
 # ---------------------------------------------------------------------------
+
+
+def _collect_stage_control_endpoints(stages) -> dict[str, str]:
+    """Derive {stage_name: control_plane_recv_endpoint} from runtime Stage objects."""
+    out: dict[str, str] = {}
+    for st in stages:
+        cp = getattr(st, "control_plane", None)
+        ep = getattr(cp, "recv_endpoint", None) if cp is not None else None
+
+        if not ep:
+            ep = getattr(st, "recv_endpoint", None)
+
+        if not ep:
+            raise RuntimeError(
+                f"Cannot resolve control endpoint for stage={getattr(st, 'name', st)}"
+            )
+        out[st.name] = ep
+    return out
+
+
+class StartReq(BaseModel):
+    run_id: str | None = None
+    trace_path_template: str | None = None
+    config: dict[str, Any] | None = None
+
+
+class StopReq(BaseModel):
+    run_id: str | None = None
+
+
+def _mount_profiler_routes(
+    app, profiler_ctl: ProfilerControlClient, profiler_dir: str
+) -> None:
+    router = APIRouter()
+
+    @router.post("/start_profile")
+    async def start(req: StartReq):
+        run_id = req.run_id or _default_run_id()
+        tpl = req.trace_path_template or _default_template(profiler_dir, run_id)
+        await profiler_ctl.broadcast_start(
+            run_id=run_id,
+            trace_path_template=tpl,
+            config=req.config,
+        )
+        return {"run_id": run_id, "trace_path_template": tpl}
+
+    @router.post("/stop_profile")
+    async def stop(req: StopReq):
+        run_id = req.run_id or "default"
+        await profiler_ctl.broadcast_stop(run_id=run_id)
+        return {"run_id": run_id}
+
+    app.include_router(router)
 
 
 async def _run_server(
@@ -95,8 +147,12 @@ async def _run_server(
 
     This is the async entry point.  For a blocking call use :func:`launch_server`.
     """
+    # 0. Check port availability before loading models
+    port = _find_available_port(host, port)
+
     # 1. Compile pipeline config -> Coordinator + Stages
     coordinator, stages = compile_pipeline(pipeline_config)
+    stage_endpoints = _collect_stage_control_endpoints(stages)
     runner = PipelineRunner(coordinator, stages)
 
     # 2. Start the pipeline (coordinator + all stages as async tasks)
@@ -111,7 +167,14 @@ async def _run_server(
         # 3. Build Client -> FastAPI app
         cl_kwargs = client_kwargs or {}
         client = Client(coordinator, **cl_kwargs)
-        app = create_app(client, model_name=model_name or pipeline_config.name)
+        app = create_app(
+            client,
+            model_name=model_name or pipeline_config.name,
+        )
+
+        profiler_dir = os.environ.get("SGLANG_TORCH_PROFILER_DIR")
+        profiler_ctl = ProfilerControlClient(stage_endpoints)
+        _mount_profiler_routes(app, profiler_ctl, profiler_dir)
 
         # 4. Run uvicorn
         config = uvicorn.Config(app, host=host, port=port, log_level=log_level)
@@ -155,181 +218,3 @@ def launch_server(
             client_kwargs=client_kwargs,
         )
     )
-
-
-def load_pipeline_config(path: str | Path) -> PipelineConfig:
-    """Load a PipelineConfig from a JSON file.
-
-    Args:
-        path: Path to a JSON file containing a valid PipelineConfig.
-
-    Returns:
-        Parsed PipelineConfig instance.
-    """
-    text = Path(path).read_text(encoding="utf-8")
-    data = json.loads(text)
-    return PipelineConfig(**data)
-
-
-def export_pipeline_config(config: PipelineConfig, path: str | Path) -> None:
-    """Export a PipelineConfig to a JSON file.
-
-    Args:
-        config: Pipeline configuration to export.
-        path: Output JSON file path.
-    """
-    data = config.model_dump(mode="json")
-    Path(path).write_text(
-        json.dumps(data, indent=2, ensure_ascii=False) + "\n",
-        encoding="utf-8",
-    )
-    logger.info("Pipeline config exported to %s", path)
-
-
-# ---------------------------------------------------------------------------
-# CLI entry point
-# ---------------------------------------------------------------------------
-
-
-def main() -> None:
-    """CLI: ``sglang-omni-server`` or ``python -m sglang_omni.serve.launcher``."""
-    import argparse
-
-    parser = argparse.ArgumentParser(
-        description="Launch an OpenAI-compatible server for sglang-omni.",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""\
-examples:
-  # From a JSON config file
-  sglang-omni-server --config pipeline.json --port 8000
-
-  # Built-in pipeline (no JSON needed)
-  sglang-omni-server --pipeline qwen3-omni --model-id Qwen/Qwen3-Omni-30B-A3B-Instruct
-
-  # Export config to JSON for inspection / editing
-  sglang-omni-server --pipeline qwen3-omni --model-id ... --export-config pipeline.json
-""",
-    )
-
-    # --- Source: pick one ---
-    source = parser.add_mutually_exclusive_group(required=True)
-    source.add_argument(
-        "--config",
-        type=str,
-        help="Path to a pipeline config JSON file.",
-    )
-    source.add_argument(
-        "--pipeline",
-        type=str,
-        choices=sorted(_BUILTIN_PIPELINES),
-        help="Name of a built-in pipeline.",
-    )
-
-    # --- Pipeline factory args (used with --pipeline) ---
-    parser.add_argument(
-        "--model-id",
-        type=str,
-        default=None,
-        help="Hugging Face model id (required with --pipeline).",
-    )
-    parser.add_argument("--dtype", type=str, default=None, help="Model dtype.")
-    parser.add_argument("--preprocessing-device", type=str, default=None)
-    parser.add_argument("--image-device", type=str, default=None)
-    parser.add_argument("--audio-device", type=str, default=None)
-    parser.add_argument("--thinker-device", type=str, default=None)
-    parser.add_argument("--thinker-max-seq-len", type=int, default=None)
-    parser.add_argument(
-        "--relay-type",
-        type=str,
-        default=None,
-        choices=["shm", "nccl", "nixl"],
-    )
-
-    # --- Export instead of serve ---
-    parser.add_argument(
-        "--export-config",
-        type=str,
-        default=None,
-        metavar="PATH",
-        help="Export the resolved pipeline config to a JSON file and exit.",
-    )
-
-    # --- Server options ---
-    parser.add_argument(
-        "--host",
-        type=str,
-        default="0.0.0.0",
-        help="Server bind address (default: 0.0.0.0).",
-    )
-    parser.add_argument(
-        "--port",
-        type=int,
-        default=8000,
-        help="Server bind port (default: 8000).",
-    )
-    parser.add_argument(
-        "--model-name",
-        type=str,
-        default=None,
-        help="Model name for /v1/models (default: pipeline name).",
-    )
-    parser.add_argument(
-        "--log-level",
-        type=str,
-        default="info",
-        choices=["debug", "info", "warning", "error", "critical"],
-        help="Log level (default: info).",
-    )
-
-    args = parser.parse_args()
-
-    logging.basicConfig(
-        level=getattr(logging, args.log_level.upper()),
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    )
-
-    # --- Resolve config ---
-    if args.config:
-        config = load_pipeline_config(args.config)
-    else:
-        # --pipeline mode
-        if not args.model_id:
-            parser.error("--model-id is required when using --pipeline")
-
-        # Collect non-None kwargs to forward to the factory
-        factory_kwargs: dict[str, Any] = {}
-        for key in (
-            "dtype",
-            "preprocessing_device",
-            "image_device",
-            "audio_device",
-            "thinker_device",
-            "thinker_max_seq_len",
-            "relay_type",
-        ):
-            val = getattr(args, key, None)
-            if val is not None:
-                factory_kwargs[key] = val
-
-        config = _resolve_builtin(
-            args.pipeline,
-            model_id=args.model_id,
-            extra_kwargs=factory_kwargs,
-        )
-
-    # --- Export or serve ---
-    if args.export_config:
-        export_pipeline_config(config, args.export_config)
-        return
-
-    launch_server(
-        config,
-        host=args.host,
-        port=args.port,
-        model_name=args.model_name,
-        log_level=args.log_level,
-    )
-
-
-if __name__ == "__main__":
-    main()

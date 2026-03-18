@@ -21,6 +21,9 @@ class DataReadyMessage:
     from_stage: str
     to_stage: str
     shm_metadata: Any  # Can be dict, SHMMetadata, or RdmaMetadata
+    chunk_id: int | None = None
+    is_done: bool = False
+    error: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         # Handle different metadata types
@@ -43,13 +46,20 @@ class DataReadyMessage:
                 else {}
             )
 
-        return {
+        d = {
             "type": "data_ready",
             "request_id": self.request_id,
             "from_stage": self.from_stage,
             "to_stage": self.to_stage,
             "shm_metadata": metadata_dict,
         }
+        if self.chunk_id is not None:
+            d["chunk_id"] = self.chunk_id
+        if self.is_done:
+            d["is_done"] = True
+        if self.error is not None:
+            d["error"] = self.error
+        return d
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "DataReadyMessage":
@@ -108,6 +118,9 @@ class DataReadyMessage:
             from_stage=d["from_stage"],
             to_stage=d["to_stage"],
             shm_metadata=metadata,
+            chunk_id=d.get("chunk_id"),
+            is_done=d.get("is_done", False),
+            error=d.get("error"),
         )
 
 
@@ -223,6 +236,42 @@ class ShutdownMessage:
         return cls()
 
 
+@dataclass
+class ProfilerStartMessage:
+    """Profiler start for a stage."""
+
+    run_id: str
+    trace_path_template: str  # e.g. "/tmp/profiles/{run_id}/{stage}/trace"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "type": "profiler_start",
+            "run_id": self.run_id,
+            "trace_path_template": self.trace_path_template,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> "ProfilerStartMessage":
+        return cls(
+            run_id=d["run_id"],
+            trace_path_template=d["trace_path_template"],
+        )
+
+
+@dataclass
+class ProfilerStopMessage:
+    """Profiler stop for an entry."""
+
+    run_id: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"type": "profiler_stop", "run_id": self.run_id}
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> "ProfilerStopMessage":
+        return cls(run_id=d["run_id"])
+
+
 def parse_message(
     d: dict[str, Any],
 ) -> (
@@ -232,6 +281,8 @@ def parse_message(
     | StreamMessage
     | SubmitMessage
     | ShutdownMessage
+    | ProfilerStartMessage
+    | ProfilerStopMessage
 ):
     """Parse a dict into the appropriate message type."""
     msg_type = d.get("type")
@@ -247,5 +298,9 @@ def parse_message(
         return SubmitMessage.from_dict(d)
     elif msg_type == "shutdown":
         return ShutdownMessage.from_dict(d)
+    elif msg_type == "profiler_start":
+        return ProfilerStartMessage.from_dict(d)
+    elif msg_type == "profiler_stop":
+        return ProfilerStopMessage.from_dict(d)
     else:
         raise ValueError(f"Unknown message type: {msg_type}")

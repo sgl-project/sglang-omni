@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import Callable
 from typing import Any
 
@@ -30,9 +31,16 @@ class EngineExecutor(Executor):
         self._request_builder = request_builder
         self._result_builder = result_builder or self._default_result_builder
         self._stream_builder = stream_builder or self._default_stream_builder
+        self._stream_queue: Any | None = (
+            None  # Set by compiler for stream-receiving stages
+        )
+        self._stream_fn: Callable | None = (
+            None  # Set by compiler for stream-sending stages
+        )
         self._done: asyncio.Queue[str] = asyncio.Queue()
         self._tasks: dict[str, asyncio.Task[StagePayload]] = {}
         self._payloads: dict[str, StagePayload] = {}
+        self._submit_times: dict[str, float] = {}
         self._aborted: set[str] = set()
 
     async def add_request(self, payload: StagePayload) -> None:
@@ -40,9 +48,22 @@ class EngineExecutor(Executor):
         if request_id in self._aborted:
             return
 
+        # Pre-fetch chunks from stream queue (async) before calling sync request_builder
+        if self._stream_queue is not None:
+            chunks = []
+            while True:
+                item = await self._stream_queue.get(request_id)
+                if item is None:  # EOS
+                    break
+                chunks.append(item)
+            payload.prefetched_chunks = chunks
+        else:
+            payload.prefetched_chunks = None
+
         self._payloads[request_id] = payload
         engine_input = self._request_builder(payload)
         await self._engine.add_request(request_id, engine_input)
+        self._submit_times[request_id] = time.perf_counter()
 
         task = asyncio.create_task(self._await_result(payload))
         self._tasks[request_id] = task
@@ -58,6 +79,15 @@ class EngineExecutor(Executor):
         if callable(stop):
             await stop()
 
+    def set_stream_fn(self, fn) -> None:
+        """Set the streaming output callback."""
+        self._stream_fn = fn
+
+    def set_feedback_mailbox(self, mailbox: Any) -> None:
+        """Attach a feedback mailbox to engines that support WAITING_FEEDBACK."""
+        if hasattr(self._engine, "_feedback_mailbox"):
+            self._engine._feedback_mailbox = mailbox
+
     async def get_result(self) -> StagePayload:
         while True:
             request_id = await self._done.get()
@@ -69,7 +99,11 @@ class EngineExecutor(Executor):
             if task is None:
                 continue
             self._payloads.pop(request_id, None)
-            return await task
+            try:
+                return await task
+            except Exception as e:
+                e.request_id = request_id
+                raise
 
     async def abort(self, request_id: str) -> None:
         self._aborted.add(request_id)
@@ -92,6 +126,9 @@ class EngineExecutor(Executor):
     async def _await_result(self, payload: StagePayload) -> StagePayload:
         request_id = payload.request_id
         result = await self._engine.get_result(request_id)
+        t_submit = self._submit_times.pop(request_id, None)
+        engine_time_s = time.perf_counter() - t_submit if t_submit else None
+
         output = self._result_builder(payload, result)
         if not isinstance(output, StagePayload):
             output = StagePayload(
@@ -99,6 +136,8 @@ class EngineExecutor(Executor):
                 request=payload.request,
                 data=output,
             )
+        if engine_time_s is not None and isinstance(output.data, dict):
+            output.data["engine_time_s"] = engine_time_s
         return output
 
     @staticmethod

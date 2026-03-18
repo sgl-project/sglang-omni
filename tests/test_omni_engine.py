@@ -19,9 +19,9 @@ from sglang_omni.engines.omni import (
 async def _run_encoder_engine() -> None:
     from transformers import AutoModel, AutoTokenizer
 
-    model_id = "bert-base-uncased"
-    tokenizer = AutoTokenizer.from_pretrained(model_id)
-    model = AutoModel.from_pretrained(model_id)
+    model_path = "bert-base-uncased"
+    tokenizer = AutoTokenizer.from_pretrained(model_path)
+    model = AutoModel.from_pretrained(model_path)
 
     engine = create_encoder_engine(model=model, tokenizer=tokenizer, device="cuda")
     await engine.start()
@@ -44,10 +44,10 @@ async def _run_qwen3_8b_engine() -> None:
 
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
-    model_id = "Qwen/Qwen3-0.6B"
-    tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
+    model_path = "Qwen/Qwen3-0.6B"
+    tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
     model = AutoModelForCausalLM.from_pretrained(
-        model_id,
+        model_path,
         trust_remote_code=True,
         torch_dtype=torch.float16,
     )

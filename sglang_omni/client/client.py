@@ -91,9 +91,9 @@ class Client:
 
         async for chunk in self.generate(request, request_id=request_id):
             last_chunk = chunk
-            if chunk.modality == "text" and chunk.text:
+            if chunk.text:
                 text_parts.append(chunk.text)
-            if chunk.modality == "audio" and chunk.audio_data is not None:
+            if chunk.audio_data is not None:
                 audio_chunks.append(chunk.audio_data)
             if chunk.finish_reason is not None:
                 finish_reason = chunk.finish_reason
@@ -175,10 +175,15 @@ class Client:
             ClientError: If the pipeline produces no audio output.
         """
         audio_chunks: list[Any] = []
+        sample_rate: int | None = None
+        last_chunk: GenerateChunk | None = None
 
         async for chunk in self.generate(request, request_id=request_id):
             if chunk.audio_data is not None:
                 audio_chunks.append(chunk.audio_data)
+            if chunk.sample_rate is not None:
+                sample_rate = chunk.sample_rate
+            last_chunk = chunk
 
         if not audio_chunks:
             raise ClientError("No audio output generated from the pipeline.")
@@ -188,11 +193,14 @@ class Client:
         else:
             audio_data = np.concatenate([to_numpy(c) for c in audio_chunks])
 
-        audio_bytes, mime_type = encode_audio(
-            audio_data,
-            response_format=response_format,
-            speed=speed,
-        )
+        encode_kwargs: dict[str, Any] = {
+            "response_format": response_format,
+            "speed": speed,
+        }
+        if sample_rate is not None:
+            encode_kwargs["sample_rate"] = sample_rate
+
+        audio_bytes, mime_type = encode_audio(audio_data, **encode_kwargs)
 
         # Derive actual format from MIME type (encode_audio may fall back
         # to WAV if the requested codec is unavailable).
@@ -206,6 +214,7 @@ class Client:
             audio_bytes=audio_bytes,
             mime_type=mime_type,
             format=actual_format,
+            usage=last_chunk.usage if last_chunk else None,
         )
 
     # ------------------------------------------------------------------
@@ -236,10 +245,22 @@ class Client:
     @staticmethod
     def _set_audio_data(chunk: GenerateChunk, data: dict[str, Any]) -> None:
         audio_data = data.get("audio_data") or data.get("audio")
+        if audio_data is None and data.get("audio_waveform") is not None:
+            raw = data.get("audio_waveform")
+            if isinstance(raw, memoryview):
+                raw = raw.tobytes()
+            dtype = np.dtype(data.get("audio_waveform_dtype", "float32"))
+            arr = np.frombuffer(raw, dtype=dtype)
+            shape = data.get("audio_waveform_shape")
+            if shape:
+                arr = arr.reshape(shape)
+            audio_data = arr.copy()
         if audio_data is not None:
             chunk.audio_data = audio_data
-            if chunk.modality == "text":
-                chunk.modality = "audio"
+            chunk.modality = "audio"
+        sample_rate = data.get("sample_rate")
+        if sample_rate is not None:
+            chunk.sample_rate = sample_rate
 
     @staticmethod
     def _build_omni_request(request: GenerateRequest) -> OmniRequest:
@@ -259,6 +280,15 @@ class Client:
             result.request_id = request_id
             return result
         if isinstance(result, dict):
+            # Multi-terminal merged result: {"decode": {...}, "code2wav": {...}}
+            if "decode" in result and "code2wav" in result:
+                decode_result = result["decode"] or {}
+                c2w_result = result["code2wav"] or {}
+                text = decode_result.get("text")
+                if isinstance(text, str):
+                    chunk.text = text
+                Client._set_audio_data(chunk, c2w_result)
+                return chunk
             text = result.get("text")
             if isinstance(text, str):
                 chunk.text = text

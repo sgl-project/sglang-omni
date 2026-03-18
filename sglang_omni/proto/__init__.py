@@ -1,9 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
-# Import SHMMetadata from relay.nixl (kept for backward compatibility)
 from .messages import (
     AbortMessage,
     CompleteMessage,
     DataReadyMessage,
+    ProfilerStartMessage,
+    ProfilerStopMessage,
     ShutdownMessage,
     StreamMessage,
     SubmitMessage,
@@ -19,6 +20,8 @@ __all__ = [
     "StreamMessage",
     "SubmitMessage",
     "ShutdownMessage",
+    "ProfilerStartMessage",
+    "ProfilerStopMessage",
     "parse_message",
     "RequestState",
     "RequestInfo",

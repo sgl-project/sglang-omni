@@ -3,20 +3,91 @@
 
 from __future__ import annotations
 
+import logging
+import types
+
 import torch
 import torch.nn as nn
 from transformers.models.qwen3_omni_moe import modeling_qwen3_omni_moe as hf_modeling
 
 from sglang_omni.models.qwen3_omni.components.common import load_thinker_config
-from sglang_omni.models.utils.hf import instantiate_module
 from sglang_omni.models.weight_loader import load_module, resolve_dtype
+from sglang_omni.utils import instantiate_module
+
+logger = logging.getLogger(__name__)
 
 VISUAL_PREFIX = ("thinker.visual.", "visual.")
 VISUAL_CLASS = hf_modeling.Qwen3OmniMoeVisionEncoder
 
 
+def _patch_embed_forward(self: nn.Module, hidden_states: torch.Tensor) -> torch.Tensor:
+    """Optimized PatchEmbed forward using Linear instead of Conv3d."""
+    return self.linear(hidden_states.to(dtype=self.linear.weight.dtype))
+
+
+def _optimize_patch_embed(visual: nn.Module) -> None:
+    """Replace Conv3d with Linear in PatchEmbed for ~7-15× speedup.
+
+    The Conv3d kernel does not slide (kernel_size == stride), so it is
+    equivalent to a reshape + linear. We load weights via Conv3d for
+    checkpoint compatibility, then copy them to a Linear layer.
+
+    Reference: https://github.com/sgl-project/sglang/pull/19788
+    """
+    patch_embed = getattr(visual, "patch_embed", None)
+    if patch_embed is None:
+        return
+    conv = getattr(patch_embed, "proj", None)
+    if conv is None or not isinstance(conv, nn.Conv3d):
+        return
+
+    if list(conv.kernel_size) != list(conv.stride):
+        logger.debug(
+            "PatchEmbed Conv3d kernel_size=%s != stride=%s, skipping optimization",
+            conv.kernel_size,
+            conv.stride,
+        )
+        return
+
+    if conv.padding != (0, 0, 0) or conv.dilation != (1, 1, 1) or conv.groups != 1:
+        logger.debug(
+            "PatchEmbed Conv3d has non-trivial padding/dilation/groups, skipping"
+        )
+        return
+
+    embed_dim = conv.out_channels
+    in_features = (
+        conv.in_channels
+        * conv.kernel_size[0]
+        * conv.kernel_size[1]
+        * conv.kernel_size[2]
+    )
+
+    linear = nn.Linear(
+        in_features,
+        embed_dim,
+        bias=True,
+        dtype=conv.weight.dtype,
+        device=conv.weight.device,
+    )
+    with torch.no_grad():
+        linear.weight.copy_(conv.weight.view(embed_dim, -1))
+        linear.bias.copy_(conv.bias)
+
+    del patch_embed.proj
+    patch_embed.linear = linear
+    patch_embed.forward = types.MethodType(_patch_embed_forward, patch_embed)
+    logger.info(
+        "PatchEmbed optimized: Conv3d(%d→%d) replaced with Linear(%d→%d)",
+        conv.in_channels,
+        embed_dim,
+        in_features,
+        embed_dim,
+    )
+
+
 def _build_visual(
-    model_id: str,
+    model_path: str,
     *,
     thinker_cfg: object,
     torch_dtype: torch.dtype | None,
@@ -24,14 +95,16 @@ def _build_visual(
 ) -> nn.Module:
     vision_cfg = thinker_cfg.vision_config
     visual = instantiate_module(VISUAL_CLASS, vision_cfg)
-    return load_module(
+    visual = load_module(
         visual,
-        model_id,
+        model_path,
         prefix=VISUAL_PREFIX,
         dtype=torch_dtype,
         device=device,
         strict=True,
     )
+    _optimize_patch_embed(visual)
+    return visual
 
 
 class Qwen3OmniImageEncoder(nn.Module):
@@ -39,17 +112,17 @@ class Qwen3OmniImageEncoder(nn.Module):
 
     def __init__(
         self,
-        model_id: str,
+        model_path: str,
         *,
         device: str = "cuda",
         dtype: str | torch.dtype | None = None,
     ) -> None:
         super().__init__()
         torch_dtype = resolve_dtype(dtype)
-        thinker_cfg = load_thinker_config(model_id)
+        thinker_cfg = load_thinker_config(model_path)
         self._device = torch.device(device)
         self.visual = _build_visual(
-            model_id,
+            model_path,
             thinker_cfg=thinker_cfg,
             torch_dtype=torch_dtype,
             device=device,

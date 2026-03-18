@@ -1,16 +1,12 @@
-# 📊 Benchmarks
+# Benchmarks
 
-## 💬 Benchmark Relay
+## benchmark_tts_speed.py
 
-This benchmark measures the latency and throughput of the various backends for relay. You can use the sample command below to benchmark all the backends. If you want to benchmark a specific backend, you can use the `--backend-type` argument (check `python benchmark_relay.py --help` for more details).
+Benchmark online serving latency and throughput for TTS models via the `/v1/audio/speech` HTTP API.
 
-```bash
-python benchmark_relay.py \
-    --backend-type all \
-    --start-size 16 \
-    --end-size 1024 \
-    --factor 2 \
-    --output-dir ./results
-```
+Supports two input modes:
 
-You can check the benchmark results in the `results` directory.
+- **Voice cloning** with a seed-tts-eval `meta.lst` testset (`--testset`)
+- **Plain text** prompts (`--prompts`)
+
+Metrics reported: latency (mean/median/p95/p99), real-time factor (RTF), audio duration, and throughput (req/s).

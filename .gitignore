@@ -34,3 +34,9 @@ Thumbs.db
 .ruff_cache/
 uv.lock
 results/
+.humanize/
+.humanize/
+trae_output/
+sglang_omni/models/qwen3_asr/
+tests/test_qwen3_omni_thinker_eagle/tiny-qwen3-omni/
+tests/test_qwen3_omni_thinker_eagle/tiny-qwen3-omni-draft/

@@ -93,8 +93,15 @@ def create_encoder_engine(
         cache_manager = SimpleCacheManager(max_size=cache_size)
 
     return OmniEngine(
-        scheduler=scheduler, model_runner=model_runner, cache_manager=cache_manager
+        scheduler=scheduler,
+        model_runner=model_runner,
+        cache_manager=cache_manager,
+        enable_overlap=False,
     )
+
+
+# Alias: generic name for non-AR single-pass engines
+create_single_pass_engine = create_encoder_engine
 
 
 def create_ar_engine(
@@ -102,6 +109,7 @@ def create_ar_engine(
     tokenizer: Any = None,
     max_seq_len: int = 2048,
     device: str = "cuda",
+    enable_overlap: bool = False,
 ) -> OmniEngine:
     """Create an AR engine (single request, HF KV cache).
 
@@ -110,6 +118,7 @@ def create_ar_engine(
         tokenizer: Tokenizer (used to get eos_token_id)
         max_seq_len: Maximum sequence length
         device: Device to run on
+        enable_overlap: Enable overlap scheduling (GPU/CPU pipelining)
 
     Returns:
         OmniEngine configured for AR models
@@ -120,7 +129,7 @@ def create_ar_engine(
         model = AutoModelForCausalLM.from_pretrained("gpt2")
         tokenizer = AutoTokenizer.from_pretrained("gpt2")
 
-        engine = create_ar_engine(model, tokenizer)
+        engine = create_ar_engine(model, tokenizer, enable_overlap=True)
         await engine.start()
 
         # Create request data
@@ -167,4 +176,145 @@ def create_ar_engine(
         device=device,
     )
 
-    return OmniEngine(scheduler=scheduler, model_runner=model_runner)
+    return OmniEngine(
+        scheduler=scheduler,
+        model_runner=model_runner,
+        enable_overlap=enable_overlap,
+    )
+
+
+def create_sglang_ar_engine(
+    server_args: Any,
+    gpu_id: int = 0,
+    enable_overlap: bool | None = None,
+    stream_adapter=None,
+    capture_hidden: bool = False,
+    capture_hidden_layers: list[int] | None = None,
+    model_arch_override: str | None = None,
+    weight_prefix: str | None = None,
+    feedback_enabled: bool = False,
+    feedback_mailbox: Any | None = None,
+) -> OmniEngine:
+    """Create an AR engine backed by SGLang's ModelWorker and KV cache.
+
+    Uses SGLang's PrefillManager, DecodeManager, and paged KV cache for
+    continuous batching with chunked prefill support.
+
+    Args:
+        server_args: SGLang ServerArgs configuration
+        gpu_id: GPU device ID
+        enable_overlap: Enable overlap scheduling. If None, uses the value
+                       from server_args (not server_args.disable_overlap_schedule).
+
+    Returns:
+        OmniEngine configured with SGLang backend
+    """
+    from sglang_omni.engines.ar.sglang_backend.model_worker import (
+        ModelWorker,
+        ModelWorkerConfig,
+    )
+    from sglang_omni.engines.ar.sglang_backend.scheduler.cache import create_tree_cache
+    from sglang_omni.engines.ar.sglang_backend.scheduler.decode import DecodeManager
+    from sglang_omni.engines.ar.sglang_backend.scheduler.prefill import PrefillManager
+
+    from .runtime.sglang_ar import (
+        SGLangBatchPlanner,
+        SGLangIterationController,
+        SGLangModelRunner,
+        SGLangOutputProcessor,
+        SGLangResourceManager,
+    )
+
+    # Determine overlap setting
+    if enable_overlap is None:
+        enable_overlap = not getattr(server_args, "disable_overlap_schedule", False)
+
+    # Initialize model worker
+    model_worker = ModelWorker(
+        config=ModelWorkerConfig(
+            model_arch_override=model_arch_override,
+            weight_prefix=weight_prefix,
+        ),
+        server_args=server_args,
+        gpu_id=gpu_id,
+    )
+
+    # Configure multi-layer hidden state capture (e.g., [0, 24] for embed + layer-24)
+    # Uses forward hooks to capture intermediate hidden states from transformer layers.
+    # The VL wrapper doesn't support layers_to_capture directly, so we hook into the
+    # text model's layers and store captured states on the model instance.
+    if capture_hidden_layers:
+        from .runtime._hidden_capture import install_hidden_capture_hooks
+
+        model = model_worker.model_runner.model
+        install_hidden_capture_hooks(model, capture_hidden_layers)
+
+    # Get memory pools
+    req_to_token_pool, token_to_kv_pool_allocator = model_worker.get_memory_pool()
+
+    # Create tree cache
+    tree_cache = create_tree_cache(
+        server_args,
+        req_to_token_pool,
+        token_to_kv_pool_allocator,
+        server_args.page_size,
+    )
+
+    # Create prefill and decode managers
+    prefill_mgr = PrefillManager(
+        page_size=server_args.page_size,
+        chunked_prefill_size=server_args.chunked_prefill_size,
+        max_prefill_tokens=server_args.max_prefill_tokens,
+        req_to_token_pool=req_to_token_pool,
+        token_to_kv_pool_allocator=token_to_kv_pool_allocator,
+        tree_cache=tree_cache,
+        model_config=model_worker.model_config,
+        enable_overlap=enable_overlap,
+    )
+    decode_mgr = DecodeManager(
+        server_args=server_args,
+        token_to_kv_pool_allocator=token_to_kv_pool_allocator,
+        on_retract=lambda req: prefill_mgr.add_one_request(req),
+    )
+
+    # Assemble SGLang-specific components
+    batch_planner = SGLangBatchPlanner(prefill_mgr, decode_mgr, server_args)
+    resource_mgr = SGLangResourceManager(
+        token_to_kv_pool_allocator, req_to_token_pool, tree_cache
+    )
+    iteration_ctrl = SGLangIterationController(
+        tree_cache, feedback_enabled=feedback_enabled
+    )
+    output_proc = SGLangOutputProcessor(
+        capture_hidden=capture_hidden,
+        capture_hidden_layers=capture_hidden_layers,
+        model=model_worker.model_runner.model if capture_hidden_layers else None,
+    )
+
+    if stream_adapter is None:
+
+        def stream_adapter(request, output):
+            if request.data.req.is_chunked > 0:
+                return None
+            token = output.data
+            return int(token) if token is not None else None
+
+    scheduler = Scheduler(
+        batch_planner=batch_planner,
+        resource_manager=resource_mgr,
+        iteration_controller=iteration_ctrl,
+        stream_adapter=stream_adapter,
+    )
+    # Wire abort callback so feedback-timeout aborts go through the
+    # scheduler's proper cleanup path (free resources, notify waiters).
+    batch_planner._abort_callback = scheduler.abort_request
+    sglang_model_runner = SGLangModelRunner(
+        model_worker, output_proc, batch_planner=batch_planner
+    )
+
+    return OmniEngine(
+        scheduler=scheduler,
+        model_runner=sglang_model_runner,
+        enable_overlap=enable_overlap,
+        feedback_mailbox=feedback_mailbox,
+    )

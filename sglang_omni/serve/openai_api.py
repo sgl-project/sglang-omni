@@ -5,6 +5,8 @@ Provides the following endpoints:
 - POST /v1/chat/completions  — Text (+ audio) chat completions
 - POST /v1/audio/speech      — Text-to-speech synthesis
 - GET  /v1/models            — List available models
+- GET  /v1/fs/list           — Browse filesystem directories
+- GET  /v1/fs/file           — Download a file
 - GET  /health               — Health check
 """
 
@@ -17,6 +19,7 @@ import uuid
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from sglang_omni.client import (
@@ -58,11 +61,22 @@ def create_app(
     Args:
         client: Client instance connected to the pipeline coordinator.
         model_name: Default model name to report in responses and /v1/models.
+        serve_playground: Path to the playground directory to serve as static
+            files.  When set, the filesystem browser API and static file
+            serving are enabled so the entire playground runs on a single port.
 
     Returns:
         Configured FastAPI application.
     """
     app = FastAPI(title="sglang-omni", version="0.1.0")
+
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
     # Store references in app state for access from route handlers
     app.state.client = client
@@ -85,13 +99,16 @@ def create_app(
 def _register_health(app: FastAPI) -> None:
     @app.get("/health")
     async def health() -> JSONResponse:
-        """Health check endpoint."""
+        """Health check endpoint (includes filesystem browse info)."""
         client: Client = app.state.client
         info = client.health()
         is_running = info.get("running", False)
         status_code = 200 if is_running else 503
         return JSONResponse(
-            content={"status": "healthy" if is_running else "unhealthy", **info},
+            content={
+                "status": "healthy" if is_running else "unhealthy",
+                **info,
+            },
             status_code=status_code,
         )
 
@@ -248,12 +265,25 @@ async def _chat_stream(
     """Streaming chat completion generator (yields SSE events)."""
     role_sent = False
     requested_modalities = req.modalities or ["text"]
+    finish_reason: str | None = None
+    final_usage: UsageResponse | None = None
 
     async for chunk in client.completion_stream(
         gen_req,
         request_id=request_id,
         audio_format=audio_format,
     ):
+        # Capture finish info for the dedicated finish chunk after the loop.
+        if chunk.finish_reason is not None:
+            finish_reason = chunk.finish_reason
+            if chunk.usage is not None:
+                final_usage = UsageResponse(
+                    prompt_tokens=chunk.usage.prompt_tokens or 0,
+                    completion_tokens=chunk.usage.completion_tokens or 0,
+                    total_tokens=chunk.usage.total_tokens or 0,
+                )
+            continue
+
         delta = ChatCompletionStreamDelta()
         emit = False
 
@@ -280,20 +310,8 @@ async def _chat_stream(
             )
             emit = True
 
-        # Finish reason
-        finish_reason = chunk.finish_reason
-
-        if not emit and finish_reason is None:
+        if not emit:
             continue
-
-        # Build usage for final chunk
-        usage = None
-        if finish_reason is not None and chunk.usage is not None:
-            usage = UsageResponse(
-                prompt_tokens=chunk.usage.prompt_tokens or 0,
-                completion_tokens=chunk.usage.completion_tokens or 0,
-                total_tokens=chunk.usage.total_tokens or 0,
-            )
 
         stream_resp = ChatCompletionStreamResponse(
             id=response_id,
@@ -303,15 +321,41 @@ async def _chat_stream(
                 ChatCompletionStreamChoice(
                     index=0,
                     delta=delta,
-                    finish_reason=finish_reason,
+                    finish_reason=None,
                 )
             ],
-            usage=usage,
         )
 
-        yield f"data: {json.dumps(stream_resp.model_dump(exclude_none=True))}\n\n"
+        data = stream_resp.model_dump(exclude_none=True)
+        for choice in data.get("choices", []):
+            choice.setdefault("finish_reason", None)
+        yield f"data: {json.dumps(data)}\n\n"
+
+    # Finish chunk: empty delta + finish_reason.
+    finish_resp = ChatCompletionStreamResponse(
+        id=response_id,
+        created=created,
+        model=model,
+        choices=[
+            ChatCompletionStreamChoice(
+                index=0,
+                delta=ChatCompletionStreamDelta(),
+                finish_reason=finish_reason or "stop",
+            )
+        ],
+        usage=final_usage,
+    )
+    data = finish_resp.model_dump(exclude_none=True)
+    for choice in data.get("choices", []):
+        choice.setdefault("finish_reason", None)
+    yield f"data: {json.dumps(data)}\n\n"
 
     yield "data: [DONE]\n\n"
+
+
+# ---------------------------------------------------------------------------
+# Request building helpers
+# ---------------------------------------------------------------------------
 
 
 def _build_chat_generate_request(req: ChatCompletionRequest) -> GenerateRequest:
@@ -415,12 +459,21 @@ def _register_speech(app: FastAPI) -> None:
             logger.exception("Error generating speech for request %s", request_id)
             raise HTTPException(status_code=500, detail=str(exc)) from exc
 
+        headers = {
+            "Content-Disposition": f'attachment; filename="speech.{result.format}"',
+        }
+        if result.usage is not None:
+            if result.usage.prompt_tokens is not None:
+                headers["X-Prompt-Tokens"] = str(result.usage.prompt_tokens)
+            if result.usage.completion_tokens is not None:
+                headers["X-Completion-Tokens"] = str(result.usage.completion_tokens)
+            if result.usage.engine_time_s is not None:
+                headers["X-Engine-Time"] = str(result.usage.engine_time_s)
+
         return Response(
             content=result.audio_bytes,
             media_type=result.mime_type,
-            headers={
-                "Content-Disposition": f'attachment; filename="speech.{result.format}"',
-            },
+            headers=headers,
         )
 
 
@@ -449,14 +502,32 @@ def _build_speech_generate_request(
     if req.seed is not None:
         tts_params["seed"] = req.seed
 
-    # Sampling params
-    sampling = SamplingParams()
+    # Sampling params — use S2-Pro-tuned defaults
+    sampling = SamplingParams(
+        temperature=0.8, top_p=0.8, top_k=30, repetition_penalty=1.1
+    )
     if req.max_new_tokens is not None:
         sampling.max_new_tokens = req.max_new_tokens
+    if req.temperature is not None:
+        sampling.temperature = req.temperature
+    if req.top_p is not None:
+        sampling.top_p = req.top_p
+    if req.top_k is not None:
+        sampling.top_k = req.top_k
+    if req.repetition_penalty is not None:
+        sampling.repetition_penalty = req.repetition_penalty
+
+    # Build prompt: plain string if no references, dict otherwise
+    prompt: Any = req.input
+    if req.ref_audio is not None:
+        ref = {"audio_path": req.ref_audio}
+        if req.ref_text is not None:
+            ref["text"] = req.ref_text
+        prompt = {"text": req.input, "references": [ref]}
 
     return GenerateRequest(
         model=req.model or default_model,
-        prompt=req.input,
+        prompt=prompt,
         sampling=sampling,
         stage_params=req.stage_params,
         stream=False,  # TTS returns complete audio, no streaming

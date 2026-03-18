@@ -54,11 +54,3 @@ jobs:
             } else {
               console.log(`Reran ${reranCount} workflow(s).`);
             }
-
-            // React to the comment to acknowledge
-            await github.rest.reactions.createForIssueComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              comment_id: context.payload.comment.id,
-              content: 'rocket',
-            });
