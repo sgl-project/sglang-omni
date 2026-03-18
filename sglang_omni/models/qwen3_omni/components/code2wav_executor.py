@@ -59,7 +59,7 @@ class _Code2WavStreamingExecutor(Executor):
         model,
         *,
         device: str,
-        stream_chunk_size: int = 300,
+        stream_chunk_size: int = 10,
         left_context_size: int = 25,
         sample_rate: int = 24000,
         codec_eos_token_id: int = 2150,
@@ -244,7 +244,7 @@ def create_code2wav_executor(
     dtype: str | None = None,
     max_batch_size: int = 32,
     gpu_id: int | None = None,
-    stream_chunk_size: int = 300,
+    stream_chunk_size: int = 10,
     left_context_size: int = 25,
 ) -> Executor:
     """Create Code2Wav executor that streams waveform chunks."""

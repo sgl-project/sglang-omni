@@ -50,10 +50,15 @@ class DirectModelExecutor(Executor):
         self._stream_queue: Any | None = None
         # Set externally by compiler for stream-sending stages
         self._stream_fn: Callable | None = None
+        self._target_stage: str | None = None
 
     def set_stream_fn(self, fn: Callable) -> None:
         """Set the streaming output callback. Sync, non-blocking."""
         self._stream_fn = fn
+
+    def set_stream_target(self, target_stage: str) -> None:
+        """Configure the downstream stage for streaming outputs."""
+        self._target_stage = target_stage
 
     async def add_request(self, payload: StagePayload) -> None:
         request_id = payload.request_id
@@ -116,8 +121,17 @@ class DirectModelExecutor(Executor):
 
             # Enqueue result as chunk to downstream via stream_fn
             if self._stream_fn is not None:
+                if self._target_stage is None:
+                    raise RuntimeError(
+                        "DirectModelExecutor streaming requires a configured target stage"
+                    )
                 chunk_tensor, chunk_metadata = self._extract_chunk_output(output)
-                self._stream_fn(request_id, chunk_tensor, metadata=chunk_metadata)
+                self._stream_fn(
+                    request_id,
+                    chunk_tensor,
+                    self._target_stage,
+                    metadata=chunk_metadata,
+                )
 
             chunk_count += 1
 

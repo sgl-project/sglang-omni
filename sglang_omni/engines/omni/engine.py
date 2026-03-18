@@ -260,6 +260,10 @@ class OmniEngine(Engine):
             # No new work. Process any pending results.
             if self._result_queue:
                 self._process_pending_result()
+            elif self._feedback_mailbox is not None:
+                # Still check for arrived feedback even when idle
+                self._check_feedback()
+                await asyncio.sleep(0.001)
             else:
                 await asyncio.sleep(0.001)
             self._last_scheduler_output = None
@@ -410,6 +414,24 @@ class OmniEngine(Engine):
             if finished:
                 for req in finished:
                     logger.debug("Request %s finished (overlap)", req.request_id)
+
+            # Check feedback needs (same logic as _step_normal)
+            iter_ctrl = self.scheduler.iteration_controller
+            if hasattr(iter_ctrl, "needs_feedback"):
+                for request in pending.scheduler_output.requests:
+                    if request.status in (
+                        SchedulerStatus.FINISHED,
+                        SchedulerStatus.ABORTED,
+                    ):
+                        continue
+                    output = pending.model_output.outputs.get(request.request_id)
+                    if output is not None and iter_ctrl.needs_feedback(request, output):
+                        request.status = SchedulerStatus.WAITING_FEEDBACK
+                        request._feedback_wait_start = time.time()
+
+            # Check for arrived feedback
+            if self._feedback_mailbox is not None:
+                self._check_feedback()
 
         except Exception as e:
             logger.exception(
@@ -566,6 +588,10 @@ class OmniEngine(Engine):
     async def _update_cache(self, scheduler_output: SchedulerOutput, model_output: Any):
         """Update cache with fresh model outputs."""
         assert self.cache_manager is not None
+        for request in scheduler_output.requests:
+            output = model_output.outputs.get(request.request_id)
+            if output is not None:
+                self.cache_manager.put(request, output)
 
 
 def _is_prefill_batch(batch_data: Any) -> bool:

@@ -77,17 +77,18 @@ async def main_async(args: argparse.Namespace) -> None:
     from sglang_omni.pipeline.mp_runner import MultiProcessPipelineRunner
     from sglang_omni.serve.openai_api import create_app
 
-    # GPU mapping via env vars (consumed by mp_runner stage processes)
-    os.environ["QWEN3_PARITY_GPU_THINKER"] = str(args.gpu_thinker)
-    os.environ["QWEN3_PARITY_GPU_TALKER"] = str(args.gpu_talker)
-    os.environ["QWEN3_PARITY_GPU_CODE_PREDICTOR"] = str(args.gpu_code_predictor)
-    os.environ["QWEN3_PARITY_GPU_CODE2WAV"] = str(args.gpu_code2wav)
-    os.environ["QWEN3_PARITY_GPU_IMAGE"] = str(args.gpu_image_encoder)
-    os.environ["QWEN3_PARITY_GPU_AUDIO"] = str(args.gpu_audio_encoder)
+    # Build GPU placement from CLI args
+    gpu_placement = {
+        "thinker": args.gpu_thinker,
+        "talker_ar": args.gpu_talker,
+        "code_predictor": args.gpu_code_predictor,
+        "code2wav": args.gpu_code2wav,
+    }
 
     config = Qwen3OmniSpeechPipelineConfig(
         model_path=args.model_path,
         relay_backend=args.relay_backend,
+        gpu_placement=gpu_placement,
     )
 
     runner = MultiProcessPipelineRunner(config)
