@@ -13,7 +13,6 @@ from sglang_omni.engines.omni.scheduler import Scheduler
 from .runtime.s2pro_sglang_ar import (
     S2ProSGLangIterationController,
     S2ProSGLangModelRunner,
-    S2ProSGLangOutputProcessor,
     S2ProSGLangResourceManager,
 )
 from .tokenizer import S2ProTokenizerAdapter
@@ -30,7 +29,6 @@ def _patch_fish_config_for_sglang(model_path: str) -> None:
     if hasattr(FishQwen3Config, "_sglang_patched"):
         return
 
-    # Patch text config: add standard HF attribute aliases
     original_init = FishQwen3Config.__init__
 
     def _patched_text_init(self, *args, **kwargs):
@@ -39,7 +37,6 @@ def _patch_fish_config_for_sglang(model_path: str) -> None:
         self.hidden_size = self.dim
         self.num_hidden_layers = self.n_layer
         self.num_key_value_heads = self.n_local_heads
-        # S2-pro is trained in bf16
         self.torch_dtype = torch.bfloat16
         if self.architectures is None:
             self.architectures = ["S2ProSGLangTextModel"]
@@ -47,7 +44,6 @@ def _patch_fish_config_for_sglang(model_path: str) -> None:
     FishQwen3Config.__init__ = _patched_text_init
     FishQwen3Config._sglang_patched = True
 
-    # Patch top-level config: add architectures for ModelConfig
     original_omni_init = FishQwen3OmniConfig.__init__
 
     def _patched_omni_init(self, *args, **kwargs):
@@ -59,7 +55,6 @@ def _patch_fish_config_for_sglang(model_path: str) -> None:
 
 
 def _truncate_rope_to_bf16(model: torch.nn.Module) -> None:
-    # Match fish_speech's bf16 RoPE training precision to avoid logit divergence
     for module in model.modules():
         if hasattr(module, "cos_sin_cache"):
             module.cos_sin_cache.data = module.cos_sin_cache.data.to(torch.bfloat16).to(
@@ -80,9 +75,8 @@ def create_s2pro_sglang_engine(
     ras_window: int = 16,
     ras_temperature: float = 1.5,
     ras_top_p: float = 0.95,
-    use_torch_compile: bool = True,
 ) -> OmniEngine:
-    """Create a paged-attention S2-Pro engine using SGLang backend."""
+    """Create a unified S2-Pro engine (slow+fast head in one CUDA graph)."""
     from sglang_omni.engines.ar.sglang_backend.model_worker import (
         ModelWorker,
         ModelWorkerConfig,
@@ -94,29 +88,52 @@ def create_s2pro_sglang_engine(
 
     _patch_fish_config_for_sglang(server_args.model_path)
 
-    # Use FlashAttention backend (fa3) to match fish_speech's flash_attn_with_kvcache. Refer to day0 support blog
     if server_args.attention_backend is None:
         server_args.attention_backend = "fa3"
+
+    # Enable hidden state capture for unified decode
+    want_cuda_graph = not server_args.disable_cuda_graph
+    if want_cuda_graph:
+        server_args.enable_return_hidden_states = True
 
     adapter = S2ProTokenizerAdapter(tokenizer)
     im_end_id = adapter.eos_token_ids[0]
     semantic_begin_id = adapter.semantic_begin_id
     semantic_end_id = adapter.semantic_end_id
 
-    # Initialize SGLang model worker (loads text model with RadixAttention)
+    # Defer CUDA graph capture: ModelWorker.__init__ captures graphs, but
+    # setup_vq_decode (which attaches the audio decoder / codebook loop)
+    # must run first so the graph includes _decode_codebooks.
+    server_args.disable_cuda_graph = True
     model_worker = ModelWorker(
         config=ModelWorkerConfig(),
         server_args=server_args,
         gpu_id=gpu_id,
     )
+    server_args.disable_cuda_graph = not want_cuda_graph
 
-    # Match fish_speech's bf16 RoPE precision. Refer to day0 support blog
     _truncate_rope_to_bf16(model_worker.model_runner.model)
 
-    # Get memory pools
+    # Set up unified decode: slow head + fast head in one forward
+    text_model = model_worker.model_runner.model
+    max_bs = server_args.max_running_requests
+    audio_decoder.setup_caches(max_batch_size=max_bs, dtype=torch.bfloat16)
+    text_model.setup_vq_decode(
+        audio_decoder,
+        num_codebooks=num_codebooks,
+        codebook_size=codebook_size,
+        semantic_begin_id=semantic_begin_id,
+        semantic_end_id=semantic_end_id,
+        im_end_id=im_end_id,
+        max_batch_size=max_bs,
+    )
+
+    # Now capture CUDA graphs with _decode_codebooks in the graph
+    if want_cuda_graph:
+        model_worker.model_runner.init_device_graphs()
+
     req_to_token_pool, token_to_kv_pool_allocator = model_worker.get_memory_pool()
 
-    # Create tree cache for prefix caching
     tree_cache = create_tree_cache(
         server_args,
         req_to_token_pool,
@@ -140,23 +157,9 @@ def create_s2pro_sglang_engine(
         on_retract=lambda req: prefill_mgr.add_one_request(req),
     )
 
-    # Assemble S2-Pro SGLang components
     batch_planner = SGLangBatchPlanner(prefill_mgr, decode_mgr, server_args)
     resource_mgr = S2ProSGLangResourceManager(
         token_to_kv_pool_allocator, req_to_token_pool, tree_cache
-    )
-    output_processor = S2ProSGLangOutputProcessor(
-        audio_decoder=audio_decoder,
-        num_codebooks=num_codebooks,
-        codebook_size=codebook_size,
-        semantic_begin_id=semantic_begin_id,
-        semantic_end_id=semantic_end_id,
-        im_end_id=im_end_id,
-        top_k=top_k,
-        ras_window=ras_window,
-        ras_temperature=ras_temperature,
-        ras_top_p=ras_top_p,
-        use_torch_compile=use_torch_compile,
     )
     iteration_ctrl = S2ProSGLangIterationController(
         tree_cache=tree_cache,
@@ -176,6 +179,11 @@ def create_s2pro_sglang_engine(
         iteration_controller=iteration_ctrl,
         stream_adapter=_stream_adapter,
     )
-    model_runner = S2ProSGLangModelRunner(model_worker, output_processor, batch_planner)
+    model_runner = S2ProSGLangModelRunner(
+        model_worker,
+        batch_planner,
+        semantic_begin_id,
+        semantic_end_id,
+    )
 
     return OmniEngine(scheduler=scheduler, model_runner=model_runner)

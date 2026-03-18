@@ -116,18 +116,11 @@ def create_preprocessing_executor(model_path: str) -> PreprocessingExecutor:
     tokenizer = PreTrainedTokenizerFast.from_pretrained(checkpoint_dir)
     adapter = S2ProTokenizerAdapter(tokenizer)
 
-    # Lazy-loaded codec
-    _codec_cache: dict[str, Any] = {}
-
-    def _get_codec(device: str = "cpu"):
-        if "codec" not in _codec_cache:
-            _codec_cache["codec"] = _load_codec(checkpoint_dir, device)
-        return _codec_cache["codec"]
+    codec = _load_codec(checkpoint_dir, "cpu")
 
     def _encode_reference_audio(audio_path: str, device: str = "cpu") -> torch.Tensor:
         import torchaudio
 
-        codec = _get_codec(device)
         audio, sr = torchaudio.load(audio_path)
         if audio.shape[0] > 1:
             audio = audio.mean(0, keepdim=True)
@@ -220,7 +213,6 @@ def create_sglang_tts_engine_executor(
     audio_decoder, num_codebooks, codebook_size, tokenizer, checkpoint_dir = (
         _load_audio_decoder(model_path, device)
     )
-    audio_decoder.setup_caches(max_batch_size=1, dtype=torch.bfloat16)
 
     _patch_fish_config_for_sglang(checkpoint_dir)
     server_args = ServerArgs(
@@ -230,7 +222,7 @@ def create_sglang_tts_engine_executor(
         mem_fraction_static=0.85,
         chunked_prefill_size=8192,
         max_running_requests=64,
-        disable_cuda_graph=True,
+        disable_cuda_graph=False,
     )
 
     engine = create_s2pro_sglang_engine(
