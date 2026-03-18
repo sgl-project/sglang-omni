@@ -6,6 +6,7 @@ Centralize third-party imports and apply optional monkey patches here.
 from __future__ import annotations
 
 from sglang.srt.distributed import (
+    get_pp_group,
     get_tensor_model_parallel_rank,
     get_tensor_model_parallel_world_size,
     tensor_model_parallel_all_reduce,
@@ -16,6 +17,7 @@ from sglang.srt.distributed import (
 #     return x
 
 __all__ = [
+    "get_pp_group",
     "get_tensor_model_parallel_rank",
     "get_tensor_model_parallel_world_size",
     "tensor_model_parallel_all_reduce",

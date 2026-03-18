@@ -339,6 +339,8 @@ def create_sglang_thinker_executor_from_config(
     thinker_max_seq_len: int = 8192,
     server_args_overrides: dict[str, Any] | None = None,
     speech_enabled: bool = False,
+    speculative_algorithm: str | None = None,
+    speculative_draft_model_path: str | None = None,
 ) -> EngineExecutor:
     """Create a SGLang thinker executor from JSON-serializable config args.
 
@@ -346,7 +348,11 @@ def create_sglang_thinker_executor_from_config(
     a typed ServerArgs object internally.
     """
     server_args = build_sglang_server_args(
-        model_path, context_length=thinker_max_seq_len, **(server_args_overrides or {})
+        model_path,
+        context_length=thinker_max_seq_len,
+        speculative_algorithm=speculative_algorithm,
+        speculative_draft_model_path=speculative_draft_model_path,
+        **(server_args_overrides or {})
     )
     return create_sglang_thinker_executor(
         server_args=server_args,

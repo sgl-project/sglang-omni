@@ -13,6 +13,7 @@ from sglang_omni.models.weight_loader import default_weight_loader
 from sglang_omni.utils import add_prefix
 from sglang_omni.vendor.sglang.core import ForwardBatch
 from sglang_omni.vendor.sglang.distributed import (
+    get_pp_group,
     get_tensor_model_parallel_rank,
     get_tensor_model_parallel_world_size,
     tensor_model_parallel_all_reduce,
@@ -21,6 +22,7 @@ from sglang_omni.vendor.sglang.layers import (
     LayerCommunicator,
     LayerScatterModes,
     MRotaryEmbedding,
+    ParallelLMHead,
     QKVParallelLinear,
     QuantizationConfig,
     RadixAttention,
@@ -618,7 +620,9 @@ class Qwen3OmniMoeThinkerTextModel(nn.Module):
             prefix=add_prefix(prefix, "embed_tokens"),
         )
 
-        alt_stream = torch.cuda.Stream()
+        self.pp_group = get_pp_group()
+        
+        alt_stream = torch.cuda.Stream() if torch.cuda.is_available() else None
         self.layers, self.start_layer, self.end_layer = make_layers(
             config.num_hidden_layers,
             lambda idx, prefix: Qwen3OmniMoeThinkerTextDecoderLayer(
@@ -628,9 +632,18 @@ class Qwen3OmniMoeThinkerTextModel(nn.Module):
                 prefix=prefix,
                 alt_stream=alt_stream,
             ),
+            pp_rank=self.pp_group.rank_in_group,
+            pp_size=self.pp_group.world_size,
             prefix=add_prefix("layers", prefix),
         )
         self.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+
+        self.lm_head = ParallelLMHead(
+            config.vocab_size, config.hidden_size, quant_config=quant_config
+        )
+        
+        from sglang.srt.layers.logits_processor import LogitsProcessor
+        self.logits_processor = LogitsProcessor(config)
 
         # For EAGLE3 support
         self.layers_to_capture = []
@@ -684,9 +697,28 @@ class Qwen3OmniMoeThinkerTextModel(nn.Module):
                 hidden_states, _ = self.norm(hidden_states, residual)
 
         if len(aux_hidden_states) == 0:
+            if forward_batch.return_logprob:
+                return self.logits_processor(
+                    input_ids,
+                    hidden_states,
+                    self.lm_head,
+                    forward_batch,
+                )
             return hidden_states
 
+        if forward_batch.return_logprob:
+            return self.logits_processor(
+                input_ids,
+                hidden_states,
+                self.lm_head,
+                forward_batch,
+                aux_hidden_states,
+            )
         return hidden_states, aux_hidden_states
+
+    def set_embed_and_head(self, embed, head):
+        self.embed_tokens = embed
+        self.lm_head = head
 
     def _deepstack_process(self, hidden_states, visual_pos_masks, visual_embeds):
         # visual_pos_masks may be 1D boolean (SGLang path) or multi-dim (HF path)

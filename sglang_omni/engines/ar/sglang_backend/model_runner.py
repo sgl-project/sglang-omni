@@ -70,6 +70,8 @@ class SGLModelRunner(ModelRunner):
             S2ProSGLangTextModel,
         )
         from sglang_omni.models.qwen3_omni.talker import Qwen3OmniTalker
+        from sglang_omni.models.qwen3_omni.draft import Qwen3OmniEagle3DraftModel
 
         ModelRegistry.models["S2ProSGLangTextModel"] = S2ProSGLangTextModel
         ModelRegistry.models["Qwen3OmniTalker"] = Qwen3OmniTalker
+        ModelRegistry.models["Qwen3OmniEagle3DraftModel"] = Qwen3OmniEagle3DraftModel

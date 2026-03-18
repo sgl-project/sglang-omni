@@ -36,3 +36,7 @@ uv.lock
 results/
 .humanize/
 .humanize/
+trae_output/
+sglang_omni/models/qwen3_asr/
+tests/dummy_models/tiny-qwen3-omni/
+tests/dummy_models/tiny-qwen3-omni-draft/
