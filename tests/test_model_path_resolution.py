@@ -10,21 +10,20 @@ from types import SimpleNamespace
 from sglang_omni.models.qwen3_omni.components import preprocessor
 
 
-def test_qwen3_preprocessor_recovers_missing_preprocessor_config(
-    monkeypatch, tmp_path: Path
+def test_qwen3_preprocessor_falls_back_to_remote_processor_download(
+    monkeypatch, tmp_path
 ) -> None:
     model_dir = tmp_path / "snapshot"
     model_dir.mkdir()
 
-    calls: list[Path] = []
+    calls: list[tuple[str, bool]] = []
 
     class DummyProcessorFactory:
         @classmethod
         def from_pretrained(cls, model_path: str, **kwargs):
-            path = Path(model_path)
-            calls.append(path)
-            if not (path / "preprocessor_config.json").exists():
-                raise OSError("missing preprocessor_config.json")
+            calls.append((str(model_path), bool(kwargs.get("local_files_only"))))
+            if kwargs.get("local_files_only"):
+                raise OSError("missing processor assets")
             return SimpleNamespace(
                 tokenizer=SimpleNamespace(chat_template="dummy-template")
             )
@@ -32,22 +31,15 @@ def test_qwen3_preprocessor_recovers_missing_preprocessor_config(
     def fake_resolve_model_path(model_path: str, *, local_files_only: bool = False):
         return model_dir
 
-    def fake_hf_hub_download(repo_id: str, *, filename: str) -> str:
-        cfg_path = model_dir / filename
-        cfg_path.write_text("{}", encoding="utf-8")
-        return str(cfg_path)
-
     monkeypatch.setattr(preprocessor, "resolve_model_path", fake_resolve_model_path)
-    monkeypatch.setattr(preprocessor, "hf_hub_download", fake_hf_hub_download)
     monkeypatch.setattr(preprocessor, "Qwen3OmniMoeProcessor", DummyProcessorFactory)
 
     proc = preprocessor.Qwen3OmniPreprocessor("Qwen/Qwen3-Omni-30B-A3B-Instruct")
 
     assert proc.processor.tokenizer.chat_template == "dummy-template"
     assert len(calls) == 2
-    assert calls[0] == model_dir
-    assert calls[1] == model_dir
-    assert (model_dir / "preprocessor_config.json").exists()
+    assert calls[0] == (str(model_dir), True)
+    assert calls[1] == ("Qwen/Qwen3-Omni-30B-A3B-Instruct", False)
 
 
 def test_qwen3_encoder_executor_forwards_cache_settings() -> None:

@@ -9,7 +9,6 @@ from pathlib import Path
 from typing import Any
 
 import torch
-from huggingface_hub import hf_hub_download
 from transformers.models.qwen3_omni_moe.processing_qwen3_omni_moe import (
     Qwen3OmniMoeProcessor,
 )
@@ -39,20 +38,6 @@ def _resolve_local_model_dir(model_path: str) -> str:
     return str(resolve_model_path(model_path, local_files_only=False))
 
 
-def _ensure_preprocessor_config(model_dir: str, *, model_path: str) -> Path:
-    cfg_path = Path(model_dir) / "preprocessor_config.json"
-    if cfg_path.exists():
-        return cfg_path
-    if Path(model_path).exists():
-        raise FileNotFoundError(f"Missing required processor metadata: {cfg_path}")
-    try:
-        return Path(hf_hub_download(model_path, filename="preprocessor_config.json"))
-    except Exception as exc:
-        raise FileNotFoundError(
-            f"Missing required processor metadata: {cfg_path}"
-        ) from exc
-
-
 class Qwen3OmniPreprocessor:
     """CPU-side preprocessing and tokenization using the HF processor."""
 
@@ -66,15 +51,14 @@ class Qwen3OmniPreprocessor:
                 local_files_only=True,
             )
         except Exception:
-            cfg_path = Path(self.model_dir) / "preprocessor_config.json"
-            if cfg_path.exists():
+            if Path(model_path).exists():
                 raise
-            _ensure_preprocessor_config(self.model_dir, model_path=model_path)
             self.processor = Qwen3OmniMoeProcessor.from_pretrained(
-                self.model_dir,
+                model_path,
                 trust_remote_code=True,
-                local_files_only=True,
+                local_files_only=False,
             )
+            self.model_dir = _resolve_local_model_dir(model_path)
         self.tokenizer = self.processor.tokenizer
         ensure_chat_template(self.tokenizer, model_path=self.model_dir)
 
