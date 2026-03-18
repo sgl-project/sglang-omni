@@ -51,12 +51,22 @@ def test_qwen3_preprocessor_recovers_missing_preprocessor_config(
 
 
 def test_qwen3_encoder_executor_forwards_cache_settings() -> None:
-    stages_path = Path(__file__).resolve().parent.parent / "sglang_omni" / "models" / "qwen3_omni" / "pipeline" / "stages.py"
+    stages_path = (
+        Path(__file__).resolve().parent.parent
+        / "sglang_omni"
+        / "models"
+        / "qwen3_omni"
+        / "pipeline"
+        / "stages.py"
+    )
     tree = ast.parse(stages_path.read_text(encoding="utf-8"))
 
     target_fn = None
     for node in tree.body:
-        if isinstance(node, ast.FunctionDef) and node.name == "_create_encoder_executor":
+        if (
+            isinstance(node, ast.FunctionDef)
+            and node.name == "_create_encoder_executor"
+        ):
             target_fn = node
             break
 
