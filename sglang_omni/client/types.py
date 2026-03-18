@@ -26,6 +26,7 @@ class UsageInfo:
     prompt_tokens: int | None = None
     completion_tokens: int | None = None
     total_tokens: int | None = None
+    engine_time_s: float | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any] | None) -> "UsageInfo | None":
@@ -35,14 +36,18 @@ class UsageInfo:
             prompt_tokens=data.get("prompt_tokens"),
             completion_tokens=data.get("completion_tokens"),
             total_tokens=data.get("total_tokens"),
+            engine_time_s=data.get("engine_time_s"),
         )
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        d: dict[str, Any] = {
             "prompt_tokens": self.prompt_tokens,
             "completion_tokens": self.completion_tokens,
             "total_tokens": self.total_tokens,
         }
+        if self.engine_time_s is not None:
+            d["engine_time_s"] = self.engine_time_s
+        return d
 
 
 @dataclass
@@ -210,6 +215,7 @@ class SpeechResult:
     audio_bytes: bytes
     mime_type: str
     format: str  # actual format used
+    usage: UsageInfo | None = None
 
 
 class ClientError(Exception):
