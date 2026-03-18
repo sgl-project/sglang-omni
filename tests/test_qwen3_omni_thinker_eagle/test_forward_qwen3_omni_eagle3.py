@@ -35,7 +35,8 @@ def test_forward():
     # Initialize DP Attention state
     from sglang.srt.layers.dp_attention import initialize_dp_attention
     
-    DUMMY_DIR = "/opt/gpfs/home/tianteng/sglang-omni/tests/dummy_models/tiny-qwen3-omni"
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    DUMMY_DIR = os.path.join(current_dir, "tiny-qwen3-omni")
     
     with open(os.path.join(DUMMY_DIR, "config.json"), "r") as f:
         config_dict = json.load(f)

@@ -3,8 +3,10 @@ import asyncio
 from sglang_omni.models.qwen3_omni.pipeline.stages import create_sglang_thinker_executor_from_config
 
 async def test():
-    DUMMY_DIR = "/opt/gpfs/home/tianteng/sglang-omni/tests/dummy_models/tiny-qwen3-omni"
-    DRAFT_DIR = "/opt/gpfs/home/tianteng/sglang-omni/tests/dummy_models/tiny-qwen3-omni-draft"
+    # Use relative paths
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    DUMMY_DIR = os.path.join(current_dir, "tiny-qwen3-omni")
+    DRAFT_DIR = os.path.join(current_dir, "tiny-qwen3-omni-draft")
 
     executor = create_sglang_thinker_executor_from_config(
         model_path=DUMMY_DIR,
