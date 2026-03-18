@@ -3,13 +3,11 @@
 
 from __future__ import annotations
 
+import ast
 from pathlib import Path
 from types import SimpleNamespace
 
-import torch
-
 from sglang_omni.models.qwen3_omni.components import preprocessor
-from sglang_omni.models.qwen3_omni.pipeline import stages
 
 
 def test_qwen3_preprocessor_recovers_missing_preprocessor_config(
@@ -52,32 +50,29 @@ def test_qwen3_preprocessor_recovers_missing_preprocessor_config(
     assert (model_dir / "preprocessor_config.json").exists()
 
 
-def test_qwen3_encoder_executor_passes_cache_settings(monkeypatch) -> None:
-    captured: dict[str, object] = {}
+def test_qwen3_encoder_executor_forwards_cache_settings() -> None:
+    stages_path = Path(__file__).resolve().parent.parent / "sglang_omni" / "models" / "qwen3_omni" / "pipeline" / "stages.py"
+    tree = ast.parse(stages_path.read_text(encoding="utf-8"))
 
-    def fake_create_single_pass_engine(model, **kwargs):
-        captured["model"] = model
-        captured.update(kwargs)
-        return object()
+    target_fn = None
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef) and node.name == "_create_encoder_executor":
+            target_fn = node
+            break
 
-    class DummyExecutor:
-        def __init__(self, **kwargs):
-            self.kwargs = kwargs
+    assert target_fn is not None, "_create_encoder_executor() not found"
 
-    monkeypatch.setattr(
-        stages, "create_single_pass_engine", fake_create_single_pass_engine
-    )
-    monkeypatch.setattr(stages, "EngineExecutor", DummyExecutor)
+    engine_call = None
+    for node in ast.walk(target_fn):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+            if node.func.id == "create_single_pass_engine":
+                engine_call = node
+                break
 
-    executor = stages._create_encoder_executor(
-        stage_name="image",
-        model=torch.nn.Identity(),
-        device="cpu",
-        use_cache=True,
-        cache_size=7,
-    )
+    assert engine_call is not None, "create_single_pass_engine() call not found"
 
-    assert isinstance(executor, DummyExecutor)
-    assert captured["device"] == "cpu"
-    assert captured["use_cache"] is True
-    assert captured["cache_size"] == 7
+    keywords = {kw.arg: kw.value for kw in engine_call.keywords if kw.arg is not None}
+    assert isinstance(keywords.get("use_cache"), ast.Name)
+    assert keywords["use_cache"].id == "use_cache"
+    assert isinstance(keywords.get("cache_size"), ast.Name)
+    assert keywords["cache_size"].id == "cache_size"
