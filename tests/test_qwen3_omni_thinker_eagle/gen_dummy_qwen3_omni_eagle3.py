@@ -6,8 +6,9 @@ import torch
 import safetensors.torch
 from transformers import AutoTokenizer
 
-DUMMY_DIR = "/opt/gpfs/home/tianteng/sglang-omni/tests/dummy_models/tiny-qwen3-omni"
-DRAFT_DIR = "/opt/gpfs/home/tianteng/sglang-omni/tests/dummy_models/tiny-qwen3-omni-draft"
+current_dir = os.path.dirname(os.path.abspath(__file__))
+DUMMY_DIR = os.path.join(current_dir, "tiny-qwen3-omni")
+DRAFT_DIR = os.path.join(current_dir, "tiny-qwen3-omni-draft")
 
 os.makedirs(DUMMY_DIR, exist_ok=True)
 os.makedirs(DRAFT_DIR, exist_ok=True)
