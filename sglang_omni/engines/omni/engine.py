@@ -425,9 +425,7 @@ class OmniEngine(Engine):
                     ):
                         continue
                     output = pending.model_output.outputs.get(request.request_id)
-                    if output is not None and iter_ctrl.needs_feedback(
-                        request, output
-                    ):
+                    if output is not None and iter_ctrl.needs_feedback(request, output):
                         request.status = SchedulerStatus.WAITING_FEEDBACK
                         request._feedback_wait_start = time.time()
 

@@ -576,7 +576,9 @@ class Stage:
             # Resolve any pending result waiter so the worker doesn't hang
             fut = worker._result_waiters.pop(request_id, None)
             if fut is not None and not fut.done():
-                fut.set_exception(asyncio.CancelledError(f"Request {request_id} aborted"))
+                fut.set_exception(
+                    asyncio.CancelledError(f"Request {request_id} aborted")
+                )
 
     def info(self) -> StageInfo:
         """Return stage info."""

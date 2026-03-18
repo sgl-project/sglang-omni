@@ -235,9 +235,7 @@ class TalkerStreamingExecutor(Executor):
 
             task = asyncio.create_task(_noop_result())
             self._tasks[request_id] = task
-            task.add_done_callback(
-                lambda _t: self._done.put_nowait(request_id)
-            )
+            task.add_done_callback(lambda _t: self._done.put_nowait(request_id))
             self._engine_feedback_mailbox.close(request_id)
             return
         await self._engine.add_request(request_id, engine_input)
@@ -325,7 +323,9 @@ class TalkerStreamingExecutor(Executor):
         thinker_done: bool = False,
     ) -> tuple[list[StreamItem], collections.deque[torch.Tensor], bool]:
         thinker_chunks = thinker_chunks or []
-        pending_feedbacks = pending_feedbacks if pending_feedbacks is not None else collections.deque()
+        pending_feedbacks = (
+            pending_feedbacks if pending_feedbacks is not None else collections.deque()
+        )
 
         while len(thinker_chunks) < min_thinker_chunks and not thinker_done:
             item = await self._stream_queue.get_with_source(request_id)

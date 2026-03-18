@@ -100,9 +100,7 @@ class _DummyEngine:
 def _install_sglang_stubs(monkeypatch):
     _DummyPrefillManager.instances.clear()
 
-    model_worker_mod = ModuleType(
-        "sglang_omni.engines.ar.sglang_backend.model_worker"
-    )
+    model_worker_mod = ModuleType("sglang_omni.engines.ar.sglang_backend.model_worker")
     model_worker_mod.ModelWorker = _DummyModelWorker
     model_worker_mod.ModelWorkerConfig = _DummyModelWorkerConfig
     monkeypatch.setitem(sys.modules, model_worker_mod.__name__, model_worker_mod)
@@ -115,9 +113,7 @@ def _install_sglang_stubs(monkeypatch):
     decode_mod.DecodeManager = _DummyDecodeManager
     monkeypatch.setitem(sys.modules, decode_mod.__name__, decode_mod)
 
-    prefill_mod = ModuleType(
-        "sglang_omni.engines.ar.sglang_backend.scheduler.prefill"
-    )
+    prefill_mod = ModuleType("sglang_omni.engines.ar.sglang_backend.scheduler.prefill")
     prefill_mod.PrefillManager = _DummyPrefillManager
     monkeypatch.setitem(sys.modules, prefill_mod.__name__, prefill_mod)
 

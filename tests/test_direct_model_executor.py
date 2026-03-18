@@ -1,10 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
 from __future__ import annotations
 
+import torch
+
 from sglang_omni.config.compiler import _wire_stream_targets
 from sglang_omni.config.schema import ExecutorConfig, StageConfig, StreamTargetConfig
 from sglang_omni.executors.direct_model_executor import DirectModelExecutor
-import torch
 
 
 class _EchoModel(torch.nn.Module):

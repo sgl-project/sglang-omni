@@ -357,9 +357,7 @@ class MultiProcessPipelineRunner:
                             f"Stage {stage_name} process died during startup "
                             f"(exit code {p.exitcode})"
                         )
-                    await loop.run_in_executor(
-                        None, event.wait, min(remaining, 1.0)
-                    )
+                    await loop.run_in_executor(None, event.wait, min(remaining, 1.0))
                 logger.info("Stage %s ready", stage_name)
 
             # 5. Check for early process failures
