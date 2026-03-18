@@ -621,7 +621,7 @@ class Qwen3OmniMoeThinkerTextModel(nn.Module):
         )
 
         self.pp_group = get_pp_group()
-        
+
         alt_stream = torch.cuda.Stream() if torch.cuda.is_available() else None
         self.layers, self.start_layer, self.end_layer = make_layers(
             config.num_hidden_layers,
@@ -641,8 +641,9 @@ class Qwen3OmniMoeThinkerTextModel(nn.Module):
         self.lm_head = ParallelLMHead(
             config.vocab_size, config.hidden_size, quant_config=quant_config
         )
-        
+
         from sglang.srt.layers.logits_processor import LogitsProcessor
+
         self.logits_processor = LogitsProcessor(config)
 
         # For EAGLE3 support

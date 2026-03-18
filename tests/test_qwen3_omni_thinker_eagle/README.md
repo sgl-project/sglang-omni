@@ -32,4 +32,3 @@ Execute the test script to simulate a multi-step autoregressive generation proce
 python test_forward_qwen3_omni_eagle3.py
 ```
 **Expected Output**: The script will initialize both models on CUDA, simulate a 4-step generate loop by incrementally updating `seq_lens` and `positions` in `ForwardBatch`, and print the tokens speculated/predicted by both models at each step without any framework crashes.
-

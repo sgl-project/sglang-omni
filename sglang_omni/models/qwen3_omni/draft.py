@@ -7,15 +7,12 @@ import torch
 from torch import nn
 
 from sglang_omni.models.qwen3_omni.hf_config import Qwen3OmniMoeTextConfig
-from sglang_omni.models.qwen3_omni.thinker import (
-    Qwen3OmniMoeThinkerTextAttention,
-)
+from sglang_omni.models.qwen3_omni.thinker import Qwen3OmniMoeThinkerTextAttention
 from sglang_omni.vendor.sglang.core import ForwardBatch
 from sglang_omni.vendor.sglang.layers import (
     LayerCommunicator,
     LayerScatterModes,
     MergedColumnParallelLinear,
-    ParallelLMHead,
     QuantizationConfig,
     ReplicatedLinear,
     RMSNorm,
@@ -107,9 +104,7 @@ class Qwen3OmniEagle3DecoderLayer(nn.Module):
 
         # Use Dense MLP for Draft Model
         # Assuming intermediate_size is provided in config or derived
-        intermediate_size = getattr(
-            config, "intermediate_size", config.hidden_size * 4
-        )
+        intermediate_size = getattr(config, "intermediate_size", config.hidden_size * 4)
         self.mlp = Qwen3OmniEagle3DenseMLP(
             hidden_size=self.hidden_size,
             intermediate_size=intermediate_size,
@@ -146,10 +141,12 @@ class Qwen3OmniEagle3DecoderLayer(nn.Module):
         residual: Optional[torch.Tensor],
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         # Self Attention
-        hidden_states, residual = self.layer_communicator.prepare_attn_and_capture_last_layer_outputs(
-            hidden_states,
-            residual,
-            forward_batch,
+        hidden_states, residual = (
+            self.layer_communicator.prepare_attn_and_capture_last_layer_outputs(
+                hidden_states,
+                residual,
+                forward_batch,
+            )
         )
 
         if hidden_states.shape[0] != 0:
@@ -209,7 +206,7 @@ class Qwen3OmniEagle3DraftModel(nn.Module):
         # Eagle3 specific projection layer
         # It projects target model's hidden state (typically same size, but could differ)
         self.fc = ReplicatedLinear(
-            config.hidden_size * 2, # Example: target + embed or just hidden_size
+            config.hidden_size * 2,  # Example: target + embed or just hidden_size
             config.hidden_size,
             bias=True,
             quant_config=quant_config,
@@ -231,8 +228,9 @@ class Qwen3OmniEagle3DraftModel(nn.Module):
         # Will be set by set_embed_and_head
         self.embed_tokens = None
         self.lm_head = None
-        
+
         from sglang.srt.layers.logits_processor import LogitsProcessor
+
         self.logits_processor = LogitsProcessor(config)
 
     def set_embed_and_head(self, embed: nn.Module, head: nn.Module):
@@ -245,11 +243,11 @@ class Qwen3OmniEagle3DraftModel(nn.Module):
         positions: torch.Tensor,
         forward_batch: ForwardBatch,
         input_embeds: torch.Tensor = None,
-        hidden_states: torch.Tensor = None, # Target model's hidden states
+        hidden_states: torch.Tensor = None,  # Target model's hidden states
     ) -> torch.Tensor:
         if input_embeds is None and self.embed_tokens is not None:
             input_embeds = self.embed_tokens(input_ids)
-            
+
         # In Eagle3, draft model usually combines its own embedding with target's hidden state
         if hidden_states is not None:
             # Concatenate or process based on specific Eagle3 implementation
@@ -261,7 +259,7 @@ class Qwen3OmniEagle3DraftModel(nn.Module):
             draft_hidden = input_embeds
 
         residual = None
-        
+
         draft_hidden, residual = self.layer(
             positions, draft_hidden, forward_batch, residual
         )
@@ -279,12 +277,13 @@ class Qwen3OmniEagle3DraftModel(nn.Module):
                 self.lm_head,
                 forward_batch,
             )
-        
+
         return draft_hidden
 
     def load_weights(self, weights: Iterable[Tuple[str, torch.Tensor]]):
         # Implement specific weight loading for Draft Model if necessary
         # Often it just loads its own small checkpoint
         pass
+
 
 EntryClass = Qwen3OmniEagle3DraftModel
