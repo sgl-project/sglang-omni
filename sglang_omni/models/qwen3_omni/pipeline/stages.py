@@ -86,7 +86,12 @@ def _create_encoder_executor(
         apply_encoder_result(state, stage_name=stage_name, result=result)
         return store_state(payload, state)
 
-    engine = create_single_pass_engine(model, device=device)
+    engine = create_single_pass_engine(
+        model,
+        device=device,
+        use_cache=use_cache,
+        cache_size=cache_size,
+    )
     return EngineExecutor(
         engine=engine, request_builder=_request_builder, result_builder=_result_builder
     )
