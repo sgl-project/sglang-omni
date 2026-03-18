@@ -162,7 +162,9 @@ def load_weights_by_prefix(
     local_files_only: bool = False,
 ) -> dict[str, torch.Tensor]:
     """Load weights matching one of the prefixes, stripping the matched prefix."""
-    resolved_model_path = resolve_model_path(model_path, local_files_only=local_files_only)
+    resolved_model_path = resolve_model_path(
+        model_path, local_files_only=local_files_only
+    )
     prefixes = _normalize_prefixes(prefix)
     state_dict = _load_weights_from_resolved_path(resolved_model_path, prefixes)
     if state_dict:

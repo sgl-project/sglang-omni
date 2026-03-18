@@ -7,8 +7,8 @@ import ast
 from pathlib import Path
 from types import SimpleNamespace
 
-from sglang_omni.models.qwen3_omni.components import preprocessor
 from sglang_omni.models import weight_loader
+from sglang_omni.models.qwen3_omni.components import preprocessor
 
 
 def test_qwen3_preprocessor_falls_back_to_remote_processor_download(
