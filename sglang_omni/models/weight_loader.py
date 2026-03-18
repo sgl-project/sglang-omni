@@ -39,13 +39,10 @@ def resolve_model_path(model_path: str, *, local_files_only: bool = False) -> Pa
     path = Path(model_path)
     if path.exists():
         return path
-    try:
+    if local_files_only:
         config_path = cached_file(model_path, "config.json", local_files_only=True)
         return Path(config_path).parent
-    except Exception:
-        if local_files_only:
-            raise
-    return Path(snapshot_download(model_path, local_files_only=local_files_only))
+    return Path(snapshot_download(model_path, local_files_only=False))
 
 
 def _load_bin_shard(path: str) -> dict[str, torch.Tensor]:
@@ -139,16 +136,9 @@ def _normalize_prefixes(prefixes: str | tuple[str, ...] | list[str]) -> tuple[st
     return tuple(prefixes)
 
 
-def load_weights_by_prefix(
-    model_path: str,
-    *,
-    prefix: str | tuple[str, ...] | list[str],
-    local_files_only: bool = False,
+def _load_weights_from_resolved_path(
+    model_path: Path, prefixes: tuple[str, ...]
 ) -> dict[str, torch.Tensor]:
-    """Load weights matching one of the prefixes, stripping the matched prefix."""
-    model_path = resolve_model_path(model_path, local_files_only=local_files_only)
-    prefixes = _normalize_prefixes(prefix)
-
     for prefix_item in prefixes:
         state_dict = _load_safetensors_sharded(model_path, prefix_item)
         if state_dict:
@@ -162,9 +152,35 @@ def load_weights_by_prefix(
         state_dict = _load_bin_single(model_path, prefix_item)
         if state_dict:
             return state_dict
+    return {}
+
+
+def load_weights_by_prefix(
+    model_path: str,
+    *,
+    prefix: str | tuple[str, ...] | list[str],
+    local_files_only: bool = False,
+) -> dict[str, torch.Tensor]:
+    """Load weights matching one of the prefixes, stripping the matched prefix."""
+    resolved_model_path = resolve_model_path(model_path, local_files_only=local_files_only)
+    prefixes = _normalize_prefixes(prefix)
+    state_dict = _load_weights_from_resolved_path(resolved_model_path, prefixes)
+    if state_dict:
+        return state_dict
+
+    # A poisoned/partial HF cache can still yield a snapshot path that is missing
+    # weight index files or shards. Refresh once before failing for remote models.
+    if not local_files_only and not Path(model_path).exists():
+        resolve_model_path.cache_clear()
+        resolved_model_path = Path(
+            snapshot_download(model_path, local_files_only=False, force_download=True)
+        )
+        state_dict = _load_weights_from_resolved_path(resolved_model_path, prefixes)
+        if state_dict:
+            return state_dict
 
     raise FileNotFoundError(
-        f"No weights found for prefixes {list(prefixes)!r} under {model_path}"
+        f"No weights found for prefixes {list(prefixes)!r} under {resolved_model_path}"
     )
 
 

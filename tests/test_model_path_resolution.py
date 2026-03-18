@@ -8,6 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from sglang_omni.models.qwen3_omni.components import preprocessor
+from sglang_omni.models import weight_loader
 
 
 def test_qwen3_preprocessor_falls_back_to_remote_processor_download(
@@ -78,3 +79,58 @@ def test_qwen3_encoder_executor_forwards_cache_settings() -> None:
     assert keywords["use_cache"].id == "use_cache"
     assert isinstance(keywords.get("cache_size"), ast.Name)
     assert keywords["cache_size"].id == "cache_size"
+
+
+def test_weight_loader_force_refreshes_partial_remote_snapshot(
+    monkeypatch, tmp_path
+) -> None:
+    partial_snapshot = tmp_path / "partial"
+    refreshed_snapshot = tmp_path / "refreshed"
+    partial_snapshot.mkdir()
+    refreshed_snapshot.mkdir()
+
+    refresh_calls: list[tuple[str, bool, bool]] = []
+    load_attempts: list[Path] = []
+
+    weight_loader.resolve_model_path.cache_clear()
+
+    def fake_resolve_model_path(model_path: str, *, local_files_only: bool = False):
+        assert model_path == "Qwen/Qwen3-Omni-30B-A3B-Instruct"
+        assert local_files_only is False
+        return partial_snapshot
+
+    fake_resolve_model_path.cache_clear = lambda: None
+
+    def fake_snapshot_download(
+        model_path: str, *, local_files_only: bool = False, force_download: bool = False
+    ) -> str:
+        refresh_calls.append((model_path, local_files_only, force_download))
+        return str(refreshed_snapshot)
+
+    def fake_load_safetensors_sharded(model_dir: Path, prefix: str):
+        load_attempts.append(model_dir)
+        if model_dir == refreshed_snapshot and prefix == "thinker.visual.":
+            return {"proj.weight": "loaded"}
+        return {}
+
+    monkeypatch.setattr(weight_loader, "resolve_model_path", fake_resolve_model_path)
+    monkeypatch.setattr(weight_loader, "snapshot_download", fake_snapshot_download)
+    monkeypatch.setattr(
+        weight_loader, "_load_safetensors_sharded", fake_load_safetensors_sharded
+    )
+    monkeypatch.setattr(weight_loader, "_load_safetensors_single", lambda *_: {})
+    monkeypatch.setattr(weight_loader, "_load_bin_sharded", lambda *_: {})
+    monkeypatch.setattr(weight_loader, "_load_bin_single", lambda *_: {})
+
+    state_dict = weight_loader.load_weights_by_prefix(
+        "Qwen/Qwen3-Omni-30B-A3B-Instruct",
+        prefix=("thinker.visual.", "visual."),
+        local_files_only=False,
+    )
+
+    assert state_dict == {"proj.weight": "loaded"}
+    assert refresh_calls == [
+        ("Qwen/Qwen3-Omni-30B-A3B-Instruct", False, True),
+    ]
+    assert load_attempts[0] == partial_snapshot
+    assert refreshed_snapshot in load_attempts
