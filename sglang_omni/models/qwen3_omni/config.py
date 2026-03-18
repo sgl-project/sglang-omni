@@ -166,7 +166,7 @@ class Qwen3OmniSpeechPipelineConfig(PipelineConfig):
             executor=ExecutorConfig(
                 factory="sglang_omni.models.qwen3_omni.pipeline.stages.create_sglang_thinker_executor_from_config",
                 args={
-                    "thinker_max_seq_len": 8192, 
+                    "thinker_max_seq_len": 8192,
                     "speech_enabled": True,
                     "speculative_algorithm": None,
                     "speculative_draft_model_path": None,

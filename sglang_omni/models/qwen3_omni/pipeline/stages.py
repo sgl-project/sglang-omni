@@ -352,7 +352,7 @@ def create_sglang_thinker_executor_from_config(
         context_length=thinker_max_seq_len,
         speculative_algorithm=speculative_algorithm,
         speculative_draft_model_path=speculative_draft_model_path,
-        **(server_args_overrides or {})
+        **(server_args_overrides or {}),
     )
     return create_sglang_thinker_executor(
         server_args=server_args,
