@@ -84,6 +84,9 @@ class ChatCompletionRequest(BaseModel):
     # Can be a list of video file paths (local paths or URLs)
     videos: list[str] | None = None
 
+    # Video/audio preprocessing options (sglang-omni extension)
+    use_audio_in_video: bool | None = None
+
     # Per-stage sampling overrides (sglang-omni specific)
     stage_sampling: dict[str, dict[str, Any]] | None = None
     stage_params: dict[str, dict[str, Any]] | None = None

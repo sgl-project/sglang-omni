@@ -417,6 +417,8 @@ def _build_chat_generate_request(req: ChatCompletionRequest) -> GenerateRequest:
         metadata["images"] = images
     if videos:
         metadata["videos"] = videos
+    if req.use_audio_in_video is not None:
+        metadata["use_audio_in_video"] = req.use_audio_in_video
 
     return GenerateRequest(
         model=req.model,

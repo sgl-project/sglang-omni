@@ -54,7 +54,7 @@ def merge_for_thinker(payloads: dict[str, StagePayload]) -> StagePayload:
         if stage_name in stage_state.engine_outputs:
             encoder_outs[stage_name] = stage_state.engine_outputs[stage_name]
 
-    thinker_inputs = build_thinker_inputs(state, encoder_outs)
+    thinker_inputs = build_thinker_inputs(state, encoder_outs, state.encoder_inputs)
 
     state.encoder_outs = encoder_outs
     state.thinker_inputs = thinker_inputs
@@ -67,6 +67,7 @@ def merge_for_thinker(payloads: dict[str, StagePayload]) -> StagePayload:
 def build_thinker_inputs(
     state: PipelineState,
     encoder_outs: dict[str, Any],
+    encoder_inputs: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     mm_inputs = state.mm_inputs
     mm_image = mm_inputs.get("image", {}) if isinstance(mm_inputs, dict) else {}
@@ -181,7 +182,27 @@ def build_thinker_inputs(
     if mm_video.get("use_audio_in_video") is True:
         thinker_model_inputs["use_audio_in_video"] = True
 
-    return {"model_inputs": thinker_model_inputs}
+    image_cache_key = mm_image.get("cache_key")
+    video_cache_key = mm_video.get("cache_key")
+    audio_cache_key = mm_audio.get("cache_key")
+    if isinstance(encoder_inputs, dict):
+        image_enc_inputs = encoder_inputs.get("image_encoder") or {}
+        audio_enc_inputs = encoder_inputs.get("audio_encoder") or {}
+        image_cache_key = image_cache_key or image_enc_inputs.get("image_cache_key")
+        video_cache_key = video_cache_key or image_enc_inputs.get("video_cache_key")
+        audio_cache_key = (
+            audio_cache_key
+            or audio_enc_inputs.get("audio_cache_key")
+            or audio_enc_inputs.get("cache_key")
+        )
+    result: dict[str, Any] = {"model_inputs": thinker_model_inputs}
+    if image_cache_key is not None:
+        result["image_cache_key"] = image_cache_key
+    if video_cache_key is not None:
+        result["video_cache_key"] = video_cache_key
+    if audio_cache_key is not None:
+        result["audio_cache_key"] = audio_cache_key
+    return result
 
 
 def _prune_preprocessing_for_thinker(

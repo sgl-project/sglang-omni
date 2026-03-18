@@ -934,7 +934,11 @@ class SGLangModelRunner:
         video_token_id = self._video_token_id
         audio_token_id = self._audio_token_id
 
-        input_embeds = self._embed_tokens(forward_batch.input_ids)
+        embed_vocab_size = int(self._embed_tokens.weight.shape[0])
+        lookup_input_ids = forward_batch.input_ids.clamp(
+            min=0, max=embed_vocab_size - 1
+        )
+        input_embeds = self._embed_tokens(lookup_input_ids)
 
         extend_lens = forward_batch.extend_seq_lens_cpu
         offsets = []
@@ -957,6 +961,12 @@ class SGLangModelRunner:
             req_input_ids = forward_batch.input_ids[start:end]
             consumed = req._omni_consumed or {}
 
+            modality_pad_values = {
+                "image": omni_inputs.get("_image_pad_value"),
+                "video": omni_inputs.get("_video_pad_value"),
+                "audio": omni_inputs.get("_audio_pad_value"),
+            }
+
             for modality, token_id in [
                 ("image", image_token_id),
                 ("video", video_token_id),
@@ -965,7 +975,10 @@ class SGLangModelRunner:
                 embeds = omni_inputs.get(f"{modality}_embeds")
                 if embeds is None:
                     continue
-                mask = req_input_ids == token_id
+                detect_id = modality_pad_values.get(modality)
+                if detect_id is None:
+                    detect_id = token_id
+                mask = req_input_ids == detect_id
                 if not mask.any():
                     continue
                 n_tokens = int(mask.sum().item())
@@ -984,16 +997,27 @@ class SGLangModelRunner:
 
             if ds_embeds is not None or image_ds is not None or video_ds is not None:
                 has_deepstack = True
-                img_mask = req_input_ids == image_token_id
-                vid_mask = req_input_ids == video_token_id
+                image_detect_id = modality_pad_values.get("image")
+                video_detect_id = modality_pad_values.get("video")
+                if image_detect_id is None:
+                    image_detect_id = image_token_id
+                if video_detect_id is None:
+                    video_detect_id = video_token_id
+                img_mask = req_input_ids == image_detect_id
+                vid_mask = req_input_ids == video_detect_id
                 visual_mask = img_mask | vid_mask
+                num_visual_tokens = int(visual_mask.sum().item())
+
+                # On cache-hit extends, visual placeholders may be fully in prefix.
+                # In that case there is no target position in this forward step.
+                if num_visual_tokens == 0:
+                    continue
 
                 if ds_embeds is None:
                     if image_ds and video_ds:
                         merged = []
                         for img_e, vid_e in zip(image_ds, video_ds):
-                            num_visual = int(visual_mask.sum().item())
-                            joint = img_e.new_zeros(num_visual, img_e.shape[-1])
+                            joint = img_e.new_zeros(num_visual_tokens, img_e.shape[-1])
                             img_in_visual = img_mask[visual_mask]
                             vid_in_visual = vid_mask[visual_mask]
                             if img_in_visual.any():
@@ -1071,15 +1095,27 @@ class SGLangModelRunner:
                 t.to(device=device, dtype=dtype) for t in deepstack_visual_embeds
             ]
             ds_input = torch.cat(layer_tensors, dim=-1)
+            num_target_positions = int(visual_pos_masks.sum().item())
 
-            full_ds = torch.zeros(
-                input_embeds.shape[0],
-                ds_input.shape[-1],
-                device=device,
-                dtype=dtype,
-            )
-            full_ds[visual_pos_masks] = ds_input
-            ds_input = full_ds
+            if num_target_positions == 0:
+                ds_input = None
+            elif ds_input.shape[0] != num_target_positions:
+                logger.warning(
+                    "Skip deepstack injection due to shape mismatch: ds_rows=%d, target_positions=%d",
+                    ds_input.shape[0],
+                    num_target_positions,
+                )
+                ds_input = None
+
+            if ds_input is not None:
+                full_ds = torch.zeros(
+                    input_embeds.shape[0],
+                    ds_input.shape[-1],
+                    device=device,
+                    dtype=dtype,
+                )
+                full_ds[visual_pos_masks] = ds_input
+                ds_input = full_ds
 
         hidden_states = outer.model(
             input_ids=None,

@@ -292,6 +292,12 @@ class Qwen3OmniPreprocessor:
             "audio": build_audio_mm_inputs(hf_inputs),
             "video": build_video_mm_inputs(hf_inputs),
         }
+        if image_cache_key:
+            mm_inputs["image"]["cache_key"] = image_cache_key
+        if video_cache_key:
+            mm_inputs["video"]["cache_key"] = video_cache_key
+        if audio_cache_key:
+            mm_inputs["audio"]["cache_key"] = audio_cache_key
         if use_audio_in_video is not None:
             mm_inputs["video"]["use_audio_in_video"] = bool(use_audio_in_video)
 

@@ -13,6 +13,8 @@ from sglang_omni.models.qwen3_omni.io import PipelineState, ThinkerOutput
 if TYPE_CHECKING:
     from sglang_omni.engines.omni.runtime.sglang_ar import SGLangARRequestData
 
+MM_HASH_SPACE = 1 << 30
+
 
 def build_encoder_request(
     state: PipelineState, *, stage_name: str
@@ -151,6 +153,15 @@ def _compute_mrope_positions(
     return mrope_positions.squeeze(1), mrope_position_delta
 
 
+def _substitute_visual_tokens(
+    input_ids_list: list[int], token_hash_map: dict[int, int]
+) -> list[int]:
+    if not token_hash_map:
+        return input_ids_list
+
+    return [token_hash_map.get(tok, tok) for tok in input_ids_list]
+
+
 def build_sglang_thinker_request(
     state: PipelineState,
     *,
@@ -205,10 +216,40 @@ def build_sglang_thinker_request(
 
     # Build SGLang Req
     rid = request_id or "req-0"
+
+    padded_input_ids = input_ids_list
+    image_cache_key = thinker_inputs.get("image_cache_key")
+    video_cache_key = thinker_inputs.get("video_cache_key")
+    audio_cache_key = thinker_inputs.get("audio_cache_key")
+    if thinker_config is not None:
+        modality_hashes: dict[str, int] = {}
+        if image_cache_key is not None:
+            modality_hashes["image"] = hash(image_cache_key) % MM_HASH_SPACE
+        if video_cache_key is not None:
+            modality_hashes["video"] = hash(video_cache_key) % MM_HASH_SPACE
+        if audio_cache_key is not None:
+            modality_hashes["audio"] = hash(audio_cache_key) % MM_HASH_SPACE
+
+        token_hash_map: dict[int, int] = {}
+        for modality in ("image", "video", "audio"):
+            token_id = getattr(thinker_config, f"{modality}_token_id", None)
+            hash_value = modality_hashes.get(modality)
+            if token_id is not None and hash_value is not None:
+                token_hash_map[token_id] = hash_value
+
+        padded_input_ids = _substitute_visual_tokens(input_ids_list, token_hash_map)
+        model_inputs = dict(model_inputs)
+        if "image" in modality_hashes:
+            model_inputs["_image_pad_value"] = modality_hashes["image"]
+        if "video" in modality_hashes:
+            model_inputs["_video_pad_value"] = modality_hashes["video"]
+        if "audio" in modality_hashes:
+            model_inputs["_audio_pad_value"] = modality_hashes["audio"]
+
     req = Req(
         rid=rid,
         origin_input_text="",
-        origin_input_ids=input_ids_list,
+        origin_input_ids=padded_input_ids,
         sampling_params=sampling_params,
         vocab_size=vocab_size,
     )
