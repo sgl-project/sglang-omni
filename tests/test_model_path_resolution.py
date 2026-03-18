@@ -7,8 +7,13 @@ import ast
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+import torch
+
 from sglang_omni.models import weight_loader
 from sglang_omni.models.qwen3_omni.components import preprocessor
+from sglang_omni.models.qwen3_omni.io import PipelineState
+from sglang_omni.proto import OmniRequest, StagePayload
 
 
 def test_qwen3_preprocessor_falls_back_to_remote_processor_download(
@@ -18,6 +23,7 @@ def test_qwen3_preprocessor_falls_back_to_remote_processor_download(
     model_dir.mkdir()
 
     calls: list[tuple[str, bool]] = []
+    resolve_calls: list[bool] = []
 
     class DummyProcessorFactory:
         @classmethod
@@ -30,6 +36,7 @@ def test_qwen3_preprocessor_falls_back_to_remote_processor_download(
             )
 
     def fake_resolve_model_path(model_path: str, *, local_files_only: bool = False):
+        resolve_calls.append(local_files_only)
         return model_dir
 
     monkeypatch.setattr(preprocessor, "resolve_model_path", fake_resolve_model_path)
@@ -41,6 +48,7 @@ def test_qwen3_preprocessor_falls_back_to_remote_processor_download(
     assert len(calls) == 2
     assert calls[0] == (str(model_dir), True)
     assert calls[1] == ("Qwen/Qwen3-Omni-30B-A3B-Instruct", False)
+    assert resolve_calls == [True, True]
 
 
 def test_qwen3_encoder_executor_forwards_cache_settings() -> None:
@@ -134,3 +142,98 @@ def test_weight_loader_force_refreshes_partial_remote_snapshot(
     ]
     assert load_attempts[0] == partial_snapshot
     assert refreshed_snapshot in load_attempts
+
+
+@pytest.mark.asyncio
+async def test_preprocessor_cache_keys_include_preprocessing_context(
+    monkeypatch, tmp_path
+) -> None:
+    model_dir = tmp_path / "snapshot"
+    model_dir.mkdir()
+
+    class DummyProcessorFactory:
+        @classmethod
+        def from_pretrained(cls, model_path: str, **kwargs):
+            return SimpleNamespace(
+                tokenizer=SimpleNamespace(chat_template="dummy-template"),
+                apply_chat_template=lambda *args, **kwargs: "prompt",
+                __call__=None,
+            )
+
+    class DummyProcessor:
+        tokenizer = SimpleNamespace(chat_template="dummy-template")
+
+        @staticmethod
+        def apply_chat_template(*args, **kwargs):
+            return "prompt"
+
+        def __call__(self, *args, **kwargs):
+            return {
+                "input_ids": torch.tensor([[1, 2, 3]], dtype=torch.long),
+                "attention_mask": torch.tensor([[1, 1, 1]], dtype=torch.long),
+                "pixel_values_videos": torch.zeros((2, 3), dtype=torch.float32),
+                "video_grid_thw": torch.tensor([[1, 2, 3]], dtype=torch.long),
+                "video_second_per_grid": torch.tensor([0.5], dtype=torch.float32),
+                "input_features": torch.zeros((1, 4), dtype=torch.float32),
+                "feature_attention_mask": torch.ones((1, 4), dtype=torch.long),
+                "audio_feature_lengths": torch.tensor([4], dtype=torch.long),
+            }
+
+    monkeypatch.setattr(
+        preprocessor,
+        "resolve_model_path",
+        lambda model_path, *, local_files_only=False: model_dir,
+    )
+    monkeypatch.setattr(preprocessor, "Qwen3OmniMoeProcessor", DummyProcessorFactory)
+
+    async def fake_ensure_video_list_async(*args, **kwargs):
+        return [torch.zeros((2, 3), dtype=torch.float32)], [7.5], []
+
+    async def fake_ensure_image_list_async(*args, **kwargs):
+        return []
+
+    async def fake_ensure_audio_list_async(*args, **kwargs):
+        return [torch.zeros(4)]
+
+    monkeypatch.setattr(
+        preprocessor, "ensure_video_list_async", fake_ensure_video_list_async
+    )
+    monkeypatch.setattr(
+        preprocessor, "ensure_image_list_async", fake_ensure_image_list_async
+    )
+    monkeypatch.setattr(
+        preprocessor, "ensure_audio_list_async", fake_ensure_audio_list_async
+    )
+    monkeypatch.setattr(preprocessor, "compute_image_cache_key", lambda *_: None)
+    monkeypatch.setattr(preprocessor, "compute_video_cache_key", lambda *_: "video-key")
+    monkeypatch.setattr(preprocessor, "compute_audio_cache_key", lambda *_: "audio-key")
+
+    proc = preprocessor.Qwen3OmniPreprocessor("Qwen/Qwen3-Omni-30B-A3B-Instruct")
+    proc.processor = DummyProcessor()
+
+    payload = StagePayload(
+        request_id="req-1",
+        request=OmniRequest(
+            inputs={
+                "messages": [{"role": "user", "content": "describe the video"}],
+                "videos": ["video.mp4"],
+                "audios": ["audio.wav"],
+                "audio_target_sr": 22050,
+                "video_fps": 12.0,
+                "video_seconds_per_chunk": 2.5,
+            }
+        ),
+        data=None,
+    )
+
+    result = await proc(payload)
+    state = PipelineState.from_dict(result.data)
+
+    assert (
+        state.encoder_inputs["image_encoder"]["cache_key"]
+        == "video-key|fps=(7.5,)|seconds_per_chunk=2.5"
+    )
+    assert (
+        state.encoder_inputs["audio_encoder"]["cache_key"]
+        == "audio-key|target_sr=22050"
+    )

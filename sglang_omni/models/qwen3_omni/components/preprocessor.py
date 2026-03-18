@@ -34,8 +34,32 @@ logger = logging.getLogger(__name__)
 
 
 def _resolve_local_model_dir(model_path: str) -> str:
-    """Resolve a local model directory, downloading snapshot when needed."""
-    return str(resolve_model_path(model_path, local_files_only=False))
+    """Resolve a local model directory without eagerly hydrating full snapshots."""
+    path = Path(model_path)
+    if path.exists():
+        return str(path)
+    try:
+        return str(resolve_model_path(model_path, local_files_only=True))
+    except Exception:
+        return model_path
+
+
+def _combine_cache_keys(*keys: str | None) -> str | None:
+    parts = [key for key in keys if key]
+    if not parts:
+        return None
+    return "|".join(parts)
+
+
+def _contextualize_cache_key(base_key: str | None, **context: Any) -> str | None:
+    if base_key is None:
+        return None
+    parts = [base_key]
+    for key in sorted(context):
+        value = context[key]
+        if value is not None:
+            parts.append(f"{key}={value}")
+    return "|".join(parts)
 
 
 class Qwen3OmniPreprocessor:
@@ -241,16 +265,43 @@ class Qwen3OmniPreprocessor:
             mm_inputs["video"]["use_audio_in_video"] = bool(use_audio_in_video)
 
         # Build encoder_inputs with cache_key for efficient caching.
-        # The image encoder handles both images and videos, so combine both
-        # cache keys when available.
+        # Include preprocessing parameters that materially change encoder outputs.
         image_encoder_inputs = {**mm_inputs["image"], **mm_inputs["video"]}
-        combined_cache_key = image_cache_key or video_cache_key
-        if image_cache_key and video_cache_key:
-            combined_cache_key = f"{image_cache_key}|{video_cache_key}"
+        effective_video_fps = None
+        if sampled_video_fps is not None:
+            effective_video_fps = tuple(float(fps) for fps in sampled_video_fps)
+        elif video_fps is not None:
+            effective_video_fps = float(video_fps)
+
+        contextual_video_cache_key = _contextualize_cache_key(
+            video_cache_key,
+            fps=effective_video_fps,
+            seconds_per_chunk=(
+                float(video_seconds_per_chunk)
+                if video_seconds_per_chunk is not None
+                else None
+            ),
+        )
+        combined_cache_key = _combine_cache_keys(
+            image_cache_key, contextual_video_cache_key
+        )
         if combined_cache_key:
             image_encoder_inputs["cache_key"] = combined_cache_key
 
         audio_encoder_inputs = {**mm_inputs["audio"]}
+        audio_cache_key = _contextualize_cache_key(
+            audio_cache_key,
+            target_sr=audio_target_sr,
+        )
+        if audio_from_video:
+            audio_cache_key = _combine_cache_keys(
+                audio_cache_key,
+                _contextualize_cache_key(
+                    video_cache_key,
+                    extracted_audio=True,
+                    target_sr=audio_target_sr,
+                ),
+            )
         if audio_cache_key:
             audio_encoder_inputs["cache_key"] = audio_cache_key
 
