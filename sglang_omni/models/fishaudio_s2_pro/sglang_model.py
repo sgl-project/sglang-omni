@@ -1,16 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
-"""SGLang-native S2-Pro text model with paged KV cache via RadixAttention.
-
-Loads fish_speech FishQwen3OmniForCausalLM checkpoint weights but replaces the
-static KVCache with SGLang's RadixAttention + paged token_to_kv_pool.
-
-The audio decoder (FishQwen3AudioDecoder) is kept unchanged with its own
-static KVCache — it only handles 11 tokens per step, no OOM risk.
+"""SGLang-native S2-Pro unified model: slow head (text) + fast head (codebook).
 """
 
 from __future__ import annotations
 
 import logging
+import math
 from typing import Any, Iterable, Optional, Tuple
 
 import torch
@@ -34,12 +29,6 @@ logger = logging.getLogger(__name__)
 
 
 class S2ProAttention(nn.Module):
-    """S2-Pro attention using RadixAttention for paged KV cache.
-
-    Loads fused wqkv weights from fish_speech checkpoint, splits into q/k/v
-    for QKVParallelLinear. Applies QK-norm and RoPE via SGLang's get_rope().
-    """
-
     def __init__(
         self,
         hidden_size: int,
@@ -78,7 +67,7 @@ class S2ProAttention(nn.Module):
             rotary_dim=head_dim,
             max_position=max_position_embeddings,
             base=rope_base,
-            is_neox_style=False,  # fish_speech uses interleaved (GPT-J) RoPE
+            is_neox_style=False,
         )
         self.attn = RadixAttention(
             num_heads,
@@ -87,7 +76,6 @@ class S2ProAttention(nn.Module):
             num_kv_heads=num_kv_heads,
             layer_id=layer_id,
         )
-
         self.qk_norm = qk_norm
         if qk_norm:
             self.q_norm = RMSNorm(head_dim, eps=rms_norm_eps)
@@ -101,10 +89,8 @@ class S2ProAttention(nn.Module):
     ) -> Tensor:
         qkv, _ = self.qkv_proj(hidden_states)
         q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
-
         if self.qk_norm:
             q, k = apply_qk_norm(q, k, self.q_norm, self.k_norm, self.head_dim)
-
         q, k = self.rotary_emb(positions, q, k)
         attn_output = self.attn(q, k, v, forward_batch)
         output, _ = self.o_proj(attn_output)
@@ -112,8 +98,6 @@ class S2ProAttention(nn.Module):
 
 
 class S2ProDecoderLayer(nn.Module):
-    """S2-Pro decoder layer: attention + SwiGLU FFN."""
-
     def __init__(
         self,
         hidden_size: int,
@@ -139,7 +123,6 @@ class S2ProDecoderLayer(nn.Module):
             rms_norm_eps=rms_norm_eps,
             qk_norm=qk_norm,
         )
-        # SwiGLU: gate_proj (w1) and up_proj (w3) merged, down_proj (w2)
         self.gate_up_proj = MergedColumnParallelLinear(
             hidden_size,
             [intermediate_size, intermediate_size],
@@ -160,7 +143,6 @@ class S2ProDecoderLayer(nn.Module):
         forward_batch: ForwardBatch,
         residual: Optional[Tensor],
     ) -> Tuple[Tensor, Tensor]:
-        # Pre-norm attention
         if residual is None:
             residual = hidden_states
             hidden_states = self.input_layernorm(hidden_states)
@@ -168,25 +150,17 @@ class S2ProDecoderLayer(nn.Module):
             hidden_states, residual = self.input_layernorm(hidden_states, residual)
 
         hidden_states = self.self_attn(positions, hidden_states, forward_batch)
-
-        # Pre-norm FFN
         hidden_states, residual = self.post_attention_layernorm(hidden_states, residual)
 
-        # SwiGLU
         gate_up, _ = self.gate_up_proj(hidden_states)
         gate, up = gate_up.chunk(2, dim=-1)
         hidden_states = torch.nn.functional.silu(gate) * up
         del gate, up
         hidden_states, _ = self.down_proj(hidden_states)
-
         return hidden_states, residual
 
 
 class S2ProSGLangTextModel(nn.Module):
-    """SGLang-native S2-Pro text model (embedding → layers → norm → lm_head).
-
-    Input shape: (num_tokens, dim) — flattened for continuous batching.
-    """
 
     def __init__(
         self,
@@ -207,7 +181,6 @@ class S2ProSGLangTextModel(nn.Module):
     ) -> None:
         super().__init__()
 
-        # When called by SGLang's model loader, config is a FishQwen3OmniConfig
         if config is not None:
             tc = config.text_config
             vocab_size = tc.vocab_size
@@ -227,6 +200,9 @@ class S2ProSGLangTextModel(nn.Module):
         self.hidden_size = hidden_size
         self.num_layers = num_layers
         self.tie_word_embeddings = tie_word_embeddings
+
+        # Set via setup_vq_decode() after model load
+        self._vq_ready = False
 
         self.embed_tokens = VocabParallelEmbedding(vocab_size, hidden_size)
         self.start_layer = 0
@@ -254,6 +230,63 @@ class S2ProSGLangTextModel(nn.Module):
 
             self.lm_head = ParallelLMHead(vocab_size, hidden_size)
 
+    # ------------------------------------------------------------------
+    # Post-load setup
+    # ------------------------------------------------------------------
+
+    def setup_vq_decode(
+        self,
+        audio_decoder: nn.Module,
+        *,
+        num_codebooks: int,
+        codebook_size: int,
+        semantic_begin_id: int,
+        semantic_end_id: int,
+        im_end_id: int,
+        max_batch_size: int,
+    ) -> None:
+        """Attach audio decoder and allocate persistent GPU buffers."""
+        device = self.embed_tokens.weight.device
+
+        # Audio decoder (fast head)
+        self._audio_decoder = audio_decoder
+        self._codebook_size = codebook_size
+        self._num_codebooks = num_codebooks
+        self._semantic_begin_id = semantic_begin_id
+
+        # Shared codebook embedding from audio decoder (for VQ input combination)
+        self._vq_codebook_embeddings = audio_decoder.codebook_embeddings
+        self._vq_codebook_offsets = audio_decoder.codebook_offsets.to(device)
+        self._vq_scale = 1.0 / math.sqrt(num_codebooks + 1)
+
+        # Input buffers: VQ codes from previous step (updated by ModelRunner)
+        self._vq_codes = torch.zeros(
+            max_batch_size, num_codebooks, dtype=torch.long, device=device
+        )
+        self._vq_mask = torch.zeros(max_batch_size, dtype=torch.bool, device=device)
+
+        # Semantic bias: mask all non-semantic and non-EOS tokens
+        bias = torch.full(
+            (self.vocab_size,), -float("inf"), device=device, dtype=torch.bfloat16
+        )
+        bias[semantic_begin_id : semantic_end_id + 1] = 0.0
+        bias[im_end_id] = 0.0
+        self._semantic_bias = bias
+
+        # Output buffers: written by _decode_codebooks, read by ModelRunner
+        self._output_codes = torch.zeros(
+            max_batch_size, num_codebooks + 1, dtype=torch.long, device=device
+        )
+        self._output_semantic_ids = torch.zeros(
+            max_batch_size, dtype=torch.long, device=device
+        )
+
+        self._vq_ready = True
+
+    # ------------------------------------------------------------------
+    # Forward
+    # ------------------------------------------------------------------
+
     def forward(
         self,
         input_ids: Tensor,
@@ -261,74 +294,108 @@ class S2ProSGLangTextModel(nn.Module):
         forward_batch: ForwardBatch,
         input_embeds: Optional[Tensor] = None,
     ) -> LogitsProcessorOutput:
-        """Forward pass. Returns LogitsProcessorOutput with hidden_states."""
         if input_embeds is None and forward_batch.input_embeds is not None:
             input_embeds = forward_batch.input_embeds
 
         if input_embeds is not None:
+            # Prefill: input_embeds from ModelRunner (with VQ injection)
             hidden_states = input_embeds
         else:
             hidden_states = self.embed_tokens(input_ids)
 
+            # Decode: VQ combination from persistent buffers (CUDA-graph-safe)
+            if self._vq_ready:
+                bs = hidden_states.shape[0]
+                vq_codes = self._vq_codes[:bs]
+                vq_mask = self._vq_mask[:bs]
+                offset_parts = vq_codes + self._vq_codebook_offsets[None, :]
+                all_embeds = self._vq_codebook_embeddings(offset_parts)
+                vq_sum = all_embeds.sum(dim=1).to(hidden_states.dtype)
+                combined = (hidden_states + vq_sum) * self._vq_scale
+                hidden_states = torch.where(
+                    vq_mask.unsqueeze(-1), combined, hidden_states
+                )
+
+        # Transformer
         residual = None
         for layer_idx in range(self.start_layer, self.end_layer):
-            layer = self.layers[layer_idx]
-            hidden_states, residual = layer(
+            hidden_states, residual = self.layers[layer_idx](
                 positions, hidden_states, forward_batch, residual
             )
-
         hidden_states, _ = self.norm(hidden_states, residual)
 
-        # Prune to last-token positions for extend (prefill) mode
+        # Extend: prune to last-token positions
         if forward_batch.forward_mode.is_extend():
             last_index = torch.cumsum(forward_batch.extend_seq_lens, dim=0) - 1
             hidden_states = hidden_states[last_index]
 
-        # Compute logits (tied weights: use embedding weight as lm_head)
+        # Logits
         if self.tie_word_embeddings:
             logits = torch.nn.functional.linear(hidden_states, self.embed_tokens.weight)
         else:
             logits = self.lm_head(hidden_states)
+
+        # Codebook decode: constrained sampling + batched codebook loop
+        if self._vq_ready:
+            self._decode_codebooks(logits, hidden_states)
 
         return LogitsProcessorOutput(
             next_token_logits=logits,
             hidden_states=hidden_states,
         )
 
+    @torch.no_grad()
+    def _decode_codebooks(self, logits: Tensor, hidden_states: Tensor) -> None:
+        """Constrained semantic sampling + batched codebook generation."""
+        bs = logits.shape[0]
+
+        # Constrained decode: mask non-semantic tokens
+        biased_logits = logits + self._semantic_bias
+        semantic_token = torch.argmax(biased_logits, dim=-1)  # [bs]
+
+        # Batched codebook loop
+        self._audio_decoder.reset_caches()
+        fast_input = self._audio_decoder.project_in(hidden_states)
+        fast_input = fast_input.unsqueeze(1)  # [bs, 1, fast_dim]
+        self._audio_decoder.forward_kvcached(fast_input, codebook_idx=0)
+
+        sem_id = (semantic_token - self._semantic_begin_id).clamp(min=0)
+        cb_hidden = self._audio_decoder.embeddings(sem_id).unsqueeze(1)
+
+        self._output_codes[:bs, 0] = semantic_token
+        self._output_codes[:bs, 1] = sem_id
+
+        for cb_idx in range(1, self._num_codebooks):
+            cb_logits = self._audio_decoder.forward_kvcached(
+                cb_hidden, codebook_idx=cb_idx
+            )
+            cb_logits = cb_logits[:, 0, : self._codebook_size]
+            cb_token = torch.argmax(cb_logits, dim=-1)  # [bs]
+            cb_hidden = self._audio_decoder.embeddings(cb_token).unsqueeze(1)
+            self._output_codes[:bs, cb_idx + 1] = cb_token
+
+        self._output_semantic_ids[:bs] = semantic_token
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
     def get_embed_tokens(self):
         return self.embed_tokens
 
     def load_weights(self, weights: Iterable[Tuple[str, Tensor]]):
-        """Load weights from fish_speech FishQwen3OmniForCausalLM checkpoint.
-
-        Checkpoint keys (text_model only):
-            text_model.model.embeddings.weight
-            text_model.model.layers.N.attention.wqkv.weight   → split into q/k/v
-            text_model.model.layers.N.attention.wo.weight      → o_proj
-            text_model.model.layers.N.attention.q_norm.weight  → q_norm
-            text_model.model.layers.N.attention.k_norm.weight  → k_norm
-            text_model.model.layers.N.attention_norm.weight    → input_layernorm
-            text_model.model.layers.N.ffn_norm.weight          → post_attention_layernorm
-            text_model.model.layers.N.feed_forward.w1.weight   → gate_up_proj (shard 0)
-            text_model.model.layers.N.feed_forward.w3.weight   → gate_up_proj (shard 1)
-            text_model.model.layers.N.feed_forward.w2.weight   → down_proj
-            text_model.model.norm.weight
-        """
+        """Load weights from fish_speech FishQwen3OmniForCausalLM checkpoint."""
         params_dict = dict(self.named_parameters())
 
         for name, loaded_weight in weights:
-            # Strip text_model.model. prefix
             if name.startswith("text_model.model."):
                 name = name[len("text_model.model.") :]
             else:
-                # Skip non-text-model weights (audio_decoder, etc.)
                 continue
 
-            # Remap checkpoint names to SGLang model names
             if self._load_remapped_weight(name, loaded_weight, params_dict):
                 continue
 
-            # Direct match
             if name in params_dict:
                 param = params_dict[name]
                 weight_loader = getattr(param, "weight_loader", _default_weight_loader)
@@ -342,9 +409,8 @@ class S2ProSGLangTextModel(nn.Module):
         loaded_weight: Tensor,
         params_dict: dict[str, nn.Parameter],
     ) -> bool:
-        # Remap table: checkpoint suffix → (target suffix, shard_id or None)
         remap = {
-            "attention.wqkv.weight": None,  # handled specially
+            "attention.wqkv.weight": None,
             "attention.wo.weight": "self_attn.o_proj.weight",
             "attention.q_norm.weight": "self_attn.q_norm.weight",
             "attention.k_norm.weight": "self_attn.k_norm.weight",
@@ -356,32 +422,23 @@ class S2ProSGLangTextModel(nn.Module):
             "embeddings.weight": "embed_tokens.weight",
             "norm.weight": "norm.weight",
         }
-
         for ckpt_suffix, target in remap.items():
             if not name.endswith(ckpt_suffix):
                 continue
-
             prefix = name[: -len(ckpt_suffix)]
-
-            # Special case: fused wqkv → split into q, k, v shards
             if target is None:
                 return self._load_fused_qkv(prefix, loaded_weight, params_dict)
-
             if isinstance(target, tuple):
                 target_suffix, shard_id = target
             else:
-                target_suffix = target
-                shard_id = None
-
-            target_name = prefix + target_suffix
-            param = params_dict[target_name]
+                target_suffix, shard_id = target, None
+            param = params_dict[prefix + target_suffix]
             if shard_id is not None:
                 param.weight_loader(param, loaded_weight, shard_id)
             else:
                 weight_loader = getattr(param, "weight_loader", _default_weight_loader)
                 weight_loader(param, loaded_weight)
             return True
-
         return False
 
     def _load_fused_qkv(
@@ -393,13 +450,10 @@ class S2ProSGLangTextModel(nn.Module):
         target_name = prefix + "self_attn.qkv_proj.weight"
         if target_name not in params_dict:
             return True
-
         param = params_dict[target_name]
-        # Fish_speech wqkv layout: [q || k || v]
         layer = self.layers[int(prefix.split(".")[1])]
         q_size = layer.self_attn.q_size
         kv_size = layer.self_attn.kv_size
-
         q, k, v = wqkv.split([q_size, kv_size, kv_size], dim=0)
         for shard_id, weight in [("q", q), ("k", k), ("v", v)]:
             param.weight_loader(param, weight, shard_id)
