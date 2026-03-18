@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import ast
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -13,6 +12,7 @@ import torch
 from sglang_omni.models import weight_loader
 from sglang_omni.models.qwen3_omni.components import preprocessor
 from sglang_omni.models.qwen3_omni.io import PipelineState
+from sglang_omni.models.qwen3_omni.pipeline import stages
 from sglang_omni.proto import OmniRequest, StagePayload
 
 
@@ -51,42 +51,39 @@ def test_qwen3_preprocessor_falls_back_to_remote_processor_download(
     assert resolve_calls == [True, True]
 
 
-def test_qwen3_encoder_executor_forwards_cache_settings() -> None:
-    stages_path = (
-        Path(__file__).resolve().parent.parent
-        / "sglang_omni"
-        / "models"
-        / "qwen3_omni"
-        / "pipeline"
-        / "stages.py"
+def test_qwen3_encoder_executor_forwards_cache_settings(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+    sentinel_engine = object()
+
+    def fake_create_single_pass_engine(
+        model, *, device: str, use_cache: bool, cache_size: int | None
+    ):
+        captured["model"] = model
+        captured["device"] = device
+        captured["use_cache"] = use_cache
+        captured["cache_size"] = cache_size
+        return sentinel_engine
+
+    monkeypatch.setattr(
+        stages, "create_single_pass_engine", fake_create_single_pass_engine
     )
-    tree = ast.parse(stages_path.read_text(encoding="utf-8"))
 
-    target_fn = None
-    for node in tree.body:
-        if (
-            isinstance(node, ast.FunctionDef)
-            and node.name == "_create_encoder_executor"
-        ):
-            target_fn = node
-            break
+    model = torch.nn.Linear(2, 2)
+    executor = stages._create_encoder_executor(
+        stage_name="image_encoder",
+        model=model,
+        device="cuda:1",
+        use_cache=False,
+        cache_size=17,
+    )
 
-    assert target_fn is not None, "_create_encoder_executor() not found"
-
-    engine_call = None
-    for node in ast.walk(target_fn):
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
-            if node.func.id == "create_single_pass_engine":
-                engine_call = node
-                break
-
-    assert engine_call is not None, "create_single_pass_engine() call not found"
-
-    keywords = {kw.arg: kw.value for kw in engine_call.keywords if kw.arg is not None}
-    assert isinstance(keywords.get("use_cache"), ast.Name)
-    assert keywords["use_cache"].id == "use_cache"
-    assert isinstance(keywords.get("cache_size"), ast.Name)
-    assert keywords["cache_size"].id == "cache_size"
+    assert captured == {
+        "model": model,
+        "device": "cuda:1",
+        "use_cache": False,
+        "cache_size": 17,
+    }
+    assert executor._engine is sentinel_engine
 
 
 def test_weight_loader_force_refreshes_partial_remote_snapshot(
@@ -236,4 +233,98 @@ async def test_preprocessor_cache_keys_include_preprocessing_context(
     assert (
         state.encoder_inputs["audio_encoder"]["cache_key"]
         == "audio-key|target_sr=22050"
+    )
+
+
+@pytest.mark.asyncio
+async def test_preprocessor_cache_keys_include_video_audio_extraction_context(
+    monkeypatch, tmp_path
+) -> None:
+    model_dir = tmp_path / "snapshot"
+    model_dir.mkdir()
+
+    class DummyProcessorFactory:
+        @classmethod
+        def from_pretrained(cls, model_path: str, **kwargs):
+            return SimpleNamespace(
+                tokenizer=SimpleNamespace(chat_template="dummy-template"),
+                apply_chat_template=lambda *args, **kwargs: "prompt",
+                __call__=None,
+            )
+
+    class DummyProcessor:
+        tokenizer = SimpleNamespace(chat_template="dummy-template")
+
+        @staticmethod
+        def apply_chat_template(*args, **kwargs):
+            return "prompt"
+
+        def __call__(self, *args, **kwargs):
+            return {
+                "input_ids": torch.tensor([[1, 2, 3]], dtype=torch.long),
+                "attention_mask": torch.tensor([[1, 1, 1]], dtype=torch.long),
+                "pixel_values_videos": torch.zeros((2, 3), dtype=torch.float32),
+                "video_grid_thw": torch.tensor([[1, 2, 3]], dtype=torch.long),
+                "video_second_per_grid": torch.tensor([0.5], dtype=torch.float32),
+                "input_features": torch.zeros((1, 4), dtype=torch.float32),
+                "feature_attention_mask": torch.ones((1, 4), dtype=torch.long),
+                "audio_feature_lengths": torch.tensor([4], dtype=torch.long),
+            }
+
+    monkeypatch.setattr(
+        preprocessor,
+        "resolve_model_path",
+        lambda model_path, *, local_files_only=False: model_dir,
+    )
+    monkeypatch.setattr(preprocessor, "Qwen3OmniMoeProcessor", DummyProcessorFactory)
+
+    async def fake_ensure_video_list_async(*args, **kwargs):
+        return [torch.zeros((2, 3), dtype=torch.float32)], [6.0], [torch.zeros(4)]
+
+    async def fake_ensure_image_list_async(*args, **kwargs):
+        return []
+
+    async def fake_ensure_audio_list_async(*args, **kwargs):
+        return []
+
+    monkeypatch.setattr(
+        preprocessor, "ensure_video_list_async", fake_ensure_video_list_async
+    )
+    monkeypatch.setattr(
+        preprocessor, "ensure_image_list_async", fake_ensure_image_list_async
+    )
+    monkeypatch.setattr(
+        preprocessor, "ensure_audio_list_async", fake_ensure_audio_list_async
+    )
+    monkeypatch.setattr(preprocessor, "compute_image_cache_key", lambda *_: None)
+    monkeypatch.setattr(preprocessor, "compute_video_cache_key", lambda *_: "video-key")
+    monkeypatch.setattr(preprocessor, "compute_audio_cache_key", lambda *_: None)
+
+    proc = preprocessor.Qwen3OmniPreprocessor("Qwen/Qwen3-Omni-30B-A3B-Instruct")
+    proc.processor = DummyProcessor()
+
+    payload = StagePayload(
+        request_id="req-2",
+        request=OmniRequest(
+            inputs={
+                "messages": [{"role": "user", "content": "describe the video"}],
+                "videos": ["video.mp4"],
+                "use_audio_in_video": True,
+                "audio_target_sr": 24000,
+                "video_seconds_per_chunk": 1.5,
+            }
+        ),
+        data=None,
+    )
+
+    result = await proc(payload)
+    state = PipelineState.from_dict(result.data)
+
+    assert (
+        state.encoder_inputs["image_encoder"]["cache_key"]
+        == "video-key|fps=(6.0,)|seconds_per_chunk=1.5"
+    )
+    assert (
+        state.encoder_inputs["audio_encoder"]["cache_key"]
+        == "video-key|extracted_audio=True|target_sr=24000"
     )
