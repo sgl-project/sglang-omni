@@ -40,7 +40,12 @@ def _resolve_local_model_dir(model_path: str) -> str:
         return str(path)
     try:
         return str(resolve_model_path(model_path, local_files_only=True))
-    except Exception:
+    except (FileNotFoundError, OSError) as exc:
+        logger.warning(
+            "Local-only model resolution failed for %s; falling back to hub id",
+            model_path,
+            exc_info=exc,
+        )
         return model_path
 
 
@@ -74,7 +79,7 @@ class Qwen3OmniPreprocessor:
                 trust_remote_code=True,
                 local_files_only=True,
             )
-        except Exception:
+        except (OSError, ValueError, RuntimeError):
             if Path(model_path).exists():
                 raise
             self.processor = Qwen3OmniMoeProcessor.from_pretrained(
@@ -82,7 +87,7 @@ class Qwen3OmniPreprocessor:
                 trust_remote_code=True,
                 local_files_only=False,
             )
-            self.model_dir = _resolve_local_model_dir(model_path)
+            self.model_dir = str(resolve_model_path(model_path, local_files_only=False))
         self.tokenizer = self.processor.tokenizer
         ensure_chat_template(self.tokenizer, model_path=self.model_dir)
 
@@ -137,7 +142,7 @@ class Qwen3OmniPreprocessor:
 
             # Compute cache keys BEFORE conversion (paths are cheap to hash)
             image_cache_key = compute_image_cache_key(raw_images)
-            audio_cache_key = compute_audio_cache_key(raw_audios)
+            raw_audio_cache_key = compute_audio_cache_key(raw_audios)
             video_cache_key = compute_video_cache_key(raw_videos)
 
             # Count explicit audio inputs (for placeholder insertion)
@@ -188,7 +193,7 @@ class Qwen3OmniPreprocessor:
             videos = []
             audios = []
             image_cache_key = None
-            audio_cache_key = None
+            raw_audio_cache_key = None
             video_cache_key = None
             video_fps = None
             sampled_video_fps = None
@@ -267,20 +272,15 @@ class Qwen3OmniPreprocessor:
         # Build encoder_inputs with cache_key for efficient caching.
         # Include preprocessing parameters that materially change encoder outputs.
         image_encoder_inputs = {**mm_inputs["image"], **mm_inputs["video"]}
-        effective_video_fps = None
+        effective_video_fps: tuple[float, ...] | None = None
         if sampled_video_fps is not None:
             effective_video_fps = tuple(float(fps) for fps in sampled_video_fps)
         elif video_fps is not None:
-            effective_video_fps = float(video_fps)
+            effective_video_fps = (float(video_fps),)
 
         contextual_video_cache_key = _contextualize_cache_key(
             video_cache_key,
             fps=effective_video_fps,
-            seconds_per_chunk=(
-                float(video_seconds_per_chunk)
-                if video_seconds_per_chunk is not None
-                else None
-            ),
         )
         combined_cache_key = _combine_cache_keys(
             image_cache_key, contextual_video_cache_key
@@ -289,21 +289,21 @@ class Qwen3OmniPreprocessor:
             image_encoder_inputs["cache_key"] = combined_cache_key
 
         audio_encoder_inputs = {**mm_inputs["audio"]}
-        audio_cache_key = _contextualize_cache_key(
-            audio_cache_key,
+        contextualized_audio_cache_key = _contextualize_cache_key(
+            raw_audio_cache_key,
             target_sr=audio_target_sr,
         )
         if audio_from_video:
-            audio_cache_key = _combine_cache_keys(
-                audio_cache_key,
+            contextualized_audio_cache_key = _combine_cache_keys(
+                contextualized_audio_cache_key,
                 _contextualize_cache_key(
                     video_cache_key,
                     extracted_audio=True,
                     target_sr=audio_target_sr,
                 ),
             )
-        if audio_cache_key:
-            audio_encoder_inputs["cache_key"] = audio_cache_key
+        if contextualized_audio_cache_key:
+            audio_encoder_inputs["cache_key"] = contextualized_audio_cache_key
 
         encoder_inputs: dict[str, dict[str, Any]] = {}
         image_encoder_inputs = {

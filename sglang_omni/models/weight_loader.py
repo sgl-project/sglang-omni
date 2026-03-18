@@ -139,6 +139,13 @@ def _normalize_prefixes(prefixes: str | tuple[str, ...] | list[str]) -> tuple[st
 def _load_weights_from_resolved_path(
     model_path: Path, prefixes: tuple[str, ...]
 ) -> dict[str, torch.Tensor]:
+    """Return the first matching state_dict, or {} if no prefix matches.
+
+    An empty dict here means "no weights found for the requested prefixes" for
+    this resolved path. Exceptions from missing/corrupted shard reads are
+    allowed to propagate so the caller can decide whether to retry with a
+    refreshed remote snapshot.
+    """
     for prefix_item in prefixes:
         state_dict = _load_safetensors_sharded(model_path, prefix_item)
         if state_dict:
@@ -155,6 +162,14 @@ def _load_weights_from_resolved_path(
     return {}
 
 
+def _should_retry_remote_weight_load(
+    *,
+    model_path: str,
+    local_files_only: bool,
+) -> bool:
+    return not local_files_only and not Path(model_path).exists()
+
+
 def load_weights_by_prefix(
     model_path: str,
     *,
@@ -166,13 +181,24 @@ def load_weights_by_prefix(
         model_path, local_files_only=local_files_only
     )
     prefixes = _normalize_prefixes(prefix)
-    state_dict = _load_weights_from_resolved_path(resolved_model_path, prefixes)
+    should_retry_remote_load = _should_retry_remote_weight_load(
+        model_path=model_path,
+        local_files_only=local_files_only,
+    )
+
+    try:
+        state_dict = _load_weights_from_resolved_path(resolved_model_path, prefixes)
+    except Exception:
+        if not should_retry_remote_load:
+            raise
+        state_dict = {}
+
     if state_dict:
         return state_dict
 
     # A poisoned/partial HF cache can still yield a snapshot path that is missing
     # weight index files or shards. Refresh once before failing for remote models.
-    if not local_files_only and not Path(model_path).exists():
+    if should_retry_remote_load:
         resolve_model_path.cache_clear()
         resolved_model_path = Path(
             snapshot_download(model_path, local_files_only=False, force_download=True)
