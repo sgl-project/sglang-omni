@@ -400,7 +400,7 @@ class Worker:
     async def _finish_stream_task(self, task: asyncio.Task[None]) -> None:
         """Wait for stream task to finish and cancel if it stalls."""
         try:
-            await asyncio.wait_for(task, timeout=0.5)
+            await asyncio.wait_for(task, timeout=10.0)
         except asyncio.TimeoutError:
             task.cancel()
             try:

@@ -70,21 +70,22 @@ def parse_args() -> argparse.Namespace:
 
 
 async def main_async(args: argparse.Namespace) -> None:
-    # Set GPU mapping via env vars (consumed by mp_runner)
-    os.environ["QWEN3_PARITY_GPU_THINKER"] = str(args.gpu_thinker)
-    os.environ["QWEN3_PARITY_GPU_TALKER"] = str(args.gpu_talker)
-    os.environ["QWEN3_PARITY_GPU_CODE_PREDICTOR"] = str(args.gpu_code_predictor)
-    os.environ["QWEN3_PARITY_GPU_CODE2WAV"] = str(args.gpu_code2wav)
-    os.environ["QWEN3_PARITY_GPU_IMAGE"] = str(args.gpu_image_encoder)
-    os.environ["QWEN3_PARITY_GPU_AUDIO"] = str(args.gpu_audio_encoder)
-
     from sglang_omni.models.qwen3_omni.config import Qwen3OmniSpeechPipelineConfig
     from sglang_omni.pipeline.mp_runner import MultiProcessPipelineRunner
     from sglang_omni.proto import OmniRequest
 
+    # Build GPU placement from CLI args
+    gpu_placement = {
+        "thinker": args.gpu_thinker,
+        "talker_ar": args.gpu_talker,
+        "code_predictor": args.gpu_code_predictor,
+        "code2wav": args.gpu_code2wav,
+    }
+
     config = Qwen3OmniSpeechPipelineConfig(
         model_path=args.model_path,
         relay_backend=args.relay_backend,
+        gpu_placement=gpu_placement,
     )
     runner = MultiProcessPipelineRunner(config)
     logger.info("Starting 9-stage speech pipeline...")
@@ -142,8 +143,14 @@ def _save_audio(result: dict, output_path: str) -> None:
 
         import torch
 
-        if isinstance(waveform, torch.Tensor):
+        if isinstance(waveform, bytes):
+            # code2wav serializes as raw bytes + shape/dtype metadata
+            dtype_str = data.get("audio_waveform_dtype", "float32")
+            shape = data.get("audio_waveform_shape", [-1])
+            waveform = np.frombuffer(waveform, dtype=np.dtype(dtype_str)).reshape(shape)
+        elif isinstance(waveform, torch.Tensor):
             waveform = waveform.cpu().float().numpy()
+
         waveform = waveform.squeeze()
         sample_rate = data.get("sample_rate", 24000)
 

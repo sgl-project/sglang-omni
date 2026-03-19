@@ -94,11 +94,10 @@ async def test_put_to_closed_queue_raises():
     with pytest.raises(KeyError):
         sq.put(REQ, _make_item())
 
-    # opened then closed
+    # opened then closed — silently drops (abort safety)
     sq.open(REQ)
     sq.close(REQ)
-    with pytest.raises(KeyError):
-        sq.put(REQ, _make_item())
+    sq.put(REQ, _make_item())  # should not raise
 
 
 @pytest.mark.asyncio

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import torch
@@ -27,6 +28,8 @@ from .runtime.encoder import (
     EncoderOutputProcessor,
 )
 from .scheduler import Scheduler
+
+logger = logging.getLogger(__name__)
 
 
 def create_encoder_engine(
@@ -228,6 +231,12 @@ def create_sglang_ar_engine(
     # Determine overlap setting
     if enable_overlap is None:
         enable_overlap = not getattr(server_args, "disable_overlap_schedule", False)
+
+    # Feedback-gated engines (e.g. Talker AR) require synchronous step processing
+    # because overlap scheduling can execute one step ahead of the feedback check.
+    if feedback_enabled and enable_overlap:
+        logger.debug("Disabling overlap for feedback-enabled engine")
+        enable_overlap = False
 
     # Initialize model worker
     model_worker = ModelWorker(
