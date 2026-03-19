@@ -126,6 +126,40 @@ def test_build_outputs_clones_model_buffers() -> None:
     assert outputs["req-1"].data.codes[0, 0].item() == 11
 
 
+def test_build_outputs_clones_each_row_for_multiple_requests() -> None:
+    text_model = SimpleNamespace(
+        _output_codes=torch.tensor([[11, 12, 13], [21, 22, 23]], dtype=torch.long),
+        _output_semantic_ids=torch.tensor([11, 21], dtype=torch.long),
+    )
+    model_worker = SimpleNamespace(model_runner=SimpleNamespace(model=text_model))
+    runner = S2ProSGLangModelRunner(
+        model_worker=model_worker,
+        batch_planner=SimpleNamespace(),
+        semantic_begin_id=0,
+        semantic_end_id=1000,
+    )
+
+    req_a = _FakeReq()
+    req_b = _FakeReq()
+    data_a = _make_request_data(req_a)
+    data_b = _make_request_data(req_b)
+    scheduler_output = SimpleNamespace(
+        requests=[
+            SchedulerRequest(request_id="req-a", data=data_a),
+            SchedulerRequest(request_id="req-b", data=data_b),
+        ]
+    )
+
+    outputs = runner._build_outputs(scheduler_output)
+
+    # Mutate both shared backing rows after outputs are built.
+    text_model._output_codes[0, 0] = 999
+    text_model._output_codes[1, 0] = 888
+
+    assert outputs["req-a"].data.codes[0, 0].item() == 11
+    assert outputs["req-b"].data.codes[0, 0].item() == 21
+
+
 def test_resource_manager_free_clears_request_state(monkeypatch) -> None:
     released: list[_FakeReq] = []
 
