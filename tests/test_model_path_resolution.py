@@ -4,8 +4,8 @@
 from __future__ import annotations
 
 import importlib
-from pathlib import Path
 import sys
+from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
 import pytest
@@ -74,7 +74,9 @@ def _install_qwen3_stages_stubs(monkeypatch) -> None:
     )
 
     class DummyEngineExecutor:
-        def __init__(self, engine, request_builder, result_builder, stream_builder=None):
+        def __init__(
+            self, engine, request_builder, result_builder, stream_builder=None
+        ):
             self._engine = engine
             self.request_builder = request_builder
             self.result_builder = result_builder
