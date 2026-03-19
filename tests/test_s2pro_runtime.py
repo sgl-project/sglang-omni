@@ -68,11 +68,13 @@ def test_iteration_controller_marks_eos_finished_without_unfinished_cache() -> N
     req = _FakeReq()
     data = _make_request_data(req, max_new_tokens=8)
     request = SchedulerRequest(request_id="req-1", data=data)
+    output = _make_step_output(999)
 
-    controller.update_request(request, _make_step_output(999))
+    controller.update_request(request, output)
 
     assert req.output_ids == [999]
     assert req.finished() is True
+    assert controller.is_finished(request, output) is True
     assert req.finished_len == 1
     assert tree_cache.calls == []
 
@@ -83,13 +85,17 @@ def test_iteration_controller_marks_length_finished_on_limit() -> None:
     req = _FakeReq()
     data = _make_request_data(req, max_new_tokens=2)
     request = SchedulerRequest(request_id="req-1", data=data)
+    first_output = _make_step_output(111)
 
-    controller.update_request(request, _make_step_output(111))
+    controller.update_request(request, first_output)
     assert req.finished() is False
+    assert controller.is_finished(request, first_output) is False
     assert len(tree_cache.calls) == 1
 
-    controller.update_request(request, _make_step_output(222))
+    second_output = _make_step_output(222)
+    controller.update_request(request, second_output)
     assert req.finished() is True
+    assert controller.is_finished(request, second_output) is True
     assert req.finished_len == 2
     assert req.output_ids == [111, 222]
     assert len(tree_cache.calls) == 1
