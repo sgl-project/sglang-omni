@@ -3,8 +3,10 @@
 
 from __future__ import annotations
 
+import importlib
 from pathlib import Path
-from types import SimpleNamespace
+import sys
+from types import ModuleType, SimpleNamespace
 
 import pytest
 import torch
@@ -12,7 +14,6 @@ import torch
 from sglang_omni.models import weight_loader
 from sglang_omni.models.qwen3_omni.components import preprocessor
 from sglang_omni.models.qwen3_omni.io import PipelineState
-from sglang_omni.models.qwen3_omni.pipeline import stages
 from sglang_omni.proto import OmniRequest, StagePayload
 
 
@@ -46,20 +47,121 @@ class _DummyProcessorFactory:
         )
 
 
+def _stub_module(monkeypatch, name: str, **attrs) -> ModuleType:
+    module = ModuleType(name)
+    module.__dict__.update(attrs)
+    monkeypatch.setitem(sys.modules, name, module)
+    return module
+
+
+def _patch_module(monkeypatch, module: ModuleType, **attrs) -> None:
+    for name, value in attrs.items():
+        monkeypatch.setitem(module.__dict__, name, value)
+
+
+def _install_qwen3_stages_stubs(monkeypatch) -> None:
+    _stub_module(
+        monkeypatch,
+        "sglang_omni.engines.ar.sglang_backend.server_args_builder",
+        build_sglang_server_args=lambda *args, **kwargs: None,
+    )
+    _stub_module(
+        monkeypatch,
+        "sglang_omni.engines.omni",
+        create_ar_engine=lambda *args, **kwargs: None,
+        create_sglang_ar_engine=lambda *args, **kwargs: None,
+        create_single_pass_engine=lambda *args, **kwargs: None,
+    )
+
+    class DummyEngineExecutor:
+        def __init__(self, engine, request_builder, result_builder, stream_builder=None):
+            self._engine = engine
+            self.request_builder = request_builder
+            self.result_builder = result_builder
+            self.stream_builder = stream_builder
+
+    class DummyPreprocessingExecutor:
+        def __init__(self, fn):
+            self.fn = fn
+
+    _stub_module(
+        monkeypatch,
+        "sglang_omni.executors",
+        EngineExecutor=DummyEngineExecutor,
+        PreprocessingExecutor=DummyPreprocessingExecutor,
+    )
+    _stub_module(
+        monkeypatch,
+        "sglang_omni.models.qwen3_omni.components.audio_encoder",
+        Qwen3OmniAudioEncoder=object,
+    )
+    _stub_module(
+        monkeypatch,
+        "sglang_omni.models.qwen3_omni.components.image_encoder",
+        Qwen3OmniImageEncoder=object,
+    )
+    _stub_module(
+        monkeypatch,
+        "sglang_omni.models.qwen3_omni.components.talker_executor",
+        TalkerStreamingExecutor=object,
+    )
+    _stub_module(
+        monkeypatch,
+        "sglang_omni.models.qwen3_omni.components.thinker",
+        Qwen3OmniSplitThinker=object,
+    )
+    _stub_module(
+        monkeypatch,
+        "sglang_omni.models.qwen3_omni.pipeline.engine_io",
+        apply_encoder_result=lambda *args, **kwargs: None,
+        apply_thinker_result=lambda *args, **kwargs: None,
+        build_encoder_request=lambda *args, **kwargs: None,
+        build_sglang_thinker_request=lambda *args, **kwargs: None,
+        build_thinker_request=lambda *args, **kwargs: None,
+    )
+    _stub_module(
+        monkeypatch,
+        "sglang_omni.models.qwen3_omni.pipeline.merge",
+        decode_events=lambda *args, **kwargs: [],
+    )
+    _stub_module(
+        monkeypatch,
+        "sglang_omni.models.qwen3_omni.pipeline.next_stage",
+        AUDIO_STAGE="audio_encoder",
+        CODE_PREDICTOR_STAGE="code_predictor",
+        IMAGE_STAGE="image_encoder",
+        TALKER_AR_STAGE="talker_ar",
+        THINKER_STAGE="thinker",
+    )
+    _stub_module(
+        monkeypatch,
+        "sglang_omni.models.qwen3_omni.pipeline.state_io",
+        load_state=lambda payload: None,
+        store_state=lambda payload, state: payload,
+    )
+
+
+def _import_qwen3_stages_for_test(monkeypatch):
+    module_name = "sglang_omni.models.qwen3_omni.pipeline.stages"
+    sys.modules.pop(module_name, None)
+    _install_qwen3_stages_stubs(monkeypatch)
+    return importlib.import_module(module_name)
+
+
 @pytest.fixture
 def qwen3_preprocessor_testbed(monkeypatch, tmp_path):
     model_dir = tmp_path / "snapshot"
     model_dir.mkdir()
 
-    monkeypatch.setattr(
+    _patch_module(
+        monkeypatch,
         preprocessor,
-        "resolve_model_path",
-        lambda model_path, *, local_files_only=False: model_dir,
+        resolve_model_path=lambda model_path, *, local_files_only=False: model_dir,
+        Qwen3OmniMoeProcessor=_DummyProcessorFactory,
+        compute_image_cache_key=lambda *_: None,
+        compute_video_cache_key=lambda *_: "video-key",
+        compute_audio_cache_key=lambda *_: None,
     )
-    monkeypatch.setattr(preprocessor, "Qwen3OmniMoeProcessor", _DummyProcessorFactory)
-    monkeypatch.setattr(preprocessor, "compute_image_cache_key", lambda *_: None)
-    monkeypatch.setattr(preprocessor, "compute_video_cache_key", lambda *_: "video-key")
-    monkeypatch.setattr(preprocessor, "compute_audio_cache_key", lambda *_: None)
 
     proc = preprocessor.Qwen3OmniPreprocessor("Qwen/Qwen3-Omni-30B-A3B-Instruct")
     proc.processor = _DummyProcessor()
@@ -91,8 +193,12 @@ def test_qwen3_preprocessor_falls_back_to_remote_processor_download(
         resolve_calls.append(local_files_only)
         return local_snapshot if local_files_only else refreshed_snapshot
 
-    monkeypatch.setattr(preprocessor, "resolve_model_path", fake_resolve_model_path)
-    monkeypatch.setattr(preprocessor, "Qwen3OmniMoeProcessor", DummyProcessorFactory)
+    _patch_module(
+        monkeypatch,
+        preprocessor,
+        resolve_model_path=fake_resolve_model_path,
+        Qwen3OmniMoeProcessor=DummyProcessorFactory,
+    )
 
     proc = preprocessor.Qwen3OmniPreprocessor("Qwen/Qwen3-Omni-30B-A3B-Instruct")
 
@@ -108,13 +214,14 @@ def test_resolve_local_model_dir_propagates_unexpected_errors(monkeypatch) -> No
     def fake_resolve_model_path(model_path: str, *, local_files_only: bool = False):
         raise RuntimeError("boom")
 
-    monkeypatch.setattr(preprocessor, "resolve_model_path", fake_resolve_model_path)
+    _patch_module(monkeypatch, preprocessor, resolve_model_path=fake_resolve_model_path)
 
     with pytest.raises(RuntimeError, match="boom"):
         preprocessor._resolve_local_model_dir("Qwen/Qwen3-Omni-30B-A3B-Instruct")
 
 
 def test_qwen3_encoder_executor_forwards_cache_settings(monkeypatch) -> None:
+    stages = _import_qwen3_stages_for_test(monkeypatch)
     captured: dict[str, object] = {}
     sentinel_engine = object()
 
@@ -127,8 +234,10 @@ def test_qwen3_encoder_executor_forwards_cache_settings(monkeypatch) -> None:
         captured["cache_size"] = cache_size
         return sentinel_engine
 
-    monkeypatch.setattr(
-        stages, "create_single_pass_engine", fake_create_single_pass_engine
+    _patch_module(
+        monkeypatch,
+        stages,
+        create_single_pass_engine=fake_create_single_pass_engine,
     )
 
     model = torch.nn.Linear(2, 2)
@@ -181,14 +290,16 @@ def test_weight_loader_force_refreshes_partial_remote_snapshot(
             return {"proj.weight": "loaded"}
         return {}
 
-    monkeypatch.setattr(weight_loader, "resolve_model_path", fake_resolve_model_path)
-    monkeypatch.setattr(weight_loader, "snapshot_download", fake_snapshot_download)
-    monkeypatch.setattr(
-        weight_loader, "_load_safetensors_sharded", fake_load_safetensors_sharded
+    _patch_module(
+        monkeypatch,
+        weight_loader,
+        resolve_model_path=fake_resolve_model_path,
+        snapshot_download=fake_snapshot_download,
+        _load_safetensors_sharded=fake_load_safetensors_sharded,
+        _load_safetensors_single=lambda *_: {},
+        _load_bin_sharded=lambda *_: {},
+        _load_bin_single=lambda *_: {},
     )
-    monkeypatch.setattr(weight_loader, "_load_safetensors_single", lambda *_: {})
-    monkeypatch.setattr(weight_loader, "_load_bin_sharded", lambda *_: {})
-    monkeypatch.setattr(weight_loader, "_load_bin_single", lambda *_: {})
 
     state_dict = weight_loader.load_weights_by_prefix(
         "Qwen/Qwen3-Omni-30B-A3B-Instruct",
@@ -238,14 +349,16 @@ def test_weight_loader_force_refreshes_missing_remote_shard(
             return {"proj.weight": "loaded"}
         return {}
 
-    monkeypatch.setattr(weight_loader, "resolve_model_path", fake_resolve_model_path)
-    monkeypatch.setattr(weight_loader, "snapshot_download", fake_snapshot_download)
-    monkeypatch.setattr(
-        weight_loader, "_load_safetensors_sharded", fake_load_safetensors_sharded
+    _patch_module(
+        monkeypatch,
+        weight_loader,
+        resolve_model_path=fake_resolve_model_path,
+        snapshot_download=fake_snapshot_download,
+        _load_safetensors_sharded=fake_load_safetensors_sharded,
+        _load_safetensors_single=lambda *_: {},
+        _load_bin_sharded=lambda *_: {},
+        _load_bin_single=lambda *_: {},
     )
-    monkeypatch.setattr(weight_loader, "_load_safetensors_single", lambda *_: {})
-    monkeypatch.setattr(weight_loader, "_load_bin_sharded", lambda *_: {})
-    monkeypatch.setattr(weight_loader, "_load_bin_single", lambda *_: {})
 
     state_dict = weight_loader.load_weights_by_prefix(
         "Qwen/Qwen3-Omni-30B-A3B-Instruct",
@@ -274,16 +387,14 @@ async def test_preprocessor_cache_keys_include_preprocessing_context(
     async def fake_ensure_audio_list_async(*args, **kwargs):
         return [torch.zeros(4)]
 
-    monkeypatch.setattr(
-        preprocessor, "ensure_video_list_async", fake_ensure_video_list_async
+    _patch_module(
+        monkeypatch,
+        preprocessor,
+        ensure_video_list_async=fake_ensure_video_list_async,
+        ensure_image_list_async=fake_ensure_image_list_async,
+        ensure_audio_list_async=fake_ensure_audio_list_async,
+        compute_audio_cache_key=lambda *_: "audio-key",
     )
-    monkeypatch.setattr(
-        preprocessor, "ensure_image_list_async", fake_ensure_image_list_async
-    )
-    monkeypatch.setattr(
-        preprocessor, "ensure_audio_list_async", fake_ensure_audio_list_async
-    )
-    monkeypatch.setattr(preprocessor, "compute_audio_cache_key", lambda *_: "audio-key")
 
     proc = qwen3_preprocessor_testbed
 
@@ -325,14 +436,12 @@ async def test_preprocessor_cache_keys_canonicalize_explicit_video_fps(
     async def fake_ensure_audio_list_async(*args, **kwargs):
         return []
 
-    monkeypatch.setattr(
-        preprocessor, "ensure_video_list_async", fake_ensure_video_list_async
-    )
-    monkeypatch.setattr(
-        preprocessor, "ensure_image_list_async", fake_ensure_image_list_async
-    )
-    monkeypatch.setattr(
-        preprocessor, "ensure_audio_list_async", fake_ensure_audio_list_async
+    _patch_module(
+        monkeypatch,
+        preprocessor,
+        ensure_video_list_async=fake_ensure_video_list_async,
+        ensure_image_list_async=fake_ensure_image_list_async,
+        ensure_audio_list_async=fake_ensure_audio_list_async,
     )
     proc = qwen3_preprocessor_testbed
 
@@ -367,14 +476,12 @@ async def test_preprocessor_cache_keys_include_video_audio_extraction_context(
     async def fake_ensure_audio_list_async(*args, **kwargs):
         return []
 
-    monkeypatch.setattr(
-        preprocessor, "ensure_video_list_async", fake_ensure_video_list_async
-    )
-    monkeypatch.setattr(
-        preprocessor, "ensure_image_list_async", fake_ensure_image_list_async
-    )
-    monkeypatch.setattr(
-        preprocessor, "ensure_audio_list_async", fake_ensure_audio_list_async
+    _patch_module(
+        monkeypatch,
+        preprocessor,
+        ensure_video_list_async=fake_ensure_video_list_async,
+        ensure_image_list_async=fake_ensure_image_list_async,
+        ensure_audio_list_async=fake_ensure_audio_list_async,
     )
     proc = qwen3_preprocessor_testbed
 
