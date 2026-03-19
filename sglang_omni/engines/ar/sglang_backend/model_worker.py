@@ -1,13 +1,13 @@
+from __future__ import annotations
+
 import os
 import socket
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
-from sglang.srt.configs.model_config import ModelConfig
-from sglang.srt.managers.scheduler import GenerationBatchResult
-from sglang.srt.server_args import ServerArgs
-from sglang.srt.utils import broadcast_pyobj, set_random_seed
-
-from .model_runner import SGLModelRunner
+if TYPE_CHECKING:
+    from sglang.srt.configs.model_config import ModelConfig
+    from sglang.srt.server_args import ServerArgs
 
 
 def _find_free_port() -> int:
@@ -49,6 +49,8 @@ class ModelWorker:
         self._init_model_runner()
 
         self.device = self.model_runner.device
+        from sglang.srt.utils import broadcast_pyobj, set_random_seed
+
         self.random_seed = broadcast_pyobj(
             [server_args.random_seed],
             self.tp_rank,
@@ -57,6 +59,8 @@ class ModelWorker:
         set_random_seed(self.random_seed)
 
     def _init_model_config(self):
+        from sglang.srt.configs.model_config import ModelConfig
+
         self.model_config = ModelConfig.from_server_args(
             server_args=self.server_args,
             model_path=self.server_args.model_path,
@@ -95,6 +99,8 @@ class ModelWorker:
         )
 
     def _init_model_runner(self):
+        from .model_runner import SGLModelRunner
+
         nccl_port = _resolve_nccl_port()
         self.model_runner = SGLModelRunner(
             model_config=self.model_config,
@@ -116,6 +122,8 @@ class ModelWorker:
         self,
         forward_batch,
     ):
+        from sglang.srt.managers.scheduler import GenerationBatchResult
+
         out = self.model_runner.forward(forward_batch=forward_batch)
         logits_output, can_run_cuda_graph = out.logits_output, out.can_run_graph
         batch_result = GenerationBatchResult(
