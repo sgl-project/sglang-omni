@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 import torch
+from sglang.srt.managers.schedule_batch import FINISH_LENGTH, FINISH_MATCHED_TOKEN
 from sglang.srt.mem_cache.common import release_kv_cache
 
 from sglang_omni.engines.omni.runtime.sglang_ar import (
@@ -97,7 +98,7 @@ class S2ProSGLangIterationController:
         codes = output.data.codes.clone()
         data.output_codes.append(codes)
 
-        semantic_token = codes[0, -1].item()
+        semantic_token = int(codes[0, -1].item())
         data._previous_semantic_tokens.append(semantic_token)
 
         # Codebook values for next step's VQ embedding (clone is redundant
@@ -105,6 +106,14 @@ class S2ProSGLangIterationController:
         data._last_codebook_values = codes[1:, 0].clone()
 
         req.output_ids.append(semantic_token)
+
+        max_tok = data.max_new_tokens or self._max_new_tokens
+        if semantic_token == self._im_end_id:
+            req.finished_reason = FINISH_MATCHED_TOKEN(matched=semantic_token)
+            req.finished_len = len(req.output_ids)
+        elif len(data.output_codes) >= max_tok:
+            req.finished_reason = FINISH_LENGTH(length=max_tok)
+            req.finished_len = max_tok
 
         if not req.finished() and req.decode_batch_idx == 0:
             self.tree_cache.cache_unfinished_req(req)
@@ -115,15 +124,7 @@ class S2ProSGLangIterationController:
         if data.req.is_chunked > 0:
             return False
 
-        semantic_token = output.data.codes[0, -1].item()
-        if semantic_token == self._im_end_id:
-            return True
-
-        max_tok = data.max_new_tokens or self._max_new_tokens
-        if len(data.output_codes) >= max_tok:
-            return True
-
-        return False
+        return data.req.finished()
 
 
 # ---------------------------------------------------------------------------
@@ -242,7 +243,7 @@ class S2ProSGLangModelRunner:
                 continue
 
             # [num_codebooks+1] → [num_codebooks+1, 1] for existing format
-            codes = text_model._output_codes[i].unsqueeze(-1)
+            codes = text_model._output_codes[i].unsqueeze(-1).clone()
             outputs[sched_req.request_id] = RequestOutput(
                 request_id=sched_req.request_id,
                 data=S2ProStepOutput(codes=codes),
