@@ -162,7 +162,7 @@ class OmniEngine(Engine):
             # Check for arrived feedback even when idle
             if self._feedback_mailbox is not None:
                 self._check_feedback()
-            await asyncio.sleep(0.001)  # Brief sleep when idle
+            await self.scheduler.wait_for_work()
             return False
 
         try:
@@ -228,7 +228,7 @@ class OmniEngine(Engine):
                     continue
                 output = model_output.outputs.get(request.request_id)
                 if output is not None and iter_ctrl.needs_feedback(request, output):
-                    request.status = SchedulerStatus.WAITING_FEEDBACK
+                    self.scheduler.mark_waiting_feedback(request.request_id)
                     request._feedback_wait_start = time.time()
 
         # 7. Check for arrived feedback — resume WAITING_FEEDBACK requests
@@ -263,9 +263,7 @@ class OmniEngine(Engine):
             elif self._feedback_mailbox is not None:
                 # Still check for arrived feedback even when idle
                 self._check_feedback()
-                await asyncio.sleep(0.001)
-            else:
-                await asyncio.sleep(0.001)
+            await self.scheduler.wait_for_work()
             self._last_scheduler_output = None
             return False
 
@@ -426,7 +424,7 @@ class OmniEngine(Engine):
                         continue
                     output = pending.model_output.outputs.get(request.request_id)
                     if output is not None and iter_ctrl.needs_feedback(request, output):
-                        request.status = SchedulerStatus.WAITING_FEEDBACK
+                        self.scheduler.mark_waiting_feedback(request.request_id)
                         request._feedback_wait_start = time.time()
 
             # Check for arrived feedback
@@ -527,8 +525,10 @@ class OmniEngine(Engine):
         assert self._feedback_mailbox is not None
         from sglang_omni.pipeline.stage.stream_queue import StreamSignal
 
-        for req_id, request in list(self.scheduler.requests.items()):
-            if request.status != SchedulerStatus.WAITING_FEEDBACK:
+        for req_id in list(self.scheduler.waiting_feedback):
+            request = self.scheduler.requests.get(req_id)
+            if request is None or request.status != SchedulerStatus.WAITING_FEEDBACK:
+                self.scheduler.waiting_feedback.discard(req_id)
                 continue
             if not self._feedback_mailbox.has(req_id):
                 continue
