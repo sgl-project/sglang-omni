@@ -103,10 +103,10 @@ async def main_async(args: argparse.Namespace) -> None:
         profiler_dir = os.environ.get("SGLANG_TORCH_PROFILER_DIR")
         if profiler_dir:
             from sglang_omni.profiler.profiler_control import ProfilerControlClient
-            from sglang_omni.serve.launcher import _mount_profiler_routes
+            from sglang_omni.serve.launcher import mount_profiler_routes
 
             profiler_ctl = ProfilerControlClient(runner.stage_endpoints)
-            _mount_profiler_routes(app, profiler_ctl, profiler_dir)
+            mount_profiler_routes(app, profiler_ctl, profiler_dir)
             logger.info("Profiler routes mounted (dir=%s)", profiler_dir)
 
         server_config = uvicorn.Config(

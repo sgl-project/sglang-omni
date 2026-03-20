@@ -104,7 +104,7 @@ class StopReq(BaseModel):
     run_id: str | None = None
 
 
-def _mount_profiler_routes(
+def mount_profiler_routes(
     app, profiler_ctl: ProfilerControlClient, profiler_dir: str
 ) -> None:
     router = APIRouter()
@@ -169,7 +169,7 @@ async def _run_server(
 
         profiler_dir = os.environ.get("SGLANG_TORCH_PROFILER_DIR")
         profiler_ctl = ProfilerControlClient(stage_endpoints)
-        _mount_profiler_routes(app, profiler_ctl, profiler_dir)
+        mount_profiler_routes(app, profiler_ctl, profiler_dir)
 
         # 4. Run uvicorn
         config = uvicorn.Config(app, host=host, port=port, log_level=log_level)
