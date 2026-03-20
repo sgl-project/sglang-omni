@@ -15,6 +15,7 @@ import signal
 import subprocess
 import sys
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -39,6 +40,34 @@ EXPECTED_KEYWORDS = [
 
 STARTUP_TIMEOUT = 600  # seconds
 REQUEST_TIMEOUT = 300  # seconds
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+@contextmanager
+def disable_proxy():
+    """Temporarily disable proxy env vars for loopback requests."""
+    proxy_vars = (
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "ALL_PROXY",
+        "all_proxy",
+        "NO_PROXY",
+        "no_proxy",
+    )
+    saved = {name: os.environ[name] for name in proxy_vars if name in os.environ}
+    for name in proxy_vars:
+        os.environ.pop(name, None)
+
+    try:
+        yield
+    finally:
+        for name in proxy_vars:
+            os.environ.pop(name, None)
+        os.environ.update(saved)
 
 
 # ---------------------------------------------------------------------------
@@ -79,7 +108,8 @@ def server_process():
             out = proc.stdout.read() if proc.stdout else ""
             pytest.fail(f"Server exited with code {proc.returncode}.\n{out}")
         try:
-            resp = requests.get(f"{API_BASE}/health", timeout=2)
+            with disable_proxy():
+                resp = requests.get(f"{API_BASE}/health", timeout=2)
             if resp.status_code == 200 and "healthy" in resp.text:
                 healthy = True
                 break
@@ -140,11 +170,12 @@ def test_two_round_conversation(server_process):
     }
 
     t1_start = time.monotonic()
-    resp_r1 = requests.post(
-        f"{API_BASE}/v1/chat/completions",
-        json=payload_r1,
-        timeout=REQUEST_TIMEOUT,
-    )
+    with disable_proxy():
+        resp_r1 = requests.post(
+            f"{API_BASE}/v1/chat/completions",
+            json=payload_r1,
+            timeout=REQUEST_TIMEOUT,
+        )
     t1_elapsed = time.monotonic() - t1_start
 
     assert (
@@ -184,11 +215,12 @@ def test_two_round_conversation(server_process):
     }
 
     t2_start = time.monotonic()
-    resp_r2 = requests.post(
-        f"{API_BASE}/v1/chat/completions",
-        json=payload_r2,
-        timeout=REQUEST_TIMEOUT,
-    )
+    with disable_proxy():
+        resp_r2 = requests.post(
+            f"{API_BASE}/v1/chat/completions",
+            json=payload_r2,
+            timeout=REQUEST_TIMEOUT,
+        )
     t2_elapsed = time.monotonic() - t2_start
 
     assert (
@@ -220,7 +252,8 @@ def test_two_round_conversation(server_process):
         )
 
     # Server should still be healthy
-    health = requests.get(f"{API_BASE}/health", timeout=5)
+    with disable_proxy():
+        health = requests.get(f"{API_BASE}/health", timeout=5)
     assert health.status_code == 200, "Server unhealthy after round 2"
 
 
