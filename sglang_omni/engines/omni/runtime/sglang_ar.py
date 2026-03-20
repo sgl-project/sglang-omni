@@ -576,6 +576,7 @@ class SGLangModelRunner:
             end = start + extend_lens[i]
             req_input_ids = forward_batch.input_ids[start:end]
             consumed = req._omni_consumed or {}
+            chunk_offsets: dict[str, tuple[int, int]] = {}
 
             for modality, token_id in [
                 ("image", image_token_id),
@@ -590,6 +591,7 @@ class SGLangModelRunner:
                     continue
                 n_tokens = int(mask.sum().item())
                 offset = consumed.get(modality, 0)
+                chunk_offsets[modality] = (offset, n_tokens)
                 chunk_embeds = embeds[offset : offset + n_tokens].to(
                     device=device, dtype=input_embeds.dtype
                 )
@@ -610,8 +612,12 @@ class SGLangModelRunner:
 
                 if ds_embeds is None:
                     if image_ds and video_ds:
+                        image_offset, image_count = chunk_offsets.get("image", (0, 0))
+                        video_offset, video_count = chunk_offsets.get("video", (0, 0))
                         merged = []
                         for img_e, vid_e in zip(image_ds, video_ds):
+                            img_e = img_e[image_offset : image_offset + image_count]
+                            vid_e = vid_e[video_offset : video_offset + video_count]
                             num_visual = int(visual_mask.sum().item())
                             joint = img_e.new_zeros(num_visual, img_e.shape[-1])
                             img_in_visual = img_mask[visual_mask]
@@ -623,9 +629,32 @@ class SGLangModelRunner:
                             merged.append(joint)
                         ds_embeds = merged
                     elif image_ds:
-                        ds_embeds = image_ds
+                        image_offset, image_count = chunk_offsets.get("image", (0, 0))
+                        ds_embeds = [
+                            layer[image_offset : image_offset + image_count]
+                            for layer in image_ds
+                        ]
                     elif video_ds:
-                        ds_embeds = video_ds
+                        video_offset, video_count = chunk_offsets.get("video", (0, 0))
+                        ds_embeds = [
+                            layer[video_offset : video_offset + video_count]
+                            for layer in video_ds
+                        ]
+                elif visual_mask.any():
+                    visual_count = int(visual_mask.sum().item())
+                    if vid_mask.any() and not img_mask.any():
+                        visual_offset = chunk_offsets.get("video", (0, 0))[0]
+                    elif img_mask.any() and not vid_mask.any():
+                        visual_offset = chunk_offsets.get("image", (0, 0))[0]
+                    else:
+                        visual_offset = consumed.get("_visual", 0)
+                    ds_embeds = [
+                        layer[visual_offset : visual_offset + visual_count]
+                        for layer in ds_embeds
+                    ]
+                    consumed["_visual"] = visual_offset + visual_count
+                else:
+                    ds_embeds = None
 
                 if ds_embeds is not None:
                     global_mask = torch.zeros(
@@ -683,20 +712,30 @@ class SGLangModelRunner:
         if forward_batch.mrope_positions is not None:
             positions = forward_batch.mrope_positions
 
-        # Pass deepstack visual embeds as per-layer list + boolean mask.
-        # The thinker's forward injects each layer's embeddings at the
-        # corresponding transformer layer (deepstack_visual_embeds[layer_idx]).
-        ds_kwargs: dict[str, Any] = {}
+        ds_input = None
         if deepstack_visual_embeds is not None and visual_pos_masks is not None:
-            ds_kwargs["visual_pos_masks"] = visual_pos_masks
-            ds_kwargs["deepstack_visual_embeds"] = deepstack_visual_embeds
+            device = input_embeds.device
+            dtype = input_embeds.dtype
+            layer_tensors = [
+                t.to(device=device, dtype=dtype) for t in deepstack_visual_embeds
+            ]
+            ds_input = torch.cat(layer_tensors, dim=-1)
+
+            full_ds = torch.zeros(
+                input_embeds.shape[0],
+                ds_input.shape[-1],
+                device=device,
+                dtype=dtype,
+            )
+            full_ds[visual_pos_masks] = ds_input
+            ds_input = full_ds
 
         hidden_states = outer.model(
             input_ids=None,
             positions=positions,
             forward_batch=forward_batch,
             input_embeds=input_embeds,
-            **ds_kwargs,
+            input_deepstack_embeds=ds_input,
         )
 
         logits_output = outer.logits_processor(
