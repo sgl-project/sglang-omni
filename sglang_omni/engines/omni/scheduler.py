@@ -69,6 +69,7 @@ class Scheduler:
         # the request is fully removed from self.requests.
         self._aborted_ids: set[str] = set()
         self._stream_queues: dict[str, asyncio.Queue[Any]] = {}
+        self._completed_stream_queues: dict[str, asyncio.Queue[Any]] = {}
         self._stream_done = object()
 
     # -------------------------------------------------------------------------
@@ -157,6 +158,7 @@ class Scheduler:
                 yield item
         finally:
             self._stream_queues.pop(request_id, None)
+            self._completed_stream_queues.pop(request_id, None)
 
     def prepare_stream(self, request_id: str) -> None:
         """Pre-register a stream queue before request submission."""
@@ -165,12 +167,17 @@ class Scheduler:
     def discard_stream(self, request_id: str) -> None:
         """Drop any pre-registered stream queue for a failed submission."""
         self._stream_queues.pop(request_id, None)
+        self._completed_stream_queues.pop(request_id, None)
 
     def _subscribe_stream(self, request_id: str) -> asyncio.Queue[Any]:
         queue = self._stream_queues.get(request_id)
         if queue is None:
+            queue = self._completed_stream_queues.pop(request_id, None)
+        if queue is None:
             queue = asyncio.Queue()
-            self._stream_queues[request_id] = queue
+        self._stream_queues[request_id] = queue
+        if request_id in self._completed_stream_queues:
+            self._completed_stream_queues.pop(request_id, None)
         request = self._get_request(request_id)
         if request is not None and request.status in (
             SchedulerStatus.FINISHED,
@@ -319,6 +326,7 @@ class Scheduler:
         queue = self._stream_queues.pop(request.request_id, None)
         if queue is not None:
             queue.put_nowait(self._stream_done)
+            self._completed_stream_queues[request.request_id] = queue
 
     def _get_request(self, request_id: str) -> SchedulerRequest | None:
         request = self.requests.get(request_id)
