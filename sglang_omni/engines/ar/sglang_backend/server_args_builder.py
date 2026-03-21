@@ -2,6 +2,7 @@
 """Shared ServerArgs construction for SGLang AR engines."""
 from __future__ import annotations
 
+import os
 from typing import Any
 
 from sglang.srt.server_args import ServerArgs
@@ -32,4 +33,6 @@ def build_sglang_server_args(
         "context_length": context_length,
     }
     kwargs.update(overrides)
+    if os.environ.get("SGLANG_DISABLE_OVERLAP") == "1":
+        kwargs["disable_overlap_schedule"] = True
     return ServerArgs(**kwargs)
