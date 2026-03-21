@@ -280,12 +280,18 @@ class MultiProcessPipelineRunner:
         self._completion_task: asyncio.Task | None = None
         self._monitor_task: asyncio.Task | None = None
         self._started = False
+        self._stage_endpoints: dict[str, str] = {}
 
     @property
     def coordinator(self) -> Coordinator:
         if self._coordinator is None:
             raise RuntimeError("Runner not started")
         return self._coordinator
+
+    @property
+    def stage_endpoints(self) -> dict[str, str]:
+        """Map of stage name -> ZMQ control endpoint. Available after start()."""
+        return dict(self._stage_endpoints)
 
     async def start(self, timeout: float = 120.0) -> None:
         """Start coordinator and spawn stage subprocesses.
@@ -302,6 +308,7 @@ class MultiProcessPipelineRunner:
             endpoints = _allocate_endpoints(self._config, stages=stages_cfg)
 
             stage_endpoints = {s.name: endpoints[f"stage_{s.name}"] for s in stages_cfg}
+            self._stage_endpoints = stage_endpoints
 
             # 2. Create Coordinator in main process (binds ZMQ first)
             self._coordinator = Coordinator(
