@@ -171,7 +171,7 @@ class Scheduler:
         if queue is None:
             queue = asyncio.Queue()
             self._stream_queues[request_id] = queue
-        request = self.requests.get(request_id)
+        request = self._get_request(request_id)
         if request is not None and request.status in (
             SchedulerStatus.FINISHED,
             SchedulerStatus.ABORTED,
