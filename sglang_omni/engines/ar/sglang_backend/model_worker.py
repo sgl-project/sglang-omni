@@ -1,19 +1,13 @@
+from __future__ import annotations
+
+import os
 import socket
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
-from sglang.srt.configs.model_config import ModelConfig
-from sglang.srt.managers.scheduler import GenerationBatchResult
-from sglang.srt.server_args import ServerArgs
-from sglang.srt.utils import broadcast_pyobj, set_random_seed
-
-from .model_runner import SGLModelRunner
-
-
-def _find_free_port() -> int:
-    """Ask the OS for a free TCP port."""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("", 0))
-        return s.getsockname()[1]
+if TYPE_CHECKING:
+    from sglang.srt.configs.model_config import ModelConfig
+    from sglang.srt.server_args import ServerArgs
 
 
 @dataclass
@@ -48,6 +42,8 @@ class ModelWorker:
         self._init_model_runner()
 
         self.device = self.model_runner.device
+        from sglang.srt.utils import broadcast_pyobj, set_random_seed
+
         self.random_seed = broadcast_pyobj(
             [server_args.random_seed],
             self.tp_rank,
@@ -56,6 +52,8 @@ class ModelWorker:
         set_random_seed(self.random_seed)
 
     def _init_model_config(self):
+        from sglang.srt.configs.model_config import ModelConfig
+
         self.model_config = ModelConfig.from_server_args(
             server_args=self.server_args,
             model_path=self.server_args.model_path,
@@ -94,6 +92,11 @@ class ModelWorker:
         )
 
     def _init_model_runner(self):
+        from .model_runner import SGLModelRunner
+
+        nccl_port = (
+            self.nccl_port if self.nccl_port is not None else _resolve_nccl_port()
+        )
         self.model_runner = SGLModelRunner(
             model_config=self.model_config,
             server_args=self.server_args,
@@ -103,9 +106,7 @@ class ModelWorker:
             moe_ep_size=1,
             pp_rank=0,
             pp_size=1,
-            nccl_port=(
-                self.nccl_port if self.nccl_port is not None else _find_free_port()
-            ),
+            nccl_port=nccl_port,
             model_arch_override=self.model_arch_override,
             weight_prefix=self.weight_prefix,
         )
@@ -114,6 +115,8 @@ class ModelWorker:
         self,
         forward_batch,
     ):
+        from sglang.srt.managers.scheduler import GenerationBatchResult
+
         out = self.model_runner.forward(forward_batch=forward_batch)
         logits_output, can_run_cuda_graph = out.logits_output, out.can_run_graph
         batch_result = GenerationBatchResult(
@@ -122,3 +125,17 @@ class ModelWorker:
             expert_distribution_metrics=out.expert_distribution_metrics,
         )
         return batch_result
+
+
+def _resolve_nccl_port() -> int:
+    master_port = os.environ.get("MASTER_PORT")
+    if master_port:
+        return int(master_port)
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("", 0))
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        port = sock.getsockname()[1]
+
+    os.environ["MASTER_PORT"] = str(port)
+    return port

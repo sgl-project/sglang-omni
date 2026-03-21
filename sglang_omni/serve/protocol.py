@@ -148,6 +148,14 @@ class ChatCompletionStreamResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+class SpeechReference(BaseModel):
+    """Reference item for voice cloning in /v1/audio/speech."""
+
+    audio_path: str | None = None
+    text: str | None = None
+    vq_codes: list[list[int]] | list[int] | None = None
+
+
 class CreateSpeechRequest(BaseModel):
     """OpenAI-compatible text-to-speech request.
 
@@ -163,6 +171,7 @@ class CreateSpeechRequest(BaseModel):
     voice: str = "default"
     response_format: str = "wav"
     speed: float = 1.0
+    stream: bool = False
 
     # Advanced TTS extensions
     task_type: str | None = None  # e.g. "Base", "CustomVoice", "VoiceDesign"
@@ -172,6 +181,7 @@ class CreateSpeechRequest(BaseModel):
     # Voice cloning parameters
     ref_audio: str | None = None  # path or URL to reference audio
     ref_text: str | None = None  # transcript of reference audio
+    references: list[SpeechReference] | None = None  # S2-Pro-style refs
 
     # Generation parameters
     max_new_tokens: int | None = None
