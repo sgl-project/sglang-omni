@@ -30,7 +30,12 @@ from sglang_omni.client import (
     Message,
     SamplingParams,
 )
-from sglang_omni.client.audio import DEFAULT_SAMPLE_RATE, encode_audio, to_numpy
+from sglang_omni.client.audio import (
+    DEFAULT_SAMPLE_RATE,
+    FORMAT_MIME_TYPES,
+    encode_audio,
+    to_numpy,
+)
 from sglang_omni.serve.protocol import (
     ChatCompletionAudio,
     ChatCompletionChoice,
@@ -46,6 +51,7 @@ from sglang_omni.serve.protocol import (
 )
 
 logger = logging.getLogger(__name__)
+MIME_TO_FORMAT = {mime: fmt for fmt, mime in FORMAT_MIME_TYPES.items()}
 
 
 # ---------------------------------------------------------------------------
@@ -525,13 +531,14 @@ async def _speech_stream(
                 sample_rate=sample_rate,
                 speed=speed,
             )
+            actual_format = MIME_TO_FORMAT.get(mime_type, response_format)
             payload = {
                 "id": f"speech-{request_id}",
                 "object": "audio.speech.chunk",
                 "index": chunk_index,
                 "audio": {
                     "data": base64.b64encode(audio_bytes).decode("ascii"),
-                    "format": response_format,
+                    "format": actual_format,
                     "mime_type": mime_type,
                     "sample_rate": sample_rate,
                 },
