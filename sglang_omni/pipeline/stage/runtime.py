@@ -555,6 +555,12 @@ class Stage:
         """Handle abort for a request."""
         logger.debug("Stage %s: aborting req=%s", self.name, request_id)
         self._aborted_requests.add(request_id)
+        # Cap to prevent unbounded growth from accumulated abort IDs
+        if len(self._aborted_requests) > 10000:
+            excess = len(self._aborted_requests) - 5000
+            it = iter(self._aborted_requests)
+            to_remove = [next(it) for _ in range(excess)]
+            self._aborted_requests -= set(to_remove)
         self.router.clear_request(request_id)
         self.input_handler.cancel(request_id)
         self.relay.cleanup(request_id)
@@ -564,9 +570,15 @@ class Stage:
             self._stream_queue.close(request_id)
         self._pending_stream_data.pop(request_id, None)
 
-        # Notify workers' engines
+        # Notify workers' engines and resolve pending futures
         for worker in self.workers:
             asyncio.create_task(worker.executor.abort(request_id))
+            # Resolve any pending result waiter so the worker doesn't hang
+            fut = worker._result_waiters.pop(request_id, None)
+            if fut is not None and not fut.done():
+                fut.set_exception(
+                    asyncio.CancelledError(f"Request {request_id} aborted")
+                )
 
     def info(self) -> StageInfo:
         """Return stage info."""

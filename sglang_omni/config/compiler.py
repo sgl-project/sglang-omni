@@ -290,6 +290,14 @@ def _wire_stream_targets(
         worker._stream_targets = all_targets
         worker._bootstrap_targets = bootstrap_targets
         worker._same_gpu_targets = same_gpu_targets
+        set_target = getattr(worker.executor, "set_stream_target", None)
+        if callable(set_target):
+            if len(all_targets) != 1:
+                raise ValueError(
+                    f"Executor for stage {sender_stage.name!r} requires exactly one "
+                    "stream_to target"
+                )
+            set_target(all_targets[0])
         # Wire stream_fn: executor calls worker._enqueue_stream
         set_fn = getattr(worker.executor, "set_stream_fn", None)
         if callable(set_fn):

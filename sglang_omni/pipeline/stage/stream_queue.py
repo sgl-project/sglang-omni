@@ -46,9 +46,10 @@ class StreamQueue:
     def __init__(self, max_pending: int = 16):
         self._max_pending = max_pending
         self._queues: dict[str, asyncio.Queue] = {}
-        self._signals: dict[str, StreamSignal] = {}  # guaranteed delivery
+        self._closed: set[str] = set()  # track closed request IDs for abort race
 
     def open(self, request_id: str) -> None:
+        self._closed.discard(request_id)
         if request_id not in self._queues:
             self._queues[request_id] = (
                 asyncio.Queue()
@@ -60,6 +61,8 @@ class StreamQueue:
     def put(self, request_id: str, item: StreamItem) -> None:
         queue = self._queues.get(request_id)
         if queue is None:
+            if request_id in self._closed:
+                return  # silently drop — queue was closed (abort)
             raise KeyError(f"No queue for {request_id}")
         queue.put_nowait(item)
 
@@ -78,26 +81,16 @@ class StreamQueue:
         queue.put_nowait(StreamSignal(from_stage=from_stage, error=error))
 
     async def get(self, request_id: str) -> StreamItem | None:
-        """Get next item. Returns None when done, raises on error."""
+        """Get next item. Returns None when done or closed (abort)."""
         queue = self._queues.get(request_id)
         if queue is None:
-            # Check deferred signals
-            sig = self._signals.pop(request_id, None)
-            if sig is not None:
-                if sig.error:
-                    raise sig.error
-                return None  # done
+            if request_id in self._closed:
+                return None  # queue was closed — treat as done
             raise RuntimeError(f"No queue for {request_id}")
 
         try:
             item = queue.get_nowait()
         except asyncio.QueueEmpty:
-            # Check deferred signals before waiting
-            sig = self._signals.pop(request_id, None)
-            if sig is not None:
-                if sig.error:
-                    raise sig.error
-                return None
             item = await queue.get()
 
         if isinstance(item, StreamSignal):
@@ -110,23 +103,26 @@ class StreamQueue:
         """Get next item or signal while preserving the upstream stage info."""
         queue = self._queues.get(request_id)
         if queue is None:
-            sig = self._signals.pop(request_id, None)
-            if sig is not None:
-                return sig
+            if request_id in self._closed:
+                return StreamSignal(is_done=True)  # abort signal
             raise RuntimeError(f"No queue for {request_id}")
 
         try:
             item = queue.get_nowait()
         except asyncio.QueueEmpty:
-            sig = self._signals.pop(request_id, None)
-            if sig is not None:
-                return sig
             item = await queue.get()
         return item
 
     def close(self, request_id: str) -> None:
         q = self._queues.pop(request_id, None)
-        self._signals.pop(request_id, None)
+        self._closed.add(request_id)
+        # Cap _closed size to prevent unbounded growth
+        if len(self._closed) > 10000:
+            # Remove oldest entries (set is unordered, but bulk discard is fine)
+            excess = len(self._closed) - 5000
+            it = iter(self._closed)
+            to_remove = [next(it) for _ in range(excess)]
+            self._closed -= set(to_remove)
         if q is not None:
             # Wake any blocked get() calls with a proper sentinel
             q.put_nowait(StreamSignal(is_done=True))

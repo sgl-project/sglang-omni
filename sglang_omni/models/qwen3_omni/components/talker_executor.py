@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import collections
 import json
 import logging
 from dataclasses import dataclass, field
@@ -41,7 +42,9 @@ _THINKER_EMBED_CANDIDATE_KEYS = (
 @dataclass
 class _TalkerRequestState:
     payload: StagePayload
-    pending_feedbacks: list[torch.Tensor] = field(default_factory=list)
+    pending_feedbacks: collections.deque[torch.Tensor] = field(
+        default_factory=collections.deque
+    )
     thinker_chunks_done: bool = False
     feedback_chunk_id: int = 0
     bridge_task: asyncio.Task | None = None
@@ -223,6 +226,18 @@ class TalkerStreamingExecutor(Executor):
             thinker_chunks=thinker_chunks,
             thinker_done=thinker_done,
         )
+        if engine_input is None:
+            # Thinker produced nothing — complete immediately with empty output
+            payload.data = {"chunk_count": 0}
+
+            async def _noop_result():
+                return payload
+
+            task = asyncio.create_task(_noop_result())
+            self._tasks[request_id] = task
+            task.add_done_callback(lambda _t: self._done.put_nowait(request_id))
+            self._engine_feedback_mailbox.close(request_id)
+            return
         await self._engine.add_request(request_id, engine_input)
 
         state = _TalkerRequestState(
@@ -304,11 +319,13 @@ class TalkerStreamingExecutor(Executor):
         *,
         min_thinker_chunks: int,
         thinker_chunks: list[StreamItem] | None = None,
-        pending_feedbacks: list[torch.Tensor] | None = None,
+        pending_feedbacks: collections.deque[torch.Tensor] | None = None,
         thinker_done: bool = False,
-    ) -> tuple[list[StreamItem], list[torch.Tensor], bool]:
+    ) -> tuple[list[StreamItem], collections.deque[torch.Tensor], bool]:
         thinker_chunks = thinker_chunks or []
-        pending_feedbacks = pending_feedbacks or []
+        pending_feedbacks = (
+            pending_feedbacks if pending_feedbacks is not None else collections.deque()
+        )
 
         while len(thinker_chunks) < min_thinker_chunks and not thinker_done:
             item = await self._stream_queue.get_with_source(request_id)
@@ -332,55 +349,18 @@ class TalkerStreamingExecutor(Executor):
     ):
         sampling_cfg = self._resolve_talker_sampling_config(payload)
 
-        if thinker_chunks:
-            return self._build_prompt_prefill_request(
-                payload=payload,
-                request_id=request_id,
-                thinker_chunks=thinker_chunks,
-                thinker_done=thinker_done,
-                sampling_cfg=sampling_cfg,
-            )
+        if not thinker_chunks:
+            # Thinker produced no output (e.g. max_new_tokens=0 or immediate abort).
+            # Return a minimal payload so the request completes gracefully.
+            return None
 
-        thinker_hidden_states = (
-            torch.stack([c.data for c in thinker_chunks], dim=0)
-            if thinker_chunks
-            else torch.empty(0)
-        )
-        thinker_token_ids = [
-            c.metadata["token_id"]
-            for c in thinker_chunks
-            if c.metadata is not None and c.metadata.get("token_id") is not None
-        ]
-        thinker_layer_hidden = None
-        if thinker_chunks and thinker_chunks[0].metadata:
-            layer_hidden_list = [
-                c.metadata["layer_hidden"]
-                for c in thinker_chunks
-                if c.metadata is not None and c.metadata.get("layer_hidden") is not None
-            ]
-            if len(layer_hidden_list) == len(thinker_chunks):
-                thinker_layer_hidden = torch.stack(layer_hidden_list, dim=0)
-
-        data = build_sglang_talker_request(
-            thinker_hidden_states,
-            tokenizer=self._tokenizer,
-            codec_vocab_size=self._codec_vocab_size,
-            max_new_tokens=sampling_cfg["max_new_tokens"],
-            temperature=sampling_cfg["temperature"],
-            top_k=sampling_cfg["top_k"],
-            top_p=sampling_cfg["top_p"],
-            repetition_penalty=sampling_cfg["repetition_penalty"],
+        return self._build_prompt_prefill_request(
+            payload=payload,
             request_id=request_id,
-            codec_eos_id=sampling_cfg["codec_eos_id"],
-            suppress_tokens=sampling_cfg["suppress_tokens"],
-            thinker_layer_hidden=thinker_layer_hidden,
-            thinker_token_ids=thinker_token_ids,
-            thinker_chunks_done=thinker_done,
-            thinker_config=self._thinker_config,
-            talker_model_inputs=self._get_prompt_model_inputs(payload),
+            thinker_chunks=thinker_chunks,
+            thinker_done=thinker_done,
+            sampling_cfg=sampling_cfg,
         )
-        data.trailing_text_hidden = []
-        return data
 
     def _build_prompt_prefill_request(
         self,
@@ -868,10 +848,14 @@ class TalkerStreamingExecutor(Executor):
         if isinstance(item, StreamSignal):
             if item.error is not None:
                 raise item.error
-            if item.is_done and self._is_thinker_source(item):
-                if update_request:
-                    self._mark_thinker_done(request_id)
-                return True
+            if item.is_done:
+                # from_stage=None means the queue was closed (abort/cleanup)
+                # — treat as terminal to prevent infinite loops
+                is_terminal = item.from_stage is None or self._is_thinker_source(item)
+                if is_terminal:
+                    if update_request:
+                        self._mark_thinker_done(request_id)
+                    return True
             return False
 
         if self._is_thinker_source(item):
@@ -905,7 +889,6 @@ class TalkerStreamingExecutor(Executor):
         if not isinstance(trailing, list):
             return
         projected = self._project_assistant_chunk(chunk).cpu()
-        trailing_index = len(trailing)
         trailing.append(projected)
 
     def _mark_thinker_done(self, request_id: str) -> None:
@@ -918,7 +901,6 @@ class TalkerStreamingExecutor(Executor):
         trailing = getattr(request.data, "trailing_text_hidden", None)
         tts_eos_embed = getattr(request.data, "tts_eos_embed", None)
         if isinstance(trailing, list) and isinstance(tts_eos_embed, torch.Tensor):
-            trailing_index = len(trailing)
             eos_embed = tts_eos_embed.detach().cpu()
             trailing.append(eos_embed)
 
@@ -943,7 +925,7 @@ class TalkerStreamingExecutor(Executor):
         if not thinker_done and step_index >= trailing_len:
             return
 
-        feedback = state.pending_feedbacks.pop(0)
+        feedback = state.pending_feedbacks.popleft()
         self._engine_feedback_mailbox.put(
             request_id,
             StreamItem(

@@ -38,6 +38,9 @@ class Scheduler:
     - Resource details (KV cache, etc.)
     """
 
+    _COMPLETED_RETENTION_SOFT_LIMIT = 10000
+    _COMPLETED_RETENTION_HARD_LIMIT = 5000
+
     def __init__(
         self,
         batch_planner: BatchPlanner,
@@ -58,12 +61,19 @@ class Scheduler:
         # Result futures (created lazily in get_result)
         self._futures: dict[str, asyncio.Future[SchedulerRequest]] = {}
         self._step_id = 0
+        # Retain terminal requests for a bounded period so late stream
+        # subscribers can still observe an immediate terminal signal after
+        # get_result() returns.
+        self._completed_requests: dict[str, SchedulerRequest] = {}
+        self._completed_order: deque[str] = deque()
 
         # Track aborted request IDs persistently so that overlap-deferred
         # update() calls still see the abort.  Entries are cleaned up when
         # the request is fully removed from self.requests.
         self._aborted_ids: set[str] = set()
         self._stream_queues: dict[str, asyncio.Queue[Any]] = {}
+        self._completed_stream_queues: dict[str, asyncio.Queue[Any]] = {}
+        self._completed_stream_order: deque[str] = deque()
         self._stream_done = object()
 
     # -------------------------------------------------------------------------
@@ -111,14 +121,21 @@ class Scheduler:
 
     async def get_result(self, request_id: str) -> SchedulerRequest:
         """Wait for a request to complete."""
-        if request_id not in self.requests:
+        request = self._get_request(request_id)
+        if request is None:
             raise KeyError(f"Unknown request: {request_id}")
         loop = asyncio.get_running_loop()
 
         while True:
             # If already finished or aborted, resolve immediately.
-            request = self.requests[request_id]
-            if request.status in (SchedulerStatus.FINISHED, SchedulerStatus.ABORTED):
+            request = self._get_request(request_id)
+            if request is None:
+                raise KeyError(f"Unknown request: {request_id}")
+            if request.status in (
+                SchedulerStatus.FINISHED,
+                SchedulerStatus.ABORTED,
+            ):
+                self._futures.pop(request_id, None)
                 if request.error is not None:
                     raise request.error
                 return request
@@ -137,21 +154,41 @@ class Scheduler:
     async def stream(self, request_id: str) -> AsyncIterator[Any]:
         """Yield per-step stream data for a request."""
         queue = self._subscribe_stream(request_id)
-        while True:
-            item = await queue.get()
-            if item is self._stream_done:
-                return
-            yield item
+        try:
+            while True:
+                item = await queue.get()
+                if item is self._stream_done:
+                    return
+                yield item
+        finally:
+            self._stream_queues.pop(request_id, None)
+            self._completed_stream_queues.pop(request_id, None)
+
+    def prepare_stream(self, request_id: str) -> None:
+        """Pre-register a stream queue before request submission."""
+        self._subscribe_stream(request_id)
+
+    def discard_stream(self, request_id: str) -> None:
+        """Drop any pre-registered stream queue for a failed submission."""
+        self._stream_queues.pop(request_id, None)
+        if request_id in self._completed_stream_queues:
+            self._completed_stream_queues.pop(request_id, None)
+            self._remove_completed_stream_order(request_id)
 
     def _subscribe_stream(self, request_id: str) -> asyncio.Queue[Any]:
-        if request_id not in self.requests:
-            raise KeyError(f"Unknown request: {request_id}")
         queue = self._stream_queues.get(request_id)
         if queue is None:
+            queue = self._completed_stream_queues.pop(request_id, None)
+            if queue is not None:
+                self._remove_completed_stream_order(request_id)
+        if queue is None:
             queue = asyncio.Queue()
-            self._stream_queues[request_id] = queue
-        request = self.requests[request_id]
-        if request.status in (SchedulerStatus.FINISHED, SchedulerStatus.ABORTED):
+        self._stream_queues[request_id] = queue
+        request = self._get_request(request_id)
+        if request is not None and request.status in (
+            SchedulerStatus.FINISHED,
+            SchedulerStatus.ABORTED,
+        ):
             queue.put_nowait(self._stream_done)
         return queue
 
@@ -277,6 +314,8 @@ class Scheduler:
 
         # Clean up abort tracking (request is fully done now)
         self._aborted_ids.discard(request.request_id)
+        self.requests.pop(request.request_id, None)
+        self._remember_completed_request(request)
 
         # Resolve future if someone is waiting
         if request.request_id in self._futures:
@@ -287,6 +326,46 @@ class Scheduler:
                 else:
                     future.set_result(request)
 
+        # Clean up futures (get_result reads from self.requests, not futures)
+        self._futures.pop(request.request_id, None)
+
         queue = self._stream_queues.pop(request.request_id, None)
         if queue is not None:
             queue.put_nowait(self._stream_done)
+            self._remember_completed_stream_queue(request.request_id, queue)
+
+    def _get_request(self, request_id: str) -> SchedulerRequest | None:
+        request = self.requests.get(request_id)
+        if request is not None:
+            return request
+        return self._completed_requests.get(request_id)
+
+    def _remember_completed_request(self, request: SchedulerRequest) -> None:
+        request_id = request.request_id
+        if request_id not in self._completed_requests:
+            self._completed_order.append(request_id)
+        self._completed_requests[request_id] = request
+
+        if len(self._completed_order) <= self._COMPLETED_RETENTION_SOFT_LIMIT:
+            return
+
+        while len(self._completed_order) > self._COMPLETED_RETENTION_HARD_LIMIT:
+            stale_request_id = self._completed_order.popleft()
+            self._completed_requests.pop(stale_request_id, None)
+
+    def _remember_completed_stream_queue(
+        self, request_id: str, queue: asyncio.Queue[Any]
+    ) -> None:
+        if request_id not in self._completed_stream_queues:
+            self._completed_stream_order.append(request_id)
+        self._completed_stream_queues[request_id] = queue
+
+        while len(self._completed_stream_order) > self._COMPLETED_RETENTION_HARD_LIMIT:
+            stale_request_id = self._completed_stream_order.popleft()
+            self._completed_stream_queues.pop(stale_request_id, None)
+
+    def _remove_completed_stream_order(self, request_id: str) -> None:
+        try:
+            self._completed_stream_order.remove(request_id)
+        except ValueError:
+            return

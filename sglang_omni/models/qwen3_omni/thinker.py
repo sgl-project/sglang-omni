@@ -619,7 +619,7 @@ class Qwen3OmniMoeThinkerTextModel(nn.Module):
         )
 
         alt_stream = torch.cuda.Stream()
-        self.layers, self.start_layer, self.end_layer = make_layers(
+        result = make_layers(
             config.num_hidden_layers,
             lambda idx, prefix: Qwen3OmniMoeThinkerTextDecoderLayer(
                 layer_id=idx,
@@ -630,6 +630,13 @@ class Qwen3OmniMoeThinkerTextModel(nn.Module):
             ),
             prefix=add_prefix("layers", prefix),
         )
+        # make_layers returns (layers, start, end) with PP args, else just layers
+        if isinstance(result, tuple):
+            self.layers, self.start_layer, self.end_layer = result
+        else:
+            self.layers = result
+            self.start_layer = 0
+            self.end_layer = config.num_hidden_layers
         self.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
         # For EAGLE3 support
@@ -752,6 +759,10 @@ def maybe_update_fused_qkv_proj(
 
     for shard_name in stacked_params_mapping:
         if shard_name in name:
+            # Expert weights (mlp.experts.*) are handled by the MoE loader,
+            # not the fused QKV/gate_up_proj path.
+            if "mlp.experts" in name:
+                continue
             fused_param_name, shard_id = stacked_params_mapping[shard_name]
 
             name = name.replace(shard_name, fused_param_name)

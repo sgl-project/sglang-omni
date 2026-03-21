@@ -340,6 +340,7 @@ class MultiProcessPipelineRunner:
             # 4. Wait for all stages to be ready
             import time as _time
 
+            loop = asyncio.get_running_loop()
             for i, event in enumerate(ready_events):
                 stage_name = stages_cfg[i].name
                 p = self._processes[i]
@@ -356,7 +357,7 @@ class MultiProcessPipelineRunner:
                             f"Stage {stage_name} process died during startup "
                             f"(exit code {p.exitcode})"
                         )
-                    event.wait(timeout=min(remaining, 1.0))
+                    await loop.run_in_executor(None, event.wait, min(remaining, 1.0))
                 logger.info("Stage %s ready", stage_name)
 
             # 5. Check for early process failures

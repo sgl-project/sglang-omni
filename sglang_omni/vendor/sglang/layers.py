@@ -49,18 +49,39 @@ def _patched_forward_cuda(
     self,
     x: torch.Tensor,
     residual: Optional[torch.Tensor] = None,
+    post_residual_addition: Optional[torch.Tensor] = None,
     **kwargs,
 ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
     if x.numel() == 0:
         return x
     if self.cast_x_before_out_mul:
-        return self.forward_native(x, residual, **kwargs)
+        return self.forward_native(
+            x,
+            residual,
+            post_residual_addition=post_residual_addition,
+            **kwargs,
+        )
     if residual is not None and residual.dtype != x.dtype:
-        return self.forward_native(x, residual, **kwargs)
-    post_residual_addition = kwargs.get("post_residual_addition")
+        return self.forward_native(
+            x,
+            residual,
+            post_residual_addition=post_residual_addition,
+            **kwargs,
+        )
     if post_residual_addition is not None and post_residual_addition.dtype != x.dtype:
-        return self.forward_native(x, residual, **kwargs)
-    return _orig_forward_cuda(self, x, residual, **kwargs)
+        return self.forward_native(
+            x,
+            residual,
+            post_residual_addition=post_residual_addition,
+            **kwargs,
+        )
+    return _orig_forward_cuda(
+        self,
+        x,
+        residual,
+        post_residual_addition=post_residual_addition,
+        **kwargs,
+    )
 
 
 RMSNorm.forward_cuda = _patched_forward_cuda
@@ -75,6 +96,7 @@ def _patched_forward_with_allreduce_fusion(
     self,
     x: torch.Tensor,
     residual: Optional[torch.Tensor] = None,
+    post_residual_addition: Optional[torch.Tensor] = None,
     **kwargs,
 ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
     if residual is not None:
@@ -97,9 +119,19 @@ def _patched_forward_with_allreduce_fusion(
                 return fused_result
 
             x = tensor_model_parallel_all_reduce(x)
-            return self.forward(x, residual, **kwargs)
+            return self.forward(
+                x,
+                residual,
+                post_residual_addition=post_residual_addition,
+                **kwargs,
+            )
 
-    return self.forward(x, residual, **kwargs)
+    return self.forward(
+        x,
+        residual,
+        post_residual_addition=post_residual_addition,
+        **kwargs,
+    )
 
 
 RMSNorm.forward_with_allreduce_fusion = _patched_forward_with_allreduce_fusion
