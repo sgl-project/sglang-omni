@@ -10,13 +10,6 @@ if TYPE_CHECKING:
     from sglang.srt.server_args import ServerArgs
 
 
-def _find_free_port() -> int:
-    """Ask the OS for a free TCP port."""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("", 0))
-        return s.getsockname()[1]
-
-
 @dataclass
 class ModelWorkerConfig:
     model_arch_override: str | None = None
@@ -101,7 +94,9 @@ class ModelWorker:
     def _init_model_runner(self):
         from .model_runner import SGLModelRunner
 
-        nccl_port = _resolve_nccl_port()
+        nccl_port = (
+            self.nccl_port if self.nccl_port is not None else _resolve_nccl_port()
+        )
         self.model_runner = SGLModelRunner(
             model_config=self.model_config,
             server_args=self.server_args,
@@ -111,9 +106,7 @@ class ModelWorker:
             moe_ep_size=1,
             pp_rank=0,
             pp_size=1,
-            nccl_port=(
-                self.nccl_port if self.nccl_port is not None else _find_free_port()
-            ),
+            nccl_port=nccl_port,
             model_arch_override=self.model_arch_override,
             weight_prefix=self.weight_prefix,
         )

@@ -16,7 +16,12 @@ def preprocessing_next(request_id: str, output: Any) -> str | None:
 
 
 def tts_engine_next(request_id: str, output: Any) -> str | None:
-    del request_id, output
+    del request_id
+    request = getattr(output, "request", None)
+    params = getattr(request, "params", None)
+    is_stream = bool(params.get("stream")) if isinstance(params, dict) else False
+    if is_stream:
+        return None
     return VOCODER_STAGE
 
 

@@ -271,5 +271,5 @@ def test_tts_engine_next_skips_vocoder_for_stream_requests() -> None:
         request=SimpleNamespace(params={"stream": False})
     )
 
-    assert tts_engine_next("req-stream", stream_output) == VOCODER_STAGE
+    assert tts_engine_next("req-stream", stream_output) is None
     assert tts_engine_next("req-non-stream", non_stream_output) == VOCODER_STAGE

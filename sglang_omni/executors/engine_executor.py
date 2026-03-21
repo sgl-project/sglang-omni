@@ -66,11 +66,13 @@ class EngineExecutor(Executor):
         discard_stream = getattr(self._engine, "discard_stream", None)
         if callable(prepare_stream):
             prepare_stream(request_id)
+        self._submit_times[request_id] = time.perf_counter()
         try:
             await self._engine.add_request(request_id, engine_input)
         except Exception:
             if callable(discard_stream):
                 discard_stream(request_id)
+            self._submit_times.pop(request_id, None)
             self._payloads.pop(request_id, None)
             raise
 
