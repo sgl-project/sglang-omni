@@ -233,24 +233,10 @@ def create_sglang_ar_engine(
         model = model_worker.model_runner.model
         install_hidden_capture_hooks(model, capture_hidden_layers)
 
-    # Mark the graph runner as LAST so that can_run() accepts decode batches
-    # with capture_hidden_mode=LAST.  We set the field *after* capture()
-    # because capture() resets non-FULL modes back to NULL.
-    # The layers_to_capture ops are already baked into the captured graphs
-    # (they run as part of the model forward during capture), so the GPU
-    # tensor buffers for aux hidden states are updated in-place on replay.
-    if capture_hidden:
-        from sglang.srt.model_executor.forward_batch_info import CaptureHiddenMode
-
-        graph_runner = getattr(model_worker.model_runner, "graph_runner", None)
-        if graph_runner is not None:
-            graph_runner.capture_hidden_mode = CaptureHiddenMode.LAST
-            import logging as _logging
-
-            _logging.getLogger(__name__).info(
-                "Set graph_runner.capture_hidden_mode = LAST (was %s)",
-                CaptureHiddenMode.NULL,
-            )
+    # capture_hidden_mode is set via engine.enable_cuda_graph() when graphs
+    # are captured (possibly deferred).  For engines that capture graphs at
+    # creation time (not deferred), enable_cuda_graph() is called by the
+    # caller after this function returns.  See OmniEngine.enable_cuda_graph().
 
     # Get memory pools
     req_to_token_pool, token_to_kv_pool_allocator = model_worker.get_memory_pool()
@@ -291,7 +277,7 @@ def create_sglang_ar_engine(
     output_proc = SGLangOutputProcessor(
         capture_hidden=capture_hidden,
         capture_hidden_layers=capture_hidden_layers,
-        model=model_worker.model_runner.model if capture_hidden_layers else None,
+        model=model_worker.model_runner.model,
     )
 
     if stream_adapter is None:

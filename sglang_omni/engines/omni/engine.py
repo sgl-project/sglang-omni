@@ -7,6 +7,8 @@ import asyncio
 import logging
 from typing import TYPE_CHECKING, Any
 
+import torch
+
 from sglang_omni.pipeline.chunk.mailbox import ChunkItem
 
 from ..base import Engine
@@ -73,6 +75,57 @@ class OmniEngine(Engine):
         self.scheduler.abort_request(request_id)
 
     # -------------------------------------------------------------------------
+    # CUDA Graph
+    # -------------------------------------------------------------------------
+
+    def _get_sglang_model_runner(self):
+        """Return the underlying SGLang ModelRunner, or None."""
+        model_worker = getattr(self.model_runner, "model_worker", None)
+        return getattr(model_worker, "model_runner", None) if model_worker else None
+
+    def enable_cuda_graph(
+        self,
+        bs: list[int] | None = None,
+        capture_hidden: bool = False,
+    ) -> None:
+        """Capture CUDA graphs and configure hidden-state mode.
+
+        Call after model buffers are fully allocated (e.g. after
+        setup_code_predictor_decode).
+
+        Args:
+            bs: Batch sizes to capture (default [1]).
+            capture_hidden: Set capture_hidden_mode=LAST so decode batches
+                requesting hidden states use the graph instead of eager.
+        """
+        mr = self._get_sglang_model_runner()
+        if mr is None:
+            logger.warning("enable_cuda_graph: not an SGLang-backed engine, skipping")
+            return
+
+        if bs is None:
+            bs = [1]
+        mr.server_args.disable_cuda_graph = False
+        mr.server_args.cuda_graph_bs = bs
+        mr.server_args.cuda_graph_max_bs = max(bs)
+        mr.init_device_graphs()
+
+        if capture_hidden:
+            self._set_graph_capture_hidden_mode()
+
+    def _set_graph_capture_hidden_mode(self) -> None:
+        """Mark the graph runner to accept capture_hidden_mode=LAST batches."""
+        from sglang.srt.model_executor.forward_batch_info import CaptureHiddenMode
+
+        mr = self._get_sglang_model_runner()
+        if mr is None:
+            return
+        graph_runner = getattr(mr, "graph_runner", None)
+        if graph_runner is not None:
+            graph_runner.capture_hidden_mode = CaptureHiddenMode.LAST
+            logger.info("CUDA graph: set capture_hidden_mode=LAST")
+
+    # -------------------------------------------------------------------------
     # Lifecycle
     # -------------------------------------------------------------------------
 
@@ -110,7 +163,9 @@ class OmniEngine(Engine):
     async def _step(self) -> bool:
         """Execute one step. Returns True if work was done."""
         # 1. Schedule
+        torch.cuda.nvtx.range_push("schedule")
         scheduler_output = self.scheduler.schedule()
+        torch.cuda.nvtx.range_pop()
 
         if scheduler_output is None:
             # Check for arrived feedback even when idle
@@ -138,6 +193,7 @@ class OmniEngine(Engine):
                 )
                 execute_in_thread = str(device_type) != "cpu"
 
+            torch.cuda.nvtx.range_push("model_forward")
             if execute_in_thread:
                 loop = asyncio.get_running_loop()
                 model_output = await loop.run_in_executor(
@@ -147,13 +203,16 @@ class OmniEngine(Engine):
                 )
             else:
                 model_output = self.model_runner.execute(scheduler_output)
+            torch.cuda.nvtx.range_pop()
 
             # 4. Update cache (if enabled)
             if self.cache_manager is not None:
                 await self._update_cache(scheduler_output, model_output)
 
             # 5. Update state
+            torch.cuda.nvtx.range_push("scheduler_update")
             finished = self.scheduler.update(scheduler_output, model_output)
+            torch.cuda.nvtx.range_pop()
 
             if finished:
                 for req in finished:
@@ -171,7 +230,8 @@ class OmniEngine(Engine):
                     pass
             return False
 
-        # 6. Check feedback needs — set WAITING_FEEDBACK for requests needing it
+        # 6. Check feedback needs + apply arrived feedback
+        torch.cuda.nvtx.range_push("feedback")
         iter_ctrl = self.scheduler.iteration_controller
         if hasattr(iter_ctrl, "needs_feedback"):
             for request in scheduler_output.requests:
@@ -184,9 +244,9 @@ class OmniEngine(Engine):
                 if output is not None and iter_ctrl.needs_feedback(request, output):
                     request.status = SchedulerStatus.WAITING_FEEDBACK
 
-        # 7. Check for arrived feedback — resume WAITING_FEEDBACK requests
         if self._feedback_mailbox is not None:
             self._check_feedback()
+        torch.cuda.nvtx.range_pop()
 
         return True
 

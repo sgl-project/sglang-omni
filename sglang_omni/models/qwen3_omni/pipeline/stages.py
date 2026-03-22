@@ -3,8 +3,11 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 import torch
 from transformers import AutoTokenizer
@@ -331,6 +334,12 @@ def create_sglang_thinker_executor(
         capture_hidden_layers=capture_layers,
     )
 
+    # Thinker graphs are already captured at creation time; just set
+    # capture_hidden_mode so decode batches requesting hidden states
+    # hit the graph instead of falling back to eager.
+    if speech_enabled:
+        engine._set_graph_capture_hidden_mode()
+
     executor = EngineExecutor(
         engine=engine,
         request_builder=_request_builder,
@@ -456,11 +465,7 @@ def make_thinker_stream_adapter(chunk_enqueue_fn=None):
 
 
 def _make_talker_ar_stream_adapter(state_holder):
-    """Stream adapter: runs code_predictor inline on each talker token.
-
-    Calls code_predictor_forward() synchronously, buffers RVQ codes for
-    code2wav, and deposits feedback for the next step.
-    """
+    """Stream adapter: routes pre-computed code predictor results from forward()."""
 
     @torch.no_grad()
     def _fused_adapter(request, output):
@@ -474,28 +479,16 @@ def _make_talker_ar_stream_adapter(state_holder):
         if executor is None:
             return int(token)
 
-        stream_hidden = None
-        if output.extra is not None:
-            stream_hidden = output.extra.get("stream_hidden_states")
-            if stream_hidden is None:
-                stream_hidden = output.extra.get("hidden_states")
-
-        if isinstance(stream_hidden, torch.Tensor):
-            codec_code = int(token)
-            device = stream_hidden.device
-            layer0_codes = torch.tensor([[codec_code]], dtype=torch.long, device=device)
-            hidden_input = stream_hidden.unsqueeze(0).unsqueeze(0)
-            result_codes, summed_embeddings = (
-                executor._talker_model.code_predictor_forward(
-                    layer0_codes, hidden_input
-                )
-            )
-            # result_codes: [1, 16, 1], summed_embeddings: [1, 1, hidden]
+        cp_codes = output.extra.get("cp_codes") if output.extra else None
+        cp_embeds = output.extra.get("cp_embeds") if output.extra else None
+        if cp_codes is not None and cp_embeds is not None:
+            torch.cuda.nvtx.range_push("handle_fused_output")
             executor._handle_fused_output(
                 request.request_id,
-                result_codes[0, :, 0],
-                summed_embeddings[0, 0],
+                cp_codes,
+                cp_embeds,
             )
+            torch.cuda.nvtx.range_pop()
 
         return int(token)
 
@@ -580,6 +573,34 @@ def create_talker_ar_executor(
         feedback_mailbox=feedback_mailbox,
     )
 
+    # Setup inline code prediction (unified talker+MTP forward, following #153)
+    # 1. Allocate buffers  2. Capture CUDA graphs with full forward
+    if speech_enabled:
+        talker_model = engine.model_runner._inner_model
+        if hasattr(talker_model, "setup_code_predictor_decode"):
+            # Use server_args batch sizes (auto-configured by SGLang based on
+            # GPU memory).  The talker's concurrency is bounded by
+            # max_running_requests, so we cap the graph capture accordingly.
+            default_bs = [1, 2, 4, 8, 12, 16]
+            talker_cuda_graph_bs = server_args.cuda_graph_bs or default_bs
+            max_running = server_args.max_running_requests
+            talker_cuda_graph_bs = [b for b in talker_cuda_graph_bs if b <= max_running]
+            if not talker_cuda_graph_bs:
+                talker_cuda_graph_bs = [1]
+            talker_max_bs = max(talker_cuda_graph_bs)
+            talker_model.setup_code_predictor_decode(max_batch_size=talker_max_bs)
+            # Deferred CUDA graph capture: now that buffers are ready,
+            # enable and capture the full talker+MTP forward graph
+            if os.environ.get("SGLANG_OMNI_DISABLE_TALKER_CUDA_GRAPH") != "1":
+                engine.enable_cuda_graph(
+                    bs=talker_cuda_graph_bs,
+                    capture_hidden=speech_enabled,
+                )
+            else:
+                logger.info(
+                    "Talker CUDA graph disabled via SGLANG_OMNI_DISABLE_TALKER_CUDA_GRAPH=1"
+                )
+
     executor = TalkerStreamingExecutor(
         engine=engine,
         model_path=model_path,
@@ -622,7 +643,13 @@ def create_talker_ar_executor_from_config(
     weight_prefix: str = "talker.",
     feedback_mailbox=None,
 ) -> EngineExecutor:
-    """Create a Talker AR executor from config args."""
+    """Create a Talker AR executor from config args.
+
+    CUDA graph capture is deferred: model loads with graphs disabled,
+    setup_code_predictor_decode() allocates buffers, then init_device_graphs()
+    captures the full talker+MTP forward in one graph (following #153).
+    """
+    # Disable CUDA graph during model load — capture after buffer setup
     talker_overrides = {"disable_cuda_graph": True}
     if server_args_overrides:
         talker_overrides.update(server_args_overrides)

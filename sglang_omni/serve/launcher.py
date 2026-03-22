@@ -157,7 +157,8 @@ async def _run_server(
     if needs_mp:
         # Multi-process: each stage in its own process
         mp_runner = MultiProcessPipelineRunner(pipeline_config)
-        await mp_runner.start()
+        startup_timeout = float(os.environ.get("SGLANG_OMNI_STARTUP_TIMEOUT", "600"))
+        await mp_runner.start(timeout=startup_timeout)
         coordinator = mp_runner.coordinator
         logger.info(
             "Pipeline '%s' started (multi-process, %d GPU(s))",

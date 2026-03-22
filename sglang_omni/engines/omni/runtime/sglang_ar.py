@@ -375,6 +375,19 @@ class SGLangOutputProcessor:
             hidden_states_dict = self._extract_hidden_states(model_output)
             stream_hidden_states = self._extract_stream_hidden_states(model_output)
 
+        # Extract inline code predictor results (decode only, not prefill)
+        cp_codes = None
+        cp_embeds = None
+        is_decode = (
+            scheduler_output.batch_data is not None
+            and not scheduler_output.batch_data.forward_mode.is_extend()
+        )
+        has_model = self._model is not None
+        cp_enabled = getattr(self._model, "_cp_enabled", False) if has_model else False
+        if is_decode and has_model and cp_enabled:
+            cp_codes = self._model._output_codes
+            cp_embeds = self._model._output_embeds
+
         outputs = {}
         for i, sched_req in enumerate(scheduler_output.requests):
             token_id = token_list[i] if i < len(token_list) else None
@@ -393,6 +406,11 @@ class SGLangOutputProcessor:
                             if stream_hidden_states.ndim >= 2
                             else stream_hidden_states
                         )
+            if cp_codes is not None:
+                if extra is None:
+                    extra = {}
+                extra["cp_codes"] = cp_codes[i].clone()
+                extra["cp_embeds"] = cp_embeds[i].clone()
             outputs[sched_req.request_id] = RequestOutput(
                 request_id=sched_req.request_id,
                 data=token_id,
@@ -466,8 +484,10 @@ class SGLangIterationController:
             return False
         if data.req.finished():
             return False
-        # Decode steps need feedback (not prefill)
-        return data.generation_steps > 0
+        # First decode step (generation_steps==1) runs without feedback since
+        # the prefill step doesn't produce code predictor output. Feedback is
+        # only available from the second decode step onward.
+        return data.generation_steps > 1
 
     def apply_feedback(
         self, request: SchedulerRequest, feedback_embeds: torch.Tensor
@@ -822,16 +842,16 @@ class SGLangModelRunner:
             can_run_cuda_graph=False,
         )
 
-    def _build_feedback_input_embeds(
-        self, forward_batch: Any, schedule_batch: Any
-    ) -> torch.Tensor | None:
+    def _update_feedback_buffers(self, schedule_batch: Any) -> None:
+        """Write feedback embeddings to model's pre-allocated buffers."""
         if not self._is_talker_model or schedule_batch.forward_mode.is_extend():
-            return None
-        if self._embed_tokens is None:
-            return None
+            return
+        model = self._inner_model
+        if not getattr(model, "_cp_enabled", False):
+            return
 
-        input_embeds = self._embed_tokens(forward_batch.input_ids)
-        has_feedback = False
+        buf = model._feedback_buffer
+        mask = model._feedback_mask
 
         for idx, req in enumerate(schedule_batch.reqs):
             sched_req = None
@@ -844,10 +864,7 @@ class SGLangModelRunner:
             feedback = getattr(data, "feedback_embeds", None)
             if feedback is None:
                 continue
-            combined = feedback.to(
-                device=input_embeds.device,
-                dtype=input_embeds.dtype,
-            ).reshape(-1)
+            combined = feedback.to(device=buf.device, dtype=buf.dtype).reshape(-1)
             step_index = max(int(getattr(data, "generation_steps", 0)) - 1, 0)
             trailing = getattr(data, "trailing_text_hidden", None)
             tts_pad_embed = getattr(data, "tts_pad_embed", None)
@@ -863,20 +880,18 @@ class SGLangModelRunner:
 
             if trailing_value is not None:
                 combined = combined + trailing_value.to(
-                    device=input_embeds.device,
-                    dtype=input_embeds.dtype,
+                    device=buf.device,
+                    dtype=buf.dtype,
                 ).reshape(-1)
             elif thinker_chunks_done and tts_pad_embed is not None:
                 combined = combined + tts_pad_embed.to(
-                    device=input_embeds.device,
-                    dtype=input_embeds.dtype,
+                    device=buf.device,
+                    dtype=buf.dtype,
                 ).reshape(-1)
 
-            input_embeds[idx] = combined
+            buf[idx].copy_(combined)
+            mask[idx] = True
             data.feedback_embeds = None
-            has_feedback = True
-
-        return input_embeds if has_feedback else None
 
     def _request_uses_projected_prefill(self, sched_req: Any) -> bool:
         data = getattr(sched_req, "data", None)
@@ -963,9 +978,6 @@ class SGLangModelRunner:
         omni_embeds = None
         if schedule_batch.forward_mode.is_extend():
             omni_embeds = self._inject_multimodal_embeds(forward_batch, schedule_batch)
-        feedback_input_embeds = self._build_feedback_input_embeds(
-            forward_batch, schedule_batch
-        )
         request_prefill_input_embeds = (
             self._rebuild_prefill_input_embeds(scheduler_output.requests)
             if schedule_batch.forward_mode.is_extend()
@@ -1001,17 +1013,10 @@ class SGLangModelRunner:
                 input_embeds=projected_input_embeds,
                 input_embeds_are_projected=True,
             )
-        elif feedback_input_embeds is not None:
-            self._set_talker_disable_fused_set_kv(True)
-            try:
-                batch_result = self._forward_talker(
-                    forward_batch,
-                    input_embeds=feedback_input_embeds,
-                    input_embeds_are_projected=True,
-                )
-            finally:
-                self._set_talker_disable_fused_set_kv(False)
         else:
+            # Decode: write feedback to model buffers, then standard path
+            # (model reads from buffers internally, CUDA graph captures everything)
+            self._update_feedback_buffers(schedule_batch)
             batch_result = self.model_worker.forward_batch_generation(forward_batch)
 
         if schedule_batch.is_prefill_only:

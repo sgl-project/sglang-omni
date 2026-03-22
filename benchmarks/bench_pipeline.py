@@ -34,7 +34,7 @@ import requests
 
 TIMEOUT = 600
 HEALTH_POLL_INTERVAL = 5
-HEALTH_TIMEOUT = 600
+HEALTH_TIMEOUT = 900
 
 
 @dataclass

@@ -86,6 +86,7 @@ class ModelWorker:
         model_config.num_key_value_heads = text_cfg.num_key_value_heads
         model_config.hidden_size = text_cfg.hidden_size
         model_config.num_hidden_layers = text_cfg.num_hidden_layers
+        model_config.vocab_size = text_cfg.vocab_size
 
     def get_memory_pool(self):
         return (

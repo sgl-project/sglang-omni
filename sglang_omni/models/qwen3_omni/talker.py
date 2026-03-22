@@ -12,7 +12,6 @@ from typing import Iterable, Optional, Tuple
 
 import torch
 from sglang.srt.layers.logits_processor import LogitsProcessorOutput
-from sglang.srt.layers.moe.fused_moe_native import moe_forward_native
 from sglang.srt.model_loader.weight_utils import default_weight_loader
 from sglang.srt.utils import add_prefix
 from torch import nn
@@ -38,7 +37,6 @@ from sglang_omni.vendor.sglang.layers import (
     RowParallelLinear,
     SiluAndMul,
     should_use_flashinfer_cutlass_moe_fp4_allgather,
-    top_k_top_p_sampling_from_probs,
 )
 from sglang_omni.vendor.sglang.models import apply_qk_norm
 from sglang_omni.vendor.sglang.utils import make_layers
@@ -228,15 +226,10 @@ class Qwen3OmniMoeTalkerSparseMoeBlock(Qwen3OmniMoeThinkerTextSparseMoeBlock):
         shared_gate, _ = self.shared_expert_gate(hidden_states)
         shared_output = shared_output * torch.sigmoid(shared_gate)
 
-        # Routed experts
+        # Routed experts (fused triton kernel, CUDA-graph safe)
         router_logits, _ = self.gate(hidden_states)
         topk_output = self.topk(hidden_states, router_logits)
-        routed_output = moe_forward_native(
-            self.experts,
-            hidden_states,
-            topk_output,
-            self.experts.moe_runner_config,
-        )
+        routed_output = self.experts(hidden_states, topk_output)
 
         final_hidden_states = routed_output + shared_output
         if (
@@ -470,6 +463,152 @@ class Qwen3OmniMoeTalkerCodePredictor(nn.Module):
                 for i in range(config.num_code_groups - 1)
             ]
         )
+
+        # KV cache dimensions (read from first layer after construction)
+        first_attn = self.model.layers[0].self_attn
+        self._cache_num_kv_heads = first_attn.num_kv_heads
+        self._cache_num_heads = first_attn.num_heads
+        self._cache_head_dim = first_attn.head_dim
+        self._cache_num_layers = cp_config.num_hidden_layers
+        self._cache_max_seq = config.num_code_groups + 1  # 17
+        self._kv_cache: Optional[torch.Tensor] = None
+
+    # ------------------------------------------------------------------
+    # KV-cached forward (prefill + decode)
+    # ------------------------------------------------------------------
+
+    def _ensure_kv_cache(
+        self, device: torch.device, dtype: torch.dtype, max_batch_size: int = 1
+    ) -> None:
+        if (
+            self._kv_cache is not None
+            and self._kv_cache.device == device
+            and self._kv_cache.dtype == dtype
+            and self._kv_cache.shape[2] >= max_batch_size
+        ):
+            return
+        # [num_layers, 2(K/V), max_batch, num_kv_heads, max_seq, head_dim]
+        self._kv_cache = torch.zeros(
+            self._cache_num_layers,
+            2,
+            max_batch_size,
+            self._cache_num_kv_heads,
+            self._cache_max_seq,
+            self._cache_head_dim,
+            device=device,
+            dtype=dtype,
+        )
+
+    def _forward_cached(
+        self,
+        inputs_embeds: torch.Tensor,
+        positions: torch.Tensor,
+        cache_pos: int,
+    ) -> torch.Tensor:
+        """Forward through code predictor using KV cache.
+
+        Args:
+            inputs_embeds: [1, seq_len, hidden_size]
+            positions: [seq_len] position indices
+            cache_pos: starting slot in the KV cache to write new K,V
+        """
+        batch_size, seq_len, hidden_size = inputs_embeds.shape
+        hidden_states = inputs_embeds
+
+        for layer_idx, layer in enumerate(self.model.layers):
+            residual = hidden_states
+            normed = layer.input_layernorm(hidden_states.reshape(-1, hidden_size))
+            normed = normed.reshape(batch_size, seq_len, hidden_size)
+            attn_out = self._cached_self_attention(
+                attn=layer.self_attn,
+                hidden_states=normed,
+                positions=positions,
+                layer_idx=layer_idx,
+                cache_pos=cache_pos,
+            )
+            hidden_states = residual + attn_out
+
+            residual = hidden_states
+            normed = layer.post_attention_layernorm(
+                hidden_states.reshape(-1, hidden_size)
+            )
+            mlp_out = layer.mlp(normed).reshape(batch_size, seq_len, hidden_size)
+            hidden_states = residual + mlp_out
+
+        hidden_states = self.model.norm(hidden_states.reshape(-1, hidden_size))
+        return hidden_states.reshape(batch_size, seq_len, hidden_size)
+
+    def _cached_self_attention(
+        self,
+        *,
+        attn: Qwen3OmniMoeThinkerTextAttention,
+        hidden_states: torch.Tensor,
+        positions: torch.Tensor,
+        layer_idx: int,
+        cache_pos: int,
+    ) -> torch.Tensor:
+        batch_size, seq_len, hidden_size = hidden_states.shape
+        flat_hidden = hidden_states.reshape(-1, hidden_size)
+
+        qkv, _ = attn.qkv_proj(flat_hidden)
+        q, k, v = qkv.split([attn.q_size, attn.kv_size, attn.kv_size], dim=-1)
+        q, k = apply_qk_norm(
+            q=q,
+            k=k,
+            q_norm=attn.q_norm,
+            k_norm=attn.k_norm,
+            head_dim=attn.head_dim,
+            alt_stream=attn.alt_stream,
+        )
+        q, k = attn.rotary_emb(
+            positions.reshape(-1), q, k, fused_set_kv_buffer_arg=None
+        )
+
+        q = q.reshape(batch_size, seq_len, attn.num_heads, attn.head_dim).transpose(
+            1, 2
+        )
+        k = k.reshape(batch_size, seq_len, attn.num_kv_heads, attn.head_dim).transpose(
+            1, 2
+        )
+        v = v.reshape(batch_size, seq_len, attn.num_kv_heads, attn.head_dim).transpose(
+            1, 2
+        )
+
+        # Write new K,V into cache
+        kv_end = cache_pos + seq_len
+        assert self._kv_cache is not None
+        self._kv_cache[layer_idx, 0, :batch_size, :, cache_pos:kv_end, :] = k
+        self._kv_cache[layer_idx, 1, :batch_size, :, cache_pos:kv_end, :] = v
+
+        # Read full cached K,V
+        k_full = self._kv_cache[layer_idx, 0, :batch_size, :, :kv_end, :]
+        v_full = self._kv_cache[layer_idx, 1, :batch_size, :, :kv_end, :]
+
+        # GQA expansion
+        num_kv_groups = attn.num_heads // attn.num_kv_heads
+        k_full = _repeat_kv(k_full, num_kv_groups)
+        v_full = _repeat_kv(v_full, num_kv_groups)
+
+        attn_weights = torch.matmul(q, k_full.transpose(2, 3)) * attn.scaling
+
+        # Causal mask only needed for prefill (seq_len > 1)
+        if seq_len > 1:
+            q_pos = torch.arange(cache_pos, kv_end, device=q.device)
+            k_pos = torch.arange(kv_end, device=q.device)
+            causal_mask = k_pos.unsqueeze(0) > q_pos.unsqueeze(1)
+            attn_weights = attn_weights.masked_fill(causal_mask, float("-inf"))
+
+        attn_weights = torch.softmax(attn_weights, dim=-1, dtype=torch.float32).to(
+            q.dtype
+        )
+        attn_output = torch.matmul(attn_weights, v_full)
+        attn_output = attn_output.transpose(1, 2).reshape(
+            batch_size * seq_len, attn.num_heads * attn.head_dim
+        )
+        attn_output, _ = attn.o_proj(attn_output)
+        return attn_output.reshape(batch_size, seq_len, hidden_size)
+
+    # ------------------------------------------------------------------
 
     def forward(
         self,
@@ -718,6 +857,11 @@ class Qwen3OmniTalker(nn.Module):
 
         self.logits_processor = SGLangLogitsProcessor(config.text_config)
 
+        # Inline code predictor state (set by setup_code_predictor_decode)
+        self._cp_enabled = False
+        self._output_codes: Optional[torch.Tensor] = None
+        self._output_embeds: Optional[torch.Tensor] = None
+
     def get_input_embeddings(self):
         return self.model.get_input_embeddings()
 
@@ -796,17 +940,33 @@ class Qwen3OmniTalker(nn.Module):
             else:
                 input_embeds = self.prepare_input_embeds(thinker_embeds=input_embeds)
 
+        # Decode: apply feedback from pre-allocated buffers (CUDA-graph safe)
+        if input_embeds is None and self._cp_enabled:
+            bs = input_ids.shape[0]
+            base_embeds = self.model.codec_embedding(input_ids)
+            mask = self._feedback_mask[:bs].unsqueeze(-1)
+            input_embeds = torch.where(mask, self._feedback_buffer[:bs], base_embeds)
+            self._feedback_mask.zero_()
+
+        torch.cuda.nvtx.range_push("talker_transformer")
         hidden_states = self.model(
             input_ids=input_ids,
             positions=positions,
             forward_batch=forward_batch,
             input_embeds=input_embeds,
         )
+        torch.cuda.nvtx.range_pop()
         if forward_batch.forward_mode.is_extend() and input_embeds is not None:
             return self._manual_extend_logits(hidden_states, forward_batch)
-        return self.logits_processor(
+        logits_output = self.logits_processor(
             input_ids, hidden_states, self.codec_head, forward_batch
         )
+        # Inline code prediction during decode (unified talker+MTP forward)
+        if self._cp_enabled and not forward_batch.forward_mode.is_extend():
+            torch.cuda.nvtx.range_push("code_predictor_inline")
+            self._decode_codebooks(logits_output.next_token_logits, hidden_states)
+            torch.cuda.nvtx.range_pop()
+        return logits_output
 
     def _manual_extend_logits(
         self,
@@ -857,86 +1017,94 @@ class Qwen3OmniTalker(nn.Module):
         logits, _ = self.codec_head(hidden_states)
         return logits
 
-    def code_predictor_forward(
-        self,
-        layer0_codes: torch.Tensor,
-        talker_hidden: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Generate residual RVQ codes (layers 1 to N-1) for each position.
+    # ------------------------------------------------------------------
+    # Inline code predictor (unified with talker forward, following #153)
+    # ------------------------------------------------------------------
 
-        Matches vLLM-Omni's code_predictor_forward:
-        - Per-position autoregressive loop
-        - Growing sequence: [talker_hidden, layer0_embed, layer1_embed, ...]
-        - Last-token hidden state → lm_head → predicted code
+    def setup_code_predictor_decode(self, max_batch_size: int = 1) -> None:
+        """Pre-allocate output buffers for inline code prediction.
+
+        Call after model load, before CUDA graph capture.
+        """
+        device = next(self.parameters()).device
+        dtype = next(self.parameters()).dtype
+        num_groups = self.config.num_code_groups
+        hidden_size = self.config.text_config.hidden_size
+
+        # Code predictor output buffers
+        self._output_codes = torch.zeros(
+            max_batch_size, num_groups, dtype=torch.long, device=device
+        )
+        self._output_embeds = torch.zeros(
+            max_batch_size, hidden_size, dtype=dtype, device=device
+        )
+        # Feedback input buffers (written by model runner before forward)
+        self._feedback_buffer = torch.zeros(
+            max_batch_size, hidden_size, dtype=dtype, device=device
+        )
+        self._feedback_mask = torch.zeros(
+            max_batch_size, dtype=torch.bool, device=device
+        )
+        self.code_predictor._ensure_kv_cache(device, dtype, max_batch_size)
+        # Pre-allocate position tensors (no tensor creation during CUDA graph capture)
+        self._cp_prefill_pos = torch.arange(2, device=device)
+        self._cp_decode_pos = [
+            torch.tensor([i + 2], device=device) for i in range(num_groups - 1)
+        ]
+        self._cp_enabled = True
+
+    def _decode_codebooks(
+        self,
+        next_token_logits: torch.Tensor,
+        hidden_states: torch.Tensor,
+    ) -> None:
+        """Run batched code predictor inline after talker forward.
 
         Args:
-            layer0_codes: [batch, seq_len] - layer-0 codec codes from argmax/sample
-            talker_hidden: [batch, seq_len, hidden] - hidden states from talker backbone
-
-        Returns:
-            result_codes: [batch, num_code_groups, seq_len] - all codes (layer 0 + predicted)
-            summed_embeddings: [batch, seq_len, hidden] - sum of all layer embeddings
+            next_token_logits: [bs, vocab_size]
+            hidden_states: [bs, hidden_size] last-token hidden from talker
         """
-        batch_size, seq_len = layer0_codes.shape
+        bs = next_token_logits.shape[0]
+        device = next_token_logits.device
         num_groups = self.config.num_code_groups
-        all_codes_per_pos = []
-        all_summed_per_pos = []
 
-        for pos in range(seq_len):
-            layer0_code = layer0_codes[:, pos : pos + 1]  # [batch, 1]
-            layer0_embed = self.model.codec_embedding(layer0_code)  # [batch, 1, hidden]
-            last_hidden = talker_hidden[:, pos : pos + 1, :]  # [batch, 1, hidden]
+        # Greedy sample layer0 code
+        layer0_codes = next_token_logits.argmax(dim=-1, keepdim=True)  # [bs, 1]
+        layer0_embed = self.model.codec_embedding(layer0_codes)  # [bs, 1, hidden]
 
-            # Initial input: [talker_hidden_at_pos, layer0_embed]
-            current_input = torch.cat(
-                [last_hidden, layer0_embed], dim=1
-            )  # [batch, 2, hidden]
-            pos_codes = [layer0_code]
+        # Prefill: [hidden_state, layer0_embed] at positions [0, 1]
+        prefill_input = torch.cat(
+            [
+                hidden_states.unsqueeze(1),
+                layer0_embed,
+            ],
+            dim=1,
+        )  # [bs, 2, hidden]
+        prefill_pos = self._cp_prefill_pos
+        hidden_out = self.code_predictor._forward_cached(
+            prefill_input, prefill_pos, cache_pos=0
+        )
 
-            # Predict layers 1 to N-1 autoregressively
-            for layer_idx in range(num_groups - 1):
-                # Forward through code predictor transformer
-                predictor_hidden = self.code_predictor(
-                    inputs_embeds=current_input,
-                    positions=torch.arange(
-                        current_input.shape[1], device=current_input.device
-                    ),
-                    forward_batch=None,
-                )
+        self._output_codes[:bs, 0] = layer0_codes.squeeze(-1)
+        embeds_sum = layer0_embed[:, 0, :]  # [bs, hidden]
 
-                # Predict from last token's hidden state (top_k=50, top_p=0.8 matching HF/vLLM-Omni)
-                logits, _ = self.code_predictor.lm_head[layer_idx](
-                    predictor_hidden[:, -1:, :]
-                )
-                probs = torch.softmax(logits[:, -1, :], dim=-1)
-                code = top_k_top_p_sampling_from_probs(probs, top_k=50, top_p=0.8)
-                if code.ndim == 1:
-                    code = code.unsqueeze(-1)
-                pos_codes.append(code)
+        # Decode: predict layers 1 to N-1 (greedy, batched)
+        for layer_idx in range(num_groups - 1):
+            logits, _ = self.code_predictor.lm_head[layer_idx](hidden_out[:, -1:, :])
+            code = logits[:, -1, :].argmax(dim=-1, keepdim=True)  # [bs, 1]
+            self._output_codes[:bs, layer_idx + 1] = code.squeeze(-1)
 
-                # Append new embedding to growing sequence
-                new_embed = self.code_predictor.model.codec_embedding[layer_idx](code)
-                if new_embed.ndim == 2:
-                    new_embed = new_embed.unsqueeze(1)
-                current_input = torch.cat([current_input, new_embed], dim=1)
+            new_embed = self.code_predictor.model.codec_embedding[layer_idx](
+                code
+            )  # [bs, 1, hidden]
+            embeds_sum = embeds_sum + new_embed[:, 0, :]
 
-            # Stack all layers for this position: [batch, num_code_groups, 1]
-            all_codes_per_pos.append(torch.stack(pos_codes, dim=1))
+            decode_pos = self._cp_decode_pos[layer_idx]
+            hidden_out = self.code_predictor._forward_cached(
+                new_embed, decode_pos, cache_pos=layer_idx + 2
+            )
 
-            # Build summed_embeddings for this position (for Code2Wav):
-            # current_input = [talker_hidden, l0_embed, l1_embed, ..., lN-1_embed]
-            # We want sum of all codec embeddings: l0 + l1 + ... + lN-1
-            # That's current_input[:, 1:, :] (skip the talker_hidden at index 0)
-            codec_embeds = current_input[:, 1:, :]  # [batch, num_code_groups, hidden]
-            pos_summed = codec_embeds.sum(dim=1, keepdim=True)  # [batch, 1, hidden]
-            all_summed_per_pos.append(pos_summed)
-
-        # [batch, num_code_groups, seq_len]
-        result_codes = torch.cat(all_codes_per_pos, dim=2)
-        # [batch, seq_len, hidden]
-        summed_embeddings = torch.cat(all_summed_per_pos, dim=1)
-
-        return result_codes, summed_embeddings
+        self._output_embeds[:bs] = embeds_sum
 
     def load_weights(self, weights: Iterable[Tuple[str, torch.Tensor]]) -> None:
         """Load weights from HuggingFace checkpoint."""

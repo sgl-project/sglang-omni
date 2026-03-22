@@ -213,7 +213,9 @@ class _Code2WavStreamingExecutor(Executor):
         with torch.no_grad():
             if self._device.type == "cuda":
                 torch.cuda.set_device(self._device)
+            torch.cuda.nvtx.range_push("code2wav_decode")
             wav = self._model(codes)
+            torch.cuda.nvtx.range_pop()
 
         trim = context_size * self._total_upsample
         if trim:

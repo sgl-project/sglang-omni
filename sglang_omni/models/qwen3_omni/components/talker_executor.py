@@ -1122,6 +1122,7 @@ class TalkerStreamingExecutor(Executor):
         request = self._engine.scheduler.requests.get(request_id)
         if request is None or request.status != SchedulerStatus.WAITING_FEEDBACK:
             return
+        torch.cuda.nvtx.range_push("flush_feedback")
 
         trailing = getattr(request.data, "trailing_text_hidden", None)
         trailing_len = 0
@@ -1133,6 +1134,7 @@ class TalkerStreamingExecutor(Executor):
         step_index = max(int(getattr(request.data, "generation_steps", 0)) - 1, 0)
         thinker_done = bool(getattr(request.data, "thinker_chunks_done", True))
         if not thinker_done and step_index >= trailing_len:
+            torch.cuda.nvtx.range_pop()
             return
 
         feedback = state.pending_feedbacks.pop(0)
@@ -1145,3 +1147,4 @@ class TalkerStreamingExecutor(Executor):
             ),
         )
         state.feedback_chunk_id += 1
+        torch.cuda.nvtx.range_pop()
