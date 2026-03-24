@@ -7,8 +7,11 @@ import asyncio
 
 from sglang_omni.engines.omni.scheduler import Scheduler
 from sglang_omni.engines.omni.types import RequestOutput
-
-from tests.dummy import DummyBatchPlanner, DummyIterationController, DummyResourceManager
+from tests.dummy import (
+    DummyBatchPlanner,
+    DummyIterationController,
+    DummyResourceManager,
+)
 
 
 def test_scheduler_prepare_stream_preserves_early_chunks() -> None:

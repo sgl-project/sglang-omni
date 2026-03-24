@@ -7,12 +7,11 @@ between pipeline stages using RDMA.
 
 from sglang_omni.relay.base import Relay
 from sglang_omni.relay.mooncake import MOONCAKE_AVAILABLE, MooncakeRelay
-from sglang_omni.relay.nixl import NIXL_AVAILABLE, Connection, NixlOperation, NixlRelay
+from sglang_omni.relay.nixl import NIXL_AVAILABLE, Connection, NixlRelay
 
 __all__ = [
     "Relay",
     "NixlRelay",
-    "NixlOperation",
     "Connection",
     "NIXL_AVAILABLE",
     "MooncakeRelay",

@@ -7,8 +7,11 @@ import pytest
 
 from sglang_omni.engines.omni.scheduler import Scheduler
 from sglang_omni.engines.omni.types import SchedulerStatus
-
-from tests.dummy import DummyBatchPlanner, DummyIterationController, DummyResourceManager
+from tests.dummy import (
+    DummyBatchPlanner,
+    DummyIterationController,
+    DummyResourceManager,
+)
 
 
 @pytest.mark.asyncio

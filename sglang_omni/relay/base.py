@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from abc import ABC, abstractmethod
-from typing import Any, Dict, Optional, Type
+from typing import Any, Callable, Dict, Optional, Type
 
 import torch
 
@@ -76,16 +76,40 @@ def create_relay(relay_type: str, **kwargs) -> Relay:
 
 
 class RelayOperation(ABC):
-    """Abstract handle for asynchronous operations (Put/Get)."""
+    """Abstract handle for asynchronous operations (Put/Get).
+
+    Subclasses only need to implement ``_do_wait``; the base class handles
+    the idempotent completion guard and the optional completion callback.
+    """
+
+    def __init__(
+        self,
+        metadata: Any = None,
+        on_completion_cb: Optional[Callable[[], None]] = None,
+    ):
+        self._metadata = metadata
+        self._completed = False
+        self._on_completion_cb = on_completion_cb
 
     @property
-    @abstractmethod
     def metadata(self) -> Any:
-        """Returns metadata required by the receiver (e.g., SHM name, memory pointer)."""
+        """Returns metadata required by the receiver."""
+        return self._metadata
+
+    async def wait_for_completion(self, timeout: float = 30.0) -> None:
+        """Waits for the transfer to complete (idempotent)."""
+        if self._completed:
+            return
+        try:
+            await self._do_wait(timeout)
+        finally:
+            self._completed = True
+            if self._on_completion_cb:
+                self._on_completion_cb()
 
     @abstractmethod
-    async def wait_for_completion(self, timeout: float = 30.0) -> None:
-        """Asynchronously waits for the transfer or copy to complete."""
+    async def _do_wait(self, timeout: float) -> None:
+        """Backend-specific wait logic. Implemented by subclasses."""
 
 
 class Relay(ABC):

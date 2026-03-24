@@ -45,80 +45,44 @@ def shm_create_from_tensor(tensor: torch.Tensor) -> _shm.SharedMemory:
 # ==========================================
 
 
-class ShmOperation(RelayOperation):
-    """Base class implementation for SHM operations."""
-
-    def __init__(self, metadata: Any):
-        self._metadata = metadata
-        self._completed = False
-
-    @property
-    def metadata(self) -> Any:
-        return self._metadata
-
-    # wait_for_completion is implemented by subclasses
-
-
-class ShmPutOperation(ShmOperation):
-    """
-    Handle for Put.
-    In this simplified SHM model, writing is synchronous during creation,
-    so the operation is effectively complete immediately.
-    """
+class ShmPutOperation(RelayOperation):
+    """Handle for Put.  Writing is synchronous, so completion just closes the handle."""
 
     def __init__(self, metadata: Any, shm_obj: _shm.SharedMemory):
-        super().__init__(metadata)
+        super().__init__(metadata=metadata)
         self._shm_obj = shm_obj
 
-    async def wait_for_completion(self, timeout: float = 30.0) -> None:
-        # Sender simply closes the local handle; Receiver is responsible for unlinking.
-        if not self._completed:
-            self._shm_obj.close()
-            self._completed = True
-        return
+    async def _do_wait(self, timeout: float) -> None:
+        self._shm_obj.close()
 
 
-class ShmGetOperation(ShmOperation):
-    """
-    Handle for Get.
-    Performs copy from SHM to destination tensor and unlinks the shared memory.
-    """
+class ShmGetOperation(RelayOperation):
+    """Handle for Get.  Copies from SHM to destination tensor, then unlinks."""
 
     def __init__(self, metadata: Any, dest_tensor: torch.Tensor):
-        super().__init__(metadata)
+        super().__init__(metadata=metadata)
         self._transfer_info = metadata["transfer_info"]
         self._dest_tensor = dest_tensor
 
-    async def wait_for_completion(self, timeout: float = 30.0) -> None:
-        if self._completed:
-            return
-
+    async def _do_wait(self, timeout: float) -> None:
         shm_name = self._transfer_info["shm_name"]
         size = self._transfer_info["size"]
 
         try:
-            # 1. Open SHM
-            try:
-                existing_shm = _shm.SharedMemory(name=shm_name)
-            except FileNotFoundError:
-                raise RuntimeError(f"SHM block {shm_name} not found.")
+            existing_shm = _shm.SharedMemory(name=shm_name)
+        except FileNotFoundError:
+            raise RuntimeError(f"SHM block {shm_name} not found.")
 
-            try:
-                # 2. Zero-copy Read -> Copy to Dest
-                shm_array = np.ndarray((size,), dtype=np.uint8, buffer=existing_shm.buf)
-                src_tensor = torch.from_numpy(shm_array)
+        try:
+            shm_array = np.ndarray((size,), dtype=np.uint8, buffer=existing_shm.buf)
+            src_tensor = torch.from_numpy(shm_array)
 
-                dest_view = self._dest_tensor.view(torch.uint8).reshape(-1)
-                copy_len = min(dest_view.numel(), size)
-                dest_view[:copy_len].copy_(src_tensor[:copy_len])
-
-            finally:
-                # 3. Cleanup (Receiver owns lifecycle)
-                existing_shm.close()
-                existing_shm.unlink()
-
+            dest_view = self._dest_tensor.view(torch.uint8).reshape(-1)
+            copy_len = min(dest_view.numel(), size)
+            dest_view[:copy_len].copy_(src_tensor[:copy_len])
         finally:
-            self._completed = True
+            existing_shm.close()
+            existing_shm.unlink()
 
 
 # ==========================================

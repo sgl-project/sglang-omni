@@ -80,85 +80,31 @@ class Connection:
         return target_rank
 
 
-class NcclOperation(RelayOperation):
-    """
-    Base class for NCCL async operations.
-    """
-
-    def __init__(
-        self, connection: Connection, work_handle, tensor_ref: Any, metadata: Any = None
-    ):
-        self._conn = connection
-        self._work = work_handle
-        self._tensor_ref = tensor_ref
-        self._metadata = metadata
-        self._completed = False
-
-    @property
-    def metadata(self) -> Any:
-        return self._metadata
-
-
-class PutOperation(NcclOperation):
-    """Handle for a Put operation (NCCL isend)."""
+class _NcclWorkOperation(RelayOperation):
+    """Polls an NCCL work handle until completion."""
 
     def __init__(
         self,
-        connection: Connection,
         work_handle,
-        tensor_ref: torch.Tensor,
-        metadata: Any,
+        tensor_ref: Any,
+        metadata: Any = None,
         on_completion_cb: Callable[[], None] = None,
     ):
-        super().__init__(connection, work_handle, tensor_ref, metadata)
-        self._on_completion_cb = on_completion_cb
+        super().__init__(metadata=metadata, on_completion_cb=on_completion_cb)
+        self._work = work_handle
+        self._tensor_ref = tensor_ref  # prevent GC during async transfer
 
-    async def wait_for_completion(self, timeout: float = 30.0) -> None:
-        if self._completed:
-            return
-
+    async def _do_wait(self, timeout: float) -> None:
         start = time.time()
-        try:
-            while not self._work.is_completed():
-                if time.time() - start > timeout:
-                    raise TimeoutError(f"PutOperation timed out")
-                await asyncio.sleep(0.0001)
-
-            self._work.wait()
-
-        finally:
-            self._completed = True
-            if self._on_completion_cb:
-                self._on_completion_cb()
+        while not self._work.is_completed():
+            if time.time() - start > timeout:
+                raise TimeoutError("NCCL operation timed out")
+            await asyncio.sleep(0.0001)
+        self._work.wait()
 
 
-class GetOperation(NcclOperation):
-    """
-    Handle for a Get operation (NCCL irecv).
-    """
-
-    def __init__(
-        self,
-        connection: Connection,
-        work_handle,
-        dest_tensor: torch.Tensor,
-    ):
-        super().__init__(connection, work_handle, dest_tensor, metadata=None)
-
-    async def wait_for_completion(self, timeout: float = 30.0) -> None:
-        if self._completed:
-            return
-
-        start = time.time()
-        try:
-            while not self._work.is_completed():
-                if time.time() - start > timeout:
-                    raise TimeoutError(f"GetOperation timed out")
-                await asyncio.sleep(0.0001)
-
-            self._work.wait()
-        finally:
-            self._completed = True
+PutOperation = _NcclWorkOperation
+GetOperation = _NcclWorkOperation
 
 
 @register_relay("nccl")
@@ -270,7 +216,6 @@ class NcclRelay(Relay):
         }
 
         return PutOperation(
-            connection=self.connection,
             work_handle=work_handle,
             tensor_ref=tensor,
             metadata=payload,
@@ -296,9 +241,8 @@ class NcclRelay(Relay):
         work = dist.irecv(tensor=dest_tensor, src=src_rank, group=self.connection.group)
 
         return GetOperation(
-            connection=self.connection,
             work_handle=work,
-            dest_tensor=dest_tensor,
+            tensor_ref=dest_tensor,
         )
 
     def cleanup(self, request_id: str):
