@@ -42,32 +42,29 @@ Usage:
         --config examples/configs/s2pro_tts.yaml \
         --port 8000
 
-    # Benchmark voice cloning (with ref audio, default):
-
-    Note that 20 samples shall take 120s+
-
+    # Voice cloning, non-streaming
     python -m benchmarks.performance.tts.benchmark_tts_speed \
         --model fishaudio/s2-pro --port 8000 \
         --testset seedtts_testset/en/meta.lst \
         --max-samples 10
 
-    # Benchmark plain TTS (without ref audio):
-    python -m benchmarks.performance.tts.benchmark_tts_speed \
-        --model fishaudio/s2-pro --port 8000 \
-        --testset seedtts_testset/en/meta.lst \
-         --no-ref-audio --max-samples 20
-
-    # Benchmark non-streaming (default):
-    python -m benchmarks.performance.tts.benchmark_tts_speed \
-        --model fishaudio/s2-pro --port 8000 \
-        --testset seedtts_testset/en/meta.lst \
-        --max-samples 10
-
-    # Benchmark streaming:
+    # Voice cloning, streaming
     python -m benchmarks.performance.tts.benchmark_tts_speed \
         --model fishaudio/s2-pro --port 8000 \
         --testset seedtts_testset/en/meta.lst \
         --max-samples 10 --stream
+
+    # Plain TTS, non-streaming
+    python -m benchmarks.performance.tts.benchmark_tts_speed \
+        --model fishaudio/s2-pro --port 8000 \
+        --testset seedtts_testset/en/meta.lst \
+        --max-samples 10 --no-ref-audio
+
+    # Plain TTS, streaming
+    python -m benchmarks.performance.tts.benchmark_tts_speed \
+        --model fishaudio/s2-pro --port 8000 \
+        --testset seedtts_testset/en/meta.lst \
+        --max-samples 10 --no-ref-audio --stream
 """
 
 from __future__ import annotations
@@ -231,14 +228,27 @@ async def send_tts_request(
                 output.error = f"HTTP {response.status}: {await response.text()}"
             elif request.stream:
                 # SSE: count audio chunks, measure wall-clock time only.
+                # Use iter_any() + manual newline splitting instead of
+                # readline() to avoid aiohttp's default 64 KB line-size
+                # limit -- base64-encoded audio chunks easily exceed it.
                 num_chunks = 0
-                async for raw_line in response.content:
-                    line = raw_line.decode("utf-8", errors="replace").strip()
-                    if not line.startswith("data: ") or line == "data: [DONE]":
-                        continue
-                    event = json.loads(line[len("data: ") :])
-                    if event.get("audio") is not None:
-                        num_chunks += 1
+                buf = b""
+                async for chunk in response.content.iter_any():
+                    buf += chunk
+                    while b"\n" in buf:
+                        raw_line, buf = buf.split(b"\n", 1)
+                        line = raw_line.decode("utf-8", errors="replace").strip()
+                        if not line.startswith("data: ") or line == "data: [DONE]":
+                            continue
+                        event = json.loads(line[len("data: ") :])
+                        if event.get("audio") is not None:
+                            num_chunks += 1
+                if buf.strip():
+                    line = buf.decode("utf-8", errors="replace").strip()
+                    if line.startswith("data: ") and line != "data: [DONE]":
+                        event = json.loads(line[len("data: ") :])
+                        if event.get("audio") is not None:
+                            num_chunks += 1
                 output.is_success = True
                 output.completion_tokens = num_chunks
             else:
