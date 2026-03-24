@@ -1,6 +1,11 @@
 """
 Benchmark online serving for TTS (text-to-speech) models.
 
+Author:
+
+- Chenyang Zhao https://github.com/zhaochenyang20
+- Jingwen Gu https://github.com/JingwenGu0829
+
 This script profiles the speed of TTS inference via the /v1/audio/speech HTTP
 API. It supports two task types:
 
@@ -12,9 +17,6 @@ API. It supports two task types:
   2. Plain TTS (--no-ref-audio) -- No reference audio is provided. The model
      generates speech with its default voice. Useful for measuring raw
      generation speed without the voice-cloning overhead.
-
-Both modes read samples from a seed-tts-eval meta.lst file. Each line in the
-file has the format: id|ref_text|ref_audio_path|text_to_synthesize
 
 Dataset: seed-tts-eval
 
@@ -44,13 +46,13 @@ Usage:
 
     Note that 20 samples shall take 120s+
 
-    python -m benchmarks.benchmark_tts_speed \
+    python -m benchmarks.performance.tts.benchmark_tts_speed \
         --model fishaudio/s2-pro --port 8000 \
         --testset seedtts_testset/en/meta.lst \
         --max-samples 10
 
     # Benchmark plain TTS (without ref audio):
-    python -m benchmarks.benchmark_tts_speed \
+    python -m benchmarks.performance.tts.benchmark_tts_speed \
         --model fishaudio/s2-pro --port 8000 \
         --testset seedtts_testset/en/meta.lst \
          --no-ref-audio --max-samples 20
