@@ -13,7 +13,6 @@ from sglang_omni.engines.omni.scheduler import Scheduler
 from .runtime.s2pro_sglang_ar import (
     S2ProSGLangIterationController,
     S2ProSGLangModelRunner,
-    S2ProSGLangOutputProcessor,
     S2ProSGLangResourceManager,
 )
 from .tokenizer import S2ProTokenizerAdapter
