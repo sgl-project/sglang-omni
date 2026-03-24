@@ -6,6 +6,7 @@ from types import ModuleType, SimpleNamespace
 
 import sglang_omni.engines.omni.factory as factory
 from sglang_omni.models.qwen3_omni.config import Qwen3OmniSpeechPipelineConfig
+from tests.dummy import DummyBatchPlanner, DummyResourceManager
 
 
 class _DummyModelWorkerConfig:
@@ -39,19 +40,6 @@ class _DummyPrefillManager:
 class _DummyDecodeManager:
     def __init__(self, **kwargs):
         self.kwargs = kwargs
-
-
-class _DummyBatchPlanner:
-    def __init__(self, prefill_mgr, decode_mgr, server_args):
-        self.prefill_mgr = prefill_mgr
-        self.decode_mgr = decode_mgr
-        self.server_args = server_args
-        self._abort_callback = None
-
-
-class _DummyResourceManager:
-    def __init__(self, *args, **kwargs):
-        del args, kwargs
 
 
 class _DummyIterationController:
@@ -118,11 +106,11 @@ def _install_sglang_stubs(monkeypatch):
     monkeypatch.setitem(sys.modules, prefill_mod.__name__, prefill_mod)
 
     runtime_mod = ModuleType("sglang_omni.engines.omni.runtime.sglang_ar")
-    runtime_mod.SGLangBatchPlanner = _DummyBatchPlanner
+    runtime_mod.SGLangBatchPlanner = DummyBatchPlanner
     runtime_mod.SGLangIterationController = _DummyIterationController
     runtime_mod.SGLangModelRunner = _DummyModelRunner
     runtime_mod.SGLangOutputProcessor = _DummyOutputProcessor
-    runtime_mod.SGLangResourceManager = _DummyResourceManager
+    runtime_mod.SGLangResourceManager = DummyResourceManager
     monkeypatch.setitem(sys.modules, runtime_mod.__name__, runtime_mod)
 
     monkeypatch.setattr(factory, "Scheduler", _DummyScheduler)
