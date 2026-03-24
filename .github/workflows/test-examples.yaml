@@ -45,7 +45,7 @@ jobs:
       - name: Kill GPU processes
         shell: bash
         run: |
-          bash .github/workflows/scripts/delete_gpu_process.sh
+          bash .github/scripts/delete_gpu_process.sh
 
       - name: Run test
         timeout-minutes: 30
