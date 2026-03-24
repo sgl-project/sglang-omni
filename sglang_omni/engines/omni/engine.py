@@ -105,6 +105,14 @@ class OmniEngine(Engine):
         async for item in self.scheduler.stream(request_id):
             yield item
 
+    def prepare_stream(self, request_id: str) -> None:
+        """Pre-register stream delivery before request execution starts."""
+        self.scheduler.prepare_stream(request_id)
+
+    def discard_stream(self, request_id: str) -> None:
+        """Discard a pre-registered stream queue for failed submissions."""
+        self.scheduler.discard_stream(request_id)
+
     async def abort(self, request_id: str) -> None:
         """Abort a request."""
         self.scheduler.abort_request(request_id)

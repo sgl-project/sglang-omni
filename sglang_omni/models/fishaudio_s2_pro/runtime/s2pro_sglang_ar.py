@@ -70,6 +70,229 @@ class S2ProSGLangRequestData(SGLangARRequestData):
 
 
 # ---------------------------------------------------------------------------
+# Codebook loop (standalone for torch.compile compatibility)
+# ---------------------------------------------------------------------------
+
+
+def _codebook_loop_impl(
+    audio_decoder: Any,
+    hidden_states: Tensor,
+    semantic_token: Tensor,
+    temperature: Tensor,
+    top_p: Tensor,
+    top_k: int,
+    num_codebooks: int,
+    codebook_size: int,
+    semantic_begin_id: int,
+) -> Tensor:
+    """Generate codebook tokens from audio decoder. Compilable with fullgraph=True."""
+    audio_decoder.reset_caches()
+
+    fast_input = audio_decoder.project_in(hidden_states.squeeze(1))
+    fast_input = fast_input.unsqueeze(1)
+    audio_decoder.forward_kvcached(fast_input, codebook_idx=0)
+
+    sem_id = semantic_token.squeeze(-1) - semantic_begin_id
+    sem_id = sem_id.clamp(min=0)
+    cb_hidden = audio_decoder.embeddings(sem_id).unsqueeze(1)
+    codebooks = [semantic_token.squeeze(-1), sem_id]
+
+    for cb_idx in range(1, num_codebooks):
+        cb_logits = audio_decoder.forward_kvcached(cb_hidden, codebook_idx=cb_idx)
+        cb_logits = cb_logits[:, 0, :codebook_size]
+
+        cb_token = _sample_with_topk(cb_logits, temperature, top_p, top_k=top_k)
+        cb_hidden = audio_decoder.embeddings(cb_token.squeeze(-1)).unsqueeze(1)
+        codebooks.append(cb_token.squeeze(-1))
+
+    return torch.stack(codebooks, dim=1).T  # [num_codebooks+1, 1]
+
+
+# ---------------------------------------------------------------------------
+# OutputProcessor: two-stage sampling (semantic + codebooks)
+# ---------------------------------------------------------------------------
+
+
+class S2ProSGLangOutputProcessor:
+    """Two-stage output processor for S2-Pro on SGLang backend.
+
+    After the text model produces logits + hidden states via ForwardBatch,
+    applies constrained decoding + RAS + codebook generation using the
+    audio decoder's static KVCache.
+    """
+
+    def __init__(
+        self,
+        audio_decoder: Any,
+        *,
+        num_codebooks: int = 10,
+        codebook_size: int = 4096,
+        semantic_begin_id: int = 0,
+        semantic_end_id: int = 0,
+        im_end_id: int = 0,
+        top_k: int = 30,
+        ras_window: int = 16,
+        ras_temperature: float = 1.5,
+        ras_top_p: float = 0.95,
+        use_torch_compile: bool = False,
+        align_logits_to_bf16: bool = True,
+    ) -> None:
+        self._audio_decoder = audio_decoder
+        self._num_codebooks = num_codebooks
+        self._codebook_size = codebook_size
+        self._semantic_begin_id = semantic_begin_id
+        self._semantic_end_id = semantic_end_id
+        self._im_end_id = im_end_id
+        self._top_k = top_k
+        self._ras_window = ras_window
+        self._ras_temperature = ras_temperature
+        self._ras_top_p = ras_top_p
+        self._align_logits_to_bf16 = align_logits_to_bf16
+        self._semantic_bias: Tensor | None = None
+
+        import functools
+
+        _cb_fn = functools.partial(
+            _codebook_loop_impl,
+            audio_decoder,
+            num_codebooks=num_codebooks,
+            codebook_size=codebook_size,
+            semantic_begin_id=semantic_begin_id,
+        )
+        if use_torch_compile:
+            # Avoid CUDA-graph capture inside inductor for sampling stability.
+            compile_mode = "max-autotune-no-cudagraphs"
+            try:
+                self._codebook_fn = torch.compile(
+                    _cb_fn, mode=compile_mode, fullgraph=True
+                )
+            except Exception:
+                logger.warning(
+                    "torch.compile mode '%s' unavailable; fallback to max-autotune.",
+                    compile_mode,
+                )
+                self._codebook_fn = torch.compile(
+                    _cb_fn, mode="max-autotune", fullgraph=True
+                )
+        else:
+            self._codebook_fn = _cb_fn
+
+    @staticmethod
+    def _truncate_to_bf16(logits: Tensor) -> Tensor:
+        # Match fish-speech training/inference numerics:
+        # keep fp32 sampling math but quantize logits to bf16 grid first.
+        return logits.to(torch.bfloat16).to(torch.float32)
+
+    def _get_semantic_bias(self, logits: Tensor) -> Tensor:
+        if self._semantic_bias is None:
+            bias = torch.full(
+                (logits.shape[-1],),
+                -float("inf"),
+                device=logits.device,
+                dtype=logits.dtype,
+            )
+            bias[self._semantic_begin_id : self._semantic_end_id + 1] = 0.0
+            bias[self._im_end_id] = 0.0
+            self._semantic_bias = bias
+        return self._semantic_bias.to(device=logits.device, dtype=logits.dtype)
+
+    def process(
+        self,
+        model_output: Any,
+        scheduler_output: SchedulerOutput,
+    ) -> dict[str, RequestOutput]:
+        """Process text model output into S2-Pro step outputs with codebooks."""
+        outputs = {}
+
+        # model_output is GenerationBatchResult from SGLang
+        # We need logits and hidden states from the text model
+        logits_output = model_output.logits_output
+        # logits_output.next_token_logits: (batch, vocab)
+        # logits_output.hidden_states: (batch, dim) — last-token hidden states
+        next_token_logits = logits_output.next_token_logits
+        hidden_states = logits_output.hidden_states
+
+        for i, sched_req in enumerate(scheduler_output.requests):
+            data: S2ProSGLangRequestData = sched_req.data
+
+            # Skip chunked prefill steps
+            if data.req.is_chunked > 0:
+                outputs[sched_req.request_id] = RequestOutput(
+                    request_id=sched_req.request_id,
+                    data=None,
+                    finished=False,
+                )
+                continue
+
+            token_logits = next_token_logits[i : i + 1]  # [1, vocab]
+            if self._align_logits_to_bf16 and token_logits.is_floating_point():
+                token_logits = self._truncate_to_bf16(token_logits)
+            token_hidden = hidden_states[i : i + 1].unsqueeze(1)  # [1, 1, dim]
+
+            codes = self._two_stage_decode(token_logits, token_hidden, data)
+
+            outputs[sched_req.request_id] = RequestOutput(
+                request_id=sched_req.request_id,
+                data=S2ProStepOutput(codes=codes),
+                finished=False,
+            )
+
+        return outputs
+
+    @torch.no_grad()
+    def _two_stage_decode(
+        self,
+        token_logits: Tensor,
+        hidden_states: Tensor,
+        data: S2ProSGLangRequestData,
+    ) -> Tensor:
+        """Semantic token sampling + codebook generation."""
+        device = token_logits.device
+
+        # Constrained decoding: mask non-semantic tokens
+        semantic_bias = self._get_semantic_bias(token_logits)
+        token_logits = token_logits + semantic_bias
+
+        # RAS check
+        use_ras = False
+        if len(data._previous_semantic_tokens) > 0:
+            recent = data._previous_semantic_tokens[-self._ras_window :]
+            if len(recent) >= 2 and len(set(recent[-4:])) < len(recent[-4:]):
+                use_ras = True
+
+        if use_ras:
+            temperature = torch.tensor([self._ras_temperature], device=device)
+            top_p = torch.tensor([self._ras_top_p], device=device)
+        else:
+            temperature = torch.tensor([data.temperature], device=device)
+            top_p = torch.tensor([data.top_p], device=device)
+
+        rep_penalty = torch.tensor([data.repetition_penalty], device=device)
+        prev_tokens = None
+        if data._previous_semantic_tokens:
+            prev_tokens = torch.tensor(
+                data._previous_semantic_tokens[-16:],
+                device=device,
+                dtype=torch.long,
+            ).unsqueeze(0)
+
+        # Sample semantic token
+        semantic_token = _sample_with_topk(
+            token_logits,
+            temperature,
+            top_p,
+            top_k=data.top_k,
+            repetition_penalty=rep_penalty,
+            previous_tokens=prev_tokens,
+        )  # [1, 1]
+
+        # Codebook generation (compiled or eager)
+        return self._codebook_fn(
+            hidden_states, semantic_token, temperature, top_p, data.top_k
+        )
+
+
+# ---------------------------------------------------------------------------
 # IterationController
 # ---------------------------------------------------------------------------
 
