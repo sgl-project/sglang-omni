@@ -56,6 +56,18 @@ Usage:
         --model fishaudio/s2-pro --port 8000 \
         --testset seedtts_testset/en/meta.lst \
          --no-ref-audio --max-samples 20
+
+    # Benchmark non-streaming (default):
+    python -m benchmarks.performance.tts.benchmark_tts_speed \
+        --model fishaudio/s2-pro --port 8000 \
+        --testset seedtts_testset/en/meta.lst \
+        --max-samples 10
+
+    # Benchmark streaming:
+    python -m benchmarks.performance.tts.benchmark_tts_speed \
+        --model fishaudio/s2-pro --port 8000 \
+        --testset seedtts_testset/en/meta.lst \
+        --max-samples 10 --stream
 """
 
 from __future__ import annotations
@@ -99,6 +111,7 @@ class RequestFuncInput:
     top_p: float | None = None
     top_k: int | None = None
     repetition_penalty: float | None = None
+    stream: bool = False
 
 
 @dataclass
@@ -179,6 +192,8 @@ def _build_tts_payload(request: RequestFuncInput) -> dict:
     for key, value in optional_fields.items():
         if value is not None:
             payload[key] = value
+    if request.stream:
+        payload["stream"] = True
     return payload
 
 
@@ -214,6 +229,18 @@ async def send_tts_request(
         async with session.post(request.api_url, json=payload) as response:
             if response.status != 200:
                 output.error = f"HTTP {response.status}: {await response.text()}"
+            elif request.stream:
+                # SSE: count audio chunks, measure wall-clock time only.
+                num_chunks = 0
+                async for raw_line in response.content:
+                    line = raw_line.decode("utf-8", errors="replace").strip()
+                    if not line.startswith("data: ") or line == "data: [DONE]":
+                        continue
+                    event = json.loads(line[len("data: ") :])
+                    if event.get("audio") is not None:
+                        num_chunks += 1
+                output.is_success = True
+                output.completion_tokens = num_chunks
             else:
                 audio_bytes = await response.read()
                 output.is_success = True
@@ -363,6 +390,7 @@ def _build_requests(
             top_p=args.top_p,
             top_k=args.top_k,
             repetition_penalty=args.repetition_penalty,
+            stream=args.stream,
         )
         for s in samples
     ]
@@ -592,6 +620,11 @@ def main() -> None:
     )
     parser.add_argument(
         "--save-audio", action="store_true", help="Save generated WAV files."
+    )
+    parser.add_argument(
+        "--stream",
+        action="store_true",
+        help="Send requests with stream=true (SSE audio chunks).",
     )
     parser.add_argument("--disable-tqdm", action="store_true")
     args = parser.parse_args()

@@ -296,19 +296,23 @@ def create_sglang_tts_engine_executor(
     )
 
     if stream_vocoder_device is None:
-        # Keep the first chunk fast by avoiding contention with the main
-        # autoregressive decode GPU. Follow-up chunks are sparse to cap CPU
-        # whole-prefix re-decode overhead.
         stream_vocoder_device = "cpu"
 
     audio_decoder, num_codebooks, codebook_size, tokenizer, checkpoint_dir = (
         _load_audio_decoder(model_path, device)
     )
-    audio_decoder.setup_caches(max_batch_size=1, dtype=torch.bfloat16)
-    stream_codec = _load_codec(checkpoint_dir, stream_vocoder_device)
-    _warmup_codec(
-        stream_codec, num_codebooks=num_codebooks, device=stream_vocoder_device
-    )
+
+    # Lazy-loaded: only materialised when the first streaming request arrives.
+    _stream_codec_cache: list[Any] = []
+
+    def _get_stream_codec() -> Any:
+        if not _stream_codec_cache:
+            codec = _load_codec(checkpoint_dir, stream_vocoder_device)
+            _warmup_codec(
+                codec, num_codebooks=num_codebooks, device=stream_vocoder_device
+            )
+            _stream_codec_cache.append(codec)
+        return _stream_codec_cache[0]
 
     _patch_fish_config_for_sglang(checkpoint_dir)
     server_args = ServerArgs(
@@ -330,9 +334,6 @@ def create_sglang_tts_engine_executor(
         codebook_size=codebook_size,
         max_new_tokens=max_new_tokens,
         top_k=top_k,
-        # Disable torch.compile to avoid cold-start compilation on first request.
-        # The 10-iteration codebook loop is small; eager mode costs only ~1-2 ms/step.
-        use_torch_compile=False,
     )
 
     def _request_builder(payload: StagePayload):
@@ -349,10 +350,13 @@ def create_sglang_tts_engine_executor(
     ) -> dict[str, Any] | None:
         if payload is None:
             return None
+        # Skip expensive GPU→CPU transfer for non-streaming requests.
+        if not payload.request.params.get("stream"):
+            return None
         return _maybe_build_incremental_audio_chunk(
             payload,
             item,
-            codec=stream_codec,
+            codec=_get_stream_codec(),
             device=stream_vocoder_device,
             stream_stride=stream_stride,
             stream_followup_stride=stream_followup_stride,
