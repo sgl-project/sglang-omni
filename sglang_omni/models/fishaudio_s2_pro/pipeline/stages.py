@@ -30,11 +30,6 @@ _STREAM_LAST_VOCODE_TOKENS_KEY = "_stream_last_vocode_tokens"
 _STREAM_NEXT_VOCODE_TOKENS_KEY = "_stream_next_vocode_tokens"
 
 
-# ---------------------------------------------------------------------------
-# Helpers (model loading)
-# ---------------------------------------------------------------------------
-
-
 def _resolve_checkpoint(checkpoint: str) -> str:
     if os.path.isdir(checkpoint):
         return checkpoint
@@ -180,11 +175,6 @@ def _maybe_build_incremental_audio_chunk(
     return chunk
 
 
-# ---------------------------------------------------------------------------
-# Stage 1: Preprocessing
-# ---------------------------------------------------------------------------
-
-
 def create_preprocessing_executor(model_path: str) -> PreprocessingExecutor:
     checkpoint_dir = _resolve_checkpoint(model_path)
 
@@ -272,11 +262,6 @@ def create_preprocessing_executor(model_path: str) -> PreprocessingExecutor:
     return PreprocessingExecutor(_preprocess)
 
 
-# ---------------------------------------------------------------------------
-# Stage 2: TTS Engine (S2-Pro)
-# ---------------------------------------------------------------------------
-
-
 def create_sglang_tts_engine_executor(
     model_path: str,
     *,
@@ -355,7 +340,8 @@ def create_sglang_tts_engine_executor(
     ) -> dict[str, Any] | None:
         if payload is None:
             return None
-        # Skip expensive GPU→CPU transfer for non-streaming requests.
+        # Note (Chenyang): Hot path optimization: skip expensive
+        # GPU→CPU transfer for non-streaming requests.
         if not payload.request.params.get("stream"):
             return None
         return _maybe_build_incremental_audio_chunk(
@@ -373,11 +359,6 @@ def create_sglang_tts_engine_executor(
         result_builder=_result_builder,
         stream_builder=_stream_builder,
     )
-
-
-# ---------------------------------------------------------------------------
-# Stage 3: Vocoder (DAC codec decode)
-# ---------------------------------------------------------------------------
 
 
 def create_vocoder_executor(
