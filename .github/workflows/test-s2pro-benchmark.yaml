@@ -1,0 +1,71 @@
+name: TTS Performance Benchmark
+
+on:
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+concurrency:
+  group: s2pro-benchmark-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  s2pro-benchmark:
+    runs-on: [self-hosted]
+    container:
+      image: frankleeeee/sglang-omni:dev
+      options: --gpus all --rm -v /dev/shm:/dev/shm
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Restore cache
+        run: |
+          if [ -d /github/home/omni-s2pro ] && [ ! -z "$(ls -A /github/home/omni-s2pro/)" ]; then
+            cp -p -r /github/home/omni-s2pro ./omni-s2pro
+          fi
+
+      - name: Remove flashinfer
+        run: |
+          rm -rf /github/home/.cache/flashinfer
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          if [ -d omni-s2pro ] && ! omni-s2pro/bin/python -c "import torch" 2>/dev/null; then
+            echo "Cached venv is corrupted, removing..."
+            rm -rf omni-s2pro
+          fi
+          if [ ! -d omni-s2pro ]; then
+            uv venv omni-s2pro -p 3.11
+          fi
+          source omni-s2pro/bin/activate
+          uv pip install -v -e ".[s2pro,dev]"
+
+      - name: Run S2-Pro benchmark
+        timeout-minutes: 60
+        shell: bash
+        run: |
+          source omni-s2pro/bin/activate
+          export PYTHONPATH=$PWD
+          pytest tests/test_model/test_s2pro_benchmark.py -v -s -x
+        env:
+          HF_ENDPOINT: https://hf-mirror.com
+
+      - name: Print benchmark results
+        if: always()
+        shell: bash
+        run: |
+          echo "=== Benchmark Results ==="
+          for f in $(find /tmp -name "speed_results.json" 2>/dev/null); do
+            echo "--- $f ---"
+            cat "$f"
+            echo ""
+          done
+
+      - name: Save cache
+        run: |
+          cp -p -r omni-s2pro /github/home/
