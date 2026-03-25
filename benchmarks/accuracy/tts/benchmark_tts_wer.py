@@ -6,19 +6,19 @@ Supports both English (Whisper-large-v3) and Chinese (FunASR paraformer-zh).
 
 Usage:
     # English
-    python -m benchmarks.performance.tts.eval_wer \
+    python -m benchmarks.accuracy.tts.benchmark_tts_wer \
         --meta seedtts_testset/zh/hardcase.lst \
         --audio-dir results/s2pro_compile_eager/audio \
         --lang en
 
     # Chinese
-    python -m benchmarks.performance.tts.eval_wer \
+    python -m benchmarks.accuracy.tts.benchmark_tts_wer \
         --meta seedtts_testset/zh/hardcase.lst \
         --audio-dir results/s2pro_zh/audio \
         --lang zh
 
     # Chinese hard cases
-    python -m benchmarks.performance.tts.eval_wer \
+    python -m benchmarks.accuracy.tts.benchmark_tts_wer \
         --meta seedtts_testset/zh/hardcase.lst \
         --audio-dir results/s2pro_zh_hard/audio \
         --lang zh
