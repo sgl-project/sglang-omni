@@ -74,11 +74,6 @@ def thinker_next_speech(request_id: str, output: Any) -> list[str]:
 
 def talker_ar_next(request_id: str, output: Any) -> str:
     del request_id, output
-    return CODE_PREDICTOR_STAGE
-
-
-def code_predictor_next(request_id: str, output: Any) -> str:
-    del request_id, output
     return CODE2WAV_STAGE
 
 

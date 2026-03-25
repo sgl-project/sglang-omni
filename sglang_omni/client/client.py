@@ -55,11 +55,23 @@ class Client:
         req_id = request_id or str(uuid.uuid4())
         omni_request = self._build_omni_request(request)
         if request.stream:
+            streamed_text = False
+            streamed_audio = False
             async for msg in self._coordinator.stream(req_id, omni_request):
                 if isinstance(msg, StreamMessage):
-                    yield self._stream_builder(req_id, msg)
+                    streamed_text = True
+                    built = self._stream_builder(req_id, msg)
+                    if built.modality == "audio" and built.audio_data is not None:
+                        streamed_audio = True
+                    yield built
                 else:
-                    yield self._result_builder(req_id, msg.result)
+                    chunk = self._result_builder(req_id, msg.result)
+                    if streamed_text:
+                        chunk.text = None
+                    if streamed_audio:
+                        chunk.audio_data = None
+                        chunk.modality = None
+                    yield chunk
             return
 
         result = await self._coordinator.submit(req_id, omni_request)

@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import logging
+import os
 from typing import Any
 
 import torch
@@ -35,13 +37,15 @@ from sglang_omni.models.qwen3_omni.pipeline.engine_io import (
 from sglang_omni.models.qwen3_omni.pipeline.merge import decode_events
 from sglang_omni.models.qwen3_omni.pipeline.next_stage import (
     AUDIO_STAGE,
-    CODE_PREDICTOR_STAGE,
+    CODE2WAV_STAGE,
     IMAGE_STAGE,
     TALKER_AR_STAGE,
     THINKER_STAGE,
 )
 from sglang_omni.models.qwen3_omni.pipeline.state_io import load_state, store_state
 from sglang_omni.proto import StagePayload
+
+logger = logging.getLogger(__name__)
 
 
 def _event_to_dict(event: OmniEvent) -> dict[str, Any]:
@@ -318,6 +322,9 @@ def create_sglang_thinker_executor(
         capture_hidden_layers=capture_layers,
     )
 
+    if speech_enabled:
+        engine._set_graph_capture_hidden_mode()
+
     executor = EngineExecutor(
         engine=engine,
         request_builder=_request_builder,
@@ -426,25 +433,25 @@ def make_thinker_stream_adapter(stream_fn=None):
     return _stream_adapter
 
 
-def make_talker_ar_stream_adapter(stream_fn=None):
-    """Talker AR stream adapter: relay codec code + hidden to Code Predictor."""
+def make_talker_ar_stream_adapter(executor=None):
+    """Talker AR stream adapter: extract fused cp_codes/cp_embeds and route.
+
+    The talker model runs the code predictor inline (fused). The output
+    processor attaches cp_codes and cp_embeds to output.extra.  This adapter
+    extracts them and calls executor._handle_fused_output.
+    """
 
     def _stream_adapter(request, output):
         if request.data.req.is_chunked > 0:
             return None
         if output.data is None:
-            return None  # chunked prefill final round, no token yet
+            return None
         token = output.data
-        if stream_fn is not None and output.extra is not None:
-            hidden = output.extra.get("hidden_states")
-            stream_hidden = output.extra.get("stream_hidden_states", hidden)
-            if isinstance(stream_hidden, torch.Tensor):
-                codec_code = int(token) if token is not None else None
-                stream_fn(
-                    request.request_id,
-                    stream_hidden,
-                    metadata={"codec_code": codec_code},
-                )
+        if executor is not None and output.extra is not None:
+            cp_codes = output.extra.get("cp_codes")
+            cp_embeds = output.extra.get("cp_embeds")
+            if cp_codes is not None and cp_embeds is not None:
+                executor._handle_fused_output(request.request_id, cp_codes, cp_embeds)
         return int(token) if token is not None else None
 
     return _stream_adapter
@@ -498,7 +505,11 @@ def create_talker_ar_executor(
     feedback_enabled: bool = False,
     feedback_mailbox=None,
 ) -> EngineExecutor:
-    """Talker AR executor backed by SGLang AR engine."""
+    """Talker AR executor backed by SGLang AR engine.
+
+    The code predictor runs inline (fused MTP+talker). Talker AR routes
+    directly to code2wav via _enqueue_stream.
+    """
     from transformers import AutoConfig
 
     tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
@@ -520,28 +531,24 @@ def create_talker_ar_executor(
     def _enqueue_stream(request_id: str, chunk_data, metadata=None):
         fn = enqueue_fn_holder["fn"]
         if fn is not None:
-            fn(request_id, chunk_data, CODE_PREDICTOR_STAGE, metadata=metadata)
+            fn(request_id, chunk_data, CODE2WAV_STAGE, metadata=metadata)
 
-    stream_adapter = (
-        make_talker_ar_stream_adapter(stream_fn=_enqueue_stream)
-        if speech_enabled
-        else None
-    )
-    capture_layers = None
+    # Disable radix cache for talker (decode-only, never reuses prefixes)
+    server_args.disable_radix_cache = True
 
     engine = create_sglang_ar_engine(
         server_args=server_args,
         gpu_id=gpu_id,
-        stream_adapter=stream_adapter,
-        capture_hidden=speech_enabled,
-        capture_hidden_layers=capture_layers,
+        stream_adapter=None,  # wired below after executor exists
+        capture_hidden=False,
+        capture_hidden_layers=None,
         model_arch_override="Qwen3OmniTalker",
         weight_prefix=weight_prefix,
-        feedback_enabled=feedback_enabled,
+        feedback_enabled=True,
         feedback_mailbox=feedback_mailbox,
     )
 
-    return TalkerStreamingExecutor(
+    executor = TalkerStreamingExecutor(
         engine=engine,
         model_path=model_path,
         tokenizer=tokenizer,
@@ -571,6 +578,38 @@ def create_talker_ar_executor(
         thinker_config=getattr(hf_config, "thinker_config", None),
     )
 
+    # Wire fused stream adapter: extracts cp_codes/cp_embeds from output.extra
+    stream_adapter = make_talker_ar_stream_adapter(executor=executor)
+    engine.scheduler._stream_adapter = stream_adapter
+
+    # Wire code2wav enqueue so _handle_fused_output can send codes downstream
+    executor._code2wav_enqueue = _enqueue_stream
+
+    # Setup inline code prediction (unified talker+MTP forward)
+    # 1. Allocate buffers  2. Capture CUDA graphs with full forward
+    if speech_enabled:
+        talker_model = engine.model_runner._inner_model
+        if hasattr(talker_model, "setup_code_predictor_decode"):
+            default_bs = [1, 2, 4, 8, 12, 16]
+            talker_cuda_graph_bs = server_args.cuda_graph_bs or default_bs
+            max_running = server_args.max_running_requests
+            talker_cuda_graph_bs = [b for b in talker_cuda_graph_bs if b <= max_running]
+            if not talker_cuda_graph_bs:
+                talker_cuda_graph_bs = [1]
+            talker_max_bs = max(talker_cuda_graph_bs)
+            talker_model.setup_code_predictor_decode(max_batch_size=talker_max_bs)
+            if os.environ.get("SGLANG_OMNI_DISABLE_TALKER_CUDA_GRAPH") != "1":
+                engine.enable_cuda_graph(
+                    bs=talker_cuda_graph_bs,
+                    capture_hidden=False,
+                )
+            else:
+                logger.info(
+                    "Talker CUDA graph disabled via SGLANG_OMNI_DISABLE_TALKER_CUDA_GRAPH=1"
+                )
+
+    return executor
+
 
 def create_talker_ar_executor_from_config(
     model_path: str,
@@ -585,8 +624,13 @@ def create_talker_ar_executor_from_config(
     feedback_mailbox=None,
 ) -> EngineExecutor:
     """Create a Talker AR executor from config args."""
+    # Use disable_cuda_graph=True so that graphs are captured after
+    # setup_code_predictor_decode (deferred capture in create_talker_ar_executor)
+    talker_overrides = {"disable_cuda_graph": True}
+    if server_args_overrides:
+        talker_overrides.update(server_args_overrides)
     server_args = build_sglang_server_args(
-        model_path, context_length=talker_max_seq_len, **(server_args_overrides or {})
+        model_path, context_length=talker_max_seq_len, **talker_overrides
     )
     return create_talker_ar_executor(
         server_args=server_args,

@@ -904,6 +904,21 @@ class TalkerStreamingExecutor(Executor):
             eos_embed = tts_eos_embed.detach().cpu()
             trailing.append(eos_embed)
 
+    def _handle_fused_output(
+        self,
+        request_id: str,
+        codes: torch.Tensor,
+        summed_embeddings: torch.Tensor,
+    ) -> None:
+        """Send RVQ codes to code2wav via stream, buffer feedback."""
+        state = self._states.get(request_id)
+        if state is None:
+            return
+        enqueue_fn = getattr(self, "_code2wav_enqueue", None)
+        if enqueue_fn is not None:
+            enqueue_fn(request_id, codes.detach())
+        state.pending_feedbacks.append(summed_embeddings.detach().cpu())
+
     def _flush_feedback(self, request_id: str) -> None:
         state = self._states.get(request_id)
         if state is None or not state.pending_feedbacks:

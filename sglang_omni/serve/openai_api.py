@@ -290,7 +290,8 @@ async def _chat_stream(
                     completion_tokens=chunk.usage.completion_tokens or 0,
                     total_tokens=chunk.usage.total_tokens or 0,
                 )
-            continue
+            if not chunk.text and chunk.audio_b64 is None:
+                continue
 
         delta = ChatCompletionStreamDelta()
         emit = False

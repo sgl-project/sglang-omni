@@ -17,7 +17,6 @@ from sglang_omni.models.qwen3_omni.pipeline.next_stage import (
     AGGREGATE_STAGE,
     AUDIO_STAGE,
     CODE2WAV_STAGE,
-    CODE_PREDICTOR_STAGE,
     DECODE_STAGE,
     IMAGE_STAGE,
     PREPROCESSING_STAGE,
@@ -102,7 +101,12 @@ class Qwen3OmniPipelineConfig(PipelineConfig):
 
 
 class Qwen3OmniSpeechPipelineConfig(PipelineConfig):
-    """9-stage pipeline config for Qwen3 Omni with text + speech output."""
+    """8-stage pipeline config for Qwen3 Omni with text + speech output.
+
+    The talker AR stage runs the code predictor inline (fused MTP+talker),
+    so there is no separate code_predictor stage. Talker AR routes directly
+    to code2wav.
+    """
 
     architecture: ClassVar[str] = "Qwen3OmniMoeForConditionalGeneration"
 
@@ -112,7 +116,6 @@ class Qwen3OmniSpeechPipelineConfig(PipelineConfig):
     gpu_placement: dict[str, int] = {
         "thinker": 0,
         "talker_ar": 1,
-        "code_predictor": 1,
         "code2wav": 1,
     }
 
@@ -179,7 +182,7 @@ class Qwen3OmniSpeechPipelineConfig(PipelineConfig):
             get_next="sglang_omni.models.qwen3_omni.pipeline.next_stage.decode_next",
             relay=RelayConfig(device="cpu"),
         ),
-        # Stage 7: Talker AR
+        # Stage 7: Talker AR (fused with inline code predictor, routes to code2wav)
         StageConfig(
             name=TALKER_AR_STAGE,
             executor=ExecutorConfig(
@@ -192,23 +195,9 @@ class Qwen3OmniSpeechPipelineConfig(PipelineConfig):
             ),
             get_next="sglang_omni.models.qwen3_omni.pipeline.next_stage.talker_ar_next",
             relay=RelayConfig(device="cuda"),
-            stream_to=[StreamTargetConfig(to_stage=CODE_PREDICTOR_STAGE)],
+            stream_to=[StreamTargetConfig(to_stage=CODE2WAV_STAGE)],
         ),
-        # Stage 8: Code Predictor (streaming: consumes chunks from Talker, sends chunks to Code2Wav)
-        StageConfig(
-            name=CODE_PREDICTOR_STAGE,
-            executor=ExecutorConfig(
-                factory="sglang_omni.models.qwen3_omni.components.code_predictor_executor.create_code_predictor_executor_from_config",
-                args={"code_predictor_max_seq_len": 256},
-            ),
-            get_next="sglang_omni.models.qwen3_omni.pipeline.next_stage.code_predictor_next",
-            relay=RelayConfig(device="cuda"),
-            stream_to=[
-                StreamTargetConfig(to_stage=CODE2WAV_STAGE),
-                StreamTargetConfig(to_stage=TALKER_AR_STAGE, bootstrap=False),
-            ],
-        ),
-        # Stage 9: Code2Wav (terminal)
+        # Stage 8: Code2Wav (terminal)
         StageConfig(
             name=CODE2WAV_STAGE,
             executor=ExecutorConfig(
@@ -221,4 +210,9 @@ class Qwen3OmniSpeechPipelineConfig(PipelineConfig):
     ]
 
 
-EntryClass = Qwen3OmniPipelineConfig
+EntryClass = Qwen3OmniSpeechPipelineConfig
+
+Variants = {
+    "text": Qwen3OmniPipelineConfig,
+    "speech": Qwen3OmniSpeechPipelineConfig,
+}

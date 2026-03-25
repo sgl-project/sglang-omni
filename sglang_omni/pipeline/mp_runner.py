@@ -316,10 +316,11 @@ class MultiProcessPipelineRunner:
             )
 
             # 3. Spawn one subprocess per stage
+            ctx = multiprocessing.get_context("spawn")
             ready_events: list[multiprocessing.Event] = []
 
             for stage_cfg in stages_cfg:
-                ready = multiprocessing.Event()
+                ready = ctx.Event()
                 config_dict = _build_stage_process_config(
                     pipeline_config=self._config,
                     stage_name=stage_cfg.name,
@@ -327,7 +328,7 @@ class MultiProcessPipelineRunner:
                     all_endpoints=endpoints,
                     name_map=name_map,
                 )
-                p = multiprocessing.Process(
+                p = ctx.Process(
                     target=_stage_process_entry,
                     args=(config_dict, ready),
                     name=f"stage-{stage_cfg.name}",

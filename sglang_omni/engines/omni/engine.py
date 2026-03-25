@@ -118,6 +118,48 @@ class OmniEngine(Engine):
         self.scheduler.abort_request(request_id)
 
     # -------------------------------------------------------------------------
+    # CUDA Graph
+    # -------------------------------------------------------------------------
+
+    def _get_sglang_model_runner(self):
+        """Return the underlying SGLang ModelRunner, or None."""
+        model_worker = getattr(self.model_runner, "model_worker", None)
+        return getattr(model_worker, "model_runner", None) if model_worker else None
+
+    def enable_cuda_graph(
+        self,
+        bs: list[int] | None = None,
+        capture_hidden: bool = False,
+    ) -> None:
+        """Capture CUDA graphs and configure hidden-state mode."""
+        mr = self._get_sglang_model_runner()
+        if mr is None:
+            logger.warning("enable_cuda_graph: not an SGLang-backed engine, skipping")
+            return
+
+        if bs is None:
+            bs = [1]
+        mr.server_args.disable_cuda_graph = False
+        mr.server_args.cuda_graph_bs = bs
+        mr.server_args.cuda_graph_max_bs = max(bs)
+        mr.init_device_graphs()
+
+        if capture_hidden:
+            self._set_graph_capture_hidden_mode()
+
+    def _set_graph_capture_hidden_mode(self) -> None:
+        """Mark the graph runner to accept capture_hidden_mode=LAST batches."""
+        from sglang.srt.model_executor.forward_batch_info import CaptureHiddenMode
+
+        mr = self._get_sglang_model_runner()
+        if mr is None:
+            return
+        graph_runner = getattr(mr, "graph_runner", None)
+        if graph_runner is not None:
+            graph_runner.capture_hidden_mode = CaptureHiddenMode.LAST
+            logger.debug("CUDA graph: set capture_hidden_mode=LAST")
+
+    # -------------------------------------------------------------------------
     # Lifecycle
     # -------------------------------------------------------------------------
 

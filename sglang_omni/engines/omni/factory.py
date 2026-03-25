@@ -258,6 +258,11 @@ def create_sglang_ar_engine(
         model = model_worker.model_runner.model
         install_hidden_capture_hooks(model, capture_hidden_layers)
 
+    # capture_hidden_mode is set via engine.enable_cuda_graph() when graphs
+    # are captured (possibly deferred).  For engines that capture graphs at
+    # creation time (not deferred), enable_cuda_graph() is called by the
+    # caller after this function returns.  See OmniEngine.enable_cuda_graph().
+
     # Get memory pools
     req_to_token_pool, token_to_kv_pool_allocator = model_worker.get_memory_pool()
 
@@ -297,7 +302,7 @@ def create_sglang_ar_engine(
     output_proc = SGLangOutputProcessor(
         capture_hidden=capture_hidden,
         capture_hidden_layers=capture_hidden_layers,
-        model=model_worker.model_runner.model if capture_hidden_layers else None,
+        model=model_worker.model_runner.model,
     )
 
     if stream_adapter is None:
