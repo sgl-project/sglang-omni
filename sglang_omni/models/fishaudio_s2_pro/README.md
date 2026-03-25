@@ -62,7 +62,8 @@ docker run -it --shm-size 32g --gpus all frankleeeee/sglang-omni:dev /bin/zsh
 git clone https://github.com/sgl-project/sglang-omni.git
 cd sglang-omni
 uv venv .venv -p 3.12 && source .venv/bin/activate
-uv pip install -v ".[s2pro]"
+# Editable install keeps fish_speech/configs/*.yaml on disk at runtime.
+uv pip install -e ".[s2pro]"
 huggingface-cli download fishaudio/s2-pro
 ```
 

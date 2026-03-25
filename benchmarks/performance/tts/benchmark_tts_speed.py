@@ -40,8 +40,8 @@ Dataset: seed-tts-eval
 
 Usage:
 
-    # Launch a server first:
-    uv pip install -v ".[s2pro]"
+    # Launch a server first (editable install recommended for S2-Pro assets):
+    uv pip install -e ".[s2pro]"
 
     python -m sglang_omni.cli.cli serve \
         --model-path fishaudio/s2-pro \
