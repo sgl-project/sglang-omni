@@ -298,21 +298,26 @@ def create_sglang_tts_engine_executor(
     if stream_vocoder_device is None:
         stream_vocoder_device = "cpu"
 
+    # Note (Chenyang): Lazy-loaded: only materialised when
+    # the first streaming request arrives.
     audio_decoder, num_codebooks, codebook_size, tokenizer, checkpoint_dir = (
         _load_audio_decoder(model_path, device)
     )
 
-    # Lazy-loaded: only load stream codec when the first streaming request arrives.
-    _stream_codec_cache: list[Any] = []
+    # TODO (Chenyang): If multi-threaded access becomes
+    # possible in the future, add threading.Lock protection
+    # at that point.
+    _stream_codec: Any = None
 
     def _get_stream_codec() -> Any:
-        if not _stream_codec_cache:
+        nonlocal _stream_codec
+        if _stream_codec is None:
             codec = _load_codec(checkpoint_dir, stream_vocoder_device)
             _warmup_codec(
                 codec, num_codebooks=num_codebooks, device=stream_vocoder_device
             )
-            _stream_codec_cache.append(codec)
-        return _stream_codec_cache[0]
+            _stream_codec = codec
+        return _stream_codec
 
     _patch_fish_config_for_sglang(checkpoint_dir)
     server_args = ServerArgs(
