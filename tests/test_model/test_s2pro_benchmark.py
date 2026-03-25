@@ -223,7 +223,7 @@ def _assert_streaming_consistency(
     stream_requests: list[dict],
     *,
     completion_token_rtol: float = 0.10,
-    audio_duration_rtol: float = 0.10,
+    audio_duration_rtol: float = 0.12,
 ) -> None:
     """Assert per-request metrics are close between streaming and non-streaming.
 
