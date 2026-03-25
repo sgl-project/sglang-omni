@@ -79,11 +79,18 @@ def _run_benchmark(
     if extra_args:
         cmd.extend(extra_args)
 
+    # Strip proxy env vars so the benchmark subprocess can reach localhost directly.
+    # The CI environment may have HTTP_PROXY set (e.g. China-region runners), which
+    # causes requests to localhost to be routed through the proxy and fail.
+    proxy_keys = {"http_proxy", "https_proxy", "all_proxy", "no_proxy"}
+    env = {k: v for k, v in os.environ.items() if k.lower() not in proxy_keys}
+
     proc_result = subprocess.run(
         cmd,
         capture_output=True,
         text=True,
         timeout=BENCHMARK_TIMEOUT,
+        env=env,
     )
     assert proc_result.returncode == 0, (
         f"Benchmark failed (rc={proc_result.returncode}).\n"
