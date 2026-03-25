@@ -1,12 +1,9 @@
-# Benchmarks
+# SGLang Omni Benchmarks
 
-## benchmark_tts_speed.py
+Comprehensive benchmark suite for SGLang Omni, covering both performance (latency, throughput, RTF etc.) and accuracy (quality metrics) across all supported modality combinations. Omni models operate on a `{video, audio, text} x {video, audio, text}` input-output matrix. The table below tracks benchmark coverage.
 
-Benchmark online serving latency and throughput for TTS models via the `/v1/audio/speech` HTTP API.
+## Performance Benchmarks
 
-Supports two input modes:
+### TTS Voice Cloning
 
-- **Voice cloning** with a seed-tts-eval `meta.lst` testset (`--testset`)
-- **Plain text** prompts (`--prompts`)
-
-Metrics reported: latency (mean/median/p95/p99), real-time factor (RTF), audio duration, and throughput (req/s).
+[`performance/tts/benchmark_tts_speed.py`](performance/tts/benchmark_tts_speed.py): Benchmarks online serving latency and throughput for TTS models via the `/v1/audio/speech` HTTP API.
