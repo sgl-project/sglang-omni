@@ -198,7 +198,11 @@ class Worker:
 
             stream_task: asyncio.Task[None] | None = None
             stream_fn = getattr(self.executor, "stream", None)
-            if callable(stream_fn):
+            request_params = merged.request.params if merged.request is not None else None
+            is_stream_request = (
+                isinstance(request_params, dict) and request_params.get("stream") is True
+            )
+            if is_stream_request and callable(stream_fn):
                 stream_iter = stream_fn(request_id)
                 if stream_iter is not None:
                     stream_task = asyncio.create_task(

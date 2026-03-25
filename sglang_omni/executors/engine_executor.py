@@ -129,6 +129,12 @@ class EngineExecutor(Executor):
         if not callable(stream_fn):
             return
         payload = self._payloads.get(request_id)
+        request_params = payload.request.params if payload is not None else None
+        is_stream_request = (
+            isinstance(request_params, dict) and request_params.get("stream") is True
+        )
+        if not is_stream_request:
+            return
         async for item in stream_fn(request_id):
             if request_id in self._aborted:
                 break
