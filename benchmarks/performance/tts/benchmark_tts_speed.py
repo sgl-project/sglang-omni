@@ -26,11 +26,17 @@ Dataset: seed-tts-eval
       - en/meta.lst : 1000 English samples from CommonVoice
       - zh/meta.lst : 2000 Chinese samples from DiDiSpeech-2
 
-    Download from Google Drive:
+    Download from Hugging Face:
 
-        pip install gdown
-        gdown 1GlSjVfSHkW3-leKKBlfrjuuTGqQ_xaLP -O seed-tts-eval.tar
-        tar xf seed-tts-eval.tar
+        # full set for local testing (5k samples)
+
+        huggingface-cli download zhaochenyang20/seed-tts-eval \
+            --repo-type dataset --local-dir seedtts_testset
+
+        # test set for CI (only 10 samples)
+
+        huggingface-cli download zhaochenyang20/seed-tts-eval-mini \
+            --repo-type dataset --local-dir seedtts_testset
 
 Usage:
 
@@ -306,7 +312,9 @@ def wait_for_service(base_url: str, timeout: int = 1200) -> None:
                 return
         except requests_lib.exceptions.RequestException as exc:
             # Ignore transient connection errors while waiting for the service to become healthy.
-            logger.debug("Health check request failed while waiting for service: %s", exc)
+            logger.debug(
+                "Health check request failed while waiting for service: %s", exc
+            )
         if time.time() - start > timeout:
             raise TimeoutError(f"Service at {base_url} not ready within {timeout}s")
         time.sleep(1)
