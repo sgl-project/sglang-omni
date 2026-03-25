@@ -161,7 +161,9 @@ def _maybe_build_incremental_audio_chunk(
         return None
 
     stream_codes: list[torch.Tensor] = payload.data.setdefault(_STREAM_CODES_KEY, [])
-    stream_codes.append(codes.detach().cpu())
+    # Keep step codes on device to avoid per-step CUDA sync from `.cpu()`.
+    # We only transfer once per emitted chunk inside _build_incremental_audio_chunk.
+    stream_codes.append(codes.detach())
 
     total_tokens = sum(chunk.shape[1] for chunk in stream_codes)
     next_vocode_tokens = int(
