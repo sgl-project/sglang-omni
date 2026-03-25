@@ -1,0 +1,1366 @@
+
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="../" >
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>Architecture &#8212; SGLang</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "";
+  </script>
+  <!--
+    this give us a css class that will be invisible only if js is disabled
+  -->
+  <noscript>
+    <style>
+      .pst-js-only { display: none !important; }
+
+    </style>
+  </noscript>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="../_static/styles/theme.css?digest=8878045cc6db502f8baf" rel="stylesheet" />
+<link href="../_static/styles/pydata-sphinx-theme.css?digest=8878045cc6db502f8baf" rel="stylesheet" />
+
+    <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=03e43079" />
+    <link rel="stylesheet" type="text/css" href="../_static/styles/sphinx-book-theme.css?v=3c74b3bc" />
+    <link rel="stylesheet" type="text/css" href="../_static/copybutton.css?v=76b2166b" />
+    <link rel="stylesheet" type="text/css" href="../_static/css/custom_log.css?v=731335ad" />
+    <link rel="stylesheet" type="text/css" href="../_static/css/custom_log.css?v=731335ad" />
+  
+  <!-- So that users can add custom icons -->
+  <script src="../_static/scripts/fontawesome.js?digest=8878045cc6db502f8baf"></script>
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=8878045cc6db502f8baf" />
+<link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=8878045cc6db502f8baf" />
+
+    <script src="../_static/documentation_options.js?v=a1637f0b"></script>
+    <script src="../_static/doctools.js?v=fd6eb6e6"></script>
+    <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
+    <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
+    <script src="../_static/copybutton.js?v=ccdb6887"></script>
+    <script src="../_static/scripts/sphinx-book-theme.js?v=fab101a9"></script>
+    <script crossorigin="anonymous" integrity="sha256-Ae2Vz/4ePdIu6ZyI/5ZGsYnb+m0JlOmKPjt6XZ9JJkA=" src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.4/require.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js"></script>
+    <script type="module">import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11.12.1/dist/mermaid.esm.min.mjs";
+
+
+
+
+
+const initStyles = () => {
+    const defaultStyle = document.createElement('style');
+    defaultStyle.textContent = `pre.mermaid {
+    /* Same as .mermaid-container > pre */
+    display: block;
+    width: 100%;
+}
+
+pre.mermaid > svg {
+    /* Same as .mermaid-container > pre > svg */
+    height: 500px;
+    width: 100%;
+    max-width: 100% !important;
+}`;
+    document.head.appendChild(defaultStyle);
+
+    const fullscreenStyle = document.createElement('style');
+    fullscreenStyle.textContent = `.mermaid-container {
+    display: flex;
+    flex-direction: row;
+    width: 100%;
+}
+
+.mermaid-container > pre {
+    display: block;
+    width: 100%;
+}
+
+.mermaid-container > pre > svg {
+    height: 500px;
+    width: 100%;
+    max-width: 100% !important;
+}
+
+.mermaid-fullscreen-btn {
+    width: 28px;
+    height: 28px;
+    background: rgba(255, 255, 255, 0.95);
+    border: 1px solid rgba(0, 0, 0, 0.3);
+    border-radius: 4px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.2s;
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);
+    font-size: 14px;
+    line-height: 1;
+    padding: 0;
+    color: #333;
+}
+
+.mermaid-fullscreen-btn:hover {
+    opacity: 100% !important;
+    background: rgba(255, 255, 255, 1);
+    box-shadow: 0 3px 10px rgba(0, 0, 0, 0.3);
+    transform: scale(1.1);
+}
+
+.mermaid-fullscreen-btn.dark-theme {
+    background: rgba(50, 50, 50, 0.95);
+    border: 1px solid rgba(255, 255, 255, 0.3);
+    color: #e0e0e0;
+}
+
+.mermaid-fullscreen-btn.dark-theme:hover {
+    background: rgba(60, 60, 60, 1);
+    box-shadow: 0 3px 10px rgba(255, 255, 255, 0.2);
+}
+
+.mermaid-fullscreen-modal {
+    display: none;
+    position: fixed !important;
+    top: 0 !important;
+    left: 0 !important;
+    width: 95vw;
+    height: 100vh;
+    background: rgba(255, 255, 255, 0.98);
+    z-index: 9999;
+    padding: 20px;
+    overflow: auto;
+}
+
+.mermaid-fullscreen-modal.dark-theme {
+    background: rgba(0, 0, 0, 0.98);
+}
+
+.mermaid-fullscreen-modal.active {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.mermaid-container-fullscreen {
+    position: relative;
+    width: 95vw;
+    height: 90vh;
+    max-width: 95vw;
+    max-height: 90vh;
+    background: white;
+    border-radius: 8px;
+    padding: 20px;
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
+    overflow: auto;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.mermaid-container-fullscreen.dark-theme {
+    background: #1a1a1a;
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.8);
+}
+
+.mermaid-container-fullscreen pre.mermaid {
+    width: 100%;
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.mermaid-container-fullscreen .mermaid svg {
+    height: 100% !important;
+    width: 100% !important;
+    cursor: grab;
+}
+
+.mermaid-fullscreen-close {
+    position: fixed !important;
+    top: 20px !important;
+    right: 20px !important;
+    width: 40px;
+    height: 40px;
+    background: rgba(255, 255, 255, 0.95);
+    border: 1px solid rgba(0, 0, 0, 0.2);
+    border-radius: 50%;
+    cursor: pointer;
+    z-index: 10000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+    transition: all 0.2s;
+    font-size: 24px;
+    line-height: 1;
+    color: #333;
+}
+
+.mermaid-fullscreen-close:hover {
+    background: white;
+    box-shadow: 0 6px 16px rgba(0, 0, 0, 0.4);
+    transform: scale(1.1);
+}
+
+.mermaid-fullscreen-close.dark-theme {
+    background: rgba(50, 50, 50, 0.95);
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    color: #e0e0e0;
+}
+
+.mermaid-fullscreen-close.dark-theme:hover {
+    background: rgba(60, 60, 60, 1);
+    box-shadow: 0 6px 16px rgba(255, 255, 255, 0.2);
+}
+
+.mermaid-fullscreen-modal .mermaid-fullscreen-btn {
+    display: none !important;
+}`;
+    document.head.appendChild(fullscreenStyle);
+}
+
+// Detect if page has dark background
+const isDarkTheme = () => {
+    // We use a set of heuristics:
+    // 1. Check for common dark mode classes or attributes
+    // 2. Check computed background color brightness
+    if (document.documentElement.classList.contains('dark') ||
+        document.documentElement.getAttribute('data-theme') === 'dark' ||
+        document.body.classList.contains('dark') ||
+        document.body.getAttribute('data-theme') === 'dark') {
+        // console.log("Dark theme detected via class/attribute");
+        return true;
+    }
+    if (document.documentElement.classList.contains('light') ||
+        document.documentElement.getAttribute('data-theme') === 'light' ||
+        document.body.classList.contains('light') ||
+        document.body.getAttribute('data-theme') === 'light') {
+        // console.log("Light theme detected via class/attribute");
+        return false;
+    }
+    if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) {
+        // console.log("Dark theme detected via prefers-color-scheme");
+        return true;
+    }
+    const bgColor = window.getComputedStyle(document.body).backgroundColor;
+    const match = bgColor.match(/rgb\((\d+),\s*(\d+),\s*(\d+)/);
+    if (match) {
+        const r = parseInt(match[1]);
+        const g = parseInt(match[2]);
+        const b = parseInt(match[3]);
+        const brightness = (r * 299 + g * 587 + b * 114) / 1000;
+        // console.log("Background color brightness:", brightness);
+        return brightness < 128;
+    }
+    // console.log("No dark or light theme detected, defaulting to light theme");
+    return false;
+};
+
+let darkTheme = isDarkTheme();
+let modal = null;
+let modalContent = null;
+let previousScrollOffset = [window.scrollX, window.scrollY];
+
+const runMermaid = async (rerun) => {
+    console.log("Running mermaid diagrams, rerun =", rerun);
+    // clear all existing mermaid charts
+    let all_mermaids = document.querySelectorAll(".mermaid");
+
+    if (rerun) {
+        all_mermaids.forEach((el) => {
+            if(!el.hasAttribute("data-original-code")) {
+                // store original code
+                // console.log(`Storing original code for first run: `, el.innerHTML);
+                el.setAttribute('data-original-code', el.innerHTML);
+            }
+            if(el.getAttribute("data-processed") === "true") {
+                // remove and restore original
+                el.removeAttribute("data-processed");
+                // console.log(`Restoring original code for re-run: `, el.getAttribute('data-original-code'));
+                el.innerHTML = el.getAttribute('data-original-code');
+            } else {
+                // store original code
+                // console.log(`Storing original code for re-run: `, el.innerHTML);
+                el.setAttribute('data-original-code', el.innerHTML);
+            }
+        });
+        await mermaid.run();
+    }
+
+    all_mermaids = document.querySelectorAll(".mermaid");
+    const mermaids_processed = document.querySelectorAll(".mermaid[data-processed='true']");
+
+    if ("False" === "True") {
+        const mermaids_to_add_zoom = -1 === -1 ? all_mermaids.length : -1;
+        if(mermaids_to_add_zoom > 0) {
+            var svgs = d3.selectAll("");
+            if(all_mermaids.length !== mermaids_processed.length) {
+                setTimeout(() => runMermaid(false), 200);
+                return;
+            } else if(svgs.size() !== mermaids_to_add_zoom) {
+                setTimeout(() => runMermaid(false), 200);
+                return;
+            } else {
+                svgs.each(function() {
+                    var svg = d3.select(this);
+                    svg.html("<g class='wrapper'>" + svg.html() + "</g>");
+                    var inner = svg.select("g");
+                    var zoom = d3.zoom().on("zoom", function(event) {
+                        inner.attr("transform", event.transform);
+                    });
+                    svg.call(zoom);
+                });
+            }
+        }
+    } else if(all_mermaids.length !== mermaids_processed.length) {
+        // Wait for mermaid to process all diagrams
+        setTimeout(() => runMermaid(false), 200);
+        return;
+    }
+
+    // Stop here if not adding fullscreen capability
+    if ("True" !== "True") return;
+
+    if (modal !== null ) {
+        // Destroy existing modal
+        modal.remove();
+        modal = null;
+        modalContent = null;
+    }
+
+    modal = document.createElement('div');
+    modal.className = 'mermaid-fullscreen-modal' + (darkTheme ? ' dark-theme' : '');
+    modal.setAttribute('role', 'dialog');
+    modal.setAttribute('aria-modal', 'true');
+    modal.setAttribute('aria-label', 'Fullscreen diagram viewer');
+    modal.innerHTML = `
+        <button class="mermaid-fullscreen-close${darkTheme ? ' dark-theme' : ''}" aria-label="Close fullscreen">✕</button>
+        <div class="mermaid-container-fullscreen${darkTheme ? ' dark-theme' : ''}"></div>
+    `;
+    document.body.appendChild(modal);
+
+    modalContent = modal.querySelector('.mermaid-container-fullscreen');
+    const closeBtn = modal.querySelector('.mermaid-fullscreen-close');
+
+    const closeModal = () => {
+        modal.classList.remove('active');
+        modalContent.innerHTML = '';
+        document.body.style.overflow = ''
+        window.scrollTo({left: previousScrollOffset[0], top: previousScrollOffset[1], behavior: 'instant'});
+    };
+
+    closeBtn.addEventListener('click', closeModal);
+    modal.addEventListener('click', (e) => {
+        if (e.target === modal) closeModal();
+    });
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape' && modal.classList.contains('active')) {
+            closeModal();
+        }
+    });
+
+    document.querySelectorAll('.mermaid').forEach((mermaidDiv) => {
+        if (mermaidDiv.parentNode.classList.contains('mermaid-container') ||
+            mermaidDiv.closest('.mermaid-fullscreen-modal')) {
+            // Already processed, adjust button class if needed
+            const existingBtn = mermaidDiv.parentNode.querySelector('.mermaid-fullscreen-btn');
+            if (existingBtn) {
+                existingBtn.className = 'mermaid-fullscreen-btn' + (darkTheme ? ' dark-theme' : '');
+            }
+            return;
+        }
+
+        const container = document.createElement('div');
+        container.className = 'mermaid-container';
+        mermaidDiv.parentNode.insertBefore(container, mermaidDiv);
+        container.appendChild(mermaidDiv);
+
+        const fullscreenBtn = document.createElement('button');
+        fullscreenBtn.className = 'mermaid-fullscreen-btn' + (darkTheme ? ' dark-theme' : '');
+        fullscreenBtn.setAttribute('aria-label', 'View diagram in fullscreen');
+        fullscreenBtn.textContent = '⛶';
+        fullscreenBtn.style.opacity = '50%';
+
+        // Calculate dynamic position based on diagram's margin and padding
+        const diagramStyle = window.getComputedStyle(mermaidDiv);
+        const marginTop = parseFloat(diagramStyle.marginTop) || 0;
+        const marginRight = parseFloat(diagramStyle.marginRight) || 0;
+        const paddingTop = parseFloat(diagramStyle.paddingTop) || 0;
+        const paddingRight = parseFloat(diagramStyle.paddingRight) || 0;
+        fullscreenBtn.style.top = `${marginTop + paddingTop + 4}px`;
+        fullscreenBtn.style.right = `${marginRight + paddingRight + 4}px`;
+
+        fullscreenBtn.addEventListener('click', () => {
+            previousScrollOffset = [window.scroll, window.scrollY];
+            const clone = mermaidDiv.cloneNode(true);
+            modalContent.innerHTML = '';
+            modalContent.appendChild(clone);
+
+            const svg = clone.querySelector('svg');
+            if (svg) {
+                svg.removeAttribute('width');
+                svg.removeAttribute('height');
+                svg.style.width = '100%';
+                svg.style.height = 'auto';
+                svg.style.maxWidth = '100%';
+                svg.style.sdisplay = 'block';
+
+                if ("False" === "True") {
+                    setTimeout(() => {
+                        const g = svg.querySelector('g');
+                        if (g) {
+                            var svgD3 = d3.select(svg);
+                            svgD3.html("<g class='wrapper'>" + svgD3.html() + "</g>");
+                            var inner = svgD3.select("g");
+                            var zoom = d3.zoom().on("zoom", function(event) {
+                                inner.attr("transform", event.transform);
+                            });
+                            svgD3.call(zoom);
+                        }
+                    }, 100);
+                }
+            }
+
+            modal.classList.add('active');
+            document.body.style.overflow = 'hidden';
+        });
+        container.appendChild(fullscreenBtn);
+    });
+};
+
+const load = async () => {
+    initStyles();
+
+    await runMermaid(true);
+
+    const reRunIfThemeChanges = async () => {
+        const newDarkTheme = isDarkTheme();
+        if (newDarkTheme !== darkTheme) {
+            darkTheme = newDarkTheme;
+            console.log("Theme change detected, re-running mermaid with", darkTheme ? "dark" : "default", "theme");
+            await mermaid.initialize(
+                {...JSON.parse(
+                    `{"startOnLoad": false}`
+                ),
+                ...{ darkMode: darkTheme, theme: darkTheme ? 'dark' : 'default' },
+                }
+            );
+            await runMermaid(true);
+        }
+    };
+
+    // Update theme classes when theme changes
+    const themeObserver = new MutationObserver(reRunIfThemeChanges);
+    themeObserver.observe(document.documentElement, {
+        attributes: true,
+        attributeFilter: ['class', 'style', 'data-theme']
+    });
+    themeObserver.observe(document.body, {
+        attributes: true,
+        attributeFilter: ['class', 'style', 'data-theme']
+    });
+};
+
+
+
+
+
+console.log("Initializing mermaid with", darkTheme ? "dark" : "default", "theme");
+mermaid.initialize(
+    {...JSON.parse(
+        `{"startOnLoad": false}`
+    ),
+    ...{ darkMode: darkTheme, theme: darkTheme ? 'dark' : 'default' },
+    }
+);
+
+window.addEventListener("load", load);
+window.runMermaid = runMermaid;</script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'developer_reference/architecture';</script>
+    <link rel="icon" href="https://docs.sglang.io/_static/logo.ico"/>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="Relay" href="relay_design.html" />
+    <link rel="prev" title="Benchmark Relay" href="../benchmarks/relay.html" />
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+  <meta name="docsearch:version" content="0.1.0" />
+    <meta name="docbuild:last-update" content="Mar 25, 2026"/>
+  </head>
+  
+  
+  <body data-bs-spy="scroll" data-bs-target=".bd-toc-nav" data-offset="180" data-bs-root-margin="0px 0px -60%" data-default-mode="">
+
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+
+  
+  <dialog id="pst-search-dialog">
+    
+<form class="bd-search d-flex align-items-center"
+      action="../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         placeholder="Search..."
+         aria-label="Search..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+  </dialog>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+      <dialog id="pst-primary-sidebar-modal"></dialog>
+      <div id="pst-primary-sidebar" class="bd-sidebar-primary bd-sidebar">
+        
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+    
+    
+  </div>
+  
+    <div class="sidebar-primary-items__start sidebar-primary__section">
+        <div class="sidebar-primary-item">
+
+  
+    
+  
+
+<a class="navbar-brand logo" href="../index.html">
+  
+  
+  
+  
+  
+    
+    
+      
+    
+    
+    <img src="https://docs.sglang.io/_static/logo.png" class="logo__image only-light" alt="SGLang - Home"/>
+    <img src="https://docs.sglang.io/_static/logo.png" class="logo__image only-dark pst-js-only" alt="SGLang - Home"/>
+  
+  
+</a></div>
+        <div class="sidebar-primary-item">
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button></div>
+        <div class="sidebar-primary-item"><nav class="bd-links bd-docs-nav" aria-label="Main">
+    <div class="bd-toc-item navbar-nav active">
+        <p aria-level="2" class="caption" role="heading"><span class="caption-text">Get Started</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../get_started/installation.html">🚀 Get Started</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Benchmarks</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../benchmarks/relay.html">Benchmark Relay</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Developer Reference</span></p>
+<ul class="current nav bd-sidenav">
+<li class="toctree-l1 current active"><a class="current reference internal" href="#">Architecture</a></li>
+<li class="toctree-l1"><a class="reference internal" href="relay_design.html">Relay</a></li>
+</ul>
+
+    </div>
+</nav></div>
+    </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+      <div class="sidebar-primary-item">
+<div id="ethical-ad-placement"
+      class="flat"
+      data-ea-publisher="readthedocs"
+      data-ea-type="readthedocs-sidebar"
+      data-ea-manual="true">
+</div></div>
+  </div>
+
+
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+
+<div class="sbt-scroll-pixel-helper"></div>
+
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item"><button class="sidebar-toggle primary-toggle btn btn-sm" title="Toggle primary sidebar" data-bs-placement="bottom" data-bs-toggle="tooltip">
+  <span class="fa-solid fa-bars"></span>
+</button></div>
+      
+    </div>
+  
+  
+    <div class="header-article-items__end">
+      
+        <div class="header-article-item">
+
+<div class="article-header-buttons">
+
+
+
+
+
+<div class="dropdown dropdown-source-buttons">
+  <button class="btn dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false" aria-label="Source repositories">
+    <i class="fab fa-github"></i>
+  </button>
+  <ul class="dropdown-menu">
+      
+      
+      
+      <li><a href="https://github.com/sgl-project/sgl-project.github.io" target="_blank"
+   class="btn btn-sm btn-source-repository-button dropdown-item"
+   title="Source repository"
+   data-bs-placement="left" data-bs-toggle="tooltip"
+>
+  
+
+<span class="btn__icon-container">
+  <i class="fab fa-github"></i>
+  </span>
+<span class="btn__text-container">Repository</span>
+</a>
+</li>
+      
+      
+      
+      
+      <li><a href="https://github.com/sgl-project/sgl-project.github.io/blob/main/developer_reference/architecture.md?plain=1" target="_blank"
+   class="btn btn-sm btn-source-file-button dropdown-item"
+   title="Show source"
+   data-bs-placement="left" data-bs-toggle="tooltip"
+>
+  
+
+<span class="btn__icon-container">
+  <i class="fas fa-code"></i>
+  </span>
+<span class="btn__text-container">Show source</span>
+</a>
+</li>
+      
+      
+      
+      
+      <li><a href="https://github.com/sgl-project/sgl-project.github.io/edit/main/developer_reference/architecture.md" target="_blank"
+   class="btn btn-sm btn-source-edit-button dropdown-item"
+   title="Suggest edit"
+   data-bs-placement="left" data-bs-toggle="tooltip"
+>
+  
+
+<span class="btn__icon-container">
+  <i class="fas fa-pencil-alt"></i>
+  </span>
+<span class="btn__text-container">Suggest edit</span>
+</a>
+</li>
+      
+      
+      
+      
+      <li><a href="https://github.com/sgl-project/sgl-project.github.io/issues/new?title=Issue%20on%20page%20%2Fdeveloper_reference/architecture.html&body=Your%20issue%20content%20here." target="_blank"
+   class="btn btn-sm btn-source-issues-button dropdown-item"
+   title="Open an issue"
+   data-bs-placement="left" data-bs-toggle="tooltip"
+>
+  
+
+<span class="btn__icon-container">
+  <i class="fas fa-lightbulb"></i>
+  </span>
+<span class="btn__text-container">Open issue</span>
+</a>
+</li>
+      
+  </ul>
+</div>
+
+
+
+
+
+
+<div class="dropdown dropdown-download-buttons">
+  <button class="btn dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false" aria-label="Download this page">
+    <i class="fas fa-download"></i>
+  </button>
+  <ul class="dropdown-menu">
+      
+      
+      
+      <li><a href="../_sources/developer_reference/architecture.md" target="_blank"
+   class="btn btn-sm btn-download-source-button dropdown-item"
+   title="Download source file"
+   data-bs-placement="left" data-bs-toggle="tooltip"
+>
+  
+
+<span class="btn__icon-container">
+  <i class="fas fa-file"></i>
+  </span>
+<span class="btn__text-container">.md</span>
+</a>
+</li>
+      
+      
+      
+      
+      <li>
+<button onclick="window.print()"
+  class="btn btn-sm btn-download-pdf-button dropdown-item"
+  title="Print to PDF"
+  data-bs-placement="left" data-bs-toggle="tooltip"
+>
+  
+
+<span class="btn__icon-container">
+  <i class="fas fa-file-pdf"></i>
+  </span>
+<span class="btn__text-container">.pdf</span>
+</button>
+</li>
+      
+  </ul>
+</div>
+
+
+
+
+<button onclick="toggleFullScreen()"
+  class="btn btn-sm btn-fullscreen-button pst-navbar-icon"
+  title="Fullscreen mode"
+  data-bs-placement="bottom" data-bs-toggle="tooltip"
+>
+  
+
+<span class="btn__icon-container">
+  <i class="fas fa-expand"></i>
+  </span>
+
+</button>
+
+
+
+<button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button pst-js-only" aria-label="Color mode" data-bs-title="Color mode"  data-bs-placement="bottom" data-bs-toggle="tooltip">
+  <i class="theme-switch fa-solid fa-sun                fa-lg" data-mode="light" title="Light"></i>
+  <i class="theme-switch fa-solid fa-moon               fa-lg" data-mode="dark"  title="Dark"></i>
+  <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"  title="System Settings"></i>
+</button>
+
+
+<button class="btn btn-sm pst-navbar-icon search-button search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+    <i class="fa-solid fa-magnifying-glass fa-lg"></i>
+</button>
+<button class="sidebar-toggle secondary-toggle btn btn-sm pst-navbar-icon" title="Toggle secondary sidebar" data-bs-placement="bottom" data-bs-toggle="tooltip">
+    <span class="fa-solid fa-list"></span>
+</button>
+</div></div>
+      
+    </div>
+  
+</div>
+</div>
+              
+              
+
+<div id="jb-print-docs-body" class="onlyprint">
+    <h1>Architecture</h1>
+    <!-- Table of contents -->
+    <div id="print-main-content">
+        <div id="jb-print-toc">
+            
+            <div>
+                <h2> Contents </h2>
+            </div>
+            <nav aria-label="Page">
+                <ul class="visible nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#design-principles">Design Principles</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#system-overview">System Overview</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#module-structure">Module Structure</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#core-components">Core Components</a><ul class="visible nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#pipeline-config-and-compilation">Pipeline Config and Compilation</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#coordinator">Coordinator</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#stage">Stage</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#worker">Worker</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#control-plane">Control Plane</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#executors">Executors</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#engines">Engines</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#relay">Relay</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#request-lifecycle">Request Lifecycle</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#data-flow-patterns">Data Flow Patterns</a><ul class="visible nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#sequential">Sequential</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#fan-out">Fan-Out</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#fan-in-aggregation">Fan-In (Aggregation)</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#qwen3-omni-pipeline-example">Qwen3-Omni Pipeline Example</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#configuration-example">Configuration Example</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#communication-layers">Communication Layers</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#key-design-decisions">Key Design Decisions</a></li>
+</ul>
+            </nav>
+        </div>
+    </div>
+</div>
+
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+  <section class="tex2jax_ignore mathjax_ignore" id="architecture">
+<h1>Architecture<a class="headerlink" href="#architecture" title="Link to this heading">#</a></h1>
+<p>SGLang-Omni is a multi-stage pipeline framework for omni models — models with multimodal inputs (text, audio, images, video) and multimodal outputs. It decomposes model inference into specialized stages that can be independently scaled and deployed across heterogeneous hardware.</p>
+<section id="design-principles">
+<h2>Design Principles<a class="headerlink" href="#design-principles" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p><strong>Multi-stage decomposition</strong>: Omni models contain components (encoders, decoders, thinkers) with different compute profiles. SGLang-Omni lets each stage run independently with its own resources.</p></li>
+<li><p><strong>Async-first</strong>: The entire pipeline is built on Python asyncio for concurrent request handling and non-blocking data transfer.</p></li>
+<li><p><strong>Pluggable data relay</strong>: Stages communicate via a relay abstraction that supports shared memory, NCCL, Nixl (RDMA), and Mooncake backends — from single-machine to multi-node deployments.</p></li>
+<li><p><strong>Configuration-driven</strong>: Pipelines are declared as config objects, compiled into runtimes, and launched by a runner. No boilerplate wiring code needed.</p></li>
+</ul>
+</section>
+<section id="system-overview">
+<h2>System Overview<a class="headerlink" href="#system-overview" title="Link to this heading">#</a></h2>
+<pre  class="mermaid">
+        graph TB
+    subgraph API[&quot;API Layer&quot;]
+        OAI[&quot;OpenAI-Compatible Server&lt;br/&gt;(FastAPI + Uvicorn)&quot;]
+        Client[&quot;Client&quot;]
+    end
+
+    subgraph Orchestration[&quot;Pipeline Orchestration&quot;]
+        Coord[&quot;Coordinator&quot;]
+        S1[&quot;Stage 1&quot;]
+        S2[&quot;Stage 2&quot;]
+        SN[&quot;Stage N&quot;]
+    end
+
+    subgraph Compute[&quot;Compute Layer&quot;]
+        W1[&quot;Workers + Executors&quot;]
+        W2[&quot;Workers + Executors&quot;]
+        WN[&quot;Workers + Executors&quot;]
+        E1[&quot;Engine&lt;br/&gt;(Scheduler + ModelRunner)&quot;]
+        E2[&quot;Engine&lt;br/&gt;(Scheduler + ModelRunner)&quot;]
+    end
+
+    subgraph Transport[&quot;Data Transport&quot;]
+        ZMQ[&quot;ZMQ Control Plane&lt;br/&gt;(PUSH/PULL/SUB)&quot;]
+        Relay[&quot;Relay Data Plane&lt;br/&gt;(SHM / NCCL / Nixl / Mooncake)&quot;]
+    end
+
+    OAI --&gt; Client
+    Client --&gt; Coord
+    Coord -- &quot;submit / complete&quot; --&gt; S1
+    S1 -- &quot;data ready&quot; --&gt; S2
+    S2 -- &quot;data ready&quot; --&gt; SN
+    S1 --- W1
+    S2 --- W2
+    SN --- WN
+    W1 --- E1
+    W2 --- E2
+    S1 &amp; S2 &amp; SN --- ZMQ
+    S1 &amp; S2 &amp; SN --- Relay
+    </pre></section>
+<section id="module-structure">
+<h2>Module Structure<a class="headerlink" href="#module-structure" title="Link to this heading">#</a></h2>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>sglang_omni/
+├── config/         # Pipeline definition, validation, and compilation
+├── pipeline/       # Coordinator, stages, workers, control plane
+├── engines/        # Compute backends (OmniEngine, schedulers)
+├── executors/      # Worker-facing interfaces bridging stages to engines
+├── models/         # Model-specific implementations (e.g., Qwen3-Omni)
+├── preprocessing/  # Multimodal input processing (audio, image, video, text)
+├── relay/          # Inter-stage data transfer backends
+├── proto/          # Request/message types and serialization
+├── client/         # High-level client wrapping the coordinator
+└── serve/          # OpenAI-compatible REST API adapter
+</pre></div>
+</div>
+</section>
+<section id="core-components">
+<h2>Core Components<a class="headerlink" href="#core-components" title="Link to this heading">#</a></h2>
+<section id="pipeline-config-and-compilation">
+<h3>Pipeline Config and Compilation<a class="headerlink" href="#pipeline-config-and-compilation" title="Link to this heading">#</a></h3>
+<p>The config module (<code class="docutils literal notranslate"><span class="pre">sglang_omni/config/</span></code>) provides a declarative way to define pipelines. A <code class="docutils literal notranslate"><span class="pre">PipelineConfig</span></code> specifies:</p>
+<ul class="simple">
+<li><p><strong>Stages</strong>: Each <code class="docutils literal notranslate"><span class="pre">StageConfig</span></code> names a stage, references an executor factory function, and defines a routing function (<code class="docutils literal notranslate"><span class="pre">get_next</span></code>) that determines where results go.</p></li>
+<li><p><strong>Input handling</strong>: Stages can use <code class="docutils literal notranslate"><span class="pre">DirectInput</span></code> (pass-through) or <code class="docutils literal notranslate"><span class="pre">AggregatedInput</span></code> (fan-in from multiple upstream stages with a merge function).</p></li>
+<li><p><strong>Relay configuration</strong>: Backend type, device, buffer sizes, and flow control credits.</p></li>
+<li><p><strong>Endpoints</strong>: ZMQ endpoint allocation (IPC for single-machine, TCP for multi-node).</p></li>
+</ul>
+<p>The <code class="docutils literal notranslate"><span class="pre">compile_pipeline()</span></code> function transforms the declarative config into runtime objects:</p>
+<ol class="arabic simple">
+<li><p>Validates stage names, routing, and aggregation sources.</p></li>
+<li><p>Optionally applies <strong>stage fusion</strong> — merging consecutive stages into a single worker to avoid relay overhead.</p></li>
+<li><p>Allocates ZMQ endpoints.</p></li>
+<li><p>Instantiates executors from factory functions.</p></li>
+<li><p>Returns a <code class="docutils literal notranslate"><span class="pre">(Coordinator,</span> <span class="pre">[Stage,</span> <span class="pre">...])</span></code> tuple.</p></li>
+</ol>
+<p>The <code class="docutils literal notranslate"><span class="pre">PipelineRunner</span></code> manages the lifecycle — starting the coordinator and all stages, then waiting for completion or errors.</p>
+</section>
+<section id="coordinator">
+<h3>Coordinator<a class="headerlink" href="#coordinator" title="Link to this heading">#</a></h3>
+<p>The <code class="docutils literal notranslate"><span class="pre">Coordinator</span></code> (<code class="docutils literal notranslate"><span class="pre">sglang_omni/pipeline/coordinator.py</span></code>) is the central request manager. It:</p>
+<ul class="simple">
+<li><p>Registers stages and their ZMQ control endpoints.</p></li>
+<li><p>Tracks every request through its lifecycle: <code class="docutils literal notranslate"><span class="pre">PENDING</span> <span class="pre">→</span> <span class="pre">RUNNING</span> <span class="pre">→</span> <span class="pre">COMPLETED</span> <span class="pre">/</span> <span class="pre">FAILED</span> <span class="pre">/</span> <span class="pre">ABORTED</span></code>.</p></li>
+<li><p>Submits requests to the entry stage.</p></li>
+<li><p>Receives completion messages and resolves per-request futures.</p></li>
+<li><p>Broadcasts abort signals to all stages via ZMQ PUB/SUB.</p></li>
+<li><p>Supports both blocking (<code class="docutils literal notranslate"><span class="pre">submit()</span></code>) and streaming (<code class="docutils literal notranslate"><span class="pre">stream()</span></code>) request patterns.</p></li>
+</ul>
+</section>
+<section id="stage">
+<h3>Stage<a class="headerlink" href="#stage" title="Link to this heading">#</a></h3>
+<p>A <code class="docutils literal notranslate"><span class="pre">Stage</span></code> (<code class="docutils literal notranslate"><span class="pre">sglang_omni/pipeline/stage/runtime.py</span></code>) is a processing unit that:</p>
+<ul class="simple">
+<li><p>Receives incoming work via the ZMQ control plane.</p></li>
+<li><p>Applies an input handler — either passing data directly or waiting for and merging inputs from multiple upstream stages.</p></li>
+<li><p>Routes work to its worker pool using round-robin with sticky affinity (subsequent requests from the same source go to the same worker for cache locality).</p></li>
+<li><p>Manages a relay instance for downstream data transfer.</p></li>
+<li><p>Forwards completed results to the next stage(s) based on the routing function.</p></li>
+</ul>
+</section>
+<section id="worker">
+<h3>Worker<a class="headerlink" href="#worker" title="Link to this heading">#</a></h3>
+<p>Each <code class="docutils literal notranslate"><span class="pre">Worker</span></code> (<code class="docutils literal notranslate"><span class="pre">sglang_omni/pipeline/worker/runtime.py</span></code>) is a stateless request processor within a stage. It:</p>
+<ul class="simple">
+<li><p>Dequeues work items from its stage.</p></li>
+<li><p>Loads inputs — either inline or by fetching tensors from the relay using metadata.</p></li>
+<li><p>Delegates execution to an <code class="docutils literal notranslate"><span class="pre">Executor</span></code>.</p></li>
+<li><p>Dispatches results back to the stage for routing to downstream stages.</p></li>
+<li><p>Handles many concurrent in-flight requests via asyncio tasks.</p></li>
+</ul>
+</section>
+<section id="control-plane">
+<h3>Control Plane<a class="headerlink" href="#control-plane" title="Link to this heading">#</a></h3>
+<p>The control plane (<code class="docutils literal notranslate"><span class="pre">sglang_omni/pipeline/control_plane.py</span></code>) uses ZMQ sockets for inter-stage messaging:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Socket</p></th>
+<th class="head"><p>Direction</p></th>
+<th class="head"><p>Purpose</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>PULL</p></td>
+<td><p>Receive</p></td>
+<td><p>Incoming work submissions</p></td>
+</tr>
+<tr class="row-odd"><td><p>PUSH</p></td>
+<td><p>Send</p></td>
+<td><p>Forward work to next stages</p></td>
+</tr>
+<tr class="row-even"><td><p>SUB</p></td>
+<td><p>Receive</p></td>
+<td><p>Abort broadcasts from coordinator</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>Message types include <code class="docutils literal notranslate"><span class="pre">SubmitMessage</span></code>, <code class="docutils literal notranslate"><span class="pre">DataReadyMessage</span></code>, <code class="docutils literal notranslate"><span class="pre">CompleteMessage</span></code>, <code class="docutils literal notranslate"><span class="pre">AbortMessage</span></code>, <code class="docutils literal notranslate"><span class="pre">StreamMessage</span></code>, and <code class="docutils literal notranslate"><span class="pre">ShutdownMessage</span></code>, all serialized with msgpack.</p>
+</section>
+<section id="executors">
+<h3>Executors<a class="headerlink" href="#executors" title="Link to this heading">#</a></h3>
+<p>Executors (<code class="docutils literal notranslate"><span class="pre">sglang_omni/executors/</span></code>) bridge stages to compute backends:</p>
+<ul class="simple">
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">PreprocessingExecutor</span></code></strong>: Wraps pure functions (e.g., tokenization, input normalization) as an executor interface.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">EngineExecutor</span></code></strong>: Adapts an <code class="docutils literal notranslate"><span class="pre">Engine</span></code> (with batching and scheduling) to the executor interface, using request/result builders for payload transformation.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">FusedExecutor</span></code></strong>: Chains multiple executors sequentially when stages are fused during compilation.</p></li>
+</ul>
+</section>
+<section id="engines">
+<h3>Engines<a class="headerlink" href="#engines" title="Link to this heading">#</a></h3>
+<p>The engines module (<code class="docutils literal notranslate"><span class="pre">sglang_omni/engines/</span></code>) provides compute backends:</p>
+<ul class="simple">
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">OmniEngine</span></code></strong>: The main engine combining a <code class="docutils literal notranslate"><span class="pre">Scheduler</span></code> and <code class="docutils literal notranslate"><span class="pre">ModelRunner</span></code>. Its loop is: <code class="docutils literal notranslate"><span class="pre">schedule()</span> <span class="pre">→</span> <span class="pre">cache</span> <span class="pre">check</span> <span class="pre">→</span> <span class="pre">execute()</span> <span class="pre">→</span> <span class="pre">cache</span> <span class="pre">update</span> <span class="pre">→</span> <span class="pre">update()</span></code>.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">Scheduler</span></code></strong>: Model-agnostic request lifecycle manager. Manages states (<code class="docutils literal notranslate"><span class="pre">WAITING</span> <span class="pre">→</span> <span class="pre">RUNNING</span> <span class="pre">→</span> <span class="pre">FINISHED</span></code>), delegates to pluggable components: <code class="docutils literal notranslate"><span class="pre">BatchPlanner</span></code>, <code class="docutils literal notranslate"><span class="pre">ResourceManager</span></code>, <code class="docutils literal notranslate"><span class="pre">IterationController</span></code>.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">ModelRunner</span></code></strong>: Stateless executor that consumes <code class="docutils literal notranslate"><span class="pre">SchedulerOutput</span></code> and calls the model forward pass.</p></li>
+</ul>
+</section>
+<section id="relay">
+<h3>Relay<a class="headerlink" href="#relay" title="Link to this heading">#</a></h3>
+<p>The relay module (<code class="docutils literal notranslate"><span class="pre">sglang_omni/relay/</span></code>) provides high-performance inter-stage data transfer. See <a class="reference internal" href="relay_design.html"><span class="std std-doc">Relay Design</span></a> for full details.</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Backend</p></th>
+<th class="head"><p>Transport</p></th>
+<th class="head"><p>Scope</p></th>
+<th class="head"><p>Use Case</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>SHM</p></td>
+<td><p>Shared memory</p></td>
+<td><p>Single machine</p></td>
+<td><p>Low-overhead, any GPU config</p></td>
+</tr>
+<tr class="row-odd"><td><p>NCCL</p></td>
+<td><p>GPU collectives</p></td>
+<td><p>Multi-GPU</p></td>
+<td><p>Synchronized GPU-GPU transfer</p></td>
+</tr>
+<tr class="row-even"><td><p>Nixl</p></td>
+<td><p>RDMA</p></td>
+<td><p>Multi-node</p></td>
+<td><p>High-bandwidth cluster deployments</p></td>
+</tr>
+<tr class="row-odd"><td><p>Mooncake</p></td>
+<td><p>Cloud-optimized</p></td>
+<td><p>Multi-node</p></td>
+<td><p>Cloud environments</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>All backends implement the same <code class="docutils literal notranslate"><span class="pre">Relay</span></code> interface with <code class="docutils literal notranslate"><span class="pre">put_async()</span></code> / <code class="docutils literal notranslate"><span class="pre">get_async()</span></code> and are selected via a registry pattern.</p>
+</section>
+</section>
+<section id="request-lifecycle">
+<h2>Request Lifecycle<a class="headerlink" href="#request-lifecycle" title="Link to this heading">#</a></h2>
+<pre  class="mermaid">
+        sequenceDiagram
+    participant C as Client
+    participant Co as Coordinator
+    participant S1 as Stage 1
+    participant W1 as Worker 1
+    participant R as Relay
+    participant S2 as Stage 2
+    participant W2 as Worker 2
+
+    C-&gt;&gt;Co: submit(OmniRequest)
+    Co-&gt;&gt;S1: SubmitMessage (ZMQ)
+    S1-&gt;&gt;W1: route work
+    W1-&gt;&gt;W1: execute via Executor
+    W1-&gt;&gt;R: put_async(tensor)
+    R--&gt;&gt;W1: metadata
+    W1-&gt;&gt;S2: DataReadyMessage(metadata) (ZMQ)
+    S2-&gt;&gt;W2: route work
+    W2-&gt;&gt;R: get_async(metadata)
+    R--&gt;&gt;W2: tensor
+    W2-&gt;&gt;W2: execute via Executor
+    W2-&gt;&gt;Co: CompleteMessage (ZMQ)
+    Co--&gt;&gt;C: result
+    </pre><ol class="arabic simple">
+<li><p>The <strong>Client</strong> submits an <code class="docutils literal notranslate"><span class="pre">OmniRequest</span></code> to the <strong>Coordinator</strong>.</p></li>
+<li><p>The Coordinator sends a <code class="docutils literal notranslate"><span class="pre">SubmitMessage</span></code> to the <strong>entry stage</strong> via ZMQ.</p></li>
+<li><p>The stage’s <strong>input handler</strong> processes the request and the <strong>router</strong> assigns it to a worker.</p></li>
+<li><p>The <strong>Worker</strong> executes the request through its <strong>Executor</strong>.</p></li>
+<li><p>If there is a downstream stage, the worker writes output tensors to the <strong>Relay</strong> and sends a <code class="docutils literal notranslate"><span class="pre">DataReadyMessage</span></code> with relay metadata to the next stage.</p></li>
+<li><p>The next stage’s worker fetches the tensor from the relay and continues processing.</p></li>
+<li><p>The final stage sends a <code class="docutils literal notranslate"><span class="pre">CompleteMessage</span></code> back to the Coordinator.</p></li>
+<li><p>The Coordinator resolves the client’s future with the result.</p></li>
+</ol>
+</section>
+<section id="data-flow-patterns">
+<h2>Data Flow Patterns<a class="headerlink" href="#data-flow-patterns" title="Link to this heading">#</a></h2>
+<section id="sequential">
+<h3>Sequential<a class="headerlink" href="#sequential" title="Link to this heading">#</a></h3>
+<pre  class="mermaid">
+        graph LR
+    A[&quot;Stage A&quot;] --&gt;|relay| B[&quot;Stage B&quot;] --&gt;|relay| C[&quot;Stage C&quot;]
+    </pre><p>The simplest pattern: each stage passes its output to the next.</p>
+</section>
+<section id="fan-out">
+<h3>Fan-Out<a class="headerlink" href="#fan-out" title="Link to this heading">#</a></h3>
+<pre  class="mermaid">
+        graph LR
+    A[&quot;Preprocessing&quot;] --&gt;|relay| B[&quot;Image Encoder&quot;]
+    A --&gt;|relay| C[&quot;Audio Encoder&quot;]
+    </pre><p>A routing function directs the output to multiple downstream stages in parallel. Used when different modalities require separate encoders.</p>
+</section>
+<section id="fan-in-aggregation">
+<h3>Fan-In (Aggregation)<a class="headerlink" href="#fan-in-aggregation" title="Link to this heading">#</a></h3>
+<pre  class="mermaid">
+        graph LR
+    B[&quot;Image Encoder&quot;] --&gt;|relay| D[&quot;Aggregate&quot;]
+    C[&quot;Audio Encoder&quot;] --&gt;|relay| D
+    </pre><p>An aggregated input handler waits for all upstream sources, then merges them with a custom function before passing to the worker.</p>
+</section>
+<section id="qwen3-omni-pipeline-example">
+<h3>Qwen3-Omni Pipeline Example<a class="headerlink" href="#qwen3-omni-pipeline-example" title="Link to this heading">#</a></h3>
+<p>A concrete example of these patterns combined:</p>
+<pre  class="mermaid">
+        graph TD
+    PP[&quot;Preprocessing&lt;br/&gt;(tokenize, template)&quot;]
+    IE[&quot;Image Encoder&quot;]
+    AE[&quot;Audio Encoder&quot;]
+    AGG[&quot;Aggregate&lt;br/&gt;(merge latents + tokens)&quot;]
+    TH[&quot;Thinker&lt;br/&gt;(autoregressive decoder)&quot;]
+    DEC[&quot;Decode&lt;br/&gt;(audio synthesis)&quot;]
+
+    PP --&gt;|&quot;has images&quot;| IE
+    PP --&gt;|&quot;has audio&quot;| AE
+    IE --&gt; AGG
+    AE --&gt; AGG
+    AGG --&gt; TH
+    TH --&gt; DEC
+    </pre><p>Preprocessing fans out to active encoders based on input modalities. The aggregate stage fans in, merging encoder outputs with text tokens. The thinker runs autoregressive decoding, and the decode stage synthesizes audio output.</p>
+</section>
+</section>
+<section id="configuration-example">
+<h2>Configuration Example<a class="headerlink" href="#configuration-example" title="Link to this heading">#</a></h2>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">sglang_omni.config</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
+    <span class="n">ExecutorConfig</span><span class="p">,</span> <span class="n">PipelineConfig</span><span class="p">,</span> <span class="n">PipelineRunner</span><span class="p">,</span>
+    <span class="n">StageConfig</span><span class="p">,</span> <span class="n">compile_pipeline</span><span class="p">,</span>
+<span class="p">)</span>
+
+<span class="n">config</span> <span class="o">=</span> <span class="n">PipelineConfig</span><span class="p">(</span>
+    <span class="n">name</span><span class="o">=</span><span class="s2">&quot;my_pipeline&quot;</span><span class="p">,</span>
+    <span class="n">entry_stage</span><span class="o">=</span><span class="s2">&quot;preprocess&quot;</span><span class="p">,</span>
+    <span class="n">stages</span><span class="o">=</span><span class="p">[</span>
+        <span class="n">StageConfig</span><span class="p">(</span>
+            <span class="n">name</span><span class="o">=</span><span class="s2">&quot;preprocess&quot;</span><span class="p">,</span>
+            <span class="n">executor</span><span class="o">=</span><span class="n">ExecutorConfig</span><span class="p">(</span>
+                <span class="n">factory</span><span class="o">=</span><span class="s2">&quot;my_project.executors.create_preprocess&quot;</span><span class="p">,</span>
+                <span class="n">args</span><span class="o">=</span><span class="p">{},</span>
+            <span class="p">),</span>
+            <span class="n">get_next</span><span class="o">=</span><span class="s2">&quot;my_project.routing.preprocess_next&quot;</span><span class="p">,</span>
+        <span class="p">),</span>
+        <span class="n">StageConfig</span><span class="p">(</span>
+            <span class="n">name</span><span class="o">=</span><span class="s2">&quot;thinker&quot;</span><span class="p">,</span>
+            <span class="n">executor</span><span class="o">=</span><span class="n">ExecutorConfig</span><span class="p">(</span>
+                <span class="n">factory</span><span class="o">=</span><span class="s2">&quot;my_project.executors.create_thinker&quot;</span><span class="p">,</span>
+                <span class="n">args</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;model_path&quot;</span><span class="p">:</span> <span class="s2">&quot;Qwen/Qwen3-Omni&quot;</span><span class="p">},</span>
+            <span class="p">),</span>
+            <span class="n">get_next</span><span class="o">=</span><span class="s2">&quot;my_project.routing.end&quot;</span><span class="p">,</span>
+        <span class="p">),</span>
+    <span class="p">],</span>
+<span class="p">)</span>
+
+<span class="n">coordinator</span><span class="p">,</span> <span class="n">stages</span> <span class="o">=</span> <span class="n">compile_pipeline</span><span class="p">(</span><span class="n">config</span><span class="p">)</span>
+<span class="n">runner</span> <span class="o">=</span> <span class="n">PipelineRunner</span><span class="p">(</span><span class="n">coordinator</span><span class="p">,</span> <span class="n">stages</span><span class="p">)</span>
+</pre></div>
+</div>
+</section>
+<section id="communication-layers">
+<h2>Communication Layers<a class="headerlink" href="#communication-layers" title="Link to this heading">#</a></h2>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Layer</p></th>
+<th class="head"><p>Technology</p></th>
+<th class="head"><p>Purpose</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Control plane</p></td>
+<td><p>ZMQ (PUSH/PULL/SUB)</p></td>
+<td><p>Stage-to-stage work submission, abort broadcasts</p></td>
+</tr>
+<tr class="row-odd"><td><p>Data plane</p></td>
+<td><p>SHM / NCCL / Nixl / Mooncake</p></td>
+<td><p>Tensor transfer between stages</p></td>
+</tr>
+<tr class="row-even"><td><p>Request tracking</p></td>
+<td><p>In-memory dict + asyncio futures</p></td>
+<td><p>Coordinator request lifecycle</p></td>
+</tr>
+<tr class="row-odd"><td><p>Worker scheduling</p></td>
+<td><p>asyncio + queues</p></td>
+<td><p>Concurrent request dispatch within stages</p></td>
+</tr>
+<tr class="row-even"><td><p>External API</p></td>
+<td><p>FastAPI + Uvicorn</p></td>
+<td><p>OpenAI-compatible HTTP endpoints</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+</section>
+<section id="key-design-decisions">
+<h2>Key Design Decisions<a class="headerlink" href="#key-design-decisions" title="Link to this heading">#</a></h2>
+<p><strong>Why ZMQ for the control plane?</strong>
+ZMQ provides lightweight, brokerless messaging with flexible socket patterns (PUSH/PULL for work distribution, PUB/SUB for broadcasts). It avoids the overhead of a message broker while supporting both IPC and TCP transports.</p>
+<p><strong>Why separate control and data planes?</strong>
+Control messages (submit, complete, abort) are small and latency-sensitive. Tensor data is large and throughput-sensitive. Separating them allows each to use the optimal transport — ZMQ for control, RDMA/NCCL for data.</p>
+<p><strong>Why configuration-driven pipelines?</strong>
+Declarative configs make pipelines reproducible, versionable, and easy to modify. The compilation step handles all wiring, endpoint allocation, and optimization (like stage fusion) automatically.</p>
+<p><strong>Why sticky worker affinity?</strong>
+When a request returns to the same stage (e.g., for iterative decoding), routing it to the same worker preserves KV cache locality, avoiding redundant recomputation.</p>
+</section>
+</section>
+
+
+                </article>
+              
+
+              
+              
+              
+              
+                <footer class="prev-next-footer d-print-none">
+                  
+<div class="prev-next-area">
+    <a class="left-prev"
+       href="../benchmarks/relay.html"
+       title="previous page">
+      <i class="fa-solid fa-angle-left"></i>
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">previous</p>
+        <p class="prev-next-title">Benchmark Relay</p>
+      </div>
+    </a>
+    <a class="right-next"
+       href="relay_design.html"
+       title="next page">
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">next</p>
+        <p class="prev-next-title">Relay</p>
+      </div>
+      <i class="fa-solid fa-angle-right"></i>
+    </a>
+</div>
+                </footer>
+              
+            </div>
+            
+            
+              
+                <dialog id="pst-secondary-sidebar-modal"></dialog>
+                <div id="pst-secondary-sidebar" class="bd-sidebar-secondary bd-toc"><div class="sidebar-secondary-items sidebar-secondary__inner">
+
+
+  <div class="sidebar-secondary-item"><div
+    id="pst-page-navigation-heading-2"
+    class="page-toc tocsection onthispage">
+    <i class="fa-solid fa-list"></i> Contents
+  </div>
+  <nav id="pst-page-toc-nav" class="page-toc" aria-labelledby="pst-page-navigation-heading-2">
+    <ul class="visible nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#design-principles">Design Principles</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#system-overview">System Overview</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#module-structure">Module Structure</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#core-components">Core Components</a><ul class="visible nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#pipeline-config-and-compilation">Pipeline Config and Compilation</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#coordinator">Coordinator</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#stage">Stage</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#worker">Worker</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#control-plane">Control Plane</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#executors">Executors</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#engines">Engines</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#relay">Relay</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#request-lifecycle">Request Lifecycle</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#data-flow-patterns">Data Flow Patterns</a><ul class="visible nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#sequential">Sequential</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#fan-out">Fan-Out</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#fan-in-aggregation">Fan-In (Aggregation)</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#qwen3-omni-pipeline-example">Qwen3-Omni Pipeline Example</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#configuration-example">Configuration Example</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#communication-layers">Communication Layers</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#key-design-decisions">Key Design Decisions</a></li>
+</ul>
+  </nav></div>
+
+</div></div>
+              
+            
+          </div>
+          <footer class="bd-footer-content">
+            
+<div class="bd-footer-content__inner container">
+  
+  <div class="footer-item">
+    
+<p class="component-author">
+By SGLang-Omni Team
+</p>
+
+  </div>
+  
+  <div class="footer-item">
+    
+
+  <p class="copyright">
+    
+      © Copyright 2025-2026, SGLang-Omni.
+      <br/>
+    
+  </p>
+
+  </div>
+  
+  <div class="footer-item">
+    <p class="last-updated">
+  Last updated on Mar 25, 2026.
+  <br/>
+</p>
+  </div>
+  
+  <div class="footer-item">
+    
+  </div>
+  
+</div>
+          </footer>
+        
+
+      </main>
+    </div>
+  </div>
+  
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script defer src="../_static/scripts/bootstrap.js?digest=8878045cc6db502f8baf"></script>
+<script defer src="../_static/scripts/pydata-sphinx-theme.js?digest=8878045cc6db502f8baf"></script>
+
+  <footer class="bd-footer">
+  </footer>
+  </body>
+</html>
