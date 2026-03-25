@@ -17,7 +17,7 @@ jobs:
     runs-on: [self-hosted]
     container:
       image: frankleeeee/sglang-omni:dev
-      options: --gpus all --shm-size=2g --rm -v /dev/shm
+      options: --gpus all --rm -v /dev/shm:/dev/shm
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -54,6 +54,17 @@ jobs:
           pytest tests/test_model/test_s2pro_benchmark.py -v -s -x
         env:
           HF_ENDPOINT: https://hf-mirror.com
+
+      - name: Print benchmark results
+        if: always()
+        shell: bash
+        run: |
+          echo "=== Benchmark Results ==="
+          for f in $(find /tmp -name "speed_results.json" 2>/dev/null); do
+            echo "--- $f ---"
+            cat "$f"
+            echo ""
+          done
 
       - name: Save cache
         run: |

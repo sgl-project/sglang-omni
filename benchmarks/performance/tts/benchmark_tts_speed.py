@@ -227,16 +227,18 @@ async def _handle_streaming_response(
 ) -> None:
     """Parse SSE stream and count audio chunks."""
     num_chunks = 0
-    buffer = b""
+    buffer = bytearray()
     async for chunk in response.content.iter_any():
-        buffer += chunk
+        buffer.extend(chunk)
         while b"\n" in buffer:
-            raw_line, buffer = buffer.split(b"\n", 1)
+            idx = buffer.index(b"\n")
+            raw_line = bytes(buffer[:idx])
+            del buffer[: idx + 1]
             line = raw_line.decode("utf-8", errors="replace").strip()
             if _is_audio_sse_event(line):
                 num_chunks += 1
     if buffer.strip():
-        line = buffer.decode("utf-8", errors="replace").strip()
+        line = bytes(buffer).decode("utf-8", errors="replace").strip()
         if _is_audio_sse_event(line):
             num_chunks += 1
     output.is_success = True
@@ -252,13 +254,14 @@ async def _handle_non_streaming_response(
 ) -> None:
     """Read full audio response and compute metrics."""
     audio_bytes = await response.read()
-    output.is_success = True
     output.audio_duration_s = _wav_duration(audio_bytes)
     elapsed = time.perf_counter() - start_time
     if output.audio_duration_s > 0:
+        output.is_success = True
         output.rtf = elapsed / output.audio_duration_s
     else:
-        output.rtf = float("inf")
+        output.error = f"Empty or invalid audio response ({len(audio_bytes)} bytes)"
+        return
     _parse_response_headers(output, response.headers)
     if save_audio_dir and audio_bytes:
         audio_path = os.path.join(save_audio_dir, f"{request_id}.wav")

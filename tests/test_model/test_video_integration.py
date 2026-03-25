@@ -20,12 +20,7 @@ from pathlib import Path
 import pytest
 import requests
 
-# Ensure repo root is in sys.path for `python test_video_integration.py` invocation.
-_REPO_ROOT = str(Path(__file__).resolve().parents[2])
-if _REPO_ROOT not in sys.path:
-    sys.path.insert(0, _REPO_ROOT)
-
-from tests.test_model.conftest import disable_proxy
+from tests.test_model.helpers import disable_proxy
 
 # ---------------------------------------------------------------------------
 # Configuration

@@ -8,8 +8,10 @@ Usage:
 from __future__ import annotations
 
 import json
+import logging
 import os
 import signal
+import socket
 import subprocess
 import sys
 import time
@@ -18,22 +20,12 @@ from pathlib import Path
 import pytest
 import requests
 
-# Ensure repo root is in sys.path for `python test_s2pro_benchmark.py` invocation.
-# Under pytest, pyproject.toml's pythonpath=["."] handles this automatically.
-_REPO_ROOT = str(Path(__file__).resolve().parents[2])
-if _REPO_ROOT not in sys.path:
-    sys.path.insert(0, _REPO_ROOT)
+from tests.test_model.helpers import disable_proxy
 
-from tests.test_model.conftest import disable_proxy
-
-# ---------------------------------------------------------------------------
-# Configuration
-# ---------------------------------------------------------------------------
+logger = logging.getLogger(__name__)
 
 MODEL_PATH = "fishaudio/s2-pro"
 CONFIG_PATH = "examples/configs/s2pro_tts.yaml"
-SERVER_PORT = 18898
-API_BASE = f"http://localhost:{SERVER_PORT}"
 DATASET_REPO = "zhaochenyang20/seed-tts-eval-mini"
 MAX_SAMPLES = 10
 
@@ -41,6 +33,7 @@ STARTUP_TIMEOUT = 600  # seconds
 BENCHMARK_TIMEOUT = 600  # seconds
 
 # Thresholds (15-25% margin from 4-run data)
+# Reference: https://github.com/sgl-project/sglang-omni/issues/193
 VC_NON_STREAM_MIN_TOK_PER_S = 80
 VC_NON_STREAM_MAX_RTF = 2.8
 VC_STREAM_MAX_LATENCY_S = 12.5
@@ -51,9 +44,13 @@ PLAIN_STREAM_MAX_LATENCY_S = 4.0
 PLAIN_STREAM_MIN_THROUGHPUT_QPS = 0.25
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
+def _find_free_port() -> int:
+    """Find and return an available TCP port."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("", 0))
+        return s.getsockname()[1]
+
+
 def _run_benchmark(
     port: int,
     testset: str,
@@ -108,9 +105,12 @@ def _run_benchmark(
     return speed_results["summary"]
 
 
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
+@pytest.fixture(scope="module")
+def server_port() -> int:
+    """Allocate a free TCP port for the server."""
+    return _find_free_port()
+
+
 @pytest.fixture(scope="module")
 def dataset_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
     """Download the mini seed-tts-eval dataset via huggingface_hub."""
@@ -132,82 +132,82 @@ def testset_path(dataset_dir: Path) -> str:
 
 
 @pytest.fixture(scope="module")
-def server_process(tmp_path_factory: pytest.TempPathFactory):
+def server_process(tmp_path_factory: pytest.TempPathFactory, server_port: int):
     """Start the s2-pro server and wait until healthy."""
     log_dir = tmp_path_factory.mktemp("server_logs")
     log_file = log_dir / "server.log"
     log_handle = open(log_file, "w")
 
-    cmd = [
-        sys.executable,
-        "-m",
-        "sglang_omni.cli.cli",
-        "serve",
-        "--model-path",
-        MODEL_PATH,
-        "--config",
-        CONFIG_PATH,
-        "--port",
-        str(SERVER_PORT),
-    ]
+    try:
+        cmd = [
+            sys.executable,
+            "-m",
+            "sglang_omni.cli.cli",
+            "serve",
+            "--model-path",
+            MODEL_PATH,
+            "--config",
+            CONFIG_PATH,
+            "--port",
+            str(server_port),
+        ]
 
-    proc = subprocess.Popen(
-        cmd,
-        stdout=log_handle,
-        stderr=subprocess.STDOUT,
-        preexec_fn=os.setsid,
-    )
-
-    is_healthy = False
-    for _ in range(STARTUP_TIMEOUT):
-        if proc.poll() is not None:
-            log_handle.close()
-            server_log = log_file.read_text()
-            pytest.fail(f"Server exited with code {proc.returncode}.\n{server_log}")
-        try:
-            with disable_proxy():
-                resp = requests.get(f"{API_BASE}/health", timeout=2)
-            if resp.status_code == 200 and "healthy" in resp.text:
-                is_healthy = True
-                break
-        except requests.RequestException:
-            pass
-        time.sleep(1)
-
-    if not is_healthy:
-        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-        proc.wait(timeout=10)
-        log_handle.close()
-        server_log = log_file.read_text()
-        pytest.fail(
-            f"Server did not become healthy within {STARTUP_TIMEOUT}s.\n{server_log}"
+        proc = subprocess.Popen(
+            cmd,
+            stdout=log_handle,
+            stderr=subprocess.STDOUT,
+            preexec_fn=os.setsid,
         )
 
-    yield proc
+        api_base = f"http://localhost:{server_port}"
+        is_healthy = False
+        for _ in range(STARTUP_TIMEOUT):
+            if proc.poll() is not None:
+                log_handle.close()
+                server_log = log_file.read_text()
+                pytest.fail(f"Server exited with code {proc.returncode}.\n{server_log}")
+            try:
+                with disable_proxy():
+                    resp = requests.get(f"{api_base}/health", timeout=2)
+                if resp.status_code == 200 and "healthy" in resp.text:
+                    is_healthy = True
+                    break
+            except requests.RequestException as exc:
+                logger.debug("Health check failed (transient): %s", exc)
+            time.sleep(1)
 
-    # Teardown
-    os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-    try:
-        proc.wait(timeout=30)
-    except subprocess.TimeoutExpired:
-        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-        proc.wait(timeout=10)
+        if not is_healthy:
+            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+            proc.wait(timeout=10)
+            log_handle.close()
+            server_log = log_file.read_text()
+            pytest.fail(
+                f"Server did not become healthy within {STARTUP_TIMEOUT}s.\n{server_log}"
+            )
+
+        yield proc
+
+        # Teardown
+        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+        try:
+            proc.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            proc.wait(timeout=10)
     finally:
         log_handle.close()
 
 
-# ---------------------------------------------------------------------------
-# Tests
-# ---------------------------------------------------------------------------
 @pytest.mark.benchmark
 def test_voice_cloning_non_streaming(
     server_process: subprocess.Popen,
+    server_port: int,
     testset_path: str,
     tmp_path: Path,
 ) -> None:
     """Voice cloning (non-streaming): tok/s >= 80, RTF <= 2.8."""
     summary = _run_benchmark(
-        SERVER_PORT,
+        server_port,
         testset_path,
         str(tmp_path / "vc_nonstream"),
     )
@@ -222,12 +222,13 @@ def test_voice_cloning_non_streaming(
 @pytest.mark.benchmark
 def test_voice_cloning_streaming(
     server_process: subprocess.Popen,
+    server_port: int,
     testset_path: str,
     tmp_path: Path,
 ) -> None:
     """Voice cloning (streaming): latency <= 12.5s, throughput >= 0.08 qps."""
     summary = _run_benchmark(
-        SERVER_PORT,
+        server_port,
         testset_path,
         str(tmp_path / "vc_stream"),
         ["--stream"],
@@ -243,12 +244,13 @@ def test_voice_cloning_streaming(
 @pytest.mark.benchmark
 def test_plain_tts_non_streaming(
     server_process: subprocess.Popen,
+    server_port: int,
     testset_path: str,
     tmp_path: Path,
 ) -> None:
     """Plain TTS (non-streaming): tok/s >= 80, RTF <= 0.35."""
     summary = _run_benchmark(
-        SERVER_PORT,
+        server_port,
         testset_path,
         str(tmp_path / "plain_nonstream"),
         ["--no-ref-audio"],
@@ -264,12 +266,13 @@ def test_plain_tts_non_streaming(
 @pytest.mark.benchmark
 def test_plain_tts_streaming(
     server_process: subprocess.Popen,
+    server_port: int,
     testset_path: str,
     tmp_path: Path,
 ) -> None:
     """Plain TTS (streaming): latency <= 4.0s, throughput >= 0.25 qps."""
     summary = _run_benchmark(
-        SERVER_PORT,
+        server_port,
         testset_path,
         str(tmp_path / "plain_stream"),
         ["--no-ref-audio", "--stream"],
