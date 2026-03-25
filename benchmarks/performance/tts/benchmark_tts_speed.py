@@ -304,8 +304,9 @@ def wait_for_service(base_url: str, timeout: int = 1200) -> None:
             if resp.status_code == 200:
                 logger.info("Service is ready.")
                 return
-        except requests_lib.exceptions.RequestException:
-            pass
+        except requests_lib.exceptions.RequestException as exc:
+            # Ignore transient connection errors while waiting for the service to become healthy.
+            logger.debug("Health check request failed while waiting for service: %s", exc)
         if time.time() - start > timeout:
             raise TimeoutError(f"Service at {base_url} not ready within {timeout}s")
         time.sleep(1)
