@@ -54,11 +54,6 @@ logger = logging.getLogger(__name__)
 MIME_TO_FORMAT = {mime: fmt for fmt, mime in FORMAT_MIME_TYPES.items()}
 
 
-# ---------------------------------------------------------------------------
-# App factory
-# ---------------------------------------------------------------------------
-
-
 def create_app(
     client: Client,
     *,
@@ -99,11 +94,6 @@ def create_app(
     return app
 
 
-# ---------------------------------------------------------------------------
-# GET /health
-# ---------------------------------------------------------------------------
-
-
 def _register_health(app: FastAPI) -> None:
     @app.get("/health")
     async def health() -> JSONResponse:
@@ -121,11 +111,6 @@ def _register_health(app: FastAPI) -> None:
         )
 
 
-# ---------------------------------------------------------------------------
-# GET /v1/models
-# ---------------------------------------------------------------------------
-
-
 def _register_models(app: FastAPI) -> None:
     @app.get("/v1/models")
     async def list_models() -> JSONResponse:
@@ -141,11 +126,6 @@ def _register_models(app: FastAPI) -> None:
             ]
         )
         return JSONResponse(content=model_list.model_dump())
-
-
-# ---------------------------------------------------------------------------
-# POST /v1/chat/completions
-# ---------------------------------------------------------------------------
 
 
 def _register_chat_completions(app: FastAPI) -> None:
@@ -361,11 +341,6 @@ async def _chat_stream(
     yield "data: [DONE]\n\n"
 
 
-# ---------------------------------------------------------------------------
-# Request building helpers
-# ---------------------------------------------------------------------------
-
-
 def _build_chat_generate_request(req: ChatCompletionRequest) -> GenerateRequest:
     """Convert a ChatCompletionRequest into a client GenerateRequest."""
     # Parse stop sequences
@@ -437,11 +412,6 @@ def _build_chat_generate_request(req: ChatCompletionRequest) -> GenerateRequest:
         output_modalities=output_modalities,
         metadata=metadata,
     )
-
-
-# ---------------------------------------------------------------------------
-# POST /v1/audio/speech
-# ---------------------------------------------------------------------------
 
 
 def _register_speech(app: FastAPI) -> None:
