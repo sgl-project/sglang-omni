@@ -302,7 +302,7 @@ def create_sglang_tts_engine_executor(
         _load_audio_decoder(model_path, device)
     )
 
-    # Lazy-loaded: only materialised when the first streaming request arrives.
+    # Lazy-loaded: only load stream codec when the first streaming request arrives.
     _stream_codec_cache: list[Any] = []
 
     def _get_stream_codec() -> Any:
@@ -350,7 +350,8 @@ def create_sglang_tts_engine_executor(
     ) -> dict[str, Any] | None:
         if payload is None:
             return None
-        # Skip expensive GPU→CPU transfer for non-streaming requests.
+        # Note (Chenyang): Hot path optimization: skip expensive
+        # GPU→CPU transfer for non-streaming requests.
         if not payload.request.params.get("stream"):
             return None
         return _maybe_build_incremental_audio_chunk(
