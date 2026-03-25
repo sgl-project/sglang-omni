@@ -123,9 +123,7 @@ def server_process(tmp_path_factory: pytest.TempPathFactory, server_port: int):
     """Start the s2-pro server and wait until healthy."""
     log_dir = tmp_path_factory.mktemp("server_logs")
     log_file = log_dir / "server.log"
-    log_handle = open(log_file, "w")
-
-    try:
+    with open(log_file, "w") as log_handle:
         cmd = [
             sys.executable,
             "-m",
@@ -150,7 +148,6 @@ def server_process(tmp_path_factory: pytest.TempPathFactory, server_port: int):
         is_healthy = False
         for _ in range(STARTUP_TIMEOUT):
             if proc.poll() is not None:
-                log_handle.close()
                 server_log = log_file.read_text()
                 pytest.fail(f"Server exited with code {proc.returncode}.\n{server_log}")
             try:
@@ -166,7 +163,6 @@ def server_process(tmp_path_factory: pytest.TempPathFactory, server_port: int):
         if not is_healthy:
             os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
             proc.wait(timeout=10)
-            log_handle.close()
             server_log = log_file.read_text()
             pytest.fail(
                 f"Server did not become healthy within {STARTUP_TIMEOUT}s.\n{server_log}"
@@ -181,8 +177,6 @@ def server_process(tmp_path_factory: pytest.TempPathFactory, server_port: int):
         except subprocess.TimeoutExpired:
             os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
             proc.wait(timeout=10)
-    finally:
-        log_handle.close()
 
 
 @pytest.mark.benchmark
