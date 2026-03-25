@@ -39,6 +39,7 @@ test_plain_tts_streaming            (+ --no-ref-audio --stream)
 - Mini dataset: 10 samples + `en/meta.lst` only
 - Uses `tmp_path_factory` (module scope) — no `/tmp/` hardcoding
 - No gdown dependency
+- `huggingface_hub` already in main dependencies (`huggingface-hub>=0.36.0`, pyproject.toml:24) — no extra dep needed
 
 ### Server Lifecycle
 
@@ -84,6 +85,10 @@ python -m sglang_omni.cli.cli serve \
   - [ ] Module-scoped fixture: dataset download via huggingface_hub
   - [ ] Module-scoped fixture: server start + health check + teardown
   - [ ] Helper: `_run_benchmark(port, testset, output_dir, extra_args) -> dict`
+    - subprocess.run the CLI, check returncode
+    - read speed_results.json
+    - `assert "summary" in results` before accessing metrics (explicit failure on schema change, not bare KeyError)
+    - return `results["summary"]`
   - [ ] `test_voice_cloning_non_streaming` — tok/s >= 80, RTF <= 2.8
   - [ ] `test_voice_cloning_streaming` — latency <= 12.5, throughput >= 0.08
   - [ ] `test_plain_tts_non_streaming` — tok/s >= 80, RTF <= 0.35
