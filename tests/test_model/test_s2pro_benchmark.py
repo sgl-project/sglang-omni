@@ -79,12 +79,15 @@ def _run_benchmark(
     if extra_args:
         cmd.extend(extra_args)
 
+    print(f"[s2pro-bench] Running benchmark: {' '.join(cmd)}", flush=True)
+
     proc_result = subprocess.run(
         cmd,
         capture_output=True,
         text=True,
         timeout=BENCHMARK_TIMEOUT,
     )
+    print(f"[s2pro-bench] Benchmark finished (rc={proc_result.returncode})", flush=True)
     assert proc_result.returncode == 0, (
         f"Benchmark failed (rc={proc_result.returncode}).\n"
         f"stdout:\n{proc_result.stdout}\nstderr:\n{proc_result.stderr}"
@@ -110,11 +113,13 @@ def dataset_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
     from huggingface_hub import snapshot_download
 
     cache_dir = tmp_path_factory.mktemp("seed_tts_eval")
+    print(f"[s2pro-bench] Downloading dataset {DATASET_REPO} ...", flush=True)
     path = snapshot_download(
         DATASET_REPO,
         repo_type="dataset",
         local_dir=str(cache_dir / "data"),
     )
+    print(f"[s2pro-bench] Dataset downloaded to {path}", flush=True)
     return Path(path)
 
 
@@ -144,6 +149,8 @@ def server_process(tmp_path_factory: pytest.TempPathFactory):
         str(SERVER_PORT),
     ]
 
+    print(f"[s2pro-bench] Starting server: {' '.join(cmd)}", flush=True)
+
     proc = subprocess.Popen(
         cmd,
         stdout=log_handle,
@@ -151,11 +158,17 @@ def server_process(tmp_path_factory: pytest.TempPathFactory):
         preexec_fn=os.setsid,
     )
 
+    HEALTH_CHECK_LOG_INTERVAL = 30
     is_healthy = False
-    for _ in range(STARTUP_TIMEOUT):
+    start_time = time.monotonic()
+    for elapsed in range(STARTUP_TIMEOUT):
         if proc.poll() is not None:
             log_handle.close()
             server_log = log_file.read_text()
+            print(
+                f"[s2pro-bench] Server exited early with code {proc.returncode}",
+                flush=True,
+            )
             pytest.fail(f"Server exited with code {proc.returncode}.\n{server_log}")
         try:
             with disable_proxy():
@@ -165,9 +178,17 @@ def server_process(tmp_path_factory: pytest.TempPathFactory):
                 break
         except requests.RequestException:
             pass
+        if (elapsed + 1) % HEALTH_CHECK_LOG_INTERVAL == 0:
+            wall = time.monotonic() - start_time
+            print(
+                f"[s2pro-bench] Waiting for server health ... {wall:.0f}s elapsed",
+                flush=True,
+            )
         time.sleep(1)
 
     if not is_healthy:
+        wall = time.monotonic() - start_time
+        print(f"[s2pro-bench] Server failed to start after {wall:.0f}s", flush=True)
         os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
         proc.wait(timeout=10)
         log_handle.close()
@@ -175,6 +196,9 @@ def server_process(tmp_path_factory: pytest.TempPathFactory):
         pytest.fail(
             f"Server did not become healthy within {STARTUP_TIMEOUT}s.\n{server_log}"
         )
+
+    wall = time.monotonic() - start_time
+    print(f"[s2pro-bench] Server healthy after {wall:.0f}s", flush=True)
 
     yield proc
 
