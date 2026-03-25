@@ -7,30 +7,11 @@ import asyncio
 
 from sglang_omni.engines.omni.scheduler import Scheduler
 from sglang_omni.engines.omni.types import RequestOutput
-
-
-class _DummyBatchPlanner:
-    def select_requests(self, waiting_reqs, running_reqs, resource_manager):
-        del waiting_reqs, running_reqs, resource_manager
-        return []
-
-    def build_batch(self, selected):
-        del selected
-        return None
-
-
-class _DummyResourceManager:
-    def free(self, request):
-        del request
-
-
-class _DummyIterationController:
-    def update_request(self, request, output):
-        del request, output
-
-    def is_finished(self, request, output):
-        del request, output
-        return False
+from tests.dummy import (
+    DummyBatchPlanner,
+    DummyIterationController,
+    DummyResourceManager,
+)
 
 
 def test_scheduler_prepare_stream_preserves_early_chunks() -> None:
@@ -39,9 +20,9 @@ def test_scheduler_prepare_stream_preserves_early_chunks() -> None:
 
 async def _run_scheduler_prepare_stream_preserves_early_chunks() -> None:
     scheduler = Scheduler(
-        batch_planner=_DummyBatchPlanner(),
-        resource_manager=_DummyResourceManager(),
-        iteration_controller=_DummyIterationController(),
+        batch_planner=DummyBatchPlanner(),
+        resource_manager=DummyResourceManager(),
+        iteration_controller=DummyIterationController(),
         stream_adapter=lambda request, output: output.data,
     )
 
@@ -65,9 +46,9 @@ async def _run_scheduler_prepare_stream_preserves_early_chunks() -> None:
 
 def test_scheduler_completed_stream_queue_is_bounded() -> None:
     scheduler = Scheduler(
-        batch_planner=_DummyBatchPlanner(),
-        resource_manager=_DummyResourceManager(),
-        iteration_controller=_DummyIterationController(),
+        batch_planner=DummyBatchPlanner(),
+        resource_manager=DummyResourceManager(),
+        iteration_controller=DummyIterationController(),
         stream_adapter=lambda request, output: output.data,
     )
 

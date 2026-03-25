@@ -262,25 +262,8 @@ class MooncakeConnection:
 # ==========================================
 
 
-class MooncakeOperation(RelayOperation):
-    """Base class for Mooncake async operations."""
-
-    def __init__(self, connection: MooncakeConnection, metadata: Any = None):
-        self._conn = connection
-        self._metadata = metadata
-        self._completed = False
-
-    @property
-    def metadata(self) -> Any:
-        return self._metadata
-
-
-class PutOperation(MooncakeOperation):
-    """
-    Handle for a Put operation.
-    In P2P mode, data is prepared in buffer and receiver pulls it.
-    Waits for receiver notification before releasing credit.
-    """
+class PutOperation(RelayOperation):
+    """Waits for receiver notification before releasing credit."""
 
     def __init__(
         self,
@@ -290,37 +273,16 @@ class PutOperation(MooncakeOperation):
         tensor_ref: torch.Tensor,
         on_completion_cb: Callable[[], None],
     ):
-        super().__init__(connection, metadata)
+        super().__init__(metadata=metadata, on_completion_cb=on_completion_cb)
         self._transfer_id = transfer_id
-        self._tensor_ref = tensor_ref
-        self._on_completion_cb = on_completion_cb
+        self._tensor_ref = tensor_ref  # prevent GC during async transfer
 
-    async def wait_for_completion(self, timeout: float = 30.0) -> None:
-        """
-        Wait for receiver notification before completing.
-        This ensures the receiver has finished reading before we reuse the buffer.
-        Uses Mooncake's built-in notification mechanism via get_notifies().
-        """
-        if self._completed:
-            return
-
-        try:
-            # Wait for receiver to send completion notification via Mooncake
-            await MooncakeRelay._wait_for_mooncake_notification(
-                self._transfer_id, timeout
-            )
-        finally:
-            self._completed = True
-            if self._on_completion_cb:
-                self._on_completion_cb()
+    async def _do_wait(self, timeout: float) -> None:
+        await MooncakeRelay._wait_for_mooncake_notification(self._transfer_id, timeout)
 
 
-class GetOperation(MooncakeOperation):
-    """
-    Handle for a Get operation using memory pool.
-    Transfers data from remote peer to memory pool, then copies to dest_tensor.
-    Sends completion notification to sender after transfer completes.
-    """
+class GetOperation(RelayOperation):
+    """Transfers data from remote peer, then copies to dest_tensor."""
 
     def __init__(
         self,
@@ -332,41 +294,27 @@ class GetOperation(MooncakeOperation):
         transfer_id: str,
         on_completion_cb: Callable[[], None],
     ):
-        super().__init__(connection, metadata=None)
+        super().__init__(metadata=None, on_completion_cb=on_completion_cb)
+        self._conn = connection
         self._remote_session_id = remote_session_id
         self._local_ptr = local_ptr
         self._remote_ptr = remote_ptr
         self._size = size
         self._transfer_id = transfer_id
-        self._on_completion_cb = on_completion_cb
 
-    async def wait_for_completion(self, timeout: float = 30.0) -> None:
-        if self._completed:
-            return
+    async def _do_wait(self, timeout: float) -> None:
+        notify = TransferNotify(self._transfer_id, "transfer_complete")
 
-        try:
-            # Create notification for sender (Mooncake will send this automatically)
-            notify = TransferNotify(self._transfer_id, "transfer_complete")
-
-            # Execute synchronous transfer with notification (to memory pool)
-            # Data will be copied from pool to dest_tensor in cleanup callback
-            await asyncio.get_event_loop().run_in_executor(
-                None,
-                self._conn.transfer_sync,
-                self._remote_session_id,
-                self._local_ptr,
-                self._remote_ptr,
-                self._size,
-                TransferOpcode.Read,
-                notify,
-            )
-
-            # No copy needed - data transferred directly to dest_tensor!
-
-        finally:
-            self._completed = True
-            if self._on_completion_cb:
-                self._on_completion_cb()
+        await asyncio.get_event_loop().run_in_executor(
+            None,
+            self._conn.transfer_sync,
+            self._remote_session_id,
+            self._local_ptr,
+            self._remote_ptr,
+            self._size,
+            TransferOpcode.Read,
+            notify,
+        )
 
 
 # ==========================================

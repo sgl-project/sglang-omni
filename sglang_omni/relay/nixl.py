@@ -46,25 +46,8 @@ class Connection:
         return self._remote_agents[remote_engine_id]
 
 
-class NixlOperation(RelayOperation):
-    """Base class for async operations."""
-
-    def __init__(self, connection: Connection, metadata: Any = None):
-        self._conn = connection
-        self._metadata = metadata
-        self._completed = False
-
-    @property
-    def metadata(self) -> Any:
-        return self._metadata
-
-
-class PutOperation(NixlOperation):
-    """
-    Handle for a Put operation.
-    Waits for a notification from the receiver indicating they have finished reading.
-    Releases the sender's credit upon completion.
-    """
+class PutOperation(RelayOperation):
+    """Waits for a receiver notification, then releases the sender's credit."""
 
     def __init__(
         self,
@@ -73,48 +56,27 @@ class PutOperation(NixlOperation):
         expected_notification: bytes,
         on_completion_cb: Callable[[], None],
     ):
-        super().__init__(connection, metadata)
+        super().__init__(metadata=metadata, on_completion_cb=on_completion_cb)
+        self._conn = connection
         self._expected_notification = expected_notification
-        self._on_completion_cb = on_completion_cb
 
-    async def wait_for_completion(self, timeout: float = 30.0) -> None:
-        if self._completed:
-            return
-
+    async def _do_wait(self, timeout: float) -> None:
         start = time.time()
-        try:
-            while True:
-                notifs = self._conn._nixl.get_new_notifs()
-                found = False
-                for msgs in notifs.values():
-                    if self._expected_notification in msgs:
-                        found = True
-                        break
+        while True:
+            notifs = self._conn._nixl.get_new_notifs()
+            for msgs in notifs.values():
+                if self._expected_notification in msgs:
+                    return
 
-                if found:
-                    break
-
-                if time.time() - start > timeout:
-                    raise TimeoutError(
-                        f"PutOperation timed out waiting for {self._expected_notification}"
-                    )
-
-                # Non-blocking wait
-                await asyncio.sleep(0.0001)
-        finally:
-            # Regardless of success or timeout, we mark complete.
-            # In a real system, you might want distinct handling for timeout vs success.
-            self._completed = True
-            # Release the credit so new puts can happen
-            self._on_completion_cb()
+            if time.time() - start > timeout:
+                raise TimeoutError(
+                    f"PutOperation timed out waiting for {self._expected_notification}"
+                )
+            await asyncio.sleep(0.0001)
 
 
-class GetOperation(NixlOperation):
-    """
-    Handle for a Get operation.
-    Waits for the RDMA transfer handle to complete.
-    Upon completion, copies data from Pool to Dest Tensor, then releases local credit.
-    """
+class GetOperation(RelayOperation):
+    """Waits for RDMA transfer, copies from pool to dest tensor, releases credit."""
 
     def __init__(
         self,
@@ -125,45 +87,31 @@ class GetOperation(NixlOperation):
         copy_size: int,
         on_completion_cb: Callable[[], None],
     ):
-        super().__init__(
-            connection, metadata=None
-        )  # Get usually doesn't return metadata
+        super().__init__(metadata=None, on_completion_cb=on_completion_cb)
+        self._conn = connection
         self._handle = handle
         self._src_pool_tensor = src_pool_tensor
         self._dest_tensor = dest_tensor
         self._copy_size = copy_size
-        self._on_completion_cb = on_completion_cb
 
-    async def wait_for_completion(self, timeout: float = 30.0) -> None:
-        if self._completed:
-            return
+    async def _do_wait(self, timeout: float) -> None:
+        # 1. Wait for RDMA Transfer
+        while True:
+            state = self._conn._nixl.check_xfer_state(self._handle)
+            if state == "DONE":
+                break
+            elif state != "PROC":
+                raise RuntimeError(f"Transfer failed with state: {state}")
+            await asyncio.sleep(0.00001)
 
-        try:
-            # 1. Wait for RDMA Transfer
-            while True:
-                state = self._conn._nixl.check_xfer_state(self._handle)
-                if state == "DONE":
-                    break
-                elif state != "PROC":
-                    raise RuntimeError(f"Transfer failed with state: {state}")
+        # 2. Cleanup Handle
+        self._conn._nixl.release_xfer_handle(self._handle)
+        self._handle = None
 
-                await asyncio.sleep(0.00001)
-
-            # 2. Cleanup Handle
-            self._conn._nixl.release_xfer_handle(self._handle)
-            self._handle = None
-
-            # 3. Perform Copy (Pool -> Dest)
-            # This ensures data is valid before the user gets control back
-            # Note: This is a GPU-GPU copy (fast), but conceptually blocking the stream.
-            src_view = self._src_pool_tensor[: self._copy_size]
-            dest_view = self._dest_tensor.view(torch.uint8).reshape(-1)
-            dest_view.copy_(src_view)
-
-        finally:
-            self._completed = True
-            # 4. Release Local Credit (Buffer is now free)
-            self._on_completion_cb()
+        # 3. Copy Pool -> Dest
+        src_view = self._src_pool_tensor[: self._copy_size]
+        dest_view = self._dest_tensor.view(torch.uint8).reshape(-1)
+        dest_view.copy_(src_view)
 
 
 # ==========================================
