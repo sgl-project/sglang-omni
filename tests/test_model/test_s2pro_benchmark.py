@@ -11,7 +11,6 @@ import json
 import logging
 import os
 import signal
-import socket
 import subprocess
 import sys
 import time
@@ -21,6 +20,7 @@ import pytest
 import requests
 
 from tests.test_model.helpers import disable_proxy
+from tests.utils import find_free_port
 
 logger = logging.getLogger(__name__)
 
@@ -42,13 +42,6 @@ PLAIN_NON_STREAM_MIN_TOK_PER_S = 80
 PLAIN_NON_STREAM_MAX_RTF = 0.35
 PLAIN_STREAM_MAX_LATENCY_S = 4.0
 PLAIN_STREAM_MIN_THROUGHPUT_QPS = 0.25
-
-
-def _find_free_port() -> int:
-    """Find and return an available TCP port."""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("", 0))
-        return s.getsockname()[1]
 
 
 def _run_benchmark(
@@ -108,7 +101,7 @@ def _run_benchmark(
 @pytest.fixture(scope="module")
 def server_port() -> int:
     """Allocate a free TCP port for the server."""
-    return _find_free_port()
+    return find_free_port()
 
 
 @pytest.fixture(scope="module")
@@ -123,12 +116,6 @@ def dataset_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
         local_dir=str(cache_dir / "data"),
     )
     return Path(path)
-
-
-@pytest.fixture(scope="module")
-def testset_path(dataset_dir: Path) -> str:
-    """Resolve the English testset meta.lst path."""
-    return str(dataset_dir / "en" / "meta.lst")
 
 
 @pytest.fixture(scope="module")
@@ -202,13 +189,13 @@ def server_process(tmp_path_factory: pytest.TempPathFactory, server_port: int):
 def test_voice_cloning_non_streaming(
     server_process: subprocess.Popen,
     server_port: int,
-    testset_path: str,
+    dataset_dir: Path,
     tmp_path: Path,
 ) -> None:
     """Voice cloning (non-streaming): tok/s >= 80, RTF <= 2.8."""
     summary = _run_benchmark(
         server_port,
-        testset_path,
+        str(dataset_dir / "en" / "meta.lst"),
         str(tmp_path / "vc_nonstream"),
     )
     assert (
@@ -223,13 +210,13 @@ def test_voice_cloning_non_streaming(
 def test_voice_cloning_streaming(
     server_process: subprocess.Popen,
     server_port: int,
-    testset_path: str,
+    dataset_dir: Path,
     tmp_path: Path,
 ) -> None:
     """Voice cloning (streaming): latency <= 12.5s, throughput >= 0.08 qps."""
     summary = _run_benchmark(
         server_port,
-        testset_path,
+        str(dataset_dir / "en" / "meta.lst"),
         str(tmp_path / "vc_stream"),
         ["--stream"],
     )
@@ -245,13 +232,13 @@ def test_voice_cloning_streaming(
 def test_plain_tts_non_streaming(
     server_process: subprocess.Popen,
     server_port: int,
-    testset_path: str,
+    dataset_dir: Path,
     tmp_path: Path,
 ) -> None:
     """Plain TTS (non-streaming): tok/s >= 80, RTF <= 0.35."""
     summary = _run_benchmark(
         server_port,
-        testset_path,
+        str(dataset_dir / "en" / "meta.lst"),
         str(tmp_path / "plain_nonstream"),
         ["--no-ref-audio"],
     )
@@ -267,13 +254,13 @@ def test_plain_tts_non_streaming(
 def test_plain_tts_streaming(
     server_process: subprocess.Popen,
     server_port: int,
-    testset_path: str,
+    dataset_dir: Path,
     tmp_path: Path,
 ) -> None:
     """Plain TTS (streaming): latency <= 4.0s, throughput >= 0.25 qps."""
     summary = _run_benchmark(
         server_port,
-        testset_path,
+        str(dataset_dir / "en" / "meta.lst"),
         str(tmp_path / "plain_stream"),
         ["--no-ref-audio", "--stream"],
     )

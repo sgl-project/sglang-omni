@@ -10,7 +10,6 @@ import asyncio
 import multiprocessing
 import os
 import pickle
-import socket
 import time
 import traceback
 from queue import Empty
@@ -31,14 +30,7 @@ import sglang_omni.relay.nccl  # noqa: F401
 import sglang_omni.relay.nixl  # noqa: F401 (Trigger @register_relay)
 import sglang_omni.relay.shm  # noqa: F401
 from sglang_omni.relay.base import create_relay
-
-
-def find_free_port():
-    """Find a free port on localhost."""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("", 0))
-        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        return str(s.getsockname()[1])
+from tests.utils import find_free_port
 
 
 def sender_process(
@@ -299,7 +291,7 @@ def test_multiprocess_transfer(relay_type):
             pytest.skip(f"{relay_type.upper()} requires at least 2 GPUs")
 
     # [Modification 4] Dynamic Port Generation
-    master_port = find_free_port()
+    master_port = str(find_free_port())
     master_addr = "127.0.0.1"
 
     # Base configuration
