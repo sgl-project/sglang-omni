@@ -93,6 +93,9 @@ WAV_HEADER_SIZE = 44
 TEXT_PREVIEW_LENGTH = 60
 SUMMARY_LABEL_WIDTH = 30
 SUMMARY_LINE_WIDTH = 60
+SSE_DATA_PREFIX = "data: "
+SSE_DONE_MARKER = "data: [DONE]"
+META_FIELD_COUNT = 4
 
 
 @dataclass
@@ -127,12 +130,7 @@ class RequestFuncOutput:
 
 
 def parse_meta_lst(path: str, max_samples: int | None = None) -> list[dict]:
-    """Parse a seed-tts-eval meta.lst file into a list of sample dicts.
-
-    Each line in the file has format: ``id|ref_text|ref_audio_path|text``.
-    Relative audio paths are resolved against the directory containing the
-    meta.lst file.
-    """
+    """Parse a seed-tts-eval meta.lst file (format: id|ref_text|ref_audio_path|text)."""
     base_dir = os.path.dirname(path)
     samples: list[dict] = []
     with open(path) as f:
@@ -140,15 +138,15 @@ def parse_meta_lst(path: str, max_samples: int | None = None) -> list[dict]:
             line = line.strip()
             if not line:
                 continue
-            parts = line.split("|")
-            if len(parts) < 4:
+            fields = line.split("|")
+            if len(fields) < META_FIELD_COUNT:
                 continue
             samples.append(
                 {
-                    "id": parts[0],
-                    "ref_text": parts[1],
-                    "ref_audio": os.path.join(base_dir, parts[2]),
-                    "text": parts[3],
+                    "id": fields[0],
+                    "ref_text": fields[1],
+                    "ref_audio": os.path.join(base_dir, fields[2]),
+                    "text": fields[3],
                 }
             )
             if max_samples and len(samples) >= max_samples:
@@ -157,7 +155,7 @@ def parse_meta_lst(path: str, max_samples: int | None = None) -> list[dict]:
 
 
 def _wav_duration(wav_bytes: bytes) -> float:
-    """Return duration in seconds from a WAV byte buffer, or 0.0 on error."""
+    """Return duration in seconds from a WAV byte buffer."""
     if len(wav_bytes) <= WAV_HEADER_SIZE:
         return 0.0
     sample_rate = struct.unpack_from("<I", wav_bytes, 24)[0]
@@ -209,6 +207,59 @@ def _parse_response_headers(output: RequestFuncOutput, headers: dict) -> None:
         output.tok_per_s = output.completion_tokens / output.engine_time_s
 
 
+def _is_audio_sse_event(line: str) -> bool:
+    """Check if an SSE line contains an audio data event."""
+    if not line.startswith(SSE_DATA_PREFIX) or line == SSE_DONE_MARKER:
+        return False
+    event = json.loads(line[len(SSE_DATA_PREFIX) :])
+    return event.get("audio") is not None
+
+
+async def _handle_streaming_response(
+    response: aiohttp.ClientResponse,
+    output: RequestFuncOutput,
+) -> None:
+    """Parse SSE stream and count audio chunks."""
+    num_chunks = 0
+    buffer = b""
+    async for chunk in response.content.iter_any():
+        buffer += chunk
+        while b"\n" in buffer:
+            raw_line, buffer = buffer.split(b"\n", 1)
+            line = raw_line.decode("utf-8", errors="replace").strip()
+            if _is_audio_sse_event(line):
+                num_chunks += 1
+    if buffer.strip():
+        line = buffer.decode("utf-8", errors="replace").strip()
+        if _is_audio_sse_event(line):
+            num_chunks += 1
+    output.is_success = True
+    output.completion_tokens = num_chunks
+
+
+async def _handle_non_streaming_response(
+    response: aiohttp.ClientResponse,
+    output: RequestFuncOutput,
+    start_time: float,
+    save_audio_dir: str | None,
+    request_id: str,
+) -> None:
+    """Read full audio response and compute metrics."""
+    audio_bytes = await response.read()
+    output.is_success = True
+    output.audio_duration_s = _wav_duration(audio_bytes)
+    elapsed = time.perf_counter() - start_time
+    if output.audio_duration_s > 0:
+        output.rtf = elapsed / output.audio_duration_s
+    else:
+        output.rtf = float("inf")
+    _parse_response_headers(output, response.headers)
+    if save_audio_dir and audio_bytes:
+        audio_path = os.path.join(save_audio_dir, f"{request_id}.wav")
+        with open(audio_path, "wb") as f:
+            f.write(audio_bytes)
+
+
 async def send_tts_request(
     request: RequestFuncInput,
     session: aiohttp.ClientSession,
@@ -227,46 +278,11 @@ async def send_tts_request(
             if response.status != 200:
                 output.error = f"HTTP {response.status}: {await response.text()}"
             elif request.stream:
-                # SSE: count audio chunks, measure wall-clock time only.
-                # Use iter_any() + manual newline splitting instead of
-                # readline() to avoid aiohttp's default 64 KB line-size
-                # limit -- base64-encoded audio chunks easily exceed it.
-                num_chunks = 0
-                buf = b""
-                async for chunk in response.content.iter_any():
-                    buf += chunk
-                    while b"\n" in buf:
-                        raw_line, buf = buf.split(b"\n", 1)
-                        line = raw_line.decode("utf-8", errors="replace").strip()
-                        if not line.startswith("data: ") or line == "data: [DONE]":
-                            continue
-                        event = json.loads(line[len("data: ") :])
-                        if event.get("audio") is not None:
-                            num_chunks += 1
-                if buf.strip():
-                    line = buf.decode("utf-8", errors="replace").strip()
-                    if line.startswith("data: ") and line != "data: [DONE]":
-                        event = json.loads(line[len("data: ") :])
-                        if event.get("audio") is not None:
-                            num_chunks += 1
-                output.is_success = True
-                output.completion_tokens = num_chunks
+                await _handle_streaming_response(response, output)
             else:
-                audio_bytes = await response.read()
-                output.is_success = True
-                output.audio_duration_s = _wav_duration(audio_bytes)
-                elapsed = time.perf_counter() - start_time
-                if output.audio_duration_s > 0:
-                    output.rtf = elapsed / output.audio_duration_s
-                else:
-                    output.rtf = float("inf")
-                _parse_response_headers(output, response.headers)
-                if save_audio_dir and audio_bytes:
-                    audio_path = os.path.join(
-                        save_audio_dir, f"{request.request_id}.wav"
-                    )
-                    with open(audio_path, "wb") as f:
-                        f.write(audio_bytes)
+                await _handle_non_streaming_response(
+                    response, output, start_time, save_audio_dir, request.request_id
+                )
     except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
         output.error = str(exc)
     finally:
@@ -278,26 +294,24 @@ async def send_tts_request(
 
 
 def wait_for_service(base_url: str, timeout: int = 1200) -> None:
-    import requests as req_lib
+    import requests as requests_lib
 
     logger.info("Waiting for service at %s ...", base_url)
     start = time.time()
     while True:
         try:
-            resp = req_lib.get(f"{base_url}/health", timeout=1)
+            resp = requests_lib.get(f"{base_url}/health", timeout=1)
             if resp.status_code == 200:
                 logger.info("Service is ready.")
                 return
-        except req_lib.exceptions.RequestException:
+        except requests_lib.exceptions.RequestException:
             pass
         if time.time() - start > timeout:
             raise TimeoutError(f"Service at {base_url} not ready within {timeout}s")
         time.sleep(1)
 
 
-def _compute_token_metrics(
-    successes: list[RequestFuncOutput],
-) -> dict:
+def _compute_token_metrics(successes: list[RequestFuncOutput]) -> dict:
     """Compute optional token throughput metrics from successful outputs."""
     tokens_per_sec = [o.tok_per_s for o in successes if o.tok_per_s > 0]
     gen_token_counts = [
@@ -389,12 +403,12 @@ def _build_requests(
     """Convert parsed samples into RequestFuncInput objects."""
     return [
         RequestFuncInput(
-            request_id=s["id"],
-            text=s["text"],
+            request_id=sample["id"],
+            text=sample["text"],
             api_url=api_url,
             model=args.model,
-            ref_audio=None if args.no_ref_audio else s.get("ref_audio"),
-            ref_text=None if args.no_ref_audio else s.get("ref_text"),
+            ref_audio=None if args.no_ref_audio else sample.get("ref_audio"),
+            ref_text=None if args.no_ref_audio else sample.get("ref_text"),
             max_new_tokens=args.max_new_tokens,
             temperature=args.temperature,
             top_p=args.top_p,
@@ -402,7 +416,7 @@ def _build_requests(
             repetition_penalty=args.repetition_penalty,
             stream=args.stream,
         )
-        for s in samples
+        for sample in samples
     ]
 
 
