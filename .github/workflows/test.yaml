@@ -51,7 +51,7 @@ jobs:
         run: |
           source omni/bin/activate
           export PYTHONPATH=$PWD
-          pytest tests/ -v
+          pytest tests/ -v -m "not benchmark"
 
       - name: Save cache
         run: |

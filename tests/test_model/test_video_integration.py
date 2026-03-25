@@ -15,11 +15,17 @@ import signal
 import subprocess
 import sys
 import time
-from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
 import requests
+
+# Ensure repo root is in sys.path for `python test_video_integration.py` invocation.
+_REPO_ROOT = str(Path(__file__).resolve().parents[2])
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+
+from tests.test_model.conftest import disable_proxy
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -40,34 +46,6 @@ EXPECTED_KEYWORDS = [
 
 STARTUP_TIMEOUT = 600  # seconds
 REQUEST_TIMEOUT = 300  # seconds
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-@contextmanager
-def disable_proxy():
-    """Temporarily disable proxy env vars for loopback requests."""
-    proxy_vars = (
-        "HTTP_PROXY",
-        "HTTPS_PROXY",
-        "http_proxy",
-        "https_proxy",
-        "ALL_PROXY",
-        "all_proxy",
-        "NO_PROXY",
-        "no_proxy",
-    )
-    saved = {name: os.environ[name] for name in proxy_vars if name in os.environ}
-    for name in proxy_vars:
-        os.environ.pop(name, None)
-
-    try:
-        yield
-    finally:
-        for name in proxy_vars:
-            os.environ.pop(name, None)
-        os.environ.update(saved)
 
 
 # ---------------------------------------------------------------------------

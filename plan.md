@@ -80,16 +80,32 @@ python -m sglang_omni.cli.cli serve \
 
 ## Implementation Checklist
 
-- [ ] Register `benchmark` marker in `pyproject.toml`
-- [ ] Create `tests/test_model/test_s2pro_benchmark.py`
-  - [ ] Module-scoped fixture: dataset download via huggingface_hub
-  - [ ] Module-scoped fixture: server start + health check + teardown
-  - [ ] Helper: `_run_benchmark(port, testset, output_dir, extra_args) -> dict`
+- [x] Register `benchmark` marker in `pyproject.toml`
+- [x] Create `tests/test_model/conftest.py` (shared `disable_proxy` helper)
+- [x] Create `tests/test_model/test_s2pro_benchmark.py`
+  - [x] Module-scoped fixture: dataset download via huggingface_hub
+  - [x] Module-scoped fixture: server start + health check + teardown
+  - [x] Helper: `_run_benchmark(port, testset, output_dir, extra_args) -> dict`
     - subprocess.run the CLI, check returncode
     - read speed_results.json
     - `assert "summary" in results` before accessing metrics (explicit failure on schema change, not bare KeyError)
     - return `results["summary"]`
-  - [ ] `test_voice_cloning_non_streaming` — tok/s >= 80, RTF <= 2.8
-  - [ ] `test_voice_cloning_streaming` — latency <= 12.5, throughput >= 0.08
-  - [ ] `test_plain_tts_non_streaming` — tok/s >= 80, RTF <= 0.35
-  - [ ] `test_plain_tts_streaming` — latency <= 4.0, throughput >= 0.25
+  - [x] `test_voice_cloning_non_streaming` — tok/s >= 80, RTF <= 2.8
+  - [x] `test_voice_cloning_streaming` — latency <= 12.5, throughput >= 0.08
+  - [x] `test_plain_tts_non_streaming` — tok/s >= 80, RTF <= 0.35
+  - [x] `test_plain_tts_streaming` — latency <= 4.0, throughput >= 0.25
+
+---
+
+## Local Run
+
+```bash
+# Run all 4 benchmark tests (requires GPU + fishaudio/s2-pro weights):
+python tests/test_model/test_s2pro_benchmark.py
+
+# Or via pytest directly:
+pytest tests/test_model/test_s2pro_benchmark.py -s -x -v
+
+# Run only benchmark-marked tests across the repo:
+pytest -m benchmark -s -x -v
+```
