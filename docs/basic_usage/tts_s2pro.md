@@ -197,4 +197,4 @@ SGLang-Omni ships with a Gradio-based playground for interactive TTS experimenta
 ./playground/tts/start.sh
 ```
 
-A demo play video is available [here](https://x.com/lmsysorg/status/2031412267213008984/video/1).
+A demo play video is available [here](https://x.com/lmsysorg/status/2031412267213008984/video/1). We highly recommend using playground since audio data is hard to intertact with by CLI.
