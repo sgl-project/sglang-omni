@@ -62,8 +62,19 @@ class EngineExecutor(Executor):
 
         self._payloads[request_id] = payload
         engine_input = self._request_builder(payload)
-        await self._engine.add_request(request_id, engine_input)
+        prepare_stream = getattr(self._engine, "prepare_stream", None)
+        discard_stream = getattr(self._engine, "discard_stream", None)
+        if callable(prepare_stream):
+            prepare_stream(request_id)
         self._submit_times[request_id] = time.perf_counter()
+        try:
+            await self._engine.add_request(request_id, engine_input)
+        except Exception:
+            if callable(discard_stream):
+                discard_stream(request_id)
+            self._submit_times.pop(request_id, None)
+            self._payloads.pop(request_id, None)
+            raise
 
         task = asyncio.create_task(self._await_result(payload))
         self._tasks[request_id] = task
@@ -121,7 +132,15 @@ class EngineExecutor(Executor):
         async for item in stream_fn(request_id):
             if request_id in self._aborted:
                 break
-            yield self._stream_builder(payload, item)
+            chunk = self._stream_builder(payload, item)
+            if chunk is not None:
+                yield chunk
+        flush_stream = getattr(self._stream_builder, "flush", None)
+        if request_id in self._aborted or not callable(flush_stream):
+            return
+        chunk = flush_stream(payload)
+        if chunk is not None:
+            yield chunk
 
     async def _await_result(self, payload: StagePayload) -> StagePayload:
         request_id = payload.request_id

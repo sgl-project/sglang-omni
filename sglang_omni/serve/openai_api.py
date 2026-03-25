@@ -12,6 +12,7 @@ Provides the following endpoints:
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import time
@@ -29,6 +30,12 @@ from sglang_omni.client import (
     Message,
     SamplingParams,
 )
+from sglang_omni.client.audio import (
+    DEFAULT_SAMPLE_RATE,
+    FORMAT_MIME_TYPES,
+    encode_audio,
+    to_numpy,
+)
 from sglang_omni.serve.protocol import (
     ChatCompletionAudio,
     ChatCompletionChoice,
@@ -44,6 +51,7 @@ from sglang_omni.serve.protocol import (
 )
 
 logger = logging.getLogger(__name__)
+MIME_TO_FORMAT = {mime: fmt for fmt, mime in FORMAT_MIME_TYPES.items()}
 
 
 # ---------------------------------------------------------------------------
@@ -445,6 +453,17 @@ def _register_speech(app: FastAPI) -> None:
         request_id = f"speech-{uuid.uuid4()}"
 
         gen_req = _build_speech_generate_request(req, default_model)
+        if req.stream:
+            return StreamingResponse(
+                _speech_stream(
+                    client=client,
+                    gen_req=gen_req,
+                    request_id=request_id,
+                    response_format=req.response_format,
+                    speed=req.speed,
+                ),
+                media_type="text/event-stream",
+            )
 
         try:
             result = await client.speech(
@@ -475,6 +494,96 @@ def _register_speech(app: FastAPI) -> None:
             media_type=result.mime_type,
             headers=headers,
         )
+
+
+async def _speech_stream(
+    client: Client,
+    gen_req: GenerateRequest,
+    request_id: str,
+    response_format: str,
+    speed: float,
+):
+    """Streaming speech generator (yields SSE events with audio chunks)."""
+    chunk_index = 0
+    emitted_samples = 0
+    finish_reason: str | None = None
+
+    try:
+        async for chunk in client.generate(gen_req, request_id=request_id):
+            if chunk.finish_reason is not None:
+                finish_reason = chunk.finish_reason
+
+            if chunk.audio_data is None:
+                continue
+
+            sample_rate = chunk.sample_rate or DEFAULT_SAMPLE_RATE
+            audio_data, emitted_samples = _select_speech_audio_delta(
+                chunk.audio_data,
+                emitted_samples=emitted_samples,
+                is_terminal=chunk.finish_reason is not None,
+            )
+            if audio_data is None:
+                continue
+
+            audio_bytes, mime_type = encode_audio(
+                audio_data,
+                response_format=response_format,
+                sample_rate=sample_rate,
+                speed=speed,
+            )
+            actual_format = MIME_TO_FORMAT.get(mime_type, response_format)
+            payload = {
+                "id": f"speech-{request_id}",
+                "object": "audio.speech.chunk",
+                "index": chunk_index,
+                "audio": {
+                    "data": base64.b64encode(audio_bytes).decode("ascii"),
+                    "format": actual_format,
+                    "mime_type": mime_type,
+                    "sample_rate": sample_rate,
+                },
+                "finish_reason": None,
+            }
+            yield f"data: {json.dumps(payload)}\n\n"
+            chunk_index += 1
+    except ClientError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("Error streaming speech for request %s", request_id)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    final_payload = {
+        "id": f"speech-{request_id}",
+        "object": "audio.speech.chunk",
+        "index": chunk_index,
+        "audio": None,
+        "finish_reason": finish_reason or "stop",
+    }
+    yield f"data: {json.dumps(final_payload)}\n\n"
+    yield "data: [DONE]\n\n"
+
+
+def _select_speech_audio_delta(
+    audio_data: Any,
+    *,
+    emitted_samples: int,
+    is_terminal: bool,
+) -> tuple[Any | None, int]:
+    audio = to_numpy(audio_data)
+    if audio.ndim > 1:
+        audio = audio.squeeze()
+    if audio.ndim > 1:
+        if audio.shape[0] < audio.shape[-1]:
+            audio = audio[0]
+        else:
+            audio = audio[:, 0]
+
+    total_samples = int(audio.shape[-1]) if audio.ndim else 0
+    if not is_terminal:
+        return audio, emitted_samples + total_samples
+    if total_samples <= emitted_samples:
+        return None, emitted_samples
+    return audio[emitted_samples:], total_samples
 
 
 def _build_speech_generate_request(
@@ -519,18 +628,28 @@ def _build_speech_generate_request(
 
     # Build prompt: plain string if no references, dict otherwise
     prompt: Any = req.input
+    references: list[dict[str, Any]] = []
+    if req.references:
+        references.extend(
+            [reference.model_dump(exclude_none=True) for reference in req.references]
+        )
+
+    # Backward compatibility with ref_audio/ref_text form.
     if req.ref_audio is not None:
-        ref = {"audio_path": req.ref_audio}
+        ref: dict[str, Any] = {"audio_path": req.ref_audio}
         if req.ref_text is not None:
             ref["text"] = req.ref_text
-        prompt = {"text": req.input, "references": [ref]}
+        references.append(ref)
+
+    if references:
+        prompt = {"text": req.input, "references": references}
 
     return GenerateRequest(
         model=req.model or default_model,
         prompt=prompt,
         sampling=sampling,
         stage_params=req.stage_params,
-        stream=False,  # TTS returns complete audio, no streaming
+        stream=req.stream,
         output_modalities=["audio"],
         metadata={
             "task": "tts",
