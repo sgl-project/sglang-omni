@@ -1,6 +1,8 @@
 name: S2-Pro Benchmark
 
 on:
+  pull_request:
+    branches: [ main ]
   workflow_dispatch:
 
 concurrency:
