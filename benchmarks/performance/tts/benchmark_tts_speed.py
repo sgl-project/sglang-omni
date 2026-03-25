@@ -369,6 +369,8 @@ def _compute_token_metrics(successes: list[RequestFuncOutput]) -> dict:
     total_tokens = sum(gen_token_counts)
     total_engine_time = sum(o.engine_time_s for o in successes if o.engine_time_s > 0)
 
+    prompt_token_counts = [o.prompt_tokens for o in successes if o.prompt_tokens > 0]
+
     token_metrics: dict = {}
     if tokens_per_sec:
         token_metrics["tok_per_s_mean"] = round(float(np.mean(tokens_per_sec)), 1)
@@ -378,6 +380,11 @@ def _compute_token_metrics(successes: list[RequestFuncOutput]) -> dict:
     if gen_token_counts:
         token_metrics["gen_tokens_mean"] = round(float(np.mean(gen_token_counts)), 0)
         token_metrics["gen_tokens_total"] = total_tokens
+    if prompt_token_counts:
+        token_metrics["prompt_tokens_mean"] = round(
+            float(np.mean(prompt_token_counts)), 0
+        )
+        token_metrics["prompt_tokens_total"] = sum(prompt_token_counts)
     return token_metrics
 
 
@@ -440,6 +447,9 @@ def print_summary(metrics: dict, args: argparse.Namespace) -> None:
     if metrics.get("gen_tokens_mean") is not None:
         print(f"  {'Gen tokens (mean):':<{lw}} {metrics['gen_tokens_mean']:.0f}")
         print(f"  {'Gen tokens (total):':<{lw}} {metrics['gen_tokens_total']}")
+    if metrics.get("prompt_tokens_mean") is not None:
+        print(f"  {'Prompt tokens (mean):':<{lw}} {metrics['prompt_tokens_mean']:.0f}")
+        print(f"  {'Prompt tokens (total):':<{lw}} {metrics['prompt_tokens_total']}")
     print(f"  {'Throughput (req/s):':<{lw}} {metrics.get('throughput_qps', 'N/A')}")
     print(f"{'=' * w}")
 
@@ -565,6 +575,7 @@ def _save_json_results(
             "base_url": base_url,
             "testset": args.testset,
             "no_ref_audio": args.no_ref_audio,
+            "stream": args.stream,
             "max_samples": args.max_samples,
             "max_new_tokens": args.max_new_tokens,
             "warmup": args.warmup,
@@ -608,6 +619,7 @@ def _save_csv_results(
                 "latency_s",
                 "audio_duration_s",
                 "rtf",
+                "prompt_tokens",
                 "completion_tokens",
                 "tok_per_s",
                 "is_success",
@@ -622,6 +634,7 @@ def _save_csv_results(
                     f"{o.latency:.4f}",
                     f"{o.audio_duration_s:.4f}",
                     f"{o.rtf:.4f}" if o.rtf < float("inf") else "",
+                    o.prompt_tokens or "",
                     o.completion_tokens or "",
                     f"{o.tok_per_s:.1f}" if o.tok_per_s > 0 else "",
                     o.is_success,
