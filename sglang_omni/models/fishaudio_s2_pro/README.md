@@ -43,7 +43,7 @@ Please refer to [TTS Model Usage](https://github.com/sgl-project/sglang-omni/blo
 By integrating S2's Dual-AR backbone into SGLang's paged-attention engine, we inherit LLM-native optimizations:
 
 - **Paged KV cache** — SGLang manages KV cache for the Slow AR path, enabling efficient memory usage and high concurrency.
-- **Radix prefix caching** — Shared system prompt and reference audio prefixes are cached across requests, keeping TTFT consistently low (~18ms).
+- **Radix prefix caching** — Shared system prompt and reference audio prefixes are cached across requests, keeping TTFT (~18ms) and Time-to-First-Audio (~140ms) consistently low.
 - **CUDA Graph dual-cover of Slow AR and Fast AR** — The 9-step codebook loop is covered with CUDA graphs. Details at [Revisiting CUDA Graph: Core Mechanisms, Multi-Graph Memory Sharing, and Unified Coverage for Dual AR Models](https://github.com/zhaochenyang20/Awesome-ML-SYS-Tutorial/blob/main/torch/cuda-graph/readme-2-en.md).
 - **FlashAttention 3** — Forced FA3 backend to match training-time attention numerics, avoiding early-EOS divergence from flashinfer.
 
