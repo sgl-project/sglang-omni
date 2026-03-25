@@ -507,11 +507,14 @@ async def _speech_stream(
     chunk_index = 0
     emitted_samples = 0
     finish_reason: str | None = None
+    usage: dict | None = None
 
     try:
         async for chunk in client.generate(gen_req, request_id=request_id):
             if chunk.finish_reason is not None:
                 finish_reason = chunk.finish_reason
+                if chunk.usage is not None:
+                    usage = chunk.usage.to_dict()
 
             if chunk.audio_data is None:
                 continue
@@ -558,6 +561,7 @@ async def _speech_stream(
         "index": chunk_index,
         "audio": None,
         "finish_reason": finish_reason or "stop",
+        "usage": usage,
     }
     yield f"data: {json.dumps(final_payload)}\n\n"
     yield "data: [DONE]\n\n"

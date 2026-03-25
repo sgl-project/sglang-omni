@@ -77,6 +77,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
 import csv
 import json
 import logging
@@ -213,20 +214,39 @@ def _parse_response_headers(output: RequestFuncOutput, headers: dict) -> None:
         output.tok_per_s = output.completion_tokens / output.engine_time_s
 
 
-def _is_audio_sse_event(line: str) -> bool:
-    """Check if an SSE line contains an audio data event."""
+def _parse_sse_event(line: str) -> dict | None:
+    """Parse an SSE data line into a JSON dict, or None."""
     if not line.startswith(SSE_DATA_PREFIX) or line == SSE_DONE_MARKER:
-        return False
-    event = json.loads(line[len(SSE_DATA_PREFIX) :])
-    return event.get("audio") is not None
+        return None
+    return json.loads(line[len(SSE_DATA_PREFIX) :])
+
+
+def _process_sse_line(
+    line: str,
+    total_duration: float,
+    usage: dict | None,
+) -> tuple[float, dict | None]:
+    """Process one SSE line: accumulate audio duration and capture usage."""
+    event = _parse_sse_event(line)
+    if event is None:
+        return total_duration, usage
+    audio = event.get("audio")
+    if isinstance(audio, dict) and audio.get("data"):
+        total_duration += _wav_duration(base64.b64decode(audio["data"]))
+    event_usage = event.get("usage")
+    if isinstance(event_usage, dict):
+        usage = event_usage
+    return total_duration, usage
 
 
 async def _handle_streaming_response(
     response: aiohttp.ClientResponse,
     output: RequestFuncOutput,
+    start_time: float,
 ) -> None:
-    """Parse SSE stream and count audio chunks."""
-    num_chunks = 0
+    """Parse SSE stream, decode audio chunks, and compute metrics."""
+    total_audio_duration = 0.0
+    usage_data: dict | None = None
     buffer = bytearray()
     async for chunk in response.content.iter_any():
         buffer.extend(chunk)
@@ -235,14 +255,31 @@ async def _handle_streaming_response(
             raw_line = bytes(buffer[:idx])
             del buffer[: idx + 1]
             line = raw_line.decode("utf-8", errors="replace").strip()
-            if _is_audio_sse_event(line):
-                num_chunks += 1
+            total_audio_duration, usage_data = _process_sse_line(
+                line, total_audio_duration, usage_data
+            )
     if buffer.strip():
         line = bytes(buffer).decode("utf-8", errors="replace").strip()
-        if _is_audio_sse_event(line):
-            num_chunks += 1
-    output.is_success = True
-    output.completion_tokens = num_chunks
+        total_audio_duration, usage_data = _process_sse_line(
+            line, total_audio_duration, usage_data
+        )
+    output.audio_duration_s = total_audio_duration
+    if total_audio_duration > 0:
+        elapsed = time.perf_counter() - start_time
+        output.rtf = elapsed / total_audio_duration
+    output.is_success = total_audio_duration > 0
+    if usage_data:
+        prompt_tok = usage_data.get("prompt_tokens")
+        comp_tok = usage_data.get("completion_tokens")
+        eng_time = usage_data.get("engine_time_s")
+        if prompt_tok is not None:
+            output.prompt_tokens = int(prompt_tok)
+        if comp_tok is not None:
+            output.completion_tokens = int(comp_tok)
+        if eng_time is not None:
+            output.engine_time_s = float(eng_time)
+        if output.completion_tokens > 0 and output.engine_time_s > 0:
+            output.tok_per_s = output.completion_tokens / output.engine_time_s
 
 
 async def _handle_non_streaming_response(
@@ -287,7 +324,7 @@ async def send_tts_request(
             if response.status != 200:
                 output.error = f"HTTP {response.status}: {await response.text()}"
             elif request.stream:
-                await _handle_streaming_response(response, output)
+                await _handle_streaming_response(response, output, start_time)
             else:
                 await _handle_non_streaming_response(
                     response, output, start_time, save_audio_dir, request.request_id
@@ -350,8 +387,8 @@ def calculate_metrics(outputs: list[RequestFuncOutput]) -> dict:
         return {"completed_requests": 0, "failed_requests": len(outputs)}
 
     latencies = [o.latency for o in successes]
-    rtfs = [o.rtf for o in successes if o.rtf < float("inf")]
-    audio_durations = [o.audio_duration_s for o in successes]
+    rtfs = [o.rtf for o in successes if 0 < o.rtf < float("inf")]
+    audio_durations = [o.audio_duration_s for o in successes if o.audio_duration_s > 0]
     total_wall = sum(latencies)
 
     metrics_summary: dict = {
