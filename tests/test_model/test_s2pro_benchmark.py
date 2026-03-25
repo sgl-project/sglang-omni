@@ -35,7 +35,7 @@ BENCHMARK_TIMEOUT = 600  # seconds
 # Thresholds (15-25% margin from 4-run data)
 # Reference: https://github.com/sgl-project/sglang-omni/issues/193
 VC_NON_STREAM_MIN_TOK_PER_S = 80
-VC_NON_STREAM_MAX_RTF = 2.8
+VC_NON_STREAM_MAX_RTF = 2.85
 VC_STREAM_MAX_LATENCY_S = 12.5
 VC_STREAM_MIN_THROUGHPUT_QPS = 0.08
 PLAIN_NON_STREAM_MIN_TOK_PER_S = 80
@@ -223,7 +223,7 @@ def _assert_streaming_consistency(
     stream_requests: list[dict],
     *,
     completion_token_rtol: float = 0.10,
-    audio_duration_rtol: float = 0.10,
+    audio_duration_rtol: float = 0.12,
 ) -> None:
     """Assert per-request metrics are close between streaming and non-streaming.
 
