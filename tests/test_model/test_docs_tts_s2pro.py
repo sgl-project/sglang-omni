@@ -37,9 +37,7 @@ STARTUP_TIMEOUT = 600  # seconds
 
 # Matches the exact text/audio pair used in the documentation.
 SPEECH_INPUT = "Get the trust fund to the bank early."
-REFERENCE_TEXT = (
-    "We asked over twenty different people, and they all said it was his."
-)
+REFERENCE_TEXT = "We asked over twenty different people, and they all said it was his."
 REF_WAV_RELPATH = "en/prompt-wavs/common_voice_en_10119832.wav"
 
 
@@ -107,9 +105,7 @@ def server_process(tmp_path_factory: pytest.TempPathFactory, server_port: int):
         for _ in range(STARTUP_TIMEOUT):
             if proc.poll() is not None:
                 server_log = log_file.read_text()
-                pytest.fail(
-                    f"Server exited with code {proc.returncode}.\n{server_log}"
-                )
+                pytest.fail(f"Server exited with code {proc.returncode}.\n{server_log}")
             try:
                 with disable_proxy():
                     resp = requests.get(f"{api_base}/health", timeout=2)
@@ -232,7 +228,7 @@ def test_voice_cloning_streaming(
         if not line or not line.startswith("data: "):
             continue
 
-        payload = line[len("data: "):]
+        payload = line[len("data: ") :]
         if payload == "[DONE]":
             has_done = True
             break
@@ -285,9 +281,7 @@ def test_python_voice_cloning(
             f"{api_base}/v1/audio/speech",
             json={
                 "input": SPEECH_INPUT,
-                "references": [
-                    {"audio_path": str(ref_wav), "text": REFERENCE_TEXT}
-                ],
+                "references": [{"audio_path": str(ref_wav), "text": REFERENCE_TEXT}],
             },
             timeout=120,
         )
@@ -328,7 +322,7 @@ def test_python_voice_cloning_streaming(
             for line in stream.iter_lines(decode_unicode=True):
                 if not line or not line.startswith("data: "):
                     continue
-                data = line[len("data:"):].lstrip()
+                data = line[len("data:") :].lstrip()
                 if data == "[DONE]":
                     break
                 b64 = (json.loads(data).get("audio") or {}).get("data")
