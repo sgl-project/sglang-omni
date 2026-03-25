@@ -62,18 +62,28 @@ def _run_benchmark(
 ) -> dict:
     """Run benchmark_tts_speed as subprocess and return the summary dict."""
     cmd = [
-        sys.executable, "-m", "benchmarks.performance.tts.benchmark_tts_speed",
-        "--model", MODEL_PATH,
-        "--port", str(port),
-        "--testset", testset,
-        "--max-samples", str(MAX_SAMPLES),
-        "--output-dir", output_dir,
+        sys.executable,
+        "-m",
+        "benchmarks.performance.tts.benchmark_tts_speed",
+        "--model",
+        MODEL_PATH,
+        "--port",
+        str(port),
+        "--testset",
+        testset,
+        "--max-samples",
+        str(MAX_SAMPLES),
+        "--output-dir",
+        output_dir,
     ]
     if extra_args:
         cmd.extend(extra_args)
 
     proc_result = subprocess.run(
-        cmd, capture_output=True, text=True, timeout=BENCHMARK_TIMEOUT,
+        cmd,
+        capture_output=True,
+        text=True,
+        timeout=BENCHMARK_TIMEOUT,
     )
     assert proc_result.returncode == 0, (
         f"Benchmark failed (rc={proc_result.returncode}).\n"
@@ -85,9 +95,9 @@ def _run_benchmark(
 
     with open(results_path) as f:
         speed_results = json.load(f)
-    assert "summary" in speed_results, (
-        f"Missing 'summary' key in results. Keys: {list(speed_results.keys())}"
-    )
+    assert (
+        "summary" in speed_results
+    ), f"Missing 'summary' key in results. Keys: {list(speed_results.keys())}"
     return speed_results["summary"]
 
 
@@ -101,7 +111,9 @@ def dataset_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
 
     cache_dir = tmp_path_factory.mktemp("seed_tts_eval")
     path = snapshot_download(
-        DATASET_REPO, repo_type="dataset", local_dir=str(cache_dir / "data"),
+        DATASET_REPO,
+        repo_type="dataset",
+        local_dir=str(cache_dir / "data"),
     )
     return Path(path)
 
@@ -120,10 +132,16 @@ def server_process(tmp_path_factory: pytest.TempPathFactory):
     log_handle = open(log_file, "w")
 
     cmd = [
-        sys.executable, "-m", "sglang_omni.cli.cli", "serve",
-        "--model-path", MODEL_PATH,
-        "--config", CONFIG_PATH,
-        "--port", str(SERVER_PORT),
+        sys.executable,
+        "-m",
+        "sglang_omni.cli.cli",
+        "serve",
+        "--model-path",
+        MODEL_PATH,
+        "--config",
+        CONFIG_PATH,
+        "--port",
+        str(SERVER_PORT),
     ]
 
     proc = subprocess.Popen(
@@ -182,14 +200,16 @@ def test_voice_cloning_non_streaming(
 ) -> None:
     """Voice cloning (non-streaming): tok/s >= 80, RTF <= 2.8."""
     summary = _run_benchmark(
-        SERVER_PORT, testset_path, str(tmp_path / "vc_nonstream"),
+        SERVER_PORT,
+        testset_path,
+        str(tmp_path / "vc_nonstream"),
     )
-    assert summary["tok_per_s_agg"] >= VC_NON_STREAM_MIN_TOK_PER_S, (
-        f"tok_per_s_agg {summary['tok_per_s_agg']} < {VC_NON_STREAM_MIN_TOK_PER_S}"
-    )
-    assert summary["rtf_mean"] <= VC_NON_STREAM_MAX_RTF, (
-        f"rtf_mean {summary['rtf_mean']} > {VC_NON_STREAM_MAX_RTF}"
-    )
+    assert (
+        summary["tok_per_s_agg"] >= VC_NON_STREAM_MIN_TOK_PER_S
+    ), f"tok_per_s_agg {summary['tok_per_s_agg']} < {VC_NON_STREAM_MIN_TOK_PER_S}"
+    assert (
+        summary["rtf_mean"] <= VC_NON_STREAM_MAX_RTF
+    ), f"rtf_mean {summary['rtf_mean']} > {VC_NON_STREAM_MAX_RTF}"
 
 
 @pytest.mark.benchmark
@@ -200,14 +220,17 @@ def test_voice_cloning_streaming(
 ) -> None:
     """Voice cloning (streaming): latency <= 12.5s, throughput >= 0.08 qps."""
     summary = _run_benchmark(
-        SERVER_PORT, testset_path, str(tmp_path / "vc_stream"), ["--stream"],
+        SERVER_PORT,
+        testset_path,
+        str(tmp_path / "vc_stream"),
+        ["--stream"],
     )
-    assert summary["latency_mean_s"] <= VC_STREAM_MAX_LATENCY_S, (
-        f"latency_mean_s {summary['latency_mean_s']} > {VC_STREAM_MAX_LATENCY_S}"
-    )
-    assert summary["throughput_qps"] >= VC_STREAM_MIN_THROUGHPUT_QPS, (
-        f"throughput_qps {summary['throughput_qps']} < {VC_STREAM_MIN_THROUGHPUT_QPS}"
-    )
+    assert (
+        summary["latency_mean_s"] <= VC_STREAM_MAX_LATENCY_S
+    ), f"latency_mean_s {summary['latency_mean_s']} > {VC_STREAM_MAX_LATENCY_S}"
+    assert (
+        summary["throughput_qps"] >= VC_STREAM_MIN_THROUGHPUT_QPS
+    ), f"throughput_qps {summary['throughput_qps']} < {VC_STREAM_MIN_THROUGHPUT_QPS}"
 
 
 @pytest.mark.benchmark
@@ -218,15 +241,17 @@ def test_plain_tts_non_streaming(
 ) -> None:
     """Plain TTS (non-streaming): tok/s >= 80, RTF <= 0.35."""
     summary = _run_benchmark(
-        SERVER_PORT, testset_path, str(tmp_path / "plain_nonstream"),
+        SERVER_PORT,
+        testset_path,
+        str(tmp_path / "plain_nonstream"),
         ["--no-ref-audio"],
     )
-    assert summary["tok_per_s_agg"] >= PLAIN_NON_STREAM_MIN_TOK_PER_S, (
-        f"tok_per_s_agg {summary['tok_per_s_agg']} < {PLAIN_NON_STREAM_MIN_TOK_PER_S}"
-    )
-    assert summary["rtf_mean"] <= PLAIN_NON_STREAM_MAX_RTF, (
-        f"rtf_mean {summary['rtf_mean']} > {PLAIN_NON_STREAM_MAX_RTF}"
-    )
+    assert (
+        summary["tok_per_s_agg"] >= PLAIN_NON_STREAM_MIN_TOK_PER_S
+    ), f"tok_per_s_agg {summary['tok_per_s_agg']} < {PLAIN_NON_STREAM_MIN_TOK_PER_S}"
+    assert (
+        summary["rtf_mean"] <= PLAIN_NON_STREAM_MAX_RTF
+    ), f"rtf_mean {summary['rtf_mean']} > {PLAIN_NON_STREAM_MAX_RTF}"
 
 
 @pytest.mark.benchmark
@@ -237,15 +262,17 @@ def test_plain_tts_streaming(
 ) -> None:
     """Plain TTS (streaming): latency <= 4.0s, throughput >= 0.25 qps."""
     summary = _run_benchmark(
-        SERVER_PORT, testset_path, str(tmp_path / "plain_stream"),
+        SERVER_PORT,
+        testset_path,
+        str(tmp_path / "plain_stream"),
         ["--no-ref-audio", "--stream"],
     )
-    assert summary["latency_mean_s"] <= PLAIN_STREAM_MAX_LATENCY_S, (
-        f"latency_mean_s {summary['latency_mean_s']} > {PLAIN_STREAM_MAX_LATENCY_S}"
-    )
-    assert summary["throughput_qps"] >= PLAIN_STREAM_MIN_THROUGHPUT_QPS, (
-        f"throughput_qps {summary['throughput_qps']} < {PLAIN_STREAM_MIN_THROUGHPUT_QPS}"
-    )
+    assert (
+        summary["latency_mean_s"] <= PLAIN_STREAM_MAX_LATENCY_S
+    ), f"latency_mean_s {summary['latency_mean_s']} > {PLAIN_STREAM_MAX_LATENCY_S}"
+    assert (
+        summary["throughput_qps"] >= PLAIN_STREAM_MIN_THROUGHPUT_QPS
+    ), f"throughput_qps {summary['throughput_qps']} < {PLAIN_STREAM_MIN_THROUGHPUT_QPS}"
 
 
 if __name__ == "__main__":
