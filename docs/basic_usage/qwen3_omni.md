@@ -17,12 +17,12 @@ Qwen3-Omni currently has two practical usage modes:
 
 Text-first mode only produces text output. It runs the following stages:
 
-- **preprocessing** (CPU) — tokenizes user input and resolves media paths
-- **image_encoder** (GPU) — encodes images and video frames into embeddings
-- **audio_encoder** (GPU) — encodes audio input into embeddings
-- **mm_aggregate** (CPU) — merges outputs from the above three stages
-- **thinker** (GPU) — the core LLM that generates text tokens
-- **decode** (CPU) — converts token ids back to text
+ - **preprocessing**: tokenizes user input and resolves media inputs
+ - **image_encoder**: encodes images and video frames into embeddings
+ - **audio_encoder**: encodes audio input into embeddings
+ - **mm_aggregate**: gathers preprocessing and encoder outputs and prepares thinker inputs
+ - **thinker**: the core LLM that generates text tokens
+ - **decode**: decodes token ids into text
 
 You can try it directly without starting an HTTP server. It supports text, image, video, and audio inputs:
 
@@ -47,9 +47,9 @@ sgl-omni serve \
 
 Speech mode builds on text-first mode by adding 3 extra stages after the thinker, enabling both text and audio output:
 
-- **talker_ar** (GPU) — generates speech tokens from thinker hidden states
-- **code_predictor** (GPU) — converts speech tokens into codec codes
-- **code2wav** (GPU) — decodes codec codes into audio waveforms
+- **talker_ar**: generates speech tokens from thinker hidden states
+- **code_predictor**: converts speech tokens into codec codes
+- **code2wav**: decodes codec codes into audio waveforms
 
 The example below uses 3 GPUs. This places the thinker on GPU 0, the talker on GPU 1, and the code predictor on GPU 2. The image encoder, audio encoder, and vocoder default to GPU 0.
 
