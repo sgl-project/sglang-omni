@@ -191,9 +191,17 @@ def create_preprocessing_executor(model_path: str) -> PreprocessingExecutor:
     codec = _load_codec(checkpoint_dir, "cpu")
 
     def _encode_reference_audio(audio_path: str, device: str = "cpu") -> torch.Tensor:
+        import io
+
+        import httpx
         import torchaudio
 
-        audio, sr = torchaudio.load(audio_path)
+        if audio_path.startswith(("http://", "https://")):
+            resp = httpx.get(audio_path, follow_redirects=True, timeout=30)
+            resp.raise_for_status()
+            audio, sr = torchaudio.load(io.BytesIO(resp.content))
+        else:
+            audio, sr = torchaudio.load(audio_path)
         if audio.shape[0] > 1:
             audio = audio.mean(0, keepdim=True)
         audio = torchaudio.functional.resample(audio, sr, codec.sample_rate)
