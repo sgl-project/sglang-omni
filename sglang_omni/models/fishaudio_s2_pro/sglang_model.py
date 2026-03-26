@@ -12,6 +12,7 @@ import torch
 from sglang.srt.layers.logits_processor import LogitsProcessorOutput
 from torch import Tensor, nn
 
+from .runtime.s2pro_ar import _sample_with_topk
 from sglang_omni.vendor.sglang.core import ForwardBatch
 from sglang_omni.vendor.sglang.layers import (
     MergedColumnParallelLinear,
@@ -26,6 +27,38 @@ from sglang_omni.vendor.sglang.models import apply_qk_norm
 from sglang_omni.vendor.sglang.utils import make_layers
 
 logger = logging.getLogger(__name__)
+
+_REPETITION_WINDOW = 16
+
+
+def _sample_semantic_with_history(
+    logits: Tensor,
+    *,
+    temperature: Tensor,
+    top_p: Tensor,
+    top_k: int,
+    repetition_penalty: Tensor,
+    previous_tokens: Tensor,
+    previous_mask: Tensor,
+) -> Tensor:
+    if previous_tokens.numel() > 0:
+        previous_tokens = previous_tokens.long()
+        previous_scores = torch.gather(logits, dim=-1, index=previous_tokens)
+        adjusted_scores = torch.where(
+            previous_scores < 0,
+            previous_scores * repetition_penalty,
+            previous_scores / repetition_penalty,
+        )
+        scatter_scores = torch.where(previous_mask, adjusted_scores, previous_scores)
+        logits = logits.clone()
+        logits.scatter_(dim=-1, index=previous_tokens, src=scatter_scores.to(logits.dtype))
+
+    return _sample_with_topk(
+        logits,
+        temperature,
+        top_p,
+        top_k=top_k,
+    ).squeeze(-1)
 
 
 class S2ProAttention(nn.Module):
@@ -244,6 +277,11 @@ class S2ProSGLangTextModel(nn.Module):
         semantic_end_id: int,
         im_end_id: int,
         max_batch_size: int,
+        top_k: int,
+        ras_window: int,
+        ras_temperature: float,
+        ras_top_p: float,
+        align_logits_to_bf16: bool,
     ) -> None:
         """Attach audio decoder and allocate persistent GPU buffers."""
         device = self.embed_tokens.weight.device
@@ -253,6 +291,11 @@ class S2ProSGLangTextModel(nn.Module):
         self._codebook_size = codebook_size
         self._num_codebooks = num_codebooks
         self._semantic_begin_id = semantic_begin_id
+        self._top_k = top_k
+        self._ras_window = ras_window
+        self._ras_temperature = ras_temperature
+        self._ras_top_p = ras_top_p
+        self._align_logits_to_bf16 = align_logits_to_bf16
 
         # Shared codebook embedding from audio decoder (for VQ input combination)
         self._vq_codebook_embeddings = audio_decoder.codebook_embeddings
@@ -264,6 +307,27 @@ class S2ProSGLangTextModel(nn.Module):
             max_batch_size, num_codebooks, dtype=torch.long, device=device
         )
         self._vq_mask = torch.zeros(max_batch_size, dtype=torch.bool, device=device)
+        self._sample_temperature = torch.full(
+            (max_batch_size, 1), 0.8, dtype=torch.float32, device=device
+        )
+        self._sample_top_p = torch.full(
+            (max_batch_size, 1), 0.8, dtype=torch.float32, device=device
+        )
+        self._sample_repetition_penalty = torch.full(
+            (max_batch_size, 1), 1.1, dtype=torch.float32, device=device
+        )
+        self._sample_previous_tokens = torch.zeros(
+            max_batch_size,
+            _REPETITION_WINDOW,
+            dtype=torch.long,
+            device=device,
+        )
+        self._sample_previous_mask = torch.zeros(
+            max_batch_size,
+            _REPETITION_WINDOW,
+            dtype=torch.bool,
+            device=device,
+        )
 
         # Semantic bias: mask all non-semantic and non-EOS tokens
         bias = torch.full(
@@ -348,10 +412,20 @@ class S2ProSGLangTextModel(nn.Module):
     def _decode_codebooks(self, logits: Tensor, hidden_states: Tensor) -> None:
         """Constrained semantic sampling + batched codebook generation."""
         bs = logits.shape[0]
+        if self._align_logits_to_bf16:
+            logits = logits.to(torch.bfloat16).to(torch.float32)
 
         # Constrained decode: mask non-semantic tokens
-        biased_logits = logits + self._semantic_bias
-        semantic_token = torch.argmax(biased_logits, dim=-1)  # [bs]
+        biased_logits = logits + self._semantic_bias.to(dtype=logits.dtype)
+        semantic_token = _sample_semantic_with_history(
+            biased_logits,
+            temperature=self._sample_temperature[:bs],
+            top_p=self._sample_top_p[:bs],
+            top_k=self._top_k,
+            repetition_penalty=self._sample_repetition_penalty[:bs],
+            previous_tokens=self._sample_previous_tokens[:bs],
+            previous_mask=self._sample_previous_mask[:bs],
+        )
 
         # Batched codebook loop
         self._audio_decoder.reset_caches()
@@ -370,7 +444,12 @@ class S2ProSGLangTextModel(nn.Module):
                 cb_hidden, codebook_idx=cb_idx
             )
             cb_logits = cb_logits[:, 0, : self._codebook_size]
-            cb_token = torch.argmax(cb_logits, dim=-1)  # [bs]
+            cb_token = _sample_with_topk(
+                cb_logits,
+                self._sample_temperature[:bs],
+                self._sample_top_p[:bs],
+                top_k=self._top_k,
+            ).squeeze(-1)
             cb_hidden = self._audio_decoder.embeddings(cb_token).unsqueeze(1)
             self._output_codes[:bs, cb_idx + 1] = cb_token
 

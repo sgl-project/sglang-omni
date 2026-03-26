@@ -39,6 +39,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+_REPETITION_WINDOW = 16
+
 
 # ---------------------------------------------------------------------------
 # Data structures
@@ -67,6 +69,25 @@ class S2ProSGLangRequestData(SGLangARRequestData):
 
     _previous_semantic_tokens: list[int] = field(default_factory=list)
     _last_codebook_values: torch.Tensor | None = None
+
+
+def _resolve_sampling_state(
+    data: S2ProSGLangRequestData,
+    *,
+    ras_window: int,
+    ras_temperature: float,
+    ras_top_p: float,
+    repetition_window: int = _REPETITION_WINDOW,
+) -> tuple[float, float, list[int]]:
+    previous_tokens = data._previous_semantic_tokens[-repetition_window:]
+    recent_tokens = data._previous_semantic_tokens[-ras_window:]
+    use_ras = False
+    if len(recent_tokens) >= 2 and len(set(recent_tokens[-4:])) < len(recent_tokens[-4:]):
+        use_ras = True
+
+    if use_ras:
+        return ras_temperature, ras_top_p, previous_tokens
+    return data.temperature, data.top_p, previous_tokens
 
 
 # ---------------------------------------------------------------------------
@@ -446,6 +467,26 @@ class S2ProSGLangModelRunner:
             data: S2ProSGLangRequestData = sched_req.data
             if data._last_codebook_values is not None and is_semantic[i]:
                 text_model._vq_codes[i].copy_(data._last_codebook_values)
+            temperature, top_p, previous_tokens = _resolve_sampling_state(
+                data,
+                ras_window=text_model._ras_window,
+                ras_temperature=text_model._ras_temperature,
+                ras_top_p=text_model._ras_top_p,
+            )
+            text_model._sample_temperature[i, 0] = temperature
+            text_model._sample_top_p[i, 0] = top_p
+            text_model._sample_repetition_penalty[i, 0] = data.repetition_penalty
+            text_model._sample_previous_tokens[i].zero_()
+            text_model._sample_previous_mask[i].zero_()
+            if previous_tokens:
+                prev_tensor = torch.tensor(
+                    previous_tokens,
+                    device=input_ids.device,
+                    dtype=torch.long,
+                )
+                length = int(prev_tensor.shape[0])
+                text_model._sample_previous_tokens[i, :length].copy_(prev_tensor)
+                text_model._sample_previous_mask[i, :length] = True
 
     def _build_outputs(
         self,

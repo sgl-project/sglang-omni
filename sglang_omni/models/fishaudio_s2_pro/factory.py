@@ -75,6 +75,7 @@ def create_s2pro_sglang_engine(
     ras_window: int = 16,
     ras_temperature: float = 1.5,
     ras_top_p: float = 0.95,
+    align_logits_to_bf16: bool = True,
 ) -> OmniEngine:
     """Create a unified S2-Pro engine (slow+fast head in one CUDA graph)."""
     from sglang_omni.engines.ar.sglang_backend.model_worker import (
@@ -126,6 +127,11 @@ def create_s2pro_sglang_engine(
         semantic_end_id=semantic_end_id,
         im_end_id=im_end_id,
         max_batch_size=max_bs,
+        top_k=top_k,
+        ras_window=ras_window,
+        ras_temperature=ras_temperature,
+        ras_top_p=ras_top_p,
+        align_logits_to_bf16=align_logits_to_bf16,
     )
 
     # Now capture CUDA graphs with _decode_codebooks in the graph
