@@ -727,7 +727,9 @@ class SGLangModelRunner:
                 device=device,
                 dtype=dtype,
             )
-            full_ds[visual_pos_masks] = ds_input
+            n_positions = visual_pos_masks.sum().item()
+            if n_positions > 0:
+                full_ds[visual_pos_masks] = ds_input[:n_positions]
             ds_input = full_ds
 
         hidden_states = outer.model(
