@@ -55,8 +55,9 @@ class Scheduler:
 
         # Scheduler request state
         self.requests: dict[str, SchedulerRequest] = {}
-        self.waiting: deque[str] = deque()
-        self.running: list[str] = []
+        self.waiting: dict[str, None] = {}
+        self.running: set[str] = set()
+        self.waiting_feedback: set[str] = set()
 
         # Result futures (created lazily in get_result)
         self._futures: dict[str, asyncio.Future[SchedulerRequest]] = {}
@@ -76,6 +77,9 @@ class Scheduler:
         self._completed_stream_order: deque[str] = deque()
         self._stream_done = object()
 
+        # Event-driven idle wait: set when new work arrives
+        self._work_event = asyncio.Event()
+
     # -------------------------------------------------------------------------
     # Public API
     # -------------------------------------------------------------------------
@@ -88,7 +92,8 @@ class Scheduler:
             arrival_time=time.time(),
         )
         self.requests[request_id] = request
-        self.waiting.append(request_id)
+        self.waiting[request_id] = None
+        self._work_event.set()
         # Note: Future created lazily in get_result() to avoid event loop issues
 
     def abort_request(self, request_id: str) -> None:
@@ -111,6 +116,14 @@ class Scheduler:
         """Check if there are any requests to process."""
         return len(self.waiting) > 0 or len(self.running) > 0
 
+    def mark_waiting_feedback(self, request_id: str) -> None:
+        """Mark a RUNNING request as waiting for feedback."""
+        request = self.requests.get(request_id)
+        if request is None:
+            return
+        request.status = SchedulerStatus.WAITING_FEEDBACK
+        self.waiting_feedback.add(request_id)
+
     def resume_request(self, request_id: str) -> None:
         """Resume a WAITING_FEEDBACK request back to RUNNING."""
         request = self.requests.get(request_id)
@@ -118,6 +131,8 @@ class Scheduler:
             return
         if request.status == SchedulerStatus.WAITING_FEEDBACK:
             request.status = SchedulerStatus.RUNNING
+            self.waiting_feedback.discard(request_id)
+            self._work_event.set()
 
     async def get_result(self, request_id: str) -> SchedulerRequest:
         """Wait for a request to complete."""
@@ -196,9 +211,28 @@ class Scheduler:
     # Core Scheduling
     # -------------------------------------------------------------------------
 
+    async def wait_for_work(self) -> None:
+        """Yield control when the scheduler has no actionable work.
+
+        If requests are waiting for external feedback, yield briefly so
+        the engine loop can poll the feedback mailbox. Otherwise, block
+        until new work arrives via the work event.
+        """
+        if self.waiting_feedback:
+            await asyncio.sleep(0.001)
+        else:
+            try:
+                await asyncio.wait_for(self._work_event.wait(), timeout=0.1)
+            except asyncio.TimeoutError:
+                pass
+
     def schedule(self) -> SchedulerOutput | None:
         """Schedule next batch. Returns None if no work."""
-        if not self.waiting and not self.running:
+        no_waiting = len(self.waiting) == 0
+        no_active_running = len(self.running - self.waiting_feedback) == 0
+        if no_waiting and no_active_running:
+            if not self.waiting_feedback:
+                self._work_event.clear()
             return None
 
         self._step_id += 1
@@ -207,7 +241,7 @@ class Scheduler:
         running_reqs = [
             self.requests[req_id]
             for req_id in self.running
-            if self.requests[req_id].status != SchedulerStatus.WAITING_FEEDBACK
+            if req_id not in self.waiting_feedback
         ]
 
         selected = self.batch_planner.select_requests(
@@ -217,12 +251,13 @@ class Scheduler:
         )
 
         if not selected:
+            self._work_event.clear()
             return None
 
         for request in selected:
             if request.request_id in self.waiting:
-                self.waiting.remove(request.request_id)
-                self.running.append(request.request_id)
+                del self.waiting[request.request_id]
+                self.running.add(request.request_id)
                 request.status = SchedulerStatus.RUNNING
 
         batch_data = self.batch_planner.build_batch(selected)
@@ -307,10 +342,11 @@ class Scheduler:
             self.resource_manager.free(request)
 
         # Remove from queues
-        if request.request_id in self.running:
-            self.running.remove(request.request_id)
-        if request.request_id in self.waiting:
-            self.waiting.remove(request.request_id)
+        self.running.discard(request.request_id)
+        self.waiting.pop(request.request_id, None)
+        self.waiting_feedback.discard(request.request_id)
+
+        self._work_event.set()
 
         # Clean up abort tracking (request is fully done now)
         self._aborted_ids.discard(request.request_id)
