@@ -85,6 +85,70 @@ WHISPER_SAMPLE_RATE = 16000
 QWEN3_OMNI_SAMPLE_RATE = 24000
 
 PUBLISHED_WER = {"en": 1.39, "zh": 1.07}
+WER_OUTLIER_THRESHOLD = 0.5
+
+# ---------------------------------------------------------------------------
+# English text normalizer (Whisper's EnglishTextNormalizer) — lazy-loaded
+# ---------------------------------------------------------------------------
+_EN_NORMALIZER_UNLOADED = object()
+_en_normalizer = _EN_NORMALIZER_UNLOADED
+
+
+def _get_en_normalizer():
+    """Return a Whisper ``EnglishTextNormalizer`` instance, or *None*.
+
+    Tries three import paths in order:
+      1. ``whisper_normalizer`` (standalone pip package)
+      2. ``openai-whisper`` (``whisper.normalizers``)
+      3. ``transformers`` (bundled Whisper normalizer + english.json)
+    """
+    global _en_normalizer
+    if _en_normalizer is not _EN_NORMALIZER_UNLOADED:
+        return _en_normalizer
+
+    # 1) whisper_normalizer package
+    try:
+        from whisper_normalizer.english import EnglishTextNormalizer
+
+        _en_normalizer = EnglishTextNormalizer()
+        return _en_normalizer
+    except (ImportError, TypeError):
+        pass
+
+    # 2) openai-whisper package
+    try:
+        from whisper.normalizers import EnglishTextNormalizer
+
+        _en_normalizer = EnglishTextNormalizer()
+        return _en_normalizer
+    except (ImportError, TypeError):
+        pass
+
+    # 3) HuggingFace transformers (needs english.json mapping)
+    try:
+        import json as _json
+        from pathlib import Path as _Path
+
+        import transformers
+        from transformers.models.whisper.english_normalizer import (
+            EnglishTextNormalizer,
+        )
+
+        json_path = (
+            _Path(transformers.__file__).parent
+            / "models"
+            / "whisper"
+            / "english.json"
+        )
+        with open(json_path) as fh:
+            mapping = _json.load(fh)
+        _en_normalizer = EnglishTextNormalizer(mapping)
+        return _en_normalizer
+    except (ImportError, AttributeError, FileNotFoundError, TypeError):
+        pass
+
+    _en_normalizer = None
+    return _en_normalizer
 
 
 @dataclass
@@ -106,6 +170,7 @@ class SampleOutput:
     substitutions: int = 0
     deletions: int = 0
     insertions: int = 0
+    hits: int = 0
     audio_duration_s: float = 0.0
     latency_s: float = 0.0
     is_success: bool = False
@@ -158,11 +223,27 @@ def detect_language(testset_dir: str) -> str:
 
 
 def normalize_text(text: str, language: str = "en") -> str:
-    """Normalize text for WER computation."""
+    """Normalize text for WER computation.
+
+    For English, delegates to Whisper's ``EnglishTextNormalizer`` when
+    available (handles numbers, contractions, unicode, etc.).  Falls back to
+    simple regex normalization if no Whisper normalizer can be imported.
+
+    For Chinese, strips *all* whitespace before filtering to CJK + word
+    characters so that stray spaces do not produce phantom tokens.
+    """
     text = text.strip()
     if language == "zh":
+        text = text.replace(" ", "").replace("\u3000", "").strip()
         text = re.sub(r"[^\u4e00-\u9fff\w]", "", text)
         return text
+
+    # English — prefer Whisper normalizer
+    normalizer = _get_en_normalizer()
+    if normalizer is not None:
+        return normalizer(text)
+
+    # Fallback: simple regex normalization
     text = text.lower()
     text = re.sub(r"[^\w\s']", "", text)
     text = re.sub(r"\s+", " ", text).strip()
@@ -362,6 +443,7 @@ def evaluate_sample(
     output.substitutions = measures.substitutions
     output.deletions = measures.deletions
     output.insertions = measures.insertions
+    output.hits = measures.hits
     output.is_success = True
     return output
 
@@ -371,7 +453,15 @@ def calculate_metrics(
     total_samples: int,
     language: str,
 ) -> dict:
-    """Compute aggregate WER metrics from sample outputs."""
+    """Compute aggregate WER metrics from sample outputs.
+
+    Primary metric: **corpus WER** (micro-average) — total edit-distance
+    errors divided by total reference words across all samples.  This matches
+    the authoritative evaluation methodology used in TTS papers.
+
+    Secondary / diagnostic: per-sample (macro) statistics are retained for
+    debugging individual outliers.
+    """
     successes = [o for o in outputs if o.is_success]
     if not successes:
         return {
@@ -379,10 +469,39 @@ def calculate_metrics(
             "failed_requests": len(outputs),
         }
 
+    # ------------------------------------------------------------------
+    # Micro-average (corpus WER) — primary metric
+    # ------------------------------------------------------------------
+    total_errors = sum(
+        o.substitutions + o.deletions + o.insertions for o in successes
+    )
+    total_ref_words = sum(
+        o.substitutions + o.deletions + o.hits for o in successes
+    )
+    corpus_wer = total_errors / total_ref_words if total_ref_words > 0 else 0.0
+
+    # Corpus WER excluding samples with >50% per-sample WER (diagnostic)
+    below_50 = [o for o in successes if o.wer <= WER_OUTLIER_THRESHOLD]
+    if below_50:
+        errors_below_50 = sum(
+            o.substitutions + o.deletions + o.insertions for o in below_50
+        )
+        ref_words_below_50 = sum(
+            o.substitutions + o.deletions + o.hits for o in below_50
+        )
+        corpus_wer_below_50 = (
+            errors_below_50 / ref_words_below_50 if ref_words_below_50 > 0 else 0.0
+        )
+    else:
+        corpus_wer_below_50 = 0.0
+
+    # ------------------------------------------------------------------
+    # Per-sample (macro) statistics — secondary / diagnostic
+    # ------------------------------------------------------------------
     wers = [o.wer for o in successes]
     latencies = [o.latency_s for o in successes]
     audio_durations = [o.audio_duration_s for o in successes if o.audio_duration_s > 0]
-    n_above_50 = sum(1 for w in wers if w > 0.5)
+    n_above_50 = sum(1 for w in wers if w > WER_OUTLIER_THRESHOLD)
 
     published = PUBLISHED_WER.get(language, 0.0)
 
@@ -391,15 +510,26 @@ def calculate_metrics(
         "total_samples": total_samples,
         "evaluated": len(successes),
         "skipped": total_samples - len(successes),
-        "wer_mean": round(float(np.mean(wers)), 6),
+        # Primary — corpus WER (micro-average)
+        "wer_corpus": round(corpus_wer, 6),
+        "wer_corpus_pct": round(corpus_wer * 100, 2),
+        "wer_below_50_corpus": round(corpus_wer_below_50, 6),
+        "wer_below_50_corpus_pct": round(corpus_wer_below_50 * 100, 2),
+        "total_errors": total_errors,
+        "total_ref_words": total_ref_words,
+        # Secondary — per-sample (macro) diagnostics
+        "wer_macro_mean": round(float(np.mean(wers)), 6),
+        "wer_macro_mean_pct": round(float(np.mean(wers)) * 100, 2),
         "wer_median": round(float(np.median(wers)), 6),
         "wer_std": round(float(np.std(wers)), 6),
         "wer_p95": round(float(np.percentile(wers, 95)), 6),
-        "wer_mean_pct": round(float(np.mean(wers)) * 100, 2),
+        # Comparison with published result
         "published_wer_pct": published,
-        "delta_pct": round(float(np.mean(wers)) * 100 - published, 2),
+        "delta_pct": round(corpus_wer * 100 - published, 2),
+        # Outlier info
         "n_above_50_pct_wer": n_above_50,
         "pct_above_50_pct_wer": round(n_above_50 / len(successes) * 100, 1),
+        # Latency / audio stats
         "latency_mean_s": round(float(np.mean(latencies)), 3),
         "latency_median_s": round(float(np.median(latencies)), 3),
         "latency_p95_s": round(float(np.percentile(latencies, 95)), 3),
@@ -423,17 +553,33 @@ def print_summary(metrics: dict, args: argparse.Namespace) -> None:
         f"  {'Evaluated / Total:':<{lw}} {metrics.get('evaluated', 0)}/{metrics.get('total_samples', 0)}"
     )
     print(f"  {'Skipped:':<{lw}} {metrics.get('skipped', 0)}")
+
+    # Primary metric — corpus WER (micro-average)
     print(f"{'-' * w}")
-    print(f"  {'WER mean:':<{lw}} {metrics.get('wer_mean_pct', 'N/A')}%")
-    print(f"  {'WER median:':<{lw}} {round(metrics.get('wer_median', 0) * 100, 2)}%")
-    print(f"  {'WER std:':<{lw}} {round(metrics.get('wer_std', 0) * 100, 2)}%")
-    print(f"  {'WER p95:':<{lw}} {round(metrics.get('wer_p95', 0) * 100, 2)}%")
+    print(f"  {'Corpus WER (micro-avg):':<{lw}} {metrics.get('wer_corpus_pct', 'N/A')}%")
     print(
-        f"  {'>50% WER samples:':<{lw}} {metrics.get('n_above_50_pct_wer', 0)} ({metrics.get('pct_above_50_pct_wer', 0)}%)"
+        f"  {'Corpus WER (<50% only):':<{lw}} {metrics.get('wer_below_50_corpus_pct', 'N/A')}%"
     )
+    print(
+        f"  {'Total errors / ref words:':<{lw}} {metrics.get('total_errors', 0)} / {metrics.get('total_ref_words', 0)}"
+    )
+
+    # Comparison with published result
     print(f"{'-' * w}")
     print(f"  {'Published WER:':<{lw}} {metrics.get('published_wer_pct', 'N/A')}%")
     print(f"  {'Delta (ours - published):':<{lw}} {metrics.get('delta_pct', 'N/A'):+}%")
+
+    # Secondary — per-sample (macro) diagnostics
+    print(f"{'-' * w}")
+    print(f"  {'Per-sample WER mean:':<{lw}} {metrics.get('wer_macro_mean_pct', 'N/A')}%")
+    print(f"  {'Per-sample WER median:':<{lw}} {round(metrics.get('wer_median', 0) * 100, 2)}%")
+    print(f"  {'Per-sample WER std:':<{lw}} {round(metrics.get('wer_std', 0) * 100, 2)}%")
+    print(f"  {'Per-sample WER p95:':<{lw}} {round(metrics.get('wer_p95', 0) * 100, 2)}%")
+    print(
+        f"  {'>50% WER samples:':<{lw}} {metrics.get('n_above_50_pct_wer', 0)} ({metrics.get('pct_above_50_pct_wer', 0)}%)"
+    )
+
+    # Latency / audio stats
     print(f"{'-' * w}")
     print(f"  {'Latency mean (s):':<{lw}} {metrics.get('latency_mean_s', 'N/A')}")
     print(f"  {'Latency median (s):':<{lw}} {metrics.get('latency_median_s', 'N/A')}")
@@ -473,6 +619,7 @@ def _save_json_results(
                 "substitutions": o.substitutions if o.is_success else None,
                 "deletions": o.deletions if o.is_success else None,
                 "insertions": o.insertions if o.is_success else None,
+                "hits": o.hits if o.is_success else None,
                 "audio_duration_s": round(o.audio_duration_s, 4),
                 "latency_s": round(o.latency_s, 4),
                 "is_success": o.is_success,

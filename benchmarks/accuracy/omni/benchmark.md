@@ -23,28 +23,65 @@ ground-truth target texts.
 
 Results on the **complete** seed-tts-eval dataset (1088 EN + 2020 ZH samples).
 
+WER is computed as **corpus-level micro-average** (total errors / total
+reference words), which is the authoritative aggregation method used in TTS
+papers and HuggingFace evaluate.
+
+### Primary Metric: Corpus WER (Micro-Average)
+
 | Metric | EN (1088 samples) | ZH (2020 samples) |
 |--------|-------------------:|-------------------:|
-| **WER mean** | **3.63%** | **7.47%** |
-| WER median | 0.00% | 0.00% |
-| WER std | 12.67% | 36.36% |
-| WER p95 | 18.18% | 22.73% |
-| Samples > 50% WER | 6 (0.6%) | 21 (1.0%) |
+| **Corpus WER** | **3.52%** | **7.57%** |
+| Corpus WER (excl >50% outliers) | 2.93% | 4.41% |
+| Total errors / ref words | 415 / 11,805 | 3,198 / 42,266 |
 | Published WER (paper Table 13) | 1.39% | 1.07% |
-| **Delta (ours - published)** | **+2.24%** | **+6.40%** |
+| **Delta (ours - published)** | **+2.13%** | **+6.50%** |
+
+### Per-Sample Distribution (Diagnostic)
+
+| Metric | EN (1088 samples) | ZH (2020 samples) |
+|--------|-------------------:|-------------------:|
+| Per-sample WER mean (macro) | 3.63% | 7.47% |
+| Per-sample WER median | 0.00% | 0.00% |
+| Per-sample WER std | 12.67% | 36.36% |
+| Per-sample WER p95 | 18.18% | 22.73% |
+| Samples > 50% WER | 6 (0.6%) | 21 (1.0%) |
+
+### Latency
+
+| Metric | EN | ZH |
+|--------|---:|---:|
 | Latency mean (s) | 9.491 | 10.708 |
 | Latency median (s) | 9.290 | 10.431 |
 | Latency p95 (s) | 13.606 | 13.932 |
 | Audio duration mean (s) | 4.288 | 4.985 |
 | Evaluated / Total | 1088 / 1088 | 2020 / 2020 |
-| Skipped | 0 | 0 |
+
+## WER Aggregation: Micro vs Macro
+
+The previous version of this benchmark used **macro-average** WER (mean of
+per-sample WER values). This gives each *sample* equal weight, so short
+sentences with high WER have outsized influence on the aggregate.
+
+The authoritative algorithm uses **micro-average** (corpus WER):
+
+```
+corpus_wer = sum(S + D + I) / sum(S + D + H)
+```
+
+This gives each *word* equal weight. The difference is small for this dataset
+but the micro-average is the standard practice:
+
+| | EN macro | EN micro | ZH macro | ZH micro |
+|--|--------:|--------:|--------:|--------:|
+| WER | 3.63% | 3.52% | 7.47% | 7.57% |
 
 ## Subset Size Analysis
 
 WER varies significantly across subset sizes, confirming feedback from the
 Qwen team that **the full dataset should be used for reliable evaluation**.
 
-| Subset | EN WER | ZH WER |
+| Subset | EN WER (macro) | ZH WER (macro) |
 |--------|-------:|-------:|
 | 5 samples | 0.00% | -- |
 | 20 samples | 1.60% | 0.92% |
