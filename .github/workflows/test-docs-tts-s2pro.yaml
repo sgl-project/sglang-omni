@@ -45,6 +45,11 @@ jobs:
           source omni-s2pro/bin/activate
           uv pip install -v -e ".[s2pro,dev]"
 
+      - name: Kill GPU processes
+        shell: bash
+        run: |
+          bash .github/scripts/delete_gpu_process.sh
+
       - name: Run docs tests
         timeout-minutes: 30
         shell: bash
