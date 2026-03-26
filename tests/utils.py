@@ -44,7 +44,7 @@ def download_dataset(cache_dir: Path) -> Path:
 
 
 def start_s2pro_server(log_file: Path, port: int) -> subprocess.Popen:
-    """Start the s2-pro TTS server and return the process handle."""
+    """Start the s2-pro TTS server, wait until healthy, and return the process."""
     cmd = [
         sys.executable,
         "-m",
@@ -58,23 +58,15 @@ def start_s2pro_server(log_file: Path, port: int) -> subprocess.Popen:
         str(port),
     ]
     with open(log_file, "w") as log_handle:
-        return subprocess.Popen(
+        proc = subprocess.Popen(
             cmd,
             stdout=log_handle,
             stderr=subprocess.STDOUT,
             start_new_session=True,
         )
 
-
-def wait_server_healthy(
-    port: int,
-    proc: subprocess.Popen,
-    log_file: Path,
-    timeout: int = STARTUP_TIMEOUT,
-) -> None:
-    """Poll the server health endpoint until healthy or raise on timeout."""
     api_base = f"http://localhost:{port}"
-    for _ in range(timeout):
+    for _ in range(STARTUP_TIMEOUT):
         if proc.poll() is not None:
             raise RuntimeError(
                 f"Server exited with code {proc.returncode}.\n{log_file.read_text()}"
@@ -83,14 +75,15 @@ def wait_server_healthy(
             with disable_proxy():
                 resp = requests.get(f"{api_base}/health", timeout=2)
             if resp.status_code == 200 and "healthy" in resp.text:
-                return
+                return proc
         except requests.RequestException as exc:
             logger.debug("Health check failed (transient): %s", exc)
         time.sleep(1)
 
     stop_server(proc)
     raise RuntimeError(
-        f"Server did not become healthy within {timeout}s.\n{log_file.read_text()}"
+        f"Server did not become healthy within {STARTUP_TIMEOUT}s.\n"
+        f"{log_file.read_text()}"
     )
 
 
@@ -115,9 +108,7 @@ def dataset_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
 def server_process(tmp_path_factory: pytest.TempPathFactory):
     """Start the s2-pro server, wait until healthy, and yield (proc, port)."""
     port = find_free_port()
-    log_dir = tmp_path_factory.mktemp("server_logs")
-    log_file = log_dir / "server.log"
+    log_file = tmp_path_factory.mktemp("server_logs") / "server.log"
     proc = start_s2pro_server(log_file, port)
-    wait_server_healthy(port, proc, log_file)
     yield proc, port
     stop_server(proc)
