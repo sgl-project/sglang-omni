@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.utils import MODEL_PATH
+from tests.utils import MODEL_PATH, dataset_dir, server_process  # noqa: F401
 
 MAX_SAMPLES = 10
 BENCHMARK_TIMEOUT = 600  # seconds

@@ -22,6 +22,7 @@ import pytest
 import requests
 
 from tests.test_model.helpers import disable_proxy
+from tests.utils import dataset_dir, server_process  # noqa: F401
 
 SPEECH_INPUT = "Get the trust fund to the bank early."
 REFERENCE_TEXT = "We asked over twenty different people, and they all said it was his."
