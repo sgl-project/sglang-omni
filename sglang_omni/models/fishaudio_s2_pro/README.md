@@ -34,94 +34,17 @@ Text input ──► Preprocessing ──► SGLang AR Engine ──► DAC Voco
 **Stage 3 — Vocoder:** The accumulated codebook indices are decoded into a waveform by a DAC codec, producing the final audio output.
 
 
-## Performance
+## Usage
 
-Evaluated on the full seed-tts-eval EN testset (1,088 samples) on a single H200 GPU.
-
-| Metric | BS=1 | BS=2 | BS=4 | BS=8 |
-|---|---|---|---|---|
-| Tok/s (mean) | 63.3 | 45.8 | 31.9 | 19.6 |
-| RTF (mean) | 0.340 | 0.473 | 0.676 | 1.097 |
-| Latency (mean) | 1.33s | 1.80s | 2.69s | 4.36s |
-| TTFT (mean) | 19.6 ms | 22.0 ms | 31.6 ms | 50.7 ms |
-| TTFB (mean) | 172.8 ms | 249.9 ms | 319.1 ms | 509.6 ms |
-
-## Installation and Quick Start
-
-### Docker
-
-```bash
-docker pull frankleeeee/sglang-omni:dev
-
-docker run -it --shm-size 32g --gpus all frankleeeee/sglang-omni:dev /bin/zsh
-```
-
-### Install sglang-omni (inside Docker)
-
-```bash
-git clone https://github.com/sgl-project/sglang-omni.git
-cd sglang-omni
-uv venv .venv -p 3.12 && source .venv/bin/activate
-uv pip install -v ".[s2pro]"
-huggingface-cli download fishaudio/s2-pro
-```
-
-### Playground and Server
-
-We provide a Gradio-based interactive playground and a server for production deployment. We highly recommend using playground since audio data is hard to intertact with by CLI.
-
-1. Interactive Playground
-
-```bash
- ./playground/tts/start.sh
-```
-
-2. Server
-
-```bash
-python -m sglang_omni.cli.cli serve \
-    --model-path fishaudio/s2-pro \
-    --config examples/configs/s2pro_tts.yaml \
-    --port 8000
-```
-
-<details>
-<summary>curl commands</summary>
-
-1. Text-to-Speech
-
-Note that without reference audio, the generated audio sounds like a robot.
-
-```bash
-curl -X POST http://localhost:8000/v1/audio/speech \
-    -H "Content-Type: application/json" \
-    -d '{"input": "Hello, how are you?"}' \
-    --output output.wav
-```
-
-2. Voice Cloning
-
-```bash
-curl -X POST http://localhost:8000/v1/audio/speech \
-    -H "Content-Type: application/json" \
-    -d '{
-        "input": "Hello, how are you?",
-        "references": [{"audio_path": "ref.wav", "text": "Transcript of ref audio."}]
-    }' \
-    --output output.wav
-```
-
-</details>
-
-We highly recommend using playground since audio data is hard to intertact with by CLI.
+Please refer to [TTS Model Usage](https://github.com/sgl-project/sglang-omni/blob/main/docs/basic_usage/tts_s2pro.md) for more details.
 
 ## Optimizations with SGLang Omni
 
 By integrating S2's Dual-AR backbone into SGLang's paged-attention engine, we inherit LLM-native optimizations:
 
 - **Paged KV cache** — SGLang manages KV cache for the Slow AR path, enabling efficient memory usage and high concurrency.
-- **Radix prefix caching** — Shared system prompt and reference audio prefixes are cached across requests, keeping TTFT consistently low (~18ms).
-- **torch.compile on Fast AR** — The 9-step codebook loop is compiled with torch.compile, achieving 5x speedup over eager mode.
+- **Radix prefix caching** — Shared system prompt and reference audio prefixes are cached across requests, keeping TTFT (~18ms) and Time-to-First-Audio (~140ms) consistently low.
+- **CUDA Graph dual-cover of Slow AR and Fast AR** — The 9-step codebook loop is covered with CUDA graphs. Details at [Revisiting CUDA Graph: Core Mechanisms, Multi-Graph Memory Sharing, and Unified Coverage for Dual AR Models](https://github.com/zhaochenyang20/Awesome-ML-SYS-Tutorial/blob/main/torch/cuda-graph/readme-2-en.md).
 - **FlashAttention 3** — Forced FA3 backend to match training-time attention numerics, avoiding early-EOS divergence from flashinfer.
 
 ## Future Optimization

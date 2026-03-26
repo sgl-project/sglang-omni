@@ -21,6 +21,13 @@ Our core features include:
 
 .. toctree::
    :maxdepth: 1
+   :caption: Basic Usage
+
+   basic_usage/tts_s2pro.md
+
+
+.. toctree::
+   :maxdepth: 1
    :caption: Benchmarks
 
    benchmarks/relay.md
