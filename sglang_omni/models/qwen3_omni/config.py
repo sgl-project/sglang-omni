@@ -89,15 +89,15 @@ class Qwen3OmniPipelineConfig(PipelineConfig):
             get_next="sglang_omni.models.qwen3_omni.pipeline.next_stage.thinker_next",
             relay=RelayConfig(device="cuda"),
         ),
-        StageConfig(
-            name=DECODE_STAGE,
-            executor=ExecutorConfig(
-                factory="sglang_omni.models.qwen3_omni.pipeline.stages.create_decode_executor",
-                args={},
-            ),
-            get_next="sglang_omni.models.qwen3_omni.pipeline.next_stage.decode_next",
-            relay=RelayConfig(device="cpu"),
-        ),
+        # StageConfig(
+        #     name=DECODE_STAGE,
+        #     executor=ExecutorConfig(
+        #         factory="sglang_omni.models.qwen3_omni.pipeline.stages.create_decode_executor",
+        #         args={},
+        #     ),
+        #     get_next="sglang_omni.models.qwen3_omni.pipeline.next_stage.decode_next",
+        #     relay=RelayConfig(device="cpu"),
+        # ),
     ]
 
 
