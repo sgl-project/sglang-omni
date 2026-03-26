@@ -180,6 +180,9 @@ class Qwen3OmniSpeechPipelineConfig(PipelineConfig):
             relay=RelayConfig(device="cpu"),
         ),
         # Stage 7: Talker AR
+        # Graph is disabled for the talker because its decode paths inject
+        # dynamic feedback embeds and projected prefill, which bypass the
+        # standard forward and force can_run_cuda_graph=False every step.
         StageConfig(
             name=TALKER_AR_STAGE,
             executor=ExecutorConfig(
@@ -188,6 +191,7 @@ class Qwen3OmniSpeechPipelineConfig(PipelineConfig):
                     "talker_max_seq_len": 4096,
                     "speech_enabled": True,
                     "feedback_enabled": True,
+                    "server_args_overrides": {"disable_cuda_graph": True},
                 },
             ),
             get_next="sglang_omni.models.qwen3_omni.pipeline.next_stage.talker_ar_next",

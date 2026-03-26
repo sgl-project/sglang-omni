@@ -327,10 +327,12 @@ class SGLangOutputProcessor:
         capture_hidden: bool = False,
         capture_hidden_layers: list[int] | None = None,
         model: Any = None,
+        hidden_capture: Any = None,
     ):
         self._capture_hidden = capture_hidden
         self._capture_hidden_layers = capture_hidden_layers
         self._model = model
+        self._hidden_capture = hidden_capture
 
     def process(
         self,
@@ -379,18 +381,22 @@ class SGLangOutputProcessor:
     def _extract_hidden_states(
         self, model_output: Any
     ) -> dict[str, torch.Tensor] | None:
-        """Extract hidden states from model output or side-channel.
+        """Extract hidden states from model output or capture buffers.
 
         Priority:
-        1. Side-channel (_captured_aux_hidden_states) from hidden capture hooks
-        2. logits_output.hidden_states (legacy single-tensor path)
+        1. GraphSafeHiddenCapture buffers (works with CUDA graph replay)
+        2. Side-channel (_captured_aux_hidden_states) from legacy hooks
+        3. logits_output.hidden_states (SGLang built-in CaptureHiddenMode)
         """
-        # Check side-channel first (set by _hidden_capture hooks)
+        # Graph-safe buffer capture (works during both eager and graph replay)
+        if self._hidden_capture is not None:
+            return self._hidden_capture.get_hidden_states()
+
+        # Legacy side-channel (only works in eager mode, not graph replay)
         if self._model is not None and self._capture_hidden_layers:
             aux = getattr(self._model, "_captured_aux_hidden_states", None)
             if aux is not None:
-                # aux is a list of tensors from layers_to_capture, one per layer
-                self._model._captured_aux_hidden_states = None  # consume
+                self._model._captured_aux_hidden_states = None
                 result = {}
                 for layer_id, tensor in zip(self._capture_hidden_layers, aux):
                     key = "embed" if layer_id == 0 else layer_id
@@ -500,6 +506,11 @@ class SGLangModelRunner:
 
     Replaces the generic ModelRunner — handles ScheduleBatch → ForwardBatch
     conversion, forward pass, and conditional sampling.
+
+    When CUDA graph is enabled (disable_cuda_graph=False), the decode path
+    through model_worker.forward_batch_generation automatically uses SGLang's
+    CudaGraphRunner for graph capture and replay. Prefill and custom forward
+    paths (omni embeds, talker feedback) remain in eager mode.
     """
 
     def __init__(
@@ -507,10 +518,12 @@ class SGLangModelRunner:
         model_worker: "ModelWorker",
         output_processor: SGLangOutputProcessor,
         batch_planner: SGLangBatchPlanner | None = None,
+        hidden_capture: Any = None,
     ):
         self.model_worker = model_worker
         self.output_processor = output_processor
         self.batch_planner = batch_planner
+        self._hidden_capture = hidden_capture
         self.device = torch.device(f"cuda:{model_worker.gpu_id}")
 
         model = model_worker.model_runner.model
@@ -939,7 +952,6 @@ class SGLangModelRunner:
             ForwardBatch,
         )
 
-        # Ensure correct CUDA device context when running in thread pool
         if self.device.type == "cuda":
             torch.cuda.set_device(self.device)
 
@@ -950,13 +962,21 @@ class SGLangModelRunner:
 
         model_worker_batch = schedule_batch.get_model_worker_batch()
 
-        # Enable hidden state capture if output processor needs it
-        if self.output_processor._capture_hidden:
+        # Hidden state capture mode selection:
+        # - GraphSafeHiddenCapture: uses hooks with pre-allocated buffers that
+        #   are captured as CUDA graph kernels. No CaptureHiddenMode needed,
+        #   avoiding unnecessary graph recapture when mode transitions.
+        # - Legacy path: uses CaptureHiddenMode.LAST which triggers SGLang's
+        #   built-in hidden capture (causes graph recapture on first decode).
+        if self.output_processor._capture_hidden and self._hidden_capture is None:
             model_worker_batch.capture_hidden_mode = CaptureHiddenMode.LAST
 
         forward_batch = ForwardBatch.init_new(
             model_worker_batch, self.model_worker.model_runner
         )
+
+        if self._hidden_capture is not None:
+            self._hidden_capture.set_num_tokens(len(forward_batch.input_ids))
 
         omni_embeds = None
         if schedule_batch.forward_mode.is_extend():

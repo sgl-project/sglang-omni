@@ -248,15 +248,42 @@ def create_sglang_ar_engine(
         gpu_id=gpu_id,
     )
 
-    # Configure multi-layer hidden state capture (e.g., [0, 24] for embed + layer-24)
-    # Uses forward hooks to capture intermediate hidden states from transformer layers.
-    # The VL wrapper doesn't support layers_to_capture directly, so we hook into the
-    # text model's layers and store captured states on the model instance.
+    # Configure multi-layer hidden state capture (e.g., [0, 24] for embed + layer-24).
+    # When CUDA graph is enabled, uses GraphSafeHiddenCapture with pre-allocated
+    # buffers and register_forward_hook. The copy_ ops inside hooks are captured
+    # as CUDA graph kernels, so hidden states update correctly during graph replay.
+    # When graph is disabled, falls back to the legacy wrapper approach.
+    hidden_capture = None
     if capture_hidden_layers:
-        from .runtime._hidden_capture import install_hidden_capture_hooks
+        use_graph = not getattr(server_args, "disable_cuda_graph", True)
+        if use_graph:
+            from .runtime._hidden_capture import GraphSafeHiddenCapture
 
-        model = model_worker.model_runner.model
-        install_hidden_capture_hooks(model, capture_hidden_layers)
+            model = model_worker.model_runner.model
+            model_config = model_worker.model_config
+            hidden_size = getattr(model_config, "hidden_size", None)
+            if hidden_size is None:
+                hf_cfg = model_config.hf_config
+                thinker_cfg = getattr(hf_cfg, "thinker_config", hf_cfg)
+                hidden_size = getattr(thinker_cfg, "hidden_size", 2048)
+
+            max_tokens = server_args.max_running_requests
+            device = torch.device(f"cuda:{gpu_id}")
+            dtype = next(model.parameters()).dtype
+
+            hidden_capture = GraphSafeHiddenCapture(
+                model=model,
+                capture_layers=capture_hidden_layers,
+                max_num_tokens=max_tokens,
+                hidden_size=hidden_size,
+                device=device,
+                dtype=dtype,
+            )
+        else:
+            from .runtime._hidden_capture import install_hidden_capture_hooks
+
+            model = model_worker.model_runner.model
+            install_hidden_capture_hooks(model, capture_hidden_layers)
 
     # Get memory pools
     req_to_token_pool, token_to_kv_pool_allocator = model_worker.get_memory_pool()
@@ -298,6 +325,7 @@ def create_sglang_ar_engine(
         capture_hidden=capture_hidden,
         capture_hidden_layers=capture_hidden_layers,
         model=model_worker.model_runner.model if capture_hidden_layers else None,
+        hidden_capture=hidden_capture,
     )
 
     if stream_adapter is None:
@@ -318,7 +346,8 @@ def create_sglang_ar_engine(
     # scheduler's proper cleanup path (free resources, notify waiters).
     batch_planner._abort_callback = scheduler.abort_request
     sglang_model_runner = SGLangModelRunner(
-        model_worker, output_proc, batch_planner=batch_planner
+        model_worker, output_proc, batch_planner=batch_planner,
+        hidden_capture=hidden_capture,
     )
 
     return OmniEngine(

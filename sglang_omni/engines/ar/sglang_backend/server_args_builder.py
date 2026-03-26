@@ -15,15 +15,21 @@ def build_sglang_server_args(
     max_prefill_tokens: int = 4096,
     max_running_requests: int = 16,
     mem_fraction_static: float = 0.7,
+    disable_cuda_graph: bool = False,
     **overrides: Any,
 ) -> ServerArgs:
-    """Build ServerArgs with shared defaults for all SGLang AR engines."""
+    """Build ServerArgs with shared defaults for all SGLang AR engines.
+
+    CUDA graph is enabled by default for decode-phase acceleration.
+    Callers that have graph-incompatible forward paths (e.g. talker with
+    dynamic feedback embeds) should pass disable_cuda_graph=True.
+    """
     kwargs: dict[str, Any] = {
         "model_path": model_path,
         "trust_remote_code": True,
         "tp_size": 1,
         "pp_size": 1,
-        "disable_cuda_graph": True,
+        "disable_cuda_graph": disable_cuda_graph,
         "chunked_prefill_size": chunked_prefill_size,
         "max_prefill_tokens": max_prefill_tokens,
         "max_running_requests": max_running_requests,
