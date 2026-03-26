@@ -1,0 +1,6 @@
+id,target_text,whisper_text,wer,substitutions,deletions,insertions,audio_duration_s,latency_s,is_success,error
+common_voice_en_10119832-common_voice_en_10119840,Get the trust fund to the bank early., Get the trust fund to the bank early.,0.000000,0,0,0,2.4569,6.3787,True,
+common_voice_en_10119832-common_voice_en_10119847,The stained glass offered a hypnotic atmosphere., The stained glass offered a hypnotic atmosphere.,0.000000,0,0,0,3.4969,7.4936,True,
+common_voice_en_103675-common_voice_en_103676,"One by one, the campfires were extinguished, and the oasis fell as quiet as the desert."," One by one, the campfires were extinguished, and the oasis fell as quiet as the desert.",0.000000,0,0,0,5.9769,13.0734,True,
+common_voice_en_103675-common_voice_en_103677,The boy knew the desert sensed his fear., The boy knew the desert sensed his fear.,0.000000,0,0,0,2.4569,5.9091,True,
+common_voice_en_10933823-common_voice_en_10933822,"When it comes to the crunch, our company will become insolvent."," When it comes to the crunch, our company will become insolvent.",0.000000,0,0,0,4.0569,9.1594,True,

@@ -9,11 +9,15 @@ Section 5.2 of the Qwen3-Omni paper (Table 13).
 The pipeline:
 1. Qwen3-Omni generates speech from a text prompt
 2. Whisper-large-v3 transcribes the generated audio
-3. WER is computed between the target text and the Whisper transcription
+3. WER (EN) / CER (ZH) is computed between the target text and the transcription
+
+For Chinese, we use **Character Error Rate (CER)**, which is the standard
+metric for Chinese TTS evaluation. The Qwen3-Omni paper reports this as "WER"
+but it is effectively CER (each Chinese character is treated as a word).
 
 ## Inference Backend
 
-**HuggingFace Transformers (offline)** -- not the SGLang serving pipeline.
+**HuggingFace Transformers (offline)** — not the SGLang serving pipeline.
 
 The SGLang speech pipeline on main is currently broken due to multiple issues:
 - Text-only server crashes with `audio_target_sr` unbound variable
@@ -25,58 +29,139 @@ Using HF Transformers ensures correctness of the accuracy measurement,
 independent of the serving infrastructure bugs. The model is loaded via
 `Qwen3OmniMoeForConditionalGeneration.from_pretrained()` with `enable_audio_output=True`.
 
-## Results
+---
 
-### English (seed-tts-eval test-en, 350 samples)
+## Results at All Scales
 
-| Metric | 20 samples | 350 samples |
-|--------|-----------|-------------|
-| Samples evaluated | 20 / 1088 | 350 / 1088 |
-| **WER mean** | **1.60%** | **3.59%** |
-| WER median | 0.00% | 0.00% |
-| WER std | 4.15% | 9.17% |
-| WER p95 | 8.14% | 17.50% |
-| >50% WER samples | 0 (0.0%) | 1 (0.3%) |
-| Non-zero WER samples | 3 (15%) | 80 (22.9%) |
-| Latency mean | 8.73s | 9.14s |
-| Audio duration mean | 3.83s | 4.17s |
+### Master Comparison Table
 
-### Chinese (seed-tts-eval test-zh, 350 samples)
+| Testset | 5 samples | 20 samples | 350 samples | Published (full set) |
+|---------|-----------|------------|-------------|----------------------|
+| **test-en WER** | **0.00%** | **1.60%** | **3.59%** | **1.39%** |
+| **test-zh CER** | N/A | **0.92%** | **4.34%** | **1.07%** |
 
-For Chinese, we use **Character Error Rate (CER)**, which is the standard
-metric for Chinese TTS evaluation. The Qwen3-Omni paper reports this as "WER"
-but it is effectively CER (each Chinese character is treated as a word).
+> Note: ZH 5-sample result is excluded because it was run before the CER fix
+> (used word-level WER instead of character-level CER, producing an invalid
+> 40% WER). All subsequent ZH runs use character-level CER.
 
-| Metric | 20 samples | 350 samples |
-|--------|-----------|-------------|
-| Samples evaluated | 20 / 2020 | 350 / 2020 |
-| **CER mean** | **0.92%** | **4.34%** |
-| CER median | 0.00% | 0.00% |
-| CER std | 3.10% | 8.61% |
-| CER p95 | 5.21% | 26.32% |
-| >50% CER samples | 0 (0.0%) | 0 (0.0%) |
-| Non-zero CER samples | 2 (10%) | 103 (29.4%) |
-| Latency mean | 8.87s | 9.49s |
-| Audio duration mean | 4.21s | 4.33s |
+### Delta vs Published
 
-### Comparison with Official Results
+| Testset | 5 samples | 20 samples | 350 samples |
+|---------|-----------|------------|-------------|
+| test-en | -1.39% | +0.21% | +2.20% |
+| test-zh | N/A | -0.15% | +3.27% |
 
-| Testset | Ours (20) | Ours (350) | Published (full) | Delta (350 vs published) |
-|---------|-----------|------------|-------------------|--------------------------|
-| test-en WER | 1.60% | 3.59% | 1.39% | +2.20% |
-| test-zh CER | 0.92% | 4.34% | 1.07% | +3.27% |
+---
 
-### Scale Effect: 20 vs 350 Samples
+## Detailed Results by Scale
 
-| Testset | 20-sample WER/CER | 350-sample WER/CER | Change |
-|---------|-------------------|---------------------|--------|
-| test-en | 1.60% | 3.59% | +1.99% |
-| test-zh | 0.92% | 4.34% | +3.42% |
+### English — 5 samples (mini testset)
+
+| Metric | Value |
+|--------|-------|
+| Samples evaluated | 5 / 1088 |
+| **WER mean** | **0.00%** |
+| WER median | 0.00% |
+| WER std | 0.00% |
+| WER p95 | 0.00% |
+| Non-zero WER samples | 0 (0.0%) |
+| Latency mean | 8.40s |
+| Audio duration mean | 3.69s |
+
+All 5 samples had perfect transcription (0% WER).
+
+### English — 20 samples
+
+| Metric | Value |
+|--------|-------|
+| Samples evaluated | 20 / 1088 |
+| **WER mean** | **1.60%** |
+| WER median | 0.00% |
+| WER std | 4.15% |
+| WER p95 | 8.14% |
+| >50% WER samples | 0 (0.0%) |
+| Non-zero WER samples | 3 (15.0%) |
+| Latency mean | 8.73s |
+| Audio duration mean | 3.83s |
+
+Errors: "fifty"→"50" (number normalization), "doesn't"→"doesnt" (apostrophe),
+"do"→"did" (word substitution).
+
+### English — 350 samples
+
+| Metric | Value |
+|--------|-------|
+| Samples evaluated | 350 / 1088 |
+| **WER mean** | **3.59%** |
+| WER median | 0.00% |
+| WER std | 9.17% |
+| WER p95 | 17.50% |
+| >50% WER samples | 1 (0.3%) |
+| Non-zero WER samples | 80 (22.9%) |
+| Latency mean | 9.14s |
+| Audio duration mean | 4.17s |
+
+### Chinese — 20 samples
+
+| Metric | Value |
+|--------|-------|
+| Samples evaluated | 20 / 2020 |
+| **CER mean** | **0.92%** |
+| CER median | 0.00% |
+| CER std | 3.10% |
+| CER p95 | 5.21% |
+| >50% CER samples | 0 (0.0%) |
+| Non-zero CER samples | 2 (10.0%) |
+| Latency mean | 8.87s |
+| Audio duration mean | 4.21s |
+
+Errors: "可是"↔"持续" + "窝策"↔"无策" (homophone, CER=13.6%),
+"怀安"↔"淮安" (place name homophone, CER=4.8%).
+
+### Chinese — 350 samples
+
+| Metric | Value |
+|--------|-------|
+| Samples evaluated | 350 / 2020 |
+| **CER mean** | **4.34%** |
+| CER median | 0.00% |
+| CER std | 8.61% |
+| CER p95 | 26.32% |
+| >50% CER samples | 0 (0.0%) |
+| Non-zero CER samples | 103 (29.4%) |
+| Latency mean | 9.49s |
+| Audio duration mean | 4.33s |
+
+---
+
+## Scale Effect Analysis
+
+### How WER/CER Changes with Sample Count
+
+| Scale | EN WER | ZH CER | EN non-zero | ZH non-zero |
+|-------|--------|--------|-------------|-------------|
+| 5 samples | 0.00% | N/A | 0 (0.0%) | N/A |
+| 20 samples | 1.60% | 0.92% | 3 (15.0%) | 2 (10.0%) |
+| 350 samples | 3.59% | 4.34% | 80 (22.9%) | 103 (29.4%) |
+| Published (full) | 1.39% | 1.07% | — | — |
 
 The 20-sample subset was close to published results, but the 350-sample run
-reveals a higher error rate. This gap is explained by the **Whisper number
-normalization problem** and a **long-tail of harder samples** (see Error
-Analysis below).
+reveals a higher error rate. The key reasons:
+
+1. **Small samples are biased toward easy cases.** The first 5-20 samples in
+   the dataset happen to be relatively clean, short sentences. Harder samples
+   (numbers, technical terms, longer sentences) appear later in the dataset.
+
+2. **Number-heavy sentences dominate the tail.** As more samples are included,
+   more sentences with spoken numbers appear, and Whisper number normalization
+   inflates the error rate. This is the single biggest contributor to the gap.
+
+3. **The published results likely use a different normalization pipeline.**
+   The official Qwen3-Omni evaluation almost certainly normalizes numbers
+   in both reference and hypothesis text before computing WER/CER, which
+   our pipeline does not.
+
+---
 
 ## Error Analysis (350 samples)
 
@@ -113,19 +198,49 @@ computation.
 - Repetition in target text: "独立思独立思独立思考" (stuttering in ground truth)
 - Punctuation-adjacent characters lost after normalization
 
-### Error Distribution
+### Error Distribution (350 samples)
 
 Both languages show a **heavy right tail**: the majority of samples have 0%
 error, but a minority have >10% error, which pulls the mean up significantly.
 
-| | EN (350) | ZH (350) |
-|---|----------|----------|
-| 0% error | 270 (77.1%) | 247 (70.6%) |
-| 0-5% error | 0 (0.0%) | 20 (5.7%) |
-| 5-10% error | 40 (11.4%) | 30 (8.6%) |
-| 10-20% error | 26 (7.4%) | 13 (3.7%) |
-| 20-50% error | 13 (3.7%) | 40 (11.4%) |
-| >50% error | 1 (0.3%) | 0 (0.0%) |
+| Error Range | EN (350) | ZH (350) |
+|-------------|----------|----------|
+| 0% | 270 (77.1%) | 247 (70.6%) |
+| 0–5% | 0 (0.0%) | 20 (5.7%) |
+| 5–10% | 40 (11.4%) | 30 (8.6%) |
+| 10–20% | 26 (7.4%) | 13 (3.7%) |
+| 20–50% | 13 (3.7%) | 40 (11.4%) |
+| >50% | 1 (0.3%) | 0 (0.0%) |
+
+---
+
+## Result Files
+
+All per-sample JSON and CSV results are saved in the repository:
+
+```
+benchmarks/accuracy/omni/results/
+├── en_5/          # EN mini (5 samples), WER=0.00%
+│   ├── wer_results.json
+│   └── wer_results.csv
+├── en_20/         # EN 20 samples, WER=1.60%
+│   ├── wer_results.json
+│   └── wer_results.csv
+├── en_350/        # EN 350 samples, WER=3.59%
+│   ├── wer_results.json
+│   └── wer_results.csv
+├── zh_20/         # ZH 20 samples, CER=0.92%
+│   ├── wer_results.json
+│   └── wer_results.csv
+└── zh_350/        # ZH 350 samples, CER=4.34%
+    ├── wer_results.json
+    └── wer_results.csv
+```
+
+Each JSON file contains: config, aggregate summary, and per-sample detail
+(target text, whisper text, normalized forms, WER/CER, latency, etc.).
+
+---
 
 ## Configuration
 
@@ -152,13 +267,19 @@ benchmarks/accuracy/omni/benchmark_omni_wer.py
 huggingface-cli download zhaochenyang20/seed-tts-eval \
     --repo-type dataset --local-dir seedtts_testset
 
-# Quick test (20 samples, ~3 min)
+# Quick test (5 samples, ~1 min)
+CUDA_VISIBLE_DEVICES=1 python -m benchmarks.accuracy.omni.benchmark_omni_wer \
+    --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct \
+    --testset seedtts_testset/en \
+    --max-samples 5
+
+# Medium test (20 samples, ~3 min)
 CUDA_VISIBLE_DEVICES=1 python -m benchmarks.accuracy.omni.benchmark_omni_wer \
     --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct \
     --testset seedtts_testset/en \
     --max-samples 20
 
-# Medium run (350 samples, ~55 min)
+# Large run (350 samples, ~55 min)
 CUDA_VISIBLE_DEVICES=1 python -m benchmarks.accuracy.omni.benchmark_omni_wer \
     --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct \
     --testset seedtts_testset/en \
@@ -176,11 +297,21 @@ CUDA_VISIBLE_DEVICES=1 python -m benchmarks.accuracy.omni.benchmark_omni_wer \
     --max-samples 20 --save-audio
 ```
 
+---
+
 ## Conclusion
 
 The Qwen3-Omni model produces high-quality speech that is broadly consistent
-with the published WER/CER numbers. The gap between our 350-sample results
-(EN 3.59%, ZH 4.34%) and the published results (EN 1.39%, ZH 1.07%) is
+with the published WER/CER numbers. Summary across all scales:
+
+| Scale | EN WER | vs Published | ZH CER | vs Published |
+|-------|--------|-------------|--------|-------------|
+| 5 samples | 0.00% | -1.39% | N/A | N/A |
+| 20 samples | 1.60% | +0.21% | 0.92% | -0.15% |
+| 350 samples | 3.59% | +2.20% | 4.34% | +3.27% |
+| **Published** | **1.39%** | — | **1.07%** | — |
+
+The gap between our 350-sample results and the published results is
 primarily attributable to:
 
 1. **Whisper number normalization** — the dominant error source. Whisper
