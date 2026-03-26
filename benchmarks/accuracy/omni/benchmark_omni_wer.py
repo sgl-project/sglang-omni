@@ -3,6 +3,7 @@ Benchmark accuracy (WER) for Qwen3-Omni speech synthesis.
 
 Author:
 
+- Jingwen Gu https://github.com/JingwenGu0829
 - Chenyang Zhao https://github.com/zhaochenyang20
 
 This script measures Word Error Rate (WER) of Qwen3-Omni's speech generation
@@ -86,11 +87,6 @@ QWEN3_OMNI_SAMPLE_RATE = 24000
 PUBLISHED_WER = {"en": 1.39, "zh": 1.07}
 
 
-# ---------------------------------------------------------------------------
-# Data classes
-# ---------------------------------------------------------------------------
-
-
 @dataclass
 class SampleInput:
     sample_id: str
@@ -114,11 +110,6 @@ class SampleOutput:
     latency_s: float = 0.0
     is_success: bool = False
     error: str = ""
-
-
-# ---------------------------------------------------------------------------
-# Dataset parsing
-# ---------------------------------------------------------------------------
 
 
 def parse_meta_lst(
@@ -166,11 +157,6 @@ def detect_language(testset_dir: str) -> str:
     return "en"
 
 
-# ---------------------------------------------------------------------------
-# Text normalization (matches seed-tts-eval convention)
-# ---------------------------------------------------------------------------
-
-
 def normalize_text(text: str, language: str = "en") -> str:
     """Normalize text for WER computation."""
     text = text.strip()
@@ -181,11 +167,6 @@ def normalize_text(text: str, language: str = "en") -> str:
     text = re.sub(r"[^\w\s']", "", text)
     text = re.sub(r"\s+", " ", text).strip()
     return text
-
-
-# ---------------------------------------------------------------------------
-# Model loading
-# ---------------------------------------------------------------------------
 
 
 def load_omni_model(
@@ -221,11 +202,6 @@ def load_whisper(
     model = WhisperForConditionalGeneration.from_pretrained(model_name)
     model = model.to(device).eval()
     return processor, model
-
-
-# ---------------------------------------------------------------------------
-# Inference
-# ---------------------------------------------------------------------------
 
 
 @torch.no_grad()
@@ -303,11 +279,6 @@ def transcribe(
     predicted_ids = model.generate(input_features, **gen_kwargs)
     text = processor.batch_decode(predicted_ids, skip_special_tokens=True)[0]
     return text
-
-
-# ---------------------------------------------------------------------------
-# Evaluate one sample
-# ---------------------------------------------------------------------------
 
 
 def evaluate_sample(
@@ -395,11 +366,6 @@ def evaluate_sample(
     return output
 
 
-# ---------------------------------------------------------------------------
-# Metrics
-# ---------------------------------------------------------------------------
-
-
 def calculate_metrics(
     outputs: list[SampleOutput],
     total_samples: int,
@@ -441,11 +407,6 @@ def calculate_metrics(
             round(float(np.mean(audio_durations)), 3) if audio_durations else 0
         ),
     }
-
-
-# ---------------------------------------------------------------------------
-# Summary and result saving
-# ---------------------------------------------------------------------------
 
 
 def print_summary(metrics: dict, args: argparse.Namespace) -> None:
@@ -579,11 +540,6 @@ def save_results(
     _save_csv_results(outputs, args.output_dir)
 
 
-# ---------------------------------------------------------------------------
-# Main benchmark loop
-# ---------------------------------------------------------------------------
-
-
 def benchmark(args: argparse.Namespace) -> None:
     """Run the WER benchmark."""
     samples = parse_meta_lst(args.testset, args.max_samples)
@@ -642,11 +598,6 @@ def benchmark(args: argparse.Namespace) -> None:
     metrics = calculate_metrics(outputs, len(samples), language)
     print_summary(metrics, args)
     save_results(outputs, metrics, args)
-
-
-# ---------------------------------------------------------------------------
-# CLI
-# ---------------------------------------------------------------------------
 
 
 def main() -> None:
