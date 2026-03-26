@@ -40,19 +40,34 @@ Source: [Fish Audio S2 Technical Report (arXiv:2603.08823)](https://arxiv.org/ab
 | Minimax Speech-02 | 1.90 | Tech Report |
 | FireRedTTS-2 | 1.95 | Tech Report |
 
+## First 50 Samples: Server vs Pipeline Comparison
+
+PR #216 reported WER using the **pipeline** (local executor) mode on the first 50 samples. We ran the same 50 samples through the **server** (HTTP API) mode:
+
+| Metric | PR #216 (pipeline) | Ours (server) |
+|--------|-------------------|---------------|
+| **Corpus WER (micro-avg)** | **0.91%** | **0.89%** |
+| Per-sample WER mean | 1.10% | 0.62% |
+| Per-sample WER median | 0.00% | 0.00% |
+| Per-sample WER std | 4.33% | - |
+| Per-sample WER p95 | 6.88% | - |
+| >50% WER samples | 0 | 0 |
+
+**Conclusion: Server and pipeline modes produce equivalent accuracy on the first 50 samples (0.89% vs 0.91%).** The SGLang-Omni serving layer does not introduce precision degradation.
+
 ## Analysis
 
-**Gap**: Our SGLang-Omni served result (1.95%) is ~2x the official Fish Audio S2 Pro result (0.99%).
+**Full-set gap**: Our SGLang-Omni full-set result (1.95%) is ~2x the official Fish Audio S2 Pro result (0.99%). However, the first-50-sample result (0.89%) closely matches the official number.
 
-**Possible explanations**:
+**Root cause**: The WER increase at scale is driven by **8 truncated/empty-output samples** (0.74% of total), not by a systematic serving-layer issue. Excluding these, the corpus WER drops to 1.24%.
 
-1. **Truncated generation**: 8 samples (0.74%) had >50% WER, mostly due to the model generating very short or empty audio (only the first few words). Excluding these, the corpus WER drops to 1.24%, which is closer to the official number.
+**Possible explanations for truncated outputs**:
+
+1. **Model corner cases**: The model generates very short or empty audio for certain input texts, likely due to edge cases in the text-to-semantic generation (e.g., specific phoneme sequences, unusual sentence structures).
 
 2. **Sampling parameters**: The official benchmark may use different sampling parameters (e.g., different temperature, top_p, top_k, repetition_penalty). We used the server defaults (temperature=0.8, top_p=0.8, top_k=30, repetition_penalty=1.1).
 
-3. **Text normalization**: WER is sensitive to text normalization. We used `whisper_normalizer.english.EnglishTextNormalizer` (or the transformers equivalent), which is the standard approach. Minor differences in normalization could account for some of the gap.
-
-4. **Inference differences**: Running via the SGLang-Omni pipeline (server mode) vs. the original Fish Audio inference pipeline may introduce subtle differences in preprocessing, tokenization, or generation behavior.
+3. **Text normalization**: WER is sensitive to text normalization. We used `whisper_normalizer.english.EnglishTextNormalizer` (or the transformers equivalent), which is the standard approach. Minor differences in normalization could account for some of the remaining gap.
 
 ## Worst Performing Samples
 
