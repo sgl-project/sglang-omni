@@ -68,6 +68,12 @@ override-dependencies = [
     "protobuf>=6.31.1,<7.0.0",
 ]
 
+[tool.pytest.ini_options]
+pythonpath = ["."]
+markers = [
+    "benchmark: performance benchmark tests (may require GPU and long runtime)",
+]
+
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["sglang_omni*"]

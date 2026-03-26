@@ -3,21 +3,16 @@
 
 from __future__ import annotations
 
-import logging
-import time
 from typing import Any
 
 import torch
 
 from sglang_omni.engines.omni.engine import OmniEngine
-
-logger = logging.getLogger(__name__)
 from sglang_omni.engines.omni.scheduler import Scheduler
 
 from .runtime.s2pro_sglang_ar import (
     S2ProSGLangIterationController,
     S2ProSGLangModelRunner,
-    S2ProSGLangOutputProcessor,
     S2ProSGLangResourceManager,
 )
 from .tokenizer import S2ProTokenizerAdapter
@@ -67,39 +62,6 @@ def _truncate_rope_to_bf16(model: torch.nn.Module) -> None:
             )
 
 
-def _warmup_codebook_fn(
-    output_processor: "S2ProSGLangOutputProcessor",
-    model_worker: Any,
-    semantic_begin_id: int,
-    top_k: int,
-) -> None:
-    """Run a dummy forward through the compiled codebook_fn to trigger torch.compile."""
-    try:
-        device = model_worker.model_runner.device
-        audio_decoder = output_processor._audio_decoder
-        # text_dim is the hidden dimension fed into the codebook loop.
-        # project_in may be nn.Identity (when text_dim==dim), so we read it
-        # directly from the config rather than from project_in.weight.
-        hidden_dim = int(audio_decoder.config.text_dim)
-        dummy_hidden = torch.zeros(
-            1, 1, hidden_dim, device=device, dtype=torch.bfloat16
-        )
-        dummy_sem = torch.full(
-            (1, 1), semantic_begin_id, dtype=torch.long, device=device
-        )
-        dummy_temp = torch.tensor([0.8], device=device)
-        dummy_top_p = torch.tensor([0.8], device=device)
-        logger.info("Warming up codebook_fn (torch.compile) on %s …", device)
-        t0 = time.perf_counter()
-        with torch.no_grad():
-            output_processor._codebook_fn(
-                dummy_hidden, dummy_sem, dummy_temp, dummy_top_p, top_k
-            )
-        logger.info("Codebook_fn warmup done in %.2fs", time.perf_counter() - t0)
-    except Exception:
-        logger.warning("codebook_fn warmup failed (non-fatal)", exc_info=True)
-
-
 def create_s2pro_sglang_engine(
     server_args: Any,
     audio_decoder: torch.nn.Module,
@@ -113,8 +75,6 @@ def create_s2pro_sglang_engine(
     ras_window: int = 16,
     ras_temperature: float = 1.5,
     ras_top_p: float = 0.95,
-    use_torch_compile: bool = True,
-    align_logits_to_bf16: bool = True,
 ) -> OmniEngine:
     """Create a unified S2-Pro engine (slow+fast head in one CUDA graph)."""
     from sglang_omni.engines.ar.sglang_backend.model_worker import (
@@ -201,27 +161,11 @@ def create_s2pro_sglang_engine(
     resource_mgr = S2ProSGLangResourceManager(
         token_to_kv_pool_allocator, req_to_token_pool, tree_cache
     )
-    output_processor = S2ProSGLangOutputProcessor(
-        audio_decoder=audio_decoder,
-        num_codebooks=num_codebooks,
-        codebook_size=codebook_size,
-        semantic_begin_id=semantic_begin_id,
-        semantic_end_id=semantic_end_id,
-        im_end_id=im_end_id,
-        top_k=top_k,
-        ras_window=ras_window,
-        ras_temperature=ras_temperature,
-        ras_top_p=ras_top_p,
-        use_torch_compile=use_torch_compile,
-        align_logits_to_bf16=align_logits_to_bf16,
-    )
     iteration_ctrl = S2ProSGLangIterationController(
         tree_cache=tree_cache,
         im_end_token_id=im_end_id,
         max_new_tokens=max_new_tokens,
     )
-
-    _warmup_codebook_fn(output_processor, model_worker, semantic_begin_id, top_k)
 
     def _stream_adapter(request, output):
         step_out = output.data

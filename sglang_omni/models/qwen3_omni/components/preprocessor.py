@@ -4,13 +4,11 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 import torch
-from transformers import AutoFeatureExtractor, AutoImageProcessor, AutoTokenizer
 from transformers.models.qwen3_omni_moe.processing_qwen3_omni_moe import (
     Qwen3OmniMoeProcessor,
 )
@@ -36,66 +34,37 @@ logger = logging.getLogger(__name__)
 
 
 def _resolve_local_model_dir(model_path: str) -> str:
-    """Resolve a local model directory, downloading snapshot when needed."""
-    return str(resolve_model_path(model_path, local_files_only=False))
+    """Resolve a local model directory without eagerly hydrating full snapshots."""
+    path = Path(model_path)
+    if path.exists():
+        return str(path)
+    try:
+        return str(resolve_model_path(model_path, local_files_only=True))
+    except (FileNotFoundError, OSError) as exc:
+        logger.warning(
+            "Local-only model resolution failed for %s; falling back to hub id",
+            model_path,
+            exc_info=exc,
+        )
+        return model_path
 
 
-def _load_preprocessor_config(model_dir: str) -> Mapping[str, Any]:
-    cfg_path = Path(model_dir) / "preprocessor_config.json"
-    with open(cfg_path, encoding="utf-8") as f:
-        payload = json.load(f)
-    if not isinstance(payload, Mapping):
-        raise ValueError("preprocessor_config.json is not a mapping")
-    return payload
+def _combine_cache_keys(*keys: str | None) -> str | None:
+    parts = [key for key in keys if key]
+    if not parts:
+        return None
+    return "|".join(parts)
 
 
-class _StubVideoProcessor:
-    """Minimal video processor to avoid remote downloads when video is unused."""
-
-    def __init__(self, *, merge_size: int, temporal_patch_size: int):
-        self.merge_size = merge_size
-        self.temporal_patch_size = temporal_patch_size
-
-    def __call__(
-        self, *args: Any, **kwargs: Any
-    ) -> Any:  # pragma: no cover - defensive
-        raise NotImplementedError("Video inputs are not supported in this pipeline yet")
-
-
-def _build_processor_local(model_dir: str, model_path: str) -> Qwen3OmniMoeProcessor:
-    cfg = _load_preprocessor_config(model_dir)
-    merge_size = int(cfg.get("merge_size", 2))
-    temporal_patch_size = int(cfg.get("temporal_patch_size", 2))
-
-    tokenizer = AutoTokenizer.from_pretrained(
-        model_dir,
-        trust_remote_code=True,
-        local_files_only=True,
-    )
-    ensure_chat_template(tokenizer, model_path=model_dir)
-
-    image_processor = AutoImageProcessor.from_pretrained(
-        model_dir,
-        trust_remote_code=True,
-        local_files_only=True,
-    )
-    feature_extractor = AutoFeatureExtractor.from_pretrained(
-        model_dir,
-        trust_remote_code=True,
-        local_files_only=True,
-    )
-    video_processor = _StubVideoProcessor(
-        merge_size=merge_size,
-        temporal_patch_size=temporal_patch_size,
-    )
-    processor = Qwen3OmniMoeProcessor(
-        image_processor=image_processor,
-        video_processor=video_processor,
-        feature_extractor=feature_extractor,
-        tokenizer=tokenizer,
-    )
-    ensure_chat_template(processor.tokenizer, model_path=model_dir)
-    return processor
+def _contextualize_cache_key(base_key: str | None, **context: Any) -> str | None:
+    if base_key is None:
+        return None
+    parts = [base_key]
+    for key in sorted(context):
+        value = context[key]
+        if value is not None:
+            parts.append(f"{key}={value}")
+    return "|".join(parts)
 
 
 class Qwen3OmniPreprocessor:
@@ -110,10 +79,15 @@ class Qwen3OmniPreprocessor:
                 trust_remote_code=True,
                 local_files_only=True,
             )
-        except Exception:
-            # The hub cache may not include video_preprocessor_config.json.
-            # Build the processor locally with a stub video processor instead.
-            self.processor = _build_processor_local(self.model_dir, model_path)
+        except (OSError, ValueError, RuntimeError):
+            if Path(model_path).exists():
+                raise
+            self.processor = Qwen3OmniMoeProcessor.from_pretrained(
+                model_path,
+                trust_remote_code=True,
+                local_files_only=False,
+            )
+            self.model_dir = str(resolve_model_path(model_path, local_files_only=False))
         self.tokenizer = self.processor.tokenizer
         ensure_chat_template(self.tokenizer, model_path=self.model_dir)
 
@@ -168,7 +142,7 @@ class Qwen3OmniPreprocessor:
 
             # Compute cache keys BEFORE conversion (paths are cheap to hash)
             image_cache_key = compute_image_cache_key(raw_images)
-            audio_cache_key = compute_audio_cache_key(raw_audios)
+            raw_audio_cache_key = compute_audio_cache_key(raw_audios)
             video_cache_key = compute_video_cache_key(raw_videos)
 
             # Count explicit audio inputs (for placeholder insertion)
@@ -219,7 +193,7 @@ class Qwen3OmniPreprocessor:
             videos = []
             audios = []
             image_cache_key = None
-            audio_cache_key = None
+            raw_audio_cache_key = None
             video_cache_key = None
             video_fps = None
             sampled_video_fps = None
@@ -296,18 +270,40 @@ class Qwen3OmniPreprocessor:
             mm_inputs["video"]["use_audio_in_video"] = bool(use_audio_in_video)
 
         # Build encoder_inputs with cache_key for efficient caching.
-        # The image encoder handles both images and videos, so combine both
-        # cache keys when available.
+        # Include preprocessing parameters that materially change encoder outputs.
         image_encoder_inputs = {**mm_inputs["image"], **mm_inputs["video"]}
-        combined_cache_key = image_cache_key or video_cache_key
-        if image_cache_key and video_cache_key:
-            combined_cache_key = f"{image_cache_key}|{video_cache_key}"
+        effective_video_fps: tuple[float, ...] | None = None
+        if sampled_video_fps is not None:
+            effective_video_fps = tuple(float(fps) for fps in sampled_video_fps)
+        elif video_fps is not None:
+            effective_video_fps = (float(video_fps),)
+
+        contextual_video_cache_key = _contextualize_cache_key(
+            video_cache_key,
+            fps=effective_video_fps,
+        )
+        combined_cache_key = _combine_cache_keys(
+            image_cache_key, contextual_video_cache_key
+        )
         if combined_cache_key:
             image_encoder_inputs["cache_key"] = combined_cache_key
 
         audio_encoder_inputs = {**mm_inputs["audio"]}
-        if audio_cache_key:
-            audio_encoder_inputs["cache_key"] = audio_cache_key
+        contextualized_audio_cache_key = _contextualize_cache_key(
+            raw_audio_cache_key,
+            target_sr=audio_target_sr,
+        )
+        if audio_from_video:
+            contextualized_audio_cache_key = _combine_cache_keys(
+                contextualized_audio_cache_key,
+                _contextualize_cache_key(
+                    video_cache_key,
+                    extracted_audio=True,
+                    target_sr=audio_target_sr,
+                ),
+            )
+        if contextualized_audio_cache_key:
+            audio_encoder_inputs["cache_key"] = contextualized_audio_cache_key
 
         encoder_inputs: dict[str, dict[str, Any]] = {}
         image_encoder_inputs = {

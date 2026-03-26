@@ -35,12 +35,20 @@ jobs:
       - name: Install dependencies
         shell: bash
         run: |
-          # if sf venv does not exist, create it
-          if [ ! -d sf ]; then
+          if [ -d omni ] && ! omni/bin/python -c "import torch" 2>/dev/null; then
+            echo "Cached venv is corrupted, removing..."
+            rm -rf omni
+          fi
+          if [ ! -d omni ]; then
             uv venv omni -p 3.11
           fi
           source omni/bin/activate
           uv pip install -v -e ".[dev]"
+
+      - name: Kill GPU processes
+        shell: bash
+        run: |
+          bash .github/scripts/delete_gpu_process.sh
 
       - name: Run test
         timeout-minutes: 30
