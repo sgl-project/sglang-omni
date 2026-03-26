@@ -7,3 +7,9 @@ Comprehensive benchmark suite for SGLang Omni, covering both performance (latenc
 ### TTS Voice Cloning
 
 [`performance/tts/benchmark_tts_speed.py`](performance/tts/benchmark_tts_speed.py): Benchmarks online serving latency and throughput for TTS models via the `/v1/audio/speech` HTTP API.
+
+## Accuracy Benchmarks
+
+### TTS WER Evaluation
+
+[`accuracy/tts/eval_wer.py`](accuracy/tts/eval_wer.py): Evaluates TTS accuracy by computing Word Error Rate (WER) on generated audio using seed-tts-eval.
