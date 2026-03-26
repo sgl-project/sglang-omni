@@ -264,6 +264,7 @@ async def generate_speech_http(
     sample: SampleInput,
     max_new_tokens: int = 2048,
     temperature: float = 0.8,
+    seed: int | None = None,
 ) -> tuple[bytes, float]:
     """Generate speech via the sglang omni server HTTP API.
 
@@ -278,6 +279,8 @@ async def generate_speech_http(
         "max_new_tokens": max_new_tokens,
         "temperature": temperature,
     }
+    if seed is not None:
+        payload["seed"] = seed
 
     t0 = time.perf_counter()
     async with session.post(api_url, json=payload) as response:
@@ -304,6 +307,7 @@ async def evaluate_sample(
     audio_dir: str,
     max_new_tokens: int,
     temperature: float,
+    seed: int | None = None,
 ) -> SampleOutput:
     output = SampleOutput(
         sample_id=sample.sample_id,
@@ -315,7 +319,7 @@ async def evaluate_sample(
     # Generate Audio
     try:
         wav_bytes, latency = await generate_speech_http(
-            session, api_url, model, sample, max_new_tokens, temperature
+            session, api_url, model, sample, max_new_tokens, temperature, seed
         )
         with open(wav_path, "wb") as f:
             f.write(wav_bytes)
@@ -600,6 +604,7 @@ async def main_async(args: argparse.Namespace):
                 audio_dir,
                 args.max_new_tokens,
                 args.temperature,
+                args.seed,
             )
             outputs.append(result)
 
@@ -662,6 +667,7 @@ def main():
     p.add_argument("--max-samples", type=int, default=None)
     p.add_argument("--max-new-tokens", type=int, default=2048)
     p.add_argument("--temperature", type=float, default=0.8)
+    p.add_argument("--seed", type=int, default=None, help="Random seed for generation")
     args = p.parse_args()
 
     asyncio.run(main_async(args))
