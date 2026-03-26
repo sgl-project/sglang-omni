@@ -130,8 +130,8 @@ class EngineExecutor(Executor):
             return
         payload = self._payloads.get(request_id)
         request_params = payload.request.params if payload is not None else None
-        is_stream_request = (
-            isinstance(request_params, dict) and request_params.get("stream") is True
+        is_stream_request = isinstance(request_params, dict) and request_params.get(
+            "stream", False
         )
         if not is_stream_request:
             return

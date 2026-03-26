@@ -274,7 +274,6 @@ class S2ProSGLangTextModel(nn.Module):
         ras_window: int,
         ras_temperature: float,
         ras_top_p: float,
-        align_logits_to_bf16: bool,
     ) -> None:
         """Attach audio decoder and allocate persistent GPU buffers."""
         device = self.embed_tokens.weight.device
@@ -288,7 +287,6 @@ class S2ProSGLangTextModel(nn.Module):
         self._ras_window = ras_window
         self._ras_temperature = ras_temperature
         self._ras_top_p = ras_top_p
-        self._align_logits_to_bf16 = align_logits_to_bf16
 
         # Shared codebook embedding from audio decoder (for VQ input combination)
         self._vq_codebook_embeddings = audio_decoder.codebook_embeddings
@@ -410,8 +408,6 @@ class S2ProSGLangTextModel(nn.Module):
     def _decode_codebooks(self, logits: Tensor, hidden_states: Tensor) -> None:
         """Constrained semantic sampling + batched codebook generation."""
         bs = logits.shape[0]
-        if self._align_logits_to_bf16:
-            logits = logits.to(torch.bfloat16).to(torch.float32)
 
         # Constrained decode: mask non-semantic tokens
         biased_logits = logits + self._semantic_bias.to(dtype=logits.dtype)
