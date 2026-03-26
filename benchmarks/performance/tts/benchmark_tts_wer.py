@@ -5,19 +5,19 @@
 Supports both English (Whisper-large-v3) and Chinese (FunASR paraformer-zh).
 
 Usage:
-    # English
-    python -m benchmarks.accuracy.tts.benchmark_tts_wer \
-        --meta seedtts_testset/en/meta.lst \
+    # Start the server first:
+    python -m sglang_omni.cli.cli serve \
         --model-path fishaudio/s2-pro \
+        --config examples/configs/s2pro_tts.yaml \
+        --port 8000
+
+    # Then run WER evaluation:
+    python -m benchmarks.performance.tts.benchmark_tts_wer \
+        --meta seedtts_testset/en/meta.lst \
+        --model fishaudio/s2-pro \
+        --port 8000 \
         --output-dir results/s2pro_en \
         --lang en
-
-    # Chinese
-    python -m benchmarks.accuracy.tts.benchmark_tts_wer \
-        --meta seedtts_testset/zh/hardcase.lst \
-        --model-path fishaudio/s2-pro \
-        --output-dir results/s2pro_zh \
-        --lang zh
 """
 
 from __future__ import annotations
@@ -32,19 +32,13 @@ import string
 import time
 from dataclasses import dataclass
 
+import aiohttp
 import numpy as np
 import scipy.signal
 import soundfile as sf
 import torch
 from jiwer import process_words
 from tqdm import tqdm
-
-from sglang_omni.models.fishaudio_s2_pro.pipeline.stages import (
-    create_preprocessing_executor,
-    create_sglang_tts_engine_executor,
-    create_vocoder_executor,
-)
-from sglang_omni.proto import OmniRequest, StagePayload
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -260,54 +254,49 @@ def transcribe(asr, wav_path: str, lang: str, device: str) -> str:
         return zhconv.convert(transcription, "zh-cn")
 
 
-async def generate_speech_s2pro(
-    prep,
-    engine,
-    vocoder,
+WAV_HEADER_SIZE = 44
+
+
+async def generate_speech_http(
+    session: aiohttp.ClientSession,
+    api_url: str,
+    model_name: str,
     sample: SampleInput,
     max_new_tokens: int = 2048,
     temperature: float = 0.8,
-) -> tuple[np.ndarray, int, float]:
-    """Generate speech using SGLang-Omni pipeline executors locally."""
-    references = []
-    if sample.ref_audio and sample.ref_text:
-        references.append({"audio_path": sample.ref_audio, "text": sample.ref_text})
+) -> tuple[bytes, float]:
+    """Generate speech via the sglang omni server HTTP API.
 
-    req = OmniRequest(
-        inputs={"text": sample.target_text, "references": references},
-        params={"max_new_tokens": max_new_tokens, "temperature": temperature},
-    )
-    payload = StagePayload(request_id=sample.sample_id, request=req, data={})
+    Returns (wav_bytes, latency_seconds).
+    """
+    payload = {
+        "model": model_name,
+        "input": sample.target_text,
+        "ref_audio": sample.ref_audio,
+        "ref_text": sample.ref_text,
+        "response_format": "wav",
+        "max_new_tokens": max_new_tokens,
+        "temperature": temperature,
+    }
 
     t0 = time.perf_counter()
-
-    # 1. Preprocessing
-    await prep.add_request(payload)
-    payload = await prep.get_result()
-
-    # 2. Text-to-Semantic engine
-    await engine.add_request(payload)
-    payload = await engine.get_result()
-
-    # 3. Vocoder (Semantic-to-Acoustic)
-    await vocoder.add_request(payload)
-    payload = await vocoder.get_result()
-
+    async with session.post(api_url, json=payload) as response:
+        if response.status != 200:
+            error_text = await response.text()
+            raise RuntimeError(f"HTTP {response.status}: {error_text}")
+        wav_bytes = await response.read()
     latency = time.perf_counter() - t0
 
-    audio_data = payload.data.get("audio_data")
-    sr = payload.data.get("sample_rate", 44100)
+    if len(wav_bytes) <= WAV_HEADER_SIZE:
+        raise ValueError(f"Empty or invalid audio response ({len(wav_bytes)} bytes)")
 
-    if not audio_data:
-        raise ValueError("No audio data generated")
-
-    return np.array(audio_data), sr, latency
+    return wav_bytes, latency
 
 
 async def evaluate_sample(
-    prep,
-    engine,
-    vocoder,
+    session: aiohttp.ClientSession,
+    api_url: str,
+    model: str,
     asr,
     sample: SampleInput,
     lang: str,
@@ -325,13 +314,15 @@ async def evaluate_sample(
 
     # Generate Audio
     try:
-        audio_data, sr, latency = await generate_speech_s2pro(
-            prep, engine, vocoder, sample, max_new_tokens, temperature
+        wav_bytes, latency = await generate_speech_http(
+            session, api_url, model, sample, max_new_tokens, temperature
         )
-        sf.write(wav_path, audio_data, sr)
+        with open(wav_path, "wb") as f:
+            f.write(wav_bytes)
 
         output.latency_s = round(latency, 4)
-        output.audio_duration_s = round(len(audio_data) / sr, 4)
+        wav_info = sf.info(wav_path)
+        output.audio_duration_s = round(wav_info.duration, 4)
     except Exception as e:
         output.error = f"Generation failed: {e}"
         logger.error("[%s] %s", sample.sample_id, output.error)
@@ -436,7 +427,7 @@ def print_summary(metrics: dict, args: argparse.Namespace) -> None:
     print(f"\n{'=' * w}")
     print(f"{'TTS WER Benchmark Result':^{w}}")
     print(f"{'=' * w}")
-    print(f"  {'Model:':<{lw}} {args.model_path}")
+    print(f"  {'Model:':<{lw}} {args.model}")
     print(f"  {'Language:':<{lw}} {metrics.get('lang', 'N/A')}")
     print(
         f"  {'Evaluated / Total:':<{lw}} {metrics.get('evaluated', 0)}/{metrics.get('total_samples', 0)}"
@@ -479,7 +470,7 @@ def save_results(
     json_results = {
         "summary": metrics,
         "config": {
-            "model_path": args.model_path,
+            "model": args.model,
             "meta": args.meta,
             "max_new_tokens": args.max_new_tokens,
             "temperature": args.temperature,
@@ -548,8 +539,26 @@ def save_results(
             )
 
 
+def wait_for_service(base_url: str, timeout: int = 1200) -> None:
+    import requests as requests_lib
+
+    logger.info("Waiting for service at %s ...", base_url)
+    start = time.time()
+    while True:
+        try:
+            resp = requests_lib.get(f"{base_url}/health", timeout=1)
+            if resp.status_code == 200:
+                logger.info("Service is ready.")
+                return
+        except requests_lib.exceptions.RequestException as exc:
+            logger.debug("Health check request failed: %s", exc)
+        if time.time() - start > timeout:
+            raise TimeoutError(f"Service at {base_url} not ready within {timeout}s")
+        time.sleep(1)
+
+
 async def main_async(args: argparse.Namespace):
-    # Set the default CUDA device to avoid device mismatch issues in multi-GPU environments
+    # Set the default CUDA device for ASR model loading
     if "cuda" in args.device:
         try:
             torch.cuda.set_device(args.device)
@@ -559,30 +568,31 @@ async def main_async(args: argparse.Namespace):
                 "Failed to set default CUDA device to %s: %s", args.device, e
             )
 
+    base_url = args.base_url or f"http://{args.host}:{args.port}"
+    api_url = f"{base_url}/v1/audio/speech"
+
+    wait_for_service(base_url)
+
     # Load ASR
     asr = load_asr_model(args.lang, args.device)
 
-    # Load S2-Pro locally (offline pipeline executors)
-    logger.info("Loading S2-Pro models from %s on %s...", args.model_path, args.device)
-    prep = create_preprocessing_executor(args.model_path)
-    engine = create_sglang_tts_engine_executor(args.model_path, device=args.device)
-    vocoder = create_vocoder_executor(args.model_path, device=args.device)
-    await engine.start()
+    # Parse samples
+    samples = parse_meta_lst(args.meta, args.max_samples)
+    logger.info("Loaded %d samples from %s", len(samples), args.meta)
 
-    try:
-        # Parse samples
-        samples = parse_meta_lst(args.meta, args.max_samples)
-        logger.info("Loaded %d samples from %s", len(samples), args.meta)
+    audio_dir = os.path.join(args.output_dir, "audio")
+    os.makedirs(audio_dir, exist_ok=True)
 
-        audio_dir = os.path.join(args.output_dir, "audio")
-        os.makedirs(audio_dir, exist_ok=True)
-
-        outputs = []
-        for i, sample in enumerate(tqdm(samples, desc=f"Evaluating WER ({args.lang})")):
+    timeout = aiohttp.ClientTimeout(total=300)
+    outputs = []
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        for i, sample in enumerate(
+            tqdm(samples, desc=f"Evaluating WER ({args.lang})")
+        ):
             result = await evaluate_sample(
-                prep,
-                engine,
-                vocoder,
+                session,
+                api_url,
+                args.model,
                 asr,
                 sample,
                 args.lang,
@@ -611,12 +621,9 @@ async def main_async(args: argparse.Namespace):
                     result.error,
                 )
 
-        metrics = calculate_metrics(outputs, args.lang)
-        print_summary(metrics, args)
-        save_results(outputs, metrics, args)
-
-    finally:
-        await engine.stop()
+    metrics = calculate_metrics(outputs, args.lang)
+    print_summary(metrics, args)
+    save_results(outputs, metrics, args)
 
 
 def main():
@@ -630,12 +637,28 @@ def main():
         help="Directory to save generated audio and results",
     )
     p.add_argument(
-        "--model-path", default="fishaudio/s2-pro", help="Path to S2-Pro model"
+        "--model",
+        default="fishaudio/s2-pro",
+        help="Model name for the API request",
     )
     p.add_argument(
         "--lang", choices=["en", "zh"], default="en", help="Language for ASR model"
     )
-    p.add_argument("--device", default="cuda:0")
+    p.add_argument(
+        "--host", type=str, default="localhost", help="Server host"
+    )
+    p.add_argument(
+        "--port", type=int, default=8000, help="Server port"
+    )
+    p.add_argument(
+        "--base-url",
+        type=str,
+        default=None,
+        help="Base URL (e.g. http://localhost:8000). Overrides --host/--port.",
+    )
+    p.add_argument(
+        "--device", default="cuda:0", help="Device for ASR model"
+    )
     p.add_argument("--max-samples", type=int, default=None)
     p.add_argument("--max-new-tokens", type=int, default=2048)
     p.add_argument("--temperature", type=float, default=0.8)
