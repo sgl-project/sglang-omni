@@ -33,15 +33,6 @@ def find_free_port() -> int:
         return s.getsockname()[1]
 
 
-def download_dataset(cache_dir: Path) -> Path:
-    """Download the mini seed-tts-eval dataset via huggingface_hub."""
-    path = snapshot_download(
-        DATASET_REPO,
-        repo_type="dataset",
-        local_dir=str(cache_dir / "data"),
-    )
-    return Path(path)
-
 
 def start_s2pro_server(log_file: Path, port: int) -> subprocess.Popen:
     """Start the s2-pro TTS server, wait until healthy, and return the process."""
@@ -101,7 +92,12 @@ def stop_server(proc: subprocess.Popen) -> None:
 def dataset_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
     """Download the mini seed-tts-eval dataset via huggingface_hub."""
     cache_dir = tmp_path_factory.mktemp("seed_tts_eval")
-    return download_dataset(cache_dir)
+    path = snapshot_download(
+        DATASET_REPO,
+        repo_type="dataset",
+        local_dir=str(cache_dir / "data"),
+    )
+    return Path(path)
 
 
 @pytest.fixture(scope="module")
