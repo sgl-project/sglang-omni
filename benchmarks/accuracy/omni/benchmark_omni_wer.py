@@ -121,7 +121,9 @@ class SampleOutput:
 # ---------------------------------------------------------------------------
 
 
-def parse_meta_lst(testset_dir: str, max_samples: int | None = None) -> list[SampleInput]:
+def parse_meta_lst(
+    testset_dir: str, max_samples: int | None = None
+) -> list[SampleInput]:
     """Parse a seed-tts-eval meta.lst file.
 
     Format: id|ref_text|ref_audio_path|target_text
@@ -261,9 +263,13 @@ def generate_speech(
     )
     latency = time.perf_counter() - t0
 
-    text_ids = thinker_result if not hasattr(thinker_result, "sequences") else thinker_result.sequences
+    text_ids = (
+        thinker_result
+        if not hasattr(thinker_result, "sequences")
+        else thinker_result.sequences
+    )
     text_output = processor.batch_decode(
-        text_ids[:, inputs["input_ids"].shape[1]:],
+        text_ids[:, inputs["input_ids"].shape[1] :],
         skip_special_tokens=True,
     )[0]
 
@@ -285,7 +291,9 @@ def transcribe(
         audio = audio.squeeze(0)
 
     inputs = processor(
-        audio.cpu().float().numpy(), sampling_rate=WHISPER_SAMPLE_RATE, return_tensors="pt"
+        audio.cpu().float().numpy(),
+        sampling_rate=WHISPER_SAMPLE_RATE,
+        return_tensors="pt",
     )
     input_features = inputs.input_features.to(model.device)
 
@@ -450,14 +458,18 @@ def print_summary(metrics: dict, args: argparse.Namespace) -> None:
     print(f"  {'Model:':<{lw}} {args.model_path}")
     print(f"  {'Language:':<{lw}} {metrics.get('language', 'N/A')}")
     print(f"  {'Backend:':<{lw}} HuggingFace Transformers")
-    print(f"  {'Evaluated / Total:':<{lw}} {metrics.get('evaluated', 0)}/{metrics.get('total_samples', 0)}")
+    print(
+        f"  {'Evaluated / Total:':<{lw}} {metrics.get('evaluated', 0)}/{metrics.get('total_samples', 0)}"
+    )
     print(f"  {'Skipped:':<{lw}} {metrics.get('skipped', 0)}")
     print(f"{'-' * w}")
     print(f"  {'WER mean:':<{lw}} {metrics.get('wer_mean_pct', 'N/A')}%")
     print(f"  {'WER median:':<{lw}} {round(metrics.get('wer_median', 0) * 100, 2)}%")
     print(f"  {'WER std:':<{lw}} {round(metrics.get('wer_std', 0) * 100, 2)}%")
     print(f"  {'WER p95:':<{lw}} {round(metrics.get('wer_p95', 0) * 100, 2)}%")
-    print(f"  {'>50% WER samples:':<{lw}} {metrics.get('n_above_50_pct_wer', 0)} ({metrics.get('pct_above_50_pct_wer', 0)}%)")
+    print(
+        f"  {'>50% WER samples:':<{lw}} {metrics.get('n_above_50_pct_wer', 0)} ({metrics.get('pct_above_50_pct_wer', 0)}%)"
+    )
     print(f"{'-' * w}")
     print(f"  {'Published WER:':<{lw}} {metrics.get('published_wer_pct', 'N/A')}%")
     print(f"  {'Delta (ours - published):':<{lw}} {metrics.get('delta_pct', 'N/A'):+}%")
@@ -465,7 +477,9 @@ def print_summary(metrics: dict, args: argparse.Namespace) -> None:
     print(f"  {'Latency mean (s):':<{lw}} {metrics.get('latency_mean_s', 'N/A')}")
     print(f"  {'Latency median (s):':<{lw}} {metrics.get('latency_median_s', 'N/A')}")
     print(f"  {'Latency p95 (s):':<{lw}} {metrics.get('latency_p95_s', 'N/A')}")
-    print(f"  {'Audio duration mean (s):':<{lw}} {metrics.get('audio_duration_mean_s', 'N/A')}")
+    print(
+        f"  {'Audio duration mean (s):':<{lw}} {metrics.get('audio_duration_mean_s', 'N/A')}"
+    )
     print(f"{'=' * w}")
 
 
@@ -574,7 +588,9 @@ def benchmark(args: argparse.Namespace) -> None:
     """Run the WER benchmark."""
     samples = parse_meta_lst(args.testset, args.max_samples)
     language = args.language or detect_language(args.testset)
-    logger.info("Loaded %d samples from %s (language=%s)", len(samples), args.testset, language)
+    logger.info(
+        "Loaded %d samples from %s (language=%s)", len(samples), args.testset, language
+    )
 
     omni_processor, omni_model = load_omni_model(
         args.model_path,

@@ -25,6 +25,8 @@ env/
 .coverage
 htmlcov/
 
+benchmarks/accuracy/omni/results/
+
 # Logs
 *.log
 
