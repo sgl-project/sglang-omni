@@ -23,15 +23,9 @@ import requests
 
 from tests.test_model.helpers import disable_proxy
 
-# Matches the exact text/audio pair used in the documentation.
 SPEECH_INPUT = "Get the trust fund to the bank early."
 REFERENCE_TEXT = "We asked over twenty different people, and they all said it was his."
 REF_WAV_RELPATH = "en/prompt-wavs/common_voice_en_10119832.wav"
-
-
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
 
 
 @pytest.fixture(scope="module")
@@ -42,22 +36,11 @@ def ref_wav(dataset_dir: Path) -> Path:
     return p
 
 
-@pytest.fixture(scope="module")
-def api_base(server_port: int) -> str:
-    """Return the base URL for the test server."""
-    return f"http://localhost:{server_port}"
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
-def _post_audio_speech(api_base: str, payload: dict, timeout: int = 120) -> bytes:
+def _post_audio_speech(port: int, payload: dict, timeout: int = 120) -> bytes:
     """Send a request to /v1/audio/speech and return raw audio bytes."""
     with disable_proxy():
         resp = requests.post(
-            f"{api_base}/v1/audio/speech", json=payload, timeout=timeout
+            f"http://localhost:{port}/v1/audio/speech", json=payload, timeout=timeout
         )
     resp.raise_for_status()
     assert len(resp.content) > 0
@@ -70,35 +53,26 @@ def _save_and_verify(content: bytes, path: Path) -> None:
     assert path.stat().st_size > 0
 
 
-# ---------------------------------------------------------------------------
-# Tests — Basic TTS
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.docs
 def test_basic_tts(
-    server_process: subprocess.Popen, api_base: str, tmp_path: Path
+    server_process: tuple[subprocess.Popen, int], tmp_path: Path
 ) -> None:
     """POST /v1/audio/speech with minimal payload (no reference audio)."""
-    content = _post_audio_speech(api_base, {"input": "Hello, how are you?"})
+    _, port = server_process
+    content = _post_audio_speech(port, {"input": "Hello, how are you?"})
     _save_and_verify(content, tmp_path / "output.wav")
-
-
-# ---------------------------------------------------------------------------
-# Tests — Voice Cloning
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.docs
 def test_voice_cloning(
-    server_process: subprocess.Popen,
-    api_base: str,
+    server_process: tuple[subprocess.Popen, int],
     ref_wav: Path,
     tmp_path: Path,
 ) -> None:
     """Voice cloning with real reference audio from seed-tts-eval-mini."""
+    _, port = server_process
     content = _post_audio_speech(
-        api_base,
+        port,
         {
             "input": SPEECH_INPUT,
             "references": [{"audio_path": str(ref_wav), "text": REFERENCE_TEXT}],
@@ -109,11 +83,12 @@ def test_voice_cloning(
 
 @pytest.mark.docs
 def test_voice_cloning_streaming(
-    server_process: subprocess.Popen,
-    api_base: str,
+    server_process: tuple[subprocess.Popen, int],
     ref_wav: Path,
 ) -> None:
     """Streaming voice cloning via SSE."""
+    _, port = server_process
+    api_base = f"http://localhost:{port}"
     with disable_proxy():
         resp = requests.post(
             f"{api_base}/v1/audio/speech",
@@ -157,12 +132,13 @@ def test_voice_cloning_streaming(
 
 @pytest.mark.docs
 def test_voice_cloning_streaming_wav_reassembly(
-    server_process: subprocess.Popen,
-    api_base: str,
+    server_process: tuple[subprocess.Popen, int],
     ref_wav: Path,
     tmp_path: Path,
 ) -> None:
     """Streaming voice cloning — reassemble WAV from SSE chunks."""
+    _, port = server_process
+    api_base = f"http://localhost:{port}"
     payload = {
         "input": SPEECH_INPUT,
         "references": [{"audio_path": str(ref_wav), "text": REFERENCE_TEXT}],
@@ -212,11 +188,12 @@ def test_voice_cloning_streaming_wav_reassembly(
 
 @pytest.mark.docs
 def test_request_parameters(
-    server_process: subprocess.Popen, api_base: str, tmp_path: Path
+    server_process: tuple[subprocess.Popen, int], tmp_path: Path
 ) -> None:
     """POST /v1/audio/speech with explicit generation parameters."""
+    _, port = server_process
     content = _post_audio_speech(
-        api_base,
+        port,
         {
             "input": "Hello, how are you?",
             "temperature": 0.7,
