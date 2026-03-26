@@ -33,7 +33,6 @@ def find_free_port() -> int:
         return s.getsockname()[1]
 
 
-
 def start_s2pro_server(log_file: Path, port: int) -> subprocess.Popen:
     """Start the s2-pro TTS server, wait until healthy, and return the process."""
     cmd = [
