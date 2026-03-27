@@ -110,19 +110,8 @@ def save_results(
     config: dict,
     output_dir: str,
 ) -> None:
-    """Save JSON and CSV results to output_dir."""
+    """Save JSON results to output_dir."""
     os.makedirs(output_dir, exist_ok=True)
-    _save_json(outputs, system_performance, metrics_summary, config, output_dir)
-
-
-def _save_json(
-    outputs: list[BenchmarkResult],
-    system_performance: dict,
-    metrics_summary: dict,
-    config: dict,
-    output_dir: str,
-) -> None:
-
     json_results = {
         "system_performance": system_performance,
         "metrics": metrics_summary,
@@ -212,14 +201,14 @@ class Benchmarker(ABC):
         max_concurrency: int = 1,
         request_rate: float = float("inf"),
         warmup: int = 1,
-        metrics: List[Metrics] = [],
+        metrics: List[Metrics] = None,
     ) -> None:
         self.base_url = base_url
         self.stream = stream
         self.max_concurrency = max_concurrency
         self.request_rate = request_rate
         self.warmup = warmup
-        self.metrics = metrics
+        self.metrics = metrics or []
 
     @property
     @abstractmethod
@@ -246,7 +235,7 @@ class Benchmarker(ABC):
             "metrics": [m.name for m in self.metrics],
         }
 
-    async def run(self, output_dir: str) -> dict:
+    async def run(self, output_dir: str):
         """Execute the full benchmark pipeline and return the metrics dict."""
         # ensure the http server is up and running
         wait_for_server(self.base_url)
@@ -294,7 +283,7 @@ class Benchmarker(ABC):
 
         print("=" * 10, "Metrics Summary", "=" * 10)
         for k, v in metrics_summary.items():
-            print(f"{k}: {v:.2f}")
+            print(f"{k}: {v}")
         print("\n")
 
         # save the benchmarking results
@@ -420,10 +409,8 @@ class Benchmarker(ABC):
             result.engine_time_s = float(eng_time)
         if result.completion_tokens > 0 and result.engine_time_s > 0:
             result.tok_per_s = result.completion_tokens / result.engine_time_s
-        if result.completion_tokens > 1 and result.latency > 0 and result.ttft > 0:
-            generation_time = result.latency - result.ttft
-            if generation_time > 0:
-                result.tpot = generation_time / (result.completion_tokens - 1)
+        if result.completion_tokens > 1 and result.latency > 0:
+            result.tpot = result.engine_time_s / (result.completion_tokens - 1)
 
     def _apply_headers(self, result: BenchmarkResult, headers: dict) -> None:
         """Extract token counts and engine time from HTTP response headers."""
