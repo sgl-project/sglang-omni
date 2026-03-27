@@ -14,64 +14,46 @@ from sglang_omni.models.fishaudio_s2_pro.sglang_model import (
 def test_resolve_sampling_state_uses_request_defaults_without_repetition() -> None:
     data = S2ProSGLangRequestData(
         input_ids=[],
-        temperature=0.7,
-        top_p=0.9,
         _previous_semantic_tokens=[11, 12, 13],
     )
 
-    use_ras, temperature, top_p, previous_tokens = _resolve_sampling_state(
+    sampling_state = _resolve_sampling_state(
         data,
         ras_window=16,
-        ras_temperature=1.5,
-        ras_top_p=0.95,
     )
 
-    assert use_ras is False
-    assert temperature == 0.7
-    assert top_p == 0.9
-    assert previous_tokens == [11, 12, 13]
+    assert sampling_state.use_ras is False
+    assert sampling_state.previous_tokens == [11, 12, 13]
 
 
-def test_resolve_sampling_state_switches_to_ras_on_recent_repetition() -> None:
+def test_resolve_sampling_state_switches_to_ras_on_recent_duplicate_window() -> None:
     data = S2ProSGLangRequestData(
         input_ids=[],
-        temperature=0.7,
-        top_p=0.9,
-        _previous_semantic_tokens=[101, 103, 103, 103],
+        _previous_semantic_tokens=[101, 103, 101],
     )
 
-    use_ras, temperature, top_p, previous_tokens = _resolve_sampling_state(
+    sampling_state = _resolve_sampling_state(
         data,
         ras_window=16,
-        ras_temperature=1.5,
-        ras_top_p=0.95,
     )
 
-    assert use_ras is True
-    assert temperature == 1.5
-    assert top_p == 0.95
-    assert previous_tokens == [101, 103, 103, 103]
+    assert sampling_state.use_ras is True
+    assert sampling_state.previous_tokens == [101, 103, 101]
 
 
-def test_resolve_sampling_state_ignores_non_terminal_duplicates() -> None:
+def test_resolve_sampling_state_uses_last_history_window() -> None:
     data = S2ProSGLangRequestData(
         input_ids=[],
-        temperature=0.7,
-        top_p=0.9,
-        _previous_semantic_tokens=[101, 102, 101, 103],
+        _previous_semantic_tokens=list(range(20)),
     )
 
-    use_ras, temperature, top_p, previous_tokens = _resolve_sampling_state(
+    sampling_state = _resolve_sampling_state(
         data,
         ras_window=16,
-        ras_temperature=1.5,
-        ras_top_p=0.95,
     )
 
-    assert use_ras is False
-    assert temperature == 0.7
-    assert top_p == 0.9
-    assert previous_tokens == [101, 102, 101, 103]
+    assert sampling_state.use_ras is False
+    assert sampling_state.previous_tokens == list(range(4, 20))
 
 
 def test_select_semantic_token_with_fallback_only_changes_collapsing_rows() -> None:
@@ -100,9 +82,21 @@ def test_select_semantic_token_with_fallback_only_changes_collapsing_rows() -> N
 
     selected = _select_semantic_token_with_fallback(
         logits,
-        fallback_mask=fallback_mask,
+        use_ras_mask=fallback_mask,
         previous_tokens=previous_tokens,
         previous_mask=previous_mask,
     )
 
     assert selected.tolist() == [2, 1]
+
+
+def test_select_semantic_token_with_fallback_keeps_greedy_without_history() -> None:
+    logits = torch.tensor([[0.1, 0.9, 0.8]], dtype=torch.float32)
+    selected = _select_semantic_token_with_fallback(
+        logits,
+        use_ras_mask=torch.tensor([True], dtype=torch.bool),
+        previous_tokens=torch.zeros((1, 3), dtype=torch.long),
+        previous_mask=torch.zeros((1, 3), dtype=torch.bool),
+    )
+
+    assert selected.tolist() == [1]

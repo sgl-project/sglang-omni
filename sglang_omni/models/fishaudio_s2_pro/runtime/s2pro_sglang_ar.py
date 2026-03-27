@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 import torch
 from sglang.srt.mem_cache.common import release_kv_cache
@@ -31,6 +31,11 @@ from sglang_omni.engines.omni.types import (
     SchedulerOutput,
     SchedulerRequest,
 )
+from sglang_omni.models.fishaudio_s2_pro.constants import (
+    RAS_TRIGGER_LOOKBACK,
+    RAS_TRIGGER_MIN_TOKENS,
+    REPETITION_WINDOW,
+)
 
 from .s2pro_ar import S2ProStepOutput
 
@@ -38,8 +43,6 @@ if TYPE_CHECKING:
     from sglang_omni.engines.ar.sglang_backend.model_worker import ModelWorker
 
 logger = logging.getLogger(__name__)
-
-_REPETITION_WINDOW = 16
 
 
 # ---------------------------------------------------------------------------
@@ -71,21 +74,25 @@ class S2ProSGLangRequestData(SGLangARRequestData):
     _last_codebook_values: torch.Tensor | None = None
 
 
+class SamplingState(NamedTuple):
+    use_ras: bool
+    previous_tokens: list[int]
+
+
 def _resolve_sampling_state(
     data: S2ProSGLangRequestData,
     *,
     ras_window: int,
-    ras_temperature: float,
-    ras_top_p: float,
-    repetition_window: int = _REPETITION_WINDOW,
-) -> tuple[bool, float, float, list[int]]:
+    repetition_window: int = REPETITION_WINDOW,
+) -> SamplingState:
     previous_tokens = data._previous_semantic_tokens[-repetition_window:]
     recent_tokens = data._previous_semantic_tokens[-ras_window:]
-    use_ras = len(recent_tokens) >= 3 and len(set(recent_tokens[-3:])) == 1
+    duplicate_window = recent_tokens[-RAS_TRIGGER_LOOKBACK:]
+    use_ras = len(recent_tokens) >= RAS_TRIGGER_MIN_TOKENS and len(
+        set(duplicate_window)
+    ) < len(duplicate_window)
 
-    if use_ras:
-        return True, ras_temperature, ras_top_p, previous_tokens
-    return False, data.temperature, data.top_p, previous_tokens
+    return SamplingState(use_ras=use_ras, previous_tokens=previous_tokens)
 
 
 # ---------------------------------------------------------------------------
@@ -465,25 +472,20 @@ class S2ProSGLangModelRunner:
             data: S2ProSGLangRequestData = sched_req.data
             if data._last_codebook_values is not None and is_semantic[i]:
                 text_model._vq_codes[i].copy_(data._last_codebook_values)
-            use_ras, temperature, top_p, previous_tokens = _resolve_sampling_state(
+            sampling_state = _resolve_sampling_state(
                 data,
                 ras_window=text_model._ras_window,
-                ras_temperature=text_model._ras_temperature,
-                ras_top_p=text_model._ras_top_p,
             )
-            text_model._sample_use_ras[i] = use_ras
-            text_model._sample_temperature[i, 0] = temperature
-            text_model._sample_top_p[i, 0] = top_p
-            text_model._sample_repetition_penalty[i, 0] = data.repetition_penalty
+            text_model._sample_use_ras[i] = sampling_state.use_ras
             text_model._sample_previous_tokens[i].zero_()
             text_model._sample_previous_mask[i].zero_()
-            if previous_tokens:
+            if sampling_state.previous_tokens:
                 prev_tensor = torch.tensor(
-                    previous_tokens,
+                    sampling_state.previous_tokens,
                     device=input_ids.device,
                     dtype=torch.long,
                 )
-                length = int(prev_tensor.shape[0])
+                length = prev_tensor.shape[0]
                 text_model._sample_previous_tokens[i, :length].copy_(prev_tensor)
                 text_model._sample_previous_mask[i, :length] = True
 
