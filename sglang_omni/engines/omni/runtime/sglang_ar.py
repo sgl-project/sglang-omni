@@ -390,11 +390,14 @@ class SGLangOutputProcessor:
             aux = getattr(self._model, "_captured_aux_hidden_states", None)
             if aux is not None:
                 # aux is a list of tensors from layers_to_capture, one per layer
-                self._model._captured_aux_hidden_states = None  # consume
+                # Clone to detach from model internal buffers before the
+                # next decode step overwrites them.  The stream send loop
+                # copies tensors to SHM asynchronously, so the original
+                # buffer may be reused by then → CUDA illegal memory access.
                 result = {}
                 for layer_id, tensor in zip(self._capture_hidden_layers, aux):
                     key = "embed" if layer_id == 0 else layer_id
-                    result[key] = tensor
+                    result[key] = tensor.clone()
                 return result
 
         # Fallback: logits_output.hidden_states
