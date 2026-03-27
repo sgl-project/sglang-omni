@@ -6,7 +6,6 @@ from __future__ import annotations
 import base64
 import io
 import json
-import tempfile
 import wave
 from dataclasses import dataclass
 from typing import Any
@@ -109,15 +108,14 @@ class WavChunkAccumulator:
         self._frames.append(frames)
         return audio_bytes
 
-    def write_temp_wav(self) -> str | None:
+    def to_wav_bytes(self) -> bytes | None:
         if self._sample_rate is None or not self._frames:
             return None
 
-        tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
-        with wave.open(tmp, "wb") as wav_file:
+        buffer = io.BytesIO()
+        with wave.open(buffer, "wb") as wav_file:
             wav_file.setnchannels(self._channels or 1)
             wav_file.setsampwidth(self._sample_width or 2)
             wav_file.setframerate(self._sample_rate)
             wav_file.writeframes(b"".join(self._frames))
-        tmp.close()
-        return tmp.name
+        return buffer.getvalue()

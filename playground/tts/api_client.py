@@ -49,6 +49,8 @@ class SpeechDemoClient:
 
         payload = request.to_payload()
         payload["stream"] = True
+        saw_terminal_event = False
+        saw_done_marker = False
 
         try:
             with httpx.stream(
@@ -65,7 +67,15 @@ class SpeechDemoClient:
                     if event is None:
                         continue
                     if event.is_done:
-                        return
+                        saw_done_marker = True
+                        break
+                    if event.finish_reason is not None:
+                        saw_terminal_event = True
                     yield event
         except Exception as exc:
             raise SpeechDemoClientError(str(exc)) from exc
+
+        if not saw_terminal_event or not saw_done_marker:
+            raise SpeechDemoClientError(
+                "Speech stream ended before the terminal completion markers were received."
+            )

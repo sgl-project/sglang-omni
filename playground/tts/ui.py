@@ -3,21 +3,63 @@
 
 from __future__ import annotations
 
-import tempfile
 import time
+from typing import Any
 
 import gradio as gr
 
 from playground.tts.api_client import SpeechDemoClient, SpeechDemoClientError
 from playground.tts.audio_stream import WavChunkAccumulator
+from playground.tts.artifacts import ArtifactStore
 from playground.tts.models import GenerationSettings, SpeechSynthesisRequest
 
 
-def _write_temp_wav(audio_bytes: bytes) -> str:
-    tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
-    tmp.write(audio_bytes)
-    tmp.close()
-    return tmp.name
+_ARTIFACT_STORE = ArtifactStore()
+
+
+def _build_request(
+    text: str,
+    ref_audio: str | None,
+    ref_text: str,
+    temperature: float,
+    top_p: float,
+    top_k: int,
+    max_new_tokens: int,
+) -> tuple[SpeechSynthesisRequest, list[Any]]:
+    request = SpeechSynthesisRequest(
+        text=text,
+        reference_audio_path=ref_audio,
+        reference_text=ref_text,
+        settings=GenerationSettings(
+            temperature=temperature,
+            top_p=top_p,
+            top_k=top_k,
+            max_new_tokens=max_new_tokens,
+        ),
+    )
+    request.validate()
+    return request, request.build_history_user_content()
+
+
+def _append_history(
+    history: list[dict],
+    user_content: list[Any],
+    assistant_content: Any,
+) -> list[dict]:
+    return history + [
+        {"role": "user", "content": user_content},
+        {"role": "assistant", "content": assistant_content},
+    ]
+
+
+def _store_wav_artifact(audio_bytes: bytes, artifact_paths: list[str]) -> tuple[str, list[str]]:
+    path = _ARTIFACT_STORE.write_bytes(audio_bytes, suffix=".wav")
+    return path, artifact_paths + [path]
+
+
+def _clear_history(artifact_paths: list[str]):
+    _ARTIFACT_STORE.cleanup_paths(artifact_paths)
+    return [], None, "Ready", None, None, "Ready", []
 
 
 def make_non_streaming_handler(api_base: str):
@@ -32,49 +74,41 @@ def make_non_streaming_handler(api_base: str):
         top_k: int,
         max_new_tokens: int,
         history: list[dict],
-    ) -> tuple[list[dict], str, str | None, str]:
-        request = SpeechSynthesisRequest(
-            text=text,
-            reference_audio_path=ref_audio,
-            reference_text=ref_text,
-            settings=GenerationSettings(
-                temperature=temperature,
-                top_p=top_p,
-                top_k=top_k,
-                max_new_tokens=max_new_tokens,
-            ),
-        )
-
+        artifact_paths: list[str],
+    ) -> tuple[list[dict], str, str | None, str, list[str]]:
         try:
-            request.validate()
+            request, user_content = _build_request(
+                text,
+                ref_audio,
+                ref_text,
+                temperature,
+                top_p,
+                top_k,
+                max_new_tokens,
+            )
         except ValueError as exc:
             gr.Warning(str(exc))
-            return history, text, None, str(exc)
-
-        user_content = request.build_history_user_content()
+            return history, text, None, str(exc), artifact_paths
 
         try:
             result = client.synthesize(request)
         except SpeechDemoClientError as exc:
-            updated_history = history + [
-                {"role": "user", "content": user_content},
-                {"role": "assistant", "content": f"Error: {exc}"},
-            ]
-            return updated_history, "", None, f"Request failed: {exc}"
+            updated_history = _append_history(history, user_content, f"Error: {exc}")
+            return updated_history, "", None, f"Request failed: {exc}", artifact_paths
 
-        audio_path = _write_temp_wav(result.audio_bytes)
+        audio_path, artifact_paths = _store_wav_artifact(
+            result.audio_bytes, artifact_paths
+        )
         summary = f"{result.elapsed_s:.1f}s | {result.size_bytes / 1024:.0f} KB"
-        updated_history = history + [
-            {"role": "user", "content": user_content},
-            {
-                "role": "assistant",
-                "content": [
-                    {"path": audio_path, "mime_type": "audio/wav"},
-                    summary,
-                ],
-            },
-        ]
-        return updated_history, "", audio_path, summary
+        updated_history = _append_history(
+            history,
+            user_content,
+            [
+                {"path": audio_path, "mime_type": "audio/wav"},
+                summary,
+            ],
+        )
+        return updated_history, "", audio_path, summary, artifact_paths
 
     return synthesize
 
@@ -91,32 +125,32 @@ def make_streaming_handler(api_base: str):
         top_k: int,
         max_new_tokens: int,
         history: list[dict],
+        artifact_paths: list[str],
     ):
-        request = SpeechSynthesisRequest(
-            text=text,
-            reference_audio_path=ref_audio,
-            reference_text=ref_text,
-            settings=GenerationSettings(
-                temperature=temperature,
-                top_p=top_p,
-                top_k=top_k,
-                max_new_tokens=max_new_tokens,
-            ),
-        )
-
         try:
-            request.validate()
+            request, user_content = _build_request(
+                text,
+                ref_audio,
+                ref_text,
+                temperature,
+                top_p,
+                top_k,
+                max_new_tokens,
+            )
         except ValueError as exc:
             gr.Warning(str(exc))
-            yield history, text, None, None, str(exc)
+            yield history, text, None, None, str(exc), artifact_paths
             return
 
-        user_content = request.build_history_user_content()
-        in_progress_history = history + [
-            {"role": "user", "content": user_content},
-            {"role": "assistant", "content": "Streaming audio..."},
-        ]
-        yield in_progress_history, "", None, None, "Connecting to speech stream..."
+        in_progress_history = _append_history(history, user_content, "Streaming audio...")
+        yield (
+            in_progress_history,
+            "",
+            None,
+            None,
+            "Connecting to speech stream...",
+            artifact_paths,
+        )
 
         started_at = time.perf_counter()
         accumulator = WavChunkAccumulator()
@@ -137,30 +171,54 @@ def make_streaming_handler(api_base: str):
                     f"Streaming | chunk {chunk_count} | "
                     f"first audio {first_audio_s:.2f}s"
                 )
-                yield in_progress_history, "", live_audio, None, status
+                yield (
+                    in_progress_history,
+                    "",
+                    live_audio,
+                    None,
+                    status,
+                    artifact_paths,
+                )
         except SpeechDemoClientError as exc:
-            failed_history = history + [
-                {"role": "user", "content": user_content},
-                {"role": "assistant", "content": f"Error: {exc}"},
-            ]
-            yield failed_history, "", None, None, f"Request failed: {exc}"
+            failed_history = _append_history(history, user_content, f"Error: {exc}")
+            yield (
+                failed_history,
+                "",
+                None,
+                None,
+                f"Request failed: {exc}",
+                artifact_paths,
+            )
             return
         except ValueError as exc:
-            failed_history = history + [
-                {"role": "user", "content": user_content},
-                {"role": "assistant", "content": f"Error: {exc}"},
-            ]
-            yield failed_history, "", None, None, f"Stream parse failed: {exc}"
+            failed_history = _append_history(history, user_content, f"Error: {exc}")
+            yield (
+                failed_history,
+                "",
+                None,
+                None,
+                f"Stream parse failed: {exc}",
+                artifact_paths,
+            )
             return
 
-        final_audio_path = accumulator.write_temp_wav()
-        if final_audio_path is None:
-            failed_history = history + [
-                {"role": "user", "content": user_content},
-                {"role": "assistant", "content": "Error: No audio was returned."},
-            ]
-            yield failed_history, "", None, None, "No audio was returned."
+        final_audio_bytes = accumulator.to_wav_bytes()
+        if final_audio_bytes is None:
+            failed_history = _append_history(
+                history, user_content, "Error: No audio was returned."
+            )
+            yield (
+                failed_history,
+                "",
+                None,
+                None,
+                "No audio was returned.",
+                artifact_paths,
+            )
             return
+        final_audio_path, artifact_paths = _store_wav_artifact(
+            final_audio_bytes, artifact_paths
+        )
 
         elapsed_s = time.perf_counter() - started_at
         summary = (
@@ -171,17 +229,15 @@ def make_streaming_handler(api_base: str):
                 else ""
             )
         )
-        completed_history = history + [
-            {"role": "user", "content": user_content},
-            {
-                "role": "assistant",
-                "content": [
-                    {"path": final_audio_path, "mime_type": "audio/wav"},
-                    summary,
-                ],
-            },
-        ]
-        yield completed_history, "", None, final_audio_path, summary
+        completed_history = _append_history(
+            history,
+            user_content,
+            [
+                {"path": final_audio_path, "mime_type": "audio/wav"},
+                summary,
+            ],
+        )
+        yield completed_history, "", None, final_audio_path, summary, artifact_paths
 
     return synthesize_stream
 
@@ -196,6 +252,11 @@ def create_demo(api_base: str) -> gr.Blocks:
             "*First request may take 10-20s due to warmup. Subsequent requests are much faster thanks to KV cache reuse.*",
             elem_classes=["note"],
         )
+        gr.Markdown(
+            "*Use the mode-specific button to start synthesis. This avoids mixing streaming and non-streaming submit behavior.*"
+        )
+
+        artifact_state = gr.State([])
 
         with gr.Row():
             with gr.Column(scale=1, min_width=320):
@@ -289,15 +350,11 @@ def create_demo(api_base: str) -> gr.Blocks:
             top_k,
             max_new_tokens,
             chatbot,
+            artifact_state,
         ]
-        outputs = [chatbot, text_input, audio_output, status_text]
+        outputs = [chatbot, text_input, audio_output, status_text, artifact_state]
 
         synth_btn.click(
-            fn=synthesize,
-            inputs=inputs,
-            outputs=outputs,
-        )
-        text_input.submit(
             fn=synthesize,
             inputs=inputs,
             outputs=outputs,
@@ -311,10 +368,12 @@ def create_demo(api_base: str) -> gr.Blocks:
                 stream_audio,
                 stream_final_audio,
                 stream_status,
+                artifact_state,
             ],
         )
         clear_btn.click(
-            fn=lambda: ([], None, "Ready", None, None, "Ready"),
+            fn=_clear_history,
+            inputs=[artifact_state],
             outputs=[
                 chatbot,
                 audio_output,
@@ -322,6 +381,7 @@ def create_demo(api_base: str) -> gr.Blocks:
                 stream_audio,
                 stream_final_audio,
                 stream_status,
+                artifact_state,
             ],
         )
 
