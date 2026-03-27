@@ -33,6 +33,7 @@ import time
 from dataclasses import dataclass
 
 import aiohttp
+import cn2an
 import numpy as np
 import scipy.signal
 import soundfile as sf
@@ -174,6 +175,12 @@ def _get_en_normalizer():
 
 def normalize_text(text: str, lang: str) -> str:
     if lang == "zh":
+        # Chinese numeral normalization (e.g., 四百六十五 → 465, 二零零二年 → 2002年)
+        # so that ASR hypothesis and reference text align on number format.
+        text = text.replace("\u3007", "\u96f6")  # 〇 (circle zero) → 零
+        text = text.replace("\u4e24", "\u4e8c")  # 两 → 二 (cn2an handles 二 better)
+        text = cn2an.transform(text, "cn2an")
+
         from zhon.hanzi import punctuation as zh_punct
 
         all_punct = zh_punct + string.punctuation
