@@ -85,11 +85,11 @@ def launch_server(args) -> subprocess.Popen:
                 logger.info("Server is healthy.")
                 return proc
         except requests.ConnectionError:
-            logger.debug("Health check connection failed; retrying...")
-        time.sleep(1)
+            logger.info("Waiting for server to be ready...")
+        time.sleep(2)
 
     kill_server(proc)
-    raise TimeoutError(f"Server not healthy within {timeout}s")
+    raise TimeoutError(f"Server did not start and become healthy within {timeout}s")
 
 
 def kill_server(proc: subprocess.Popen) -> None:
