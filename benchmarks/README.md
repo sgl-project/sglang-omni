@@ -1,9 +1,28 @@
 # SGLang Omni Benchmarks
 
-Comprehensive benchmark suite for SGLang Omni, covering both performance (latency, throughput, RTF etc.) and accuracy (quality metrics) across all supported modality combinations. Omni models operate on a `{video, audio, text} x {video, audio, text}` input-output matrix. The table below tracks benchmark coverage.
+Model-agnostic benchmark framework for SGLang Omni. V1 focuses on performance
+benchmarking for the models and HTTP APIs that already exist in this repo.
+The public entrypoint is model-first via explicit benchmark profiles.
 
 ## Performance Benchmarks
 
-### TTS Voice Cloning
+### Generic Runner
 
-[`performance/tts/benchmark_tts_speed.py`](performance/tts/benchmark_tts_speed.py): Benchmarks online serving latency and throughput for TTS models via the `/v1/audio/speech` HTTP API.
+Run the new framework via:
+
+```bash
+python3 -m benchmarks.run \
+  --base-url http://localhost:8000 \
+  --model fishaudio/s2-pro \
+  --model-profile s2_tts \
+  --case voice-cloning \
+  --dataset seedtts_testset/en/meta.lst
+```
+
+Built-in profiles:
+
+- `s2_tts`
+
+The legacy [`performance/tts/benchmark_tts_speed.py`](performance/tts/benchmark_tts_speed.py)
+script is kept temporarily, but the supported entrypoint for the new framework
+is [`benchmarks.run`](run.py).

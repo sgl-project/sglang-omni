@@ -58,6 +58,7 @@ s2pro = [
     "gradio>=4.0.0",
     # flash-attn: install separately via prebuilt wheel (see install instructions below)
 ]
+benchmark = ["aiohttp", "tqdm"]
 gradio = ["gradio>=4.0.0"]
 
 [project.scripts]
@@ -76,7 +77,7 @@ markers = [
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["sglang_omni*"]
+include = ["sglang_omni*", "benchmarks*"]
 
 # Fish Speech S2-Pro DAC: OmegaConf YAML must ship with the wheel (not only .py).
 [tool.setuptools.package-data]
