@@ -15,12 +15,6 @@ from playground.tts.models import GenerationSettings, SpeechSynthesisRequest
 _ARTIFACT_STORE = ArtifactStore()
 
 
-def _gradio():
-    import gradio as gr
-
-    return gr
-
-
 def _build_request(
     text: str,
     ref_audio: str | None,
@@ -64,11 +58,15 @@ def _store_wav_artifact(
 
 
 def _reset_audio_output() -> dict[str, Any]:
-    return _gradio().update(value=None)
+    import gradio as gr
+
+    return gr.update(value=None)
 
 
 def _keep_audio_output():
-    return _gradio().skip()
+    import gradio as gr
+
+    return gr.skip()
 
 
 def _format_audio_duration(audio_duration_s: float) -> str:
