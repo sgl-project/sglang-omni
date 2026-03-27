@@ -1,3 +1,4 @@
+import json
 import os
 import signal
 import subprocess
@@ -5,9 +6,37 @@ import sys
 import time
 from logging import Logger
 
+import aiohttp
 import requests
 
 logger = Logger(__name__)
+
+
+SSE_DATA_PREFIX = "data: "
+SSE_DONE_MARKER = "data: [DONE]"
+
+
+def parse_sse_event(line: str) -> dict | None:
+    """Parse an SSE data line into a JSON dict, or None."""
+    if not line.startswith(SSE_DATA_PREFIX) or line == SSE_DONE_MARKER:
+        return None
+    return json.loads(line[len(SSE_DATA_PREFIX) :])
+
+
+async def iter_sse_lines(response: aiohttp.ClientResponse):
+    """Yield decoded SSE lines from an aiohttp streaming response."""
+    buffer = bytearray()
+    async for chunk in response.content.iter_any():
+        buffer.extend(chunk)
+        while b"\n" in buffer:
+            idx = buffer.index(b"\n")
+            raw_line = bytes(buffer[:idx])
+            del buffer[: idx + 1]
+            line = raw_line.decode("utf-8", errors="replace").strip()
+            if line:
+                yield line
+    if buffer.strip():
+        yield bytes(buffer).decode("utf-8", errors="replace").strip()
 
 
 def launch_server(args) -> subprocess.Popen:
@@ -75,3 +104,22 @@ def kill_server(proc: subprocess.Popen) -> None:
     except ProcessLookupError:
         pass
     logger.info("Server process terminated.")
+
+
+def wait_for_server(base_url: str, timeout: int = 1200) -> None:
+    """Block until the server health endpoint returns 200."""
+    import requests as requests_lib
+
+    logger.info("Waiting for service at %s ...", base_url)
+    start = time.time()
+    while True:
+        try:
+            resp = requests_lib.get(f"{base_url}/health", timeout=1)
+            if resp.status_code == 200:
+                logger.info("Service is ready.")
+                return
+        except requests_lib.exceptions.RequestException:
+            pass
+        if time.time() - start > timeout:
+            raise TimeoutError(f"Service at {base_url} not ready within {timeout}s")
+        time.sleep(1)

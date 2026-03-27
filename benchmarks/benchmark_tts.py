@@ -40,11 +40,9 @@ def main() -> None:
             max_concurrency=args.max_concurrency,
             request_rate=args.request_rate,
             warmup=args.warmup,
-            output_dir=args.output_dir,
-            save_audio=args.save_audio,
         )
 
-        asyncio.run(benchmarker.run())
+        asyncio.run(benchmarker.run(output_dir=args.output_dir))
     finally:
         if server_proc is not None:
             kill_server(server_proc)

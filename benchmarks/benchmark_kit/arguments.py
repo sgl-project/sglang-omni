@@ -86,10 +86,4 @@ def add_benchmark_args(parser: argparse.ArgumentParser):
     saving_group.add_argument(
         "--output-dir", type=str, default="results", help="Path to the output directory"
     )
-    saving_group.add_argument(
-        "--save-audio", action="store_true", help="Save audio files"
-    )
-    saving_group.add_argument(
-        "--save-json", action="store_true", help="Save JSON files"
-    )
     return parser

@@ -21,12 +21,11 @@ HOST="${HOST:-localhost}"
 PORT="${PORT:-8000}"
 
 python "$BENCHMARK_DIR/benchmark_tts.py" \
-  --launch-server \
   --model-path "fishaudio/s2-pro" \
   --config "$BENCHMARK_DIR/../examples/configs/s2pro_tts.yaml" \
   --host "${HOST}" \
   --port "${PORT}" \
   --dataset "$BENCHMARK_DIR/cache/seedtts_tts_5_samples/data.jsonl" \
   --output-dir "$BENCHMARK_DIR/results/fish_audio_s2" \
-  --save-audio \
+  --stream
   "$@"
