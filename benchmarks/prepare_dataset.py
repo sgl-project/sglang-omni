@@ -4,6 +4,7 @@ import zipfile
 
 from huggingface_hub import snapshot_download
 
+BENCHMARK_DIR = os.path.dirname(os.path.abspath(__file__))
 DATASET_MAPPING = {
     "seedtts_tts": "frankleeeee/seedtts-testset-tts",
     "seedtts_tts_5_samples": "frankleeeee/seedtts-testset-tts-5-samples",
@@ -12,7 +13,7 @@ DATASET_MAPPING = {
 }
 
 
-def download_hf_dataset(dataset_name: str, output_dir: str):
+def download_hf_dataset(dataset_name: str, dataset_path: str):
     """
     Download the dataset from Hugging Face
 
@@ -23,7 +24,6 @@ def download_hf_dataset(dataset_name: str, output_dir: str):
     Returns:
         The path to the downloaded dataset
     """
-    dataset_path = os.path.join(output_dir, dataset_name)
     return snapshot_download(
         repo_id=DATASET_MAPPING[dataset_name],
         repo_type="dataset",
@@ -31,7 +31,7 @@ def download_hf_dataset(dataset_name: str, output_dir: str):
     )
 
 
-def unzip_dataset(dataset_name: str, output_dir: str, data_file_name: str):
+def unzip_dataset(dataset_path: str, data_file_name: str):
     """
     Unzip the dataset
 
@@ -40,9 +40,9 @@ def unzip_dataset(dataset_name: str, output_dir: str, data_file_name: str):
         output_dir: The directory to save the unzipped dataset
         data_file_name: The name of the data file to unzip
     """
-    dataset_path = os.path.join(output_dir, dataset_name)
     data_file_path = os.path.join(dataset_path, data_file_name)
-    zipfile.ZipFile(data_file_path, "r").extractall(dataset_path)
+    with zipfile.ZipFile(data_file_path, "r") as zip_ref:
+        zip_ref.extractall(dataset_path)
 
 
 def parse_args():
@@ -50,21 +50,25 @@ def parse_args():
     parser.add_argument(
         "--dataset", type=str, required=True, choices=DATASET_MAPPING.keys()
     )
-    parser.add_argument("--output-dir", type=str, default="./cache")
+    parser.add_argument(
+        "--output-dir", type=str, default=os.path.join(BENCHMARK_DIR, "cache")
+    )
     return parser.parse_args()
 
 
 def main():
     args = parse_args()
 
-    if not os.path.exists(args.output_dir):
-        os.makedirs(args.output_dir)
+    dataset_path = os.path.join(args.output_dir, args.dataset)
+    if not os.path.exists(dataset_path):
+        os.makedirs(dataset_path)
 
-    if "seedtts" in args.dataset_name:
-        download_hf_dataset(args.dataset_name, args.output_dir)
-        unzip_dataset(args.dataset_name, args.output_dir, "data.zip")
+    if "seedtts" in args.dataset:
+        download_hf_dataset(args.dataset, dataset_path)
+        unzip_dataset(dataset_path, "data.zip")
     else:
-        raise ValueError(f"Invalid dataset name: {args.dataset_name}")
+        raise ValueError(f"Invalid dataset name: {args.dataset}")
+    print(f"Dataset prepared and saved to {dataset_path}")
 
 
 if __name__ == "__main__":

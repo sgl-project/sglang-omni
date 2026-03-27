@@ -58,7 +58,7 @@ python benchmark_relay.py
 
 **Q1: How is the `benchmark_kit` module organized?**
 
-The core of the `benchmark_kit` module is the `Benchmarker` class, which is a base class for all benchmarkers. It provides the basic functionality for loading datasets, building requests, sending queries to the server, measuring latency and throughput, and compute the metrics.
+The core of the `benchmark_kit` module is the `Benchmarker` class, which is a base class for all benchmarkers. It provides the basic functionality for loading datasets, building requests, sending queries to the server, measuring latency and throughput, and compute the metrics. Then we instantiate a `Benchmarker` object for a specific type of model in a script such as `benchmark_omni.py` or `benchmark_tts.py`. Note that these scripts serve as unified general benchmarking script for different models of the same type. We place the exactly arguments for each model in the corresponding shell script in the `models` folder.
 
 **Q2: How to add a new benchmark metrics?**
 
