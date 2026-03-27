@@ -1,11 +1,12 @@
 # Playground
 
-This directory contains two playground interfaces for SGLang-Omni.
+This directory contains multiple playground interfaces for SGLang-Omni.
 
 | Subdirectory | Description |
 |---|---|
 | `web/` | Full-featured HTML/CSS/JS UI served directly by the sglang-omni server. Supports text, audio, image, video inputs and a built-in file browser. |
 | `gradio/` | Lightweight Gradio app that connects to a running server via HTTP. Text chat with streaming, model selector, and generation parameter controls. |
+| `tts/` | S2 Pro TTS Gradio app with shared controls for voice cloning plus separate streaming and non-streaming playback modes. |
 
 ## Web Playground
 
@@ -53,6 +54,31 @@ If you already have a server running, use `app.py` directly:
 
 ```bash
 python playground/gradio/app.py --api-base http://localhost:8000
+```
+
+## TTS Playground
+
+### Install
+
+```bash
+pip install "sglang-omni[s2pro]"
+```
+
+### Launch
+
+```bash
+./playground/tts/start.sh --model-path fishaudio/s2-pro
+```
+
+The TTS playground starts the S2 Pro backend and exposes two tabs:
+
+- `Non-Streaming` for final-audio latency measurement
+- `Streaming` for incremental playback from `/v1/audio/speech` SSE chunks
+
+### Connect to an existing server
+
+```bash
+python -m playground.tts.app --api-base http://localhost:8000
 ```
 
 ## SSH tunnel (for remote servers / Docker)
