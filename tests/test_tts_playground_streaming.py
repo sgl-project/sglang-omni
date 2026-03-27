@@ -61,12 +61,11 @@ def test_decode_wav_chunk_returns_audio_tuple() -> None:
 
 def test_wav_chunk_accumulator_writes_combined_audio() -> None:
     accumulator = WavChunkAccumulator()
-    accumulator.add_wav_chunk(
-        encode_wav(np.array([0.0, 0.1], dtype=np.float32), 24000)
-    )
-    accumulator.add_wav_chunk(
-        encode_wav(np.array([-0.1, 0.0], dtype=np.float32), 24000)
-    )
+    first = encode_wav(np.array([0.0, 0.1], dtype=np.float32), 24000)
+    second = encode_wav(np.array([-0.1, 0.0], dtype=np.float32), 24000)
+
+    assert accumulator.add_wav_chunk(first) == first
+    assert accumulator.add_wav_chunk(second) == second
 
     output_path = accumulator.write_temp_wav()
 

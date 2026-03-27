@@ -88,7 +88,7 @@ class WavChunkAccumulator:
         self._sample_rate: int | None = None
         self._frames: list[bytes] = []
 
-    def add_wav_chunk(self, audio_bytes: bytes) -> tuple[int, np.ndarray]:
+    def add_wav_chunk(self, audio_bytes: bytes) -> bytes:
         with wave.open(io.BytesIO(audio_bytes), "rb") as wav_file:
             channels = wav_file.getnchannels()
             sample_width = wav_file.getsampwidth()
@@ -107,7 +107,7 @@ class WavChunkAccumulator:
             raise ValueError("Inconsistent WAV chunk format in speech stream")
 
         self._frames.append(frames)
-        return decode_wav_chunk(audio_bytes)
+        return audio_bytes
 
     def write_temp_wav(self) -> str | None:
         if self._sample_rate is None or not self._frames:
