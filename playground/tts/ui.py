@@ -9,7 +9,7 @@ from typing import Any
 
 from playground.tts.api_client import SpeechDemoClient, SpeechDemoClientError
 from playground.tts.artifacts import ArtifactStore
-from playground.tts.audio_stream import WavChunkAccumulator
+from playground.tts.audio_stream import WavChunkAccumulator, wav_duration_seconds
 from playground.tts.models import GenerationSettings, SpeechSynthesisRequest
 
 _ARTIFACT_STORE = ArtifactStore()
@@ -57,9 +57,57 @@ def _store_wav_artifact(
     return path, artifact_paths + [path]
 
 
+def _reset_audio_output() -> dict[str, Any]:
+    return gr.update(value=None)
+
+
+def _keep_audio_output():
+    return gr.skip()
+
+
+def _format_audio_duration(audio_duration_s: float) -> str:
+    return f"{audio_duration_s:.1f}s audio"
+
+
+def _format_non_streaming_summary(
+    *,
+    elapsed_s: float,
+    audio_duration_s: float,
+    size_bytes: int,
+) -> str:
+    return (
+        f"{_format_audio_duration(audio_duration_s)} | "
+        f"{elapsed_s:.1f}s total | {size_bytes / 1024:.0f} KB"
+    )
+
+
+def _format_streaming_summary(
+    *,
+    elapsed_s: float,
+    audio_duration_s: float,
+    chunk_count: int,
+    first_audio_s: float | None,
+) -> str:
+    summary = (
+        f"{_format_audio_duration(audio_duration_s)} | "
+        f"{elapsed_s:.1f}s total | {chunk_count} chunks"
+    )
+    if first_audio_s is not None:
+        summary += f" | first audio {first_audio_s:.2f}s"
+    return summary
+
+
 def _clear_history(artifact_paths: list[str]):
     _ARTIFACT_STORE.cleanup_paths(artifact_paths)
-    return [], None, "Ready", None, None, "Ready", []
+    return (
+        [],
+        _reset_audio_output(),
+        "Ready",
+        _reset_audio_output(),
+        _reset_audio_output(),
+        "Ready",
+        [],
+    )
 
 
 def make_non_streaming_handler(api_base: str):
@@ -99,7 +147,11 @@ def make_non_streaming_handler(api_base: str):
         audio_path, artifact_paths = _store_wav_artifact(
             result.audio_bytes, artifact_paths
         )
-        summary = f"{result.elapsed_s:.1f}s | {result.size_bytes / 1024:.0f} KB"
+        summary = _format_non_streaming_summary(
+            elapsed_s=result.elapsed_s,
+            audio_duration_s=wav_duration_seconds(result.audio_bytes),
+            size_bytes=result.size_bytes,
+        )
         updated_history = _append_history(
             history,
             user_content,
@@ -148,8 +200,8 @@ def make_streaming_handler(api_base: str):
         yield (
             in_progress_history,
             "",
-            None,
-            None,
+            _reset_audio_output(),
+            _reset_audio_output(),
             "Connecting to speech stream...",
             artifact_paths,
         )
@@ -177,7 +229,7 @@ def make_streaming_handler(api_base: str):
                     in_progress_history,
                     "",
                     live_audio,
-                    None,
+                    _keep_audio_output(),
                     status,
                     artifact_paths,
                 )
@@ -186,8 +238,8 @@ def make_streaming_handler(api_base: str):
             yield (
                 failed_history,
                 "",
-                None,
-                None,
+                _keep_audio_output(),
+                _keep_audio_output(),
                 f"Request failed: {exc}",
                 artifact_paths,
             )
@@ -197,8 +249,8 @@ def make_streaming_handler(api_base: str):
             yield (
                 failed_history,
                 "",
-                None,
-                None,
+                _keep_audio_output(),
+                _keep_audio_output(),
                 f"Stream parse failed: {exc}",
                 artifact_paths,
             )
@@ -212,8 +264,8 @@ def make_streaming_handler(api_base: str):
             yield (
                 failed_history,
                 "",
-                None,
-                None,
+                _keep_audio_output(),
+                _keep_audio_output(),
                 "No audio was returned.",
                 artifact_paths,
             )
@@ -223,8 +275,11 @@ def make_streaming_handler(api_base: str):
         )
 
         elapsed_s = time.perf_counter() - started_at
-        summary = f"{elapsed_s:.1f}s total | {chunk_count} chunks" + (
-            f" | first audio {first_audio_s:.2f}s" if first_audio_s is not None else ""
+        summary = _format_streaming_summary(
+            elapsed_s=elapsed_s,
+            audio_duration_s=wav_duration_seconds(final_audio_bytes),
+            chunk_count=chunk_count,
+            first_audio_s=first_audio_s,
         )
         completed_history = _append_history(
             history,
@@ -234,7 +289,14 @@ def make_streaming_handler(api_base: str):
                 summary,
             ],
         )
-        yield completed_history, "", None, final_audio_path, summary, artifact_paths
+        yield (
+            completed_history,
+            "",
+            _keep_audio_output(),
+            final_audio_path,
+            summary,
+            artifact_paths,
+        )
 
     return synthesize_stream
 

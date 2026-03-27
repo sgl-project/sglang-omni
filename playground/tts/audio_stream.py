@@ -77,6 +77,15 @@ def decode_wav_chunk(audio_bytes: bytes) -> tuple[int, np.ndarray]:
     return sample_rate, audio
 
 
+def wav_duration_seconds(audio_bytes: bytes) -> float:
+    with wave.open(io.BytesIO(audio_bytes), "rb") as wav_file:
+        frame_count = wav_file.getnframes()
+        sample_rate = wav_file.getframerate()
+    if sample_rate <= 0:
+        return 0.0
+    return frame_count / sample_rate
+
+
 class WavChunkAccumulator:
     """Collect streamed WAV chunks and write a final WAV artifact."""
 

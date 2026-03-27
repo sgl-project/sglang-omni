@@ -5,12 +5,24 @@ from __future__ import annotations
 
 import wave
 
+import gradio as gr
 import numpy as np
 
 from playground.tts.api_client import SpeechDemoClientError
 from playground.tts.audio_stream import SpeechStreamEvent
-from playground.tts.ui import make_streaming_handler
+from playground.tts.models import NonStreamingSpeechResult
+from playground.tts.ui import make_non_streaming_handler, make_streaming_handler
 from sglang_omni.client.audio import encode_wav
+
+
+def _assert_reset_update(value) -> None:
+    assert isinstance(value, dict)
+    assert value.get("value") is None
+    assert value.get("__type__") == "update"
+
+
+def _assert_not_reset_update(value) -> None:
+    assert value != gr.update(value=None)
 
 
 def test_streaming_handler_builds_expected_final_wav(monkeypatch) -> None:
@@ -41,15 +53,24 @@ def test_streaming_handler_builds_expected_final_wav(monkeypatch) -> None:
     )
 
     assert len(outputs) == 4
-    _, _, live_audio, _, live_status, _ = outputs[1]
+    _, _, reset_live_audio, reset_final_audio, reset_status, _ = outputs[0]
+    _assert_reset_update(reset_live_audio)
+    _assert_reset_update(reset_final_audio)
+    assert reset_status == "Connecting to speech stream..."
+
+    _, _, live_audio, chunk_final_audio, live_status, _ = outputs[1]
     assert isinstance(live_audio, bytes)
+    assert chunk_final_audio == gr.skip()
     assert "Streaming | chunk 1" in live_status
 
-    final_history, _, _, final_path, final_status, artifact_paths = outputs[-1]
+    final_history, _, final_live_audio, final_path, final_status, artifact_paths = outputs[-1]
     assert final_path is not None
     assert final_path in artifact_paths
     assert "chunks" in final_status
+    assert "audio" in final_status
+    assert final_live_audio == gr.skip()
     assert final_history[-1]["content"][0]["path"] == final_path
+    assert "audio" in final_history[-1]["content"][1]
 
     with wave.open(final_path, "rb") as wav_file:
         assert wav_file.getframerate() == 24000
@@ -90,3 +111,110 @@ def test_streaming_handler_reports_truncated_stream(monkeypatch) -> None:
     assert artifact_paths == []
     assert "Request failed" in status
     assert "stream closed early" in failed_history[-1]["content"]
+
+
+def test_streaming_handler_resets_audio_outputs_for_followup_request(monkeypatch) -> None:
+    first = encode_wav(np.zeros(2400, dtype=np.float32), 24000)
+
+    def _stream(self, request):
+        del self, request
+        yield SpeechStreamEvent(index=0, audio_bytes=first, sample_rate=24000)
+        yield SpeechStreamEvent(index=1, finish_reason="stop")
+
+    monkeypatch.setattr("playground.tts.ui.SpeechDemoClient.stream_synthesize", _stream)
+
+    handler = make_streaming_handler("http://localhost:8000")
+    first_outputs = list(
+        handler(
+            "first request",
+            None,
+            "",
+            0.8,
+            0.8,
+            30,
+            256,
+            [],
+            [],
+        )
+    )
+    history, _, _, _, _, artifact_paths = first_outputs[-1]
+
+    second_outputs = list(
+        handler(
+            "second request",
+            None,
+            "",
+            0.8,
+            0.8,
+            30,
+            256,
+            history,
+            artifact_paths,
+        )
+    )
+
+    _, _, reset_live_audio, reset_final_audio, reset_status, _ = second_outputs[0]
+    _assert_reset_update(reset_live_audio)
+    _assert_reset_update(reset_final_audio)
+    assert reset_status == "Connecting to speech stream..."
+
+
+def test_streaming_handler_keeps_live_audio_at_final_handoff(monkeypatch) -> None:
+    chunk = encode_wav(np.zeros(2400, dtype=np.float32), 24000)
+
+    def _stream(self, request):
+        del self, request
+        yield SpeechStreamEvent(index=0, audio_bytes=chunk, sample_rate=24000)
+        yield SpeechStreamEvent(index=1, finish_reason="stop")
+
+    monkeypatch.setattr("playground.tts.ui.SpeechDemoClient.stream_synthesize", _stream)
+
+    handler = make_streaming_handler("http://localhost:8000")
+    outputs = list(
+        handler(
+            "handoff test",
+            None,
+            "",
+            0.8,
+            0.8,
+            30,
+            256,
+            [],
+            [],
+        )
+    )
+
+    final_live_audio = outputs[-1][2]
+    _assert_not_reset_update(final_live_audio)
+    assert final_live_audio == gr.skip()
+
+
+def test_non_streaming_handler_summary_includes_audio_duration(monkeypatch) -> None:
+    audio_bytes = encode_wav(np.zeros(4800, dtype=np.float32), 24000)
+
+    def _synthesize(self, request):
+        del self, request
+        return NonStreamingSpeechResult(audio_bytes=audio_bytes, elapsed_s=1.25)
+
+    monkeypatch.setattr(
+        "playground.tts.ui.SpeechDemoClient.synthesize",
+        _synthesize,
+    )
+
+    handler = make_non_streaming_handler("http://localhost:8000")
+    history, _, audio_path, status, artifact_paths = handler(
+        "hello world",
+        None,
+        "",
+        0.8,
+        0.8,
+        30,
+        256,
+        [],
+        [],
+    )
+
+    assert audio_path is not None
+    assert artifact_paths == [audio_path]
+    assert status == "0.2s audio | 1.2s total | 9 KB"
+    assert history[-1]["content"][1] == status

@@ -14,6 +14,7 @@ from playground.tts.audio_stream import (
     WavChunkAccumulator,
     decode_wav_chunk,
     parse_speech_stream_data,
+    wav_duration_seconds,
 )
 from sglang_omni.client.audio import encode_wav
 
@@ -76,3 +77,9 @@ def test_wav_chunk_accumulator_writes_combined_audio() -> None:
     with wave.open(io.BytesIO(output_bytes), "rb") as wav_file:
         assert wav_file.getframerate() == 24000
         assert wav_file.getnframes() == 4
+
+
+def test_wav_duration_seconds_reads_wav_length() -> None:
+    audio_bytes = encode_wav(np.zeros(2400, dtype=np.float32), 24000)
+
+    assert wav_duration_seconds(audio_bytes) == 0.1
