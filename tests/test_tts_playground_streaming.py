@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import base64
+import io
 import json
 import wave
 
@@ -69,9 +70,9 @@ def test_wav_chunk_accumulator_writes_combined_audio() -> None:
     assert accumulator.add_wav_chunk(first) == first
     assert accumulator.add_wav_chunk(second) == second
 
-    output_path = accumulator.write_temp_wav()
+    output_bytes = accumulator.to_wav_bytes()
 
-    assert output_path is not None
-    with wave.open(output_path, "rb") as wav_file:
+    assert output_bytes is not None
+    with wave.open(io.BytesIO(output_bytes), "rb") as wav_file:
         assert wav_file.getframerate() == 24000
         assert wav_file.getnframes() == 4
