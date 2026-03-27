@@ -1,0 +1,44 @@
+# S2-Pro TTS with Tensor Parallel (TP=2)
+#
+# Launch with torchrun for multi-GPU TP:
+#   torchrun --nproc_per_node=2 <launcher> --config examples/configs/s2pro_tts_tp2.yaml
+#
+# Each TP rank runs in a separate process. The launcher should override
+# tp_rank and device per rank:
+#   Rank 0: tp_rank=0, device=cuda:0
+#   Rank 1: tp_rank=1, device=cuda:1
+#
+# Alternatively, set tp_rank via environment variable LOCAL_RANK (set by torchrun).
+
+config_cls: S2ProPipelineConfig
+model_path: fishaudio/s2-pro
+relay_backend: shm
+
+stages:
+  - name: preprocessing
+    executor:
+      factory: sglang_omni.models.fishaudio_s2_pro.pipeline.stages.create_preprocessing_executor
+      args: {}
+    get_next: sglang_omni.models.fishaudio_s2_pro.pipeline.next_stage.preprocessing_next
+    relay:
+      device: cpu
+
+  - name: tts_engine
+    executor:
+      factory: sglang_omni.models.fishaudio_s2_pro.pipeline.stages.create_sglang_tts_engine_executor
+      args:
+        device: "cuda:0"
+        max_new_tokens: 2048
+        tp_size: 2
+        tp_rank: 0  # Override per process: rank 0 → cuda:0, rank 1 → cuda:1
+    get_next: sglang_omni.models.fishaudio_s2_pro.pipeline.next_stage.tts_engine_next
+    relay:
+      device: cuda
+
+  - name: vocoder
+    executor:
+      factory: sglang_omni.models.fishaudio_s2_pro.pipeline.stages.create_vocoder_executor
+      args: {}
+    get_next: sglang_omni.models.fishaudio_s2_pro.pipeline.next_stage.vocoder_next
+    relay:
+      device: cpu
