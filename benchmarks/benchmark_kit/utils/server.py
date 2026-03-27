@@ -1,15 +1,15 @@
 import json
+import logging
 import os
 import signal
 import subprocess
 import sys
 import time
-from logging import Logger
 
 import aiohttp
 import requests
 
-logger = Logger(__name__)
+logger = logging.getLogger(__name__)
 
 
 SSE_DATA_PREFIX = "data: "
@@ -68,7 +68,6 @@ def launch_server(args) -> subprocess.Popen:
     logger.info("Launching server: %s", " ".join(cmd))
     proc = subprocess.Popen(
         cmd,
-        stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
         preexec_fn=os.setsid,
@@ -86,7 +85,7 @@ def launch_server(args) -> subprocess.Popen:
                 logger.info("Server is healthy.")
                 return proc
         except requests.ConnectionError:
-            pass
+            logger.debug("Health check connection failed; retrying...")
         time.sleep(1)
 
     kill_server(proc)
@@ -102,7 +101,9 @@ def kill_server(proc: subprocess.Popen) -> None:
         os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
         proc.wait(timeout=10)
     except ProcessLookupError:
-        pass
+        logger.debug(
+            f"Process group for PID {proc.pid} does not exist; assuming already terminated."
+        )
     logger.info("Server process terminated.")
 
 

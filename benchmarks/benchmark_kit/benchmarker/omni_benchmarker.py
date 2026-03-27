@@ -3,35 +3,6 @@ Omni benchmarker — measures speed and accuracy for multi-modal chat completion
 
 Supports text, image, audio, and video inputs via /v1/chat/completions.
 Measures TTFT, TPOT, end-to-end latency, throughput, and optional accuracy.
-
-Usage:
-
-    # Text-only benchmark
-    python -m benchmarks.benchmarker.omni_benchmarker \
-        --model Qwen/Qwen3-Omni --port 8000 \
-        --dataset dataset.jsonl --stream
-
-    # Multi-modal with accuracy evaluation
-    python -m benchmarks.benchmarker.omni_benchmarker \
-        --model Qwen/Qwen3-Omni --port 8000 \
-        --dataset dataset.jsonl --stream \
-        --modalities text audio \
-        --max-concurrency 4
-
-Dataset format (JSONL, one JSON object per line):
-
-    {
-        "id": "sample_001",
-        "messages": [
-            {"role": "system", "content": "You are a helpful assistant."},
-            {"role": "user", "content": "Describe this image."}
-        ],
-        "images": ["path/to/image.jpg"],       // optional
-        "audios": ["path/to/audio.wav"],        // optional
-        "videos": ["path/to/video.mp4"],        // optional
-        "expected_text": "A cat sitting on...", // optional, for accuracy
-        "expected_audio_path": "path/to/ref.wav" // optional
-    }
 """
 
 from __future__ import annotations

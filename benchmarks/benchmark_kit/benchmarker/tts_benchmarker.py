@@ -4,25 +4,6 @@ TTS benchmarker — measures speed and optional accuracy for text-to-speech.
 Supports two modes:
   1. Voice cloning (default) — reference audio + transcript provided per sample.
   2. Plain TTS (--no-ref-audio) — no reference audio, default voice.
-
-Usage:
-
-    python -m benchmarks.benchmarker.tts_benchmarker \
-        --model fishaudio/s2-pro --port 8000 \
-        --testset seedtts_testset/en/meta.lst \
-        --max-samples 10
-
-    # streaming mode
-    python -m benchmarks.benchmarker.tts_benchmarker \
-        --model fishaudio/s2-pro --port 8000 \
-        --testset seedtts_testset/en/meta.lst \
-        --max-samples 10 --stream
-
-    # plain TTS (no voice cloning)
-    python -m benchmarks.benchmarker.tts_benchmarker \
-        --model fishaudio/s2-pro --port 8000 \
-        --testset seedtts_testset/en/meta.lst \
-        --max-samples 10 --no-ref-audio
 """
 
 from __future__ import annotations
@@ -100,8 +81,8 @@ class TTSBenchmarker(Benchmarker):
         if not self.no_ref_audio:
             if sample.get("prompt_audio"):
                 payload["ref_audio"] = sample["prompt_audio"]
-            if sample.get("target_text"):
-                payload["ref_text"] = sample["target_text"]
+            if sample.get("prompt_text"):
+                payload["ref_text"] = sample["prompt_text"]
 
         for key, value in [
             ("max_new_tokens", self.max_new_tokens),
@@ -122,7 +103,7 @@ class TTSBenchmarker(Benchmarker):
             payload=payload,
             api_url=api_url,
             stream=self.stream,
-            expected_text=sample.get("text"),
+            expected_text=sample.get("target_text"),
         )
 
     def get_config(self) -> dict:

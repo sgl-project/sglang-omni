@@ -2,7 +2,7 @@ import argparse
 import asyncio
 import logging
 
-from benchmark_kit.args import add_benchmark_args
+from benchmark_kit.arguments import add_benchmark_args
 from benchmark_kit.benchmarker.omni_benchmarker import OmniBenchmarker
 from benchmark_kit.utils import kill_server, launch_server
 
