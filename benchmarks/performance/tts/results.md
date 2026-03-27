@@ -95,12 +95,61 @@ The fix (`fix/minimal-speech-pipeline-patches`) addresses several critical issue
 
 Most errors are on the first 1-2 words of the sentence, or on rare/proper nouns.
 
+---
+
+## WER Results — With Voice Cloning (English, seed-tts-eval)
+
+Voice cloning passes the reference audio from seed-tts-eval via the top-level `audios` field of the `/v1/chat/completions` request. The prompt instructs the model to read the target text in the same voice/style as the reference audio.
+
+**Script**: `benchmark_tts_wer_qwen3_omni_server_vc.py`
+
+### Full EN Set (1088 samples, with voice cloning)
+
+| Metric | Value |
+|--------|-------|
+| **WER (corpus, micro-avg)** | **2.36%** |
+| WER per-sample mean | 2.43% |
+| WER per-sample median | 0.00% |
+| WER per-sample std | 9.08% |
+| WER per-sample p95 | 13.33% |
+| WER (excl >50% samples) | 1.82% |
+| >50% WER samples | 6 (0.6%) |
+| Latency mean | 5.82s |
+| Audio duration mean | 3.61s |
+
+### Comparison: With vs Without Voice Cloning
+
+| Configuration | Full EN set (1088) | >50% bad cases | WER excl bad cases |
+|---------------|---------------------|----------------|---------------------|
+| **Without voice cloning** (prompt only) | **2.19%** | 4 (0.4%) | 1.93% |
+| **With voice cloning** (ref_audio + prompt) | **2.36%** | 6 (0.6%) | 1.82% |
+| Official (no voice cloning) | 1.39% | — | — |
+
+### Analysis
+
+- **Voice cloning slightly increases raw WER** (2.36% vs 2.19%), primarily due to 2 additional severe bad cases (6 vs 4).
+- **Excluding bad cases, voice cloning is slightly better** (1.82% vs 1.93%), suggesting the reference audio helps the model stay on-track for most samples.
+- The 6 bad cases with voice cloning show a new failure mode: the model sometimes **generates completely unrelated content** (hallucination), possibly confused by the reference audio input.
+
+### Bad Cases (>50% WER, voice cloning)
+
+| Sample ID | WER | Issue |
+|-----------|-----|-------|
+| `common_voice_en_19984445-...` | 137.5% | Hallucinated unrelated content about an airport |
+| `common_voice_en_96260-...` | 120.0% | Hallucinated unrelated content about an alchemist |
+| `common_voice_en_25568854-...` | 114.3% | Completely garbled output |
+| `common_voice_en_37133940-...` | 112.5% | Completely garbled output |
+| `common_voice_en_27794266-...` | 55.6% | Minor word distortion |
+| `common_voice_en_120405-...` | 52.0% | Leaked ref_text into output before target text |
+
+---
+
 ## Detailed Results
 
 Full per-sample results (JSON):
-- `results/qwen3_omni_server_en_full/wer_results_merged.json` — merged full set (1088 samples)
-- `results/qwen3_omni_server_en_full/part_{0,1,2}/wer_results.json` — per-shard results
-- `results/qwen3_omni_server_en_{50,100,200}/wer_results.json` — subset results
+- `results/qwen3_omni_server_en_full/wer_results_merged.json` — without voice cloning, full set (1088)
+- `results/qwen3_omni_server_vc_en_full/wer_results_merged.json` — **with voice cloning**, full set (1088)
+- `results/qwen3_omni_server_en_{50,100,200}/wer_results.json` — subset results (no VC)
 
 ## How to Reproduce
 
@@ -166,10 +215,11 @@ bash benchmarks/performance/tts/run_parallel_wer_eval.sh
 ## Conclusions
 
 1. **Jingwen's fix works**: The Qwen3 Omni speech pipeline runs correctly on sglang-omni server after the minimal patches.
-2. **Full EN set WER = 2.19%**: Compared to official 1.39%. The gap likely comes from differences in generation hyperparameters, prompt format, or non-determinism. Excluding 4 severe bad cases, WER is 1.93%.
-3. **sglang-omni server is better than transformers pipeline**: Full set WER 2.19% vs 2.53% (transformers), a 13% relative improvement.
-4. **sglang-omni server matches transformers on small sets**: The 50-sample WER (0.89%) is identical between sglang-omni server and transformers pipeline, confirming correctness.
-5. **No voice cloning**: Qwen3 Omni only supports fixed speaker IDs, not reference-audio-based voice cloning. This is an architecture limitation, not a bug.
+2. **Without voice cloning, full EN set WER = 2.19%**: Compared to official 1.39%. The gap likely comes from differences in generation hyperparameters, prompt format, or non-determinism. Excluding 4 severe bad cases, WER is 1.93%.
+3. **With voice cloning, full EN set WER = 2.36%**: Passing the reference audio via the `audios` field slightly increases raw WER due to more hallucination-type bad cases (6 vs 4). However, excluding bad cases, voice cloning WER (1.82%) is slightly better than no voice cloning (1.93%).
+4. **sglang-omni server is better than transformers pipeline**: Full set WER 2.19% vs 2.53% (transformers), a 13% relative improvement.
+5. **Voice cloning introduces a new failure mode**: In ~0.4% of samples, the reference audio causes the model to hallucinate completely unrelated content instead of reading the target text. This does not happen without voice cloning.
+6. **Qwen3 Omni voice cloning is limited**: Unlike S2-Pro which explicitly encodes speaker embeddings from reference audio, Qwen3 Omni passes ref audio through its audio encoder as conversational context. This provides some voice conditioning but is not true zero-shot voice cloning.
 
 ## Date
 
