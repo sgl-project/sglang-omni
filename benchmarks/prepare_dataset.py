@@ -48,7 +48,7 @@ def unzip_dataset(dataset_name: str, output_dir: str, data_file_name: str):
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--dataset-name", type=str, required=True, choices=DATASET_MAPPING.keys()
+        "--dataset", type=str, required=True, choices=DATASET_MAPPING.keys()
     )
     parser.add_argument("--output-dir", type=str, default="./cache")
     return parser.parse_args()
