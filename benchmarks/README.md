@@ -62,7 +62,7 @@ The core of the `benchmark_kit` module is the `Benchmarker` class, which is a ba
 
 **Q2: How to add a new benchmark metrics?**
 
-You can implement a metric class by inheriting from the `Metrics` class in the `benchmark_kit.benchmarker.metrics` module. Then you can pass the metric objects to the `Benchmarker` class when initializing it. The metrics will be computed annd saved in the result json file.
+You can implement a metric class by inheriting from the `Metrics` class in the `benchmark_kit.benchmarker.metrics` module. Then you can pass the metric objects to the `Benchmarker` class when initializing it. The metrics will be computed and saved in the result json file.
 
 **Q3: How to add a new benchmark dataset?**
 
