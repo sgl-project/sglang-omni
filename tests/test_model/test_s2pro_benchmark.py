@@ -8,28 +8,16 @@ Usage:
 from __future__ import annotations
 
 import json
-import logging
 import os
-import signal
 import subprocess
 import sys
-import time
 from pathlib import Path
 
 import pytest
-import requests
 
-from tests.test_model.helpers import disable_proxy
-from tests.utils import find_free_port
+from tests.utils import MODEL_PATH, dataset_dir, server_process  # noqa: F401
 
-logger = logging.getLogger(__name__)
-
-MODEL_PATH = "fishaudio/s2-pro"
-CONFIG_PATH = "examples/configs/s2pro_tts.yaml"
-DATASET_REPO = "zhaochenyang20/seed-tts-eval-mini"
 MAX_SAMPLES = 10
-
-STARTUP_TIMEOUT = 600  # seconds
 BENCHMARK_TIMEOUT = 600  # seconds
 
 # Thresholds (15-25% margin from 4-run data)
@@ -103,87 +91,6 @@ def _run_benchmark(
         "per_request" in speed_results
     ), f"Missing 'per_request' key in results. Keys: {list(speed_results.keys())}"
     return speed_results
-
-
-@pytest.fixture(scope="module")
-def server_port() -> int:
-    """Allocate a free TCP port for the server."""
-    return find_free_port()
-
-
-@pytest.fixture(scope="module")
-def dataset_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    """Download the mini seed-tts-eval dataset via huggingface_hub."""
-    from huggingface_hub import snapshot_download
-
-    cache_dir = tmp_path_factory.mktemp("seed_tts_eval")
-    path = snapshot_download(
-        DATASET_REPO,
-        repo_type="dataset",
-        local_dir=str(cache_dir / "data"),
-    )
-    return Path(path)
-
-
-@pytest.fixture(scope="module")
-def server_process(tmp_path_factory: pytest.TempPathFactory, server_port: int):
-    """Start the s2-pro server and wait until healthy."""
-    log_dir = tmp_path_factory.mktemp("server_logs")
-    log_file = log_dir / "server.log"
-    with open(log_file, "w") as log_handle:
-        cmd = [
-            sys.executable,
-            "-m",
-            "sglang_omni.cli.cli",
-            "serve",
-            "--model-path",
-            MODEL_PATH,
-            "--config",
-            CONFIG_PATH,
-            "--port",
-            str(server_port),
-        ]
-
-        proc = subprocess.Popen(
-            cmd,
-            stdout=log_handle,
-            stderr=subprocess.STDOUT,
-            preexec_fn=os.setsid,
-        )
-
-        api_base = f"http://localhost:{server_port}"
-        is_healthy = False
-        for _ in range(STARTUP_TIMEOUT):
-            if proc.poll() is not None:
-                server_log = log_file.read_text()
-                pytest.fail(f"Server exited with code {proc.returncode}.\n{server_log}")
-            try:
-                with disable_proxy():
-                    resp = requests.get(f"{api_base}/health", timeout=2)
-                if resp.status_code == 200 and "healthy" in resp.text:
-                    is_healthy = True
-                    break
-            except requests.RequestException as exc:
-                logger.debug("Health check failed (transient): %s", exc)
-            time.sleep(1)
-
-        if not is_healthy:
-            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-            proc.wait(timeout=10)
-            server_log = log_file.read_text()
-            pytest.fail(
-                f"Server did not become healthy within {STARTUP_TIMEOUT}s.\n{server_log}"
-            )
-
-        yield proc
-
-        # Teardown
-        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-        try:
-            proc.wait(timeout=30)
-        except subprocess.TimeoutExpired:
-            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-            proc.wait(timeout=10)
 
 
 def _assert_summary_metrics(summary: dict) -> None:
@@ -271,14 +178,14 @@ _per_request_store: dict[str, list[dict]] = {}
 
 @pytest.mark.benchmark
 def test_voice_cloning_non_streaming(
-    server_process: subprocess.Popen,
-    server_port: int,
+    server_process: tuple[subprocess.Popen, int],
     dataset_dir: Path,
     tmp_path: Path,
 ) -> None:
     """Voice cloning (non-streaming): tok/s >= 80, RTF <= 2.8."""
+    _, port = server_process
     results = _run_benchmark(
-        server_port,
+        port,
         str(dataset_dir / "en" / "meta.lst"),
         str(tmp_path / "vc_nonstream"),
     )
@@ -296,14 +203,14 @@ def test_voice_cloning_non_streaming(
 
 @pytest.mark.benchmark
 def test_voice_cloning_streaming(
-    server_process: subprocess.Popen,
-    server_port: int,
+    server_process: tuple[subprocess.Popen, int],
     dataset_dir: Path,
     tmp_path: Path,
 ) -> None:
     """Voice cloning (streaming): latency <= 12.5s, throughput >= 0.08 qps."""
+    _, port = server_process
     results = _run_benchmark(
-        server_port,
+        port,
         str(dataset_dir / "en" / "meta.lst"),
         str(tmp_path / "vc_stream"),
         ["--stream"],
@@ -322,14 +229,14 @@ def test_voice_cloning_streaming(
 
 @pytest.mark.benchmark
 def test_plain_tts_non_streaming(
-    server_process: subprocess.Popen,
-    server_port: int,
+    server_process: tuple[subprocess.Popen, int],
     dataset_dir: Path,
     tmp_path: Path,
 ) -> None:
     """Plain TTS (non-streaming): tok/s >= 80, RTF <= 0.35."""
+    _, port = server_process
     results = _run_benchmark(
-        server_port,
+        port,
         str(dataset_dir / "en" / "meta.lst"),
         str(tmp_path / "plain_nonstream"),
         ["--no-ref-audio"],
@@ -348,14 +255,14 @@ def test_plain_tts_non_streaming(
 
 @pytest.mark.benchmark
 def test_plain_tts_streaming(
-    server_process: subprocess.Popen,
-    server_port: int,
+    server_process: tuple[subprocess.Popen, int],
     dataset_dir: Path,
     tmp_path: Path,
 ) -> None:
     """Plain TTS (streaming): latency <= 4.0s, throughput >= 0.25 qps."""
+    _, port = server_process
     results = _run_benchmark(
-        server_port,
+        port,
         str(dataset_dir / "en" / "meta.lst"),
         str(tmp_path / "plain_stream"),
         ["--no-ref-audio", "--stream"],
@@ -376,7 +283,7 @@ def test_plain_tts_streaming(
 
 
 @pytest.mark.benchmark
-def test_voice_cloning_streaming_consistency(server_process: subprocess.Popen) -> None:
+def test_voice_cloning_streaming_consistency(server_process) -> None:
     """Streaming vs non-streaming must produce identical per-request metrics for VC."""
     ns = _per_request_store.get("vc_nonstream")
     st = _per_request_store.get("vc_stream")
@@ -386,7 +293,7 @@ def test_voice_cloning_streaming_consistency(server_process: subprocess.Popen) -
 
 
 @pytest.mark.benchmark
-def test_plain_tts_streaming_consistency(server_process: subprocess.Popen) -> None:
+def test_plain_tts_streaming_consistency(server_process) -> None:
     """Streaming vs non-streaming must produce identical per-request metrics for TTS."""
     ns = _per_request_store.get("plain_nonstream")
     st = _per_request_store.get("plain_stream")

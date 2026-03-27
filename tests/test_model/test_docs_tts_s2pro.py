@@ -1,0 +1,209 @@
+# SPDX-License-Identifier: Apache-2.0
+"""Tests for TTS S2-Pro documentation examples.
+
+Every test replicates an API call from docs/basic_usage/tts_s2pro.md
+so documentation can never silently go stale.
+
+Usage:
+    pytest tests/test_model/test_docs_tts_s2pro.py -s -x
+"""
+
+from __future__ import annotations
+
+import base64
+import io
+import json
+import subprocess
+import sys
+import wave
+from pathlib import Path
+
+import pytest
+import requests
+
+from tests.test_model.helpers import disable_proxy
+from tests.utils import dataset_dir, server_process  # noqa: F401
+
+SPEECH_INPUT = "Get the trust fund to the bank early."
+REFERENCE_TEXT = "We asked over twenty different people, and they all said it was his."
+REF_WAV_RELPATH = "en/prompt-wavs/common_voice_en_10119832.wav"
+
+
+@pytest.fixture(scope="module")
+def ref_wav(dataset_dir: Path) -> Path:
+    """Return the absolute path to the reference wav used in docs."""
+    p = dataset_dir / REF_WAV_RELPATH
+    assert p.exists(), f"Reference wav not found: {p}"
+    return p
+
+
+def _post_audio_speech(port: int, payload: dict, timeout: int = 120) -> bytes:
+    """Send a request to /v1/audio/speech and return raw audio bytes."""
+    with disable_proxy():
+        resp = requests.post(
+            f"http://localhost:{port}/v1/audio/speech", json=payload, timeout=timeout
+        )
+    resp.raise_for_status()
+    assert len(resp.content) > 0
+    return resp.content
+
+
+def _save_and_verify(content: bytes, path: Path) -> None:
+    """Write audio bytes and assert the file is non-empty."""
+    path.write_bytes(content)
+    assert path.stat().st_size > 0
+
+
+@pytest.mark.docs
+def test_basic_tts(
+    server_process: tuple[subprocess.Popen, int], tmp_path: Path
+) -> None:
+    """POST /v1/audio/speech with minimal payload (no reference audio)."""
+    _, port = server_process
+    content = _post_audio_speech(port, {"input": "Hello, how are you?"})
+    _save_and_verify(content, tmp_path / "output.wav")
+
+
+@pytest.mark.docs
+def test_voice_cloning(
+    server_process: tuple[subprocess.Popen, int],
+    ref_wav: Path,
+    tmp_path: Path,
+) -> None:
+    """Voice cloning with real reference audio from seed-tts-eval-mini."""
+    _, port = server_process
+    content = _post_audio_speech(
+        port,
+        {
+            "input": SPEECH_INPUT,
+            "references": [{"audio_path": str(ref_wav), "text": REFERENCE_TEXT}],
+        },
+    )
+    _save_and_verify(content, tmp_path / "output.wav")
+
+
+@pytest.mark.docs
+def test_voice_cloning_streaming(
+    server_process: tuple[subprocess.Popen, int],
+    ref_wav: Path,
+) -> None:
+    """Streaming voice cloning via SSE."""
+    _, port = server_process
+    api_base = f"http://localhost:{port}"
+    with disable_proxy():
+        resp = requests.post(
+            f"{api_base}/v1/audio/speech",
+            json={
+                "input": SPEECH_INPUT,
+                "references": [
+                    {
+                        "audio_path": str(ref_wav),
+                        "text": REFERENCE_TEXT,
+                    }
+                ],
+                "stream": True,
+            },
+            stream=True,
+            timeout=600,
+        )
+    resp.raise_for_status()
+
+    has_audio_chunk = False
+    has_done = False
+    for raw_line in resp.iter_lines():
+        line = raw_line.decode("utf-8") if isinstance(raw_line, bytes) else raw_line
+        if not line or not line.startswith("data: "):
+            continue
+
+        payload = line.removeprefix("data: ")
+        if payload == "[DONE]":
+            has_done = True
+            break
+
+        event = json.loads(payload)
+        if (
+            event.get("object") == "audio.speech.chunk"
+            and event.get("audio") is not None
+        ):
+            has_audio_chunk = True
+
+    assert has_audio_chunk, "Expected at least one audio.speech.chunk event"
+    assert has_done, "Expected stream to end with [DONE]"
+
+
+@pytest.mark.docs
+def test_voice_cloning_streaming_wav_reassembly(
+    server_process: tuple[subprocess.Popen, int],
+    ref_wav: Path,
+    tmp_path: Path,
+) -> None:
+    """Streaming voice cloning — reassemble WAV from SSE chunks."""
+    _, port = server_process
+    api_base = f"http://localhost:{port}"
+    payload = {
+        "input": SPEECH_INPUT,
+        "references": [{"audio_path": str(ref_wav), "text": REFERENCE_TEXT}],
+        "stream": True,
+        "response_format": "wav",
+    }
+
+    chunks: list[bytes] = []
+    wav_format: tuple[int, int, int] | None = None
+
+    with disable_proxy():
+        with requests.post(
+            f"{api_base}/v1/audio/speech",
+            json=payload,
+            stream=True,
+            timeout=600,
+        ) as stream:
+            stream.raise_for_status()
+            for line in stream.iter_lines(decode_unicode=True):
+                if not line or not line.startswith("data: "):
+                    continue
+                data = line.removeprefix("data: ")
+                if data == "[DONE]":
+                    break
+                b64 = (json.loads(data).get("audio") or {}).get("data")
+                if not b64:
+                    continue
+                with wave.open(io.BytesIO(base64.b64decode(b64)), "rb") as w:
+                    if wav_format is None:
+                        wav_format = (
+                            w.getnchannels(),
+                            w.getsampwidth(),
+                            w.getframerate(),
+                        )
+                    chunks.append(w.readframes(w.getnframes()))
+
+    assert wav_format, "No audio chunks received"
+    n_channels, sample_width, frame_rate = wav_format
+    output_path = tmp_path / "output_stream.wav"
+    with wave.open(str(output_path), "wb") as w:
+        w.setnchannels(n_channels)
+        w.setsampwidth(sample_width)
+        w.setframerate(frame_rate)
+        w.writeframes(b"".join(chunks))
+    assert output_path.stat().st_size > 0
+
+
+@pytest.mark.docs
+def test_request_parameters(
+    server_process: tuple[subprocess.Popen, int], tmp_path: Path
+) -> None:
+    """POST /v1/audio/speech with explicit generation parameters."""
+    _, port = server_process
+    content = _post_audio_speech(
+        port,
+        {
+            "input": "Hello, how are you?",
+            "temperature": 0.7,
+            "top_p": 0.9,
+            "max_new_tokens": 2048,
+        },
+    )
+    _save_and_verify(content, tmp_path / "output.wav")
+
+
+if __name__ == "__main__":
+    sys.exit(pytest.main([__file__, "-s", "-x", "-v"]))
