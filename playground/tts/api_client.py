@@ -4,9 +4,11 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Iterator
 
 import httpx
 
+from playground.tts.audio_stream import SpeechStreamEvent, parse_speech_stream_data
 from playground.tts.models import NonStreamingSpeechResult, SpeechSynthesisRequest
 
 
@@ -39,3 +41,31 @@ class SpeechDemoClient:
             audio_bytes=response.content,
             elapsed_s=time.perf_counter() - started_at,
         )
+
+    def stream_synthesize(
+        self, request: SpeechSynthesisRequest
+    ) -> Iterator[SpeechStreamEvent]:
+        request.validate()
+
+        payload = request.to_payload()
+        payload["stream"] = True
+
+        try:
+            with httpx.stream(
+                "POST",
+                f"{self._api_base}/v1/audio/speech",
+                json=payload,
+                timeout=None,
+            ) as response:
+                response.raise_for_status()
+                for line in response.iter_lines():
+                    if not line or not line.startswith("data: "):
+                        continue
+                    event = parse_speech_stream_data(line[len("data: ") :])
+                    if event is None:
+                        continue
+                    if event.is_done:
+                        return
+                    yield event
+        except Exception as exc:
+            raise SpeechDemoClientError(str(exc)) from exc
