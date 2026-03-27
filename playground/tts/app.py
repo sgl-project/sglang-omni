@@ -7,7 +7,6 @@ import argparse
 
 from playground.tts.ui import create_demo
 
-
 DEFAULT_API_BASE = "http://localhost:8000"
 
 

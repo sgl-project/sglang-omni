@@ -76,7 +76,9 @@ class _DummyStreamResponse:
 def test_stream_synthesize_requires_terminal_markers(monkeypatch) -> None:
     monkeypatch.setattr(
         "playground.tts.api_client.httpx.stream",
-        lambda *args, **kwargs: _DummyStreamResponse(_stream_lines(include_terminal=False)),
+        lambda *args, **kwargs: _DummyStreamResponse(
+            _stream_lines(include_terminal=False)
+        ),
     )
 
     client = SpeechDemoClient("http://localhost:8000")
@@ -88,7 +90,9 @@ def test_stream_synthesize_requires_terminal_markers(monkeypatch) -> None:
 def test_stream_synthesize_yields_audio_and_completes(monkeypatch) -> None:
     monkeypatch.setattr(
         "playground.tts.api_client.httpx.stream",
-        lambda *args, **kwargs: _DummyStreamResponse(_stream_lines(include_terminal=True)),
+        lambda *args, **kwargs: _DummyStreamResponse(
+            _stream_lines(include_terminal=True)
+        ),
     )
 
     client = SpeechDemoClient("http://localhost:8000")

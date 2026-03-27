@@ -34,7 +34,9 @@ def _make_event(audio: np.ndarray, *, index: int = 0, sample_rate: int = 24000) 
 
 
 def test_parse_speech_stream_data_decodes_audio_event() -> None:
-    event = parse_speech_stream_data(_make_event(np.array([0.0, 0.1], dtype=np.float32)))
+    event = parse_speech_stream_data(
+        _make_event(np.array([0.0, 0.1], dtype=np.float32))
+    )
 
     assert event is not None
     assert event.audio_bytes is not None

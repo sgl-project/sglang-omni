@@ -9,10 +9,9 @@ from typing import Any
 import gradio as gr
 
 from playground.tts.api_client import SpeechDemoClient, SpeechDemoClientError
-from playground.tts.audio_stream import WavChunkAccumulator
 from playground.tts.artifacts import ArtifactStore
+from playground.tts.audio_stream import WavChunkAccumulator
 from playground.tts.models import GenerationSettings, SpeechSynthesisRequest
-
 
 _ARTIFACT_STORE = ArtifactStore()
 
@@ -52,7 +51,9 @@ def _append_history(
     ]
 
 
-def _store_wav_artifact(audio_bytes: bytes, artifact_paths: list[str]) -> tuple[str, list[str]]:
+def _store_wav_artifact(
+    audio_bytes: bytes, artifact_paths: list[str]
+) -> tuple[str, list[str]]:
     path = _ARTIFACT_STORE.write_bytes(audio_bytes, suffix=".wav")
     return path, artifact_paths + [path]
 
@@ -142,7 +143,9 @@ def make_streaming_handler(api_base: str):
             yield history, text, None, None, str(exc), artifact_paths
             return
 
-        in_progress_history = _append_history(history, user_content, "Streaming audio...")
+        in_progress_history = _append_history(
+            history, user_content, "Streaming audio..."
+        )
         yield (
             in_progress_history,
             "",
@@ -221,13 +224,8 @@ def make_streaming_handler(api_base: str):
         )
 
         elapsed_s = time.perf_counter() - started_at
-        summary = (
-            f"{elapsed_s:.1f}s total | {chunk_count} chunks"
-            + (
-                f" | first audio {first_audio_s:.2f}s"
-                if first_audio_s is not None
-                else ""
-            )
+        summary = f"{elapsed_s:.1f}s total | {chunk_count} chunks" + (
+            f" | first audio {first_audio_s:.2f}s" if first_audio_s is not None else ""
         )
         completed_history = _append_history(
             history,
