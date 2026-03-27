@@ -4,9 +4,8 @@
 from __future__ import annotations
 
 import time
+import warnings
 from typing import Any
-
-import gradio as gr
 
 from playground.tts.api_client import SpeechDemoClient, SpeechDemoClientError
 from playground.tts.artifacts import ArtifactStore
@@ -88,7 +87,7 @@ def make_non_streaming_handler(api_base: str):
                 max_new_tokens,
             )
         except ValueError as exc:
-            gr.Warning(str(exc))
+            warnings.warn(str(exc))
             return history, text, None, str(exc), artifact_paths
 
         try:
@@ -139,7 +138,7 @@ def make_streaming_handler(api_base: str):
                 max_new_tokens,
             )
         except ValueError as exc:
-            gr.Warning(str(exc))
+            warnings.warn(str(exc))
             yield history, text, None, None, str(exc), artifact_paths
             return
 
@@ -240,7 +239,9 @@ def make_streaming_handler(api_base: str):
     return synthesize_stream
 
 
-def create_demo(api_base: str) -> gr.Blocks:
+def create_demo(api_base: str):
+    import gradio as gr
+
     synthesize = make_non_streaming_handler(api_base)
     synthesize_stream = make_streaming_handler(api_base)
 
