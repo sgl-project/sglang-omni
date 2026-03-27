@@ -63,7 +63,9 @@ def test_streaming_handler_builds_expected_final_wav(monkeypatch) -> None:
     assert chunk_final_audio == gr.skip()
     assert "Streaming | chunk 1" in live_status
 
-    final_history, _, final_live_audio, final_path, final_status, artifact_paths = outputs[-1]
+    final_history, _, final_live_audio, final_path, final_status, artifact_paths = (
+        outputs[-1]
+    )
     assert final_path is not None
     assert final_path in artifact_paths
     assert "chunks" in final_status
@@ -113,7 +115,9 @@ def test_streaming_handler_reports_truncated_stream(monkeypatch) -> None:
     assert "stream closed early" in failed_history[-1]["content"]
 
 
-def test_streaming_handler_resets_audio_outputs_for_followup_request(monkeypatch) -> None:
+def test_streaming_handler_resets_audio_outputs_for_followup_request(
+    monkeypatch,
+) -> None:
     first = encode_wav(np.zeros(2400, dtype=np.float32), 24000)
 
     def _stream(self, request):
