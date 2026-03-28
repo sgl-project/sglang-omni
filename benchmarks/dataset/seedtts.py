@@ -9,8 +9,6 @@ from dataclasses import dataclass
 
 @dataclass
 class SampleInput:
-    """A single sample from the seed-tts-eval dataset."""
-
     sample_id: str
     ref_text: str
     ref_audio: str

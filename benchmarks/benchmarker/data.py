@@ -8,8 +8,6 @@ from dataclasses import dataclass
 
 @dataclass
 class RequestResult:
-    """Result from a single benchmark request."""
-
     request_id: str = ""
     text: str = ""
     is_success: bool = False

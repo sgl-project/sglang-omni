@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Callable, Coroutine
 
 import aiohttp
@@ -23,8 +23,6 @@ SendFn = Callable[
 
 @dataclass
 class RunConfig:
-    """Configuration for a benchmark run."""
-
     max_concurrency: int = 1
     request_rate: float = float("inf")
     warmup: int = 1
@@ -46,7 +44,6 @@ class BenchmarkRunner:
     async def run(
         self, samples: list, send_fn: SendFn
     ) -> list[RequestResult]:
-        """Run the full benchmark: warmup then timed dispatch."""
         timeout = aiohttp.ClientTimeout(total=self.config.timeout_s)
         async with aiohttp.ClientSession(timeout=timeout) as session:
             if self.config.warmup > 0:

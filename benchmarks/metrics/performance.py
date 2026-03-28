@@ -9,7 +9,6 @@ from benchmarks.benchmarker.data import RequestResult
 
 
 def _compute_token_metrics(successes: list[RequestResult]) -> dict:
-    """Compute optional token throughput metrics from successful outputs."""
     tokens_per_sec = [o.tok_per_s for o in successes if o.tok_per_s > 0]
     gen_token_counts = [
         o.completion_tokens for o in successes if o.completion_tokens > 0
@@ -37,11 +36,7 @@ def _compute_token_metrics(successes: list[RequestResult]) -> dict:
 
 
 def compute_speed_metrics(outputs: list[RequestResult]) -> dict:
-    """Compute system performance summary from a list of request results.
-
-    Returns the same dict format as the original benchmark_tts_speed.py
-    ``calculate_metrics()``, so that existing CI assertions continue to pass.
-    """
+    """Compute system performance summary from a list of request results."""
     successes = [o for o in outputs if o.is_success]
     if not successes:
         return {"completed_requests": 0, "failed_requests": len(outputs)}

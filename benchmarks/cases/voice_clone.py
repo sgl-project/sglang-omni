@@ -1,19 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Voice Cloning WER case -- TTS API and Omni API unified implementation.
-
-TTS API (/v1/audio/speech):
-  S2 Pro / Qwen TTS / Xiaomi TTS share ``VoiceCloneTTS``.
-  Reference: s2pro-wer-eval-server branch benchmark_tts_wer.py
-
-Omni API (/v1/chat/completions):
-  Qwen3 Omni etc. share ``VoiceCloneOmni``.
-  Reference: qwen3-omni-wer-server-eval branch benchmark_tts_wer_qwen3_omni_server.py
-
-Shared module-level functions:
-  - normalize_text(): text normalization
-  - load_asr_model() / transcribe(): ASR loading and transcription
-  - evaluate_sample_wer(): single-sample WER evaluation
-"""
+"""Voice Cloning WER case -- TTS API (/v1/audio/speech) and Omni API
+(/v1/chat/completions) unified implementation."""
 
 from __future__ import annotations
 
@@ -32,10 +19,9 @@ import scipy.signal
 import soundfile as sf
 import torch
 from jiwer import process_words
-from tqdm import tqdm
 
-from benchmarks.benchmarker.utils import WAV_HEADER_SIZE, wait_for_service
-from benchmarks.dataset.seedtts import SampleInput, load_seedtts_samples
+from benchmarks.benchmarker.utils import WAV_HEADER_SIZE
+from benchmarks.dataset.seedtts import SampleInput
 
 logger = logging.getLogger(__name__)
 
@@ -43,13 +29,8 @@ SUMMARY_LABEL_WIDTH = 30
 SUMMARY_LINE_WIDTH = 60
 
 
-# ======================== Data ========================
-
-
 @dataclass
 class SampleOutput:
-    """Result from a single WER evaluation sample."""
-
     sample_id: str = ""
     target_text: str = ""
     whisper_text: str = ""
@@ -66,14 +47,12 @@ class SampleOutput:
     error: str = ""
 
 
-# ======================== Shared: Text normalization ========================
-
 _EN_NORMALIZER_UNLOADED = object()
 _en_normalizer = _EN_NORMALIZER_UNLOADED
 
 
 def _get_en_normalizer():
-    """Lazy-load the English text normalizer (tries only once)."""
+    """Lazy-load the English text normalizer. Tries whisper_normalizer, openai-whisper, transformers."""
     global _en_normalizer
     if _en_normalizer is not _EN_NORMALIZER_UNLOADED:
         return _en_normalizer
@@ -131,7 +110,6 @@ def _get_en_normalizer():
 
 
 def normalize_text(text: str, lang: str) -> str:
-    """Normalize text for WER computation."""
     if lang == "zh":
         from zhon.hanzi import punctuation as zh_punct
 
@@ -154,9 +132,6 @@ def normalize_text(text: str, lang: str) -> str:
         text = text.replace(ch, "")
     text = text.replace("  ", " ").strip().lower()
     return text
-
-
-# ======================== Shared: ASR ========================
 
 
 def load_asr_model(lang: str, device: str):
@@ -185,7 +160,6 @@ def load_asr_model(lang: str, device: str):
 
 
 def transcribe(asr: dict, wav_path: str, lang: str, device: str) -> str:
-    """Transcribe an audio file using the loaded ASR model."""
     if asr["type"] == "whisper":
         processor = asr["processor"]
         model = asr["model"]
@@ -213,9 +187,6 @@ def transcribe(asr: dict, wav_path: str, lang: str, device: str) -> str:
         raise ValueError(f"Unknown ASR type: {asr['type']}")
 
 
-# ======================== TTS API ========================
-
-
 class VoiceCloneTTS:
     """Voice cloning via /v1/audio/speech (OAI TTS API format).
 
@@ -232,7 +203,6 @@ class VoiceCloneTTS:
         temperature: float = 0.8,
         seed: int | None = None,
     ) -> tuple[bytes, float]:
-        """Generate speech via TTS API. Returns (wav_bytes, latency)."""
         payload: dict = {
             "model": model_name,
             "input": sample.target_text,
@@ -273,7 +243,6 @@ class VoiceCloneTTS:
         temperature: float = 0.8,
         seed: int | None = None,
     ) -> SampleOutput:
-        """Generate speech, transcribe, and compute WER for one sample."""
         output = SampleOutput(
             sample_id=sample.sample_id,
             target_text=sample.target_text,
@@ -325,9 +294,6 @@ class VoiceCloneTTS:
         return output
 
 
-# ======================== Omni API ========================
-
-
 class VoiceCloneOmni:
     """Voice cloning via /v1/chat/completions (Omni API format).
 
@@ -347,7 +313,6 @@ class VoiceCloneOmni:
         max_tokens: int | None = None,
         temperature: float = 0.7,
     ) -> tuple[bytes, float]:
-        """Generate speech via chat completions API. Returns (wav_bytes, latency)."""
         if max_tokens is None:
             max_tokens = self.THINKER_MAX_NEW_TOKENS
 
@@ -409,7 +374,6 @@ class VoiceCloneOmni:
         speaker: str = "Ethan",
         max_tokens: int | None = None,
     ) -> SampleOutput:
-        """Generate speech, transcribe, and compute WER for one sample."""
         output = SampleOutput(
             sample_id=sample.sample_id,
             target_text=sample.target_text,
@@ -455,19 +419,12 @@ class VoiceCloneOmni:
         return output
 
 
-# ======================== Shared: Metrics aggregation ========================
-
-
 def calculate_wer_metrics(outputs: list[SampleOutput], lang: str) -> dict:
-    """Compute corpus-level WER metrics from per-sample outputs.
-
-    Matches the reference scripts' ``calculate_metrics()`` output format exactly.
-    """
+    """Compute corpus-level WER metrics from per-sample outputs."""
     successes = [o for o in outputs if o.is_success]
     if not successes:
         return {"completed": 0, "failed": len(outputs)}
 
-    # Micro-average WER (authoritative)
     total_errors = sum(
         o.substitutions + o.deletions + o.insertions for o in successes
     )
@@ -512,11 +469,7 @@ def calculate_wer_metrics(outputs: list[SampleOutput], lang: str) -> dict:
     }
 
 
-# ======================== Shared: Output ========================
-
-
 def print_wer_summary(metrics: dict, model_name: str) -> None:
-    """Pretty-print WER benchmark results."""
     lw = SUMMARY_LABEL_WIDTH
     w = SUMMARY_LINE_WIDTH
     print(f"\n{'=' * w}")
@@ -575,7 +528,6 @@ def print_wer_summary(metrics: dict, model_name: str) -> None:
 def save_wer_results(
     outputs: list[SampleOutput], metrics: dict, config: dict, output_dir: str
 ) -> None:
-    """Save WER results as JSON and CSV."""
     os.makedirs(output_dir, exist_ok=True)
 
     json_results = {

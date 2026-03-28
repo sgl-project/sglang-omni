@@ -1,9 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""TTS Speed case — /v1/audio/speech request handling (streaming + non-streaming).
-
-Extracted from benchmark_tts_speed.py.  S2 Pro / Qwen TTS / Xiaomi TTS etc.
-share this case via the OAI TTS API format.
-"""
+"""TTS Speed case -- /v1/audio/speech request handling (streaming + non-streaming)."""
 
 from __future__ import annotations
 
@@ -17,11 +13,7 @@ import time
 import aiohttp
 
 from benchmarks.benchmarker.data import RequestResult
-from benchmarks.benchmarker.utils import (
-    WAV_HEADER_SIZE,
-    get_wav_duration,
-    process_sse_line,
-)
+from benchmarks.benchmarker.utils import get_wav_duration, process_sse_line
 from benchmarks.dataset.seedtts import SampleInput
 
 logger = logging.getLogger(__name__)
@@ -29,9 +21,6 @@ logger = logging.getLogger(__name__)
 TEXT_PREVIEW_LENGTH = 60
 SUMMARY_LABEL_WIDTH = 30
 SUMMARY_LINE_WIDTH = 60
-
-
-# ======================== Request / Response ========================
 
 
 def _build_tts_payload(
@@ -42,7 +31,6 @@ def _build_tts_payload(
     no_ref_audio: bool = False,
     **gen_kwargs,
 ) -> dict:
-    """Build JSON payload for /v1/audio/speech."""
     payload: dict = {
         "model": model_name,
         "input": sample.target_text,
@@ -60,7 +48,6 @@ def _build_tts_payload(
 
 
 def _parse_response_headers(result: RequestResult, headers: dict) -> None:
-    """Extract token counts and engine time from response headers."""
     prompt_tok = headers.get("X-Prompt-Tokens")
     comp_tok = headers.get("X-Completion-Tokens")
     eng_time = headers.get("X-Engine-Time")
@@ -79,7 +66,6 @@ async def _handle_streaming_response(
     result: RequestResult,
     start_time: float,
 ) -> None:
-    """Parse SSE stream, decode audio chunks, and compute metrics."""
     total_audio_duration = 0.0
     usage_data: dict | None = None
     buffer = bytearray()
@@ -123,7 +109,6 @@ async def _handle_non_streaming_response(
     start_time: float,
     save_audio_dir: str | None,
 ) -> None:
-    """Read full audio response and compute metrics."""
     audio_bytes = await response.read()
     result.audio_duration_s = get_wav_duration(audio_bytes)
     elapsed = time.perf_counter() - start_time
@@ -139,9 +124,6 @@ async def _handle_non_streaming_response(
         with open(audio_path, "wb") as f:
             f.write(audio_bytes)
         result.wav_path = audio_path
-
-
-# ======================== Send function factory ========================
 
 
 def make_tts_send_fn(
@@ -187,11 +169,7 @@ def make_tts_send_fn(
     return send_fn
 
 
-# ======================== Output ========================
-
-
 def print_speed_summary(metrics: dict, model_name: str) -> None:
-    """Pretty-print speed benchmark results."""
     lw = SUMMARY_LABEL_WIDTH
     w = SUMMARY_LINE_WIDTH
     print(f"\n{'=' * w}")
@@ -233,7 +211,6 @@ def save_speed_results(
     config: dict,
     output_dir: str,
 ) -> None:
-    """Save speed benchmark results as JSON and CSV."""
     os.makedirs(output_dir, exist_ok=True)
 
     json_results = {

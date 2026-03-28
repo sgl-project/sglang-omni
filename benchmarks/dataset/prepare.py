@@ -24,7 +24,6 @@ DATASETS = {
 def download_dataset(
     repo_id: str, local_dir: str = "seedtts_testset"
 ) -> None:
-    """Download a dataset from HuggingFace if not already present."""
     meta_en = os.path.join(local_dir, "en", "meta.lst")
     if os.path.exists(meta_en):
         logger.info("Dataset already exists at %s, skipping download.", local_dir)
