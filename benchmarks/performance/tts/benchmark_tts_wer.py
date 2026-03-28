@@ -175,11 +175,9 @@ def _get_en_normalizer():
 
 def normalize_text(text: str, lang: str) -> str:
     if lang == "zh":
-        # Chinese numeral normalization (e.g., 四百六十五 → 465, 二零零二年 → 2002年)
-        # so that ASR hypothesis and reference text align on number format.
-        text = text.replace("\u3007", "\u96f6")  # 〇 (circle zero) → 零
-        text = text.replace("\u4e24", "\u4e8c")  # 两 → 二 (cn2an handles 二 better)
-        text = cn2an.transform(text, "cn2an")
+        # Normalize Arabic numerals to spoken-form Chinese (e.g., 2002年 → 二零零二年)
+        # so that reference text aligns with ASR output, which is always spoken-form.
+        text = cn2an.transform(text, "an2cn")
 
         from zhon.hanzi import punctuation as zh_punct
 
