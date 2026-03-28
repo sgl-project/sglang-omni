@@ -11,7 +11,11 @@ import numpy as np
 from playground.tts.api_client import SpeechDemoClientError
 from playground.tts.audio_stream import SpeechStreamEvent
 from playground.tts.models import NonStreamingSpeechResult
-from playground.tts.ui import make_non_streaming_handler, make_streaming_handler
+from playground.tts.ui import (
+    _publish_pending_stream_result,
+    make_non_streaming_handler,
+    make_streaming_handler,
+)
 from sglang_omni.client.audio import encode_wav
 
 
@@ -55,31 +59,56 @@ def test_streaming_handler_builds_expected_final_wav(monkeypatch) -> None:
     )
 
     assert len(outputs) == 5
-    _, _, reset_live_audio, reset_final_audio, reset_status, _ = outputs[0]
+    _, _, reset_live_audio, reset_final_audio, reset_status, _, reset_pending = outputs[
+        0
+    ]
     _assert_reset_update(reset_live_audio)
     _assert_reset_update(reset_final_audio)
     assert reset_status == "Connecting to speech stream..."
+    assert reset_pending is None
 
-    _, _, buffering_live_audio, buffering_final_audio, buffering_status, _ = outputs[1]
+    (
+        _,
+        _,
+        buffering_live_audio,
+        buffering_final_audio,
+        buffering_status,
+        _,
+        buffering_pending,
+    ) = outputs[1]
     assert buffering_live_audio == gr.skip()
     assert buffering_final_audio == gr.skip()
     assert buffering_status == "Buffering live playback | chunk 1"
+    assert buffering_pending is None
 
-    _, _, live_audio, chunk_final_audio, live_status, _ = outputs[3]
+    _, _, live_audio, chunk_final_audio, live_status, _, live_pending = outputs[3]
     assert isinstance(live_audio, bytes)
     assert chunk_final_audio == gr.skip()
     assert "Streaming | chunk 3" in live_status
+    assert live_pending is None
 
-    final_history, _, final_live_audio, final_path, final_status, artifact_paths = (
-        outputs[-1]
-    )
-    assert final_path is not None
-    assert final_path in artifact_paths
-    assert "chunks" in final_status
-    assert "audio" in final_status
+    (
+        final_history,
+        final_text,
+        final_live_audio,
+        final_path,
+        final_status,
+        artifact_paths,
+        pending_result,
+    ) = outputs[-1]
+    assert final_history == gr.skip()
+    assert final_text == gr.skip()
     assert final_live_audio == gr.skip()
-    assert final_history[-1]["content"][0]["path"] == final_path
-    assert "audio" in final_history[-1]["content"][1]
+    assert final_path == gr.skip()
+    assert final_status == gr.skip()
+    assert pending_result is not None
+
+    final_path = pending_result["final_audio_path"]
+    assert final_path in artifact_paths
+    assert "chunks" in pending_result["status"]
+    assert "audio" in pending_result["status"]
+    assert pending_result["history"][-1]["content"][0]["path"] == final_path
+    assert "audio" in pending_result["history"][-1]["content"][1]
 
     with wave.open(final_path, "rb") as wav_file:
         assert wav_file.getframerate() == 24000
@@ -116,10 +145,11 @@ def test_streaming_handler_reports_truncated_stream(monkeypatch) -> None:
     )
 
     assert len(outputs) == 2
-    failed_history, _, _, _, status, artifact_paths = outputs[-1]
+    failed_history, _, _, _, status, artifact_paths, pending_result = outputs[-1]
     assert artifact_paths == []
     assert "Request failed" in status
     assert "stream closed early" in failed_history[-1]["content"]
+    assert pending_result is None
 
 
 def test_streaming_handler_resets_audio_outputs_for_followup_request(
@@ -148,7 +178,7 @@ def test_streaming_handler_resets_audio_outputs_for_followup_request(
             [],
         )
     )
-    history, _, _, _, _, artifact_paths = first_outputs[-1]
+    history, _, _, _, _, artifact_paths, _ = first_outputs[-1]
 
     second_outputs = list(
         handler(
@@ -164,10 +194,13 @@ def test_streaming_handler_resets_audio_outputs_for_followup_request(
         )
     )
 
-    _, _, reset_live_audio, reset_final_audio, reset_status, _ = second_outputs[0]
+    _, _, reset_live_audio, reset_final_audio, reset_status, _, reset_pending = (
+        second_outputs[0]
+    )
     _assert_reset_update(reset_live_audio)
     _assert_reset_update(reset_final_audio)
     assert reset_status == "Connecting to speech stream..."
+    assert reset_pending is None
 
 
 def test_streaming_handler_keeps_live_audio_at_final_handoff(monkeypatch) -> None:
@@ -200,6 +233,23 @@ def test_streaming_handler_keeps_live_audio_at_final_handoff(monkeypatch) -> Non
     final_live_audio = outputs[-1][2]
     _assert_not_reset_update(final_live_audio)
     assert final_live_audio == gr.skip()
+
+
+def test_publish_pending_stream_result_reveals_final_outputs() -> None:
+    pending_result = {
+        "history": [{"role": "assistant", "content": "done"}],
+        "final_audio_path": "/tmp/final.wav",
+        "status": "2.0s audio | 1 chunks",
+    }
+
+    history, final_audio, status, cleared_pending = _publish_pending_stream_result(
+        pending_result
+    )
+
+    assert history == pending_result["history"]
+    assert final_audio == pending_result["final_audio_path"]
+    assert status == pending_result["status"]
+    assert cleared_pending is None
 
 
 def test_non_streaming_handler_summary_includes_audio_duration(monkeypatch) -> None:

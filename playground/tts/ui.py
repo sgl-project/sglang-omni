@@ -7,6 +7,8 @@ import time
 import warnings
 from typing import Any
 
+import gradio as gr
+
 from playground.tts.api_client import SpeechDemoClient, SpeechDemoClientError
 from playground.tts.artifacts import ArtifactStore
 from playground.tts.audio_stream import (
@@ -64,14 +66,10 @@ def _store_wav_artifact(
 
 
 def _reset_audio_output() -> dict[str, Any]:
-    import gradio as gr
-
     return gr.update(value=None)
 
 
 def _keep_audio_output():
-    import gradio as gr
-
     return gr.skip()
 
 
@@ -117,6 +115,24 @@ def _clear_history(artifact_paths: list[str]):
         _reset_audio_output(),
         "Ready",
         [],
+        None,
+    )
+
+
+def _publish_pending_stream_result(pending_result: dict[str, Any] | None):
+    if not pending_result:
+        return (
+            gr.skip(),
+            gr.skip(),
+            gr.skip(),
+            None,
+        )
+
+    return (
+        pending_result["history"],
+        pending_result["final_audio_path"],
+        pending_result["status"],
+        None,
     )
 
 
@@ -201,7 +217,7 @@ def make_streaming_handler(api_base: str):
             )
         except ValueError as exc:
             warnings.warn(str(exc))
-            yield history, text, None, None, str(exc), artifact_paths
+            yield history, text, None, None, str(exc), artifact_paths, None
             return
 
         in_progress_history = _append_history(
@@ -214,6 +230,7 @@ def make_streaming_handler(api_base: str):
             _reset_audio_output(),
             "Connecting to speech stream...",
             artifact_paths,
+            None,
         )
 
         started_at = time.perf_counter()
@@ -241,6 +258,7 @@ def make_streaming_handler(api_base: str):
                         _keep_audio_output(),
                         f"Buffering live playback | chunk {chunk_count}",
                         artifact_paths,
+                        None,
                     )
                     continue
 
@@ -258,6 +276,7 @@ def make_streaming_handler(api_base: str):
                     _keep_audio_output(),
                     status,
                     artifact_paths,
+                    None,
                 )
         except SpeechDemoClientError as exc:
             failed_history = _append_history(history, user_content, f"Error: {exc}")
@@ -268,6 +287,7 @@ def make_streaming_handler(api_base: str):
                 _keep_audio_output(),
                 f"Request failed: {exc}",
                 artifact_paths,
+                None,
             )
             return
         except ValueError as exc:
@@ -279,6 +299,7 @@ def make_streaming_handler(api_base: str):
                 _keep_audio_output(),
                 f"Stream parse failed: {exc}",
                 artifact_paths,
+                None,
             )
             return
 
@@ -294,6 +315,7 @@ def make_streaming_handler(api_base: str):
                 _keep_audio_output(),
                 "No audio was returned.",
                 artifact_paths,
+                None,
             )
             return
 
@@ -312,6 +334,7 @@ def make_streaming_handler(api_base: str):
                 _keep_audio_output(),
                 status,
                 artifact_paths,
+                None,
             )
 
         final_audio_path, artifact_paths = _store_wav_artifact(
@@ -333,13 +356,19 @@ def make_streaming_handler(api_base: str):
                 summary,
             ],
         )
+        pending_result = {
+            "history": completed_history,
+            "final_audio_path": final_audio_path,
+            "status": summary,
+        }
         yield (
-            completed_history,
-            "",
+            gr.skip(),
+            gr.skip(),
             _keep_audio_output(),
-            final_audio_path,
-            summary,
+            _keep_audio_output(),
+            _keep_audio_output(),
             artifact_paths,
+            pending_result,
         )
 
     return synthesize_stream
@@ -362,6 +391,7 @@ def create_demo(api_base: str):
         )
 
         artifact_state = gr.State([])
+        pending_stream_result = gr.State(None)
 
         with gr.Row():
             with gr.Column(scale=1, min_width=320):
@@ -474,7 +504,19 @@ def create_demo(api_base: str):
                 stream_final_audio,
                 stream_status,
                 artifact_state,
+                pending_stream_result,
             ],
+        )
+        stream_audio.stop(
+            fn=_publish_pending_stream_result,
+            inputs=[pending_stream_result],
+            outputs=[
+                chatbot,
+                stream_final_audio,
+                stream_status,
+                pending_stream_result,
+            ],
+            queue=False,
         )
         clear_btn.click(
             fn=_clear_history,
@@ -487,6 +529,7 @@ def create_demo(api_base: str):
                 stream_final_audio,
                 stream_status,
                 artifact_state,
+                pending_stream_result,
             ],
         )
 
