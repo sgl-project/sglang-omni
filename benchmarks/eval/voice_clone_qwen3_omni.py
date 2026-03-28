@@ -17,7 +17,6 @@ import argparse
 import asyncio
 import logging
 import os
-import time
 
 import aiohttp
 import torch
