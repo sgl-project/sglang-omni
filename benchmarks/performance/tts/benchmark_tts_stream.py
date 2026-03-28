@@ -51,7 +51,7 @@ def _parse_stream_event(line: str) -> tuple[bytes | None, bool]:
     """Parse one SSE data line. Returns (audio_bytes_or_None, is_done)."""
     if not line.startswith("data: "):
         return None, False
-    data = line[len("data: "):].strip()
+    data = line[len("data: ") :].strip()
     if data == "[DONE]":
         return None, True
     try:
@@ -65,10 +65,13 @@ def _parse_stream_event(line: str) -> tuple[bytes | None, bool]:
     if not isinstance(raw, str):
         return None, False
     import base64
+
     return base64.b64decode(raw), False
 
 
-def stream_and_profile(api_base: str, text: str, model: str, *, verbose: bool = True) -> None:
+def stream_and_profile(
+    api_base: str, text: str, model: str, *, verbose: bool = True
+) -> None:
     url = f"{api_base.rstrip('/')}/v1/audio/speech"
     payload = {"input": text, "model": model, "stream": True}
 
@@ -77,9 +80,13 @@ def stream_and_profile(api_base: str, text: str, model: str, *, verbose: bool = 
         print("  S2-Pro Streaming Chunk Timing Benchmark")
         print(f"{'='*60}")
         print(f"  Endpoint: {url}")
-        print(f"  Text ({len(text)} chars): {text[:80]}{'...' if len(text) > 80 else ''}")
+        print(
+            f"  Text ({len(text)} chars): {text[:80]}{'...' if len(text) > 80 else ''}"
+        )
         print(f"{'='*60}\n")
-        print(f"{'Chunk':>6}  {'Wall Time':>10}  {'Gap (s)':>9}  {'Audio (s)':>9}  {'RT Ratio':>9}")
+        print(
+            f"{'Chunk':>6}  {'Wall Time':>10}  {'Gap (s)':>9}  {'Audio (s)':>9}  {'RT Ratio':>9}"
+        )
         print("-" * 60)
 
     request_start = time.perf_counter()
@@ -101,7 +108,11 @@ def stream_and_profile(api_base: str, text: str, model: str, *, verbose: bool = 
                 if audio_bytes is None:
                     continue
 
-                gap_s = (now - prev_wall) if prev_wall is not None else (now - request_start)
+                gap_s = (
+                    (now - prev_wall)
+                    if prev_wall is not None
+                    else (now - request_start)
+                )
                 audio_s = _wav_duration_seconds(audio_bytes)
                 rt_ratio = audio_s / gap_s if gap_s > 0 else float("inf")
                 total_audio_s += audio_s
@@ -130,7 +141,10 @@ def stream_and_profile(api_base: str, text: str, model: str, *, verbose: bool = 
                 prev_wall = now
 
     except httpx.HTTPStatusError as exc:
-        print(f"\nERROR: HTTP {exc.response.status_code}: {exc.response.text[:200]}", file=sys.stderr)
+        print(
+            f"\nERROR: HTTP {exc.response.status_code}: {exc.response.text[:200]}",
+            file=sys.stderr,
+        )
         sys.exit(1)
     except Exception as exc:
         print(f"\nERROR: {exc}", file=sys.stderr)
@@ -154,7 +168,9 @@ def stream_and_profile(api_base: str, text: str, model: str, *, verbose: bool = 
     print(f"  Total audio:           {total_audio_s:.3f}s")
     print(f"  Overall RT ratio:      {total_audio_s / total_wall:.2f}x")
     if gaps:
-        print(f"  Inter-chunk gaps (s):  min={min(gaps):.3f}  max={max(gaps):.3f}  mean={sum(gaps)/len(gaps):.3f}")
+        print(
+            f"  Inter-chunk gaps (s):  min={min(gaps):.3f}  max={max(gaps):.3f}  mean={sum(gaps)/len(gaps):.3f}"
+        )
         slow_gaps = [(i + 1, round(g, 3)) for i, g in enumerate(gaps) if g > 1.0]
         if slow_gaps:
             print(f"  Slow gaps (>1s):       {slow_gaps}")
@@ -165,13 +181,18 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Benchmark S2-Pro TTS streaming chunk cadence."
     )
-    parser.add_argument("--base-url", type=str, default=None,
-                        help="Base URL (e.g. http://localhost:8000). Overrides --host/--port.")
+    parser.add_argument(
+        "--base-url",
+        type=str,
+        default=None,
+        help="Base URL (e.g. http://localhost:8000). Overrides --host/--port.",
+    )
     parser.add_argument("--host", type=str, default="localhost")
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--model", type=str, default="s2pro")
-    parser.add_argument("--text", type=str, default=DEFAULT_TEXT,
-                        help="Text to synthesize.")
+    parser.add_argument(
+        "--text", type=str, default=DEFAULT_TEXT, help="Text to synthesize."
+    )
     args = parser.parse_args()
 
     base_url = args.base_url or f"http://{args.host}:{args.port}"
