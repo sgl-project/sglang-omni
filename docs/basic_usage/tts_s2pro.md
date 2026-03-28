@@ -197,4 +197,15 @@ SGLang-Omni ships with a Gradio-based playground for interactive TTS experimenta
 ./playground/tts/start.sh
 ```
 
+The playground now exposes two demo modes against the same S2 Pro backend:
+
+- `Non-Streaming` starts a standard request and shows the final WAV after generation finishes.
+- `Streaming` consumes the `/v1/audio/speech` SSE stream, starts playback from incremental WAV chunks, and also writes a final combined WAV artifact for inspection.
+
+The launcher starts the backend first, waits for `/health`, then starts the Gradio UI with:
+
+```bash
+python -m playground.tts.app --api-base http://localhost:8000
+```
+
 A demo play video is available [here](https://x.com/lmsysorg/status/2031412267213008984/video/1). We highly recommend using playground since audio data is hard to intertact with by CLI.

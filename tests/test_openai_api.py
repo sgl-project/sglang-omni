@@ -18,12 +18,17 @@ from sglang_omni.client import (
     CompletionStreamChunk,
     GenerateChunk,
 )
+from sglang_omni.client.client import _build_params
+from sglang_omni.client.types import GenerateRequest, SamplingParams
 from sglang_omni.models.fishaudio_s2_pro.pipeline.next_stage import (
     VOCODER_STAGE,
     tts_engine_next,
 )
 from sglang_omni.serve import create_app
-from sglang_omni.serve.openai_api import _build_speech_generate_request
+from sglang_omni.serve.openai_api import (
+    _build_speech_generate_request,
+    _select_speech_audio_delta,
+)
 from sglang_omni.serve.protocol import CreateSpeechRequest
 
 
@@ -183,6 +188,19 @@ def test_build_speech_request_preserves_stream_flag() -> None:
     assert gen_req.stream is True
 
 
+def test_client_build_params_includes_stream_flag_for_stage_consumers() -> None:
+    params = _build_params(
+        GenerateRequest(
+            prompt="hello",
+            sampling=SamplingParams(max_new_tokens=64),
+            stream=True,
+        )
+    )
+
+    assert params["stream"] is True
+    assert params["max_new_tokens"] == 64
+
+
 def test_speech_endpoint_e2e_with_mock_pipeline_references() -> None:
     coordinator = MockSpeechCoordinator()
     client = Client(coordinator=coordinator)
@@ -257,6 +275,29 @@ def test_speech_endpoint_stream_returns_sse_audio_chunks() -> None:
     ]
     assert sample_counts == [4, 2]
     assert events[-1]["finish_reason"] == "stop"
+
+
+def test_select_speech_audio_delta_suppresses_empty_chunks() -> None:
+    audio, emitted = _select_speech_audio_delta(
+        [],
+        emitted_samples=5,
+        is_terminal=False,
+    )
+
+    assert audio is None
+    assert emitted == 5
+
+
+def test_select_speech_audio_delta_returns_only_new_terminal_samples() -> None:
+    audio, emitted = _select_speech_audio_delta(
+        [0.0, 0.1, -0.1, 0.0, 0.2, -0.2],
+        emitted_samples=4,
+        is_terminal=True,
+    )
+
+    assert audio is not None
+    assert list(audio) == [0.2, -0.2]
+    assert emitted == 6
 
 
 def _decode_wav_frame_count(audio_b64: str) -> int:
