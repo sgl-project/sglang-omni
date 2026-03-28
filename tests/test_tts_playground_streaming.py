@@ -11,6 +11,7 @@ import wave
 import numpy as np
 
 from playground.tts.audio_stream import (
+    BufferedWavChunkEmitter,
     WavChunkAccumulator,
     decode_wav_chunk,
     parse_speech_stream_data,
@@ -83,3 +84,38 @@ def test_wav_duration_seconds_reads_wav_length() -> None:
     audio_bytes = encode_wav(np.zeros(2400, dtype=np.float32), 24000)
 
     assert wav_duration_seconds(audio_bytes) == 0.1
+
+
+def test_buffered_wav_chunk_emitter_combines_short_live_chunks() -> None:
+    emitter = BufferedWavChunkEmitter(
+        min_emit_duration_s=1.0,
+        max_buffered_chunks=3,
+    )
+    chunk = encode_wav(np.zeros(2400, dtype=np.float32), 24000)
+
+    assert emitter.add_wav_chunk(chunk) is None
+    assert emitter.add_wav_chunk(chunk) is None
+
+    emitted = emitter.add_wav_chunk(chunk)
+
+    assert emitted is not None
+    with wave.open(io.BytesIO(emitted), "rb") as wav_file:
+        assert wav_file.getframerate() == 24000
+        assert wav_file.getnframes() == 7200
+
+
+def test_buffered_wav_chunk_emitter_flushes_remaining_audio() -> None:
+    emitter = BufferedWavChunkEmitter(
+        min_emit_duration_s=1.0,
+        max_buffered_chunks=3,
+    )
+    chunk = encode_wav(np.zeros(2400, dtype=np.float32), 24000)
+
+    assert emitter.add_wav_chunk(chunk) is None
+
+    emitted = emitter.flush()
+
+    assert emitted is not None
+    with wave.open(io.BytesIO(emitted), "rb") as wav_file:
+        assert wav_file.getframerate() == 24000
+        assert wav_file.getnframes() == 2400

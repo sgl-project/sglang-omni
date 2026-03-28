@@ -9,10 +9,16 @@ from typing import Any
 
 from playground.tts.api_client import SpeechDemoClient, SpeechDemoClientError
 from playground.tts.artifacts import ArtifactStore
-from playground.tts.audio_stream import WavChunkAccumulator, wav_duration_seconds
+from playground.tts.audio_stream import (
+    BufferedWavChunkEmitter,
+    WavChunkAccumulator,
+    wav_duration_seconds,
+)
 from playground.tts.models import GenerationSettings, SpeechSynthesisRequest
 
 _ARTIFACT_STORE = ArtifactStore()
+_LIVE_AUDIO_MIN_CHUNK_DURATION_S = 1.0
+_LIVE_AUDIO_MAX_BUFFERED_CHUNKS = 3
 
 
 def _build_request(
@@ -212,6 +218,10 @@ def make_streaming_handler(api_base: str):
 
         started_at = time.perf_counter()
         accumulator = WavChunkAccumulator()
+        live_emitter = BufferedWavChunkEmitter(
+            min_emit_duration_s=_LIVE_AUDIO_MIN_CHUNK_DURATION_S,
+            max_buffered_chunks=_LIVE_AUDIO_MAX_BUFFERED_CHUNKS,
+        )
         chunk_count = 0
         first_audio_s: float | None = None
 
@@ -221,10 +231,22 @@ def make_streaming_handler(api_base: str):
                     continue
 
                 chunk_count += 1
+                accumulator.add_wav_chunk(event.audio_bytes)
+                live_audio = live_emitter.add_wav_chunk(event.audio_bytes)
+                if live_audio is None:
+                    yield (
+                        in_progress_history,
+                        "",
+                        _keep_audio_output(),
+                        _keep_audio_output(),
+                        f"Buffering live playback | chunk {chunk_count}",
+                        artifact_paths,
+                    )
+                    continue
+
                 if first_audio_s is None:
                     first_audio_s = time.perf_counter() - started_at
 
-                live_audio = accumulator.add_wav_chunk(event.audio_bytes)
                 status = (
                     f"Streaming | chunk {chunk_count} | "
                     f"first audio {first_audio_s:.2f}s"
@@ -274,6 +296,24 @@ def make_streaming_handler(api_base: str):
                 artifact_paths,
             )
             return
+
+        live_tail = live_emitter.flush()
+        if live_tail is not None:
+            if first_audio_s is None:
+                first_audio_s = time.perf_counter() - started_at
+            status = (
+                f"Streaming | chunk {chunk_count} | "
+                f"first audio {first_audio_s:.2f}s | finalizing"
+            )
+            yield (
+                in_progress_history,
+                "",
+                live_tail,
+                _keep_audio_output(),
+                status,
+                artifact_paths,
+            )
+
         final_audio_path, artifact_paths = _store_wav_artifact(
             final_audio_bytes, artifact_paths
         )

@@ -28,12 +28,14 @@ def _assert_not_reset_update(value) -> None:
 def test_streaming_handler_builds_expected_final_wav(monkeypatch) -> None:
     first = encode_wav(np.array([0.0, 0.1], dtype=np.float32), 24000)
     second = encode_wav(np.array([-0.1, 0.0], dtype=np.float32), 24000)
+    third = encode_wav(np.array([0.05, -0.05], dtype=np.float32), 24000)
 
     def _stream(self, request):
         del self, request
         yield SpeechStreamEvent(index=0, audio_bytes=first, sample_rate=24000)
         yield SpeechStreamEvent(index=1, audio_bytes=second, sample_rate=24000)
-        yield SpeechStreamEvent(index=2, finish_reason="stop")
+        yield SpeechStreamEvent(index=2, audio_bytes=third, sample_rate=24000)
+        yield SpeechStreamEvent(index=3, finish_reason="stop")
 
     monkeypatch.setattr("playground.tts.ui.SpeechDemoClient.stream_synthesize", _stream)
 
@@ -52,16 +54,21 @@ def test_streaming_handler_builds_expected_final_wav(monkeypatch) -> None:
         )
     )
 
-    assert len(outputs) == 4
+    assert len(outputs) == 5
     _, _, reset_live_audio, reset_final_audio, reset_status, _ = outputs[0]
     _assert_reset_update(reset_live_audio)
     _assert_reset_update(reset_final_audio)
     assert reset_status == "Connecting to speech stream..."
 
-    _, _, live_audio, chunk_final_audio, live_status, _ = outputs[1]
+    _, _, buffering_live_audio, buffering_final_audio, buffering_status, _ = outputs[1]
+    assert buffering_live_audio == gr.skip()
+    assert buffering_final_audio == gr.skip()
+    assert buffering_status == "Buffering live playback | chunk 1"
+
+    _, _, live_audio, chunk_final_audio, live_status, _ = outputs[3]
     assert isinstance(live_audio, bytes)
     assert chunk_final_audio == gr.skip()
-    assert "Streaming | chunk 1" in live_status
+    assert "Streaming | chunk 3" in live_status
 
     final_history, _, final_live_audio, final_path, final_status, artifact_paths = (
         outputs[-1]
@@ -76,12 +83,12 @@ def test_streaming_handler_builds_expected_final_wav(monkeypatch) -> None:
 
     with wave.open(final_path, "rb") as wav_file:
         assert wav_file.getframerate() == 24000
-        assert wav_file.getnframes() == 4
+        assert wav_file.getnframes() == 6
         frames = wav_file.readframes(wav_file.getnframes())
 
-    expected = (np.array([0.0, 0.1, -0.1, 0.0], dtype=np.float32) * 32767.0).astype(
-        np.int16
-    )
+    expected = (
+        np.array([0.0, 0.1, -0.1, 0.0, 0.05, -0.05], dtype=np.float32) * 32767.0
+    ).astype(np.int16)
     assert frames == expected.tobytes()
 
 
@@ -188,6 +195,8 @@ def test_streaming_handler_keeps_live_audio_at_final_handoff(monkeypatch) -> Non
         )
     )
 
+    flushed_live_audio = outputs[-2][2]
+    assert isinstance(flushed_live_audio, bytes)
     final_live_audio = outputs[-1][2]
     _assert_not_reset_update(final_live_audio)
     assert final_live_audio == gr.skip()
