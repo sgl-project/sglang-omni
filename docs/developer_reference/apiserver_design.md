@@ -2,7 +2,7 @@
 
 This page explains the API server at the level that is most useful for maintenance: where it sits in the system, which files matter, and how requests are mapped into the runtime.
 
-If you only want to launch the server and call it, start with [API Server Quickstart](../get_started/apiserver_quickstart.md).
+If you only want to launch the server and call it, start with [Send Requests](../basic_usage/send_request.md).
 
 ## Role in the System
 
