@@ -17,7 +17,6 @@ SSE_DONE_MARKER = "data: [DONE]"
 
 
 def get_wav_duration(wav_bytes: bytes) -> float:
-    """Return duration in seconds from a WAV byte buffer."""
     if len(wav_bytes) <= WAV_HEADER_SIZE:
         return 0.0
     sample_rate = struct.unpack_from("<I", wav_bytes, 24)[0]
@@ -31,7 +30,6 @@ def get_wav_duration(wav_bytes: bytes) -> float:
 
 
 def parse_sse_event(line: str) -> dict | None:
-    """Parse an SSE data line into a JSON dict, or None."""
     if not line.startswith(SSE_DATA_PREFIX) or line == SSE_DONE_MARKER:
         return None
     return json.loads(line[len(SSE_DATA_PREFIX) :])
@@ -42,7 +40,6 @@ def process_sse_line(
     total_duration: float,
     usage: dict | None,
 ) -> tuple[float, dict | None]:
-    """Process one SSE line: accumulate audio duration and capture usage."""
     event = parse_sse_event(line)
     if event is None:
         return total_duration, usage
@@ -56,7 +53,6 @@ def process_sse_line(
 
 
 def wait_for_service(base_url: str, timeout: int = 1200) -> None:
-    """Block until the server health endpoint returns 200."""
     import requests as requests_lib
 
     logger.info("Waiting for service at %s ...", base_url)
@@ -67,10 +63,8 @@ def wait_for_service(base_url: str, timeout: int = 1200) -> None:
             if resp.status_code == 200:
                 logger.info("Service is ready.")
                 return
-        except requests_lib.exceptions.RequestException as exc:
-            logger.debug(
-                "Health check request failed while waiting for service: %s", exc
-            )
+        except requests_lib.exceptions.RequestException:
+            pass
         if time.time() - start > timeout:
             raise TimeoutError(f"Service at {base_url} not ready within {timeout}s")
         time.sleep(1)

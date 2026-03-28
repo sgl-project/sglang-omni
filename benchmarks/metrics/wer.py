@@ -11,7 +11,6 @@ from jiwer import process_words
 
 
 def compute_wer(ref_norm: str, hyp_norm: str) -> dict:
-    """Compute WER for a single sample. Inputs must already be normalized."""
     if not ref_norm:
         return {"wer": 0.0, "error": "Empty reference"}
 
@@ -28,12 +27,10 @@ def compute_wer(ref_norm: str, hyp_norm: str) -> dict:
 def aggregate_wer(
     per_sample_metrics: list[dict], bad_case_threshold: float = 0.5
 ) -> dict:
-    """Aggregate micro-average WER + distribution stats + bad case analysis."""
     wer_samples = [m for m in per_sample_metrics if "hits" in m]
     if not wer_samples:
         return {"micro_wer": None}
 
-    # Micro-average WER (authoritative)
     total_errors = sum(
         m["substitutions"] + m["deletions"] + m["insertions"] for m in wer_samples
     )
@@ -42,11 +39,9 @@ def aggregate_wer(
     )
     micro_wer = total_errors / total_ref if total_ref > 0 else 0.0
 
-    # Per-sample distribution
     wer_arr = np.array([m["wer"] for m in wer_samples])
     n_bad = int(np.sum(wer_arr > bad_case_threshold))
 
-    # Micro-average excluding bad cases
     ok = [m for m in wer_samples if m["wer"] <= bad_case_threshold]
     if ok:
         ok_err = sum(m["substitutions"] + m["deletions"] + m["insertions"] for m in ok)
