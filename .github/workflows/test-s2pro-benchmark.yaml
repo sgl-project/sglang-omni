@@ -60,7 +60,7 @@ jobs:
         shell: bash
         run: |
           echo "=== Benchmark Results ==="
-          for f in $(find /tmp -name "speed_results.json" 2>/dev/null); do
+          for f in $(find /tmp -name "speed_results.json" -o -name "wer_results.json" 2>/dev/null); do
             echo "--- $f ---"
             cat "$f"
             echo ""
