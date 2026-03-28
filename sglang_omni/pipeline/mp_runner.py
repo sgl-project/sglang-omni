@@ -316,10 +316,15 @@ class MultiProcessPipelineRunner:
             )
 
             # 3. Spawn one subprocess per stage
+            # Use "spawn" context: the parent process may have already
+            # initialized CUDA (via sglang/HF imports), so forked children
+            # would inherit that context and fail with
+            # "Cannot re-initialize CUDA in forked subprocess".
+            ctx = multiprocessing.get_context("spawn")
             ready_events: list[multiprocessing.Event] = []
 
             for stage_cfg in stages_cfg:
-                ready = multiprocessing.Event()
+                ready = ctx.Event()
                 config_dict = _build_stage_process_config(
                     pipeline_config=self._config,
                     stage_name=stage_cfg.name,
@@ -327,7 +332,7 @@ class MultiProcessPipelineRunner:
                     all_endpoints=endpoints,
                     name_map=name_map,
                 )
-                p = multiprocessing.Process(
+                p = ctx.Process(
                     target=_stage_process_entry,
                     args=(config_dict, ready),
                     name=f"stage-{stage_cfg.name}",

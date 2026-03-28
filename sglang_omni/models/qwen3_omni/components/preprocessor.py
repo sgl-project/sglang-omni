@@ -196,6 +196,7 @@ class Qwen3OmniPreprocessor:
             image_cache_key = None
             raw_audio_cache_key = None
             video_cache_key = None
+            audio_target_sr = 16000
             video_fps = None
             sampled_video_fps = None
             use_audio_in_video = None
