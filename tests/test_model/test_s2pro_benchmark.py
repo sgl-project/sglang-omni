@@ -59,7 +59,7 @@ def _run_benchmark(
     cmd = [
         sys.executable,
         "-m",
-        "benchmarks.performance.tts.benchmark_tts_speed",
+        "benchmarks.eval.s2pro_tts_speed",
         "--model",
         MODEL_PATH,
         "--port",
