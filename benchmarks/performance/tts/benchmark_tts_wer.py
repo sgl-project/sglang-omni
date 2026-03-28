@@ -33,6 +33,7 @@ import time
 from dataclasses import dataclass
 
 import aiohttp
+import cn2an
 import numpy as np
 import scipy.signal
 import soundfile as sf
@@ -174,6 +175,10 @@ def _get_en_normalizer():
 
 def normalize_text(text: str, lang: str) -> str:
     if lang == "zh":
+        # Normalize Arabic numerals to spoken-form Chinese (e.g., 2002年 → 二零零二年)
+        # so that reference text aligns with ASR output, which is always spoken-form.
+        text = cn2an.transform(text, "an2cn")
+
         from zhon.hanzi import punctuation as zh_punct
 
         all_punct = zh_punct + string.punctuation
