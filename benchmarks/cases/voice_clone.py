@@ -312,17 +312,31 @@ class VoiceCloneOmni:
         speaker: str = "Ethan",
         max_tokens: int | None = None,
         temperature: float = 0.7,
+        voice_clone: bool = False,
     ) -> tuple[bytes, float]:
         if max_tokens is None:
             max_tokens = self.THINKER_MAX_NEW_TOKENS
 
-        if lang == "en":
-            prompt_text = (
-                f"Please read the following text out loud in English: "
-                f"{sample.target_text}"
-            )
+        if voice_clone:
+            if lang == "en":
+                prompt_text = (
+                    f'Listen to the audio above. The speaker is reading: "{sample.ref_text}". '
+                    f"Now please read the following text out loud in the same voice and style: "
+                    f"{sample.target_text}"
+                )
+            else:
+                prompt_text = (
+                    f'听上面的音频，说话人正在朗读："{sample.ref_text}"。'
+                    f"现在请用同样的声音和风格朗读以下文本：{sample.target_text}"
+                )
         else:
-            prompt_text = f"请用中文朗读以下文本: {sample.target_text}"
+            if lang == "en":
+                prompt_text = (
+                    f"Please read the following text out loud in English: "
+                    f"{sample.target_text}"
+                )
+            else:
+                prompt_text = f"请用中文朗读以下文本: {sample.target_text}"
 
         payload = {
             "model": model_name,
@@ -333,6 +347,8 @@ class VoiceCloneOmni:
             "temperature": temperature,
             "stream": False,
         }
+        if voice_clone:
+            payload["audios"] = [sample.ref_audio]
 
         t0 = time.perf_counter()
         async with session.post(api_url, json=payload) as response:
@@ -373,6 +389,7 @@ class VoiceCloneOmni:
         audio_dir: str,
         speaker: str = "Ethan",
         max_tokens: int | None = None,
+        voice_clone: bool = False,
     ) -> SampleOutput:
         output = SampleOutput(
             sample_id=sample.sample_id,
@@ -382,7 +399,8 @@ class VoiceCloneOmni:
 
         try:
             wav_bytes, latency = await self.generate_speech(
-                session, api_url, model_name, sample, lang, speaker, max_tokens
+                session, api_url, model_name, sample, lang, speaker, max_tokens,
+                voice_clone=voice_clone,
             )
             with open(wav_path, "wb") as f:
                 f.write(wav_bytes)

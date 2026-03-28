@@ -81,6 +81,7 @@ async def main_async(args: argparse.Namespace) -> None:
                 audio_dir,
                 args.speaker,
                 args.max_tokens,
+                voice_clone=args.voice_clone,
             )
             outputs.append(result)
 
@@ -108,6 +109,7 @@ async def main_async(args: argparse.Namespace) -> None:
     config = {
         "model": args.model,
         "speaker": args.speaker,
+        "voice_clone": args.voice_clone,
         "server_url": base_url,
         "meta": args.meta,
         "max_samples": args.max_samples,
@@ -145,6 +147,11 @@ def main() -> None:
         "--asr-device", default="cuda:0", help="Device for ASR (Whisper) model"
     )
     p.add_argument("--max-samples", type=int, default=None)
+    p.add_argument(
+        "--voice-clone",
+        action="store_true",
+        help="Pass ref_audio via 'audios' field for voice cloning",
+    )
     p.add_argument(
         "--max-tokens",
         type=int,
