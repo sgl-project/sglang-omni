@@ -40,6 +40,7 @@ class S2ProPipelineConfig(PipelineConfig):
                 args={
                     "device": "cuda:0",
                     "max_new_tokens": 2048,
+                    "stream_stride": 10,
                     "stream_followup_stride": 10,
                     "stream_vocoder_device": "cuda:0",
                 },

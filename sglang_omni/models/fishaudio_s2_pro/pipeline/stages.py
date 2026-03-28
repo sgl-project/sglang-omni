@@ -25,15 +25,9 @@ from sglang_omni.proto import StagePayload
 logger = logging.getLogger(__name__)
 
 _STREAM_CODES_KEY = "_stream_output_codes"
+_STREAM_EMITTED_SAMPLES_KEY = "_stream_emitted_samples"
 _STREAM_LAST_VOCODE_TOKENS_KEY = "_stream_last_vocode_tokens"
 _STREAM_NEXT_VOCODE_TOKENS_KEY = "_stream_next_vocode_tokens"
-
-# Number of previously-vocoded tokens to include as left context for each
-# incremental codec call.  Must be >= the post_module WindowLimitedTransformer
-# window_size (128) so that relative positions seen by that transformer are
-# identical to a full re-decode.  The causal convolutional decoder has a much
-# smaller receptive field, so 128 is also sufficient there.
-_CODEC_CONTEXT_TOKENS = 128
 
 
 def _resolve_checkpoint(checkpoint: str) -> str:
@@ -128,40 +122,21 @@ def _build_incremental_audio_chunk(
     if not isinstance(stream_codes, list) or not stream_codes:
         return None
 
-    all_codes = torch.cat(stream_codes, dim=1)  # [num_codebooks, total_tokens]
-    total_tokens = all_codes.shape[1]
-    last_vocoded = int(payload.data.get(_STREAM_LAST_VOCODE_TOKENS_KEY, 0))
-
-    # Decode only the context window + new tokens instead of re-decoding the
-    # entire sequence.  Including _CODEC_CONTEXT_TOKENS of previously-vocoded
-    # tokens as left context ensures the post_module WindowLimitedTransformer
-    # (window_size=128) sees the same relative positions as a full re-decode,
-    # making this O(stride) per call rather than O(total_tokens).
-    decode_start = max(0, last_vocoded - _CODEC_CONTEXT_TOKENS)
-    decode_codes = all_codes[1:, decode_start:].to(device)  # strip semantic codebook
-    n_decode = total_tokens - decode_start
-    n_context = last_vocoded - decode_start  # tokens already emitted, included for context
+    total_tokens = sum(chunk.shape[1] for chunk in stream_codes)
+    output_codes = torch.cat(stream_codes, dim=1)
+    codebook_codes = output_codes[1:].to(device)
 
     with torch.no_grad():
-        audio = codec.from_indices(decode_codes[None])
+        audio = codec.from_indices(codebook_codes[None])
 
     audio_np = audio[0, 0].float().cpu()
-    total_audio_samples = audio_np.shape[-1]
-
-    if total_audio_samples == 0:
+    emitted_samples = int(payload.data.get(_STREAM_EMITTED_SAMPLES_KEY, 0))
+    if audio_np.shape[-1] <= emitted_samples:
         payload.data[_STREAM_LAST_VOCODE_TOKENS_KEY] = total_tokens
         return None
 
-    # Discard the audio samples corresponding to context tokens (already emitted).
-    # For a codec with a constant hop-size the ratio is exact; rounding error is
-    # at most 1 sample and is imperceptible.
-    context_samples = round(total_audio_samples * n_context / n_decode)
-    delta_audio = audio_np[context_samples:]
-
-    if delta_audio.shape[-1] == 0:
-        payload.data[_STREAM_LAST_VOCODE_TOKENS_KEY] = total_tokens
-        return None
-
+    delta_audio = audio_np[emitted_samples:]
+    payload.data[_STREAM_EMITTED_SAMPLES_KEY] = int(audio_np.shape[-1])
     payload.data[_STREAM_LAST_VOCODE_TOKENS_KEY] = total_tokens
 
     return {
