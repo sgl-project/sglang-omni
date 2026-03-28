@@ -1,0 +1,70 @@
+name: Docs CI (Qwen3-Omni)
+
+on:
+  pull_request:
+    branches: [ main ]
+    paths:
+      - "docs/basic_usage/qwen3_omni.md"
+      - "docs/basic_usage/send_request.md"
+      - "tests/test_docs_qwen3_omni.py"
+      - ".github/workflows/test-docs-qwen3-omni.yaml"
+  workflow_dispatch:
+
+concurrency:
+  group: docs-ci-qwen3-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  docs-qwen3-omni:
+    runs-on: [self-hosted]
+    container:
+      image: frankleeeee/sglang-omni:dev
+      options: --gpus all --shm-size=2g --rm -v /dev/shm
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Restore cache
+        run: |
+          if [ -d /github/home/omni ] && [ ! -z "$(ls -A /github/home/omni/)" ]; then
+            cp -p -r /github/home/omni ./
+          fi
+
+      - name: Remove flashinfer
+        run: |
+          rm -rf /github/home/.cache/flashinfer
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          if [ -d omni ] && ! omni/bin/python -c "import torch" 2>/dev/null; then
+            echo "Cached venv is corrupted, removing..."
+            rm -rf omni
+          fi
+          if [ ! -d omni ]; then
+            uv venv omni -p 3.11
+          fi
+          source omni/bin/activate
+          uv pip install -v -e ".[dev]"
+
+      - name: Kill GPU processes
+        shell: bash
+        run: |
+          bash .github/scripts/delete_gpu_process.sh
+
+      - name: Run docs tests
+        timeout-minutes: 30
+        shell: bash
+        run: |
+          source omni/bin/activate
+          export PYTHONPATH=$PWD
+          pytest tests/test_docs_qwen3_omni.py -v -s -x
+        env:
+          HF_ENDPOINT: https://hf-mirror.com
+
+      - name: Save cache
+        run: |
+          cp -p -r omni /github/home/
