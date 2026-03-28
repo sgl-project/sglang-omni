@@ -40,6 +40,8 @@ class S2ProPipelineConfig(PipelineConfig):
                 args={
                     "device": "cuda:0",
                     "max_new_tokens": 2048,
+                    "stream_followup_stride": 10,
+                    "stream_vocoder_device": "cuda:0",
                 },
             ),
             get_next=f"{_S2_PKG}.next_stage.tts_engine_next",
