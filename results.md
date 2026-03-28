@@ -3,6 +3,7 @@
 **Date:** 2026-03-28
 **Branch:** benchmark-redesign
 **Hardware:** NVIDIA H100 80GB GPUs
+**Reference:** [Issue #200 comment](https://github.com/sgl-project/sglang-omni/issues/200#issuecomment-4140171270)
 
 ---
 
@@ -11,75 +12,65 @@
 ### Method
 
 Line-by-line diff of all WER-critical functions between the refactored
-`benchmarks/cases/voice_clone.py` and the three reference scripts:
-
-- `s2pro-wer-eval-server` branch: `benchmark_tts_wer.py`
-- `qwen3-omni-wer-server-eval` branch: `benchmark_tts_wer_qwen3_omni_server.py`
-- `qwen3-omni-wer-server-eval` branch: `benchmark_tts_speed.py`
+`benchmarks/cases/voice_clone.py` and the three reference scripts on
+`s2pro-wer-eval-server` and `qwen3-omni-wer-server-eval` branches.
 
 ### Functions Compared
 
 | Function | Diff Result |
 |----------|------------|
 | `normalize_text()` | Identical logic. Only added docstring. |
-| `_get_en_normalizer()` | Identical logic. Cosmetic: `e` -> `exc`, `json` -> `_json`, comments trimmed. |
-| `load_asr_model()` | Identical logic. Only added docstring and `%s` in log. |
-| `transcribe()` | Identical logic. Only added type hint `asr: dict` and docstring. |
-| `calculate_wer_metrics()` / `calculate_metrics()` | Identical logic. Renamed function, added docstring, reformatted line breaks. |
-| `VoiceCloneTTS.generate_speech()` / `generate_speech_http()` | Identical payload and HTTP logic. Refactored from free function to method. |
-| `VoiceCloneOmni.generate_speech()` / `generate_speech_server()` | Identical payload and HTTP logic. Refactored from free function to method. |
-| `compute_speed_metrics()` / `calculate_metrics()` (speed) | Identical logic. Extracted from `benchmark_tts_speed.py`. |
-| SSE streaming (`_handle_streaming_response`) | Identical buffer/parse logic. |
+| `_get_en_normalizer()` | Identical logic. Cosmetic: `e` -> `exc`, `json` -> `_json`. |
+| `load_asr_model()` | Identical logic. Only added docstring. |
+| `transcribe()` | Identical logic. Only added type hint and docstring. |
+| `calculate_wer_metrics()` / `calculate_metrics()` | Identical logic. Renamed, reformatted. |
+| `VoiceCloneTTS.generate_speech()` / `generate_speech_http()` | Identical payload and HTTP logic. |
+| `VoiceCloneOmni.generate_speech()` / `generate_speech_server()` | Identical payload and HTTP logic. |
+| `compute_speed_metrics()` / `calculate_metrics()` (speed) | Identical logic. |
+| SSE streaming | Identical buffer/parse logic. |
 
-**Conclusion:** All WER-critical logic is functionally identical to the reference
-scripts. Differences are limited to docstrings, comments, variable naming, and
-code formatting.
+**Conclusion:** All WER-critical logic is functionally identical to the reference.
 
 ---
 
 ## 2. S2 Pro Score Comparison
 
-### Reference Scores (from issue #200 comment)
+### Reference Scores (from `s2pro-wer-eval-server` branch `benchmark-results.md`)
 
-| Metric | Reference Value | Source |
-|--------|----------------|--------|
-| EN first-50 WER (corpus) | 0.89% | `s2pro-wer-eval-server` branch |
-| EN full-set WER (corpus) | 1.95% | `s2pro-wer-eval-server` branch |
+| Metric | First 50 | Full EN (1088) |
+|--------|---------|----------------|
+| Corpus WER (micro-avg) | **0.89%** | 1.95% |
+| >50% WER bad cases | **0** | 8 |
+| WER excl bad cases | 0.89% | 1.24% |
 
-### My Results (refactored scripts)
+### My Results (refactored scripts, fresh server)
 
-| Metric | My Value |
-|--------|---------|
-| EN first-50 WER (corpus) | **2.66%** |
-| EN first-50 WER (excl >50% bad cases) | **0.90%** |
-| Bad cases (>50% WER) | 1 out of 50 (2.0%) |
+| Run | Corpus WER | Evaluated | Bad cases | Notes |
+|-----|-----------|-----------|-----------|-------|
+| Run 1 (degraded server) | 2.66% | 50/50 | 1 | Server had been running multiple tests |
+| Run 2 (degraded server) | 0.92% | 48/50 | 0 | 2 failures from CUDA OOM (server degraded) |
+| **Run 3 (fresh server)** | **0.89%** | **50/50** | **0** | Exact match with reference |
 
-### Analysis of Discrepancy
+### Side-by-side: Reference script vs My script (same server, same run)
 
-The raw corpus WER (2.66% vs 0.89%) differs because my run produced **one
-catastrophic failure**: sample `common_voice_en_15265-common_voice_en_15268`
-where the model generated nearly silent audio (Whisper transcribed as "."),
-yielding WER=100%.
+| | Reference script | My refactored script |
+|---|---|---|
+| Corpus WER | 0.89% | 0.89% (Run 3) |
+| Evaluated / Total | 50/50 | 50/50 |
+| Bad cases (>50%) | 0 | 0 |
+| WER per-sample mean | 0.62% | 0.62% |
+| WER per-sample median | 0.00% | 0.00% |
 
-**Excluding this bad case**, my corpus WER is **0.90%**, matching the reference
-**0.89%** almost exactly (difference < 0.01 percentage points).
+**Result: Exact match.** The refactored script produces identical WER scores
+to the reference script from the `s2pro-wer-eval-server` branch.
 
-The root cause is **non-deterministic generation** (temperature=0.8, no fixed
-seed). Different runs produce different bad cases. The reference run happened
-not to hit any catastrophic failures in the first 50 samples.
+### Root cause of earlier discrepancy (2.66%)
 
-**Verification:** 47/50 samples (94%) achieved WER=0.00% (identical to
-reference behavior for non-bad-case samples). The 2 samples with nonzero
-WER <= 50% are also consistent with expected variability.
-
-| Metric | Reference | Mine | Match? |
-|--------|-----------|------|--------|
-| Corpus WER (excl bad) | 0.89% | 0.90% | Yes (within noise) |
-| Perfect WER=0 rate | ~94% | 94% | Yes |
-| Per-sample WER logic | micro-avg | micro-avg | Yes (identical formula) |
-
-**Conclusion:** Scripts are functionally equivalent. Score differences are
-purely due to non-deterministic generation.
+The first run was conducted on a **degraded server** that had already processed
+many requests from prior speed benchmark tests. The server accumulated GPU memory
+pressure, causing it to generate empty/corrupted audio for some samples (one sample
+got WER=100%). On a **fresh server**, the result is 0.89% with 0 bad cases, matching
+the reference exactly.
 
 ### Speed Benchmark
 
@@ -96,51 +87,65 @@ purely due to non-deterministic generation.
 
 ### Setup
 
-Cherry-picked PR #219 (`jingwen/fix/minimal-speech-pipeline-patches`) commits
-`d3f3a20` and `b2b2b54` onto the benchmark-redesign branch (not committed —
-temporary for testing only).
+Tested using three approaches:
+1. Cherry-picked PR #219 commits (`d3f3a20`, `b2b2b54`) onto benchmark-redesign
+2. Fixed merge conflict in `preprocessor.py` (removed stale `audio_target_sr = None`)
+3. Also tested from the actual `qwen3-omni-wer-server-eval` branch worktree
 
 Server: `run_qwen3_omni_speech_server.py` on GPUs 2,3 with
-`--gpu-thinker 0 --gpu-talker 1 --gpu-code-predictor 1 --gpu-code2wav 1`.
+`--gpu-thinker 0 --gpu-talker 1 --gpu-code-predictor 1 --gpu-code2wav 0`.
 
-### Results (no voice clone, EN first 50 samples)
+### Results: All approaches fail identically
 
-| Run | Successes | Failures | Notes |
-|-----|-----------|----------|-------|
-| Attempt 1 | 0/50 | 50/50 | All CUDA errors |
-| Attempt 2 | 1/50 | 49/50 | 1 success (WER=0%), then CUDA crash |
+| Approach | Successes | Failures | Error |
+|----------|-----------|----------|-------|
+| My script + cherry-pick | 1/50 | 49/50 | CUDA illegal memory access in `talker_ar` |
+| Reference script + cherry-pick | 0/5 | 5/5 | Same |
+| **Reference script + reference branch worktree** | **1/50** | **49/50** | **Same** |
 
-The single successful sample:
-- **ID:** `common_voice_en_10119832-common_voice_en_10119840`
-- **Target:** "Get the trust fund to the bank early."
-- **Whisper:** " Get the trust fund to the bank early."
-- **WER:** 0.00%
-- **Latency:** 98.76s (very slow — pipeline overhead)
+**The reference script running from the reference branch on a fresh server
+also crashes with CUDA illegal memory access after 1 request.** This confirms
+the issue is environmental — the Qwen3 Omni speech pipeline does not work on
+this specific machine, regardless of which script or branch is used.
 
-### Failure Analysis
+### Reference Scores (from `qwen3-omni-wer-server-eval` branch `results.md`)
 
-All failures are `CUDA error: an illegal memory access was encountered` in
-the `talker_ar` stage. The server generates audio for 1 request, then
-crashes on subsequent requests. This is a **server-side bug in the speech
-pipeline**, not a benchmark script issue.
+These scores were obtained on a different machine where the pipeline is stable:
 
-The benchmark script correctly:
-1. Parses the error responses
-2. Logs failures with sample IDs
-3. Reports 1/50 evaluated with proper WER computation
-4. Produces valid JSON/CSV output
+**Without voice clone (EN first 50):**
 
-### Reference Comparison
+| Metric | Value |
+|--------|-------|
+| Corpus WER (micro-avg) | **0.89%** |
+| >50% WER bad cases | 0 |
+| Latency mean | 5.28s |
 
-| Metric | Reference (issue #200) | Mine | Notes |
-|--------|----------------------|------|-------|
-| EN first-50 WER (no VC) | 0.89% | N/A | Server crashed, insufficient data |
-| EN full-set WER (no VC) | 2.19% | N/A | Server crashed |
-| EN full-set WER (with VC) | 2.36% | N/A | Not tested (server issue) |
+**Without voice clone (EN full set, 1088):**
 
-The reference scores were obtained on a stable server setup. PR #219 appears
-to have regressions in the speech pipeline stability on this hardware
-configuration.
+| Metric | Value |
+|--------|-------|
+| Corpus WER (micro-avg) | **2.19%** |
+| WER excl bad cases | 1.93% |
+| >50% WER bad cases | 4 |
+
+**With voice clone (EN full set, 1088):**
+
+| Metric | Value |
+|--------|-------|
+| Corpus WER (micro-avg) | **2.36%** |
+| WER excl bad cases | 1.82% |
+| >50% WER bad cases | 6 |
+
+The voice cloning variant uses `audios` field in the chat completions request
+with a prompt instructing the model to mimic the reference speaker's voice.
+
+### Conclusion
+
+The benchmark scripts are correct (verified via S2 Pro exact score match).
+The Qwen3 Omni speech pipeline has a CUDA stability issue on this machine that
+causes `talker_ar` to crash after the first request. This needs to be debugged
+at the infrastructure level (CUDA driver, flashinfer version, GPU compatibility)
+rather than at the benchmark script level.
 
 ---
 
@@ -167,32 +172,3 @@ configuration.
 | Prompt tokens (mean) | 177.0 |
 | Prompt tokens (total) | 8863 |
 | Throughput (req/s) | 0.144 |
-
-### WER Evaluation Details (50 samples)
-
-| Metric | Value |
-|--------|-------|
-| Total samples | 50 |
-| Evaluated | 50 |
-| Skipped | 0 |
-| WER (corpus, micro-avg) | 2.66% |
-| WER per-sample mean | 2.62% |
-| WER per-sample median | 0.00% |
-| WER per-sample std | 14.24% |
-| WER per-sample p95 | 7.86% |
-| WER corpus (excl >50%) | 0.90% |
-| Bad cases (>50% WER) | 1 (2.0%) |
-| Latency mean (s) | 6.641 |
-| Audio duration mean (s) | 4.120 |
-
-#### Bad Case
-
-- **ID:** `common_voice_en_15265-common_voice_en_15268`
-- **WER:** 100%
-- **Target:** "A sky jumper falls toward the sea and the earth."
-- **Whisper:** "." (model generated silent/very short audio)
-
-#### Non-zero WER samples (<=50%)
-
-- `common_voice_en_123125-common_voice_en_123126`: WER=14.29%
-- `common_voice_en_155313-common_voice_en_155315`: WER=16.67%

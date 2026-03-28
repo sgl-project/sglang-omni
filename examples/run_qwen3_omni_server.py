@@ -1,13 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Launch an OpenAI-compatible server for Qwen3-Omni.
+"""Launch an OpenAI-compatible server for Qwen3-Omni (text-only).
 
 Usage::
 
     python examples/run_qwen3_omni_server.py \
-        --model-id Qwen/Qwen3-Omni-30B-A3B-Instruct \
-        --thinker-device cuda:0 \
-        --image-device cuda:1 \
-        --audio-device cuda:1 \
+        --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct \
         --port 8000
 
 Then test with::
@@ -28,7 +25,7 @@ import argparse
 import logging
 import os
 
-from sglang_omni.models.qwen3_omni import create_text_first_pipeline_config
+from sglang_omni.models.qwen3_omni.config import Qwen3OmniPipelineConfig
 from sglang_omni.serve import launch_server
 
 logging.basicConfig(
@@ -42,23 +39,16 @@ def parse_args() -> argparse.Namespace:
 
     # Model
     parser.add_argument(
-        "--model-id",
+        "--model-path",
         type=str,
         default="Qwen/Qwen3-Omni-30B-A3B-Instruct",
-        help="Hugging Face model id",
+        help="Hugging Face model id or local path",
     )
-    parser.add_argument("--dtype", type=str, default="bfloat16")
-
-    # Device placement
-    parser.add_argument("--preprocessing-device", type=str, default="cpu")
-    parser.add_argument("--image-device", type=str, default="cuda:0")
-    parser.add_argument("--audio-device", type=str, default="cuda:0")
-    parser.add_argument("--thinker-device", type=str, default="cuda:0")
     parser.add_argument("--thinker-max-seq-len", type=int, default=8192)
 
     # Pipeline options
     parser.add_argument(
-        "--relay-type",
+        "--relay-backend",
         type=str,
         default="shm",
         choices=["shm", "nccl", "nixl"],
@@ -81,19 +71,11 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
 
-    # Build pipeline config
-    config = create_text_first_pipeline_config(
+    config = Qwen3OmniPipelineConfig(
         model_path=args.model_path,
-        preprocessing_device=args.preprocessing_device,
-        image_device=args.image_device,
-        audio_device=args.audio_device,
-        thinker_device=args.thinker_device,
-        thinker_max_seq_len=args.thinker_max_seq_len,
-        dtype=args.dtype,
-        relay_type=args.relay_type,
+        relay_backend=args.relay_backend,
     )
 
-    # Launch: compile pipeline + start stages + start OpenAI server
     launch_server(
         config,
         host=args.host,
