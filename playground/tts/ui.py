@@ -92,11 +92,17 @@ def _button_update(
 
 def _lock_request_buttons(active_request: str) -> tuple[dict[str, Any], dict[str, Any]]:
     synth_button = _button_update(
-        value=_SYNTH_BUSY_LABEL if active_request == "non_streaming" else _SYNTH_IDLE_LABEL,
+        value=(
+            _SYNTH_BUSY_LABEL
+            if active_request == "non_streaming"
+            else _SYNTH_IDLE_LABEL
+        ),
         interactive=False,
     )
     stream_button = _button_update(
-        value=_STREAM_BUSY_LABEL if active_request == "streaming" else _STREAM_IDLE_LABEL,
+        value=(
+            _STREAM_BUSY_LABEL if active_request == "streaming" else _STREAM_IDLE_LABEL
+        ),
         interactive=False,
     )
     return synth_button, stream_button
@@ -203,7 +209,9 @@ def make_non_streaming_handler(api_base: str):
         max_new_tokens: int,
         history: list[dict],
         artifact_paths: list[str],
-    ) -> tuple[list[dict], str, str | None, str, list[str], dict[str, Any], dict[str, Any]]:
+    ) -> tuple[
+        list[dict], str, str | None, str, list[str], dict[str, Any], dict[str, Any]
+    ]:
         try:
             request, user_content = _build_request(
                 text,
@@ -217,7 +225,15 @@ def make_non_streaming_handler(api_base: str):
         except ValueError as exc:
             warnings.warn(str(exc))
             synth_button, stream_button = _unlock_request_buttons()
-            return history, text, None, str(exc), artifact_paths, synth_button, stream_button
+            return (
+                history,
+                text,
+                None,
+                str(exc),
+                artifact_paths,
+                synth_button,
+                stream_button,
+            )
 
         try:
             result = client.synthesize(request)

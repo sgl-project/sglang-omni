@@ -11,10 +11,7 @@ import numpy as np
 from playground.tts.api_client import SpeechDemoClientError
 from playground.tts.audio_stream import SpeechStreamEvent
 from playground.tts.models import NonStreamingSpeechResult
-from playground.tts.ui import (
-    make_non_streaming_handler,
-    make_streaming_handler,
-)
+from playground.tts.ui import make_non_streaming_handler, make_streaming_handler
 from sglang_omni.client.audio import encode_wav
 
 
@@ -282,6 +279,7 @@ def test_streaming_handler_keeps_live_audio_at_final_handoff(monkeypatch) -> Non
     _assert_not_reset_update(final_live_audio)
     assert final_live_audio == gr.skip()
 
+
 def test_non_streaming_handler_summary_includes_audio_duration(monkeypatch) -> None:
     audio_bytes = encode_wav(np.zeros(4800, dtype=np.float32), 24000)
 
@@ -295,16 +293,18 @@ def test_non_streaming_handler_summary_includes_audio_duration(monkeypatch) -> N
     )
 
     handler = make_non_streaming_handler("http://localhost:8000")
-    history, _, audio_path, status, artifact_paths, synth_button, stream_button = handler(
-        "hello world",
-        None,
-        "",
-        0.8,
-        0.8,
-        30,
-        256,
-        [],
-        [],
+    history, _, audio_path, status, artifact_paths, synth_button, stream_button = (
+        handler(
+            "hello world",
+            None,
+            "",
+            0.8,
+            0.8,
+            30,
+            256,
+            [],
+            [],
+        )
     )
 
     assert audio_path is not None
