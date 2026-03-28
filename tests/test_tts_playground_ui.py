@@ -12,7 +12,6 @@ from playground.tts.api_client import SpeechDemoClientError
 from playground.tts.audio_stream import SpeechStreamEvent
 from playground.tts.models import NonStreamingSpeechResult
 from playground.tts.ui import (
-    _publish_pending_stream_result,
     make_non_streaming_handler,
     make_streaming_handler,
 )
@@ -59,13 +58,23 @@ def test_streaming_handler_builds_expected_final_wav(monkeypatch) -> None:
     )
 
     assert len(outputs) == 5
-    _, _, reset_live_audio, reset_final_audio, reset_status, _, reset_pending = outputs[
-        0
-    ]
+    (
+        _,
+        _,
+        reset_live_audio,
+        reset_final_audio,
+        reset_status,
+        _,
+        reset_pending,
+        reset_synth_button,
+        reset_stream_button,
+    ) = outputs[0]
     _assert_reset_update(reset_live_audio)
     _assert_reset_update(reset_final_audio)
     assert reset_status == "Connecting to speech stream..."
     assert reset_pending is None
+    assert reset_synth_button["interactive"] is False
+    assert reset_stream_button["interactive"] is False
 
     (
         _,
@@ -75,13 +84,25 @@ def test_streaming_handler_builds_expected_final_wav(monkeypatch) -> None:
         buffering_status,
         _,
         buffering_pending,
+        _,
+        _,
     ) = outputs[1]
     assert buffering_live_audio == gr.skip()
     assert buffering_final_audio == gr.skip()
     assert buffering_status == "Buffering live playback | chunk 1"
     assert buffering_pending is None
 
-    _, _, live_audio, chunk_final_audio, live_status, _, live_pending = outputs[3]
+    (
+        _,
+        _,
+        live_audio,
+        chunk_final_audio,
+        live_status,
+        _,
+        live_pending,
+        _,
+        _,
+    ) = outputs[3]
     assert isinstance(live_audio, bytes)
     assert chunk_final_audio == gr.skip()
     assert "Streaming | chunk 3" in live_status
@@ -95,6 +116,8 @@ def test_streaming_handler_builds_expected_final_wav(monkeypatch) -> None:
         final_status,
         artifact_paths,
         pending_result,
+        _,
+        _,
     ) = outputs[-1]
     assert final_history == gr.skip()
     assert final_text == gr.skip()
@@ -145,11 +168,23 @@ def test_streaming_handler_reports_truncated_stream(monkeypatch) -> None:
     )
 
     assert len(outputs) == 2
-    failed_history, _, _, _, status, artifact_paths, pending_result = outputs[-1]
+    (
+        failed_history,
+        _,
+        _,
+        _,
+        status,
+        artifact_paths,
+        pending_result,
+        failed_synth_button,
+        failed_stream_button,
+    ) = outputs[-1]
     assert artifact_paths == []
     assert "Request failed" in status
     assert "stream closed early" in failed_history[-1]["content"]
     assert pending_result is None
+    assert failed_synth_button["interactive"] is True
+    assert failed_stream_button["interactive"] is True
 
 
 def test_streaming_handler_resets_audio_outputs_for_followup_request(
@@ -178,7 +213,10 @@ def test_streaming_handler_resets_audio_outputs_for_followup_request(
             [],
         )
     )
-    history, _, _, _, _, artifact_paths, _ = first_outputs[-1]
+    pending_result = first_outputs[-1][6]
+    artifact_paths = first_outputs[-1][5]
+    assert pending_result is not None
+    history = pending_result["history"]
 
     second_outputs = list(
         handler(
@@ -194,13 +232,23 @@ def test_streaming_handler_resets_audio_outputs_for_followup_request(
         )
     )
 
-    _, _, reset_live_audio, reset_final_audio, reset_status, _, reset_pending = (
-        second_outputs[0]
-    )
+    (
+        _,
+        _,
+        reset_live_audio,
+        reset_final_audio,
+        reset_status,
+        _,
+        reset_pending,
+        reset_synth_button,
+        reset_stream_button,
+    ) = second_outputs[0]
     _assert_reset_update(reset_live_audio)
     _assert_reset_update(reset_final_audio)
     assert reset_status == "Connecting to speech stream..."
     assert reset_pending is None
+    assert reset_synth_button["interactive"] is False
+    assert reset_stream_button["interactive"] is False
 
 
 def test_streaming_handler_keeps_live_audio_at_final_handoff(monkeypatch) -> None:
@@ -234,24 +282,6 @@ def test_streaming_handler_keeps_live_audio_at_final_handoff(monkeypatch) -> Non
     _assert_not_reset_update(final_live_audio)
     assert final_live_audio == gr.skip()
 
-
-def test_publish_pending_stream_result_reveals_final_outputs() -> None:
-    pending_result = {
-        "history": [{"role": "assistant", "content": "done"}],
-        "final_audio_path": "/tmp/final.wav",
-        "status": "2.0s audio | 1 chunks",
-    }
-
-    history, final_audio, status, cleared_pending = _publish_pending_stream_result(
-        pending_result
-    )
-
-    assert history == pending_result["history"]
-    assert final_audio == pending_result["final_audio_path"]
-    assert status == pending_result["status"]
-    assert cleared_pending is None
-
-
 def test_non_streaming_handler_summary_includes_audio_duration(monkeypatch) -> None:
     audio_bytes = encode_wav(np.zeros(4800, dtype=np.float32), 24000)
 
@@ -265,7 +295,7 @@ def test_non_streaming_handler_summary_includes_audio_duration(monkeypatch) -> N
     )
 
     handler = make_non_streaming_handler("http://localhost:8000")
-    history, _, audio_path, status, artifact_paths = handler(
+    history, _, audio_path, status, artifact_paths, synth_button, stream_button = handler(
         "hello world",
         None,
         "",
@@ -281,3 +311,5 @@ def test_non_streaming_handler_summary_includes_audio_duration(monkeypatch) -> N
     assert artifact_paths == [audio_path]
     assert status == "0.2s audio | 1.2s total | 9 KB"
     assert history[-1]["content"][1] == status
+    assert synth_button["interactive"] is True
+    assert stream_button["interactive"] is True

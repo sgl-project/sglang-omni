@@ -21,6 +21,10 @@ from playground.tts.models import GenerationSettings, SpeechSynthesisRequest
 _ARTIFACT_STORE = ArtifactStore()
 _LIVE_AUDIO_MIN_CHUNK_DURATION_S = 1.0
 _LIVE_AUDIO_MAX_BUFFERED_CHUNKS = 3
+_SYNTH_IDLE_LABEL = "Synthesize"
+_SYNTH_BUSY_LABEL = "Synthesizing..."
+_STREAM_IDLE_LABEL = "Start Streaming"
+_STREAM_BUSY_LABEL = "Streaming..."
 
 
 def _build_request(
@@ -73,6 +77,48 @@ def _keep_audio_output():
     return gr.skip()
 
 
+def _button_update(
+    *,
+    value: str | None = None,
+    interactive: bool | None = None,
+) -> dict[str, Any]:
+    kwargs: dict[str, Any] = {}
+    if value is not None:
+        kwargs["value"] = value
+    if interactive is not None:
+        kwargs["interactive"] = interactive
+    return gr.update(**kwargs)
+
+
+def _lock_request_buttons(active_request: str) -> tuple[dict[str, Any], dict[str, Any]]:
+    synth_button = _button_update(
+        value=_SYNTH_BUSY_LABEL if active_request == "non_streaming" else _SYNTH_IDLE_LABEL,
+        interactive=False,
+    )
+    stream_button = _button_update(
+        value=_STREAM_BUSY_LABEL if active_request == "streaming" else _STREAM_IDLE_LABEL,
+        interactive=False,
+    )
+    return synth_button, stream_button
+
+
+def _unlock_request_buttons() -> tuple[dict[str, Any], dict[str, Any]]:
+    return (
+        _button_update(value=_SYNTH_IDLE_LABEL, interactive=True),
+        _button_update(value=_STREAM_IDLE_LABEL, interactive=True),
+    )
+
+
+def _prepare_non_stream_request():
+    synth_button, stream_button = _lock_request_buttons("non_streaming")
+    return "Submitting request...", synth_button, stream_button
+
+
+def _prepare_stream_request():
+    synth_button, stream_button = _lock_request_buttons("streaming")
+    return "Connecting to speech stream...", synth_button, stream_button
+
+
 def _format_audio_duration(audio_duration_s: float) -> str:
     return f"{audio_duration_s:.1f}s audio"
 
@@ -107,6 +153,7 @@ def _format_streaming_summary(
 
 def _clear_history(artifact_paths: list[str]):
     _ARTIFACT_STORE.cleanup_paths(artifact_paths)
+    synth_button, stream_button = _unlock_request_buttons()
     return (
         [],
         _reset_audio_output(),
@@ -116,16 +163,21 @@ def _clear_history(artifact_paths: list[str]):
         "Ready",
         [],
         None,
+        synth_button,
+        stream_button,
     )
 
 
 def _publish_pending_stream_result(pending_result: dict[str, Any] | None):
+    synth_button, stream_button = _unlock_request_buttons()
     if not pending_result:
         return (
             gr.skip(),
             gr.skip(),
             gr.skip(),
             None,
+            synth_button,
+            stream_button,
         )
 
     return (
@@ -133,6 +185,8 @@ def _publish_pending_stream_result(pending_result: dict[str, Any] | None):
         pending_result["final_audio_path"],
         pending_result["status"],
         None,
+        synth_button,
+        stream_button,
     )
 
 
@@ -149,7 +203,7 @@ def make_non_streaming_handler(api_base: str):
         max_new_tokens: int,
         history: list[dict],
         artifact_paths: list[str],
-    ) -> tuple[list[dict], str, str | None, str, list[str]]:
+    ) -> tuple[list[dict], str, str | None, str, list[str], dict[str, Any], dict[str, Any]]:
         try:
             request, user_content = _build_request(
                 text,
@@ -162,13 +216,23 @@ def make_non_streaming_handler(api_base: str):
             )
         except ValueError as exc:
             warnings.warn(str(exc))
-            return history, text, None, str(exc), artifact_paths
+            synth_button, stream_button = _unlock_request_buttons()
+            return history, text, None, str(exc), artifact_paths, synth_button, stream_button
 
         try:
             result = client.synthesize(request)
         except SpeechDemoClientError as exc:
             updated_history = _append_history(history, user_content, f"Error: {exc}")
-            return updated_history, "", None, f"Request failed: {exc}", artifact_paths
+            synth_button, stream_button = _unlock_request_buttons()
+            return (
+                updated_history,
+                "",
+                None,
+                f"Request failed: {exc}",
+                artifact_paths,
+                synth_button,
+                stream_button,
+            )
 
         audio_path, artifact_paths = _store_wav_artifact(
             result.audio_bytes, artifact_paths
@@ -186,7 +250,16 @@ def make_non_streaming_handler(api_base: str):
                 summary,
             ],
         )
-        return updated_history, "", audio_path, summary, artifact_paths
+        synth_button, stream_button = _unlock_request_buttons()
+        return (
+            updated_history,
+            "",
+            audio_path,
+            summary,
+            artifact_paths,
+            synth_button,
+            stream_button,
+        )
 
     return synthesize
 
@@ -217,12 +290,24 @@ def make_streaming_handler(api_base: str):
             )
         except ValueError as exc:
             warnings.warn(str(exc))
-            yield history, text, None, None, str(exc), artifact_paths, None
+            synth_button, stream_button = _unlock_request_buttons()
+            yield (
+                history,
+                text,
+                None,
+                None,
+                str(exc),
+                artifact_paths,
+                None,
+                synth_button,
+                stream_button,
+            )
             return
 
         in_progress_history = _append_history(
             history, user_content, "Streaming audio..."
         )
+        synth_button, stream_button = _lock_request_buttons("streaming")
         yield (
             in_progress_history,
             "",
@@ -231,6 +316,8 @@ def make_streaming_handler(api_base: str):
             "Connecting to speech stream...",
             artifact_paths,
             None,
+            synth_button,
+            stream_button,
         )
 
         started_at = time.perf_counter()
@@ -259,6 +346,8 @@ def make_streaming_handler(api_base: str):
                         f"Buffering live playback | chunk {chunk_count}",
                         artifact_paths,
                         None,
+                        gr.skip(),
+                        gr.skip(),
                     )
                     continue
 
@@ -277,9 +366,12 @@ def make_streaming_handler(api_base: str):
                     status,
                     artifact_paths,
                     None,
+                    gr.skip(),
+                    gr.skip(),
                 )
         except SpeechDemoClientError as exc:
             failed_history = _append_history(history, user_content, f"Error: {exc}")
+            synth_button, stream_button = _unlock_request_buttons()
             yield (
                 failed_history,
                 "",
@@ -288,10 +380,13 @@ def make_streaming_handler(api_base: str):
                 f"Request failed: {exc}",
                 artifact_paths,
                 None,
+                synth_button,
+                stream_button,
             )
             return
         except ValueError as exc:
             failed_history = _append_history(history, user_content, f"Error: {exc}")
+            synth_button, stream_button = _unlock_request_buttons()
             yield (
                 failed_history,
                 "",
@@ -300,6 +395,8 @@ def make_streaming_handler(api_base: str):
                 f"Stream parse failed: {exc}",
                 artifact_paths,
                 None,
+                synth_button,
+                stream_button,
             )
             return
 
@@ -308,6 +405,7 @@ def make_streaming_handler(api_base: str):
             failed_history = _append_history(
                 history, user_content, "Error: No audio was returned."
             )
+            synth_button, stream_button = _unlock_request_buttons()
             yield (
                 failed_history,
                 "",
@@ -316,6 +414,8 @@ def make_streaming_handler(api_base: str):
                 "No audio was returned.",
                 artifact_paths,
                 None,
+                synth_button,
+                stream_button,
             )
             return
 
@@ -325,7 +425,7 @@ def make_streaming_handler(api_base: str):
                 first_audio_s = time.perf_counter() - started_at
             status = (
                 f"Streaming | chunk {chunk_count} | "
-                f"first audio {first_audio_s:.2f}s | finalizing"
+                f"first audio {first_audio_s:.2f}s"
             )
             yield (
                 in_progress_history,
@@ -335,6 +435,8 @@ def make_streaming_handler(api_base: str):
                 status,
                 artifact_paths,
                 None,
+                gr.skip(),
+                gr.skip(),
             )
 
         final_audio_path, artifact_paths = _store_wav_artifact(
@@ -369,14 +471,14 @@ def make_streaming_handler(api_base: str):
             _keep_audio_output(),
             artifact_paths,
             pending_result,
+            gr.skip(),
+            gr.skip(),
         )
 
     return synthesize_stream
 
 
 def create_demo(api_base: str):
-    import gradio as gr
-
     synthesize = make_non_streaming_handler(api_base)
     synthesize_stream = make_streaming_handler(api_base)
 
@@ -488,13 +590,32 @@ def create_demo(api_base: str):
             artifact_state,
         ]
         outputs = [chatbot, text_input, audio_output, status_text, artifact_state]
+        outputs = outputs + [synth_btn, stream_btn]
 
-        synth_btn.click(
+        synth_prepare = synth_btn.click(
+            fn=_prepare_non_stream_request,
+            inputs=None,
+            outputs=[status_text, synth_btn, stream_btn],
+            queue=False,
+            show_progress="hidden",
+        )
+        synth_prepare.then(
             fn=synthesize,
             inputs=inputs,
             outputs=outputs,
+            trigger_mode="once",
+            concurrency_id="tts_request",
+            show_progress="minimal",
+            show_progress_on=[status_text],
         )
-        stream_btn.click(
+        stream_prepare = stream_btn.click(
+            fn=_prepare_stream_request,
+            inputs=None,
+            outputs=[stream_status, synth_btn, stream_btn],
+            queue=False,
+            show_progress="hidden",
+        )
+        stream_prepare.then(
             fn=synthesize_stream,
             inputs=inputs,
             outputs=[
@@ -505,7 +626,13 @@ def create_demo(api_base: str):
                 stream_status,
                 artifact_state,
                 pending_stream_result,
+                synth_btn,
+                stream_btn,
             ],
+            trigger_mode="once",
+            concurrency_id="tts_request",
+            show_progress="minimal",
+            show_progress_on=[stream_status],
         )
         stream_audio.stop(
             fn=_publish_pending_stream_result,
@@ -515,6 +642,8 @@ def create_demo(api_base: str):
                 stream_final_audio,
                 stream_status,
                 pending_stream_result,
+                synth_btn,
+                stream_btn,
             ],
             queue=False,
         )
@@ -530,6 +659,8 @@ def create_demo(api_base: str):
                 stream_status,
                 artifact_state,
                 pending_stream_result,
+                synth_btn,
+                stream_btn,
             ],
         )
 
