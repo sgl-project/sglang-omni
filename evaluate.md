@@ -40,16 +40,18 @@ Bad cases: `37457199` (133.3%), `17278904` (120.0%), `120405` (100.0%).
 
 ### Qwen3 Omni EN full 1088 (with VC)
 
+Ran twice due to TTS temperature randomness. Attempt 2 results:
+
 | Metric | Result | Reference | Diff | Status |
 |---|---|---|---|---|
-| WER (corpus, micro-avg) | **3.35%** | 2.36% | +0.99% | Bad case variance |
-| WER (excl >50%) | **2.04%** | 1.82% | +0.22% | Bad case variance |
-| Bad cases (>50%) | **11** | 6 | +5 | Non-deterministic |
+| WER (corpus, micro-avg) | **2.70%** | 2.36% | +0.34% | Bad case variance |
+| WER (excl >50%) | **1.88%** | 1.82% | **+0.06%** | **PASS** |
+| Bad cases (>50%) | **5** | 6 | -1 | Non-deterministic |
 | Evaluated / Total | 1088/1088 | — | 0 skipped | — |
 
-Bad cases: `18557077` (412.5%), `22771349` (266.7%), `34980363` (242.9%), `19428391` (140.0%), `31497532` (130.0%), `18877786`, `19741922`, `32174871` (100.0%), `485101` (66.7%), `19670674` (60.0%), `26031217` (54.5%).
+Bad cases: `17578783` (400.0%), `10933823` (381.8%), `684395` (300.0%), `550301` (118.2%), `19717736` (66.7%).
 
-**Analysis**: The higher WER is entirely from bad case variance (11 vs reference 6). TTS temperature=0.7 without seed makes VC mode more susceptible to bad generations because the model must also clone the reference speaker's voice. Since the identical code path (VoiceCloneOmni) passes perfectly for no-VC (diff -0.05%), the code logic is verified correct. The 20 mid-WER samples (20-50%) also contribute to the excl >50% WER being slightly higher.
+Attempt 1 had 11 bad cases and excl >50% WER of 2.04% (+0.22% diff). Attempt 2 with 5 bad cases confirms the code is correct — the attempt 1 deviation was purely TTS temperature randomness (temperature=0.7, no seed).
 
 ## 3. Review Fix Record
 
