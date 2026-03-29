@@ -31,8 +31,9 @@ MAX_SAMPLES = 10
 
 STARTUP_TIMEOUT = 600  # seconds
 BENCHMARK_TIMEOUT = 600  # seconds
+WER_TIMEOUT = 600  # seconds — includes Whisper model loading + inference
 
-# Thresholds (15-25% margin from 4-run data)
+# Speed thresholds (15-25% margin from 4-run data)
 # Reference: https://github.com/sgl-project/sglang-omni/issues/193
 VC_NON_STREAM_MIN_TOK_PER_S = 80
 VC_NON_STREAM_MAX_RTF = 2.85
@@ -43,6 +44,13 @@ PLAIN_NON_STREAM_MAX_RTF = 0.35
 PLAIN_STREAM_MAX_LATENCY_S = 4.0
 PLAIN_STREAM_MIN_THROUGHPUT_QPS = 0.25
 VC_CONCURRENT_MAX_CONCURRENCY = 16
+
+# WER accuracy thresholds for voice cloning (EN).
+# Baseline: 0% corpus WER across 3 consecutive runs on 5 EN mini samples
+# (50 total reference words). Thresholds allow CI noise (stochastic TTS
+# sampling at temperature=0.8) while catching real regressions.
+VC_WER_MAX_CORPUS = 0.10  # 10% corpus WER — allows ~5 word errors out of 50
+VC_WER_MAX_PER_SAMPLE = 0.50  # no single sample should exceed 50% WER
 
 
 def _run_benchmark(
@@ -108,6 +116,71 @@ def _run_benchmark(
         "per_request" in speed_results
     ), f"Missing 'per_request' key in results. Keys: {list(speed_results.keys())}"
     return speed_results
+
+
+def _run_wer_benchmark(
+    port: int,
+    meta_path: str,
+    output_dir: str,
+    lang: str = "en",
+    device: str = "cuda:0",
+) -> dict:
+    """Run voice_clone_s2pro WER evaluation as subprocess and return results dict.
+
+    Returns the complete JSON results containing ``summary`` and ``per_sample``.
+    """
+    script_path = str(
+        Path(__file__).resolve().parents[2]
+        / "benchmarks"
+        / "eval"
+        / "voice_clone_s2pro.py"
+    )
+    cmd = [
+        sys.executable,
+        script_path,
+        "--meta",
+        meta_path,
+        "--output-dir",
+        output_dir,
+        "--model",
+        MODEL_PATH,
+        "--port",
+        str(port),
+        "--lang",
+        lang,
+        "--device",
+        device,
+        "--max-samples",
+        str(MAX_SAMPLES),
+    ]
+
+    proxy_keys = {"http_proxy", "https_proxy", "all_proxy", "no_proxy"}
+    env = {k: v for k, v in os.environ.items() if k.lower() not in proxy_keys}
+
+    proc_result = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        timeout=WER_TIMEOUT,
+        env=env,
+    )
+    assert proc_result.returncode == 0, (
+        f"WER benchmark failed (rc={proc_result.returncode}).\n"
+        f"stdout:\n{proc_result.stdout}\nstderr:\n{proc_result.stderr}"
+    )
+
+    results_path = Path(output_dir) / "wer_results.json"
+    assert results_path.exists(), f"WER results file not found: {results_path}"
+
+    with open(results_path) as f:
+        wer_results = json.load(f)
+    assert (
+        "summary" in wer_results
+    ), f"Missing 'summary' key in WER results. Keys: {list(wer_results.keys())}"
+    assert (
+        "per_sample" in wer_results
+    ), f"Missing 'per_sample' key in WER results. Keys: {list(wer_results.keys())}"
+    return wer_results
 
 
 @pytest.fixture(scope="module")
@@ -397,6 +470,61 @@ def test_plain_tts_streaming(
     assert (
         summary["throughput_qps"] >= PLAIN_STREAM_MIN_THROUGHPUT_QPS
     ), f"throughput_qps {summary['throughput_qps']} < {PLAIN_STREAM_MIN_THROUGHPUT_QPS}"
+
+
+# --- WER accuracy test (must run after speed tests, reuses same server) ---
+
+
+@pytest.mark.benchmark
+def test_voice_cloning_wer(
+    server_process: subprocess.Popen,
+    server_port: int,
+    dataset_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """Voice cloning WER: corpus WER <= 10%, no sample > 50% WER.
+
+    Generates speech for all EN mini samples, transcribes with Whisper-large-v3,
+    and asserts corpus-level and per-sample WER thresholds.
+
+    Baseline (3 runs on 5 EN samples, 50 total words): 0% corpus WER.
+    """
+    results = _run_wer_benchmark(
+        server_port,
+        str(dataset_dir / "en" / "meta.lst"),
+        str(tmp_path / "vc_wer"),
+    )
+    summary = results["summary"]
+    per_sample = results["per_sample"]
+
+    # All samples must be successfully evaluated
+    assert summary["evaluated"] == summary["total_samples"], (
+        f"Only {summary['evaluated']}/{summary['total_samples']} samples evaluated, "
+        f"{summary['skipped']} skipped"
+    )
+
+    # Corpus-level WER check
+    assert summary["wer_corpus"] <= VC_WER_MAX_CORPUS, (
+        f"Corpus WER {summary['wer_corpus']:.4f} ({summary['wer_corpus'] * 100:.2f}%) "
+        f"> threshold {VC_WER_MAX_CORPUS} ({VC_WER_MAX_CORPUS * 100:.0f}%)"
+    )
+
+    # No catastrophic per-sample failures
+    assert summary["n_above_50_pct_wer"] == 0, (
+        f"{summary['n_above_50_pct_wer']} samples have >50% WER — "
+        f"expected 0 catastrophic failures"
+    )
+
+    # Per-sample checks
+    for sample in per_sample:
+        assert sample["is_success"], (
+            f"Sample {sample['id']} failed: {sample.get('error')}"
+        )
+        if sample["wer"] is not None:
+            assert sample["wer"] <= VC_WER_MAX_PER_SAMPLE, (
+                f"Sample {sample['id']} WER {sample['wer']:.4f} "
+                f"> {VC_WER_MAX_PER_SAMPLE}"
+            )
 
 
 # --- Cross-mode consistency tests (must run after the 4 individual tests) ---
