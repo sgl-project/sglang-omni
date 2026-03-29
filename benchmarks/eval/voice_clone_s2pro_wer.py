@@ -79,6 +79,7 @@ async def main_async(args: argparse.Namespace) -> None:
                 args.max_new_tokens,
                 args.temperature,
                 args.seed,
+                stream=args.stream,
             )
             outputs.append(result)
 
@@ -109,6 +110,7 @@ async def main_async(args: argparse.Namespace) -> None:
         "max_new_tokens": args.max_new_tokens,
         "temperature": args.temperature,
         "max_samples": args.max_samples,
+        "stream": args.stream,
     }
     save_wer_results(outputs, metrics, config, args.output_dir)
 
@@ -144,6 +146,11 @@ def main() -> None:
     p.add_argument("--max-new-tokens", type=int, default=2048)
     p.add_argument("--temperature", type=float, default=0.8)
     p.add_argument("--seed", type=int, default=None, help="Random seed for generation")
+    p.add_argument(
+        "--stream",
+        action="store_true",
+        help="Use streaming SSE for TTS generation",
+    )
     args = p.parse_args()
 
     base_url = args.base_url or f"http://{args.host}:{args.port}"
