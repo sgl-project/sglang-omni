@@ -12,20 +12,91 @@ Tests cover:
   - Forward pass: VQ combination, logits shape, _decode_codebooks output
   - TP-specific: all-gather gating, tp_size tracking
   - Config validation: tp_rank < tp_size
+
+Strategy:
+  Initialize SGLang's real distributed TP process group (TP=1) via
+  init_distributed_environment + initialize_model_parallel, then construct
+  S2ProSGLangTextModel with all real SGLang parallel layers.  For forward
+  pass tests, transformer layer forward methods are replaced with
+  passthroughs to avoid needing a full KV-cache / ForwardBatch setup.
 """
 
 from __future__ import annotations
 
 import math
-from unittest.mock import patch
+import os
+import socket
+from unittest.mock import MagicMock, patch
 
 import pytest
 import torch
 
 # ---------------------------------------------------------------------------
-# Skip the entire module if sglang is not installed
+# Skip the entire module if sglang or CUDA is not available
 # ---------------------------------------------------------------------------
 sglang = pytest.importorskip("sglang", reason="sglang not installed")
+
+if not torch.cuda.is_available():
+    pytest.skip("CUDA required for SGLang distributed tests", allow_module_level=True)
+
+
+# ---------------------------------------------------------------------------
+# Module-scoped fixture: initialize SGLang distributed (TP=1)
+# ---------------------------------------------------------------------------
+
+
+def _find_free_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("", 0))
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        return s.getsockname()[1]
+
+
+@pytest.fixture(scope="module", autouse=True)
+def init_sglang_distributed():
+    """Initialize SGLang TP process group (TP=1, single GPU) for the module."""
+    from sglang.srt.distributed import (
+        destroy_distributed_environment,
+        destroy_model_parallel,
+        init_distributed_environment,
+        initialize_model_parallel,
+    )
+    from sglang.srt.server_args import ServerArgs, set_global_server_args_for_scheduler
+
+    # Clean up any leftover state from a previous module / crashed run
+    try:
+        destroy_model_parallel()
+    except Exception:
+        pass
+    try:
+        destroy_distributed_environment()
+    except Exception:
+        pass
+
+    port = _find_free_port()
+    torch.cuda.set_device(0)
+
+    # Disable message-queue broadcaster to keep the test lightweight
+    os.environ["SGLANG_USE_MESSAGE_QUEUE_BROADCASTER"] = "false"
+
+    # Set global server args (needed by RotaryEmbedding._compute_inv_freq)
+    server_args = ServerArgs(model_path="dummy", tp_size=1, dtype="bfloat16")
+    set_global_server_args_for_scheduler(server_args)
+
+    init_distributed_environment(
+        world_size=1,
+        rank=0,
+        local_rank=0,
+        backend="nccl",
+        distributed_init_method=f"tcp://127.0.0.1:{port}",
+    )
+    initialize_model_parallel(tensor_model_parallel_size=1)
+
+    yield
+
+    destroy_model_parallel()
+    destroy_distributed_environment()
+
 
 # ---------------------------------------------------------------------------
 # Minimal config helpers
@@ -88,7 +159,7 @@ def _make_tiny_config_no_decoder() -> FishQwen3OmniConfig:
 
 
 # ---------------------------------------------------------------------------
-# Helpers for creating a model on a single GPU, mocking distributed
+# Model helpers
 # ---------------------------------------------------------------------------
 
 _VQ_PARAMS = dict(
@@ -100,29 +171,56 @@ _VQ_PARAMS = dict(
     max_batch_size=8,
 )
 
-_DEVICE = "cuda:0" if torch.cuda.is_available() else "cpu"
+_DEVICE = "cuda:0"
 
 
 def _create_model(config=None, device=_DEVICE):
-    """Instantiate S2ProSGLangTextModel with mocked distributed (TP=1)."""
+    """Create S2ProSGLangTextModel with real SGLang parallel layers (TP=1)."""
     from sglang_omni.models.fishaudio_s2_pro.sglang_model import S2ProSGLangTextModel
 
     if config is None:
         config = _make_tiny_config()
 
-    with patch(
-        "sglang_omni.models.fishaudio_s2_pro.sglang_model.get_tensor_model_parallel_world_size",
-        return_value=1,
-    ):
-        model = S2ProSGLangTextModel(config=config)
-
+    model = S2ProSGLangTextModel(config=config)
     model = model.to(device=device, dtype=torch.bfloat16).eval()
     return model
 
 
 def _create_model_no_decoder(device=_DEVICE):
-    """Instantiate model without internal audio decoder."""
+    """Create model without internal audio decoder."""
     return _create_model(config=_make_tiny_config_no_decoder(), device=device)
+
+
+def _patch_layers_passthrough(model):
+    """Replace transformer layer forward methods with passthroughs.
+
+    This avoids needing a real ForwardBatch (with KV cache, attention masks,
+    etc.) when testing forward-pass logic outside of the attention layers.
+    """
+    for i in range(model.start_layer, model.end_layer):
+
+        def _passthrough(positions, hidden_states, forward_batch, residual):
+            if residual is None:
+                residual = hidden_states
+            else:
+                hidden_states = hidden_states + residual
+                residual = hidden_states
+            return hidden_states, residual
+
+        model.layers[i].forward = _passthrough
+
+
+def _make_fake_forward_batch(*, is_extend: bool = False):
+    fb = MagicMock()
+    fb.input_embeds = None
+
+    class _FakeMode:
+        @staticmethod
+        def is_extend():
+            return is_extend
+
+    fb.forward_mode = _FakeMode()
+    return fb
 
 
 # ===========================================================================
@@ -142,8 +240,6 @@ class TestAudioDecoderCreationOrder:
     def test_embed_tokens_exists_before_audio_decoder(self):
         """embed_tokens must already exist when _create_audio_decoder runs."""
         model = _create_model()
-        # If embed_tokens was created first, audio decoder should be on the
-        # same device (the _create_audio_decoder logic uses embed_tokens.weight.device).
         embed_device = model.embed_tokens.weight.device
         ad_device = next(model._audio_decoder.parameters()).device
         assert ad_device == embed_device, (
@@ -160,6 +256,19 @@ class TestAudioDecoderCreationOrder:
         model = _create_model()
         names = {n for n, _ in model.named_modules()}
         assert "_audio_decoder" in names
+
+    def test_create_audio_decoder_method(self):
+        """Test _create_audio_decoder on an existing model object."""
+        model = _create_model_no_decoder()
+        assert model._audio_decoder is None
+
+        adc = _make_tiny_config().audio_decoder_config
+        model._create_audio_decoder(adc)
+        assert model._audio_decoder is not None
+        # Should be on same device as embed_tokens
+        ad_device = next(model._audio_decoder.parameters()).device
+        expected = model.embed_tokens.weight.device
+        assert ad_device == expected
 
 
 class TestSetupVqDecode:
@@ -267,8 +376,6 @@ class TestSetupVqDecodeInternalOrdering:
         model = _create_model()
         model.setup_vq_decode_internal(**_VQ_PARAMS)
 
-        # setup_caches should have been called AFTER device move.
-        # KV caches live inside the audio decoder's layers.
         ad = model._audio_decoder
         assert ad.max_batch_size == _VQ_PARAMS["max_batch_size"]
 
@@ -283,7 +390,6 @@ class TestSetupVqDecodeInternalOrdering:
                         "setup_caches was likely called before device move."
                     )
 
-    @pytest.mark.skipif(not torch.cuda.is_available(), reason="Needs CUDA")
     def test_device_move_from_cpu(self):
         """If audio decoder starts on CPU, setup_vq_decode should move it."""
         model = _create_model(device="cuda:0")
@@ -305,14 +411,12 @@ class TestWeightLoading:
     """Test load_weights: text weights (TP-sharded) + audio decoder (replicated)."""
 
     def test_weights_separated_correctly(self):
-        """Text weights vs audio decoder weights should be routed correctly."""
+        """Audio decoder weights should be directly copied (replicated)."""
         model = _create_model()
 
-        # Grab an audio decoder param name
         ad_param_name = list(model._audio_decoder.named_parameters())[0][0]
         orig_value = model._audio_decoder.state_dict()[ad_param_name].clone()
 
-        # Create a fake weight with a known value
         new_value = torch.randn_like(orig_value)
         weights = [
             (f"audio_decoder.{ad_param_name}", new_value),
@@ -325,18 +429,21 @@ class TestWeightLoading:
             loaded, new_value.to(device=loaded.device, dtype=loaded.dtype)
         ), "Audio decoder weight not loaded correctly"
 
-    def test_text_weights_loaded(self):
+    def test_text_weights_loaded_via_remap(self):
+        """Text model weights loaded through the remap path."""
         model = _create_model()
 
-        # embed_tokens.weight is a text model param
+        # In real checkpoints: "text_model.model.embeddings.weight"
+        # -> remap to "embed_tokens.weight"
         orig = model.embed_tokens.weight.data.clone()
         new_weight = torch.randn_like(orig)
-        weights = [("text_model.model.embed_tokens.weight", new_weight)]
+        weights = [("text_model.model.embeddings.weight", new_weight)]
 
         model.load_weights(iter(weights))
-        # Weight loader might shard, so just check it changed
+        # Weight loader may shard for TP, but for TP=1 it should match fully
+        loaded = model.embed_tokens.weight.data
         assert not torch.equal(
-            model.embed_tokens.weight.data, orig
+            loaded, orig
         ), "embed_tokens.weight should have been updated by load_weights"
 
     def test_audio_decoder_buffer_loaded(self):
@@ -362,7 +469,6 @@ class TestWeightLoading:
         target_device = ad_param.device
         target_dtype = ad_param.dtype
 
-        # Load a float32 CPU weight
         cpu_weight = torch.randn(ad_param.shape, dtype=torch.float32, device="cpu")
         weights = [(f"audio_decoder.{ad_param_name}", cpu_weight)]
 
@@ -379,7 +485,6 @@ class TestWeightLoading:
             ("audio_decoder.nonexistent_layer.weight", torch.randn(10, 10)),
             ("completely_unknown.weight", torch.randn(10, 10)),
         ]
-
         # Should not raise
         model.load_weights(iter(weights))
 
@@ -387,17 +492,22 @@ class TestWeightLoading:
         model = _create_model_no_decoder()
 
         weights = [("audio_decoder.embeddings.weight", torch.randn(64, 32))]
-
         # Should not raise — just logs and skips
         model.load_weights(iter(weights))
 
 
 class TestForwardPass:
-    """Test forward pass logic: VQ combination, shapes, _decode_codebooks."""
+    """Test forward pass logic: VQ combination, shapes, _decode_codebooks.
+
+    Transformer layers are patched to passthrough to avoid needing a real
+    ForwardBatch with KV cache.  The tested logic is the embedding, VQ
+    combination, logits, and codebook generation — all outside of attention.
+    """
 
     def _setup_model(self):
         model = _create_model()
         model.setup_vq_decode_internal(**_VQ_PARAMS)
+        _patch_layers_passthrough(model)
         return model
 
     def test_forward_decode_mode_shapes(self):
@@ -408,19 +518,7 @@ class TestForwardPass:
 
         input_ids = torch.randint(0, model.vocab_size, (bs,), device=device)
         positions = torch.arange(bs, device=device)
-
-        # Minimal ForwardBatch mock
-        from unittest.mock import MagicMock
-
-        fb = MagicMock()
-        fb.input_embeds = None
-
-        class _FakeMode:
-            @staticmethod
-            def is_extend():
-                return False
-
-        fb.forward_mode = _FakeMode()
+        fb = _make_fake_forward_batch(is_extend=False)
 
         with torch.no_grad():
             output = model.forward(input_ids, positions, fb)
@@ -428,6 +526,23 @@ class TestForwardPass:
         assert output.next_token_logits.shape == (bs, model.vocab_size)
         assert output.hidden_states.shape[0] == bs
         assert output.hidden_states.shape[1] == model.hidden_size
+
+    def test_forward_without_vq_ready(self):
+        """Forward without VQ setup should still produce logits."""
+        model = _create_model()
+        _patch_layers_passthrough(model)
+        assert not model._vq_ready
+        bs = 2
+        device = model.embed_tokens.weight.device
+
+        input_ids = torch.randint(0, model.vocab_size, (bs,), device=device)
+        positions = torch.arange(bs, device=device)
+        fb = _make_fake_forward_batch(is_extend=False)
+
+        with torch.no_grad():
+            output = model.forward(input_ids, positions, fb)
+
+        assert output.next_token_logits.shape == (bs, model.vocab_size)
 
     def test_decode_codebooks_writes_output_buffers(self):
         model = self._setup_model()
@@ -499,37 +614,25 @@ class TestTPSpecific:
 
     def test_tp_size_stored(self):
         model = _create_model()
-        assert model.tp_size == 1  # Mocked to return 1
+        assert model.tp_size == 1
 
     def test_all_gather_not_called_for_tp1(self):
         """With tp_size=1, tensor_model_parallel_all_gather should be skipped."""
         model = _create_model()
         model.setup_vq_decode_internal(**_VQ_PARAMS)
+        _patch_layers_passthrough(model)
         device = model.embed_tokens.weight.device
 
         bs = 1
         input_ids = torch.randint(0, model.vocab_size, (bs,), device=device)
         positions = torch.arange(bs, device=device)
+        fb = _make_fake_forward_batch(is_extend=False)
 
-        from unittest.mock import MagicMock
-
-        fb = MagicMock()
-        fb.input_embeds = None
-
-        class _FakeMode:
-            @staticmethod
-            def is_extend():
-                return False
-
-        fb.forward_mode = _FakeMode()
-
-        # Patch all_gather to track calls
         with patch(
             "sglang_omni.models.fishaudio_s2_pro.sglang_model.tensor_model_parallel_all_gather",
         ) as mock_gather:
             with torch.no_grad():
                 model.forward(input_ids, positions, fb)
-
             mock_gather.assert_not_called()
 
     def test_all_gather_called_for_tp_gt1(self):
@@ -537,23 +640,13 @@ class TestTPSpecific:
         model = _create_model()
         model.tp_size = 2  # Pretend TP=2
         model.setup_vq_decode_internal(**_VQ_PARAMS)
+        _patch_layers_passthrough(model)
         device = model.embed_tokens.weight.device
 
         bs = 1
         input_ids = torch.randint(0, model.vocab_size, (bs,), device=device)
         positions = torch.arange(bs, device=device)
-
-        from unittest.mock import MagicMock
-
-        fb = MagicMock()
-        fb.input_embeds = None
-
-        class _FakeMode:
-            @staticmethod
-            def is_extend():
-                return False
-
-        fb.forward_mode = _FakeMode()
+        fb = _make_fake_forward_batch(is_extend=False)
 
         with patch(
             "sglang_omni.models.fishaudio_s2_pro.sglang_model.tensor_model_parallel_all_gather",
@@ -561,7 +654,6 @@ class TestTPSpecific:
         ) as mock_gather:
             with torch.no_grad():
                 model.forward(input_ids, positions, fb)
-
             mock_gather.assert_called_once()
 
 
@@ -594,6 +686,4 @@ class TestConfigValidation:
 
     def test_tp_rank_0_tp_size_1_no_validation_error(self):
         """Valid config should not raise the tp_rank validation error."""
-        # We can't run the full factory without a model, but we can verify
-        # that the validation check passes for valid params.
         assert 0 < 1  # tp_rank=0 < tp_size=1

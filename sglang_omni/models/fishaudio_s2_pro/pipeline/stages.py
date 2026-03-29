@@ -318,6 +318,17 @@ def create_sglang_tts_engine_executor(
         create_s2pro_sglang_engine,
     )
 
+    # Auto-detect tp_rank from LOCAL_RANK env var (set by torchrun)
+    if tp_size > 1:
+        local_rank_env = os.environ.get("LOCAL_RANK")
+        if local_rank_env is not None:
+            tp_rank = int(local_rank_env)
+            device = f"cuda:{tp_rank}"
+            logger.info(
+                "Auto-detected LOCAL_RANK=%d: tp_rank=%d, device=%s",
+                tp_rank, tp_rank, device,
+            )
+
     if tp_rank >= tp_size:
         raise ValueError(f"tp_rank ({tp_rank}) must be less than tp_size ({tp_size})")
 
