@@ -328,7 +328,7 @@ def create_sglang_tts_engine_executor(
 
     def _request_builder(payload: StagePayload):
         state = load_state(payload)
-        return build_sglang_tts_request(state, tokenizer)
+        return build_sglang_tts_request(state, tokenizer, request_id=payload.request_id)
 
     def _result_builder(payload: StagePayload, result: Any) -> StagePayload:
         state = load_state(payload)
