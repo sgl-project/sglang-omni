@@ -415,22 +415,12 @@ def test_plain_tts_streaming(
     ), f"throughput_qps {summary['throughput_qps']} < {PLAIN_STREAM_MIN_THROUGHPUT_QPS}"
 
 
-# --- WER accuracy test (must run after speed tests, reuses same server) ---
-
-
 @pytest.mark.benchmark
 def test_voice_cloning_wer(
     server_process: subprocess.Popen,
     dataset_dir: Path,
     tmp_path: Path,
 ) -> None:
-    """Voice cloning WER: corpus WER <= 1%, no sample > 50% WER.
-
-    Generates speech for all EN mini samples, transcribes with Whisper-large-v3,
-    and asserts corpus-level and per-sample WER thresholds.
-
-    Baseline (3 runs on 5 EN samples, 50 total words): 0% corpus WER.
-    """
     results = _run_wer_benchmark(
         server_process.port,
         str(dataset_dir / "en" / "meta.lst"),
@@ -439,25 +429,21 @@ def test_voice_cloning_wer(
     summary = results["summary"]
     per_sample = results["per_sample"]
 
-    # All samples must be successfully evaluated
     assert summary["evaluated"] == summary["total_samples"], (
         f"Only {summary['evaluated']}/{summary['total_samples']} samples evaluated, "
         f"{summary['skipped']} skipped"
     )
 
-    # Corpus-level WER check
     assert summary["wer_corpus"] <= VC_WER_MAX_CORPUS, (
         f"Corpus WER {summary['wer_corpus']:.4f} ({summary['wer_corpus'] * 100:.2f}%) "
         f"> threshold {VC_WER_MAX_CORPUS} ({VC_WER_MAX_CORPUS * 100:.0f}%)"
     )
 
-    # No catastrophic per-sample failures
     assert summary["n_above_50_pct_wer"] == 0, (
         f"{summary['n_above_50_pct_wer']} samples have >50% WER — "
         f"expected 0 catastrophic failures"
     )
 
-    # Per-sample checks
     for sample in per_sample:
         assert sample[
             "is_success"

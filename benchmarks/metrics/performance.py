@@ -38,15 +38,7 @@ def _compute_token_metrics(successes: list[RequestResult]) -> dict:
 def compute_speed_metrics(
     outputs: list[RequestResult], wall_clock_s: float | None = None
 ) -> dict:
-    """Compute system performance summary from a list of request results.
-
-    Args:
-        outputs: Per-request results from the benchmark runner.
-        wall_clock_s: Actual wall-clock time of the dispatch phase. When
-            provided, throughput is computed as ``len(successes) / wall_clock_s``
-            which is correct under concurrency. Falls back to
-            ``len(successes) / sum(latencies)`` when *None*.
-    """
+    """Compute system performance summary from a list of request results."""
     successes = [o for o in outputs if o.is_success]
     if not successes:
         return {"completed_requests": 0, "failed_requests": len(outputs)}

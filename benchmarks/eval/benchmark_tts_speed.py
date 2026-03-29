@@ -58,6 +58,8 @@ async def benchmark(args: argparse.Namespace) -> None:
         logger.error("Testset not found: %s", args.testset)
         return
 
+    # Note (Chenyang): We use the seed-tts-eval dataset by default.
+    # TODO (Chenyang): Make datasets configurable.
     samples = load_seedtts_samples(args.testset, args.max_samples)
     logger.info("Prepared %d requests", len(samples))
 
