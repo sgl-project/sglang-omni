@@ -45,21 +45,14 @@ logger = logging.getLogger(__name__)
 
 async def main_async(args: argparse.Namespace) -> None:
     if "cuda" in args.asr_device:
-        try:
-            torch.cuda.set_device(args.asr_device)
-            logger.info("Set ASR CUDA device to %s", args.asr_device)
-        except Exception as exc:
-            logger.warning(
-                "Failed to set CUDA device %s: %s", args.asr_device, exc
-            )
+        torch.cuda.set_device(args.asr_device)
+        logger.info("Set ASR CUDA device to %s", args.asr_device)
 
     base_url = f"http://{args.host}:{args.port}"
     api_url = f"{base_url}/v1/chat/completions"
 
     if args.download_dataset:
         download_dataset("zhaochenyang20/seed-tts-eval", args.dataset_dir)
-
-    wait_for_service(base_url, timeout=args.server_timeout)
 
     asr = load_asr_model(args.lang, args.asr_device)
 
@@ -69,6 +62,10 @@ async def main_async(args: argparse.Namespace) -> None:
     audio_dir = os.path.join(args.output_dir, "audio")
     os.makedirs(audio_dir, exist_ok=True)
 
+    # Sequential evaluation: each request is processed one at a time because
+    # (1) Qwen3 pipeline cannot handle concurrent requests (CUDA illegal memory
+    #     access) and (2) ASR transcription runs on GPU after each generation.
+    # Cross-scenario parallelism (separate processes) is used instead.
     task = VoiceCloneOmni()
     timeout = aiohttp.ClientTimeout(total=300)
     outputs = []
@@ -179,6 +176,9 @@ def main() -> None:
         help="Local directory for the dataset",
     )
     args = p.parse_args()
+
+    base_url = f"http://{args.host}:{args.port}"
+    wait_for_service(base_url, timeout=args.server_timeout)
 
     asyncio.run(main_async(args))
 

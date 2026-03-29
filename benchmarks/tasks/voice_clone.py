@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import base64
 import csv
+import functools
 import json
 import logging
 import os
@@ -47,37 +48,24 @@ class SampleOutput:
     error: str = ""
 
 
-_EN_NORMALIZER_UNLOADED = object()
-_en_normalizer = _EN_NORMALIZER_UNLOADED
-
-
+@functools.lru_cache(maxsize=1)
 def _get_en_normalizer():
-    """Lazy-load the English text normalizer. Tries whisper_normalizer, openai-whisper, transformers."""
-    global _en_normalizer
-    if _en_normalizer is not _EN_NORMALIZER_UNLOADED:
-        return _en_normalizer
+    """Lazy-load the English text normalizer.
 
-    # 1) whisper_normalizer (standalone pip package)
+    Tries whisper_normalizer (standalone pip package) first, then falls back to
+    the transformers built-in normalizer.
+    """
+    # 1) whisper_normalizer (standalone pip package — preferred)
     try:
         from whisper_normalizer.english import EnglishTextNormalizer
 
-        _en_normalizer = EnglishTextNormalizer()
+        normalizer = EnglishTextNormalizer()
         logger.info("Using whisper_normalizer.english.EnglishTextNormalizer")
-        return _en_normalizer
-    except (ImportError, TypeError):
+        return normalizer
+    except ImportError:
         pass
 
-    # 2) openai-whisper
-    try:
-        from whisper.normalizers import EnglishTextNormalizer
-
-        _en_normalizer = EnglishTextNormalizer()
-        logger.info("Using whisper.normalizers.EnglishTextNormalizer")
-        return _en_normalizer
-    except (ImportError, TypeError):
-        pass
-
-    # 3) transformers — requires explicit english_spelling_mapping dict
+    # 2) transformers — requires explicit english_spelling_mapping dict
     try:
         import json as _json
         from pathlib import Path
@@ -93,20 +81,19 @@ def _get_en_normalizer():
         with open(json_path) as f:
             english_spelling_mapping = _json.load(f)
 
-        _en_normalizer = EnglishTextNormalizer(english_spelling_mapping)
+        normalizer = EnglishTextNormalizer(english_spelling_mapping)
         logger.info(
             "Using transformers.models.whisper.english_normalizer.EnglishTextNormalizer"
         )
-        return _en_normalizer
-    except (ImportError, AttributeError, FileNotFoundError, TypeError) as exc:
+        return normalizer
+    except (ImportError, FileNotFoundError) as exc:
         logger.debug("transformers EnglishTextNormalizer failed: %s", exc)
 
-    _en_normalizer = None
     logger.warning(
-        "EnglishTextNormalizer not found in whisper_normalizer, whisper, "
-        "or transformers; falling back to simple punctuation-strip normalizer."
+        "EnglishTextNormalizer not found in whisper_normalizer or transformers; "
+        "falling back to simple punctuation-strip normalizer."
     )
-    return _en_normalizer
+    return None
 
 
 def normalize_text(text: str, lang: str) -> str:
