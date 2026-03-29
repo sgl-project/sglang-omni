@@ -7,11 +7,13 @@ from __future__ import annotations
 import base64
 import csv
 import functools
+import io
 import json
 import logging
 import os
 import string
 import time
+import wave
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -23,7 +25,11 @@ import torch
 import transformers
 from jiwer import process_words
 
-from benchmarks.benchmarker.utils import WAV_HEADER_SIZE
+from benchmarks.benchmarker.utils import (
+    SSE_DATA_PREFIX,
+    SSE_DONE_MARKER,
+    WAV_HEADER_SIZE,
+)
 from benchmarks.dataset.seedtts import SampleInput
 
 logger = logging.getLogger(__name__)
@@ -262,6 +268,111 @@ class VoiceCloneTTS:
             )
         return wav_bytes, latency
 
+    async def generate_speech_streaming(
+        self,
+        session: aiohttp.ClientSession,
+        api_url: str,
+        model_name: str,
+        sample: SampleInput,
+        max_new_tokens: int = 2048,
+        temperature: float = 0.8,
+        seed: int | None = None,
+    ) -> tuple[bytes, float]:
+        """Generate speech via streaming SSE, concatenate audio chunks into WAV."""
+        payload: dict = {
+            "model": model_name,
+            "input": sample.target_text,
+            "ref_audio": sample.ref_audio,
+            "ref_text": sample.ref_text,
+            "response_format": "wav",
+            "max_new_tokens": max_new_tokens,
+            "temperature": temperature,
+            "stream": True,
+        }
+        if seed is not None:
+            payload["seed"] = seed
+
+        t0 = time.perf_counter()
+        pcm_chunks: list[bytes] = []
+        sample_rate = None
+        num_channels = None
+        sample_width = None
+
+        async with session.post(api_url, json=payload) as response:
+            if response.status != 200:
+                error_text = await response.text()
+                raise RuntimeError(f"HTTP {response.status}: {error_text}")
+
+            buffer = bytearray()
+            async for chunk in response.content.iter_any():
+                buffer.extend(chunk)
+                while b"\n" in buffer:
+                    idx = buffer.index(b"\n")
+                    raw_line = bytes(buffer[:idx])
+                    del buffer[: idx + 1]
+                    line = raw_line.decode("utf-8", errors="replace").strip()
+                    if not line.startswith(SSE_DATA_PREFIX) or line == SSE_DONE_MARKER:
+                        continue
+                    try:
+                        event = json.loads(line[len(SSE_DATA_PREFIX) :])
+                    except json.JSONDecodeError:
+                        continue
+                    audio = event.get("audio")
+                    if not isinstance(audio, dict) or not audio.get("data"):
+                        continue
+                    chunk_bytes = base64.b64decode(audio["data"])
+                    if len(chunk_bytes) <= WAV_HEADER_SIZE:
+                        continue
+                    try:
+                        with io.BytesIO(chunk_bytes) as buf:
+                            with wave.open(buf, "rb") as wf:
+                                sr = wf.getframerate()
+                                ch = wf.getnchannels()
+                                sw = wf.getsampwidth()
+                                pcm = wf.readframes(wf.getnframes())
+                        if sample_rate is None:
+                            sample_rate, num_channels, sample_width = sr, ch, sw
+                        pcm_chunks.append(pcm)
+                    except Exception:
+                        continue
+
+            # process any remaining bytes in buffer
+            if buffer.strip():
+                line = bytes(buffer).decode("utf-8", errors="replace").strip()
+                if line.startswith(SSE_DATA_PREFIX) and line != SSE_DONE_MARKER:
+                    try:
+                        event = json.loads(line[len(SSE_DATA_PREFIX) :])
+                        audio = event.get("audio")
+                        if isinstance(audio, dict) and audio.get("data"):
+                            chunk_bytes = base64.b64decode(audio["data"])
+                            if len(chunk_bytes) > WAV_HEADER_SIZE:
+                                with io.BytesIO(chunk_bytes) as buf:
+                                    with wave.open(buf, "rb") as wf:
+                                        pcm = wf.readframes(wf.getnframes())
+                                        if sample_rate is None:
+                                            sample_rate = wf.getframerate()
+                                            num_channels = wf.getnchannels()
+                                            sample_width = wf.getsampwidth()
+                                pcm_chunks.append(pcm)
+                    except (json.JSONDecodeError, Exception):
+                        pass
+
+        latency = time.perf_counter() - t0
+
+        if not pcm_chunks or sample_rate is None:
+            raise ValueError("No audio chunks received from streaming response")
+
+        # Concatenate PCM chunks into a single WAV
+        wav_buf = io.BytesIO()
+        with wave.open(wav_buf, "wb") as wf:
+            wf.setnchannels(num_channels)
+            wf.setsampwidth(sample_width)
+            wf.setframerate(sample_rate)
+            wf.writeframes(b"".join(pcm_chunks))
+        wav_bytes = wav_buf.getvalue()
+
+        return wav_bytes, latency
+
     async def evaluate_sample(
         self,
         session: aiohttp.ClientSession,
@@ -275,6 +386,7 @@ class VoiceCloneTTS:
         max_new_tokens: int = 2048,
         temperature: float = 0.8,
         seed: int | None = None,
+        stream: bool = False,
     ) -> SampleOutput:
         output = SampleOutput(
             sample_id=sample.sample_id,
@@ -283,7 +395,8 @@ class VoiceCloneTTS:
         wav_path = os.path.join(audio_dir, f"{sample.sample_id}.wav")
 
         try:
-            wav_bytes, latency = await self.generate_speech(
+            gen_fn = self.generate_speech_streaming if stream else self.generate_speech
+            wav_bytes, latency = await gen_fn(
                 session,
                 api_url,
                 model_name,

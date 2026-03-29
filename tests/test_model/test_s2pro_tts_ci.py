@@ -46,8 +46,11 @@ PLAIN_NON_STREAM_MIN_TOK_PER_S = 80
 PLAIN_NON_STREAM_MAX_RTF = 0.35
 PLAIN_STREAM_MAX_LATENCY_S = 4.0
 PLAIN_STREAM_MIN_THROUGHPUT_QPS = 0.25
-VC_WER_MAX_CORPUS = 0.01
-VC_WER_MAX_PER_SAMPLE = 0.1
+# WER thresholds: 10 runs (5 nonstream + 5 stream) all produce 0.00% WER.
+VC_WER_MAX_CORPUS = 0.0
+VC_WER_MAX_PER_SAMPLE = 0.0
+VC_STREAM_WER_MAX_CORPUS = 0.0
+VC_STREAM_WER_MAX_PER_SAMPLE = 0.0
 
 
 def _run_benchmark(
@@ -113,12 +116,13 @@ def _run_wer_benchmark(
     output_dir: str,
     lang: str = "en",
     device: str = "cuda:0",
+    stream: bool = False,
 ) -> dict:
     script_path = str(
         Path(__file__).resolve().parents[2]
         / "benchmarks"
         / "eval"
-        / "voice_clone_s2pro.py"
+        / "voice_clone_s2pro_wer.py"
     )
     cmd = [
         sys.executable,
@@ -138,6 +142,8 @@ def _run_wer_benchmark(
         "--max-samples",
         str(MAX_SAMPLES),
     ]
+    if stream:
+        cmd.append("--stream")
 
     proxy_keys = {"http_proxy", "https_proxy", "all_proxy", "no_proxy"}
     env = {k: v for k, v in os.environ.items() if k.lower() not in proxy_keys}
@@ -452,6 +458,50 @@ def test_voice_cloning_wer(
             assert sample["wer"] <= VC_WER_MAX_PER_SAMPLE, (
                 f"Sample {sample['id']} WER {sample['wer']:.4f} "
                 f"> {VC_WER_MAX_PER_SAMPLE}"
+            )
+
+
+@pytest.mark.benchmark
+def test_voice_cloning_streaming_wer(
+    server_process: subprocess.Popen,
+    dataset_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """Voice cloning streaming WER: same quality bar as non-streaming."""
+    results = _run_wer_benchmark(
+        server_process.port,
+        str(dataset_dir / "en" / "meta.lst"),
+        str(tmp_path / "vc_stream_wer"),
+        stream=True,
+    )
+    summary = results["summary"]
+    per_sample = results["per_sample"]
+
+    assert summary["evaluated"] == summary["total_samples"], (
+        f"Only {summary['evaluated']}/{summary['total_samples']} samples evaluated, "
+        f"{summary['skipped']} skipped"
+    )
+
+    assert summary["wer_corpus"] <= VC_STREAM_WER_MAX_CORPUS, (
+        f"Streaming corpus WER {summary['wer_corpus']:.4f} "
+        f"({summary['wer_corpus'] * 100:.2f}%) "
+        f"> threshold {VC_STREAM_WER_MAX_CORPUS} "
+        f"({VC_STREAM_WER_MAX_CORPUS * 100:.0f}%)"
+    )
+
+    assert summary["n_above_50_pct_wer"] == 0, (
+        f"{summary['n_above_50_pct_wer']} samples have >50% WER — "
+        f"expected 0 catastrophic failures"
+    )
+
+    for sample in per_sample:
+        assert sample[
+            "is_success"
+        ], f"Sample {sample['id']} failed: {sample.get('error')}"
+        if sample["wer"] is not None:
+            assert sample["wer"] <= VC_STREAM_WER_MAX_PER_SAMPLE, (
+                f"Sample {sample['id']} streaming WER {sample['wer']:.4f} "
+                f"> {VC_STREAM_WER_MAX_PER_SAMPLE}"
             )
 
 
