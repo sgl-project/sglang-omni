@@ -96,13 +96,15 @@ class BenchmarkRunner:
             pbar.update(1)
             return result
 
-        tasks: list[asyncio.Task] = []
-        for sample in samples:
-            if self.config.request_rate != float("inf"):
-                interval = np.random.exponential(1.0 / self.config.request_rate)
-                await asyncio.sleep(interval)
-            tasks.append(asyncio.create_task(_limited(sample)))
+        try:
+            tasks: list[asyncio.Task] = []
+            for sample in samples:
+                if self.config.request_rate != float("inf"):
+                    interval = np.random.exponential(1.0 / self.config.request_rate)
+                    await asyncio.sleep(interval)
+                tasks.append(asyncio.create_task(_limited(sample)))
 
-        results: list[RequestResult] = list(await asyncio.gather(*tasks))
-        pbar.close()
+            results: list[RequestResult] = list(await asyncio.gather(*tasks))
+        finally:
+            pbar.close()
         return results

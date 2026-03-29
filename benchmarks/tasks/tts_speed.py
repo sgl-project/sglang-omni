@@ -13,6 +13,7 @@ import time
 import aiohttp
 
 from benchmarks.benchmarker.data import RequestResult
+from benchmarks.benchmarker.runner import SendFn
 from benchmarks.benchmarker.utils import get_wav_duration, process_sse_line
 from benchmarks.dataset.seedtts import SampleInput
 
@@ -134,7 +135,7 @@ def make_tts_send_fn(
     no_ref_audio: bool = False,
     save_audio_dir: str | None = None,
     **gen_kwargs,
-):
+) -> SendFn:
     """Return a *send_fn(session, sample) -> RequestResult* for the runner."""
 
     async def send_fn(

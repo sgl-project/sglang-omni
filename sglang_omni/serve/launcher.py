@@ -173,6 +173,9 @@ async def _run_server(
                 client,
                 model_name=model_name or pipeline_config.name,
             )
+            # NOTE: Profiler routes are not mounted in multi-process mode because
+            # the stage control endpoints are not accessible from the parent
+            # process. Profiling multi-GPU pipelines requires per-stage tracing.
 
             config = uvicorn.Config(app, host=host, port=port, log_level=log_level)
             server = uvicorn.Server(config)

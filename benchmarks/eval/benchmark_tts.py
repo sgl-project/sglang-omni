@@ -54,8 +54,6 @@ async def benchmark(args: argparse.Namespace) -> None:
     base_url = args.base_url or f"http://{args.host}:{args.port}"
     api_url = f"{base_url}/v1/audio/speech"
 
-    wait_for_service(base_url)
-
     if not os.path.isfile(args.testset):
         logger.error("Testset not found: %s", args.testset)
         return
@@ -180,6 +178,9 @@ def main() -> None:
     )
     parser.add_argument("--disable-tqdm", action="store_true")
     args = parser.parse_args()
+
+    base_url = args.base_url or f"http://{args.host}:{args.port}"
+    wait_for_service(base_url)
 
     asyncio.run(benchmark(args))
 

@@ -44,18 +44,11 @@ logger = logging.getLogger(__name__)
 
 async def main_async(args: argparse.Namespace) -> None:
     if "cuda" in args.device:
-        try:
-            torch.cuda.set_device(args.device)
-            logger.info("Set default CUDA device to %s", args.device)
-        except Exception as exc:
-            logger.warning(
-                "Failed to set default CUDA device to %s: %s", args.device, exc
-            )
+        torch.cuda.set_device(args.device)
+        logger.info("Set default CUDA device to %s", args.device)
 
     base_url = args.base_url or f"http://{args.host}:{args.port}"
     api_url = f"{base_url}/v1/audio/speech"
-
-    wait_for_service(base_url)
 
     asr = load_asr_model(args.lang, args.device)
 
@@ -65,6 +58,9 @@ async def main_async(args: argparse.Namespace) -> None:
     audio_dir = os.path.join(args.output_dir, "audio")
     os.makedirs(audio_dir, exist_ok=True)
 
+    # Sequential evaluation: each request is processed one at a time because
+    # ASR transcription runs on GPU immediately after each TTS generation.
+    # Cross-scenario parallelism (separate processes) is used instead.
     task = VoiceCloneTTS()
     timeout = aiohttp.ClientTimeout(total=300)
     outputs = []
@@ -150,6 +146,9 @@ def main() -> None:
         "--seed", type=int, default=None, help="Random seed for generation"
     )
     args = p.parse_args()
+
+    base_url = args.base_url or f"http://{args.host}:{args.port}"
+    wait_for_service(base_url)
 
     asyncio.run(main_async(args))
 
