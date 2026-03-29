@@ -1,23 +1,23 @@
 # SPDX-License-Identifier: Apache-2.0
-"""S2 Pro TTS Speed benchmark.
+"""TTS Speed benchmark.
 
-Measures latency, RTF, throughput, and token throughput for S2 Pro via the
+Measures latency, RTF, throughput, and token throughput for TTS models via the
 /v1/audio/speech API.  Supports voice cloning (default) and plain TTS modes,
 both streaming and non-streaming.
 
 Usage:
     # Voice cloning, non-streaming
-    python -m benchmarks.eval.s2pro_tts_speed \
+    python benchmarks/eval/benchmark_tts.py \
         --model fishaudio/s2-pro --port 8000 \
         --testset seedtts_testset/en/meta.lst --max-samples 10
 
     # Voice cloning, streaming
-    python -m benchmarks.eval.s2pro_tts_speed \
+    python benchmarks/eval/benchmark_tts.py \
         --model fishaudio/s2-pro --port 8000 \
         --testset seedtts_testset/en/meta.lst --max-samples 10 --stream
 
     # Plain TTS, non-streaming
-    python -m benchmarks.eval.s2pro_tts_speed \
+    python benchmarks/eval/benchmark_tts.py \
         --model fishaudio/s2-pro --port 8000 \
         --testset seedtts_testset/en/meta.lst --max-samples 10 --no-ref-audio
 """
@@ -28,16 +28,20 @@ import argparse
 import asyncio
 import logging
 import os
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from benchmarks.benchmarker.runner import BenchmarkRunner, RunConfig
 from benchmarks.benchmarker.utils import wait_for_service
-from benchmarks.cases.tts_speed import (
+from benchmarks.dataset.seedtts import load_seedtts_samples
+from benchmarks.metrics.performance import compute_speed_metrics
+from benchmarks.tasks.tts_speed import (
     make_tts_send_fn,
     print_speed_summary,
     save_speed_results,
 )
-from benchmarks.dataset.seedtts import load_seedtts_samples
-from benchmarks.metrics.performance import compute_speed_metrics
 
 logging.basicConfig(
     level=logging.INFO,
@@ -136,7 +140,10 @@ def main() -> None:
         "--testset",
         type=str,
         default="seed-tts-eval/en/meta.lst",
-        help="Path to seed-tts-eval meta.lst.",
+        help=(
+            "Path to a meta.lst file (one sample per line).  "
+            "Accepts any dataset in seed-tts-eval format."
+        ),
     )
     parser.add_argument(
         "--no-ref-audio",

@@ -5,7 +5,7 @@ Generates speech via /v1/chat/completions with modalities: ["text", "audio"],
 then evaluates WER using Whisper (EN) or FunASR (ZH).
 
 Usage:
-    python -m benchmarks.eval.voice_clone_qwen3_omni \
+    python benchmarks/eval/voice_clone_qwen3_omni.py \
         --meta seedtts_testset/en/meta.lst \
         --output-dir results/qwen3_omni_en \
         --lang en --max-samples 50
@@ -17,21 +17,25 @@ import argparse
 import asyncio
 import logging
 import os
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import aiohttp
 import torch
 from tqdm import tqdm
 
 from benchmarks.benchmarker.utils import wait_for_service
-from benchmarks.cases.voice_clone import (
+from benchmarks.dataset.prepare import download_dataset
+from benchmarks.dataset.seedtts import load_seedtts_samples
+from benchmarks.tasks.voice_clone import (
     VoiceCloneOmni,
     calculate_wer_metrics,
     load_asr_model,
     print_wer_summary,
     save_wer_results,
 )
-from benchmarks.dataset.prepare import download_dataset
-from benchmarks.dataset.seedtts import load_seedtts_samples
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s"
@@ -65,12 +69,12 @@ async def main_async(args: argparse.Namespace) -> None:
     audio_dir = os.path.join(args.output_dir, "audio")
     os.makedirs(audio_dir, exist_ok=True)
 
-    case = VoiceCloneOmni()
+    task = VoiceCloneOmni()
     timeout = aiohttp.ClientTimeout(total=300)
     outputs = []
     async with aiohttp.ClientSession(timeout=timeout) as session:
         for i, sample in enumerate(tqdm(samples, desc=f"Evaluating WER ({args.lang})")):
-            result = await case.evaluate_sample(
+            result = await task.evaluate_sample(
                 session,
                 api_url,
                 args.model,
