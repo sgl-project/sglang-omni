@@ -47,6 +47,10 @@ dev = [
     # Testing dependencies
     "pytest>=7.0.0",
     "pytest-asyncio>=0.21.0",
+    # WER benchmark dependencies (Whisper ASR + text normalization)
+    "jiwer",
+    "scipy>=1.10.0",
+    "openai-whisper",
 ]
 s2pro = [
     "tiktoken",
