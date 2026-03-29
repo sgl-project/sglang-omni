@@ -187,6 +187,43 @@ def transcribe(asr: dict, wav_path: str, lang: str, device: str) -> str:
         raise ValueError(f"Unknown ASR type: {asr['type']}")
 
 
+def _transcribe_and_compute_wer(
+    output: SampleOutput,
+    wav_path: str,
+    asr: dict,
+    lang: str,
+    device: str,
+) -> SampleOutput:
+    """Transcribe audio and compute per-sample WER metrics.
+
+    Shared by VoiceCloneTTS and VoiceCloneOmni to avoid duplicating the
+    transcription -> normalization -> WER pipeline.
+    """
+    try:
+        hyp_text = transcribe(asr, wav_path, lang, device)
+    except Exception as exc:
+        output.error = f"Transcription failed: {exc}"
+        logger.error("[%s] %s", output.sample_id, output.error)
+        return output
+
+    output.whisper_text = hyp_text
+    output.ref_norm = normalize_text(output.target_text, lang)
+    output.hyp_norm = normalize_text(hyp_text, lang)
+
+    if not output.ref_norm:
+        output.error = "Empty reference after normalization"
+        return output
+
+    measures = process_words(output.ref_norm, output.hyp_norm)
+    output.wer = measures.wer
+    output.substitutions = measures.substitutions
+    output.deletions = measures.deletions
+    output.insertions = measures.insertions
+    output.hits = measures.hits
+    output.is_success = True
+    return output
+
+
 class VoiceCloneTTS:
     """Voice cloning via /v1/audio/speech (OAI TTS API format).
 
@@ -269,29 +306,7 @@ class VoiceCloneTTS:
             logger.error("[%s] %s", sample.sample_id, output.error)
             return output
 
-        try:
-            hyp_text = transcribe(asr, wav_path, lang, device)
-        except Exception as exc:
-            output.error = f"Transcription failed: {exc}"
-            logger.error("[%s] %s", sample.sample_id, output.error)
-            return output
-
-        output.whisper_text = hyp_text
-        output.ref_norm = normalize_text(sample.target_text, lang)
-        output.hyp_norm = normalize_text(hyp_text, lang)
-
-        if not output.ref_norm:
-            output.error = "Empty reference after normalization"
-            return output
-
-        measures = process_words(output.ref_norm, output.hyp_norm)
-        output.wer = measures.wer
-        output.substitutions = measures.substitutions
-        output.deletions = measures.deletions
-        output.insertions = measures.insertions
-        output.hits = measures.hits
-        output.is_success = True
-        return output
+        return _transcribe_and_compute_wer(output, wav_path, asr, lang, device)
 
 
 class VoiceCloneOmni:
@@ -412,29 +427,7 @@ class VoiceCloneOmni:
             logger.error("[%s] %s", sample.sample_id, output.error)
             return output
 
-        try:
-            hyp_text = transcribe(asr, wav_path, lang, asr_device)
-        except Exception as exc:
-            output.error = f"Transcription failed: {exc}"
-            logger.error("[%s] %s", sample.sample_id, output.error)
-            return output
-
-        output.whisper_text = hyp_text
-        output.ref_norm = normalize_text(sample.target_text, lang)
-        output.hyp_norm = normalize_text(hyp_text, lang)
-
-        if not output.ref_norm:
-            output.error = "Empty reference after normalization"
-            return output
-
-        measures = process_words(output.ref_norm, output.hyp_norm)
-        output.wer = measures.wer
-        output.substitutions = measures.substitutions
-        output.deletions = measures.deletions
-        output.insertions = measures.insertions
-        output.hits = measures.hits
-        output.is_success = True
-        return output
+        return _transcribe_and_compute_wer(output, wav_path, asr, lang, asr_device)
 
 
 def calculate_wer_metrics(outputs: list[SampleOutput], lang: str) -> dict:

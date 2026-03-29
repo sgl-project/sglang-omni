@@ -99,7 +99,7 @@ async def benchmark(args: argparse.Namespace) -> None:
     )
     outputs = await runner.run(samples, send_fn)
 
-    metrics = compute_speed_metrics(outputs)
+    metrics = compute_speed_metrics(outputs, wall_clock_s=runner.wall_clock_s)
     print_speed_summary(metrics, args.model)
 
     if args.output_dir:
