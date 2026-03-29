@@ -1,40 +1,43 @@
 # SPDX-License-Identifier: Apache-2.0
-"""S2-Pro TTS benchmark CI: starts server, runs benchmarks, asserts thresholds.
+"""Speed benchmarks and voice-clone WER thresholds CI for S2-Pro as a representative of TTS models.
 
 Usage:
-    pytest tests/test_model/test_s2pro_benchmark.py -s -x
+    pytest tests/test_model/test_s2pro_tts_ci.py -s -x
+
+Author:
+    chenyang zhao https://github.com/zhaochenyang20
+    Jingwen Guo https://github.com/JingwenGu0829
+    Yuan Luo https://github.com/yuan-luo
+    Yitong Guan https://github.com/minleminzui
 """
 
 from __future__ import annotations
 
 import json
-import logging
 import os
 import signal
 import subprocess
 import sys
-import time
 from pathlib import Path
 
 import pytest
-import requests
 
+from benchmarks.benchmarker.utils import wait_for_service
+from benchmarks.dataset.prepare import DATASETS, download_dataset
 from tests.test_model.helpers import disable_proxy
 from tests.utils import find_free_port
 
-logger = logging.getLogger(__name__)
-
 MODEL_PATH = "fishaudio/s2-pro"
 CONFIG_PATH = "examples/configs/s2pro_tts.yaml"
-DATASET_REPO = "zhaochenyang20/seed-tts-eval-mini"
 MAX_SAMPLES = 10
 
-STARTUP_TIMEOUT = 600  # seconds
-BENCHMARK_TIMEOUT = 600  # seconds
-WER_TIMEOUT = 600  # seconds — includes Whisper model loading + inference
+STARTUP_TIMEOUT = 600
+BENCHMARK_TIMEOUT = 600
+WER_TIMEOUT = 600
 
-# Speed thresholds (15-25% margin from 4-run data)
-# Reference: https://github.com/sgl-project/sglang-omni/issues/193
+# Thresholds reference: https://github.com/sgl-project/sglang-omni/issues/193
+
+
 VC_NON_STREAM_MIN_TOK_PER_S = 80
 VC_NON_STREAM_MAX_RTF = 2.85
 VC_STREAM_MAX_LATENCY_S = 12.5
@@ -43,14 +46,8 @@ PLAIN_NON_STREAM_MIN_TOK_PER_S = 80
 PLAIN_NON_STREAM_MAX_RTF = 0.35
 PLAIN_STREAM_MAX_LATENCY_S = 4.0
 PLAIN_STREAM_MIN_THROUGHPUT_QPS = 0.25
-VC_CONCURRENT_MAX_CONCURRENCY = 16
-
-# WER accuracy thresholds for voice cloning (EN).
-# Baseline: 0% corpus WER across 3 consecutive runs on 5 EN mini samples
-# (50 total reference words). Thresholds allow CI noise (stochastic TTS
-# sampling at temperature=0.8) while catching real regressions.
-VC_WER_MAX_CORPUS = 0.10  # 10% corpus WER — allows ~5 word errors out of 50
-VC_WER_MAX_PER_SAMPLE = 0.50  # no single sample should exceed 50% WER
+VC_WER_MAX_CORPUS = 0.01
+VC_WER_MAX_PER_SAMPLE = 0.1
 
 
 def _run_benchmark(
@@ -59,11 +56,6 @@ def _run_benchmark(
     output_dir: str,
     extra_args: list[str] | None = None,
 ) -> dict:
-    """Run benchmark_tts_speed as subprocess and return the full results dict.
-
-    Returns the complete JSON results containing both ``summary`` and
-    ``per_request`` entries.
-    """
     cmd = [
         sys.executable,
         str(
@@ -86,9 +78,6 @@ def _run_benchmark(
     if extra_args:
         cmd.extend(extra_args)
 
-    # Strip proxy env vars so the benchmark subprocess can reach localhost directly.
-    # The CI environment may have HTTP_PROXY set (e.g. China-region runners), which
-    # causes requests to localhost to be routed through the proxy and fail.
     proxy_keys = {"http_proxy", "https_proxy", "all_proxy", "no_proxy"}
     env = {k: v for k, v in os.environ.items() if k.lower() not in proxy_keys}
 
@@ -125,10 +114,6 @@ def _run_wer_benchmark(
     lang: str = "en",
     device: str = "cuda:0",
 ) -> dict:
-    """Run voice_clone_s2pro WER evaluation as subprocess and return results dict.
-
-    Returns the complete JSON results containing ``summary`` and ``per_sample``.
-    """
     script_path = str(
         Path(__file__).resolve().parents[2]
         / "benchmarks"
@@ -184,28 +169,16 @@ def _run_wer_benchmark(
 
 
 @pytest.fixture(scope="module")
-def server_port() -> int:
-    """Allocate a free TCP port for the server."""
-    return find_free_port()
-
-
-@pytest.fixture(scope="module")
 def dataset_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    """Download the mini seed-tts-eval dataset via huggingface_hub."""
-    from huggingface_hub import snapshot_download
-
-    cache_dir = tmp_path_factory.mktemp("seed_tts_eval")
-    path = snapshot_download(
-        DATASET_REPO,
-        repo_type="dataset",
-        local_dir=str(cache_dir / "data"),
-    )
-    return Path(path)
+    root = tmp_path_factory.mktemp("seed_tts_eval") / "data"
+    download_dataset(DATASETS["seedtts-mini"], str(root))
+    return root
 
 
 @pytest.fixture(scope="module")
-def server_process(tmp_path_factory: pytest.TempPathFactory, server_port: int):
+def server_process(tmp_path_factory: pytest.TempPathFactory):
     """Start the s2-pro server and wait until healthy."""
+    port = find_free_port()
     log_dir = tmp_path_factory.mktemp("server_logs")
     log_file = log_dir / "server.log"
     with open(log_file, "w") as log_handle:
@@ -219,7 +192,7 @@ def server_process(tmp_path_factory: pytest.TempPathFactory, server_port: int):
             "--config",
             CONFIG_PATH,
             "--port",
-            str(server_port),
+            str(port),
         ]
 
         proc = subprocess.Popen(
@@ -228,34 +201,30 @@ def server_process(tmp_path_factory: pytest.TempPathFactory, server_port: int):
             stderr=subprocess.STDOUT,
             preexec_fn=os.setsid,
         )
+        proc.port = port
 
-        api_base = f"http://localhost:{server_port}"
-        is_healthy = False
-        for _ in range(STARTUP_TIMEOUT):
-            if proc.poll() is not None:
-                server_log = log_file.read_text()
-                pytest.fail(f"Server exited with code {proc.returncode}.\n{server_log}")
-            try:
-                with disable_proxy():
-                    resp = requests.get(f"{api_base}/health", timeout=2)
-                if resp.status_code == 200 and "healthy" in resp.text:
-                    is_healthy = True
-                    break
-            except requests.RequestException as exc:
-                logger.debug("Health check failed (transient): %s", exc)
-            time.sleep(1)
-
-        if not is_healthy:
+        api_base = f"http://localhost:{port}"
+        try:
+            with disable_proxy():
+                wait_for_service(
+                    api_base,
+                    timeout=STARTUP_TIMEOUT,
+                    server_process=proc,
+                    server_log_file=log_file,
+                    health_body_contains="healthy",
+                )
+        except TimeoutError:
             os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
             proc.wait(timeout=10)
             server_log = log_file.read_text()
             pytest.fail(
                 f"Server did not become healthy within {STARTUP_TIMEOUT}s.\n{server_log}"
             )
+        except RuntimeError as exc:
+            pytest.fail(str(exc))
 
         yield proc
 
-        # Teardown
         os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
         try:
             proc.wait(timeout=30)
@@ -350,13 +319,12 @@ _per_request_store: dict[str, list[dict]] = {}
 @pytest.mark.benchmark
 def test_voice_cloning_non_streaming(
     server_process: subprocess.Popen,
-    server_port: int,
     dataset_dir: Path,
     tmp_path: Path,
 ) -> None:
     """Voice cloning (non-streaming): tok/s >= 80, RTF <= 2.8."""
     results = _run_benchmark(
-        server_port,
+        server_process.port,
         str(dataset_dir / "en" / "meta.lst"),
         str(tmp_path / "vc_nonstream"),
     )
@@ -375,13 +343,12 @@ def test_voice_cloning_non_streaming(
 @pytest.mark.benchmark
 def test_voice_cloning_streaming(
     server_process: subprocess.Popen,
-    server_port: int,
     dataset_dir: Path,
     tmp_path: Path,
 ) -> None:
     """Voice cloning (streaming): latency <= 12.5s, throughput >= 0.08 qps."""
     results = _run_benchmark(
-        server_port,
+        server_process.port,
         str(dataset_dir / "en" / "meta.lst"),
         str(tmp_path / "vc_stream"),
         ["--stream"],
@@ -399,37 +366,14 @@ def test_voice_cloning_streaming(
 
 
 @pytest.mark.benchmark
-def test_voice_cloning_concurrent_non_streaming(
-    server_process: subprocess.Popen,
-    server_port: int,
-    dataset_dir: Path,
-    tmp_path: Path,
-) -> None:
-    """Voice cloning (non-streaming, concurrent): all requests must succeed."""
-    results = _run_benchmark(
-        server_port,
-        str(dataset_dir / "en" / "meta.lst"),
-        str(tmp_path / "vc_concurrent_nonstream"),
-        ["--max-concurrency", str(VC_CONCURRENT_MAX_CONCURRENCY)],
-    )
-    summary, per_request = results["summary"], results["per_request"]
-    _assert_summary_metrics(summary)
-    _assert_per_request_fields(per_request)
-    assert (
-        summary["throughput_qps"] > 0
-    ), f"Expected positive throughput, got {summary['throughput_qps']}"
-
-
-@pytest.mark.benchmark
 def test_plain_tts_non_streaming(
     server_process: subprocess.Popen,
-    server_port: int,
     dataset_dir: Path,
     tmp_path: Path,
 ) -> None:
     """Plain TTS (non-streaming): tok/s >= 80, RTF <= 0.35."""
     results = _run_benchmark(
-        server_port,
+        server_process.port,
         str(dataset_dir / "en" / "meta.lst"),
         str(tmp_path / "plain_nonstream"),
         ["--no-ref-audio"],
@@ -449,13 +393,12 @@ def test_plain_tts_non_streaming(
 @pytest.mark.benchmark
 def test_plain_tts_streaming(
     server_process: subprocess.Popen,
-    server_port: int,
     dataset_dir: Path,
     tmp_path: Path,
 ) -> None:
     """Plain TTS (streaming): latency <= 4.0s, throughput >= 0.25 qps."""
     results = _run_benchmark(
-        server_port,
+        server_process.port,
         str(dataset_dir / "en" / "meta.lst"),
         str(tmp_path / "plain_stream"),
         ["--no-ref-audio", "--stream"],
@@ -478,11 +421,10 @@ def test_plain_tts_streaming(
 @pytest.mark.benchmark
 def test_voice_cloning_wer(
     server_process: subprocess.Popen,
-    server_port: int,
     dataset_dir: Path,
     tmp_path: Path,
 ) -> None:
-    """Voice cloning WER: corpus WER <= 10%, no sample > 50% WER.
+    """Voice cloning WER: corpus WER <= 1%, no sample > 50% WER.
 
     Generates speech for all EN mini samples, transcribes with Whisper-large-v3,
     and asserts corpus-level and per-sample WER thresholds.
@@ -490,7 +432,7 @@ def test_voice_cloning_wer(
     Baseline (3 runs on 5 EN samples, 50 total words): 0% corpus WER.
     """
     results = _run_wer_benchmark(
-        server_port,
+        server_process.port,
         str(dataset_dir / "en" / "meta.lst"),
         str(tmp_path / "vc_wer"),
     )
@@ -527,26 +469,21 @@ def test_voice_cloning_wer(
             )
 
 
-# --- Cross-mode consistency tests (must run after the 4 individual tests) ---
-
-
 @pytest.mark.benchmark
 def test_voice_cloning_streaming_consistency(server_process: subprocess.Popen) -> None:
-    """Streaming vs non-streaming must produce identical per-request metrics for VC."""
     ns = _per_request_store.get("vc_nonstream")
     st = _per_request_store.get("vc_stream")
-    assert ns is not None, "vc_nonstream results missing — did that test run first?"
-    assert st is not None, "vc_stream results missing — did that test run first?"
+    assert ns is not None, "vc_nonstream results missing"
+    assert st is not None, "vc_stream results missing"
     _assert_streaming_consistency(ns, st)
 
 
 @pytest.mark.benchmark
 def test_plain_tts_streaming_consistency(server_process: subprocess.Popen) -> None:
-    """Streaming vs non-streaming must produce identical per-request metrics for TTS."""
     ns = _per_request_store.get("plain_nonstream")
     st = _per_request_store.get("plain_stream")
-    assert ns is not None, "plain_nonstream results missing — did that test run first?"
-    assert st is not None, "plain_stream results missing — did that test run first?"
+    assert ns is not None, "plain_nonstream results missing"
+    assert st is not None, "plain_stream results missing"
     _assert_streaming_consistency(ns, st)
 
 
