@@ -145,81 +145,41 @@ async def _run_server(
     # 0. Check port availability before loading models
     port = _find_available_port(host, port)
 
-    gpu_ids = set(pipeline_config.gpu_placement.values())
-    needs_mp = len(gpu_ids) > 1
+    # 1. Compile pipeline config -> Coordinator + Stages
+    coordinator, stages = compile_pipeline(pipeline_config)
+    stage_endpoints = _collect_stage_control_endpoints(stages)
+    runner = PipelineRunner(coordinator, stages)
+
+    # 2. Start the pipeline (coordinator + all stages as async tasks)
+    await runner.start()
     logger.info(
-        "GPU placement: %s → %s",
-        dict(pipeline_config.gpu_placement),
-        "multi-process" if needs_mp else "single-process",
+        "Pipeline '%s' started (%d stages)",
+        pipeline_config.name,
+        len(stages),
     )
 
-    if needs_mp:
-        from sglang_omni.pipeline.mp_runner import MultiProcessPipelineRunner
-
-        mp_runner = MultiProcessPipelineRunner(pipeline_config)
-        startup_timeout = float(os.environ.get("SGLANG_OMNI_STARTUP_TIMEOUT", "600"))
-        await mp_runner.start(timeout=startup_timeout)
-        coordinator = mp_runner.coordinator
-        logger.info(
-            "Pipeline '%s' started (multi-process, %d GPU(s))",
-            pipeline_config.name,
-            len(gpu_ids),
+    try:
+        # 3. Build Client -> FastAPI app
+        cl_kwargs = client_kwargs or {}
+        client = Client(coordinator, **cl_kwargs)
+        app = create_app(
+            client,
+            model_name=model_name or pipeline_config.name,
         )
 
-        try:
-            cl_kwargs = client_kwargs or {}
-            client = Client(coordinator, **cl_kwargs)
-            app = create_app(
-                client,
-                model_name=model_name or pipeline_config.name,
-            )
-            # NOTE: Profiler routes are not mounted in multi-process mode because
-            # the stage control endpoints are not accessible from the parent
-            # process. Profiling multi-GPU pipelines requires per-stage tracing.
+        profiler_dir = os.environ.get("SGLANG_TORCH_PROFILER_DIR")
+        profiler_ctl = ProfilerControlClient(stage_endpoints)
+        _mount_profiler_routes(app, profiler_ctl, profiler_dir)
 
-            config = uvicorn.Config(app, host=host, port=port, log_level=log_level)
-            server = uvicorn.Server(config)
-            await server.serve()
-        finally:
-            logger.info("Shutting down pipeline …")
-            await mp_runner.stop()
-            logger.info("Pipeline stopped.")
-    else:
-        # 1. Compile pipeline config -> Coordinator + Stages
-        coordinator, stages = compile_pipeline(pipeline_config)
-        stage_endpoints = _collect_stage_control_endpoints(stages)
-        runner = PipelineRunner(coordinator, stages)
+        # 4. Run uvicorn
+        config = uvicorn.Config(app, host=host, port=port, log_level=log_level)
+        server = uvicorn.Server(config)
 
-        # 2. Start the pipeline (coordinator + all stages as async tasks)
-        await runner.start()
-        logger.info(
-            "Pipeline '%s' started (%d stages)",
-            pipeline_config.name,
-            len(stages),
-        )
-
-        try:
-            # 3. Build Client -> FastAPI app
-            cl_kwargs = client_kwargs or {}
-            client = Client(coordinator, **cl_kwargs)
-            app = create_app(
-                client,
-                model_name=model_name or pipeline_config.name,
-            )
-
-            profiler_dir = os.environ.get("SGLANG_TORCH_PROFILER_DIR")
-            profiler_ctl = ProfilerControlClient(stage_endpoints)
-            _mount_profiler_routes(app, profiler_ctl, profiler_dir)
-
-            # 4. Run uvicorn
-            config = uvicorn.Config(app, host=host, port=port, log_level=log_level)
-            server = uvicorn.Server(config)
-
-            await server.serve()
-        finally:
-            logger.info("Shutting down pipeline …")
-            await runner.stop()
-            logger.info("Pipeline stopped.")
+        await server.serve()
+    finally:
+        logger.info("Shutting down pipeline …")
+        await runner.stop()
+        logger.info("Pipeline stopped.")
 
 
 def launch_server(
