@@ -41,6 +41,12 @@ logger = logging.getLogger(__name__)
 
 
 async def main_async(args: argparse.Namespace) -> None:
+    """Main async function for S2 Pro voice clone WER evaluation.
+
+    Note (chenyang):
+    There is concurrency issue in S2 Pro voice clone WER eval.
+    https://github.com/sgl-project/sglang-omni/issues/228
+    """
     if "cuda" in args.device:
         torch.cuda.set_device(args.device)
         logger.info("Set default CUDA device to %s", args.device)
@@ -56,9 +62,6 @@ async def main_async(args: argparse.Namespace) -> None:
     audio_dir = os.path.join(args.output_dir, "audio")
     os.makedirs(audio_dir, exist_ok=True)
 
-    # Sequential evaluation: each request is processed one at a time because
-    # ASR transcription runs on GPU immediately after each TTS generation.
-    # Cross-scenario parallelism (separate processes) is used instead.
     task = VoiceCloneTTS()
     timeout = aiohttp.ClientTimeout(total=300)
     outputs = []

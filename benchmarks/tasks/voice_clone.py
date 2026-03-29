@@ -13,12 +13,14 @@ import os
 import string
 import time
 from dataclasses import dataclass
+from pathlib import Path
 
 import aiohttp
 import numpy as np
 import scipy.signal
 import soundfile as sf
 import torch
+import transformers
 from jiwer import process_words
 
 from benchmarks.benchmarker.utils import WAV_HEADER_SIZE
@@ -54,8 +56,20 @@ def _get_en_normalizer():
 
     Tries whisper_normalizer (standalone pip package) first, then openai-whisper,
     then the transformers built-in normalizer.
+
+    # Note (chenyang):
+
+    For Chinese and English wer evaluation, the normalizer is critical.
+    For human understanding, "1" is equal to "一" and "one". But without
+    normalizer, these identical words will be treated as different words.
+
+    Also, we prefer to import all the dependencies at the top of the file.
+    But the normalizer is rather complex, so we use lazy import here.
+
+    # TODO (chenyang):
+
+    Refactor the normalizer load function and ensure the best normalizer is used.
     """
-    # 1) whisper_normalizer (standalone pip package — preferred)
     try:
         from whisper_normalizer.english import EnglishTextNormalizer
 
@@ -63,9 +77,8 @@ def _get_en_normalizer():
         logger.info("Using whisper_normalizer.english.EnglishTextNormalizer")
         return normalizer
     except ImportError:
-        pass
+        logger.debug("whisper_normalizer.english.EnglishTextNormalizer failed")
 
-    # 2) openai-whisper package
     try:
         from whisper.normalizers import EnglishTextNormalizer
 
@@ -73,21 +86,16 @@ def _get_en_normalizer():
         logger.info("Using whisper.normalizers.EnglishTextNormalizer")
         return normalizer
     except ImportError:
-        pass
+        logger.debug("whisper.normalizers.EnglishTextNormalizer failed")
 
-    # 3) transformers — requires explicit english_spelling_mapping dict
     try:
-        import json as _json
-        from pathlib import Path
-
-        import transformers
         from transformers.models.whisper.english_normalizer import EnglishTextNormalizer
 
         json_path = (
             Path(transformers.__file__).parent / "models" / "whisper" / "english.json"
         )
         with open(json_path) as f:
-            english_spelling_mapping = _json.load(f)
+            english_spelling_mapping = json.load(f)
 
         normalizer = EnglishTextNormalizer(english_spelling_mapping)
         logger.info(
@@ -130,7 +138,7 @@ def normalize_text(text: str, lang: str) -> str:
 
 
 def load_asr_model(lang: str, device: str):
-    """Load ASR model. en: Whisper-large-v3, zh: FunASR paraformer-zh."""
+    """Load ASR model for voice clone WER evaluation."""
     if lang == "en":
         from transformers import WhisperForConditionalGeneration, WhisperProcessor
 
@@ -189,11 +197,7 @@ def _transcribe_and_compute_wer(
     lang: str,
     device: str,
 ) -> SampleOutput:
-    """Transcribe audio and compute per-sample WER metrics.
-
-    Shared by VoiceCloneTTS and VoiceCloneOmni to avoid duplicating the
-    transcription -> normalization -> WER pipeline.
-    """
+    """Transcribe audio and compute per-sample WER metrics."""
     try:
         hyp_text = transcribe(asr, wav_path, lang, device)
     except Exception as exc:
@@ -220,10 +224,7 @@ def _transcribe_and_compute_wer(
 
 
 class VoiceCloneTTS:
-    """Voice cloning via /v1/audio/speech (OAI TTS API format).
-
-    Shared by S2 Pro / Qwen TTS / Xiaomi TTS etc.
-    """
+    """Voice cloning via /v1/audio/speech (OAI TTS API format)."""
 
     async def generate_speech(
         self,

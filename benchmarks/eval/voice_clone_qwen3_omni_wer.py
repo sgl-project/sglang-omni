@@ -42,6 +42,12 @@ logger = logging.getLogger(__name__)
 
 
 async def main_async(args: argparse.Namespace) -> None:
+    """Main async function for voice clone WER evaluation.
+
+    TODO (chenyang):
+    Current implementation of Qwen3 Omni on main branch is broken.
+    Need to merge the changes from https://github.com/sgl-project/sglang-omni/pull/219
+    """
     if "cuda" in args.asr_device:
         torch.cuda.set_device(args.asr_device)
         logger.info("Set ASR CUDA device to %s", args.asr_device)
@@ -60,10 +66,6 @@ async def main_async(args: argparse.Namespace) -> None:
     audio_dir = os.path.join(args.output_dir, "audio")
     os.makedirs(audio_dir, exist_ok=True)
 
-    # Sequential evaluation: each request is processed one at a time because
-    # (1) Qwen3 pipeline cannot handle concurrent requests (CUDA illegal memory
-    #     access) and (2) ASR transcription runs on GPU after each generation.
-    # Cross-scenario parallelism (separate processes) is used instead.
     task = VoiceCloneOmni()
     timeout = aiohttp.ClientTimeout(total=300)
     outputs = []
