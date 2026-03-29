@@ -50,7 +50,7 @@ def _run_benchmark(
     output_dir: str,
     extra_args: list[str] | None = None,
 ) -> dict:
-    """Run benchmark_tts as subprocess and return the full results dict.
+    """Run benchmark_tts_speed as subprocess and return the full results dict.
 
     Returns the complete JSON results containing both ``summary`` and
     ``per_request`` entries.
@@ -61,7 +61,7 @@ def _run_benchmark(
             Path(__file__).resolve().parents[2]
             / "benchmarks"
             / "eval"
-            / "benchmark_tts.py"
+            / "benchmark_tts_speed.py"
         ),
         "--model",
         MODEL_PATH,

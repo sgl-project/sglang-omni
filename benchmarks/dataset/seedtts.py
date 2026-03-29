@@ -21,6 +21,9 @@ def load_seedtts_samples(
     """Parse a seed-tts-eval meta.lst file.
 
     Format per line: ``id|ref_text|ref_audio_path|target_text``
+
+    Note (chenyang): Detailed format description could be found at
+    https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval
     """
     base_dir = os.path.dirname(path)
     samples: list[SampleInput] = []
