@@ -58,6 +58,14 @@ s2pro = [
     "gradio>=4.0.0",
     # flash-attn: install separately via prebuilt wheel (see install instructions below)
 ]
+minicpm = [
+    # CosyVoice vocoder dependencies for MiniCPM-o audio output
+    "cosyvoice",          # CosyVoice flow-matching TTS model
+    "torchaudio>=2.0.0",  # Audio processing
+    "onnxruntime>=1.16.0", # ONNX runtime for CosyVoice components
+    # Note: CosyVoice may require additional setup, see:
+    # https://github.com/FunAudioLLM/CosyVoice
+]
 gradio = ["gradio>=4.0.0"]
 
 [project.scripts]
@@ -72,6 +80,8 @@ override-dependencies = [
 pythonpath = ["."]
 markers = [
     "benchmark: performance benchmark tests (may require GPU and long runtime)",
+    "minicpmv: MiniCPM-V 2.6 integration tests (requires model weights and GPU)",
+    "minicpmo: MiniCPM-o 2.6 integration tests (requires model weights and GPU)",
 ]
 
 [tool.setuptools.packages.find]
