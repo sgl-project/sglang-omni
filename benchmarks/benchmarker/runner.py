@@ -30,11 +30,15 @@ class RunConfig:
 
 
 class BenchmarkRunner:
-    """Orchestrates warmup and concurrent request dispatch.
+    """Support concurrent requests sending in a single benchmark run.
 
-    The caller provides a *send_fn(session, sample) -> RequestResult* coroutine
-    that encapsulates all HTTP/response handling.  The runner only manages
-    concurrency, warmup, rate-limiting, and progress display.
+    Note (chenyang):
+    max_concurrency is default to 1, thus all the requests are runs sequentially.
+
+    TODO (chenyang):
+    Current concurrency implementation of models are not fully supported.
+    https://github.com/sgl-project/sglang-omni/issues/229
+    https://github.com/sgl-project/sglang-omni/issues/228
     """
 
     def __init__(self, config: RunConfig) -> None:
