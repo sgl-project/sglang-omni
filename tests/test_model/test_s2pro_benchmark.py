@@ -58,7 +58,12 @@ def _run_benchmark(
     """
     cmd = [
         sys.executable,
-        str(Path(__file__).resolve().parents[2] / "benchmarks" / "eval" / "benchmark_tts.py"),
+        str(
+            Path(__file__).resolve().parents[2]
+            / "benchmarks"
+            / "eval"
+            / "benchmark_tts.py"
+        ),
         "--model",
         MODEL_PATH,
         "--port",

@@ -36,9 +36,7 @@ from benchmarks.tasks.voice_clone import (
     save_wer_results,
 )
 
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s"
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
 
@@ -142,9 +140,7 @@ def main() -> None:
     p.add_argument("--max-samples", type=int, default=None)
     p.add_argument("--max-new-tokens", type=int, default=2048)
     p.add_argument("--temperature", type=float, default=0.8)
-    p.add_argument(
-        "--seed", type=int, default=None, help="Random seed for generation"
-    )
+    p.add_argument("--seed", type=int, default=None, help="Random seed for generation")
     args = p.parse_args()
 
     base_url = args.base_url or f"http://{args.host}:{args.port}"

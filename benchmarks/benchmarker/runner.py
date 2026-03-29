@@ -17,9 +17,7 @@ from benchmarks.benchmarker.data import RequestResult
 
 logger = logging.getLogger(__name__)
 
-SendFn = Callable[
-    [aiohttp.ClientSession, Any], Coroutine[Any, Any, RequestResult]
-]
+SendFn = Callable[[aiohttp.ClientSession, Any], Coroutine[Any, Any, RequestResult]]
 
 
 @dataclass
@@ -43,9 +41,7 @@ class BenchmarkRunner:
         self.config = config
         self.wall_clock_s: float = 0.0
 
-    async def run(
-        self, samples: list, send_fn: SendFn
-    ) -> list[RequestResult]:
+    async def run(self, samples: list, send_fn: SendFn) -> list[RequestResult]:
         timeout = aiohttp.ClientTimeout(total=self.config.timeout_s)
         async with aiohttp.ClientSession(timeout=timeout) as session:
             if self.config.warmup > 0:

@@ -21,6 +21,7 @@ env/
 *.swo
 
 # Testing
+seedtts_testset/
 .pytest_cache/
 .coverage
 htmlcov/
