@@ -52,8 +52,8 @@ class SampleOutput:
 def _get_en_normalizer():
     """Lazy-load the English text normalizer.
 
-    Tries whisper_normalizer (standalone pip package) first, then falls back to
-    the transformers built-in normalizer.
+    Tries whisper_normalizer (standalone pip package) first, then openai-whisper,
+    then the transformers built-in normalizer.
     """
     # 1) whisper_normalizer (standalone pip package — preferred)
     try:
@@ -65,7 +65,17 @@ def _get_en_normalizer():
     except ImportError:
         pass
 
-    # 2) transformers — requires explicit english_spelling_mapping dict
+    # 2) openai-whisper package
+    try:
+        from whisper.normalizers import EnglishTextNormalizer
+
+        normalizer = EnglishTextNormalizer()
+        logger.info("Using whisper.normalizers.EnglishTextNormalizer")
+        return normalizer
+    except ImportError:
+        pass
+
+    # 3) transformers — requires explicit english_spelling_mapping dict
     try:
         import json as _json
         from pathlib import Path
@@ -90,8 +100,8 @@ def _get_en_normalizer():
         logger.debug("transformers EnglishTextNormalizer failed: %s", exc)
 
     logger.warning(
-        "EnglishTextNormalizer not found in whisper_normalizer or transformers; "
-        "falling back to simple punctuation-strip normalizer."
+        "EnglishTextNormalizer not found in whisper_normalizer, whisper, "
+        "or transformers; falling back to simple punctuation-strip normalizer."
     )
     return None
 
