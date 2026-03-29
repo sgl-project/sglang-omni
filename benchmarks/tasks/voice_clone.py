@@ -354,8 +354,9 @@ class VoiceCloneTTS:
                                             num_channels = wf.getnchannels()
                                             sample_width = wf.getsampwidth()
                                 pcm_chunks.append(pcm)
-                    except (json.JSONDecodeError, Exception):
-                        pass
+                    except (json.JSONDecodeError, Exception) as exc:
+                        # Best-effort parsing of trailing SSE buffer: log and ignore malformed/invalid data.
+                        logger.debug("Failed to parse or decode trailing SSE audio chunk: %s", exc)
 
         latency = time.perf_counter() - t0
 
