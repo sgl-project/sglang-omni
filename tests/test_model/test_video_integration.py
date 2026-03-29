@@ -58,7 +58,6 @@ def server_process():
         "serve",
         "--model-path",
         MODEL_PATH,
-        "--text-only",
         "--relay-backend",
         "nixl",
         "--port",
