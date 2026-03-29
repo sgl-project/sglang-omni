@@ -494,9 +494,9 @@ def test_voice_cloning_wer(
 
     # Per-sample checks
     for sample in per_sample:
-        assert sample["is_success"], (
-            f"Sample {sample['id']} failed: {sample.get('error')}"
-        )
+        assert sample[
+            "is_success"
+        ], f"Sample {sample['id']} failed: {sample.get('error')}"
         if sample["wer"] is not None:
             assert sample["wer"] <= VC_WER_MAX_PER_SAMPLE, (
                 f"Sample {sample['id']} WER {sample['wer']:.4f} "
