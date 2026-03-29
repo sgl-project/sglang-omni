@@ -6,7 +6,9 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import os
 import struct
+import subprocess
 import time
 
 import requests as requests_lib
@@ -59,14 +61,33 @@ def process_sse_line(
     return total_duration, usage
 
 
-def wait_for_service(base_url: str, timeout: int = 1200) -> None:
+def wait_for_service(
+    base_url: str,
+    timeout: int = 1200,
+    *,
+    server_process: subprocess.Popen | None = None,
+    server_log_file: str | os.PathLike[str] | None = None,
+    health_body_contains: str | None = None,
+) -> None:
     """Wait for SGLang Omni Server to be ready."""
     logger.info("Waiting for service at %s ...", base_url)
     start = time.time()
     while True:
+        if server_process is not None:
+            exit_code = server_process.poll()
+            if exit_code is not None:
+                log_text = ""
+                if server_log_file is not None:
+                    log_path = os.fspath(server_log_file)
+                    if os.path.isfile(log_path):
+                        with open(log_path) as f:
+                            log_text = f.read()
+                raise RuntimeError(f"Server exited with code {exit_code}.\n{log_text}")
         try:
             resp = requests_lib.get(f"{base_url}/health", timeout=1)
-            if resp.status_code == 200:
+            if resp.status_code == 200 and (
+                health_body_contains is None or health_body_contains in resp.text
+            ):
                 logger.info("Service is ready.")
                 return
         except requests_lib.exceptions.RequestException as exc:
