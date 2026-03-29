@@ -25,17 +25,17 @@ python -m sglang_omni.cli.cli serve \
     --config examples/configs/s2pro_tts.yaml --port 8000
 
 # 2a. Speed benchmark (voice cloning, non-streaming)
-python benchmarks/eval/benchmark_tts.py \
+python benchmarks/eval/benchmark_tts_speed.py \
     --model fishaudio/s2-pro --port 8000 \
     --testset seedtts_testset/en/meta.lst --max-samples 10
 
 # 2b. Speed benchmark (streaming)
-python benchmarks/eval/benchmark_tts.py \
+python benchmarks/eval/benchmark_tts_speed.py \
     --model fishaudio/s2-pro --port 8000 \
     --testset seedtts_testset/en/meta.lst --max-samples 10 --stream
 
 # 2c. WER evaluation (voice cloning)
-python benchmarks/eval/voice_clone_s2pro.py \
+python benchmarks/eval/voice_clone_s2pro_wer.py \
     --meta seedtts_testset/en/meta.lst \
     --output-dir results/s2pro_en --lang en --max-samples 50
 ```
@@ -44,13 +44,13 @@ python benchmarks/eval/voice_clone_s2pro.py \
 
 | Script | Task | Model | API |
 |--------|------|-------|-----|
-| `eval/benchmark_tts.py` | TTS speed | Any TTS model | `/v1/audio/speech` |
-| `eval/voice_clone_s2pro.py` | Voice clone WER | S2 Pro | `/v1/audio/speech` |
-| `eval/voice_clone_qwen3_omni.py` | Voice clone WER | Qwen3 Omni | `/v1/chat/completions` |
+| `eval/benchmark_tts_speed.py` | TTS speed | Any TTS model | `/v1/audio/speech` |
+| `eval/voice_clone_s2pro_wer.py` | Voice clone WER | S2 Pro | `/v1/audio/speech` |
+| `eval/voice_clone_qwen3_omni_wer.py` | Voice clone WER | Qwen3 Omni | `/v1/chat/completions` |
 
 ## Adding a New Model
 
 For a model using the same API type (e.g., another OAI TTS API model):
-1. Add eval script in `eval/voice_clone_your_model.py` using existing task class
+1. Add eval script in `eval/voice_clone_your_model_wer.py` using existing task class
 
 For a new API type: add a new class in the relevant `tasks/` file.

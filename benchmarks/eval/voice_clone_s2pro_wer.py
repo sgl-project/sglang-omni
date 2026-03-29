@@ -1,13 +1,13 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Qwen3 Omni Voice Cloning WER evaluation.
+"""S2 Pro Voice Cloning WER evaluation.
 
-Generates speech via /v1/chat/completions with modalities: ["text", "audio"],
-then evaluates WER using Whisper (EN) or FunASR (ZH).
+Generates speech via /v1/audio/speech, transcribes with Whisper (EN) or
+FunASR (ZH), and computes corpus-level WER.
 
 Usage:
-    python benchmarks/eval/voice_clone_qwen3_omni.py \
+    python benchmarks/eval/voice_clone_s2pro_wer.py \
         --meta seedtts_testset/en/meta.lst \
-        --output-dir results/qwen3_omni_en \
+        --output-dir results/s2pro_en \
         --lang en --max-samples 50
 """
 
@@ -27,10 +27,9 @@ import torch
 from tqdm import tqdm
 
 from benchmarks.benchmarker.utils import wait_for_service
-from benchmarks.dataset.prepare import download_dataset
 from benchmarks.dataset.seedtts import load_seedtts_samples
 from benchmarks.tasks.voice_clone import (
-    VoiceCloneOmni,
+    VoiceCloneTTS,
     calculate_wer_metrics,
     load_asr_model,
     print_wer_summary,
@@ -42,17 +41,14 @@ logger = logging.getLogger(__name__)
 
 
 async def main_async(args: argparse.Namespace) -> None:
-    if "cuda" in args.asr_device:
-        torch.cuda.set_device(args.asr_device)
-        logger.info("Set ASR CUDA device to %s", args.asr_device)
+    if "cuda" in args.device:
+        torch.cuda.set_device(args.device)
+        logger.info("Set default CUDA device to %s", args.device)
 
-    base_url = f"http://{args.host}:{args.port}"
-    api_url = f"{base_url}/v1/chat/completions"
+    base_url = args.base_url or f"http://{args.host}:{args.port}"
+    api_url = f"{base_url}/v1/audio/speech"
 
-    if args.download_dataset:
-        download_dataset("zhaochenyang20/seed-tts-eval", args.dataset_dir)
-
-    asr = load_asr_model(args.lang, args.asr_device)
+    asr = load_asr_model(args.lang, args.device)
 
     samples = load_seedtts_samples(args.meta, args.max_samples)
     logger.info("Loaded %d samples from %s", len(samples), args.meta)
@@ -61,10 +57,9 @@ async def main_async(args: argparse.Namespace) -> None:
     os.makedirs(audio_dir, exist_ok=True)
 
     # Sequential evaluation: each request is processed one at a time because
-    # (1) Qwen3 pipeline cannot handle concurrent requests (CUDA illegal memory
-    #     access) and (2) ASR transcription runs on GPU after each generation.
+    # ASR transcription runs on GPU immediately after each TTS generation.
     # Cross-scenario parallelism (separate processes) is used instead.
-    task = VoiceCloneOmni()
+    task = VoiceCloneTTS()
     timeout = aiohttp.ClientTimeout(total=300)
     outputs = []
     async with aiohttp.ClientSession(timeout=timeout) as session:
@@ -76,11 +71,11 @@ async def main_async(args: argparse.Namespace) -> None:
                 asr,
                 sample,
                 args.lang,
-                args.asr_device,
+                args.device,
                 audio_dir,
-                args.speaker,
-                args.max_tokens,
-                voice_clone=args.voice_clone,
+                args.max_new_tokens,
+                args.temperature,
+                args.seed,
             )
             outputs.append(result)
 
@@ -95,7 +90,7 @@ async def main_async(args: argparse.Namespace) -> None:
                 )
             else:
                 logger.warning(
-                    "[%d/%d] FAILED: %s -- %s",
+                    "[%d/%d] FAILED: %s — %s",
                     i + 1,
                     len(samples),
                     sample.sample_id,
@@ -107,10 +102,9 @@ async def main_async(args: argparse.Namespace) -> None:
 
     config = {
         "model": args.model,
-        "speaker": args.speaker,
-        "voice_clone": args.voice_clone,
-        "server_url": base_url,
         "meta": args.meta,
+        "max_new_tokens": args.max_new_tokens,
+        "temperature": args.temperature,
         "max_samples": args.max_samples,
     }
     save_wer_results(outputs, metrics, config, args.output_dir)
@@ -118,7 +112,7 @@ async def main_async(args: argparse.Namespace) -> None:
 
 def main() -> None:
     p = argparse.ArgumentParser(
-        description="WER evaluation for Qwen3-Omni TTS via sglang-omni server"
+        description="WER evaluation for S2 Pro (Whisper for EN, FunASR for ZH)"
     )
     p.add_argument("--meta", default="seedtts_testset/en/meta.lst")
     p.add_argument(
@@ -128,14 +122,8 @@ def main() -> None:
     )
     p.add_argument(
         "--model",
-        default="qwen3-omni",
+        default="fishaudio/s2-pro",
         help="Model name for the API request",
-    )
-    p.add_argument(
-        "--speaker",
-        default="Ethan",
-        choices=["Ethan", "Chelsie", "Aiden"],
-        help="Speaker voice for Qwen3-Omni TTS",
     )
     p.add_argument(
         "--lang", choices=["en", "zh"], default="en", help="Language for ASR model"
@@ -143,40 +131,20 @@ def main() -> None:
     p.add_argument("--host", type=str, default="localhost", help="Server host")
     p.add_argument("--port", type=int, default=8000, help="Server port")
     p.add_argument(
-        "--asr-device", default="cuda:0", help="Device for ASR (Whisper) model"
+        "--base-url",
+        type=str,
+        default=None,
+        help="Base URL (e.g. http://localhost:8000). Overrides --host/--port.",
     )
+    p.add_argument("--device", default="cuda:0", help="Device for ASR model")
     p.add_argument("--max-samples", type=int, default=None)
-    p.add_argument(
-        "--voice-clone",
-        action="store_true",
-        help="Pass ref_audio via 'audios' field for voice cloning",
-    )
-    p.add_argument(
-        "--max-tokens",
-        type=int,
-        default=256,
-        help="Max new tokens for thinker",
-    )
-    p.add_argument(
-        "--server-timeout",
-        type=int,
-        default=1200,
-        help="Timeout in seconds to wait for server readiness",
-    )
-    p.add_argument(
-        "--download-dataset",
-        action="store_true",
-        help="Auto-download seed-tts-eval dataset before evaluation",
-    )
-    p.add_argument(
-        "--dataset-dir",
-        default="seedtts_testset",
-        help="Local directory for the dataset",
-    )
+    p.add_argument("--max-new-tokens", type=int, default=2048)
+    p.add_argument("--temperature", type=float, default=0.8)
+    p.add_argument("--seed", type=int, default=None, help="Random seed for generation")
     args = p.parse_args()
 
-    base_url = f"http://{args.host}:{args.port}"
-    wait_for_service(base_url, timeout=args.server_timeout)
+    base_url = args.base_url or f"http://{args.host}:{args.port}"
+    wait_for_service(base_url)
 
     asyncio.run(main_async(args))
 

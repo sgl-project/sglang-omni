@@ -7,17 +7,17 @@ both streaming and non-streaming.
 
 Usage:
     # Voice cloning, non-streaming
-    python benchmarks/eval/benchmark_tts.py \
+    python benchmarks/eval/benchmark_tts_speed.py \
         --model fishaudio/s2-pro --port 8000 \
         --testset seedtts_testset/en/meta.lst --max-samples 10
 
     # Voice cloning, streaming
-    python benchmarks/eval/benchmark_tts.py \
+    python benchmarks/eval/benchmark_tts_speed.py \
         --model fishaudio/s2-pro --port 8000 \
         --testset seedtts_testset/en/meta.lst --max-samples 10 --stream
 
     # Plain TTS, non-streaming
-    python benchmarks/eval/benchmark_tts.py \
+    python benchmarks/eval/benchmark_tts_speed.py \
         --model fishaudio/s2-pro --port 8000 \
         --testset seedtts_testset/en/meta.lst --max-samples 10 --no-ref-audio
 """
