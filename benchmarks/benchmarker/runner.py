@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from dataclasses import dataclass
 from typing import Any, Callable, Coroutine
 
@@ -40,6 +41,7 @@ class BenchmarkRunner:
 
     def __init__(self, config: RunConfig) -> None:
         self.config = config
+        self.wall_clock_s: float = 0.0
 
     async def run(
         self, samples: list, send_fn: SendFn
@@ -54,7 +56,9 @@ class BenchmarkRunner:
                 len(samples),
                 self.config.max_concurrency,
             )
+            t0 = time.perf_counter()
             results = await self._dispatch(session, samples, send_fn)
+            self.wall_clock_s = time.perf_counter() - t0
         return results
 
     async def _warmup(

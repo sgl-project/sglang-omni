@@ -61,7 +61,12 @@ def parse_args() -> argparse.Namespace:
         "--relay-backend", type=str, default="shm", choices=["nixl", "shm"]
     )
 
-    # Server
+    # IPC / Server
+    parser.add_argument(
+        "--ipc-base-path", type=str, default="/tmp/sglang_omni",
+        help="Base directory for IPC sockets. Use different paths when "
+             "running multiple servers simultaneously.",
+    )
     parser.add_argument("--host", type=str, default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--model-name", type=str, default="qwen3-omni")
@@ -90,6 +95,7 @@ async def main_async(args: argparse.Namespace) -> None:
         relay_backend=args.relay_backend,
         gpu_placement=gpu_placement,
     )
+    config.endpoints.base_path = args.ipc_base_path
 
     runner = MultiProcessPipelineRunner(config)
     logger.info("Starting 9-stage speech pipeline (multiprocess)...")

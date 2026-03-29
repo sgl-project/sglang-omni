@@ -35,8 +35,18 @@ def _compute_token_metrics(successes: list[RequestResult]) -> dict:
     return token_metrics
 
 
-def compute_speed_metrics(outputs: list[RequestResult]) -> dict:
-    """Compute system performance summary from a list of request results."""
+def compute_speed_metrics(
+    outputs: list[RequestResult], wall_clock_s: float | None = None
+) -> dict:
+    """Compute system performance summary from a list of request results.
+
+    Args:
+        outputs: Per-request results from the benchmark runner.
+        wall_clock_s: Actual wall-clock time of the dispatch phase. When
+            provided, throughput is computed as ``len(successes) / wall_clock_s``
+            which is correct under concurrency. Falls back to
+            ``len(successes) / sum(latencies)`` when *None*.
+    """
     successes = [o for o in outputs if o.is_success]
     if not successes:
         return {"completed_requests": 0, "failed_requests": len(outputs)}
@@ -44,7 +54,12 @@ def compute_speed_metrics(outputs: list[RequestResult]) -> dict:
     latencies = [o.latency_s for o in successes]
     rtfs = [o.rtf for o in successes if 0 < o.rtf < float("inf")]
     audio_durations = [o.audio_duration_s for o in successes if o.audio_duration_s > 0]
-    total_wall = sum(latencies)
+
+    if wall_clock_s is not None and wall_clock_s > 0:
+        throughput = round(len(successes) / wall_clock_s, 3)
+    else:
+        total_latency = sum(latencies)
+        throughput = round(len(successes) / total_latency, 3) if total_latency > 0 else 0
 
     metrics_summary: dict = {
         "completed_requests": len(successes),
@@ -58,9 +73,7 @@ def compute_speed_metrics(outputs: list[RequestResult]) -> dict:
         ),
         "rtf_mean": round(float(np.mean(rtfs)), 4) if rtfs else None,
         "rtf_median": round(float(np.median(rtfs)), 4) if rtfs else None,
-        "throughput_qps": (
-            round(len(successes) / total_wall, 3) if total_wall > 0 else 0
-        ),
+        "throughput_qps": throughput,
         **_compute_token_metrics(successes),
     }
     return metrics_summary
