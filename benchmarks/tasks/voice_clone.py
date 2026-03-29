@@ -81,9 +81,7 @@ def _get_en_normalizer():
         from pathlib import Path
 
         import transformers
-        from transformers.models.whisper.english_normalizer import (
-            EnglishTextNormalizer,
-        )
+        from transformers.models.whisper.english_normalizer import EnglishTextNormalizer
 
         json_path = (
             Path(transformers.__file__).parent / "models" / "whisper" / "english.json"
@@ -411,7 +409,13 @@ class VoiceCloneOmni:
 
         try:
             wav_bytes, latency = await self.generate_speech(
-                session, api_url, model_name, sample, lang, speaker, max_tokens,
+                session,
+                api_url,
+                model_name,
+                sample,
+                lang,
+                speaker,
+                max_tokens,
                 voice_clone=voice_clone,
             )
             with open(wav_path, "wb") as f:
@@ -433,9 +437,7 @@ def calculate_wer_metrics(outputs: list[SampleOutput], lang: str) -> dict:
     if not successes:
         return {"completed": 0, "failed": len(outputs)}
 
-    total_errors = sum(
-        o.substitutions + o.deletions + o.insertions for o in successes
-    )
+    total_errors = sum(o.substitutions + o.deletions + o.insertions for o in successes)
     total_ref_words = sum(o.substitutions + o.deletions + o.hits for o in successes)
     corpus_wer = total_errors / total_ref_words if total_ref_words > 0 else 0.0
 
@@ -467,9 +469,7 @@ def calculate_wer_metrics(outputs: list[SampleOutput], lang: str) -> dict:
         "wer_per_sample_p95": float(np.percentile(wer_arr, 95)),
         "wer_below_50_corpus": float(wer_below_50_micro),
         "n_above_50_pct_wer": n_above_50,
-        "pct_above_50_pct_wer": (
-            n_above_50 / len(successes) * 100 if successes else 0
-        ),
+        "pct_above_50_pct_wer": (n_above_50 / len(successes) * 100 if successes else 0),
         "latency_mean_s": float(np.mean(latencies)),
         "audio_duration_mean_s": (
             float(np.mean(audio_durations)) if audio_durations else 0

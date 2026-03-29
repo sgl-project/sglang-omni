@@ -63,9 +63,11 @@ def parse_args() -> argparse.Namespace:
 
     # IPC / Server
     parser.add_argument(
-        "--ipc-base-path", type=str, default="/tmp/sglang_omni",
+        "--ipc-base-path",
+        type=str,
+        default="/tmp/sglang_omni",
         help="Base directory for IPC sockets. Use different paths when "
-             "running multiple servers simultaneously.",
+        "running multiple servers simultaneously.",
     )
     parser.add_argument("--host", type=str, default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8000)

@@ -59,7 +59,9 @@ def compute_speed_metrics(
         throughput = round(len(successes) / wall_clock_s, 3)
     else:
         total_latency = sum(latencies)
-        throughput = round(len(successes) / total_latency, 3) if total_latency > 0 else 0
+        throughput = (
+            round(len(successes) / total_latency, 3) if total_latency > 0 else 0
+        )
 
     metrics_summary: dict = {
         "completed_requests": len(successes),
