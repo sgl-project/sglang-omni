@@ -88,6 +88,8 @@ def build_thinker_inputs(
             audio_embeds = audio_embeds.squeeze(0)
         thinker_model_inputs["audio_embeds"] = audio_embeds
 
+    if not thinker_model_inputs:
+        return {}
     return {"model_inputs": thinker_model_inputs}
 
 
@@ -152,7 +154,7 @@ def decode_events(
         return []
 
     emitted_text = str(stream_state.get("emitted_text", ""))
-    delta = decoded[len(emitted_text):]
+    delta = decoded[len(emitted_text) :]
     if not delta:
         return []
     stream_state["emitted_text"] = decoded

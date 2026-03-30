@@ -18,7 +18,6 @@ import asyncio
 import logging
 import sys
 from pathlib import Path
-from typing import Any
 
 import torch
 
@@ -47,9 +46,7 @@ class MingTalkerExecutor(Executor):
         voice: str = DEFAULT_VOICE,
     ):
         self._model_path = model_path
-        self._talker_model_path = talker_model_path or str(
-            Path(model_path) / "talker"
-        )
+        self._talker_model_path = talker_model_path or str(Path(model_path) / "talker")
         self._device = device
         self._voice = voice
         self._results: asyncio.Queue[StagePayload] = asyncio.Queue()
@@ -73,7 +70,7 @@ class MingTalkerExecutor(Executor):
 
     def _load_models(self) -> None:
         """Load talker model and VAE (runs in thread pool)."""
-        from transformers import AutoModel, AutoConfig
+        from transformers import AutoConfig, AutoModel
 
         # Load talker model
         talker_config = AutoConfig.from_pretrained(
@@ -91,9 +88,7 @@ class MingTalkerExecutor(Executor):
         # Load AudioVAE
         vae_path = str(Path(self._talker_model_path) / "vae")
         if Path(vae_path).exists():
-            vae_config = AutoConfig.from_pretrained(
-                vae_path, trust_remote_code=True
-            )
+            vae_config = AutoConfig.from_pretrained(vae_path, trust_remote_code=True)
             self._vae = AutoModel.from_pretrained(
                 vae_path,
                 config=vae_config,
@@ -133,9 +128,7 @@ class MingTalkerExecutor(Executor):
 
         # Run TTS in thread pool (blocking CUDA operations)
         try:
-            waveform, duration = await asyncio.to_thread(
-                self._generate_speech, text
-            )
+            waveform, duration = await asyncio.to_thread(self._generate_speech, text)
         except Exception as e:
             logger.error("Talker generation failed: %s", e, exc_info=True)
             waveform = None

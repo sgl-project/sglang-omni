@@ -10,10 +10,13 @@ from typing import Any
 import numpy as np
 import torch
 
-from sglang_omni.models.ming_omni.components.common import load_ming_config
+from sglang_omni.models.ming_omni.components.common import (
+    load_ming_config,
+    load_ming_tokenizer,
+)
 from sglang_omni.models.ming_omni.io import PipelineState, PromptInputs
 from sglang_omni.models.ming_omni.pipeline.next_stage import AUDIO_STAGE
-from sglang_omni.preprocessing.audio import load_audio
+from sglang_omni.preprocessing.audio import load_audio_path
 from sglang_omni.proto import StagePayload
 
 logger = logging.getLogger(__name__)
@@ -53,6 +56,7 @@ def compute_mel_spectrogram(
     """
     try:
         import whisper
+
         # Use whisper's built-in mel computation for exact compatibility
         if waveform.dtype != np.float32:
             waveform = waveform.astype(np.float32)
@@ -96,13 +100,9 @@ class MingPreprocessor:
     """
 
     def __init__(self, model_path: str):
-        from transformers import AutoTokenizer
-
         self._model_path = model_path
         self._config = load_ming_config(model_path)
-        self._tokenizer = AutoTokenizer.from_pretrained(
-            model_path, trust_remote_code=True
-        )
+        self._tokenizer = load_ming_tokenizer(model_path)
         self._audio_config = self._config.audio_config
 
         # Resolve special token IDs
@@ -114,17 +114,25 @@ class MingPreprocessor:
         """Process a chat completion request into pipeline state."""
         request = payload.request
         raw_inputs = request.inputs if hasattr(request, "inputs") else {}
-        messages = raw_inputs.get("messages", [])
-        audio_urls = raw_inputs.get("audios", [])
+        if isinstance(raw_inputs, list):
+            # OpenAI API passes messages list directly as inputs
+            messages = raw_inputs
+            audio_urls = []
+        else:
+            messages = raw_inputs.get("messages", [])
+            audio_urls = raw_inputs.get("audios", [])
 
-        # Load audio files concurrently
-        audio_data: list[tuple[np.ndarray, int]] = []
+        # Load audio files concurrently (load_audio_path returns 16kHz np.ndarray)
+        waveforms: list[np.ndarray] = []
         if audio_urls:
-            tasks = [asyncio.to_thread(load_audio, url) for url in audio_urls]
-            audio_data = [
+            tasks = [
+                asyncio.to_thread(load_audio_path, url, target_sr=WHISPER_SAMPLE_RATE)
+                for url in audio_urls
+            ]
+            waveforms = [
                 a
                 for a in await asyncio.gather(*tasks, return_exceptions=True)
-                if not isinstance(a, Exception)
+                if isinstance(a, np.ndarray)
             ]
 
         # --- Compute mel features FIRST so we know exact placeholder counts ---
@@ -132,17 +140,7 @@ class MingPreprocessor:
         mel_lengths_list: list[int] = []
         audio_token_counts: list[int] = []
 
-        for waveform, sr in audio_data:
-            if sr != WHISPER_SAMPLE_RATE:
-                import torchaudio
-
-                waveform_tensor = torch.from_numpy(waveform).float()
-                if waveform_tensor.dim() == 1:
-                    waveform_tensor = waveform_tensor.unsqueeze(0)
-                resampler = torchaudio.transforms.Resample(sr, WHISPER_SAMPLE_RATE)
-                waveform_tensor = resampler(waveform_tensor)
-                waveform = waveform_tensor.squeeze(0).numpy()
-
+        for waveform in waveforms:
             mel = compute_mel_spectrogram(waveform)
             mel_features_list.append(torch.from_numpy(mel).float())
             mel_lengths_list.append(mel.shape[0])
@@ -169,14 +167,16 @@ class MingPreprocessor:
         }
 
         # --- Prepare audio encoder inputs ---
-        encoder_inputs: dict[str, dict[str, Any]] = {}
+        # Always include audio_encoder key so that the aggregated input handler
+        # (which waits for ALL configured sources) receives data from every source.
+        encoder_inputs: dict[str, dict[str, Any]] = {
+            AUDIO_STAGE: {"_skip": True, "_result": {}},
+        }
         if mel_features_list:
             placeholder_loc_lens_list = []
             for i, num_tokens in enumerate(audio_token_counts):
                 if i < len(audio_positions):
-                    placeholder_loc_lens_list.append(
-                        [audio_positions[i], num_tokens]
-                    )
+                    placeholder_loc_lens_list.append([audio_positions[i], num_tokens])
 
             concat_mel = torch.cat(mel_features_list, dim=0).unsqueeze(0)
             mel_lens = torch.tensor([mel_lengths_list], dtype=torch.long)
@@ -248,9 +248,7 @@ class MingPreprocessor:
                             text_parts.append(item.get("text", ""))
                         elif item_type in ("audio_url", "input_audio"):
                             n_tokens = (
-                                counts[audio_idx]
-                                if audio_idx < len(counts)
-                                else 1
+                                counts[audio_idx] if audio_idx < len(counts) else 1
                             )
                             placeholder = (
                                 f"{AUDIO_START}"

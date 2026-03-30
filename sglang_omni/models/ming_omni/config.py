@@ -89,6 +89,20 @@ class MingOmniPipelineConfig(PipelineConfig):
         ),
     ]
 
+    def __init__(self, **kwargs):
+        # Extract server_args_overrides and inject into thinker stage
+        server_args_overrides = kwargs.pop("server_args_overrides", None)
+        super().__init__(**kwargs)
+        if server_args_overrides:
+            for stage in self.stages:
+                if stage.name == THINKER_STAGE:
+                    if stage.executor.args is None:
+                        stage.executor.args = {}
+                    existing = stage.executor.args.setdefault(
+                        "server_args_overrides", {}
+                    )
+                    existing.update(server_args_overrides)
+
 
 class MingOmniSpeechPipelineConfig(PipelineConfig):
     """7-stage pipeline for Ming-Omni with text + speech output.

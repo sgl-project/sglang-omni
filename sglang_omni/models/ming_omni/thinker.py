@@ -17,43 +17,27 @@ from __future__ import annotations
 
 import logging
 import math
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Iterable, Optional, Tuple
 
 import torch
 from torch import nn
 from transformers import PretrainedConfig
 
 from sglang_omni.models.weight_loader import default_weight_loader
-from sglang_omni.utils import add_prefix
 from sglang_omni.vendor.sglang.core import ForwardBatch
-from sglang_omni.vendor.sglang.distributed import (
-    get_tensor_model_parallel_rank,
-    get_tensor_model_parallel_world_size,
-    tensor_model_parallel_all_reduce,
-)
+from sglang_omni.vendor.sglang.distributed import get_tensor_model_parallel_world_size
 from sglang_omni.vendor.sglang.layers import (
-    LayerCommunicator,
-    LayerScatterModes,
     QKVParallelLinear,
     QuantizationConfig,
     RadixAttention,
     ReplicatedLinear,
     RMSNorm,
-    RoutingMethodType,
     RowParallelLinear,
-    TopK,
     VocabParallelEmbedding,
-    get_attention_tp_rank,
-    get_attention_tp_size,
     get_moe_impl_class,
     get_rope,
 )
-from sglang_omni.vendor.sglang.models import (
-    apply_qk_norm,
-    create_fused_set_kv_buffer_arg,
-    enable_fused_set_kv_buffer,
-)
-from sglang_omni.vendor.sglang.server_args import get_global_server_args
+from sglang_omni.vendor.sglang.models import apply_qk_norm
 from sglang_omni.vendor.sglang.utils import make_layers
 
 logger = logging.getLogger(__name__)
@@ -115,16 +99,58 @@ class BailingMoeV2Config(PretrainedConfig):
         self.routed_scaling_factor = routed_scaling_factor
         self.use_expert_bias = use_expert_bias
         self.first_k_dense_replace = first_k_dense_replace
-        self.rope_scaling = rope_scaling
+        # Sanitize rope_scaling: SGLang expects factor to be non-None
+        if isinstance(rope_scaling, dict) and rope_scaling.get("factor") is None:
+            self.rope_scaling = None
+        else:
+            self.rope_scaling = rope_scaling
 
         # Derived
         self.head_dim = hidden_size // num_attention_heads
         self.rotary_dim = int(self.head_dim * partial_rotary_factor)
 
 
+class BailingMM2Config(PretrainedConfig):
+    """Top-level composite config for BailingMM2 (Ming-Omni).
+
+    Registered with AutoConfig so that SGLang can load config.json from HF
+    repos that are missing the custom ``configuration_bailingmm2.py`` file.
+    """
+
+    model_type = "bailingmm_moe_v2_lite"
+
+    def __init__(
+        self,
+        mlp_depth=1,
+        llm_config=None,
+        vision_config=None,
+        audio_config=None,
+        **kwargs,
+    ):
+        super().__init__(**kwargs)
+        self.mlp_depth = mlp_depth
+        self.llm_config = (
+            BailingMoeV2Config(**llm_config)
+            if isinstance(llm_config, dict)
+            else llm_config
+        )
+        # Use PretrainedConfig for sub-configs so they're JSON-serializable
+        self.audio_config = (
+            PretrainedConfig(**audio_config)
+            if isinstance(audio_config, dict)
+            else audio_config
+        )
+        self.vision_config = (
+            PretrainedConfig(**vision_config)
+            if isinstance(vision_config, dict)
+            else vision_config
+        )
+
+
 # ============================================================================
 # Attention Layer
 # ============================================================================
+
 
 class BailingMoeV2Attention(nn.Module):
     """Multi-head attention with GQA, partial RoPE, and QK normalization."""
@@ -205,8 +231,7 @@ class BailingMoeV2Attention(nn.Module):
 
         # QK normalization
         if self.use_qk_norm:
-            q = apply_qk_norm(q, self.q_norm)
-            k = apply_qk_norm(k, self.k_norm)
+            q, k = apply_qk_norm(q, k, self.q_norm, self.k_norm, self.head_dim)
 
         # Partial RoPE: only apply to first rotary_dim dimensions
         q_rot = q[..., : self.rotary_dim]
@@ -214,9 +239,7 @@ class BailingMoeV2Attention(nn.Module):
         k_rot = k[..., : self.rotary_dim]
         k_pass = k[..., self.rotary_dim :]
 
-        q_rot, k_rot = self.rotary_emb(
-            forward_batch.positions, q_rot, k_rot
-        )
+        q_rot, k_rot = self.rotary_emb(forward_batch.positions, q_rot, k_rot)
 
         q = torch.cat([q_rot, q_pass], dim=-1)
         k = torch.cat([k_rot, k_pass], dim=-1)
@@ -248,6 +271,7 @@ class BailingMoeV2Attention(nn.Module):
 # ============================================================================
 # MLP (for dense layers and shared experts)
 # ============================================================================
+
 
 class BailingMoeV2MLP(nn.Module):
     """Standard SiLU-gated MLP."""
@@ -282,6 +306,7 @@ class BailingMoeV2MLP(nn.Module):
 # Sparse MoE Block
 # ============================================================================
 
+
 class BailingMoeV2SparseMoeBlock(nn.Module):
     """Sparse MoE with group-limited top-k routing and optional shared expert.
 
@@ -309,9 +334,7 @@ class BailingMoeV2SparseMoeBlock(nn.Module):
         self.routed_scaling_factor = config.routed_scaling_factor
 
         # Gate: linear projection for router scores
-        self.gate = ReplicatedLinear(
-            config.hidden_size, config.num_experts, bias=False
-        )
+        self.gate = ReplicatedLinear(config.hidden_size, config.num_experts, bias=False)
 
         # Expert bias for load balancing
         if config.use_expert_bias:
@@ -322,14 +345,15 @@ class BailingMoeV2SparseMoeBlock(nn.Module):
             self.expert_bias = None
 
         # FusedMoE implementation
-        FusedMoE = get_moe_impl_class()
+        FusedMoE = get_moe_impl_class(quant_config)
         self.experts = FusedMoE(
             num_experts=config.num_experts,
             top_k=config.num_experts_per_tok,
             hidden_size=config.hidden_size,
             intermediate_size=config.moe_intermediate_size,
+            layer_id=layer_id,
             quant_config=quant_config,
-            tp_size=get_tensor_model_parallel_world_size(),
+            reduce_results=False,
         )
 
         # Shared expert
@@ -370,8 +394,15 @@ class BailingMoeV2SparseMoeBlock(nn.Module):
             )
         topk_weights = topk_weights * self.routed_scaling_factor
 
-        # FusedMoE forward
-        y = self.experts(hidden_states, topk_ids, topk_weights)
+        # FusedMoE forward — wrap in StandardTopKOutput
+        from sglang.srt.layers.moe.topk import StandardTopKOutput
+
+        topk_output = StandardTopKOutput(
+            topk_weights=topk_weights,
+            topk_ids=topk_ids,
+            router_logits=router_logits,
+        )
+        y = self.experts(hidden_states, topk_output)
 
         # Add shared expert output
         if self.shared_experts is not None:
@@ -401,9 +432,7 @@ class BailingMoeV2SparseMoeBlock(nn.Module):
         )
 
         # Select top groups
-        group_idx = torch.topk(
-            group_scores, k=self.topk_group, dim=-1, sorted=False
-        )[1]
+        group_idx = torch.topk(group_scores, k=self.topk_group, dim=-1, sorted=False)[1]
         group_mask = torch.zeros_like(group_scores)
         group_mask.scatter_(1, group_idx, 1)
 
@@ -426,6 +455,7 @@ class BailingMoeV2SparseMoeBlock(nn.Module):
 # ============================================================================
 # Decoder Layer
 # ============================================================================
+
 
 class BailingMoeV2DecoderLayer(nn.Module):
     """Single transformer decoder layer with attention + MoE/MLP."""
@@ -450,9 +480,7 @@ class BailingMoeV2DecoderLayer(nn.Module):
             config.hidden_size, eps=config.rms_norm_eps
         )
         if self.is_dense:
-            self.mlp = BailingMoeV2MLP(
-                config, config.intermediate_size, quant_config
-            )
+            self.mlp = BailingMoeV2MLP(config, config.intermediate_size, quant_config)
         else:
             self.mlp = BailingMoeV2SparseMoeBlock(config, layer_id, quant_config)
 
@@ -472,9 +500,7 @@ class BailingMoeV2DecoderLayer(nn.Module):
         hidden_states = self.self_attn(hidden_states, forward_batch)
 
         # FFN with post-attention norm
-        hidden_states, residual = self.post_attention_layernorm(
-            hidden_states, residual
-        )
+        hidden_states, residual = self.post_attention_layernorm(hidden_states, residual)
         hidden_states = self.mlp(hidden_states)
 
         return hidden_states, residual
@@ -483,6 +509,7 @@ class BailingMoeV2DecoderLayer(nn.Module):
 # ============================================================================
 # Full Model
 # ============================================================================
+
 
 class BailingMoeV2TextModel(nn.Module):
     """BailingMoeV2 text model body (no LM head)."""
@@ -499,9 +526,7 @@ class BailingMoeV2TextModel(nn.Module):
         )
         self.layers = make_layers(
             config.num_hidden_layers,
-            lambda layer_id: BailingMoeV2DecoderLayer(
-                config, layer_id, quant_config
-            ),
+            lambda idx, prefix="": BailingMoeV2DecoderLayer(config, idx, quant_config),
         )
         self.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
@@ -511,6 +536,7 @@ class BailingMoeV2TextModel(nn.Module):
         positions: torch.Tensor,
         forward_batch: ForwardBatch,
         input_embeds: Optional[torch.Tensor] = None,
+        **kwargs,
     ) -> torch.Tensor:
         if input_embeds is not None:
             hidden_states = input_embeds
@@ -526,64 +552,86 @@ class BailingMoeV2TextModel(nn.Module):
 
     def load_weights(self, weights: Iterable[Tuple[str, torch.Tensor]]):
         """Load weights with prefix-based selection and MoE mapping."""
-        from sglang_omni.vendor.sglang.models import (
-            maybe_update_fused_qkv_proj,
-            maybe_update_fused_moe_proj,
-            extract_fused_experts,
-        )
 
-        stacked_params_mapping = [
-            # SGLang fused QKV
-            ("qkv_proj", "q_proj", "q"),
-            ("qkv_proj", "k_proj", "k"),
-            ("qkv_proj", "v_proj", "v"),
-            # SGLang fused gate+up
-            ("gate_up_proj", "gate_proj", 0),
-            ("gate_up_proj", "up_proj", 1),
-        ]
+        from sglang_omni.models.qwen3_omni.thinker import extract_fused_experts
 
-        # Map Ming weight names to SGLang names
+        # Fused QKV: attention q/k/v -> qkv_proj
+        _attn_fused_map = {
+            "q_proj": ("qkv_proj", "q"),
+            "k_proj": ("qkv_proj", "k"),
+            "v_proj": ("qkv_proj", "v"),
+        }
+
         params_dict = dict(self.named_parameters())
+
+        # Buffer for shared expert gate/up fusion
+        _shared_expert_buf: dict[str, dict[str, torch.Tensor]] = {}
 
         for name, loaded_weight in weights:
             # Strip common prefixes from Ming checkpoint
             for prefix in ("model.model.", "model.", "thinker.model.", "thinker."):
                 if name.startswith(prefix):
-                    name = name[len(prefix):]
+                    name = name[len(prefix) :]
                     break
 
-            # Handle MoE expert weights
-            # Ming format: layers.X.mlp.experts.Y.gate_proj.weight
-            # SGLang FusedMoE: layers.X.mlp.experts.w1 (gate), w2 (down), w3 (up)
-            if ".experts." in name and ".mlp." in name:
-                # Try to map to fused expert format
-                loaded = extract_fused_experts(
-                    name, loaded_weight, params_dict
+            # 1. Handle attention fused QKV (q/k/v -> qkv_proj)
+            matched_attn = False
+            for shard_name, (fused_name, shard_id) in _attn_fused_map.items():
+                if shard_name in name and "self_attn" in name:
+                    fused_key = name.replace(shard_name, fused_name)
+                    if fused_key in params_dict:
+                        param = params_dict[fused_key]
+                        param.weight_loader(param, loaded_weight, shard_id)
+                        matched_attn = True
+                        break
+            if matched_attn:
+                continue
+
+            # 2. Handle MoE expert weights via FusedMoE weight_loader
+            if ".mlp.experts." in name:
+                res = extract_fused_experts(
+                    name=name,
+                    ckpt_gate_proj_name="gate_proj",
+                    ckpt_down_proj_name="down_proj",
+                    ckpt_up_proj_name="up_proj",
+                    num_experts=self.config.num_experts,
                 )
-                if loaded:
+                if res:
+                    param_name, weight_name, expert_id, shard_id = res
+                    fused_key = name.replace(weight_name, param_name)
+                    if fused_key in params_dict:
+                        param = params_dict[fused_key]
+                        param.weight_loader(
+                            param,
+                            loaded_weight,
+                            name,
+                            shard_id=shard_id,
+                            expert_id=expert_id,
+                        )
+                        continue
+
+            # 3. Handle shared expert gate/up -> fused gate_up_proj
+            # Ming ckpt: shared_experts.gate_proj.weight / shared_experts.up_proj.weight
+            # Our model: shared_experts.gate_up_proj.weight (concatenated)
+            if "shared_experts.gate_proj" in name or "shared_experts.up_proj" in name:
+                # Determine the base key (layer prefix)
+                base = name.rsplit("shared_experts.", 1)[0] + "shared_experts."
+                fused_key = base + "gate_up_proj.weight"
+                if fused_key in params_dict:
+                    buf = _shared_expert_buf.setdefault(fused_key, {})
+                    if "gate_proj" in name:
+                        buf["gate"] = loaded_weight
+                    else:
+                        buf["up"] = loaded_weight
+                    if "gate" in buf and "up" in buf:
+                        param = params_dict[fused_key]
+                        fused = torch.cat([buf["gate"], buf["up"]], dim=0)
+                        default_weight_loader(param, fused)
+                        del _shared_expert_buf[fused_key]
                     continue
 
-            # Handle fused QKV
-            handled = maybe_update_fused_qkv_proj(
-                name,
-                loaded_weight,
-                stacked_params_mapping,
-                params_dict,
-            )
-            if handled:
-                continue
-
-            # Handle fused gate+up for shared experts
-            handled = maybe_update_fused_moe_proj(
-                name,
-                loaded_weight,
-                stacked_params_mapping,
-                params_dict,
-            )
-            if handled:
-                continue
-
-            # Direct parameter mapping
+            # 4. Handle shared expert gate_up_proj / down_proj directly
+            # (already fused in checkpoint)
             if name in params_dict:
                 param = params_dict[name]
                 weight_loader = getattr(param, "weight_loader", default_weight_loader)
@@ -626,9 +674,13 @@ class BailingMoeV2ForCausalLM(nn.Module):
 
         # Extract LLM sub-config (Ming's BailingMM2Config has .llm_config)
         llm_cfg = getattr(config, "llm_config", config)
-        adapted = BailingMoeV2Config(
-            **(llm_cfg.to_dict() if hasattr(llm_cfg, "to_dict") else {}),
-        ) if not isinstance(llm_cfg, BailingMoeV2Config) else llm_cfg
+        adapted = (
+            BailingMoeV2Config(
+                **(llm_cfg.to_dict() if hasattr(llm_cfg, "to_dict") else {}),
+            )
+            if not isinstance(llm_cfg, BailingMoeV2Config)
+            else llm_cfg
+        )
 
         # Build model body
         self.model = BailingMoeV2TextModel(adapted, quant_config)
@@ -667,11 +719,11 @@ class BailingMoeV2ForCausalLM(nn.Module):
             model_path = getattr(config, "_name_or_path", None)
             if model_path:
                 try:
-                    from transformers import AutoTokenizer
-
-                    tok = AutoTokenizer.from_pretrained(
-                        model_path, trust_remote_code=True
+                    from sglang_omni.models.ming_omni.components.common import (
+                        load_ming_tokenizer,
                     )
+
+                    tok = load_ming_tokenizer(model_path)
                     audio_id = tok.convert_tokens_to_ids("<audioPatch>")
                     # convert_tokens_to_ids returns the UNK id if not found
                     unk_id = getattr(tok, "unk_token_id", None)
@@ -698,7 +750,7 @@ class BailingMoeV2ForCausalLM(nn.Module):
         forward_batch: ForwardBatch,
         input_embeds: Optional[torch.Tensor] = None,
     ):
-        from sglang.srt.layers.logits_processor import LogitsProcessorOutput
+        pass
 
         hidden_states = self.model(input_ids, positions, forward_batch, input_embeds)
         return self.logits_processor(

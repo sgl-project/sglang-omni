@@ -5,15 +5,13 @@ from __future__ import annotations
 
 from typing import Any
 
-import torch
-from transformers import AutoTokenizer
-
-from sglang_omni.engines.omni import create_single_pass_engine, create_sglang_ar_engine
 from sglang_omni.engines.ar.sglang_backend.server_args_builder import (
     build_sglang_server_args,
 )
+from sglang_omni.engines.omni import create_sglang_ar_engine, create_single_pass_engine
 from sglang_omni.executors import EngineExecutor, PreprocessingExecutor
 from sglang_omni.models.ming_omni.components.audio_encoder import MingAudioEncoder
+from sglang_omni.models.ming_omni.components.common import load_ming_tokenizer
 from sglang_omni.models.ming_omni.components.preprocessor import MingPreprocessor
 from sglang_omni.models.ming_omni.components.talker_executor import MingTalkerExecutor
 from sglang_omni.models.ming_omni.io import OmniEvent, ThinkerOutput
@@ -22,13 +20,9 @@ from sglang_omni.models.ming_omni.pipeline.engine_io import (
     apply_thinker_result,
     build_encoder_request,
     build_sglang_thinker_request,
-    build_thinker_request,
 )
 from sglang_omni.models.ming_omni.pipeline.merge import decode_events
-from sglang_omni.models.ming_omni.pipeline.next_stage import (
-    AUDIO_STAGE,
-    THINKER_STAGE,
-)
+from sglang_omni.models.ming_omni.pipeline.next_stage import AUDIO_STAGE, THINKER_STAGE
 from sglang_omni.models.ming_omni.pipeline.state_io import load_state, store_state
 from sglang_omni.proto import StagePayload
 
@@ -93,7 +87,7 @@ def create_sglang_thinker_executor(
     gpu_id: int = 0,
 ) -> EngineExecutor:
     """Create a thinker executor backed by SGLang's ModelWorker."""
-    tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
+    tokenizer = load_ming_tokenizer(model_path)
     eos_token_id = getattr(tokenizer, "eos_token_id", None)
     vocab_size = getattr(tokenizer, "vocab_size", 32000)
 
@@ -183,6 +177,87 @@ def create_sglang_thinker_executor(
     )
 
 
+_ming_config_registered = False
+
+# Tokenizer fallback repo — same vocab as Ming-flash-omni-2.0
+_TOKENIZER_FALLBACK_REPO = "inclusionAI/Ming-flash-omni-Preview"
+
+
+def _ensure_ming_config_registered(model_path: str = "inclusionAI/Ming-flash-omni-2.0"):
+    """Ensure ``AutoConfig`` can resolve Ming's ``bailingmm_moe_v2_lite`` model type.
+
+    The HF repo ``inclusionAI/Ming-flash-omni-2.0`` is missing:
+    - ``configuration_bailingmm2.py`` (custom config class)
+    - tokenizer files (``tokenizer.json``, ``tokenizer_config.json``)
+
+    We patch the local HF cache snapshot to include these files so that
+    both ``AutoConfig.from_pretrained`` and ``AutoTokenizer.from_pretrained``
+    work with ``trust_remote_code=True``.
+    """
+    global _ming_config_registered
+    if _ming_config_registered:
+        return
+    _ming_config_registered = True
+
+    import os
+    import shutil
+
+    from transformers import AutoConfig
+
+    from sglang_omni.models.ming_omni.thinker import BailingMM2Config
+
+    try:
+        AutoConfig.register("bailingmm_moe_v2_lite", BailingMM2Config)
+    except ValueError:
+        pass
+
+    # Patch HF cache with missing files
+    try:
+        from huggingface_hub import hf_hub_download, snapshot_download
+
+        snapshot_dir = snapshot_download(model_path)
+
+        # 1. Write configuration_bailingmm2.py shim
+        shim_path = os.path.join(snapshot_dir, "configuration_bailingmm2.py")
+        if not os.path.exists(shim_path):
+            with open(shim_path, "w") as f:
+                f.write(
+                    "from sglang_omni.models.ming_omni.thinker "
+                    "import BailingMM2Config\n"
+                )
+
+        # 2. Copy tokenizer files from fallback repo if missing
+        for fname in (
+            "tokenizer.json",
+            "tokenizer_config.json",
+            "special_tokens_map.json",
+        ):
+            dst = os.path.join(snapshot_dir, fname)
+            if not os.path.exists(dst):
+                src = hf_hub_download(_TOKENIZER_FALLBACK_REPO, fname)
+                shutil.copy2(src, dst)
+    except Exception:
+        pass  # Best-effort
+
+
+def _resolve_local_model_path(model_path: str) -> str:
+    """Resolve HF repo ID to local snapshot path (with patched files).
+
+    If model_path is already a local directory, return as-is.
+    Otherwise download the HF snapshot and return the local path.
+    """
+    import os
+
+    if os.path.isdir(model_path):
+        return model_path
+    try:
+        from huggingface_hub import snapshot_download
+
+        return snapshot_download(model_path)
+    except Exception:
+        return model_path
+
+
 def create_sglang_thinker_executor_from_config(
     model_path: str,
     *,
@@ -191,12 +266,15 @@ def create_sglang_thinker_executor_from_config(
     server_args_overrides: dict[str, Any] | None = None,
 ) -> EngineExecutor:
     """Create a SGLang thinker executor from JSON-serializable config args."""
+    _ensure_ming_config_registered(model_path)
+    # Use local snapshot path so AutoConfig finds our patched files
+    local_path = _resolve_local_model_path(model_path)
     server_args = build_sglang_server_args(
-        model_path, context_length=thinker_max_seq_len, **(server_args_overrides or {})
+        local_path, context_length=thinker_max_seq_len, **(server_args_overrides or {})
     )
     return create_sglang_thinker_executor(
         server_args=server_args,
-        model_path=model_path,
+        model_path=local_path,
         gpu_id=gpu_id,
     )
 
@@ -222,7 +300,7 @@ def create_talker_executor(
 
 
 def create_decode_executor(model_path: str) -> PreprocessingExecutor:
-    tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
+    tokenizer = load_ming_tokenizer(model_path)
     eos_token_id = getattr(tokenizer, "eos_token_id", None)
 
     def _decode(payload: StagePayload) -> StagePayload:

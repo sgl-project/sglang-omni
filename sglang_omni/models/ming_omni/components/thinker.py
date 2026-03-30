@@ -10,13 +10,15 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
-from typing import Any, Iterable, Optional, Tuple
+from typing import Optional
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
-from sglang_omni.models.ming_omni.thinker import BailingMoeV2Config, BailingMoeV2TextModel
+from sglang_omni.models.ming_omni.thinker import (
+    BailingMoeV2Config,
+    BailingMoeV2TextModel,
+)
 from sglang_omni.models.weight_loader import (
     load_weights_by_prefix,
     resolve_dtype,
@@ -76,10 +78,13 @@ class MingSplitThinker(nn.Module):
             raw = json.load(f)
 
         llm_raw = raw.get("llm_config", raw)
-        return BailingMoeV2Config(**{
-            k: v for k, v in llm_raw.items()
-            if k in BailingMoeV2Config.__init__.__code__.co_varnames
-        })
+        return BailingMoeV2Config(
+            **{
+                k: v
+                for k, v in llm_raw.items()
+                if k in BailingMoeV2Config.__init__.__code__.co_varnames
+            }
+        )
 
     def _load_weights(self) -> None:
         """Load text model and LM head weights."""
