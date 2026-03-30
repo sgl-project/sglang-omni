@@ -527,6 +527,12 @@ def create_talker_ar_executor(
         if fn is not None:
             fn(request_id, chunk_data, CODE_PREDICTOR_STAGE, metadata=metadata)
 
+    # Disable radix cache for talker: the talker uses projected input
+    # embeddings (not regular token IDs), so radix cache prefix matching
+    # from a previous request corrupts KV positions on subsequent requests,
+    # causing illegal memory access in the rotary embedding kernel.
+    server_args.disable_radix_cache = True
+
     stream_adapter = (
         make_talker_ar_stream_adapter(stream_fn=_enqueue_stream)
         if speech_enabled
