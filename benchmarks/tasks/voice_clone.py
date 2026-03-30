@@ -355,15 +355,15 @@ class VoiceCloneTTS:
                                             sample_width = wf.getsampwidth()
                                 pcm_chunks.append(pcm)
                     except (json.JSONDecodeError, Exception) as exc:
-                        # Best-effort parsing of trailing SSE buffer: log and ignore malformed/invalid data.
-                        logger.debug("Failed to parse or decode trailing SSE audio chunk: %s", exc)
+                        logger.debug(
+                            f"Failed to parse or decode trailing SSE audio chunk: {exc}"
+                        )
 
         latency = time.perf_counter() - t0
 
         if not pcm_chunks or sample_rate is None:
             raise ValueError("No audio chunks received from streaming response")
 
-        # Concatenate PCM chunks into a single WAV
         wav_buf = io.BytesIO()
         with wave.open(wav_buf, "wb") as wf:
             wf.setnchannels(num_channels)
@@ -550,7 +550,22 @@ def calculate_wer_metrics(outputs: list[SampleOutput], lang: str) -> dict:
     """Compute corpus-level WER metrics from per-sample outputs."""
     successes = [o for o in outputs if o.is_success]
     if not successes:
-        return {"completed": 0, "failed": len(outputs)}
+        return {
+            "lang": lang,
+            "total_samples": len(outputs),
+            "evaluated": 0,
+            "skipped": len(outputs),
+            "wer_corpus": 0.0,
+            "wer_per_sample_mean": 0.0,
+            "wer_per_sample_median": 0.0,
+            "wer_per_sample_std": 0.0,
+            "wer_per_sample_p95": 0.0,
+            "wer_below_50_corpus": 0.0,
+            "n_above_50_pct_wer": 0,
+            "pct_above_50_pct_wer": 0.0,
+            "latency_mean_s": 0.0,
+            "audio_duration_mean_s": 0.0,
+        }
 
     total_errors = sum(o.substitutions + o.deletions + o.insertions for o in successes)
     total_ref_words = sum(o.substitutions + o.deletions + o.hits for o in successes)

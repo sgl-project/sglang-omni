@@ -52,6 +52,10 @@ VC_WER_MAX_PER_SAMPLE = 0.0
 VC_STREAM_WER_MAX_CORPUS = 0.0
 VC_STREAM_WER_MAX_PER_SAMPLE = 0.0
 
+# TODO (Chenyang): Current WER is computed over mini set, which can not
+# capture the accuracy regression fixed by https://github.com/sgl-project/sglang-omni/pull/217
+# We shall have more strict rules that can let #217 pass but let commit 8deddef fail.
+
 
 def _run_benchmark(
     port: int,
