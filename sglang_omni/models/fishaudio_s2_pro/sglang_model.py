@@ -9,6 +9,10 @@ import math
 from typing import Any, Iterable, Optional, Tuple
 
 import torch
+from sglang.srt.distributed import (
+    get_tensor_model_parallel_world_size,
+    tensor_model_parallel_all_gather,
+)
 from sglang.srt.layers.logits_processor import LogitsProcessorOutput
 from torch import Tensor, nn
 
@@ -200,11 +204,21 @@ class S2ProSGLangTextModel(nn.Module):
         self.hidden_size = hidden_size
         self.num_layers = num_layers
         self.tie_word_embeddings = tie_word_embeddings
+        self.tp_size = get_tensor_model_parallel_world_size()
 
-        # Set via setup_vq_decode() after model load
+        # Audio decoder (fast head) - created internally for TP support
+        self._audio_decoder = None
         self._vq_ready = False
 
         self.embed_tokens = VocabParallelEmbedding(vocab_size, hidden_size)
+
+        # Create Audio Decoder after embed_tokens so device is available
+        if (
+            config is not None
+            and hasattr(config, "audio_decoder_config")
+            and config.audio_decoder_config is not None
+        ):
+            self._create_audio_decoder(config.audio_decoder_config)
         self.start_layer = 0
         self.end_layer = num_layers
         self.layers = make_layers(
@@ -231,12 +245,34 @@ class S2ProSGLangTextModel(nn.Module):
             self.lm_head = ParallelLMHead(vocab_size, hidden_size)
 
     # ------------------------------------------------------------------
+    # Audio Decoder creation (TP-safe)
+    # ------------------------------------------------------------------
+
+    def _create_audio_decoder(self, decoder_config: Any) -> None:
+        """Create Audio Decoder as part of the model (replicated across TP ranks)."""
+        from sglang_omni.models.fishaudio_s2_pro.fish_speech.models.text2semantic.modeling import (
+            FishQwen3AudioDecoder,
+        )
+
+        # Create Audio Decoder (HF implementation, will be replicated)
+        self._audio_decoder = FishQwen3AudioDecoder(decoder_config)
+
+        # Move to correct device if model is already on GPU
+        if hasattr(self, "embed_tokens") and self.embed_tokens is not None:
+            if self.embed_tokens.weight.device.type != "meta":
+                self._audio_decoder = self._audio_decoder.to(
+                    self.embed_tokens.weight.device
+                )
+
+    # ------------------------------------------------------------------
     # Post-load setup
     # ------------------------------------------------------------------
 
     def setup_vq_decode(
         self,
-        audio_decoder: nn.Module,
+        audio_decoder: Optional[
+            nn.Module
+        ] = None,  # Optional: use internal if not provided
         *,
         num_codebooks: int,
         codebook_size: int,
@@ -245,18 +281,43 @@ class S2ProSGLangTextModel(nn.Module):
         im_end_id: int,
         max_batch_size: int,
     ) -> None:
-        """Attach audio decoder and allocate persistent GPU buffers."""
+        """Attach audio decoder and allocate persistent GPU buffers.
+
+        Args:
+            audio_decoder: Optional external audio decoder. If None, uses internal
+                           _audio_decoder (created in __init__ for TP support).
+        """
         device = self.embed_tokens.weight.device
 
+        # Use external audio_decoder if provided (backward compatibility)
+        # Otherwise use internal _audio_decoder (TP-safe)
+        if audio_decoder is not None:
+            self._audio_decoder = audio_decoder
+        elif self._audio_decoder is None:
+            raise ValueError(
+                "Audio decoder not initialized. Pass audio_decoder or ensure "
+                "model was created with audio_decoder_config."
+            )
+
+        # Ensure audio decoder is on the correct device and dtype
+        ad_device = next(self._audio_decoder.parameters()).device
+        if ad_device != device:
+            logger.info(
+                "Moving audio decoder from %s to %s (dtype=bfloat16)", ad_device, device
+            )
+            self._audio_decoder = self._audio_decoder.to(
+                device=device, dtype=torch.bfloat16
+            )
+            self._audio_decoder.eval()
+
         # Audio decoder (fast head)
-        self._audio_decoder = audio_decoder
         self._codebook_size = codebook_size
         self._num_codebooks = num_codebooks
         self._semantic_begin_id = semantic_begin_id
 
         # Shared codebook embedding from audio decoder (for VQ input combination)
-        self._vq_codebook_embeddings = audio_decoder.codebook_embeddings
-        self._vq_codebook_offsets = audio_decoder.codebook_offsets.to(device)
+        self._vq_codebook_embeddings = self._audio_decoder.codebook_embeddings
+        self._vq_codebook_offsets = self._audio_decoder.codebook_offsets.to(device)
         self._vq_scale = 1.0 / math.sqrt(num_codebooks + 1)
 
         # Input buffers: VQ codes from previous step (updated by ModelRunner)
@@ -282,6 +343,42 @@ class S2ProSGLangTextModel(nn.Module):
         )
 
         self._vq_ready = True
+
+    def setup_vq_decode_internal(
+        self,
+        *,
+        num_codebooks: int,
+        codebook_size: int,
+        semantic_begin_id: int,
+        semantic_end_id: int,
+        im_end_id: int,
+        max_batch_size: int,
+    ) -> None:
+        """Initialize VQ decode using internal audio decoder (TP-safe).
+
+        This method should be used when the model was created with
+        audio_decoder_config, ensuring the audio decoder exists on all TP ranks.
+        Device move happens in setup_vq_decode, then caches are set up.
+        """
+        if self._audio_decoder is None:
+            raise ValueError(
+                "Internal audio decoder not initialized. Model must be created "
+                "with audio_decoder_config."
+            )
+        # setup_vq_decode will move decoder to correct device first
+        self.setup_vq_decode(
+            audio_decoder=None,  # Use internal _audio_decoder
+            num_codebooks=num_codebooks,
+            codebook_size=codebook_size,
+            semantic_begin_id=semantic_begin_id,
+            semantic_end_id=semantic_end_id,
+            im_end_id=im_end_id,
+            max_batch_size=max_batch_size,
+        )
+        # Setup caches after device move so they are on the correct device
+        self._audio_decoder.setup_caches(
+            max_batch_size=max_batch_size, dtype=torch.bfloat16
+        )
 
     # ------------------------------------------------------------------
     # Forward
@@ -329,11 +426,16 @@ class S2ProSGLangTextModel(nn.Module):
             last_index = torch.cumsum(forward_batch.extend_seq_lens, dim=0) - 1
             hidden_states = hidden_states[last_index]
 
-        # Logits
+        # Logits — compute partial logits per TP rank, then all-gather
+        # to full vocab before constrained decoding / codebook generation.
         if self.tie_word_embeddings:
             logits = torch.nn.functional.linear(hidden_states, self.embed_tokens.weight)
         else:
-            logits = self.lm_head(hidden_states)
+            # ParallelLMHead.forward() raises RuntimeError; use weight directly.
+            logits = torch.nn.functional.linear(hidden_states, self.lm_head.weight)
+
+        if self.tp_size > 1:
+            logits = tensor_model_parallel_all_gather(logits)
 
         # Codebook decode: constrained sampling + batched codebook loop
         if self._vq_ready:
@@ -384,15 +486,29 @@ class S2ProSGLangTextModel(nn.Module):
         return self.embed_tokens
 
     def load_weights(self, weights: Iterable[Tuple[str, Tensor]]):
-        """Load weights from fish_speech FishQwen3OmniForCausalLM checkpoint."""
+        """Load weights from fish_speech FishQwen3OmniForCausalLM checkpoint.
+
+        Handles both Text Model weights (TP-aware) and Audio Decoder weights (replicated).
+        """
         params_dict = dict(self.named_parameters())
 
-        for name, loaded_weight in weights:
-            if name.startswith("text_model.model."):
-                name = name[len("text_model.model.") :]
-            else:
-                continue
+        # Separate text and audio decoder weights
+        text_weights = []
+        audio_decoder_weights = []
 
+        for name, loaded_weight in weights:
+            if name.startswith("audio_decoder."):
+                # Audio Decoder weights (replicated across TP ranks)
+                audio_decoder_weights.append((name, loaded_weight))
+            elif name.startswith("text_model.model."):
+                name = name[len("text_model.model.") :]
+                text_weights.append((name, loaded_weight))
+            else:
+                # Could be direct text model weights or other weights
+                text_weights.append((name, loaded_weight))
+
+        # Load Text Model weights (existing logic, TP-aware)
+        for name, loaded_weight in text_weights:
             if self._load_remapped_weight(name, loaded_weight, params_dict):
                 continue
 
@@ -402,6 +518,9 @@ class S2ProSGLangTextModel(nn.Module):
                 weight_loader(param, loaded_weight)
             else:
                 logger.debug("Skipping weight: %s", name)
+
+        # Load Audio Decoder weights (replicated)
+        self._load_audio_decoder_weights(audio_decoder_weights)
 
     def _load_remapped_weight(
         self,
@@ -458,6 +577,49 @@ class S2ProSGLangTextModel(nn.Module):
         for shard_id, weight in [("q", q), ("k", k), ("v", v)]:
             param.weight_loader(param, weight, shard_id)
         return True
+
+    def _load_audio_decoder_weights(self, weights: list) -> None:
+        """Load Audio Decoder weights (replicated across all TP ranks).
+
+        Audio Decoder uses standard nn.Linear/nn.Embedding layers, so weights
+        are directly copied without TP sharding.
+        """
+        if self._audio_decoder is None:
+            logger.debug("No internal audio decoder to load weights into")
+            return
+
+        if not weights:
+            logger.debug("No audio decoder weights to load")
+            return
+
+        # Get Audio Decoder parameters
+        audio_params_dict = dict(self._audio_decoder.named_parameters())
+        audio_buffers_dict = dict(self._audio_decoder.named_buffers())
+
+        loaded_count = 0
+        for name, loaded_weight in weights:
+            # Remove "audio_decoder." prefix
+            if name.startswith("audio_decoder."):
+                name = name[len("audio_decoder.") :]
+
+            # Try to find in parameters
+            if name in audio_params_dict:
+                param = audio_params_dict[name]
+                param.data.copy_(
+                    loaded_weight.to(device=param.device, dtype=param.dtype)
+                )
+                loaded_count += 1
+            # Try to find in buffers (e.g., codebook_offsets)
+            elif name in audio_buffers_dict:
+                buffer = audio_buffers_dict[name]
+                buffer.data.copy_(
+                    loaded_weight.to(device=buffer.device, dtype=buffer.dtype)
+                )
+                loaded_count += 1
+            else:
+                logger.debug("Audio decoder weight/buffer not found: %s", name)
+
+        logger.debug("Loaded %d audio decoder weights", loaded_count)
 
 
 def _default_weight_loader(param: nn.Parameter, loaded_weight: Tensor):
