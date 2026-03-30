@@ -57,7 +57,10 @@ VC_STREAM_WER_MAX_PER_SAMPLE = 0.0
 # We shall have more strict rules that can let #217 pass but let commit 8deddef fail.
 
 WER_SCRIPT = str(
-    Path(__file__).resolve().parents[2] / "benchmarks" / "eval" / "voice_clone_s2pro_wer.py"
+    Path(__file__).resolve().parents[2]
+    / "benchmarks"
+    / "eval"
+    / "voice_clone_s2pro_wer.py"
 )
 
 
@@ -211,12 +214,12 @@ def _run_wer_transcribe(
 
     with open(results_path) as f:
         wer_results = json.load(f)
-    assert "summary" in wer_results, (
-        f"Missing 'summary' key in WER results. Keys: {list(wer_results.keys())}"
-    )
-    assert "per_sample" in wer_results, (
-        f"Missing 'per_sample' key in WER results. Keys: {list(wer_results.keys())}"
-    )
+    assert (
+        "summary" in wer_results
+    ), f"Missing 'summary' key in WER results. Keys: {list(wer_results.keys())}"
+    assert (
+        "per_sample" in wer_results
+    ), f"Missing 'per_sample' key in WER results. Keys: {list(wer_results.keys())}"
 
     summary = wer_results["summary"]
     if summary.get("skipped", 0) > 0:
