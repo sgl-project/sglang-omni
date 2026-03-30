@@ -553,6 +553,8 @@ def _select_speech_audio_delta(
             audio = audio[:, 0]
 
     total_samples = int(audio.shape[-1]) if audio.ndim else 0
+    if total_samples == 0:
+        return None, emitted_samples
     if not is_terminal:
         return audio, emitted_samples + total_samples
     if total_samples <= emitted_samples:
