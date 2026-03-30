@@ -42,6 +42,7 @@ PLAIN_NON_STREAM_MIN_TOK_PER_S = 80
 PLAIN_NON_STREAM_MAX_RTF = 0.35
 PLAIN_STREAM_MAX_LATENCY_S = 4.0
 PLAIN_STREAM_MIN_THROUGHPUT_QPS = 0.25
+VC_CONCURRENT_MAX_CONCURRENCY = 16
 
 
 def _run_benchmark(
@@ -318,6 +319,28 @@ def test_voice_cloning_streaming(
     assert (
         summary["throughput_qps"] >= VC_STREAM_MIN_THROUGHPUT_QPS
     ), f"throughput_qps {summary['throughput_qps']} < {VC_STREAM_MIN_THROUGHPUT_QPS}"
+
+
+@pytest.mark.benchmark
+def test_voice_cloning_concurrent_non_streaming(
+    server_process: subprocess.Popen,
+    server_port: int,
+    dataset_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """Voice cloning (non-streaming, concurrent): all requests must succeed."""
+    results = _run_benchmark(
+        server_port,
+        str(dataset_dir / "en" / "meta.lst"),
+        str(tmp_path / "vc_concurrent_nonstream"),
+        ["--max-concurrency", str(VC_CONCURRENT_MAX_CONCURRENCY)],
+    )
+    summary, per_request = results["summary"], results["per_request"]
+    _assert_summary_metrics(summary)
+    _assert_per_request_fields(per_request)
+    assert (
+        summary["throughput_qps"] > 0
+    ), f"Expected positive throughput, got {summary['throughput_qps']}"
 
 
 @pytest.mark.benchmark

@@ -192,6 +192,7 @@ class Qwen3OmniPreprocessor:
             images = []
             videos = []
             audios = []
+            audio_target_sr = None
             image_cache_key = None
             raw_audio_cache_key = None
             video_cache_key = None
