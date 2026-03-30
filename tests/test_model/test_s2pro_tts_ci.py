@@ -126,9 +126,6 @@ def _run_benchmark(
     return speed_results
 
 
-# ---------------------------------------------------------------------------
-
-
 def _no_proxy_env() -> dict[str, str]:
     proxy_keys = {"http_proxy", "https_proxy", "all_proxy", "no_proxy"}
     return {k: v for k, v in os.environ.items() if k.lower() not in proxy_keys}
@@ -140,7 +137,7 @@ def _run_wer_generate(
     output_dir: str,
     stream: bool = False,
 ) -> None:
-    """Phase 1: generate TTS audio while server is alive."""
+    """Generate TTS audio in CI."""
     cmd = [
         sys.executable,
         WER_SCRIPT,
@@ -178,7 +175,7 @@ def _run_wer_transcribe(
     lang: str = "en",
     device: str = "cuda:0",
 ) -> dict:
-    """Phase 2: transcribe saved audio and compute WER (no server needed)."""
+    """Transcribe saved audio and compute WER in CI."""
     cmd = [
         sys.executable,
         WER_SCRIPT,
@@ -247,11 +244,6 @@ def _kill_server(proc: subprocess.Popen) -> None:
             pass
 
 
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
-
-
 @pytest.fixture(scope="module")
 def dataset_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
     root = tmp_path_factory.mktemp("seed_tts_eval") / "data"
@@ -317,31 +309,16 @@ def wer_audio_dirs(
     dataset_dir: Path,
     tmp_path_factory: pytest.TempPathFactory,
 ):
-    """Generate all WER audio while server is alive, then kill server.
-
-    This fixture runs after speed tests (which also depend on server_process)
-    because WER tests are defined after speed tests in this file, and pytest
-    evaluates module-scoped fixtures lazily on first use.
-
-    After audio generation completes the server is killed to free GPU memory
-    for the Whisper ASR model used during transcription.
-    """
+    """Generate WER audio in CI, then kill server in order to prevent CI OOM."""
     tmp = tmp_path_factory.mktemp("wer")
     meta = str(dataset_dir / "en" / "meta.lst")
 
-    # Generate audio (server must be alive)
     _run_wer_generate(server_process.port, meta, str(tmp / "non_stream"))
     _run_wer_generate(server_process.port, meta, str(tmp / "stream"), stream=True)
 
-    # Kill server to free GPU for Whisper
     _kill_server(server_process)
 
     return {"non_stream": str(tmp / "non_stream"), "stream": str(tmp / "stream")}
-
-
-# ---------------------------------------------------------------------------
-# Assertion helpers
-# ---------------------------------------------------------------------------
 
 
 def _assert_summary_metrics(summary: dict) -> None:
@@ -383,12 +360,7 @@ def _assert_streaming_consistency(
     completion_token_rtol: float = 0.10,
     audio_duration_rtol: float = 0.12,
 ) -> None:
-    """Assert per-request metrics are close between streaming and non-streaming.
-
-    The model is not perfectly deterministic across separate inference passes,
-    so completion_tokens and audio_duration are compared with a relative
-    tolerance.  prompt_tokens must still match exactly (input-dependent only).
-    """
+    """Assert per-request metrics are close between streaming and non-streaming."""
     ns_by_id = {r["id"]: r for r in non_stream_requests}
     st_by_id = {r["id"]: r for r in stream_requests}
     assert set(ns_by_id) == set(st_by_id), (
@@ -398,7 +370,6 @@ def _assert_streaming_consistency(
     for rid in sorted(ns_by_id):
         ns, st = ns_by_id[rid], st_by_id[rid]
 
-        # completion_tokens: allow relative tolerance
         ns_ct, st_ct = ns["completion_tokens"], st["completion_tokens"]
         max_ct = max(ns_ct, st_ct)
         assert abs(ns_ct - st_ct) <= completion_token_rtol * max_ct, (
@@ -412,7 +383,6 @@ def _assert_streaming_consistency(
             f"non_stream={ns['prompt_tokens']}, stream={st['prompt_tokens']}"
         )
 
-        # audio_duration_s: allow relative tolerance
         ns_ad, st_ad = ns["audio_duration_s"], st["audio_duration_s"]
         max_ad = max(ns_ad, st_ad)
         assert abs(ns_ad - st_ad) <= audio_duration_rtol * max_ad, (
@@ -427,7 +397,6 @@ def _assert_wer_results(
     max_corpus_wer: float,
     max_per_sample_wer: float,
 ) -> None:
-    """Common WER assertions shared by streaming and non-streaming tests."""
     summary = results["summary"]
     per_sample = results["per_sample"]
 
