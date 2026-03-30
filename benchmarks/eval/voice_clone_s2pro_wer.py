@@ -62,7 +62,7 @@ async def generate_audio(args: argparse.Namespace) -> list[dict]:
     api_url = f"{base_url}/v1/audio/speech"
 
     samples = load_seedtts_samples(args.meta, args.max_samples)
-    logger.info("Loaded %d samples from %s", len(samples), args.meta)
+    logger.info(f"Loaded {len(samples)} samples from {args.meta}")
 
     audio_dir = os.path.join(args.output_dir, "audio")
     os.makedirs(audio_dir, exist_ok=True)
@@ -101,28 +101,21 @@ async def generate_audio(args: argparse.Namespace) -> list[dict]:
                 entry["audio_duration_s"] = round(wav_info.duration, 4)
                 entry["is_success"] = True
                 logger.info(
-                    "[%d/%d] Generated %.1fs audio for %s",
-                    i + 1,
-                    len(samples),
-                    wav_info.duration,
-                    sample.sample_id,
+                    f"[{i + 1}/{len(samples)}] Generated {wav_info.duration:.1f}s audio "
+                    f"for {sample.sample_id}"
                 )
             except Exception as exc:
                 entry["is_success"] = False
                 entry["error"] = str(exc)
                 logger.warning(
-                    "[%d/%d] FAILED %s: %s",
-                    i + 1,
-                    len(samples),
-                    sample.sample_id,
-                    exc,
+                    f"[{i + 1}/{len(samples)}] FAILED {sample.sample_id}: {exc}"
                 )
             generated.append(entry)
 
     meta_path = os.path.join(args.output_dir, "generated.json")
     with open(meta_path, "w") as f:
         json.dump(generated, f, indent=2, ensure_ascii=False)
-    logger.info("Saved generation metadata to %s", meta_path)
+    logger.info(f"Saved generation metadata to {meta_path}")
     return generated
 
 
@@ -130,12 +123,12 @@ def transcribe_audio(args: argparse.Namespace) -> None:
     """Load ASR model, transcribe saved audio, compute and save WER."""
     if "cuda" in args.device:
         torch.cuda.set_device(args.device)
-        logger.info("Set default CUDA device to %s", args.device)
+        logger.info(f"Set default CUDA device to {args.device}")
 
     meta_path = os.path.join(args.output_dir, "generated.json")
     with open(meta_path) as f:
         generated: list[dict] = json.load(f)
-    logger.info("Loaded %d entries from %s", len(generated), meta_path)
+    logger.info(f"Loaded {len(generated)} entries from {meta_path}")
 
     asr = load_asr_model(args.lang, args.device)
 
@@ -165,20 +158,13 @@ def transcribe_audio(args: argparse.Namespace) -> None:
 
         if output.is_success:
             logger.info(
-                "[%d/%d] WER=%.3f  ref=%.50s  hyp=%.50s",
-                i + 1,
-                len(generated),
-                output.wer,
-                output.ref_norm,
-                output.hyp_norm,
+                f"[{i + 1}/{len(generated)}] WER={output.wer:.3f}  "
+                f"ref={output.ref_norm:.50}  hyp={output.hyp_norm:.50}"
             )
         else:
             logger.warning(
-                "[%d/%d] Transcription failed: %s — %s",
-                i + 1,
-                len(generated),
-                entry["sample_id"],
-                output.error,
+                f"[{i + 1}/{len(generated)}] Transcription failed: {entry['sample_id']} — "
+                f"{output.error}"
             )
 
     metrics = calculate_wer_metrics(outputs, args.lang)
@@ -204,7 +190,7 @@ async def main_async(args: argparse.Namespace) -> None:
     """
     if "cuda" in args.device:
         torch.cuda.set_device(args.device)
-        logger.info("Set default CUDA device to %s", args.device)
+        logger.info(f"Set default CUDA device to {args.device}")
 
     base_url = args.base_url or f"http://{args.host}:{args.port}"
     api_url = f"{base_url}/v1/audio/speech"
@@ -212,7 +198,7 @@ async def main_async(args: argparse.Namespace) -> None:
     asr = load_asr_model(args.lang, args.device)
 
     samples = load_seedtts_samples(args.meta, args.max_samples)
-    logger.info("Loaded %d samples from %s", len(samples), args.meta)
+    logger.info(f"Loaded {len(samples)} samples from {args.meta}")
 
     audio_dir = os.path.join(args.output_dir, "audio")
     os.makedirs(audio_dir, exist_ok=True)
@@ -240,20 +226,12 @@ async def main_async(args: argparse.Namespace) -> None:
 
             if result.is_success:
                 logger.info(
-                    "[%d/%d] WER=%.3f  target=%.50s  whisper=%.50s",
-                    i + 1,
-                    len(samples),
-                    result.wer,
-                    result.ref_norm,
-                    result.hyp_norm,
+                    f"[{i + 1}/{len(samples)}] WER={result.wer:.3f}  "
+                    f"target={result.ref_norm:.50}  whisper={result.hyp_norm:.50}"
                 )
             else:
                 logger.warning(
-                    "[%d/%d] FAILED: %s — %s",
-                    i + 1,
-                    len(samples),
-                    sample.sample_id,
-                    result.error,
+                    f"[{i + 1}/{len(samples)}] FAILED: {sample.sample_id} — {result.error}"
                 )
 
     metrics = calculate_wer_metrics(outputs, args.lang)
