@@ -4,18 +4,23 @@
 Generates speech via /v1/audio/speech, transcribes with Whisper (EN) or
 FunASR (ZH), and computes corpus-level WER.
 
-Supports two-phase execution for CI (avoids GPU OOM from co-locating
-TTS server and Whisper on the same GPU):
+1. Launch server and download dataset
 
-    # Phase 1: generate audio while server is alive
-    python voice_clone_s2pro_wer.py --generate-only --port 8000 ...
+    python -m sglang_omni.cli.cli serve \
+        --model-path fishaudio/s2-pro \
+        --config examples/configs/s2pro_tts.yaml \
+        --port 8001
 
-    # Phase 2: transcribe + compute WER after server is killed
-    python voice_clone_s2pro_wer.py --transcribe-only --device cuda:0 ...
+    hf download zhaochenyang20/seed-tts-eval \
+     --repo-type dataset --local-dir seedtts_testset
 
-Or run both phases in one shot (original behavior):
+2. Evaluate
 
-    python voice_clone_s2pro_wer.py --port 8000 --device cuda:0 ...
+    python benchmarks/eval/voice_clone_s2pro_wer.py \
+        --meta seedtts_testset/en/meta.lst \
+        --output-dir results/s2pro_en \
+        --port 8001 \
+        --lang en --max-samples 5
 """
 
 from __future__ import annotations
@@ -51,16 +56,8 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 logger = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------
-# Phase 1: generate audio (requires running TTS server)
-# ---------------------------------------------------------------------------
-
-
 async def generate_audio(args: argparse.Namespace) -> list[dict]:
-    """Call TTS API for each sample and save WAV files to disk.
-
-    Returns a list of per-sample dicts persisted as ``generated.json``.
-    """
+    """Call TTS API for each sample and save WAV files to disk."""
     base_url = args.base_url or f"http://{args.host}:{args.port}"
     api_url = f"{base_url}/v1/audio/speech"
 
@@ -84,7 +81,9 @@ async def generate_audio(args: argparse.Namespace) -> list[dict]:
             }
             try:
                 gen_fn = (
-                    task.generate_speech_streaming if args.stream else task.generate_speech
+                    task.generate_speech_streaming
+                    if args.stream
+                    else task.generate_speech
                 )
                 wav_bytes, latency = await gen_fn(
                     session,
@@ -103,13 +102,20 @@ async def generate_audio(args: argparse.Namespace) -> list[dict]:
                 entry["is_success"] = True
                 logger.info(
                     "[%d/%d] Generated %.1fs audio for %s",
-                    i + 1, len(samples), wav_info.duration, sample.sample_id,
+                    i + 1,
+                    len(samples),
+                    wav_info.duration,
+                    sample.sample_id,
                 )
             except Exception as exc:
                 entry["is_success"] = False
                 entry["error"] = str(exc)
                 logger.warning(
-                    "[%d/%d] FAILED %s: %s", i + 1, len(samples), sample.sample_id, exc,
+                    "[%d/%d] FAILED %s: %s",
+                    i + 1,
+                    len(samples),
+                    sample.sample_id,
+                    exc,
                 )
             generated.append(entry)
 
@@ -118,11 +124,6 @@ async def generate_audio(args: argparse.Namespace) -> list[dict]:
         json.dump(generated, f, indent=2, ensure_ascii=False)
     logger.info("Saved generation metadata to %s", meta_path)
     return generated
-
-
-# ---------------------------------------------------------------------------
-# Phase 2: transcribe + WER (no server needed, loads ASR model on device)
-# ---------------------------------------------------------------------------
 
 
 def transcribe_audio(args: argparse.Namespace) -> None:
@@ -154,19 +155,30 @@ def transcribe_audio(args: argparse.Namespace) -> None:
         output.audio_duration_s = entry.get("audio_duration_s", 0.0)
 
         output = _transcribe_and_compute_wer(
-            output, wav_path, asr, args.lang, args.device,
+            output,
+            wav_path,
+            asr,
+            args.lang,
+            args.device,
         )
         outputs.append(output)
 
         if output.is_success:
             logger.info(
                 "[%d/%d] WER=%.3f  ref=%.50s  hyp=%.50s",
-                i + 1, len(generated), output.wer, output.ref_norm, output.hyp_norm,
+                i + 1,
+                len(generated),
+                output.wer,
+                output.ref_norm,
+                output.hyp_norm,
             )
         else:
             logger.warning(
                 "[%d/%d] Transcription failed: %s — %s",
-                i + 1, len(generated), entry["sample_id"], output.error,
+                i + 1,
+                len(generated),
+                entry["sample_id"],
+                output.error,
             )
 
     metrics = calculate_wer_metrics(outputs, args.lang)
@@ -181,11 +193,6 @@ def transcribe_audio(args: argparse.Namespace) -> None:
         "stream": args.stream,
     }
     save_wer_results(outputs, metrics, config, args.output_dir)
-
-
-# ---------------------------------------------------------------------------
-# Combined: original single-shot behavior
-# ---------------------------------------------------------------------------
 
 
 async def main_async(args: argparse.Namespace) -> None:
@@ -263,11 +270,6 @@ async def main_async(args: argparse.Namespace) -> None:
     save_wer_results(outputs, metrics, config, args.output_dir)
 
 
-# ---------------------------------------------------------------------------
-# CLI
-# ---------------------------------------------------------------------------
-
-
 def main() -> None:
     p = argparse.ArgumentParser(
         description="WER evaluation for S2 Pro (Whisper for EN, FunASR for ZH)"
@@ -306,17 +308,23 @@ def main() -> None:
     )
 
     mode = p.add_mutually_exclusive_group()
+
+    # Note (chenyang):
+    # On our CI, we use --generate-only to generate audio and --transcribe-only to
+    # ensure that the SGLang Omni server is killed after the audio generation.
+    # Thus the CI testset won't raise GPU OOM error.
+
     mode.add_argument(
         "--generate-only",
         action="store_true",
-        help="Phase 1: only generate TTS audio (requires server). "
-        "Saves generated.json for --transcribe-only.",
+        help=(
+            "Only synthesize audio: call the TTS API and write WAVs under --output-dir."
+        ),
     )
     mode.add_argument(
         "--transcribe-only",
         action="store_true",
-        help="Phase 2: only transcribe saved audio and compute WER "
-        "(no server needed, loads ASR on --device).",
+        help=("Only run recognition and WER on existing output-dir)."),
     )
     args = p.parse_args()
 
