@@ -288,6 +288,16 @@ class Scheduler:
             return
         queue.put_nowait(item)
 
+    def cleanup_finished(self, request_id: str) -> None:
+        """Drop finished request bookkeeping from in-memory maps.
+
+        This is safe to call after callers have consumed final results and need
+        to bound long-lived scheduler memory usage.
+        """
+        self.requests.pop(request_id, None)
+        self._futures.pop(request_id, None)
+        self._stream_queues.pop(request_id, None)
+
     def _finish_request(
         self,
         request: SchedulerRequest,
