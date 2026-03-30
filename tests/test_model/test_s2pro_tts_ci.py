@@ -27,6 +27,8 @@ from benchmarks.dataset.prepare import DATASETS, download_dataset
 from tests.test_model.helpers import disable_proxy
 from tests.utils import find_free_port
 
+PER_REQUEST_STORE: dict[str, list[dict]] = {}
+
 MODEL_PATH = "fishaudio/s2-pro"
 CONFIG_PATH = "examples/configs/s2pro_tts.yaml"
 MAX_SAMPLES = 10
@@ -36,7 +38,8 @@ BENCHMARK_TIMEOUT = 600
 WER_TIMEOUT = 600
 
 # Thresholds reference: https://github.com/sgl-project/sglang-omni/issues/193
-
+# Note (chenyang): the RTF thresholds also includes the reference audio
+# processing time. The Plain text RTF is far less than 1.0.
 
 VC_NON_STREAM_MIN_TOK_PER_S = 80
 VC_NON_STREAM_MAX_RTF = 2.85
@@ -46,15 +49,17 @@ PLAIN_NON_STREAM_MIN_TOK_PER_S = 80
 PLAIN_NON_STREAM_MAX_RTF = 0.35
 PLAIN_STREAM_MAX_LATENCY_S = 4.0
 PLAIN_STREAM_MIN_THROUGHPUT_QPS = 0.25
-# WER thresholds: 10 runs (5 nonstream + 5 stream) all produce 0.00% WER.
+
+
+# TODO (Chenyang): Current WER thresholds is computed over mini set, which can not
+# capture the accuracy regression fixed by https://github.com/sgl-project/sglang-omni/pull/217
+# We shall have more strict rules that can let #217 pass but let commit 8deddef fail.
+
 VC_WER_MAX_CORPUS = 0.0
 VC_WER_MAX_PER_SAMPLE = 0.0
 VC_STREAM_WER_MAX_CORPUS = 0.0
 VC_STREAM_WER_MAX_PER_SAMPLE = 0.0
 
-# TODO (Chenyang): Current WER is computed over mini set, which can not
-# capture the accuracy regression fixed by https://github.com/sgl-project/sglang-omni/pull/217
-# We shall have more strict rules that can let #217 pass but let commit 8deddef fail.
 
 WER_SCRIPT = str(
     Path(__file__).resolve().parents[2]
@@ -62,11 +67,6 @@ WER_SCRIPT = str(
     / "eval"
     / "voice_clone_s2pro_wer.py"
 )
-
-
-# ---------------------------------------------------------------------------
-# Helpers: speed benchmark
-# ---------------------------------------------------------------------------
 
 
 def _run_benchmark(
@@ -126,8 +126,6 @@ def _run_benchmark(
     return speed_results
 
 
-# ---------------------------------------------------------------------------
-# Helpers: two-phase WER benchmark
 # ---------------------------------------------------------------------------
 
 
@@ -465,23 +463,12 @@ def _assert_wer_results(
             )
 
 
-# Module-level storage so consistency tests can compare across streaming modes
-# without re-running benchmarks.  Keys: "vc_nonstream", "vc_stream", etc.
-_per_request_store: dict[str, list[dict]] = {}
-
-
-# ---------------------------------------------------------------------------
-# Speed tests (server alive)
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.benchmark
 def test_voice_cloning_non_streaming(
     server_process: subprocess.Popen,
     dataset_dir: Path,
     tmp_path: Path,
 ) -> None:
-    """Voice cloning (non-streaming): tok/s >= 80, RTF <= 2.8."""
     results = _run_benchmark(
         server_process.port,
         str(dataset_dir / "en" / "meta.lst"),
@@ -490,7 +477,7 @@ def test_voice_cloning_non_streaming(
     summary, per_request = results["summary"], results["per_request"]
     _assert_summary_metrics(summary)
     _assert_per_request_fields(per_request)
-    _per_request_store["vc_nonstream"] = per_request
+    PER_REQUEST_STORE["vc_nonstream"] = per_request
     assert (
         summary["tok_per_s_agg"] >= VC_NON_STREAM_MIN_TOK_PER_S
     ), f"tok_per_s_agg {summary['tok_per_s_agg']} < {VC_NON_STREAM_MIN_TOK_PER_S}"
@@ -505,7 +492,6 @@ def test_voice_cloning_streaming(
     dataset_dir: Path,
     tmp_path: Path,
 ) -> None:
-    """Voice cloning (streaming): latency <= 12.5s, throughput >= 0.08 qps."""
     results = _run_benchmark(
         server_process.port,
         str(dataset_dir / "en" / "meta.lst"),
@@ -515,7 +501,7 @@ def test_voice_cloning_streaming(
     summary, per_request = results["summary"], results["per_request"]
     _assert_summary_metrics(summary)
     _assert_per_request_fields(per_request)
-    _per_request_store["vc_stream"] = per_request
+    PER_REQUEST_STORE["vc_stream"] = per_request
     assert (
         summary["latency_mean_s"] <= VC_STREAM_MAX_LATENCY_S
     ), f"latency_mean_s {summary['latency_mean_s']} > {VC_STREAM_MAX_LATENCY_S}"
@@ -530,7 +516,6 @@ def test_plain_tts_non_streaming(
     dataset_dir: Path,
     tmp_path: Path,
 ) -> None:
-    """Plain TTS (non-streaming): tok/s >= 80, RTF <= 0.35."""
     results = _run_benchmark(
         server_process.port,
         str(dataset_dir / "en" / "meta.lst"),
@@ -540,7 +525,7 @@ def test_plain_tts_non_streaming(
     summary, per_request = results["summary"], results["per_request"]
     _assert_summary_metrics(summary)
     _assert_per_request_fields(per_request)
-    _per_request_store["plain_nonstream"] = per_request
+    PER_REQUEST_STORE["plain_nonstream"] = per_request
     assert (
         summary["tok_per_s_agg"] >= PLAIN_NON_STREAM_MIN_TOK_PER_S
     ), f"tok_per_s_agg {summary['tok_per_s_agg']} < {PLAIN_NON_STREAM_MIN_TOK_PER_S}"
@@ -555,7 +540,6 @@ def test_plain_tts_streaming(
     dataset_dir: Path,
     tmp_path: Path,
 ) -> None:
-    """Plain TTS (streaming): latency <= 4.0s, throughput >= 0.25 qps."""
     results = _run_benchmark(
         server_process.port,
         str(dataset_dir / "en" / "meta.lst"),
@@ -565,7 +549,7 @@ def test_plain_tts_streaming(
     summary, per_request = results["summary"], results["per_request"]
     _assert_summary_metrics(summary)
     _assert_per_request_fields(per_request)
-    _per_request_store["plain_stream"] = per_request
+    PER_REQUEST_STORE["plain_stream"] = per_request
     assert (
         summary["latency_mean_s"] <= PLAIN_STREAM_MAX_LATENCY_S
     ), f"latency_mean_s {summary['latency_mean_s']} > {PLAIN_STREAM_MAX_LATENCY_S}"
@@ -574,15 +558,10 @@ def test_plain_tts_streaming(
     ), f"throughput_qps {summary['throughput_qps']} < {PLAIN_STREAM_MIN_THROUGHPUT_QPS}"
 
 
-# ---------------------------------------------------------------------------
-# Streaming consistency tests (no server calls, uses stored data)
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.benchmark
 def test_voice_cloning_streaming_consistency() -> None:
-    ns = _per_request_store.get("vc_nonstream")
-    st = _per_request_store.get("vc_stream")
+    ns = PER_REQUEST_STORE.get("vc_nonstream")
+    st = PER_REQUEST_STORE.get("vc_stream")
     assert ns is not None, "vc_nonstream results missing"
     assert st is not None, "vc_stream results missing"
     _assert_streaming_consistency(ns, st)
@@ -590,19 +569,11 @@ def test_voice_cloning_streaming_consistency() -> None:
 
 @pytest.mark.benchmark
 def test_plain_tts_streaming_consistency() -> None:
-    ns = _per_request_store.get("plain_nonstream")
-    st = _per_request_store.get("plain_stream")
+    ns = PER_REQUEST_STORE.get("plain_nonstream")
+    st = PER_REQUEST_STORE.get("plain_stream")
     assert ns is not None, "plain_nonstream results missing"
     assert st is not None, "plain_stream results missing"
     _assert_streaming_consistency(ns, st)
-
-
-# ---------------------------------------------------------------------------
-# WER tests (server killed, Whisper on GPU)
-#
-# The wer_audio_dirs fixture generates audio while the server is alive, then
-# kills the server to free GPU memory for the Whisper ASR model.
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.benchmark
@@ -622,7 +593,6 @@ def test_voice_cloning_streaming_wer(
     wer_audio_dirs: dict[str, str],
     dataset_dir: Path,
 ) -> None:
-    """Voice cloning streaming WER: same quality bar as non-streaming."""
     results = _run_wer_transcribe(
         str(dataset_dir / "en" / "meta.lst"),
         wer_audio_dirs["stream"],
