@@ -17,6 +17,42 @@ from sglang_omni.models.weight_loader import resolve_model_path
 
 logger = logging.getLogger(__name__)
 
+# Fallback tokenizer source: Ming-flash-omni-Preview has tokenizer files
+# that are missing from some other Ming repos (e.g., Ming-flash-omni-2.0).
+_TOKENIZER_FALLBACK = "inclusionAI/Ming-flash-omni-Preview"
+
+
+def load_ming_tokenizer(model_path: str):
+    """Load the Ming tokenizer with fallback for incomplete HF repos.
+
+    Some Ming HF repos (e.g., Ming-flash-omni-2.0) are missing tokenizer
+    files and custom Python code.  We try several strategies:
+    1. AutoTokenizer with trust_remote_code
+    2. PreTrainedTokenizerFast directly (skips custom class requirement)
+    3. Fallback to Ming-flash-omni-Preview repo (same vocab)
+    """
+    from transformers import AutoTokenizer, PreTrainedTokenizerFast
+
+    # Strategy 1: standard AutoTokenizer
+    try:
+        return AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
+    except (OSError, ValueError):
+        pass
+
+    # Strategy 2: direct PreTrainedTokenizerFast (works if tokenizer.json exists)
+    try:
+        return PreTrainedTokenizerFast.from_pretrained(model_path)
+    except Exception:
+        pass
+
+    # Strategy 3: fallback repo with matching vocab
+    logger.warning(
+        "Tokenizer not found in %s, falling back to %s",
+        model_path,
+        _TOKENIZER_FALLBACK,
+    )
+    return PreTrainedTokenizerFast.from_pretrained(_TOKENIZER_FALLBACK)
+
 
 def load_ming_config(model_path: str) -> MingOmniConfig:
     """Load Ming-Omni configuration from model checkpoint."""

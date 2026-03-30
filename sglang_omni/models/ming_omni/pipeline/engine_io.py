@@ -115,7 +115,7 @@ def build_sglang_thinker_request(
     if not isinstance(input_ids, torch.Tensor):
         raise TypeError("prompt.input_ids must be a torch.Tensor")
 
-    input_ids_list = input_ids.to(dtype=torch.long).tolist()
+    input_ids_list = input_ids.to(dtype=torch.long).flatten().tolist()
 
     attention_mask = prompt.get("attention_mask")
     thinker_inputs = state.thinker_inputs or {}
@@ -152,7 +152,7 @@ def build_sglang_thinker_request(
     req._omni_consumed = None
 
     data = SGLangARRequestData(
-        input_ids=input_ids.to(dtype=torch.long),
+        input_ids=input_ids.to(dtype=torch.long).flatten(),
         attention_mask=(
             attention_mask if isinstance(attention_mask, torch.Tensor) else None
         ),

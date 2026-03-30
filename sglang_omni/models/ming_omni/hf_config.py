@@ -133,8 +133,12 @@ class BailingMoeV2LLMConfig:
             video_patch_token=d.get("video_patch_token", 157175),
             image_start_token=d.get("image_start_token", 157158),
             video_start_token=d.get("video_start_token", 157159),
-            rope_scaling_type=rope_scaling.get("type", "video_rope") if rope_scaling else "video_rope",
-            use_interleaved_frame_timestamp=d.get("use_interleaved_frame_timestamp", True),
+            rope_scaling_type=(
+                rope_scaling.get("type", "video_rope") if rope_scaling else "video_rope"
+            ),
+            use_interleaved_frame_timestamp=d.get(
+                "use_interleaved_frame_timestamp", True
+            ),
         )
 
 
