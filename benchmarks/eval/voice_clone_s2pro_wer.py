@@ -4,17 +4,25 @@
 Generates speech via /v1/audio/speech, transcribes with Whisper (EN) or
 FunASR (ZH), and computes corpus-level WER.
 
-Usage:
-    python benchmarks/eval/voice_clone_s2pro_wer.py \
-        --meta seedtts_testset/en/meta.lst \
-        --output-dir results/s2pro_en \
-        --lang en --max-samples 50
+Supports two-phase execution for CI (avoids GPU OOM from co-locating
+TTS server and Whisper on the same GPU):
+
+    # Phase 1: generate audio while server is alive
+    python voice_clone_s2pro_wer.py --generate-only --port 8000 ...
+
+    # Phase 2: transcribe + compute WER after server is killed
+    python voice_clone_s2pro_wer.py --transcribe-only --device cuda:0 ...
+
+Or run both phases in one shot (original behavior):
+
+    python voice_clone_s2pro_wer.py --port 8000 --device cuda:0 ...
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import logging
 import os
 import sys
@@ -23,13 +31,16 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import aiohttp
+import soundfile as sf
 import torch
 from tqdm import tqdm
 
 from benchmarks.benchmarker.utils import wait_for_service
 from benchmarks.dataset.seedtts import load_seedtts_samples
 from benchmarks.tasks.voice_clone import (
+    SampleOutput,
     VoiceCloneTTS,
+    _transcribe_and_compute_wer,
     calculate_wer_metrics,
     load_asr_model,
     print_wer_summary,
@@ -40,8 +51,145 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 logger = logging.getLogger(__name__)
 
 
+# ---------------------------------------------------------------------------
+# Phase 1: generate audio (requires running TTS server)
+# ---------------------------------------------------------------------------
+
+
+async def generate_audio(args: argparse.Namespace) -> list[dict]:
+    """Call TTS API for each sample and save WAV files to disk.
+
+    Returns a list of per-sample dicts persisted as ``generated.json``.
+    """
+    base_url = args.base_url or f"http://{args.host}:{args.port}"
+    api_url = f"{base_url}/v1/audio/speech"
+
+    samples = load_seedtts_samples(args.meta, args.max_samples)
+    logger.info("Loaded %d samples from %s", len(samples), args.meta)
+
+    audio_dir = os.path.join(args.output_dir, "audio")
+    os.makedirs(audio_dir, exist_ok=True)
+
+    task = VoiceCloneTTS()
+    timeout = aiohttp.ClientTimeout(total=300)
+    generated: list[dict] = []
+
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        for i, sample in enumerate(tqdm(samples, desc="Generating TTS audio")):
+            wav_path = os.path.join(audio_dir, f"{sample.sample_id}.wav")
+            entry: dict = {
+                "sample_id": sample.sample_id,
+                "target_text": sample.target_text,
+                "wav_path": wav_path,
+            }
+            try:
+                gen_fn = (
+                    task.generate_speech_streaming if args.stream else task.generate_speech
+                )
+                wav_bytes, latency = await gen_fn(
+                    session,
+                    api_url,
+                    args.model,
+                    sample,
+                    args.max_new_tokens,
+                    args.temperature,
+                    args.seed,
+                )
+                with open(wav_path, "wb") as f:
+                    f.write(wav_bytes)
+                wav_info = sf.info(wav_path)
+                entry["latency_s"] = round(latency, 4)
+                entry["audio_duration_s"] = round(wav_info.duration, 4)
+                entry["is_success"] = True
+                logger.info(
+                    "[%d/%d] Generated %.1fs audio for %s",
+                    i + 1, len(samples), wav_info.duration, sample.sample_id,
+                )
+            except Exception as exc:
+                entry["is_success"] = False
+                entry["error"] = str(exc)
+                logger.warning(
+                    "[%d/%d] FAILED %s: %s", i + 1, len(samples), sample.sample_id, exc,
+                )
+            generated.append(entry)
+
+    meta_path = os.path.join(args.output_dir, "generated.json")
+    with open(meta_path, "w") as f:
+        json.dump(generated, f, indent=2, ensure_ascii=False)
+    logger.info("Saved generation metadata to %s", meta_path)
+    return generated
+
+
+# ---------------------------------------------------------------------------
+# Phase 2: transcribe + WER (no server needed, loads ASR model on device)
+# ---------------------------------------------------------------------------
+
+
+def transcribe_audio(args: argparse.Namespace) -> None:
+    """Load ASR model, transcribe saved audio, compute and save WER."""
+    if "cuda" in args.device:
+        torch.cuda.set_device(args.device)
+        logger.info("Set default CUDA device to %s", args.device)
+
+    meta_path = os.path.join(args.output_dir, "generated.json")
+    with open(meta_path) as f:
+        generated: list[dict] = json.load(f)
+    logger.info("Loaded %d entries from %s", len(generated), meta_path)
+
+    asr = load_asr_model(args.lang, args.device)
+
+    outputs: list[SampleOutput] = []
+    for i, entry in enumerate(tqdm(generated, desc=f"Transcribing ({args.lang})")):
+        output = SampleOutput(
+            sample_id=entry["sample_id"],
+            target_text=entry["target_text"],
+        )
+        if not entry.get("is_success", False):
+            output.error = f"Generation failed: {entry.get('error', 'unknown')}"
+            outputs.append(output)
+            continue
+
+        wav_path = entry["wav_path"]
+        output.latency_s = entry.get("latency_s", 0.0)
+        output.audio_duration_s = entry.get("audio_duration_s", 0.0)
+
+        output = _transcribe_and_compute_wer(
+            output, wav_path, asr, args.lang, args.device,
+        )
+        outputs.append(output)
+
+        if output.is_success:
+            logger.info(
+                "[%d/%d] WER=%.3f  ref=%.50s  hyp=%.50s",
+                i + 1, len(generated), output.wer, output.ref_norm, output.hyp_norm,
+            )
+        else:
+            logger.warning(
+                "[%d/%d] Transcription failed: %s — %s",
+                i + 1, len(generated), entry["sample_id"], output.error,
+            )
+
+    metrics = calculate_wer_metrics(outputs, args.lang)
+    print_wer_summary(metrics, args.model)
+
+    config = {
+        "model": args.model,
+        "meta": args.meta,
+        "max_new_tokens": args.max_new_tokens,
+        "temperature": args.temperature,
+        "max_samples": args.max_samples,
+        "stream": args.stream,
+    }
+    save_wer_results(outputs, metrics, config, args.output_dir)
+
+
+# ---------------------------------------------------------------------------
+# Combined: original single-shot behavior
+# ---------------------------------------------------------------------------
+
+
 async def main_async(args: argparse.Namespace) -> None:
-    """Main async function for S2 Pro voice clone WER evaluation.
+    """Run both phases in one shot (original behavior).
 
     Note (chenyang):
     There is concurrency issue in S2 Pro voice clone WER eval.
@@ -115,6 +263,11 @@ async def main_async(args: argparse.Namespace) -> None:
     save_wer_results(outputs, metrics, config, args.output_dir)
 
 
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
+
 def main() -> None:
     p = argparse.ArgumentParser(
         description="WER evaluation for S2 Pro (Whisper for EN, FunASR for ZH)"
@@ -151,12 +304,32 @@ def main() -> None:
         action="store_true",
         help="Use streaming SSE for TTS generation",
     )
+
+    mode = p.add_mutually_exclusive_group()
+    mode.add_argument(
+        "--generate-only",
+        action="store_true",
+        help="Phase 1: only generate TTS audio (requires server). "
+        "Saves generated.json for --transcribe-only.",
+    )
+    mode.add_argument(
+        "--transcribe-only",
+        action="store_true",
+        help="Phase 2: only transcribe saved audio and compute WER "
+        "(no server needed, loads ASR on --device).",
+    )
     args = p.parse_args()
 
-    base_url = args.base_url or f"http://{args.host}:{args.port}"
-    wait_for_service(base_url)
-
-    asyncio.run(main_async(args))
+    if args.generate_only:
+        base_url = args.base_url or f"http://{args.host}:{args.port}"
+        wait_for_service(base_url)
+        asyncio.run(generate_audio(args))
+    elif args.transcribe_only:
+        transcribe_audio(args)
+    else:
+        base_url = args.base_url or f"http://{args.host}:{args.port}"
+        wait_for_service(base_url)
+        asyncio.run(main_async(args))
 
 
 if __name__ == "__main__":
