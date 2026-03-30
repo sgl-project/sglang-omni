@@ -172,6 +172,7 @@ def create_sglang_thinker_executor(
     engine = create_sglang_ar_engine(
         server_args=server_args,
         gpu_id=gpu_id,
+        model_arch_override="BailingMoeV2ForCausalLM",
     )
 
     return EngineExecutor(

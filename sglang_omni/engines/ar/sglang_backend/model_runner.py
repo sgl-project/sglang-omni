@@ -71,5 +71,8 @@ class SGLModelRunner(ModelRunner):
         )
         from sglang_omni.models.qwen3_omni.talker import Qwen3OmniTalker
 
+        from sglang_omni.models.ming_omni.thinker import BailingMoeV2ForCausalLM
+
         ModelRegistry.models["S2ProSGLangTextModel"] = S2ProSGLangTextModel
         ModelRegistry.models["Qwen3OmniTalker"] = Qwen3OmniTalker
+        ModelRegistry.models["BailingMoeV2ForCausalLM"] = BailingMoeV2ForCausalLM

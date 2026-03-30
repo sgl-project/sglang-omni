@@ -69,17 +69,18 @@ def compute_mel_spectrogram(
 
 def estimate_audio_feature_length(
     mel_frames: int,
-    ds_kernel_size: int = 3,
-    ds_stride: int = 2,
+    ds_kernel_size: int = 1,
+    ds_stride: int = 1,
 ) -> int:
     """Estimate the number of audio tokens after Whisper encoder + Conv1d projection.
 
-    The Whisper encoder preserves sequence length (conv layers are internal).
-    The projection Conv1d downsamples by ds_stride.
+    Two downsampling stages (matching Ming's modeling_utils.py):
+    1. Whisper encoder internal conv: kernel=3, stride=2, padding=1
+    2. Projection Conv1d: kernel=ds_kernel_size, stride=ds_stride, padding=ds_kernel_size//2
     """
-    # Whisper encoder internal conv: no length change in output
-    whisper_out_len = mel_frames
-    # Projection Conv1d: (L - kernel + 2*padding) // stride + 1
+    # Whisper encoder internal conv: (L - 3 + 2*1) // 2 + 1
+    whisper_out_len = (mel_frames - 3 + 2 * 1) // 2 + 1
+    # Projection Conv1d: (L - k + 2*(k//2)) // s + 1
     padding = ds_kernel_size // 2
     proj_out_len = (whisper_out_len - ds_kernel_size + 2 * padding) // ds_stride + 1
     return proj_out_len
@@ -117,16 +118,46 @@ class MingPreprocessor:
         audio_urls = raw_inputs.get("audios", [])
 
         # Load audio files concurrently
-        audio_data = []
+        audio_data: list[tuple[np.ndarray, int]] = []
         if audio_urls:
             tasks = [asyncio.to_thread(load_audio, url) for url in audio_urls]
-            audio_data = await asyncio.gather(*tasks, return_exceptions=True)
             audio_data = [
-                a for a in audio_data if not isinstance(a, Exception)
+                a
+                for a in await asyncio.gather(*tasks, return_exceptions=True)
+                if not isinstance(a, Exception)
             ]
 
-        # Build prompt text and tokenize
-        prompt_text, audio_positions = self._build_prompt(messages, len(audio_data))
+        # --- Compute mel features FIRST so we know exact placeholder counts ---
+        mel_features_list: list[torch.Tensor] = []
+        mel_lengths_list: list[int] = []
+        audio_token_counts: list[int] = []
+
+        for waveform, sr in audio_data:
+            if sr != WHISPER_SAMPLE_RATE:
+                import torchaudio
+
+                waveform_tensor = torch.from_numpy(waveform).float()
+                if waveform_tensor.dim() == 1:
+                    waveform_tensor = waveform_tensor.unsqueeze(0)
+                resampler = torchaudio.transforms.Resample(sr, WHISPER_SAMPLE_RATE)
+                waveform_tensor = resampler(waveform_tensor)
+                waveform = waveform_tensor.squeeze(0).numpy()
+
+            mel = compute_mel_spectrogram(waveform)
+            mel_features_list.append(torch.from_numpy(mel).float())
+            mel_lengths_list.append(mel.shape[0])
+            audio_token_counts.append(
+                estimate_audio_feature_length(
+                    mel.shape[0],
+                    getattr(self._audio_config, "ds_kernel_size", 1),
+                    getattr(self._audio_config, "ds_stride", 1),
+                )
+            )
+
+        # --- Build prompt with correct placeholder counts, then tokenize ---
+        prompt_text, audio_positions = self._build_prompt(
+            messages, audio_token_counts=audio_token_counts
+        )
         input_ids = self._tokenizer.encode(prompt_text, add_special_tokens=False)
         input_ids_tensor = torch.tensor([input_ids], dtype=torch.long)
         attention_mask = torch.ones_like(input_ids_tensor)
@@ -137,69 +168,27 @@ class MingPreprocessor:
             "prompt_text": prompt_text,
         }
 
-        # Prepare audio encoder inputs if audio is present
+        # --- Prepare audio encoder inputs ---
         encoder_inputs: dict[str, dict[str, Any]] = {}
-        if audio_data:
-            mel_features_list = []
-            mel_lengths_list = []
+        if mel_features_list:
             placeholder_loc_lens_list = []
-
-            for i, (waveform, sr) in enumerate(audio_data):
-                # Resample to 16kHz if needed
-                if sr != WHISPER_SAMPLE_RATE:
-                    import torchaudio
-                    waveform_tensor = torch.from_numpy(waveform).float()
-                    if waveform_tensor.dim() == 1:
-                        waveform_tensor = waveform_tensor.unsqueeze(0)
-                    resampler = torchaudio.transforms.Resample(sr, WHISPER_SAMPLE_RATE)
-                    waveform_tensor = resampler(waveform_tensor)
-                    waveform = waveform_tensor.squeeze(0).numpy()
-
-                mel = compute_mel_spectrogram(waveform)
-                mel_features_list.append(torch.from_numpy(mel).float())
-                mel_lengths_list.append(mel.shape[0])
-
-                # Compute placeholder location for this audio segment
-                num_audio_tokens = estimate_audio_feature_length(
-                    mel.shape[0],
-                    self._audio_config.ds_kernel_size,
-                    self._audio_config.ds_stride,
-                )
+            for i, num_tokens in enumerate(audio_token_counts):
                 if i < len(audio_positions):
-                    start_pos = audio_positions[i]
-                    placeholder_loc_lens_list.append([start_pos, num_audio_tokens])
+                    placeholder_loc_lens_list.append(
+                        [audio_positions[i], num_tokens]
+                    )
 
-            # Pad mel features to same length and stack
-            max_mel_len = max(m.shape[0] for m in mel_features_list)
-            padded_mels = []
-            for m in mel_features_list:
-                if m.shape[0] < max_mel_len:
-                    pad = torch.zeros(max_mel_len - m.shape[0], m.shape[1])
-                    m = torch.cat([m, pad], dim=0)
-                padded_mels.append(m)
+            concat_mel = torch.cat(mel_features_list, dim=0).unsqueeze(0)
+            mel_lens = torch.tensor([mel_lengths_list], dtype=torch.long)
+            placeholder_locs = torch.tensor(
+                [placeholder_loc_lens_list], dtype=torch.long
+            )
 
-            audio_feats = torch.stack(padded_mels)  # [num_audios, max_len, n_mels]
-            audio_feats_lengths = torch.tensor(
-                [[l] for l in mel_lengths_list], dtype=torch.long
-            )  # [batch, num_audios_per_sample]
-
-            # For single-batch: wrap into batch format
-            # audio_feats: [1, total_mel_len, n_mels] (concatenated)
-            # audio_feats_lengths: [1, num_audios]
-            if len(mel_features_list) > 0:
-                concat_mel = torch.cat(mel_features_list, dim=0).unsqueeze(0)
-                mel_lens = torch.tensor(
-                    [mel_lengths_list], dtype=torch.long
-                )
-                placeholder_locs = torch.tensor(
-                    [placeholder_loc_lens_list], dtype=torch.long
-                )
-
-                encoder_inputs[AUDIO_STAGE] = {
-                    "audio_feats": concat_mel,
-                    "audio_feats_lengths": mel_lens,
-                    "audio_placeholder_loc_lens": placeholder_locs,
-                }
+            encoder_inputs[AUDIO_STAGE] = {
+                "audio_feats": concat_mel,
+                "audio_feats_lengths": mel_lens,
+                "audio_placeholder_loc_lens": placeholder_locs,
+            }
 
         state = PipelineState(
             raw_inputs=raw_inputs,
@@ -216,17 +205,24 @@ class MingPreprocessor:
     def _build_prompt(
         self,
         messages: list[dict[str, Any]],
-        num_audios: int,
+        *,
+        audio_token_counts: list[int] | None = None,
     ) -> tuple[str, list[int]]:
         """Build Ming-Omni chat format prompt with audio placeholders.
 
+        Args:
+            messages: Chat messages.
+            audio_token_counts: Exact number of <audioPatch> tokens to insert
+                per audio segment (computed from mel features). If None or
+                shorter than the number of audio items, a fallback of 1 is used.
+
         Returns:
-            prompt_text: The formatted prompt string
-            audio_positions: List of token positions where <audioPatch> placeholders start
+            prompt_text: The formatted prompt string.
+            audio_positions: Token positions where <audioPatch> placeholders start.
         """
+        counts = audio_token_counts or []
         parts: list[str] = []
         audio_idx = 0
-        audio_placeholder_texts: list[str] = []
 
         # System message
         parts.append(f"{ROLE_SYSTEM}{DEFAULT_SYSTEM_PROMPT}")
@@ -236,7 +232,6 @@ class MingPreprocessor:
             content = msg.get("content", "")
 
             if role == "system":
-                # Override system prompt
                 parts[0] = f"{ROLE_SYSTEM}{content}\n"
                 continue
 
@@ -245,7 +240,6 @@ class MingPreprocessor:
             if isinstance(content, str):
                 parts.append(f"{role_tag}{content}")
             elif isinstance(content, list):
-                # Multimodal content list
                 text_parts: list[str] = []
                 for item in content:
                     if isinstance(item, dict):
@@ -253,11 +247,14 @@ class MingPreprocessor:
                         if item_type == "text":
                             text_parts.append(item.get("text", ""))
                         elif item_type in ("audio_url", "input_audio"):
-                            # Insert audio placeholder
-                            num_placeholder_tokens = 100  # estimated, will be adjusted
+                            n_tokens = (
+                                counts[audio_idx]
+                                if audio_idx < len(counts)
+                                else 1
+                            )
                             placeholder = (
                                 f"{AUDIO_START}"
-                                + AUDIO_PATCH * num_placeholder_tokens
+                                + AUDIO_PATCH * n_tokens
                                 + f"{END_OF_AUDIO}{AUDIO_END}"
                             )
                             text_parts.append(placeholder)

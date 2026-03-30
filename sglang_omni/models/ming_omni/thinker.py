@@ -590,3 +590,155 @@ class BailingMoeV2TextModel(nn.Module):
                 weight_loader(param, loaded_weight)
             else:
                 logger.debug("Skipping weight: %s", name)
+
+
+# ============================================================================
+# ForCausalLM Wrapper (top-level SGLang model class)
+# ============================================================================
+
+
+class BailingMoeV2ForCausalLM(nn.Module):
+    """Top-level SGLang model class for BailingMoeV2.
+
+    Wraps BailingMoeV2TextModel with LM head and LogitsProcessor.
+
+    SGLang runtime expects:
+      - model.model.embed_tokens  (embedding table)
+      - model.model(...)          (text body forward)
+      - model.lm_head             (output projection)
+      - model.logits_processor    (logits post-processing)
+
+    The config passed by SGLang is the top-level BailingMM2Config (from
+    AutoConfig). This class extracts llm_config for model construction
+    and patches token IDs on the HF config for the runtime's multimodal
+    embedding injection.
+    """
+
+    def __init__(
+        self,
+        config: Any,
+        quant_config: Optional[QuantizationConfig] = None,
+    ):
+        super().__init__()
+        # Keep the original HF config reference so SGLang runtime can read
+        # patched attributes (audio_token_id, etc.) from the same object.
+        self.config = config
+
+        # Extract LLM sub-config (Ming's BailingMM2Config has .llm_config)
+        llm_cfg = getattr(config, "llm_config", config)
+        adapted = BailingMoeV2Config(
+            **(llm_cfg.to_dict() if hasattr(llm_cfg, "to_dict") else {}),
+        ) if not isinstance(llm_cfg, BailingMoeV2Config) else llm_cfg
+
+        # Build model body
+        self.model = BailingMoeV2TextModel(adapted, quant_config)
+
+        # Build LM head
+        from sglang.srt.layers.vocab_parallel_embedding import ParallelLMHead
+
+        self.lm_head = ParallelLMHead(
+            adapted.vocab_size,
+            adapted.hidden_size,
+            quant_config=quant_config,
+        )
+
+        # Build logits processor
+        from sglang.srt.layers.logits_processor import LogitsProcessor
+
+        self.logits_processor = LogitsProcessor(adapted)
+
+        # ------------------------------------------------------------------
+        # Patch token IDs on the HF config for SGLang runtime's
+        # _inject_multimodal_embeds() which reads config.audio_token_id etc.
+        # This runs during model loading, BEFORE SGLangModelScheduler reads
+        # the config, so the patched values will be visible.
+        # ------------------------------------------------------------------
+        self._patch_token_ids(config, llm_cfg)
+
+    @staticmethod
+    def _patch_token_ids(config: Any, llm_cfg: Any) -> None:
+        """Set image/video/audio token IDs on the HF config."""
+        if not hasattr(config, "image_token_id"):
+            config.image_token_id = getattr(llm_cfg, "image_patch_token", None)
+        if not hasattr(config, "video_token_id"):
+            config.video_token_id = getattr(llm_cfg, "video_patch_token", None)
+        if not hasattr(config, "audio_token_id"):
+            # audio_patch_token is NOT in config.json — resolve from tokenizer
+            model_path = getattr(config, "_name_or_path", None)
+            if model_path:
+                try:
+                    from transformers import AutoTokenizer
+
+                    tok = AutoTokenizer.from_pretrained(
+                        model_path, trust_remote_code=True
+                    )
+                    audio_id = tok.convert_tokens_to_ids("<audioPatch>")
+                    # convert_tokens_to_ids returns the UNK id if not found
+                    unk_id = getattr(tok, "unk_token_id", None)
+                    if isinstance(audio_id, int) and audio_id != unk_id:
+                        config.audio_token_id = audio_id
+                    else:
+                        config.audio_token_id = None
+                        logger.warning(
+                            "Could not resolve <audioPatch> token ID from %s",
+                            model_path,
+                        )
+                except Exception:
+                    config.audio_token_id = None
+                    logger.warning(
+                        "Failed to load tokenizer for audio_token_id resolution"
+                    )
+            else:
+                config.audio_token_id = None
+
+    def forward(
+        self,
+        input_ids: torch.Tensor,
+        positions: torch.Tensor,
+        forward_batch: ForwardBatch,
+        input_embeds: Optional[torch.Tensor] = None,
+    ):
+        from sglang.srt.layers.logits_processor import LogitsProcessorOutput
+
+        hidden_states = self.model(input_ids, positions, forward_batch, input_embeds)
+        return self.logits_processor(
+            input_ids, hidden_states, self.lm_head, forward_batch
+        )
+
+    def load_weights(self, weights: Iterable[Tuple[str, torch.Tensor]]):
+        """Load weights from Ming-Omni checkpoint.
+
+        Routes lm_head weights to self.lm_head and text model weights
+        to self.model. Skips non-LLM weights (audio encoder, vision, etc.).
+        """
+        model_weights = []
+        lm_head_params = dict(self.lm_head.named_parameters())
+
+        for name, tensor in weights:
+            # Route lm_head weights
+            if name in ("lm_head.weight", "model.lm_head.weight"):
+                param = lm_head_params.get("weight")
+                if param is not None:
+                    weight_loader = getattr(
+                        param, "weight_loader", default_weight_loader
+                    )
+                    weight_loader(param, tensor)
+                continue
+
+            # Skip non-LLM weights that may be in the checkpoint
+            if any(
+                name.startswith(p)
+                for p in ("audio.", "linear_proj_audio.", "vision.", "linear_proj.")
+            ):
+                continue
+
+            model_weights.append((name, tensor))
+
+        self.model.load_weights(iter(model_weights))
+
+        # Handle weight tying
+        llm_cfg = getattr(self.config, "llm_config", self.config)
+        if getattr(llm_cfg, "tie_word_embeddings", False):
+            lm_weight = lm_head_params.get("weight")
+            if lm_weight is not None:
+                lm_weight.data = self.model.embed_tokens.weight.data

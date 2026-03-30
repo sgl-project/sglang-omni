@@ -63,14 +63,13 @@ def build_thinker_inputs(
 ) -> dict[str, Any]:
     """Build model_inputs dict for the Ming thinker from encoder outputs.
 
-    The thinker needs:
-    - audio_embeds: projected audio embeddings [B, T', hidden_size]
-    - audio_embed_lengths: output lengths per segment [B, N]
-    - audio_placeholder_loc_lens: placeholder positions from preprocessing [B, N, 2]
-    """
-    mm_inputs = state.mm_inputs
-    mm_audio = mm_inputs.get("audio", {}) if isinstance(mm_inputs, dict) else {}
+    The SGLang runtime's _inject_multimodal_embeds() handles audio embedding
+    injection automatically: it finds positions where input_ids == audio_token_id
+    and patches audio_embeds from req.omni_model_inputs into those positions.
 
+    We just need to pass audio_embeds as a flat [T', hidden_size] tensor —
+    the runtime handles the rest via token ID matching.
+    """
     audio_out = (
         encoder_outs.get(AUDIO_STAGE, {}) if isinstance(encoder_outs, dict) else {}
     )
@@ -80,25 +79,14 @@ def build_thinker_inputs(
         if isinstance(audio_out, dict)
         else None
     )
-    audio_embed_lengths = (
-        _as_tensor(audio_out.get("audio_embed_lengths"), dtype=torch.long)
-        if isinstance(audio_out, dict)
-        else None
-    )
-
-    # Placeholder locations come from preprocessing (stored in mm_inputs or encoder_inputs)
-    audio_placeholder_loc_lens = _as_tensor(
-        mm_audio.get("audio_placeholder_loc_lens"),
-        dtype=torch.long,
-    )
 
     thinker_model_inputs: dict[str, Any] = {}
+
     if _non_empty(audio_embeds):
+        # Flatten: [B, T', H] -> [T', H] (remove batch dim for SGLang injection)
+        if audio_embeds.dim() == 3:
+            audio_embeds = audio_embeds.squeeze(0)
         thinker_model_inputs["audio_embeds"] = audio_embeds
-    if _non_empty(audio_embed_lengths):
-        thinker_model_inputs["audio_embed_lengths"] = audio_embed_lengths
-    if _non_empty(audio_placeholder_loc_lens):
-        thinker_model_inputs["audio_placeholder_loc_lens"] = audio_placeholder_loc_lens
 
     return {"model_inputs": thinker_model_inputs}
 
