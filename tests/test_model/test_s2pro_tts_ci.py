@@ -56,6 +56,15 @@ VC_STREAM_WER_MAX_PER_SAMPLE = 0.0
 # capture the accuracy regression fixed by https://github.com/sgl-project/sglang-omni/pull/217
 # We shall have more strict rules that can let #217 pass but let commit 8deddef fail.
 
+WER_SCRIPT = str(
+    Path(__file__).resolve().parents[2] / "benchmarks" / "eval" / "voice_clone_s2pro_wer.py"
+)
+
+
+# ---------------------------------------------------------------------------
+# Helpers: speed benchmark
+# ---------------------------------------------------------------------------
+
 
 def _run_benchmark(
     port: int,
@@ -114,23 +123,27 @@ def _run_benchmark(
     return speed_results
 
 
-def _run_wer_benchmark(
+# ---------------------------------------------------------------------------
+# Helpers: two-phase WER benchmark
+# ---------------------------------------------------------------------------
+
+
+def _no_proxy_env() -> dict[str, str]:
+    proxy_keys = {"http_proxy", "https_proxy", "all_proxy", "no_proxy"}
+    return {k: v for k, v in os.environ.items() if k.lower() not in proxy_keys}
+
+
+def _run_wer_generate(
     port: int,
     meta_path: str,
     output_dir: str,
-    lang: str = "en",
-    device: str = "cuda:0",
     stream: bool = False,
-) -> dict:
-    script_path = str(
-        Path(__file__).resolve().parents[2]
-        / "benchmarks"
-        / "eval"
-        / "voice_clone_s2pro_wer.py"
-    )
+) -> None:
+    """Phase 1: generate TTS audio while server is alive."""
     cmd = [
         sys.executable,
-        script_path,
+        WER_SCRIPT,
+        "--generate-only",
         "--meta",
         meta_path,
         "--output-dir",
@@ -139,29 +152,58 @@ def _run_wer_benchmark(
         MODEL_PATH,
         "--port",
         str(port),
-        "--lang",
-        lang,
-        "--device",
-        device,
         "--max-samples",
         str(MAX_SAMPLES),
     ]
     if stream:
         cmd.append("--stream")
 
-    proxy_keys = {"http_proxy", "https_proxy", "all_proxy", "no_proxy"}
-    env = {k: v for k, v in os.environ.items() if k.lower() not in proxy_keys}
-
-    proc_result = subprocess.run(
+    result = subprocess.run(
         cmd,
         capture_output=True,
         text=True,
         timeout=WER_TIMEOUT,
-        env=env,
+        env=_no_proxy_env(),
     )
-    assert proc_result.returncode == 0, (
-        f"WER benchmark failed (rc={proc_result.returncode}).\n"
-        f"stdout:\n{proc_result.stdout}\nstderr:\n{proc_result.stderr}"
+    assert result.returncode == 0, (
+        f"WER generate failed (rc={result.returncode}).\n"
+        f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    )
+
+
+def _run_wer_transcribe(
+    meta_path: str,
+    output_dir: str,
+    lang: str = "en",
+    device: str = "cuda:0",
+) -> dict:
+    """Phase 2: transcribe saved audio and compute WER (no server needed)."""
+    cmd = [
+        sys.executable,
+        WER_SCRIPT,
+        "--transcribe-only",
+        "--meta",
+        meta_path,
+        "--output-dir",
+        output_dir,
+        "--model",
+        MODEL_PATH,
+        "--lang",
+        lang,
+        "--device",
+        device,
+    ]
+
+    result = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        timeout=WER_TIMEOUT,
+        env=_no_proxy_env(),
+    )
+    assert result.returncode == 0, (
+        f"WER transcribe failed (rc={result.returncode}).\n"
+        f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
     )
 
     results_path = Path(output_dir) / "wer_results.json"
@@ -169,13 +211,44 @@ def _run_wer_benchmark(
 
     with open(results_path) as f:
         wer_results = json.load(f)
-    assert (
-        "summary" in wer_results
-    ), f"Missing 'summary' key in WER results. Keys: {list(wer_results.keys())}"
-    assert (
-        "per_sample" in wer_results
-    ), f"Missing 'per_sample' key in WER results. Keys: {list(wer_results.keys())}"
+    assert "summary" in wer_results, (
+        f"Missing 'summary' key in WER results. Keys: {list(wer_results.keys())}"
+    )
+    assert "per_sample" in wer_results, (
+        f"Missing 'per_sample' key in WER results. Keys: {list(wer_results.keys())}"
+    )
+
+    summary = wer_results["summary"]
+    if summary.get("skipped", 0) > 0:
+        print(
+            f"\n[WER DIAGNOSTIC] {summary['skipped']}/{summary['total_samples']} "
+            f"samples skipped.\nSubprocess stderr:\n{result.stderr}"
+        )
+        for sample in wer_results["per_sample"]:
+            if not sample.get("is_success", True):
+                print(f"  FAILED sample {sample['id']}: {sample.get('error')}")
+
     return wer_results
+
+
+def _kill_server(proc: subprocess.Popen) -> None:
+    """Kill the server process group, tolerating already-dead processes."""
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+        proc.wait(timeout=30)
+    except (ProcessLookupError, ChildProcessError):
+        pass
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            proc.wait(timeout=10)
+        except (ProcessLookupError, ChildProcessError):
+            pass
+
+
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
 
 
 @pytest.fixture(scope="module")
@@ -224,8 +297,7 @@ def server_process(tmp_path_factory: pytest.TempPathFactory):
                     health_body_contains="healthy",
                 )
         except TimeoutError:
-            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-            proc.wait(timeout=10)
+            _kill_server(proc)
             server_log = log_file.read_text()
             pytest.fail(
                 f"Server did not become healthy within {STARTUP_TIMEOUT}s.\n{server_log}"
@@ -235,12 +307,40 @@ def server_process(tmp_path_factory: pytest.TempPathFactory):
 
         yield proc
 
-        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-        try:
-            proc.wait(timeout=30)
-        except subprocess.TimeoutExpired:
-            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-            proc.wait(timeout=10)
+        _kill_server(proc)
+
+
+@pytest.fixture(scope="module")
+def wer_audio_dirs(
+    server_process: subprocess.Popen,
+    dataset_dir: Path,
+    tmp_path_factory: pytest.TempPathFactory,
+):
+    """Generate all WER audio while server is alive, then kill server.
+
+    This fixture runs after speed tests (which also depend on server_process)
+    because WER tests are defined after speed tests in this file, and pytest
+    evaluates module-scoped fixtures lazily on first use.
+
+    After audio generation completes the server is killed to free GPU memory
+    for the Whisper ASR model used during transcription.
+    """
+    tmp = tmp_path_factory.mktemp("wer")
+    meta = str(dataset_dir / "en" / "meta.lst")
+
+    # Generate audio (server must be alive)
+    _run_wer_generate(server_process.port, meta, str(tmp / "non_stream"))
+    _run_wer_generate(server_process.port, meta, str(tmp / "stream"), stream=True)
+
+    # Kill server to free GPU for Whisper
+    _kill_server(server_process)
+
+    return {"non_stream": str(tmp / "non_stream"), "stream": str(tmp / "stream")}
+
+
+# ---------------------------------------------------------------------------
+# Assertion helpers
+# ---------------------------------------------------------------------------
 
 
 def _assert_summary_metrics(summary: dict) -> None:
@@ -321,9 +421,55 @@ def _assert_streaming_consistency(
         )
 
 
+def _assert_wer_results(
+    results: dict,
+    max_corpus_wer: float,
+    max_per_sample_wer: float,
+) -> None:
+    """Common WER assertions shared by streaming and non-streaming tests."""
+    summary = results["summary"]
+    per_sample = results["per_sample"]
+
+    failed_details = [
+        f"  sample {s['id']}: {s.get('error')}"
+        for s in per_sample
+        if not s.get("is_success", True)
+    ]
+    assert summary["evaluated"] == summary["total_samples"], (
+        f"Only {summary['evaluated']}/{summary['total_samples']} samples evaluated, "
+        f"{summary['skipped']} skipped.\n"
+        f"Per-sample errors:\n" + "\n".join(failed_details)
+    )
+
+    assert summary["wer_corpus"] <= max_corpus_wer, (
+        f"Corpus WER {summary['wer_corpus']:.4f} ({summary['wer_corpus'] * 100:.2f}%) "
+        f"> threshold {max_corpus_wer} ({max_corpus_wer * 100:.0f}%)"
+    )
+
+    assert summary["n_above_50_pct_wer"] == 0, (
+        f"{summary['n_above_50_pct_wer']} samples have >50% WER — "
+        f"expected 0 catastrophic failures"
+    )
+
+    for sample in per_sample:
+        assert sample[
+            "is_success"
+        ], f"Sample {sample['id']} failed: {sample.get('error')}"
+        if sample["wer"] is not None:
+            assert sample["wer"] <= max_per_sample_wer, (
+                f"Sample {sample['id']} WER {sample['wer']:.4f} "
+                f"> {max_per_sample_wer}"
+            )
+
+
 # Module-level storage so consistency tests can compare across streaming modes
 # without re-running benchmarks.  Keys: "vc_nonstream", "vc_stream", etc.
 _per_request_store: dict[str, list[dict]] = {}
+
+
+# ---------------------------------------------------------------------------
+# Speed tests (server alive)
+# ---------------------------------------------------------------------------
 
 
 @pytest.mark.benchmark
@@ -425,92 +571,13 @@ def test_plain_tts_streaming(
     ), f"throughput_qps {summary['throughput_qps']} < {PLAIN_STREAM_MIN_THROUGHPUT_QPS}"
 
 
-@pytest.mark.benchmark
-def test_voice_cloning_wer(
-    server_process: subprocess.Popen,
-    dataset_dir: Path,
-    tmp_path: Path,
-) -> None:
-    results = _run_wer_benchmark(
-        server_process.port,
-        str(dataset_dir / "en" / "meta.lst"),
-        str(tmp_path / "vc_wer"),
-    )
-    summary = results["summary"]
-    per_sample = results["per_sample"]
-
-    assert summary["evaluated"] == summary["total_samples"], (
-        f"Only {summary['evaluated']}/{summary['total_samples']} samples evaluated, "
-        f"{summary['skipped']} skipped"
-    )
-
-    assert summary["wer_corpus"] <= VC_WER_MAX_CORPUS, (
-        f"Corpus WER {summary['wer_corpus']:.4f} ({summary['wer_corpus'] * 100:.2f}%) "
-        f"> threshold {VC_WER_MAX_CORPUS} ({VC_WER_MAX_CORPUS * 100:.0f}%)"
-    )
-
-    assert summary["n_above_50_pct_wer"] == 0, (
-        f"{summary['n_above_50_pct_wer']} samples have >50% WER — "
-        f"expected 0 catastrophic failures"
-    )
-
-    for sample in per_sample:
-        assert sample[
-            "is_success"
-        ], f"Sample {sample['id']} failed: {sample.get('error')}"
-        if sample["wer"] is not None:
-            assert sample["wer"] <= VC_WER_MAX_PER_SAMPLE, (
-                f"Sample {sample['id']} WER {sample['wer']:.4f} "
-                f"> {VC_WER_MAX_PER_SAMPLE}"
-            )
+# ---------------------------------------------------------------------------
+# Streaming consistency tests (no server calls, uses stored data)
+# ---------------------------------------------------------------------------
 
 
 @pytest.mark.benchmark
-def test_voice_cloning_streaming_wer(
-    server_process: subprocess.Popen,
-    dataset_dir: Path,
-    tmp_path: Path,
-) -> None:
-    """Voice cloning streaming WER: same quality bar as non-streaming."""
-    results = _run_wer_benchmark(
-        server_process.port,
-        str(dataset_dir / "en" / "meta.lst"),
-        str(tmp_path / "vc_stream_wer"),
-        stream=True,
-    )
-    summary = results["summary"]
-    per_sample = results["per_sample"]
-
-    assert summary["evaluated"] == summary["total_samples"], (
-        f"Only {summary['evaluated']}/{summary['total_samples']} samples evaluated, "
-        f"{summary['skipped']} skipped"
-    )
-
-    assert summary["wer_corpus"] <= VC_STREAM_WER_MAX_CORPUS, (
-        f"Streaming corpus WER {summary['wer_corpus']:.4f} "
-        f"({summary['wer_corpus'] * 100:.2f}%) "
-        f"> threshold {VC_STREAM_WER_MAX_CORPUS} "
-        f"({VC_STREAM_WER_MAX_CORPUS * 100:.0f}%)"
-    )
-
-    assert summary["n_above_50_pct_wer"] == 0, (
-        f"{summary['n_above_50_pct_wer']} samples have >50% WER — "
-        f"expected 0 catastrophic failures"
-    )
-
-    for sample in per_sample:
-        assert sample[
-            "is_success"
-        ], f"Sample {sample['id']} failed: {sample.get('error')}"
-        if sample["wer"] is not None:
-            assert sample["wer"] <= VC_STREAM_WER_MAX_PER_SAMPLE, (
-                f"Sample {sample['id']} streaming WER {sample['wer']:.4f} "
-                f"> {VC_STREAM_WER_MAX_PER_SAMPLE}"
-            )
-
-
-@pytest.mark.benchmark
-def test_voice_cloning_streaming_consistency(server_process: subprocess.Popen) -> None:
+def test_voice_cloning_streaming_consistency() -> None:
     ns = _per_request_store.get("vc_nonstream")
     st = _per_request_store.get("vc_stream")
     assert ns is not None, "vc_nonstream results missing"
@@ -519,12 +586,45 @@ def test_voice_cloning_streaming_consistency(server_process: subprocess.Popen) -
 
 
 @pytest.mark.benchmark
-def test_plain_tts_streaming_consistency(server_process: subprocess.Popen) -> None:
+def test_plain_tts_streaming_consistency() -> None:
     ns = _per_request_store.get("plain_nonstream")
     st = _per_request_store.get("plain_stream")
     assert ns is not None, "plain_nonstream results missing"
     assert st is not None, "plain_stream results missing"
     _assert_streaming_consistency(ns, st)
+
+
+# ---------------------------------------------------------------------------
+# WER tests (server killed, Whisper on GPU)
+#
+# The wer_audio_dirs fixture generates audio while the server is alive, then
+# kills the server to free GPU memory for the Whisper ASR model.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.benchmark
+def test_voice_cloning_wer(
+    wer_audio_dirs: dict[str, str],
+    dataset_dir: Path,
+) -> None:
+    results = _run_wer_transcribe(
+        str(dataset_dir / "en" / "meta.lst"),
+        wer_audio_dirs["non_stream"],
+    )
+    _assert_wer_results(results, VC_WER_MAX_CORPUS, VC_WER_MAX_PER_SAMPLE)
+
+
+@pytest.mark.benchmark
+def test_voice_cloning_streaming_wer(
+    wer_audio_dirs: dict[str, str],
+    dataset_dir: Path,
+) -> None:
+    """Voice cloning streaming WER: same quality bar as non-streaming."""
+    results = _run_wer_transcribe(
+        str(dataset_dir / "en" / "meta.lst"),
+        wer_audio_dirs["stream"],
+    )
+    _assert_wer_results(results, VC_STREAM_WER_MAX_CORPUS, VC_STREAM_WER_MAX_PER_SAMPLE)
 
 
 if __name__ == "__main__":
