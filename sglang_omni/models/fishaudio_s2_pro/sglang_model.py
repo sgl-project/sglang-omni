@@ -12,6 +12,7 @@ import torch
 from sglang.srt.layers.logits_processor import LogitsProcessorOutput
 from torch import Tensor, nn
 
+from sglang_omni.models.fishaudio_s2_pro.runtime.s2pro_ar import _sample_with_topk
 from sglang_omni.vendor.sglang.core import ForwardBatch
 from sglang_omni.vendor.sglang.layers import (
     MergedColumnParallelLinear,
@@ -346,12 +347,39 @@ class S2ProSGLangTextModel(nn.Module):
 
     @torch.no_grad()
     def _decode_codebooks(self, logits: Tensor, hidden_states: Tensor) -> None:
-        """Constrained semantic sampling + batched codebook generation."""
+        """Constrained semantic + codebook decode with full sampling.
+
+        Restores the original S2-Pro sampling behavior (temperature, top_p,
+        top_k, repetition_penalty) that was lost in the CUDA-graph-compatible
+        argmax path. Requires disable_cuda_graph=True.
+        """
         bs = logits.shape[0]
+        device = logits.device
+
+        # Default S2-Pro sampling parameters
+        temperature = torch.tensor([0.8], device=device)
+        top_p = torch.tensor([0.8], device=device)
+        rep_penalty = torch.tensor([1.1], device=device)
+        top_k = 30
+
+        # bf16 logits alignment: match fish-speech training numerics
+        biased_logits = logits.to(torch.bfloat16).to(torch.float32)
 
         # Constrained decode: mask non-semantic tokens
-        biased_logits = logits + self._semantic_bias
-        semantic_token = torch.argmax(biased_logits, dim=-1)  # [bs]
+        biased_logits = biased_logits + self._semantic_bias.to(dtype=biased_logits.dtype)
+
+        # Sample semantic token per request
+        for b in range(bs):
+            sem_tok = _sample_with_topk(
+                biased_logits[b : b + 1],
+                temperature,
+                top_p,
+                top_k=top_k,
+                repetition_penalty=rep_penalty,
+            )
+            self._output_codes[b, 0] = sem_tok.squeeze()
+
+        semantic_token = self._output_codes[:bs, 0]
 
         # Batched codebook loop
         self._audio_decoder.reset_caches()
@@ -362,7 +390,6 @@ class S2ProSGLangTextModel(nn.Module):
         sem_id = (semantic_token - self._semantic_begin_id).clamp(min=0)
         cb_hidden = self._audio_decoder.embeddings(sem_id).unsqueeze(1)
 
-        self._output_codes[:bs, 0] = semantic_token
         self._output_codes[:bs, 1] = sem_id
 
         for cb_idx in range(1, self._num_codebooks):
@@ -370,9 +397,17 @@ class S2ProSGLangTextModel(nn.Module):
                 cb_hidden, codebook_idx=cb_idx
             )
             cb_logits = cb_logits[:, 0, : self._codebook_size]
-            cb_token = torch.argmax(cb_logits, dim=-1)  # [bs]
+            # Sample codebook token per request
+            for b in range(bs):
+                cb_tok = _sample_with_topk(
+                    cb_logits[b : b + 1],
+                    temperature,
+                    top_p,
+                    top_k=top_k,
+                )
+                self._output_codes[b, cb_idx + 1] = cb_tok.squeeze()
+            cb_token = self._output_codes[:bs, cb_idx + 1]
             cb_hidden = self._audio_decoder.embeddings(cb_token).unsqueeze(1)
-            self._output_codes[:bs, cb_idx + 1] = cb_token
 
         self._output_semantic_ids[:bs] = semantic_token
 
