@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 import torch
 from sglang.srt.mem_cache.common import release_kv_cache
@@ -30,6 +30,11 @@ from sglang_omni.engines.omni.types import (
     RequestOutput,
     SchedulerOutput,
     SchedulerRequest,
+)
+from sglang_omni.models.fishaudio_s2_pro.constants import (
+    RAS_TRIGGER_LOOKBACK,
+    RAS_TRIGGER_MIN_TOKENS,
+    REPETITION_WINDOW,
 )
 
 from .s2pro_ar import S2ProStepOutput
@@ -67,6 +72,27 @@ class S2ProSGLangRequestData(SGLangARRequestData):
 
     _previous_semantic_tokens: list[int] = field(default_factory=list)
     _last_codebook_values: torch.Tensor | None = None
+
+
+class SamplingState(NamedTuple):
+    use_ras: bool
+    previous_tokens: list[int]
+
+
+def _resolve_sampling_state(
+    data: S2ProSGLangRequestData,
+    *,
+    ras_window: int,
+    repetition_window: int = REPETITION_WINDOW,
+) -> SamplingState:
+    previous_tokens = data._previous_semantic_tokens[-repetition_window:]
+    recent_tokens = data._previous_semantic_tokens[-ras_window:]
+    duplicate_window = recent_tokens[-RAS_TRIGGER_LOOKBACK:]
+    use_ras = len(recent_tokens) >= RAS_TRIGGER_MIN_TOKENS and len(
+        set(duplicate_window)
+    ) < len(duplicate_window)
+
+    return SamplingState(use_ras=use_ras, previous_tokens=previous_tokens)
 
 
 # ---------------------------------------------------------------------------
@@ -446,6 +472,22 @@ class S2ProSGLangModelRunner:
             data: S2ProSGLangRequestData = sched_req.data
             if data._last_codebook_values is not None and is_semantic[i]:
                 text_model._vq_codes[i].copy_(data._last_codebook_values)
+            sampling_state = _resolve_sampling_state(
+                data,
+                ras_window=text_model._ras_window,
+            )
+            text_model._sample_use_ras[i] = sampling_state.use_ras
+            text_model._sample_previous_tokens[i].zero_()
+            text_model._sample_previous_mask[i].zero_()
+            if sampling_state.previous_tokens:
+                prev_tensor = torch.tensor(
+                    sampling_state.previous_tokens,
+                    device=input_ids.device,
+                    dtype=torch.long,
+                )
+                length = prev_tensor.shape[0]
+                text_model._sample_previous_tokens[i, :length].copy_(prev_tensor)
+                text_model._sample_previous_mask[i, :length] = True
 
     def _build_outputs(
         self,

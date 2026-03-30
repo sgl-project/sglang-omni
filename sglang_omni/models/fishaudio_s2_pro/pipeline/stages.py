@@ -11,6 +11,7 @@ from typing import Any
 import torch
 
 from sglang_omni.executors import EngineExecutor, PreprocessingExecutor
+from sglang_omni.executors.engine_executor import is_stream_request_params
 from sglang_omni.models.fishaudio_s2_pro.io import S2ProState
 from sglang_omni.models.fishaudio_s2_pro.pipeline.engine_io import (
     apply_tts_result,
@@ -161,7 +162,9 @@ def _maybe_build_incremental_audio_chunk(
         return None
 
     stream_codes: list[torch.Tensor] = payload.data.setdefault(_STREAM_CODES_KEY, [])
-    stream_codes.append(codes.detach().cpu())
+    # Keep step codes on device to avoid per-step CUDA sync from `.cpu()`.
+    # We only transfer once per emitted chunk inside _build_incremental_audio_chunk.
+    stream_codes.append(codes.detach())
 
     total_tokens = sum(chunk.shape[1] for chunk in stream_codes)
     next_vocode_tokens = int(
@@ -269,7 +272,7 @@ def create_sglang_tts_engine_executor(
     max_new_tokens: int = 2048,
     top_k: int = 30,
     stream_stride: int = 5,
-    stream_followup_stride: int = 100,
+    stream_followup_stride: int = 10000,
     stream_vocoder_device: str | None = None,
 ) -> EngineExecutor:
     """Factory for the S2-Pro TTS engine stage."""
@@ -323,7 +326,6 @@ def create_sglang_tts_engine_executor(
         num_codebooks=num_codebooks,
         codebook_size=codebook_size,
         max_new_tokens=max_new_tokens,
-        top_k=top_k,
     )
 
     def _request_builder(payload: StagePayload):
@@ -342,7 +344,7 @@ def create_sglang_tts_engine_executor(
             return None
         # Note (Chenyang): Hot path optimization: skip expensive
         # GPU→CPU transfer for non-streaming requests.
-        if not payload.request.params.get("stream"):
+        if not is_stream_request_params(payload.request.params):
             return None
         return _maybe_build_incremental_audio_chunk(
             payload,
@@ -368,24 +370,31 @@ def create_vocoder_executor(
 ) -> PreprocessingExecutor:
     """Factory for the vocoder stage."""
     checkpoint_dir = _resolve_checkpoint(model_path)
-    codec = _load_codec(checkpoint_dir, device)
+    codec: Any | None = None
+
+    def _get_codec() -> Any:
+        nonlocal codec
+        if codec is None:
+            codec = _load_codec(checkpoint_dir, device)
+        return codec
 
     def _vocode(payload: StagePayload) -> StagePayload:
         state = load_state(payload)
         output_codes = state.output_codes
+        codec_model = _get_codec()
 
         codebook_codes = output_codes[1:].to(device)
 
         with torch.no_grad():
-            audio = codec.from_indices(codebook_codes[None])
+            audio = codec_model.from_indices(codebook_codes[None])
 
         audio_np = audio[0, 0].float().cpu()
         state.audio_samples = audio_np
-        state.sample_rate = codec.sample_rate
+        state.sample_rate = codec_model.sample_rate
         payload = store_state(payload, state)
 
         payload.data["audio_data"] = audio_np.tolist()
-        payload.data["sample_rate"] = codec.sample_rate
+        payload.data["sample_rate"] = codec_model.sample_rate
         payload.data["modality"] = "audio"
         if state.prompt_tokens or state.completion_tokens:
             usage = {
