@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""S2-Pro TTS benchmark CI: starts server, runs benchmarks, asserts thresholds.
+"""S2-Pro benchmark CI: starts server, runs the generic benchmark framework, asserts thresholds.
 
 Usage:
     pytest tests/test_model/test_s2pro_benchmark.py -s -x
@@ -49,9 +49,10 @@ def _run_benchmark(
     port: int,
     testset: str,
     output_dir: str,
+    case_id: str,
     extra_args: list[str] | None = None,
 ) -> dict:
-    """Run benchmark_tts_speed as subprocess and return the full results dict.
+    """Run the generic benchmark runner as subprocess and return the full results dict.
 
     Returns the complete JSON results containing both ``summary`` and
     ``per_request`` entries.
@@ -59,12 +60,16 @@ def _run_benchmark(
     cmd = [
         sys.executable,
         "-m",
-        "benchmarks.performance.tts.benchmark_tts_speed",
+        "benchmarks.run",
+        "--base-url",
+        f"http://localhost:{port}",
         "--model",
         MODEL_PATH,
-        "--port",
-        str(port),
-        "--testset",
+        "--model-profile",
+        "s2_tts",
+        "--case",
+        case_id,
+        "--dataset",
         testset,
         "--max-samples",
         str(MAX_SAMPLES),
@@ -92,7 +97,7 @@ def _run_benchmark(
         f"stdout:\n{proc_result.stdout}\nstderr:\n{proc_result.stderr}"
     )
 
-    results_path = Path(output_dir) / "speed_results.json"
+    results_path = Path(output_dir) / "benchmark_results.json"
     assert results_path.exists(), f"Results file not found: {results_path}"
 
     with open(results_path) as f:
@@ -196,8 +201,11 @@ def _assert_summary_metrics(summary: dict) -> None:
         summary["audio_duration_mean_s"] > 0
     ), f"Expected positive audio duration, got {summary['audio_duration_mean_s']}"
     assert (
-        summary.get("gen_tokens_mean", 0) > 0
-    ), f"Expected positive gen_tokens_mean, got {summary.get('gen_tokens_mean', 0)}"
+        summary.get("completion_tokens_mean", 0) > 0
+    ), (
+        "Expected positive completion_tokens_mean, got "
+        f"{summary.get('completion_tokens_mean', 0)}"
+    )
     assert (
         summary.get("prompt_tokens_mean", 0) > 0
     ), f"Expected positive prompt_tokens_mean, got {summary.get('prompt_tokens_mean', 0)}"
@@ -207,7 +215,7 @@ def _assert_per_request_fields(per_request: list[dict]) -> None:
     """Verify every request has valid audio, prompt_tokens, and completion_tokens."""
     for req in per_request:
         rid = req["id"]
-        assert req["is_success"], f"Request {rid} failed: {req.get('error')}"
+        assert req["success"], f"Request {rid} failed: {req.get('error')}"
         assert (
             req["audio_duration_s"] is not None and req["audio_duration_s"] > 0
         ), f"Request {rid}: audio_duration_s={req['audio_duration_s']}, expected > 0"
@@ -282,6 +290,7 @@ def test_voice_cloning_non_streaming(
         server_port,
         str(dataset_dir / "en" / "meta.lst"),
         str(tmp_path / "vc_nonstream"),
+        "voice-cloning",
     )
     summary, per_request = results["summary"], results["per_request"]
     _assert_summary_metrics(summary)
@@ -307,6 +316,7 @@ def test_voice_cloning_streaming(
         server_port,
         str(dataset_dir / "en" / "meta.lst"),
         str(tmp_path / "vc_stream"),
+        "voice-cloning",
         ["--stream"],
     )
     summary, per_request = results["summary"], results["per_request"]
@@ -355,7 +365,7 @@ def test_plain_tts_non_streaming(
         server_port,
         str(dataset_dir / "en" / "meta.lst"),
         str(tmp_path / "plain_nonstream"),
-        ["--no-ref-audio"],
+        "plain-tts",
     )
     summary, per_request = results["summary"], results["per_request"]
     _assert_summary_metrics(summary)
@@ -381,7 +391,8 @@ def test_plain_tts_streaming(
         server_port,
         str(dataset_dir / "en" / "meta.lst"),
         str(tmp_path / "plain_stream"),
-        ["--no-ref-audio", "--stream"],
+        "plain-tts",
+        ["--stream"],
     )
     summary, per_request = results["summary"], results["per_request"]
     _assert_summary_metrics(summary)
