@@ -368,7 +368,11 @@ class BailingMoeV2SparseMoeBlock(nn.Module):
             self.shared_experts = None
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        identity = hidden_states
+        # Clone for shared expert input: FusedMoE with inplace=True overwrites
+        # hidden_states, so the shared expert must use a separate copy.
+        identity = (
+            hidden_states.clone() if self.shared_experts is not None else hidden_states
+        )
 
         # Router scores via sigmoid (not softmax like standard MoE)
         router_logits, _ = self.gate(hidden_states)
@@ -602,7 +606,6 @@ class BailingMoeV2TextModel(nn.Module):
                         param = params_dict[fused_key]
                         param.weight_loader(param, loaded_weight, shard_id)
                         matched_attn = True
-
                         break
             if matched_attn:
                 continue
@@ -635,7 +638,6 @@ class BailingMoeV2TextModel(nn.Module):
                             shard_id=shard_id,
                             expert_id=expert_id,
                         )
-
                         continue
 
             # 3. Handle gate/up -> fused gate_up_proj
@@ -667,8 +669,6 @@ class BailingMoeV2TextModel(nn.Module):
                 param = params_dict[name]
                 weight_loader = getattr(param, "weight_loader", default_weight_loader)
                 weight_loader(param, loaded_weight)
-            else:
-                logger.debug("Skipping weight: %s", name)
 
 
 # ============================================================================
@@ -782,6 +782,7 @@ class BailingMoeV2ForCausalLM(nn.Module):
         input_embeds: Optional[torch.Tensor] = None,
     ):
         hidden_states = self.model(input_ids, positions, forward_batch, input_embeds)
+
         return self.logits_processor(
             input_ids, hidden_states, self.lm_head, forward_batch
         )
