@@ -119,7 +119,10 @@ def test_voice_cloning_streaming(
             break
 
         event = json.loads(payload)
-        if event.get("object") == "audio.speech.chunk" and event.get("audio") is not None:
+        if (
+            event.get("object") == "audio.speech.chunk"
+            and event.get("audio") is not None
+        ):
             has_audio_chunk = True
 
     assert has_audio_chunk, "Expected at least one audio.speech.chunk event"
@@ -162,7 +165,9 @@ def test_voice_cloning_streaming_wav_reassembly(
                 base64_audio = (json.loads(data).get("audio") or {}).get("data")
                 if not base64_audio:
                     continue
-                with wave.open(io.BytesIO(base64.b64decode(base64_audio)), "rb") as wav_file:
+                with wave.open(
+                    io.BytesIO(base64.b64decode(base64_audio)), "rb"
+                ) as wav_file:
                     if wav_format is None:
                         wav_format = (
                             wav_file.getnchannels(),
