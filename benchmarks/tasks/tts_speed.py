@@ -233,6 +233,69 @@ def make_tts_send_fn(
     return send_fn
 
 
+def make_omni_tts_send_fn(
+    model_name: str,
+    api_url: str,
+    *,
+    lang: str = "en",
+    voice_clone: bool = True,
+    speaker: str = "Ethan",
+    max_tokens: int = 256,
+    temperature: float = 0.7,
+    save_audio_dir: str | None = None,
+) -> SendFn:
+    """Return a *send_fn* for Omni models that use /v1/chat/completions.
+
+    Reuses the same VoiceCloneOmni payload format so the benchmark is
+    consistent with the WER evaluation scripts.
+    """
+    from benchmarks.tasks.voice_clone import VoiceCloneOmni
+
+    task = VoiceCloneOmni()
+
+    async def send_fn(
+        session: aiohttp.ClientSession, sample: SampleInput
+    ) -> RequestResult:
+        result = RequestResult(
+            request_id=sample.sample_id,
+            text=sample.target_text[:TEXT_PREVIEW_LENGTH],
+        )
+        start_time = time.perf_counter()
+        try:
+            wav_bytes, _ = await task.generate_speech(
+                session,
+                api_url,
+                model_name,
+                sample,
+                lang,
+                speaker=speaker,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                voice_clone=voice_clone,
+            )
+            result.audio_duration_s = get_wav_duration(wav_bytes)
+            elapsed = time.perf_counter() - start_time
+            if result.audio_duration_s > 0:
+                result.is_success = True
+                result.rtf = elapsed / result.audio_duration_s
+            else:
+                result.error = f"Invalid audio ({len(wav_bytes)} bytes)"
+            if save_audio_dir:
+                path = os.path.join(save_audio_dir, f"{result.request_id}.wav")
+                with open(path, "wb") as f:
+                    f.write(wav_bytes)
+                result.wav_path = path
+        except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+            result.error = str(exc)
+        except Exception as exc:
+            result.error = str(exc)
+        finally:
+            result.latency_s = time.perf_counter() - start_time
+        return result
+
+    return send_fn
+
+
 def print_speed_summary(
     metrics: dict, model_name: str, concurrency: int | None = None
 ) -> None:

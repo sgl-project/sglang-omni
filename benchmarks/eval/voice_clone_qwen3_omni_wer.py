@@ -5,16 +5,27 @@ Generates speech via /v1/chat/completions with modalities: ["text", "audio"],
 then evaluates WER using Whisper (EN) or FunASR (ZH).
 
 Usage:
+    # All-in-one (generate + transcribe)
     python benchmarks/eval/voice_clone_qwen3_omni_wer.py \
         --meta seedtts_testset/en/meta.lst \
         --output-dir results/qwen3_omni_en \
         --lang en --max-samples 50
+
+    # Two-phase (for CI — kill server between phases to avoid OOM)
+    python benchmarks/eval/voice_clone_qwen3_omni_wer.py \
+        --generate-only --meta seedtts_testset/en/meta.lst \
+        --output-dir results/qwen3_omni_en --max-samples 10
+
+    python benchmarks/eval/voice_clone_qwen3_omni_wer.py \
+        --transcribe-only --meta seedtts_testset/en/meta.lst \
+        --output-dir results/qwen3_omni_en --lang en --device cuda:0
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import logging
 import os
 import sys
@@ -23,6 +34,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import aiohttp
+import soundfile as sf
 import torch
 from tqdm import tqdm
 
@@ -30,7 +42,9 @@ from benchmarks.benchmarker.utils import wait_for_service
 from benchmarks.dataset.prepare import download_dataset
 from benchmarks.dataset.seedtts import load_seedtts_samples
 from benchmarks.tasks.voice_clone import (
+    SampleOutput,
     VoiceCloneOmni,
+    _transcribe_and_compute_wer,
     calculate_wer_metrics,
     load_asr_model,
     print_wer_summary,
@@ -41,13 +55,142 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 logger = logging.getLogger(__name__)
 
 
-async def main_async(args: argparse.Namespace) -> None:
-    """Main async function for voice clone WER evaluation.
+async def generate_audio(args: argparse.Namespace) -> list[dict]:
+    """Call Omni TTS API for each sample and save WAV files to disk."""
+    base_url = f"http://{args.host}:{args.port}"
+    api_url = f"{base_url}/v1/chat/completions"
 
-    TODO (chenyang):
-    Current implementation of Qwen3 Omni on main branch is broken.
-    Need to merge the changes from https://github.com/sgl-project/sglang-omni/pull/219
-    """
+    samples = load_seedtts_samples(args.meta, args.max_samples)
+    logger.info("Loaded %d samples from %s", len(samples), args.meta)
+
+    audio_dir = os.path.join(args.output_dir, "audio")
+    os.makedirs(audio_dir, exist_ok=True)
+
+    task = VoiceCloneOmni()
+    timeout = aiohttp.ClientTimeout(total=300)
+    generated: list[dict] = []
+
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        for i, sample in enumerate(tqdm(samples, desc="Generating TTS audio")):
+            wav_path = os.path.join(audio_dir, f"{sample.sample_id}.wav")
+            entry: dict = {
+                "sample_id": sample.sample_id,
+                "target_text": sample.target_text,
+                "wav_path": wav_path,
+            }
+            try:
+                wav_bytes, latency = await task.generate_speech(
+                    session,
+                    api_url,
+                    args.model,
+                    sample,
+                    args.lang,
+                    speaker=args.speaker,
+                    max_tokens=args.max_tokens,
+                    voice_clone=args.voice_clone,
+                )
+                with open(wav_path, "wb") as f:
+                    f.write(wav_bytes)
+                wav_info = sf.info(wav_path)
+                entry["latency_s"] = round(latency, 4)
+                entry["audio_duration_s"] = round(wav_info.duration, 4)
+                entry["is_success"] = True
+                logger.info(
+                    "[%d/%d] Generated %.1fs audio for %s",
+                    i + 1,
+                    len(samples),
+                    wav_info.duration,
+                    sample.sample_id,
+                )
+            except Exception as exc:
+                entry["is_success"] = False
+                entry["error"] = str(exc)
+                logger.warning(
+                    "[%d/%d] FAILED %s: %s",
+                    i + 1,
+                    len(samples),
+                    sample.sample_id,
+                    exc,
+                )
+            generated.append(entry)
+
+    meta_path = os.path.join(args.output_dir, "generated.json")
+    with open(meta_path, "w") as f:
+        json.dump(generated, f, indent=2, ensure_ascii=False)
+    logger.info("Saved generation metadata to %s", meta_path)
+    return generated
+
+
+def transcribe_audio(args: argparse.Namespace) -> None:
+    """Load ASR model, transcribe saved audio, compute and save WER."""
+    if "cuda" in args.device:
+        torch.cuda.set_device(args.device)
+        logger.info("Set ASR CUDA device to %s", args.device)
+
+    meta_path = os.path.join(args.output_dir, "generated.json")
+    with open(meta_path) as f:
+        generated: list[dict] = json.load(f)
+    logger.info("Loaded %d entries from %s", len(generated), meta_path)
+
+    asr = load_asr_model(args.lang, args.device)
+
+    outputs: list[SampleOutput] = []
+    for i, entry in enumerate(tqdm(generated, desc=f"Transcribing ({args.lang})")):
+        output = SampleOutput(
+            sample_id=entry["sample_id"],
+            target_text=entry["target_text"],
+        )
+        if not entry.get("is_success", False):
+            output.error = f"Generation failed: {entry.get('error', 'unknown')}"
+            outputs.append(output)
+            continue
+
+        wav_path = entry["wav_path"]
+        output.latency_s = entry.get("latency_s", 0.0)
+        output.audio_duration_s = entry.get("audio_duration_s", 0.0)
+
+        output = _transcribe_and_compute_wer(
+            output,
+            wav_path,
+            asr,
+            args.lang,
+            args.device,
+        )
+        outputs.append(output)
+
+        if output.is_success:
+            logger.info(
+                "[%d/%d] WER=%.3f  ref=%s  hyp=%s",
+                i + 1,
+                len(generated),
+                output.wer,
+                output.ref_norm[:50],
+                output.hyp_norm[:50],
+            )
+        else:
+            logger.warning(
+                "[%d/%d] Transcription failed: %s -- %s",
+                i + 1,
+                len(generated),
+                entry["sample_id"],
+                output.error,
+            )
+
+    metrics = calculate_wer_metrics(outputs, args.lang)
+    print_wer_summary(metrics, args.model)
+
+    config = {
+        "model": args.model,
+        "speaker": args.speaker,
+        "voice_clone": args.voice_clone,
+        "meta": args.meta,
+        "max_samples": args.max_samples,
+    }
+    save_wer_results(outputs, metrics, config, args.output_dir)
+
+
+async def main_async(args: argparse.Namespace) -> None:
+    """Run both phases in one shot (original behavior)."""
     if "cuda" in args.asr_device:
         torch.cuda.set_device(args.asr_device)
         logger.info("Set ASR CUDA device to %s", args.asr_device)
@@ -147,6 +290,9 @@ def main() -> None:
     p.add_argument(
         "--asr-device", default="cuda:0", help="Device for ASR (Whisper) model"
     )
+    p.add_argument(
+        "--device", default="cuda:0", help="Device for ASR model (transcribe-only mode)"
+    )
     p.add_argument("--max-samples", type=int, default=None)
     p.add_argument(
         "--voice-clone",
@@ -175,12 +321,30 @@ def main() -> None:
         default="seedtts_testset",
         help="Local directory for the dataset",
     )
+
+    mode = p.add_mutually_exclusive_group()
+    mode.add_argument(
+        "--generate-only",
+        action="store_true",
+        help="Only synthesize audio: call the TTS API and write WAVs.",
+    )
+    mode.add_argument(
+        "--transcribe-only",
+        action="store_true",
+        help="Only run recognition and WER on existing output-dir.",
+    )
     args = p.parse_args()
 
-    base_url = f"http://{args.host}:{args.port}"
-    wait_for_service(base_url, timeout=args.server_timeout)
-
-    asyncio.run(main_async(args))
+    if args.generate_only:
+        base_url = f"http://{args.host}:{args.port}"
+        wait_for_service(base_url, timeout=args.server_timeout)
+        asyncio.run(generate_audio(args))
+    elif args.transcribe_only:
+        transcribe_audio(args)
+    else:
+        base_url = f"http://{args.host}:{args.port}"
+        wait_for_service(base_url, timeout=args.server_timeout)
+        asyncio.run(main_async(args))
 
 
 if __name__ == "__main__":
