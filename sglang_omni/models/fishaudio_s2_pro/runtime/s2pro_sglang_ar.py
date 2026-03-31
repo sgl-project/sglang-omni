@@ -15,9 +15,10 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Callable
 
 import torch
+from torch import Tensor
 from sglang.srt.mem_cache.common import release_kv_cache
 
 from sglang_omni.engines.omni.runtime.sglang_ar import (
@@ -32,7 +33,7 @@ from sglang_omni.engines.omni.types import (
     SchedulerRequest,
 )
 
-from .s2pro_ar import S2ProStepOutput
+from .s2pro_ar import S2ProStepOutput, _sample_with_topk
 
 if TYPE_CHECKING:
     from sglang_omni.engines.ar.sglang_backend.model_worker import ModelWorker
@@ -114,12 +115,7 @@ def _codebook_loop_impl(
 
 
 class S2ProSGLangOutputProcessor:
-    """Two-stage output processor for S2-Pro on SGLang backend.
-
-    After the text model produces logits + hidden states via ForwardBatch,
-    applies constrained decoding + RAS + codebook generation using the
-    audio decoder's static KVCache.
-    """
+    """Two-stage output processor: constrained decoding + codebook generation."""
 
     def __init__(
         self,
@@ -134,7 +130,6 @@ class S2ProSGLangOutputProcessor:
         ras_window: int = 16,
         ras_temperature: float = 1.5,
         ras_top_p: float = 0.95,
-        use_torch_compile: bool = False,
         align_logits_to_bf16: bool = True,
     ) -> None:
         self._audio_decoder = audio_decoder
@@ -152,30 +147,19 @@ class S2ProSGLangOutputProcessor:
 
         import functools
 
-        _cb_fn = functools.partial(
+        self._codebook_fn = functools.partial(
             _codebook_loop_impl,
             audio_decoder,
             num_codebooks=num_codebooks,
             codebook_size=codebook_size,
             semantic_begin_id=semantic_begin_id,
         )
-        if use_torch_compile:
-            # Avoid CUDA-graph capture inside inductor for sampling stability.
-            compile_mode = "max-autotune-no-cudagraphs"
-            try:
-                self._codebook_fn = torch.compile(
-                    _cb_fn, mode=compile_mode, fullgraph=True
-                )
-            except Exception:
-                logger.warning(
-                    "torch.compile mode '%s' unavailable; fallback to max-autotune.",
-                    compile_mode,
-                )
-                self._codebook_fn = torch.compile(
-                    _cb_fn, mode="max-autotune", fullgraph=True
-                )
-        else:
-            self._codebook_fn = _cb_fn
+
+    def get_compile_targets(self) -> dict[str, Callable]:
+        return {"codebook_loop": self._codebook_fn}
+
+    def set_compiled_codebook_loop_fn(self, compiled_fn: Callable) -> None:
+        self._codebook_fn = compiled_fn
 
     @staticmethod
     def _truncate_to_bf16(logits: Tensor) -> Tensor:
