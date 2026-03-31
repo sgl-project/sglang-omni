@@ -242,7 +242,7 @@ async def transcribe_audio(args: argparse.Namespace) -> None:
 
     await asyncio.gather(*[_run(i, entry) for i, entry in enumerate(generated)])
     assert all(output is not None for output in outputs)
-    final_outputs = [output for output in outputs if output is not None]
+    final_outputs = outputs
 
     metrics = calculate_wer_metrics(final_outputs, args.lang)
     print_wer_summary(metrics, args.model)
@@ -374,7 +374,7 @@ async def main_async(args: argparse.Namespace) -> None:
         await asyncio.gather(*transcribe_workers)
 
     assert all(output is not None for output in outputs)
-    final_outputs = [output for output in outputs if output is not None]
+    final_outputs = outputs
     metrics = calculate_wer_metrics(final_outputs, args.lang)
     print_wer_summary(metrics, args.model)
 
