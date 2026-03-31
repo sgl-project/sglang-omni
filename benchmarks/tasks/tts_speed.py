@@ -233,6 +233,27 @@ def make_tts_send_fn(
     return send_fn
 
 
+def _build_omni_prompt(sample: SampleInput, lang: str, voice_clone: bool) -> str:
+    """Build the user prompt for Omni TTS, matching VoiceCloneOmni format."""
+    if voice_clone:
+        if lang == "en":
+            return (
+                f'Listen to the audio above. The speaker is reading: "{sample.ref_text}". '
+                f"Now please read the following text out loud in the same voice and style: "
+                f"{sample.target_text}"
+            )
+        return (
+            f'听上面的音频，说话人正在朗读："{sample.ref_text}"。'
+            f"现在请用同样的声音和风格朗读以下文本：{sample.target_text}"
+        )
+    if lang == "en":
+        return (
+            f"Please read the following text out loud in English: "
+            f"{sample.target_text}"
+        )
+    return f"请用中文朗读以下文本: {sample.target_text}"
+
+
 def make_omni_tts_send_fn(
     model_name: str,
     api_url: str,
@@ -244,14 +265,8 @@ def make_omni_tts_send_fn(
     temperature: float = 0.7,
     save_audio_dir: str | None = None,
 ) -> SendFn:
-    """Return a *send_fn* for Omni models that use /v1/chat/completions.
-
-    Reuses the same VoiceCloneOmni payload format so the benchmark is
-    consistent with the WER evaluation scripts.
-    """
-    from benchmarks.tasks.voice_clone import VoiceCloneOmni
-
-    task = VoiceCloneOmni()
+    """Return a *send_fn* for Omni models that use /v1/chat/completions."""
+    import base64
 
     async def send_fn(
         session: aiohttp.ClientSession, sample: SampleInput
@@ -260,37 +275,70 @@ def make_omni_tts_send_fn(
             request_id=sample.sample_id,
             text=sample.target_text[:TEXT_PREVIEW_LENGTH],
         )
+        payload: dict = {
+            "model": model_name,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": _build_omni_prompt(sample, lang, voice_clone),
+                }
+            ],
+            "modalities": ["text", "audio"],
+            "audio": {"format": "wav"},
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "stream": False,
+        }
+        if voice_clone:
+            payload["audios"] = [sample.ref_audio]
+
         start_time = time.perf_counter()
         try:
-            wav_bytes, _ = await task.generate_speech(
-                session,
-                api_url,
-                model_name,
-                sample,
-                lang,
-                speaker=speaker,
-                max_tokens=max_tokens,
-                temperature=temperature,
-                voice_clone=voice_clone,
-            )
-            result.audio_duration_s = get_wav_duration(wav_bytes)
-            elapsed = time.perf_counter() - start_time
-            if result.audio_duration_s > 0:
-                result.is_success = True
-                result.rtf = elapsed / result.audio_duration_s
-            else:
-                result.error = f"Invalid audio ({len(wav_bytes)} bytes)"
-            if save_audio_dir:
-                path = os.path.join(save_audio_dir, f"{result.request_id}.wav")
-                with open(path, "wb") as f:
-                    f.write(wav_bytes)
-                result.wav_path = path
+            async with session.post(api_url, json=payload) as response:
+                if response.status != 200:
+                    result.error = f"HTTP {response.status}: {await response.text()}"
+                else:
+                    resp_json = await response.json()
+
+                    # Extract usage (thinker prompt/completion tokens)
+                    usage = resp_json.get("usage")
+                    if usage:
+                        result.prompt_tokens = usage.get("prompt_tokens", 0)
+                        result.completion_tokens = usage.get("completion_tokens", 0)
+
+                    # Extract audio
+                    choices = resp_json.get("choices", [])
+                    audio_b64 = (
+                        choices[0].get("message", {}).get("audio", {}).get("data")
+                        if choices
+                        else None
+                    )
+                    if not audio_b64:
+                        result.error = "No audio in response"
+                    else:
+                        wav_bytes = base64.b64decode(audio_b64)
+                        result.audio_duration_s = get_wav_duration(wav_bytes)
+                        elapsed = time.perf_counter() - start_time
+                        if result.audio_duration_s > 0:
+                            result.is_success = True
+                            result.rtf = elapsed / result.audio_duration_s
+                        else:
+                            result.error = f"Invalid audio ({len(wav_bytes)} bytes)"
+                        if save_audio_dir:
+                            path = os.path.join(
+                                save_audio_dir, f"{result.request_id}.wav"
+                            )
+                            with open(path, "wb") as f:
+                                f.write(wav_bytes)
+                            result.wav_path = path
         except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
             result.error = str(exc)
         except Exception as exc:
             result.error = str(exc)
         finally:
             result.latency_s = time.perf_counter() - start_time
+            if result.completion_tokens > 0 and result.latency_s > 0:
+                result.tok_per_s = result.completion_tokens / result.latency_s
         return result
 
     return send_fn
