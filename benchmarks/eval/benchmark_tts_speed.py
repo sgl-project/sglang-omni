@@ -11,6 +11,12 @@ Usage:
         --model fishaudio/s2-pro --port 8000 \
         --testset seedtts_testset/en/meta.lst --max-samples 10
 
+    # Voice cloning, non-streaming, high concurrency
+    python benchmarks/eval/benchmark_tts_speed.py \
+        --model fishaudio/s2-pro --port 8000 \
+        --testset seedtts_testset/en/meta.lst --max-samples 50 \
+        --max-concurrency 20
+
     # Voice cloning, streaming
     python benchmarks/eval/benchmark_tts_speed.py \
         --model fishaudio/s2-pro --port 8000 \
@@ -100,7 +106,7 @@ async def benchmark(args: argparse.Namespace) -> None:
     outputs = await runner.run(samples, send_fn)
 
     metrics = compute_speed_metrics(outputs, wall_clock_s=runner.wall_clock_s)
-    print_speed_summary(metrics, args.model)
+    print_speed_summary(metrics, args.model, max_concurrency=args.max_concurrency)
 
     if args.output_dir:
         config = {

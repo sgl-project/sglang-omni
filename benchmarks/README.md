@@ -29,6 +29,12 @@ python benchmarks/eval/benchmark_tts_speed.py \
     --model fishaudio/s2-pro --port 8000 \
     --testset seedtts_testset/en/meta.lst --max-samples 10
 
+# 2a+. Speed benchmark (voice cloning, non-streaming, concurrency 20)
+python benchmarks/eval/benchmark_tts_speed.py \
+    --model fishaudio/s2-pro --port 8000 \
+    --testset seedtts_testset/en/meta.lst --max-samples 50 \
+    --max-concurrency 20
+
 # 2b. Speed benchmark (streaming)
 python benchmarks/eval/benchmark_tts_speed.py \
     --model fishaudio/s2-pro --port 8000 \
@@ -38,6 +44,12 @@ python benchmarks/eval/benchmark_tts_speed.py \
 python benchmarks/eval/voice_clone_s2pro_wer.py \
     --meta seedtts_testset/en/meta.lst \
     --output-dir results/s2pro_en --lang en --max-samples 50
+
+# 2d. WER evaluation (voice cloning, overlapped generation + ASR)
+python benchmarks/eval/voice_clone_s2pro_wer.py \
+    --meta seedtts_testset/en/meta.lst \
+    --output-dir results/s2pro_en_c20 --lang en --max-samples 50 \
+    --generation-concurrency 20 --transcription-concurrency 20
 ```
 
 ## Eval Scripts
