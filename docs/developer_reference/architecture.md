@@ -11,7 +11,7 @@ SGLang-Omni is a multi-stage pipeline framework for omni models — models with 
 
 ## System Overview
 
-```{mermaid}
+```mermaid
 graph TB
     subgraph API["API Layer"]
         OAI["OpenAI-Compatible Server<br/>(FastAPI + Uvicorn)"]
@@ -163,7 +163,7 @@ All backends implement the same `Relay` interface with `put_async()` / `get_asyn
 
 ## Request Lifecycle
 
-```{mermaid}
+```mermaid
 sequenceDiagram
     participant C as Client
     participant Co as Coordinator
@@ -201,7 +201,7 @@ sequenceDiagram
 
 ### Sequential
 
-```{mermaid}
+```mermaid
 graph LR
     A["Stage A"] -->|relay| B["Stage B"] -->|relay| C["Stage C"]
 ```
@@ -210,7 +210,7 @@ The simplest pattern: each stage passes its output to the next.
 
 ### Fan-Out
 
-```{mermaid}
+```mermaid
 graph LR
     A["Preprocessing"] -->|relay| B["Image Encoder"]
     A -->|relay| C["Audio Encoder"]
@@ -220,7 +220,7 @@ A routing function directs the output to multiple downstream stages in parallel.
 
 ### Fan-In (Aggregation)
 
-```{mermaid}
+```mermaid
 graph LR
     B["Image Encoder"] -->|relay| D["Aggregate"]
     C["Audio Encoder"] -->|relay| D
@@ -232,7 +232,7 @@ An aggregated input handler waits for all upstream sources, then merges them wit
 
 A concrete example of these patterns combined:
 
-```{mermaid}
+```mermaid
 graph TD
     PP["Preprocessing<br/>(tokenize, template)"]
     IE["Image Encoder"]
