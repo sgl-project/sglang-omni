@@ -44,10 +44,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import aiohttp
-import soundfile as sf
 import torch
 
-from benchmarks.benchmarker.utils import wait_for_service
+from benchmarks.benchmarker.utils import get_wav_duration, wait_for_service
 from benchmarks.dataset.seedtts import SampleInput, load_seedtts_samples
 from benchmarks.tasks.voice_clone import (
     SampleOutput,
@@ -95,9 +94,8 @@ async def _generate_entry(
         )
         with open(wav_path, "wb") as f:
             f.write(wav_bytes)
-        wav_info = sf.info(wav_path)
         entry["latency_s"] = round(latency, 4)
-        entry["audio_duration_s"] = round(wav_info.duration, 4)
+        entry["audio_duration_s"] = round(get_wav_duration(wav_bytes), 4)
         entry["is_success"] = True
     except Exception as exc:
         entry["is_success"] = False
@@ -116,12 +114,12 @@ def _transcribe_entry(
         sample_id=entry["sample_id"],
         target_text=entry["target_text"],
     )
-    if not entry.get("is_success", False):
-        output.error = f"Generation failed: {entry.get('error', 'unknown')}"
+    if not entry["is_success"]:
+        output.error = f"Generation failed: {entry['error']}"
         return output
 
-    output.latency_s = entry.get("latency_s", 0.0)
-    output.audio_duration_s = entry.get("audio_duration_s", 0.0)
+    output.latency_s = entry["latency_s"]
+    output.audio_duration_s = entry["audio_duration_s"]
     return _transcribe_and_compute_wer(
         output,
         entry["wav_path"],
@@ -144,13 +142,12 @@ async def generate_audio(args: argparse.Namespace) -> list[dict]:
 
     task = VoiceCloneTTS()
     timeout = aiohttp.ClientTimeout(total=300)
-    generated: list[dict | None] = [None] * len(samples)
     completed = 0
 
     async with aiohttp.ClientSession(timeout=timeout) as session:
         semaphore = asyncio.Semaphore(args.generation_concurrency)
 
-        async def _run(index: int, sample) -> None:
+        async def _run(sample: SampleInput) -> dict:
             nonlocal completed
             async with semaphore:
                 entry = await _generate_entry(
@@ -165,7 +162,6 @@ async def generate_audio(args: argparse.Namespace) -> list[dict]:
                     sample,
                     audio_dir,
                 )
-            generated[index] = entry
             completed += 1
             if entry["is_success"]:
                 logger.info(
@@ -183,14 +179,15 @@ async def generate_audio(args: argparse.Namespace) -> list[dict]:
                     sample.sample_id,
                     entry["error"],
                 )
+            return entry
 
-        await asyncio.gather(*[_run(i, sample) for i, sample in enumerate(samples)])
+        generated = await asyncio.gather(*[_run(sample) for sample in samples])
 
     meta_path = os.path.join(args.output_dir, "generated.json")
     with open(meta_path, "w") as f:
         json.dump(generated, f, indent=2, ensure_ascii=False)
     logger.info("Saved generation metadata to %s", meta_path)
-    return [entry for entry in generated if entry is not None]
+    return generated
 
 
 async def transcribe_audio(args: argparse.Namespace) -> None:
@@ -206,11 +203,10 @@ async def transcribe_audio(args: argparse.Namespace) -> None:
 
     asr = load_asr_model(args.lang, args.device)
 
-    outputs: list[SampleOutput | None] = [None] * len(generated)
     semaphore = asyncio.Semaphore(args.transcription_concurrency)
     completed = 0
 
-    async def _run(index: int, entry: dict) -> None:
+    async def _run(entry: dict) -> SampleOutput:
         nonlocal completed
         async with semaphore:
             output = await asyncio.to_thread(
@@ -220,7 +216,6 @@ async def transcribe_audio(args: argparse.Namespace) -> None:
                 args.lang,
                 args.device,
             )
-        outputs[index] = output
         completed += 1
         if output.is_success:
             logger.info(
@@ -239,10 +234,9 @@ async def transcribe_audio(args: argparse.Namespace) -> None:
                 entry["sample_id"],
                 output.error,
             )
+        return output
 
-    await asyncio.gather(*[_run(i, entry) for i, entry in enumerate(generated)])
-    assert all(output is not None for output in outputs)
-    final_outputs = outputs
+    final_outputs = await asyncio.gather(*[_run(entry) for entry in generated])
 
     metrics = calculate_wer_metrics(final_outputs, args.lang)
     print_wer_summary(metrics, args.model)
