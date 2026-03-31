@@ -1,15 +1,22 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Model-specific preprocessor for MiniCPM-V 2.6 and MiniCPM-o 2.6.
+"""Model-specific preprocessor for MiniCPM-V (2.6 and 4.5) and MiniCPM-o.
 
 This is the core preprocessing module that handles:
 - LLaVA-style slice-based image tokenization
 - Audio feature extraction for MiniCPM-o (Whisper-based)
 
+Supported versions:
+- MiniCPM-V 2.6: SigLIP-400M + MiniCPM-3.0 LLM
+- MiniCPM-V 4.5: SigLIP2-400M + Qwen3-8B LLM + 3D-Resampler
+- MiniCPM-o 2.6: Full audio support with Whisper encoder
+
 Key differences from Qwen3-Omni:
 - Images are sliced into multiple patches (up to 9 slices + 1 thumbnail)
-- Each slice produces fixed-length tokens via SigLIP
+- Each slice produces fixed-length tokens via SigLIP/SigLIP2
 - `tgt_sizes` tracks each slice's patch grid size for 2D RoPE
 - No `image_grid_thw` - MiniCPM-V uses different position encoding
+
+Note: The HF AutoProcessor handles version-specific tokenization automatically.
 """
 
 from __future__ import annotations

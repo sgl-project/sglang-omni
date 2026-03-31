@@ -1,12 +1,22 @@
 # SPDX-License-Identifier: Apache-2.0
 """SGLang-native MiniCPM-V LLM model with paged attention.
 
-This module provides a SGLang-compatible LLM backbone for MiniCPM-V 2.6,
-implementing MiniCPM 3.0's LLaMA-style architecture with:
+This module provides a SGLang-compatible LLM backbone for MiniCPM-V,
+supporting both 2.6 and 4.5 architectures:
+
+MiniCPM-V 2.6 (MiniCPM-3.0 backbone):
 - QKVParallelLinear + RadixAttention (with optional QK norm)
 - MergedColumnParallelLinear (gate_up) + RowParallelLinear (down) + SiLU
 - RMSNorm for layer normalization
-- Support for pre-computed image embeddings via forward_batch.input_embeds
+- Default: hidden_size=2560, num_layers=62, num_kv_heads=8
+
+MiniCPM-V 4.5 (Qwen3-8B backbone):
+- Same architecture but with different dimensions
+- Default: hidden_size=4096, num_layers=36, num_kv_heads=8
+- vocab_size=151748, max_position_embeddings=40960
+
+Image embedding injection is handled via forward_batch.input_embeds,
+which is set by the SGLang model runner when omni_model_inputs is present.
 
 The weight loading strips "llm." prefix from MiniCPM-V checkpoints.
 """
@@ -184,8 +194,12 @@ class MiniCPMDecoderLayer(nn.Module):
 class MiniCPMVSGLangLLM(nn.Module):
     """SGLang-native MiniCPM-V LLM with paged attention.
 
-    This model implements the MiniCPM 3.0 LLaMA-style LLM backbone
-    optimized for SGLang's continuous batching and CUDA graph capture.
+    This model implements the LLaMA-style LLM backbone optimized for
+    SGLang's continuous batching and CUDA graph capture.
+
+    Supports both versions:
+    - MiniCPM-V 2.6: MiniCPM-3.0 backbone (62 layers, hidden_size=2560)
+    - MiniCPM-V 4.5: Qwen3-8B backbone (36 layers, hidden_size=4096)
 
     Image embedding injection is handled via forward_batch.input_embeds,
     which is set by the SGLang model runner when omni_model_inputs is present.
@@ -195,19 +209,21 @@ class MiniCPMVSGLangLLM(nn.Module):
         self,
         config: Any = None,
         quant_config: Any = None,
-        # Fallback defaults for MiniCPM 3.0
-        vocab_size: int = 122880,
-        hidden_size: int = 2560,
-        intermediate_size: int = 6912,
-        num_layers: int = 62,
-        num_heads: int = 40,
+        # Dynamic defaults based on config - these are fallbacks
+        # 2.6: vocab_size=122880, hidden_size=2560, num_layers=62
+        # 4.5: vocab_size=151748, hidden_size=4096, num_layers=36
+        vocab_size: int = 151748,  # Default to 4.5 (Qwen3)
+        hidden_size: int = 4096,
+        intermediate_size: int = 14336,
+        num_layers: int = 36,
+        num_heads: int = 32,
         num_kv_heads: int = 8,
-        head_dim: int = 64,
-        rope_base: float = 10000.0,
-        max_position_embeddings: int = 131072,
-        rms_norm_eps: float = 1e-5,
+        head_dim: int = 128,
+        rope_base: float = 1000000.0,  # Qwen3 default
+        max_position_embeddings: int = 40960,
+        rms_norm_eps: float = 1e-6,
         qk_norm: bool = False,
-        tie_word_embeddings: bool = True,
+        tie_word_embeddings: bool = False,
     ) -> None:
         super().__init__()
 

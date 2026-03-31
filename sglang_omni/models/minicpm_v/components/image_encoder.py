@@ -1,13 +1,17 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Image encoder component for MiniCPM-V 2.6.
+"""Image encoder component for MiniCPM-V 2.6 and 4.5.
 
-MiniCPM-V uses SigLIP ViT as the vision backbone and a Perceiver Resampler
-for token compression. This is different from Qwen3-Omni which uses a
+MiniCPM-V uses SigLIP/SigLIP2 ViT as the vision backbone and a Resampler
+for token compression. This differs from Qwen3-Omni which uses a
 custom ViT with DeepStack multi-scale features.
 
+Version differences:
+- 2.6: SigLIP-400M + Perceiver Resampler (24 layers, 1024 hidden)
+- 4.5: SigLIP2-400M + 3D-Resampler (27 layers, 1152 hidden, batch_3d_resampler=True)
+
 Key components:
-- vpm (Vision Perception Module): SigLIP ViT-400M backbone
-- resampler: Perceiver Resampler that compresses patch tokens to fixed queries
+- vpm (Vision Perception Module): SigLIP/SigLIP2 ViT backbone
+- resampler: Perceiver/3D Resampler that compresses patch tokens to fixed queries
 
 The forward pass:
 1. SigLIP encodes each image slice into patch embeddings
@@ -26,6 +30,8 @@ import torch.nn as nn
 from sglang_omni.models.minicpm_v.components.common import (
     RESAMPLER_PREFIX,
     VISUAL_PREFIX,
+    get_minicpm_version,
+    is_minicpm_v45,
     load_minicpm_config,
 )
 from sglang_omni.models.weight_loader import load_weights_by_prefix, resolve_dtype
@@ -40,10 +46,10 @@ def _build_vpm(
     torch_dtype: torch.dtype | None,
     device: str,
 ) -> nn.Module:
-    """Build and load the SigLIP vision encoder (vpm).
+    """Build and load the SigLIP/SigLIP2 vision encoder (vpm).
 
-    MiniCPM-V uses SigLIP-400M as the vision backbone. The module is loaded
-    with trust_remote_code=True to handle the custom architecture.
+    MiniCPM-V 2.6 uses SigLIP-400M (24 layers, 1024 hidden)
+    MiniCPM-V 4.5 uses SigLIP2-400M (27 layers, 1152 hidden)
     """
     from transformers import AutoModel
 
@@ -79,22 +85,33 @@ def _build_resampler(
     torch_dtype: torch.dtype | None,
     device: str,
 ) -> nn.Module:
-    """Build and load the Perceiver Resampler.
+    """Build and load the Perceiver/3D Resampler.
+
+    MiniCPM-V 2.6: Perceiver Resampler with cross-attention
+    MiniCPM-V 4.5: 3D-Resampler with batch processing and video support
 
     The Resampler compresses variable-length patch embeddings from SigLIP
-    into a fixed number of query tokens per image slice. This uses
-    cross-attention with learnable query embeddings.
+    into a fixed number of query tokens per image slice.
     """
-    # Get resampler config - MiniCPM-V stores this in the main config
-    # The resampler architecture varies by version
-    hidden_size = getattr(config, "hidden_size", 2304)
+    version = get_minicpm_version(model_path)
+    is_v45 = version >= 4.5
+    batch_3d_resampler = getattr(config, "batch_3d_resampler", False)
+
+    # Get resampler config
+    hidden_size = getattr(config, "hidden_size", 4096 if is_v45 else 2304)
     query_num = getattr(config, "query_num", 64)
     vision_config = getattr(config, "vision_config", None)
 
     if vision_config is not None:
-        vision_hidden_size = getattr(vision_config, "hidden_size", 1152)
+        vision_hidden_size = getattr(vision_config, "hidden_size", 1152 if is_v45 else 1024)
     else:
         vision_hidden_size = hidden_size
+
+    logger.info(
+        f"Building resampler for MiniCPM-V {version}: "
+        f"vision_dim={vision_hidden_size}, output_dim={hidden_size}, "
+        f"query_num={query_num}, batch_3d={batch_3d_resampler}"
+    )
 
     # Try to instantiate the resampler from the HF model
     # MiniCPM-V defines a custom Resampler class
@@ -176,11 +193,15 @@ def _build_simple_resampler(
 
 
 class MiniCPMVImageEncoder(nn.Module):
-    """Vision encoder extracted from MiniCPM-V 2.6.
+    """Vision encoder for MiniCPM-V 2.6 and 4.5.
 
     This module combines:
-    - vpm: SigLIP ViT for patch embedding extraction
-    - resampler: Perceiver Resampler for token compression
+    - vpm: SigLIP/SigLIP2 ViT for patch embedding extraction
+    - resampler: Perceiver/3D Resampler for token compression
+
+    Version differences:
+    - 2.6: SigLIP-400M (24L, 1024D) + Perceiver Resampler
+    - 4.5: SigLIP2-400M (27L, 1152D) + 3D-Resampler (supports video)
 
     Input:
         pixel_values: [total_slices, C, H, W] - all image slices concatenated
@@ -203,8 +224,11 @@ class MiniCPMVImageEncoder(nn.Module):
         torch_dtype = resolve_dtype(dtype)
         config = load_minicpm_config(model_path)
         self._device = torch.device(device)
+        self._version = get_minicpm_version(model_path)
 
-        # Build vision backbone (SigLIP)
+        logger.info(f"Loading MiniCPM-V {self._version} image encoder")
+
+        # Build vision backbone (SigLIP/SigLIP2)
         self.vpm = _build_vpm(
             model_path,
             config=config,
@@ -212,7 +236,7 @@ class MiniCPMVImageEncoder(nn.Module):
             device=device,
         )
 
-        # Build Perceiver Resampler
+        # Build Resampler (Perceiver/3D)
         self.resampler = _build_resampler(
             model_path,
             config=config,
@@ -222,6 +246,7 @@ class MiniCPMVImageEncoder(nn.Module):
 
         # Store config for reference
         self.query_num = getattr(config, "query_num", 64)
+        self.batch_3d_resampler = getattr(config, "batch_3d_resampler", False)
 
     @property
     def dtype(self) -> torch.dtype:
