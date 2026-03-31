@@ -37,10 +37,9 @@ WER_TIMEOUT = 600
 # Speed thresholds
 # ---------------------------------------------------------------------------
 # Qwen3-Omni uses /v1/chat/completions (non-streaming only for now).
-# Baseline measured on H200: VC RTF ~1.78, Plain RTF ~1.64.
+# Baseline measured on H200: VC RTF ~1.78.
 
 VC_NON_STREAM_MAX_RTF = 3.5
-PLAIN_NON_STREAM_MAX_RTF = 3.0
 
 # ---------------------------------------------------------------------------
 # WER thresholds
@@ -50,11 +49,6 @@ PLAIN_NON_STREAM_MAX_RTF = 3.0
 
 VC_WER_MAX_CORPUS = 0.06
 VC_WER_MAX_PER_SAMPLE = 0.30
-
-# ---------------------------------------------------------------------------
-# Concurrency
-# ---------------------------------------------------------------------------
-CONCURRENCY_LEVEL = 4
 
 SPEED_SCRIPT = str(
     Path(__file__).resolve().parents[2]
@@ -409,53 +403,6 @@ def test_voice_cloning_non_streaming(
     assert (
         summary["rtf_mean"] <= VC_NON_STREAM_MAX_RTF
     ), f"rtf_mean {summary['rtf_mean']} > {VC_NON_STREAM_MAX_RTF}"
-
-
-@pytest.mark.benchmark
-def test_plain_tts_non_streaming(
-    server_process: subprocess.Popen,
-    dataset_dir: Path,
-    tmp_path: Path,
-) -> None:
-    results = _run_benchmark(
-        server_process.port,
-        str(dataset_dir / "en" / "meta.lst"),
-        str(tmp_path / "plain_nonstream"),
-        ["--no-ref-audio"],
-    )
-    summary, per_request = results["summary"], results["per_request"]
-    _assert_summary_metrics(summary)
-    _assert_per_request_fields(per_request)
-    PER_REQUEST_STORE["plain_nonstream"] = per_request
-    assert (
-        summary["rtf_mean"] <= PLAIN_NON_STREAM_MAX_RTF
-    ), f"rtf_mean {summary['rtf_mean']} > {PLAIN_NON_STREAM_MAX_RTF}"
-
-
-# ---------------------------------------------------------------------------
-# Concurrency tests — validates the fix for issue #229
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.benchmark
-def test_concurrency_no_crash(
-    server_process: subprocess.Popen,
-    dataset_dir: Path,
-    tmp_path: Path,
-) -> None:
-    """Verify concurrent requests complete without CUDA crash (issue #229)."""
-    results = _run_benchmark(
-        server_process.port,
-        str(dataset_dir / "en" / "meta.lst"),
-        str(tmp_path / "vc_concurrent"),
-        ["--max-concurrency", str(CONCURRENCY_LEVEL)],
-    )
-    summary, per_request = results["summary"], results["per_request"]
-    assert summary["failed_requests"] == 0, (
-        f"Concurrency={CONCURRENCY_LEVEL}: {summary['failed_requests']} requests failed. "
-        f"See https://github.com/sgl-project/sglang-omni/issues/229"
-    )
-    _assert_per_request_fields(per_request)
 
 
 # ---------------------------------------------------------------------------

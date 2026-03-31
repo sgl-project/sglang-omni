@@ -79,7 +79,7 @@ async def generate_audio(args: argparse.Namespace) -> list[dict]:
                 "wav_path": wav_path,
             }
             try:
-                wav_bytes, latency = await task.generate_speech(
+                wav_bytes, latency, _usage = await task.generate_speech(
                     session,
                     api_url,
                     args.model,

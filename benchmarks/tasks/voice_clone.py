@@ -447,7 +447,7 @@ class VoiceCloneOmni:
         max_tokens: int | None = None,
         temperature: float = 0.7,
         voice_clone: bool = False,
-    ) -> tuple[bytes, float]:
+    ) -> tuple[bytes, float, dict]:
         if max_tokens is None:
             max_tokens = self.THINKER_MAX_NEW_TOKENS
 
@@ -509,7 +509,8 @@ class VoiceCloneOmni:
             raise ValueError("Empty audio data in response")
 
         wav_bytes = base64.b64decode(audio_b64)
-        return wav_bytes, latency
+        usage = resp_json.get("usage", {})
+        return wav_bytes, latency, usage
 
     async def evaluate_sample(
         self,
@@ -532,7 +533,7 @@ class VoiceCloneOmni:
         wav_path = os.path.join(audio_dir, f"{sample.sample_id}.wav")
 
         try:
-            wav_bytes, latency = await self.generate_speech(
+            wav_bytes, latency, _usage = await self.generate_speech(
                 session,
                 api_url,
                 model_name,

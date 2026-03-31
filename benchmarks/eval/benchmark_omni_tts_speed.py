@@ -1,9 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """TTS Speed benchmark for Omni models (Qwen3-Omni).
 
-Measures latency, RTF, and throughput via /v1/chat/completions with
-modalities: ["text", "audio"].  Supports voice cloning (default) and
-plain TTS modes.
+Measures latency, RTF, throughput, and token throughput via /v1/chat/completions
+with modalities: ["text", "audio"].
 
 Usage:
     # Voice cloning (default)
@@ -29,25 +28,92 @@ import asyncio
 import logging
 import os
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from benchmarks.benchmarker.runner import BenchmarkRunner, RunConfig
-from benchmarks.benchmarker.utils import wait_for_service
-from benchmarks.dataset.seedtts import load_seedtts_samples
+import aiohttp
+
+from benchmarks.benchmarker.data import RequestResult
+from benchmarks.benchmarker.runner import BenchmarkRunner, RunConfig, SendFn
+from benchmarks.benchmarker.utils import get_wav_duration, wait_for_service
+from benchmarks.dataset.seedtts import SampleInput, load_seedtts_samples
 from benchmarks.metrics.performance import compute_speed_metrics
-from benchmarks.tasks.tts_speed import (
-    make_omni_tts_send_fn,
-    print_speed_summary,
-    save_speed_results,
-)
+from benchmarks.tasks.tts_speed import print_speed_summary, save_speed_results
+from benchmarks.tasks.voice_clone import VoiceCloneOmni
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(name)s %(levelname)s %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+TEXT_PREVIEW_LENGTH = 60
+
+
+def make_omni_tts_send_fn(
+    model_name: str,
+    api_url: str,
+    *,
+    lang: str = "en",
+    voice_clone: bool = True,
+    speaker: str = "Ethan",
+    max_tokens: int = 256,
+    temperature: float = 0.7,
+    save_audio_dir: str | None = None,
+) -> SendFn:
+    """Return a *send_fn* for Omni models via VoiceCloneOmni."""
+    task = VoiceCloneOmni()
+
+    async def send_fn(
+        session: aiohttp.ClientSession, sample: SampleInput
+    ) -> RequestResult:
+        result = RequestResult(
+            request_id=sample.sample_id,
+            text=sample.target_text[:TEXT_PREVIEW_LENGTH],
+        )
+        start_time = time.perf_counter()
+        try:
+            wav_bytes, _, usage = await task.generate_speech(
+                session,
+                api_url,
+                model_name,
+                sample,
+                lang,
+                speaker=speaker,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                voice_clone=voice_clone,
+            )
+            result.audio_duration_s = get_wav_duration(wav_bytes)
+            elapsed = time.perf_counter() - start_time
+            if result.audio_duration_s > 0:
+                result.is_success = True
+                result.rtf = elapsed / result.audio_duration_s
+            else:
+                result.error = f"Invalid audio ({len(wav_bytes)} bytes)"
+
+            if usage:
+                result.prompt_tokens = usage.get("prompt_tokens", 0)
+                result.completion_tokens = usage.get("completion_tokens", 0)
+            if result.completion_tokens > 0 and elapsed > 0:
+                result.tok_per_s = result.completion_tokens / elapsed
+
+            if save_audio_dir:
+                path = os.path.join(save_audio_dir, f"{result.request_id}.wav")
+                with open(path, "wb") as f:
+                    f.write(wav_bytes)
+                result.wav_path = path
+        except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+            result.error = str(exc)
+        except Exception as exc:
+            result.error = str(exc)
+        finally:
+            result.latency_s = time.perf_counter() - start_time
+        return result
+
+    return send_fn
 
 
 async def benchmark(args: argparse.Namespace) -> None:
