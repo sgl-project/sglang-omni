@@ -76,6 +76,7 @@ override-dependencies = [
 pythonpath = ["."]
 markers = [
     "benchmark: performance benchmark tests (may require GPU and long runtime)",
+    "docs: documentation example tests (verify documented API calls still work)",
 ]
 
 [tool.setuptools.packages.find]

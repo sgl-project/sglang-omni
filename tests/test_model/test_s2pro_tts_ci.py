@@ -1,13 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Strict functional CI for the S2-Pro TTS docs path.
-
-This suite validates the user-facing S2-Pro workflow described in `docs/`
-with end-to-end speed and WER assertions. The documentation itself is built by
-Sphinx, while this test protects the documented behavior with executable
-checks.
+"""Speed benchmarks and voice-clone WER thresholds CI for S2-Pro as a representative of TTS models.
 
 Usage:
-    pytest tests/docs/test_s2pro_tts_ci.py -s -x
+    pytest tests/test_model/test_s2pro_tts_ci.py -s -x
 
 Author:
     chenyang zhao https://github.com/zhaochenyang20
