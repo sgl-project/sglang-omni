@@ -32,6 +32,7 @@ PER_REQUEST_STORE: dict[str, list[dict]] = {}
 MODEL_PATH = "fishaudio/s2-pro"
 CONFIG_PATH = "examples/configs/s2pro_tts.yaml"
 MAX_SAMPLES = 10
+CI_MAX_CONCURRENCY = 20
 
 STARTUP_TIMEOUT = 600
 BENCHMARK_TIMEOUT = 600
@@ -152,6 +153,8 @@ def _run_wer_generate(
         str(port),
         "--max-samples",
         str(MAX_SAMPLES),
+        "--generation-concurrency",
+        str(CI_MAX_CONCURRENCY),
     ]
     if stream:
         cmd.append("--stream")
@@ -190,6 +193,8 @@ def _run_wer_transcribe(
         lang,
         "--device",
         device,
+        "--transcription-concurrency",
+        str(CI_MAX_CONCURRENCY),
     ]
 
     result = subprocess.run(
@@ -442,6 +447,7 @@ def test_voice_cloning_non_streaming(
         server_process.port,
         str(dataset_dir / "en" / "meta.lst"),
         str(tmp_path / "vc_nonstream"),
+        ["--max-concurrency", str(CI_MAX_CONCURRENCY)],
     )
     summary, per_request = results["summary"], results["per_request"]
     _assert_summary_metrics(summary)
@@ -465,7 +471,7 @@ def test_voice_cloning_streaming(
         server_process.port,
         str(dataset_dir / "en" / "meta.lst"),
         str(tmp_path / "vc_stream"),
-        ["--stream"],
+        ["--stream", "--max-concurrency", str(CI_MAX_CONCURRENCY)],
     )
     summary, per_request = results["summary"], results["per_request"]
     _assert_summary_metrics(summary)
@@ -489,7 +495,7 @@ def test_plain_tts_non_streaming(
         server_process.port,
         str(dataset_dir / "en" / "meta.lst"),
         str(tmp_path / "plain_nonstream"),
-        ["--no-ref-audio"],
+        ["--no-ref-audio", "--max-concurrency", str(CI_MAX_CONCURRENCY)],
     )
     summary, per_request = results["summary"], results["per_request"]
     _assert_summary_metrics(summary)
@@ -513,7 +519,12 @@ def test_plain_tts_streaming(
         server_process.port,
         str(dataset_dir / "en" / "meta.lst"),
         str(tmp_path / "plain_stream"),
-        ["--no-ref-audio", "--stream"],
+        [
+            "--no-ref-audio",
+            "--stream",
+            "--max-concurrency",
+            str(CI_MAX_CONCURRENCY),
+        ],
     )
     summary, per_request = results["summary"], results["per_request"]
     _assert_summary_metrics(summary)
