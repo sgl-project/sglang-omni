@@ -15,6 +15,8 @@ def build_sglang_server_args(
     max_prefill_tokens: int = 4096,
     max_running_requests: int = 16,
     mem_fraction_static: float = 0.7,
+    quantization: str | None = None,
+    kv_cache_dtype: str | None = None,
     **overrides: Any,
 ) -> ServerArgs:
     """Build ServerArgs with shared defaults for all SGLang AR engines."""
@@ -31,5 +33,9 @@ def build_sglang_server_args(
         "random_seed": 123,
         "context_length": context_length,
     }
+    if quantization is not None:
+        kwargs["quantization"] = quantization
+    if kv_cache_dtype is not None:
+        kwargs["kv_cache_dtype"] = kv_cache_dtype
     kwargs.update(overrides)
     return ServerArgs(**kwargs)
