@@ -48,7 +48,7 @@ import soundfile as sf
 import torch
 
 from benchmarks.benchmarker.utils import wait_for_service
-from benchmarks.dataset.seedtts import load_seedtts_samples
+from benchmarks.dataset.seedtts import SampleInput, load_seedtts_samples
 from benchmarks.tasks.voice_clone import (
     SampleOutput,
     VoiceCloneTTS,
@@ -67,8 +67,12 @@ async def _generate_entry(
     session: aiohttp.ClientSession,
     api_url: str,
     task: VoiceCloneTTS,
-    args: argparse.Namespace,
-    sample,
+    model_name: str,
+    stream: bool,
+    max_new_tokens: int,
+    temperature: float,
+    seed: int | None,
+    sample: SampleInput,
     audio_dir: str,
 ) -> dict:
     wav_path = os.path.join(audio_dir, f"{sample.sample_id}.wav")
@@ -79,15 +83,15 @@ async def _generate_entry(
     }
 
     try:
-        gen_fn = task.generate_speech_streaming if args.stream else task.generate_speech
+        gen_fn = task.generate_speech_streaming if stream else task.generate_speech
         wav_bytes, latency = await gen_fn(
             session,
             api_url,
-            args.model,
+            model_name,
             sample,
-            args.max_new_tokens,
-            args.temperature,
-            args.seed,
+            max_new_tokens,
+            temperature,
+            seed,
         )
         with open(wav_path, "wb") as f:
             f.write(wav_bytes)
@@ -153,8 +157,13 @@ async def generate_audio(args: argparse.Namespace) -> list[dict]:
                     session,
                     api_url,
                     task,
-                    args,
+                    args.model,
+                    args.stream,
+                    args.max_new_tokens,
+                    args.temperature,
+                    args.seed,
                     sample,
+                    audio_dir,
                 )
             generated[index] = entry
             completed += 1
@@ -232,6 +241,7 @@ async def transcribe_audio(args: argparse.Namespace) -> None:
             )
 
     await asyncio.gather(*[_run(i, entry) for i, entry in enumerate(generated)])
+    assert all(output is not None for output in outputs)
     final_outputs = [output for output in outputs if output is not None]
 
     metrics = calculate_wer_metrics(final_outputs, args.lang)
@@ -328,7 +338,11 @@ async def main_async(args: argparse.Namespace) -> None:
                     session,
                     api_url,
                     task,
-                    args,
+                    args.model,
+                    args.stream,
+                    args.max_new_tokens,
+                    args.temperature,
+                    args.seed,
                     sample,
                     audio_dir,
                 )
@@ -359,6 +373,7 @@ async def main_async(args: argparse.Namespace) -> None:
         await transcription_queue.join()
         await asyncio.gather(*transcribe_workers)
 
+    assert all(output is not None for output in outputs)
     final_outputs = [output for output in outputs if output is not None]
     metrics = calculate_wer_metrics(final_outputs, args.lang)
     print_wer_summary(metrics, args.model)
