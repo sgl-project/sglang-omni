@@ -1,4 +1,4 @@
-name: TTS Performance Benchmark
+name: S2-Pro TTS CI
 
 on:
   pull_request:
@@ -6,14 +6,14 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: s2pro-benchmark-${{ github.ref }}
+  group: s2pro-tts-ci-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
   contents: read
 
 jobs:
-  s2pro-benchmark:
+  s2pro-tts-ci:
     runs-on: [self-hosted]
     container:
       image: frankleeeee/sglang-omni:dev
@@ -45,22 +45,22 @@ jobs:
           source omni-s2pro/bin/activate
           uv pip install -v -e ".[s2pro,dev]"
 
-      - name: Run S2-Pro benchmark
+      - name: Run S2-Pro TTS CI (speed + WER)
         timeout-minutes: 60
         shell: bash
         run: |
           source omni-s2pro/bin/activate
           export PYTHONPATH=$PWD
-          pytest tests/test_model/test_s2pro_benchmark.py -v -s -x
+          pytest tests/test_model/test_s2pro_tts_ci.py -v -s -x
         env:
           HF_ENDPOINT: https://hf-mirror.com
 
-      - name: Print benchmark results
+      - name: Print TTS CI artifacts (speed + WER)
         if: always()
         shell: bash
         run: |
-          echo "=== Benchmark Results ==="
-          for f in $(find /tmp -name "speed_results.json" 2>/dev/null); do
+          echo "=== S2-Pro TTS CI results ==="
+          for f in $(find /tmp -name "speed_results.json" -o -name "wer_results.json" 2>/dev/null); do
             echo "--- $f ---"
             cat "$f"
             echo ""
