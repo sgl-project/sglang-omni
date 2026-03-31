@@ -170,17 +170,14 @@ def make_tts_send_fn(
     return send_fn
 
 
-def print_speed_summary(
-    metrics: dict, model_name: str, max_concurrency: int | None = None
-) -> None:
+def print_speed_summary(metrics: dict, model_name: str, max_concurrency: int) -> None:
     lw = SUMMARY_LABEL_WIDTH
     w = SUMMARY_LINE_WIDTH
     print(f"\n{'=' * w}")
     print(f"{'TTS Benchmark Result':^{w}}")
     print(f"{'=' * w}")
     print(f"  {'Model:':<{lw}} {model_name}")
-    if max_concurrency is not None:
-        print(f"  {'Max concurrency:':<{lw}} {max_concurrency}")
+    print(f"  {'Max concurrency:':<{lw}} {max_concurrency}")
     print(f"  {'Completed requests:':<{lw}} {metrics['completed_requests']}")
     print(f"  {'Failed requests:':<{lw}} {metrics['failed_requests']}")
     print(f"{'-' * w}")
