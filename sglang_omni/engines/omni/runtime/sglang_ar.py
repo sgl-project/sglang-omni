@@ -389,11 +389,6 @@ class SGLangOutputProcessor:
         if self._model is not None and self._capture_hidden_layers:
             aux = getattr(self._model, "_captured_aux_hidden_states", None)
             if aux is not None:
-                # aux is a list of tensors from layers_to_capture, one per layer
-                # Clone to detach from model internal buffers before the
-                # next decode step overwrites them.  The stream send loop
-                # copies tensors to SHM asynchronously, so the original
-                # buffer may be reused by then → CUDA illegal memory access.
                 result = {}
                 for layer_id, tensor in zip(self._capture_hidden_layers, aux):
                     key = "embed" if layer_id == 0 else layer_id
@@ -871,7 +866,8 @@ class SGLangModelRunner:
             req = getattr(data, "req", None)
             input_embeds = getattr(req, "input_embeds", None)
             if input_embeds:
-                rows.extend(input_embeds)
+                prefix_len = len(getattr(req, "prefix_indices", []))
+                rows.extend(input_embeds[prefix_len:])
         if not rows:
             return None
         return torch.as_tensor(rows, device=self.device, dtype=torch.float32)
@@ -990,9 +986,9 @@ class SGLangModelRunner:
                 forward_batch, input_embeds, ds_embeds, vis_masks
             )
         elif projected_prefill:
-            projected_input_embeds = forward_batch.input_embeds
+            projected_input_embeds = request_prefill_input_embeds
             if projected_input_embeds is None:
-                projected_input_embeds = request_prefill_input_embeds
+                projected_input_embeds = forward_batch.input_embeds
             if projected_input_embeds is None:
                 raise RuntimeError(
                     "Projected talker prefill requested without input_embeds"

@@ -76,6 +76,7 @@ class _Code2WavStreamingExecutor(Executor):
         self._tasks: dict[str, asyncio.Task[StagePayload]] = {}
         self._stream_queues: dict[str, asyncio.Queue[dict[str, Any] | None]] = {}
         self._aborted: set[str] = set()
+        self._gpu_lock: asyncio.Lock = asyncio.Lock()
 
     async def add_request(self, payload: StagePayload) -> None:
         request_id = payload.request_id
@@ -195,13 +196,14 @@ class _Code2WavStreamingExecutor(Executor):
     ) -> np.ndarray:
         if self._device.type == "cpu":
             return self._decode_incremental(code_chunks, start_index, end_index)
-        return await loop.run_in_executor(
-            None,
-            self._decode_incremental,
-            code_chunks,
-            start_index,
-            end_index,
-        )
+        async with self._gpu_lock:
+            return await loop.run_in_executor(
+                None,
+                self._decode_incremental,
+                code_chunks,
+                start_index,
+                end_index,
+            )
 
     def _decode_incremental(
         self,
