@@ -72,6 +72,26 @@ def thinker_next_speech(request_id: str, output: Any) -> list[str]:
     return [DECODE_STAGE, TALKER_AR_STAGE]
 
 
+def thinker_next_flexible(request_id: str, output: Any) -> str | list[str]:
+    """Modality-aware thinker routing for the speech pipeline.
+
+    Checks ``output.request.metadata["output_modalities"]`` to decide
+    whether to fan out to the audio path.  When the caller only requests
+    text (i.e. ``"audio"`` is **not** in the modalities list), the audio
+    stages are skipped entirely and only DECODE_STAGE is returned.
+
+    If ``output_modalities`` is *unset* or ``None`` the default behaviour
+    is to produce **both** text and audio (full speech pipeline).
+    """
+    del request_id
+    modalities = None
+    if isinstance(output, StagePayload):
+        modalities = output.request.metadata.get("output_modalities")
+    if modalities is not None and "audio" not in modalities:
+        return DECODE_STAGE
+    return [DECODE_STAGE, TALKER_AR_STAGE]
+
+
 def talker_ar_next(request_id: str, output: Any) -> str:
     del request_id, output
     return CODE_PREDICTOR_STAGE

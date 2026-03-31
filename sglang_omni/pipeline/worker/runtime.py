@@ -72,6 +72,9 @@ class Worker:
             set()
         )  # Set by compiler for CUDA IPC zero-copy
         self._stream_running: bool = False
+        # Per-request set of stream targets to suppress (for text-only
+        # requests in the speech pipeline).
+        self._suppressed_stream_targets: dict[str, set[str]] = {}
 
     def bind(self, stage: Stage, queue: asyncio.Queue[WorkDescriptor | None]) -> None:
         """Bind this worker to a stage."""
@@ -174,7 +177,23 @@ class Worker:
                     f"(expected={request_id} got={merged.request_id})"
                 )
 
+            # Determine whether audio stream targets should be suppressed
+            # for this request (e.g. text-only in speech pipeline).
             bootstrap_targets = self._get_stream_bootstrap_targets()
+            if bootstrap_targets or self._stream_targets:
+                modalities = None
+                if hasattr(merged, "request") and merged.request is not None:
+                    modalities = merged.request.metadata.get("output_modalities")
+                if modalities is not None and "audio" not in modalities:
+                    self._suppressed_stream_targets[request_id] = set(
+                        self._stream_targets
+                    )
+                    bootstrap_targets = [
+                        t
+                        for t in bootstrap_targets
+                        if t not in self._suppressed_stream_targets[request_id]
+                    ]
+
             for stage_name in bootstrap_targets:
                 sent = await self._send_to_next(request_id, stage_name, merged)
                 if not sent:
@@ -209,7 +228,11 @@ class Worker:
             logger.debug("Worker %s: got result for %s", self.stage.name, request_id)
 
             # Signal stream done to all downstream streaming targets
+            # (skip targets suppressed for this request).
+            suppressed = self._suppressed_stream_targets.get(request_id, set())
             for target in self._stream_targets:
+                if target in suppressed:
+                    continue
                 try:
                     self._enqueue_stream_done(request_id, target)
                 except Exception:
@@ -271,6 +294,7 @@ class Worker:
             await self._send_failure(request_id, str(e))
         finally:
             self._result_waiters.pop(request_id, None)
+            self._suppressed_stream_targets.pop(request_id, None)
             if self.stage is not None:
                 self.stage.router.clear_request(request_id)
                 # Close the stream queue entry to prevent per-request leaks
@@ -420,6 +444,11 @@ class Worker:
         metadata: dict | None = None,
     ) -> None:
         """Non-blocking enqueue. Must not block — may be called from the event loop."""
+        # Skip streaming to targets suppressed for this request (e.g.
+        # text-only request skipping audio stages in the speech pipeline).
+        suppressed = self._suppressed_stream_targets.get(request_id)
+        if suppressed and target_stage in suppressed:
+            return
         try:
             self._stream_send_queue.put_nowait(
                 _PendingStreamItem(
