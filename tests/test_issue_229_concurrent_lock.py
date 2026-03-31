@@ -237,3 +237,100 @@ def test_code2wav_no_concurrent_gpu_access() -> None:
         f"BUG: decoder was called from {detector.max_concurrent} threads simultaneously "
         f"(expected 1). This is the race condition reported in issue #229."
     )
+
+
+# ---------------------------------------------------------------------------
+# Test: _rebuild_prefill_input_embeds slices by prefix_indices
+# ---------------------------------------------------------------------------
+
+
+class _MockReq:
+    """Minimal mock of sglang Req with input_embeds and prefix_indices."""
+
+    def __init__(self, input_embeds, prefix_indices=None):
+        self.input_embeds = input_embeds
+        self.prefix_indices = prefix_indices if prefix_indices is not None else []
+
+
+class _MockSchedReq:
+    """Minimal mock of a scheduler request wrapping a Req via .data.req."""
+
+    def __init__(self, req):
+        self.data = type("_Data", (), {"req": req})()
+
+
+class _MockModelRunner:
+    """Minimal mock providing only self.device for _rebuild_prefill_input_embeds."""
+
+    device = torch.device("cpu")
+
+    # Bind the real method so we can call it on this mock.
+    from sglang_omni.engines.omni.runtime.sglang_ar import SGLangModelRunner
+
+    _rebuild_prefill_input_embeds = SGLangModelRunner._rebuild_prefill_input_embeds
+
+
+def test_rebuild_prefill_slices_by_prefix() -> None:
+    """input_embeds must be sliced by prefix_indices length.
+
+    When the tree cache matches a prefix of N tokens, extend_input_len is
+    reduced by N.  _rebuild_prefill_input_embeds must slice input_embeds
+    accordingly so the embed count matches extend_input_len.
+    """
+    runner = _MockModelRunner()
+    total_len = 23
+    prefix_len = 7
+    hidden = 16
+    embeds = [[float(i)] * hidden for i in range(total_len)]
+
+    req = _MockReq(
+        input_embeds=embeds,
+        prefix_indices=list(range(prefix_len)),  # 7-token prefix cached
+    )
+    result = runner._rebuild_prefill_input_embeds([_MockSchedReq(req)])
+
+    assert result is not None
+    assert result.shape == (total_len - prefix_len, hidden), (
+        f"Expected ({total_len - prefix_len}, {hidden}) but got {tuple(result.shape)}. "
+        f"input_embeds was not sliced by prefix_indices — this causes the "
+        f"'expected {total_len} but got {total_len - prefix_len}' KV cache crash."
+    )
+    # Verify the slice starts at the correct offset
+    assert result[0, 0].item() == float(prefix_len)
+
+
+def test_rebuild_prefill_no_prefix() -> None:
+    """Without prefix match, all input_embeds rows must be included."""
+    runner = _MockModelRunner()
+    total_len = 23
+    hidden = 16
+    embeds = [[float(i)] * hidden for i in range(total_len)]
+
+    req = _MockReq(input_embeds=embeds, prefix_indices=[])
+    result = runner._rebuild_prefill_input_embeds([_MockSchedReq(req)])
+
+    assert result is not None
+    assert result.shape == (total_len, hidden)
+    assert result[0, 0].item() == 0.0
+
+
+def test_rebuild_prefill_multiple_requests() -> None:
+    """Multiple requests with different prefix lengths are sliced independently."""
+    runner = _MockModelRunner()
+    hidden = 8
+
+    req_a = _MockReq(
+        input_embeds=[[1.0] * hidden] * 20,
+        prefix_indices=list(range(5)),  # 5-token prefix
+    )
+    req_b = _MockReq(
+        input_embeds=[[2.0] * hidden] * 15,
+        prefix_indices=list(range(10)),  # 10-token prefix
+    )
+    result = runner._rebuild_prefill_input_embeds(
+        [_MockSchedReq(req_a), _MockSchedReq(req_b)]
+    )
+
+    assert result is not None
+    # req_a: 20 - 5 = 15 rows;  req_b: 15 - 10 = 5 rows
+    assert result.shape == (15 + 5, hidden)
