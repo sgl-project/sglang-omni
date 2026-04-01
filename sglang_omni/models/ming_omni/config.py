@@ -121,6 +121,19 @@ class MingOmniSpeechPipelineConfig(PipelineConfig):
         "talker": 1,
     }
 
+    def __init__(self, **kwargs):
+        server_args_overrides = kwargs.pop("server_args_overrides", None)
+        super().__init__(**kwargs)
+        if server_args_overrides:
+            for stage in self.stages:
+                if stage.name == THINKER_STAGE:
+                    if stage.executor.args is None:
+                        stage.executor.args = {}
+                    existing = stage.executor.args.setdefault(
+                        "server_args_overrides", {}
+                    )
+                    existing.update(server_args_overrides)
+
     stages: list[StageConfig] = [
         StageConfig(
             name=PREPROCESSING_STAGE,

@@ -7,7 +7,7 @@ using its own internal LLM + CFM + DiT + AudioVAE pipeline.
 
 The talker is a self-contained TTS system that:
 1. Tokenizes input text with its own tokenizer
-2. Runs its own LLM (Qwen2 or BailingMoe) with StaticCache + CUDA graphs
+2. Runs its own Qwen2 LLM with StaticCache + CUDA graphs
 3. Uses CFM (Conditional Flow Matching) + DiT for diffusion-based audio synthesis
 4. Decodes audio latents to waveform via AudioVAE
 """
@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import sys
+import time
 from pathlib import Path
 
 import torch
@@ -30,13 +30,7 @@ DEFAULT_VOICE = "DB30"
 
 
 class MingTalkerExecutor(Executor):
-    """Executor that wraps BailingTalker2 for speech generation.
-
-    This executor:
-    - Receives decoded text from the thinker stage
-    - Runs the Ming TTS pipeline (own LLM + CFM + AudioVAE)
-    - Returns audio waveform as the stage output
-    """
+    """Executor that wraps BailingTalker2 for speech generation."""
 
     def __init__(
         self,
@@ -52,57 +46,66 @@ class MingTalkerExecutor(Executor):
         self._results: asyncio.Queue[StagePayload] = asyncio.Queue()
         self._aborted: set[str] = set()
 
-        # Will be initialized in start()
         self._talker = None
         self._vae = None
+        self._thinker_tokenizer = None
 
     async def start(self) -> None:
         """Initialize the talker model and AudioVAE."""
         logger.info("Loading Ming talker from %s", self._talker_model_path)
-
-        # Add Ming source directory to path for imports
-        ming_dir = str(Path(self._model_path).parent)
-        if ming_dir not in sys.path:
-            sys.path.insert(0, ming_dir)
-
         await asyncio.to_thread(self._load_models)
         logger.info("Ming talker loaded and initialized")
 
     def _load_models(self) -> None:
         """Load talker model and VAE (runs in thread pool)."""
-        from transformers import AutoConfig, AutoModel
+        from sglang_omni.models.ming_omni.talker import AudioVAE, BailingTalker2
 
-        # Load talker model
-        talker_config = AutoConfig.from_pretrained(
-            self._talker_model_path, trust_remote_code=True
-        )
-        self._talker = AutoModel.from_pretrained(
+        logger.info(
+            "[TALKER] Loading BailingTalker2 from %s (device=%s)",
             self._talker_model_path,
-            config=talker_config,
-            torch_dtype=torch.bfloat16,
-            trust_remote_code=True,
+            self._device,
         )
+
+        t0 = time.time()
+        self._talker = BailingTalker2.from_pretrained(
+            self._talker_model_path,
+            torch_dtype=torch.bfloat16,
+        )
+        logger.info("[TALKER] BailingTalker2 loaded in %.1fs", time.time() - t0)
         self._talker.to(self._device)
         self._talker.eval()
 
         # Load AudioVAE
         vae_path = str(Path(self._talker_model_path) / "vae")
         if Path(vae_path).exists():
-            vae_config = AutoConfig.from_pretrained(vae_path, trust_remote_code=True)
-            self._vae = AutoModel.from_pretrained(
-                vae_path,
-                config=vae_config,
-                torch_dtype=torch.bfloat16,
-                trust_remote_code=True,
-            )
+            t0v = time.time()
+            self._vae = AudioVAE.from_pretrained(vae_path, torch_dtype=torch.bfloat16)
             self._vae.to(self._device)
             self._vae.eval()
+            logger.info("[TALKER] AudioVAE loaded in %.1fs", time.time() - t0v)
         else:
-            logger.warning("AudioVAE not found at %s, talker may fail", vae_path)
+            logger.warning("[TALKER] AudioVAE not found at %s", vae_path)
+
+        # Load thinker tokenizer for decoding output_ids
+        try:
+            from sglang_omni.models.ming_omni.components.common import (
+                load_ming_tokenizer,
+            )
+
+            self._thinker_tokenizer = load_ming_tokenizer(self._model_path)
+            logger.info(
+                "[TALKER] Thinker tokenizer loaded: %s",
+                type(self._thinker_tokenizer).__name__,
+            )
+        except Exception as e:
+            logger.warning("[TALKER] Could not load thinker tokenizer: %s", e)
 
         # Initialize CUDA graphs
         if hasattr(self._talker, "initial_graph"):
+            logger.info("[TALKER] Initializing CUDA graphs...")
+            t0g = time.time()
             self._talker.initial_graph()
+            logger.info("[TALKER] CUDA graphs initialized in %.1fs", time.time() - t0g)
 
     async def add_request(self, payload: StagePayload) -> None:
         """Process a TTS request."""
@@ -110,36 +113,57 @@ class MingTalkerExecutor(Executor):
         if request_id in self._aborted:
             return
 
-        # Extract text from thinker output
         text = self._extract_text(payload)
+        logger.info(
+            "[TALKER] Extracted text (len=%d): %r",
+            len(text) if text else 0,
+            text[:200] if text else "",
+        )
         if not text:
-            # No text to synthesize, return empty audio
             result = StagePayload(
                 request_id=request_id,
                 request=payload.request,
-                data={
-                    "audio_waveform": None,
-                    "sample_rate": 24000,
-                    "duration": 0.0,
-                },
+                data={"audio_waveform": None, "sample_rate": 44100, "duration": 0.0},
             )
             await self._results.put(result)
             return
 
-        # Run TTS in thread pool (blocking CUDA operations)
+        t0 = time.time()
+        logger.info("[TALKER] Starting TTS generation for %d chars...", len(text))
         try:
-            waveform, duration = await asyncio.to_thread(self._generate_speech, text)
+            waveform, sample_rate, duration = await asyncio.to_thread(
+                self._generate_speech, text
+            )
+            logger.info(
+                "[TALKER] TTS done in %.1fs, audio=%.2fs", time.time() - t0, duration
+            )
         except Exception as e:
-            logger.error("Talker generation failed: %s", e, exc_info=True)
+            logger.error(
+                "[TALKER] ERROR after %.1fs: %s", time.time() - t0, e, exc_info=True
+            )
             waveform = None
+            sample_rate = 44100
             duration = 0.0
+
+        # Serialize tensor to bytes for cross-process msgpack transport
+        if waveform is not None:
+            waveform_np = waveform.cpu().float().numpy()
+            waveform_data = waveform_np.tobytes()
+            waveform_dtype = str(waveform_np.dtype)
+            waveform_shape = list(waveform_np.shape)
+        else:
+            waveform_data = None
+            waveform_dtype = "float32"
+            waveform_shape = []
 
         result = StagePayload(
             request_id=request_id,
             request=payload.request,
             data={
-                "audio_waveform": waveform,
-                "sample_rate": 24000,
+                "audio_waveform": waveform_data,
+                "audio_waveform_dtype": waveform_dtype,
+                "audio_waveform_shape": waveform_shape,
+                "sample_rate": sample_rate,
                 "duration": duration,
             },
         )
@@ -158,44 +182,41 @@ class MingTalkerExecutor(Executor):
     def _extract_text(self, payload: StagePayload) -> str:
         """Extract generated text from the thinker output in the payload."""
         data = payload.data
-        if isinstance(data, dict):
-            # Check thinker_out field
-            thinker_out = data.get("thinker_out", {})
-            if isinstance(thinker_out, dict):
-                output_ids = thinker_out.get("output_ids", [])
-                if output_ids:
-                    # Decode token IDs to text
-                    if hasattr(self._talker, "tokenizer"):
-                        return self._talker.tokenizer.decode(
-                            output_ids, skip_special_tokens=True
-                        )
+        if not isinstance(data, dict):
+            return ""
 
-            # Fallback: check for pre-decoded text
-            text = data.get("generated_text", "")
-            if text:
-                return text
+        # Check thinker_out field
+        thinker_out = data.get("thinker_out", {})
+        if isinstance(thinker_out, dict):
+            output_ids = thinker_out.get("output_ids", [])
+            if output_ids:
+                tokenizer = self._thinker_tokenizer
+                if tokenizer is None and hasattr(self._talker, "tokenizer"):
+                    tokenizer = self._talker.tokenizer
+                if tokenizer is not None:
+                    return tokenizer.decode(output_ids, skip_special_tokens=True)
 
-            # Check stream_state for accumulated text
-            stream_state = data.get("stream_state", {})
-            text = stream_state.get("accumulated_text", "")
-            if text:
-                return text
+        # Fallback: pre-decoded text
+        text = data.get("generated_text", "")
+        if text:
+            return text
 
-        return ""
+        # Check stream_state
+        stream_state = data.get("stream_state", {})
+        return stream_state.get("accumulated_text", "")
 
     @torch.no_grad()
-    def _generate_speech(self, text: str) -> tuple[torch.Tensor | None, float]:
+    def _generate_speech(self, text: str) -> tuple[torch.Tensor | None, int, float]:
         """Generate speech from text using BailingTalker2.
 
         Returns:
-            Tuple of (waveform tensor, duration in seconds).
+            Tuple of (waveform tensor, sample_rate, duration in seconds).
         """
         if self._talker is None:
             raise RuntimeError("Talker model not loaded")
 
         all_wavs = []
 
-        # Use the talker's omni_audio_generation method
         if hasattr(self._talker, "omni_audio_generation"):
             for tts_speech, _, _, _ in self._talker.omni_audio_generation(
                 tts_text=text,
@@ -217,13 +238,15 @@ class MingTalkerExecutor(Executor):
                     all_wavs.append(tts_speech)
         else:
             logger.error("Talker has no supported generation method")
-            return None, 0.0
+            return None, 44100, 0.0
 
         if not all_wavs:
-            return None, 0.0
+            return None, 44100, 0.0
 
         waveform = torch.cat(all_wavs, dim=-1)
-        sample_rate = 24000  # Ming TTS default sample rate
+        sample_rate = 44100
+        if self._vae is not None and hasattr(self._vae, "config"):
+            sample_rate = getattr(self._vae.config, "sample_rate", 44100)
         duration = waveform.shape[-1] / sample_rate
 
-        return waveform, duration
+        return waveform, sample_rate, duration

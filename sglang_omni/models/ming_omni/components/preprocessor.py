@@ -25,7 +25,8 @@ logger = logging.getLogger(__name__)
 ROLE_HUMAN = "<role>HUMAN</role>"
 ROLE_ASSISTANT = "<role>ASSISTANT</role>"
 ROLE_SYSTEM = "<role>SYSTEM</role>"
-DEFAULT_SYSTEM_PROMPT = "你是一个友好的AI助手。\n"
+ROLE_END = "<|role_end|>"
+DEFAULT_SYSTEM_PROMPT = "你是一个友好的AI助手。"
 
 # Modality tokens
 AUDIO_START = "<audio>"
@@ -224,21 +225,32 @@ class MingPreprocessor:
         parts: list[str] = []
         audio_idx = 0
 
-        # System message
-        parts.append(f"{ROLE_SYSTEM}{DEFAULT_SYSTEM_PROMPT}")
+        # System message: match the Jinja template behavior exactly.
+        # Always include system prompt + "\n\ndetailed thinking off".
+        # If no explicit system message, use the default system prompt.
+        has_system = messages and messages[0].get("role") == "system"
+        if has_system:
+            system_content = messages[0].get("content", DEFAULT_SYSTEM_PROMPT)
+            parts.append(
+                f"{ROLE_SYSTEM}{system_content}\n\ndetailed thinking off{ROLE_END}"
+            )
+        else:
+            # Official Jinja template always includes the default system prompt
+            parts.append(
+                f"{ROLE_SYSTEM}{DEFAULT_SYSTEM_PROMPT}\n\ndetailed thinking off{ROLE_END}"
+            )
 
         for msg in messages:
             role = msg.get("role", "user")
             content = msg.get("content", "")
 
             if role == "system":
-                parts[0] = f"{ROLE_SYSTEM}{content}\n"
                 continue
 
             role_tag = ROLE_HUMAN if role == "user" else ROLE_ASSISTANT
 
             if isinstance(content, str):
-                parts.append(f"{role_tag}{content}")
+                parts.append(f"{role_tag}{content}{ROLE_END}")
             elif isinstance(content, list):
                 text_parts: list[str] = []
                 for item in content:
@@ -253,15 +265,15 @@ class MingPreprocessor:
                             placeholder = (
                                 f"{AUDIO_START}"
                                 + AUDIO_PATCH * n_tokens
-                                + f"{END_OF_AUDIO}{AUDIO_END}"
+                                + f"{AUDIO_END}"
                             )
                             text_parts.append(placeholder)
                             audio_idx += 1
                     elif isinstance(item, str):
                         text_parts.append(item)
-                parts.append(f"{role_tag}{''.join(text_parts)}")
+                parts.append(f"{role_tag}{''.join(text_parts)}{ROLE_END}")
             else:
-                parts.append(f"{role_tag}{content}")
+                parts.append(f"{role_tag}{content}{ROLE_END}")
 
         # Add assistant prefix for generation
         parts.append(ROLE_ASSISTANT)

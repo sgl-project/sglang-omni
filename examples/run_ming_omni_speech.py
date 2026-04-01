@@ -73,6 +73,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--gpu-thinker", type=int, default=0)
     parser.add_argument("--gpu-talker", type=int, default=1)
     parser.add_argument("--timeout", type=float, default=300.0)
+    parser.add_argument("--cpu-offload-gb", type=float, default=0)
+    parser.add_argument("--mem-fraction-static", type=float, default=None)
     return parser.parse_args()
 
 
@@ -86,10 +88,17 @@ async def main_async(args: argparse.Namespace) -> None:
         "talker": args.gpu_talker,
     }
 
+    overrides = {}
+    if args.cpu_offload_gb:
+        overrides["cpu_offload_gb"] = args.cpu_offload_gb
+    if args.mem_fraction_static is not None:
+        overrides["mem_fraction_static"] = args.mem_fraction_static
+
     config = MingOmniSpeechPipelineConfig(
         model_path=args.model_path,
         relay_backend=args.relay_backend,
         gpu_placement=gpu_placement,
+        server_args_overrides=overrides if overrides else None,
     )
     runner = MultiProcessPipelineRunner(config)
     logger.info("Starting Ming-Omni speech pipeline...")
@@ -144,7 +153,12 @@ def _save_audio(result: dict, output_path: str) -> None:
     import numpy as np
 
     for stage_name, payload in result.items():
-        data = getattr(payload, "data", None)
+        # Multi-terminal coordinator returns {stage_name: data_dict}
+        # where data_dict is the raw dict (not a StagePayload object).
+        if isinstance(payload, dict):
+            data = payload
+        else:
+            data = getattr(payload, "data", None)
         if not isinstance(data, dict):
             continue
         waveform = data.get("audio_waveform")

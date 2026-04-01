@@ -11,7 +11,10 @@ from sglang_omni.engines.ar.sglang_backend.server_args_builder import (
 from sglang_omni.engines.omni import create_sglang_ar_engine, create_single_pass_engine
 from sglang_omni.executors import EngineExecutor, PreprocessingExecutor
 from sglang_omni.models.ming_omni.components.audio_encoder import MingAudioEncoder
-from sglang_omni.models.ming_omni.components.common import load_ming_tokenizer
+from sglang_omni.models.ming_omni.components.common import (
+    load_ming_config,
+    load_ming_tokenizer,
+)
 from sglang_omni.models.ming_omni.components.preprocessor import MingPreprocessor
 from sglang_omni.models.ming_omni.components.talker_executor import MingTalkerExecutor
 from sglang_omni.models.ming_omni.io import OmniEvent, ThinkerOutput
@@ -89,7 +92,13 @@ def create_sglang_thinker_executor(
     """Create a thinker executor backed by SGLang's ModelWorker."""
     tokenizer = load_ming_tokenizer(model_path)
     eos_token_id = getattr(tokenizer, "eos_token_id", None)
-    vocab_size = getattr(tokenizer, "vocab_size", 32000)
+    # Use config vocab_size (157184) instead of tokenizer.vocab_size (156891)
+    # because Ming-Omni has special tokens beyond the tokenizer's base vocab.
+    config = load_ming_config(model_path)
+    llm_cfg = getattr(config, "llm_config", config)
+    vocab_size = getattr(llm_cfg, "vocab_size", None) or getattr(
+        tokenizer, "vocab_size", 32000
+    )
 
     step_counters: dict[str, int] = {}
 
@@ -266,11 +275,22 @@ def create_sglang_thinker_executor_from_config(
     server_args_overrides: dict[str, Any] | None = None,
 ) -> EngineExecutor:
     """Create a SGLang thinker executor from JSON-serializable config args."""
+    import logging as _log
+
+    _log.getLogger(__name__).info(
+        "create_sglang_thinker_executor_from_config: server_args_overrides=%s",
+        server_args_overrides,
+    )
     _ensure_ming_config_registered(model_path)
     # Use local snapshot path so AutoConfig finds our patched files
     local_path = _resolve_local_model_path(model_path)
     server_args = build_sglang_server_args(
         local_path, context_length=thinker_max_seq_len, **(server_args_overrides or {})
+    )
+    _log.getLogger(__name__).info(
+        "ServerArgs: cpu_offload_gb=%s, mem_fraction_static=%s",
+        server_args.cpu_offload_gb,
+        server_args.mem_fraction_static,
     )
     return create_sglang_thinker_executor(
         server_args=server_args,
@@ -291,8 +311,11 @@ def create_talker_executor(
     The talker is a self-contained BailingTalker2 with its own LLM + CFM + AudioVAE,
     wrapped as an Executor for the pipeline.
     """
+    # Resolve HF repo ID to local snapshot path so that
+    # Path(model_path) / "talker" yields a real filesystem path.
+    local_path = _resolve_local_model_path(model_path)
     return MingTalkerExecutor(
-        model_path=model_path,
+        model_path=local_path,
         talker_model_path=talker_model_path,
         device=device,
         voice=voice,

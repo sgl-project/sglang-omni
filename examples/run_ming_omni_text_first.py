@@ -48,15 +48,34 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--temperature", type=float, default=0.8)
     parser.add_argument("--audio-path", type=str, default=None)
     parser.add_argument(
+        "--cpu-offload-gb",
+        type=int,
+        default=80,
+        help="GB of model weights to offload to CPU (default: 80 for Ming-flash-omni-2.0)",
+    )
+    parser.add_argument(
+        "--mem-fraction-static",
+        type=float,
+        default=0.80,
+        help="Fraction of GPU memory for KV cache (default: 0.80)",
+    )
+    parser.add_argument(
         "--relay-backend", type=str, default="shm", choices=["nixl", "shm"]
     )
     return parser.parse_args()
 
 
 async def main_async(args: argparse.Namespace) -> None:
+    overrides = {}
+    if args.cpu_offload_gb:
+        overrides["cpu_offload_gb"] = args.cpu_offload_gb
+    if args.mem_fraction_static is not None:
+        overrides["mem_fraction_static"] = args.mem_fraction_static
+
     config = MingOmniPipelineConfig(
         model_path=args.model_path,
         relay_backend=args.relay_backend,
+        server_args_overrides=overrides if overrides else None,
     )
     coordinator, stages = compile_pipeline(config)
     runner = PipelineRunner(coordinator, stages)

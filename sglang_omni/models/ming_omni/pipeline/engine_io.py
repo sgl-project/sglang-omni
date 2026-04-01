@@ -138,6 +138,9 @@ def build_sglang_thinker_request(
     sampling_params.normalize(tokenizer)
     sampling_params.verify(vocab_size)
 
+    eos_token_id = getattr(tokenizer, "eos_token_id", None)
+    eos_token_ids = {eos_token_id} if eos_token_id is not None else None
+
     rid = request_id or "req-0"
     req = Req(
         rid=rid,
@@ -145,6 +148,7 @@ def build_sglang_thinker_request(
         origin_input_ids=input_ids_list,
         sampling_params=sampling_params,
         vocab_size=vocab_size,
+        eos_token_ids=eos_token_ids,
     )
 
     # Attach multimodal model inputs (audio embeddings, placeholder locations)
