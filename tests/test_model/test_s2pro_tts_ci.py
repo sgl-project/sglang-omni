@@ -114,12 +114,12 @@ def _run_benchmark(
 
     with open(results_path) as f:
         speed_results = json.load(f)
-    assert "summary" in speed_results, (
-        f"Missing 'summary' key in results. Keys: {list(speed_results.keys())}"
-    )
-    assert "per_request" in speed_results, (
-        f"Missing 'per_request' key in results. Keys: {list(speed_results.keys())}"
-    )
+    assert (
+        "summary" in speed_results
+    ), f"Missing 'summary' key in results. Keys: {list(speed_results.keys())}"
+    assert (
+        "per_request" in speed_results
+    ), f"Missing 'per_request' key in results. Keys: {list(speed_results.keys())}"
     return speed_results
 
 
@@ -206,12 +206,12 @@ def _run_wer_transcribe(
 
     with open(results_path) as f:
         wer_results = json.load(f)
-    assert "summary" in wer_results, (
-        f"Missing 'summary' key in WER results. Keys: {list(wer_results.keys())}"
-    )
-    assert "per_sample" in wer_results, (
-        f"Missing 'per_sample' key in WER results. Keys: {list(wer_results.keys())}"
-    )
+    assert (
+        "summary" in wer_results
+    ), f"Missing 'summary' key in WER results. Keys: {list(wer_results.keys())}"
+    assert (
+        "per_sample" in wer_results
+    ), f"Missing 'per_sample' key in WER results. Keys: {list(wer_results.keys())}"
 
     summary = wer_results["summary"]
     if summary.get("skipped", 0) > 0:
@@ -264,18 +264,18 @@ def wer_audio_dirs(
 
 def _assert_summary_metrics(summary: dict) -> None:
     """Verify summary-level sanity invariants that must hold for every run."""
-    assert summary["failed_requests"] == 0, (
-        f"Expected 0 failed requests, got {summary['failed_requests']}"
-    )
-    assert summary["audio_duration_mean_s"] > 0, (
-        f"Expected positive audio duration, got {summary['audio_duration_mean_s']}"
-    )
-    assert summary.get("gen_tokens_mean", 0) > 0, (
-        f"Expected positive gen_tokens_mean, got {summary.get('gen_tokens_mean', 0)}"
-    )
-    assert summary.get("prompt_tokens_mean", 0) > 0, (
-        f"Expected positive prompt_tokens_mean, got {summary.get('prompt_tokens_mean', 0)}"
-    )
+    assert (
+        summary["failed_requests"] == 0
+    ), f"Expected 0 failed requests, got {summary['failed_requests']}"
+    assert (
+        summary["audio_duration_mean_s"] > 0
+    ), f"Expected positive audio duration, got {summary['audio_duration_mean_s']}"
+    assert (
+        summary.get("gen_tokens_mean", 0) > 0
+    ), f"Expected positive gen_tokens_mean, got {summary.get('gen_tokens_mean', 0)}"
+    assert (
+        summary.get("prompt_tokens_mean", 0) > 0
+    ), f"Expected positive prompt_tokens_mean, got {summary.get('prompt_tokens_mean', 0)}"
 
 
 def _assert_per_request_fields(per_request: list[dict]) -> None:
@@ -283,15 +283,15 @@ def _assert_per_request_fields(per_request: list[dict]) -> None:
     for req in per_request:
         rid = req["id"]
         assert req["is_success"], f"Request {rid} failed: {req.get('error')}"
-        assert req["audio_duration_s"] is not None and req["audio_duration_s"] > 0, (
-            f"Request {rid}: audio_duration_s={req['audio_duration_s']}, expected > 0"
-        )
-        assert req["prompt_tokens"] is not None and req["prompt_tokens"] > 0, (
-            f"Request {rid}: prompt_tokens={req['prompt_tokens']}, expected > 0"
-        )
-        assert req["completion_tokens"] is not None and req["completion_tokens"] > 0, (
-            f"Request {rid}: completion_tokens={req['completion_tokens']}, expected > 0"
-        )
+        assert (
+            req["audio_duration_s"] is not None and req["audio_duration_s"] > 0
+        ), f"Request {rid}: audio_duration_s={req['audio_duration_s']}, expected > 0"
+        assert (
+            req["prompt_tokens"] is not None and req["prompt_tokens"] > 0
+        ), f"Request {rid}: prompt_tokens={req['prompt_tokens']}, expected > 0"
+        assert (
+            req["completion_tokens"] is not None and req["completion_tokens"] > 0
+        ), f"Request {rid}: completion_tokens={req['completion_tokens']}, expected > 0"
 
 
 def _assert_streaming_consistency(
@@ -304,9 +304,9 @@ def _assert_streaming_consistency(
     """Assert per-request metrics are close between streaming and non-streaming."""
     ns_by_id = {r["id"]: r for r in non_stream_requests}
     st_by_id = {r["id"]: r for r in stream_requests}
-    assert set(ns_by_id) == set(st_by_id), (
-        f"Request ID mismatch: non_stream={sorted(ns_by_id)}, stream={sorted(st_by_id)}"
-    )
+    assert set(ns_by_id) == set(
+        st_by_id
+    ), f"Request ID mismatch: non_stream={sorted(ns_by_id)}, stream={sorted(st_by_id)}"
     for rid in sorted(ns_by_id):
         ns, st = ns_by_id[rid], st_by_id[rid]
 
@@ -362,13 +362,13 @@ def _assert_wer_results(
     )
 
     for sample in per_sample:
-        assert sample["is_success"], (
-            f"Sample {sample['id']} failed: {sample.get('error')}"
-        )
+        assert sample[
+            "is_success"
+        ], f"Sample {sample['id']} failed: {sample.get('error')}"
         if sample["wer"] is not None:
-            assert sample["wer"] <= max_per_sample_wer, (
-                f"Sample {sample['id']} WER {sample['wer']:.4f} > {max_per_sample_wer}"
-            )
+            assert (
+                sample["wer"] <= max_per_sample_wer
+            ), f"Sample {sample['id']} WER {sample['wer']:.4f} > {max_per_sample_wer}"
 
 
 @pytest.mark.benchmark
@@ -386,12 +386,12 @@ def test_voice_cloning_non_streaming(
     _assert_summary_metrics(summary)
     _assert_per_request_fields(per_request)
     PER_REQUEST_STORE["vc_nonstream"] = per_request
-    assert summary["tok_per_s_agg"] >= VC_NON_STREAM_MIN_TOK_PER_S, (
-        f"tok_per_s_agg {summary['tok_per_s_agg']} < {VC_NON_STREAM_MIN_TOK_PER_S}"
-    )
-    assert summary["rtf_mean"] <= VC_NON_STREAM_MAX_RTF, (
-        f"rtf_mean {summary['rtf_mean']} > {VC_NON_STREAM_MAX_RTF}"
-    )
+    assert (
+        summary["tok_per_s_agg"] >= VC_NON_STREAM_MIN_TOK_PER_S
+    ), f"tok_per_s_agg {summary['tok_per_s_agg']} < {VC_NON_STREAM_MIN_TOK_PER_S}"
+    assert (
+        summary["rtf_mean"] <= VC_NON_STREAM_MAX_RTF
+    ), f"rtf_mean {summary['rtf_mean']} > {VC_NON_STREAM_MAX_RTF}"
 
 
 @pytest.mark.benchmark
@@ -410,12 +410,12 @@ def test_voice_cloning_streaming(
     _assert_summary_metrics(summary)
     _assert_per_request_fields(per_request)
     PER_REQUEST_STORE["vc_stream"] = per_request
-    assert summary["latency_mean_s"] <= VC_STREAM_MAX_LATENCY_S, (
-        f"latency_mean_s {summary['latency_mean_s']} > {VC_STREAM_MAX_LATENCY_S}"
-    )
-    assert summary["throughput_qps"] >= VC_STREAM_MIN_THROUGHPUT_QPS, (
-        f"throughput_qps {summary['throughput_qps']} < {VC_STREAM_MIN_THROUGHPUT_QPS}"
-    )
+    assert (
+        summary["latency_mean_s"] <= VC_STREAM_MAX_LATENCY_S
+    ), f"latency_mean_s {summary['latency_mean_s']} > {VC_STREAM_MAX_LATENCY_S}"
+    assert (
+        summary["throughput_qps"] >= VC_STREAM_MIN_THROUGHPUT_QPS
+    ), f"throughput_qps {summary['throughput_qps']} < {VC_STREAM_MIN_THROUGHPUT_QPS}"
 
 
 @pytest.mark.benchmark
@@ -434,12 +434,12 @@ def test_plain_tts_non_streaming(
     _assert_summary_metrics(summary)
     _assert_per_request_fields(per_request)
     PER_REQUEST_STORE["plain_nonstream"] = per_request
-    assert summary["tok_per_s_agg"] >= PLAIN_NON_STREAM_MIN_TOK_PER_S, (
-        f"tok_per_s_agg {summary['tok_per_s_agg']} < {PLAIN_NON_STREAM_MIN_TOK_PER_S}"
-    )
-    assert summary["rtf_mean"] <= PLAIN_NON_STREAM_MAX_RTF, (
-        f"rtf_mean {summary['rtf_mean']} > {PLAIN_NON_STREAM_MAX_RTF}"
-    )
+    assert (
+        summary["tok_per_s_agg"] >= PLAIN_NON_STREAM_MIN_TOK_PER_S
+    ), f"tok_per_s_agg {summary['tok_per_s_agg']} < {PLAIN_NON_STREAM_MIN_TOK_PER_S}"
+    assert (
+        summary["rtf_mean"] <= PLAIN_NON_STREAM_MAX_RTF
+    ), f"rtf_mean {summary['rtf_mean']} > {PLAIN_NON_STREAM_MAX_RTF}"
 
 
 @pytest.mark.benchmark
@@ -458,12 +458,12 @@ def test_plain_tts_streaming(
     _assert_summary_metrics(summary)
     _assert_per_request_fields(per_request)
     PER_REQUEST_STORE["plain_stream"] = per_request
-    assert summary["latency_mean_s"] <= PLAIN_STREAM_MAX_LATENCY_S, (
-        f"latency_mean_s {summary['latency_mean_s']} > {PLAIN_STREAM_MAX_LATENCY_S}"
-    )
-    assert summary["throughput_qps"] >= PLAIN_STREAM_MIN_THROUGHPUT_QPS, (
-        f"throughput_qps {summary['throughput_qps']} < {PLAIN_STREAM_MIN_THROUGHPUT_QPS}"
-    )
+    assert (
+        summary["latency_mean_s"] <= PLAIN_STREAM_MAX_LATENCY_S
+    ), f"latency_mean_s {summary['latency_mean_s']} > {PLAIN_STREAM_MAX_LATENCY_S}"
+    assert (
+        summary["throughput_qps"] >= PLAIN_STREAM_MIN_THROUGHPUT_QPS
+    ), f"throughput_qps {summary['throughput_qps']} < {PLAIN_STREAM_MIN_THROUGHPUT_QPS}"
 
 
 @pytest.mark.benchmark
