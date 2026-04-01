@@ -24,8 +24,6 @@ from benchmarks.dataset.prepare import DATASETS, download_dataset
 from tests.test_model.helpers import disable_proxy
 from tests.utils import find_free_port
 
-PER_REQUEST_STORE: dict[str, list[dict]] = {}
-
 MODEL_PATH = "Qwen/Qwen3-Omni-30B-A3B-Instruct"
 MAX_SAMPLES = 10
 
@@ -399,7 +397,6 @@ def test_voice_cloning_non_streaming(
     summary, per_request = results["summary"], results["per_request"]
     _assert_summary_metrics(summary)
     _assert_per_request_fields(per_request)
-    PER_REQUEST_STORE["vc_nonstream"] = per_request
     assert (
         summary["rtf_mean"] <= VC_NON_STREAM_MAX_RTF
     ), f"rtf_mean {summary['rtf_mean']} > {VC_NON_STREAM_MAX_RTF}"
