@@ -166,22 +166,25 @@ def _maybe_build_incremental_audio_chunk(
 
     stream_codes: list[torch.Tensor] = payload.data.setdefault(_STREAM_CODES_KEY, [])
     # Keep step codes on device to avoid per-step CUDA sync from `.cpu()`.
-    # Clone to break aliasing with reused model output buffers across decode steps.
-    step_codes = codes.detach().clone()
+    # Slice first, then clone only unseen suffix to avoid cloning the full
+    # cumulative snapshot on every decode step.
+    codes_detached = codes.detach()
+    step_codes = codes_detached
 
     # Handle cumulative snapshots defensively: if current step tensor grows in
     # token length, keep only the unseen suffix; keep per-step deltas unchanged.
     last_len = int(payload.data.get(_STREAM_LAST_CODES_LEN_KEY, 0))
-    curr_len = int(step_codes.shape[1])
+    curr_len = int(codes_detached.shape[1])
     if curr_len > last_len:
         if last_len > 0 and curr_len > 1:
-            step_codes = step_codes[:, last_len:]
+            step_codes = codes_detached[:, last_len:]
         if curr_len > 1:
             payload.data[_STREAM_LAST_CODES_LEN_KEY] = curr_len
     elif curr_len > 1:
         return None
 
-    stream_codes.append(step_codes)
+    # Clone only the actual delta to break aliasing with model output buffers.
+    stream_codes.append(step_codes.clone())
 
     total_tokens = sum(chunk.shape[1] for chunk in stream_codes)
     next_vocode_tokens = int(
