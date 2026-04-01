@@ -20,13 +20,40 @@ from pathlib import Path
 
 import pytest
 import requests
+from huggingface_hub import snapshot_download
 
 from tests.test_model.helpers import disable_proxy
-from tests.utils import dataset_dir, server_process  # noqa: F401
+from tests.utils import find_free_port, start_server, stop_server
+
+S2PRO_MODEL_PATH = "fishaudio/s2-pro"
+S2PRO_CONFIG_PATH = "examples/configs/s2pro_tts.yaml"
+DATASET_REPO = "zhaochenyang20/seed-tts-eval-mini"
 
 SPEECH_INPUT = "Get the trust fund to the bank early."
 REFERENCE_TEXT = "We asked over twenty different people, and they all said it was his."
 REF_WAV_RELPATH = "en/prompt-wavs/common_voice_en_10119832.wav"
+
+
+@pytest.fixture(scope="module")
+def dataset_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """Download the mini Seed-TTS eval dataset used by docs tests."""
+    cache_dir = tmp_path_factory.mktemp("seed_tts_eval")
+    dataset_path = snapshot_download(
+        DATASET_REPO,
+        repo_type="dataset",
+        local_dir=str(cache_dir / "data"),
+    )
+    return Path(dataset_path)
+
+
+@pytest.fixture(scope="module")
+def server_process(tmp_path_factory: pytest.TempPathFactory):
+    """Start the S2-Pro server, wait until healthy, and yield `(proc, port)`."""
+    port = find_free_port()
+    log_file = tmp_path_factory.mktemp("server_logs") / "server.log"
+    proc = start_server(S2PRO_MODEL_PATH, S2PRO_CONFIG_PATH, log_file, port)
+    yield proc, port
+    stop_server(proc)
 
 
 @pytest.fixture(scope="module")

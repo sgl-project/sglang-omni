@@ -1,28 +1,18 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Shared test utilities."""
+"""Shared test utilities — model-agnostic helpers for launching and managing servers."""
 
 from __future__ import annotations
 
-import logging
 import os
 import signal
 import socket
 import subprocess
 import sys
-import time
 from pathlib import Path
 
-import pytest
-import requests
-from huggingface_hub import snapshot_download
-
+from benchmarks.benchmarker.utils import wait_for_service
 from tests.test_model.helpers import disable_proxy
 
-logger = logging.getLogger(__name__)
-
-MODEL_PATH = "fishaudio/s2-pro"
-CONFIG_PATH = "examples/configs/s2pro_tts.yaml"
-DATASET_REPO = "zhaochenyang20/seed-tts-eval-mini"
 STARTUP_TIMEOUT = 600
 
 
@@ -33,17 +23,23 @@ def find_free_port() -> int:
         return socket_handle.getsockname()[1]
 
 
-def start_s2pro_server(log_file: Path, port: int) -> subprocess.Popen:
-    """Start the S2-Pro server and wait until healthy."""
+def start_server(
+    model_path: str,
+    config_path: str,
+    log_file: Path,
+    port: int,
+    timeout: int = STARTUP_TIMEOUT,
+) -> subprocess.Popen:
+    """Start a server and wait until healthy."""
     cmd = [
         sys.executable,
         "-m",
         "sglang_omni.cli.cli",
         "serve",
         "--model-path",
-        MODEL_PATH,
+        model_path,
         "--config",
-        CONFIG_PATH,
+        config_path,
         "--port",
         str(port),
     ]
@@ -55,55 +51,27 @@ def start_s2pro_server(log_file: Path, port: int) -> subprocess.Popen:
             start_new_session=True,
         )
 
-    api_base = f"http://localhost:{port}"
-    for _ in range(STARTUP_TIMEOUT):
-        if proc.poll() is not None:
-            raise RuntimeError(
-                f"Server exited with code {proc.returncode}.\n{log_file.read_text()}"
-            )
-        try:
-            with disable_proxy():
-                response = requests.get(f"{api_base}/health", timeout=2)
-            if response.status_code == 200 and "healthy" in response.text:
-                return proc
-        except requests.RequestException as exc:
-            logger.debug("Health check failed (transient): %s", exc)
-        time.sleep(1)
-
-    stop_server(proc)
-    raise RuntimeError(
-        f"Server did not become healthy within {STARTUP_TIMEOUT}s.\n"
-        f"{log_file.read_text()}"
-    )
+    with disable_proxy():
+        wait_for_service(
+            f"http://localhost:{port}",
+            timeout=timeout,
+            server_process=proc,
+            server_log_file=log_file,
+            health_body_contains="healthy",
+        )
+    return proc
 
 
 def stop_server(proc: subprocess.Popen) -> None:
-    """Gracefully stop the server process group."""
-    os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+    """Gracefully stop the server process group, tolerating already-dead processes."""
     try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
         proc.wait(timeout=30)
+    except (ProcessLookupError, ChildProcessError):
+        return
     except subprocess.TimeoutExpired:
-        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-        proc.wait()
-
-
-@pytest.fixture(scope="module")
-def dataset_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    """Download the mini Seed-TTS eval dataset used by docs tests."""
-    cache_dir = tmp_path_factory.mktemp("seed_tts_eval")
-    dataset_path = snapshot_download(
-        DATASET_REPO,
-        repo_type="dataset",
-        local_dir=str(cache_dir / "data"),
-    )
-    return Path(dataset_path)
-
-
-@pytest.fixture(scope="module")
-def server_process(tmp_path_factory: pytest.TempPathFactory):
-    """Start the S2-Pro server, wait until healthy, and yield `(proc, port)`."""
-    port = find_free_port()
-    log_file = tmp_path_factory.mktemp("server_logs") / "server.log"
-    proc = start_s2pro_server(log_file, port)
-    yield proc, port
-    stop_server(proc)
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            proc.wait(timeout=10)
+        except (ProcessLookupError, ChildProcessError):
+            pass
