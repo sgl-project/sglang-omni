@@ -17,7 +17,8 @@ logger = logging.getLogger(__name__)
 
 DATASETS = {
     "seedtts": "zhaochenyang20/seed-tts-eval",
-    "seedtts-mini": "zhaochenyang20/seed-tts-eval-mini",
+    "seedtts-mini": "zhaochenyang20/seed-tts-eval-mini", # 5 en samples + 5 zh samples
+    "seedtts-ci": "zhaochenyang20/seed-tts-eval-ci", # 16 en samples
 }
 
 

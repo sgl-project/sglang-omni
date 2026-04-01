@@ -31,7 +31,7 @@ PER_REQUEST_STORE: dict[str, list[dict]] = {}
 
 MODEL_PATH = "fishaudio/s2-pro"
 CONFIG_PATH = "examples/configs/s2pro_tts.yaml"
-MAX_SAMPLES = 10
+MAX_SAMPLES = 16
 
 STARTUP_TIMEOUT = 600
 BENCHMARK_TIMEOUT = 600
@@ -41,24 +41,25 @@ WER_TIMEOUT = 600
 # Note (chenyang): the RTF thresholds also includes the reference audio
 # processing time. The Plain text RTF is far less than 1.0.
 
+# TODO: Fine-tune thresholds based on CI dataset performance on H20.
 VC_NON_STREAM_MIN_TOK_PER_S = 80
-VC_NON_STREAM_MAX_RTF = 2.85
-VC_STREAM_MAX_LATENCY_S = 12.5
-VC_STREAM_MIN_THROUGHPUT_QPS = 0.08
+VC_NON_STREAM_MAX_RTF = 2.1
+VC_STREAM_MAX_LATENCY_S = 10.1
+VC_STREAM_MIN_THROUGHPUT_QPS = 0.098
 PLAIN_NON_STREAM_MIN_TOK_PER_S = 80
-PLAIN_NON_STREAM_MAX_RTF = 0.35
-PLAIN_STREAM_MAX_LATENCY_S = 4.0
-PLAIN_STREAM_MIN_THROUGHPUT_QPS = 0.25
+PLAIN_NON_STREAM_MAX_RTF = 0.30
+PLAIN_STREAM_MAX_LATENCY_S = 4.7
+PLAIN_STREAM_MIN_THROUGHPUT_QPS = 0.215
 
 
-# TODO (Chenyang): Current WER thresholds is computed over mini set, which can not
-# capture the accuracy regression fixed by https://github.com/sgl-project/sglang-omni/pull/217
-# We shall have more strict rules that can let #217 pass but let commit 8deddef fail.
+# NOTE: Current WER thresholds are based on a small CI subset of seed-tts-eval dataset (N=16).
+# This sample size may not always capture accuracy regressions
+# If flaky or missed regressions occur, consider expanding the WER evaluation dataset to N=32/64 with concurrency support.
 
-VC_WER_MAX_CORPUS = 0.0
-VC_WER_MAX_PER_SAMPLE = 0.0
-VC_STREAM_WER_MAX_CORPUS = 0.0
-VC_STREAM_WER_MAX_PER_SAMPLE = 0.0
+VC_WER_MAX_CORPUS = 0.02
+VC_WER_MAX_PER_SAMPLE = 0.20
+VC_STREAM_WER_MAX_CORPUS = 0.02
+VC_STREAM_WER_MAX_PER_SAMPLE = 0.20
 
 
 WER_SCRIPT = str(
@@ -247,7 +248,7 @@ def _kill_server(proc: subprocess.Popen) -> None:
 @pytest.fixture(scope="module")
 def dataset_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
     root = tmp_path_factory.mktemp("seed_tts_eval") / "data"
-    download_dataset(DATASETS["seedtts-mini"], str(root))
+    download_dataset(DATASETS["seedtts-ci"], str(root))
     return root
 
 
