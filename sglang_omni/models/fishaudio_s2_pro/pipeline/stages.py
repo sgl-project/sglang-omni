@@ -304,7 +304,9 @@ def create_sglang_tts_engine_executor(
     )
 
     if stream_vocoder_device is None:
-        stream_vocoder_device = "cpu"
+        # Keep stream vocoder on the same accelerator by default to reduce
+        # end-to-end streaming latency variance from CPU decode spikes.
+        stream_vocoder_device = device
 
     # Note (Chenyang): Lazy-loaded: only materialised when
     # the first streaming request arrives.
