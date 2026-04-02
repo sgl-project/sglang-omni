@@ -22,8 +22,7 @@ import pytest
 import requests
 from huggingface_hub import snapshot_download
 
-from tests.test_model.helpers import disable_proxy
-from tests.utils import find_free_port, start_server, stop_server
+from tests.utils import disable_proxy, find_free_port, start_server, stop_server
 
 S2PRO_MODEL_PATH = "fishaudio/s2-pro"
 S2PRO_CONFIG_PATH = "examples/configs/s2pro_tts.yaml"
@@ -131,26 +130,26 @@ def test_voice_cloning_streaming(
             stream=True,
             timeout=600,
         )
-    response.raise_for_status()
+        response.raise_for_status()
 
-    has_audio_chunk = False
-    has_done = False
-    for raw_line in response.iter_lines():
-        line = raw_line.decode("utf-8") if isinstance(raw_line, bytes) else raw_line
-        if not line or not line.startswith("data: "):
-            continue
+        has_audio_chunk = False
+        has_done = False
+        for raw_line in response.iter_lines():
+            line = raw_line.decode("utf-8") if isinstance(raw_line, bytes) else raw_line
+            if not line or not line.startswith("data: "):
+                continue
 
-        payload = line.removeprefix("data: ")
-        if payload == "[DONE]":
-            has_done = True
-            break
+            payload = line.removeprefix("data: ")
+            if payload == "[DONE]":
+                has_done = True
+                break
 
-        event = json.loads(payload)
-        if (
-            event.get("object") == "audio.speech.chunk"
-            and event.get("audio") is not None
-        ):
-            has_audio_chunk = True
+            event = json.loads(payload)
+            if (
+                event.get("object") == "audio.speech.chunk"
+                and event.get("audio") is not None
+            ):
+                has_audio_chunk = True
 
     assert has_audio_chunk, "Expected at least one audio.speech.chunk event"
     assert has_done, "Expected stream to end with [DONE]"

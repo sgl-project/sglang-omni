@@ -8,12 +8,37 @@ import signal
 import socket
 import subprocess
 import sys
+from contextlib import contextmanager
 from pathlib import Path
+from typing import Generator
 
 from benchmarks.benchmarker.utils import wait_for_service
-from tests.test_model.helpers import disable_proxy
 
 STARTUP_TIMEOUT = 600
+
+
+@contextmanager
+def disable_proxy() -> Generator[None, None, None]:
+    """Temporarily disable proxy env vars for loopback requests."""
+    proxy_vars = (
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "ALL_PROXY",
+        "all_proxy",
+        "NO_PROXY",
+        "no_proxy",
+    )
+    saved_env = {k: os.environ[k] for k in proxy_vars if k in os.environ}
+    for k in proxy_vars:
+        os.environ.pop(k, None)
+    try:
+        yield
+    finally:
+        for k in proxy_vars:
+            os.environ.pop(k, None)
+        os.environ.update(saved_env)
 
 
 def find_free_port() -> int:
@@ -74,4 +99,5 @@ def stop_server(proc: subprocess.Popen) -> None:
             os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
             proc.wait(timeout=10)
         except (ProcessLookupError, ChildProcessError):
-            pass
+            # Process already exited — nothing left to kill.
+            return
