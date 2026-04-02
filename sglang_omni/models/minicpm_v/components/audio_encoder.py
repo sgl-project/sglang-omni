@@ -1,11 +1,15 @@
 # SPDX-License-Identifier: Apache-2.0
-"""MiniCPM-o 2.6 Whisper-based audio encoder.
+"""MiniCPM-o Whisper-based audio encoder for 2.6 and 4.5.
 
-This module provides the audio encoder component for MiniCPM-o 2.6,
+This module provides the audio encoder component for MiniCPM-o models,
 which uses a Whisper-based architecture with the `apm.` weight prefix.
 
-The audio encoder follows the same pattern as Qwen3OmniAudioEncoder but
-is adapted for MiniCPM-o's Whisper-based audio processing model.
+Supported versions:
+- MiniCPM-o 2.6: Whisper encoder with standard config
+- MiniCPM-o 4.5: Whisper-medium with enhanced voice features
+
+Both versions follow the same architecture pattern but may have different
+model sizes and configurations loaded from the HF config.
 """
 
 from __future__ import annotations
@@ -87,10 +91,14 @@ def _build_audio_tower(
 
 
 class MiniCPMOAudioEncoder(nn.Module):
-    """Whisper-based audio encoder for MiniCPM-o 2.6.
+    """Whisper-based audio encoder for MiniCPM-o (2.6 and 4.5).
 
     This encoder processes audio inputs through a Whisper encoder and
     produces embeddings compatible with the MiniCPM LLM backbone.
+
+    Version-specific behavior:
+    - 2.6: Standard Whisper encoder configuration
+    - 4.5: Whisper-medium with enhanced voice recognition
 
     The forward pass accepts mel-spectrogram features and returns
     audio embeddings with corresponding output lengths.
