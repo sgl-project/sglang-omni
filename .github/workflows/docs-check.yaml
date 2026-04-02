@@ -1,20 +1,24 @@
-name: Docs Publish
+name: Docs Check
 
 on:
-  push:
-    branches:
-      - main
+  pull_request:
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
   workflow_dispatch:
 
 concurrency:
-  group: docs-publish-${{ github.ref }}
+  group: docs-check-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
-  deploy-github-pages:
+  build-docs:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -34,13 +38,3 @@ jobs:
           cd docs
           make compile
           make html
-
-      - name: Add .nojekyll file
-        run: |
-          touch ./docs/_build/html/.nojekyll
-
-      - name: Deploy
-        uses: peaceiris/actions-gh-pages@v4
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: ./docs/_build/html

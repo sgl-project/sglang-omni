@@ -1,0 +1,65 @@
+name: TTS Docs Tests
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: s2pro-docs-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  s2pro-docs:
+    runs-on: [self-hosted]
+    container:
+      image: frankleeeee/sglang-omni:dev
+      options: --gpus all --rm -v /dev/shm:/dev/shm
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Restore cache
+        run: |
+          if [ -d /github/home/omni-s2pro ] && [ ! -z "$(ls -A /github/home/omni-s2pro/)" ]; then
+            cp -p -r /github/home/omni-s2pro ./omni-s2pro
+          fi
+
+      - name: Remove flashinfer
+        run: |
+          rm -rf /github/home/.cache/flashinfer
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          if [ -d omni-s2pro ] && ! omni-s2pro/bin/python -c "import torch" 2>/dev/null; then
+            echo "Cached venv is corrupted, removing..."
+            rm -rf omni-s2pro
+          fi
+          if [ ! -d omni-s2pro ]; then
+            uv venv omni-s2pro -p 3.11
+          fi
+          source omni-s2pro/bin/activate
+          uv pip install -v -e ".[s2pro,dev]"
+
+      - name: Kill GPU processes
+        shell: bash
+        run: |
+          bash .github/scripts/delete_gpu_process.sh
+
+      - name: Run docs tests
+        timeout-minutes: 30
+        shell: bash
+        run: |
+          source omni-s2pro/bin/activate
+          export PYTHONPATH=$PWD
+          pytest tests/docs/s2pro/test_docs_tts_s2pro.py -v -s -x
+        env:
+          HF_ENDPOINT: https://hf-mirror.com
+
+      - name: Save cache
+        run: |
+          cp -p -r omni-s2pro /github/home/

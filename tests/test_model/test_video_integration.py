@@ -20,7 +20,7 @@ from pathlib import Path
 import pytest
 import requests
 
-from tests.test_model.helpers import disable_proxy
+from tests.utils import disable_proxy
 
 # ---------------------------------------------------------------------------
 # Configuration

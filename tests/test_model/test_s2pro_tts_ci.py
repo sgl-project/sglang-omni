@@ -16,23 +16,20 @@ from __future__ import annotations
 import json
 import os
 import random
-import signal
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
 
-from benchmarks.benchmarker.utils import wait_for_service
 from benchmarks.dataset.prepare import DATASETS, download_dataset
-from tests.test_model.helpers import disable_proxy
-from tests.utils import find_free_port
+from tests.utils import find_free_port, start_server, stop_server
 
 PER_REQUEST_STORE: dict[str, list[dict]] = {}
 SELECTED_VC_CONCURRENCIES: tuple[int, ...] | None = None
 
-MODEL_PATH = "fishaudio/s2-pro"
-CONFIG_PATH = "examples/configs/s2pro_tts.yaml"
+S2PRO_MODEL_PATH = "fishaudio/s2-pro"
+S2PRO_CONFIG_PATH = "examples/configs/s2pro_tts.yaml"
 MAX_SAMPLES = 10
 CI_MAX_CONCURRENCY = 20
 
@@ -151,7 +148,7 @@ def _run_benchmark(
             / "benchmark_tts_speed.py"
         ),
         "--model",
-        MODEL_PATH,
+        S2PRO_MODEL_PATH,
         "--port",
         str(port),
         "--testset",
@@ -211,7 +208,7 @@ def _run_wer_generate(
         "--output-dir",
         output_dir,
         "--model",
-        MODEL_PATH,
+        S2PRO_MODEL_PATH,
         "--port",
         str(port),
         "--max-samples",
@@ -251,7 +248,7 @@ def _run_wer_transcribe(
         "--output-dir",
         output_dir,
         "--model",
-        MODEL_PATH,
+        S2PRO_MODEL_PATH,
         "--lang",
         lang,
         "--device",
@@ -295,21 +292,6 @@ def _run_wer_transcribe(
     return wer_results
 
 
-def _kill_server(proc: subprocess.Popen) -> None:
-    """Kill the server process group, tolerating already-dead processes."""
-    try:
-        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-        proc.wait(timeout=30)
-    except (ProcessLookupError, ChildProcessError):
-        pass
-    except subprocess.TimeoutExpired:
-        try:
-            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-            proc.wait(timeout=10)
-        except (ProcessLookupError, ChildProcessError):
-            pass
-
-
 @pytest.fixture(scope="module")
 def dataset_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
     root = tmp_path_factory.mktemp("seed_tts_eval") / "data"
@@ -321,52 +303,11 @@ def dataset_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
 def server_process(tmp_path_factory: pytest.TempPathFactory):
     """Start the s2-pro server and wait until healthy."""
     port = find_free_port()
-    log_dir = tmp_path_factory.mktemp("server_logs")
-    log_file = log_dir / "server.log"
-    with open(log_file, "w") as log_handle:
-        cmd = [
-            sys.executable,
-            "-m",
-            "sglang_omni.cli.cli",
-            "serve",
-            "--model-path",
-            MODEL_PATH,
-            "--config",
-            CONFIG_PATH,
-            "--port",
-            str(port),
-        ]
-
-        proc = subprocess.Popen(
-            cmd,
-            stdout=log_handle,
-            stderr=subprocess.STDOUT,
-            preexec_fn=os.setsid,
-        )
-        proc.port = port
-
-        api_base = f"http://localhost:{port}"
-        try:
-            with disable_proxy():
-                wait_for_service(
-                    api_base,
-                    timeout=STARTUP_TIMEOUT,
-                    server_process=proc,
-                    server_log_file=log_file,
-                    health_body_contains="healthy",
-                )
-        except TimeoutError:
-            _kill_server(proc)
-            server_log = log_file.read_text()
-            pytest.fail(
-                f"Server did not become healthy within {STARTUP_TIMEOUT}s.\n{server_log}"
-            )
-        except RuntimeError as exc:
-            pytest.fail(str(exc))
-
-        yield proc
-
-        _kill_server(proc)
+    log_file = tmp_path_factory.mktemp("server_logs") / "server.log"
+    proc = start_server(S2PRO_MODEL_PATH, S2PRO_CONFIG_PATH, log_file, port)
+    proc.port = port
+    yield proc
+    stop_server(proc)
 
 
 @pytest.fixture(scope="module")
@@ -382,7 +323,7 @@ def wer_audio_dirs(
     _run_wer_generate(server_process.port, meta, str(tmp / "non_stream"))
     _run_wer_generate(server_process.port, meta, str(tmp / "stream"), stream=True)
 
-    _kill_server(server_process)
+    stop_server(server_process)
 
     return {"non_stream": str(tmp / "non_stream"), "stream": str(tmp / "stream")}
 
@@ -429,10 +370,9 @@ def _assert_streaming_consistency(
     """Assert per-request metrics are close between streaming and non-streaming."""
     ns_by_id = {r["id"]: r for r in non_stream_requests}
     st_by_id = {r["id"]: r for r in stream_requests}
-    assert set(ns_by_id) == set(st_by_id), (
-        f"Request ID mismatch: "
-        f"non_stream={sorted(ns_by_id)}, stream={sorted(st_by_id)}"
-    )
+    assert set(ns_by_id) == set(
+        st_by_id
+    ), f"Request ID mismatch: non_stream={sorted(ns_by_id)}, stream={sorted(st_by_id)}"
     for rid in sorted(ns_by_id):
         ns, st = ns_by_id[rid], st_by_id[rid]
 
@@ -492,10 +432,9 @@ def _assert_wer_results(
             "is_success"
         ], f"Sample {sample['id']} failed: {sample.get('error')}"
         if sample["wer"] is not None:
-            assert sample["wer"] <= max_per_sample_wer, (
-                f"Sample {sample['id']} WER {sample['wer']:.4f} "
-                f"> {max_per_sample_wer}"
-            )
+            assert (
+                sample["wer"] <= max_per_sample_wer
+            ), f"Sample {sample['id']} WER {sample['wer']:.4f} > {max_per_sample_wer}"
 
 
 def _selected_concurrencies() -> tuple[int, ...]:
