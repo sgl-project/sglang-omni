@@ -193,8 +193,6 @@ def _run_wer_transcribe(
         lang,
         "--device",
         device,
-        "--transcription-concurrency",
-        str(CI_MAX_CONCURRENCY),
     ]
 
     result = subprocess.run(
