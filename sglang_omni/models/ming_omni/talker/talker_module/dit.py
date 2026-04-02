@@ -169,12 +169,10 @@ class DiT(nn.Module):
         t: (N,) tensor of diffusion timesteps
         y: (N,) tensor of class labels
         """
-        x = torch.cat([latent_history, x], dim=1)  # 拼接patch history和当前patch
+        x = torch.cat([latent_history, x], dim=1)
         x = self.x_embedder(x)
         t = self.t_embedder(t).unsqueeze(1)  # (N, D)
-        c = self.c_embedder(
-            c, self.training
-        )  # (N, 1, 896) -> (N, 1, D)，同时带有CFG替换操作
+        c = self.c_embedder(c, self.training)  # (N, 1, 896) -> (N, 1, D)
         y = t + c
         if spk_emb is None:
             assert self.spk_embedder is None

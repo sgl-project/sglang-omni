@@ -135,7 +135,7 @@ def load_ming_omni_talker(model_path: str, device: str = "cuda"):
 
 
 @torch.no_grad()
-def test_tts(
+def run_tts(
     talker,
     vae,
     text: str,
@@ -191,7 +191,7 @@ def main():
     args = parser.parse_args()
 
     talker, vae = load_ming_omni_talker(args.model_path, args.device)
-    test_tts(talker, vae, args.text, args.voice, args.output)
+    run_tts(talker, vae, args.text, args.voice, args.output)
     logger.info("Test PASSED - MingOmniTalker works!")
 
 
