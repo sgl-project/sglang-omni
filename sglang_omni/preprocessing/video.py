@@ -14,8 +14,6 @@ import av
 import librosa
 import torch
 from qwen_vl_utils import vision_process as qwen_vision
-from torchvision.transforms import InterpolationMode
-from torchvision.transforms import functional as tv_f
 
 from .base import MediaIO, _is_url
 from .cache_key import compute_media_cache_key
@@ -252,48 +250,21 @@ def load_video_path(
     path: str | Path,
     fps: float | None = None,
 ) -> tuple[torch.Tensor, float]:
-    """Load a local video into a torch tensor (T, C, H, W) on CPU."""
+    """Load a local video into a torch tensor (T, C, H, W) on CPU.
+
+    Uses ``qwen_vl_utils.vision_process.fetch_video`` which handles frame
+    sampling, smart resize and pixel budget internally.
+
+    Requires qwen-vl-utils >= 0.0.14 (fetch_video API).
+    """
     ele: dict[str, Any] = {"video": str(path)}
     if fps is not None:
         ele["fps"] = float(fps)
-    backend = qwen_vision.get_video_reader_backend()
-    try:
-        video, sample_fps = qwen_vision.VIDEO_READER_BACKENDS[backend](ele)
-    except Exception:
-        logger.warning("Video reader %s failed, falling back to torchvision", backend)
-        video, sample_fps = qwen_vision.VIDEO_READER_BACKENDS["torchvision"](ele)
-    nframes, _, height, width = video.shape
-    min_pixels = ele.get("min_pixels", qwen_vision.VIDEO_MIN_PIXELS)
-    total_pixels = ele.get("total_pixels", qwen_vision.VIDEO_TOTAL_PIXELS)
-    max_pixels = max(
-        min(
-            qwen_vision.VIDEO_MAX_PIXELS,
-            total_pixels / nframes * qwen_vision.FRAME_FACTOR,
-        ),
-        int(min_pixels * 1.05),
-    )
-    max_pixels_supposed = ele.get("max_pixels", max_pixels)
-    max_pixels = min(max_pixels_supposed, max_pixels)
-    if "resized_height" in ele and "resized_width" in ele:
-        resized_height, resized_width = qwen_vision.smart_resize(
-            ele["resized_height"],
-            ele["resized_width"],
-            factor=qwen_vision.IMAGE_FACTOR,
-        )
-    else:
-        resized_height, resized_width = qwen_vision.smart_resize(
-            height,
-            width,
-            factor=qwen_vision.IMAGE_FACTOR,
-            min_pixels=min_pixels,
-            max_pixels=max_pixels,
-        )
-    video = tv_f.resize(
-        video,
-        [resized_height, resized_width],
-        interpolation=InterpolationMode.BICUBIC,
-        antialias=True,
-    ).float()
+    video, sample_fps = qwen_vision.fetch_video(ele, return_video_sample_fps=True)
+    if not isinstance(video, torch.Tensor):
+        import numpy as np
+
+        video = torch.from_numpy(np.stack(video))
     return video, sample_fps
 
 
