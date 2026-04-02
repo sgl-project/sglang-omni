@@ -4,6 +4,7 @@
 Usage:
     python -m benchmarks.dataset.prepare --dataset seedtts
     python -m benchmarks.dataset.prepare --dataset seedtts-mini
+    python -m benchmarks.dataset.prepare --dataset seedtts-50
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ logger = logging.getLogger(__name__)
 DATASETS = {
     "seedtts": "zhaochenyang20/seed-tts-eval",
     "seedtts-mini": "zhaochenyang20/seed-tts-eval-mini",
+    "seedtts-50": "Ratish21/seed-tts-eval-50",
 }
 
 

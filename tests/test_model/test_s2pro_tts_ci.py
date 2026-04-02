@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+import random
 import signal
 import subprocess
 import sys
@@ -28,6 +29,7 @@ from tests.test_model.helpers import disable_proxy
 from tests.utils import find_free_port
 
 PER_REQUEST_STORE: dict[str, list[dict]] = {}
+SELECTED_VC_CONCURRENCIES: tuple[int, ...] | None = None
 
 MODEL_PATH = "fishaudio/s2-pro"
 CONFIG_PATH = "examples/configs/s2pro_tts.yaml"
@@ -42,10 +44,6 @@ WER_TIMEOUT = 600
 # Note (chenyang): the RTF thresholds also includes the reference audio
 # processing time. The Plain text RTF is far less than 1.0.
 
-VC_NON_STREAM_MIN_TOK_PER_S = 80
-VC_NON_STREAM_MAX_RTF = 2.85
-VC_STREAM_MAX_LATENCY_S = 12.5
-VC_STREAM_MIN_THROUGHPUT_QPS = 0.08
 PLAIN_NON_STREAM_MIN_TOK_PER_S = 80
 PLAIN_NON_STREAM_MAX_RTF = 0.35
 PLAIN_STREAM_MAX_LATENCY_S = 4.0
@@ -61,6 +59,73 @@ VC_WER_MAX_PER_SAMPLE = 0.0
 VC_STREAM_WER_MAX_CORPUS = 0.0
 VC_STREAM_WER_MAX_PER_SAMPLE = 0.0
 
+VC_NON_STREAM_THRESHOLDS = {
+    1: {
+        "throughput_qps_min": 0.10,
+        "tok_per_s_agg_min": 70.0,
+        "latency_mean_s_max": 9.5,
+        "rtf_mean_max": 2.55,
+    },
+    2: {
+        "throughput_qps_min": 0.20,
+        "tok_per_s_agg_min": 65.0,
+        "latency_mean_s_max": 10.0,
+        "rtf_mean_max": 2.70,
+    },
+    4: {
+        "throughput_qps_min": 0.37,
+        "tok_per_s_agg_min": 65.0,
+        "latency_mean_s_max": 10.5,
+        "rtf_mean_max": 2.85,
+    },
+    8: {
+        "throughput_qps_min": 0.65,
+        "tok_per_s_agg_min": 58.0,
+        "latency_mean_s_max": 11.5,
+        "rtf_mean_max": 3.05,
+    },
+    16: {
+        "throughput_qps_min": 0.93,
+        "tok_per_s_agg_min": 52.0,
+        "latency_mean_s_max": 14.5,
+        "rtf_mean_max": 3.85,
+    },
+}
+
+VC_ALLOWED_CONCURRENCIES = (1, 2, 4, 8, 16)
+
+VC_STREAM_THRESHOLDS = {
+    1: {
+        "throughput_qps_min": 0.08,
+        "tok_per_s_agg_min": 18.0,
+        "latency_mean_s_max": 12.5,
+        "rtf_mean_max": 3.0,
+    },
+    2: {
+        "throughput_qps_min": 0.13,
+        "tok_per_s_agg_min": 14.0,
+        "latency_mean_s_max": 15.0,
+        "rtf_mean_max": 3.6,
+    },
+    4: {
+        "throughput_qps_min": 0.20,
+        "tok_per_s_agg_min": 13.0,
+        "latency_mean_s_max": 18.0,
+        "rtf_mean_max": 4.5,
+    },
+    8: {
+        "throughput_qps_min": 0.25,
+        "tok_per_s_agg_min": 6.5,
+        "latency_mean_s_max": 30.0,
+        "rtf_mean_max": 7.5,
+    },
+    16: {
+        "throughput_qps_min": 0.25,
+        "tok_per_s_agg_min": 2.5,
+        "latency_mean_s_max": 55.0,
+        "rtf_mean_max": 14.0,
+    },
+}
 
 WER_SCRIPT = str(
     Path(__file__).resolve().parents[2]
@@ -75,6 +140,7 @@ def _run_benchmark(
     testset: str,
     output_dir: str,
     extra_args: list[str] | None = None,
+    max_samples: int | None = MAX_SAMPLES,
 ) -> dict:
     cmd = [
         sys.executable,
@@ -90,23 +156,20 @@ def _run_benchmark(
         str(port),
         "--testset",
         testset,
-        "--max-samples",
-        str(MAX_SAMPLES),
         "--output-dir",
         output_dir,
     ]
+    if max_samples is not None:
+        cmd.extend(["--max-samples", str(max_samples)])
     if extra_args:
         cmd.extend(extra_args)
-
-    proxy_keys = {"http_proxy", "https_proxy", "all_proxy", "no_proxy"}
-    env = {k: v for k, v in os.environ.items() if k.lower() not in proxy_keys}
 
     proc_result = subprocess.run(
         cmd,
         capture_output=True,
         text=True,
         timeout=BENCHMARK_TIMEOUT,
-        env=env,
+        env=_no_proxy_env(),
     )
     assert proc_result.returncode == 0, (
         f"Benchmark failed (rc={proc_result.returncode}).\n"
@@ -250,7 +313,7 @@ def _kill_server(proc: subprocess.Popen) -> None:
 @pytest.fixture(scope="module")
 def dataset_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
     root = tmp_path_factory.mktemp("seed_tts_eval") / "data"
-    download_dataset(DATASETS["seedtts-mini"], str(root))
+    download_dataset(DATASETS["seedtts-50"], str(root))
     return root
 
 
@@ -435,28 +498,58 @@ def _assert_wer_results(
             )
 
 
+def _selected_concurrencies() -> tuple[int, ...]:
+    global SELECTED_VC_CONCURRENCIES
+    if SELECTED_VC_CONCURRENCIES is not None:
+        return SELECTED_VC_CONCURRENCIES
+    if os.environ.get("CI"):
+        concurrency = random.choice(VC_ALLOWED_CONCURRENCIES)
+        print(f"\n[S2 Pro benchmark] selected concurrency: {concurrency}")
+        SELECTED_VC_CONCURRENCIES = (concurrency,)
+        return SELECTED_VC_CONCURRENCIES
+    SELECTED_VC_CONCURRENCIES = VC_ALLOWED_CONCURRENCIES
+    return SELECTED_VC_CONCURRENCIES
+
+
+def _assert_speed_thresholds(summary: dict, thresholds: dict, concurrency: int) -> None:
+    thresholds = thresholds[concurrency]
+    assert summary["throughput_qps"] >= thresholds["throughput_qps_min"], (
+        f"throughput_qps {summary['throughput_qps']} < "
+        f"{thresholds['throughput_qps_min']} at concurrency {concurrency}"
+    )
+    assert summary["tok_per_s_agg"] >= thresholds["tok_per_s_agg_min"], (
+        f"tok_per_s_agg {summary['tok_per_s_agg']} < "
+        f"{thresholds['tok_per_s_agg_min']} at concurrency {concurrency}"
+    )
+    assert summary["latency_mean_s"] <= thresholds["latency_mean_s_max"], (
+        f"latency_mean_s {summary['latency_mean_s']} > "
+        f"{thresholds['latency_mean_s_max']} at concurrency {concurrency}"
+    )
+    assert summary["rtf_mean"] <= thresholds["rtf_mean_max"], (
+        f"rtf_mean {summary['rtf_mean']} > "
+        f"{thresholds['rtf_mean_max']} at concurrency {concurrency}"
+    )
+
+
 @pytest.mark.benchmark
 def test_voice_cloning_non_streaming(
     server_process: subprocess.Popen,
     dataset_dir: Path,
     tmp_path: Path,
 ) -> None:
-    results = _run_benchmark(
-        server_process.port,
-        str(dataset_dir / "en" / "meta.lst"),
-        str(tmp_path / "vc_nonstream"),
-        ["--max-concurrency", str(CI_MAX_CONCURRENCY)],
-    )
-    summary, per_request = results["summary"], results["per_request"]
-    _assert_summary_metrics(summary)
-    _assert_per_request_fields(per_request)
-    PER_REQUEST_STORE["vc_nonstream"] = per_request
-    assert (
-        summary["tok_per_s_agg"] >= VC_NON_STREAM_MIN_TOK_PER_S
-    ), f"tok_per_s_agg {summary['tok_per_s_agg']} < {VC_NON_STREAM_MIN_TOK_PER_S}"
-    assert (
-        summary["rtf_mean"] <= VC_NON_STREAM_MAX_RTF
-    ), f"rtf_mean {summary['rtf_mean']} > {VC_NON_STREAM_MAX_RTF}"
+    for concurrency in _selected_concurrencies():
+        results = _run_benchmark(
+            server_process.port,
+            str(dataset_dir / "en" / "meta.lst"),
+            str(tmp_path / f"vc_nonstream_c{concurrency}"),
+            ["--max-concurrency", str(concurrency)],
+            max_samples=None,
+        )
+        summary, per_request = results["summary"], results["per_request"]
+        _assert_summary_metrics(summary)
+        _assert_per_request_fields(per_request)
+        PER_REQUEST_STORE["vc_nonstream"] = per_request
+        _assert_speed_thresholds(summary, VC_NON_STREAM_THRESHOLDS, concurrency)
 
 
 @pytest.mark.benchmark
@@ -465,22 +558,19 @@ def test_voice_cloning_streaming(
     dataset_dir: Path,
     tmp_path: Path,
 ) -> None:
-    results = _run_benchmark(
-        server_process.port,
-        str(dataset_dir / "en" / "meta.lst"),
-        str(tmp_path / "vc_stream"),
-        ["--stream", "--max-concurrency", str(CI_MAX_CONCURRENCY)],
-    )
-    summary, per_request = results["summary"], results["per_request"]
-    _assert_summary_metrics(summary)
-    _assert_per_request_fields(per_request)
-    PER_REQUEST_STORE["vc_stream"] = per_request
-    assert (
-        summary["latency_mean_s"] <= VC_STREAM_MAX_LATENCY_S
-    ), f"latency_mean_s {summary['latency_mean_s']} > {VC_STREAM_MAX_LATENCY_S}"
-    assert (
-        summary["throughput_qps"] >= VC_STREAM_MIN_THROUGHPUT_QPS
-    ), f"throughput_qps {summary['throughput_qps']} < {VC_STREAM_MIN_THROUGHPUT_QPS}"
+    for concurrency in _selected_concurrencies():
+        results = _run_benchmark(
+            server_process.port,
+            str(dataset_dir / "en" / "meta.lst"),
+            str(tmp_path / f"vc_stream_c{concurrency}"),
+            ["--stream", "--max-concurrency", str(concurrency)],
+            max_samples=None,
+        )
+        summary, per_request = results["summary"], results["per_request"]
+        _assert_summary_metrics(summary)
+        _assert_per_request_fields(per_request)
+        PER_REQUEST_STORE["vc_stream"] = per_request
+        _assert_speed_thresholds(summary, VC_STREAM_THRESHOLDS, concurrency)
 
 
 @pytest.mark.benchmark
