@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Ming-Omni speech pipeline: text + audio output.
 
-The talker is a self-contained BailingTalker2 with its own LLM + CFM + AudioVAE,
+The talker is a self-contained MingOmniTalker with its own LLM + CFM + AudioVAE,
 generating speech from the thinker's decoded text.
 
 Usage::

@@ -1,9 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Audio encoder component for Ming-Omni.
-
-Extracts the WhisperAudioEncoder + Conv1d projection from the Ming-Omni
-checkpoint and wraps them as a single nn.Module for the encoder stage.
-"""
+"""Audio encoder component for Ming-Omni."""
 
 from __future__ import annotations
 

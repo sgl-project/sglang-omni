@@ -193,16 +193,7 @@ _TOKENIZER_FALLBACK_REPO = "inclusionAI/Ming-flash-omni-Preview"
 
 
 def _ensure_ming_config_registered(model_path: str = "inclusionAI/Ming-flash-omni-2.0"):
-    """Ensure ``AutoConfig`` can resolve Ming's ``bailingmm_moe_v2_lite`` model type.
-
-    The HF repo ``inclusionAI/Ming-flash-omni-2.0`` is missing:
-    - ``configuration_bailingmm2.py`` (custom config class)
-    - tokenizer files (``tokenizer.json``, ``tokenizer_config.json``)
-
-    We patch the local HF cache snapshot to include these files so that
-    both ``AutoConfig.from_pretrained`` and ``AutoTokenizer.from_pretrained``
-    work with ``trust_remote_code=True``.
-    """
+    """Ensure ``AutoConfig`` can resolve Ming's ``bailingmm_moe_v2_lite`` model type."""
     global _ming_config_registered
     if _ming_config_registered:
         return
@@ -308,7 +299,7 @@ def create_talker_executor(
 ) -> MingTalkerExecutor:
     """Create the Ming TTS talker executor.
 
-    The talker is a self-contained BailingTalker2 with its own LLM + CFM + AudioVAE,
+    The talker is a self-contained MingOmniTalker with its own LLM + CFM + AudioVAE,
     wrapped as an Executor for the pipeline.
     """
     # Resolve HF repo ID to local snapshot path so that

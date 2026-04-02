@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """Talker executor for Ming-Omni.
 
-Wraps BailingTalker2 as a pipeline Executor stage. The talker receives
-decoded text from the thinker and independently generates speech audio
+Wraps MingOmniTalker as a pipeline Executor stage. The talker
+receives decoded text from the thinker and independently generates speech audio
 using its own internal LLM + CFM + DiT + AudioVAE pipeline.
 
 The talker is a self-contained TTS system that:
@@ -15,7 +15,9 @@ The talker is a self-contained TTS system that:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import os
 import time
 from pathlib import Path
 
@@ -30,7 +32,7 @@ DEFAULT_VOICE = "DB30"
 
 
 class MingTalkerExecutor(Executor):
-    """Executor that wraps BailingTalker2 for speech generation."""
+    """Executor that wraps MingOmniTalker for speech generation."""
 
     def __init__(
         self,
@@ -58,35 +60,90 @@ class MingTalkerExecutor(Executor):
 
     def _load_models(self) -> None:
         """Load talker model and VAE (runs in thread pool)."""
-        from sglang_omni.models.ming_omni.talker import AudioVAE, BailingTalker2
+        from transformers import AutoTokenizer
+
+        from sglang_omni.models.ming_omni.talker import (
+            MingOmniTalker,
+            MingOmniTalkerConfig,
+            SpkembExtractor,
+        )
+        from sglang_omni.models.ming_omni.talker.audio_vae.modeling_audio_vae import (
+            AudioVAE,
+        )
+        from sglang_omni.models.weight_loader import load_weights_by_prefix
 
         logger.info(
-            "[TALKER] Loading BailingTalker2 from %s (device=%s)",
+            "[TALKER] Loading MingOmniTalker from %s (device=%s)",
             self._talker_model_path,
             self._device,
         )
 
+        # 1. Load config from checkpoint
         t0 = time.time()
-        self._talker = BailingTalker2.from_pretrained(
-            self._talker_model_path,
-            torch_dtype=torch.bfloat16,
-        )
-        logger.info("[TALKER] BailingTalker2 loaded in %.1fs", time.time() - t0)
-        self._talker.to(self._device)
+        config = MingOmniTalkerConfig.from_pretrained_dir(self._talker_model_path)
+
+        # 2. Create model (no weights yet)
+        self._talker = MingOmniTalker(config)
         self._talker.eval()
 
-        # Load AudioVAE
+        # 3. Stream weights, then move to device with bf16
+        weights = load_weights_by_prefix(self._talker_model_path, prefix="")
+        self._talker.load_weights(weights.items())
+        self._talker.to(device=self._device, dtype=torch.bfloat16)
+        logger.info("[TALKER] MingOmniTalker loaded in %.1fs", time.time() - t0)
+
+        # 4. Load tokenizer externally
+        tokenizer = AutoTokenizer.from_pretrained(
+            str(Path(self._talker_model_path) / "llm")
+        )
+        self._talker.set_tokenizer(tokenizer)
+
+        # 5. Load voice presets
+        voice_json_path = os.path.join(
+            self._talker_model_path, "data", "voice_name.json"
+        )
+        if os.path.exists(voice_json_path):
+            with open(voice_json_path, "r") as f:
+                voice_dict = json.load(f)
+            for key in voice_dict:
+                voice_dict[key]["prompt_wav_path"] = os.path.join(
+                    self._talker_model_path,
+                    voice_dict[key]["prompt_wav_path"],
+                )
+            self._talker.set_voice_presets(voice_dict)
+        else:
+            logger.warning("[TALKER] voice_name.json not found at %s", voice_json_path)
+
+        # 6. Load speaker embedding extractor (optional)
+        campplus_path = os.path.join(self._talker_model_path, "campplus.onnx")
+        try:
+            extractor = SpkembExtractor(campplus_path)
+            self._talker.set_spkemb_extractor(extractor)
+        except (ImportError, Exception) as e:
+            logger.warning("[TALKER] SpkembExtractor not available: %s", e)
+
+        # 7. Load text normalizer (optional)
+        try:
+            from talker_tn.talker_tn import TalkerTN
+
+            self._talker.set_normalizer(TalkerTN())
+        except ImportError:
+            logger.warning(
+                "[TALKER] TalkerTN (pynini) not available — using identity normalizer"
+            )
+
+        # 8. Load AudioVAE
         vae_path = str(Path(self._talker_model_path) / "vae")
         if Path(vae_path).exists():
             t0v = time.time()
-            self._vae = AudioVAE.from_pretrained(vae_path, torch_dtype=torch.bfloat16)
+            self._vae = AudioVAE.from_pretrained(vae_path, dtype=torch.bfloat16)
             self._vae.to(self._device)
             self._vae.eval()
             logger.info("[TALKER] AudioVAE loaded in %.1fs", time.time() - t0v)
         else:
             logger.warning("[TALKER] AudioVAE not found at %s", vae_path)
 
-        # Load thinker tokenizer for decoding output_ids
+        # 9. Load thinker tokenizer for decoding output_ids
         try:
             from sglang_omni.models.ming_omni.components.common import (
                 load_ming_tokenizer,
@@ -100,12 +157,11 @@ class MingTalkerExecutor(Executor):
         except Exception as e:
             logger.warning("[TALKER] Could not load thinker tokenizer: %s", e)
 
-        # Initialize CUDA graphs
-        if hasattr(self._talker, "initial_graph"):
-            logger.info("[TALKER] Initializing CUDA graphs...")
-            t0g = time.time()
-            self._talker.initial_graph()
-            logger.info("[TALKER] CUDA graphs initialized in %.1fs", time.time() - t0g)
+        # 10. Initialize CUDA graphs
+        logger.info("[TALKER] Initializing CUDA graphs...")
+        t0g = time.time()
+        self._talker.initial_graph()
+        logger.info("[TALKER] CUDA graphs initialized in %.1fs", time.time() - t0g)
 
     async def add_request(self, payload: StagePayload) -> None:
         """Process a TTS request."""
@@ -207,7 +263,7 @@ class MingTalkerExecutor(Executor):
 
     @torch.no_grad()
     def _generate_speech(self, text: str) -> tuple[torch.Tensor | None, int, float]:
-        """Generate speech from text using BailingTalker2.
+        """Generate speech from text using MingOmniTalker.
 
         Returns:
             Tuple of (waveform tensor, sample_rate, duration in seconds).

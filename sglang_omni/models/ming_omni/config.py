@@ -108,7 +108,7 @@ class MingOmniSpeechPipelineConfig(PipelineConfig):
     """7-stage pipeline for Ming-Omni with text + speech output.
 
     Adds a talker stage that generates audio from thinker's decoded text.
-    The talker is a self-contained BailingTalker2 (own LLM + CFM + AudioVAE).
+    The talker is a self-contained MingOmniTalker (own LLM + CFM + AudioVAE).
     """
 
     architecture: ClassVar[str] = "BailingMM2NativeForConditionalGeneration"
