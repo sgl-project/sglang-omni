@@ -310,7 +310,6 @@ def wer_audio_dirs(
     meta = str(dataset_dir / "en" / "meta.lst")
     audio_dirs = {"non_stream": {}, "stream": {}}
 
-    # Follow the intended CI sequence exactly:
     # finish speed tests, stop the speed-test server, then bring up a fresh
     # server instance only for WER audio generation.
     stop_server(server_process)
