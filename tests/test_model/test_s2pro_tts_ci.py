@@ -301,13 +301,20 @@ def server_process(tmp_path_factory: pytest.TempPathFactory):
 
 @pytest.fixture(scope="module")
 def wer_audio_dirs(
+    server_process: subprocess.Popen,
     dataset_dir: Path,
     tmp_path_factory: pytest.TempPathFactory,
 ):
-    """Generate WER audio in CI, then kill server in order to prevent CI OOM."""
+    """Generate WER audio after speed tests by restarting S2 Pro on a clean GPU."""
     tmp = tmp_path_factory.mktemp("wer")
     meta = str(dataset_dir / "en" / "meta.lst")
     audio_dirs = {"non_stream": {}, "stream": {}}
+
+    # Follow the intended CI sequence exactly:
+    # finish speed tests, stop the speed-test server, then bring up a fresh
+    # server instance only for WER audio generation.
+    stop_server(server_process)
+
     port = find_free_port()
     log_file = tmp_path_factory.mktemp("wer_server_logs") / "server.log"
     proc = start_server(S2PRO_MODEL_PATH, S2PRO_CONFIG_PATH, log_file, port)
