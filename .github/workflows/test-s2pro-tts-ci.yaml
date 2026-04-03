@@ -51,7 +51,7 @@ jobs:
         run: |
           source omni-s2pro/bin/activate
           export PYTHONPATH=$PWD
-          pytest tests/test_model/test_s2pro_tts_ci.py -v -s -x
+          pytest tests/test_model/test_s2pro_tts_ci.py -v -s -x --concurrency 8
         env:
           HF_ENDPOINT: https://hf-mirror.com
 
