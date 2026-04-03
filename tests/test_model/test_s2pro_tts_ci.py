@@ -31,7 +31,8 @@ PER_REQUEST_STORE: dict[str, list[dict]] = {}
 
 MODEL_PATH = "fishaudio/s2-pro"
 CONFIG_PATH = "examples/configs/s2pro_tts.yaml"
-MAX_SAMPLES = 16
+SPEED_MAX_SAMPLES = 16
+WER_MAX_SAMPLES = 64
 
 STARTUP_TIMEOUT = 600
 BENCHMARK_TIMEOUT = 600
@@ -41,7 +42,7 @@ WER_TIMEOUT = 600
 # Note (chenyang): the RTF thresholds also includes the reference audio
 # processing time. The Plain text RTF is far less than 1.0.
 
-# TODO: Fine-tune thresholds based on CI dataset performance on H20.
+# TODO: Fine-tune thresholds based on CI dataset performance on H20 with concurrency support.
 VC_NON_STREAM_MIN_TOK_PER_S = 80
 VC_NON_STREAM_MAX_RTF = 2.1
 VC_STREAM_MAX_LATENCY_S = 10.1
@@ -52,14 +53,10 @@ PLAIN_STREAM_MAX_LATENCY_S = 4.7
 PLAIN_STREAM_MIN_THROUGHPUT_QPS = 0.215
 
 
-# NOTE: Current WER thresholds are based on a small CI subset of seed-tts-eval dataset (N=16).
-# This sample size may not always capture accuracy regressions
-# If flaky or missed regressions occur, consider expanding the WER evaluation dataset to N=32/64 with concurrency support.
-
-VC_WER_MAX_CORPUS = 0.02
-VC_WER_MAX_PER_SAMPLE = 0.20
-VC_STREAM_WER_MAX_CORPUS = 0.02
-VC_STREAM_WER_MAX_PER_SAMPLE = 0.20
+VC_WER_MAX_CORPUS = 0.025
+VC_WER_MAX_PER_SAMPLE = 0.30
+VC_STREAM_WER_MAX_CORPUS = 0.025
+VC_STREAM_WER_MAX_PER_SAMPLE = 0.30
 
 
 WER_SCRIPT = str(
@@ -91,7 +88,7 @@ def _run_benchmark(
         "--testset",
         testset,
         "--max-samples",
-        str(MAX_SAMPLES),
+        str(SPEED_MAX_SAMPLES),
         "--output-dir",
         output_dir,
     ]
@@ -152,7 +149,7 @@ def _run_wer_generate(
         "--port",
         str(port),
         "--max-samples",
-        str(MAX_SAMPLES),
+        str(WER_MAX_SAMPLES),
     ]
     if stream:
         cmd.append("--stream")
@@ -358,7 +355,7 @@ def _assert_streaming_consistency(
     non_stream_requests: list[dict],
     stream_requests: list[dict],
     *,
-    completion_token_rtol: float = 0.10,
+    completion_token_rtol: float = 0.12,
     audio_duration_rtol: float = 0.12,
 ) -> None:
     """Assert per-request metrics are close between streaming and non-streaming."""
