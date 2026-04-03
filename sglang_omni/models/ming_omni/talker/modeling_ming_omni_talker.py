@@ -271,7 +271,7 @@ class MingOmniTalker(nn.Module):
         self.initialized = None
         self.initial_lock = threading.Lock()
         self.registered_prompt: dict = {}
-        self.max_conc = 1
+        self.max_conc = config.max_conc
         self.executor = ThreadPoolExecutor(max_workers=self.max_conc)
         self.sampler_pool = CFMGraphExecutorPool(
             self.config,
@@ -372,7 +372,7 @@ class MingOmniTalker(nn.Module):
                     prompt = (
                         "Please generate speech based on the following description.\n"
                     )
-                    text = "\u521d\u59cb\u5316\u7f16\u8bd1\u56fe"
+                    text = "Initialize compilation graph"
                     future = self.executor.submit(
                         self.llm_job,
                         prompt,

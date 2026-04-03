@@ -29,6 +29,8 @@ class MingOmniTalkerConfig:
         # Latent / speaker dims
         latent_dim: int = 64,
         spk_dim: int = 192,
+        # Concurrency
+        max_conc: int = 1,
     ):
         self.llm_config = llm_config or {}
         self.flowmodel = flowmodel or {}
@@ -38,6 +40,7 @@ class MingOmniTalkerConfig:
         self.history_patch_size = history_patch_size
         self.latent_dim = latent_dim
         self.spk_dim = spk_dim
+        self.max_conc = max_conc
 
     @classmethod
     def from_pretrained_dir(cls, model_dir: str) -> MingOmniTalkerConfig:
