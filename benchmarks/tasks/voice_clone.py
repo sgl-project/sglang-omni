@@ -143,26 +143,37 @@ def normalize_text(text: str, lang: str) -> str:
     return text
 
 
-def load_asr_model(lang: str, device: str):
+def load_asr_model(
+    lang: str, device: str, generation_mode: str | None = None
+):
     """Load ASR model for voice clone WER evaluation."""
+    mode_suffix = f" for {generation_mode} generation" if generation_mode else ""
     if lang == "en":
         from transformers import WhisperForConditionalGeneration, WhisperProcessor
 
-        logger.info("Loading Whisper-large-v3 on %s...", device)
+        logger.info("Loading Whisper-large-v3 on %s%s...", device, mode_suffix)
         t0 = time.perf_counter()
         processor = WhisperProcessor.from_pretrained("openai/whisper-large-v3")
         model = WhisperForConditionalGeneration.from_pretrained(
             "openai/whisper-large-v3"
         ).to(device)
-        logger.info("Whisper loaded in %.1fs", time.perf_counter() - t0)
+        logger.info(
+            "Whisper loaded in %.1fs%s",
+            time.perf_counter() - t0,
+            mode_suffix,
+        )
         return {"type": "whisper", "processor": processor, "model": model}
     elif lang == "zh":
         from funasr import AutoModel
 
-        logger.info("Loading FunASR paraformer-zh...")
+        logger.info("Loading FunASR paraformer-zh%s...", mode_suffix)
         t0 = time.perf_counter()
         model = AutoModel(model="paraformer-zh")
-        logger.info("FunASR loaded in %.1fs", time.perf_counter() - t0)
+        logger.info(
+            "FunASR loaded in %.1fs%s",
+            time.perf_counter() - t0,
+            mode_suffix,
+        )
         return {"type": "funasr", "model": model}
     else:
         raise ValueError(f"Unsupported language: {lang}")
@@ -607,13 +618,20 @@ def calculate_wer_metrics(outputs: list[SampleOutput], lang: str) -> dict:
     }
 
 
-def print_wer_summary(metrics: dict, model_name: str) -> None:
+def print_wer_summary(
+    metrics: dict, model_name: str, generation_mode: str | None = None
+) -> None:
     lw = SUMMARY_LABEL_WIDTH
     w = SUMMARY_LINE_WIDTH
+    summary_title = "TTS WER Benchmark Result"
+    if generation_mode:
+        summary_title = f"TTS WER Benchmark Result ({generation_mode})"
     print(f"\n{'=' * w}")
-    print(f"{'TTS WER Benchmark Result':^{w}}")
+    print(f"{summary_title:^{w}}")
     print(f"{'=' * w}")
     print(f"  {'Model:':<{lw}} {model_name}")
+    if generation_mode:
+        print(f"  {'Generation mode:':<{lw}} {generation_mode}")
     print(f"  {'Language:':<{lw}} {metrics.get('lang', 'N/A')}")
     print(
         f"  {'Evaluated / Total:':<{lw}} "

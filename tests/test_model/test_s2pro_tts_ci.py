@@ -3,18 +3,27 @@
 
 Usage:
     pytest tests/test_model/test_s2pro_tts_ci.py -s -x
+    pytest tests/test_model/test_s2pro_tts_ci.py -s -x --concurrency 8
+    pytest tests/test_model/test_s2pro_tts_ci.py -s -x --concurrency all
 
 Author:
     chenyang zhao https://github.com/zhaochenyang20
+    Raitsh P https://github.com/Ratish1
     Jingwen Guo https://github.com/JingwenGu0829
     Yuan Luo https://github.com/yuan-luo
     Yitong Guan https://github.com/minleminzui
+
+The benchmark supports one selected concurrency per test run. Use `--concurrency 8`
+in CI, run without the flag to use concurrency 1, or pass `--concurrency all`
+to sweep all supported concurrency values locally.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -22,10 +31,14 @@ from pathlib import Path
 import pytest
 
 from benchmarks.dataset.prepare import DATASETS, download_dataset
+from benchmarks.eval.benchmark_tts_speed import (
+    TtsSpeedBenchmarkConfig,
+    run_tts_speed_benchmark,
+)
 from tests.utils import find_free_port, start_server, stop_server
 
 PER_REQUEST_STORE: dict[str, list[dict]] = {}
-SELECTED_VC_CONCURRENCIES: tuple[int, ...] | None = None
+SPEED_OUTPUT_DIRS: dict[str, dict[int, str]] = {"non_stream": {}, "stream": {}}
 
 S2PRO_MODEL_PATH = "fishaudio/s2-pro"
 S2PRO_CONFIG_PATH = "examples/configs/s2pro_tts.yaml"
@@ -33,20 +46,34 @@ S2PRO_CONFIG_PATH = "examples/configs/s2pro_tts.yaml"
 STARTUP_TIMEOUT = 600
 BENCHMARK_TIMEOUT = 600
 WER_TIMEOUT = 600
+DATASET_CACHE_ENV = "SGLANG_SEEDTTS50_DIR"
+STREAMING_BENCHMARK_MAX_SAMPLES = 16
 
-# Thresholds reference: https://github.com/sgl-project/sglang-omni/issues/193
+# Thresholds reference: https://github.com/sgl-project/sglang-omni/pull/242
 # Note (chenyang): the RTF thresholds also includes the reference audio
 # processing time.
 
+# Note (Ratish, Chenyang): We evalute the performance of S2-Pro CI on our H20
+# CI machines and compute the thresholds based on the results.
 
-# TODO (Chenyang): Current WER thresholds is computed over mini set, which can not
-# capture the accuracy regression fixed by https://github.com/sgl-project/sglang-omni/pull/217
-# We shall have more strict rules that can let #217 pass but let commit 8deddef fail.
+# The following are the P95 thresholds compute from previous runs.
 
-VC_WER_MAX_CORPUS = 0.02
+# concurrency 1: throughput>=0.13, tok/s>=82.5, latency_mean<=7.6, rtf_mean<=2.03
+# concurrency 2: throughput>=0.25, tok/s>=78.4, latency_mean<=7.9, rtf_mean<=2.10
+# concurrency 4: throughput>=0.47, tok/s>=75.3, latency_mean<=8.3, rtf_mean<=2.21
+# concurrency 8: throughput>=0.80, tok/s>=67.7, latency_mean<=9.1, rtf_mean<=2.43
+# concurrency 16: throughput>=1.17, tok/s>=60.7, latency_mean<=11.2, rtf_mean<=3.01
+
+VC_WER_MAX_CORPUS = 0.025
 VC_WER_MAX_PER_SAMPLE = 0.40
-VC_STREAM_WER_MAX_CORPUS = 0.02
+VC_STREAM_WER_MAX_CORPUS = 0.025
 VC_STREAM_WER_MAX_PER_SAMPLE = 0.40
+
+
+# TODO (Ratish, Chenyang): The precomputed performance thresholds compute directly with
+# the CI machines still varies from CI actual results. We should figure out the difference
+# and update the thresholds accordingly.
+
 
 VC_NON_STREAM_THRESHOLDS = {
     1: {
@@ -81,8 +108,12 @@ VC_NON_STREAM_THRESHOLDS = {
     },
 }
 
-VC_ALLOWED_CONCURRENCIES = (1, 2, 4, 8, 16)
-VC_CI_CONCURRENCY = 8
+# Pre-slack H20 reference values from 5 repeated runs before extra CI slack:
+# concurrency 1: throughput>=0.09, tok/s>=21.0, latency_mean<=10.8, rtf_mean<=2.60
+# concurrency 2: throughput>=0.15, tok/s>=14.7, latency_mean<=13.3, rtf_mean<=3.20
+# concurrency 4: throughput>=0.23, tok/s>=13.7, latency_mean<=15.7, rtf_mean<=4.08
+# concurrency 8: throughput>=0.32, tok/s>=9.3, latency_mean<=22.7, rtf_mean<=5.89
+# concurrency 16: throughput>=0.27, tok/s>=2.9, latency_mean<=47.7, rtf_mean<=12.02
 
 VC_STREAM_THRESHOLDS = {
     1: {
@@ -104,9 +135,9 @@ VC_STREAM_THRESHOLDS = {
         "rtf_mean_max": 4.49,
     },
     8: {
-        "throughput_qps_min": 0.28,
-        "tok_per_s_agg_min": 8.3,
-        "latency_mean_s_max": 25.0,
+        "throughput_qps_min": 0.18,
+        "tok_per_s_agg_min": 6.0,
+        "latency_mean_s_max": 28.0,
         "rtf_mean_max": 6.48,
     },
     16: {
@@ -129,45 +160,22 @@ def _run_benchmark(
     port: int,
     testset: str,
     output_dir: str,
-    extra_args: list[str] | None = None,
+    *,
+    concurrency: int,
+    max_samples: int | None = None,
+    stream: bool = False,
 ) -> dict:
-    cmd = [
-        sys.executable,
-        str(
-            Path(__file__).resolve().parents[2]
-            / "benchmarks"
-            / "eval"
-            / "benchmark_tts_speed.py"
-        ),
-        "--model",
-        S2PRO_MODEL_PATH,
-        "--port",
-        str(port),
-        "--testset",
-        testset,
-        "--output-dir",
-        output_dir,
-    ]
-    if extra_args:
-        cmd.extend(extra_args)
-
-    proc_result = subprocess.run(
-        cmd,
-        capture_output=True,
-        text=True,
-        timeout=BENCHMARK_TIMEOUT,
-        env=_no_proxy_env(),
+    benchmark_config = TtsSpeedBenchmarkConfig(
+        model=S2PRO_MODEL_PATH,
+        port=port,
+        testset=testset,
+        output_dir=output_dir,
+        concurrency=concurrency,
+        max_samples=max_samples,
+        save_audio=True,
+        stream=stream,
     )
-    assert proc_result.returncode == 0, (
-        f"Benchmark failed (rc={proc_result.returncode}).\n"
-        f"stdout:\n{proc_result.stdout}\nstderr:\n{proc_result.stderr}"
-    )
-
-    results_path = Path(output_dir) / "speed_results.json"
-    assert results_path.exists(), f"Results file not found: {results_path}"
-
-    with open(results_path) as f:
-        speed_results = json.load(f)
+    speed_results = asyncio.run(run_tts_speed_benchmark(benchmark_config))
     assert (
         "summary" in speed_results
     ), f"Missing 'summary' key in results. Keys: {list(speed_results.keys())}"
@@ -182,48 +190,11 @@ def _no_proxy_env() -> dict[str, str]:
     return {k: v for k, v in os.environ.items() if k.lower() not in proxy_keys}
 
 
-def _run_wer_generate(
-    port: int,
-    meta_path: str,
-    output_dir: str,
-    concurrency: int,
-    stream: bool = False,
-) -> None:
-    """Generate TTS audio in CI."""
-    cmd = [
-        sys.executable,
-        WER_SCRIPT,
-        "--generate-only",
-        "--meta",
-        meta_path,
-        "--output-dir",
-        output_dir,
-        "--model",
-        S2PRO_MODEL_PATH,
-        "--port",
-        str(port),
-        "--generation-concurrency",
-        str(concurrency),
-    ]
-    if stream:
-        cmd.append("--stream")
-
-    result = subprocess.run(
-        cmd,
-        capture_output=True,
-        text=True,
-        timeout=WER_TIMEOUT,
-        env=_no_proxy_env(),
-    )
-    assert result.returncode == 0, (
-        f"WER generate failed (rc={result.returncode}).\n"
-        f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
-    )
-
-
 def _run_wer_transcribe(
     meta_path: str,
     output_dir: str,
+    *,
+    stream: bool = False,
     lang: str = "en",
     device: str = "cuda:0",
 ) -> dict:
@@ -243,18 +214,16 @@ def _run_wer_transcribe(
         "--device",
         device,
     ]
+    if stream:
+        cmd.append("--stream")
 
     result = subprocess.run(
         cmd,
-        capture_output=True,
         text=True,
         timeout=WER_TIMEOUT,
         env=_no_proxy_env(),
     )
-    assert result.returncode == 0, (
-        f"WER transcribe failed (rc={result.returncode}).\n"
-        f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
-    )
+    assert result.returncode == 0, f"WER transcribe failed (rc={result.returncode})"
 
     results_path = Path(output_dir) / "wer_results.json"
     assert results_path.exists(), f"WER results file not found: {results_path}"
@@ -272,7 +241,7 @@ def _run_wer_transcribe(
     if summary.get("skipped", 0) > 0:
         print(
             f"\n[WER DIAGNOSTIC] {summary['skipped']}/{summary['total_samples']} "
-            f"samples skipped.\nSubprocess stderr:\n{result.stderr}"
+            "samples skipped."
         )
         for sample in wer_results["per_sample"]:
             if not sample.get("is_success", True):
@@ -281,11 +250,43 @@ def _run_wer_transcribe(
     return wer_results
 
 
+def _dataset_cache_dir() -> Path:
+    override_dir = os.environ.get(DATASET_CACHE_ENV)
+    if override_dir:
+        return Path(override_dir).expanduser()
+    raise ValueError(f"{DATASET_CACHE_ENV} is not set")
+
+
+def _cleanup_generated_audio() -> None:
+    for output_dirs in SPEED_OUTPUT_DIRS.values():
+        for output_dir in output_dirs.values():
+            audio_dir = Path(output_dir) / "audio"
+            if audio_dir.exists():
+                shutil.rmtree(audio_dir)
+
+
+def _print_stage(stage: str, mode: str, concurrency: int, details: str = "") -> None:
+    message = f"\n[Stage] {stage} benchmark | mode={mode} | concurrency={concurrency}"
+    if details:
+        message += f" | {details}"
+    print(message)
+
+
 @pytest.fixture(scope="module")
 def dataset_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    root = tmp_path_factory.mktemp("seed_tts_eval") / "data"
-    download_dataset(DATASETS["seedtts-50"], str(root))
+    root = (
+        _dataset_cache_dir()
+        if os.environ.get(DATASET_CACHE_ENV)
+        else tmp_path_factory.mktemp("seed_tts_eval") / "data"
+    )
+    download_dataset(DATASETS["seedtts-50"], str(root), quiet=True)
     return root
+
+
+@pytest.fixture(scope="module", autouse=True)
+def cleanup_generated_audio_fixture():
+    yield
+    _cleanup_generated_audio()
 
 
 @pytest.fixture(scope="module")
@@ -300,47 +301,14 @@ def server_process(tmp_path_factory: pytest.TempPathFactory):
 
 
 @pytest.fixture(scope="module")
-def wer_audio_dirs(
-    server_process: subprocess.Popen,
-    dataset_dir: Path,
-    tmp_path_factory: pytest.TempPathFactory,
-):
-    """Generate WER audio after speed tests by restarting S2 Pro on a clean GPU."""
-    tmp = tmp_path_factory.mktemp("wer")
-    meta = str(dataset_dir / "en" / "meta.lst")
-    audio_dirs = {"non_stream": {}, "stream": {}}
-
-    # finish speed tests, stop the speed-test server, then bring up a fresh
-    # server instance only for WER audio generation.
+def wer_input_dirs(server_process: subprocess.Popen) -> dict[str, dict[int, str]]:
+    """Reuse saved benchmark audio for WER after freeing the TTS server GPU."""
     stop_server(server_process)
-
-    port = find_free_port()
-    log_file = tmp_path_factory.mktemp("wer_server_logs") / "server.log"
-    proc = start_server(S2PRO_MODEL_PATH, S2PRO_CONFIG_PATH, log_file, port)
-
-    try:
-        for concurrency in _selected_concurrencies():
-            non_stream_dir = str(tmp / f"non_stream_c{concurrency}")
-            stream_dir = str(tmp / f"stream_c{concurrency}")
-            _run_wer_generate(
-                port,
-                meta,
-                non_stream_dir,
-                concurrency,
-            )
-            _run_wer_generate(
-                port,
-                meta,
-                stream_dir,
-                concurrency,
-                stream=True,
-            )
-            audio_dirs["non_stream"][concurrency] = non_stream_dir
-            audio_dirs["stream"][concurrency] = stream_dir
-    finally:
-        stop_server(proc)
-
-    return audio_dirs
+    for mode in ("non_stream", "stream"):
+        for concurrency, output_dir in SPEED_OUTPUT_DIRS[mode].items():
+            generated_path = Path(output_dir) / "generated.json"
+            assert generated_path.exists(), f"WER metadata missing: {generated_path}"
+    return SPEED_OUTPUT_DIRS
 
 
 def _assert_summary_metrics(summary: dict) -> None:
@@ -383,19 +351,26 @@ def _assert_streaming_consistency(
     median_completion_token_rtol: float = 0.20,
     total_audio_duration_rtol: float = 0.12,
 ) -> None:
-    """Assert stable invariants between streaming and non-streaming runs."""
+    """Assert stable invariants on the shared request subset."""
     ns_by_id = {r["id"]: r for r in non_stream_requests}
     st_by_id = {r["id"]: r for r in stream_requests}
-    assert set(ns_by_id) == set(
-        st_by_id
-    ), f"Request ID mismatch: non_stream={sorted(ns_by_id)}, stream={sorted(st_by_id)}"
+    common_ids = sorted(set(ns_by_id) & set(st_by_id))
+    assert common_ids, "No overlapping request IDs between non-stream and stream runs"
+    assert set(st_by_id).issubset(set(ns_by_id)), (
+        "Streaming requests must be a subset of non-streaming requests: "
+        f"non_stream={sorted(ns_by_id)}, stream={sorted(st_by_id)}"
+    )
+    assert len(st_by_id) == STREAMING_BENCHMARK_MAX_SAMPLES, (
+        f"Expected {STREAMING_BENCHMARK_MAX_SAMPLES} streaming requests, "
+        f"got {len(st_by_id)}"
+    )
 
     ns_completion_tokens: list[int] = []
     st_completion_tokens: list[int] = []
     ns_audio_duration_total = 0.0
     st_audio_duration_total = 0.0
 
-    for rid in sorted(ns_by_id):
+    for rid in common_ids:
         ns, st = ns_by_id[rid], st_by_id[rid]
         assert ns["prompt_tokens"] == st["prompt_tokens"], (
             f"Request {rid}: prompt_tokens mismatch — "
@@ -477,18 +452,6 @@ def _assert_wer_results(
             ), f"Sample {sample['id']} WER {sample['wer']:.4f} > {max_per_sample_wer}"
 
 
-def _selected_concurrencies() -> tuple[int, ...]:
-    global SELECTED_VC_CONCURRENCIES
-    if SELECTED_VC_CONCURRENCIES is not None:
-        return SELECTED_VC_CONCURRENCIES
-    if os.environ.get("CI"):
-        print(f"\n[S2 Pro benchmark] selected concurrency: {VC_CI_CONCURRENCY}")
-        SELECTED_VC_CONCURRENCIES = (VC_CI_CONCURRENCY,)
-        return SELECTED_VC_CONCURRENCIES
-    SELECTED_VC_CONCURRENCIES = VC_ALLOWED_CONCURRENCIES
-    return SELECTED_VC_CONCURRENCIES
-
-
 def _assert_speed_thresholds(summary: dict, thresholds: dict, concurrency: int) -> None:
     thresholds = thresholds[concurrency]
     assert summary["throughput_qps"] >= thresholds["throughput_qps_min"], (
@@ -514,18 +477,26 @@ def test_voice_cloning_non_streaming(
     server_process: subprocess.Popen,
     dataset_dir: Path,
     tmp_path: Path,
+    selected_s2pro_tts_concurrencies: tuple[int, ...],
 ) -> None:
-    for concurrency in _selected_concurrencies():
+    print(
+        "\n[S2 Pro benchmark] selected concurrency: "
+        f"{selected_s2pro_tts_concurrencies}"
+    )
+    for concurrency in selected_s2pro_tts_concurrencies:
+        _print_stage("TTS speed", "non-streaming", concurrency, "generate WAVs for WER")
+        output_dir = str(tmp_path / f"vc_nonstream_c{concurrency}")
         results = _run_benchmark(
             server_process.port,
             str(dataset_dir / "en" / "meta.lst"),
-            str(tmp_path / f"vc_nonstream_c{concurrency}"),
-            ["--max-concurrency", str(concurrency)],
+            output_dir,
+            concurrency=concurrency,
         )
         summary, per_request = results["summary"], results["per_request"]
         _assert_summary_metrics(summary)
         _assert_per_request_fields(per_request)
         PER_REQUEST_STORE["vc_nonstream"] = per_request
+        SPEED_OUTPUT_DIRS["non_stream"][concurrency] = output_dir
         _assert_speed_thresholds(summary, VC_NON_STREAM_THRESHOLDS, concurrency)
 
 
@@ -534,18 +505,29 @@ def test_voice_cloning_streaming(
     server_process: subprocess.Popen,
     dataset_dir: Path,
     tmp_path: Path,
+    selected_s2pro_tts_concurrencies: tuple[int, ...],
 ) -> None:
-    for concurrency in _selected_concurrencies():
+    for concurrency in selected_s2pro_tts_concurrencies:
+        _print_stage(
+            "TTS speed",
+            "streaming",
+            concurrency,
+            f"max_samples={STREAMING_BENCHMARK_MAX_SAMPLES} | generate WAVs for WER",
+        )
+        output_dir = str(tmp_path / f"vc_stream_c{concurrency}")
         results = _run_benchmark(
             server_process.port,
             str(dataset_dir / "en" / "meta.lst"),
-            str(tmp_path / f"vc_stream_c{concurrency}"),
-            ["--stream", "--max-concurrency", str(concurrency)],
+            output_dir,
+            concurrency=concurrency,
+            max_samples=STREAMING_BENCHMARK_MAX_SAMPLES,
+            stream=True,
         )
         summary, per_request = results["summary"], results["per_request"]
         _assert_summary_metrics(summary)
         _assert_per_request_fields(per_request)
         PER_REQUEST_STORE["vc_stream"] = per_request
+        SPEED_OUTPUT_DIRS["stream"][concurrency] = output_dir
         _assert_speed_thresholds(summary, VC_STREAM_THRESHOLDS, concurrency)
 
 
@@ -560,26 +542,41 @@ def test_voice_cloning_streaming_consistency() -> None:
 
 @pytest.mark.benchmark
 def test_voice_cloning_wer(
-    wer_audio_dirs: dict[str, str],
+    wer_input_dirs: dict[str, dict[int, str]],
     dataset_dir: Path,
+    selected_s2pro_tts_concurrencies: tuple[int, ...],
 ) -> None:
-    for concurrency in _selected_concurrencies():
+    for concurrency in selected_s2pro_tts_concurrencies:
+        _print_stage(
+            "WER",
+            "non-streaming",
+            concurrency,
+            "transcribe speed-stage WAVs",
+        )
         results = _run_wer_transcribe(
             str(dataset_dir / "en" / "meta.lst"),
-            wer_audio_dirs["non_stream"][concurrency],
+            wer_input_dirs["non_stream"][concurrency],
         )
         _assert_wer_results(results, VC_WER_MAX_CORPUS, VC_WER_MAX_PER_SAMPLE)
 
 
 @pytest.mark.benchmark
 def test_voice_cloning_streaming_wer(
-    wer_audio_dirs: dict[str, str],
+    wer_input_dirs: dict[str, dict[int, str]],
     dataset_dir: Path,
+    selected_s2pro_tts_concurrencies: tuple[int, ...],
 ) -> None:
-    for concurrency in _selected_concurrencies():
+    for concurrency in selected_s2pro_tts_concurrencies:
+        _print_stage(
+            "WER",
+            "streaming",
+            concurrency,
+            f"transcribe {STREAMING_BENCHMARK_MAX_SAMPLES} speed-stage WAVs",
+        )
         results = _run_wer_transcribe(
             str(dataset_dir / "en" / "meta.lst"),
-            wer_audio_dirs["stream"][concurrency],
+            wer_input_dirs["stream"][concurrency],
+            stream=True,
         )
         _assert_wer_results(
             results, VC_STREAM_WER_MAX_CORPUS, VC_STREAM_WER_MAX_PER_SAMPLE

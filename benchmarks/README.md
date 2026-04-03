@@ -33,7 +33,7 @@ python benchmarks/eval/benchmark_tts_speed.py \
 python benchmarks/eval/benchmark_tts_speed.py \
     --model fishaudio/s2-pro --port 8000 \
     --testset seedtts_testset/en/meta.lst --max-samples 50 \
-    --max-concurrency 20
+    --concurrency 20
 
 # 2c. Speed benchmark (streaming)
 python benchmarks/eval/benchmark_tts_speed.py \

@@ -4,17 +4,25 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import csv
+import io
 import json
 import logging
 import os
 import time
+import wave
 
 import aiohttp
 
 from benchmarks.benchmarker.data import RequestResult
 from benchmarks.benchmarker.runner import SendFn
-from benchmarks.benchmarker.utils import get_wav_duration, process_sse_line
+from benchmarks.benchmarker.utils import (
+    WAV_HEADER_SIZE,
+    get_wav_duration,
+    parse_sse_event,
+    process_sse_line,
+)
 from benchmarks.dataset.seedtts import SampleInput
 
 logger = logging.getLogger(__name__)
@@ -66,10 +74,13 @@ async def _handle_streaming_response(
     response: aiohttp.ClientResponse,
     result: RequestResult,
     start_time: float,
+    save_audio_dir: str | None,
 ) -> None:
     total_audio_duration = 0.0
     usage_data: dict | None = None
     buffer = bytearray()
+    pcm_chunks: list[bytes] = []
+    stream_format: tuple[int, int, int] | None = None
     async for chunk in response.content.iter_any():
         buffer.extend(chunk)
         while b"\n" in buffer:
@@ -80,16 +91,23 @@ async def _handle_streaming_response(
             total_audio_duration, usage_data = process_sse_line(
                 line, total_audio_duration, usage_data
             )
+            stream_format = _collect_streaming_audio(line, pcm_chunks, stream_format)
     if buffer.strip():
         line = bytes(buffer).decode("utf-8", errors="replace").strip()
         total_audio_duration, usage_data = process_sse_line(
             line, total_audio_duration, usage_data
         )
+        stream_format = _collect_streaming_audio(line, pcm_chunks, stream_format)
     result.audio_duration_s = total_audio_duration
     if total_audio_duration > 0:
         elapsed = time.perf_counter() - start_time
         result.rtf = elapsed / total_audio_duration
     result.is_success = total_audio_duration > 0
+    if save_audio_dir and pcm_chunks and stream_format is not None:
+        audio_path = os.path.join(save_audio_dir, f"{result.request_id}.wav")
+        with open(audio_path, "wb") as file_handle:
+            file_handle.write(_build_streaming_wav_bytes(pcm_chunks, stream_format))
+        result.wav_path = audio_path
     if usage_data:
         prompt_tok = usage_data.get("prompt_tokens")
         comp_tok = usage_data.get("completion_tokens")
@@ -122,9 +140,52 @@ async def _handle_non_streaming_response(
     _parse_response_headers(result, response.headers)
     if save_audio_dir and audio_bytes:
         audio_path = os.path.join(save_audio_dir, f"{result.request_id}.wav")
-        with open(audio_path, "wb") as f:
-            f.write(audio_bytes)
+        with open(audio_path, "wb") as file_handle:
+            file_handle.write(audio_bytes)
         result.wav_path = audio_path
+
+
+def _collect_streaming_audio(
+    line: str,
+    pcm_chunks: list[bytes],
+    stream_format: tuple[int, int, int] | None,
+) -> tuple[int, int, int] | None:
+    event = parse_sse_event(line)
+    if event is None:
+        return stream_format
+
+    audio = event.get("audio")
+    if not isinstance(audio, dict) or not audio.get("data"):
+        return stream_format
+
+    chunk_bytes = base64.b64decode(audio["data"])
+    if len(chunk_bytes) <= WAV_HEADER_SIZE:
+        return stream_format
+
+    with io.BytesIO(chunk_bytes) as buffer:
+        with wave.open(buffer, "rb") as wav_file:
+            pcm_chunks.append(wav_file.readframes(wav_file.getnframes()))
+            if stream_format is not None:
+                return stream_format
+            return (
+                wav_file.getframerate(),
+                wav_file.getnchannels(),
+                wav_file.getsampwidth(),
+            )
+
+
+def _build_streaming_wav_bytes(
+    pcm_chunks: list[bytes],
+    stream_format: tuple[int, int, int],
+) -> bytes:
+    sample_rate, num_channels, sample_width = stream_format
+    wav_buffer = io.BytesIO()
+    with wave.open(wav_buffer, "wb") as wav_file:
+        wav_file.setframerate(sample_rate)
+        wav_file.setnchannels(num_channels)
+        wav_file.setsampwidth(sample_width)
+        wav_file.writeframes(b"".join(pcm_chunks))
+    return wav_buffer.getvalue()
 
 
 def make_tts_send_fn(
@@ -155,7 +216,9 @@ def make_tts_send_fn(
                 if response.status != 200:
                     result.error = f"HTTP {response.status}: {await response.text()}"
                 elif stream:
-                    await _handle_streaming_response(response, result, start_time)
+                    await _handle_streaming_response(
+                        response, result, start_time, save_audio_dir
+                    )
                 else:
                     await _handle_non_streaming_response(
                         response, result, start_time, save_audio_dir
@@ -171,7 +234,7 @@ def make_tts_send_fn(
 
 
 def print_speed_summary(
-    metrics: dict, model_name: str, max_concurrency: int | None = None
+    metrics: dict, model_name: str, concurrency: int | None = None
 ) -> None:
     lw = SUMMARY_LABEL_WIDTH
     w = SUMMARY_LINE_WIDTH
@@ -179,8 +242,8 @@ def print_speed_summary(
     print(f"{'TTS Benchmark Result':^{w}}")
     print(f"{'=' * w}")
     print(f"  {'Model:':<{lw}} {model_name}")
-    if max_concurrency is not None:
-        print(f"  {'Max concurrency:':<{lw}} {max_concurrency}")
+    if concurrency is not None:
+        print(f"  {'Concurrency:':<{lw}} {concurrency}")
     print(f"  {'Completed requests:':<{lw}} {metrics['completed_requests']}")
     print(f"  {'Failed requests:':<{lw}} {metrics['failed_requests']}")
     print(f"{'-' * w}")
@@ -210,6 +273,67 @@ def print_speed_summary(
     print(f"{'=' * w}")
 
 
+def build_speed_results(
+    outputs: list[RequestResult],
+    metrics: dict,
+    config: dict,
+) -> dict:
+    return {
+        "summary": metrics,
+        "config": config,
+        "per_request": [_request_result_to_dict(output) for output in outputs],
+    }
+
+
+def _request_result_to_dict(output: RequestResult) -> dict:
+    return {
+        "id": output.request_id,
+        "text": output.text,
+        "is_success": output.is_success,
+        "latency_s": round(output.latency_s, 4),
+        "audio_duration_s": round(output.audio_duration_s, 4),
+        "rtf": round(output.rtf, 4) if output.rtf < float("inf") else None,
+        "prompt_tokens": output.prompt_tokens or None,
+        "completion_tokens": output.completion_tokens or None,
+        "tok_per_s": round(output.tok_per_s, 1) if output.tok_per_s > 0 else None,
+        "wav_path": output.wav_path or None,
+        "error": output.error or None,
+    }
+
+
+def save_generated_audio_metadata(
+    outputs: list[RequestResult],
+    samples: list[SampleInput],
+    output_dir: str,
+) -> None:
+    sample_by_id = {sample.sample_id: sample for sample in samples}
+    generated = [
+        _request_result_to_generated_entry(output, sample_by_id[output.request_id])
+        for output in outputs
+    ]
+    metadata_path = os.path.join(output_dir, "generated.json")
+    with open(metadata_path, "w") as file_handle:
+        json.dump(generated, file_handle, indent=2, ensure_ascii=False)
+    logger.info("Generated audio metadata saved to %s", metadata_path)
+
+
+def _request_result_to_generated_entry(
+    output: RequestResult,
+    sample: SampleInput,
+) -> dict:
+    entry = {
+        "sample_id": output.request_id,
+        "target_text": sample.target_text,
+        "wav_path": output.wav_path,
+        "is_success": output.is_success,
+        "latency_s": round(output.latency_s, 4),
+        "audio_duration_s": round(output.audio_duration_s, 4),
+    }
+    if output.error:
+        entry["error"] = output.error
+    return entry
+
+
 def save_speed_results(
     outputs: list[RequestResult],
     metrics: dict,
@@ -218,25 +342,7 @@ def save_speed_results(
 ) -> None:
     os.makedirs(output_dir, exist_ok=True)
 
-    json_results = {
-        "summary": metrics,
-        "config": config,
-        "per_request": [
-            {
-                "id": o.request_id,
-                "text": o.text,
-                "is_success": o.is_success,
-                "latency_s": round(o.latency_s, 4),
-                "audio_duration_s": round(o.audio_duration_s, 4),
-                "rtf": round(o.rtf, 4) if o.rtf < float("inf") else None,
-                "prompt_tokens": o.prompt_tokens or None,
-                "completion_tokens": o.completion_tokens or None,
-                "tok_per_s": round(o.tok_per_s, 1) if o.tok_per_s > 0 else None,
-                "error": o.error or None,
-            }
-            for o in outputs
-        ],
-    }
+    json_results = build_speed_results(outputs, metrics, config)
     json_path = os.path.join(output_dir, "speed_results.json")
     with open(json_path, "w") as f:
         json.dump(json_results, f, indent=2, ensure_ascii=False)

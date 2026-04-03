@@ -45,6 +45,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import aiohttp
 import torch
+from tqdm import tqdm
 
 from benchmarks.benchmarker.data import RequestResult
 from benchmarks.benchmarker.runner import BenchmarkRunner, RunConfig
@@ -198,57 +199,32 @@ async def generate_audio(args: argparse.Namespace) -> list[dict]:
     return generated
 
 
-def _log_transcription_result(
-    completed: int,
-    total: int,
-    entry: dict,
-    output: SampleOutput,
-) -> None:
-    if output.is_success:
-        logger.info(
-            "[%d/%d] WER=%.3f  ref=%.50s  hyp=%.50s",
-            completed,
-            total,
-            output.wer,
-            output.ref_norm,
-            output.hyp_norm,
-        )
-    else:
-        logger.warning(
-            "[%d/%d] Transcription failed: %s -- %s",
-            completed,
-            total,
-            entry["sample_id"],
-            output.error,
-        )
-
-
 def transcribe_audio(args: argparse.Namespace) -> None:
     """Load the ASR model, transcribe saved audio sequentially, and compute WER."""
+    generation_mode = "streaming" if args.stream else "non-streaming"
     if "cuda" in args.device:
         torch.cuda.set_device(args.device)
-        logger.info(f"Set default CUDA device to {args.device}")
 
     meta_path = os.path.join(args.output_dir, "generated.json")
     with open(meta_path) as f:
         generated: list[dict] = json.load(f)
-    logger.info(f"Loaded {len(generated)} entries from {meta_path}")
 
-    asr = load_asr_model(args.lang, args.device)
+    asr = load_asr_model(args.lang, args.device, generation_mode)
 
     final_outputs: list[SampleOutput] = []
-    for completed, entry in enumerate(generated, start=1):
-        output = _transcribe_entry(
-            entry,
-            asr,
-            args.lang,
-            args.device,
-        )
-        _log_transcription_result(completed, len(generated), entry, output)
+    progress = tqdm(generated, desc="WER transcribe", unit="sample")
+    for entry in progress:
+        output = _transcribe_entry(entry, asr, args.lang, args.device)
+        if not output.is_success:
+            logger.warning(
+                "Transcription failed: %s -- %s",
+                entry["sample_id"],
+                output.error,
+            )
         final_outputs.append(output)
 
     metrics = calculate_wer_metrics(final_outputs, args.lang)
-    print_wer_summary(metrics, args.model)
+    print_wer_summary(metrics, args.model, generation_mode)
 
     config = {
         "model": args.model,

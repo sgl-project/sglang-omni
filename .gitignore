@@ -37,3 +37,4 @@ uv.lock
 results/
 .humanize/
 .humanize/
+.benchmark-data/

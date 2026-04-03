@@ -23,13 +23,20 @@ DATASETS = {
 }
 
 
-def download_dataset(repo_id: str, local_dir: str = "seedtts_testset") -> None:
+def download_dataset(
+    repo_id: str,
+    local_dir: str = "seedtts_testset",
+    *,
+    quiet: bool = False,
+) -> None:
     meta_en = os.path.join(local_dir, "en", "meta.lst")
     if os.path.exists(meta_en):
-        logger.info("Dataset already exists at %s, skipping download.", local_dir)
+        if not quiet:
+            logger.info("Dataset already exists at %s, skipping download.", local_dir)
         return
 
-    logger.info("Downloading %s to %s ...", repo_id, local_dir)
+    if not quiet:
+        logger.info("Downloading %s to %s ...", repo_id, local_dir)
     cmd = [
         "huggingface-cli",
         "download",
@@ -39,8 +46,19 @@ def download_dataset(repo_id: str, local_dir: str = "seedtts_testset") -> None:
         "--local-dir",
         local_dir,
     ]
-    subprocess.run(cmd, check=True)
-    logger.info("Dataset downloaded to %s", local_dir)
+    if quiet:
+        try:
+            subprocess.run(cmd, check=True, capture_output=True, text=True)
+        except subprocess.CalledProcessError as exc:
+            raise RuntimeError(
+                f"Failed to download dataset {repo_id} to {local_dir}.\n"
+                f"stdout:\n{exc.stdout}\n"
+                f"stderr:\n{exc.stderr}"
+            ) from exc
+    else:
+        subprocess.run(cmd, check=True)
+    if not quiet:
+        logger.info("Dataset downloaded to %s", local_dir)
 
 
 def main() -> None:
