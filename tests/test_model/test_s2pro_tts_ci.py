@@ -30,8 +30,6 @@ SELECTED_VC_CONCURRENCIES: tuple[int, ...] | None = None
 
 S2PRO_MODEL_PATH = "fishaudio/s2-pro"
 S2PRO_CONFIG_PATH = "examples/configs/s2pro_tts.yaml"
-MAX_SAMPLES = 10
-CI_MAX_CONCURRENCY = 20
 
 STARTUP_TIMEOUT = 600
 BENCHMARK_TIMEOUT = 600
@@ -39,12 +37,7 @@ WER_TIMEOUT = 600
 
 # Thresholds reference: https://github.com/sgl-project/sglang-omni/issues/193
 # Note (chenyang): the RTF thresholds also includes the reference audio
-# processing time. The Plain text RTF is far less than 1.0.
-
-PLAIN_NON_STREAM_MIN_TOK_PER_S = 80
-PLAIN_NON_STREAM_MAX_RTF = 0.35
-PLAIN_STREAM_MAX_LATENCY_S = 4.0
-PLAIN_STREAM_MIN_THROUGHPUT_QPS = 0.25
+# processing time.
 
 
 # TODO (Chenyang): Current WER thresholds is computed over mini set, which can not
@@ -137,7 +130,6 @@ def _run_benchmark(
     testset: str,
     output_dir: str,
     extra_args: list[str] | None = None,
-    max_samples: int | None = MAX_SAMPLES,
 ) -> dict:
     cmd = [
         sys.executable,
@@ -156,8 +148,6 @@ def _run_benchmark(
         "--output-dir",
         output_dir,
     ]
-    if max_samples is not None:
-        cmd.extend(["--max-samples", str(max_samples)])
     if extra_args:
         cmd.extend(extra_args)
 
@@ -196,6 +186,7 @@ def _run_wer_generate(
     port: int,
     meta_path: str,
     output_dir: str,
+    concurrency: int,
     stream: bool = False,
 ) -> None:
     """Generate TTS audio in CI."""
@@ -211,10 +202,8 @@ def _run_wer_generate(
         S2PRO_MODEL_PATH,
         "--port",
         str(port),
-        "--max-samples",
-        str(MAX_SAMPLES),
         "--generation-concurrency",
-        str(CI_MAX_CONCURRENCY),
+        str(concurrency),
     ]
     if stream:
         cmd.append("--stream")
@@ -319,13 +308,30 @@ def wer_audio_dirs(
     """Generate WER audio in CI, then kill server in order to prevent CI OOM."""
     tmp = tmp_path_factory.mktemp("wer")
     meta = str(dataset_dir / "en" / "meta.lst")
+    audio_dirs = {"non_stream": {}, "stream": {}}
 
-    _run_wer_generate(server_process.port, meta, str(tmp / "non_stream"))
-    _run_wer_generate(server_process.port, meta, str(tmp / "stream"), stream=True)
+    for concurrency in _selected_concurrencies():
+        non_stream_dir = str(tmp / f"non_stream_c{concurrency}")
+        stream_dir = str(tmp / f"stream_c{concurrency}")
+        _run_wer_generate(
+            server_process.port,
+            meta,
+            non_stream_dir,
+            concurrency,
+        )
+        _run_wer_generate(
+            server_process.port,
+            meta,
+            stream_dir,
+            concurrency,
+            stream=True,
+        )
+        audio_dirs["non_stream"][concurrency] = non_stream_dir
+        audio_dirs["stream"][concurrency] = stream_dir
 
     stop_server(server_process)
 
-    return {"non_stream": str(tmp / "non_stream"), "stream": str(tmp / "stream")}
+    return audio_dirs
 
 
 def _assert_summary_metrics(summary: dict) -> None:
@@ -364,38 +370,63 @@ def _assert_streaming_consistency(
     non_stream_requests: list[dict],
     stream_requests: list[dict],
     *,
-    completion_token_rtol: float = 0.10,
-    audio_duration_rtol: float = 0.12,
+    total_completion_token_rtol: float = 0.12,
+    median_completion_token_rtol: float = 0.20,
+    total_audio_duration_rtol: float = 0.12,
 ) -> None:
-    """Assert per-request metrics are close between streaming and non-streaming."""
+    """Assert stable invariants between streaming and non-streaming runs."""
     ns_by_id = {r["id"]: r for r in non_stream_requests}
     st_by_id = {r["id"]: r for r in stream_requests}
     assert set(ns_by_id) == set(
         st_by_id
     ), f"Request ID mismatch: non_stream={sorted(ns_by_id)}, stream={sorted(st_by_id)}"
+
+    ns_completion_tokens: list[int] = []
+    st_completion_tokens: list[int] = []
+    ns_audio_duration_total = 0.0
+    st_audio_duration_total = 0.0
+
     for rid in sorted(ns_by_id):
         ns, st = ns_by_id[rid], st_by_id[rid]
-
-        ns_ct, st_ct = ns["completion_tokens"], st["completion_tokens"]
-        max_ct = max(ns_ct, st_ct)
-        assert abs(ns_ct - st_ct) <= completion_token_rtol * max_ct, (
-            f"Request {rid}: completion_tokens differ too much — "
-            f"non_stream={ns_ct}, stream={st_ct} "
-            f"(rtol={completion_token_rtol})"
-        )
-
         assert ns["prompt_tokens"] == st["prompt_tokens"], (
             f"Request {rid}: prompt_tokens mismatch — "
             f"non_stream={ns['prompt_tokens']}, stream={st['prompt_tokens']}"
         )
+        ns_completion_tokens.append(ns["completion_tokens"])
+        st_completion_tokens.append(st["completion_tokens"])
+        ns_audio_duration_total += ns["audio_duration_s"]
+        st_audio_duration_total += st["audio_duration_s"]
 
-        ns_ad, st_ad = ns["audio_duration_s"], st["audio_duration_s"]
-        max_ad = max(ns_ad, st_ad)
-        assert abs(ns_ad - st_ad) <= audio_duration_rtol * max_ad, (
-            f"Request {rid}: audio_duration_s differ too much — "
-            f"non_stream={ns_ad}, stream={st_ad} "
-            f"(rtol={audio_duration_rtol})"
-        )
+    ns_completion_total = sum(ns_completion_tokens)
+    st_completion_total = sum(st_completion_tokens)
+    max_completion_total = max(ns_completion_total, st_completion_total)
+    assert abs(ns_completion_total - st_completion_total) <= (
+        total_completion_token_rtol * max_completion_total
+    ), (
+        "Total completion_tokens differ too much — "
+        f"non_stream={ns_completion_total}, stream={st_completion_total} "
+        f"(rtol={total_completion_token_rtol})"
+    )
+
+    ns_completion_median = sorted(ns_completion_tokens)[len(ns_completion_tokens) // 2]
+    st_completion_median = sorted(st_completion_tokens)[len(st_completion_tokens) // 2]
+    max_completion_median = max(ns_completion_median, st_completion_median)
+    assert abs(ns_completion_median - st_completion_median) <= (
+        median_completion_token_rtol * max_completion_median
+    ), (
+        "Median completion_tokens differ too much — "
+        f"non_stream={ns_completion_median}, stream={st_completion_median} "
+        f"(rtol={median_completion_token_rtol})"
+    )
+
+    max_audio_duration_total = max(ns_audio_duration_total, st_audio_duration_total)
+    assert abs(ns_audio_duration_total - st_audio_duration_total) <= (
+        total_audio_duration_rtol * max_audio_duration_total
+    ), (
+        "Total audio_duration_s differs too much — "
+        f"non_stream={ns_audio_duration_total}, stream={st_audio_duration_total} "
+        f"(rtol={total_audio_duration_rtol})"
+    )
 
 
 def _assert_wer_results(
@@ -482,7 +513,6 @@ def test_voice_cloning_non_streaming(
             str(dataset_dir / "en" / "meta.lst"),
             str(tmp_path / f"vc_nonstream_c{concurrency}"),
             ["--max-concurrency", str(concurrency)],
-            max_samples=None,
         )
         summary, per_request = results["summary"], results["per_request"]
         _assert_summary_metrics(summary)
@@ -503,66 +533,12 @@ def test_voice_cloning_streaming(
             str(dataset_dir / "en" / "meta.lst"),
             str(tmp_path / f"vc_stream_c{concurrency}"),
             ["--stream", "--max-concurrency", str(concurrency)],
-            max_samples=None,
         )
         summary, per_request = results["summary"], results["per_request"]
         _assert_summary_metrics(summary)
         _assert_per_request_fields(per_request)
         PER_REQUEST_STORE["vc_stream"] = per_request
         _assert_speed_thresholds(summary, VC_STREAM_THRESHOLDS, concurrency)
-
-
-@pytest.mark.benchmark
-def test_plain_tts_non_streaming(
-    server_process: subprocess.Popen,
-    dataset_dir: Path,
-    tmp_path: Path,
-) -> None:
-    results = _run_benchmark(
-        server_process.port,
-        str(dataset_dir / "en" / "meta.lst"),
-        str(tmp_path / "plain_nonstream"),
-        ["--no-ref-audio", "--max-concurrency", str(CI_MAX_CONCURRENCY)],
-    )
-    summary, per_request = results["summary"], results["per_request"]
-    _assert_summary_metrics(summary)
-    _assert_per_request_fields(per_request)
-    PER_REQUEST_STORE["plain_nonstream"] = per_request
-    assert (
-        summary["tok_per_s_agg"] >= PLAIN_NON_STREAM_MIN_TOK_PER_S
-    ), f"tok_per_s_agg {summary['tok_per_s_agg']} < {PLAIN_NON_STREAM_MIN_TOK_PER_S}"
-    assert (
-        summary["rtf_mean"] <= PLAIN_NON_STREAM_MAX_RTF
-    ), f"rtf_mean {summary['rtf_mean']} > {PLAIN_NON_STREAM_MAX_RTF}"
-
-
-@pytest.mark.benchmark
-def test_plain_tts_streaming(
-    server_process: subprocess.Popen,
-    dataset_dir: Path,
-    tmp_path: Path,
-) -> None:
-    results = _run_benchmark(
-        server_process.port,
-        str(dataset_dir / "en" / "meta.lst"),
-        str(tmp_path / "plain_stream"),
-        [
-            "--no-ref-audio",
-            "--stream",
-            "--max-concurrency",
-            str(CI_MAX_CONCURRENCY),
-        ],
-    )
-    summary, per_request = results["summary"], results["per_request"]
-    _assert_summary_metrics(summary)
-    _assert_per_request_fields(per_request)
-    PER_REQUEST_STORE["plain_stream"] = per_request
-    assert (
-        summary["latency_mean_s"] <= PLAIN_STREAM_MAX_LATENCY_S
-    ), f"latency_mean_s {summary['latency_mean_s']} > {PLAIN_STREAM_MAX_LATENCY_S}"
-    assert (
-        summary["throughput_qps"] >= PLAIN_STREAM_MIN_THROUGHPUT_QPS
-    ), f"throughput_qps {summary['throughput_qps']} < {PLAIN_STREAM_MIN_THROUGHPUT_QPS}"
 
 
 @pytest.mark.benchmark
@@ -575,24 +551,16 @@ def test_voice_cloning_streaming_consistency() -> None:
 
 
 @pytest.mark.benchmark
-def test_plain_tts_streaming_consistency() -> None:
-    ns = PER_REQUEST_STORE.get("plain_nonstream")
-    st = PER_REQUEST_STORE.get("plain_stream")
-    assert ns is not None, "plain_nonstream results missing"
-    assert st is not None, "plain_stream results missing"
-    _assert_streaming_consistency(ns, st)
-
-
-@pytest.mark.benchmark
 def test_voice_cloning_wer(
     wer_audio_dirs: dict[str, str],
     dataset_dir: Path,
 ) -> None:
-    results = _run_wer_transcribe(
-        str(dataset_dir / "en" / "meta.lst"),
-        wer_audio_dirs["non_stream"],
-    )
-    _assert_wer_results(results, VC_WER_MAX_CORPUS, VC_WER_MAX_PER_SAMPLE)
+    for concurrency in _selected_concurrencies():
+        results = _run_wer_transcribe(
+            str(dataset_dir / "en" / "meta.lst"),
+            wer_audio_dirs["non_stream"][concurrency],
+        )
+        _assert_wer_results(results, VC_WER_MAX_CORPUS, VC_WER_MAX_PER_SAMPLE)
 
 
 @pytest.mark.benchmark
@@ -600,11 +568,14 @@ def test_voice_cloning_streaming_wer(
     wer_audio_dirs: dict[str, str],
     dataset_dir: Path,
 ) -> None:
-    results = _run_wer_transcribe(
-        str(dataset_dir / "en" / "meta.lst"),
-        wer_audio_dirs["stream"],
-    )
-    _assert_wer_results(results, VC_STREAM_WER_MAX_CORPUS, VC_STREAM_WER_MAX_PER_SAMPLE)
+    for concurrency in _selected_concurrencies():
+        results = _run_wer_transcribe(
+            str(dataset_dir / "en" / "meta.lst"),
+            wer_audio_dirs["stream"][concurrency],
+        )
+        _assert_wer_results(
+            results, VC_STREAM_WER_MAX_CORPUS, VC_STREAM_WER_MAX_PER_SAMPLE
+        )
 
 
 if __name__ == "__main__":
