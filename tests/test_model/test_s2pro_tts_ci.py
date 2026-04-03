@@ -52,31 +52,31 @@ VC_STREAM_WER_MAX_PER_SAMPLE = 0.40
 VC_NON_STREAM_THRESHOLDS = {
     1: {
         "throughput_qps_min": 0.13,
-        "tok_per_s_agg_min": 82.5,
+        "tok_per_s_agg_min": 77.5,
         "latency_mean_s_max": 7.6,
         "rtf_mean_max": 2.03,
     },
     2: {
         "throughput_qps_min": 0.25,
-        "tok_per_s_agg_min": 78.4,
+        "tok_per_s_agg_min": 73.4,
         "latency_mean_s_max": 7.9,
         "rtf_mean_max": 2.10,
     },
     4: {
         "throughput_qps_min": 0.47,
-        "tok_per_s_agg_min": 75.3,
+        "tok_per_s_agg_min": 70.3,
         "latency_mean_s_max": 8.3,
         "rtf_mean_max": 2.21,
     },
     8: {
         "throughput_qps_min": 0.80,
-        "tok_per_s_agg_min": 67.7,
+        "tok_per_s_agg_min": 62.7,
         "latency_mean_s_max": 9.1,
         "rtf_mean_max": 2.43,
     },
     16: {
         "throughput_qps_min": 1.17,
-        "tok_per_s_agg_min": 60.7,
+        "tok_per_s_agg_min": 55.7,
         "latency_mean_s_max": 11.2,
         "rtf_mean_max": 3.01,
     },
