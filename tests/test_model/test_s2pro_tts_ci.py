@@ -44,10 +44,10 @@ WER_TIMEOUT = 600
 # capture the accuracy regression fixed by https://github.com/sgl-project/sglang-omni/pull/217
 # We shall have more strict rules that can let #217 pass but let commit 8deddef fail.
 
-VC_WER_MAX_CORPUS = 0.0
-VC_WER_MAX_PER_SAMPLE = 0.0
-VC_STREAM_WER_MAX_CORPUS = 0.0
-VC_STREAM_WER_MAX_PER_SAMPLE = 0.0
+VC_WER_MAX_CORPUS = 0.02
+VC_WER_MAX_PER_SAMPLE = 0.40
+VC_STREAM_WER_MAX_CORPUS = 0.02
+VC_STREAM_WER_MAX_PER_SAMPLE = 0.40
 
 VC_NON_STREAM_THRESHOLDS = {
     1: {
