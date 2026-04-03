@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import json
 import os
-import random
 import subprocess
 import sys
 from pathlib import Path
@@ -83,6 +82,7 @@ VC_NON_STREAM_THRESHOLDS = {
 }
 
 VC_ALLOWED_CONCURRENCIES = (1, 2, 4, 8, 16)
+VC_CI_CONCURRENCY = 8
 
 VC_STREAM_THRESHOLDS = {
     1: {
@@ -482,9 +482,8 @@ def _selected_concurrencies() -> tuple[int, ...]:
     if SELECTED_VC_CONCURRENCIES is not None:
         return SELECTED_VC_CONCURRENCIES
     if os.environ.get("CI"):
-        concurrency = random.choice(VC_ALLOWED_CONCURRENCIES)
-        print(f"\n[S2 Pro benchmark] selected concurrency: {concurrency}")
-        SELECTED_VC_CONCURRENCIES = (concurrency,)
+        print(f"\n[S2 Pro benchmark] selected concurrency: {VC_CI_CONCURRENCY}")
+        SELECTED_VC_CONCURRENCIES = (VC_CI_CONCURRENCY,)
         return SELECTED_VC_CONCURRENCIES
     SELECTED_VC_CONCURRENCIES = VC_ALLOWED_CONCURRENCIES
     return SELECTED_VC_CONCURRENCIES
