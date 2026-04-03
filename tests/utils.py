@@ -76,14 +76,26 @@ def start_server(
             start_new_session=True,
         )
 
-    with disable_proxy():
-        wait_for_service(
-            f"http://localhost:{port}",
-            timeout=timeout,
-            server_process=proc,
-            server_log_file=log_file,
-            health_body_contains="healthy",
-        )
+    try:
+        with disable_proxy():
+            wait_for_service(
+                f"http://localhost:{port}",
+                timeout=timeout,
+                server_process=proc,
+                server_log_file=log_file,
+                health_body_contains="healthy",
+            )
+    except Exception as exc:
+        stop_server(proc)
+        log_text = log_file.read_text() if log_file.exists() else ""
+        message = str(exc)
+        if log_text and log_text not in message:
+            message = f"{message}\n{log_text}"
+        if isinstance(exc, TimeoutError):
+            raise TimeoutError(message) from exc
+        if isinstance(exc, RuntimeError):
+            raise RuntimeError(message) from exc
+        raise
     return proc
 
 

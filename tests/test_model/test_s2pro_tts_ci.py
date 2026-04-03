@@ -301,7 +301,6 @@ def server_process(tmp_path_factory: pytest.TempPathFactory):
 
 @pytest.fixture(scope="module")
 def wer_audio_dirs(
-    server_process: subprocess.Popen,
     dataset_dir: Path,
     tmp_path_factory: pytest.TempPathFactory,
 ):
@@ -309,27 +308,31 @@ def wer_audio_dirs(
     tmp = tmp_path_factory.mktemp("wer")
     meta = str(dataset_dir / "en" / "meta.lst")
     audio_dirs = {"non_stream": {}, "stream": {}}
+    port = find_free_port()
+    log_file = tmp_path_factory.mktemp("wer_server_logs") / "server.log"
+    proc = start_server(S2PRO_MODEL_PATH, S2PRO_CONFIG_PATH, log_file, port)
 
-    for concurrency in _selected_concurrencies():
-        non_stream_dir = str(tmp / f"non_stream_c{concurrency}")
-        stream_dir = str(tmp / f"stream_c{concurrency}")
-        _run_wer_generate(
-            server_process.port,
-            meta,
-            non_stream_dir,
-            concurrency,
-        )
-        _run_wer_generate(
-            server_process.port,
-            meta,
-            stream_dir,
-            concurrency,
-            stream=True,
-        )
-        audio_dirs["non_stream"][concurrency] = non_stream_dir
-        audio_dirs["stream"][concurrency] = stream_dir
-
-    stop_server(server_process)
+    try:
+        for concurrency in _selected_concurrencies():
+            non_stream_dir = str(tmp / f"non_stream_c{concurrency}")
+            stream_dir = str(tmp / f"stream_c{concurrency}")
+            _run_wer_generate(
+                port,
+                meta,
+                non_stream_dir,
+                concurrency,
+            )
+            _run_wer_generate(
+                port,
+                meta,
+                stream_dir,
+                concurrency,
+                stream=True,
+            )
+            audio_dirs["non_stream"][concurrency] = non_stream_dir
+            audio_dirs["stream"][concurrency] = stream_dir
+    finally:
+        stop_server(proc)
 
     return audio_dirs
 

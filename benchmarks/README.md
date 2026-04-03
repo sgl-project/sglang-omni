@@ -45,11 +45,11 @@ python benchmarks/eval/voice_clone_s2pro_wer.py \
     --meta seedtts_testset/en/meta.lst \
     --output-dir results/s2pro_en --lang en --max-samples 50
 
-# 2e. WER evaluation (voice cloning, overlapped generation + ASR)
+# 2e. WER evaluation (voice cloning, higher-concurrency generation)
 python benchmarks/eval/voice_clone_s2pro_wer.py \
     --meta seedtts_testset/en/meta.lst \
     --output-dir results/s2pro_en_c20 --lang en --max-samples 50 \
-    --generation-concurrency 20 --transcription-concurrency 20
+    --generation-concurrency 20
 ```
 
 ## Eval Scripts
