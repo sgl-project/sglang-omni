@@ -96,8 +96,8 @@ with open("output.wav", "wb") as f:
 ### Voice Cloning
 
 ```python
-REF_URL = "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav"
-REF_TEXT = "We asked over twenty different people, and they all said it was his."
+REFERENCE_AUDIO = "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav"
+REFERENCE_TEXT = "We asked over twenty different people, and they all said it was his."
 SPEECH_INPUT = "Get the trust fund to the bank early."
 ```
 
@@ -110,7 +110,7 @@ resp = requests.post(
     "http://localhost:8000/v1/audio/speech",
     json={
         "input": SPEECH_INPUT,
-        "references": [{"audio_path": REF_URL, "text": REF_TEXT}],
+        "references": [{"audio_path": REFERENCE_AUDIO, "text": REFERENCE_TEXT}],
     },
 )
 resp.raise_for_status()
@@ -127,7 +127,7 @@ import requests
 
 payload = {
     "input": SPEECH_INPUT,
-    "references": [{"audio_path": REF_URL, "text": REF_TEXT}],
+    "references": [{"audio_path": REFERENCE_AUDIO, "text": REFERENCE_TEXT}],
     "stream": True,
     "response_format": "wav",
 }
