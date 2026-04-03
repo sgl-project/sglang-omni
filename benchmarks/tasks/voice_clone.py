@@ -143,9 +143,7 @@ def normalize_text(text: str, lang: str) -> str:
     return text
 
 
-def load_asr_model(
-    lang: str, device: str, generation_mode: str | None = None
-):
+def load_asr_model(lang: str, device: str, generation_mode: str | None = None):
     """Load ASR model for voice clone WER evaluation."""
     mode_suffix = f" for {generation_mode} generation" if generation_mode else ""
     if lang == "en":
