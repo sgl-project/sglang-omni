@@ -74,6 +74,8 @@ VC_STREAM_WER_MAX_PER_SAMPLE = 0.40
 # the CI machines still varies from CI actual results. We should figure out the difference
 # and update the thresholds accordingly.
 
+# Note (Chenyang): Only thresholds for concurrency 8 are dedicatedly tuned, others may not
+# pass the CI.
 
 VC_NON_STREAM_THRESHOLDS = {
     1: {
@@ -95,7 +97,7 @@ VC_NON_STREAM_THRESHOLDS = {
         "rtf_mean_max": 2.44,
     },
     8: {
-        "throughput_qps_min": 0.72,
+        "throughput_qps_min": 0.68,
         "tok_per_s_agg_min": 60.9,
         "latency_mean_s_max": 10.1,
         "rtf_mean_max": 2.68,
