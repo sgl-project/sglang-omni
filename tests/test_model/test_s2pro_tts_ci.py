@@ -207,8 +207,6 @@ def _run_benchmark(
     return speed_results
 
 
-
-
 def _run_wer_transcribe(
     meta_path: str,
     output_dir: str,
@@ -407,7 +405,6 @@ def _assert_speed_thresholds(summary: dict, thresholds: dict, concurrency: int) 
         f"rtf_mean {summary['rtf_mean']} > "
         f"{level_thresholds['rtf_mean_max']} at concurrency {concurrency}"
     )
-
 
 
 @pytest.mark.benchmark
