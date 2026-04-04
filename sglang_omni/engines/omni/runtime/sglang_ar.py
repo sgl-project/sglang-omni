@@ -868,7 +868,12 @@ class SGLangModelRunner:
             req = getattr(data, "req", None)
             input_embeds = getattr(req, "input_embeds", None)
             if input_embeds:
-                rows.extend(input_embeds)
+                # Slice off the prefix that the tree cache already covers.
+                # sglang core's prepare_for_extend correctly slices input_ids
+                # by prefix_indices, but does NOT slice input_embeds.  We fix
+                # that here so the embed count matches extend_input_len.
+                prefix_len = len(getattr(req, "prefix_indices", []))
+                rows.extend(input_embeds[prefix_len:])
         if not rows:
             return None
         return torch.as_tensor(rows, device=self.device, dtype=torch.float32)
@@ -987,9 +992,12 @@ class SGLangModelRunner:
                 forward_batch, input_embeds, ds_embeds, vis_masks
             )
         elif projected_prefill:
-            projected_input_embeds = forward_batch.input_embeds
+            # Prefer our _rebuild_prefill_input_embeds (which correctly slices
+            # by prefix_indices) over forward_batch.input_embeds (set by sglang
+            # core's prepare_for_extend, which does NOT slice input_embeds).
+            projected_input_embeds = request_prefill_input_embeds
             if projected_input_embeds is None:
-                projected_input_embeds = request_prefill_input_embeds
+                projected_input_embeds = forward_batch.input_embeds
             if projected_input_embeds is None:
                 raise RuntimeError(
                     "Projected talker prefill requested without input_embeds"
