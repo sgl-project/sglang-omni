@@ -420,7 +420,6 @@
   <section class="tex2jax_ignore mathjax_ignore" id="tts-model-usage">
 <h1>TTS Model Usage<a class="headerlink" href="#tts-model-usage" title="Link to this heading">#</a></h1>
 <p>This guide uses <a class="reference external" href="https://huggingface.co/fishaudio/s2-pro">Fish Speech S2-Pro</a> as an example TTS (text-to-speech) model with SGLang-Omni and the OpenAI-compatible API.</p>
-<p>Hugging Face assets below use the <strong><code class="docutils literal notranslate"><span class="pre">hf</span> <span class="pre">download</span></code></strong> command from <code class="docutils literal notranslate"><span class="pre">huggingface-hub</span></code> (the old <code class="docutils literal notranslate"><span class="pre">huggingface-cli</span> <span class="pre">download</span></code> name is deprecated). For <strong>datasets</strong>, you must pass <strong><code class="docutils literal notranslate"><span class="pre">--repo-type</span> <span class="pre">dataset</span></code></strong>; the default is <code class="docutils literal notranslate"><span class="pre">model</span></code>, which makes those repos 404.</p>
 <section id="prerequisites">
 <h2>Prerequisites<a class="headerlink" href="#prerequisites" title="Link to this heading">#</a></h2>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>docker<span class="w"> </span>pull<span class="w"> </span>frankleeeee/sglang-omni:dev
@@ -456,31 +455,36 @@ hf<span class="w"> </span>download<span class="w"> </span>fishaudio/s2-pro
 <p>Note that without reference audio, the generated voice will sound robotic. For natural-sounding results, use Voice Cloning with a reference audio clip.</p>
 <section id="voice-cloning">
 <h3>Voice Cloning<a class="headerlink" href="#voice-cloning" title="Link to this heading">#</a></h3>
-<p>The curl examples below use a fixed clip from <a class="reference external" href="https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini"><code class="docutils literal notranslate"><span class="pre">seed-tts-eval-mini</span></code></a>:</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nv">LOCAL_DIR</span><span class="o">=</span><span class="s2">&quot;./seed-tts-eval-mini&quot;</span>
-hf<span class="w"> </span>download<span class="w"> </span>--repo-type<span class="w"> </span>dataset<span class="w"> </span>--local-dir<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$LOCAL_DIR</span><span class="s2">&quot;</span><span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>zhaochenyang20/seed-tts-eval-mini<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>en/prompt-wavs/common_voice_en_10119832.wav
-<span class="nv">REF_WAV</span><span class="o">=</span><span class="s2">&quot;</span><span class="k">$(</span><span class="nb">cd</span><span class="w"> </span><span class="s2">&quot;</span><span class="nv">$LOCAL_DIR</span><span class="s2">/en/prompt-wavs&quot;</span><span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="nb">pwd</span><span class="k">)</span><span class="s2">/common_voice_en_10119832.wav&quot;</span>
-</pre></div>
-</div>
+<p>The examples below use a sample clip from <a class="reference external" href="https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini"><code class="docutils literal notranslate"><span class="pre">seed-tts-eval-mini</span></code></a>. The <code class="docutils literal notranslate"><span class="pre">references</span></code> field accepts <code class="docutils literal notranslate"><span class="pre">audio_path</span></code> (a local path or HTTP URL) and <code class="docutils literal notranslate"><span class="pre">text</span></code> (transcript of that audio).</p>
 <ol class="arabic simple">
 <li><p>Non-streaming request</p></li>
 </ol>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8000/v1/audio/speech<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>-H<span class="w"> </span><span class="s2">&quot;Content-Type: application/json&quot;</span><span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>-d<span class="w"> </span><span class="s1">&#39;{&quot;input&quot;: &quot;Get the trust fund to the bank early.&quot;, &quot;references&quot;: [{&quot;audio_path&quot;: &quot;&#39;</span><span class="s2">&quot;</span><span class="nv">$REF_WAV</span><span class="s2">&quot;</span><span class="s1">&#39;&quot;, &quot;text&quot;: &quot;We asked over twenty different people, and they all said it was his.&quot;}]}&#39;</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-d<span class="w"> </span><span class="s1">&#39;{</span>
+<span class="s1">    &quot;input&quot;: &quot;Get the trust fund to the bank early.&quot;,</span>
+<span class="s1">    &quot;references&quot;: [{</span>
+<span class="s1">      &quot;audio_path&quot;: &quot;https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav&quot;,</span>
+<span class="s1">      &quot;text&quot;: &quot;We asked over twenty different people, and they all said it was his.&quot;</span>
+<span class="s1">    }]</span>
+<span class="s1">  }&#39;</span><span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--output<span class="w"> </span>output.wav
 </pre></div>
 </div>
-<p>The <code class="docutils literal notranslate"><span class="pre">references</span></code> field lists <code class="docutils literal notranslate"><span class="pre">audio_path</span></code> and <code class="docutils literal notranslate"><span class="pre">text</span></code> (transcript of that audio).</p>
 <ol class="arabic simple" start="2">
 <li><p>Streaming</p></li>
 </ol>
 <p>Enable streaming to receive audio chunks in real time via Server-Sent Events (SSE). Set <code class="docutils literal notranslate"><span class="pre">&quot;stream&quot;:</span> <span class="pre">true</span></code>:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>curl<span class="w"> </span>-N<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8000/v1/audio/speech<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>-H<span class="w"> </span><span class="s2">&quot;Content-Type: application/json&quot;</span><span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>-d<span class="w"> </span><span class="s1">&#39;{&quot;input&quot;: &quot;Get the trust fund to the bank early.&quot;, &quot;references&quot;: [{&quot;audio_path&quot;: &quot;&#39;</span><span class="s2">&quot;</span><span class="nv">$REF_WAV</span><span class="s2">&quot;</span><span class="s1">&#39;&quot;, &quot;text&quot;: &quot;We asked over twenty different people, and they all said it was his.&quot;}], &quot;stream&quot;: true}&#39;</span>
+<span class="w">  </span>-d<span class="w"> </span><span class="s1">&#39;{</span>
+<span class="s1">    &quot;input&quot;: &quot;Get the trust fund to the bank early.&quot;,</span>
+<span class="s1">    &quot;references&quot;: [{</span>
+<span class="s1">      &quot;audio_path&quot;: &quot;https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav&quot;,</span>
+<span class="s1">      &quot;text&quot;: &quot;We asked over twenty different people, and they all said it was his.&quot;</span>
+<span class="s1">    }],</span>
+<span class="s1">    &quot;stream&quot;: true</span>
+<span class="s1">  }&#39;</span>
 </pre></div>
 </div>
 <p>The server returns a stream of SSE events. Each event contains an <code class="docutils literal notranslate"><span class="pre">audio.speech.chunk</span></code> object with a base64-encoded audio chunk. The stream ends with <code class="docutils literal notranslate"><span class="pre">data:</span> <span class="pre">[DONE]</span></code>.</p>
@@ -504,15 +508,9 @@ hf<span class="w"> </span>download<span class="w"> </span>--repo-type<span class
 </section>
 <section id="id1">
 <h3>Voice Cloning<a class="headerlink" href="#id1" title="Link to this heading">#</a></h3>
-<p>Use the same wav as in the curl section (after <code class="docutils literal notranslate"><span class="pre">hf</span> <span class="pre">download</span></code>).</p>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">pathlib</span><span class="w"> </span><span class="kn">import</span> <span class="n">Path</span>
-
-<span class="n">ref_path</span> <span class="o">=</span> <span class="p">(</span>
-    <span class="n">Path</span><span class="p">(</span><span class="s2">&quot;seed-tts-eval-mini&quot;</span><span class="p">)</span> <span class="o">/</span> <span class="s2">&quot;en&quot;</span> <span class="o">/</span> <span class="s2">&quot;prompt-wavs&quot;</span> <span class="o">/</span> <span class="s2">&quot;common_voice_en_10119832.wav&quot;</span>
-<span class="p">)</span><span class="o">.</span><span class="n">resolve</span><span class="p">()</span>
-
-<span class="n">SPEECH_INPUT</span> <span class="o">=</span> <span class="s2">&quot;Get the trust fund to the bank early.&quot;</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">REFERENCE_AUDIO</span> <span class="o">=</span> <span class="s2">&quot;https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav&quot;</span>
 <span class="n">REFERENCE_TEXT</span> <span class="o">=</span> <span class="s2">&quot;We asked over twenty different people, and they all said it was his.&quot;</span>
+<span class="n">SPEECH_INPUT</span> <span class="o">=</span> <span class="s2">&quot;Get the trust fund to the bank early.&quot;</span>
 </pre></div>
 </div>
 <ol class="arabic simple">
@@ -524,7 +522,7 @@ hf<span class="w"> </span>download<span class="w"> </span>--repo-type<span class
     <span class="s2">&quot;http://localhost:8000/v1/audio/speech&quot;</span><span class="p">,</span>
     <span class="n">json</span><span class="o">=</span><span class="p">{</span>
         <span class="s2">&quot;input&quot;</span><span class="p">:</span> <span class="n">SPEECH_INPUT</span><span class="p">,</span>
-        <span class="s2">&quot;references&quot;</span><span class="p">:</span> <span class="p">[{</span><span class="s2">&quot;audio_path&quot;</span><span class="p">:</span> <span class="nb">str</span><span class="p">(</span><span class="n">ref_path</span><span class="p">),</span> <span class="s2">&quot;text&quot;</span><span class="p">:</span> <span class="n">REFERENCE_TEXT</span><span class="p">}],</span>
+        <span class="s2">&quot;references&quot;</span><span class="p">:</span> <span class="p">[{</span><span class="s2">&quot;audio_path&quot;</span><span class="p">:</span> <span class="n">REFERENCE_AUDIO</span><span class="p">,</span> <span class="s2">&quot;text&quot;</span><span class="p">:</span> <span class="n">REFERENCE_TEXT</span><span class="p">}],</span>
     <span class="p">},</span>
 <span class="p">)</span>
 <span class="n">resp</span><span class="o">.</span><span class="n">raise_for_status</span><span class="p">()</span>
@@ -541,7 +539,7 @@ hf<span class="w"> </span>download<span class="w"> </span>--repo-type<span class
 
 <span class="n">payload</span> <span class="o">=</span> <span class="p">{</span>
     <span class="s2">&quot;input&quot;</span><span class="p">:</span> <span class="n">SPEECH_INPUT</span><span class="p">,</span>
-    <span class="s2">&quot;references&quot;</span><span class="p">:</span> <span class="p">[{</span><span class="s2">&quot;audio_path&quot;</span><span class="p">:</span> <span class="nb">str</span><span class="p">(</span><span class="n">ref_path</span><span class="p">),</span> <span class="s2">&quot;text&quot;</span><span class="p">:</span> <span class="n">REFERENCE_TEXT</span><span class="p">}],</span>
+    <span class="s2">&quot;references&quot;</span><span class="p">:</span> <span class="p">[{</span><span class="s2">&quot;audio_path&quot;</span><span class="p">:</span> <span class="n">REFERENCE_AUDIO</span><span class="p">,</span> <span class="s2">&quot;text&quot;</span><span class="p">:</span> <span class="n">REFERENCE_TEXT</span><span class="p">}],</span>
     <span class="s2">&quot;stream&quot;</span><span class="p">:</span> <span class="kc">True</span><span class="p">,</span>
     <span class="s2">&quot;response_format&quot;</span><span class="p">:</span> <span class="s2">&quot;wav&quot;</span><span class="p">,</span>
 <span class="p">}</span>
@@ -620,7 +618,7 @@ hf<span class="w"> </span>download<span class="w"> </span>--repo-type<span class
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">references</span></code></p></td>
 <td><p>list</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">null</span></code></p></td>
-<td><p>Reference audio for voice cloning; each item has <code class="docutils literal notranslate"><span class="pre">audio_path</span></code> and <code class="docutils literal notranslate"><span class="pre">text</span></code></p></td>
+<td><p>Reference audio for voice cloning; each item has <code class="docutils literal notranslate"><span class="pre">audio_path</span></code> (local path / remote url) and <code class="docutils literal notranslate"><span class="pre">text</span></code></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">max_new_tokens</span></code></p></td>
 <td><p>int</p></td>

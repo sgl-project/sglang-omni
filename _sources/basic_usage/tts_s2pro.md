@@ -2,8 +2,6 @@
 
 This guide uses [Fish Speech S2-Pro](https://huggingface.co/fishaudio/s2-pro) as an example TTS (text-to-speech) model with SGLang-Omni and the OpenAI-compatible API.
 
-Hugging Face assets below use the **`hf download`** command from `huggingface-hub` (the old `huggingface-cli download` name is deprecated). For **datasets**, you must pass **`--repo-type dataset`**; the default is `model`, which makes those repos 404.
-
 ## Prerequisites
 
 ```bash
@@ -43,26 +41,22 @@ Note that without reference audio, the generated voice will sound robotic. For n
 
 ### Voice Cloning
 
-The curl examples below use a fixed clip from [`seed-tts-eval-mini`](https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini):
-
-```bash
-LOCAL_DIR="./seed-tts-eval-mini"
-hf download --repo-type dataset --local-dir "$LOCAL_DIR" \
-  zhaochenyang20/seed-tts-eval-mini \
-  en/prompt-wavs/common_voice_en_10119832.wav
-REF_WAV="$(cd "$LOCAL_DIR/en/prompt-wavs" && pwd)/common_voice_en_10119832.wav"
-```
+The examples below use a sample clip from [`seed-tts-eval-mini`](https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini). The `references` field accepts `audio_path` (a local path or HTTP URL) and `text` (transcript of that audio).
 
 1. Non-streaming request
 
 ```bash
 curl -X POST http://localhost:8000/v1/audio/speech \
   -H "Content-Type: application/json" \
-  -d '{"input": "Get the trust fund to the bank early.", "references": [{"audio_path": "'"$REF_WAV"'", "text": "We asked over twenty different people, and they all said it was his."}]}' \
+  -d '{
+    "input": "Get the trust fund to the bank early.",
+    "references": [{
+      "audio_path": "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav",
+      "text": "We asked over twenty different people, and they all said it was his."
+    }]
+  }' \
   --output output.wav
 ```
-
-The `references` field lists `audio_path` and `text` (transcript of that audio).
 
 2. Streaming
 
@@ -71,7 +65,14 @@ Enable streaming to receive audio chunks in real time via Server-Sent Events (SS
 ```bash
 curl -N -X POST http://localhost:8000/v1/audio/speech \
   -H "Content-Type: application/json" \
-  -d '{"input": "Get the trust fund to the bank early.", "references": [{"audio_path": "'"$REF_WAV"'", "text": "We asked over twenty different people, and they all said it was his."}], "stream": true}'
+  -d '{
+    "input": "Get the trust fund to the bank early.",
+    "references": [{
+      "audio_path": "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav",
+      "text": "We asked over twenty different people, and they all said it was his."
+    }],
+    "stream": true
+  }'
 ```
 
 The server returns a stream of SSE events. Each event contains an `audio.speech.chunk` object with a base64-encoded audio chunk. The stream ends with `data: [DONE]`.
@@ -94,17 +95,10 @@ with open("output.wav", "wb") as f:
 
 ### Voice Cloning
 
-Use the same wav as in the curl section (after `hf download`).
-
 ```python
-from pathlib import Path
-
-ref_path = (
-    Path("seed-tts-eval-mini") / "en" / "prompt-wavs" / "common_voice_en_10119832.wav"
-).resolve()
-
-SPEECH_INPUT = "Get the trust fund to the bank early."
+REFERENCE_AUDIO = "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav"
 REFERENCE_TEXT = "We asked over twenty different people, and they all said it was his."
+SPEECH_INPUT = "Get the trust fund to the bank early."
 ```
 
 1. Non-streaming Request
@@ -116,7 +110,7 @@ resp = requests.post(
     "http://localhost:8000/v1/audio/speech",
     json={
         "input": SPEECH_INPUT,
-        "references": [{"audio_path": str(ref_path), "text": REFERENCE_TEXT}],
+        "references": [{"audio_path": REFERENCE_AUDIO, "text": REFERENCE_TEXT}],
     },
 )
 resp.raise_for_status()
@@ -133,7 +127,7 @@ import requests
 
 payload = {
     "input": SPEECH_INPUT,
-    "references": [{"audio_path": str(ref_path), "text": REFERENCE_TEXT}],
+    "references": [{"audio_path": REFERENCE_AUDIO, "text": REFERENCE_TEXT}],
     "stream": True,
     "response_format": "wav",
 }
@@ -181,7 +175,7 @@ The table below lists all parameters accepted by the `/v1/audio/speech` endpoint
 | `response_format` | string | `"wav"` | Output audio format |
 | `speed` | float | `1.0` | Playback speed multiplier |
 | `stream` | bool | `false` | Enable streaming via SSE |
-| `references` | list | `null` | Reference audio for voice cloning; each item has `audio_path` and `text` |
+| `references` | list | `null` | Reference audio for voice cloning; each item has `audio_path` (local path / remote url) and `text` |
 | `max_new_tokens` | int | `null` | Maximum number of generated tokens |
 | `temperature` | float | `null` | Sampling temperature |
 | `top_p` | float | `null` | Top-p sampling |
