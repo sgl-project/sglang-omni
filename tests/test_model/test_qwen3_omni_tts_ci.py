@@ -4,7 +4,8 @@
 Usage:
     pytest tests/test_model/test_qwen3_omni_tts_ci.py -s -x
 
-No streaming supported yet.
+TODO (Jingwen, Chenyang): Support streaming for audio output
+and concurrency of vocoder.
 """
 
 from __future__ import annotations
@@ -33,6 +34,7 @@ MODEL_PATH = "Qwen/Qwen3-Omni-30B-A3B-Instruct"
 # TODO(Chenyang): Currently we only run concurrency=1 and a small dataset
 # (seedtts-mini, 10 samples). Support higher concurrency and larger datasets
 # once the Qwen3-Omni pipeline is optimized for concurrent requests.
+
 CONCURRENCY = 1
 MAX_SAMPLES = 10
 
@@ -40,15 +42,9 @@ STARTUP_TIMEOUT = 900
 BENCHMARK_TIMEOUT = 600
 WER_TIMEOUT = 600
 
-# --- Threshold reference values (P95 from baseline runs) ---
-# Slack factors applied to P95 reference values to derive CI thresholds.
-# Higher-is-better metrics (throughput): threshold = P95 x slack_higher
-# Lower-is-better metrics (latency, rtf): threshold = P95 x slack_lower
-THRESHOLD_SLACK_HIGHER = 0.75
-THRESHOLD_SLACK_LOWER = 1.25
-
 # Note (Chenyang): P95 values measured on H20 CI machines with concurrency=1,
 # seedtts-mini dataset (5 samples). Update these when hardware or model changes.
+
 _VC_NON_STREAM_P95 = {
     1: {
         "throughput_qps": 0.17,
@@ -57,6 +53,14 @@ _VC_NON_STREAM_P95 = {
         "rtf_mean": 2.0,
     },
 }
+
+
+# Slack factors applied to P95 reference values to derive CI thresholds.
+# Higher-is-better metrics (throughput): threshold = P95 x slack_higher
+# Lower-is-better metrics (latency, rtf): threshold = P95 x slack_lower
+
+THRESHOLD_SLACK_HIGHER = 0.75
+THRESHOLD_SLACK_LOWER = 1.25
 
 
 def _apply_slack(

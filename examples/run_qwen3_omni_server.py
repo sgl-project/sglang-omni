@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Launch an OpenAI-compatible server for Qwen3-Omni (text-only).
+"""Launch an OpenAI-compatible server for Qwen3-Omni with text only output.
 
 Usage::
 

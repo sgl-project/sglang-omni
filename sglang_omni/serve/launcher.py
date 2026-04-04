@@ -55,11 +55,11 @@ def _find_available_port(host: str, port: int) -> int:
             return port
     except OSError:
         pass
-    logger.warning("Port %d is already in use on %s.", port, host)
+    logger.warning(f"Port {port} is already in use on {host}.")
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind((host, 0))
         free_port = s.getsockname()[1]
-    logger.warning("Using port %d instead.", free_port)
+    logger.warning(f"Using port {free_port} instead.")
     return free_port
 
 
@@ -139,11 +139,7 @@ async def _build_app_and_serve(
     client_kwargs: dict[str, Any] | None = None,
     stage_endpoints: dict[str, str] | None = None,
 ) -> None:
-    """Create Client + FastAPI app + uvicorn server and serve.
-
-    When *stage_endpoints* is provided, profiler routes are mounted
-    (requires all stages to be reachable from this process).
-    """
+    """Create Client + FastAPI app + uvicorn server."""
     cl_kwargs = client_kwargs or {}
     client = Client(coordinator, **cl_kwargs)
     app = create_app(client, model_name=model_name)
@@ -178,9 +174,8 @@ async def _run_server(
     need_multi_process = len(gpu_ids) > 1
     resolved_name = model_name or pipeline_config.name
     logger.info(
-        "GPU placement: %s → %s",
-        dict(pipeline_config.gpu_placement),
-        "multi-process" if need_multi_process else "single-process",
+        f"GPU placement: {dict(pipeline_config.gpu_placement)} → "
+        f"{'multi-process' if need_multi_process else 'single-process'}"
     )
 
     if need_multi_process:
@@ -191,16 +186,16 @@ async def _run_server(
         await mp_runner.start(timeout=startup_timeout)
         coordinator = mp_runner.coordinator
         logger.info(
-            "Pipeline '%s' started (multi-process, %d GPU(s))",
-            pipeline_config.name,
-            len(gpu_ids),
+            f"Pipeline '{pipeline_config.name}' started "
+            f"(multi-process, {len(gpu_ids)} GPU(s))"
         )
 
         try:
-            # Note (Chenyang): Profiler routes are not mounted in multi-process
-            # mode because stages run in separate processes and their control
-            # plane endpoints are not directly reachable from the HTTP server
-            # process. Pass stage_endpoints=None to skip profiler setup.
+
+            # Note (Chenyang): Profiler is not enabled in multi-process mode
+            # because stages run in separate processes and their control planes
+            # are not directly reachable from the HTTP server process.
+
             await _build_app_and_serve(
                 coordinator,
                 model_name=resolved_name,
@@ -210,22 +205,15 @@ async def _run_server(
                 client_kwargs=client_kwargs,
             )
         finally:
-            logger.info("Shutting down pipeline …")
+            logger.info(f"Shutting down pipeline …")
             await mp_runner.stop()
-            logger.info("Pipeline stopped.")
+            logger.info(f"Pipeline stopped.")
     else:
-        # 1. Compile pipeline config -> Coordinator + Stages
         coordinator, stages = compile_pipeline(pipeline_config)
         stage_endpoints = _collect_stage_control_endpoints(stages)
         runner = PipelineRunner(coordinator, stages)
-
-        # 2. Start the pipeline (coordinator + all stages as async tasks)
         await runner.start()
-        logger.info(
-            "Pipeline '%s' started (%d stages)",
-            pipeline_config.name,
-            len(stages),
-        )
+        logger.info(f"Pipeline '{pipeline_config.name}' started ({len(stages)} stages)")
 
         try:
             await _build_app_and_serve(
@@ -238,9 +226,9 @@ async def _run_server(
                 stage_endpoints=stage_endpoints,
             )
         finally:
-            logger.info("Shutting down pipeline …")
+            logger.info(f"Shutting down pipeline …")
             await runner.stop()
-            logger.info("Pipeline stopped.")
+            logger.info(f"Pipeline stopped.")
 
 
 def launch_server(

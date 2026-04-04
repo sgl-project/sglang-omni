@@ -527,8 +527,10 @@ def create_talker_ar_executor(
         if fn is not None:
             fn(request_id, chunk_data, CODE_PREDICTOR_STAGE, metadata=metadata)
 
-    # Note (Chenyang): Talker input mixes text tokens with projected thinker
-    # hidden states, so prefix-based radix caching does not apply.
+    # Note (Chenyang): Talker input mixes text tokens embeddeding with projected
+    # thinker hidden states, so prefix token based radix caching does not apply.
+    # Reference: https://github.com/zhaochenyang20/Awesome-ML-SYS-Tutorial/blob/main/transformers/omni/readme-en.md
+
     server_args.disable_radix_cache = True
 
     stream_adapter = (
@@ -659,7 +661,6 @@ def create_decode_executor(model_path: str) -> PreprocessingExecutor:
                 result["text"] = tokenizer.decode(output_ids, skip_special_tokens=True)
                 result.setdefault("modality", "text")
 
-        # Propagate thinker token counts for usage tracking
         prompt_tokens = int(thinker_out.get("prompt_tokens", 0))
         completion_tokens = int(thinker_out.get("completion_tokens", 0))
         result["usage"] = {
