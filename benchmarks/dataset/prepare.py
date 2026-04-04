@@ -46,17 +46,14 @@ def download_dataset(
         "--local-dir",
         local_dir,
     ]
-    if quiet:
-        try:
-            subprocess.run(cmd, check=True, capture_output=True, text=True)
-        except subprocess.CalledProcessError as exc:
-            raise RuntimeError(
-                f"Failed to download dataset {repo_id} to {local_dir}.\n"
-                f"stdout:\n{exc.stdout}\n"
-                f"stderr:\n{exc.stderr}"
-            ) from exc
-    else:
-        subprocess.run(cmd, check=True)
+    try:
+        subprocess.run(cmd, check=True, capture_output=quiet, text=True)
+    except subprocess.CalledProcessError as exc:
+        raise RuntimeError(
+            f"Failed to download dataset {repo_id} to {local_dir}.\n"
+            f"stdout:\n{exc.stdout}\n"
+            f"stderr:\n{exc.stderr}"
+        ) from exc
     if not quiet:
         logger.info("Dataset downloaded to %s", local_dir)
 

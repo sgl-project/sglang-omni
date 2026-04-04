@@ -24,6 +24,7 @@ import asyncio
 import json
 import os
 import shutil
+import statistics
 import subprocess
 import sys
 from pathlib import Path
@@ -56,13 +57,11 @@ STREAMING_BENCHMARK_MAX_SAMPLES = 16
 # Note (Ratish, Chenyang): We evalute the performance of S2-Pro CI on our H20
 # CI machines and compute the thresholds based on the results.
 
-# The following are the P95 thresholds compute from previous runs.
-
-# concurrency 1: throughput>=0.13, tok/s>=82.5, latency_mean<=7.6, rtf_mean<=2.03
-# concurrency 2: throughput>=0.25, tok/s>=78.4, latency_mean<=7.9, rtf_mean<=2.10
-# concurrency 4: throughput>=0.47, tok/s>=75.3, latency_mean<=8.3, rtf_mean<=2.21
-# concurrency 8: throughput>=0.80, tok/s>=67.7, latency_mean<=9.1, rtf_mean<=2.43
-# concurrency 16: throughput>=1.17, tok/s>=60.7, latency_mean<=11.2, rtf_mean<=3.01
+# Slack factors applied to P95 reference values to derive CI thresholds.
+# Higher-is-better metrics (throughput, tok/s): threshold = P95 × slack_higher
+# Lower-is-better metrics (latency, rtf):      threshold = P95 × slack_lower
+THRESHOLD_SLACK_HIGHER = 0.9
+THRESHOLD_SLACK_LOWER = 1.1
 
 VC_WER_MAX_CORPUS = 0.025
 VC_WER_MAX_PER_SAMPLE = 0.40
@@ -70,85 +69,96 @@ VC_STREAM_WER_MAX_CORPUS = 0.025
 VC_STREAM_WER_MAX_PER_SAMPLE = 0.40
 
 
-# TODO (Ratish, Chenyang): The precomputed performance thresholds compute directly with
-# the CI machines still varies from CI actual results. We should figure out the difference
-# and update the thresholds accordingly.
-
+# P95 reference values from 5 repeated H20 runs (one-sided 95% confidence bound of
+# the mean, i.e. mean ∓ t_(0.95, n-1) * s / sqrt(n)).
 # Note (Chenyang): Only thresholds for concurrency 8 are dedicatedly tuned, others may not
 # pass the CI.
-
-VC_NON_STREAM_THRESHOLDS = {
+_VC_NON_STREAM_P95 = {
     1: {
-        "throughput_qps_min": 0.11,
-        "tok_per_s_agg_min": 74.2,
-        "latency_mean_s_max": 8.4,
-        "rtf_mean_max": 2.24,
+        "throughput_qps": 0.13,
+        "tok_per_s_agg": 82.5,
+        "latency_mean_s": 7.6,
+        "rtf_mean": 2.03,
     },
     2: {
-        "throughput_qps_min": 0.22,
-        "tok_per_s_agg_min": 70.5,
-        "latency_mean_s_max": 8.7,
-        "rtf_mean_max": 2.31,
+        "throughput_qps": 0.25,
+        "tok_per_s_agg": 78.4,
+        "latency_mean_s": 7.9,
+        "rtf_mean": 2.10,
     },
     4: {
-        "throughput_qps_min": 0.42,
-        "tok_per_s_agg_min": 67.7,
-        "latency_mean_s_max": 9.2,
-        "rtf_mean_max": 2.44,
+        "throughput_qps": 0.47,
+        "tok_per_s_agg": 75.3,
+        "latency_mean_s": 8.3,
+        "rtf_mean": 2.21,
     },
     8: {
-        "throughput_qps_min": 0.68,
-        "tok_per_s_agg_min": 60.9,
-        "latency_mean_s_max": 10.1,
-        "rtf_mean_max": 2.68,
+        "throughput_qps": 0.80,
+        "tok_per_s_agg": 67.7,
+        "latency_mean_s": 9.1,
+        "rtf_mean": 2.43,
     },
     16: {
-        "throughput_qps_min": 1.05,
-        "tok_per_s_agg_min": 54.6,
-        "latency_mean_s_max": 12.4,
-        "rtf_mean_max": 3.32,
+        "throughput_qps": 1.17,
+        "tok_per_s_agg": 60.7,
+        "latency_mean_s": 11.2,
+        "rtf_mean": 3.01,
     },
 }
 
-# Pre-slack H20 reference values from 5 repeated runs before extra CI slack:
-# concurrency 1: throughput>=0.09, tok/s>=21.0, latency_mean<=10.8, rtf_mean<=2.60
-# concurrency 2: throughput>=0.15, tok/s>=14.7, latency_mean<=13.3, rtf_mean<=3.20
-# concurrency 4: throughput>=0.23, tok/s>=13.7, latency_mean<=15.7, rtf_mean<=4.08
-# concurrency 8: throughput>=0.32, tok/s>=9.3, latency_mean<=22.7, rtf_mean<=5.89
-# concurrency 16: throughput>=0.27, tok/s>=2.9, latency_mean<=47.7, rtf_mean<=12.02
-
-VC_STREAM_THRESHOLDS = {
+_VC_STREAM_P95 = {
     1: {
-        "throughput_qps_min": 0.08,
-        "tok_per_s_agg_min": 18.9,
-        "latency_mean_s_max": 11.9,
-        "rtf_mean_max": 2.86,
+        "throughput_qps": 0.09,
+        "tok_per_s_agg": 21.0,
+        "latency_mean_s": 10.8,
+        "rtf_mean": 2.60,
     },
     2: {
-        "throughput_qps_min": 0.13,
-        "tok_per_s_agg_min": 13.2,
-        "latency_mean_s_max": 14.7,
-        "rtf_mean_max": 3.52,
+        "throughput_qps": 0.15,
+        "tok_per_s_agg": 14.7,
+        "latency_mean_s": 13.3,
+        "rtf_mean": 3.20,
     },
     4: {
-        "throughput_qps_min": 0.20,
-        "tok_per_s_agg_min": 12.3,
-        "latency_mean_s_max": 17.3,
-        "rtf_mean_max": 4.49,
+        "throughput_qps": 0.23,
+        "tok_per_s_agg": 13.7,
+        "latency_mean_s": 15.7,
+        "rtf_mean": 4.08,
     },
     8: {
-        "throughput_qps_min": 0.18,
-        "tok_per_s_agg_min": 6.0,
-        "latency_mean_s_max": 28.0,
-        "rtf_mean_max": 6.48,
+        "throughput_qps": 0.32,
+        "tok_per_s_agg": 9.3,
+        "latency_mean_s": 22.7,
+        "rtf_mean": 5.89,
     },
     16: {
-        "throughput_qps_min": 0.24,
-        "tok_per_s_agg_min": 2.6,
-        "latency_mean_s_max": 52.5,
-        "rtf_mean_max": 13.23,
+        "throughput_qps": 0.27,
+        "tok_per_s_agg": 2.9,
+        "latency_mean_s": 47.7,
+        "rtf_mean": 12.02,
     },
 }
+
+
+def _apply_slack(
+    p95: dict[int, dict[str, float]],
+    slack_higher: float = THRESHOLD_SLACK_HIGHER,
+    slack_lower: float = THRESHOLD_SLACK_LOWER,
+) -> dict[int, dict[str, float]]:
+    """Derive CI thresholds from P95 references with uniform slack."""
+    result: dict[int, dict[str, float]] = {}
+    for conc, m in p95.items():
+        result[conc] = {
+            "throughput_qps_min": round(m["throughput_qps"] * slack_higher, 2),
+            "tok_per_s_agg_min": round(m["tok_per_s_agg"] * slack_higher, 1),
+            "latency_mean_s_max": round(m["latency_mean_s"] * slack_lower, 1),
+            "rtf_mean_max": round(m["rtf_mean"] * slack_lower, 2),
+        }
+    return result
+
+
+VC_NON_STREAM_THRESHOLDS = _apply_slack(_VC_NON_STREAM_P95)
+VC_STREAM_THRESHOLDS = _apply_slack(_VC_STREAM_P95)
 
 WER_SCRIPT = str(
     Path(__file__).resolve().parents[2]
@@ -178,12 +188,12 @@ def _run_benchmark(
         stream=stream,
     )
     speed_results = asyncio.run(run_tts_speed_benchmark(benchmark_config))
-    assert (
-        "summary" in speed_results
-    ), f"Missing 'summary' key in results. Keys: {list(speed_results.keys())}"
-    assert (
-        "per_request" in speed_results
-    ), f"Missing 'per_request' key in results. Keys: {list(speed_results.keys())}"
+    assert "summary" in speed_results, (
+        f"Missing 'summary' key in results. Keys: {list(speed_results.keys())}"
+    )
+    assert "per_request" in speed_results, (
+        f"Missing 'per_request' key in results. Keys: {list(speed_results.keys())}"
+    )
     return speed_results
 
 
@@ -232,12 +242,12 @@ def _run_wer_transcribe(
 
     with open(results_path) as f:
         wer_results = json.load(f)
-    assert (
-        "summary" in wer_results
-    ), f"Missing 'summary' key in WER results. Keys: {list(wer_results.keys())}"
-    assert (
-        "per_sample" in wer_results
-    ), f"Missing 'per_sample' key in WER results. Keys: {list(wer_results.keys())}"
+    assert "summary" in wer_results, (
+        f"Missing 'summary' key in WER results. Keys: {list(wer_results.keys())}"
+    )
+    assert "per_sample" in wer_results, (
+        f"Missing 'per_sample' key in WER results. Keys: {list(wer_results.keys())}"
+    )
 
     summary = wer_results["summary"]
     if summary.get("skipped", 0) > 0:
@@ -315,18 +325,18 @@ def wer_input_dirs(server_process: subprocess.Popen) -> dict[str, dict[int, str]
 
 def _assert_summary_metrics(summary: dict) -> None:
     """Verify summary-level sanity invariants that must hold for every run."""
-    assert (
-        summary["failed_requests"] == 0
-    ), f"Expected 0 failed requests, got {summary['failed_requests']}"
-    assert (
-        summary["audio_duration_mean_s"] > 0
-    ), f"Expected positive audio duration, got {summary['audio_duration_mean_s']}"
-    assert (
-        summary.get("gen_tokens_mean", 0) > 0
-    ), f"Expected positive gen_tokens_mean, got {summary.get('gen_tokens_mean', 0)}"
-    assert (
-        summary.get("prompt_tokens_mean", 0) > 0
-    ), f"Expected positive prompt_tokens_mean, got {summary.get('prompt_tokens_mean', 0)}"
+    assert summary["failed_requests"] == 0, (
+        f"Expected 0 failed requests, got {summary['failed_requests']}"
+    )
+    assert summary["audio_duration_mean_s"] > 0, (
+        f"Expected positive audio duration, got {summary['audio_duration_mean_s']}"
+    )
+    assert summary.get("gen_tokens_mean", 0) > 0, (
+        f"Expected positive gen_tokens_mean, got {summary.get('gen_tokens_mean', 0)}"
+    )
+    assert summary.get("prompt_tokens_mean", 0) > 0, (
+        f"Expected positive prompt_tokens_mean, got {summary.get('prompt_tokens_mean', 0)}"
+    )
 
 
 def _assert_per_request_fields(per_request: list[dict]) -> None:
@@ -334,15 +344,15 @@ def _assert_per_request_fields(per_request: list[dict]) -> None:
     for req in per_request:
         rid = req["id"]
         assert req["is_success"], f"Request {rid} failed: {req.get('error')}"
-        assert (
-            req["audio_duration_s"] is not None and req["audio_duration_s"] > 0
-        ), f"Request {rid}: audio_duration_s={req['audio_duration_s']}, expected > 0"
-        assert (
-            req["prompt_tokens"] is not None and req["prompt_tokens"] > 0
-        ), f"Request {rid}: prompt_tokens={req['prompt_tokens']}, expected > 0"
-        assert (
-            req["completion_tokens"] is not None and req["completion_tokens"] > 0
-        ), f"Request {rid}: completion_tokens={req['completion_tokens']}, expected > 0"
+        assert req["audio_duration_s"] is not None and req["audio_duration_s"] > 0, (
+            f"Request {rid}: audio_duration_s={req['audio_duration_s']}, expected > 0"
+        )
+        assert req["prompt_tokens"] is not None and req["prompt_tokens"] > 0, (
+            f"Request {rid}: prompt_tokens={req['prompt_tokens']}, expected > 0"
+        )
+        assert req["completion_tokens"] is not None and req["completion_tokens"] > 0, (
+            f"Request {rid}: completion_tokens={req['completion_tokens']}, expected > 0"
+        )
 
 
 def _assert_streaming_consistency(
@@ -394,8 +404,8 @@ def _assert_streaming_consistency(
         f"(rtol={total_completion_token_rtol})"
     )
 
-    ns_completion_median = sorted(ns_completion_tokens)[len(ns_completion_tokens) // 2]
-    st_completion_median = sorted(st_completion_tokens)[len(st_completion_tokens) // 2]
+    ns_completion_median = statistics.median(ns_completion_tokens)
+    st_completion_median = statistics.median(st_completion_tokens)
     max_completion_median = max(ns_completion_median, st_completion_median)
     assert abs(ns_completion_median - st_completion_median) <= (
         median_completion_token_rtol * max_completion_median
@@ -445,32 +455,32 @@ def _assert_wer_results(
     )
 
     for sample in per_sample:
-        assert sample[
-            "is_success"
-        ], f"Sample {sample['id']} failed: {sample.get('error')}"
+        assert sample["is_success"], (
+            f"Sample {sample['id']} failed: {sample.get('error')}"
+        )
         if sample["wer"] is not None:
-            assert (
-                sample["wer"] <= max_per_sample_wer
-            ), f"Sample {sample['id']} WER {sample['wer']:.4f} > {max_per_sample_wer}"
+            assert sample["wer"] <= max_per_sample_wer, (
+                f"Sample {sample['id']} WER {sample['wer']:.4f} > {max_per_sample_wer}"
+            )
 
 
 def _assert_speed_thresholds(summary: dict, thresholds: dict, concurrency: int) -> None:
-    thresholds = thresholds[concurrency]
-    assert summary["throughput_qps"] >= thresholds["throughput_qps_min"], (
+    level_thresholds = thresholds[concurrency]
+    assert summary["throughput_qps"] >= level_thresholds["throughput_qps_min"], (
         f"throughput_qps {summary['throughput_qps']} < "
-        f"{thresholds['throughput_qps_min']} at concurrency {concurrency}"
+        f"{level_thresholds['throughput_qps_min']} at concurrency {concurrency}"
     )
-    assert summary["tok_per_s_agg"] >= thresholds["tok_per_s_agg_min"], (
+    assert summary["tok_per_s_agg"] >= level_thresholds["tok_per_s_agg_min"], (
         f"tok_per_s_agg {summary['tok_per_s_agg']} < "
-        f"{thresholds['tok_per_s_agg_min']} at concurrency {concurrency}"
+        f"{level_thresholds['tok_per_s_agg_min']} at concurrency {concurrency}"
     )
-    assert summary["latency_mean_s"] <= thresholds["latency_mean_s_max"], (
+    assert summary["latency_mean_s"] <= level_thresholds["latency_mean_s_max"], (
         f"latency_mean_s {summary['latency_mean_s']} > "
-        f"{thresholds['latency_mean_s_max']} at concurrency {concurrency}"
+        f"{level_thresholds['latency_mean_s_max']} at concurrency {concurrency}"
     )
-    assert summary["rtf_mean"] <= thresholds["rtf_mean_max"], (
+    assert summary["rtf_mean"] <= level_thresholds["rtf_mean_max"], (
         f"rtf_mean {summary['rtf_mean']} > "
-        f"{thresholds['rtf_mean_max']} at concurrency {concurrency}"
+        f"{level_thresholds['rtf_mean_max']} at concurrency {concurrency}"
     )
 
 
@@ -482,8 +492,7 @@ def test_voice_cloning_non_streaming(
     selected_s2pro_tts_concurrencies: tuple[int, ...],
 ) -> None:
     print(
-        "\n[S2 Pro benchmark] selected concurrency: "
-        f"{selected_s2pro_tts_concurrencies}"
+        f"\n[S2 Pro benchmark] selected concurrency: {selected_s2pro_tts_concurrencies}"
     )
     for concurrency in selected_s2pro_tts_concurrencies:
         _print_stage("TTS speed", "non-streaming", concurrency, "generate WAVs for WER")
@@ -497,7 +506,7 @@ def test_voice_cloning_non_streaming(
         summary, per_request = results["summary"], results["per_request"]
         _assert_summary_metrics(summary)
         _assert_per_request_fields(per_request)
-        PER_REQUEST_STORE["vc_nonstream"] = per_request
+        PER_REQUEST_STORE[f"vc_nonstream_c{concurrency}"] = per_request
         SPEED_OUTPUT_DIRS["non_stream"][concurrency] = output_dir
         _assert_speed_thresholds(summary, VC_NON_STREAM_THRESHOLDS, concurrency)
 
@@ -528,18 +537,21 @@ def test_voice_cloning_streaming(
         summary, per_request = results["summary"], results["per_request"]
         _assert_summary_metrics(summary)
         _assert_per_request_fields(per_request)
-        PER_REQUEST_STORE["vc_stream"] = per_request
+        PER_REQUEST_STORE[f"vc_stream_c{concurrency}"] = per_request
         SPEED_OUTPUT_DIRS["stream"][concurrency] = output_dir
         _assert_speed_thresholds(summary, VC_STREAM_THRESHOLDS, concurrency)
 
 
 @pytest.mark.benchmark
-def test_voice_cloning_streaming_consistency() -> None:
-    ns = PER_REQUEST_STORE.get("vc_nonstream")
-    st = PER_REQUEST_STORE.get("vc_stream")
-    assert ns is not None, "vc_nonstream results missing"
-    assert st is not None, "vc_stream results missing"
-    _assert_streaming_consistency(ns, st)
+def test_voice_cloning_streaming_consistency(
+    selected_s2pro_tts_concurrencies: tuple[int, ...],
+) -> None:
+    for concurrency in selected_s2pro_tts_concurrencies:
+        ns = PER_REQUEST_STORE.get(f"vc_nonstream_c{concurrency}")
+        st = PER_REQUEST_STORE.get(f"vc_stream_c{concurrency}")
+        assert ns is not None, f"vc_nonstream_c{concurrency} results missing"
+        assert st is not None, f"vc_stream_c{concurrency} results missing"
+        _assert_streaming_consistency(ns, st)
 
 
 @pytest.mark.benchmark

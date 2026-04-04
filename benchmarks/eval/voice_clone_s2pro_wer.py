@@ -160,7 +160,6 @@ async def generate_audio(args: argparse.Namespace) -> list[dict]:
         seed=args.seed,
         audio_dir=audio_dir,
     )
-    generated_by_id: dict[str, dict] = {}
 
     async def send_fn(
         session: aiohttp.ClientSession, sample: SampleInput
@@ -171,7 +170,6 @@ async def generate_audio(args: argparse.Namespace) -> list[dict]:
             sample,
             config,
         )
-        generated_by_id[sample.sample_id] = entry
         return RequestResult(
             request_id=sample.sample_id,
             text=sample.target_text,
@@ -190,7 +188,21 @@ async def generate_audio(args: argparse.Namespace) -> list[dict]:
         )
     )
     results = await runner.run(samples, send_fn)
-    generated = [generated_by_id[result.request_id] for result in results]
+    # asyncio.gather preserves input order, so results align with samples.
+    generated = []
+    for r in results:
+        entry: dict = {
+            "sample_id": r.request_id,
+            "target_text": r.text,
+            "wav_path": r.wav_path,
+            "is_success": r.is_success,
+        }
+        if r.is_success:
+            entry["latency_s"] = r.latency_s
+            entry["audio_duration_s"] = r.audio_duration_s
+        else:
+            entry["error"] = r.error
+        generated.append(entry)
 
     meta_path = os.path.join(args.output_dir, "generated.json")
     with open(meta_path, "w") as f:
@@ -299,7 +311,7 @@ def main() -> None:
     mode.add_argument(
         "--transcribe-only",
         action="store_true",
-        help=("Only run recognition and WER on existing output-dir)."),
+        help="Only run recognition and WER on existing output-dir.",
     )
     args = p.parse_args()
 
