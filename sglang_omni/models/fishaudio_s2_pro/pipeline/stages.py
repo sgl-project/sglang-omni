@@ -271,6 +271,8 @@ def create_sglang_tts_engine_executor(
     stream_stride: int = 5,
     stream_followup_stride: int = 100,
     stream_vocoder_device: str | None = None,
+    quantization: str | None = None,
+    kv_cache_dtype: str | None = None,
 ) -> EngineExecutor:
     """Factory for the S2-Pro TTS engine stage."""
     from sglang.srt.server_args import ServerArgs
@@ -305,15 +307,20 @@ def create_sglang_tts_engine_executor(
         return _stream_codec
 
     _patch_fish_config_for_sglang(checkpoint_dir)
-    server_args = ServerArgs(
-        model_path=checkpoint_dir,
-        tp_size=1,
-        dtype="bfloat16",
-        mem_fraction_static=0.85,
-        chunked_prefill_size=8192,
-        max_running_requests=64,
-        disable_cuda_graph=False,
-    )
+    server_args_kwargs: dict[str, Any] = {
+        "model_path": checkpoint_dir,
+        "tp_size": 1,
+        "dtype": "bfloat16",
+        "mem_fraction_static": 0.85,
+        "chunked_prefill_size": 8192,
+        "max_running_requests": 64,
+        "disable_cuda_graph": False,
+    }
+    if quantization is not None:
+        server_args_kwargs["quantization"] = quantization
+    if kv_cache_dtype is not None:
+        server_args_kwargs["kv_cache_dtype"] = kv_cache_dtype
+    server_args = ServerArgs(**server_args_kwargs)
 
     engine = create_s2pro_sglang_engine(
         server_args=server_args,
