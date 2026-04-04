@@ -13,8 +13,8 @@ Author:
     Yuan Luo https://github.com/yuan-luo
     Yitong Guan https://github.com/minleminzui
 
-The benchmark supports one selected concurrency per test run. Use `--concurrency 8`
-in CI, run without the flag to use concurrency 1, or pass `--concurrency all`
+The benchmark supports one selected concurrency per test run. Use --concurrency 8
+in CI, run without the flag to use concurrency 1, or pass --concurrency all
 to sweep all supported concurrency values locally.
 """
 
@@ -48,6 +48,9 @@ STARTUP_TIMEOUT = 600
 BENCHMARK_TIMEOUT = 600
 WER_TIMEOUT = 600
 DATASET_CACHE_ENV = "SGLANG_SEEDTTS50_DIR"
+
+# Note (Chenyang): The streaming mode evaluation is only run at first 16 samples.
+
 STREAMING_BENCHMARK_MAX_SAMPLES = 16
 
 # Thresholds reference: https://github.com/sgl-project/sglang-omni/pull/242
@@ -59,20 +62,19 @@ STREAMING_BENCHMARK_MAX_SAMPLES = 16
 
 # Slack factors applied to P95 reference values to derive CI thresholds.
 # Higher-is-better metrics (throughput, tok/s): threshold = P95 × slack_higher
-# Lower-is-better metrics (latency, rtf):      threshold = P95 × slack_lower
-THRESHOLD_SLACK_HIGHER = 0.9
-THRESHOLD_SLACK_LOWER = 1.1
+# Lower-is-better metrics (latency, rtf): threshold = P95 × slack_lower
+
+THRESHOLD_SLACK_HIGHER = 0.85
+THRESHOLD_SLACK_LOWER = 1.15
 
 VC_WER_MAX_CORPUS = 0.025
 VC_WER_MAX_PER_SAMPLE = 0.40
 VC_STREAM_WER_MAX_CORPUS = 0.025
 VC_STREAM_WER_MAX_PER_SAMPLE = 0.40
 
+# Note (Chenyang): Only thresholds for concurrency 8 are dedicatedly tuned, others
+# may not pass the CI.
 
-# P95 reference values from 5 repeated H20 runs (one-sided 95% confidence bound of
-# the mean, i.e. mean ∓ t_(0.95, n-1) * s / sqrt(n)).
-# Note (Chenyang): Only thresholds for concurrency 8 are dedicatedly tuned, others may not
-# pass the CI.
 _VC_NON_STREAM_P95 = {
     1: {
         "throughput_qps": 0.13,
@@ -262,21 +264,6 @@ def _run_wer_transcribe(
     return wer_results
 
 
-def _dataset_cache_dir() -> Path:
-    override_dir = os.environ.get(DATASET_CACHE_ENV)
-    if override_dir:
-        return Path(override_dir).expanduser()
-    raise ValueError(f"{DATASET_CACHE_ENV} is not set")
-
-
-def _cleanup_generated_audio() -> None:
-    for output_dirs in SPEED_OUTPUT_DIRS.values():
-        for output_dir in output_dirs.values():
-            audio_dir = Path(output_dir) / "audio"
-            if audio_dir.exists():
-                shutil.rmtree(audio_dir)
-
-
 def _print_stage(stage: str, mode: str, concurrency: int, details: str = "") -> None:
     message = f"\n[Stage] {stage} benchmark | mode={mode} | concurrency={concurrency}"
     if details:
@@ -286,11 +273,11 @@ def _print_stage(stage: str, mode: str, concurrency: int, details: str = "") -> 
 
 @pytest.fixture(scope="module")
 def dataset_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    root = (
-        _dataset_cache_dir()
-        if os.environ.get(DATASET_CACHE_ENV)
-        else tmp_path_factory.mktemp("seed_tts_eval") / "data"
-    )
+    override_dir = os.environ.get(DATASET_CACHE_ENV)
+    if override_dir:
+        root = Path(override_dir).expanduser()
+    else:
+        root = tmp_path_factory.mktemp("seed_tts_eval") / "data"
     download_dataset(DATASETS["seedtts-50"], str(root), quiet=True)
     return root
 
@@ -298,7 +285,11 @@ def dataset_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
 @pytest.fixture(scope="module", autouse=True)
 def cleanup_generated_audio_fixture():
     yield
-    _cleanup_generated_audio()
+    for output_dirs in SPEED_OUTPUT_DIRS.values():
+        for output_dir in output_dirs.values():
+            audio_dir = Path(output_dir) / "audio"
+            if audio_dir.exists():
+                shutil.rmtree(audio_dir)
 
 
 @pytest.fixture(scope="module")
