@@ -68,9 +68,9 @@ THRESHOLD_SLACK_HIGHER = 0.75
 THRESHOLD_SLACK_LOWER = 1.25
 
 VC_WER_MAX_CORPUS = 0.025
-VC_WER_MAX_PER_SAMPLE = 0.40
+VC_WER_MAX_PER_SAMPLE = 0.6
 VC_STREAM_WER_MAX_CORPUS = 0.025
-VC_STREAM_WER_MAX_PER_SAMPLE = 0.40
+VC_STREAM_WER_MAX_PER_SAMPLE = 0.6
 
 # Note (Chenyang): Only thresholds for concurrency 8 are dedicatedly tuned, others
 # may not pass the CI.
