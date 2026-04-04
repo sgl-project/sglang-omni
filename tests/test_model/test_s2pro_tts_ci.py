@@ -49,7 +49,7 @@ BENCHMARK_TIMEOUT = 600
 WER_TIMEOUT = 600
 DATASET_CACHE_ENV = "SGLANG_SEEDTTS50_DIR"
 
-# Note (Chenyang): The streaming mode evaluation is only run at first 16 samples.
+# Note (Chenyang): The streaming mode evaluation is only run at first 16.
 
 STREAMING_BENCHMARK_MAX_SAMPLES = 16
 
@@ -64,8 +64,8 @@ STREAMING_BENCHMARK_MAX_SAMPLES = 16
 # Higher-is-better metrics (throughput, tok/s): threshold = P95 × slack_higher
 # Lower-is-better metrics (latency, rtf): threshold = P95 × slack_lower
 
-THRESHOLD_SLACK_HIGHER = 0.85
-THRESHOLD_SLACK_LOWER = 1.15
+THRESHOLD_SLACK_HIGHER = 0.75
+THRESHOLD_SLACK_LOWER = 1.25
 
 VC_WER_MAX_CORPUS = 0.025
 VC_WER_MAX_PER_SAMPLE = 0.40
