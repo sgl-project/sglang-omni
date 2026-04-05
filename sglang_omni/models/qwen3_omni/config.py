@@ -185,7 +185,7 @@ class Qwen3OmniSpeechPipelineConfig(PipelineConfig):
             executor=ExecutorConfig(
                 factory="sglang_omni.models.qwen3_omni.pipeline.stages.create_talker_ar_executor_from_config",
                 args={
-                    "talker_max_seq_len": 4096,
+                    "talker_max_seq_len": 8192,
                     "speech_enabled": True,
                     "feedback_enabled": True,
                 },
