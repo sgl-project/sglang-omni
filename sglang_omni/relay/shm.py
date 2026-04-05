@@ -10,14 +10,9 @@ from typing import Any
 import numpy as np
 import torch
 
-# Import abstract layer
 from .base import Relay, RelayOperation, register_relay
 
 logger = logging.getLogger(__name__)
-
-# ==========================================
-# Helpers
-# ==========================================
 
 
 def shm_create_from_tensor(tensor: torch.Tensor) -> _shm.SharedMemory:
@@ -38,11 +33,6 @@ def shm_create_from_tensor(tensor: torch.Tensor) -> _shm.SharedMemory:
     shm_view[:] = t_np[:]
 
     return shm
-
-
-# ==========================================
-# Operations Implementation
-# ==========================================
 
 
 class ShmOperation(RelayOperation):
@@ -112,11 +102,6 @@ class ShmGetOperation(ShmOperation):
                 copy_len = min(dest_view.numel(), size)
                 dest_view[:copy_len].copy_(src_tensor[:copy_len])
 
-                # Ensure the async CUDA copy completes before freeing the
-                # source SHM buffer.  copy_() from host (SHM-backed numpy)
-                # to CUDA submits a cudaMemcpyAsync; without a sync the
-                # SHM could be unmapped while the DMA is still in flight,
-                # causing cudaErrorIllegalAddress on the destination GPU.
                 if self._dest_tensor.is_cuda:
                     torch.cuda.synchronize(self._dest_tensor.device)
 
@@ -129,9 +114,6 @@ class ShmGetOperation(ShmOperation):
             self._completed = True
 
 
-# ==========================================
-# ShmRelay Implementation
-# ==========================================
 @register_relay("shm")
 class ShmRelay(Relay):
     def __init__(
