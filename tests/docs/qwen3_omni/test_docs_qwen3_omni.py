@@ -51,11 +51,6 @@ def _post_chat(port: int, payload: dict, timeout: int = REQUEST_TIMEOUT) -> dict
     return resp.json()
 
 
-# ===========================================================================
-# Text-Only Mode Tests
-# ===========================================================================
-
-
 class TestTextOnlyMode:
     """Text-only server (--text-only, single GPU)."""
 
@@ -118,11 +113,6 @@ class TestTextOnlyMode:
         content = result["choices"][0]["message"]["content"]
         assert isinstance(content, str)
         assert len(content) > 0
-
-
-# ===========================================================================
-# Speech Mode Tests
-# ===========================================================================
 
 
 class TestSpeechMode:
