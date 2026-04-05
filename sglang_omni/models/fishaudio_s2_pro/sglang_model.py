@@ -12,6 +12,7 @@ import torch
 from sglang.srt.layers.logits_processor import LogitsProcessorOutput
 from torch import Tensor, nn
 
+from sglang_omni.models.fishaudio_s2_pro.constants import REPETITION_WINDOW
 from sglang_omni.vendor.sglang.core import ForwardBatch
 from sglang_omni.vendor.sglang.layers import (
     MergedColumnParallelLinear,
@@ -26,6 +27,30 @@ from sglang_omni.vendor.sglang.models import apply_qk_norm
 from sglang_omni.vendor.sglang.utils import make_layers
 
 logger = logging.getLogger(__name__)
+
+
+def _select_semantic_token_with_fallback(
+    logits: Tensor,
+    *,
+    use_ras_mask: Tensor,
+    previous_tokens: Tensor,
+    previous_mask: Tensor,
+) -> Tensor:
+    top2_tokens = torch.topk(logits, k=2, dim=-1).indices
+    greedy_token = top2_tokens[:, 0]
+    fallback_token = top2_tokens[:, 1]
+
+    valid_counts = previous_mask.long().sum(dim=-1).clamp(min=1) - 1
+    last_previous_token = torch.gather(
+        previous_tokens.long(),
+        dim=1,
+        index=valid_counts.unsqueeze(-1),
+    ).squeeze(-1)
+    has_previous_token = previous_mask.any(dim=-1)
+    collapse_mask = (
+        use_ras_mask & has_previous_token & (greedy_token == last_previous_token)
+    )
+    return torch.where(collapse_mask, fallback_token, greedy_token)
 
 
 class S2ProAttention(nn.Module):
@@ -244,6 +269,7 @@ class S2ProSGLangTextModel(nn.Module):
         semantic_end_id: int,
         im_end_id: int,
         max_batch_size: int,
+        ras_window: int,
     ) -> None:
         """Attach audio decoder and allocate persistent GPU buffers."""
         device = self.embed_tokens.weight.device
@@ -253,6 +279,7 @@ class S2ProSGLangTextModel(nn.Module):
         self._codebook_size = codebook_size
         self._num_codebooks = num_codebooks
         self._semantic_begin_id = semantic_begin_id
+        self._ras_window = ras_window
 
         # Shared codebook embedding from audio decoder (for VQ input combination)
         self._vq_codebook_embeddings = audio_decoder.codebook_embeddings
@@ -264,6 +291,23 @@ class S2ProSGLangTextModel(nn.Module):
             max_batch_size, num_codebooks, dtype=torch.long, device=device
         )
         self._vq_mask = torch.zeros(max_batch_size, dtype=torch.bool, device=device)
+        self._sample_use_ras = torch.zeros(
+            max_batch_size,
+            dtype=torch.bool,
+            device=device,
+        )
+        self._sample_previous_tokens = torch.zeros(
+            max_batch_size,
+            REPETITION_WINDOW,
+            dtype=torch.long,
+            device=device,
+        )
+        self._sample_previous_mask = torch.zeros(
+            max_batch_size,
+            REPETITION_WINDOW,
+            dtype=torch.bool,
+            device=device,
+        )
 
         # Semantic bias: mask all non-semantic and non-EOS tokens
         bias = torch.full(
@@ -350,8 +394,13 @@ class S2ProSGLangTextModel(nn.Module):
         bs = logits.shape[0]
 
         # Constrained decode: mask non-semantic tokens
-        biased_logits = logits + self._semantic_bias
-        semantic_token = torch.argmax(biased_logits, dim=-1)  # [bs]
+        biased_logits = logits + self._semantic_bias.to(dtype=logits.dtype)
+        semantic_token = _select_semantic_token_with_fallback(
+            biased_logits,
+            use_ras_mask=self._sample_use_ras[:bs],
+            previous_tokens=self._sample_previous_tokens[:bs],
+            previous_mask=self._sample_previous_mask[:bs],
+        )
 
         # Batched codebook loop
         self._audio_decoder.reset_caches()
@@ -370,7 +419,7 @@ class S2ProSGLangTextModel(nn.Module):
                 cb_hidden, codebook_idx=cb_idx
             )
             cb_logits = cb_logits[:, 0, : self._codebook_size]
-            cb_token = torch.argmax(cb_logits, dim=-1)  # [bs]
+            cb_token = torch.argmax(cb_logits, dim=-1)
             cb_hidden = self._audio_decoder.embeddings(cb_token).unsqueeze(1)
             self._output_codes[:bs, cb_idx + 1] = cb_token
 

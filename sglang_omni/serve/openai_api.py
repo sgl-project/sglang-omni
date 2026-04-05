@@ -555,9 +555,14 @@ def _select_speech_audio_delta(
     total_samples = int(audio.shape[-1]) if audio.ndim else 0
     if not is_terminal:
         return audio, emitted_samples + total_samples
-    if total_samples <= emitted_samples:
-        return None, emitted_samples
-    return audio[emitted_samples:], total_samples
+    # Terminal chunk may be either:
+    # - cumulative snapshot of the full waveform, or
+    # - a final incremental delta.
+    # If it is larger than all emitted samples, trim prefix as cumulative;
+    # otherwise treat it as normal delta.
+    if total_samples > emitted_samples:
+        return audio[emitted_samples:], total_samples
+    return audio, emitted_samples + total_samples
 
 
 def _build_speech_generate_request(
