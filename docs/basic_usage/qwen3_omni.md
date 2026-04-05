@@ -26,7 +26,7 @@ Text-only mode runs the thinker pipeline on a single GPU. It accepts multi-modal
 sgl-omni serve \
   --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct \
   --text-only \
-  --port 8000
+  --port 8008
 ```
 
 ### Image and Text Input
@@ -36,7 +36,7 @@ Send an image with a text question to get a text response.
 **cURL**
 
 ```bash
-curl -X POST http://localhost:8000/v1/chat/completions \
+curl -X POST http://localhost:8008/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
     "model": "qwen3-omni",
@@ -53,7 +53,7 @@ curl -X POST http://localhost:8000/v1/chat/completions \
 import requests
 
 resp = requests.post(
-    "http://localhost:8000/v1/chat/completions",
+    "http://localhost:8008/v1/chat/completions",
     json={
         "model": "qwen3-omni",
         "messages": [{"role": "user", "content": "How many cars are there in the picture?"}],
@@ -74,7 +74,7 @@ Send an audio file together with an image. The audio contains the spoken questio
 **cURL**
 
 ```bash
-curl -X POST http://localhost:8000/v1/chat/completions \
+curl -X POST http://localhost:8008/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
     "model": "qwen3-omni",
@@ -92,7 +92,7 @@ curl -X POST http://localhost:8000/v1/chat/completions \
 import requests
 
 resp = requests.post(
-    "http://localhost:8000/v1/chat/completions",
+    "http://localhost:8008/v1/chat/completions",
     json={
         "model": "qwen3-omni",
         "messages": [{"role": "user", "content": ""}],
@@ -122,7 +122,7 @@ python examples/run_qwen3_omni_speech_server.py \
   --gpu-talker 1 \
   --gpu-code-predictor 1 \
   --gpu-code2wav 1 \
-  --port 8000
+  --port 8008
 ```
 
 Or use the CLI without `--text-only` (defaults to speech mode):
@@ -130,7 +130,7 @@ Or use the CLI without `--text-only` (defaults to speech mode):
 ```bash
 sgl-omni serve \
   --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct \
-  --port 8000
+  --port 8008
 ```
 
 ### Image and Text Input
@@ -140,7 +140,7 @@ Send an image with a text question to get both text and audio responses. Set `"m
 **cURL**
 
 ```bash
-curl -X POST http://localhost:8000/v1/chat/completions \
+curl -X POST http://localhost:8008/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
     "model": "qwen3-omni",
@@ -158,7 +158,7 @@ import base64
 import requests
 
 resp = requests.post(
-    "http://localhost:8000/v1/chat/completions",
+    "http://localhost:8008/v1/chat/completions",
     json={
         "model": "qwen3-omni",
         "messages": [{"role": "user", "content": "How many cars are there in the picture?"}],
@@ -187,7 +187,7 @@ Send an audio file with an image. The model hears the spoken question and sees t
 **cURL**
 
 ```bash
-curl -X POST http://localhost:8000/v1/chat/completions \
+curl -X POST http://localhost:8008/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
     "model": "qwen3-omni",
@@ -206,7 +206,7 @@ import base64
 import requests
 
 resp = requests.post(
-    "http://localhost:8000/v1/chat/completions",
+    "http://localhost:8008/v1/chat/completions",
     json={
         "model": "qwen3-omni",
         "messages": [{"role": "user", "content": ""}],

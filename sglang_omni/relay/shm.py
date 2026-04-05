@@ -112,6 +112,14 @@ class ShmGetOperation(ShmOperation):
                 copy_len = min(dest_view.numel(), size)
                 dest_view[:copy_len].copy_(src_tensor[:copy_len])
 
+                # Ensure the async CUDA copy completes before freeing the
+                # source SHM buffer.  copy_() from host (SHM-backed numpy)
+                # to CUDA submits a cudaMemcpyAsync; without a sync the
+                # SHM could be unmapped while the DMA is still in flight,
+                # causing cudaErrorIllegalAddress on the destination GPU.
+                if self._dest_tensor.is_cuda:
+                    torch.cuda.synchronize(self._dest_tensor.device)
+
             finally:
                 # 3. Cleanup (Receiver owns lifecycle)
                 existing_shm.close()

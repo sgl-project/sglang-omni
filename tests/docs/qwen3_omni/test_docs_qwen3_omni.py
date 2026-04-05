@@ -4,9 +4,6 @@
 Every test replicates an API call from `docs/basic_usage/qwen3_omni.md`
 so documentation can never silently go stale.
 
-Class-scoped fixtures ensure the text-only server is fully stopped before
-the speech server starts, avoiding GPU memory contention.
-
 Usage:
     pytest tests/docs/qwen3_omni/test_docs_qwen3_omni.py -s -x
 """
