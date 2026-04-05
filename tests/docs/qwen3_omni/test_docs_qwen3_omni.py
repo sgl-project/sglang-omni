@@ -84,7 +84,7 @@ class TestTextOnlyMode:
                 "messages": [{"role": "user", "content": TEXT_PROMPT}],
                 "images": [IMAGE_PATH],
                 "modalities": ["text"],
-                "max_tokens": 256,
+                "max_tokens": 16,
             },
         )
         assert "choices" in result
@@ -103,7 +103,7 @@ class TestTextOnlyMode:
                 "images": [IMAGE_PATH],
                 "audios": [AUDIO_PATH],
                 "modalities": ["text"],
-                "max_tokens": 256,
+                "max_tokens": 16,
             },
         )
         assert "choices" in result
@@ -159,7 +159,7 @@ class TestSpeechMode:
                 "messages": [{"role": "user", "content": TEXT_PROMPT}],
                 "images": [IMAGE_PATH],
                 "modalities": ["text", "audio"],
-                "max_tokens": 256,
+                "max_tokens": 16,
             },
         )
         assert "choices" in result
@@ -184,7 +184,7 @@ class TestSpeechMode:
                 "images": [IMAGE_PATH],
                 "audios": [AUDIO_PATH],
                 "modalities": ["text", "audio"],
-                "max_tokens": 256,
+                "max_tokens": 16,
             },
         )
         assert "choices" in result

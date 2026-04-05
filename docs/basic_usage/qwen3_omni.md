@@ -43,7 +43,7 @@ curl -X POST http://localhost:8008/v1/chat/completions \
     "messages": [{"role": "user", "content": "How many cars are there in the picture?"}],
     "images": ["tests/data/cars.jpg"],
     "modalities": ["text"],
-    "max_tokens": 256
+    "max_tokens": 16
   }'
 ```
 
@@ -59,7 +59,7 @@ resp = requests.post(
         "messages": [{"role": "user", "content": "How many cars are there in the picture?"}],
         "images": ["tests/data/cars.jpg"],
         "modalities": ["text"],
-        "max_tokens": 256,
+        "max_tokens": 16,
     },
 )
 resp.raise_for_status()
@@ -82,7 +82,7 @@ curl -X POST http://localhost:8008/v1/chat/completions \
     "images": ["tests/data/cars.jpg"],
     "audios": ["tests/data/query_to_cars.wav"],
     "modalities": ["text"],
-    "max_tokens": 256
+    "max_tokens": 16
   }'
 ```
 
@@ -99,7 +99,7 @@ resp = requests.post(
         "images": ["tests/data/cars.jpg"],
         "audios": ["tests/data/query_to_cars.wav"],
         "modalities": ["text"],
-        "max_tokens": 256,
+        "max_tokens": 16,
     },
 )
 resp.raise_for_status()
@@ -147,7 +147,7 @@ curl -X POST http://localhost:8008/v1/chat/completions \
     "messages": [{"role": "user", "content": "How many cars are there in the picture?"}],
     "images": ["tests/data/cars.jpg"],
     "modalities": ["text", "audio"],
-    "max_tokens": 256
+    "max_tokens": 16
   }'
 ```
 
@@ -164,17 +164,15 @@ resp = requests.post(
         "messages": [{"role": "user", "content": "How many cars are there in the picture?"}],
         "images": ["tests/data/cars.jpg"],
         "modalities": ["text", "audio"],
-        "max_tokens": 256,
+        "max_tokens": 16,
     },
 )
 resp.raise_for_status()
 result = resp.json()
 choice = result["choices"][0]["message"]
 
-# Text output from the thinker
 print(choice["content"])
 
-# Audio output from the talker (base64-encoded WAV)
 audio_data = base64.b64decode(choice["audio"]["data"])
 with open("output.wav", "wb") as f:
     f.write(audio_data)
@@ -195,7 +193,7 @@ curl -X POST http://localhost:8008/v1/chat/completions \
     "images": ["tests/data/cars.jpg"],
     "audios": ["tests/data/query_to_cars.wav"],
     "modalities": ["text", "audio"],
-    "max_tokens": 256
+    "max_tokens": 16
   }'
 ```
 
@@ -213,17 +211,15 @@ resp = requests.post(
         "images": ["tests/data/cars.jpg"],
         "audios": ["tests/data/query_to_cars.wav"],
         "modalities": ["text", "audio"],
-        "max_tokens": 256,
+        "max_tokens": 16,
     },
 )
 resp.raise_for_status()
 result = resp.json()
 choice = result["choices"][0]["message"]
 
-# Text output from the thinker
 print(choice["content"])
 
-# Audio output from the talker (base64-encoded WAV)
 audio_data = base64.b64decode(choice["audio"]["data"])
 with open("output.wav", "wb") as f:
     f.write(audio_data)

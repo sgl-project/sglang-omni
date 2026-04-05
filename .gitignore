@@ -28,6 +28,7 @@ htmlcov/
 
 # Logs
 *.log
+output.wav
 
 # OS
 .DS_Store
