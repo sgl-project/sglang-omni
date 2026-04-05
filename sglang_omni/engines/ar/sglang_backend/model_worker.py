@@ -17,9 +17,11 @@ class ModelWorkerConfig:
     nccl_port: int | None = None
 
 
-# Architecture -> (sub_config_attr, text_config_attr) for composite models
-_ARCH_CONFIG_MAP: dict[str, tuple[str, str]] = {
+# Architecture -> (sub_config_attr, text_config_attr) for composite models.
+# When text_config_attr is None, the sub_config IS the text config itself.
+_ARCH_CONFIG_MAP: dict[str, tuple[str, str | None]] = {
     "Qwen3OmniTalker": ("talker_config", "text_config"),
+    "BailingMoeV2ForCausalLM": ("llm_config", None),
 }
 
 
@@ -76,7 +78,11 @@ class ModelWorker:
         sub_cfg = getattr(model_config.hf_config, sub_config_attr, None)
         if sub_cfg is None:
             return
-        text_cfg = getattr(sub_cfg, text_config_attr, None)
+        # When text_config_attr is None, the sub_config IS the text config
+        if text_config_attr is not None:
+            text_cfg = getattr(sub_cfg, text_config_attr, None)
+        else:
+            text_cfg = sub_cfg
         if text_cfg is None:
             return
         model_config.hf_text_config = text_cfg
