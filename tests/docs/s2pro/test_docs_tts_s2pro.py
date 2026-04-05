@@ -20,29 +20,15 @@ from pathlib import Path
 
 import pytest
 import requests
-from huggingface_hub import snapshot_download
 
 from tests.utils import disable_proxy, find_free_port, start_server, stop_server
 
 S2PRO_MODEL_PATH = "fishaudio/s2-pro"
 S2PRO_CONFIG_PATH = "examples/configs/s2pro_tts.yaml"
-DATASET_REPO = "zhaochenyang20/seed-tts-eval-mini"
 
 SPEECH_INPUT = "Get the trust fund to the bank early."
 REFERENCE_TEXT = "We asked over twenty different people, and they all said it was his."
-REF_WAV_RELPATH = "en/prompt-wavs/common_voice_en_10119832.wav"
-
-
-@pytest.fixture(scope="module")
-def dataset_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    """Download the mini Seed-TTS eval dataset used by docs tests."""
-    cache_dir = tmp_path_factory.mktemp("seed_tts_eval")
-    dataset_path = snapshot_download(
-        DATASET_REPO,
-        repo_type="dataset",
-        local_dir=str(cache_dir / "data"),
-    )
-    return Path(dataset_path)
+REFERENCE_AUDIO = "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav"
 
 
 @pytest.fixture(scope="module")
@@ -53,14 +39,6 @@ def server_process(tmp_path_factory: pytest.TempPathFactory):
     proc = start_server(S2PRO_MODEL_PATH, S2PRO_CONFIG_PATH, log_file, port)
     yield proc, port
     stop_server(proc)
-
-
-@pytest.fixture(scope="module")
-def ref_wav(dataset_dir: Path) -> Path:
-    """Return the absolute path to the reference wav used in docs."""
-    wav_path = dataset_dir / REF_WAV_RELPATH
-    assert wav_path.exists(), f"Reference wav not found: {wav_path}"
-    return wav_path
 
 
 def _post_audio_speech(port: int, payload: dict, timeout: int = 120) -> bytes:
@@ -96,7 +74,6 @@ def test_basic_tts(
 @pytest.mark.docs
 def test_voice_cloning(
     server_process: tuple[subprocess.Popen, int],
-    ref_wav: Path,
     tmp_path: Path,
 ) -> None:
     """Voice cloning with the real reference audio used in docs."""
@@ -105,7 +82,7 @@ def test_voice_cloning(
         port,
         {
             "input": SPEECH_INPUT,
-            "references": [{"audio_path": str(ref_wav), "text": REFERENCE_TEXT}],
+            "references": [{"audio_path": REFERENCE_AUDIO, "text": REFERENCE_TEXT}],
         },
     )
     _save_and_verify(content, tmp_path / "output.wav")
@@ -114,7 +91,6 @@ def test_voice_cloning(
 @pytest.mark.docs
 def test_voice_cloning_streaming(
     server_process: tuple[subprocess.Popen, int],
-    ref_wav: Path,
 ) -> None:
     """Streaming voice cloning via SSE."""
     _, port = server_process
@@ -124,7 +100,7 @@ def test_voice_cloning_streaming(
             f"{api_base}/v1/audio/speech",
             json={
                 "input": SPEECH_INPUT,
-                "references": [{"audio_path": str(ref_wav), "text": REFERENCE_TEXT}],
+                "references": [{"audio_path": REFERENCE_AUDIO, "text": REFERENCE_TEXT}],
                 "stream": True,
             },
             stream=True,
@@ -158,7 +134,6 @@ def test_voice_cloning_streaming(
 @pytest.mark.docs
 def test_voice_cloning_streaming_wav_reassembly(
     server_process: tuple[subprocess.Popen, int],
-    ref_wav: Path,
     tmp_path: Path,
 ) -> None:
     """Streaming voice cloning with WAV reassembly from SSE chunks."""
@@ -166,7 +141,7 @@ def test_voice_cloning_streaming_wav_reassembly(
     api_base = f"http://localhost:{port}"
     payload = {
         "input": SPEECH_INPUT,
-        "references": [{"audio_path": str(ref_wav), "text": REFERENCE_TEXT}],
+        "references": [{"audio_path": REFERENCE_AUDIO, "text": REFERENCE_TEXT}],
         "stream": True,
         "response_format": "wav",
     }

@@ -394,7 +394,10 @@ class SGLangOutputProcessor:
                 result = {}
                 for layer_id, tensor in zip(self._capture_hidden_layers, aux):
                     key = "embed" if layer_id == 0 else layer_id
-                    result[key] = tensor
+                    # Note (Chenyang): clone() is required because the captured
+                    # hidden states reference the model's internal buffer, which
+                    # gets overwritten on the next forward pass.
+                    result[key] = tensor.clone()
                 return result
 
         # Fallback: logits_output.hidden_states
@@ -868,7 +871,8 @@ class SGLangModelRunner:
             req = getattr(data, "req", None)
             input_embeds = getattr(req, "input_embeds", None)
             if input_embeds:
-                rows.extend(input_embeds)
+                prefix_len = len(getattr(req, "prefix_indices", []))
+                rows.extend(input_embeds[prefix_len:])
         if not rows:
             return None
         return torch.as_tensor(rows, device=self.device, dtype=torch.float32)
@@ -987,9 +991,9 @@ class SGLangModelRunner:
                 forward_batch, input_embeds, ds_embeds, vis_masks
             )
         elif projected_prefill:
-            projected_input_embeds = forward_batch.input_embeds
+            projected_input_embeds = request_prefill_input_embeds
             if projected_input_embeds is None:
-                projected_input_embeds = request_prefill_input_embeds
+                projected_input_embeds = forward_batch.input_embeds
             if projected_input_embeds is None:
                 raise RuntimeError(
                     "Projected talker prefill requested without input_embeds"

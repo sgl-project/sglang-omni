@@ -56,7 +56,8 @@ python benchmarks/eval/voice_clone_s2pro_wer.py \
 
 | Script | Task | Model | API |
 |--------|------|-------|-----|
-| `eval/benchmark_tts_speed.py` | TTS speed | Any TTS model | `/v1/audio/speech` |
+| `eval/benchmark_tts_speed.py` | TTS speed | S2 Pro | `/v1/audio/speech` |
+| `eval/benchmark_omni_tts_speed.py` | TTS speed | Qwen3 Omni | `/v1/chat/completions` |
 | `eval/voice_clone_s2pro_wer.py` | Voice clone WER | S2 Pro | `/v1/audio/speech` |
 | `eval/voice_clone_qwen3_omni_wer.py` | Voice clone WER | Qwen3 Omni | `/v1/chat/completions` |
 

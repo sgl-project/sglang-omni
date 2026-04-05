@@ -288,6 +288,7 @@ class Client:
                 if isinstance(text, str):
                     chunk.text = text
                 Client._set_audio_data(chunk, c2w_result)
+                chunk.usage = UsageInfo.from_dict(decode_result.get("usage"))
                 return chunk
             text = result.get("text")
             if isinstance(text, str):

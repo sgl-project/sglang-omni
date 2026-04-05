@@ -23,6 +23,13 @@ def serve(
     config: Annotated[
         str, typer.Option(help="Path to a pipeline config JSON file.")
     ] = None,
+    text_only: Annotated[
+        bool,
+        typer.Option(
+            "--text-only",
+            help="Use thinker-only pipeline (1 GPU, no talker/speech output).",
+        ),
+    ] = False,
     host: Annotated[
         str, typer.Option(help="Server bind address (default: 0.0.0.0).")
     ] = "0.0.0.0",
@@ -44,6 +51,8 @@ def serve(
     # --- Resolve config ---
     if config:
         config_manager = ConfigManager.from_file(config)
+    elif text_only:
+        config_manager = ConfigManager.from_model_path(model_path, variant="text")
     else:
         config_manager = ConfigManager.from_model_path(model_path)
 
