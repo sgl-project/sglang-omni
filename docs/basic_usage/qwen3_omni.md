@@ -69,7 +69,7 @@ print(result["choices"][0]["message"]["content"])
 
 ### Audio and Image Input
 
-Send an audio file together with an image. The audio contains the spoken question and the model answers based on both inputs.
+Send an audio file together with an image. The audio contains the spoken question ("How many cars are there in the picture?") and the model answers based on both inputs.
 
 **cURL**
 

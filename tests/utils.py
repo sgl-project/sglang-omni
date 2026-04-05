@@ -55,34 +55,34 @@ def no_proxy_env() -> dict[str, str]:
     return {k: v for k, v in os.environ.items() if k.lower() not in proxy_keys}
 
 
-def start_server(
-    model_path: str,
-    config_path: str,
-    log_file: Path,
-    port: int,
-    timeout: int = STARTUP_TIMEOUT,
-) -> subprocess.Popen:
-    """Start a server and wait until healthy."""
-    cmd = [
-        sys.executable,
-        "-m",
-        "sglang_omni.cli.cli",
-        "serve",
-        "--model-path",
-        model_path,
-        "--config",
-        config_path,
-        "--port",
-        str(port),
-    ]
-    with open(log_file, "w") as log_handle:
-        proc = subprocess.Popen(
-            cmd,
-            stdout=log_handle,
-            stderr=subprocess.STDOUT,
-            start_new_session=True,
-        )
+# ---------------------------------------------------------------------------
+# Server lifecycle
+# ---------------------------------------------------------------------------
 
+
+def stop_server(proc: subprocess.Popen) -> None:
+    """Gracefully stop the server process group, tolerating already-dead processes."""
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+        proc.wait(timeout=30)
+    except (ProcessLookupError, ChildProcessError):
+        return
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            proc.wait(timeout=10)
+        except (ProcessLookupError, ChildProcessError):
+            # Process already exited — nothing left to kill.
+            return
+
+
+def wait_healthy(
+    proc: subprocess.Popen,
+    port: int,
+    log_file: Path,
+    timeout: int = STARTUP_TIMEOUT,
+) -> None:
+    """Wait for a server to report healthy, stopping it and raising on failure."""
     try:
         with disable_proxy():
             wait_for_service(
@@ -103,7 +103,55 @@ def start_server(
         if isinstance(exc, RuntimeError):
             raise RuntimeError(message) from exc
         raise
+
+
+def start_server_from_cmd(
+    cmd: list[str],
+    log_file: Path,
+    port: int,
+    timeout: int = STARTUP_TIMEOUT,
+) -> subprocess.Popen:
+    """Start a server from an arbitrary command and wait until healthy."""
+    with open(log_file, "w") as log_handle:
+        proc = subprocess.Popen(
+            cmd,
+            stdout=log_handle,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+    wait_healthy(proc, port, log_file, timeout=timeout)
     return proc
+
+
+def start_server(
+    model_path: str,
+    config_path: str | None,
+    log_file: Path,
+    port: int,
+    timeout: int = STARTUP_TIMEOUT,
+    extra_args: list[str] | None = None,
+) -> subprocess.Popen:
+    """Start a ``sgl-omni serve`` server and wait until healthy."""
+    cmd = [
+        sys.executable,
+        "-m",
+        "sglang_omni.cli.cli",
+        "serve",
+        "--model-path",
+        model_path,
+        "--port",
+        str(port),
+    ]
+    if config_path:
+        cmd.extend(["--config", config_path])
+    if extra_args:
+        cmd.extend(extra_args)
+    return start_server_from_cmd(cmd, log_file, port, timeout=timeout)
+
+
+# ---------------------------------------------------------------------------
+# Assertion helpers
+# ---------------------------------------------------------------------------
 
 
 def assert_summary_metrics(summary: dict, *, check_tokens: bool = True) -> None:
@@ -295,48 +343,3 @@ def assert_wer_results(
                 f"Sample {sample['id']} WER {sample['wer']:.4f} "
                 f"> {max_per_sample_wer}"
             )
-
-
-def wait_healthy(
-    proc: subprocess.Popen,
-    port: int,
-    log_file: Path,
-    timeout: int = STARTUP_TIMEOUT,
-) -> None:
-    """Wait for a server to report healthy, stopping it and raising on failure."""
-    try:
-        with disable_proxy():
-            wait_for_service(
-                f"http://localhost:{port}",
-                timeout=timeout,
-                server_process=proc,
-                server_log_file=log_file,
-                health_body_contains="healthy",
-            )
-    except Exception as exc:
-        stop_server(proc)
-        log_text = log_file.read_text() if log_file.exists() else ""
-        message = str(exc)
-        if log_text and log_text not in message:
-            message = f"{message}\n{log_text}"
-        if isinstance(exc, TimeoutError):
-            raise TimeoutError(message) from exc
-        if isinstance(exc, RuntimeError):
-            raise RuntimeError(message) from exc
-        raise
-
-
-def stop_server(proc: subprocess.Popen) -> None:
-    """Gracefully stop the server process group, tolerating already-dead processes."""
-    try:
-        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-        proc.wait(timeout=30)
-    except (ProcessLookupError, ChildProcessError):
-        return
-    except subprocess.TimeoutExpired:
-        try:
-            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-            proc.wait(timeout=10)
-        except (ProcessLookupError, ChildProcessError):
-            # Process already exited — nothing left to kill.
-            return
