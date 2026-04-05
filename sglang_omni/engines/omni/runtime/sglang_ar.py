@@ -526,9 +526,9 @@ class SGLangModelRunner:
             if hasattr(hf_config, "thinker_config")
             else hf_config
         )
-        self._image_token_id = thinker_cfg.image_token_id
-        self._video_token_id = thinker_cfg.video_token_id
-        self._audio_token_id = thinker_cfg.audio_token_id
+        self._image_token_id = getattr(thinker_cfg, "image_token_id", None)
+        self._video_token_id = getattr(thinker_cfg, "video_token_id", None)
+        self._audio_token_id = getattr(thinker_cfg, "audio_token_id", None)
 
     @staticmethod
     def _get_inner_model_components(model):
@@ -586,6 +586,8 @@ class SGLangModelRunner:
                 ("video", video_token_id),
                 ("audio", audio_token_id),
             ]:
+                if token_id is None:
+                    continue
                 embeds = omni_inputs.get(f"{modality}_embeds")
                 if embeds is None:
                     continue
