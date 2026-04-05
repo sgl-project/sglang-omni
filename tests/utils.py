@@ -55,11 +55,6 @@ def no_proxy_env() -> dict[str, str]:
     return {k: v for k, v in os.environ.items() if k.lower() not in proxy_keys}
 
 
-# ---------------------------------------------------------------------------
-# Server lifecycle
-# ---------------------------------------------------------------------------
-
-
 def stop_server(proc: subprocess.Popen) -> None:
     """Gracefully stop the server process group, tolerating already-dead processes."""
     try:
@@ -147,11 +142,6 @@ def start_server(
     if extra_args:
         cmd.extend(extra_args)
     return start_server_from_cmd(cmd, log_file, port, timeout=timeout)
-
-
-# ---------------------------------------------------------------------------
-# Assertion helpers
-# ---------------------------------------------------------------------------
 
 
 def assert_summary_metrics(summary: dict, *, check_tokens: bool = True) -> None:
