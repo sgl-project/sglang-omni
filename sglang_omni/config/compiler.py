@@ -114,6 +114,23 @@ def _compile_pipeline(
         )
 
     return coordinator, stages
+
+
+def compile_pipeline(config: PipelineConfig) -> tuple[Coordinator, list[Stage]]:
+    """Build coordinator and stages directly from a pipeline config.
+
+    In IPC mode, direct calls allocate a unique per-run runtime directory for
+    endpoint paths but do not manage that directory's lifecycle. Prefer
+    `build_pipeline_runner(...)` or `MultiProcessPipelineRunner` for managed
+    startup and cleanup.
+    """
+    ipc_runtime_dir = create_ipc_runtime_dir(config)
+    return _compile_pipeline(
+        config,
+        ipc_base_dir=ipc_runtime_dir.path if ipc_runtime_dir else None,
+    )
+
+
 def _compile_stage(
     stage_cfg: StageConfig,
     global_cfg: PipelineConfig,
