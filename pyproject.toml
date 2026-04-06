@@ -47,6 +47,10 @@ dev = [
     # Testing dependencies
     "pytest>=7.0.0",
     "pytest-asyncio>=0.21.0",
+    # WER benchmark dependencies (Whisper ASR + text normalization)
+    "jiwer",
+    "scipy>=1.10.0",
+    "openai-whisper",
 ]
 s2pro = [
     "tiktoken",
@@ -72,6 +76,7 @@ override-dependencies = [
 pythonpath = ["."]
 markers = [
     "benchmark: performance benchmark tests (may require GPU and long runtime)",
+    "docs: documentation example tests (verify documented API calls still work)",
 ]
 
 [tool.setuptools.packages.find]

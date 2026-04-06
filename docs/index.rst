@@ -23,6 +23,7 @@ Our core features include:
    :maxdepth: 1
    :caption: Basic Usage
 
+   basic_usage/qwen3_omni.md
    basic_usage/tts_s2pro.md
 
 

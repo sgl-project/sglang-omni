@@ -112,10 +112,12 @@ class ConfigManager:
         return merged_config
 
     @staticmethod
-    def from_model_path(model_path: str) -> "ConfigManager":
-        """
-        Load the configuration from the model path.
-        """
+    @staticmethod
+    def from_model_path(
+        model_path: str, variant: str | None = None
+    ) -> "ConfigManager":
+        """Load config from model path, optionally selecting a variant."""
+        import importlib
         arch = None
 
         # 1) Try HuggingFace config.json
@@ -128,14 +130,17 @@ class ConfigManager:
         if arch is None:
             arch = _try_resolve_arch_from_mistral_config(model_path)
 
-        if arch is None:
-            raise ValueError(
-                f"Cannot determine model architecture from {model_path}. "
-                f"Expected either a HuggingFace config.json with 'architectures', "
-                f"or a Mistral params.json with model_type in {list(_MISTRAL_MODEL_TYPE_TO_ARCH)}."
-            )
 
         config_cls = PIPELINE_CONFIG_REGISTRY.get_config(arch)
+
+        if variant:
+            module = importlib.import_module(config_cls.__module__)
+            variants = getattr(module, "Variants", None)
+            if variants and variant in variants:
+                config_cls = variants[variant]
+            else:
+                raise ValueError(f"Unknown variant '{variant}' for {config_cls.__name__}")
+
         config = config_cls(model_path=model_path)
         return ConfigManager(config)
 

@@ -401,11 +401,18 @@ def apply_thinker_result(
 ) -> ThinkerOutput:
     if isinstance(result, ARRequestData):
         output_ids = list(result.output_ids)
+        prompt_tokens = (
+            int(result.input_ids.shape[0])
+            if result.input_ids is not None and hasattr(result.input_ids, "shape")
+            else 0
+        )
         thinker_out: ThinkerOutput = {
             "output_ids": output_ids,
             "step": len(output_ids),
             "is_final": True,
             "extra_model_outputs": dict(result.extra_model_outputs),
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": len(output_ids),
         }
     else:
         thinker_out = {

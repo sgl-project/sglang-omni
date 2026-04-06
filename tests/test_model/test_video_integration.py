@@ -20,7 +20,7 @@ from pathlib import Path
 import pytest
 import requests
 
-from tests.test_model.helpers import disable_proxy
+from tests.utils import disable_proxy
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -58,6 +58,7 @@ def server_process():
         "serve",
         "--model-path",
         MODEL_PATH,
+        "--text-only",
         "--relay-backend",
         "nixl",
         "--port",

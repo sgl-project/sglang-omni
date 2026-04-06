@@ -124,6 +124,14 @@ def _compile_stage_local(
         gpu_id = global_cfg.gpu_placement.get(stage_cfg.name, 0)
         stage_cfg.executor.args["gpu_id"] = gpu_id
 
+    # Also translate gpu_placement to device string for stages using "device"
+    # instead of "gpu_id" (e.g., talker, audio_encoder).
+    if "device" in inspect.signature(
+        factory
+    ).parameters and stage_cfg.executor.args.get("device", "").startswith("cuda"):
+        gpu_id = global_cfg.gpu_placement.get(stage_cfg.name, 0)
+        stage_cfg.executor.args["device"] = f"cuda:{gpu_id}"
+
     for _ in range(stage_cfg.num_workers):
         executor = factory(**stage_cfg.executor.args)
         stage.add_worker(Worker(executor=executor))
@@ -220,6 +228,16 @@ def _stage_process_entry(
         # Reconstruct PipelineConfig from serialized dict
         pipeline_config = PipelineConfig(**config_dict["pipeline_config"])
 
+        # Set default CUDA device early based on gpu_placement, before
+        # any CUDA initialization.  This prevents PyTorch from allocating
+        # the context on the wrong GPU in multi-GPU deployments.
+        gpu_id = pipeline_config.gpu_placement.get(stage_name, 0)
+        import torch
+
+        if torch.cuda.is_available() and torch.cuda.device_count() > gpu_id:
+            torch.cuda.set_device(gpu_id)
+            log.info("Set CUDA device to cuda:%d for stage %s", gpu_id, stage_name)
+
         # Apply fusion to get actual stage configs
         stages_cfg, fused_name_map, _ = pipeline_config.apply_fusion()
         name_map.update(fused_name_map)
@@ -315,11 +333,11 @@ class MultiProcessPipelineRunner:
                 self._coordinator.run_completion_loop()
             )
 
-            # 3. Spawn one subprocess per stage
+            ctx = multiprocessing.get_context("spawn")
             ready_events: list[multiprocessing.Event] = []
 
             for stage_cfg in stages_cfg:
-                ready = multiprocessing.Event()
+                ready = ctx.Event()
                 config_dict = _build_stage_process_config(
                     pipeline_config=self._config,
                     stage_name=stage_cfg.name,
@@ -327,7 +345,7 @@ class MultiProcessPipelineRunner:
                     all_endpoints=endpoints,
                     name_map=name_map,
                 )
-                p = multiprocessing.Process(
+                p = ctx.Process(
                     target=_stage_process_entry,
                     args=(config_dict, ready),
                     name=f"stage-{stage_cfg.name}",

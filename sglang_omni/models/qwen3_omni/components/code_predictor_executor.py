@@ -171,6 +171,7 @@ class _CodePredictorStreamingExecutor(Executor):
         self._aborted: set[str] = set()
         self._stream_queue: Any | None = None  # Set by compiler
         self._stream_fn: Any | None = None  # Set by compiler
+        self._gpu_lock: asyncio.Lock = asyncio.Lock()
 
     async def add_request(self, payload: StagePayload) -> None:
         request_id = payload.request_id
@@ -198,7 +199,8 @@ class _CodePredictorStreamingExecutor(Executor):
                     device=self._device,
                 ),
             }
-            output = await loop.run_in_executor(None, self._run_model, model_inputs)
+            async with self._gpu_lock:
+                output = await loop.run_in_executor(None, self._run_model, model_inputs)
             self._dispatch_outputs(request_id, output)
             chunk_count += 1
 
