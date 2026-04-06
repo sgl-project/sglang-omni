@@ -54,6 +54,11 @@ class Coordinator:
         )
         self._partial_results: dict[str, dict[str, Any]] = {}
 
+        # Per-request terminal stage overrides.  When a request's
+        # output_modalities skip audio, only a subset of the global
+        # terminal_stages is expected to complete.
+        self._request_terminals: dict[str, set[str]] = {}
+
         # Control plane
         self.control_plane = CoordinatorControlPlane(
             completion_endpoint=completion_endpoint,
@@ -136,16 +141,24 @@ class Coordinator:
                         raise RuntimeError(msg.error or "Unknown error")
                     yield msg
                     completed_stages.add(msg.from_stage)
-                    if (
-                        not self._terminal_stages
-                        or completed_stages >= self._terminal_stages
-                    ):
+                    effective = self._effective_terminals(request_id)
+                    if not effective or completed_stages >= effective:
                         return
                 else:
                     yield msg
         finally:
             self._stream_queues.pop(request_id, None)
             self._completion_futures.pop(request_id, None)
+            self._request_terminals.pop(request_id, None)
+
+    def _effective_terminals(self, request_id: str) -> set[str]:
+        """Return the terminal stage set for *request_id*.
+
+        If a per-request override was stored (e.g. text-only request in a
+        multi-terminal speech pipeline), return that; otherwise fall back to
+        the global ``_terminal_stages``.
+        """
+        return self._request_terminals.get(request_id, self._terminal_stages)
 
     async def _submit_request(
         self, request_id: str, request: OmniRequest | Any
@@ -171,6 +184,18 @@ class Coordinator:
 
         if not isinstance(request, OmniRequest):
             request = OmniRequest(inputs=request)
+
+        # Compute per-request terminal stages when the multi-terminal speech
+        # pipeline is active but this particular request only needs text.
+        if len(self._terminal_stages) > 1:
+            modalities = request.metadata.get("output_modalities")
+            if modalities is not None and "audio" not in modalities:
+                # Only the text decode terminal is expected.
+                text_terminals = {
+                    s for s in self._terminal_stages if s == "decode"
+                }
+                if text_terminals:
+                    self._request_terminals[request_id] = text_terminals
 
         payload = StagePayload(
             request_id=request_id,
@@ -240,6 +265,7 @@ class Coordinator:
         # Cleanup request tracking
         self._requests.pop(request_id, None)
         self._partial_results.pop(request_id, None)
+        self._request_terminals.pop(request_id, None)
 
         logger.info("Coordinator aborted req=%s", request_id)
         return True
@@ -285,6 +311,7 @@ class Coordinator:
             info.state = RequestState.FAILED
             info.error = msg.error
             self._partial_results.pop(request_id, None)
+            self._request_terminals.pop(request_id, None)
             if request_id in self._completion_futures:
                 future = self._completion_futures[request_id]
                 if not future.done():
@@ -294,8 +321,10 @@ class Coordinator:
             self._requests.pop(request_id, None)
             return
 
+        effective = self._effective_terminals(request_id)
+
         # Single terminal (original behavior) or no terminal_stages configured
-        if len(self._terminal_stages) <= 1:
+        if len(effective) <= 1:
             info.state = RequestState.COMPLETED
             info.result = msg.result
             if request_id in self._completion_futures:
@@ -305,6 +334,7 @@ class Coordinator:
             if request_id in self._stream_queues:
                 await self._stream_queues[request_id].put(msg)
             self._requests.pop(request_id, None)
+            self._request_terminals.pop(request_id, None)
             return
 
         # Multi-terminal: collect partial results
@@ -315,12 +345,13 @@ class Coordinator:
         if request_id in self._stream_queues:
             await self._stream_queues[request_id].put(msg)
 
-        if len(partials) < len(self._terminal_stages):
+        if len(partials) < len(effective):
             return  # still waiting
 
         # All terminal stages done -> merge and resolve
         merged = dict(partials)
         self._partial_results.pop(request_id)
+        self._request_terminals.pop(request_id, None)
         info.state = RequestState.COMPLETED
         info.result = merged
 
