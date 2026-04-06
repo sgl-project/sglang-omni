@@ -16,9 +16,9 @@ from typing import Any
 from sglang_omni.config.compiler import (
     _allocate_endpoints,
     _build_relay_config,
+    _acquire_ipc_namespace_lock,
     _create_input_handler,
     _wrap_get_next,
-    acquire_ipc_namespace_lock,
 )
 from sglang_omni.config.schema import PipelineConfig, StageConfig
 from sglang_omni.pipeline import Coordinator, Stage, Worker
@@ -317,14 +317,10 @@ class MultiProcessPipelineRunner:
             raise RuntimeError("Already started")
 
         try:
-            self._ipc_namespace_lock = acquire_ipc_namespace_lock(self._config)
+            self._ipc_namespace_lock = _acquire_ipc_namespace_lock(self._config)
             ipc_namespace = None
             if self._ipc_namespace_lock is not None:
                 ipc_namespace = self._ipc_namespace_lock.ipc_namespace
-                logger.info(
-                    f"Resolved IPC namespace '{ipc_namespace}' under "
-                    f"{self._config.endpoints.base_path}"
-                )
 
             # 1. Apply fusion, allocate endpoints
             stages_cfg, name_map, entry_stage = self._config.apply_fusion()

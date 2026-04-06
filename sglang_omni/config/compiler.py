@@ -40,7 +40,7 @@ class IpcNamespaceLock:
             self._lock_file = None
 
 
-def resolve_ipc_namespace(
+def _resolve_ipc_namespace(
     config: PipelineConfig, *, ipc_namespace: str | None = None
 ) -> str | None:
     """Resolve the IPC namespace for a pipeline config.
@@ -58,14 +58,18 @@ def resolve_ipc_namespace(
     if configured_namespace:
         return configured_namespace
 
-    seed = "".join(ch.lower() if ch.isalnum() else "-" for ch in config.name).strip("-")
-    if not seed:
-        seed = "pipeline"
-    seed = "-".join(part for part in seed.split("-") if part)
-    return f"{seed}-{os.getpid()}-{uuid4().hex[:8]}"
+    namespace_prefix = "".join(
+        ch.lower() if ch.isalnum() else "-" for ch in config.name
+    ).strip("-")
+    if not namespace_prefix:
+        namespace_prefix = "pipeline"
+    namespace_prefix = "-".join(
+        part for part in namespace_prefix.split("-") if part
+    )
+    return f"{namespace_prefix}-{os.getpid()}-{uuid4().hex[:8]}"
 
 
-def acquire_ipc_namespace_lock(
+def _acquire_ipc_namespace_lock(
     config: PipelineConfig,
     *,
     ipc_namespace: str | None = None,
@@ -75,7 +79,7 @@ def acquire_ipc_namespace_lock(
         return None
 
     explicit_namespace = config.endpoints.namespace is not None
-    ipc_namespace = resolve_ipc_namespace(config, ipc_namespace=ipc_namespace)
+    ipc_namespace = _resolve_ipc_namespace(config, ipc_namespace=ipc_namespace)
     assert ipc_namespace is not None
 
     base_dir = Path(config.endpoints.base_path) / ipc_namespace
@@ -280,7 +284,7 @@ def _allocate_endpoints(
         endpoints["abort"] = config.abort_endpoint
 
     if config.endpoints.scheme == "ipc":
-        resolved_ipc_namespace = resolve_ipc_namespace(
+        resolved_ipc_namespace = _resolve_ipc_namespace(
             config,
             ipc_namespace=ipc_namespace,
         )

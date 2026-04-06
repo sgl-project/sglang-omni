@@ -8,11 +8,8 @@ import asyncio
 import logging
 import os
 
-from sglang_omni.config import (
-    PipelineRunner,
-    acquire_ipc_namespace_lock,
-    compile_pipeline,
-)
+from sglang_omni.config import PipelineRunner, compile_pipeline
+from sglang_omni.config.compiler import _acquire_ipc_namespace_lock
 from sglang_omni.models.qwen3_omni.config import Qwen3OmniPipelineConfig
 from sglang_omni.proto import OmniRequest
 
@@ -52,18 +49,11 @@ async def main_async(args: argparse.Namespace) -> None:
         model_path=args.model_path,
         relay_backend=args.relay_backend,
     )
-    ipc_namespace_lock = acquire_ipc_namespace_lock(config)
-    try:
-        coordinator, stages = compile_pipeline(
-            config,
-            ipc_namespace=(
-                ipc_namespace_lock.ipc_namespace if ipc_namespace_lock else None
-            ),
-        )
-    except Exception:
-        if ipc_namespace_lock is not None:
-            ipc_namespace_lock.close()
-        raise
+    ipc_namespace_lock = _acquire_ipc_namespace_lock(config)
+    coordinator, stages = compile_pipeline(
+        config,
+        ipc_namespace=ipc_namespace_lock.ipc_namespace if ipc_namespace_lock else None,
+    )
     runner = PipelineRunner(
         coordinator,
         stages,

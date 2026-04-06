@@ -36,12 +36,8 @@ from fastapi import APIRouter
 from pydantic import BaseModel
 
 from sglang_omni.client import Client
-from sglang_omni.config import (
-    PipelineConfig,
-    PipelineRunner,
-    acquire_ipc_namespace_lock,
-    compile_pipeline,
-)
+from sglang_omni.config import PipelineConfig, PipelineRunner, compile_pipeline
+from sglang_omni.config.compiler import _acquire_ipc_namespace_lock
 from sglang_omni.profiler.profiler_control import ProfilerControlClient
 from sglang_omni.serve.openai_api import create_app
 
@@ -214,12 +210,7 @@ async def _run_server(
             await mp_runner.stop()
             logger.info(f"Pipeline stopped.")
     else:
-        ipc_namespace_lock = acquire_ipc_namespace_lock(pipeline_config)
-        if ipc_namespace_lock is not None:
-            logger.info(
-                f"Resolved IPC namespace '{ipc_namespace_lock.ipc_namespace}' under "
-                f"{pipeline_config.endpoints.base_path}"
-            )
+        ipc_namespace_lock = _acquire_ipc_namespace_lock(pipeline_config)
         try:
             coordinator, stages = compile_pipeline(
                 pipeline_config,
