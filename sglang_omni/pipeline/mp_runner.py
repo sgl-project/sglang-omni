@@ -18,8 +18,8 @@ from sglang_omni.config.compiler import (
     IpcRuntimeDir,
     _allocate_endpoints,
     _build_relay_config,
-    _create_ipc_runtime_dir,
     _create_input_handler,
+    _create_ipc_runtime_dir,
     _wrap_get_next,
 )
 from sglang_omni.config.schema import PipelineConfig, StageConfig
