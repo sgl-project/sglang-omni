@@ -3,8 +3,7 @@
 
 import asyncio
 import logging
-from typing import Callable
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Callable
 
 from sglang_omni.pipeline.control_plane import CoordinatorControlPlane
 from sglang_omni.proto import (
