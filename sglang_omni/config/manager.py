@@ -1,3 +1,5 @@
+import json
+import os
 from copy import deepcopy
 from typing import Any
 
@@ -6,6 +8,25 @@ from transformers import AutoConfig
 
 from sglang_omni.config.schema import PipelineConfig
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
+
+_MISTRAL_MODEL_TYPE_TO_ARCH = {
+    "voxtral_tts": "VoxtralTTSForConditionalGeneration",
+}
+
+
+def _try_resolve_arch_from_mistral_config(model_path: str) -> str | None:
+    """Try to resolve architecture from Mistral-format params.json.
+
+    Returns the architecture string if params.json exists and contains
+    a known model_type, otherwise returns None.
+    """
+    params_path = os.path.join(model_path, "params.json")
+    if not os.path.isfile(params_path):
+        return None
+    with open(params_path) as f:
+        params = json.load(f)
+    model_type = params.get("model_type", "")
+    return _MISTRAL_MODEL_TYPE_TO_ARCH.get(model_type)
 
 
 class ConfigManager:
@@ -91,12 +112,26 @@ class ConfigManager:
         return merged_config
 
     @staticmethod
-    def from_model_path(model_path: str, variant: str | None = None) -> "ConfigManager":
+    @staticmethod
+    def from_model_path(
+        model_path: str, variant: str | None = None
+    ) -> "ConfigManager":
         """Load config from model path, optionally selecting a variant."""
         import importlib
+        arch = None
 
-        hf_config = AutoConfig.from_pretrained(model_path)
-        config_cls = PIPELINE_CONFIG_REGISTRY.get_config(hf_config.architectures[0])
+        # 1) Try HuggingFace config.json
+        hf_config_path = os.path.join(model_path, "config.json")
+        if os.path.isfile(hf_config_path):
+            hf_config = AutoConfig.from_pretrained(model_path)
+            arch = hf_config.architectures[0]
+
+        # 2) Try Mistral-format params.json (e.g. Voxtral TTS)
+        if arch is None:
+            arch = _try_resolve_arch_from_mistral_config(model_path)
+
+
+        config_cls = PIPELINE_CONFIG_REGISTRY.get_config(arch)
 
         if variant:
             module = importlib.import_module(config_cls.__module__)
@@ -104,9 +139,7 @@ class ConfigManager:
             if variants and variant in variants:
                 config_cls = variants[variant]
             else:
-                raise ValueError(
-                    f"Unknown variant '{variant}' for {config_cls.__name__}"
-                )
+                raise ValueError(f"Unknown variant '{variant}' for {config_cls.__name__}")
 
         config = config_cls(model_path=model_path)
         return ConfigManager(config)
