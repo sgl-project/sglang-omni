@@ -1,0 +1,36 @@
+{
+  "name": "sglang-omni",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": "..",
+    "target": "dev",
+    "args": {
+      // Change to your host uid/gid to preserve workspace folder write permission in container  
+      // "HOST_UID": "1000",
+      // "HOST_GID": "1000"
+    }
+  },
+  "remoteUser": "devuser",
+  "updateRemoteUserUID": true,
+  "runArgs": [
+    "--gpus",
+    "all",
+    "--shm-size",
+    "32g"
+  ],
+  "workspaceFolder": "/sgl-workspace/sglang-omni",
+  "workspaceMount": "source=${localWorkspaceFolder},target=/sgl-workspace/sglang-omni,type=bind",
+  "containerEnv": {
+    "PYTHON_BIN": "python3"
+  },
+  "customizations": {
+    "vscode": {
+      "settings": {
+        "python.terminal.activateEnvironment": true
+      },
+      "extensions": [
+        "ms-python.python"
+      ]
+    }
+  }
+}
