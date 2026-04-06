@@ -4,11 +4,12 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import suppress
 from typing import Iterable
 
 from sglang_omni.config.compiler import (
-    IpcNamespaceLock,
-    _acquire_ipc_namespace_lock,
+    IpcRuntimeDir,
+    _prepare_ipc_runtime_dir,
     compile_pipeline,
 )
 from sglang_omni.config.schema import PipelineConfig
@@ -23,13 +24,13 @@ class PipelineRunner:
         coordinator: Coordinator,
         stages: Iterable[Stage],
         *,
-        ipc_namespace_lock: IpcNamespaceLock | None = None,
+        ipc_runtime_dir: IpcRuntimeDir | None = None,
     ):
         self._coordinator = coordinator
         self._stages = list(stages)
         self._completion_task: asyncio.Task[None] | None = None
         self._stage_tasks: list[asyncio.Task[None]] = []
-        self._ipc_namespace_lock = ipc_namespace_lock
+        self._ipc_runtime_dir = ipc_runtime_dir
         self._started = False
 
     async def start(self) -> None:
@@ -46,9 +47,11 @@ class PipelineRunner:
             ]
             self._started = True
         except Exception:
-            if self._ipc_namespace_lock is not None:
-                self._ipc_namespace_lock.close()
-                self._ipc_namespace_lock = None
+            await self._cancel_completion_task()
+            with suppress(Exception):
+                await self._coordinator.stop()
+            self._stage_tasks.clear()
+            self._cleanup_runtime_dir()
             raise
 
     async def wait(self) -> None:
@@ -64,51 +67,56 @@ class PipelineRunner:
 
     async def stop(self) -> None:
         if not self._started:
-            raise RuntimeError("PipelineRunner not started")
+            return
 
         try:
             await self._coordinator.shutdown_stages()
             await asyncio.gather(*self._stage_tasks)
-
-            if self._completion_task is not None:
-                self._completion_task.cancel()
-                try:
-                    await self._completion_task
-                except asyncio.CancelledError:
-                    pass
-
-            await self._coordinator.stop()
-            self._started = False
         finally:
-            if self._ipc_namespace_lock is not None:
-                self._ipc_namespace_lock.close()
-                self._ipc_namespace_lock = None
+            try:
+                await self._cancel_completion_task()
+                await self._coordinator.stop()
+            finally:
+                self._stage_tasks.clear()
+                self._started = False
+                self._cleanup_runtime_dir()
 
     async def run(self) -> None:
         await self.start()
         await self.wait()
 
+    async def _cancel_completion_task(self) -> None:
+        if self._completion_task is not None:
+            self._completion_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._completion_task
+            self._completion_task = None
+
+    def _cleanup_runtime_dir(self) -> None:
+        if self._ipc_runtime_dir is None:
+            return
+        self._ipc_runtime_dir.close()
+        self._ipc_runtime_dir = None
+
 
 def build_pipeline_runner(
     config: PipelineConfig,
 ) -> tuple[Coordinator, list[Stage], PipelineRunner]:
-    """Build a single-process pipeline runtime with IPC namespace reservation."""
-    ipc_namespace_lock = _acquire_ipc_namespace_lock(config)
+    """Build a single-process pipeline runtime with isolated IPC paths."""
+    ipc_runtime_dir = _prepare_ipc_runtime_dir(config)
     try:
         coordinator, stages = compile_pipeline(
             config,
-            ipc_namespace=(
-                ipc_namespace_lock.ipc_namespace if ipc_namespace_lock else None
-            ),
+            ipc_base_dir=ipc_runtime_dir.path if ipc_runtime_dir else None,
         )
     except Exception:
-        if ipc_namespace_lock is not None:
-            ipc_namespace_lock.close()
+        if ipc_runtime_dir is not None:
+            ipc_runtime_dir.close()
         raise
 
     runner = PipelineRunner(
         coordinator,
         stages,
-        ipc_namespace_lock=ipc_namespace_lock,
+        ipc_runtime_dir=ipc_runtime_dir,
     )
     return coordinator, stages, runner

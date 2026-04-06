@@ -3,12 +3,12 @@
 
 from __future__ import annotations
 
-import fcntl
 import inspect
-import os
+import logging
+import shutil
+import tempfile
 from pathlib import Path
 from typing import Any
-from uuid import uuid4
 
 from sglang_omni.config.schema import InputHandlerConfig, PipelineConfig, StageConfig
 from sglang_omni.executors.interface import Executor
@@ -22,41 +22,43 @@ from sglang_omni.pipeline import (
 from sglang_omni.pipeline.stage.input import InputHandler
 from sglang_omni.utils import import_string
 
+logger = logging.getLogger(__name__)
 
-class IpcNamespaceLock:
-    """Process-scoped lock that prevents explicit IPC namespace reuse."""
 
-    def __init__(self, ipc_namespace: str, lock_file):
-        self.ipc_namespace = ipc_namespace
-        self._lock_file = lock_file
+class IpcRuntimeDir:
+    """Runtime-owned IPC directory for a single pipeline instance."""
+
+    def __init__(self, path: Path):
+        self.path = path
 
     def close(self) -> None:
-        if self._lock_file is None:
-            return
         try:
-            fcntl.flock(self._lock_file.fileno(), fcntl.LOCK_UN)
-        finally:
-            self._lock_file.close()
-            self._lock_file = None
+            shutil.rmtree(self.path)
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            logger.warning(f"Failed to remove IPC runtime dir {self.path}: {exc}")
 
 
-def _resolve_ipc_namespace(
-    config: PipelineConfig, *, ipc_namespace: str | None = None
-) -> str | None:
-    """Resolve the IPC namespace for a pipeline config.
-
-    When the user does not specify a namespace, generate a unique one per server
-    run so independent servers cannot accidentally share stage sockets.
-    """
+def _prepare_ipc_runtime_dir(config: PipelineConfig) -> IpcRuntimeDir | None:
+    """Create a per-run IPC directory for a single pipeline instance."""
     if config.endpoints.scheme != "ipc":
         return None
 
-    if ipc_namespace is not None:
-        return ipc_namespace
+    base_root = Path(config.endpoints.base_path)
+    base_root.mkdir(parents=True, exist_ok=True)
 
     configured_namespace = config.endpoints.namespace
     if configured_namespace:
-        return configured_namespace
+        path = base_root / configured_namespace
+        try:
+            path.mkdir(parents=True, exist_ok=False)
+        except FileExistsError as exc:
+            raise RuntimeError(
+                f"IPC namespace '{configured_namespace}' already exists at {path}. "
+                "Choose a different endpoint namespace or remove the existing directory."
+            ) from exc
+        return IpcRuntimeDir(path)
 
     namespace_prefix = "".join(
         ch.lower() if ch.isalnum() else "-" for ch in config.name
@@ -64,54 +66,29 @@ def _resolve_ipc_namespace(
     if not namespace_prefix:
         namespace_prefix = "pipeline"
     namespace_prefix = "-".join(part for part in namespace_prefix.split("-") if part)
-    return f"{namespace_prefix}-{os.getpid()}-{uuid4().hex[:8]}"
-
-
-def _acquire_ipc_namespace_lock(
-    config: PipelineConfig,
-    *,
-    ipc_namespace: str | None = None,
-) -> IpcNamespaceLock | None:
-    """Reserve the configured IPC namespace for the lifetime of the server."""
-    if config.endpoints.scheme != "ipc":
-        return None
-
-    explicit_namespace = config.endpoints.namespace is not None
-    ipc_namespace = _resolve_ipc_namespace(config, ipc_namespace=ipc_namespace)
-    assert ipc_namespace is not None
-
-    base_dir = Path(config.endpoints.base_path) / ipc_namespace
-    base_dir.mkdir(parents=True, exist_ok=True)
-
-    if explicit_namespace and any(base_dir.glob("*.sock")):
-        raise RuntimeError(
-            f"IPC namespace '{ipc_namespace}' is already populated at {base_dir}. "
-            "Choose a different endpoint namespace or remove the existing sockets."
-        )
-
-    lock_path = base_dir / ".namespace.lock"
-    lock_file = open(lock_path, "a+")
-    try:
-        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except BlockingIOError as exc:
-        lock_file.close()
-        raise RuntimeError(
-            f"IPC namespace '{ipc_namespace}' is already in use at {base_dir}. "
-            "Choose a different endpoint namespace."
-        ) from exc
-
-    return IpcNamespaceLock(
-        ipc_namespace=ipc_namespace,
-        lock_file=lock_file,
-    )
+    path = Path(tempfile.mkdtemp(prefix=f"{namespace_prefix}-", dir=base_root))
+    return IpcRuntimeDir(path)
 
 
 def compile_pipeline(
-    config: PipelineConfig, *, ipc_namespace: str | None = None
+    config: PipelineConfig,
+    *,
+    ipc_base_dir: Path | None = None,
 ) -> tuple[Coordinator, list[Stage]]:
     """
     Build the coordinator and stage objects from the pipeline configuration.
     """
+    if (
+        config.endpoints.scheme == "ipc"
+        and ipc_base_dir is None
+        and config.endpoints.namespace is None
+    ):
+        raise ValueError(
+            "compile_pipeline() requires an explicit IPC runtime dir for default IPC "
+            "allocation. Use build_pipeline_runner() or MultiProcessPipelineRunner "
+            "for managed runtime startup."
+        )
+
     # 1. apply stage fusion if enabled
     stages_cfg, name_map, entry_stage = config.apply_fusion()
 
@@ -119,7 +96,7 @@ def compile_pipeline(
     endpoints = _allocate_endpoints(
         config,
         stages=stages_cfg,
-        ipc_namespace=ipc_namespace,
+        ipc_base_dir=ipc_base_dir,
     )
 
     # 4. create coordinator
@@ -272,7 +249,7 @@ def _allocate_endpoints(
     config: PipelineConfig,
     *,
     stages: list[StageConfig],
-    ipc_namespace: str | None = None,
+    ipc_base_dir: Path | None = None,
 ) -> dict[str, str]:
     endpoints: dict[str, str] = {}
 
@@ -282,13 +259,34 @@ def _allocate_endpoints(
         endpoints["abort"] = config.abort_endpoint
 
     if config.endpoints.scheme == "ipc":
-        resolved_ipc_namespace = _resolve_ipc_namespace(
-            config,
-            ipc_namespace=ipc_namespace,
-        )
-        assert resolved_ipc_namespace is not None
-        base_dir = Path(config.endpoints.base_path) / resolved_ipc_namespace
-        base_dir.mkdir(parents=True, exist_ok=True)
+        if ipc_base_dir is not None:
+            base_dir = ipc_base_dir
+        elif config.endpoints.namespace:
+            base_dir = Path(config.endpoints.base_path) / config.endpoints.namespace
+            try:
+                base_dir.mkdir(parents=True, exist_ok=False)
+            except FileExistsError as exc:
+                raise RuntimeError(
+                    f"IPC namespace '{config.endpoints.namespace}' already exists at {base_dir}. "
+                    "Choose a different endpoint namespace or remove the existing directory."
+                ) from exc
+        else:
+            namespace_prefix = "".join(
+                ch.lower() if ch.isalnum() else "-" for ch in config.name
+            ).strip("-")
+            if not namespace_prefix:
+                namespace_prefix = "pipeline"
+            namespace_prefix = "-".join(
+                part for part in namespace_prefix.split("-") if part
+            )
+            base_dir = Path(
+                tempfile.mkdtemp(
+                    prefix=f"{namespace_prefix}-",
+                    dir=config.endpoints.base_path,
+                )
+            )
+        if ipc_base_dir is not None or not config.endpoints.namespace:
+            base_dir.mkdir(parents=True, exist_ok=True)
 
         endpoints.setdefault("completion", f"ipc://{base_dir}/completion.sock")
         endpoints.setdefault("abort", f"ipc://{base_dir}/abort.sock")

@@ -11,14 +11,15 @@ import asyncio
 import inspect
 import logging
 import multiprocessing
+from contextlib import suppress
 from typing import Any
 
 from sglang_omni.config.compiler import (
-    IpcNamespaceLock,
-    _acquire_ipc_namespace_lock,
+    IpcRuntimeDir,
     _allocate_endpoints,
     _build_relay_config,
     _create_input_handler,
+    _prepare_ipc_runtime_dir,
     _wrap_get_next,
 )
 from sglang_omni.config.schema import PipelineConfig, StageConfig
@@ -296,7 +297,7 @@ class MultiProcessPipelineRunner:
     def __init__(self, config: PipelineConfig):
         self._config = config
         self._coordinator: Coordinator | None = None
-        self._ipc_namespace_lock: IpcNamespaceLock | None = None
+        self._ipc_runtime_dir: IpcRuntimeDir | None = None
         self._processes: list[multiprocessing.Process] = []
         self._completion_task: asyncio.Task | None = None
         self._monitor_task: asyncio.Task | None = None
@@ -318,17 +319,16 @@ class MultiProcessPipelineRunner:
             raise RuntimeError("Already started")
 
         try:
-            self._ipc_namespace_lock = _acquire_ipc_namespace_lock(self._config)
-            ipc_namespace = None
-            if self._ipc_namespace_lock is not None:
-                ipc_namespace = self._ipc_namespace_lock.ipc_namespace
+            self._ipc_runtime_dir = _prepare_ipc_runtime_dir(self._config)
 
             # 1. Apply fusion, allocate endpoints
             stages_cfg, name_map, entry_stage = self._config.apply_fusion()
             endpoints = _allocate_endpoints(
                 self._config,
                 stages=stages_cfg,
-                ipc_namespace=ipc_namespace,
+                ipc_base_dir=(
+                    self._ipc_runtime_dir.path if self._ipc_runtime_dir else None
+                ),
             )
 
             stage_endpoints = {s.name: endpoints[f"stage_{s.name}"] for s in stages_cfg}
@@ -438,9 +438,7 @@ class MultiProcessPipelineRunner:
                     pass
                 self._coordinator = None
 
-            if self._ipc_namespace_lock is not None:
-                self._ipc_namespace_lock.close()
-                self._ipc_namespace_lock = None
+            self._cleanup_runtime_dir()
 
             raise
 
@@ -493,15 +491,18 @@ class MultiProcessPipelineRunner:
         # 3. Cancel completion loop and stop coordinator
         if self._completion_task is not None:
             self._completion_task.cancel()
-            try:
+            with suppress(asyncio.CancelledError):
                 await self._completion_task
-            except asyncio.CancelledError:
-                pass
+            self._completion_task = None
 
         try:
             await self._coordinator.stop()
             self._processes.clear()
         finally:
-            if self._ipc_namespace_lock is not None:
-                self._ipc_namespace_lock.close()
-                self._ipc_namespace_lock = None
+            self._cleanup_runtime_dir()
+
+    def _cleanup_runtime_dir(self) -> None:
+        if self._ipc_runtime_dir is None:
+            return
+        self._ipc_runtime_dir.close()
+        self._ipc_runtime_dir = None
