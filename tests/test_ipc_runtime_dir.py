@@ -6,7 +6,6 @@ from sglang_omni.config import build_pipeline_runner
 from sglang_omni.config.compiler import (
     _allocate_endpoints,
     _prepare_ipc_runtime_dir,
-    compile_pipeline,
 )
 from sglang_omni.config.schema import (
     EndpointsConfig,
@@ -14,6 +13,9 @@ from sglang_omni.config.schema import (
     PipelineConfig,
     StageConfig,
 )
+
+_NOOP_FACTORY = "sglang_omni.pipeline.mp_runner._noop_executor_factory"
+_NOOP_GET_NEXT = "sglang_omni.pipeline.mp_runner._noop_get_next"
 
 
 def _make_config(base_path: str) -> PipelineConfig:
@@ -23,8 +25,8 @@ def _make_config(base_path: str) -> PipelineConfig:
         stages=[
             StageConfig(
                 name="preprocessing",
-                executor=ExecutorConfig(factory="dummy.factory", args={}),
-                get_next="dummy.get_next",
+                executor=ExecutorConfig(factory=_NOOP_FACTORY, args={}),
+                get_next=_NOOP_GET_NEXT,
             )
         ],
         endpoints=EndpointsConfig(
@@ -65,13 +67,6 @@ class TestIpcRuntimeDir(unittest.TestCase):
             runtime_a.close()
             runtime_b.close()
 
-    def test_compile_pipeline_requires_managed_runtime_dir_for_default_ipc(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            config = _make_config(tmp_dir)
-
-            with self.assertRaisesRegex(ValueError, "requires an explicit IPC runtime dir"):
-                compile_pipeline(config)
-
 
 class TestPipelineRunnerIpcCleanup(unittest.IsolatedAsyncioTestCase):
     async def test_build_pipeline_runner_cleans_runtime_dir_on_stop(self) -> None:
@@ -83,10 +78,10 @@ class TestPipelineRunnerIpcCleanup(unittest.IsolatedAsyncioTestCase):
                     StageConfig(
                         name="preprocessing",
                         executor=ExecutorConfig(
-                            factory="sglang_omni.pipeline.mp_runner._noop_executor_factory",
+                            factory=_NOOP_FACTORY,
                             args={},
                         ),
-                        get_next="sglang_omni.pipeline.mp_runner._noop_get_next",
+                        get_next=_NOOP_GET_NEXT,
                     )
                 ],
                 endpoints=EndpointsConfig(

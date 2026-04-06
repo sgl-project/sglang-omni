@@ -58,7 +58,7 @@ def _prepare_ipc_runtime_dir(config: PipelineConfig) -> IpcRuntimeDir | None:
     return IpcRuntimeDir(path)
 
 
-def compile_pipeline(
+def _compile_pipeline(
     config: PipelineConfig,
     *,
     ipc_base_dir: Path | None = None,
@@ -66,15 +66,8 @@ def compile_pipeline(
     """
     Build the coordinator and stage objects from the pipeline configuration.
     """
-    if (
-        config.endpoints.scheme == "ipc"
-        and ipc_base_dir is None
-    ):
-        raise ValueError(
-            "compile_pipeline() requires an explicit IPC runtime dir for default IPC "
-            "allocation. Use build_pipeline_runner() or MultiProcessPipelineRunner "
-            "for managed runtime startup."
-        )
+    if config.endpoints.scheme == "ipc":
+        assert ipc_base_dir is not None
 
     # 1. apply stage fusion if enabled
     stages_cfg, name_map, entry_stage = config.apply_fusion()
