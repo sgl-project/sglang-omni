@@ -18,6 +18,7 @@ from sglang_omni.config.compiler import (
     _build_relay_config,
     _create_input_handler,
     _wrap_get_next,
+    acquire_ipc_namespace_lock,
 )
 from sglang_omni.config.schema import PipelineConfig, StageConfig
 from sglang_omni.pipeline import Coordinator, Stage, Worker
@@ -294,6 +295,8 @@ class MultiProcessPipelineRunner:
     def __init__(self, config: PipelineConfig):
         self._config = config
         self._coordinator: Coordinator | None = None
+        self._endpoint_namespace: str | None = None
+        self._ipc_namespace_lock = None
         self._processes: list[multiprocessing.Process] = []
         self._completion_task: asyncio.Task | None = None
         self._monitor_task: asyncio.Task | None = None
@@ -305,6 +308,10 @@ class MultiProcessPipelineRunner:
             raise RuntimeError("Runner not started")
         return self._coordinator
 
+    @property
+    def endpoint_namespace(self) -> str | None:
+        return self._endpoint_namespace
+
     async def start(self, timeout: float = 120.0) -> None:
         """Start coordinator and spawn stage subprocesses.
 
@@ -315,9 +322,21 @@ class MultiProcessPipelineRunner:
             raise RuntimeError("Already started")
 
         try:
+            self._ipc_namespace_lock = acquire_ipc_namespace_lock(self._config)
+            if self._ipc_namespace_lock is not None:
+                self._endpoint_namespace = self._ipc_namespace_lock.ipc_namespace
+                logger.info(
+                    f"Resolved IPC namespace '{self._endpoint_namespace}' under "
+                    f"{self._config.endpoints.base_path}"
+                )
+
             # 1. Apply fusion, allocate endpoints
             stages_cfg, name_map, entry_stage = self._config.apply_fusion()
-            endpoints = _allocate_endpoints(self._config, stages=stages_cfg)
+            endpoints = _allocate_endpoints(
+                self._config,
+                stages=stages_cfg,
+                ipc_namespace=self._endpoint_namespace,
+            )
 
             stage_endpoints = {s.name: endpoints[f"stage_{s.name}"] for s in stages_cfg}
 
@@ -426,6 +445,11 @@ class MultiProcessPipelineRunner:
                     pass
                 self._coordinator = None
 
+            if self._ipc_namespace_lock is not None:
+                self._ipc_namespace_lock.close()
+                self._ipc_namespace_lock = None
+            self._endpoint_namespace = None
+
             raise
 
     async def _monitor_children(self) -> None:
@@ -482,5 +506,11 @@ class MultiProcessPipelineRunner:
             except asyncio.CancelledError:
                 pass
 
-        await self._coordinator.stop()
-        self._processes.clear()
+        try:
+            await self._coordinator.stop()
+            self._processes.clear()
+        finally:
+            if self._ipc_namespace_lock is not None:
+                self._ipc_namespace_lock.close()
+                self._ipc_namespace_lock = None
+            self._endpoint_namespace = None

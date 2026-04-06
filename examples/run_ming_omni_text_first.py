@@ -22,7 +22,11 @@ import asyncio
 import logging
 import os
 
-from sglang_omni.config import PipelineRunner, compile_pipeline
+from sglang_omni.config import (
+    PipelineRunner,
+    acquire_ipc_namespace_lock,
+    compile_pipeline,
+)
 from sglang_omni.models.ming_omni.config import MingOmniPipelineConfig
 from sglang_omni.proto import OmniRequest
 
@@ -77,8 +81,23 @@ async def main_async(args: argparse.Namespace) -> None:
         relay_backend=args.relay_backend,
         server_args_overrides=overrides if overrides else None,
     )
-    coordinator, stages = compile_pipeline(config)
-    runner = PipelineRunner(coordinator, stages)
+    ipc_namespace_lock = acquire_ipc_namespace_lock(config)
+    try:
+        coordinator, stages = compile_pipeline(
+            config,
+            ipc_namespace=(
+                ipc_namespace_lock.ipc_namespace if ipc_namespace_lock else None
+            ),
+        )
+    except Exception:
+        if ipc_namespace_lock is not None:
+            ipc_namespace_lock.close()
+        raise
+    runner = PipelineRunner(
+        coordinator,
+        stages,
+        ipc_namespace_lock=ipc_namespace_lock,
+    )
 
     await runner.start()
     try:

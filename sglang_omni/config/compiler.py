@@ -3,9 +3,12 @@
 
 from __future__ import annotations
 
+import fcntl
 import inspect
+import os
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from sglang_omni.config.schema import InputHandlerConfig, PipelineConfig, StageConfig
 from sglang_omni.executors.interface import Executor
@@ -20,7 +23,92 @@ from sglang_omni.pipeline.stage.input import InputHandler
 from sglang_omni.utils import import_string
 
 
-def compile_pipeline(config: PipelineConfig) -> tuple[Coordinator, list[Stage]]:
+class IpcNamespaceLock:
+    """Process-scoped lock that prevents explicit IPC namespace reuse."""
+
+    def __init__(self, ipc_namespace: str, base_dir: Path, lock_file):
+        self.ipc_namespace = ipc_namespace
+        self.base_dir = base_dir
+        self._lock_file = lock_file
+
+    def close(self) -> None:
+        if self._lock_file is None:
+            return
+        try:
+            fcntl.flock(self._lock_file.fileno(), fcntl.LOCK_UN)
+        finally:
+            self._lock_file.close()
+            self._lock_file = None
+
+
+def resolve_ipc_namespace(
+    config: PipelineConfig, *, ipc_namespace: str | None = None
+) -> str | None:
+    """Resolve the IPC namespace for a pipeline config.
+
+    When the user does not specify a namespace, generate a unique one per server
+    run so independent servers cannot accidentally share stage sockets.
+    """
+    if config.endpoints.scheme != "ipc":
+        return None
+
+    if ipc_namespace is not None:
+        return ipc_namespace
+
+    configured_namespace = config.endpoints.namespace
+    if configured_namespace:
+        return configured_namespace
+
+    seed = "".join(ch.lower() if ch.isalnum() else "-" for ch in config.name).strip("-")
+    if not seed:
+        seed = "pipeline"
+    seed = "-".join(part for part in seed.split("-") if part)
+    return f"{seed}-{os.getpid()}-{uuid4().hex[:8]}"
+
+
+def acquire_ipc_namespace_lock(
+    config: PipelineConfig,
+    *,
+    ipc_namespace: str | None = None,
+) -> IpcNamespaceLock | None:
+    """Reserve the configured IPC namespace for the lifetime of the server."""
+    if config.endpoints.scheme != "ipc":
+        return None
+
+    explicit_namespace = config.endpoints.namespace is not None
+    ipc_namespace = resolve_ipc_namespace(config, ipc_namespace=ipc_namespace)
+    assert ipc_namespace is not None
+
+    base_dir = Path(config.endpoints.base_path) / ipc_namespace
+    base_dir.mkdir(parents=True, exist_ok=True)
+
+    if explicit_namespace and any(base_dir.glob("*.sock")):
+        raise RuntimeError(
+            f"IPC namespace '{ipc_namespace}' is already populated at {base_dir}. "
+            "Choose a different endpoint namespace or remove the existing sockets."
+        )
+
+    lock_path = base_dir / ".namespace.lock"
+    lock_file = open(lock_path, "a+")
+    try:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError as exc:
+        lock_file.close()
+        raise RuntimeError(
+            f"IPC namespace '{ipc_namespace}' is already in use at {base_dir}. "
+            "Choose a different endpoint namespace."
+        ) from exc
+
+    return IpcNamespaceLock(
+        ipc_namespace=ipc_namespace,
+        base_dir=base_dir,
+        lock_file=lock_file,
+    )
+
+
+def compile_pipeline(
+    config: PipelineConfig, *, ipc_namespace: str | None = None
+) -> tuple[Coordinator, list[Stage]]:
     """
     Build the coordinator and stage objects from the pipeline configuration.
     """
@@ -28,7 +116,11 @@ def compile_pipeline(config: PipelineConfig) -> tuple[Coordinator, list[Stage]]:
     stages_cfg, name_map, entry_stage = config.apply_fusion()
 
     # 3. allocate ZMQ endpoints
-    endpoints = _allocate_endpoints(config, stages=stages_cfg)
+    endpoints = _allocate_endpoints(
+        config,
+        stages=stages_cfg,
+        ipc_namespace=ipc_namespace,
+    )
 
     # 4. create coordinator
     coordinator = Coordinator(
@@ -177,7 +269,10 @@ def _parse_gpu_id(device: str) -> int | None:
 
 
 def _allocate_endpoints(
-    config: PipelineConfig, *, stages: list[StageConfig]
+    config: PipelineConfig,
+    *,
+    stages: list[StageConfig],
+    ipc_namespace: str | None = None,
 ) -> dict[str, str]:
     endpoints: dict[str, str] = {}
 
@@ -187,7 +282,12 @@ def _allocate_endpoints(
         endpoints["abort"] = config.abort_endpoint
 
     if config.endpoints.scheme == "ipc":
-        base_dir = Path(config.endpoints.base_path) / config.name
+        resolved_ipc_namespace = resolve_ipc_namespace(
+            config,
+            ipc_namespace=ipc_namespace,
+        )
+        assert resolved_ipc_namespace is not None
+        base_dir = Path(config.endpoints.base_path) / resolved_ipc_namespace
         base_dir.mkdir(parents=True, exist_ok=True)
 
         endpoints.setdefault("completion", f"ipc://{base_dir}/completion.sock")

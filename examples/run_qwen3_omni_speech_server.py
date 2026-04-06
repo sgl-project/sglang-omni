@@ -92,11 +92,11 @@ async def main_async(args: argparse.Namespace) -> None:
     )
 
     runner = MultiProcessPipelineRunner(config)
-    logger.info("Starting 9-stage speech pipeline (multiprocess)...")
-    await runner.start(timeout=600)
-    logger.info("Pipeline ready.")
-
     try:
+        logger.info("Starting 9-stage speech pipeline (multiprocess)...")
+        await runner.start(timeout=600)
+        logger.info("Pipeline ready.")
+
         client = Client(runner.coordinator)
         app = create_app(client, model_name=args.model_name)
 
