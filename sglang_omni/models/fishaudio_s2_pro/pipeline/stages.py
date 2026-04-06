@@ -69,6 +69,25 @@ def _load_audio_decoder(checkpoint: str, device: str):
     return audio_decoder, num_codebooks, codebook_size, tokenizer, checkpoint
 
 
+def _load_tokenizer_and_config(checkpoint: str):
+    """Load only tokenizer and config info (for TP mode with internal audio decoder)."""
+    from transformers import PreTrainedTokenizerFast
+
+    from sglang_omni.models.fishaudio_s2_pro.fish_speech.models.text2semantic.configuration import (
+        FishQwen3OmniConfig,
+    )
+
+    checkpoint = _resolve_checkpoint(checkpoint)
+    logger.info("Loading S2-Pro config from %s …", checkpoint)
+
+    config = FishQwen3OmniConfig.from_pretrained(checkpoint)
+    num_codebooks = config.audio_decoder_config.num_codebooks
+    codebook_size = config.audio_decoder_config.vocab_size
+
+    tokenizer = PreTrainedTokenizerFast.from_pretrained(checkpoint)
+    return tokenizer, num_codebooks, codebook_size
+
+
 def _load_codec(checkpoint_dir: str, device: str):
     from hydra.utils import instantiate
     from omegaconf import OmegaConf
@@ -276,11 +295,30 @@ def create_sglang_tts_engine_executor(
     device: str = "cuda",
     max_new_tokens: int = 2048,
     top_k: int = 30,
+    tp_size: int = 1,  # Tensor parallelism size
+    tp_rank: int = 0,  # Tensor parallel rank for this process
     stream_stride: int = 5,
     stream_followup_stride: int = 100,
     stream_vocoder_device: str | None = None,
 ) -> EngineExecutor:
-    """Factory for the S2-Pro TTS engine stage."""
+    """Factory for the S2-Pro TTS engine stage.
+
+    Args:
+        model_path: Path to the model checkpoint.
+        device: Target device (e.g., "cuda:0").
+        max_new_tokens: Maximum tokens to generate.
+        top_k: Top-k sampling parameter.
+        tp_size: Tensor parallelism size. When tp_size > 1, the model uses
+                 internal Audio Decoder for TP compatibility.
+        tp_rank: Tensor parallel rank for this process. Each TP rank must be
+                 run in a separate process with a unique rank.
+        stream_stride: Stride for streaming output.
+        stream_followup_stride: Followup stride for streaming.
+        stream_vocoder_device: Device for streaming vocoder.
+
+    Returns:
+        EngineExecutor instance.
+    """
     from sglang.srt.server_args import ServerArgs
 
     from sglang_omni.models.fishaudio_s2_pro.factory import (
@@ -288,19 +326,42 @@ def create_sglang_tts_engine_executor(
         create_s2pro_sglang_engine,
     )
 
+    # Auto-detect tp_rank from LOCAL_RANK env var (set by torchrun)
+    if tp_size > 1:
+        local_rank_env = os.environ.get("LOCAL_RANK")
+        if local_rank_env is not None:
+            tp_rank = int(local_rank_env)
+            device = f"cuda:{tp_rank}"
+            logger.info(
+                "Auto-detected LOCAL_RANK=%d: tp_rank=%d, device=%s",
+                tp_rank, tp_rank, device,
+            )
+
+    if tp_rank >= tp_size:
+        raise ValueError(f"tp_rank ({tp_rank}) must be less than tp_size ({tp_size})")
+
     if stream_vocoder_device is None:
         stream_vocoder_device = "cpu"
 
     # Note (Chenyang): Lazy-loaded: only materialised when
     # the first streaming request arrives.
-    audio_decoder, num_codebooks, codebook_size, tokenizer, checkpoint_dir = (
-        _load_audio_decoder(model_path, device)
-    )
-
-    # TODO (Chenyang): If multi-threaded access becomes
-    # possible in the future, add threading.Lock protection
-    # at that point.
     _stream_codec: Any = None
+
+    checkpoint_dir = _resolve_checkpoint(model_path)
+
+    # Load audio decoder externally only when tp_size == 1 (backward compatible)
+    # When tp_size > 1, use internal audio decoder from model checkpoint
+    if tp_size == 1:
+        audio_decoder, num_codebooks, codebook_size, tokenizer, checkpoint_dir = (
+            _load_audio_decoder(model_path, device)
+        )
+    else:
+        # For TP, we don't load audio_decoder externally;
+        # it will be created internally from config.audio_decoder_config
+        audio_decoder = None
+        tokenizer, num_codebooks, codebook_size = _load_tokenizer_and_config(
+            checkpoint_dir
+        )
 
     def _get_stream_codec() -> Any:
         nonlocal _stream_codec
@@ -313,11 +374,15 @@ def create_sglang_tts_engine_executor(
         return _stream_codec
 
     _patch_fish_config_for_sglang(checkpoint_dir)
+
+    # Adjust memory fraction for TP (more GPUs = more memory per GPU available)
+    mem_fraction = 0.85 if tp_size == 1 else 0.80
+
     server_args = ServerArgs(
         model_path=checkpoint_dir,
-        tp_size=1,
+        tp_size=tp_size,
         dtype="bfloat16",
-        mem_fraction_static=0.85,
+        mem_fraction_static=mem_fraction,
         chunked_prefill_size=8192,
         max_running_requests=64,
         disable_cuda_graph=False,
@@ -328,6 +393,7 @@ def create_sglang_tts_engine_executor(
         audio_decoder=audio_decoder,
         tokenizer=tokenizer,
         gpu_id=int(device.split(":")[-1]) if ":" in device else 0,
+        tp_rank=tp_rank,
         num_codebooks=num_codebooks,
         codebook_size=codebook_size,
         max_new_tokens=max_new_tokens,
