@@ -67,7 +67,6 @@ class EndpointsConfig(BaseModel):
 
     scheme: Literal["ipc", "tcp"] = "ipc"
     base_path: str = "/tmp/sglang_omni"
-    namespace: str | None = None
     base_port: int = 16000
 
 

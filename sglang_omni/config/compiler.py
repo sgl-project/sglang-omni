@@ -48,18 +48,6 @@ def _prepare_ipc_runtime_dir(config: PipelineConfig) -> IpcRuntimeDir | None:
     base_root = Path(config.endpoints.base_path)
     base_root.mkdir(parents=True, exist_ok=True)
 
-    configured_namespace = config.endpoints.namespace
-    if configured_namespace:
-        path = base_root / configured_namespace
-        try:
-            path.mkdir(parents=True, exist_ok=False)
-        except FileExistsError as exc:
-            raise RuntimeError(
-                f"IPC namespace '{configured_namespace}' already exists at {path}. "
-                "Choose a different endpoint namespace or remove the existing directory."
-            ) from exc
-        return IpcRuntimeDir(path)
-
     namespace_prefix = "".join(
         ch.lower() if ch.isalnum() else "-" for ch in config.name
     ).strip("-")
@@ -81,7 +69,6 @@ def compile_pipeline(
     if (
         config.endpoints.scheme == "ipc"
         and ipc_base_dir is None
-        and config.endpoints.namespace is None
     ):
         raise ValueError(
             "compile_pipeline() requires an explicit IPC runtime dir for default IPC "
@@ -259,34 +246,9 @@ def _allocate_endpoints(
         endpoints["abort"] = config.abort_endpoint
 
     if config.endpoints.scheme == "ipc":
-        if ipc_base_dir is not None:
-            base_dir = ipc_base_dir
-        elif config.endpoints.namespace:
-            base_dir = Path(config.endpoints.base_path) / config.endpoints.namespace
-            try:
-                base_dir.mkdir(parents=True, exist_ok=False)
-            except FileExistsError as exc:
-                raise RuntimeError(
-                    f"IPC namespace '{config.endpoints.namespace}' already exists at {base_dir}. "
-                    "Choose a different endpoint namespace or remove the existing directory."
-                ) from exc
-        else:
-            namespace_prefix = "".join(
-                ch.lower() if ch.isalnum() else "-" for ch in config.name
-            ).strip("-")
-            if not namespace_prefix:
-                namespace_prefix = "pipeline"
-            namespace_prefix = "-".join(
-                part for part in namespace_prefix.split("-") if part
-            )
-            base_dir = Path(
-                tempfile.mkdtemp(
-                    prefix=f"{namespace_prefix}-",
-                    dir=config.endpoints.base_path,
-                )
-            )
-        if ipc_base_dir is not None or not config.endpoints.namespace:
-            base_dir.mkdir(parents=True, exist_ok=True)
+        assert ipc_base_dir is not None
+        base_dir = ipc_base_dir
+        base_dir.mkdir(parents=True, exist_ok=True)
 
         endpoints.setdefault("completion", f"ipc://{base_dir}/completion.sock")
         endpoints.setdefault("abort", f"ipc://{base_dir}/abort.sock")

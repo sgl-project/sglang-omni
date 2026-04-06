@@ -16,7 +16,7 @@ from sglang_omni.config.schema import (
 )
 
 
-def _make_config(base_path: str, *, namespace: str | None = None) -> PipelineConfig:
+def _make_config(base_path: str) -> PipelineConfig:
     return PipelineConfig(
         model_path="dummy",
         entry_stage="preprocessing",
@@ -30,7 +30,6 @@ def _make_config(base_path: str, *, namespace: str | None = None) -> PipelineCon
         endpoints=EndpointsConfig(
             scheme="ipc",
             base_path=base_path,
-            namespace=namespace,
         ),
     )
 
@@ -65,24 +64,6 @@ class TestIpcRuntimeDir(unittest.TestCase):
 
             runtime_a.close()
             runtime_b.close()
-
-    def test_explicit_namespace_reuse_fails_until_cleanup(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            config = _make_config(tmp_dir, namespace="shared")
-
-            runtime_dir = _prepare_ipc_runtime_dir(config)
-            self.assertIsNotNone(runtime_dir)
-            self.assertEqual(runtime_dir.path, Path(tmp_dir) / "shared")
-
-            with self.assertRaisesRegex(RuntimeError, "already exists"):
-                _prepare_ipc_runtime_dir(config)
-
-            runtime_dir.close()
-
-            reused_runtime_dir = _prepare_ipc_runtime_dir(config)
-            self.assertIsNotNone(reused_runtime_dir)
-            self.assertEqual(reused_runtime_dir.path, Path(tmp_dir) / "shared")
-            reused_runtime_dir.close()
 
     def test_compile_pipeline_requires_managed_runtime_dir_for_default_ipc(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -127,43 +108,6 @@ class TestPipelineRunnerIpcCleanup(unittest.IsolatedAsyncioTestCase):
             await runner.stop()
 
             self.assertFalse(runtime_path.exists())
-
-    async def test_explicit_namespace_can_be_reused_after_runner_stop(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            config = PipelineConfig(
-                model_path="dummy",
-                entry_stage="preprocessing",
-                stages=[
-                    StageConfig(
-                        name="preprocessing",
-                        executor=ExecutorConfig(
-                            factory="sglang_omni.pipeline.mp_runner._noop_executor_factory",
-                            args={},
-                        ),
-                        get_next="sglang_omni.pipeline.mp_runner._noop_get_next",
-                    )
-                ],
-                endpoints=EndpointsConfig(
-                    scheme="ipc",
-                    base_path=tmp_dir,
-                    namespace="shared",
-                ),
-            )
-
-            _, _, runner_a = build_pipeline_runner(config)
-            runtime_path = Path(tmp_dir) / "shared"
-            self.assertEqual(runtime_path, Path(tmp_dir) / "shared")
-            self.assertTrue(runtime_path.exists())
-
-            await runner_a.start()
-            await runner_a.stop()
-
-            self.assertFalse(runtime_path.exists())
-
-            _, _, runner_b = build_pipeline_runner(config)
-            self.assertTrue(runtime_path.exists())
-            await runner_b.start()
-            await runner_b.stop()
 
 
 if __name__ == "__main__":
