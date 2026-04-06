@@ -63,9 +63,7 @@ def _resolve_ipc_namespace(
     ).strip("-")
     if not namespace_prefix:
         namespace_prefix = "pipeline"
-    namespace_prefix = "-".join(
-        part for part in namespace_prefix.split("-") if part
-    )
+    namespace_prefix = "-".join(part for part in namespace_prefix.split("-") if part)
     return f"{namespace_prefix}-{os.getpid()}-{uuid4().hex[:8]}"
 
 

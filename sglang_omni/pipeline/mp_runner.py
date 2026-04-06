@@ -14,9 +14,9 @@ import multiprocessing
 from typing import Any
 
 from sglang_omni.config.compiler import (
+    _acquire_ipc_namespace_lock,
     _allocate_endpoints,
     _build_relay_config,
-    _acquire_ipc_namespace_lock,
     _create_input_handler,
     _wrap_get_next,
 )
