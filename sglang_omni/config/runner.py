@@ -4,8 +4,14 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Iterable
+from typing import Iterable
 
+from sglang_omni.config.compiler import (
+    IpcNamespaceLock,
+    _acquire_ipc_namespace_lock,
+    compile_pipeline,
+)
+from sglang_omni.config.schema import PipelineConfig
 from sglang_omni.pipeline import Coordinator, Stage
 
 
@@ -17,7 +23,7 @@ class PipelineRunner:
         coordinator: Coordinator,
         stages: Iterable[Stage],
         *,
-        ipc_namespace_lock: Any | None = None,
+        ipc_namespace_lock: IpcNamespaceLock | None = None,
     ):
         self._coordinator = coordinator
         self._stages = list(stages)
@@ -81,3 +87,28 @@ class PipelineRunner:
     async def run(self) -> None:
         await self.start()
         await self.wait()
+
+
+def build_pipeline_runner(
+    config: PipelineConfig,
+) -> tuple[Coordinator, list[Stage], PipelineRunner]:
+    """Build a single-process pipeline runtime with IPC namespace reservation."""
+    ipc_namespace_lock = _acquire_ipc_namespace_lock(config)
+    try:
+        coordinator, stages = compile_pipeline(
+            config,
+            ipc_namespace=(
+                ipc_namespace_lock.ipc_namespace if ipc_namespace_lock else None
+            ),
+        )
+    except Exception:
+        if ipc_namespace_lock is not None:
+            ipc_namespace_lock.close()
+        raise
+
+    runner = PipelineRunner(
+        coordinator,
+        stages,
+        ipc_namespace_lock=ipc_namespace_lock,
+    )
+    return coordinator, stages, runner

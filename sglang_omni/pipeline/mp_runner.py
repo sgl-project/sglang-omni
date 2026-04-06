@@ -14,6 +14,7 @@ import multiprocessing
 from typing import Any
 
 from sglang_omni.config.compiler import (
+    IpcNamespaceLock,
     _acquire_ipc_namespace_lock,
     _allocate_endpoints,
     _build_relay_config,
@@ -295,7 +296,7 @@ class MultiProcessPipelineRunner:
     def __init__(self, config: PipelineConfig):
         self._config = config
         self._coordinator: Coordinator | None = None
-        self._ipc_namespace_lock = None
+        self._ipc_namespace_lock: IpcNamespaceLock | None = None
         self._processes: list[multiprocessing.Process] = []
         self._completion_task: asyncio.Task | None = None
         self._monitor_task: asyncio.Task | None = None
