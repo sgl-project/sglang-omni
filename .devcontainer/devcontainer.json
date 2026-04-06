@@ -5,7 +5,7 @@
     "context": "..",
     "target": "dev",
     "args": {
-      // Change to your host uid/gid to preserve workspace folder write permission in container  
+      // Change to your host uid/gid to preserve workspace folder write permission in container
       // "HOST_UID": "1000",
       // "HOST_GID": "1000"
     }
