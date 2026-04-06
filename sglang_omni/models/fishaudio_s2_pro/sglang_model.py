@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import logging
 import math
-from typing import Any, Iterable, Optional, Tuple
+from typing import Any, Callable, Iterable, Optional, Tuple
 
 import torch
 from sglang.srt.layers.logits_processor import LogitsProcessorOutput
@@ -26,6 +26,46 @@ from sglang_omni.vendor.sglang.models import apply_qk_norm
 from sglang_omni.vendor.sglang.utils import make_layers
 
 logger = logging.getLogger(__name__)
+
+
+def _decode_codebooks_impl(
+    logits: Tensor,
+    hidden_states: Tensor,
+    semantic_bias: Tensor,
+    audio_decoder: nn.Module,
+    codebook_size: int,
+    num_codebooks: int,
+    semantic_begin_id: int,
+) -> tuple[Tensor, Tensor]:
+    """Constrained semantic argmax + codebook generation.
+
+    Standalone function so torch.compile can trace it with fullgraph=True.
+    Returns (output_codes [bs, num_codebooks+1], semantic_ids [bs]).
+    """
+    # Constrained semantic decode
+    biased_logits = logits + semantic_bias
+    semantic_token = torch.argmax(biased_logits, dim=-1)  # [bs]
+
+    # Codebook generation
+    audio_decoder.reset_caches()
+    fast_input = audio_decoder.project_in(hidden_states)
+    fast_input = fast_input.unsqueeze(1)  # [bs, 1, fast_dim]
+    audio_decoder.forward_kvcached(fast_input, codebook_idx=0)
+
+    sem_id = (semantic_token - semantic_begin_id).clamp(min=0)
+    cb_hidden = audio_decoder.embeddings(sem_id).unsqueeze(1)
+
+    codes = [semantic_token, sem_id]
+    for cb_idx in range(1, num_codebooks):
+        cb_logits = audio_decoder.forward_kvcached(cb_hidden, codebook_idx=cb_idx)
+        cb_logits = cb_logits[:, 0, :codebook_size]
+        cb_token = torch.argmax(cb_logits, dim=-1)  # [bs]
+        cb_hidden = audio_decoder.embeddings(cb_token).unsqueeze(1)
+        codes.append(cb_token)
+
+    # [bs, num_codebooks+1]
+    output_codes = torch.stack(codes, dim=1)
+    return output_codes, semantic_token
 
 
 class S2ProAttention(nn.Module):
@@ -281,6 +321,8 @@ class S2ProSGLangTextModel(nn.Module):
             max_batch_size, dtype=torch.long, device=device
         )
 
+        self._decode_codebooks_fn = _decode_codebooks_impl
+
         self._vq_ready = True
 
     # ------------------------------------------------------------------
@@ -344,37 +386,29 @@ class S2ProSGLangTextModel(nn.Module):
             hidden_states=hidden_states,
         )
 
+    def get_compile_targets(self) -> dict[str, "Callable"]:
+        if not self._vq_ready:
+            return {}
+        return {"decode_codebooks": self._decode_codebooks_fn}
+
+    def set_compiled_decode_codebooks_fn(self, compiled_fn: "Callable") -> None:
+        self._decode_codebooks_fn = compiled_fn
+
     @torch.no_grad()
     def _decode_codebooks(self, logits: Tensor, hidden_states: Tensor) -> None:
-        """Constrained semantic sampling + batched codebook generation."""
         bs = logits.shape[0]
+        output_codes, semantic_ids = self._decode_codebooks_fn(
+            logits,
+            hidden_states,
+            self._semantic_bias,
+            self._audio_decoder,
+            self._codebook_size,
+            self._num_codebooks,
+            self._semantic_begin_id,
+        )
 
-        # Constrained decode: mask non-semantic tokens
-        biased_logits = logits + self._semantic_bias
-        semantic_token = torch.argmax(biased_logits, dim=-1)  # [bs]
-
-        # Batched codebook loop
-        self._audio_decoder.reset_caches()
-        fast_input = self._audio_decoder.project_in(hidden_states)
-        fast_input = fast_input.unsqueeze(1)  # [bs, 1, fast_dim]
-        self._audio_decoder.forward_kvcached(fast_input, codebook_idx=0)
-
-        sem_id = (semantic_token - self._semantic_begin_id).clamp(min=0)
-        cb_hidden = self._audio_decoder.embeddings(sem_id).unsqueeze(1)
-
-        self._output_codes[:bs, 0] = semantic_token
-        self._output_codes[:bs, 1] = sem_id
-
-        for cb_idx in range(1, self._num_codebooks):
-            cb_logits = self._audio_decoder.forward_kvcached(
-                cb_hidden, codebook_idx=cb_idx
-            )
-            cb_logits = cb_logits[:, 0, : self._codebook_size]
-            cb_token = torch.argmax(cb_logits, dim=-1)  # [bs]
-            cb_hidden = self._audio_decoder.embeddings(cb_token).unsqueeze(1)
-            self._output_codes[:bs, cb_idx + 1] = cb_token
-
-        self._output_semantic_ids[:bs] = semantic_token
+        self._output_codes[:bs] = output_codes
+        self._output_semantic_ids[:bs] = semantic_ids
 
     # ------------------------------------------------------------------
     # Helpers
