@@ -3,10 +3,7 @@ import unittest
 from pathlib import Path
 
 from sglang_omni.config import build_pipeline_runner
-from sglang_omni.config.compiler import (
-    _allocate_endpoints,
-    _prepare_ipc_runtime_dir,
-)
+from sglang_omni.config.compiler import _allocate_endpoints, _prepare_ipc_runtime_dir
 from sglang_omni.config.schema import (
     EndpointsConfig,
     ExecutorConfig,
