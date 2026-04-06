@@ -10,7 +10,7 @@ from typing import Iterable
 from sglang_omni.config.compiler import (
     IpcRuntimeDir,
     _compile_pipeline,
-    _prepare_ipc_runtime_dir,
+    _create_ipc_runtime_dir,
 )
 from sglang_omni.config.schema import PipelineConfig
 from sglang_omni.pipeline import Coordinator, Stage
@@ -32,6 +32,14 @@ class PipelineRunner:
         self._stage_tasks: list[asyncio.Task[None]] = []
         self._ipc_runtime_dir = ipc_runtime_dir
         self._started = False
+
+    @property
+    def coordinator(self) -> Coordinator:
+        return self._coordinator
+
+    @property
+    def stages(self) -> list[Stage]:
+        return self._stages
 
     async def start(self) -> None:
         if self._started:
@@ -101,9 +109,9 @@ class PipelineRunner:
 
 def build_pipeline_runner(
     config: PipelineConfig,
-) -> tuple[Coordinator, list[Stage], PipelineRunner]:
+) -> PipelineRunner:
     """Build a single-process pipeline runtime with isolated IPC paths."""
-    ipc_runtime_dir = _prepare_ipc_runtime_dir(config)
+    ipc_runtime_dir = _create_ipc_runtime_dir(config)
     try:
         coordinator, stages = _compile_pipeline(
             config,
@@ -119,4 +127,4 @@ def build_pipeline_runner(
         stages,
         ipc_runtime_dir=ipc_runtime_dir,
     )
-    return coordinator, stages, runner
+    return runner

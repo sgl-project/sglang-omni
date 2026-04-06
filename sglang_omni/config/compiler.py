@@ -40,7 +40,7 @@ class IpcRuntimeDir:
             logger.warning(f"Failed to remove IPC runtime dir {self.path}: {exc}")
 
 
-def _prepare_ipc_runtime_dir(config: PipelineConfig) -> IpcRuntimeDir | None:
+def _create_ipc_runtime_dir(config: PipelineConfig) -> IpcRuntimeDir | None:
     """Create a per-run IPC directory for a single pipeline instance."""
     if config.endpoints.scheme != "ipc":
         return None

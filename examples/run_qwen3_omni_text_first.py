@@ -48,7 +48,7 @@ async def main_async(args: argparse.Namespace) -> None:
         model_path=args.model_path,
         relay_backend=args.relay_backend,
     )
-    coordinator, _stages, runner = build_pipeline_runner(config)
+    runner = build_pipeline_runner(config)
 
     await runner.start()
     try:
@@ -66,7 +66,7 @@ async def main_async(args: argparse.Namespace) -> None:
             "audios": audios,
             "audio_target_sr": args.audio_target_sr,
         }
-        result = await coordinator.submit(
+        result = await runner.coordinator.submit(
             "qwen3-omni-text-first",
             OmniRequest(
                 inputs=request,

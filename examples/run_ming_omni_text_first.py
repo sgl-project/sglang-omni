@@ -77,7 +77,7 @@ async def main_async(args: argparse.Namespace) -> None:
         relay_backend=args.relay_backend,
         server_args_overrides=overrides if overrides else None,
     )
-    coordinator, _stages, runner = build_pipeline_runner(config)
+    runner = build_pipeline_runner(config)
 
     await runner.start()
     try:
@@ -96,7 +96,7 @@ async def main_async(args: argparse.Namespace) -> None:
             ],
             "audios": [args.audio_path] if args.audio_path else [],
         }
-        result = await coordinator.submit(
+        result = await runner.coordinator.submit(
             "ming-omni-text-first",
             OmniRequest(
                 inputs=request,
