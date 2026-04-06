@@ -211,6 +211,7 @@ def build_sglang_thinker_request(
         origin_input_ids=input_ids_list,
         sampling_params=sampling_params,
         vocab_size=vocab_size,
+        extra_key=state.media_cache_key,
     )
 
     # Compute M-RoPE positions and attach multimodal_inputs to Req
