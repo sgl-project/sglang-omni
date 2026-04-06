@@ -323,6 +323,12 @@ class Qwen3OmniPreprocessor:
         else:
             encoder_inputs["audio_encoder"] = {"_skip": True, "_result": {}}
 
+        # Combine all media cache keys so the thinker can use it as
+        # RadixCache extra_key, isolating KV caches for different media inputs.
+        media_cache_key = _combine_cache_keys(
+            combined_cache_key, contextualized_audio_cache_key
+        )
+
         state = PipelineState(
             raw_inputs=inputs,
             mm_inputs=mm_inputs,
@@ -333,6 +339,7 @@ class Qwen3OmniPreprocessor:
             },
             encoder_inputs=encoder_inputs,
             stream_state={"token_ids": [], "text": ""},
+            media_cache_key=media_cache_key,
         )
         payload.data = state.to_dict()
         return payload

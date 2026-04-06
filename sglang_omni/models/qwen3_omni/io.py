@@ -51,6 +51,7 @@ class PipelineState:
     thinker_out: ThinkerOutput | None = None
     engine_outputs: dict[str, Any] = field(default_factory=dict)
     stream_state: dict[str, Any] = field(default_factory=dict)
+    media_cache_key: str | None = None
 
     @classmethod
     def from_dict(cls, data: Any) -> "PipelineState":
@@ -73,6 +74,7 @@ class PipelineState:
             thinker_out=thinker_out if isinstance(thinker_out, dict) else None,
             engine_outputs=engine_outputs if isinstance(engine_outputs, dict) else {},
             stream_state=stream_state if isinstance(stream_state, dict) else {},
+            media_cache_key=data.get("media_cache_key"),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -95,6 +97,8 @@ class PipelineState:
             data["engine_outputs"] = self.engine_outputs
         if self.stream_state:
             data["stream_state"] = self.stream_state
+        if self.media_cache_key is not None:
+            data["media_cache_key"] = self.media_cache_key
         return data
 
 
