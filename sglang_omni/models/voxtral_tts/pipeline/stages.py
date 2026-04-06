@@ -320,8 +320,39 @@ def create_vocoder_executor(
             logger.info("[SGL-DEBUG] audio_codes row0[:5]=%s, semantic_codes[:10]=%s",
                         audio_codes[0, :5].tolist(), audio_codes[:10, 0].tolist())
 
-        results = audio_tokenizer.decode_helper_batch_async([audio_codes])
+        # Prepend warmup context frames so the causal decoder has initial
+        # context (mitigates boundary artifacts / noise at the start of the
+        # waveform).  After decoding, the samples corresponding to the
+        # warmup frames are trimmed away.
+        n_warmup = 2
+        warmup_samples = 0
+        if audio_codes.shape[0] > 0:
+            first_frame = audio_codes[0:1]
+            warmup = first_frame.repeat(n_warmup, 1)
+            codes_with_warmup = torch.cat([warmup, audio_codes], dim=0)
+            warmup_samples = n_warmup * audio_tokenizer.downsample_factor
+        else:
+            codes_with_warmup = audio_codes
+
+        results = audio_tokenizer.decode_helper_batch_async([codes_with_warmup])
         audio_np = results[0]
+
+        # Trim warmup samples from the beginning
+        if warmup_samples > 0 and len(audio_np) > warmup_samples:
+            audio_np = audio_np[warmup_samples:]
+
+        # Apply a short fade-in to smooth any residual onset artifacts
+        fade_in_ms = 10  # milliseconds
+        fade_samples = min(
+            int(fade_in_ms * audio_tokenizer.sampling_rate / 1000),
+            len(audio_np),
+        )
+        if fade_samples > 0:
+            fade_in = torch.linspace(
+                0, 1, fade_samples,
+                device=audio_np.device, dtype=audio_np.dtype,
+            )
+            audio_np[:fade_samples] = audio_np[:fade_samples] * fade_in
 
         logger.info("[SGL-DEBUG] decoded audio: shape=%s, duration=%.2fs (sr=%d)",
                     audio_np.shape, len(audio_np) / audio_tokenizer.sampling_rate,
