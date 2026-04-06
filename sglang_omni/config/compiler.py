@@ -292,6 +292,16 @@ def _allocate_endpoints(
 
         endpoints.setdefault("completion", f"ipc://{base_dir}/completion.sock")
         endpoints.setdefault("abort", f"ipc://{base_dir}/abort.sock")
+        _validate_ipc_endpoint_override(
+            endpoint_name="completion",
+            endpoint=endpoints["completion"],
+            base_dir=base_dir,
+        )
+        _validate_ipc_endpoint_override(
+            endpoint_name="abort",
+            endpoint=endpoints["abort"],
+            base_dir=base_dir,
+        )
 
         for stage_cfg in stages:
             endpoints[f"stage_{stage_cfg.name}"] = (
@@ -314,6 +324,25 @@ def _allocate_endpoints(
         return endpoints
 
     raise ValueError(f"Unknown endpoint scheme: {config.endpoints.scheme}")
+
+
+def _validate_ipc_endpoint_override(
+    *,
+    endpoint_name: str,
+    endpoint: str,
+    base_dir: Path,
+) -> None:
+    if not endpoint.startswith("ipc://"):
+        return
+
+    endpoint_path = Path(endpoint.removeprefix("ipc://"))
+    if endpoint_path.is_absolute() and endpoint_path.is_relative_to(base_dir):
+        return
+
+    raise ValueError(
+        f"{endpoint_name}_endpoint must live under the resolved IPC namespace "
+        f"directory {base_dir} when endpoints.scheme='ipc'; got {endpoint!r}"
+    )
 
 
 def _wrap_get_next(get_next: Any, name_map: dict[str, str]):
