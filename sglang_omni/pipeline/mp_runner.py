@@ -14,6 +14,8 @@ import multiprocessing
 from typing import Any
 
 from sglang_omni.config.compiler import (
+    IpcNamespaceLock,
+    _acquire_ipc_namespace_lock,
     _allocate_endpoints,
     _build_relay_config,
     _create_input_handler,
@@ -294,6 +296,7 @@ class MultiProcessPipelineRunner:
     def __init__(self, config: PipelineConfig):
         self._config = config
         self._coordinator: Coordinator | None = None
+        self._ipc_namespace_lock: IpcNamespaceLock | None = None
         self._processes: list[multiprocessing.Process] = []
         self._completion_task: asyncio.Task | None = None
         self._monitor_task: asyncio.Task | None = None
@@ -315,9 +318,18 @@ class MultiProcessPipelineRunner:
             raise RuntimeError("Already started")
 
         try:
+            self._ipc_namespace_lock = _acquire_ipc_namespace_lock(self._config)
+            ipc_namespace = None
+            if self._ipc_namespace_lock is not None:
+                ipc_namespace = self._ipc_namespace_lock.ipc_namespace
+
             # 1. Apply fusion, allocate endpoints
             stages_cfg, name_map, entry_stage = self._config.apply_fusion()
-            endpoints = _allocate_endpoints(self._config, stages=stages_cfg)
+            endpoints = _allocate_endpoints(
+                self._config,
+                stages=stages_cfg,
+                ipc_namespace=ipc_namespace,
+            )
 
             stage_endpoints = {s.name: endpoints[f"stage_{s.name}"] for s in stages_cfg}
 
@@ -426,6 +438,10 @@ class MultiProcessPipelineRunner:
                     pass
                 self._coordinator = None
 
+            if self._ipc_namespace_lock is not None:
+                self._ipc_namespace_lock.close()
+                self._ipc_namespace_lock = None
+
             raise
 
     async def _monitor_children(self) -> None:
@@ -482,5 +498,10 @@ class MultiProcessPipelineRunner:
             except asyncio.CancelledError:
                 pass
 
-        await self._coordinator.stop()
-        self._processes.clear()
+        try:
+            await self._coordinator.stop()
+            self._processes.clear()
+        finally:
+            if self._ipc_namespace_lock is not None:
+                self._ipc_namespace_lock.close()
+                self._ipc_namespace_lock = None
