@@ -7,8 +7,8 @@ and accuracy (WER) across supported modality combinations.
 
 ```
 benchmarks/
-├── tasks/          # Task definitions (voice_clone, tts_speed)
-├── metrics/        # Atomic evaluation tools (wer, performance)
+├── tasks/          # Task definitions (voice_clone, tts_speed, speech_mmlu)
+├── metrics/        # Atomic evaluation tools (wer, performance, accuracy)
 ├── dataset/        # Dataset loaders + download helpers
 ├── benchmarker/    # Framework: runner, data structures, utilities
 ├── eval/           # Entry-point scripts (one per task x model)
@@ -50,6 +50,21 @@ python benchmarks/eval/voice_clone_s2pro_wer.py \
     --meta seedtts_testset/en/meta.lst \
     --output-dir results/s2pro_en_c20 --lang en --max-samples 50 \
     --generation-concurrency 20
+
+# 3a. Speech MMLU: audio-in -> text-out accuracy
+python benchmarks/eval/speech_mmlu.py \
+    --model qwen3-omni --port 8000 \
+    --modalities text --max-samples 100
+
+# 3b. Speech MMLU: audio-in -> text+audio-out (accuracy + audio metrics)
+python benchmarks/eval/speech_mmlu.py \
+    --model qwen3-omni --port 8000 \
+    --modalities text+audio --max-samples 100 --save-audio
+
+# 3c. Speech MMLU: filter by subject
+python benchmarks/eval/speech_mmlu.py \
+    --model qwen3-omni --port 8000 \
+    --subjects anatomy,virology --max-samples 50
 ```
 
 ## Eval Scripts
@@ -60,6 +75,8 @@ python benchmarks/eval/voice_clone_s2pro_wer.py \
 | `eval/benchmark_omni_tts_speed.py` | TTS speed | Qwen3 Omni | `/v1/chat/completions` |
 | `eval/voice_clone_s2pro_wer.py` | Voice clone WER | S2 Pro | `/v1/audio/speech` |
 | `eval/voice_clone_qwen3_omni_wer.py` | Voice clone WER | Qwen3 Omni | `/v1/chat/completions` |
+| `eval/speech_mmlu.py` | Speech MMLU accuracy (audio-in → text-out) | Qwen3 Omni | `/v1/chat/completions` |
+| `eval/speech_mmlu.py --modalities text+audio` | Speech MMLU accuracy + audio-out | Qwen3 Omni | `/v1/chat/completions` |
 
 ## Adding a New Model
 
