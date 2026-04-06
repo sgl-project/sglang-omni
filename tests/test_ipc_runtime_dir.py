@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 
 from sglang_omni.config import build_pipeline_runner
-from sglang_omni.config.compiler import _allocate_endpoints, _create_ipc_runtime_dir
+from sglang_omni.config.compiler import _allocate_endpoints, create_ipc_runtime_dir
 from sglang_omni.config.schema import (
     EndpointsConfig,
     ExecutorConfig,
@@ -38,8 +38,8 @@ class TestIpcRuntimeDir(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             config = _make_config(tmp_dir)
 
-            runtime_a = _create_ipc_runtime_dir(config)
-            runtime_b = _create_ipc_runtime_dir(config)
+            runtime_a = create_ipc_runtime_dir(config)
+            runtime_b = create_ipc_runtime_dir(config)
 
             self.assertIsNotNone(runtime_a)
             self.assertIsNotNone(runtime_b)

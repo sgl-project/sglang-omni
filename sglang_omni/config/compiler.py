@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import inspect
 import logging
+import re
 import shutil
 import tempfile
 from pathlib import Path
@@ -40,7 +41,7 @@ class IpcRuntimeDir:
             logger.warning(f"Failed to remove IPC runtime dir {self.path}: {exc}")
 
 
-def _create_ipc_runtime_dir(config: PipelineConfig) -> IpcRuntimeDir | None:
+def create_ipc_runtime_dir(config: PipelineConfig) -> IpcRuntimeDir | None:
     """Create a per-run IPC directory for a single pipeline instance."""
     if config.endpoints.scheme != "ipc":
         return None
@@ -48,12 +49,9 @@ def _create_ipc_runtime_dir(config: PipelineConfig) -> IpcRuntimeDir | None:
     base_root = Path(config.endpoints.base_path)
     base_root.mkdir(parents=True, exist_ok=True)
 
-    namespace_prefix = "".join(
-        ch.lower() if ch.isalnum() else "-" for ch in config.name
-    ).strip("-")
+    namespace_prefix = re.sub(r"[^0-9a-z]+", "-", config.name.lower()).strip("-")
     if not namespace_prefix:
         namespace_prefix = "pipeline"
-    namespace_prefix = "-".join(part for part in namespace_prefix.split("-") if part)
     path = Path(tempfile.mkdtemp(prefix=f"{namespace_prefix}-", dir=base_root))
     return IpcRuntimeDir(path)
 
@@ -116,8 +114,6 @@ def _compile_pipeline(
         )
 
     return coordinator, stages
-
-
 def _compile_stage(
     stage_cfg: StageConfig,
     global_cfg: PipelineConfig,

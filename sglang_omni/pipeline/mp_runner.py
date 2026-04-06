@@ -19,8 +19,8 @@ from sglang_omni.config.compiler import (
     _allocate_endpoints,
     _build_relay_config,
     _create_input_handler,
-    _create_ipc_runtime_dir,
     _wrap_get_next,
+    create_ipc_runtime_dir,
 )
 from sglang_omni.config.schema import PipelineConfig, StageConfig
 from sglang_omni.pipeline import Coordinator, Stage, Worker
@@ -319,7 +319,7 @@ class MultiProcessPipelineRunner:
             raise RuntimeError("Already started")
 
         try:
-            self._ipc_runtime_dir = _create_ipc_runtime_dir(self._config)
+            self._ipc_runtime_dir = create_ipc_runtime_dir(self._config)
 
             # 1. Apply fusion, allocate endpoints
             stages_cfg, name_map, entry_stage = self._config.apply_fusion()

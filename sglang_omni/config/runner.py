@@ -10,7 +10,7 @@ from typing import Iterable
 from sglang_omni.config.compiler import (
     IpcRuntimeDir,
     _compile_pipeline,
-    _create_ipc_runtime_dir,
+    create_ipc_runtime_dir,
 )
 from sglang_omni.config.schema import PipelineConfig
 from sglang_omni.pipeline import Coordinator, Stage
@@ -111,7 +111,7 @@ def build_pipeline_runner(
     config: PipelineConfig,
 ) -> PipelineRunner:
     """Build a single-process pipeline runtime with isolated IPC paths."""
-    ipc_runtime_dir = _create_ipc_runtime_dir(config)
+    ipc_runtime_dir = create_ipc_runtime_dir(config)
     try:
         coordinator, stages = _compile_pipeline(
             config,
