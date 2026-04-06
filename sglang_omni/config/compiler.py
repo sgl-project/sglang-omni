@@ -125,10 +125,20 @@ def compile_pipeline(config: PipelineConfig) -> tuple[Coordinator, list[Stage]]:
     startup and cleanup.
     """
     ipc_runtime_dir = create_ipc_runtime_dir(config)
-    return _compile_pipeline(
-        config,
-        ipc_base_dir=ipc_runtime_dir.path if ipc_runtime_dir else None,
-    )
+    try:
+        coordinator, stages = _compile_pipeline(
+            config,
+            ipc_base_dir=ipc_runtime_dir.path if ipc_runtime_dir else None,
+        )
+    except Exception:
+        if ipc_runtime_dir is not None:
+            ipc_runtime_dir.close()
+        raise
+
+    if ipc_runtime_dir is not None:
+        coordinator.set_runtime_cleanup(ipc_runtime_dir.close)
+
+    return coordinator, stages
 
 
 def _compile_stage(

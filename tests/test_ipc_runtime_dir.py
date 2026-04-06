@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from sglang_omni.config import build_pipeline_runner
+from sglang_omni.config import PipelineRunner, build_pipeline_runner, compile_pipeline
 from sglang_omni.config.compiler import _allocate_endpoints, create_ipc_runtime_dir
 from sglang_omni.config.schema import (
     EndpointsConfig,
@@ -91,6 +91,23 @@ class TestPipelineRunnerIpcCleanup(unittest.IsolatedAsyncioTestCase):
 
             self.assertEqual(runner.coordinator.entry_stage, "preprocessing")
             self.assertEqual(len(runner.stages), 1)
+            runtime_dirs = [path for path in Path(tmp_dir).iterdir() if path.is_dir()]
+            self.assertEqual(len(runtime_dirs), 1)
+            runtime_path = runtime_dirs[0]
+            self.assertTrue(runtime_path.exists())
+
+            await runner.start()
+            await runner.stop()
+
+            self.assertFalse(runtime_path.exists())
+
+    async def test_compile_pipeline_path_cleans_runtime_dir_on_stop(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config = _make_config(tmp_dir)
+
+            coordinator, stages = compile_pipeline(config)
+            runner = PipelineRunner(coordinator, stages)
+
             runtime_dirs = [path for path in Path(tmp_dir).iterdir() if path.is_dir()]
             self.assertEqual(len(runtime_dirs), 1)
             runtime_path = runtime_dirs[0]

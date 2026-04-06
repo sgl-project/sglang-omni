@@ -3,6 +3,7 @@
 
 import asyncio
 import logging
+from typing import Callable
 from typing import Any, AsyncIterator
 
 from sglang_omni.pipeline.control_plane import CoordinatorControlPlane
@@ -72,6 +73,7 @@ class Coordinator:
 
         # State
         self._running = False
+        self._runtime_cleanup: Callable[[], None] | None = None
 
     def register_stage(self, name: str, endpoint: str) -> None:
         """Register a stage.
@@ -91,9 +93,18 @@ class Coordinator:
 
     async def stop(self) -> None:
         """Stop the coordinator."""
-        self._running = False
-        self.control_plane.close()
-        logger.info("Coordinator stopped")
+        try:
+            self._running = False
+            self.control_plane.close()
+            logger.info("Coordinator stopped")
+        finally:
+            if self._runtime_cleanup is not None:
+                self._runtime_cleanup()
+                self._runtime_cleanup = None
+
+    def set_runtime_cleanup(self, cleanup: Callable[[], None] | None) -> None:
+        """Register runtime cleanup to run when the coordinator stops."""
+        self._runtime_cleanup = cleanup
 
     async def shutdown_stages(self) -> None:
         """Send shutdown signal to all registered stages."""
