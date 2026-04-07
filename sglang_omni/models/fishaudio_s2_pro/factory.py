@@ -3,9 +3,12 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import torch
+
+logger = logging.getLogger(__name__)
 
 from sglang_omni.engines.omni.engine import OmniEngine
 from sglang_omni.engines.omni.scheduler import Scheduler
@@ -75,8 +78,9 @@ def create_s2pro_sglang_engine(
     ras_window: int = 16,
     ras_temperature: float = 1.5,
     ras_top_p: float = 0.95,
+    compile_level: str = "none",
 ) -> OmniEngine:
-    """Create a unified S2-Pro engine (slow+fast head in one CUDA graph)."""
+    """Create an S2-Pro engine."""
     from sglang_omni.engines.ar.sglang_backend.model_worker import (
         ModelWorker,
         ModelWorkerConfig,
@@ -91,9 +95,11 @@ def create_s2pro_sglang_engine(
     if server_args.attention_backend is None:
         server_args.attention_backend = "fa3"
 
-    # Enable hidden state capture for unified decode
+    use_partial_compile = compile_level == "partial"
+
+    # Enable hidden state capture for unified decode or partial compile
     want_cuda_graph = not server_args.disable_cuda_graph
-    if want_cuda_graph:
+    if want_cuda_graph or use_partial_compile:
         server_args.enable_return_hidden_states = True
 
     adapter = S2ProTokenizerAdapter(tokenizer)
@@ -128,7 +134,12 @@ def create_s2pro_sglang_engine(
         max_batch_size=max_bs,
     )
 
-    # Now capture CUDA graphs with _decode_codebooks in the graph
+    if use_partial_compile:
+        from sglang_omni.engines.omni.compile import apply_compile_targets
+
+        compiled = apply_compile_targets(text_model)
+        logger.info("Partial compile targets: %s", compiled)
+
     if want_cuda_graph:
         model_worker.model_runner.init_device_graphs()
 
