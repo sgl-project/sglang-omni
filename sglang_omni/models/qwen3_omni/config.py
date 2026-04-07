@@ -100,6 +100,17 @@ class Qwen3OmniPipelineConfig(PipelineConfig):
         ),
     ]
 
+    def __init__(self, **kwargs):
+        server_args_overrides = kwargs.pop("server_args_overrides", None)
+        super().__init__(**kwargs)
+        if server_args_overrides:
+            for stage in self.stages:
+                if stage.name == THINKER_STAGE:
+                    existing = stage.executor.args.setdefault(
+                        "server_args_overrides", {}
+                    )
+                    existing.update(server_args_overrides)
+
 
 class Qwen3OmniSpeechPipelineConfig(PipelineConfig):
     """9-stage pipeline config for Qwen3 Omni with text + speech output."""
@@ -219,6 +230,17 @@ class Qwen3OmniSpeechPipelineConfig(PipelineConfig):
             relay=RelayConfig(device="cuda"),
         ),
     ]
+
+    def __init__(self, **kwargs):
+        server_args_overrides = kwargs.pop("server_args_overrides", None)
+        super().__init__(**kwargs)
+        if server_args_overrides:
+            for stage in self.stages:
+                if stage.name == THINKER_STAGE:
+                    existing = stage.executor.args.setdefault(
+                        "server_args_overrides", {}
+                    )
+                    existing.update(server_args_overrides)
 
 
 EntryClass = Qwen3OmniSpeechPipelineConfig

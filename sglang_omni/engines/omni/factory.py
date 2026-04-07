@@ -189,6 +189,8 @@ def create_ar_engine(
 def create_sglang_ar_engine(
     server_args: Any,
     gpu_id: int = 0,
+    tp_rank: int = 0,
+    nccl_port: int | None = None,
     enable_overlap: bool | None = None,
     stream_adapter=None,
     capture_hidden: bool = False,
@@ -243,9 +245,11 @@ def create_sglang_ar_engine(
         config=ModelWorkerConfig(
             model_arch_override=model_arch_override,
             weight_prefix=weight_prefix,
+            nccl_port=nccl_port,
         ),
         server_args=server_args,
         gpu_id=gpu_id,
+        tp_rank=tp_rank,
     )
 
     # Configure multi-layer hidden state capture (e.g., [0, 24] for embed + layer-24)

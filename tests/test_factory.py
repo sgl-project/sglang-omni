@@ -1,11 +1,15 @@
 # SPDX-License-Identifier: Apache-2.0
 from __future__ import annotations
 
+import importlib
 import sys
 from types import ModuleType, SimpleNamespace
 
 import sglang_omni.engines.omni.factory as factory
-from sglang_omni.models.qwen3_omni.config import Qwen3OmniSpeechPipelineConfig
+from sglang_omni.models.qwen3_omni.config import (
+    Qwen3OmniPipelineConfig,
+    Qwen3OmniSpeechPipelineConfig,
+)
 
 
 class _DummyModelWorkerConfig:
@@ -14,10 +18,11 @@ class _DummyModelWorkerConfig:
 
 
 class _DummyModelWorker:
-    def __init__(self, config, server_args, gpu_id):
+    def __init__(self, config, server_args, gpu_id, tp_rank=0):
         self.config = config
         self.server_args = server_args
         self.gpu_id = gpu_id
+        self.tp_rank = tp_rank
         self.model_runner = SimpleNamespace(model=object())
         self.model_config = object()
 
@@ -129,6 +134,31 @@ def _install_sglang_stubs(monkeypatch):
     monkeypatch.setattr(factory, "OmniEngine", _DummyEngine)
 
 
+def _import_qwen_stages(monkeypatch):
+    server_args_mod = ModuleType("sglang.srt.server_args")
+
+    class _DummyServerArgs:
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+
+    server_args_mod.ServerArgs = _DummyServerArgs
+    server_args_mod.get_global_server_args = lambda: None
+
+    srt_mod = ModuleType("sglang.srt")
+    srt_mod.server_args = server_args_mod
+
+    sglang_mod = ModuleType("sglang")
+    sglang_mod.srt = srt_mod
+
+    monkeypatch.setitem(sys.modules, "sglang", sglang_mod)
+    monkeypatch.setitem(sys.modules, "sglang.srt", srt_mod)
+    monkeypatch.setitem(sys.modules, "sglang.srt.server_args", server_args_mod)
+
+    sys.modules.pop("sglang_omni.engines.ar.sglang_backend.server_args_builder", None)
+    sys.modules.pop("sglang_omni.models.qwen3_omni.pipeline.stages", None)
+    return importlib.import_module("sglang_omni.models.qwen3_omni.pipeline.stages")
+
+
 def test_create_sglang_ar_engine_disables_overlap_for_feedback(monkeypatch) -> None:
     _install_sglang_stubs(monkeypatch)
     server_args = SimpleNamespace(
@@ -168,8 +198,133 @@ def test_create_sglang_ar_engine_keeps_overlap_without_feedback(monkeypatch) -> 
     assert _DummyPrefillManager.instances[-1].kwargs["enable_overlap"] is True
 
 
+def test_create_sglang_ar_engine_forwards_tp_metadata(monkeypatch) -> None:
+    _install_sglang_stubs(monkeypatch)
+    server_args = SimpleNamespace(
+        disable_overlap_schedule=False,
+        page_size=16,
+        chunked_prefill_size=32,
+        max_prefill_tokens=64,
+    )
+
+    engine = factory.create_sglang_ar_engine(
+        server_args=server_args,
+        gpu_id=3,
+        tp_rank=1,
+        nccl_port=23456,
+    )
+
+    model_worker = engine.model_runner.model_worker
+    assert model_worker.gpu_id == 3
+    assert model_worker.tp_rank == 1
+    assert model_worker.config.kwargs["nccl_port"] == 23456
+
+
 def test_qwen3_speech_pipeline_enables_talker_feedback() -> None:
     cfg = Qwen3OmniSpeechPipelineConfig(model_path="dummy")
     talker_stage = next(stage for stage in cfg.stages if stage.name == "talker_ar")
 
     assert talker_stage.executor.args["feedback_enabled"] is True
+
+
+def test_qwen3_text_pipeline_injects_server_args_overrides() -> None:
+    cfg = Qwen3OmniPipelineConfig(
+        model_path="dummy",
+        server_args_overrides={"tp_size": 2, "mem_fraction_static": 0.75},
+    )
+    thinker_stage = next(stage for stage in cfg.stages if stage.name == "thinker")
+
+    assert thinker_stage.executor.args["server_args_overrides"] == {
+        "tp_size": 2,
+        "mem_fraction_static": 0.75,
+    }
+
+
+def test_qwen3_speech_pipeline_injects_server_args_overrides() -> None:
+    cfg = Qwen3OmniSpeechPipelineConfig(
+        model_path="dummy",
+        server_args_overrides={"tp_size": 2, "quantization": "fp8"},
+    )
+    thinker_stage = next(stage for stage in cfg.stages if stage.name == "thinker")
+
+    assert thinker_stage.executor.args["server_args_overrides"] == {
+        "tp_size": 2,
+        "quantization": "fp8",
+    }
+
+
+def test_qwen3_thinker_from_config_uses_tp_wrapper(monkeypatch) -> None:
+    qwen_stages = _import_qwen_stages(monkeypatch)
+    captured = {}
+
+    class _DummyTensorParallelExecutor:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr(
+        qwen_stages,
+        "build_sglang_server_args",
+        lambda *args, **kwargs: SimpleNamespace(tp_size=kwargs["tp_size"]),
+    )
+    monkeypatch.setattr(
+        qwen_stages,
+        "TensorParallelExecutor",
+        _DummyTensorParallelExecutor,
+    )
+
+    executor = qwen_stages.create_sglang_thinker_executor_from_config(
+        model_path="dummy",
+        gpu_id=4,
+        thinker_max_seq_len=4096,
+        server_args_overrides={"tp_size": 2, "quantization": "fp8"},
+        speech_enabled=True,
+    )
+
+    assert isinstance(executor, _DummyTensorParallelExecutor)
+    assert captured["factory_path"].endswith(
+        "create_sglang_thinker_executor_rank_local"
+    )
+    assert captured["factory_kwargs"] == {
+        "model_path": "dummy",
+        "thinker_max_seq_len": 4096,
+        "server_args_overrides": {"tp_size": 2, "quantization": "fp8"},
+        "speech_enabled": True,
+    }
+    assert captured["tp_size"] == 2
+    assert captured["base_gpu_id"] == 4
+
+
+def test_qwen3_thinker_executor_forwards_tp_rank(monkeypatch) -> None:
+    qwen_stages = _import_qwen_stages(monkeypatch)
+    captured = {}
+
+    class _DummyTokenizer:
+        eos_token_id = 7
+        vocab_size = 11
+
+    monkeypatch.setattr(
+        qwen_stages.AutoTokenizer,
+        "from_pretrained",
+        lambda *args, **kwargs: _DummyTokenizer(),
+    )
+    def _capture_engine_kwargs(**kwargs):
+        captured["engine_kwargs"] = kwargs
+        return object()
+
+    monkeypatch.setattr(qwen_stages, "create_sglang_ar_engine", _capture_engine_kwargs)
+    common_mod = ModuleType("sglang_omni.models.qwen3_omni.components.common")
+    common_mod.load_thinker_config = lambda model_path: object()
+    monkeypatch.setitem(sys.modules, common_mod.__name__, common_mod)
+
+    qwen_stages.create_sglang_thinker_executor(
+        server_args=SimpleNamespace(tp_size=2),
+        model_path="dummy",
+        gpu_id=5,
+        tp_rank=1,
+        nccl_port=34567,
+        speech_enabled=False,
+    )
+
+    assert captured["engine_kwargs"]["gpu_id"] == 5
+    assert captured["engine_kwargs"]["tp_rank"] == 1
+    assert captured["engine_kwargs"]["nccl_port"] == 34567

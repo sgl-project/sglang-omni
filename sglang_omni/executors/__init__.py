@@ -5,10 +5,12 @@ from sglang_omni.executors.direct_model_executor import DirectModelExecutor
 from sglang_omni.executors.engine_executor import EngineExecutor
 from sglang_omni.executors.interface import Executor
 from sglang_omni.executors.preprocessing_executor import PreprocessingExecutor
+from sglang_omni.executors.tp_executor import TensorParallelExecutor
 
 __all__ = [
     "Executor",
     "PreprocessingExecutor",
     "EngineExecutor",
     "DirectModelExecutor",
+    "TensorParallelExecutor",
 ]

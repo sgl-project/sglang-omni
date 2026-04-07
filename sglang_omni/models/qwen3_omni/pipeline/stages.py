@@ -17,6 +17,7 @@ from sglang_omni.engines.omni import (
     create_single_pass_engine,
 )
 from sglang_omni.executors import EngineExecutor, PreprocessingExecutor
+from sglang_omni.executors.tp_executor import TensorParallelExecutor
 from sglang_omni.models.qwen3_omni.components.audio_encoder import Qwen3OmniAudioEncoder
 from sglang_omni.models.qwen3_omni.components.image_encoder import Qwen3OmniImageEncoder
 from sglang_omni.models.qwen3_omni.components.preprocessor import Qwen3OmniPreprocessor
@@ -211,6 +212,8 @@ def create_sglang_thinker_executor(
     model_path: str,
     *,
     gpu_id: int = 0,
+    tp_rank: int = 0,
+    nccl_port: int | None = None,
     stream_fn=None,
     speech_enabled: bool = False,
 ) -> EngineExecutor:
@@ -318,6 +321,8 @@ def create_sglang_thinker_executor(
     engine = create_sglang_ar_engine(
         server_args=server_args,
         gpu_id=gpu_id,
+        tp_rank=tp_rank,
+        nccl_port=nccl_port,
         stream_adapter=stream_adapter,
         capture_hidden=speech_enabled,
         capture_hidden_layers=capture_layers,
@@ -337,6 +342,32 @@ def create_sglang_thinker_executor(
     return executor
 
 
+def create_sglang_thinker_executor_rank_local(
+    model_path: str,
+    *,
+    gpu_id: int = 0,
+    tp_rank: int = 0,
+    nccl_port: int | None = None,
+    thinker_max_seq_len: int = 8192,
+    server_args_overrides: dict[str, Any] | None = None,
+    speech_enabled: bool = False,
+    stream_fn=None,
+) -> EngineExecutor:
+    """Create one local TP rank for the Qwen thinker executor."""
+    server_args = build_sglang_server_args(
+        model_path, context_length=thinker_max_seq_len, **(server_args_overrides or {})
+    )
+    return create_sglang_thinker_executor(
+        server_args=server_args,
+        model_path=model_path,
+        gpu_id=gpu_id,
+        tp_rank=tp_rank,
+        nccl_port=nccl_port,
+        stream_fn=stream_fn,
+        speech_enabled=speech_enabled,
+    )
+
+
 def create_sglang_thinker_executor_from_config(
     model_path: str,
     *,
@@ -353,6 +384,22 @@ def create_sglang_thinker_executor_from_config(
     server_args = build_sglang_server_args(
         model_path, context_length=thinker_max_seq_len, **(server_args_overrides or {})
     )
+    tp_size = int(getattr(server_args, "tp_size", 1) or 1)
+    if tp_size > 1:
+        return TensorParallelExecutor(
+            factory_path=(
+                "sglang_omni.models.qwen3_omni.pipeline.stages."
+                "create_sglang_thinker_executor_rank_local"
+            ),
+            factory_kwargs={
+                "model_path": model_path,
+                "thinker_max_seq_len": thinker_max_seq_len,
+                "server_args_overrides": dict(server_args_overrides or {}),
+                "speech_enabled": speech_enabled,
+            },
+            tp_size=tp_size,
+            base_gpu_id=gpu_id,
+        )
     return create_sglang_thinker_executor(
         server_args=server_args,
         model_path=model_path,

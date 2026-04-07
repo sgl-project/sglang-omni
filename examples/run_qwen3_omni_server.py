@@ -45,6 +45,30 @@ def parse_args() -> argparse.Namespace:
         help="Hugging Face model id or local path",
     )
     parser.add_argument("--thinker-max-seq-len", type=int, default=8192)
+    parser.add_argument(
+        "--tp-size",
+        type=int,
+        default=1,
+        help="Tensor parallel size for thinker",
+    )
+    parser.add_argument(
+        "--quantization",
+        type=str,
+        default=None,
+        help="Quantization method (e.g., fp8) for thinker model",
+    )
+    parser.add_argument(
+        "--cpu-offload-gb",
+        type=int,
+        default=None,
+        help="GB of model weights to offload to CPU for thinker model",
+    )
+    parser.add_argument(
+        "--mem-fraction-static",
+        type=float,
+        default=0.70,
+        help="Fraction of GPU memory for KV cache",
+    )
 
     # Pipeline options
     parser.add_argument(
@@ -71,9 +95,20 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
 
+    overrides = {}
+    if args.tp_size and args.tp_size > 1:
+        overrides["tp_size"] = args.tp_size
+    if args.quantization:
+        overrides["quantization"] = args.quantization
+    if args.cpu_offload_gb is not None:
+        overrides["cpu_offload_gb"] = args.cpu_offload_gb
+    if args.mem_fraction_static is not None:
+        overrides["mem_fraction_static"] = args.mem_fraction_static
+
     config = Qwen3OmniPipelineConfig(
         model_path=args.model_path,
         relay_backend=args.relay_backend,
+        server_args_overrides=overrides if overrides else None,
     )
 
     launch_server(
