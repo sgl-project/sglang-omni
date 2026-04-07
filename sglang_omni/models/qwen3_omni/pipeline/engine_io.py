@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from typing import TYPE_CHECKING, Any
 
 import torch
@@ -178,7 +179,7 @@ def build_sglang_thinker_request(
     if not isinstance(input_ids, torch.Tensor):
         raise TypeError("prompt.input_ids must be a torch.Tensor")
 
-    input_ids_list = input_ids.to(dtype=torch.long).tolist()
+    input_ids = input_ids.to(dtype=torch.long)
 
     attention_mask = prompt.get("attention_mask")
     thinker_inputs = state.thinker_inputs or {}
@@ -189,6 +190,39 @@ def build_sglang_thinker_request(
             k: v for k, v in thinker_inputs.items() if k != "capture_model_output_keys"
         }
     capture_keys = thinker_inputs.get("capture_model_output_keys", ())
+
+    # Note (Yifei):
+    # Compute pad_values from per-modality cache keys and replace placeholder
+    # tokens in input_ids so that RadixCache naturally branches on different
+    # media content while sharing common text prefixes (e.g. system prompt).
+    media_cache_keys = thinker_inputs.get("media_cache_keys", {})
+    pad_values: dict[str, int] = {}
+    if media_cache_keys and thinker_config is not None:
+        token_id_map: dict[int, int] = {}
+        for modality, attr in [
+            ("image", "image_token_id"),
+            ("video", "video_token_id"),
+            ("audio", "audio_token_id"),
+        ]:
+            cache_key = media_cache_keys.get(modality)
+            if cache_key is None:
+                continue
+            h = hashlib.sha256(cache_key.encode()).digest()[:8]
+            pad_val = vocab_size + int.from_bytes(h, "big") % (1 << 30)
+            pad_values[modality] = pad_val
+            orig_token_id = getattr(thinker_config, attr, None)
+            if orig_token_id is not None:
+                token_id_map[orig_token_id] = pad_val
+
+        if token_id_map:
+            input_ids = input_ids.clone()
+            for orig_id, pad_val in token_id_map.items():
+                input_ids[input_ids == orig_id] = pad_val
+
+        if pad_values:
+            model_inputs["_pad_values"] = pad_values
+
+    input_ids_list = input_ids.tolist()
     if "attention_mask" in model_inputs:
         model_inputs.pop("attention_mask", None)
 

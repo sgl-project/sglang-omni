@@ -557,7 +557,15 @@ class SGLangModelRunner:
         video_token_id = self._video_token_id
         audio_token_id = self._audio_token_id
 
-        input_embeds = self._embed_tokens(forward_batch.input_ids)
+        # Note (Yifei):
+        # Multimodal placeholder tokens (image/video/audio) are replaced with
+        # content-hash pad_values that exceed vocab_size. Clamp before embedding
+        # lookup to avoid OOB. Use non-in-place clamp to preserve original input_ids
+        # for pad_value mask matching in chunked prefill.
+        embed_input_ids = forward_batch.input_ids.clamp(
+            0, self._embed_tokens.num_embeddings - 1
+        )
+        input_embeds = self._embed_tokens(embed_input_ids)
 
         extend_lens = forward_batch.extend_seq_lens_cpu
         offsets = []
@@ -581,6 +589,7 @@ class SGLangModelRunner:
             consumed = req._omni_consumed or {}
             chunk_offsets: dict[str, tuple[int, int]] = {}
 
+            pad_values = omni_inputs.get("_pad_values", {})
             for modality, token_id in [
                 ("image", image_token_id),
                 ("video", video_token_id),
@@ -591,7 +600,8 @@ class SGLangModelRunner:
                 embeds = omni_inputs.get(f"{modality}_embeds")
                 if embeds is None:
                     continue
-                mask = req_input_ids == token_id
+                match_id = pad_values.get(modality, token_id)
+                mask = req_input_ids == match_id
                 if not mask.any():
                     continue
                 n_tokens = int(mask.sum().item())
@@ -611,8 +621,10 @@ class SGLangModelRunner:
 
             if ds_embeds is not None or image_ds is not None or video_ds is not None:
                 has_deepstack = True
-                img_mask = req_input_ids == image_token_id
-                vid_mask = req_input_ids == video_token_id
+                img_match_id = pad_values.get("image", image_token_id)
+                vid_match_id = pad_values.get("video", video_token_id)
+                img_mask = req_input_ids == img_match_id
+                vid_mask = req_input_ids == vid_match_id
                 visual_mask = img_mask | vid_mask
 
                 if ds_embeds is None:
