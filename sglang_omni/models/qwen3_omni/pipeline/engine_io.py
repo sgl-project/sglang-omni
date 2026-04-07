@@ -195,6 +195,7 @@ def build_sglang_thinker_request(
     # Compute pad_values from per-modality cache keys and replace placeholder
     # tokens in input_ids so that RadixCache naturally branches on different
     # media content while sharing common text prefixes (e.g. system prompt).
+    original_input_ids = input_ids
     media_cache_keys = thinker_inputs.get("media_cache_keys", {})
     pad_values: dict[str, int] = {}
     if media_cache_keys and thinker_config is not None:
@@ -250,7 +251,7 @@ def build_sglang_thinker_request(
     # Compute M-RoPE positions and attach multimodal_inputs to Req
     if thinker_config is not None and model_inputs:
         mrope_result = _compute_mrope_positions(
-            input_ids.to(dtype=torch.long), model_inputs, thinker_config
+            original_input_ids.to(dtype=torch.long), model_inputs, thinker_config
         )
         if mrope_result is not None:
             mrope_positions, mrope_position_delta = mrope_result
