@@ -82,8 +82,8 @@ class TestIpcRuntimeDir(unittest.TestCase):
             )
 
             self.assertNotEqual(
-                stages_a[0].recv_endpoint,
-                stages_b[0].recv_endpoint,
+                stages_a[0].control_plane.recv_endpoint,
+                stages_b[0].control_plane.recv_endpoint,
             )
 
             runtime_a.close()
