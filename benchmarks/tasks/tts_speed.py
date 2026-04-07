@@ -234,12 +234,15 @@ def make_tts_send_fn(
 
 
 def print_speed_summary(
-    metrics: dict, model_name: str, concurrency: int | None = None
+    metrics: dict,
+    model_name: str,
+    concurrency: int | None = None,
+    title: str = "TTS Benchmark Result",
 ) -> None:
     lw = SUMMARY_LABEL_WIDTH
     w = SUMMARY_LINE_WIDTH
     print(f"\n{'=' * w}")
-    print(f"{'TTS Benchmark Result':^{w}}")
+    print(f"{title:^{w}}")
     print(f"{'=' * w}")
     print(f"  {'Model:':<{lw}} {model_name}")
     if concurrency is not None:
