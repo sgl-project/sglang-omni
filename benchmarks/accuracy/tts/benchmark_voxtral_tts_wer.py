@@ -11,7 +11,7 @@ Prerequisites
     # 1. Start the server
     export CUDA_VISIBLE_DEVICES=1
     sgl-omni serve \\
-        --model-path /disk3/models/Voxtral-4B-TTS-2603/Voxtral-4B-TTS-2603 \\
+        --model-path mistralai/Voxtral-4B-TTS-2603 \\
         --port 8000
     # 2. Download dataset
     huggingface-cli download zhaochenyang20/seed-tts-eval \\
@@ -44,6 +44,7 @@ import logging
 import os
 import re
 import struct
+import sys
 import time
 import unicodedata
 from dataclasses import dataclass
@@ -237,22 +238,25 @@ def load_asr_model(lang: str, device: str = "cpu", whisper_model: str | None = N
     if lang == "zh" and whisper_model is None:
         try:
             from funasr import AutoModel as FunAutoModel
-
-            logger.info("Loading FunASR model for Chinese...")
-            _asr_model = FunAutoModel(
-                model="iic/speech_paraformer-large-vad-punc_asr_nat-zh-cn-16k-common-vocab8404-pytorch",
-                device=device,
-                disable_update=True,
+        except ImportError:
+            logger.error(
+                "funasr is required for Chinese ASR (--lang zh). Install with one of:\n"
+                "  pip install funasr\n"
+                "  uv pip install funasr"
             )
-            _asr_lang = lang
-            logger.info("FunASR model loaded")
-            return _asr_model
-        except (ImportError, Exception) as e:
-            logger.warning(
-                "FunASR failed (%s), falling back to Whisper for Chinese.", e
-            )
+            sys.exit(1)
 
-    # Whisper for EN or fallback
+        logger.info("Loading FunASR model for Chinese...")
+        _asr_model = FunAutoModel(
+            model="iic/speech_paraformer-large-vad-punc_asr_nat-zh-cn-16k-common-vocab8404-pytorch",
+            device=device,
+            disable_update=True,
+        )
+        _asr_lang = lang
+        logger.info("FunASR model loaded")
+        return _asr_model
+
+    # Whisper for EN, or ZH when --whisper-model is set
     import whisper
 
     if whisper_model is None:
