@@ -142,11 +142,10 @@ class ConfigManager:
         return merged_config
 
     @staticmethod
-    def from_model_path(
-        model_path: str, variant: str | None = None
-    ) -> "ConfigManager":
+    def from_model_path(model_path: str, variant: str | None = None) -> "ConfigManager":
         """Load config from model path, optionally selecting a variant."""
         import importlib
+
         arch = None
 
         # 1) Hugging Face: local snapshot or hub id (hub ids have no local config.json)
@@ -175,7 +174,9 @@ class ConfigManager:
             if variants and variant in variants:
                 config_cls = variants[variant]
             else:
-                raise ValueError(f"Unknown variant '{variant}' for {config_cls.__name__}")
+                raise ValueError(
+                    f"Unknown variant '{variant}' for {config_cls.__name__}"
+                )
 
         config = config_cls(model_path=model_path)
         return ConfigManager(config)
