@@ -327,7 +327,6 @@ class MultiProcessPipelineRunner:
         try:
             stage_endpoints = {s.name: endpoints[f"stage_{s.name}"] for s in stages_cfg}
 
-            # 2. Create Coordinator in main process (binds ZMQ first)
             self._coordinator = Coordinator(
                 completion_endpoint=endpoints["completion"],
                 abort_endpoint=endpoints["abort"],
@@ -361,7 +360,6 @@ class MultiProcessPipelineRunner:
                 self._processes.append(p)
                 ready_events.append(ready)
 
-            # 4. Wait for all stages to be ready
             import time as _time
 
             loop = asyncio.get_running_loop()
@@ -384,14 +382,12 @@ class MultiProcessPipelineRunner:
                     await loop.run_in_executor(None, event.wait, min(remaining, 1.0))
                 logger.info("Stage %s ready", stage_name)
 
-            # 5. Check for early process failures
             for i, p in enumerate(self._processes):
                 if not p.is_alive() and p.exitcode != 0:
                     raise RuntimeError(
                         f"Stage {stages_cfg[i].name} exited with code {p.exitcode}"
                     )
 
-            # 6. Register stages with coordinator
             for stage_cfg in stages_cfg:
                 self._coordinator.register_stage(
                     stage_cfg.name, stage_endpoints[stage_cfg.name]
@@ -467,13 +463,11 @@ class MultiProcessPipelineRunner:
                 self._monitor_task.cancel()
             self._monitor_task = None
 
-        # 1. Send shutdown to all stages via coordinator
         try:
             await self._coordinator.shutdown_stages()
         except Exception as e:
             logger.warning("shutdown_stages error: %s", e)
 
-        # 2. Wait for processes to exit
         for p in self._processes:
             p.join(timeout=30)
             if p.is_alive():
@@ -484,7 +478,6 @@ class MultiProcessPipelineRunner:
                     p.kill()
                     p.join(timeout=2)
 
-        # 3. Cancel completion loop and stop coordinator
         if self._completion_task is not None:
             self._completion_task.cancel()
             with suppress(asyncio.CancelledError):

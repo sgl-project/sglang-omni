@@ -68,23 +68,25 @@ def prepare_pipeline_runtime(
     list[StageConfig], dict[str, str], str, dict[str, str], IpcRuntimeDir | None
 ]:
     """Prepare stage configs and endpoints for a pipeline runtime."""
-    owns_ipc_runtime_dir = ipc_runtime_dir is None
-    if ipc_runtime_dir is None:
-        ipc_runtime_dir = create_ipc_runtime_dir(config)
+    runtime_dir = ipc_runtime_dir
+    created_runtime_dir = None
+    if runtime_dir is None:
+        runtime_dir = create_ipc_runtime_dir(config)
+        created_runtime_dir = runtime_dir
 
     try:
         stages_cfg, name_map, entry_stage = config.apply_fusion()
         endpoints = _allocate_endpoints(
             config,
             stages=stages_cfg,
-            ipc_base_dir=ipc_runtime_dir.path if ipc_runtime_dir else None,
+            ipc_base_dir=runtime_dir.path if runtime_dir else None,
         )
     except Exception:
-        if owns_ipc_runtime_dir and ipc_runtime_dir is not None:
-            ipc_runtime_dir.close()
+        if created_runtime_dir is not None:
+            created_runtime_dir.close()
         raise
 
-    return stages_cfg, name_map, entry_stage, endpoints, ipc_runtime_dir
+    return stages_cfg, name_map, entry_stage, endpoints, runtime_dir
 
 
 def compile_pipeline_core(
@@ -92,19 +94,16 @@ def compile_pipeline_core(
     *,
     ipc_runtime_dir: IpcRuntimeDir | None = None,
 ) -> tuple[Coordinator, list[Stage], IpcRuntimeDir | None]:
-    """
-    Build the coordinator and stage objects from the pipeline configuration.
-    """
-    owns_ipc_runtime_dir = ipc_runtime_dir is None
-    stages_cfg, name_map, entry_stage, endpoints, ipc_runtime_dir = (
+    """Build the coordinator and stage objects from the pipeline configuration."""
+    stages_cfg, name_map, entry_stage, endpoints, runtime_dir = (
         prepare_pipeline_runtime(
             config,
             ipc_runtime_dir=ipc_runtime_dir,
         )
     )
+    created_runtime_dir = runtime_dir if ipc_runtime_dir is None else None
 
     try:
-        # 4. create coordinator
         coordinator = Coordinator(
             completion_endpoint=endpoints["completion"],
             abort_endpoint=endpoints["abort"],
@@ -112,7 +111,6 @@ def compile_pipeline_core(
             terminal_stages=config.terminal_stages or None,
         )
 
-        # 5. create each stage in order
         stage_endpoints = {
             stage_cfg.name: endpoints[f"stage_{stage_cfg.name}"]
             for stage_cfg in stages_cfg
@@ -141,11 +139,11 @@ def compile_pipeline_core(
                 cfg_map=cfg_map,
             )
     except Exception:
-        if owns_ipc_runtime_dir and ipc_runtime_dir is not None:
-            ipc_runtime_dir.close()
+        if created_runtime_dir is not None:
+            created_runtime_dir.close()
         raise
 
-    return coordinator, stages, ipc_runtime_dir
+    return coordinator, stages, runtime_dir
 
 
 def compile_pipeline(config: PipelineConfig) -> tuple[Coordinator, list[Stage]]:
