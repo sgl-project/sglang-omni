@@ -7,11 +7,7 @@ import asyncio
 from contextlib import suppress
 from typing import Iterable
 
-from sglang_omni.config.compiler import (
-    IpcRuntimeDir,
-    _compile_pipeline,
-    create_ipc_runtime_dir,
-)
+from sglang_omni.config.compiler import IpcRuntimeDir, compile_pipeline_core
 from sglang_omni.config.schema import PipelineConfig
 from sglang_omni.pipeline import Coordinator, Stage
 
@@ -59,7 +55,9 @@ class PipelineRunner:
             with suppress(Exception):
                 await self._coordinator.stop()
             self._stage_tasks.clear()
-            self._cleanup_runtime_dir()
+            if self._ipc_runtime_dir is not None:
+                self._ipc_runtime_dir.close()
+                self._ipc_runtime_dir = None
             raise
 
     async def wait(self) -> None:
@@ -87,7 +85,9 @@ class PipelineRunner:
             finally:
                 self._stage_tasks.clear()
                 self._started = False
-                self._cleanup_runtime_dir()
+                if self._ipc_runtime_dir is not None:
+                    self._ipc_runtime_dir.close()
+                    self._ipc_runtime_dir = None
 
     async def run(self) -> None:
         await self.start()
@@ -100,27 +100,12 @@ class PipelineRunner:
                 await self._completion_task
             self._completion_task = None
 
-    def _cleanup_runtime_dir(self) -> None:
-        if self._ipc_runtime_dir is None:
-            return
-        self._ipc_runtime_dir.close()
-        self._ipc_runtime_dir = None
-
 
 def build_pipeline_runner(
     config: PipelineConfig,
 ) -> PipelineRunner:
     """Build a single-process pipeline runtime with isolated IPC paths."""
-    ipc_runtime_dir = create_ipc_runtime_dir(config)
-    try:
-        coordinator, stages = _compile_pipeline(
-            config,
-            ipc_base_dir=ipc_runtime_dir.path if ipc_runtime_dir else None,
-        )
-    except Exception:
-        if ipc_runtime_dir is not None:
-            ipc_runtime_dir.close()
-        raise
+    coordinator, stages, ipc_runtime_dir = compile_pipeline_core(config)
 
     runner = PipelineRunner(
         coordinator,

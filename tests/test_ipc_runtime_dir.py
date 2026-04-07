@@ -1,9 +1,28 @@
+# SPDX-License-Identifier: Apache-2.0
+"""Lightweight IPC runtime directory lifecycle tests.
+
+Covers per-run IPC namespace isolation (unique directory allocation)
+and runtime directory cleanup on pipeline shutdown. Does not require
+GPU or full model startup.
+
+Reference: https://github.com/sgl-project/sglang-omni/issues/252
+
+Author:
+Ratish P https://github.com/Ratish1
+Chenyang Zhao https://github.com/zhaochenyang20
+"""
+
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import AsyncMock, patch
 
 from sglang_omni.config import PipelineRunner, build_pipeline_runner, compile_pipeline
-from sglang_omni.config.compiler import _allocate_endpoints, create_ipc_runtime_dir
+from sglang_omni.config.compiler import (
+    _allocate_endpoints,
+    compile_pipeline_core,
+    create_ipc_runtime_dir,
+)
 from sglang_omni.config.schema import (
     EndpointsConfig,
     ExecutorConfig,
@@ -64,28 +83,25 @@ class TestIpcRuntimeDir(unittest.TestCase):
             runtime_a.close()
             runtime_b.close()
 
+    def test_create_ipc_runtime_dir_returns_none_for_tcp(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config = _make_config(tmp_dir)
+            config.endpoints.scheme = "tcp"
+
+            self.assertIsNone(create_ipc_runtime_dir(config))
+
+    def test_compile_pipeline_rejects_unmanaged_ipc(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config = _make_config(tmp_dir)
+
+            with self.assertRaisesRegex(ValueError, "does not manage IPC runtime-dir"):
+                compile_pipeline(config)
+
 
 class TestPipelineRunnerIpcCleanup(unittest.IsolatedAsyncioTestCase):
     async def test_build_pipeline_runner_cleans_runtime_dir_on_stop(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
-            config = PipelineConfig(
-                model_path="dummy",
-                entry_stage="preprocessing",
-                stages=[
-                    StageConfig(
-                        name="preprocessing",
-                        executor=ExecutorConfig(
-                            factory=_NOOP_FACTORY,
-                            args={},
-                        ),
-                        get_next=_NOOP_GET_NEXT,
-                    )
-                ],
-                endpoints=EndpointsConfig(
-                    scheme="ipc",
-                    base_path=tmp_dir,
-                ),
-            )
+            config = _make_config(tmp_dir)
 
             runner = build_pipeline_runner(config)
 
@@ -100,13 +116,38 @@ class TestPipelineRunnerIpcCleanup(unittest.IsolatedAsyncioTestCase):
             await runner.stop()
 
             self.assertFalse(runtime_path.exists())
+            await runner.stop()
 
-    async def test_compile_pipeline_path_cleans_runtime_dir_on_stop(self) -> None:
+    async def test_build_pipeline_runner_cleans_runtime_dir_on_start_failure(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config = _make_config(tmp_dir)
+            runner = build_pipeline_runner(config)
+
+            runtime_dirs = [path for path in Path(tmp_dir).iterdir() if path.is_dir()]
+            self.assertEqual(len(runtime_dirs), 1)
+            runtime_path = runtime_dirs[0]
+
+            runner.coordinator.start = AsyncMock(side_effect=RuntimeError("boom"))
+
+            with self.assertRaisesRegex(RuntimeError, "boom"):
+                await runner.start()
+
+            self.assertFalse(runtime_path.exists())
+
+    async def test_caller_managed_compile_path_cleans_runtime_dir_on_stop(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             config = _make_config(tmp_dir)
 
-            coordinator, stages = compile_pipeline(config)
-            runner = PipelineRunner(coordinator, stages)
+            runtime_dir = create_ipc_runtime_dir(config)
+            self.assertIsNotNone(runtime_dir)
+
+            coordinator, stages, runtime_dir = compile_pipeline_core(
+                config,
+                ipc_runtime_dir=runtime_dir,
+            )
+            runner = PipelineRunner(coordinator, stages, ipc_runtime_dir=runtime_dir)
 
             runtime_dirs = [path for path in Path(tmp_dir).iterdir() if path.is_dir()]
             self.assertEqual(len(runtime_dirs), 1)
@@ -114,6 +155,42 @@ class TestPipelineRunnerIpcCleanup(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(runtime_path.exists())
 
             await runner.start()
+            await runner.stop()
+
+            self.assertFalse(runtime_path.exists())
+
+
+class TestMultiProcessPipelineRunnerIpcCleanup(unittest.IsolatedAsyncioTestCase):
+    async def test_mp_runner_cleans_runtime_dir_on_start_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config = _make_config(tmp_dir)
+            from sglang_omni.pipeline.mp_runner import MultiProcessPipelineRunner
+
+            runner = MultiProcessPipelineRunner(config)
+
+            with patch(
+                "sglang_omni.pipeline.mp_runner.Coordinator.start",
+                new=AsyncMock(side_effect=RuntimeError("boom")),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "boom"):
+                    await runner.start()
+
+            runtime_dirs = [path for path in Path(tmp_dir).iterdir() if path.is_dir()]
+            self.assertEqual(runtime_dirs, [])
+
+    async def test_mp_runner_cleans_runtime_dir_on_stop(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config = _make_config(tmp_dir)
+            from sglang_omni.pipeline.mp_runner import MultiProcessPipelineRunner
+
+            runner = MultiProcessPipelineRunner(config)
+            await runner.start(timeout=30.0)
+
+            runtime_dirs = [path for path in Path(tmp_dir).iterdir() if path.is_dir()]
+            self.assertEqual(len(runtime_dirs), 1)
+            runtime_path = runtime_dirs[0]
+            self.assertTrue(runtime_path.exists())
+
             await runner.stop()
 
             self.assertFalse(runtime_path.exists())

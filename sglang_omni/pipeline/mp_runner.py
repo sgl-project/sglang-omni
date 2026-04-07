@@ -16,11 +16,10 @@ from typing import Any
 
 from sglang_omni.config.compiler import (
     IpcRuntimeDir,
-    _allocate_endpoints,
     _build_relay_config,
     _create_input_handler,
     _wrap_get_next,
-    create_ipc_runtime_dir,
+    prepare_pipeline_runtime,
 )
 from sglang_omni.config.schema import PipelineConfig, StageConfig
 from sglang_omni.pipeline import Coordinator, Stage, Worker
@@ -318,19 +317,14 @@ class MultiProcessPipelineRunner:
         if self._started:
             raise RuntimeError("Already started")
 
-        try:
-            self._ipc_runtime_dir = create_ipc_runtime_dir(self._config)
-
-            # 1. Apply fusion, allocate endpoints
-            stages_cfg, name_map, entry_stage = self._config.apply_fusion()
-            endpoints = _allocate_endpoints(
+        stages_cfg, name_map, entry_stage, endpoints, self._ipc_runtime_dir = (
+            prepare_pipeline_runtime(
                 self._config,
-                stages=stages_cfg,
-                ipc_base_dir=(
-                    self._ipc_runtime_dir.path if self._ipc_runtime_dir else None
-                ),
+                ipc_runtime_dir=self._ipc_runtime_dir,
             )
+        )
 
+        try:
             stage_endpoints = {s.name: endpoints[f"stage_{s.name}"] for s in stages_cfg}
 
             # 2. Create Coordinator in main process (binds ZMQ first)
@@ -438,7 +432,9 @@ class MultiProcessPipelineRunner:
                     pass
                 self._coordinator = None
 
-            self._cleanup_runtime_dir()
+            if self._ipc_runtime_dir is not None:
+                self._ipc_runtime_dir.close()
+                self._ipc_runtime_dir = None
 
             raise
 
@@ -499,10 +495,6 @@ class MultiProcessPipelineRunner:
             await self._coordinator.stop()
             self._processes.clear()
         finally:
-            self._cleanup_runtime_dir()
-
-    def _cleanup_runtime_dir(self) -> None:
-        if self._ipc_runtime_dir is None:
-            return
-        self._ipc_runtime_dir.close()
-        self._ipc_runtime_dir = None
+            if self._ipc_runtime_dir is not None:
+                self._ipc_runtime_dir.close()
+                self._ipc_runtime_dir = None
