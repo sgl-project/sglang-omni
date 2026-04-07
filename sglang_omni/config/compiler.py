@@ -33,6 +33,9 @@ class IpcRuntimeDir:
         self.path = path
         self._closed = False
 
+    def __enter__(self) -> IpcRuntimeDir:
+        return self
+
     def close(self) -> None:
         if self._closed:
             return
@@ -43,6 +46,9 @@ class IpcRuntimeDir:
             return
         except OSError as exc:
             logger.warning(f"Failed to remove IPC runtime dir {self.path}: {exc}")
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        self.close()
 
 
 def create_ipc_runtime_dir(config: PipelineConfig) -> IpcRuntimeDir | None:
@@ -65,7 +71,7 @@ def prepare_pipeline_runtime(
     *,
     ipc_runtime_dir: IpcRuntimeDir | None = None,
 ) -> tuple[
-    list[StageConfig], dict[str, str], str, dict[str, str], IpcRuntimeDir | None
+    list[StageConfig], dict[str, str], str, dict[str, str], IpcRuntimeDir | None, bool
 ]:
     """Prepare stage configs and endpoints for a pipeline runtime."""
     runtime_dir = ipc_runtime_dir
@@ -73,6 +79,7 @@ def prepare_pipeline_runtime(
     if runtime_dir is None:
         runtime_dir = create_ipc_runtime_dir(config)
         created_runtime_dir = runtime_dir
+    owns_runtime_dir = created_runtime_dir is not None
 
     try:
         stages_cfg, name_map, entry_stage = config.apply_fusion()
@@ -86,7 +93,7 @@ def prepare_pipeline_runtime(
             created_runtime_dir.close()
         raise
 
-    return stages_cfg, name_map, entry_stage, endpoints, runtime_dir
+    return stages_cfg, name_map, entry_stage, endpoints, runtime_dir, owns_runtime_dir
 
 
 def compile_pipeline_core(
@@ -95,13 +102,12 @@ def compile_pipeline_core(
     ipc_runtime_dir: IpcRuntimeDir | None = None,
 ) -> tuple[Coordinator, list[Stage], IpcRuntimeDir | None]:
     """Build the coordinator and stage objects from the pipeline configuration."""
-    stages_cfg, name_map, entry_stage, endpoints, runtime_dir = (
+    stages_cfg, name_map, entry_stage, endpoints, runtime_dir, owns_runtime_dir = (
         prepare_pipeline_runtime(
             config,
             ipc_runtime_dir=ipc_runtime_dir,
         )
     )
-    created_runtime_dir = runtime_dir if ipc_runtime_dir is None else None
 
     try:
         coordinator = Coordinator(
@@ -124,7 +130,6 @@ def compile_pipeline_core(
             coordinator.register_stage(stage.name, stage.control_plane.recv_endpoint)
             stages.append(stage)
 
-        # 6. wire stream targets
         stage_map = {stage.name: stage for stage in stages}
         cfg_map = {s.name: s for s in stages_cfg}
         for stage_cfg in stages_cfg:
@@ -139,8 +144,8 @@ def compile_pipeline_core(
                 cfg_map=cfg_map,
             )
     except Exception:
-        if created_runtime_dir is not None:
-            created_runtime_dir.close()
+        if owns_runtime_dir and runtime_dir is not None:
+            runtime_dir.close()
         raise
 
     return coordinator, stages, runtime_dir

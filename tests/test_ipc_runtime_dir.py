@@ -18,11 +18,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 from sglang_omni.config import PipelineRunner, build_pipeline_runner, compile_pipeline
-from sglang_omni.config.compiler import (
-    _allocate_endpoints,
-    compile_pipeline_core,
-    create_ipc_runtime_dir,
-)
+from sglang_omni.config.compiler import compile_pipeline_core, create_ipc_runtime_dir
 from sglang_omni.config.schema import (
     EndpointsConfig,
     ExecutorConfig,
@@ -53,6 +49,18 @@ def _make_config(base_path: str) -> PipelineConfig:
 
 
 class TestIpcRuntimeDir(unittest.TestCase):
+    def test_ipc_runtime_dir_close_is_idempotent(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config = _make_config(tmp_dir)
+            runtime_dir = create_ipc_runtime_dir(config)
+            self.assertIsNotNone(runtime_dir)
+            runtime_path = runtime_dir.path
+
+            runtime_dir.close()
+            runtime_dir.close()
+
+            self.assertFalse(runtime_path.exists())
+
     def test_default_ipc_runtime_dirs_are_unique(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             config = _make_config(tmp_dir)
@@ -64,20 +72,18 @@ class TestIpcRuntimeDir(unittest.TestCase):
             self.assertIsNotNone(runtime_b)
             self.assertNotEqual(runtime_a.path, runtime_b.path)
 
-            endpoints_a = _allocate_endpoints(
+            _coordinator_a, stages_a, _ = compile_pipeline_core(
                 config,
-                stages=config.stages,
-                ipc_base_dir=runtime_a.path,
+                ipc_runtime_dir=runtime_a,
             )
-            endpoints_b = _allocate_endpoints(
+            _coordinator_b, stages_b, _ = compile_pipeline_core(
                 config,
-                stages=config.stages,
-                ipc_base_dir=runtime_b.path,
+                ipc_runtime_dir=runtime_b,
             )
 
             self.assertNotEqual(
-                endpoints_a["stage_preprocessing"],
-                endpoints_b["stage_preprocessing"],
+                stages_a[0].recv_endpoint,
+                stages_b[0].recv_endpoint,
             )
 
             runtime_a.close()

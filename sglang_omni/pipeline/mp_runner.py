@@ -11,6 +11,7 @@ import asyncio
 import inspect
 import logging
 import multiprocessing
+import time
 from contextlib import suppress
 from typing import Any
 
@@ -317,11 +318,16 @@ class MultiProcessPipelineRunner:
         if self._started:
             raise RuntimeError("Already started")
 
-        stages_cfg, name_map, entry_stage, endpoints, self._ipc_runtime_dir = (
-            prepare_pipeline_runtime(
-                self._config,
-                ipc_runtime_dir=self._ipc_runtime_dir,
-            )
+        (
+            stages_cfg,
+            name_map,
+            entry_stage,
+            endpoints,
+            self._ipc_runtime_dir,
+            _,
+        ) = prepare_pipeline_runtime(
+            self._config,
+            ipc_runtime_dir=self._ipc_runtime_dir,
         )
 
         try:
@@ -360,15 +366,13 @@ class MultiProcessPipelineRunner:
                 self._processes.append(p)
                 ready_events.append(ready)
 
-            import time as _time
-
             loop = asyncio.get_running_loop()
             for i, event in enumerate(ready_events):
                 stage_name = stages_cfg[i].name
                 p = self._processes[i]
-                deadline = _time.monotonic() + timeout
+                deadline = time.monotonic() + timeout
                 while not event.is_set():
-                    remaining = deadline - _time.monotonic()
+                    remaining = deadline - time.monotonic()
                     if remaining <= 0:
                         raise TimeoutError(
                             f"Stage {stage_name} did not become ready within {timeout}s"
