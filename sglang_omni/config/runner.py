@@ -75,19 +75,26 @@ class PipelineRunner:
         if not self._started:
             return
 
+        self._started = False
+        shutdown_error: Exception | None = None
+
         try:
             await self._coordinator.shutdown_stages()
             await asyncio.gather(*self._stage_tasks)
+        except Exception as exc:
+            shutdown_error = exc
+
+        try:
+            await self._cancel_completion_task()
+            await self._coordinator.stop()
         finally:
-            try:
-                await self._cancel_completion_task()
-                await self._coordinator.stop()
-            finally:
-                self._stage_tasks.clear()
-                self._started = False
-                if self._ipc_runtime_dir is not None:
-                    self._ipc_runtime_dir.close()
-                    self._ipc_runtime_dir = None
+            self._stage_tasks.clear()
+            if self._ipc_runtime_dir is not None:
+                self._ipc_runtime_dir.close()
+                self._ipc_runtime_dir = None
+
+        if shutdown_error is not None:
+            raise shutdown_error
 
     async def run(self) -> None:
         await self.start()
