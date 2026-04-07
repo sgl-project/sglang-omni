@@ -258,8 +258,8 @@ Preprocessing fans out to active encoders based on input modalities. The aggrega
 
 ```python
 from sglang_omni.config import (
-    ExecutorConfig, PipelineConfig, PipelineRunner,
-    StageConfig, compile_pipeline,
+    ExecutorConfig, PipelineConfig, StageConfig,
+    build_pipeline_runner,
 )
 
 config = PipelineConfig(
