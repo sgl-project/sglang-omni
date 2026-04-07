@@ -17,6 +17,23 @@ from sglang_omni.proto import StagePayload
 
 logger = logging.getLogger(__name__)
 
+_VOXTRAL_MISTRAL_COMMON_HINT = (
+    "Voxtral TTS requires the `mistral-common` package (speech / Tekken tokenizer). "
+    "Please install it in your active environment, for example:\n"
+    "  pip install 'mistral-common[audio]>=1.8.0'\n"
+    "  uv pip install 'mistral-common[audio]>=1.8.0'"
+)
+
+
+def _import_mistral_common_for_voxtral():
+    """Lazy import so the rest of sglang-omni does not depend on mistral-common."""
+    try:
+        from mistral_common.protocol.speech.request import SpeechRequest
+        from mistral_common.tokens.tokenizers.mistral import MistralTokenizer
+    except ImportError as exc:
+        raise RuntimeError(_VOXTRAL_MISTRAL_COMMON_HINT) from exc
+    return SpeechRequest, MistralTokenizer
+
 
 def _resolve_checkpoint(checkpoint: str) -> str:
     if os.path.isdir(checkpoint):
@@ -31,8 +48,7 @@ def create_preprocessing_executor(model_path: str) -> PreprocessingExecutor:
     """Factory for the preprocessing stage."""
     checkpoint_dir = _resolve_checkpoint(model_path)
 
-    from mistral_common.protocol.speech.request import SpeechRequest
-    from mistral_common.tokens.tokenizers.mistral import MistralTokenizer
+    SpeechRequest, MistralTokenizer = _import_mistral_common_for_voxtral()
 
     tekken_path = os.path.join(checkpoint_dir, "tekken.json")
     tokenizer = MistralTokenizer.from_file(tekken_path)
