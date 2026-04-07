@@ -9,24 +9,54 @@ from transformers import AutoConfig
 from sglang_omni.config.schema import PipelineConfig
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
 
-_MISTRAL_MODEL_TYPE_TO_ARCH = {
+_CONFIG_MODEL_TYPE_TO_ARCH = {
     "voxtral_tts": "VoxtralTTSForConditionalGeneration",
 }
 
 
-def _try_resolve_arch_from_mistral_config(model_path: str) -> str | None:
-    """Try to resolve architecture from Mistral-format params.json.
+def _architecture_from_hf_config(hf_config: Any) -> str | None:
+    """Prefer HF ``architectures``; fall back to ``model_type`` when needed."""
+    archs = getattr(hf_config, "architectures", None)
+    if archs:
+        for a in archs:
+            if a:
+                return a
+    mt = getattr(hf_config, "model_type", None)
+    if mt and mt in _CONFIG_MODEL_TYPE_TO_ARCH:
+        return _CONFIG_MODEL_TYPE_TO_ARCH[mt]
+    return None
 
-    Returns the architecture string if params.json exists and contains
-    a known model_type, otherwise returns None.
+
+def _load_mistral_params_json(model_path: str) -> dict | None:
+    """Load Mistral-format ``params.json`` from a local dir or Hugging Face hub id.
+
+    Official Voxtral TTS checkpoints ship without ``config.json``; architecture is
+    only indicated by ``model_type`` inside ``params.json`` (see Hub repo files).
     """
     params_path = os.path.join(model_path, "params.json")
-    if not os.path.isfile(params_path):
+    if os.path.isfile(params_path):
+        with open(params_path) as f:
+            return json.load(f)
+    # Local directory without params — do not treat as hub repo id
+    if os.path.isdir(model_path):
         return None
-    with open(params_path) as f:
-        params = json.load(f)
+    try:
+        from huggingface_hub import hf_hub_download
+
+        cached = hf_hub_download(repo_id=model_path, filename="params.json")
+        with open(cached) as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def _try_resolve_arch_from_mistral_config(model_path: str) -> str | None:
+    """Resolve architecture from Mistral-format params.json (local or Hub)."""
+    params = _load_mistral_params_json(model_path)
+    if params is None:
+        return None
     model_type = params.get("model_type", "")
-    return _MISTRAL_MODEL_TYPE_TO_ARCH.get(model_type)
+    return _CONFIG_MODEL_TYPE_TO_ARCH.get(model_type)
 
 
 class ConfigManager:
@@ -112,7 +142,6 @@ class ConfigManager:
         return merged_config
 
     @staticmethod
-    @staticmethod
     def from_model_path(
         model_path: str, variant: str | None = None
     ) -> "ConfigManager":
@@ -120,16 +149,23 @@ class ConfigManager:
         import importlib
         arch = None
 
-        # 1) Try HuggingFace config.json
-        hf_config_path = os.path.join(model_path, "config.json")
-        if os.path.isfile(hf_config_path):
+        # 1) Hugging Face: local snapshot or hub id (hub ids have no local config.json)
+        try:
             hf_config = AutoConfig.from_pretrained(model_path)
-            arch = hf_config.architectures[0]
+            arch = _architecture_from_hf_config(hf_config)
+        except Exception:
+            pass
 
-        # 2) Try Mistral-format params.json (e.g. Voxtral TTS)
+        # 2) Mistral-format params.json (e.g. Voxtral TTS) when HF config is absent
         if arch is None:
             arch = _try_resolve_arch_from_mistral_config(model_path)
 
+        if arch is None:
+            raise ValueError(
+                f"Could not resolve model architecture for {model_path!r}. "
+                "Use a Hugging Face model id or a local directory with config.json "
+                "(architectures) or Mistral params.json (model_type, e.g. voxtral_tts)."
+            )
 
         config_cls = PIPELINE_CONFIG_REGISTRY.get_config(arch)
 
