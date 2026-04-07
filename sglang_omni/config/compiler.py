@@ -68,6 +68,7 @@ def prepare_pipeline_runtime(
     list[StageConfig], dict[str, str], str, dict[str, str], IpcRuntimeDir | None
 ]:
     """Prepare stage configs and endpoints for a pipeline runtime."""
+    owns_ipc_runtime_dir = ipc_runtime_dir is None
     if ipc_runtime_dir is None:
         ipc_runtime_dir = create_ipc_runtime_dir(config)
 
@@ -79,7 +80,7 @@ def prepare_pipeline_runtime(
             ipc_base_dir=ipc_runtime_dir.path if ipc_runtime_dir else None,
         )
     except Exception:
-        if ipc_runtime_dir is not None:
+        if owns_ipc_runtime_dir and ipc_runtime_dir is not None:
             ipc_runtime_dir.close()
         raise
 
@@ -94,6 +95,7 @@ def compile_pipeline_core(
     """
     Build the coordinator and stage objects from the pipeline configuration.
     """
+    owns_ipc_runtime_dir = ipc_runtime_dir is None
     stages_cfg, name_map, entry_stage, endpoints, ipc_runtime_dir = (
         prepare_pipeline_runtime(
             config,
@@ -139,7 +141,7 @@ def compile_pipeline_core(
                 cfg_map=cfg_map,
             )
     except Exception:
-        if ipc_runtime_dir is not None:
+        if owns_ipc_runtime_dir and ipc_runtime_dir is not None:
             ipc_runtime_dir.close()
         raise
 

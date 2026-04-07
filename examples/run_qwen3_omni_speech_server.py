@@ -95,18 +95,17 @@ async def main_async(args: argparse.Namespace) -> None:
     logger.info("Starting 9-stage speech pipeline (multiprocess)...")
     await runner.start(timeout=600)
     logger.info("Pipeline ready.")
-
-    client = Client(runner.coordinator)
-    app = create_app(client, model_name=args.model_name)
-
-    server_config = uvicorn.Config(
-        app,
-        host=args.host,
-        port=args.port,
-        log_level="info",
-    )
-    server = uvicorn.Server(server_config)
     try:
+        client = Client(runner.coordinator)
+        app = create_app(client, model_name=args.model_name)
+
+        server_config = uvicorn.Config(
+            app,
+            host=args.host,
+            port=args.port,
+            log_level="info",
+        )
+        server = uvicorn.Server(server_config)
         await server.serve()
     finally:
         logger.info("Shutting down pipeline...")

@@ -97,6 +97,24 @@ class TestIpcRuntimeDir(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "does not manage IPC runtime-dir"):
                 compile_pipeline(config)
 
+    def test_compile_core_preserves_caller_owned_ipc_dir_on_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config = _make_config(tmp_dir)
+            runtime_dir = create_ipc_runtime_dir(config)
+            self.assertIsNotNone(runtime_dir)
+            runtime_path = runtime_dir.path
+
+            with patch(
+                "sglang_omni.config.compiler._compile_stage",
+                side_effect=RuntimeError("boom"),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "boom"):
+                    compile_pipeline_core(config, ipc_runtime_dir=runtime_dir)
+
+            self.assertTrue(runtime_path.exists())
+            runtime_dir.close()
+            self.assertFalse(runtime_path.exists())
+
 
 class TestPipelineRunnerIpcCleanup(unittest.IsolatedAsyncioTestCase):
     async def test_build_pipeline_runner_cleans_runtime_dir_on_stop(self) -> None:
