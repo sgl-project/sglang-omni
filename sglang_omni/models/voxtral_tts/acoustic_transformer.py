@@ -1,21 +1,50 @@
-"""FlowMatchingAudioTransformer for Voxtral TTS.
+# SPDX-License-Identifier: Apache-2.0
+"""Acoustic transformer components for Voxtral TTS.
+
+Contains AudioSpecialTokens, FlowMatchingAudioTransformer, and all supporting
+sub-modules (AcousticTransformerBlock, BidirectionalAttention, FeedForward,
+TimeEmbedding, etc.).
+
+This module is independent of vLLM.
 """
 
+import logging
 import math
-import types
 from dataclasses import dataclass, fields, is_dataclass
 from enum import Enum
-from typing import Any, Optional, Union, get_args, get_origin
+from typing import Union, get_args, get_origin
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-rms_norm = torch.nn.RMSNorm
+try:
+    from apex.normalization import FusedRMSNorm
+
+    rms_norm = FusedRMSNorm
+except ImportError:
+    from torch.nn import RMSNorm as RMSNorm
+
+    rms_norm = RMSNorm
+
+from sglang_omni.models.weight_loader import default_weight_loader
+
+logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Audio special tokens
+# ---------------------------------------------------------------------------
 
 
 class AudioSpecialTokens(str, Enum):
-    """Special tokens predicted by audio codebook heads."""
+    """Special tokens predicted by audio codebook heads.
+
+    These tokens are inserted by ``audio_tokens_with_pattern``.  They are not
+    part of the text vocabulary.  We offset the output audio tokens from the
+    quantizer by ``len(all_special_tokens)`` to avoid conflicts with text
+    tokens.
+    """
 
     empty_audio = "[EMPTY_AUDIO]"
     end_audio = "[END_AUDIO]"
@@ -29,9 +58,14 @@ class AudioSpecialTokens(str, Enum):
         return AudioSpecialTokens.all_special_tokens().index(token)
 
 
+# ---------------------------------------------------------------------------
+# Model argument dataclasses
+# ---------------------------------------------------------------------------
+
+
 @dataclass
 class AcousticTransformerArgs:
-    input_dim: int = 3072
+    input_dim: int
     dim: int = 768
     n_layers: int = 3
     head_dim: int = 128
@@ -45,10 +79,13 @@ class AcousticTransformerArgs:
 
 @dataclass
 class MultimodalAudioModelArgs:
-    semantic_codebook_size: int = 8192
-    acoustic_codebook_size: int = 21
-    n_acoustic_codebook: int = 36
-    acoustic_transformer_args: Optional[AcousticTransformerArgs] = None
+    # comma-separated list of codebook sizes.
+    # The first token in a codebook should always be reserved to indicate
+    # absence.  The codebook size should be inclusive of this.
+    semantic_codebook_size: int
+    acoustic_codebook_size: int
+    n_acoustic_codebook: int
+    acoustic_transformer_args: AcousticTransformerArgs
 
     @property
     def codebook_sizes(self) -> list[int]:
@@ -58,12 +95,14 @@ class MultimodalAudioModelArgs:
         ]
 
     def get_codebook_sizes(
-        self, pad_to_multiple: Optional[int] = 128, include_special_tokens: bool = True
+        self,
+        pad_to_multiple: int | None = 128,
+        include_special_tokens: bool = True,
     ) -> list[int]:
         def _round_up(n: int, multiple: int) -> int:
             return multiple * ((n + multiple - 1) // multiple)
 
-        result = []
+        result: list[int] = []
         for cb_size in self.codebook_sizes:
             if include_special_tokens:
                 cb_size += len(AudioSpecialTokens.all_special_tokens())
@@ -73,24 +112,9 @@ class MultimodalAudioModelArgs:
         return result
 
 
-def from_nested_dict(cls: type, d: dict) -> Any:
-    """Recursively instantiate dataclasses from nested dicts."""
-    if not is_dataclass(cls):
-        return d
-    kwargs = {}
-    for f in fields(cls):
-        value = d.get(f.name, getattr(cls, f.name, None))
-        field_type = f.type
-        origin = get_origin(field_type)
-        if origin is Union or origin is types.UnionType:
-            args = get_args(field_type)
-            non_none = [a for a in args if a is not type(None)]
-            if len(non_none) == 1:
-                field_type = non_none[0]
-        if is_dataclass(field_type) and isinstance(value, dict):
-            value = from_nested_dict(field_type, value)
-        kwargs[f.name] = value
-    return cls(**kwargs)
+# ---------------------------------------------------------------------------
+# Utility helpers
+# ---------------------------------------------------------------------------
 
 
 def _repeat_interleave(t: torch.Tensor, repeats: int) -> torch.Tensor:
@@ -106,6 +130,36 @@ def repeat_kv(
     return keys, values
 
 
+def from_nested_dict(cls, d):
+    """Recursively instantiate dataclasses from nested dicts."""
+    if not is_dataclass(cls):
+        return d
+
+    kwargs = {}
+    for f in fields(cls):
+        value = d.get(f.name, getattr(cls, f.name, None))
+        field_type = f.type
+
+        origin = get_origin(field_type)
+        if origin is Union:
+            args = get_args(field_type)
+            # Filter out NoneType from Union args (e.g. Optional[X] = Union[X, None])
+            non_none = [a for a in args if a is not type(None)]  # noqa: E721
+            if len(non_none) == 1:
+                field_type = non_none[0]
+
+        if is_dataclass(field_type) and isinstance(value, dict):
+            value = from_nested_dict(field_type, value)
+
+        kwargs[f.name] = value
+    return cls(**kwargs)
+
+
+# ---------------------------------------------------------------------------
+# Sub-modules
+# ---------------------------------------------------------------------------
+
+
 class FeedForward(nn.Module):
     def __init__(self, dim: int, hidden_dim: int, use_biases: bool) -> None:
         super().__init__()
@@ -118,13 +172,15 @@ class FeedForward(nn.Module):
 
 
 class BidirectionalAttention(nn.Module):
+    """Attention layer (without RoPE embeddings)."""
+
     def __init__(self, args: AcousticTransformerArgs, layer_id: int) -> None:
         super().__init__()
         self.args = args
-        self.n_local_heads = args.n_heads
-        self.n_local_kv_heads = args.n_kv_heads
+        self.n_local_heads: int = args.n_heads
+        self.n_local_kv_heads: int = args.n_kv_heads
+        self.layer_id = layer_id
         self.head_dim = args.head_dim
-        self.repeats = self.n_local_heads // self.n_local_kv_heads
 
         self.wq = nn.Linear(
             args.dim, args.n_heads * args.head_dim, bias=args.use_biases
@@ -137,10 +193,33 @@ class BidirectionalAttention(nn.Module):
             args.n_heads * args.head_dim, args.dim, bias=args.use_biases
         )
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        self.softmax_scale: float = args.head_dim**-0.5
+        self.repeats = self.n_local_heads // self.n_local_kv_heads
+
+    def _native_attention(
+        self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor
+    ) -> torch.Tensor:
+        scale = 1.0 / query.shape[-1] ** 0.5
+        query = query * scale
+        query = query.transpose(1, 2)
+        key = key.transpose(1, 2)
+        value = value.transpose(1, 2)
+        attn = query @ key.transpose(-2, -1)
+        attn = attn.softmax(-1)
+        attn = attn @ value
+        return attn.transpose(1, 2).contiguous()
+
+    def _forward_attention(
+        self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor
+    ) -> torch.Tensor:
+        key, value = repeat_kv(key, value, repeats=self.repeats)
+        bsz, seqlen, _, _ = query.shape
+        output = self._native_attention(query, key, value)
+        return output.view(bsz, seqlen, -1)
+
+    def forward(self, x: torch.Tensor, **kwargs) -> torch.Tensor:
         if x.dim() == 2:
-            bsz, seqlen = 1, x.shape[0]
-            _ = x.shape[1]
+            bsz, (seqlen, _) = 1, x.shape
         else:
             bsz, seqlen, _ = x.shape
 
@@ -149,18 +228,8 @@ class BidirectionalAttention(nn.Module):
         xk = xk.view(bsz, seqlen, self.n_local_kv_heads, self.head_dim)
         xv = xv.view(bsz, seqlen, self.n_local_kv_heads, self.head_dim)
 
-        keys, values = repeat_kv(xk, xv, repeats=self.repeats)
-
-        # Native attention
-        scale = 1.0 / xq.shape[-1] ** 0.5
-        q = (xq * scale).transpose(1, 2)
-        k = keys.transpose(1, 2)
-        v = values.transpose(1, 2)
-        attn = q @ k.transpose(-2, -1)
-        attn = attn.softmax(-1)
-        output = (attn @ v).transpose(1, 2).contiguous()
-
-        output = output.view(bsz, seqlen, -1)
+        output = self._forward_attention(query=xq, key=xk, value=xv, **kwargs)
+        output = output.view(bsz, seqlen, self.n_local_heads * self.head_dim)
         return self.wo(output).squeeze(0)
 
 
@@ -168,23 +237,33 @@ class AcousticTransformerBlock(nn.Module):
     def __init__(self, layer_id: int, args: AcousticTransformerArgs) -> None:
         super().__init__()
         self._layer_id = layer_id
+        self.n_heads = args.n_heads
+        self.dim = args.dim
         self.attention = BidirectionalAttention(args, layer_id=layer_id)
         self.feed_forward = FeedForward(args.dim, args.hidden_dim, args.use_biases)
         self.attention_norm = rms_norm(args.dim, eps=args.norm_eps)
         self.ffn_norm = rms_norm(args.dim, eps=args.norm_eps)
+        self.args = args
 
     @property
     def layer_id(self) -> int:
         return self._layer_id
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        r = self.attention(self.attention_norm(x))
+        r = self.attention.forward(self.attention_norm(x))
         h = x + r
-        r = self.feed_forward(self.ffn_norm(h))
+        r = self.feed_forward.forward(self.ffn_norm(h))
         return h + r
 
 
+# ---------------------------------------------------------------------------
+# Flow Matching Acoustic Transformer
+# ---------------------------------------------------------------------------
+
+
 class TimeEmbedding(nn.Module):
+    """Sinusoidal embedding for encoding time."""
+
     def __init__(self, dim: int, theta: float = 10000.0) -> None:
         super().__init__()
         inv_freq = torch.exp(
@@ -214,19 +293,27 @@ class FlowMatchingAudioTransformer(nn.Module):
         self.model_args: MultimodalAudioModelArgs = from_nested_dict(
             MultimodalAudioModelArgs, audio_model_args
         )
+        assert isinstance(self.model_args, MultimodalAudioModelArgs)
         args = self.model_args.acoustic_transformer_args
         self.acoustic_transformer_args = args
+        assert isinstance(self.acoustic_transformer_args, AcousticTransformerArgs)
 
+        # currently assuming always 1 semantic codebook + N acoustic codebooks
         self.num_non_acoustic_embeddings = 1
         self.num_acoustic_codebooks = (
             len(self.model_args.get_codebook_sizes()) - self.num_non_acoustic_embeddings
         )
 
+        # flow matching utils
         self.sigma = args.sigma
 
+        # codebook sizes
         acoustic_codebook_sizes = self.model_args.get_codebook_sizes(
             pad_to_multiple=None, include_special_tokens=False
         )[1:]
+        assert (
+            len(set(acoustic_codebook_sizes)) == 1
+        ), "only 1 size for acoustic codebooks supported"
         self.acoustic_embeddings_levels = acoustic_codebook_sizes[0]
         self.acoustic_embeddings_dim = len(acoustic_codebook_sizes)
 
@@ -239,7 +326,8 @@ class FlowMatchingAudioTransformer(nn.Module):
             AudioSpecialTokens.empty_audio
         )
 
-        self._acoustic_decode_iters = 16
+        # Flow matching constants
+        self._acoustic_decode_iters = 8
         self._cfg_alpha = 1.2
         self._noise_scale = 1.0
         self.register_buffer(
@@ -252,40 +340,62 @@ class FlowMatchingAudioTransformer(nn.Module):
         params_dict = dict(self.named_parameters())
         name, loaded_weight = weight
         if name not in params_dict:
+            logger.warning(
+                "%s not found in FlowMatchingAudioTransformer (UNUSED)", name
+            )
             return name
         param = params_dict[name]
-        param.data.copy_(loaded_weight)
+        weight_loader = getattr(param, "weight_loader", default_weight_loader)
+        weight_loader(param, loaded_weight)
         return name
 
+    # -- Initialization helpers ---------------------------------------------
+
     def _init_audio_embeddings_layer(self) -> None:
-        args = self.acoustic_transformer_args
-        self.time_embedding = TimeEmbedding(args.dim)
+        self.time_embedding = TimeEmbedding(self.acoustic_transformer_args.dim)
         input_dim = self.acoustic_embeddings_dim
-        self.input_projection = nn.Linear(input_dim, args.dim, bias=False)
-        self.time_projection = nn.Linear(args.dim, args.dim, bias=False)
-        self.llm_projection = nn.Linear(args.input_dim, args.dim, bias=False)
+        self.input_projection = nn.Linear(
+            input_dim, self.acoustic_transformer_args.dim, bias=False
+        )
+        self.time_projection = nn.Linear(
+            self.acoustic_transformer_args.dim,
+            self.acoustic_transformer_args.dim,
+            bias=False,
+        )
+        self.llm_projection = nn.Linear(
+            self.acoustic_transformer_args.input_dim,
+            self.acoustic_transformer_args.dim,
+            bias=False,
+        )
 
     def _init_output_layer(self) -> None:
         padded_codebook_sizes = self.model_args.get_codebook_sizes(pad_to_multiple=128)
-        args = self.acoustic_transformer_args
         self.semantic_codebook_output = nn.Linear(
-            args.dim, padded_codebook_sizes[0], args.use_biases
+            self.acoustic_transformer_args.dim,
+            padded_codebook_sizes[0],
+            self.acoustic_transformer_args.use_biases,
         )
         self.acoustic_codebook_output = nn.Linear(
-            in_features=args.dim,
+            in_features=self.acoustic_transformer_args.dim,
             out_features=self.model_args.n_acoustic_codebook,
             bias=False,
         )
 
     def _init_layers(self) -> None:
-        args = self.acoustic_transformer_args
-        self.layers_ids = list(range(args.n_layers))
+        self.layers_ids: list[int] = list(
+            range(self.acoustic_transformer_args.n_layers)
+        )
         self.layers = nn.ModuleDict()
         for layer_id in self.layers_ids:
             self.layers[str(layer_id)] = AcousticTransformerBlock(
-                layer_id=layer_id, args=args
+                layer_id=layer_id, args=self.acoustic_transformer_args
             )
-        self.norm = rms_norm(args.dim, args.norm_eps)
+        self.norm = rms_norm(
+            self.acoustic_transformer_args.dim,
+            self.acoustic_transformer_args.norm_eps,
+        )
+
+    # -- Forward path -------------------------------------------------------
 
     def forward_attention_layers(self, h: torch.Tensor) -> torch.Tensor:
         for layer_id in self.layers_ids:
@@ -310,6 +420,7 @@ class FlowMatchingAudioTransformer(nn.Module):
         for i in range(len(timesteps) - 1):
             t = timesteps[i]
             dt = timesteps[i + 1] - timesteps[i]
+
             t_emb = self.time_embedding(t.view(-1, 1).repeat(B, 1)).to(llm_hidden.dtype)
 
             x_batched = torch.cat([sampled, sampled], dim=0)
@@ -321,12 +432,15 @@ class FlowMatchingAudioTransformer(nn.Module):
             )
             v_t, uncond_v_t = v_all[:B], v_all[B:]
             v_t = self._cfg_alpha * v_t + (1 - self._cfg_alpha) * uncond_v_t
+
             sampled = sampled + v_t * dt
 
         sampled = torch.clamp(sampled, -1, 1)
-        scaled_x = ((sampled + 1) / 2) * (self.acoustic_embeddings_levels - 1)
-        output_codes = scaled_x.round().long()
+        # Scale from [-1, 1] to [0, levels-1] for quantization
+        quantized_levels = ((sampled + 1) / 2) * (self.acoustic_embeddings_levels - 1)
+        output_codes = quantized_levels.round().long()
         output_codes[~should_decode] = self._empty_audio_token_id
+        # Offset by the number of special tokens to avoid ID conflicts
         return output_codes + len(AudioSpecialTokens)
 
     def _predict_velocity(
@@ -336,6 +450,7 @@ class FlowMatchingAudioTransformer(nn.Module):
         t_emb: torch.Tensor,
     ) -> torch.Tensor:
         x_t = x_t.to(llm_output.dtype)
+
         t_emb = self.time_projection(t_emb)
         llm_output = self.llm_projection(llm_output)
 
@@ -359,8 +474,7 @@ class FlowMatchingAudioTransformer(nn.Module):
         semantic_logit = self.semantic_codebook_output(llm_hidden).float()
         semantic_logit[:, self._empty_audio_token_id] = -float("inf")
         semantic_logit[
-            :,
-            (len(AudioSpecialTokens) + self.model_args.semantic_codebook_size) :,
+            :, (len(AudioSpecialTokens) + self.model_args.semantic_codebook_size) :
         ] = -float("inf")
 
         semantic_code = semantic_logit.argmax(dim=-1, keepdim=True)

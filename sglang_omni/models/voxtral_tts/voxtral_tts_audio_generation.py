@@ -1,30 +1,38 @@
+# SPDX-License-Identifier: Apache-2.0
+"""Voxtral TTS audio generation model.
+
+Standalone pure-PyTorch implementation with a Llama-family causal decoder
+backbone, the FlowMatchingAudioTransformer for acoustic code prediction,
+and MultiVocabEmbeddings for audio token embedding.
+
+Architecture overview::
+
+    VoxtralTTSAudioGeneration
+    ├── CausalLlamaDecoder          (text LLM backbone)
+    │   ├── DecoderBlock × N
+    │   │   ├── CausalSelfAttention (GQA via SDPA + RoPE)
+    │   │   └── GatedFFN            (SiLU gate)
+    │   └── RMSNorm                 (final norm)
+    ├── FlowMatchingAudioTransformer (imported from acoustic_transformer)
+    └── MultiVocabEmbeddings         (multi-codebook offset embedding)
+"""
+
 import logging
 import math
 import os
-import re as stdlib_re
+import re
 import time
-from dataclasses import dataclass, fields, is_dataclass
-from typing import Union, get_args, get_origin
+from dataclasses import dataclass
 
-import numpy as np
-import regex as re
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 from sglang_omni.models.voxtral_tts.acoustic_transformer import (
-    AudioSpecialTokens,
     FlowMatchingAudioTransformer,
+    MultimodalAudioModelArgs,
+    from_nested_dict,
 )
-
-try:
-    from apex.normalization import FusedRMSNorm
-
-    rms_norm = FusedRMSNorm
-except ImportError:
-    from torch.nn import RMSNorm as RMSNorm
-
-    rms_norm = RMSNorm
 
 logger = logging.getLogger(__name__)
 
@@ -40,467 +48,366 @@ SUPPORTED_LANGS = {
 }
 
 
-# ---- Dataclasses (copied from vLLM) ----
-
-
-@dataclass
-class AcousticTransformerArgs:
-    input_dim: int
-    dim: int = 768
-    n_layers: int = 3
-    head_dim: int = 128
-    hidden_dim: int = 2048
-    n_heads: int = 6
-    n_kv_heads: int = 2
-    use_biases: bool = False
-    norm_eps: float = 1e-5
-    sigma: float = 1e-5
-
-
-@dataclass
-class MultimodalAudioModelArgs:
-    semantic_codebook_size: int
-    acoustic_codebook_size: int
-    n_acoustic_codebook: int
-    acoustic_transformer_args: AcousticTransformerArgs
-
-    @property
-    def codebook_sizes(self) -> list[int]:
-        return [
-            self.semantic_codebook_size,
-            *[self.acoustic_codebook_size for _ in range(self.n_acoustic_codebook)],
-        ]
-
-    def get_codebook_sizes(
-        self, pad_to_multiple: int | None = 128, include_special_tokens: bool = True
-    ) -> list[int]:
-        def _round_up_to_multiple_of_number(n: int, multiple: int) -> int:
-            return multiple * ((n + multiple - 1) // multiple)
-
-        result_codebook_sizes = []
-        for i, cb_size in enumerate(self.codebook_sizes):
-            if include_special_tokens:
-                cb_size += len(AudioSpecialTokens.all_special_tokens())
-            if pad_to_multiple is not None:
-                cb_size = _round_up_to_multiple_of_number(cb_size, pad_to_multiple)
-            result_codebook_sizes.append(cb_size)
-        return result_codebook_sizes
-
-
-def from_nested_dict(cls, d):
-    if not is_dataclass(cls):
-        return d
-    kwargs = {}
-    for f in fields(cls):
-        value = d.get(f.name, getattr(cls, f.name, None))
-        field_type = f.type
-        origin = get_origin(field_type)
-        if origin is Union:
-            args = get_args(field_type)
-            non_none_types = [a for a in args if a is not type(None)]
-            if len(non_none_types) == 1:
-                field_type = non_none_types[0]
-        if is_dataclass(field_type) and isinstance(value, dict):
-            value = from_nested_dict(field_type, value)
-        kwargs[f.name] = value
-    return cls(**kwargs)
-
-
-# ---- Acoustic Transformer components (copied from vLLM) ----
-
-
-def _repeat_interleave(t: torch.Tensor, repeats: int) -> torch.Tensor:
-    return t.unsqueeze(3).expand([-1, -1, -1, repeats, -1]).flatten(2, 3)
-
-
-def repeat_kv(
-    keys: torch.Tensor, values: torch.Tensor, repeats: int
-) -> tuple[torch.Tensor, torch.Tensor]:
-    if repeats > 1:
-        keys = _repeat_interleave(keys, repeats=repeats)
-        values = _repeat_interleave(values, repeats=repeats)
-    return keys, values
-
-
-class FeedForward(nn.Module):
-    def __init__(self, dim: int, hidden_dim: int, use_biases: bool) -> None:
-        super().__init__()
-        self.w1 = nn.Linear(dim, hidden_dim, bias=False)
-        self.w2 = nn.Linear(hidden_dim, dim, bias=use_biases)
-        self.w3 = nn.Linear(dim, hidden_dim, bias=False)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.w2(F.silu(self.w1(x)) * self.w3(x))
-
-
-class BidirectionalAttention(nn.Module):
-    def __init__(self, args: AcousticTransformerArgs, layer_id: int) -> None:
-        super().__init__()
-        self.args = args
-        self.n_local_heads: int = args.n_heads
-        self.n_local_kv_heads: int = args.n_kv_heads
-        self.repeats = self.n_local_heads
-        self.layer_id = layer_id
-        self.head_dim = args.head_dim
-        self.wq = nn.Linear(
-            args.dim, args.n_heads * args.head_dim, bias=args.use_biases
-        )
-        self.wk = nn.Linear(args.dim, args.n_kv_heads * args.head_dim, bias=False)
-        self.wv = nn.Linear(
-            args.dim, args.n_kv_heads * args.head_dim, bias=args.use_biases
-        )
-        self.wo = nn.Linear(
-            args.n_heads * args.head_dim, args.dim, bias=args.use_biases
-        )
-        self.softmax_scale: float = self.args.head_dim**-0.5
-        self.repeats = self.n_local_heads // self.n_local_kv_heads
-
-    def _native_attention(self, query, key, value):
-        scale = 1.0 / query.shape[-1] ** 0.5
-        query = query * scale
-        query = query.transpose(1, 2)
-        key = key.transpose(1, 2)
-        value = value.transpose(1, 2)
-        attn = query @ key.transpose(-2, -1)
-        attn = attn.softmax(-1)
-        attn = attn @ value
-        return attn.transpose(1, 2).contiguous()
-
-    def _forward_attention(self, query, key, value):
-        key, value = repeat_kv(key, value, repeats=self.repeats)
-        bsz, seqlen, _, _ = query.shape
-        output = self._native_attention(query, key, value)
-        return output.view(bsz, seqlen, -1)
-
-    def forward(self, x: torch.Tensor, **kwargs) -> torch.Tensor:
-        if x.dim() == 2:
-            bsz, (seqlen, _) = 1, x.shape
-        else:
-            bsz, seqlen, _ = x.shape
-        xq, xk, xv = self.wq(x), self.wk(x), self.wv(x)
-        xq = xq.view(bsz, seqlen, self.n_local_heads, self.head_dim)
-        xk = xk.view(bsz, seqlen, self.n_local_kv_heads, self.head_dim)
-        xv = xv.view(bsz, seqlen, self.n_local_kv_heads, self.head_dim)
-        output = self._forward_attention(query=xq, key=xk, value=xv, **kwargs)
-        output = output.view(bsz, seqlen, self.n_local_heads * self.head_dim)
-        return self.wo(output).squeeze(0)
-
-
-class AcousticTransformerBlock(nn.Module):
-    def __init__(self, layer_id: int, args: AcousticTransformerArgs) -> None:
-        super().__init__()
-        self._layer_id = layer_id
-        self.n_heads = args.n_heads
-        self.dim = args.dim
-        self.attention = BidirectionalAttention(args, layer_id=layer_id)
-        self.feed_forward = FeedForward(args.dim, args.hidden_dim, args.use_biases)
-        self.attention_norm = rms_norm(args.dim, eps=args.norm_eps)
-        self.ffn_norm = rms_norm(args.dim, eps=args.norm_eps)
-        self.args = args
-
-    @property
-    def layer_id(self) -> int:
-        return self._layer_id
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        r = self.attention.forward(self.attention_norm(x))
-        h = x + r
-        r = self.feed_forward.forward(self.ffn_norm(h))
-        out = h + r
-        return out
-
-
-class TimeEmbedding(nn.Module):
-    def __init__(self, dim: int, theta: float = 10000.0) -> None:
-        super().__init__()
-        inv_freq = torch.exp(
-            -math.log(theta) * torch.arange(dim // 2).float() / (dim // 2)
-        )
-        self.register_buffer("inv_freq", inv_freq, persistent=True)
-
-    def forward(self, t: torch.Tensor) -> torch.Tensor:
-        emb = torch.einsum("bi, j -> bj", t, self.inv_freq)
-        return torch.cat((emb.cos(), emb.sin()), dim=-1)
-
-
-# ---- MultiVocabEmbeddings (copied from vLLM audio_tokenizer) ----
+# ---------------------------------------------------------------------------
+# Multi-codebook audio token embeddings
+# ---------------------------------------------------------------------------
 
 
 class MultiVocabEmbeddings(nn.Module):
+    """Embed audio tokens from multiple codebooks into a shared space.
+
+    Each codebook's token IDs are offset by the cumulative size of the
+    preceding codebooks so that a single ``nn.Embedding`` table serves all
+    codebooks.  The table size is rounded up to a multiple of 128 for
+    efficient GPU memory alignment.
+    """
+
     def __init__(self, audio_model_args: dict, embedding_dim: int) -> None:
         super().__init__()
         self.model_args = from_nested_dict(MultimodalAudioModelArgs, audio_model_args)
         self.codebook_sizes = list(
             self.model_args.get_codebook_sizes(pad_to_multiple=None)
         )
-        self.offsets = torch.from_numpy(np.cumsum([0] + self.codebook_sizes[:-1]))
-        self.total_vocab_size = sum(self.codebook_sizes)
-        padded_size = 128 * ((self.total_vocab_size + 127) // 128)
-        self.embeddings = nn.Embedding(padded_size, embedding_dim)
+        # Cumulative offsets: codebook *i* tokens are shifted by sum(sizes[:i])
+        offsets = [0]
+        for sz in self.codebook_sizes[:-1]:
+            offsets.append(offsets[-1] + sz)
+        self.register_buffer(
+            "offsets", torch.tensor(offsets, dtype=torch.long), persistent=False
+        )
+        total_vocab = sum(self.codebook_sizes)
+        aligned_size = 128 * ((total_vocab + 127) // 128)
+        self.embeddings = nn.Embedding(aligned_size, embedding_dim)
+
+    def _rebuild_offsets(self) -> None:
+        """Recompute the per-codebook offsets buffer.
+
+        Must be called after ``to_empty()`` (meta-device init) because
+        ``register_buffer`` values are replaced with uninitialised tensors.
+        """
+        vals = [0]
+        for sz in self.codebook_sizes[:-1]:
+            vals.append(vals[-1] + sz)
+        self.offsets.copy_(torch.tensor(vals, dtype=torch.long))
 
     def forward(self, input_ids: torch.Tensor) -> torch.Tensor:
-        self.offsets = self.offsets.to(input_ids.device)
-        input_ids = input_ids + self.offsets[torch.newaxis, :, torch.newaxis]
-        return self.embeddings(input_ids)
+        # input_ids: [batch, n_codebooks, seq_len]
+        shifted = input_ids + self.offsets[None, :, None]
+        return self.embeddings(shifted)
 
 
-# ---- Standalone LLM: ported from vLLM's LlamaModel / LlamaDecoderLayer ----
-# Uses flash_attn_func for attention (same kernel as vLLM).
-# RMSNorm with fused residual pattern matches vLLM exactly.
-# RoPE uses the same cos_sin_cache approach as vLLM.
+# ---------------------------------------------------------------------------
+# Llama-family causal decoder backbone
+# ---------------------------------------------------------------------------
 
 
-class _RMSNorm(nn.Module):
-    """RMSNorm matching vLLM's implementation, with optional fused residual add."""
+@dataclass
+class LlamaConfig:
+    """Minimal configuration for the Llama causal decoder."""
 
-    def __init__(self, hidden_size: int, eps: float = 1e-5):
+    vocab_size: int
+    hidden_size: int
+    num_layers: int
+    num_heads: int
+    num_kv_heads: int
+    head_dim: int
+    intermediate_size: int
+    max_position_embeddings: int
+    rope_theta: float
+    rms_norm_eps: float
+
+
+class RMSNorm(nn.Module):
+    """Root-mean-square layer normalisation.
+
+    When *residual* is supplied the residual connection is fused into the
+    normalisation step to avoid an extra memory read/write pass.
+    """
+
+    def __init__(self, dim: int, eps: float = 1e-5) -> None:
         super().__init__()
-        self.weight = nn.Parameter(torch.ones(hidden_size))
+        self.scale = nn.Parameter(torch.ones(dim))
         self.eps = eps
 
-    def forward(self, x: torch.Tensor, residual: torch.Tensor | None = None):
+    def _norm(self, x: torch.Tensor) -> torch.Tensor:
+        return x * torch.rsqrt(x.float().pow(2).mean(-1, keepdim=True) + self.eps)
+
+    def forward(
+        self, x: torch.Tensor, residual: torch.Tensor | None = None
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         if residual is not None:
             x = x + residual
-        residual = x
-        x_float = x.float()
-        norm = torch.rsqrt(x_float.pow(2).mean(-1, keepdim=True) + self.eps)
-        out = (x_float * norm).to(residual.dtype) * self.weight
-        return out, residual
+        pre_norm = x  # keep the un-normalised value for the next residual
+        out = self._norm(x).to(x.dtype) * self.scale
+        return out, pre_norm
 
 
-class _RotaryEmbedding(nn.Module):
-    """Neox-style rotary embeddings matching vLLM's RotaryEmbedding exactly."""
+class RotaryPositionEmbedding(nn.Module):
+    """Precomputed rotary position embedding (complex-exponential form).
+
+    Builds a ``[max_positions, head_dim]`` cos/sin cache at init time.  At
+    forward time the cache is sliced by the position indices and applied in
+    the standard Neox-rotate-half convention.
+    """
 
     def __init__(
         self,
         head_dim: int,
-        max_position_embeddings: int,
-        base: float,
-        dtype: torch.dtype,
-    ):
+        max_positions: int,
+        theta: float,
+        dtype: torch.dtype = torch.bfloat16,
+    ) -> None:
         super().__init__()
         self.head_dim = head_dim
-        self.rotary_dim = head_dim
-        self.max_position_embeddings = max_position_embeddings
-        self.base = base
-        self._cache_dtype = dtype
-        self._build_cache()
+        self.max_positions = max_positions
+        self.theta = theta
+        self._dtype = dtype
+        self._materialise_cache()
 
-    def _build_cache(self):
-        inv_freq = 1.0 / (
-            self.base
-            ** (torch.arange(0, self.head_dim, 2, dtype=torch.float) / self.head_dim)
-        )
-        t = torch.arange(self.max_position_embeddings, dtype=torch.float)
-        freqs = torch.einsum("i,j->ij", t, inv_freq)
-        cache = torch.cat([freqs.cos(), freqs.sin()], dim=-1).to(self._cache_dtype)
-        self.register_buffer("cos_sin_cache", cache, persistent=False)
+    def _materialise_cache(self) -> None:
+        half = self.head_dim // 2
+        freq_exponents = torch.arange(half, dtype=torch.float32) / half
+        inv_freq = 1.0 / (self.theta**freq_exponents)
+        positions = torch.arange(self.max_positions, dtype=torch.float32)
+        # outer product → [max_positions, half]
+        angles = torch.outer(positions, inv_freq)
+        cos_cache = angles.cos().to(self._dtype)
+        sin_cache = angles.sin().to(self._dtype)
+        self.register_buffer("_cos", cos_cache, persistent=False)
+        self.register_buffer("_sin", sin_cache, persistent=False)
 
-    def forward(self, positions: torch.Tensor, q: torch.Tensor, k: torch.Tensor):
-        positions = positions.flatten()
-        num_tokens = positions.shape[0]
-        cos_sin = self.cos_sin_cache[positions]
-        cos, sin = cos_sin.chunk(2, dim=-1)
-        cos = cos.unsqueeze(-2).to(q.dtype)
-        sin = sin.unsqueeze(-2).to(q.dtype)
+    @staticmethod
+    def _rotate(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
+        """Apply Neox-style rotation: split in half, rotate, concatenate."""
+        x1, x2 = x.chunk(2, dim=-1)
+        return torch.cat([x1 * cos - x2 * sin, x2 * cos + x1 * sin], dim=-1)
 
-        q = q.view(num_tokens, -1, self.head_dim)
-        q1, q2 = q.chunk(2, dim=-1)
-        q = torch.cat([q1 * cos - q2 * sin, q2 * cos + q1 * sin], dim=-1).flatten(1)
+    def forward(
+        self,
+        positions: torch.Tensor,
+        q: torch.Tensor,
+        k: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        seq_len = positions.numel()
+        cos = self._cos[positions.flatten()].unsqueeze(1).to(q.dtype)  # [S, 1, D/2]
+        sin = self._sin[positions.flatten()].unsqueeze(1).to(q.dtype)
 
-        k = k.view(num_tokens, -1, self.head_dim)
-        k1, k2 = k.chunk(2, dim=-1)
-        k = torch.cat([k1 * cos - k2 * sin, k2 * cos + k1 * sin], dim=-1).flatten(1)
-
+        q = self._rotate(q.view(seq_len, -1, self.head_dim), cos, sin).flatten(1)
+        k = self._rotate(k.view(seq_len, -1, self.head_dim), cos, sin).flatten(1)
         return q, k
 
 
-class _LlamaAttention(nn.Module):
-    """Attention layer matching vLLM's LlamaAttention, using PyTorch SDPA."""
+class CausalSelfAttention(nn.Module):
+    """Grouped-query self-attention with rotary position embeddings.
 
-    def __init__(
-        self,
-        hidden_size,
-        num_heads,
-        num_kv_heads,
-        head_dim,
-        max_position_embeddings,
-        rope_theta,
-    ):
+    Uses ``F.scaled_dot_product_attention`` with ``enable_gqa=True`` so the
+    KV heads are broadcast-expanded to the query head count inside the SDPA
+    kernel rather than via an explicit ``repeat_interleave``.
+    """
+
+    def __init__(self, cfg: LlamaConfig) -> None:
         super().__init__()
-        self.num_heads = num_heads
-        self.num_kv_heads = num_kv_heads
-        self.head_dim = head_dim
-        self.num_kv_groups = num_heads // num_kv_heads
-        self.q_size = num_heads * head_dim
-        self.kv_size = num_kv_heads * head_dim
+        self.num_heads = cfg.num_heads
+        self.num_kv_heads = cfg.num_kv_heads
+        self.head_dim = cfg.head_dim
+        q_dim = cfg.num_heads * cfg.head_dim
+        kv_dim = cfg.num_kv_heads * cfg.head_dim
 
-        self.q_proj = nn.Linear(hidden_size, self.q_size, bias=False)
-        self.k_proj = nn.Linear(hidden_size, self.kv_size, bias=False)
-        self.v_proj = nn.Linear(hidden_size, self.kv_size, bias=False)
-        self.o_proj = nn.Linear(self.q_size, hidden_size, bias=False)
+        self.q_proj = nn.Linear(cfg.hidden_size, q_dim, bias=False)
+        self.k_proj = nn.Linear(cfg.hidden_size, kv_dim, bias=False)
+        self.v_proj = nn.Linear(cfg.hidden_size, kv_dim, bias=False)
+        self.o_proj = nn.Linear(q_dim, cfg.hidden_size, bias=False)
 
-        self.rotary_emb = _RotaryEmbedding(
-            head_dim, max_position_embeddings, rope_theta, dtype=torch.bfloat16
+        self.rotary_emb = RotaryPositionEmbedding(
+            cfg.head_dim, cfg.max_position_embeddings, cfg.rope_theta
         )
 
-    def forward(self, positions, hidden_states, kv_cache=None):
-        num_tokens = hidden_states.shape[0]
-        q = self.q_proj(hidden_states)
-        k = self.k_proj(hidden_states)
-        v = self.v_proj(hidden_states)
+    def forward(
+        self,
+        positions: torch.Tensor,
+        hidden: torch.Tensor,
+        kv_cache: tuple[torch.Tensor, torch.Tensor] | None = None,
+    ) -> tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
+        n = hidden.shape[0]
+        q = self.q_proj(hidden)
+        k = self.k_proj(hidden)
+        v = self.v_proj(hidden)
 
         q, k = self.rotary_emb(positions, q, k)
 
-        q = q.view(num_tokens, self.num_heads, self.head_dim)
-        k = k.view(num_tokens, self.num_kv_heads, self.head_dim)
-        v = v.view(num_tokens, self.num_kv_heads, self.head_dim)
+        q = q.view(n, self.num_heads, self.head_dim)
+        k = k.view(n, self.num_kv_heads, self.head_dim)
+        v = v.view(n, self.num_kv_heads, self.head_dim)
 
+        # Prepend cached KV pairs when decoding
         if kv_cache is not None:
-            k_cache, v_cache = kv_cache
-            k = torch.cat([k_cache, k], dim=0)
-            v = torch.cat([v_cache, v], dim=0)
-        new_kv = (k, v)
+            k = torch.cat([kv_cache[0], k], dim=0)
+            v = torch.cat([kv_cache[1], v], dim=0)
+        updated_kv = (k, v)
 
-        # Transpose to (batch=1, heads, seq, head_dim) for SDPA
-        q = q.unsqueeze(0).transpose(1, 2)  # [1, num_heads, num_tokens, head_dim]
-        k = k.unsqueeze(0).transpose(1, 2)  # [1, num_kv_heads, kv_len, head_dim]
-        v = v.unsqueeze(0).transpose(1, 2)  # [1, num_kv_heads, kv_len, head_dim]
+        # SDPA expects [B, H, S, D]; batch dim is always 1 here
+        q = q.unsqueeze(0).transpose(1, 2)
+        k = k.unsqueeze(0).transpose(1, 2)
+        v = v.unsqueeze(0).transpose(1, 2)
 
-        # Expand KV heads for GQA: repeat each KV head to match query head groups
-        if self.num_kv_groups > 1:
-            k = k.repeat_interleave(self.num_kv_groups, dim=1)
-            v = v.repeat_interleave(self.num_kv_groups, dim=1)
-
-        is_causal = kv_cache is None and num_tokens > 1
-        attn_out = F.scaled_dot_product_attention(q, k, v, is_causal=is_causal)
-        attn_out = attn_out.transpose(1, 2).squeeze(0).reshape(num_tokens, -1)
-        return self.o_proj(attn_out), new_kv
+        causal = kv_cache is None and n > 1
+        out = F.scaled_dot_product_attention(q, k, v, is_causal=causal, enable_gqa=True)
+        out = out.transpose(1, 2).squeeze(0).reshape(n, -1)
+        return self.o_proj(out), updated_kv
 
 
-class _LlamaMLP(nn.Module):
-    def __init__(self, hidden_size, intermediate_size):
+class GatedFFN(nn.Module):
+    """SiLU-gated feed-forward network (SwiGLU variant)."""
+
+    def __init__(self, hidden_size: int, intermediate_size: int) -> None:
         super().__init__()
-        self.gate_proj = nn.Linear(hidden_size, intermediate_size, bias=False)
-        self.up_proj = nn.Linear(hidden_size, intermediate_size, bias=False)
-        self.down_proj = nn.Linear(intermediate_size, hidden_size, bias=False)
+        self.gate = nn.Linear(hidden_size, intermediate_size, bias=False)
+        self.up = nn.Linear(hidden_size, intermediate_size, bias=False)
+        self.down = nn.Linear(intermediate_size, hidden_size, bias=False)
 
-    def forward(self, x):
-        return self.down_proj(F.silu(self.gate_proj(x)) * self.up_proj(x))
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.down(F.silu(self.gate(x)) * self.up(x))
 
 
-class _LlamaDecoderLayer(nn.Module):
-    """Decoder layer matching vLLM's LlamaDecoderLayer exactly:
-    fused residual + RMSNorm pattern, flash_attn attention."""
+class DecoderBlock(nn.Module):
+    """Single Llama-style decoder block: pre-norm attention + pre-norm FFN."""
 
-    def __init__(
+    def __init__(self, cfg: LlamaConfig) -> None:
+        super().__init__()
+        self.attn = CausalSelfAttention(cfg)
+        self.ffn = GatedFFN(cfg.hidden_size, cfg.intermediate_size)
+        self.norm1 = RMSNorm(cfg.hidden_size, cfg.rms_norm_eps)
+        self.norm2 = RMSNorm(cfg.hidden_size, cfg.rms_norm_eps)
+
+    def forward(
         self,
-        hidden_size,
-        num_heads,
-        num_kv_heads,
-        head_dim,
-        intermediate_size,
-        max_position_embeddings,
-        rope_theta,
-        rms_norm_eps,
-    ):
-        super().__init__()
-        self.self_attn = _LlamaAttention(
-            hidden_size,
-            num_heads,
-            num_kv_heads,
-            head_dim,
-            max_position_embeddings,
-            rope_theta,
-        )
-        self.mlp = _LlamaMLP(hidden_size, intermediate_size)
-        self.input_layernorm = _RMSNorm(hidden_size, rms_norm_eps)
-        self.post_attention_layernorm = _RMSNorm(hidden_size, rms_norm_eps)
-
-    def forward(self, positions, hidden_states, residual, kv_cache=None):
+        positions: torch.Tensor,
+        hidden: torch.Tensor,
+        residual: torch.Tensor | None,
+        kv_cache: tuple[torch.Tensor, torch.Tensor] | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
+        # Fused residual + pre-norm before attention
         if residual is None:
-            residual = hidden_states
-            hidden_states, _ = self.input_layernorm(hidden_states)
+            residual = hidden
+            hidden, _ = self.norm1(hidden)
         else:
-            hidden_states, residual = self.input_layernorm(hidden_states, residual)
+            hidden, residual = self.norm1(hidden, residual)
 
-        hidden_states, new_kv = self.self_attn(positions, hidden_states, kv_cache)
-        hidden_states, residual = self.post_attention_layernorm(hidden_states, residual)
-        hidden_states = self.mlp(hidden_states)
-        return hidden_states, residual, new_kv
+        hidden, new_kv = self.attn(positions, hidden, kv_cache)
+
+        # Fused residual + pre-norm before FFN
+        hidden, residual = self.norm2(hidden, residual)
+        hidden = self.ffn(hidden)
+        return hidden, residual, new_kv
 
 
-class _LlamaModel(nn.Module):
-    """Standalone LlamaModel matching vLLM's, with flash_attn."""
+class CausalLlamaDecoder(nn.Module):
+    """Llama-family causal decoder (embedding + N blocks + final norm)."""
 
-    def __init__(
-        self,
-        vocab_size,
-        hidden_size,
-        num_layers,
-        num_heads,
-        num_kv_heads,
-        head_dim,
-        intermediate_size,
-        max_position_embeddings,
-        rope_theta,
-        rms_norm_eps,
-    ):
+    def __init__(self, cfg: LlamaConfig) -> None:
         super().__init__()
-        self.embed_tokens = nn.Embedding(vocab_size, hidden_size)
-        self.layers = nn.ModuleList(
-            [
-                _LlamaDecoderLayer(
-                    hidden_size,
-                    num_heads,
-                    num_kv_heads,
-                    head_dim,
-                    intermediate_size,
-                    max_position_embeddings,
-                    rope_theta,
-                    rms_norm_eps,
-                )
-                for _ in range(num_layers)
-            ]
-        )
-        self.norm = _RMSNorm(hidden_size, rms_norm_eps)
+        self.embed_tokens = nn.Embedding(cfg.vocab_size, cfg.hidden_size)
+        self.blocks = nn.ModuleList([DecoderBlock(cfg) for _ in range(cfg.num_layers)])
+        self.final_norm = RMSNorm(cfg.hidden_size, cfg.rms_norm_eps)
 
-    def forward(self, inputs_embeds, positions, past_key_values=None):
-        hidden_states = inputs_embeds
-        residual = None
-        new_kvs = []
-        for i, layer in enumerate(self.layers):
-            kv = past_key_values[i] if past_key_values is not None else None
-            hidden_states, residual, new_kv = layer(
-                positions, hidden_states, residual, kv
-            )
-            new_kvs.append(new_kv)
-        hidden_states, _ = self.norm(hidden_states, residual)
-        return hidden_states, new_kvs
+    def forward(
+        self,
+        inputs_embeds: torch.Tensor,
+        positions: torch.Tensor,
+        past_kv: list[tuple[torch.Tensor, torch.Tensor]] | None = None,
+    ) -> tuple[torch.Tensor, list[tuple[torch.Tensor, torch.Tensor]]]:
+        hidden = inputs_embeds
+        residual: torch.Tensor | None = None
+        new_kv_list: list[tuple[torch.Tensor, torch.Tensor]] = []
+        for idx, block in enumerate(self.blocks):
+            cached = past_kv[idx] if past_kv is not None else None
+            hidden, residual, kv = block(positions, hidden, residual, cached)
+            new_kv_list.append(kv)
+        hidden, _ = self.final_norm(hidden, residual)
+        return hidden, new_kv_list
 
 
-# ---- Main model ----
+# ---------------------------------------------------------------------------
+# Weight key mapping: Mistral checkpoint → our parameter names
+# ---------------------------------------------------------------------------
+
+# Per-layer Mistral key suffix → our DecoderBlock key suffix
+_LAYER_KEY_MAP: dict[str, str] = {
+    "attention.wq.weight": "attn.q_proj.weight",
+    "attention.wk.weight": "attn.k_proj.weight",
+    "attention.wv.weight": "attn.v_proj.weight",
+    "attention.wo.weight": "attn.o_proj.weight",
+    "attention_norm.weight": "norm1.scale",
+    "feed_forward.w1.weight": "ffn.gate.weight",
+    "feed_forward.w2.weight": "ffn.down.weight",
+    "feed_forward.w3.weight": "ffn.up.weight",
+    "ffn_norm.weight": "norm2.scale",
+}
+
+# Global (non-layer) Mistral key → our parameter name
+_GLOBAL_KEY_MAP: dict[str, str] = {
+    "norm.weight": "final_norm.scale",
+    "mm_audio_embeddings.tok_embeddings.weight": "embed_tokens.weight",
+}
+
+
+def _remap_checkpoint_key(name: str) -> str | None:
+    """Map a Mistral-format checkpoint key to our parameter name.
+
+    Returns ``None`` if the key does not belong to the LLM backbone.
+    """
+    if name in _GLOBAL_KEY_MAP:
+        return _GLOBAL_KEY_MAP[name]
+
+    # layers.<N>.<suffix> → blocks.<N>.<mapped_suffix>
+    m = re.match(r"^layers\.(\d+)\.(.+)$", name)
+    if m is not None:
+        layer_idx, suffix = m.group(1), m.group(2)
+        mapped = _LAYER_KEY_MAP.get(suffix)
+        if mapped is not None:
+            return f"blocks.{layer_idx}.{mapped}"
+    return None
+
+
+def _interleave_qk_weight(w: torch.Tensor, n_heads: int, head_dim: int) -> torch.Tensor:
+    """Re-order Q/K weight rows from Mistral's grouped layout to the
+    interleaved layout expected by the Neox-style rotary convention.
+
+    Mistral stores each head's half-dimensions contiguously as
+    ``[head, half_dim, 2, hidden]``; we transpose to ``[head, 2, half_dim, hidden]``
+    which interleaves the even/odd dimensions the way our RoPE expects.
+    """
+    total = n_heads * head_dim
+    half = head_dim // 2
+    return w.view(n_heads, half, 2, -1).transpose(1, 2).reshape(total, -1)
+
+
+# ---------------------------------------------------------------------------
+# Main model
+# ---------------------------------------------------------------------------
 
 
 class VoxtralTTSAudioGeneration(nn.Module):
-    """Voxtral TTS generation model.
+    """Voxtral TTS audio generation model.
 
-    LLM backbone is a standalone LlamaModel ported from vLLM, using flash_attn.
+    Combines a Llama causal decoder for autoregressive text-to-semantic-code
+    generation with a FlowMatchingAudioTransformer for acoustic code
+    prediction and a MultiVocabEmbeddings layer for audio token lookup.
     """
 
-    def __init__(self, text_config, audio_model_args: dict, embedding_dim: int):
-        """Args:
-        text_config: VoxtralTextConfig dataclass with dim, n_layers, etc.
-        audio_model_args: dict for FlowMatchingAudioTransformer & MultiVocabEmbeddings.
-        embedding_dim: typically text_config.dim.
-        """
+    def __init__(
+        self,
+        text_config,
+        audio_model_args: dict,
+        embedding_dim: int,
+    ) -> None:
         super().__init__()
         self.n_heads = text_config.n_heads
         self.n_kv_heads = text_config.n_kv_heads
         self.head_dim = text_config.head_dim
         self.hidden_size = text_config.dim
 
-        self.language_model = _LlamaModel(
+        cfg = LlamaConfig(
             vocab_size=text_config.vocab_size,
             hidden_size=text_config.dim,
             num_layers=text_config.n_layers,
@@ -512,255 +419,211 @@ class VoxtralTTSAudioGeneration(nn.Module):
             rope_theta=text_config.rope_theta,
             rms_norm_eps=text_config.norm_eps,
         )
+        self.language_model = CausalLlamaDecoder(cfg)
         self.acoustic_transformer = FlowMatchingAudioTransformer(audio_model_args)
         self.audio_token_embedding = MultiVocabEmbeddings(
             audio_model_args=audio_model_args,
             embedding_dim=embedding_dim,
         )
 
-    # ---- Forward ----
+    # ---- forward helpers --------------------------------------------------
 
     def forward_llm(
         self,
-        inputs_embeds,
-        position_ids,
+        inputs_embeds: torch.Tensor,
+        position_ids: torch.Tensor,
         past_key_values=None,
-        use_cache=True,
-        do_layer_debug=False,
-    ):
-        """Run LLM forward. Returns (hidden_states, past_key_values).
-        inputs_embeds: [B, seq_len, dim] — squeezed to [seq_len, dim] for flash_attn."""
+        use_cache: bool = True,
+        do_layer_debug: bool = False,
+    ) -> tuple[torch.Tensor, list | None]:
+        """Run the LLM backbone.
+
+        *inputs_embeds* may be ``[B, S, D]`` or ``[S, D]``; the batch
+        dimension is squeezed to ``[S, D]`` for the unbatched decoder.
+
+        Returns ``(hidden_states, kv_cache)`` where *hidden_states* has
+        a leading batch dimension added back for caller convenience.
+        """
         embeds = inputs_embeds.squeeze(0) if inputs_embeds.dim() == 3 else inputs_embeds
         positions = position_ids.flatten()
 
         if do_layer_debug and past_key_values is None:
-            hidden, new_kvs = self._forward_with_layer_debug(embeds, positions)
-            return hidden.unsqueeze(0), new_kvs if use_cache else None
+            hidden, kv = self._debug_forward(embeds, positions)
+        else:
+            hidden, kv = self.language_model(embeds, positions, past_key_values)
 
-        hidden, new_kvs = self.language_model(embeds, positions, past_key_values)
-        return hidden.unsqueeze(0), new_kvs if use_cache else None
-
-    # ---- Per-layer debug (mirrors vLLM's _forward_with_layer_debug) ----
+        return hidden.unsqueeze(0), kv if use_cache else None
 
     @torch.no_grad()
-    def _forward_with_layer_debug(self, inputs_embeds, positions):
-        """Manually iterate layers with per-layer logging, matching vLLM's debug.
-        Also returns KV cache so decode steps can continue properly."""
+    def _debug_forward(
+        self,
+        embeds: torch.Tensor,
+        positions: torch.Tensor,
+    ) -> tuple[torch.Tensor, list[tuple[torch.Tensor, torch.Tensor]]]:
+        """Layer-by-layer forward pass for debugging / profiling."""
         model = self.language_model
-        hidden_states = inputs_embeds
-        residual = None
-        new_kvs = []
+        hidden, residual = embeds, None
+        kv_list: list[tuple[torch.Tensor, torch.Tensor]] = []
+        for block in model.blocks:
+            hidden, residual, kv = block(positions, hidden, residual)
+            kv_list.append(kv)
+        hidden, _ = model.final_norm(hidden, residual)
+        return hidden, kv_list
 
-        last = hidden_states[-1]
+    # ---- weight loading ---------------------------------------------------
 
-        for i, layer in enumerate(model.layers):
-            hidden_states, residual, new_kv = layer(positions, hidden_states, residual)
-            new_kvs.append(new_kv)
-            state = hidden_states + residual
-            last = state[-1]
-
-        hidden_states, _ = model.norm(hidden_states, residual)
-        last = hidden_states[-1]
-
-        return hidden_states, new_kvs
-
-    # ---- Weight loading (mirrors vLLM's load_weights) ----
-
-    _MISTRAL_TO_HF_RULES = [
-        (
-            r"^layers\.(\d+)\.attention\.wq\.weight$",
-            r"layers.\1.self_attn.q_proj.weight",
-        ),
-        (
-            r"^layers\.(\d+)\.attention\.wk\.weight$",
-            r"layers.\1.self_attn.k_proj.weight",
-        ),
-        (
-            r"^layers\.(\d+)\.attention\.wv\.weight$",
-            r"layers.\1.self_attn.v_proj.weight",
-        ),
-        (
-            r"^layers\.(\d+)\.attention\.wo\.weight$",
-            r"layers.\1.self_attn.o_proj.weight",
-        ),
-        (
-            r"^layers\.(\d+)\.attention_norm\.weight$",
-            r"layers.\1.input_layernorm.weight",
-        ),
-        (
-            r"^layers\.(\d+)\.feed_forward\.w1\.weight$",
-            r"layers.\1.mlp.gate_proj.weight",
-        ),
-        (
-            r"^layers\.(\d+)\.feed_forward\.w2\.weight$",
-            r"layers.\1.mlp.down_proj.weight",
-        ),
-        (r"^layers\.(\d+)\.feed_forward\.w3\.weight$", r"layers.\1.mlp.up_proj.weight"),
-        (
-            r"^layers\.(\d+)\.ffn_norm\.weight$",
-            r"layers.\1.post_attention_layernorm.weight",
-        ),
-    ]
-
-    @staticmethod
-    def _permute_qk_weight(
-        w: torch.Tensor, n_heads: int, head_dim: int, hidden_size: int
-    ) -> torch.Tensor:
-        attn_in = head_dim * n_heads
-        return (
-            w.view(n_heads, attn_in // n_heads // 2, 2, hidden_size)
-            .transpose(1, 2)
-            .reshape(attn_in, hidden_size)
-        )
-
-    def load_weights(self, checkpoint_dir: str, device: str = "cpu"):
-        """Load weights from Mistral-format safetensors checkpoint."""
+    def load_weights(self, checkpoint_dir: str) -> None:
+        """Load weights from a Mistral-format safetensors checkpoint."""
         import glob
 
-        from sglang.srt.model_loader.weight_utils import safetensors_weights_iterator
+        from safetensors import safe_open
 
-        safetensors_files = sorted(
-            glob.glob(os.path.join(checkpoint_dir, "*.safetensors"))
-        )
-        if not safetensors_files:
-            raise RuntimeError(f"No .safetensors files found in {checkpoint_dir}")
+        shard_paths = sorted(glob.glob(os.path.join(checkpoint_dir, "*.safetensors")))
+        if not shard_paths:
+            raise FileNotFoundError(f"No .safetensors files found in {checkpoint_dir}")
 
         n_heads = self.n_heads
         n_kv_heads = self.n_kv_heads
         head_dim = self.head_dim
-        hidden_size = self.hidden_size
 
-        llm_state = {}
-        llm_count = 0
-        at_count = 0
-        emb_loaded = False
+        llm_state: dict[str, torch.Tensor] = {}
+        counters = {"llm": 0, "acoustic": 0, "embedding": False}
 
-        for name, tensor in safetensors_weights_iterator(safetensors_files):
-            # LLM weights
-            hf_name = self._remap_mistral_to_hf(name)
-            if hf_name is not None:
-                if ".attention.wq." in name:
-                    tensor = self._permute_qk_weight(
-                        tensor, n_heads, head_dim, hidden_size
+        for path in shard_paths:
+            with safe_open(path, framework="pt", device="cpu") as fp:
+                for ckpt_key in fp.keys():
+                    tensor = fp.get_tensor(ckpt_key)
+                    self._dispatch_weight(
+                        ckpt_key,
+                        tensor,
+                        llm_state,
+                        counters,
+                        n_heads,
+                        n_kv_heads,
+                        head_dim,
                     )
-                elif ".attention.wk." in name:
-                    tensor = self._permute_qk_weight(
-                        tensor, n_kv_heads, head_dim, hidden_size
-                    )
-                llm_state[hf_name] = tensor
-                llm_count += 1
-                continue
-
-            # Acoustic transformer weights
-            if name.startswith("acoustic_transformer."):
-                short = name[len("acoustic_transformer.") :]
-                self.acoustic_transformer.load_weight((short, tensor))
-                at_count += 1
-                continue
-
-            # Audio token embedding weights
-            if (
-                name
-                == "mm_audio_embeddings.audio_codebook_embeddings.embeddings.weight"
-            ):
-                self.audio_token_embedding.embeddings.weight.data.copy_(tensor)
-                emb_loaded = True
-                continue
 
         missing, unexpected = self.language_model.load_state_dict(
             llm_state, strict=False
         )
         logger.info(
-            "LLM weights: %d loaded, %d missing, %d unexpected",
-            llm_count,
+            "LLM: %d loaded, %d missing, %d unexpected",
+            counters["llm"],
             len(missing),
             len(unexpected),
         )
         if missing:
-            logger.warning("Missing LLM keys (first 5): %s", missing[:5])
+            logger.warning("Missing keys (first 5): %s", missing[:5])
         if unexpected:
-            logger.warning("Unexpected LLM keys (first 5): %s", unexpected[:5])
-        logger.info("Acoustic transformer weights: %d loaded", at_count)
-        logger.info("Audio token embedding loaded: %s", emb_loaded)
+            logger.warning("Unexpected keys (first 5): %s", unexpected[:5])
+        logger.info(
+            "Acoustic transformer: %d loaded | Audio embedding: %s",
+            counters["acoustic"],
+            counters["embedding"],
+        )
 
-    def _remap_mistral_to_hf(self, name: str) -> str | None:
-        if name == "norm.weight":
-            return "norm.weight"
-        if name == "mm_audio_embeddings.tok_embeddings.weight":
-            return "embed_tokens.weight"
-        for pattern, repl in self._MISTRAL_TO_HF_RULES:
-            if stdlib_re.match(pattern, name):
-                return stdlib_re.sub(pattern, repl, name)
-        return None
+    def _dispatch_weight(
+        self,
+        ckpt_key: str,
+        tensor: torch.Tensor,
+        llm_state: dict[str, torch.Tensor],
+        counters: dict,
+        n_heads: int,
+        n_kv_heads: int,
+        head_dim: int,
+    ) -> None:
+        """Route a single checkpoint tensor to the correct sub-module."""
+        # --- LLM backbone ---
+        mapped = _remap_checkpoint_key(ckpt_key)
+        if mapped is not None:
+            if "attention.wq." in ckpt_key:
+                tensor = _interleave_qk_weight(tensor, n_heads, head_dim)
+            elif "attention.wk." in ckpt_key:
+                tensor = _interleave_qk_weight(tensor, n_kv_heads, head_dim)
+            llm_state[mapped] = tensor
+            counters["llm"] += 1
+            return
 
-    # ---- Class method to build from checkpoint (replaces stages.py logic) ----
+        # --- Acoustic transformer ---
+        prefix = "acoustic_transformer."
+        if ckpt_key.startswith(prefix):
+            param_name = ckpt_key[len(prefix) :]
+            self.acoustic_transformer.load_weight((param_name, tensor))
+            counters["acoustic"] += 1
+            return
+
+        # --- Audio codebook embedding ---
+        if ckpt_key == (
+            "mm_audio_embeddings.audio_codebook_embeddings.embeddings.weight"
+        ):
+            self.audio_token_embedding.embeddings.weight.data.copy_(tensor)
+            counters["embedding"] = True
+
+    # ---- factory ----------------------------------------------------------
 
     @classmethod
-    def from_checkpoint(cls, checkpoint_dir: str, device: str = "cuda:0"):
-        """Build the full model from a Mistral-format checkpoint directory."""
+    def from_checkpoint(
+        cls, checkpoint_dir: str, device: str = "cuda:0"
+    ) -> tuple["VoxtralTTSAudioGeneration", dict[str, torch.Tensor], object]:
+        """Build and load the full model from a Mistral-format checkpoint."""
         from dataclasses import asdict
 
         from sglang_omni.models.voxtral_tts.model_config import VoxtralModelConfig
 
         config = VoxtralModelConfig.from_model_path(checkpoint_dir)
-        audio_model_args_dict = asdict(config.audio_model_args)
+        audio_args = asdict(config.audio_model_args)
 
-        logger.info("Starting to load model %s ...", checkpoint_dir)
+        logger.info("Loading model from %s …", checkpoint_dir)
         t0 = time.perf_counter()
-        mem_before = (
-            torch.cuda.memory_allocated(device) if device.startswith("cuda") else 0
-        )
+        mem0 = torch.cuda.memory_allocated(device) if device.startswith("cuda") else 0
 
-        logger.info(
-            "Building VoxtralTTSAudioGeneration with meta device (fast init) ..."
-        )
+        # Fast-init on meta device, then materialise on CPU
         with torch.device("meta"):
             model = cls(
                 text_config=config.text_config,
-                audio_model_args=audio_model_args_dict,
+                audio_model_args=audio_args,
                 embedding_dim=config.text_config.dim,
             )
         model = model.to_empty(device="cpu")
 
-        for layer in model.language_model.layers:
-            layer.self_attn.rotary_emb._build_cache()
+        # Rebuild non-persistent buffers lost during meta init
+        for block in model.language_model.blocks:
+            block.attn.rotary_emb._materialise_cache()
 
-        # Rebuild acoustic transformer buffers lost during meta-device init
+        model.audio_token_embedding._rebuild_offsets()
+
         at = model.acoustic_transformer
         at._timesteps = torch.linspace(0, 1, at._acoustic_decode_iters)
         dim = at.acoustic_transformer_args.dim
-        inv_freq = torch.exp(
-            -math.log(10000.0) * torch.arange(dim // 2).float() / (dim // 2)
+        at.time_embedding.inv_freq = torch.exp(
+            -math.log(10_000.0) * torch.arange(dim // 2).float() / (dim // 2)
         )
-        at.time_embedding.inv_freq = inv_freq
 
         model.load_weights(checkpoint_dir)
-
-        load_time = time.perf_counter() - t0
-        logger.info("Loading weights took %.2f seconds", load_time)
+        logger.info("Weight loading: %.2f s", time.perf_counter() - t0)
 
         model = model.to(dtype=torch.bfloat16, device=device).eval()
 
-        mem_after = (
-            torch.cuda.memory_allocated(device) if device.startswith("cuda") else 0
-        )
-        mem_used_gib = (mem_after - mem_before) / (1024**3)
-        total_time = time.perf_counter() - t0
+        mem1 = torch.cuda.memory_allocated(device) if device.startswith("cuda") else 0
         logger.info(
-            "Model loading took %.2f GiB and %.2f seconds", mem_used_gib, total_time
+            "Model ready: %.2f GiB GPU, %.2f s total",
+            (mem1 - mem0) / (1 << 30),
+            time.perf_counter() - t0,
         )
 
-        # Load voice embeddings
-        voice_embeddings = {}
+        # Voice embeddings (speaker conditioning vectors)
+        voice_embeddings: dict[str, torch.Tensor] = {}
         voice_dir = os.path.join(checkpoint_dir, "voice_embedding")
         if os.path.isdir(voice_dir):
-            for fname in os.listdir(voice_dir):
+            for fname in sorted(os.listdir(voice_dir)):
                 if fname.endswith(".pt"):
-                    voice_name = fname[:-3]
+                    name = fname.removesuffix(".pt")
                     emb = torch.load(
-                        os.path.join(voice_dir, fname), map_location=device
+                        os.path.join(voice_dir, fname),
+                        map_location=device,
+                        weights_only=True,
                     )
-                    voice_embeddings[voice_name] = emb.to(dtype=torch.bfloat16)
+                    voice_embeddings[name] = emb.to(dtype=torch.bfloat16)
             logger.info(
                 "Loaded %d voice embeddings: %s",
                 len(voice_embeddings),
