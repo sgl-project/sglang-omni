@@ -16,6 +16,7 @@ from sglang_omni.models.ming_omni.pipeline.next_stage import (
     AGGREGATE_STAGE,
     AUDIO_STAGE,
     DECODE_STAGE,
+    IMAGE_STAGE,
     PREPROCESSING_STAGE,
     TALKER_STAGE,
     THINKER_STAGE,
@@ -23,9 +24,9 @@ from sglang_omni.models.ming_omni.pipeline.next_stage import (
 
 
 class MingOmniPipelineConfig(PipelineConfig):
-    """6-stage text-only pipeline for Ming-Omni.
+    """6-stage text/vision pipeline for Ming-Omni.
 
-    preprocessing → audio_encoder → mm_aggregate → thinker → decode
+    preprocessing → audio_encoder + image_encoder → mm_aggregate → thinker → decode
     """
 
     architecture: ClassVar[str] = "BailingMM2NativeForConditionalGeneration"
@@ -54,6 +55,18 @@ class MingOmniPipelineConfig(PipelineConfig):
             relay=RelayConfig(device="cuda"),
         ),
         StageConfig(
+            name=IMAGE_STAGE,
+            executor=ExecutorConfig(
+                factory="sglang_omni.models.ming_omni.pipeline.stages.create_image_encoder_executor",
+                args={
+                    "device": "cuda",
+                    "dtype": None,
+                },
+            ),
+            get_next="sglang_omni.models.ming_omni.pipeline.next_stage.encoder_next",
+            relay=RelayConfig(device="cuda"),
+        ),
+        StageConfig(
             name=AGGREGATE_STAGE,
             executor=ExecutorConfig(
                 factory="sglang_omni.models.ming_omni.pipeline.stages.create_aggregate_executor",
@@ -62,7 +75,7 @@ class MingOmniPipelineConfig(PipelineConfig):
             get_next="sglang_omni.models.ming_omni.pipeline.next_stage.aggregate_next",
             input_handler=InputHandlerConfig(
                 type="aggregated",
-                sources=[PREPROCESSING_STAGE, AUDIO_STAGE],
+                sources=[PREPROCESSING_STAGE, AUDIO_STAGE, IMAGE_STAGE],
                 merge_fn="sglang_omni.models.ming_omni.pipeline.merge.merge_for_thinker",
             ),
             relay=RelayConfig(device="cpu"),
@@ -153,6 +166,15 @@ class MingOmniSpeechPipelineConfig(PipelineConfig):
             relay=RelayConfig(device="cuda"),
         ),
         StageConfig(
+            name=IMAGE_STAGE,
+            executor=ExecutorConfig(
+                factory="sglang_omni.models.ming_omni.pipeline.stages.create_image_encoder_executor",
+                args={"device": "cuda", "dtype": None},
+            ),
+            get_next="sglang_omni.models.ming_omni.pipeline.next_stage.encoder_next",
+            relay=RelayConfig(device="cuda"),
+        ),
+        StageConfig(
             name=AGGREGATE_STAGE,
             executor=ExecutorConfig(
                 factory="sglang_omni.models.ming_omni.pipeline.stages.create_aggregate_executor",
@@ -161,7 +183,7 @@ class MingOmniSpeechPipelineConfig(PipelineConfig):
             get_next="sglang_omni.models.ming_omni.pipeline.next_stage.aggregate_next",
             input_handler=InputHandlerConfig(
                 type="aggregated",
-                sources=[PREPROCESSING_STAGE, AUDIO_STAGE],
+                sources=[PREPROCESSING_STAGE, AUDIO_STAGE, IMAGE_STAGE],
                 merge_fn="sglang_omni.models.ming_omni.pipeline.merge.merge_for_thinker",
             ),
             relay=RelayConfig(device="cpu"),

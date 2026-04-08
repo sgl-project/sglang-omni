@@ -8,7 +8,7 @@ from typing import Any, Iterable
 import torch
 
 from sglang_omni.models.ming_omni.io import OmniEvent, PipelineState, ThinkerOutput
-from sglang_omni.models.ming_omni.pipeline.next_stage import AUDIO_STAGE
+from sglang_omni.models.ming_omni.pipeline.next_stage import AUDIO_STAGE, IMAGE_STAGE
 from sglang_omni.proto import StagePayload
 
 
@@ -63,20 +63,28 @@ def build_thinker_inputs(
 ) -> dict[str, Any]:
     """Build model_inputs dict for the Ming thinker from encoder outputs.
 
-    The SGLang runtime's _inject_multimodal_embeds() handles audio embedding
-    injection automatically: it finds positions where input_ids == audio_token_id
-    and patches audio_embeds from req.omni_model_inputs into those positions.
+    The SGLang runtime's _inject_multimodal_embeds() handles embedding
+    injection automatically: it finds positions where input_ids == token_id
+    and patches embeddings from req.omni_model_inputs into those positions.
 
-    We just need to pass audio_embeds as a flat [T', hidden_size] tensor —
+    We pass each modality as a flat [T', hidden_size] tensor —
     the runtime handles the rest via token ID matching.
     """
     audio_out = (
         encoder_outs.get(AUDIO_STAGE, {}) if isinstance(encoder_outs, dict) else {}
     )
+    image_out = (
+        encoder_outs.get(IMAGE_STAGE, {}) if isinstance(encoder_outs, dict) else {}
+    )
 
     audio_embeds = (
         _as_tensor(audio_out.get("audio_embeds"))
         if isinstance(audio_out, dict)
+        else None
+    )
+    image_embeds = (
+        _as_tensor(image_out.get("image_embeds"))
+        if isinstance(image_out, dict)
         else None
     )
 
@@ -87,6 +95,12 @@ def build_thinker_inputs(
         if audio_embeds.dim() == 3:
             audio_embeds = audio_embeds.squeeze(0)
         thinker_model_inputs["audio_embeds"] = audio_embeds
+
+    if _non_empty(image_embeds):
+        # Flatten: [B, T', H] -> [T', H] if needed
+        if image_embeds.dim() == 3:
+            image_embeds = image_embeds.squeeze(0)
+        thinker_model_inputs["image_embeds"] = image_embeds
 
     if not thinker_model_inputs:
         return {}

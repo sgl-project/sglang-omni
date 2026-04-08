@@ -112,8 +112,6 @@ class MingOmniVisionEncoder(nn.Module):
     ) -> None:
         super().__init__()
 
-        # --- imports from sglang (sub-modules only, no top-level model) ---
-        from sglang.srt.layers.attention.vision import VisionAttention  # noqa: F401
         from sglang.srt.layers.rotary_embedding import get_rope
         from sglang.srt.layers.vocab_parallel_embedding import VocabParallelEmbedding
         from sglang.srt.models.qwen3_omni_moe import Qwen3OmniMoeVisionPatchMerger

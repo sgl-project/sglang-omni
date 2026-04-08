@@ -25,7 +25,11 @@ from sglang_omni.models.ming_omni.pipeline.engine_io import (
     build_sglang_thinker_request,
 )
 from sglang_omni.models.ming_omni.pipeline.merge import decode_events
-from sglang_omni.models.ming_omni.pipeline.next_stage import AUDIO_STAGE, THINKER_STAGE
+from sglang_omni.models.ming_omni.pipeline.next_stage import (
+    AUDIO_STAGE,
+    IMAGE_STAGE,
+    THINKER_STAGE,
+)
 from sglang_omni.models.ming_omni.pipeline.state_io import load_state, store_state
 from sglang_omni.proto import StagePayload
 
@@ -70,6 +74,37 @@ def create_audio_encoder_executor(
     def _result_builder(payload: StagePayload, result: Any) -> StagePayload:
         state = load_state(payload)
         apply_encoder_result(state, stage_name=AUDIO_STAGE, result=result)
+        return store_state(payload, state)
+
+    engine = create_single_pass_engine(
+        model,
+        device=device,
+        use_cache=True,
+        cache_size=64,
+    )
+    return EngineExecutor(
+        engine=engine, request_builder=_request_builder, result_builder=_result_builder
+    )
+
+
+def create_image_encoder_executor(
+    model_path: str,
+    *,
+    device: str = "cuda",
+    dtype: str | None = None,
+) -> EngineExecutor:
+    """Create an image encoder executor for the Ming-Omni vision pipeline."""
+    from sglang_omni.models.ming_omni.components.image_encoder import MingImageEncoder
+
+    model = MingImageEncoder(model_path=model_path, device=device, dtype=dtype)
+
+    def _request_builder(payload: StagePayload):
+        state = load_state(payload)
+        return build_encoder_request(state, stage_name=IMAGE_STAGE)
+
+    def _result_builder(payload: StagePayload, result: Any) -> StagePayload:
+        state = load_state(payload)
+        apply_encoder_result(state, stage_name=IMAGE_STAGE, result=result)
         return store_state(payload, state)
 
     engine = create_single_pass_engine(
