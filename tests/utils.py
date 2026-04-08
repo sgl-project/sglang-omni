@@ -192,17 +192,25 @@ def apply_slack(
     """
     result: dict[int, dict[str, float]] = {}
     for conc, m in p95.items():
-        result[conc] = {
+        thresholds = {
             "throughput_qps_min": round(m["throughput_qps"] * slack_higher, 2),
             "tok_per_s_agg_min": round(m["tok_per_s_agg"] * slack_higher, 1),
             "latency_mean_s_max": round(m["latency_mean_s"] * slack_lower, 1),
-            "rtf_mean_max": round(m["rtf_mean"] * slack_lower, 2),
         }
+        if "rtf_mean" in m:
+            thresholds["rtf_mean_max"] = round(m["rtf_mean"] * slack_lower, 2)
+        result[conc] = thresholds
     return result
 
 
-def assert_speed_thresholds(summary: dict, thresholds: dict, concurrency: int) -> None:
-    """Assert speed benchmark summary meets threshold requirements."""
+def assert_speed_thresholds(
+    summary: dict, thresholds: dict, concurrency: int, *, check_rtf: bool = True
+) -> None:
+    """Assert speed benchmark summary meets threshold requirements.
+
+    Set *check_rtf* to ``False`` for non-audio tasks (e.g. VLM) that have no
+    RTF metric.
+    """
     level_thresholds = thresholds[concurrency]
     assert summary["throughput_qps"] >= level_thresholds["throughput_qps_min"], (
         f"throughput_qps {summary['throughput_qps']} < "
@@ -216,10 +224,11 @@ def assert_speed_thresholds(summary: dict, thresholds: dict, concurrency: int) -
         f"latency_mean_s {summary['latency_mean_s']} > "
         f"{level_thresholds['latency_mean_s_max']} at concurrency {concurrency}"
     )
-    assert summary["rtf_mean"] <= level_thresholds["rtf_mean_max"], (
-        f"rtf_mean {summary['rtf_mean']} > "
-        f"{level_thresholds['rtf_mean_max']} at concurrency {concurrency}"
-    )
+    if check_rtf and "rtf_mean_max" in level_thresholds:
+        assert summary["rtf_mean"] <= level_thresholds["rtf_mean_max"], (
+            f"rtf_mean {summary['rtf_mean']} > "
+            f"{level_thresholds['rtf_mean_max']} at concurrency {concurrency}"
+        )
 
 
 def assert_streaming_consistency(

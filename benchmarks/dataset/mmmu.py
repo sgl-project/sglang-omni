@@ -7,6 +7,7 @@ samples with base64-encoded images for the sglang-omni chat completions API.
 
 from __future__ import annotations
 
+import ast
 import base64
 import io
 import logging
@@ -130,6 +131,11 @@ def load_mmmu_samples(max_samples: int | None = None) -> list[MMMUSample]:
     Downloads and caches via the ``datasets`` library. Deterministic selection:
     all subjects are loaded, merged, sorted by sample id, and the first
     *max_samples* are returned.
+
+    Memory note: All images are eagerly converted to base64 data URIs and held
+    in memory. Each sample carries ~2MB of base64 data. The full validation set
+    (~900 samples) would reach ~1.8GB. Use *max_samples* to cap memory usage in
+    constrained environments.
     """
     subjects: list[str] = []
     for subs in DOMAIN_CAT2SUB_CAT.values():
@@ -137,15 +143,9 @@ def load_mmmu_samples(max_samples: int | None = None) -> list[MMMUSample]:
 
     ds_list = []
     for subj in subjects:
-        try:
-            d = load_dataset("MMMU/MMMU", subj, split="validation")
-            d = d.add_column("__subject__", [subj] * len(d))
-            ds_list.append(d)
-        except Exception:
-            logger.warning("Failed to load MMMU subject: %s", subj)
-            continue
-    if not ds_list:
-        raise RuntimeError("Failed to load any MMMU subject datasets")
+        d = load_dataset("MMMU/MMMU", subj, split="validation")
+        d = d.add_column("__subject__", [subj] * len(d))
+        ds_list.append(d)
 
     merged = concatenate_datasets(ds_list)
 
@@ -162,11 +162,14 @@ def load_mmmu_samples(max_samples: int | None = None) -> list[MMMUSample]:
         ex = merged[idx]
         subject = ex["__subject__"]
 
-        image = ex.get("image_1")
-        if image is None or not hasattr(image, "convert"):
+        image_uris: list[str] = []
+        for i in range(1, 8):
+            image = ex.get(f"image_{i}")
+            if image is not None and hasattr(image, "convert"):
+                image_uris.append(image_to_data_uri(image))
+        if not image_uris:
             continue
 
-        data_uri = image_to_data_uri(image)
         question = ex.get("question", "")
         answer = ex.get("answer")
 
@@ -177,7 +180,7 @@ def load_mmmu_samples(max_samples: int | None = None) -> list[MMMUSample]:
                 options = (
                     raw_options
                     if isinstance(raw_options, list)
-                    else list(eval(raw_options))
+                    else list(ast.literal_eval(raw_options))
                 )
             except Exception:
                 options = []
@@ -199,7 +202,7 @@ def load_mmmu_samples(max_samples: int | None = None) -> list[MMMUSample]:
                 question=question,
                 options=options,
                 answer=answer,
-                image_uris=[data_uri],
+                image_uris=image_uris,
                 subject=subject,
                 prompt=prompt,
                 all_choices=all_choices,

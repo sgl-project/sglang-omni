@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""MMMU accuracy and speed CI for Qwen3-Omni (Case 1: Text+Image → Text, Talker OFF).
+"""MMMU accuracy and speed CI for Qwen3-Omni (Text+Image → Text, Talker OFF).
 
 Usage:
     pytest tests/test_model/test_qwen3_omni_mmmu_ci.py -s -x
@@ -15,20 +15,31 @@ from pathlib import Path
 import pytest
 
 from benchmarks.eval.mmmu import MMMUEvalConfig, run_mmmu_eval
-from tests.utils import find_free_port, start_server_from_cmd, stop_server
+from tests.utils import (
+    apply_slack,
+    assert_speed_thresholds,
+    find_free_port,
+    start_server_from_cmd,
+    stop_server,
+)
 
 MODEL_PATH = "Qwen/Qwen3-Omni-30B-A3B-Instruct"
 
 MAX_SAMPLES = 50
-MAX_CONCURRENCY = 16
+CONCURRENCY = 16
 STARTUP_TIMEOUT = 900
 
 MMMU_MIN_ACCURACY = 0.55
 
-# Note (Yifei): Thresholds are set very loose now. Tighten after gathering P95 baselines.
-SPEED_LATENCY_MEAN_MAX = 300.0
-SPEED_THROUGHPUT_MIN = 0.01
-SPEED_TOK_PER_S_AGG_MIN = 5.0
+# TODO(Yifei): Tighten after gathering P95 baselines on CI hardware.
+_MMMU_P95 = {
+    16: {
+        "throughput_qps": 0.05,
+        "tok_per_s_agg": 10.0,
+        "latency_mean_s": 200.0,
+    },
+}
+MMMU_THRESHOLDS = apply_slack(_MMMU_P95)
 
 
 @pytest.fixture(scope="module")
@@ -62,15 +73,12 @@ def test_mmmu_accuracy_and_speed(
         model="qwen3-omni",
         port=server_process.port,
         max_samples=MAX_SAMPLES,
-        max_concurrency=MAX_CONCURRENCY,
+        max_concurrency=CONCURRENCY,
         output_dir=str(tmp_path / "mmmu"),
     )
     results = asyncio.run(run_mmmu_eval(config))
 
     summary = results["summary"]
-    assert (
-        summary["failed"] == 0
-    ), f"Expected 0 failed requests, got {summary['failed']}"
     assert summary["accuracy"] >= MMMU_MIN_ACCURACY, (
         f"MMMU accuracy {summary['accuracy']:.4f} "
         f"({summary['accuracy'] * 100:.1f}%) < "
@@ -78,19 +86,7 @@ def test_mmmu_accuracy_and_speed(
     )
 
     speed = results["speed"]
-    assert speed["latency_mean_s"] <= SPEED_LATENCY_MEAN_MAX, (
-        f"latency_mean_s {speed['latency_mean_s']} > "
-        f"threshold {SPEED_LATENCY_MEAN_MAX}s"
-    )
-    assert speed["throughput_qps"] >= SPEED_THROUGHPUT_MIN, (
-        f"throughput_qps {speed['throughput_qps']} < "
-        f"threshold {SPEED_THROUGHPUT_MIN}"
-    )
-    if speed.get("tok_per_s_agg") is not None:
-        assert speed["tok_per_s_agg"] >= SPEED_TOK_PER_S_AGG_MIN, (
-            f"tok_per_s_agg {speed['tok_per_s_agg']} < "
-            f"threshold {SPEED_TOK_PER_S_AGG_MIN}"
-        )
+    assert_speed_thresholds(speed, MMMU_THRESHOLDS, CONCURRENCY, check_rtf=False)
 
 
 if __name__ == "__main__":

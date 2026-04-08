@@ -87,6 +87,38 @@ jobs:
             echo ""
           done
 
+      - name: Kill GPU processes
+        if: always()
+        shell: bash
+        run: |
+          bash .github/scripts/delete_gpu_process.sh
+
+      - name: Run MMMU CI (accuracy + speed)
+        timeout-minutes: 60
+        shell: bash
+        run: |
+          source omni-qwen3/bin/activate
+          export PYTHONPATH=$PWD
+          pytest tests/test_model/test_qwen3_omni_mmmu_ci.py -v -s -x
+        env:
+          HF_ENDPOINT: https://hf-mirror.com
+
+      - name: Kill GPU processes
+        if: always()
+        shell: bash
+        run: |
+          bash .github/scripts/delete_gpu_process.sh
+
+      - name: Run MMMU Audio CI (WER + speed)
+        timeout-minutes: 60
+        shell: bash
+        run: |
+          source omni-qwen3/bin/activate
+          export PYTHONPATH=$PWD
+          pytest tests/test_model/test_qwen3_omni_mmmu_audio_ci.py -v -s -x
+        env:
+          HF_ENDPOINT: https://hf-mirror.com
+
       - name: Save cache
         run: |
           cp -p -r omni-qwen3 /github/home/

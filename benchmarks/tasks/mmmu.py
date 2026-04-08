@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-import asyncio
+import base64
 import json
 import logging
 import os
@@ -26,18 +26,18 @@ def _check_is_number(s: str) -> bool:
     try:
         float(s.replace(",", ""))
         return True
-    except Exception:
+    except (ValueError, TypeError):
         return False
 
 
-def _normalize_str(s: str) -> list:
+def _normalize_str(s: str) -> list[float | str]:
     """Normalize a string for open-ended answer comparison."""
     s = s.strip()
     if _check_is_number(s):
         s = s.replace(",", "")
         try:
             return [round(float(s), 2)]
-        except Exception:
+        except (ValueError, TypeError):
             return [s.lower()]
     return [s.lower()] if len(s) > 1 else [" " + s, s + " "]
 
@@ -54,7 +54,7 @@ def _extract_numbers(s: str) -> list[str]:
     )
 
 
-def parse_open_response(response: str) -> list:
+def parse_open_response(response: str) -> list[float | str]:
     """Extract answer candidates from an open-ended model response."""
 
     def _get_key_subresponses(resp: str) -> list[str]:
@@ -95,7 +95,7 @@ def parse_open_response(response: str) -> list:
     return list(dict.fromkeys(out))
 
 
-def eval_open(gold, preds: list) -> bool:
+def eval_open(gold: str | list[str], preds: list[float | str]) -> bool:
     """Check if any prediction matches the gold answer (fuzzy)."""
     if isinstance(gold, list):
         norm_answers: list = []
@@ -168,12 +168,20 @@ def make_mmmu_send_fn(
     *,
     max_tokens: int = 2048,
     temperature: float = 0.0,
+    enable_audio: bool = False,
+    audio_dir: str | None = None,
 ) -> SendFn:
     """Return a *send_fn* that sends an MMMUSample to /v1/chat/completions.
 
-    Uses the sglang-omni request format with a top-level ``images`` field
-    and ``modalities: ["text"]`` (text-only output, no audio generation).
+    Uses the sglang-omni request format with a top-level ``images`` field.
+    When *enable_audio* is ``False`` (default), requests text-only output.
+    When ``True``, requests ``["text", "audio"]`` modalities, decodes the
+    audio response, saves it as a WAV file under *audio_dir*, and stores
+    the path in ``RequestResult.wav_path``.
     """
+    modalities = ["text", "audio"] if enable_audio else ["text"]
+    if enable_audio:
+        import soundfile as sf
 
     async def send_fn(
         session: aiohttp.ClientSession, sample: MMMUSample
@@ -183,15 +191,17 @@ def make_mmmu_send_fn(
             text=sample.prompt[:60],
         )
 
-        payload = {
+        payload: dict = {
             "model": model_name,
             "messages": [{"role": "user", "content": sample.prompt}],
             "images": sample.image_uris,
-            "modalities": ["text"],
+            "modalities": modalities,
             "max_tokens": max_tokens,
             "temperature": temperature,
             "stream": False,
         }
+        if enable_audio:
+            payload["audio"] = {"format": "wav"}
 
         start_time = time.perf_counter()
         try:
@@ -199,8 +209,28 @@ def make_mmmu_send_fn(
                 response.raise_for_status()
                 body = await response.json()
 
-            content = body.get("choices", [{}])[0].get("message", {}).get("content", "")
+            message = body.get("choices", [{}])[0].get("message", {})
+            content = message.get("content", "")
             result.text = content or ""
+
+            if enable_audio and audio_dir:
+                audio_obj = message.get("audio")
+                if audio_obj is None:
+                    raise ValueError("No audio in response")
+                audio_b64 = audio_obj.get("data", "")
+                if not audio_b64:
+                    raise ValueError("Empty audio data in response")
+                wav_path = os.path.join(audio_dir, f"{sample.sample_id}.wav")
+                with open(wav_path, "wb") as f:
+                    f.write(base64.b64decode(audio_b64))
+                result.wav_path = wav_path
+
+                wav_info = sf.info(wav_path)
+                result.audio_duration_s = round(wav_info.duration, 4)
+                elapsed = time.perf_counter() - start_time
+                if result.audio_duration_s > 0:
+                    result.rtf = elapsed / result.audio_duration_s
+
             result.is_success = True
 
             usage = body.get("usage", {})
@@ -212,7 +242,7 @@ def make_mmmu_send_fn(
             result.engine_time_s = elapsed
             if result.completion_tokens > 0 and result.engine_time_s > 0:
                 result.tok_per_s = result.completion_tokens / result.engine_time_s
-        except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+        except Exception as exc:
             result.error = str(exc)
         finally:
             result.latency_s = time.perf_counter() - start_time
@@ -235,68 +265,56 @@ def compute_mmmu_metrics(
     per_sample: list[dict] = []
 
     for sample, result in zip(samples, results):
+        record = {
+            "sample_id": sample.sample_id,
+            "subject": sample.subject,
+            "question_type": sample.question_type,
+            "expected": sample.answer,
+            "latency_s": round(result.latency_s, 4),
+            "prompt_tokens": result.prompt_tokens,
+            "completion_tokens": result.completion_tokens,
+            "tok_per_s": (round(result.tok_per_s, 1) if result.tok_per_s > 0 else None),
+        }
+
         if not result.is_success:
-            per_sample.append(
-                {
-                    "sample_id": sample.sample_id,
-                    "subject": sample.subject,
-                    "question_type": sample.question_type,
-                    "expected": sample.answer,
-                    "predicted": "",
-                    "raw_response": result.error,
-                    "is_correct": False,
-                    "is_success": False,
-                    "error": result.error,
-                    "latency_s": round(result.latency_s, 4),
-                    "prompt_tokens": result.prompt_tokens,
-                    "completion_tokens": result.completion_tokens,
-                    "tok_per_s": (
-                        round(result.tok_per_s, 1) if result.tok_per_s > 0 else None
-                    ),
-                }
+            record.update(
+                predicted="",
+                raw_response=result.error,
+                is_correct=False,
+                is_success=False,
+                error=result.error,
             )
             failed += 1
-            continue
-
-        gold = sample.answer
-        if (
-            sample.question_type == "multiple-choice"
-            and sample.all_choices
-            and sample.index2ans
-        ):
-            predicted = parse_multi_choice_response(
-                result.text,
-                sample.all_choices,
-                sample.index2ans,
-            )
-            is_correct = gold is not None and predicted == gold
         else:
-            parsed_list = parse_open_response(result.text)
-            is_correct = gold is not None and eval_open(gold, parsed_list)
-            predicted = ", ".join(map(str, parsed_list))
+            gold = sample.answer
+            if (
+                sample.question_type == "multiple-choice"
+                and sample.all_choices
+                and sample.index2ans
+            ):
+                predicted = parse_multi_choice_response(
+                    result.text,
+                    sample.all_choices,
+                    sample.index2ans,
+                )
+                is_correct = gold is not None and predicted == gold
+            else:
+                parsed_list = parse_open_response(result.text)
+                is_correct = gold is not None and eval_open(gold, parsed_list)
+                predicted = ", ".join(map(str, parsed_list))
 
-        if is_correct:
-            correct += 1
+            if is_correct:
+                correct += 1
 
-        per_sample.append(
-            {
-                "sample_id": sample.sample_id,
-                "subject": sample.subject,
-                "question_type": sample.question_type,
-                "expected": sample.answer,
-                "predicted": predicted,
-                "raw_response": result.text,
-                "is_correct": is_correct,
-                "is_success": True,
-                "error": "",
-                "latency_s": round(result.latency_s, 4),
-                "prompt_tokens": result.prompt_tokens,
-                "completion_tokens": result.completion_tokens,
-                "tok_per_s": (
-                    round(result.tok_per_s, 1) if result.tok_per_s > 0 else None
-                ),
-            }
-        )
+            record.update(
+                predicted=predicted,
+                raw_response=result.text,
+                is_correct=is_correct,
+                is_success=True,
+                error="",
+            )
+
+        per_sample.append(record)
 
     total = len(samples)
     accuracy = correct / total if total > 0 else 0.0
