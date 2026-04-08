@@ -743,41 +743,16 @@ class VoxtralTTSAudioGeneration(nn.Module):
         new_kvs = []
 
         last = hidden_states[-1]
-        logger.info(
-            "[SGL-DEBUG] embed: shape=%s, mean=%.6f, std=%.4f | last_tok: mean=%.6f, std=%.4f",
-            list(hidden_states.shape),
-            hidden_states.float().mean().item(),
-            hidden_states.float().std().item(),
-            last.float().mean().item(),
-            last.float().std().item(),
-        )
 
         for i, layer in enumerate(model.layers):
             hidden_states, residual, new_kv = layer(positions, hidden_states, residual)
             new_kvs.append(new_kv)
             state = hidden_states + residual
             last = state[-1]
-            logger.info(
-                "[SGL-DEBUG] layer %2d: shape=%s, mean=%.6f, std=%.4f | last_tok: mean=%.6f, std=%.4f",
-                i,
-                list(state.shape),
-                state.float().mean().item(),
-                state.float().std().item(),
-                last.float().mean().item(),
-                last.float().std().item(),
-            )
 
         hidden_states, _ = model.norm(hidden_states, residual)
         last = hidden_states[-1]
-        logger.info(
-            "[SGL-DEBUG] final_norm: shape=%s, mean=%.6f, std=%.4f | last_tok: mean=%.6f, std=%.4f, norm=%.4f",
-            list(hidden_states.shape),
-            hidden_states.float().mean().item(),
-            hidden_states.float().std().item(),
-            last.float().mean().item(),
-            last.float().std().item(),
-            last.float().norm().item(),
-        )
+
         return hidden_states, new_kvs
 
     # ---- Weight loading (mirrors vLLM's load_weights) ----
