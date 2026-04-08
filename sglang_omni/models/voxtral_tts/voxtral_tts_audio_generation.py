@@ -4,7 +4,6 @@ import os
 import re as stdlib_re
 import time
 from dataclasses import dataclass, fields, is_dataclass
-from enum import Enum
 from typing import Union, get_args, get_origin
 
 import numpy as np
@@ -12,6 +11,11 @@ import regex as re
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+from sglang_omni.models.voxtral_tts.acoustic_transformer import (
+    AudioSpecialTokens,
+    FlowMatchingAudioTransformer,
+)
 
 try:
     from apex.normalization import FusedRMSNorm
@@ -34,22 +38,6 @@ SUPPORTED_LANGS = {
     "it": "Italian",
     "pt": "Portuguese",
 }
-
-
-# ---- Audio special tokens ----
-
-
-class AudioSpecialTokens(str, Enum):
-    empty_audio = "[EMPTY_AUDIO]"
-    end_audio = "[END_AUDIO]"
-
-    @staticmethod
-    def all_special_tokens() -> list["AudioSpecialTokens"]:
-        return [token for token in AudioSpecialTokens]
-
-    @staticmethod
-    def id(token: "AudioSpecialTokens") -> int:
-        return AudioSpecialTokens.all_special_tokens().index(token)
 
 
 # ---- Dataclasses (copied from vLLM) ----
@@ -233,185 +221,6 @@ class TimeEmbedding(nn.Module):
     def forward(self, t: torch.Tensor) -> torch.Tensor:
         emb = torch.einsum("bi, j -> bj", t, self.inv_freq)
         return torch.cat((emb.cos(), emb.sin()), dim=-1)
-
-
-class FlowMatchingAudioTransformer(nn.Module):
-    def __init__(self, audio_model_args: dict) -> None:
-        super().__init__()
-        if "codebook_sizes" in audio_model_args:
-            codebook_sizes = [
-                int(c) for c in audio_model_args.pop("codebook_sizes").split(",")
-            ]
-            audio_model_args.update(
-                {
-                    "semantic_codebook_size": codebook_sizes[0],
-                    "acoustic_codebook_size": codebook_sizes[1],
-                    "n_acoustic_codebook": len(codebook_sizes) - 1,
-                }
-            )
-        self.model_args: MultimodalAudioModelArgs = from_nested_dict(
-            MultimodalAudioModelArgs, audio_model_args
-        )
-        assert isinstance(self.model_args, MultimodalAudioModelArgs)
-        args = self.model_args.acoustic_transformer_args
-        self.acoustic_transformer_args = args
-        assert isinstance(self.acoustic_transformer_args, AcousticTransformerArgs)
-
-        self.num_non_acoustic_embeddings = 1
-        self.num_acoustic_codebooks = (
-            len(self.model_args.get_codebook_sizes()) - self.num_non_acoustic_embeddings
-        )
-
-        self.sigma = args.sigma
-
-        acoustic_codebook_sizes = self.model_args.get_codebook_sizes(
-            pad_to_multiple=None, include_special_tokens=False
-        )[1:]
-        assert len(set(acoustic_codebook_sizes)) == 1
-        self.acoustic_embeddings_levels = acoustic_codebook_sizes[0]
-        self.acoustic_embeddings_dim = len(acoustic_codebook_sizes)
-
-        self._init_audio_embeddings_layer()
-        self._init_output_layer()
-        self._init_layers()
-
-        self._end_audio_token_id = AudioSpecialTokens.id(AudioSpecialTokens.end_audio)
-        self._empty_audio_token_id = AudioSpecialTokens.id(
-            AudioSpecialTokens.empty_audio
-        )
-
-        self._acoustic_decode_iters = 16
-        self._cfg_alpha = 1.2
-        self._noise_scale = 1.0
-        self.register_buffer(
-            "_timesteps",
-            torch.linspace(0, 1, self._acoustic_decode_iters),
-            persistent=False,
-        )
-
-    def load_weight(self, weight: tuple[str, torch.Tensor]) -> str:
-        params_dict = dict(self.named_parameters())
-        name, loaded_weight = weight
-        if name not in params_dict:
-            logger.warning(f"{name} not found in FlowMatchingAudioTransformer (UNUSED)")
-            return name
-        param = params_dict[name]
-        param.data.copy_(loaded_weight)
-        return name
-
-    def _init_audio_embeddings_layer(self) -> None:
-        self.time_embedding = TimeEmbedding(self.acoustic_transformer_args.dim)
-        input_dim = self.acoustic_embeddings_dim
-        self.input_projection = nn.Linear(
-            input_dim, self.acoustic_transformer_args.dim, bias=False
-        )
-        self.time_projection = nn.Linear(
-            self.acoustic_transformer_args.dim,
-            self.acoustic_transformer_args.dim,
-            bias=False,
-        )
-        self.llm_projection = nn.Linear(
-            self.acoustic_transformer_args.input_dim,
-            self.acoustic_transformer_args.dim,
-            bias=False,
-        )
-
-    def _init_output_layer(self) -> None:
-        padded_codebook_sizes = self.model_args.get_codebook_sizes(pad_to_multiple=128)
-        self.semantic_codebook_output = nn.Linear(
-            self.acoustic_transformer_args.dim,
-            padded_codebook_sizes[0],
-            self.acoustic_transformer_args.use_biases,
-        )
-        self.acoustic_codebook_output = nn.Linear(
-            in_features=self.acoustic_transformer_args.dim,
-            out_features=self.model_args.n_acoustic_codebook,
-            bias=False,
-        )
-
-    def _init_layers(self) -> None:
-        self.layers_ids: list[int] = list(
-            range(self.acoustic_transformer_args.n_layers)
-        )
-        self.layers = nn.ModuleDict()
-        for layer_id in self.layers_ids:
-            block = AcousticTransformerBlock(
-                layer_id=layer_id, args=self.acoustic_transformer_args
-            )
-            self.layers[str(layer_id)] = block
-        self.norm = rms_norm(
-            self.acoustic_transformer_args.dim, self.acoustic_transformer_args.norm_eps
-        )
-
-    def forward_attention_layers(self, h: torch.Tensor) -> torch.Tensor:
-        for layer_id in self.layers_ids:
-            layer = self.layers[str(layer_id)]
-            h = layer(h)
-        return h
-
-    def decode_one_frame(
-        self, semantic_code: torch.Tensor, llm_hidden: torch.Tensor
-    ) -> torch.Tensor:
-        B = semantic_code.shape[0]
-        should_decode = semantic_code != self._end_audio_token_id
-        x_0 = torch.randn(B, self.model_args.n_acoustic_codebook).to(
-            dtype=llm_hidden.dtype, device=llm_hidden.device
-        )
-        x_0 = self._noise_scale * x_0
-        timesteps = self._timesteps.to(dtype=llm_hidden.dtype)
-        llm_hidden_zero = torch.zeros_like(llm_hidden)
-
-        sampled = x_0
-        for i in range(len(timesteps) - 1):
-            t = timesteps[i]
-            dt = timesteps[i + 1] - timesteps[i]
-            t_emb = self.time_embedding(t.view(-1, 1).repeat(B, 1)).to(llm_hidden.dtype)
-            x_batched = torch.cat([sampled, sampled], dim=0)
-            llm_batched = torch.cat([llm_hidden, llm_hidden_zero], dim=0)
-            t_emb_batched = torch.cat([t_emb, t_emb], dim=0)
-            v_all = self._predict_velocity(
-                x_t=x_batched, llm_output=llm_batched, t_emb=t_emb_batched
-            )
-            v_t, uncond_v_t = v_all[:B], v_all[B:]
-            v_t = self._cfg_alpha * v_t + (1 - self._cfg_alpha) * uncond_v_t
-            sampled = sampled + v_t * dt
-
-        sampled = torch.clamp(sampled, -1, 1)
-        scaled_x = ((sampled + 1) / 2) * (self.acoustic_embeddings_levels - 1)
-        output_codes = scaled_x.round().long()
-        output_codes[~should_decode] = self._empty_audio_token_id
-        return output_codes + len(AudioSpecialTokens)
-
-    def _predict_velocity(self, x_t, llm_output, t_emb):
-        x_t = x_t.to(llm_output.dtype)
-        t_emb = self.time_projection(t_emb)
-        llm_output = self.llm_projection(llm_output)
-        acoustic_and_semantic_embeddings = [
-            self.input_projection(x_t.unsqueeze(1)),
-            t_emb.unsqueeze(1),
-            llm_output.unsqueeze(1),
-        ]
-        acoustic_transformer_inputs = torch.concatenate(
-            acoustic_and_semantic_embeddings, dim=1
-        )
-        attn_output = self.forward_attention_layers(acoustic_transformer_inputs)
-        final_hidden = self.norm(attn_output)
-        final_hidden = final_hidden.view(
-            -1, acoustic_transformer_inputs.shape[1], final_hidden.shape[-1]
-        )
-        v_t = self.acoustic_codebook_output(final_hidden[:, 0, :])
-        return v_t
-
-    def forward(self, llm_hidden: torch.Tensor) -> torch.Tensor:
-        semantic_logit = self.semantic_codebook_output(llm_hidden).float()
-        semantic_logit[:, self._empty_audio_token_id] = -float("inf")
-        semantic_logit[
-            :, (len(AudioSpecialTokens) + self.model_args.semantic_codebook_size) :
-        ] = -float("inf")
-        semantic_code = semantic_logit.argmax(dim=-1, keepdim=True)
-        acoustic_codes = self.decode_one_frame(semantic_code.squeeze(1), llm_hidden)
-        audio_codes = torch.concatenate([semantic_code, acoustic_codes], dim=1)
-        return audio_codes
 
 
 # ---- MultiVocabEmbeddings (copied from vLLM audio_tokenizer) ----
@@ -825,17 +634,6 @@ class VoxtralTTSAudioGeneration(nn.Module):
         llm_count = 0
         at_count = 0
         emb_loaded = False
-
-        # Remapping rules for acoustic transformer and audio embeddings (same as vLLM)
-        vllm_remapping = [
-            (r"^acoustic_transformer\.(.*)$", r"\1"),
-            (r"^audio_tokenizer\.(.*)$", r"\1"),
-            (
-                r"^mm_audio_embeddings\.audio_codebook_embeddings\.embeddings\.(weight|bias)",
-                r"audio_token_embedding.embeddings.\1",
-            ),
-            (r"^mm_audio_embeddings\.tok_embeddings\.weight", r"tok_embeddings.weight"),
-        ]
 
         for name, tensor in safetensors_weights_iterator(safetensors_files):
             # LLM weights
