@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any
 
 import torch
 
+from sglang_omni.executors.engine_executor import is_stream_request_params
 from sglang_omni.executors.interface import Executor
 from sglang_omni.pipeline.stage.work import WorkDescriptor
 from sglang_omni.pipeline.worker.data_plane import DataPlaneAdapter
@@ -198,7 +199,11 @@ class Worker:
 
             stream_task: asyncio.Task[None] | None = None
             stream_fn = getattr(self.executor, "stream", None)
-            if callable(stream_fn):
+            request_params = (
+                merged.request.params if merged.request is not None else None
+            )
+            is_stream_request = is_stream_request_params(request_params)
+            if is_stream_request and callable(stream_fn):
                 stream_iter = stream_fn(request_id)
                 if stream_iter is not None:
                     stream_task = asyncio.create_task(

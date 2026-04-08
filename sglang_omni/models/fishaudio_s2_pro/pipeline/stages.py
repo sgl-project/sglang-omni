@@ -11,6 +11,7 @@ from typing import Any
 import torch
 
 from sglang_omni.executors import EngineExecutor, PreprocessingExecutor
+from sglang_omni.executors.engine_executor import is_stream_request_params
 from sglang_omni.models.fishaudio_s2_pro.io import S2ProState
 from sglang_omni.models.fishaudio_s2_pro.pipeline.engine_io import (
     apply_tts_result,
@@ -28,6 +29,7 @@ _STREAM_CODES_KEY = "_stream_output_codes"
 _STREAM_EMITTED_SAMPLES_KEY = "_stream_emitted_samples"
 _STREAM_LAST_VOCODE_TOKENS_KEY = "_stream_last_vocode_tokens"
 _STREAM_NEXT_VOCODE_TOKENS_KEY = "_stream_next_vocode_tokens"
+_STREAM_LAST_CODES_LEN_KEY = "_stream_last_codes_len"
 
 
 def _resolve_checkpoint(checkpoint: str) -> str:
@@ -124,6 +126,8 @@ def _build_incremental_audio_chunk(
 
     total_tokens = sum(chunk.shape[1] for chunk in stream_codes)
     output_codes = torch.cat(stream_codes, dim=1)
+    # Collapse buffered chunks to one tensor to avoid unbounded list growth.
+    payload.data[_STREAM_CODES_KEY] = [output_codes]
     codebook_codes = output_codes[1:].to(device)
 
     with torch.no_grad():
@@ -161,7 +165,26 @@ def _maybe_build_incremental_audio_chunk(
         return None
 
     stream_codes: list[torch.Tensor] = payload.data.setdefault(_STREAM_CODES_KEY, [])
-    stream_codes.append(codes.detach().cpu())
+    # Keep step codes on device to avoid per-step CUDA sync from `.cpu()`.
+    # Slice first, then clone only unseen suffix to avoid cloning the full
+    # cumulative snapshot on every decode step.
+    codes_detached = codes.detach()
+    step_codes = codes_detached
+
+    # Handle cumulative snapshots defensively: if current step tensor grows in
+    # token length, keep only the unseen suffix; keep per-step deltas unchanged.
+    last_len = int(payload.data.get(_STREAM_LAST_CODES_LEN_KEY, 0))
+    curr_len = int(codes_detached.shape[1])
+    if curr_len > last_len:
+        if last_len > 0 and curr_len > 1:
+            step_codes = codes_detached[:, last_len:]
+        if curr_len > 1:
+            payload.data[_STREAM_LAST_CODES_LEN_KEY] = curr_len
+    elif curr_len > 1:
+        return None
+
+    # Clone only the actual delta to break aliasing with model output buffers.
+    stream_codes.append(step_codes.clone())
 
     total_tokens = sum(chunk.shape[1] for chunk in stream_codes)
     next_vocode_tokens = int(
@@ -289,7 +312,9 @@ def create_sglang_tts_engine_executor(
     )
 
     if stream_vocoder_device is None:
-        stream_vocoder_device = "cpu"
+        # Keep stream vocoder on the same accelerator by default to reduce
+        # end-to-end streaming latency variance from CPU decode spikes.
+        stream_vocoder_device = device
 
     # Note (Chenyang): Lazy-loaded: only materialised when
     # the first streaming request arrives.
@@ -331,7 +356,6 @@ def create_sglang_tts_engine_executor(
         num_codebooks=num_codebooks,
         codebook_size=codebook_size,
         max_new_tokens=max_new_tokens,
-        top_k=top_k,
     )
 
     def _request_builder(payload: StagePayload):
@@ -350,7 +374,7 @@ def create_sglang_tts_engine_executor(
             return None
         # Note (Chenyang): Hot path optimization: skip expensive
         # GPU→CPU transfer for non-streaming requests.
-        if not payload.request.params.get("stream"):
+        if not is_stream_request_params(payload.request.params):
             return None
         return _maybe_build_incremental_audio_chunk(
             payload,
@@ -376,24 +400,31 @@ def create_vocoder_executor(
 ) -> PreprocessingExecutor:
     """Factory for the vocoder stage."""
     checkpoint_dir = _resolve_checkpoint(model_path)
-    codec = _load_codec(checkpoint_dir, device)
+    codec: Any | None = None
+
+    def _get_codec() -> Any:
+        nonlocal codec
+        if codec is None:
+            codec = _load_codec(checkpoint_dir, device)
+        return codec
 
     def _vocode(payload: StagePayload) -> StagePayload:
         state = load_state(payload)
         output_codes = state.output_codes
+        codec_model = _get_codec()
 
         codebook_codes = output_codes[1:].to(device)
 
         with torch.no_grad():
-            audio = codec.from_indices(codebook_codes[None])
+            audio = codec_model.from_indices(codebook_codes[None])
 
         audio_np = audio[0, 0].float().cpu()
         state.audio_samples = audio_np
-        state.sample_rate = codec.sample_rate
+        state.sample_rate = codec_model.sample_rate
         payload = store_state(payload, state)
 
         payload.data["audio_data"] = audio_np.tolist()
-        payload.data["sample_rate"] = codec.sample_rate
+        payload.data["sample_rate"] = codec_model.sample_rate
         payload.data["modality"] = "audio"
         if state.prompt_tokens or state.completion_tokens:
             usage = {

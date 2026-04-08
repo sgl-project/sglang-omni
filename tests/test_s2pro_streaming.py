@@ -10,6 +10,7 @@ from sglang_omni.models.fishaudio_s2_pro.pipeline.stages import (
     _STREAM_EMITTED_SAMPLES_KEY,
     _STREAM_LAST_VOCODE_TOKENS_KEY,
     _build_incremental_audio_chunk,
+    _maybe_build_incremental_audio_chunk,
 )
 from sglang_omni.proto import OmniRequest, StagePayload
 
@@ -50,3 +51,27 @@ def test_build_incremental_audio_chunk_emits_delta_audio() -> None:
     )
     assert second_chunk is not None
     assert len(second_chunk["audio_data"]) == 2
+
+
+def test_maybe_build_incremental_audio_chunk_avoids_step_cpu_sync(monkeypatch) -> None:
+    payload = StagePayload(
+        request_id="req-2",
+        request=OmniRequest(inputs="hello"),
+        data={},
+    )
+    codes = torch.tensor([[1], [2]], dtype=torch.long)
+
+    def _cpu_should_not_be_called(self):
+        raise AssertionError("unexpected .cpu() call in per-step streaming path")
+
+    monkeypatch.setattr(torch.Tensor, "cpu", _cpu_should_not_be_called)
+    chunk = _maybe_build_incremental_audio_chunk(
+        payload,
+        codes,
+        codec=_FakeCodec(),
+        device="cpu",
+        stream_stride=10,
+        stream_followup_stride=100,
+    )
+
+    assert chunk is None
