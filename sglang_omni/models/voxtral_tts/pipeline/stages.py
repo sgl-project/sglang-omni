@@ -39,10 +39,12 @@ def _resolve_checkpoint(checkpoint: str) -> str:
     if os.path.isdir(checkpoint):
         return checkpoint
     from huggingface_hub import snapshot_download
+
     return snapshot_download(checkpoint)
 
 
 # ---- Preprocessing ----
+
 
 def create_preprocessing_executor(model_path: str) -> PreprocessingExecutor:
     """Factory for the preprocessing stage."""
@@ -88,8 +90,12 @@ def create_preprocessing_executor(model_path: str) -> PreprocessingExecutor:
 
         logger.info("[SGL-DEBUG] === Preprocessing ===")
         logger.info("[SGL-DEBUG] text=%r, voice=%r", text, voice)
-        logger.info("[SGL-DEBUG] input_ids len=%d, first20=%s, last10=%s",
-                     len(input_ids), input_ids[:20], input_ids[-10:])
+        logger.info(
+            "[SGL-DEBUG] input_ids len=%d, first20=%s, last10=%s",
+            len(input_ids),
+            input_ids[:20],
+            input_ids[-10:],
+        )
         logger.info("[SGL-DEBUG] audio_token(24) count=%d", input_ids.count(24))
 
         return store_state(payload, state)
@@ -98,6 +104,7 @@ def create_preprocessing_executor(model_path: str) -> PreprocessingExecutor:
 
 
 # ---- Generation ----
+
 
 @torch.no_grad()
 def _run_ar_generation(
@@ -110,7 +117,9 @@ def _run_ar_generation(
     device: str,
 ) -> tuple[torch.Tensor, int, int]:
     """Run AR generation loop using VoxtralTTSAudioGeneration model."""
-    from sglang_omni.models.voxtral_tts.voxtral_tts_audio_generation import AudioSpecialTokens
+    from sglang_omni.models.voxtral_tts.voxtral_tts_audio_generation import (
+        AudioSpecialTokens,
+    )
 
     audio_token_id = config.audio_model_args.audio_token_id
 
@@ -130,15 +139,26 @@ def _run_ar_generation(
             ].to(input_embeds.dtype)
 
     logger.info("[SGL-DEBUG] === AR Generation: Prefill ===")
-    logger.info("[SGL-DEBUG] voice='%s', input_ids len=%d, first20=%s, last10=%s",
-                voice, len(input_ids), input_ids[:20], input_ids[-10:])
-    logger.info("[SGL-DEBUG] audio_token(%d) count=%d, voice_emb shape=%s, voice_emb norm=%.4f",
-                audio_token_id,
-                input_ids.count(audio_token_id),
-                voice_emb.shape if voice_emb is not None else None,
-                voice_emb.norm().item() if voice_emb is not None else 0)
-    logger.info("[SGL-DEBUG] input_embeds after voice injection: shape=%s, norm=%.4f, mean=%.6f",
-                input_embeds.shape, input_embeds.norm().item(), input_embeds.mean().item())
+    logger.info(
+        "[SGL-DEBUG] voice='%s', input_ids len=%d, first20=%s, last10=%s",
+        voice,
+        len(input_ids),
+        input_ids[:20],
+        input_ids[-10:],
+    )
+    logger.info(
+        "[SGL-DEBUG] audio_token(%d) count=%d, voice_emb shape=%s, voice_emb norm=%.4f",
+        audio_token_id,
+        input_ids.count(audio_token_id),
+        voice_emb.shape if voice_emb is not None else None,
+        voice_emb.norm().item() if voice_emb is not None else 0,
+    )
+    logger.info(
+        "[SGL-DEBUG] input_embeds after voice injection: shape=%s, norm=%.4f, mean=%.6f",
+        input_embeds.shape,
+        input_embeds.norm().item(),
+        input_embeds.mean().item(),
+    )
 
     position_ids = torch.arange(prompt_len, device=device).unsqueeze(0)
 
@@ -152,8 +172,12 @@ def _run_ar_generation(
     )
 
     last_hidden = hidden[:, -1:, :]
-    logger.info("[SGL-DEBUG] prefill last_hidden: norm=%.4f, mean=%.6f, std=%.4f",
-                last_hidden.norm().item(), last_hidden.mean().item(), last_hidden.std().item())
+    logger.info(
+        "[SGL-DEBUG] prefill last_hidden: norm=%.4f, mean=%.6f, std=%.4f",
+        last_hidden.norm().item(),
+        last_hidden.mean().item(),
+        last_hidden.std().item(),
+    )
 
     audio_codes_list = []
     semantic_codes_debug = []
@@ -166,8 +190,13 @@ def _run_ar_generation(
         semantic_codes_debug.append(semantic_code)
 
         if step < 10 or step % 100 == 0:
-            logger.info("[SGL-DEBUG] step=%d: semantic=%d, codes[:5]=%s, hidden_norm=%.2f",
-                        step, semantic_code, codes[0, :5].tolist(), last_hidden.norm().item())
+            logger.info(
+                "[SGL-DEBUG] step=%d: semantic=%d, codes[:5]=%s, hidden_norm=%.2f",
+                step,
+                semantic_code,
+                codes[0, :5].tolist(),
+                last_hidden.norm().item(),
+            )
 
         if semantic_code == AudioSpecialTokens.id(AudioSpecialTokens.end_audio):
             logger.info("[SGL-DEBUG] end_audio at step=%d", step)
@@ -178,8 +207,12 @@ def _run_ar_generation(
         next_embeds = multi_cb_emb.sum(dim=1)
 
         if step < 3:
-            logger.info("[SGL-DEBUG]   feedback: input_ids=[%d], embeds norm=%.4f, mean=%.6f",
-                        audio_token_id, next_embeds.norm().item(), next_embeds.mean().item())
+            logger.info(
+                "[SGL-DEBUG]   feedback: input_ids=[%d], embeds norm=%.4f, mean=%.6f",
+                audio_token_id,
+                next_embeds.norm().item(),
+                next_embeds.mean().item(),
+            )
 
         cur_pos = prompt_len + step
         next_pos = torch.tensor([[cur_pos]], dtype=torch.long, device=device)
@@ -194,13 +227,22 @@ def _run_ar_generation(
         last_hidden = hidden[:, -1:, :]
 
         if step < 3:
-            logger.info("[SGL-DEBUG]   decode step=%d: hidden_norm=%.4f, mean=%.6f, std=%.4f",
-                        step, last_hidden.norm().item(), last_hidden.mean().item(), last_hidden.std().item())
+            logger.info(
+                "[SGL-DEBUG]   decode step=%d: hidden_norm=%.4f, mean=%.6f, std=%.4f",
+                step,
+                last_hidden.norm().item(),
+                last_hidden.mean().item(),
+                last_hidden.std().item(),
+            )
 
     total_steps = len(audio_codes_list)
     logger.info("[SGL-DEBUG] === AR Generation: Done ===")
-    logger.info("[SGL-DEBUG] total_steps=%d, first20_semantic=%s, last5_semantic=%s",
-                total_steps, semantic_codes_debug[:20], semantic_codes_debug[-5:])
+    logger.info(
+        "[SGL-DEBUG] total_steps=%d, first20_semantic=%s, last5_semantic=%s",
+        total_steps,
+        semantic_codes_debug[:20],
+        semantic_codes_debug[-5:],
+    )
 
     if audio_codes_list:
         all_codes = torch.stack([c.squeeze(0) for c in audio_codes_list], dim=0)
@@ -252,10 +294,13 @@ def create_generation_executor(
 
 # ---- Vocoder ----
 
+
 def _load_audio_tokenizer(checkpoint_dir: str, audio_config: dict, device: str):
     """Load the VoxtralTTSAudioTokenizer (decoder) from checkpoint."""
     import glob
+
     from sglang.srt.model_loader.weight_utils import safetensors_weights_iterator
+
     from sglang_omni.models.voxtral_tts.audio_tokenizer import VoxtralTTSAudioTokenizer
     from sglang_omni.models.voxtral_tts.model_config import VoxtralModelConfig
 
@@ -331,10 +376,17 @@ def create_vocoder_executor(
             audio_codes = torch.tensor(audio_codes)
 
         logger.info("[SGL-DEBUG] === Vocoder ===")
-        logger.info("[SGL-DEBUG] audio_codes: shape=%s, dtype=%s", audio_codes.shape, audio_codes.dtype)
+        logger.info(
+            "[SGL-DEBUG] audio_codes: shape=%s, dtype=%s",
+            audio_codes.shape,
+            audio_codes.dtype,
+        )
         if audio_codes.numel() > 0:
-            logger.info("[SGL-DEBUG] audio_codes row0[:5]=%s, semantic_codes[:10]=%s",
-                        audio_codes[0, :5].tolist(), audio_codes[:10, 0].tolist())
+            logger.info(
+                "[SGL-DEBUG] audio_codes row0[:5]=%s, semantic_codes[:10]=%s",
+                audio_codes[0, :5].tolist(),
+                audio_codes[:10, 0].tolist(),
+            )
 
         # Prepend warmup context frames so the causal decoder has initial
         # context (mitigates boundary artifacts / noise at the start of the
@@ -365,14 +417,20 @@ def create_vocoder_executor(
         )
         if fade_samples > 0:
             fade_in = torch.linspace(
-                0, 1, fade_samples,
-                device=audio_np.device, dtype=audio_np.dtype,
+                0,
+                1,
+                fade_samples,
+                device=audio_np.device,
+                dtype=audio_np.dtype,
             )
             audio_np[:fade_samples] = audio_np[:fade_samples] * fade_in
 
-        logger.info("[SGL-DEBUG] decoded audio: shape=%s, duration=%.2fs (sr=%d)",
-                    audio_np.shape, len(audio_np) / audio_tokenizer.sampling_rate,
-                    audio_tokenizer.sampling_rate)
+        logger.info(
+            "[SGL-DEBUG] decoded audio: shape=%s, duration=%.2fs (sr=%d)",
+            audio_np.shape,
+            len(audio_np) / audio_tokenizer.sampling_rate,
+            audio_tokenizer.sampling_rate,
+        )
 
         state.audio_samples = audio_np
         state.sample_rate = audio_tokenizer.sampling_rate

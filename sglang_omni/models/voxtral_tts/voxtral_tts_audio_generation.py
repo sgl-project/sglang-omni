@@ -3,10 +3,9 @@ import math
 import os
 import re as stdlib_re
 import time
-from collections.abc import Iterable
 from dataclasses import dataclass, fields, is_dataclass
 from enum import Enum
-from typing import Any, Union, get_args, get_origin
+from typing import Union, get_args, get_origin
 
 import numpy as np
 import regex as re
@@ -16,9 +15,11 @@ import torch.nn.functional as F
 
 try:
     from apex.normalization import FusedRMSNorm
+
     rms_norm = FusedRMSNorm
 except ImportError:
     from torch.nn import RMSNorm as RMSNorm
+
     rms_norm = RMSNorm
 
 logger = logging.getLogger(__name__)
@@ -37,6 +38,7 @@ SUPPORTED_LANGS = {
 
 # ---- Audio special tokens ----
 
+
 class AudioSpecialTokens(str, Enum):
     empty_audio = "[EMPTY_AUDIO]"
     end_audio = "[END_AUDIO]"
@@ -51,6 +53,7 @@ class AudioSpecialTokens(str, Enum):
 
 
 # ---- Dataclasses (copied from vLLM) ----
+
 
 @dataclass
 class AcousticTransformerArgs:
@@ -117,11 +120,14 @@ def from_nested_dict(cls, d):
 
 # ---- Acoustic Transformer components (copied from vLLM) ----
 
+
 def _repeat_interleave(t: torch.Tensor, repeats: int) -> torch.Tensor:
     return t.unsqueeze(3).expand([-1, -1, -1, repeats, -1]).flatten(2, 3)
 
 
-def repeat_kv(keys: torch.Tensor, values: torch.Tensor, repeats: int) -> tuple[torch.Tensor, torch.Tensor]:
+def repeat_kv(
+    keys: torch.Tensor, values: torch.Tensor, repeats: int
+) -> tuple[torch.Tensor, torch.Tensor]:
     if repeats > 1:
         keys = _repeat_interleave(keys, repeats=repeats)
         values = _repeat_interleave(values, repeats=repeats)
@@ -148,10 +154,16 @@ class BidirectionalAttention(nn.Module):
         self.repeats = self.n_local_heads
         self.layer_id = layer_id
         self.head_dim = args.head_dim
-        self.wq = nn.Linear(args.dim, args.n_heads * args.head_dim, bias=args.use_biases)
+        self.wq = nn.Linear(
+            args.dim, args.n_heads * args.head_dim, bias=args.use_biases
+        )
         self.wk = nn.Linear(args.dim, args.n_kv_heads * args.head_dim, bias=False)
-        self.wv = nn.Linear(args.dim, args.n_kv_heads * args.head_dim, bias=args.use_biases)
-        self.wo = nn.Linear(args.n_heads * args.head_dim, args.dim, bias=args.use_biases)
+        self.wv = nn.Linear(
+            args.dim, args.n_kv_heads * args.head_dim, bias=args.use_biases
+        )
+        self.wo = nn.Linear(
+            args.n_heads * args.head_dim, args.dim, bias=args.use_biases
+        )
         self.softmax_scale: float = self.args.head_dim**-0.5
         self.repeats = self.n_local_heads // self.n_local_kv_heads
 
@@ -213,7 +225,9 @@ class AcousticTransformerBlock(nn.Module):
 class TimeEmbedding(nn.Module):
     def __init__(self, dim: int, theta: float = 10000.0) -> None:
         super().__init__()
-        inv_freq = torch.exp(-math.log(theta) * torch.arange(dim // 2).float() / (dim // 2))
+        inv_freq = torch.exp(
+            -math.log(theta) * torch.arange(dim // 2).float() / (dim // 2)
+        )
         self.register_buffer("inv_freq", inv_freq, persistent=True)
 
     def forward(self, t: torch.Tensor) -> torch.Tensor:
@@ -225,20 +239,28 @@ class FlowMatchingAudioTransformer(nn.Module):
     def __init__(self, audio_model_args: dict) -> None:
         super().__init__()
         if "codebook_sizes" in audio_model_args:
-            codebook_sizes = [int(c) for c in audio_model_args.pop("codebook_sizes").split(",")]
-            audio_model_args.update({
-                "semantic_codebook_size": codebook_sizes[0],
-                "acoustic_codebook_size": codebook_sizes[1],
-                "n_acoustic_codebook": len(codebook_sizes) - 1,
-            })
-        self.model_args: MultimodalAudioModelArgs = from_nested_dict(MultimodalAudioModelArgs, audio_model_args)
+            codebook_sizes = [
+                int(c) for c in audio_model_args.pop("codebook_sizes").split(",")
+            ]
+            audio_model_args.update(
+                {
+                    "semantic_codebook_size": codebook_sizes[0],
+                    "acoustic_codebook_size": codebook_sizes[1],
+                    "n_acoustic_codebook": len(codebook_sizes) - 1,
+                }
+            )
+        self.model_args: MultimodalAudioModelArgs = from_nested_dict(
+            MultimodalAudioModelArgs, audio_model_args
+        )
         assert isinstance(self.model_args, MultimodalAudioModelArgs)
         args = self.model_args.acoustic_transformer_args
         self.acoustic_transformer_args = args
         assert isinstance(self.acoustic_transformer_args, AcousticTransformerArgs)
 
         self.num_non_acoustic_embeddings = 1
-        self.num_acoustic_codebooks = len(self.model_args.get_codebook_sizes()) - self.num_non_acoustic_embeddings
+        self.num_acoustic_codebooks = (
+            len(self.model_args.get_codebook_sizes()) - self.num_non_acoustic_embeddings
+        )
 
         self.sigma = args.sigma
 
@@ -254,12 +276,18 @@ class FlowMatchingAudioTransformer(nn.Module):
         self._init_layers()
 
         self._end_audio_token_id = AudioSpecialTokens.id(AudioSpecialTokens.end_audio)
-        self._empty_audio_token_id = AudioSpecialTokens.id(AudioSpecialTokens.empty_audio)
+        self._empty_audio_token_id = AudioSpecialTokens.id(
+            AudioSpecialTokens.empty_audio
+        )
 
         self._acoustic_decode_iters = 16
         self._cfg_alpha = 1.2
         self._noise_scale = 1.0
-        self.register_buffer("_timesteps", torch.linspace(0, 1, self._acoustic_decode_iters), persistent=False)
+        self.register_buffer(
+            "_timesteps",
+            torch.linspace(0, 1, self._acoustic_decode_iters),
+            persistent=False,
+        )
 
     def load_weight(self, weight: tuple[str, torch.Tensor]) -> str:
         params_dict = dict(self.named_parameters())
@@ -274,14 +302,26 @@ class FlowMatchingAudioTransformer(nn.Module):
     def _init_audio_embeddings_layer(self) -> None:
         self.time_embedding = TimeEmbedding(self.acoustic_transformer_args.dim)
         input_dim = self.acoustic_embeddings_dim
-        self.input_projection = nn.Linear(input_dim, self.acoustic_transformer_args.dim, bias=False)
-        self.time_projection = nn.Linear(self.acoustic_transformer_args.dim, self.acoustic_transformer_args.dim, bias=False)
-        self.llm_projection = nn.Linear(self.acoustic_transformer_args.input_dim, self.acoustic_transformer_args.dim, bias=False)
+        self.input_projection = nn.Linear(
+            input_dim, self.acoustic_transformer_args.dim, bias=False
+        )
+        self.time_projection = nn.Linear(
+            self.acoustic_transformer_args.dim,
+            self.acoustic_transformer_args.dim,
+            bias=False,
+        )
+        self.llm_projection = nn.Linear(
+            self.acoustic_transformer_args.input_dim,
+            self.acoustic_transformer_args.dim,
+            bias=False,
+        )
 
     def _init_output_layer(self) -> None:
         padded_codebook_sizes = self.model_args.get_codebook_sizes(pad_to_multiple=128)
         self.semantic_codebook_output = nn.Linear(
-            self.acoustic_transformer_args.dim, padded_codebook_sizes[0], self.acoustic_transformer_args.use_biases,
+            self.acoustic_transformer_args.dim,
+            padded_codebook_sizes[0],
+            self.acoustic_transformer_args.use_biases,
         )
         self.acoustic_codebook_output = nn.Linear(
             in_features=self.acoustic_transformer_args.dim,
@@ -290,12 +330,18 @@ class FlowMatchingAudioTransformer(nn.Module):
         )
 
     def _init_layers(self) -> None:
-        self.layers_ids: list[int] = list(range(self.acoustic_transformer_args.n_layers))
+        self.layers_ids: list[int] = list(
+            range(self.acoustic_transformer_args.n_layers)
+        )
         self.layers = nn.ModuleDict()
         for layer_id in self.layers_ids:
-            block = AcousticTransformerBlock(layer_id=layer_id, args=self.acoustic_transformer_args)
+            block = AcousticTransformerBlock(
+                layer_id=layer_id, args=self.acoustic_transformer_args
+            )
             self.layers[str(layer_id)] = block
-        self.norm = rms_norm(self.acoustic_transformer_args.dim, self.acoustic_transformer_args.norm_eps)
+        self.norm = rms_norm(
+            self.acoustic_transformer_args.dim, self.acoustic_transformer_args.norm_eps
+        )
 
     def forward_attention_layers(self, h: torch.Tensor) -> torch.Tensor:
         for layer_id in self.layers_ids:
@@ -303,10 +349,14 @@ class FlowMatchingAudioTransformer(nn.Module):
             h = layer(h)
         return h
 
-    def decode_one_frame(self, semantic_code: torch.Tensor, llm_hidden: torch.Tensor) -> torch.Tensor:
+    def decode_one_frame(
+        self, semantic_code: torch.Tensor, llm_hidden: torch.Tensor
+    ) -> torch.Tensor:
         B = semantic_code.shape[0]
         should_decode = semantic_code != self._end_audio_token_id
-        x_0 = torch.randn(B, self.model_args.n_acoustic_codebook).to(dtype=llm_hidden.dtype, device=llm_hidden.device)
+        x_0 = torch.randn(B, self.model_args.n_acoustic_codebook).to(
+            dtype=llm_hidden.dtype, device=llm_hidden.device
+        )
         x_0 = self._noise_scale * x_0
         timesteps = self._timesteps.to(dtype=llm_hidden.dtype)
         llm_hidden_zero = torch.zeros_like(llm_hidden)
@@ -319,7 +369,9 @@ class FlowMatchingAudioTransformer(nn.Module):
             x_batched = torch.cat([sampled, sampled], dim=0)
             llm_batched = torch.cat([llm_hidden, llm_hidden_zero], dim=0)
             t_emb_batched = torch.cat([t_emb, t_emb], dim=0)
-            v_all = self._predict_velocity(x_t=x_batched, llm_output=llm_batched, t_emb=t_emb_batched)
+            v_all = self._predict_velocity(
+                x_t=x_batched, llm_output=llm_batched, t_emb=t_emb_batched
+            )
             v_t, uncond_v_t = v_all[:B], v_all[B:]
             v_t = self._cfg_alpha * v_t + (1 - self._cfg_alpha) * uncond_v_t
             sampled = sampled + v_t * dt
@@ -339,17 +391,23 @@ class FlowMatchingAudioTransformer(nn.Module):
             t_emb.unsqueeze(1),
             llm_output.unsqueeze(1),
         ]
-        acoustic_transformer_inputs = torch.concatenate(acoustic_and_semantic_embeddings, dim=1)
+        acoustic_transformer_inputs = torch.concatenate(
+            acoustic_and_semantic_embeddings, dim=1
+        )
         attn_output = self.forward_attention_layers(acoustic_transformer_inputs)
         final_hidden = self.norm(attn_output)
-        final_hidden = final_hidden.view(-1, acoustic_transformer_inputs.shape[1], final_hidden.shape[-1])
+        final_hidden = final_hidden.view(
+            -1, acoustic_transformer_inputs.shape[1], final_hidden.shape[-1]
+        )
         v_t = self.acoustic_codebook_output(final_hidden[:, 0, :])
         return v_t
 
     def forward(self, llm_hidden: torch.Tensor) -> torch.Tensor:
         semantic_logit = self.semantic_codebook_output(llm_hidden).float()
         semantic_logit[:, self._empty_audio_token_id] = -float("inf")
-        semantic_logit[:, (len(AudioSpecialTokens) + self.model_args.semantic_codebook_size):] = -float("inf")
+        semantic_logit[
+            :, (len(AudioSpecialTokens) + self.model_args.semantic_codebook_size) :
+        ] = -float("inf")
         semantic_code = semantic_logit.argmax(dim=-1, keepdim=True)
         acoustic_codes = self.decode_one_frame(semantic_code.squeeze(1), llm_hidden)
         audio_codes = torch.concatenate([semantic_code, acoustic_codes], dim=1)
@@ -358,11 +416,14 @@ class FlowMatchingAudioTransformer(nn.Module):
 
 # ---- MultiVocabEmbeddings (copied from vLLM audio_tokenizer) ----
 
+
 class MultiVocabEmbeddings(nn.Module):
     def __init__(self, audio_model_args: dict, embedding_dim: int) -> None:
         super().__init__()
         self.model_args = from_nested_dict(MultimodalAudioModelArgs, audio_model_args)
-        self.codebook_sizes = list(self.model_args.get_codebook_sizes(pad_to_multiple=None))
+        self.codebook_sizes = list(
+            self.model_args.get_codebook_sizes(pad_to_multiple=None)
+        )
         self.offsets = torch.from_numpy(np.cumsum([0] + self.codebook_sizes[:-1]))
         self.total_vocab_size = sum(self.codebook_sizes)
         padded_size = 128 * ((self.total_vocab_size + 127) // 128)
@@ -401,7 +462,13 @@ class _RMSNorm(nn.Module):
 class _RotaryEmbedding(nn.Module):
     """Neox-style rotary embeddings matching vLLM's RotaryEmbedding exactly."""
 
-    def __init__(self, head_dim: int, max_position_embeddings: int, base: float, dtype: torch.dtype):
+    def __init__(
+        self,
+        head_dim: int,
+        max_position_embeddings: int,
+        base: float,
+        dtype: torch.dtype,
+    ):
         super().__init__()
         self.head_dim = head_dim
         self.rotary_dim = head_dim
@@ -411,7 +478,10 @@ class _RotaryEmbedding(nn.Module):
         self._build_cache()
 
     def _build_cache(self):
-        inv_freq = 1.0 / (self.base ** (torch.arange(0, self.head_dim, 2, dtype=torch.float) / self.head_dim))
+        inv_freq = 1.0 / (
+            self.base
+            ** (torch.arange(0, self.head_dim, 2, dtype=torch.float) / self.head_dim)
+        )
         t = torch.arange(self.max_position_embeddings, dtype=torch.float)
         freqs = torch.einsum("i,j->ij", t, inv_freq)
         cache = torch.cat([freqs.cos(), freqs.sin()], dim=-1).to(self._cache_dtype)
@@ -439,8 +509,15 @@ class _RotaryEmbedding(nn.Module):
 class _LlamaAttention(nn.Module):
     """Attention layer matching vLLM's LlamaAttention, using PyTorch SDPA."""
 
-    def __init__(self, hidden_size, num_heads, num_kv_heads, head_dim,
-                 max_position_embeddings, rope_theta):
+    def __init__(
+        self,
+        hidden_size,
+        num_heads,
+        num_kv_heads,
+        head_dim,
+        max_position_embeddings,
+        rope_theta,
+    ):
         super().__init__()
         self.num_heads = num_heads
         self.num_kv_heads = num_kv_heads
@@ -454,8 +531,9 @@ class _LlamaAttention(nn.Module):
         self.v_proj = nn.Linear(hidden_size, self.kv_size, bias=False)
         self.o_proj = nn.Linear(self.q_size, hidden_size, bias=False)
 
-        self.rotary_emb = _RotaryEmbedding(head_dim, max_position_embeddings, rope_theta,
-                                            dtype=torch.bfloat16)
+        self.rotary_emb = _RotaryEmbedding(
+            head_dim, max_position_embeddings, rope_theta, dtype=torch.bfloat16
+        )
 
     def forward(self, positions, hidden_states, kv_cache=None):
         num_tokens = hidden_states.shape[0]
@@ -506,12 +584,25 @@ class _LlamaDecoderLayer(nn.Module):
     """Decoder layer matching vLLM's LlamaDecoderLayer exactly:
     fused residual + RMSNorm pattern, flash_attn attention."""
 
-    def __init__(self, hidden_size, num_heads, num_kv_heads, head_dim,
-                 intermediate_size, max_position_embeddings, rope_theta, rms_norm_eps):
+    def __init__(
+        self,
+        hidden_size,
+        num_heads,
+        num_kv_heads,
+        head_dim,
+        intermediate_size,
+        max_position_embeddings,
+        rope_theta,
+        rms_norm_eps,
+    ):
         super().__init__()
         self.self_attn = _LlamaAttention(
-            hidden_size, num_heads, num_kv_heads, head_dim,
-            max_position_embeddings, rope_theta,
+            hidden_size,
+            num_heads,
+            num_kv_heads,
+            head_dim,
+            max_position_embeddings,
+            rope_theta,
         )
         self.mlp = _LlamaMLP(hidden_size, intermediate_size)
         self.input_layernorm = _RMSNorm(hidden_size, rms_norm_eps)
@@ -533,17 +624,36 @@ class _LlamaDecoderLayer(nn.Module):
 class _LlamaModel(nn.Module):
     """Standalone LlamaModel matching vLLM's, with flash_attn."""
 
-    def __init__(self, vocab_size, hidden_size, num_layers, num_heads, num_kv_heads,
-                 head_dim, intermediate_size, max_position_embeddings, rope_theta, rms_norm_eps):
+    def __init__(
+        self,
+        vocab_size,
+        hidden_size,
+        num_layers,
+        num_heads,
+        num_kv_heads,
+        head_dim,
+        intermediate_size,
+        max_position_embeddings,
+        rope_theta,
+        rms_norm_eps,
+    ):
         super().__init__()
         self.embed_tokens = nn.Embedding(vocab_size, hidden_size)
-        self.layers = nn.ModuleList([
-            _LlamaDecoderLayer(
-                hidden_size, num_heads, num_kv_heads, head_dim,
-                intermediate_size, max_position_embeddings, rope_theta, rms_norm_eps,
-            )
-            for _ in range(num_layers)
-        ])
+        self.layers = nn.ModuleList(
+            [
+                _LlamaDecoderLayer(
+                    hidden_size,
+                    num_heads,
+                    num_kv_heads,
+                    head_dim,
+                    intermediate_size,
+                    max_position_embeddings,
+                    rope_theta,
+                    rms_norm_eps,
+                )
+                for _ in range(num_layers)
+            ]
+        )
         self.norm = _RMSNorm(hidden_size, rms_norm_eps)
 
     def forward(self, inputs_embeds, positions, past_key_values=None):
@@ -552,13 +662,16 @@ class _LlamaModel(nn.Module):
         new_kvs = []
         for i, layer in enumerate(self.layers):
             kv = past_key_values[i] if past_key_values is not None else None
-            hidden_states, residual, new_kv = layer(positions, hidden_states, residual, kv)
+            hidden_states, residual, new_kv = layer(
+                positions, hidden_states, residual, kv
+            )
             new_kvs.append(new_kv)
         hidden_states, _ = self.norm(hidden_states, residual)
         return hidden_states, new_kvs
 
 
 # ---- Main model ----
+
 
 class VoxtralTTSAudioGeneration(nn.Module):
     """Voxtral TTS generation model.
@@ -568,9 +681,9 @@ class VoxtralTTSAudioGeneration(nn.Module):
 
     def __init__(self, text_config, audio_model_args: dict, embedding_dim: int):
         """Args:
-            text_config: VoxtralTextConfig dataclass with dim, n_layers, etc.
-            audio_model_args: dict for FlowMatchingAudioTransformer & MultiVocabEmbeddings.
-            embedding_dim: typically text_config.dim.
+        text_config: VoxtralTextConfig dataclass with dim, n_layers, etc.
+        audio_model_args: dict for FlowMatchingAudioTransformer & MultiVocabEmbeddings.
+        embedding_dim: typically text_config.dim.
         """
         super().__init__()
         self.n_heads = text_config.n_heads
@@ -592,13 +705,20 @@ class VoxtralTTSAudioGeneration(nn.Module):
         )
         self.acoustic_transformer = FlowMatchingAudioTransformer(audio_model_args)
         self.audio_token_embedding = MultiVocabEmbeddings(
-            audio_model_args=audio_model_args, embedding_dim=embedding_dim,
+            audio_model_args=audio_model_args,
+            embedding_dim=embedding_dim,
         )
 
     # ---- Forward ----
 
-    def forward_llm(self, inputs_embeds, position_ids, past_key_values=None,
-                    use_cache=True, do_layer_debug=False):
+    def forward_llm(
+        self,
+        inputs_embeds,
+        position_ids,
+        past_key_values=None,
+        use_cache=True,
+        do_layer_debug=False,
+    ):
         """Run LLM forward. Returns (hidden_states, past_key_values).
         inputs_embeds: [B, seq_len, dim] — squeezed to [seq_len, dim] for flash_attn."""
         embeds = inputs_embeds.squeeze(0) if inputs_embeds.dim() == 3 else inputs_embeds
@@ -626,8 +746,10 @@ class VoxtralTTSAudioGeneration(nn.Module):
         logger.info(
             "[SGL-DEBUG] embed: shape=%s, mean=%.6f, std=%.4f | last_tok: mean=%.6f, std=%.4f",
             list(hidden_states.shape),
-            hidden_states.float().mean().item(), hidden_states.float().std().item(),
-            last.float().mean().item(), last.float().std().item(),
+            hidden_states.float().mean().item(),
+            hidden_states.float().std().item(),
+            last.float().mean().item(),
+            last.float().std().item(),
         )
 
         for i, layer in enumerate(model.layers):
@@ -637,9 +759,12 @@ class VoxtralTTSAudioGeneration(nn.Module):
             last = state[-1]
             logger.info(
                 "[SGL-DEBUG] layer %2d: shape=%s, mean=%.6f, std=%.4f | last_tok: mean=%.6f, std=%.4f",
-                i, list(state.shape),
-                state.float().mean().item(), state.float().std().item(),
-                last.float().mean().item(), last.float().std().item(),
+                i,
+                list(state.shape),
+                state.float().mean().item(),
+                state.float().std().item(),
+                last.float().mean().item(),
+                last.float().std().item(),
             )
 
         hidden_states, _ = model.norm(hidden_states, residual)
@@ -647,27 +772,56 @@ class VoxtralTTSAudioGeneration(nn.Module):
         logger.info(
             "[SGL-DEBUG] final_norm: shape=%s, mean=%.6f, std=%.4f | last_tok: mean=%.6f, std=%.4f, norm=%.4f",
             list(hidden_states.shape),
-            hidden_states.float().mean().item(), hidden_states.float().std().item(),
-            last.float().mean().item(), last.float().std().item(), last.float().norm().item(),
+            hidden_states.float().mean().item(),
+            hidden_states.float().std().item(),
+            last.float().mean().item(),
+            last.float().std().item(),
+            last.float().norm().item(),
         )
         return hidden_states, new_kvs
 
     # ---- Weight loading (mirrors vLLM's load_weights) ----
 
     _MISTRAL_TO_HF_RULES = [
-        (r"^layers\.(\d+)\.attention\.wq\.weight$", r"layers.\1.self_attn.q_proj.weight"),
-        (r"^layers\.(\d+)\.attention\.wk\.weight$", r"layers.\1.self_attn.k_proj.weight"),
-        (r"^layers\.(\d+)\.attention\.wv\.weight$", r"layers.\1.self_attn.v_proj.weight"),
-        (r"^layers\.(\d+)\.attention\.wo\.weight$", r"layers.\1.self_attn.o_proj.weight"),
-        (r"^layers\.(\d+)\.attention_norm\.weight$", r"layers.\1.input_layernorm.weight"),
-        (r"^layers\.(\d+)\.feed_forward\.w1\.weight$", r"layers.\1.mlp.gate_proj.weight"),
-        (r"^layers\.(\d+)\.feed_forward\.w2\.weight$", r"layers.\1.mlp.down_proj.weight"),
+        (
+            r"^layers\.(\d+)\.attention\.wq\.weight$",
+            r"layers.\1.self_attn.q_proj.weight",
+        ),
+        (
+            r"^layers\.(\d+)\.attention\.wk\.weight$",
+            r"layers.\1.self_attn.k_proj.weight",
+        ),
+        (
+            r"^layers\.(\d+)\.attention\.wv\.weight$",
+            r"layers.\1.self_attn.v_proj.weight",
+        ),
+        (
+            r"^layers\.(\d+)\.attention\.wo\.weight$",
+            r"layers.\1.self_attn.o_proj.weight",
+        ),
+        (
+            r"^layers\.(\d+)\.attention_norm\.weight$",
+            r"layers.\1.input_layernorm.weight",
+        ),
+        (
+            r"^layers\.(\d+)\.feed_forward\.w1\.weight$",
+            r"layers.\1.mlp.gate_proj.weight",
+        ),
+        (
+            r"^layers\.(\d+)\.feed_forward\.w2\.weight$",
+            r"layers.\1.mlp.down_proj.weight",
+        ),
         (r"^layers\.(\d+)\.feed_forward\.w3\.weight$", r"layers.\1.mlp.up_proj.weight"),
-        (r"^layers\.(\d+)\.ffn_norm\.weight$", r"layers.\1.post_attention_layernorm.weight"),
+        (
+            r"^layers\.(\d+)\.ffn_norm\.weight$",
+            r"layers.\1.post_attention_layernorm.weight",
+        ),
     ]
 
     @staticmethod
-    def _permute_qk_weight(w: torch.Tensor, n_heads: int, head_dim: int, hidden_size: int) -> torch.Tensor:
+    def _permute_qk_weight(
+        w: torch.Tensor, n_heads: int, head_dim: int, hidden_size: int
+    ) -> torch.Tensor:
         attn_in = head_dim * n_heads
         return (
             w.view(n_heads, attn_in // n_heads // 2, 2, hidden_size)
@@ -678,9 +832,12 @@ class VoxtralTTSAudioGeneration(nn.Module):
     def load_weights(self, checkpoint_dir: str, device: str = "cpu"):
         """Load weights from Mistral-format safetensors checkpoint."""
         import glob
+
         from sglang.srt.model_loader.weight_utils import safetensors_weights_iterator
 
-        safetensors_files = sorted(glob.glob(os.path.join(checkpoint_dir, "*.safetensors")))
+        safetensors_files = sorted(
+            glob.glob(os.path.join(checkpoint_dir, "*.safetensors"))
+        )
         if not safetensors_files:
             raise RuntimeError(f"No .safetensors files found in {checkpoint_dir}")
 
@@ -698,7 +855,10 @@ class VoxtralTTSAudioGeneration(nn.Module):
         vllm_remapping = [
             (r"^acoustic_transformer\.(.*)$", r"\1"),
             (r"^audio_tokenizer\.(.*)$", r"\1"),
-            (r"^mm_audio_embeddings\.audio_codebook_embeddings\.embeddings\.(weight|bias)", r"audio_token_embedding.embeddings.\1"),
+            (
+                r"^mm_audio_embeddings\.audio_codebook_embeddings\.embeddings\.(weight|bias)",
+                r"audio_token_embedding.embeddings.\1",
+            ),
             (r"^mm_audio_embeddings\.tok_embeddings\.weight", r"tok_embeddings.weight"),
         ]
 
@@ -707,28 +867,42 @@ class VoxtralTTSAudioGeneration(nn.Module):
             hf_name = self._remap_mistral_to_hf(name)
             if hf_name is not None:
                 if ".attention.wq." in name:
-                    tensor = self._permute_qk_weight(tensor, n_heads, head_dim, hidden_size)
+                    tensor = self._permute_qk_weight(
+                        tensor, n_heads, head_dim, hidden_size
+                    )
                 elif ".attention.wk." in name:
-                    tensor = self._permute_qk_weight(tensor, n_kv_heads, head_dim, hidden_size)
+                    tensor = self._permute_qk_weight(
+                        tensor, n_kv_heads, head_dim, hidden_size
+                    )
                 llm_state[hf_name] = tensor
                 llm_count += 1
                 continue
 
             # Acoustic transformer weights
             if name.startswith("acoustic_transformer."):
-                short = name[len("acoustic_transformer."):]
+                short = name[len("acoustic_transformer.") :]
                 self.acoustic_transformer.load_weight((short, tensor))
                 at_count += 1
                 continue
 
             # Audio token embedding weights
-            if name == "mm_audio_embeddings.audio_codebook_embeddings.embeddings.weight":
+            if (
+                name
+                == "mm_audio_embeddings.audio_codebook_embeddings.embeddings.weight"
+            ):
                 self.audio_token_embedding.embeddings.weight.data.copy_(tensor)
                 emb_loaded = True
                 continue
 
-        missing, unexpected = self.language_model.load_state_dict(llm_state, strict=False)
-        logger.info("LLM weights: %d loaded, %d missing, %d unexpected", llm_count, len(missing), len(unexpected))
+        missing, unexpected = self.language_model.load_state_dict(
+            llm_state, strict=False
+        )
+        logger.info(
+            "LLM weights: %d loaded, %d missing, %d unexpected",
+            llm_count,
+            len(missing),
+            len(unexpected),
+        )
         if missing:
             logger.warning("Missing LLM keys (first 5): %s", missing[:5])
         if unexpected:
@@ -752,6 +926,7 @@ class VoxtralTTSAudioGeneration(nn.Module):
     def from_checkpoint(cls, checkpoint_dir: str, device: str = "cuda:0"):
         """Build the full model from a Mistral-format checkpoint directory."""
         from dataclasses import asdict
+
         from sglang_omni.models.voxtral_tts.model_config import VoxtralModelConfig
 
         config = VoxtralModelConfig.from_model_path(checkpoint_dir)
@@ -759,9 +934,13 @@ class VoxtralTTSAudioGeneration(nn.Module):
 
         logger.info("Starting to load model %s ...", checkpoint_dir)
         t0 = time.perf_counter()
-        mem_before = torch.cuda.memory_allocated(device) if device.startswith("cuda") else 0
+        mem_before = (
+            torch.cuda.memory_allocated(device) if device.startswith("cuda") else 0
+        )
 
-        logger.info("Building VoxtralTTSAudioGeneration with meta device (fast init) ...")
+        logger.info(
+            "Building VoxtralTTSAudioGeneration with meta device (fast init) ..."
+        )
         with torch.device("meta"):
             model = cls(
                 text_config=config.text_config,
@@ -777,7 +956,9 @@ class VoxtralTTSAudioGeneration(nn.Module):
         at = model.acoustic_transformer
         at._timesteps = torch.linspace(0, 1, at._acoustic_decode_iters)
         dim = at.acoustic_transformer_args.dim
-        inv_freq = torch.exp(-math.log(10000.0) * torch.arange(dim // 2).float() / (dim // 2))
+        inv_freq = torch.exp(
+            -math.log(10000.0) * torch.arange(dim // 2).float() / (dim // 2)
+        )
         at.time_embedding.inv_freq = inv_freq
 
         model.load_weights(checkpoint_dir)
@@ -787,10 +968,14 @@ class VoxtralTTSAudioGeneration(nn.Module):
 
         model = model.to(dtype=torch.bfloat16, device=device).eval()
 
-        mem_after = torch.cuda.memory_allocated(device) if device.startswith("cuda") else 0
+        mem_after = (
+            torch.cuda.memory_allocated(device) if device.startswith("cuda") else 0
+        )
         mem_used_gib = (mem_after - mem_before) / (1024**3)
         total_time = time.perf_counter() - t0
-        logger.info("Model loading took %.2f GiB and %.2f seconds", mem_used_gib, total_time)
+        logger.info(
+            "Model loading took %.2f GiB and %.2f seconds", mem_used_gib, total_time
+        )
 
         # Load voice embeddings
         voice_embeddings = {}
@@ -799,8 +984,14 @@ class VoxtralTTSAudioGeneration(nn.Module):
             for fname in os.listdir(voice_dir):
                 if fname.endswith(".pt"):
                     voice_name = fname[:-3]
-                    emb = torch.load(os.path.join(voice_dir, fname), map_location=device)
+                    emb = torch.load(
+                        os.path.join(voice_dir, fname), map_location=device
+                    )
                     voice_embeddings[voice_name] = emb.to(dtype=torch.bfloat16)
-            logger.info("Loaded %d voice embeddings: %s", len(voice_embeddings), list(voice_embeddings.keys()))
+            logger.info(
+                "Loaded %d voice embeddings: %s",
+                len(voice_embeddings),
+                list(voice_embeddings.keys()),
+            )
 
         return model, voice_embeddings, config

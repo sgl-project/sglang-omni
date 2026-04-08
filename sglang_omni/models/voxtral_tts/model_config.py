@@ -70,9 +70,7 @@ class VoxtralModelConfig:
             semantic_codebook_size=audio_args.get("semantic_codebook_size", 8192),
             acoustic_codebook_size=audio_args.get("acoustic_codebook_size", 21),
             n_acoustic_codebook=audio_args.get("n_acoustic_codebook", 36),
-            acoustic_transformer_args=audio_args.get(
-                "acoustic_transformer_args", {}
-            ),
+            acoustic_transformer_args=audio_args.get("acoustic_transformer_args", {}),
             audio_encoding_args=audio_args.get("audio_encoding_args", {}),
             audio_token_id=audio_args.get("audio_token_id", 24),
             begin_audio_token_id=audio_args.get("begin_audio_token_id", 25),

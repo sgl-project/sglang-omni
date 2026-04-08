@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import json
+import os
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -16,6 +18,63 @@ except ImportError:
     from transformers.modeling_utils import no_init_weights
 
 from transformers.utils.hub import cached_file
+
+# ---------------------------------------------------------------------------
+# Architecture resolution helpers
+# ---------------------------------------------------------------------------
+
+_CONFIG_MODEL_TYPE_TO_ARCH = {
+    "voxtral_tts": "VoxtralTTSForConditionalGeneration",
+}
+
+
+def architecture_from_hf_config(hf_config: Any) -> str | None:
+    """Prefer HF ``architectures``; fall back to ``model_type`` when needed."""
+    archs = getattr(hf_config, "architectures", None)
+    if archs:
+        for a in archs:
+            if a:
+                return a
+    mt = getattr(hf_config, "model_type", None)
+    if mt and mt in _CONFIG_MODEL_TYPE_TO_ARCH:
+        return _CONFIG_MODEL_TYPE_TO_ARCH[mt]
+    return None
+
+
+def load_mistral_params_json(model_path: str) -> dict | None:
+    """Load Mistral-format ``params.json`` from a local dir or Hugging Face hub id.
+    Official Voxtral TTS checkpoints ship without ``config.json``; architecture is
+    only indicated by ``model_type`` inside ``params.json`` (see Hub repo files).
+    """
+    params_path = os.path.join(model_path, "params.json")
+    if os.path.isfile(params_path):
+        with open(params_path) as f:
+            return json.load(f)
+    # Local directory without params — do not treat as hub repo id
+    if os.path.isdir(model_path):
+        return None
+    try:
+        from huggingface_hub import hf_hub_download
+
+        cached = hf_hub_download(repo_id=model_path, filename="params.json")
+        with open(cached) as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def try_resolve_arch_from_mistral_config(model_path: str) -> str | None:
+    """Resolve architecture from Mistral-format params.json (local or Hub)."""
+    params = load_mistral_params_json(model_path)
+    if params is None:
+        return None
+    model_type = params.get("model_type", "")
+    return _CONFIG_MODEL_TYPE_TO_ARCH.get(model_type)
+
+
+# ---------------------------------------------------------------------------
+# HF config loading
+# ---------------------------------------------------------------------------
 
 
 @lru_cache(maxsize=8)

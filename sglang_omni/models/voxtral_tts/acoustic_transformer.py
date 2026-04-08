@@ -126,10 +126,16 @@ class BidirectionalAttention(nn.Module):
         self.head_dim = args.head_dim
         self.repeats = self.n_local_heads // self.n_local_kv_heads
 
-        self.wq = nn.Linear(args.dim, args.n_heads * args.head_dim, bias=args.use_biases)
+        self.wq = nn.Linear(
+            args.dim, args.n_heads * args.head_dim, bias=args.use_biases
+        )
         self.wk = nn.Linear(args.dim, args.n_kv_heads * args.head_dim, bias=False)
-        self.wv = nn.Linear(args.dim, args.n_kv_heads * args.head_dim, bias=args.use_biases)
-        self.wo = nn.Linear(args.n_heads * args.head_dim, args.dim, bias=args.use_biases)
+        self.wv = nn.Linear(
+            args.dim, args.n_kv_heads * args.head_dim, bias=args.use_biases
+        )
+        self.wo = nn.Linear(
+            args.n_heads * args.head_dim, args.dim, bias=args.use_biases
+        )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if x.dim() == 2:
@@ -260,9 +266,7 @@ class FlowMatchingAudioTransformer(nn.Module):
         self.llm_projection = nn.Linear(args.input_dim, args.dim, bias=False)
 
     def _init_output_layer(self) -> None:
-        padded_codebook_sizes = self.model_args.get_codebook_sizes(
-            pad_to_multiple=128
-        )
+        padded_codebook_sizes = self.model_args.get_codebook_sizes(pad_to_multiple=128)
         args = self.acoustic_transformer_args
         self.semantic_codebook_output = nn.Linear(
             args.dim, padded_codebook_sizes[0], args.use_biases
@@ -306,9 +310,7 @@ class FlowMatchingAudioTransformer(nn.Module):
         for i in range(len(timesteps) - 1):
             t = timesteps[i]
             dt = timesteps[i + 1] - timesteps[i]
-            t_emb = self.time_embedding(t.view(-1, 1).repeat(B, 1)).to(
-                llm_hidden.dtype
-            )
+            t_emb = self.time_embedding(t.view(-1, 1).repeat(B, 1)).to(llm_hidden.dtype)
 
             x_batched = torch.cat([sampled, sampled], dim=0)
             llm_batched = torch.cat([llm_hidden, llm_hidden_zero], dim=0)
@@ -363,8 +365,6 @@ class FlowMatchingAudioTransformer(nn.Module):
 
         semantic_code = semantic_logit.argmax(dim=-1, keepdim=True)
 
-        acoustic_codes = self.decode_one_frame(
-            semantic_code.squeeze(1), llm_hidden
-        )
+        acoustic_codes = self.decode_one_frame(semantic_code.squeeze(1), llm_hidden)
 
         return torch.concatenate([semantic_code, acoustic_codes], dim=1)

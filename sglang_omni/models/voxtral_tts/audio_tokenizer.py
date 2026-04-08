@@ -15,7 +15,6 @@ import torch.nn.functional as F
 from einops import rearrange
 
 from sglang_omni.models.voxtral_tts.acoustic_transformer import (
-    AudioSpecialTokens,
     FeedForward,
     MultimodalAudioModelArgs,
     from_nested_dict,
@@ -122,17 +121,15 @@ class SemanticCodebook(nn.Module):
         super().__init__()
         self.epsilon = 1e-5
         self.register_buffer("cluster_usage", torch.ones(codebook_size))
-        self.register_buffer(
-            "embedding_sum", torch.zeros(codebook_size, codebook_dim)
-        )
+        self.register_buffer("embedding_sum", torch.zeros(codebook_size, codebook_dim))
         self.register_buffer("_embedding", None, persistent=False)
 
     @property
     def embedding(self) -> torch.Tensor:
         if self._embedding is None:
-            embedding = self.embedding_sum / self.cluster_usage.clamp(
-                min=self.epsilon
-            )[:, None]
+            embedding = (
+                self.embedding_sum / self.cluster_usage.clamp(min=self.epsilon)[:, None]
+            )
             self.register_buffer("_embedding", embedding, persistent=False)
             return embedding
         return self._embedding
@@ -186,8 +183,7 @@ class MistralAudioCodebook(nn.Module):
     @property
     def num_codebooks(self) -> int:
         return (
-            self.semantic_codebook.num_codebooks
-            + self.acoustic_codebook.num_codebooks
+            self.semantic_codebook.num_codebooks + self.acoustic_codebook.num_codebooks
         )
 
     def decode(
@@ -237,8 +233,13 @@ class CausalConv1d(nn.Module):
     ) -> None:
         super().__init__()
         conv = nn.Conv1d(
-            in_channels, out_channels, kernel_size,
-            stride=stride, padding=0, dilation=dilation, bias=use_bias,
+            in_channels,
+            out_channels,
+            kernel_size,
+            stride=stride,
+            padding=0,
+            dilation=dilation,
+            bias=use_bias,
         )
         self.conv = weight_norm(conv) if use_weight_norm else conv
         self.pad_mode = pad_mode
@@ -251,9 +252,8 @@ class CausalConv1d(nn.Module):
         n_frames = (
             x.shape[-1] - self._effective_kernel_size + self._padding_total
         ) / self._stride + 1
-        target_length = (
-            (math.ceil(n_frames) - 1) * self._stride
-            + (self._effective_kernel_size - self._padding_total)
+        target_length = (math.ceil(n_frames) - 1) * self._stride + (
+            self._effective_kernel_size - self._padding_total
         )
         extra_padding = target_length - x.shape[-1]
         x = pad1d(x, (self._padding_total, extra_padding), mode=self.pad_mode)
@@ -274,8 +274,12 @@ class CausalConvTranspose1d(nn.Module):
     ) -> None:
         super().__init__()
         conv = nn.ConvTranspose1d(
-            in_channels, out_channels, kernel_size,
-            stride=stride, groups=groups, bias=use_bias,
+            in_channels,
+            out_channels,
+            kernel_size,
+            stride=stride,
+            groups=groups,
+            bias=use_bias,
         )
         self.conv = weight_norm(conv) if use_weight_norm else conv
         self.trim_ratio = trim_ratio
@@ -314,16 +318,22 @@ class Attention(nn.Module):
                 [slopes_power_of_2(m), slopes_power_of_2(2 * m)[::2][: n_heads - m]]
             )
 
-        self.register_buffer("alibi_slopes", get_alibi_slopes(self.n_local_heads), persistent=False)
+        self.register_buffer(
+            "alibi_slopes", get_alibi_slopes(self.n_local_heads), persistent=False
+        )
 
         self.wq = nn.Linear(args.dim, args.n_heads * args.head_dim, bias=False)
         self.wk = nn.Linear(args.dim, args.n_kv_heads * args.head_dim, bias=False)
         self.wv = nn.Linear(args.dim, args.n_kv_heads * args.head_dim, bias=False)
-        self.wo = nn.Linear(args.n_heads * args.head_dim, args.dim, bias=args.use_biases)
+        self.wo = nn.Linear(
+            args.n_heads * args.head_dim, args.dim, bias=args.use_biases
+        )
 
         if args.qk_norm:
             self.q_norm = rms_norm(args.n_heads * args.head_dim, eps=args.qk_norm_eps)
-            self.k_norm = rms_norm(args.n_kv_heads * args.head_dim, eps=args.qk_norm_eps)
+            self.k_norm = rms_norm(
+                args.n_kv_heads * args.head_dim, eps=args.qk_norm_eps
+            )
 
     def _native_attention(
         self, xq: torch.Tensor, xk: torch.Tensor, xv: torch.Tensor
@@ -348,7 +358,9 @@ class Attention(nn.Module):
         window_right = 0 if self.args.causal else self.sliding_window
         outside_window = (rel_pos < -window_left) | (rel_pos > window_right)
         attn_bias = attn_bias.masked_fill(outside_window.unsqueeze(0), float("-inf"))
-        output = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_bias.unsqueeze(0))
+        output = F.scaled_dot_product_attention(
+            q, k, v, attn_mask=attn_bias.unsqueeze(0)
+        )
         return output.transpose(1, 2)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -368,9 +380,14 @@ class Attention(nn.Module):
         if HAS_FLASH_ATTN:
             alibi_slopes = self.alibi_slopes.to(torch.float32)
             output = flash_attn_func(
-                xq, xk, xv,
+                xq,
+                xk,
+                xv,
                 causal=self.args.causal,
-                window_size=(self.sliding_window, 0 if self.args.causal else self.sliding_window),
+                window_size=(
+                    self.sliding_window,
+                    0 if self.args.causal else self.sliding_window,
+                ),
                 alibi_slopes=alibi_slopes,
             )
         else:
@@ -447,7 +464,9 @@ class MultiVocabEmbeddings(nn.Module):
     def __init__(self, audio_model_args: dict, embedding_dim: int) -> None:
         super().__init__()
         self.model_args = from_nested_dict(MultimodalAudioModelArgs, audio_model_args)
-        self.codebook_sizes = list(self.model_args.get_codebook_sizes(pad_to_multiple=None))
+        self.codebook_sizes = list(
+            self.model_args.get_codebook_sizes(pad_to_multiple=None)
+        )
         self.offsets = torch.from_numpy(np.cumsum([0] + self.codebook_sizes[:-1]))
         self.total_vocab_size = sum(self.codebook_sizes)
         padded_size = 128 * ((self.total_vocab_size + 127) // 128)
@@ -490,10 +509,12 @@ class VoxtralTTSAudioTokenizer(nn.Module):
 
         decoder_blocks.append(
             CausalConv1d(
-                self.latent_dim, args.dim,
+                self.latent_dim,
+                args.dim,
                 kernel_size=decoder_convs_kernels[0],
                 stride=decoder_convs_strides[0],
-                pad_mode="replicate", use_bias=False,
+                pad_mode="replicate",
+                use_bias=False,
             )
         )
         if args.half_attn_window_upon_downsampling and decoder_convs_strides[0] > 1:
@@ -504,23 +525,29 @@ class VoxtralTTSAudioTokenizer(nn.Module):
             layer_args.attn_sliding_window_size = cur_window_size
             decoder_blocks.append(Transformer(args=layer_args, n_layers=n_layers))
             if (idx + 1 != len(decoder_transformer_lengths)) and (
-                (decoder_convs_kernels[idx + 1] != 1) or (decoder_convs_strides[idx + 1] != 1)
+                (decoder_convs_kernels[idx + 1] != 1)
+                or (decoder_convs_strides[idx + 1] != 1)
             ):
                 decoder_blocks.append(
                     CausalConvTranspose1d(
-                        args.dim, args.dim,
+                        args.dim,
+                        args.dim,
                         kernel_size=decoder_convs_kernels[idx + 1],
                         stride=decoder_convs_strides[idx + 1],
                         use_bias=False,
                     )
                 )
-                if args.half_attn_window_upon_downsampling and decoder_convs_strides[idx + 1] > 1:
+                if (
+                    args.half_attn_window_upon_downsampling
+                    and decoder_convs_strides[idx + 1] > 1
+                ):
                     cur_window_size = cur_window_size * 2
 
         self.decoder_blocks = nn.ModuleList(decoder_blocks)
         self.quantizer = MistralAudioCodebook(args)
         self.output_proj = CausalConv1d(
-            args.dim, args.pretransform_patch_size,
+            args.dim,
+            args.pretransform_patch_size,
             kernel_size=args.patch_proj_kernel_size,
             use_weight_norm=args.conv_weight_norm,
             use_bias=False,
@@ -609,8 +636,11 @@ class VoxtralTTSAudioTokenizer(nn.Module):
         max_chunk_len = max(chunk_lengths)
         K = all_chunks[0].shape[1]
         padded = torch.zeros(
-            len(all_chunks), max_chunk_len, K,
-            dtype=all_chunks[0].dtype, device=all_chunks[0].device,
+            len(all_chunks),
+            max_chunk_len,
+            K,
+            dtype=all_chunks[0].dtype,
+            device=all_chunks[0].device,
         )
         for i, chunk in enumerate(all_chunks):
             padded[i, : len(chunk)] = chunk
