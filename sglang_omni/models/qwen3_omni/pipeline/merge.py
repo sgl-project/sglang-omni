@@ -186,10 +186,10 @@ def build_thinker_inputs(
     image_ck = (encoder_inputs.get("image_encoder") or {}).get("cache_key")
     audio_ck = (encoder_inputs.get("audio_encoder") or {}).get("cache_key")
     if image_ck:
-        media_cache_keys["image"] = str(image_ck)
-        media_cache_keys["video"] = str(image_ck)
+        media_cache_keys["image"] = f"image:{image_ck}"
+        media_cache_keys["video"] = f"video:{image_ck}"
     if audio_ck:
-        media_cache_keys["audio"] = str(audio_ck)
+        media_cache_keys["audio"] = f"audio:{audio_ck}"
 
     result: dict[str, Any] = {"model_inputs": thinker_model_inputs}
     if media_cache_keys:

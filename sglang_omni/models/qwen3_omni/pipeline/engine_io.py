@@ -73,7 +73,9 @@ def build_thinker_request(
     model_inputs = dict(thinker_inputs.get("model_inputs", {}))
     if not model_inputs:
         model_inputs = {
-            k: v for k, v in thinker_inputs.items() if k != "capture_model_output_keys"
+            k: v
+            for k, v in thinker_inputs.items()
+            if k not in ("capture_model_output_keys", "media_cache_keys")
         }
 
     capture_keys = thinker_inputs.get("capture_model_output_keys", ())
@@ -187,7 +189,9 @@ def build_sglang_thinker_request(
     model_inputs = dict(thinker_inputs.get("model_inputs", {}))
     if not model_inputs:
         model_inputs = {
-            k: v for k, v in thinker_inputs.items() if k != "capture_model_output_keys"
+            k: v
+            for k, v in thinker_inputs.items()
+            if k not in ("capture_model_output_keys", "media_cache_keys")
         }
     capture_keys = thinker_inputs.get("capture_model_output_keys", ())
 
@@ -209,11 +213,13 @@ def build_sglang_thinker_request(
             if cache_key is None:
                 continue
             h = hashlib.sha256(cache_key.encode()).digest()[:8]
+            # Note (Yifei):
+            # Unlike SGLang main (hash % 2^30 without offset),
+            # offset by vocab_size to avoid collision with real token IDs.
             pad_val = vocab_size + int.from_bytes(h, "big") % (1 << 30)
             pad_values[modality] = pad_val
-            orig_token_id = getattr(thinker_config, attr, None)
-            if orig_token_id is not None:
-                token_id_map[orig_token_id] = pad_val
+            orig_token_id = getattr(thinker_config, attr)
+            token_id_map[orig_token_id] = pad_val
 
         if token_id_map:
             input_ids = input_ids.clone()
@@ -221,7 +227,7 @@ def build_sglang_thinker_request(
                 input_ids[input_ids == orig_id] = pad_val
 
         if pad_values:
-            model_inputs["_pad_values"] = pad_values
+            model_inputs["pad_values"] = pad_values
 
     input_ids_list = input_ids.tolist()
     if "attention_mask" in model_inputs:

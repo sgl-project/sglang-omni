@@ -589,7 +589,7 @@ class SGLangModelRunner:
             consumed = req._omni_consumed or {}
             chunk_offsets: dict[str, tuple[int, int]] = {}
 
-            pad_values = omni_inputs.get("_pad_values", {})
+            pad_values = omni_inputs.get("pad_values", {})
             for modality, token_id in [
                 ("image", image_token_id),
                 ("video", video_token_id),
