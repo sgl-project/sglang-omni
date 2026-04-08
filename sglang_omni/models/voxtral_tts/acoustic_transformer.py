@@ -5,7 +5,6 @@ Contains AudioSpecialTokens, FlowMatchingAudioTransformer, and all supporting
 sub-modules (AcousticTransformerBlock, BidirectionalAttention, FeedForward,
 TimeEmbedding, etc.).
 
-This module is independent of vLLM.
 """
 
 import logging
