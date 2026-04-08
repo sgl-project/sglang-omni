@@ -731,6 +731,31 @@ class BailingMoeV2ForCausalLM(nn.Module):
         self.logits_processor = LogitsProcessor(adapted)
 
         # ------------------------------------------------------------------
+        # Vision encoder + projector
+        # ------------------------------------------------------------------
+        vision_cfg = getattr(config, "vision_config", None)
+        if vision_cfg is not None:
+            from sglang_omni.models.ming_omni.components.projectors import (
+                VisionProjector,
+            )
+            from sglang_omni.models.ming_omni.components.vision_encoder import (
+                MingOmniVisionEncoder,
+            )
+
+            self.visual = MingOmniVisionEncoder(
+                vision_cfg, quant_config=quant_config, prefix="visual"
+            )
+            mlp_depth = getattr(config, "mlp_depth", 2)
+            self.linear_proj = VisionProjector(
+                vision_dim=self.visual.image_emb_dim,
+                llm_dim=adapted.hidden_size,
+                mlp_depth=mlp_depth,
+            )
+        else:
+            self.visual = None
+            self.linear_proj = None
+
+        # ------------------------------------------------------------------
         # Patch token IDs on the HF config for SGLang runtime's
         # _inject_multimodal_embeds() which reads config.audio_token_id etc.
         # This runs during model loading, BEFORE SGLangModelScheduler reads
@@ -774,6 +799,33 @@ class BailingMoeV2ForCausalLM(nn.Module):
             else:
                 config.audio_token_id = None
 
+    def get_image_feature(
+        self,
+        pixel_values: torch.Tensor,
+        grid_thw: torch.Tensor,
+    ) -> torch.Tensor:
+        """Extract image features: vision encode → project → L2 normalize.
+
+        Args:
+            pixel_values: Flattened pixel values from image processor.
+            grid_thw: [num_images, 3] tensor of (t, h, w) grid dimensions.
+
+        Returns:
+            Image embeddings of shape [seq_len, llm_hidden_size].
+        """
+        assert self.visual is not None, "Vision encoder not initialized"
+        assert self.linear_proj is not None, "Vision projector not initialized"
+
+        image_embeds = self.visual(pixel_values, grid_thw=grid_thw)
+
+        # If deepstack is enabled, only use the base merger output for projection
+        if self.visual.use_deepstack:
+            image_embeds = image_embeds[:, : self.visual.image_emb_dim]
+
+        image_embeds = self.linear_proj(image_embeds)
+        image_embeds = torch.nn.functional.normalize(image_embeds, dim=-1)
+        return image_embeds
+
     def forward(
         self,
         input_ids: torch.Tensor,
@@ -790,15 +842,30 @@ class BailingMoeV2ForCausalLM(nn.Module):
     def load_weights(self, weights: Iterable[Tuple[str, torch.Tensor]]):
         """Load weights from Ming-Omni checkpoint.
 
-        Routes lm_head weights to self.lm_head and text model weights
-        to self.model. Skips non-LLM weights (audio encoder, vision, etc.).
+        Routes weights to sub-modules:
+        - lm_head.*       → self.lm_head
+        - vision.*        → self.visual (MingOmniVisionEncoder)
+        - linear_proj.*   → self.linear_proj (VisionProjector)
+        - audio.*, linear_proj_audio.* → skipped (audio encoder handled separately)
+        - everything else → self.model (BailingMoeV2TextModel)
         """
         model_weights = []
+        vision_weights = []
+        proj_weights = []
         lm_head_params = dict(self.lm_head.named_parameters())
 
         for name, tensor in weights:
+            # Strip top-level "model." prefix from checkpoint names.
+            # Checkpoint uses "model.vision.*", "model.linear_proj.*", etc.
+            # but NOT "model.model.*" (that stripping is in TextModel).
+            stripped = name
+            if stripped.startswith("model.") and not stripped.startswith(
+                "model.model."
+            ):
+                stripped = stripped[len("model.") :]
+
             # Route lm_head weights
-            if name in ("lm_head.weight", "model.lm_head.weight"):
+            if stripped in ("lm_head.weight",) or name in ("model.lm_head.weight",):
                 param = lm_head_params.get("weight")
                 if param is not None:
                     weight_loader = getattr(
@@ -807,16 +874,41 @@ class BailingMoeV2ForCausalLM(nn.Module):
                     weight_loader(param, tensor)
                 continue
 
-            # Skip non-LLM weights that may be in the checkpoint
-            if any(
-                name.startswith(p)
-                for p in ("audio.", "linear_proj_audio.", "vision.", "linear_proj.")
+            # Route vision encoder weights
+            if stripped.startswith("vision."):
+                if self.visual is not None:
+                    vision_weights.append((stripped[len("vision.") :], tensor))
+                continue
+
+            # Route vision projector weights
+            if stripped.startswith("linear_proj.") and not stripped.startswith(
+                "linear_proj_audio."
+            ):
+                if self.linear_proj is not None:
+                    proj_weights.append((stripped[len("linear_proj.") :], tensor))
+                continue
+
+            # Skip audio weights (handled by audio encoder separately)
+            if stripped.startswith("audio.") or stripped.startswith(
+                "linear_proj_audio."
             ):
                 continue
 
+            # Pass original name to text model (it does its own prefix stripping)
             model_weights.append((name, tensor))
 
+        # Load text model weights
         self.model.load_weights(iter(model_weights))
+
+        # Load vision encoder weights
+        if self.visual is not None and vision_weights:
+            loaded = self.visual.load_weights(iter(vision_weights))
+            logger.info("Loaded %d vision encoder weights", len(loaded))
+
+        # Load vision projector weights
+        if self.linear_proj is not None and proj_weights:
+            loaded = self.linear_proj.load_weights(iter(proj_weights))
+            logger.info("Loaded %d vision projector weights", len(loaded))
 
         # Handle weight tying
         llm_cfg = getattr(self.config, "llm_config", self.config)

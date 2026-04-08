@@ -46,14 +46,35 @@ class VisionConfig:
 
     depth: int = 27
     hidden_size: int = 1152
-    num_heads: int = 16
-    patch_size: int = 16
+    hidden_act: str = "gelu_pytorch_tanh"
     intermediate_size: int = 4304
-    out_hidden_size: int = 4096
+    num_heads: int = 16
+    in_channels: int = 3
+    patch_size: int = 16
     spatial_merge_size: int = 2
     temporal_patch_size: int = 2
+    out_hidden_size: int = 4096
     num_position_embeddings: int = 2304
     deepstack_visual_indexes: list[int] = field(default_factory=lambda: [8, 16, 24])
+    initializer_range: float = 0.02
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> "VisionConfig":
+        return cls(
+            depth=d.get("depth", 27),
+            hidden_size=d.get("hidden_size", 1152),
+            hidden_act=d.get("hidden_act", "gelu_pytorch_tanh"),
+            intermediate_size=d.get("intermediate_size", 4304),
+            num_heads=d.get("num_heads", 16),
+            in_channels=d.get("in_channels", 3),
+            patch_size=d.get("patch_size", 16),
+            spatial_merge_size=d.get("spatial_merge_size", 2),
+            temporal_patch_size=d.get("temporal_patch_size", 2),
+            out_hidden_size=d.get("out_hidden_size", 4096),
+            num_position_embeddings=d.get("num_position_embeddings", 2304),
+            deepstack_visual_indexes=d.get("deepstack_visual_indexes", [8, 16, 24]),
+            initializer_range=d.get("initializer_range", 0.02),
+        )
 
 
 @dataclass(frozen=True)
@@ -156,8 +177,13 @@ class MingOmniConfig:
     def from_dict(cls, d: dict[str, Any]) -> "MingOmniConfig":
         llm_config = BailingMoeV2LLMConfig.from_dict(d.get("llm_config", {}))
         audio_config = AudioConfig.from_dict(d.get("audio_config", {}))
+        vision_raw = d.get("vision_config", {})
+        vision_config = (
+            VisionConfig.from_dict(vision_raw) if vision_raw else VisionConfig()
+        )
         return cls(
             llm_config=llm_config,
             audio_config=audio_config,
+            vision_config=vision_config,
             mlp_depth=d.get("mlp_depth", 2),
         )
