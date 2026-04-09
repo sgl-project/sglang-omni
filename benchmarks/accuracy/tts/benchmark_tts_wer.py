@@ -436,7 +436,7 @@ def main() -> None:
     parser.add_argument(
         "--backend",
         type=str,
-        required=True,
+        default="api",
         choices=["api", "local-ming"],
         help=(
             "TTS backend to use. "
