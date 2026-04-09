@@ -7,6 +7,7 @@ import base64
 import json
 import logging
 import os
+import random
 import re
 import time
 
@@ -54,9 +55,44 @@ def _extract_numbers(s: str) -> list[str]:
     )
 
 
-def parse_open_response(response: str) -> list[float | str]:
-    """Extract answer candidates from an open-ended model response."""
+def _parse_open_answer_tag(response: str) -> str | None:
+    """Try to extract the answer from an explicit 'Answer: ...' line.
 
+    Supports formats like ``Answer: 42``, ``Answer: MgS``,
+    ``Answer: \\boxed{13.0}``.  Returns ``None`` when no match is found.
+    """
+    matches = re.findall(
+        r"[Aa]nswer\s*:\s*\*?\*?\s*(.+)",
+        response,
+    )
+    if not matches:
+        return None
+    raw = matches[-1].strip().rstrip(".")
+    # Unwrap \boxed{...} if present
+    boxed = re.search(r"\\boxed\{(.+?)\}", raw)
+    if boxed:
+        raw = boxed.group(1)
+    # Strip surrounding ** (bold markdown)
+    raw = raw.strip("*").strip()
+    return raw if raw else None
+
+
+def parse_open_response(response: str) -> list[float | str]:
+    """Extract answer candidates from an open-ended model response.
+
+    First tries to extract from an explicit ``Answer: ...`` line.
+    Falls back to heuristic key-subresponse extraction.
+    """
+    # Fast path: explicit "Answer: ..."
+    tag_answer = _parse_open_answer_tag(response)
+    if tag_answer is not None:
+        out: list = []
+        out.extend(_normalize_str(tag_answer))
+        for num in _extract_numbers(tag_answer):
+            out.extend(_normalize_str(num))
+        return list(dict.fromkeys(out))
+
+    # Fallback: heuristic extraction
     def _get_key_subresponses(resp: str) -> list[str]:
         resp = resp.strip().strip(".").lower()
         subs = re.split(r"\.\s(?=[A-Z])|\n", resp)
@@ -89,7 +125,7 @@ def parse_open_response(response: str) -> list[float | str]:
     pred_list = key_resps.copy()
     for r in key_resps:
         pred_list.extend(_extract_numbers(r))
-    out: list = []
+    out = []
     for x in pred_list:
         out.extend(_normalize_str(x))
     return list(dict.fromkeys(out))
@@ -122,7 +158,7 @@ def parse_multi_choice_response(
     """Extract a single answer letter from the model response.
 
     Priority: ``Answer: X`` → ``(A)`` bracket → ``·A·`` space-padded →
-    option-text match → last-occurrence tie-break → fallback to first choice.
+    option-text match → last-occurrence tie-break → random fallback.
     """
     answer_matches = re.findall(r"[Aa]nswer\s*:\s*\*?\*?\s*\(?([A-Z])\)?", response)
     if answer_matches:
@@ -147,7 +183,7 @@ def parse_multi_choice_response(
             if ans and ans.lower() in response.lower():
                 candidates.append(idx)
     if not candidates:
-        return all_choices[0]
+        return random.choice(all_choices)
     if len(candidates) == 1:
         return candidates[0]
 

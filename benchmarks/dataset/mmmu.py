@@ -105,7 +105,8 @@ def format_mmmu_prompt(question: str, options: list[str]) -> str:
 
         <question>
 
-        Answer:
+        Answer the following question. The last line of your response
+        should be of the following format: 'Answer: $ANSWER' ...
     """
     clean_question = _strip_image_tags(question)
     prompt = f"{clean_question}\n"
@@ -121,7 +122,13 @@ def format_mmmu_prompt(question: str, options: list[str]) -> str:
             "Think step by step before answering."
         )
     else:
-        prompt += "\nAnswer: "
+        prompt += (
+            "\nAnswer the following question. "
+            "The last line of your response should be of the "
+            "following format: 'Answer: $ANSWER' (without quotes) "
+            "where $ANSWER is your final answer. "
+            "Think step by step before answering."
+        )
     return prompt
 
 
