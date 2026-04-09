@@ -108,6 +108,36 @@ def _estimate_image_tokens(
     return counts
 
 
+def _inject_top_level_images(
+    messages: list[dict[str, Any]],
+    images: list[str],
+) -> list[dict[str, Any]]:
+    """Convert top-level ``images`` into inline content items.
+
+    When the request uses ``{"images": ["url1"], "messages": [...]}`` instead of
+    inline ``image_url`` content items, we prepend the images to the first user
+    message so that the rest of the preprocessor handles both formats uniformly.
+
+    Returns a shallow copy of messages with the first user message modified;
+    the original list is not mutated.
+    """
+    messages = list(messages)  # shallow copy
+    for idx, msg in enumerate(messages):
+        if msg.get("role") != "user":
+            continue
+        content = msg.get("content", "")
+        new_content: list[dict[str, Any]] = [
+            {"type": "image_url", "image_url": {"url": url}} for url in images
+        ]
+        if isinstance(content, str):
+            new_content.append({"type": "text", "text": content})
+        elif isinstance(content, list):
+            new_content.extend(content)
+        messages[idx] = {**msg, "content": new_content}
+        break
+    return messages
+
+
 class MingPreprocessor:
     """Preprocessor for Ming-Omni model.
 
@@ -177,9 +207,17 @@ class MingPreprocessor:
             # OpenAI API passes messages list directly as inputs
             messages = raw_inputs
             audio_urls = []
+            top_level_images: list[str] = []
         else:
             messages = raw_inputs.get("messages", [])
             audio_urls = raw_inputs.get("audios", [])
+            top_level_images = raw_inputs.get("images") or []
+
+        # If top-level images are provided (e.g. {"images": ["url1", ...]}),
+        # inject them as inline content items in the first user message so that
+        # placeholder insertion and image extraction use a single code path.
+        if top_level_images:
+            messages = _inject_top_level_images(messages, top_level_images)
 
         # --- Extract image URLs/data from messages ---
         raw_images: list[Any] = []

@@ -731,29 +731,15 @@ class BailingMoeV2ForCausalLM(nn.Module):
         self.logits_processor = LogitsProcessor(adapted)
 
         # ------------------------------------------------------------------
-        # Vision encoder + projector
+        # Vision encoder + projector — NOT loaded here.
+        # The pipeline's IMAGE_STAGE (MingImageEncoder) handles vision
+        # encoding independently and injects pre-computed image_embeds
+        # via SGLang's _inject_multimodal_embeds().  Loading a duplicate
+        # copy here would waste ~1.2 GB of GPU memory.
+        # Vision/projector weights are silently skipped in load_weights().
         # ------------------------------------------------------------------
-        vision_cfg = getattr(config, "vision_config", None)
-        if vision_cfg is not None:
-            from sglang_omni.models.ming_omni.components.projectors import (
-                VisionProjector,
-            )
-            from sglang_omni.models.ming_omni.components.vision_encoder import (
-                MingOmniVisionEncoder,
-            )
-
-            self.visual = MingOmniVisionEncoder(
-                vision_cfg, quant_config=quant_config, prefix="visual"
-            )
-            mlp_depth = getattr(config, "mlp_depth", 2)
-            self.linear_proj = VisionProjector(
-                vision_dim=self.visual.image_emb_dim,
-                llm_dim=adapted.hidden_size,
-                mlp_depth=mlp_depth,
-            )
-        else:
-            self.visual = None
-            self.linear_proj = None
+        self.visual = None
+        self.linear_proj = None
 
         # ------------------------------------------------------------------
         # Patch token IDs on the HF config for SGLang runtime's
@@ -799,33 +785,6 @@ class BailingMoeV2ForCausalLM(nn.Module):
             else:
                 config.audio_token_id = None
 
-    def get_image_feature(
-        self,
-        pixel_values: torch.Tensor,
-        grid_thw: torch.Tensor,
-    ) -> torch.Tensor:
-        """Extract image features: vision encode → project → L2 normalize.
-
-        Args:
-            pixel_values: Flattened pixel values from image processor.
-            grid_thw: [num_images, 3] tensor of (t, h, w) grid dimensions.
-
-        Returns:
-            Image embeddings of shape [seq_len, llm_hidden_size].
-        """
-        assert self.visual is not None, "Vision encoder not initialized"
-        assert self.linear_proj is not None, "Vision projector not initialized"
-
-        image_embeds = self.visual(pixel_values, grid_thw=grid_thw)
-
-        # If deepstack is enabled, only use the base merger output for projection
-        if self.visual.use_deepstack:
-            image_embeds = image_embeds[:, : self.visual.image_emb_dim]
-
-        image_embeds = self.linear_proj(image_embeds)
-        image_embeds = torch.nn.functional.normalize(image_embeds, dim=-1)
-        return image_embeds
-
     def forward(
         self,
         input_ids: torch.Tensor,
@@ -844,14 +803,11 @@ class BailingMoeV2ForCausalLM(nn.Module):
 
         Routes weights to sub-modules:
         - lm_head.*       → self.lm_head
-        - vision.*        → self.visual (MingOmniVisionEncoder)
-        - linear_proj.*   → self.linear_proj (VisionProjector)
-        - audio.*, linear_proj_audio.* → skipped (audio encoder handled separately)
+        - vision.*, linear_proj.* → skipped (vision handled by IMAGE_STAGE)
+        - audio.*, linear_proj_audio.* → skipped (audio handled by AUDIO_STAGE)
         - everything else → self.model (BailingMoeV2TextModel)
         """
         model_weights = []
-        vision_weights = []
-        proj_weights = []
         lm_head_params = dict(self.lm_head.named_parameters())
 
         for name, tensor in weights:
@@ -874,21 +830,15 @@ class BailingMoeV2ForCausalLM(nn.Module):
                     weight_loader(param, tensor)
                 continue
 
-            # Route vision encoder weights
+            # Skip vision encoder + projector weights (handled by IMAGE_STAGE)
             if stripped.startswith("vision."):
-                if self.visual is not None:
-                    vision_weights.append((stripped[len("vision.") :], tensor))
                 continue
-
-            # Route vision projector weights
             if stripped.startswith("linear_proj.") and not stripped.startswith(
                 "linear_proj_audio."
             ):
-                if self.linear_proj is not None:
-                    proj_weights.append((stripped[len("linear_proj.") :], tensor))
                 continue
 
-            # Skip audio weights (handled by audio encoder separately)
+            # Skip audio weights (handled by AUDIO_STAGE)
             if stripped.startswith("audio.") or stripped.startswith(
                 "linear_proj_audio."
             ):
@@ -899,16 +849,6 @@ class BailingMoeV2ForCausalLM(nn.Module):
 
         # Load text model weights
         self.model.load_weights(iter(model_weights))
-
-        # Load vision encoder weights
-        if self.visual is not None and vision_weights:
-            loaded = self.visual.load_weights(iter(vision_weights))
-            logger.info("Loaded %d vision encoder weights", len(loaded))
-
-        # Load vision projector weights
-        if self.linear_proj is not None and proj_weights:
-            loaded = self.linear_proj.load_weights(iter(proj_weights))
-            logger.info("Loaded %d vision projector weights", len(loaded))
 
         # Handle weight tying
         llm_cfg = getattr(self.config, "llm_config", self.config)

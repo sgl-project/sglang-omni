@@ -10,7 +10,7 @@ Tests the complete vision pipeline with a real image:
 
 Usage (on remote server):
     cd /sgl-workspace/sglang-omni-dev2
-    CUDA_VISIBLE_DEVICES=0 python scripts/test_vision_e2e.py
+    CUDA_VISIBLE_DEVICES=0 python scripts/test_ming_omni_vision_e2e.py
 """
 
 from __future__ import annotations

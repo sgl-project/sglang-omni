@@ -33,11 +33,6 @@ from sglang_omni.models.weight_loader import default_weight_loader
 logger = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------
-# Config helpers
-# ---------------------------------------------------------------------------
-
-
 def _extract_vision_dict(vision_config) -> dict:
     """Extract a plain dict from a vision config object."""
     if hasattr(vision_config, "to_dict"):
@@ -53,10 +48,6 @@ def _extract_vision_dict(vision_config) -> dict:
         d.pop(key, None)
     return d
 
-
-# ---------------------------------------------------------------------------
-# Weight name remapping: Ming checkpoint -> sglang model
-# ---------------------------------------------------------------------------
 
 _WEIGHT_SUBSTR_MAPPINGS = {
     "deepstack_merger_list.": "merger_list.",
@@ -81,11 +72,6 @@ def _remap_ming_vision_weight(name: str) -> str:
     name = name.replace("attn.out_proj.", "attn.proj.")
 
     return name
-
-
-# ---------------------------------------------------------------------------
-# MingOmniVisionEncoder
-# ---------------------------------------------------------------------------
 
 
 class MingOmniVisionEncoder(nn.Module):

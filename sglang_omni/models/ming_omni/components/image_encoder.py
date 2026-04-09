@@ -97,6 +97,9 @@ class MingImageEncoder(nn.Module):
             len(loaded_proj),
         )
 
+        # Store spatial merge size for token count computation
+        self._spatial_merge_size = vision_cfg.spatial_merge_size
+
         # Move to device
         torch_dtype = _resolve_dtype(dtype)
         self.to(device=device, dtype=torch_dtype)
@@ -129,7 +132,12 @@ class MingImageEncoder(nn.Module):
             return  # Already initialized
 
         os.environ.setdefault("MASTER_ADDR", "127.0.0.1")
-        os.environ.setdefault("MASTER_PORT", "29500")
+        if "MASTER_PORT" not in os.environ:
+            import socket
+
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.bind(("", 0))
+                os.environ["MASTER_PORT"] = str(s.getsockname()[1])
 
         from sglang.srt.server_args import (
             ServerArgs,
@@ -183,7 +191,10 @@ class MingImageEncoder(nn.Module):
             image_grid_thw: [num_images, 3] tensor of (t, h, w).
 
         Returns:
-            Dict with ``image_embeds`` [seq_len, llm_hidden_size] (L2-normalized).
+            Dict with:
+            - ``image_embeds`` [seq_len, llm_hidden_size] (L2-normalized)
+            - ``image_grid_thw`` [num_images, 3]
+            - ``image_token_counts`` [num_images] per-image token counts
         """
         pixel_values = pixel_values.to(
             device=self.visual.device, dtype=self.visual.dtype
@@ -200,9 +211,16 @@ class MingImageEncoder(nn.Module):
             image_embeds = self.linear_proj(image_embeds)
             image_embeds = F.normalize(image_embeds, dim=-1)
 
+        # Per-image token counts after spatial merge: t * h * w / merge^2
+        merge_sq = self._spatial_merge_size**2
+        image_token_counts = (
+            image_grid_thw[:, 0] * image_grid_thw[:, 1] * image_grid_thw[:, 2]
+        ) // merge_sq
+
         return {
             "image_embeds": image_embeds,
             "image_grid_thw": image_grid_thw,
+            "image_token_counts": image_token_counts,
         }
 
 
