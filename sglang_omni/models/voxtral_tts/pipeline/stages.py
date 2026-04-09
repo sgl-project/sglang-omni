@@ -107,9 +107,7 @@ def _run_ar_generation(
     device: str,
 ) -> tuple[torch.Tensor, int, int]:
     """Run AR generation loop using VoxtralTTSAudioGeneration model."""
-    from sglang_omni.models.voxtral_tts.voxtral_tts_audio_generation import (
-        AudioSpecialTokens,
-    )
+    from sglang_omni.models.voxtral_tts.acoustic_transformer import AudioSpecialTokens
 
     audio_token_id = config.audio_model_args.audio_token_id
 
