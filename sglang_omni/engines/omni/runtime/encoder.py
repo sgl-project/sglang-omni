@@ -470,13 +470,38 @@ class EncoderOutputProcessor:
 
         # Handle count keys
         if key in {"image_token_counts", "audio_output_lengths", "video_token_counts"}:
+            for mod_name, config in self.modality_configs.items():
+                if config.count_key == key:
+                    sizes = modality_sizes.get(mod_name, [])
+                    if sizes and value.dim() == 1 and sum(sizes) == value.shape[0]:
+                        offset = sum(sizes[:out_idx])
+                        count = sizes[out_idx]
+                        return value[offset : offset + count]
+                    break
+            # Fallback: 1-to-1 mapping
             if value.dim() == 1 and value.shape[0] == len(active_indices):
                 return value[out_idx : out_idx + 1]
             return value
 
         # Handle embeddings
         if key in embed_splits:
-            return embed_splits[key][out_idx]
+            splits = embed_splits[key]
+            # Find the modality that owns this embed key so we can
+            # map per-item splits back to per-request groups.
+            for mod_name, config in self.modality_configs.items():
+                if config.embed_key == key:
+                    sizes = modality_sizes.get(mod_name, [])
+                    if sizes and sum(sizes) == len(splits):
+                        offset = sum(sizes[:out_idx])
+                        count = sizes[out_idx]
+                        if count == 1:
+                            return splits[offset]
+                        return torch.cat(splits[offset : offset + count])
+                    break
+            # Fallback: 1-to-1 mapping
+            if out_idx < len(splits):
+                return splits[out_idx]
+            return value
 
         # Handle generic batched tensors
         if value.shape[0] == len(active_indices):
