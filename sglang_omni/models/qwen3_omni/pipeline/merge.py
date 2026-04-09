@@ -187,6 +187,10 @@ def build_thinker_inputs(
     audio_ck = (encoder_inputs.get("audio_encoder") or {}).get("cache_key")
     if image_ck:
         media_cache_keys["image"] = f"image:{image_ck}"
+        # Note(Yifei):
+        # In Qwen3-Omni the image_encoder handles both image and video
+        # (no separate video_encoder), so they share the same cache key.
+        # Different prefixes ensure distinct pad_values.
         media_cache_keys["video"] = f"video:{image_ck}"
     if audio_ck:
         media_cache_keys["audio"] = f"audio:{audio_ck}"

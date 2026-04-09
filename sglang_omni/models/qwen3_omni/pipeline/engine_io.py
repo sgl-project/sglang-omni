@@ -3,10 +3,10 @@
 
 from __future__ import annotations
 
-import hashlib
 from typing import TYPE_CHECKING, Any
 
 import torch
+import xxhash
 
 from sglang_omni.engines.omni.runtime import ARRequestData, EncoderRequestData
 from sglang_omni.models.qwen3_omni.io import PipelineState, ThinkerOutput
@@ -212,11 +212,11 @@ def build_sglang_thinker_request(
             cache_key = media_cache_keys.get(modality)
             if cache_key is None:
                 continue
-            h = hashlib.sha256(cache_key.encode()).digest()[:8]
+            h = xxhash.xxh3_64(cache_key.encode()).intdigest()
             # Note (Yifei):
             # Unlike SGLang main (hash % 2^30 without offset),
             # offset by vocab_size to avoid collision with real token IDs.
-            pad_val = vocab_size + int.from_bytes(h, "big") % (1 << 30)
+            pad_val = vocab_size + h % (1 << 30)
             pad_values[modality] = pad_val
             orig_token_id = getattr(thinker_config, attr)
             token_id_map[orig_token_id] = pad_val
