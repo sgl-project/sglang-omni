@@ -21,7 +21,12 @@ from pathlib import Path
 import pytest
 import requests
 
-from tests.utils import disable_proxy, find_free_port, start_server, stop_server
+from tests.utils import (
+    disable_proxy,
+    find_free_port,
+    start_server_from_cmd,
+    stop_server,
+)
 
 S2PRO_MODEL_PATH = "fishaudio/s2-pro"
 S2PRO_CONFIG_PATH = "examples/configs/s2pro_tts.yaml"
@@ -36,7 +41,19 @@ def server_process(tmp_path_factory: pytest.TempPathFactory):
     """Start the S2-Pro server, wait until healthy, and yield `(proc, port)`."""
     port = find_free_port()
     log_file = tmp_path_factory.mktemp("server_logs") / "server.log"
-    proc = start_server(S2PRO_MODEL_PATH, S2PRO_CONFIG_PATH, log_file, port)
+    cmd = [
+        sys.executable,
+        "-m",
+        "sglang_omni.cli.cli",
+        "serve",
+        "--model-path",
+        S2PRO_MODEL_PATH,
+        "--config",
+        S2PRO_CONFIG_PATH,
+        "--port",
+        str(port),
+    ]
+    proc = start_server_from_cmd(cmd, log_file, port)
     yield proc, port
     stop_server(proc)
 

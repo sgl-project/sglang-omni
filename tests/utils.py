@@ -8,7 +8,6 @@ import signal
 import socket
 import statistics
 import subprocess
-import sys
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Generator
@@ -116,32 +115,6 @@ def start_server_from_cmd(
         )
     wait_healthy(proc, port, log_file, timeout=timeout)
     return proc
-
-
-def start_server(
-    model_path: str,
-    config_path: str | None,
-    log_file: Path,
-    port: int,
-    timeout: int = STARTUP_TIMEOUT,
-    extra_args: list[str] | None = None,
-) -> subprocess.Popen:
-    """Start a ``sgl-omni serve`` server and wait until healthy."""
-    cmd = [
-        sys.executable,
-        "-m",
-        "sglang_omni.cli.cli",
-        "serve",
-        "--model-path",
-        model_path,
-        "--port",
-        str(port),
-    ]
-    if config_path:
-        cmd.extend(["--config", config_path])
-    if extra_args:
-        cmd.extend(extra_args)
-    return start_server_from_cmd(cmd, log_file, port, timeout=timeout)
 
 
 def assert_summary_metrics(summary: dict, *, check_tokens: bool = True) -> None:

@@ -54,7 +54,7 @@ class MMMUSample:
     question: str
     options: list[str]
     answer: str
-    image_uris: list[str]
+    images: list[Image.Image]
     subject: str
     prompt: str
     all_choices: list[str] = field(default_factory=list)
@@ -138,11 +138,6 @@ def load_mmmu_samples(max_samples: int | None = None) -> list[MMMUSample]:
     Downloads and caches via the ``datasets`` library. Deterministic selection:
     all subjects are loaded, merged, sorted by sample id, and the first
     *max_samples* are returned.
-
-    Memory note: All images are eagerly converted to base64 data URIs and held
-    in memory. Each sample carries ~2MB of base64 data. The full validation set
-    (~900 samples) would reach ~1.8GB. Use *max_samples* to cap memory usage in
-    constrained environments.
     """
     subjects: list[str] = []
     for subs in DOMAIN_CAT2SUB_CAT.values():
@@ -169,12 +164,12 @@ def load_mmmu_samples(max_samples: int | None = None) -> list[MMMUSample]:
         ex = merged[idx]
         subject = ex["__subject__"]
 
-        image_uris: list[str] = []
+        images: list[Image.Image] = []
         for i in range(1, 8):
             image = ex.get(f"image_{i}")
             if image is not None and hasattr(image, "convert"):
-                image_uris.append(image_to_data_uri(image))
-        if not image_uris:
+                images.append(image)
+        if not images:
             continue
 
         question = ex.get("question", "")
@@ -189,7 +184,7 @@ def load_mmmu_samples(max_samples: int | None = None) -> list[MMMUSample]:
                     if isinstance(raw_options, list)
                     else list(ast.literal_eval(raw_options))
                 )
-            except Exception:
+            except (ValueError, SyntaxError):
                 options = []
 
         all_choices: list[str] = []
@@ -209,7 +204,7 @@ def load_mmmu_samples(max_samples: int | None = None) -> list[MMMUSample]:
                 question=question,
                 options=options,
                 answer=answer,
-                image_uris=image_uris,
+                images=images,
                 subject=subject,
                 prompt=prompt,
                 all_choices=all_choices,
@@ -218,5 +213,5 @@ def load_mmmu_samples(max_samples: int | None = None) -> list[MMMUSample]:
             )
         )
 
-    logger.info("Loaded %d MMMU samples", len(samples))
+    logger.info(f"Loaded {len(samples)} MMMU samples")
     return samples

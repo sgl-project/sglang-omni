@@ -20,7 +20,6 @@ import requests
 from tests.utils import (
     disable_proxy,
     find_free_port,
-    start_server,
     start_server_from_cmd,
     stop_server,
 )
@@ -55,14 +54,20 @@ class TestTextOnlyMode:
     def server(self, tmp_path_factory: pytest.TempPathFactory):
         port = find_free_port()
         log_file = tmp_path_factory.mktemp("text_only_logs") / "server.log"
-        proc = start_server(
+        cmd = [
+            sys.executable,
+            "-m",
+            "sglang_omni.cli.cli",
+            "serve",
+            "--model-path",
             MODEL_PATH,
-            None,
-            log_file,
-            port,
-            timeout=STARTUP_TIMEOUT,
-            extra_args=["--text-only", "--model-name", MODEL_NAME],
-        )
+            "--text-only",
+            "--model-name",
+            MODEL_NAME,
+            "--port",
+            str(port),
+        ]
+        proc = start_server_from_cmd(cmd, log_file, port, timeout=STARTUP_TIMEOUT)
         yield port
         stop_server(proc)
 

@@ -1,11 +1,14 @@
 # SPDX-License-Identifier: Apache-2.0
-"""MMMU audio consistency CI for Qwen3-Omni (Text+Image → Text+Audio, Talker ON).
+"""MMMU TTS consistency CI for Qwen3-Omni (Text+Image → Text+Audio, Talker ON).
 
 Evaluates text-audio consistency by comparing the model's text output
 with ASR transcription of its audio output on MMMU image-QA tasks.
 
 Usage:
-    pytest tests/test_model/test_qwen3_omni_mmmu_audio_ci.py -v -s -x
+    pytest tests/test_model/test_qwen3_omni_mmmu_tts_consistency_ci.py -v -s -x
+
+Author:
+    Yifei Gao https://github.com/PasserBy4
 """
 
 from __future__ import annotations
@@ -17,14 +20,13 @@ from pathlib import Path
 
 import pytest
 
-from benchmarks.benchmarker.utils import wait_for_service
 from benchmarks.eval.mmmu import MMMUEvalConfig, run_mmmu_eval
 from tests.utils import (
     apply_slack,
     assert_speed_thresholds,
     assert_wer_results,
-    disable_proxy,
     find_free_port,
+    start_server_from_cmd,
     stop_server,
 )
 
@@ -58,59 +60,29 @@ MMMU_AUDIO_THRESHOLDS = apply_slack(_MMMU_AUDIO_P95)
 def server_process(tmp_path_factory: pytest.TempPathFactory):
     """Start the Qwen3-Omni speech server (talker ON) and wait until healthy."""
     port = find_free_port()
-    log_dir = tmp_path_factory.mktemp("server_logs")
-    log_file = log_dir / "server.log"
-    with open(log_file, "w") as log_handle:
-        cmd = [
-            sys.executable,
-            "examples/run_qwen3_omni_speech_server.py",
-            "--model-path",
-            MODEL_PATH,
-            "--gpu-thinker",
-            "0",
-            "--gpu-talker",
-            "1",
-            "--gpu-code-predictor",
-            "1",
-            "--gpu-code2wav",
-            "1",
-            "--port",
-            str(port),
-            "--model-name",
-            "qwen3-omni",
-        ]
-
-        proc = subprocess.Popen(
-            cmd,
-            stdout=log_handle,
-            stderr=subprocess.STDOUT,
-            start_new_session=True,
-        )
-        proc.port = port
-
-        api_base = f"http://localhost:{port}"
-        try:
-            with disable_proxy():
-                wait_for_service(
-                    api_base,
-                    timeout=STARTUP_TIMEOUT,
-                    server_process=proc,
-                    server_log_file=log_file,
-                    health_body_contains="healthy",
-                )
-        except TimeoutError:
-            stop_server(proc)
-            server_log = log_file.read_text()
-            pytest.fail(
-                f"Server did not become healthy within {STARTUP_TIMEOUT}s.\n"
-                f"{server_log}"
-            )
-        except RuntimeError as exc:
-            pytest.fail(str(exc))
-
-        yield proc
-
-        stop_server(proc)
+    log_file = tmp_path_factory.mktemp("server_logs") / "server.log"
+    cmd = [
+        sys.executable,
+        "examples/run_qwen3_omni_speech_server.py",
+        "--model-path",
+        MODEL_PATH,
+        "--gpu-thinker",
+        "0",
+        "--gpu-talker",
+        "1",
+        "--gpu-code-predictor",
+        "1",
+        "--gpu-code2wav",
+        "1",
+        "--port",
+        str(port),
+        "--model-name",
+        "qwen3-omni",
+    ]
+    proc = start_server_from_cmd(cmd, log_file, port, timeout=STARTUP_TIMEOUT)
+    proc.port = port
+    yield proc
+    stop_server(proc)
 
 
 @pytest.mark.benchmark

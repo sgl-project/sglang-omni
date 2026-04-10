@@ -13,7 +13,9 @@ Usage:
     python benchmarks/eval/mmmu.py \
         --model qwen3-omni --port 8000 --max-samples 50 --max-concurrency 16
 
-    # With audio (requires speech server; concurrency=1 only for now)
+    # With audio (requires speech server)
+    # Note (Yifei): Concurrency=1 only for now — code_predictor and code2wav
+    # modules serialize GPU access, so they run serially even when concurrency > 1.
     python benchmarks/eval/mmmu.py \
         --model qwen3-omni --port 8000 --max-samples 5 --enable-audio --max-tokens 50
 """
@@ -30,16 +32,22 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from benchmarks.benchmarker.runner import BenchmarkRunner, RunConfig
-from benchmarks.benchmarker.utils import wait_for_service
+from benchmarks.benchmarker.utils import save_json_results, wait_for_service
 from benchmarks.dataset.mmmu import load_mmmu_samples
 from benchmarks.metrics.performance import compute_speed_metrics
 from benchmarks.tasks.mmmu import (
     compute_mmmu_metrics,
     make_mmmu_send_fn,
     print_mmmu_accuracy_summary,
-    save_mmmu_results,
 )
 from benchmarks.tasks.tts_speed import print_speed_summary
+from benchmarks.tasks.voice_clone import (
+    SampleOutput,
+    _transcribe_and_compute_wer,
+    calculate_wer_metrics,
+    load_asr_model,
+    print_wer_summary,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -59,7 +67,7 @@ class MMMUEvalConfig:
     temperature: float = 0.0
     output_dir: str | None = None
     max_concurrency: int = 1
-    warmup: int = 1
+    warmup: int = 0
     request_rate: float = float("inf")
     disable_tqdm: bool = False
     enable_audio: bool = False
@@ -81,7 +89,7 @@ async def run_mmmu_eval(config: MMMUEvalConfig) -> dict:
     api_url = f"{base_url}/v1/chat/completions"
 
     samples = load_mmmu_samples(config.max_samples)
-    logger.info("Prepared %d MMMU samples", len(samples))
+    logger.info(f"Prepared {len(samples)} MMMU samples")
 
     audio_dir: str | None = None
     if config.enable_audio and config.output_dir:
@@ -137,7 +145,7 @@ async def run_mmmu_eval(config: MMMUEvalConfig) -> dict:
         results["wer"] = wer_results
 
     if config.output_dir:
-        save_mmmu_results(results, config.output_dir)
+        save_json_results(results, config.output_dir, "mmmu_results.json")
 
     return results
 
@@ -153,13 +161,6 @@ def _compute_audio_wer(
     hypothesis.  Returns a dict with ``summary`` and ``per_sample`` keys.
     """
     import soundfile as sf
-
-    from benchmarks.tasks.voice_clone import (
-        SampleOutput,
-        _transcribe_and_compute_wer,
-        calculate_wer_metrics,
-        load_asr_model,
-    )
 
     asr = load_asr_model(lang, asr_device)
 
@@ -236,8 +237,6 @@ async def benchmark(args: argparse.Namespace) -> dict:
         results["speed"], config.model, config.max_concurrency, title="MMMU Speed"
     )
     if "wer" in results:
-        from benchmarks.tasks.voice_clone import print_wer_summary
-
         print_wer_summary(results["wer"]["summary"], config.model)
     return results
 

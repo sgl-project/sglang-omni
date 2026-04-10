@@ -3,6 +3,9 @@
 
 Usage:
     pytest tests/test_model/test_qwen3_omni_mmmu_ci.py -s -x
+
+Author:
+    Yifei Gao https://github.com/PasserBy4
 """
 
 from __future__ import annotations

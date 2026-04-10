@@ -11,8 +11,6 @@ Usage:
 from __future__ import annotations
 
 import os
-import signal
-import subprocess
 import sys
 import time
 from pathlib import Path
@@ -20,7 +18,7 @@ from pathlib import Path
 import pytest
 import requests
 
-from tests.utils import disable_proxy
+from tests.utils import disable_proxy, start_server_from_cmd, stop_server
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -47,10 +45,11 @@ REQUEST_TIMEOUT = 300  # seconds
 # Fixtures
 # ---------------------------------------------------------------------------
 @pytest.fixture(scope="module")
-def server_process():
+def server_process(tmp_path_factory: pytest.TempPathFactory):
     """Start the sglang-omni backend server and wait until healthy."""
     assert os.path.isfile(VIDEO_PATH), f"Test video not found: {VIDEO_PATH}"
-
+    port = SERVER_PORT
+    log_file = tmp_path_factory.mktemp("server_logs") / "server.log"
     cmd = [
         sys.executable,
         "-m",
@@ -62,54 +61,11 @@ def server_process():
         "--relay-backend",
         "nixl",
         "--port",
-        str(SERVER_PORT),
+        str(port),
     ]
-
-    t_start = time.monotonic()
-    proc = subprocess.Popen(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        preexec_fn=os.setsid,
-    )
-
-    # Wait for health endpoint
-    healthy = False
-    for _ in range(STARTUP_TIMEOUT):
-        if proc.poll() is not None:
-            # Server exited early — dump output for debugging
-            out = proc.stdout.read() if proc.stdout else ""
-            pytest.fail(f"Server exited with code {proc.returncode}.\n{out}")
-        try:
-            with disable_proxy():
-                resp = requests.get(f"{API_BASE}/health", timeout=2)
-            if resp.status_code == 200 and "healthy" in resp.text:
-                healthy = True
-                break
-        except requests.ConnectionError:
-            pass
-        time.sleep(1)
-
-    startup_time = time.monotonic() - t_start
-
-    if not healthy:
-        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-        proc.wait(timeout=10)
-        out = proc.stdout.read() if proc.stdout else ""
-        pytest.fail(f"Server did not become healthy within {STARTUP_TIMEOUT}s.\n{out}")
-
-    print(f"\n[PERF] Server startup time: {startup_time:.1f}s")
-
-    yield proc, startup_time
-
-    # Teardown
-    os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-    try:
-        proc.wait(timeout=30)
-    except subprocess.TimeoutExpired:
-        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-        proc.wait(timeout=10)
+    proc = start_server_from_cmd(cmd, log_file, port, timeout=STARTUP_TIMEOUT)
+    yield proc, 0.0  # startup_time no longer measured inline
+    stop_server(proc)
 
 
 # ---------------------------------------------------------------------------

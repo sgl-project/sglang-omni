@@ -29,6 +29,7 @@ from benchmarks.benchmarker.utils import (
     SSE_DATA_PREFIX,
     SSE_DONE_MARKER,
     WAV_HEADER_SIZE,
+    save_json_results,
 )
 from benchmarks.dataset.seedtts import SampleInput
 
@@ -683,8 +684,6 @@ def print_wer_summary(
 def save_wer_results(
     outputs: list[SampleOutput], metrics: dict, config: dict, output_dir: str
 ) -> None:
-    os.makedirs(output_dir, exist_ok=True)
-
     json_results = {
         "summary": metrics,
         "config": config,
@@ -708,9 +707,7 @@ def save_wer_results(
             for o in outputs
         ],
     }
-    json_path = os.path.join(output_dir, "wer_results.json")
-    with open(json_path, "w") as f:
-        json.dump(json_results, f, indent=2, ensure_ascii=False)
+    save_json_results(json_results, output_dir, "wer_results.json")
 
     csv_path = os.path.join(output_dir, "wer_results.csv")
     with open(csv_path, "w", newline="") as f:

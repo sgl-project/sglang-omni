@@ -3,8 +3,8 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
-import json
 import logging
 import os
 import random
@@ -15,7 +15,7 @@ import aiohttp
 
 from benchmarks.benchmarker.data import RequestResult
 from benchmarks.benchmarker.runner import SendFn
-from benchmarks.dataset.mmmu import MMMUSample
+from benchmarks.dataset.mmmu import MMMUSample, image_to_data_uri
 
 logger = logging.getLogger(__name__)
 
@@ -230,7 +230,7 @@ def make_mmmu_send_fn(
         payload: dict = {
             "model": model_name,
             "messages": [{"role": "user", "content": sample.prompt}],
-            "images": sample.image_uris,
+            "images": [image_to_data_uri(img) for img in sample.images],
             "modalities": modalities,
             "max_tokens": max_tokens,
             "temperature": temperature,
@@ -263,9 +263,6 @@ def make_mmmu_send_fn(
 
                 wav_info = sf.info(wav_path)
                 result.audio_duration_s = round(wav_info.duration, 4)
-                elapsed = time.perf_counter() - start_time
-                if result.audio_duration_s > 0:
-                    result.rtf = elapsed / result.audio_duration_s
 
             result.is_success = True
 
@@ -276,9 +273,11 @@ def make_mmmu_send_fn(
 
             elapsed = time.perf_counter() - start_time
             result.engine_time_s = elapsed
+            if result.audio_duration_s > 0:
+                result.rtf = elapsed / result.audio_duration_s
             if result.completion_tokens > 0 and result.engine_time_s > 0:
                 result.tok_per_s = result.completion_tokens / result.engine_time_s
-        except Exception as exc:
+        except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
             result.error = str(exc)
         finally:
             result.latency_s = time.perf_counter() - start_time
@@ -378,12 +377,3 @@ def print_mmmu_accuracy_summary(metrics: dict, model_name: str) -> None:
     )
     print(f"  {'Failed requests:':<{lw}} {metrics['failed']}")
     print(f"{'=' * SUMMARY_LINE_WIDTH}\n")
-
-
-def save_mmmu_results(results: dict, output_dir: str) -> None:
-    """Save results to ``mmmu_results.json`` in *output_dir*."""
-    os.makedirs(output_dir, exist_ok=True)
-    path = os.path.join(output_dir, "mmmu_results.json")
-    with open(path, "w") as f:
-        json.dump(results, f, indent=2, ensure_ascii=False)
-    logger.info("Results saved to %s", path)
