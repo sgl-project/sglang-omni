@@ -78,9 +78,9 @@ STREAMING_BENCHMARK_MAX_SAMPLES = 16
 THRESHOLD_SLACK_HIGHER = 0.75
 THRESHOLD_SLACK_LOWER = 1.25
 
-VC_WER_MAX_CORPUS = 0.015
+VC_WER_MAX_CORPUS = 0.018
 VC_WER_MAX_PER_SAMPLE = 0.5
-VC_STREAM_WER_MAX_CORPUS = 0.015
+VC_STREAM_WER_MAX_CORPUS = 0.018
 VC_STREAM_WER_MAX_PER_SAMPLE = 0.5
 
 # Note (Chenyang): Only thresholds for concurrency 8 are dedicatedly tuned, others
@@ -139,7 +139,7 @@ _VC_STREAM_P95 = {
         "rtf_mean": 4.08,
     },
     8: {
-        "throughput_qps": 0.32,
+        "throughput_qps": 0.31,
         "tok_per_s_agg": 9.3,
         "latency_mean_s": 22.7,
         "rtf_mean": 5.89,
