@@ -7,7 +7,7 @@ Usage:
     pytest tests/test_model/test_s2pro_tts_ci.py -s -x --concurrency all
 
 Author:
-    chenyang zhao https://github.com/zhaochenyang20
+    Chenyang Zhao https://github.com/zhaochenyang20
     Raitsh P https://github.com/Ratish1
     Jingwen Guo https://github.com/JingwenGu0829
     Yuan Luo https://github.com/yuan-luo
@@ -78,9 +78,9 @@ STREAMING_BENCHMARK_MAX_SAMPLES = 16
 THRESHOLD_SLACK_HIGHER = 0.75
 THRESHOLD_SLACK_LOWER = 1.25
 
-VC_WER_MAX_CORPUS = 0.018
+VC_WER_MAX_CORPUS = 0.015
 VC_WER_MAX_PER_SAMPLE = 0.5
-VC_STREAM_WER_MAX_CORPUS = 0.018
+VC_STREAM_WER_MAX_CORPUS = 0.015
 VC_STREAM_WER_MAX_PER_SAMPLE = 0.5
 
 # Note (Chenyang): Only thresholds for concurrency 8 are dedicatedly tuned, others
