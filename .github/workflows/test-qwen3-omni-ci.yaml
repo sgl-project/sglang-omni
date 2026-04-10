@@ -120,7 +120,7 @@ jobs:
         run: |
           bash .github/scripts/delete_gpu_process.sh
 
-      - name: Run MMMU Audio CI (WER + speed)
+      - name: Run MMMU TTS Consistency CI (WER + speed)
         timeout-minutes: 60
         shell: bash
         run: |
@@ -130,11 +130,11 @@ jobs:
         env:
           HF_ENDPOINT: https://hf-mirror.com
 
-      - name: Print MMMU Audio CI artifacts (WER + speed)
+      - name: Print MMMU TTS Consistency CI artifacts (WER + speed)
         if: always()
         shell: bash
         run: |
-          echo "=== Qwen3-Omni MMMU Audio CI results ==="
+          echo "=== Qwen3-Omni MMMU TTS Consistency CI results ==="
           for f in $(find /tmp -path '*/mmmu_audio/mmmu_results.json' 2>/dev/null); do
             echo "--- $f ---"
             cat "$f"

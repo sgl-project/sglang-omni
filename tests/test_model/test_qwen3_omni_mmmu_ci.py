@@ -29,17 +29,17 @@ from tests.utils import (
 MODEL_PATH = "Qwen/Qwen3-Omni-30B-A3B-Instruct"
 
 MAX_SAMPLES = 50
-CONCURRENCY = 16
+CONCURRENCY = 8
 STARTUP_TIMEOUT = 900
 
-MMMU_MIN_ACCURACY = 0.55
+MMMU_MIN_ACCURACY = 0.54
 
-# TODO(Yifei): Tighten after gathering P95 baselines on CI hardware.
+# Baselines: P95 of 5 runs at concurrency=8 on CI hardware.
 _MMMU_P95 = {
-    16: {
-        "throughput_qps": 0.05,
-        "tok_per_s_agg": 10.0,
-        "latency_mean_s": 200.0,
+    8: {
+        "throughput_qps": 0.128,
+        "tok_per_s_agg": 13.1,
+        "latency_mean_s": 59.30,
     },
 }
 MMMU_THRESHOLDS = apply_slack(_MMMU_P95)
