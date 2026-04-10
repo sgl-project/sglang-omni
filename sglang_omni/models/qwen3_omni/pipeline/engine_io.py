@@ -204,10 +204,10 @@ def build_sglang_thinker_request(
     pad_values: dict[str, int] = {}
     if media_cache_keys and thinker_config is not None:
         token_id_map: dict[int, int] = {}
-        for modality, attr in [
-            ("image", "image_token_id"),
-            ("video", "video_token_id"),
-            ("audio", "audio_token_id"),
+        for modality, orig_token_id in [
+            ("image", thinker_config.image_token_id),
+            ("video", thinker_config.video_token_id),
+            ("audio", thinker_config.audio_token_id),
         ]:
             cache_key = media_cache_keys.get(modality)
             if cache_key is None:
@@ -218,7 +218,6 @@ def build_sglang_thinker_request(
             # offset by vocab_size to avoid collision with real token IDs.
             pad_val = vocab_size + h % (1 << 30)
             pad_values[modality] = pad_val
-            orig_token_id = getattr(thinker_config, attr)
             token_id_map[orig_token_id] = pad_val
 
         if token_id_map:

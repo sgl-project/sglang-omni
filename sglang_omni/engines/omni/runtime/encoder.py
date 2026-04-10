@@ -483,19 +483,24 @@ class EncoderOutputProcessor:
         if key in {"image_token_counts", "audio_output_lengths", "video_token_counts"}:
             for mod_name, config in self.modality_configs.items():
                 if config.count_key == key:
-                    sizes = modality_sizes.get(mod_name, [])
+                    sizes = modality_sizes[mod_name]
                     return self._slice_for_request(value, sizes, out_idx)
             return value
 
-        # Handle embeddings
+        # Handle embeddings. ``embed_splits`` is built solely by
+        # ``_split_embeddings`` from ``self.modality_configs``, so any key here
+        # is guaranteed to match exactly one config.embed_key below.
         if key in embed_splits:
             splits = embed_splits[key]
             for mod_name, config in self.modality_configs.items():
                 if config.embed_key == key:
-                    sizes = modality_sizes.get(mod_name, [])
+                    sizes = modality_sizes[mod_name]
                     chunk = self._slice_for_request(splits, sizes, out_idx)
+                    if not chunk:
+                        # 0 items for this modality (e.g. text-only request in
+                        # a mixed batch); empty slice preserves dtype/device.
+                        return value[:0]
                     return chunk[0] if len(chunk) == 1 else torch.cat(chunk)
-            return splits[out_idx]
 
         # Handle generic batched tensors
         if value.shape[0] == len(active_indices):
