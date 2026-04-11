@@ -176,9 +176,7 @@ def apply_slack(
     return result
 
 
-def assert_speed_thresholds(
-    summary: dict, thresholds: dict, concurrency: int
-) -> None:
+def assert_speed_thresholds(summary: dict, thresholds: dict, concurrency: int) -> None:
     """Assert speed benchmark summary meets threshold requirements.
 
     Whether RTF is checked is driven entirely by the thresholds dict: if
