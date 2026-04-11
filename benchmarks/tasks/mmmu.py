@@ -296,6 +296,14 @@ def compute_mmmu_metrics(
 
     Returns ``(summary_dict, per_sample_list)``.
     """
+    assert len(samples) == len(
+        results
+    ), f"Sample/result count mismatch: {len(samples)} samples vs {len(results)} results"
+    # Fix the random seed so that MC fallback choices are deterministic across
+    # CI runs.  The MMMU reference eval also uses random fallback, so this
+    # does not change the evaluation methodology.
+    random.seed(42)
+
     correct = 0
     failed = 0
     mc_fallback = 0

@@ -73,6 +73,7 @@ class MMMUEvalConfig:
     enable_audio: bool = False
     asr_device: str = "cuda:0"
     lang: str = "en"
+    repo_id: str | None = None
 
 
 def _build_base_url(config: MMMUEvalConfig) -> str:
@@ -88,7 +89,7 @@ async def run_mmmu_eval(config: MMMUEvalConfig) -> dict:
     base_url = _build_base_url(config)
     api_url = f"{base_url}/v1/chat/completions"
 
-    samples = load_mmmu_samples(config.max_samples)
+    samples = load_mmmu_samples(config.max_samples, repo_id=config.repo_id)
     logger.info(f"Prepared {len(samples)} MMMU samples")
 
     audio_dir: str | None = None
@@ -222,6 +223,7 @@ def _config_from_args(args: argparse.Namespace) -> MMMUEvalConfig:
         enable_audio=args.enable_audio,
         asr_device=args.asr_device,
         lang=args.lang,
+        repo_id=args.repo_id,
     )
 
 
@@ -289,6 +291,13 @@ def main() -> None:
         choices=["en", "zh"],
         default="en",
         help="Language for ASR transcription (default: en).",
+    )
+    parser.add_argument(
+        "--repo-id",
+        type=str,
+        default=None,
+        help="HuggingFace dataset repo (e.g. 'zhaochenyang20/mmmu-ci-50'). "
+        "Defaults to loading the full MMMU/MMMU (all 30 subjects).",
     )
     args = parser.parse_args()
 

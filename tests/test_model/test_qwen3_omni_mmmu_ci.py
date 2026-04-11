@@ -17,6 +17,7 @@ from pathlib import Path
 
 import pytest
 
+from benchmarks.dataset.prepare import DATASETS
 from benchmarks.eval.mmmu import MMMUEvalConfig, run_mmmu_eval
 from tests.utils import (
     apply_slack,
@@ -28,7 +29,6 @@ from tests.utils import (
 
 MODEL_PATH = "Qwen/Qwen3-Omni-30B-A3B-Instruct"
 
-MAX_SAMPLES = 50
 CONCURRENCY = 8
 STARTUP_TIMEOUT = 900
 
@@ -76,9 +76,9 @@ def test_mmmu_accuracy_and_speed(
     config = MMMUEvalConfig(
         model="qwen3-omni",
         port=server_process.port,
-        max_samples=MAX_SAMPLES,
         max_concurrency=CONCURRENCY,
         output_dir=str(tmp_path / "mmmu"),
+        repo_id=DATASETS["mmmu-ci-50"],
     )
     results = asyncio.run(run_mmmu_eval(config))
 
