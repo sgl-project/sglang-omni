@@ -17,35 +17,57 @@ from sglang_omni.models.weight_loader import resolve_model_path
 
 logger = logging.getLogger(__name__)
 
+# Known subdirectories where Ming repos store tokenizer files.
+_TOKENIZER_SUBDIRS = ("talker/llm",)
+
 # Fallback tokenizer source: Ming-flash-omni-Preview has tokenizer files
-# that are missing from some other Ming repos (e.g., Ming-flash-omni-2.0).
+# at the repo root, used only as a last resort.
 _TOKENIZER_FALLBACK = "inclusionAI/Ming-flash-omni-Preview"
 
 
 def load_ming_tokenizer(model_path: str):
-    """Load the Ming tokenizer with fallback for incomplete HF repos.
+    """Load the Ming tokenizer, searching subdirectories before falling back.
 
-    Some Ming HF repos (e.g., Ming-flash-omni-2.0) are missing tokenizer
-    files and custom Python code.  We try several strategies:
-    1. AutoTokenizer with trust_remote_code
-    2. PreTrainedTokenizerFast directly (skips custom class requirement)
-    3. Fallback to Ming-flash-omni-Preview repo (same vocab)
+    Ming HF repos may store tokenizer files in subdirectories (e.g.
+    ``talker/llm/``) rather than at the repo root.  We try:
+    1. AutoTokenizer from the root path (with trust_remote_code)
+    2. PreTrainedTokenizerFast from the root path
+    3. Known subdirectories (talker/llm) that ship tokenizer files
+    4. Fallback to Ming-flash-omni-Preview repo (same vocab)
     """
     from transformers import AutoTokenizer, PreTrainedTokenizerFast
 
-    # Strategy 1: standard AutoTokenizer
+    # Strategy 1: standard AutoTokenizer at root
     try:
         return AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
     except (OSError, ValueError):
         pass
 
-    # Strategy 2: direct PreTrainedTokenizerFast (works if tokenizer.json exists)
+    # Strategy 2: direct PreTrainedTokenizerFast at root
     try:
         return PreTrainedTokenizerFast.from_pretrained(model_path)
     except Exception:
         pass
 
-    # Strategy 3: fallback repo with matching vocab
+    # Strategy 3: check known subdirectories (local snapshots only)
+    resolved = resolve_model_path(model_path)
+    for subdir in _TOKENIZER_SUBDIRS:
+        subpath = Path(resolved) / subdir
+        if (subpath / "tokenizer.json").is_file() or (
+            subpath / "tokenizer_config.json"
+        ).is_file():
+            try:
+                return AutoTokenizer.from_pretrained(
+                    str(subpath), trust_remote_code=True
+                )
+            except (OSError, ValueError):
+                pass
+            try:
+                return PreTrainedTokenizerFast.from_pretrained(str(subpath))
+            except Exception:
+                pass
+
+    # Strategy 4: fallback repo with matching vocab
     logger.warning(
         "Tokenizer not found in %s, falling back to %s",
         model_path,
