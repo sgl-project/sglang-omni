@@ -177,12 +177,14 @@ def apply_slack(
 
 
 def assert_speed_thresholds(
-    summary: dict, thresholds: dict, concurrency: int, *, check_rtf: bool = True
+    summary: dict, thresholds: dict, concurrency: int
 ) -> None:
     """Assert speed benchmark summary meets threshold requirements.
 
-    Set *check_rtf* to ``False`` for non-audio tasks (e.g. VLM) that have no
-    RTF metric.
+    Whether RTF is checked is driven entirely by the thresholds dict: if
+    ``apply_slack`` was fed a baseline that included ``rtf_mean`` the
+    corresponding ``rtf_mean_max`` is present here and enforced; otherwise
+    (e.g. VLM / text-only tasks) the RTF assertion is skipped automatically.
     """
     level_thresholds = thresholds[concurrency]
     assert summary["throughput_qps"] >= level_thresholds["throughput_qps_min"], (
@@ -197,7 +199,7 @@ def assert_speed_thresholds(
         f"latency_mean_s {summary['latency_mean_s']} > "
         f"{level_thresholds['latency_mean_s_max']} at concurrency {concurrency}"
     )
-    if check_rtf and "rtf_mean_max" in level_thresholds:
+    if "rtf_mean_max" in level_thresholds:
         assert summary["rtf_mean"] <= level_thresholds["rtf_mean_max"], (
             f"rtf_mean {summary['rtf_mean']} > "
             f"{level_thresholds['rtf_mean_max']} at concurrency {concurrency}"

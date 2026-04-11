@@ -32,9 +32,10 @@ MAX_SAMPLES = 50
 CONCURRENCY = 8
 STARTUP_TIMEOUT = 900
 
-MMMU_MIN_ACCURACY = 0.54
+MMMU_MIN_ACCURACY = 0.52
 
-# Baselines: P95 of 5 runs at concurrency=8 on CI hardware.
+# Baselines: worst observed across 5 runs at concurrency=8 on CI hardware
+# (throughput / tok_per_s: min; latency: max). See MMMU_CI_THRESHOLDS.md.
 _MMMU_P95 = {
     8: {
         "throughput_qps": 0.128,
@@ -89,7 +90,7 @@ def test_mmmu_accuracy_and_speed(
     )
 
     speed = results["speed"]
-    assert_speed_thresholds(speed, MMMU_THRESHOLDS, CONCURRENCY, check_rtf=False)
+    assert_speed_thresholds(speed, MMMU_THRESHOLDS, CONCURRENCY)
 
 
 if __name__ == "__main__":

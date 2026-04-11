@@ -160,8 +160,6 @@ def _compute_audio_wer(
     Text output is the reference; ASR transcription of the audio is the
     hypothesis.  Returns a dict with ``summary`` and ``per_sample`` keys.
     """
-    import soundfile as sf
-
     asr = load_asr_model(lang, asr_device)
 
     outputs: list[SampleOutput] = []
@@ -174,15 +172,13 @@ def _compute_audio_wer(
             sample_id=result.request_id,
             target_text=ref_text,
             latency_s=result.latency_s,
+            audio_duration_s=result.audio_duration_s,
         )
 
         if not result.is_success or not result.wav_path:
             output.error = result.error or "No audio in response"
             outputs.append(output)
             continue
-
-        wav_info = sf.info(result.wav_path)
-        output.audio_duration_s = round(wav_info.duration, 4)
 
         output = _transcribe_and_compute_wer(
             output, result.wav_path, asr, lang, asr_device

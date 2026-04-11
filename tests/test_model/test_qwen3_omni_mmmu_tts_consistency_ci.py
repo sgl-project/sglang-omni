@@ -44,7 +44,8 @@ CONCURRENCY = 1
 MMMU_AUDIO_WER_MAX_CORPUS = 0.10
 MMMU_AUDIO_WER_MAX_PER_SAMPLE = 0.18
 
-# Baselines: P95 of 5 runs at concurrency=1 on CI hardware.
+# Baselines: worst observed across 5 runs at concurrency=1 on CI hardware
+# (throughput / tok_per_s: min; latency / rtf: max). See MMMU_CI_THRESHOLDS.md.
 _MMMU_AUDIO_P95 = {
     1: {
         "throughput_qps": 0.034,

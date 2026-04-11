@@ -27,7 +27,7 @@ def _check_is_number(s: str) -> bool:
     try:
         float(s.replace(",", ""))
         return True
-    except (ValueError, TypeError):
+    except ValueError:
         return False
 
 
@@ -35,11 +35,7 @@ def _normalize_str(s: str) -> list[float | str]:
     """Normalize a string for open-ended answer comparison."""
     s = s.strip()
     if _check_is_number(s):
-        s = s.replace(",", "")
-        try:
-            return [round(float(s), 2)]
-        except (ValueError, TypeError):
-            return [s.lower()]
+        return [round(float(s.replace(",", "")), 2)]
     return [s.lower()] if len(s) > 1 else [" " + s, s + " "]
 
 
@@ -108,9 +104,7 @@ def parse_open_response(response: str) -> list[float | str]:
         ]
         keys: list[str] = []
         for i, s in enumerate(subs):
-            cands = [*indicators]
-            if i == len(subs) - 1:
-                cands.append("=")
+            cands = indicators + ["="] if i == len(subs) - 1 else indicators
             shortest = None
             for ind in cands:
                 if ind in s:
@@ -154,17 +148,22 @@ def parse_multi_choice_response(
     response: str,
     all_choices: list[str],
     index2ans: dict[str, str],
-) -> str:
+) -> tuple[str, bool]:
     """Extract a single answer letter from the model response.
 
     Priority: ``Answer: X`` → ``(A)`` bracket → ``·A·`` space-padded →
     option-text match → last-occurrence tie-break → random fallback.
+
+    Returns ``(choice, is_fallback)``. ``is_fallback`` is ``True`` iff
+    nothing could be parsed out of *response* and a random choice was
+    returned — this counter is observational and doesn't change scoring
+    behavior vs. the MMMU reference eval.
     """
     answer_matches = re.findall(r"[Aa]nswer\s*:\s*\*?\*?\s*\(?([A-Z])\)?", response)
     if answer_matches:
         candidate = answer_matches[-1]
         if candidate in all_choices:
-            return candidate
+            return candidate, False
 
     for char in (",", ".", "!", "?", ";", ":", "'"):
         response = response.strip(char)
@@ -183,9 +182,9 @@ def parse_multi_choice_response(
             if ans and ans.lower() in response.lower():
                 candidates.append(idx)
     if not candidates:
-        return random.choice(all_choices)
+        return random.choice(all_choices), True
     if len(candidates) == 1:
-        return candidates[0]
+        return candidates[0], False
 
     starts: list[int] = []
     for can in candidates:
@@ -195,7 +194,7 @@ def parse_multi_choice_response(
         if pos == -1 and index2ans.get(can):
             pos = response.lower().rfind(index2ans[can].lower())
         starts.append(pos)
-    return candidates[int(max(range(len(starts)), key=lambda i: starts[i]))]
+    return candidates[max(range(len(candidates)), key=starts.__getitem__)], False
 
 
 def make_mmmu_send_fn(
@@ -252,10 +251,12 @@ def make_mmmu_send_fn(
             if enable_audio and audio_dir:
                 audio_obj = message.get("audio")
                 if audio_obj is None:
-                    raise ValueError("No audio in response")
+                    result.error = "No audio in response"
+                    return result
                 audio_b64 = audio_obj.get("data", "")
                 if not audio_b64:
-                    raise ValueError("Empty audio data in response")
+                    result.error = "Empty audio data in response"
+                    return result
                 wav_path = os.path.join(audio_dir, f"{sample.sample_id}.wav")
                 with open(wav_path, "wb") as f:
                     f.write(base64.b64decode(audio_b64))
@@ -297,6 +298,7 @@ def compute_mmmu_metrics(
     """
     correct = 0
     failed = 0
+    mc_fallback = 0
     per_sample: list[dict] = []
 
     for sample, result in zip(samples, results):
@@ -327,11 +329,17 @@ def compute_mmmu_metrics(
                 and sample.all_choices
                 and sample.index2ans
             ):
-                predicted = parse_multi_choice_response(
+                predicted, is_fallback = parse_multi_choice_response(
                     result.text,
                     sample.all_choices,
                     sample.index2ans,
                 )
+                if is_fallback:
+                    mc_fallback += 1
+                    logger.debug(
+                        f"MMMU multi-choice parse fallback for sample "
+                        f"{sample.sample_id}"
+                    )
                 is_correct = gold is not None and predicted == gold
             else:
                 parsed_list = parse_open_response(result.text)
@@ -359,6 +367,7 @@ def compute_mmmu_metrics(
         "correct": correct,
         "accuracy": round(accuracy, 4),
         "failed": failed,
+        "mc_fallback": mc_fallback,
     }
     return summary, per_sample
 
@@ -376,4 +385,5 @@ def print_mmmu_accuracy_summary(metrics: dict, model_name: str) -> None:
         f"({metrics['accuracy'] * 100:.1f}%)"
     )
     print(f"  {'Failed requests:':<{lw}} {metrics['failed']}")
+    print(f"  {'MC parse fallback:':<{lw}} {metrics['mc_fallback']}")
     print(f"{'=' * SUMMARY_LINE_WIDTH}\n")
