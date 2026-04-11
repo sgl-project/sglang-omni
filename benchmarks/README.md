@@ -41,12 +41,12 @@ python benchmarks/eval/benchmark_tts_speed.py \
     --testset seedtts_testset/en/meta.lst --max-samples 10 --stream
 
 # 2d. WER evaluation (voice cloning)
-python benchmarks/eval/voice_clone_s2pro_wer.py \
+python benchmarks/eval/voice_clone_tts_wer.py \
     --meta seedtts_testset/en/meta.lst \
     --output-dir results/s2pro_en --lang en --max-samples 50
 
 # 2e. WER evaluation (voice cloning, higher-concurrency generation)
-python benchmarks/eval/voice_clone_s2pro_wer.py \
+python benchmarks/eval/voice_clone_tts_wer.py \
     --meta seedtts_testset/en/meta.lst \
     --output-dir results/s2pro_en_c20 --lang en --max-samples 50 \
     --generation-concurrency 20
@@ -58,8 +58,8 @@ python benchmarks/eval/voice_clone_s2pro_wer.py \
 |--------|------|-------|-----|
 | `eval/benchmark_tts_speed.py` | TTS speed | S2 Pro | `/v1/audio/speech` |
 | `eval/benchmark_omni_tts_speed.py` | TTS speed | Qwen3 Omni | `/v1/chat/completions` |
-| `eval/voice_clone_s2pro_wer.py` | Voice clone WER | S2 Pro | `/v1/audio/speech` |
-| `eval/voice_clone_qwen3_omni_wer.py` | Voice clone WER | Qwen3 Omni | `/v1/chat/completions` |
+| `eval/voice_clone_tts_wer.py` | Voice clone WER | S2 Pro | `/v1/audio/speech` |
+| `eval/voice_clone_omni_wer.py` | Voice clone WER | Qwen3 Omni | `/v1/chat/completions` |
 
 ## Adding a New Model
 

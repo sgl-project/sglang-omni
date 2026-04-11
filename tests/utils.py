@@ -8,7 +8,6 @@ import signal
 import socket
 import statistics
 import subprocess
-import sys
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Generator
@@ -118,32 +117,6 @@ def start_server_from_cmd(
     return proc
 
 
-def start_server(
-    model_path: str,
-    config_path: str | None,
-    log_file: Path,
-    port: int,
-    timeout: int = STARTUP_TIMEOUT,
-    extra_args: list[str] | None = None,
-) -> subprocess.Popen:
-    """Start a ``sgl-omni serve`` server and wait until healthy."""
-    cmd = [
-        sys.executable,
-        "-m",
-        "sglang_omni.cli.cli",
-        "serve",
-        "--model-path",
-        model_path,
-        "--port",
-        str(port),
-    ]
-    if config_path:
-        cmd.extend(["--config", config_path])
-    if extra_args:
-        cmd.extend(extra_args)
-    return start_server_from_cmd(cmd, log_file, port, timeout=timeout)
-
-
 def assert_summary_metrics(summary: dict, *, check_tokens: bool = True) -> None:
     """Verify summary-level sanity invariants that must hold for every run."""
     assert (
@@ -192,17 +165,25 @@ def apply_slack(
     """
     result: dict[int, dict[str, float]] = {}
     for conc, m in p95.items():
-        result[conc] = {
+        thresholds = {
             "throughput_qps_min": round(m["throughput_qps"] * slack_higher, 2),
             "tok_per_s_agg_min": round(m["tok_per_s_agg"] * slack_higher, 1),
             "latency_mean_s_max": round(m["latency_mean_s"] * slack_lower, 1),
-            "rtf_mean_max": round(m["rtf_mean"] * slack_lower, 2),
         }
+        if "rtf_mean" in m:
+            thresholds["rtf_mean_max"] = round(m["rtf_mean"] * slack_lower, 2)
+        result[conc] = thresholds
     return result
 
 
 def assert_speed_thresholds(summary: dict, thresholds: dict, concurrency: int) -> None:
-    """Assert speed benchmark summary meets threshold requirements."""
+    """Assert speed benchmark summary meets threshold requirements.
+
+    Whether RTF is checked is driven entirely by the thresholds dict: if
+    ``apply_slack`` was fed a baseline that included ``rtf_mean`` the
+    corresponding ``rtf_mean_max`` is present here and enforced; otherwise
+    (e.g. VLM / text-only tasks) the RTF assertion is skipped automatically.
+    """
     level_thresholds = thresholds[concurrency]
     assert summary["throughput_qps"] >= level_thresholds["throughput_qps_min"], (
         f"throughput_qps {summary['throughput_qps']} < "
@@ -216,10 +197,11 @@ def assert_speed_thresholds(summary: dict, thresholds: dict, concurrency: int) -
         f"latency_mean_s {summary['latency_mean_s']} > "
         f"{level_thresholds['latency_mean_s_max']} at concurrency {concurrency}"
     )
-    assert summary["rtf_mean"] <= level_thresholds["rtf_mean_max"], (
-        f"rtf_mean {summary['rtf_mean']} > "
-        f"{level_thresholds['rtf_mean_max']} at concurrency {concurrency}"
-    )
+    if "rtf_mean_max" in level_thresholds:
+        assert summary["rtf_mean"] <= level_thresholds["rtf_mean_max"], (
+            f"rtf_mean {summary['rtf_mean']} > "
+            f"{level_thresholds['rtf_mean_max']} at concurrency {concurrency}"
+        )
 
 
 def assert_streaming_consistency(

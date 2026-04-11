@@ -87,6 +87,60 @@ jobs:
             echo ""
           done
 
+      - name: Kill GPU processes
+        if: always()
+        shell: bash
+        run: |
+          bash .github/scripts/delete_gpu_process.sh
+
+      - name: Run MMMU CI (accuracy + speed)
+        timeout-minutes: 60
+        shell: bash
+        run: |
+          source omni-qwen3/bin/activate
+          export PYTHONPATH=$PWD
+          pytest tests/test_model/test_qwen3_omni_mmmu_ci.py -v -s -x
+        env:
+          HF_ENDPOINT: https://hf-mirror.com
+
+      - name: Print MMMU CI artifacts (accuracy + speed)
+        if: always()
+        shell: bash
+        run: |
+          echo "=== Qwen3-Omni MMMU CI results ==="
+          for f in $(find /tmp -path '*/mmmu/mmmu_results.json' 2>/dev/null); do
+            echo "--- $f ---"
+            cat "$f"
+            echo ""
+          done
+
+      - name: Kill GPU processes
+        if: always()
+        shell: bash
+        run: |
+          bash .github/scripts/delete_gpu_process.sh
+
+      - name: Run MMMU TTS Consistency CI (WER + speed)
+        timeout-minutes: 60
+        shell: bash
+        run: |
+          source omni-qwen3/bin/activate
+          export PYTHONPATH=$PWD
+          pytest tests/test_model/test_qwen3_omni_mmmu_tts_consistency_ci.py -v -s -x
+        env:
+          HF_ENDPOINT: https://hf-mirror.com
+
+      - name: Print MMMU TTS Consistency CI artifacts (WER + speed)
+        if: always()
+        shell: bash
+        run: |
+          echo "=== Qwen3-Omni MMMU TTS Consistency CI results ==="
+          for f in $(find /tmp -path '*/mmmu_audio/mmmu_results.json' 2>/dev/null); do
+            echo "--- $f ---"
+            cat "$f"
+            echo ""
+          done
+
       - name: Save cache
         run: |
           cp -p -r omni-qwen3 /github/home/

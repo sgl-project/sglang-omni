@@ -70,7 +70,7 @@ def wait_for_service(
     health_body_contains: str | None = None,
 ) -> None:
     """Wait for SGLang Omni Server to be ready."""
-    logger.info("Waiting for service at %s ...", base_url)
+    logger.info(f"Waiting for service at {base_url} ...")
     start = time.time()
     while True:
         if server_process is not None:
@@ -91,7 +91,17 @@ def wait_for_service(
                 logger.info("Service is ready.")
                 return
         except requests_lib.exceptions.RequestException as exc:
-            logger.debug("Health check failed for %s: %s", base_url, exc)
+            logger.debug(f"Health check failed for {base_url}: {exc}")
         if time.time() - start > timeout:
             raise TimeoutError(f"Service at {base_url} not ready within {timeout}s")
         time.sleep(1)
+
+
+def save_json_results(results: dict, output_dir: str, filename: str) -> str:
+    """Write results as JSON to output_dir/filename and return the path."""
+    os.makedirs(output_dir, exist_ok=True)
+    path = os.path.join(output_dir, filename)
+    with open(path, "w") as f:
+        json.dump(results, f, indent=2, ensure_ascii=False)
+    logger.info(f"Results saved to {path}")
+    return path

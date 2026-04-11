@@ -8,7 +8,7 @@ Usage:
 
     1. Generate audio and transcribe all at once
 
-    python benchmarks/eval/voice_clone_qwen3_omni_wer.py \
+    python benchmarks/eval/voice_clone_omni_wer.py \
         --meta seedtts_testset/en/meta.lst \
         --output-dir results/qwen3_omni_en \
         --lang en --max-samples 50
@@ -18,11 +18,11 @@ Usage:
     Note (Jingwen, Chenyang): we separate the generate and
     transcribe phases for CI to avoid OOM.
 
-    python benchmarks/eval/voice_clone_qwen3_omni_wer.py \
+    python benchmarks/eval/voice_clone_omni_wer.py \
         --generate-only --meta seedtts_testset/en/meta.lst \
         --output-dir results/qwen3_omni_en --max-samples 10
 
-    python benchmarks/eval/voice_clone_qwen3_omni_wer.py \
+    python benchmarks/eval/voice_clone_omni_wer.py \
         --transcribe-only --meta seedtts_testset/en/meta.lst \
         --output-dir results/qwen3_omni_en --lang en --device cuda:0
 """

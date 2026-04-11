@@ -16,13 +16,13 @@ FunASR (ZH), and computes corpus-level WER.
 
 2. Evaluate
 
-    python benchmarks/eval/voice_clone_s2pro_wer.py \
+    python benchmarks/eval/voice_clone_tts_wer.py \
         --meta seedtts_testset/en/meta.lst \
         --output-dir results/s2pro_en \
         --port 8001 \
         --lang en --max-samples 5
 
-    python benchmarks/eval/voice_clone_s2pro_wer.py \
+    python benchmarks/eval/voice_clone_tts_wer.py \
         --meta seedtts_testset/en/meta.lst \
         --output-dir results/s2pro_en_c20 \
         --port 8001 \

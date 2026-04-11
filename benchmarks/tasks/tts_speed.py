@@ -22,6 +22,7 @@ from benchmarks.benchmarker.utils import (
     get_wav_duration,
     parse_sse_event,
     process_sse_line,
+    save_json_results,
 )
 from benchmarks.dataset.seedtts import SampleInput
 
@@ -234,12 +235,15 @@ def make_tts_send_fn(
 
 
 def print_speed_summary(
-    metrics: dict, model_name: str, concurrency: int | None = None
+    metrics: dict,
+    model_name: str,
+    concurrency: int | None = None,
+    title: str = "TTS Benchmark Result",
 ) -> None:
     lw = SUMMARY_LABEL_WIDTH
     w = SUMMARY_LINE_WIDTH
     print(f"\n{'=' * w}")
-    print(f"{'TTS Benchmark Result':^{w}}")
+    print(f"{title:^{w}}")
     print(f"{'=' * w}")
     print(f"  {'Model:':<{lw}} {model_name}")
     if concurrency is not None:
@@ -340,13 +344,8 @@ def save_speed_results(
     config: dict,
     output_dir: str,
 ) -> None:
-    os.makedirs(output_dir, exist_ok=True)
-
     json_results = build_speed_results(outputs, metrics, config)
-    json_path = os.path.join(output_dir, "speed_results.json")
-    with open(json_path, "w") as f:
-        json.dump(json_results, f, indent=2, ensure_ascii=False)
-    logger.info("Results saved to %s", json_path)
+    save_json_results(json_results, output_dir, "speed_results.json")
 
     csv_path = os.path.join(output_dir, "results.csv")
     with open(csv_path, "w", newline="") as f:

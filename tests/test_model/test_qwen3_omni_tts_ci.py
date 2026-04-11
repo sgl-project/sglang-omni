@@ -18,7 +18,6 @@ from pathlib import Path
 
 import pytest
 
-from benchmarks.benchmarker.utils import wait_for_service
 from benchmarks.dataset.prepare import DATASETS, download_dataset
 from benchmarks.eval.benchmark_omni_tts_speed import (
     OmniTtsSpeedBenchmarkConfig,
@@ -30,9 +29,9 @@ from tests.utils import (
     assert_speed_thresholds,
     assert_summary_metrics,
     assert_wer_results,
-    disable_proxy,
     find_free_port,
     no_proxy_env,
+    start_server_from_cmd,
     stop_server,
 )
 
@@ -79,7 +78,7 @@ WER_SCRIPT = str(
     Path(__file__).resolve().parents[2]
     / "benchmarks"
     / "eval"
-    / "voice_clone_qwen3_omni_wer.py"
+    / "voice_clone_omni_wer.py"
 )
 
 
@@ -214,59 +213,29 @@ def dataset_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
 def server_process(tmp_path_factory: pytest.TempPathFactory):
     """Start the Qwen3-Omni speech server and wait until healthy."""
     port = find_free_port()
-    log_dir = tmp_path_factory.mktemp("server_logs")
-    log_file = log_dir / "server.log"
-    with open(log_file, "w") as log_handle:
-        cmd = [
-            sys.executable,
-            "examples/run_qwen3_omni_speech_server.py",
-            "--model-path",
-            MODEL_PATH,
-            "--gpu-thinker",
-            "0",
-            "--gpu-talker",
-            "1",
-            "--gpu-code-predictor",
-            "1",
-            "--gpu-code2wav",
-            "1",
-            "--port",
-            str(port),
-            "--model-name",
-            "qwen3-omni",
-        ]
-
-        proc = subprocess.Popen(
-            cmd,
-            stdout=log_handle,
-            stderr=subprocess.STDOUT,
-            start_new_session=True,
-        )
-        proc.port = port
-
-        api_base = f"http://localhost:{port}"
-        try:
-            with disable_proxy():
-                wait_for_service(
-                    api_base,
-                    timeout=STARTUP_TIMEOUT,
-                    server_process=proc,
-                    server_log_file=log_file,
-                    health_body_contains="healthy",
-                )
-        except TimeoutError:
-            stop_server(proc)
-            server_log = log_file.read_text()
-            pytest.fail(
-                f"Server did not become healthy within {STARTUP_TIMEOUT}s.\n"
-                f"{server_log}"
-            )
-        except RuntimeError as exc:
-            pytest.fail(str(exc))
-
-        yield proc
-
-        stop_server(proc)
+    log_file = tmp_path_factory.mktemp("server_logs") / "server.log"
+    cmd = [
+        sys.executable,
+        "examples/run_qwen3_omni_speech_server.py",
+        "--model-path",
+        MODEL_PATH,
+        "--gpu-thinker",
+        "0",
+        "--gpu-talker",
+        "1",
+        "--gpu-code-predictor",
+        "1",
+        "--gpu-code2wav",
+        "1",
+        "--port",
+        str(port),
+        "--model-name",
+        "qwen3-omni",
+    ]
+    proc = start_server_from_cmd(cmd, log_file, port, timeout=STARTUP_TIMEOUT)
+    proc.port = port
+    yield proc
+    stop_server(proc)
 
 
 @pytest.fixture(scope="module")
