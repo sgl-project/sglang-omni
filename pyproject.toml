@@ -77,6 +77,7 @@ pythonpath = ["."]
 markers = [
     "benchmark: performance benchmark tests (may require GPU and long runtime)",
     "docs: documentation example tests (verify documented API calls still work)",
+    "s2pro_stage(name): select an in-file S2-Pro benchmark CI stage",
 ]
 
 [tool.setuptools.packages.find]
