@@ -6,17 +6,17 @@ Evaluates VLM accuracy and performance on the MMMU validation set via
 
 Usage:
     # Text-only
-    python benchmarks/eval/mmmu.py \
+    python benchmarks/eval/benchmark_omni_mmmu.py \
         --model qwen3-omni --port 8000 --max-samples 20
 
     # With concurrency
-    python benchmarks/eval/mmmu.py \
+    python benchmarks/eval/benchmark_omni_mmmu.py \
         --model qwen3-omni --port 8000 --max-samples 50 --max-concurrency 16
 
     # With audio (requires speech server)
     # Note (Yifei): Concurrency=1 only for now — code_predictor and code2wav
     # modules serialize GPU access, so they run serially even when concurrency > 1.
-    python benchmarks/eval/mmmu.py \
+    python benchmarks/eval/benchmark_omni_mmmu.py \
         --model qwen3-omni --port 8000 --max-samples 5 --enable-audio --max-tokens 50
 """
 

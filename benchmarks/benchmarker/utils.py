@@ -98,7 +98,7 @@ def wait_for_service(
 
 
 def save_json_results(results: dict, output_dir: str, filename: str) -> str:
-    """Write *results* as JSON to *output_dir/filename* and return the path."""
+    """Write results as JSON to output_dir/filename and return the path."""
     os.makedirs(output_dir, exist_ok=True)
     path = os.path.join(output_dir, filename)
     with open(path, "w") as f:

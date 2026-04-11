@@ -164,7 +164,7 @@ WER_SCRIPT = str(
     Path(__file__).resolve().parents[2]
     / "benchmarks"
     / "eval"
-    / "voice_clone_s2pro_wer.py"
+    / "voice_clone_tts_wer.py"
 )
 
 

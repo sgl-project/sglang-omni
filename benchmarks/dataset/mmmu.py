@@ -63,7 +63,7 @@ class MMMUSample:
 
 
 def image_to_data_uri(image: Image.Image) -> str:
-    """Convert a PIL Image to a ``data:image/png;base64,...`` URI."""
+    """Convert a PIL Image to a data:image/png;base64,... URI."""
     if image.mode == "RGBA":
         image = image.convert("RGB")
     buf = io.BytesIO()
@@ -73,10 +73,10 @@ def image_to_data_uri(image: Image.Image) -> str:
 
 
 def _strip_image_tags(text: str) -> str:
-    """Remove ``<image N>`` placeholders from MMMU question text.
+    """Remove <image N> placeholders from MMMU question text.
 
     sglang-omni's preprocessor injects image tokens automatically based on
-    the top-level ``images`` field, so inline placeholders must be removed
+    the top-level images field, so inline placeholders must be removed
     to avoid confusing the model.
     """
     return re.sub(r"<image\s*\d+>", "", text).strip()
@@ -85,7 +85,7 @@ def _strip_image_tags(text: str) -> str:
 def format_mmmu_prompt(question: str, options: list[str]) -> str:
     """Format an MMMU prompt (multiple-choice or open-ended).
 
-    Image placeholders (``<image 1>``, etc.) are stripped because
+    Image placeholders (<image 1>, etc.) are stripped because
     sglang-omni handles image injection separately via the ``images``
     request field.
 
@@ -226,11 +226,11 @@ def load_mmmu_samples(
     """Load MMMU validation samples.
 
     Args:
-        max_samples: Cap on how many samples to return.  ``None`` = all.
+        max_samples: Cap on how many samples to return.  None = all.
         repo_id: HuggingFace dataset repo to load from.  Defaults to
-            ``None`` which loads the full ``MMMU/MMMU`` (all 30 subjects,
+            None which loads the full MMMU/MMMU (all 30 subjects,
             ~900 samples).  Pass a repo id like
-            ``"zhaochenyang20/mmmu-ci-50"`` to load a pre-built subset.
+            "zhaochenyang20/mmmu-ci-50" to load a pre-built subset.
     """
     if repo_id is not None:
         ds = load_dataset(repo_id, split="validation")
