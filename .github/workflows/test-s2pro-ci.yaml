@@ -67,10 +67,6 @@ jobs:
         run: |
           bash .github/scripts/delete_gpu_process.sh
 
-      - name: Save cache
-        run: |
-          cp -p -r omni-s2pro /github/home/
-
   stage-1-non-streaming:
     name: stage 1 - non-streaming
     runs-on: [self-hosted]
@@ -136,10 +132,6 @@ jobs:
         run: |
           bash .github/scripts/delete_gpu_process.sh
 
-      - name: Save cache
-        run: |
-          cp -p -r omni-s2pro /github/home/
-
   stage-2-streaming:
     name: stage 2 - streaming
     runs-on: [self-hosted]
@@ -204,10 +196,6 @@ jobs:
         shell: bash
         run: |
           bash .github/scripts/delete_gpu_process.sh
-
-      - name: Save cache
-        run: |
-          cp -p -r omni-s2pro /github/home/
 
   stage-3-consistency:
     name: stage 3 - consistency
