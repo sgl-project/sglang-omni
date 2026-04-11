@@ -1,118 +1,227 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Z-Image diffusion backend.
+"""Z-Image diffusion backend with semantic + ByT5 text encoding.
 
-Ports the inference logic from Ming's pipeline_z_image.py.
-Uses a single-stream transformer with RoPE and a single text encoder.
+Loads the ZImage pipeline components (transformer, VAE, scheduler) and
+optionally the MingSemanticEncoder (LLM + connector) and/or ByT5 text
+encoder.  Semantic conditioning (LLM-derived) produces meaningful images;
+ByT5 provides supplementary text rendering control.
 """
 
 from __future__ import annotations
 
 import logging
-import sys
 from pathlib import Path
 
 import torch
 from PIL import Image
 
-from sglang_omni.models.ming_omni.diffusion.backend import DiffusionBackend, ImageGenParams
+from sglang_omni.models.ming_omni.diffusion.backend import (
+    DiffusionBackend,
+    ImageGenParams,
+)
 
 logger = logging.getLogger(__name__)
 
 
 class ZImageBackend(DiffusionBackend):
-    """Z-Image diffusion backend using Ming's ZImagePipeline."""
+    """Z-Image diffusion backend with semantic text conditioning."""
 
     def __init__(self) -> None:
         self._pipe = None
+        self._text_encoder = None  # ByT5 (supplementary)
+        self._tokenizer = None  # ByT5 tokenizer
+        self._semantic_encoder = None  # Ming LLM + connector (primary)
         self._device: torch.device | None = None
 
     def load_models(self, model_path: str, device: torch.device) -> None:
         self._device = device
 
-        # Import Ming's ZImagePipeline — expects Ming repo on sys.path
-        # or the pipeline classes installed as a package.
+        from diffusers import (
+            AutoencoderKL,
+            FlowMatchEulerDiscreteScheduler,
+            ZImagePipeline,
+            ZImageTransformer2DModel,
+        )
+
+        logger.info("[ZImage] Loading pipeline components from %s", model_path)
+
+        # 1. Scheduler
+        scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(
+            model_path, subfolder="scheduler"
+        )
+        scheduler.config["use_dynamic_shifting"] = True
+
+        # 2. VAE
+        vae = AutoencoderKL.from_pretrained(
+            model_path, subfolder="vae", torch_dtype=torch.bfloat16
+        )
+
+        # 3. Transformer (ZImageTransformer2DModel)
+        transformer = ZImageTransformer2DModel.from_pretrained(
+            model_path, subfolder="transformer", torch_dtype=torch.bfloat16
+        )
+        logger.info(
+            "[ZImage] Transformer loaded (cap_feat_dim=%d)",
+            transformer.config.cap_feat_dim,
+        )
+
+        # 4. Assemble pipeline (text encoding handled separately)
+        self._pipe = ZImagePipeline(
+            scheduler=scheduler,
+            vae=vae,
+            transformer=transformer,
+            text_encoder=None,
+            tokenizer=None,
+        )
+        self._pipe = self._pipe.to(device)
+        logger.info("[ZImage] Pipeline assembled on %s", device)
+
+        # 5. Load semantic encoder (LLM + connector) — primary
         try:
-            from diffusers import AutoencoderKL, FlowMatchEulerDiscreteScheduler
-            from transformers import AutoModel, AutoTokenizer
-
-            logger.info("[ZImage] Loading pipeline components from %s", model_path)
-            model_root = Path(model_path)
-
-            # Load scheduler
-            scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(
-                str(model_root / "scheduler")
-                if (model_root / "scheduler").exists()
-                else model_path,
-                subfolder="scheduler" if not (model_root / "scheduler").exists() else None,
+            from sglang_omni.models.ming_omni.diffusion.semantic_encoder import (
+                MingSemanticEncoder,
             )
 
-            # Load VAE
-            vae = AutoencoderKL.from_pretrained(
-                model_path, subfolder="vae", torch_dtype=torch.bfloat16
+            self._semantic_encoder = MingSemanticEncoder()
+            self._semantic_encoder.load(model_path, device)
+            logger.info("[ZImage] Semantic encoder (LLM + connector) ready")
+        except Exception as e:
+            logger.warning(
+                "[ZImage] Failed to load semantic encoder: %s. "
+                "Falling back to ByT5-only mode.",
+                e,
+            )
+            self._semantic_encoder = None
+
+        # 6. Load ByT5 text encoder + mapper (supplementary)
+        byt5_dir = Path(model_path) / "byt5"
+        if byt5_dir.exists():
+            from sglang_omni.models.ming_omni.diffusion.byt5_encoder import (
+                load_byt5_text_encoder,
             )
 
-            # Load text encoder + tokenizer
-            text_encoder_path = str(model_root / "text_encoder") if (model_root / "text_encoder").exists() else model_path
-            text_encoder = AutoModel.from_pretrained(
-                text_encoder_path,
-                subfolder="text_encoder" if text_encoder_path == model_path else None,
-                torch_dtype=torch.bfloat16,
-                trust_remote_code=True,
+            self._text_encoder, self._tokenizer = load_byt5_text_encoder(
+                model_path, device, dtype=torch.bfloat16
             )
-            tokenizer = AutoTokenizer.from_pretrained(
-                text_encoder_path,
-                subfolder="text_encoder" if text_encoder_path == model_path else None,
-                trust_remote_code=True,
-            )
-
-            # Load transformer
-            from diffusers import DiffusionPipeline
-
-            # Try loading as a full diffusers pipeline first
-            self._pipe = DiffusionPipeline.from_pretrained(
+            logger.info("[ZImage] ByT5 text encoder ready")
+        else:
+            logger.warning(
+                "[ZImage] No byt5/ directory found at %s — "
+                "ByT5 text encoding will not be available.",
                 model_path,
-                torch_dtype=torch.bfloat16,
-                trust_remote_code=True,
             )
-            self._pipe.to(device)
-            logger.info("[ZImage] Pipeline loaded on %s", device)
-
-        except Exception:
-            # Fallback: try loading the whole thing as a diffusers pipeline
-            logger.info("[ZImage] Falling back to DiffusionPipeline.from_pretrained")
-            from diffusers import DiffusionPipeline
-
-            self._pipe = DiffusionPipeline.from_pretrained(
-                model_path,
-                torch_dtype=torch.bfloat16,
-                trust_remote_code=True,
-            )
-            self._pipe.to(device)
-            logger.info("[ZImage] Pipeline loaded on %s (fallback)", device)
 
     @torch.no_grad()
-    def generate(self, prompt: str, params: ImageGenParams) -> Image.Image:
+    def generate(
+        self,
+        prompt: str,
+        params: ImageGenParams,
+        *,
+        condition_embeds: list[torch.Tensor] | None = None,
+        negative_condition_embeds: list[torch.Tensor] | None = None,
+    ) -> Image.Image:
         if self._pipe is None:
             raise RuntimeError("ZImage pipeline not loaded")
 
         generator = None
         if params.seed is not None:
-            generator = torch.Generator(device=self._device).manual_seed(params.seed)
+            generator = torch.Generator(device=self._device).manual_seed(
+                params.seed
+            )
+
+        # --- Build condition embeddings ---
+        prompt_embeds: list[torch.Tensor]
+        neg_embeds: list[torch.Tensor]
+
+        if condition_embeds is not None:
+            # Pre-computed embeddings provided (e.g., from pipeline Phase 2)
+            prompt_embeds = condition_embeds
+            neg_embeds = (
+                negative_condition_embeds
+                if negative_condition_embeds is not None
+                else [e * 0.0 for e in condition_embeds]
+            )
+
+        elif self._semantic_encoder is not None:
+            # Semantic encoding via LLM + connector
+            prompt_embeds, neg_embeds = self._semantic_encoder.encode(prompt)
+
+            # Optionally concatenate ByT5 embeddings for text rendering
+            if self._text_encoder is not None and self._tokenizer is not None:
+                byt5_pos, byt5_neg = self._text_encoder.encode(
+                    prompt,
+                    tokenizer=self._tokenizer,
+                    device=self._device,
+                    max_length=256,
+                )
+                prompt_embeds = [
+                    torch.cat([sem, byt], dim=0)
+                    for sem, byt in zip(prompt_embeds, byt5_pos)
+                ]
+                neg_embeds = [
+                    torch.cat([nsem, nbyt], dim=0)
+                    for nsem, nbyt in zip(neg_embeds, byt5_neg)
+                ]
+
+        elif self._text_encoder is not None and self._tokenizer is not None:
+            # Fallback: ByT5-only encoding (text rendering mode)
+            logger.warning(
+                "[ZImage] Using ByT5-only encoding (no semantic encoder). "
+                "Images may show text rendering instead of semantic content."
+            )
+            prompt_embeds, neg_embeds = self._text_encoder.encode(
+                prompt,
+                tokenizer=self._tokenizer,
+                device=self._device,
+                max_length=256,
+            )
+            if params.negative_prompt:
+                neg_embeds, _ = self._text_encoder.encode(
+                    params.negative_prompt,
+                    tokenizer=self._tokenizer,
+                    device=self._device,
+                    max_length=256,
+                )
+
+        else:
+            # No text encoder at all — random embeddings
+            logger.warning(
+                "[ZImage] No text encoder — generating with random embeddings"
+            )
+            cap_feat_dim = self._pipe.transformer.config.cap_feat_dim
+            prompt_embeds = [
+                torch.randn(
+                    77, cap_feat_dim, device=self._device, dtype=torch.bfloat16
+                )
+            ]
+            neg_embeds = [
+                torch.zeros(
+                    77, cap_feat_dim, device=self._device, dtype=torch.bfloat16
+                )
+            ]
 
         result = self._pipe(
-            prompt=prompt,
-            negative_prompt=params.negative_prompt or None,
+            prompt_embeds=prompt_embeds,
+            negative_prompt_embeds=neg_embeds,
             height=params.height,
             width=params.width,
             num_inference_steps=params.num_inference_steps,
             guidance_scale=params.guidance_scale,
             generator=generator,
-            output_type="pil",
+            max_sequence_length=512,
         )
+
         return result.images[0]
 
     def unload(self) -> None:
         if self._pipe is not None:
             del self._pipe
             self._pipe = None
-            torch.cuda.empty_cache()
+        if self._text_encoder is not None:
+            del self._text_encoder
+            self._text_encoder = None
+        self._tokenizer = None
+        if self._semantic_encoder is not None:
+            self._semantic_encoder.unload()
+            self._semantic_encoder = None
+        torch.cuda.empty_cache()

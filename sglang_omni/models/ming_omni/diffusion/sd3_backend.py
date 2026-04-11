@@ -37,7 +37,14 @@ class SD3Backend(DiffusionBackend):
         logger.info("[SD3] Pipeline loaded on %s", device)
 
     @torch.no_grad()
-    def generate(self, prompt: str, params: ImageGenParams) -> Image.Image:
+    def generate(
+        self,
+        prompt: str,
+        params: ImageGenParams,
+        *,
+        condition_embeds: list[torch.Tensor] | None = None,
+        negative_condition_embeds: list[torch.Tensor] | None = None,
+    ) -> Image.Image:
         if self._pipe is None:
             raise RuntimeError("SD3 pipeline not loaded")
 

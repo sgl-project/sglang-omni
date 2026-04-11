@@ -37,8 +37,16 @@ class DiffusionBackend(ABC):
         self,
         prompt: str,
         params: ImageGenParams,
+        *,
+        condition_embeds: list[torch.Tensor] | None = None,
+        negative_condition_embeds: list[torch.Tensor] | None = None,
     ) -> Image.Image:
-        """Full text-to-image pipeline: encode text, denoise, decode."""
+        """Full text-to-image pipeline: encode text, denoise, decode.
+
+        If *condition_embeds* is provided, uses pre-computed semantic
+        embeddings directly (bypasses text encoding). Otherwise falls back
+        to the backend's built-in text encoder.
+        """
         ...
 
     def unload(self) -> None:
