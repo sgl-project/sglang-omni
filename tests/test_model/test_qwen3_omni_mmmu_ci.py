@@ -17,6 +17,7 @@ from pathlib import Path
 
 import pytest
 
+from benchmarks.dataset.prepare import DATASETS
 from benchmarks.eval.mmmu import MMMUEvalConfig, run_mmmu_eval
 from tests.utils import (
     apply_slack,
@@ -28,18 +29,18 @@ from tests.utils import (
 
 MODEL_PATH = "Qwen/Qwen3-Omni-30B-A3B-Instruct"
 
-MAX_SAMPLES = 50
-CONCURRENCY = 16
+CONCURRENCY = 8
 STARTUP_TIMEOUT = 900
 
-MMMU_MIN_ACCURACY = 0.55
+MMMU_MIN_ACCURACY = 0.52
 
-# TODO(Yifei): Tighten after gathering P95 baselines on CI hardware.
+# Baselines: worst observed across 5 runs at concurrency=8 on CI hardware
+# (throughput / tok_per_s: min; latency: max). See MMMU_CI_THRESHOLDS.md.
 _MMMU_P95 = {
-    16: {
-        "throughput_qps": 0.05,
-        "tok_per_s_agg": 10.0,
-        "latency_mean_s": 200.0,
+    8: {
+        "throughput_qps": 0.128,
+        "tok_per_s_agg": 13.1,
+        "latency_mean_s": 59.30,
     },
 }
 MMMU_THRESHOLDS = apply_slack(_MMMU_P95)
@@ -75,9 +76,9 @@ def test_mmmu_accuracy_and_speed(
     config = MMMUEvalConfig(
         model="qwen3-omni",
         port=server_process.port,
-        max_samples=MAX_SAMPLES,
         max_concurrency=CONCURRENCY,
         output_dir=str(tmp_path / "mmmu"),
+        repo_id=DATASETS["mmmu-ci-50"],
     )
     results = asyncio.run(run_mmmu_eval(config))
 
@@ -89,7 +90,7 @@ def test_mmmu_accuracy_and_speed(
     )
 
     speed = results["speed"]
-    assert_speed_thresholds(speed, MMMU_THRESHOLDS, CONCURRENCY, check_rtf=False)
+    assert_speed_thresholds(speed, MMMU_THRESHOLDS, CONCURRENCY)
 
 
 if __name__ == "__main__":

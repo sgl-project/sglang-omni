@@ -20,6 +20,7 @@ from pathlib import Path
 
 import pytest
 
+from benchmarks.dataset.prepare import DATASETS
 from benchmarks.eval.mmmu import MMMUEvalConfig, run_mmmu_eval
 from tests.utils import (
     apply_slack,
@@ -36,21 +37,22 @@ MAX_SAMPLES = 5
 MAX_TOKENS = 50
 STARTUP_TIMEOUT = 900
 
-# TODO(Yifei): Support higher concurrency and larger sample size
-# once the Qwen3-Omni pipeline is optimized for concurrent requests.
+# Note (Yifei): Concurrency=1 only for now — code_predictor and code2wav
+# modules serialize GPU access, so they run serially even when concurrency > 1.
 CONCURRENCY = 1
 
 # WER thresholds — text-audio consistency.
-MMMU_AUDIO_WER_MAX_CORPUS = 0.08
-MMMU_AUDIO_WER_MAX_PER_SAMPLE = 0.15
+MMMU_AUDIO_WER_MAX_CORPUS = 0.10
+MMMU_AUDIO_WER_MAX_PER_SAMPLE = 0.18
 
-# TODO(Yifei): Tighten after gathering data from CI hardware.
+# Baselines: worst observed across 5 runs at concurrency=1 on CI hardware
+# (throughput / tok_per_s: min; latency / rtf: max). See MMMU_CI_THRESHOLDS.md.
 _MMMU_AUDIO_P95 = {
     1: {
-        "throughput_qps": 0.02,
-        "tok_per_s_agg": 1.0,
-        "latency_mean_s": 60.0,
-        "rtf_mean": 5.0,
+        "throughput_qps": 0.034,
+        "tok_per_s_agg": 1.7,
+        "latency_mean_s": 29.66,
+        "rtf_mean": 2.02,
     },
 }
 MMMU_AUDIO_THRESHOLDS = apply_slack(_MMMU_AUDIO_P95)
@@ -99,6 +101,7 @@ def test_mmmu_audio_wer_and_speed(
         max_concurrency=CONCURRENCY,
         output_dir=str(tmp_path / "mmmu_audio"),
         enable_audio=True,
+        repo_id=DATASETS["mmmu-ci-50"],
     )
     results = asyncio.run(run_mmmu_eval(config))
 

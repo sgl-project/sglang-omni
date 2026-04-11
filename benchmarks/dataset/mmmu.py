@@ -132,13 +132,8 @@ def format_mmmu_prompt(question: str, options: list[str]) -> str:
     return prompt
 
 
-def load_mmmu_samples(max_samples: int | None = None) -> list[MMMUSample]:
-    """Load MMMU validation samples from HuggingFace.
-
-    Downloads and caches via the ``datasets`` library. Deterministic selection:
-    all subjects are loaded, merged, sorted by sample id, and the first
-    *max_samples* are returned.
-    """
+def _load_full_mmmu() -> list:
+    """Load and merge all 30 subjects from MMMU/MMMU, sorted by sample id."""
     subjects: list[str] = []
     for subs in DOMAIN_CAT2SUB_CAT.values():
         subjects.extend(subs)
@@ -156,13 +151,17 @@ def load_mmmu_samples(max_samples: int | None = None) -> list[MMMUSample]:
         return str(ex.get("id", f"{ex['__subject__']}:{idx}"))
 
     order = sorted(range(len(merged)), key=_sort_key)
-    if max_samples is not None:
-        order = order[:max_samples]
+    return merged.select(order)
 
+
+def _dataset_to_samples(dataset, max_samples: int | None) -> list[MMMUSample]:
+    """Convert HuggingFace dataset rows to MMMUSample objects."""
     samples: list[MMMUSample] = []
-    for idx in order:
-        ex = merged[idx]
-        subject = ex["__subject__"]
+    for idx in range(len(dataset)):
+        if max_samples is not None and len(samples) >= max_samples:
+            break
+        ex = dataset[idx]
+        subject = ex.get("__subject__", "unknown")
 
         images: list[Image.Image] = []
         for i in range(1, 8):
@@ -178,14 +177,17 @@ def load_mmmu_samples(max_samples: int | None = None) -> list[MMMUSample]:
         raw_options = ex.get("options")
         options: list[str] = []
         if raw_options:
-            try:
-                options = (
-                    raw_options
-                    if isinstance(raw_options, list)
-                    else list(ast.literal_eval(raw_options))
-                )
-            except (ValueError, SyntaxError):
-                options = []
+            if isinstance(raw_options, list):
+                options = raw_options
+            else:
+                try:
+                    options = list(ast.literal_eval(raw_options))
+                except (ValueError, SyntaxError) as exc:
+                    logger.warning(
+                        f"Skipping MMMU sample {ex.get('id', idx)}: "
+                        f"failed to parse options {raw_options!r}: {exc}"
+                    )
+                    continue
 
         all_choices: list[str] = []
         index2ans: dict[str, str] = {}
@@ -213,5 +215,28 @@ def load_mmmu_samples(max_samples: int | None = None) -> list[MMMUSample]:
             )
         )
 
+    return samples
+
+
+def load_mmmu_samples(
+    max_samples: int | None = None,
+    *,
+    repo_id: str | None = None,
+) -> list[MMMUSample]:
+    """Load MMMU validation samples.
+
+    Args:
+        max_samples: Cap on how many samples to return.  ``None`` = all.
+        repo_id: HuggingFace dataset repo to load from.  Defaults to
+            ``None`` which loads the full ``MMMU/MMMU`` (all 30 subjects,
+            ~900 samples).  Pass a repo id like
+            ``"zhaochenyang20/mmmu-ci-50"`` to load a pre-built subset.
+    """
+    if repo_id is not None:
+        ds = load_dataset(repo_id, split="validation")
+    else:
+        ds = _load_full_mmmu()
+
+    samples = _dataset_to_samples(ds, max_samples)
     logger.info(f"Loaded {len(samples)} MMMU samples")
     return samples
