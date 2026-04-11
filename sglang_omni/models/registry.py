@@ -29,15 +29,17 @@ def import_pipeline_configs(
                     raise
                 logger.warning(f"Ignore import error when loading {name}: {e}")
                 continue
-            if hasattr(module, config_path):
-                config_module = getattr(module, config_path)
-                assert hasattr(
-                    config_module, "EntryClass"
-                ), f"Config module {module.__name__} must have an EntryClass in its submodule {config_path}"
-                config_cls = getattr(config_module, "EntryClass")
-                model_arch_to_config_cls[config_cls.architecture] = config_cls
-            else:
-                logger.debug(f"Skipping {module.__name__}: no submodule {config_path}")
+            try:
+                config_module = importlib.import_module(f"{name}.{config_path}")
+            except ImportError:
+                logger.debug(f"Skipping {name}: no submodule {config_path}")
+                continue
+            if not hasattr(config_module, "EntryClass"):
+                raise AssertionError(
+                    f"Config module {name}.{config_path} must have an EntryClass"
+                )
+            config_cls = config_module.EntryClass
+            model_arch_to_config_cls[config_cls.architecture] = config_cls
     return model_arch_to_config_cls
 
 
