@@ -27,7 +27,7 @@ from pathlib import Path
 import pytest
 
 from benchmarks.dataset.prepare import DATASETS
-from benchmarks.eval.mmmu import MMMUEvalConfig, run_mmmu_eval
+from benchmarks.eval.benchmark_omni_mmmu import MMMUEvalConfig, run_mmmu_eval
 from tests.utils import (
     apply_slack,
     assert_speed_thresholds,
