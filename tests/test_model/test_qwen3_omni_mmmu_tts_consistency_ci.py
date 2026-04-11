@@ -7,8 +7,14 @@ with ASR transcription of its audio output on MMMU image-QA tasks.
 Usage:
     pytest tests/test_model/test_qwen3_omni_mmmu_tts_consistency_ci.py -v -s -x
 
+Note (Chenyang):
+    Currently due to the performance limitation of the Talker, we run limited
+    samples for the MMMU tts CI.
+    reference: https://github.com/sgl-project/sglang-omni/issues/276
+
 Author:
     Yifei Gao https://github.com/PasserBy4
+    Chenyang Zhao https://github.com/zhaochenyang20
 """
 
 from __future__ import annotations
@@ -39,14 +45,16 @@ STARTUP_TIMEOUT = 900
 
 # Note (Yifei): Concurrency=1 only for now — code_predictor and code2wav
 # modules serialize GPU access, so they run serially even when concurrency > 1.
+
 CONCURRENCY = 1
 
 # WER thresholds — text-audio consistency.
 MMMU_AUDIO_WER_MAX_CORPUS = 0.10
 MMMU_AUDIO_WER_MAX_PER_SAMPLE = 0.18
 
-# Baselines: worst observed across 5 runs at concurrency=1 on CI hardware
-# (throughput / tok_per_s: min; latency / rtf: max). See MMMU_CI_THRESHOLDS.md.
+# Note (Yifei, Chenyang): Thresholds reference
+# https://github.com/sgl-project/sglang-omni/pull/265#issuecomment-4228251028
+
 _MMMU_AUDIO_P95 = {
     1: {
         "throughput_qps": 0.034,

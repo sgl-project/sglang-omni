@@ -6,6 +6,7 @@ Usage:
 
 Author:
     Yifei Gao https://github.com/PasserBy4
+    Chenyang Zhao https://github.com/zhaochenyang20
 """
 
 from __future__ import annotations
@@ -34,8 +35,9 @@ STARTUP_TIMEOUT = 900
 
 MMMU_MIN_ACCURACY = 0.52
 
-# Baselines: worst observed across 5 runs at concurrency=8 on CI hardware
-# (throughput / tok_per_s: min; latency: max). See MMMU_CI_THRESHOLDS.md.
+# Note (Yifei, Chenyang): Thresholds reference
+# https://github.com/sgl-project/sglang-omni/pull/265#issuecomment-4228251028
+
 _MMMU_P95 = {
     8: {
         "throughput_qps": 0.128,
