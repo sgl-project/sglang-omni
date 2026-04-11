@@ -1,19 +1,35 @@
 name: S2-Pro CI
+run-name: >-
+  S2-Pro CI / ${{
+    github.event_name == 'workflow_dispatch' && github.event.inputs.target_stage || 'pull_request'
+  }}
 
 on:
   pull_request:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      target_stage:
+        description: Select the S2-Pro benchmark stage to run
+        required: false
+        default: all
+        type: choice
+        options:
+          - all
+          - s2pro-stage-1-nonstream
+          - s2pro-stage-2-stream
+          - s2pro-stage-3-consistency
 
 concurrency:
-  group: s2pro-ci-${{ github.event.pull_request.number || github.ref }}
+  group: s2pro-ci-${{ github.event.pull_request.number || github.ref }}-${{ github.event.inputs.target_stage || 'all' }}
   cancel-in-progress: true
 
 permissions:
   contents: read
 
 jobs:
-  s2pro-ci:
+  docs:
+    name: S2-Pro CI / Docs
     runs-on: [self-hosted]
     container:
       image: frankleeeee/sglang-omni:dev
@@ -66,26 +82,87 @@ jobs:
         run: |
           bash .github/scripts/delete_gpu_process.sh
 
-      - name: Run TTS CI (speed + WER)
+      - name: Save cache
+        run: |
+          cp -p -r omni-s2pro /github/home/
+
+  benchmark:
+    name: ${{ matrix.stage_name }}
+    needs: docs
+    if: github.event_name != 'workflow_dispatch' || github.event.inputs.target_stage == 'all' || github.event.inputs.target_stage == matrix.stage_id
+    runs-on: [self-hosted]
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        include:
+          - stage_id: s2pro-stage-1-nonstream
+            stage_name: S2-Pro CI / Stage 1 - Non-Streaming
+          - stage_id: s2pro-stage-2-stream
+            stage_name: S2-Pro CI / Stage 2 - Streaming
+          - stage_id: s2pro-stage-3-consistency
+            stage_name: S2-Pro CI / Stage 3 - Consistency
+    container:
+      image: frankleeeee/sglang-omni:dev
+      options: --gpus all --rm -v /dev/shm:/dev/shm
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Restore cache
+        run: |
+          if [ -d /github/home/omni-s2pro ] && [ ! -z "$(ls -A /github/home/omni-s2pro/)" ]; then
+            cp -p -r /github/home/omni-s2pro ./omni-s2pro
+          fi
+
+      - name: Remove flashinfer
+        run: |
+          rm -rf /github/home/.cache/flashinfer
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          if [ -d omni-s2pro ] && ! omni-s2pro/bin/python -c "import torch" 2>/dev/null; then
+            echo "Cached venv is corrupted, removing..."
+            rm -rf omni-s2pro
+          fi
+          if [ ! -d omni-s2pro ]; then
+            uv venv omni-s2pro -p 3.11
+          fi
+          source omni-s2pro/bin/activate
+          uv pip install -v -e ".[s2pro,dev]"
+
+      - name: Kill GPU processes
+        shell: bash
+        run: |
+          bash .github/scripts/delete_gpu_process.sh
+
+      - name: Run benchmark stage
         timeout-minutes: 60
         shell: bash
         run: |
           source omni-s2pro/bin/activate
           export PYTHONPATH=$PWD
-          pytest tests/test_model/test_s2pro_tts_ci.py -v -s -x --concurrency 8
+          pytest tests/test_model/test_s2pro_tts_ci.py -v -s -x --concurrency 8 --s2pro-stage ${{ matrix.stage_id }}
         env:
           HF_ENDPOINT: https://hf-mirror.com
 
-      - name: Print TTS CI artifacts (speed + WER)
+      - name: Print benchmark artifacts
         if: always()
         shell: bash
         run: |
-          echo "=== S2-Pro TTS CI results ==="
+          echo "=== ${{ matrix.stage_name }} results ==="
           for f in $(find /tmp -name "speed_results.json" -o -name "wer_results.json" 2>/dev/null); do
             echo "--- $f ---"
             cat "$f"
             echo ""
           done
+
+      - name: Kill GPU processes
+        if: always()
+        shell: bash
+        run: |
+          bash .github/scripts/delete_gpu_process.sh
 
       - name: Save cache
         run: |
