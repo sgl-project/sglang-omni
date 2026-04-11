@@ -5,12 +5,13 @@ from __future__ import annotations
 
 import pytest
 
-from tests.test_model.s2pro_ci_stages import (
-    S2PRO_CI_STAGES,
-    S2PRO_STAGE_ALL,
-)
-
 S2PRO_TTS_ALLOWED_CONCURRENCIES = (1, 2, 4, 8, 16)
+S2PRO_CI_STAGES = (
+    "s2pro-stage-1-nonstream",
+    "s2pro-stage-2-stream",
+    "s2pro-stage-3-consistency",
+)
+S2PRO_STAGE_ALL = "all"
 S2PRO_TTS_CONCURRENCY_OPTION = "--concurrency"
 SELECTED_S2PRO_TTS_CONCURRENCIES = pytest.StashKey[tuple[int, ...]]()
 S2PRO_STAGE_OPTION = "--s2pro-stage"

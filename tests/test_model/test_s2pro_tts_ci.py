@@ -38,11 +38,6 @@ from benchmarks.eval.benchmark_tts_speed import (
     TtsSpeedBenchmarkConfig,
     run_tts_speed_benchmark,
 )
-from tests.test_model.s2pro_ci_stages import (
-    S2PRO_STAGE_CONSISTENCY,
-    S2PRO_STAGE_NONSTREAM,
-    S2PRO_STAGE_STREAM,
-)
 from tests.utils import (
     apply_slack,
     assert_per_request_fields,
@@ -58,6 +53,10 @@ from tests.utils import (
 
 PER_REQUEST_STORE: dict[str, list[dict]] = {}
 SPEED_OUTPUT_DIRS: dict[str, dict[int, str]] = {"non_stream": {}, "stream": {}}
+
+S2PRO_STAGE_NONSTREAM = "s2pro-stage-1-nonstream"
+S2PRO_STAGE_STREAM = "s2pro-stage-2-stream"
+S2PRO_STAGE_CONSISTENCY = "s2pro-stage-3-consistency"
 
 S2PRO_MODEL_PATH = "fishaudio/s2-pro"
 S2PRO_CONFIG_PATH = "examples/configs/s2pro_tts.yaml"
