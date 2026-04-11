@@ -2,7 +2,7 @@
 """MMMU benchmark for sglang-omni models.
 
 Evaluates VLM accuracy and performance on the MMMU validation set via
-``/v1/chat/completions`` with image input.
+/v1/chat/completions with image input.
 
 Usage:
     # Text-only
@@ -14,8 +14,10 @@ Usage:
         --model qwen3-omni --port 8000 --max-samples 50 --max-concurrency 16
 
     # With audio (requires speech server)
-    # Note (Yifei): Concurrency=1 only for now — code_predictor and code2wav
-    # modules serialize GPU access, so they run serially even when concurrency > 1.
+    # Note (Yifei, Chenyang): Concurrency=1 only for now since code_predictor and
+    # code2wav modules serialize GPU access, so they run serially even when
+    # concurrency > 1. And, audio output is still slow at this stage.
+
     python benchmarks/eval/benchmark_omni_mmmu.py \
         --model qwen3-omni --port 8000 --max-samples 5 --enable-audio --max-tokens 50
 """
@@ -35,12 +37,12 @@ from benchmarks.benchmarker.runner import BenchmarkRunner, RunConfig
 from benchmarks.benchmarker.utils import save_json_results, wait_for_service
 from benchmarks.dataset.mmmu import load_mmmu_samples
 from benchmarks.metrics.performance import compute_speed_metrics
-from benchmarks.tasks.mmmu import (
+from benchmarks.tasks.tts_speed import print_speed_summary
+from benchmarks.tasks.visual_understand import (
     compute_mmmu_metrics,
     make_mmmu_send_fn,
     print_mmmu_accuracy_summary,
 )
-from benchmarks.tasks.tts_speed import print_speed_summary
 from benchmarks.tasks.voice_clone import (
     SampleOutput,
     _transcribe_and_compute_wer,
@@ -83,8 +85,8 @@ def _build_base_url(config: MMMUEvalConfig) -> str:
 async def run_mmmu_eval(config: MMMUEvalConfig) -> dict:
     """Run full MMMU evaluation and return results dict.
 
-    Returns a dict with keys: ``summary``, ``speed``, ``config``,
-    ``per_sample``, and ``wer`` (only when *enable_audio* is True).
+    Returns a dict with keys: summary, speed, config,
+    per_sample, and wer (only when enable_audio is True).
     """
     base_url = _build_base_url(config)
     api_url = f"{base_url}/v1/chat/completions"
@@ -159,15 +161,13 @@ def _compute_audio_wer(
     """Transcribe audio outputs with ASR and compute WER against text outputs.
 
     Text output is the reference; ASR transcription of the audio is the
-    hypothesis.  Returns a dict with ``summary`` and ``per_sample`` keys.
+    hypothesis.  Returns a dict with summary and per_sample keys.
     """
     asr = load_asr_model(lang, asr_device)
 
     outputs: list[SampleOutput] = []
     for result in request_results:
 
-        # Replace newlines with spaces — model text output may contain
-        # reasoning steps with line breaks that hurt WER tokenization.
         ref_text = " ".join(result.text.split())
         output = SampleOutput(
             sample_id=result.request_id,
