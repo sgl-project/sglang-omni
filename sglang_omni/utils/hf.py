@@ -72,6 +72,50 @@ def try_resolve_arch_from_mistral_config(model_path: str) -> str | None:
     return _CONFIG_MODEL_TYPE_TO_ARCH.get(model_type)
 
 
+def try_resolve_arch_from_raw_config(model_path: str) -> str | None:
+    """Resolve architecture by reading raw ``config.json`` as plain JSON.
+
+    This is useful when ``AutoConfig.from_pretrained`` fails (e.g. because the
+    model requires ``trust_remote_code=True`` and the custom Python config
+    module is unavailable).  We parse the JSON directly to extract
+    ``architectures`` or map ``model_type``.
+    """
+    raw: dict | None = None
+
+    # Try local path first
+    local_config = os.path.join(model_path, "config.json")
+    if os.path.isfile(local_config):
+        with open(local_config) as f:
+            raw = json.load(f)
+    elif not os.path.isdir(model_path):
+        # Treat as a Hub repo id — download config.json
+        try:
+            from huggingface_hub import hf_hub_download
+
+            cached = hf_hub_download(repo_id=model_path, filename="config.json")
+            with open(cached) as f:
+                raw = json.load(f)
+        except Exception:
+            return None
+
+    if raw is None:
+        return None
+
+    # Prefer architectures list
+    archs = raw.get("architectures")
+    if archs:
+        for a in archs:
+            if a:
+                return a
+
+    # Fall back to model_type mapping
+    mt = raw.get("model_type")
+    if mt and mt in _CONFIG_MODEL_TYPE_TO_ARCH:
+        return _CONFIG_MODEL_TYPE_TO_ARCH[mt]
+
+    return None
+
+
 # ---------------------------------------------------------------------------
 # HF config loading
 # ---------------------------------------------------------------------------
