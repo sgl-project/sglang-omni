@@ -29,14 +29,14 @@ class UsageInfo:
     engine_time_s: float | None = None
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any] | None) -> "UsageInfo | None":
-        if not data:
+    def from_dict(cls, raw: dict[str, Any] | None) -> "UsageInfo | None":
+        if not raw:
             return None
         return cls(
-            prompt_tokens=data.get("prompt_tokens"),
-            completion_tokens=data.get("completion_tokens"),
-            total_tokens=data.get("total_tokens"),
-            engine_time_s=data.get("engine_time_s"),
+            prompt_tokens=raw.get("prompt_tokens"),
+            completion_tokens=raw.get("completion_tokens"),
+            total_tokens=raw.get("total_tokens"),
+            engine_time_s=raw.get("engine_time_s"),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -133,9 +133,13 @@ class GenerateChunk:
     stage_id: int | None = None
     stage_name: str | None = None
     modality: str = "text"
-    # Multi-modal output data (e.g. audio waveform bytes, image bytes)
+    # Multi-modal output data
     audio_data: Any = None
     sample_rate: int | None = None
+    image_data: str | None = None  # base64-encoded image
+    image_format: str | None = None
+    image_width: int | None = None
+    image_height: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -151,6 +155,10 @@ class GenerateChunk:
             "modality": self.modality,
             "audio_data": self.audio_data,
             "sample_rate": self.sample_rate,
+            "image_data": self.image_data,
+            "image_format": self.image_format,
+            "image_width": self.image_width,
+            "image_height": self.image_height,
         }
 
 
@@ -185,12 +193,23 @@ class CompletionAudio:
 
 
 @dataclass
+class CompletionImage:
+    """Image data from a non-streaming completion."""
+
+    b64_json: str
+    format: str = "png"
+    width: int | None = None
+    height: int | None = None
+
+
+@dataclass
 class CompletionResult:
     """Result of a non-streaming completion call."""
 
     request_id: str
     text: str
     audio: CompletionAudio | None = None
+    images: list[CompletionImage] | None = None
     finish_reason: str = "stop"
     usage: UsageInfo | None = None
 
@@ -203,6 +222,10 @@ class CompletionStreamChunk:
     text: str = ""
     modality: str = "text"
     audio_b64: str | None = None  # already base64-encoded
+    image_b64: str | None = None  # already base64-encoded
+    image_format: str | None = None
+    image_width: int | None = None
+    image_height: int | None = None
     finish_reason: str | None = None
     usage: UsageInfo | None = None
     stage_name: str | None = None

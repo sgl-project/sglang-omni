@@ -19,6 +19,7 @@ from sglang_omni.client.types import (
     AbortResult,
     ClientError,
     CompletionAudio,
+    CompletionImage,
     CompletionResult,
     CompletionStreamChunk,
     GenerateChunk,
@@ -86,6 +87,7 @@ class Client:
         """
         text_parts: list[str] = []
         audio_chunks: list[Any] = []
+        image_list: list[CompletionImage] = []
         last_chunk: GenerateChunk | None = None
         finish_reason: str | None = None
 
@@ -95,6 +97,15 @@ class Client:
                 text_parts.append(chunk.text)
             if chunk.audio_data is not None:
                 audio_chunks.append(chunk.audio_data)
+            if chunk.image_data is not None:
+                image_list.append(
+                    CompletionImage(
+                        b64_json=chunk.image_data,
+                        format=chunk.image_format or "png",
+                        width=chunk.image_width,
+                        height=chunk.image_height,
+                    )
+                )
             if chunk.finish_reason is not None:
                 finish_reason = chunk.finish_reason
 
@@ -120,6 +131,7 @@ class Client:
             request_id=request_id,
             text=full_text,
             audio=audio,
+            images=image_list if image_list else None,
             finish_reason=finish_reason or "stop",
             usage=last_chunk.usage,
         )
@@ -152,6 +164,10 @@ class Client:
                 text=chunk.text,
                 modality=chunk.modality,
                 audio_b64=audio_b64,
+                image_b64=chunk.image_data if chunk.modality == "image" else None,
+                image_format=chunk.image_format,
+                image_width=chunk.image_width,
+                image_height=chunk.image_height,
                 finish_reason=chunk.finish_reason,
                 usage=chunk.usage,
                 stage_name=chunk.stage_name,
@@ -243,22 +259,32 @@ class Client:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _set_audio_data(chunk: GenerateChunk, data: dict[str, Any]) -> None:
-        audio_data = data.get("audio_data") or data.get("audio")
-        if audio_data is None and data.get("audio_waveform") is not None:
-            raw = data.get("audio_waveform")
+    def _set_image_data(chunk: GenerateChunk, result: dict[str, Any]) -> None:
+        image_b64 = result.get("image_data")
+        if image_b64 is not None:
+            chunk.image_data = image_b64
+            chunk.image_format = result.get("image_format", "png")
+            chunk.image_width = result.get("image_width")
+            chunk.image_height = result.get("image_height")
+            chunk.modality = "image"
+
+    @staticmethod
+    def _set_audio_data(chunk: GenerateChunk, audio_dict: dict[str, Any]) -> None:
+        audio_data = audio_dict.get("audio_data") or audio_dict.get("audio")
+        if audio_data is None and audio_dict.get("audio_waveform") is not None:
+            raw = audio_dict.get("audio_waveform")
             if isinstance(raw, memoryview):
                 raw = raw.tobytes()
-            dtype = np.dtype(data.get("audio_waveform_dtype", "float32"))
+            dtype = np.dtype(audio_dict.get("audio_waveform_dtype", "float32"))
             arr = np.frombuffer(raw, dtype=dtype)
-            shape = data.get("audio_waveform_shape")
+            shape = audio_dict.get("audio_waveform_shape")
             if shape:
                 arr = arr.reshape(shape)
             audio_data = arr.copy()
         if audio_data is not None:
             chunk.audio_data = audio_data
             chunk.modality = "audio"
-        sample_rate = data.get("sample_rate")
+        sample_rate = audio_dict.get("sample_rate")
         if sample_rate is not None:
             chunk.sample_rate = sample_rate
 
@@ -288,6 +314,20 @@ class Client:
                 if isinstance(text, str):
                     chunk.text = text
                 Client._set_audio_data(chunk, c2w_result)
+                chunk.usage = UsageInfo.from_dict(decode_result.get("usage"))
+                return chunk
+            # Multi-terminal with image: {"decode": {...}, "img_gen": {...}}
+            if "decode" in result and "img_gen" in result:
+                decode_result = result["decode"] or {}
+                img_result = result["img_gen"] or {}
+                text = decode_result.get("text")
+                if isinstance(text, str):
+                    chunk.text = text
+                Client._set_image_data(chunk, img_result)
+                # If also has talker
+                talker_result = result.get("talker")
+                if talker_result:
+                    Client._set_audio_data(chunk, talker_result)
                 chunk.usage = UsageInfo.from_dict(decode_result.get("usage"))
                 return chunk
             text = result.get("text")

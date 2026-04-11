@@ -17,6 +17,7 @@ from sglang_omni.models.ming_omni.components.common import (
     load_ming_tokenizer,
 )
 from sglang_omni.models.ming_omni.components.preprocessor import MingPreprocessor
+from sglang_omni.models.ming_omni.components.image_gen_executor import MingImageGenExecutor
 from sglang_omni.models.ming_omni.components.talker_executor import MingTalkerExecutor
 from sglang_omni.models.ming_omni.io import OmniEvent, ThinkerOutput
 from sglang_omni.models.ming_omni.pipeline.engine_io import (
@@ -389,6 +390,27 @@ def create_talker_executor(
         talker_model_path=talker_model_path,
         device=device,
         voice=voice,
+    )
+
+
+def create_image_gen_executor(
+    model_path: str,
+    *,
+    dit_type: str = "zimage",
+    dit_model_path: str | None = None,
+    device: str = "cuda",
+) -> MingImageGenExecutor:
+    """Create the Ming image generation executor.
+
+    The executor is a self-contained diffusion pipeline (text encoder + DiT + VAE),
+    wrapped as an Executor for the pipeline.
+    """
+    local_path = _resolve_local_model_path(model_path)
+    return MingImageGenExecutor(
+        model_path=local_path,
+        dit_type=dit_type,
+        dit_model_path=dit_model_path or local_path,
+        device=device,
     )
 
 
