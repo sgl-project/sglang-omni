@@ -4,6 +4,8 @@
 Usage:
     pytest tests/test_model/test_s2pro_tts_ci.py -s -x
     pytest tests/test_model/test_s2pro_tts_ci.py -s -x --concurrency 8
+    pytest tests/test_model/test_s2pro_tts_ci.py -s -x --concurrency 8 \
+        --s2pro-stage s2pro-stage-1-nonstream
     pytest tests/test_model/test_s2pro_tts_ci.py -s -x --concurrency all
 
 Author:
@@ -35,6 +37,11 @@ from benchmarks.dataset.prepare import DATASETS, download_dataset
 from benchmarks.eval.benchmark_tts_speed import (
     TtsSpeedBenchmarkConfig,
     run_tts_speed_benchmark,
+)
+from tests.test_model.s2pro_ci_stages import (
+    S2PRO_STAGE_CONSISTENCY,
+    S2PRO_STAGE_NONSTREAM,
+    S2PRO_STAGE_STREAM,
 )
 from tests.utils import (
     apply_slack,
@@ -297,16 +304,76 @@ def server_process(tmp_path_factory: pytest.TempPathFactory):
 
 
 @pytest.fixture(scope="module")
-def wer_input_dirs(server_process: subprocess.Popen) -> dict[str, dict[int, str]]:
+def consistency_stage_inputs(
+    selected_s2pro_ci_stage: str,
+    server_process: subprocess.Popen,
+    dataset_dir: Path,
+    tmp_path_factory: pytest.TempPathFactory,
+    selected_s2pro_tts_concurrencies: tuple[int, ...],
+) -> None:
+    if selected_s2pro_ci_stage != S2PRO_STAGE_CONSISTENCY:
+        return
+
+    output_root = tmp_path_factory.mktemp("s2pro_consistency")
+    for concurrency in selected_s2pro_tts_concurrencies:
+        non_stream_key = f"vc_nonstream_c{concurrency}"
+        stream_key = f"vc_stream_c{concurrency}"
+
+        if non_stream_key not in PER_REQUEST_STORE:
+            output_dir = str(output_root / f"vc_nonstream_c{concurrency}")
+            results = _run_benchmark(
+                server_process.port,
+                str(dataset_dir / "en" / "meta.lst"),
+                output_dir,
+                concurrency=concurrency,
+            )
+            summary, per_request = results["summary"], results["per_request"]
+            assert_summary_metrics(summary)
+            assert_per_request_fields(per_request)
+            PER_REQUEST_STORE[non_stream_key] = per_request
+            SPEED_OUTPUT_DIRS["non_stream"][concurrency] = output_dir
+
+        if stream_key not in PER_REQUEST_STORE:
+            output_dir = str(output_root / f"vc_stream_c{concurrency}")
+            results = _run_benchmark(
+                server_process.port,
+                str(dataset_dir / "en" / "meta.lst"),
+                output_dir,
+                concurrency=concurrency,
+                max_samples=STREAMING_BENCHMARK_MAX_SAMPLES,
+                stream=True,
+            )
+            summary, per_request = results["summary"], results["per_request"]
+            assert_summary_metrics(summary)
+            assert_per_request_fields(per_request)
+            PER_REQUEST_STORE[stream_key] = per_request
+            SPEED_OUTPUT_DIRS["stream"][concurrency] = output_dir
+
+
+@pytest.fixture(scope="module")
+def wer_input_dirs(
+    selected_s2pro_ci_stage: str,
+    server_process: subprocess.Popen,
+) -> dict[str, dict[int, str]]:
     """Reuse saved benchmark audio for WER after freeing the TTS server GPU."""
     stop_server(server_process)
-    for mode in ("non_stream", "stream"):
+
+    required_modes: tuple[str, ...]
+    if selected_s2pro_ci_stage == S2PRO_STAGE_NONSTREAM:
+        required_modes = ("non_stream",)
+    elif selected_s2pro_ci_stage == S2PRO_STAGE_STREAM:
+        required_modes = ("stream",)
+    else:
+        required_modes = ("non_stream", "stream")
+
+    for mode in required_modes:
         for concurrency, output_dir in SPEED_OUTPUT_DIRS[mode].items():
             generated_path = Path(output_dir) / "generated.json"
             assert generated_path.exists(), f"WER metadata missing: {generated_path}"
     return SPEED_OUTPUT_DIRS
 
 
+@pytest.mark.s2pro_stage(S2PRO_STAGE_NONSTREAM)
 @pytest.mark.benchmark
 def test_voice_cloning_non_streaming(
     server_process: subprocess.Popen,
@@ -334,6 +401,7 @@ def test_voice_cloning_non_streaming(
         assert_speed_thresholds(summary, VC_NON_STREAM_THRESHOLDS, concurrency)
 
 
+@pytest.mark.s2pro_stage(S2PRO_STAGE_STREAM)
 @pytest.mark.benchmark
 def test_voice_cloning_streaming(
     server_process: subprocess.Popen,
@@ -365,8 +433,10 @@ def test_voice_cloning_streaming(
         assert_speed_thresholds(summary, VC_STREAM_THRESHOLDS, concurrency)
 
 
+@pytest.mark.s2pro_stage(S2PRO_STAGE_CONSISTENCY)
 @pytest.mark.benchmark
 def test_voice_cloning_streaming_consistency(
+    consistency_stage_inputs: None,
     selected_s2pro_tts_concurrencies: tuple[int, ...],
 ) -> None:
     for concurrency in selected_s2pro_tts_concurrencies:
@@ -379,6 +449,7 @@ def test_voice_cloning_streaming_consistency(
         )
 
 
+@pytest.mark.s2pro_stage(S2PRO_STAGE_NONSTREAM)
 @pytest.mark.benchmark
 def test_voice_cloning_wer(
     wer_input_dirs: dict[str, dict[int, str]],
@@ -399,6 +470,7 @@ def test_voice_cloning_wer(
         assert_wer_results(results, VC_WER_MAX_CORPUS, VC_WER_MAX_PER_SAMPLE)
 
 
+@pytest.mark.s2pro_stage(S2PRO_STAGE_STREAM)
 @pytest.mark.benchmark
 def test_voice_cloning_streaming_wer(
     wer_input_dirs: dict[str, dict[int, str]],
