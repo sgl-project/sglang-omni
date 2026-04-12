@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>SGLang-Omni Realtime Prototype</title>
+    <style>
+      body {
+        margin: 0;
+        font: 16px/1.45 ui-sans-serif, system-ui, sans-serif;
+        background: #0d1117;
+        color: #e6edf3;
+      }
+      main {
+        max-width: 920px;
+        margin: 0 auto;
+        padding: 32px 20px 48px;
+      }
+      h1 {
+        margin: 0 0 8px;
+        font-size: 32px;
+      }
+      p {
+        margin: 0 0 16px;
+        color: #9fb1c7;
+      }
+      .panel {
+        background: #161b22;
+        border: 1px solid #2d333b;
+        border-radius: 16px;
+        padding: 18px;
+        margin-top: 18px;
+      }
+      textarea {
+        width: 100%;
+        min-height: 92px;
+        border-radius: 10px;
+        border: 1px solid #30363d;
+        background: #0d1117;
+        color: #e6edf3;
+        padding: 12px;
+        box-sizing: border-box;
+        resize: vertical;
+      }
+      button {
+        border: 0;
+        border-radius: 999px;
+        padding: 10px 18px;
+        font-weight: 600;
+        cursor: pointer;
+        background: #2f81f7;
+        color: white;
+      }
+      button.secondary {
+        background: #30363d;
+      }
+      button:disabled {
+        opacity: 0.5;
+        cursor: default;
+      }
+      .row {
+        display: flex;
+        gap: 12px;
+        flex-wrap: wrap;
+        align-items: center;
+      }
+      .status {
+        font-weight: 600;
+      }
+      .log {
+        max-height: 360px;
+        overflow: auto;
+        background: #0b0f14;
+        border: 1px solid #222933;
+        border-radius: 12px;
+        padding: 12px;
+        font-family: ui-monospace, SFMono-Regular, monospace;
+        font-size: 13px;
+        white-space: pre-wrap;
+      }
+      audio {
+        width: 100%;
+        margin-top: 12px;
+      }
+      label {
+        color: #c9d1d9;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Realtime WebRTC Prototype</h1>
+      <p>
+        Audio-first voice demo with server-side VAD, optional camera buffering,
+        and request-based inference on utterance end.
+      </p>
+
+      <section class="panel">
+        <label for="instructions">System instructions</label>
+        <textarea id="instructions">You are a concise, natural voice assistant. Answer conversationally.</textarea>
+        <div class="row" style="margin-top: 12px">
+          <label><input id="camera" type="checkbox" /> Share camera</label>
+          <label><input id="text-output" type="checkbox" checked /> Also stream text events</label>
+        </div>
+        <div class="row" style="margin-top: 14px">
+          <button id="connect">Connect</button>
+          <button id="disconnect" class="secondary" disabled>Disconnect</button>
+          <span class="status" id="status">Idle</span>
+        </div>
+        <audio id="remote-audio" autoplay controls></audio>
+      </section>
+
+      <section class="panel">
+        <div class="row" style="justify-content: space-between">
+          <strong>Session Events</strong>
+          <button id="clear-log" class="secondary">Clear log</button>
+        </div>
+        <div id="log" class="log" style="margin-top: 12px"></div>
+      </section>
+    </main>
+    <script src="/v1/realtime/demo/app.js"></script>
+  </body>
+</html>

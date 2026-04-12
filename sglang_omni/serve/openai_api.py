@@ -90,6 +90,14 @@ def create_app(
     _register_models(app)
     _register_chat_completions(app)
     _register_speech(app)
+    try:
+        from sglang_omni.serve.webrtc_api import create_realtime_router
+
+        app.include_router(
+            create_realtime_router(client, model_name=app.state.model_name)
+        )
+    except Exception:
+        logger.exception("Failed to register realtime prototype routes")
 
     return app
 
