@@ -106,6 +106,20 @@ jobs:
             echo ""
           done
 
+      - name: Prepare stage artifact
+        shell: bash
+        run: |
+          mkdir -p stage-results/vc_nonstream_c8
+          cp "$(find /tmp -path '*/vc_nonstream_c8/speed_results.json' | head -n1)" \
+            stage-results/vc_nonstream_c8/speed_results.json
+
+      - name: Upload stage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: s2pro-stage-1-speed-results
+          path: stage-results
+          if-no-files-found: error
+
       - name: Kill GPU processes
         if: always()
         shell: bash
@@ -146,6 +160,20 @@ jobs:
             echo ""
           done
 
+      - name: Prepare stage artifact
+        shell: bash
+        run: |
+          mkdir -p stage-results/vc_stream_c8
+          cp "$(find /tmp -path '*/vc_stream_c8/speed_results.json' | head -n1)" \
+            stage-results/vc_stream_c8/speed_results.json
+
+      - name: Upload stage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: s2pro-stage-2-speed-results
+          path: stage-results
+          if-no-files-found: error
+
       - name: Kill GPU processes
         if: always()
         shell: bash
@@ -166,6 +194,18 @@ jobs:
 
       - uses: ./.github/actions/s2pro-setup
 
+      - name: Download stage 1 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: s2pro-stage-1-speed-results
+          path: stage-artifacts/nonstream
+
+      - name: Download stage 2 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: s2pro-stage-2-speed-results
+          path: stage-artifacts/stream
+
       - name: Run benchmark stage
         shell: bash
         run: |
@@ -174,6 +214,8 @@ jobs:
           pytest tests/test_model/test_s2pro_tts_ci.py -v -s -x --concurrency 8 --s2pro-stage s2pro-stage-3-consistency
         env:
           HF_ENDPOINT: https://hf-mirror.com
+          S2PRO_STAGE1_SPEED_RESULTS_DIR: ${{ github.workspace }}/stage-artifacts/nonstream
+          S2PRO_STAGE2_SPEED_RESULTS_DIR: ${{ github.workspace }}/stage-artifacts/stream
 
       - name: Print benchmark artifacts
         if: always()

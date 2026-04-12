@@ -66,6 +66,8 @@ STARTUP_TIMEOUT = 600
 BENCHMARK_TIMEOUT = 600
 WER_TIMEOUT = 600
 DATASET_CACHE_ENV = "SGLANG_SEEDTTS50_DIR"
+S2PRO_STAGE1_SPEED_RESULTS_DIR_ENV = "S2PRO_STAGE1_SPEED_RESULTS_DIR"
+S2PRO_STAGE2_SPEED_RESULTS_DIR_ENV = "S2PRO_STAGE2_SPEED_RESULTS_DIR"
 
 # Note (Chenyang): The streaming mode evaluation is only run at first 16.
 
@@ -264,6 +266,50 @@ def _run_wer_transcribe(
     return wer_results
 
 
+def _load_speed_results(results_path: Path) -> dict:
+    assert results_path.exists(), f"Speed results file not found: {results_path}"
+    with open(results_path) as f:
+        speed_results = json.load(f)
+    assert (
+        "summary" in speed_results
+    ), f"Missing 'summary' key in speed results. Keys: {list(speed_results.keys())}"
+    assert (
+        "per_request" in speed_results
+    ), f"Missing 'per_request' key in speed results. Keys: {list(speed_results.keys())}"
+    return speed_results
+
+
+def _store_consistency_inputs(
+    *,
+    mode: str,
+    concurrency: int,
+    output_dir: str,
+    results: dict,
+) -> None:
+    summary, per_request = results["summary"], results["per_request"]
+    assert_summary_metrics(summary)
+    assert_per_request_fields(per_request)
+    if mode == "non_stream":
+        assert_speed_thresholds(summary, VC_NON_STREAM_THRESHOLDS, concurrency)
+        store_key = f"vc_nonstream_c{concurrency}"
+    else:
+        assert_speed_thresholds(summary, VC_STREAM_THRESHOLDS, concurrency)
+        store_key = f"vc_stream_c{concurrency}"
+    PER_REQUEST_STORE[store_key] = per_request
+    SPEED_OUTPUT_DIRS[mode][concurrency] = output_dir
+
+
+def _find_downloaded_speed_results(
+    artifact_root: str,
+    output_dir_name: str,
+) -> tuple[str, dict]:
+    root = Path(artifact_root)
+    matches = sorted(root.rglob(f"{output_dir_name}/speed_results.json"))
+    assert matches, f"Downloaded speed results not found under {artifact_root}: {output_dir_name}"
+    results_path = matches[0]
+    return str(results_path.parent), _load_speed_results(results_path)
+
+
 def _print_stage(stage: str, mode: str, concurrency: int, details: str = "") -> None:
     message = f"\n[Stage] {stage} benchmark | mode={mode} | concurrency={concurrency}"
     if details:
@@ -326,6 +372,30 @@ def consistency_stage_inputs(
     if selected_s2pro_ci_stage != S2PRO_STAGE_CONSISTENCY:
         return
 
+    non_stream_results_root = os.environ.get(S2PRO_STAGE1_SPEED_RESULTS_DIR_ENV)
+    stream_results_root = os.environ.get(S2PRO_STAGE2_SPEED_RESULTS_DIR_ENV)
+    if non_stream_results_root and stream_results_root:
+        for concurrency in selected_s2pro_tts_concurrencies:
+            non_stream_output_dir, non_stream_results = _find_downloaded_speed_results(
+                non_stream_results_root, f"vc_nonstream_c{concurrency}"
+            )
+            stream_output_dir, stream_results = _find_downloaded_speed_results(
+                stream_results_root, f"vc_stream_c{concurrency}"
+            )
+            _store_consistency_inputs(
+                mode="non_stream",
+                concurrency=concurrency,
+                output_dir=non_stream_output_dir,
+                results=non_stream_results,
+            )
+            _store_consistency_inputs(
+                mode="stream",
+                concurrency=concurrency,
+                output_dir=stream_output_dir,
+                results=stream_results,
+            )
+        return
+
     output_root = tmp_path_factory.mktemp("s2pro_consistency")
     for concurrency in selected_s2pro_tts_concurrencies:
         non_stream_key = f"vc_nonstream_c{concurrency}"
@@ -339,11 +409,12 @@ def consistency_stage_inputs(
                 output_dir,
                 concurrency=concurrency,
             )
-            summary, per_request = results["summary"], results["per_request"]
-            assert_summary_metrics(summary)
-            assert_per_request_fields(per_request)
-            PER_REQUEST_STORE[non_stream_key] = per_request
-            SPEED_OUTPUT_DIRS["non_stream"][concurrency] = output_dir
+            _store_consistency_inputs(
+                mode="non_stream",
+                concurrency=concurrency,
+                output_dir=output_dir,
+                results=results,
+            )
 
         if stream_key not in PER_REQUEST_STORE:
             output_dir = str(output_root / f"vc_stream_c{concurrency}")
@@ -355,11 +426,12 @@ def consistency_stage_inputs(
                 max_samples=STREAMING_BENCHMARK_MAX_SAMPLES,
                 stream=True,
             )
-            summary, per_request = results["summary"], results["per_request"]
-            assert_summary_metrics(summary)
-            assert_per_request_fields(per_request)
-            PER_REQUEST_STORE[stream_key] = per_request
-            SPEED_OUTPUT_DIRS["stream"][concurrency] = output_dir
+            _store_consistency_inputs(
+                mode="stream",
+                concurrency=concurrency,
+                output_dir=output_dir,
+                results=results,
+            )
 
 
 @pytest.fixture(scope="module")
