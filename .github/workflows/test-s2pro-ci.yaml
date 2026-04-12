@@ -78,7 +78,7 @@ jobs:
         shell: bash
         run: |
           echo "=== stage 1 - non-streaming results ==="
-          for f in $(find /tmp -name "speed_results.json" -o -name "wer_results.json" 2>/dev/null); do
+          find stage-results/nonstream -name "speed_results.json" -o -name "wer_results.json" 2>/dev/null | sort | while read -r f; do
             echo "--- $f ---"
             cat "$f"
             echo ""
@@ -127,7 +127,7 @@ jobs:
         shell: bash
         run: |
           echo "=== stage 2 - streaming results ==="
-          for f in $(find /tmp -name "speed_results.json" -o -name "wer_results.json" 2>/dev/null); do
+          find stage-results/stream -name "speed_results.json" -o -name "wer_results.json" 2>/dev/null | sort | while read -r f; do
             echo "--- $f ---"
             cat "$f"
             echo ""
@@ -188,8 +188,8 @@ jobs:
         if: always()
         shell: bash
         run: |
-          echo "=== stage 3 - consistency results ==="
-          for f in $(find /tmp -name "speed_results.json" -o -name "wer_results.json" 2>/dev/null); do
+          echo "=== stage 3 - consistency inputs ==="
+          find stage-artifacts -name "speed_results.json" -o -name "wer_results.json" 2>/dev/null | sort | while read -r f; do
             echo "--- $f ---"
             cat "$f"
             echo ""
