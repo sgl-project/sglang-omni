@@ -1,6 +1,12 @@
 name: S2-Pro CI Setup
 description: Restore the prepared S2-Pro environment and run common pre-test setup.
 
+inputs:
+  install-deps:
+    description: Prepare the shared omni-s2pro virtualenv.
+    required: false
+    default: "false"
+
 runs:
   using: composite
   steps:
@@ -12,6 +18,7 @@ runs:
         fi
 
     - name: Install dependencies
+      if: ${{ inputs.install-deps == 'true' }}
       shell: bash
       run: |
         if [ -d omni-s2pro ] && ! omni-s2pro/bin/python -c "import torch" 2>/dev/null; then
@@ -23,6 +30,15 @@ runs:
         fi
         source omni-s2pro/bin/activate
         uv pip install -v -e ".[s2pro,dev]"
+
+    - name: Validate prepared environment
+      if: ${{ inputs.install-deps != 'true' }}
+      shell: bash
+      run: |
+        test -x omni-s2pro/bin/python || {
+          echo "Prepared omni-s2pro environment is missing. Run the docs stage first."
+          exit 1
+        }
 
     - name: Remove flashinfer
       shell: bash
