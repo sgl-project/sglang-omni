@@ -16,7 +16,7 @@ jobs:
   docs:
     name: docs
     runs-on: [self-hosted]
-    timeout-minutes: 30
+    timeout-minutes: 10
     container:
       image: frankleeeee/sglang-omni:dev
       options: --gpus all --rm -v /dev/shm:/dev/shm
@@ -53,7 +53,7 @@ jobs:
     name: stage 1 - non-streaming
     needs: docs
     runs-on: [self-hosted]
-    timeout-minutes: 60
+    timeout-minutes: 5
     container:
       image: frankleeeee/sglang-omni:dev
       options: --gpus all --rm -v /dev/shm:/dev/shm
@@ -102,7 +102,7 @@ jobs:
     name: stage 2 - streaming
     needs: stage-1-non-streaming
     runs-on: [self-hosted]
-    timeout-minutes: 60
+    timeout-minutes: 5
     container:
       image: frankleeeee/sglang-omni:dev
       options: --gpus all --rm -v /dev/shm:/dev/shm
@@ -151,7 +151,7 @@ jobs:
     name: stage 3 - consistency
     needs: stage-2-streaming
     runs-on: [self-hosted]
-    timeout-minutes: 15
+    timeout-minutes: 5
     container:
       image: frankleeeee/sglang-omni:dev
       options: --gpus all --rm -v /dev/shm:/dev/shm
