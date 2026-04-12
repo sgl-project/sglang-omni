@@ -13,9 +13,10 @@ permissions:
   contents: read
 
 jobs:
-  docs:
-    name: docs
+  prepare-env:
+    name: prepare env
     runs-on: [self-hosted]
+    timeout-minutes: 30
     container:
       image: frankleeeee/sglang-omni:dev
       options: --gpus all --rm -v /dev/shm:/dev/shm
@@ -45,223 +46,79 @@ jobs:
           fi
           source omni-s2pro/bin/activate
           uv pip install -v -e ".[s2pro,dev]"
-
-      - name: Kill GPU processes
-        shell: bash
-        run: |
-          bash .github/scripts/delete_gpu_process.sh
-
-      - name: Run docs tests
-        timeout-minutes: 30
-        shell: bash
-        run: |
-          source omni-s2pro/bin/activate
-          export PYTHONPATH=$PWD
-          pytest tests/docs/s2pro/test_docs_tts_s2pro.py -v -s -x
-        env:
-          HF_ENDPOINT: https://hf-mirror.com
-
-      - name: Kill GPU processes
-        if: always()
-        shell: bash
-        run: |
-          bash .github/scripts/delete_gpu_process.sh
-
-  stage-1-non-streaming:
-    name: stage 1 - non-streaming
-    runs-on: [self-hosted]
-    container:
-      image: frankleeeee/sglang-omni:dev
-      options: --gpus all --rm -v /dev/shm:/dev/shm
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Restore cache
-        run: |
-          if [ -d /github/home/omni-s2pro ] && [ ! -z "$(ls -A /github/home/omni-s2pro/)" ]; then
-            cp -p -r /github/home/omni-s2pro ./omni-s2pro
-          fi
-
-      - name: Remove flashinfer
-        run: |
-          rm -rf /github/home/.cache/flashinfer
-
-      - name: Install dependencies
-        shell: bash
-        run: |
-          if [ -d omni-s2pro ] && ! omni-s2pro/bin/python -c "import torch" 2>/dev/null; then
-            echo "Cached venv is corrupted, removing..."
-            rm -rf omni-s2pro
-          fi
-          if [ ! -d omni-s2pro ]; then
-            uv venv omni-s2pro -p 3.11
-          fi
-          source omni-s2pro/bin/activate
-          uv pip install -v -e ".[s2pro,dev]"
-
-      - name: Kill GPU processes
-        shell: bash
-        run: |
-          bash .github/scripts/delete_gpu_process.sh
-
-      - name: Run benchmark stage
-        timeout-minutes: 60
-        shell: bash
-        run: |
-          source omni-s2pro/bin/activate
-          export PYTHONPATH=$PWD
-          pytest tests/test_model/test_s2pro_tts_ci.py -v -s -x --concurrency 8 --s2pro-stage s2pro-stage-1-nonstream
-        env:
-          HF_ENDPOINT: https://hf-mirror.com
-
-      - name: Print benchmark artifacts
-        if: always()
-        shell: bash
-        run: |
-          echo "=== stage 1 - non-streaming results ==="
-          for f in $(find /tmp -name "speed_results.json" -o -name "wer_results.json" 2>/dev/null); do
-            echo "--- $f ---"
-            cat "$f"
-            echo ""
-          done
-
-      - name: Kill GPU processes
-        if: always()
-        shell: bash
-        run: |
-          bash .github/scripts/delete_gpu_process.sh
-
-  stage-2-streaming:
-    name: stage 2 - streaming
-    runs-on: [self-hosted]
-    container:
-      image: frankleeeee/sglang-omni:dev
-      options: --gpus all --rm -v /dev/shm:/dev/shm
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Restore cache
-        run: |
-          if [ -d /github/home/omni-s2pro ] && [ ! -z "$(ls -A /github/home/omni-s2pro/)" ]; then
-            cp -p -r /github/home/omni-s2pro ./omni-s2pro
-          fi
-
-      - name: Remove flashinfer
-        run: |
-          rm -rf /github/home/.cache/flashinfer
-
-      - name: Install dependencies
-        shell: bash
-        run: |
-          if [ -d omni-s2pro ] && ! omni-s2pro/bin/python -c "import torch" 2>/dev/null; then
-            echo "Cached venv is corrupted, removing..."
-            rm -rf omni-s2pro
-          fi
-          if [ ! -d omni-s2pro ]; then
-            uv venv omni-s2pro -p 3.11
-          fi
-          source omni-s2pro/bin/activate
-          uv pip install -v -e ".[s2pro,dev]"
-
-      - name: Kill GPU processes
-        shell: bash
-        run: |
-          bash .github/scripts/delete_gpu_process.sh
-
-      - name: Run benchmark stage
-        timeout-minutes: 60
-        shell: bash
-        run: |
-          source omni-s2pro/bin/activate
-          export PYTHONPATH=$PWD
-          pytest tests/test_model/test_s2pro_tts_ci.py -v -s -x --concurrency 8 --s2pro-stage s2pro-stage-2-stream
-        env:
-          HF_ENDPOINT: https://hf-mirror.com
-
-      - name: Print benchmark artifacts
-        if: always()
-        shell: bash
-        run: |
-          echo "=== stage 2 - streaming results ==="
-          for f in $(find /tmp -name "speed_results.json" -o -name "wer_results.json" 2>/dev/null); do
-            echo "--- $f ---"
-            cat "$f"
-            echo ""
-          done
-
-      - name: Kill GPU processes
-        if: always()
-        shell: bash
-        run: |
-          bash .github/scripts/delete_gpu_process.sh
-
-  stage-3-consistency:
-    name: stage 3 - consistency
-    runs-on: [self-hosted]
-    container:
-      image: frankleeeee/sglang-omni:dev
-      options: --gpus all --rm -v /dev/shm:/dev/shm
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Restore cache
-        run: |
-          if [ -d /github/home/omni-s2pro ] && [ ! -z "$(ls -A /github/home/omni-s2pro/)" ]; then
-            cp -p -r /github/home/omni-s2pro ./omni-s2pro
-          fi
-
-      - name: Remove flashinfer
-        run: |
-          rm -rf /github/home/.cache/flashinfer
-
-      - name: Install dependencies
-        shell: bash
-        run: |
-          if [ -d omni-s2pro ] && ! omni-s2pro/bin/python -c "import torch" 2>/dev/null; then
-            echo "Cached venv is corrupted, removing..."
-            rm -rf omni-s2pro
-          fi
-          if [ ! -d omni-s2pro ]; then
-            uv venv omni-s2pro -p 3.11
-          fi
-          source omni-s2pro/bin/activate
-          uv pip install -v -e ".[s2pro,dev]"
-
-      - name: Kill GPU processes
-        shell: bash
-        run: |
-          bash .github/scripts/delete_gpu_process.sh
-
-      - name: Run benchmark stage
-        timeout-minutes: 60
-        shell: bash
-        run: |
-          source omni-s2pro/bin/activate
-          export PYTHONPATH=$PWD
-          pytest tests/test_model/test_s2pro_tts_ci.py -v -s -x --concurrency 8 --s2pro-stage s2pro-stage-3-consistency
-        env:
-          HF_ENDPOINT: https://hf-mirror.com
-
-      - name: Print benchmark artifacts
-        if: always()
-        shell: bash
-        run: |
-          echo "=== stage 3 - consistency results ==="
-          for f in $(find /tmp -name "speed_results.json" -o -name "wer_results.json" 2>/dev/null); do
-            echo "--- $f ---"
-            cat "$f"
-            echo ""
-          done
-
-      - name: Kill GPU processes
-        if: always()
-        shell: bash
-        run: |
-          bash .github/scripts/delete_gpu_process.sh
 
       - name: Save cache
         run: |
+          rm -rf /github/home/omni-s2pro
           cp -p -r omni-s2pro /github/home/
+
+  docs:
+    name: docs
+    needs: prepare-env
+    runs-on: [self-hosted]
+    timeout-minutes: 30
+    container:
+      image: frankleeeee/sglang-omni:dev
+      options: --gpus all --rm -v /dev/shm:/dev/shm
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - uses: ./.github/actions/run-s2pro-job
+        with:
+          job-title: docs
+          pytest-command: pytest tests/docs/s2pro/test_docs_tts_s2pro.py -v -s -x
+
+  stage-1-non-streaming:
+    name: stage 1 - non-streaming
+    needs: docs
+    runs-on: [self-hosted]
+    timeout-minutes: 60
+    container:
+      image: frankleeeee/sglang-omni:dev
+      options: --gpus all --rm -v /dev/shm:/dev/shm
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - uses: ./.github/actions/run-s2pro-job
+        with:
+          job-title: stage 1 - non-streaming
+          pytest-command: pytest tests/test_model/test_s2pro_tts_ci.py -v -s -x --concurrency 8 --s2pro-stage s2pro-stage-1-nonstream
+          print-benchmark-artifacts: "true"
+
+  stage-2-streaming:
+    name: stage 2 - streaming
+    needs: stage-1-non-streaming
+    runs-on: [self-hosted]
+    timeout-minutes: 60
+    container:
+      image: frankleeeee/sglang-omni:dev
+      options: --gpus all --rm -v /dev/shm:/dev/shm
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - uses: ./.github/actions/run-s2pro-job
+        with:
+          job-title: stage 2 - streaming
+          pytest-command: pytest tests/test_model/test_s2pro_tts_ci.py -v -s -x --concurrency 8 --s2pro-stage s2pro-stage-2-stream
+          print-benchmark-artifacts: "true"
+
+  stage-3-consistency:
+    name: stage 3 - consistency
+    needs: stage-2-streaming
+    runs-on: [self-hosted]
+    timeout-minutes: 60
+    container:
+      image: frankleeeee/sglang-omni:dev
+      options: --gpus all --rm -v /dev/shm:/dev/shm
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - uses: ./.github/actions/run-s2pro-job
+        with:
+          job-title: stage 3 - consistency
+          pytest-command: pytest tests/test_model/test_s2pro_tts_ci.py -v -s -x --concurrency 8 --s2pro-stage s2pro-stage-3-consistency
+          print-benchmark-artifacts: "true"
