@@ -16,6 +16,7 @@ import torch
 
 from sglang_omni.realtime.backend import ResponseBackend, TurnContext
 from sglang_omni.realtime.media import mono_float32, resample_linear, resize_rgb_frame
+from sglang_omni.realtime.utils import throttle
 from sglang_omni.realtime.vad import EnergyVad, VadConfig
 
 
@@ -40,6 +41,7 @@ class VideoBufferState:
     config: VideoBufferConfig = field(default_factory=VideoBufferConfig)
     frames: deque[VideoFrameSample] = field(default_factory=deque)
     last_ingest_ts: float | None = None
+    total_frames_received: int = 0
 
 
 @dataclass
@@ -89,6 +91,7 @@ class RealtimeSession:
         self.current_user_text: str | None = None
         self.current_audio = AudioTurnState(sample_rate=config.input_audio_sample_rate)
         self.video = VideoBufferState(config=config.video)
+        self._audio_chunk_count = 0
 
         self.vad = EnergyVad(config.vad)
         self._preroll_chunks: deque[np.ndarray] = deque()
@@ -97,6 +100,7 @@ class RealtimeSession:
         self._event_backlog: list[dict[str, Any]] = []
         self._response_lock = asyncio.Lock()
         self._closed = False
+        self._throttle_state: dict[str, float] = {}
 
         self.active_response_id: str | None = None
         self.active_task: asyncio.Task[None] | None = None
@@ -198,11 +202,27 @@ class RealtimeSession:
         if chunk.size == 0:
             return
 
+        self._audio_chunk_count += 1
         was_speaking = self.vad.speaking
         if not was_speaking:
             self._append_preroll(chunk)
 
+        rms = self.vad.measure_level(chunk)
+        dc_offset = float(np.mean(chunk)) if chunk.size else 0.0
         event = self.vad.process(chunk)
+        await self._emit_audio_chunk_received(
+            timestamp=ts,
+            chunk_count=self._audio_chunk_count,
+            sample_count=int(chunk.size),
+            sample_rate=int(self.config.input_audio_sample_rate),
+            rms=rms,
+            dc_offset=dc_offset,
+            frame_count=int(getattr(self.vad, "last_frame_count", 0)),
+            voiced_frame_count=int(getattr(self.vad, "last_voiced_frame_count", 0)),
+            speech_ratio=float(getattr(self.vad, "last_speech_ratio", 0.0)),
+            speaking_before=bool(was_speaking),
+            speaking_after=bool(self.vad.speaking),
+        )
         if event.speech_started:
             self.current_audio = AudioTurnState(
                 sample_rate=self.config.input_audio_sample_rate,
@@ -223,7 +243,7 @@ class RealtimeSession:
                 self.assistant_playing = True
                 self.active_task = asyncio.create_task(self._run_response(pending))
 
-    def handle_video_frame(
+    async def handle_video_frame(
         self,
         frame_rgb: np.ndarray,
         *,
@@ -247,12 +267,21 @@ class RealtimeSession:
         )
         self.video.frames.append(VideoFrameSample(ts_monotonic=ts, frame_rgb=resized))
         self.video.last_ingest_ts = ts
+        self.video.total_frames_received += 1
 
         min_allowed_ts = ts - cfg.max_buffer_s
         while self.video.frames and self.video.frames[0].ts_monotonic < min_allowed_ts:
             self.video.frames.popleft()
         while len(self.video.frames) > cfg.max_frames:
             self.video.frames.popleft()
+
+        await self._emit_video_frame_received(
+            timestamp=ts,
+            frame_count=self.video.total_frames_received,
+            buffered_frames=len(self.video.frames),
+            width=int(resized.shape[1]),
+            height=int(resized.shape[0]),
+        )
 
     def _append_preroll(self, chunk: np.ndarray) -> None:
         max_samples = int(
@@ -279,6 +308,54 @@ class RealtimeSession:
         )
         self.current_user_text = None
         return pending
+
+    @throttle(1.0, timestamp_kw="timestamp")
+    async def _emit_audio_chunk_received(
+        self,
+        *,
+        timestamp: float,
+        chunk_count: int,
+        sample_count: int,
+        sample_rate: int,
+        rms: float,
+        dc_offset: float,
+        frame_count: int,
+        voiced_frame_count: int,
+        speech_ratio: float,
+        speaking_before: bool,
+        speaking_after: bool,
+    ) -> None:
+        await self.emit_event(
+            "input_audio_buffer.chunk_received",
+            chunk_count=chunk_count,
+            sample_count=sample_count,
+            sample_rate=sample_rate,
+            rms=rms,
+            dc_offset=dc_offset,
+            frame_count=frame_count,
+            voiced_frame_count=voiced_frame_count,
+            speech_ratio=speech_ratio,
+            speaking_before=speaking_before,
+            speaking_after=speaking_after,
+        )
+
+    @throttle(1.0, timestamp_kw="timestamp")
+    async def _emit_video_frame_received(
+        self,
+        *,
+        timestamp: float,
+        frame_count: int,
+        buffered_frames: int,
+        width: int,
+        height: int,
+    ) -> None:
+        await self.emit_event(
+            "input_video_buffer.frame_received",
+            frame_count=frame_count,
+            buffered_frames=buffered_frames,
+            width=width,
+            height=height,
+        )
 
     def sample_recent_video_clip(
         self,
@@ -315,6 +392,14 @@ class RealtimeSession:
 
             await self.output_track.clear()
             clip, fps = self.sample_recent_video_clip(anchor_ts=pending.speech_end_ts)
+            video_frame_count = int(clip.shape[0]) if clip is not None else 0
+            await self.emit_event(
+                "turn.prepared",
+                audio_sample_count=int(pending.audio.size),
+                audio_sample_rate=int(pending.sample_rate),
+                video_frame_count=video_frame_count,
+                video_fps=float(fps) if fps is not None else None,
+            )
             turn = TurnContext(
                 session_id=self.session_id,
                 history=list(self.history),

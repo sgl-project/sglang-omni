@@ -7,8 +7,10 @@ import asyncio
 import contextlib
 import json
 import logging
+import os
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -17,7 +19,12 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 try:
-    from aiortc import RTCPeerConnection, RTCSessionDescription
+    from aiortc import (
+        RTCConfiguration,
+        RTCIceServer,
+        RTCPeerConnection,
+        RTCSessionDescription,
+    )
     from aiortc.exceptions import InvalidStateError
     from aiortc.mediastreams import MediaStreamError
 
@@ -26,6 +33,8 @@ try:
     AIORTC_AVAILABLE = True
 except ImportError:  # pragma: no cover - handled at runtime
     BufferedAudioStreamTrack = None
+    RTCConfiguration = None
+    RTCIceServer = None
     RTCPeerConnection = None
     RTCSessionDescription = None
     InvalidStateError = RuntimeError
@@ -33,19 +42,46 @@ except ImportError:  # pragma: no cover - handled at runtime
     AIORTC_AVAILABLE = False
 
 from sglang_omni.client import Client
-from sglang_omni.realtime.backend import OmniResponseBackend
+from sglang_omni.realtime.backend import OmniResponseBackend, ResponseBackend
 from sglang_omni.realtime.session import RealtimeSession, RealtimeSessionConfig
 from sglang_omni.realtime.vad import VadConfig
 
 logger = logging.getLogger(__name__)
 
+BackendFactory = Callable[[str, int, bool], ResponseBackend]
+
+
+def _load_rtc_configuration_from_env() -> Any | None:
+    ice_urls = [
+        value.strip()
+        for value in os.environ.get("SGLANG_OMNI_ICE_URLS", "").split(",")
+        if value.strip()
+    ]
+    if not ice_urls or RTCConfiguration is None or RTCIceServer is None:
+        return None
+
+    username = os.environ.get("SGLANG_OMNI_ICE_USERNAME") or None
+    credential = os.environ.get("SGLANG_OMNI_ICE_CREDENTIAL") or None
+    return RTCConfiguration(
+        iceServers=[
+            RTCIceServer(
+                urls=ice_urls,
+                username=username,
+                credential=credential,
+            )
+        ]
+    )
+
 
 class RealtimeVadRequest(BaseModel):
-    start_threshold: float = 0.020
-    stop_threshold: float = 0.012
+    aggressiveness: int = 3
+    frame_duration_ms: int = 20
     min_speech_s: float = 0.25
     min_silence_s: float = 0.60
     preroll_s: float = 0.18
+    # Legacy energy-VAD fields retained for compatibility with older clients.
+    start_threshold: float = 0.020
+    stop_threshold: float = 0.012
 
 
 class RealtimeOfferRequest(BaseModel):
@@ -68,9 +104,16 @@ class SessionHandle:
 class RealtimeSessionManager:
     """Owns active peer connections and their session state."""
 
-    def __init__(self, client: Client, default_model: str) -> None:
-        self._client = client
+    def __init__(
+        self,
+        *,
+        backend_factory: BackendFactory,
+        default_model: str,
+        rtc_configuration: Any | None = None,
+    ) -> None:
+        self._backend_factory = backend_factory
         self._default_model = default_model
+        self._rtc_configuration = rtc_configuration
         self._sessions: dict[str, SessionHandle] = {}
         self._lock = asyncio.Lock()
 
@@ -94,22 +137,22 @@ class RealtimeSessionManager:
 
         session_id = uuid.uuid4().hex
         output_track = BufferedAudioStreamTrack()
-        output_modalities = ("text", "audio") if output_text else ("audio",)
-        backend = OmniResponseBackend(
-            client=self._client,
-            model=model or self._default_model,
-            max_new_tokens=max_new_tokens,
-            output_modalities=output_modalities,
+        backend = self._backend_factory(
+            model or self._default_model,
+            max_new_tokens,
+            output_text,
         )
         vad_config = VadConfig()
         if vad is not None:
             vad_config = VadConfig(
                 sample_rate=vad_config.sample_rate,
-                start_threshold=vad.start_threshold,
-                stop_threshold=vad.stop_threshold,
+                aggressiveness=vad.aggressiveness,
+                frame_duration_ms=vad.frame_duration_ms,
                 min_speech_s=vad.min_speech_s,
                 min_silence_s=vad.min_silence_s,
                 preroll_s=vad.preroll_s,
+                start_threshold=vad.start_threshold,
+                stop_threshold=vad.stop_threshold,
             )
 
         config = RealtimeSessionConfig(
@@ -125,7 +168,7 @@ class RealtimeSessionManager:
             output_track=output_track,
             config=config,
         )
-        pc = RTCPeerConnection()
+        pc = RTCPeerConnection(configuration=self._rtc_configuration)
         pc.addTrack(output_track)
         handle = SessionHandle(
             session=session,
@@ -142,24 +185,53 @@ class RealtimeSessionManager:
         if handle is None:
             return
 
+        with contextlib.suppress(Exception):
+            await handle.peer_connection.close()
+
         for task in handle.consumer_tasks:
             task.cancel()
         for task in handle.consumer_tasks:
-            with contextlib.suppress(asyncio.CancelledError):
+            with contextlib.suppress(asyncio.CancelledError, Exception):
                 await task
 
         await handle.session.close()
-        with contextlib.suppress(Exception):
-            await handle.peer_connection.close()
 
     async def get(self, session_id: str) -> SessionHandle | None:
         async with self._lock:
             return self._sessions.get(session_id)
 
 
-def create_realtime_router(client: Client, *, model_name: str) -> APIRouter:
+def create_realtime_router(
+    client: Client | None = None,
+    *,
+    model_name: str,
+    backend_factory: BackendFactory | None = None,
+) -> APIRouter:
+    if backend_factory is None:
+        if client is None:
+            raise ValueError(
+                "create_realtime_router requires either client or backend_factory"
+            )
+
+        def backend_factory(
+            resolved_model: str,
+            max_new_tokens: int,
+            output_text: bool,
+        ) -> ResponseBackend:
+            output_modalities = ("text", "audio") if output_text else ("audio",)
+            return OmniResponseBackend(
+                client=client,
+                model=resolved_model,
+                max_new_tokens=max_new_tokens,
+                output_modalities=output_modalities,
+            )
+
     router = APIRouter()
-    manager = RealtimeSessionManager(client, model_name)
+    manager = RealtimeSessionManager(
+        backend_factory=backend_factory,
+        default_model=model_name,
+        rtc_configuration=_load_rtc_configuration_from_env(),
+    )
 
     @router.post("/v1/realtime/webrtc/offer")
     async def realtime_offer(req: RealtimeOfferRequest) -> JSONResponse:
@@ -261,7 +333,7 @@ async def _consume_audio_track(track: Any, session: RealtimeSession) -> None:
             )
             return
 
-        audio = frame.to_ndarray(format="s16")
+        audio = frame.to_ndarray()
         sample_rate = frame.sample_rate or 48000
         await session.handle_audio_chunk(
             audio,
@@ -283,4 +355,4 @@ async def _consume_video_track(track: Any, session: RealtimeSession) -> None:
             return
 
         frame_rgb = frame.to_ndarray(format="rgb24")
-        session.handle_video_frame(frame_rgb, timestamp=time.monotonic())
+        await session.handle_video_frame(frame_rgb, timestamp=time.monotonic())

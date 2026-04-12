@@ -67,6 +67,34 @@
       .status {
         font-weight: 600;
       }
+      .meter {
+        margin-top: 12px;
+        padding: 12px;
+        border-radius: 12px;
+        border: 1px solid #222933;
+        background: #0b0f14;
+      }
+      .meter-label {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        font-size: 13px;
+        color: #9fb1c7;
+      }
+      .meter-track {
+        margin-top: 8px;
+        height: 10px;
+        border-radius: 999px;
+        overflow: hidden;
+        background: #1a2330;
+      }
+      .meter-fill {
+        height: 100%;
+        width: 0%;
+        border-radius: 999px;
+        background: linear-gradient(90deg, #238636 0%, #d29922 60%, #f85149 100%);
+        transition: width 80ms linear;
+      }
       .log {
         max-height: 360px;
         overflow: auto;
@@ -82,8 +110,20 @@
         width: 100%;
         margin-top: 12px;
       }
+      video {
+        width: 100%;
+        margin-top: 12px;
+        border-radius: 12px;
+        background: #0b0f14;
+        border: 1px solid #222933;
+        aspect-ratio: 16 / 9;
+        object-fit: cover;
+      }
       label {
         color: #c9d1d9;
+      }
+      .hidden {
+        display: none;
       }
     </style>
   </head>
@@ -107,7 +147,32 @@
           <button id="disconnect" class="secondary" disabled>Disconnect</button>
           <span class="status" id="status">Idle</span>
         </div>
-        <audio id="remote-audio" autoplay controls></audio>
+        <video
+          id="local-video"
+          class="hidden"
+          autoplay
+          muted
+          playsinline
+        ></video>
+        <div class="meter">
+          <div class="meter-label">
+            <span>Microphone level</span>
+            <span id="mic-level-text">0%</span>
+          </div>
+          <div class="meter-track" aria-hidden="true">
+            <div id="mic-level-fill" class="meter-fill"></div>
+          </div>
+        </div>
+        <div class="meter">
+          <div class="meter-label">
+            <span>Server audio level</span>
+            <span id="remote-level-text">0%</span>
+          </div>
+          <div class="meter-track" aria-hidden="true">
+            <div id="remote-level-fill" class="meter-fill"></div>
+          </div>
+        </div>
+        <audio id="remote-audio" controls autoplay playsinline></audio>
       </section>
 
       <section class="panel">
@@ -118,6 +183,6 @@
         <div id="log" class="log" style="margin-top: 12px"></div>
       </section>
     </main>
-    <script src="/v1/realtime/demo/app.js"></script>
+    <script src="/app.js"></script>
   </body>
 </html>

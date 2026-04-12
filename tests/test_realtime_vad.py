@@ -5,25 +5,64 @@ import numpy as np
 from sglang_omni.realtime.vad import EnergyVad, VadConfig
 
 
-def test_energy_vad_detects_start_and_stop():
+def _dummy_chunk(num_samples: int = 3200) -> np.ndarray:
+    return np.zeros(num_samples, dtype=np.float32)
+
+
+def test_webrtc_vad_detects_start_and_stop_with_scripted_votes(monkeypatch):
     vad = EnergyVad(
         VadConfig(
-            start_threshold=0.02,
-            stop_threshold=0.01,
-            min_speech_s=0.2,
-            min_silence_s=0.4,
+            min_speech_s=0.06,
+            min_silence_s=0.08,
+            frame_duration_ms=20,
         )
     )
+    votes = iter(
+        [
+            True,
+            True,
+            True,
+            False,
+            False,
+            False,
+            False,
+        ]
+    )
+    monkeypatch.setattr(vad, "_detect_frame", lambda _frame: next(votes))
 
-    chunk_silence = np.zeros(1600, dtype=np.float32)  # 100 ms @ 16 kHz
-    chunk_speech = np.full(1600, 0.2, dtype=np.float32)
+    start_event = vad.process(_dummy_chunk(960))
+    assert start_event.speech_started is True
+    assert vad.speaking is True
 
-    events = [vad.process(chunk_silence) for _ in range(4)]
-    assert not any(event.speech_started or event.speech_stopped for event in events)
+    stop_event = vad.process(_dummy_chunk(1280))
+    assert stop_event.speech_stopped is True
+    assert vad.speaking is False
 
-    events = [vad.process(chunk_speech) for _ in range(3)]
-    assert any(event.speech_started for event in events)
-    assert not any(event.speech_stopped for event in events)
 
-    events = [vad.process(chunk_silence) for _ in range(5)]
-    assert any(event.speech_stopped for event in events)
+def test_webrtc_vad_ignores_short_spike(monkeypatch):
+    vad = EnergyVad(
+        VadConfig(
+            min_speech_s=0.10,
+            min_silence_s=0.10,
+            frame_duration_ms=20,
+        )
+    )
+    votes = iter([True, False, False, False, False])
+    monkeypatch.setattr(vad, "_detect_frame", lambda _frame: next(votes))
+
+    event = vad.process(_dummy_chunk(1600))
+
+    assert event.speech_started is False
+    assert vad.speaking is False
+
+
+def test_webrtc_vad_tracks_frame_statistics(monkeypatch):
+    vad = EnergyVad(VadConfig(frame_duration_ms=20))
+    votes = iter([True, False, True, True])
+    monkeypatch.setattr(vad, "_detect_frame", lambda _frame: next(votes))
+
+    vad.process(_dummy_chunk(1280))
+
+    assert vad.last_frame_count == 4
+    assert vad.last_voiced_frame_count == 3
+    assert vad.last_speech_ratio == 0.75

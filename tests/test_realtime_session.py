@@ -110,6 +110,47 @@ class _BlockingBackend:
         self.released.set()
 
 
+class _FakeVadEvent:
+    def __init__(
+        self, *, speech_started: bool = False, speech_stopped: bool = False
+    ) -> None:
+        self.speech_started = speech_started
+        self.speech_stopped = speech_stopped
+
+
+class _FakeVad:
+    def __init__(self) -> None:
+        self.speaking = False
+        self.last_frame_count = 2
+        self.last_voiced_frame_count = 0
+        self.last_speech_ratio = 0.0
+        self._call_count = 0
+
+    def measure_level(self, audio: np.ndarray) -> float:
+        audio = np.asarray(audio, dtype=np.float32).reshape(-1)
+        if audio.size == 0:
+            return 0.0
+        return float(np.sqrt(np.mean(np.square(audio))))
+
+    def process(self, _audio: np.ndarray) -> _FakeVadEvent:
+        self._call_count += 1
+        phase = ((self._call_count - 1) % 3) + 1
+        if phase == 1:
+            self.last_voiced_frame_count = 2
+            self.last_speech_ratio = 1.0
+            return _FakeVadEvent()
+        if phase == 2:
+            self.speaking = True
+            self.last_voiced_frame_count = 2
+            self.last_speech_ratio = 1.0
+            return _FakeVadEvent(speech_started=True)
+
+        self.speaking = False
+        self.last_voiced_frame_count = 0
+        self.last_speech_ratio = 0.0
+        return _FakeVadEvent(speech_stopped=True)
+
+
 def _make_session(backend) -> tuple[RealtimeSession, _FakeOutputTrack, _FakeChannel]:
     output_track = _FakeOutputTrack()
     channel = _FakeChannel()
@@ -127,6 +168,7 @@ def _make_session(backend) -> tuple[RealtimeSession, _FakeOutputTrack, _FakeChan
             )
         ),
     )
+    session.vad = _FakeVad()
     session.attach_event_channel(channel)
     return session, output_track, channel
 
@@ -162,7 +204,8 @@ async def test_realtime_session_runs_turns_with_fake_backend_and_history():
     session, output_track, channel = _make_session(backend)
 
     frame = np.zeros((8, 8, 3), dtype=np.uint8)
-    session.handle_video_frame(frame, timestamp=1.0)
+    await session.handle_video_frame(frame, timestamp=1.0)
+    await session.handle_video_frame(frame, timestamp=1.6)
 
     await _drive_turn(session, user_text="describe this", start_ts=2.0)
     await _drive_turn(session, user_text="follow up", start_ts=4.0)
@@ -170,6 +213,7 @@ async def test_realtime_session_runs_turns_with_fake_backend_and_history():
     assert len(backend.turns) == 2
     assert backend.turns[0].user_text == "describe this"
     assert backend.turns[0].recent_video is not None
+    assert backend.turns[0].recent_video.shape[0] == 2
     assert backend.turns[1].history == [
         {"role": "user", "content": "describe this"},
         {"role": "assistant", "content": "answer-1"},
@@ -188,12 +232,46 @@ async def test_realtime_session_runs_turns_with_fake_backend_and_history():
 
     event_types = [event["type"] for event in channel.messages]
     assert event_types.count("conversation.item.created") == 2
+    assert event_types.count("input_audio_buffer.chunk_received") == 2
     assert event_types.count("input_audio_buffer.speech_started") == 2
     assert event_types.count("input_audio_buffer.speech_stopped") == 2
+    assert event_types.count("input_video_buffer.frame_received") == 1
+    assert event_types.count("turn.prepared") == 2
     assert event_types.count("response.created") == 2
     assert event_types.count("response.output_text.delta") == 2
     assert event_types.count("response.output_audio.delta") == 2
     assert event_types.count("response.done") == 2
+
+    frame_event = next(
+        event
+        for event in channel.messages
+        if event["type"] == "input_video_buffer.frame_received"
+    )
+    assert frame_event["frame_count"] == 1
+    assert frame_event["buffered_frames"] == 1
+
+    audio_chunk_events = [
+        event
+        for event in channel.messages
+        if event["type"] == "input_audio_buffer.chunk_received"
+    ]
+    assert all(event["sample_count"] > 0 for event in audio_chunk_events)
+    assert all(event["sample_rate"] == 16000 for event in audio_chunk_events)
+    assert all(event["rms"] >= 0.0 for event in audio_chunk_events)
+    assert all("dc_offset" in event for event in audio_chunk_events)
+    assert all("frame_count" in event for event in audio_chunk_events)
+    assert all("voiced_frame_count" in event for event in audio_chunk_events)
+    assert all("speech_ratio" in event for event in audio_chunk_events)
+    assert all("speaking_before" in event for event in audio_chunk_events)
+    assert all("speaking_after" in event for event in audio_chunk_events)
+    assert [event["chunk_count"] for event in audio_chunk_events] == [1, 4]
+
+    turn_events = [
+        event for event in channel.messages if event["type"] == "turn.prepared"
+    ]
+    assert all(event["audio_sample_count"] > 0 for event in turn_events)
+    assert turn_events[0]["video_frame_count"] == 2
+    assert turn_events[0]["video_fps"] is not None
 
 
 @pytest.mark.asyncio
