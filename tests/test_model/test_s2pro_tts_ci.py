@@ -313,6 +313,81 @@ def _find_downloaded_speed_results(
     return str(results_path.parent), _load_speed_results(results_path)
 
 
+def _load_consistency_artifact_inputs(
+    selected_s2pro_tts_concurrencies: tuple[int, ...],
+) -> bool:
+    non_stream_results_root = os.environ.get(S2PRO_STAGE1_SPEED_RESULTS_DIR_ENV)
+    stream_results_root = os.environ.get(S2PRO_STAGE2_SPEED_RESULTS_DIR_ENV)
+    if not (non_stream_results_root and stream_results_root):
+        return False
+
+    for concurrency in selected_s2pro_tts_concurrencies:
+        non_stream_output_dir, non_stream_results = _find_downloaded_speed_results(
+            non_stream_results_root, f"vc_nonstream_c{concurrency}"
+        )
+        stream_output_dir, stream_results = _find_downloaded_speed_results(
+            stream_results_root, f"vc_stream_c{concurrency}"
+        )
+        _store_consistency_inputs(
+            mode="non_stream",
+            concurrency=concurrency,
+            output_dir=non_stream_output_dir,
+            results=non_stream_results,
+        )
+        _store_consistency_inputs(
+            mode="stream",
+            concurrency=concurrency,
+            output_dir=stream_output_dir,
+            results=stream_results,
+        )
+    return True
+
+
+def _generate_consistency_inputs(
+    request: pytest.FixtureRequest,
+    tmp_path_factory: pytest.TempPathFactory,
+    selected_s2pro_tts_concurrencies: tuple[int, ...],
+) -> None:
+    server_process = request.getfixturevalue("server_process")
+    dataset_dir = request.getfixturevalue("dataset_dir")
+    output_root = tmp_path_factory.mktemp("s2pro_consistency")
+    for concurrency in selected_s2pro_tts_concurrencies:
+        non_stream_key = f"vc_nonstream_c{concurrency}"
+        stream_key = f"vc_stream_c{concurrency}"
+
+        if non_stream_key not in PER_REQUEST_STORE:
+            output_dir = str(output_root / f"vc_nonstream_c{concurrency}")
+            results = _run_benchmark(
+                server_process.port,
+                str(dataset_dir / "en" / "meta.lst"),
+                output_dir,
+                concurrency=concurrency,
+            )
+            _store_consistency_inputs(
+                mode="non_stream",
+                concurrency=concurrency,
+                output_dir=output_dir,
+                results=results,
+            )
+
+        if stream_key not in PER_REQUEST_STORE:
+            output_dir = str(output_root / f"vc_stream_c{concurrency}")
+            results = _run_benchmark(
+                server_process.port,
+                str(dataset_dir / "en" / "meta.lst"),
+                output_dir,
+                concurrency=concurrency,
+                max_samples=STREAMING_BENCHMARK_MAX_SAMPLES,
+                stream=True,
+            )
+            _store_consistency_inputs(
+                mode="stream",
+                concurrency=concurrency,
+                output_dir=output_dir,
+                results=results,
+            )
+
+
 def _resolve_stage_output_dir(tmp_path: Path, output_dir_name: str) -> str:
     output_root = os.environ.get(S2PRO_STAGE_OUTPUT_ROOT_ENV)
     if output_root:
@@ -383,68 +458,14 @@ def consistency_stage_inputs(
     if selected_s2pro_ci_stage != S2PRO_STAGE_CONSISTENCY:
         return
 
-    non_stream_results_root = os.environ.get(S2PRO_STAGE1_SPEED_RESULTS_DIR_ENV)
-    stream_results_root = os.environ.get(S2PRO_STAGE2_SPEED_RESULTS_DIR_ENV)
-    if non_stream_results_root and stream_results_root:
-        for concurrency in selected_s2pro_tts_concurrencies:
-            non_stream_output_dir, non_stream_results = _find_downloaded_speed_results(
-                non_stream_results_root, f"vc_nonstream_c{concurrency}"
-            )
-            stream_output_dir, stream_results = _find_downloaded_speed_results(
-                stream_results_root, f"vc_stream_c{concurrency}"
-            )
-            _store_consistency_inputs(
-                mode="non_stream",
-                concurrency=concurrency,
-                output_dir=non_stream_output_dir,
-                results=non_stream_results,
-            )
-            _store_consistency_inputs(
-                mode="stream",
-                concurrency=concurrency,
-                output_dir=stream_output_dir,
-                results=stream_results,
-            )
+    if _load_consistency_artifact_inputs(selected_s2pro_tts_concurrencies):
         return
 
-    server_process = request.getfixturevalue("server_process")
-    dataset_dir = request.getfixturevalue("dataset_dir")
-    output_root = tmp_path_factory.mktemp("s2pro_consistency")
-    for concurrency in selected_s2pro_tts_concurrencies:
-        non_stream_key = f"vc_nonstream_c{concurrency}"
-        stream_key = f"vc_stream_c{concurrency}"
-
-        if non_stream_key not in PER_REQUEST_STORE:
-            output_dir = str(output_root / f"vc_nonstream_c{concurrency}")
-            results = _run_benchmark(
-                server_process.port,
-                str(dataset_dir / "en" / "meta.lst"),
-                output_dir,
-                concurrency=concurrency,
-            )
-            _store_consistency_inputs(
-                mode="non_stream",
-                concurrency=concurrency,
-                output_dir=output_dir,
-                results=results,
-            )
-
-        if stream_key not in PER_REQUEST_STORE:
-            output_dir = str(output_root / f"vc_stream_c{concurrency}")
-            results = _run_benchmark(
-                server_process.port,
-                str(dataset_dir / "en" / "meta.lst"),
-                output_dir,
-                concurrency=concurrency,
-                max_samples=STREAMING_BENCHMARK_MAX_SAMPLES,
-                stream=True,
-            )
-            _store_consistency_inputs(
-                mode="stream",
-                concurrency=concurrency,
-                output_dir=output_dir,
-                results=results,
-            )
+    _generate_consistency_inputs(
+        request,
+        tmp_path_factory,
+        selected_s2pro_tts_concurrencies,
+    )
 
 
 @pytest.fixture(scope="module")
