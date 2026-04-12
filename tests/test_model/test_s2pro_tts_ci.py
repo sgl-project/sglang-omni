@@ -38,6 +38,11 @@ from benchmarks.eval.benchmark_tts_speed import (
     TtsSpeedBenchmarkConfig,
     run_tts_speed_benchmark,
 )
+from tests.test_model.conftest import (
+    S2PRO_STAGE_CONSISTENCY,
+    S2PRO_STAGE_NONSTREAM,
+    S2PRO_STAGE_STREAM,
+)
 from tests.utils import (
     apply_slack,
     assert_per_request_fields,
@@ -53,10 +58,6 @@ from tests.utils import (
 
 PER_REQUEST_STORE: dict[str, list[dict]] = {}
 SPEED_OUTPUT_DIRS: dict[str, dict[int, str]] = {"non_stream": {}, "stream": {}}
-
-S2PRO_STAGE_NONSTREAM = "s2pro-stage-1-nonstream"
-S2PRO_STAGE_STREAM = "s2pro-stage-2-stream"
-S2PRO_STAGE_CONSISTENCY = "s2pro-stage-3-consistency"
 
 S2PRO_MODEL_PATH = "fishaudio/s2-pro"
 S2PRO_CONFIG_PATH = "examples/configs/s2pro_tts.yaml"
@@ -363,22 +364,13 @@ def consistency_stage_inputs(
 
 @pytest.fixture(scope="module")
 def wer_input_dirs(
-    selected_s2pro_ci_stage: str,
     server_process: subprocess.Popen,
 ) -> dict[str, dict[int, str]]:
     """Reuse saved benchmark audio for WER after freeing the TTS server GPU."""
     stop_server(server_process)
 
-    required_modes: tuple[str, ...]
-    if selected_s2pro_ci_stage == S2PRO_STAGE_NONSTREAM:
-        required_modes = ("non_stream",)
-    elif selected_s2pro_ci_stage == S2PRO_STAGE_STREAM:
-        required_modes = ("stream",)
-    else:
-        required_modes = ("non_stream", "stream")
-
-    for mode in required_modes:
-        for concurrency, output_dir in SPEED_OUTPUT_DIRS[mode].items():
+    for output_dirs in SPEED_OUTPUT_DIRS.values():
+        for output_dir in output_dirs.values():
             generated_path = Path(output_dir) / "generated.json"
             assert generated_path.exists(), f"WER metadata missing: {generated_path}"
     return SPEED_OUTPUT_DIRS

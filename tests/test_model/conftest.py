@@ -6,11 +6,15 @@ from __future__ import annotations
 import pytest
 
 S2PRO_TTS_ALLOWED_CONCURRENCIES = (1, 2, 4, 8, 16)
+S2PRO_STAGE_NONSTREAM = "s2pro-stage-1-nonstream"
+S2PRO_STAGE_STREAM = "s2pro-stage-2-stream"
+S2PRO_STAGE_CONSISTENCY = "s2pro-stage-3-consistency"
 S2PRO_CI_STAGES = (
-    "s2pro-stage-1-nonstream",
-    "s2pro-stage-2-stream",
-    "s2pro-stage-3-consistency",
+    S2PRO_STAGE_NONSTREAM,
+    S2PRO_STAGE_STREAM,
+    S2PRO_STAGE_CONSISTENCY,
 )
+S2PRO_TTS_FULL_SWEEP_VALUE = "all"
 S2PRO_STAGE_ALL = "all"
 S2PRO_TTS_CONCURRENCY_OPTION = "--concurrency"
 SELECTED_S2PRO_TTS_CONCURRENCIES = pytest.StashKey[tuple[int, ...]]()
@@ -62,7 +66,7 @@ def selected_s2pro_ci_stage(pytestconfig: pytest.Config) -> str:
 
 def _parse_s2pro_tts_concurrency(option_value: str) -> tuple[int, ...]:
     normalized_value = option_value.strip().lower()
-    if normalized_value == S2PRO_STAGE_ALL:
+    if normalized_value == S2PRO_TTS_FULL_SWEEP_VALUE:
         return S2PRO_TTS_ALLOWED_CONCURRENCIES
 
     try:
