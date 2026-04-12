@@ -461,6 +461,11 @@ def consistency_stage_inputs(
     if _load_consistency_artifact_inputs(selected_s2pro_tts_concurrencies):
         return
 
+    if os.environ.get("GITHUB_ACTIONS") == "true":
+        raise AssertionError(
+            "Stage 3 requires downloaded stage 1/2 speed artifacts when running in CI."
+        )
+
     _generate_consistency_inputs(
         request,
         tmp_path_factory,
@@ -502,12 +507,12 @@ def test_voice_cloning_non_streaming(
             output_dir,
             concurrency=concurrency,
         )
-        summary, per_request = results["summary"], results["per_request"]
-        assert_summary_metrics(summary)
-        assert_per_request_fields(per_request)
-        PER_REQUEST_STORE[f"vc_nonstream_c{concurrency}"] = per_request
-        SPEED_OUTPUT_DIRS["non_stream"][concurrency] = output_dir
-        assert_speed_thresholds(summary, VC_NON_STREAM_THRESHOLDS, concurrency)
+        _store_consistency_inputs(
+            mode="non_stream",
+            concurrency=concurrency,
+            output_dir=output_dir,
+            results=results,
+        )
 
 
 @pytest.mark.s2pro_stage(S2PRO_STAGE_STREAM)
@@ -534,12 +539,12 @@ def test_voice_cloning_streaming(
             max_samples=STREAMING_BENCHMARK_MAX_SAMPLES,
             stream=True,
         )
-        summary, per_request = results["summary"], results["per_request"]
-        assert_summary_metrics(summary)
-        assert_per_request_fields(per_request)
-        PER_REQUEST_STORE[f"vc_stream_c{concurrency}"] = per_request
-        SPEED_OUTPUT_DIRS["stream"][concurrency] = output_dir
-        assert_speed_thresholds(summary, VC_STREAM_THRESHOLDS, concurrency)
+        _store_consistency_inputs(
+            mode="stream",
+            concurrency=concurrency,
+            output_dir=output_dir,
+            results=results,
+        )
 
 
 @pytest.mark.s2pro_stage(S2PRO_STAGE_CONSISTENCY)

@@ -87,7 +87,7 @@ jobs:
       - name: Upload stage artifact
         uses: actions/upload-artifact@v4
         with:
-          name: s2pro-stage-1-speed-results
+          name: s2pro-stage-1-results
           path: stage-results/nonstream
           if-no-files-found: error
 
@@ -136,7 +136,7 @@ jobs:
       - name: Upload stage artifact
         uses: actions/upload-artifact@v4
         with:
-          name: s2pro-stage-2-speed-results
+          name: s2pro-stage-2-results
           path: stage-results/stream
           if-no-files-found: error
 
@@ -163,13 +163,13 @@ jobs:
       - name: Download stage 1 artifact
         uses: actions/download-artifact@v4
         with:
-          name: s2pro-stage-1-speed-results
+          name: s2pro-stage-1-results
           path: stage-artifacts/nonstream
 
       - name: Download stage 2 artifact
         uses: actions/download-artifact@v4
         with:
-          name: s2pro-stage-2-speed-results
+          name: s2pro-stage-2-results
           path: stage-artifacts/stream
 
       - name: Run benchmark stage
