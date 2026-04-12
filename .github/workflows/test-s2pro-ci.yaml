@@ -13,8 +13,8 @@ permissions:
   contents: read
 
 jobs:
-  prepare-env:
-    name: prepare env
+  docs:
+    name: docs
     runs-on: [self-hosted]
     timeout-minutes: 30
     container:
@@ -52,19 +52,10 @@ jobs:
           rm -rf /github/home/omni-s2pro
           cp -p -r omni-s2pro /github/home/
 
-  docs:
-    name: docs
-    needs: prepare-env
-    runs-on: [self-hosted]
-    timeout-minutes: 30
-    container:
-      image: frankleeeee/sglang-omni:dev
-      options: --gpus all --rm -v /dev/shm:/dev/shm
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - uses: ./.github/actions/s2pro-setup
+      - name: Kill GPU processes
+        shell: bash
+        run: |
+          bash .github/scripts/delete_gpu_process.sh
 
       - name: Run docs tests
         shell: bash
