@@ -30,6 +30,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from typing import Literal
 
 import pytest
 
@@ -66,6 +67,7 @@ STARTUP_TIMEOUT = 600
 BENCHMARK_TIMEOUT = 600
 WER_TIMEOUT = 600
 DATASET_CACHE_ENV = "SGLANG_SEEDTTS50_DIR"
+# Also used in .github/workflows/test-s2pro-ci.yaml — keep in sync.
 S2PRO_STAGE_OUTPUT_ROOT_ENV = "S2PRO_STAGE_OUTPUT_ROOT"
 S2PRO_STAGE1_SPEED_RESULTS_DIR_ENV = "S2PRO_STAGE1_SPEED_RESULTS_DIR"
 S2PRO_STAGE2_SPEED_RESULTS_DIR_ENV = "S2PRO_STAGE2_SPEED_RESULTS_DIR"
@@ -178,6 +180,15 @@ WER_SCRIPT = str(
 )
 
 
+def _validate_speed_results_keys(speed_results: dict) -> None:
+    assert (
+        "summary" in speed_results
+    ), f"Missing 'summary' key in results. Keys: {list(speed_results.keys())}"
+    assert (
+        "per_request" in speed_results
+    ), f"Missing 'per_request' key in results. Keys: {list(speed_results.keys())}"
+
+
 def _run_benchmark(
     port: int,
     testset: str,
@@ -198,12 +209,7 @@ def _run_benchmark(
         stream=stream,
     )
     speed_results = asyncio.run(run_tts_speed_benchmark(benchmark_config))
-    assert (
-        "summary" in speed_results
-    ), f"Missing 'summary' key in results. Keys: {list(speed_results.keys())}"
-    assert (
-        "per_request" in speed_results
-    ), f"Missing 'per_request' key in results. Keys: {list(speed_results.keys())}"
+    _validate_speed_results_keys(speed_results)
     return speed_results
 
 
@@ -271,18 +277,13 @@ def _load_speed_results(results_path: Path) -> dict:
     assert results_path.exists(), f"Speed results file not found: {results_path}"
     with open(results_path) as f:
         speed_results = json.load(f)
-    assert (
-        "summary" in speed_results
-    ), f"Missing 'summary' key in speed results. Keys: {list(speed_results.keys())}"
-    assert (
-        "per_request" in speed_results
-    ), f"Missing 'per_request' key in speed results. Keys: {list(speed_results.keys())}"
+    _validate_speed_results_keys(speed_results)
     return speed_results
 
 
 def _store_consistency_inputs(
     *,
-    mode: str,
+    mode: Literal["non_stream", "stream"],
     concurrency: int,
     output_dir: str,
     results: dict,
@@ -348,6 +349,9 @@ def _generate_consistency_inputs(
     tmp_path_factory: pytest.TempPathFactory,
     selected_s2pro_tts_concurrencies: tuple[int, ...],
 ) -> None:
+    # Lazily resolve fixtures via getfixturevalue so that the server is only
+    # started when stage 3 actually needs to generate its own inputs (local
+    # dev path).  In CI the artifact path returns early above.
     server_process = request.getfixturevalue("server_process")
     dataset_dir = request.getfixturevalue("dataset_dir")
     output_root = tmp_path_factory.mktemp("s2pro_consistency")

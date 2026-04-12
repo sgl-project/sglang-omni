@@ -44,6 +44,7 @@ jobs:
           bash .github/scripts/delete_gpu_process.sh
 
       - name: Save cache
+        if: always()
         run: |
           rm -rf /github/home/omni-s2pro
           cp -p -r omni-s2pro /github/home/
@@ -150,7 +151,7 @@ jobs:
     name: stage 3 - consistency
     needs: stage-2-streaming
     runs-on: [self-hosted]
-    timeout-minutes: 60
+    timeout-minutes: 15
     container:
       image: frankleeeee/sglang-omni:dev
       options: --gpus all --rm -v /dev/shm:/dev/shm
