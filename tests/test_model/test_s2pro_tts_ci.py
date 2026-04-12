@@ -66,6 +66,7 @@ STARTUP_TIMEOUT = 600
 BENCHMARK_TIMEOUT = 600
 WER_TIMEOUT = 600
 DATASET_CACHE_ENV = "SGLANG_SEEDTTS50_DIR"
+S2PRO_STAGE_OUTPUT_ROOT_ENV = "S2PRO_STAGE_OUTPUT_ROOT"
 S2PRO_STAGE1_SPEED_RESULTS_DIR_ENV = "S2PRO_STAGE1_SPEED_RESULTS_DIR"
 S2PRO_STAGE2_SPEED_RESULTS_DIR_ENV = "S2PRO_STAGE2_SPEED_RESULTS_DIR"
 
@@ -312,6 +313,15 @@ def _find_downloaded_speed_results(
     return str(results_path.parent), _load_speed_results(results_path)
 
 
+def _resolve_stage_output_dir(tmp_path: Path, output_dir_name: str) -> str:
+    output_root = os.environ.get(S2PRO_STAGE_OUTPUT_ROOT_ENV)
+    if output_root:
+        output_dir = Path(output_root) / output_dir_name
+        output_dir.mkdir(parents=True, exist_ok=True)
+        return str(output_dir)
+    return str(tmp_path / output_dir_name)
+
+
 def _print_stage(stage: str, mode: str, concurrency: int, details: str = "") -> None:
     message = f"\n[Stage] {stage} benchmark | mode={mode} | concurrency={concurrency}"
     if details:
@@ -366,10 +376,9 @@ def server_process(tmp_path_factory: pytest.TempPathFactory):
 @pytest.fixture(scope="module")
 def consistency_stage_inputs(
     selected_s2pro_ci_stage: str,
-    server_process: subprocess.Popen,
-    dataset_dir: Path,
     tmp_path_factory: pytest.TempPathFactory,
     selected_s2pro_tts_concurrencies: tuple[int, ...],
+    request: pytest.FixtureRequest,
 ) -> None:
     if selected_s2pro_ci_stage != S2PRO_STAGE_CONSISTENCY:
         return
@@ -398,6 +407,8 @@ def consistency_stage_inputs(
             )
         return
 
+    server_process = request.getfixturevalue("server_process")
+    dataset_dir = request.getfixturevalue("dataset_dir")
     output_root = tmp_path_factory.mktemp("s2pro_consistency")
     for concurrency in selected_s2pro_tts_concurrencies:
         non_stream_key = f"vc_nonstream_c{concurrency}"
@@ -463,7 +474,7 @@ def test_voice_cloning_non_streaming(
     )
     for concurrency in selected_s2pro_tts_concurrencies:
         _print_stage("TTS speed", "non-streaming", concurrency, "generate WAVs for WER")
-        output_dir = str(tmp_path / f"vc_nonstream_c{concurrency}")
+        output_dir = _resolve_stage_output_dir(tmp_path, f"vc_nonstream_c{concurrency}")
         results = _run_benchmark(
             server_process.port,
             str(dataset_dir / "en" / "meta.lst"),
@@ -493,7 +504,7 @@ def test_voice_cloning_streaming(
             concurrency,
             f"max_samples={STREAMING_BENCHMARK_MAX_SAMPLES} | generate WAVs for WER",
         )
-        output_dir = str(tmp_path / f"vc_stream_c{concurrency}")
+        output_dir = _resolve_stage_output_dir(tmp_path, f"vc_stream_c{concurrency}")
         results = _run_benchmark(
             server_process.port,
             str(dataset_dir / "en" / "meta.lst"),

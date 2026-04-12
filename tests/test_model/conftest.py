@@ -99,6 +99,24 @@ def _parse_s2pro_ci_stage(option_value: str) -> str:
 def pytest_collection_modifyitems(
     config: pytest.Config, items: list[pytest.Item]
 ) -> None:
+    for item in items:
+        if item.path.name != "test_s2pro_tts_ci.py":
+            continue
+
+        stage_markers = tuple(item.iter_markers(name="s2pro_stage"))
+        if len(stage_markers) != 1:
+            raise pytest.UsageError(
+                "Each test in tests/test_model/test_s2pro_tts_ci.py must have "
+                "exactly one s2pro_stage marker."
+            )
+
+        stage_ids = tuple(str(arg) for arg in stage_markers[0].args)
+        if len(stage_ids) != 1 or stage_ids[0] not in S2PRO_CI_STAGES:
+            raise pytest.UsageError(
+                "Each s2pro_stage marker in tests/test_model/test_s2pro_tts_ci.py "
+                f"must provide exactly one valid stage ID from {S2PRO_CI_STAGES}."
+            )
+
     selected_stage = config.stash.get(SELECTED_S2PRO_CI_STAGE, S2PRO_STAGE_ALL)
     if selected_stage == S2PRO_STAGE_ALL:
         return
@@ -111,10 +129,7 @@ def pytest_collection_modifyitems(
             continue
 
         stage_marker = item.get_closest_marker("s2pro_stage")
-        if stage_marker is None:
-            deselected_items.append(item)
-            continue
-
+        assert stage_marker is not None
         stage_ids = tuple(str(arg) for arg in stage_marker.args)
         if selected_stage in stage_ids:
             selected_items.append(item)

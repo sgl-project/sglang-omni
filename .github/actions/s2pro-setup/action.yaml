@@ -1,16 +1,9 @@
 name: S2-Pro CI Setup
-description: Restore the prepared S2-Pro environment and run common pre-test setup.
+description: Verify the prepared S2-Pro environment and run common pre-test setup.
 
 runs:
   using: composite
   steps:
-    - name: Restore cache
-      shell: bash
-      run: |
-        if [ -d /github/home/omni-s2pro ] && [ ! -z "$(ls -A /github/home/omni-s2pro/)" ]; then
-          cp -p -r /github/home/omni-s2pro ./omni-s2pro
-        fi
-
     - name: Verify prepared environment
       shell: bash
       run: |
