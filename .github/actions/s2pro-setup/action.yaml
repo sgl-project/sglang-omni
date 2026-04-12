@@ -1,15 +1,28 @@
 name: S2-Pro CI Setup
-description: Verify the prepared S2-Pro environment and run common pre-test setup.
+description: Restore the prepared S2-Pro environment and run common pre-test setup.
 
 runs:
   using: composite
   steps:
-    - name: Verify prepared environment
+    - name: Restore cache
       shell: bash
       run: |
-        test -x omni-s2pro/bin/python
+        if [ -d /github/home/omni-s2pro ] && [ ! -z "$(ls -A /github/home/omni-s2pro/)" ]; then
+          cp -p -r /github/home/omni-s2pro ./omni-s2pro
+        fi
+
+    - name: Install dependencies
+      shell: bash
+      run: |
+        if [ -d omni-s2pro ] && ! omni-s2pro/bin/python -c "import torch" 2>/dev/null; then
+          echo "Cached venv is corrupted, removing..."
+          rm -rf omni-s2pro
+        fi
+        if [ ! -d omni-s2pro ]; then
+          uv venv omni-s2pro -p 3.11
+        fi
         source omni-s2pro/bin/activate
-        python -c "import torch"
+        uv pip install -v -e ".[s2pro,dev]"
 
     - name: Remove flashinfer
       shell: bash

@@ -24,46 +24,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Restore cache
-        run: |
-          if [ -d /github/home/omni-s2pro ] && [ ! -z "$(ls -A /github/home/omni-s2pro/)" ]; then
-            cp -p -r /github/home/omni-s2pro ./omni-s2pro
-          fi
-
-      - name: Remove flashinfer
-        run: |
-          rm -rf /github/home/.cache/flashinfer
-
-      - name: Install dependencies
-        shell: bash
-        run: |
-          if [ -d omni-s2pro ] && ! omni-s2pro/bin/python -c "import torch" 2>/dev/null; then
-            echo "Cached venv is corrupted, removing..."
-            rm -rf omni-s2pro
-          fi
-          if [ ! -d omni-s2pro ]; then
-            uv venv omni-s2pro -p 3.11
-          fi
-          source omni-s2pro/bin/activate
-          uv pip install -v -e ".[s2pro,dev]"
-
-      - name: Save cache
-        run: |
-          rm -rf /github/home/omni-s2pro
-          cp -p -r omni-s2pro /github/home/
-
-      - name: Upload prepared environment
-        uses: actions/upload-artifact@v4
-        with:
-          name: s2pro-env
-          path: omni-s2pro
-          if-no-files-found: error
-          compression-level: 0
-
-      - name: Kill GPU processes
-        shell: bash
-        run: |
-          bash .github/scripts/delete_gpu_process.sh
+      - uses: ./.github/actions/s2pro-setup
 
       - name: Run docs tests
         shell: bash
@@ -80,6 +41,11 @@ jobs:
         run: |
           bash .github/scripts/delete_gpu_process.sh
 
+      - name: Save cache
+        run: |
+          rm -rf /github/home/omni-s2pro
+          cp -p -r omni-s2pro /github/home/
+
   stage-1-non-streaming:
     name: stage 1 - non-streaming
     needs: docs
@@ -92,12 +58,6 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Download prepared environment
-        uses: actions/download-artifact@v4
-        with:
-          name: s2pro-env
-          path: .
-
       - uses: ./.github/actions/s2pro-setup
 
       - name: Run benchmark stage
@@ -108,6 +68,7 @@ jobs:
           pytest tests/test_model/test_s2pro_tts_ci.py -v -s -x --concurrency 8 --s2pro-stage s2pro-stage-1-nonstream
         env:
           HF_ENDPOINT: https://hf-mirror.com
+          SGLANG_SEEDTTS50_DIR: /github/home/seedtts-50
           S2PRO_STAGE_OUTPUT_ROOT: ${{ github.workspace }}/stage-results/nonstream
 
       - name: Print benchmark artifacts
@@ -146,12 +107,6 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Download prepared environment
-        uses: actions/download-artifact@v4
-        with:
-          name: s2pro-env
-          path: .
-
       - uses: ./.github/actions/s2pro-setup
 
       - name: Run benchmark stage
@@ -162,6 +117,7 @@ jobs:
           pytest tests/test_model/test_s2pro_tts_ci.py -v -s -x --concurrency 8 --s2pro-stage s2pro-stage-2-stream
         env:
           HF_ENDPOINT: https://hf-mirror.com
+          SGLANG_SEEDTTS50_DIR: /github/home/seedtts-50
           S2PRO_STAGE_OUTPUT_ROOT: ${{ github.workspace }}/stage-results/stream
 
       - name: Print benchmark artifacts
@@ -200,12 +156,6 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Download prepared environment
-        uses: actions/download-artifact@v4
-        with:
-          name: s2pro-env
-          path: .
-
       - uses: ./.github/actions/s2pro-setup
 
       - name: Download stage 1 artifact
@@ -228,6 +178,7 @@ jobs:
           pytest tests/test_model/test_s2pro_tts_ci.py -v -s -x --concurrency 8 --s2pro-stage s2pro-stage-3-consistency
         env:
           HF_ENDPOINT: https://hf-mirror.com
+          SGLANG_SEEDTTS50_DIR: /github/home/seedtts-50
           S2PRO_STAGE1_SPEED_RESULTS_DIR: ${{ github.workspace }}/stage-artifacts/nonstream
           S2PRO_STAGE2_SPEED_RESULTS_DIR: ${{ github.workspace }}/stage-artifacts/stream
 
