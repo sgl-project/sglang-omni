@@ -305,7 +305,9 @@ def _find_downloaded_speed_results(
 ) -> tuple[str, dict]:
     root = Path(artifact_root)
     matches = sorted(root.rglob(f"{output_dir_name}/speed_results.json"))
-    assert matches, f"Downloaded speed results not found under {artifact_root}: {output_dir_name}"
+    assert (
+        matches
+    ), f"Downloaded speed results not found under {artifact_root}: {output_dir_name}"
     results_path = matches[0]
     return str(results_path.parent), _load_speed_results(results_path)
 
