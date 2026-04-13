@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""WebRTC VAD wrapper for the realtime prototype."""
+"""webrtcvad-based voice activity detection for realtime sessions."""
 
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ class VadConfig:
     min_speech_s: float = 0.25
     min_silence_s: float = 0.60
     preroll_s: float = 0.18
-    # Legacy fields kept for request compatibility; WebRTC VAD does not use them.
+    # Legacy fields kept for request compatibility; the VAD backend does not use them.
     start_threshold: float = 0.020
     stop_threshold: float = 0.012
     start_margin: float = 0.020
@@ -39,7 +39,7 @@ class VadEvent:
 
 
 class EnergyVad:
-    """Stateful wrapper around WebRTC VAD with start/stop hysteresis."""
+    """Stateful wrapper around webrtcvad with start/stop hysteresis."""
 
     def __init__(self, config: VadConfig | None = None) -> None:
         self.config = config or VadConfig()

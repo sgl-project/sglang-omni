@@ -1,12 +1,12 @@
 # Playground
 
-This directory contains two playground interfaces for SGLang-Omni.
+This directory contains several playground interfaces for SGLang-Omni.
 
 | Subdirectory | Description |
 |---|---|
 | `web/` | Full-featured HTML/CSS/JS UI served directly by the sglang-omni server. Supports text, audio, image, video inputs and a built-in file browser. |
 | `gradio/` | Lightweight Gradio app that connects to a running server via HTTP. Text chat with streaming, model selector, and generation parameter controls. |
-| `realtime/` | Standalone WebRTC prototype app with server-side VAD, automatic turn triggering, and streamed assistant audio playback. |
+| `realtime-ws/` | Standalone websocket realtime app with server-side VAD, text input, microphone streaming, and streamed assistant audio playback. |
 
 ## Web Playground
 
@@ -20,7 +20,7 @@ uv pip install -v -e ".[dev]"
 
 Then open `http://localhost:8000` in your browser.
 
-## Realtime Prototype
+## Realtime WebSocket Playground
 
 Install the realtime extra before launching:
 
@@ -31,107 +31,74 @@ uv pip install -v -e ".[realtime]"
 Launch the backend plus standalone frontend app with one command:
 
 ```bash
-./playground/realtime/start.sh [--mock] [realtime-options] [serve-options...]
+./playground/realtime-ws/start.sh [--mock] [realtime-options] [backend-options...]
 ```
 
 Minimal usable commands:
 
 ```bash
 # local smoke test
-./playground/realtime/start.sh --mock
-
-# remote smoke test with TURN
-./playground/realtime/start.sh --mock --with-turn
+./playground/realtime-ws/start.sh --mock
 
 # real model
-./playground/realtime/start.sh --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct
+./playground/realtime-ws/start.sh --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct
 ```
 
-In normal backend mode, pass the usual serve flags such as `--model-path`:
+In normal backend mode, pass the usual speech server flags such as `--model-path`:
 
 ```bash
-./playground/realtime/start.sh \
+./playground/realtime-ws/start.sh \
   --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct
 ```
 
-Then open `http://localhost:7861`.
+Then open `http://localhost:7862`.
 
 For a browser smoke test without loading any model, launch the mock realtime API:
 
 ```bash
-./playground/realtime/start.sh --mock
+./playground/realtime-ws/start.sh --mock
 ```
 
-That path still exercises:
+That path exercises:
 
-- browser microphone capture over WebRTC
+- browser microphone capture over websocket PCM streaming
 - server-side VAD turn detection
 - automatic response start after speech stop
 - streamed assistant audio playback in the browser
+- text prompts over the same websocket session
 
 The mock backend returns canned text plus a synthetic tone sequence instead of
 calling the inference pipeline.
 
 ### Remote browser over SSH port forwarding
 
-SSH port forwarding only tunnels the HTTP signaling path. It does not carry the
-actual WebRTC media transport, so remote browser testing usually needs a TURN
-server.
+Because the transport is plain HTTP + WebSocket, standard SSH forwarding is
+enough for remote browser testing.
 
 Example:
 
 ```bash
-./playground/realtime/start.sh --mock \
-  --with-turn
+./playground/realtime-ws/start.sh --mock
 ```
 
-You can also add a STUN URL with another `--ice-server`, but for tunneled or
-firewalled environments TURN is the important part.
-
-`start.sh --with-turn` now assumes `coturn` is already installed on the host
-and launches the local `turnserver` binary directly. If Tailscale is installed,
-it auto-detects the first Tailscale IPv4 and uses that as `--turn-host`.
-
-If you do not want auto-detection, override it explicitly:
+Forward the backend port and the frontend port from the remote machine:
 
 ```bash
-./playground/realtime/start.sh --mock \
-  --with-turn \
-  --turn-host turn.example.com \
-  --turn-user demo-user \
-  --turn-password demo-pass
+ssh -L 8000:localhost:8000 -L 7862:localhost:7862 user@host
 ```
 
 For the full launcher help, run:
 
 ```bash
-./playground/realtime/start.sh --help
+./playground/realtime-ws/start.sh --help
 ```
 
-If the server is behind NAT and `turn.example.com` resolves to a public IP that
-is different from the machine's local interface address, also pass:
+The websocket playground:
 
-```bash
---turn-public-ip PUBLIC_IP
-```
-
-For TURN to work, the TURN host must be reachable by the browser on the TURN
-listener port and on the configured relay port range.
-
-If you are running inside WSL and exposing the demo through the Windows host,
-you need to forward both:
-
-- the TURN listener port, by default `3479`
-- the relay allocation range, for example `49160-49200`
-
-Forwarding only the TURN listener port is not enough for a normal coturn relay.
-
-The prototype:
-
-- uses WebRTC for microphone uplink and assistant audio playback
+- streams microphone PCM to the backend over `/v1/realtime/ws`
 - runs server-side VAD to auto-trigger one inference turn per utterance
-- optionally buffers a webcam track and injects recent sampled frames into the turn request
-- reuses the existing request-oriented pipeline rather than modifying the coordinator
+- supports manual push-to-talk and text prompts in the same session
+- streams assistant audio back over the websocket and auto-plays it in the browser
 - keeps the frontend separate from the inference API server
 
 ### Custom port
@@ -185,6 +152,7 @@ ssh -L 8000:localhost:8000 -L 7860:localhost:7860 user@host
 | `/` | Web playground UI (index.html, app.js, styles.css) |
 | `/v1/chat/completions` | Chat completions (text + audio, streaming) |
 | `/v1/audio/speech` | Text-to-speech |
+| `/v1/realtime/ws` | Realtime websocket session transport |
 | `/v1/models` | List available models |
 | `/v1/fs/list` | Browse server filesystem |
 | `/v1/fs/file` | Download a server file |

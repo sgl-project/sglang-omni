@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Realtime session orchestration for the WebRTC prototype."""
+"""Realtime session orchestration shared across interactive transports."""
 
 from __future__ import annotations
 

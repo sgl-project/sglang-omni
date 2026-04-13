@@ -64,7 +64,6 @@ s2pro = [
 ]
 gradio = ["gradio>=4.0.0"]
 realtime = [
-    "aiortc>=1.10.1",
     "webrtcvad-wheels>=2.0.14",
     "websockets>=12.0",
 ]

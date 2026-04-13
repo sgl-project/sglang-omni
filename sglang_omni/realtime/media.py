@@ -1,40 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Realtime media helpers shared by the WebRTC prototype."""
+"""Realtime media helpers shared across realtime transports."""
 
 from __future__ import annotations
 
-from typing import Any
-
 import numpy as np
 from PIL import Image
-
-
-def audio_frame_to_ndarray(frame: Any) -> np.ndarray:
-    """Decode a PyAV audio frame into a canonical mono/stereo ndarray."""
-    arr = np.asarray(frame.to_ndarray())
-
-    layout = getattr(frame, "layout", None)
-    channels = max(len(getattr(layout, "channels", ()) or ()), 1)
-    format_obj = getattr(frame, "format", None)
-    is_planar = bool(getattr(format_obj, "is_planar", False))
-
-    if channels <= 1:
-        return arr.reshape(-1)
-
-    if is_planar:
-        if arr.ndim == 1:
-            return arr.reshape(channels, -1)
-        if arr.shape[0] == channels:
-            return arr
-        if arr.shape[-1] == channels:
-            return arr.T
-        return arr.reshape(channels, -1)
-
-    flat = arr.reshape(-1)
-    usable = (flat.size // channels) * channels
-    if usable <= 0:
-        return np.zeros(0, dtype=arr.dtype)
-    return flat[:usable].reshape(-1, channels).T
 
 
 def mono_float32(audio: Any) -> np.ndarray:

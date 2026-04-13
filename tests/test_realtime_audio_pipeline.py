@@ -5,16 +5,13 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-import av
 import numpy as np
 import pytest
 import soundfile as sf
-from aiortc.mediastreams import MediaStreamError
 
 from sglang_omni.realtime.backend import MockResponseBackend
 from sglang_omni.realtime.media import mono_float32, resample_linear
 from sglang_omni.realtime.session import RealtimeSession, RealtimeSessionConfig
-from sglang_omni.serve.webrtc_api import _consume_audio_track
 
 TEST_AUDIO_PATH = Path(__file__).resolve().parent / "data" / "query_to_cars.wav"
 
@@ -34,36 +31,20 @@ class _CollectingOutputTrack:
         self.pending_samples = 0
 
 
-class _FakeAudioTrack:
-    def __init__(self, frames: list[av.AudioFrame]) -> None:
-        self._frames = list(frames)
-
-    async def recv(self) -> av.AudioFrame:
-        if self._frames:
-            return self._frames.pop(0)
-        raise MediaStreamError
-
-
 def _load_test_audio() -> tuple[np.ndarray, int]:
     audio, sample_rate = sf.read(TEST_AUDIO_PATH, dtype="int16")
     return np.asarray(audio), int(sample_rate)
 
 
-def _build_audio_frames(audio_i16: np.ndarray, sample_rate: int) -> list[av.AudioFrame]:
-    frame_samples = sample_rate // 50  # 20 ms @ 48 kHz -> 960 samples
-    frames: list[av.AudioFrame] = []
+def _iter_audio_chunks(audio_i16: np.ndarray, sample_rate: int) -> list[np.ndarray]:
+    frame_samples = sample_rate // 50
+    chunks: list[np.ndarray] = []
     for start in range(0, audio_i16.shape[0], frame_samples):
         chunk = audio_i16[start : start + frame_samples]
         if chunk.size == 0:
             continue
-        frame = av.AudioFrame.from_ndarray(
-            chunk.reshape(1, -1),
-            format="s16",
-            layout="mono",
-        )
-        frame.sample_rate = sample_rate
-        frames.append(frame)
-    return frames
+        chunks.append(chunk)
+    return chunks
 
 
 def _expected_session_audio(audio_i16: np.ndarray, sample_rate: int) -> np.ndarray:
@@ -96,9 +77,8 @@ async def test_real_wav_audio_pipeline_round_trips_through_manual_mock_echo():
     )
 
     await session.handle_client_event({"type": "input_audio_buffer.start"})
-    await _consume_audio_track(
-        _FakeAudioTrack(_build_audio_frames(audio_i16, sample_rate)), session
-    )
+    for chunk in _iter_audio_chunks(audio_i16, sample_rate):
+        await session.handle_audio_chunk(chunk, sample_rate)
     await session.handle_client_event({"type": "input_audio_buffer.commit"})
 
     assert session.active_task is not None

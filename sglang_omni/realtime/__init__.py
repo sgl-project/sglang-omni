@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Realtime helpers for the WebRTC prototype."""
+"""Realtime helpers shared by the interactive transports."""
 
 from sglang_omni.realtime.backend import (
     BackendCapabilities,

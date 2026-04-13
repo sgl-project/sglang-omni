@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""WebSocket transport for the realtime prototype."""
+"""WebSocket transport for realtime sessions."""
 
 from __future__ import annotations
 
@@ -13,15 +13,28 @@ from dataclasses import dataclass
 
 import numpy as np
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from pydantic import BaseModel
 
 from sglang_omni.client import Client
 from sglang_omni.realtime.backend import OmniResponseBackend, ResponseBackend
 from sglang_omni.realtime.media import mono_float32, resample_linear
 from sglang_omni.realtime.session import RealtimeSession, RealtimeSessionConfig
 from sglang_omni.realtime.vad import VadConfig
-from sglang_omni.serve.webrtc_api import BackendFactory, RealtimeVadRequest
 
 logger = logging.getLogger(__name__)
+
+BackendFactory = Callable[[str, int], ResponseBackend]
+
+
+class RealtimeVadRequest(BaseModel):
+    aggressiveness: int = 3
+    frame_duration_ms: int = 20
+    min_speech_s: float = 0.25
+    min_silence_s: float = 0.60
+    preroll_s: float = 0.18
+    # Legacy energy-VAD fields retained for compatibility with older clients.
+    start_threshold: float = 0.020
+    stop_threshold: float = 0.012
 
 
 class WebSocketEventChannel:
