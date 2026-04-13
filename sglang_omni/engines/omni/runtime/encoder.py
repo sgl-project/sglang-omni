@@ -12,17 +12,16 @@ import torch.nn.functional as F
 from ..types import RequestOutput, SchedulerOutput, SchedulerRequest
 from .interfaces import ResourceManager
 
+QWEN3_AUDIO_TIME_PAD_KEYS = {"input_features", "feature_attention_mask"}
+QWEN3_AUDIO_FEATURES_RANK = 3
+QWEN3_AUDIO_MASK_RANK = 2
+
 
 def _right_pad_last_dim(tensor: torch.Tensor, target_len: int) -> torch.Tensor:
     current_len = int(tensor.shape[-1])
     if current_len >= target_len:
         return tensor
     return F.pad(tensor, (0, target_len - current_len))
-
-
-QWEN3_AUDIO_TIME_PAD_KEYS = {"input_features", "feature_attention_mask"}
-QWEN3_AUDIO_FEATURES_RANK = 3
-QWEN3_AUDIO_MASK_RANK = 2
 
 
 # -----------------------------------------------------------------------------
