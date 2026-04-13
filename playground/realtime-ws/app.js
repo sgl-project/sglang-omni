@@ -132,7 +132,9 @@
     const entry = {
       container: message.container,
       contentEl: message.contentEl,
-      hasText: false,
+      rawText: "",
+      hasVisibleText: false,
+      hasAudio: false,
     };
     assistantMessages.set(responseId, entry);
     return entry;
@@ -146,11 +148,25 @@
     if (!entry) {
       return;
     }
-    if (!entry.hasText) {
-      entry.contentEl.textContent = delta;
-      entry.hasText = true;
-    } else {
-      entry.contentEl.textContent += delta;
+    entry.rawText += delta;
+    entry.contentEl.textContent = entry.rawText;
+    if (entry.rawText.trim().length > 0) {
+      entry.hasVisibleText = true;
+    }
+    scrollConversationToBottom();
+  }
+
+  function noteAssistantAudio(responseId) {
+    if (!responseId) {
+      return;
+    }
+    const entry = ensureAssistantMessage(responseId);
+    if (!entry) {
+      return;
+    }
+    entry.hasAudio = true;
+    if (!entry.hasVisibleText) {
+      entry.contentEl.textContent = "(streaming audio)";
     }
     scrollConversationToBottom();
   }
@@ -163,12 +179,15 @@
     if (!entry) {
       return;
     }
-    if (!entry.hasText && typeof text === "string" && text.length > 0) {
+    if (typeof text === "string" && text.length > 0) {
+      entry.rawText = text;
       entry.contentEl.textContent = text;
-      entry.hasText = true;
+      entry.hasVisibleText = text.trim().length > 0;
     }
-    if (!entry.hasText) {
-      entry.contentEl.textContent = "(no text output)";
+    if (!entry.hasVisibleText) {
+      entry.contentEl.textContent = entry.hasAudio
+        ? "(audio response)"
+        : "(no text output)";
     }
     entry.container.classList.remove("pending");
     scrollConversationToBottom();
@@ -482,6 +501,11 @@
 
     if (event.type === "response.done") {
       finalizeAssistantMessage(event.response_id, event.text);
+      return;
+    }
+
+    if (event.type === "response.output_audio.delta") {
+      noteAssistantAudio(event.response_id);
       return;
     }
 

@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
+import msgpack
 import numpy as np
 import pytest
 
@@ -63,6 +64,12 @@ async def test_omni_response_backend_normalizes_turn_output():
     assert request is not None
     assert request.model == "qwen3-omni"
     assert request.metadata["audio_target_sr"] == 16000
+    assert len(request.metadata["audios"]) == 1
+    audio_payload = request.metadata["audios"][0]
+    assert isinstance(audio_payload["audio_waveform"], bytes)
+    assert audio_payload["audio_waveform_dtype"] == "float32"
+    assert audio_payload["audio_waveform_shape"] == [32]
+    msgpack.packb(request.metadata, use_bin_type=True)
     assert len(request.messages) == 3
     assert request.messages[-1].content == "hi there"
 

@@ -96,6 +96,15 @@ class OmniResponseBackend(ResponseBackend):
     async def cancel(self, response_id: str) -> None:
         await self._client.abort(response_id)
 
+    @staticmethod
+    def _serialize_audio_input(audio: Any) -> dict[str, Any]:
+        audio_np = np.asarray(audio, dtype=np.float32)
+        return {
+            "audio_waveform": audio_np.tobytes(),
+            "audio_waveform_shape": list(audio_np.shape),
+            "audio_waveform_dtype": "float32",
+        }
+
     def _build_request(self, turn: TurnContext) -> GenerateRequest:
         messages: list[Message] = []
         if turn.instructions:
@@ -107,8 +116,9 @@ class OmniResponseBackend(ResponseBackend):
 
         metadata: dict[str, Any] = {}
         if turn.user_audio is not None:
-            metadata["audios"] = [turn.user_audio]
-            metadata["audio_target_sr"] = turn.user_audio_sample_rate
+            metadata["audios"] = [self._serialize_audio_input(turn.user_audio)]
+            if turn.user_audio_sample_rate is not None:
+                metadata["audio_target_sr"] = int(turn.user_audio_sample_rate)
         if turn.recent_video is not None:
             metadata["videos"] = [turn.recent_video]
             metadata["video_fps"] = turn.recent_video_fps
