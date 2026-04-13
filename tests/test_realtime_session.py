@@ -302,6 +302,53 @@ async def test_realtime_session_cancel_delegates_to_backend():
 
 
 @pytest.mark.asyncio
+async def test_realtime_session_auto_vad_barge_in_cancels_and_queues_next_turn():
+    backend = _BlockingBackend()
+    session, output_track, channel = _make_session(backend)
+
+    speech = np.full(1600, 0.2, dtype=np.float32)
+    silence = np.zeros(1600, dtype=np.float32)
+
+    await session.handle_client_event(
+        {
+            "type": "conversation.item.create",
+            "item": {"role": "user", "content": "first request"},
+        }
+    )
+    await session.handle_audio_chunk(speech, 16000, timestamp=1.0)
+    await session.handle_audio_chunk(speech, 16000, timestamp=1.1)
+    await session.handle_audio_chunk(silence, 16000, timestamp=1.2)
+
+    await asyncio.wait_for(backend.started.wait(), timeout=1.0)
+    assert len(backend.turns) == 1
+
+    await session.handle_client_event(
+        {
+            "type": "conversation.item.create",
+            "item": {"role": "user", "content": "second request"},
+        }
+    )
+    await session.handle_audio_chunk(speech, 16000, timestamp=2.0)
+    await session.handle_audio_chunk(speech, 16000, timestamp=2.1)
+    await session.handle_audio_chunk(silence, 16000, timestamp=2.2)
+
+    deadline = asyncio.get_running_loop().time() + 1.0
+    while (
+        session.active_task is not None and asyncio.get_running_loop().time() < deadline
+    ):
+        await asyncio.sleep(0.01)
+
+    assert backend.cancelled == ["resp-cancel"]
+    assert len(backend.turns) == 2
+    assert backend.turns[1].user_text == "second request"
+    assert output_track.clear_calls >= 2
+    assert any(
+        event["type"] == "response.cancelled" and event["reason"] == "barge_in"
+        for event in channel.messages
+    )
+
+
+@pytest.mark.asyncio
 async def test_realtime_session_supports_manual_push_to_talk_commit():
     backend = _ScriptedBackend()
     session, output_track, channel = _make_session(backend)

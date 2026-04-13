@@ -106,6 +106,7 @@ class RealtimeSession:
         self._closed = False
         self._throttle_state: dict[str, float] = {}
         self._turn_index = 0
+        self._queued_pending_turn: PendingTurn | None = None
 
         self.active_response_id: str | None = None
         self.active_task: asyncio.Task[None] | None = None
@@ -162,12 +163,10 @@ class RealtimeSession:
             return
 
         if event_type == "input_audio_buffer.start":
-            if (
-                self._closed
-                or self.active_response_id is not None
-                or self.assistant_playing
-            ):
+            if self._closed:
                 return
+            if self.active_task is not None or self.assistant_playing:
+                await self._interrupt_active_response(reason="barge_in")
             self.turn_mode = "manual"
             self.manual_recording = True
             self.current_audio = AudioTurnState(
@@ -199,9 +198,8 @@ class RealtimeSession:
                 ),
             )
             pending = self._consume_pending_turn()
-            if pending is not None and self.active_task is None:
-                self.assistant_playing = True
-                self.active_task = asyncio.create_task(self._run_response(pending))
+            if pending is not None:
+                await self._start_or_queue_response(pending)
             return
 
         if event_type == "conversation.item.create":
@@ -211,18 +209,14 @@ class RealtimeSession:
                 await self.emit_event("conversation.item.created", item=item)
             return
 
-        if event_type == "response.cancel" and self.active_response_id is not None:
-            if self.backend.capabilities.supports_cancel:
-                await self.backend.cancel(self.active_response_id)
-            await self.output_track.clear()
-            self.assistant_playing = False
-            await self.emit_event(
-                "response.cancelled",
-                response_id=self.active_response_id,
-            )
+        if event_type == "response.cancel" and (
+            self.active_response_id is not None or self.active_task is not None
+        ):
+            await self._interrupt_active_response(reason="client")
 
     async def close(self) -> None:
         self._closed = True
+        self._queued_pending_turn = None
         if (
             self.active_response_id is not None
             and self.backend.capabilities.supports_cancel
@@ -241,11 +235,7 @@ class RealtimeSession:
         *,
         timestamp: float | None = None,
     ) -> None:
-        if (
-            self._closed
-            or self.active_response_id is not None
-            or self.assistant_playing
-        ):
+        if self._closed:
             return
 
         ts = timestamp if timestamp is not None else time.monotonic()
@@ -302,6 +292,8 @@ class RealtimeSession:
             speaking_after=bool(self.vad.speaking),
         )
         if event.speech_started:
+            if self.active_task is not None or self.assistant_playing:
+                await self._interrupt_active_response(reason="barge_in")
             self.current_audio = AudioTurnState(
                 sample_rate=self.config.input_audio_sample_rate,
                 chunks=list(self._preroll_chunks),
@@ -317,9 +309,8 @@ class RealtimeSession:
             self.current_audio.speech_end_ts = ts
             await self.emit_event("input_audio_buffer.speech_stopped")
             pending = self._consume_pending_turn()
-            if pending is not None and self.active_task is None:
-                self.assistant_playing = True
-                self.active_task = asyncio.create_task(self._run_response(pending))
+            if pending is not None:
+                await self._start_or_queue_response(pending)
 
     async def handle_video_frame(
         self,
@@ -406,6 +397,37 @@ class RealtimeSession:
         else:
             self.vad.speaking = False
         return True
+
+    async def _start_or_queue_response(self, pending: PendingTurn) -> None:
+        if self.active_task is None:
+            self.assistant_playing = True
+            self.active_task = asyncio.create_task(self._run_response(pending))
+            return
+        self._queued_pending_turn = pending
+
+    async def _interrupt_active_response(self, *, reason: str) -> None:
+        had_active_response = (
+            self.active_task is not None
+            or self.active_response_id is not None
+            or self.assistant_playing
+        )
+        if not had_active_response:
+            return
+
+        response_id = self.active_response_id
+        task = self.active_task
+        if response_id is not None and self.backend.capabilities.supports_cancel:
+            await self.backend.cancel(response_id)
+        elif task is not None:
+            task.cancel()
+
+        await self.output_track.clear()
+        self.assistant_playing = False
+        await self.emit_event(
+            "response.cancelled",
+            response_id=response_id,
+            reason=reason,
+        )
 
     @throttle(1.0, timestamp_kw="timestamp")
     async def _emit_audio_chunk_received(
@@ -593,3 +615,10 @@ class RealtimeSession:
                 self.assistant_playing = False
                 self.active_response_id = None
                 self.active_task = None
+                queued_pending = self._queued_pending_turn
+                self._queued_pending_turn = None
+                if queued_pending is not None and not self._closed:
+                    self.assistant_playing = True
+                    self.active_task = asyncio.create_task(
+                        self._run_response(queued_pending)
+                    )
