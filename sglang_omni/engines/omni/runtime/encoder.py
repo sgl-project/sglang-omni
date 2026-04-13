@@ -31,6 +31,7 @@ def _right_pad_last_dim(
         return tensor
     return F.pad(tensor, (0, target_len - current_len), value=pad_value)
 
+
 @dataclass
 class EncoderRequestData:
     """Encoder-specific request data (stored in SchedulerRequest.data)."""
@@ -364,7 +365,6 @@ class EncoderOutputProcessor:
             return self._process_multimodal(model_output, scheduler_output)
         else:
             return self._process_text_embedding(model_output, scheduler_output)
-
 
     def _process_multimodal(
         self,
