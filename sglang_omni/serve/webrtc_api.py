@@ -53,16 +53,23 @@ BackendFactory = Callable[[str, int], ResponseBackend]
 
 
 def _load_rtc_configuration_from_env() -> Any | None:
-    ice_urls = [
-        value.strip()
-        for value in os.environ.get("SGLANG_OMNI_ICE_URLS", "").split(",")
-        if value.strip()
-    ]
+    ice_urls_raw = os.environ.get("SGLANG_OMNI_BACKEND_ICE_URLS")
+    if not ice_urls_raw:
+        ice_urls_raw = os.environ.get("SGLANG_OMNI_ICE_URLS", "")
+    ice_urls = [value.strip() for value in ice_urls_raw.split(",") if value.strip()]
     if not ice_urls or RTCConfiguration is None or RTCIceServer is None:
         return None
 
-    username = os.environ.get("SGLANG_OMNI_ICE_USERNAME") or None
-    credential = os.environ.get("SGLANG_OMNI_ICE_CREDENTIAL") or None
+    username = (
+        os.environ.get("SGLANG_OMNI_BACKEND_ICE_USERNAME")
+        or os.environ.get("SGLANG_OMNI_ICE_USERNAME")
+        or None
+    )
+    credential = (
+        os.environ.get("SGLANG_OMNI_BACKEND_ICE_CREDENTIAL")
+        or os.environ.get("SGLANG_OMNI_ICE_CREDENTIAL")
+        or None
+    )
     return RTCConfiguration(
         iceServers=[
             RTCIceServer(

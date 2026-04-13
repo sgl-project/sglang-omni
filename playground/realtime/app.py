@@ -15,15 +15,22 @@ assert FRONTEND_DIR.is_dir(), "Frontend directory does not exist"
 
 
 def _load_ice_config() -> dict[str, object]:
-    ice_urls = [
-        value.strip()
-        for value in os.environ.get("SGLANG_OMNI_ICE_URLS", "").split(",")
-        if value.strip()
-    ]
+    ice_urls_raw = os.environ.get("SGLANG_OMNI_FRONTEND_ICE_URLS")
+    if not ice_urls_raw:
+        ice_urls_raw = os.environ.get("SGLANG_OMNI_ICE_URLS", "")
+    ice_urls = [value.strip() for value in ice_urls_raw.split(",") if value.strip()]
     return {
         "urls": ice_urls,
-        "username": os.environ.get("SGLANG_OMNI_ICE_USERNAME") or None,
-        "credential": os.environ.get("SGLANG_OMNI_ICE_CREDENTIAL") or None,
+        "username": (
+            os.environ.get("SGLANG_OMNI_FRONTEND_ICE_USERNAME")
+            or os.environ.get("SGLANG_OMNI_ICE_USERNAME")
+            or None
+        ),
+        "credential": (
+            os.environ.get("SGLANG_OMNI_FRONTEND_ICE_CREDENTIAL")
+            or os.environ.get("SGLANG_OMNI_ICE_CREDENTIAL")
+            or None
+        ),
     }
 
 

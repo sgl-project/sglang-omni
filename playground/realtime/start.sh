@@ -23,6 +23,7 @@ PLAYGROUND_PORT="7861"
 MOCK_BACKEND="0"
 MOCK_ARGS=()
 ICE_URLS=()
+BACKEND_ICE_URLS=()
 ICE_USERNAME="${SGLANG_OMNI_ICE_USERNAME:-}"
 ICE_CREDENTIAL="${SGLANG_OMNI_ICE_CREDENTIAL:-}"
 TURN_ENABLED="0"
@@ -242,9 +243,14 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 if [[ "${TURN_ENABLED}" == "1" ]]; then
+  BACKEND_ICE_URLS=("${ICE_URLS[@]}")
   ICE_URLS+=(
     "turn:${TURN_HOST}:${TURN_PORT}?transport=tcp"
     "turn:${TURN_HOST}:${TURN_PORT}?transport=udp"
+  )
+  BACKEND_ICE_URLS+=(
+    "turn:127.0.0.1:${TURN_PORT}?transport=tcp"
+    "turn:127.0.0.1:${TURN_PORT}?transport=udp"
   )
   TURN_USERDB_PATH="$(mktemp /tmp/sglang-omni-turn-XXXXXX.db)"
   TURN_PIDFILE_PATH="$(mktemp /tmp/sglang-omni-turn-XXXXXX.pid)"
@@ -271,6 +277,10 @@ echo ""
 
 if [[ ${#ICE_URLS[@]} -gt 0 ]]; then
   export SGLANG_OMNI_ICE_URLS="$(IFS=,; echo "${ICE_URLS[*]}")"
+  export SGLANG_OMNI_FRONTEND_ICE_URLS="${SGLANG_OMNI_ICE_URLS}"
+fi
+if [[ ${#BACKEND_ICE_URLS[@]} -gt 0 ]]; then
+  export SGLANG_OMNI_BACKEND_ICE_URLS="$(IFS=,; echo "${BACKEND_ICE_URLS[*]}")"
 fi
 if [[ -n "${ICE_USERNAME}" ]]; then
   export SGLANG_OMNI_ICE_USERNAME="${ICE_USERNAME}"
@@ -357,6 +367,9 @@ echo "  Frontend UI:   http://localhost:${PLAYGROUND_PORT}"
 echo "  Backend API:   ${API_BASE}"
 if [[ ${#ICE_URLS[@]} -gt 0 ]]; then
   echo "  ICE servers:   ${ICE_URLS[*]}"
+fi
+if [[ ${#BACKEND_ICE_URLS[@]} -gt 0 ]]; then
+  echo "  Backend ICE:   ${BACKEND_ICE_URLS[*]}"
 fi
 if [[ "${TURN_ENABLED}" == "1" ]]; then
   echo "  TURN user:     ${TURN_USER}"
