@@ -193,12 +193,12 @@ class EncoderInputPreparer:
             active_inputs = [batch_data.input_dicts[i] for i in active_indices]
             first = active_inputs[0]
             batched: dict[str, Any] = {}
-            
+
             # Note (Ratish, Chenyang):
             # Keys routed through plain torch.cat on dim=0. Entries in
             # TIME_PAD_SPECS are intercepted earlier and handled via the
             # right-pad-and-cat path, so they do not appear here.
-            
+
             cat_keys = {
                 "pixel_values",
                 "pixel_values_videos",
