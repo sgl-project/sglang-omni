@@ -4,6 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 PYTHON_BIN="${PYTHON_BIN:-python}"
+BACKEND_ENTRY="${REPO_ROOT}/examples/run_qwen3_omni_speech_server.py"
 
 BACKEND_PORT="${PORT:-8000}"
 PLAYGROUND_PORT="7862"
@@ -39,7 +40,7 @@ Mock-only options:
 
 Backend options:
   Any unrecognized options are forwarded to:
-    python -m sglang_omni.cli.cli serve
+    python examples/run_qwen3_omni_speech_server.py
 
 Examples:
   ./playground/realtime-ws/start.sh --mock
@@ -130,7 +131,7 @@ if [[ "${MOCK_BACKEND}" == "1" ]]; then
     "${MOCK_ARGS[@]}" &
 else
   echo "[1/2] Starting backend server with arguments: ${BACKEND_ARGS[*]}"
-  "${PYTHON_BIN}" -m sglang_omni.cli.cli serve \
+  "${PYTHON_BIN}" "${BACKEND_ENTRY}" \
     "${BACKEND_ARGS[@]}" \
     --port "${BACKEND_PORT}" &
 fi
