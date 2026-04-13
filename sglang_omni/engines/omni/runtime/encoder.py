@@ -150,7 +150,7 @@ class EncoderInputPreparer:
         if key not in QWEN3_AUDIO_TIME_PAD_KEYS:
             return torch.cat(tensors, dim=0).to(device)
 
-        # Qwen3-Omni pads within each request but can still produce different
+        # Note (Ratish): Qwen3-Omni pads within each request but can still produce different
         # time lengths across requests. Right-pad the shared time axis here so
         # the audio tower receives one padded batch plus the original feature
         # masks / lengths.
