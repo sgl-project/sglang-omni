@@ -8,6 +8,8 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
+from huggingface_hub import hf_hub_download
+
 from sglang_omni.models.ming_omni.hf_config import (
     AudioConfig,
     BailingMoeV2LLMConfig,
@@ -19,10 +21,37 @@ logger = logging.getLogger(__name__)
 
 # Known subdirectories where Ming repos store tokenizer files.
 _TOKENIZER_SUBDIRS = ("talker/llm",)
+_TOKENIZER_FILES = ("tokenizer.json", "tokenizer_config.json")
 
 # Fallback tokenizer source: Ming-flash-omni-Preview has tokenizer files
 # at the repo root, used only as a last resort.
 _TOKENIZER_FALLBACK = "inclusionAI/Ming-flash-omni-Preview"
+
+
+def _resolve_local_tokenizer_subdir(model_path: str) -> Path | None:
+    base = Path(model_path)
+    if not base.exists():
+        return None
+    for subdir in _TOKENIZER_SUBDIRS:
+        subpath = base / subdir
+        if any((subpath / filename).is_file() for filename in _TOKENIZER_FILES):
+            return subpath
+    return None
+
+
+def _download_tokenizer_subdir_from_hub(model_path: str) -> Path | None:
+    for subdir in _TOKENIZER_SUBDIRS:
+        for filename in _TOKENIZER_FILES:
+            try:
+                cached = hf_hub_download(
+                    repo_id=model_path,
+                    filename=filename,
+                    subfolder=subdir,
+                )
+            except Exception:
+                continue
+            return Path(cached).parent
+    return None
 
 
 def load_ming_tokenizer(model_path: str):
@@ -32,7 +61,7 @@ def load_ming_tokenizer(model_path: str):
     ``talker/llm/``) rather than at the repo root.  We try:
     1. AutoTokenizer from the root path (with trust_remote_code)
     2. PreTrainedTokenizerFast from the root path
-    3. Known subdirectories (talker/llm) that ship tokenizer files
+    3. Known subdirectories (talker/llm), local first then selective Hub probe
     4. Fallback to Ming-flash-omni-Preview repo (same vocab)
     """
     from transformers import AutoTokenizer, PreTrainedTokenizerFast
@@ -49,23 +78,34 @@ def load_ming_tokenizer(model_path: str):
     except Exception:
         pass
 
-    # Strategy 3: check known subdirectories (local snapshots only)
-    resolved = resolve_model_path(model_path)
-    for subdir in _TOKENIZER_SUBDIRS:
-        subpath = Path(resolved) / subdir
-        if (subpath / "tokenizer.json").is_file() or (
-            subpath / "tokenizer_config.json"
-        ).is_file():
-            try:
-                return AutoTokenizer.from_pretrained(
-                    str(subpath), trust_remote_code=True
-                )
-            except (OSError, ValueError):
-                pass
-            try:
-                return PreTrainedTokenizerFast.from_pretrained(str(subpath))
-            except Exception:
-                pass
+    # Strategy 3a: check known subdirectories for local paths
+    local_subpath = _resolve_local_tokenizer_subdir(model_path)
+    if local_subpath is not None:
+        try:
+            return AutoTokenizer.from_pretrained(
+                str(local_subpath), trust_remote_code=True
+            )
+        except (OSError, ValueError):
+            pass
+        try:
+            return PreTrainedTokenizerFast.from_pretrained(str(local_subpath))
+        except Exception:
+            pass
+
+    # Strategy 3b: probe known subdirectories on Hub by downloading only
+    # tokenizer files, avoiding a full snapshot download.
+    remote_subpath = _download_tokenizer_subdir_from_hub(model_path)
+    if remote_subpath is not None:
+        try:
+            return AutoTokenizer.from_pretrained(
+                str(remote_subpath), trust_remote_code=True
+            )
+        except (OSError, ValueError):
+            pass
+        try:
+            return PreTrainedTokenizerFast.from_pretrained(str(remote_subpath))
+        except Exception:
+            pass
 
     # Strategy 4: fallback repo with matching vocab
     logger.warning(

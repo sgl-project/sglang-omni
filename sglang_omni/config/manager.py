@@ -104,9 +104,7 @@ class ConfigManager:
 
         # 1) Hugging Face: local snapshot or hub id (hub ids have no local config.json)
         try:
-            hf_config = AutoConfig.from_pretrained(
-                model_path, trust_remote_code=True
-            )
+            hf_config = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
             arch = architecture_from_hf_config(hf_config)
         except Exception:
             pass
@@ -120,7 +118,9 @@ class ConfigManager:
             arch = try_resolve_arch_from_raw_config(model_path)
 
         if arch is None:
-            supported = ", ".join(sorted(PIPELINE_CONFIG_REGISTRY.get_supported_archs()))
+            supported = ", ".join(
+                sorted(PIPELINE_CONFIG_REGISTRY.get_supported_archs())
+            )
             raise ValueError(
                 f"Could not resolve model architecture for {model_path!r}. "
                 "Use a Hugging Face model id or a local directory with config.json "

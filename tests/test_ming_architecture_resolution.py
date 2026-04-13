@@ -15,7 +15,6 @@ import tempfile
 
 import pytest
 
-
 # ---------------------------------------------------------------------------
 # Test 1 – Registry discovers Ming architecture
 # ---------------------------------------------------------------------------
@@ -26,9 +25,9 @@ def test_registry_discovers_ming_architecture():
     from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
 
     supported = PIPELINE_CONFIG_REGISTRY.get_supported_archs()
-    assert "BailingMM2NativeForConditionalGeneration" in supported, (
-        f"Ming architecture not found in registry. Registered: {sorted(supported)}"
-    )
+    assert (
+        "BailingMM2NativeForConditionalGeneration" in supported
+    ), f"Ming architecture not found in registry. Registered: {sorted(supported)}"
 
 
 def test_registry_returns_ming_config_class():

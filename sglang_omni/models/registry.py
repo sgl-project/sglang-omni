@@ -23,16 +23,33 @@ def import_pipeline_configs(
         # if this is a package, we import it
         if ispkg:
             try:
-                module = importlib.import_module(name)
+                importlib.import_module(name)
             except Exception as e:
                 if strict:
                     raise
                 logger.warning(f"Ignore import error when loading {name}: {e}")
                 continue
+            expected_config_module = f"{name}.{config_path}"
             try:
-                config_module = importlib.import_module(f"{name}.{config_path}")
-            except ImportError:
-                logger.debug(f"Skipping {name}: no submodule {config_path}")
+                config_module = importlib.import_module(expected_config_module)
+            except ModuleNotFoundError as e:
+                if e.name == expected_config_module:
+                    if strict:
+                        raise
+                    logger.debug(f"Skipping {name}: no submodule {config_path}")
+                    continue
+                if strict:
+                    raise
+                logger.warning(
+                    f"Ignore import error when loading {expected_config_module}: {e}"
+                )
+                continue
+            except ImportError as e:
+                if strict:
+                    raise
+                logger.warning(
+                    f"Ignore import error when loading {expected_config_module}: {e}"
+                )
                 continue
             if not hasattr(config_module, "EntryClass"):
                 raise AssertionError(
