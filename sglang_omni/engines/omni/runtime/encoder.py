@@ -7,9 +7,18 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 import torch
+import torch.nn.functional as F
 
 from ..types import RequestOutput, SchedulerOutput, SchedulerRequest
 from .interfaces import ResourceManager
+
+
+def _right_pad_last_dim(tensor: torch.Tensor, target_len: int) -> torch.Tensor:
+    current_len = int(tensor.shape[-1])
+    if current_len >= target_len:
+        return tensor
+    return F.pad(tensor, (0, target_len - current_len))
+
 
 # -----------------------------------------------------------------------------
 # Data Structures
@@ -123,9 +132,41 @@ class EncoderInputPreparer:
     """Converts EncoderBatchData to model inputs."""
 
     EXCLUDED_KEYS = {"cache_key", "_skip", "_result"}
+    QWEN3_AUDIO_TIME_PAD_KEYS = {"input_features", "feature_attention_mask"}
+    QWEN3_AUDIO_FEATURES_RANK = 3
+    QWEN3_AUDIO_MASK_RANK = 2
 
     def __init__(self, pad_token_id: int = 0):
         self.pad_token_id = pad_token_id
+
+    def _prepare_qwen3_audio_batch_tensor(
+        self,
+        *,
+        key: str,
+        tensors: list[torch.Tensor],
+        device: torch.device,
+    ) -> torch.Tensor:
+        if key not in self.QWEN3_AUDIO_TIME_PAD_KEYS:
+            return torch.cat(tensors, dim=0).to(device)
+
+        # Qwen3-Omni pads within each request but can still produce different
+        # time lengths across requests. Right-pad the shared time axis here so
+        # the audio tower receives one padded batch plus the original feature
+        # masks / lengths.
+        expected_dim = (
+            self.QWEN3_AUDIO_FEATURES_RANK
+            if key == "input_features"
+            else self.QWEN3_AUDIO_MASK_RANK
+        )
+        if any(tensor.dim() != expected_dim for tensor in tensors):
+            raise ValueError(
+                f"Unsupported Qwen3 audio tensor layout: key={key}, "
+                f"tensor_shapes={[tuple(tensor.shape) for tensor in tensors]}"
+            )
+
+        max_time_dim = max(int(tensor.shape[-1]) for tensor in tensors)
+        padded = [_right_pad_last_dim(tensor, max_time_dim) for tensor in tensors]
+        return torch.cat(padded, dim=0).to(device)
 
     def prepare(
         self,
@@ -158,7 +199,11 @@ class EncoderInputPreparer:
                     if value.dim() == 0:
                         batched[key] = torch.stack(tensors).to(device)
                     elif key in cat_keys:
-                        batched[key] = torch.cat(tensors, dim=0).to(device)
+                        batched[key] = self._prepare_qwen3_audio_batch_tensor(
+                            key=key,
+                            tensors=tensors,
+                            device=device,
+                        )
                     else:
                         batched[key] = torch.stack(tensors).to(device)
                 else:
