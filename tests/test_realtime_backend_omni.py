@@ -28,6 +28,18 @@ class _FakeClient:
         self.cancelled = request_id
 
 
+class _SnapshotTextClient:
+    async def generate(self, request, request_id: str):
+        del request
+        yield GenerateChunk(request_id=request_id, text="Hi")
+        yield GenerateChunk(request_id=request_id, text="Hi there")
+        yield GenerateChunk(request_id=request_id, text="Hi there")
+        yield GenerateChunk(request_id=request_id, finish_reason="stop")
+
+    async def abort(self, request_id: str) -> None:
+        del request_id
+
+
 @pytest.mark.asyncio
 async def test_omni_response_backend_normalizes_turn_output():
     client = _FakeClient()
@@ -75,3 +87,28 @@ async def test_omni_response_backend_normalizes_turn_output():
 
     await backend.cancel(events[0].response_id)
     assert client.cancelled == events[0].response_id
+
+
+@pytest.mark.asyncio
+async def test_omni_response_backend_coerces_snapshot_text_to_deltas():
+    backend = OmniResponseBackend(
+        client=_SnapshotTextClient(),
+        model="qwen3-omni",
+        output_modalities=("text",),
+    )
+    turn = TurnContext(
+        session_id="session-1",
+        history=[],
+        instructions=None,
+        user_text="hello",
+        user_audio=None,
+        user_audio_sample_rate=None,
+        recent_video=None,
+        recent_video_fps=None,
+    )
+
+    events = [event async for event in backend.stream_response(turn)]
+    text_events = [event for event in events if event.type == "text_delta"]
+
+    assert [event.text for event in text_events] == ["Hi", " there"]
+    assert "".join(event.text for event in text_events) == "Hi there"

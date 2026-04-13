@@ -58,6 +58,7 @@ class OmniResponseBackend(ResponseBackend):
         yield ResponseEvent(type="response_started", response_id=response_id)
 
         finish_reason = "stop"
+        emitted_text = ""
         request = self._build_request(turn)
         try:
             async for chunk in self._client.generate(request, request_id=response_id):
@@ -66,11 +67,14 @@ class OmniResponseBackend(ResponseBackend):
                     continue
 
                 if chunk.text:
-                    yield ResponseEvent(
-                        type="text_delta",
-                        response_id=response_id,
-                        text=chunk.text,
-                    )
+                    text_delta = self._coerce_text_delta(chunk.text, emitted_text)
+                    if text_delta:
+                        emitted_text += text_delta
+                        yield ResponseEvent(
+                            type="text_delta",
+                            response_id=response_id,
+                            text=text_delta,
+                        )
 
                 if chunk.audio_data is not None:
                     yield ResponseEvent(
@@ -104,6 +108,18 @@ class OmniResponseBackend(ResponseBackend):
             "audio_waveform_shape": list(audio_np.shape),
             "audio_waveform_dtype": "float32",
         }
+
+    @staticmethod
+    def _coerce_text_delta(text: str, emitted_text: str) -> str:
+        if not text:
+            return ""
+        if not emitted_text:
+            return text
+        if text == emitted_text:
+            return ""
+        if text.startswith(emitted_text):
+            return text[len(emitted_text) :]
+        return text
 
     def _build_request(self, turn: TurnContext) -> GenerateRequest:
         messages: list[Message] = []
