@@ -142,6 +142,52 @@
       .hidden {
         display: none;
       }
+      .conversation {
+        margin-top: 12px;
+        max-height: 360px;
+        overflow: auto;
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        background: #0b0f14;
+        border: 1px solid #222933;
+        border-radius: 12px;
+        padding: 12px;
+      }
+      .conversation-empty {
+        color: #9fb1c7;
+      }
+      .message {
+        max-width: min(80%, 640px);
+        padding: 12px 14px;
+        border-radius: 14px;
+        white-space: pre-wrap;
+      }
+      .message-user {
+        align-self: flex-end;
+        background: #1f6feb;
+        color: #ffffff;
+      }
+      .message-assistant {
+        align-self: flex-start;
+        background: #111826;
+        border: 1px solid #2d333b;
+      }
+      .message.pending {
+        opacity: 0.8;
+      }
+      .message-role {
+        margin-bottom: 4px;
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        opacity: 0.75;
+      }
+      .message-content {
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
     </style>
   </head>
   <body>
@@ -157,7 +203,6 @@
         <textarea id="instructions">You are a concise, natural voice assistant. Answer conversationally.</textarea>
         <div class="row" style="margin-top: 12px">
           <label><input id="camera" type="checkbox" /> Share camera</label>
-          <label><input id="text-output" type="checkbox" checked /> Also stream text events</label>
         </div>
         <div class="row" style="margin-top: 12px">
           <div>
@@ -202,6 +247,24 @@
           </div>
         </div>
         <audio id="remote-audio" controls autoplay playsinline></audio>
+      </section>
+
+      <section class="panel">
+        <strong>Conversation</strong>
+        <div id="conversation" class="conversation">
+          <div class="conversation-empty">Conversation history will appear here.</div>
+        </div>
+        <label for="user-prompt" style="display: block; margin-top: 12px">User prompt</label>
+        <textarea
+          id="user-prompt"
+          placeholder="Type a message and press Send or Enter"
+        ></textarea>
+        <div class="row" style="margin-top: 12px">
+          <button id="send-text" class="secondary" disabled>Send Text</button>
+          <span class="option-help">
+            Text turns share the same session history as voice turns.
+          </span>
+        </div>
       </section>
 
       <section class="panel">

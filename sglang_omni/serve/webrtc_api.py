@@ -49,7 +49,7 @@ from sglang_omni.realtime.vad import VadConfig
 
 logger = logging.getLogger(__name__)
 
-BackendFactory = Callable[[str, int, bool], ResponseBackend]
+BackendFactory = Callable[[str, int], ResponseBackend]
 
 
 def _load_rtc_configuration_from_env() -> Any | None:
@@ -91,7 +91,6 @@ class RealtimeOfferRequest(BaseModel):
     model: str | None = None
     instructions: str | None = None
     max_new_tokens: int = 256
-    output_text: bool = True
     input_audio_mode: Literal["vad", "manual"] = "vad"
     vad: RealtimeVadRequest | None = None
 
@@ -125,7 +124,6 @@ class RealtimeSessionManager:
         model: str | None,
         instructions: str | None,
         max_new_tokens: int,
-        output_text: bool,
         input_audio_mode: str,
         vad: RealtimeVadRequest | None,
     ) -> SessionHandle:
@@ -143,7 +141,6 @@ class RealtimeSessionManager:
         backend = self._backend_factory(
             model or self._default_model,
             max_new_tokens,
-            output_text,
         )
         vad_config = VadConfig()
         if vad is not None:
@@ -220,14 +217,12 @@ def create_realtime_router(
         def backend_factory(
             resolved_model: str,
             max_new_tokens: int,
-            output_text: bool,
         ) -> ResponseBackend:
-            output_modalities = ("text", "audio") if output_text else ("audio",)
             return OmniResponseBackend(
                 client=client,
                 model=resolved_model,
                 max_new_tokens=max_new_tokens,
-                output_modalities=output_modalities,
+                output_modalities=("text", "audio"),
             )
 
     router = APIRouter()
@@ -243,7 +238,6 @@ def create_realtime_router(
             model=req.model,
             instructions=req.instructions,
             max_new_tokens=req.max_new_tokens,
-            output_text=req.output_text,
             input_audio_mode=req.input_audio_mode,
             vad=req.vad,
         )

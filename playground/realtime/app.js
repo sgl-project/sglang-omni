@@ -8,9 +8,11 @@
   const clearLogBtn = $("clear-log");
   const statusEl = $("status");
   const logEl = $("log");
+  const conversationEl = $("conversation");
   const instructionsEl = $("instructions");
+  const userPromptEl = $("user-prompt");
+  const sendTextBtn = $("send-text");
   const cameraEl = $("camera");
-  const textOutputEl = $("text-output");
   const audioModeAutoEl = $("audio-mode-auto");
   const audioModePushEl = $("audio-mode-push");
   const audioModeHelpEl = $("audio-mode-help");
@@ -38,6 +40,7 @@
   let pushToTalkActive = false;
   let pushToTalkKeyActive = false;
   let inputAudioMode = "vad";
+  let assistantMessages = new Map();
 
   function getRtcConfiguration() {
     const config =
@@ -78,6 +81,139 @@
     const body = payload ? `\n${JSON.stringify(payload, null, 2)}` : "";
     logEl.textContent += `${line}${body}\n\n`;
     logEl.scrollTop = logEl.scrollHeight;
+  }
+
+  function scrollConversationToBottom() {
+    conversationEl.scrollTop = conversationEl.scrollHeight;
+  }
+
+  function addConversationEmptyState() {
+    if (conversationEl.querySelector(".conversation-empty")) {
+      return;
+    }
+    const empty = document.createElement("div");
+    empty.className = "conversation-empty";
+    empty.textContent = "Conversation history will appear here.";
+    conversationEl.appendChild(empty);
+  }
+
+  function clearConversation() {
+    assistantMessages = new Map();
+    conversationEl.textContent = "";
+    addConversationEmptyState();
+  }
+
+  function createConversationMessage(role, text, pending) {
+    const container = document.createElement("div");
+    container.className = `message message-${role}${pending ? " pending" : ""}`;
+
+    const roleEl = document.createElement("div");
+    roleEl.className = "message-role";
+    roleEl.textContent = role === "user" ? "User" : "Assistant";
+
+    const contentEl = document.createElement("div");
+    contentEl.className = "message-content";
+    contentEl.textContent = text;
+
+    container.appendChild(roleEl);
+    container.appendChild(contentEl);
+    return { container, contentEl };
+  }
+
+  function appendConversationMessage(role, text, pending = false) {
+    const emptyState = conversationEl.querySelector(".conversation-empty");
+    if (emptyState) {
+      emptyState.remove();
+    }
+    const message = createConversationMessage(role, text, pending);
+    conversationEl.appendChild(message.container);
+    scrollConversationToBottom();
+    return message;
+  }
+
+  function ensureAssistantMessage(responseId) {
+    if (!responseId) {
+      return null;
+    }
+    const existing = assistantMessages.get(responseId);
+    if (existing) {
+      return existing;
+    }
+    const message = appendConversationMessage("assistant", "", true);
+    const entry = {
+      container: message.container,
+      contentEl: message.contentEl,
+      hasText: false,
+    };
+    assistantMessages.set(responseId, entry);
+    return entry;
+  }
+
+  function appendAssistantDelta(responseId, delta) {
+    if (!responseId || typeof delta !== "string" || delta.length === 0) {
+      return;
+    }
+    const entry = ensureAssistantMessage(responseId);
+    if (!entry) {
+      return;
+    }
+    if (!entry.hasText) {
+      entry.contentEl.textContent = delta;
+      entry.hasText = true;
+    } else {
+      entry.contentEl.textContent += delta;
+    }
+    scrollConversationToBottom();
+  }
+
+  function finalizeAssistantMessage(responseId, text) {
+    if (!responseId) {
+      return;
+    }
+    const entry = ensureAssistantMessage(responseId);
+    if (!entry) {
+      return;
+    }
+    if (!entry.hasText && typeof text === "string" && text.length > 0) {
+      entry.contentEl.textContent = text;
+      entry.hasText = true;
+    }
+    if (!entry.hasText) {
+      entry.contentEl.textContent = "(no text output)";
+    }
+    entry.container.classList.remove("pending");
+    scrollConversationToBottom();
+  }
+
+  function handleServerEvent(event) {
+    if (!event || typeof event.type !== "string") {
+      return;
+    }
+    if (event.type === "conversation.item.created") {
+      const item = event.item || {};
+      if (item.role === "user" && typeof item.content === "string") {
+        appendConversationMessage("user", item.content);
+      }
+      return;
+    }
+    if (event.type === "response.created") {
+      ensureAssistantMessage(event.response_id);
+      return;
+    }
+    if (event.type === "response.output_text.delta") {
+      appendAssistantDelta(event.response_id, event.delta);
+      return;
+    }
+    if (event.type === "response.done") {
+      finalizeAssistantMessage(event.response_id, event.text);
+      return;
+    }
+    if (event.type === "response.cancelled" && typeof event.response_id === "string") {
+      const entry = assistantMessages.get(event.response_id);
+      if (entry) {
+        entry.container.classList.remove("pending");
+      }
+    }
   }
 
   function canSendControlEvent() {
@@ -135,6 +271,12 @@
     pushToTalkBtn.textContent = pushToTalkActive
       ? "Release To Commit"
       : "Hold To Talk";
+  }
+
+  function updateTextPromptUi() {
+    const connected = Boolean(pc && canSendControlEvent());
+    userPromptEl.disabled = !connected;
+    sendTextBtn.disabled = !(connected && userPromptEl.value.trim());
   }
 
   function updateAudioModeHelp() {
@@ -357,6 +499,30 @@
     }
   }
 
+  function submitTextPrompt() {
+    const text = userPromptEl.value.trim();
+    if (!text) {
+      updateTextPromptUi();
+      return;
+    }
+    if (
+      !sendControlEvent({
+        type: "conversation.item.create",
+        item: { role: "user", content: text },
+      })
+    ) {
+      updateTextPromptUi();
+      return;
+    }
+    if (!sendControlEvent({ type: "response.create" })) {
+      updateTextPromptUi();
+      return;
+    }
+    userPromptEl.value = "";
+    updateTextPromptUi();
+    log("text prompt sent", { chars: text.length });
+  }
+
   async function connect() {
     if (pc) return;
     connectBtn.disabled = true;
@@ -380,14 +546,18 @@
     dc.addEventListener("open", () => {
       sendSessionModeUpdate();
       updatePushToTalkUi();
+      updateTextPromptUi();
     });
     dc.addEventListener("close", () => {
       pushToTalkActive = false;
       updatePushToTalkUi();
+      updateTextPromptUi();
     });
     dc.addEventListener("message", (event) => {
       try {
-        log("server event", JSON.parse(event.data));
+        const payload = JSON.parse(event.data);
+        handleServerEvent(payload);
+        log("server event", payload);
       } catch (err) {
         log("server message", { raw: event.data });
       }
@@ -424,7 +594,6 @@
           sdp: offer.sdp,
           type: offer.type,
           instructions: instructionsEl.value.trim(),
-          output_text: Boolean(textOutputEl.checked),
           input_audio_mode: inputAudioMode,
         }),
       });
@@ -441,11 +610,13 @@
     const answer = await response.json();
     sessionId = answer.session_id;
     await pc.setRemoteDescription(answer);
+    clearConversation();
     setStatus(`Connected (${sessionId})`);
     log("session created", answer);
 
     disconnectBtn.disabled = false;
     updatePushToTalkUi();
+    updateTextPromptUi();
   }
 
   async function disconnect() {
@@ -479,9 +650,11 @@
     remoteAudioEl.srcObject = null;
     remoteAudioEl.removeAttribute("src");
     remoteAudioEl.load();
+    clearConversation();
     connectBtn.disabled = false;
     setStatus("Idle");
     updatePushToTalkUi();
+    updateTextPromptUi();
 
     if (closingSessionId) {
       log("local disconnect complete", {
@@ -580,9 +753,24 @@
   clearLogBtn.addEventListener("click", () => {
     logEl.textContent = "";
   });
+  sendTextBtn.addEventListener("click", () => {
+    submitTextPrompt();
+  });
+  userPromptEl.addEventListener("input", () => {
+    updateTextPromptUi();
+  });
+  userPromptEl.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" || event.shiftKey) {
+      return;
+    }
+    event.preventDefault();
+    submitTextPrompt();
+  });
 
   updateMicLevel(0);
   updateRemoteLevel(0);
+  clearConversation();
   setInputAudioMode("vad");
   updatePushToTalkUi();
+  updateTextPromptUi();
 })();

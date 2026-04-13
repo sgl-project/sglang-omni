@@ -54,8 +54,8 @@ class AudioTurnState:
 
 @dataclass
 class PendingTurn:
-    audio: np.ndarray
-    sample_rate: int
+    audio: np.ndarray | None
+    sample_rate: int | None
     user_text: str | None
     speech_end_ts: float | None
     turn_index: int
@@ -207,6 +207,16 @@ class RealtimeSession:
             if item.get("role") == "user" and isinstance(item.get("content"), str):
                 self.current_user_text = item["content"]
                 await self.emit_event("conversation.item.created", item=item)
+            return
+
+        if event_type == "response.create":
+            if self._closed:
+                return
+            if self.active_task is not None or self.assistant_playing:
+                await self._interrupt_active_response(reason="barge_in")
+            pending = self._consume_pending_turn()
+            if pending is not None:
+                await self._start_or_queue_response(pending)
             return
 
         if event_type == "response.cancel" and (
@@ -363,14 +373,19 @@ class RealtimeSession:
             self._preroll_samples -= removed.shape[0]
 
     def _consume_pending_turn(self) -> PendingTurn | None:
-        if not self.current_audio.chunks:
+        user_text = self.current_user_text.strip() if self.current_user_text else None
+        if not self.current_audio.chunks and not user_text:
             return None
-        audio = np.concatenate(self.current_audio.chunks, axis=0)
+        audio = None
+        sample_rate: int | None = None
+        if self.current_audio.chunks:
+            audio = np.concatenate(self.current_audio.chunks, axis=0)
+            sample_rate = self.current_audio.sample_rate
         self._turn_index += 1
         pending = PendingTurn(
             audio=audio,
-            sample_rate=self.current_audio.sample_rate,
-            user_text=self.current_user_text,
+            sample_rate=sample_rate,
+            user_text=user_text,
             speech_end_ts=self.current_audio.speech_end_ts,
             turn_index=self._turn_index,
         )
@@ -515,8 +530,14 @@ class RealtimeSession:
             video_frame_count = int(clip.shape[0]) if clip is not None else 0
             await self.emit_event(
                 "turn.prepared",
-                audio_sample_count=int(pending.audio.size),
-                audio_sample_rate=int(pending.sample_rate),
+                audio_sample_count=(
+                    int(pending.audio.size) if pending.audio is not None else 0
+                ),
+                audio_sample_rate=(
+                    int(pending.sample_rate)
+                    if pending.sample_rate is not None
+                    else None
+                ),
                 video_frame_count=video_frame_count,
                 video_fps=float(fps) if fps is not None else None,
             )

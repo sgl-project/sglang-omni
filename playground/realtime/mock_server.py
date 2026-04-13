@@ -46,12 +46,11 @@ def create_app(args: argparse.Namespace) -> FastAPI:
         allow_headers=["*"],
     )
 
-    def backend_factory(model_name: str, max_new_tokens: int, output_text: bool):
+    def backend_factory(model_name: str, max_new_tokens: int):
         del max_new_tokens
-        output_modalities = ("text", "audio") if output_text else ("audio",)
         return MockResponseBackend(
             model=model_name,
-            output_modalities=output_modalities,
+            output_modalities=("text", "audio"),
             response_text=args.response_text,
             audio_mode=args.audio_mode,
             dump_audio_dir=args.dump_audio_dir,

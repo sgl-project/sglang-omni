@@ -207,6 +207,24 @@ async def _drive_turn(
     await asyncio.wait_for(task, timeout=1.0)
 
 
+async def _drive_text_turn(
+    session: RealtimeSession,
+    *,
+    user_text: str,
+) -> None:
+    await session.handle_client_event(
+        {
+            "type": "conversation.item.create",
+            "item": {"role": "user", "content": user_text},
+        }
+    )
+    await session.handle_client_event({"type": "response.create"})
+
+    task = session.active_task
+    assert task is not None
+    await asyncio.wait_for(task, timeout=1.0)
+
+
 @pytest.mark.asyncio
 async def test_realtime_session_runs_turns_with_fake_backend_and_history():
     backend = _ScriptedBackend()
@@ -390,6 +408,37 @@ async def test_realtime_session_supports_manual_push_to_talk_commit():
     assert any(event["type"] == "turn.prepared" for event in channel.messages)
     assert any(event["type"] == "response.done" for event in channel.messages)
     assert len(output_track.enqueue_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_realtime_session_supports_text_only_turns_with_history():
+    backend = _ScriptedBackend()
+    session, output_track, channel = _make_session(backend)
+
+    await _drive_text_turn(session, user_text="hello there")
+    await _drive_text_turn(session, user_text="follow up")
+
+    assert len(backend.turns) == 2
+    assert backend.turns[0].user_text == "hello there"
+    assert backend.turns[0].user_audio is None
+    assert backend.turns[1].history == [
+        {"role": "user", "content": "hello there"},
+        {"role": "assistant", "content": "answer-1"},
+    ]
+    assert session.history == [
+        {"role": "user", "content": "hello there"},
+        {"role": "assistant", "content": "answer-1"},
+        {"role": "user", "content": "follow up"},
+        {"role": "assistant", "content": "answer-2"},
+    ]
+    assert len(output_track.enqueue_calls) == 2
+
+    turn_events = [
+        event for event in channel.messages if event["type"] == "turn.prepared"
+    ]
+    assert len(turn_events) == 2
+    assert all(event["audio_sample_count"] == 0 for event in turn_events)
+    assert all(event["audio_sample_rate"] is None for event in turn_events)
 
 
 @pytest.mark.asyncio
