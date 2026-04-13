@@ -44,6 +44,13 @@ jobs:
           fi
           source omni/bin/activate
           uv pip install -v -e ".[dev]"
+          # Repair PyAV if its bundled shared libs got corrupted in the cached
+          # venv (e.g. "libx265-...so.215: file too short"). The editable install
+          # above does not reinstall an already-present package, so force it.
+          if ! python -c "import av" 2>/dev/null; then
+            echo "PyAV native libraries corrupted in cached venv, force-reinstalling..."
+            uv pip install --force-reinstall --no-deps --no-cache av
+          fi
 
       - name: Kill GPU processes
         shell: bash
