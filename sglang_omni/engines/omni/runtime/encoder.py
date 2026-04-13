@@ -17,8 +17,14 @@ _AUDIO_MASK_NDIM = 2
 
 
 def _right_pad_last_dim(
-    tensor: torch.Tensor, target_len: int, pad_value: float = 0.0
+    tensor: torch.Tensor, target_len: int, pad_value: float | int = 0.0
 ) -> torch.Tensor:
+    """Right-pad only the last dimension of ``tensor`` to ``target_len``.
+
+    Returns the tensor unchanged if its last dimension already meets or exceeds
+    ``target_len``. ``pad_value`` is cast by ``F.pad`` to the tensor's dtype,
+    so both float and int are accepted for use with feature/mask tensors.
+    """
     current_len = tensor.shape[-1]
     if current_len >= target_len:
         return tensor
@@ -138,11 +144,14 @@ class EncoderInputPreparer:
 
     EXCLUDED_KEYS = {"cache_key", "_skip", "_result"}
     # Note (Ratish): Qwen3-Omni pads within each request but can still produce
-    # different time lengths across requests.
-    TIME_PAD_KEYS = {"input_features", "feature_attention_mask"}
-    TIME_PAD_NDIMS = {
-        "input_features": _AUDIO_FEATURES_NDIM,
-        "feature_attention_mask": _AUDIO_MASK_NDIM,
+    # different time lengths across requests. Keys listed here are right-padded
+    # on their last (time) dimension before being concatenated on the batch
+    # dimension. Each entry maps to (expected_ndim, pad_value_for_last_dim) so
+    # the dispatch key set and per-key invariants stay in a single source of
+    # truth.
+    TIME_PAD_SPECS: dict[str, tuple[int, float]] = {
+        "input_features": (_AUDIO_FEATURES_NDIM, 0.0),
+        "feature_attention_mask": (_AUDIO_MASK_NDIM, 0.0),
     }
 
     def __init__(self, pad_token_id: int = 0):
@@ -155,15 +164,33 @@ class EncoderInputPreparer:
         tensors: list[torch.Tensor],
         device: torch.device,
     ) -> torch.Tensor:
-        expected_dim = self.TIME_PAD_NDIMS[key]
+        assert tensors, (
+            f"_pad_and_cat_tensors called with empty tensor list for key={key}"
+        )
+        expected_dim, pad_value = self.TIME_PAD_SPECS[key]
         if any(tensor.dim() != expected_dim for tensor in tensors):
             raise ValueError(
                 f"Unsupported tensor layout for time padding: key={key}, "
                 f"tensor_shapes={[tuple(tensor.shape) for tensor in tensors]}"
             )
 
+        # Only the last (time) dim is padded; all non-time dims must match
+        # across requests. Catching the mismatch here surfaces a clear error
+        # instead of a silent shape bug downstream.
+        ref_shape = tensors[0].shape[:-1]
+        for i, tensor in enumerate(tensors[1:], 1):
+            if tensor.shape[:-1] != ref_shape:
+                raise ValueError(
+                    f"Non-time dimensions mismatch for key={key}: "
+                    f"tensor[0].shape={tuple(tensors[0].shape)}, "
+                    f"tensor[{i}].shape={tuple(tensor.shape)}"
+                )
+
         max_time_dim = max(tensor.shape[-1] for tensor in tensors)
-        padded = [_right_pad_last_dim(tensor, max_time_dim) for tensor in tensors]
+        padded = [
+            _right_pad_last_dim(tensor, max_time_dim, pad_value=pad_value)
+            for tensor in tensors
+        ]
         return torch.cat(padded, dim=0).to(device)
 
     def prepare(
@@ -179,13 +206,14 @@ class EncoderInputPreparer:
             active_inputs = [batch_data.input_dicts[i] for i in active_indices]
             first = active_inputs[0]
             batched: dict[str, Any] = {}
+            # Keys routed through plain torch.cat on dim=0. Entries in
+            # TIME_PAD_SPECS are intercepted earlier and handled via the
+            # right-pad-and-cat path, so they do not appear here.
             cat_keys = {
                 "pixel_values",
                 "pixel_values_videos",
                 "image_grid_thw",
                 "video_grid_thw",
-                "input_features",
-                "feature_attention_mask",
                 "audio_feature_lengths",
             }
             for key, value in first.items():
@@ -196,7 +224,7 @@ class EncoderInputPreparer:
                     tensors = [inp[key] for inp in active_inputs]
                     if value.dim() == 0:
                         batched[key] = torch.stack(tensors).to(device)
-                    elif key in self.TIME_PAD_KEYS:
+                    elif key in self.TIME_PAD_SPECS:
                         batched[key] = self._pad_and_cat_tensors(
                             key=key,
                             tensors=tensors,
