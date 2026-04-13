@@ -71,6 +71,36 @@
     return "";
   }
 
+  function waitForIceGatheringComplete(peerConnection, timeoutMs = 5000) {
+    if (!peerConnection || peerConnection.iceGatheringState === "complete") {
+      return Promise.resolve();
+    }
+
+    return new Promise((resolve) => {
+      let timeoutId = 0;
+
+      const cleanup = () => {
+        peerConnection.removeEventListener("icegatheringstatechange", onStateChange);
+        if (timeoutId) {
+          window.clearTimeout(timeoutId);
+        }
+      };
+
+      const onStateChange = () => {
+        if (peerConnection.iceGatheringState === "complete") {
+          cleanup();
+          resolve();
+        }
+      };
+
+      peerConnection.addEventListener("icegatheringstatechange", onStateChange);
+      timeoutId = window.setTimeout(() => {
+        cleanup();
+        resolve();
+      }, timeoutMs);
+    });
+  }
+
   function setStatus(text) {
     statusEl.textContent = text;
   }
@@ -582,6 +612,12 @@
 
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
+    await waitForIceGatheringComplete(pc);
+
+    const localDescription = pc.localDescription;
+    if (!localDescription) {
+      throw new Error("Local SDP offer was not created");
+    }
 
     const offerUrl = `${getApiBase()}/v1/realtime/webrtc/offer`;
 
@@ -591,8 +627,8 @@
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          sdp: offer.sdp,
-          type: offer.type,
+          sdp: localDescription.sdp,
+          type: localDescription.type,
           instructions: instructionsEl.value.trim(),
           input_audio_mode: inputAudioMode,
         }),

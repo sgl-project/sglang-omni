@@ -9,7 +9,8 @@ set -euo pipefail
 #   uv pip install -e ".[realtime]"
 #
 # Usage:
-#   ./playground/realtime/start.sh [--mock] [realtime-options] [backend-options...]
+#   ./playground/realtime/start.sh [--mock] [realtime-options] [serve-options...]
+#   ./playground/realtime/start.sh --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct --gpu-talker 1 --gpu-code-predictor 1 --mem-fraction-static 0.9 --with-turn --turn-host IP_ADDRESS
 # ---------------------------------------------------------------------------
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
