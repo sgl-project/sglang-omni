@@ -129,6 +129,13 @@ class EnergyVad:
         while len(self._recent_votes) > window:
             self._recent_votes.popleft()
 
+    def reset(self) -> None:
+        self.speaking = False
+        self._frame_tail = np.zeros(0, dtype=np.int16)
+        self._recent_votes.clear()
+        self._last_frame_count = 0
+        self._last_voiced_frame_count = 0
+
     def process(self, audio: np.ndarray) -> VadEvent:
         audio = np.asarray(audio, dtype=np.float32).reshape(-1)
         if audio.size == 0:

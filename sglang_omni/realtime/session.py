@@ -67,6 +67,7 @@ class RealtimeSessionConfig:
         "You are a concise, natural voice assistant. Answer conversationally."
     )
     input_audio_sample_rate: int = 16000
+    input_audio_mode: str = "vad"
     vad: VadConfig = field(default_factory=VadConfig)
     video: VideoBufferConfig = field(default_factory=VideoBufferConfig)
 
@@ -109,6 +110,7 @@ class RealtimeSession:
         self.active_response_id: str | None = None
         self.active_task: asyncio.Task[None] | None = None
         self.assistant_playing = False
+        self._set_turn_mode(config.input_audio_mode)
 
     async def emit_event(self, event_type: str, **payload: Any) -> None:
         event = {"type": event_type, "session_id": self.session_id, **payload}
@@ -142,13 +144,21 @@ class RealtimeSession:
         event_type = str(payload.get("type") or "").strip()
         if event_type == "session.update":
             session = payload.get("session") or {}
+            updated_session: dict[str, Any] = {}
             instructions = session.get("instructions") or payload.get("instructions")
             if isinstance(instructions, str):
                 self.instructions = instructions.strip()
-                await self.emit_event(
-                    "session.updated",
-                    session={"instructions": self.instructions},
-                )
+                updated_session["instructions"] = self.instructions
+            audio_config = session.get("audio") or {}
+            input_mode = (
+                audio_config.get("input_mode")
+                or audio_config.get("turn_mode")
+                or payload.get("input_audio_mode")
+            )
+            if isinstance(input_mode, str) and self._set_turn_mode(input_mode):
+                updated_session["audio"] = {"input_mode": self.turn_mode}
+            if updated_session:
+                await self.emit_event("session.updated", session=updated_session)
             return
 
         if event_type == "input_audio_buffer.start":
@@ -378,6 +388,24 @@ class RealtimeSession:
         )
         self.current_user_text = None
         return pending
+
+    def _set_turn_mode(self, mode: str) -> bool:
+        normalized = str(mode).strip().lower()
+        if normalized not in {"vad", "manual"}:
+            return False
+        self.turn_mode = normalized
+        self.manual_recording = False
+        self.current_audio = AudioTurnState(
+            sample_rate=self.config.input_audio_sample_rate
+        )
+        self._preroll_chunks.clear()
+        self._preroll_samples = 0
+        reset_vad = getattr(self.vad, "reset", None)
+        if callable(reset_vad):
+            reset_vad()
+        else:
+            self.vad.speaking = False
+        return True
 
     @throttle(1.0, timestamp_kw="timestamp")
     async def _emit_audio_chunk_received(

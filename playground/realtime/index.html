@@ -128,6 +128,17 @@
       label {
         color: #c9d1d9;
       }
+      .option-group {
+        display: flex;
+        gap: 16px;
+        flex-wrap: wrap;
+        align-items: center;
+      }
+      .option-help {
+        margin-top: 8px;
+        font-size: 13px;
+        color: #9fb1c7;
+      }
       .hidden {
         display: none;
       }
@@ -147,6 +158,17 @@
         <div class="row" style="margin-top: 12px">
           <label><input id="camera" type="checkbox" /> Share camera</label>
           <label><input id="text-output" type="checkbox" checked /> Also stream text events</label>
+        </div>
+        <div class="row" style="margin-top: 12px">
+          <div>
+            <div class="option-group">
+              <label><input id="audio-mode-auto" type="radio" name="audio-mode" checked /> Auto VAD</label>
+              <label><input id="audio-mode-push" type="radio" name="audio-mode" /> Push To Talk</label>
+            </div>
+            <div class="option-help" id="audio-mode-help">
+              Auto VAD streams continuously and lets the server detect utterance boundaries.
+            </div>
+          </div>
         </div>
         <div class="row" style="margin-top: 14px">
           <button id="connect">Connect</button>

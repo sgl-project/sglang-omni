@@ -11,6 +11,9 @@
   const instructionsEl = $("instructions");
   const cameraEl = $("camera");
   const textOutputEl = $("text-output");
+  const audioModeAutoEl = $("audio-mode-auto");
+  const audioModePushEl = $("audio-mode-push");
+  const audioModeHelpEl = $("audio-mode-help");
   const localVideoEl = $("local-video");
   const micLevelFillEl = $("mic-level-fill");
   const micLevelTextEl = $("mic-level-text");
@@ -34,6 +37,7 @@
   let remoteMeterRaf = 0;
   let pushToTalkActive = false;
   let pushToTalkKeyActive = false;
+  let inputAudioMode = "vad";
 
   function getRtcConfiguration() {
     const config =
@@ -124,11 +128,46 @@
   }
 
   function updatePushToTalkUi() {
-    pushToTalkBtn.disabled = !(pc && canSendControlEvent());
+    const manualMode = inputAudioMode === "manual";
+    pushToTalkBtn.disabled = !(manualMode && pc && canSendControlEvent());
+    pushToTalkBtn.classList.toggle("hidden", !manualMode);
     pushToTalkBtn.classList.toggle("active", pushToTalkActive);
     pushToTalkBtn.textContent = pushToTalkActive
       ? "Release To Commit"
       : "Hold To Talk";
+  }
+
+  function updateAudioModeHelp() {
+    if (inputAudioMode === "manual") {
+      audioModeHelpEl.textContent =
+        "Push To Talk only captures while you hold the button or space bar.";
+      return;
+    }
+    audioModeHelpEl.textContent =
+      "Auto VAD streams continuously and lets the server detect utterance boundaries.";
+  }
+
+  function setInputAudioMode(mode) {
+    inputAudioMode = mode === "manual" ? "manual" : "vad";
+    audioModeAutoEl.checked = inputAudioMode === "vad";
+    audioModePushEl.checked = inputAudioMode === "manual";
+    if (inputAudioMode !== "manual") {
+      pushToTalkActive = false;
+      pushToTalkKeyActive = false;
+    }
+    updateAudioModeHelp();
+    updatePushToTalkUi();
+  }
+
+  function sendSessionModeUpdate() {
+    return sendControlEvent({
+      type: "session.update",
+      session: {
+        audio: {
+          input_mode: inputAudioMode,
+        },
+      },
+    });
   }
 
   function stopMicLevelMeter() {
@@ -278,6 +317,9 @@
   }
 
   function beginPushToTalk(source) {
+    if (inputAudioMode !== "manual") {
+      return;
+    }
     if (pushToTalkActive) {
       return;
     }
@@ -291,6 +333,9 @@
   }
 
   function commitPushToTalk(source) {
+    if (inputAudioMode !== "manual") {
+      return;
+    }
     if (!pushToTalkActive) {
       return;
     }
@@ -332,7 +377,10 @@
     const rtcConfiguration = getRtcConfiguration();
     pc = new RTCPeerConnection(rtcConfiguration);
     dc = pc.createDataChannel("events");
-    dc.addEventListener("open", updatePushToTalkUi);
+    dc.addEventListener("open", () => {
+      sendSessionModeUpdate();
+      updatePushToTalkUi();
+    });
     dc.addEventListener("close", () => {
       pushToTalkActive = false;
       updatePushToTalkUi();
@@ -377,6 +425,7 @@
           type: offer.type,
           instructions: instructionsEl.value.trim(),
           output_text: Boolean(textOutputEl.checked),
+          input_audio_mode: inputAudioMode,
         }),
       });
     } catch (err) {
@@ -476,6 +525,9 @@
   });
 
   window.addEventListener("keydown", (event) => {
+    if (inputAudioMode !== "manual") {
+      return;
+    }
     if (event.code !== "Space" || event.repeat) {
       return;
     }
@@ -488,6 +540,9 @@
     beginPushToTalk("space");
   });
   window.addEventListener("keyup", (event) => {
+    if (inputAudioMode !== "manual") {
+      return;
+    }
     if (event.code !== "Space" || !pushToTalkKeyActive) {
       return;
     }
@@ -496,8 +551,30 @@
     commitPushToTalk("space");
   });
   window.addEventListener("blur", () => {
+    if (inputAudioMode !== "manual") {
+      return;
+    }
     pushToTalkKeyActive = false;
     commitPushToTalk("window-blur");
+  });
+
+  audioModeAutoEl.addEventListener("change", () => {
+    if (!audioModeAutoEl.checked) {
+      return;
+    }
+    setInputAudioMode("vad");
+    if (pc && canSendControlEvent()) {
+      sendSessionModeUpdate();
+    }
+  });
+  audioModePushEl.addEventListener("change", () => {
+    if (!audioModePushEl.checked) {
+      return;
+    }
+    setInputAudioMode("manual");
+    if (pc && canSendControlEvent()) {
+      sendSessionModeUpdate();
+    }
   });
 
   clearLogBtn.addEventListener("click", () => {
@@ -506,5 +583,6 @@
 
   updateMicLevel(0);
   updateRemoteLevel(0);
+  setInputAudioMode("vad");
   updatePushToTalkUi();
 })();

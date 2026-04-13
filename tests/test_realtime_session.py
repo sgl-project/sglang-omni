@@ -150,6 +150,13 @@ class _FakeVad:
         self.last_speech_ratio = 0.0
         return _FakeVadEvent(speech_stopped=True)
 
+    def reset(self) -> None:
+        self.speaking = False
+        self.last_frame_count = 0
+        self.last_voiced_frame_count = 0
+        self.last_speech_ratio = 0.0
+        self._call_count = 0
+
 
 def _make_session(
     backend,
@@ -336,3 +343,40 @@ async def test_realtime_session_supports_manual_push_to_talk_commit():
     assert any(event["type"] == "turn.prepared" for event in channel.messages)
     assert any(event["type"] == "response.done" for event in channel.messages)
     assert len(output_track.enqueue_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_realtime_session_can_switch_between_vad_and_manual_modes():
+    backend = _ScriptedBackend()
+    session, _output_track, channel = _make_session(backend)
+
+    assert session.turn_mode == "vad"
+
+    await session.handle_client_event(
+        {
+            "type": "session.update",
+            "session": {"audio": {"input_mode": "manual"}},
+        }
+    )
+
+    assert session.turn_mode == "manual"
+    assert session.manual_recording is False
+    assert channel.messages[-1]["type"] == "session.updated"
+    assert channel.messages[-1]["session"]["audio"]["input_mode"] == "manual"
+
+    await session.handle_audio_chunk(
+        np.full(1600, 0.2, dtype=np.float32), 16000, timestamp=1.0
+    )
+    assert session.active_task is None
+
+    await session.handle_client_event(
+        {
+            "type": "session.update",
+            "session": {"audio": {"input_mode": "vad"}},
+        }
+    )
+
+    assert session.turn_mode == "vad"
+    assert session.manual_recording is False
+    assert channel.messages[-1]["type"] == "session.updated"
+    assert channel.messages[-1]["session"]["audio"]["input_mode"] == "vad"

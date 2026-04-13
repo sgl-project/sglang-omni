@@ -112,6 +112,7 @@ async def test_realtime_session_manager_close_swallows_consumer_failures():
         instructions=None,
         max_new_tokens=32,
         output_text=False,
+        input_audio_mode="vad",
         vad=None,
     )
 

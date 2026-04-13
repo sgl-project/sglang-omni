@@ -12,7 +12,7 @@ import time
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse
@@ -92,6 +92,7 @@ class RealtimeOfferRequest(BaseModel):
     instructions: str | None = None
     max_new_tokens: int = 256
     output_text: bool = True
+    input_audio_mode: Literal["vad", "manual"] = "vad"
     vad: RealtimeVadRequest | None = None
 
 
@@ -125,6 +126,7 @@ class RealtimeSessionManager:
         instructions: str | None,
         max_new_tokens: int,
         output_text: bool,
+        input_audio_mode: str,
         vad: RealtimeVadRequest | None,
     ) -> SessionHandle:
         if not AIORTC_AVAILABLE:
@@ -161,6 +163,7 @@ class RealtimeSessionManager:
                 instructions
                 or "You are a concise, natural voice assistant. Answer conversationally."
             ),
+            input_audio_mode=input_audio_mode,
             vad=vad_config,
         )
         session = RealtimeSession(
@@ -241,6 +244,7 @@ def create_realtime_router(
             instructions=req.instructions,
             max_new_tokens=req.max_new_tokens,
             output_text=req.output_text,
+            input_audio_mode=req.input_audio_mode,
             vad=req.vad,
         )
         session = handle.session
@@ -258,6 +262,7 @@ def create_realtime_router(
                         "session.created",
                         model=session.backend.model_name,
                         instructions=session.instructions,
+                        audio={"input_mode": session.turn_mode},
                     )
                 )
 
