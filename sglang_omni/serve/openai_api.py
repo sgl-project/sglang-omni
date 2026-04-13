@@ -98,6 +98,14 @@ def create_app(
         )
     except Exception:
         logger.exception("Failed to register realtime prototype routes")
+    try:
+        from sglang_omni.serve.realtime_ws_api import create_realtime_ws_router
+
+        app.include_router(
+            create_realtime_ws_router(client, model_name=app.state.model_name)
+        )
+    except Exception:
+        logger.exception("Failed to register realtime websocket routes")
 
     return app
 
