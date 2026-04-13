@@ -20,6 +20,11 @@ def _right_pad_last_dim(tensor: torch.Tensor, target_len: int) -> torch.Tensor:
     return F.pad(tensor, (0, target_len - current_len))
 
 
+QWEN3_AUDIO_TIME_PAD_KEYS = {"input_features", "feature_attention_mask"}
+QWEN3_AUDIO_FEATURES_RANK = 3
+QWEN3_AUDIO_MASK_RANK = 2
+
+
 # -----------------------------------------------------------------------------
 # Data Structures
 # -----------------------------------------------------------------------------
@@ -132,9 +137,6 @@ class EncoderInputPreparer:
     """Converts EncoderBatchData to model inputs."""
 
     EXCLUDED_KEYS = {"cache_key", "_skip", "_result"}
-    QWEN3_AUDIO_TIME_PAD_KEYS = {"input_features", "feature_attention_mask"}
-    QWEN3_AUDIO_FEATURES_RANK = 3
-    QWEN3_AUDIO_MASK_RANK = 2
 
     def __init__(self, pad_token_id: int = 0):
         self.pad_token_id = pad_token_id
@@ -146,7 +148,7 @@ class EncoderInputPreparer:
         tensors: list[torch.Tensor],
         device: torch.device,
     ) -> torch.Tensor:
-        if key not in self.QWEN3_AUDIO_TIME_PAD_KEYS:
+        if key not in QWEN3_AUDIO_TIME_PAD_KEYS:
             return torch.cat(tensors, dim=0).to(device)
 
         # Qwen3-Omni pads within each request but can still produce different
@@ -154,9 +156,9 @@ class EncoderInputPreparer:
         # the audio tower receives one padded batch plus the original feature
         # masks / lengths.
         expected_dim = (
-            self.QWEN3_AUDIO_FEATURES_RANK
+            QWEN3_AUDIO_FEATURES_RANK
             if key == "input_features"
-            else self.QWEN3_AUDIO_MASK_RANK
+            else QWEN3_AUDIO_MASK_RANK
         )
         if any(tensor.dim() != expected_dim for tensor in tensors):
             raise ValueError(
