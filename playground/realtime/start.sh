@@ -9,11 +9,13 @@ set -euo pipefail
 #   uv pip install -e ".[realtime]"
 #
 # Usage:
-#   ./playground/realtime/start.sh [--mock] [realtime-options] [serve-options...]
+#   ./playground/realtime/start.sh [--mock] [realtime-options] [backend-options...]
 # ---------------------------------------------------------------------------
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 PYTHON_BIN="${PYTHON_BIN:-python}"
+BACKEND_ENTRY="${REPO_ROOT}/examples/run_qwen3_omni_speech_server.py"
 
 BACKEND_PORT="${PORT:-8000}"
 PLAYGROUND_PORT="7861"
@@ -42,12 +44,12 @@ BACKEND_ARGS=()
 usage() {
   cat <<'EOF'
 Usage:
-  ./playground/realtime/start.sh [--mock] [realtime-options] [serve-options...]
+  ./playground/realtime/start.sh [--mock] [realtime-options] [backend-options...]
 
 Description:
   Launch the standalone realtime frontend plus either:
   - the mock realtime backend with --mock, or
-  - the normal sglang_omni serve backend with forwarded serve-options.
+  - the Qwen3 Omni speech server backend with forwarded backend-options.
 
 Minimal usable commands:
   Local smoke test:
@@ -60,7 +62,7 @@ Minimal usable commands:
     ./playground/realtime/start.sh --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct
 
 Realtime options:
-  --mock                     Use the mock backend instead of sglang_omni serve.
+  --mock                     Use the mock backend instead of the Qwen3 Omni speech server.
   --port PORT                Backend API port. Default: 8000.
   --playground-port PORT     Frontend UI port. Default: 7861.
   --with-turn                Start a local coturn process for ICE relay.
@@ -88,9 +90,9 @@ Mock-only options:
   --total-duration SECONDS
   --tone-frequency HZ
 
-Serve options:
+Backend options:
   Any unrecognized options are forwarded to:
-    python -m sglang_omni.cli.cli serve
+    python examples/run_qwen3_omni_speech_server.py
 
   In normal backend mode you typically want:
     --model-path MODEL_OR_PATH
@@ -322,7 +324,7 @@ if [[ "${MOCK_BACKEND}" == "1" ]]; then
     "${MOCK_ARGS[@]}" &
 else
   echo "[${STEP_LABEL/1/2}] Starting backend server with arguments: ${BACKEND_ARGS[@]}"
-  "${PYTHON_BIN}" -m sglang_omni.cli.cli serve \
+  "${PYTHON_BIN}" "${BACKEND_ENTRY}" \
     "${BACKEND_ARGS[@]}" \
     --port "${BACKEND_PORT}" &
 fi
