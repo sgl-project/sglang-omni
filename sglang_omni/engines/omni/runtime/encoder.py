@@ -160,6 +160,7 @@ class EncoderInputPreparer:
                 f"tensor_shapes={[tuple(tensor.shape) for tensor in tensors]}"
             )
 
+        # Note (Chenyang, Ratish):
         # Only the last (time) dim is padded; all non-time dims must match
         # across requests. Catching the mismatch here surfaces a clear error
         # instead of a silent shape bug downstream.
