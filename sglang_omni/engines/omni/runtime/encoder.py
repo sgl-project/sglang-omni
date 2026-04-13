@@ -19,7 +19,7 @@ _AUDIO_MASK_NDIM = 2
 def _right_pad_last_dim(
     tensor: torch.Tensor, target_len: int, pad_value: float | int = 0.0
 ) -> torch.Tensor:
-    """Right-pad only the last dimension of tensor`` to target_len.
+    """Right-pad only the last dimension of tensor to target_len.
 
     Note (Chenyang):
     Returns the tensor unchanged if its last dimension already meets or
