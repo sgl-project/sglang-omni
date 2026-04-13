@@ -19,22 +19,17 @@ _AUDIO_MASK_NDIM = 2
 def _right_pad_last_dim(
     tensor: torch.Tensor, target_len: int, pad_value: float | int = 0.0
 ) -> torch.Tensor:
-    """Right-pad only the last dimension of ``tensor`` to ``target_len``.
+    """Right-pad only the last dimension of tensor`` to target_len.
 
-    Returns the tensor unchanged if its last dimension already meets or exceeds
-    ``target_len``. ``pad_value`` is cast by ``F.pad`` to the tensor's dtype,
+    Note (Chenyang):
+    Returns the tensor unchanged if its last dimension already meets or
+    exceeds target_len. pad_value is cast by F.pad to the tensor's dtype,
     so both float and int are accepted for use with feature/mask tensors.
     """
     current_len = tensor.shape[-1]
     if current_len >= target_len:
         return tensor
     return F.pad(tensor, (0, target_len - current_len), value=pad_value)
-
-
-# -----------------------------------------------------------------------------
-# Data Structures
-# -----------------------------------------------------------------------------
-
 
 @dataclass
 class EncoderRequestData:
@@ -56,11 +51,6 @@ class EncoderBatchData:
     input_dicts: list[dict[str, Any]] | None = None
     active_indices: list[int] | None = None
     skip_results: list[dict[str, Any] | None] | None = None
-
-
-# -----------------------------------------------------------------------------
-# BatchPlanner
-# -----------------------------------------------------------------------------
 
 
 class EncoderBatchPlanner:
@@ -132,11 +122,6 @@ class EncoderBatchPlanner:
 
     def is_finished(self, request: SchedulerRequest, output: RequestOutput) -> bool:
         return True  # Encoder always done in one pass
-
-
-# -----------------------------------------------------------------------------
-# InputPreparer
-# -----------------------------------------------------------------------------
 
 
 class EncoderInputPreparer:
@@ -380,9 +365,6 @@ class EncoderOutputProcessor:
         else:
             return self._process_text_embedding(model_output, scheduler_output)
 
-    # -------------------------------------------------------------------------
-    # Multimodal Processing
-    # -------------------------------------------------------------------------
 
     def _process_multimodal(
         self,
