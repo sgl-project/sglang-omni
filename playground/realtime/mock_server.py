@@ -66,7 +66,6 @@ def create_app(args: argparse.Namespace) -> FastAPI:
         create_realtime_router(
             model_name=args.model_name,
             backend_factory=backend_factory,
-            audio_debug_dump_dir=args.dump_audio_dir,
         )
     )
 

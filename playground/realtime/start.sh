@@ -80,7 +80,7 @@ Realtime options:
 Mock-only options:
   --response-text TEXT
   --audio-mode MODE         Mock audio mode: tone or echo. Default: tone.
-  --dump-audio-dir DIR      Save per-turn ingest-stage WAVs and mock capture WAVs into DIR.
+  --dump-audio-dir DIR      Save mock turn-context WAVs into DIR.
   --model-name NAME
   --sample-rate HZ
   --chunk-duration SECONDS

@@ -58,33 +58,6 @@ def mono_float32(audio: Any) -> np.ndarray:
     return np.clip(arr, -1.0, 1.0)
 
 
-def float32_audio_for_wav(audio: Any) -> np.ndarray:
-    """Normalize arbitrary audio into float32 shaped for soundfile.write."""
-    arr = np.asarray(audio)
-    if arr.ndim == 0:
-        arr = arr.reshape(1)
-
-    if np.issubdtype(arr.dtype, np.integer):
-        scale = max(abs(np.iinfo(arr.dtype).min), np.iinfo(arr.dtype).max)
-        arr = arr.astype(np.float32) / float(scale)
-    else:
-        arr = arr.astype(np.float32, copy=False)
-
-    if arr.ndim == 1:
-        return np.clip(arr, -1.0, 1.0)
-
-    if arr.ndim > 2:
-        arr = arr.reshape(arr.shape[0], -1)
-
-    if arr.shape[0] <= arr.shape[-1]:
-        arr = arr.T
-
-    arr = np.clip(arr, -1.0, 1.0)
-    if arr.ndim == 2 and arr.shape[1] == 1:
-        return arr[:, 0]
-    return arr
-
-
 def resample_linear(
     audio: np.ndarray,
     orig_sr: int,

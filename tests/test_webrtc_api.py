@@ -25,10 +25,9 @@ class _FakeSession:
         audio: np.ndarray,
         sample_rate: int,
         *,
-        raw_audio: np.ndarray | None = None,
         timestamp: float | None = None,
     ) -> None:
-        del raw_audio, timestamp
+        del timestamp
         self.calls.append((np.asarray(audio), sample_rate))
 
     async def close(self) -> None:

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-from pathlib import Path
 
 import numpy as np
 import pytest
@@ -154,8 +153,6 @@ class _FakeVad:
 
 def _make_session(
     backend,
-    *,
-    audio_debug_dump_dir: str | None = None,
 ) -> tuple[RealtimeSession, _FakeOutputTrack, _FakeChannel]:
     output_track = _FakeOutputTrack()
     channel = _FakeChannel()
@@ -171,7 +168,6 @@ def _make_session(
                 min_silence_s=0.1,
                 preroll_s=0.0,
             ),
-            audio_debug_dump_dir=audio_debug_dump_dir,
         ),
     )
     session.vad = _FakeVad()
@@ -340,35 +336,3 @@ async def test_realtime_session_supports_manual_push_to_talk_commit():
     assert any(event["type"] == "turn.prepared" for event in channel.messages)
     assert any(event["type"] == "response.done" for event in channel.messages)
     assert len(output_track.enqueue_calls) == 1
-
-
-@pytest.mark.asyncio
-async def test_realtime_session_dumps_audio_ingest_stages_per_turn(tmp_path: Path):
-    backend = _ScriptedBackend()
-    session, _output_track, _channel = _make_session(
-        backend,
-        audio_debug_dump_dir=str(tmp_path),
-    )
-
-    await session.handle_client_event({"type": "input_audio_buffer.start"})
-    stereo_chunk = np.array(
-        [[1000, 2000, 3000], [-1000, -2000, -3000]],
-        dtype=np.int16,
-    )
-    await session.handle_audio_chunk(
-        stereo_chunk,
-        48000,
-        raw_audio=stereo_chunk,
-        timestamp=1.0,
-    )
-    await session.handle_client_event({"type": "input_audio_buffer.commit"})
-
-    task = session.active_task
-    assert task is not None
-    await asyncio.wait_for(task, timeout=1.0)
-
-    turn_dir = tmp_path / "session-1" / "turn_0001"
-    assert turn_dir.is_dir()
-    assert (turn_dir / "01_decoded_input_sr48000.wav").is_file()
-    assert (turn_dir / "02_mono_mixdown_sr48000.wav").is_file()
-    assert (turn_dir / "03_turn_resampled_sr16000.wav").is_file()
