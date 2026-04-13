@@ -18,8 +18,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--response-text",
         type=str,
-        default="Mock backend replaying captured user audio.",
+        default="Mock backend streaming a test tone.",
     )
+    parser.add_argument(
+        "--audio-mode",
+        type=str,
+        choices=("tone", "echo"),
+        default="tone",
+    )
+    parser.add_argument("--dump-audio-dir", type=str, default=None)
     parser.add_argument("--sample-rate", type=int, default=24000)
     parser.add_argument("--chunk-duration", type=float, default=0.24)
     parser.add_argument("--chunk-delay", type=float, default=0.08)
@@ -46,6 +53,8 @@ def create_app(args: argparse.Namespace) -> FastAPI:
             model=model_name,
             output_modalities=output_modalities,
             response_text=args.response_text,
+            audio_mode=args.audio_mode,
+            dump_audio_dir=args.dump_audio_dir,
             sample_rate=args.sample_rate,
             chunk_duration_s=args.chunk_duration,
             inter_chunk_delay_s=args.chunk_delay,
@@ -57,6 +66,7 @@ def create_app(args: argparse.Namespace) -> FastAPI:
         create_realtime_router(
             model_name=args.model_name,
             backend_factory=backend_factory,
+            audio_debug_dump_dir=args.dump_audio_dir,
         )
     )
 

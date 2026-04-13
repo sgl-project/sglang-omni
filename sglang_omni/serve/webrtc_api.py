@@ -43,6 +43,7 @@ except ImportError:  # pragma: no cover - handled at runtime
 
 from sglang_omni.client import Client
 from sglang_omni.realtime.backend import OmniResponseBackend, ResponseBackend
+from sglang_omni.realtime.media import audio_frame_to_ndarray
 from sglang_omni.realtime.session import RealtimeSession, RealtimeSessionConfig
 from sglang_omni.realtime.vad import VadConfig
 
@@ -110,10 +111,12 @@ class RealtimeSessionManager:
         backend_factory: BackendFactory,
         default_model: str,
         rtc_configuration: Any | None = None,
+        audio_debug_dump_dir: str | None = None,
     ) -> None:
         self._backend_factory = backend_factory
         self._default_model = default_model
         self._rtc_configuration = rtc_configuration
+        self._audio_debug_dump_dir = audio_debug_dump_dir
         self._sessions: dict[str, SessionHandle] = {}
         self._lock = asyncio.Lock()
 
@@ -161,6 +164,7 @@ class RealtimeSessionManager:
                 or "You are a concise, natural voice assistant. Answer conversationally."
             ),
             vad=vad_config,
+            audio_debug_dump_dir=self._audio_debug_dump_dir,
         )
         session = RealtimeSession(
             session_id=session_id,
@@ -206,6 +210,7 @@ def create_realtime_router(
     *,
     model_name: str,
     backend_factory: BackendFactory | None = None,
+    audio_debug_dump_dir: str | None = None,
 ) -> APIRouter:
     if backend_factory is None:
         if client is None:
@@ -231,6 +236,9 @@ def create_realtime_router(
         backend_factory=backend_factory,
         default_model=model_name,
         rtc_configuration=_load_rtc_configuration_from_env(),
+        audio_debug_dump_dir=audio_debug_dump_dir
+        or os.environ.get("SGLANG_OMNI_AUDIO_DEBUG_DUMP_DIR")
+        or None,
     )
 
     @router.post("/v1/realtime/webrtc/offer")
@@ -333,11 +341,12 @@ async def _consume_audio_track(track: Any, session: RealtimeSession) -> None:
             )
             return
 
-        audio = frame.to_ndarray()
+        audio = audio_frame_to_ndarray(frame)
         sample_rate = frame.sample_rate or 48000
         await session.handle_audio_chunk(
             audio,
             sample_rate,
+            raw_audio=audio,
             timestamp=time.monotonic(),
         )
 

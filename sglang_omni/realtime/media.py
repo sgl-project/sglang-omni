@@ -9,16 +9,39 @@ import numpy as np
 from PIL import Image
 
 
+def audio_frame_to_ndarray(frame: Any) -> np.ndarray:
+    """Decode a PyAV audio frame into a canonical mono/stereo ndarray."""
+    arr = np.asarray(frame.to_ndarray())
+
+    layout = getattr(frame, "layout", None)
+    channels = max(len(getattr(layout, "channels", ()) or ()), 1)
+    format_obj = getattr(frame, "format", None)
+    is_planar = bool(getattr(format_obj, "is_planar", False))
+
+    if channels <= 1:
+        return arr.reshape(-1)
+
+    if is_planar:
+        if arr.ndim == 1:
+            return arr.reshape(channels, -1)
+        if arr.shape[0] == channels:
+            return arr
+        if arr.shape[-1] == channels:
+            return arr.T
+        return arr.reshape(channels, -1)
+
+    flat = arr.reshape(-1)
+    usable = (flat.size // channels) * channels
+    if usable <= 0:
+        return np.zeros(0, dtype=arr.dtype)
+    return flat[:usable].reshape(-1, channels).T
+
+
 def mono_float32(audio: Any) -> np.ndarray:
     """Normalize arbitrary mono/stereo audio into mono float32 in [-1, 1]."""
     arr = np.asarray(audio)
     if arr.ndim == 0:
         arr = arr.reshape(1)
-    if arr.ndim > 1:
-        if arr.shape[0] <= arr.shape[-1]:
-            arr = arr.mean(axis=0)
-        else:
-            arr = arr.mean(axis=1)
 
     if np.issubdtype(arr.dtype, np.integer):
         scale = max(abs(np.iinfo(arr.dtype).min), np.iinfo(arr.dtype).max)
@@ -26,7 +49,40 @@ def mono_float32(audio: Any) -> np.ndarray:
     else:
         arr = arr.astype(np.float32, copy=False)
 
+    if arr.ndim > 1:
+        if arr.shape[0] <= arr.shape[-1]:
+            arr = arr.mean(axis=0)
+        else:
+            arr = arr.mean(axis=1)
+
     return np.clip(arr, -1.0, 1.0)
+
+
+def float32_audio_for_wav(audio: Any) -> np.ndarray:
+    """Normalize arbitrary audio into float32 shaped for soundfile.write."""
+    arr = np.asarray(audio)
+    if arr.ndim == 0:
+        arr = arr.reshape(1)
+
+    if np.issubdtype(arr.dtype, np.integer):
+        scale = max(abs(np.iinfo(arr.dtype).min), np.iinfo(arr.dtype).max)
+        arr = arr.astype(np.float32) / float(scale)
+    else:
+        arr = arr.astype(np.float32, copy=False)
+
+    if arr.ndim == 1:
+        return np.clip(arr, -1.0, 1.0)
+
+    if arr.ndim > 2:
+        arr = arr.reshape(arr.shape[0], -1)
+
+    if arr.shape[0] <= arr.shape[-1]:
+        arr = arr.T
+
+    arr = np.clip(arr, -1.0, 1.0)
+    if arr.ndim == 2 and arr.shape[1] == 1:
+        return arr[:, 0]
+    return arr
 
 
 def resample_linear(

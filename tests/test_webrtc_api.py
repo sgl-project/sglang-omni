@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 
+import av
 import numpy as np
 import pytest
 
@@ -24,28 +25,21 @@ class _FakeSession:
         audio: np.ndarray,
         sample_rate: int,
         *,
+        raw_audio: np.ndarray | None = None,
         timestamp: float | None = None,
     ) -> None:
+        del raw_audio, timestamp
         self.calls.append((np.asarray(audio), sample_rate))
 
     async def close(self) -> None:
         return
 
 
-class _FakeAudioFrame:
-    def __init__(self, audio: np.ndarray, sample_rate: int = 48000) -> None:
-        self._audio = audio
-        self.sample_rate = sample_rate
-
-    def to_ndarray(self) -> np.ndarray:
-        return self._audio
-
-
 class _FakeAudioTrack:
-    def __init__(self, frames: list[_FakeAudioFrame]) -> None:
+    def __init__(self, frames: list[av.AudioFrame]) -> None:
         self._frames = list(frames)
 
-    async def recv(self) -> _FakeAudioFrame:
+    async def recv(self) -> av.AudioFrame:
         if self._frames:
             return self._frames.pop(0)
         raise RuntimeError("done")
@@ -79,13 +73,33 @@ class _FakeBackend:
 async def test_consume_audio_track_accepts_pyav_frames_without_format_kwarg():
     session = _FakeSession()
     audio = np.array([[1000, -1000, 500, -500]], dtype=np.int16)
-    track = _FakeAudioTrack([_FakeAudioFrame(audio, sample_rate=24000)])
+    frame = av.AudioFrame.from_ndarray(audio, format="s16", layout="mono")
+    frame.sample_rate = 24000
+    track = _FakeAudioTrack([frame])
 
     await _consume_audio_track(track, session)
 
     assert len(session.calls) == 1
-    np.testing.assert_array_equal(session.calls[0][0], audio)
+    np.testing.assert_array_equal(session.calls[0][0], audio.reshape(-1))
     assert session.calls[0][1] == 24000
+
+
+@pytest.mark.asyncio
+async def test_consume_audio_track_deinterleaves_packed_stereo_frames():
+    session = _FakeSession()
+    packed = np.array([[1000, -1000, 2000, -2000, 3000, -3000]], dtype=np.int16)
+    frame = av.AudioFrame.from_ndarray(packed, format="s16", layout="stereo")
+    frame.sample_rate = 48000
+    track = _FakeAudioTrack([frame])
+
+    await _consume_audio_track(track, session)
+
+    assert len(session.calls) == 1
+    np.testing.assert_array_equal(
+        session.calls[0][0],
+        np.array([[1000, 2000, 3000], [-1000, -2000, -3000]], dtype=np.int16),
+    )
+    assert session.calls[0][1] == 48000
 
 
 @pytest.mark.asyncio

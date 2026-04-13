@@ -79,6 +79,8 @@ Realtime options:
 
 Mock-only options:
   --response-text TEXT
+  --audio-mode MODE         Mock audio mode: tone or echo. Default: tone.
+  --dump-audio-dir DIR      Save per-turn ingest-stage WAVs and mock capture WAVs into DIR.
   --model-name NAME
   --sample-rate HZ
   --chunk-duration SECONDS
@@ -173,7 +175,7 @@ while [[ $# -gt 0 ]]; do
     --turn-public-ip)     TURN_PUBLIC_IP="$2"; shift 2 ;;
     --turn-min-port)      TURN_MIN_PORT="$2"; shift 2 ;;
     --turn-max-port)      TURN_MAX_PORT="$2"; shift 2 ;;
-    --response-text|--model-name|--sample-rate|--chunk-duration|--chunk-delay|--total-duration|--tone-frequency)
+    --response-text|--audio-mode|--dump-audio-dir|--model-name|--sample-rate|--chunk-duration|--chunk-delay|--total-duration|--tone-frequency)
                          MOCK_ARGS+=("$1" "$2"); shift 2 ;;
     --pipeline)           shift 2 ;;
     *)                    BACKEND_ARGS+=("$1"); shift ;;

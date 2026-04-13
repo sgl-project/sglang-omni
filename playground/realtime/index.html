@@ -54,6 +54,23 @@
       button.secondary {
         background: #30363d;
       }
+      a.secondary-link {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 999px;
+        padding: 10px 18px;
+        font-weight: 600;
+        background: #30363d;
+        color: white;
+        text-decoration: none;
+      }
+      button.warning {
+        background: #8b2d2d;
+      }
+      button.warning.active {
+        background: #d93838;
+      }
       button:disabled {
         opacity: 0.5;
         cursor: default;
@@ -145,6 +162,7 @@
         <div class="row" style="margin-top: 14px">
           <button id="connect">Connect</button>
           <button id="disconnect" class="secondary" disabled>Disconnect</button>
+          <button id="push-to-talk" class="warning" disabled>Hold To Talk</button>
           <span class="status" id="status">Idle</span>
         </div>
         <video
@@ -170,6 +188,26 @@
           </div>
           <div class="meter-track" aria-hidden="true">
             <div id="remote-level-fill" class="meter-fill"></div>
+          </div>
+        </div>
+        <div class="meter">
+          <div class="meter-label">
+            <span>Last local capture</span>
+            <span id="local-capture-text">No capture</span>
+          </div>
+          <audio
+            id="local-capture-audio"
+            class="hidden"
+            controls
+            preload="metadata"
+          ></audio>
+          <div class="row" style="margin-top: 12px">
+            <a
+              id="local-capture-download"
+              class="secondary-link hidden"
+              download="local-capture.wav"
+              href="#"
+            >Download capture</a>
           </div>
         </div>
         <audio id="remote-audio" controls autoplay playsinline></audio>

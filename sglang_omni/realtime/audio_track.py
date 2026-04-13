@@ -59,6 +59,10 @@ class BufferedAudioStreamTrack(AudioStreamTrack):
             if self._buffer.shape[0] >= self.frame_samples:
                 pcm_i16 = self._buffer[: self.frame_samples]
                 self._buffer = self._buffer[self.frame_samples :]
+            elif self._buffer.shape[0] > 0:
+                pcm_i16 = np.zeros(self.frame_samples, dtype=np.int16)
+                pcm_i16[: self._buffer.shape[0]] = self._buffer
+                self._buffer = np.zeros(0, dtype=np.int16)
             else:
                 pcm_i16 = np.zeros(self.frame_samples, dtype=np.int16)
 

@@ -27,6 +27,7 @@ class TurnContext:
     user_audio_sample_rate: int | None
     recent_video: Any | None
     recent_video_fps: float | None
+    turn_index: int | None = None
 
 
 @dataclass

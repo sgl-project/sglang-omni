@@ -4,6 +4,7 @@ import asyncio
 
 import numpy as np
 import pytest
+import soundfile as sf
 
 from sglang_omni.realtime.backend import MockResponseBackend, TurnContext
 
@@ -12,6 +13,7 @@ from sglang_omni.realtime.backend import MockResponseBackend, TurnContext
 async def test_mock_response_backend_streams_text_and_audio():
     backend = MockResponseBackend(
         response_text="Mock backend replayed the captured utterance.",
+        audio_mode="echo",
         inter_chunk_delay_s=0.0,
         total_duration_s=0.2,
         chunk_duration_s=0.1,
@@ -46,6 +48,7 @@ async def test_mock_response_backend_streams_text_and_audio():
 @pytest.mark.asyncio
 async def test_mock_response_backend_falls_back_to_tone_without_audio():
     backend = MockResponseBackend(
+        audio_mode="echo",
         inter_chunk_delay_s=0.0,
         total_duration_s=0.05,
         chunk_duration_s=0.05,
@@ -71,8 +74,39 @@ async def test_mock_response_backend_falls_back_to_tone_without_audio():
 
 
 @pytest.mark.asyncio
+async def test_mock_response_backend_tone_mode_ignores_user_audio():
+    backend = MockResponseBackend(
+        audio_mode="tone",
+        inter_chunk_delay_s=0.0,
+        total_duration_s=0.05,
+        chunk_duration_s=0.05,
+        sample_rate=24000,
+    )
+    turn = TurnContext(
+        session_id="session-1",
+        history=[],
+        instructions=None,
+        user_text="hello",
+        user_audio=np.linspace(-0.9, 0.9, 128, dtype=np.float32),
+        user_audio_sample_rate=16000,
+        recent_video=None,
+        recent_video_fps=None,
+    )
+
+    events = [event async for event in backend.stream_response(turn)]
+    audio_events = [event for event in events if event.type == "audio_chunk"]
+    tone_audio = np.concatenate([event.audio for event in audio_events])
+
+    assert audio_events
+    assert [event.sample_rate for event in audio_events] == [24000]
+    assert tone_audio.shape != turn.user_audio.shape
+    assert np.any(tone_audio != 0.0)
+
+
+@pytest.mark.asyncio
 async def test_mock_response_backend_cancel_stops_stream():
     backend = MockResponseBackend(
+        audio_mode="echo",
         inter_chunk_delay_s=0.05,
         total_duration_s=0.4,
         chunk_duration_s=0.1,
@@ -101,3 +135,33 @@ async def test_mock_response_backend_cancel_stops_stream():
     assert events[0].type == "response_started"
     assert events[-1].type == "done"
     assert events[-1].finish_reason == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_mock_response_backend_dumps_captured_wav(tmp_path):
+    backend = MockResponseBackend(
+        audio_mode="echo",
+        dump_audio_dir=str(tmp_path),
+        inter_chunk_delay_s=0.0,
+        chunk_duration_s=0.05,
+    )
+    user_audio = np.linspace(-0.2, 0.2, 160, dtype=np.float32)
+    turn = TurnContext(
+        session_id="session-1",
+        history=[],
+        instructions=None,
+        user_text="hello",
+        user_audio=user_audio,
+        user_audio_sample_rate=16000,
+        recent_video=None,
+        recent_video_fps=None,
+    )
+
+    _events = [event async for event in backend.stream_response(turn)]
+
+    dumped = sorted(tmp_path.glob("*_captured.wav"))
+    assert len(dumped) == 1
+
+    dumped_audio, dumped_sr = sf.read(dumped[0], dtype="float32")
+    assert dumped_sr == 16000
+    np.testing.assert_allclose(dumped_audio, user_audio, atol=1e-4)

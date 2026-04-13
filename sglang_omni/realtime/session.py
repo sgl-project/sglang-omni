@@ -6,18 +6,28 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import logging
 import time
 from collections import deque
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 import numpy as np
+import soundfile as sf
 import torch
 
 from sglang_omni.realtime.backend import ResponseBackend, TurnContext
-from sglang_omni.realtime.media import mono_float32, resample_linear, resize_rgb_frame
+from sglang_omni.realtime.media import (
+    float32_audio_for_wav,
+    mono_float32,
+    resample_linear,
+    resize_rgb_frame,
+)
 from sglang_omni.realtime.utils import throttle
 from sglang_omni.realtime.vad import EnergyVad, VadConfig
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -58,6 +68,17 @@ class PendingTurn:
     sample_rate: int
     user_text: str | None
     speech_end_ts: float | None
+    turn_index: int
+
+
+@dataclass
+class AudioDebugTurnState:
+    decoded_chunks: list[np.ndarray] = field(default_factory=list)
+    decoded_sample_rate: int | None = None
+    mono_chunks: list[np.ndarray] = field(default_factory=list)
+    mono_sample_rate: int | None = None
+    resampled_chunks: list[np.ndarray] = field(default_factory=list)
+    resampled_sample_rate: int | None = None
 
 
 @dataclass
@@ -68,6 +89,7 @@ class RealtimeSessionConfig:
     input_audio_sample_rate: int = 16000
     vad: VadConfig = field(default_factory=VadConfig)
     video: VideoBufferConfig = field(default_factory=VideoBufferConfig)
+    audio_debug_dump_dir: str | None = None
 
 
 class RealtimeSession:
@@ -92,6 +114,8 @@ class RealtimeSession:
         self.current_audio = AudioTurnState(sample_rate=config.input_audio_sample_rate)
         self.video = VideoBufferState(config=config.video)
         self._audio_chunk_count = 0
+        self.turn_mode = "vad"
+        self.manual_recording = False
 
         self.vad = EnergyVad(config.vad)
         self._preroll_chunks: deque[np.ndarray] = deque()
@@ -101,6 +125,15 @@ class RealtimeSession:
         self._response_lock = asyncio.Lock()
         self._closed = False
         self._throttle_state: dict[str, float] = {}
+        self._audio_debug_dump_dir = (
+            Path(config.audio_debug_dump_dir).expanduser()
+            if config.audio_debug_dump_dir
+            else None
+        )
+        if self._audio_debug_dump_dir is not None:
+            self._audio_debug_dump_dir.mkdir(parents=True, exist_ok=True)
+        self._audio_debug_current = AudioDebugTurnState()
+        self._turn_index = 0
 
         self.active_response_id: str | None = None
         self.active_task: asyncio.Task[None] | None = None
@@ -147,6 +180,50 @@ class RealtimeSession:
                 )
             return
 
+        if event_type == "input_audio_buffer.start":
+            if (
+                self._closed
+                or self.active_response_id is not None
+                or self.assistant_playing
+            ):
+                return
+            self.turn_mode = "manual"
+            self.manual_recording = True
+            self.current_audio = AudioTurnState(
+                sample_rate=self.config.input_audio_sample_rate,
+                speech_start_ts=time.monotonic(),
+            )
+            self._reset_audio_debug_current()
+            self._preroll_chunks.clear()
+            self._preroll_samples = 0
+            await self.emit_event("input_audio_buffer.manual_started")
+            return
+
+        if event_type == "input_audio_buffer.commit":
+            if self.turn_mode != "manual":
+                return
+            self.manual_recording = False
+            if not self.current_audio.chunks:
+                await self.emit_event("input_audio_buffer.manual_committed", empty=True)
+                self.current_audio = AudioTurnState(
+                    sample_rate=self.config.input_audio_sample_rate
+                )
+                return
+
+            self.current_audio.speech_end_ts = time.monotonic()
+            await self.emit_event(
+                "input_audio_buffer.manual_committed",
+                empty=False,
+                sample_count=int(
+                    sum(chunk.size for chunk in self.current_audio.chunks)
+                ),
+            )
+            pending = self._consume_pending_turn()
+            if pending is not None and self.active_task is None:
+                self.assistant_playing = True
+                self.active_task = asyncio.create_task(self._run_response(pending))
+            return
+
         if event_type == "conversation.item.create":
             item = payload.get("item") or {}
             if item.get("role") == "user" and isinstance(item.get("content"), str):
@@ -182,6 +259,7 @@ class RealtimeSession:
         audio: np.ndarray,
         sample_rate: int,
         *,
+        raw_audio: np.ndarray | None = None,
         timestamp: float | None = None,
     ) -> None:
         if (
@@ -192,17 +270,50 @@ class RealtimeSession:
             return
 
         ts = timestamp if timestamp is not None else time.monotonic()
+        decoded_audio = audio if raw_audio is None else raw_audio
+        decoded_wav = float32_audio_for_wav(decoded_audio)
         chunk = mono_float32(audio)
+        mono_wav = float32_audio_for_wav(chunk)
         if sample_rate != self.config.input_audio_sample_rate:
             chunk = resample_linear(
                 chunk,
                 sample_rate,
                 self.config.input_audio_sample_rate,
             )
+        resampled_wav = float32_audio_for_wav(chunk)
         if chunk.size == 0:
             return
 
         self._audio_chunk_count += 1
+        if self.turn_mode == "manual":
+            if not self.manual_recording:
+                return
+            self.current_audio.chunks.append(chunk)
+            self._append_audio_debug_chunk(
+                decoded_audio=decoded_wav,
+                decoded_sample_rate=sample_rate,
+                mono_audio=mono_wav,
+                mono_sample_rate=sample_rate,
+                resampled_audio=resampled_wav,
+                resampled_sample_rate=self.config.input_audio_sample_rate,
+            )
+            rms = self.vad.measure_level(chunk)
+            dc_offset = float(np.mean(chunk)) if chunk.size else 0.0
+            await self._emit_audio_chunk_received(
+                timestamp=ts,
+                chunk_count=self._audio_chunk_count,
+                sample_count=int(chunk.size),
+                sample_rate=int(self.config.input_audio_sample_rate),
+                rms=rms,
+                dc_offset=dc_offset,
+                frame_count=0,
+                voiced_frame_count=0,
+                speech_ratio=0.0,
+                speaking_before=True,
+                speaking_after=True,
+            )
+            return
+
         was_speaking = self.vad.speaking
         if not was_speaking:
             self._append_preroll(chunk)
@@ -229,11 +340,20 @@ class RealtimeSession:
                 chunks=list(self._preroll_chunks),
                 speech_start_ts=ts,
             )
+            self._reset_audio_debug_current()
             self._preroll_chunks.clear()
             self._preroll_samples = 0
             await self.emit_event("input_audio_buffer.speech_started")
         elif was_speaking:
             self.current_audio.chunks.append(chunk)
+            self._append_audio_debug_chunk(
+                decoded_audio=decoded_wav,
+                decoded_sample_rate=sample_rate,
+                mono_audio=mono_wav,
+                mono_sample_rate=sample_rate,
+                resampled_audio=resampled_wav,
+                resampled_sample_rate=self.config.input_audio_sample_rate,
+            )
 
         if event.speech_stopped and self.current_audio.chunks:
             self.current_audio.speech_end_ts = ts
@@ -297,17 +417,128 @@ class RealtimeSession:
         if not self.current_audio.chunks:
             return None
         audio = np.concatenate(self.current_audio.chunks, axis=0)
+        self._turn_index += 1
         pending = PendingTurn(
             audio=audio,
             sample_rate=self.current_audio.sample_rate,
             user_text=self.current_user_text,
             speech_end_ts=self.current_audio.speech_end_ts,
+            turn_index=self._turn_index,
+        )
+        self._dump_audio_debug_turn(
+            turn_index=self._turn_index,
+            turn_audio=audio,
+            turn_sample_rate=self.current_audio.sample_rate,
         )
         self.current_audio = AudioTurnState(
             sample_rate=self.config.input_audio_sample_rate
         )
         self.current_user_text = None
         return pending
+
+    def _reset_audio_debug_current(self) -> None:
+        self._audio_debug_current = AudioDebugTurnState()
+
+    def _append_audio_debug_chunk(
+        self,
+        *,
+        decoded_audio: np.ndarray,
+        decoded_sample_rate: int,
+        mono_audio: np.ndarray,
+        mono_sample_rate: int,
+        resampled_audio: np.ndarray,
+        resampled_sample_rate: int,
+    ) -> None:
+        if self._audio_debug_dump_dir is None:
+            return
+
+        debug = self._audio_debug_current
+        if debug.decoded_sample_rate is None:
+            debug.decoded_sample_rate = int(decoded_sample_rate)
+        elif debug.decoded_sample_rate != int(decoded_sample_rate):
+            logger.warning(
+                "Realtime session %s decoded audio sample rate changed mid-turn: %s -> %s",
+                self.session_id,
+                debug.decoded_sample_rate,
+                decoded_sample_rate,
+            )
+        if debug.mono_sample_rate is None:
+            debug.mono_sample_rate = int(mono_sample_rate)
+        if debug.resampled_sample_rate is None:
+            debug.resampled_sample_rate = int(resampled_sample_rate)
+
+        debug.decoded_chunks.append(np.array(decoded_audio, copy=True))
+        debug.mono_chunks.append(np.array(mono_audio, copy=True))
+        debug.resampled_chunks.append(np.array(resampled_audio, copy=True))
+
+    def _concat_audio_chunks(self, chunks: list[np.ndarray]) -> np.ndarray | None:
+        if not chunks:
+            return None
+        first = np.asarray(chunks[0])
+        if first.ndim == 1:
+            return np.concatenate(
+                [np.asarray(chunk).reshape(-1) for chunk in chunks], axis=0
+            )
+        return np.concatenate(
+            [
+                np.asarray(chunk).reshape(np.asarray(chunk).shape[0], -1)
+                for chunk in chunks
+            ],
+            axis=0,
+        )
+
+    def _dump_audio_debug_turn(
+        self,
+        *,
+        turn_index: int,
+        turn_audio: np.ndarray,
+        turn_sample_rate: int,
+    ) -> None:
+        if self._audio_debug_dump_dir is None:
+            return
+
+        turn_dir = (
+            self._audio_debug_dump_dir / self.session_id / f"turn_{turn_index:04d}"
+        )
+        turn_dir.mkdir(parents=True, exist_ok=True)
+
+        debug = self._audio_debug_current
+        decoded_audio = self._concat_audio_chunks(debug.decoded_chunks)
+        mono_audio = self._concat_audio_chunks(debug.mono_chunks)
+
+        try:
+            if decoded_audio is not None and debug.decoded_sample_rate is not None:
+                sf.write(
+                    turn_dir
+                    / f"01_decoded_input_sr{int(debug.decoded_sample_rate)}.wav",
+                    decoded_audio,
+                    int(debug.decoded_sample_rate),
+                )
+            if mono_audio is not None and debug.mono_sample_rate is not None:
+                sf.write(
+                    turn_dir / f"02_mono_mixdown_sr{int(debug.mono_sample_rate)}.wav",
+                    mono_audio,
+                    int(debug.mono_sample_rate),
+                )
+            sf.write(
+                turn_dir / f"03_turn_resampled_sr{int(turn_sample_rate)}.wav",
+                np.asarray(turn_audio, dtype=np.float32).reshape(-1),
+                int(turn_sample_rate),
+            )
+            logger.info(
+                "Realtime session %s dumped audio ingest stages for turn %04d to %s",
+                self.session_id,
+                turn_index,
+                turn_dir,
+            )
+        except Exception:
+            logger.exception(
+                "Failed to dump audio ingest stages for session %s turn %04d",
+                self.session_id,
+                turn_index,
+            )
+        finally:
+            self._reset_audio_debug_current()
 
     @throttle(1.0, timestamp_kw="timestamp")
     async def _emit_audio_chunk_received(
@@ -409,6 +640,7 @@ class RealtimeSession:
                 user_audio_sample_rate=pending.sample_rate,
                 recent_video=clip,
                 recent_video_fps=fps,
+                turn_index=pending.turn_index,
             )
 
             try:

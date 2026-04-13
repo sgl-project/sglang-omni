@@ -6,8 +6,10 @@ from __future__ import annotations
 import asyncio
 import uuid
 from collections.abc import AsyncIterator
+from pathlib import Path
 
 import numpy as np
+import soundfile as sf
 
 from sglang_omni.realtime.backend.base import (
     BackendCapabilities,
@@ -18,14 +20,16 @@ from sglang_omni.realtime.backend.base import (
 
 
 class MockResponseBackend(ResponseBackend):
-    """Replay captured turn audio for end-to-end smoke tests."""
+    """Stream either a pure tone or conditioned echo for smoke tests."""
 
     def __init__(
         self,
         *,
         model: str = "mock-realtime",
         output_modalities: tuple[str, ...] = ("text", "audio"),
-        response_text: str = "Mock backend replaying captured user audio.",
+        response_text: str = "Mock backend streaming a test tone.",
+        audio_mode: str = "tone",
+        dump_audio_dir: str | None = None,
         sample_rate: int = 24000,
         chunk_duration_s: float = 0.24,
         inter_chunk_delay_s: float = 0.08,
@@ -35,12 +39,22 @@ class MockResponseBackend(ResponseBackend):
         self._model = model
         self._output_modalities = output_modalities
         self._response_text = response_text.strip() or "Mock backend response."
+        self._audio_mode = audio_mode
+        self._dump_audio_dir = (
+            Path(dump_audio_dir).expanduser() if dump_audio_dir else None
+        )
         self._sample_rate = sample_rate
         self._chunk_duration_s = chunk_duration_s
         self._inter_chunk_delay_s = inter_chunk_delay_s
         self._total_duration_s = total_duration_s
         self._tone_hz = tone_hz
         self._cancel_events: dict[str, asyncio.Event] = {}
+        if self._audio_mode not in {"tone", "echo"}:
+            raise ValueError(
+                f"Unsupported mock audio mode {self._audio_mode!r}; expected 'tone' or 'echo'."
+            )
+        if self._dump_audio_dir is not None:
+            self._dump_audio_dir.mkdir(parents=True, exist_ok=True)
         self._capabilities = BackendCapabilities(
             accepts_audio_input=True,
             accepts_video_input=True,
@@ -66,6 +80,7 @@ class MockResponseBackend(ResponseBackend):
         self._cancel_events[response_id] = cancel_event
         try:
             yield ResponseEvent(type="response_started", response_id=response_id)
+            self._dump_captured_audio(turn, response_id=response_id)
 
             if self._capabilities.returns_text:
                 for text_delta in self._split_text(self._response_text):
@@ -134,16 +149,55 @@ class MockResponseBackend(ResponseBackend):
         ], sample_rate
 
     def _resolve_response_audio(self, turn: TurnContext) -> tuple[np.ndarray, int]:
-        if turn.user_audio is not None:
+        if self._audio_mode == "echo" and turn.user_audio is not None:
             waveform = np.asarray(turn.user_audio, dtype=np.float32).reshape(-1)
             if waveform.size > 0:
                 sample_rate = int(turn.user_audio_sample_rate or self._sample_rate)
-                return waveform, sample_rate
+                return self._condition_echo_waveform(waveform), sample_rate
 
         sample_rate = self._sample_rate
         total_samples = max(1, int(round(sample_rate * self._total_duration_s)))
         waveform = self._build_demo_waveform(total_samples)
         return waveform, sample_rate
+
+    def _condition_echo_waveform(self, waveform: np.ndarray) -> np.ndarray:
+        waveform = np.asarray(waveform, dtype=np.float32).reshape(-1)
+        if waveform.size == 0:
+            return waveform
+
+        # Browser / device capture can carry a DC bias and occasional hot peaks.
+        # Remove the bias and cap the peak so the mock echo stays intelligible.
+        waveform = waveform - float(np.mean(waveform))
+        peak = float(np.max(np.abs(waveform))) if waveform.size else 0.0
+        target_peak = 0.35
+        if peak > target_peak and peak > 0.0:
+            waveform = waveform * (target_peak / peak)
+        return np.clip(waveform, -0.95, 0.95).astype(np.float32, copy=False)
+
+    def _dump_captured_audio(self, turn: TurnContext, *, response_id: str) -> None:
+        if self._dump_audio_dir is None or turn.user_audio is None:
+            return
+
+        waveform = np.asarray(turn.user_audio, dtype=np.float32).reshape(-1)
+        if waveform.size == 0:
+            return
+
+        sample_rate = int(turn.user_audio_sample_rate or self._sample_rate)
+        if turn.turn_index is not None:
+            turn_dir = (
+                self._dump_audio_dir
+                / turn.session_id
+                / f"turn_{int(turn.turn_index):04d}"
+            )
+            turn_dir.mkdir(parents=True, exist_ok=True)
+            path = (
+                turn_dir / f"04_backend_turn_context_{response_id}_sr{sample_rate}.wav"
+            )
+        else:
+            path = (
+                self._dump_audio_dir / f"{turn.session_id}_{response_id}_captured.wav"
+            )
+        sf.write(path, waveform, sample_rate)
 
     def _build_demo_waveform(self, num_samples: int) -> np.ndarray:
         t = np.arange(num_samples, dtype=np.float32) / float(self._sample_rate)
