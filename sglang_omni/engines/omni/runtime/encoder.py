@@ -164,9 +164,9 @@ class EncoderInputPreparer:
         tensors: list[torch.Tensor],
         device: torch.device,
     ) -> torch.Tensor:
-        assert tensors, (
-            f"_pad_and_cat_tensors called with empty tensor list for key={key}"
-        )
+        assert (
+            tensors
+        ), f"_pad_and_cat_tensors called with empty tensor list for key={key}"
         expected_dim, pad_value = self.TIME_PAD_SPECS[key]
         if any(tensor.dim() != expected_dim for tensor in tensors):
             raise ValueError(
