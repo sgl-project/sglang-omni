@@ -8,7 +8,7 @@ import asyncio
 import logging
 import os
 
-from sglang_omni.config import PipelineRunner, compile_pipeline
+from sglang_omni.config import build_pipeline_runner
 from sglang_omni.models.qwen3_omni.config import Qwen3OmniPipelineConfig
 from sglang_omni.proto import OmniRequest
 
@@ -48,8 +48,7 @@ async def main_async(args: argparse.Namespace) -> None:
         model_path=args.model_path,
         relay_backend=args.relay_backend,
     )
-    coordinator, stages = compile_pipeline(config)
-    runner = PipelineRunner(coordinator, stages)
+    runner = build_pipeline_runner(config)
 
     await runner.start()
     try:
@@ -67,7 +66,7 @@ async def main_async(args: argparse.Namespace) -> None:
             "audios": audios,
             "audio_target_sr": args.audio_target_sr,
         }
-        result = await coordinator.submit(
+        result = await runner.coordinator.submit(
             "qwen3-omni-text-first",
             OmniRequest(
                 inputs=request,

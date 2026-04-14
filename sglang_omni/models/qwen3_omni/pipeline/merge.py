@@ -181,7 +181,24 @@ def build_thinker_inputs(
     if mm_video.get("use_audio_in_video") is True:
         thinker_model_inputs["use_audio_in_video"] = True
 
-    return {"model_inputs": thinker_model_inputs}
+    media_cache_keys: dict[str, str] = {}
+    encoder_inputs = state.encoder_inputs or {}
+    image_ck = (encoder_inputs.get("image_encoder") or {}).get("cache_key")
+    audio_ck = (encoder_inputs.get("audio_encoder") or {}).get("cache_key")
+    if image_ck:
+        media_cache_keys["image"] = f"image:{image_ck}"
+        # Note(Yifei):
+        # In Qwen3-Omni the image_encoder handles both image and video
+        # (no separate video_encoder), so they share the same cache key.
+        # Different prefixes ensure distinct pad_values.
+        media_cache_keys["video"] = f"video:{image_ck}"
+    if audio_ck:
+        media_cache_keys["audio"] = f"audio:{audio_ck}"
+
+    result: dict[str, Any] = {"model_inputs": thinker_model_inputs}
+    if media_cache_keys:
+        result["media_cache_keys"] = media_cache_keys
+    return result
 
 
 def _prune_preprocessing_for_thinker(

@@ -10,14 +10,9 @@ from typing import Any
 import numpy as np
 import torch
 
-# Import abstract layer
 from .base import Relay, RelayOperation, register_relay
 
 logger = logging.getLogger(__name__)
-
-# ==========================================
-# Helpers
-# ==========================================
 
 
 def shm_create_from_tensor(tensor: torch.Tensor) -> _shm.SharedMemory:
@@ -38,11 +33,6 @@ def shm_create_from_tensor(tensor: torch.Tensor) -> _shm.SharedMemory:
     shm_view[:] = t_np[:]
 
     return shm
-
-
-# ==========================================
-# Operations Implementation
-# ==========================================
 
 
 class ShmOperation(RelayOperation):
@@ -112,6 +102,9 @@ class ShmGetOperation(ShmOperation):
                 copy_len = min(dest_view.numel(), size)
                 dest_view[:copy_len].copy_(src_tensor[:copy_len])
 
+                if self._dest_tensor.is_cuda:
+                    torch.cuda.synchronize(self._dest_tensor.device)
+
             finally:
                 # 3. Cleanup (Receiver owns lifecycle)
                 existing_shm.close()
@@ -121,9 +114,6 @@ class ShmGetOperation(ShmOperation):
             self._completed = True
 
 
-# ==========================================
-# ShmRelay Implementation
-# ==========================================
 @register_relay("shm")
 class ShmRelay(Relay):
     def __init__(

@@ -1,15 +1,13 @@
-name: Release Documentation
+name: Docs Publish
 
 on:
   push:
     branches:
       - main
-    paths:
-      - "docs/**"
   workflow_dispatch:
 
 concurrency:
-  group: release-docs-${{ github.ref }}
+  group: docs-publish-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -24,7 +22,7 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.13'
+          python-version: "3.13"
 
       - name: Install dependencies
         run: |

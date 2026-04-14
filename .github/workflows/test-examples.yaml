@@ -43,7 +43,7 @@ jobs:
             uv venv omni -p 3.11
           fi
           source omni/bin/activate
-          uv pip install -v -e ".[dev]"
+          uv pip install -v -e .
 
       - name: Kill GPU processes
         shell: bash

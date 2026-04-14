@@ -14,7 +14,7 @@ from sglang_omni.models.fishaudio_s2_pro.runtime.s2pro_sglang_ar import (
 
 
 def build_sglang_tts_request(
-    state: S2ProState, tokenizer: Any
+    state: S2ProState, tokenizer: Any, request_id: str
 ) -> S2ProSGLangRequestData:
     from sglang.srt.managers.schedule_batch import Req
     from sglang.srt.sampling.sampling_params import SamplingParams
@@ -35,7 +35,7 @@ def build_sglang_tts_request(
     )
 
     req = Req(
-        rid="",
+        rid=request_id,
         origin_input_text="",
         origin_input_ids=input_ids_list,
         sampling_params=sampling_params,

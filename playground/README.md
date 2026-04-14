@@ -13,7 +13,7 @@ This directory contains multiple playground interfaces for SGLang-Omni.
 The web playground is embedded in the backend — a single process serves both the API and the UI.
 
 ```bash
-uv pip install -v -e ".[dev]"
+uv pip install -v -e .
 ./playground/web/start.sh \
   --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct
 ```
@@ -33,8 +33,7 @@ Then open `http://localhost:8000` in your browser.
 ### Install
 
 ```bash
-pip install "sglang-omni[gradio]"
-# or just: pip install gradio httpx
+pip install sglang-omni
 ```
 
 ### Launch (one command)

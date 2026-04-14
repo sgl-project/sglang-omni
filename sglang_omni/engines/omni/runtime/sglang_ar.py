@@ -394,7 +394,10 @@ class SGLangOutputProcessor:
                 result = {}
                 for layer_id, tensor in zip(self._capture_hidden_layers, aux):
                     key = "embed" if layer_id == 0 else layer_id
-                    result[key] = tensor
+                    # Note (Chenyang): clone() is required because the captured
+                    # hidden states reference the model's internal buffer, which
+                    # gets overwritten on the next forward pass.
+                    result[key] = tensor.clone()
                 return result
 
         # Fallback: logits_output.hidden_states
@@ -523,9 +526,9 @@ class SGLangModelRunner:
             if hasattr(hf_config, "thinker_config")
             else hf_config
         )
-        self._image_token_id = thinker_cfg.image_token_id
-        self._video_token_id = thinker_cfg.video_token_id
-        self._audio_token_id = thinker_cfg.audio_token_id
+        self._image_token_id = getattr(thinker_cfg, "image_token_id", None)
+        self._video_token_id = getattr(thinker_cfg, "video_token_id", None)
+        self._audio_token_id = getattr(thinker_cfg, "audio_token_id", None)
 
     @staticmethod
     def _get_inner_model_components(model):
@@ -554,7 +557,15 @@ class SGLangModelRunner:
         video_token_id = self._video_token_id
         audio_token_id = self._audio_token_id
 
-        input_embeds = self._embed_tokens(forward_batch.input_ids)
+        # Note (Yifei):
+        # Multimodal placeholder tokens (image/video/audio) are replaced with
+        # content-hash pad_values that exceed vocab_size. Clamp before embedding
+        # lookup to avoid OOB. Use non-in-place clamp to preserve original input_ids
+        # for pad_value mask matching in chunked prefill.
+        embed_input_ids = forward_batch.input_ids.clamp(
+            0, self._embed_tokens.num_embeddings - 1
+        )
+        input_embeds = self._embed_tokens(embed_input_ids)
 
         extend_lens = forward_batch.extend_seq_lens_cpu
         offsets = []
@@ -578,15 +589,19 @@ class SGLangModelRunner:
             consumed = req._omni_consumed or {}
             chunk_offsets: dict[str, tuple[int, int]] = {}
 
+            pad_values = omni_inputs.get("pad_values", {})
             for modality, token_id in [
                 ("image", image_token_id),
                 ("video", video_token_id),
                 ("audio", audio_token_id),
             ]:
+                if token_id is None:
+                    continue
                 embeds = omni_inputs.get(f"{modality}_embeds")
                 if embeds is None:
                     continue
-                mask = req_input_ids == token_id
+                match_id = pad_values.get(modality, token_id)
+                mask = req_input_ids == match_id
                 if not mask.any():
                     continue
                 n_tokens = int(mask.sum().item())
@@ -606,8 +621,10 @@ class SGLangModelRunner:
 
             if ds_embeds is not None or image_ds is not None or video_ds is not None:
                 has_deepstack = True
-                img_mask = req_input_ids == image_token_id
-                vid_mask = req_input_ids == video_token_id
+                img_match_id = pad_values.get("image", image_token_id)
+                vid_match_id = pad_values.get("video", video_token_id)
+                img_mask = req_input_ids == img_match_id
+                vid_mask = req_input_ids == vid_match_id
                 visual_mask = img_mask | vid_mask
 
                 if ds_embeds is None:
@@ -868,7 +885,8 @@ class SGLangModelRunner:
             req = getattr(data, "req", None)
             input_embeds = getattr(req, "input_embeds", None)
             if input_embeds:
-                rows.extend(input_embeds)
+                prefix_len = len(getattr(req, "prefix_indices", []))
+                rows.extend(input_embeds[prefix_len:])
         if not rows:
             return None
         return torch.as_tensor(rows, device=self.device, dtype=torch.float32)
@@ -987,9 +1005,9 @@ class SGLangModelRunner:
                 forward_batch, input_embeds, ds_embeds, vis_masks
             )
         elif projected_prefill:
-            projected_input_embeds = forward_batch.input_embeds
+            projected_input_embeds = request_prefill_input_embeds
             if projected_input_embeds is None:
-                projected_input_embeds = request_prefill_input_embeds
+                projected_input_embeds = forward_batch.input_embeds
             if projected_input_embeds is None:
                 raise RuntimeError(
                     "Projected talker prefill requested without input_embeds"

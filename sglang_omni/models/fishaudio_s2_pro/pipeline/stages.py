@@ -24,6 +24,8 @@ from sglang_omni.proto import StagePayload
 
 logger = logging.getLogger(__name__)
 
+_VOCODER_BYTES_PER_TOKEN = int(5.3 * 1024 * 1024)
+
 _STREAM_CODES_KEY = "_stream_output_codes"
 _STREAM_EMITTED_SAMPLES_KEY = "_stream_emitted_samples"
 _STREAM_LAST_VOCODE_TOKENS_KEY = "_stream_last_vocode_tokens"
@@ -191,9 +193,17 @@ def create_preprocessing_executor(model_path: str) -> PreprocessingExecutor:
     codec = _load_codec(checkpoint_dir, "cpu")
 
     def _encode_reference_audio(audio_path: str, device: str = "cpu") -> torch.Tensor:
+        import io
+
+        import httpx
         import torchaudio
 
-        audio, sr = torchaudio.load(audio_path)
+        if audio_path.startswith(("http://", "https://")):
+            resp = httpx.get(audio_path, follow_redirects=True, timeout=30)
+            resp.raise_for_status()
+            audio, sr = torchaudio.load(io.BytesIO(resp.content))
+        else:
+            audio, sr = torchaudio.load(audio_path)
         if audio.shape[0] > 1:
             audio = audio.mean(0, keepdim=True)
         audio = torchaudio.functional.resample(audio, sr, codec.sample_rate)
@@ -326,9 +336,45 @@ def create_sglang_tts_engine_executor(
         top_k=top_k,
     )
 
+    # Note (Xuesong, Chenyang):
+    # SGLang engine pre-allocates ~85% of total VRAM for model weights
+    # and KV cache. The remaining ~15% is shared by runtime activations
+    # and the vocoder (DAC decoder).
+
+    # Unlike the KV cache, the vocoder has no pre-allocated memory pool —
+    # it allocates dynamically during codec.from_indices() on each request.
+    # If the AR model produces an oversized codebook sequence, DAC conv1d
+    # layers need ~5.3 MB per token (float32, measured empirically on H100),
+    # easily exceeding the remaining free VRAM.
+
+    # To prevent this, we snapshot free GPU memory at engine startup and
+    # compute the maximum token count the vocoder can safely handle.
+    # Requests whose max_new_tokens exceed this limit are clamped and raise
+    # warnings.
+
+    # Caveat: PyTorch's caching allocator reserves memory for intermediate
+    # tensors across requests (~5.5 GB over ~100 diverse requests on H100).
+    # This memory is NOT lost — the vocoder allocates through the same
+    # allocator and reuses cached blocks. The allocator also evicts old
+    # blocks when large contiguous allocations are needed.
+
+    # reference: https://github.com/sgl-project/sglang-omni/pull/267
+
+    gpu_id_int = int(device.split(":")[-1]) if ":" in device else 0
+    free_mem = torch.cuda.mem_get_info(gpu_id_int)[0]
+    max_vocoder_tokens = int(free_mem / _VOCODER_BYTES_PER_TOKEN)
+    logger.info(
+        f"Vocoder memory guard: GPU free {free_mem / 1e9:.1f} GB, max_vocoder_tokens={max_vocoder_tokens}"
+    )
+
     def _request_builder(payload: StagePayload):
         state = load_state(payload)
-        return build_sglang_tts_request(state, tokenizer)
+        if state.max_new_tokens > max_vocoder_tokens:
+            logger.warning(
+                f"Request {payload.request_id}: max_new_tokens={state.max_new_tokens} exceeds vocoder limit {max_vocoder_tokens}, clamping."
+            )
+            state.max_new_tokens = max_vocoder_tokens
+        return build_sglang_tts_request(state, tokenizer, request_id=payload.request_id)
 
     def _result_builder(payload: StagePayload, result: Any) -> StagePayload:
         state = load_state(payload)

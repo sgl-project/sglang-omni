@@ -1,0 +1,71 @@
+name: Omni CI Setup
+description: Restore a prepared Omni virtualenv and run common pre-test setup.
+
+inputs:
+  venv-name:
+    description: Name of the virtualenv to restore and activate.
+    required: true
+  install-deps:
+    description: Prepare or refresh the requested virtualenv before running tests.
+    required: false
+    default: "false"
+
+runs:
+  using: composite
+  steps:
+    - name: Restore cache
+      shell: bash
+      env:
+        VENV_NAME: ${{ inputs.venv-name }}
+      run: |
+        if [ -d "/github/home/${VENV_NAME}" ] && [ -n "$(ls -A "/github/home/${VENV_NAME}/")" ]; then
+          cp -p -r "/github/home/${VENV_NAME}" "./${VENV_NAME}"
+        fi
+
+    - name: Install dependencies
+      if: ${{ inputs.install-deps == 'true' }}
+      shell: bash
+      env:
+        VENV_NAME: ${{ inputs.venv-name }}
+      run: |
+        if [ -d "${VENV_NAME}" ] && ! "${VENV_NAME}/bin/python" -c "import torch" 2>/dev/null; then
+          echo "Cached venv is corrupted, removing..."
+          rm -rf "${VENV_NAME}"
+        fi
+        if [ ! -d "${VENV_NAME}" ]; then
+          uv venv "${VENV_NAME}" -p 3.11
+        fi
+        source "${VENV_NAME}/bin/activate"
+        uv pip install -v -e .
+        # Repair PyAV if its bundled shared libs got corrupted in the cached
+        # venv (e.g. "libx265-...so.215: file too short"). The editable install
+        # above does not reinstall an already-present package, so force it.
+        if ! python -c "import av" 2>/dev/null; then
+          echo "PyAV native libraries corrupted in cached venv, force-reinstalling..."
+          uv pip install --force-reinstall --no-deps --no-cache av
+        fi
+
+    - name: Validate prepared environment
+      if: ${{ inputs.install-deps != 'true' }}
+      shell: bash
+      env:
+        VENV_NAME: ${{ inputs.venv-name }}
+      run: |
+        test -x "${VENV_NAME}/bin/python" || {
+          echo "Prepared ${VENV_NAME} environment is missing. Run the setup stage first."
+          exit 1
+        }
+        "${VENV_NAME}/bin/python" -c "import torch" 2>/dev/null || {
+          echo "Cached venv is corrupted (torch not importable). Re-run the setup stage."
+          exit 1
+        }
+
+    - name: Remove flashinfer
+      shell: bash
+      run: |
+        rm -rf /github/home/.cache/flashinfer
+
+    - name: Kill GPU processes
+      shell: bash
+      run: |
+        bash .github/scripts/delete_gpu_process.sh
