@@ -14,6 +14,9 @@ uv venv .venv -p 3.11
 source .venv/bin/activate
 
 # install
+uv pip install -v .
+
+# install for development
 uv pip install -v -e .
 ```
 
