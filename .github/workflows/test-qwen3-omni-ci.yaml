@@ -27,7 +27,6 @@ jobs:
       - uses: ./.github/actions/omni-setup
         with:
           venv-name: omni-qwen3
-          pip-extras: dev
           install-deps: "true"
 
       - name: Run docs tests

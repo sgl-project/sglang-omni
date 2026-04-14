@@ -39,30 +39,24 @@ dependencies = [
     "typer>=0.9.0",
     "openai==2.6.1",
     "openai-harmony==0.0.4",
-    "soundfile>=0.12.0"
-]
-
-[project.optional-dependencies]
-dev = [
-    # Testing dependencies
+    "soundfile>=0.12.0",
+    # Testing
     "pytest>=7.0.0",
     "pytest-asyncio>=0.21.0",
-    # WER benchmark dependencies (Whisper ASR + text normalization)
     "jiwer",
     "scipy>=1.10.0",
     "openai-whisper",
-]
-s2pro = [
+    # S2-Pro
     "tiktoken",
     "hydra-core",
     "omegaconf",
     "descript-audiotools",
     "descript-audio-codec",
     "torchaudio",
+    # Gradio playground
     "gradio>=4.0.0",
     # flash-attn: install separately via prebuilt wheel (see install instructions below)
 ]
-gradio = ["gradio>=4.0.0"]
 
 [project.scripts]
 sgl-omni = "sglang_omni.cli.cli:app"

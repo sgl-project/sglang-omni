@@ -6,7 +6,7 @@ set -euo pipefail
 # become healthy, then starts the Gradio UI.  One command, one terminal.
 #
 # Prerequisites:
-#   pip install "sglang-omni[gradio]"   # or: pip install gradio httpx
+#   pip install sglang-omni
 #
 # Usage:
 #   ./playground/gradio/start.sh --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct

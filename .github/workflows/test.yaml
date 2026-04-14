@@ -43,7 +43,7 @@ jobs:
             uv venv omni -p 3.11
           fi
           source omni/bin/activate
-          uv pip install -v -e ".[dev]"
+          uv pip install -v -e .
           # Repair PyAV if its bundled shared libs got corrupted in the cached
           # venv (e.g. "libx265-...so.215: file too short"). The editable install
           # above does not reinstall an already-present package, so force it.

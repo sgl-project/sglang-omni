@@ -5,10 +5,6 @@ inputs:
   venv-name:
     description: Name of the virtualenv to restore and activate.
     required: true
-  pip-extras:
-    description: Optional dependency extras to install, for example `dev` or `s2pro,dev`.
-    required: false
-    default: ""
   install-deps:
     description: Prepare or refresh the requested virtualenv before running tests.
     required: false
@@ -31,7 +27,6 @@ runs:
       shell: bash
       env:
         VENV_NAME: ${{ inputs.venv-name }}
-        PIP_EXTRAS: ${{ inputs.pip-extras }}
       run: |
         if [ -d "${VENV_NAME}" ] && ! "${VENV_NAME}/bin/python" -c "import torch" 2>/dev/null; then
           echo "Cached venv is corrupted, removing..."
@@ -41,12 +36,7 @@ runs:
           uv venv "${VENV_NAME}" -p 3.11
         fi
         source "${VENV_NAME}/bin/activate"
-        if [ -n "${PIP_EXTRAS}" ]; then
-          uv pip install -v -e ".[${PIP_EXTRAS}]"
-        else
-          echo "::warning::pip-extras is empty; installing bare package without extras"
-          uv pip install -v -e .
-        fi
+        uv pip install -v -e .
         # Repair PyAV if its bundled shared libs got corrupted in the cached
         # venv (e.g. "libx265-...so.215: file too short"). The editable install
         # above does not reinstall an already-present package, so force it.

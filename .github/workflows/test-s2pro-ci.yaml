@@ -27,7 +27,6 @@ jobs:
       - uses: ./.github/actions/omni-setup
         with:
           venv-name: omni-s2pro
-          pip-extras: s2pro,dev
           install-deps: "true"
 
       - name: Run docs tests
