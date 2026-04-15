@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import torch
 
+from sglang_omni.models.fishaudio_s2_pro.pipeline import stages
 from sglang_omni.models.fishaudio_s2_pro.pipeline.streaming_vocoder import (
     STREAM_VOCODER_STATE_KEY,
     build_stream_vocoder_chunk,
@@ -24,6 +25,12 @@ class _FakeCodec:
         num_tokens = int(codes.shape[-1])
         audio = torch.arange(num_tokens * 2, dtype=torch.float32)
         return audio.reshape(1, 1, -1)
+
+
+class _FactoryCodec:
+    sample_rate = 24000
+    delay = 4
+    frame_length = 2
 
 
 def test_resolve_stream_overlap_tokens_uses_codec_delay_math() -> None:
@@ -166,3 +173,95 @@ def test_incremental_chunk_builder_bounds_retained_code_history() -> None:
     retained_codes = state["codes"]
     assert len(retained_codes) == 1
     assert retained_codes[0].tolist() == [[6], [8]]
+
+
+def test_tts_engine_executor_flush_builder_calls_streaming_vocoder_flush(monkeypatch) -> None:
+    def _fake_load_audio_decoder(model_path: str, device: str):
+        del model_path, device
+        return object(), 10, 4096, object(), "/tmp/fake-model"
+
+    def _fake_load_codec(checkpoint_dir: str, device: str):
+        del checkpoint_dir, device
+        return _FactoryCodec()
+
+    def _fake_warmup_codec(codec, *, num_codebooks: int, device: str) -> None:
+        del codec, num_codebooks, device
+
+    def _fake_patch_config(model_path: str) -> None:
+        del model_path
+
+    class _DummyEngine:
+        pass
+
+    def _fake_create_engine(**kwargs):
+        del kwargs
+        return _DummyEngine()
+
+    flush_calls: list[dict] = []
+
+    def _fake_flush_stream_vocoder_chunk(
+        payload: StagePayload,
+        *,
+        codec,
+        device: str,
+        stream_overlap_tokens: int,
+        stream_crossfade_samples: int,
+    ) -> dict[str, object]:
+        flush_calls.append(
+            {
+                "payload": payload,
+                "codec": codec,
+                "device": device,
+                "stream_overlap_tokens": stream_overlap_tokens,
+                "stream_crossfade_samples": stream_crossfade_samples,
+            }
+        )
+        return {
+            "audio_data": [0.0],
+            "sample_rate": codec.sample_rate,
+            "modality": "audio",
+        }
+
+    monkeypatch.setattr(stages, "_load_audio_decoder", _fake_load_audio_decoder)
+    monkeypatch.setattr(stages, "_load_codec", _fake_load_codec)
+    monkeypatch.setattr(stages, "_warmup_codec", _fake_warmup_codec)
+    monkeypatch.setattr(
+        stages,
+        "flush_stream_vocoder_chunk",
+        _fake_flush_stream_vocoder_chunk,
+    )
+    monkeypatch.setattr(
+        stages.torch.cuda,
+        "mem_get_info",
+        lambda gpu_id: (8 * 1024**3, 0),
+    )
+
+    import sglang_omni.models.fishaudio_s2_pro.factory as factory
+
+    monkeypatch.setattr(factory, "_patch_fish_config_for_sglang", _fake_patch_config)
+    monkeypatch.setattr(factory, "create_s2pro_sglang_engine", _fake_create_engine)
+
+    executor = stages.create_sglang_tts_engine_executor(
+        model_path="unused",
+        device="cuda:0",
+        stream_overlap_tokens=20,
+        stream_crossfade_samples=512,
+        stream_vocoder_device="cuda:0",
+        warmup_stream_codec_on_startup=False,
+    )
+
+    payload = StagePayload(
+        request_id="req-flush",
+        request=OmniRequest(inputs="hello", params={"stream": True}),
+        data={},
+    )
+    chunk = executor._stream_builder.flush(payload)
+
+    assert chunk is not None
+    assert chunk["audio_data"] == [0.0]
+    assert len(flush_calls) == 1
+    assert flush_calls[0]["payload"] is payload
+    assert isinstance(flush_calls[0]["codec"], _FactoryCodec)
+    assert flush_calls[0]["device"] == "cuda:0"
+    assert flush_calls[0]["stream_overlap_tokens"] == 20
+    assert flush_calls[0]["stream_crossfade_samples"] == 512

@@ -217,6 +217,7 @@ def create_sglang_tts_engine_executor(
     stream_overlap_tokens: int | None = None,
     stream_crossfade_samples: int = 0,
     stream_vocoder_device: str | None = None,
+    warmup_stream_codec_on_startup: bool = True,
 ) -> EngineExecutor:
     """Factory for the S2-Pro TTS engine stage."""
     from sglang.srt.server_args import ServerArgs
@@ -258,9 +259,10 @@ def create_sglang_tts_engine_executor(
             )
         return _stream_codec, int(_stream_overlap_tokens)
 
-    # Load and warm the stream codec during executor creation so the first
-    # streaming request is not dominated by codec initialization.
-    _get_stream_codec_bundle()
+    if warmup_stream_codec_on_startup:
+        # Load and warm the stream codec during executor creation so the first
+        # streaming request is not dominated by codec initialization.
+        _get_stream_codec_bundle()
 
     _patch_fish_config_for_sglang(checkpoint_dir)
     server_args = ServerArgs(

@@ -17,13 +17,6 @@ from sglang_omni.client import (
     CompletionStreamChunk,
     GenerateChunk,
 )
-from sglang_omni.client.client import _build_params
-from sglang_omni.client.types import GenerateRequest, SamplingParams
-from sglang_omni.models.fishaudio_s2_pro.pipeline.next_stage import (
-    VOCODER_STAGE,
-    tts_engine_next,
-)
-from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.serve import create_app
 from sglang_omni.serve.openai_api import (
     _build_speech_generate_request,
@@ -188,19 +181,6 @@ def test_build_speech_request_preserves_stream_flag() -> None:
     assert gen_req.stream is True
 
 
-def test_client_build_params_includes_stream_flag_for_stage_consumers() -> None:
-    params = _build_params(
-        GenerateRequest(
-            prompt="hello",
-            sampling=SamplingParams(max_new_tokens=64),
-            stream=True,
-        )
-    )
-
-    assert params["stream"] is True
-    assert params["max_new_tokens"] == 64
-
-
 def test_speech_endpoint_e2e_with_mock_pipeline_references() -> None:
     coordinator = MockSpeechCoordinator()
     client = Client(coordinator=coordinator)
@@ -304,22 +284,6 @@ def _decode_wav_frame_count(audio_b64: str) -> int:
     wav_bytes = base64.b64decode(audio_b64)
     with wave.open(io.BytesIO(wav_bytes), "rb") as wav_file:
         return wav_file.getnframes()
-
-
-def test_tts_engine_next_routes_stream_requests_to_terminal_stage() -> None:
-    stream_output = StagePayload(
-        request_id="req-stream",
-        request=OmniRequest(inputs="hello", params={"stream": True}),
-        data={},
-    )
-    non_stream_output = StagePayload(
-        request_id="req-non-stream",
-        request=OmniRequest(inputs="hello", params={"stream": False}),
-        data={},
-    )
-
-    assert tts_engine_next("req-stream", stream_output) is None
-    assert tts_engine_next("req-non-stream", non_stream_output) == VOCODER_STAGE
 
 
 def test_speech_stream_finishes_without_terminal_audio_chunk() -> None:

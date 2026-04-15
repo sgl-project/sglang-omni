@@ -45,6 +45,7 @@ class S2ProPipelineConfig(PipelineConfig):
                     "stream_overlap_tokens": 20,
                     "stream_crossfade_samples": 512,
                     "stream_vocoder_device": "cuda:0",
+                    "warmup_stream_codec_on_startup": True,
                 },
             ),
             get_next=f"{_S2_PKG}.next_stage.tts_engine_next",
