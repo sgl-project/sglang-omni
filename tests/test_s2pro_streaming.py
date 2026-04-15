@@ -243,6 +243,7 @@ def test_tts_engine_executor_flush_builder_calls_streaming_vocoder_flush(
     )
 
     import sglang.srt.server_args as server_args_module
+
     import sglang_omni.models.fishaudio_s2_pro.factory as factory
 
     monkeypatch.setattr(server_args_module, "ServerArgs", _FakeServerArgs)
