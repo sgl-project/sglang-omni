@@ -175,7 +175,9 @@ def test_incremental_chunk_builder_bounds_retained_code_history() -> None:
     assert retained_codes[0].tolist() == [[6], [8]]
 
 
-def test_tts_engine_executor_flush_builder_calls_streaming_vocoder_flush(monkeypatch) -> None:
+def test_tts_engine_executor_flush_builder_calls_streaming_vocoder_flush(
+    monkeypatch,
+) -> None:
     def _fake_load_audio_decoder(model_path: str, device: str):
         del model_path, device
         return object(), 10, 4096, object(), "/tmp/fake-model"
