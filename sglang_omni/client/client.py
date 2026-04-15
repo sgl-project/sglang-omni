@@ -325,10 +325,7 @@ class Client:
                     usage["total_tokens"] = (prompt_tokens or 0) + (
                         completion_tokens or 0
                     )
-            if (
-                "engine_time_s" not in usage
-                and result.get("engine_time_s") is not None
-            ):
+            if "engine_time_s" not in usage and result.get("engine_time_s") is not None:
                 usage["engine_time_s"] = result.get("engine_time_s")
             chunk.usage = UsageInfo.from_dict(usage)
             return chunk

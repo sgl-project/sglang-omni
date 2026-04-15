@@ -243,8 +243,7 @@ def _apply_stream_crossfade(
             )
             fade_out = 1.0 - fade_in
             blended = (
-                pending_tail[-crossfade:] * fade_out
-                + delta_audio[:crossfade] * fade_in
+                pending_tail[-crossfade:] * fade_out + delta_audio[:crossfade] * fade_in
             )
             delta_audio = torch.cat(
                 [pending_tail[:-crossfade], blended, delta_audio[crossfade:]]
