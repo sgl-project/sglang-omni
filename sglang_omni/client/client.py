@@ -59,7 +59,10 @@ class Client:
                 if isinstance(msg, StreamMessage):
                     yield self._stream_builder(req_id, msg)
                 else:
-                    yield self._result_builder(req_id, msg.result)
+                    chunk = self._result_builder(req_id, msg.result)
+                    if isinstance(chunk, GenerateChunk) and chunk.stage_name is None:
+                        chunk.stage_name = msg.from_stage
+                    yield chunk
             return
 
         result = await self._coordinator.submit(req_id, omni_request)

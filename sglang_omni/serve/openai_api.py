@@ -476,6 +476,7 @@ async def _speech_stream(
     """Streaming speech generator (yields SSE events with audio chunks)."""
     chunk_index = 0
     emitted_samples = 0
+    streamed_audio_started = False
     finish_reason: str | None = None
     usage: dict | None = None
 
@@ -489,6 +490,16 @@ async def _speech_stream(
             if chunk.audio_data is None:
                 continue
 
+            # Once streaming audio has started, keep the streamed response on the
+            # engine-stage preview/flush path and ignore the terminal full-audio
+            # vocoder payload as an audio source. Still keep its finish_reason/usage.
+            if (
+                streamed_audio_started
+                and chunk.finish_reason is not None
+                and chunk.stage_name == "vocoder"
+            ):
+                continue
+
             sample_rate = chunk.sample_rate or DEFAULT_SAMPLE_RATE
             audio_data, emitted_samples = _select_speech_audio_delta(
                 chunk.audio_data,
@@ -497,6 +508,8 @@ async def _speech_stream(
             )
             if audio_data is None:
                 continue
+
+            streamed_audio_started = True
 
             audio_bytes, mime_type = encode_audio(
                 audio_data,
