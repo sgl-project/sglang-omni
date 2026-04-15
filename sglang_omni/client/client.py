@@ -59,10 +59,7 @@ class Client:
                 if isinstance(msg, StreamMessage):
                     yield self._stream_builder(req_id, msg)
                 else:
-                    chunk = self._result_builder(req_id, msg.result)
-                    if isinstance(chunk, GenerateChunk) and chunk.stage_name is None:
-                        chunk.stage_name = msg.from_stage
-                    yield chunk
+                    yield self._result_builder(req_id, msg.result)
             return
 
         result = await self._coordinator.submit(req_id, omni_request)
@@ -313,7 +310,27 @@ class Client:
             if modality is not None:
                 chunk.modality = modality
             Client._set_audio_data(chunk, result)
-            chunk.usage = UsageInfo.from_dict(result.get("usage"))
+            usage = dict(result.get("usage") or {})
+            if "prompt_tokens" not in usage and result.get("prompt_tokens") is not None:
+                usage["prompt_tokens"] = result.get("prompt_tokens")
+            if (
+                "completion_tokens" not in usage
+                and result.get("completion_tokens") is not None
+            ):
+                usage["completion_tokens"] = result.get("completion_tokens")
+            if "total_tokens" not in usage:
+                prompt_tokens = usage.get("prompt_tokens")
+                completion_tokens = usage.get("completion_tokens")
+                if prompt_tokens is not None or completion_tokens is not None:
+                    usage["total_tokens"] = (prompt_tokens or 0) + (
+                        completion_tokens or 0
+                    )
+            if (
+                "engine_time_s" not in usage
+                and result.get("engine_time_s") is not None
+            ):
+                usage["engine_time_s"] = result.get("engine_time_s")
+            chunk.usage = UsageInfo.from_dict(usage)
             return chunk
         if isinstance(result, str):
             chunk.text = result

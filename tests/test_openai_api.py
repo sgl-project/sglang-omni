@@ -7,7 +7,6 @@ import base64
 import io
 import json
 import wave
-from types import SimpleNamespace
 from typing import Any
 
 from fastapi.testclient import TestClient
@@ -24,6 +23,7 @@ from sglang_omni.models.fishaudio_s2_pro.pipeline.next_stage import (
     VOCODER_STAGE,
     tts_engine_next,
 )
+from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.serve import create_app
 from sglang_omni.serve.openai_api import (
     _build_speech_generate_request,
@@ -306,14 +306,65 @@ def _decode_wav_frame_count(audio_b64: str) -> int:
         return wav_file.getnframes()
 
 
-def test_tts_engine_next_keeps_vocoder_for_stream_requests() -> None:
-    stream_output = SimpleNamespace(request=SimpleNamespace(params={"stream": True}))
-    non_stream_output = SimpleNamespace(
-        request=SimpleNamespace(params={"stream": False})
+def test_tts_engine_next_routes_stream_requests_to_terminal_stage() -> None:
+    stream_output = StagePayload(
+        request_id="req-stream",
+        request=OmniRequest(inputs="hello", params={"stream": True}),
+        data={},
+    )
+    non_stream_output = StagePayload(
+        request_id="req-non-stream",
+        request=OmniRequest(inputs="hello", params={"stream": False}),
+        data={},
     )
 
-    assert tts_engine_next("req-stream", stream_output) == VOCODER_STAGE
+    assert tts_engine_next("req-stream", stream_output) is None
     assert tts_engine_next("req-non-stream", non_stream_output) == VOCODER_STAGE
+
+
+def test_speech_stream_finishes_without_terminal_audio_chunk() -> None:
+    dummy = DummyClient(
+        [
+            GenerateChunk(
+                request_id="speech-1",
+                modality="audio",
+                audio_data=[0.0, 0.1, -0.1, 0.0],
+                sample_rate=24000,
+            ),
+            GenerateChunk(
+                request_id="speech-1",
+                finish_reason="stop",
+            ),
+        ]
+    )
+    client = TestClient(create_app(dummy, model_name="s2-pro"))
+
+    with client.stream(
+        "POST",
+        "/v1/audio/speech",
+        json={
+            "model": "s2-pro",
+            "input": "hello",
+            "stream": True,
+            "response_format": "wav",
+        },
+        timeout=5.0,
+    ) as resp:
+        assert resp.status_code == 200
+        events = []
+        for line in resp.iter_lines():
+            if not line or not line.startswith("data: "):
+                continue
+            payload = line[len("data: ") :]
+            if payload == "[DONE]":
+                break
+            events.append(json.loads(payload))
+
+    assert len(events) == 2
+    assert events[0]["audio"] is not None
+    assert events[0]["finish_reason"] is None
+    assert events[1]["audio"] is None
+    assert events[1]["finish_reason"] == "stop"
 
 
 def test_speech_stream_uses_actual_audio_format_on_fallback(monkeypatch) -> None:

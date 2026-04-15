@@ -42,11 +42,7 @@ class S2ProPipelineConfig(PipelineConfig):
                     "max_new_tokens": 2048,
                     "stream_stride": 10,
                     "stream_followup_stride": 90,
-                    # Use a larger explicit overlap for the incremental stream
-                    # vocoder path instead of the minimal codec-delay-derived
-                    # default, which is too weak a guarantee for clean seams.
                     "stream_overlap_tokens": 20,
-                    # Smooth residual discontinuities at streamed chunk joins.
                     "stream_crossfade_samples": 512,
                     "stream_vocoder_device": "cuda:0",
                 },

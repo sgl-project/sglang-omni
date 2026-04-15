@@ -20,16 +20,16 @@ from sglang_omni.models.fishaudio_s2_pro.pipeline.state_io import (
     load_state,
     store_state,
 )
+from sglang_omni.models.fishaudio_s2_pro.pipeline.streaming_vocoder import (
+    build_stream_vocoder_chunk,
+    flush_stream_vocoder_chunk,
+    resolve_stream_overlap_tokens,
+)
 from sglang_omni.proto import StagePayload
 
 logger = logging.getLogger(__name__)
 
 _VOCODER_BYTES_PER_TOKEN = int(5.3 * 1024 * 1024)
-
-_STREAM_CODES_KEY = "_stream_output_codes"
-_STREAM_LAST_VOCODE_TOKENS_KEY = "_stream_last_vocode_tokens"
-_STREAM_NEXT_VOCODE_TOKENS_KEY = "_stream_next_vocode_tokens"
-_STREAM_PENDING_TAIL_KEY = "_stream_pending_tail"
 
 
 def _resolve_checkpoint(checkpoint: str) -> str:
@@ -109,140 +109,6 @@ def _warmup_codec(codec: Any, *, num_codebooks: int, device: str) -> None:
     with torch.no_grad():
         codec.from_indices(dummy)
     logger.info("Stream codec warmup done in %.2fs", time.perf_counter() - t0)
-
-
-def _resolve_stream_overlap_tokens(
-    codec: Any, requested_overlap_tokens: int | None
-) -> int:
-    if requested_overlap_tokens is not None:
-        if requested_overlap_tokens < 0:
-            raise ValueError("stream_overlap_tokens must be >= 0")
-        return requested_overlap_tokens
-
-    delay_samples = int(codec.delay)
-    if delay_samples <= 0:
-        return 0
-    frame_length = int(codec.frame_length)
-    return (delay_samples + frame_length - 1) // frame_length
-
-
-def _build_incremental_audio_chunk(
-    payload: StagePayload,
-    *,
-    codec: Any,
-    device: str,
-    stream_overlap_tokens: int,
-    stream_crossfade_samples: int = 0,
-    is_final: bool = False,
-) -> dict[str, Any] | None:
-    if not isinstance(payload.data, dict):
-        return None
-
-    stream_codes = payload.data.get(_STREAM_CODES_KEY)
-    if not isinstance(stream_codes, list) or not stream_codes:
-        return None
-
-    total_tokens = sum(chunk.shape[1] for chunk in stream_codes)
-    emitted_tokens = int(payload.data.get(_STREAM_LAST_VOCODE_TOKENS_KEY, 0))
-    if total_tokens <= emitted_tokens:
-        return None
-
-    output_codes = torch.cat(stream_codes, dim=1)
-    window_start_token = max(0, emitted_tokens - stream_overlap_tokens)
-    window_codes = output_codes[:, window_start_token:total_tokens]
-    codebook_codes = window_codes[1:].to(device)
-
-    with torch.no_grad():
-        audio = codec.from_indices(codebook_codes[None])
-
-    audio_np = audio[0, 0].float().cpu()
-    overlap_token_count = emitted_tokens - window_start_token
-    overlap_samples = int(overlap_token_count * codec.frame_length)
-    if audio_np.shape[-1] <= overlap_samples:
-        return None
-
-    delta_audio = audio_np[overlap_samples:]
-    if stream_crossfade_samples > 0:
-        pending_tail = payload.data.get(_STREAM_PENDING_TAIL_KEY)
-        if isinstance(pending_tail, torch.Tensor) and pending_tail.numel() > 0:
-            crossfade = min(
-                int(stream_crossfade_samples),
-                int(pending_tail.shape[-1]),
-                int(delta_audio.shape[-1]),
-            )
-            if crossfade > 0:
-                fade_in = torch.linspace(
-                    0.0,
-                    1.0,
-                    crossfade,
-                    dtype=delta_audio.dtype,
-                )
-                fade_out = 1.0 - fade_in
-                blended = (
-                    pending_tail[-crossfade:] * fade_out
-                    + delta_audio[:crossfade] * fade_in
-                )
-                delta_audio = torch.cat(
-                    [pending_tail[:-crossfade], blended, delta_audio[crossfade:]]
-                )
-            else:
-                delta_audio = torch.cat([pending_tail, delta_audio])
-        if is_final:
-            payload.data.pop(_STREAM_PENDING_TAIL_KEY, None)
-        else:
-            hold = min(int(stream_crossfade_samples), int(delta_audio.shape[-1]))
-            if hold > 0:
-                payload.data[_STREAM_PENDING_TAIL_KEY] = delta_audio[-hold:].clone()
-                delta_audio = delta_audio[:-hold]
-            else:
-                payload.data.pop(_STREAM_PENDING_TAIL_KEY, None)
-            if delta_audio.numel() == 0:
-                payload.data[_STREAM_LAST_VOCODE_TOKENS_KEY] = total_tokens
-                return None
-    payload.data[_STREAM_LAST_VOCODE_TOKENS_KEY] = total_tokens
-
-    return {
-        "audio_data": delta_audio.tolist(),
-        "sample_rate": codec.sample_rate,
-        "modality": "audio",
-    }
-
-
-def _maybe_build_incremental_audio_chunk(
-    payload: StagePayload,
-    codes: Any,
-    *,
-    codec: Any,
-    device: str,
-    stream_stride: int,
-    stream_followup_stride: int,
-    stream_overlap_tokens: int,
-    stream_crossfade_samples: int,
-) -> dict[str, Any] | None:
-    if not isinstance(codes, torch.Tensor) or codes.ndim != 2:
-        return None
-    if not isinstance(payload.data, dict):
-        return None
-
-    stream_codes: list[torch.Tensor] = payload.data.setdefault(_STREAM_CODES_KEY, [])
-    stream_codes.append(codes.detach().cpu())
-
-    total_tokens = sum(chunk.shape[1] for chunk in stream_codes)
-    next_vocode_tokens = int(
-        payload.data.get(_STREAM_NEXT_VOCODE_TOKENS_KEY, stream_stride)
-    )
-    if total_tokens < next_vocode_tokens:
-        return None
-
-    chunk = _build_incremental_audio_chunk(
-        payload,
-        codec=codec,
-        device=device,
-        stream_overlap_tokens=stream_overlap_tokens,
-        stream_crossfade_samples=stream_crossfade_samples,
-    )
-    payload.data[_STREAM_NEXT_VOCODE_TOKENS_KEY] = total_tokens + stream_followup_stride
-    return chunk
 
 
 def create_preprocessing_executor(model_path: str) -> PreprocessingExecutor:
@@ -363,8 +229,6 @@ def create_sglang_tts_engine_executor(
     if stream_vocoder_device is None:
         stream_vocoder_device = "cpu"
 
-    # Note (Chenyang): Lazy-loaded: only materialised when
-    # the first streaming request arrives.
     audio_decoder, num_codebooks, codebook_size, tokenizer, checkpoint_dir = (
         _load_audio_decoder(model_path, device)
     )
@@ -383,7 +247,7 @@ def create_sglang_tts_engine_executor(
                 codec, num_codebooks=num_codebooks, device=stream_vocoder_device
             )
             _stream_codec = codec
-            _stream_overlap_tokens = _resolve_stream_overlap_tokens(
+            _stream_overlap_tokens = resolve_stream_overlap_tokens(
                 codec, stream_overlap_tokens
             )
             logger.info(
@@ -463,7 +327,17 @@ def create_sglang_tts_engine_executor(
     def _result_builder(payload: StagePayload, result: Any) -> StagePayload:
         state = load_state(payload)
         apply_tts_result(state, result)
-        return store_state(payload, state)
+        payload = store_state(payload, state)
+        usage = {
+            "prompt_tokens": state.prompt_tokens,
+            "completion_tokens": state.completion_tokens,
+            "total_tokens": state.prompt_tokens + state.completion_tokens,
+        }
+        engine_time_s = payload.data.get("engine_time_s")
+        if engine_time_s is not None:
+            usage["engine_time_s"] = round(float(engine_time_s), 6)
+        payload.data["usage"] = usage
+        return payload
 
     def _stream_builder(
         payload: StagePayload | None, item: Any
@@ -475,7 +349,7 @@ def create_sglang_tts_engine_executor(
         if not payload.request.params.get("stream"):
             return None
         codec, overlap_tokens = _get_stream_codec_bundle()
-        return _maybe_build_incremental_audio_chunk(
+        return build_stream_vocoder_chunk(
             payload,
             item,
             codec=codec,
@@ -487,19 +361,10 @@ def create_sglang_tts_engine_executor(
         )
 
     def _flush_stream_builder(payload: StagePayload | None) -> dict[str, Any] | None:
-        if payload is None or not isinstance(payload.data, dict):
+        if payload is None:
             return None
-        stream_codes = payload.data.get(_STREAM_CODES_KEY)
-        if not isinstance(stream_codes, list) or not stream_codes:
-            return None
-
-        total_tokens = sum(chunk.shape[1] for chunk in stream_codes)
-        emitted_tokens = int(payload.data.get(_STREAM_LAST_VOCODE_TOKENS_KEY, 0))
-        if total_tokens <= emitted_tokens:
-            return None
-
         codec, overlap_tokens = _get_stream_codec_bundle()
-        return _build_incremental_audio_chunk(
+        return flush_stream_vocoder_chunk(
             payload,
             codec=codec,
             device=stream_vocoder_device,
