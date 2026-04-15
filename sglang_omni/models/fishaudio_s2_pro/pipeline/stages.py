@@ -370,7 +370,6 @@ def create_sglang_tts_engine_executor(
             device=stream_vocoder_device,
             stream_overlap_tokens=overlap_tokens,
             stream_crossfade_samples=stream_crossfade_samples,
-            is_final=True,
         )
 
     _stream_builder.flush = _flush_stream_builder
