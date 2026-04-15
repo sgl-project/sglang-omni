@@ -178,6 +178,10 @@ def test_incremental_chunk_builder_bounds_retained_code_history() -> None:
 def test_tts_engine_executor_flush_builder_calls_streaming_vocoder_flush(
     monkeypatch,
 ) -> None:
+    class _FakeServerArgs:
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+
     def _fake_load_audio_decoder(model_path: str, device: str):
         del model_path, device
         return object(), 10, 4096, object(), "/tmp/fake-model"
@@ -238,8 +242,10 @@ def test_tts_engine_executor_flush_builder_calls_streaming_vocoder_flush(
         lambda gpu_id: (8 * 1024**3, 0),
     )
 
+    import sglang.srt.server_args as server_args_module
     import sglang_omni.models.fishaudio_s2_pro.factory as factory
 
+    monkeypatch.setattr(server_args_module, "ServerArgs", _FakeServerArgs)
     monkeypatch.setattr(factory, "_patch_fish_config_for_sglang", _fake_patch_config)
     monkeypatch.setattr(factory, "create_s2pro_sglang_engine", _fake_create_engine)
 
