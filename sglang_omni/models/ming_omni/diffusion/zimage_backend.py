@@ -10,6 +10,7 @@ ByT5 provides supplementary text rendering control.
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 
 import torch
@@ -21,6 +22,26 @@ from sglang_omni.models.ming_omni.diffusion.backend import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Patterns for extracting quoted text from prompts (matching
+# processing_bailingmm2.py:get_text_from_prompt).
+_QUOTE_PATTERNS = [
+    r'\"(.*?)\"',       # straight double quotes
+    r'\u201c(.*?)\u201d',  # curly double quotes ""
+    r'\u2018(.*?)\u2019',  # curly single quotes ''
+]
+
+
+def _extract_render_text(prompt: str) -> str:
+    """Extract text-to-render from a prompt by finding quoted substrings.
+
+    Mirrors Ming's ``processing_bailingmm2.py:get_text_from_prompt``.
+    Returns the last quoted substring found, or empty string if none.
+    """
+    texts: list[str] = []
+    for pattern in _QUOTE_PATTERNS:
+        texts.extend(re.findall(pattern, prompt))
+    return texts[-1] if texts else ""
 
 
 class ZImageBackend(DiffusionBackend):
@@ -146,22 +167,28 @@ class ZImageBackend(DiffusionBackend):
             # Semantic encoding via LLM + connector
             prompt_embeds, neg_embeds = self._semantic_encoder.encode(prompt)
 
-            # Optionally concatenate ByT5 embeddings for text rendering
+            # Optionally concatenate ByT5 embeddings for text rendering.
+            # ByT5 encodes only the RENDER TEXT (text between quotes in the
+            # prompt), not the full scene description.  This matches Ming's
+            # production flow: processing_bailingmm2.py:get_text_from_prompt
+            # extracts quoted text, and encode() wraps it as 'Text "...". '.
             if self._text_encoder is not None and self._tokenizer is not None:
-                byt5_pos, byt5_neg = self._text_encoder.encode(
-                    prompt,
-                    tokenizer=self._tokenizer,
-                    device=self._device,
-                    max_length=256,
-                )
-                prompt_embeds = [
-                    torch.cat([sem, byt], dim=0)
-                    for sem, byt in zip(prompt_embeds, byt5_pos)
-                ]
-                neg_embeds = [
-                    torch.cat([nsem, nbyt], dim=0)
-                    for nsem, nbyt in zip(neg_embeds, byt5_neg)
-                ]
+                render_text = _extract_render_text(prompt)
+                if render_text:
+                    byt5_pos, byt5_neg = self._text_encoder.encode(
+                        render_text,
+                        tokenizer=self._tokenizer,
+                        device=self._device,
+                        max_length=256,
+                    )
+                    prompt_embeds = [
+                        torch.cat([sem, byt.to(sem.device)], dim=0)
+                        for sem, byt in zip(prompt_embeds, byt5_pos)
+                    ]
+                    neg_embeds = [
+                        torch.cat([nsem, nbyt.to(nsem.device)], dim=0)
+                        for nsem, nbyt in zip(neg_embeds, byt5_neg)
+                    ]
 
         elif self._text_encoder is not None and self._tokenizer is not None:
             # Fallback: ByT5-only encoding (text rendering mode)
@@ -169,19 +196,13 @@ class ZImageBackend(DiffusionBackend):
                 "[ZImage] Using ByT5-only encoding (no semantic encoder). "
                 "Images may show text rendering instead of semantic content."
             )
+            render_text = _extract_render_text(prompt) or prompt
             prompt_embeds, neg_embeds = self._text_encoder.encode(
-                prompt,
+                render_text,
                 tokenizer=self._tokenizer,
                 device=self._device,
                 max_length=256,
             )
-            if params.negative_prompt:
-                neg_embeds, _ = self._text_encoder.encode(
-                    params.negative_prompt,
-                    tokenizer=self._tokenizer,
-                    device=self._device,
-                    max_length=256,
-                )
 
         else:
             # No text encoder at all — random embeddings

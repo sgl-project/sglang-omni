@@ -136,12 +136,32 @@ class ByT5TextEncoder(nn.Module):
 
     Encodes text to cap_feat_dim (2560) embeddings ready for the ZImage
     transformer's cap_embedder.
+
+    Text format: ByT5 expects render text wrapped as ``Text "...". `` — this
+    matches Ming's production code (``processing_bailingmm2.py:get_text_from_prompt``).
+    The ``encode()`` method applies this formatting automatically.
     """
 
     def __init__(self, byt5_encoder: nn.Module, mapper: ByT5Mapper):
         super().__init__()
         self.byt5_encoder = byt5_encoder
         self.mapper = mapper
+
+    @staticmethod
+    def format_render_text(text: str) -> str:
+        """Wrap render text in the format expected by the fine-tuned ByT5 model.
+
+        Ming's production code (``processing_bailingmm2.py:get_text_from_prompt``)
+        extracts quoted text from user prompts and formats it as::
+
+            Text "百灵 Ming Omni".
+
+        Without this wrapper, the byte-level tokenization produces incorrect
+        embeddings and garbled text rendering.
+        """
+        if not text:
+            return ""
+        return f'Text "{text}". '
 
     @torch.no_grad()
     def encode(
@@ -151,21 +171,27 @@ class ByT5TextEncoder(nn.Module):
         device: torch.device,
         max_length: int = 256,
     ) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
-        """Encode text prompt(s) into variable-length embedding lists.
+        """Encode render text into padded embedding lists.
+
+        The text is automatically formatted as ``Text "...". `` before encoding.
 
         Returns:
             (prompt_embeds, negative_embeds): Each is a list of tensors,
-            one per batch item, with shape [valid_tokens, cap_feat_dim].
+            one per batch item, with shape ``[max_length, cap_feat_dim]``.
+            Padding positions are zeroed out.  Negative embeds are all zeros
+            (matching production: ``byt5_prompt_embeds * 0.0``).
         """
         if isinstance(text, str):
             text = [text]
 
-        # Encode positive prompt
-        prompt_embeds = self._encode_batch(text, tokenizer, device, max_length)
+        # Format text for ByT5 (production: Text "...". )
+        formatted = [self.format_render_text(t) for t in text]
 
-        # Encode negative prompt (empty strings)
-        neg_text = [""] * len(text)
-        neg_embeds = self._encode_batch(neg_text, tokenizer, device, max_length)
+        # Encode positive prompt
+        prompt_embeds = self._encode_batch(formatted, tokenizer, device, max_length)
+
+        # Negative = zeros with same shape (production: byt5_prompt_embeds * 0.0)
+        neg_embeds = [torch.zeros_like(e) for e in prompt_embeds]
 
         return prompt_embeds, neg_embeds
 
@@ -181,6 +207,7 @@ class ByT5TextEncoder(nn.Module):
             padding="max_length",
             max_length=max_length,
             truncation=True,
+            add_special_tokens=True,
             return_tensors="pt",
         )
         input_ids = inputs.input_ids.to(device)
@@ -195,9 +222,10 @@ class ByT5TextEncoder(nn.Module):
         # Mapper: d_model → cap_feat_dim
         mapped = self.mapper(base_hidden, attn_mask)
 
-        # Mask out padding → variable-length list
-        mask_bool = attn_mask.bool()
-        return [mapped[b][mask_bool[b]] for b in range(mapped.shape[0])]
+        # Zero out padding positions (production: byt5_prompt_embeds *= attn_mask)
+        # Keep full padded tensor shape [max_length, cap_feat_dim] per item.
+        mapped = mapped * attn_mask.unsqueeze(-1)
+        return [mapped[b] for b in range(mapped.shape[0])]
 
 
 # ---------------------------------------------------------------------------
