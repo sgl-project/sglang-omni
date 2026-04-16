@@ -88,12 +88,18 @@ from benchmarks.benchmarker.runner import BenchmarkRunner, RunConfig
 from benchmarks.benchmarker.utils import wait_for_service
 from benchmarks.dataset.mmsu import load_mmsu_samples
 from benchmarks.metrics.performance import compute_speed_metrics
-from benchmarks.tasks.mmsu import (
+from benchmarks.tasks.audio_understanding import (
     build_mmsu_results,
     compute_mmsu_metrics,
     make_mmsu_send_fn,
     print_mmsu_summary,
     save_mmsu_results,
+)
+from benchmarks.tasks.tts import (
+    SampleOutput,
+    calculate_wer_metrics,
+    load_asr_model,
+    transcribe_and_compute_wer,
 )
 
 logging.basicConfig(
@@ -167,7 +173,52 @@ async def run(args: argparse.Namespace) -> dict:
             speed_metrics=speed,
         )
 
-    return {"accuracy": metrics, "speed": speed}
+    output: dict = {"accuracy": metrics, "speed": speed}
+    if audio_mode:
+        output["wer"] = _compute_audio_wer(
+            request_results,
+            getattr(args, "lang", "en"),
+            getattr(args, "asr_device", "cuda:0"),
+        )
+    return output
+
+
+def _compute_audio_wer(request_results, lang: str, asr_device: str) -> dict:
+    """Transcribe audio outputs and compute WER against text outputs."""
+    asr = load_asr_model(lang, asr_device)
+
+    outputs: list[SampleOutput] = []
+    for result in request_results:
+        ref_text = " ".join(result.text.split())
+        out = SampleOutput(
+            sample_id=result.request_id,
+            target_text=ref_text,
+            latency_s=result.latency_s,
+            audio_duration_s=result.audio_duration_s,
+        )
+        if not result.is_success or not result.wav_path:
+            out.error = result.error or "No audio in response"
+            outputs.append(out)
+            continue
+        out = transcribe_and_compute_wer(out, result.wav_path, asr, lang, asr_device)
+        outputs.append(out)
+
+    wer_summary = calculate_wer_metrics(outputs, lang)
+    per_sample = [
+        {
+            "id": o.sample_id,
+            "is_success": o.is_success,
+            "wer": o.wer if o.is_success else None,
+            "ref_text": o.target_text[:100],
+            "hyp_text": o.whisper_text[:100],
+            "ref_norm": o.ref_norm,
+            "hyp_norm": o.hyp_norm,
+            "audio_duration_s": o.audio_duration_s,
+            "error": o.error,
+        }
+        for o in outputs
+    ]
+    return {"summary": wer_summary, "per_sample": per_sample}
 
 
 def main() -> None:
