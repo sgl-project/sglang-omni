@@ -475,6 +475,11 @@ class SGLangIterationController:
             req.is_chunked -= 1
             return
 
+        # Transfer captured model outputs (e.g. hidden states) to the
+        # request data so they're available to downstream pipeline stages.
+        if output.extra:
+            data.extra_model_outputs.update(output.extra)
+
         token_id = output.data
         if token_id is not None:
             req.output_ids.append(token_id)

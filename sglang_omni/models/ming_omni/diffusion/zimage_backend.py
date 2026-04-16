@@ -54,7 +54,13 @@ class ZImageBackend(DiffusionBackend):
         self._semantic_encoder = None  # Ming LLM + connector (primary)
         self._device: torch.device | None = None
 
-    def load_models(self, model_path: str, device: torch.device) -> None:
+    def load_models(
+        self,
+        model_path: str,
+        device: torch.device,
+        *,
+        skip_semantic_encoder: bool = False,
+    ) -> None:
         self._device = device
 
         from diffusers import (
@@ -98,21 +104,28 @@ class ZImageBackend(DiffusionBackend):
         logger.info("[ZImage] Pipeline assembled on %s", device)
 
         # 5. Load semantic encoder (LLM + connector) — primary
-        try:
-            from sglang_omni.models.ming_omni.diffusion.semantic_encoder import (
-                MingSemanticEncoder,
-            )
-
-            self._semantic_encoder = MingSemanticEncoder()
-            self._semantic_encoder.load(model_path, device)
-            logger.info("[ZImage] Semantic encoder (LLM + connector) ready")
-        except Exception as e:
-            logger.warning(
-                "[ZImage] Failed to load semantic encoder: %s. "
-                "Falling back to ByT5-only mode.",
-                e,
+        if skip_semantic_encoder:
+            logger.info(
+                "[ZImage] Skipping semantic encoder loading "
+                "(skip_semantic_encoder=True)"
             )
             self._semantic_encoder = None
+        else:
+            try:
+                from sglang_omni.models.ming_omni.diffusion.semantic_encoder import (
+                    MingSemanticEncoder,
+                )
+
+                self._semantic_encoder = MingSemanticEncoder()
+                self._semantic_encoder.load(model_path, device)
+                logger.info("[ZImage] Semantic encoder (LLM + connector) ready")
+            except Exception as e:
+                logger.warning(
+                    "[ZImage] Failed to load semantic encoder: %s. "
+                    "Falling back to ByT5-only mode.",
+                    e,
+                )
+                self._semantic_encoder = None
 
         # 6. Load ByT5 text encoder + mapper (supplementary)
         byt5_dir = Path(model_path) / "byt5"
@@ -155,13 +168,32 @@ class ZImageBackend(DiffusionBackend):
         neg_embeds: list[torch.Tensor]
 
         if condition_embeds is not None:
-            # Pre-computed embeddings provided (e.g., from pipeline Phase 2)
+            # Pre-computed embeddings provided (e.g., from thinker hidden states)
             prompt_embeds = condition_embeds
             neg_embeds = (
                 negative_condition_embeds
                 if negative_condition_embeds is not None
                 else [e * 0.0 for e in condition_embeds]
             )
+
+            # Optionally concatenate ByT5 embeddings for text rendering
+            if self._text_encoder is not None and self._tokenizer is not None:
+                render_text = _extract_render_text(prompt)
+                if render_text:
+                    byt5_pos, byt5_neg = self._text_encoder.encode(
+                        render_text,
+                        tokenizer=self._tokenizer,
+                        device=self._device,
+                        max_length=256,
+                    )
+                    prompt_embeds = [
+                        torch.cat([sem, byt.to(sem.device)], dim=0)
+                        for sem, byt in zip(prompt_embeds, byt5_pos)
+                    ]
+                    neg_embeds = [
+                        torch.cat([nsem, nbyt.to(nsem.device)], dim=0)
+                        for nsem, nbyt in zip(neg_embeds, byt5_neg)
+                    ]
 
         elif self._semantic_encoder is not None:
             # Semantic encoding via LLM + connector
