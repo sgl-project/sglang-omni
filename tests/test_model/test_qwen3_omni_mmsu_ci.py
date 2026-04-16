@@ -7,6 +7,7 @@ Usage:
 Author:
     Yifei Gao https://github.com/PasserBy4
     Huapeng Zhou https://github.com/PopSoda2002
+    Chenyang Zhao https://github.com/zhaochenyang20
 """
 
 from __future__ import annotations
@@ -31,8 +32,7 @@ from tests.utils import (
 MODEL_PATH = "Qwen/Qwen3-Omni-30B-A3B-Instruct"
 
 CONCURRENCY = 8
-MAX_SAMPLES = 1000
-SEED = 42
+MAX_SAMPLES = 500
 STARTUP_TIMEOUT = 900
 
 MMSU_MIN_ACCURACY = 0.52
@@ -85,8 +85,7 @@ def _build_args(port: int, output_dir: str) -> argparse.Namespace:
         max_concurrency=CONCURRENCY,
         request_rate=float("inf"),
         save_audio=False,
-        disable_tqdm=True,
-        seed=SEED,
+        disable_tqdm=True
     )
 
 

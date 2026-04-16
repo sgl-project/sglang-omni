@@ -95,7 +95,7 @@ from benchmarks.tasks.audio_understanding import (
     print_mmsu_summary,
     save_mmsu_results,
 )
-from benchmarks.tasks.tts import compute_text_audio_consistency
+from benchmarks.tasks.tts import compute_text_audio_consistency, print_wer_summary
 
 logging.basicConfig(
     level=logging.INFO,
@@ -151,6 +151,17 @@ async def run(args: argparse.Namespace) -> dict:
 
     print_mmsu_summary(metrics, args.model, speed_metrics=speed)
 
+    output: dict = {"accuracy": metrics, "speed": speed}
+    wer_results = None
+    if audio_mode:
+        wer_results = compute_text_audio_consistency(
+            request_results,
+            getattr(args, "lang", "en"),
+            getattr(args, "asr_device", "cuda:0"),
+        )
+        output["wer"] = wer_results
+        print_wer_summary(wer_results["summary"], args.model)
+
     if args.output_dir:
         save_mmsu_results(
             results,
@@ -165,16 +176,10 @@ async def run(args: argparse.Namespace) -> dict:
                 "seed": args.seed,
             },
             args.output_dir,
-            speed_metrics=speed,
+            speed_metrics=speed if audio_mode else None,
+            wer_metrics=wer_results,
         )
 
-    output: dict = {"accuracy": metrics, "speed": speed}
-    if audio_mode:
-        output["wer"] = compute_text_audio_consistency(
-            request_results,
-            getattr(args, "lang", "en"),
-            getattr(args, "asr_device", "cuda:0"),
-        )
     return output
 
 
@@ -198,6 +203,8 @@ def main() -> None:
     p.add_argument("--save-audio", action="store_true")
     p.add_argument("--disable-tqdm", action="store_true")
     p.add_argument("--seed", type=int, default=None)
+    p.add_argument("--lang", type=str, default="en", help="Language for ASR WER evaluation")
+    p.add_argument("--asr-device", type=str, default="cuda:0", help="Device for ASR model")
 
     args = p.parse_args()
     wait_for_service(args.base_url or f"http://{args.host}:{args.port}")

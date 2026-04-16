@@ -2,12 +2,18 @@
 """MMSU TTS consistency CI for Qwen3-Omni (Text + Audio → Text+Audio, Talker ON).
 
 Evaluates text-audio consistency by comparing the model's text output with
-ASR transcription of its audio output on MMSU audio-QA tasks. The default
-"Reply with only A, B, C, or D." instruction is stripped so the model
-produces a full-sentence response suitable for WER evaluation.
+ASR transcription of its audio output on MMSU audio-QA tasks. Uses a
+chain-of-thought prompt (mirroring MMMU style) so the model reasons step
+by step before giving the final answer letter, producing longer responses
+more suitable for WER evaluation.
 
 Usage:
     pytest tests/test_model/test_qwen3_omni_mmsu_tts_consistency_ci.py -v -s -x
+
+Author:
+    Yifei Gao https://github.com/PasserBy4
+    Huapeng Zhou https://github.com/PopSoda2002
+    Chenyang Zhao https://github.com/zhaochenyang20
 """
 
 from __future__ import annotations
@@ -33,17 +39,21 @@ from tests.utils import (
 MODEL_PATH = "Qwen/Qwen3-Omni-30B-A3B-Instruct"
 
 MAX_SAMPLES = 5
-MAX_TOKENS = 50
-SEED = 42
+MAX_TOKENS = 100
 STARTUP_TIMEOUT = 900
 
 # Note (Yifei): Concurrency=1 only for now — code_predictor and code2wav
 # modules serialize GPU access, so they run serially even when concurrency > 1.
 CONCURRENCY = 1
 
-# Strip the "Reply with only A, B, C, or D." constraint so the model emits
-# a natural-language response that can be transcribed for WER comparison.
-MMSU_TTS_PROMPT = "Listen to the audio and answer the multiple-choice question."
+# Use chain-of-thought prompt (mirroring MMMU style) instead of the default
+# "Reply with only A, B, C, or D." to elicit longer responses for WER.
+MMSU_TTS_PROMPT = (
+    "Listen to the audio and answer the multiple-choice question. "
+    "Think step by step before answering. The last line of your response "
+    "should be of the following format: 'Answer: $LETTER' (without quotes) "
+    "where LETTER is one of the options."
+)
 
 MMSU_AUDIO_WER_MAX_CORPUS = 0.10
 MMSU_AUDIO_WER_MAX_PER_SAMPLE = 0.18
@@ -106,7 +116,7 @@ def _build_args(port: int, output_dir: str) -> argparse.Namespace:
         request_rate=float("inf"),
         save_audio=True,
         disable_tqdm=True,
-        seed=SEED,
+        seed=None,
         lang="en",
         asr_device="cuda:0",
     )
