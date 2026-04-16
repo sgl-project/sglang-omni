@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import time
 import warnings
+from dataclasses import dataclass
 from typing import Any
 
 import gradio as gr
@@ -25,6 +26,32 @@ _SYNTH_IDLE_LABEL = "Synthesize"
 _SYNTH_BUSY_LABEL = "Synthesizing..."
 _STREAM_IDLE_LABEL = "Start Streaming"
 _STREAM_BUSY_LABEL = "Streaming..."
+
+
+@dataclass(frozen=True)
+class StreamingUiUpdate:
+    history: Any
+    text_input: Any
+    live_audio: Any
+    final_audio: Any
+    status: Any
+    artifact_paths: Any
+    pending_stream_result: Any
+    synth_button: Any
+    stream_button: Any
+
+    def to_gradio_outputs(self) -> tuple[Any, ...]:
+        return (
+            self.history,
+            self.text_input,
+            self.live_audio,
+            self.final_audio,
+            self.status,
+            self.artifact_paths,
+            self.pending_stream_result,
+            self.synth_button,
+            self.stream_button,
+        )
 
 
 def _build_request(
@@ -307,34 +334,34 @@ def make_streaming_handler(api_base: str):
         except ValueError as exc:
             warnings.warn(str(exc))
             synth_button, stream_button = _unlock_request_buttons()
-            yield (
-                history,
-                text,
-                None,
-                None,
-                str(exc),
-                artifact_paths,
-                None,
-                synth_button,
-                stream_button,
-            )
+            yield StreamingUiUpdate(
+                history=history,
+                text_input=text,
+                live_audio=None,
+                final_audio=None,
+                status=str(exc),
+                artifact_paths=artifact_paths,
+                pending_stream_result=None,
+                synth_button=synth_button,
+                stream_button=stream_button,
+            ).to_gradio_outputs()
             return
 
         in_progress_history = _append_history(
             history, user_content, "Streaming audio..."
         )
         synth_button, stream_button = _lock_request_buttons("streaming")
-        yield (
-            in_progress_history,
-            "",
-            _reset_audio_output(),
-            _reset_audio_output(),
-            "Connecting to speech stream...",
-            artifact_paths,
-            None,
-            synth_button,
-            stream_button,
-        )
+        yield StreamingUiUpdate(
+            history=in_progress_history,
+            text_input="",
+            live_audio=_reset_audio_output(),
+            final_audio=_reset_audio_output(),
+            status="Connecting to speech stream...",
+            artifact_paths=artifact_paths,
+            pending_stream_result=None,
+            synth_button=synth_button,
+            stream_button=stream_button,
+        ).to_gradio_outputs()
 
         started_at = time.perf_counter()
         accumulator = WavChunkAccumulator()
@@ -354,17 +381,17 @@ def make_streaming_handler(api_base: str):
                 accumulator.add_wav_chunk(event.audio_bytes)
                 live_audio = live_emitter.add_wav_chunk(event.audio_bytes)
                 if live_audio is None:
-                    yield (
-                        in_progress_history,
-                        "",
-                        _keep_audio_output(),
-                        _keep_audio_output(),
-                        f"Buffering live playback | chunk {chunk_count}",
-                        artifact_paths,
-                        None,
-                        gr.skip(),
-                        gr.skip(),
-                    )
+                    yield StreamingUiUpdate(
+                        history=in_progress_history,
+                        text_input="",
+                        live_audio=_keep_audio_output(),
+                        final_audio=_keep_audio_output(),
+                        status=f"Buffering live playback | chunk {chunk_count}",
+                        artifact_paths=artifact_paths,
+                        pending_stream_result=None,
+                        synth_button=gr.skip(),
+                        stream_button=gr.skip(),
+                    ).to_gradio_outputs()
                     continue
 
                 if first_audio_s is None:
@@ -374,46 +401,46 @@ def make_streaming_handler(api_base: str):
                     f"Streaming | chunk {chunk_count} | "
                     f"first audio {first_audio_s:.2f}s"
                 )
-                yield (
-                    in_progress_history,
-                    "",
-                    live_audio,
-                    _keep_audio_output(),
-                    status,
-                    artifact_paths,
-                    None,
-                    gr.skip(),
-                    gr.skip(),
-                )
+                yield StreamingUiUpdate(
+                    history=in_progress_history,
+                    text_input="",
+                    live_audio=live_audio,
+                    final_audio=_keep_audio_output(),
+                    status=status,
+                    artifact_paths=artifact_paths,
+                    pending_stream_result=None,
+                    synth_button=gr.skip(),
+                    stream_button=gr.skip(),
+                ).to_gradio_outputs()
         except SpeechDemoClientError as exc:
             failed_history = _append_history(history, user_content, f"Error: {exc}")
             synth_button, stream_button = _unlock_request_buttons()
-            yield (
-                failed_history,
-                "",
-                _keep_audio_output(),
-                _keep_audio_output(),
-                f"Request failed: {exc}",
-                artifact_paths,
-                None,
-                synth_button,
-                stream_button,
-            )
+            yield StreamingUiUpdate(
+                history=failed_history,
+                text_input="",
+                live_audio=_keep_audio_output(),
+                final_audio=_keep_audio_output(),
+                status=f"Request failed: {exc}",
+                artifact_paths=artifact_paths,
+                pending_stream_result=None,
+                synth_button=synth_button,
+                stream_button=stream_button,
+            ).to_gradio_outputs()
             return
         except ValueError as exc:
             failed_history = _append_history(history, user_content, f"Error: {exc}")
             synth_button, stream_button = _unlock_request_buttons()
-            yield (
-                failed_history,
-                "",
-                _keep_audio_output(),
-                _keep_audio_output(),
-                f"Stream parse failed: {exc}",
-                artifact_paths,
-                None,
-                synth_button,
-                stream_button,
-            )
+            yield StreamingUiUpdate(
+                history=failed_history,
+                text_input="",
+                live_audio=_keep_audio_output(),
+                final_audio=_keep_audio_output(),
+                status=f"Stream parse failed: {exc}",
+                artifact_paths=artifact_paths,
+                pending_stream_result=None,
+                synth_button=synth_button,
+                stream_button=stream_button,
+            ).to_gradio_outputs()
             return
 
         final_audio_bytes = accumulator.to_wav_bytes()
@@ -422,17 +449,17 @@ def make_streaming_handler(api_base: str):
                 history, user_content, "Error: No audio was returned."
             )
             synth_button, stream_button = _unlock_request_buttons()
-            yield (
-                failed_history,
-                "",
-                _keep_audio_output(),
-                _keep_audio_output(),
-                "No audio was returned.",
-                artifact_paths,
-                None,
-                synth_button,
-                stream_button,
-            )
+            yield StreamingUiUpdate(
+                history=failed_history,
+                text_input="",
+                live_audio=_keep_audio_output(),
+                final_audio=_keep_audio_output(),
+                status="No audio was returned.",
+                artifact_paths=artifact_paths,
+                pending_stream_result=None,
+                synth_button=synth_button,
+                stream_button=stream_button,
+            ).to_gradio_outputs()
             return
 
         live_tail = live_emitter.flush()
@@ -443,17 +470,17 @@ def make_streaming_handler(api_base: str):
                 f"Streaming | chunk {chunk_count} | "
                 f"first audio {first_audio_s:.2f}s"
             )
-            yield (
-                in_progress_history,
-                "",
-                live_tail,
-                _keep_audio_output(),
-                status,
-                artifact_paths,
-                None,
-                gr.skip(),
-                gr.skip(),
-            )
+            yield StreamingUiUpdate(
+                history=in_progress_history,
+                text_input="",
+                live_audio=live_tail,
+                final_audio=_keep_audio_output(),
+                status=status,
+                artifact_paths=artifact_paths,
+                pending_stream_result=None,
+                synth_button=gr.skip(),
+                stream_button=gr.skip(),
+            ).to_gradio_outputs()
 
         final_audio_path, artifact_paths = _store_wav_artifact(
             final_audio_bytes, artifact_paths
@@ -479,17 +506,17 @@ def make_streaming_handler(api_base: str):
             "final_audio_path": final_audio_path,
             "status": summary,
         }
-        yield (
-            gr.skip(),
-            gr.skip(),
-            _keep_audio_output(),
-            _keep_audio_output(),
-            _keep_audio_output(),
-            artifact_paths,
-            pending_result,
-            gr.skip(),
-            gr.skip(),
-        )
+        yield StreamingUiUpdate(
+            history=gr.skip(),
+            text_input=gr.skip(),
+            live_audio=_keep_audio_output(),
+            final_audio=_keep_audio_output(),
+            status=_keep_audio_output(),
+            artifact_paths=artifact_paths,
+            pending_stream_result=pending_result,
+            synth_button=gr.skip(),
+            stream_button=gr.skip(),
+        ).to_gradio_outputs()
 
     return synthesize_stream
 
