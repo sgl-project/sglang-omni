@@ -91,6 +91,7 @@ class GenerateRequest:
     sampling: SamplingParams = field(default_factory=SamplingParams)
     stage_sampling: dict[str, SamplingParams] | None = None
     stage_params: dict[str, dict[str, Any]] | None = None
+    extra_params: dict[str, Any] = field(default_factory=dict)
     stream: bool = True
     max_tokens: int | None = None
 
@@ -112,6 +113,7 @@ class GenerateRequest:
                 else None
             ),
             "stage_params": self.stage_params,
+            "extra_params": dict(self.extra_params),
             "stream": self.stream,
             "max_tokens": self.max_tokens,
             "output_modalities": self.output_modalities,
@@ -133,7 +135,6 @@ class GenerateChunk:
     stage_id: int | None = None
     stage_name: str | None = None
     modality: str = "text"
-    # Multi-modal output data (e.g. audio waveform bytes, image bytes)
     audio_data: Any = None
     sample_rate: int | None = None
 
@@ -214,7 +215,7 @@ class SpeechResult:
 
     audio_bytes: bytes
     mime_type: str
-    format: str  # actual format used
+    format: str
     usage: UsageInfo | None = None
 
 

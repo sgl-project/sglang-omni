@@ -4,138 +4,44 @@
 from __future__ import annotations
 
 import inspect
-import logging
-import re
-import shutil
-import tempfile
+import socket
 from pathlib import Path
 from typing import Any
 
-from sglang_omni.config.schema import InputHandlerConfig, PipelineConfig, StageConfig
-from sglang_omni.executors.interface import Executor
-from sglang_omni.pipeline import (
-    AggregatedInput,
-    Coordinator,
-    DirectInput,
-    Stage,
-    Worker,
-)
+from sglang_omni.config.schema import PipelineConfig, StageConfig
+from sglang_omni.pipeline import AggregatedInput, Coordinator, DirectInput, Stage
 from sglang_omni.pipeline.stage.input import InputHandler
 from sglang_omni.utils import import_string
 
-logger = logging.getLogger(__name__)
 
-
-class IpcRuntimeDir:
-    """Runtime-owned IPC directory for a single pipeline instance."""
-
-    def __init__(self, path: Path):
-        self.path = path
-        self._closed = False
-
-    def __enter__(self) -> IpcRuntimeDir:
-        return self
-
-    def close(self) -> None:
-        if self._closed:
-            return
-        self._closed = True
-        try:
-            shutil.rmtree(self.path)
-        except FileNotFoundError:
-            return
-        except OSError as exc:
-            logger.warning(f"Failed to remove IPC runtime dir {self.path}: {exc}")
-
-    def __exit__(self, exc_type, exc, tb) -> None:
-        self.close()
-
-
-def create_ipc_runtime_dir(config: PipelineConfig) -> IpcRuntimeDir | None:
-    """Create a per-run IPC directory for a single pipeline instance."""
-    if config.endpoints.scheme != "ipc":
-        return None
-
-    base_root = Path(config.endpoints.base_path)
-    base_root.mkdir(parents=True, exist_ok=True)
-
-    namespace_prefix = re.sub(r"[^0-9a-z]+", "-", config.name.lower()).strip("-")
-    if not namespace_prefix:
-        namespace_prefix = "pipeline"
-    path = Path(tempfile.mkdtemp(prefix=f"{namespace_prefix}-", dir=base_root))
-    return IpcRuntimeDir(path)
-
-
-def prepare_pipeline_runtime(
-    config: PipelineConfig,
-    *,
-    ipc_runtime_dir: IpcRuntimeDir | None = None,
-) -> tuple[
-    list[StageConfig], dict[str, str], str, dict[str, str], IpcRuntimeDir | None, bool
-]:
-    """Prepare stage configs and endpoints for a pipeline runtime."""
-    runtime_dir = ipc_runtime_dir
-    created_runtime_dir = None
-    if runtime_dir is None:
-        runtime_dir = create_ipc_runtime_dir(config)
-        created_runtime_dir = runtime_dir
-    owns_runtime_dir = created_runtime_dir is not None
-
-    try:
-        stages_cfg, name_map, entry_stage = config.apply_fusion()
-        endpoints = _allocate_endpoints(
-            config,
-            stages=stages_cfg,
-            ipc_base_dir=runtime_dir.path if runtime_dir else None,
-        )
-    except Exception:
-        if created_runtime_dir is not None:
-            created_runtime_dir.close()
-        raise
-
-    return stages_cfg, name_map, entry_stage, endpoints, runtime_dir, owns_runtime_dir
-
-
-def compile_pipeline_core(
-    config: PipelineConfig,
-    *,
-    ipc_runtime_dir: IpcRuntimeDir | None = None,
-) -> tuple[Coordinator, list[Stage], IpcRuntimeDir | None]:
+def compile_pipeline(config: PipelineConfig) -> tuple[Coordinator, list[Stage]]:
     """Build the coordinator and stage objects from the pipeline configuration."""
-    stages_cfg, name_map, entry_stage, endpoints, runtime_dir, owns_runtime_dir = (
-        prepare_pipeline_runtime(
-            config,
-            ipc_runtime_dir=ipc_runtime_dir,
-        )
+    stages_cfg, name_map, entry_stage = config.apply_fusion()
+    endpoints = _allocate_endpoints(config, stages=stages_cfg)
+
+    coordinator = Coordinator(
+        completion_endpoint=endpoints["completion"],
+        abort_endpoint=endpoints["abort"],
+        entry_stage=entry_stage,
+        terminal_stages=config.terminal_stages or None,
     )
 
-    try:
-        coordinator = Coordinator(
-            completion_endpoint=endpoints["completion"],
-            abort_endpoint=endpoints["abort"],
-            entry_stage=entry_stage,
-            terminal_stages=config.terminal_stages or None,
+    stage_endpoints = {s.name: endpoints[f"stage_{s.name}"] for s in stages_cfg}
+
+    stages: list[Stage] = []
+    for stage_cfg in stages_cfg:
+        stage = _compile_stage(
+            stage_cfg, config, stage_endpoints, endpoints, name_map=name_map
         )
+        coordinator.register_stage(stage.name, stage.control_plane.recv_endpoint)
+        stages.append(stage)
 
-        stage_endpoints = {
-            stage_cfg.name: endpoints[f"stage_{stage_cfg.name}"]
-            for stage_cfg in stages_cfg
-        }
-
-        stages: list[Stage] = []
-        for stage_cfg in stages_cfg:
-            stage = _compile_stage(
-                stage_cfg, config, stage_endpoints, endpoints, name_map=name_map
-            )
-            coordinator.register_stage(stage.name, stage.control_plane.recv_endpoint)
-            stages.append(stage)
-
-        stage_map = {stage.name: stage for stage in stages}
-        cfg_map = {s.name: s for s in stages_cfg}
-        for stage_cfg in stages_cfg:
-            stage = stage_map.get(stage_cfg.name)
-            if stage is None:
-                continue
+    # Wire streaming targets
+    stage_map = {stage.name: stage for stage in stages}
+    cfg_map = {s.name: s for s in stages_cfg}
+    for stage_cfg in stages_cfg:
+        stage = stage_map.get(stage_cfg.name)
+        if stage is not None:
             _wire_stream_targets(
                 stage,
                 stage_cfg,
@@ -143,30 +49,7 @@ def compile_pipeline_core(
                 gpu_placement=config.gpu_placement,
                 cfg_map=cfg_map,
             )
-    except Exception:
-        if owns_runtime_dir and runtime_dir is not None:
-            runtime_dir.close()
-        raise
 
-    return coordinator, stages, runtime_dir
-
-
-def compile_pipeline(config: PipelineConfig) -> tuple[Coordinator, list[Stage]]:
-    """Build coordinator and stages directly from a pipeline config.
-
-    For IPC pipelines, use `build_pipeline_runner(...)` or
-    `MultiProcessPipelineRunner` for managed startup and cleanup, or pair
-    `create_ipc_runtime_dir(...)` with `compile_pipeline_core(...)` for
-    explicit caller-managed ownership.
-    """
-    if config.endpoints.scheme == "ipc":
-        raise ValueError(
-            "compile_pipeline() does not manage IPC runtime-dir ownership. "
-            "Use build_pipeline_runner(...), MultiProcessPipelineRunner, or "
-            "create_ipc_runtime_dir(...) + compile_pipeline_core(...)."
-        )
-
-    coordinator, stages, _ = compile_pipeline_core(config)
     return coordinator, stages
 
 
@@ -178,89 +61,128 @@ def _compile_stage(
     *,
     name_map: dict[str, str],
 ) -> Stage:
-    factory = import_string(stage_cfg.executor.factory)
-    if not callable(factory):
-        raise TypeError(
-            f"Executor factory is not callable: {stage_cfg.executor.factory}"
-        )
+    factory = import_string(stage_cfg.factory)
+    get_next = _resolve_get_next(stage_cfg, name_map)
+    input_handler = _create_input_handler(stage_cfg, name_map=name_map)
+    factory_args = _resolve_factory_args(stage_cfg, global_cfg)
+    relay_config = _build_relay_config(stage_cfg, global_cfg)
 
-    get_next = import_string(stage_cfg.get_next)
-    if not callable(get_next):
-        raise TypeError(f"get_next is not callable: {stage_cfg.get_next}")
-    get_next = _wrap_get_next(get_next, name_map)
+    scheduler = factory(**factory_args)
 
-    input_handler = _create_input_handler(stage_cfg.input_handler, name_map=name_map)
-
-    stage = Stage(
+    return Stage(
         name=stage_cfg.name,
         get_next=get_next,
+        gpu_id=relay_config["gpu_id"],
         recv_endpoint=stage_endpoints[stage_cfg.name],
         coordinator_endpoint=endpoints["completion"],
         abort_endpoint=endpoints["abort"],
         endpoints=stage_endpoints,
         input_handler=input_handler,
-        relay_config=_build_relay_config(stage_cfg, global_cfg),
+        relay_config=relay_config,
+        scheduler=scheduler,
     )
 
-    # check if factory has the signature of model_path and the user does not provide the model path
-    # if yes, use the one in global config
-    if (
-        "model_path" in inspect.signature(factory).parameters
-        and "model_path" not in stage_cfg.executor.args
-    ):
-        stage_cfg.executor.args["model_path"] = global_cfg.model_path
 
-    # Inject gpu_id from gpu_placement map
-    if (
-        "gpu_id" in inspect.signature(factory).parameters
-        and "gpu_id" not in stage_cfg.executor.args
-    ):
-        gpu_id = global_cfg.gpu_placement.get(stage_cfg.name, 0)
-        stage_cfg.executor.args["gpu_id"] = gpu_id
+# ------------------------------------------------------------------
+# Routing
+# ------------------------------------------------------------------
 
-    for _ in range(stage_cfg.num_workers):
-        executor = factory(**stage_cfg.executor.args)
-        if not isinstance(executor, Executor):
-            raise TypeError(
-                f"Executor factory {stage_cfg.executor.factory} returned "
-                f"{type(executor)}"
-            )
-        stage.add_worker(Worker(executor=executor))
 
-    return stage
+def _resolve_get_next(stage_cfg: StageConfig, name_map: dict[str, str]):
+    """Build a get_next callable from static ``next``."""
+    if stage_cfg.terminal:
+        return lambda request_id, output: None
+
+    # Static routing from `next` field
+    target = stage_cfg.next
+    if isinstance(target, str):
+        mapped = name_map.get(target, target)
+        return lambda request_id, output, _t=mapped: _t
+    if isinstance(target, list):
+        mapped = [name_map.get(t, t) for t in target]
+        return lambda request_id, output, _t=mapped: _t
+
+    return lambda request_id, output: None
+
+
+# ------------------------------------------------------------------
+# Input handler
+# ------------------------------------------------------------------
 
 
 def _create_input_handler(
-    config: InputHandlerConfig, *, name_map: dict[str, str]
+    stage_cfg: StageConfig, *, name_map: dict[str, str]
 ) -> InputHandler:
-    if config.type == "direct":
+    if not stage_cfg.wait_for:
         return DirectInput()
 
-    if not config.sources:
-        raise ValueError("Aggregated input handler requires sources")
-    if not config.merge_fn:
-        raise ValueError("Aggregated input handler requires merge_fn")
-
-    merge_fn = import_string(config.merge_fn)
-    if not callable(merge_fn):
-        raise TypeError(f"merge_fn is not callable: {config.merge_fn}")
-
-    sources = [_map_stage_name(name_map, name) for name in config.sources]
-    sources = _dedupe_list(sources)
+    merge_fn = import_string(stage_cfg.merge_fn)
+    sources = [name_map.get(n, n) for n in stage_cfg.wait_for]
     return AggregatedInput(sources=set(sources), merge=merge_fn)
 
 
+# ------------------------------------------------------------------
+# Factory args
+# ------------------------------------------------------------------
+
+
+def _resolve_factory_args(
+    stage_cfg: StageConfig,
+    global_cfg: PipelineConfig,
+) -> dict[str, Any]:
+    """Resolve factory args, injecting model_path and gpu_id if accepted."""
+    args = dict(stage_cfg.factory_args)
+    factory = import_string(stage_cfg.factory)
+    sig = inspect.signature(factory)
+
+    if "model_path" in sig.parameters and "model_path" not in args:
+        args["model_path"] = global_cfg.model_path
+
+    if "gpu_id" in sig.parameters and "gpu_id" not in args:
+        placement = global_cfg.gpu_placement.get(stage_cfg.name, 0)
+        gpu_id = placement[0] if isinstance(placement, list) else placement
+        args["gpu_id"] = gpu_id
+
+    return args
+
+
+# ------------------------------------------------------------------
+# Relay config
+# ------------------------------------------------------------------
+
+
 def _build_relay_config(
-    stage_cfg: StageConfig, global_cfg: PipelineConfig
+    stage_cfg: StageConfig,
+    global_cfg: PipelineConfig,
 ) -> dict[str, Any]:
     relay_cfg = stage_cfg.relay
+    if relay_cfg is not None:
+        # Explicit relay config
+        return {
+            "relay_type": global_cfg.relay_backend,
+            "slot_size_mb": relay_cfg.slot_size_mb,
+            "credits": relay_cfg.credits,
+            "rank": relay_cfg.rank,
+            "world_size": relay_cfg.world_size,
+            "gpu_id": _parse_gpu_id(relay_cfg.device),
+        }
+
+    # Auto-infer from gpu field
+    gpu = stage_cfg.gpu
+    if gpu is None:
+        gpu_id = None  # CPU stage
+    elif isinstance(gpu, list):
+        gpu_id = gpu[0]
+    else:
+        gpu_id = gpu
+
     return {
         "relay_type": global_cfg.relay_backend,
-        "slot_size_mb": relay_cfg.slot_size_mb,
-        "credits": relay_cfg.credits,
-        "rank": relay_cfg.rank,
-        "world_size": relay_cfg.world_size,
-        "gpu_id": _parse_gpu_id(relay_cfg.device),
+        "slot_size_mb": 512,
+        "credits": 2,
+        "rank": None,
+        "world_size": None,
+        "gpu_id": gpu_id,
     }
 
 
@@ -270,18 +192,37 @@ def _parse_gpu_id(device: str) -> int | None:
     if device == "cuda":
         return 0
     if device.startswith("cuda:"):
-        index = device.split(":", 1)[1]
-        if not index:
-            raise ValueError("CUDA device index is required after 'cuda:'")
-        return int(index)
+        return int(device.split(":", 1)[1])
     raise ValueError(f"Unsupported device string: {device}")
+
+
+# ------------------------------------------------------------------
+# Endpoints
+# ------------------------------------------------------------------
+
+
+def _find_free_tcp_ports(start: int, count: int) -> list[int]:
+    """Find *count* available TCP ports starting from *start*.
+
+    Does NOT set SO_REUSEADDR so that TIME_WAIT ports are skipped.
+    """
+    ports: list[int] = []
+    port = start
+    while len(ports) < count:
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.bind(("127.0.0.1", port))
+                ports.append(port)
+        except OSError:
+            pass
+        port += 1
+    return ports
 
 
 def _allocate_endpoints(
     config: PipelineConfig,
     *,
     stages: list[StageConfig],
-    ipc_base_dir: Path | None = None,
 ) -> dict[str, str]:
     endpoints: dict[str, str] = {}
 
@@ -291,67 +232,35 @@ def _allocate_endpoints(
         endpoints["abort"] = config.abort_endpoint
 
     if config.endpoints.scheme == "ipc":
-        assert ipc_base_dir is not None
-        base_dir = ipc_base_dir
-
+        base_dir = Path(config.endpoints.base_path) / config.name
+        base_dir.mkdir(parents=True, exist_ok=True)
         endpoints.setdefault("completion", f"ipc://{base_dir}/completion.sock")
         endpoints.setdefault("abort", f"ipc://{base_dir}/abort.sock")
-
-        for stage_cfg in stages:
-            endpoints[f"stage_{stage_cfg.name}"] = (
-                f"ipc://{base_dir}/stage_{stage_cfg.name}.sock"
-            )
+        for s in stages:
+            endpoints[f"stage_{s.name}"] = f"ipc://{base_dir}/stage_{s.name}.sock"
         return endpoints
 
     if config.endpoints.scheme == "tcp":
-        port = config.endpoints.base_port
+        needed = 2 + len(stages)
+        ports = _find_free_tcp_ports(config.endpoints.base_port, needed)
+        idx = 0
         if "completion" not in endpoints:
-            endpoints["completion"] = f"tcp://127.0.0.1:{port}"
-            port += 1
+            endpoints["completion"] = f"tcp://127.0.0.1:{ports[idx]}"
+            idx += 1
         if "abort" not in endpoints:
-            endpoints["abort"] = f"tcp://127.0.0.1:{port}"
-            port += 1
-
-        for stage_cfg in stages:
-            endpoints[f"stage_{stage_cfg.name}"] = f"tcp://127.0.0.1:{port}"
-            port += 1
+            endpoints["abort"] = f"tcp://127.0.0.1:{ports[idx]}"
+            idx += 1
+        for s in stages:
+            endpoints[f"stage_{s.name}"] = f"tcp://127.0.0.1:{ports[idx]}"
+            idx += 1
         return endpoints
 
     raise ValueError(f"Unknown endpoint scheme: {config.endpoints.scheme}")
 
 
-def _wrap_get_next(get_next: Any, name_map: dict[str, str]):
-    def _wrapped(request_id: str, output: Any):
-        result = get_next(request_id, output)
-        return _remap_next(result, name_map)
-
-    return _wrapped
-
-
-def _remap_next(value: Any, name_map: dict[str, str]) -> Any:
-    if value is None:
-        return None
-    if isinstance(value, str):
-        return _map_stage_name(name_map, value)
-    if isinstance(value, list):
-        remapped = [_map_stage_name(name_map, item) for item in value]
-        return _dedupe_list(remapped)
-    return value
-
-
-def _map_stage_name(name_map: dict[str, str], name: str) -> str:
-    return name_map.get(name, name)
-
-
-def _dedupe_list(items: list[str]) -> list[str]:
-    seen: set[str] = set()
-    result: list[str] = []
-    for item in items:
-        if item in seen:
-            continue
-        seen.add(item)
-        result.append(item)
-    return result
+# ------------------------------------------------------------------
+# Stream target wiring
+# ------------------------------------------------------------------
 
 
 def _wire_stream_targets(
@@ -359,112 +268,60 @@ def _wire_stream_targets(
     sender_cfg: StageConfig,
     stage_map: dict[str, Stage],
     *,
-    gpu_placement: dict[str, int] | None = None,
+    gpu_placement: dict[str, int | list[int]] | None = None,
     cfg_map: dict[str, StageConfig] | None = None,
 ) -> None:
-    """Wire stream_to targets between stages.
-
-    For each stream_to entry on the sender:
-    1. Set worker._stream_targets and worker._bootstrap_targets
-    2. Detect same-GPU targets and set worker._same_gpu_targets (CUDA IPC)
-    3. Create StreamQueue on receiver stages
-    4. Set executor._stream_queue on receiver executors
-    5. Wire set_stream_fn on sender executors
-    """
     from sglang_omni.pipeline.stage.stream_queue import StreamQueue
 
     targets = sender_cfg.stream_to
     if not targets:
         return
 
-    # Collect target stage names and bootstrap targets
-    all_targets = [t.to_stage for t in targets]
-    bootstrap_targets = {t.to_stage for t in targets if t.bootstrap}
-
-    # Detect same-GPU targets for CUDA IPC zero-copy
-    same_gpu_targets = _detect_same_gpu_targets(
+    same_gpu = _detect_same_gpu_targets(
         sender_cfg,
         targets,
         gpu_placement=gpu_placement,
         cfg_map=cfg_map,
     )
 
-    # Set stream targets on sender workers and wire stream_fn.
-    for worker in sender_stage.workers:
-        worker._stream_targets = all_targets
-        worker._bootstrap_targets = bootstrap_targets
-        worker._same_gpu_targets = same_gpu_targets
-        set_target = getattr(worker.executor, "set_stream_target", None)
-        if callable(set_target):
-            if len(all_targets) != 1:
-                raise ValueError(
-                    f"Executor for stage {sender_stage.name!r} requires exactly one "
-                    "stream_to target"
-                )
-            set_target(all_targets[0])
-        # Wire stream_fn: executor calls worker._enqueue_stream
-        set_fn = getattr(worker.executor, "set_stream_fn", None)
-        if callable(set_fn):
-            set_fn(worker._enqueue_stream)
+    sender_stage._stream_targets = targets
+    sender_stage._same_gpu_targets = same_gpu
 
-    # Set up receiver side: create StreamQueue on receiver stages
-    for target_cfg in targets:
-        receiver_stage = stage_map.get(target_cfg.to_stage)
-        if receiver_stage is None:
-            continue
-
-        # Create a shared StreamQueue for the receiver stage if not already present
-        if receiver_stage._stream_queue is None:
-            queue = StreamQueue(max_pending=4096)
-            receiver_stage._stream_queue = queue
-        else:
-            queue = receiver_stage._stream_queue
-
-        # Wire stream queue to receiver executors
-        for worker in receiver_stage.workers:
-            worker.executor._stream_queue = queue
-            # Wire feedback mailbox for executors that support it
-            set_feedback_mailbox = getattr(
-                worker.executor, "set_feedback_mailbox", None
-            )
-            if callable(set_feedback_mailbox):
-                set_feedback_mailbox(queue)
+    for target_name in targets:
+        receiver = stage_map.get(target_name)
+        if receiver is not None and receiver._stream_queue is None:
+            receiver._stream_queue = StreamQueue(max_pending=4096)
 
 
 def _detect_same_gpu_targets(
     sender_cfg: StageConfig,
-    targets: list,
+    targets: list[str],
     *,
-    gpu_placement: dict[str, int] | None = None,
+    gpu_placement: dict[str, int | list[int]] | None = None,
     cfg_map: dict[str, StageConfig] | None = None,
 ) -> set[str]:
-    """Return the set of target stage names that share a GPU with the sender.
-
-    Same-GPU streaming uses CUDA IPC (zero data copy) instead of the relay.
-    Both the sender and receiver must use CUDA relays and be placed on the
-    same GPU (per ``gpu_placement``) for this to activate.
-    """
     if not gpu_placement or not cfg_map:
         return set()
-
-    sender_gpu = gpu_placement.get(sender_cfg.name)
+    sender_gpu = _primary_gpu(sender_cfg, gpu_placement)
     if sender_gpu is None:
         return set()
-
-    # Sender must have a CUDA relay
-    if sender_cfg.relay.device == "cpu":
-        return set()
-
     same: set[str] = set()
-    for target in targets:
-        receiver_cfg = cfg_map.get(target.to_stage)
+    for target_name in targets:
+        receiver_cfg = cfg_map.get(target_name)
         if receiver_cfg is None:
             continue
-        # Receiver must also have a CUDA relay
-        if receiver_cfg.relay.device == "cpu":
-            continue
-        receiver_gpu = gpu_placement.get(target.to_stage)
+        receiver_gpu = _primary_gpu(receiver_cfg, gpu_placement)
         if receiver_gpu is not None and receiver_gpu == sender_gpu:
-            same.add(target.to_stage)
-
+            same.add(target_name)
     return same
+
+
+def _primary_gpu(
+    stage_cfg: StageConfig,
+    gpu_placement: dict[str, int | list[int]],
+) -> int | None:
+    """Return the primary (rank 0) GPU id for a stage, or None for CPU stages."""
+    raw = gpu_placement.get(stage_cfg.name)
+    if raw is None:
+        return None
+    return raw[0] if isinstance(raw, list) else raw

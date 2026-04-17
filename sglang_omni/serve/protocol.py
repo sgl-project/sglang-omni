@@ -88,6 +88,13 @@ class ChatCompletionRequest(BaseModel):
     stage_sampling: dict[str, dict[str, Any]] | None = None
     stage_params: dict[str, dict[str, Any]] | None = None
 
+    # Talker-specific overrides for Qwen3-Omni speech output
+    talker_temperature: float | None = None
+    talker_top_p: float | None = None
+    talker_top_k: int | None = None
+    talker_repetition_penalty: float | None = None
+    talker_max_new_tokens: int | None = None
+
     # Misc
     request_id: str | None = None
     user: str | None = None

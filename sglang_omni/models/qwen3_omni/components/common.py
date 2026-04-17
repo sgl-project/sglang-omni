@@ -11,7 +11,7 @@ from sglang_omni.utils import load_hf_config
 
 def load_thinker_config(model_path: str) -> Any:
     cfg = load_hf_config(model_path, trust_remote_code=True, local_files_only=True)
-    return getattr(cfg, "thinker_config", cfg)
+    return cfg.thinker_config
 
 
 @dataclass(frozen=True)

@@ -30,7 +30,7 @@ def load_chat_template(model_path: str) -> str | None:
 
 def ensure_chat_template(tokenizer: Any, *, model_path: str) -> None:
     """Ensure tokenizer.chat_template is populated when possible."""
-    if getattr(tokenizer, "chat_template", None):
+    if tokenizer.chat_template:
         return
     template = load_chat_template(model_path)
     if template:
@@ -83,10 +83,6 @@ def append_modality_placeholders(
 
 def apply_chat_template(tokenizer: Any, messages: list[dict[str, str]]) -> str:
     """Apply the tokenizer's chat template with a generation prompt."""
-    if not hasattr(tokenizer, "apply_chat_template"):
-        raise ValueError("Tokenizer does not support apply_chat_template")
-    if not getattr(tokenizer, "chat_template", None):
-        raise ValueError("Tokenizer chat_template is not set")
     return tokenizer.apply_chat_template(
         messages,
         tokenize=False,

@@ -288,14 +288,13 @@ class Client:
                 if isinstance(text, str):
                     chunk.text = text
                 Client._set_audio_data(chunk, c2w_result)
-                chunk.usage = UsageInfo.from_dict(decode_result.get("usage"))
                 return chunk
             text = result.get("text")
             if isinstance(text, str):
                 chunk.text = text
             token_ids = result.get("token_ids")
             if token_ids is not None:
-                if hasattr(token_ids, "tolist"):
+                if not isinstance(token_ids, (list, tuple)):
                     token_ids = token_ids.tolist()
                 chunk.token_ids = list(token_ids)
             logprobs = result.get("logprobs")
@@ -342,7 +341,7 @@ class Client:
                 chunk.text = text
             token_ids = data.get("token_ids")
             if token_ids is not None:
-                if hasattr(token_ids, "tolist"):
+                if not isinstance(token_ids, (list, tuple)):
                     token_ids = token_ids.tolist()
                 chunk.token_ids = list(token_ids)
             logprobs = data.get("logprobs")
@@ -429,4 +428,6 @@ def _build_params(request: GenerateRequest) -> dict[str, Any]:
         }
     if request.stage_params:
         params["stage_params"] = request.stage_params
+    if request.extra_params:
+        params.update(request.extra_params)
     return params

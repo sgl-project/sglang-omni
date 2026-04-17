@@ -27,6 +27,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import socket
 import time
 from typing import Any
 
@@ -35,16 +36,31 @@ from fastapi import APIRouter
 from pydantic import BaseModel
 
 from sglang_omni.client import Client
-from sglang_omni.config import PipelineConfig, build_pipeline_runner
+from sglang_omni.config import PipelineConfig, compile_pipeline
 from sglang_omni.profiler.profiler_control import ProfilerControlClient
 from sglang_omni.serve.openai_api import create_app
-from sglang_omni.utils import find_available_port
 
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Built-in pipeline registry
 # ---------------------------------------------------------------------------
+
+
+def _find_available_port(host: str, port: int) -> int:
+    """Return *port* if available, otherwise find a free port and warn."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind((host, port))
+            return port
+    except OSError:
+        pass
+    logger.warning("Port %d is already in use on %s.", port, host)
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind((host, 0))
+        free_port = s.getsockname()[1]
+    logger.warning("Using port %d instead.", free_port)
+    return free_port
 
 
 def _default_run_id() -> str:
@@ -113,31 +129,6 @@ def _mount_profiler_routes(
     app.include_router(router)
 
 
-async def _build_app_and_serve(
-    coordinator,
-    *,
-    model_name: str,
-    host: str,
-    port: int,
-    log_level: str,
-    client_kwargs: dict[str, Any] | None = None,
-    stage_endpoints: dict[str, str] | None = None,
-) -> None:
-    """Create Client + FastAPI app + uvicorn server."""
-    cl_kwargs = client_kwargs or {}
-    client = Client(coordinator, **cl_kwargs)
-    app = create_app(client, model_name=model_name)
-
-    if stage_endpoints is not None:
-        profiler_dir = os.environ.get("SGLANG_TORCH_PROFILER_DIR")
-        profiler_ctl = ProfilerControlClient(stage_endpoints)
-        _mount_profiler_routes(app, profiler_ctl, profiler_dir)
-
-    config = uvicorn.Config(app, host=host, port=port, log_level=log_level)
-    server = uvicorn.Server(config)
-    await server.serve()
-
-
 async def _run_server(
     pipeline_config: PipelineConfig,
     *,
@@ -152,17 +143,25 @@ async def _run_server(
     This is the async entry point.  For a blocking call use :func:`launch_server`.
     """
     # 0. Check port availability before loading models
-    port = find_available_port(host, port)
+    port = _find_available_port(host, port)
 
-    gpu_ids = set(pipeline_config.gpu_placement.values())
-    need_multi_process = len(gpu_ids) > 1
-    resolved_name = model_name or pipeline_config.name
+    # Determine whether we need multi-process mode.  This is true when
+    # stages span more than one GPU *or* any stage uses tensor parallelism.
+    gpu_ids: set[int] = set()
+    for v in pipeline_config.gpu_placement.values():
+        if isinstance(v, list):
+            gpu_ids.update(v)
+        else:
+            gpu_ids.add(v)
+    any_tp = any(s.tp_size > 1 for s in pipeline_config.stages)
+    needs_mp = len(gpu_ids) > 1 or any_tp
     logger.info(
-        f"GPU placement: {dict(pipeline_config.gpu_placement)} → "
-        f"{'multi-process' if need_multi_process else 'single-process'}"
+        "GPU placement: %s → %s",
+        dict(pipeline_config.gpu_placement),
+        "multi-process" if needs_mp else "single-process",
     )
 
-    if need_multi_process:
+    if needs_mp:
         from sglang_omni.pipeline.mp_runner import MultiProcessPipelineRunner
 
         mp_runner = MultiProcessPipelineRunner(pipeline_config)
@@ -170,50 +169,62 @@ async def _run_server(
         await mp_runner.start(timeout=startup_timeout)
         coordinator = mp_runner.coordinator
         logger.info(
-            f"Pipeline '{pipeline_config.name}' started "
-            f"(multi-process, {len(gpu_ids)} GPU(s))"
+            "Pipeline '%s' started (multi-process, %d GPU(s))",
+            pipeline_config.name,
+            len(gpu_ids),
         )
 
         try:
-
-            # Note (Chenyang): Profiler is not enabled in multi-process mode
-            # because stages run in separate processes and their control planes
-            # are not directly reachable from the HTTP server process.
-
-            await _build_app_and_serve(
-                coordinator,
-                model_name=resolved_name,
-                host=host,
-                port=port,
-                log_level=log_level,
-                client_kwargs=client_kwargs,
+            cl_kwargs = client_kwargs or {}
+            client = Client(coordinator, **cl_kwargs)
+            app = create_app(
+                client,
+                model_name=model_name or pipeline_config.name,
             )
+
+            config = uvicorn.Config(app, host=host, port=port, log_level=log_level)
+            server = uvicorn.Server(config)
+            await server.serve()
         finally:
-            logger.info(f"Shutting down pipeline …")
+            logger.info("Shutting down pipeline …")
             await mp_runner.stop()
-            logger.info(f"Pipeline stopped.")
+            logger.info("Pipeline stopped.")
     else:
-        runner = build_pipeline_runner(pipeline_config)
-        stage_endpoints = _collect_stage_control_endpoints(runner.stages)
-        await runner.start()
+        coordinator, stages = compile_pipeline(pipeline_config)
+        stage_endpoints = _collect_stage_control_endpoints(stages)
+
+        # Start coordinator + all stages as async tasks
+        await coordinator.start()
+        completion_task = asyncio.create_task(coordinator.run_completion_loop())
+        stage_tasks = [asyncio.create_task(s.run()) for s in stages]
         logger.info(
-            f"Pipeline '{pipeline_config.name}' started ({len(runner.stages)} stages)"
+            "Pipeline '%s' started (%d stages)",
+            pipeline_config.name,
+            len(stages),
         )
 
         try:
-            await _build_app_and_serve(
-                runner.coordinator,
-                model_name=resolved_name,
-                host=host,
-                port=port,
-                log_level=log_level,
-                client_kwargs=client_kwargs,
-                stage_endpoints=stage_endpoints,
+            cl_kwargs = client_kwargs or {}
+            client = Client(coordinator, **cl_kwargs)
+            app = create_app(
+                client,
+                model_name=model_name or pipeline_config.name,
             )
+
+            profiler_dir = os.environ.get("SGLANG_TORCH_PROFILER_DIR")
+            profiler_ctl = ProfilerControlClient(stage_endpoints)
+            _mount_profiler_routes(app, profiler_ctl, profiler_dir)
+
+            config = uvicorn.Config(app, host=host, port=port, log_level=log_level)
+            server = uvicorn.Server(config)
+            await server.serve()
         finally:
-            logger.info(f"Shutting down pipeline …")
-            await runner.stop()
-            logger.info(f"Pipeline stopped.")
+            logger.info("Shutting down pipeline …")
+            for t in stage_tasks:
+                t.cancel()
+            completion_task.cancel()
+            await coordinator.stop()
+            logger.info("Pipeline stopped.")
 
 
 def launch_server(

@@ -33,12 +33,7 @@ def _concat_features(value: Any) -> torch.Tensor | None:
 
 
 def _should_tie_embeddings(config: Any) -> bool:
-    # Prefer text_config.tie_word_embeddings when it exists, as nested configs
-    # may have different settings than the top-level config.
-    text_config = getattr(config, "text_config", None)
-    if text_config is not None:
-        return bool(getattr(text_config, "tie_word_embeddings", False))
-    return bool(getattr(config, "tie_word_embeddings", False))
+    return bool(config.text_config.tie_word_embeddings)
 
 
 def _maybe_tie_weights(
@@ -49,9 +44,7 @@ def _maybe_tie_weights(
 ) -> None:
     if not _should_tie_embeddings(config):
         return
-    embed_tokens = getattr(text_model, "embed_tokens", None)
-    if isinstance(embed_tokens, nn.Module) and hasattr(embed_tokens, "weight"):
-        lm_head.weight = embed_tokens.weight
+    lm_head.weight = text_model.embed_tokens.weight
 
 
 def _build_text_model(

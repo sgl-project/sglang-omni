@@ -95,6 +95,7 @@ class Qwen3OmniMoeTextConfig(PretrainedConfig):
         num_hidden_layers=28,
         num_attention_heads=28,
         num_key_value_heads=4,
+        head_dim=None,
         hidden_act="silu",
         max_position_embeddings=32768,
         initializer_range=0.02,
@@ -103,9 +104,11 @@ class Qwen3OmniMoeTextConfig(PretrainedConfig):
         tie_word_embeddings=False,
         rope_theta=1000000.0,
         rope_scaling=None,
+        partial_rotary_factor=1.0,
         attention_bias=False,
         sliding_window=None,
         attention_dropout=0,
+        dual_chunk_attention_config=None,
         decoder_sparse_step=1,
         moe_intermediate_size=768,
         num_experts_per_tok=8,
@@ -126,6 +129,9 @@ class Qwen3OmniMoeTextConfig(PretrainedConfig):
         self.intermediate_size = intermediate_size
         self.num_hidden_layers = num_hidden_layers
         self.num_attention_heads = num_attention_heads
+        self.head_dim = (
+            head_dim if head_dim is not None else hidden_size // num_attention_heads
+        )
         self.sliding_window = sliding_window
 
         self.num_key_value_heads = num_key_value_heads
@@ -135,8 +141,10 @@ class Qwen3OmniMoeTextConfig(PretrainedConfig):
         self.use_cache = use_cache
         self.rope_theta = rope_theta
         self.rope_scaling = rope_scaling
+        self.partial_rotary_factor = partial_rotary_factor
         self.attention_bias = attention_bias
         self.attention_dropout = attention_dropout
+        self.dual_chunk_attention_config = dual_chunk_attention_config
         # Validate the correctness of rotary position embeddings parameters
         # BC: if there is a 'type' field, move it to 'rope_type'.
         if self.rope_scaling is not None and "type" in self.rope_scaling:
