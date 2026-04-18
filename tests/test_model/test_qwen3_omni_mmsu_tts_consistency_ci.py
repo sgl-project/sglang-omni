@@ -22,10 +22,12 @@ import argparse
 import asyncio
 import subprocess
 import sys
+from copy import copy
 from pathlib import Path
 
 import pytest
 
+from benchmarks.dataset.mmsu import load_mmsu_samples
 from benchmarks.eval.benchmark_omni_mmsu import run as run_mmsu
 from sglang_omni.utils import find_available_port
 from tests.utils import (
@@ -129,7 +131,17 @@ def test_mmsu_audio_wer_and_speed(
 ) -> None:
     """Run MMSU eval with audio and assert WER and speed meet thresholds."""
     args = _build_args(server_process.port, str(tmp_path / "mmsu_audio"))
-    results = asyncio.run(run_mmsu(args))
+
+    # NOTE (Yifei):
+    # Regression guard for issue #299: append a dup of sample[0] so the
+    # audio encoder sees a cached+non-cached mixed batch. Inert at
+    # concurrency=1; starts to take effect once concurrency is raised.
+    base = load_mmsu_samples(max_samples=MAX_SAMPLES)
+    dup = copy(base[0])
+    dup.sample_id = f"{base[0].sample_id}__dup"
+    samples = [*base, dup]
+
+    results = asyncio.run(run_mmsu(args, samples=samples))
 
     assert "wer" in results, "Audio WER results missing from eval output"
     assert_wer_results(

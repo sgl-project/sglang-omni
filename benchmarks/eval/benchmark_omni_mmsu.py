@@ -86,7 +86,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from benchmarks.benchmarker.runner import BenchmarkRunner, RunConfig
 from benchmarks.benchmarker.utils import wait_for_service
-from benchmarks.dataset.mmsu import load_mmsu_samples
+from benchmarks.dataset.mmsu import MmsuSample, load_mmsu_samples
 from benchmarks.metrics.performance import compute_speed_metrics
 from benchmarks.tasks.audio_understanding import (
     build_mmsu_results,
@@ -103,17 +103,22 @@ logging.basicConfig(
 )
 
 
-async def run(args: argparse.Namespace) -> dict:
+async def run(
+    args: argparse.Namespace,
+    *,
+    samples: list[MmsuSample] | None = None,
+) -> dict:
     base_url = args.base_url or f"http://{args.host}:{args.port}"
     api_url = f"{base_url}/v1/chat/completions"
     modalities = ["text", "audio"] if args.modalities == "text+audio" else ["text"]
 
-    samples = load_mmsu_samples(
-        max_samples=args.max_samples,
-        task_names=args.task_names.split(",") if args.task_names else None,
-        categories=args.categories.split(",") if args.categories else None,
-        seed=args.seed,
-    )
+    if samples is None:
+        samples = load_mmsu_samples(
+            max_samples=args.max_samples,
+            task_names=args.task_names.split(",") if args.task_names else None,
+            categories=args.categories.split(",") if args.categories else None,
+            seed=args.seed,
+        )
 
     save_audio_dir = None
     if args.save_audio and args.output_dir:
