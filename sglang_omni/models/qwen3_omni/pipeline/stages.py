@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import torch
@@ -42,6 +43,8 @@ from sglang_omni.models.qwen3_omni.pipeline.next_stage import (
 )
 from sglang_omni.models.qwen3_omni.pipeline.state_io import load_state, store_state
 from sglang_omni.proto import StagePayload
+
+logger = logging.getLogger(__name__)
 
 
 def _event_to_dict(event: OmniEvent) -> dict[str, Any]:
@@ -353,6 +356,14 @@ def create_sglang_thinker_executor_from_config(
     server_args = build_sglang_server_args(
         model_path, context_length=thinker_max_seq_len, **(server_args_overrides or {})
     )
+    logger.info(
+        "Creating thinker SGLang executor: gpu_id=%s context_length=%s "
+        "speech_enabled=%s mem_fraction_static=%s",
+        gpu_id,
+        thinker_max_seq_len,
+        speech_enabled,
+        server_args.mem_fraction_static,
+    )
     return create_sglang_thinker_executor(
         server_args=server_args,
         model_path=model_path,
@@ -598,6 +609,15 @@ def create_talker_ar_executor_from_config(
     """Create a Talker AR executor from config args."""
     server_args = build_sglang_server_args(
         model_path, context_length=talker_max_seq_len, **(server_args_overrides or {})
+    )
+    logger.info(
+        "Creating talker AR SGLang executor: gpu_id=%s context_length=%s "
+        "speech_enabled=%s feedback_enabled=%s mem_fraction_static=%s",
+        gpu_id,
+        talker_max_seq_len,
+        speech_enabled,
+        feedback_enabled,
+        server_args.mem_fraction_static,
     )
     return create_talker_ar_executor(
         server_args=server_args,

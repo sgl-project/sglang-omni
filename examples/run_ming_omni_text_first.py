@@ -56,8 +56,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--mem-fraction-static",
         type=float,
-        default=0.80,
-        help="Fraction of GPU memory for KV cache (default: 0.80)",
+        default=None,
+        help=(
+            "Override mem_fraction_static for the thinker stage. "
+            "If omitted, SGLang hardware-aware auto-sizing is used."
+        ),
     )
     parser.add_argument(
         "--relay-backend", type=str, default="shm", choices=["nixl", "shm"]

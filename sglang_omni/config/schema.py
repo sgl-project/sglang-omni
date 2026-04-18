@@ -82,6 +82,7 @@ class PipelineConfig(BaseModel):
     terminal_stages: list[str] = Field(default_factory=list)
     relay_backend: Literal["shm", "nccl", "nixl", "mooncake"] = "shm"
     fused_stages: list[list[str]] = Field(default_factory=list)
+    mem_fraction_override_stages: dict[str, str] = Field(default_factory=dict)
     endpoints: EndpointsConfig = Field(default_factory=EndpointsConfig)
     gpu_placement: dict[str, int] = Field(default_factory=dict)
     completion_endpoint: str | None = None
@@ -115,6 +116,15 @@ class PipelineConfig(BaseModel):
 
         if self.entry_stage not in stage_names:
             raise ValueError(f"entry_stage {self.entry_stage!r} is not defined")
+
+        unknown_override_stages = set(self.mem_fraction_override_stages.values()) - set(
+            stage_names
+        )
+        if unknown_override_stages:
+            raise ValueError(
+                "mem_fraction_override_stages references unknown stages: "
+                f"{sorted(unknown_override_stages)}"
+            )
 
         for stage_cfg in self.stages:
             if stage_cfg.num_workers < 1:

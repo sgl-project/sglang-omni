@@ -74,7 +74,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--gpu-talker", type=int, default=1)
     parser.add_argument("--timeout", type=float, default=300.0)
     parser.add_argument("--cpu-offload-gb", type=float, default=0)
-    parser.add_argument("--mem-fraction-static", type=float, default=None)
+    parser.add_argument(
+        "--mem-fraction-static",
+        type=float,
+        default=None,
+        help=(
+            "Override mem_fraction_static for the thinker stage. "
+            "If omitted, SGLang hardware-aware auto-sizing is used."
+        ),
+    )
     return parser.parse_args()
 
 

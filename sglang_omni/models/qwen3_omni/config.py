@@ -31,6 +31,9 @@ class Qwen3OmniPipelineConfig(PipelineConfig):
 
     model_path: str
     entry_stage: str = "preprocessing"
+    mem_fraction_override_stages: dict[str, str] = {
+        "thinker": THINKER_STAGE,
+    }
     stages: list[StageConfig] = [
         StageConfig(
             name=PREPROCESSING_STAGE,
@@ -109,12 +112,42 @@ class Qwen3OmniSpeechPipelineConfig(PipelineConfig):
     model_path: str
     entry_stage: str = "preprocessing"
     terminal_stages: list[str] = [DECODE_STAGE, CODE2WAV_STAGE]
+    mem_fraction_override_stages: dict[str, str] = {
+        "thinker": THINKER_STAGE,
+        "talker": TALKER_AR_STAGE,
+    }
     gpu_placement: dict[str, int] = {
         "thinker": 0,
         "talker_ar": 1,
         "code_predictor": 1,
         "code2wav": 1,
     }
+
+    def __init__(self, **kwargs):
+        server_args_overrides = kwargs.pop("server_args_overrides", None)
+        thinker_server_args_overrides = kwargs.pop(
+            "thinker_server_args_overrides", None
+        )
+        talker_server_args_overrides = kwargs.pop("talker_server_args_overrides", None)
+        super().__init__(**kwargs)
+
+        global_overrides = dict(server_args_overrides or {})
+        thinker_overrides = dict(global_overrides)
+        thinker_overrides.update(thinker_server_args_overrides or {})
+        talker_overrides = dict(global_overrides)
+        talker_overrides.update(talker_server_args_overrides or {})
+
+        for stage in self.stages:
+            if stage.name == THINKER_STAGE and thinker_overrides:
+                if stage.executor.args is None:
+                    stage.executor.args = {}
+                existing = stage.executor.args.setdefault("server_args_overrides", {})
+                existing.update(thinker_overrides)
+            elif stage.name == TALKER_AR_STAGE and talker_overrides:
+                if stage.executor.args is None:
+                    stage.executor.args = {}
+                existing = stage.executor.args.setdefault("server_args_overrides", {})
+                existing.update(talker_overrides)
 
     stages: list[StageConfig] = [
         # Stages 1-4: same as text-only

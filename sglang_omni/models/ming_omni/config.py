@@ -33,6 +33,9 @@ class MingOmniPipelineConfig(PipelineConfig):
 
     model_path: str
     entry_stage: str = "preprocessing"
+    mem_fraction_override_stages: dict[str, str] = {
+        "thinker": THINKER_STAGE,
+    }
     stages: list[StageConfig] = [
         StageConfig(
             name=PREPROCESSING_STAGE,
@@ -129,6 +132,9 @@ class MingOmniSpeechPipelineConfig(PipelineConfig):
     model_path: str
     entry_stage: str = "preprocessing"
     terminal_stages: list[str] = [DECODE_STAGE, TALKER_STAGE]
+    mem_fraction_override_stages: dict[str, str] = {
+        "thinker": THINKER_STAGE,
+    }
     gpu_placement: dict[str, int] = {
         "thinker": 0,
         "talker": 1,

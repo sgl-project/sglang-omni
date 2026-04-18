@@ -135,6 +135,16 @@ sgl-omni serve \
   --port 8008
 ```
 
+For debugging or reproduction, you can pin the SGLang AR memory fraction per stage:
+
+```bash
+sgl-omni serve \
+  --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct \
+  --port 8008 \
+  --thinker-mem-fraction-static 0.88 \
+  --talker-mem-fraction-static 0.88
+```
+
 ### Image and Text Input
 
 Send an image with a text question to get both text and audio responses. Set `"modalities": ["text", "audio"]` to enable audio output.

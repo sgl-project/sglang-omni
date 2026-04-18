@@ -60,6 +60,33 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--relay-backend", type=str, default="shm", choices=["nixl", "shm"]
     )
+    parser.add_argument(
+        "--mem-fraction-static",
+        type=float,
+        default=None,
+        help=(
+            "Override mem_fraction_static for both thinker and talker AR stages. "
+            "If omitted, SGLang hardware-aware auto-sizing is used."
+        ),
+    )
+    parser.add_argument(
+        "--thinker-mem-fraction-static",
+        type=float,
+        default=None,
+        help=(
+            "Override mem_fraction_static only for the thinker AR stage. "
+            "Takes precedence over --mem-fraction-static for thinker."
+        ),
+    )
+    parser.add_argument(
+        "--talker-mem-fraction-static",
+        type=float,
+        default=None,
+        help=(
+            "Override mem_fraction_static only for the talker AR stage. "
+            "Takes precedence over --mem-fraction-static for talker."
+        ),
+    )
 
     # Server
     parser.add_argument("--host", type=str, default="0.0.0.0")
@@ -85,10 +112,45 @@ async def main_async(args: argparse.Namespace) -> None:
         "code2wav": args.gpu_code2wav,
     }
 
+    global_overrides = {}
+    if args.mem_fraction_static is not None:
+        global_overrides["mem_fraction_static"] = args.mem_fraction_static
+
+    thinker_overrides = {}
+    if args.thinker_mem_fraction_static is not None:
+        thinker_overrides["mem_fraction_static"] = args.thinker_mem_fraction_static
+
+    talker_overrides = {}
+    if args.talker_mem_fraction_static is not None:
+        talker_overrides["mem_fraction_static"] = args.talker_mem_fraction_static
+
+    effective_thinker_mem_fraction = thinker_overrides.get(
+        "mem_fraction_static",
+        global_overrides.get("mem_fraction_static", "auto"),
+    )
+    effective_talker_mem_fraction = talker_overrides.get(
+        "mem_fraction_static",
+        global_overrides.get("mem_fraction_static", "auto"),
+    )
+    logger.info(
+        "Speech server config: thinker_gpu=%s talker_gpu=%s code_predictor_gpu=%s "
+        "code2wav_gpu=%s thinker_mem_fraction_static=%s "
+        "talker_mem_fraction_static=%s",
+        args.gpu_thinker,
+        args.gpu_talker,
+        args.gpu_code_predictor,
+        args.gpu_code2wav,
+        effective_thinker_mem_fraction,
+        effective_talker_mem_fraction,
+    )
+
     config = Qwen3OmniSpeechPipelineConfig(
         model_path=args.model_path,
         relay_backend=args.relay_backend,
         gpu_placement=gpu_placement,
+        server_args_overrides=global_overrides or None,
+        thinker_server_args_overrides=thinker_overrides or None,
+        talker_server_args_overrides=talker_overrides or None,
     )
 
     runner = MultiProcessPipelineRunner(config)

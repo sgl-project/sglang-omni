@@ -14,7 +14,7 @@ def build_sglang_server_args(
     chunked_prefill_size: int = 128,
     max_prefill_tokens: int = 4096,
     max_running_requests: int = 16,
-    mem_fraction_static: float = 0.7,
+    mem_fraction_static: float | None = None,
     **overrides: Any,
 ) -> ServerArgs:
     """Build ServerArgs with shared defaults for all SGLang AR engines."""
@@ -27,9 +27,10 @@ def build_sglang_server_args(
         "chunked_prefill_size": chunked_prefill_size,
         "max_prefill_tokens": max_prefill_tokens,
         "max_running_requests": max_running_requests,
-        "mem_fraction_static": mem_fraction_static,
         "random_seed": 123,
         "context_length": context_length,
     }
+    if mem_fraction_static is not None:
+        kwargs["mem_fraction_static"] = mem_fraction_static
     kwargs.update(overrides)
     return ServerArgs(**kwargs)
