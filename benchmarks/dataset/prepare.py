@@ -29,6 +29,7 @@ DATASETS: dict[str, str] = {
     "mmmu": "MMMU/MMMU",
     "mmmu-ci-50": "zhaochenyang20/mmmu-ci-50",
     "mmsu": "ddwang2000/MMSU",
+    "mmsu-ci-2000": "zhaochenyang20/mmsu-ci-2000",
 }
 
 _CLI_LOCAL_DIRS: dict[str, str] = {

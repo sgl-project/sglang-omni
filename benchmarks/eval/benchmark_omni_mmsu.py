@@ -118,6 +118,7 @@ async def run(
             task_names=args.task_names.split(",") if args.task_names else None,
             categories=args.categories.split(",") if args.categories else None,
             seed=args.seed,
+            repo_id=getattr(args, "repo_id", None),
         )
 
     save_audio_dir = None
@@ -208,6 +209,13 @@ def main() -> None:
     p.add_argument("--save-audio", action="store_true")
     p.add_argument("--disable-tqdm", action="store_true")
     p.add_argument("--seed", type=int, default=None)
+    p.add_argument(
+        "--repo-id",
+        type=str,
+        default=None,
+        help="HuggingFace dataset repo (e.g. 'zhaochenyang20/mmsu-ci-2000'). "
+        "Defaults to loading the full ddwang2000/MMSU (train split).",
+    )
     p.add_argument("--lang", type=str, default="en", help="Language for ASR WER evaluation")
     p.add_argument("--asr-device", type=str, default="cuda:0", help="Device for ASR model")
 

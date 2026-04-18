@@ -20,6 +20,7 @@ from pathlib import Path
 
 import pytest
 
+from benchmarks.dataset.prepare import DATASETS
 from benchmarks.eval.benchmark_omni_mmsu import run as run_mmsu
 from sglang_omni.utils import find_available_port
 from tests.utils import (
@@ -32,7 +33,6 @@ from tests.utils import (
 MODEL_PATH = "Qwen/Qwen3-Omni-30B-A3B-Instruct"
 
 CONCURRENCY = 8
-MAX_SAMPLES = 500
 STARTUP_TIMEOUT = 900
 
 MMSU_MIN_ACCURACY = 0.52
@@ -75,17 +75,19 @@ def _build_args(port: int, output_dir: str) -> argparse.Namespace:
         model="qwen3-omni",
         modalities="text",
         output_dir=output_dir,
-        max_samples=MAX_SAMPLES,
+        max_samples=None,
         task_names=None,
         categories=None,
         prompt=None,
         max_tokens=32,
         temperature=0.0,
-        warmup=1,
+        warmup=0,
         max_concurrency=CONCURRENCY,
         request_rate=float("inf"),
         save_audio=False,
-        disable_tqdm=True
+        disable_tqdm=True,
+        seed=None,
+        repo_id=DATASETS["mmsu-ci-2000"],
     )
 
 
