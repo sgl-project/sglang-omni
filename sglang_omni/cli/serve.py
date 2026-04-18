@@ -106,9 +106,9 @@ def serve(
         float | None,
         typer.Option(
             help=(
-                "Override mem_fraction_static for supported SGLang AR stages in the "
-                "selected pipeline. If omitted, SGLang hardware-aware auto-sizing is "
-                "used."
+                "Set SGLang mem_fraction_static for all stages in the selected "
+                "pipeline that support this override. If omitted, SGLang chooses "
+                "the value automatically."
             )
         ),
     ] = None,
@@ -116,8 +116,8 @@ def serve(
         float | None,
         typer.Option(
             help=(
-                "Override mem_fraction_static only for the thinker stage. "
-                "Takes precedence over --mem-fraction-static for thinker."
+                "Set SGLang mem_fraction_static only for the pipeline's thinker "
+                "stage. Overrides --mem-fraction-static for thinker."
             )
         ),
     ] = None,
@@ -125,8 +125,8 @@ def serve(
         float | None,
         typer.Option(
             help=(
-                "Override mem_fraction_static only for the talker AR stage. "
-                "Takes precedence over --mem-fraction-static for talker."
+                "Set SGLang mem_fraction_static only for the pipeline's talker "
+                "stage. Overrides --mem-fraction-static for talker."
             )
         ),
     ] = None,

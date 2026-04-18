@@ -65,8 +65,9 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=None,
         help=(
-            "Override mem_fraction_static for both thinker and talker AR stages. "
-            "If omitted, SGLang hardware-aware auto-sizing is used."
+            "Set SGLang mem_fraction_static for both Qwen AR stages "
+            "(thinker and talker). If omitted, SGLang chooses the value "
+            "automatically."
         ),
     )
     parser.add_argument(
@@ -74,8 +75,8 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=None,
         help=(
-            "Override mem_fraction_static only for the thinker AR stage. "
-            "Takes precedence over --mem-fraction-static for thinker."
+            "Set SGLang mem_fraction_static only for the thinker stage. "
+            "Overrides --mem-fraction-static for thinker."
         ),
     )
     parser.add_argument(
@@ -83,8 +84,8 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=None,
         help=(
-            "Override mem_fraction_static only for the talker AR stage. "
-            "Takes precedence over --mem-fraction-static for talker."
+            "Set SGLang mem_fraction_static only for the talker stage. "
+            "Overrides --mem-fraction-static for talker."
         ),
     )
 

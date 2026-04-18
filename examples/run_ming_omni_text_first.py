@@ -58,8 +58,8 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=None,
         help=(
-            "Override mem_fraction_static for the thinker stage. "
-            "If omitted, SGLang hardware-aware auto-sizing is used."
+            "Set SGLang mem_fraction_static for the thinker stage. "
+            "If omitted, SGLang chooses the value automatically."
         ),
     )
     parser.add_argument(
