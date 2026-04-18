@@ -47,6 +47,15 @@ class StreamTargetConfig(BaseModel):
     bootstrap: bool = True
 
 
+class MemFractionOverrideStages(BaseModel):
+    """Pipeline stage targets for mem_fraction_static overrides."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    thinker: str | None = None
+    talker: str | None = None
+
+
 class StageConfig(BaseModel):
     """Single pipeline stage configuration."""
 
@@ -82,7 +91,9 @@ class PipelineConfig(BaseModel):
     terminal_stages: list[str] = Field(default_factory=list)
     relay_backend: Literal["shm", "nccl", "nixl", "mooncake"] = "shm"
     fused_stages: list[list[str]] = Field(default_factory=list)
-    mem_fraction_override_stages: dict[str, str] = Field(default_factory=dict)
+    mem_fraction_override_stages: MemFractionOverrideStages = Field(
+        default_factory=MemFractionOverrideStages
+    )
     endpoints: EndpointsConfig = Field(default_factory=EndpointsConfig)
     gpu_placement: dict[str, int] = Field(default_factory=dict)
     completion_endpoint: str | None = None
@@ -117,9 +128,15 @@ class PipelineConfig(BaseModel):
         if self.entry_stage not in stage_names:
             raise ValueError(f"entry_stage {self.entry_stage!r} is not defined")
 
-        unknown_override_stages = set(self.mem_fraction_override_stages.values()) - set(
-            stage_names
-        )
+        override_stage_names = {
+            stage_name
+            for stage_name in (
+                self.mem_fraction_override_stages.thinker,
+                self.mem_fraction_override_stages.talker,
+            )
+            if stage_name is not None
+        }
+        unknown_override_stages = override_stage_names - set(stage_names)
         if unknown_override_stages:
             raise ValueError(
                 "mem_fraction_override_stages references unknown stages: "
@@ -230,3 +247,65 @@ class PipelineConfig(BaseModel):
 
         entry_stage = name_map[self.entry_stage]
         return stages_out, name_map, entry_stage
+
+    def apply_server_args_overrides(
+        self, *, stage_name: str, overrides: dict[str, Any]
+    ) -> None:
+        for stage in self.stages:
+            if stage.name == stage_name:
+                stage.executor.args.setdefault("server_args_overrides", {}).update(
+                    overrides
+                )
+                return
+        raise AssertionError(f"Unknown stage {stage_name!r}")
+
+    def apply_mem_fraction_static_overrides(
+        self,
+        *,
+        mem_fraction_static: float | None = None,
+        thinker_mem_fraction_static: float | None = None,
+        talker_mem_fraction_static: float | None = None,
+    ) -> None:
+        if mem_fraction_static is not None:
+            stage_names = [
+                stage_name
+                for stage_name in (
+                    self.mem_fraction_override_stages.thinker,
+                    self.mem_fraction_override_stages.talker,
+                )
+                if stage_name is not None
+            ]
+            if not stage_names:
+                raise ValueError(
+                    "--mem-fraction-static requires a pipeline with a supported "
+                    "mem_fraction_override_stages target"
+                )
+            for stage_name in stage_names:
+                self.apply_server_args_overrides(
+                    stage_name=stage_name,
+                    overrides={"mem_fraction_static": mem_fraction_static},
+                )
+
+        if thinker_mem_fraction_static is not None:
+            stage_name = self.mem_fraction_override_stages.thinker
+            if stage_name is None:
+                raise ValueError(
+                    "--thinker-mem-fraction-static requires a pipeline with a "
+                    "'thinker' mem-fraction override target"
+                )
+            self.apply_server_args_overrides(
+                stage_name=stage_name,
+                overrides={"mem_fraction_static": thinker_mem_fraction_static},
+            )
+
+        if talker_mem_fraction_static is not None:
+            stage_name = self.mem_fraction_override_stages.talker
+            if stage_name is None:
+                raise ValueError(
+                    "--talker-mem-fraction-static requires a pipeline with a "
+                    "'talker' mem-fraction override target"
+                )
+            self.apply_server_args_overrides(
+                stage_name=stage_name,
+                overrides={"mem_fraction_static": talker_mem_fraction_static},
+            )

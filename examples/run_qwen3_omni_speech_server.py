@@ -66,8 +66,8 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help=(
             "Set SGLang mem_fraction_static for both Qwen AR stages "
-            "(thinker and talker). If omitted, SGLang chooses the value "
-            "automatically."
+            "(thinker and talker). This controls SGLang's weights + KV cache "
+            "memory budget. If omitted, SGLang chooses the value automatically."
         ),
     )
     parser.add_argument(
@@ -113,25 +113,25 @@ async def main_async(args: argparse.Namespace) -> None:
         "code2wav": args.gpu_code2wav,
     }
 
-    global_overrides = {}
-    if args.mem_fraction_static is not None:
-        global_overrides["mem_fraction_static"] = args.mem_fraction_static
-
-    thinker_overrides = {}
-    if args.thinker_mem_fraction_static is not None:
-        thinker_overrides["mem_fraction_static"] = args.thinker_mem_fraction_static
-
-    talker_overrides = {}
-    if args.talker_mem_fraction_static is not None:
-        talker_overrides["mem_fraction_static"] = args.talker_mem_fraction_static
-
-    effective_thinker_mem_fraction = thinker_overrides.get(
-        "mem_fraction_static",
-        global_overrides.get("mem_fraction_static", "auto"),
+    effective_thinker_mem_fraction = (
+        args.thinker_mem_fraction_static
+        if args.thinker_mem_fraction_static is not None
+        else args.mem_fraction_static
     )
-    effective_talker_mem_fraction = talker_overrides.get(
-        "mem_fraction_static",
-        global_overrides.get("mem_fraction_static", "auto"),
+    effective_talker_mem_fraction = (
+        args.talker_mem_fraction_static
+        if args.talker_mem_fraction_static is not None
+        else args.mem_fraction_static
+    )
+    thinker_mem_fraction_display = (
+        effective_thinker_mem_fraction
+        if effective_thinker_mem_fraction is not None
+        else "auto"
+    )
+    talker_mem_fraction_display = (
+        effective_talker_mem_fraction
+        if effective_talker_mem_fraction is not None
+        else "auto"
     )
     logger.info(
         "Speech server config: thinker_gpu=%s talker_gpu=%s code_predictor_gpu=%s "
@@ -141,17 +141,19 @@ async def main_async(args: argparse.Namespace) -> None:
         args.gpu_talker,
         args.gpu_code_predictor,
         args.gpu_code2wav,
-        effective_thinker_mem_fraction,
-        effective_talker_mem_fraction,
+        thinker_mem_fraction_display,
+        talker_mem_fraction_display,
     )
 
     config = Qwen3OmniSpeechPipelineConfig(
         model_path=args.model_path,
         relay_backend=args.relay_backend,
         gpu_placement=gpu_placement,
-        server_args_overrides=global_overrides or None,
-        thinker_server_args_overrides=thinker_overrides or None,
-        talker_server_args_overrides=talker_overrides or None,
+    )
+    config.apply_mem_fraction_static_overrides(
+        mem_fraction_static=args.mem_fraction_static,
+        thinker_mem_fraction_static=args.thinker_mem_fraction_static,
+        talker_mem_fraction_static=args.talker_mem_fraction_static,
     )
 
     runner = MultiProcessPipelineRunner(config)

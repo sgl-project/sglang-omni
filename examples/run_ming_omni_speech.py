@@ -80,6 +80,7 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help=(
             "Set SGLang mem_fraction_static for the thinker stage. "
+            "This controls SGLang's weights + KV cache memory budget. "
             "If omitted, SGLang chooses the value automatically."
         ),
     )
@@ -99,14 +100,15 @@ async def main_async(args: argparse.Namespace) -> None:
     overrides = {}
     if args.cpu_offload_gb:
         overrides["cpu_offload_gb"] = args.cpu_offload_gb
-    if args.mem_fraction_static is not None:
-        overrides["mem_fraction_static"] = args.mem_fraction_static
 
     config = MingOmniSpeechPipelineConfig(
         model_path=args.model_path,
         relay_backend=args.relay_backend,
         gpu_placement=gpu_placement,
         server_args_overrides=overrides if overrides else None,
+    )
+    config.apply_mem_fraction_static_overrides(
+        mem_fraction_static=args.mem_fraction_static
     )
     runner = MultiProcessPipelineRunner(config)
     logger.info("Starting Ming-Omni speech pipeline...")

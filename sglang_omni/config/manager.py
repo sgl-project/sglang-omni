@@ -82,15 +82,10 @@ class ConfigManager:
         for key, value in extra_args.items():
             current = cfg_copy
             keys = key.split(".")
-            for next_key, k in zip(keys[1:], keys[:-1]):
+            for k in keys[:-1]:
                 # if k is an digit, treat it as an index
                 if k.isdigit():
                     k = int(k)
-                    current = current[k]
-                    continue
-
-                if k not in current or current[k] is None:
-                    current[k] = [] if next_key.isdigit() else {}
                 current = current[k]
 
             # update the value

@@ -12,6 +12,7 @@ from sglang_omni.config import (
     RelayConfig,
     StageConfig,
 )
+from sglang_omni.config.schema import MemFractionOverrideStages
 from sglang_omni.models.ming_omni.pipeline.next_stage import (
     AGGREGATE_STAGE,
     AUDIO_STAGE,
@@ -33,9 +34,9 @@ class MingOmniPipelineConfig(PipelineConfig):
 
     model_path: str
     entry_stage: str = "preprocessing"
-    mem_fraction_override_stages: dict[str, str] = {
-        "thinker": THINKER_STAGE,
-    }
+    mem_fraction_override_stages: MemFractionOverrideStages = MemFractionOverrideStages(
+        thinker=THINKER_STAGE
+    )
     stages: list[StageConfig] = [
         StageConfig(
             name=PREPROCESSING_STAGE,
@@ -106,18 +107,13 @@ class MingOmniPipelineConfig(PipelineConfig):
     ]
 
     def __init__(self, **kwargs):
-        # Extract server_args_overrides and inject into thinker stage
         server_args_overrides = kwargs.pop("server_args_overrides", None)
         super().__init__(**kwargs)
         if server_args_overrides:
-            for stage in self.stages:
-                if stage.name == THINKER_STAGE:
-                    if stage.executor.args is None:
-                        stage.executor.args = {}
-                    existing = stage.executor.args.setdefault(
-                        "server_args_overrides", {}
-                    )
-                    existing.update(server_args_overrides)
+            self.apply_server_args_overrides(
+                stage_name=THINKER_STAGE,
+                overrides=server_args_overrides,
+            )
 
 
 class MingOmniSpeechPipelineConfig(PipelineConfig):
@@ -132,9 +128,9 @@ class MingOmniSpeechPipelineConfig(PipelineConfig):
     model_path: str
     entry_stage: str = "preprocessing"
     terminal_stages: list[str] = [DECODE_STAGE, TALKER_STAGE]
-    mem_fraction_override_stages: dict[str, str] = {
-        "thinker": THINKER_STAGE,
-    }
+    mem_fraction_override_stages: MemFractionOverrideStages = MemFractionOverrideStages(
+        thinker=THINKER_STAGE
+    )
     gpu_placement: dict[str, int] = {
         "thinker": 0,
         "talker": 1,
@@ -144,14 +140,10 @@ class MingOmniSpeechPipelineConfig(PipelineConfig):
         server_args_overrides = kwargs.pop("server_args_overrides", None)
         super().__init__(**kwargs)
         if server_args_overrides:
-            for stage in self.stages:
-                if stage.name == THINKER_STAGE:
-                    if stage.executor.args is None:
-                        stage.executor.args = {}
-                    existing = stage.executor.args.setdefault(
-                        "server_args_overrides", {}
-                    )
-                    existing.update(server_args_overrides)
+            self.apply_server_args_overrides(
+                stage_name=THINKER_STAGE,
+                overrides=server_args_overrides,
+            )
 
     stages: list[StageConfig] = [
         StageConfig(
