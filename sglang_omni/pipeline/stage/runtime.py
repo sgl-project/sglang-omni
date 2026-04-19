@@ -261,7 +261,7 @@ class Stage:
             while self._running:
                 # Receive work
                 msg = await self.control_plane.recv()
-                logger.info("Stage %s received msg: %s", self.name, type(msg).__name__)
+                logger.debug(f"Stage {self.name} received msg: {type(msg).__name__}")
 
                 if isinstance(msg, ShutdownMessage):
                     logger.info("Stage %s received shutdown", self.name)

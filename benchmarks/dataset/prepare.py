@@ -2,9 +2,15 @@
 """Dataset download helpers.
 
 Usage:
+    # SeedTTS family (downloads into ./seedtts_testset by default)
     python -m benchmarks.dataset.prepare --dataset seedtts
     python -m benchmarks.dataset.prepare --dataset seedtts-mini
     python -m benchmarks.dataset.prepare --dataset seedtts-50
+
+    # MMMU / MMSU (pre-warm the HuggingFace datasets cache)
+    python -m benchmarks.dataset.prepare --dataset mmmu
+    python -m benchmarks.dataset.prepare --dataset mmmu-ci-50
+    python -m benchmarks.dataset.prepare --dataset mmsu
 """
 
 from __future__ import annotations
@@ -16,47 +22,65 @@ import subprocess
 
 logger = logging.getLogger(__name__)
 
-DATASETS = {
+DATASETS: dict[str, str] = {
     "seedtts": "zhaochenyang20/seed-tts-eval",
     "seedtts-mini": "zhaochenyang20/seed-tts-eval-mini",
     "seedtts-50": "xuesongye/seed-tts-eval-50",
+    "mmmu": "MMMU/MMMU",
     "mmmu-ci-50": "zhaochenyang20/mmmu-ci-50",
+    "mmsu": "ddwang2000/MMSU",
 }
+
+_CLI_LOCAL_DIRS: dict[str, str] = {
+    "seedtts": "seedtts_testset",
+    "seedtts-mini": "seedtts_testset",
+    "seedtts-50": "seedtts_testset",
+}
+
+_SEEDTTS_EXISTENCE_MARKER = "en/meta.lst"
 
 
 def download_dataset(
     repo_id: str,
-    local_dir: str = "seedtts_testset",
+    local_dir: str | None = "seedtts_testset",
     *,
+    existence_marker: str | None = _SEEDTTS_EXISTENCE_MARKER,
     quiet: bool = False,
 ) -> None:
-    meta_en = os.path.join(local_dir, "en", "meta.lst")
-    if os.path.exists(meta_en):
-        if not quiet:
-            logger.info("Dataset already exists at %s, skipping download.", local_dir)
-        return
+    """Download a HuggingFace dataset."""
+    if local_dir is not None and existence_marker:
+        marker_path = os.path.join(local_dir, existence_marker)
+        if os.path.exists(marker_path):
+            if not quiet:
+                logger.info(
+                    f"Dataset already exists at {local_dir}, skipping download."
+                )
+            return
 
     if not quiet:
-        logger.info("Downloading %s to %s ...", repo_id, local_dir)
+        where = local_dir if local_dir is not None else "HuggingFace cache"
+        logger.info(f"Downloading {repo_id} to {where} ...")
+
     cmd = [
         "huggingface-cli",
         "download",
         repo_id,
         "--repo-type",
         "dataset",
-        "--local-dir",
-        local_dir,
     ]
+    if local_dir is not None:
+        cmd += ["--local-dir", local_dir]
+
     try:
         subprocess.run(cmd, check=True, capture_output=quiet, text=True)
     except subprocess.CalledProcessError as exc:
         raise RuntimeError(
-            f"Failed to download dataset {repo_id} to {local_dir}.\n"
+            f"Failed to download dataset {repo_id}.\n"
             f"stdout:\n{exc.stdout}\n"
             f"stderr:\n{exc.stderr}"
         ) from exc
     if not quiet:
-        logger.info("Dataset downloaded to %s", local_dir)
+        logger.info(f"Dataset {repo_id} ready.")
 
 
 def main() -> None:
@@ -69,13 +93,25 @@ def main() -> None:
     )
     parser.add_argument(
         "--local-dir",
-        default="seedtts_testset",
-        help="Local directory for the dataset.",
+        default=None,
+        help="Override local directory for seedtts-family datasets. "
+        "Ignored for datasets that are pulled into the HuggingFace cache.",
     )
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO)
-    download_dataset(DATASETS[args.dataset], args.local_dir)
+
+    repo_id = DATASETS[args.dataset]
+    default_local_dir = _CLI_LOCAL_DIRS.get(args.dataset)
+    local_dir = args.local_dir or default_local_dir
+    existence_marker = (
+        _SEEDTTS_EXISTENCE_MARKER if args.dataset in _CLI_LOCAL_DIRS else None
+    )
+    download_dataset(
+        repo_id,
+        local_dir,
+        existence_marker=existence_marker,
+    )
 
 
 if __name__ == "__main__":

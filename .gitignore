@@ -37,5 +37,7 @@ Thumbs.db
 uv.lock
 results/
 .humanize/
-.humanize/
 .benchmark-data/
+
+# AI
+.claude/

@@ -20,10 +20,10 @@ import pytest
 
 from benchmarks.dataset.prepare import DATASETS
 from benchmarks.eval.benchmark_omni_mmmu import MMMUEvalConfig, run_mmmu_eval
+from sglang_omni.utils import find_available_port
 from tests.utils import (
     apply_slack,
     assert_speed_thresholds,
-    find_free_port,
     start_server_from_cmd,
     stop_server,
 )
@@ -51,7 +51,7 @@ MMMU_THRESHOLDS = apply_slack(_MMMU_P95)
 @pytest.fixture(scope="module")
 def server_process(tmp_path_factory: pytest.TempPathFactory):
     """Start the text-only Qwen3-Omni server and wait until healthy."""
-    port = find_free_port()
+    port = find_available_port()
     log_file = tmp_path_factory.mktemp("server_logs") / "server.log"
     cmd = [
         sys.executable,

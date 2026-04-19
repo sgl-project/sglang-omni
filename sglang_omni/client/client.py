@@ -310,7 +310,24 @@ class Client:
             if modality is not None:
                 chunk.modality = modality
             Client._set_audio_data(chunk, result)
-            chunk.usage = UsageInfo.from_dict(result.get("usage"))
+            usage = dict(result.get("usage") or {})
+            if "prompt_tokens" not in usage and result.get("prompt_tokens") is not None:
+                usage["prompt_tokens"] = result.get("prompt_tokens")
+            if (
+                "completion_tokens" not in usage
+                and result.get("completion_tokens") is not None
+            ):
+                usage["completion_tokens"] = result.get("completion_tokens")
+            if "total_tokens" not in usage:
+                prompt_tokens = usage.get("prompt_tokens")
+                completion_tokens = usage.get("completion_tokens")
+                if prompt_tokens is not None or completion_tokens is not None:
+                    usage["total_tokens"] = (prompt_tokens or 0) + (
+                        completion_tokens or 0
+                    )
+            if "engine_time_s" not in usage and result.get("engine_time_s") is not None:
+                usage["engine_time_s"] = result.get("engine_time_s")
+            chunk.usage = UsageInfo.from_dict(usage)
             return chunk
         if isinstance(result, str):
             chunk.text = result

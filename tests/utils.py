@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import os
 import signal
-import socket
 import statistics
 import subprocess
 from contextlib import contextmanager
@@ -39,13 +38,6 @@ def disable_proxy() -> Generator[None, None, None]:
         for k in proxy_vars:
             os.environ.pop(k, None)
         os.environ.update(saved_env)
-
-
-def find_free_port() -> int:
-    """Find and return an available TCP port."""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as socket_handle:
-        socket_handle.bind(("", 0))
-        return socket_handle.getsockname()[1]
 
 
 def no_proxy_env() -> dict[str, str]:

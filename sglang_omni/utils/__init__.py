@@ -1,3 +1,4 @@
+from .connection import find_available_port
 from .hf import (
     architecture_from_hf_config,
     instantiate_module,
@@ -14,6 +15,7 @@ from .misc import (
 )
 
 __all__ = [
+    "find_available_port",
     "load_hf_config",
     "instantiate_module",
     "architecture_from_hf_config",

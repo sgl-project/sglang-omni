@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -19,17 +20,17 @@ from pathlib import Path
 import pytest
 
 from benchmarks.dataset.prepare import DATASETS, download_dataset
-from benchmarks.eval.benchmark_omni_tts_speed import (
-    OmniTtsSpeedBenchmarkConfig,
-    run_omni_tts_speed_benchmark,
+from benchmarks.eval.benchmark_omni_seedtts import (
+    OmniSeedttsBenchmarkConfig,
+    run_omni_seedtts_benchmark,
 )
+from sglang_omni.utils import find_available_port
 from tests.utils import (
     apply_slack,
     assert_per_request_fields,
     assert_speed_thresholds,
     assert_summary_metrics,
     assert_wer_results,
-    find_free_port,
     no_proxy_env,
     start_server_from_cmd,
     stop_server,
@@ -37,17 +38,21 @@ from tests.utils import (
 
 MODEL_PATH = "Qwen/Qwen3-Omni-30B-A3B-Instruct"
 
-# TODO(Chenyang): Currently we only run concurrency=1 and a small dataset
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+# note (Chenyang): Currently we only run concurrency=1 and a small dataset
 # (seedtts-mini, 10 samples). Support higher concurrency and larger datasets
 # once the Qwen3-Omni pipeline is optimized for concurrent requests.
 
 CONCURRENCY = 1
 MAX_SAMPLES = 10
+# Also used in .github/workflows/test-qwen3-omni-ci.yaml — keep in sync.
+DATASET_CACHE_ENV = "SGLANG_SEEDTTS_MINI_DIR"
 
 STARTUP_TIMEOUT = 900
 WER_TIMEOUT = 600
 
-# Note (Chenyang): P95 values measured on H20 CI machines with concurrency=1,
+# note (Chenyang): P95 values measured on H20 CI machines with concurrency=1,
 # seedtts-mini dataset (5 samples). Update these when hardware or model changes.
 
 _VC_NON_STREAM_P95 = {
@@ -74,27 +79,21 @@ VC_NON_STREAM_THRESHOLDS = apply_slack(
 VC_WER_MAX_CORPUS = 0.06
 VC_WER_MAX_PER_SAMPLE = 0.30
 
-WER_SCRIPT = str(
-    Path(__file__).resolve().parents[2]
-    / "benchmarks"
-    / "eval"
-    / "voice_clone_omni_wer.py"
-)
-
 
 def _run_benchmark(
     port: int,
-    testset: str,
+    meta: str,
     output_dir: str,
 ) -> dict:
-    config = OmniTtsSpeedBenchmarkConfig(
+    config = OmniSeedttsBenchmarkConfig(
         model="qwen3-omni",
         port=port,
-        testset=testset,
+        meta=meta,
         output_dir=output_dir,
         max_samples=MAX_SAMPLES,
+        voice_clone=True,
     )
-    speed_results = asyncio.run(run_omni_tts_speed_benchmark(config))
+    speed_results = asyncio.run(run_omni_seedtts_benchmark(config))
     assert (
         "summary" in speed_results
     ), f"Missing 'summary' key in results. Keys: {list(speed_results.keys())}"
@@ -104,54 +103,23 @@ def _run_benchmark(
     return speed_results
 
 
-def _run_wer_generate(
-    port: int,
-    meta_path: str,
-    output_dir: str,
-    voice_clone: bool = True,
-) -> None:
-    """Generate TTS audio in CI."""
-    cmd = [
-        sys.executable,
-        WER_SCRIPT,
-        "--generate-only",
-        "--meta",
-        meta_path,
-        "--output-dir",
-        output_dir,
-        "--model",
-        "qwen3-omni",
-        "--port",
-        str(port),
-        "--max-samples",
-        str(MAX_SAMPLES),
-    ]
-    if voice_clone:
-        cmd.append("--voice-clone")
-
-    result = subprocess.run(
-        cmd,
-        capture_output=True,
-        text=True,
-        timeout=WER_TIMEOUT,
-        env=no_proxy_env(),
-    )
-    assert result.returncode == 0, (
-        f"WER generate failed (rc={result.returncode}).\n"
-        f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
-    )
-
-
 def _run_wer_transcribe(
     meta_path: str,
     output_dir: str,
     lang: str = "en",
     device: str = "cuda:0",
 ) -> dict:
-    """Transcribe saved audio and compute WER in CI."""
+    """Transcribe saved audio and compute WER in CI.
+
+    note (Chenyang): We invoke the benchmark as ``python -m
+    benchmarks.eval.benchmark_omni_seedtts`` rather than via a direct file
+    path so the ``benchmarks`` package is discovered via PEP 420 namespace
+    lookup from the project root (which PYTHONPATH guarantees below).
+    """
     cmd = [
         sys.executable,
-        WER_SCRIPT,
+        "-m",
+        "benchmarks.eval.benchmark_omni_seedtts",
         "--transcribe-only",
         "--meta",
         meta_path,
@@ -165,12 +133,19 @@ def _run_wer_transcribe(
         device,
     ]
 
+    env = no_proxy_env()
+    existing = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = (
+        f"{PROJECT_ROOT}{os.pathsep}{existing}" if existing else str(PROJECT_ROOT)
+    )
+
     result = subprocess.run(
         cmd,
         capture_output=True,
         text=True,
         timeout=WER_TIMEOUT,
-        env=no_proxy_env(),
+        env=env,
+        cwd=str(PROJECT_ROOT),
     )
     assert result.returncode == 0, (
         f"WER transcribe failed (rc={result.returncode}).\n"
@@ -204,15 +179,19 @@ def _run_wer_transcribe(
 
 @pytest.fixture(scope="module")
 def dataset_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    root = tmp_path_factory.mktemp("seed_tts_eval") / "data"
-    download_dataset(DATASETS["seedtts-mini"], str(root))
+    override_dir = os.environ.get(DATASET_CACHE_ENV)
+    if override_dir:
+        root = Path(override_dir).expanduser()
+    else:
+        root = tmp_path_factory.mktemp("seed_tts_eval") / "data"
+    download_dataset(DATASETS["seedtts-mini"], str(root), quiet=True)
     return root
 
 
 @pytest.fixture(scope="module")
 def server_process(tmp_path_factory: pytest.TempPathFactory):
     """Start the Qwen3-Omni speech server and wait until healthy."""
-    port = find_free_port()
+    port = find_available_port()
     log_file = tmp_path_factory.mktemp("server_logs") / "server.log"
     cmd = [
         sys.executable,
@@ -239,42 +218,52 @@ def server_process(tmp_path_factory: pytest.TempPathFactory):
 
 
 @pytest.fixture(scope="module")
-def wer_audio_dir(
+def speed_output_dir(
     server_process: subprocess.Popen,
     dataset_dir: Path,
     tmp_path_factory: pytest.TempPathFactory,
-):
-    """Generate WER audio in CI, then kill server to free GPU for Whisper."""
-    tmp = tmp_path_factory.mktemp("wer")
-    meta = str(dataset_dir / "en" / "meta.lst")
+) -> str:
+    """Run the speed benchmark once and expose the output directory.
 
-    _run_wer_generate(
-        server_process.port,
-        meta,
-        str(tmp / "vc"),
-        voice_clone=True,
-    )
-
-    stop_server(server_process)
-
-    return str(tmp / "vc")
-
-
-@pytest.mark.benchmark
-def test_voice_cloning_non_streaming(
-    server_process: subprocess.Popen,
-    dataset_dir: Path,
-    tmp_path: Path,
-) -> None:
+    Keeping the benchmark in its own fixture (rather than a test body that
+    writes a module-level global) lets the WER stage consume the audio
+    without coupling test ordering through mutable globals.
+    """
+    output_dir = str(tmp_path_factory.mktemp("vc_nonstream"))
     results = _run_benchmark(
         server_process.port,
         str(dataset_dir / "en" / "meta.lst"),
-        str(tmp_path / "vc_nonstream"),
+        output_dir,
     )
     summary, per_request = results["summary"], results["per_request"]
     assert_summary_metrics(summary)
     assert_per_request_fields(per_request)
     assert_speed_thresholds(summary, VC_NON_STREAM_THRESHOLDS, CONCURRENCY)
+    return output_dir
+
+
+@pytest.fixture(scope="module")
+def wer_audio_dir(
+    server_process: subprocess.Popen,
+    speed_output_dir: str,
+) -> str:
+    """Reuse speed-benchmark audio for WER after freeing the TTS server GPU.
+
+    ``stop_server`` is called here (in addition to the ``server_process``
+    teardown) so Whisper-large-v3 can claim the GPU memory before the
+    transcribe subprocess runs. ``stop_server`` is idempotent so the later
+    teardown call is a safe no-op.
+    """
+    stop_server(server_process)
+    generated_path = Path(speed_output_dir) / "generated.json"
+    assert generated_path.exists(), f"WER metadata missing: {generated_path}"
+    return speed_output_dir
+
+
+@pytest.mark.benchmark
+def test_voice_cloning_non_streaming(speed_output_dir: str) -> None:
+    """Smoke check: the speed-benchmark fixture asserts metrics/thresholds."""
+    assert Path(speed_output_dir).is_dir()
 
 
 @pytest.mark.benchmark

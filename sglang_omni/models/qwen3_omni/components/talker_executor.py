@@ -500,20 +500,10 @@ class TalkerStreamingExecutor(Executor):
             self._tts_eos_token_id,
             self._tts_pad_token_id,
         ]
-        hidden_size = self._talker_model.config.thinker_hidden_size
-        try:
-            thinker_rows = _load_thinker_embedding_rows(
-                self._resolved_model_path, special_ids
-            )
-            thinker_rows = thinker_rows.to(device=self._device, dtype=self._dtype)
-        except Exception:
-            logger.exception("Failed to load thinker special token embeddings")
-            thinker_rows = torch.zeros(
-                len(special_ids),
-                hidden_size,
-                device=self._device,
-                dtype=self._dtype,
-            )
+        thinker_rows = _load_thinker_embedding_rows(
+            self._resolved_model_path, special_ids
+        )
+        thinker_rows = thinker_rows.to(device=self._device, dtype=self._dtype)
 
         projected = self._talker_model.text_projection(thinker_rows)
         tts_bos_embed, tts_eos_embed, tts_pad_embed = projected.chunk(3, dim=0)

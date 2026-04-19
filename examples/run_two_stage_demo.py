@@ -11,11 +11,11 @@ import asyncio
 import logging
 import multiprocessing as mp
 import os
-import socket
 import time
 from typing import Any, List
 
 from sglang_omni import Coordinator
+from sglang_omni.utils import find_available_port
 
 # Configure logging
 logging.basicConfig(
@@ -40,14 +40,6 @@ ENDPOINTS = {
 WORLD_SIZE = 2
 RANK_STAGE1 = 0
 RANK_STAGE2 = 1
-
-
-def find_free_port():
-    """Find a free port on localhost to avoid collisions."""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("", 0))
-        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        return s.getsockname()[1]
 
 
 def stage1_get_next(request_id: str, output: Any) -> str | None:
@@ -313,7 +305,7 @@ def main():
 
     # Configure NCCL environment dynamically to avoid port conflicts
     if relay_type == "nccl":
-        free_port = str(find_free_port())
+        free_port = str(find_available_port())
         os.environ["MASTER_ADDR"] = "127.0.0.1"
         os.environ["MASTER_PORT"] = free_port
         logger.info(f"Using NCCL Master Port: {free_port}")

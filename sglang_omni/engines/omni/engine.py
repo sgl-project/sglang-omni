@@ -13,7 +13,13 @@ from typing import TYPE_CHECKING, Any, Deque, Optional
 from ..base import Engine
 from .model_runner import ModelRunner
 from .scheduler import Scheduler
-from .types import ModelRunnerOutput, SchedulerOutput, SchedulerStatus
+from .types import (
+    ModelRunnerOutput,
+    RequestOutput,
+    SchedulerOutput,
+    SchedulerRequest,
+    SchedulerStatus,
+)
 
 if TYPE_CHECKING:
     from sglang_omni.pipeline.stage.stream_queue import StreamQueue
@@ -25,10 +31,11 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class _PendingResult:
-    """Buffered result from a previous step, awaiting CPU processing."""
+    """Buffered result awaiting CPU-side scheduler.update processing."""
 
     scheduler_output: SchedulerOutput
     model_output: ModelRunnerOutput
+    update_cache: bool = True
 
 
 class OmniEngine(Engine):
@@ -167,23 +174,20 @@ class OmniEngine(Engine):
         scheduler_output = self.scheduler.schedule()
 
         if scheduler_output is None:
-            # Check for arrived feedback even when idle
             if self._feedback_mailbox is not None:
                 self._check_feedback()
-            await asyncio.sleep(0.001)  # Brief sleep when idle
+            await asyncio.sleep(0.001)
             return False
 
         try:
-            # 2. Check cache (if enabled)
             if self.cache_manager is not None:
-                scheduler_output = await self._filter_cached(scheduler_output)
-                if scheduler_output is None:
-                    return True  # All cached, no execution needed
+                uncached_output, cached_pending = self._filter_cached(scheduler_output)
+                if cached_pending is not None:
+                    self._apply_pending_result(cached_pending)
+                if uncached_output is None:
+                    return True
+                scheduler_output = uncached_output
 
-            # 3. Execute
-            # Run CPU model runners inline to avoid threadpool hangs with
-            # non-thread-safe mock/model outputs. Keep threaded execution for
-            # accelerator-backed runners by default.
             execute_in_thread = getattr(self.model_runner, "execute_in_thread", None)
             if execute_in_thread is None:
                 device = getattr(self.model_runner, "device", None)
@@ -261,15 +265,12 @@ class OmniEngine(Engine):
         - GPU: executing current step's forward pass
         - CPU: processing previous step's update (token append, finish check, etc.)
         """
-        # 1. Schedule next batch
         scheduler_output = self.scheduler.schedule()
 
         if scheduler_output is None:
-            # No new work. Process any pending results.
             if self._result_queue:
                 self._process_pending_result()
             elif self._feedback_mailbox is not None:
-                # Still check for arrived feedback even when idle
                 self._check_feedback()
                 await asyncio.sleep(0.001)
             else:
@@ -278,28 +279,25 @@ class OmniEngine(Engine):
             return False
 
         try:
-            # 2. Check if overlap should be disabled
             disable_overlap = self._should_disable_overlap(scheduler_output)
 
-            # 3. If disabled, synchronously process previous results first
             if disable_overlap and self._result_queue:
                 self._process_pending_result()
 
-            # 4. Handle cache filtering
             if self.cache_manager is not None:
-                scheduler_output = await self._filter_cached(scheduler_output)
-                if scheduler_output is None:
+                uncached_output, cached_pending = self._filter_cached(scheduler_output)
+                if cached_pending is not None:
+                    self._result_queue.append(cached_pending)
+                if uncached_output is None:
                     if not disable_overlap and self._result_queue:
                         self._process_pending_result()
                     self._last_scheduler_output = None
                     return True
+                scheduler_output = uncached_output
 
-            # 5. Determine execution strategy
             execute_in_thread = self._should_execute_in_thread()
 
             if execute_in_thread and not disable_overlap:
-                # ═══ OVERLAP PATH ═══
-                # Launch GPU execution as a background task
                 loop = asyncio.get_running_loop()
                 execute_future = loop.run_in_executor(
                     None,
@@ -307,16 +305,11 @@ class OmniEngine(Engine):
                     scheduler_output,
                 )
 
-                # While GPU is busy, process previous step's result on CPU
                 if self._result_queue:
                     self._process_pending_result()
 
-                # Now wait for GPU to finish
                 model_output = await execute_future
             else:
-                # ═══ SYNCHRONOUS PATH ═══
-                # Either CPU device or overlap disabled for this step.
-                # Process pending results BEFORE execution to minimize latency.
                 if (
                     not disable_overlap
                     and self._last_scheduler_output is not None
@@ -334,9 +327,6 @@ class OmniEngine(Engine):
                 else:
                     model_output = self.model_runner.execute(scheduler_output)
 
-            # 6. Buffer current result for next step's CPU processing
-            #    (cache update is deferred to _process_pending_result to keep
-            #     it co-located with scheduler.update for consistency)
             self._result_queue.append(
                 _PendingResult(
                     scheduler_output=scheduler_output,
@@ -344,7 +334,6 @@ class OmniEngine(Engine):
                 )
             )
 
-            # 7. Track last output for prefill-detection heuristic
             self._last_scheduler_output = scheduler_output
 
         except Exception as e:
@@ -402,19 +391,16 @@ class OmniEngine(Engine):
         """Process the oldest pending result from the result queue."""
         if not self._result_queue:
             return
+        self._apply_pending_result(self._result_queue.popleft())
 
-        pending = self._result_queue.popleft()
-
+    def _apply_pending_result(self, pending: _PendingResult) -> None:
+        """Apply a pending result: cache put (if enabled) + scheduler.update + feedback housekeeping."""
         try:
-            # Update cache (if enabled)
-            if self.cache_manager is not None:
-                # Note: we do sync cache update here since we're on CPU
-                for request in pending.scheduler_output.requests:
-                    output = pending.model_output.outputs.get(request.request_id)
-                    if output is not None:
-                        self.cache_manager.put(request, output)
+            if pending.update_cache and self.cache_manager is not None:
+                self._put_outputs_in_cache(
+                    pending.scheduler_output, pending.model_output
+                )
 
-            # Update scheduler state
             finished = self.scheduler.update(
                 pending.scheduler_output, pending.model_output
             )
@@ -423,7 +409,6 @@ class OmniEngine(Engine):
                 for req in finished:
                     logger.debug("Request %s finished (overlap)", req.request_id)
 
-            # Check feedback needs (same logic as _step_normal)
             iter_ctrl = self.scheduler.iteration_controller
             if hasattr(iter_ctrl, "needs_feedback"):
                 for request in pending.scheduler_output.requests:
@@ -437,7 +422,6 @@ class OmniEngine(Engine):
                         request.status = SchedulerStatus.WAITING_FEEDBACK
                         request._feedback_wait_start = time.time()
 
-            # Check for arrived feedback
             if self._feedback_mailbox is not None:
                 self._check_feedback()
 
@@ -451,6 +435,17 @@ class OmniEngine(Engine):
                     self.scheduler.fail_request(request.request_id, e)
                 except Exception:
                     pass
+
+    def _put_outputs_in_cache(
+        self, scheduler_output: SchedulerOutput, model_output: ModelRunnerOutput
+    ) -> None:
+        """Store every per-request output in the cache. No-op if disabled."""
+        if self.cache_manager is None:
+            return
+        for request in scheduler_output.requests:
+            output = model_output.outputs.get(request.request_id)
+            if output is not None:
+                self.cache_manager.put(request, output)
 
     def _drain_pending_results(self) -> None:
         """Process all pending results. Called during shutdown."""
@@ -481,10 +476,7 @@ class OmniEngine(Engine):
     ) -> None:
         """Synchronously update cache with model outputs."""
         assert self.cache_manager is not None
-        for request in scheduler_output.requests:
-            output = model_output.outputs.get(request.request_id)
-            if output is not None:
-                self.cache_manager.put(request, output)
+        self._put_outputs_in_cache(scheduler_output, model_output)
 
     def _fail_requests(
         self, scheduler_output: SchedulerOutput, error: Exception
@@ -496,33 +488,100 @@ class OmniEngine(Engine):
             except Exception:
                 pass
 
-    async def _filter_cached(
+    def _filter_cached(
         self, scheduler_output: SchedulerOutput
-    ) -> SchedulerOutput | None:
-        """Check cache and filter out cached requests."""
+    ) -> tuple[SchedulerOutput | None, _PendingResult | None]:
+        """Partition a scheduler output into cached and uncached halves."""
         assert self.cache_manager is not None
 
-        cached_outputs = {}
-        uncached_requests = []
+        cached_outputs: dict[str, RequestOutput] = {}
+        cached_requests: list[SchedulerRequest] = []
+        uncached_requests: list[SchedulerRequest] = []
 
         for request in scheduler_output.requests:
             cached = self.cache_manager.get(request)
             if cached is not None:
                 cached_outputs[request.request_id] = cached
+                cached_requests.append(request)
             else:
                 uncached_requests.append(request)
 
-        if not uncached_requests:
-            req_ids = [req.request_id for req in scheduler_output.requests]
-            req_id_to_index = {req_id: idx for idx, req_id in enumerate(req_ids)}
-            model_output = ModelRunnerOutput(
-                outputs=cached_outputs,
-                req_ids=req_ids,
-                req_id_to_index=req_id_to_index,
-            )
-            self.scheduler.update(scheduler_output, model_output)
-            return None
+        has_cached = bool(cached_requests)
+        has_uncached = bool(uncached_requests)
 
+        cached_pending = (
+            self._build_cached_pending(
+                cached_requests, cached_outputs, scheduler_output
+            )
+            if has_cached
+            else None
+        )
+
+        if not has_cached and not has_uncached:
+            return None, None
+        elif has_cached and not has_uncached:
+            return None, cached_pending
+        elif not has_cached and has_uncached:
+            return (
+                self._build_uncached_output(uncached_requests, scheduler_output),
+                None,
+            )
+        elif has_cached and has_uncached:
+            return (
+                self._build_uncached_output(uncached_requests, scheduler_output),
+                cached_pending,
+            )
+        else:
+            raise AssertionError("unreachable: _filter_cached logic error")
+
+    def _build_cached_pending(
+        self,
+        cached_requests: list[SchedulerRequest],
+        cached_outputs: dict[str, RequestOutput],
+        scheduler_output: SchedulerOutput,
+    ) -> _PendingResult:
+        """Package cached outputs as a _PendingResult."""
+        for req in cached_requests:
+            if req.status != SchedulerStatus.RUNNING:
+                logger.error(
+                    "Cached request %s is in status %s, not RUNNING. "
+                    "scheduler.update would silently skip it; failing explicitly.",
+                    req.request_id,
+                    req.status,
+                )
+                self.scheduler.fail_request(
+                    req.request_id,
+                    RuntimeError(
+                        f"Cached request {req.request_id} in non-RUNNING status "
+                        f"{req.status} at cache-resolution time"
+                    ),
+                )
+
+        req_ids = [req.request_id for req in cached_requests]
+        req_id_to_index = {req_id: idx for idx, req_id in enumerate(req_ids)}
+        model_output = ModelRunnerOutput(
+            outputs=cached_outputs,
+            req_ids=req_ids,
+            req_id_to_index=req_id_to_index,
+        )
+        scheduler_output_for_cached = SchedulerOutput(
+            requests=cached_requests,
+            batch_data=None,
+            step_id=scheduler_output.step_id,
+        )
+        return _PendingResult(
+            scheduler_output=scheduler_output_for_cached,
+            model_output=model_output,
+            update_cache=False,
+        )
+
+    def _build_uncached_output(
+        self,
+        uncached_requests: list[SchedulerRequest],
+        scheduler_output: SchedulerOutput,
+    ) -> SchedulerOutput:
+        """Build a SchedulerOutput for the uncached subset, for model execution."""
+        assert uncached_requests, "_build_uncached_output called with empty list"
         batch_data = self.scheduler.batch_planner.build_batch(uncached_requests)
         return SchedulerOutput(
             requests=uncached_requests,
@@ -596,10 +655,7 @@ class OmniEngine(Engine):
     async def _update_cache(self, scheduler_output: SchedulerOutput, model_output: Any):
         """Update cache with fresh model outputs."""
         assert self.cache_manager is not None
-        for request in scheduler_output.requests:
-            output = model_output.outputs.get(request.request_id)
-            if output is not None:
-                self.cache_manager.put(request, output)
+        self._put_outputs_in_cache(scheduler_output, model_output)
 
 
 def _is_prefill_batch(batch_data: Any) -> bool:

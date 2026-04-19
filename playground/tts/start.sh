@@ -101,7 +101,9 @@ echo "  Then open http://localhost:${GRADIO_PORT} in your browser."
 echo "============================================================"
 echo ""
 
-exec "${PYTHON_BIN}" "${SCRIPT_DIR}/app.py" \
+cd "${REPO_DIR}"
+
+exec "${PYTHON_BIN}" -m playground.tts.app \
   --api-base "${API_BASE}" \
   --port "${GRADIO_PORT}" \
   ${GRADIO_SHARE}

@@ -17,7 +17,7 @@ source .venv/bin/activate
 uv pip install -v .
 
 # install for development
-uv pip install -v -e ".[dev]"
+uv pip install -v -e .
 ```
 
 
