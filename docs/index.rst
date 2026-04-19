@@ -1,6 +1,10 @@
 SGLang-Omni
 =======================
 
+.. raw:: html
+
+   <p>🌐 <strong>Languages:</strong> English | <a href="./zh_CN/index.html">简体中文</a></p>
+
 SGLang-Omni is an ecosystem project for SGLang.
 Omni models refer to models that have multi-modal inputs and multi-modal outputs.
 These models typically consist of multiple stages, making SGLang's LLM-specific architecture no longer suitable.
@@ -17,6 +21,7 @@ Our core features include:
    :caption: Get Started
 
    get_started/installation.md
+   get_started/apiserver_quickstart.md
 
 
 .. toctree::
@@ -40,4 +45,4 @@ Our core features include:
 
    developer_reference/architecture.md
    developer_reference/relay_design.md
-   developer_reference/talker_decode_parity.md
+   developer_reference/apiserver_design.md
