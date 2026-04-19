@@ -50,7 +50,7 @@ STARTUP_TIMEOUT = 900
 # modules serialize GPU access, so they run serially even when concurrency > 1.
 CONCURRENCY = 1
 
-# Use chain-of-thought prompt (mirroring MMMU style) instead of the default
+# Note (Yifei): Use chain-of-thought prompt (mirroring MMMU style) instead of the default
 # "Reply with only A, B, C, or D." to elicit longer responses for WER.
 MMSU_TTS_PROMPT = (
     "Listen to the audio and answer the multiple-choice question. "
@@ -61,8 +61,8 @@ MMSU_TTS_PROMPT = (
 
 # TODO (Yifei): update thresholds when concurrency > 1 is supported.
 
-MMMU_AUDIO_WER_MAX_CORPUS = 0.12
-MMMU_AUDIO_WER_MAX_PER_SAMPLE = 0.20
+MMSU_AUDIO_WER_MAX_CORPUS = 0.12
+MMSU_AUDIO_WER_MAX_PER_SAMPLE = 0.20
 
 _MMSU_AUDIO_P95 = {
     1: {
