@@ -198,6 +198,14 @@ jobs:
         with:
           venv-name: omni-qwen3
 
+      - name: Dump pip freeze for CI-vs-local diff
+        shell: bash
+        run: |
+          source omni-qwen3/bin/activate
+          echo "=== CI pip freeze ==="
+          pip freeze | sort
+          echo "=== end CI pip freeze ==="
+
       - name: Run MMSU CI (accuracy + speed)
         shell: bash
         run: |

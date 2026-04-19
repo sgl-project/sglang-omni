@@ -35,13 +35,13 @@ MODEL_PATH = "Qwen/Qwen3-Omni-30B-A3B-Instruct"
 CONCURRENCY = 8
 STARTUP_TIMEOUT = 900
 
-MMSU_MIN_ACCURACY = 0.67
+MMSU_MIN_ACCURACY = 0.69
 
 _MMSU_P95 = {
     8: {
-        "throughput_qps": 8.24,
-        "tok_per_s_agg": 3.9,
-        "latency_mean_s": 0.969,
+        "throughput_qps": 9.94,
+        "tok_per_s_agg": 2.60,
+        "latency_mean_s": 0.804,
     },
 }
 MMSU_THRESHOLDS = apply_slack(_MMSU_P95)

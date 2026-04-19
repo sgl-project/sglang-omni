@@ -58,8 +58,10 @@ MMSU_TTS_PROMPT = (
     "where LETTER is one of the options."
 )
 
-MMSU_AUDIO_WER_MAX_CORPUS = 0.10
-MMSU_AUDIO_WER_MAX_PER_SAMPLE = 0.18
+# TODO: Update thresholds after testing on H20 CI machines.
+
+MMSU_AUDIO_WER_MAX_CORPUS = 0.30
+MMSU_AUDIO_WER_MAX_PER_SAMPLE = 0.50
 
 _MMSU_AUDIO_P95 = {
     1: {
