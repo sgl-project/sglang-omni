@@ -79,7 +79,9 @@ class TestMemFractionStaticOverrides(unittest.TestCase):
         self.assertEqual(thinker_overrides["mem_fraction_static"], 0.83)
         self.assertEqual(talker_overrides["mem_fraction_static"], 0.91)
 
-    def test_invalid_stage_specific_override_does_not_partially_mutate_config(self) -> None:
+    def test_invalid_stage_specific_override_does_not_partially_mutate_config(
+        self,
+    ) -> None:
         config = _make_pipeline(talker=None)
 
         with self.assertRaisesRegex(
