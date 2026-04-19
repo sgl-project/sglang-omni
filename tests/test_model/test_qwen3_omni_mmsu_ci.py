@@ -81,7 +81,7 @@ def _build_args(port: int, output_dir: str) -> argparse.Namespace:
         prompt=None,
         max_tokens=32,
         temperature=0.0,
-        warmup=0,
+        warmup=1,
         max_concurrency=CONCURRENCY,
         request_rate=float("inf"),
         save_audio=False,
@@ -99,6 +99,13 @@ def test_mmsu_accuracy_and_speed(
     """Run MMSU eval and assert accuracy and speed meet thresholds."""
     args = _build_args(server_process.port, str(tmp_path / "mmsu"))
     results = asyncio.run(run_mmsu(args))
+
+    failed = results["accuracy"].get("failed_samples", 0)
+    total = results["accuracy"].get("total_samples", 0)
+    assert failed == 0, (
+        f"MMSU had {failed}/{total} failed requests (timeouts or empty responses); "
+        f"any failure fails the test"
+    )
 
     accuracy = results["accuracy"]["overall_accuracy"]
     assert accuracy >= MMSU_MIN_ACCURACY, (

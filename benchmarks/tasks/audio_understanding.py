@@ -182,6 +182,7 @@ class MmsuResult:
     raw_response: str = ""
     is_correct: bool = False
     is_parseable: bool = False
+    is_success: bool = False
     latency_s: float = 0.0
     has_audio: bool = False
     audio_duration_s: float = 0.0
@@ -294,6 +295,7 @@ def build_mmsu_results(
             raw_response=request_result.text,
             is_correct=index_match or text_match,
             is_parseable=predicted_index is not None or bool(predicted_answer),
+            is_success=bool(request_result.is_success),
             latency_s=request_result.latency_s,
             error=request_result.error,
         )
@@ -310,12 +312,15 @@ def build_mmsu_results(
 def compute_mmsu_metrics(results: list[MmsuResult]) -> dict[str, Any]:
     total = len(results)
     parseable = sum(1 for result in results if result.is_parseable)
+    successful = sum(1 for result in results if result.is_success)
     correct = sum(1 for result in results if result.is_correct)
 
     return {
         "total_samples": total,
         "parseable_samples": parseable,
         "unparseable_samples": total - parseable,
+        "successful_samples": successful,
+        "failed_samples": total - successful,
         "correct": correct,
         "incorrect": total - correct,
         "overall_accuracy": round(correct / total, 4) if total else 0.0,
@@ -340,6 +345,9 @@ def print_mmsu_summary(
     print(f"  MMSU Results - {model_name}")
     print("=" * 60)
     print(f"  Total samples:    {metrics['total_samples']}")
+    print(
+        f"  Successful:       {metrics.get('successful_samples', metrics['total_samples'])}"
+    )
     print(f"  Parseable:        {metrics['parseable_samples']}")
     print(f"  Correct:          {metrics['correct']}")
     print(f"  Overall accuracy: {metrics['overall_accuracy']:.2%}")

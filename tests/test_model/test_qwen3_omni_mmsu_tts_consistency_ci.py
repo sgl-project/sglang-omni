@@ -41,6 +41,7 @@ from tests.utils import (
 
 MODEL_PATH = "Qwen/Qwen3-Omni-30B-A3B-Instruct"
 
+# TODO (Yifei): enable larger subset/max_tokens when concurrency > 1 is supported.
 MAX_SAMPLES = 5
 MAX_TOKENS = 50
 STARTUP_TIMEOUT = 900
@@ -58,17 +59,17 @@ MMSU_TTS_PROMPT = (
     "where LETTER is one of the options."
 )
 
-# TODO: Update thresholds after testing on H20 CI machines.
+# TODO (Yifei): update thresholds when concurrency > 1 is supported.
 
-MMSU_AUDIO_WER_MAX_CORPUS = 0.30
-MMSU_AUDIO_WER_MAX_PER_SAMPLE = 0.50
+MMMU_AUDIO_WER_MAX_CORPUS = 0.12
+MMMU_AUDIO_WER_MAX_PER_SAMPLE = 0.20
 
 _MMSU_AUDIO_P95 = {
     1: {
-        "throughput_qps": 0.001,
-        "tok_per_s_agg": 1.0,
-        "latency_mean_s": 1000.0,
-        "rtf_mean": 1000.0,
+        "throughput_qps": 0.03,
+        "tok_per_s_agg": 1.70,
+        "latency_mean_s": 29.090,
+        "rtf_mean": 1.5625,
     },
 }
 MMSU_AUDIO_THRESHOLDS = apply_slack(_MMSU_AUDIO_P95)
@@ -116,7 +117,7 @@ def _build_args(port: int, output_dir: str) -> argparse.Namespace:
         prompt=MMSU_TTS_PROMPT,
         max_tokens=MAX_TOKENS,
         temperature=0.0,
-        warmup=0,
+        warmup=1,
         max_concurrency=CONCURRENCY,
         request_rate=float("inf"),
         save_audio=True,
@@ -145,6 +146,13 @@ def test_mmsu_audio_wer_and_speed(
     samples = [*base, dup]
 
     results = asyncio.run(run_mmsu(args, samples=samples))
+
+    failed = results["accuracy"].get("failed_samples", 0)
+    total = results["accuracy"].get("total_samples", 0)
+    assert failed == 0, (
+        f"MMSU TTS consistency had {failed}/{total} failed requests "
+        f"(timeouts or empty responses); any failure fails the test"
+    )
 
     assert "wer" in results, "Audio WER results missing from eval output"
     assert_wer_results(
