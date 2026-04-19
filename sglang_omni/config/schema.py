@@ -142,6 +142,15 @@ class PipelineConfig(BaseModel):
                 "mem_fraction_override_stages references unknown stages: "
                 f"{sorted(unknown_override_stages)}"
             )
+        if (
+            self.mem_fraction_override_stages.thinker is not None
+            and self.mem_fraction_override_stages.thinker
+            == self.mem_fraction_override_stages.talker
+        ):
+            raise ValueError(
+                "mem_fraction_override_stages thinker and talker must reference "
+                "different stages"
+            )
 
         for stage_cfg in self.stages:
             if stage_cfg.num_workers < 1:
@@ -257,7 +266,7 @@ class PipelineConfig(BaseModel):
                     overrides
                 )
                 return
-        raise AssertionError(f"Unknown stage {stage_name!r}")
+        raise ValueError(f"Unknown stage {stage_name!r}")
 
     def apply_mem_fraction_static_overrides(
         self,
@@ -266,6 +275,8 @@ class PipelineConfig(BaseModel):
         thinker_mem_fraction_static: float | None = None,
         talker_mem_fraction_static: float | None = None,
     ) -> None:
+        stage_overrides: list[tuple[str, float]] = []
+
         if mem_fraction_static is not None:
             stage_names = [
                 stage_name
@@ -280,11 +291,9 @@ class PipelineConfig(BaseModel):
                     "--mem-fraction-static requires a pipeline with a supported "
                     "mem_fraction_override_stages target"
                 )
-            for stage_name in stage_names:
-                self.apply_server_args_overrides(
-                    stage_name=stage_name,
-                    overrides={"mem_fraction_static": mem_fraction_static},
-                )
+            stage_overrides.extend(
+                (stage_name, mem_fraction_static) for stage_name in stage_names
+            )
 
         if thinker_mem_fraction_static is not None:
             stage_name = self.mem_fraction_override_stages.thinker
@@ -293,10 +302,7 @@ class PipelineConfig(BaseModel):
                     "--thinker-mem-fraction-static requires a pipeline with a "
                     "'thinker' mem-fraction override target"
                 )
-            self.apply_server_args_overrides(
-                stage_name=stage_name,
-                overrides={"mem_fraction_static": thinker_mem_fraction_static},
-            )
+            stage_overrides.append((stage_name, thinker_mem_fraction_static))
 
         if talker_mem_fraction_static is not None:
             stage_name = self.mem_fraction_override_stages.talker
@@ -305,7 +311,10 @@ class PipelineConfig(BaseModel):
                     "--talker-mem-fraction-static requires a pipeline with a "
                     "'talker' mem-fraction override target"
                 )
+            stage_overrides.append((stage_name, talker_mem_fraction_static))
+
+        for stage_name, mem_fraction_static_value in stage_overrides:
             self.apply_server_args_overrides(
                 stage_name=stage_name,
-                overrides={"mem_fraction_static": talker_mem_fraction_static},
+                overrides={"mem_fraction_static": mem_fraction_static_value},
             )
