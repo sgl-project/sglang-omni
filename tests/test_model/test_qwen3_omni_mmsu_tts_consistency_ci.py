@@ -42,7 +42,7 @@ from tests.utils import (
 MODEL_PATH = "Qwen/Qwen3-Omni-30B-A3B-Instruct"
 
 MAX_SAMPLES = 5
-MAX_TOKENS = 100
+MAX_TOKENS = 50
 STARTUP_TIMEOUT = 900
 
 # Note (Yifei): Concurrency=1 only for now — code_predictor and code2wav
@@ -137,9 +137,7 @@ def test_mmsu_audio_wer_and_speed(
     # Regression guard for issue #299: append a dup of sample[0] so the
     # audio encoder sees a cached+non-cached mixed batch. Inert at
     # concurrency=1; starts to take effect once concurrency is raised.
-    base = load_mmsu_samples(
-        max_samples=MAX_SAMPLES, repo_id=DATASETS["mmsu-ci-2000"]
-    )
+    base = load_mmsu_samples(max_samples=MAX_SAMPLES, repo_id=DATASETS["mmsu-ci-2000"])
     dup = copy(base[0])
     dup.sample_id = f"{base[0].sample_id}__dup"
     samples = [*base, dup]

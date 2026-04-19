@@ -182,7 +182,7 @@ async def run(
                 "seed": args.seed,
             },
             args.output_dir,
-            speed_metrics=speed if audio_mode else None,
+            speed_metrics=speed,
             wer_metrics=wer_results,
         )
 
@@ -216,8 +216,12 @@ def main() -> None:
         help="HuggingFace dataset repo (e.g. 'zhaochenyang20/mmsu-ci-2000'). "
         "Defaults to loading the full ddwang2000/MMSU (train split).",
     )
-    p.add_argument("--lang", type=str, default="en", help="Language for ASR WER evaluation")
-    p.add_argument("--asr-device", type=str, default="cuda:0", help="Device for ASR model")
+    p.add_argument(
+        "--lang", type=str, default="en", help="Language for ASR WER evaluation"
+    )
+    p.add_argument(
+        "--asr-device", type=str, default="cuda:0", help="Device for ASR model"
+    )
 
     args = p.parse_args()
     wait_for_service(args.base_url or f"http://{args.host}:{args.port}")
