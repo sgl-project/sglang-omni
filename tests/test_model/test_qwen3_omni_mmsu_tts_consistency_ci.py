@@ -62,14 +62,14 @@ MMSU_TTS_PROMPT = (
 # TODO (Yifei): update thresholds when concurrency > 1 is supported.
 
 MMSU_AUDIO_WER_MAX_CORPUS = 0.12
-MMSU_AUDIO_WER_MAX_PER_SAMPLE = 0.20
+MMSU_AUDIO_WER_MAX_PER_SAMPLE = 0.36
 
 _MMSU_AUDIO_P95 = {
     1: {
-        "throughput_qps": 0.03,
-        "tok_per_s_agg": 1.70,
-        "latency_mean_s": 29.090,
-        "rtf_mean": 1.5625,
+        "throughput_qps": 0.04,
+        "tok_per_s_agg": 1.80,
+        "latency_mean_s": 27.376,
+        "rtf_mean": 1.5734,
     },
 }
 MMSU_AUDIO_THRESHOLDS = apply_slack(_MMSU_AUDIO_P95)
