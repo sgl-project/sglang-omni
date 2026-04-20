@@ -93,8 +93,9 @@ def main() -> None:
     config = Qwen3OmniPipelineConfig(
         model_path=args.model_path,
         relay_backend=args.relay_backend,
-        server_args_overrides=overrides or None,
     )
+    if overrides:
+        config.apply_thinker_server_args_overrides(overrides)
     apply_mem_fraction_static_args(config, args)
 
     # Override thinker_max_seq_len in stage executor args if provided

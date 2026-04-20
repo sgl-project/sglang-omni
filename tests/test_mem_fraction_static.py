@@ -15,6 +15,16 @@ from sglang_omni.config.schema import (
 )
 from sglang_omni.models.ming_omni.config import MingOmniPipelineConfig
 
+try:
+    from sglang_omni.models.qwen3_omni.config import Qwen3OmniPipelineConfig
+    from sglang_omni.models.qwen3_omni.pipeline.stages import (
+        create_sglang_thinker_executor_from_config,
+    )
+
+    _qwen3_available = True
+except ImportError:
+    _qwen3_available = False
+
 _NOOP_FACTORY = "sglang_omni.pipeline.mp_runner._noop_executor_factory"
 _NOOP_GET_NEXT = "sglang_omni.pipeline.mp_runner._noop_get_next"
 
@@ -279,3 +289,46 @@ class TestServeMemFractionStatic(unittest.TestCase):
             ],
             0.88,
         )
+
+    @unittest.skipUnless(_qwen3_available, "qwen3_omni config not importable")
+    @patch(
+        "sglang_omni.models.qwen3_omni.pipeline.stages.create_sglang_thinker_executor"
+    )
+    @patch("sglang_omni.cli.serve.launch_server")
+    @patch("sglang_omni.cli.serve.ConfigManager.from_model_path")
+    def test_serve_mem_fraction_reaches_final_server_args(
+        self,
+        from_model_path,
+        launch_server_mock,
+        create_thinker_executor_mock,
+    ) -> None:
+        from_model_path.return_value = _FakeConfigManager(
+            Qwen3OmniPipelineConfig(model_path="dummy")
+        )
+
+        serve(
+            ctx=SimpleNamespace(args=[]),
+            model_path="dummy",
+            config=None,
+            text_only=False,
+            host="0.0.0.0",
+            port=8000,
+            model_name=None,
+            mem_fraction_static=0.88,
+            thinker_mem_fraction_static=None,
+            talker_mem_fraction_static=None,
+            log_level="info",
+        )
+
+        passed_config = launch_server_mock.call_args.args[0]
+        thinker_stage = next(
+            stage for stage in passed_config.stages if stage.name == "thinker"
+        )
+
+        create_sglang_thinker_executor_from_config(
+            model_path="dummy",
+            **thinker_stage.executor.args,
+        )
+
+        server_args = create_thinker_executor_mock.call_args.kwargs["server_args"]
+        self.assertEqual(server_args.mem_fraction_static, 0.88)

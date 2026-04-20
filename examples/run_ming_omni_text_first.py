@@ -78,12 +78,7 @@ async def main_async(args: argparse.Namespace) -> None:
         relay_backend=args.relay_backend,
     )
     if overrides:
-        thinker_stage = config.mem_fraction_override_stages.thinker
-        assert thinker_stage is not None
-        config.apply_server_args_overrides(
-            stage_name=thinker_stage,
-            overrides=overrides,
-        )
+        config.apply_thinker_server_args_overrides(overrides)
     apply_mem_fraction_static_args(config, args)
     runner = build_pipeline_runner(config)
 

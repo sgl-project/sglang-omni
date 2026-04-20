@@ -192,5 +192,4 @@ def test_qwen3_speech_pipeline_rejects_tp() -> None:
     with pytest.raises(ValueError, match="collides"):
         Qwen3OmniSpeechPipelineConfig(
             model_path="dummy",
-            server_args_overrides={"tp_size": 2},
-        )
+        ).apply_thinker_server_args_overrides({"tp_size": 2})

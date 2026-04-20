@@ -52,8 +52,8 @@ async def run_thinker(
     config = MingOmniPipelineConfig(
         model_path="inclusionAI/Ming-flash-omni-2.0",
         relay_backend="shm",
-        server_args_overrides=overrides,
     )
+    config.apply_thinker_server_args_overrides(overrides)
 
     runner = MultiProcessPipelineRunner(config)
     logger.info(

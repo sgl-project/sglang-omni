@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from typing import ClassVar
+from typing import Any, ClassVar
 
 from pydantic import Field
 
@@ -40,7 +40,6 @@ def validate_ming_speech_gpu_placement(
             f"[{thinker_gpu}, {thinker_gpu + tp_size}). "
             f"Set --gpu-talker >= {thinker_gpu + tp_size}."
         )
-
 
 class MingOmniPipelineConfig(PipelineConfig):
     """6-stage text/vision pipeline for Ming-Omni.
@@ -123,6 +122,12 @@ class MingOmniPipelineConfig(PipelineConfig):
             relay=RelayConfig(device="cpu"),
         ),
     ]
+
+    def apply_thinker_server_args_overrides(self, overrides: dict[str, Any]) -> None:
+        self.apply_server_args_overrides(
+            stage_name=THINKER_STAGE,
+            overrides=overrides,
+        )
 
 
 class MingOmniSpeechPipelineConfig(PipelineConfig):
@@ -217,6 +222,29 @@ class MingOmniSpeechPipelineConfig(PipelineConfig):
             relay=RelayConfig(device="cuda"),
         ),
     ]
+
+    def model_post_init(self, __context: Any) -> None:
+        super().model_post_init(__context)
+        validate_ming_speech_gpu_placement(self.gpu_placement, tp_size=1)
+
+    def apply_server_args_overrides(
+        self, *, stage_name: str, overrides: dict[str, Any]
+    ) -> None:
+        if stage_name == THINKER_STAGE and "tp_size" in overrides:
+            validate_ming_speech_gpu_placement(
+                self.gpu_placement,
+                tp_size=overrides["tp_size"],
+            )
+        super().apply_server_args_overrides(
+            stage_name=stage_name,
+            overrides=overrides,
+        )
+
+    def apply_thinker_server_args_overrides(self, overrides: dict[str, Any]) -> None:
+        self.apply_server_args_overrides(
+            stage_name=THINKER_STAGE,
+            overrides=overrides,
+        )
 
 
 EntryClass = MingOmniPipelineConfig

@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from typing import ClassVar
+from typing import Any, ClassVar
 
 from pydantic import Field
 
@@ -26,6 +26,23 @@ from sglang_omni.models.qwen3_omni.pipeline.next_stage import (
     TALKER_AR_STAGE,
     THINKER_STAGE,
 )
+
+
+def _validate_qwen3_speech_gpu_placement(
+    gpu_placement: dict[str, int],
+    *,
+    tp_size: int = 1,
+) -> None:
+    thinker_gpu = gpu_placement.get("thinker", 0)
+    thinker_range = range(thinker_gpu, thinker_gpu + tp_size)
+    for speech_stage_name in ("talker_ar", "code_predictor", "code2wav"):
+        stage_gpu = gpu_placement.get(speech_stage_name, 1)
+        if stage_gpu in thinker_range:
+            raise ValueError(
+                f"Speech stage '{speech_stage_name}' GPU {stage_gpu} collides with "
+                f"thinker TP range [{thinker_gpu}, {thinker_gpu + tp_size}). "
+                f"Place speech stages on GPU >= {thinker_gpu + tp_size}."
+            )
 
 
 class Qwen3OmniPipelineConfig(PipelineConfig):
@@ -105,27 +122,26 @@ class Qwen3OmniPipelineConfig(PipelineConfig):
         ),
     ]
 
-    def __init__(self, **kwargs):
-        server_args_overrides = kwargs.pop("server_args_overrides", None)
-        super().__init__(**kwargs)
-        tp_size = (
-            server_args_overrides.get("tp_size", 1) if server_args_overrides else 1
-        )
-        if tp_size > 1:
+    def apply_server_args_overrides(
+        self, *, stage_name: str, overrides: dict[str, Any]
+    ) -> None:
+        tp_size = overrides.get("tp_size", 1)
+        if stage_name == THINKER_STAGE and tp_size > 1:
             raise NotImplementedError(
                 "The TP runtime under sglang_omni/engines/tp/ is model-agnostic; "
                 "Qwen3-Omni support will land as a follow-up after Ming-flash-omni "
                 "TP lands."
             )
-        if server_args_overrides:
-            for stage in self.stages:
-                if stage.name == THINKER_STAGE:
-                    if stage.executor.args is None:
-                        stage.executor.args = {}
-                    existing = stage.executor.args.setdefault(
-                        "server_args_overrides", {}
-                    )
-                    existing.update(server_args_overrides)
+        super().apply_server_args_overrides(
+            stage_name=stage_name,
+            overrides=overrides,
+        )
+
+    def apply_thinker_server_args_overrides(self, overrides: dict[str, Any]) -> None:
+        self.apply_server_args_overrides(
+            stage_name=THINKER_STAGE,
+            overrides=overrides,
+        )
 
 
 class Qwen3OmniSpeechPipelineConfig(PipelineConfig):
@@ -253,32 +269,29 @@ class Qwen3OmniSpeechPipelineConfig(PipelineConfig):
         ),
     ]
 
-    def __init__(self, **kwargs):
-        server_args_overrides = kwargs.pop("server_args_overrides", None)
-        super().__init__(**kwargs)
-        if server_args_overrides:
-            for stage in self.stages:
-                if stage.name == THINKER_STAGE:
-                    if stage.executor.args is None:
-                        stage.executor.args = {}
-                    existing = stage.executor.args.setdefault(
-                        "server_args_overrides", {}
-                    )
-                    existing.update(server_args_overrides)
+    def model_post_init(self, __context: Any) -> None:
+        super().model_post_init(__context)
+        _validate_qwen3_speech_gpu_placement(self.gpu_placement)
 
-        tp_size = 1
-        if server_args_overrides:
-            tp_size = server_args_overrides.get("tp_size", 1)
-        thinker_gpu = self.gpu_placement.get("thinker", 0)
-        thinker_range = range(thinker_gpu, thinker_gpu + tp_size)
-        for stage_name in ("talker_ar", "code_predictor", "code2wav"):
-            stage_gpu = self.gpu_placement.get(stage_name, 1)
-            if stage_gpu in thinker_range:
-                raise ValueError(
-                    f"Speech stage '{stage_name}' GPU {stage_gpu} collides with "
-                    f"thinker TP range [{thinker_gpu}, {thinker_gpu + tp_size}). "
-                    f"Place speech stages on GPU >= {thinker_gpu + tp_size}."
-                )
+    def apply_server_args_overrides(
+        self, *, stage_name: str, overrides: dict[str, Any]
+    ) -> None:
+        if stage_name == THINKER_STAGE:
+            tp_size = overrides.get("tp_size", 1)
+            _validate_qwen3_speech_gpu_placement(
+                self.gpu_placement,
+                tp_size=tp_size,
+            )
+        super().apply_server_args_overrides(
+            stage_name=stage_name,
+            overrides=overrides,
+        )
+
+    def apply_thinker_server_args_overrides(self, overrides: dict[str, Any]) -> None:
+        self.apply_server_args_overrides(
+            stage_name=THINKER_STAGE,
+            overrides=overrides,
+        )
 
 
 EntryClass = Qwen3OmniSpeechPipelineConfig
