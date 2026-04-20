@@ -26,6 +26,22 @@ from sglang_omni.models.ming_omni.pipeline.next_stage import (
 )
 
 
+def validate_ming_speech_gpu_placement(
+    gpu_placement: dict[str, int],
+    *,
+    tp_size: int,
+) -> None:
+    thinker_gpu = gpu_placement.get("thinker", 0)
+    talker_gpu = gpu_placement.get("talker", 1)
+    thinker_range = range(thinker_gpu, thinker_gpu + tp_size)
+    if talker_gpu in thinker_range:
+        raise ValueError(
+            f"Talker GPU {talker_gpu} collides with thinker TP range "
+            f"[{thinker_gpu}, {thinker_gpu + tp_size}). "
+            f"Set --gpu-talker >= {thinker_gpu + tp_size}."
+        )
+
+
 class MingOmniPipelineConfig(PipelineConfig):
     """6-stage text/vision pipeline for Ming-Omni.
 
@@ -128,33 +144,6 @@ class MingOmniSpeechPipelineConfig(PipelineConfig):
         "thinker": 0,
         "talker": 1,
     }
-
-    def __init__(self, **kwargs):
-        server_args_overrides = kwargs.pop("server_args_overrides", None)
-        super().__init__(**kwargs)
-        if server_args_overrides:
-            for stage in self.stages:
-                if stage.name == THINKER_STAGE:
-                    if stage.executor.args is None:
-                        stage.executor.args = {}
-                    existing = stage.executor.args.setdefault(
-                        "server_args_overrides", {}
-                    )
-                    existing.update(server_args_overrides)
-
-        # Validate GPU placement: thinker TP range must not overlap talker
-        tp_size = 1
-        if server_args_overrides:
-            tp_size = server_args_overrides.get("tp_size", 1)
-        thinker_gpu = self.gpu_placement.get("thinker", 0)
-        talker_gpu = self.gpu_placement.get("talker", 1)
-        thinker_range = range(thinker_gpu, thinker_gpu + tp_size)
-        if talker_gpu in thinker_range:
-            raise ValueError(
-                f"Talker GPU {talker_gpu} collides with thinker TP range "
-                f"[{thinker_gpu}, {thinker_gpu + tp_size}). "
-                f"Set --gpu-talker >= {thinker_gpu + tp_size}."
-            )
 
     stages: list[StageConfig] = [
         StageConfig(

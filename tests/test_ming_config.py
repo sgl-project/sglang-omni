@@ -7,23 +7,32 @@ import unittest
 
 class TestMingOmniSpeechGPUValidation(unittest.TestCase):
     def test_tp2_default_gpus_rejected(self):
-        from sglang_omni.models.ming_omni.config import MingOmniSpeechPipelineConfig
+        from sglang_omni.models.ming_omni.config import (
+            MingOmniSpeechPipelineConfig,
+            validate_ming_speech_gpu_placement,
+        )
 
         with self.assertRaises(ValueError) as ctx:
-            MingOmniSpeechPipelineConfig(
-                model_path="test/model",
+            validate_ming_speech_gpu_placement(
                 gpu_placement={"thinker": 0, "talker": 1},
-                server_args_overrides={"tp_size": 2},
+                tp_size=2,
             )
         self.assertIn("collides", str(ctx.exception).lower())
+        MingOmniSpeechPipelineConfig(model_path="test/model")
 
     def test_tp2_talker_gpu2_accepted(self):
-        from sglang_omni.models.ming_omni.config import MingOmniSpeechPipelineConfig
+        from sglang_omni.models.ming_omni.config import (
+            MingOmniSpeechPipelineConfig,
+            validate_ming_speech_gpu_placement,
+        )
 
+        validate_ming_speech_gpu_placement(
+            {"thinker": 0, "talker": 2},
+            tp_size=2,
+        )
         config = MingOmniSpeechPipelineConfig(
             model_path="test/model",
             gpu_placement={"thinker": 0, "talker": 2},
-            server_args_overrides={"tp_size": 2},
         )
         self.assertEqual(config.gpu_placement["talker"], 2)
 

@@ -82,7 +82,8 @@ def serve(
         typer.Option(
             help=(
                 "Set SGLang mem_fraction_static only for the pipeline's thinker "
-                "stage. Overrides --mem-fraction-static for thinker."
+                "stage. Overrides --mem-fraction-static for thinker. Some "
+                "pipelines do not expose a thinker AR stage."
             )
         ),
     ] = None,
@@ -91,7 +92,8 @@ def serve(
         typer.Option(
             help=(
                 "Set SGLang mem_fraction_static only for the pipeline's talker "
-                "stage. Overrides --mem-fraction-static for talker."
+                "stage. Overrides --mem-fraction-static for talker. Some "
+                "pipelines do not expose a talker AR stage."
             )
         ),
     ] = None,

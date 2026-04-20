@@ -55,12 +55,6 @@ def parse_args() -> argparse.Namespace:
         default=0,
         help="GB of model weights to offload to CPU",
     )
-    parser.add_argument(
-        "--mem-fraction-static",
-        type=float,
-        default=None,
-        help="Fraction of GPU memory for KV cache",
-    )
 
     # Pipeline options
     parser.add_argument(
@@ -94,8 +88,6 @@ def main() -> None:
     overrides = {}
     if args.cpu_offload_gb:
         overrides["cpu_offload_gb"] = args.cpu_offload_gb
-    if args.mem_fraction_static is not None:
-        overrides["mem_fraction_static"] = args.mem_fraction_static
 
     config = Qwen3OmniPipelineConfig(
         model_path=args.model_path,

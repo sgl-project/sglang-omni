@@ -90,7 +90,10 @@ def parse_args() -> argparse.Namespace:
 
 
 async def main_async(args: argparse.Namespace) -> None:
-    from sglang_omni.models.ming_omni.config import MingOmniSpeechPipelineConfig
+    from sglang_omni.models.ming_omni.config import (
+        MingOmniSpeechPipelineConfig,
+        validate_ming_speech_gpu_placement,
+    )
     from sglang_omni.pipeline.mp_runner import MultiProcessPipelineRunner
     from sglang_omni.proto import OmniRequest
 
@@ -106,12 +109,22 @@ async def main_async(args: argparse.Namespace) -> None:
     if args.cpu_offload_gb:
         overrides["cpu_offload_gb"] = args.cpu_offload_gb
 
+    validate_ming_speech_gpu_placement(
+        gpu_placement,
+        tp_size=args.tp_size,
+    )
     config = MingOmniSpeechPipelineConfig(
         model_path=args.model_path,
         relay_backend=args.relay_backend,
         gpu_placement=gpu_placement,
-        server_args_overrides=overrides or None,
     )
+    if overrides:
+        thinker_stage = config.mem_fraction_override_stages.thinker
+        assert thinker_stage is not None
+        config.apply_server_args_overrides(
+            stage_name=thinker_stage,
+            overrides=overrides,
+        )
     apply_mem_fraction_static_args(config, args)
     runner = MultiProcessPipelineRunner(config)
     logger.info("Starting Ming-Omni speech pipeline...")
