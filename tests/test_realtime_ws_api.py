@@ -12,7 +12,11 @@ from sglang_omni.realtime.backend import MockResponseBackend
 from sglang_omni.serve.realtime_ws_api import create_realtime_ws_router
 
 
-def _make_app(*, output_modalities: tuple[str, ...] = ("text", "audio")) -> FastAPI:
+def _make_app(
+    *,
+    output_modalities: tuple[str, ...] = ("text", "audio"),
+    audio_mode: str = "playback",
+) -> FastAPI:
     app = FastAPI()
 
     def backend_factory(model_name: str, max_new_tokens: int) -> MockResponseBackend:
@@ -21,7 +25,7 @@ def _make_app(*, output_modalities: tuple[str, ...] = ("text", "audio")) -> Fast
             model=model_name,
             output_modalities=output_modalities,
             response_text="Mock websocket response.",
-            audio_mode="echo",
+            audio_mode=audio_mode,
             inter_chunk_delay_s=0.0,
             chunk_duration_s=0.05,
             total_duration_s=0.1,

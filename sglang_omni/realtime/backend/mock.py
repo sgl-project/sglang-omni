@@ -20,15 +20,15 @@ from sglang_omni.realtime.backend.base import (
 
 
 class MockResponseBackend(ResponseBackend):
-    """Stream either a pure tone or conditioned echo for smoke tests."""
+    """Stream mock text plus playback, conditioned echo, or a test tone."""
 
     def __init__(
         self,
         *,
         model: str = "mock-realtime",
         output_modalities: tuple[str, ...] = ("text", "audio"),
-        response_text: str = "Mock backend streaming a test tone.",
-        audio_mode: str = "tone",
+        response_text: str = "Mock backend replaying the captured utterance.",
+        audio_mode: str = "playback",
         dump_audio_dir: str | None = None,
         sample_rate: int = 24000,
         chunk_duration_s: float = 0.24,
@@ -49,9 +49,10 @@ class MockResponseBackend(ResponseBackend):
         self._total_duration_s = total_duration_s
         self._tone_hz = tone_hz
         self._cancel_events: dict[str, asyncio.Event] = {}
-        if self._audio_mode not in {"tone", "echo"}:
+        if self._audio_mode not in {"playback", "tone", "echo"}:
             raise ValueError(
-                f"Unsupported mock audio mode {self._audio_mode!r}; expected 'tone' or 'echo'."
+                "Unsupported mock audio mode "
+                f"{self._audio_mode!r}; expected 'playback', 'echo', or 'tone'."
             )
         if self._dump_audio_dir is not None:
             self._dump_audio_dir.mkdir(parents=True, exist_ok=True)
@@ -149,6 +150,12 @@ class MockResponseBackend(ResponseBackend):
         ], sample_rate
 
     def _resolve_response_audio(self, turn: TurnContext) -> tuple[np.ndarray, int]:
+        if self._audio_mode == "playback" and turn.user_audio is not None:
+            waveform = np.asarray(turn.user_audio, dtype=np.float32).reshape(-1)
+            if waveform.size > 0:
+                sample_rate = int(turn.user_audio_sample_rate or self._sample_rate)
+                return waveform.astype(np.float32, copy=False), sample_rate
+
         if self._audio_mode == "echo" and turn.user_audio is not None:
             waveform = np.asarray(turn.user_audio, dtype=np.float32).reshape(-1)
             if waveform.size > 0:

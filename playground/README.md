@@ -68,7 +68,8 @@ That path exercises:
 - streamed assistant audio playback in the browser
 - text prompts over the same websocket session
 
-The mock backend returns canned text plus a synthetic tone sequence instead of
+The mock backend returns canned text plus playback of the captured client audio
+(falling back to a synthetic tone when there is no input audio) instead of
 calling the inference pipeline.
 
 ### Remote browser over SSH port forwarding

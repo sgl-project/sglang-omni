@@ -10,10 +10,10 @@ from sglang_omni.realtime.backend import MockResponseBackend, TurnContext
 
 
 @pytest.mark.asyncio
-async def test_mock_response_backend_streams_text_and_audio():
+async def test_mock_response_backend_playback_mode_replays_user_audio_verbatim():
     backend = MockResponseBackend(
         response_text="Mock backend replayed the captured utterance.",
-        audio_mode="echo",
+        audio_mode="playback",
         inter_chunk_delay_s=0.0,
         total_duration_s=0.2,
         chunk_duration_s=0.1,
@@ -46,9 +46,40 @@ async def test_mock_response_backend_streams_text_and_audio():
 
 
 @pytest.mark.asyncio
-async def test_mock_response_backend_falls_back_to_tone_without_audio():
+async def test_mock_response_backend_echo_mode_conditions_user_audio():
     backend = MockResponseBackend(
         audio_mode="echo",
+        inter_chunk_delay_s=0.0,
+        total_duration_s=0.2,
+        chunk_duration_s=0.1,
+    )
+    user_audio = np.linspace(-0.8, 0.9, 32, dtype=np.float32) + 0.2
+    turn = TurnContext(
+        session_id="session-1",
+        history=[],
+        instructions=None,
+        user_text="hello",
+        user_audio=user_audio,
+        user_audio_sample_rate=16000,
+        recent_video=None,
+        recent_video_fps=None,
+    )
+
+    events = [event async for event in backend.stream_response(turn)]
+    audio_events = [event for event in events if event.type == "audio_chunk"]
+
+    assert audio_events
+    echoed_audio = np.concatenate([event.audio for event in audio_events])
+    np.testing.assert_allclose(
+        echoed_audio,
+        backend._condition_echo_waveform(user_audio),
+    )
+
+
+@pytest.mark.asyncio
+async def test_mock_response_backend_falls_back_to_tone_without_audio():
+    backend = MockResponseBackend(
+        audio_mode="playback",
         inter_chunk_delay_s=0.0,
         total_duration_s=0.05,
         chunk_duration_s=0.05,

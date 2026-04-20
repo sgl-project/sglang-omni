@@ -18,13 +18,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--response-text",
         type=str,
-        default="Mock websocket backend streaming a test tone.",
+        default="Mock websocket backend replaying the captured utterance.",
     )
     parser.add_argument(
         "--audio-mode",
         type=str,
-        choices=("tone", "echo"),
-        default="tone",
+        choices=("playback", "tone", "echo"),
+        default="playback",
     )
     parser.add_argument("--dump-audio-dir", type=str, default=None)
     parser.add_argument("--sample-rate", type=int, default=24000)
