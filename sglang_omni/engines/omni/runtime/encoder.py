@@ -205,6 +205,9 @@ class EncoderInputPreparer:
                 "image_grid_thw",
                 "video_grid_thw",
                 "audio_feature_lengths",
+                "audio_feats",
+                "audio_feats_lengths",
+                "audio_placeholder_loc_lens",
             }
             for key, value in first.items():
                 # Skip metadata keys that shouldn't be passed to the model
