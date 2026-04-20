@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from typing import ClassVar
+from typing import Any, ClassVar
 
 from pydantic import Field
 
@@ -108,6 +108,16 @@ class Qwen3OmniPipelineConfig(PipelineConfig):
     def apply_thinker_server_args_overrides(self, overrides: dict[str, Any]) -> None:
         self.apply_server_args_overrides(
             stage_name=THINKER_STAGE,
+            overrides=overrides,
+        )
+
+    def apply_server_args_overrides(
+        self, *, stage_name: str, overrides: dict[str, Any]
+    ) -> None:
+        if stage_name == THINKER_STAGE and overrides.get("tp_size", 1) > 1:
+            raise NotImplementedError("Qwen3-Omni TP is not supported yet.")
+        super().apply_server_args_overrides(
+            stage_name=stage_name,
             overrides=overrides,
         )
 
@@ -240,6 +250,16 @@ class Qwen3OmniSpeechPipelineConfig(PipelineConfig):
     def apply_thinker_server_args_overrides(self, overrides: dict[str, Any]) -> None:
         self.apply_server_args_overrides(
             stage_name=THINKER_STAGE,
+            overrides=overrides,
+        )
+
+    def apply_server_args_overrides(
+        self, *, stage_name: str, overrides: dict[str, Any]
+    ) -> None:
+        if stage_name == THINKER_STAGE and overrides.get("tp_size", 1) > 1:
+            raise NotImplementedError("Qwen3-Omni TP is not supported yet.")
+        super().apply_server_args_overrides(
+            stage_name=stage_name,
             overrides=overrides,
         )
 

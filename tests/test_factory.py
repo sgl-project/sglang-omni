@@ -4,6 +4,8 @@ from __future__ import annotations
 import sys
 from types import ModuleType, SimpleNamespace
 
+import pytest
+
 import sglang_omni.engines.omni.factory as factory
 from sglang_omni.models.qwen3_omni.config import Qwen3OmniSpeechPipelineConfig
 
@@ -184,3 +186,10 @@ def test_qwen3_speech_pipeline_enables_talker_feedback() -> None:
     talker_stage = next(stage for stage in cfg.stages if stage.name == "talker_ar")
 
     assert talker_stage.executor.args["feedback_enabled"] is True
+
+
+def test_qwen3_speech_pipeline_rejects_tp() -> None:
+    cfg = Qwen3OmniSpeechPipelineConfig(model_path="dummy")
+
+    with pytest.raises(NotImplementedError, match="not supported yet"):
+        cfg.apply_thinker_server_args_overrides({"tp_size": 2})

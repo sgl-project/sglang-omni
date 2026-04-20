@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Tests for pipeline config GPU validation (Ming + Qwen3)."""
+"""Tests for Ming speech pipeline GPU validation."""
 from __future__ import annotations
 
 import unittest
@@ -48,43 +48,6 @@ class TestMingOmniSpeechGPUValidation(unittest.TestCase):
         )
         self.assertEqual(config.gpu_placement["thinker"], 0)
         self.assertEqual(config.gpu_placement["talker"], 1)
-
-
-try:
-    from sglang_omni.models.qwen3_omni.config import (  # noqa: F401
-        Qwen3OmniSpeechPipelineConfig,
-    )
-
-    _qwen3_available = True
-except ImportError:
-    _qwen3_available = False
-
-
-@unittest.skipUnless(_qwen3_available, "qwen3_omni config not importable (missing av?)")
-class TestQwen3OmniSpeechGPUValidation(unittest.TestCase):
-    def test_default_tp_construction_rejects_colliding_gpu_placement(self):
-        from sglang_omni.models.qwen3_omni.config import Qwen3OmniSpeechPipelineConfig
-
-        with self.assertRaises(ValueError) as ctx:
-            Qwen3OmniSpeechPipelineConfig(
-                model_path="test/model",
-                gpu_placement={
-                    "thinker": 0,
-                    "talker_ar": 0,
-                    "code_predictor": 1,
-                    "code2wav": 1,
-                },
-            )
-        self.assertIn("collides", str(ctx.exception).lower())
-
-    def test_tp1_default_accepted(self):
-        from sglang_omni.models.qwen3_omni.config import Qwen3OmniSpeechPipelineConfig
-
-        config = Qwen3OmniSpeechPipelineConfig(
-            model_path="test/model",
-        )
-        self.assertEqual(config.gpu_placement["thinker"], 0)
-        self.assertEqual(config.gpu_placement["talker_ar"], 1)
 
 
 if __name__ == "__main__":

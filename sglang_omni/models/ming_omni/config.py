@@ -26,22 +26,6 @@ from sglang_omni.models.ming_omni.pipeline.next_stage import (
 )
 
 
-def validate_ming_speech_gpu_placement(
-    gpu_placement: dict[str, int],
-    *,
-    tp_size: int,
-) -> None:
-    thinker_gpu = gpu_placement.get("thinker", 0)
-    talker_gpu = gpu_placement.get("talker", 1)
-    thinker_range = range(thinker_gpu, thinker_gpu + tp_size)
-    if talker_gpu in thinker_range:
-        raise ValueError(
-            f"Talker GPU {talker_gpu} collides with thinker TP range "
-            f"[{thinker_gpu}, {thinker_gpu + tp_size}). "
-            f"Set --gpu-talker >= {thinker_gpu + tp_size}."
-        )
-
-
 class MingOmniPipelineConfig(PipelineConfig):
     """6-stage text/vision pipeline for Ming-Omni.
 
@@ -128,6 +112,22 @@ class MingOmniPipelineConfig(PipelineConfig):
         self.apply_server_args_overrides(
             stage_name=THINKER_STAGE,
             overrides=overrides,
+        )
+
+
+def _validate_ming_speech_gpu_placement(
+    gpu_placement: dict[str, int],
+    *,
+    tp_size: int,
+) -> None:
+    thinker_gpu = gpu_placement.get("thinker", 0)
+    talker_gpu = gpu_placement.get("talker", 1)
+    thinker_range = range(thinker_gpu, thinker_gpu + tp_size)
+    if talker_gpu in thinker_range:
+        raise ValueError(
+            f"Talker GPU {talker_gpu} collides with thinker TP range "
+            f"[{thinker_gpu}, {thinker_gpu + tp_size}). "
+            f"Set --gpu-talker >= {thinker_gpu + tp_size}."
         )
 
 
@@ -226,13 +226,13 @@ class MingOmniSpeechPipelineConfig(PipelineConfig):
 
     def model_post_init(self, __context: Any) -> None:
         super().model_post_init(__context)
-        validate_ming_speech_gpu_placement(self.gpu_placement, tp_size=1)
+        _validate_ming_speech_gpu_placement(self.gpu_placement, tp_size=1)
 
     def apply_server_args_overrides(
         self, *, stage_name: str, overrides: dict[str, Any]
     ) -> None:
         if stage_name == THINKER_STAGE and "tp_size" in overrides:
-            validate_ming_speech_gpu_placement(
+            _validate_ming_speech_gpu_placement(
                 self.gpu_placement,
                 tp_size=overrides["tp_size"],
             )

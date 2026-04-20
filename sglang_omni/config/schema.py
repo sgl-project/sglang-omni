@@ -128,19 +128,23 @@ class PipelineConfig(BaseModel):
         if self.entry_stage not in stage_names:
             raise ValueError(f"entry_stage {self.entry_stage!r} is not defined")
 
-        override_stage_names = {
+        override_stage_names = [
             stage_name
             for stage_name in (
                 self.mem_fraction_override_stages.thinker,
                 self.mem_fraction_override_stages.talker,
             )
             if stage_name is not None
-        }
-        unknown_override_stages = override_stage_names - set(stage_names)
+        ]
+        unknown_override_stages = [
+            stage_name
+            for stage_name in override_stage_names
+            if stage_name not in stage_names
+        ]
         if unknown_override_stages:
             raise ValueError(
                 "mem_fraction_override_stages references unknown stages: "
-                f"{sorted(unknown_override_stages)}"
+                f"{unknown_override_stages}"
             )
         if (
             self.mem_fraction_override_stages.thinker is not None
@@ -289,9 +293,7 @@ class PipelineConfig(BaseModel):
         }
         for flag_name, value in value_by_flag.items():
             if value is not None and not 0.0 < value < 1.0:
-                raise ValueError(
-                    f"{flag_name} must be in the open interval (0, 1), got {value}"
-                )
+                raise ValueError(f"{flag_name} must be > 0 and < 1, got {value}")
 
         stage_overrides: list[tuple[str, float]] = []
 

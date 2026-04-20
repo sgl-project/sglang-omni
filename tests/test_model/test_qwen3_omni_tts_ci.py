@@ -18,6 +18,7 @@ import sys
 from pathlib import Path
 
 import pytest
+import torch
 
 from benchmarks.dataset.prepare import DATASETS, download_dataset
 from benchmarks.eval.benchmark_omni_seedtts import (
@@ -84,8 +85,6 @@ VC_WER_MAX_PER_SAMPLE = 0.30
 
 
 def test_h20_auto_mem_fraction_static_has_expected_floor() -> None:
-    import torch
-
     total_memory_gib = torch.cuda.get_device_properties(0).total_memory / (1024**3)
     if not 90 <= total_memory_gib <= 100:
         pytest.skip(f"H20-only check, got GPU with {total_memory_gib:.1f} GiB")
