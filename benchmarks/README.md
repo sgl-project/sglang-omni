@@ -98,6 +98,15 @@ python -m benchmarks.eval.benchmark_omni_mmsu \
 # 5. Qwen3-Omni — MMMU (VLM accuracy, image input)
 python -m benchmarks.eval.benchmark_omni_mmmu \
     --model qwen3-omni --port 8000 --max-samples 50 --max-concurrency 16
+
+# 6. Qwen3-Omni — SocialOmni level1
+python -m benchmarks.eval.benchmark_omni_socialomni \
+    --model qwen3-omni --port 8000 --level level1 --max-samples 10
+
+# 7. Qwen3-Omni — SocialOmni level2 with one judge
+python -m benchmarks.eval.benchmark_omni_socialomni \
+    --model qwen3-omni --port 8000 --level level2 --judges 1 --max-samples 1 \
+    --judge-base-url http://localhost:8001 --judge-model qwen3-omni-judge
 ```
 
 ## Eval Scripts
@@ -108,6 +117,7 @@ python -m benchmarks.eval.benchmark_omni_mmmu \
 | `eval/benchmark_omni_seedtts.py` | TTS speed + WER (unified) | Qwen3-Omni | `/v1/chat/completions` |
 | `eval/benchmark_omni_mmsu.py` | MMSU (audio comprehension) | Qwen3-Omni | `/v1/chat/completions` |
 | `eval/benchmark_omni_mmmu.py` | MMMU (VLM accuracy + speed) | Qwen3-Omni | `/v1/chat/completions` |
+| `eval/benchmark_omni_socialomni.py` | SocialOmni level1/level2 | Qwen3-Omni + optional judges | `/v1/chat/completions` |
 
 The two `*_seedtts.py` scripts merge the previous `benchmark_*_tts_speed.py`
 and `voice_clone_*_wer.py` pairs into a single two-phase pipeline: phase 1
@@ -138,9 +148,13 @@ python -m benchmarks.dataset.prepare --dataset seedtts-50    # 50-sample subset
 python -m benchmarks.dataset.prepare --dataset mmmu          # full MMMU (30 subjects)
 python -m benchmarks.dataset.prepare --dataset mmmu-ci-50    # MMMU CI subset
 python -m benchmarks.dataset.prepare --dataset mmsu          # full MMSU (ddwang2000/MMSU)
+python -m benchmarks.dataset.prepare --dataset socialomni    # full SocialOmni into ./socialomni
+python -m benchmarks.dataset.prepare --dataset socialomni-mini  # deterministic smoke subset into ./socialomni-mini
 ```
 
 SeedTTS datasets are materialized into `./seedtts_testset/` (override with
-`--local-dir`).  MMMU/MMSU datasets are pre-warmed into the default
+`--local-dir`). MMMU/MMSU datasets are pre-warmed into the default
 HuggingFace cache and consumed via `datasets.load_dataset(repo_id)`, so
-`--local-dir` is a no-op for them.
+`--local-dir` is a no-op for them. SocialOmni datasets are materialized into
+`./socialomni/` or `./socialomni-mini/` with `level_1/`, `level_2/`, and a
+reviewable `mini_manifest.json` for the frozen mini subset.
