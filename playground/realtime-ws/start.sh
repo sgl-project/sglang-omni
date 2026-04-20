@@ -67,8 +67,8 @@ import sys
 if importlib.util.find_spec("websockets") or importlib.util.find_spec("wsproto"):
     raise SystemExit(0)
 print(
-    "ERROR: WebSocket runtime support is missing. Install the realtime extra with\n"
-    "  uv pip install -e \".[realtime]\"\n"
+    "ERROR: WebSocket runtime support is missing. Install project dependencies with\n"
+    "  uv pip install -e .\n"
     "or install one of:\n"
     "  pip install websockets\n"
     "  pip install wsproto"

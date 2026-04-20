@@ -23,10 +23,10 @@ Then open `http://localhost:8000` in your browser.
 
 ## Realtime WebSocket Playground
 
-Install the realtime extra before launching:
+Install the project before launching:
 
 ```bash
-uv pip install -v -e ".[realtime]"
+uv pip install -v -e .
 ```
 
 Launch the backend plus standalone frontend app with one command:
