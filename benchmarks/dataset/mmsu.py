@@ -61,6 +61,10 @@ def load_mmsu_samples(
     (train split, ~5000 samples).  zhaochenyang20/mmsu-ci-2000 to
     load our pre-built subset for CI.
     """
+    import tempfile
+
+    from datasets import Audio, load_dataset
+
     ds = load_dataset(repo_id or "ddwang2000/MMSU")
     assert list(ds.keys()) == [
         "train"
