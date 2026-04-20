@@ -62,6 +62,10 @@ class OmniResponseBackend(ResponseBackend):
         request = self._build_request(turn)
         try:
             async for chunk in self._client.generate(request, request_id=response_id):
+                if chunk.finish_reason is not None:
+                    finish_reason = chunk.finish_reason
+                    continue
+
                 if chunk.text:
                     text_delta = self._coerce_text_delta(chunk.text, emitted_text)
                     if text_delta:
@@ -79,8 +83,6 @@ class OmniResponseBackend(ResponseBackend):
                         audio=np.asarray(chunk.audio_data),
                         sample_rate=chunk.sample_rate or DEFAULT_SAMPLE_RATE,
                     )
-                if chunk.finish_reason is not None:
-                    finish_reason = chunk.finish_reason
         except Exception as exc:
             yield ResponseEvent(
                 type="error",
@@ -141,9 +143,6 @@ class OmniResponseBackend(ResponseBackend):
             model=self._model,
             messages=messages,
             sampling=SamplingParams(max_new_tokens=self._max_new_tokens),
-            stage_params={
-                "talker_ar": {"max_new_tokens": self._max_new_tokens},
-            },
             stream=True,
             output_modalities=list(self._output_modalities),
             metadata=metadata,

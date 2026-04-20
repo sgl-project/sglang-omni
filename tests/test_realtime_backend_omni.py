@@ -40,19 +40,6 @@ class _SnapshotTextClient:
         del request_id
 
 
-class _TerminalPayloadClient:
-    async def generate(self, request, request_id: str):
-        del request
-        yield GenerateChunk(
-            request_id=request_id,
-            text="terminal text",
-            finish_reason="stop",
-        )
-
-    async def abort(self, request_id: str) -> None:
-        del request_id
-
-
 @pytest.mark.asyncio
 async def test_omni_response_backend_normalizes_turn_output():
     client = _FakeClient()
@@ -94,7 +81,6 @@ async def test_omni_response_backend_normalizes_turn_output():
     assert isinstance(audio_payload["audio_waveform"], bytes)
     assert audio_payload["audio_waveform_dtype"] == "float32"
     assert audio_payload["audio_waveform_shape"] == [32]
-    assert request.stage_params == {"talker_ar": {"max_new_tokens": 32}}
     msgpack.packb(request.metadata, use_bin_type=True)
     assert len(request.messages) == 3
     assert request.messages[-1].content == "hi there"
@@ -126,32 +112,3 @@ async def test_omni_response_backend_coerces_snapshot_text_to_deltas():
 
     assert [event.text for event in text_events] == ["Hi", " there"]
     assert "".join(event.text for event in text_events) == "Hi there"
-
-
-@pytest.mark.asyncio
-async def test_omni_response_backend_keeps_terminal_payload_before_done():
-    backend = OmniResponseBackend(
-        client=_TerminalPayloadClient(),
-        model="qwen3-omni",
-        output_modalities=("text",),
-    )
-    turn = TurnContext(
-        session_id="session-1",
-        history=[],
-        instructions=None,
-        user_text="hello",
-        user_audio=None,
-        user_audio_sample_rate=None,
-        recent_video=None,
-        recent_video_fps=None,
-    )
-
-    events = [event async for event in backend.stream_response(turn)]
-
-    assert [event.type for event in events] == [
-        "response_started",
-        "text_delta",
-        "done",
-    ]
-    assert events[1].text == "terminal text"
-    assert events[2].finish_reason == "stop"

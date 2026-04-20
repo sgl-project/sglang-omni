@@ -471,11 +471,6 @@ class TalkerStreamingExecutor(Executor):
 
     def _resolve_talker_sampling_config(self, payload: StagePayload) -> dict[str, Any]:
         params = payload.request.params
-        raw_stage_params = params.get("stage_params")
-        stage_params = raw_stage_params if isinstance(raw_stage_params, dict) else {}
-        talker_stage_params = stage_params.get("talker_ar")
-        if not isinstance(talker_stage_params, dict):
-            talker_stage_params = {}
         codec_eos_id = int(getattr(self._talker_model.config, "codec_eos_token_id", -1))
         suppress_tokens = [
             token_id
@@ -485,29 +480,11 @@ class TalkerStreamingExecutor(Executor):
             if token_id != codec_eos_id
         ]
         return {
-            "max_new_tokens": int(
-                talker_stage_params.get(
-                    "max_new_tokens",
-                    params.get("talker_max_new_tokens", 4096),
-                )
-            ),
-            "temperature": float(
-                talker_stage_params.get(
-                    "temperature", params.get("talker_temperature", 0.9)
-                )
-            ),
-            "top_k": int(
-                talker_stage_params.get("top_k", params.get("talker_top_k", 50))
-            ),
-            "top_p": float(
-                talker_stage_params.get("top_p", params.get("talker_top_p", 1.0))
-            ),
-            "repetition_penalty": float(
-                talker_stage_params.get(
-                    "repetition_penalty",
-                    params.get("talker_repetition_penalty", 1.05),
-                )
-            ),
+            "max_new_tokens": int(params.get("talker_max_new_tokens", 4096)),
+            "temperature": float(params.get("talker_temperature", 0.9)),
+            "top_k": int(params.get("talker_top_k", 50)),
+            "top_p": float(params.get("talker_top_p", 1.0)),
+            "repetition_penalty": float(params.get("talker_repetition_penalty", 1.05)),
             "codec_eos_id": codec_eos_id if codec_eos_id >= 0 else None,
             "suppress_tokens": suppress_tokens,
         }
