@@ -20,9 +20,8 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import subprocess
 import sys
-from copy import copy
+from copy import deepcopy
 from pathlib import Path
 
 import pytest
@@ -32,6 +31,7 @@ from benchmarks.dataset.prepare import DATASETS
 from benchmarks.eval.benchmark_omni_mmsu import run as run_mmsu
 from sglang_omni.utils import find_available_port
 from tests.utils import (
+    ServerHandle,
     apply_slack,
     assert_speed_thresholds,
     assert_wer_results,
@@ -98,8 +98,7 @@ def server_process(tmp_path_factory: pytest.TempPathFactory):
         "qwen3-omni",
     ]
     proc = start_server_from_cmd(cmd, log_file, port, timeout=STARTUP_TIMEOUT)
-    proc.port = port
-    yield proc
+    yield ServerHandle(proc=proc, port=port)
     stop_server(proc)
 
 
@@ -130,7 +129,7 @@ def _build_args(port: int, output_dir: str) -> argparse.Namespace:
 
 @pytest.mark.benchmark
 def test_mmsu_audio_wer_and_speed(
-    server_process: subprocess.Popen,
+    server_process: ServerHandle,
     tmp_path: Path,
 ) -> None:
     """Run MMSU eval with audio and assert WER and speed meet thresholds."""
@@ -141,7 +140,7 @@ def test_mmsu_audio_wer_and_speed(
     # audio encoder sees a cached+non-cached mixed batch. Inert at
     # concurrency=1; starts to take effect once concurrency is raised.
     base = load_mmsu_samples(max_samples=MAX_SAMPLES, repo_id=DATASETS["mmsu-ci-2000"])
-    dup = copy(base[0])
+    dup = deepcopy(base[0])
     dup.sample_id = f"{base[0].sample_id}__dup"
     samples = [*base, dup]
 

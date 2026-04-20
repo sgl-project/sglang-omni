@@ -118,7 +118,7 @@ async def run(
             task_names=args.task_names.split(",") if args.task_names else None,
             categories=args.categories.split(",") if args.categories else None,
             seed=args.seed,
-            repo_id=getattr(args, "repo_id", None),
+            repo_id=args.repo_id,
         )
 
     save_audio_dir = None
@@ -162,8 +162,8 @@ async def run(
     if audio_mode:
         wer_results = compute_text_audio_consistency(
             request_results,
-            getattr(args, "lang", "en"),
-            getattr(args, "asr_device", "cuda:0"),
+            args.lang,
+            args.asr_device,
         )
         output["wer"] = wer_results
         print_wer_summary(wer_results["summary"], args.model)

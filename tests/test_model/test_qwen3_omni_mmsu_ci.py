@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import subprocess
 import sys
 from pathlib import Path
 
@@ -24,6 +23,7 @@ from benchmarks.dataset.prepare import DATASETS
 from benchmarks.eval.benchmark_omni_mmsu import run as run_mmsu
 from sglang_omni.utils import find_available_port
 from tests.utils import (
+    ServerHandle,
     apply_slack,
     assert_speed_thresholds,
     start_server_from_cmd,
@@ -62,8 +62,7 @@ def server_process(tmp_path_factory: pytest.TempPathFactory):
         "qwen3-omni",
     ]
     proc = start_server_from_cmd(cmd, log_file, port, timeout=STARTUP_TIMEOUT)
-    proc.port = port
-    yield proc
+    yield ServerHandle(proc=proc, port=port)
     stop_server(proc)
 
 
@@ -88,12 +87,15 @@ def _build_args(port: int, output_dir: str) -> argparse.Namespace:
         disable_tqdm=True,
         seed=None,
         repo_id=DATASETS["mmsu-ci-2000"],
+        # Unused in text-only mode but kept for API consistency with run().
+        lang="en",
+        asr_device="cuda:0",
     )
 
 
 @pytest.mark.benchmark
 def test_mmsu_accuracy_and_speed(
-    server_process: subprocess.Popen,
+    server_process: ServerHandle,
     tmp_path: Path,
 ) -> None:
     """Run MMSU eval and assert accuracy and speed meet thresholds."""

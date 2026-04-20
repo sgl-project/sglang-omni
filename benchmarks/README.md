@@ -7,7 +7,7 @@ and accuracy (WER, MMSU, MMMU) across supported modality combinations.
 
 ```
 benchmarks/
-├── tasks/          # Per-task logic (tts, mmsu, visual_understand)
+├── tasks/          # Per-task logic (tts, audio_understanding, visual_understand)
 ├── metrics/        # Metric computation (performance, accuracy)
 ├── dataset/        # Dataset loaders + download helpers
 ├── benchmarker/    # Framework: runner, data structures, utilities
