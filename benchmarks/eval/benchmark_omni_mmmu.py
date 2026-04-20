@@ -63,7 +63,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from benchmarks.benchmarker.runner import BenchmarkRunner, RunConfig
 from benchmarks.benchmarker.utils import save_json_results, wait_for_service
-from benchmarks.dataset.mmmu import load_mmmu_samples
+from benchmarks.dataset.mmmu import MMMUSample, load_mmmu_samples
 from benchmarks.metrics.performance import compute_speed_metrics
 from benchmarks.tasks.tts import (
     compute_text_audio_consistency,
@@ -107,7 +107,11 @@ def _build_base_url(config: MMMUEvalConfig) -> str:
     return config.base_url or f"http://{config.host}:{config.port}"
 
 
-async def run_mmmu_eval(config: MMMUEvalConfig) -> dict:
+async def run_mmmu_eval(
+    config: MMMUEvalConfig,
+    *,
+    samples: list[MMMUSample] | None = None,
+) -> dict:
     """Run full MMMU evaluation and return results dict.
 
     Returns a dict with keys: summary, speed, config,
@@ -116,7 +120,8 @@ async def run_mmmu_eval(config: MMMUEvalConfig) -> dict:
     base_url = _build_base_url(config)
     api_url = f"{base_url}/v1/chat/completions"
 
-    samples = load_mmmu_samples(config.max_samples, repo_id=config.repo_id)
+    if samples is None:
+        samples = load_mmmu_samples(config.max_samples, repo_id=config.repo_id)
     logger.info(f"Prepared {len(samples)} MMMU samples")
 
     audio_dir: str | None = None

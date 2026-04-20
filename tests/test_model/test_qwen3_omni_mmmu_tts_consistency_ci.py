@@ -113,6 +113,14 @@ def test_mmmu_audio_wer_and_speed(
     )
     results = asyncio.run(run_mmmu_eval(config))
 
+    summary = results["summary"]
+    failed = summary.get("failed", 0)
+    total = summary.get("total_samples", 0)
+    assert failed == 0, (
+        f"MMMU TTS consistency had {failed}/{total} failed requests "
+        f"(timeouts or empty responses); any failure fails the test"
+    )
+
     # Assert WER
     assert "wer" in results, "Audio WER results missing from eval output"
     assert_wer_results(

@@ -14,10 +14,12 @@ from __future__ import annotations
 import asyncio
 import subprocess
 import sys
+from copy import deepcopy
 from pathlib import Path
 
 import pytest
 
+from benchmarks.dataset.mmmu import MMMUSample, load_mmmu_samples
 from benchmarks.dataset.prepare import DATASETS
 from benchmarks.eval.benchmark_omni_mmmu import MMMUEvalConfig, run_mmmu_eval
 from sglang_omni.utils import find_available_port
@@ -69,6 +71,36 @@ def server_process(tmp_path_factory: pytest.TempPathFactory):
     stop_server(proc)
 
 
+def _build_samples_with_dups(repo_id: str, concurrency: int) -> list[MMMUSample]:
+    """Load the MMMU CI subset and interleave a duplicate right after each
+    of the first ``concurrency // 2`` samples.
+
+    Note (Yifei):
+    Regression guard for issue #299 (cached + non-cached in the same encoder
+    batch). One request almost always finishes the encoder first, and by the
+    time the encoder picks up its next batch, ``concurrency - 1`` other
+    requests have queued behind it. Placing dups immediately after their
+    originals ensures that batch contains at least one sample whose encoder
+    result is already cached (the dup) alongside fresh uncached ones —
+    exactly the mixed-batch shape that exercises the #299 code path. Only
+    surfaces once concurrency > 1.
+
+    For concurrency=8 on the 50-sample ``mmmu-ci-50`` subset this produces
+    54 samples ordered as
+    ``[s1, s1_dup, s2, s2_dup, s3, s3_dup, s4, s4_dup, s5, s6, ..., s50]``.
+    """
+    base = load_mmmu_samples(repo_id=repo_id)
+    dup_count = concurrency // 2
+    samples: list[MMMUSample] = []
+    for i, sample in enumerate(base):
+        samples.append(sample)
+        if i < dup_count:
+            dup = deepcopy(sample)
+            dup.sample_id = f"{sample.sample_id}__dup"
+            samples.append(dup)
+    return samples
+
+
 @pytest.mark.benchmark
 def test_mmmu_accuracy_and_speed(
     server_process: subprocess.Popen,
@@ -82,9 +114,17 @@ def test_mmmu_accuracy_and_speed(
         output_dir=str(tmp_path / "mmmu"),
         repo_id=DATASETS["mmmu-ci-50"],
     )
-    results = asyncio.run(run_mmmu_eval(config))
+    samples = _build_samples_with_dups(DATASETS["mmmu-ci-50"], CONCURRENCY)
+    results = asyncio.run(run_mmmu_eval(config, samples=samples))
 
     summary = results["summary"]
+    failed = summary.get("failed", 0)
+    total = summary.get("total_samples", 0)
+    assert failed == 0, (
+        f"MMMU had {failed}/{total} failed requests (timeouts or empty responses); "
+        f"any failure fails the test"
+    )
+
     assert summary["accuracy"] >= MMMU_MIN_ACCURACY, (
         f"MMMU accuracy {summary['accuracy']:.4f} "
         f"({summary['accuracy'] * 100:.1f}%) < "
