@@ -303,6 +303,48 @@ def calculate_wer_metrics(outputs: list[SampleOutput], lang: str) -> dict:
     }
 
 
+def compute_text_audio_consistency(
+    request_results: list[RequestResult],
+    lang: str,
+    asr_device: str,
+) -> dict:
+    """WER between each request's text output (ref) and ASR-transcribed audio (hyp)."""
+    asr = load_asr_model(lang, asr_device)
+
+    outputs: list[SampleOutput] = []
+    for result in request_results:
+        ref_text = " ".join(result.text.split())
+        out = SampleOutput(
+            sample_id=result.request_id,
+            target_text=ref_text,
+            latency_s=result.latency_s,
+            audio_duration_s=result.audio_duration_s,
+        )
+        if not result.is_success or not result.wav_path:
+            out.error = result.error or "No audio in response"
+            outputs.append(out)
+            continue
+        outputs.append(
+            transcribe_and_compute_wer(out, result.wav_path, asr, lang, asr_device)
+        )
+
+    per_sample = [
+        {
+            "id": o.sample_id,
+            "is_success": o.is_success,
+            "wer": o.wer if o.is_success else None,
+            "ref_text": o.target_text[:100],
+            "hyp_text": o.whisper_text[:100],
+            "ref_norm": o.ref_norm,
+            "hyp_norm": o.hyp_norm,
+            "audio_duration_s": o.audio_duration_s,
+            "error": o.error,
+        }
+        for o in outputs
+    ]
+    return {"summary": calculate_wer_metrics(outputs, lang), "per_sample": per_sample}
+
+
 def print_wer_summary(
     metrics: dict, model_name: str, generation_mode: str | None = None
 ) -> None:

@@ -249,7 +249,7 @@ def build_input_embeds(
     # Build prompt with image patch tokens
     image_patch_token = "<imagePatch>"
     prompt = (
-        "<role>SYSTEM</role>你是一个友好的AI助手。\n\ndetailed thinking off</s>"
+        "<role>SYSTEM</role>You are a friendly AI assistant.\n\ndetailed thinking off</s>"
         "<role>HUMAN</role>"
         "<image>" + (image_patch_token * num_image_tokens) + "</image>\n"
         "Describe this image in English.</s>"

@@ -181,3 +181,88 @@ jobs:
         shell: bash
         run: |
           bash .github/scripts/delete_gpu_process.sh
+
+  stage-4-mmsu:
+    name: stage 4 - MMSU accuracy + speed
+    needs: stage-3-mmmu-tts-consistency
+    runs-on: [self-hosted]
+    timeout-minutes: 20
+    container:
+      image: frankleeeee/sglang-omni:dev
+      options: --gpus all --rm -v /dev/shm:/dev/shm
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - uses: ./.github/actions/omni-setup
+        with:
+          venv-name: omni-qwen3
+
+      - name: Run MMSU CI (accuracy + speed)
+        shell: bash
+        run: |
+          source omni-qwen3/bin/activate
+          export PYTHONPATH=$PWD
+          pytest tests/test_model/test_qwen3_omni_mmsu_ci.py -v -s -x
+        env:
+          HF_ENDPOINT: https://hf-mirror.com
+
+      - name: Print MMSU CI artifacts (accuracy + speed)
+        if: always()
+        shell: bash
+        run: |
+          source omni-qwen3/bin/activate
+          echo "=== Qwen3-Omni MMSU CI results (summary only) ==="
+          for f in $(find /tmp -path '*/mmsu/mmsu_results.json' 2>/dev/null); do
+            echo "--- $f ---"
+            python -c "import json,sys; d=json.load(open(sys.argv[1])); d.pop('per_sample',None); print(json.dumps(d, indent=2, ensure_ascii=False))" "$f"
+            echo ""
+          done
+
+      - name: Kill GPU processes
+        if: always()
+        shell: bash
+        run: |
+          bash .github/scripts/delete_gpu_process.sh
+
+  stage-5-mmsu-tts-consistency:
+    name: stage 5 - MMSU TTS consistency
+    needs: stage-4-mmsu
+    runs-on: [self-hosted]
+    timeout-minutes: 15
+    container:
+      image: frankleeeee/sglang-omni:dev
+      options: --gpus all --rm -v /dev/shm:/dev/shm
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - uses: ./.github/actions/omni-setup
+        with:
+          venv-name: omni-qwen3
+
+      - name: Run MMSU TTS Consistency CI (WER + speed)
+        shell: bash
+        run: |
+          source omni-qwen3/bin/activate
+          export PYTHONPATH=$PWD
+          pytest tests/test_model/test_qwen3_omni_mmsu_tts_consistency_ci.py -v -s -x
+        env:
+          HF_ENDPOINT: https://hf-mirror.com
+
+      - name: Print MMSU TTS Consistency CI artifacts (WER + speed)
+        if: always()
+        shell: bash
+        run: |
+          echo "=== Qwen3-Omni MMSU TTS Consistency CI results ==="
+          for f in $(find /tmp -path '*/mmsu_audio/mmsu_results.json' 2>/dev/null); do
+            echo "--- $f ---"
+            cat "$f"
+            echo ""
+          done
+
+      - name: Kill GPU processes
+        if: always()
+        shell: bash
+        run: |
+          bash .github/scripts/delete_gpu_process.sh

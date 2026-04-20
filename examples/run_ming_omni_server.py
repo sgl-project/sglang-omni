@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import multiprocessing as mp
 import os
 
 from examples._mem_fraction_cli import (
@@ -102,6 +103,7 @@ def main() -> None:
     overrides = {}
     if args.tp_size and args.tp_size > 1:
         overrides["tp_size"] = args.tp_size
+        overrides["disable_custom_all_reduce"] = True
     if args.quantization:
         overrides["quantization"] = args.quantization
     if args.cpu_offload_gb:
@@ -129,4 +131,5 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    mp.set_start_method("spawn", force=True)
     main()

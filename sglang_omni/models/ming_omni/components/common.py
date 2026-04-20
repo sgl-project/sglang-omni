@@ -8,8 +8,6 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
-from huggingface_hub import hf_hub_download
-
 from sglang_omni.models.ming_omni.hf_config import (
     AudioConfig,
     BailingMoeV2LLMConfig,
@@ -19,95 +17,35 @@ from sglang_omni.models.weight_loader import resolve_model_path
 
 logger = logging.getLogger(__name__)
 
-# Known subdirectories where Ming repos store tokenizer files.
-_TOKENIZER_SUBDIRS = ("talker/llm",)
-_TOKENIZER_FILES = ("tokenizer.json", "tokenizer_config.json")
-
 # Fallback tokenizer source: Ming-flash-omni-Preview has tokenizer files
-# at the repo root, used only as a last resort.
+# that are missing from some other Ming repos (e.g., Ming-flash-omni-2.0).
 _TOKENIZER_FALLBACK = "inclusionAI/Ming-flash-omni-Preview"
 
 
-def _resolve_local_tokenizer_subdir(model_path: str) -> Path | None:
-    base = Path(model_path)
-    if not base.exists():
-        return None
-    for subdir in _TOKENIZER_SUBDIRS:
-        subpath = base / subdir
-        if any((subpath / filename).is_file() for filename in _TOKENIZER_FILES):
-            return subpath
-    return None
-
-
-def _download_tokenizer_subdir_from_hub(model_path: str) -> Path | None:
-    for subdir in _TOKENIZER_SUBDIRS:
-        for filename in _TOKENIZER_FILES:
-            try:
-                cached = hf_hub_download(
-                    repo_id=model_path,
-                    filename=filename,
-                    subfolder=subdir,
-                )
-            except Exception:
-                continue
-            return Path(cached).parent
-    return None
-
-
 def load_ming_tokenizer(model_path: str):
-    """Load the Ming tokenizer, searching subdirectories before falling back.
+    """Load the Ming tokenizer with fallback for incomplete HF repos.
 
-    Ming HF repos may store tokenizer files in subdirectories (e.g.
-    ``talker/llm/``) rather than at the repo root.  We try:
-    1. AutoTokenizer from the root path (with trust_remote_code)
-    2. PreTrainedTokenizerFast from the root path
-    3. Known subdirectories (talker/llm), local first then selective Hub probe
-    4. Fallback to Ming-flash-omni-Preview repo (same vocab)
+    Some Ming HF repos (e.g., Ming-flash-omni-2.0) are missing tokenizer
+    files and custom Python code. We try:
+    1. AutoTokenizer with trust_remote_code
+    2. PreTrainedTokenizerFast directly
+    3. Fallback to Ming-flash-omni-Preview repo (same thinker vocab)
     """
     from transformers import AutoTokenizer, PreTrainedTokenizerFast
 
-    # Strategy 1: standard AutoTokenizer at root
+    # Strategy 1: standard AutoTokenizer
     try:
         return AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
     except (OSError, ValueError):
         pass
 
-    # Strategy 2: direct PreTrainedTokenizerFast at root
+    # Strategy 2: direct PreTrainedTokenizerFast (works if tokenizer.json exists)
     try:
         return PreTrainedTokenizerFast.from_pretrained(model_path)
     except Exception:
         pass
 
-    # Strategy 3a: check known subdirectories for local paths
-    local_subpath = _resolve_local_tokenizer_subdir(model_path)
-    if local_subpath is not None:
-        try:
-            return AutoTokenizer.from_pretrained(
-                str(local_subpath), trust_remote_code=True
-            )
-        except (OSError, ValueError):
-            pass
-        try:
-            return PreTrainedTokenizerFast.from_pretrained(str(local_subpath))
-        except Exception:
-            pass
-
-    # Strategy 3b: probe known subdirectories on Hub by downloading only
-    # tokenizer files, avoiding a full snapshot download.
-    remote_subpath = _download_tokenizer_subdir_from_hub(model_path)
-    if remote_subpath is not None:
-        try:
-            return AutoTokenizer.from_pretrained(
-                str(remote_subpath), trust_remote_code=True
-            )
-        except (OSError, ValueError):
-            pass
-        try:
-            return PreTrainedTokenizerFast.from_pretrained(str(remote_subpath))
-        except Exception:
-            pass
-
-    # Strategy 4: fallback repo with matching vocab
+    # Strategy 3: fallback repo with matching vocab
     logger.warning(
         "Tokenizer not found in %s, falling back to %s",
         model_path,

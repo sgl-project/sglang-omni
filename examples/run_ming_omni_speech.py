@@ -83,6 +83,9 @@ def parse_args() -> argparse.Namespace:
         parser,
         global_target_help="the thinker stage",
     )
+    parser.add_argument(
+        "--tp-size", type=int, default=1, help="Tensor parallel size for thinker"
+    )
     return parser.parse_args()
 
 
@@ -97,6 +100,9 @@ async def main_async(args: argparse.Namespace) -> None:
     }
 
     overrides = {}
+    if args.tp_size > 1:
+        overrides["tp_size"] = args.tp_size
+        overrides["disable_custom_all_reduce"] = True
     if args.cpu_offload_gb:
         overrides["cpu_offload_gb"] = args.cpu_offload_gb
 
@@ -104,14 +110,8 @@ async def main_async(args: argparse.Namespace) -> None:
         model_path=args.model_path,
         relay_backend=args.relay_backend,
         gpu_placement=gpu_placement,
+        server_args_overrides=overrides or None,
     )
-    if overrides:
-        thinker_stage = config.mem_fraction_override_stages.thinker
-        assert thinker_stage is not None
-        config.apply_server_args_overrides(
-            stage_name=thinker_stage,
-            overrides=overrides,
-        )
     apply_mem_fraction_static_args(config, args)
     runner = MultiProcessPipelineRunner(config)
     logger.info("Starting Ming-Omni speech pipeline...")

@@ -56,6 +56,48 @@ Usage (CI):
         --model fishaudio/s2-pro \
         --output-dir results/s2pro_en \
         --lang en --device cuda:0
+
+
+H200 Full-Set Reference Results
+
+Reproducibility references for the FULL eval set — NOT CI thresholds.
+CI runs on a subset and has its own thresholds elsewhere (see tasks/*.py).
+
+Benchmark: SeedTTS  |  Dataset: seed-tts-eval, full set (EN=1088, ZH=2020)
+Hardware:  1 x H200 (default; non-H200 sources are tagged in Source column)
+Last verified: 2026-04-18
+
+Accuracy (accuracy.wer)
+
+| Model  | Config           | wer_corpus | wer_per_sample_mean | wer_per_sample_median | wer_per_sample_std | evaluated | skipped | Source                         |
+| ------ | ---------------- | ---------- | ------------------- | --------------------- | ------------------ | --------- | ------- | ------------------------------ |
+| S2-Pro | EN, stream=False | 1.02%      | 0.99%               | 0.00%                 | 3.4%               | 1088/1088 | 0       | PR #316 [H200, full-set, c=16] |
+| S2-Pro | EN, stream=True  | 0.97%      | 0.93%               | 0.00%                 | 3.3%               | 1088/1088 | 0       | PR #316 [H200, full-set, c=16] |
+| S2-Pro | ZH, stream=False | 1.15%      | 1.09%               | 0.00%                 | 2.7%               | 2020/2020 | 0       | PR #316 [H200, full-set, c=16] |
+| S2-Pro | ZH, stream=True  | 1.10%      | 1.05%               | 0.00%                 | 2.7%               | 2020/2020 | 0       | PR #316 [H200, full-set, c=16] |
+
+
+Generation speed (generation.speed)
+
+| Model  | Config           | latency_mean_s | latency_p95_s | rtf_mean | throughput_qps | tok_per_s_mean | tok_per_s_agg | Source                         |
+| ------ | ---------------- | -------------- | ------------- | -------- | -------------- | -------------- | ------------- | ------------------------------ |
+| S2-Pro | EN, stream=False | 13.724         | 21.163        | 3.604    | 1.161          | 45.5           | 25.7          | PR #316 [H200, full-set, c=16] |
+| S2-Pro | EN, stream=True  | 15.172         | 24.686        | 4.047    | 1.051          | 50.1           | 43.8          | PR #316 [H200, full-set, c=16] |
+| S2-Pro | ZH, stream=False | 15.934         | 24.903        | 2.986    | 1.001          | 45.9           | 40.8          | PR #316 [H200, full-set, c=16] |
+| S2-Pro | ZH, stream=True  | 13.913         | 22.303        | 2.608    | 1.146          | 48.2           | 44.0          | PR #316 [H200, full-set, c=16] |
+
+Note (Chenyang): tok_per_s_{mean,agg} here counts S2-Pro's codec tokens.  It is NOT
+comparable to the tok_per_s column reported for Qwen3-Omni in benchmark_omni_seedtts.py,
+whose tokens are discrete talker LM tokens emitted at audio frame rate. Cross-model
+comparison of this column is not meaningful — use latency_mean_s / rtf_mean / throughput_qps
+instead when comparing backends.
+
+ASR speed (accuracy.asr_speed) — Whisper-large-v3 for EN, FunASR paraformer-zh for ZH
+
+| Lang | asr_latency_mean_s | asr_rtf_mean | asr_throughput_samples_per_s | Source                                          |
+| ---- | ------------------ | ------------ | ---------------------------- | ----------------------------------------------- |
+| EN   | 0.274              | 0.0713       | 3.65                         | PR #316 [H200, from S2-Pro EN stream=False run] |
+| ZH   | 0.357              | 0.0676       | 2.80                         | PR #316 [H200, from S2-Pro ZH stream=False run] |
 """
 
 from __future__ import annotations

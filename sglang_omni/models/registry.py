@@ -73,7 +73,6 @@ class _PipelineConfigRegistry:
     ) -> None:
         # we register the model
         pipeline_configs = import_pipeline_configs(package_name, config_path, strict)
-        print(pipeline_configs)
 
         if overwrite:
             self.configs.update(pipeline_configs)

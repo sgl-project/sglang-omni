@@ -5,8 +5,11 @@ from __future__ import annotations
 
 import random
 import re
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
+
+from datasets import Audio, load_dataset
 
 
 @dataclass
@@ -50,13 +53,19 @@ def load_mmsu_samples(
     task_names: list[str] | None = None,
     categories: list[str] | None = None,
     seed: int | None = None,
+    *,
+    repo_id: str | None = None,
 ) -> list[MmsuSample]:
-    """Load MMSU samples from HuggingFace dataset ``ddwang2000/MMSU``."""
-    import tempfile
+    """Load MMSU samples.
 
-    from datasets import Audio, load_dataset
 
-    ds = load_dataset("ddwang2000/MMSU")
+    Note (Yifei, Chenyang):
+    repo_id defaults to None which loads the full ddwang2000/MMSU
+    (train split, ~5000 samples).  zhaochenyang20/mmsu-ci-2000 to
+    load our pre-built subset for CI.
+    """
+
+    ds = load_dataset(repo_id or "ddwang2000/MMSU")
     assert list(ds.keys()) == [
         "train"
     ], f"Expected only 'train' split, got {list(ds.keys())}"

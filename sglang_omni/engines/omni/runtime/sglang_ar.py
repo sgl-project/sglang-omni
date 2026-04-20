@@ -515,6 +515,11 @@ class SGLangModelRunner:
         self.output_processor = output_processor
         self.batch_planner = batch_planner
         self.device = torch.device(f"cuda:{model_worker.gpu_id}")
+        self._tp_size = model_worker.tp_size
+        self._tp_cpu_group = model_worker.tp_cpu_group if self._tp_size > 1 else None
+        self._req_to_token_pool = (
+            model_worker.model_runner.req_to_token_pool if self._tp_size > 1 else None
+        )
 
         model = model_worker.model_runner.model
         self._embed_tokens, self._inner_model = self._get_inner_model_components(model)
@@ -529,6 +534,11 @@ class SGLangModelRunner:
         self._image_token_id = getattr(thinker_cfg, "image_token_id", None)
         self._video_token_id = getattr(thinker_cfg, "video_token_id", None)
         self._audio_token_id = getattr(thinker_cfg, "audio_token_id", None)
+
+    @property
+    def _tp_cpu_group_for_stop(self):
+        """Exposed for OmniEngine to send stop signal to followers."""
+        return self._tp_cpu_group
 
     @staticmethod
     def _get_inner_model_components(model):
@@ -546,26 +556,22 @@ class SGLangModelRunner:
         return embed_tokens, outer
 
     def _inject_multimodal_embeds(
-        self, forward_batch: Any, schedule_batch: Any
+        self,
+        forward_batch: Any,
+        schedule_batch: Any,
+        base_embeds: torch.Tensor,
     ) -> tuple[torch.Tensor | None, list | None, torch.Tensor | None]:
 
         if not any(req.omni_model_inputs is not None for req in schedule_batch.reqs):
             return None, None, None
 
-        device = forward_batch.input_ids.device
+        device = base_embeds.device
         image_token_id = self._image_token_id
         video_token_id = self._video_token_id
         audio_token_id = self._audio_token_id
 
-        # Note (Yifei):
-        # Multimodal placeholder tokens (image/video/audio) are replaced with
-        # content-hash pad_values that exceed vocab_size. Clamp before embedding
-        # lookup to avoid OOB. Use non-in-place clamp to preserve original input_ids
-        # for pad_value mask matching in chunked prefill.
-        embed_input_ids = forward_batch.input_ids.clamp(
-            0, self._embed_tokens.num_embeddings - 1
-        )
-        input_embeds = self._embed_tokens(embed_input_ids)
+        # Clone so we don't mutate the base embed tensor shared with followers.
+        input_embeds = base_embeds.clone()
 
         extend_lens = forward_batch.extend_seq_lens_cpu
         offsets = []
@@ -719,49 +725,18 @@ class SGLangModelRunner:
         deepstack_visual_embeds: list | None = None,
         visual_pos_masks: torch.Tensor | None = None,
     ) -> Any:
+        from sglang_omni.engines.omni.runtime.thinker_forward import (
+            thinker_forward_omni,
+        )
 
-        model_runner = self.model_worker.model_runner
-        outer = self._inner_model
-
-        model_runner.attn_backend.init_forward_metadata(forward_batch)
-
-        positions = forward_batch.positions
-        if forward_batch.mrope_positions is not None:
-            positions = forward_batch.mrope_positions
-
-        ds_input = None
-        if deepstack_visual_embeds is not None and visual_pos_masks is not None:
-            device = input_embeds.device
-            dtype = input_embeds.dtype
-            layer_tensors = [
-                t.to(device=device, dtype=dtype) for t in deepstack_visual_embeds
-            ]
-            ds_input = torch.cat(layer_tensors, dim=-1)
-
-            full_ds = torch.zeros(
-                input_embeds.shape[0],
-                ds_input.shape[-1],
-                device=device,
-                dtype=dtype,
-            )
-            full_ds[visual_pos_masks] = ds_input
-            ds_input = full_ds
-
-        hidden_states = outer.model(
-            input_ids=None,
-            positions=positions,
+        logits_output = thinker_forward_omni(
+            outer_model=self._inner_model,
+            attn_backend=self.model_worker.model_runner.attn_backend,
             forward_batch=forward_batch,
             input_embeds=input_embeds,
-            input_deepstack_embeds=ds_input,
+            deepstack_visual_embeds=deepstack_visual_embeds,
+            visual_pos_masks=visual_pos_masks,
         )
-
-        logits_output = outer.logits_processor(
-            forward_batch.input_ids,
-            hidden_states,
-            outer.lm_head,
-            forward_batch,
-        )
-
         return GenerationBatchResult(
             logits_output=logits_output,
             can_run_cuda_graph=False,
@@ -968,7 +943,6 @@ class SGLangModelRunner:
 
         model_worker_batch = schedule_batch.get_model_worker_batch()
 
-        # Enable hidden state capture if output processor needs it
         if self.output_processor._capture_hidden:
             model_worker_batch.capture_hidden_mode = CaptureHiddenMode.LAST
 
@@ -976,9 +950,75 @@ class SGLangModelRunner:
             model_worker_batch, self.model_worker.model_runner
         )
 
-        omni_embeds = None
-        if schedule_batch.forward_mode.is_extend():
-            omni_embeds = self._inject_multimodal_embeds(forward_batch, schedule_batch)
+        has_mm_payload = schedule_batch.forward_mode.is_extend() and any(
+            req.omni_model_inputs is not None for req in schedule_batch.reqs
+        )
+
+        input_embeds, ds_embeds, vis_masks = None, None, None
+
+        if self._tp_size > 1:
+            from sglang.srt.utils import broadcast_pyobj
+
+            from sglang_omni.engines.tp.serialization import (
+                attach_page_table_snapshot,
+                make_follower_batch,
+            )
+
+            model_worker_batch.tp_has_mm_payload = has_mm_payload
+            attach_page_table_snapshot(model_worker_batch, self._req_to_token_pool)
+            follower_batch = make_follower_batch(model_worker_batch)
+            broadcast_pyobj([follower_batch], 0, self._tp_cpu_group, src=0)
+
+            if has_mm_payload:
+                # Note (wenyao):
+                # Pre-clamp input_ids to vocab range: multimodal placeholder tokens are
+                # content-hash pad_values that exceed vocab_size. Non-in-place clamp
+                # preserves original input_ids for chunked prefill pad_value mask matching.
+                # Mirrored on the follower side in follower.py.
+                # (Constraint originally documented by @Yifei in _inject_multimodal_embeds.)
+                embed_input_ids = forward_batch.input_ids.clamp(
+                    0, self._embed_tokens.num_embeddings - 1
+                )
+                base_embeds = self._embed_tokens(embed_input_ids)
+                input_embeds, ds_embeds, vis_masks = self._inject_multimodal_embeds(
+                    forward_batch, schedule_batch, base_embeds
+                )
+
+                payload_meta = {
+                    "input_embeds_shape": tuple(input_embeds.shape),
+                    "input_embeds_dtype": input_embeds.dtype,
+                    "deepstack_shapes": (
+                        [tuple(t.shape) for t in ds_embeds]
+                        if ds_embeds is not None
+                        else None
+                    ),
+                    "deepstack_dtype": (
+                        ds_embeds[0].dtype if ds_embeds is not None else None
+                    ),
+                    "visual_pos_mask_shape": (
+                        tuple(vis_masks.shape) if vis_masks is not None else None
+                    ),
+                }
+                broadcast_pyobj([payload_meta], 0, self._tp_cpu_group, src=0)
+
+                import torch.distributed as dist
+
+                device_group = self.model_worker.model_runner.tp_group.device_group
+                dist.broadcast(input_embeds, src=0, group=device_group)
+                if ds_embeds is not None:
+                    for t in ds_embeds:
+                        dist.broadcast(t, src=0, group=device_group)
+                if vis_masks is not None:
+                    dist.broadcast(vis_masks, src=0, group=device_group)
+        elif has_mm_payload:
+            embed_input_ids = forward_batch.input_ids.clamp(
+                0, self._embed_tokens.num_embeddings - 1
+            )
+            base_embeds = self._embed_tokens(embed_input_ids)
+            input_embeds, ds_embeds, vis_masks = self._inject_multimodal_embeds(
+                forward_batch, schedule_batch, base_embeds
+            )
+
         feedback_input_embeds = self._build_feedback_input_embeds(
             forward_batch, schedule_batch
         )
@@ -999,12 +1039,15 @@ class SGLangModelRunner:
             and schedule_batch.forward_mode.is_extend()
             and has_projected_prefill
         )
-        if omni_embeds is not None and omni_embeds[0] is not None:
-            input_embeds, ds_embeds, vis_masks = omni_embeds
+        if input_embeds is not None:
             batch_result = self._forward_with_omni_embeds(
                 forward_batch, input_embeds, ds_embeds, vis_masks
             )
         elif projected_prefill:
+            if self._tp_size > 1:
+                raise NotImplementedError(
+                    "Projected prefill (talker) is not yet supported with TP>1."
+                )
             projected_input_embeds = request_prefill_input_embeds
             if projected_input_embeds is None:
                 projected_input_embeds = forward_batch.input_embeds
@@ -1018,6 +1061,10 @@ class SGLangModelRunner:
                 input_embeds_are_projected=True,
             )
         elif feedback_input_embeds is not None:
+            if self._tp_size > 1:
+                raise NotImplementedError(
+                    "Feedback input embeds (talker) is not yet supported with TP>1."
+                )
             batch_result = self._forward_talker(
                 forward_batch,
                 input_embeds=feedback_input_embeds,

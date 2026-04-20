@@ -129,14 +129,15 @@ def _build_result_from_response(
         return result
 
     audio_obj = message.get("audio")
-    if not isinstance(audio_obj, dict) or not audio_obj.get("data"):
-        result.error = "No audio in response"
-        return result
+    if isinstance(audio_obj, dict) and audio_obj.get("data"):
+        wav_bytes = base64.b64decode(audio_obj["data"])
+        result.audio_duration_s = get_wav_duration(wav_bytes)
+        result.wav_path = _save_response_audio(wav_bytes, sample_id, save_audio_dir)
 
-    wav_bytes = base64.b64decode(audio_obj["data"])
-    result.audio_duration_s = get_wav_duration(wav_bytes)
-    result.wav_path = _save_response_audio(wav_bytes, sample_id, save_audio_dir)
-    result.is_success = bool(result.text or result.audio_duration_s > 0)
+    if result.text or result.audio_duration_s > 0:
+        result.is_success = True
+    else:
+        result.error = "Empty response"
     return result
 
 
@@ -181,6 +182,7 @@ class MmsuResult:
     raw_response: str = ""
     is_correct: bool = False
     is_parseable: bool = False
+    is_success: bool = False
     latency_s: float = 0.0
     has_audio: bool = False
     audio_duration_s: float = 0.0
@@ -293,6 +295,7 @@ def build_mmsu_results(
             raw_response=request_result.text,
             is_correct=index_match or text_match,
             is_parseable=predicted_index is not None or bool(predicted_answer),
+            is_success=bool(request_result.is_success),
             latency_s=request_result.latency_s,
             error=request_result.error,
         )
@@ -309,12 +312,15 @@ def build_mmsu_results(
 def compute_mmsu_metrics(results: list[MmsuResult]) -> dict[str, Any]:
     total = len(results)
     parseable = sum(1 for result in results if result.is_parseable)
+    successful = sum(1 for result in results if result.is_success)
     correct = sum(1 for result in results if result.is_correct)
 
     return {
         "total_samples": total,
         "parseable_samples": parseable,
         "unparseable_samples": total - parseable,
+        "successful_samples": successful,
+        "failed_samples": total - successful,
         "correct": correct,
         "incorrect": total - correct,
         "overall_accuracy": round(correct / total, 4) if total else 0.0,
@@ -339,6 +345,9 @@ def print_mmsu_summary(
     print(f"  MMSU Results - {model_name}")
     print("=" * 60)
     print(f"  Total samples:    {metrics['total_samples']}")
+    print(
+        f"  Successful:       {metrics.get('successful_samples', metrics['total_samples'])}"
+    )
     print(f"  Parseable:        {metrics['parseable_samples']}")
     print(f"  Correct:          {metrics['correct']}")
     print(f"  Overall accuracy: {metrics['overall_accuracy']:.2%}")
@@ -358,6 +367,11 @@ def print_mmsu_summary(
         if speed_metrics.get("rtf_mean") is not None:
             print(f"  RTF mean:         {speed_metrics.get('rtf_mean', 0):.4f}")
         print(f"  Throughput:       {speed_metrics.get('throughput_qps', 0):.2f} req/s")
+        print(f"  Tok/s agg:        {speed_metrics.get('tok_per_s_agg', 0):.2f}")
+        audio_returned = speed_metrics.get("audio_returned")
+        audio_expected = speed_metrics.get("audio_expected")
+        if audio_expected:
+            print(f"  Audio returned:   {audio_returned}/{audio_expected}")
     print("=" * 60)
 
 
@@ -368,6 +382,7 @@ def save_mmsu_results(
     output_dir: str,
     *,
     speed_metrics: dict[str, Any] | None = None,
+    wer_metrics: dict[str, Any] | None = None,
 ) -> None:
     summary_output = {
         "summary": metrics,
@@ -376,6 +391,8 @@ def save_mmsu_results(
     }
     if speed_metrics:
         summary_output["speed_metrics"] = speed_metrics
+    if wer_metrics:
+        summary_output["wer"] = wer_metrics
 
     save_json_results(summary_output, output_dir, "mmsu_results.json")
 

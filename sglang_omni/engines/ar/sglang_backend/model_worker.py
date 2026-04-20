@@ -53,6 +53,15 @@ class ModelWorker:
         )[0]
         set_random_seed(self.random_seed)
 
+    @property
+    def tp_cpu_group(self):
+        """NCCL CPU process group for TP broadcast operations."""
+        return self.model_runner.tp_group.cpu_group
+
+    @property
+    def tp_size(self) -> int:
+        return self.server_args.tp_size
+
     def _init_model_config(self):
         from sglang.srt.configs.model_config import ModelConfig
 

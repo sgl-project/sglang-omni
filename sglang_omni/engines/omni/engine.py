@@ -80,12 +80,14 @@ class OmniEngine(Engine):
         cache_manager: CacheManager | None = None,
         enable_overlap: bool = False,
         feedback_mailbox: StreamQueue | None = None,
+        follower_processes: list | None = None,
     ):
         self.scheduler = scheduler
         self.model_runner = model_runner
         self.cache_manager = cache_manager
         self.enable_overlap = enable_overlap
         self._feedback_mailbox = feedback_mailbox
+        self._follower_processes = follower_processes or []
 
         self._running = False
         self._loop_task: asyncio.Task[None] | None = None
@@ -150,6 +152,27 @@ class OmniEngine(Engine):
 
         # Drain any pending results
         self._drain_pending_results()
+
+        # Stop TP follower processes
+        if self._follower_processes:
+            tp_cpu_group = getattr(self.model_runner, "_tp_cpu_group_for_stop", None)
+            if tp_cpu_group is not None:
+                from sglang.srt.utils import broadcast_pyobj
+
+                try:
+                    broadcast_pyobj([None], 0, tp_cpu_group, src=0)
+                except Exception as exc:
+                    logger.warning("TP stop broadcast failed: %s", exc)
+
+            for proc in self._follower_processes:
+                proc.join(timeout=10)
+                if proc.is_alive():
+                    proc.terminate()
+                    proc.join(timeout=5)
+                    if proc.is_alive():
+                        proc.kill()
+            self._follower_processes.clear()
+
         logger.info("OmniEngine stopped")
 
     # -------------------------------------------------------------------------

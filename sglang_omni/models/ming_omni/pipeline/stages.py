@@ -310,8 +310,30 @@ def create_sglang_thinker_executor_from_config(
     _ensure_ming_config_registered(model_path)
     # Use local snapshot path so AutoConfig finds our patched files
     local_path = _resolve_local_model_path(model_path)
+
+    overrides = dict(server_args_overrides or {})
+    tp_size = overrides.get("tp_size", 1)
+
+    if tp_size > 1:
+        import json as _json
+
+        config = load_ming_config(model_path)
+        llm_cfg = getattr(config, "llm_config", config)
+        model_override = _json.dumps(
+            {
+                "architectures": ["BailingMoeV2ForCausalLM"],
+                "num_attention_heads": llm_cfg.num_attention_heads,
+                "num_key_value_heads": llm_cfg.num_key_value_heads,
+                "hidden_size": llm_cfg.hidden_size,
+                "num_hidden_layers": llm_cfg.num_hidden_layers,
+                "vocab_size": llm_cfg.vocab_size,
+            }
+        )
+        overrides["json_model_override_args"] = model_override
+        overrides.setdefault("base_gpu_id", gpu_id)
+
     server_args = build_sglang_server_args(
-        local_path, context_length=thinker_max_seq_len, **(server_args_overrides or {})
+        local_path, context_length=thinker_max_seq_len, **overrides
     )
     _log.getLogger(__name__).info(
         "ServerArgs: cpu_offload_gb=%s, mem_fraction_static=%s",

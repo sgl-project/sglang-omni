@@ -8,12 +8,21 @@ import signal
 import statistics
 import subprocess
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Generator
 
 from benchmarks.benchmarker.utils import wait_for_service
 
 STARTUP_TIMEOUT = 600
+
+
+@dataclass
+class ServerHandle:
+    """Typed bundle of a running server's process and its port."""
+
+    proc: subprocess.Popen
+    port: int
 
 
 @contextmanager

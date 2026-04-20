@@ -356,11 +356,21 @@ class MultiProcessPipelineRunner:
                     all_endpoints=endpoints,
                     name_map=name_map,
                 )
+                # Stages that spawn TP follower subprocesses (tp_size > 1)
+                # cannot be daemon — Python forbids daemon children.
+                needs_children = (
+                    stage_cfg.executor
+                    and stage_cfg.executor.args
+                    and stage_cfg.executor.args.get("server_args_overrides", {}).get(
+                        "tp_size", 1
+                    )
+                    > 1
+                )
                 p = ctx.Process(
                     target=_stage_process_entry,
                     args=(config_dict, ready),
                     name=f"stage-{stage_cfg.name}",
-                    daemon=True,
+                    daemon=not needs_children,
                 )
                 p.start()
                 self._processes.append(p)

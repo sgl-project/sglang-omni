@@ -1,5 +1,77 @@
 # SPDX-License-Identifier: Apache-2.0
-"""MMSU benchmark."""
+"""MMSU (audio understanding) benchmark for sglang-omni models.
+
+Evaluates Qwen3-Omni accuracy and performance on the MMSU eval set via
+/v1/chat/completions with optional audio input modality.
+
+Usage:
+
+    # Launch the server:
+    python -m sglang_omni.cli.cli serve \
+        --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct \
+        --port 8000
+
+    # If only text is needed:
+
+    python -m sglang_omni.cli.cli serve \
+        --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct \
+        --text-only --port 8000
+
+    # Prepare the dataset:
+    python -m benchmarks.dataset.prepare --dataset mmsu
+
+    # Text-only
+    python benchmarks/eval/benchmark_omni_mmsu.py \
+        --model qwen3-omni --port 8000 --max-samples 50
+
+    # Text + audio
+    python benchmarks/eval/benchmark_omni_mmsu.py \
+        --model qwen3-omni --port 8000 --max-samples 50 \
+        --modalities text+audio
+
+    # Filter by task names or categories
+    python benchmarks/eval/benchmark_omni_mmsu.py \
+        --model qwen3-omni --port 8000 \
+        --task-names casual_reasoning,continuation_writing
+
+
+H200 Full-Set Reference Results
+
+Reproducibility references for the FULL eval set — NOT CI thresholds.
+CI runs on a subset and has its own thresholds elsewhere (see tasks/*.py).
+
+Benchmark: MMSU     |  Dataset: MMSU full (5000 samples)
+Hardware:  1 x H200 (default; non-H200 sources are tagged in Source column)
+Last verified: 2026-04-18
+
+Accuracy (accuracy)
+
+| Model      | Config                | overall_accuracy | parseable_samples | unparseable_samples | Source                        |
+| ---------- | --------------------- | ---------------- | ----------------- | ------------------- | ----------------------------- |
+| Qwen3-Omni | modalities=text       | 70.88%           | 5000/5000         | 0                   | PR #316 [H200, full-set, c=8] |
+| Qwen3-Omni | modalities=text+audio | 71.22%           | 5000/5000         | 0                   | PR #316 [H200, full-set, c=8] |
+
+Per-task accuracy (accuracy.per_task; top-level task names only — full sub/sub-sub trees stay in JSON output)
+
+| Model      | Config                | per_task breakdown (highlights)                                                                                                                                                                | Source                   |
+| ---------- | --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------ |
+| Qwen3-Omni | modalities=text       | strong: casual_reasoning / continuation_writing / long_speech_summarization / polysemy_reasoning = 100%; weak: dialogue_turn_counting 10.10%, pitch_comparison 22.22%, speed_comparison 22.94% | PR #316 [H200, full-set] |
+| Qwen3-Omni | modalities=text+audio | strong: casual_reasoning / continuation_writing / long_speech_summarization / polysemy_reasoning = 100%; weak: dialogue_turn_counting 12.12%, speed_comparison 21.10%, pitch_comparison 24.07% | PR #316 [H200, full-set] |
+
+Speed (speed)
+
+| Model      | Config                | latency_mean_s | latency_p95_s | throughput_qps | tok_per_s_mean | tok_per_s_agg | Source                                          |
+| ---------- | --------------------- | -------------- | ------------- | -------------- | -------------- | ------------- | ----------------------------------------------- |
+| Qwen3-Omni | modalities=text       | 0.349          | 0.484         | 22.91          | 6.1            | 5.9           | PR #316 [H200, full-set, c=8]                   |
+| Qwen3-Omni | modalities=text+audio | 0.330          | 0.444         | 24.23          | 6.4            | 6.3           | PR #316 [H200, full-set, c=8, text-only server] |
+
+Note (Xuesong): text + audio numbers above were measured against a text-only
+Qwen3-Omni server (talker disabled) because a full-pipeline run is blocked on
+Issue #276 (talker is c=1 only at ~2 min/sample). Numbers therefore reflect
+text-only behavior and are near-identical to the `modalities=text` row;
+re-run with talker enabled once #276 lands to get true full-pipeline reference.
+"""
+
 
 from __future__ import annotations
 
@@ -14,15 +86,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from benchmarks.benchmarker.runner import BenchmarkRunner, RunConfig
 from benchmarks.benchmarker.utils import wait_for_service
-from benchmarks.dataset.mmsu import load_mmsu_samples
+from benchmarks.dataset.mmsu import MmsuSample, load_mmsu_samples
 from benchmarks.metrics.performance import compute_speed_metrics
-from benchmarks.tasks.mmsu import (
+from benchmarks.tasks.audio_understanding import (
     build_mmsu_results,
     compute_mmsu_metrics,
     make_mmsu_send_fn,
     print_mmsu_summary,
     save_mmsu_results,
 )
+from benchmarks.tasks.tts import compute_text_audio_consistency, print_wer_summary
 
 logging.basicConfig(
     level=logging.INFO,
@@ -30,17 +103,23 @@ logging.basicConfig(
 )
 
 
-async def run(args: argparse.Namespace) -> dict:
+async def run(
+    args: argparse.Namespace,
+    *,
+    samples: list[MmsuSample] | None = None,
+) -> dict:
     base_url = args.base_url or f"http://{args.host}:{args.port}"
     api_url = f"{base_url}/v1/chat/completions"
     modalities = ["text", "audio"] if args.modalities == "text+audio" else ["text"]
 
-    samples = load_mmsu_samples(
-        max_samples=args.max_samples,
-        task_names=args.task_names.split(",") if args.task_names else None,
-        categories=args.categories.split(",") if args.categories else None,
-        seed=args.seed,
-    )
+    if samples is None:
+        samples = load_mmsu_samples(
+            max_samples=args.max_samples,
+            task_names=args.task_names.split(",") if args.task_names else None,
+            categories=args.categories.split(",") if args.categories else None,
+            seed=args.seed,
+            repo_id=args.repo_id,
+        )
 
     save_audio_dir = None
     if args.save_audio and args.output_dir:
@@ -70,8 +149,24 @@ async def run(args: argparse.Namespace) -> dict:
     metrics = compute_mmsu_metrics(results)
     speed = compute_speed_metrics(request_results, wall_clock_s=runner.wall_clock_s)
     audio_mode = "audio" in modalities
+    if audio_mode:
+        speed["audio_returned"] = sum(
+            1 for r in request_results if r.audio_duration_s > 0
+        )
+        speed["audio_expected"] = len(request_results)
 
-    print_mmsu_summary(metrics, args.model, speed_metrics=speed if audio_mode else None)
+    print_mmsu_summary(metrics, args.model, speed_metrics=speed)
+
+    output: dict = {"accuracy": metrics, "speed": speed}
+    wer_results = None
+    if audio_mode:
+        wer_results = compute_text_audio_consistency(
+            request_results,
+            args.lang,
+            args.asr_device,
+        )
+        output["wer"] = wer_results
+        print_wer_summary(wer_results["summary"], args.model)
 
     if args.output_dir:
         save_mmsu_results(
@@ -87,10 +182,11 @@ async def run(args: argparse.Namespace) -> dict:
                 "seed": args.seed,
             },
             args.output_dir,
-            speed_metrics=speed if audio_mode else None,
+            speed_metrics=speed,
+            wer_metrics=wer_results,
         )
 
-    return {"accuracy": metrics, "speed": speed}
+    return output
 
 
 def main() -> None:
@@ -113,6 +209,19 @@ def main() -> None:
     p.add_argument("--save-audio", action="store_true")
     p.add_argument("--disable-tqdm", action="store_true")
     p.add_argument("--seed", type=int, default=None)
+    p.add_argument(
+        "--repo-id",
+        type=str,
+        default=None,
+        help="HuggingFace dataset repo (e.g. 'zhaochenyang20/mmsu-ci-2000'). "
+        "Defaults to loading the full ddwang2000/MMSU (train split).",
+    )
+    p.add_argument(
+        "--lang", type=str, default="en", help="Language for ASR WER evaluation"
+    )
+    p.add_argument(
+        "--asr-device", type=str, default="cuda:0", help="Device for ASR model"
+    )
 
     args = p.parse_args()
     wait_for_service(args.base_url or f"http://{args.host}:{args.port}")

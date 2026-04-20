@@ -344,7 +344,7 @@ class BailingMoeV2SparseMoeBlock(nn.Module):
         else:
             self.expert_bias = None
 
-        # FusedMoE implementation
+        # FusedMoE implementation.
         FusedMoE = get_moe_impl_class(quant_config)
         self.experts = FusedMoE(
             num_experts=config.num_experts,
@@ -353,7 +353,7 @@ class BailingMoeV2SparseMoeBlock(nn.Module):
             intermediate_size=config.moe_intermediate_size,
             layer_id=layer_id,
             quant_config=quant_config,
-            reduce_results=False,
+            reduce_results=True,
         )
 
         # Shared expert

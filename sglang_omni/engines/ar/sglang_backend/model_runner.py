@@ -39,7 +39,9 @@ class SGLModelRunner(ModelRunner):
         weight_prefix: str | None = None,
     ) -> None:
         self._weight_prefix = weight_prefix
-        self._register_omni_model()
+        from sglang_omni.models.sglang_registry import register_omni_models_in_sglang
+
+        register_omni_models_in_sglang()
 
         port_args = PortArgs.init_new(server_args)
         tp_size = server_args.tp_size
@@ -61,26 +63,3 @@ class SGLModelRunner(ModelRunner):
             nccl_port=nccl_port,
             server_args=server_args,
         )
-
-    def _register_omni_model(self):
-        # Register sglang_omni model classes directly in SGLang's model registry.
-        from sglang.srt.models.registry import ModelRegistry
-
-        from sglang_omni.models.fishaudio_s2_pro.sglang_model import (
-            S2ProSGLangTextModel,
-        )
-        from sglang_omni.models.ming_omni.thinker import (
-            BailingMM2Config,
-            BailingMoeV2ForCausalLM,
-        )
-        from sglang_omni.models.qwen3_omni.talker import Qwen3OmniTalker
-
-        ModelRegistry.models["S2ProSGLangTextModel"] = S2ProSGLangTextModel
-        ModelRegistry.models["Qwen3OmniTalker"] = Qwen3OmniTalker
-        ModelRegistry.models["BailingMoeV2ForCausalLM"] = BailingMoeV2ForCausalLM
-
-        # Register BailingMM2Config with AutoConfig so SGLang can load
-        # config.json from HF repos missing configuration_bailingmm2.py.
-        from transformers import AutoConfig
-
-        AutoConfig.register("bailingmm_moe_v2_lite", BailingMM2Config)
