@@ -34,6 +34,11 @@ import logging
 import multiprocessing as mp
 import os
 
+from examples._mem_fraction_cli import (
+    add_mem_fraction_static_args,
+    apply_mem_fraction_static_args,
+)
+
 logging.basicConfig(
     level=os.environ.get("LOGLEVEL", "INFO").upper(),
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -64,6 +69,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--voice", type=str, default="DB30", help="Voice ID for the talker"
     )
+    add_mem_fraction_static_args(
+        parser,
+        global_target_help="the thinker stage",
+    )
 
     # Server
     parser.add_argument("--host", type=str, default="0.0.0.0")
@@ -91,6 +100,7 @@ async def main_async(args: argparse.Namespace) -> None:
         relay_backend=args.relay_backend,
         gpu_placement=gpu_placement,
     )
+    apply_mem_fraction_static_args(config, args)
 
     runner = MultiProcessPipelineRunner(config)
     logger.info("Starting Ming-Omni speech pipeline (multiprocess)...")

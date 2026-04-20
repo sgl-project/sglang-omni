@@ -26,6 +26,11 @@ import multiprocessing as mp
 import os
 import time
 
+from examples._mem_fraction_cli import (
+    add_mem_fraction_static_args,
+    apply_mem_fraction_static_args,
+)
+
 logging.basicConfig(
     level=os.environ.get("LOGLEVEL", "INFO").upper(),
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -66,6 +71,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--gpu-image-encoder", type=int, default=0)
     parser.add_argument("--gpu-audio-encoder", type=int, default=0)
     parser.add_argument("--timeout", type=float, default=300.0)
+    add_mem_fraction_static_args(
+        parser,
+        global_target_help="both Qwen AR stages (thinker and talker)",
+        include_thinker=True,
+        include_talker=True,
+    )
     return parser.parse_args()
 
 
@@ -87,6 +98,7 @@ async def main_async(args: argparse.Namespace) -> None:
         relay_backend=args.relay_backend,
         gpu_placement=gpu_placement,
     )
+    apply_mem_fraction_static_args(config, args)
     runner = MultiProcessPipelineRunner(config)
     logger.info("Starting 9-stage speech pipeline...")
     await runner.start(timeout=600)

@@ -10,6 +10,37 @@ from sglang_omni.config.manager import ConfigManager
 from sglang_omni.serve.launcher import launch_server
 
 
+def _validate_mem_fraction_static_support(
+    *,
+    mem_fraction_static: float | None,
+    thinker_mem_fraction_static: float | None,
+    talker_mem_fraction_static: float | None,
+    merged_config,
+) -> None:
+    override_stages = merged_config.mem_fraction_override_stages
+    pipeline_name = type(merged_config).__name__
+
+    if (
+        mem_fraction_static is not None
+        and override_stages.thinker is None
+        and override_stages.talker is None
+    ):
+        raise typer.BadParameter(
+            "--mem-fraction-static is not supported by pipeline "
+            f"{pipeline_name} (no SGLang AR stage)."
+        )
+    if thinker_mem_fraction_static is not None and override_stages.thinker is None:
+        raise typer.BadParameter(
+            "--thinker-mem-fraction-static is not supported by pipeline "
+            f"{pipeline_name} (no thinker AR stage)."
+        )
+    if talker_mem_fraction_static is not None and override_stages.talker is None:
+        raise typer.BadParameter(
+            "--talker-mem-fraction-static is not supported by pipeline "
+            f"{pipeline_name} (no talker AR stage)."
+        )
+
+
 def serve(
     ctx: typer.Context,
     model_path: Annotated[
@@ -87,12 +118,24 @@ def serve(
     # we do expect the extra arguments to be pairs of names and values
     extra_args = config_manager.parse_extra_args(ctx.args)
     merged_config = config_manager.merge_config(extra_args)
-    merged_config = merged_config.model_copy(update={"model_path": model_path})
-    merged_config.apply_mem_fraction_static_overrides(
+    merged_config = merged_config.model_copy(
+        update={"model_path": model_path},
+        deep=True,
+    )
+    _validate_mem_fraction_static_support(
         mem_fraction_static=mem_fraction_static,
         thinker_mem_fraction_static=thinker_mem_fraction_static,
         talker_mem_fraction_static=talker_mem_fraction_static,
+        merged_config=merged_config,
     )
+    try:
+        merged_config.apply_mem_fraction_static_overrides(
+            mem_fraction_static=mem_fraction_static,
+            thinker_mem_fraction_static=thinker_mem_fraction_static,
+            talker_mem_fraction_static=talker_mem_fraction_static,
+        )
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
 
     # print merged configuration
     print("=" * 20, "Merged Configuration", "=" * 20)

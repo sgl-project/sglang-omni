@@ -25,6 +25,10 @@ import argparse
 import logging
 import os
 
+from examples._mem_fraction_cli import (
+    add_mem_fraction_static_args,
+    apply_mem_fraction_static_args,
+)
 from sglang_omni.models.qwen3_omni.config import Qwen3OmniPipelineConfig
 from sglang_omni.serve import launch_server
 
@@ -54,6 +58,10 @@ def parse_args() -> argparse.Namespace:
         choices=["shm", "nccl", "nixl"],
         help="Relay type for inter-stage data transfer",
     )
+    add_mem_fraction_static_args(
+        parser,
+        global_target_help="the thinker stage",
+    )
 
     # Server
     parser.add_argument("--host", type=str, default="0.0.0.0")
@@ -75,6 +83,7 @@ def main() -> None:
         model_path=args.model_path,
         relay_backend=args.relay_backend,
     )
+    apply_mem_fraction_static_args(config, args)
 
     launch_server(
         config,

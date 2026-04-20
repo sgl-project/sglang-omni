@@ -8,6 +8,10 @@ import asyncio
 import logging
 import os
 
+from examples._mem_fraction_cli import (
+    add_mem_fraction_static_args,
+    apply_mem_fraction_static_args,
+)
 from sglang_omni.config import build_pipeline_runner
 from sglang_omni.models.qwen3_omni.config import Qwen3OmniPipelineConfig
 from sglang_omni.proto import OmniRequest
@@ -40,6 +44,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--relay-backend", type=str, default="nixl", choices=["nixl", "shm"]
     )
+    add_mem_fraction_static_args(
+        parser,
+        global_target_help="the thinker stage",
+    )
     return parser.parse_args()
 
 
@@ -48,6 +56,7 @@ async def main_async(args: argparse.Namespace) -> None:
         model_path=args.model_path,
         relay_backend=args.relay_backend,
     )
+    apply_mem_fraction_static_args(config, args)
     runner = build_pipeline_runner(config)
 
     await runner.start()

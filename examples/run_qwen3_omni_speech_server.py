@@ -32,6 +32,12 @@ import logging
 import multiprocessing as mp
 import os
 
+from examples._mem_fraction_cli import (
+    add_mem_fraction_static_args,
+    apply_mem_fraction_static_args,
+    get_applied_mem_fraction_static,
+)
+
 logging.basicConfig(
     level=os.environ.get("LOGLEVEL", "INFO").upper(),
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -60,33 +66,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--relay-backend", type=str, default="shm", choices=["nixl", "shm"]
     )
-    parser.add_argument(
-        "--mem-fraction-static",
-        type=float,
-        default=None,
-        help=(
-            "Set SGLang mem_fraction_static for both Qwen AR stages "
-            "(thinker and talker). This controls SGLang's weights + KV cache "
-            "memory budget. If omitted, SGLang chooses the value automatically."
-        ),
-    )
-    parser.add_argument(
-        "--thinker-mem-fraction-static",
-        type=float,
-        default=None,
-        help=(
-            "Set SGLang mem_fraction_static only for the thinker stage. "
-            "Overrides --mem-fraction-static for thinker."
-        ),
-    )
-    parser.add_argument(
-        "--talker-mem-fraction-static",
-        type=float,
-        default=None,
-        help=(
-            "Set SGLang mem_fraction_static only for the talker stage. "
-            "Overrides --mem-fraction-static for talker."
-        ),
+    add_mem_fraction_static_args(
+        parser,
+        global_target_help="both Qwen AR stages (thinker and talker)",
+        include_thinker=True,
+        include_talker=True,
     )
 
     # Server
@@ -113,26 +97,12 @@ async def main_async(args: argparse.Namespace) -> None:
         "code2wav": args.gpu_code2wav,
     }
 
-    effective_thinker_mem_fraction = (
-        args.thinker_mem_fraction_static
-        if args.thinker_mem_fraction_static is not None
-        else args.mem_fraction_static
+    config = Qwen3OmniSpeechPipelineConfig(
+        model_path=args.model_path,
+        relay_backend=args.relay_backend,
+        gpu_placement=gpu_placement,
     )
-    effective_talker_mem_fraction = (
-        args.talker_mem_fraction_static
-        if args.talker_mem_fraction_static is not None
-        else args.mem_fraction_static
-    )
-    thinker_mem_fraction_display = (
-        effective_thinker_mem_fraction
-        if effective_thinker_mem_fraction is not None
-        else "auto"
-    )
-    talker_mem_fraction_display = (
-        effective_talker_mem_fraction
-        if effective_talker_mem_fraction is not None
-        else "auto"
-    )
+    apply_mem_fraction_static_args(config, args)
     logger.info(
         "Speech server config: thinker_gpu=%s talker_gpu=%s code_predictor_gpu=%s "
         "code2wav_gpu=%s thinker_mem_fraction_static=%s "
@@ -141,19 +111,14 @@ async def main_async(args: argparse.Namespace) -> None:
         args.gpu_talker,
         args.gpu_code_predictor,
         args.gpu_code2wav,
-        thinker_mem_fraction_display,
-        talker_mem_fraction_display,
-    )
-
-    config = Qwen3OmniSpeechPipelineConfig(
-        model_path=args.model_path,
-        relay_backend=args.relay_backend,
-        gpu_placement=gpu_placement,
-    )
-    config.apply_mem_fraction_static_overrides(
-        mem_fraction_static=args.mem_fraction_static,
-        thinker_mem_fraction_static=args.thinker_mem_fraction_static,
-        talker_mem_fraction_static=args.talker_mem_fraction_static,
+        get_applied_mem_fraction_static(
+            config,
+            config.mem_fraction_override_stages.thinker,
+        ),
+        get_applied_mem_fraction_static(
+            config,
+            config.mem_fraction_override_stages.talker,
+        ),
     )
 
     runner = MultiProcessPipelineRunner(config)

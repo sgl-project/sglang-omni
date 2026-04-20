@@ -5,6 +5,8 @@ from __future__ import annotations
 
 from typing import ClassVar
 
+from pydantic import Field
+
 from sglang_omni.config import (
     ExecutorConfig,
     InputHandlerConfig,
@@ -34,8 +36,8 @@ class MingOmniPipelineConfig(PipelineConfig):
 
     model_path: str
     entry_stage: str = "preprocessing"
-    mem_fraction_override_stages: MemFractionOverrideStages = MemFractionOverrideStages(
-        thinker=THINKER_STAGE
+    mem_fraction_override_stages: MemFractionOverrideStages = Field(
+        default_factory=lambda: MemFractionOverrideStages(thinker=THINKER_STAGE)
     )
     stages: list[StageConfig] = [
         StageConfig(
@@ -106,15 +108,6 @@ class MingOmniPipelineConfig(PipelineConfig):
         ),
     ]
 
-    def __init__(self, **kwargs):
-        server_args_overrides = kwargs.pop("server_args_overrides", None)
-        super().__init__(**kwargs)
-        if server_args_overrides:
-            self.apply_server_args_overrides(
-                stage_name=THINKER_STAGE,
-                overrides=server_args_overrides,
-            )
-
 
 class MingOmniSpeechPipelineConfig(PipelineConfig):
     """7-stage pipeline for Ming-Omni with text + speech output.
@@ -128,22 +121,13 @@ class MingOmniSpeechPipelineConfig(PipelineConfig):
     model_path: str
     entry_stage: str = "preprocessing"
     terminal_stages: list[str] = [DECODE_STAGE, TALKER_STAGE]
-    mem_fraction_override_stages: MemFractionOverrideStages = MemFractionOverrideStages(
-        thinker=THINKER_STAGE
+    mem_fraction_override_stages: MemFractionOverrideStages = Field(
+        default_factory=lambda: MemFractionOverrideStages(thinker=THINKER_STAGE)
     )
     gpu_placement: dict[str, int] = {
         "thinker": 0,
         "talker": 1,
     }
-
-    def __init__(self, **kwargs):
-        server_args_overrides = kwargs.pop("server_args_overrides", None)
-        super().__init__(**kwargs)
-        if server_args_overrides:
-            self.apply_server_args_overrides(
-                stage_name=THINKER_STAGE,
-                overrides=server_args_overrides,
-            )
 
     stages: list[StageConfig] = [
         StageConfig(

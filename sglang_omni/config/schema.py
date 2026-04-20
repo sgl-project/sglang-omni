@@ -260,6 +260,13 @@ class PipelineConfig(BaseModel):
     def apply_server_args_overrides(
         self, *, stage_name: str, overrides: dict[str, Any]
     ) -> None:
+        """Inject raw SGLang server args overrides into a stage executor.
+
+        NOTE (Ratish): This performs an in-place `dict.update()` on
+        `stage.executor.args["server_args_overrides"]` after Pydantic
+        validation. Override keys and values are not validated against a
+        dedicated schema. Repeated calls are last-write-wins on a per-key basis.
+        """
         for stage in self.stages:
             if stage.name == stage_name:
                 stage.executor.args.setdefault("server_args_overrides", {}).update(
@@ -275,6 +282,17 @@ class PipelineConfig(BaseModel):
         thinker_mem_fraction_static: float | None = None,
         talker_mem_fraction_static: float | None = None,
     ) -> None:
+        value_by_flag = {
+            "--mem-fraction-static": mem_fraction_static,
+            "--thinker-mem-fraction-static": thinker_mem_fraction_static,
+            "--talker-mem-fraction-static": talker_mem_fraction_static,
+        }
+        for flag_name, value in value_by_flag.items():
+            if value is not None and not 0.0 < value < 1.0:
+                raise ValueError(
+                    f"{flag_name} must be in the open interval (0, 1), got {value}"
+                )
+
         stage_overrides: list[tuple[str, float]] = []
 
         if mem_fraction_static is not None:

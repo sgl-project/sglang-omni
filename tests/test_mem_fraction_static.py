@@ -1,13 +1,19 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 
+import typer
+
+from sglang_omni.cli.serve import serve
 from sglang_omni.config.schema import (
     ExecutorConfig,
     MemFractionOverrideStages,
     PipelineConfig,
     StageConfig,
 )
+from sglang_omni.models.ming_omni.config import MingOmniPipelineConfig
 
 _NOOP_FACTORY = "sglang_omni.pipeline.mp_runner._noop_executor_factory"
 _NOOP_GET_NEXT = "sglang_omni.pipeline.mp_runner._noop_get_next"
@@ -125,3 +131,151 @@ class TestMemFractionStaticOverrides(unittest.TestCase):
             "mem_fraction_override_stages thinker and talker must reference different stages",
         ):
             _make_pipeline(thinker="shared", talker="shared")
+
+    def test_unknown_override_stage_is_rejected_at_construction(self) -> None:
+        with self.assertRaisesRegex(
+            ValueError,
+            "mem_fraction_override_stages references unknown stages",
+        ):
+            PipelineConfig(
+                model_path="dummy",
+                entry_stage="preprocessing",
+                stages=[_make_stage("preprocessing"), _make_stage("thinker")],
+                mem_fraction_override_stages=MemFractionOverrideStages(
+                    thinker="ghost_stage"
+                ),
+            )
+
+    def test_apply_server_args_overrides_rejects_unknown_stage(self) -> None:
+        config = _make_pipeline()
+
+        with self.assertRaisesRegex(ValueError, "Unknown stage 'nope'"):
+            config.apply_server_args_overrides(stage_name="nope", overrides={})
+
+    def test_invalid_value_range_is_rejected(self) -> None:
+        config = _make_pipeline()
+
+        for value in (-0.1, 0.0, 1.0, 1.5):
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "must be in the open interval",
+                ):
+                    config.apply_mem_fraction_static_overrides(
+                        mem_fraction_static=value
+                    )
+
+    def test_model_copy_then_apply_does_not_mutate_original(self) -> None:
+        config = _make_pipeline()
+        copied_config = config.model_copy(update={"model_path": "other"}, deep=True)
+
+        copied_config.apply_mem_fraction_static_overrides(mem_fraction_static=0.88)
+
+        self.assertNotIn("server_args_overrides", config.stages[1].executor.args)
+
+
+class _FakeConfigManager:
+    def __init__(self, config: PipelineConfig):
+        self.config = config
+
+    def parse_extra_args(self, args: list[str]) -> dict[str, str]:
+        del args
+        return {}
+
+    def merge_config(self, extra_args: dict[str, str]) -> PipelineConfig:
+        del extra_args
+        return self.config
+
+
+class TestServeMemFractionStatic(unittest.TestCase):
+    @patch("sglang_omni.cli.serve.launch_server")
+    @patch("sglang_omni.cli.serve.ConfigManager.from_model_path")
+    def test_serve_rejects_unsupported_talker_flag_before_launch(
+        self,
+        from_model_path,
+        launch_server_mock,
+    ) -> None:
+        from_model_path.return_value = _FakeConfigManager(
+            MingOmniPipelineConfig(model_path="dummy")
+        )
+
+        with self.assertRaises(typer.BadParameter):
+            serve(
+                ctx=SimpleNamespace(args=[]),
+                model_path="dummy",
+                config=None,
+                text_only=False,
+                host="0.0.0.0",
+                port=8000,
+                model_name=None,
+                mem_fraction_static=None,
+                thinker_mem_fraction_static=None,
+                talker_mem_fraction_static=0.88,
+                log_level="info",
+            )
+
+        launch_server_mock.assert_not_called()
+
+    @patch("sglang_omni.cli.serve.launch_server")
+    @patch("sglang_omni.cli.serve.ConfigManager.from_model_path")
+    def test_serve_rejects_invalid_mem_fraction_value_before_launch(
+        self,
+        from_model_path,
+        launch_server_mock,
+    ) -> None:
+        from_model_path.return_value = _FakeConfigManager(_make_pipeline())
+
+        with self.assertRaisesRegex(
+            typer.BadParameter,
+            "must be in the open interval",
+        ):
+            serve(
+                ctx=SimpleNamespace(args=[]),
+                model_path="dummy",
+                config=None,
+                text_only=False,
+                host="0.0.0.0",
+                port=8000,
+                model_name=None,
+                mem_fraction_static=1.5,
+                thinker_mem_fraction_static=None,
+                talker_mem_fraction_static=None,
+                log_level="info",
+            )
+
+        launch_server_mock.assert_not_called()
+
+    @patch("sglang_omni.cli.serve.launch_server")
+    @patch("sglang_omni.cli.serve.ConfigManager.from_model_path")
+    def test_serve_applies_mem_fraction_to_copied_config_only(
+        self,
+        from_model_path,
+        launch_server_mock,
+    ) -> None:
+        original_config = _make_pipeline()
+        from_model_path.return_value = _FakeConfigManager(original_config)
+
+        serve(
+            ctx=SimpleNamespace(args=[]),
+            model_path="other-model",
+            config=None,
+            text_only=False,
+            host="0.0.0.0",
+            port=8000,
+            model_name=None,
+            mem_fraction_static=0.88,
+            thinker_mem_fraction_static=None,
+            talker_mem_fraction_static=None,
+            log_level="info",
+        )
+
+        passed_config = launch_server_mock.call_args.args[0]
+        self.assertNotIn(
+            "server_args_overrides", original_config.stages[1].executor.args
+        )
+        self.assertEqual(
+            passed_config.stages[1].executor.args["server_args_overrides"][
+                "mem_fraction_static"
+            ],
+            0.88,
+        )

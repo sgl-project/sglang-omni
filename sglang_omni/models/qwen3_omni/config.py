@@ -5,6 +5,8 @@ from __future__ import annotations
 
 from typing import ClassVar
 
+from pydantic import Field
+
 from sglang_omni.config import (
     ExecutorConfig,
     InputHandlerConfig,
@@ -31,8 +33,8 @@ class Qwen3OmniPipelineConfig(PipelineConfig):
 
     model_path: str
     entry_stage: str = "preprocessing"
-    mem_fraction_override_stages: MemFractionOverrideStages = MemFractionOverrideStages(
-        thinker=THINKER_STAGE
+    mem_fraction_override_stages: MemFractionOverrideStages = Field(
+        default_factory=lambda: MemFractionOverrideStages(thinker=THINKER_STAGE)
     )
     stages: list[StageConfig] = [
         StageConfig(
@@ -112,8 +114,11 @@ class Qwen3OmniSpeechPipelineConfig(PipelineConfig):
     model_path: str
     entry_stage: str = "preprocessing"
     terminal_stages: list[str] = [DECODE_STAGE, CODE2WAV_STAGE]
-    mem_fraction_override_stages: MemFractionOverrideStages = MemFractionOverrideStages(
-        thinker=THINKER_STAGE, talker=TALKER_AR_STAGE
+    mem_fraction_override_stages: MemFractionOverrideStages = Field(
+        default_factory=lambda: MemFractionOverrideStages(
+            thinker=THINKER_STAGE,
+            talker=TALKER_AR_STAGE,
+        )
     )
     gpu_placement: dict[str, int] = {
         "thinker": 0,

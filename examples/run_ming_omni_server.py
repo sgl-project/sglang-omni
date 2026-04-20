@@ -25,6 +25,10 @@ import argparse
 import logging
 import os
 
+from examples._mem_fraction_cli import (
+    add_mem_fraction_static_args,
+    apply_mem_fraction_static_args,
+)
 from sglang_omni.models.ming_omni.config import MingOmniPipelineConfig
 from sglang_omni.serve import launch_server
 
@@ -67,15 +71,9 @@ def parse_args() -> argparse.Namespace:
         default=80,
         help="GB of model weights to offload to CPU (default: 80 for Ming-flash-omni-2.0)",
     )
-    parser.add_argument(
-        "--mem-fraction-static",
-        type=float,
-        default=None,
-        help=(
-            "Set SGLang mem_fraction_static for the thinker stage. "
-            "This controls SGLang's weights + KV cache memory budget. "
-            "If omitted, SGLang chooses the value automatically."
-        ),
+    add_mem_fraction_static_args(
+        parser,
+        global_target_help="the thinker stage",
     )
     parser.add_argument(
         "--relay-backend",
@@ -112,11 +110,15 @@ def main() -> None:
     config = MingOmniPipelineConfig(
         model_path=args.model_path,
         relay_backend=args.relay_backend,
-        server_args_overrides=overrides if overrides else None,
     )
-    config.apply_mem_fraction_static_overrides(
-        mem_fraction_static=args.mem_fraction_static
-    )
+    if overrides:
+        thinker_stage = config.mem_fraction_override_stages.thinker
+        assert thinker_stage is not None
+        config.apply_server_args_overrides(
+            stage_name=thinker_stage,
+            overrides=overrides,
+        )
+    apply_mem_fraction_static_args(config, args)
 
     launch_server(
         config,
