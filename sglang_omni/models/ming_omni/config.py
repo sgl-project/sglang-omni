@@ -41,6 +41,7 @@ def validate_ming_speech_gpu_placement(
             f"Set --gpu-talker >= {thinker_gpu + tp_size}."
         )
 
+
 class MingOmniPipelineConfig(PipelineConfig):
     """6-stage text/vision pipeline for Ming-Omni.
 
