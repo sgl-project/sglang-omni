@@ -55,20 +55,12 @@ def load_mmsu_samples(
 ) -> list[MmsuSample]:
     """Load MMSU samples.
 
-    Args:
-        max_samples: Cap on how many samples to return.  None = all.
-        task_names: Optional task_name filter.
-        categories: Optional category filter.
-        seed: If set, shuffle with ``random.Random(seed)`` before slicing.
-        repo_id: HuggingFace dataset repo to load from.  Defaults to
-            None which loads the full ddwang2000/MMSU (train split,
-            ~5000 samples).  Pass a repo id like
-            "zhaochenyang20/mmsu-ci-2000" to load a pre-built subset.
+
+    Note (Yifei, Chenyang):
+    repo_id defaults to None which loads the full ddwang2000/MMSU
+    (train split, ~5000 samples).  zhaochenyang20/mmsu-ci-2000 to
+    load our pre-built subset for CI.
     """
-    import tempfile
-
-    from datasets import Audio, load_dataset
-
     ds = load_dataset(repo_id or "ddwang2000/MMSU")
     assert list(ds.keys()) == [
         "train"
