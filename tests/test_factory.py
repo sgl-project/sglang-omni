@@ -4,8 +4,6 @@ from __future__ import annotations
 import sys
 from types import ModuleType, SimpleNamespace
 
-import pytest
-
 import sglang_omni.engines.omni.factory as factory
 from sglang_omni.models.qwen3_omni.config import Qwen3OmniSpeechPipelineConfig
 
