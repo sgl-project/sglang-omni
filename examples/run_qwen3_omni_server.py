@@ -102,8 +102,6 @@ def main() -> None:
     if args.thinker_max_seq_len is not None:
         for stage in config.stages:
             if stage.name == "thinker":
-                if stage.executor.args is None:
-                    stage.executor.args = {}
                 stage.executor.args["thinker_max_seq_len"] = args.thinker_max_seq_len
 
     launch_server(

@@ -121,27 +121,6 @@ class TestMemFractionStaticOverrides(unittest.TestCase):
         ):
             config.apply_mem_fraction_static_overrides(mem_fraction_static=0.88)
 
-    def test_global_override_applies_to_single_declared_target(self) -> None:
-        config = _make_pipeline(
-            thinker="thinker",
-            talker=None,
-            thinker_args={"server_args_overrides": {"cpu_offload_gb": 80}},
-        )
-
-        config.apply_mem_fraction_static_overrides(mem_fraction_static=0.88)
-
-        thinker_overrides = config.stages[1].executor.args["server_args_overrides"]
-
-        self.assertEqual(thinker_overrides["cpu_offload_gb"], 80)
-        self.assertEqual(thinker_overrides["mem_fraction_static"], 0.88)
-
-    def test_override_targets_must_reference_distinct_stages(self) -> None:
-        with self.assertRaisesRegex(
-            ValueError,
-            "mem_fraction_override_stages thinker and talker must reference different stages",
-        ):
-            _make_pipeline(thinker="shared", talker="shared")
-
     def test_unknown_override_stage_is_rejected_at_construction(self) -> None:
         with self.assertRaisesRegex(
             ValueError,

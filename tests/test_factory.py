@@ -186,10 +186,3 @@ def test_qwen3_speech_pipeline_enables_talker_feedback() -> None:
     talker_stage = next(stage for stage in cfg.stages if stage.name == "talker_ar")
 
     assert talker_stage.executor.args["feedback_enabled"] is True
-
-
-def test_qwen3_speech_pipeline_rejects_tp() -> None:
-    with pytest.raises(ValueError, match="collides"):
-        Qwen3OmniSpeechPipelineConfig(
-            model_path="dummy",
-        ).apply_thinker_server_args_overrides({"tp_size": 2})
