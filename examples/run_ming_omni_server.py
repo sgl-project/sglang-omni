@@ -26,10 +26,11 @@ import logging
 import multiprocessing as mp
 import os
 
-from examples._mem_fraction_cli import (
+from _mem_fraction_cli import (
     add_mem_fraction_static_args,
     apply_mem_fraction_static_args,
 )
+
 from sglang_omni.models.ming_omni.config import MingOmniPipelineConfig
 from sglang_omni.serve import launch_server
 

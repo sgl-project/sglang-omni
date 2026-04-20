@@ -26,7 +26,7 @@ import multiprocessing as mp
 import os
 import time
 
-from examples._mem_fraction_cli import (
+from _mem_fraction_cli import (
     add_mem_fraction_static_args,
     apply_mem_fraction_static_args,
 )

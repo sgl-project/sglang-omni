@@ -8,10 +8,11 @@ import asyncio
 import logging
 import os
 
-from examples._mem_fraction_cli import (
+from _mem_fraction_cli import (
     add_mem_fraction_static_args,
     apply_mem_fraction_static_args,
 )
+
 from sglang_omni.config import build_pipeline_runner
 from sglang_omni.models.qwen3_omni.config import Qwen3OmniPipelineConfig
 from sglang_omni.proto import OmniRequest
