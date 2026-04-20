@@ -148,7 +148,7 @@ class TestMemFractionStaticOverrides(unittest.TestCase):
             with self.subTest(value=value):
                 with self.assertRaisesRegex(
                     ValueError,
-                    "must be in the open interval",
+                    r"must be > 0 and < 1",
                 ):
                     config.apply_mem_fraction_static_overrides(
                         mem_fraction_static=value
@@ -216,7 +216,7 @@ class TestServeMemFractionStatic(unittest.TestCase):
 
         with self.assertRaisesRegex(
             typer.BadParameter,
-            "must be in the open interval",
+            r"must be > 0 and < 1",
         ):
             serve(
                 ctx=SimpleNamespace(args=[]),
