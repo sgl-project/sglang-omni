@@ -25,6 +25,7 @@ try:
     from sglang_omni.models.qwen3_omni.config import Qwen3OmniPipelineConfig
     from sglang_omni.models.qwen3_omni.pipeline.stages import (
         create_sglang_thinker_executor_from_config,
+        create_talker_ar_executor_from_config,
     )
 
     _qwen3_available = True
@@ -131,6 +132,19 @@ class TestMemFractionStaticOverrides(unittest.TestCase):
 
         self.assertEqual(server_args.mem_fraction_static, 0.88)
         self.assertEqual(server_args_mock.call_args.kwargs["mem_fraction_static"], 0.88)
+
+    @patch("sglang_omni.engines.ar.sglang_backend.server_args_builder.ServerArgs")
+    def test_auto_reserve_not_applied_when_reserve_kwarg_omitted(
+        self, server_args_mock
+    ) -> None:
+        server_args_mock.return_value = SimpleNamespace(mem_fraction_static=0.929)
+
+        server_args = build_sglang_server_args(
+            model_path="dummy",
+            context_length=8192,
+        )
+
+        self.assertEqual(server_args.mem_fraction_static, 0.929)
 
 
 class TestH20AutoMemFractionFloor(unittest.TestCase):
@@ -248,6 +262,8 @@ class TestServeMemFractionStatic(unittest.TestCase):
             ],
             0.88,
         )
+        self.assertEqual(original_config.model_path, "dummy")
+        self.assertEqual(passed_config.model_path, "other-model")
 
     @unittest.skipUnless(_qwen3_available, "qwen3_omni config not importable")
     @patch(
@@ -255,7 +271,7 @@ class TestServeMemFractionStatic(unittest.TestCase):
     )
     @patch("sglang_omni.cli.serve.launch_server")
     @patch("sglang_omni.cli.serve.ConfigManager.from_model_path")
-    def test_serve_mem_fraction_reaches_final_server_args(
+    def test_serve_thinker_override_round_trips_through_factory(
         self,
         from_model_path,
         launch_server_mock,
@@ -291,3 +307,137 @@ class TestServeMemFractionStatic(unittest.TestCase):
 
         server_args = create_thinker_executor_mock.call_args.kwargs["server_args"]
         self.assertEqual(server_args.mem_fraction_static, 0.88)
+
+
+@unittest.skipUnless(_qwen3_available, "qwen3_omni config not importable")
+class TestServeMemFractionPrecedence(unittest.TestCase):
+    """Verify per-stage mem_fraction_static flags override the global fallback."""
+
+    def _run(
+        self,
+        global_mfs: float | None,
+        thinker_mfs: float | None,
+        talker_mfs: float | None,
+    ) -> PipelineConfig:
+        from sglang_omni.models.qwen3_omni.config import Qwen3OmniSpeechPipelineConfig
+
+        with (
+            patch("sglang_omni.cli.serve.launch_server") as launch_mock,
+            patch("sglang_omni.cli.serve.ConfigManager.from_model_path") as from_path,
+        ):
+            from_path.return_value = _FakeConfigManager(
+                Qwen3OmniSpeechPipelineConfig(model_path="dummy")
+            )
+            serve(
+                ctx=SimpleNamespace(args=[]),
+                model_path="dummy",
+                config=None,
+                text_only=False,
+                host="0.0.0.0",
+                port=8000,
+                model_name=None,
+                mem_fraction_static=global_mfs,
+                thinker_mem_fraction_static=thinker_mfs,
+                talker_mem_fraction_static=talker_mfs,
+                log_level="info",
+            )
+            return launch_mock.call_args.args[0]
+
+    def _mem_fraction_static(
+        self, config: PipelineConfig, stage_name: str
+    ) -> float | None:
+        stage = next(stage for stage in config.stages if stage.name == stage_name)
+        return stage.executor.args.get("server_args_overrides", {}).get(
+            "mem_fraction_static"
+        )
+
+    def test_global_only_applies_to_both_roles(self) -> None:
+        config = self._run(0.80, None, None)
+
+        self.assertEqual(self._mem_fraction_static(config, "thinker"), 0.80)
+        self.assertEqual(self._mem_fraction_static(config, "talker_ar"), 0.80)
+
+    def test_thinker_specific_overrides_global_for_thinker_only(self) -> None:
+        config = self._run(0.80, 0.70, None)
+
+        self.assertEqual(self._mem_fraction_static(config, "thinker"), 0.70)
+        self.assertEqual(self._mem_fraction_static(config, "talker_ar"), 0.80)
+
+    def test_talker_specific_overrides_global_for_talker_only(self) -> None:
+        config = self._run(0.80, None, 0.65)
+
+        self.assertEqual(self._mem_fraction_static(config, "thinker"), 0.80)
+        self.assertEqual(self._mem_fraction_static(config, "talker_ar"), 0.65)
+
+    def test_both_specific_plus_global_each_stage_gets_its_specific(self) -> None:
+        config = self._run(0.80, 0.70, 0.65)
+
+        self.assertEqual(self._mem_fraction_static(config, "thinker"), 0.70)
+        self.assertEqual(self._mem_fraction_static(config, "talker_ar"), 0.65)
+
+    def test_thinker_specific_only_does_not_bleed_into_talker(self) -> None:
+        config = self._run(None, 0.70, None)
+        talker = next(stage for stage in config.stages if stage.name == "talker_ar")
+
+        self.assertEqual(self._mem_fraction_static(config, "thinker"), 0.70)
+        self.assertNotIn("server_args_overrides", talker.executor.args)
+
+
+@unittest.skipUnless(_qwen3_available, "qwen3_omni config not importable")
+class TestSpeechMemFractionFactoryWiring(unittest.TestCase):
+    @patch("sglang_omni.models.qwen3_omni.pipeline.stages.create_talker_ar_executor")
+    @patch(
+        "sglang_omni.models.qwen3_omni.pipeline.stages.create_sglang_thinker_executor"
+    )
+    @patch("sglang_omni.cli.serve.launch_server")
+    @patch("sglang_omni.cli.serve.ConfigManager.from_model_path")
+    def test_serve_speech_overrides_round_trip_through_factories(
+        self,
+        from_model_path,
+        launch_server_mock,
+        create_thinker_executor_mock,
+        create_talker_executor_mock,
+    ) -> None:
+        from sglang_omni.models.qwen3_omni.config import Qwen3OmniSpeechPipelineConfig
+
+        from_model_path.return_value = _FakeConfigManager(
+            Qwen3OmniSpeechPipelineConfig(model_path="dummy")
+        )
+
+        serve(
+            ctx=SimpleNamespace(args=[]),
+            model_path="dummy",
+            config=None,
+            text_only=False,
+            host="0.0.0.0",
+            port=8000,
+            model_name=None,
+            mem_fraction_static=None,
+            thinker_mem_fraction_static=0.70,
+            talker_mem_fraction_static=0.65,
+            log_level="info",
+        )
+
+        passed_config = launch_server_mock.call_args.args[0]
+        thinker_stage = next(
+            stage for stage in passed_config.stages if stage.name == "thinker"
+        )
+        talker_stage = next(
+            stage for stage in passed_config.stages if stage.name == "talker_ar"
+        )
+
+        create_sglang_thinker_executor_from_config(
+            model_path="dummy",
+            **thinker_stage.executor.args,
+        )
+        create_talker_ar_executor_from_config(
+            model_path="dummy",
+            **talker_stage.executor.args,
+        )
+
+        thinker_server_args = create_thinker_executor_mock.call_args.kwargs[
+            "server_args"
+        ]
+        talker_server_args = create_talker_executor_mock.call_args.kwargs["server_args"]
+        self.assertEqual(thinker_server_args.mem_fraction_static, 0.70)
+        self.assertEqual(talker_server_args.mem_fraction_static, 0.65)
