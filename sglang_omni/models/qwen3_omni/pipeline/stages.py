@@ -624,16 +624,23 @@ def create_talker_ar_executor_from_config(
     feedback_mailbox=None,
 ) -> EngineExecutor:
     """Create a Talker AR executor from config args."""
+    pre_load_avail_mem = avail_gpu_mem(gpu_id)
     server_args = build_sglang_server_args(
         model_path, context_length=talker_max_seq_len, **(server_args_overrides or {})
+    )
+    pre_load_mem = (
+        f" pre_load_avail_mem={pre_load_avail_mem:.2f} GB"
+        if pre_load_avail_mem is not None
+        else ""
     )
     logger.info(
         f"Creating talker AR SGLang executor: gpu_id={gpu_id} "
         f"context_length={talker_max_seq_len} speech_enabled={speech_enabled} "
         f"feedback_enabled={feedback_enabled} "
         f"mem_fraction_static={server_args.mem_fraction_static}"
+        f"{pre_load_mem}"
     )
-    return create_talker_ar_executor(
+    executor = create_talker_ar_executor(
         server_args=server_args,
         model_path=model_path,
         gpu_id=gpu_id,
@@ -643,6 +650,16 @@ def create_talker_ar_executor_from_config(
         feedback_enabled=feedback_enabled,
         feedback_mailbox=feedback_mailbox,
     )
+    post_load_avail_mem = avail_gpu_mem(gpu_id)
+    post_load_mem = (
+        f" post_load_avail_mem={post_load_avail_mem:.2f} GB"
+        if post_load_avail_mem is not None
+        else ""
+    )
+    logger.info(
+        f"Talker AR SGLang executor initialized: gpu_id={gpu_id}{post_load_mem}"
+    )
+    return executor
 
 
 def create_decode_executor(model_path: str) -> PreprocessingExecutor:

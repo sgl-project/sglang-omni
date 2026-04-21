@@ -262,6 +262,8 @@ class Qwen3OmniSpeechPipelineConfig(PipelineConfig):
     def apply_server_args_overrides(
         self, *, stage_name: str, overrides: dict[str, Any]
     ) -> None:
+        # Order matters: validate placement first so users get an actionable
+        # collision error today, and the same check gates TP after support lands.
         if stage_name in (THINKER_STAGE, TALKER_AR_STAGE) and "tp_size" in overrides:
             tp_size = overrides["tp_size"]
             if stage_name == THINKER_STAGE:

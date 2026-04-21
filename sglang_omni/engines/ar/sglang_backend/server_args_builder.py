@@ -6,7 +6,7 @@ from typing import Any
 
 from sglang.srt.server_args import ServerArgs
 
-# Reserve the same 5% margin that SGLang applies for VLM vision towers.
+# Note (Ratish): Reserve the same 5% margin that SGLang applies for VLM vision towers.
 # Omni thinker GPUs also host encoder stages, so auto-sized AR memory needs
 # the same headroom unless the user pins mem_fraction_static explicitly.
 OMNI_ENCODER_MEM_FRACTION_STATIC_RESERVE = 0.05

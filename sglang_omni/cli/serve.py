@@ -89,7 +89,7 @@ def serve(
     # we do expect the extra arguments to be pairs of names and values
     extra_args = config_manager.parse_extra_args(ctx.args)
     merged_config = config_manager.merge_config(extra_args)
-    merged_config.model_path = model_path
+    merged_config = merged_config.model_copy(update={"model_path": model_path})
     for flag_name, value in (
         ("--mem-fraction-static", mem_fraction_static),
         ("--thinker-mem-fraction-static", thinker_mem_fraction_static),
