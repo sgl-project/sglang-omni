@@ -266,14 +266,18 @@ class Qwen3OmniSpeechPipelineConfig(PipelineConfig):
     def apply_server_args_overrides(
         self, *, stage_name: str, overrides: dict[str, Any]
     ) -> None:
+        # TODO (Ratish, Chenyang):
         # Order matters: validate placement first so users get an actionable
-        # collision error today, and the same check gates TP after support lands.
+        # collision error currently, and the same check gates TP after support lands.
         if stage_name in (THINKER_STAGE, TALKER_AR_STAGE) and "tp_size" in overrides:
             tp_size = overrides["tp_size"]
-            # Validate placement for whichever AR stage is being scaled. Today
-            # talker_ar's range-check reuses the same thinker-range helper;
-            # once per-stage TP lands, extend this with a talker_ar-specific
-            # collision check rather than letting the outer guard silently pass.
+
+            # TODO (Ratish, Chenyang):
+            # Validate placement for whichever AR stage is being scaled.
+            # Currently, talker_ar's range-check reuses the same thinker-range
+            # helper; once per-stage TP lands, extend this with a
+            # talker_ar-specific collision check rather than letting the
+            # outer guard silently pass.
             _validate_qwen3_speech_gpu_placement(
                 self.gpu_placement,
                 tp_size=tp_size,

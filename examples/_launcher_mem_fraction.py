@@ -1,9 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
 """Shared mem_fraction_static precedence resolution for Qwen3 speech launchers.
 
+Note (Ratish, Chenyang):
+
 Used by the two Qwen3-Omni speech launchers that expose three flags
-(`--mem-fraction-static`, `--thinker-mem-fraction-static`,
-`--talker-mem-fraction-static`) side by side. Single-flag launchers keep
+(--mem-fraction-static, --thinker-mem-fraction-static,
+--talker-mem-fraction-static) side by side. Single-flag launchers keep
 their ~8-line inline block; the 20-line 3-flag block is the only variant
 that earns a shared helper.
 """
