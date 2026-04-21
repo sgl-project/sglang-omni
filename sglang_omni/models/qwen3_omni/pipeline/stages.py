@@ -385,9 +385,7 @@ def create_sglang_thinker_executor_from_config(
         if post_load_avail_mem is not None
         else ""
     )
-    logger.info(
-        f"Thinker SGLang executor initialized: gpu_id={gpu_id}{post_load_mem}"
-    )
+    logger.info(f"Thinker SGLang executor initialized: gpu_id={gpu_id}{post_load_mem}")
     return executor
 
 
