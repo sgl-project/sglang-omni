@@ -26,8 +26,8 @@ class S2ProSGLangRequestData(SGLangARRequestData):
     top_p: float = 0.8
     top_k: int = 30
     repetition_penalty: float = 1.1
-    _previous_semantic_tokens: list = field(default_factory=list)
-    _last_codebook_values: Any = None
+    previous_semantic_tokens: list = field(default_factory=list)
+    last_codebook_values: Any = None
 
 
 def build_sglang_tts_request(

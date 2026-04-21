@@ -80,16 +80,9 @@ def _collect_stage_control_endpoints(stages) -> dict[str, str]:
     """Derive {stage_name: control_plane_recv_endpoint} from runtime Stage objects."""
     out: dict[str, str] = {}
     for st in stages:
-        cp = getattr(st, "control_plane", None)
-        ep = getattr(cp, "recv_endpoint", None) if cp is not None else None
-
+        ep = st.control_plane.recv_endpoint
         if not ep:
-            ep = getattr(st, "recv_endpoint", None)
-
-        if not ep:
-            raise RuntimeError(
-                f"Cannot resolve control endpoint for stage={getattr(st, 'name', st)}"
-            )
+            raise RuntimeError(f"Cannot resolve control endpoint for stage={st.name}")
         out[st.name] = ep
     return out
 

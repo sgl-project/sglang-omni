@@ -17,7 +17,7 @@ class IncomingMessage:
 @dataclass
 class OutgoingMessage:
     request_id: str
-    type: Literal["result", "stream"]
+    type: Literal["result", "stream", "error"]
     data: Any = None
     target: str | None = None
     metadata: dict[str, Any] | None = None

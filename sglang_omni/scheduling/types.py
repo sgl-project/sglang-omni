@@ -11,7 +11,6 @@ from typing import Any
 class SchedulerStatus(Enum):
     WAITING = auto()
     RUNNING = auto()
-    WAITING_FEEDBACK = auto()
     FINISHED = auto()
     ABORTED = auto()
 

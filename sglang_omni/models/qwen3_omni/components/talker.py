@@ -4,7 +4,6 @@ SGLang-native Talker model for Qwen3-Omni compatiable with hf formatting.
 
 from __future__ import annotations
 
-import logging
 import os
 from typing import Iterable, Optional, Tuple
 
@@ -25,7 +24,6 @@ from sglang_omni.models.qwen3_omni.components.thinker_model import (
     Qwen3OmniMoeThinkerTextDecoderLayer,
     Qwen3OmniMoeThinkerTextSparseMoeBlock,
 )
-from sglang_omni.models.qwen3_omni.debug_dump import dump_precision_pt
 from sglang_omni.models.qwen3_omni.hf_config import (
     Qwen3OmniMoeTalkerConfig,
     Qwen3OmniMoeTalkerTextConfig,
@@ -44,31 +42,6 @@ from sglang_omni.vendor.sglang.layers import (
 from sglang_omni.vendor.sglang.models import apply_qk_norm
 from sglang_omni.vendor.sglang.server_args import get_global_server_args
 from sglang_omni.vendor.sglang.utils import make_layers
-
-logger = logging.getLogger(__name__)
-
-
-def _trace_precision_enabled() -> bool:
-    return os.environ.get("QWEN_PRECISION_DUMP_DIR") is not None
-
-
-def _trace_precision_layers() -> set[int]:
-    raw = os.environ.get("QWEN_PRECISION_TRACE_LAYERS")
-    if not raw:
-        return {0}
-    layers: set[int] = set()
-    for chunk in raw.split(","):
-        chunk = chunk.strip()
-        if not chunk:
-            continue
-        if chunk == "*":
-            return set(range(10_000))
-        layers.add(int(chunk))
-    return layers or {0}
-
-
-def _should_trace_precision_layer(layer_id: int) -> bool:
-    return _trace_precision_enabled() and layer_id in _trace_precision_layers()
 
 
 def _talker_moe_backend() -> str:
@@ -339,8 +312,6 @@ class Qwen3OmniMoeTalkerDecoderLayer(Qwen3OmniMoeThinkerTextDecoderLayer):
             quant_config=quant_config,
             prefix=add_prefix("mlp", prefix),
         )
-        self._trace_request_ids_ref = None
-        self._trace_generation_steps_ref = None
 
     def forward(
         self,
@@ -361,27 +332,6 @@ class Qwen3OmniMoeTalkerDecoderLayer(Qwen3OmniMoeThinkerTextDecoderLayer):
             )
         )
 
-        if _should_trace_precision_layer(self.layer_id) and hidden_states.shape[0] > 0:
-            for row_idx in range(hidden_states.shape[0]):
-                request_id = (
-                    self._trace_request_ids_ref[row_idx]
-                    if self._trace_request_ids_ref is not None
-                    and row_idx < len(self._trace_request_ids_ref)
-                    else f"row-{row_idx}"
-                )
-                generation_steps = (
-                    self._trace_generation_steps_ref[row_idx]
-                    if self._trace_generation_steps_ref is not None
-                    and row_idx < len(self._trace_generation_steps_ref)
-                    else 0
-                )
-                dump_precision_pt(
-                    prefix=f"talker_layer{self.layer_id}_pre_attn",
-                    request_id=request_id,
-                    step=generation_steps,
-                    payload={"hidden_states": hidden_states[row_idx].detach().cpu()},
-                )
-
         if hidden_states.shape[0] != 0:
             hidden_states = self.self_attn(
                 positions=positions,
@@ -392,27 +342,6 @@ class Qwen3OmniMoeTalkerDecoderLayer(Qwen3OmniMoeThinkerTextDecoderLayer):
         hidden_states, residual = self.layer_communicator.prepare_mlp(
             hidden_states, residual, forward_batch
         )
-
-        if _should_trace_precision_layer(self.layer_id) and hidden_states.shape[0] > 0:
-            for row_idx in range(hidden_states.shape[0]):
-                request_id = (
-                    self._trace_request_ids_ref[row_idx]
-                    if self._trace_request_ids_ref is not None
-                    and row_idx < len(self._trace_request_ids_ref)
-                    else f"row-{row_idx}"
-                )
-                generation_steps = (
-                    self._trace_generation_steps_ref[row_idx]
-                    if self._trace_generation_steps_ref is not None
-                    and row_idx < len(self._trace_generation_steps_ref)
-                    else 0
-                )
-                dump_precision_pt(
-                    prefix=f"talker_layer{self.layer_id}_post_attn",
-                    request_id=request_id,
-                    step=generation_steps,
-                    payload={"hidden_states": hidden_states[row_idx].detach().cpu()},
-                )
 
         should_allreduce_fusion = (
             self.layer_communicator.should_fuse_mlp_allreduce_with_next_layer(
@@ -433,27 +362,6 @@ class Qwen3OmniMoeTalkerDecoderLayer(Qwen3OmniMoeThinkerTextDecoderLayer):
             hidden_states, residual = self.layer_communicator.postprocess_layer(
                 hidden_states, residual, forward_batch
             )
-
-        if _should_trace_precision_layer(self.layer_id) and hidden_states.shape[0] > 0:
-            for row_idx in range(hidden_states.shape[0]):
-                request_id = (
-                    self._trace_request_ids_ref[row_idx]
-                    if self._trace_request_ids_ref is not None
-                    and row_idx < len(self._trace_request_ids_ref)
-                    else f"row-{row_idx}"
-                )
-                generation_steps = (
-                    self._trace_generation_steps_ref[row_idx]
-                    if self._trace_generation_steps_ref is not None
-                    and row_idx < len(self._trace_generation_steps_ref)
-                    else 0
-                )
-                dump_precision_pt(
-                    prefix=f"talker_layer{self.layer_id}_post_mlp",
-                    request_id=request_id,
-                    step=generation_steps,
-                    payload={"hidden_states": hidden_states[row_idx].detach().cpu()},
-                )
 
         return hidden_states, residual
 
@@ -516,13 +424,6 @@ class Qwen3OmniMoeTalkerTextModel(nn.Module):
             dtype=torch.bool,
             device=self.codec_embedding.weight.device,
         )
-        self._trace_request_ids: list[str] = []
-        self._trace_generation_steps: list[int] = []
-        for idx in range(self.start_layer, self.end_layer):
-            layer = self.layers[idx]
-            if isinstance(layer, Qwen3OmniMoeTalkerDecoderLayer):
-                layer._trace_request_ids_ref = self._trace_request_ids
-                layer._trace_generation_steps_ref = self._trace_generation_steps
 
         # Disable fused_qk_norm_rope so the separate QK-norm + RoPE path is
         # used.  The fp32 weight promotion + cast_x_before_out_mul is applied
@@ -546,52 +447,11 @@ class Qwen3OmniMoeTalkerTextModel(nn.Module):
             if self._cp_enabled:
                 bs = hidden_states.shape[0]
                 feedback_mask = self._feedback_mask[:bs]
-                raw_embed = (
-                    hidden_states.clone() if _trace_precision_enabled() else None
-                )
                 hidden_states = torch.where(
                     feedback_mask.unsqueeze(-1),
                     self._feedback_buffer[:bs].to(hidden_states.dtype),
                     hidden_states,
                 )
-                if _trace_precision_enabled():
-                    for row_idx in range(bs):
-                        request_id = (
-                            self._trace_request_ids[row_idx]
-                            if row_idx < len(self._trace_request_ids)
-                            else f"row-{row_idx}"
-                        )
-                        generation_steps = (
-                            self._trace_generation_steps[row_idx]
-                            if row_idx < len(self._trace_generation_steps)
-                            else 0
-                        )
-                        dump_precision_pt(
-                            prefix="talker_decode_embed_after_feedback",
-                            request_id=request_id,
-                            step=generation_steps,
-                            payload={
-                                "request_id": request_id,
-                                "generation_steps": generation_steps,
-                                "input_id": (
-                                    int(input_ids[row_idx].item())
-                                    if input_ids.ndim == 1
-                                    else None
-                                ),
-                                "position": (
-                                    int(positions[row_idx].item())
-                                    if isinstance(positions, torch.Tensor)
-                                    and positions.ndim == 1
-                                    else None
-                                ),
-                                "feedback_mask": bool(feedback_mask[row_idx].item()),
-                                "raw_embed": raw_embed[row_idx].detach().cpu(),
-                                "feedback_buffer": self._feedback_buffer[row_idx]
-                                .detach()
-                                .cpu(),
-                                "hidden_states": hidden_states[row_idx].detach().cpu(),
-                            },
-                        )
                 self._feedback_mask[:bs] = False
         else:
             hidden_states = input_embeds
@@ -1057,33 +917,18 @@ class Qwen3OmniTalker(nn.Module):
         self._sampling_top_ps[:batch_size].fill_(1.0)
         self._sampling_top_ks[:batch_size].fill_(1)
         self._sampling_min_ps[:batch_size].zero_()
-        self.model._trace_request_ids.clear()
-        self.model._trace_generation_steps.clear()
 
         for row_idx, sched_req in enumerate(requests):
             data = sched_req.data
             req = data.req
-            self.model._trace_request_ids.append(
-                getattr(sched_req, "request_id", getattr(req, "rid", f"row-{row_idx}"))
-            )
-            self.model._trace_generation_steps.append(
-                int(getattr(data, "generation_steps", 0))
-            )
+            sampling_params = req.sampling_params
 
-            penalty = float(getattr(req.sampling_params, "repetition_penalty", 1.0))
+            penalty = float(sampling_params.repetition_penalty)
             self._repetition_penalties[row_idx, 0] = penalty
-            self._sampling_temperatures[row_idx, 0] = float(
-                getattr(req.sampling_params, "temperature", 1.0)
-            )
-            self._sampling_top_ps[row_idx] = float(
-                getattr(req.sampling_params, "top_p", 1.0)
-            )
-            self._sampling_top_ks[row_idx] = int(
-                getattr(req.sampling_params, "top_k", 1)
-            )
-            self._sampling_min_ps[row_idx] = float(
-                getattr(req.sampling_params, "min_p", 0.0)
-            )
+            self._sampling_temperatures[row_idx, 0] = float(sampling_params.temperature)
+            self._sampling_top_ps[row_idx] = float(sampling_params.top_p)
+            self._sampling_top_ks[row_idx] = int(sampling_params.top_k)
+            self._sampling_min_ps[row_idx] = float(sampling_params.min_p)
             if penalty != 1.0 and req.output_ids:
                 token_ids = torch.as_tensor(
                     list({int(token_id) for token_id in req.output_ids}),

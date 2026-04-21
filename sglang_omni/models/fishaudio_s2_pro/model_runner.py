@@ -3,15 +3,11 @@
 
 from __future__ import annotations
 
-import logging
 from typing import Any
 
 import torch
 
 from sglang_omni.model_runner.base import ModelRunner
-
-logger = logging.getLogger(__name__)
-_FISH_DEBUG = __import__("os").environ.get("FISH_DEBUG") == "1"
 
 
 class FishS2ProModelRunner(ModelRunner):
@@ -41,7 +37,7 @@ class FishS2ProModelRunner(ModelRunner):
         for row_idx, sched_req in enumerate(requests):
             if not bool(is_semantic[row_idx].item()):
                 continue
-            last_codes = getattr(sched_req.data, "_last_codebook_values", None)
+            last_codes = sched_req.data.last_codebook_values
             if last_codes is None:
                 continue
             self.model._vq_codes[row_idx].copy_(
@@ -53,20 +49,19 @@ class FishS2ProModelRunner(ModelRunner):
         return None
 
     def post_prefill(self, result, forward_batch, schedule_batch, requests):
-        del forward_batch
-        self._collect_step_outputs(result, schedule_batch, requests)
+        del forward_batch, schedule_batch
+        self._collect_step_outputs(result, requests)
 
     def post_decode(self, result, forward_batch, schedule_batch, requests):
-        del forward_batch
-        self._log_decode_cuda_graph_status(result, requests)
-        self._collect_step_outputs(result, schedule_batch, requests)
+        del forward_batch, schedule_batch
+        self._collect_step_outputs(result, requests)
 
     def _build_prefill_input_embeds(
         self,
         forward_batch: Any,
         requests: list,
     ) -> torch.Tensor:
-        input_ids = getattr(forward_batch, "input_ids", None)
+        input_ids = forward_batch.input_ids
         if not isinstance(input_ids, torch.Tensor):
             raise TypeError("Fish prefill expects tensor input_ids")
 
@@ -77,7 +72,7 @@ class FishS2ProModelRunner(ModelRunner):
         for sched_req in requests:
             data = sched_req.data
             req = data.req
-            req_len = int(getattr(req, "extend_input_len", 0))
+            req_len = int(req.extend_input_len)
 
             if (
                 data.vq_mask_tokens is None
@@ -91,7 +86,7 @@ class FishS2ProModelRunner(ModelRunner):
             if vq_mask.dim() == 2:
                 vq_mask = vq_mask.squeeze(0)
 
-            prefix_len = len(getattr(req, "prefix_indices", []))
+            prefix_len = len(req.prefix_indices)
             mask_slice = vq_mask[prefix_len : prefix_len + req_len]
             if not bool(mask_slice.any()):
                 offset += req_len
@@ -121,9 +116,7 @@ class FishS2ProModelRunner(ModelRunner):
 
         return text_embeds
 
-    def _collect_step_outputs(
-        self, result: Any, schedule_batch: Any, requests: list
-    ) -> None:
+    def _collect_step_outputs(self, result: Any, requests: list) -> None:
         batch_size = len(requests)
         if batch_size == 0:
             return
@@ -133,48 +126,10 @@ class FishS2ProModelRunner(ModelRunner):
         for row_idx, sched_req in enumerate(requests):
             data = sched_req.data
             req = data.req
-            if getattr(req, "is_chunked", 0) > 0:
+            if req.is_chunked > 0:
                 continue
 
             codes = self.model._output_codes[row_idx].unsqueeze(-1).clone()
-            data._last_codebook_values = codes[1:, 0].clone()
-            semantic_token = int(codes[0, -1].item())
-            if _FISH_DEBUG:
-                logger.info(
-                    "FISH_DEBUG collect_step_outputs prefill_only=%s semantic_token=%s codes_shape=%s",
-                    getattr(schedule_batch, "is_prefill_only", False),
-                    semantic_token,
-                    tuple(codes.shape),
-                )
-            data._previous_semantic_tokens.append(semantic_token)
+            data.last_codebook_values = codes[1:, 0].clone()
+            data.previous_semantic_tokens.append(int(codes[0, -1].item()))
             data.output_codes.append(codes)
-
-    def _log_decode_cuda_graph_status(self, result: Any, requests: list) -> None:
-        if not _FISH_DEBUG or not requests:
-            return
-
-        tp_model_runner = self.tp_worker.model_runner
-        graph_runner = getattr(tp_model_runner, "graph_runner", None)
-        replayed = bool(getattr(result, "can_run_cuda_graph", False))
-        batch_size = len(requests)
-        capture_bs = getattr(graph_runner, "capture_bs", None)
-        max_bs = getattr(graph_runner, "max_bs", None)
-        req_summary = [
-            {
-                "request_id": str(getattr(req, "request_id", "?")),
-                "generation_steps": int(
-                    getattr(getattr(req, "data", None), "generation_steps", 0)
-                ),
-            }
-            for req in requests[:4]
-        ]
-
-        logger.info(
-            "FISH_DEBUG decode_step cuda_graph_replay=%s graph_runner_ready=%s batch_size=%d capture_bs=%s max_capture_bs=%s reqs=%s",
-            replayed,
-            graph_runner is not None,
-            batch_size,
-            capture_bs,
-            max_bs,
-            req_summary,
-        )

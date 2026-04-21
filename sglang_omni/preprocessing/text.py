@@ -13,13 +13,16 @@ def load_chat_template(model_path: str) -> str | None:
     """Load chat_template.json from the local HF cache if available."""
     try:
         path = cached_file(model_path, "chat_template.json", local_files_only=True)
-    except Exception:
+    except (OSError, ValueError):
+        return None
+
+    if path is None:
         return None
 
     try:
         with open(path, encoding="utf-8") as f:
             payload = json.load(f)
-    except Exception:
+    except (OSError, TypeError, json.JSONDecodeError):
         return None
 
     if not isinstance(payload, Mapping):

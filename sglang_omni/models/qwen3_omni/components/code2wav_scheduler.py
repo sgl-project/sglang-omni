@@ -6,7 +6,6 @@ runs vocoder incrementally, outputs final audio via outbox.
 """
 from __future__ import annotations
 
-import hashlib
 import logging
 import queue as _queue_mod
 from typing import Any
@@ -14,8 +13,6 @@ from typing import Any
 import numpy as np
 import torch
 
-from sglang_omni.debug_trace import append_trace
-from sglang_omni.models.qwen3_omni.debug_dump import dump_precision_pt
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.messages import IncomingMessage, OutgoingMessage
 
@@ -137,17 +134,6 @@ class Code2WavScheduler:
                     "Code2Wav skip EOS req=%s codes=%s", request_id, codes.tolist()
                 )
             return
-
-        dump_precision_pt(
-            prefix="code2wav_input",
-            request_id=request_id,
-            step=len(self._code_chunks[request_id]),
-            payload={
-                "request_id": request_id,
-                "step": len(self._code_chunks[request_id]),
-                "codes": codes.detach().cpu(),
-            },
-        )
         self._code_chunks[request_id].append(codes)
         ready = len(self._code_chunks[request_id]) - self._emitted[request_id]
         if ready >= self._stream_chunk_size:
@@ -182,22 +168,6 @@ class Code2WavScheduler:
                 len(audio_parts),
                 int(full_audio.shape[0]),
             )
-        dump_precision_pt(
-            prefix="code2wav_final",
-            request_id=request_id,
-            payload={
-                "request_id": request_id,
-                "audio": torch.from_numpy(full_audio.copy()),
-            },
-        )
-        append_trace(
-            "code2wav",
-            request_id,
-            "final_audio",
-            chunk_count=len(audio_parts),
-            audio_shape=list(full_audio.shape),
-            audio_sha256=hashlib.sha256(full_audio.tobytes()).hexdigest(),
-        )
         self.outbox.put(
             OutgoingMessage(
                 request_id=request_id,
@@ -250,28 +220,6 @@ class Code2WavScheduler:
                 trim,
                 int(audio.shape[0]),
             )
-        dump_precision_pt(
-            prefix="code2wav_decode",
-            request_id=request_id,
-            step=end,
-            payload={
-                "request_id": request_id,
-                "start": start,
-                "end": end,
-                "context": context,
-                "trim": trim,
-                "codes_window": codes.detach().cpu(),
-                "audio": torch.from_numpy(audio.copy()),
-            },
-        )
-        append_trace(
-            "code2wav",
-            request_id,
-            "chunk_audio",
-            emitted_positions=end,
-            audio_shape=list(audio.shape),
-            audio_sha256=hashlib.sha256(audio.tobytes()).hexdigest(),
-        )
         return audio
 
     def _build_audio_payload(self, audio: np.ndarray) -> dict[str, Any]:

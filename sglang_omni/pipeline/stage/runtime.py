@@ -112,10 +112,13 @@ class Stage:
         # --- State ---
         self._running = False
         self._aborted: set[str] = set()
+        self._active_requests: set[str] = set()
         self._stream_queue: StreamQueue | None = None
         self._pending_stream_data: dict[str, list[StreamItem | StreamSignal]] = {}
         self._stream_chunk_counters: dict[tuple[str, str], int] = {}
         self._scheduler_thread: threading.Thread | None = None
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._scheduler_crash_error: BaseException | None = None
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -125,6 +128,7 @@ class Stage:
         if self._running:
             return
         await self.control_plane.start()
+        self._loop = asyncio.get_running_loop()
         self._running = True
 
         # Start scheduler in dedicated thread
@@ -142,9 +146,15 @@ class Stage:
                             self.gpu_id,
                         )
                     self.scheduler.start()
-                except Exception:
+                except Exception as exc:
                     logger.exception("Scheduler thread for stage %s crashed", self.name)
                     self._running = False
+                    loop = self._loop
+                    if loop is not None and not loop.is_closed():
+                        asyncio.run_coroutine_threadsafe(
+                            self._handle_scheduler_crash(exc),
+                            loop,
+                        )
 
             self._scheduler_thread = threading.Thread(
                 target=_run_scheduler,
@@ -176,6 +186,9 @@ class Stage:
                 await self._handle_message(msg)
         except asyncio.CancelledError:
             pass
+        except Exception:
+            if self._scheduler_crash_error is None:
+                raise
         finally:
             await self.stop()
             abort_task.cancel()
@@ -208,6 +221,7 @@ class Stage:
         request_id = msg.request_id
         if request_id in self._aborted:
             return
+        self._active_requests.add(request_id)
         if self._stream_queue is not None and not self._stream_queue.has(request_id):
             self._stream_queue.open(request_id)
 
@@ -219,6 +233,7 @@ class Stage:
         if request_id in self._aborted:
             self.relay.cleanup(request_id)
             return
+        self._active_requests.add(request_id)
         if self._stream_queue is not None and not self._stream_queue.has(request_id):
             self._stream_queue.open(request_id)
 
@@ -227,10 +242,12 @@ class Stage:
             payload = await relay_io.read_payload(
                 self.relay, request_id, msg.shm_metadata
             )
-        except Exception:
+        except Exception as exc:
             logger.exception(
                 "Stage %s: relay read failed for %s", self.name, request_id
             )
+            self.relay.cleanup(request_id)
+            await self._send_failure(request_id, f"relay read failed: {exc}")
             return
 
         # Input aggregation
@@ -261,6 +278,7 @@ class Stage:
         request_id = msg.request_id
         if request_id in self._aborted:
             return
+        self._active_requests.add(request_id)
 
         # Same-GPU CUDA IPC
         if isinstance(msg.shm_metadata, dict) and msg.shm_metadata.get("_ipc"):
@@ -273,6 +291,7 @@ class Stage:
                     request_id,
                     exc,
                 )
+                self._queue_stream_error(request_id, msg.from_stage, exc)
                 return
             self._route_stream_item(request_id, item)
             return
@@ -289,8 +308,7 @@ class Stage:
                 request_id,
                 exc,
             )
-            if self._stream_queue is not None and self._stream_queue.has(request_id):
-                self._stream_queue.put_error(request_id, exc)
+            self._queue_stream_error(request_id, msg.from_stage, exc)
             return
 
         item = StreamItem(
@@ -303,6 +321,23 @@ class Stage:
             self._pending_stream_data.setdefault(request_id, []).append(item)
             return
         self._route_stream_item(request_id, item)
+
+    def _queue_stream_error(
+        self,
+        request_id: str,
+        from_stage: str | None,
+        error: BaseException,
+    ) -> None:
+        if self._stream_queue is not None and self._stream_queue.has(request_id):
+            self._stream_queue.put_error(
+                request_id,
+                error,
+                from_stage=from_stage,
+            )
+            return
+        self._pending_stream_data.setdefault(request_id, []).append(
+            StreamSignal(from_stage=from_stage, error=error)
+        )
 
     async def _read_chunk_metadata(
         self, shm_metadata: dict, blob_key: str
@@ -339,6 +374,7 @@ class Stage:
         request_id = msg.request_id
         if request_id in self._aborted:
             return
+        self._active_requests.add(request_id)
         if self._stream_queue is None or not self._stream_queue.has(request_id):
             if msg.error:
                 self._pending_stream_data.setdefault(request_id, []).append(
@@ -413,6 +449,9 @@ class Stage:
             except _queue_mod.Empty:
                 continue
 
+            if out.request_id not in self._active_requests:
+                continue
+
             if out.type == "result":
                 await self._route_result(out.request_id, out.data)
             elif out.type == "stream":
@@ -431,6 +470,8 @@ class Stage:
                         out.target,
                         out.metadata,
                     )
+            elif out.type == "error":
+                await self._send_failure(out.request_id, str(out.data))
 
     # ------------------------------------------------------------------
     # Routing: send results to next stage(s) or coordinator
@@ -468,10 +509,7 @@ class Stage:
             for target in next_stages:
                 await self._send_to_stage(request_id, target, result)
 
-        # Cleanup
-        if self._stream_queue is not None:
-            self._stream_queue.close(request_id)
-        self._pending_stream_data.pop(request_id, None)
+        self._clear_request_state(request_id)
 
     async def _send_to_stage(self, request_id: str, target: str, payload: Any) -> None:
         endpoint = self.endpoints.get(target)
@@ -523,6 +561,37 @@ class Stage:
                 error=error,
             )
         )
+        self._clear_request_state(request_id)
+
+    def _clear_request_state(self, request_id: str) -> None:
+        self._active_requests.discard(request_id)
+        self.input_handler.cancel(request_id)
+        if self._stream_queue is not None:
+            self._stream_queue.close(request_id)
+        self._pending_stream_data.pop(request_id, None)
+        stale_keys = [
+            key for key in self._stream_chunk_counters if key[0] == request_id
+        ]
+        for key in stale_keys:
+            self._stream_chunk_counters.pop(key, None)
+
+    async def _handle_scheduler_crash(self, exc: BaseException) -> None:
+        if self._scheduler_crash_error is not None:
+            return
+        self._scheduler_crash_error = exc
+        error = f"scheduler crashed: {exc}"
+        active_request_ids = [
+            request_id
+            for request_id in list(self._active_requests)
+            if request_id not in self._aborted
+        ]
+        for request_id in active_request_ids:
+            with suppress(Exception):
+                self.scheduler.abort(request_id)
+            await self._send_failure(request_id, error)
+            with suppress(Exception):
+                self.relay.cleanup(request_id)
+        self.control_plane.close()
 
     # ------------------------------------------------------------------
     # Abort
@@ -535,6 +604,9 @@ class Stage:
                 self._on_abort(abort_msg.request_id)
         except asyncio.CancelledError:
             pass
+        except Exception:
+            if self._scheduler_crash_error is None and self._running:
+                logger.exception("Stage %s abort listener crashed", self.name)
 
     def _on_abort(self, request_id: str) -> None:
         self._aborted.add(request_id)
@@ -543,6 +615,7 @@ class Stage:
             it = iter(self._aborted)
             to_remove = [next(it) for _ in range(excess)]
             self._aborted -= set(to_remove)
+        self._active_requests.discard(request_id)
         self.input_handler.cancel(request_id)
         self.relay.cleanup(request_id)
         if self._stream_queue is not None:

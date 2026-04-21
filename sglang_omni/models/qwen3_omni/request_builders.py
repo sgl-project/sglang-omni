@@ -3,32 +3,15 @@
 
 from __future__ import annotations
 
-import logging
-import os
 from typing import Any
 
 import torch
 
 from sglang_omni.models.qwen3_omni.components.talker_prefill import TalkerPrefillBuilder
-from sglang_omni.models.qwen3_omni.debug_dump import dump_precision_pt
 from sglang_omni.models.qwen3_omni.payload_types import PipelineState, ThinkerOutput
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.messages import OutgoingMessage
 from sglang_omni.scheduling.sglang_backend import SGLangARRequestData
-
-logger = logging.getLogger(__name__)
-
-
-def _tensor_head(tensor: torch.Tensor | None, n: int = 4) -> list[float]:
-    if tensor is None:
-        return []
-    return tensor.detach().reshape(-1)[:n].float().cpu().tolist()
-
-
-def _tensor_norm(tensor: torch.Tensor | None) -> float:
-    if tensor is None:
-        return 0.0
-    return float(tensor.detach().float().norm().cpu().item())
 
 
 # Lightweight request data types (previously in engines/omni/runtime/)
@@ -366,7 +349,6 @@ def build_sglang_talker_request(
     req.tokenizer = tokenizer
     req.omni_model_inputs = dict(talker_model_inputs or {})
     req._omni_consumed = None
-    req._input_embeds_are_projected = bool(input_embeds_are_projected)
     req._codec_suppress_tokens = (
         tuple(int(token_id) for token_id in suppress_tokens)
         if suppress_tokens
@@ -474,14 +456,8 @@ def make_thinker_stream_output_builder():
         return _normalize_chunk_hidden(embed), _normalize_chunk_hidden(layer_hidden)
 
     def _build_stream_output(request_id: str, req_data: Any, req_output: Any):
+        del req_data
         if req_output.data is None:
-            if os.environ.get("QWEN_TALKER_TRACE") == "1":
-                logger.info(
-                    "QWEN_TRACE new thinker_chunk_skip req=%s token_id=%s data_is_none=%s",
-                    request_id,
-                    None if req_output.data is None else int(req_output.data),
-                    req_output.data is None,
-                )
             return None
         extra = req_output.extra
         if not isinstance(extra, dict) or "hidden_states" not in extra:
@@ -489,39 +465,11 @@ def make_thinker_stream_output_builder():
 
         embed, layer_hidden = _split_dual_layer_hidden(extra["hidden_states"])
         token_id = int(req_output.data)
-        chunk_index = int(getattr(req_data, "_precision_thinker_chunk_index", 0))
 
         if embed is not None:
             metadata = {"token_id": token_id}
             if layer_hidden is not None:
                 metadata["layer_hidden"] = layer_hidden
-            dump_precision_pt(
-                prefix="thinker_chunk",
-                request_id=request_id,
-                step=chunk_index,
-                payload={
-                    "request_id": request_id,
-                    "chunk_index": chunk_index,
-                    "token_id": token_id,
-                    "embed": embed.detach().cpu(),
-                    "layer_hidden": (
-                        layer_hidden.detach().cpu()
-                        if isinstance(layer_hidden, torch.Tensor)
-                        else None
-                    ),
-                },
-            )
-            setattr(req_data, "_precision_thinker_chunk_index", chunk_index + 1)
-            if os.environ.get("QWEN_TALKER_TRACE") == "1":
-                logger.info(
-                    "QWEN_TRACE new thinker_chunk req=%s token_id=%s embed_norm=%.4f embed_head=%s layer_norm=%.4f layer_head=%s",
-                    request_id,
-                    token_id,
-                    _tensor_norm(embed),
-                    _tensor_head(embed),
-                    _tensor_norm(layer_hidden),
-                    _tensor_head(layer_hidden),
-                )
             return OutgoingMessage(
                 request_id=request_id,
                 type="stream",
@@ -530,27 +478,6 @@ def make_thinker_stream_output_builder():
             )
 
         if layer_hidden is not None:
-            dump_precision_pt(
-                prefix="thinker_chunk",
-                request_id=request_id,
-                step=chunk_index,
-                payload={
-                    "request_id": request_id,
-                    "chunk_index": chunk_index,
-                    "token_id": token_id,
-                    "embed": None,
-                    "layer_hidden": layer_hidden.detach().cpu(),
-                },
-            )
-            setattr(req_data, "_precision_thinker_chunk_index", chunk_index + 1)
-            if os.environ.get("QWEN_TALKER_TRACE") == "1":
-                logger.info(
-                    "QWEN_TRACE new thinker_chunk req=%s token_id=%s embed_norm=0.0000 embed_head=[] layer_norm=%.4f layer_head=%s",
-                    request_id,
-                    token_id,
-                    _tensor_norm(layer_hidden),
-                    _tensor_head(layer_hidden),
-                )
             return OutgoingMessage(
                 request_id=request_id,
                 type="stream",

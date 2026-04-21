@@ -4,8 +4,6 @@
 from __future__ import annotations
 
 import json
-import logging
-import os
 from pathlib import Path
 from typing import Any
 
@@ -13,11 +11,9 @@ import torch
 from safetensors import safe_open
 
 from sglang_omni.models.qwen3_omni.components.talker_input import build_prefill_input
-from sglang_omni.models.qwen3_omni.debug_dump import dump_precision_pt
 from sglang_omni.models.qwen3_omni.payload_types import PipelineState
 from sglang_omni.models.weight_loader import resolve_model_path
 
-logger = logging.getLogger(__name__)
 _THINKER_EMBED_CANDIDATE_KEYS = (
     "thinker.model.embed_tokens.weight",
     "model.embed_tokens.weight",
@@ -28,11 +24,11 @@ def _read_rows_from_safetensor(
     file_path: Path, tensor_name: str, row_ids: list[int]
 ) -> torch.Tensor:
     with safe_open(str(file_path), framework="pt", device="cpu") as handle:
+        tensor_slice = handle.get_slice(tensor_name)
         try:
-            tensor_slice = handle.get_slice(tensor_name)
             rows = [tensor_slice[row_id] for row_id in row_ids]
             return torch.stack(rows, dim=0)
-        except Exception:
+        except (IndexError, RuntimeError, TypeError, ValueError):
             tensor = handle.get_tensor(tensor_name)
             return tensor[row_ids]
 
@@ -229,39 +225,6 @@ class TalkerPrefillBuilder:
             tts_pad_token_id=self._tts_pad_token_id,
             include_assistant_eos=thinker_done,
             im_end_token_id=self._im_end_token_id,
-        )
-
-        if os.environ.get("QWEN_TALKER_TRACE") == "1":
-            logger.info(
-                "QWEN_TRACE new prompt_prefill rid=%s chunks=%s prompt_ids=%s assistant_ids=%s input_ids=%s embed0=%s embed_last=%s embed_sum=%.6f embed_norm=%.6f",
-                payload.request_id,
-                len(thinker_chunks),
-                prompt_ids[:8].tolist(),
-                assistant_token_ids[:8].tolist(),
-                prefill["input_ids"][:12].detach().cpu().tolist(),
-                prefill["input_embeds"][0, :8].detach().float().cpu().tolist(),
-                prefill["input_embeds"][-1, :8].detach().float().cpu().tolist(),
-                float(prefill["input_embeds"].detach().float().sum().cpu().item()),
-                float(prefill["input_embeds"].detach().float().norm().cpu().item()),
-            )
-        dump_precision_pt(
-            prefix="talker_prefill",
-            request_id=payload.request_id,
-            payload={
-                "request_id": payload.request_id,
-                "prompt_ids": prompt_ids.detach().cpu(),
-                "assistant_ids": assistant_token_ids.detach().cpu(),
-                "input_ids": prefill["input_ids"].detach().cpu(),
-                "input_embeds": prefill["input_embeds"].detach().cpu(),
-                "trailing_text_hidden": (
-                    prefill["trailing_text_hidden"].detach().cpu()
-                    if isinstance(prefill["trailing_text_hidden"], torch.Tensor)
-                    else None
-                ),
-                "tts_pad_embed": tts_pad_embed[0].detach().cpu(),
-                "tts_eos_embed": tts_eos_embed[0].detach().cpu(),
-                "prompt_model_input_keys": sorted(prompt_model_inputs.keys()),
-            },
         )
 
         return {

@@ -11,7 +11,6 @@ from typing import Any
 
 import torch
 
-from sglang_omni.debug_trace import append_ar_trace
 from sglang_omni.scheduling.types import ModelRunnerOutput
 
 logger = logging.getLogger(__name__)
@@ -135,12 +134,6 @@ class ModelRunner:
                 scheduler_output.requests,
             )
         schedule_batch.output_ids = batch_result.next_token_ids
-        append_ar_trace(
-            type(self.model).__name__,
-            scheduler_output.requests,
-            batch_result.logits_output,
-            batch_result.next_token_ids,
-        )
 
         # Output extraction
         outputs = self.output_processor.process(batch_result, scheduler_output)
@@ -210,15 +203,6 @@ class ModelRunner:
     ) -> Any | None:
         return None
 
-    def trace_pre_sample(
-        self,
-        logits_output: Any,
-        forward_batch: Any,
-        schedule_batch: Any,
-        requests: list,
-    ) -> None:
-        del logits_output, forward_batch, schedule_batch, requests
-
     # ------------------------------------------------------------------
     # Shared logit processing
     # ------------------------------------------------------------------
@@ -232,12 +216,6 @@ class ModelRunner:
     ) -> Any:
         self._apply_repetition_penalty(logits_output, requests)
         self._apply_codec_suppress_tokens(logits_output, requests)
-        self.trace_pre_sample(
-            logits_output,
-            forward_batch,
-            schedule_batch,
-            requests,
-        )
         return self.tp_worker.model_runner.sample(logits_output, forward_batch)
 
     def _apply_repetition_penalty(self, logits_output: Any, requests: list) -> None:

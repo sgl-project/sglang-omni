@@ -30,8 +30,6 @@ logger = logging.getLogger(__name__)
 class FishBatchPlanner:
     """SGLang-backed batch planner ported from the old Fish runtime."""
 
-    _FEEDBACK_TIMEOUT: float = 60.0
-
     def __init__(self, prefill_manager: Any, decode_manager: Any, server_args: Any):
         self.prefill_manager = prefill_manager
         self.decode_manager = decode_manager
@@ -40,7 +38,6 @@ class FishBatchPlanner:
         self.forward_ct: int = 0
         self.req_id_map: dict[str, SchedulerRequest] = {}
         self._cached_schedule_batch: Any | None = None
-        self._abort_callback: Any | None = None
 
     def select_requests(
         self,
@@ -79,11 +76,7 @@ class FishBatchPlanner:
         )
 
         if schedule_batch is None and self.decode_manager.runnable:
-            self._abort_stuck_feedback_requests()
-            if not self._any_waiting_feedback():
-                schedule_batch = self.decode_manager.schedule_next_batch(
-                    self.forward_ct
-                )
+            schedule_batch = self.decode_manager.schedule_next_batch(self.forward_ct)
 
         if schedule_batch is None:
             self._cached_schedule_batch = None
@@ -120,43 +113,6 @@ class FishBatchPlanner:
 
     def record_last_batch(self, schedule_batch: Any) -> None:
         self.last_batch = schedule_batch
-
-    def _any_waiting_feedback(self) -> bool:
-        running_batch = self.decode_manager.running_batch
-        if running_batch is None or running_batch.is_empty():
-            return False
-        for req in running_batch.reqs:
-            sched_req = self.req_id_map.get(req.rid)
-            if (
-                sched_req is not None
-                and sched_req.status == SchedulerStatus.WAITING_FEEDBACK
-            ):
-                return True
-        return False
-
-    def _abort_stuck_feedback_requests(self) -> None:
-        running_batch = self.decode_manager.running_batch
-        if running_batch is None or running_batch.is_empty():
-            return
-        now = time.time()
-        for req in running_batch.reqs:
-            sched_req = self.req_id_map.get(req.rid)
-            if (
-                sched_req is None
-                or sched_req.status != SchedulerStatus.WAITING_FEEDBACK
-            ):
-                continue
-            wait_start = getattr(sched_req, "_feedback_wait_start", None)
-            if wait_start is not None and (now - wait_start) > self._FEEDBACK_TIMEOUT:
-                logger.error(
-                    "Fish request %s stuck in WAITING_FEEDBACK for >%.0fs, aborting",
-                    sched_req.request_id,
-                    self._FEEDBACK_TIMEOUT,
-                )
-                if self._abort_callback is not None:
-                    self._abort_callback(sched_req.request_id)
-                else:
-                    sched_req.status = SchedulerStatus.ABORTED
 
     def _post_step_operations(self) -> None:
         chunked_req_to_exclude = set()
@@ -271,8 +227,8 @@ class FishResourceManager:
         data = request.data
         if data.req is not None:
             release_kv_cache(data.req, self.tree_cache)
-        data._previous_semantic_tokens.clear()
-        data._last_codebook_values = None
+        data.previous_semantic_tokens.clear()
+        data.last_codebook_values = None
 
 
 class FishIterationController:
@@ -306,8 +262,8 @@ class FishIterationController:
             return False
 
         semantic_token = output_token_id
-        if semantic_token is None and data._previous_semantic_tokens:
-            semantic_token = int(data._previous_semantic_tokens[-1])
+        if semantic_token is None and data.previous_semantic_tokens:
+            semantic_token = int(data.previous_semantic_tokens[-1])
 
         if semantic_token == self._im_end_id:
             return True
@@ -355,7 +311,6 @@ class FishScheduler:
         self.batch_planner = FishBatchPlanner(
             prefill_manager, decode_manager, server_args
         )
-        self.batch_planner._abort_callback = self.abort
         self.resource_manager = FishResourceManager(
             token_to_kv_pool_allocator,
             req_to_token_pool,
@@ -385,8 +340,6 @@ class FishScheduler:
         for payload in recv_reqs:
             req_id = payload.request_id
             req_data = self._request_builder(payload)
-            req = req_data.req
-            req._omni_data = req_data
             sched_req = SchedulerRequest(
                 request_id=req_id,
                 data=req_data,
@@ -487,9 +440,16 @@ class FishScheduler:
                 result = self.run_batch(batch)
                 finished = self.update(batch, result)
                 self.emit_finished(finished)
-            except Exception:
+            except Exception as exc:
                 logger.exception("FishScheduler batch failed")
                 for request in batch.requests:
+                    self.outbox.put(
+                        OutgoingMessage(
+                            request_id=request.request_id,
+                            type="error",
+                            data=exc,
+                        )
+                    )
                     self.abort(request.request_id)
 
     def stop(self) -> None:

@@ -389,7 +389,7 @@ class OmniScheduler:
     ) -> bool:
         if pending_stream_done:
             return False
-        prefetched_chunks = getattr(payload, "prefetched_chunks", None) or []
+        prefetched_chunks = payload.prefetched_chunks or []
         if prefetched_chunks:
             return False
         message = str(exc)

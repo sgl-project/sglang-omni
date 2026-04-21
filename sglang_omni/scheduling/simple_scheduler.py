@@ -89,6 +89,18 @@ class SimpleScheduler:
             )
         )
 
+    @staticmethod
+    def _emit_error(
+        request_id: str, error: BaseException, outbox: _queue_mod.Queue[OutgoingMessage]
+    ) -> None:
+        outbox.put(
+            OutgoingMessage(
+                request_id=request_id,
+                type="error",
+                data=error,
+            )
+        )
+
     def _run_single(
         self, msg: IncomingMessage, loop: asyncio.AbstractEventLoop
     ) -> None:
@@ -129,13 +141,19 @@ class SimpleScheduler:
                     continue
 
                 if msg.type == "new_request":
+                    batch = self._collect_batch(msg)
                     try:
-                        batch = self._collect_batch(msg)
                         self._run_batch(batch, loop)
-                    except Exception:
+                    except Exception as exc:
                         logger.exception(
                             "SimpleScheduler: compute_fn failed for %s", msg.request_id
                         )
+                        for failed_msg in batch:
+                            self._emit_error(
+                                failed_msg.request_id,
+                                exc,
+                                self.outbox,
+                            )
         finally:
             loop.close()
 
