@@ -25,11 +25,6 @@ import argparse
 import logging
 import os
 
-from _mem_fraction_cli import (
-    add_mem_fraction_static_args,
-    apply_mem_fraction_static_args,
-)
-
 from sglang_omni.models.qwen3_omni.config import Qwen3OmniPipelineConfig
 from sglang_omni.serve import launch_server
 
@@ -65,9 +60,14 @@ def parse_args() -> argparse.Namespace:
         choices=["shm", "nccl", "nixl"],
         help="Relay type for inter-stage data transfer",
     )
-    add_mem_fraction_static_args(
-        parser,
-        global_target_help="the thinker stage",
+    parser.add_argument(
+        "--mem-fraction-static",
+        type=float,
+        default=None,
+        help=(
+            "Set SGLang mem_fraction_static for the thinker stage. "
+            "If omitted, SGLang chooses automatically."
+        ),
     )
 
     # Server
@@ -95,8 +95,16 @@ def main() -> None:
         relay_backend=args.relay_backend,
     )
     if overrides:
-        config.apply_thinker_server_args_overrides(overrides)
-    apply_mem_fraction_static_args(config, args)
+        config.apply_server_args_overrides(stage_name="thinker", overrides=overrides)
+    if args.mem_fraction_static is not None:
+        if not 0.0 < args.mem_fraction_static < 1.0:
+            raise ValueError(
+                f"--mem-fraction-static must be > 0 and < 1, got {args.mem_fraction_static}"
+            )
+        config.apply_server_args_overrides(
+            stage_name="thinker",
+            overrides={"mem_fraction_static": args.mem_fraction_static},
+        )
 
     # Override thinker_max_seq_len in stage executor args if provided
     if args.thinker_max_seq_len is not None:

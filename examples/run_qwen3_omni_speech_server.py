@@ -32,12 +32,6 @@ import logging
 import multiprocessing as mp
 import os
 
-from _mem_fraction_cli import (
-    add_mem_fraction_static_args,
-    apply_mem_fraction_static_args,
-    get_applied_mem_fraction_static,
-)
-
 logging.basicConfig(
     level=os.environ.get("LOGLEVEL", "INFO").upper(),
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -57,8 +51,8 @@ def parse_args() -> argparse.Namespace:
     # GPU placement
     parser.add_argument("--gpu-thinker", type=int, default=0)
     parser.add_argument("--gpu-talker", type=int, default=1)
-    parser.add_argument("--gpu-code-predictor", type=int, default=2)
-    parser.add_argument("--gpu-code2wav", type=int, default=0)
+    parser.add_argument("--gpu-code-predictor", type=int, default=1)
+    parser.add_argument("--gpu-code2wav", type=int, default=1)
     parser.add_argument("--gpu-image-encoder", type=int, default=0)
     parser.add_argument("--gpu-audio-encoder", type=int, default=0)
 
@@ -66,11 +60,32 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--relay-backend", type=str, default="shm", choices=["nixl", "shm"]
     )
-    add_mem_fraction_static_args(
-        parser,
-        global_target_help="both Qwen AR stages (thinker and talker)",
-        include_thinker=True,
-        include_talker=True,
+    parser.add_argument(
+        "--mem-fraction-static",
+        type=float,
+        default=None,
+        help=(
+            "Set SGLang mem_fraction_static for both Qwen AR stages "
+            "(thinker and talker). If omitted, SGLang chooses automatically."
+        ),
+    )
+    parser.add_argument(
+        "--thinker-mem-fraction-static",
+        type=float,
+        default=None,
+        help=(
+            "Set SGLang mem_fraction_static only for the thinker stage. "
+            "Overrides --mem-fraction-static for thinker."
+        ),
+    )
+    parser.add_argument(
+        "--talker-mem-fraction-static",
+        type=float,
+        default=None,
+        help=(
+            "Set SGLang mem_fraction_static only for the talker stage. "
+            "Overrides --mem-fraction-static for talker."
+        ),
     )
 
     # Server
@@ -102,23 +117,42 @@ async def main_async(args: argparse.Namespace) -> None:
         relay_backend=args.relay_backend,
         gpu_placement=gpu_placement,
     )
-    apply_mem_fraction_static_args(config, args)
+    for flag_name, value in (
+        ("--mem-fraction-static", args.mem_fraction_static),
+        ("--thinker-mem-fraction-static", args.thinker_mem_fraction_static),
+        ("--talker-mem-fraction-static", args.talker_mem_fraction_static),
+    ):
+        if value is not None and not 0.0 < value < 1.0:
+            raise ValueError(f"{flag_name} must be > 0 and < 1, got {value}")
+    thinker_mem_fraction_static = (
+        args.thinker_mem_fraction_static
+        if args.thinker_mem_fraction_static is not None
+        else args.mem_fraction_static
+    )
+    talker_mem_fraction_static = (
+        args.talker_mem_fraction_static
+        if args.talker_mem_fraction_static is not None
+        else args.mem_fraction_static
+    )
+    if thinker_mem_fraction_static is not None:
+        config.apply_server_args_overrides(
+            stage_name="thinker",
+            overrides={"mem_fraction_static": thinker_mem_fraction_static},
+        )
+    if talker_mem_fraction_static is not None:
+        config.apply_server_args_overrides(
+            stage_name="talker_ar",
+            overrides={"mem_fraction_static": talker_mem_fraction_static},
+        )
     logger.info(
-        "Speech server config: thinker_gpu=%s talker_gpu=%s code_predictor_gpu=%s "
-        "code2wav_gpu=%s thinker_mem_fraction_static=%s "
-        "talker_mem_fraction_static=%s",
-        args.gpu_thinker,
-        args.gpu_talker,
-        args.gpu_code_predictor,
-        args.gpu_code2wav,
-        get_applied_mem_fraction_static(
-            config,
-            config.mem_fraction_override_stages.thinker,
-        ),
-        get_applied_mem_fraction_static(
-            config,
-            config.mem_fraction_override_stages.talker,
-        ),
+        f"Speech server config: thinker_gpu={args.gpu_thinker} "
+        f"talker_gpu={args.gpu_talker} "
+        f"code_predictor_gpu={args.gpu_code_predictor} "
+        f"code2wav_gpu={args.gpu_code2wav} "
+        f"thinker_mem_fraction_static="
+        f"{'auto' if thinker_mem_fraction_static is None else thinker_mem_fraction_static} "
+        f"talker_mem_fraction_static="
+        f"{'auto' if talker_mem_fraction_static is None else talker_mem_fraction_static}"
     )
 
     runner = MultiProcessPipelineRunner(config)

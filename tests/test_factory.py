@@ -189,7 +189,18 @@ def test_qwen3_speech_pipeline_enables_talker_feedback() -> None:
 
 
 def test_qwen3_speech_pipeline_rejects_tp() -> None:
-    cfg = Qwen3OmniSpeechPipelineConfig(model_path="dummy")
+    cfg = Qwen3OmniSpeechPipelineConfig(
+        model_path="dummy",
+        gpu_placement={
+            "thinker": 0,
+            "talker_ar": 2,
+            "code_predictor": 2,
+            "code2wav": 2,
+        },
+    )
 
     with pytest.raises(NotImplementedError, match="not supported yet"):
-        cfg.apply_thinker_server_args_overrides({"tp_size": 2})
+        cfg.apply_server_args_overrides(
+            stage_name="thinker",
+            overrides={"tp_size": 2},
+        )

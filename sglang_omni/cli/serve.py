@@ -93,14 +93,45 @@ def serve(
         update={"model_path": model_path},
         deep=True,
     )
-    try:
-        merged_config.apply_mem_fraction_static_overrides(
-            mem_fraction_static=mem_fraction_static,
-            thinker_mem_fraction_static=thinker_mem_fraction_static,
-            talker_mem_fraction_static=talker_mem_fraction_static,
+    for flag_name, value in (
+        ("--mem-fraction-static", mem_fraction_static),
+        ("--thinker-mem-fraction-static", thinker_mem_fraction_static),
+        ("--talker-mem-fraction-static", talker_mem_fraction_static),
+    ):
+        if value is not None and not 0.0 < value < 1.0:
+            raise typer.BadParameter(f"{flag_name} must be > 0 and < 1, got {value}")
+
+    role_to_stage = type(merged_config).mem_fraction_role_to_stage()
+    if mem_fraction_static is not None and not role_to_stage:
+        raise typer.BadParameter(
+            "--mem-fraction-static requires a pipeline with a supported "
+            "mem_fraction_static override target"
         )
-    except ValueError as exc:
-        raise typer.BadParameter(str(exc)) from exc
+    if thinker_mem_fraction_static is not None and "thinker" not in role_to_stage:
+        raise typer.BadParameter(
+            "--thinker-mem-fraction-static is not supported by pipeline "
+            f"{type(merged_config).__name__}."
+        )
+    if talker_mem_fraction_static is not None and "talker" not in role_to_stage:
+        raise typer.BadParameter(
+            "--talker-mem-fraction-static is not supported by pipeline "
+            f"{type(merged_config).__name__}."
+        )
+
+    role_values = {
+        "thinker": thinker_mem_fraction_static,
+        "talker": talker_mem_fraction_static,
+    }
+    for role, stage_name in role_to_stage.items():
+        role_value = role_values.get(role)
+        final_mem_fraction_static = (
+            role_value if role_value is not None else mem_fraction_static
+        )
+        if final_mem_fraction_static is not None:
+            merged_config.apply_server_args_overrides(
+                stage_name=stage_name,
+                overrides={"mem_fraction_static": final_mem_fraction_static},
+            )
 
     # print merged configuration
     print("=" * 20, "Merged Configuration", "=" * 20)

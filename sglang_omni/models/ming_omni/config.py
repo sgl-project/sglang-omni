@@ -5,8 +5,6 @@ from __future__ import annotations
 
 from typing import Any, ClassVar
 
-from pydantic import Field
-
 from sglang_omni.config import (
     ExecutorConfig,
     InputHandlerConfig,
@@ -14,7 +12,6 @@ from sglang_omni.config import (
     RelayConfig,
     StageConfig,
 )
-from sglang_omni.config.schema import MemFractionOverrideStages
 from sglang_omni.models.ming_omni.pipeline.next_stage import (
     AGGREGATE_STAGE,
     AUDIO_STAGE,
@@ -36,9 +33,6 @@ class MingOmniPipelineConfig(PipelineConfig):
 
     model_path: str
     entry_stage: str = "preprocessing"
-    mem_fraction_override_stages: MemFractionOverrideStages = Field(
-        default_factory=lambda: MemFractionOverrideStages(thinker=THINKER_STAGE)
-    )
     stages: list[StageConfig] = [
         StageConfig(
             name=PREPROCESSING_STAGE,
@@ -108,11 +102,9 @@ class MingOmniPipelineConfig(PipelineConfig):
         ),
     ]
 
-    def apply_thinker_server_args_overrides(self, overrides: dict[str, Any]) -> None:
-        self.apply_server_args_overrides(
-            stage_name=THINKER_STAGE,
-            overrides=overrides,
-        )
+    @classmethod
+    def mem_fraction_role_to_stage(cls) -> dict[str, str]:
+        return {"thinker": THINKER_STAGE}
 
 
 def _validate_ming_speech_gpu_placement(
@@ -143,9 +135,6 @@ class MingOmniSpeechPipelineConfig(PipelineConfig):
     model_path: str
     entry_stage: str = "preprocessing"
     terminal_stages: list[str] = [DECODE_STAGE, TALKER_STAGE]
-    mem_fraction_override_stages: MemFractionOverrideStages = Field(
-        default_factory=lambda: MemFractionOverrideStages(thinker=THINKER_STAGE)
-    )
     gpu_placement: dict[str, int] = {
         "thinker": 0,
         "talker": 1,
@@ -224,6 +213,10 @@ class MingOmniSpeechPipelineConfig(PipelineConfig):
         ),
     ]
 
+    @classmethod
+    def mem_fraction_role_to_stage(cls) -> dict[str, str]:
+        return {"thinker": THINKER_STAGE}
+
     def model_post_init(self, __context: Any) -> None:
         super().model_post_init(__context)
         _validate_ming_speech_gpu_placement(self.gpu_placement, tp_size=1)
@@ -238,12 +231,6 @@ class MingOmniSpeechPipelineConfig(PipelineConfig):
             )
         super().apply_server_args_overrides(
             stage_name=stage_name,
-            overrides=overrides,
-        )
-
-    def apply_thinker_server_args_overrides(self, overrides: dict[str, Any]) -> None:
-        self.apply_server_args_overrides(
-            stage_name=THINKER_STAGE,
             overrides=overrides,
         )
 

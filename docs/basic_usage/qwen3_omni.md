@@ -145,6 +145,13 @@ sgl-omni serve \
   --talker-mem-fraction-static 0.88
 ```
 
+When `mem_fraction_static` is omitted, SGLang chooses an auto value for the
+thinker AR engine. SGLang's main VLM reserve only handles top-level
+`vision_config`, while Qwen3-Omni keeps vision/audio encoder configs under the
+nested thinker config and SGLang-Omni runs those encoders on the thinker GPU.
+SGLang-Omni therefore applies a small additional thinker-only reserve on the
+auto path. Explicit `--thinker-mem-fraction-static` values are left unchanged.
+
 ### Image and Text Input
 
 Send an image with a text question to get both text and audio responses. Set `"modalities": ["text", "audio"]` to enable audio output.

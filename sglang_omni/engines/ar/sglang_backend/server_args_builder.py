@@ -15,6 +15,7 @@ def build_sglang_server_args(
     max_prefill_tokens: int = 4096,
     max_running_requests: int = 16,
     mem_fraction_static: float | None = None,
+    omni_encoder_mem_reserve_delta: float | None = None,
     **overrides: Any,
 ) -> ServerArgs:
     """Build ServerArgs with shared defaults for all SGLang AR engines."""
@@ -33,4 +34,30 @@ def build_sglang_server_args(
     if mem_fraction_static is not None:
         kwargs["mem_fraction_static"] = mem_fraction_static
     kwargs.update(overrides)
-    return ServerArgs(**kwargs)
+    server_args = ServerArgs(**kwargs)
+    _apply_omni_encoder_mem_fraction_clamp(
+        server_args,
+        enabled=omni_encoder_mem_reserve_delta is not None,
+        user_mem_fraction_static=mem_fraction_static,
+        reserve_delta=omni_encoder_mem_reserve_delta or 0.0,
+    )
+    return server_args
+
+
+def _apply_omni_encoder_mem_fraction_clamp(
+    server_args: ServerArgs,
+    *,
+    enabled: bool,
+    user_mem_fraction_static: float | None,
+    reserve_delta: float,
+) -> None:
+    """Reserve extra GPU memory for omni encoders that share the thinker GPU."""
+    if not enabled or user_mem_fraction_static is not None:
+        return
+    if reserve_delta <= 0:
+        return
+
+    current = server_args.mem_fraction_static
+    if current is None:
+        return
+    server_args.mem_fraction_static = round(max(0.01, current - reserve_delta), 3)

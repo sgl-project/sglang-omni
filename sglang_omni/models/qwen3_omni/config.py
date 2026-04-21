@@ -5,8 +5,6 @@ from __future__ import annotations
 
 from typing import Any, ClassVar
 
-from pydantic import Field
-
 from sglang_omni.config import (
     ExecutorConfig,
     InputHandlerConfig,
@@ -14,7 +12,7 @@ from sglang_omni.config import (
     RelayConfig,
     StageConfig,
 )
-from sglang_omni.config.schema import MemFractionOverrideStages, StreamTargetConfig
+from sglang_omni.config.schema import StreamTargetConfig
 from sglang_omni.models.qwen3_omni.pipeline.next_stage import (
     AGGREGATE_STAGE,
     AUDIO_STAGE,
@@ -33,9 +31,6 @@ class Qwen3OmniPipelineConfig(PipelineConfig):
 
     model_path: str
     entry_stage: str = "preprocessing"
-    mem_fraction_override_stages: MemFractionOverrideStages = Field(
-        default_factory=lambda: MemFractionOverrideStages(thinker=THINKER_STAGE)
-    )
     stages: list[StageConfig] = [
         StageConfig(
             name=PREPROCESSING_STAGE,
@@ -105,11 +100,9 @@ class Qwen3OmniPipelineConfig(PipelineConfig):
         ),
     ]
 
-    def apply_thinker_server_args_overrides(self, overrides: dict[str, Any]) -> None:
-        self.apply_server_args_overrides(
-            stage_name=THINKER_STAGE,
-            overrides=overrides,
-        )
+    @classmethod
+    def mem_fraction_role_to_stage(cls) -> dict[str, str]:
+        return {"thinker": THINKER_STAGE}
 
     def apply_server_args_overrides(
         self, *, stage_name: str, overrides: dict[str, Any]
@@ -122,6 +115,23 @@ class Qwen3OmniPipelineConfig(PipelineConfig):
         )
 
 
+def _validate_qwen3_speech_gpu_placement(
+    gpu_placement: dict[str, int],
+    *,
+    tp_size: int,
+) -> None:
+    thinker_gpu = gpu_placement.get(THINKER_STAGE, 0)
+    thinker_range = range(thinker_gpu, thinker_gpu + tp_size)
+    for stage_name in (TALKER_AR_STAGE, CODE_PREDICTOR_STAGE, CODE2WAV_STAGE):
+        stage_gpu = gpu_placement.get(stage_name, 1)
+        if stage_gpu in thinker_range:
+            raise ValueError(
+                f"Speech stage {stage_name!r} GPU {stage_gpu} collides with "
+                f"thinker TP range [{thinker_gpu}, {thinker_gpu + tp_size}). "
+                f"Place speech stages on GPU >= {thinker_gpu + tp_size}."
+            )
+
+
 class Qwen3OmniSpeechPipelineConfig(PipelineConfig):
     """9-stage pipeline config for Qwen3 Omni with text + speech output."""
 
@@ -130,12 +140,6 @@ class Qwen3OmniSpeechPipelineConfig(PipelineConfig):
     model_path: str
     entry_stage: str = "preprocessing"
     terminal_stages: list[str] = [DECODE_STAGE, CODE2WAV_STAGE]
-    mem_fraction_override_stages: MemFractionOverrideStages = Field(
-        default_factory=lambda: MemFractionOverrideStages(
-            thinker=THINKER_STAGE,
-            talker=TALKER_AR_STAGE,
-        )
-    )
     gpu_placement: dict[str, int] = {
         "thinker": 0,
         "talker_ar": 1,
@@ -247,17 +251,26 @@ class Qwen3OmniSpeechPipelineConfig(PipelineConfig):
         ),
     ]
 
-    def apply_thinker_server_args_overrides(self, overrides: dict[str, Any]) -> None:
-        self.apply_server_args_overrides(
-            stage_name=THINKER_STAGE,
-            overrides=overrides,
-        )
+    @classmethod
+    def mem_fraction_role_to_stage(cls) -> dict[str, str]:
+        return {"thinker": THINKER_STAGE, "talker": TALKER_AR_STAGE}
+
+    def model_post_init(self, __context: Any) -> None:
+        super().model_post_init(__context)
+        _validate_qwen3_speech_gpu_placement(self.gpu_placement, tp_size=1)
 
     def apply_server_args_overrides(
         self, *, stage_name: str, overrides: dict[str, Any]
     ) -> None:
-        if stage_name == THINKER_STAGE and overrides.get("tp_size", 1) > 1:
-            raise NotImplementedError("Qwen3-Omni TP is not supported yet.")
+        if stage_name in (THINKER_STAGE, TALKER_AR_STAGE) and "tp_size" in overrides:
+            tp_size = overrides["tp_size"]
+            if stage_name == THINKER_STAGE:
+                _validate_qwen3_speech_gpu_placement(
+                    self.gpu_placement,
+                    tp_size=tp_size,
+                )
+            if tp_size > 1:
+                raise NotImplementedError("Qwen3-Omni TP is not supported yet.")
         super().apply_server_args_overrides(
             stage_name=stage_name,
             overrides=overrides,

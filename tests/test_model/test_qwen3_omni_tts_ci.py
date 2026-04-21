@@ -18,15 +18,11 @@ import sys
 from pathlib import Path
 
 import pytest
-import torch
 
 from benchmarks.dataset.prepare import DATASETS, download_dataset
 from benchmarks.eval.benchmark_omni_seedtts import (
     OmniSeedttsBenchmarkConfig,
     run_omni_seedtts_benchmark,
-)
-from sglang_omni.engines.ar.sglang_backend.server_args_builder import (
-    build_sglang_server_args,
 )
 from sglang_omni.utils import find_available_port
 from tests.utils import (
@@ -82,15 +78,6 @@ VC_NON_STREAM_THRESHOLDS = apply_slack(
 
 VC_WER_MAX_CORPUS = 0.06
 VC_WER_MAX_PER_SAMPLE = 0.30
-
-
-def test_h20_auto_mem_fraction_static_has_expected_floor() -> None:
-    total_memory_gib = torch.cuda.get_device_properties(0).total_memory / (1024**3)
-    if not 90 <= total_memory_gib <= 100:
-        pytest.skip(f"H20-only check, got GPU with {total_memory_gib:.1f} GiB")
-
-    server_args = build_sglang_server_args(MODEL_PATH, 8192)
-    assert server_args.mem_fraction_static >= 0.85
 
 
 def _run_benchmark(

@@ -32,11 +32,6 @@ import multiprocessing as mp
 import os
 import time
 
-from _mem_fraction_cli import (
-    add_mem_fraction_static_args,
-    apply_mem_fraction_static_args,
-)
-
 logging.basicConfig(
     level=os.environ.get("LOGLEVEL", "INFO").upper(),
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -79,9 +74,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--gpu-talker", type=int, default=1)
     parser.add_argument("--timeout", type=float, default=300.0)
     parser.add_argument("--cpu-offload-gb", type=float, default=0)
-    add_mem_fraction_static_args(
-        parser,
-        global_target_help="the thinker stage",
+    parser.add_argument(
+        "--mem-fraction-static",
+        type=float,
+        default=None,
+        help=(
+            "Set SGLang mem_fraction_static for the thinker stage. "
+            "If omitted, SGLang chooses automatically."
+        ),
     )
     parser.add_argument(
         "--tp-size", type=int, default=1, help="Tensor parallel size for thinker"
@@ -112,8 +112,16 @@ async def main_async(args: argparse.Namespace) -> None:
         gpu_placement=gpu_placement,
     )
     if overrides:
-        config.apply_thinker_server_args_overrides(overrides)
-    apply_mem_fraction_static_args(config, args)
+        config.apply_server_args_overrides(stage_name="thinker", overrides=overrides)
+    if args.mem_fraction_static is not None:
+        if not 0.0 < args.mem_fraction_static < 1.0:
+            raise ValueError(
+                f"--mem-fraction-static must be > 0 and < 1, got {args.mem_fraction_static}"
+            )
+        config.apply_server_args_overrides(
+            stage_name="thinker",
+            overrides={"mem_fraction_static": args.mem_fraction_static},
+        )
     runner = MultiProcessPipelineRunner(config)
     logger.info("Starting Ming-Omni speech pipeline...")
     await runner.start(timeout=600)

@@ -47,15 +47,6 @@ class StreamTargetConfig(BaseModel):
     bootstrap: bool = True
 
 
-class MemFractionOverrideStages(BaseModel):
-    """Pipeline stage targets for mem_fraction_static overrides."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    thinker: str | None = None
-    talker: str | None = None
-
-
 class StageConfig(BaseModel):
     """Single pipeline stage configuration."""
 
@@ -91,9 +82,6 @@ class PipelineConfig(BaseModel):
     terminal_stages: list[str] = Field(default_factory=list)
     relay_backend: Literal["shm", "nccl", "nixl", "mooncake"] = "shm"
     fused_stages: list[list[str]] = Field(default_factory=list)
-    mem_fraction_override_stages: MemFractionOverrideStages = Field(
-        default_factory=MemFractionOverrideStages
-    )
     endpoints: EndpointsConfig = Field(default_factory=EndpointsConfig)
     gpu_placement: dict[str, int] = Field(default_factory=dict)
     completion_endpoint: str | None = None
@@ -114,6 +102,11 @@ class PipelineConfig(BaseModel):
         """
         return PipelineConfig(**data)
 
+    @classmethod
+    def mem_fraction_role_to_stage(cls) -> dict[str, str]:
+        """Class-level role to stage mapping for mem_fraction_static overrides."""
+        return {}
+
     def _validate_general(self) -> None:
         if not self.model_path:
             raise ValueError("Model path is required")
@@ -127,34 +120,6 @@ class PipelineConfig(BaseModel):
 
         if self.entry_stage not in stage_names:
             raise ValueError(f"entry_stage {self.entry_stage!r} is not defined")
-
-        override_stage_names = [
-            stage_name
-            for stage_name in (
-                self.mem_fraction_override_stages.thinker,
-                self.mem_fraction_override_stages.talker,
-            )
-            if stage_name is not None
-        ]
-        unknown_override_stages = [
-            stage_name
-            for stage_name in override_stage_names
-            if stage_name not in stage_names
-        ]
-        if unknown_override_stages:
-            raise ValueError(
-                "mem_fraction_override_stages references unknown stages: "
-                f"{unknown_override_stages}"
-            )
-        if (
-            self.mem_fraction_override_stages.thinker is not None
-            and self.mem_fraction_override_stages.thinker
-            == self.mem_fraction_override_stages.talker
-        ):
-            raise ValueError(
-                "mem_fraction_override_stages thinker and talker must reference "
-                "different stages"
-            )
 
         for stage_cfg in self.stages:
             if stage_cfg.num_workers < 1:
@@ -278,63 +243,3 @@ class PipelineConfig(BaseModel):
                 )
                 return
         raise ValueError(f"Unknown stage {stage_name!r}")
-
-    def apply_mem_fraction_static_overrides(
-        self,
-        *,
-        mem_fraction_static: float | None = None,
-        thinker_mem_fraction_static: float | None = None,
-        talker_mem_fraction_static: float | None = None,
-    ) -> None:
-        value_by_flag = {
-            "--mem-fraction-static": mem_fraction_static,
-            "--thinker-mem-fraction-static": thinker_mem_fraction_static,
-            "--talker-mem-fraction-static": talker_mem_fraction_static,
-        }
-        for flag_name, value in value_by_flag.items():
-            if value is not None and not 0.0 < value < 1.0:
-                raise ValueError(f"{flag_name} must be > 0 and < 1, got {value}")
-
-        stage_overrides: list[tuple[str, float]] = []
-
-        if mem_fraction_static is not None:
-            stage_names = [
-                stage_name
-                for stage_name in (
-                    self.mem_fraction_override_stages.thinker,
-                    self.mem_fraction_override_stages.talker,
-                )
-                if stage_name is not None
-            ]
-            if not stage_names:
-                raise ValueError(
-                    "--mem-fraction-static requires a pipeline with a supported "
-                    "mem_fraction_override_stages target"
-                )
-            stage_overrides.extend(
-                (stage_name, mem_fraction_static) for stage_name in stage_names
-            )
-
-        if thinker_mem_fraction_static is not None:
-            stage_name = self.mem_fraction_override_stages.thinker
-            if stage_name is None:
-                raise ValueError(
-                    "--thinker-mem-fraction-static requires a pipeline with a "
-                    "'thinker' mem-fraction override target"
-                )
-            stage_overrides.append((stage_name, thinker_mem_fraction_static))
-
-        if talker_mem_fraction_static is not None:
-            stage_name = self.mem_fraction_override_stages.talker
-            if stage_name is None:
-                raise ValueError(
-                    "--talker-mem-fraction-static requires a pipeline with a "
-                    "'talker' mem-fraction override target"
-                )
-            stage_overrides.append((stage_name, talker_mem_fraction_static))
-
-        for stage_name, mem_fraction_static_value in stage_overrides:
-            self.apply_server_args_overrides(
-                stage_name=stage_name,
-                overrides={"mem_fraction_static": mem_fraction_static_value},
-            )
