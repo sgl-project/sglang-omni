@@ -51,8 +51,8 @@ def parse_args() -> argparse.Namespace:
     # GPU placement
     parser.add_argument("--gpu-thinker", type=int, default=0)
     parser.add_argument("--gpu-talker", type=int, default=1)
-    parser.add_argument("--gpu-code-predictor", type=int, default=1)
-    parser.add_argument("--gpu-code2wav", type=int, default=1)
+    parser.add_argument("--gpu-code-predictor", type=int, default=2)
+    parser.add_argument("--gpu-code2wav", type=int, default=0)
     parser.add_argument("--gpu-image-encoder", type=int, default=0)
     parser.add_argument("--gpu-audio-encoder", type=int, default=0)
 

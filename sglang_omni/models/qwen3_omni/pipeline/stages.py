@@ -10,6 +10,7 @@ import torch
 from transformers import AutoTokenizer
 
 from sglang_omni.engines.ar.sglang_backend.server_args_builder import (
+    OMNI_ENCODER_MEM_FRACTION_STATIC_RESERVE,
     build_sglang_server_args,
 )
 from sglang_omni.engines.omni import (
@@ -43,21 +44,9 @@ from sglang_omni.models.qwen3_omni.pipeline.next_stage import (
 )
 from sglang_omni.models.qwen3_omni.pipeline.state_io import load_state, store_state
 from sglang_omni.proto import StagePayload
+from sglang_omni.utils.misc import avail_gpu_mem
 
 logger = logging.getLogger(__name__)
-# Mirrors SGLang's VLM 0.95 base factor for omni encoders that are not covered
-# by top-level vision_config auto-sizing.
-_OMNI_ENCODER_MEM_RESERVE_DELTA = 0.05
-
-
-def _avail_gpu_mem(gpu_id: int) -> str:
-    try:
-        if not torch.cuda.is_available():
-            return "n/a"
-        free_bytes, _ = torch.cuda.mem_get_info(gpu_id)
-        return f"{free_bytes / (1024**3):.2f} GB"
-    except Exception:
-        return "n/a"
 
 
 def _event_to_dict(event: OmniEvent) -> dict[str, Any]:
@@ -366,18 +355,23 @@ def create_sglang_thinker_executor_from_config(
     This keeps pipeline config args plain dict types while still constructing
     a typed ServerArgs object internally.
     """
-    pre_load_avail_mem = _avail_gpu_mem(gpu_id)
+    pre_load_avail_mem = avail_gpu_mem(gpu_id)
     server_args = build_sglang_server_args(
         model_path,
         context_length=thinker_max_seq_len,
-        omni_encoder_mem_reserve_delta=_OMNI_ENCODER_MEM_RESERVE_DELTA,
+        auto_mem_fraction_static_reserve=OMNI_ENCODER_MEM_FRACTION_STATIC_RESERVE,
         **(server_args_overrides or {}),
+    )
+    pre_load_mem = (
+        f" pre_load_avail_mem={pre_load_avail_mem:.2f} GB"
+        if pre_load_avail_mem is not None
+        else ""
     )
     logger.info(
         f"Creating thinker SGLang executor: gpu_id={gpu_id} "
         f"context_length={thinker_max_seq_len} speech_enabled={speech_enabled} "
-        f"mem_fraction_static={server_args.mem_fraction_static} "
-        f"pre_load_avail_mem={pre_load_avail_mem}"
+        f"mem_fraction_static={server_args.mem_fraction_static}"
+        f"{pre_load_mem}"
     )
     executor = create_sglang_thinker_executor(
         server_args=server_args,
@@ -385,9 +379,14 @@ def create_sglang_thinker_executor_from_config(
         gpu_id=gpu_id,
         speech_enabled=speech_enabled,
     )
+    post_load_avail_mem = avail_gpu_mem(gpu_id)
+    post_load_mem = (
+        f" post_load_avail_mem={post_load_avail_mem:.2f} GB"
+        if post_load_avail_mem is not None
+        else ""
+    )
     logger.info(
-        f"Thinker SGLang executor initialized: gpu_id={gpu_id} "
-        f"post_load_avail_mem={_avail_gpu_mem(gpu_id)}"
+        f"Thinker SGLang executor initialized: gpu_id={gpu_id}{post_load_mem}"
     )
     return executor
 

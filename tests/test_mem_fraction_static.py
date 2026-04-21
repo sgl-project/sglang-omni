@@ -107,7 +107,7 @@ class TestMemFractionStaticOverrides(unittest.TestCase):
         self.assertNotIn("server_args_overrides", config.stages[1].executor.args)
 
     @patch("sglang_omni.engines.ar.sglang_backend.server_args_builder.ServerArgs")
-    def test_omni_encoder_reserve_subtracts_auto_value_only(
+    def test_auto_mem_fraction_static_reserve_subtracts_auto_value_only(
         self, server_args_mock
     ) -> None:
         server_args_mock.return_value = SimpleNamespace(mem_fraction_static=0.929)
@@ -115,14 +115,14 @@ class TestMemFractionStaticOverrides(unittest.TestCase):
         server_args = build_sglang_server_args(
             model_path="dummy",
             context_length=8192,
-            omni_encoder_mem_reserve_delta=0.05,
+            auto_mem_fraction_static_reserve=0.05,
         )
 
         self.assertEqual(server_args.mem_fraction_static, 0.879)
         self.assertNotIn("mem_fraction_static", server_args_mock.call_args.kwargs)
 
     @patch("sglang_omni.engines.ar.sglang_backend.server_args_builder.ServerArgs")
-    def test_omni_encoder_reserve_preserves_user_pinned_value(
+    def test_auto_mem_fraction_static_reserve_preserves_user_pinned_value(
         self, server_args_mock
     ) -> None:
         server_args_mock.return_value = SimpleNamespace(mem_fraction_static=0.88)
@@ -131,7 +131,7 @@ class TestMemFractionStaticOverrides(unittest.TestCase):
             model_path="dummy",
             context_length=8192,
             mem_fraction_static=0.88,
-            omni_encoder_mem_reserve_delta=0.05,
+            auto_mem_fraction_static_reserve=0.05,
         )
 
         self.assertEqual(server_args.mem_fraction_static, 0.88)

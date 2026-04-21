@@ -59,6 +59,15 @@ def set_random_seed(seed: int) -> None:
         torch.cuda.manual_seed_all(seed)
 
 
+def avail_gpu_mem(gpu_id: int) -> float | None:
+    """Return available GPU memory in GiB."""
+    try:
+        free_bytes, _ = torch.cuda.mem_get_info(gpu_id)
+    except RuntimeError:
+        return None
+    return free_bytes / (1024**3)
+
+
 def broadcast_pyobj(
     data: List[Any],
     rank: int,
