@@ -411,21 +411,27 @@ def _extract_inputs(request: GenerateRequest) -> Any:
     # Build messages list
     messages = [msg.to_dict() for msg in request.messages or []]
 
-    # Check if we have audios, images, or videos in metadata
-    audios = request.metadata.get("audios")
-    images = request.metadata.get("images")
-    videos = request.metadata.get("videos")
+    media_input_keys = (
+        "audios",
+        "images",
+        "videos",
+        "audio_target_sr",
+        "video_fps",
+        "use_audio_in_video",
+        "video_seconds_per_chunk",
+        "video_position_id_per_seconds",
+    )
+    media_inputs = {
+        key: request.metadata.get(key)
+        for key in media_input_keys
+        if request.metadata.get(key) is not None
+    }
 
-    # If we have any media, return a dict with messages and media
-    # Otherwise, return just the messages list (for backward compatibility)
-    if audios or images or videos:
+    # If we have any media or media preprocessing hints, return a dict with
+    # messages plus those fields. Otherwise keep the legacy bare-messages shape.
+    if media_inputs:
         result = {"messages": messages}
-        if images:
-            result["images"] = images
-        if audios:
-            result["audios"] = audios
-        if videos:
-            result["videos"] = videos
+        result.update(media_inputs)
         return result
     return messages
 

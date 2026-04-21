@@ -60,6 +60,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--relay-backend", type=str, default="shm", choices=["nixl", "shm"]
     )
+    parser.add_argument(
+        "--mem-fraction-static",
+        type=float,
+        default=0.7,
+        help="Static memory fraction for SGLang-backed AR stages.",
+    )
 
     # Server
     parser.add_argument("--host", type=str, default="0.0.0.0")
@@ -90,6 +96,13 @@ async def main_async(args: argparse.Namespace) -> None:
         relay_backend=args.relay_backend,
         gpu_placement=gpu_placement,
     )
+
+    server_args_overrides = {"mem_fraction_static": args.mem_fraction_static}
+    for stage in config.stages:
+        if stage.name in {"thinker", "talker_ar"}:
+            stage.executor.args.setdefault("server_args_overrides", {}).update(
+                server_args_overrides
+            )
 
     runner = MultiProcessPipelineRunner(config)
     logger.info("Starting 9-stage speech pipeline (multiprocess)...")

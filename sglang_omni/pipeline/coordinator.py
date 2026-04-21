@@ -2,6 +2,7 @@
 """Coordinator for managing the multi-stage pipeline."""
 
 import asyncio
+import contextlib
 import logging
 from typing import Any, AsyncIterator
 
@@ -144,8 +145,18 @@ class Coordinator:
                 else:
                     yield msg
         finally:
+            info = self._requests.get(request_id)
+            if info is not None and info.state not in {
+                RequestState.COMPLETED,
+                RequestState.FAILED,
+                RequestState.ABORTED,
+            }:
+                await self.abort(request_id)
             self._stream_queues.pop(request_id, None)
-            self._completion_futures.pop(request_id, None)
+            future = self._completion_futures.pop(request_id, None)
+            if future is not None and future.done():
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    future.exception()
 
     async def _submit_request(
         self, request_id: str, request: OmniRequest | Any

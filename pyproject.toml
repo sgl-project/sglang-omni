@@ -56,6 +56,9 @@ dependencies = [
     "torchaudio",
     # Gradio playground
     "gradio>=4.0.0",
+    # Realtime websocket playground
+    "webrtcvad-wheels>=2.0.14",
+    "websockets>=12.0",
     # flash-attn: install separately via prebuilt wheel (see install instructions below)
 ]
 

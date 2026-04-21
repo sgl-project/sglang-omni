@@ -1,0 +1,256 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>SGLang-Omni Realtime WebSocket Prototype</title>
+    <style>
+      body {
+        margin: 0;
+        font: 16px/1.45 ui-sans-serif, system-ui, sans-serif;
+        background: #0d1117;
+        color: #e6edf3;
+      }
+      main {
+        max-width: 920px;
+        margin: 0 auto;
+        padding: 32px 20px 48px;
+      }
+      h1 {
+        margin: 0 0 8px;
+        font-size: 32px;
+      }
+      p {
+        margin: 0 0 16px;
+        color: #9fb1c7;
+      }
+      .panel {
+        background: #161b22;
+        border: 1px solid #2d333b;
+        border-radius: 16px;
+        padding: 18px;
+        margin-top: 18px;
+      }
+      textarea {
+        width: 100%;
+        min-height: 92px;
+        border-radius: 10px;
+        border: 1px solid #30363d;
+        background: #0d1117;
+        color: #e6edf3;
+        padding: 12px;
+        box-sizing: border-box;
+        resize: vertical;
+      }
+      button {
+        border: 0;
+        border-radius: 999px;
+        padding: 10px 18px;
+        font-weight: 600;
+        cursor: pointer;
+        background: #2f81f7;
+        color: white;
+      }
+      button.secondary {
+        background: #30363d;
+      }
+      button.warning {
+        background: #8b2d2d;
+      }
+      button.warning.active {
+        background: #d93838;
+      }
+      button:disabled {
+        opacity: 0.5;
+        cursor: default;
+      }
+      .row {
+        display: flex;
+        gap: 12px;
+        flex-wrap: wrap;
+        align-items: center;
+      }
+      .status {
+        font-weight: 600;
+      }
+      .meter {
+        margin-top: 12px;
+        padding: 12px;
+        border-radius: 12px;
+        border: 1px solid #222933;
+        background: #0b0f14;
+      }
+      .meter-label {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        font-size: 13px;
+        color: #9fb1c7;
+      }
+      .meter-track {
+        margin-top: 8px;
+        height: 10px;
+        border-radius: 999px;
+        overflow: hidden;
+        background: #1a2330;
+      }
+      .meter-fill {
+        height: 100%;
+        width: 0%;
+        border-radius: 999px;
+        background: linear-gradient(90deg, #238636 0%, #d29922 60%, #f85149 100%);
+        transition: width 80ms linear;
+      }
+      .log {
+        max-height: 360px;
+        overflow: auto;
+        background: #0b0f14;
+        border: 1px solid #222933;
+        border-radius: 12px;
+        padding: 12px;
+        font-family: ui-monospace, SFMono-Regular, monospace;
+        font-size: 13px;
+        white-space: pre-wrap;
+      }
+      label {
+        color: #c9d1d9;
+      }
+      .option-group {
+        display: flex;
+        gap: 16px;
+        flex-wrap: wrap;
+        align-items: center;
+      }
+      .option-help {
+        margin-top: 8px;
+        font-size: 13px;
+        color: #9fb1c7;
+      }
+      .hidden {
+        display: none;
+      }
+      .conversation {
+        margin-top: 12px;
+        max-height: 360px;
+        overflow: auto;
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        background: #0b0f14;
+        border: 1px solid #222933;
+        border-radius: 12px;
+        padding: 12px;
+      }
+      .conversation-empty {
+        color: #9fb1c7;
+      }
+      .message {
+        max-width: min(80%, 640px);
+        padding: 12px 14px;
+        border-radius: 14px;
+        white-space: pre-wrap;
+      }
+      .message-user {
+        align-self: flex-end;
+        background: #1f6feb;
+        color: #ffffff;
+      }
+      .message-assistant {
+        align-self: flex-start;
+        background: #111826;
+        border: 1px solid #2d333b;
+      }
+      .message.pending {
+        opacity: 0.8;
+      }
+      .message-role {
+        margin-bottom: 4px;
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        opacity: 0.75;
+      }
+      .message-content {
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Realtime WebSocket Prototype</h1>
+      <p>
+        Audio-first voice demo over a single WebSocket using raw PCM audio,
+        server-side VAD, and request-based inference on utterance end.
+      </p>
+
+      <section class="panel">
+        <label for="instructions">System instructions</label>
+        <textarea id="instructions">You are a concise, natural voice assistant. Answer conversationally.</textarea>
+        <div class="row" style="margin-top: 12px">
+          <div>
+            <div class="option-group">
+              <label><input id="audio-mode-auto" type="radio" name="audio-mode" checked /> Auto VAD</label>
+              <label><input id="audio-mode-push" type="radio" name="audio-mode" /> Push To Talk</label>
+            </div>
+            <div class="option-help" id="audio-mode-help">
+              Auto VAD streams microphone PCM continuously and lets the server detect utterance boundaries.
+            </div>
+          </div>
+        </div>
+        <div class="row" style="margin-top: 14px">
+          <button id="connect">Connect</button>
+          <button id="disconnect" class="secondary" disabled>Disconnect</button>
+          <button id="push-to-talk" class="warning hidden" disabled>Hold To Talk</button>
+          <span class="status" id="status">Idle</span>
+        </div>
+        <div class="meter">
+          <div class="meter-label">
+            <span>Microphone level</span>
+            <span id="mic-level-text">0%</span>
+          </div>
+          <div class="meter-track" aria-hidden="true">
+            <div id="mic-level-fill" class="meter-fill"></div>
+          </div>
+        </div>
+        <div class="meter">
+          <div class="meter-label">
+            <span>Assistant audio level</span>
+            <span id="remote-level-text">0%</span>
+          </div>
+          <div class="meter-track" aria-hidden="true">
+            <div id="remote-level-fill" class="meter-fill"></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <strong>Conversation</strong>
+        <div id="conversation" class="conversation">
+          <div class="conversation-empty">Conversation history will appear here.</div>
+        </div>
+        <label for="user-prompt" style="display: block; margin-top: 12px">User prompt</label>
+        <textarea
+          id="user-prompt"
+          placeholder="Type a message and press Send or Enter"
+        ></textarea>
+        <div class="row" style="margin-top: 12px">
+          <button id="send-text" class="secondary" disabled>Send Text</button>
+          <span class="option-help">
+            Text turns share the same session history as voice turns.
+          </span>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="row" style="justify-content: space-between">
+          <strong>Session Events</strong>
+          <button id="clear-log" class="secondary">Clear log</button>
+        </div>
+        <div id="log" class="log" style="margin-top: 12px"></div>
+      </section>
+    </main>
+    <script src="/app.js"></script>
+  </body>
+</html>

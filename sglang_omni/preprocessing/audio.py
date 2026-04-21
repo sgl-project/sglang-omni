@@ -197,6 +197,33 @@ class AudioMediaIO(MediaIO[tuple[npt.NDArray, float]]):
         return resampled, float(self.target_sr)
 
 
+def _decode_audio_waveform_payload(
+    item: dict[str, Any],
+    *,
+    target_sr: int,
+) -> np.ndarray:
+    raw = item.get("audio_waveform")
+    if raw is None:
+        raise ValueError("Missing audio_waveform payload")
+    if isinstance(raw, memoryview):
+        raw = raw.tobytes()
+    if not isinstance(raw, (bytes, bytearray)):
+        raise TypeError("audio_waveform payload must be bytes-like")
+
+    dtype = np.dtype(item.get("audio_waveform_dtype", "float32"))
+    audio = np.frombuffer(raw, dtype=dtype)
+    shape = item.get("audio_waveform_shape")
+    if shape:
+        audio = audio.reshape(shape)
+    audio = audio.astype(np.float32, copy=False)
+
+    source_sr = item.get("sample_rate")
+    if isinstance(source_sr, int) and source_sr > 0 and source_sr != target_sr:
+        audio = _resample_linear(audio, source_sr, target_sr)
+
+    return audio.copy()
+
+
 async def ensure_audio_list_async(
     audios: Any,
     *,
@@ -244,6 +271,8 @@ async def ensure_audio_list_async(
             else:
                 # Local path - can be loaded synchronously
                 normalized.append(load_audio_path(item, target_sr=target_sr))
+        elif isinstance(item, dict) and item.get("audio_waveform") is not None:
+            normalized.append(_decode_audio_waveform_payload(item, target_sr=target_sr))
         else:
             # Already processed (numpy array, etc.)
             normalized.append(item)
