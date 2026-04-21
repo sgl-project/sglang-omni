@@ -76,8 +76,6 @@ def server_process(tmp_path_factory: pytest.TempPathFactory):
         "examples/run_qwen3_omni_speech_server.py",
         "--model-path",
         MODEL_PATH,
-        "--mem-fraction-static",
-        "0.7",
         "--gpu-thinker",
         "0",
         "--gpu-talker",
