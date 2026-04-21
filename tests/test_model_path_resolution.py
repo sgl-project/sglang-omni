@@ -63,6 +63,7 @@ def _install_qwen3_stages_stubs(monkeypatch) -> None:
     _stub_module(
         monkeypatch,
         "sglang_omni.engines.ar.sglang_backend.server_args_builder",
+        OMNI_ENCODER_MEM_FRACTION_STATIC_RESERVE=0.05,
         build_sglang_server_args=lambda *args, **kwargs: None,
     )
     _stub_module(
