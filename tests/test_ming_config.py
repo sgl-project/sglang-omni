@@ -120,11 +120,43 @@ class TestQwen3OmniSpeechGPUValidation(unittest.TestCase):
     def test_talker_ar_tp2_reaches_unsupported_tp_guard(self) -> None:
         from sglang_omni.models.qwen3_omni.config import Qwen3OmniSpeechPipelineConfig
 
-        config = Qwen3OmniSpeechPipelineConfig(model_path="test/model")
+        config = Qwen3OmniSpeechPipelineConfig(
+            model_path="test/model",
+            gpu_placement={
+                "thinker": 0,
+                "talker_ar": 2,
+                "code_predictor": 2,
+                "code2wav": 2,
+            },
+        )
         with self.assertRaisesRegex(NotImplementedError, "not supported yet"):
             config.apply_server_args_overrides(
                 stage_name="talker_ar",
                 overrides={"tp_size": 2},
+            )
+
+    def test_talker_ar_tp_override_runs_placement_check_before_tp_guard(
+        self,
+    ) -> None:
+        """Scaling talker_ar must re-run placement validation, not fall through
+        to the unsupported-TP guard. Pins the forward-compat contract: once
+        the NotImplementedError is removed, the placement check still gates.
+        """
+        from sglang_omni.models.qwen3_omni.config import Qwen3OmniSpeechPipelineConfig
+
+        config = Qwen3OmniSpeechPipelineConfig(
+            model_path="test/model",
+            gpu_placement={
+                "thinker": 0,
+                "talker_ar": 2,
+                "code_predictor": 2,
+                "code2wav": 2,
+            },
+        )
+        with self.assertRaisesRegex(ValueError, "collides"):
+            config.apply_server_args_overrides(
+                stage_name="talker_ar",
+                overrides={"tp_size": 3},
             )
 
 

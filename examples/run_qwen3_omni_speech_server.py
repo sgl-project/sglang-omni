@@ -98,6 +98,7 @@ def parse_args() -> argparse.Namespace:
 
 async def main_async(args: argparse.Namespace) -> None:
     import uvicorn
+    from _launcher_mem_fraction import resolve_and_apply_speech_mem_fraction
 
     from sglang_omni.client import Client
     from sglang_omni.models.qwen3_omni.config import Qwen3OmniSpeechPipelineConfig
@@ -117,33 +118,14 @@ async def main_async(args: argparse.Namespace) -> None:
         relay_backend=args.relay_backend,
         gpu_placement=gpu_placement,
     )
-    for flag_name, value in (
-        ("--mem-fraction-static", args.mem_fraction_static),
-        ("--thinker-mem-fraction-static", args.thinker_mem_fraction_static),
-        ("--talker-mem-fraction-static", args.talker_mem_fraction_static),
-    ):
-        if value is not None and not 0.0 < value < 1.0:
-            raise ValueError(f"{flag_name} must be > 0 and < 1, got {value}")
-    thinker_mem_fraction_static = (
-        args.thinker_mem_fraction_static
-        if args.thinker_mem_fraction_static is not None
-        else args.mem_fraction_static
-    )
-    talker_mem_fraction_static = (
-        args.talker_mem_fraction_static
-        if args.talker_mem_fraction_static is not None
-        else args.mem_fraction_static
-    )
-    if thinker_mem_fraction_static is not None:
-        config.apply_server_args_overrides(
-            stage_name="thinker",
-            overrides={"mem_fraction_static": thinker_mem_fraction_static},
+    thinker_mem_fraction_static, talker_mem_fraction_static = (
+        resolve_and_apply_speech_mem_fraction(
+            config,
+            global_mem_fraction_static=args.mem_fraction_static,
+            thinker_mem_fraction_static=args.thinker_mem_fraction_static,
+            talker_mem_fraction_static=args.talker_mem_fraction_static,
         )
-    if talker_mem_fraction_static is not None:
-        config.apply_server_args_overrides(
-            stage_name="talker_ar",
-            overrides={"mem_fraction_static": talker_mem_fraction_static},
-        )
+    )
     logger.info(
         f"Speech server config: thinker_gpu={args.gpu_thinker} "
         f"talker_gpu={args.gpu_talker} "

@@ -107,7 +107,11 @@ class Qwen3OmniPipelineConfig(PipelineConfig):
     def apply_server_args_overrides(
         self, *, stage_name: str, overrides: dict[str, Any]
     ) -> None:
-        if stage_name == THINKER_STAGE and overrides.get("tp_size", 1) > 1:
+        if (
+            stage_name == THINKER_STAGE
+            and "tp_size" in overrides
+            and overrides["tp_size"] > 1
+        ):
             raise NotImplementedError("Qwen3-Omni TP is not supported yet.")
         super().apply_server_args_overrides(
             stage_name=stage_name,
@@ -266,11 +270,14 @@ class Qwen3OmniSpeechPipelineConfig(PipelineConfig):
         # collision error today, and the same check gates TP after support lands.
         if stage_name in (THINKER_STAGE, TALKER_AR_STAGE) and "tp_size" in overrides:
             tp_size = overrides["tp_size"]
-            if stage_name == THINKER_STAGE:
-                _validate_qwen3_speech_gpu_placement(
-                    self.gpu_placement,
-                    tp_size=tp_size,
-                )
+            # Validate placement for whichever AR stage is being scaled. Today
+            # talker_ar's range-check reuses the same thinker-range helper;
+            # once per-stage TP lands, extend this with a talker_ar-specific
+            # collision check rather than letting the outer guard silently pass.
+            _validate_qwen3_speech_gpu_placement(
+                self.gpu_placement,
+                tp_size=tp_size,
+            )
             if tp_size > 1:
                 raise NotImplementedError("Qwen3-Omni TP is not supported yet.")
         super().apply_server_args_overrides(

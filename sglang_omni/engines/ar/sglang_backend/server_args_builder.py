@@ -6,9 +6,12 @@ from typing import Any
 
 from sglang.srt.server_args import ServerArgs
 
-# Note (Ratish): Reserve the same 5% margin that SGLang applies for VLM vision towers.
-# Omni thinker GPUs also host encoder stages, so auto-sized AR memory needs
-# the same headroom unless the user pins mem_fraction_static explicitly.
+# Note (Ratish): SGLang's VLM auto-sizing applies a dynamic 0.95 * factor
+# reserve (roughly [0.8, 1.05]); Qwen3-Omni nests vision/audio configs under
+# `thinker_config` so SGLang's VLM path never triggers for us. 0.05 is a
+# conservative linear lower-bound of that dynamic reserve; we subtract it
+# after auto-sizing when the thinker GPU also hosts encoder stages.
+# User-pinned mem_fraction_static bypasses this reserve.
 OMNI_ENCODER_MEM_FRACTION_STATIC_RESERVE = 0.05
 
 
