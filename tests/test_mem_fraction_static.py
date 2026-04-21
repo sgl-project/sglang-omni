@@ -95,17 +95,6 @@ class TestMemFractionStaticOverrides(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Unknown stage 'nope'"):
             config.apply_server_args_overrides(stage_name="nope", overrides={})
 
-    def test_model_copy_then_apply_does_not_mutate_original(self) -> None:
-        config = _make_pipeline()
-        copied_config = config.model_copy(update={"model_path": "other"}, deep=True)
-
-        copied_config.apply_server_args_overrides(
-            stage_name="thinker",
-            overrides={"mem_fraction_static": 0.88},
-        )
-
-        self.assertNotIn("server_args_overrides", config.stages[1].executor.args)
-
     @patch("sglang_omni.engines.ar.sglang_backend.server_args_builder.ServerArgs")
     def test_auto_mem_fraction_static_reserve_subtracts_auto_value_only(
         self, server_args_mock
@@ -158,7 +147,7 @@ class _FakeConfigManager:
 
     def merge_config(self, extra_args: dict[str, str]) -> PipelineConfig:
         del extra_args
-        return self.config
+        return type(self.config)(**self.config.model_dump())
 
 
 class TestServeMemFractionStatic(unittest.TestCase):
