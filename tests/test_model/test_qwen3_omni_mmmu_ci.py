@@ -68,6 +68,7 @@ def server_process(tmp_path_factory: pytest.TempPathFactory):
     yield proc
     stop_server(proc)
 
+
 @pytest.mark.benchmark
 def test_mmmu_accuracy_and_speed(
     server_process: subprocess.Popen,
@@ -80,6 +81,10 @@ def test_mmmu_accuracy_and_speed(
         max_concurrency=CONCURRENCY,
         output_dir=str(tmp_path / "mmmu"),
         repo_id=DATASETS["mmmu-ci-50"],
+        # Note (Yifei):
+        # Regression guard for issue #299: warmup pre-populates the image
+        # encoder cache so the first real batch mixes cached and uncached
+        # requests. warmup > 1 keeps the lone hit from landing alone.
         warmup=2,
     )
     results = asyncio.run(run_mmmu_eval(config))
