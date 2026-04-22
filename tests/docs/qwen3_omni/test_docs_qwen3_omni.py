@@ -172,6 +172,31 @@ class TestTextOnlyMode:
         assert len(content) > 0
 
 
+    @pytest.mark.docs
+    @pytest.mark.parametrize("client", ["python", "curl"])
+    def test_video_audio(self, server: int, client: str) -> None:
+        """Docs section: Text-Only Mode — Video and Audio Input."""
+        assert VIDEO_PATH.exists(), f"Test video not found: {VIDEO_PATH}"
+        assert VIDEO_AUDIO_PATH.exists(), f"Test audio not found: {VIDEO_AUDIO_PATH}"
+        payload = {
+            "model": MODEL_NAME,
+            "messages": [{"role": "user", "content": ""}],
+            "videos": [str(VIDEO_PATH)],
+            "audios": [str(VIDEO_AUDIO_PATH)],
+            "modalities": ["text"],
+            "max_tokens": 16,
+        }
+        result = _send_chat(server, payload, client)
+        assert "choices" in result
+        content = result["choices"][0]["message"]["content"]
+        assert isinstance(content, str)
+        assert len(content) > 0
+        content_lower = content.lower()
+        assert any(
+            kw in content_lower for kw in EXPECTED_VIDEO_KEYWORDS
+        ), f"Text output missing expected keywords about the video. Got: {content}"
+
+
 class TestSpeechMode:
     """Speech server (multi-GPU, text + audio output)."""
 
