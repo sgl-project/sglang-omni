@@ -48,11 +48,18 @@ def init_sglang_env_for_encoder(model_path: str) -> None:
 
     Reads world topology from torchrun env vars (``WORLD_SIZE`` / ``RANK`` /
     ``LOCAL_RANK``) when present; defaults to single-process TP=1 otherwise.
+    If ``MASTER_PORT`` is unset, picks a free ephemeral port (matches the
+    pattern in ``sglang_omni.engines.ar.sglang_backend.model_worker._resolve_nccl_port``)
+    so concurrent standalone users don't clobber each other.
     """
-    import torch.distributed as dist
+    import socket
 
     os.environ.setdefault("MASTER_ADDR", "127.0.0.1")
-    os.environ.setdefault("MASTER_PORT", "29501")
+    if "MASTER_PORT" not in os.environ:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.bind(("", 0))
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            os.environ["MASTER_PORT"] = str(sock.getsockname()[1])
     os.environ.setdefault("WORLD_SIZE", "1")
     os.environ.setdefault("RANK", "0")
     os.environ.setdefault("LOCAL_RANK", "0")

@@ -447,7 +447,6 @@ def run_graphed_mode(args) -> list[BenchResult]:
                 batch=B,
                 seq_len=L,
                 device=device,
-                dtype=dtype,
             )
             r_eager = bench_eager(
                 graphed,
@@ -572,6 +571,18 @@ def main() -> None:
         help="Skip loading HF baseline for graphed-mode parity check (saves ~1GB GPU).",
     )
     args = p.parse_args()
+
+    # The bench wraps every iter in torch.cuda.synchronize / max_memory_allocated
+    # / CUDAGraph and has no meaningful non-CUDA path. Fail fast with a clear
+    # message rather than letting the first .synchronize() blow up mid-bench.
+    if args.mode != "tp":  # tp derives device from LOCAL_RANK internally
+        if torch.device(args.device).type != "cuda":
+            p.error(
+                f"--device={args.device!r}: this bench requires a CUDA device "
+                f"(the harness uses torch.cuda.synchronize / CUDAGraph)."
+            )
+        if not torch.cuda.is_available():
+            p.error("CUDA is not available on this host.")
 
     if args.mode == "eager":
         results = run_eager_mode(args)

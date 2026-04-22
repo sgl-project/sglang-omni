@@ -62,8 +62,9 @@ class GraphedAudioEncoder(nn.Module):
     batch, seq_len
         Shape contract for this instance. ``forward`` asserts any passed-in
         lengths match.
-    device, dtype
-        For precomputation and I/O dtype.
+    device
+        Target device for precomputed layout tensors. Base encoder params are
+        already on their own device/dtype; inputs are cast to match at forward.
     """
 
     def __init__(
@@ -73,7 +74,6 @@ class GraphedAudioEncoder(nn.Module):
         batch: int,
         seq_len: int,
         device: torch.device | str,
-        dtype: torch.dtype,
     ) -> None:
         super().__init__()
         self.base = base_encoder
@@ -85,6 +85,10 @@ class GraphedAudioEncoder(nn.Module):
         self.n_window = int(cfg.n_window)
         self.n_window_infer = int(cfg.n_window_infer)
         self.conv_chunksize = int(cfg.conv_chunksize)
+
+        base_params = next(self.base.parameters())
+        self._param_dtype = base_params.dtype
+        self._param_device = base_params.device
 
         self._precompute()
 
@@ -148,18 +152,28 @@ class GraphedAudioEncoder(nn.Module):
         # Sliced + dtype-cast positional embedding (shape derived from
         # post-conv seq length, which is constant for fixed (batch, seq_len)).
         pe_len = padded_mask_after_cnn.shape[-1]
-        param_dtype = next(self.base.parameters()).dtype
         pe = (
             self.base.positional_embedding.positional_embedding[:pe_len, :]
             .unsqueeze(0)
-            .to(dtype=param_dtype)
+            .to(dtype=self._param_dtype)
             .contiguous()
         )
+
+        # Per-sample output lengths (after CNN + whatever sglang's helper
+        # computes). Constant for the fixed (batch, seq_len) contract, so we
+        # precompute and reuse for the drop-in-compatible forward dict.
+        audio_output_lengths = _get_feat_extract_output_lengths(feature_lens)
 
         self.chunk_lengths_list: list[int] = chunk_lengths.tolist()
         self.register_buffer("flat_mask_indices", flat_indices, persistent=False)
         self.register_buffer("cu_seqlens", cu_seqlens, persistent=False)
         self.register_buffer("pe", pe, persistent=False)
+        self.register_buffer(
+            "_audio_feature_lengths", feature_lens, persistent=False
+        )
+        self.register_buffer(
+            "_audio_output_lengths", audio_output_lengths, persistent=False
+        )
         self._max_seqlen = max_seqlen
 
         # Resolve cu_seqlens arg format once at init. sglang's graph-capable
@@ -191,6 +205,11 @@ class GraphedAudioEncoder(nn.Module):
 
     def _static_forward(self, input_features: torch.Tensor) -> torch.Tensor:
         base = self.base
+        # Cast input to base encoder's device/dtype. ``.to(...)`` is a no-op
+        # when already matching, so this is safe inside CUDA graph capture.
+        input_features = input_features.to(
+            device=self._param_device, dtype=self._param_dtype
+        )
         chunk_list = input_features.T.split(self.chunk_lengths_list, dim=0)
         padded_feature = (
             nn.utils.rnn.pad_sequence(chunk_list, batch_first=True)
@@ -279,4 +298,11 @@ class GraphedAudioEncoder(nn.Module):
                 input_features, feature_attention_mask, audio_feature_lengths
             )
         out = self._static_forward(input_features)
-        return {"audio_embeds": out}
+        # Match Qwen3OmniAudioEncoder / Qwen3OmniAudioEncoderNative return
+        # shape (length tensors are constant for our fixed-shape contract,
+        # precomputed at init).
+        return {
+            "audio_embeds": out,
+            "audio_feature_lengths": self._audio_feature_lengths,
+            "audio_output_lengths": self._audio_output_lengths,
+        }
