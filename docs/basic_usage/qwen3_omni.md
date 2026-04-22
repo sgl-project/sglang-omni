@@ -109,6 +109,46 @@ result = resp.json()
 print(result["choices"][0]["message"]["content"])
 ```
 
+### Video and Audio Input
+
+Send a video with a spoken audio question. The model watches the video, hears the question, and responds with text.
+
+**cURL**
+
+```bash
+curl -X POST http://localhost:8008/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "qwen3-omni",
+    "messages": [{"role": "user", "content": ""}],
+    "videos": ["tests/data/draw.mp4"],
+    "audios": ["tests/data/query_to_draw.wav"],
+    "modalities": ["text"],
+    "max_tokens": 16
+  }'
+```
+
+**Python**
+
+```python
+import requests
+
+resp = requests.post(
+    "http://localhost:8008/v1/chat/completions",
+    json={
+        "model": "qwen3-omni",
+        "messages": [{"role": "user", "content": ""}],
+        "videos": ["tests/data/draw.mp4"],
+        "audios": ["tests/data/query_to_draw.wav"],
+        "modalities": ["text"],
+        "max_tokens": 16,
+    },
+)
+resp.raise_for_status()
+result = resp.json()
+print(result["choices"][0]["message"]["content"])
+```
+
 ## Speech Mode
 
 Speech mode runs the full 9-stage pipeline across multiple GPUs. It produces both text (from the thinker) and audio (from the talker) output.
