@@ -171,7 +171,6 @@ class TestTextOnlyMode:
         assert isinstance(content, str)
         assert len(content) > 0
 
-
     @pytest.mark.docs
     @pytest.mark.parametrize("client", ["python", "curl"])
     def test_video_audio(self, server: int, client: str) -> None:
