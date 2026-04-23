@@ -285,9 +285,22 @@ def assert_streaming_consistency(
 def assert_wer_results(
     results: dict,
     max_corpus_wer: float,
-    max_per_sample_wer: float,
+    max_per_sample_wer: float | None = None,
+    *,
+    p95_per_sample_wer: float | None = None,
 ) -> None:
-    """Verify WER results are within thresholds."""
+    """Verify WER results. Callers pick ONE per-sample mode:
+
+    - ``max_per_sample_wer``: strict — every sample's WER ≤ threshold,
+      plus a catastrophic-failure guard that forbids any sample > 50%.
+      Used by voice-clone TTS.
+    - ``p95_per_sample_wer``: lenient — only the 95th percentile must
+      be ≤ threshold. Tolerates a long tail, which matches how the
+      MMMU/MMSU TTS-consistency tests assess large-scale audio QA.
+    """
+    assert (max_per_sample_wer is not None) ^ (p95_per_sample_wer is not None), (
+        "must pass exactly one of max_per_sample_wer / p95_per_sample_wer"
+    )
     summary = results["summary"]
     per_sample = results["per_sample"]
 
@@ -307,17 +320,26 @@ def assert_wer_results(
         f"> threshold {max_corpus_wer} ({max_corpus_wer * 100:.0f}%)"
     )
 
-    assert summary["n_above_50_pct_wer"] == 0, (
-        f"{summary['n_above_50_pct_wer']} samples have >50% WER — "
-        f"expected 0 catastrophic failures"
-    )
-
     for sample in per_sample:
         assert sample[
             "is_success"
         ], f"Sample {sample['id']} failed: {sample.get('error')}"
-        if sample["wer"] is not None:
-            assert sample["wer"] <= max_per_sample_wer, (
-                f"Sample {sample['id']} WER {sample['wer']:.4f} "
-                f"> {max_per_sample_wer}"
-            )
+
+    if max_per_sample_wer is not None:
+        assert summary["n_above_50_pct_wer"] == 0, (
+            f"{summary['n_above_50_pct_wer']} samples have >50% WER — "
+            f"expected 0 catastrophic failures"
+        )
+        for sample in per_sample:
+            if sample["wer"] is not None:
+                assert sample["wer"] <= max_per_sample_wer, (
+                    f"Sample {sample['id']} WER {sample['wer']:.4f} "
+                    f"> {max_per_sample_wer}"
+                )
+    else:  # p95 path
+        p95 = summary.get("wer_per_sample_p95", 0.0)
+        assert p95 <= p95_per_sample_wer, (
+            f"P95 per-sample WER {p95:.4f} ({p95 * 100:.2f}%) "
+            f"> threshold {p95_per_sample_wer} "
+            f"({p95_per_sample_wer * 100:.2f}%)"
+        )

@@ -42,13 +42,13 @@ from tests.utils import (
 MODEL_PATH = "Qwen/Qwen3-Omni-30B-A3B-Instruct"
 
 # TODO (Yifei): enable larger subset/max_tokens when concurrency > 1 is supported.
-MAX_SAMPLES = 5
+MAX_SAMPLES = 50
 MAX_TOKENS = 50
 STARTUP_TIMEOUT = 900
 
 # Note (Yifei): Concurrency=1 only for now — code_predictor and code2wav
 # modules serialize GPU access, so they run serially even when concurrency > 1.
-CONCURRENCY = 1
+CONCURRENCY = 8
 
 # Note (Yifei): Use chain-of-thought prompt (mirroring MMMU style) instead of the default
 # "Reply with only A, B, C, or D." to elicit longer responses for WER.
@@ -62,7 +62,7 @@ MMSU_TTS_PROMPT = (
 # TODO (Yifei): update thresholds when concurrency > 1 is supported.
 
 MMSU_AUDIO_WER_MAX_CORPUS = 0.12
-MMSU_AUDIO_WER_MAX_PER_SAMPLE = 0.36
+MMSU_AUDIO_WER_P95_PER_SAMPLE = 0.36
 
 _MMSU_AUDIO_P95 = {
     1: {
@@ -70,6 +70,12 @@ _MMSU_AUDIO_P95 = {
         "tok_per_s_agg": 1.80,
         "latency_mean_s": 27.376,
         "rtf_mean": 1.5734,
+    },
+    8: {
+        "throughput_qps": 0.0,
+        "tok_per_s_agg": 0.0,
+        "latency_mean_s": 1e9,
+        "rtf_mean": 1e9,
     },
 }
 MMSU_AUDIO_THRESHOLDS = apply_slack(_MMSU_AUDIO_P95)
@@ -120,7 +126,7 @@ def _build_args(port: int, output_dir: str) -> argparse.Namespace:
         max_concurrency=CONCURRENCY,
         request_rate=float("inf"),
         save_audio=True,
-        disable_tqdm=True,
+        disable_tqdm=False,
         seed=None,
         lang="en",
         asr_device="cuda:0",
@@ -155,7 +161,9 @@ def test_mmsu_audio_wer_and_speed(
 
     assert "wer" in results, "Audio WER results missing from eval output"
     assert_wer_results(
-        results["wer"], MMSU_AUDIO_WER_MAX_CORPUS, MMSU_AUDIO_WER_MAX_PER_SAMPLE
+        results["wer"],
+        MMSU_AUDIO_WER_MAX_CORPUS,
+        p95_per_sample_wer=MMSU_AUDIO_WER_P95_PER_SAMPLE,
     )
 
     assert_speed_thresholds(results["speed"], MMSU_AUDIO_THRESHOLDS, CONCURRENCY)

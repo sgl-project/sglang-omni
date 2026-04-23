@@ -84,7 +84,7 @@ def _build_args(port: int, output_dir: str) -> argparse.Namespace:
         max_concurrency=CONCURRENCY,
         request_rate=float("inf"),
         save_audio=False,
-        disable_tqdm=True,
+        disable_tqdm=False,
         seed=None,
         repo_id=DATASETS["mmsu-ci-2000"],
         # Unused in text-only mode but kept for API consistency with run().

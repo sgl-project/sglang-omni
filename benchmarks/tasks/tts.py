@@ -257,6 +257,7 @@ def calculate_wer_metrics(outputs: list[SampleOutput], lang: str) -> dict:
             "wer_per_sample_median": 0.0,
             "wer_per_sample_std": 0.0,
             "wer_per_sample_p95": 0.0,
+            "wer_per_sample_max": 0.0,
             "wer_below_50_corpus": 0.0,
             "n_above_50_pct_wer": 0,
             "pct_above_50_pct_wer": 0.0,
@@ -293,6 +294,7 @@ def calculate_wer_metrics(outputs: list[SampleOutput], lang: str) -> dict:
         "wer_per_sample_median": float(np.median(wer_arr)),
         "wer_per_sample_std": float(np.std(wer_arr)),
         "wer_per_sample_p95": float(np.percentile(wer_arr, 95)),
+        "wer_per_sample_max": float(np.max(wer_arr)),
         "wer_below_50_corpus": float(wer_below_50_micro),
         "n_above_50_pct_wer": n_above_50,
         "pct_above_50_pct_wer": (n_above_50 / len(successes) * 100 if successes else 0),
@@ -388,6 +390,11 @@ def print_wer_summary(
     print(
         f"  {'WER per-sample p95:':<{lw}} "
         f"{metrics.get('wer_per_sample_p95', 0):.4f}"
+    )
+    print(
+        f"  {'WER per-sample max:':<{lw}} "
+        f"{metrics.get('wer_per_sample_max', 0):.4f} "
+        f"({metrics.get('wer_per_sample_max', 0) * 100:.2f}%)"
     )
     print(
         f"  {'WER corpus (excl >50%):':<{lw}} "

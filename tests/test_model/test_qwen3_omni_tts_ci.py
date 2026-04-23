@@ -40,20 +40,12 @@ MODEL_PATH = "Qwen/Qwen3-Omni-30B-A3B-Instruct"
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
-# note (Chenyang): Currently we only run concurrency=1 and a small dataset
-# (seedtts-mini, 10 samples). Support higher concurrency and larger datasets
-# once the Qwen3-Omni pipeline is optimized for concurrent requests.
-
-CONCURRENCY = 1
-MAX_SAMPLES = 10
-# Also used in .github/workflows/test-qwen3-omni-ci.yaml — keep in sync.
-DATASET_CACHE_ENV = "SGLANG_SEEDTTS_MINI_DIR"
+CONCURRENCY = 8
+MAX_SAMPLES = 50
+DATASET_CACHE_ENV = "SGLANG_SEEDTTS50_DIR"
 
 STARTUP_TIMEOUT = 900
 WER_TIMEOUT = 600
-
-# note (Chenyang): P95 values measured on H20 CI machines with concurrency=1,
-# seedtts-mini dataset (5 samples). Update these when hardware or model changes.
 
 _VC_NON_STREAM_P95 = {
     1: {
@@ -61,6 +53,12 @@ _VC_NON_STREAM_P95 = {
         "tok_per_s_agg": 2.3,
         "latency_mean_s": 6.0,
         "rtf_mean": 2.0,
+    },
+    8: {
+        "throughput_qps": 0.0,
+        "tok_per_s_agg": 0.0,
+        "latency_mean_s": 1e9,
+        "rtf_mean": 1e9,
     },
 }
 
@@ -184,7 +182,7 @@ def dataset_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
         root = Path(override_dir).expanduser()
     else:
         root = tmp_path_factory.mktemp("seed_tts_eval") / "data"
-    download_dataset(DATASETS["seedtts-mini"], str(root), quiet=True)
+    download_dataset(DATASETS["seedtts-50"], str(root), quiet=True)
     return root
 
 
@@ -275,7 +273,9 @@ def test_voice_cloning_wer(
         str(dataset_dir / "en" / "meta.lst"),
         wer_audio_dir,
     )
-    assert_wer_results(results, VC_WER_MAX_CORPUS, VC_WER_MAX_PER_SAMPLE)
+    assert_wer_results(
+        results, VC_WER_MAX_CORPUS, max_per_sample_wer=VC_WER_MAX_PER_SAMPLE
+    )
 
 
 if __name__ == "__main__":

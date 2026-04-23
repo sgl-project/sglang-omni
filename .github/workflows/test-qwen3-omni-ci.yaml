@@ -119,7 +119,7 @@ jobs:
           pytest tests/test_model/test_qwen3_omni_tts_ci.py -v -s -x
         env:
           HF_ENDPOINT: https://hf-mirror.com
-          SGLANG_SEEDTTS_MINI_DIR: /github/home/seedtts-mini
+          SGLANG_SEEDTTS50_DIR: /github/home/seedtts-50
 
       - name: Post-stage cleanup
         if: always()

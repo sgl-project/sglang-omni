@@ -39,5 +39,6 @@ results/
 .humanize/
 .benchmark-data/
 
-# AI
-.claude/
+.tune-runs/
+.claude/*
+!.claude/skills/
