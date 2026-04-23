@@ -77,9 +77,7 @@ class ByT5Mapper(nn.Module):
         if num_layers > 0:
             self.blocks = nn.ModuleList(
                 [
-                    _T5EncoderBlock(
-                        byt5_config, has_relative_attention_bias=(i == 0)
-                    )
+                    _T5EncoderBlock(byt5_config, has_relative_attention_bias=(i == 0))
                     for i in range(num_layers)
                 ]
             )
@@ -214,9 +212,7 @@ class ByT5TextEncoder(nn.Module):
         attn_mask = inputs.attention_mask.to(device)
 
         # ByT5 encoder forward
-        byt5_out = self.byt5_encoder(
-            input_ids=input_ids, attention_mask=attn_mask
-        )
+        byt5_out = self.byt5_encoder(input_ids=input_ids, attention_mask=attn_mask)
         base_hidden = byt5_out.last_hidden_state
 
         # Mapper: d_model → cap_feat_dim
@@ -264,9 +260,7 @@ def load_byt5_text_encoder(
     tokenizer = AutoTokenizer.from_pretrained(byt5_ckpt_path)
     byt5_model = T5ForConditionalGeneration.from_pretrained(byt5_ckpt_path)
     byt5_encoder = byt5_model.get_encoder()
-    logger.info(
-        "[ByT5] Base encoder loaded (d_model=%d)", byt5_encoder.config.d_model
-    )
+    logger.info("[ByT5] Base encoder loaded (d_model=%d)", byt5_encoder.config.d_model)
 
     # 2. Add special tokens (font / color)
     _add_special_tokens(tokenizer, byt5_encoder, byt5_cfg, byt5_dir)
@@ -278,7 +272,9 @@ def load_byt5_text_encoder(
         state = torch.load(str(finetuned_path), map_location="cpu", weights_only=True)
         missing, unexpected = byt5_encoder.load_state_dict(state, strict=False)
         if missing:
-            logger.warning("[ByT5] Missing keys (%d): %s ...", len(missing), missing[:3])
+            logger.warning(
+                "[ByT5] Missing keys (%d): %s ...", len(missing), missing[:3]
+            )
         if unexpected:
             logger.warning(
                 "[ByT5] Unexpected keys (%d): %s ...", len(unexpected), unexpected[:3]
@@ -322,7 +318,9 @@ def _add_special_tokens(
     if not byt5_cfg.get("special_token"):
         return
 
-    font_ann_path = str(byt5_dir / byt5_cfg.get("font_ann_path", "font_uni_10-lang_idx.json"))
+    font_ann_path = str(
+        byt5_dir / byt5_cfg.get("font_ann_path", "font_uni_10-lang_idx.json")
+    )
     color_ann_path = str(byt5_dir / byt5_cfg.get("color_ann_path", "color_idx.json"))
 
     additional: list[str] = []

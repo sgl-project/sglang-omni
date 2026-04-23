@@ -12,7 +12,10 @@ import logging
 import torch
 from PIL import Image
 
-from sglang_omni.models.ming_omni.diffusion.backend import DiffusionBackend, ImageGenParams
+from sglang_omni.models.ming_omni.diffusion.backend import (
+    DiffusionBackend,
+    ImageGenParams,
+)
 
 logger = logging.getLogger(__name__)
 

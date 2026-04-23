@@ -16,8 +16,10 @@ from sglang_omni.models.ming_omni.components.common import (
     load_ming_config,
     load_ming_tokenizer,
 )
+from sglang_omni.models.ming_omni.components.image_gen_executor import (
+    MingImageGenExecutor,
+)
 from sglang_omni.models.ming_omni.components.preprocessor import MingPreprocessor
-from sglang_omni.models.ming_omni.components.image_gen_executor import MingImageGenExecutor
 from sglang_omni.models.ming_omni.components.talker_executor import MingTalkerExecutor
 from sglang_omni.models.ming_omni.io import OmniEvent, ThinkerOutput
 from sglang_omni.models.ming_omni.pipeline.engine_io import (
@@ -46,7 +48,9 @@ def _event_to_dict(event: OmniEvent) -> dict[str, Any]:
     }
 
 
-def create_preprocessing_executor(model_path: str, *, conditioner=None) -> PreprocessingExecutor:
+def create_preprocessing_executor(
+    model_path: str, *, conditioner=None
+) -> PreprocessingExecutor:
     preprocessor = MingPreprocessor(model_path=model_path, conditioner=conditioner)
 
     async def _preprocess(payload: StagePayload) -> StagePayload:

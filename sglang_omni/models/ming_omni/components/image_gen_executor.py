@@ -22,7 +22,10 @@ import time
 import torch
 
 from sglang_omni.executors.interface import Executor
-from sglang_omni.models.ming_omni.diffusion.backend import DiffusionBackend, ImageGenParams
+from sglang_omni.models.ming_omni.diffusion.backend import (
+    DiffusionBackend,
+    ImageGenParams,
+)
 from sglang_omni.proto import StagePayload
 
 logger = logging.getLogger(__name__)
@@ -91,14 +94,14 @@ class MingImageGenExecutor(Executor):
                 skip_semantic_encoder=True,
             )
         else:
-            self._backend.load_models(
-                self._dit_model_path, torch.device(self._device)
-            )
+            self._backend.load_models(self._dit_model_path, torch.device(self._device))
         logger.info("[IMG_GEN] Diffusion backend loaded in %.1fs", time.time() - t0)
 
         # Load thinker tokenizer for decoding output_ids → text prompt
         try:
-            from sglang_omni.models.ming_omni.components.common import load_ming_tokenizer
+            from sglang_omni.models.ming_omni.components.common import (
+                load_ming_tokenizer,
+            )
 
             self._thinker_tokenizer = load_ming_tokenizer(self._model_path)
             logger.info(
@@ -276,7 +279,9 @@ class MingImageGenExecutor(Executor):
         if isinstance(thinker_out, dict):
             output_ids = thinker_out.get("output_ids", [])
             if output_ids and self._thinker_tokenizer is not None:
-                text = self._thinker_tokenizer.decode(output_ids, skip_special_tokens=True)
+                text = self._thinker_tokenizer.decode(
+                    output_ids, skip_special_tokens=True
+                )
 
         # Fallback: pre-decoded text
         if not text:
@@ -354,7 +359,8 @@ class MingImageGenExecutor(Executor):
         if isinstance(hidden_states, dict):
             # Side-channel capture: pick the last (highest) layer
             numeric_keys = [
-                k for k in hidden_states
+                k
+                for k in hidden_states
                 if isinstance(k, int) or (isinstance(k, str) and k.isdigit())
             ]
             if not numeric_keys:

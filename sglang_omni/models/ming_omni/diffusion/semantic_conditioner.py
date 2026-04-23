@@ -48,10 +48,10 @@ class SemanticConditioner:
     """
 
     def __init__(self) -> None:
-        self._connector = None      # Qwen2ForCausalLM (non-causal)
-        self._proj_in = None        # Linear(4096, 1536)
-        self._proj_out = None       # Linear(1536, 2560)
-        self._query_tokens = None   # Tensor(num_tokens, 4096)
+        self._connector = None  # Qwen2ForCausalLM (non-causal)
+        self._proj_in = None  # Linear(4096, 1536)
+        self._proj_out = None  # Linear(1536, 2560)
+        self._query_tokens = None  # Tensor(num_tokens, 4096)
         self._device: torch.device | None = None
         self._dtype: torch.dtype = torch.bfloat16
 
@@ -74,9 +74,7 @@ class SemanticConditioner:
         input embeddings before the LLM forward pass.
         """
         if self._query_tokens is None:
-            raise RuntimeError(
-                "SemanticConditioner not loaded. Call load() first."
-            )
+            raise RuntimeError("SemanticConditioner not loaded. Call load() first.")
         return self._query_tokens
 
     @property
@@ -140,9 +138,7 @@ class SemanticConditioner:
             full_config = json.load(f)
         llm_config_dict = full_config["llm_config"]
 
-        self._image_patch_token = llm_config_dict.get(
-            "image_patch_token", 157157
-        )
+        self._image_patch_token = llm_config_dict.get("image_patch_token", 157157)
         self._image_start_token = llm_config_dict.get(
             "image_start_token", self._image_patch_token + 1
         )
@@ -214,9 +210,7 @@ class SemanticConditioner:
         from safetensors.torch import load_file
 
         mlp_path = os.path.join(model_path, "mlp", "model.safetensors")
-        logger.info(
-            "[SemanticConditioner] Loading projections from %s", mlp_path
-        )
+        logger.info("[SemanticConditioner] Loading projections from %s", mlp_path)
         state = load_file(mlp_path)
 
         # proj_in: Linear(llm_hidden=4096, connector_hidden=1536)
@@ -224,10 +218,12 @@ class SemanticConditioner:
             state["proj_in.weight"].shape[1],
             state["proj_in.weight"].shape[0],
         )
-        self._proj_in.load_state_dict({
-            "weight": state["proj_in.weight"],
-            "bias": state["proj_in.bias"],
-        })
+        self._proj_in.load_state_dict(
+            {
+                "weight": state["proj_in.weight"],
+                "bias": state["proj_in.bias"],
+            }
+        )
         self._proj_in.to(device=device, dtype=dtype)
 
         # proj_out: Linear(connector_hidden=1536, cap_feat_dim=2560)
@@ -235,10 +231,12 @@ class SemanticConditioner:
             state["proj_out.weight"].shape[1],
             state["proj_out.weight"].shape[0],
         )
-        self._proj_out.load_state_dict({
-            "weight": state["proj_out.weight"],
-            "bias": state["proj_out.bias"],
-        })
+        self._proj_out.load_state_dict(
+            {
+                "weight": state["proj_out.weight"],
+                "bias": state["proj_out.bias"],
+            }
+        )
         self._proj_out.to(device=device, dtype=dtype)
 
         # Query tokens (learnable, one set per scale)
@@ -265,15 +263,11 @@ class SemanticConditioner:
         """Estimate total GPU memory used by loaded components."""
         total_params = 0
         if self._connector is not None:
-            total_params += sum(
-                p.numel() for p in self._connector.parameters()
-            )
+            total_params += sum(p.numel() for p in self._connector.parameters())
         if self._proj_in is not None:
             total_params += sum(p.numel() for p in self._proj_in.parameters())
         if self._proj_out is not None:
-            total_params += sum(
-                p.numel() for p in self._proj_out.parameters()
-            )
+            total_params += sum(p.numel() for p in self._proj_out.parameters())
         if self._query_tokens is not None:
             total_params += self._query_tokens.numel()
 
@@ -307,9 +301,7 @@ class SemanticConditioner:
             along the last dimension.
         """
         if self._connector is None:
-            raise RuntimeError(
-                "SemanticConditioner not loaded. Call load() first."
-            )
+            raise RuntimeError("SemanticConditioner not loaded. Call load() first.")
 
         with torch.cuda.amp.autocast(dtype=self._dtype):
             # Move to conditioner device (may differ from thinker device)
@@ -319,9 +311,9 @@ class SemanticConditioner:
             # Currently with single 16x16 scale, this is a no-op slice.
             scale_starts = [0] + self._scale_indices[:-1]
             scale_ends = self._scale_indices
-            _, start, end = list(
-                zip(self._img_gen_scales, scale_starts, scale_ends)
-            )[-1]
+            _, start, end = list(zip(self._img_gen_scales, scale_starts, scale_ends))[
+                -1
+            ]
             h = h[:, start:end, :]
 
             # Project to connector input dimension
@@ -332,7 +324,10 @@ class SemanticConditioner:
             connector_out = self._connector(
                 inputs_embeds=h,
                 attention_mask=torch.ones(
-                    seq_shape[0], 1, seq_shape[1], seq_shape[1],
+                    seq_shape[0],
+                    1,
+                    seq_shape[1],
+                    seq_shape[1],
                     device=h.device,
                 ),
                 output_hidden_states=True,

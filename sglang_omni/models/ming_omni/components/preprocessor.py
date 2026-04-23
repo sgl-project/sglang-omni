@@ -164,6 +164,17 @@ class MingPreprocessor:
         # Lazy-init image processor
         self._image_processor = None
 
+        # Image generation conditioner (optional)
+        self._conditioner = conditioner
+        if conditioner is not None:
+            self._image_patch_token_id = conditioner.image_patch_token
+            self._image_start_token_id = conditioner.image_start_token
+            self._image_end_token_id = conditioner.image_end_token
+        else:
+            self._image_patch_token_id = None
+            self._image_start_token_id = None
+            self._image_end_token_id = None
+
     def _get_image_processor(self):
         """Lazy-init Qwen2VLImageProcessor (same processor as Ming-Omni uses)."""
         if self._image_processor is None:
@@ -198,17 +209,6 @@ class MingPreprocessor:
             self._vision_config.spatial_merge_size,
         )
         return pixel_values, image_grid_thw, token_counts
-
-        # Image generation conditioner (optional)
-        self._conditioner = conditioner
-        if conditioner is not None:
-            self._image_patch_token_id = conditioner.image_patch_token
-            self._image_start_token_id = conditioner.image_start_token
-            self._image_end_token_id = conditioner.image_end_token
-        else:
-            self._image_patch_token_id = None
-            self._image_start_token_id = None
-            self._image_end_token_id = None
 
     async def __call__(self, payload: StagePayload) -> StagePayload:
         """Process a chat completion request into pipeline state."""
@@ -340,9 +340,7 @@ class MingPreprocessor:
         gen_mask = None
 
         if is_image_gen:
-            num_query_tokens = sum(
-                s * s for s in self._conditioner.img_gen_scales
-            )
+            num_query_tokens = sum(s * s for s in self._conditioner.img_gen_scales)
 
             suffix_ids = (
                 [self._image_start_token_id]
@@ -350,16 +348,12 @@ class MingPreprocessor:
                 + [self._image_end_token_id]
             )
             suffix_tensor = torch.tensor([suffix_ids], dtype=torch.long)
-            input_ids_tensor = torch.cat(
-                [input_ids_tensor, suffix_tensor], dim=1
-            )
+            input_ids_tensor = torch.cat([input_ids_tensor, suffix_tensor], dim=1)
             attention_mask = torch.ones_like(input_ids_tensor)
 
             # gen_mask: 0 for text, 1 for query tokens, 0 for start/end markers
             text_len = len(input_ids)
-            gen_mask = torch.zeros(
-                input_ids_tensor.shape[1], dtype=torch.long
-            )
+            gen_mask = torch.zeros(input_ids_tensor.shape[1], dtype=torch.long)
             gen_mask[text_len + 1 : text_len + 1 + num_query_tokens] = 1
 
         prompt: PromptInputs = {

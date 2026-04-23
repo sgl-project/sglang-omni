@@ -130,7 +130,9 @@ class MingSemanticEncoder:
         llm_config_dict = full_config["llm_config"]
 
         self._image_patch_token = llm_config_dict.get("image_patch_token", 157157)
-        self._image_start_token = llm_config_dict.get("image_start_token", self._image_patch_token + 1)
+        self._image_start_token = llm_config_dict.get(
+            "image_start_token", self._image_patch_token + 1
+        )
         self._image_end_token = self._image_start_token + 1
 
         with open(os.path.join(model_path, "mlp", "config.json")) as f:
@@ -201,6 +203,7 @@ class MingSemanticEncoder:
         # Use flash_attention_2 (available on remote H200s) or fallback to eager
         try:
             from flash_attn import flash_attn_func  # noqa: F401
+
             config._attn_implementation = "flash_attention_2"
         except ImportError:
             config._attn_implementation = "eager"
@@ -216,7 +219,7 @@ class MingSemanticEncoder:
         shards_needed = set()
         for key, shard in weight_map.items():
             if key.startswith("model."):
-                new_key = key[len("model."):]
+                new_key = key[len("model.") :]
                 llm_key_to_shard[new_key] = (shard, key)
                 shards_needed.add(shard)
 
@@ -236,9 +239,9 @@ class MingSemanticEncoder:
         # Each MoE layer is ~6.5 GiB; we reserve headroom for activations.
         from accelerate.utils import set_module_tensor_to_device
 
-        LAYER_SIZE_GIB = 6.5   # MoE layer size in bf16 (256 experts × 3 linear)
-        HEADROOM_GIB = 15.0    # reserved for activations + framework overhead
-        MIN_FREE_GIB = 30.0    # minimum free memory to consider a GPU
+        LAYER_SIZE_GIB = 6.5  # MoE layer size in bf16 (256 experts × 3 linear)
+        HEADROOM_GIB = 15.0  # reserved for activations + framework overhead
+        MIN_FREE_GIB = 30.0  # minimum free memory to consider a GPU
 
         gpu_count = torch.cuda.device_count()
         gpu_free_gib: dict[int, float] = {}
@@ -311,6 +314,7 @@ class MingSemanticEncoder:
 
         # Log distribution
         from collections import Counter
+
         gpu_layer_counts = Counter(device_map.values())
         logger.info(
             "[SemanticEncoder] Proportional device map: %d modules across "
@@ -344,7 +348,10 @@ class MingSemanticEncoder:
                     target_device = self._device
                     best_len = -1
                     for module_name, dev in device_map.items():
-                        if new_key.startswith(module_name) and len(module_name) > best_len:
+                        if (
+                            new_key.startswith(module_name)
+                            and len(module_name) > best_len
+                        ):
                             target_device = dev
                             best_len = len(module_name)
 
@@ -367,7 +374,9 @@ class MingSemanticEncoder:
         )
 
         for name, module in self._llm.named_modules():
-            if isinstance(module, (BailingMoeV2RotaryEmbedding, BailingMoeV2RotaryEmbedding3D)):
+            if isinstance(
+                module, (BailingMoeV2RotaryEmbedding, BailingMoeV2RotaryEmbedding3D)
+            ):
                 inv_freq, attn_scaling = module.rope_init_fn(module.config, "cpu")
                 # Replace the meta buffer with a real CPU tensor
                 module.inv_freq = inv_freq
@@ -431,10 +440,12 @@ class MingSemanticEncoder:
             state["proj_in.weight"].shape[1],
             state["proj_in.weight"].shape[0],
         )
-        self._proj_in.load_state_dict({
-            "weight": state["proj_in.weight"],
-            "bias": state["proj_in.bias"],
-        })
+        self._proj_in.load_state_dict(
+            {
+                "weight": state["proj_in.weight"],
+                "bias": state["proj_in.bias"],
+            }
+        )
         self._proj_in.to(device=device, dtype=dtype)
 
         # proj_out: Linear(connector_hidden=1536, cap_feat_dim=2560)
@@ -442,10 +453,12 @@ class MingSemanticEncoder:
             state["proj_out.weight"].shape[1],
             state["proj_out.weight"].shape[0],
         )
-        self._proj_out.load_state_dict({
-            "weight": state["proj_out.weight"],
-            "bias": state["proj_out.bias"],
-        })
+        self._proj_out.load_state_dict(
+            {
+                "weight": state["proj_out.weight"],
+                "bias": state["proj_out.bias"],
+            }
+        )
         self._proj_out.to(device=device, dtype=dtype)
 
         # Query tokens (learnable, one per scale)
@@ -489,9 +502,7 @@ class MingSemanticEncoder:
                 Each is a list of tensors with shape [num_tokens, 2560].
         """
         if self._llm is None or self._tokenizer is None:
-            raise RuntimeError(
-                "Semantic encoder not loaded. Call load() first."
-            )
+            raise RuntimeError("Semantic encoder not loaded. Call load() first.")
 
         if isinstance(text, str):
             text = [text]
@@ -520,9 +531,7 @@ class MingSemanticEncoder:
         )
 
         # 3. Build query token embeddings for vision patching
-        image_grid_thw, query_embeds = self._build_query_embeds(
-            input_ids, gen_mask
-        )
+        image_grid_thw, query_embeds = self._build_query_embeds(input_ids, gen_mask)
 
         # 4. Embed tokens and patch in query token embeddings
         words_embeddings = self._llm.get_input_embeddings()(
@@ -531,8 +540,8 @@ class MingSemanticEncoder:
         words_embeddings = self._patch_vision_embeddings(
             input_ids, words_embeddings, query_embeds, self._image_patch_token
         )
-        image_mask = (input_ids == self._image_patch_token).unsqueeze(-1).to(
-            input_ids.device
+        image_mask = (
+            (input_ids == self._image_patch_token).unsqueeze(-1).to(input_ids.device)
         )
 
         # 5. LLM forward pass
@@ -597,12 +606,8 @@ class MingSemanticEncoder:
             # Find where padding starts
             pad_start = sum(1 for v in am if v != 0)
 
-            new_ids.append(
-                tid[:pad_start] + deepcopy(default_tokens) + tid[pad_start:]
-            )
-            new_attn.append(
-                am[:pad_start] + deepcopy(default_attn) + am[pad_start:]
-            )
+            new_ids.append(tid[:pad_start] + deepcopy(default_tokens) + tid[pad_start:])
+            new_attn.append(am[:pad_start] + deepcopy(default_attn) + am[pad_start:])
             new_gen.append(
                 [0] * pad_start + deepcopy(default_gen) + [0] * (len(tid) - pad_start)
             )
@@ -656,9 +661,12 @@ class MingSemanticEncoder:
         if vision_embeds.ndim == 3:
             vision_embeds = vision_embeds.reshape(-1, vision_embeds.shape[-1])
 
-        vision_mask = (input_ids == vision_token_id).unsqueeze(-1).expand_as(
-            inputs_embeds
-        ).to(inputs_embeds.device)
+        vision_mask = (
+            (input_ids == vision_token_id)
+            .unsqueeze(-1)
+            .expand_as(inputs_embeds)
+            .to(inputs_embeds.device)
+        )
         vision_embeds = vision_embeds.to(inputs_embeds.device, inputs_embeds.dtype)
         inputs_embeds = inputs_embeds.masked_scatter(vision_mask, vision_embeds)
         return inputs_embeds
@@ -671,9 +679,12 @@ class MingSemanticEncoder:
         """Extract gen-marked hidden states, run through connector + proj."""
         with torch.cuda.amp.autocast(dtype=self._dtype):
             # Expand gen_mask to hidden_states dimensions
-            mask = gen_mask.unsqueeze(-1).expand(
-                gen_mask.shape[0], gen_mask.shape[1], hidden_states.shape[-1]
-            ).to(hidden_states.device).bool()
+            mask = (
+                gen_mask.unsqueeze(-1)
+                .expand(gen_mask.shape[0], gen_mask.shape[1], hidden_states.shape[-1])
+                .to(hidden_states.device)
+                .bool()
+            )
 
             # Extract generation-relevant hidden states
             hidden_gen = torch.masked_select(hidden_states, mask).view(
@@ -683,9 +694,9 @@ class MingSemanticEncoder:
             # Select highest resolution scale
             scale_starts = [0] + self._scale_indices[:-1]
             scale_ends = self._scale_indices
-            _, start, end = list(
-                zip(self._img_gen_scales, scale_starts, scale_ends)
-            )[-1]
+            _, start, end = list(zip(self._img_gen_scales, scale_starts, scale_ends))[
+                -1
+            ]
 
             scale_hidden = hidden_gen[:, start:end, :]
 
@@ -701,7 +712,10 @@ class MingSemanticEncoder:
             connector_out = self._connector(
                 inputs_embeds=scale_embeds,
                 attention_mask=torch.ones(
-                    seq_shape[0], 1, seq_shape[1], seq_shape[1],
+                    seq_shape[0],
+                    1,
+                    seq_shape[1],
+                    seq_shape[1],
                     device=scale_embeds.device,
                 ),
                 output_hidden_states=True,

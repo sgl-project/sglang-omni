@@ -56,6 +56,8 @@ dependencies = [
     "torchaudio",
     # Gradio playground
     "gradio>=4.0.0",
+    # Ming-Omni
+    "diffusers==0.37.1",
     # flash-attn: install separately via prebuilt wheel (see install instructions below)
 ]
 

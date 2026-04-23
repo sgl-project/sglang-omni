@@ -7,11 +7,8 @@ actual diffusion model weights. Uses mocks for the DiffusionBackend.
 
 from __future__ import annotations
 
-import asyncio
 import base64
-import json
-from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 

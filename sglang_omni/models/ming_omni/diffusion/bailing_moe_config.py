@@ -3,8 +3,10 @@
 """Bailing MoE model configuration"""
 from transformers.configuration_utils import PretrainedConfig
 
+
 class BailingMoeV2Config(PretrainedConfig):
     model_type = "bailing_moe_v2"
+
     def __init__(
         self,
         vocab_size=30592,
@@ -84,5 +86,7 @@ class BailingMoeV2Config(PretrainedConfig):
         self.partial_rotary_factor = partial_rotary_factor
         self.router_type = router_type
         self.use_interleaved_frame_timestamp = use_interleaved_frame_timestamp
-        super().__init__(pad_token_id=pad_token_id, tie_word_embeddings=tie_word_embeddings, **kwargs)
+        super().__init__(
+            pad_token_id=pad_token_id, tie_word_embeddings=tie_word_embeddings, **kwargs
+        )
         self._attn_implementation = _attn_implementation

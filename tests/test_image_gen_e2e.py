@@ -15,15 +15,11 @@ from __future__ import annotations
 import json
 import logging
 import os
-import sys
 import time
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional
 
 import torch
 import torch.nn as nn
-from PIL import Image
 
 logging.basicConfig(
     level="INFO",
@@ -32,18 +28,30 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Resolve model path: support both HF cache and direct path
-_DEFAULT_MODEL_PATH = "/data/cache/huggingface/hub/models--inclusionAI--Ming-flash-omni-2.0/snapshots/6a2e1dec07066d20f62a743ac7c34284e4a3932d"
+_DEFAULT_MODEL_PATH = "inclusionAI/Ming-flash-omni-2.0"
 MODEL_PATH = os.environ.get("MING_MODEL_PATH", _DEFAULT_MODEL_PATH)
 DEVICE = os.environ.get("CUDA_DEVICE", "cuda:1")
 OUTPUT_DIR = "/tmp"
+
+
+def _resolve_model_root(model_path: str) -> Path:
+    """Resolve model_path to a local directory, downloading from HF if needed."""
+    p = Path(model_path)
+    if p.is_dir():
+        return p
+    from huggingface_hub import snapshot_download
+
+    return Path(snapshot_download(model_path))
 
 
 # ---------------------------------------------------------------------------
 # Composite ByT5 + Mapper text encoder
 # ---------------------------------------------------------------------------
 
+
 class _HiddenStatesOutput:
     """Mimics HuggingFace model output with .hidden_states attribute."""
+
     def __init__(self, hidden_states: list[torch.Tensor]):
         self.hidden_states = hidden_states
 
@@ -96,16 +104,20 @@ class ByT5TextEncoder(nn.Module):
         )
 
 
-def load_byt5_mapper(model_root: Path, byt5_config, device: torch.device, dtype: torch.dtype):
+def load_byt5_mapper(
+    model_root: Path, byt5_config, device: torch.device, dtype: torch.dtype
+):
     """Load the T5EncoderBlockByT5Mapper from Ming model weights."""
-    from diffusers import ModelMixin
 
     byt5_dir = model_root / "byt5"
     byt5_json = json.loads((byt5_dir / "byt5.json").read_text())
     mapper_config = byt5_json["byt5_mapper_config"]
 
-    logger.info("Mapper config: num_layers=%d, sdxl_channels=%s",
-                mapper_config["num_layers"], mapper_config.get("sdxl_channels"))
+    logger.info(
+        "Mapper config: num_layers=%d, sdxl_channels=%s",
+        mapper_config["num_layers"],
+        mapper_config.get("sdxl_channels"),
+    )
 
     # Build mapper using the same architecture as Ming
     # T5EncoderBlockByT5Mapper(byt5_config, num_layers=4, sdxl_channels=2560)
@@ -123,10 +135,16 @@ def load_byt5_mapper(model_root: Path, byt5_config, device: torch.device, dtype:
         def __init__(self, config, has_relative_attention_bias=False):
             super().__init__()
             self.layer = nn.ModuleList()
-            self.layer.append(T5LayerSelfAttention(config, has_relative_attention_bias=has_relative_attention_bias))
+            self.layer.append(
+                T5LayerSelfAttention(
+                    config, has_relative_attention_bias=has_relative_attention_bias
+                )
+            )
             self.layer.append(T5LayerFF(config))
 
-        def forward(self, hidden_states, attention_mask=None, position_bias=None, **kwargs):
+        def forward(
+            self, hidden_states, attention_mask=None, position_bias=None, **kwargs
+        ):
             seq_len = hidden_states.shape[1]
             cache_position = torch.arange(seq_len, device=hidden_states.device)
             self_attention_outputs = self.layer[0](
@@ -145,16 +163,20 @@ def load_byt5_mapper(model_root: Path, byt5_config, device: torch.device, dtype:
         def __init__(self, config, num_layers, sdxl_channels=None):
             super().__init__()
             if num_layers > 0:
-                self.blocks = nn.ModuleList([
-                    T5EncoderBlock(config, has_relative_attention_bias=bool(i == 0))
-                    for i in range(num_layers)
-                ])
+                self.blocks = nn.ModuleList(
+                    [
+                        T5EncoderBlock(config, has_relative_attention_bias=bool(i == 0))
+                        for i in range(num_layers)
+                    ]
+                )
             else:
                 self.blocks = None
             self.layer_norm = T5LayerNorm(config.d_model, eps=config.layer_norm_epsilon)
             if sdxl_channels is not None:
                 self.channel_mapper = nn.Linear(config.d_model, sdxl_channels)
-                self.final_layer_norm = T5LayerNorm(sdxl_channels, eps=config.layer_norm_epsilon)
+                self.final_layer_norm = T5LayerNorm(
+                    sdxl_channels, eps=config.layer_norm_epsilon
+                )
             else:
                 self.channel_mapper = None
                 self.final_layer_norm = None
@@ -165,8 +187,12 @@ def load_byt5_mapper(model_root: Path, byt5_config, device: torch.device, dtype:
                 extended_attention_mask = attention_mask[:, None, None, :]
             else:
                 extended_attention_mask = attention_mask[:, None, :, :]
-            extended_attention_mask = extended_attention_mask.to(dtype=inputs_embeds.dtype)
-            extended_attention_mask = (1.0 - extended_attention_mask) * torch.finfo(inputs_embeds.dtype).min
+            extended_attention_mask = extended_attention_mask.to(
+                dtype=inputs_embeds.dtype
+            )
+            extended_attention_mask = (1.0 - extended_attention_mask) * torch.finfo(
+                inputs_embeds.dtype
+            ).min
 
             hidden_states = inputs_embeds
             position_bias = None
@@ -218,12 +244,21 @@ def load_full_text_encoder(model_root: Path, device: torch.device, dtype: torch.
     byt5_tokenizer = AutoTokenizer.from_pretrained(byt5_path)
     byt5_model = T5ForConditionalGeneration.from_pretrained(byt5_path)
     byt5_encoder = byt5_model.get_encoder()
-    logger.info("ByT5 base loaded in %.1fs (d_model=%d)", time.time() - t0, byt5_encoder.config.d_model)
+    logger.info(
+        "ByT5 base loaded in %.1fs (d_model=%d)",
+        time.time() - t0,
+        byt5_encoder.config.d_model,
+    )
 
     # Add special tokens
     if byt5_config_dict.get("special_token"):
-        font_ann_path = str(byt5_dir / byt5_config_dict.get("font_ann_path", "font_uni_10-lang_idx.json"))
-        color_ann_path = str(byt5_dir / byt5_config_dict.get("color_ann_path", "color_idx.json"))
+        font_ann_path = str(
+            byt5_dir
+            / byt5_config_dict.get("font_ann_path", "font_uni_10-lang_idx.json")
+        )
+        color_ann_path = str(
+            byt5_dir / byt5_config_dict.get("color_ann_path", "color_idx.json")
+        )
         with open(font_ann_path) as f:
             idx_font_dict = json.load(f)
         with open(color_ann_path) as f:
@@ -231,17 +266,19 @@ def load_full_text_encoder(model_root: Path, device: torch.device, dtype: torch.
 
         additional_tokens = []
         if byt5_config_dict.get("color_special_token"):
-            additional_tokens += [f'<color-{i}>' for i in range(len(idx_color_dict))]
+            additional_tokens += [f"<color-{i}>" for i in range(len(idx_color_dict))]
         if byt5_config_dict.get("font_special_token"):
             if byt5_config_dict.get("multilingual"):
                 for font_code in idx_font_dict:
                     prefix = font_code[:3]
-                    if prefix in ('cn-', 'en-', 'jp-', 'kr-'):
-                        additional_tokens.append(f'<{prefix}font-{idx_font_dict[font_code]}>')
+                    if prefix in ("cn-", "en-", "jp-", "kr-"):
+                        additional_tokens.append(
+                            f"<{prefix}font-{idx_font_dict[font_code]}>"
+                        )
                     else:
-                        additional_tokens.append(f'<font-{idx_font_dict[font_code]}>')
+                        additional_tokens.append(f"<font-{idx_font_dict[font_code]}>")
             else:
-                additional_tokens += [f'<font-{i}>' for i in range(len(idx_font_dict))]
+                additional_tokens += [f"<font-{i}>" for i in range(len(idx_font_dict))]
 
         if additional_tokens:
             byt5_tokenizer.add_tokens(additional_tokens, special_tokens=True)
@@ -252,12 +289,20 @@ def load_full_text_encoder(model_root: Path, device: torch.device, dtype: torch.
     byt5_model_path = byt5_dir / "byt5_model" / "byt5_model.pt"
     if byt5_model_path.exists():
         logger.info("Loading fine-tuned ByT5 weights from %s", byt5_model_path)
-        byt5_state = torch.load(str(byt5_model_path), map_location="cpu", weights_only=True)
+        byt5_state = torch.load(
+            str(byt5_model_path), map_location="cpu", weights_only=True
+        )
         missing, unexpected = byt5_encoder.load_state_dict(byt5_state, strict=False)
         if missing:
-            logger.warning("ByT5 encoder missing keys (%d): %s...", len(missing), missing[:3])
+            logger.warning(
+                "ByT5 encoder missing keys (%d): %s...", len(missing), missing[:3]
+            )
         if unexpected:
-            logger.warning("ByT5 encoder unexpected keys (%d): %s...", len(unexpected), unexpected[:3])
+            logger.warning(
+                "ByT5 encoder unexpected keys (%d): %s...",
+                len(unexpected),
+                unexpected[:3],
+            )
 
     byt5_encoder = byt5_encoder.to(device=device, dtype=dtype)
 
@@ -276,6 +321,7 @@ def load_full_text_encoder(model_root: Path, device: torch.device, dtype: torch.
 # Tests
 # ---------------------------------------------------------------------------
 
+
 def test_manual_pipeline():
     """Test pipeline with random prompt_embeds (proves pipeline mechanics work)."""
     from diffusers import (
@@ -286,39 +332,56 @@ def test_manual_pipeline():
     )
 
     logger.info("=== Manual pipeline test (random embeddings) ===")
-    model_root = Path(MODEL_PATH)
+    model_root = _resolve_model_root(MODEL_PATH)
 
     t0 = time.time()
-    scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(MODEL_PATH, subfolder="scheduler")
+    scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(
+        MODEL_PATH, subfolder="scheduler"
+    )
     scheduler.config["use_dynamic_shifting"] = True
-    vae = AutoencoderKL.from_pretrained(MODEL_PATH, subfolder="vae", torch_dtype=torch.bfloat16)
-    transformer = ZImageTransformer2DModel.from_pretrained(MODEL_PATH, subfolder="transformer", torch_dtype=torch.bfloat16)
+    vae = AutoencoderKL.from_pretrained(
+        MODEL_PATH, subfolder="vae", torch_dtype=torch.bfloat16
+    )
+    transformer = ZImageTransformer2DModel.from_pretrained(
+        MODEL_PATH, subfolder="transformer", torch_dtype=torch.bfloat16
+    )
     logger.info("Components loaded in %.1fs", time.time() - t0)
 
     pipe = ZImagePipeline(
-        scheduler=scheduler, vae=vae, transformer=transformer,
-        text_encoder=None, tokenizer=None,
+        scheduler=scheduler,
+        vae=vae,
+        transformer=transformer,
+        text_encoder=None,
+        tokenizer=None,
     )
     pipe = pipe.to(DEVICE)
     logger.info("Pipeline on %s", DEVICE)
 
     cap_feat_dim = transformer.config.cap_feat_dim
     seq_len = 77
-    prompt_embeds = [torch.randn(seq_len, cap_feat_dim, device=DEVICE, dtype=torch.bfloat16)]
-    neg_embeds = [torch.zeros(seq_len, cap_feat_dim, device=DEVICE, dtype=torch.bfloat16)]
+    prompt_embeds = [
+        torch.randn(seq_len, cap_feat_dim, device=DEVICE, dtype=torch.bfloat16)
+    ]
+    neg_embeds = [
+        torch.zeros(seq_len, cap_feat_dim, device=DEVICE, dtype=torch.bfloat16)
+    ]
 
     logger.info("Generating 512x512, 10 steps...")
     t0 = time.time()
     result = pipe(
         prompt_embeds=prompt_embeds,
         negative_prompt_embeds=neg_embeds,
-        height=512, width=512,
-        num_inference_steps=10, guidance_scale=7.0,
+        height=512,
+        width=512,
+        num_inference_steps=10,
+        guidance_scale=7.0,
         generator=torch.Generator(device=DEVICE).manual_seed(42),
         max_sequence_length=512,
     )
     image = result.images[0]
-    logger.info("Generated in %.1fs: %dx%d", time.time() - t0, image.width, image.height)
+    logger.info(
+        "Generated in %.1fs: %dx%d", time.time() - t0, image.width, image.height
+    )
 
     out = os.path.join(OUTPUT_DIR, "test_zimage_manual.png")
     image.save(out)
@@ -340,25 +403,36 @@ def test_full_pipeline():
     )
 
     logger.info("=== Full pipeline test (with ByT5 text encoder) ===")
-    model_root = Path(MODEL_PATH)
+    model_root = _resolve_model_root(MODEL_PATH)
 
     # Load diffusion components
     t0 = time.time()
-    scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(MODEL_PATH, subfolder="scheduler")
+    scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(
+        MODEL_PATH, subfolder="scheduler"
+    )
     scheduler.config["use_dynamic_shifting"] = True
-    vae = AutoencoderKL.from_pretrained(MODEL_PATH, subfolder="vae", torch_dtype=torch.bfloat16)
-    transformer = ZImageTransformer2DModel.from_pretrained(MODEL_PATH, subfolder="transformer", torch_dtype=torch.bfloat16)
+    vae = AutoencoderKL.from_pretrained(
+        MODEL_PATH, subfolder="vae", torch_dtype=torch.bfloat16
+    )
+    transformer = ZImageTransformer2DModel.from_pretrained(
+        MODEL_PATH, subfolder="transformer", torch_dtype=torch.bfloat16
+    )
     logger.info("Diffusion components loaded in %.1fs", time.time() - t0)
 
     # Load text encoder
     t0 = time.time()
-    text_encoder, tokenizer = load_full_text_encoder(model_root, torch.device(DEVICE), torch.bfloat16)
+    text_encoder, tokenizer = load_full_text_encoder(
+        model_root, torch.device(DEVICE), torch.bfloat16
+    )
     logger.info("Text encoder loaded in %.1fs", time.time() - t0)
 
     # Build pipeline WITHOUT text_encoder (we'll encode manually and pass prompt_embeds)
     pipe = ZImagePipeline(
-        scheduler=scheduler, vae=vae, transformer=transformer,
-        text_encoder=None, tokenizer=None,
+        scheduler=scheduler,
+        vae=vae,
+        transformer=transformer,
+        text_encoder=None,
+        tokenizer=None,
     )
     pipe = pipe.to(DEVICE)
     logger.info("Full pipeline assembled on %s", DEVICE)
@@ -393,7 +467,10 @@ def test_full_pipeline():
             prompt_embeds_tensor = enc_out.hidden_states[-2]  # [1, seq_len, 2560]
             # Apply attention mask to get variable-length embeddings
             mask_bool = attn_mask.bool()
-            prompt_embeds_list = [prompt_embeds_tensor[b][mask_bool[b]] for b in range(prompt_embeds_tensor.shape[0])]
+            prompt_embeds_list = [
+                prompt_embeds_tensor[b][mask_bool[b]]
+                for b in range(prompt_embeds_tensor.shape[0])
+            ]
 
             # Encode negative prompt (empty string)
             neg_inputs = tokenizer(
@@ -413,7 +490,10 @@ def test_full_pipeline():
             )
             neg_embeds_tensor = neg_out.hidden_states[-2]
             neg_mask_bool = neg_mask.bool()
-            neg_embeds_list = [neg_embeds_tensor[b][neg_mask_bool[b]] for b in range(neg_embeds_tensor.shape[0])]
+            neg_embeds_list = [
+                neg_embeds_tensor[b][neg_mask_bool[b]]
+                for b in range(neg_embeds_tensor.shape[0])
+            ]
 
         logger.info("Text encoded in %.1fs", time.time() - t0)
 
@@ -421,7 +501,8 @@ def test_full_pipeline():
         result = pipe(
             prompt_embeds=prompt_embeds_list,
             negative_prompt_embeds=neg_embeds_list,
-            height=1024, width=1024,
+            height=1024,
+            width=1024,
             num_inference_steps=28,
             guidance_scale=7.0,
             generator=torch.Generator(device=DEVICE).manual_seed(42 + i),

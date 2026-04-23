@@ -26,9 +26,9 @@ logger = logging.getLogger(__name__)
 # Patterns for extracting quoted text from prompts (matching
 # processing_bailingmm2.py:get_text_from_prompt).
 _QUOTE_PATTERNS = [
-    r'\"(.*?)\"',       # straight double quotes
-    r'\u201c(.*?)\u201d',  # curly double quotes ""
-    r'\u2018(.*?)\u2019',  # curly single quotes ''
+    r"\"(.*?)\"",  # straight double quotes
+    r"\u201c(.*?)\u201d",  # curly double quotes ""
+    r"\u2018(.*?)\u2019",  # curly single quotes ''
 ]
 
 
@@ -159,9 +159,7 @@ class ZImageBackend(DiffusionBackend):
 
         generator = None
         if params.seed is not None:
-            generator = torch.Generator(device=self._device).manual_seed(
-                params.seed
-            )
+            generator = torch.Generator(device=self._device).manual_seed(params.seed)
 
         # --- Build condition embeddings ---
         prompt_embeds: list[torch.Tensor]
@@ -243,14 +241,10 @@ class ZImageBackend(DiffusionBackend):
             )
             cap_feat_dim = self._pipe.transformer.config.cap_feat_dim
             prompt_embeds = [
-                torch.randn(
-                    77, cap_feat_dim, device=self._device, dtype=torch.bfloat16
-                )
+                torch.randn(77, cap_feat_dim, device=self._device, dtype=torch.bfloat16)
             ]
             neg_embeds = [
-                torch.zeros(
-                    77, cap_feat_dim, device=self._device, dtype=torch.bfloat16
-                )
+                torch.zeros(77, cap_feat_dim, device=self._device, dtype=torch.bfloat16)
             ]
 
         result = self._pipe(

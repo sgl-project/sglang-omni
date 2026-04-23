@@ -5,7 +5,6 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Any
 
 import torch
 from PIL import Image
@@ -51,4 +50,3 @@ class DiffusionBackend(ABC):
 
     def unload(self) -> None:
         """Release GPU memory."""
-        pass

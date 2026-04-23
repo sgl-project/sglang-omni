@@ -24,8 +24,7 @@ logger = logging.getLogger(__name__)
 
 MODEL_PATH = os.environ.get(
     "MING_MODEL_PATH",
-    "/data/cache/huggingface/hub/models--inclusionAI--Ming-flash-omni-2.0"
-    "/snapshots/6a2e1dec07066d20f62a743ac7c34284e4a3932d",
+    "inclusionAI/Ming-flash-omni-2.0",
 )
 DEVICE = os.environ.get("CUDA_DEVICE", "cuda:1")
 
@@ -75,9 +74,7 @@ def main():
         t0 = time.time()
         image = backend.generate(prompt, params)
         elapsed = time.time() - t0
-        logger.info(
-            "Generated in %.1fs: %dx%d", elapsed, image.width, image.height
-        )
+        logger.info("Generated in %.1fs: %dx%d", elapsed, image.width, image.height)
 
         assert image.width == params.width
         assert image.height == params.height
