@@ -323,9 +323,9 @@ def assert_wer_partitioned(
     )
 
     n_above_50 = summary.get("n_above_50_pct_wer", 0)
-    assert n_above_50 <= max_n_above_50, (
-        f"{n_above_50} samples have WER>50% > threshold {max_n_above_50}"
-    )
+    assert (
+        n_above_50 <= max_n_above_50
+    ), f"{n_above_50} samples have WER>50% > threshold {max_n_above_50}"
 
 
 def assert_wer_results(
@@ -344,9 +344,9 @@ def assert_wer_results(
       be ≤ threshold. Tolerates a long tail, which matches how the
       MMMU/MMSU TTS-consistency tests assess large-scale audio QA.
     """
-    assert (max_per_sample_wer is not None) ^ (p95_per_sample_wer is not None), (
-        "must pass exactly one of max_per_sample_wer / p95_per_sample_wer"
-    )
+    assert (max_per_sample_wer is not None) ^ (
+        p95_per_sample_wer is not None
+    ), "must pass exactly one of max_per_sample_wer / p95_per_sample_wer"
     summary = results["summary"]
     per_sample = results["per_sample"]
 
