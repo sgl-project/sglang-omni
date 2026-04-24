@@ -809,7 +809,20 @@ def _run_shared(test_path, stage_keys, all_stages, out, k, py, total, gpus_neede
         shutil.rmtree(basetemp, ignore_errors=True)
         basetemp.mkdir(parents=True)
         if auto_pick_gpus:
+            # Wait up to 180s for GPUs to become free. In containerized
+            # environments delete_gpu_process.sh can't kill host-PID
+            # CUDA contexts; they release naturally after the server
+            # subprocess exits.
             picked, err = pick_free_gpus(gpus_needed)
+            if picked is None:
+                waited = 0
+                while waited < 180:
+                    time.sleep(5)
+                    waited += 5
+                    picked, err = pick_free_gpus(gpus_needed)
+                    if picked is not None:
+                        print(f"{label} GPUs freed after {waited}s wait")
+                        break
             if picked is None:
                 status, reason, dur = "failed", err, 0.0
                 print(f"{label} {err}")

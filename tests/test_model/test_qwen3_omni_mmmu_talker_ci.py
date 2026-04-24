@@ -59,29 +59,23 @@ MMMU_TTS_PROMPT = (
 # TODO (Yifei): calibrate with /tune-ci-thresholds after the new prompt lands.
 
 # Accuracy floor — audio-mode MMMU.
-MMMU_AUDIO_MIN_ACCURACY = 0.40
+MMMU_AUDIO_MIN_ACCURACY = 0.50
 
 # WER thresholds use a partitioned view of the per-sample distribution:
 #  - corpus WER over the "sane" subset (per-sample WER <= 50%)
 #  - count of catastrophic failures (per-sample WER > 50%)
-MMMU_AUDIO_WER_BELOW_50_CORPUS_MAX = 0.08
-MMMU_AUDIO_N_ABOVE_50_MAX = 3
+MMMU_AUDIO_WER_BELOW_50_CORPUS_MAX = 0.18
+MMMU_AUDIO_N_ABOVE_50_MAX = 7
 
 # Note (Yifei, Chenyang): Speed thresholds reference
 # https://github.com/sgl-project/sglang-omni/pull/265#issuecomment-4228251028
 
 _MMMU_AUDIO_P95 = {
-    1: {
-        "throughput_qps": 0.034,
-        "tok_per_s_agg": 1.7,
-        "latency_mean_s": 29.66,
-        "rtf_mean": 2.02,
-    },
     8: {
-        "throughput_qps": 0.0,
-        "tok_per_s_agg": 0.0,
-        "latency_mean_s": 1e9,
-        "rtf_mean": 1e9,
+        "throughput_qps": 0.039,
+        "tok_per_s_agg": 0.80,
+        "latency_mean_s": 179.43,
+        "rtf_mean": 3.8534,
     },
 }
 MMMU_AUDIO_THRESHOLDS = apply_slack(_MMMU_AUDIO_P95)
@@ -131,7 +125,7 @@ def test_mmmu_audio_wer_and_speed(
         output_dir=str(tmp_path / "mmmu_audio"),
         enable_audio=True,
         repo_id=DATASETS["mmmu-ci-50"],
-        warmup=0,
+        warmup=1,
         prompt_override=MMMU_TTS_PROMPT,
         timeout_s=500,
     )

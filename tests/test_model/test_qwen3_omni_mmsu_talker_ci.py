@@ -60,26 +60,20 @@ MMSU_TTS_PROMPT = (
 # TODO (Yifei): calibrate with /tune-ci-thresholds after the new prompt lands.
 
 # Accuracy floor — audio-mode MMSU.
-MMSU_AUDIO_MIN_ACCURACY = 0.60
+MMSU_AUDIO_MIN_ACCURACY = 0.50
 
 # WER thresholds use a partitioned view of the per-sample distribution:
 #  - corpus WER over the "sane" subset (per-sample WER <= 50%)
 #  - count of catastrophic failures (per-sample WER > 50%)
-MMSU_AUDIO_WER_BELOW_50_CORPUS_MAX = 0.10
-MMSU_AUDIO_N_ABOVE_50_MAX = 5
+MMSU_AUDIO_WER_BELOW_50_CORPUS_MAX = 0.03
+MMSU_AUDIO_N_ABOVE_50_MAX = 0
 
 _MMSU_AUDIO_P95 = {
-    1: {
-        "throughput_qps": 0.04,
-        "tok_per_s_agg": 1.80,
-        "latency_mean_s": 27.376,
-        "rtf_mean": 1.5734,
-    },
     8: {
-        "throughput_qps": 0.0,
-        "tok_per_s_agg": 0.0,
-        "latency_mean_s": 1e9,
-        "rtf_mean": 1e9,
+        "throughput_qps": 0.100,
+        "tok_per_s_agg": 0.90,
+        "latency_mean_s": 68.27,
+        "rtf_mean": 3.8127,
     },
 }
 MMSU_AUDIO_THRESHOLDS = apply_slack(_MMSU_AUDIO_P95)
@@ -126,7 +120,7 @@ def _build_args(port: int, output_dir: str) -> argparse.Namespace:
         prompt=MMSU_TTS_PROMPT,
         max_tokens=MAX_TOKENS,
         temperature=0.0,
-        warmup=0,
+        warmup=1,
         max_concurrency=CONCURRENCY,
         request_rate=float("inf"),
         save_audio=True,

@@ -24,8 +24,8 @@ gpus_per_test:
   test_qwen3_omni_mmmu_ci.py: 1
   test_qwen3_omni_mmsu_ci.py: 1
   test_qwen3_omni_tts_ci.py: 2
-  test_qwen3_omni_mmmu_tts_consistency_ci.py: 2
-  test_qwen3_omni_mmsu_tts_consistency_ci.py: 2
+  test_qwen3_omni_mmmu_talker_ci.py: 2
+  test_qwen3_omni_mmsu_talker_ci.py: 2
   test_docs_qwen3_omni.py: 2
 test_globs:
   - "tests/test_model/test_qwen3_omni_*_ci.py"
@@ -59,7 +59,7 @@ metric_sources:
       throughput_qps: "speed.throughput_qps"
       tok_per_s_agg: "speed.tok_per_s_agg"
       latency_mean_s: "speed.latency_mean_s"
-  test_qwen3_omni_mmmu_tts_consistency_ci.py:
+  test_qwen3_omni_mmmu_talker_ci.py:
     json_file: "test_mmmu_audio_wer_and_speed0/mmmu_audio/mmmu_results.json"
     sample_counts:
       total: "summary.total_samples"
@@ -82,7 +82,7 @@ metric_sources:
       throughput_qps: "speed_metrics.throughput_qps"
       tok_per_s_agg: "speed_metrics.tok_per_s_agg"
       latency_mean_s: "speed_metrics.latency_mean_s"
-  test_qwen3_omni_mmsu_tts_consistency_ci.py:
+  test_qwen3_omni_mmsu_talker_ci.py:
     json_file: "test_mmsu_audio_wer_and_speed0/mmsu_audio/mmsu_results.json"
     sample_counts:
       total: "summary.total_samples"

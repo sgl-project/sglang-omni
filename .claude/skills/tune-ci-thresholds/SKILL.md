@@ -67,7 +67,7 @@ yourself and retry.
 1. Run `python .claude/skills/tune-ci-thresholds/tune.py models-list` to
    discover available models. Then for the selected model, run
    `python tune.py --model <M> stages-list` to read the per-test-file
-   bases (e.g. `mmmu`, `mmmu_tts_consistency`, `mmsu`, `tts`, …) and
+   bases (e.g. `mmmu`, `mmmu_talker`, `mmsu`, `mmsu_talker`, `tts`, …) and
    group aliases (`@accuracy`, `@speed`, `@wer`, `@docs`).
 2. **One-time parameter prompt.** If the invocation omits `--model`,
    `--stages`, or `--repeats`, collect missing fields from the user
@@ -85,9 +85,9 @@ yourself and retry.
    Which tests should I calibrate? Reply with one or more of:
      ALL                          (every stage)
      mmmu                         tests/test_model/test_qwen3_omni_mmmu_ci.py — acc + speed
-     mmmu_tts_consistency         tests/test_model/test_qwen3_omni_mmmu_tts_consistency_ci.py — wer + speed
+     mmmu_talker                  tests/test_model/test_qwen3_omni_mmmu_talker_ci.py — acc + wer + speed
      mmsu                         tests/test_model/test_qwen3_omni_mmsu_ci.py — acc + speed
-     mmsu_tts_consistency         tests/test_model/test_qwen3_omni_mmsu_tts_consistency_ci.py — wer + speed
+     mmsu_talker                  tests/test_model/test_qwen3_omni_mmsu_talker_ci.py — acc + wer + speed
      tts                          tests/test_model/test_qwen3_omni_tts_ci.py — speed + wer
      qwen3_omni_docs              tests/docs/qwen3_omni/test_docs_qwen3_omni.py — docs smoke
    Shortcuts: @accuracy, @speed, @wer, @docs (metric-group aliases).
