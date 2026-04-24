@@ -83,6 +83,7 @@ def _build_args(port: int, output_dir: str) -> argparse.Namespace:
         warmup=1,
         max_concurrency=CONCURRENCY,
         request_rate=float("inf"),
+        timeout_s=300,
         save_audio=False,
         disable_tqdm=False,
         seed=None,

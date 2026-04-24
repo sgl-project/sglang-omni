@@ -55,10 +55,10 @@ _VC_NON_STREAM_P95 = {
         "rtf_mean": 2.0,
     },
     8: {
-        "throughput_qps": 0.0,
-        "tok_per_s_agg": 0.0,
-        "latency_mean_s": 1e9,
-        "rtf_mean": 1e9,
+        "throughput_qps": 0.183,
+        "tok_per_s_agg": 2.70,
+        "latency_mean_s": 5.471,
+        "rtf_mean": 1.6034,
     },
 }
 
@@ -74,8 +74,8 @@ VC_NON_STREAM_THRESHOLDS = apply_slack(
     _VC_NON_STREAM_P95, THRESHOLD_SLACK_HIGHER, THRESHOLD_SLACK_LOWER
 )
 
-VC_WER_MAX_CORPUS = 0.06
-VC_WER_MAX_PER_SAMPLE = 0.30
+VC_WER_MAX_CORPUS = 0.015
+VC_WER_MAX_PER_SAMPLE = 0.20
 
 
 def _run_benchmark(
