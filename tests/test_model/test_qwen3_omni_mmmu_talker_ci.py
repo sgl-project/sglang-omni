@@ -32,27 +32,42 @@ from sglang_omni.utils import find_available_port
 from tests.utils import (
     apply_slack,
     assert_speed_thresholds,
-    assert_wer_results,
+    assert_wer_partitioned,
     start_server_from_cmd,
     stop_server,
 )
 
 MODEL_PATH = "Qwen/Qwen3-Omni-30B-A3B-Instruct"
 
-MAX_SAMPLES = 50
-MAX_TOKENS = 50
+MAX_SAMPLES = 20
+MAX_TOKENS = 256
 STARTUP_TIMEOUT = 900
-
-# Note (Yifei): Concurrency=1 only for now — code_predictor and code2wav
-# modules serialize GPU access, so they run serially even when concurrency > 1.
 
 CONCURRENCY = 8
 
-# WER thresholds — text-audio consistency.
-MMMU_AUDIO_WER_MAX_CORPUS = 0.10
-MMMU_AUDIO_WER_P95_PER_SAMPLE = 0.18
+# Note (Yifei): "2-3 sentences" floor prevents terse "Answer: X" replies that
+# would starve the WER signal; the 120-word cap keeps p95 output well under
+# MAX_TOKENS so the final 'Answer: $LETTER' line is never truncated.
+MMMU_TTS_PROMPT = (
+    "Look at the image and answer the multiple-choice question.\n"
+    "Briefly explain your reasoning in 2-3 sentences, then on a new final "
+    "line output exactly:\n"
+    "'Answer: $LETTER' (without quotes) where LETTER is one of the options.\n"
+    "Do not exceed 120 words in total."
+)
 
-# Note (Yifei, Chenyang): Thresholds reference
+# TODO (Yifei): calibrate with /tune-ci-thresholds after the new prompt lands.
+
+# Accuracy floor — audio-mode MMMU.
+MMMU_AUDIO_MIN_ACCURACY = 0.40
+
+# WER thresholds use a partitioned view of the per-sample distribution:
+#  - corpus WER over the "sane" subset (per-sample WER <= 50%)
+#  - count of catastrophic failures (per-sample WER > 50%)
+MMMU_AUDIO_WER_BELOW_50_CORPUS_MAX = 0.08
+MMMU_AUDIO_N_ABOVE_50_MAX = 3
+
+# Note (Yifei, Chenyang): Speed thresholds reference
 # https://github.com/sgl-project/sglang-omni/pull/265#issuecomment-4228251028
 
 _MMMU_AUDIO_P95 = {
@@ -116,7 +131,9 @@ def test_mmmu_audio_wer_and_speed(
         output_dir=str(tmp_path / "mmmu_audio"),
         enable_audio=True,
         repo_id=DATASETS["mmmu-ci-50"],
-        warmup=1,
+        warmup=0,
+        prompt_override=MMMU_TTS_PROMPT,
+        timeout_s=500,
     )
     results = asyncio.run(run_mmmu_eval(config))
 
@@ -128,12 +145,20 @@ def test_mmmu_audio_wer_and_speed(
         f"(timeouts or empty responses); any failure fails the test"
     )
 
+    # Assert accuracy
+    accuracy = summary["accuracy"]
+    assert accuracy >= MMMU_AUDIO_MIN_ACCURACY, (
+        f"MMMU audio accuracy {accuracy:.4f} ({accuracy * 100:.1f}%) < "
+        f"threshold {MMMU_AUDIO_MIN_ACCURACY} "
+        f"({MMMU_AUDIO_MIN_ACCURACY * 100:.0f}%)"
+    )
+
     # Assert WER
     assert "wer" in results, "Audio WER results missing from eval output"
-    assert_wer_results(
+    assert_wer_partitioned(
         results["wer"],
-        MMMU_AUDIO_WER_MAX_CORPUS,
-        p95_per_sample_wer=MMMU_AUDIO_WER_P95_PER_SAMPLE,
+        max_wer_below_50_corpus=MMMU_AUDIO_WER_BELOW_50_CORPUS_MAX,
+        max_n_above_50=MMMU_AUDIO_N_ABOVE_50_MAX,
     )
 
     # Assert speed

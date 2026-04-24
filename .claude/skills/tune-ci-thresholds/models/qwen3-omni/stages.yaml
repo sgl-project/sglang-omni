@@ -7,7 +7,7 @@ mmmu_accuracy:
   context_vars:
     - CONCURRENCY
   test_file_sha256: 5d47bdbbc93d2bee2f049a5dc72e91115808148d02c615077ff71220996b7508
-  last_discovered_at: 2026-04-23T06:59:32Z
+  last_discovered_at: 2026-04-24T02:43:59Z
   sample_counts:
     total:
       json_file: "test_mmmu_accuracy_and_speed0/mmmu/mmmu_results.json"
@@ -34,7 +34,7 @@ mmmu_speed:
   context_vars:
     - CONCURRENCY
   test_file_sha256: 5d47bdbbc93d2bee2f049a5dc72e91115808148d02c615077ff71220996b7508
-  last_discovered_at: 2026-04-23T06:59:32Z
+  last_discovered_at: 2026-04-24T02:43:59Z
   sample_counts:
     total:
       json_file: "test_mmmu_accuracy_and_speed0/mmmu/mmmu_results.json"
@@ -73,6 +73,35 @@ mmmu_speed:
         scale: 1
         digits: 3
       status: OK
+mmmu_tts_consistency_accuracy:
+  test: tests/test_model/test_qwen3_omni_mmmu_tts_consistency_ci.py
+  title: "MMMU TTS CONSISTENCY Accuracy"
+  group: accuracy
+  extra_env: {}
+  context_vars:
+    - MAX_SAMPLES
+    - MAX_TOKENS
+    - CONCURRENCY
+  test_file_sha256: 9d00b742ebcec806682a2ce63856504bb4c33b697ba8d5ab746bff77046d09de
+  last_discovered_at: 2026-04-24T02:43:59Z
+  sample_counts:
+    total:
+      json_file: "test_mmmu_audio_wer_and_speed0/mmmu_audio/mmmu_results.json"
+      json_path: "summary.total_samples"
+    ok:
+      json_file: "test_mmmu_audio_wer_and_speed0/mmmu_audio/mmmu_results.json"
+      json_path: "speed.completed_requests"
+  metrics:
+    accuracy:
+      source: "MMMU_AUDIO_MIN_ACCURACY"
+      json_file: "test_mmmu_audio_wer_and_speed0/mmmu_audio/mmmu_results.json"
+      json_path: "summary.accuracy"
+      worst: min
+      display:
+        label: "Acc (%)"
+        scale: 100
+        digits: 2
+      status: OK
 mmmu_tts_consistency_wer:
   test: tests/test_model/test_qwen3_omni_mmmu_tts_consistency_ci.py
   title: "MMMU TTS CONSISTENCY Wer"
@@ -82,8 +111,8 @@ mmmu_tts_consistency_wer:
     - MAX_SAMPLES
     - MAX_TOKENS
     - CONCURRENCY
-  test_file_sha256: 9f2f3faab8b40869dcf8c0faff9d351b9b507dba0bf3aac6581f00d0ae57aa83
-  last_discovered_at: 2026-04-23T06:59:32Z
+  test_file_sha256: 9d00b742ebcec806682a2ce63856504bb4c33b697ba8d5ab746bff77046d09de
+  last_discovered_at: 2026-04-24T02:43:59Z
   sample_counts:
     total:
       json_file: "test_mmmu_audio_wer_and_speed0/mmmu_audio/mmmu_results.json"
@@ -92,25 +121,25 @@ mmmu_tts_consistency_wer:
       json_file: "test_mmmu_audio_wer_and_speed0/mmmu_audio/mmmu_results.json"
       json_path: "speed.completed_requests"
   metrics:
-    corpus_wer:
-      source: "MMMU_AUDIO_WER_MAX_CORPUS"
+    wer_below_50_corpus:
+      source: "MMMU_AUDIO_WER_BELOW_50_CORPUS_MAX"
       json_file: "test_mmmu_audio_wer_and_speed0/mmmu_audio/mmmu_results.json"
-      json_path: "wer.summary.wer_corpus"
+      json_path: "wer.summary.wer_below_50_corpus"
       worst: max
       display:
-        label: "Corpus WER (%)"
+        label: "Corpus WER ≤50% (%)"
         scale: 100
         digits: 2
       status: OK
-    per_sample_wer_p95:
-      source: "MMMU_AUDIO_WER_P95_PER_SAMPLE"
+    n_above_50:
+      source: "MMMU_AUDIO_N_ABOVE_50_MAX"
       json_file: "test_mmmu_audio_wer_and_speed0/mmmu_audio/mmmu_results.json"
-      json_path: "wer.summary.wer_per_sample_p95"
+      json_path: "wer.summary.n_above_50_pct_wer"
       worst: max
       display:
-        label: "P95 per-sample WER (%)"
-        scale: 100
-        digits: 2
+        label: "Samples >50% WER"
+        scale: 1
+        digits: 0
       status: OK
 mmmu_tts_consistency_speed:
   test: tests/test_model/test_qwen3_omni_mmmu_tts_consistency_ci.py
@@ -121,8 +150,8 @@ mmmu_tts_consistency_speed:
     - MAX_SAMPLES
     - MAX_TOKENS
     - CONCURRENCY
-  test_file_sha256: 9f2f3faab8b40869dcf8c0faff9d351b9b507dba0bf3aac6581f00d0ae57aa83
-  last_discovered_at: 2026-04-23T06:59:32Z
+  test_file_sha256: 9d00b742ebcec806682a2ce63856504bb4c33b697ba8d5ab746bff77046d09de
+  last_discovered_at: 2026-04-24T02:43:59Z
   sample_counts:
     total:
       json_file: "test_mmmu_audio_wer_and_speed0/mmmu_audio/mmmu_results.json"
@@ -179,7 +208,7 @@ mmsu_accuracy:
   context_vars:
     - CONCURRENCY
   test_file_sha256: e24161698826f02ef5a244ebefc7d133c6ff0fa3ef9b324a78d780877b2afa1e
-  last_discovered_at: 2026-04-23T06:59:32Z
+  last_discovered_at: 2026-04-24T02:43:59Z
   sample_counts:
     total:
       json_file: "test_mmsu_accuracy_and_speed0/mmsu/mmsu_results.json"
@@ -206,7 +235,7 @@ mmsu_speed:
   context_vars:
     - CONCURRENCY
   test_file_sha256: e24161698826f02ef5a244ebefc7d133c6ff0fa3ef9b324a78d780877b2afa1e
-  last_discovered_at: 2026-04-23T06:59:32Z
+  last_discovered_at: 2026-04-24T02:43:59Z
   sample_counts:
     total:
       json_file: "test_mmsu_accuracy_and_speed0/mmsu/mmsu_results.json"
@@ -245,6 +274,35 @@ mmsu_speed:
         scale: 1
         digits: 3
       status: OK
+mmsu_tts_consistency_accuracy:
+  test: tests/test_model/test_qwen3_omni_mmsu_tts_consistency_ci.py
+  title: "MMSU TTS CONSISTENCY Accuracy"
+  group: accuracy
+  extra_env: {}
+  context_vars:
+    - MAX_SAMPLES
+    - MAX_TOKENS
+    - CONCURRENCY
+  test_file_sha256: 7feb355d8cab96f35516ed9e740b487e902f41b9147b9a0d7dc8e63801b801aa
+  last_discovered_at: 2026-04-24T02:43:59Z
+  sample_counts:
+    total:
+      json_file: "test_mmsu_audio_wer_and_speed0/mmsu_audio/mmsu_results.json"
+      json_path: "summary.total_samples"
+    ok:
+      json_file: "test_mmsu_audio_wer_and_speed0/mmsu_audio/mmsu_results.json"
+      json_path: "summary.successful_samples"
+  metrics:
+    accuracy:
+      source: "MMSU_AUDIO_MIN_ACCURACY"
+      json_file: "test_mmsu_audio_wer_and_speed0/mmsu_audio/mmsu_results.json"
+      json_path: "summary.overall_accuracy"
+      worst: min
+      display:
+        label: "Acc (%)"
+        scale: 100
+        digits: 2
+      status: OK
 mmsu_tts_consistency_wer:
   test: tests/test_model/test_qwen3_omni_mmsu_tts_consistency_ci.py
   title: "MMSU TTS CONSISTENCY Wer"
@@ -254,8 +312,8 @@ mmsu_tts_consistency_wer:
     - MAX_SAMPLES
     - MAX_TOKENS
     - CONCURRENCY
-  test_file_sha256: fa60adb68913fd0d59e27dd162d65aba08ac33ca4e65e140ce8f043222095ed9
-  last_discovered_at: 2026-04-23T06:59:32Z
+  test_file_sha256: 7feb355d8cab96f35516ed9e740b487e902f41b9147b9a0d7dc8e63801b801aa
+  last_discovered_at: 2026-04-24T02:43:59Z
   sample_counts:
     total:
       json_file: "test_mmsu_audio_wer_and_speed0/mmsu_audio/mmsu_results.json"
@@ -264,25 +322,25 @@ mmsu_tts_consistency_wer:
       json_file: "test_mmsu_audio_wer_and_speed0/mmsu_audio/mmsu_results.json"
       json_path: "summary.successful_samples"
   metrics:
-    corpus_wer:
-      source: "MMSU_AUDIO_WER_MAX_CORPUS"
+    wer_below_50_corpus:
+      source: "MMSU_AUDIO_WER_BELOW_50_CORPUS_MAX"
       json_file: "test_mmsu_audio_wer_and_speed0/mmsu_audio/mmsu_results.json"
-      json_path: "wer.summary.wer_corpus"
+      json_path: "wer.summary.wer_below_50_corpus"
       worst: max
       display:
-        label: "Corpus WER (%)"
+        label: "Corpus WER ≤50% (%)"
         scale: 100
         digits: 2
       status: OK
-    per_sample_wer_p95:
-      source: "MMSU_AUDIO_WER_P95_PER_SAMPLE"
+    n_above_50:
+      source: "MMSU_AUDIO_N_ABOVE_50_MAX"
       json_file: "test_mmsu_audio_wer_and_speed0/mmsu_audio/mmsu_results.json"
-      json_path: "wer.summary.wer_per_sample_p95"
+      json_path: "wer.summary.n_above_50_pct_wer"
       worst: max
       display:
-        label: "P95 per-sample WER (%)"
-        scale: 100
-        digits: 2
+        label: "Samples >50% WER"
+        scale: 1
+        digits: 0
       status: OK
 mmsu_tts_consistency_speed:
   test: tests/test_model/test_qwen3_omni_mmsu_tts_consistency_ci.py
@@ -293,8 +351,8 @@ mmsu_tts_consistency_speed:
     - MAX_SAMPLES
     - MAX_TOKENS
     - CONCURRENCY
-  test_file_sha256: fa60adb68913fd0d59e27dd162d65aba08ac33ca4e65e140ce8f043222095ed9
-  last_discovered_at: 2026-04-23T06:59:32Z
+  test_file_sha256: 7feb355d8cab96f35516ed9e740b487e902f41b9147b9a0d7dc8e63801b801aa
+  last_discovered_at: 2026-04-24T02:43:59Z
   sample_counts:
     total:
       json_file: "test_mmsu_audio_wer_and_speed0/mmsu_audio/mmsu_results.json"
@@ -351,8 +409,8 @@ tts_speed:
     SGLANG_SEEDTTS50_DIR: "/github/home/seedtts-50"
   context_vars:
     - MAX_SAMPLES
-  test_file_sha256: 67f0782e6a1761810c9330f3094bbe02b47cf68a268b9b89551dbacea6e5bdcd
-  last_discovered_at: 2026-04-23T06:59:32Z
+  test_file_sha256: 03cb1e2d0f855af1d0f05a1701fa3eb88fc248cff5fe07e9bfb320bb0d71b985
+  last_discovered_at: 2026-04-24T02:43:59Z
   sample_counts:
     total:
       json_file: "vc_nonstream0/wer_results.json"
@@ -409,8 +467,8 @@ tts_wer:
     SGLANG_SEEDTTS50_DIR: "/github/home/seedtts-50"
   context_vars:
     - MAX_SAMPLES
-  test_file_sha256: 67f0782e6a1761810c9330f3094bbe02b47cf68a268b9b89551dbacea6e5bdcd
-  last_discovered_at: 2026-04-23T06:59:32Z
+  test_file_sha256: 03cb1e2d0f855af1d0f05a1701fa3eb88fc248cff5fe07e9bfb320bb0d71b985
+  last_discovered_at: 2026-04-24T02:43:59Z
   sample_counts:
     total:
       json_file: "vc_nonstream0/wer_results.json"
@@ -446,5 +504,5 @@ qwen3_omni_docs:
   extra_env: {}
   context_vars: []
   test_file_sha256: e1ebb81eb167bb6a290b904d73c71ca7c01c4bdea920617522286441a6f91110
-  last_discovered_at: 2026-04-23T06:59:32Z
+  last_discovered_at: 2026-04-24T02:43:59Z
   metrics: {}

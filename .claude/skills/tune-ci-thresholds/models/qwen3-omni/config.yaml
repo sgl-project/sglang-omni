@@ -42,6 +42,7 @@ stage_base_docs_override: "qwen3_omni_docs"
 # Per-test metric source JSONs. `json_file` is relative to pytest's
 # `--basetemp` dir (set fresh per run by tune.py). `paths` maps a
 # recognized metric key (accuracy / corpus_wer / per_sample_wer_max /
+# per_sample_wer_p95 / wer_below_50_corpus / n_above_50 /
 # throughput_qps / tok_per_s_agg / latency_mean_s / rtf_mean) to the
 # dotted JSON key chain that yields a number.
 # When a metric pulls from a different JSON than `json_file`, use the
@@ -64,8 +65,9 @@ metric_sources:
       total: "summary.total_samples"
       ok: "speed.completed_requests"
     paths:
-      corpus_wer: "wer.summary.wer_corpus"
-      per_sample_wer_p95: "wer.summary.wer_per_sample_p95"
+      accuracy: "summary.accuracy"
+      wer_below_50_corpus: "wer.summary.wer_below_50_corpus"
+      n_above_50: "wer.summary.n_above_50_pct_wer"
       throughput_qps: "speed.throughput_qps"
       tok_per_s_agg: "speed.tok_per_s_agg"
       latency_mean_s: "speed.latency_mean_s"
@@ -86,8 +88,9 @@ metric_sources:
       total: "summary.total_samples"
       ok: "summary.successful_samples"
     paths:
-      corpus_wer: "wer.summary.wer_corpus"
-      per_sample_wer_p95: "wer.summary.wer_per_sample_p95"
+      accuracy: "summary.overall_accuracy"
+      wer_below_50_corpus: "wer.summary.wer_below_50_corpus"
+      n_above_50: "wer.summary.n_above_50_pct_wer"
       throughput_qps: "speed_metrics.throughput_qps"
       tok_per_s_agg: "speed_metrics.tok_per_s_agg"
       latency_mean_s: "speed_metrics.latency_mean_s"

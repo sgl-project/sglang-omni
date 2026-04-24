@@ -141,6 +141,7 @@ async def run(
             request_rate=args.request_rate,
             warmup=args.warmup,
             disable_tqdm=args.disable_tqdm,
+            timeout_s=args.timeout_s,
         )
     )
     request_results = await runner.run(samples, send_fn)
@@ -206,6 +207,7 @@ def main() -> None:
     p.add_argument("--warmup", type=int, default=1)
     p.add_argument("--max-concurrency", type=int, default=32)
     p.add_argument("--request-rate", type=float, default=float("inf"))
+    p.add_argument("--timeout-s", type=int, default=300)
     p.add_argument("--save-audio", action="store_true")
     p.add_argument("--disable-tqdm", action="store_true")
     p.add_argument("--seed", type=int, default=None)

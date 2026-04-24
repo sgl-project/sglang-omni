@@ -282,6 +282,52 @@ def assert_streaming_consistency(
     )
 
 
+def assert_wer_partitioned(
+    results: dict,
+    *,
+    max_wer_below_50_corpus: float,
+    max_n_above_50: int,
+) -> None:
+    """Verify WER results using a partitioned view of the per-sample WER
+    distribution, suited to large-scale audio-QA TTS consistency tests:
+
+    - ``max_wer_below_50_corpus``: upper bound on corpus-level WER computed
+      ONLY over samples whose per-sample WER ≤ 50%. Measures transcription
+      quality on the "sane" subset, insensitive to catastrophic outliers.
+    - ``max_n_above_50``: upper bound on the count of samples with
+      per-sample WER > 50% (catastrophic failures).
+
+    Together these thresholds bound both the typical-case quality and the
+    tail of wildly-wrong outputs, without the length-sensitivity of a
+    single corpus-wide WER.
+    """
+    summary = results["summary"]
+    per_sample = results["per_sample"]
+
+    failed_details = [
+        f"  sample {s['id']}: {s.get('error')}"
+        for s in per_sample
+        if not s.get("is_success", True)
+    ]
+    assert summary["evaluated"] == summary["total_samples"], (
+        f"Only {summary['evaluated']}/{summary['total_samples']} samples evaluated, "
+        f"{summary['skipped']} skipped.\n"
+        f"Per-sample errors:\n" + "\n".join(failed_details)
+    )
+
+    wer_below_50 = summary.get("wer_below_50_corpus", 0.0)
+    assert wer_below_50 <= max_wer_below_50_corpus, (
+        f"Corpus WER over samples with WER<=50% is "
+        f"{wer_below_50:.4f} ({wer_below_50 * 100:.2f}%) > threshold "
+        f"{max_wer_below_50_corpus} ({max_wer_below_50_corpus * 100:.2f}%)"
+    )
+
+    n_above_50 = summary.get("n_above_50_pct_wer", 0)
+    assert n_above_50 <= max_n_above_50, (
+        f"{n_above_50} samples have WER>50% > threshold {max_n_above_50}"
+    )
+
+
 def assert_wer_results(
     results: dict,
     max_corpus_wer: float,

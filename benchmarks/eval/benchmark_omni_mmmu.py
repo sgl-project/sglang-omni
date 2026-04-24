@@ -101,6 +101,8 @@ class MMMUEvalConfig:
     asr_device: str = "cuda:0"
     lang: str = "en"
     repo_id: str | None = None
+    prompt_override: str | None = None
+    timeout_s: int = 300
 
 
 def _build_base_url(config: MMMUEvalConfig) -> str:
@@ -116,7 +118,11 @@ async def run_mmmu_eval(config: MMMUEvalConfig) -> dict:
     base_url = _build_base_url(config)
     api_url = f"{base_url}/v1/chat/completions"
 
-    samples = load_mmmu_samples(config.max_samples, repo_id=config.repo_id)
+    samples = load_mmmu_samples(
+        config.max_samples,
+        repo_id=config.repo_id,
+        instruction_override=config.prompt_override,
+    )
     logger.info(f"Prepared {len(samples)} MMMU samples")
 
     audio_dir: str | None = None
@@ -139,6 +145,7 @@ async def run_mmmu_eval(config: MMMUEvalConfig) -> dict:
             request_rate=config.request_rate,
             warmup=config.warmup,
             disable_tqdm=config.disable_tqdm,
+            timeout_s=config.timeout_s,
         )
     )
     request_results = await runner.run(samples, send_fn)
@@ -171,6 +178,13 @@ async def run_mmmu_eval(config: MMMUEvalConfig) -> dict:
             request_results, config.lang, config.asr_device
         )
 
+    print_mmmu_accuracy_summary(summary, config.model)
+    print_speed_summary(
+        speed_metrics, config.model, config.max_concurrency, title="MMMU Speed"
+    )
+    if "wer" in results:
+        print_wer_summary(results["wer"]["summary"], config.model)
+
     if config.output_dir:
         save_json_results(results, config.output_dir, "mmmu_results.json")
 
@@ -200,14 +214,7 @@ def _config_from_args(args: argparse.Namespace) -> MMMUEvalConfig:
 
 async def benchmark(args: argparse.Namespace) -> dict:
     config = _config_from_args(args)
-    results = await run_mmmu_eval(config)
-    print_mmmu_accuracy_summary(results["summary"], config.model)
-    print_speed_summary(
-        results["speed"], config.model, config.max_concurrency, title="MMMU Speed"
-    )
-    if "wer" in results:
-        print_wer_summary(results["wer"]["summary"], config.model)
-    return results
+    return await run_mmmu_eval(config)
 
 
 def main() -> None:

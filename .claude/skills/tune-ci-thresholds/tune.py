@@ -27,14 +27,16 @@ RETRY_SIGS = ("OOM", "exit 137", "exit 139", "TimeoutExpired")
 # assume the metric is read from the result JSON in its native unit
 # (fractions 0-1 for accuracy/WER, raw for throughput/latency/RTF).
 METRIC_SPECS = {
-    "accuracy":           dict(worst="min", label="Acc (%)",               digits=2, scale=100, group="accuracy"),
-    "corpus_wer":         dict(worst="max", label="Corpus WER (%)",        digits=2, scale=100, group="wer"),
-    "per_sample_wer_max": dict(worst="max", label="Max per-sample WER (%)", digits=2, scale=100, group="wer"),
-    "per_sample_wer_p95": dict(worst="max", label="P95 per-sample WER (%)", digits=2, scale=100, group="wer"),
-    "throughput_qps":     dict(worst="min", label="Throughput (req/s)",    digits=3, scale=1,   group="speed"),
-    "tok_per_s_agg":      dict(worst="min", label="Tok/s (aggregate)",     digits=2, scale=1,   group="speed"),
-    "latency_mean_s":     dict(worst="max", label="Latency mean (s)",      digits=3, scale=1,   group="speed"),
-    "rtf_mean":           dict(worst="max", label="RTF mean",              digits=4, scale=1,   group="speed"),
+    "accuracy":             dict(worst="min", label="Acc (%)",               digits=2, scale=100, group="accuracy"),
+    "corpus_wer":           dict(worst="max", label="Corpus WER (%)",        digits=2, scale=100, group="wer"),
+    "per_sample_wer_max":   dict(worst="max", label="Max per-sample WER (%)", digits=2, scale=100, group="wer"),
+    "per_sample_wer_p95":   dict(worst="max", label="P95 per-sample WER (%)", digits=2, scale=100, group="wer"),
+    "wer_below_50_corpus":  dict(worst="max", label="Corpus WER ≤50% (%)", digits=2, scale=100, group="wer"),
+    "n_above_50":           dict(worst="max", label="Samples >50% WER",      digits=0, scale=1,   group="wer"),
+    "throughput_qps":       dict(worst="min", label="Throughput (req/s)",    digits=3, scale=1,   group="speed"),
+    "tok_per_s_agg":        dict(worst="min", label="Tok/s (aggregate)",     digits=2, scale=1,   group="speed"),
+    "latency_mean_s":       dict(worst="max", label="Latency mean (s)",      digits=3, scale=1,   group="speed"),
+    "rtf_mean":             dict(worst="max", label="RTF mean",              digits=4, scale=1,   group="speed"),
 }
 _NESTED = {"throughput_qps", "tok_per_s_agg", "latency_mean_s", "rtf_mean"}
 
@@ -44,6 +46,10 @@ def match_metric(name, nested):
         return nested if nested in _NESTED else None
     if re.fullmatch(r".*_ACC(?:URACY)?_MIN", name) or re.fullmatch(r".*_MIN_ACCURACY", name):
         return "accuracy"
+    # Partitioned WER (wer_below_50_corpus + n_above_50) must precede the
+    # generic "WER_MAX_CORPUS" substring check to avoid false hits.
+    if "WER_BELOW_50_CORPUS_MAX" in name: return "wer_below_50_corpus"
+    if "N_ABOVE_50_MAX" in name: return "n_above_50"
     if "WER_MAX_CORPUS" in name: return "corpus_wer"
     if "WER_MAX_PER_SAMPLE" in name: return "per_sample_wer_max"
     if "WER_P95_PER_SAMPLE" in name: return "per_sample_wer_p95"

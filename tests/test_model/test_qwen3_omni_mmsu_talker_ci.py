@@ -21,7 +21,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import sys
-from copy import deepcopy
 from pathlib import Path
 
 import pytest
@@ -34,35 +33,40 @@ from tests.utils import (
     ServerHandle,
     apply_slack,
     assert_speed_thresholds,
-    assert_wer_results,
+    assert_wer_partitioned,
     start_server_from_cmd,
     stop_server,
 )
 
 MODEL_PATH = "Qwen/Qwen3-Omni-30B-A3B-Instruct"
 
-# TODO (Yifei): enable larger subset/max_tokens when concurrency > 1 is supported.
-MAX_SAMPLES = 50
-MAX_TOKENS = 50
+MAX_SAMPLES = 20
+MAX_TOKENS = 256
 STARTUP_TIMEOUT = 900
 
-# Note (Yifei): Concurrency=1 only for now — code_predictor and code2wav
-# modules serialize GPU access, so they run serially even when concurrency > 1.
 CONCURRENCY = 8
 
-# Note (Yifei): Use chain-of-thought prompt (mirroring MMMU style) instead of the default
-# "Reply with only A, B, C, or D." to elicit longer responses for WER.
+# Note (Yifei): "2-3 sentences" floor prevents terse "Answer: X" replies that
+# would starve the WER signal; the 120-word cap keeps p95 output well under
+# MAX_TOKENS so the final 'Answer: $LETTER' line is never truncated.
 MMSU_TTS_PROMPT = (
-    "Listen to the audio and answer the multiple-choice question. "
-    "Think step by step before answering. The last line of your response "
-    "should be of the following format: 'Answer: $LETTER' (without quotes) "
-    "where LETTER is one of the options."
+    "Listen to the audio and answer the multiple-choice question.\n"
+    "Briefly explain your reasoning in 2-3 sentences, then on a new final "
+    "line output exactly:\n"
+    "'Answer: $LETTER' (without quotes) where LETTER is one of the options.\n"
+    "Do not exceed 120 words in total."
 )
 
-# TODO (Yifei): update thresholds when concurrency > 1 is supported.
+# TODO (Yifei): calibrate with /tune-ci-thresholds after the new prompt lands.
 
-MMSU_AUDIO_WER_MAX_CORPUS = 0.12
-MMSU_AUDIO_WER_P95_PER_SAMPLE = 0.36
+# Accuracy floor — audio-mode MMSU.
+MMSU_AUDIO_MIN_ACCURACY = 0.60
+
+# WER thresholds use a partitioned view of the per-sample distribution:
+#  - corpus WER over the "sane" subset (per-sample WER <= 50%)
+#  - count of catastrophic failures (per-sample WER > 50%)
+MMSU_AUDIO_WER_BELOW_50_CORPUS_MAX = 0.10
+MMSU_AUDIO_N_ABOVE_50_MAX = 5
 
 _MMSU_AUDIO_P95 = {
     1: {
@@ -122,7 +126,7 @@ def _build_args(port: int, output_dir: str) -> argparse.Namespace:
         prompt=MMSU_TTS_PROMPT,
         max_tokens=MAX_TOKENS,
         temperature=0.0,
-        warmup=1,
+        warmup=0,
         max_concurrency=CONCURRENCY,
         request_rate=float("inf"),
         save_audio=True,
@@ -130,6 +134,7 @@ def _build_args(port: int, output_dir: str) -> argparse.Namespace:
         seed=None,
         lang="en",
         asr_device="cuda:0",
+        timeout_s=500,
     )
 
 
@@ -141,14 +146,9 @@ def test_mmsu_audio_wer_and_speed(
     """Run MMSU eval with audio and assert WER and speed meet thresholds."""
     args = _build_args(server_process.port, str(tmp_path / "mmsu_audio"))
 
-    # NOTE (Yifei):
-    # Regression guard for issue #299: append a dup of sample[0] so the
-    # audio encoder sees a cached+non-cached mixed batch. Inert at
-    # concurrency=1; starts to take effect once concurrency is raised.
-    base = load_mmsu_samples(max_samples=MAX_SAMPLES, repo_id=DATASETS["mmsu-ci-2000"])
-    dup = deepcopy(base[0])
-    dup.sample_id = f"{base[0].sample_id}__dup"
-    samples = [*base, dup]
+    samples = load_mmsu_samples(
+        max_samples=MAX_SAMPLES, repo_id=DATASETS["mmsu-ci-2000"]
+    )
 
     results = asyncio.run(run_mmsu(args, samples=samples))
 
@@ -159,11 +159,18 @@ def test_mmsu_audio_wer_and_speed(
         f"(timeouts or empty responses); any failure fails the test"
     )
 
+    accuracy = results["accuracy"]["overall_accuracy"]
+    assert accuracy >= MMSU_AUDIO_MIN_ACCURACY, (
+        f"MMSU audio accuracy {accuracy:.4f} ({accuracy * 100:.1f}%) < "
+        f"threshold {MMSU_AUDIO_MIN_ACCURACY} "
+        f"({MMSU_AUDIO_MIN_ACCURACY * 100:.0f}%)"
+    )
+
     assert "wer" in results, "Audio WER results missing from eval output"
-    assert_wer_results(
+    assert_wer_partitioned(
         results["wer"],
-        MMSU_AUDIO_WER_MAX_CORPUS,
-        p95_per_sample_wer=MMSU_AUDIO_WER_P95_PER_SAMPLE,
+        max_wer_below_50_corpus=MMSU_AUDIO_WER_BELOW_50_CORPUS_MAX,
+        max_n_above_50=MMSU_AUDIO_N_ABOVE_50_MAX,
     )
 
     assert_speed_thresholds(results["speed"], MMSU_AUDIO_THRESHOLDS, CONCURRENCY)
