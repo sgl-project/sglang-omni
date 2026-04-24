@@ -18,6 +18,7 @@ import os
 import time
 from pathlib import Path
 
+import pytest
 import torch
 import torch.nn as nn
 
@@ -393,6 +394,7 @@ def test_manual_pipeline():
     torch.cuda.empty_cache()
 
 
+@pytest.mark.skip(reason="Requires large model download; run manually with --run-slow")
 def test_full_pipeline():
     """Full test: ByT5 text encoder + ZImage pipeline → generate from text prompt."""
     from diffusers import (
