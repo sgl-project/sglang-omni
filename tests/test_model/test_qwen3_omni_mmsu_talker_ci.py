@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""MMSU TTS consistency CI for Qwen3-Omni (Text + Audio → Text+Audio, Talker ON).
+"""MMSU Talker CI for Qwen3-Omni (Text + Audio → Text+Audio, Talker ON).
 
 Evaluates text-audio consistency by comparing the model's text output with
 ASR transcription of its audio output on MMSU audio-QA tasks. Uses a
@@ -8,7 +8,7 @@ by step before giving the final answer letter, producing longer responses
 more suitable for WER evaluation.
 
 Usage:
-    pytest tests/test_model/test_qwen3_omni_mmsu_tts_consistency_ci.py -v -s -x
+    pytest tests/test_model/test_qwen3_omni_mmsu_talker_ci.py -v -s -x
 
 Author:
     Yifei Gao https://github.com/PasserBy4
@@ -149,7 +149,7 @@ def test_mmsu_audio_wer_and_speed(
     failed = results["accuracy"].get("failed_samples", 0)
     total = results["accuracy"].get("total_samples", 0)
     assert failed == 0, (
-        f"MMSU TTS consistency had {failed}/{total} failed requests "
+        f"MMSU Talker had {failed}/{total} failed requests "
         f"(timeouts or empty responses); any failure fails the test"
     )
 

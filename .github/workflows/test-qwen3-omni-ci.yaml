@@ -15,9 +15,9 @@ permissions:
 # DAG:
 #   docs ──► stage-1-thinker ──► stage-2-tts
 #                              ├─► stage-3-mmmu
-#                              ├─► stage-4-mmmu-tts-consistency
+#                              ├─► stage-4-mmmu-talker
 #                              ├─► stage-5-mmsu
-#                              ├─► stage-6-mmsu-tts-consistency
+#                              ├─► stage-6-mmsu-talker
 #                              ├─► stage-7-videomme
 #                              └─► stage-8-videomme-tts-consistency
 
@@ -167,8 +167,8 @@ jobs:
           artifact-upload-name: qwen3-omni-mmmu-results
           artifact-upload-path: /tmp/**/mmmu_results.json
 
-  stage-4-mmmu-tts-consistency:
-    name: stage 4 - MMMU TTS consistency
+  stage-4-mmmu-talker:
+    name: stage 4 - MMMU Talker
     needs: [docs, stage-1-thinker]
     runs-on: [self-hosted]
     timeout-minutes: 15
@@ -183,12 +183,12 @@ jobs:
         with:
           venv-name: omni-qwen3
 
-      - name: Run MMMU TTS Consistency CI (WER + speed)
+      - name: Run MMMU Talker CI (WER + speed)
         shell: bash
         run: |
           source omni-qwen3/bin/activate
           export PYTHONPATH=$PWD
-          pytest tests/test_model/test_qwen3_omni_mmmu_tts_consistency_ci.py -v -s -x
+          pytest tests/test_model/test_qwen3_omni_mmmu_talker_ci.py -v -s -x
         env:
           HF_ENDPOINT: https://hf-mirror.com
 
@@ -196,10 +196,10 @@ jobs:
         if: always()
         uses: ./.github/actions/omni-post-stage
         with:
-          stage-label: MMMU TTS Consistency (WER + speed)
+          stage-label: MMMU Talker (WER + speed)
           artifact-path-globs: |
             */mmmu_audio/mmmu_results.json
-          artifact-upload-name: qwen3-omni-mmmu-tts-consistency-results
+          artifact-upload-name: qwen3-omni-mmmu-talker-results
           artifact-upload-path: /tmp/**/mmmu_audio/mmmu_results.json
 
   stage-5-mmsu:
@@ -238,8 +238,8 @@ jobs:
           artifact-upload-path: /tmp/**/mmsu/mmsu_results.json
           summary-only: "true"
 
-  stage-6-mmsu-tts-consistency:
-    name: stage 6 - MMSU TTS consistency
+  stage-6-mmsu-talker:
+    name: stage 6 - MMSU Talker
     needs: [docs, stage-1-thinker]
     runs-on: [self-hosted]
     timeout-minutes: 15
@@ -254,12 +254,12 @@ jobs:
         with:
           venv-name: omni-qwen3
 
-      - name: Run MMSU TTS Consistency CI (WER + speed)
+      - name: Run MMSU Talker CI (WER + speed)
         shell: bash
         run: |
           source omni-qwen3/bin/activate
           export PYTHONPATH=$PWD
-          pytest tests/test_model/test_qwen3_omni_mmsu_tts_consistency_ci.py -v -s -x
+          pytest tests/test_model/test_qwen3_omni_mmsu_talker_ci.py -v -s -x
         env:
           HF_ENDPOINT: https://hf-mirror.com
 
@@ -267,10 +267,10 @@ jobs:
         if: always()
         uses: ./.github/actions/omni-post-stage
         with:
-          stage-label: MMSU TTS Consistency (WER + speed)
+          stage-label: MMSU Talker (WER + speed)
           artifact-path-globs: |
             */mmsu_audio/mmsu_results.json
-          artifact-upload-name: qwen3-omni-mmsu-tts-consistency-results
+          artifact-upload-name: qwen3-omni-mmsu-talker-results
           artifact-upload-path: /tmp/**/mmsu_audio/mmsu_results.json
 
   stage-7-videomme:

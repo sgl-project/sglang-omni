@@ -1,11 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
-"""MMMU TTS consistency CI for Qwen3-Omni (Text+Image → Text+Audio, Talker ON).
+"""MMMU Talker CI for Qwen3-Omni (Text+Image → Text+Audio, Talker ON).
 
 Evaluates text-audio consistency by comparing the model's text output
 with ASR transcription of its audio output on MMMU image-QA tasks.
 
 Usage:
-    pytest tests/test_model/test_qwen3_omni_mmmu_tts_consistency_ci.py -v -s -x
+    pytest tests/test_model/test_qwen3_omni_mmmu_talker_ci.py -v -s -x
 
 Note (Chenyang):
     Currently due to the performance limitation of the Talker, we run limited
@@ -135,7 +135,7 @@ def test_mmmu_audio_wer_and_speed(
     failed = summary.get("failed", 0)
     total = summary.get("total_samples", 0)
     assert failed == 0, (
-        f"MMMU TTS consistency had {failed}/{total} failed requests "
+        f"MMMU Talker had {failed}/{total} failed requests "
         f"(timeouts or empty responses); any failure fails the test"
     )
 
