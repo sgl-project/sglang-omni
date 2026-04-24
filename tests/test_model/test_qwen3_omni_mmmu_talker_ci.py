@@ -59,7 +59,7 @@ MMMU_TTS_PROMPT = (
 # TODO (Yifei): calibrate with /tune-ci-thresholds after the new prompt lands.
 
 # Accuracy floor — audio-mode MMMU.
-MMMU_AUDIO_MIN_ACCURACY = 0.50
+MMMU_AUDIO_MIN_ACCURACY = 0.60
 
 # WER thresholds use a partitioned view of the per-sample distribution:
 #  - corpus WER over the "sane" subset (per-sample WER <= 50%)
