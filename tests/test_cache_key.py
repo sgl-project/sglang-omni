@@ -164,7 +164,7 @@ class TestCacheEviction:
             device="cpu",
             use_cache=True,
             cache_size=100,
-            cache_max_bytes=3000,
+            cache_max_bytes=300,
         )
         await engine.start()
         try:

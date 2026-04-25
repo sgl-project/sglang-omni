@@ -443,10 +443,11 @@ class TalkerStreamingExecutor(Executor):
             include_assistant_eos=thinker_done,
             im_end_token_id=self._im_end_token_id,
         )
-        self._validate_prefill_seq_len(
+        sampling_cfg["max_new_tokens"] = self._resolve_effective_max_new_tokens(
             request_id,
             prefill["input_ids"],
             max_new_tokens=sampling_cfg["max_new_tokens"],
+            explicit=bool(sampling_cfg["max_new_tokens_explicit"]),
         )
         self._log_assistant_component_summary(
             request_id=request_id,
@@ -490,6 +491,36 @@ class TalkerStreamingExecutor(Executor):
         data.tts_eos_embed = tts_eos_embed[0].detach().cpu()
         return data
 
+    def _resolve_effective_max_new_tokens(
+        self,
+        request_id: str,
+        input_ids: torch.Tensor,
+        *,
+        max_new_tokens: int,
+        explicit: bool,
+    ) -> int:
+        if self._max_seq_len is None:
+            return int(max_new_tokens)
+
+        prefill_tokens = int(input_ids.numel())
+        max_available = int(self._max_seq_len) - prefill_tokens - 1
+        if max_available <= 0:
+            _validate_talker_context(
+                request_id=request_id,
+                prefill_tokens=prefill_tokens,
+                max_new_tokens=max_new_tokens,
+                max_seq_len=self._max_seq_len,
+            )
+        if explicit or int(max_new_tokens) <= max_available:
+            _validate_talker_context(
+                request_id=request_id,
+                prefill_tokens=prefill_tokens,
+                max_new_tokens=max_new_tokens,
+                max_seq_len=self._max_seq_len,
+            )
+            return int(max_new_tokens)
+        return max_available
+
     def _validate_prefill_seq_len(
         self,
         request_id: str,
@@ -497,13 +528,11 @@ class TalkerStreamingExecutor(Executor):
         *,
         max_new_tokens: int,
     ) -> None:
-        if self._max_seq_len is None:
-            return
-        _validate_talker_context(
-            request_id=request_id,
-            prefill_tokens=int(input_ids.numel()),
+        self._resolve_effective_max_new_tokens(
+            request_id,
+            input_ids,
             max_new_tokens=max_new_tokens,
-            max_seq_len=self._max_seq_len,
+            explicit=True,
         )
 
     def _resolve_speaker_id(self, payload: StagePayload) -> int:
@@ -527,6 +556,7 @@ class TalkerStreamingExecutor(Executor):
         ]
         return {
             "max_new_tokens": int(params.get("talker_max_new_tokens", 4096)),
+            "max_new_tokens_explicit": "talker_max_new_tokens" in params,
             "temperature": float(params.get("talker_temperature", 0.9)),
             "top_k": int(params.get("talker_top_k", 50)),
             "top_p": float(params.get("talker_top_p", 1.0)),
