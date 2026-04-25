@@ -58,7 +58,7 @@ echo ""
 
 # 1. Start the backend server in the background
 echo "[1/2] Starting backend server with arguments: ${BACKEND_ARGS[@]}"
-"${PYTHON_BIN}" -m sglang_omni.cli.cli serve \
+"${PYTHON_BIN}" -m sglang_omni.cli serve \
   "${BACKEND_ARGS[@]}" \
   --port "${PORT}" &
 SERVER_PID=$!

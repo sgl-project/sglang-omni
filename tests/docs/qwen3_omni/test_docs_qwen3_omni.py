@@ -114,7 +114,7 @@ class TestTextOnlyMode:
         cmd = [
             sys.executable,
             "-m",
-            "sglang_omni.cli.cli",
+            "sglang_omni.cli",
             "serve",
             "--model-path",
             MODEL_PATH,

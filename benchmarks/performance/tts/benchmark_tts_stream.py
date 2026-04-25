@@ -7,7 +7,7 @@ benchmark_tts_speed.py which measures overall latency and throughput.
 
 Usage:
     # Launch a server first:
-    python -m sglang_omni.cli.cli serve \\
+    python -m sglang_omni.cli serve \\
         --model-path fishaudio/s2-pro \\
         --config examples/configs/s2pro_tts.yaml \\
         --port 8000

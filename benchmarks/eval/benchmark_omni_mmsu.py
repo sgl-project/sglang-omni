@@ -7,13 +7,13 @@ Evaluates Qwen3-Omni accuracy and performance on the MMSU eval set via
 Usage:
 
     # Launch the server:
-    python -m sglang_omni.cli.cli serve \
+    python -m sglang_omni.cli serve \
         --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct \
         --port 8000
 
     # If only text is needed:
 
-    python -m sglang_omni.cli.cli serve \
+    python -m sglang_omni.cli serve \
         --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct \
         --text-only --port 8000
 
