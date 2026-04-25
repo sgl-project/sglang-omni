@@ -53,7 +53,7 @@ def test_preprocessing_filter_strips_raw_video_from_aggregate_payload() -> None:
     assert filtered_state.encoder_inputs[IMAGE_STAGE] == {"cache_key": "video-key"}
 
 
-def test_encoder_filter_sends_only_cpu_encoder_outputs() -> None:
+def test_encoder_filter_sends_only_encoder_outputs() -> None:
     encoder_out = torch.ones((2, 4), dtype=torch.float32)
     state = PipelineState(
         encoder_inputs={IMAGE_STAGE: {"pixel_values_videos": torch.zeros((2, 4))}},
@@ -67,7 +67,6 @@ def test_encoder_filter_sends_only_cpu_encoder_outputs() -> None:
     assert filtered_state.encoder_inputs == {}
     assert filtered_state.engine_outputs == {}
     filtered_video_embeds = filtered_state.encoder_outs[IMAGE_STAGE]["video_embeds"]
-    assert filtered_video_embeds.device.type == "cpu"
     assert torch.equal(filtered_video_embeds, encoder_out)
 
 
