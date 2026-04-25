@@ -15,12 +15,12 @@ Usage:
 
     # Launch the server:
     1. For S2-Pro:
-    python -m sglang_omni.cli.cli serve \
+    python -m sglang_omni.cli serve \
         --model-path fishaudio/s2-pro \
         --port 8000
 
     2. For Voxtral-4B-TTS-2603:
-    python -m sglang_omni.cli.cli serve \
+    python -m sglang_omni.cli serve \
         --model-path mistralai/Voxtral-4B-TTS-2603 \
         --port 8000
 

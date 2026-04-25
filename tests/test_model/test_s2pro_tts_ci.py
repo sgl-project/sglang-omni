@@ -440,7 +440,7 @@ def server_process(tmp_path_factory: pytest.TempPathFactory):
     cmd = [
         sys.executable,
         "-m",
-        "sglang_omni.cli.cli",
+        "sglang_omni.cli",
         "serve",
         "--model-path",
         S2PRO_MODEL_PATH,

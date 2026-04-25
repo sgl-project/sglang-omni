@@ -13,6 +13,7 @@ Usage:
     python -m benchmarks.dataset.prepare --dataset mmsu
     python -m benchmarks.dataset.prepare --dataset videomme
     python -m benchmarks.dataset.prepare --dataset videomme-ci-50
+    python -m benchmarks.dataset.prepare --dataset videomme-ci-25
 """
 
 from __future__ import annotations
@@ -34,6 +35,7 @@ DATASETS: dict[str, str] = {
     "mmsu-ci-2000": "zhaochenyang20/mmsu-ci-2000",
     "videomme": "zhaochenyang20/Video_MME",
     "videomme-ci-50": "zhaochenyang20/Video_MME_ci",
+    "videomme-ci-25": "zhaochenyang20/Video_MME_ci_25",
 }
 
 _CLI_LOCAL_DIRS: dict[str, str] = {

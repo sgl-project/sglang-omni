@@ -61,7 +61,7 @@ echo "============================================================"
 
 # 1. Start backend
 echo "[1/2] Starting S2-Pro server..."
-"${PYTHON_BIN}" -m sglang_omni.cli.cli serve \
+"${PYTHON_BIN}" -m sglang_omni.cli serve \
   --model-path "${MODEL_PATH}" \
   --config "${CONFIG_PATH}" \
   --port "${BACKEND_PORT}" &

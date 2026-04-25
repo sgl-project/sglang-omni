@@ -60,7 +60,7 @@ dependencies = [
 ]
 
 [project.scripts]
-sgl-omni = "sglang_omni.cli.cli:app"
+sgl-omni = "sglang_omni.cli:app"
 
 [tool.uv]
 override-dependencies = [

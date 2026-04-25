@@ -13,7 +13,7 @@ Note (chenyang):
 Usage:
 
     # Launch the server:
-    python -m sglang_omni.cli.cli serve \
+    python -m sglang_omni.cli serve \
         --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct \
         --port 8000
 

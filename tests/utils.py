@@ -74,7 +74,7 @@ def stop_server(proc: subprocess.Popen) -> None:
 def wait_healthy(
     proc: subprocess.Popen,
     port: int,
-    log_file: Path,
+    log_file: Path | None,
     timeout: int = STARTUP_TIMEOUT,
 ) -> None:
     """Wait for a server to report healthy, stopping it and raising on failure."""
@@ -89,7 +89,9 @@ def wait_healthy(
             )
     except Exception as exc:
         stop_server(proc)
-        log_text = log_file.read_text() if log_file.exists() else ""
+        log_text = (
+            log_file.read_text() if log_file is not None and log_file.exists() else ""
+        )
         message = str(exc)
         if log_text and log_text not in message:
             message = f"{message}\n{log_text}"
@@ -102,18 +104,21 @@ def wait_healthy(
 
 def start_server_from_cmd(
     cmd: list[str],
-    log_file: Path,
+    log_file: Path | None,
     port: int,
     timeout: int = STARTUP_TIMEOUT,
 ) -> subprocess.Popen:
     """Start a server from an arbitrary command and wait until healthy."""
-    with open(log_file, "w") as log_handle:
-        proc = subprocess.Popen(
-            cmd,
-            stdout=log_handle,
-            stderr=subprocess.STDOUT,
-            start_new_session=True,
-        )
+    if log_file is None:
+        proc = subprocess.Popen(cmd, start_new_session=True)
+    else:
+        with open(log_file, "w") as log_handle:
+            proc = subprocess.Popen(
+                cmd,
+                stdout=log_handle,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
     wait_healthy(proc, port, log_file, timeout=timeout)
     return proc
 
