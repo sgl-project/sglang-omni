@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, Callable
 
 import torch
 
@@ -28,6 +28,7 @@ from .runtime.encoder import (
     EncoderOutputProcessor,
 )
 from .scheduler import Scheduler
+from .types import SchedulerRequest
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +43,8 @@ def create_encoder_engine(
     cache_size: int | None = None,
     cache_max_bytes: int | None = None,
     cache_device: torch.device | str | None = None,
+    request_cost_fn: Callable[[SchedulerRequest], int] | None = None,
+    max_batch_cost: int | None = None,
 ) -> OmniEngine:
     """Create an encoder engine.
 
@@ -55,6 +58,8 @@ def create_encoder_engine(
         cache_size: Max cache entries (None for unbounded)
         cache_max_bytes: Max cached tensor bytes (None for unbounded)
         cache_device: Optional device used to store cached outputs
+        request_cost_fn: Optional per-request batch cost estimator
+        max_batch_cost: Optional maximum summed cost per scheduled batch
 
     Returns:
         OmniEngine configured for encoder models
@@ -81,7 +86,11 @@ def create_encoder_engine(
         pad_token_id = getattr(tokenizer, "pad_token_id", None) or 0
 
     scheduler = Scheduler(
-        batch_planner=EncoderBatchPlanner(max_batch_size=max_batch_size),
+        batch_planner=EncoderBatchPlanner(
+            max_batch_size=max_batch_size,
+            request_cost_fn=request_cost_fn,
+            max_batch_cost=max_batch_cost,
+        ),
         resource_manager=SimpleResourceManager(max_count=max_batch_size),
         iteration_controller=SinglePassIterationController(),
     )

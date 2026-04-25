@@ -11,6 +11,8 @@ from types import ModuleType, SimpleNamespace
 import pytest
 import torch
 
+from sglang_omni.engines.omni.runtime.encoder import EncoderRequestData
+from sglang_omni.engines.omni.types import SchedulerRequest
 from sglang_omni.models import weight_loader
 from sglang_omni.models.qwen3_omni.components import preprocessor
 from sglang_omni.models.qwen3_omni.io import PipelineState
@@ -240,6 +242,8 @@ def test_qwen3_encoder_executor_forwards_cache_settings(monkeypatch) -> None:
         cache_max_bytes: int | None,
         cache_device: str | torch.device | None,
         max_batch_size: int,
+        request_cost_fn,
+        max_batch_cost: int | None,
     ):
         captured["model"] = model
         captured["device"] = device
@@ -248,6 +252,8 @@ def test_qwen3_encoder_executor_forwards_cache_settings(monkeypatch) -> None:
         captured["cache_max_bytes"] = cache_max_bytes
         captured["cache_device"] = cache_device
         captured["max_batch_size"] = max_batch_size
+        captured["request_cost_fn"] = request_cost_fn
+        captured["max_batch_cost"] = max_batch_cost
         return sentinel_engine
 
     _patch_module(
@@ -273,8 +279,147 @@ def test_qwen3_encoder_executor_forwards_cache_settings(monkeypatch) -> None:
         "cache_max_bytes": stages.QWEN3_ENCODER_CACHE_MAX_BYTES,
         "cache_device": "cpu",
         "max_batch_size": 32,
+        "request_cost_fn": None,
+        "max_batch_cost": None,
     }
     assert executor._engine is sentinel_engine
+
+
+def test_qwen3_image_executor_uses_visual_batch_budget(monkeypatch) -> None:
+    stages = _import_qwen3_stages_for_test(monkeypatch)
+    visual_budget = importlib.import_module(
+        "sglang_omni.models.qwen3_omni.pipeline.visual_budget"
+    )
+    captured: dict[str, object] = {}
+    sentinel_engine = object()
+
+    class FakeImageEncoder:
+        spatial_merge_size = 2
+        out_hidden_size = 8
+        deepstack_layers = 3
+        visual_dtype_bytes = 2
+
+        def __init__(self, *, model_path: str, device: str, dtype: str | None):
+            captured["model_path"] = model_path
+            captured["model_device"] = device
+            captured["model_dtype"] = dtype
+
+    def fake_create_single_pass_engine(
+        model,
+        *,
+        device: str,
+        use_cache: bool,
+        cache_size: int | None,
+        cache_max_bytes: int | None,
+        cache_device: str | torch.device | None,
+        max_batch_size: int,
+        request_cost_fn,
+        max_batch_cost: int | None,
+    ):
+        captured["model"] = model
+        captured["device"] = device
+        captured["use_cache"] = use_cache
+        captured["cache_size"] = cache_size
+        captured["cache_max_bytes"] = cache_max_bytes
+        captured["cache_device"] = cache_device
+        captured["max_batch_size"] = max_batch_size
+        captured["request_cost_fn"] = request_cost_fn
+        captured["max_batch_cost"] = max_batch_cost
+        return sentinel_engine
+
+    _patch_module(
+        monkeypatch,
+        stages,
+        Qwen3OmniImageEncoder=FakeImageEncoder,
+        create_single_pass_engine=fake_create_single_pass_engine,
+    )
+
+    executor = stages.create_image_encoder_executor(
+        "Qwen/Qwen3-Omni-30B-A3B-Instruct",
+        device="cuda:1",
+        dtype="bfloat16",
+        max_batch_size=7,
+    )
+
+    request = SchedulerRequest(
+        request_id="video",
+        data=EncoderRequestData(
+            input_dict={
+                "pixel_values_videos": torch.zeros((16, 3), dtype=torch.float32),
+                "video_grid_thw": torch.tensor([[2, 4, 4]], dtype=torch.long),
+            },
+        ),
+    )
+
+    assert executor._engine is sentinel_engine
+    assert captured["model_path"] == "Qwen/Qwen3-Omni-30B-A3B-Instruct"
+    assert captured["model_device"] == "cuda:1"
+    assert captured["model_dtype"] == "bfloat16"
+    assert captured["device"] == "cuda:1"
+    assert captured["max_batch_size"] == 7
+    assert (
+        captured["max_batch_cost"]
+        == visual_budget.QWEN3_IMAGE_ENCODER_BATCH_BUDGET_BYTES
+    )
+    request_cost_fn = captured["request_cost_fn"]
+    assert callable(request_cost_fn)
+    assert request_cost_fn(request) > 0
+
+
+def test_qwen3_visual_request_cost_counts_raw_and_deepstack_bytes(
+    monkeypatch,
+) -> None:
+    _import_qwen3_stages_for_test(monkeypatch)
+    visual_budget = importlib.import_module(
+        "sglang_omni.models.qwen3_omni.pipeline.visual_budget"
+    )
+    model = SimpleNamespace(
+        spatial_merge_size=2,
+        out_hidden_size=8,
+        deepstack_layers=3,
+        visual_dtype_bytes=2,
+    )
+    request = SchedulerRequest(
+        request_id="mixed",
+        data=EncoderRequestData(
+            input_dict={
+                "pixel_values_videos": torch.zeros((16, 3), dtype=torch.float32),
+                "video_grid_thw": torch.tensor([[2, 4, 4]], dtype=torch.long),
+                "pixel_values": torch.zeros((4, 3), dtype=torch.float16),
+                "image_grid_thw": torch.tensor([[1, 4, 4]], dtype=torch.long),
+            },
+        ),
+    )
+
+    cost = visual_budget.create_qwen3_visual_request_cost_fn(model)(request)
+
+    raw_video_bytes = 16 * 3 * 4
+    raw_image_bytes = 4 * 3 * 2
+    video_output_bytes = 8 * 8 * 2 * 4
+    image_output_bytes = 4 * 8 * 2 * 4
+    expected = (
+        raw_video_bytes + raw_image_bytes + video_output_bytes + image_output_bytes
+    ) * visual_budget.QWEN3_IMAGE_ENCODER_ACTIVATION_MULTIPLIER
+    assert cost == expected
+
+
+def test_qwen3_visual_request_cost_ignores_cached_skip(monkeypatch) -> None:
+    _import_qwen3_stages_for_test(monkeypatch)
+    visual_budget = importlib.import_module(
+        "sglang_omni.models.qwen3_omni.pipeline.visual_budget"
+    )
+    model = SimpleNamespace(
+        spatial_merge_size=2,
+        out_hidden_size=8,
+        deepstack_layers=3,
+        visual_dtype_bytes=2,
+    )
+    request = SchedulerRequest(
+        request_id="cached",
+        data=EncoderRequestData(input_dict={"_skip": True}),
+    )
+
+    assert visual_budget.create_qwen3_visual_request_cost_fn(model)(request) == 0
 
 
 def test_weight_loader_force_refreshes_partial_remote_snapshot(

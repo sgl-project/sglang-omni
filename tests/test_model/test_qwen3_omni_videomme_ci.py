@@ -35,7 +35,7 @@ from tests.utils import (
 
 MODEL_PATH = "Qwen/Qwen3-Omni-30B-A3B-Instruct"
 
-CONCURRENCY = 4
+CONCURRENCY = 8
 STARTUP_TIMEOUT = 900
 
 # threshold reference: https://github.com/sgl-project/sglang-omni/pull/338#issuecomment-4318351375
@@ -43,7 +43,8 @@ VIDEOMME_MIN_ACCURACY = 0.56
 VIDEOMME_MAX_FAILED = 0
 
 _VIDEOMME_P95 = {
-    4: {
+    8: {
+        # TODO: Recalibrate on H20 CI hardware.
         "throughput_qps": 0.077,
         "tok_per_s_agg": 2.30,
         "latency_mean_s": 50.241,
@@ -91,13 +92,16 @@ def test_videomme_accuracy_and_speed(
     server_process: ServerHandle,
     tmp_path: Path,
 ) -> None:
-    """Run videomme-ci-25 at concurrency=4 and assert accuracy + speed thresholds."""
+    """Run videomme-ci-50 at concurrency=8 and assert accuracy + speed thresholds."""
     config = VideoMMEEvalConfig(
         model="qwen3-omni",
         port=server_process.port,
         max_concurrency=CONCURRENCY,
         output_dir=str(tmp_path / "videomme"),
-        repo_id=DATASETS["videomme-ci-25"],
+        repo_id=DATASETS["videomme-ci-50"],
+        video_fps=2,
+        video_max_frames=128,
+        video_max_pixels=401408,
         disable_tqdm=True,
     )
     results = asyncio.run(run_videomme_eval(config))

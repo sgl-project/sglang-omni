@@ -57,8 +57,16 @@ class EncoderBatchData:
 class EncoderBatchPlanner:
     """Batch planner for encoder models."""
 
-    def __init__(self, max_batch_size: int = 32):
+    def __init__(
+        self,
+        max_batch_size: int = 32,
+        *,
+        request_cost_fn: Callable[[SchedulerRequest], int] | None = None,
+        max_batch_cost: int | None = None,
+    ):
         self.max_batch_size = max_batch_size
+        self.request_cost_fn = request_cost_fn
+        self.max_batch_cost = max_batch_cost
 
     def select_requests(
         self,
@@ -68,14 +76,28 @@ class EncoderBatchPlanner:
     ) -> list[SchedulerRequest]:
         del running
         selected: list[SchedulerRequest] = []
+        selected_cost = 0
         for request in waiting:
             if len(selected) >= self.max_batch_size:
+                break
+            request_cost = self._request_cost(request)
+            if (
+                self.max_batch_cost is not None
+                and selected
+                and selected_cost + request_cost > self.max_batch_cost
+            ):
                 break
             if not resource_manager.can_allocate(request):
                 break
             resource_manager.allocate(request)
             selected.append(request)
+            selected_cost += request_cost
         return selected
+
+    def _request_cost(self, request: SchedulerRequest) -> int:
+        if self.request_cost_fn is None:
+            return 0
+        return max(0, int(self.request_cost_fn(request)))
 
     def build_batch(self, requests: list[SchedulerRequest]) -> EncoderBatchData:
         if any(getattr(r.data, "input_dict", None) is not None for r in requests):

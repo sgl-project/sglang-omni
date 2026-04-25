@@ -83,9 +83,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from benchmarks.benchmarker.runner import BenchmarkRunner, RunConfig
 from benchmarks.benchmarker.utils import save_json_results, wait_for_service
 from benchmarks.dataset.videomme import DEFAULT_REPO_ID as _VIDEOMME_DEFAULT_REPO
-from benchmarks.dataset.videomme import load_videomme_samples
+from benchmarks.dataset.videomme import VideoMMESample, load_videomme_samples
 from benchmarks.metrics.performance import compute_speed_metrics
-from benchmarks.tasks.tts import print_speed_summary
+from benchmarks.tasks.tts import (
+    compute_text_audio_consistency,
+    print_speed_summary,
+    print_wer_summary,
+)
 from benchmarks.tasks.video_understanding import (
     compute_videomme_metrics,
     make_videomme_send_fn,
@@ -120,22 +124,34 @@ class VideoMMEEvalConfig:
     request_rate: float = float("inf")
     disable_tqdm: bool = False
     repo_id: str | None = None
+    enable_audio: bool = False
+    asr_device: str = "cuda:0"
+    lang: str = "en"
 
 
 def _build_base_url(config: VideoMMEEvalConfig) -> str:
     return config.base_url or f"http://{config.host}:{config.port}"
 
 
-async def run_videomme_eval(config: VideoMMEEvalConfig) -> dict:
+async def run_videomme_eval(
+    config: VideoMMEEvalConfig,
+    *,
+    samples: list[VideoMMESample] | None = None,
+) -> dict:
     base_url = _build_base_url(config)
     api_url = f"{base_url}/v1/chat/completions"
 
-    samples = load_videomme_samples(
-        repo_id=config.repo_id,
-        split=config.split,
-        max_samples=config.max_samples,
-    )
+    if samples is None:
+        samples = load_videomme_samples(
+            repo_id=config.repo_id,
+            split=config.split,
+            max_samples=config.max_samples,
+        )
     logger.info("Prepared %d Video-MME samples", len(samples))
+    audio_dir = None
+    if config.enable_audio:
+        output_root = Path(config.output_dir or "results/videomme_audio")
+        audio_dir = str(output_root / "audio")
 
     send_fn = make_videomme_send_fn(
         config.model,
@@ -147,6 +163,8 @@ async def run_videomme_eval(config: VideoMMEEvalConfig) -> dict:
         video_min_pixels=config.video_min_pixels,
         video_max_pixels=config.video_max_pixels,
         video_total_pixels=config.video_total_pixels,
+        enable_audio=config.enable_audio,
+        audio_dir=audio_dir,
     )
     runner = BenchmarkRunner(
         RunConfig(
@@ -178,9 +196,18 @@ async def run_videomme_eval(config: VideoMMEEvalConfig) -> dict:
             "video_total_pixels": config.video_total_pixels,
             "max_concurrency": config.max_concurrency,
             "warmup": config.warmup,
+            "enable_audio": config.enable_audio,
+            "asr_device": config.asr_device,
+            "lang": config.lang,
         },
         "per_sample": per_sample,
     }
+    if config.enable_audio:
+        results["wer"] = compute_text_audio_consistency(
+            request_results,
+            config.lang,
+            config.asr_device,
+        )
 
     if config.output_dir:
         save_json_results(results, config.output_dir, "videomme_results.json")
@@ -209,6 +236,9 @@ def _config_from_args(args: argparse.Namespace) -> VideoMMEEvalConfig:
         warmup=args.warmup,
         request_rate=args.request_rate,
         disable_tqdm=args.disable_tqdm,
+        enable_audio=args.enable_audio,
+        asr_device=args.asr_device,
+        lang=args.lang,
     )
 
 
@@ -222,6 +252,8 @@ async def benchmark(args: argparse.Namespace) -> dict:
         config.max_concurrency,
         title="Video-MME Speed",
     )
+    if "wer" in results:
+        print_wer_summary(results["wer"]["summary"], config.model)
     return results
 
 
@@ -256,6 +288,23 @@ def main() -> None:
     parser.add_argument("--max-concurrency", type=int, default=1)
     parser.add_argument("--request-rate", type=float, default=float("inf"))
     parser.add_argument("--disable-tqdm", action="store_true")
+    parser.add_argument(
+        "--enable-audio",
+        action="store_true",
+        help="Request text+audio output and compute text-audio WER.",
+    )
+    parser.add_argument(
+        "--asr-device",
+        type=str,
+        default="cuda:0",
+        help="Device for ASR model when --enable-audio is used.",
+    )
+    parser.add_argument(
+        "--lang",
+        choices=["en", "zh"],
+        default="en",
+        help="Language for ASR transcription when --enable-audio is used.",
+    )
     args = parser.parse_args()
 
     wait_for_service(args.base_url or f"http://{args.host}:{args.port}")

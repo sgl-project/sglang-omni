@@ -18,7 +18,8 @@ permissions:
 #                              ├─► stage-4-mmmu-tts-consistency
 #                              ├─► stage-5-mmsu
 #                              ├─► stage-6-mmsu-tts-consistency
-#                              └─► stage-7-videomme
+#                              ├─► stage-7-videomme
+#                              └─► stage-8-videomme-tts-consistency
 
 jobs:
   docs:
@@ -307,3 +308,38 @@ jobs:
           artifact-upload-name: qwen3-omni-videomme-results
           artifact-upload-path: /tmp/**/videomme/videomme_results.json
           summary-only: "false"
+
+  stage-8-videomme-tts-consistency:
+    name: stage 8 - Video-MME TTS consistency
+    needs: [docs, stage-1-thinker]
+    runs-on: [self-hosted]
+    timeout-minutes: 30
+    container:
+      image: frankleeeee/sglang-omni:dev
+      options: --gpus all --rm -v /dev/shm:/dev/shm
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - uses: ./.github/actions/omni-setup
+        with:
+          venv-name: omni-qwen3
+
+      - name: Run Video-MME TTS Consistency CI (WER + speed)
+        shell: bash
+        run: |
+          source omni-qwen3/bin/activate
+          export PYTHONPATH=$PWD
+          pytest tests/test_model/test_qwen3_omni_videomme_tts_consistency_ci.py -v -s -x
+        env:
+          HF_ENDPOINT: https://hf-mirror.com
+
+      - name: Post-stage cleanup
+        if: always()
+        uses: ./.github/actions/omni-post-stage
+        with:
+          stage-label: Video-MME TTS Consistency (WER + speed)
+          artifact-path-globs: |
+            */videomme_audio/videomme_results.json
+          artifact-upload-name: qwen3-omni-videomme-tts-consistency-results
+          artifact-upload-path: /tmp/**/videomme_audio/videomme_results.json

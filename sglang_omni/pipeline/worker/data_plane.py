@@ -168,7 +168,8 @@ class DataPlaneAdapter:
 
         # Receive tensor bytes via relay (even if empty) to complete transfer.
         data_size = relay_info["transfer_info"]["size"]
-        recv_tensor = torch.zeros(data_size, dtype=torch.uint8, device=device)
+        relay_device = torch.device(device)
+        recv_tensor = torch.zeros(data_size, dtype=torch.uint8, device=relay_device)
         op = await self._relay.get_async(
             metadata=relay_info, dest_tensor=recv_tensor, request_id=request_id
         )

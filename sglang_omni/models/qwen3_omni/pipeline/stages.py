@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, Callable
 
 import torch
 from transformers import AutoTokenizer
@@ -18,6 +18,7 @@ from sglang_omni.engines.omni import (
     create_sglang_ar_engine,
     create_single_pass_engine,
 )
+from sglang_omni.engines.omni.types import SchedulerRequest
 from sglang_omni.executors import EngineExecutor, PreprocessingExecutor
 from sglang_omni.models.qwen3_omni.components.audio_encoder import Qwen3OmniAudioEncoder
 from sglang_omni.models.qwen3_omni.components.image_encoder import Qwen3OmniImageEncoder
@@ -43,6 +44,10 @@ from sglang_omni.models.qwen3_omni.pipeline.next_stage import (
     THINKER_STAGE,
 )
 from sglang_omni.models.qwen3_omni.pipeline.state_io import load_state, store_state
+from sglang_omni.models.qwen3_omni.pipeline.visual_budget import (
+    QWEN3_IMAGE_ENCODER_BATCH_BUDGET_BYTES,
+    create_qwen3_visual_request_cost_fn,
+)
 from sglang_omni.proto import StagePayload
 from sglang_omni.utils.misc import avail_gpu_mem
 
@@ -90,6 +95,8 @@ def _create_encoder_executor(
     use_cache: bool = True,
     cache_size: int | None = 64,
     max_batch_size: int = 32,
+    request_cost_fn: Callable[[SchedulerRequest], int] | None = None,
+    max_batch_cost: int | None = None,
 ) -> EngineExecutor:
     def _request_builder(payload: StagePayload):
         state = load_state(payload)
@@ -108,6 +115,8 @@ def _create_encoder_executor(
         cache_max_bytes=QWEN3_ENCODER_CACHE_MAX_BYTES,
         cache_device="cpu",
         max_batch_size=max_batch_size,
+        request_cost_fn=request_cost_fn,
+        max_batch_cost=max_batch_cost,
     )
     return EngineExecutor(
         engine=engine, request_builder=_request_builder, result_builder=_result_builder
@@ -120,6 +129,7 @@ def create_image_encoder_executor(
     device: str = "cuda",
     dtype: str | None = None,
     max_batch_size: int = 32,
+    max_batch_cost: int = QWEN3_IMAGE_ENCODER_BATCH_BUDGET_BYTES,
 ) -> EngineExecutor:
     model = Qwen3OmniImageEncoder(model_path=model_path, device=device, dtype=dtype)
     return _create_encoder_executor(
@@ -127,6 +137,8 @@ def create_image_encoder_executor(
         model=model,
         device=device,
         max_batch_size=max_batch_size,
+        request_cost_fn=create_qwen3_visual_request_cost_fn(model),
+        max_batch_cost=max_batch_cost,
     )
 
 

@@ -61,6 +61,15 @@ def parse_args() -> argparse.Namespace:
         "--relay-backend", type=str, default="shm", choices=["nixl", "shm"]
     )
     parser.add_argument(
+        "--thinker-max-seq-len",
+        type=int,
+        default=8192,
+        help=(
+            "Context length for the thinker stage. The same value is routed "
+            "to preprocessing and Talker context guards."
+        ),
+    )
+    parser.add_argument(
         "--mem-fraction-static",
         type=float,
         default=None,
@@ -118,6 +127,10 @@ async def main_async(args: argparse.Namespace) -> None:
         relay_backend=args.relay_backend,
         gpu_placement=gpu_placement,
     )
+    config.apply_server_args_overrides(
+        stage_name="thinker",
+        overrides={"thinker_max_seq_len": args.thinker_max_seq_len},
+    )
     thinker_mem_fraction_static, talker_mem_fraction_static = (
         resolve_and_apply_speech_mem_fraction(
             config,
@@ -134,7 +147,8 @@ async def main_async(args: argparse.Namespace) -> None:
         f"thinker_mem_fraction_static="
         f"{'auto' if thinker_mem_fraction_static is None else thinker_mem_fraction_static} "
         f"talker_mem_fraction_static="
-        f"{'auto' if talker_mem_fraction_static is None else talker_mem_fraction_static}"
+        f"{'auto' if talker_mem_fraction_static is None else talker_mem_fraction_static} "
+        f"thinker_max_seq_len={args.thinker_max_seq_len}"
     )
 
     runner = MultiProcessPipelineRunner(config)

@@ -4,8 +4,12 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import logging
+import os
 import random
+import struct
 import time
 from collections import defaultdict
 from typing import Any
@@ -14,7 +18,7 @@ import aiohttp
 
 from benchmarks.benchmarker.data import RequestResult
 from benchmarks.benchmarker.runner import SendFn
-from benchmarks.benchmarker.utils import print_accuracy_breakdown
+from benchmarks.benchmarker.utils import get_wav_duration, print_accuracy_breakdown
 from benchmarks.dataset.videomme import VideoMMESample
 from benchmarks.tasks.visual_understand import parse_multi_choice_response
 
@@ -35,7 +39,11 @@ def make_videomme_send_fn(
     video_min_pixels: int | None = None,
     video_max_pixels: int | None = None,
     video_total_pixels: int | None = None,
+    enable_audio: bool = False,
+    audio_dir: str | None = None,
 ) -> SendFn:
+    modalities = ["text", "audio"] if enable_audio else ["text"]
+
     async def send_fn(
         session: aiohttp.ClientSession,
         sample: VideoMMESample,
@@ -49,11 +57,13 @@ def make_videomme_send_fn(
             "model": model_name,
             "messages": [{"role": "user", "content": sample.prompt}],
             "videos": [sample.video_path],
-            "modalities": ["text"],
+            "modalities": modalities,
             "max_tokens": max_tokens,
             "temperature": temperature,
             "stream": False,
         }
+        if enable_audio:
+            payload["audio"] = {"format": "wav"}
         if video_fps is not None:
             payload["video_fps"] = video_fps
         if video_max_frames is not None:
@@ -73,7 +83,22 @@ def make_videomme_send_fn(
 
             message = body.get("choices", [{}])[0].get("message", {})
             result.text = message.get("content", "") or ""
-            result.is_success = True
+
+            if enable_audio and audio_dir:
+                audio_obj = message.get("audio")
+                if not isinstance(audio_obj, dict):
+                    result.error = "No audio in response"
+                    return result
+                audio_b64 = audio_obj.get("data", "")
+                if not audio_b64:
+                    result.error = "Empty audio data in response"
+                    return result
+                try:
+                    wav_bytes = base64.b64decode(audio_b64, validate=True)
+                    result.audio_duration_s = round(get_wav_duration(wav_bytes), 4)
+                except (binascii.Error, ValueError, struct.error) as exc:
+                    result.error = f"Invalid audio data: {exc}"
+                    return result
 
             usage = body.get("usage", {})
             if usage:
@@ -82,8 +107,22 @@ def make_videomme_send_fn(
 
             elapsed = time.perf_counter() - start_time
             result.engine_time_s = elapsed
+            if result.audio_duration_s > 0:
+                result.rtf = elapsed / result.audio_duration_s
             if result.completion_tokens > 0 and result.engine_time_s > 0:
                 result.tok_per_s = result.completion_tokens / result.engine_time_s
+
+            if enable_audio and audio_dir and result.audio_duration_s > 0:
+                try:
+                    os.makedirs(audio_dir, exist_ok=True)
+                    wav_path = os.path.join(audio_dir, f"{sample.sample_id}.wav")
+                    with open(wav_path, "wb") as f:
+                        f.write(wav_bytes)
+                except OSError as exc:
+                    result.error = f"Failed to save audio: {exc}"
+                    return result
+                result.wav_path = wav_path
+            result.is_success = True
         except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
             result.error = str(exc)
         finally:
@@ -150,6 +189,13 @@ def compute_videomme_metrics(
             "prompt_tokens": result.prompt_tokens,
             "completion_tokens": result.completion_tokens,
             "tok_per_s": (round(result.tok_per_s, 1) if result.tok_per_s > 0 else None),
+            "audio_duration_s": (
+                round(result.audio_duration_s, 4)
+                if result.audio_duration_s > 0
+                else None
+            ),
+            "rtf": (round(result.rtf, 4) if result.rtf > 0 else None),
+            "wav_path": result.wav_path or "",
         }
 
         per_duration[sample.duration]["total"] += 1
