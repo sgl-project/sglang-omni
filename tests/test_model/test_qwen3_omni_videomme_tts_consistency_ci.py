@@ -19,6 +19,8 @@ from benchmarks.eval.benchmark_omni_videomme import (
     VideoMMEEvalConfig,
     run_videomme_eval,
 )
+from benchmarks.tasks.tts import print_speed_summary, print_wer_summary
+from benchmarks.tasks.video_understanding import print_videomme_accuracy_summary
 from sglang_omni.utils import find_available_port
 from tests.utils import (
     ServerHandle,
@@ -122,6 +124,15 @@ def test_videomme_tts_accuracy_wer_and_speed(
     )
 
     summary = results["summary"]
+    print_videomme_accuracy_summary(summary, config.model)
+    print_speed_summary(
+        results["speed"],
+        config.model,
+        CONCURRENCY,
+        title="Video-MME TTS Speed",
+    )
+    print_wer_summary(results["wer"]["summary"], config.model)
+
     failed = summary.get("failed", 0)
     total = summary.get("total_samples", 0)
     assert failed <= VIDEOMME_TTS_MAX_FAILED, (
