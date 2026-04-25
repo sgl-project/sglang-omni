@@ -49,7 +49,7 @@ class Qwen3OmniPipelineConfig(PipelineConfig):
                 args={
                     "device": "cuda",
                     "dtype": None,
-                    "max_batch_size": 1,
+                    "max_batch_size": 32,
                 },
             ),
             get_next="sglang_omni.models.qwen3_omni.pipeline.next_stage.encoder_next",
@@ -209,7 +209,7 @@ class Qwen3OmniSpeechPipelineConfig(PipelineConfig):
             name=IMAGE_STAGE,
             executor=ExecutorConfig(
                 factory="sglang_omni.models.qwen3_omni.pipeline.stages.create_image_encoder_executor",
-                args={"device": "cuda", "dtype": None, "max_batch_size": 1},
+                args={"device": "cuda", "dtype": None, "max_batch_size": 32},
             ),
             get_next="sglang_omni.models.qwen3_omni.pipeline.next_stage.encoder_next",
             payload_filter="sglang_omni.models.qwen3_omni.pipeline.payload_filter.encoder_payload_filter",

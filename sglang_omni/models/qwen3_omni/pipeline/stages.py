@@ -119,7 +119,7 @@ def create_image_encoder_executor(
     *,
     device: str = "cuda",
     dtype: str | None = None,
-    max_batch_size: int = 1,
+    max_batch_size: int = 32,
 ) -> EngineExecutor:
     model = Qwen3OmniImageEncoder(model_path=model_path, device=device, dtype=dtype)
     return _create_encoder_executor(
