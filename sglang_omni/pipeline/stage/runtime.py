@@ -28,6 +28,7 @@ from sglang_omni.proto import (
     ProfilerStopMessage,
     ShutdownMessage,
     StageInfo,
+    StagePayload,
     SubmitMessage,
 )
 from sglang_omni.relay.base import Relay, create_relay
@@ -38,6 +39,7 @@ logger = logging.getLogger(__name__)
 # Type alias for get_next function.
 # Returns: next stage name, list of next stages (fan-out), or None for END.
 GetNextFn = Callable[[str, Any], str | list[str] | None]
+PayloadFilterFn = Callable[[str, str, StagePayload], StagePayload]
 
 
 class Stage:
@@ -59,6 +61,7 @@ class Stage:
         abort_endpoint: str,
         endpoints: dict[str, str],
         input_handler: InputHandler | None = None,
+        payload_filter: PayloadFilterFn | None = None,
         relay: Relay | None = None,
         relay_config: dict[str, Any] | None = None,
     ):
@@ -78,6 +81,7 @@ class Stage:
         """
         self.name = name
         self.get_next = get_next
+        self.payload_filter = payload_filter
         self.endpoints = endpoints
         self.input_handler = input_handler or DirectInput()
 

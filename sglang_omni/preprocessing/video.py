@@ -31,6 +31,10 @@ class VideoMediaIO(MediaIO[tuple[torch.Tensor, float, Any | None]]):
         self,
         *,
         fps: float | None = None,
+        max_frames: int | None = None,
+        min_pixels: int | None = None,
+        max_pixels: int | None = None,
+        total_pixels: int | None = None,
         image_mode: str = "RGB",
         extract_audio: bool = False,
         audio_target_sr: int = 16000,
@@ -40,6 +44,10 @@ class VideoMediaIO(MediaIO[tuple[torch.Tensor, float, Any | None]]):
 
         Args:
             fps: Target FPS for video loading.
+            max_frames: Optional frame cap passed to the video reader backend.
+            min_pixels: Optional lower resize budget per frame.
+            max_pixels: Optional upper resize budget per frame.
+            total_pixels: Optional total video pixel budget.
             image_mode: Target image mode (default: "RGB").
             extract_audio: If True, extract audio from video and return as third element.
             audio_target_sr: Target sample rate for audio extraction (default: 16000).
@@ -47,10 +55,24 @@ class VideoMediaIO(MediaIO[tuple[torch.Tensor, float, Any | None]]):
         """
         super().__init__()
         self.fps = fps
+        self.max_frames = max_frames
+        self.min_pixels = min_pixels
+        self.max_pixels = max_pixels
+        self.total_pixels = total_pixels
         self.image_mode = image_mode
         self.extract_audio = extract_audio
         self.audio_target_sr = audio_target_sr
         self.kwargs = kwargs
+
+    def _load_path(self, filepath: Path) -> tuple[torch.Tensor, float]:
+        return load_video_path(
+            filepath,
+            fps=self.fps,
+            max_frames=self.max_frames,
+            min_pixels=self.min_pixels,
+            max_pixels=self.max_pixels,
+            total_pixels=self.total_pixels,
+        )
 
     def load_bytes(self, data: bytes) -> tuple[torch.Tensor, float, Any | None]:
         """Load video from raw bytes, optionally extracting audio.
@@ -68,11 +90,11 @@ class VideoMediaIO(MediaIO[tuple[torch.Tensor, float, Any | None]]):
         try:
             if self.extract_audio:
                 # Load video and extract audio from the same file
-                video, sample_fps = load_video_path(tmp_path, self.fps)
+                video, sample_fps = self._load_path(tmp_path)
                 audio = _extract_audio_from_path(tmp_path, self.audio_target_sr)
                 return video, sample_fps, audio
             else:
-                video, sample_fps = load_video_path(tmp_path, self.fps)
+                video, sample_fps = self._load_path(tmp_path)
                 return video, sample_fps, None
         finally:
             # Clean up temporary file
@@ -90,11 +112,11 @@ class VideoMediaIO(MediaIO[tuple[torch.Tensor, float, Any | None]]):
         """Load video from a local file path, optionally extracting audio."""
         if self.extract_audio:
             # Load video and extract audio from the same file
-            video, sample_fps = load_video_path(filepath, self.fps)
+            video, sample_fps = self._load_path(filepath)
             audio = _extract_audio_from_path(filepath, self.audio_target_sr)
             return video, sample_fps, audio
         else:
-            video, sample_fps = load_video_path(filepath, self.fps)
+            video, sample_fps = self._load_path(filepath)
             return video, sample_fps, None
 
 
@@ -102,6 +124,10 @@ async def ensure_video_list_async(
     videos: Any,
     *,
     fps: float | None = None,
+    max_frames: int | None = None,
+    min_pixels: int | None = None,
+    max_pixels: int | None = None,
+    total_pixels: int | None = None,
     image_mode: str = "RGB",
     resource_connector: Any | None = None,
     extract_audio: bool = False,
@@ -112,6 +138,10 @@ async def ensure_video_list_async(
     Args:
         videos: Video input(s) - can be a path, URL, torch Tensor, or list.
         fps: Target FPS for video loading.
+        max_frames: Optional frame cap passed to the video reader backend.
+        min_pixels: Optional lower resize budget per frame.
+        max_pixels: Optional upper resize budget per frame.
+        total_pixels: Optional total video pixel budget.
         image_mode: Target image mode (default: "RGB").
         resource_connector: Optional MultiModalResourceConnector instance. If None, uses
                         the global connector.
@@ -150,6 +180,10 @@ async def ensure_video_list_async(
             return await resource_connector.fetch_video_async(
                 str(video_item),
                 fps=fps,
+                max_frames=max_frames,
+                min_pixels=min_pixels,
+                max_pixels=max_pixels,
+                total_pixels=total_pixels,
                 image_mode=image_mode,
                 extract_audio=extract_audio,
                 audio_target_sr=audio_target_sr,
@@ -159,7 +193,14 @@ async def ensure_video_list_async(
             video_path = Path(video_item)
             if extract_audio:
                 video_task = loop.run_in_executor(
-                    global_thread_pool, load_video_path, video_path, fps
+                    global_thread_pool,
+                    load_video_path,
+                    video_path,
+                    fps,
+                    max_frames,
+                    min_pixels,
+                    max_pixels,
+                    total_pixels,
                 )
                 audio_task = loop.run_in_executor(
                     global_thread_pool,
@@ -173,7 +214,14 @@ async def ensure_video_list_async(
                 return video, sample_fps, audio
             else:
                 video, sample_fps = await loop.run_in_executor(
-                    global_thread_pool, load_video_path, video_path, fps
+                    global_thread_pool,
+                    load_video_path,
+                    video_path,
+                    fps,
+                    max_frames,
+                    min_pixels,
+                    max_pixels,
+                    total_pixels,
                 )
                 return video, sample_fps, None
 
@@ -251,11 +299,23 @@ def _extract_audio_from_path(video_path: Path, target_sr: int) -> Any | None:
 def load_video_path(
     path: str | Path,
     fps: float | None = None,
+    max_frames: int | None = None,
+    min_pixels: int | None = None,
+    max_pixels: int | None = None,
+    total_pixels: int | None = None,
 ) -> tuple[torch.Tensor, float]:
     """Load a local video into a torch tensor (T, C, H, W) on CPU."""
     ele: dict[str, Any] = {"video": str(path)}
     if fps is not None:
         ele["fps"] = float(fps)
+    if max_frames is not None:
+        ele["max_frames"] = int(max_frames)
+    if min_pixels is not None:
+        ele["min_pixels"] = int(min_pixels)
+    if max_pixels is not None:
+        ele["max_pixels"] = int(max_pixels)
+    if total_pixels is not None:
+        ele["total_pixels"] = int(total_pixels)
     backend = qwen_vision.get_video_reader_backend()
     try:
         video, sample_fps = qwen_vision.VIDEO_READER_BACKENDS[backend](ele)

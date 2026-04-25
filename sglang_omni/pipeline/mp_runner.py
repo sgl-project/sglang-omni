@@ -100,6 +100,12 @@ def _compile_stage_local(
         raise TypeError(f"get_next not callable: {stage_cfg.get_next}")
     get_next = _wrap_get_next(get_next, name_map)
 
+    payload_filter = None
+    if stage_cfg.payload_filter:
+        payload_filter = import_string(stage_cfg.payload_filter)
+        if not callable(payload_filter):
+            raise TypeError(f"payload_filter not callable: {stage_cfg.payload_filter}")
+
     input_handler = _create_input_handler(stage_cfg.input_handler, name_map=name_map)
 
     stage = Stage(
@@ -110,6 +116,7 @@ def _compile_stage_local(
         abort_endpoint=all_endpoints["abort"],
         endpoints=stage_endpoints,
         input_handler=input_handler,
+        payload_filter=payload_filter,
         relay_config=_resolve_relay_config(stage_cfg, global_cfg),
     )
 

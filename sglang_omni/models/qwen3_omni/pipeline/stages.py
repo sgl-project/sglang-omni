@@ -58,8 +58,12 @@ def _event_to_dict(event: OmniEvent) -> dict[str, Any]:
     }
 
 
-def create_preprocessing_executor(model_path: str) -> PreprocessingExecutor:
-    preprocessor = Qwen3OmniPreprocessor(model_path=model_path)
+def create_preprocessing_executor(
+    model_path: str,
+    *,
+    max_seq_len: int | None = None,
+) -> PreprocessingExecutor:
+    preprocessor = Qwen3OmniPreprocessor(model_path=model_path, max_seq_len=max_seq_len)
 
     async def _preprocess(payload: StagePayload) -> StagePayload:
         return await preprocessor(payload)
@@ -81,6 +85,8 @@ def _create_encoder_executor(
     device: str,
     use_cache: bool = True,
     cache_size: int | None = 64,
+    cache_device: str | torch.device | None = "cpu",
+    max_batch_size: int = 32,
 ) -> EngineExecutor:
     def _request_builder(payload: StagePayload):
         state = load_state(payload)
@@ -96,6 +102,8 @@ def _create_encoder_executor(
         device=device,
         use_cache=use_cache,
         cache_size=cache_size,
+        cache_device=cache_device,
+        max_batch_size=max_batch_size,
     )
     return EngineExecutor(
         engine=engine, request_builder=_request_builder, result_builder=_result_builder
@@ -107,9 +115,15 @@ def create_image_encoder_executor(
     *,
     device: str = "cuda",
     dtype: str | None = None,
+    max_batch_size: int = 1,
 ) -> EngineExecutor:
     model = Qwen3OmniImageEncoder(model_path=model_path, device=device, dtype=dtype)
-    return _create_encoder_executor(stage_name=IMAGE_STAGE, model=model, device=device)
+    return _create_encoder_executor(
+        stage_name=IMAGE_STAGE,
+        model=model,
+        device=device,
+        max_batch_size=max_batch_size,
+    )
 
 
 def create_audio_encoder_executor(
@@ -117,9 +131,15 @@ def create_audio_encoder_executor(
     *,
     device: str = "cuda",
     dtype: str | None = None,
+    max_batch_size: int = 32,
 ) -> EngineExecutor:
     model = Qwen3OmniAudioEncoder(model_path=model_path, device=device, dtype=dtype)
-    return _create_encoder_executor(stage_name=AUDIO_STAGE, model=model, device=device)
+    return _create_encoder_executor(
+        stage_name=AUDIO_STAGE,
+        model=model,
+        device=device,
+        max_batch_size=max_batch_size,
+    )
 
 
 def create_thinker_executor(
@@ -537,6 +557,7 @@ def create_talker_ar_executor(
     weight_prefix: str | None = None,
     feedback_enabled: bool = False,
     feedback_mailbox=None,
+    max_seq_len: int | None = None,
 ) -> EngineExecutor:
     """Talker AR executor backed by SGLang AR engine."""
     from transformers import AutoConfig
@@ -614,6 +635,7 @@ def create_talker_ar_executor(
         ),
         speaker_map=getattr(talker_cfg, "speaker_id", None),
         enqueue_fn_holder=enqueue_fn_holder,
+        max_seq_len=max_seq_len,
         thinker_config=getattr(hf_config, "thinker_config", None),
     )
 
@@ -656,6 +678,7 @@ def create_talker_ar_executor_from_config(
         weight_prefix=weight_prefix,
         feedback_enabled=feedback_enabled,
         feedback_mailbox=feedback_mailbox,
+        max_seq_len=talker_max_seq_len,
     )
     post_load_avail_mem = avail_gpu_mem(gpu_id)
     post_load_mem = (

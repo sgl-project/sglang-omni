@@ -420,6 +420,16 @@ def _build_chat_generate_request(req: ChatCompletionRequest) -> GenerateRequest:
         metadata["images"] = images
     if videos:
         metadata["videos"] = videos
+    if req.video_fps is not None:
+        metadata["video_fps"] = req.video_fps
+    if req.video_max_frames is not None:
+        metadata["video_max_frames"] = req.video_max_frames
+    if req.video_min_pixels is not None:
+        metadata["video_min_pixels"] = req.video_min_pixels
+    if req.video_max_pixels is not None:
+        metadata["video_max_pixels"] = req.video_max_pixels
+    if req.video_total_pixels is not None:
+        metadata["video_total_pixels"] = req.video_total_pixels
 
     return GenerateRequest(
         model=req.model,

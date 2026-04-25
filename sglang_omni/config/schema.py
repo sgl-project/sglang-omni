@@ -54,6 +54,7 @@ class StageConfig(BaseModel):
     name: str
     executor: ExecutorConfig
     get_next: str
+    payload_filter: str | None = None
     input_handler: InputHandlerConfig = Field(default_factory=InputHandlerConfig)
     relay: RelayConfig = Field(default_factory=RelayConfig)
     num_workers: int = 1
@@ -214,6 +215,7 @@ class PipelineConfig(BaseModel):
                         args={"executors": executors},
                     ),
                     get_next=stage.get_next,
+                    payload_filter=stage.payload_filter,
                     input_handler=first.input_handler,
                     relay=first.relay,
                     num_workers=first.num_workers,

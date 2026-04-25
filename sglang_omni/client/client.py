@@ -415,6 +415,11 @@ def _extract_inputs(request: GenerateRequest) -> Any:
     audios = request.metadata.get("audios")
     images = request.metadata.get("images")
     videos = request.metadata.get("videos")
+    video_fps = request.metadata.get("video_fps")
+    video_max_frames = request.metadata.get("video_max_frames")
+    video_min_pixels = request.metadata.get("video_min_pixels")
+    video_max_pixels = request.metadata.get("video_max_pixels")
+    video_total_pixels = request.metadata.get("video_total_pixels")
 
     # If we have any media, return a dict with messages and media
     # Otherwise, return just the messages list (for backward compatibility)
@@ -426,6 +431,16 @@ def _extract_inputs(request: GenerateRequest) -> Any:
             result["audios"] = audios
         if videos:
             result["videos"] = videos
+        if video_fps is not None:
+            result["video_fps"] = video_fps
+        if video_max_frames is not None:
+            result["video_max_frames"] = video_max_frames
+        if video_min_pixels is not None:
+            result["video_min_pixels"] = video_min_pixels
+        if video_max_pixels is not None:
+            result["video_max_pixels"] = video_max_pixels
+        if video_total_pixels is not None:
+            result["video_total_pixels"] = video_total_pixels
         return result
     return messages
 

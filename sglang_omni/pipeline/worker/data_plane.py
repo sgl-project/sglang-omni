@@ -115,6 +115,13 @@ class DataPlaneAdapter:
                 flat = tensor.contiguous().view(torch.uint8).reshape(-1)
                 if flat.device != transport_device:
                     flat = flat.to(device=transport_device)
+                alignment = max(tensor.element_size(), 1)
+                padding = (-offset) % alignment
+                if padding:
+                    tensor_buffers.append(
+                        torch.zeros(padding, dtype=torch.uint8, device=transport_device)
+                    )
+                    offset += padding
                 tensor_buffers.append(flat)
                 tensor_info.append(
                     {
@@ -181,8 +188,9 @@ class DataPlaneAdapter:
                 # Parse dtype
                 dtype = getattr(torch, dtype_str.replace("torch.", ""))
 
-                # Reconstruct tensor (keep on original device)
-                tensor = tensor_bytes.clone().view(dtype).reshape(shape)
+                # Keep a view into the relay receive buffer instead of cloning;
+                # write_payload pads offsets so dtype views are aligned.
+                tensor = tensor_bytes.view(dtype).reshape(shape)
                 tensor_dict[path] = tensor
 
         # Restore tensors into payload

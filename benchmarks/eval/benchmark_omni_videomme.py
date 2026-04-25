@@ -109,6 +109,11 @@ class VideoMMEEvalConfig:
     max_samples: int | None = None
     max_tokens: int = 256
     temperature: float = 0.0
+    video_fps: float | None = None
+    video_max_frames: int | None = None
+    video_min_pixels: int | None = None
+    video_max_pixels: int | None = None
+    video_total_pixels: int | None = None
     output_dir: str | None = None
     max_concurrency: int = 1
     warmup: int = 0
@@ -137,6 +142,11 @@ async def run_videomme_eval(config: VideoMMEEvalConfig) -> dict:
         api_url,
         max_tokens=config.max_tokens,
         temperature=config.temperature,
+        video_fps=config.video_fps,
+        video_max_frames=config.video_max_frames,
+        video_min_pixels=config.video_min_pixels,
+        video_max_pixels=config.video_max_pixels,
+        video_total_pixels=config.video_total_pixels,
     )
     runner = BenchmarkRunner(
         RunConfig(
@@ -161,6 +171,11 @@ async def run_videomme_eval(config: VideoMMEEvalConfig) -> dict:
             "max_samples": config.max_samples,
             "max_tokens": config.max_tokens,
             "temperature": config.temperature,
+            "video_fps": config.video_fps,
+            "video_max_frames": config.video_max_frames,
+            "video_min_pixels": config.video_min_pixels,
+            "video_max_pixels": config.video_max_pixels,
+            "video_total_pixels": config.video_total_pixels,
             "max_concurrency": config.max_concurrency,
             "warmup": config.warmup,
         },
@@ -184,6 +199,11 @@ def _config_from_args(args: argparse.Namespace) -> VideoMMEEvalConfig:
         max_samples=args.max_samples,
         max_tokens=args.max_tokens,
         temperature=args.temperature,
+        video_fps=args.video_fps,
+        video_max_frames=args.video_max_frames,
+        video_min_pixels=args.video_min_pixels,
+        video_max_pixels=args.video_max_pixels,
+        video_total_pixels=args.video_total_pixels,
         output_dir=args.output_dir,
         max_concurrency=args.max_concurrency,
         warmup=args.warmup,
@@ -227,6 +247,11 @@ def main() -> None:
     parser.add_argument("--max-samples", type=int, default=None)
     parser.add_argument("--max-tokens", type=int, default=256)
     parser.add_argument("--temperature", type=float, default=0.0)
+    parser.add_argument("--video-fps", type=float, default=None)
+    parser.add_argument("--video-max-frames", type=int, default=None)
+    parser.add_argument("--video-min-pixels", type=int, default=None)
+    parser.add_argument("--video-max-pixels", type=int, default=None)
+    parser.add_argument("--video-total-pixels", type=int, default=None)
     parser.add_argument("--warmup", type=int, default=0)
     parser.add_argument("--max-concurrency", type=int, default=1)
     parser.add_argument("--request-rate", type=float, default=float("inf"))

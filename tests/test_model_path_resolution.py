@@ -384,7 +384,10 @@ def test_weight_loader_force_refreshes_missing_remote_shard(
 async def test_preprocessor_cache_keys_include_preprocessing_context(
     monkeypatch, qwen3_preprocessor_testbed
 ) -> None:
+    video_kwargs: dict[str, object] = {}
+
     async def fake_ensure_video_list_async(*args, **kwargs):
+        video_kwargs.update(kwargs)
         return [torch.zeros((2, 3), dtype=torch.float32)], [7.5], []
 
     async def fake_ensure_image_list_async(*args, **kwargs):
@@ -413,6 +416,8 @@ async def test_preprocessor_cache_keys_include_preprocessing_context(
                 "audios": ["audio.wav"],
                 "audio_target_sr": 22050,
                 "video_fps": 12.0,
+                "video_max_frames": 128,
+                "video_max_pixels": 401408,
                 "video_seconds_per_chunk": 2.5,
             }
         ),
@@ -422,7 +427,13 @@ async def test_preprocessor_cache_keys_include_preprocessing_context(
     result = await proc(payload)
     state = PipelineState.from_dict(result.data)
 
-    assert state.encoder_inputs["image_encoder"]["cache_key"] == "video-key|fps=(7.5,)"
+    assert video_kwargs["fps"] == 12.0
+    assert video_kwargs["max_frames"] == 128
+    assert video_kwargs["max_pixels"] == 401408
+    assert (
+        state.encoder_inputs["image_encoder"]["cache_key"]
+        == "video-key|fps=(7.5,)|max_frames=128|max_pixels=401408"
+    )
     assert (
         state.encoder_inputs["audio_encoder"]["cache_key"]
         == "audio-key|target_sr=22050"

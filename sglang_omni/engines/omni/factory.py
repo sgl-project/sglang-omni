@@ -40,6 +40,7 @@ def create_encoder_engine(
     device: str = "cuda",
     use_cache: bool = False,
     cache_size: int | None = None,
+    cache_device: torch.device | str | None = None,
 ) -> OmniEngine:
     """Create an encoder engine.
 
@@ -93,7 +94,9 @@ def create_encoder_engine(
     # Create cache manager (if needed)
     cache_manager = None
     if use_cache:
-        cache_manager = SimpleCacheManager(max_size=cache_size)
+        cache_manager = SimpleCacheManager(
+            max_size=cache_size, cache_device=cache_device
+        )
 
     return OmniEngine(
         scheduler=scheduler,

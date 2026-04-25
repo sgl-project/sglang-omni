@@ -30,6 +30,11 @@ def make_videomme_send_fn(
     *,
     max_tokens: int = 256,
     temperature: float = 0.0,
+    video_fps: float | None = None,
+    video_max_frames: int | None = None,
+    video_min_pixels: int | None = None,
+    video_max_pixels: int | None = None,
+    video_total_pixels: int | None = None,
 ) -> SendFn:
     async def send_fn(
         session: aiohttp.ClientSession,
@@ -49,6 +54,16 @@ def make_videomme_send_fn(
             "temperature": temperature,
             "stream": False,
         }
+        if video_fps is not None:
+            payload["video_fps"] = video_fps
+        if video_max_frames is not None:
+            payload["video_max_frames"] = video_max_frames
+        if video_min_pixels is not None:
+            payload["video_min_pixels"] = video_min_pixels
+        if video_max_pixels is not None:
+            payload["video_max_pixels"] = video_max_pixels
+        if video_total_pixels is not None:
+            payload["video_total_pixels"] = video_total_pixels
 
         start_time = time.perf_counter()
         try:

@@ -216,8 +216,11 @@ class TestEncoderMemReserveRouting(unittest.TestCase):
     def test_thinker_executor_args_atomic_on_partial_cast_failure(self) -> None:
         """A later cast failure must not leave an earlier valid key written."""
         config = Qwen3OmniPipelineConfig(model_path="dummy")
-        thinker_stage = next(s for s in config.stages if s.name == "thinker")
-        original_args = dict(thinker_stage.executor.args or {})
+        original_args_by_stage = {
+            stage.name: dict(stage.executor.args or {})
+            for stage in config.stages
+            if stage.executor is not None
+        }
 
         with self.assertRaises(ValueError):
             config.apply_server_args_overrides(
@@ -228,7 +231,12 @@ class TestEncoderMemReserveRouting(unittest.TestCase):
                 },
             )
 
-        self.assertEqual(dict(thinker_stage.executor.args or {}), original_args)
+        current_args_by_stage = {
+            stage.name: dict(stage.executor.args or {})
+            for stage in config.stages
+            if stage.executor is not None
+        }
+        self.assertEqual(current_args_by_stage, original_args_by_stage)
 
     def test_encoder_mem_reserve_routes_on_speech_variant(self) -> None:
         """Speech variant shares _route_thinker_executor_args and pins that."""
@@ -242,6 +250,26 @@ class TestEncoderMemReserveRouting(unittest.TestCase):
 
         thinker_stage = next(s for s in config.stages if s.name == "thinker")
         self.assertEqual(thinker_stage.executor.args["encoder_mem_reserve"], 0.20)
+
+    def test_thinker_seq_len_routes_to_speech_talker(self) -> None:
+        """Speech Talker must accept the same long prompt that the thinker accepts."""
+        from sglang_omni.models.qwen3_omni.config import Qwen3OmniSpeechPipelineConfig
+
+        config = Qwen3OmniSpeechPipelineConfig(model_path="dummy")
+        config.apply_server_args_overrides(
+            stage_name="thinker",
+            overrides={"thinker_max_seq_len": 32768},
+        )
+
+        preprocessing_stage = next(
+            s for s in config.stages if s.name == "preprocessing"
+        )
+        thinker_stage = next(s for s in config.stages if s.name == "thinker")
+        talker_stage = next(s for s in config.stages if s.name == "talker_ar")
+
+        self.assertEqual(preprocessing_stage.executor.args["max_seq_len"], 32768)
+        self.assertEqual(thinker_stage.executor.args["thinker_max_seq_len"], 32768)
+        self.assertEqual(talker_stage.executor.args["talker_max_seq_len"], 32768)
 
 
 class TestEncoderMemReserveFloor(unittest.TestCase):
