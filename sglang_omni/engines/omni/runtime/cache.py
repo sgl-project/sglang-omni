@@ -15,6 +15,7 @@ class _CacheEntry:
     data: Any
     finished: bool
     finish_reason: str | None
+    size_bytes: int
 
 
 def _hash_tensor(value: torch.Tensor) -> str:
@@ -61,6 +62,16 @@ def _detach_value(value: Any, *, device: torch.device | None) -> Any:
     return value
 
 
+def _value_size_bytes(value: Any) -> int:
+    if isinstance(value, torch.Tensor):
+        return int(value.numel() * value.element_size())
+    if isinstance(value, dict):
+        return sum(_value_size_bytes(item) for item in value.values())
+    if isinstance(value, (list, tuple)):
+        return sum(_value_size_bytes(item) for item in value)
+    return 0
+
+
 def _get_cache_key(request: SchedulerRequest) -> str | None:
     data = getattr(request, "data", None)
     if data is None:
@@ -84,13 +95,16 @@ class SimpleCacheManager:
     def __init__(
         self,
         max_size: int | None = None,
+        max_bytes: int | None = None,
         cache_device: torch.device | str | None = None,
     ) -> None:
         if isinstance(cache_device, str):
             cache_device = torch.device(cache_device)
         self._cache: OrderedDict[str, _CacheEntry] = OrderedDict()
         self.max_size = max_size
+        self.max_bytes = max_bytes
         self.cache_device = cache_device
+        self.current_bytes = 0
 
     def get(self, request: SchedulerRequest) -> RequestOutput | None:
         key = _get_cache_key(request)
@@ -111,16 +125,35 @@ class SimpleCacheManager:
         key = _get_cache_key(request)
         if key is None:
             return
+        size_bytes = _value_size_bytes(output.data)
+        old_entry = self._cache.pop(key, None)
+        if old_entry is not None:
+            self.current_bytes -= old_entry.size_bytes
+        if self.max_bytes is not None and size_bytes > self.max_bytes:
+            return
+        data = _detach_value(output.data, device=self.cache_device)
         entry = _CacheEntry(
-            data=_detach_value(output.data, device=self.cache_device),
+            data=data,
             finished=bool(output.finished),
             finish_reason=output.finish_reason,
+            size_bytes=size_bytes,
         )
         self._cache[key] = entry
+        self.current_bytes += size_bytes
         self._cache.move_to_end(key)
-        if self.max_size is not None:
-            while len(self._cache) > self.max_size:
-                self._cache.popitem(last=False)
+        self._evict_over_budget()
 
     def clear(self) -> None:
         self._cache.clear()
+        self.current_bytes = 0
+
+    def _evict_over_budget(self) -> None:
+        while self.max_size is not None and len(self._cache) > self.max_size:
+            _, entry = self._cache.popitem(last=False)
+            self.current_bytes -= entry.size_bytes
+        while self.max_bytes is not None and self.current_bytes > self.max_bytes:
+            if not self._cache:
+                self.current_bytes = 0
+                return
+            _, entry = self._cache.popitem(last=False)
+            self.current_bytes -= entry.size_bytes

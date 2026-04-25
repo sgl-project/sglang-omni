@@ -18,7 +18,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_THINKER_MAX_NEW_TOKENS = 2048
+_DEFAULT_THINKER_MAX_NEW_TOKENS = 2048
 
 
 def validate_prompt_seq_len(
@@ -112,7 +112,7 @@ def build_thinker_request(
     input_ids = prompt.get("input_ids")
     if not isinstance(input_ids, torch.Tensor):
         raise TypeError("prompt.input_ids must be a torch.Tensor")
-    max_new_tokens = params.get("max_new_tokens", DEFAULT_THINKER_MAX_NEW_TOKENS)
+    max_new_tokens = params.get("max_new_tokens", _DEFAULT_THINKER_MAX_NEW_TOKENS)
     validate_prompt_seq_len(
         input_ids,
         max_seq_len=max_seq_len,
@@ -234,7 +234,7 @@ def build_sglang_thinker_request(
     input_ids = prompt.get("input_ids")
     if not isinstance(input_ids, torch.Tensor):
         raise TypeError("prompt.input_ids must be a torch.Tensor")
-    max_new_tokens = params.get("max_new_tokens", DEFAULT_THINKER_MAX_NEW_TOKENS)
+    max_new_tokens = params.get("max_new_tokens", _DEFAULT_THINKER_MAX_NEW_TOKENS)
     validate_prompt_seq_len(
         input_ids,
         max_seq_len=max_seq_len,

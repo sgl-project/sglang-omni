@@ -232,12 +232,20 @@ def test_qwen3_encoder_executor_forwards_cache_settings(monkeypatch) -> None:
     sentinel_engine = object()
 
     def fake_create_single_pass_engine(
-        model, *, device: str, use_cache: bool, cache_size: int | None
+        model,
+        *,
+        device: str,
+        use_cache: bool,
+        cache_size: int | None,
+        cache_max_bytes: int | None,
+        cache_device: str | torch.device | None,
     ):
         captured["model"] = model
         captured["device"] = device
         captured["use_cache"] = use_cache
         captured["cache_size"] = cache_size
+        captured["cache_max_bytes"] = cache_max_bytes
+        captured["cache_device"] = cache_device
         return sentinel_engine
 
     _patch_module(
@@ -260,6 +268,8 @@ def test_qwen3_encoder_executor_forwards_cache_settings(monkeypatch) -> None:
         "device": "cuda:1",
         "use_cache": False,
         "cache_size": 17,
+        "cache_max_bytes": stages.QWEN3_ENCODER_CACHE_MAX_BYTES,
+        "cache_device": "cpu",
     }
     assert executor._engine is sentinel_engine
 

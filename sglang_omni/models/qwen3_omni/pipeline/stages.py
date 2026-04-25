@@ -48,6 +48,10 @@ from sglang_omni.utils.misc import avail_gpu_mem
 
 logger = logging.getLogger(__name__)
 
+# Keep repeated-media encoder cache useful without retaining unbounded host
+# tensors. 4096 MiB matches SGLang's disaggregated VLM encode cache default.
+QWEN3_ENCODER_CACHE_MAX_BYTES = 4 * 1024**3
+
 
 def _event_to_dict(event: OmniEvent) -> dict[str, Any]:
     return {
@@ -85,7 +89,6 @@ def _create_encoder_executor(
     device: str,
     use_cache: bool = True,
     cache_size: int | None = 64,
-    cache_device: str | torch.device | None = "cpu",
     max_batch_size: int = 32,
 ) -> EngineExecutor:
     def _request_builder(payload: StagePayload):
@@ -102,7 +105,8 @@ def _create_encoder_executor(
         device=device,
         use_cache=use_cache,
         cache_size=cache_size,
-        cache_device=cache_device,
+        cache_max_bytes=QWEN3_ENCODER_CACHE_MAX_BYTES,
+        cache_device="cpu",
         max_batch_size=max_batch_size,
     )
     return EngineExecutor(

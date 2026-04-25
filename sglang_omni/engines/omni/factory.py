@@ -40,6 +40,7 @@ def create_encoder_engine(
     device: str = "cuda",
     use_cache: bool = False,
     cache_size: int | None = None,
+    cache_max_bytes: int | None = None,
     cache_device: torch.device | str | None = None,
 ) -> OmniEngine:
     """Create an encoder engine.
@@ -52,6 +53,8 @@ def create_encoder_engine(
         device: Device to run on
         use_cache: Enable encoder output cache
         cache_size: Max cache entries (None for unbounded)
+        cache_max_bytes: Max cached tensor bytes (None for unbounded)
+        cache_device: Optional device used to store cached outputs
 
     Returns:
         OmniEngine configured for encoder models
@@ -95,7 +98,9 @@ def create_encoder_engine(
     cache_manager = None
     if use_cache:
         cache_manager = SimpleCacheManager(
-            max_size=cache_size, cache_device=cache_device
+            max_size=cache_size,
+            max_bytes=cache_max_bytes,
+            cache_device=cache_device,
         )
 
     return OmniEngine(
