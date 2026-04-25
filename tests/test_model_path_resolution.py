@@ -239,6 +239,7 @@ def test_qwen3_encoder_executor_forwards_cache_settings(monkeypatch) -> None:
         cache_size: int | None,
         cache_max_bytes: int | None,
         cache_device: str | torch.device | None,
+        max_batch_size: int,
     ):
         captured["model"] = model
         captured["device"] = device
@@ -246,6 +247,7 @@ def test_qwen3_encoder_executor_forwards_cache_settings(monkeypatch) -> None:
         captured["cache_size"] = cache_size
         captured["cache_max_bytes"] = cache_max_bytes
         captured["cache_device"] = cache_device
+        captured["max_batch_size"] = max_batch_size
         return sentinel_engine
 
     _patch_module(
@@ -270,6 +272,7 @@ def test_qwen3_encoder_executor_forwards_cache_settings(monkeypatch) -> None:
         "cache_size": 17,
         "cache_max_bytes": stages.QWEN3_ENCODER_CACHE_MAX_BYTES,
         "cache_device": "cpu",
+        "max_batch_size": 32,
     }
     assert executor._engine is sentinel_engine
 
