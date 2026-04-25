@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import pytest
 import torch
 
 from sglang_omni.models.qwen3_omni.io import PipelineState
@@ -68,3 +69,8 @@ def test_encoder_filter_sends_only_cpu_encoder_outputs() -> None:
     filtered_video_embeds = filtered_state.encoder_outs[IMAGE_STAGE]["video_embeds"]
     assert filtered_video_embeds.device.type == "cpu"
     assert torch.equal(filtered_video_embeds, encoder_out)
+
+
+def test_preprocessing_filter_rejects_unknown_route() -> None:
+    with pytest.raises(ValueError, match="Unexpected Qwen3-Omni preprocessing target"):
+        preprocessing_payload_filter("req", "unknown", _payload(PipelineState()))

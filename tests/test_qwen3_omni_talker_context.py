@@ -16,10 +16,11 @@ def test_talker_context_validation_reserves_generation_room() -> None:
     executor._max_seq_len = 8
 
     with pytest.raises(ValueError, match="8 total tokens"):
-        executor._validate_prefill_seq_len(
+        executor._resolve_effective_max_new_tokens(
             request_id="req",
             input_ids=torch.arange(6),
             max_new_tokens=2,
+            explicit=True,
         )
 
 

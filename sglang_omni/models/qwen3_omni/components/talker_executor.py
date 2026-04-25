@@ -521,20 +521,6 @@ class TalkerStreamingExecutor(Executor):
             return int(max_new_tokens)
         return max_available
 
-    def _validate_prefill_seq_len(
-        self,
-        request_id: str,
-        input_ids: torch.Tensor,
-        *,
-        max_new_tokens: int,
-    ) -> None:
-        self._resolve_effective_max_new_tokens(
-            request_id,
-            input_ids,
-            max_new_tokens=max_new_tokens,
-            explicit=True,
-        )
-
     def _resolve_speaker_id(self, payload: StagePayload) -> int:
         speaker_name = str(payload.request.params.get("speaker", "Ethan")).lower()
         speaker_id = self._speaker_map.get(speaker_name)

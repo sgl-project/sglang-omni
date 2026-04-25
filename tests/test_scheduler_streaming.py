@@ -86,3 +86,37 @@ def test_scheduler_completed_stream_queue_is_bounded() -> None:
     assert "req-0" not in scheduler._completed_stream_queues
     latest_request_id = f"req-{total_requests - 1}"
     assert latest_request_id in scheduler._completed_stream_queues
+
+
+def test_scheduler_reused_request_id_does_not_replay_old_stream_done() -> None:
+    asyncio.run(_run_scheduler_reused_request_id_does_not_replay_old_stream_done())
+
+
+async def _run_scheduler_reused_request_id_does_not_replay_old_stream_done() -> None:
+    scheduler = Scheduler(
+        batch_planner=_DummyBatchPlanner(),
+        resource_manager=_DummyResourceManager(),
+        iteration_controller=_DummyIterationController(),
+        stream_adapter=lambda request, output: output.data,
+    )
+
+    request_id = "req-reused"
+    scheduler.prepare_stream(request_id)
+    scheduler.add_request(request_id, data={"stream": True})
+    first_request = scheduler.requests[request_id]
+    scheduler._finish_request(first_request)
+
+    scheduler.prepare_stream(request_id)
+    scheduler.add_request(request_id, data={"stream": True})
+    second_request = scheduler.requests[request_id]
+    scheduler._emit_stream(
+        second_request,
+        RequestOutput(request_id=request_id, data={"audio_data": [4, 5, 6]}),
+    )
+    scheduler._finish_request(second_request)
+
+    chunks = []
+    async for chunk in scheduler.stream(request_id):
+        chunks.append(chunk)
+
+    assert chunks == [{"audio_data": [4, 5, 6]}]

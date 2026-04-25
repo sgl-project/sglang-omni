@@ -454,6 +454,42 @@ async def test_preprocessor_cache_keys_include_preprocessing_context(
 
 
 @pytest.mark.asyncio
+async def test_preprocessor_rejects_default_generation_over_context(
+    monkeypatch, qwen3_preprocessor_testbed
+) -> None:
+    async def fake_ensure_video_list_async(*args, **kwargs):
+        return [], None, []
+
+    async def fake_ensure_image_list_async(*args, **kwargs):
+        return []
+
+    async def fake_ensure_audio_list_async(*args, **kwargs):
+        return []
+
+    _patch_module(
+        monkeypatch,
+        preprocessor,
+        ensure_video_list_async=fake_ensure_video_list_async,
+        ensure_image_list_async=fake_ensure_image_list_async,
+        ensure_audio_list_async=fake_ensure_audio_list_async,
+    )
+    proc = qwen3_preprocessor_testbed
+    proc.max_seq_len = 4
+
+    payload = StagePayload(
+        request_id="req-context",
+        request=OmniRequest(
+            inputs={"messages": [{"role": "user", "content": "describe"}]},
+            params={},
+        ),
+        data=None,
+    )
+
+    with pytest.raises(ValueError, match="Requested token count exceeds"):
+        await proc(payload)
+
+
+@pytest.mark.asyncio
 async def test_preprocessor_cache_keys_canonicalize_explicit_video_fps(
     monkeypatch, qwen3_preprocessor_testbed
 ) -> None:

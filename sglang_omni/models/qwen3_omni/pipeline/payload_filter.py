@@ -31,7 +31,7 @@ def preprocessing_payload_filter(
         return _with_state(payload, _encoder_state(state, next_stage))
     if next_stage == AGGREGATE_STAGE:
         return _with_state(payload, _aggregate_state(state))
-    return payload
+    raise ValueError(f"Unexpected Qwen3-Omni preprocessing target: {next_stage}")
 
 
 def encoder_payload_filter(
@@ -44,7 +44,7 @@ def encoder_payload_filter(
             f"(expected={request_id} got={payload.request_id})"
         )
     if next_stage != AGGREGATE_STAGE:
-        return payload
+        raise ValueError(f"Unexpected Qwen3-Omni encoder target: {next_stage}")
 
     state = PipelineState.from_dict(payload.data)
     return _with_state(
@@ -63,8 +63,9 @@ def _with_state(payload: StagePayload, state: PipelineState) -> StagePayload:
 
 def _encoder_state(state: PipelineState, stage_name: str) -> PipelineState:
     inputs = state.encoder_inputs.get(stage_name)
+    assert isinstance(inputs, dict), f"missing encoder inputs for {stage_name}"
     return PipelineState(
-        encoder_inputs={stage_name: inputs if isinstance(inputs, dict) else {}},
+        encoder_inputs={stage_name: inputs},
         stream_state=dict(state.stream_state),
     )
 

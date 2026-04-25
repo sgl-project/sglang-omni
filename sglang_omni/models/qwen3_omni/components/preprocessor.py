@@ -14,7 +14,10 @@ from transformers.models.qwen3_omni_moe.processing_qwen3_omni_moe import (
 )
 
 from sglang_omni.models.qwen3_omni.io import PipelineState
-from sglang_omni.models.qwen3_omni.pipeline.engine_io import validate_prompt_seq_len
+from sglang_omni.models.qwen3_omni.pipeline.engine_io import (
+    DEFAULT_THINKER_MAX_NEW_TOKENS,
+    validate_prompt_seq_len,
+)
 from sglang_omni.models.weight_loader import resolve_model_path
 from sglang_omni.preprocessing import (
     build_audio_mm_inputs,
@@ -288,7 +291,9 @@ class Qwen3OmniPreprocessor:
         validate_prompt_seq_len(
             input_ids,
             max_seq_len=self.max_seq_len,
-            max_new_tokens=payload.request.params.get("max_new_tokens"),
+            max_new_tokens=payload.request.params.get(
+                "max_new_tokens", DEFAULT_THINKER_MAX_NEW_TOKENS
+            ),
             request_id=payload.request_id,
         )
 

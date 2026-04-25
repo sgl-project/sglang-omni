@@ -84,6 +84,7 @@ class Scheduler:
 
     def add_request(self, request_id: str, data: Any) -> None:
         """Add a new request with model-specific data."""
+        self._clear_completed_state(request_id)
         request = SchedulerRequest(
             request_id=request_id,
             data=data,
@@ -169,6 +170,7 @@ class Scheduler:
 
     def prepare_stream(self, request_id: str) -> None:
         """Pre-register a stream queue before request submission."""
+        self._clear_completed_state(request_id)
         self._subscribe_stream(request_id)
 
     def discard_stream(self, request_id: str) -> None:
@@ -356,6 +358,19 @@ class Scheduler:
 
     def _forget_completed_request(self, request_id: str) -> None:
         self._completed_requests.pop(request_id, None)
+
+    def _clear_completed_state(self, request_id: str) -> None:
+        self._completed_requests.pop(request_id, None)
+        self._completed_ids.discard(request_id)
+        self._completed_stream_queues.pop(request_id, None)
+        self._remove_completed_order(request_id)
+        self._remove_completed_stream_order(request_id)
+
+    def _remove_completed_order(self, request_id: str) -> None:
+        try:
+            self._completed_order.remove(request_id)
+        except ValueError:
+            return
 
     def _remember_completed_stream_queue(
         self, request_id: str, queue: asyncio.Queue[Any]
