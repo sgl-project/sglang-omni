@@ -29,6 +29,7 @@ from sglang_omni.models.qwen3_omni.components.talker_executor import (
 from sglang_omni.models.qwen3_omni.components.thinker import Qwen3OmniSplitThinker
 from sglang_omni.models.qwen3_omni.io import OmniEvent, ThinkerOutput
 from sglang_omni.models.qwen3_omni.pipeline.engine_io import (
+    DEFAULT_THINKER_MAX_SEQ_LEN,
     apply_encoder_result,
     apply_thinker_result,
     build_encoder_request,
@@ -163,7 +164,7 @@ def create_thinker_executor(
     *,
     device: str = "cuda",
     dtype: str | None = None,
-    max_seq_len: int = 8192,
+    max_seq_len: int = DEFAULT_THINKER_MAX_SEQ_LEN,
 ) -> EngineExecutor:
     model = Qwen3OmniSplitThinker(model_path=model_path, device=device, dtype=dtype)
     tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
@@ -389,7 +390,7 @@ def create_sglang_thinker_executor_from_config(
     model_path: str,
     *,
     gpu_id: int = 0,
-    thinker_max_seq_len: int = 8192,
+    thinker_max_seq_len: int = DEFAULT_THINKER_MAX_SEQ_LEN,
     encoder_mem_reserve: float = 0.05,
     server_args_overrides: dict[str, Any] | None = None,
     speech_enabled: bool = False,

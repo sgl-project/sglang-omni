@@ -13,6 +13,7 @@ from sglang_omni.config import (
     StageConfig,
 )
 from sglang_omni.config.schema import StreamTargetConfig
+from sglang_omni.models.qwen3_omni.pipeline.engine_io import DEFAULT_THINKER_MAX_SEQ_LEN
 from sglang_omni.models.qwen3_omni.pipeline.next_stage import (
     AGGREGATE_STAGE,
     AUDIO_STAGE,
@@ -36,7 +37,7 @@ class Qwen3OmniPipelineConfig(PipelineConfig):
             name=PREPROCESSING_STAGE,
             executor=ExecutorConfig(
                 factory="sglang_omni.models.qwen3_omni.pipeline.stages.create_preprocessing_executor",
-                args={"max_seq_len": 8192},
+                args={"max_seq_len": DEFAULT_THINKER_MAX_SEQ_LEN},
             ),
             get_next="sglang_omni.models.qwen3_omni.pipeline.next_stage.preprocessing_next",
             payload_filter="sglang_omni.models.qwen3_omni.pipeline.payload_filter.preprocessing_payload_filter",
@@ -88,7 +89,7 @@ class Qwen3OmniPipelineConfig(PipelineConfig):
             executor=ExecutorConfig(
                 factory="sglang_omni.models.qwen3_omni.pipeline.stages.create_sglang_thinker_executor_from_config",
                 args={
-                    "thinker_max_seq_len": 8192,
+                    "thinker_max_seq_len": DEFAULT_THINKER_MAX_SEQ_LEN,
                 },
             ),
             get_next="sglang_omni.models.qwen3_omni.pipeline.next_stage.thinker_next",
@@ -199,7 +200,7 @@ class Qwen3OmniSpeechPipelineConfig(PipelineConfig):
             name=PREPROCESSING_STAGE,
             executor=ExecutorConfig(
                 factory="sglang_omni.models.qwen3_omni.pipeline.stages.create_preprocessing_executor",
-                args={"max_seq_len": 8192},
+                args={"max_seq_len": DEFAULT_THINKER_MAX_SEQ_LEN},
             ),
             get_next="sglang_omni.models.qwen3_omni.pipeline.next_stage.preprocessing_next",
             payload_filter="sglang_omni.models.qwen3_omni.pipeline.payload_filter.preprocessing_payload_filter",
@@ -244,7 +245,10 @@ class Qwen3OmniSpeechPipelineConfig(PipelineConfig):
             name=THINKER_STAGE,
             executor=ExecutorConfig(
                 factory="sglang_omni.models.qwen3_omni.pipeline.stages.create_sglang_thinker_executor_from_config",
-                args={"thinker_max_seq_len": 8192, "speech_enabled": True},
+                args={
+                    "thinker_max_seq_len": DEFAULT_THINKER_MAX_SEQ_LEN,
+                    "speech_enabled": True,
+                },
             ),
             get_next="sglang_omni.models.qwen3_omni.pipeline.next_stage.thinker_next_speech",
             relay=RelayConfig(device="cuda"),

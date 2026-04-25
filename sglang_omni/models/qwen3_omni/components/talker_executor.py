@@ -503,15 +503,7 @@ class TalkerStreamingExecutor(Executor):
             return int(max_new_tokens)
 
         prefill_tokens = int(input_ids.numel())
-        max_available = int(self._max_seq_len) - prefill_tokens - 1
-        if max_available <= 0:
-            _validate_talker_context(
-                request_id=request_id,
-                prefill_tokens=prefill_tokens,
-                max_new_tokens=max_new_tokens,
-                max_seq_len=self._max_seq_len,
-            )
-        if explicit or int(max_new_tokens) <= max_available:
+        if explicit:
             _validate_talker_context(
                 request_id=request_id,
                 prefill_tokens=prefill_tokens,
@@ -519,7 +511,19 @@ class TalkerStreamingExecutor(Executor):
                 max_seq_len=self._max_seq_len,
             )
             return int(max_new_tokens)
-        return max_available
+
+        if prefill_tokens >= self._max_seq_len:
+            _validate_talker_context(
+                request_id=request_id,
+                prefill_tokens=prefill_tokens,
+                max_new_tokens=max_new_tokens,
+                max_seq_len=self._max_seq_len,
+            )
+
+        # Reserve 1 token of slack so prefill + generated stays strictly below
+        # max_seq_len (room for EOS / talker bos token handling).
+        max_available = max(int(self._max_seq_len) - prefill_tokens - 1, 0)
+        return min(int(max_new_tokens), max_available)
 
     def _resolve_speaker_id(self, payload: StagePayload) -> int:
         speaker_name = str(payload.request.params.get("speaker", "Ethan")).lower()

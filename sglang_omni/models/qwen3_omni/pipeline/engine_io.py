@@ -19,6 +19,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 DEFAULT_THINKER_MAX_NEW_TOKENS = 2048
+DEFAULT_THINKER_MAX_SEQ_LEN = 8192
 
 
 def validate_prompt_seq_len(
