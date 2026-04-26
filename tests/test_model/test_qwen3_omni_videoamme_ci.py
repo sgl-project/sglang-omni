@@ -11,30 +11,19 @@ Author:
 from __future__ import annotations
 
 import asyncio
-import os
 import sys
 from pathlib import Path
 
 import pytest
 
 from benchmarks.dataset.prepare import DATASETS
-from benchmarks.eval.benchmark_omni_video_amme import (
+from benchmarks.eval.benchmark_omni_videoamme import (
     VideoAMMEEvalConfig,
-    run_video_amme_eval,
+    run_videoamme_eval,
 )
-from sglang_omni.utils import find_available_port
-from tests.utils import (
-    ServerHandle,
-    apply_slack,
-    assert_speed_thresholds,
-    start_server_from_cmd,
-    stop_server,
-)
-
-MODEL_PATH = "Qwen/Qwen3-Omni-30B-A3B-Instruct"
+from tests.utils import ServerHandle, apply_slack, assert_speed_thresholds
 
 CONCURRENCY = 8
-STARTUP_TIMEOUT = 900
 
 # TODO: Recalibrate thresholds on H20.
 VIDEOAMME_MIN_ACCURACY = 0.40
@@ -49,52 +38,25 @@ _VIDEOAMME_P95 = {
 VIDEOAMME_THRESHOLDS = apply_slack(_VIDEOAMME_P95)
 
 
-@pytest.fixture(scope="module")
-def server_process(tmp_path_factory: pytest.TempPathFactory):
-    """Start the text-only Qwen3-Omni server and wait until healthy."""
-    port = find_available_port()
-    is_ci = os.environ.get("GITHUB_ACTIONS") == "true"
-    log_file: Path | None = (
-        tmp_path_factory.mktemp("server_logs") / "server.log" if is_ci else None
-    )
-    cmd = [
-        sys.executable,
-        "examples/run_qwen3_omni_server.py",
-        "--model-path",
-        MODEL_PATH,
-        "--port",
-        str(port),
-        "--model-name",
-        "qwen3-omni",
-        "--thinker-max-seq-len",
-        "32768",
-        "--mem-fraction-static",
-        "0.78",
-    ]
-    proc = start_server_from_cmd(cmd, log_file, port, timeout=STARTUP_TIMEOUT)
-    yield ServerHandle(proc=proc, port=port)
-    stop_server(proc)
-
-
 @pytest.mark.benchmark
 def test_videoamme_accuracy_and_speed(
-    server_process: ServerHandle,
+    qwen3_omni_thinker_server: ServerHandle,
     tmp_path: Path,
 ) -> None:
-    """Run video-amme-ci-50 at concurrency=8 and assert accuracy + speed."""
+    """Run videoamme-ci-50 at concurrency=8 and assert accuracy + speed."""
     config = VideoAMMEEvalConfig(
         model="qwen3-omni",
-        port=server_process.port,
+        port=qwen3_omni_thinker_server.port,
         max_concurrency=CONCURRENCY,
         output_dir=str(tmp_path / "videoamme"),
-        repo_id=DATASETS["video-amme-ci-50"],
+        repo_id=DATASETS["videoamme-ci-50"],
         video_fps=2,
         video_max_frames=128,
         video_max_pixels=401408,
         disable_tqdm=False,
         timeout_s=500,
     )
-    results = asyncio.run(run_video_amme_eval(config))
+    results = asyncio.run(run_videoamme_eval(config))
 
     summary = results["summary"]
     failed = summary.get("failed", 0)

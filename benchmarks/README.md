@@ -105,14 +105,14 @@ python -m benchmarks.eval.benchmark_omni_videomme \
     --model qwen3-omni --port 8000 --max-samples 50
 
 # 7a. Qwen3-Omni — Video-AMME (video + audio question understanding)
-python -m benchmarks.eval.benchmark_omni_video_amme \
+python -m benchmarks.eval.benchmark_omni_videoamme \
     --model qwen3-omni --port 8000 \
     --repo-id Ratish21/Video_AMME_ci \
     --max-samples 50 --max-concurrency 8 \
     --video-fps 2 --video-max-frames 128 --video-max-pixels 401408
 
 # 7b. Qwen3-Omni — Video-AMME Talker (text + audio output)
-python -m benchmarks.eval.benchmark_omni_video_amme \
+python -m benchmarks.eval.benchmark_omni_videoamme \
     --model qwen3-omni --port 8000 \
     --repo-id Ratish21/Video_AMME_ci \
     --max-samples 50 --max-concurrency 8 \
@@ -129,7 +129,7 @@ python -m benchmarks.eval.benchmark_omni_video_amme \
 | `eval/benchmark_omni_mmsu.py` | MMSU (audio comprehension) | Qwen3-Omni | `/v1/chat/completions` |
 | `eval/benchmark_omni_mmmu.py` | MMMU (VLM accuracy + speed) | Qwen3-Omni | `/v1/chat/completions` |
 | `eval/benchmark_omni_videomme.py` | Video-MME (video understanding) | Qwen3-Omni | `/v1/chat/completions` |
-| `eval/benchmark_omni_video_amme.py` | Video-AMME (video + audio question understanding) | Qwen3-Omni | `/v1/chat/completions` |
+| `eval/benchmark_omni_videoamme.py` | Video-AMME (video + audio question understanding) | Qwen3-Omni | `/v1/chat/completions` |
 
 The two `*_seedtts.py` scripts merge the previous `benchmark_*_tts_speed.py`
 and `voice_clone_*_wer.py` pairs into a single two-phase pipeline: phase 1
@@ -162,7 +162,7 @@ python -m benchmarks.dataset.prepare --dataset mmmu-ci-50    # MMMU CI subset
 python -m benchmarks.dataset.prepare --dataset mmsu          # full MMSU (ddwang2000/MMSU)
 python -m benchmarks.dataset.prepare --dataset videomme-ci-50  # Video-MME CI subset
 python -m benchmarks.dataset.prepare --dataset videomme      # full Video-MME
-python -m benchmarks.dataset.prepare --dataset video-amme-ci-50  # Video-AMME CI subset
+python -m benchmarks.dataset.prepare --dataset videoamme-ci-50  # Video-AMME CI subset
 ```
 
 SeedTTS datasets are materialized into `./seedtts_testset/` (override with

@@ -3,6 +3,10 @@
 
 from __future__ import annotations
 
+import os
+import sys
+from pathlib import Path
+
 import pytest
 
 S2PRO_TTS_ALLOWED_CONCURRENCIES = (1, 2, 4, 8, 16)
@@ -21,6 +25,80 @@ S2PRO_TTS_CONCURRENCY_OPTION = "--concurrency"
 SELECTED_S2PRO_TTS_CONCURRENCIES = pytest.StashKey[tuple[int, ...]]()
 S2PRO_STAGE_OPTION = "--s2pro-stage"
 SELECTED_S2PRO_CI_STAGE = pytest.StashKey[str]()
+QWEN3_OMNI_MODEL_PATH = "Qwen/Qwen3-Omni-30B-A3B-Instruct"
+QWEN3_OMNI_STARTUP_TIMEOUT = 900
+
+
+@pytest.fixture(scope="module")
+def qwen3_omni_thinker_server(tmp_path_factory: pytest.TempPathFactory):
+    """Start the text-only Qwen3-Omni server and wait until healthy."""
+    from sglang_omni.utils import find_available_port
+    from tests.utils import ServerHandle, start_server_from_cmd, stop_server
+
+    port = find_available_port()
+    is_ci = os.environ.get("GITHUB_ACTIONS") == "true"
+    log_file: Path | None = (
+        tmp_path_factory.mktemp("server_logs") / "server.log" if is_ci else None
+    )
+    cmd = [
+        sys.executable,
+        "examples/run_qwen3_omni_server.py",
+        "--model-path",
+        QWEN3_OMNI_MODEL_PATH,
+        "--port",
+        str(port),
+        "--model-name",
+        "qwen3-omni",
+        "--thinker-max-seq-len",
+        "32768",
+        "--mem-fraction-static",
+        "0.78",
+    ]
+    proc = start_server_from_cmd(
+        cmd, log_file, port, timeout=QWEN3_OMNI_STARTUP_TIMEOUT
+    )
+    yield ServerHandle(proc=proc, port=port)
+    stop_server(proc)
+
+
+@pytest.fixture(scope="module")
+def qwen3_omni_talker_server(tmp_path_factory: pytest.TempPathFactory):
+    """Start the Qwen3-Omni speech server and wait until healthy."""
+    from sglang_omni.utils import find_available_port
+    from tests.utils import ServerHandle, start_server_from_cmd, stop_server
+
+    port = find_available_port()
+    is_ci = os.environ.get("GITHUB_ACTIONS") == "true"
+    log_file: Path | None = (
+        tmp_path_factory.mktemp("server_logs") / "server.log" if is_ci else None
+    )
+    cmd = [
+        sys.executable,
+        "examples/run_qwen3_omni_speech_server.py",
+        "--model-path",
+        QWEN3_OMNI_MODEL_PATH,
+        "--gpu-thinker",
+        "0",
+        "--gpu-talker",
+        "1",
+        "--gpu-code-predictor",
+        "1",
+        "--gpu-code2wav",
+        "1",
+        "--port",
+        str(port),
+        "--model-name",
+        "qwen3-omni",
+        "--thinker-max-seq-len",
+        "32768",
+        "--thinker-mem-fraction-static",
+        "0.78",
+    ]
+    proc = start_server_from_cmd(
+        cmd, log_file, port, timeout=QWEN3_OMNI_STARTUP_TIMEOUT
+    )
+    yield ServerHandle(proc=proc, port=port)
+    stop_server(proc)
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
