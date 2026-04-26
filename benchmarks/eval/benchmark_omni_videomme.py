@@ -130,11 +130,6 @@ class VideoEvalConfig:
     lang: str = "en"
 
 
-@dataclass
-class VideoMMEEvalConfig(VideoEvalConfig):
-    pass
-
-
 def _build_base_url(config: VideoEvalConfig) -> str:
     return config.base_url or f"http://{config.host}:{config.port}"
 
@@ -230,18 +225,15 @@ async def run_video_eval(
 
 
 async def run_videomme_eval(
-    config: VideoMMEEvalConfig,
+    config: VideoEvalConfig,
     *,
     samples: list[VideoMMESample] | None = None,
 ) -> dict:
     return await run_video_eval(config, samples=samples)
 
 
-def video_eval_config_from_args(
-    args: argparse.Namespace,
-    config_cls: type[VideoEvalConfig] = VideoMMEEvalConfig,
-) -> VideoEvalConfig:
-    return config_cls(
+def video_eval_config_from_args(args: argparse.Namespace) -> VideoEvalConfig:
+    return VideoEvalConfig(
         model=args.model,
         repo_id=args.repo_id,
         split=args.split,
@@ -268,10 +260,8 @@ def video_eval_config_from_args(
     )
 
 
-def _config_from_args(args: argparse.Namespace) -> VideoMMEEvalConfig:
-    config = video_eval_config_from_args(args, VideoMMEEvalConfig)
-    assert isinstance(config, VideoMMEEvalConfig)
-    return config
+def _config_from_args(args: argparse.Namespace) -> VideoEvalConfig:
+    return video_eval_config_from_args(args)
 
 
 def add_video_eval_args(parser: argparse.ArgumentParser, *, repo_help: str) -> None:

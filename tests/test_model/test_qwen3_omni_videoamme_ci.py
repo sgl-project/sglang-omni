@@ -17,10 +17,8 @@ from pathlib import Path
 import pytest
 
 from benchmarks.dataset.prepare import DATASETS
-from benchmarks.eval.benchmark_omni_videoamme import (
-    VideoAMMEEvalConfig,
-    run_videoamme_eval,
-)
+from benchmarks.eval.benchmark_omni_videoamme import run_videoamme_eval
+from benchmarks.eval.benchmark_omni_videomme import VideoEvalConfig
 from tests.utils import ServerHandle, apply_slack, assert_speed_thresholds
 
 CONCURRENCY = 8
@@ -44,7 +42,7 @@ def test_videoamme_accuracy_and_speed(
     tmp_path: Path,
 ) -> None:
     """Run videoamme-ci-50 at concurrency=8 and assert accuracy + speed."""
-    config = VideoAMMEEvalConfig(
+    config = VideoEvalConfig(
         model="qwen3-omni",
         port=qwen3_omni_thinker_server.port,
         max_concurrency=CONCURRENCY,

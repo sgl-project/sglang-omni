@@ -20,10 +20,8 @@ from pathlib import Path
 import pytest
 
 from benchmarks.dataset.prepare import DATASETS
-from benchmarks.eval.benchmark_omni_videoamme import (
-    VideoAMMEEvalConfig,
-    run_videoamme_eval,
-)
+from benchmarks.eval.benchmark_omni_videoamme import run_videoamme_eval
+from benchmarks.eval.benchmark_omni_videomme import VideoEvalConfig
 from benchmarks.tasks.tts import print_speed_summary, print_wer_summary
 from benchmarks.tasks.video_understanding import print_videomme_accuracy_summary
 from tests.utils import (
@@ -59,7 +57,7 @@ def test_videoamme_talker_accuracy_wer_and_speed(
     tmp_path: Path,
 ) -> None:
     """Run Video-AMME with Talker enabled and assert text/audio metrics."""
-    config = VideoAMMEEvalConfig(
+    config = VideoEvalConfig(
         model="qwen3-omni",
         port=qwen3_omni_talker_server.port,
         max_samples=MAX_SAMPLES,

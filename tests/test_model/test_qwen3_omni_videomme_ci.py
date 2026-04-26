@@ -19,10 +19,7 @@ from pathlib import Path
 import pytest
 
 from benchmarks.dataset.prepare import DATASETS
-from benchmarks.eval.benchmark_omni_videomme import (
-    VideoMMEEvalConfig,
-    run_videomme_eval,
-)
+from benchmarks.eval.benchmark_omni_videomme import VideoEvalConfig, run_videomme_eval
 from tests.utils import ServerHandle, apply_slack, assert_speed_thresholds
 
 CONCURRENCY = 16
@@ -46,7 +43,7 @@ def test_videomme_accuracy_and_speed(
     tmp_path: Path,
 ) -> None:
     """Run videomme-ci-50 at concurrency=16 and assert accuracy + speed thresholds."""
-    config = VideoMMEEvalConfig(
+    config = VideoEvalConfig(
         model="qwen3-omni",
         port=qwen3_omni_thinker_server.port,
         max_concurrency=CONCURRENCY,

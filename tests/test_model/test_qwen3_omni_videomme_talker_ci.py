@@ -30,10 +30,7 @@ import pytest
 
 from benchmarks.dataset.prepare import DATASETS
 from benchmarks.dataset.videomme import VideoMMESample, load_videomme_samples
-from benchmarks.eval.benchmark_omni_videomme import (
-    VideoMMEEvalConfig,
-    run_videomme_eval,
-)
+from benchmarks.eval.benchmark_omni_videomme import VideoEvalConfig, run_videomme_eval
 from benchmarks.tasks.tts import print_speed_summary, print_wer_summary
 from benchmarks.tasks.video_understanding import print_videomme_accuracy_summary
 from tests.utils import (
@@ -83,7 +80,7 @@ def test_videomme_tts_accuracy_wer_and_speed(
     tmp_path: Path,
 ) -> None:
     """Run Video-MME with Talker enabled and assert text/audio metrics."""
-    config = VideoMMEEvalConfig(
+    config = VideoEvalConfig(
         model="qwen3-omni",
         port=qwen3_omni_talker_server.port,
         max_samples=MAX_SAMPLES,

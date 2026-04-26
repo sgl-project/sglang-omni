@@ -54,7 +54,6 @@ import argparse
 import asyncio
 import logging
 import sys
-from dataclasses import dataclass
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -82,13 +81,8 @@ logging.basicConfig(
 )
 
 
-@dataclass
-class VideoAMMEEvalConfig(VideoEvalConfig):
-    pass
-
-
 async def run_videoamme_eval(
-    config: VideoAMMEEvalConfig,
+    config: VideoEvalConfig,
     *,
     samples: list[VideoAMMESample] | None = None,
 ) -> dict:
@@ -104,10 +98,8 @@ async def run_videoamme_eval(
     )
 
 
-def _config_from_args(args: argparse.Namespace) -> VideoAMMEEvalConfig:
-    config = video_eval_config_from_args(args, VideoAMMEEvalConfig)
-    assert isinstance(config, VideoAMMEEvalConfig)
-    return config
+def _config_from_args(args: argparse.Namespace) -> VideoEvalConfig:
+    return video_eval_config_from_args(args)
 
 
 async def benchmark(args: argparse.Namespace) -> dict:
