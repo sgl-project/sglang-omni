@@ -9,7 +9,12 @@ import pytest
 import requests
 
 from sglang_omni.preprocessing import compute_video_cache_key, ensure_video_list_async
-from sglang_omni.preprocessing.video import _check_if_video_has_audio
+from sglang_omni.preprocessing import video as video_module
+from sglang_omni.preprocessing.video import (
+    VideoDecodeError,
+    _check_if_video_has_audio,
+    load_video_path,
+)
 
 # Remote test resources
 VIDEO_URL = "https://qianwen-res.oss-cn-beijing.aliyuncs.com/Qwen3-Omni/demo/draw.mp4"
@@ -48,6 +53,46 @@ def image_path():
 
 class TestVideoPreprocessing:
     """Test core video preprocessing functionality."""
+
+    def test_video_decode_error_includes_path_and_backend_context(
+        self, monkeypatch, tmp_path
+    ):
+        video = tmp_path / "broken.mp4"
+        video.write_bytes(b"not a real video")
+        reader_calls: list[str] = []
+
+        def fail_torchcodec(_):
+            reader_calls.append("torchcodec")
+            raise ValueError("total_frames must be a positive integer")
+
+        def fail_torchvision(_):
+            reader_calls.append("torchvision")
+            raise ValueError("nframes should in interval [2, 0], but got 0")
+
+        monkeypatch.setattr(
+            video_module.qwen_vision,
+            "get_video_reader_backend",
+            lambda: "torchcodec",
+        )
+        monkeypatch.setitem(
+            video_module.qwen_vision.VIDEO_READER_BACKENDS,
+            "torchcodec",
+            fail_torchcodec,
+        )
+        monkeypatch.setitem(
+            video_module.qwen_vision.VIDEO_READER_BACKENDS,
+            "torchvision",
+            fail_torchvision,
+        )
+
+        with pytest.raises(VideoDecodeError) as exc_info:
+            load_video_path(video, fps=2.0, max_frames=128)
+
+        message = str(exc_info.value)
+        assert reader_calls == ["torchcodec", "torchvision"]
+        assert str(video) in message
+        assert "torchcodec failed with ValueError" in message
+        assert "torchvision failed with ValueError" in message
 
     @pytest.mark.asyncio
     async def test_video_loading_and_normalization(self, video_path):

@@ -16,6 +16,16 @@ logger = logging.getLogger(__name__)
 DEFAULT_REPO_ID = "zhaochenyang20/Video_MME"
 DEFAULT_VIDEOAMME_REPO_ID = "Ratish21/Video_AMME_ci"
 DEFAULT_VIDEOAMME_SOURCE_REPO_ID = "zhaochenyang20/Video_MME_ci"
+VIDEOMME_DECODE_INVALID_VIDEO_PATHS = {
+    "videos/5LU_XY0z2ZY.mp4",
+    "videos/5kmnEgBSCfg.mp4",
+    "videos/9Y-YJEtxHeo.mp4",
+    "videos/MYxL_JLseC8.mp4",
+    "videos/bHt0Riqz0qo.mp4",
+    "videos/j27UP4zz_6U.mp4",
+    "videos/jRS9fVh7MUw.mp4",
+    "videos/vzfTpidE5wg.mp4",
+}
 
 
 @dataclass
@@ -205,6 +215,14 @@ def load_videomme_samples(
 
     def build_sample(row_index, row):
         question_id = str(row.get("question_id", f"videomme:{row_index}")).strip()
+        relative_video_path = str(row.get("video_path") or "").strip()
+        normalized_video_path = relative_video_path.removeprefix("./")
+        if normalized_video_path in VIDEOMME_DECODE_INVALID_VIDEO_PATHS:
+            logger.warning(
+                f"Skipping Video-MME sample {question_id} because "
+                f"{relative_video_path} is decode-invalid in the dataset",
+            )
+            return None
         video_path = _resolve_video_path(snapshot_dir, row, question_id)
         if not video_path:
             return None

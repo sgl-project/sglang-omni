@@ -24,6 +24,10 @@ from .resource_connector import global_thread_pool
 logger = logging.getLogger(__name__)
 
 
+class VideoDecodeError(RuntimeError):
+    """Raised when video decoding fails."""
+
+
 class VideoMediaIO(MediaIO[tuple[torch.Tensor, float, Any | None]]):
     """MediaIO implementation for video files with optional audio extraction."""
 
@@ -305,6 +309,7 @@ def load_video_path(
     total_pixels: int | None = None,
 ) -> tuple[torch.Tensor, float]:
     """Load a local video into a torch tensor (T, C, H, W) on CPU."""
+    path = Path(path)
     ele: dict[str, Any] = {"video": str(path)}
     if fps is not None:
         ele["fps"] = float(fps)
@@ -319,9 +324,22 @@ def load_video_path(
     backend = qwen_vision.get_video_reader_backend()
     try:
         video, sample_fps = qwen_vision.VIDEO_READER_BACKENDS[backend](ele)
-    except Exception:
+    except Exception as backend_exc:
+        if backend == "torchvision":
+            raise VideoDecodeError(
+                f"Failed to decode video path={path}; torchvision failed with "
+                f"{type(backend_exc).__name__}: {backend_exc}"
+            ) from backend_exc
         logger.warning("Video reader %s failed, falling back to torchvision", backend)
-        video, sample_fps = qwen_vision.VIDEO_READER_BACKENDS["torchvision"](ele)
+        try:
+            video, sample_fps = qwen_vision.VIDEO_READER_BACKENDS["torchvision"](ele)
+        except Exception as fallback_exc:
+            raise VideoDecodeError(
+                f"Failed to decode video path={path}; {backend} failed with "
+                f"{type(backend_exc).__name__}: {backend_exc}; "
+                f"torchvision failed with {type(fallback_exc).__name__}: "
+                f"{fallback_exc}"
+            ) from fallback_exc
     nframes, _, height, width = video.shape
     min_pixels = ele.get("min_pixels", qwen_vision.VIDEO_MIN_PIXELS)
     total_pixels = ele.get("total_pixels", qwen_vision.VIDEO_TOTAL_PIXELS)
