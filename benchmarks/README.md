@@ -104,7 +104,7 @@ python -m benchmarks.eval.benchmark_omni_mmmu \
 python -m benchmarks.eval.benchmark_omni_videomme \
     --model qwen3-omni --port 8000 --max-samples 50
 
-# 7. Qwen3-Omni — Video-AMME (video + audio question understanding)
+# 7a. Qwen3-Omni — Video-AMME (video + audio question understanding)
 python -m benchmarks.eval.benchmark_omni_video_amme \
     --model qwen3-omni --port 8000 \
     --repo-id Ratish21/Video_AMME_ci \
