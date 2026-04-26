@@ -66,6 +66,45 @@ Speed (speed)
 | Model      | Config                             | latency_mean_s | latency_p95_s | throughput_qps | tok_per_s_mean | tok_per_s_agg | Source                                                |
 | ---------- | ---------------------------------- | -------------- | ------------- | -------------- | -------------- | ------------- | ----------------------------------------------------- |
 | Qwen3-Omni | thinker-only, encoder-reserve=0.40 | 42.53          | 67.62         | 0.094          | 2.70           | 2.60          | PR #327 [H200, first-100 prefix, c=4, max_tokens=256] |
+
+Full-set command
+
+    python -m sglang_omni.cli.cli serve \
+        --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct \
+        --port 30000 \
+        --model-name qwen3-omni \
+        --thinker-max-seq-len 32768 \
+        --text-only \
+        --encoder-mem-reserve 0.20
+
+    python -m benchmarks.eval.benchmark_omni_videomme \
+        --model qwen3-omni \
+        --port 30000 \
+        --max-concurrency 4 \
+        --max-tokens 256 \
+        --temperature 0.0 \
+        --video-fps 2 \
+        --video-max-frames 128 \
+        --video-max-pixels 401408 \
+        --output-dir /tmp/videomme-full
+
+H200 Reference Results
+
+Benchmark: Video-MME | Dataset: zhaochenyang20/Video_MME test split (2520 questions full)
+Hardware:  1 x H200
+Last verified: 2026-04-26
+
+Accuracy (full set)
+
+| Model      | Config                       | accuracy | correct   | failed | mc_fallback | Source                                            |
+| ---------- | ---------------------------- | -------- | --------- | ------ | ----------- | ------------------------------------------------- |
+| Qwen3-Omni | thinker-only, full-set, c=4 | 64.52%   | 1626/2520 | 24     | 67          | main 0d1a46d18369cb24185340ff7e82c1064c771fe6 [H200, c=4, max_tokens=256] |
+
+Speed (full set)
+
+| Model      | Config                       | completed | failed | latency_mean_s | latency_median_s | latency_p95_s | latency_p99_s | tok_per_s_mean | tok_per_s_agg | gen_tokens_mean | gen_tokens_total | prompt_tokens_mean | prompt_tokens_total | throughput_qps | Source                                            |
+| ---------- | ---------------------------- | --------- | ------ | -------------- | ---------------- | ------------- | ------------- | -------------- | ------------- | --------------- | ---------------- | ------------------ | ------------------- | -------------- | ------------------------------------------------- |
+| Qwen3-Omni | thinker-only, full-set, c=4 | 2496      | 24     | 30.251         | 28.896           | 48.294        | 58.313        | 3.9            | 3.8           | 116             | 289152           | 13769              | 34366523            | 0.132          | main 0d1a46d18369cb24185340ff7e82c1064c771fe6 [H200, c=4, max_tokens=256] |
 """
 
 
