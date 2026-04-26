@@ -120,6 +120,7 @@ def _build_args(port: int, output_dir: str) -> argparse.Namespace:
         prompt=MMSU_TTS_PROMPT,
         max_tokens=MAX_TOKENS,
         temperature=0.0,
+        warmup=0,
         max_concurrency=CONCURRENCY,
         request_rate=float("inf"),
         save_audio=True,
