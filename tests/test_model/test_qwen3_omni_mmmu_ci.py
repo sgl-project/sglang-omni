@@ -31,7 +31,7 @@ from tests.utils import (
 MODEL_PATH = "Qwen/Qwen3-Omni-30B-A3B-Instruct"
 
 CONCURRENCY = 8
-STARTUP_TIMEOUT = 900
+STARTUP_TIMEOUT = 300
 
 MMMU_MIN_ACCURACY = 0.60
 

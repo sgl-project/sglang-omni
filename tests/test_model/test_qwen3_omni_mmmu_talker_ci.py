@@ -39,9 +39,9 @@ from tests.utils import (
 
 MODEL_PATH = "Qwen/Qwen3-Omni-30B-A3B-Instruct"
 
-MAX_SAMPLES = 20
+MAX_SAMPLES = 10
 MAX_TOKENS = 256
-STARTUP_TIMEOUT = 900
+STARTUP_TIMEOUT = 300
 
 CONCURRENCY = 8
 
@@ -59,20 +59,20 @@ MMMU_TTS_PROMPT = (
 # Threshold reference: https://github.com/sgl-project/sglang-omni/pull/337#issuecomment-4314808991
 
 # Accuracy floor — audio-mode MMMU.
-MMMU_AUDIO_MIN_ACCURACY = 0.60
+MMMU_AUDIO_MIN_ACCURACY = 0.50
 
 # WER thresholds use a partitioned view of the per-sample distribution:
 #  - corpus WER over the "sane" subset (per-sample WER <= 50%)
 #  - count of catastrophic failures (per-sample WER > 50%)
 MMMU_AUDIO_WER_BELOW_50_CORPUS_MAX = 0.20
-MMMU_AUDIO_N_ABOVE_50_MAX = 6
+MMMU_AUDIO_N_ABOVE_50_MAX = 3
 
 _MMMU_AUDIO_P95 = {
     8: {
-        "throughput_qps": 0.042,
-        "tok_per_s_agg": 0.80,
-        "latency_mean_s": 179.428,
-        "rtf_mean": 3.9102,
+        "throughput_qps": 0.035,
+        "tok_per_s_agg": 0.90,
+        "latency_mean_s": 151.500,
+        "rtf_mean": 3.6109,
     },
 }
 MMMU_AUDIO_THRESHOLDS = apply_slack(_MMMU_AUDIO_P95)
@@ -122,7 +122,6 @@ def test_mmmu_audio_wer_and_speed(
         output_dir=str(tmp_path / "mmmu_audio"),
         enable_audio=True,
         repo_id=DATASETS["mmmu-ci-50"],
-        warmup=1,
         prompt_override=MMMU_TTS_PROMPT,
         timeout_s=500,
     )

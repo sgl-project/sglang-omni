@@ -36,7 +36,7 @@ from tests.utils import (
 MODEL_PATH = "Qwen/Qwen3-Omni-30B-A3B-Instruct"
 
 CONCURRENCY = 16
-STARTUP_TIMEOUT = 900
+STARTUP_TIMEOUT = 300
 
 # threshold reference: https://github.com/sgl-project/sglang-omni/pull/337#issuecomment-4321084941
 VIDEOMME_MIN_ACCURACY = 0.56

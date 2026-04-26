@@ -42,7 +42,7 @@ CONCURRENCY = 8
 MAX_SAMPLES = 50
 DATASET_CACHE_ENV = "SGLANG_SEEDTTS50_DIR"
 
-STARTUP_TIMEOUT = 900
+STARTUP_TIMEOUT = 300
 WER_TIMEOUT = 600
 
 # Threshold reference: https://github.com/sgl-project/sglang-omni/pull/337#issuecomment-4321089804

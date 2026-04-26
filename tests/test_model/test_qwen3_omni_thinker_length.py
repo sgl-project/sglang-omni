@@ -21,7 +21,7 @@ from tests.utils import disable_proxy, start_server_from_cmd, stop_server
 MODEL_PATH = "Qwen/Qwen3-Omni-30B-A3B-Instruct"
 MODEL_NAME = "qwen3-omni"
 THINKER_MAX_SEQ_LEN = 128
-STARTUP_TIMEOUT = 900
+STARTUP_TIMEOUT = 300
 REQUEST_TIMEOUT = 120
 
 

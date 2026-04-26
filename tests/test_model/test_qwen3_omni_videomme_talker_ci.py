@@ -52,7 +52,7 @@ MODEL_PATH = "Qwen/Qwen3-Omni-30B-A3B-Instruct"
 CONCURRENCY = 8
 MAX_SAMPLES = 10
 MAX_TOKENS = 256
-STARTUP_TIMEOUT = 900
+STARTUP_TIMEOUT = 300
 SHORT_ANSWER_PROMPT = (
     "For the audio response, answer briefly in one sentence and end with "
     "'Answer: $LETTER'. Do not include step-by-step reasoning."
