@@ -20,6 +20,32 @@ Usage:
         --repo-id Ratish21/Video_AMME_ci \
         --max-samples 50 --max-concurrency 8 \
         --video-fps 2 --video-max-frames 128 --video-max-pixels 401408
+
+H200 Reference Results
+
+Benchmark: Video-AMME | Dataset: Ratish21/Video_AMME_ci test split (50 questions)
+Hardware:  1 x H200
+Last verified: 2026-04-26
+
+Accuracy
+
+| Model      | Config                     | accuracy | correct | failed | mc_fallback | Source                                                              |
+| ---------- | -------------------------- | -------- | ------- | ------ | ----------- | ------------------------------------------------------------------- |
+| Qwen3-Omni | thinker-only, full-set, c=8 | 66.00%   | 33/50   | 0      | 0           | benchmark-video-amme 8fb2dcd65ed8a896a50c5ab8ab2cf10c08c787ff [H200, c=8, max_tokens=256] |
+| Qwen3-Omni | thinker-talker, c=8        | 50.00%   | 5/10    | 0      | 0           | benchmark-video-amme 8fb2dcd65ed8a896a50c5ab8ab2cf10c08c787ff [H200, c=8, max_tokens=256] |
+
+Speed
+
+| Model      | Config                     | completed | failed | latency_mean_s | latency_median_s | latency_p95_s | latency_p99_s | tok_per_s_mean | tok_per_s_agg | gen_tokens_mean | gen_tokens_total | prompt_tokens_mean | prompt_tokens_total | throughput_qps | Source                                                              |
+| ---------- | -------------------------- | --------- | ------ | -------------- | ---------------- | ------------- | ------------- | -------------- | ------------- | --------------- | ---------------- | ------------------ | ------------------- | -------------- | ------------------------------------------------------------------- |
+| Qwen3-Omni | thinker-only, full-set, c=8 | 50        | 0      | 54.545         | 48.362           | 95.787        | 108.239       | 0.9            | 0.8           | 46              | 2278             | 14336              | 716818              | 0.145          | benchmark-video-amme 8fb2dcd65ed8a896a50c5ab8ab2cf10c08c787ff [H200, c=8, max_tokens=256] |
+| Qwen3-Omni | thinker-talker, c=8        | 10        | 0      | 94.525         | 100.172          | 136.172       | 137.596       | 0.6            | 0.6           | 53              | 526              | 14434              | 144340              | 0.072          | benchmark-video-amme 8fb2dcd65ed8a896a50c5ab8ab2cf10c08c787ff [H200, c=8, max_tokens=256] |
+
+Talker WER
+
+| Model      | Config              | evaluated | skipped | wer_corpus | wer_per_sample_mean | wer_per_sample_p95 | wer_per_sample_max | n_above_50_pct_wer | rtf_mean | audio_duration_mean_s | Source                                                              |
+| ---------- | ------------------- | --------- | ------- | ---------- | ------------------- | ------------------ | ------------------ | ------------------ | -------- | --------------------- | ------------------------------------------------------------------- |
+| Qwen3-Omni | thinker-talker, c=8 | 10        | 0       | 0.70%      | 0.90%               | 3.75%              | 4.00%              | 0                  | 6.3183   | 15.598                | benchmark-video-amme 8fb2dcd65ed8a896a50c5ab8ab2cf10c08c787ff [H200, c=8, max_tokens=256] |
 """
 
 from __future__ import annotations
