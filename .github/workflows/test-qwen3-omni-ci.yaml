@@ -19,7 +19,9 @@ permissions:
 #                              ├─► stage-5-mmsu
 #                              ├─► stage-6-mmsu-talker
 #                              ├─► stage-7-videomme
-#                              └─► stage-8-videomme-talker
+#                              ├─► stage-8-videomme-talker
+#                              ├─► stage-9-videoamme
+#                              └─► stage-10-videoamme-talker
 
 jobs:
   docs:
@@ -342,3 +344,73 @@ jobs:
             */videomme_audio/videomme_results.json
           artifact-upload-name: qwen3-omni-videomme-talker-results
           artifact-upload-path: /tmp/**/videomme_audio/videomme_results.json
+
+  stage-9-videoamme:
+    name: stage 9 - Video-AMME accuracy + speed
+    needs: [docs, stage-1-thinker]
+    runs-on: [self-hosted]
+    timeout-minutes: 30
+    container:
+      image: frankleeeee/sglang-omni:dev
+      options: --gpus all --rm -v /dev/shm:/dev/shm
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - uses: ./.github/actions/omni-setup
+        with:
+          venv-name: omni-qwen3
+
+      - name: Run Video-AMME CI (accuracy + speed)
+        shell: bash
+        run: |
+          source omni-qwen3/bin/activate
+          export PYTHONPATH=$PWD
+          pytest tests/test_model/test_qwen3_omni_videoamme_ci.py -v -s -x
+        env:
+          HF_ENDPOINT: https://hf-mirror.com
+
+      - name: Post-stage cleanup
+        if: always()
+        uses: ./.github/actions/omni-post-stage
+        with:
+          stage-label: Video-AMME (accuracy + speed)
+          artifact-path-globs: |
+            */videoamme/videoamme_results.json
+          artifact-upload-name: qwen3-omni-videoamme-results
+          artifact-upload-path: /tmp/**/videoamme/videoamme_results.json
+
+  stage-10-videoamme-talker:
+    name: stage 10 - Video-AMME Talker
+    needs: [docs, stage-1-thinker]
+    runs-on: [self-hosted]
+    timeout-minutes: 30
+    container:
+      image: frankleeeee/sglang-omni:dev
+      options: --gpus all --rm -v /dev/shm:/dev/shm
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - uses: ./.github/actions/omni-setup
+        with:
+          venv-name: omni-qwen3
+
+      - name: Run Video-AMME Talker CI (WER + speed)
+        shell: bash
+        run: |
+          source omni-qwen3/bin/activate
+          export PYTHONPATH=$PWD
+          pytest tests/test_model/test_qwen3_omni_videoamme_talker_ci.py -v -s -x
+        env:
+          HF_ENDPOINT: https://hf-mirror.com
+
+      - name: Post-stage cleanup
+        if: always()
+        uses: ./.github/actions/omni-post-stage
+        with:
+          stage-label: Video-AMME Talker (WER + speed)
+          artifact-path-globs: |
+            */videoamme_audio/videoamme_results.json
+          artifact-upload-name: qwen3-omni-videoamme-talker-results
+          artifact-upload-path: /tmp/**/videoamme_audio/videoamme_results.json

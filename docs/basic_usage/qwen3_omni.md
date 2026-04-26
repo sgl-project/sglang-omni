@@ -113,6 +113,10 @@ print(result["choices"][0]["message"]["content"])
 
 Send a video with a spoken audio question. The model watches the video, hears the question, and responds with text.
 
+The Video-AMME CI benchmark uses this same modality combination: video input
+plus a spoken question/options WAV, with only routing and answer-format
+instructions in the text message.
+
 **cURL**
 
 ```bash
