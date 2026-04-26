@@ -122,6 +122,7 @@ class VideoMMEEvalConfig:
     max_concurrency: int = 1
     warmup: int = 0
     request_rate: float = float("inf")
+    timeout_s: int = 300
     disable_tqdm: bool = False
     repo_id: str | None = None
     enable_audio: bool = False
@@ -172,6 +173,7 @@ async def run_videomme_eval(
             request_rate=config.request_rate,
             warmup=config.warmup,
             disable_tqdm=config.disable_tqdm,
+            timeout_s=config.timeout_s,
         )
     )
     request_results = await runner.run(samples, send_fn)

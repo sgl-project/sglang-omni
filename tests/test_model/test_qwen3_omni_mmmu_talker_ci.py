@@ -56,19 +56,16 @@ MMMU_TTS_PROMPT = (
     "Do not exceed 120 words in total."
 )
 
-# TODO (Yifei): calibrate with /tune-ci-thresholds after the new prompt lands.
+# Threshold reference: https://github.com/sgl-project/sglang-omni/pull/337#issuecomment-4314808991
 
 # Accuracy floor — audio-mode MMMU.
-MMMU_AUDIO_MIN_ACCURACY = 0.60
+MMMU_AUDIO_MIN_ACCURACY = 0.65
 
 # WER thresholds use a partitioned view of the per-sample distribution:
 #  - corpus WER over the "sane" subset (per-sample WER <= 50%)
 #  - count of catastrophic failures (per-sample WER > 50%)
 MMMU_AUDIO_WER_BELOW_50_CORPUS_MAX = 0.18
 MMMU_AUDIO_N_ABOVE_50_MAX = 7
-
-# Note (Yifei, Chenyang): Speed thresholds reference
-# https://github.com/sgl-project/sglang-omni/pull/265#issuecomment-4228251028
 
 _MMMU_AUDIO_P95 = {
     8: {

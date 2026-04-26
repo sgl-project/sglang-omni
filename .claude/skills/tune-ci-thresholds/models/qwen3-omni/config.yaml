@@ -10,6 +10,7 @@ hf_datasets:
   - "zhaochenyang20/mmsu-ci-2000"
   - "zhaochenyang20/mmmu-ci-50"
   - "xuesongye/seed-tts-eval-50"
+  - "zhaochenyang20/Video_MME_ci"
 default_venv_python: "/github/home/omni-qwen3/bin/python"
 # Env vars that tune.py auto-sets at startup (matches CI behavior).
 # Overrides anything already in os.environ so the user never has to
@@ -23,9 +24,11 @@ auto_env:
 gpus_per_test:
   test_qwen3_omni_mmmu_ci.py: 1
   test_qwen3_omni_mmsu_ci.py: 1
+  test_qwen3_omni_videomme_ci.py: 1
   test_qwen3_omni_tts_ci.py: 2
   test_qwen3_omni_mmmu_talker_ci.py: 2
   test_qwen3_omni_mmsu_talker_ci.py: 2
+  test_qwen3_omni_videomme_talker_ci.py: 2
   test_docs_qwen3_omni.py: 2
 test_globs:
   - "tests/test_model/test_qwen3_omni_*_ci.py"
@@ -95,6 +98,29 @@ metric_sources:
       tok_per_s_agg: "speed_metrics.tok_per_s_agg"
       latency_mean_s: "speed_metrics.latency_mean_s"
       rtf_mean: "speed_metrics.rtf_mean"
+  test_qwen3_omni_videomme_ci.py:
+    json_file: "test_videomme_accuracy_and_speed0/videomme/videomme_results.json"
+    sample_counts:
+      total: "summary.total_samples"
+      ok: "speed.completed_requests"
+    paths:
+      accuracy: "summary.accuracy"
+      throughput_qps: "speed.throughput_qps"
+      tok_per_s_agg: "speed.tok_per_s_agg"
+      latency_mean_s: "speed.latency_mean_s"
+  test_qwen3_omni_videomme_talker_ci.py:
+    json_file: "test_videomme_tts_accuracy_wer_and_speed0/videomme_audio/videomme_results.json"
+    sample_counts:
+      total: "summary.total_samples"
+      ok: "speed.completed_requests"
+    paths:
+      accuracy: "summary.accuracy"
+      corpus_wer: "wer.summary.wer_corpus"
+      per_sample_wer_max: "wer.summary.wer_per_sample_max"
+      throughput_qps: "speed.throughput_qps"
+      tok_per_s_agg: "speed.tok_per_s_agg"
+      latency_mean_s: "speed.latency_mean_s"
+      rtf_mean: "speed.rtf_mean"
   test_qwen3_omni_tts_ci.py:
     sample_counts:
       total: "vc_nonstream0/wer_results.json::summary.total_samples"

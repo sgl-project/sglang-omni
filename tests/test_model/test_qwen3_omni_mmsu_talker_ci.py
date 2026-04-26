@@ -57,10 +57,10 @@ MMSU_TTS_PROMPT = (
     "Do not exceed 120 words in total."
 )
 
-# TODO (Yifei): calibrate with /tune-ci-thresholds after the new prompt lands.
+# Threshold reference: https://github.com/sgl-project/sglang-omni/pull/337#issuecomment-4314808991
 
 # Accuracy floor — audio-mode MMSU.
-MMSU_AUDIO_MIN_ACCURACY = 0.50
+MMSU_AUDIO_MIN_ACCURACY = 0.55
 
 # WER thresholds use a partitioned view of the per-sample distribution:
 #  - corpus WER over the "sane" subset (per-sample WER <= 50%)

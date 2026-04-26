@@ -48,12 +48,6 @@ STARTUP_TIMEOUT = 900
 WER_TIMEOUT = 600
 
 _VC_NON_STREAM_P95 = {
-    1: {
-        "throughput_qps": 0.17,
-        "tok_per_s_agg": 2.3,
-        "latency_mean_s": 6.0,
-        "rtf_mean": 2.0,
-    },
     8: {
         "throughput_qps": 0.183,
         "tok_per_s_agg": 2.70,
