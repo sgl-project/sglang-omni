@@ -33,7 +33,7 @@ from tests.utils import (
 MODEL_PATH = "Qwen/Qwen3-Omni-30B-A3B-Instruct"
 
 CONCURRENCY = 8
-STARTUP_TIMEOUT = 900
+STARTUP_TIMEOUT = 300
 
 MMSU_MIN_ACCURACY = 0.69
 
@@ -81,7 +81,7 @@ def _build_args(port: int, output_dir: str) -> argparse.Namespace:
         prompt=None,
         max_tokens=32,
         temperature=0.0,
-        warmup=1,
+        warmup=0,
         max_concurrency=CONCURRENCY,
         request_rate=float("inf"),
         timeout_s=300,
