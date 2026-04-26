@@ -59,20 +59,20 @@ MMMU_TTS_PROMPT = (
 # Threshold reference: https://github.com/sgl-project/sglang-omni/pull/337#issuecomment-4314808991
 
 # Accuracy floor — audio-mode MMMU.
-MMMU_AUDIO_MIN_ACCURACY = 0.65
+MMMU_AUDIO_MIN_ACCURACY = 0.60
 
 # WER thresholds use a partitioned view of the per-sample distribution:
 #  - corpus WER over the "sane" subset (per-sample WER <= 50%)
 #  - count of catastrophic failures (per-sample WER > 50%)
-MMMU_AUDIO_WER_BELOW_50_CORPUS_MAX = 0.18
+MMMU_AUDIO_WER_BELOW_50_CORPUS_MAX = 0.20
 MMMU_AUDIO_N_ABOVE_50_MAX = 6
 
 _MMMU_AUDIO_P95 = {
     8: {
-        "throughput_qps": 0.039,
+        "throughput_qps": 0.042,
         "tok_per_s_agg": 0.80,
-        "latency_mean_s": 179.43,
-        "rtf_mean": 3.8534,
+        "latency_mean_s": 179.428,
+        "rtf_mean": 3.9102,
     },
 }
 MMMU_AUDIO_THRESHOLDS = apply_slack(_MMMU_AUDIO_P95)

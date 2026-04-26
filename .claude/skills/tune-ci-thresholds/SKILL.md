@@ -1,6 +1,6 @@
 ---
 name: tune-ci-thresholds
-description: Run CI tests N times per stage on the H20 CI-reproduction host and produce a per-metric worst-of-N observation report. Use when recalibrating CI thresholds after an engine update. Currently supports qwen3-omni; extensible via models/<name>/config.yaml.
+description: Run CI tests N times per stage on the H20 CI-reproduction host, produce a per-metric worst-of-N observation report, and (on user confirmation) write the worst-of-N values back into the test files as new baselines. Use when recalibrating CI thresholds after an engine update. Currently supports qwen3-omni; extensible via models/<name>/config.yaml.
 ---
 
 # tune-ci-thresholds
@@ -14,9 +14,15 @@ comparable and must not drive threshold changes. If you just want to
 run the tests locally, use pytest directly — this skill is not for
 that.
 
-The skill only observes. It does NOT propose thresholds, generate
-patches, edit test files, run `apply_slack`, or commit/push anything.
-The user eyeballs the report and decides new thresholds manually.
+The skill is observation-first: it runs tests N times and produces a
+worst-of-N report. After the report is shown, it offers a one-shot
+**apply step** that writes the worst-of-N values directly into the
+test files as the new P95 baselines and accuracy / WER thresholds —
+**only** if the user explicitly confirms. The skill still does NOT
+re-run `apply_slack` separately, generate patch files, or
+commit / push anything; if the user rejects the apply prompt, the
+test files stay untouched and the user picks values manually from
+the report.
 
 ## Models
 Each supported model has a config under `models/<name>/`:
@@ -145,15 +151,61 @@ yourself and retry.
       `— <N>× <gpu_model>, docs smoke, <N> runs`.
    e. If a context var is not found in the file, write `?`. Never
       guess or copy from another stage.
-8. Tell the user the report path and stop.
+8. Tell the user the report path.
+9. **Apply prompt — strictly after the entire run is done.** This
+   prompt is the LAST thing the skill does, and must only fire once
+   ALL of the following have completed for the whole `--stages` set:
+   `tune.py run` has exited with all repeats finished, `report.md`
+   has been written, every `{{CONTEXT:...}}` placeholder in step 7
+   has been resolved, and step 8 has shown the user the report
+   path. Never ask between stages, between repeats, on partial
+   failure, or while any pytest subprocess is still alive — the
+   user may be running unattended for an hour+ and must not be
+   interrupted mid-run. If the run was aborted (Ctrl+C, precheck
+   failure, exit code from `tune.py run`, or any stage with no
+   completed repeats), skip step 9 entirely.
+
+   Use AskUserQuestion to ask exactly once: "Apply the worst-of-N
+   values from this run into the test files as the new baselines?"
+   with options `yes` / `no`. If `no`, stop without touching any
+   file.
+
+   If `yes`, for every stage in `models/<M>/stages.yaml` whose
+   `metrics` is non-empty (skip the docs stage):
+   a. For each metric in the stage:
+      - Read each run's value at `metric.json_file` /
+        `metric.json_path`. The N JSON files live at
+        `<run-dir>/_pytest/<test_stem>/basetemp_run<k>/<json_file>`
+        for `k = 1..N`.
+      - Compute the worst across runs per `metric.worst`
+        (`min` ⇒ take the minimum, `max` ⇒ take the maximum).
+        Keep the **raw** numeric value; do NOT multiply by
+        `display.scale` (the test file stores raw, not display
+        units).
+      - Round to `metric.display.digits` significant digits past
+        the decimal.
+   b. Edit `metric.test` in place using the Edit tool:
+      - **Bare `source`** (no `[...]`), e.g. `MMMU_MIN_ACCURACY`:
+        replace the RHS literal of `MMMU_MIN_ACCURACY = <old>`.
+      - **Nested `source`**, e.g. `_MMMU_P95['throughput_qps']`:
+        read `CONCURRENCY = <C>` from the same test file, then
+        replace the entry under `_MMMU_P95[<C>]["throughput_qps"]`.
+        If the file has no `CONCURRENCY` symbol, fall back to the
+        single concurrency key present in the dict; if multiple
+        keys exist and `CONCURRENCY` is missing, abort the apply
+        step for that metric and warn the user.
+   c. After all edits, list every changed `<file>:<symbol> = <new>`
+      tuple in one message and stop. Do NOT run pytest, commit,
+      or push.
 
 ## What I do not do
 - Set up container / venv / caches
 - Check out branches, install packages
-- Propose thresholds, run `apply_slack`, generate patches
-- Edit test files, commit, push
+- Run `apply_slack`, generate patch files, commit, push
+- Edit test files outside of the explicit apply prompt (step 9)
 - Ask mid-run for confirmation. (I may ask once up front for missing
-  model/stages/repeats — see step 2. After that, no further questions.)
+  model/stages/repeats — step 2 — and once at the end for the apply
+  prompt — step 9. No other questions.)
 
 ## Files in this skill
 ```

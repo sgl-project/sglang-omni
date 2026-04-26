@@ -161,8 +161,8 @@ def assert_per_request_fields(
 
 def apply_slack(
     p95: dict[int, dict[str, float]],
-    slack_higher: float = 0.75,
-    slack_lower: float = 1.25,
+    slack_higher: float = 0.90,
+    slack_lower: float = 1.10,
 ) -> dict[int, dict[str, float]]:
     """Derive CI thresholds from P95 references with uniform slack.
 
