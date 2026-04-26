@@ -932,6 +932,20 @@ def _fmt(v, d): return "N/A" if v is None else f"{v * d['scale']:.{d['digits']}f
 def _fmt_count(v): return "N/A" if v is None else str(v)
 
 
+def _fmt_threshold(v, d):
+    """Render a worst-of-N value for the `Threshold:` line.
+
+    Trims trailing zeros after the decimal, appends `%` when the metric
+    is displayed as a percentage (`scale == 100`).
+    """
+    if v is None:
+        return "N/A"
+    s = f"{v * d['scale']:.{d['digits']}f}"
+    if "." in s:
+        s = s.rstrip("0").rstrip(".")
+    return s + ("%" if d["scale"] == 100 else "")
+
+
 def report(run_dir):
     plan = json.loads((run_dir / "plan.json").read_text())
     pre = json.loads((run_dir / "precheck.json").read_text()) \
@@ -1002,6 +1016,20 @@ def report(run_dir):
             v = min(vals[k]) if worst[k] == "min" else max(vals[k])
             wc.append(f"**{_fmt(v, disp[k])}**")
         L += [f"| **Worst-of-{N}** | " + " | ".join(wc) + " |", ""]
+        # Render `Threshold:` line for accuracy / wer stages so the report
+        # documents the proposed bound per metric. Speed thresholds go
+        # through apply_slack downstream and are not surfaced here.
+        if s.get("group") in ("accuracy", "wer"):
+            parts = []
+            for k in keys:
+                if k in nulls or not vals[k]:
+                    continue
+                v = min(vals[k]) if worst[k] == "min" else max(vals[k])
+                op = ">=" if worst[k] == "min" else "<="
+                label = disp[k]["label"].replace(" (%)", "")
+                parts.append(f"{label} {op} {_fmt_threshold(v, disp[k])}")
+            if parts:
+                L += [f"Threshold: {', '.join(parts)}", ""]
         for k in nulls:
             L.append(f"> ⚠ {disp[k]['label']}: no `json_path` in stages.yaml "
                      "(config.yaml `metric_sources` missing this metric)")
