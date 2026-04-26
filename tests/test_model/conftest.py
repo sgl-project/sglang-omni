@@ -26,7 +26,7 @@ SELECTED_S2PRO_TTS_CONCURRENCIES = pytest.StashKey[tuple[int, ...]]()
 S2PRO_STAGE_OPTION = "--s2pro-stage"
 SELECTED_S2PRO_CI_STAGE = pytest.StashKey[str]()
 QWEN3_OMNI_MODEL_PATH = "Qwen/Qwen3-Omni-30B-A3B-Instruct"
-QWEN3_OMNI_STARTUP_TIMEOUT = 900
+QWEN3_OMNI_STARTUP_TIMEOUT = 300
 
 
 @pytest.fixture(scope="module")

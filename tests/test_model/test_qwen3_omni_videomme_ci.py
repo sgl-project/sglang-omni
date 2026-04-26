@@ -22,7 +22,7 @@ from benchmarks.dataset.prepare import DATASETS
 from benchmarks.eval.benchmark_omni_videomme import VideoEvalConfig, run_video_eval
 from benchmarks.tasks.tts import print_speed_summary
 from benchmarks.tasks.video_understanding import print_videomme_accuracy_summary
-from tests.utils import ServerHandle, apply_slack
+from tests.utils import ServerHandle, apply_slack, assert_speed_thresholds
 
 CONCURRENCY = 16
 
@@ -73,13 +73,12 @@ def test_videomme_accuracy_and_speed(
         CONCURRENCY,
         title="Video-MME Speed",
     )
-    # TODO: Recalibrate accuracy and speed thresholds on H20 before enforcing.
-    # assert summary["accuracy"] >= VIDEOMME_MIN_ACCURACY, (
-    #     f"Video-MME accuracy {summary['accuracy']:.4f} "
-    #     f"({summary['accuracy'] * 100:.1f}%) < "
-    #     f"threshold {VIDEOMME_MIN_ACCURACY} ({VIDEOMME_MIN_ACCURACY * 100:.0f}%)"
-    # )
-    # assert_speed_thresholds(results["speed"], VIDEOMME_THRESHOLDS, CONCURRENCY)
+    assert summary["accuracy"] >= VIDEOMME_MIN_ACCURACY, (
+        f"Video-MME accuracy {summary['accuracy']:.4f} "
+        f"({summary['accuracy'] * 100:.1f}%) < "
+        f"threshold {VIDEOMME_MIN_ACCURACY} ({VIDEOMME_MIN_ACCURACY * 100:.0f}%)"
+    )
+    assert_speed_thresholds(results["speed"], VIDEOMME_THRESHOLDS, CONCURRENCY)
 
 
 if __name__ == "__main__":

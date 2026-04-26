@@ -33,7 +33,12 @@ from benchmarks.dataset.videomme import VideoMMESample, load_videomme_samples
 from benchmarks.eval.benchmark_omni_videomme import VideoEvalConfig, run_video_eval
 from benchmarks.tasks.tts import print_speed_summary, print_wer_summary
 from benchmarks.tasks.video_understanding import print_videomme_accuracy_summary
-from tests.utils import ServerHandle, apply_slack
+from tests.utils import (
+    ServerHandle,
+    apply_slack,
+    assert_speed_thresholds,
+    assert_wer_partitioned,
+)
 
 CONCURRENCY = 8
 MAX_SAMPLES = 10
@@ -45,8 +50,8 @@ SHORT_ANSWER_PROMPT = (
 
 # Threshold reference: https://github.com/sgl-project/sglang-omni/pull/337#issuecomment-4321051462
 VIDEOMME_TALKER_THINKER_TEXT_MIN_ACCURACY = 0.5
-VIDEOMME_TALKER_TEXT_AUDIO_WER_MAX_CORPUS = 0.013
-VIDEOMME_TALKER_TEXT_AUDIO_WER_MAX_PER_SAMPLE = 0.16
+VIDEOMME_TALKER_WER_BELOW_50_CORPUS_MAX = 0.015
+VIDEOMME_TALKER_N_ABOVE_50_MAX = 0
 
 _VIDEOMME_TALKER_AUDIO_P95 = {
     8: {
@@ -110,21 +115,20 @@ def test_videomme_tts_accuracy_wer_and_speed(
         title="Video-MME Talker Speed",
     )
     print_wer_summary(results["wer"]["summary"], config.model)
-    # TODO: Recalibrate accuracy, WER, and speed thresholds on H20 before enforcing.
-    # assert summary["accuracy"] >= VIDEOMME_TALKER_THINKER_TEXT_MIN_ACCURACY, (
-    #     f"Video-MME Talker thinker-text accuracy {summary['accuracy']:.4f} "
-    #     f"({summary['accuracy'] * 100:.1f}%) < "
-    #     f"threshold {VIDEOMME_TALKER_THINKER_TEXT_MIN_ACCURACY} "
-    #     f"({VIDEOMME_TALKER_THINKER_TEXT_MIN_ACCURACY * 100:.0f}%)"
-    # )
-    #
-    # assert "wer" in results, "Audio WER results missing from Video-MME Talker output"
-    # assert_wer_results(
-    #     results["wer"],
-    #     VIDEOMME_TALKER_TEXT_AUDIO_WER_MAX_CORPUS,
-    #     VIDEOMME_TALKER_TEXT_AUDIO_WER_MAX_PER_SAMPLE,
-    # )
-    # assert_speed_thresholds(results["speed"], VIDEOMME_TALKER_THRESHOLDS, CONCURRENCY)
+    assert summary["accuracy"] >= VIDEOMME_TALKER_THINKER_TEXT_MIN_ACCURACY, (
+        f"Video-MME Talker thinker-text accuracy {summary['accuracy']:.4f} "
+        f"({summary['accuracy'] * 100:.1f}%) < "
+        f"threshold {VIDEOMME_TALKER_THINKER_TEXT_MIN_ACCURACY} "
+        f"({VIDEOMME_TALKER_THINKER_TEXT_MIN_ACCURACY * 100:.0f}%)"
+    )
+
+    assert "wer" in results, "Audio WER results missing from Video-MME Talker output"
+    assert_wer_partitioned(
+        results["wer"],
+        max_wer_below_50_corpus=VIDEOMME_TALKER_WER_BELOW_50_CORPUS_MAX,
+        max_n_above_50=VIDEOMME_TALKER_N_ABOVE_50_MAX,
+    )
+    assert_speed_thresholds(results["speed"], VIDEOMME_TALKER_THRESHOLDS, CONCURRENCY)
 
 
 if __name__ == "__main__":

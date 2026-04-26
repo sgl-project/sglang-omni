@@ -96,6 +96,8 @@ yourself and retry.
      mmsu_talker                  tests/test_model/test_qwen3_omni_mmsu_talker_ci.py — acc + wer + speed
      videomme                     tests/test_model/test_qwen3_omni_videomme_ci.py — acc + speed
      videomme_talker              tests/test_model/test_qwen3_omni_videomme_talker_ci.py — acc + wer + speed
+     videoamme                    tests/test_model/test_qwen3_omni_videoamme_ci.py — acc + speed
+     videoamme_talker             tests/test_model/test_qwen3_omni_videoamme_talker_ci.py — acc + wer + speed
      tts                          tests/test_model/test_qwen3_omni_tts_ci.py — speed + wer
      qwen3_omni_docs              tests/docs/qwen3_omni/test_docs_qwen3_omni.py — docs smoke
    Shortcuts: @accuracy, @speed, @wer, @docs (metric-group aliases).
