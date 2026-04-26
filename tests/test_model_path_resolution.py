@@ -118,6 +118,7 @@ def _install_qwen3_stages_stubs(monkeypatch) -> None:
     _stub_module(
         monkeypatch,
         "sglang_omni.models.qwen3_omni.pipeline.engine_io",
+        DEFAULT_THINKER_MAX_SEQ_LEN=8192,
         apply_encoder_result=lambda *args, **kwargs: None,
         apply_thinker_result=lambda *args, **kwargs: None,
         build_encoder_request=lambda *args, **kwargs: None,

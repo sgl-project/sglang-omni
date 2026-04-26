@@ -30,7 +30,6 @@ METRIC_SPECS = {
     "accuracy":             dict(worst="min", label="Acc (%)",               digits=2, scale=100, group="accuracy"),
     "corpus_wer":           dict(worst="max", label="Corpus WER (%)",        digits=2, scale=100, group="wer"),
     "per_sample_wer_max":   dict(worst="max", label="Max per-sample WER (%)", digits=2, scale=100, group="wer"),
-    "per_sample_wer_p95":   dict(worst="max", label="P95 per-sample WER (%)", digits=2, scale=100, group="wer"),
     "wer_below_50_corpus":  dict(worst="max", label="Corpus WER ≤50% (%)", digits=2, scale=100, group="wer"),
     "n_above_50":           dict(worst="max", label="Samples >50% WER",      digits=0, scale=1,   group="wer"),
     "throughput_qps":       dict(worst="min", label="Throughput (req/s)",    digits=3, scale=1,   group="speed"),
@@ -52,7 +51,6 @@ def match_metric(name, nested):
     if "N_ABOVE_50_MAX" in name: return "n_above_50"
     if "WER_MAX_CORPUS" in name: return "corpus_wer"
     if "WER_MAX_PER_SAMPLE" in name: return "per_sample_wer_max"
-    if "WER_P95_PER_SAMPLE" in name: return "per_sample_wer_p95"
     return None
 
 

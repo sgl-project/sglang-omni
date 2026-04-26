@@ -45,7 +45,7 @@ stage_base_docs_override: "qwen3_omni_docs"
 # Per-test metric source JSONs. `json_file` is relative to pytest's
 # `--basetemp` dir (set fresh per run by tune.py). `paths` maps a
 # recognized metric key (accuracy / corpus_wer / per_sample_wer_max /
-# per_sample_wer_p95 / wer_below_50_corpus / n_above_50 /
+# wer_below_50_corpus / n_above_50 /
 # throughput_qps / tok_per_s_agg / latency_mean_s / rtf_mean) to the
 # dotted JSON key chain that yields a number.
 # When a metric pulls from a different JSON than `json_file`, use the
