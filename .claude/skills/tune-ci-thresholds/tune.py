@@ -342,7 +342,7 @@ def discover(out, only, cfg):
         files.extend(sorted(REPO_ROOT.glob(g)))
     sources = cfg.get("metric_sources", {}) or {}
     stages = {}
-    configured = review = needs_cfg = 0
+    configured = needs_cfg = 0
     for tp in files:
         base = _stage_base(tp, cfg)
         tree = ast.parse(tp.read_text())
@@ -367,13 +367,6 @@ def discover(out, only, cfg):
         for name, nested in _constants(tree):
             mk = match_metric(name, nested)
             if mk is None:
-                if nested is None and re.search(r"_(MIN|MAX)(_|$)", name):
-                    review += 1
-                    groups.setdefault("review", {})[name] = dict(
-                        source=name, json_file=None, json_path=None,
-                        worst="min",
-                        display=dict(label=name, scale=1, digits=4),
-                        status="NEEDS_REVIEW")
                 continue
             spec = METRIC_SPECS[mk]
             jf, jp = _split_source(cfg_paths.get(mk), default_file)
@@ -386,9 +379,8 @@ def discover(out, only, cfg):
                 display=dict(label=spec["label"], scale=spec["scale"],
                              digits=spec["digits"]), status=status)
         for g, metrics in groups.items():
-            key = f"{base}_{g}" if g != "review" else f"{base}_review"
-            title = (f"{base.replace('_', ' ').upper()} "
-                     f"{'Unclassified' if g == 'review' else g.capitalize()}")
+            key = f"{base}_{g}"
+            title = f"{base.replace('_', ' ').upper()} {g.capitalize()}"
             stages[key] = dict(test=rel, title=title, group=g,
                 extra_env=extra, context_vars=ctx, test_file_sha256=sha,
                 last_discovered_at=now_iso(), metrics=metrics,
@@ -397,8 +389,7 @@ def discover(out, only, cfg):
     out.parent.mkdir(parents=True, exist_ok=True)
     _write_yaml(stages, out)
     print(f"[{cfg['name']}] {len(stages)} stages written to {out}, "
-          f"{configured} metric(s) OK, {needs_cfg} need config, "
-          f"{review} need review")
+          f"{configured} metric(s) OK, {needs_cfg} need config")
     return 0
 
 

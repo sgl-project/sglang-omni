@@ -307,7 +307,6 @@ jobs:
             */videomme/videomme_results.json
           artifact-upload-name: qwen3-omni-videomme-results
           artifact-upload-path: /tmp/**/videomme/videomme_results.json
-          summary-only: "false"
 
   stage-8-videomme-talker:
     name: stage 8 - Video-MME Talker

@@ -99,7 +99,7 @@ metric_sources:
       latency_mean_s: "speed_metrics.latency_mean_s"
       rtf_mean: "speed_metrics.rtf_mean"
   test_qwen3_omni_videomme_ci.py:
-    json_file: "test_videomme_accuracy_and_speed0/videomme/videomme_results.json"
+    json_file: "test_videomme_accuracy_and_spe0/videomme/videomme_results.json"
     sample_counts:
       total: "summary.total_samples"
       ok: "speed.completed_requests"
@@ -109,7 +109,7 @@ metric_sources:
       tok_per_s_agg: "speed.tok_per_s_agg"
       latency_mean_s: "speed.latency_mean_s"
   test_qwen3_omni_videomme_talker_ci.py:
-    json_file: "test_videomme_tts_accuracy_wer_and_speed0/videomme_audio/videomme_results.json"
+    json_file: "test_videomme_tts_accuracy_wer0/videomme_audio/videomme_results.json"
     sample_counts:
       total: "summary.total_samples"
       ok: "speed.completed_requests"
@@ -132,3 +132,5 @@ metric_sources:
       rtf_mean: "vc_nonstream0/speed_results.json::summary.rtf_mean"
       corpus_wer: "vc_nonstream0/wer_results.json::summary.wer_corpus"
       per_sample_wer_max: "vc_nonstream0/wer_results.json::summary.wer_per_sample_max"
+      wer_below_50_corpus: "vc_nonstream0/wer_results.json::summary.wer_below_50_corpus"
+      n_above_50: "vc_nonstream0/wer_results.json::summary.n_above_50_pct_wer"

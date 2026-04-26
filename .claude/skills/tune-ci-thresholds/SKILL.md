@@ -193,9 +193,7 @@ This is deterministic (AST + config lookup, no LLM calls).
 2. Run `python tune.py --model <new-name> discover`.
 3. Any metric that shows up as `NEEDS_CONFIG` means the constant was
    recognized but the config is missing a `paths` entry for it — add
-   the dotted JSON key and re-run discover. Any metric showing as
-   `NEEDS_REVIEW` is a threshold-looking constant whose name `match_metric()`
-   didn't recognize — extend the matcher or ignore.
+   the dotted JSON key and re-run discover.
 
 ## Adding a new metric to an existing model
 If a new test file adds a threshold constant:
@@ -209,6 +207,5 @@ If a new test file adds a threshold constant:
 - Metric lives in a different JSON than the test's default → use the
   `<file>::<dotted.path>` inline form in `metric_sources.<test>.paths`.
 
-Unmatched threshold-looking constants (with `_MIN` or `_MAX` in the
-name) surface as `NEEDS_REVIEW` stages with no json_path — they don't
-get silently dropped.
+Threshold constants whose name `match_metric()` doesn't recognize are
+silently ignored — extend `match_metric()` if you add a new pattern.

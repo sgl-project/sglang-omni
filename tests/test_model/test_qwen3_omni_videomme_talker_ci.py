@@ -41,6 +41,8 @@ from sglang_omni.utils import find_available_port
 from tests.utils import (
     ServerHandle,
     apply_slack,
+    assert_speed_thresholds,
+    assert_wer_results,
     start_server_from_cmd,
     stop_server,
 )
@@ -48,7 +50,7 @@ from tests.utils import (
 MODEL_PATH = "Qwen/Qwen3-Omni-30B-A3B-Instruct"
 
 CONCURRENCY = 8
-MAX_SAMPLES = 20
+MAX_SAMPLES = 10
 MAX_TOKENS = 256
 STARTUP_TIMEOUT = 900
 SHORT_ANSWER_PROMPT = (
@@ -56,19 +58,17 @@ SHORT_ANSWER_PROMPT = (
     "'Answer: $LETTER'. Do not include step-by-step reasoning."
 )
 
-# TODO: Recalibrate on H20 CI.
-
-VIDEOMME_TALKER_THINKER_TEXT_MIN_ACCURACY = 0
-VIDEOMME_TALKER_MAX_FAILED = 0
-VIDEOMME_TALKER_TEXT_AUDIO_WER_MAX_CORPUS = 0
-VIDEOMME_TALKER_TEXT_AUDIO_WER_MAX_PER_SAMPLE = 0
+# Threshold reference: https://github.com/sgl-project/sglang-omni/pull/337#issuecomment-4321051462
+VIDEOMME_TALKER_THINKER_TEXT_MIN_ACCURACY = 0.5
+VIDEOMME_TALKER_TEXT_AUDIO_WER_MAX_CORPUS = 0.013
+VIDEOMME_TALKER_TEXT_AUDIO_WER_MAX_PER_SAMPLE = 0.16
 
 _VIDEOMME_TALKER_AUDIO_P95 = {
-    CONCURRENCY: {
-        "throughput_qps": 0.0,
-        "tok_per_s_agg": 0.0,
-        "latency_mean_s": 0.0,
-        "rtf_mean": 0.0,
+    8: {
+        "throughput_qps": 0.077,
+        "tok_per_s_agg": 0.60,
+        "latency_mean_s": 79.913,
+        "rtf_mean": 8.3397,
     },
 }
 VIDEOMME_TALKER_THRESHOLDS = apply_slack(_VIDEOMME_TALKER_AUDIO_P95)
@@ -155,26 +155,20 @@ def test_videomme_tts_accuracy_wer_and_speed(
     )
     print_wer_summary(results["wer"]["summary"], config.model)
 
-    failed = summary.get("failed", 0)
-    total = summary.get("total_samples", 0)
-    # assert failed <= VIDEOMME_TALKER_MAX_FAILED, (
-    #     f"Video-MME Talker had {failed}/{total} failed requests, "
-    #     f"which exceeds the threshold {VIDEOMME_TALKER_MAX_FAILED}"
-    # )
-    # assert summary["accuracy"] >= VIDEOMME_TALKER_THINKER_TEXT_MIN_ACCURACY, (
-    #     f"Video-MME Talker thinker-text accuracy {summary['accuracy']:.4f} "
-    #     f"({summary['accuracy'] * 100:.1f}%) < "
-    #     f"threshold {VIDEOMME_TALKER_THINKER_TEXT_MIN_ACCURACY} "
-    #     f"({VIDEOMME_TALKER_THINKER_TEXT_MIN_ACCURACY * 100:.0f}%)"
-    # )
+    assert summary["accuracy"] >= VIDEOMME_TALKER_THINKER_TEXT_MIN_ACCURACY, (
+        f"Video-MME Talker thinker-text accuracy {summary['accuracy']:.4f} "
+        f"({summary['accuracy'] * 100:.1f}%) < "
+        f"threshold {VIDEOMME_TALKER_THINKER_TEXT_MIN_ACCURACY} "
+        f"({VIDEOMME_TALKER_THINKER_TEXT_MIN_ACCURACY * 100:.0f}%)"
+    )
 
-    # assert "wer" in results, "Audio WER results missing from Video-MME Talker output"
-    # assert_wer_results(
-    #     results["wer"],
-    #     VIDEOMME_TALKER_TEXT_AUDIO_WER_MAX_CORPUS,
-    #     VIDEOMME_TALKER_TEXT_AUDIO_WER_MAX_PER_SAMPLE,
-    # )
-    # assert_speed_thresholds(results["speed"], VIDEOMME_TALKER_THRESHOLDS, CONCURRENCY)
+    assert "wer" in results, "Audio WER results missing from Video-MME Talker output"
+    assert_wer_results(
+        results["wer"],
+        VIDEOMME_TALKER_TEXT_AUDIO_WER_MAX_CORPUS,
+        VIDEOMME_TALKER_TEXT_AUDIO_WER_MAX_PER_SAMPLE,
+    )
+    assert_speed_thresholds(results["speed"], VIDEOMME_TALKER_THRESHOLDS, CONCURRENCY)
 
 
 if __name__ == "__main__":

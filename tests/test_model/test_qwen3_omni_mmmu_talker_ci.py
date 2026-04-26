@@ -65,7 +65,7 @@ MMMU_AUDIO_MIN_ACCURACY = 0.65
 #  - corpus WER over the "sane" subset (per-sample WER <= 50%)
 #  - count of catastrophic failures (per-sample WER > 50%)
 MMMU_AUDIO_WER_BELOW_50_CORPUS_MAX = 0.18
-MMMU_AUDIO_N_ABOVE_50_MAX = 7
+MMMU_AUDIO_N_ABOVE_50_MAX = 6
 
 _MMMU_AUDIO_P95 = {
     8: {
