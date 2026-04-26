@@ -139,9 +139,9 @@ async def run_video_eval(
     *,
     samples: list[VideoMMESample] | None = None,
     load_samples=load_videomme_samples,
-    task_label: str = "Video-MME",
-    output_filename: str = "videomme_results.json",
-    audio_output_dir_default: str = "results/videomme_audio",
+    task_label: str,
+    output_filename: str,
+    audio_output_dir_default: str,
     enable_audio_input: bool = False,
     fixed_prompt: str | None = None,
 ) -> dict:
@@ -224,14 +224,6 @@ async def run_video_eval(
     return results
 
 
-async def run_videomme_eval(
-    config: VideoEvalConfig,
-    *,
-    samples: list[VideoMMESample] | None = None,
-) -> dict:
-    return await run_video_eval(config, samples=samples)
-
-
 def video_eval_config_from_args(args: argparse.Namespace) -> VideoEvalConfig:
     return VideoEvalConfig(
         model=args.model,
@@ -306,7 +298,12 @@ def add_video_eval_args(parser: argparse.ArgumentParser, *, repo_help: str) -> N
 
 async def benchmark(args: argparse.Namespace) -> dict:
     config = _config_from_args(args)
-    results = await run_videomme_eval(config)
+    results = await run_video_eval(
+        config,
+        task_label="Video-MME",
+        output_filename="videomme_results.json",
+        audio_output_dir_default="results/videomme_audio",
+    )
     print_videomme_accuracy_summary(results["summary"], config.model)
     print_speed_summary(
         results["speed"],

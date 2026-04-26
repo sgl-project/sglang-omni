@@ -19,7 +19,7 @@ from pathlib import Path
 import pytest
 
 from benchmarks.dataset.prepare import DATASETS
-from benchmarks.eval.benchmark_omni_videomme import VideoEvalConfig, run_videomme_eval
+from benchmarks.eval.benchmark_omni_videomme import VideoEvalConfig, run_video_eval
 from tests.utils import ServerHandle, apply_slack, assert_speed_thresholds
 
 CONCURRENCY = 16
@@ -54,7 +54,14 @@ def test_videomme_accuracy_and_speed(
         video_max_pixels=401408,
         disable_tqdm=False,
     )
-    results = asyncio.run(run_videomme_eval(config))
+    results = asyncio.run(
+        run_video_eval(
+            config,
+            task_label="Video-MME",
+            output_filename="videomme_results.json",
+            audio_output_dir_default="results/videomme_audio",
+        )
+    )
 
     summary = results["summary"]
     assert summary["accuracy"] >= VIDEOMME_MIN_ACCURACY, (

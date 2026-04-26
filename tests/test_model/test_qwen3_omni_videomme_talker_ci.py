@@ -30,7 +30,7 @@ import pytest
 
 from benchmarks.dataset.prepare import DATASETS
 from benchmarks.dataset.videomme import VideoMMESample, load_videomme_samples
-from benchmarks.eval.benchmark_omni_videomme import VideoEvalConfig, run_videomme_eval
+from benchmarks.eval.benchmark_omni_videomme import VideoEvalConfig, run_video_eval
 from benchmarks.tasks.tts import print_speed_summary, print_wer_summary
 from benchmarks.tasks.video_understanding import print_videomme_accuracy_summary
 from tests.utils import (
@@ -97,7 +97,13 @@ def test_videomme_tts_accuracy_wer_and_speed(
         timeout_s=500,
     )
     results = asyncio.run(
-        run_videomme_eval(config, samples=_load_short_answer_samples())
+        run_video_eval(
+            config,
+            samples=_load_short_answer_samples(),
+            task_label="Video-MME",
+            output_filename="videomme_results.json",
+            audio_output_dir_default="results/videomme_audio",
+        )
     )
 
     summary = results["summary"]

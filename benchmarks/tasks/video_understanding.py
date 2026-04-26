@@ -98,7 +98,7 @@ def make_video_send_fn(
 
     async def send_fn(
         session: aiohttp.ClientSession,
-        sample: VideoMMESample,
+        sample: VideoMMESample | VideoAMMESample,
     ) -> RequestResult:
         prompt = fixed_prompt or sample.prompt
         result = RequestResult(
