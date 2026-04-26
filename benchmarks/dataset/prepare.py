@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 DATASETS: dict[str, str] = {
     "seedtts": "zhaochenyang20/seed-tts-eval",
     "seedtts-mini": "zhaochenyang20/seed-tts-eval-mini",
-    "seedtts-50": "xuesongye/seed-tts-eval-50",
+    "seedtts-50": "zhaochenyang20/seed-tts-eval-50",
     "mmmu": "MMMU/MMMU",
     "mmmu-ci-50": "zhaochenyang20/mmmu-ci-50",
     "mmsu": "ddwang2000/MMSU",
@@ -37,7 +37,7 @@ DATASETS: dict[str, str] = {
     "videomme": "zhaochenyang20/Video_MME",
     "videomme-ci-50": "zhaochenyang20/Video_MME_ci",
     "videomme-ci-25": "zhaochenyang20/Video_MME_ci_25",
-    "videoamme-ci-50": "Ratish21/Video_AMME_ci",
+    "videoamme-ci-50": "zhaochenyang20/Video_AMME_ci",
 }
 
 _CLI_LOCAL_DIRS: dict[str, str] = {

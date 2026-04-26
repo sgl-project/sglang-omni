@@ -9,9 +9,9 @@ hf_model_id: "Qwen/Qwen3-Omni-30B-A3B-Instruct"
 hf_datasets:
   - "zhaochenyang20/mmsu-ci-2000"
   - "zhaochenyang20/mmmu-ci-50"
-  - "xuesongye/seed-tts-eval-50"
+  - "zhaochenyang20/seed-tts-eval-50"
   - "zhaochenyang20/Video_MME_ci"
-  - "Ratish21/Video_AMME_ci"
+  - "zhaochenyang20/Video_AMME_ci"
 default_venv_python: "/github/home/omni-qwen3/bin/python"
 # Env vars that tune.py auto-sets at startup (matches CI behavior).
 # Overrides anything already in os.environ so the user never has to

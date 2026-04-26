@@ -14,7 +14,7 @@ from huggingface_hub import snapshot_download
 logger = logging.getLogger(__name__)
 
 DEFAULT_REPO_ID = "zhaochenyang20/Video_MME"
-DEFAULT_VIDEOAMME_REPO_ID = "Ratish21/Video_AMME_ci"
+DEFAULT_VIDEOAMME_REPO_ID = "zhaochenyang20/Video_AMME_ci"
 DEFAULT_VIDEOAMME_SOURCE_REPO_ID = "zhaochenyang20/Video_MME_ci"
 
 

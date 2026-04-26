@@ -17,13 +17,13 @@ Usage:
 
     python -m benchmarks.eval.benchmark_omni_videoamme \
         --model qwen3-omni --port 30000 \
-        --repo-id Ratish21/Video_AMME_ci \
+        --repo-id zhaochenyang20/Video_AMME_ci \
         --max-samples 50 --max-concurrency 8 \
         --video-fps 2 --video-max-frames 128 --video-max-pixels 401408
 
 H200 Reference Results
 
-Benchmark: Video-AMME | Dataset: Ratish21/Video_AMME_ci test split (50 questions)
+Benchmark: Video-AMME | Dataset: zhaochenyang20/Video_AMME_ci test split (50 questions)
 Hardware:  1 x H200
 Last verified: 2026-04-26
 
