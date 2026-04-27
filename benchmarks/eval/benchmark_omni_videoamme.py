@@ -69,11 +69,10 @@ from benchmarks.eval.benchmark_omni_videomme import (
     run_video_eval,
     video_eval_config_from_args,
 )
-from benchmarks.tasks.tts import print_speed_summary, print_wer_summary
-from benchmarks.tasks.video_understanding import (
-    VIDEOAMME_REQUEST_TEXT,
-    print_videomme_accuracy_summary,
-)
+from benchmarks.metrics.performance import print_speed_summary
+from benchmarks.metrics.video import print_videomme_accuracy_summary
+from benchmarks.metrics.wer import print_wer_summary
+from benchmarks.tasks.video_understanding import VIDEOAMME_REQUEST_TEXT
 
 logging.basicConfig(
     level=logging.INFO,

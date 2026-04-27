@@ -93,15 +93,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from benchmarks.benchmarker.runner import BenchmarkRunner, RunConfig
 from benchmarks.benchmarker.utils import wait_for_service
 from benchmarks.dataset.mmsu import MmsuSample, load_mmsu_samples
+from benchmarks.metrics.mmsu import compute_mmsu_metrics, print_mmsu_summary
 from benchmarks.metrics.performance import compute_speed_metrics
+from benchmarks.metrics.wer import print_wer_summary
 from benchmarks.tasks.audio_understanding import (
     build_mmsu_results,
-    compute_mmsu_metrics,
     make_mmsu_send_fn,
-    print_mmsu_summary,
     save_mmsu_results,
 )
-from benchmarks.tasks.tts import compute_text_audio_consistency, print_wer_summary
+from benchmarks.tasks.tts import compute_text_audio_consistency
 
 logging.basicConfig(
     level=logging.INFO,

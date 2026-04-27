@@ -68,16 +68,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from benchmarks.benchmarker.runner import BenchmarkRunner, RunConfig
 from benchmarks.benchmarker.utils import save_json_results, wait_for_service
 from benchmarks.dataset.mmmu import load_mmmu_samples
-from benchmarks.metrics.performance import compute_speed_metrics
-from benchmarks.tasks.tts import (
-    compute_text_audio_consistency,
-    print_speed_summary,
-    print_wer_summary,
-)
+from benchmarks.metrics.mmmu import compute_mmmu_metrics, print_mmmu_accuracy_summary
+from benchmarks.metrics.performance import compute_speed_metrics, print_speed_summary
+from benchmarks.metrics.wer import print_wer_summary
+from benchmarks.tasks.tts import compute_text_audio_consistency
 from benchmarks.tasks.visual_understand import (
-    compute_mmmu_metrics,
+    build_mmmu_result_records,
     make_mmmu_send_fn,
-    print_mmmu_accuracy_summary,
 )
 
 logging.basicConfig(
@@ -154,7 +151,8 @@ async def run_mmmu_eval(config: MMMUEvalConfig) -> dict:
     )
     request_results = await runner.run(samples, send_fn)
 
-    summary, per_sample = compute_mmmu_metrics(samples, request_results)
+    per_sample, mc_fallback = build_mmmu_result_records(samples, request_results)
+    summary, per_sample = compute_mmmu_metrics(per_sample, mc_fallback)
     speed_metrics = compute_speed_metrics(
         request_results, wall_clock_s=runner.wall_clock_s
     )

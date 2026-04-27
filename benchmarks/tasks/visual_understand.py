@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""MMMU benchmark case -- answer parsing, send_fn, metrics, and persistence."""
+"""MMMU benchmark case: answer parsing and request execution."""
 
 from __future__ import annotations
 
@@ -18,9 +18,6 @@ from benchmarks.benchmarker.runner import SendFn
 from benchmarks.dataset.mmmu import MMMUSample, image_to_data_uri
 
 logger = logging.getLogger(__name__)
-
-SUMMARY_LABEL_WIDTH = 28
-SUMMARY_LINE_WIDTH = 50
 
 MULTI_CHOICE_INSTRUCTION = (
     "\nAnswer the following multiple-choice question. "
@@ -296,24 +293,17 @@ def make_mmmu_send_fn(
     return send_fn
 
 
-def compute_mmmu_metrics(
+def build_mmmu_result_records(
     samples: list[MMMUSample],
     results: list[RequestResult],
-) -> tuple[dict, list[dict]]:
-    """Parse answers, compute accuracy, and build per-sample detail list.
-
-    Returns ``(summary_dict, per_sample_list)``.
-    """
+) -> tuple[list[dict], int]:
+    """Parse responses into persisted per-sample records plus fallback count."""
     assert len(samples) == len(
         results
     ), f"Sample/result count mismatch: {len(samples)} samples vs {len(results)} results"
-    # Fix the random seed so that MC fallback choices are deterministic across
-    # CI runs.  The MMMU reference eval also uses random fallback, so this
-    # does not change the evaluation methodology.
+    # Fix the random seed so MC fallback choices stay deterministic across CI runs.
     random.seed(42)
 
-    correct = 0
-    failed = 0
     mc_fallback = 0
     per_sample: list[dict] = []
 
@@ -337,7 +327,6 @@ def compute_mmmu_metrics(
                 is_success=False,
                 error=result.error,
             )
-            failed += 1
         else:
             gold = sample.answer
             if (
@@ -362,9 +351,6 @@ def compute_mmmu_metrics(
                 is_correct = gold is not None and eval_open(gold, parsed_list)
                 predicted = ", ".join(map(str, parsed_list))
 
-            if is_correct:
-                correct += 1
-
             record.update(
                 predicted=predicted,
                 raw_response=result.text,
@@ -375,31 +361,4 @@ def compute_mmmu_metrics(
 
         per_sample.append(record)
 
-    total = len(samples)
-    accuracy = correct / total if total > 0 else 0.0
-
-    summary = {
-        "total_samples": total,
-        "correct": correct,
-        "accuracy": round(accuracy, 4),
-        "failed": failed,
-        "mc_fallback": mc_fallback,
-    }
-    return summary, per_sample
-
-
-def print_mmmu_accuracy_summary(metrics: dict, model_name: str) -> None:
-    """Print formatted MMMU accuracy summary to stdout."""
-    lw = SUMMARY_LABEL_WIDTH
-    print(f"\n{'=' * SUMMARY_LINE_WIDTH}")
-    print(f"  MMMU Accuracy — {model_name}")
-    print(f"{'=' * SUMMARY_LINE_WIDTH}")
-    print(f"  {'Total samples:':<{lw}} {metrics['total_samples']}")
-    print(f"  {'Correct:':<{lw}} {metrics['correct']}")
-    print(
-        f"  {'Accuracy:':<{lw}} {metrics['accuracy']:.4f} "
-        f"({metrics['accuracy'] * 100:.1f}%)"
-    )
-    print(f"  {'Failed requests:':<{lw}} {metrics['failed']}")
-    print(f"  {'MC parse fallback:':<{lw}} {metrics['mc_fallback']}")
-    print(f"{'=' * SUMMARY_LINE_WIDTH}\n")
+    return per_sample, mc_fallback

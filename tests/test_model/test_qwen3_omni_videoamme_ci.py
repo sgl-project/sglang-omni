@@ -19,8 +19,8 @@ import pytest
 from benchmarks.dataset.prepare import DATASETS
 from benchmarks.eval.benchmark_omni_videoamme import run_videoamme_eval
 from benchmarks.eval.benchmark_omni_videomme import VideoEvalConfig
-from benchmarks.tasks.tts import print_speed_summary
-from benchmarks.tasks.video_understanding import print_videomme_accuracy_summary
+from benchmarks.metrics.performance import print_speed_summary
+from benchmarks.metrics.video import print_videomme_accuracy_summary
 from tests.utils import ServerHandle, apply_slack, assert_speed_thresholds
 
 CONCURRENCY = 16

@@ -11,21 +11,18 @@ import os
 import random
 import struct
 import time
-from collections import defaultdict
 from typing import Any
 
 import aiohttp
 
 from benchmarks.benchmarker.data import RequestResult
 from benchmarks.benchmarker.runner import SendFn
-from benchmarks.benchmarker.utils import get_wav_duration, print_accuracy_breakdown
+from benchmarks.benchmarker.utils import get_wav_duration
 from benchmarks.dataset.videomme import VideoAMMESample, VideoMMESample
 from benchmarks.tasks.visual_understand import parse_multi_choice_response
 
 logger = logging.getLogger(__name__)
 
-SUMMARY_LABEL_WIDTH = 28
-SUMMARY_LINE_WIDTH = 50
 VIDEOAMME_REQUEST_TEXT = (
     "Use the video and the audio question to answer. "
     "Return the final answer as Answer: $LETTER."
@@ -161,44 +158,17 @@ def make_video_send_fn(
     return send_fn
 
 
-def _finalize_breakdown(
-    buckets: dict[str, dict[str, int]]
-) -> dict[str, dict[str, Any]]:
-    return {
-        key: {
-            "total": value["total"],
-            "correct": value["correct"],
-            "accuracy": (
-                round(value["correct"] / value["total"], 4)
-                if value["total"] > 0
-                else 0.0
-            ),
-        }
-        for key, value in sorted(buckets.items())
-    }
-
-
-def compute_videomme_metrics(
+def build_videomme_result_records(
     samples: list[VideoMMESample],
     results: list[RequestResult],
-) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+) -> tuple[list[dict[str, Any]], int]:
+    """Parse responses into persisted per-sample records plus fallback count."""
     assert len(samples) == len(
         results
     ), f"Sample/result count mismatch: {len(samples)} samples vs {len(results)} results"
     random.seed(42)
 
-    correct = 0
-    failed = 0
     mc_fallback = 0
-    per_duration: dict[str, dict[str, int]] = defaultdict(
-        lambda: {"total": 0, "correct": 0}
-    )
-    per_domain: dict[str, dict[str, int]] = defaultdict(
-        lambda: {"total": 0, "correct": 0}
-    )
-    per_task_type: dict[str, dict[str, int]] = defaultdict(
-        lambda: {"total": 0, "correct": 0}
-    )
     per_sample: list[dict[str, Any]] = []
 
     for sample, result in zip(samples, results):
@@ -226,10 +196,6 @@ def compute_videomme_metrics(
             "wav_path": result.wav_path or "",
         }
 
-        per_duration[sample.duration]["total"] += 1
-        per_domain[sample.domain]["total"] += 1
-        per_task_type[sample.task_type]["total"] += 1
-
         if not result.is_success:
             record.update(
                 predicted="",
@@ -238,7 +204,6 @@ def compute_videomme_metrics(
                 is_success=False,
                 error=result.error,
             )
-            failed += 1
             per_sample.append(record)
             continue
 
@@ -251,11 +216,6 @@ def compute_videomme_metrics(
         if is_fallback:
             mc_fallback += 1
             logger.debug("Video-MME parse fallback for sample %s", sample.sample_id)
-        if is_correct:
-            correct += 1
-            per_duration[sample.duration]["correct"] += 1
-            per_domain[sample.domain]["correct"] += 1
-            per_task_type[sample.task_type]["correct"] += 1
 
         record.update(
             predicted=predicted,
@@ -266,39 +226,4 @@ def compute_videomme_metrics(
         )
         per_sample.append(record)
 
-    total = len(samples)
-    summary = {
-        "total_samples": total,
-        "correct": correct,
-        "accuracy": round(correct / total, 4) if total > 0 else 0.0,
-        "failed": failed,
-        "mc_fallback": mc_fallback,
-        "per_duration": _finalize_breakdown(per_duration),
-        "per_domain": _finalize_breakdown(per_domain),
-        "per_task_type": _finalize_breakdown(per_task_type),
-    }
-    return summary, per_sample
-
-
-def print_videomme_accuracy_summary(
-    metrics: dict[str, Any],
-    model_name: str,
-    *,
-    title: str = "Video-MME Accuracy",
-) -> None:
-    lw = SUMMARY_LABEL_WIDTH
-    print(f"\n{'=' * SUMMARY_LINE_WIDTH}")
-    print(f"  {title} — {model_name}")
-    print(f"{'=' * SUMMARY_LINE_WIDTH}")
-    print(f"  {'Total samples:':<{lw}} {metrics['total_samples']}")
-    print(f"  {'Correct:':<{lw}} {metrics['correct']}")
-    print(
-        f"  {'Accuracy:':<{lw}} {metrics['accuracy']:.4f} "
-        f"({metrics['accuracy'] * 100:.1f}%)"
-    )
-    print(f"  {'Failed requests:':<{lw}} {metrics['failed']}")
-    print(f"  {'MC parse fallback:':<{lw}} {metrics['mc_fallback']}")
-    print_accuracy_breakdown("By duration", metrics.get("per_duration", {}))
-    print_accuracy_breakdown("By domain", metrics.get("per_domain", {}))
-    print_accuracy_breakdown("By task type", metrics.get("per_task_type", {}))
-    print(f"{'=' * SUMMARY_LINE_WIDTH}\n")
+    return per_sample, mc_fallback

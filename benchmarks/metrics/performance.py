@@ -7,6 +7,9 @@ import numpy as np
 
 from benchmarks.benchmarker.data import RequestResult
 
+SUMMARY_LABEL_WIDTH = 30
+SUMMARY_LINE_WIDTH = 60
+
 
 def _compute_token_metrics(successes: list[RequestResult]) -> dict:
     tokens_per_sec = [o.tok_per_s for o in successes if o.tok_per_s > 0]
@@ -71,3 +74,74 @@ def compute_speed_metrics(
         **_compute_token_metrics(successes),
     }
     return metrics_summary
+
+
+def print_speed_summary(
+    metrics: dict,
+    model_name: str,
+    concurrency: int | None = None,
+    title: str = "TTS Benchmark Result",
+) -> None:
+    lw = SUMMARY_LABEL_WIDTH
+    w = SUMMARY_LINE_WIDTH
+    print(f"\n{'=' * w}")
+    print(f"{title:^{w}}")
+    print(f"{'=' * w}")
+    print(f"  {'Model:':<{lw}} {model_name}")
+    if concurrency is not None:
+        print(f"  {'Concurrency:':<{lw}} {concurrency}")
+    print(f"  {'Completed requests:':<{lw}} {metrics['completed_requests']}")
+    print(f"  {'Failed requests:':<{lw}} {metrics['failed_requests']}")
+    print(f"{'-' * w}")
+    print(f"  {'Latency mean (s):':<{lw}} {metrics.get('latency_mean_s', 'N/A')}")
+    print(f"  {'Latency median (s):':<{lw}} {metrics.get('latency_median_s', 'N/A')}")
+    print(f"  {'Latency p95 (s):':<{lw}} {metrics.get('latency_p95_s', 'N/A')}")
+    print(f"  {'Latency p99 (s):':<{lw}} {metrics.get('latency_p99_s', 'N/A')}")
+    if metrics.get("rtf_mean") is not None:
+        print(f"  {'RTF mean:':<{lw}} {metrics['rtf_mean']}")
+        print(f"  {'RTF median:':<{lw}} {metrics['rtf_median']}")
+    if metrics.get("audio_duration_mean_s"):
+        print(
+            f"  {'Audio duration mean (s):':<{lw}} {metrics['audio_duration_mean_s']}"
+        )
+    if metrics.get("tok_per_s_mean") is not None:
+        print(f"  {'Tok/s (per-req mean):':<{lw}} {metrics['tok_per_s_mean']}")
+        print(f"  {'Tok/s (per-req median):':<{lw}} {metrics['tok_per_s_median']}")
+    if metrics.get("tok_per_s_agg") is not None:
+        print(f"  {'Tok/s (aggregate):':<{lw}} {metrics['tok_per_s_agg']}")
+    if metrics.get("gen_tokens_mean") is not None:
+        print(f"  {'Gen tokens (mean):':<{lw}} {metrics['gen_tokens_mean']:.0f}")
+        print(f"  {'Gen tokens (total):':<{lw}} {metrics['gen_tokens_total']}")
+    if metrics.get("prompt_tokens_mean") is not None:
+        print(f"  {'Prompt tokens (mean):':<{lw}} {metrics['prompt_tokens_mean']:.0f}")
+        print(f"  {'Prompt tokens (total):':<{lw}} {metrics['prompt_tokens_total']}")
+    print(f"  {'Throughput (req/s):':<{lw}} {metrics.get('throughput_qps', 'N/A')}")
+    print(f"{'=' * w}")
+
+
+def build_speed_results(
+    outputs: list[RequestResult],
+    metrics: dict,
+    config: dict,
+) -> dict:
+    return {
+        "summary": metrics,
+        "config": config,
+        "per_request": [_request_result_to_dict(output) for output in outputs],
+    }
+
+
+def _request_result_to_dict(output: RequestResult) -> dict:
+    return {
+        "id": output.request_id,
+        "text": output.text,
+        "is_success": output.is_success,
+        "latency_s": round(output.latency_s, 4),
+        "audio_duration_s": round(output.audio_duration_s, 4),
+        "rtf": round(output.rtf, 4) if output.rtf < float("inf") else None,
+        "prompt_tokens": output.prompt_tokens or None,
+        "completion_tokens": output.completion_tokens or None,
+        "tok_per_s": round(output.tok_per_s, 1) if output.tok_per_s > 0 else None,
+        "wav_path": output.wav_path or None,
+        "error": output.error or None,
+    }

@@ -116,12 +116,14 @@ from benchmarks.benchmarker.utils import (
     wait_for_service,
 )
 from benchmarks.dataset.seedtts import SampleInput, load_seedtts_samples
-from benchmarks.metrics.performance import compute_speed_metrics
+from benchmarks.metrics.performance import (
+    build_speed_results,
+    compute_speed_metrics,
+    print_speed_summary,
+)
 from benchmarks.tasks.tts import (
     VoiceCloneOmni,
     build_base_url,
-    build_speed_results,
-    print_speed_summary,
     run_seedtts_transcribe,
     save_generated_audio_metadata,
     save_speed_results,

@@ -77,16 +77,16 @@ from benchmarks.benchmarker.runner import BenchmarkRunner, RunConfig
 from benchmarks.benchmarker.utils import save_json_results, wait_for_service
 from benchmarks.dataset.videomme import DEFAULT_REPO_ID as _VIDEOMME_DEFAULT_REPO
 from benchmarks.dataset.videomme import VideoMMESample, load_videomme_samples
-from benchmarks.metrics.performance import compute_speed_metrics
-from benchmarks.tasks.tts import (
-    compute_text_audio_consistency,
-    print_speed_summary,
-    print_wer_summary,
-)
-from benchmarks.tasks.video_understanding import (
+from benchmarks.metrics.performance import compute_speed_metrics, print_speed_summary
+from benchmarks.metrics.video import (
     compute_videomme_metrics,
-    make_video_send_fn,
     print_videomme_accuracy_summary,
+)
+from benchmarks.metrics.wer import print_wer_summary
+from benchmarks.tasks.tts import compute_text_audio_consistency
+from benchmarks.tasks.video_understanding import (
+    build_videomme_result_records,
+    make_video_send_fn,
 )
 
 logging.basicConfig(
@@ -178,7 +178,8 @@ async def run_video_eval(
     )
     request_results = await runner.run(samples, send_fn)
 
-    summary, per_sample = compute_videomme_metrics(samples, request_results)
+    per_sample, mc_fallback = build_videomme_result_records(samples, request_results)
+    summary, per_sample = compute_videomme_metrics(per_sample, mc_fallback)
     speed = compute_speed_metrics(request_results, wall_clock_s=runner.wall_clock_s)
     results = {
         "summary": summary,
