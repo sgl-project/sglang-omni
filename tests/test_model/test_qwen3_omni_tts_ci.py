@@ -63,12 +63,7 @@ _VC_NON_STREAM_P95 = {
 # Higher-is-better metrics (throughput): threshold = P95 x slack_higher
 # Lower-is-better metrics (latency, rtf): threshold = P95 x slack_lower
 
-THRESHOLD_SLACK_HIGHER = 0.90
-THRESHOLD_SLACK_LOWER = 1.10
-
-VC_NON_STREAM_THRESHOLDS = apply_slack(
-    _VC_NON_STREAM_P95, THRESHOLD_SLACK_HIGHER, THRESHOLD_SLACK_LOWER
-)
+VC_NON_STREAM_THRESHOLDS = apply_slack(_VC_NON_STREAM_P95)
 
 
 def _run_benchmark(
