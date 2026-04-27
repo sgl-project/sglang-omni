@@ -27,3 +27,9 @@
 - [ ] Update documentation / docstrings / example tutorials as needed.
 - [ ] Provide throughput / latency benchmark results and accuracy evaluation results as needed.
 - [ ] For reviewers: If you haven't made any contributions to this PR and are only assisting with merging the main branch, please remove yourself as a co-author when merging the PR.
+
+## CI
+
+CI runs on self-hosted GPU runners and requires a maintainer to add the
+`run-ci` label. Once labeled, every subsequent push re-triggers CI as
+long as the label remains. Draft PRs are skipped even if labeled.
