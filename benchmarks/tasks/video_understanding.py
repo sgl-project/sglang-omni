@@ -48,11 +48,11 @@ class VideoMMERecord(TypedDict):
     rtf: float | None
     wav_path: str
     predicted: str
-    raw_response: str | None
+    raw_response: str
     is_correct: bool
     is_success: bool
     is_mc_fallback: bool
-    error: str | None
+    error: str
 
 
 def _apply_chat_completion_response(

@@ -33,17 +33,17 @@ class MMMURecord(TypedDict):
     sample_id: str
     subject: str
     question_type: str
-    expected: str | list[str] | None
+    expected: str
     latency_s: float
     prompt_tokens: int
     completion_tokens: int
     tok_per_s: float | None
     predicted: str
-    raw_response: str | None
+    raw_response: str
     is_correct: bool
     is_success: bool
     is_mc_fallback: bool
-    error: str | None
+    error: str
 
 
 def _check_is_number(s: str) -> bool:
