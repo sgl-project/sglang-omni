@@ -3,6 +3,7 @@ name: Qwen3-Omni CI
 on:
   pull_request:
     branches: [main]
+    types: [labeled, synchronize, reopened, ready_for_review]
   workflow_dispatch:
 
 concurrency:
@@ -26,6 +27,12 @@ permissions:
 jobs:
   docs:
     name: docs
+    # CI gate — runs on workflow_dispatch, or on non-draft PRs carrying the `run-ci` label.
+    # Keep in sync with the same gate in test.yaml / test-examples.yaml / test-s2pro-ci.yaml.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (!github.event.pull_request.draft &&
+       contains(github.event.pull_request.labels.*.name, 'run-ci'))
     runs-on: [self-hosted]
     timeout-minutes: 15
     container:

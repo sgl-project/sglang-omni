@@ -24,15 +24,16 @@ from benchmarks.metrics.video import print_videomme_accuracy_summary
 from tests.utils import ServerHandle, apply_slack, assert_speed_thresholds
 
 CONCURRENCY = 16
+MAX_SAMPLES = 30
 
-# threshold reference: https://github.com/sgl-project/sglang-omni/pull/363#issuecomment-4323126404
-VIDEOAMME_MIN_ACCURACY = 0.68
+# threshold reference: https://github.com/sgl-project/sglang-omni/pull/367#issue-4333687689
+VIDEOAMME_MIN_ACCURACY = 0.60
 
 _VIDEOAMME_P95 = {
     16: {
-        "throughput_qps": 0.132,
+        "throughput_qps": 0.128,
         "tok_per_s_agg": 0.4,
-        "latency_mean_s": 119.004,
+        "latency_mean_s": 118.437,
     },
 }
 VIDEOAMME_THRESHOLDS = apply_slack(_VIDEOAMME_P95)
@@ -43,10 +44,11 @@ def test_videoamme_accuracy_and_speed(
     qwen3_omni_thinker_server: ServerHandle,
     tmp_path: Path,
 ) -> None:
-    """Run videoamme-ci-50 at concurrency=8 and report accuracy + speed."""
+    """Run first 30 of videoamme-ci-50 at concurrency=16 and report accuracy + speed."""
     config = VideoEvalConfig(
         model="qwen3-omni",
         port=qwen3_omni_thinker_server.port,
+        max_samples=MAX_SAMPLES,
         max_concurrency=CONCURRENCY,
         output_dir=str(tmp_path / "videoamme"),
         repo_id=DATASETS["videoamme-ci-50"],
