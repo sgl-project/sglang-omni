@@ -9,8 +9,9 @@ hf_model_id: "Qwen/Qwen3-Omni-30B-A3B-Instruct"
 hf_datasets:
   - "zhaochenyang20/mmsu-ci-2000"
   - "zhaochenyang20/mmmu-ci-50"
-  - "xuesongye/seed-tts-eval-50"
+  - "zhaochenyang20/seed-tts-eval-50"
   - "zhaochenyang20/Video_MME_ci"
+  - "zhaochenyang20/Video_AMME_ci"
 default_venv_python: "/github/home/omni-qwen3/bin/python"
 # Env vars that tune.py auto-sets at startup (matches CI behavior).
 # Overrides anything already in os.environ so the user never has to
@@ -25,10 +26,12 @@ gpus_per_test:
   test_qwen3_omni_mmmu_ci.py: 1
   test_qwen3_omni_mmsu_ci.py: 1
   test_qwen3_omni_videomme_ci.py: 1
+  test_qwen3_omni_videoamme_ci.py: 1
   test_qwen3_omni_tts_ci.py: 2
   test_qwen3_omni_mmmu_talker_ci.py: 2
   test_qwen3_omni_mmsu_talker_ci.py: 2
   test_qwen3_omni_videomme_talker_ci.py: 2
+  test_qwen3_omni_videoamme_talker_ci.py: 2
   test_docs_qwen3_omni.py: 2
 test_globs:
   - "tests/test_model/test_qwen3_omni_*_ci.py"
@@ -117,6 +120,29 @@ metric_sources:
       accuracy: "summary.accuracy"
       corpus_wer: "wer.summary.wer_corpus"
       per_sample_wer_max: "wer.summary.wer_per_sample_max"
+      throughput_qps: "speed.throughput_qps"
+      tok_per_s_agg: "speed.tok_per_s_agg"
+      latency_mean_s: "speed.latency_mean_s"
+      rtf_mean: "speed.rtf_mean"
+  test_qwen3_omni_videoamme_ci.py:
+    json_file: "test_videoamme_accuracy_and_sp0/videoamme/videoamme_results.json"
+    sample_counts:
+      total: "summary.total_samples"
+      ok: "speed.completed_requests"
+    paths:
+      accuracy: "summary.accuracy"
+      throughput_qps: "speed.throughput_qps"
+      tok_per_s_agg: "speed.tok_per_s_agg"
+      latency_mean_s: "speed.latency_mean_s"
+  test_qwen3_omni_videoamme_talker_ci.py:
+    json_file: "test_videoamme_talker_accuracy0/videoamme_audio/videoamme_results.json"
+    sample_counts:
+      total: "summary.total_samples"
+      ok: "speed.completed_requests"
+    paths:
+      accuracy: "summary.accuracy"
+      wer_below_50_corpus: "wer.summary.wer_below_50_corpus"
+      n_above_50: "wer.summary.n_above_50_pct_wer"
       throughput_qps: "speed.throughput_qps"
       tok_per_s_agg: "speed.tok_per_s_agg"
       latency_mean_s: "speed.latency_mean_s"

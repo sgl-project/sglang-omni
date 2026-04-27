@@ -21,18 +21,18 @@ from benchmarks.eval.benchmark_omni_videoamme import run_videoamme_eval
 from benchmarks.eval.benchmark_omni_videomme import VideoEvalConfig
 from benchmarks.tasks.tts import print_speed_summary
 from benchmarks.tasks.video_understanding import print_videomme_accuracy_summary
-from tests.utils import ServerHandle, apply_slack
+from tests.utils import ServerHandle, apply_slack, assert_speed_thresholds
 
-CONCURRENCY = 8
+CONCURRENCY = 16
 
-# TODO: Recalibrate thresholds on H20.
-VIDEOAMME_MIN_ACCURACY = 0.40
+# threshold reference: https://github.com/sgl-project/sglang-omni/pull/363#issuecomment-4323126404
+VIDEOAMME_MIN_ACCURACY = 0.68
 
 _VIDEOAMME_P95 = {
-    8: {
-        "throughput_qps": 0.05,
-        "tok_per_s_agg": 0.30,
-        "latency_mean_s": 140.0,
+    16: {
+        "throughput_qps": 0.132,
+        "tok_per_s_agg": 0.4,
+        "latency_mean_s": 119.004,
     },
 }
 VIDEOAMME_THRESHOLDS = apply_slack(_VIDEOAMME_P95)
@@ -70,19 +70,18 @@ def test_videoamme_accuracy_and_speed(
         CONCURRENCY,
         title="Video-AMME Speed",
     )
-    # TODO: Recalibrate accuracy and speed thresholds on H20 before enforcing.
-    # failed = summary.get("failed", 0)
-    # total = summary.get("total_samples", 0)
-    # assert failed == 0, (
-    #     f"Video-AMME had {failed}/{total} failed requests "
-    #     f"(timeouts or empty responses); any failure fails the test"
-    # )
-    # assert summary["accuracy"] >= VIDEOAMME_MIN_ACCURACY, (
-    #     f"Video-AMME accuracy {summary['accuracy']:.4f} "
-    #     f"({summary['accuracy'] * 100:.1f}%) < "
-    #     f"threshold {VIDEOAMME_MIN_ACCURACY} ({VIDEOAMME_MIN_ACCURACY * 100:.0f}%)"
-    # )
-    # assert_speed_thresholds(results["speed"], VIDEOAMME_THRESHOLDS, CONCURRENCY)
+    failed = summary.get("failed", 0)
+    total = summary.get("total_samples", 0)
+    assert failed == 0, (
+        f"Video-AMME had {failed}/{total} failed requests "
+        f"(timeouts or empty responses); any failure fails the test"
+    )
+    assert summary["accuracy"] >= VIDEOAMME_MIN_ACCURACY, (
+        f"Video-AMME accuracy {summary['accuracy']:.4f} "
+        f"({summary['accuracy'] * 100:.1f}%) < "
+        f"threshold {VIDEOAMME_MIN_ACCURACY} ({VIDEOAMME_MIN_ACCURACY * 100:.0f}%)"
+    )
+    assert_speed_thresholds(results["speed"], VIDEOAMME_THRESHOLDS, CONCURRENCY)
 
 
 if __name__ == "__main__":
