@@ -20,7 +20,7 @@ from benchmarks.benchmarker.data import RequestResult
 from benchmarks.benchmarker.runner import SendFn
 from benchmarks.benchmarker.utils import get_wav_duration, print_accuracy_breakdown
 from benchmarks.dataset.videomme import VideoAMMESample, VideoMMESample
-from benchmarks.tasks.visual_understand import parse_multi_choice_response
+from benchmarks.metrics.accuracy import parse_multi_choice_response
 
 logger = logging.getLogger(__name__)
 
