@@ -10,6 +10,7 @@ import os
 import random
 import re
 import time
+from typing import TypedDict
 
 import aiohttp
 
@@ -26,6 +27,23 @@ MULTI_CHOICE_INSTRUCTION = (
     "where LETTER is one of the options. "
     "Think step by step before answering."
 )
+
+
+class MMMURecord(TypedDict):
+    sample_id: str
+    subject: str
+    question_type: str
+    expected: str | list[str] | None
+    latency_s: float
+    prompt_tokens: int
+    completion_tokens: int
+    tok_per_s: float | None
+    predicted: str
+    raw_response: str | None
+    is_correct: bool
+    is_success: bool
+    is_mc_fallback: bool
+    error: str | None
 
 
 def _check_is_number(s: str) -> bool:
@@ -296,19 +314,18 @@ def make_mmmu_send_fn(
 def build_mmmu_result_records(
     samples: list[MMMUSample],
     results: list[RequestResult],
-) -> tuple[list[dict], int]:
-    """Parse responses into persisted per-sample records plus fallback count."""
+) -> list[MMMURecord]:
+    """Parse responses into persisted per-sample records."""
     assert len(samples) == len(
         results
     ), f"Sample/result count mismatch: {len(samples)} samples vs {len(results)} results"
     # Fix the random seed so MC fallback choices stay deterministic across CI runs.
     random.seed(42)
 
-    mc_fallback = 0
-    per_sample: list[dict] = []
+    per_sample: list[MMMURecord] = []
 
     for sample, result in zip(samples, results):
-        record = {
+        record: MMMURecord = {
             "sample_id": sample.sample_id,
             "subject": sample.subject,
             "question_type": sample.question_type,
@@ -317,18 +334,17 @@ def build_mmmu_result_records(
             "prompt_tokens": result.prompt_tokens,
             "completion_tokens": result.completion_tokens,
             "tok_per_s": (round(result.tok_per_s, 1) if result.tok_per_s > 0 else None),
+            "predicted": "",
+            "raw_response": result.error,
+            "is_correct": False,
+            "is_success": False,
+            "is_mc_fallback": False,
+            "error": result.error,
         }
 
-        if not result.is_success:
-            record.update(
-                predicted="",
-                raw_response=result.error,
-                is_correct=False,
-                is_success=False,
-                error=result.error,
-            )
-        else:
+        if result.is_success:
             gold = sample.answer
+            is_fallback = False
             if (
                 sample.question_type == "multiple-choice"
                 and sample.all_choices
@@ -340,7 +356,6 @@ def build_mmmu_result_records(
                     sample.index2ans,
                 )
                 if is_fallback:
-                    mc_fallback += 1
                     logger.debug(
                         f"MMMU multi-choice parse fallback for sample "
                         f"{sample.sample_id}"
@@ -356,9 +371,10 @@ def build_mmmu_result_records(
                 raw_response=result.text,
                 is_correct=is_correct,
                 is_success=True,
+                is_mc_fallback=is_fallback,
                 error="",
             )
 
         per_sample.append(record)
 
-    return per_sample, mc_fallback
+    return per_sample

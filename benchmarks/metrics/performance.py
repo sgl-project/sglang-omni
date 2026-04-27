@@ -6,9 +6,7 @@ from __future__ import annotations
 import numpy as np
 
 from benchmarks.benchmarker.data import RequestResult
-
-SUMMARY_LABEL_WIDTH = 30
-SUMMARY_LINE_WIDTH = 60
+from benchmarks.metrics._format import SPEED_LABEL_WIDTH, SPEED_LINE_WIDTH
 
 
 def _compute_token_metrics(successes: list[RequestResult]) -> dict:
@@ -80,10 +78,10 @@ def print_speed_summary(
     metrics: dict,
     model_name: str,
     concurrency: int | None = None,
-    title: str = "TTS Benchmark Result",
+    title: str = "Speed Benchmark Result",
 ) -> None:
-    lw = SUMMARY_LABEL_WIDTH
-    w = SUMMARY_LINE_WIDTH
+    lw = SPEED_LABEL_WIDTH
+    w = SPEED_LINE_WIDTH
     print(f"\n{'=' * w}")
     print(f"{title:^{w}}")
     print(f"{'=' * w}")

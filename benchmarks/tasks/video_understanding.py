@@ -11,7 +11,7 @@ import os
 import random
 import struct
 import time
-from typing import Any
+from typing import Any, TypedDict
 
 import aiohttp
 
@@ -27,6 +27,32 @@ VIDEOAMME_REQUEST_TEXT = (
     "Use the video and the audio question to answer. "
     "Return the final answer as Answer: $LETTER."
 )
+
+
+class VideoMMERecord(TypedDict):
+    sample_id: str
+    video_path: str
+    url: str
+    video_id: str
+    question_id: str
+    duration: str
+    domain: str
+    sub_category: str
+    task_type: str
+    expected: str
+    latency_s: float
+    prompt_tokens: int
+    completion_tokens: int
+    tok_per_s: float | None
+    audio_duration_s: float | None
+    rtf: float | None
+    wav_path: str
+    predicted: str
+    raw_response: str | None
+    is_correct: bool
+    is_success: bool
+    is_mc_fallback: bool
+    error: str | None
 
 
 def _apply_chat_completion_response(
@@ -161,18 +187,17 @@ def make_video_send_fn(
 def build_videomme_result_records(
     samples: list[VideoMMESample],
     results: list[RequestResult],
-) -> tuple[list[dict[str, Any]], int]:
-    """Parse responses into persisted per-sample records plus fallback count."""
+) -> list[VideoMMERecord]:
+    """Parse responses into persisted per-sample records."""
     assert len(samples) == len(
         results
     ), f"Sample/result count mismatch: {len(samples)} samples vs {len(results)} results"
     random.seed(42)
 
-    mc_fallback = 0
-    per_sample: list[dict[str, Any]] = []
+    per_sample: list[VideoMMERecord] = []
 
     for sample, result in zip(samples, results):
-        record = {
+        record: VideoMMERecord = {
             "sample_id": sample.sample_id,
             "video_path": sample.video_path,
             "url": sample.url,
@@ -194,16 +219,15 @@ def build_videomme_result_records(
             ),
             "rtf": (round(result.rtf, 4) if result.rtf > 0 else None),
             "wav_path": result.wav_path or "",
+            "predicted": "",
+            "raw_response": result.error,
+            "is_correct": False,
+            "is_success": False,
+            "is_mc_fallback": False,
+            "error": result.error,
         }
 
         if not result.is_success:
-            record.update(
-                predicted="",
-                raw_response=result.error,
-                is_correct=False,
-                is_success=False,
-                error=result.error,
-            )
             per_sample.append(record)
             continue
 
@@ -214,7 +238,6 @@ def build_videomme_result_records(
         )
         is_correct = predicted == sample.answer
         if is_fallback:
-            mc_fallback += 1
             logger.debug("Video-MME parse fallback for sample %s", sample.sample_id)
 
         record.update(
@@ -222,8 +245,9 @@ def build_videomme_result_records(
             raw_response=result.text,
             is_correct=is_correct,
             is_success=True,
+            is_mc_fallback=is_fallback,
             error="",
         )
         per_sample.append(record)
 
-    return per_sample, mc_fallback
+    return per_sample

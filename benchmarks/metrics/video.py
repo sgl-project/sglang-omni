@@ -4,12 +4,16 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from benchmarks.benchmarker.utils import print_accuracy_breakdown
+from benchmarks.metrics._format import (
+    ACCURACY_LABEL_WIDTH,
+    ACCURACY_LINE_WIDTH,
+    print_accuracy_breakdown,
+)
 
-SUMMARY_LABEL_WIDTH = 28
-SUMMARY_LINE_WIDTH = 50
+if TYPE_CHECKING:
+    from benchmarks.tasks.video_understanding import VideoMMERecord
 
 
 def _finalize_breakdown(
@@ -30,9 +34,8 @@ def _finalize_breakdown(
 
 
 def compute_videomme_metrics(
-    per_sample: list[dict[str, Any]],
-    mc_fallback: int,
-) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    per_sample: list["VideoMMERecord"],
+) -> dict[str, Any]:
     correct = 0
     failed = 0
     per_duration: dict[str, dict[str, int]] = defaultdict(
@@ -66,12 +69,12 @@ def compute_videomme_metrics(
         "correct": correct,
         "accuracy": round(correct / total, 4) if total > 0 else 0.0,
         "failed": failed,
-        "mc_fallback": mc_fallback,
+        "mc_fallback": sum(record["is_mc_fallback"] for record in per_sample),
         "per_duration": _finalize_breakdown(per_duration),
         "per_domain": _finalize_breakdown(per_domain),
         "per_task_type": _finalize_breakdown(per_task_type),
     }
-    return summary, per_sample
+    return summary
 
 
 def print_videomme_accuracy_summary(
@@ -80,10 +83,10 @@ def print_videomme_accuracy_summary(
     *,
     title: str = "Video-MME Accuracy",
 ) -> None:
-    lw = SUMMARY_LABEL_WIDTH
-    print(f"\n{'=' * SUMMARY_LINE_WIDTH}")
+    lw = ACCURACY_LABEL_WIDTH
+    print(f"\n{'=' * ACCURACY_LINE_WIDTH}")
     print(f"  {title} — {model_name}")
-    print(f"{'=' * SUMMARY_LINE_WIDTH}")
+    print(f"{'=' * ACCURACY_LINE_WIDTH}")
     print(f"  {'Total samples:':<{lw}} {metrics['total_samples']}")
     print(f"  {'Correct:':<{lw}} {metrics['correct']}")
     print(
@@ -95,4 +98,4 @@ def print_videomme_accuracy_summary(
     print_accuracy_breakdown("By duration", metrics.get("per_duration", {}))
     print_accuracy_breakdown("By domain", metrics.get("per_domain", {}))
     print_accuracy_breakdown("By task type", metrics.get("per_task_type", {}))
-    print(f"{'=' * SUMMARY_LINE_WIDTH}\n")
+    print(f"{'=' * ACCURACY_LINE_WIDTH}\n")

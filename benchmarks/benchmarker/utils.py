@@ -10,7 +10,6 @@ import os
 import struct
 import subprocess
 import time
-from typing import Any
 
 import requests as requests_lib
 
@@ -19,7 +18,6 @@ logger = logging.getLogger(__name__)
 WAV_HEADER_SIZE = 44
 SSE_DATA_PREFIX = "data: "
 SSE_DONE_MARKER = "data: [DONE]"
-DEFAULT_BREAKDOWN_KEY_WIDTH = 14
 
 
 def get_wav_duration(wav_bytes: bytes) -> float:
@@ -107,20 +105,3 @@ def save_json_results(results: dict, output_dir: str, filename: str) -> str:
         json.dump(results, f, indent=2, ensure_ascii=False)
     logger.info(f"Results saved to {path}")
     return path
-
-
-def print_accuracy_breakdown(
-    title: str,
-    breakdown: dict[str, dict[str, Any]],
-    *,
-    key_width: int = DEFAULT_BREAKDOWN_KEY_WIDTH,
-) -> None:
-    """Print a correct/total (accuracy%) table for a per-bucket breakdown."""
-    if not breakdown:
-        return
-    print(f"  {title}:")
-    for key, stat in breakdown.items():
-        print(
-            f"    {key:<{key_width}} {stat['correct']}/{stat['total']} "
-            f"({stat['accuracy'] * 100:.1f}%)"
-        )

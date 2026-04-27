@@ -151,8 +151,8 @@ async def run_mmmu_eval(config: MMMUEvalConfig) -> dict:
     )
     request_results = await runner.run(samples, send_fn)
 
-    per_sample, mc_fallback = build_mmmu_result_records(samples, request_results)
-    summary, per_sample = compute_mmmu_metrics(per_sample, mc_fallback)
+    per_sample = build_mmmu_result_records(samples, request_results)
+    summary = compute_mmmu_metrics(per_sample)
     speed_metrics = compute_speed_metrics(
         request_results, wall_clock_s=runner.wall_clock_s
     )

@@ -7,11 +7,10 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
+from benchmarks.metrics._format import SPEED_LABEL_WIDTH, SPEED_LINE_WIDTH
+
 if TYPE_CHECKING:
     from benchmarks.tasks.tts import SampleOutput
-
-SUMMARY_LABEL_WIDTH = 30
-SUMMARY_LINE_WIDTH = 60
 
 
 def calculate_wer_metrics(outputs: list["SampleOutput"], lang: str) -> dict:
@@ -79,8 +78,8 @@ def calculate_wer_metrics(outputs: list["SampleOutput"], lang: str) -> dict:
 def print_wer_summary(
     metrics: dict, model_name: str, generation_mode: str | None = None
 ) -> None:
-    lw = SUMMARY_LABEL_WIDTH
-    w = SUMMARY_LINE_WIDTH
+    lw = SPEED_LABEL_WIDTH
+    w = SPEED_LINE_WIDTH
     title = "TTS WER Benchmark Result"
     if generation_mode:
         title = f"TTS WER Benchmark Result ({generation_mode})"
@@ -197,8 +196,8 @@ def calculate_asr_speed_metrics(outputs: list["SampleOutput"]) -> dict:
 
 def print_asr_speed_summary(metrics: dict, model_name: str) -> None:
     """Print ASR speed metrics summary table."""
-    lw = SUMMARY_LABEL_WIDTH
-    w = SUMMARY_LINE_WIDTH
+    lw = SPEED_LABEL_WIDTH
+    w = SPEED_LINE_WIDTH
     print(f"\n{'=' * w}")
     print(f"{'ASR Speed Benchmark Result':^{w}}")
     print(f"{'=' * w}")

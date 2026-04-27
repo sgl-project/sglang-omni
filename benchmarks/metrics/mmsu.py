@@ -6,6 +6,8 @@ from __future__ import annotations
 from collections import defaultdict
 from typing import TYPE_CHECKING, Any
 
+from benchmarks.metrics._format import MMSU_CATEGORY_WIDTH, SPEED_LINE_WIDTH
+
 if TYPE_CHECKING:
     from benchmarks.tasks.audio_understanding import MmsuResult
 
@@ -68,9 +70,9 @@ def print_mmsu_summary(
     *,
     speed_metrics: dict[str, Any] | None = None,
 ) -> None:
-    print("\n" + "=" * 60)
+    print("\n" + "=" * SPEED_LINE_WIDTH)
     print(f"  MMSU Results - {model_name}")
-    print("=" * 60)
+    print("=" * SPEED_LINE_WIDTH)
     print(f"  Total samples:    {metrics['total_samples']}")
     print(
         f"  Successful:       {metrics.get('successful_samples', metrics['total_samples'])}"
@@ -78,13 +80,16 @@ def print_mmsu_summary(
     print(f"  Parseable:        {metrics['parseable_samples']}")
     print(f"  Correct:          {metrics['correct']}")
     print(f"  Overall accuracy: {metrics['overall_accuracy']:.2%}")
-    print("-" * 60)
-    print(f"  {'Category':<18} {'Acc':>8} {'N':>6}")
-    print("-" * 60)
+    print("-" * SPEED_LINE_WIDTH)
+    print(f"  {'Category':<{MMSU_CATEGORY_WIDTH}} {'Acc':>8} {'N':>6}")
+    print("-" * SPEED_LINE_WIDTH)
     for name, info in metrics["per_category"].items():
-        print(f"  {name:<18} {info['accuracy']:>8.2%} {info['total']:>6}")
+        print(
+            f"  {name:<{MMSU_CATEGORY_WIDTH}} "
+            f"{info['accuracy']:>8.2%} {info['total']:>6}"
+        )
     if speed_metrics:
-        print("-" * 60)
+        print("-" * SPEED_LINE_WIDTH)
         print(f"  Latency mean:     {speed_metrics.get('latency_mean_s', 0):.3f}s")
         print(f"  Latency p95:      {speed_metrics.get('latency_p95_s', 0):.3f}s")
         if speed_metrics.get("audio_duration_mean_s", 0) > 0:
@@ -99,4 +104,4 @@ def print_mmsu_summary(
         audio_expected = speed_metrics.get("audio_expected")
         if audio_expected:
             print(f"  Audio returned:   {audio_returned}/{audio_expected}")
-    print("=" * 60)
+    print("=" * SPEED_LINE_WIDTH)

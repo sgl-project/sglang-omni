@@ -178,8 +178,8 @@ async def run_video_eval(
     )
     request_results = await runner.run(samples, send_fn)
 
-    per_sample, mc_fallback = build_videomme_result_records(samples, request_results)
-    summary, per_sample = compute_videomme_metrics(per_sample, mc_fallback)
+    per_sample = build_videomme_result_records(samples, request_results)
+    summary = compute_videomme_metrics(per_sample)
     speed = compute_speed_metrics(request_results, wall_clock_s=runner.wall_clock_s)
     results = {
         "summary": summary,
