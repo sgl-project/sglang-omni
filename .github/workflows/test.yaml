@@ -3,6 +3,7 @@ name: PR Test
 on:
   pull_request:
     branches: [ main ]
+    types: [labeled, synchronize, reopened, ready_for_review]
   workflow_dispatch:
 
 concurrency:
@@ -14,6 +15,10 @@ permissions:
 
 jobs:
   unit-test:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (!github.event.pull_request.draft &&
+       contains(github.event.pull_request.labels.*.name, 'run-ci'))
     runs-on: [self-hosted]
     container:
       image: frankleeeee/sglang-omni:dev # we lock to this version to avoid repeated docker pull
