@@ -116,7 +116,7 @@ def _inject_server_version(cmd: list[str]) -> list[str]:
     if version != "v1" or _has_version_flag(cmd):
         return list(cmd)
 
-    if len(cmd) >= 4 and cmd[1:4] == ["-m", "sglang_omni.cli.cli", "serve"]:
+    if len(cmd) >= 4 and cmd[1:4] == ["-m", "sglang_omni.cli", "serve"]:
         return [*cmd[:4], "--version", version, *cmd[4:]]
 
     if len(cmd) >= 2 and Path(cmd[1]).name in _QWEN3_LAUNCHERS:

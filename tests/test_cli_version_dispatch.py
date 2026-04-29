@@ -28,7 +28,7 @@ def test_build_v1_exec_argv_strips_split_version_flag() -> None:
     assert _build_v1_exec_argv(argv) == [
         sys.executable,
         "-m",
-        "sglang_omni_v1.cli.cli",
+        "sglang_omni_v1.cli",
         "serve",
         "--model-path",
         "dummy",
@@ -51,7 +51,7 @@ def test_build_v1_exec_argv_strips_inline_version_flag() -> None:
     assert _build_v1_exec_argv(argv) == [
         sys.executable,
         "-m",
-        "sglang_omni_v1.cli.cli",
+        "sglang_omni_v1.cli",
         "serve",
         "--model-path",
         "dummy",

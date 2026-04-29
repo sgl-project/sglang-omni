@@ -12,7 +12,7 @@ from sglang_omni.config.manager import ConfigManager
 from sglang_omni.serve.launcher import launch_server
 
 _THINKER_STAGE_NAME = "thinker"
-_V1_CLI_MODULE = "sglang_omni_v1.cli.cli"
+_V1_CLI_MODULE = "sglang_omni_v1.cli"
 
 
 def _build_v1_exec_argv(argv: list[str]) -> list[str]:
