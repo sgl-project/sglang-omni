@@ -97,6 +97,7 @@ def parse_args() -> argparse.Namespace:
             "Overrides --mem-fraction-static for talker."
         ),
     )
+    # Note (Chenyang): Add for V1.
     parser.add_argument(
         "--version",
         type=str,
@@ -104,13 +105,16 @@ def parse_args() -> argparse.Namespace:
         choices=["legacy", "v1"],
         help="Select the legacy or v1 Qwen3 speech launcher implementation.",
     )
-
+    # Note (Chenyang): Add for V1.
     # Server
     parser.add_argument("--host", type=str, default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--model-name", type=str, default="qwen3-omni")
 
     return parser.parse_args()
+
+
+# Note (Chenyang): Add for V1.
 
 
 def _validate_fraction(flag_name: str, value: float | None) -> None:
@@ -214,6 +218,9 @@ def _launch_v1_speech_server(args: argparse.Namespace) -> None:
     )
 
 
+# Note (Chenyang): Add for V1.
+
+
 async def main_async(args: argparse.Namespace) -> None:
     import uvicorn
     from _launcher_mem_fraction import resolve_and_apply_speech_mem_fraction
@@ -285,9 +292,11 @@ async def main_async(args: argparse.Namespace) -> None:
 def main() -> None:
     mp.set_start_method("spawn", force=True)
     args = parse_args()
+    # Note (Chenyang): Add for V1.
     if args.version == "v1":
         _launch_v1_speech_server(args)
         return
+    # Note (Chenyang): Add for V1.
     asyncio.run(main_async(args))
 
 

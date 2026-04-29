@@ -92,6 +92,7 @@ def parse_args() -> argparse.Namespace:
             "workloads."
         ),
     )
+    # Note (Chenyang): Add for V1.
     parser.add_argument(
         "--version",
         type=str,
@@ -99,7 +100,7 @@ def parse_args() -> argparse.Namespace:
         choices=["legacy", "v1"],
         help="Select the legacy or v1 Qwen3 launcher implementation.",
     )
-
+    # Note (Chenyang): Add for V1.
     # Server
     parser.add_argument("--host", type=str, default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8000)
@@ -125,6 +126,9 @@ def _check_mem_flag_mutex(
             "and the reserve only subtracts from SGLang's auto-selected "
             "value. Pass only one."
         )
+
+
+# Note (Chenyang): Add for V1.
 
 
 def _validate_fraction(flag_name: str, value: float | None) -> None:
@@ -194,11 +198,16 @@ def _launch_v1_text_server(args: argparse.Namespace) -> None:
     )
 
 
+# Note (Chenyang): Add for V1.
+
+
 def main() -> None:
     args = parse_args()
+    # Note (Chenyang): Add for V1.
     if args.version == "v1":
         _launch_v1_text_server(args)
         return
+    # Note (Chenyang): Add for V1.
 
     _check_mem_flag_mutex(args.mem_fraction_static, args.encoder_mem_reserve)
 
