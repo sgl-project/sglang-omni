@@ -12,6 +12,7 @@ from sglang_omni.config.manager import ConfigManager
 from sglang_omni.serve.launcher import launch_server
 
 _THINKER_STAGE_NAME = "thinker"
+# Note (Chenyang): Add for V1.
 _V1_CLI_MODULE = "sglang_omni_v1.cli"
 
 
@@ -34,6 +35,9 @@ def _build_v1_exec_argv(argv: list[str]) -> list[str]:
 
 def _dispatch_to_v1_cli() -> None:
     os.execv(sys.executable, _build_v1_exec_argv(sys.argv))
+
+
+# Note (Chenyang): Add for V1.
 
 
 def serve(
@@ -113,6 +117,7 @@ def serve(
             ),
         ),
     ] = None,
+    # Note (Chenyang): Add for V1.
     version: Annotated[
         Literal["legacy", "v1"],
         typer.Option(
@@ -123,12 +128,14 @@ def serve(
             )
         ),
     ] = "legacy",
+    # Note (Chenyang): Add for V1.
     log_level: Annotated[
         Literal["debug", "info", "warning", "error", "critical"],
         typer.Option(help="Log level (default: info)."),
     ] = "info",
 ) -> None:
     """Serve the pipeline."""
+    # Note (Chenyang): Add for V1.
     if version == "v1":
         unsupported_v1_flags = {
             "--mem-fraction-static": mem_fraction_static,
@@ -146,7 +153,7 @@ def serve(
 
         _dispatch_to_v1_cli()
         return
-
+    # Note (Chenyang): End for V1.
     logging.basicConfig(
         level=getattr(logging, log_level.upper()),
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
