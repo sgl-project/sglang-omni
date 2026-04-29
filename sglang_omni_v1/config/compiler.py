@@ -10,6 +10,7 @@ from typing import Any
 
 from sglang_omni_v1.config.schema import PipelineConfig, StageConfig
 from sglang_omni_v1.pipeline import AggregatedInput, Coordinator, DirectInput, Stage
+from sglang_omni_v1.pipeline.control_plane import StageControlPlane
 from sglang_omni_v1.pipeline.stage.input import InputHandler
 from sglang_omni_v1.utils import import_string
 
@@ -69,14 +70,20 @@ def _compile_stage(
 
     scheduler = factory(**factory_args)
 
-    return Stage(
-        name=stage_cfg.name,
-        get_next=get_next,
-        gpu_id=relay_config["gpu_id"],
+    control_plane = StageControlPlane(
+        stage_name=stage_cfg.name,
         recv_endpoint=stage_endpoints[stage_cfg.name],
         coordinator_endpoint=endpoints["completion"],
         abort_endpoint=endpoints["abort"],
+    )
+
+    return Stage(
+        name=stage_cfg.name,
+        role="single",
+        get_next=get_next,
+        gpu_id=relay_config["gpu_id"],
         endpoints=stage_endpoints,
+        control_plane=control_plane,
         input_handler=input_handler,
         relay_config=relay_config,
         scheduler=scheduler,
