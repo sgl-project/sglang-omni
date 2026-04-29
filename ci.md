@@ -28,7 +28,7 @@ docs ──► stage-1-thinker ──► stage-2-tts
 | 0 | docs | `tests/docs/qwen3_omni/test_docs_qwen3_omni.py` | 1+2 | ✅ 14 passed in 309s | TextOnly 7/7 + SpeechMode 7/7 (incl. video+audio WER vs Whisper). Required Fix 1 (compiler). |
 | 1 | stage-1 thinker length | `tests/test_model/test_qwen3_omni_thinker_length.py` | 1 | ✅ 3 passed in 42.49s | Initial fail: compiler `recv_endpoint` TypeError. 2nd fail (post-compiler-fix): API didn't reject overlong → scheduler crash → ReadTimeout cascade. 3rd fail: `finish_reason` always `"stop"`. **All three fixed**: see "Fixes applied during this run". |
 | 2 | stage-2 TTS | `tests/test_model/test_qwen3_omni_tts_ci.py` | 2 | _pending_ | |
-| 3 | stage-3 MMMU | `tests/test_model/test_qwen3_omni_mmmu_ci.py` | 1 | ❌ FAIL @ assertion | 50/50 requests succeeded, accuracy and latency pass. Fails on `KeyError: 'tok_per_s_agg'` — V1 benchmark summary dict is missing this key. Pipeline itself works; benchmark schema gap. |
+| 3 | stage-3 MMMU | `tests/test_model/test_qwen3_omni_mmmu_ci.py` | 1 | ✅ 1 passed in 362s | After Fix 4 (usage propagation), accuracy + speed thresholds all pass. |
 | 4 | stage-4 MMMU Talker | `tests/test_model/test_qwen3_omni_mmmu_talker_ci.py` | 2 | _pending_ | |
 | 5 | stage-5 MMSU | `tests/test_model/test_qwen3_omni_mmsu_ci.py` | 1 | _pending_ | |
 | 6 | stage-6 MMSU Talker | `tests/test_model/test_qwen3_omni_mmsu_talker_ci.py` | 2 | _pending_ | |
@@ -95,10 +95,18 @@ Files touched:
 
 ---
 
+### Fix 4 — `usage` propagation (every benchmark stage's speed assertion)
+
+V1 pipeline never populated `usage` (prompt/completion/total tokens) anywhere on the chain. The decode stage's result dict didn't have it, the merged-terminal client branch ignored it, so the API returned `usage=null`. The benchmark client read `body["usage"]` as `{}`, set `completion_tokens=0`, and `compute_speed_metrics` dropped `tok_per_s_agg` — making `assert_speed_thresholds` crash with `KeyError: 'tok_per_s_agg'`.
+
+Files touched:
+- `sglang_omni_v1/models/qwen3_omni/stages.py` — `_decode` now sets `result["usage"] = {prompt_tokens, completion_tokens, total_tokens}` from `state.prompt["input_ids"]` and `thinker_out["output_ids"]`.
+- `sglang_omni_v1/client/client.py` — `_default_result_builder`'s merged-terminal branch (`{"decode": ..., "code2wav": ...}`) now also propagates `decode_result["usage"]` into `chunk.usage`. The simple-dict branch already worked.
+
+Stage 3 verified after this fix: 1 passed in 362s.
+
 ## Known V1 issues outside this PR's reach
 
-These surfaced during the run but were **not** fixed (they don't gate stage-1):
-
-- **`tok_per_s_agg` missing in V1 benchmark summaries.** `compute_speed_metrics` only adds the key when `total_engine_time > 0 AND total_tokens > 0`. V1's per-request `engine_time_s` and/or `completion_tokens` are not populated, so the key is dropped. CI's `assert_speed_thresholds` reads `summary["tok_per_s_agg"]` unconditionally → `KeyError`. Stage 3 hit this; stages 5/7/9 (and possibly the talker speed paths) are likely to hit it too.
+(none currently — all root causes encountered so far are fixed by Fixes 1–4.)
 
 ---

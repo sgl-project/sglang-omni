@@ -524,6 +524,28 @@ def create_decode_executor(model_path: str):
         if finish_reason is not None:
             result.setdefault("finish_reason", finish_reason)
 
+        input_ids = (
+            state.prompt.get("input_ids") if isinstance(state.prompt, dict) else None
+        )
+        if input_ids is None:
+            prompt_tokens = 0
+        elif hasattr(input_ids, "numel"):
+            prompt_tokens = int(input_ids.numel())
+        else:
+            prompt_tokens = len(input_ids)
+
+        completion_ids = thinker_out.get("output_ids") or []
+        completion_tokens = len(completion_ids)
+
+        result.setdefault(
+            "usage",
+            {
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+                "total_tokens": prompt_tokens + completion_tokens,
+            },
+        )
+
         payload.data = result
         return payload
 

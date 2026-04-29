@@ -3,25 +3,13 @@ from __future__ import annotations
 
 import torch
 
-import sglang_omni_v1.models.qwen3_omni.components.talker as talker_module
 from sglang_omni_v1.models.qwen3_omni.components.talker import Qwen3OmniTalker
 
 
-def test_sample_code_predictor_token_uses_top_k_top_p(monkeypatch) -> None:
-    captured: dict[str, object] = {}
-
-    def fake_sampler(probs: torch.Tensor, top_k: int, top_p: float) -> torch.Tensor:
-        captured["probs"] = probs.clone()
-        captured["top_k"] = top_k
-        captured["top_p"] = top_p
-        return torch.tensor([2, 1], device=probs.device, dtype=torch.long)
-
-    monkeypatch.setattr(
-        talker_module,
-        "top_k_top_p_sampling_from_probs",
-        fake_sampler,
-    )
-
+def test_sample_code_predictor_token_picks_argmax() -> None:
+    # logits[:, -1, :] is the slice the function uses; choose unambiguous
+    # winners (token 2 for the first row, token 0 for the second). Input is
+    # 3D so argmax yields a 1D tensor and the function unsqueezes to (B, 1).
     logits = torch.tensor(
         [
             [[0.0, 1.0, 2.0]],
@@ -33,10 +21,20 @@ def test_sample_code_predictor_token_uses_top_k_top_p(monkeypatch) -> None:
     result = Qwen3OmniTalker._sample_code_predictor_token(logits)
 
     assert result.shape == (2, 1)
-    assert result[:, 0].tolist() == [2, 1]
-    assert captured["top_k"] == 50
-    assert captured["top_p"] == 0.8
-    assert torch.allclose(
-        captured["probs"],
-        torch.softmax(logits[:, -1, :], dim=-1),
+    assert result.dtype == torch.long
+    assert result[:, 0].tolist() == [2, 0]
+
+
+def test_sample_code_predictor_token_skips_unsqueeze_when_already_2d() -> None:
+    # With a 4D input, logits[:, -1, :] is 3D and argmax returns a 2D tensor;
+    # the function must leave it untouched rather than adding a third axis.
+    logits = torch.tensor(
+        [
+            [[[0.0, 1.0, 2.0], [2.0, 1.0, 0.0]]],
+        ],
+        dtype=torch.float32,
     )
+    result = Qwen3OmniTalker._sample_code_predictor_token(logits)
+
+    assert result.shape == (1, 2)
+    assert result.tolist() == [[2, 0]]

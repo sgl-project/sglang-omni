@@ -162,19 +162,20 @@ def apply_parallelism_cli_overrides(
         if thinker_gpus is not None
         else None
     )
-    thinker_stages = _find_matching_stages(
-        pipeline_config,
-        stage_name="thinker",
-        reason="tensor parallel settings",
-    )
-    for stage in thinker_stages:
-        if thinker_tp_size is not None:
-            stage.tp_size = int(thinker_tp_size)
-        if thinker_gpu_override is not None:
-            stage.gpu = thinker_gpu_override
-        _validate_stage_parallelism_config("thinker", stage.tp_size, stage.gpu)
-        if stage.tp_size == 1 and isinstance(stage.gpu, list):
-            stage.gpu = int(stage.gpu[0])
+    if thinker_tp_size is not None or thinker_gpu_override is not None:
+        thinker_stages = _find_matching_stages(
+            pipeline_config,
+            stage_name="thinker",
+            reason="tensor parallel settings",
+        )
+        for stage in thinker_stages:
+            if thinker_tp_size is not None:
+                stage.tp_size = int(thinker_tp_size)
+            if thinker_gpu_override is not None:
+                stage.gpu = thinker_gpu_override
+            _validate_stage_parallelism_config("thinker", stage.tp_size, stage.gpu)
+            if stage.tp_size == 1 and isinstance(stage.gpu, list):
+                stage.gpu = int(stage.gpu[0])
 
     _apply_stage_gpu_override(
         pipeline_config,
