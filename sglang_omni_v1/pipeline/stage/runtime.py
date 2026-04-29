@@ -32,6 +32,7 @@ from sglang_omni_v1.proto import (
     ProfilerStopMessage,
     ShutdownMessage,
     StageInfo,
+    StreamMessage,
     SubmitMessage,
 )
 from sglang_omni_v1.relay.base import Relay, create_relay
@@ -482,13 +483,16 @@ class Stage:
                 await self._route_result(out.request_id, out.data)
             elif out.type == "stream":
                 if out.target is None:
-                    for target in self._stream_targets:
-                        await self._send_stream_to_target(
-                            out.request_id,
-                            out.data,
-                            target,
-                            out.metadata,
-                        )
+                    if self._stream_targets:
+                        for target in self._stream_targets:
+                            await self._send_stream_to_target(
+                                out.request_id,
+                                out.data,
+                                target,
+                                out.metadata,
+                            )
+                    else:
+                        await self._send_stream_to_coordinator(out)
                 else:
                     await self._send_stream_to_target(
                         out.request_id,
@@ -609,6 +613,23 @@ class Stage:
             chunk_id=chunk_id,
             metadata=metadata,
             same_gpu_targets=self._same_gpu_targets,
+        )
+
+    async def _send_stream_to_coordinator(self, out: Any) -> None:
+        if not self._owns_external_io:
+            return
+        data = out.data
+        metadata = out.metadata or {}
+        modality = metadata.get("modality")
+        if modality is None and isinstance(data, dict):
+            modality = data.get("modality")
+        await self.control_plane.send_stream(
+            StreamMessage(
+                request_id=out.request_id,
+                from_stage=self.name,
+                chunk=data,
+                modality=modality,
+            )
         )
 
     async def _send_failure(self, request_id: str, error: str) -> None:
