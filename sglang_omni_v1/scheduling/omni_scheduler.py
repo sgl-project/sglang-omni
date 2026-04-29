@@ -535,6 +535,12 @@ class OmniScheduler:
             # Build result payload from the Req
             data = req._omni_data
             data.output_ids = list(req.output_ids)
+            finished_reason = req.finished_reason
+            data.finish_reason = (
+                finished_reason.to_json().get("type")
+                if finished_reason is not None
+                else None
+            )
             result = self._result_adapter(data)
 
             self.outbox.put(

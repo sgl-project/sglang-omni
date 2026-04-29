@@ -53,6 +53,16 @@ from sglang_omni_v1.serve.protocol import (
 logger = logging.getLogger(__name__)
 MIME_TO_FORMAT = {mime: fmt for fmt, mime in FORMAT_MIME_TYPES.items()}
 
+_BAD_REQUEST_MARKERS = (
+    "longer than the model's context length",
+    "Requested token count exceeds the model's maximum context length",
+)
+
+
+def _is_bad_request_error(exc: Exception) -> bool:
+    message = str(exc)
+    return any(marker in message for marker in _BAD_REQUEST_MARKERS)
+
 
 def create_app(
     client: Client,
@@ -191,9 +201,13 @@ async def _chat_non_stream(
             audio_format=audio_format,
         )
     except ClientError as exc:
+        if _is_bad_request_error(exc):
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     except Exception as exc:
         logger.exception("Error generating response for request %s", request_id)
+        if _is_bad_request_error(exc):
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     requested_modalities = req.modalities or ["text"]

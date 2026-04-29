@@ -394,10 +394,14 @@ def _batch_audio_encoder_payloads(
 # ---------------------------------------------------------------------------
 
 
-def create_preprocessing_executor(model_path: str):
+def create_preprocessing_executor(
+    model_path: str, *, thinker_max_seq_len: int | None = None
+):
     from sglang_omni_v1.scheduling.simple_scheduler import SimpleScheduler
 
-    preprocessor = Qwen3OmniPreprocessor(model_path=model_path)
+    preprocessor = Qwen3OmniPreprocessor(
+        model_path=model_path, max_seq_len=thinker_max_seq_len
+    )
 
     async def _preprocess(payload: StagePayload) -> StagePayload:
         return await preprocessor(payload)
@@ -515,6 +519,10 @@ def create_decode_executor(model_path: str):
             if isinstance(output_ids, list) and output_ids:
                 result["text"] = tokenizer.decode(output_ids, skip_special_tokens=True)
                 result.setdefault("modality", "text")
+
+        finish_reason = thinker_out.get("finish_reason")
+        if finish_reason is not None:
+            result.setdefault("finish_reason", finish_reason)
 
         payload.data = result
         return payload

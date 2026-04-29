@@ -453,6 +453,10 @@ def apply_thinker_result(
         "extra_model_outputs": dict(result.extra_model_outputs),
     }
 
+    finish_reason = getattr(result, "finish_reason", None)
+    if finish_reason is not None:
+        thinker_out["finish_reason"] = finish_reason
+
     state.thinker_out = thinker_out
     state.engine_outputs[stage_name] = thinker_out
     return thinker_out

@@ -67,11 +67,51 @@ def _contextualize_cache_key(base_key: str | None, **context: Any) -> str | None
     return "|".join(parts)
 
 
+DEFAULT_THINKER_MAX_NEW_TOKENS = 2048
+
+
+def validate_prompt_seq_len(
+    input_ids: torch.Tensor,
+    *,
+    max_seq_len: int | None,
+    max_new_tokens: int = DEFAULT_THINKER_MAX_NEW_TOKENS,
+    request_id: str | None = None,
+) -> None:
+    if max_seq_len is None:
+        return
+    prompt_len = int(input_ids.numel())
+    if prompt_len >= max_seq_len:
+        logger.info(
+            f"rejecting request {request_id}: prompt {prompt_len} tokens "
+            f">= max_seq_len {max_seq_len}"
+        )
+        raise ValueError(
+            f"The input ({prompt_len} tokens) is longer than the model's "
+            f"context length ({max_seq_len} tokens)."
+        )
+    total_tokens = prompt_len + int(max_new_tokens)
+    if total_tokens >= max_seq_len:
+        logger.info(
+            f"rejecting request {request_id}: prompt {prompt_len} + "
+            f"max_new_tokens {int(max_new_tokens)} = {total_tokens} tokens "
+            f">= max_seq_len {max_seq_len}"
+        )
+        raise ValueError(
+            f"Requested token count exceeds the model's maximum context length "
+            f"of {max_seq_len} tokens. You requested a total of {total_tokens} "
+            f"tokens: {prompt_len} tokens from the input messages and "
+            f"{int(max_new_tokens)} tokens for the completion. Please reduce "
+            f"the number of tokens in the input messages or the completion to "
+            f"fit within the limit."
+        )
+
+
 class Qwen3OmniPreprocessor:
     """CPU-side preprocessing and tokenization using the HF processor."""
 
-    def __init__(self, model_path: str):
+    def __init__(self, model_path: str, max_seq_len: int | None = None):
         self.model_path = model_path
+        self.max_seq_len = max_seq_len
         self.model_dir = _resolve_local_model_dir(model_path)
         try:
             self.processor = Qwen3OmniMoeProcessor.from_pretrained(
@@ -261,6 +301,15 @@ class Qwen3OmniPreprocessor:
             attention_mask = attention_mask[0]
         else:
             attention_mask = torch.ones_like(input_ids)
+
+        validate_prompt_seq_len(
+            input_ids,
+            max_seq_len=self.max_seq_len,
+            max_new_tokens=payload.request.params.get(
+                "max_new_tokens", DEFAULT_THINKER_MAX_NEW_TOKENS
+            ),
+            request_id=payload.request_id,
+        )
 
         mm_inputs: dict[str, Any] = {
             "image": build_image_mm_inputs(hf_inputs),

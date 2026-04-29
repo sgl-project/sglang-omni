@@ -17,6 +17,7 @@ class SGLangARRequestData:
     model_inputs: dict[str, Any] = field(default_factory=dict)
     output_ids: list[int] = field(default_factory=list)
     extra_model_outputs: dict[str, Any] = field(default_factory=dict)
+    finish_reason: str | None = None
     req: Any = None
     synced: bool = False
     generation_steps: int = 0

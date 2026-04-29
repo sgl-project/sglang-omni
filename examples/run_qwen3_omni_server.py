@@ -189,6 +189,12 @@ def _launch_v1_text_server(args: argparse.Namespace) -> None:
             updates=stage_updates,
             server_arg_updates=server_arg_updates or None,
         )
+    if stage_updates:
+        _apply_stage_factory_updates(
+            config,
+            stage_name="preprocessing",
+            updates=stage_updates,
+        )
 
     launch_v1_server(
         config,

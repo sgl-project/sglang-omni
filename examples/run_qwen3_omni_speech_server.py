@@ -210,6 +210,21 @@ def _launch_v1_speech_server(args: argparse.Namespace) -> None:
             server_arg_updates={"mem_fraction_static": talker_mem_fraction},
         )
 
+    if args.thinker_max_seq_len is not None:
+        thinker_seq_len_updates: dict[str, object] = {
+            "thinker_max_seq_len": int(args.thinker_max_seq_len)
+        }
+        _apply_stage_factory_updates(
+            config,
+            stage_name="thinker",
+            updates=thinker_seq_len_updates,
+        )
+        _apply_stage_factory_updates(
+            config,
+            stage_name="preprocessing",
+            updates=thinker_seq_len_updates,
+        )
+
     launch_v1_server(
         config,
         host=args.host,

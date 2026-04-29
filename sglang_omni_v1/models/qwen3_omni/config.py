@@ -20,6 +20,7 @@ class Qwen3OmniPipelineConfig(PipelineConfig):
         StageConfig(
             name="preprocessing",
             factory=f"{_PKG}.stages.create_preprocessing_executor",
+            factory_args={"thinker_max_seq_len": 8192},
             next=["image_encoder", "audio_encoder", "mm_aggregate"],
         ),
         StageConfig(
@@ -68,6 +69,7 @@ class Qwen3OmniSpeechPipelineConfig(PipelineConfig):
         StageConfig(
             name="preprocessing",
             factory=f"{_PKG}.stages.create_preprocessing_executor",
+            factory_args={"thinker_max_seq_len": 8192},
             next=["image_encoder", "audio_encoder", "mm_aggregate"],
         ),
         StageConfig(
