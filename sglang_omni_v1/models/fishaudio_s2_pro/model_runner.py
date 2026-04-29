@@ -35,9 +35,32 @@ class FishS2ProModelRunner(ModelRunner):
         self.model._vq_mask[:batch_size].copy_(is_semantic)
 
         for row_idx, sched_req in enumerate(requests):
+            data = sched_req.data
+            self.model._sampling_temperature[row_idx] = data.temperature
+            self.model._sampling_top_p[row_idx] = data.top_p
+            self.model._sampling_top_k[row_idx] = data.top_k
+            self.model._sampling_rep_penalty[row_idx] = data.repetition_penalty
+            self.model._ras_temperature[row_idx] = data.ras_temperature
+            self.model._ras_top_p[row_idx] = data.ras_top_p
+
+            prev = data.previous_semantic_tokens
+            history_len = self.model._rep_history_len
+            if prev:
+                recent = prev[-history_len:]
+                self.model._prev_tokens[row_idx, : len(recent)] = torch.tensor(
+                    recent,
+                    dtype=self.model._prev_tokens.dtype,
+                    device=self.model._prev_tokens.device,
+                )
+                self.model._prev_tokens[row_idx, len(recent) :] = 0
+                self.model._prev_token_count[row_idx] = len(recent)
+            else:
+                self.model._prev_tokens[row_idx].zero_()
+                self.model._prev_token_count[row_idx] = 0
+
             if not bool(is_semantic[row_idx].item()):
                 continue
-            last_codes = sched_req.data.last_codebook_values
+            last_codes = data.last_codebook_values
             if last_codes is None:
                 continue
             self.model._vq_codes[row_idx].copy_(

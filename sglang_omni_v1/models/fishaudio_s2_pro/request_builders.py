@@ -20,13 +20,16 @@ class S2ProSGLangRequestData(SGLangARRequestData):
     vq_parts: list | None = None
     num_codebooks: int = 10
     codebook_size: int = 4096
-    output_codes: list = field(default_factory=list)
+    output_codes: list[torch.Tensor] = field(default_factory=list)
     max_new_tokens: int = 2048
     temperature: float = 0.8
     top_p: float = 0.8
     top_k: int = 30
     repetition_penalty: float = 1.1
-    previous_semantic_tokens: list = field(default_factory=list)
+    ras_window: int = 16
+    ras_temperature: float = 1.0
+    ras_top_p: float = 0.9
+    previous_semantic_tokens: list[int] = field(default_factory=list)
     last_codebook_values: Any = None
 
 
@@ -97,6 +100,9 @@ def build_sglang_tts_request(
         top_p=state.top_p,
         top_k=state.top_k,
         repetition_penalty=state.repetition_penalty,
+        ras_window=state.ras_window,
+        ras_temperature=state.ras_temperature,
+        ras_top_p=state.ras_top_p,
     )
 
 

@@ -26,6 +26,9 @@ class S2ProState:
     top_p: float = 0.8
     top_k: int = 30
     repetition_penalty: float = 1.1
+    ras_window: int = 16
+    ras_temperature: float = 1.0
+    ras_top_p: float = 0.9
 
     # -- From TTS engine ---------------------------------------------------
     output_codes: Any | None = None  # [num_codebooks+1, T] as nested list
@@ -60,6 +63,9 @@ class S2ProState:
         data["top_p"] = self.top_p
         data["top_k"] = self.top_k
         data["repetition_penalty"] = self.repetition_penalty
+        data["ras_window"] = self.ras_window
+        data["ras_temperature"] = self.ras_temperature
+        data["ras_top_p"] = self.ras_top_p
         if self.output_codes is not None:
             data["output_codes"] = self._tensor_to_list(self.output_codes)
         if self.prompt_tokens:
@@ -89,6 +95,9 @@ class S2ProState:
             top_p=data.get("top_p", 0.8),
             top_k=data.get("top_k", 30),
             repetition_penalty=data.get("repetition_penalty", 1.1),
+            ras_window=data.get("ras_window", 16),
+            ras_temperature=data.get("ras_temperature", 1.0),
+            ras_top_p=data.get("ras_top_p", 0.9),
             output_codes=(
                 torch.tensor(data["output_codes"]) if "output_codes" in data else None
             ),

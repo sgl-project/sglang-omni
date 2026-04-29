@@ -176,6 +176,7 @@ def create_sglang_tts_engine_executor(
     device: str = "cuda",
     max_new_tokens: int = 2048,
     top_k: int = 30,
+    ras_window: int = 16,
     server_args_overrides: dict[str, Any] | None = None,
 ):
     """Returns OmniScheduler for the Fish TTS AR engine."""
@@ -252,6 +253,7 @@ def create_sglang_tts_engine_executor(
         max_batch_size=server_args.max_running_requests,
         num_codebooks=num_codebooks,
         codebook_size=codebook_size,
+        ras_window=ras_window,
     )
 
     if want_cuda_graph:
