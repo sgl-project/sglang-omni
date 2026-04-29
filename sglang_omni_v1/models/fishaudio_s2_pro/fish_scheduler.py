@@ -393,11 +393,32 @@ class FishScheduler:
                 continue
 
             self.iteration_controller.update_request(request, output.data)
+            self._emit_stream_chunk(request)
             if self.iteration_controller.is_finished(request, output.data):
                 self._finish_request(request)
                 finished.append(request)
 
         return finished
+
+    def _emit_stream_chunk(self, request: SchedulerRequest) -> None:
+        data = request.data
+        payload = getattr(data, "stage_payload", None)
+        params = getattr(getattr(payload, "request", None), "params", None) or {}
+        if not params.get("stream"):
+            return
+        codes = getattr(data, "latest_stream_code_chunk", None)
+        if codes is None:
+            return
+        self.outbox.put(
+            OutgoingMessage(
+                request_id=request.request_id,
+                type="stream",
+                data=codes,
+                target="vocoder",
+                metadata={"modality": "audio_codes"},
+            )
+        )
+        data.latest_stream_code_chunk = None
 
     def _finish_request(self, request: SchedulerRequest) -> None:
         request.status = SchedulerStatus.FINISHED

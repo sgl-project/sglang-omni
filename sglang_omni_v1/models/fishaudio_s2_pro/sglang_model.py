@@ -382,9 +382,9 @@ class S2ProSGLangTextModel(nn.Module):
     def _decode_codebooks(self, logits: Tensor, hidden_states: Tensor) -> None:
         """Constrained semantic sampling + batched codebook generation.
 
-        CUDA graph sampling is aligned with the legacy path except that
-        codebook tokens keep v1's argmax path. RAS uses 4+ token history to
-        avoid false positives from clamped indices in the fixed-size graph path.
+        Semantic tokens use temperature/top-p sampling with RAS fallback.
+        Codebook tokens remain deterministic because each codebook layer is
+        conditioned on the sampled semantic token and previous codebook layers.
         """
         bs = logits.shape[0]
 

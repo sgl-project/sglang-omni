@@ -31,6 +31,7 @@ class S2ProSGLangRequestData(SGLangARRequestData):
     ras_top_p: float = 0.9
     previous_semantic_tokens: list[int] = field(default_factory=list)
     last_codebook_values: Any = None
+    latest_stream_code_chunk: torch.Tensor | None = None
 
 
 def build_sglang_tts_request(

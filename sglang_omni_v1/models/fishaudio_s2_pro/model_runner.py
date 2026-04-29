@@ -156,3 +156,4 @@ class FishS2ProModelRunner(ModelRunner):
             data.last_codebook_values = codes[1:, 0].clone()
             data.previous_semantic_tokens.append(int(codes[0, -1].item()))
             data.output_codes.append(codes)
+            data.latest_stream_code_chunk = codes

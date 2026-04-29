@@ -28,6 +28,7 @@ class S2ProPipelineConfig(PipelineConfig):
             factory_args={"device": "cuda:0", "max_new_tokens": 2048},
             gpu=0,
             next="vocoder",
+            stream_to=["vocoder"],
         ),
         StageConfig(
             name="vocoder",
