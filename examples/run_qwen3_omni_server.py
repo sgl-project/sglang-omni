@@ -194,7 +194,6 @@ def _launch_v1_text_server(args: argparse.Namespace) -> None:
     )
 
 
-
 def main() -> None:
     args = parse_args()
     if args.version == "v1":
