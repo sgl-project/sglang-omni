@@ -112,7 +112,12 @@ class Qwen3OmniSpeechPipelineConfig(PipelineConfig):
             factory_args={
                 # Note (Xuesong): must exceed talker_max_new_tokens (4096) +
                 # prefill, else req_to_token_pool OOBs and crashes talker_ar.
-                "talker_max_seq_len": 8192,
+                # Note (Chenyang): bumped 8192 → 32768 because the V1 talker
+                # prefill replays the full thinker prompt as projected
+                # embeddings, and a 30-frame video prompt is ~22K positions,
+                # which overflows 8192 and triggers a FusedAddRMSNorm illegal
+                # memory access in the talker forward.
+                "talker_max_seq_len": 32768,
                 "speech_enabled": True,
                 "feedback_enabled": True,
             },

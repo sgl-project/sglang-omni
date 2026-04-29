@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import queue as _queue_mod
+import time
 import types
 from collections import deque
 from typing import Any, Callable
@@ -608,11 +609,18 @@ class OmniScheduler:
     # ------------------------------------------------------------------
 
     def _event_loop_normal(self) -> None:
+        # Note (Chenyang): yield the GIL when idle so co-located non-AR stages
+        # (encoders, preprocessor) running in sibling threads aren't starved
+        # of Python execution. Without this, in single-process mode the busy
+        # AR scheduler loop pins the GIL and the audio_encoder forward pass
+        # (which is mostly Python-side dispatch into many small CUDA kernels)
+        # slows ~600x, dropping audio QPS from >10 to <0.5.
         while self._running:
             recv_reqs = self.recv_requests()
             recv_reqs.extend(self._take_deferred_request_payloads())
             self.process_input_requests(recv_reqs)
             if self._engine_paused:
+                time.sleep(0.001)
                 continue
 
             batch = self.get_next_batch_to_run()
@@ -623,6 +631,7 @@ class OmniScheduler:
                 self.process_batch_result(batch, result)
             else:
                 self.self_check_during_idle()
+                time.sleep(0.001)
 
             self.last_batch = batch
             if envs.SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_BUSY.get():

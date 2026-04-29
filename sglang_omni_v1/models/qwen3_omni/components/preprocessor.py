@@ -174,6 +174,10 @@ class Qwen3OmniPreprocessor:
             raw_audios = inputs.get("audio") or inputs.get("audios")
             audio_target_sr = int(inputs.get("audio_target_sr", 16000))
             video_fps = inputs.get("video_fps")
+            video_max_frames = inputs.get("video_max_frames")
+            video_min_pixels = inputs.get("video_min_pixels")
+            video_max_pixels = inputs.get("video_max_pixels")
+            video_total_pixels = inputs.get("video_total_pixels")
             use_audio_in_video = inputs.get("use_audio_in_video")
             video_seconds_per_chunk = inputs.get("video_seconds_per_chunk")
             video_position_id_per_seconds = inputs.get("video_position_id_per_seconds")
@@ -237,6 +241,10 @@ class Qwen3OmniPreprocessor:
             video_cache_key = None
             audio_target_sr = 16000
             video_fps = None
+            video_max_frames = None
+            video_min_pixels = None
+            video_max_pixels = None
+            video_total_pixels = None
             sampled_video_fps = None
             use_audio_in_video = None
             video_seconds_per_chunk = None
@@ -270,6 +278,14 @@ class Qwen3OmniPreprocessor:
             )
         elif video_fps is not None:
             videos_kwargs["fps"] = video_fps
+        if video_max_frames is not None:
+            videos_kwargs["max_frames"] = video_max_frames
+        if video_min_pixels is not None:
+            videos_kwargs["min_pixels"] = video_min_pixels
+        if video_max_pixels is not None:
+            videos_kwargs["max_pixels"] = video_max_pixels
+        if video_total_pixels is not None:
+            videos_kwargs["total_pixels"] = video_total_pixels
         if use_audio_in_video is not None:
             videos_kwargs["use_audio_in_video"] = bool(use_audio_in_video)
         if video_seconds_per_chunk is not None:

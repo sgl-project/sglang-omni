@@ -438,10 +438,15 @@ def create_image_encoder_executor(
     def _encode_batch(payloads: list[StagePayload]) -> list[StagePayload]:
         return _batch_image_encoder_payloads(payloads, model=model)
 
+    # Note (Chenyang): match v0's image-encoder batching shape (max=32) and
+    # add a small batch_wait so video benchmarks at concurrency=16 batch
+    # together. Without the wait, requests arriving microseconds apart end
+    # up in batches of 1; with the wait, all 16 land in one forward pass.
     return SimpleScheduler(
         _encode,
         batch_compute_fn=_encode_batch,
-        max_batch_size=8,
+        max_batch_size=32,
+        max_batch_wait_ms=50,
     )
 
 
@@ -468,7 +473,8 @@ def create_audio_encoder_executor(
     return SimpleScheduler(
         _encode,
         batch_compute_fn=_encode_batch,
-        max_batch_size=8,
+        max_batch_size=32,
+        max_batch_wait_ms=50,
     )
 
 
@@ -571,9 +577,7 @@ def create_sglang_thinker_executor_from_config(
     """Returns OmniScheduler for thinker."""
     from sglang_omni_v1.models.qwen3_omni.bootstrap import create_thinker_scheduler
 
-    overrides = {"disable_cuda_graph": True}
-    if server_args_overrides:
-        overrides.update(server_args_overrides)
+    overrides = dict(server_args_overrides) if server_args_overrides else {}
     overrides["tp_size"] = tp_size
     server_args = build_sglang_server_args(
         model_path,
@@ -605,7 +609,11 @@ def create_talker_ar_executor_from_config(
     """Returns OmniScheduler for talker."""
     from sglang_omni_v1.models.qwen3_omni.bootstrap import create_talker_scheduler
 
-    overrides = {"disable_cuda_graph": True}
+    # Note (Chenyang): keep cuda_graph disabled by default for the talker —
+    # the AR talker forward (custom feedback/MTP-style decode) has ops that
+    # break CUDA stream capture; bootstrap.create_talker_scheduler will flip
+    # it back on later if it can. Caller can still override via factory_args.
+    overrides: dict[str, Any] = {"disable_cuda_graph": True}
     if server_args_overrides:
         overrides.update(server_args_overrides)
     overrides["tp_size"] = tp_size
