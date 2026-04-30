@@ -306,6 +306,7 @@ class FishScheduler:
         self._requests: dict[str, SchedulerRequest] = {}
         self._waiting: deque[str] = deque()
         self._running_ids: list[str] = []
+        self._submit_times: dict[str, float] = {}
         self._step_id = 0
 
         self.batch_planner = FishBatchPlanner(
@@ -345,6 +346,7 @@ class FishScheduler:
                 data=req_data,
                 arrival_time=time.time(),
             )
+            self._submit_times[req_id] = time.perf_counter()
             self._requests[req_id] = sched_req
             self._waiting.append(req_id)
 
@@ -417,6 +419,9 @@ class FishScheduler:
             data = request.data
             data.output_ids = list(data.req.output_ids)
             result = self._result_adapter(data)
+            t_submit = self._submit_times.pop(request.request_id, None)
+            if t_submit is not None and isinstance(result.data, dict):
+                result.data["engine_time_s"] = time.perf_counter() - t_submit
             self.outbox.put(
                 OutgoingMessage(
                     request_id=request.request_id,
@@ -458,6 +463,7 @@ class FishScheduler:
     def abort(self, request_id: str) -> None:
         self._aborted_request_ids.add(request_id)
         self._requests.pop(request_id, None)
+        self._submit_times.pop(request_id, None)
         self._waiting = deque(
             req_id for req_id in self._waiting if req_id != request_id
         )

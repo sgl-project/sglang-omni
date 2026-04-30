@@ -60,6 +60,20 @@ def store_state(payload: StagePayload, state: S2ProState) -> StagePayload:
     return payload
 
 
+def _build_usage(state: S2ProState) -> dict[str, Any] | None:
+    if not (state.prompt_tokens or state.completion_tokens or state.engine_time_s):
+        return None
+
+    usage = {
+        "prompt_tokens": state.prompt_tokens,
+        "completion_tokens": state.completion_tokens,
+        "total_tokens": state.prompt_tokens + state.completion_tokens,
+    }
+    if state.engine_time_s:
+        usage["engine_time_s"] = round(float(state.engine_time_s), 6)
+    return usage
+
+
 # ---------------------------------------------------------------------------
 # Preprocessing — returns callable
 # ---------------------------------------------------------------------------
@@ -297,6 +311,9 @@ def create_vocoder_executor(
         payload.data["audio_data"] = audio_np.tolist()
         payload.data["sample_rate"] = codec.sample_rate
         payload.data["modality"] = "audio"
+        usage = _build_usage(state)
+        if usage is not None:
+            payload.data["usage"] = usage
         return payload
 
     def _vocode(payload: StagePayload) -> StagePayload:

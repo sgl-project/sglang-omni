@@ -46,6 +46,7 @@ def create_thinker_scheduler(
         gpu_id,
         tp_rank=tp_rank,
         nccl_port=nccl_port,
+        model_arch_override="Qwen3OmniThinkerForCausalLM",
         capture_hidden_layers=capture_hidden_layers,
     )
 

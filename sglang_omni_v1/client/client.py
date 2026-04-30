@@ -263,6 +263,25 @@ class Client:
             chunk.sample_rate = sample_rate
 
     @staticmethod
+    def _build_usage_info(data: dict[str, Any]) -> UsageInfo | None:
+        usage = dict(data.get("usage") or {})
+        if "prompt_tokens" not in usage and data.get("prompt_tokens") is not None:
+            usage["prompt_tokens"] = data.get("prompt_tokens")
+        if (
+            "completion_tokens" not in usage
+            and data.get("completion_tokens") is not None
+        ):
+            usage["completion_tokens"] = data.get("completion_tokens")
+        if "total_tokens" not in usage:
+            prompt_tokens = usage.get("prompt_tokens")
+            completion_tokens = usage.get("completion_tokens")
+            if prompt_tokens is not None or completion_tokens is not None:
+                usage["total_tokens"] = (prompt_tokens or 0) + (completion_tokens or 0)
+        if "engine_time_s" not in usage and data.get("engine_time_s") is not None:
+            usage["engine_time_s"] = data.get("engine_time_s")
+        return UsageInfo.from_dict(usage)
+
+    @staticmethod
     def _build_omni_request(request: GenerateRequest) -> OmniRequest:
         inputs = _extract_inputs(request)
         params = _build_params(request)
@@ -288,7 +307,9 @@ class Client:
                 if isinstance(text, str):
                     chunk.text = text
                 Client._set_audio_data(chunk, c2w_result)
-                chunk.usage = UsageInfo.from_dict(decode_result.get("usage"))
+                chunk.usage = Client._build_usage_info(
+                    decode_result
+                ) or Client._build_usage_info(c2w_result)
                 return chunk
             text = result.get("text")
             if isinstance(text, str):
@@ -310,7 +331,7 @@ class Client:
             if modality is not None:
                 chunk.modality = modality
             Client._set_audio_data(chunk, result)
-            chunk.usage = UsageInfo.from_dict(result.get("usage"))
+            chunk.usage = Client._build_usage_info(result)
             return chunk
         if isinstance(result, str):
             chunk.text = result
@@ -351,9 +372,7 @@ class Client:
             finish_reason = data.get("finish_reason")
             if finish_reason is not None:
                 chunk.finish_reason = finish_reason
-            usage = data.get("usage")
-            if usage is not None:
-                chunk.usage = UsageInfo.from_dict(usage)
+            chunk.usage = Client._build_usage_info(data)
             stage_name = data.get("stage_name")
             if stage_name is not None:
                 chunk.stage_name = stage_name

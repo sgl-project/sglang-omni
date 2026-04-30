@@ -69,7 +69,13 @@ class SGLModelRunner(ModelRunner):
         from sglang_omni_v1.models.fishaudio_s2_pro.sglang_model import (
             S2ProSGLangTextModel,
         )
+        from sglang_omni_v1.models.qwen3_omni.components.sglang_thinker import (
+            Qwen3OmniThinkerForCausalLM,
+        )
         from sglang_omni_v1.models.qwen3_omni.components.talker import Qwen3OmniTalker
 
         ModelRegistry.models["S2ProSGLangTextModel"] = S2ProSGLangTextModel
         ModelRegistry.models["Qwen3OmniTalker"] = Qwen3OmniTalker
+        ModelRegistry.models["Qwen3OmniThinkerForCausalLM"] = (
+            Qwen3OmniThinkerForCausalLM
+        )
