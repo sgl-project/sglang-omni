@@ -17,6 +17,12 @@ class ModelWorkerConfig:
     nccl_port: int | None = None
 
 
+_ARCH_CONFIG_MAP: dict[str, tuple[str, str | None]] = {
+    "Qwen3OmniTalker": ("talker_config", "text_config"),
+    "Qwen3OmniThinkerForCausalLM": ("thinker_config", "text_config"),
+}
+
+
 class ModelWorker:
     def __init__(
         self,
@@ -62,10 +68,14 @@ class ModelWorker:
     def _apply_arch_override(model_config: ModelConfig, arch: str) -> None:
         """Override model config for a sub-model architecture."""
         model_config.hf_config.architectures = [arch]
-        if arch != "Qwen3OmniTalker":
+        entry = _ARCH_CONFIG_MAP.get(arch)
+        if entry is None:
             return
-        sub_cfg = model_config.hf_config.talker_config
-        text_cfg = sub_cfg.text_config
+        sub_config_attr, text_config_attr = entry
+        sub_cfg = getattr(model_config.hf_config, sub_config_attr, None)
+        if sub_cfg is None:
+            return
+        text_cfg = getattr(sub_cfg, text_config_attr) if text_config_attr else sub_cfg
         model_config.hf_text_config = text_cfg
         model_config.num_attention_heads = text_cfg.num_attention_heads
         model_config.num_key_value_heads = text_cfg.num_key_value_heads
