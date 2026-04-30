@@ -305,8 +305,13 @@ async def main_async(args: argparse.Namespace) -> None:
 
 
 def main() -> None:
+    from sglang_omni.utils import print_server_version_banner
+
     mp.set_start_method("spawn", force=True)
     args = parse_args()
+    print_server_version_banner(
+        args.version, entry="examples/run_qwen3_omni_speech_server.py"
+    )
     # Note (Chenyang): Add for V1.
     if args.version == "v1":
         _launch_v1_speech_server(args)

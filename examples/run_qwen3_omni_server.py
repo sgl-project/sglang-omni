@@ -28,6 +28,7 @@ from typing import Any
 
 from sglang_omni.models.qwen3_omni.config import Qwen3OmniPipelineConfig
 from sglang_omni.serve import launch_server
+from sglang_omni.utils import print_server_version_banner
 
 logging.basicConfig(
     level=os.environ.get("LOGLEVEL", "INFO").upper(),
@@ -209,6 +210,7 @@ def _launch_v1_text_server(args: argparse.Namespace) -> None:
 
 def main() -> None:
     args = parse_args()
+    print_server_version_banner(args.version, entry="examples/run_qwen3_omni_server.py")
     # Note (Chenyang): Add for V1.
     if args.version == "v1":
         _launch_v1_text_server(args)

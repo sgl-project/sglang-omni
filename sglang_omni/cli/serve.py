@@ -10,6 +10,7 @@ import yaml
 
 from sglang_omni.config.manager import ConfigManager
 from sglang_omni.serve.launcher import launch_server
+from sglang_omni.utils import print_server_version_banner
 
 _THINKER_STAGE_NAME = "thinker"
 # Note (Chenyang): Add for V1.
@@ -135,6 +136,7 @@ def serve(
     ] = "info",
 ) -> None:
     """Serve the pipeline."""
+    print_server_version_banner(version, entry="sglang_omni.cli serve")
     # Note (Chenyang): Add for V1.
     if version == "v1":
         unsupported_v1_flags = {
