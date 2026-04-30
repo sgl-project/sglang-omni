@@ -174,14 +174,19 @@ def _build_relay_config(
             "gpu_id": _parse_gpu_id(relay_cfg.device),
         }
 
-    # Auto-infer from gpu field
-    gpu = stage_cfg.gpu
-    if gpu is None:
-        gpu_id = None  # CPU stage
-    elif isinstance(gpu, list):
-        gpu_id = gpu[0]
+    # Auto-infer from gpu field. For shm, keep transport buffers on CPU:
+    # ShmRelay copies tensors to host shared memory anyway, so CUDA staging
+    # only inflates GPU allocator pressure.
+    if global_cfg.relay_backend == "shm":
+        gpu_id = None
     else:
-        gpu_id = gpu
+        gpu = stage_cfg.gpu
+        if gpu is None:
+            gpu_id = None  # CPU stage
+        elif isinstance(gpu, list):
+            gpu_id = gpu[0]
+        else:
+            gpu_id = gpu
 
     return {
         "relay_type": global_cfg.relay_backend,

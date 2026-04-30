@@ -112,6 +112,8 @@ def _run_stage(
     gpu_id = spec.relay_config.get("gpu_id")
     if gpu_id is None:
         gpu_id = spec.factory_args.get("gpu_id")
+    if gpu_id is None and _factory_args_use_cuda(spec.factory_args):
+        gpu_id = spec.gpu_id
     if gpu_id is not None:
         import torch
 
@@ -201,6 +203,13 @@ def _run_stage(
         await stage.run()
 
     asyncio.run(_start_and_run())
+
+
+def _factory_args_use_cuda(factory_args: Mapping[str, Any]) -> bool:
+    for value in factory_args.values():
+        if isinstance(value, str) and value.startswith("cuda"):
+            return True
+    return False
 
 
 def get_stage_process_env(

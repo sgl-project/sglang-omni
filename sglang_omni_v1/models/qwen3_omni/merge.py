@@ -48,10 +48,12 @@ def merge_for_thinker(payloads: dict[str, StagePayload]) -> StagePayload:
 
     thinker_inputs = build_thinker_inputs(state, encoder_outs)
 
-    state.encoder_outs = encoder_outs
     state.thinker_inputs = thinker_inputs
     state.encoder_inputs = {}
     _prune_preprocessing_for_thinker(state, encoder_outs)
+    # Encoder outputs have been consumed into thinker_inputs; keeping both
+    # doubles multimodal tensor payloads sent to the thinker.
+    state.encoder_outs = {}
     base.data = state.to_dict()
     return base
 

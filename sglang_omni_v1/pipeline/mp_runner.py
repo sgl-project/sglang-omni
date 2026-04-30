@@ -250,8 +250,9 @@ def _resolve_relay_config(
 ) -> dict[str, Any]:
     """Build relay config, overriding gpu_id from placement."""
     relay_config = _build_relay_config(stage_cfg, config)
-    # Override gpu_id for GPU stages
-    if stage_cfg.gpu is not None:
+    # shm copies into host shared memory, so CUDA staging only creates extra
+    # GPU allocator pressure.
+    if stage_cfg.gpu is not None and config.relay_backend != "shm":
         relay_config["gpu_id"] = gpu_id
     return relay_config
 
