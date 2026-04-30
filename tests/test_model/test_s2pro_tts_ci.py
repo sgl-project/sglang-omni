@@ -53,6 +53,7 @@ from tests.utils import (
     assert_summary_metrics,
     assert_wer_results,
     no_proxy_env,
+    server_log_file,
     start_server_from_cmd,
     stop_server,
 )
@@ -436,7 +437,7 @@ def cleanup_generated_audio_fixture():
 def server_process(tmp_path_factory: pytest.TempPathFactory):
     """Start the s2-pro server and wait until healthy."""
     port = find_available_port()
-    log_file = tmp_path_factory.mktemp("server_logs") / "server.log"
+    log_file = server_log_file(tmp_path_factory)
     cmd = [
         sys.executable,
         "-m",

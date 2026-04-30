@@ -62,6 +62,14 @@ def no_proxy_env() -> dict[str, str]:
     return {k: v for k, v in os.environ.items() if k.lower() not in proxy_keys}
 
 
+def server_log_file(tmp_path_factory, prefix: str = "server_logs") -> Path | None:
+    """Capture server logs to a file on CI; stream to the terminal locally."""
+    is_ci = os.environ.get("GITHUB_ACTIONS") == "true"
+    if not is_ci:
+        return None
+    return tmp_path_factory.mktemp(prefix) / "server.log"
+
+
 def stop_server(proc: subprocess.Popen) -> None:
     """Gracefully stop the server process group, tolerating already-dead processes."""
     try:

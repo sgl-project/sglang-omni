@@ -34,6 +34,7 @@ from tests.utils import (
     apply_slack,
     assert_speed_thresholds,
     assert_wer_partitioned,
+    server_log_file,
     start_server_from_cmd,
     stop_server,
 )
@@ -82,7 +83,7 @@ MMSU_AUDIO_THRESHOLDS = apply_slack(_MMSU_AUDIO_P95)
 @pytest.fixture(scope="module")
 def server_process(tmp_path_factory: pytest.TempPathFactory):
     port = find_available_port()
-    log_file = tmp_path_factory.mktemp("server_logs") / "server.log"
+    log_file = server_log_file(tmp_path_factory)
     cmd = [
         sys.executable,
         "examples/run_qwen3_omni_speech_server.py",
