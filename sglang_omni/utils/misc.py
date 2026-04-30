@@ -23,10 +23,10 @@ def print_server_version_banner(version: str, entry: str) -> None:
     border = "=" * width
     title = f"SGLANG-OMNI SERVER VERSION = {label}"
     entry_line = f"entry: {entry}"
-    print(border, flush=True)
+    print(f"\n{border}\n", flush=True)
     print(title.center(width), flush=True)
     print(entry_line.center(width), flush=True)
-    print(border, flush=True)
+    print(f"{border}\n", flush=True)
 
 
 def import_string(path: str) -> Any:

@@ -24,6 +24,32 @@ permissions:
 #                              ├─► stage-9-videoamme
 #                              └─► stage-10-videoamme-talker
 
+# Note (Chenyang):
+# If running locally, use (env var is case-sensitive — must be SGLANG_OMNI_SERVER_VERSION):
+# SGLANG_OMNI_SERVER_VERSION=v1     pytest tests/docs/qwen3_omni/test_docs_qwen3_omni.py -s -x
+# SGLANG_OMNI_SERVER_VERSION=legacy pytest tests/docs/qwen3_omni/test_docs_qwen3_omni.py -s -x
+# SGLANG_OMNI_SERVER_VERSION=v1     pytest tests/test_model/test_qwen3_omni_thinker_length.py -v -s -x
+# SGLANG_OMNI_SERVER_VERSION=legacy pytest tests/test_model/test_qwen3_omni_thinker_length.py -v -s -x
+# SGLANG_OMNI_SERVER_VERSION=v1     pytest tests/test_model/test_qwen3_omni_tts_ci.py -v -s -x
+# SGLANG_OMNI_SERVER_VERSION=legacy pytest tests/test_model/test_qwen3_omni_tts_ci.py -v -s -x
+# SGLANG_OMNI_SERVER_VERSION=v1     pytest tests/test_model/test_qwen3_omni_mmmu_ci.py -v -s -x
+# SGLANG_OMNI_SERVER_VERSION=legacy pytest tests/test_model/test_qwen3_omni_mmmu_ci.py -v -s -x
+# SGLANG_OMNI_SERVER_VERSION=v1     pytest tests/test_model/test_qwen3_omni_mmmu_talker_ci.py -v -s -x
+# SGLANG_OMNI_SERVER_VERSION=legacy pytest tests/test_model/test_qwen3_omni_mmmu_talker_ci.py -v -s -x
+# SGLANG_OMNI_SERVER_VERSION=v1     pytest tests/test_model/test_qwen3_omni_mmsu_ci.py -v -s -x
+# SGLANG_OMNI_SERVER_VERSION=legacy pytest tests/test_model/test_qwen3_omni_mmsu_ci.py -v -s -x
+# SGLANG_OMNI_SERVER_VERSION=v1     pytest tests/test_model/test_qwen3_omni_mmsu_talker_ci.py -v -s -x
+# SGLANG_OMNI_SERVER_VERSION=legacy pytest tests/test_model/test_qwen3_omni_mmsu_talker_ci.py -v -s -x
+# SGLANG_OMNI_SERVER_VERSION=v1     pytest tests/test_model/test_qwen3_omni_videomme_ci.py -v -s -x
+# SGLANG_OMNI_SERVER_VERSION=legacy pytest tests/test_model/test_qwen3_omni_videomme_ci.py -v -s -x
+# SGLANG_OMNI_SERVER_VERSION=v1     pytest tests/test_model/test_qwen3_omni_videomme_talker_ci.py -v -s -x
+# SGLANG_OMNI_SERVER_VERSION=legacy pytest tests/test_model/test_qwen3_omni_videomme_talker_ci.py -v -s -x
+# SGLANG_OMNI_SERVER_VERSION=v1     pytest tests/test_model/test_qwen3_omni_videoamme_ci.py -v -s -x
+# SGLANG_OMNI_SERVER_VERSION=legacy pytest tests/test_model/test_qwen3_omni_videoamme_ci.py -v -s -x
+# SGLANG_OMNI_SERVER_VERSION=v1     pytest tests/test_model/test_qwen3_omni_videoamme_talker_ci.py -v -s -x
+# SGLANG_OMNI_SERVER_VERSION=legacy pytest tests/test_model/test_qwen3_omni_videoamme_talker_ci.py -v -s -x
+
+
 jobs:
   docs:
     name: docs
