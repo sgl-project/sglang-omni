@@ -396,6 +396,10 @@ def create_vocoder_executor(
     def _vocode(payload: StagePayload) -> StagePayload:
         state = load_state(payload)
         output_codes = state.output_codes
+        if output_codes is None or output_codes.shape[1] == 0:
+            raise ValueError(
+                f"Request {payload.request_id}: S2-Pro generated no audio codec tokens"
+            )
 
         codebook_codes = output_codes[1:].to(device)
 
