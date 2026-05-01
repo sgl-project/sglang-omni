@@ -22,6 +22,8 @@ from benchmarks.eval.benchmark_omni_seedtts import (
     OmniSeedttsBenchmarkConfig,
     run_omni_seedtts_benchmark,
 )
+from benchmarks.metrics.performance import print_speed_summary
+from benchmarks.metrics.wer import print_wer_summary
 from sglang_omni.utils import find_available_port
 from tests.utils import (
     apply_slack,
@@ -99,9 +101,9 @@ def _run_wer_transcribe(
 ) -> dict:
     """Transcribe saved audio and compute WER in CI.
 
-    note (Chenyang): We invoke the benchmark as ``python -m
-    benchmarks.eval.benchmark_omni_seedtts`` rather than via a direct file
-    path so the ``benchmarks`` package is discovered via PEP 420 namespace
+    note (Chenyang): We invoke the benchmark as python -m
+    benchmarks.eval.benchmark_omni_seedtts rather than via a direct file
+    path so the benchmarks package is discovered via PEP 420 namespace
     lookup from the project root (which PYTHONPATH guarantees below).
     """
     cmd = [
@@ -211,12 +213,7 @@ def speed_output_dir(
     dataset_dir: Path,
     tmp_path_factory: pytest.TempPathFactory,
 ) -> str:
-    """Run the speed benchmark once and expose the output directory.
-
-    Keeping the benchmark in its own fixture (rather than a test body that
-    writes a module-level global) lets the WER stage consume the audio
-    without coupling test ordering through mutable globals.
-    """
+    """Run the speed benchmark once and expose the output directory."""
     output_dir = str(tmp_path_factory.mktemp("vc_nonstream"))
     results = _run_benchmark(
         server_process.port,
@@ -224,6 +221,9 @@ def speed_output_dir(
         output_dir,
     )
     summary, per_request = results["summary"], results["per_request"]
+    print_speed_summary(
+        summary, "qwen3-omni", CONCURRENCY, title="TTS Voice-Clone Speed"
+    )
     assert_summary_metrics(summary)
     assert_per_request_fields(per_request)
     assert_speed_thresholds(summary, VC_NON_STREAM_THRESHOLDS, CONCURRENCY)
@@ -235,13 +235,7 @@ def wer_audio_dir(
     server_process: subprocess.Popen,
     speed_output_dir: str,
 ) -> str:
-    """Reuse speed-benchmark audio for WER after freeing the TTS server GPU.
-
-    ``stop_server`` is called here (in addition to the ``server_process``
-    teardown) so Whisper-large-v3 can claim the GPU memory before the
-    transcribe subprocess runs. ``stop_server`` is idempotent so the later
-    teardown call is a safe no-op.
-    """
+    """Reuse speed-benchmark audio for WER after freeing the TTS server GPU."""
     stop_server(server_process)
     generated_path = Path(speed_output_dir) / "generated.json"
     assert generated_path.exists(), f"WER metadata missing: {generated_path}"
@@ -263,6 +257,7 @@ def test_voice_cloning_wer(
         str(dataset_dir / "en" / "meta.lst"),
         wer_audio_dir,
     )
+    print_wer_summary(results["summary"], "qwen3-omni")
     assert_wer_partitioned(
         results,
         max_wer_below_50_corpus=VC_WER_BELOW_50_CORPUS_MAX,

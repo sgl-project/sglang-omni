@@ -28,6 +28,9 @@ import pytest
 
 from benchmarks.dataset.prepare import DATASETS
 from benchmarks.eval.benchmark_omni_mmmu import MMMUEvalConfig, run_mmmu_eval
+from benchmarks.metrics.mmmu import print_mmmu_accuracy_summary
+from benchmarks.metrics.performance import print_speed_summary
+from benchmarks.metrics.wer import print_wer_summary
 from sglang_omni.utils import find_available_port
 from tests.utils import (
     apply_slack,
@@ -129,6 +132,12 @@ def test_mmmu_audio_wer_and_speed(
     results = asyncio.run(run_mmmu_eval(config))
 
     summary = results["summary"]
+    speed = results["speed"]
+    print_mmmu_accuracy_summary(summary, config.model)
+    print_speed_summary(speed, config.model, CONCURRENCY, title="MMMU Talker Speed")
+    if "wer" in results:
+        print_wer_summary(results["wer"]["summary"], config.model)
+
     failed = summary.get("failed", 0)
     total = summary.get("total_samples", 0)
     assert failed == 0, (
@@ -136,7 +145,6 @@ def test_mmmu_audio_wer_and_speed(
         f"(timeouts or empty responses); any failure fails the test"
     )
 
-    # Assert accuracy
     accuracy = summary["accuracy"]
     assert accuracy >= MMMU_AUDIO_MIN_ACCURACY, (
         f"MMMU audio accuracy {accuracy:.4f} ({accuracy * 100:.1f}%) < "
@@ -144,7 +152,6 @@ def test_mmmu_audio_wer_and_speed(
         f"({MMMU_AUDIO_MIN_ACCURACY * 100:.0f}%)"
     )
 
-    # Assert WER
     assert "wer" in results, "Audio WER results missing from eval output"
     assert_wer_partitioned(
         results["wer"],
@@ -152,8 +159,6 @@ def test_mmmu_audio_wer_and_speed(
         max_n_above_50=MMMU_AUDIO_N_ABOVE_50_MAX,
     )
 
-    # Assert speed
-    speed = results["speed"]
     assert_speed_thresholds(speed, MMMU_AUDIO_THRESHOLDS, CONCURRENCY)
 
 

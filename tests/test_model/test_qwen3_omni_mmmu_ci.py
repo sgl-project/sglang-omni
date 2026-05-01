@@ -20,6 +20,8 @@ import pytest
 
 from benchmarks.dataset.prepare import DATASETS
 from benchmarks.eval.benchmark_omni_mmmu import MMMUEvalConfig, run_mmmu_eval
+from benchmarks.metrics.mmmu import print_mmmu_accuracy_summary
+from benchmarks.metrics.performance import print_speed_summary
 from sglang_omni.utils import find_available_port
 from tests.utils import (
     apply_slack,
@@ -90,6 +92,10 @@ def test_mmmu_accuracy_and_speed(
     results = asyncio.run(run_mmmu_eval(config))
 
     summary = results["summary"]
+    speed = results["speed"]
+    print_mmmu_accuracy_summary(summary, config.model)
+    print_speed_summary(speed, config.model, CONCURRENCY, title="MMMU Speed")
+
     failed = summary.get("failed", 0)
     total = summary.get("total_samples", 0)
     assert failed == 0, (
@@ -103,7 +109,6 @@ def test_mmmu_accuracy_and_speed(
         f"threshold {MMMU_MIN_ACCURACY} ({MMMU_MIN_ACCURACY * 100:.0f}%)"
     )
 
-    speed = results["speed"]
     assert_speed_thresholds(speed, MMMU_THRESHOLDS, CONCURRENCY)
 
 

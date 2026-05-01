@@ -28,6 +28,8 @@ import pytest
 from benchmarks.dataset.mmsu import load_mmsu_samples
 from benchmarks.dataset.prepare import DATASETS
 from benchmarks.eval.benchmark_omni_mmsu import run as run_mmsu
+from benchmarks.metrics.mmsu import print_mmsu_summary
+from benchmarks.metrics.wer import print_wer_summary
 from sglang_omni.utils import find_available_port
 from tests.utils import (
     ServerHandle,
@@ -146,6 +148,10 @@ def test_mmsu_audio_wer_and_speed(
     )
 
     results = asyncio.run(run_mmsu(args, samples=samples))
+
+    print_mmsu_summary(results["accuracy"], args.model, speed_metrics=results["speed"])
+    if "wer" in results:
+        print_wer_summary(results["wer"]["summary"], args.model)
 
     failed = results["accuracy"].get("failed_samples", 0)
     total = results["accuracy"].get("total_samples", 0)

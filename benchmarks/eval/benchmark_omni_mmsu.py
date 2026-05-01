@@ -183,8 +183,6 @@ async def run(
         )
         speed["audio_expected"] = len(request_results)
 
-    print_mmsu_summary(metrics, args.model, speed_metrics=speed)
-
     output: dict = {"accuracy": metrics, "speed": speed}
     wer_results = None
     if audio_mode:
@@ -194,7 +192,6 @@ async def run(
             args.asr_device,
         )
         output["wer"] = wer_results
-        print_wer_summary(wer_results["summary"], args.model)
 
     if args.output_dir:
         save_mmsu_results(
@@ -254,7 +251,10 @@ def main() -> None:
 
     args = p.parse_args()
     wait_for_service(args.base_url or f"http://{args.host}:{args.port}")
-    asyncio.run(run(args))
+    output = asyncio.run(run(args))
+    print_mmsu_summary(output["accuracy"], args.model, speed_metrics=output["speed"])
+    if "wer" in output:
+        print_wer_summary(output["wer"]["summary"], args.model)
 
 
 if __name__ == "__main__":

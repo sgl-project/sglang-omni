@@ -194,13 +194,6 @@ async def run_mmmu_eval(config: MMMUEvalConfig) -> dict:
             request_results, config.lang, config.asr_device
         )
 
-    print_mmmu_accuracy_summary(summary, config.model)
-    print_speed_summary(
-        speed_metrics, config.model, config.max_concurrency, title="MMMU Speed"
-    )
-    if "wer" in results:
-        print_wer_summary(results["wer"]["summary"], config.model)
-
     if config.output_dir:
         save_json_results(results, config.output_dir, "mmmu_results.json")
 
@@ -230,7 +223,17 @@ def _config_from_args(args: argparse.Namespace) -> MMMUEvalConfig:
 
 async def benchmark(args: argparse.Namespace) -> dict:
     config = _config_from_args(args)
-    return await run_mmmu_eval(config)
+    results = await run_mmmu_eval(config)
+    print_mmmu_accuracy_summary(results["summary"], config.model)
+    print_speed_summary(
+        results["speed"],
+        config.model,
+        config.max_concurrency,
+        title="MMMU Speed",
+    )
+    if "wer" in results:
+        print_wer_summary(results["wer"]["summary"], config.model)
+    return results
 
 
 def main() -> None:

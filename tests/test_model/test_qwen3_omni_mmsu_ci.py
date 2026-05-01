@@ -21,6 +21,7 @@ import pytest
 
 from benchmarks.dataset.prepare import DATASETS
 from benchmarks.eval.benchmark_omni_mmsu import run as run_mmsu
+from benchmarks.metrics.mmsu import print_mmsu_summary
 from sglang_omni.utils import find_available_port
 from tests.utils import (
     ServerHandle,
@@ -104,6 +105,8 @@ def test_mmsu_accuracy_and_speed(
     """Run MMSU eval and assert accuracy and speed meet thresholds."""
     args = _build_args(server_process.port, str(tmp_path / "mmsu"))
     results = asyncio.run(run_mmsu(args))
+
+    print_mmsu_summary(results["accuracy"], args.model, speed_metrics=results["speed"])
 
     failed = results["accuracy"].get("failed_samples", 0)
     total = results["accuracy"].get("total_samples", 0)
