@@ -29,14 +29,11 @@ MAX_SAMPLES = 30
 # threshold reference: https://github.com/sgl-project/sglang-omni/pull/367#issue-4333687689
 VIDEOAMME_MIN_ACCURACY = 0.60
 
-# Note (Chenyang): V1 measured P95 on H200 (2026-04-29) — see
-# test_qwen3_omni_videomme_ci.py for the same V0→V1 pipeline-architecture
-# context. Single-run measurement; refine via tune-ci-thresholds skill.
 _VIDEOAMME_P95 = {
     16: {
-        "throughput_qps": 0.062,
-        "tok_per_s_agg": 0.20,
-        "latency_mean_s": 260.0,
+        "throughput_qps": 0.128,
+        "tok_per_s_agg": 0.4,
+        "latency_mean_s": 118.437,
     },
 }
 VIDEOAMME_THRESHOLDS = apply_slack(_VIDEOAMME_P95)

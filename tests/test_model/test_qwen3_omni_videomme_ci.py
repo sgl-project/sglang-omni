@@ -30,16 +30,11 @@ MAX_SAMPLES = 30
 # threshold reference: https://github.com/sgl-project/sglang-omni/pull/367#issue-4333687689
 VIDEOMME_MIN_ACCURACY = 0.53
 
-# Note (Chenyang): V1 measured P95 on H200 (2026-04-29) — the V1 pipeline
-# splits image_encoder into its own stage which adds IPC + relay overhead
-# vs the V0 single-pass thinker, so the long-context video throughput
-# baseline shifts. These numbers are from a single V1 run; the
-# tune-ci-thresholds skill should refine them with multi-run statistics.
 _VIDEOMME_P95 = {
     16: {
-        "throughput_qps": 0.060,
-        "tok_per_s_agg": 0.40,
-        "latency_mean_s": 260.0,
+        "throughput_qps": 0.127,
+        "tok_per_s_agg": 0.90,
+        "latency_mean_s": 121.264,
     },
 }
 VIDEOMME_THRESHOLDS = apply_slack(_VIDEOMME_P95)
