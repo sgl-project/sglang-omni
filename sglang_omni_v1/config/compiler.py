@@ -49,6 +49,7 @@ def compile_pipeline(config: PipelineConfig) -> tuple[Coordinator, list[Stage]]:
                 stage_map,
                 gpu_placement=config.gpu_placement,
                 cfg_map=cfg_map,
+                name_map=name_map,
             )
 
     return coordinator, stages
@@ -89,6 +90,7 @@ def _compile_stage(
         relay_config=relay_config,
         scheduler=scheduler,
         project_payload=project_payload or None,
+        stream_transports=_resolve_stream_transports(stage_cfg, name_map),
     )
 
 
@@ -112,6 +114,23 @@ def _resolve_get_next(stage_cfg: StageConfig, name_map: dict[str, str]):
         return lambda request_id, output, _t=mapped: _t
 
     return lambda request_id, output: None
+
+
+def _resolve_stream_transports(
+    stage_cfg: StageConfig,
+    name_map: dict[str, str],
+) -> dict[str, str]:
+    return {
+        name_map.get(target, target): transport
+        for target, transport in stage_cfg.stream_transport.items()
+    }
+
+
+def _resolve_stream_targets(
+    stage_cfg: StageConfig,
+    name_map: dict[str, str],
+) -> list[str]:
+    return [name_map.get(target, target) for target in stage_cfg.stream_to]
 
 
 # ------------------------------------------------------------------
@@ -299,19 +318,25 @@ def _wire_stream_targets(
     *,
     gpu_placement: dict[str, int | list[int]] | None = None,
     cfg_map: dict[str, StageConfig] | None = None,
+    name_map: dict[str, str] | None = None,
 ) -> None:
     from sglang_omni_v1.pipeline.stage.stream_queue import StreamQueue
 
-    targets = sender_cfg.stream_to
+    if name_map is None:
+        targets = sender_cfg.stream_to
+    else:
+        targets = _resolve_stream_targets(sender_cfg, name_map)
     if not targets:
         return
 
     same_gpu = _detect_same_gpu_targets(
         sender_cfg,
-        targets,
+        sender_cfg.stream_to,
         gpu_placement=gpu_placement,
         cfg_map=cfg_map,
     )
+    if name_map is not None:
+        same_gpu = {name_map.get(target, target) for target in same_gpu}
 
     sender_stage._stream_targets = targets
     sender_stage._same_gpu_targets = same_gpu

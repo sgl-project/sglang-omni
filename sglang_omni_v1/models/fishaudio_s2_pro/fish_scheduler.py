@@ -408,12 +408,11 @@ class FishScheduler:
         codes = data.latest_stream_code_chunk
         if codes is None:
             return
-        stream_codes = codes.detach().cpu()
         self.outbox.put(
             OutgoingMessage(
                 request_id=request.request_id,
                 type="stream",
-                data=stream_codes,
+                data=codes,
                 target="vocoder",
                 metadata={"modality": "audio_codes"},
             )

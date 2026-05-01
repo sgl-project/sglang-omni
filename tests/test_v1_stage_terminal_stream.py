@@ -115,5 +115,49 @@ def test_explicit_scheduler_stream_target_keeps_stage_to_stage_routing(
         assert sent[0]["target_stage"] == "vocoder"
         assert sent[0]["data"] == "codes"
         assert sent[0]["metadata"] == {"modality": "audio_codes"}
+        assert sent[0]["same_gpu_targets"] == set()
+
+    asyncio.run(_run())
+
+
+def test_stage_stream_transport_relay_disables_same_gpu_ipc(monkeypatch) -> None:
+    async def _run() -> None:
+        sent = []
+
+        async def _fake_send_stream_chunk(*args, **kwargs):
+            sent.append(kwargs)
+
+        monkeypatch.setattr(
+            "sglang_omni_v1.pipeline.stage.runtime.relay_io.send_stream_chunk",
+            _fake_send_stream_chunk,
+        )
+        control_plane = _FakeControlPlane()
+        scheduler = SimpleNamespace(outbox=queue.Queue())
+        stage = Stage(
+            name="tts_engine",
+            role="single",
+            get_next=lambda request_id, output: None,
+            gpu_id=None,
+            endpoints={"vocoder": "inproc://vocoder"},
+            control_plane=control_plane,
+            relay=_FakeRelay(),
+            scheduler=scheduler,
+            same_gpu_targets={"vocoder"},
+            stream_transports={"vocoder": "relay"},
+        )
+        stage._active_requests.add("req")
+        scheduler.outbox.put(
+            OutgoingMessage(
+                request_id="req",
+                type="stream",
+                data="codes",
+                target="vocoder",
+            )
+        )
+
+        await stage._drain_outbox_external()
+
+        assert len(sent) == 1
+        assert sent[0]["same_gpu_targets"] == set()
 
     asyncio.run(_run())

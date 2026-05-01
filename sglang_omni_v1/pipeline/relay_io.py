@@ -299,7 +299,7 @@ async def send_stream_chunk(
 
     Handles:
     - Same-GPU: CUDA IPC (zero copy)
-    - Cross-GPU: relay write + NIXL credit deadlock avoidance
+    - Relay: default transport when CUDA IPC is not selected
     """
     # ── Same-GPU CUDA IPC ──
     if same_gpu_targets and target_stage in same_gpu_targets:
@@ -315,7 +315,7 @@ async def send_stream_chunk(
         await control_plane.send_to_stage(target_stage, target_endpoint, msg)
         return
 
-    # ── Cross-GPU: relay ──
+    # ── Relay transport ──
     blob_key = f"{request_id}:stream:{from_stage}:{target_stage}:{chunk_id}"
 
     pending_ops = []

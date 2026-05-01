@@ -281,7 +281,6 @@ def test_fish_scheduler_emits_code_chunks_only_for_streaming_requests() -> None:
     assert out.request_id == "stream"
     assert out.type == "stream"
     assert out.target == "vocoder"
-    assert torch.equal(out.data, stream_codes.cpu())
-    assert out.data.device.type == "cpu"
+    assert out.data is stream_codes
     assert stream_req.data.latest_stream_code_chunk is None
     assert scheduler.outbox.empty()

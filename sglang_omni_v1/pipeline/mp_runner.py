@@ -20,6 +20,8 @@ from sglang_omni_v1.config.compiler import (
     _build_relay_config,
     _detect_same_gpu_targets,
     _resolve_factory_args,
+    _resolve_stream_targets,
+    _resolve_stream_transports,
 )
 from sglang_omni_v1.config.schema import PipelineConfig, StageConfig
 from sglang_omni_v1.pipeline import Coordinator
@@ -48,7 +50,7 @@ def _build_stage_groups(
 
     stream_receivers: set[str] = set()
     for scfg in stages_cfg:
-        for target in scfg.stream_to:
+        for target in _resolve_stream_targets(scfg, name_map):
             stream_receivers.add(target)
 
     nccl_port_counter = _NcclPortAllocator()
@@ -68,6 +70,9 @@ def _build_stage_groups(
                 gpu_placement=config.gpu_placement,
                 cfg_map=cfg_map,
             )
+            same_gpu_targets = {
+                name_map.get(target, target) for target in same_gpu_targets
+            }
 
         # Pre-resolve factory args (inject model_path, gpu_id)
         base_factory_args = _resolve_factory_args(stage_cfg, config)
@@ -86,7 +91,8 @@ def _build_stage_groups(
             coordinator_endpoint=endpoints["completion"],
             abort_endpoint=endpoints["abort"],
             stage_endpoints=stage_endpoints,
-            stream_targets=list(stage_cfg.stream_to),
+            stream_targets=_resolve_stream_targets(stage_cfg, name_map),
+            stream_transports=_resolve_stream_transports(stage_cfg, name_map),
             same_gpu_targets=same_gpu_targets,
             is_stream_receiver=stage_cfg.name in stream_receivers,
             name_map=name_map,
