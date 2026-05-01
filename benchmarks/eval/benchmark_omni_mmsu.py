@@ -76,6 +76,27 @@ Qwen3-Omni server (talker disabled) because a full-pipeline run is blocked on
 Issue #276 (talker is c=1 only at ~2 min/sample). Numbers therefore reflect
 text-only behavior and are near-identical to the `modalities=text` row;
 re-run with talker enabled once #276 lands to get true full-pipeline reference.
+
+Local v1 Pipeline Result (this workspace, 2026-05-01)
+
+This local run used the stage-6 talker prompt on the full 2000-sample
+`zhaochenyang20/mmsu-ci-2000` backing set, not the 5000-sample `ddwang2000/MMSU`
+full set summarized above, so it is not directly apples-to-apples with the
+reference rows.
+
+Accuracy (summary)
+
+| Model      | Config                         | overall_accuracy | parseable_samples | unparseable_samples | Source                                                                       |
+| ---------- | ------------------------------ | ---------------- | ----------------- | ------------------- | ---------------------------------------------------------------------------- |
+| Qwen3-Omni | stage6 talker, mmsu-ci-2000    | 70.05%           | 1996/2000         | 4                   | local v1 run [H200, 2000-sample stage-6 backing set, speech pipeline, c=1] |
+
+Speed (speed)
+
+| Model      | Config                         | latency_mean_s | latency_p95_s | throughput_qps | tok_per_s_mean | tok_per_s_agg | Source                                                                       |
+| ---------- | ------------------------------ | -------------- | ------------- | -------------- | -------------- | ------------- | ---------------------------------------------------------------------------- |
+| Qwen3-Omni | stage6 talker, mmsu-ci-2000    | 22.049         | 31.935        | 0.362          | 2.7            | 2.7           | local v1 run [H200, 2000-sample stage-6 backing set, speech pipeline, c=1] |
+
+Additional local notes: `audio_returned=2000/2000`, `rtf_mean=1.2704`.
 """
 
 
