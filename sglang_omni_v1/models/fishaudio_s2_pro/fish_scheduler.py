@@ -402,11 +402,10 @@ class FishScheduler:
 
     def _emit_stream_chunk(self, request: SchedulerRequest) -> None:
         data = request.data
-        payload = getattr(data, "stage_payload", None)
-        params = getattr(getattr(payload, "request", None), "params", None) or {}
-        if not params.get("stream"):
+        payload = data.stage_payload
+        if not payload.request.params.get("stream"):
             return
-        codes = getattr(data, "latest_stream_code_chunk", None)
+        codes = data.latest_stream_code_chunk
         if codes is None:
             return
         self.outbox.put(

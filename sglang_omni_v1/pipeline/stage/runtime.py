@@ -36,7 +36,7 @@ from sglang_omni_v1.proto import (
     SubmitMessage,
 )
 from sglang_omni_v1.relay.base import Relay, create_relay
-from sglang_omni_v1.scheduling.messages import IncomingMessage
+from sglang_omni_v1.scheduling.messages import IncomingMessage, OutgoingMessage
 
 logger = logging.getLogger(__name__)
 
@@ -615,7 +615,7 @@ class Stage:
             same_gpu_targets=self._same_gpu_targets,
         )
 
-    async def _send_stream_to_coordinator(self, out: Any) -> None:
+    async def _send_stream_to_coordinator(self, out: OutgoingMessage) -> None:
         if not self._owns_external_io:
             return
         data = out.data

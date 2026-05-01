@@ -27,8 +27,9 @@ from sglang_omni_v1.vendor.sglang.utils import make_layers
 
 logger = logging.getLogger(__name__)
 
-# Sampling defaults follow the legacy S2-Pro path and FishAudio recommendations.
 _GRAPH_TOP_K = 30
+# note(Ratish): CUDA graph capture needs a fixed top-k width; per-request top_k
+# is applied as a mask inside this buffer.
 _DEFAULT_TEMPERATURE = 0.8
 _DEFAULT_TOP_P = 0.8
 _DEFAULT_REP_PENALTY = 1.1

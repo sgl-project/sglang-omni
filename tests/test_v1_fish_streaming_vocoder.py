@@ -12,6 +12,7 @@ from sglang_omni_v1.models.fishaudio_s2_pro.fish_scheduler import FishScheduler
 from sglang_omni_v1.models.fishaudio_s2_pro.streaming_vocoder import (
     S2ProVocoderScheduler,
 )
+from sglang_omni_v1.pipeline.stage.stream_queue import StreamItem
 from sglang_omni_v1.proto import OmniRequest, StagePayload
 from sglang_omni_v1.scheduling.messages import IncomingMessage
 from sglang_omni_v1.scheduling.types import (
@@ -67,8 +68,8 @@ def _code(value: int = 1) -> torch.Tensor:
     return torch.full((11, 1), value, dtype=torch.long)
 
 
-def _chunk(value: int = 1) -> SimpleNamespace:
-    return SimpleNamespace(data=_code(value))
+def _chunk(value: int = 1) -> StreamItem:
+    return StreamItem(chunk_id=value, data=_code(value), from_stage="tts_engine")
 
 
 def _start_scheduler(
