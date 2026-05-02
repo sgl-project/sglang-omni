@@ -22,6 +22,17 @@ class Qwen3OmniPipelineConfig(PipelineConfig):
             factory=f"{_PKG}.stages.create_preprocessing_executor",
             factory_args={"thinker_max_seq_len": 8192},
             next=["image_encoder", "audio_encoder", "mm_aggregate"],
+            project_payload={
+                "image_encoder": (
+                    f"{_PKG}.request_builders.project_preprocessing_to_image_encoder"
+                ),
+                "audio_encoder": (
+                    f"{_PKG}.request_builders.project_preprocessing_to_audio_encoder"
+                ),
+                "mm_aggregate": (
+                    f"{_PKG}.request_builders.project_preprocessing_to_mm_aggregate"
+                ),
+            },
         ),
         StageConfig(
             name="image_encoder",
@@ -29,6 +40,11 @@ class Qwen3OmniPipelineConfig(PipelineConfig):
             factory_args={"device": "cuda", "dtype": None},
             gpu=0,
             next="mm_aggregate",
+            project_payload={
+                "mm_aggregate": (
+                    f"{_PKG}.request_builders.project_encoder_to_mm_aggregate"
+                )
+            },
         ),
         StageConfig(
             name="audio_encoder",
@@ -36,6 +52,11 @@ class Qwen3OmniPipelineConfig(PipelineConfig):
             factory_args={"device": "cuda", "dtype": None},
             gpu=0,
             next="mm_aggregate",
+            project_payload={
+                "mm_aggregate": (
+                    f"{_PKG}.request_builders.project_encoder_to_mm_aggregate"
+                )
+            },
         ),
         StageConfig(
             name="mm_aggregate",
@@ -71,6 +92,17 @@ class Qwen3OmniSpeechPipelineConfig(PipelineConfig):
             factory=f"{_PKG}.stages.create_preprocessing_executor",
             factory_args={"thinker_max_seq_len": 8192},
             next=["image_encoder", "audio_encoder", "mm_aggregate"],
+            project_payload={
+                "image_encoder": (
+                    f"{_PKG}.request_builders.project_preprocessing_to_image_encoder"
+                ),
+                "audio_encoder": (
+                    f"{_PKG}.request_builders.project_preprocessing_to_audio_encoder"
+                ),
+                "mm_aggregate": (
+                    f"{_PKG}.request_builders.project_preprocessing_to_mm_aggregate"
+                ),
+            },
         ),
         StageConfig(
             name="image_encoder",
@@ -78,6 +110,11 @@ class Qwen3OmniSpeechPipelineConfig(PipelineConfig):
             factory_args={"device": "cuda", "dtype": None},
             gpu=0,
             next="mm_aggregate",
+            project_payload={
+                "mm_aggregate": (
+                    f"{_PKG}.request_builders.project_encoder_to_mm_aggregate"
+                )
+            },
         ),
         StageConfig(
             name="audio_encoder",
@@ -85,6 +122,11 @@ class Qwen3OmniSpeechPipelineConfig(PipelineConfig):
             factory_args={"device": "cuda", "dtype": None},
             gpu=0,
             next="mm_aggregate",
+            project_payload={
+                "mm_aggregate": (
+                    f"{_PKG}.request_builders.project_encoder_to_mm_aggregate"
+                )
+            },
         ),
         StageConfig(
             name="mm_aggregate",

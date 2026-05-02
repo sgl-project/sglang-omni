@@ -272,6 +272,10 @@ class MultiModalResourceConnector:
         video_url: str,
         *,
         fps: float | None = None,
+        max_frames: int | None = None,
+        min_pixels: int | None = None,
+        max_pixels: int | None = None,
+        total_pixels: int | None = None,
         image_mode: str = "RGB",
         timeout: float = 30.0,
         extract_audio: bool = False,
@@ -282,6 +286,10 @@ class MultiModalResourceConnector:
         Args:
             video_url: URL to the video file.
             fps: Target FPS for video loading.
+            max_frames: Optional frame cap passed to the video reader backend.
+            min_pixels: Optional lower resize budget per frame.
+            max_pixels: Optional upper resize budget per frame.
+            total_pixels: Optional total video pixel budget.
             image_mode: Target image mode (default: "RGB").
             timeout: Timeout for HTTP requests in seconds.
             extract_audio: If True, extract audio from video and return as third element.
@@ -294,6 +302,10 @@ class MultiModalResourceConnector:
 
         video_io = VideoMediaIO(
             fps=fps,
+            max_frames=max_frames,
+            min_pixels=min_pixels,
+            max_pixels=max_pixels,
+            total_pixels=total_pixels,
             image_mode=image_mode,
             extract_audio=extract_audio,
             audio_target_sr=audio_target_sr,

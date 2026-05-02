@@ -35,6 +35,8 @@ class SimpleScheduler:
         batch_compute_fn: Callable | None = None,
         max_batch_size: int = 1,
         max_batch_wait_ms: int = 0,
+        request_cost_fn: Callable[[Any], int] | None = None,
+        max_batch_cost: int | None = None,
     ):
         self.inbox: _queue_mod.Queue[IncomingMessage] = _queue_mod.Queue()
         self.outbox: _queue_mod.Queue[OutgoingMessage] = _queue_mod.Queue()
@@ -42,8 +44,17 @@ class SimpleScheduler:
         self._batch_fn = batch_compute_fn
         self._max_batch_size = max(int(max_batch_size), 1)
         self._max_batch_wait_s = max(float(max_batch_wait_ms), 0.0) / 1000.0
+        self._request_cost_fn = request_cost_fn
+        self._max_batch_cost = (
+            max(int(max_batch_cost), 0) if max_batch_cost is not None else None
+        )
         self._running = False
         self._pending_messages: collections.deque[IncomingMessage] = collections.deque()
+
+    def _message_cost(self, msg: IncomingMessage) -> int:
+        if self._request_cost_fn is None or msg.type != "new_request":
+            return 0
+        return max(int(self._request_cost_fn(msg.data)), 0)
 
     def _next_message(self) -> IncomingMessage | None:
         if self._pending_messages:
@@ -58,6 +69,7 @@ class SimpleScheduler:
         if self._batch_fn is None or self._max_batch_size <= 1:
             return batch
 
+        batch_cost = self._message_cost(first_msg)
         deadline = time.monotonic() + self._max_batch_wait_s
         while len(batch) < self._max_batch_size:
             try:
@@ -72,6 +84,12 @@ class SimpleScheduler:
                     break
 
             if msg.type == "new_request":
+                if self._max_batch_cost is not None:
+                    msg_cost = self._message_cost(msg)
+                    if batch and batch_cost + msg_cost > self._max_batch_cost:
+                        self._pending_messages.appendleft(msg)
+                        break
+                    batch_cost += msg_cost
                 batch.append(msg)
             else:
                 self._pending_messages.append(msg)
@@ -141,8 +159,9 @@ class SimpleScheduler:
                     continue
 
                 if msg.type == "new_request":
-                    batch = self._collect_batch(msg)
+                    batch = [msg]
                     try:
+                        batch = self._collect_batch(msg)
                         self._run_batch(batch, loop)
                     except Exception as exc:
                         logger.exception(

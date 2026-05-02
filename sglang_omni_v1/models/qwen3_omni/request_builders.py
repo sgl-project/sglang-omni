@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import collections
+from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any
 
@@ -18,16 +19,17 @@ from sglang_omni_v1.proto import StagePayload
 from sglang_omni_v1.scheduling.messages import OutgoingMessage
 from sglang_omni_v1.scheduling.sglang_backend import SGLangARRequestData
 
+IMAGE_STAGE = "image_encoder"
+AUDIO_STAGE = "audio_encoder"
 
-# Lightweight request data types (previously in engines/omni/runtime/)
+
+@dataclass(slots=True)
 class EncoderRequestData:
-    """Encoder request — just wraps a dict of inputs."""
+    """Typed encoder request data for pre-thinker stages."""
 
-    def __init__(self, input_dict: dict | None = None, **kwargs):
-        self.input_dict = input_dict or kwargs
-
-    def get(self, key, default=None):
-        return self.input_dict.get(key, default)
+    model_inputs: dict[str, Any]
+    cache_key: str | None = None
+    skip_result: dict[str, Any] | None = None
 
 
 class ARRequestData:
@@ -39,17 +41,17 @@ def build_encoder_request(
 ) -> EncoderRequestData:
     inputs = state.encoder_inputs.get(stage_name)
     if not isinstance(inputs, dict) or not inputs:
-        return EncoderRequestData(input_dict={"_skip": True, "_result": {}})
+        return EncoderRequestData(model_inputs={}, skip_result={})
     if inputs.get("_skip"):
         skip_result = inputs.get("_result")
         return EncoderRequestData(
-            input_dict=inputs,
-            output_dict=skip_result if isinstance(skip_result, dict) else {},
+            model_inputs={},
+            skip_result=skip_result if isinstance(skip_result, dict) else {},
         )
     cache_key = inputs.get("cache_key")
     model_inputs = {k: v for k, v in inputs.items() if k != "cache_key"}
     return EncoderRequestData(
-        input_dict=model_inputs,
+        model_inputs=model_inputs,
         cache_key=str(cache_key) if cache_key is not None else None,
     )
 
@@ -61,17 +63,127 @@ def apply_encoder_result(
     result: Any,
 ) -> None:
     if isinstance(result, EncoderRequestData):
-        if result.output_dict is not None:
-            encoder_out = result.output_dict
-        elif result.embeddings is not None:
-            encoder_out = result.embeddings
-        else:
-            encoder_out = {}
+        encoder_out = result.skip_result if result.skip_result is not None else {}
     else:
         encoder_out = result if isinstance(result, dict) else {"result": result}
 
     state.encoder_outs[stage_name] = encoder_out
     state.engine_outputs[stage_name] = encoder_out
+
+
+def build_lightweight_mm_inputs(mm_inputs: dict[str, Any]) -> dict[str, Any]:
+    mm_image = mm_inputs.get("image", {})
+    mm_audio = mm_inputs.get("audio", {})
+    mm_video = mm_inputs.get("video", {})
+    return {
+        "image": _select_present_fields(mm_image, ("image_grid_thw",)),
+        "audio": _select_present_fields(
+            mm_audio,
+            ("feature_attention_mask", "audio_feature_lengths"),
+        ),
+        "video": _select_present_fields(
+            mm_video,
+            ("video_grid_thw", "video_second_per_grid", "use_audio_in_video"),
+        ),
+    }
+
+
+def project_preprocessing_to_image_encoder(payload: StagePayload) -> StagePayload:
+    return _project_preprocessing_to_encoder(payload, stage_name=IMAGE_STAGE)
+
+
+def project_preprocessing_to_audio_encoder(payload: StagePayload) -> StagePayload:
+    return _project_preprocessing_to_encoder(payload, stage_name=AUDIO_STAGE)
+
+
+def project_preprocessing_to_mm_aggregate(payload: StagePayload) -> StagePayload:
+    state = PipelineState.from_dict(payload.data)
+    projected = PipelineState(
+        prompt=dict(state.prompt) if isinstance(state.prompt, dict) else None,
+        mm_inputs=build_lightweight_mm_inputs(state.mm_inputs),
+        encoder_inputs=_project_encoder_input_metadata(state.encoder_inputs),
+        stream_state=dict(state.stream_state),
+    )
+    return _payload_with_state(payload, projected)
+
+
+def project_encoder_to_mm_aggregate(payload: StagePayload) -> StagePayload:
+    state = PipelineState.from_dict(payload.data)
+    stage_name = _single_encoder_stage_name(state)
+    encoder_out = state.encoder_outs.get(stage_name, {})
+    projected = PipelineState(encoder_outs={stage_name: encoder_out})
+    return _payload_with_state(payload, projected)
+
+
+def _project_preprocessing_to_encoder(
+    payload: StagePayload,
+    *,
+    stage_name: str,
+) -> StagePayload:
+    state = PipelineState.from_dict(payload.data)
+    projected = PipelineState(
+        encoder_inputs=_select_encoder_inputs(
+            state.encoder_inputs, stage_name=stage_name
+        )
+    )
+    return _payload_with_state(payload, projected)
+
+
+def _payload_with_state(payload: StagePayload, state: PipelineState) -> StagePayload:
+    return StagePayload(
+        request_id=payload.request_id,
+        request=payload.request,
+        data=state.to_dict(),
+    )
+
+
+def _select_encoder_inputs(
+    encoder_inputs: dict[str, dict[str, Any]],
+    *,
+    stage_name: str,
+) -> dict[str, dict[str, Any]]:
+    stage_inputs = encoder_inputs.get(stage_name)
+    if not isinstance(stage_inputs, dict):
+        return {}
+    return {stage_name: dict(stage_inputs)}
+
+
+def _project_encoder_input_metadata(
+    encoder_inputs: dict[str, dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    projected: dict[str, dict[str, Any]] = {}
+    for stage_name, stage_inputs in encoder_inputs.items():
+        if not isinstance(stage_inputs, dict):
+            continue
+        stage_metadata: dict[str, Any] = {}
+        cache_key = stage_inputs.get("cache_key")
+        if cache_key is not None:
+            stage_metadata["cache_key"] = cache_key
+        if stage_inputs.get("_skip"):
+            stage_metadata["_skip"] = True
+        if stage_metadata:
+            projected[stage_name] = stage_metadata
+    return projected
+
+
+def _select_present_fields(
+    source: dict[str, Any],
+    keys: tuple[str, ...],
+) -> dict[str, Any]:
+    selected: dict[str, Any] = {}
+    for key in keys:
+        value = source.get(key)
+        if value is not None:
+            selected[key] = value
+    return selected
+
+
+def _single_encoder_stage_name(state: PipelineState) -> str:
+    if len(state.encoder_outs) != 1:
+        raise ValueError(
+            f"Expected exactly one encoder output in payload, got {sorted(state.encoder_outs)}"
+        )
+    return next(iter(state.encoder_outs))
 
 
 def build_thinker_request(

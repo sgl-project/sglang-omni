@@ -63,6 +63,7 @@ class Stage:
         relay: Relay | None = None,
         relay_config: dict[str, Any] | None = None,
         scheduler: Any = None,
+        project_payload: dict[str, Callable[[Any], Any]] | None = None,
         stream_targets: list[str] | None = None,
         same_gpu_targets: set[str] | None = None,
         tp_fanout: TPLeaderFanout | None = None,
@@ -75,6 +76,7 @@ class Stage:
         self.control_plane = control_plane
         self.input_handler = input_handler or DirectInput()
         self.scheduler = scheduler
+        self._project_payload = project_payload or {}
         self._stream_targets = stream_targets or []
         self._same_gpu_targets = same_gpu_targets or set()
         self._tp_fanout = tp_fanout
@@ -567,7 +569,11 @@ class Stage:
         if endpoint is None:
             logger.warning("Stage %s: no endpoint for %s", self.name, target)
             return
-        metadata, op = await relay_io.write_payload(self.relay, request_id, payload)
+        projector = self._project_payload.get(target)
+        projected_payload = projector(payload) if projector is not None else payload
+        metadata, op = await relay_io.write_payload(
+            self.relay, request_id, projected_payload
+        )
         msg = DataReadyMessage(
             request_id=request_id,
             from_stage=self.name,

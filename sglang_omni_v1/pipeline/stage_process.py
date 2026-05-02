@@ -47,6 +47,7 @@ class StageProcessSpec:
     # Fan-in
     wait_for: list[str] | None = None
     merge_fn: str | None = None
+    project_payload: dict[str, str] = field(default_factory=dict)
 
     # Relay
     relay_config: dict[str, Any] = field(default_factory=dict)
@@ -152,6 +153,10 @@ def _run_stage(
         input_handler = AggregatedInput(sources=sources, merge=merge_fn)
     else:
         input_handler = DirectInput()
+    project_payload = {
+        target: import_string(dotted_path)
+        for target, dotted_path in spec.project_payload.items()
+    }
 
     if spec.owns_external_io:
         control_plane = StageControlPlane(
@@ -187,6 +192,7 @@ def _run_stage(
         input_handler=input_handler,
         relay_config=spec.relay_config,
         scheduler=scheduler,
+        project_payload=project_payload or None,
         stream_targets=spec.stream_targets or None,
         same_gpu_targets=spec.same_gpu_targets or None,
         tp_fanout=tp_fanout,

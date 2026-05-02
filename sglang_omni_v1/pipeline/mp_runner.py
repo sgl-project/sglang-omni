@@ -10,7 +10,6 @@ Architecture
 from __future__ import annotations
 
 import asyncio
-import inspect
 import logging
 import multiprocessing
 import socket
@@ -20,6 +19,7 @@ from sglang_omni_v1.config.compiler import (
     _allocate_endpoints,
     _build_relay_config,
     _detect_same_gpu_targets,
+    _resolve_factory_args,
 )
 from sglang_omni_v1.config.schema import PipelineConfig, StageConfig
 from sglang_omni_v1.pipeline import Coordinator
@@ -79,6 +79,10 @@ def _build_stage_groups(
             is_terminal=stage_cfg.terminal,
             wait_for=stage_cfg.wait_for,
             merge_fn=stage_cfg.merge_fn,
+            project_payload={
+                name_map.get(target, target): dotted_path
+                for target, dotted_path in stage_cfg.project_payload.items()
+            },
             coordinator_endpoint=endpoints["completion"],
             abort_endpoint=endpoints["abort"],
             stage_endpoints=stage_endpoints,
@@ -129,27 +133,6 @@ def _resolve_gpu_ids(stage_cfg: StageConfig, config: PipelineConfig) -> list[int
             f"entries but tp_size={stage_cfg.tp_size}"
         )
     return list(placement)
-
-
-def _resolve_factory_args(
-    stage_cfg: StageConfig, config: PipelineConfig
-) -> dict[str, Any]:
-    """Pre-resolve factory args: inject model_path and gpu_id if accepted."""
-    from sglang_omni_v1.utils import import_string
-
-    args = dict(stage_cfg.factory_args)
-    factory = import_string(stage_cfg.factory)
-    sig = inspect.signature(factory)
-
-    if "model_path" in sig.parameters and "model_path" not in args:
-        args["model_path"] = config.model_path
-
-    if "gpu_id" in sig.parameters and "gpu_id" not in args:
-        placement = config.gpu_placement.get(stage_cfg.name, 0)
-        gpu_id = placement[0] if isinstance(placement, list) else placement
-        args["gpu_id"] = gpu_id
-
-    return args
 
 
 def _build_single_stage_spec(
