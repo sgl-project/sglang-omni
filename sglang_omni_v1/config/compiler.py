@@ -66,6 +66,7 @@ def _compile_stage(
     get_next = _resolve_get_next(stage_cfg, name_map)
     input_handler = _create_input_handler(stage_cfg, name_map=name_map)
     factory_args = _resolve_factory_args(stage_cfg, global_cfg)
+    project_payload = _resolve_project_payload(stage_cfg, name_map=name_map)
     relay_config = _build_relay_config(stage_cfg, global_cfg)
 
     scheduler = factory(**factory_args)
@@ -87,6 +88,7 @@ def _compile_stage(
         input_handler=input_handler,
         relay_config=relay_config,
         scheduler=scheduler,
+        project_payload=project_payload or None,
     )
 
 
@@ -139,6 +141,9 @@ def _resolve_factory_args(
 ) -> dict[str, Any]:
     """Resolve factory args, injecting model_path and gpu_id if accepted."""
     args = dict(stage_cfg.factory_args)
+    stage_overrides = global_cfg.runtime_overrides.get(stage_cfg.name, {})
+    if stage_overrides:
+        args.update(stage_overrides)
     factory = import_string(stage_cfg.factory)
     sig = inspect.signature(factory)
 
@@ -151,6 +156,18 @@ def _resolve_factory_args(
         args["gpu_id"] = gpu_id
 
     return args
+
+
+def _resolve_project_payload(
+    stage_cfg: StageConfig,
+    *,
+    name_map: dict[str, str],
+) -> dict[str, Any]:
+    project_payload: dict[str, Any] = {}
+    for target, dotted_path in stage_cfg.project_payload.items():
+        mapped_target = name_map.get(target, target)
+        project_payload[mapped_target] = import_string(dotted_path)
+    return project_payload
 
 
 # ------------------------------------------------------------------

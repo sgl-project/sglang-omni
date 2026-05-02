@@ -72,6 +72,9 @@ class StageConfig(BaseModel):
     # --- Streaming ---
     stream_to: list[str] = Field(default_factory=list)
 
+    # --- Route-specific payload projection ---
+    project_payload: dict[str, str] = Field(default_factory=dict)
+
     # --- Relay (auto-inferred from gpu when None) ---
     relay: RelayConfig | None = None
 
@@ -87,6 +90,7 @@ class PipelineConfig(BaseModel):
     entry_stage: str | None = None
     relay_backend: Literal["shm", "nccl", "nixl", "mooncake"] = "shm"
     fused_stages: list[list[str]] = Field(default_factory=list)
+    runtime_overrides: dict[str, dict[str, Any]] = Field(default_factory=dict)
     endpoints: EndpointsConfig = Field(default_factory=EndpointsConfig)
     completion_endpoint: str | None = None
     abort_endpoint: str | None = None
@@ -161,6 +165,17 @@ class PipelineConfig(BaseModel):
                     raise ValueError(
                         f"Stage {s.name!r} stream_to references unknown stage {t!r}"
                     )
+            for t in s.project_payload:
+                if t not in names:
+                    raise ValueError(
+                        f"Stage {s.name!r} project_payload references unknown stage {t!r}"
+                    )
+
+        for stage_name in self.runtime_overrides:
+            if stage_name not in names:
+                raise ValueError(
+                    f"runtime_overrides references unknown stage {stage_name!r}"
+                )
 
     def _validate_fusion(self) -> None:
         names = [s.name for s in self.stages]

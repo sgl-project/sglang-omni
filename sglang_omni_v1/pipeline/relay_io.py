@@ -24,6 +24,14 @@ from sglang_omni_v1.relay.base import Relay
 logger = logging.getLogger(__name__)
 
 
+def _dtype_alignment(dtype: torch.dtype) -> int:
+    return max(torch.empty((), dtype=dtype).element_size(), 1)
+
+
+def _pad_offset(offset: int, alignment: int) -> int:
+    return (-offset) % alignment
+
+
 # ---------------------------------------------------------------------------
 # Tensor extraction / restoration (recursive, nested dicts/lists)
 # ---------------------------------------------------------------------------
@@ -111,6 +119,12 @@ async def write_payload(
             flat = tensor.contiguous().view(torch.uint8).reshape(-1)
             if flat.device != transport_device:
                 flat = flat.to(device=transport_device)
+            padding = _pad_offset(offset, _dtype_alignment(tensor.dtype))
+            if padding:
+                tensor_buffers.append(
+                    torch.zeros(padding, dtype=torch.uint8, device=transport_device)
+                )
+                offset += padding
             tensor_buffers.append(flat)
             tensor_info.append(
                 {
@@ -167,7 +181,7 @@ async def read_payload(
             size = info["size"]
             tensor_bytes = recv_tensor[offset : offset + size]
             dtype = getattr(torch, dtype_str.replace("torch.", ""))
-            tensor = tensor_bytes.clone().view(dtype).reshape(shape)
+            tensor = tensor_bytes.view(dtype).reshape(shape)
             tensor_dict[path] = tensor
 
     restored_data = restore_tensors(payload_no_tensors.data, tensor_dict)
@@ -192,11 +206,23 @@ async def write_blob(
 ) -> tuple[dict[str, Any], Any]:
     """Write a raw tensor to relay. Returns (metadata, relay_op)."""
     flat = tensor.contiguous().view(torch.uint8).reshape(-1)
+    transport_device = torch.device(getattr(relay, "device", "cpu"))
+    if flat.device != transport_device:
+        flat = flat.to(device=transport_device)
+    padding = _pad_offset(0, _dtype_alignment(tensor.dtype))
+    if padding:
+        flat = torch.cat(
+            [
+                torch.zeros(padding, dtype=torch.uint8, device=transport_device),
+                flat,
+            ]
+        )
     op = await relay.put_async(flat, request_id=key)
     metadata = {
         "relay_info": op.metadata,
         "tensor_shape": list(tensor.shape),
         "tensor_dtype": str(tensor.dtype),
+        "tensor_offset": padding,
     }
     return metadata, op
 
@@ -211,6 +237,7 @@ async def read_blob(
     relay_info = metadata["relay_info"]
     shape = metadata["tensor_shape"]
     dtype_str = metadata["tensor_dtype"]
+    offset = int(metadata.get("tensor_offset", 0))
 
     data_size = relay_info["transfer_info"]["size"]
     recv_buf = torch.zeros(data_size, dtype=torch.uint8, device=device)
@@ -220,7 +247,7 @@ async def read_blob(
     await op.wait_for_completion()
 
     dtype = getattr(torch, dtype_str.replace("torch.", ""))
-    return recv_buf.view(dtype).reshape(shape)
+    return recv_buf[offset:].view(dtype).reshape(shape)
 
 
 # ---------------------------------------------------------------------------
