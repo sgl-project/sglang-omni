@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 
 from sglang_omni_v1.client import (
     Client,
+    ClientError,
     CompletionResult,
     CompletionStreamChunk,
     GenerateChunk,
@@ -95,6 +96,22 @@ class DummyClient:
         return {"running": True}
 
 
+class ErrorCompletionClient:
+    """Client stand-in that raises from the non-streaming completion path."""
+
+    def __init__(self, exc: Exception):
+        self._exc = exc
+
+    async def completion(
+        self, request: Any, *, request_id: str, audio_format: str = "wav"
+    ) -> CompletionResult:
+        del request, request_id, audio_format
+        raise self._exc
+
+    def health(self) -> dict[str, Any]:
+        return {"running": True}
+
+
 class MockSpeechCoordinator:
     """Minimal coordinator mock for speech E2E tests."""
 
@@ -128,6 +145,56 @@ def test_chat_completions_non_stream() -> None:
     )
     assert resp.status_code == 200
     assert resp.json()["choices"][0]["message"]["content"] == "hello"
+
+
+def test_chat_completions_client_context_length_error_returns_400() -> None:
+    client = TestClient(
+        create_app(
+            ErrorCompletionClient(
+                ClientError(
+                    "Requested token count exceeds the model's maximum context length"
+                )
+            )
+        )
+    )
+
+    resp = client.post(
+        "/v1/chat/completions",
+        json={"model": "test", "messages": [{"role": "user", "content": "hi"}]},
+    )
+
+    assert resp.status_code == 400
+    assert "maximum context length" in resp.json()["detail"]
+
+
+def test_chat_completions_context_length_exception_returns_400() -> None:
+    client = TestClient(
+        create_app(
+            ErrorCompletionClient(
+                ValueError("The input is longer than the model's context length")
+            )
+        )
+    )
+
+    resp = client.post(
+        "/v1/chat/completions",
+        json={"model": "test", "messages": [{"role": "user", "content": "hi"}]},
+    )
+
+    assert resp.status_code == 400
+    assert "context length" in resp.json()["detail"]
+
+
+def test_chat_completions_unrelated_exception_returns_500() -> None:
+    client = TestClient(create_app(ErrorCompletionClient(RuntimeError("boom"))))
+
+    resp = client.post(
+        "/v1/chat/completions",
+        json={"model": "test", "messages": [{"role": "user", "content": "hi"}]},
+    )
+
+    assert resp.status_code == 500
+    assert resp.json()["detail"] == "boom"
 
 
 def test_chat_completions_stream() -> None:
