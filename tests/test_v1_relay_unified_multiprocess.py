@@ -32,6 +32,7 @@ def sender_process(
 ):
     relay_type = config.get("relay_type", "nixl")
     gpu_id = config.get("gpu_id")
+    worker_id = config.get("worker_id", "sender_worker")
     device = (
         f"cuda:{gpu_id}" if gpu_id is not None and torch.cuda.is_available() else "cpu"
     )
@@ -82,7 +83,7 @@ def sender_process(
 
                 data_np = np.frombuffer(serialized_data, dtype=np.uint8).copy()
                 transport_tensor[:data_len].copy_(torch.from_numpy(data_np))
-                req_id = f"req_{i}"
+                req_id = f"{worker_id}:req_{i}"
                 readable_op = await connector.put_async(
                     transport_tensor[:data_len],
                     request_id=req_id,
@@ -116,7 +117,14 @@ def sender_process(
             connector.close()
 
 
-def receiver_process(config, meta_queue, num_transfers, results, init_barrier=None):
+def receiver_process(
+    config,
+    meta_queue,
+    num_transfers,
+    results,
+    init_barrier=None,
+    expected_senders=1,
+):
     relay_type = config.get("relay_type", "nixl")
     gpu_id = config.get("gpu_id")
     device = (
@@ -148,11 +156,13 @@ def receiver_process(config, meta_queue, num_transfers, results, init_barrier=No
     async def _async_receiver():
         try:
             count = 0
-            while count < num_transfers:
+            completed_senders = 0
+            while count < num_transfers and completed_senders < expected_senders:
                 try:
                     item = meta_queue.get(timeout=60)
                     if item is None:
-                        break
+                        completed_senders += 1
+                        continue
                     remote_meta = item["metadata"]
                     if "transfer_info" in remote_meta and remote_meta["transfer_info"]:
                         data_size = remote_meta["transfer_info"]["size"]
@@ -298,6 +308,93 @@ def test_multiprocess_transfer(relay_type):
         assert results.get("transfers_completed", 0) == num_transfers
     finally:
         for process in (sender, receiver):
+            if process.is_alive():
+                process.terminate()
+                process.join(timeout=5)
+
+
+def test_multiprocess_two_senders_one_receiver_nixl():
+    if torch.cuda.is_available() and torch.cuda.device_count() < 3:
+        pytest.skip("NIXL two-sender transfer requires at least 3 GPUs")
+
+    master_port = str(find_available_port())
+    master_addr = "127.0.0.1"
+    sender_configs = [
+        {
+            "worker_id": "worker0",
+            "relay_type": "nixl",
+            "master_addr": master_addr,
+            "master_port": master_port,
+            "gpu_id": 0,
+        },
+        {
+            "worker_id": "worker1",
+            "relay_type": "nixl",
+            "master_addr": master_addr,
+            "master_port": master_port,
+            "gpu_id": 1 if torch.cuda.device_count() > 1 else 0,
+        },
+    ]
+    receiver_config = {
+        "worker_id": "worker2",
+        "relay_type": "nixl",
+        "master_addr": master_addr,
+        "master_port": master_port,
+        "gpu_id": 2 if torch.cuda.device_count() > 2 else 0,
+    }
+
+    meta_queue = multiprocessing.Queue()
+    results = multiprocessing.Manager().dict()
+    transfers_per_sender = 3
+    total_transfers = transfers_per_sender * len(sender_configs)
+    data_size = 50000
+
+    senders = [
+        multiprocessing.Process(
+            target=sender_process,
+            args=(config, meta_queue, transfers_per_sender, data_size, results),
+        )
+        for config in sender_configs
+    ]
+    receiver = multiprocessing.Process(
+        target=receiver_process,
+        args=(
+            receiver_config,
+            meta_queue,
+            total_transfers,
+            results,
+            None,
+            len(sender_configs),
+        ),
+    )
+    processes = [*senders, receiver]
+
+    try:
+        for sender in senders:
+            sender.start()
+        time.sleep(2)
+        receiver.start()
+
+        for process in processes:
+            process.join(timeout=300)
+
+        failed = [process for process in processes if process.exitcode != 0]
+        if failed:
+            error_msg = "Process failed (nixl two-sender): " + ", ".join(
+                f"pid={process.pid}, exitcode={process.exitcode}" for process in failed
+            )
+            if "sender_error" in results:
+                error_msg += f"\n[Sender Error]: {results['sender_error']}"
+            if "receiver_error" in results:
+                error_msg += f"\n[Receiver Error]: {results['receiver_error']}"
+            pytest.fail(error_msg)
+        if "sender_error" in results:
+            pytest.fail(f"Sender logical error:\n{results['sender_error']}")
+        if "receiver_error" in results:
+            pytest.fail(f"Receiver logical error:\n{results['receiver_error']}")
+        assert results.get("transfers_completed", 0) == total_transfers
+    finally:
+        for process in processes:
             if process.is_alive():
                 process.terminate()
                 process.join(timeout=5)
