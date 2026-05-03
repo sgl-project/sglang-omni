@@ -69,6 +69,7 @@ jobs:
 
   stage-1-non-streaming:
     name: stage 1 - non-streaming
+    if: false  # DISABLED: V0 CI will be removed
     needs: docs
     runs-on: [self-hosted]
     timeout-minutes: 5
@@ -109,6 +110,7 @@ jobs:
 
   stage-2-streaming:
     name: stage 2 - streaming
+    if: false  # DISABLED: V0 CI will be removed
     needs: docs
     runs-on: [self-hosted]
     timeout-minutes: 5
@@ -149,6 +151,7 @@ jobs:
 
   stage-3-consistency:
     name: stage 3 - consistency
+    if: false  # DISABLED: V0 CI will be removed
     needs: [stage-1-non-streaming, stage-2-streaming]
     runs-on: [self-hosted]
     timeout-minutes: 5
