@@ -175,7 +175,13 @@ async def _run_server(
                 model_name=model_name or pipeline_config.name,
             )
 
-            config = uvicorn.Config(app, host=host, port=port, log_level=log_level)
+            config = uvicorn.Config(
+                app,
+                host=host,
+                port=port,
+                log_level=log_level,
+                timeout_keep_alive=120,
+            )
             server = uvicorn.Server(config)
             await server.serve()
         finally:
@@ -208,7 +214,13 @@ async def _run_server(
             profiler_ctl = ProfilerControlClient(stage_endpoints)
             _mount_profiler_routes(app, profiler_ctl, profiler_dir)
 
-            config = uvicorn.Config(app, host=host, port=port, log_level=log_level)
+            config = uvicorn.Config(
+                app,
+                host=host,
+                port=port,
+                log_level=log_level,
+                timeout_keep_alive=120,
+            )
             server = uvicorn.Server(config)
             await server.serve()
         finally:

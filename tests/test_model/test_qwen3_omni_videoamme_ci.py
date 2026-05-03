@@ -27,13 +27,13 @@ CONCURRENCY = 16
 MAX_SAMPLES = 30
 
 # threshold reference: https://github.com/sgl-project/sglang-omni/pull/367#issue-4333687689
-VIDEOAMME_MIN_ACCURACY = 0.60
+VIDEOAMME_MIN_ACCURACY = 0.65
 
 _VIDEOAMME_P95 = {
     16: {
-        "throughput_qps": 0.128,
-        "tok_per_s_agg": 0.4,
-        "latency_mean_s": 118.437,
+        "throughput_qps": 0.222,
+        "tok_per_s_agg": 0.8,
+        "latency_mean_s": 55.085,
     },
 }
 VIDEOAMME_THRESHOLDS = apply_slack(_VIDEOAMME_P95)
