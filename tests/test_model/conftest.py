@@ -8,7 +8,6 @@ import sys
 import pytest
 
 S2PRO_TTS_ALLOWED_CONCURRENCIES = (1, 2, 4, 8, 16)
-# Also used in .github/workflows/test-s2pro-ci.yaml — keep in sync.
 S2PRO_STAGE_NONSTREAM = "s2pro-stage-1-nonstream"
 S2PRO_STAGE_STREAM = "s2pro-stage-2-stream"
 S2PRO_STAGE_CONSISTENCY = "s2pro-stage-3-consistency"

@@ -16,7 +16,7 @@ permissions:
 jobs:
   unit-test:
     # CI gate — runs on workflow_dispatch, or on non-draft PRs carrying the `run-ci` label.
-    # Keep in sync with the same gate in test.yaml / test-qwen3-omni-ci.yaml / test-s2pro-ci.yaml.
+    # Keep in sync with the same gate in test.yaml / test-qwen3-omni-ci-v1.yaml / test-s2pro-ci-v1.yaml.
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (!github.event.pull_request.draft &&
