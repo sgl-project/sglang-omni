@@ -39,7 +39,7 @@ STARTUP_TIMEOUT = 300
 
 MMSU_MIN_ACCURACY = 0.69
 
-# Threshold reference: https://github.com/sgl-project/sglang-omni/pull/337#issuecomment-4321253588
+# Threshold reference: https://github.com/sgl-project/sglang-omni/pull/382#issuecomment-4366925373
 _MMSU_P95 = {
     8: {
         "throughput_qps": 30.036,

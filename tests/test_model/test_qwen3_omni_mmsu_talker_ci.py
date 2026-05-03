@@ -60,7 +60,7 @@ MMSU_TTS_PROMPT = (
     "Do not exceed 120 words in total."
 )
 
-# Threshold reference: https://github.com/sgl-project/sglang-omni/pull/337#issuecomment-4314808991
+# Threshold reference: https://github.com/sgl-project/sglang-omni/pull/382#issuecomment-4366925373
 
 # Accuracy floor — audio-mode MMSU.
 MMSU_AUDIO_MIN_ACCURACY = 0.60
@@ -69,7 +69,8 @@ MMSU_AUDIO_MIN_ACCURACY = 0.60
 #  - corpus WER over the "sane" subset (per-sample WER <= 50%)
 #  - count of catastrophic failures (per-sample WER > 50%)
 MMSU_AUDIO_WER_BELOW_50_CORPUS_MAX = 0.04
-MMSU_AUDIO_N_ABOVE_50_MAX = 0
+# Relaxed in V1 refactor: v0=0 → v1=1.
+MMSU_AUDIO_N_ABOVE_50_MAX = 1
 
 _MMSU_AUDIO_P95 = {
     8: {

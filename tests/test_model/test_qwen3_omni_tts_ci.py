@@ -48,7 +48,7 @@ DATASET_CACHE_ENV = "SGLANG_SEEDTTS50_DIR"
 STARTUP_TIMEOUT = 300
 WER_TIMEOUT = 600
 
-# Threshold reference: https://github.com/sgl-project/sglang-omni/pull/337#issuecomment-4321089804
+# Threshold reference: https://github.com/sgl-project/sglang-omni/pull/382#issuecomment-4366925373
 VC_WER_BELOW_50_CORPUS_MAX = 0.03
 VC_N_ABOVE_50_MAX = 0
 

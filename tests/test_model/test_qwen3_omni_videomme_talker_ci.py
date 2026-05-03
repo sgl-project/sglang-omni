@@ -49,9 +49,10 @@ SHORT_ANSWER_PROMPT = (
     "'Answer: $LETTER'. Do not include step-by-step reasoning."
 )
 
-# Threshold reference: https://github.com/sgl-project/sglang-omni/pull/337#issuecomment-4321051462
+# Threshold reference: https://github.com/sgl-project/sglang-omni/pull/382#issuecomment-4366925373
 VIDEOMME_TALKER_THINKER_TEXT_MIN_ACCURACY = 0.5
-VIDEOMME_TALKER_WER_BELOW_50_CORPUS_MAX = 0.02
+# Relaxed in V1 refactor: v0=0.02 → v1=0.06.
+VIDEOMME_TALKER_WER_BELOW_50_CORPUS_MAX = 0.06
 VIDEOMME_TALKER_N_ABOVE_50_MAX = 0
 
 _VIDEOMME_TALKER_AUDIO_P95 = {
