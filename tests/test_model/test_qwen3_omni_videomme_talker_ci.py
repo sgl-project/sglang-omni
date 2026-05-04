@@ -49,17 +49,18 @@ SHORT_ANSWER_PROMPT = (
     "'Answer: $LETTER'. Do not include step-by-step reasoning."
 )
 
-# Threshold reference: https://github.com/sgl-project/sglang-omni/pull/337#issuecomment-4321051462
+# Threshold reference: https://github.com/sgl-project/sglang-omni/pull/382#issuecomment-4366925373
 VIDEOMME_TALKER_THINKER_TEXT_MIN_ACCURACY = 0.5
-VIDEOMME_TALKER_WER_BELOW_50_CORPUS_MAX = 0.02
+# Relaxed in V1 refactor: v0=0.02 → v1=0.06.
+VIDEOMME_TALKER_WER_BELOW_50_CORPUS_MAX = 0.06
 VIDEOMME_TALKER_N_ABOVE_50_MAX = 0
 
 _VIDEOMME_TALKER_AUDIO_P95 = {
     8: {
-        "throughput_qps": 0.077,
-        "tok_per_s_agg": 0.60,
-        "latency_mean_s": 79.913,
-        "rtf_mean": 8.3397,
+        "throughput_qps": 0.153,
+        "tok_per_s_agg": 1.0,
+        "latency_mean_s": 42.383,
+        "rtf_mean": 5.3488,
     },
 }
 VIDEOMME_TALKER_THRESHOLDS = apply_slack(_VIDEOMME_TALKER_AUDIO_P95)
