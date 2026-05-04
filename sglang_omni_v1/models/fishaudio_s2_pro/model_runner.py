@@ -17,6 +17,7 @@ class FishS2ProModelRunner(ModelRunner):
         super().__init__(tp_worker, output_processor)
         self._semantic_begin_id = int(self.model._semantic_begin_id)
         self._semantic_end_id = int(self.model._semantic_end_id)
+        self._im_end_token_id = int(self.model._im_end_token_id)
 
     def prepare_prefill(self, forward_batch, schedule_batch, requests):
         del schedule_batch
@@ -130,6 +131,10 @@ class FishS2ProModelRunner(ModelRunner):
                 continue
 
             codes = self.model._output_codes[row_idx].unsqueeze(-1).clone()
+            semantic_token = int(codes[0, -1].item())
+            if semantic_token == self._im_end_token_id:
+                continue
+
             data.last_codebook_values = codes[1:, 0].clone()
-            data.previous_semantic_tokens.append(int(codes[0, -1].item()))
+            data.previous_semantic_tokens.append(semantic_token)
             data.output_codes.append(codes)

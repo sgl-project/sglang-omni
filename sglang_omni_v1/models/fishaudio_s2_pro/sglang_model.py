@@ -254,6 +254,7 @@ class S2ProSGLangTextModel(nn.Module):
         self._num_codebooks = num_codebooks
         self._semantic_begin_id = semantic_begin_id
         self._semantic_end_id = semantic_end_id
+        self._im_end_token_id = int(im_end_id)
 
         # Shared codebook embedding from audio decoder (for VQ input combination)
         self._vq_codebook_embeddings = audio_decoder.codebook_embeddings

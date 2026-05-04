@@ -82,7 +82,7 @@ class S2ProSGLangIterationController:
         max_new_tokens: int = 2048,
     ) -> None:
         self.tree_cache = tree_cache
-        self._im_end_token_id = im_end_token_id
+        self._im_end_id = im_end_token_id
         self._max_new_tokens = max_new_tokens
 
     def update_request(self, request: SchedulerRequest, output: RequestOutput) -> None:
@@ -95,18 +95,16 @@ class S2ProSGLangIterationController:
             return
 
         codes = output.data.codes.clone()
+        data.output_codes.append(codes)
 
         semantic_token = codes[0, -1].item()
-        req.output_ids.append(semantic_token)
-        if semantic_token == self._im_end_token_id:
-            return
-
-        data.output_codes.append(codes)
         data._previous_semantic_tokens.append(semantic_token)
 
         # Codebook values for next step's VQ embedding (clone is redundant
         # since `codes` is already cloned above, but guards against future edits)
         data._last_codebook_values = codes[1:, 0].clone()
+
+        req.output_ids.append(semantic_token)
 
         if not req.finished() and req.decode_batch_idx == 0:
             self.tree_cache.cache_unfinished_req(req)
@@ -118,7 +116,7 @@ class S2ProSGLangIterationController:
             return False
 
         semantic_token = output.data.codes[0, -1].item()
-        if semantic_token == self._im_end_token_id:
+        if semantic_token == self._im_end_id:
             return True
 
         max_tok = data.max_new_tokens or self._max_new_tokens

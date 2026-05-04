@@ -95,7 +95,7 @@ def create_s2pro_sglang_engine(
         server_args.enable_return_hidden_states = True
 
     adapter = S2ProTokenizerAdapter(tokenizer)
-    im_end_token_id = adapter.eos_token_ids[0]
+    im_end_id = adapter.eos_token_ids[0]
     semantic_begin_id = adapter.semantic_begin_id
     semantic_end_id = adapter.semantic_end_id
 
@@ -122,7 +122,7 @@ def create_s2pro_sglang_engine(
         codebook_size=codebook_size,
         semantic_begin_id=semantic_begin_id,
         semantic_end_id=semantic_end_id,
-        im_end_id=im_end_token_id,
+        im_end_id=im_end_id,
         max_batch_size=max_bs,
         rep_history_len=ras_window,
     )
@@ -162,18 +162,13 @@ def create_s2pro_sglang_engine(
     )
     iteration_ctrl = S2ProSGLangIterationController(
         tree_cache=tree_cache,
-        im_end_token_id=im_end_token_id,
+        im_end_token_id=im_end_id,
         max_new_tokens=max_new_tokens,
     )
 
     def _stream_adapter(request, output):
         step_out = output.data
         if step_out is None:
-            return None
-        if (
-            request.data.req.output_ids
-            and request.data.req.output_ids[-1] == im_end_token_id
-        ):
             return None
         return step_out.codes
 
