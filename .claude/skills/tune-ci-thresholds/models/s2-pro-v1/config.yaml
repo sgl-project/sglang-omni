@@ -1,0 +1,91 @@
+# Model-specific config for the s2-pro-v1 (FishAudio S2-Pro on V1 pipeline).
+#
+# Notes:
+# - Single test file (test_s2pro_tts_ci.py) runs three internal stages
+#   (nonstream / stream / consistency) controlled by --s2pro-stage. With no
+#   flag the test runs all three by default, which is what we want here.
+# - Voice-clone speed and WER artifacts are written to per-variant dirs
+#   under each pytest-function tmp_path: vc_nonstream_c8/ for nonstream and
+#   vc_stream_c8/ for stream. Both speed_results.json and wer_results.json
+#   live in that same per-variant dir.
+# - Concurrency: CI uses --concurrency 8 (the only fully tuned conc); the
+#   _VC_*_P95 dicts include {1,2,4,8,16}. Discover reads conc=8 row.
+# - Default venv path: /github/home/omni-s2pro to mirror the real CI venv
+#   (test-s2pro-ci-v1.yaml). Critically, omni-s2pro must NOT have
+#   `openai-whisper` / `whisper-normalizer` installed — CI's omni-s2pro
+#   doesn't, which makes `_get_en_normalizer()` fall back to the
+#   punctuation-strip path. omni-qwen3 (used by qwen3-omni-v1 stages) DOES
+#   have openai-whisper installed and uses the real EnglishTextNormalizer,
+#   so the two venvs produce different WER numbers on identical audio.
+#   Keep them separate; do not unify.
+name: s2-pro-v1
+description: "FishAudio S2-Pro voice-clone TTS (v1 pipeline)"
+hf_model_id: "fishaudio/s2-pro"
+hf_datasets:
+  - "zhaochenyang20/seed-tts-eval-50"
+default_venv_python: "/github/home/omni-s2pro/bin/python"
+# CI's omni-s2pro venv has neither openai-whisper nor whisper-normalizer
+# installed, so `_get_en_normalizer()` falls back to the punctuation-strip
+# path. precheck warns if the local venv has installed either package.
+expected_wer_normalizer: "fallback"
+auto_env:
+  HF_ENDPOINT: "https://hf-mirror.com"
+  SGLANG_OMNI_SERVER_VERSION: "v1"
+gpus_per_test:
+  test_s2pro_tts_ci.py: 1
+test_globs:
+  - "tests/test_model/test_s2pro_tts_ci.py"
+extra_env:
+  test_s2pro_tts_ci.py:
+    SGLANG_SEEDTTS50_DIR: "/github/home/seedtts-50"
+# Per-test extra pytest CLI args. test_s2pro_tts_ci.py needs `--concurrency 8`
+# to match the CI invocation; without it the test defaults to concurrency=1
+# (and writes results into vc_*_c1/ subdirs, not vc_*_c8/ where this config
+# expects them).
+pytest_extra_args:
+  test_s2pro_tts_ci.py:
+    - "--concurrency"
+    - "8"
+stage_base_strip_prefix: "test_s2pro_"
+stage_base_strip_suffix: "_ci"
+stage_base_docs_override: "s2pro_docs"
+metric_sources:
+  test_s2pro_tts_ci.py:
+    # Per-variant routing: each variant claims constants matching its
+    # `constant_filter` regex (matched against the bare constant name with
+    # any leading underscore stripped). Stage keys become
+    # <base>_<variant>_<group>: e.g. tts_nonstream_speed, tts_stream_wer.
+    variants:
+      nonstream:
+        # Matches VC_*, _VC_NON_STREAM_P95 — but NOT VC_STREAM_* / _VC_STREAM_P95
+        constant_filter: "^VC_(?!STREAM_).*|^VC_NON_STREAM.*"
+        # Speed test writes audios under the pytest tmp_path for
+        # test_voice_cloning_non_streaming, which pytest truncates to
+        # `test_voice_cloning_non_streami0/` (30-char limit) — so paths
+        # below use the truncated form. The WER test reuses that dir
+        # via SPEED_OUTPUT_DIRS, so wer_results.json lands in the same
+        # place; both are accessed via the per-metric ::path form.
+        json_file: "test_voice_cloning_non_streami0/vc_nonstream_c8/speed_results.json"
+        sample_counts:
+          total: "test_voice_cloning_non_streami0/vc_nonstream_c8/wer_results.json::summary.total_samples"
+          ok: "test_voice_cloning_non_streami0/vc_nonstream_c8/wer_results.json::summary.evaluated"
+        paths:
+          throughput_qps: "summary.throughput_qps"
+          tok_per_s_agg: "summary.tok_per_s_agg"
+          latency_mean_s: "summary.latency_mean_s"
+          rtf_mean: "summary.rtf_mean"
+          corpus_wer: "test_voice_cloning_non_streami0/vc_nonstream_c8/wer_results.json::summary.wer_corpus"
+          per_sample_wer_max: "test_voice_cloning_non_streami0/vc_nonstream_c8/wer_results.json::summary.wer_per_sample_max"
+      stream:
+        constant_filter: "^VC_STREAM_.*"
+        json_file: "test_voice_cloning_streaming0/vc_stream_c8/speed_results.json"
+        sample_counts:
+          total: "test_voice_cloning_streaming0/vc_stream_c8/wer_results.json::summary.total_samples"
+          ok: "test_voice_cloning_streaming0/vc_stream_c8/wer_results.json::summary.evaluated"
+        paths:
+          throughput_qps: "summary.throughput_qps"
+          tok_per_s_agg: "summary.tok_per_s_agg"
+          latency_mean_s: "summary.latency_mean_s"
+          rtf_mean: "summary.rtf_mean"
+          corpus_wer: "test_voice_cloning_streaming0/vc_stream_c8/wer_results.json::summary.wer_corpus"
+          per_sample_wer_max: "test_voice_cloning_streaming0/vc_stream_c8/wer_results.json::summary.wer_per_sample_max"

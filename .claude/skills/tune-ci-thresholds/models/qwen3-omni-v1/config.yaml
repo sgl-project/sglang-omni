@@ -1,0 +1,171 @@
+# Model-specific config for the qwen3-omni-v1 CI threshold skill.
+# Same tests + datasets + venv as the legacy `qwen3-omni` model — this
+# entry only differs by setting SGLANG_OMNI_SERVER_VERSION=v1 in
+# auto_env, which makes tests/utils.py inject `--version v1` so the
+# server runs the sglang_omni_v1 pipeline instead of legacy
+# sglang_omni. Mirrors the test-qwen3-omni-ci-v1.yaml workflow.
+name: qwen3-omni-v1
+description: "Qwen3-Omni 30B-A3B Instruct (v1 pipeline — Talker + Thinker)"
+hf_model_id: "Qwen/Qwen3-Omni-30B-A3B-Instruct"
+hf_datasets:
+  - "zhaochenyang20/mmsu-ci-2000"
+  - "zhaochenyang20/mmmu-ci-50"
+  - "zhaochenyang20/seed-tts-eval-50"
+  - "zhaochenyang20/Video_MME_ci"
+  - "zhaochenyang20/Video_AMME_ci"
+default_venv_python: "/github/home/omni-qwen3/bin/python"
+# CI's omni-qwen3 venv has openai-whisper installed, so
+# `_get_en_normalizer()` resolves to whisper.normalizers.EnglishTextNormalizer
+# (contractions expanded, numbers→words, etc.). precheck warns if the local
+# venv falls back to the punctuation-strip path.
+expected_wer_normalizer: "english"
+# Env vars that tune.py auto-sets at startup (matches CI behavior).
+# SGLANG_OMNI_SERVER_VERSION=v1 routes serve through sglang_omni_v1
+# (see sglang_omni/cli/serve.py and tests/utils.py:_inject_server_version).
+auto_env:
+  HF_ENDPOINT: "https://hf-mirror.com"
+  SGLANG_OMNI_SERVER_VERSION: "v1"
+# Number of GPUs each test needs. tune.py picks that many free GPUs
+# via CUDA_VISIBLE_DEVICES before each pytest invocation. Tests that
+# launch the text-only server need 1; speech-server tests use
+# device indices 0+1 in-process, so they need 2. Unknown test → 2.
+gpus_per_test:
+  test_qwen3_omni_mmmu_ci.py: 1
+  test_qwen3_omni_mmsu_ci.py: 1
+  test_qwen3_omni_videomme_ci.py: 1
+  test_qwen3_omni_videoamme_ci.py: 1
+  test_qwen3_omni_tts_ci.py: 2
+  test_qwen3_omni_mmmu_talker_ci.py: 2
+  test_qwen3_omni_mmsu_talker_ci.py: 2
+  test_qwen3_omni_videomme_talker_ci.py: 2
+  test_qwen3_omni_videoamme_talker_ci.py: 2
+  test_docs_qwen3_omni.py: 2
+test_globs:
+  - "tests/test_model/test_qwen3_omni_*_ci.py"
+  - "tests/docs/qwen3_omni/test_docs_qwen3_omni.py"
+# Per-test extra env vars. Key is the test filename (basename).
+extra_env:
+  test_qwen3_omni_tts_ci.py:
+    SGLANG_SEEDTTS50_DIR: "/github/home/seedtts-50"
+# Stage-key base derivation: strip prefix + strip suffix from the test
+# stem. Docs tests (path contains "docs/") use the override instead.
+stage_base_strip_prefix: "test_qwen3_omni_"
+stage_base_strip_suffix: "_ci"
+stage_base_docs_override: "qwen3_omni_docs"
+# Per-test metric source JSONs. `json_file` is relative to pytest's
+# `--basetemp` dir (set fresh per run by tune.py). `paths` maps a
+# recognized metric key (accuracy / corpus_wer / per_sample_wer_max /
+# wer_below_50_corpus / n_above_50 /
+# throughput_qps / tok_per_s_agg / latency_mean_s / rtf_mean) to the
+# dotted JSON key chain that yields a number.
+# When a metric pulls from a different JSON than `json_file`, use the
+# `<file>::<dotted.path>` inline form as the value instead of a bare
+# dotted path.
+metric_sources:
+  test_qwen3_omni_mmmu_ci.py:
+    json_file: "test_mmmu_accuracy_and_speed0/mmmu/mmmu_results.json"
+    sample_counts:
+      total: "summary.total_samples"
+      ok: "speed.completed_requests"
+    paths:
+      accuracy: "summary.accuracy"
+      throughput_qps: "speed.throughput_qps"
+      tok_per_s_agg: "speed.tok_per_s_agg"
+      latency_mean_s: "speed.latency_mean_s"
+  test_qwen3_omni_mmmu_talker_ci.py:
+    json_file: "test_mmmu_audio_wer_and_speed0/mmmu_audio/mmmu_results.json"
+    sample_counts:
+      total: "summary.total_samples"
+      ok: "speed.completed_requests"
+    paths:
+      accuracy: "summary.accuracy"
+      wer_below_50_corpus: "wer.summary.wer_below_50_corpus"
+      n_above_50: "wer.summary.n_above_50_pct_wer"
+      throughput_qps: "speed.throughput_qps"
+      tok_per_s_agg: "speed.tok_per_s_agg"
+      latency_mean_s: "speed.latency_mean_s"
+      rtf_mean: "speed.rtf_mean"
+  test_qwen3_omni_mmsu_ci.py:
+    json_file: "test_mmsu_accuracy_and_speed0/mmsu/mmsu_results.json"
+    sample_counts:
+      total: "summary.total_samples"
+      ok: "summary.successful_samples"
+    paths:
+      accuracy: "summary.overall_accuracy"
+      throughput_qps: "speed_metrics.throughput_qps"
+      tok_per_s_agg: "speed_metrics.tok_per_s_agg"
+      latency_mean_s: "speed_metrics.latency_mean_s"
+  test_qwen3_omni_mmsu_talker_ci.py:
+    json_file: "test_mmsu_audio_wer_and_speed0/mmsu_audio/mmsu_results.json"
+    sample_counts:
+      total: "summary.total_samples"
+      ok: "summary.successful_samples"
+    paths:
+      accuracy: "summary.overall_accuracy"
+      wer_below_50_corpus: "wer.summary.wer_below_50_corpus"
+      n_above_50: "wer.summary.n_above_50_pct_wer"
+      throughput_qps: "speed_metrics.throughput_qps"
+      tok_per_s_agg: "speed_metrics.tok_per_s_agg"
+      latency_mean_s: "speed_metrics.latency_mean_s"
+      rtf_mean: "speed_metrics.rtf_mean"
+  test_qwen3_omni_videomme_ci.py:
+    json_file: "test_videomme_accuracy_and_spe0/videomme/videomme_results.json"
+    sample_counts:
+      total: "summary.total_samples"
+      ok: "speed.completed_requests"
+    paths:
+      accuracy: "summary.accuracy"
+      throughput_qps: "speed.throughput_qps"
+      tok_per_s_agg: "speed.tok_per_s_agg"
+      latency_mean_s: "speed.latency_mean_s"
+  test_qwen3_omni_videomme_talker_ci.py:
+    json_file: "test_videomme_tts_accuracy_wer0/videomme_audio/videomme_results.json"
+    sample_counts:
+      total: "summary.total_samples"
+      ok: "speed.completed_requests"
+    paths:
+      accuracy: "summary.accuracy"
+      corpus_wer: "wer.summary.wer_corpus"
+      per_sample_wer_max: "wer.summary.wer_per_sample_max"
+      wer_below_50_corpus: "wer.summary.wer_below_50_corpus"
+      n_above_50: "wer.summary.n_above_50_pct_wer"
+      throughput_qps: "speed.throughput_qps"
+      tok_per_s_agg: "speed.tok_per_s_agg"
+      latency_mean_s: "speed.latency_mean_s"
+      rtf_mean: "speed.rtf_mean"
+  test_qwen3_omni_videoamme_ci.py:
+    json_file: "test_videoamme_accuracy_and_sp0/videoamme/videoamme_results.json"
+    sample_counts:
+      total: "summary.total_samples"
+      ok: "speed.completed_requests"
+    paths:
+      accuracy: "summary.accuracy"
+      throughput_qps: "speed.throughput_qps"
+      tok_per_s_agg: "speed.tok_per_s_agg"
+      latency_mean_s: "speed.latency_mean_s"
+  test_qwen3_omni_videoamme_talker_ci.py:
+    json_file: "test_videoamme_talker_accuracy0/videoamme_audio/videoamme_results.json"
+    sample_counts:
+      total: "summary.total_samples"
+      ok: "speed.completed_requests"
+    paths:
+      accuracy: "summary.accuracy"
+      wer_below_50_corpus: "wer.summary.wer_below_50_corpus"
+      n_above_50: "wer.summary.n_above_50_pct_wer"
+      throughput_qps: "speed.throughput_qps"
+      tok_per_s_agg: "speed.tok_per_s_agg"
+      latency_mean_s: "speed.latency_mean_s"
+      rtf_mean: "speed.rtf_mean"
+  test_qwen3_omni_tts_ci.py:
+    sample_counts:
+      total: "vc_nonstream0/wer_results.json::summary.total_samples"
+      ok: "vc_nonstream0/wer_results.json::summary.evaluated"
+    paths:
+      throughput_qps: "vc_nonstream0/speed_results.json::summary.throughput_qps"
+      tok_per_s_agg: "vc_nonstream0/speed_results.json::summary.tok_per_s_agg"
+      latency_mean_s: "vc_nonstream0/speed_results.json::summary.latency_mean_s"
+      rtf_mean: "vc_nonstream0/speed_results.json::summary.rtf_mean"
+      corpus_wer: "vc_nonstream0/wer_results.json::summary.wer_corpus"
+      per_sample_wer_max: "vc_nonstream0/wer_results.json::summary.wer_per_sample_max"
+      wer_below_50_corpus: "vc_nonstream0/wer_results.json::summary.wer_below_50_corpus"
+      n_above_50: "vc_nonstream0/wer_results.json::summary.n_above_50_pct_wer"
