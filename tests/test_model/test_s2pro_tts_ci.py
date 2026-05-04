@@ -99,69 +99,21 @@ VC_STREAM_WER_MAX_PER_SAMPLE = 0.5
 # may not pass the CI.
 
 _VC_NON_STREAM_P95 = {
-    1: {
-        "throughput_qps": 0.13,
-        "tok_per_s_agg": 82.5,
-        "latency_mean_s": 7.6,
-        "rtf_mean": 2.03,
-    },
-    2: {
-        "throughput_qps": 0.25,
-        "tok_per_s_agg": 78.4,
-        "latency_mean_s": 7.9,
-        "rtf_mean": 2.10,
-    },
-    4: {
-        "throughput_qps": 0.47,
-        "tok_per_s_agg": 75.3,
-        "latency_mean_s": 8.3,
-        "rtf_mean": 2.21,
-    },
     8: {
-        "throughput_qps": 0.80,
-        "tok_per_s_agg": 67.7,
-        "latency_mean_s": 9.1,
-        "rtf_mean": 2.43,
-    },
-    16: {
-        "throughput_qps": 1.17,
-        "tok_per_s_agg": 60.7,
-        "latency_mean_s": 11.2,
-        "rtf_mean": 3.01,
-    },
+        "throughput_qps": 0.850,
+        "tok_per_s_agg": 70.5,
+        "latency_mean_s": 8.567,
+        "rtf_mean": 2.5022,
+    }
 }
 
 _VC_STREAM_P95 = {
-    1: {
-        "throughput_qps": 0.09,
-        "tok_per_s_agg": 21.0,
-        "latency_mean_s": 10.8,
-        "rtf_mean": 2.60,
-    },
-    2: {
-        "throughput_qps": 0.15,
-        "tok_per_s_agg": 14.7,
-        "latency_mean_s": 13.3,
-        "rtf_mean": 3.20,
-    },
-    4: {
-        "throughput_qps": 0.23,
-        "tok_per_s_agg": 13.7,
-        "latency_mean_s": 15.7,
-        "rtf_mean": 4.08,
-    },
     8: {
-        "throughput_qps": 0.31,
-        "tok_per_s_agg": 8.5,
-        "latency_mean_s": 22.7,
-        "rtf_mean": 5.89,
-    },
-    16: {
-        "throughput_qps": 0.27,
-        "tok_per_s_agg": 2.9,
-        "latency_mean_s": 47.7,
-        "rtf_mean": 12.02,
-    },
+        "throughput_qps": 0.715,
+        "tok_per_s_agg": 70.0,
+        "latency_mean_s": 9.403,
+        "rtf_mean": 2.5614,
+    }
 }
 
 
