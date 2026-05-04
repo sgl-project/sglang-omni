@@ -87,7 +87,7 @@ class PipelineConfig(BaseModel):
 
     model_path: str
     stages: list[StageConfig]
-    name: str = "model"
+    name: str | None = None
     entry_stage: str | None = None
     relay_backend: Literal["shm", "nccl", "nixl", "mooncake"] = "shm"
     fused_stages: list[list[str]] = Field(default_factory=list)
@@ -101,6 +101,8 @@ class PipelineConfig(BaseModel):
         self._validate_general()
         self._validate_fusion()
         self.config_cls = self.__class__.__name__
+        if self.name is None:
+            self.name = self.model_path
 
     @property
     def resolved_entry_stage(self) -> str:

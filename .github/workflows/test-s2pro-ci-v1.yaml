@@ -153,18 +153,22 @@ jobs:
   stage-3-consistency:
     name: stage 3 - consistency
     needs: [stage-1-non-streaming, stage-2-streaming]
-    runs-on: [self-hosted]
+    runs-on: ubuntu-latest
     timeout-minutes: 5
-    container:
-      image: frankleeeee/sglang-omni:dev
-      options: --gpus all --rm -v /dev/shm:/dev/shm
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - uses: ./.github/actions/omni-setup
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
-          venv-name: omni-s2pro
+          python-version: "3.11"
+
+      - name: Install test dependency
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pytest
 
       - name: Download stage 1 artifact
         uses: actions/download-artifact@v4
@@ -178,25 +182,12 @@ jobs:
           name: s2pro-stage-2-results
           path: stage-artifacts/stream
 
-      - name: Run benchmark stage
+      - name: Run consistency check
         shell: bash
         run: |
-          source omni-s2pro/bin/activate
           export PYTHONPATH=$PWD
-          pytest tests/test_model/test_s2pro_tts_ci.py -v -s -x --concurrency 8 --s2pro-stage s2pro-stage-3-consistency
+          python -m pytest tests/test_model/test_s2pro_consistency_artifacts.py -v -s -x
         env:
-          HF_ENDPOINT: https://hf-mirror.com
-          SGLANG_SEEDTTS50_DIR: /github/home/seedtts-50
           S2PRO_STAGE1_SPEED_RESULTS_DIR: ${{ github.workspace }}/stage-artifacts/nonstream
           S2PRO_STAGE2_SPEED_RESULTS_DIR: ${{ github.workspace }}/stage-artifacts/stream
-          SGLANG_OMNI_SERVER_VERSION: v1
-
-      - name: Post-stage cleanup
-        if: always()
-        uses: ./.github/actions/omni-post-stage
-        with:
-          stage-label: S2-Pro stage 3 (consistency inputs)
-          artifact-search-root: stage-artifacts
-          artifact-path-globs: |
-            */speed_results.json
-            */wer_results.json
+          S2PRO_CONSISTENCY_CONCURRENCY: "8"
