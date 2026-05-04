@@ -84,7 +84,7 @@ def test_build_assistant_part_tolerates_short_prefix() -> None:
 def test_append_text_chunk_ignores_late_chunks_after_thinker_done() -> None:
     builder = TalkerPrefillBuilder(
         model=_FakeTalkerModel(),
-        model_path="/data/Jingwen/Jingwen/sglang-omni",
+        model_path="Qwen/Qwen3-Omni-30B-A3B-Instruct",
         audio_token_id=None,
         image_token_id=None,
         video_token_id=None,

@@ -60,10 +60,10 @@ MMMU_TTS_PROMPT = (
     "Do not exceed 120 words in total."
 )
 
-# Threshold reference: https://github.com/sgl-project/sglang-omni/pull/337#issuecomment-4314808991
+# Threshold reference: https://github.com/sgl-project/sglang-omni/pull/382#issuecomment-4366925373
 
 # Accuracy floor — audio-mode MMMU.
-MMMU_AUDIO_MIN_ACCURACY = 0.50
+MMMU_AUDIO_MIN_ACCURACY = 0.70
 
 # WER thresholds use a partitioned view of the per-sample distribution:
 #  - corpus WER over the "sane" subset (per-sample WER <= 50%)
@@ -73,10 +73,10 @@ MMMU_AUDIO_N_ABOVE_50_MAX = 3
 
 _MMMU_AUDIO_P95 = {
     8: {
-        "throughput_qps": 0.035,
-        "tok_per_s_agg": 0.90,
-        "latency_mean_s": 151.500,
-        "rtf_mean": 3.6109,
+        "throughput_qps": 0.089,
+        "tok_per_s_agg": 2.6,
+        "latency_mean_s": 52.104,
+        "rtf_mean": 1.3361,
     },
 }
 MMMU_AUDIO_THRESHOLDS = apply_slack(_MMMU_AUDIO_P95)

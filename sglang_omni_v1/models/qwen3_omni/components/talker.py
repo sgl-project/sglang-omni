@@ -8,7 +8,6 @@ from typing import Iterable, Optional, Tuple
 
 import torch
 from sglang.srt.layers.logits_processor import LogitsProcessorOutput
-from sglang.srt.layers.moe.fused_moe_native import moe_forward_native
 from sglang.srt.model_loader.weight_utils import default_weight_loader
 from sglang.srt.sampling.sampling_batch_info import SamplingBatchInfo
 from sglang.srt.utils import add_prefix
@@ -225,12 +224,7 @@ class Qwen3OmniMoeTalkerSparseMoeBlock(Qwen3OmniMoeThinkerTextSparseMoeBlock):
         # --- Routed experts (no all-reduce yet) ---
         router_logits, _ = self.gate(linear_hidden_states)
         topk_output = self.topk(linear_hidden_states, router_logits)
-        routed_output = moe_forward_native(
-            self.experts,
-            linear_hidden_states,
-            topk_output,
-            self.experts.moe_runner_config,
-        )
+        routed_output = self.experts(linear_hidden_states, topk_output)
 
         # --- Combine then unified all-reduce ---
         final_hidden_states = routed_output + shared_output
