@@ -37,6 +37,7 @@ def _fake_server_args() -> SimpleNamespace:
         enable_metrics=False,
         enable_metrics_for_all_schedulers=False,
         enable_dp_attention=False,
+        pp_max_micro_batch_size=None,
     )
 
 
@@ -56,18 +57,22 @@ def _fake_tp_worker() -> SimpleNamespace:
 
 
 def _real_scheduler(monkeypatch: pytest.MonkeyPatch, **kwargs) -> OmniScheduler:
+    server_args = _fake_server_args()
     monkeypatch.setattr(
         OmniScheduler,
         "init_metrics",
         lambda self, *args, **kwargs: None,
         raising=False,
     )
+    from sglang.srt.server_args import set_global_server_args_for_scheduler
+
+    set_global_server_args_for_scheduler(server_args)
     return OmniScheduler(
         tp_worker=_fake_tp_worker(),
         tree_cache=None,
         req_to_token_pool=None,
         token_to_kv_pool_allocator=None,
-        server_args=_fake_server_args(),
+        server_args=server_args,
         model_config=SimpleNamespace(),
         stream_chunk_handler=kwargs.get("stream_chunk_handler"),
         stream_done_handler=kwargs.get("stream_done_handler"),
