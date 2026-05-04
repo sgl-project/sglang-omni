@@ -15,6 +15,13 @@ from typing import Generator
 from benchmarks.benchmarker.utils import wait_for_service
 
 STARTUP_TIMEOUT = 600
+# Note (Chenyang): Add for V1.
+_SERVER_VERSION_ENV = "SGLANG_OMNI_SERVER_VERSION"
+_QWEN3_LAUNCHERS = {
+    "run_qwen3_omni_server.py",
+    "run_qwen3_omni_speech_server.py",
+}
+# Note (Chenyang): End for V1.
 
 
 @dataclass
@@ -53,6 +60,14 @@ def no_proxy_env() -> dict[str, str]:
     """Return a copy of os.environ with proxy variables removed, for subprocess use."""
     proxy_keys = {"http_proxy", "https_proxy", "all_proxy", "no_proxy"}
     return {k: v for k, v in os.environ.items() if k.lower() not in proxy_keys}
+
+
+def server_log_file(tmp_path_factory, prefix: str = "server_logs") -> Path | None:
+    """Capture server logs to a file on CI; stream to the terminal locally."""
+    is_ci = os.environ.get("GITHUB_ACTIONS") == "true"
+    if not is_ci:
+        return None
+    return tmp_path_factory.mktemp(prefix) / "server.log"
 
 
 def stop_server(proc: subprocess.Popen) -> None:
@@ -102,6 +117,28 @@ def wait_healthy(
         raise
 
 
+# Note (Chenyang): Add for V1.
+def _has_version_flag(cmd: list[str]) -> bool:
+    return any(arg == "--version" or arg.startswith("--version=") for arg in cmd)
+
+
+def _inject_server_version(cmd: list[str]) -> list[str]:
+    version = os.environ.get(_SERVER_VERSION_ENV)
+    if version != "v1" or _has_version_flag(cmd):
+        return list(cmd)
+
+    if len(cmd) >= 4 and cmd[1:4] == ["-m", "sglang_omni.cli", "serve"]:
+        return [*cmd[:4], "--version", version, *cmd[4:]]
+
+    if len(cmd) >= 2 and Path(cmd[1]).name in _QWEN3_LAUNCHERS:
+        return [*cmd, "--version", version]
+
+    return list(cmd)
+
+
+# Note (Chenyang): End for V1.
+
+
 def start_server_from_cmd(
     cmd: list[str],
     log_file: Path | None,
@@ -109,12 +146,19 @@ def start_server_from_cmd(
     timeout: int = STARTUP_TIMEOUT,
 ) -> subprocess.Popen:
     """Start a server from an arbitrary command and wait until healthy."""
+    # Note (Chenyang): Add for V1.
+    resolved_cmd = _inject_server_version(cmd)
+    # Note (Chenyang): End for V1.
     if log_file is None:
-        proc = subprocess.Popen(cmd, start_new_session=True)
+        # Note (Chenyang): Add for V1.
+        proc = subprocess.Popen(resolved_cmd, start_new_session=True)
+        # Note (Chenyang): End for V1.
     else:
         with open(log_file, "w") as log_handle:
             proc = subprocess.Popen(
-                cmd,
+                # Note (Chenyang): Add for V1.
+                resolved_cmd,
+                # Note (Chenyang): End for V1.
                 stdout=log_handle,
                 stderr=subprocess.STDOUT,
                 start_new_session=True,

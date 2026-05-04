@@ -1,4 +1,4 @@
-name: Qwen3-Omni CI
+name: Qwen3-Omni CI (v1)
 
 on:
   pull_request:
@@ -7,28 +7,56 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: qwen3-omni-ci-${{ github.event.pull_request.number || github.ref }}
+  group: qwen3-omni-ci-v1-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 permissions:
   contents: read
 
 # DAG:
-#   docs ──► stage-1-thinker ──► stage-2-tts
-#                              ├─► stage-3-mmmu
-#                              ├─► stage-4-mmmu-talker
-#                              ├─► stage-5-mmsu
-#                              ├─► stage-6-mmsu-talker
-#                              ├─► stage-7-videomme
-#                              ├─► stage-8-videomme-talker
-#                              ├─► stage-9-videoamme
-#                              └─► stage-10-videoamme-talker
+#   docs ──► stage-1-thinker
+#        ├─► stage-2-tts
+#        ├─► stage-3-mmmu
+#        ├─► stage-4-mmmu-talker
+#        ├─► stage-5-mmsu
+#        ├─► stage-6-mmsu-talker
+#        ├─► stage-7-videomme
+#        ├─► stage-8-videomme-talker
+#        ├─► stage-9-videoamme
+#        └─► stage-10-videoamme-talker
+# All 10 stages run in parallel after docs passes — they are independent.
+
+# Note (Chenyang):
+# If running locally, use (env var is case-sensitive — must be SGLANG_OMNI_SERVER_VERSION):
+# SGLANG_OMNI_SERVER_VERSION=v1     pytest tests/docs/qwen3_omni/test_docs_qwen3_omni.py -s -x
+# SGLANG_OMNI_SERVER_VERSION=legacy pytest tests/docs/qwen3_omni/test_docs_qwen3_omni.py -s -x
+# SGLANG_OMNI_SERVER_VERSION=v1     pytest tests/test_model/test_qwen3_omni_thinker_length.py -v -s -x
+# SGLANG_OMNI_SERVER_VERSION=legacy pytest tests/test_model/test_qwen3_omni_thinker_length.py -v -s -x
+# SGLANG_OMNI_SERVER_VERSION=v1     pytest tests/test_model/test_qwen3_omni_tts_ci.py -v -s -x
+# SGLANG_OMNI_SERVER_VERSION=legacy pytest tests/test_model/test_qwen3_omni_tts_ci.py -v -s -x
+# SGLANG_OMNI_SERVER_VERSION=v1     pytest tests/test_model/test_qwen3_omni_mmmu_ci.py -v -s -x
+# SGLANG_OMNI_SERVER_VERSION=legacy pytest tests/test_model/test_qwen3_omni_mmmu_ci.py -v -s -x
+# SGLANG_OMNI_SERVER_VERSION=v1     pytest tests/test_model/test_qwen3_omni_mmmu_talker_ci.py -v -s -x
+# SGLANG_OMNI_SERVER_VERSION=legacy pytest tests/test_model/test_qwen3_omni_mmmu_talker_ci.py -v -s -x
+# SGLANG_OMNI_SERVER_VERSION=v1     pytest tests/test_model/test_qwen3_omni_mmsu_ci.py -v -s -x
+# SGLANG_OMNI_SERVER_VERSION=legacy pytest tests/test_model/test_qwen3_omni_mmsu_ci.py -v -s -x
+# SGLANG_OMNI_SERVER_VERSION=v1     pytest tests/test_model/test_qwen3_omni_mmsu_talker_ci.py -v -s -x
+# SGLANG_OMNI_SERVER_VERSION=legacy pytest tests/test_model/test_qwen3_omni_mmsu_talker_ci.py -v -s -x
+# SGLANG_OMNI_SERVER_VERSION=v1     pytest tests/test_model/test_qwen3_omni_videomme_ci.py -v -s -x
+# SGLANG_OMNI_SERVER_VERSION=legacy pytest tests/test_model/test_qwen3_omni_videomme_ci.py -v -s -x
+# SGLANG_OMNI_SERVER_VERSION=v1     pytest tests/test_model/test_qwen3_omni_videomme_talker_ci.py -v -s -x
+# SGLANG_OMNI_SERVER_VERSION=legacy pytest tests/test_model/test_qwen3_omni_videomme_talker_ci.py -v -s -x
+# SGLANG_OMNI_SERVER_VERSION=v1     pytest tests/test_model/test_qwen3_omni_videoamme_ci.py -v -s -x
+# SGLANG_OMNI_SERVER_VERSION=legacy pytest tests/test_model/test_qwen3_omni_videoamme_ci.py -v -s -x
+# SGLANG_OMNI_SERVER_VERSION=v1     pytest tests/test_model/test_qwen3_omni_videoamme_talker_ci.py -v -s -x
+# SGLANG_OMNI_SERVER_VERSION=legacy pytest tests/test_model/test_qwen3_omni_videoamme_talker_ci.py -v -s -x
+
 
 jobs:
   docs:
     name: docs
     # CI gate — runs on workflow_dispatch, or on non-draft PRs carrying the `run-ci` label.
-    # Keep in sync with the same gate in test.yaml / test-examples.yaml / test-s2pro-ci.yaml.
+    # Keep in sync with the same gate in test.yaml / test-examples.yaml / test-s2pro-ci-v1.yaml.
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (!github.event.pull_request.draft &&
@@ -55,6 +83,7 @@ jobs:
           pytest tests/docs/qwen3_omni/test_docs_qwen3_omni.py -v -s -x
         env:
           HF_ENDPOINT: https://hf-mirror.com
+          SGLANG_OMNI_SERVER_VERSION: v1
 
       - name: Post-stage cleanup
         if: always()
@@ -97,6 +126,7 @@ jobs:
           pytest tests/test_model/test_qwen3_omni_thinker_length.py -v -s -x
         env:
           HF_ENDPOINT: https://hf-mirror.com
+          SGLANG_OMNI_SERVER_VERSION: v1
 
       - name: Post-stage cleanup
         if: always()
@@ -106,7 +136,7 @@ jobs:
 
   stage-2-tts:
     name: stage 2 - TTS speed + WER
-    needs: [docs, stage-1-thinker]
+    needs: docs
     runs-on: [self-hosted]
     timeout-minutes: 15
     container:
@@ -129,6 +159,7 @@ jobs:
         env:
           HF_ENDPOINT: https://hf-mirror.com
           SGLANG_SEEDTTS50_DIR: /github/home/seedtts-50
+          SGLANG_OMNI_SERVER_VERSION: v1
 
       - name: Post-stage cleanup
         if: always()
@@ -143,7 +174,7 @@ jobs:
 
   stage-3-mmmu:
     name: stage 3 - MMMU accuracy + speed
-    needs: [docs, stage-1-thinker]
+    needs: docs
     runs-on: [self-hosted]
     timeout-minutes: 20
     container:
@@ -165,6 +196,7 @@ jobs:
           pytest tests/test_model/test_qwen3_omni_mmmu_ci.py -v -s -x
         env:
           HF_ENDPOINT: https://hf-mirror.com
+          SGLANG_OMNI_SERVER_VERSION: v1
 
       - name: Post-stage cleanup
         if: always()
@@ -178,7 +210,7 @@ jobs:
 
   stage-4-mmmu-talker:
     name: stage 4 - MMMU Talker
-    needs: [docs, stage-1-thinker]
+    needs: docs
     runs-on: [self-hosted]
     timeout-minutes: 15
     container:
@@ -200,6 +232,7 @@ jobs:
           pytest tests/test_model/test_qwen3_omni_mmmu_talker_ci.py -v -s -x
         env:
           HF_ENDPOINT: https://hf-mirror.com
+          SGLANG_OMNI_SERVER_VERSION: v1
 
       - name: Post-stage cleanup
         if: always()
@@ -213,7 +246,7 @@ jobs:
 
   stage-5-mmsu:
     name: stage 5 - MMSU accuracy + speed
-    needs: [docs, stage-1-thinker]
+    needs: docs
     runs-on: [self-hosted]
     timeout-minutes: 20
     container:
@@ -235,6 +268,7 @@ jobs:
           pytest tests/test_model/test_qwen3_omni_mmsu_ci.py -v -s -x
         env:
           HF_ENDPOINT: https://hf-mirror.com
+          SGLANG_OMNI_SERVER_VERSION: v1
 
       - name: Post-stage cleanup
         if: always()
@@ -249,7 +283,7 @@ jobs:
 
   stage-6-mmsu-talker:
     name: stage 6 - MMSU Talker
-    needs: [docs, stage-1-thinker]
+    needs: docs
     runs-on: [self-hosted]
     timeout-minutes: 15
     container:
@@ -271,6 +305,7 @@ jobs:
           pytest tests/test_model/test_qwen3_omni_mmsu_talker_ci.py -v -s -x
         env:
           HF_ENDPOINT: https://hf-mirror.com
+          SGLANG_OMNI_SERVER_VERSION: v1
 
       - name: Post-stage cleanup
         if: always()
@@ -284,7 +319,7 @@ jobs:
 
   stage-7-videomme:
     name: stage 7 - Video-MME accuracy + speed
-    needs: [docs, stage-1-thinker]
+    needs: docs
     runs-on: [self-hosted]
     timeout-minutes: 30
     container:
@@ -306,6 +341,7 @@ jobs:
           pytest tests/test_model/test_qwen3_omni_videomme_ci.py -v -s -x
         env:
           HF_ENDPOINT: https://hf-mirror.com
+          SGLANG_OMNI_SERVER_VERSION: v1
 
       - name: Post-stage cleanup
         if: always()
@@ -319,7 +355,7 @@ jobs:
 
   stage-8-videomme-talker:
     name: stage 8 - Video-MME Talker
-    needs: [docs, stage-1-thinker]
+    needs: docs
     runs-on: [self-hosted]
     timeout-minutes: 30
     container:
@@ -341,6 +377,7 @@ jobs:
           pytest tests/test_model/test_qwen3_omni_videomme_talker_ci.py -v -s -x
         env:
           HF_ENDPOINT: https://hf-mirror.com
+          SGLANG_OMNI_SERVER_VERSION: v1
 
       - name: Post-stage cleanup
         if: always()
@@ -354,7 +391,7 @@ jobs:
 
   stage-9-videoamme:
     name: stage 9 - Video-AMME accuracy + speed
-    needs: [docs, stage-1-thinker]
+    needs: docs
     runs-on: [self-hosted]
     timeout-minutes: 30
     container:
@@ -376,6 +413,7 @@ jobs:
           pytest tests/test_model/test_qwen3_omni_videoamme_ci.py -v -s -x
         env:
           HF_ENDPOINT: https://hf-mirror.com
+          SGLANG_OMNI_SERVER_VERSION: v1
 
       - name: Post-stage cleanup
         if: always()
@@ -389,7 +427,7 @@ jobs:
 
   stage-10-videoamme-talker:
     name: stage 10 - Video-AMME Talker
-    needs: [docs, stage-1-thinker]
+    needs: docs
     runs-on: [self-hosted]
     timeout-minutes: 30
     container:
@@ -411,6 +449,7 @@ jobs:
           pytest tests/test_model/test_qwen3_omni_videoamme_talker_ci.py -v -s -x
         env:
           HF_ENDPOINT: https://hf-mirror.com
+          SGLANG_OMNI_SERVER_VERSION: v1
 
       - name: Post-stage cleanup
         if: always()

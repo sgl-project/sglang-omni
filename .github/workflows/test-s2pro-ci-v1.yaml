@@ -1,4 +1,4 @@
-name: S2-Pro CI
+name: S2-Pro CI (v1)
 
 on:
   pull_request:
@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: s2pro-ci-${{ github.event.pull_request.number || github.ref }}
+  group: s2pro-ci-v1-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -22,7 +22,7 @@ jobs:
   docs:
     name: docs
     # CI gate — runs on workflow_dispatch, or on non-draft PRs carrying the `run-ci` label.
-    # Keep in sync with the same gate in test.yaml / test-examples.yaml / test-qwen3-omni-ci.yaml.
+    # Keep in sync with the same gate in test.yaml / test-examples.yaml / test-qwen3-omni-ci-v1.yaml.
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (!github.event.pull_request.draft &&
@@ -49,6 +49,7 @@ jobs:
           pytest tests/docs/s2pro/test_docs_tts_s2pro.py -v -s -x
         env:
           HF_ENDPOINT: https://hf-mirror.com
+          SGLANG_OMNI_SERVER_VERSION: v1
 
       - name: Post-stage cleanup
         if: always()
@@ -93,6 +94,7 @@ jobs:
           HF_ENDPOINT: https://hf-mirror.com
           SGLANG_SEEDTTS50_DIR: /github/home/seedtts-50
           S2PRO_STAGE_OUTPUT_ROOT: ${{ github.workspace }}/stage-results/nonstream
+          SGLANG_OMNI_SERVER_VERSION: v1
 
       - name: Post-stage cleanup
         if: always()
@@ -133,6 +135,7 @@ jobs:
           HF_ENDPOINT: https://hf-mirror.com
           SGLANG_SEEDTTS50_DIR: /github/home/seedtts-50
           S2PRO_STAGE_OUTPUT_ROOT: ${{ github.workspace }}/stage-results/stream
+          SGLANG_OMNI_SERVER_VERSION: v1
 
       - name: Post-stage cleanup
         if: always()
@@ -186,6 +189,7 @@ jobs:
           SGLANG_SEEDTTS50_DIR: /github/home/seedtts-50
           S2PRO_STAGE1_SPEED_RESULTS_DIR: ${{ github.workspace }}/stage-artifacts/nonstream
           S2PRO_STAGE2_SPEED_RESULTS_DIR: ${{ github.workspace }}/stage-artifacts/stream
+          SGLANG_OMNI_SERVER_VERSION: v1
 
       - name: Post-stage cleanup
         if: always()

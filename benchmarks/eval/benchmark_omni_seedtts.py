@@ -95,6 +95,28 @@ ASR speed (accuracy.asr_speed) — Whisper-large-v3 for EN, FunASR paraformer-zh
 | ZH   | 0.344              | 0.0861       | 2.90                         | PR #316 [H200, from Qwen3-Omni ZH VC=T run] |
 | EN   | 0.224              | 0.0660       | 4.46                         | PR #351 [H100, from Qwen3-Omni EN VC=F run] |
 | ZH   | 0.261              | 0.0652       | 3.83                         | PR #351 [H100, from Qwen3-Omni ZH VC=T run] |
+
+Local v1 Pipeline Result (this workspace, 2026-05-01)
+
+Accuracy (accuracy.wer)
+
+| Model      | Config            | wer_corpus | wer_per_sample_mean | wer_per_sample_median | wer_per_sample_std | evaluated | skipped | Source                                                                  |
+| ---------- | ----------------- | ---------- | ------------------- | --------------------- | ------------------ | --------- | ------- | ----------------------------------------------------------------------- |
+| Qwen3-Omni | EN, voice_clone=T | 2.14%      | 2.18%               | 0.00%                 | 7.3%               | 1088/1088 | 0       | local v1 sweep [H200, full-set, c=16, sequential generate+transcribe]  |
+| Qwen3-Omni | EN, voice_clone=F | 1.89%      | 1.98%               | 0.00%                 | 7.2%               | 1088/1088 | 0       | local v1 sweep [H200, full-set, c=16, sequential generate+transcribe]  |
+| Qwen3-Omni | ZH, voice_clone=T | 1.49%      | 1.46%               | 0.00%                 | 8.5%               | 2020/2020 | 0       | local v1 sweep [H200, full-set, c=16, sequential generate+transcribe]  |
+| Qwen3-Omni | ZH, voice_clone=F | 1.80%      | 1.65%               | 0.00%                 | 8.9%               | 2020/2020 | 0       | local v1 sweep [H200, full-set, c=16, sequential generate+transcribe]  |
+
+Generation speed (generation.speed)
+
+| Model      | Config            | latency_mean_s | latency_p95_s | rtf_mean | throughput_qps | tok_per_s_mean | tok_per_s_agg | Source                                                                  |
+| ---------- | ----------------- | -------------- | ------------- | -------- | -------------- | -------------- | ------------- | ----------------------------------------------------------------------- |
+| Qwen3-Omni | EN, voice_clone=T | 7.961          | 11.789        | 2.2217   | 2.001          | 1.8            | 1.8           | local v1 sweep [H200, full-set, c=16, sequential generate+transcribe]  |
+| Qwen3-Omni | EN, voice_clone=F | 6.906          | 10.342        | 1.9382   | 2.307          | 2.1            | 2.1           | local v1 sweep [H200, full-set, c=16, sequential generate+transcribe]  |
+| Qwen3-Omni | ZH, voice_clone=T | 9.004          | 12.117        | 2.1632   | 1.774          | 1.9            | 1.9           | local v1 sweep [H200, full-set, c=16, sequential generate+transcribe]  |
+| Qwen3-Omni | ZH, voice_clone=F | 8.043          | 10.736        | 1.9326   | 1.983          | 2.2            | 2.1           | local v1 sweep [H200, full-set, c=16, sequential generate+transcribe]  |
+
+Standalone ASR speed was not logged separately in the local v1 sweep above.
 """
 
 from __future__ import annotations

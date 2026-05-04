@@ -53,6 +53,7 @@ from tests.utils import (
     assert_summary_metrics,
     assert_wer_results,
     no_proxy_env,
+    server_log_file,
     start_server_from_cmd,
     stop_server,
 )
@@ -67,7 +68,6 @@ STARTUP_TIMEOUT = 600
 BENCHMARK_TIMEOUT = 600
 WER_TIMEOUT = 600
 DATASET_CACHE_ENV = "SGLANG_SEEDTTS50_DIR"
-# Also used in .github/workflows/test-s2pro-ci.yaml — keep in sync.
 S2PRO_STAGE_OUTPUT_ROOT_ENV = "S2PRO_STAGE_OUTPUT_ROOT"
 S2PRO_STAGE1_SPEED_RESULTS_DIR_ENV = "S2PRO_STAGE1_SPEED_RESULTS_DIR"
 S2PRO_STAGE2_SPEED_RESULTS_DIR_ENV = "S2PRO_STAGE2_SPEED_RESULTS_DIR"
@@ -436,7 +436,7 @@ def cleanup_generated_audio_fixture():
 def server_process(tmp_path_factory: pytest.TempPathFactory):
     """Start the s2-pro server and wait until healthy."""
     port = find_available_port()
-    log_file = tmp_path_factory.mktemp("server_logs") / "server.log"
+    log_file = server_log_file(tmp_path_factory)
     cmd = [
         sys.executable,
         "-m",

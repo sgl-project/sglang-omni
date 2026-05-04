@@ -22,7 +22,12 @@ import pytest
 import requests
 
 from sglang_omni.utils import find_available_port
-from tests.utils import disable_proxy, start_server_from_cmd, stop_server
+from tests.utils import (
+    disable_proxy,
+    server_log_file,
+    start_server_from_cmd,
+    stop_server,
+)
 
 S2PRO_MODEL_PATH = "fishaudio/s2-pro"
 S2PRO_CONFIG_PATH = "examples/configs/s2pro_tts.yaml"
@@ -36,7 +41,7 @@ REFERENCE_AUDIO = "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-
 def server_process(tmp_path_factory: pytest.TempPathFactory):
     """Start the S2-Pro server, wait until healthy, and yield `(proc, port)`."""
     port = find_available_port()
-    log_file = tmp_path_factory.mktemp("server_logs") / "server.log"
+    log_file = server_log_file(tmp_path_factory)
     cmd = [
         sys.executable,
         "-m",

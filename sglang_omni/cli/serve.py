@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import logging
+import os
+import sys
 from typing import Annotated, Literal
 
 import typer
@@ -8,8 +10,35 @@ import yaml
 
 from sglang_omni.config.manager import ConfigManager
 from sglang_omni.serve.launcher import launch_server
+from sglang_omni.utils import print_server_version_banner
 
 _THINKER_STAGE_NAME = "thinker"
+# Note (Chenyang): Add for V1.
+_V1_CLI_MODULE = "sglang_omni_v1.cli"
+
+
+def _build_v1_exec_argv(argv: list[str]) -> list[str]:
+    filtered_args: list[str] = []
+    index = 1  # Skip the executable/script path.
+    while index < len(argv):
+        arg = argv[index]
+        if arg == "--version":
+            index += 2
+            continue
+        if arg.startswith("--version="):
+            index += 1
+            continue
+        filtered_args.append(arg)
+        index += 1
+
+    return [sys.executable, "-m", _V1_CLI_MODULE, *filtered_args]
+
+
+def _dispatch_to_v1_cli() -> None:
+    os.execv(sys.executable, _build_v1_exec_argv(sys.argv))
+
+
+# Note (Chenyang): Add for V1.
 
 
 def serve(
@@ -89,12 +118,44 @@ def serve(
             ),
         ),
     ] = None,
+    # Note (Chenyang): Add for V1.
+    version: Annotated[
+        Literal["legacy", "v1"],
+        typer.Option(
+            help=(
+                "Select which server implementation to run. "
+                "'legacy' keeps the current mainline pipeline, while 'v1' "
+                "dispatches to the copied refactored package."
+            )
+        ),
+    ] = "legacy",
+    # Note (Chenyang): Add for V1.
     log_level: Annotated[
         Literal["debug", "info", "warning", "error", "critical"],
         typer.Option(help="Log level (default: info)."),
     ] = "info",
 ) -> None:
     """Serve the pipeline."""
+    print_server_version_banner(version, entry="sglang_omni.cli serve")
+    # Note (Chenyang): Add for V1.
+    if version == "v1":
+        unsupported_v1_flags = {
+            "--mem-fraction-static": mem_fraction_static,
+            "--thinker-mem-fraction-static": thinker_mem_fraction_static,
+            "--talker-mem-fraction-static": talker_mem_fraction_static,
+            "--thinker-max-seq-len": thinker_max_seq_len,
+            "--encoder-mem-reserve": encoder_mem_reserve,
+        }
+        for flag_name, value in unsupported_v1_flags.items():
+            if value is not None:
+                raise typer.BadParameter(
+                    f"{flag_name} is only supported by the legacy server. "
+                    "Remove it when using --version v1."
+                )
+
+        _dispatch_to_v1_cli()
+        return
+    # Note (Chenyang): End for V1.
     logging.basicConfig(
         level=getattr(logging, log_level.upper()),
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",

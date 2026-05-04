@@ -82,3 +82,6 @@ include = ["sglang_omni*"]
 # Fish Speech S2-Pro DAC: OmegaConf YAML must ship with the wheel (not only .py).
 [tool.setuptools.package-data]
 "sglang_omni.models.fishaudio_s2_pro" = ["fish_speech/configs/*.yaml"]
+# Note (Chenyang): Add for V1.
+"sglang_omni_v1.models.fishaudio_s2_pro" = ["fish_speech/configs/*.yaml"]
+# Note (Chenyang): Add for V1.

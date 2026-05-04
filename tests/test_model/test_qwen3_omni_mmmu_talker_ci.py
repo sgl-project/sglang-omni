@@ -28,11 +28,15 @@ import pytest
 
 from benchmarks.dataset.prepare import DATASETS
 from benchmarks.eval.benchmark_omni_mmmu import MMMUEvalConfig, run_mmmu_eval
+from benchmarks.metrics.mmmu import print_mmmu_accuracy_summary
+from benchmarks.metrics.performance import print_speed_summary
+from benchmarks.metrics.wer import print_wer_summary
 from sglang_omni.utils import find_available_port
 from tests.utils import (
     apply_slack,
     assert_speed_thresholds,
     assert_wer_partitioned,
+    server_log_file,
     start_server_from_cmd,
     stop_server,
 )
@@ -56,10 +60,10 @@ MMMU_TTS_PROMPT = (
     "Do not exceed 120 words in total."
 )
 
-# Threshold reference: https://github.com/sgl-project/sglang-omni/pull/337#issuecomment-4314808991
+# Threshold reference: https://github.com/sgl-project/sglang-omni/pull/382#issuecomment-4366925373
 
 # Accuracy floor — audio-mode MMMU.
-MMMU_AUDIO_MIN_ACCURACY = 0.50
+MMMU_AUDIO_MIN_ACCURACY = 0.70
 
 # WER thresholds use a partitioned view of the per-sample distribution:
 #  - corpus WER over the "sane" subset (per-sample WER <= 50%)
@@ -69,10 +73,10 @@ MMMU_AUDIO_N_ABOVE_50_MAX = 3
 
 _MMMU_AUDIO_P95 = {
     8: {
-        "throughput_qps": 0.035,
-        "tok_per_s_agg": 0.90,
-        "latency_mean_s": 151.500,
-        "rtf_mean": 3.6109,
+        "throughput_qps": 0.089,
+        "tok_per_s_agg": 2.6,
+        "latency_mean_s": 52.104,
+        "rtf_mean": 1.3361,
     },
 }
 MMMU_AUDIO_THRESHOLDS = apply_slack(_MMMU_AUDIO_P95)
@@ -82,7 +86,7 @@ MMMU_AUDIO_THRESHOLDS = apply_slack(_MMMU_AUDIO_P95)
 def server_process(tmp_path_factory: pytest.TempPathFactory):
     """Start the Qwen3-Omni speech server (talker ON) and wait until healthy."""
     port = find_available_port()
-    log_file = tmp_path_factory.mktemp("server_logs") / "server.log"
+    log_file = server_log_file(tmp_path_factory)
     cmd = [
         sys.executable,
         "examples/run_qwen3_omni_speech_server.py",
@@ -128,6 +132,12 @@ def test_mmmu_audio_wer_and_speed(
     results = asyncio.run(run_mmmu_eval(config))
 
     summary = results["summary"]
+    speed = results["speed"]
+    print_mmmu_accuracy_summary(summary, config.model)
+    print_speed_summary(speed, config.model, CONCURRENCY, title="MMMU Talker Speed")
+    if "wer" in results:
+        print_wer_summary(results["wer"]["summary"], config.model)
+
     failed = summary.get("failed", 0)
     total = summary.get("total_samples", 0)
     assert failed == 0, (
@@ -135,7 +145,6 @@ def test_mmmu_audio_wer_and_speed(
         f"(timeouts or empty responses); any failure fails the test"
     )
 
-    # Assert accuracy
     accuracy = summary["accuracy"]
     assert accuracy >= MMMU_AUDIO_MIN_ACCURACY, (
         f"MMMU audio accuracy {accuracy:.4f} ({accuracy * 100:.1f}%) < "
@@ -143,7 +152,6 @@ def test_mmmu_audio_wer_and_speed(
         f"({MMMU_AUDIO_MIN_ACCURACY * 100:.0f}%)"
     )
 
-    # Assert WER
     assert "wer" in results, "Audio WER results missing from eval output"
     assert_wer_partitioned(
         results["wer"],
@@ -151,8 +159,6 @@ def test_mmmu_audio_wer_and_speed(
         max_n_above_50=MMMU_AUDIO_N_ABOVE_50_MAX,
     )
 
-    # Assert speed
-    speed = results["speed"]
     assert_speed_thresholds(speed, MMMU_AUDIO_THRESHOLDS, CONCURRENCY)
 
 

@@ -18,7 +18,12 @@ from pathlib import Path
 import pytest
 import requests
 
-from tests.utils import disable_proxy, start_server_from_cmd, stop_server
+from tests.utils import (
+    disable_proxy,
+    server_log_file,
+    start_server_from_cmd,
+    stop_server,
+)
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -49,7 +54,7 @@ def server_process(tmp_path_factory: pytest.TempPathFactory):
     """Start the sglang-omni backend server and wait until healthy."""
     assert os.path.isfile(VIDEO_PATH), f"Test video not found: {VIDEO_PATH}"
     port = SERVER_PORT
-    log_file = tmp_path_factory.mktemp("server_logs") / "server.log"
+    log_file = server_log_file(tmp_path_factory)
     cmd = [
         sys.executable,
         "-m",
