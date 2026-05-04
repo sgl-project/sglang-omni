@@ -11,6 +11,7 @@ from .misc import (
     broadcast_pyobj,
     get_layer_id,
     import_string,
+    print_server_version_banner,
     set_random_seed,
 )
 
@@ -26,4 +27,5 @@ __all__ = [
     "add_prefix",
     "set_random_seed",
     "broadcast_pyobj",
+    "print_server_version_banner",
 ]

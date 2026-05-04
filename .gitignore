@@ -28,6 +28,7 @@ htmlcov/
 
 # Logs
 *.log
+*.txt
 output.wav
 
 # OS

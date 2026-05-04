@@ -13,6 +13,21 @@ import numpy as np
 import torch
 import torch.distributed as dist
 
+_SERVER_VERSION_BANNER_WIDTH = 72
+
+
+def print_server_version_banner(version: str, entry: str) -> None:
+    """Loudly announce which server version is starting up."""
+    width = _SERVER_VERSION_BANNER_WIDTH
+    label = version.upper()
+    border = "=" * width
+    title = f"SGLANG-OMNI SERVER VERSION = {label}"
+    entry_line = f"entry: {entry}"
+    print(f"\n{border}\n", flush=True)
+    print(title.center(width), flush=True)
+    print(entry_line.center(width), flush=True)
+    print(f"{border}\n", flush=True)
+
 
 def import_string(path: str) -> Any:
     if not path or not isinstance(path, str):

@@ -1,5 +1,7 @@
 default_stages: [pre-commit, pre-push, manual]
 
+exclude: \.txt$
+
 repos:
   - repo: https://github.com/PyCQA/autoflake
     rev: v2.3.1

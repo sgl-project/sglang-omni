@@ -16,7 +16,12 @@ import pytest
 import requests
 
 from sglang_omni.utils import find_available_port
-from tests.utils import disable_proxy, start_server_from_cmd, stop_server
+from tests.utils import (
+    disable_proxy,
+    server_log_file,
+    start_server_from_cmd,
+    stop_server,
+)
 
 MODEL_PATH = "Qwen/Qwen3-Omni-30B-A3B-Instruct"
 MODEL_NAME = "qwen3-omni"
@@ -39,7 +44,7 @@ def _post_chat(
 @pytest.fixture(scope="module")
 def server_process(tmp_path_factory: pytest.TempPathFactory):
     port = find_available_port()
-    log_file = tmp_path_factory.mktemp("thinker_length_logs") / "server.log"
+    log_file = server_log_file(tmp_path_factory, "thinker_length_logs")
     cmd = [
         sys.executable,
         "examples/run_qwen3_omni_server.py",
