@@ -34,6 +34,8 @@ import json
 import os
 from pathlib import Path
 
+import pytest
+
 from tests.utils import assert_streaming_consistency
 
 S2PRO_STAGE1_SPEED_RESULTS_DIR_ENV = "S2PRO_STAGE1_SPEED_RESULTS_DIR"
@@ -69,6 +71,7 @@ def _selected_concurrency() -> int:
         ) from exc
 
 
+@pytest.mark.benchmark
 def test_s2pro_streaming_consistency_from_artifacts() -> None:
     """Validate stage-1 (non-stream) vs stage-2 (stream) speed_results.json
     artifacts agree on structural invariants: prompt token counts, completion
