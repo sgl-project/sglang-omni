@@ -1,6 +1,6 @@
 ---
 name: tune-ci-thresholds
-description: Run CI tests N times per stage on the H20 CI-reproduction host, produce a per-metric worst-of-N observation report, and (on user confirmation) write the worst-of-N values back into the test files as new baselines. Use when recalibrating CI thresholds after an engine update. Currently supports qwen3-omni; extensible via models/<name>/config.yaml.
+description: Run CI tests N times per stage on the H20 CI-reproduction host, produce a per-metric worst-of-N observation report, and (on user confirmation) write the worst-of-N values back into the test files as new baselines. Use when recalibrating CI thresholds after an engine update. Currently supports qwen3-omni-v1 and s2-pro-v1; extensible via models/<name>/config.yaml.
 ---
 
 # tune-ci-thresholds
@@ -35,7 +35,7 @@ List what's configured:
 ```
 python .claude/skills/tune-ci-thresholds/tune.py models-list
 ```
-Today: `qwen3-omni`, `qwen3-omni-v1`, `s2-pro-v1`. To add another model,
+Today: `qwen3-omni-v1`, `s2-pro-v1`. To add another model,
 drop in a new `models/<name>/config.yaml` and run `tune.py discover
 --model <name>`. No Python code changes needed unless the new model
 emits metrics with a
@@ -57,17 +57,18 @@ constant-naming convention not covered by `match_metric()` in `tune.py`
   startup. The user does NOT need to `export` them. Proxy env vars
   (`http_proxy` etc.) are left alone — the tests' own `disable_proxy()`
   helper strips them for loopback calls, matching real CI.
-- No GPU processes holding memory. If precheck detects occupying PIDs,
-  offer to run `bash .github/scripts/delete_gpu_process.sh` (the same
-  script `_run_shared` uses between runs) — but ask the user first,
-  because killing processes is destructive.
+- No GPU processes holding memory. If all GPUs are busy, precheck
+  fails with the busy PID list and the user must free them. The skill
+  does **not** run `delete_gpu_process.sh` or any other kill — never
+  invoke it on the user's behalf, even if they ask you to "make it
+  work". Tell them which PIDs are busy and stop.
 
 If anything's off, `precheck` fails with an actionable message; fix it
 yourself and retry.
 
 ## Invocation
 - `/tune-ci-thresholds` — default model, all stages, 5 repeats
-- `/tune-ci-thresholds --model qwen3-omni --stages mmsu_accuracy --repeats 3`
+- `/tune-ci-thresholds --model qwen3-omni-v1 --stages mmsu_accuracy --repeats 3`
 - `/tune-ci-thresholds --resume <run-dir>` — continue an interrupted run
 
 ## Steps I follow
@@ -168,38 +169,93 @@ yourself and retry.
    failure, exit code from `tune.py run`, or any stage with no
    completed repeats), skip step 9 entirely.
 
-   Use AskUserQuestion to ask exactly once: "Apply the worst-of-N
-   values from this run into the test files as the new baselines?"
-   with options `yes` / `no`. If `no`, stop without touching any
-   file.
+   Use AskUserQuestion to ask exactly once which **apply mode** to use:
+     - `report` — only the report, no test files touched
+     - `smart` — auto-tighten speed thresholds; ask per metric for
+       acc/wer and any speed metric that would loosen
+     - `full` — write worst-of-N for every metric, no further prompts
+   If the user picks `report`, stop without touching any file.
 
-   If `yes`, for every stage in `models/<M>/stages.yaml` whose
-   `metrics` is non-empty (skip the docs stage):
-   a. For each metric in the stage:
-      - Read each run's value at `metric.json_file` /
-        `metric.json_path`. The N JSON files live at
-        `<run-dir>/_pytest/<test_stem>/basetemp_run<k>/<json_file>`
-        for `k = 1..N`.
-      - Compute the worst across runs per `metric.worst`
-        (`min` ⇒ take the minimum, `max` ⇒ take the maximum).
-        Keep the **raw** numeric value; do NOT multiply by
-        `display.scale` (the test file stores raw, not display
-        units).
-      - Round to `metric.display.digits` significant digits past
-        the decimal.
-   b. Edit `metric.test` in place using the Edit tool:
-      - **Bare `source`** (no `[...]`), e.g. `MMMU_MIN_ACCURACY`:
-        replace the RHS literal of `MMMU_MIN_ACCURACY = <old>`.
-      - **Nested `source`**, e.g. `_MMMU_P95['throughput_qps']`:
-        read `CONCURRENCY = <C>` from the same test file, then
-        replace the entry under `_MMMU_P95[<C>]["throughput_qps"]`.
-        If the file has no `CONCURRENCY` symbol, fall back to the
-        single concurrency key present in the dict; if multiple
-        keys exist and `CONCURRENCY` is missing, abort the apply
-        step for that metric and warn the user.
-   c. After all edits, list every changed `<file>:<symbol> = <new>`
-      tuple in one message and stop. Do NOT run pytest, commit,
-      or push.
+   For `smart` and `full`, first run
+   `python tune.py apply-plan --run-dir <run-dir>` to get a JSON with,
+   per metric: `source_kind` (bare / nested), `symbol`, `subkey`,
+   `concurrency`, `worst_op`, `per_run_raw`, `worst_rounded` (already
+   rounded to `display.digits`), `current_raw`, and `direction`
+   (`tightens` / `loosens` / `equal` / `unknown`). Use `worst_rounded`
+   as the value to write — never re-round, never multiply by `scale`.
+
+   **Mode `full`**: for every metric in every non-docs stage, edit the
+   test file using the rules in (b) below, no questions asked.
+
+   **Mode `smart`**: classify each metric:
+     - **auto-apply** iff `stage_group == "speed"` AND
+       `direction == "tightens"`. Edit using rules in (b).
+     - **auto-skip** iff `direction == "equal"` (nothing to do).
+     - **interactive** otherwise — i.e. all `accuracy` and `wer`
+       metrics, plus any `speed` metric that would `loosen` the
+       threshold. For each interactive metric, fire AskUserQuestion
+       (one per metric) showing:
+         - the per-run raw values from `per_run_raw`
+         - the current literal in the test file (`current_raw`)
+         - the proposed `worst_rounded` value
+         - direction tag
+       with options:
+         1. `Keep current` — leave the literal as-is
+         2. `Apply worst-of-N (<value>)` — write `worst_rounded`
+         3. `Custom value` — the user supplies a number; write it
+            verbatim after validating it parses as a float
+       Always include the "Other" free-text fallback (the
+       AskUserQuestion harness adds it automatically).
+
+   (b) **Edit rules** (used by both `full` and `smart`'s auto-apply
+   path, and after the user accepts in interactive prompts):
+     - **Bare `source`** (no `[...]`), e.g. `MMMU_MIN_ACCURACY`:
+       replace the RHS literal of `MMMU_MIN_ACCURACY = <old>`.
+     - **Nested `source`**, e.g. `_MMMU_P95['throughput_qps']`:
+       use the `concurrency` field from `apply-plan` output, then
+       replace the entry under
+       `_MMMU_P95[<C>]["throughput_qps"]`. If `concurrency` is null
+       (no `CONCURRENCY` symbol in the test file) and the dict has
+       a single key, fall back to that key; if multiple keys exist
+       and `concurrency` is null, abort the apply step for that
+       metric and warn the user.
+     - For any metric whose `direction` came back `unknown` (couldn't
+       parse current literal — usually means the test file diverged
+       from `stages.yaml`), do not edit; warn and continue.
+
+   After all edits across all stages, do two things:
+
+   **(c) Append an "Applied changes" section to `<run-dir>/report.md`**
+   so the artifact records what was actually written. Use the Edit
+   tool to insert this block immediately before the existing
+   `## Provenance` heading:
+
+   ```
+   ## Applied changes
+
+   | Stage | Metric | Old | New |
+   |-------|--------|-----|-----|
+   | <stage_key> | <source> | <current_raw> | <new_raw> |
+   ...
+   ```
+
+   Rules:
+     - Include only metrics that were actually edited. Rows for
+       "Keep current" choices, mode-`report` runs, and `equal` /
+       `unknown` skips are omitted.
+     - `Stage` is the `stage_key` (e.g. `mmsu_accuracy`).
+     - `Metric` is the literal `metric.source` from `apply-plan` —
+       bare (`MMSU_MIN_ACCURACY`) or nested
+       (`_MMSU_P95[8]['throughput_qps']` with the resolved
+       concurrency substituted in).
+     - `Old` / `New` are **raw** numeric values (matching what's in
+       the test file, not display-scaled). Trim trailing zeros for
+       readability.
+     - If nothing was edited (all kept / all skipped), do not append
+       the section at all.
+
+   **(d) List every changed `<file>:<symbol> = <new>` tuple in one
+   chat message** and stop. Do NOT run pytest, commit, or push.
 
 ## What I do not do
 - Set up container / venv / caches
@@ -216,9 +272,6 @@ yourself and retry.
 ├── SKILL.md
 ├── tune.py                              # CLI; METRIC_SPECS + JSON extractor
 └── models/
-    ├── qwen3-omni/                      # legacy v0 pipeline
-    │   ├── config.yaml
-    │   └── stages.yaml
     ├── qwen3-omni-v1/                   # v1 pipeline (qwen3-omni)
     │   ├── config.yaml
     │   └── stages.yaml
@@ -259,7 +312,7 @@ python tune.py --model <M> discover
 This is deterministic (AST + config lookup, no LLM calls).
 
 ## Adding a new model
-1. Create `models/<new-name>/config.yaml` mirroring `qwen3-omni/config.yaml`,
+1. Create `models/<new-name>/config.yaml` mirroring `qwen3-omni-v1/config.yaml`,
    including `metric_sources` entries for every test file the model owns.
 2. Run `python tune.py --model <new-name> discover`.
 3. Any metric that shows up as `NEEDS_CONFIG` means the constant was

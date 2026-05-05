@@ -9,13 +9,13 @@ Usage:
     # Launch the server:
     python -m sglang_omni.cli serve \
         --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct \
-        --port 8000
+        --version v1 --port 8000
 
     # If only text is needed:
 
     python -m sglang_omni.cli serve \
         --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct \
-        --text-only --port 8000
+        --version v1 --text-only --port 8000
 
     # Prepare the dataset:
     python -m benchmarks.dataset.prepare --dataset mmsu
@@ -42,14 +42,14 @@ CI runs on a subset and has its own thresholds elsewhere (see tasks/*.py).
 
 Benchmark: MMSU     |  Dataset: MMSU full (5000 samples)
 Hardware:  1 x H200 (default; non-H200 sources are tagged in Source column)
-Last verified: 2026-04-25
+Last verified: 2026-05-04
 
 Accuracy (accuracy)
 
 | Model      | Config                | overall_accuracy | parseable_samples | unparseable_samples | Source                        |
 | ---------- | --------------------- | ---------------- | ----------------- | ------------------- | ----------------------------- |
-| Qwen3-Omni | modalities=text       | 70.88%           | 5000/5000         | 0                   | PR #316 [H200, full-set, c=8] |
-| Qwen3-Omni | modalities=text+audio | 71.22%           | 5000/5000         | 0                   | PR #316 [H200, full-set, c=8] |
+| Qwen3-Omni | modalities=text       | 70.96%           | 5000/5000         | 0                   | PR #393 [H200, V1-pipeline, full-set, c=8] |
+| Qwen3-Omni | modalities=text+audio | 71.06%           | 5000/5000         | 0                   | PR #393 [H200, V1-pipeline, full-set, c=8] |
 | Qwen3-Omni | modalities=text       | 71.10%           | 4999/5000         | 1                   | PR #351 [H100, full-set, c=8] |
 | Qwen3-Omni | modalities=text+audio | 71.14%           | 5000/5000         | 0                   | PR #351 [H100, full-set, c=8] |
 
@@ -66,8 +66,8 @@ Speed (speed)
 
 | Model      | Config                | latency_mean_s | latency_p95_s | throughput_qps | tok_per_s_mean | tok_per_s_agg | Source                                          |
 | ---------- | --------------------- | -------------- | ------------- | -------------- | -------------- | ------------- | ----------------------------------------------- |
-| Qwen3-Omni | modalities=text       | 0.349          | 0.484         | 22.91          | 6.1            | 5.9           | PR #316 [H200, full-set, c=8]                   |
-| Qwen3-Omni | modalities=text+audio | 0.330          | 0.444         | 24.23          | 6.4            | 6.3           | PR #316 [H200, full-set, c=8, text-only server] |
+| Qwen3-Omni | modalities=text       | 0.226          | 0.335         | 35.33          | 9.1            | 9.1           | PR #393 [H200, V1-pipeline, full-set, c=8]                   |
+| Qwen3-Omni | modalities=text+audio | 0.243          | 0.340         | 32.89          | 8.5            | 8.5           | PR #393 [H200, V1-pipeline, full-set, c=8, text-only server] |
 | Qwen3-Omni | modalities=text       | 0.512          | 0.864         | 15.598         | 4.5            | 4.0           | PR #351 [H100, full-set, c=8]                   |
 | Qwen3-Omni | modalities=text+audio | 0.515          | 0.884         | 15.521         | 4.4            | 4.0           | PR #351 [H100, full-set, c=8] (text-only server) |
 
