@@ -21,7 +21,6 @@ from sglang_omni_v1.config.compiler import (
     _detect_same_gpu_targets,
     _resolve_factory_args,
     _resolve_stream_targets,
-    _resolve_stream_transports,
 )
 from sglang_omni_v1.config.schema import PipelineConfig, StageConfig
 from sglang_omni_v1.pipeline import Coordinator
@@ -92,7 +91,6 @@ def _build_stage_groups(
             abort_endpoint=endpoints["abort"],
             stage_endpoints=stage_endpoints,
             stream_targets=_resolve_stream_targets(stage_cfg, name_map),
-            stream_transports=_resolve_stream_transports(stage_cfg, name_map),
             same_gpu_targets=same_gpu_targets,
             is_stream_receiver=stage_cfg.name in stream_receivers,
             name_map=name_map,

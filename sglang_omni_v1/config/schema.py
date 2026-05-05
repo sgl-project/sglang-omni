@@ -71,7 +71,6 @@ class StageConfig(BaseModel):
 
     # --- Streaming ---
     stream_to: list[str] = Field(default_factory=list)
-    stream_transport: dict[str, Literal["relay"]] = Field(default_factory=dict)
 
     # --- Route-specific payload projection ---
     project_payload: dict[str, str] = Field(default_factory=dict)
@@ -168,12 +167,6 @@ class PipelineConfig(BaseModel):
                     raise ValueError(
                         f"Stage {s.name!r} stream_to references unknown stage {t!r}"
                     )
-            unknown_stream_transport = set(s.stream_transport) - set(s.stream_to)
-            if unknown_stream_transport:
-                raise ValueError(
-                    f"Stage {s.name!r} stream_transport references non-stream "
-                    f"targets: {sorted(unknown_stream_transport)}"
-                )
             for t in s.project_payload:
                 if t not in names:
                     raise ValueError(

@@ -27,9 +27,9 @@ from sglang_omni_v1.vendor.sglang.utils import make_layers
 
 logger = logging.getLogger(__name__)
 
+# Note (Ratish): fixed top-k width keeps decode graph shape stable;
+# per-request top_k is masked inside _decode_codebooks.
 _GRAPH_TOP_K = 30
-# note(Ratish): CUDA graph capture needs a fixed top-k width; per-request top_k
-# is applied as a mask inside this buffer.
 _DEFAULT_TEMPERATURE = 0.8
 _DEFAULT_TOP_P = 0.8
 _DEFAULT_REP_PENALTY = 1.1
@@ -249,7 +249,7 @@ class S2ProSGLangTextModel(nn.Module):
         codebook_size: int,
         semantic_begin_id: int,
         semantic_end_id: int,
-        im_end_id: int,
+        im_end_token_id: int,
         max_batch_size: int,
         rep_history_len: int = 16,
     ) -> None:
@@ -262,6 +262,7 @@ class S2ProSGLangTextModel(nn.Module):
         self._num_codebooks = num_codebooks
         self._semantic_begin_id = semantic_begin_id
         self._semantic_end_id = semantic_end_id
+        self._im_end_token_id = int(im_end_token_id)
 
         # Shared codebook embedding from audio decoder (for VQ input combination)
         self._vq_codebook_embeddings = audio_decoder.codebook_embeddings
@@ -279,7 +280,7 @@ class S2ProSGLangTextModel(nn.Module):
             (self.vocab_size,), -float("inf"), device=device, dtype=torch.bfloat16
         )
         bias[semantic_begin_id : semantic_end_id + 1] = 0.0
-        bias[im_end_id] = 0.0
+        bias[im_end_token_id] = 0.0
         self._semantic_bias = bias
 
         # Output buffers: written by _decode_codebooks, read by ModelRunner

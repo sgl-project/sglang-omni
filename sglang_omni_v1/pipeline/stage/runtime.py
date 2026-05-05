@@ -66,7 +66,6 @@ class Stage:
         scheduler: Any = None,
         project_payload: dict[str, Callable[[Any], Any]] | None = None,
         stream_targets: list[str] | None = None,
-        stream_transports: dict[str, str] | None = None,
         same_gpu_targets: set[str] | None = None,
         tp_fanout: TPLeaderFanout | None = None,
     ):
@@ -80,7 +79,6 @@ class Stage:
         self.scheduler = scheduler
         self._project_payload = project_payload or {}
         self._stream_targets = stream_targets or []
-        self._stream_transports = stream_transports or {}
         self._same_gpu_targets = same_gpu_targets or set()
         self._tp_fanout = tp_fanout
         self._owns_external_io = role in {"single", "leader"}
@@ -273,6 +271,9 @@ class Stage:
             await self._send_failure(request_id, f"relay read failed: {exc}")
             return
 
+        if request_id in self._aborted:
+            return
+
         # Input aggregation
         merged = self.input_handler.receive(request_id, msg.from_stage, payload)
         if merged is not None:
@@ -332,6 +333,9 @@ class Stage:
                 exc,
             )
             self._queue_stream_error(request_id, msg.from_stage, exc)
+            return
+
+        if request_id in self._aborted:
             return
 
         item = StreamItem(
@@ -604,11 +608,6 @@ class Stage:
         key = (request_id, target)
         chunk_id = self._stream_chunk_counters.get(key, 0)
         self._stream_chunk_counters[key] = chunk_id + 1
-        same_gpu_targets = (
-            set()
-            if self._stream_transports.get(target) == "relay"
-            else self._same_gpu_targets
-        )
         await relay_io.send_stream_chunk(
             self.relay,
             self.control_plane,
@@ -619,7 +618,7 @@ class Stage:
             from_stage=self.name,
             chunk_id=chunk_id,
             metadata=metadata,
-            same_gpu_targets=same_gpu_targets,
+            same_gpu_targets=self._same_gpu_targets,
         )
 
     async def _send_stream_to_coordinator(self, out: OutgoingMessage) -> None:

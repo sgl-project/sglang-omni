@@ -60,7 +60,6 @@ class StageProcessSpec:
 
     # Stream wiring
     stream_targets: list[str] = field(default_factory=list)
-    stream_transports: dict[str, str] = field(default_factory=dict)
     same_gpu_targets: set[str] = field(default_factory=set)
     is_stream_receiver: bool = False
 
@@ -195,7 +194,6 @@ def _run_stage(
         scheduler=scheduler,
         project_payload=project_payload or None,
         stream_targets=spec.stream_targets or None,
-        stream_transports=spec.stream_transports or None,
         same_gpu_targets=spec.same_gpu_targets or None,
         tp_fanout=tp_fanout,
     )

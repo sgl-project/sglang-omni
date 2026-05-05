@@ -29,7 +29,6 @@ class S2ProPipelineConfig(PipelineConfig):
             gpu=0,
             next="vocoder",
             stream_to=["vocoder"],
-            stream_transport={"vocoder": "relay"},
         ),
         StageConfig(
             name="vocoder",

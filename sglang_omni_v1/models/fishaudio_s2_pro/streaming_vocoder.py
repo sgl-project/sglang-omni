@@ -18,6 +18,9 @@ from sglang_omni_v1.scheduling.messages import IncomingMessage, OutgoingMessage
 
 logger = logging.getLogger(__name__)
 
+_ABORTED_REQUEST_ID_LIMIT = 10000
+_ABORTED_REQUEST_ID_RETAINED = 5000
+
 
 @dataclass
 class _StreamVocoderState:
@@ -354,16 +357,28 @@ class S2ProVocoderScheduler:
         self._running = False
 
     def abort(self, request_id: str) -> None:
-        self._aborted_request_ids.add(request_id)
-        self._clear_request_state(request_id)
+        self._record_aborted_request_id(request_id)
+        self._clear_request_state(request_id, keep_aborted=True)
 
-    def _clear_request_state(self, request_id: str) -> None:
+    def _record_aborted_request_id(self, request_id: str) -> None:
+        self._aborted_request_ids.add(request_id)
+        if len(self._aborted_request_ids) <= _ABORTED_REQUEST_ID_LIMIT:
+            return
+
+        # Note (Ratish): keep aborted ids bounded for late queued messages;
+        # do not drain the shared inbox because it owns request order.
+        excess = len(self._aborted_request_ids) - _ABORTED_REQUEST_ID_RETAINED
+        to_remove = list(self._aborted_request_ids)[:excess]
+        self._aborted_request_ids -= set(to_remove)
+
+    def _clear_request_state(
+        self, request_id: str, *, keep_aborted: bool = False
+    ) -> None:
         self._payloads.pop(request_id, None)
         self._stream_states.pop(request_id, None)
         self._pending_done.discard(request_id)
-        self._pending_messages = collections.deque(
-            msg for msg in self._pending_messages if msg.request_id != request_id
-        )
+        if not keep_aborted:
+            self._aborted_request_ids.discard(request_id)
 
     def _next_message(self) -> IncomingMessage | None:
         if self._pending_messages:
@@ -393,6 +408,8 @@ class S2ProVocoderScheduler:
                 except _queue_mod.Empty:
                     break
 
+            if msg.request_id in self._aborted_request_ids:
+                continue
             if msg.type == "new_request" and not self._is_streaming_payload(msg.data):
                 batch.append(msg)
             else:
@@ -421,6 +438,8 @@ class S2ProVocoderScheduler:
             self._on_done(request_id)
 
     def _on_chunk(self, request_id: str, chunk: Any) -> None:
+        if request_id in self._aborted_request_ids:
+            return
         state = self._stream_states.setdefault(request_id, _StreamVocoderState())
         codes = chunk.data
         assert isinstance(codes, torch.Tensor)
@@ -434,7 +453,7 @@ class S2ProVocoderScheduler:
             stream_overlap_tokens=self._stream_overlap_tokens,
             stream_crossfade_samples=self._stream_crossfade_samples,
         )
-        if output is not None:
+        if output is not None and request_id not in self._aborted_request_ids:
             self.outbox.put(
                 OutgoingMessage(
                     request_id=request_id,
@@ -445,6 +464,8 @@ class S2ProVocoderScheduler:
             )
 
     def _on_done(self, request_id: str) -> None:
+        if request_id in self._aborted_request_ids:
+            return
         if request_id not in self._stream_states:
             return
         if request_id not in self._payloads:
@@ -459,7 +480,7 @@ class S2ProVocoderScheduler:
             stream_overlap_tokens=self._stream_overlap_tokens,
             stream_crossfade_samples=self._stream_crossfade_samples,
         )
-        if output is not None:
+        if output is not None and request_id not in self._aborted_request_ids:
             self.outbox.put(
                 OutgoingMessage(
                     request_id=request_id,
@@ -469,17 +490,27 @@ class S2ProVocoderScheduler:
                 )
             )
 
-        payload = self._payloads[request_id]
+        payload = self._payloads.get(request_id)
+        if payload is None or request_id in self._aborted_request_ids:
+            return
+        result = self._vocode_payload(payload)
+        if request_id in self._aborted_request_ids:
+            return
         self.outbox.put(
             OutgoingMessage(
                 request_id=request_id,
                 type="result",
-                data=self._vocode_payload(payload),
+                data=result,
             )
         )
         self._clear_request_state(request_id)
 
     def _vocode_non_streaming_batch(self, batch: list[IncomingMessage]) -> None:
+        batch = [
+            msg for msg in batch if msg.request_id not in self._aborted_request_ids
+        ]
+        if not batch:
+            return
         for msg in batch:
             self._pending_done.discard(msg.request_id)
         try:
@@ -492,6 +523,8 @@ class S2ProVocoderScheduler:
             return
 
         for msg, result in zip(batch, results):
+            if msg.request_id in self._aborted_request_ids:
+                continue
             self.outbox.put(
                 OutgoingMessage(
                     request_id=msg.request_id,
@@ -505,6 +538,11 @@ class S2ProVocoderScheduler:
 
     def _vocode_payloads(self, payloads: list[StagePayload]) -> list[StagePayload]:
         states = [S2ProState.from_dict(payload.data) for payload in payloads]
+        for payload, state in zip(payloads, states):
+            if state.output_codes is None or state.output_codes.shape[1] == 0:
+                raise ValueError(
+                    f"Request {payload.request_id}: S2-Pro generated no audio codec tokens"
+                )
         code_batches = [state.output_codes[1:].to(self._device) for state in states]
         lengths = [int(codes.shape[-1]) for codes in code_batches]
         max_len = max(lengths)

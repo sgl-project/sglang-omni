@@ -106,7 +106,7 @@ def bootstrap_text_model_for_decode(
     audio_decoder: torch.nn.Module,
     semantic_begin_id: int,
     semantic_end_id: int,
-    im_end_id: int,
+    im_end_token_id: int,
     max_batch_size: int,
     num_codebooks: int,
     codebook_size: int,
@@ -120,7 +120,7 @@ def bootstrap_text_model_for_decode(
         codebook_size=codebook_size,
         semantic_begin_id=semantic_begin_id,
         semantic_end_id=semantic_end_id,
-        im_end_id=im_end_id,
+        im_end_token_id=im_end_token_id,
         max_batch_size=max_batch_size,
         rep_history_len=ras_window,
     )

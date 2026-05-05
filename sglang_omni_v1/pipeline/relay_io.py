@@ -12,6 +12,7 @@ from __future__ import annotations
 import base64
 import io
 import logging
+import multiprocessing
 import pickle
 from multiprocessing.reduction import ForkingPickler
 from typing import Any
@@ -282,6 +283,18 @@ def serialize_ipc_chunk(
     return ipc_metadata
 
 
+def _should_use_stream_ipc(
+    *,
+    target_stage: str,
+    same_gpu_targets: set[str] | None,
+) -> bool:
+    if not same_gpu_targets or target_stage not in same_gpu_targets:
+        return False
+    # Note (Ratish): spawned stages use relay until CUDA IPC handle lifetime
+    # and device-context ownership are managed by the stage runtime.
+    return multiprocessing.current_process().name == "MainProcess"
+
+
 async def send_stream_chunk(
     relay: Relay,
     control_plane: Any,
@@ -301,21 +314,26 @@ async def send_stream_chunk(
     - Same-GPU: CUDA IPC (zero copy)
     - Relay: default transport when CUDA IPC is not selected
     """
-    # ── Same-GPU CUDA IPC ──
-    if same_gpu_targets and target_stage in same_gpu_targets:
-        ipc_meta = serialize_ipc_chunk(data, metadata)
-        ipc_meta["chunk_id"] = chunk_id
-        msg = DataReadyMessage(
-            request_id=request_id,
-            from_stage=from_stage,
-            to_stage=target_stage,
-            shm_metadata=ipc_meta,
-            chunk_id=chunk_id,
-        )
-        await control_plane.send_to_stage(target_stage, target_endpoint, msg)
-        return
+    if _should_use_stream_ipc(
+        target_stage=target_stage,
+        same_gpu_targets=same_gpu_targets,
+    ):
+        try:
+            ipc_meta = serialize_ipc_chunk(data, metadata)
+        except Exception:
+            logger.debug("Stream IPC serialization failed; falling back to relay")
+        else:
+            ipc_meta["chunk_id"] = chunk_id
+            msg = DataReadyMessage(
+                request_id=request_id,
+                from_stage=from_stage,
+                to_stage=target_stage,
+                shm_metadata=ipc_meta,
+                chunk_id=chunk_id,
+            )
+            await control_plane.send_to_stage(target_stage, target_endpoint, msg)
+            return
 
-    # ── Relay transport ──
     blob_key = f"{request_id}:stream:{from_stage}:{target_stage}:{chunk_id}"
 
     pending_ops = []
