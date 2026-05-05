@@ -189,43 +189,14 @@ def test_s2pro_config_declares_topology_without_transport_policy() -> None:
     assert not hasattr(tts_stage, "stream_" + "transport")
 
 
-def test_stream_chunk_selector_uses_relay_for_spawned_process(
-    monkeypatch,
-) -> None:
-    monkeypatch.setattr(
-        relay_io.multiprocessing,
-        "current_process",
-        lambda: SimpleNamespace(name="SpawnProcess-1"),
-    )
-
+def test_stream_chunk_selector_uses_relay_for_same_gpu_target() -> None:
     assert not relay_io._should_use_stream_ipc(
         target_stage="vocoder",
         same_gpu_targets={"vocoder"},
     )
 
 
-def test_stream_chunk_selector_allows_ipc_for_main_process_same_gpu(
-    monkeypatch,
-) -> None:
-    monkeypatch.setattr(
-        relay_io.multiprocessing,
-        "current_process",
-        lambda: SimpleNamespace(name="MainProcess"),
-    )
-
-    assert relay_io._should_use_stream_ipc(
-        target_stage="vocoder",
-        same_gpu_targets={"vocoder"},
-    )
-
-
-def test_stream_chunk_selector_uses_relay_for_non_same_gpu(monkeypatch) -> None:
-    monkeypatch.setattr(
-        relay_io.multiprocessing,
-        "current_process",
-        lambda: SimpleNamespace(name="MainProcess"),
-    )
-
+def test_stream_chunk_selector_uses_relay_for_non_same_gpu() -> None:
     assert not relay_io._should_use_stream_ipc(
         target_stage="vocoder",
         same_gpu_targets={"other"},

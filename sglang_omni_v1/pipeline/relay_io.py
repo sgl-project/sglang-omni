@@ -12,7 +12,6 @@ from __future__ import annotations
 import base64
 import io
 import logging
-import multiprocessing
 import pickle
 from multiprocessing.reduction import ForkingPickler
 from typing import Any
@@ -290,9 +289,10 @@ def _should_use_stream_ipc(
 ) -> bool:
     if not same_gpu_targets or target_stage not in same_gpu_targets:
         return False
-    # Note (Ratish): spawned stages use relay until CUDA IPC handle lifetime
-    # and device-context ownership are managed by the stage runtime.
-    return multiprocessing.current_process().name == "MainProcess"
+    # Note (Ratish): CUDA IPC is only valid after the stage runtime owns a
+    # cross-process CUDA handle lifetime contract. Single-process stages can
+    # share data through the relay path without opening CUDA IPC handles.
+    return False
 
 
 async def send_stream_chunk(
@@ -314,10 +314,12 @@ async def send_stream_chunk(
     - Same-GPU: CUDA IPC (zero copy)
     - Relay: default transport when CUDA IPC is not selected
     """
-    if _should_use_stream_ipc(
+    use_ipc = _should_use_stream_ipc(
         target_stage=target_stage,
         same_gpu_targets=same_gpu_targets,
-    ):
+    )
+
+    if use_ipc:
         try:
             ipc_meta = serialize_ipc_chunk(data, metadata)
         except Exception:
