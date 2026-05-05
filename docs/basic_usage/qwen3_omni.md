@@ -43,7 +43,7 @@ curl -X POST http://localhost:8008/v1/chat/completions \
     "messages": [{"role": "user", "content": "How many cars are there in the picture?"}],
     "images": ["tests/data/cars.jpg"],
     "modalities": ["text"],
-    "max_tokens": 1024
+    "max_tokens": 16
   }'
 ```
 
@@ -59,29 +59,12 @@ resp = requests.post(
         "messages": [{"role": "user", "content": "How many cars are there in the picture?"}],
         "images": ["tests/data/cars.jpg"],
         "modalities": ["text"],
-        "max_tokens": 1024,
+        "max_tokens": 16,
     },
 )
 resp.raise_for_status()
 result = resp.json()
 print(result["choices"][0]["message"]["content"])
-```
-
-**Example output**
-
-```
-Based on the image provided, we can count the number of cars by examining each quadrant.
-
-The image is a collage divided into four sections, each featuring a different car:
-
-1. **Top-left quadrant:** This section displays a white Rolls-Royce sedan.
-2. **Top-right quadrant:** This section shows a dark gray Mercedes-Benz GLE SUV.
-3. **Bottom-left quadrant:** This section features a red Ferrari Portofino M convertible.
-4. **Bottom-right quadrant:** This section presents a white Porsche 911.
-
-By counting each distinct vehicle shown in these four quadrants, we can determine the total.
-
-There are 4 cars in the picture.
 ```
 
 ### Audio and Image Input
