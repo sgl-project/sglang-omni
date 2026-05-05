@@ -10,11 +10,16 @@ import torch
 from sglang_omni_v1.models.fishaudio_s2_pro.fish_scheduler import (
     FishIterationController,
 )
-from sglang_omni_v1.models.fishaudio_s2_pro.model_runner import FishS2ProModelRunner
+from sglang_omni_v1.models.fishaudio_s2_pro.model_runner import (
+    _collect_s2pro_step_outputs,
+)
 from sglang_omni_v1.models.fishaudio_s2_pro.request_builders import (
     S2ProSGLangRequestData,
 )
 from sglang_omni_v1.scheduling.types import SchedulerRequest
+
+IM_END_TOKEN_ID = 151645
+SEMANTIC_TOKEN_ID = 151678
 
 
 class _CountingTreeCache:
@@ -26,32 +31,9 @@ class _CountingTreeCache:
         self.cached_requests += 1
 
 
-def _make_runner(im_end_token_id: int) -> FishS2ProModelRunner:
-    runner = object.__new__(FishS2ProModelRunner)
-    runner._im_end_token_id = im_end_token_id
-    runner.model = SimpleNamespace()
-    return runner
-
-
-def _set_model_step(
-    runner: FishS2ProModelRunner, semantic_token_id: int, residual_tokens: list[int]
-) -> None:
-    runner.model._output_semantic_ids = torch.tensor(
-        [semantic_token_id], dtype=torch.long
-    )
-    runner.model._output_codes = torch.tensor(
-        [[semantic_token_id, *residual_tokens]], dtype=torch.long
-    )
-
-
-def test_v1_s2pro_terminal_im_end_is_not_audio_codebook_frame() -> None:
-    im_end_token_id = 151645
-    semantic_token_id = 151678
-    runner = _make_runner(im_end_token_id)
-    tree_cache = _CountingTreeCache()
-    controller = FishIterationController(tree_cache, im_end_token_id)
+def _make_request(request_id: str, *, is_chunked: int = 0) -> SchedulerRequest:
     req = SimpleNamespace(
-        is_chunked=0,
+        is_chunked=is_chunked,
         output_ids=[],
         decode_batch_idx=0,
         finished=lambda: False,
@@ -60,25 +42,127 @@ def test_v1_s2pro_terminal_im_end_is_not_audio_codebook_frame() -> None:
         input_ids=torch.tensor([], dtype=torch.long),
         req=req,
     )
-    request = SchedulerRequest(request_id="req-terminal", data=data)
-    batch_result = SimpleNamespace(next_token_ids=None)
+    return SchedulerRequest(request_id=request_id, data=data)
 
-    _set_model_step(runner, semantic_token_id, [11, 22])
-    runner._collect_step_outputs(batch_result, [request])
-    controller.update_request(request, int(batch_result.next_token_ids[0].item()))
 
-    _set_model_step(runner, im_end_token_id, [33, 44])
-    runner._collect_step_outputs(batch_result, [request])
-    eos_token = int(batch_result.next_token_ids[0].item())
-    controller.update_request(request, eos_token)
+def _collect_model_step(
+    requests: list[SchedulerRequest],
+    code_rows: list[list[int]],
+) -> SimpleNamespace:
+    result = SimpleNamespace(next_token_ids=None)
+    output_codes = torch.tensor(code_rows, dtype=torch.long)
+    output_semantic_ids = output_codes[:, 0].clone()
+    _collect_s2pro_step_outputs(
+        result,
+        requests,
+        output_codes=output_codes,
+        output_semantic_ids=output_semantic_ids,
+        im_end_token_id=IM_END_TOKEN_ID,
+    )
+    return result
+
+
+def _update_request_from_result(
+    controller: FishIterationController,
+    request: SchedulerRequest,
+    result: SimpleNamespace,
+    row_idx: int = 0,
+) -> int:
+    token_id = int(result.next_token_ids[row_idx].item())
+    controller.update_request(request, token_id)
+    return token_id
+
+
+def test_v1_s2pro_terminal_im_end_is_not_audio_codebook_frame() -> None:
+    tree_cache = _CountingTreeCache()
+    controller = FishIterationController(tree_cache, IM_END_TOKEN_ID)
+    request = _make_request("req-terminal")
+    data = request.data
+    req = data.req
+
+    result = _collect_model_step([request], [[SEMANTIC_TOKEN_ID, 11, 22]])
+    _update_request_from_result(controller, request, result)
+
+    result = _collect_model_step([request], [[IM_END_TOKEN_ID, 33, 44]])
+    eos_token = _update_request_from_result(controller, request, result)
 
     assert controller.is_finished(request, eos_token)
-    assert req.output_ids == [semantic_token_id, im_end_token_id]
+    assert req.output_ids == [SEMANTIC_TOKEN_ID, IM_END_TOKEN_ID]
     assert len(data.output_codes) == 1
     assert torch.equal(
         data.output_codes[0],
-        torch.tensor([[semantic_token_id], [11], [22]], dtype=torch.long),
+        torch.tensor([[SEMANTIC_TOKEN_ID], [11], [22]], dtype=torch.long),
     )
-    assert data.previous_semantic_tokens == [semantic_token_id]
+    assert data.previous_semantic_tokens == [SEMANTIC_TOKEN_ID]
     assert torch.equal(data.last_codebook_values, torch.tensor([11, 22]))
     assert tree_cache.cached_requests == 1
+
+
+def test_v1_s2pro_immediate_im_end_leaves_no_audio_codebook_frames() -> None:
+    tree_cache = _CountingTreeCache()
+    controller = FishIterationController(tree_cache, IM_END_TOKEN_ID)
+    request = _make_request("req-immediate-terminal")
+    data = request.data
+
+    result = _collect_model_step([request], [[IM_END_TOKEN_ID, 33, 44]])
+    eos_token = _update_request_from_result(controller, request, result)
+
+    assert controller.is_finished(request, eos_token)
+    assert data.req.output_ids == [IM_END_TOKEN_ID]
+    assert data.output_codes == []
+    assert data.previous_semantic_tokens == []
+    assert data.last_codebook_values is None
+    assert tree_cache.cached_requests == 0
+
+
+def test_v1_s2pro_mixed_batch_keeps_terminal_and_audio_state_separate() -> None:
+    tree_cache = _CountingTreeCache()
+    controller = FishIterationController(tree_cache, IM_END_TOKEN_ID)
+    audio_request = _make_request("req-audio")
+    terminal_request = _make_request("req-terminal")
+
+    result = _collect_model_step(
+        [audio_request, terminal_request],
+        [
+            [SEMANTIC_TOKEN_ID, 11, 22],
+            [IM_END_TOKEN_ID, 33, 44],
+        ],
+    )
+    audio_token = _update_request_from_result(controller, audio_request, result, 0)
+    terminal_token = _update_request_from_result(
+        controller, terminal_request, result, 1
+    )
+
+    assert not controller.is_finished(audio_request, audio_token)
+    assert controller.is_finished(terminal_request, terminal_token)
+    assert audio_request.data.req.output_ids == [SEMANTIC_TOKEN_ID]
+    assert terminal_request.data.req.output_ids == [IM_END_TOKEN_ID]
+    assert len(audio_request.data.output_codes) == 1
+    assert terminal_request.data.output_codes == []
+    assert torch.equal(
+        audio_request.data.output_codes[0],
+        torch.tensor([[SEMANTIC_TOKEN_ID], [11], [22]], dtype=torch.long),
+    )
+    assert audio_request.data.previous_semantic_tokens == [SEMANTIC_TOKEN_ID]
+    assert terminal_request.data.previous_semantic_tokens == []
+    assert torch.equal(audio_request.data.last_codebook_values, torch.tensor([11, 22]))
+    assert terminal_request.data.last_codebook_values is None
+    assert tree_cache.cached_requests == 1
+
+
+def test_v1_s2pro_chunked_step_does_not_mutate_decode_state() -> None:
+    tree_cache = _CountingTreeCache()
+    controller = FishIterationController(tree_cache, IM_END_TOKEN_ID)
+    request = _make_request("req-chunked", is_chunked=1)
+    data = request.data
+
+    result = _collect_model_step([request], [[SEMANTIC_TOKEN_ID, 11, 22]])
+    semantic_token = _update_request_from_result(controller, request, result)
+
+    assert not controller.is_finished(request, semantic_token)
+    assert data.req.is_chunked == 0
+    assert data.req.output_ids == []
+    assert data.output_codes == []
+    assert data.previous_semantic_tokens == []
+    assert data.last_codebook_values is None
+    assert tree_cache.cached_requests == 0

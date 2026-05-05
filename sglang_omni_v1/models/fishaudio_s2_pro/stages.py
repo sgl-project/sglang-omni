@@ -248,7 +248,7 @@ def create_sglang_tts_engine_executor(
         audio_decoder=audio_decoder,
         semantic_begin_id=adapter.semantic_begin_id,
         semantic_end_id=adapter.semantic_end_id,
-        im_end_id=adapter.eos_token_ids[0],
+        im_end_token_id=adapter.eos_token_ids[0],
         max_batch_size=server_args.max_running_requests,
         num_codebooks=num_codebooks,
         codebook_size=codebook_size,
@@ -319,6 +319,10 @@ def create_vocoder_executor(
     def _vocode(payload: StagePayload) -> StagePayload:
         state = load_state(payload)
         output_codes = state.output_codes
+        if output_codes is None or output_codes.shape[1] == 0:
+            raise ValueError(
+                f"Request {payload.request_id}: S2-Pro generated no audio codec tokens"
+            )
         codebook_codes = output_codes[1:].to(device)
         with torch.no_grad():
             audio = codec.from_indices(codebook_codes[None])
@@ -327,6 +331,11 @@ def create_vocoder_executor(
 
     def _vocode_batch(payloads: list[StagePayload]) -> list[StagePayload]:
         states = [load_state(payload) for payload in payloads]
+        for payload, state in zip(payloads, states):
+            if state.output_codes is None or state.output_codes.shape[1] == 0:
+                raise ValueError(
+                    f"Request {payload.request_id}: S2-Pro generated no audio codec tokens"
+                )
         code_batches = [state.output_codes[1:].to(device) for state in states]
         lengths = [int(codes.shape[-1]) for codes in code_batches]
         max_len = max(lengths)
