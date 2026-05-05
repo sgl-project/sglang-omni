@@ -12,7 +12,7 @@ from sglang_omni_v1.models.fishaudio_s2_pro.fish_scheduler import (
     FishScheduler,
 )
 from sglang_omni_v1.models.fishaudio_s2_pro.model_runner import (
-    _collect_s2pro_step_outputs,
+    collect_s2pro_step_outputs,
 )
 from sglang_omni_v1.models.fishaudio_s2_pro.request_builders import (
     S2ProSGLangRequestData,
@@ -53,7 +53,7 @@ def _collect_model_step(
     result = SimpleNamespace(next_token_ids=None)
     output_codes = torch.tensor(code_rows, dtype=torch.long)
     output_semantic_ids = output_codes[:, 0].clone()
-    _collect_s2pro_step_outputs(
+    collect_s2pro_step_outputs(
         result,
         requests,
         output_codes=output_codes,
