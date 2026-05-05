@@ -209,35 +209,30 @@ def precheck(py, src, out, skip_ver, cfg, datasets_override=None):
     # load_model_config; print them for visibility.
     for k, v in cfg["auto_env"].items():
         print(f"  auto env: {k}={v}")
-    # WER normalizer check: per-model `expected_wer_normalizer` declares which
-    # variant of `_get_en_normalizer()` the venv must yield. CI venvs differ
-    # silently on this — qwen3-omni's omni-qwen3 ships openai-whisper (real
-    # EnglishTextNormalizer; "doesn't" → "does not"), s2-pro's omni-s2pro does
-    # not (fallback strips punctuation but keeps apostrophes; "doesn't"
-    # stays). Mismatch shifts WER by ~2× on contraction-heavy samples and
-    # silently breaks calibration. Warn (not fail) so the user can override
-    # — they may know what they're doing.
+    # WER normalizer check: English WER benchmarks require openai-whisper's
+    # EnglishTextNormalizer. Check the dependency directly so a missing package
+    # is reported as a calibration environment mismatch before benchmarks run.
     expected_norm = cfg.get("expected_wer_normalizer")
     if expected_norm:
         r = subprocess.run([py, "-c",
-            "from benchmarks.tasks.tts import _get_en_normalizer;"
-            "n = _get_en_normalizer();"
-            "print('english' if n is not None else 'fallback')"],
+            "try:\n"
+            "    from whisper.normalizers import EnglishTextNormalizer\n"
+            "except ImportError:\n"
+            "    print('missing')\n"
+            "else:\n"
+            "    EnglishTextNormalizer()\n"
+            "    print('english')\n"],
             capture_output=True, text=True)
         actual = (r.stdout or "").strip().splitlines()[-1] if r.stdout else "unknown"
         ok = actual == expected_norm
         print(f"  {'✓' if ok else '✗'} wer normalizer: {actual} "
               f"(expected {expected_norm})")
         if not ok:
-            hint = ("uv pip install --python {py} openai-whisper"
-                    if expected_norm == "english"
-                    else "uv pip uninstall --python {py} openai-whisper "
-                         "whisper-normalizer").format(py=py)
+            hint = f"uv pip install --python {py} openai-whisper==20250625"
             warns.append(
                 f"wer normalizer mismatch: got {actual!r}, "
                 f"expected {expected_norm!r}. To fix: {hint}. "
-                f"(s2-pro CI uses fallback, qwen3-omni CI uses english; "
-                f"mismatch will shift WER ~2× on contraction-heavy samples.)")
+                f"Missing openai-whisper makes WER calibration incomparable.")
     def _cached(repo_id, kind):
         extra = ", repo_type='dataset'" if kind == "dataset" else ""
         r = subprocess.run([py, "-c",
