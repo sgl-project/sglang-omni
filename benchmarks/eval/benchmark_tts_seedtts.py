@@ -65,16 +65,16 @@ CI runs on a subset and has its own thresholds elsewhere (see tasks/*.py).
 
 Benchmark: SeedTTS  |  Dataset: seed-tts-eval, full set (EN=1088, ZH=2020)
 Hardware:  1 x H200 (default; non-H200 sources are tagged in Source column)
-Last verified: 2026-04-25
+Last verified: 2026-05-04
 
 Accuracy (accuracy.wer)
 
 | Model  | Config           | wer_corpus | wer_per_sample_mean | wer_per_sample_median | wer_per_sample_std | evaluated | skipped | Source                         |
 | ------ | ---------------- | ---------- | ------------------- | --------------------- | ------------------ | --------- | ------- | ------------------------------ |
-| S2-Pro | EN, stream=False | 1.02%      | 0.99%               | 0.00%                 | 3.4%               | 1088/1088 | 0       | PR #316 [H200, full-set, c=16] |
-| S2-Pro | EN, stream=True  | 0.97%      | 0.93%               | 0.00%                 | 3.3%               | 1088/1088 | 0       | PR #316 [H200, full-set, c=16] |
-| S2-Pro | ZH, stream=False | 1.15%      | 1.09%               | 0.00%                 | 2.7%               | 2020/2020 | 0       | PR #316 [H200, full-set, c=16] |
-| S2-Pro | ZH, stream=True  | 1.10%      | 1.05%               | 0.00%                 | 2.7%               | 2020/2020 | 0       | PR #316 [H200, full-set, c=16] |
+| S2-Pro | EN, stream=False | 1.16%      | 1.11%               | 0.00%                 | 3.7%               | 1088/1088 | 0       | PR #393 [H200, full-set, c=16] |
+| S2-Pro | EN, stream=True  | 1.06%      | 1.00%               | 0.00%                 | 3.4%               | 1088/1088 | 0       | PR #393 [H200, full-set, c=16] |
+| S2-Pro | ZH, stream=False | 0.93%      | 0.89%               | 0.00%                 | 2.2%               | 2020/2020 | 0       | PR #393 [H200, full-set, c=16] |
+| S2-Pro | ZH, stream=True  | 0.94%      | 0.89%               | 0.00%                 | 2.2%               | 2020/2020 | 0       | PR #393 [H200, full-set, c=16] |
 | S2-Pro | EN, stream=False | 1.03%      | 0.98%               | 0.00%                 | 3.4%               | 1088/1088 | 0       | PR #351 [H100, full-set, c=16] |
 | S2-Pro | EN, stream=True  | 0.98%      | 0.94%               | 0.00%                 | 3.3%               | 1088/1088 | 0       | PR #351 [H100, full-set, c=16] |
 | S2-Pro | ZH, stream=False | 0.93%      | 0.89%               | 0.00%                 | 2.2%               | 2020/2020 | 0       | PR #351 [H100, full-set, c=16] |
@@ -85,10 +85,10 @@ Generation speed (generation.speed)
 
 | Model  | Config           | latency_mean_s | latency_p95_s | rtf_mean | throughput_qps | tok_per_s_mean | tok_per_s_agg | Source                         |
 | ------ | ---------------- | -------------- | ------------- | -------- | -------------- | -------------- | ------------- | ------------------------------ |
-| S2-Pro | EN, stream=False | 13.724         | 21.163        | 3.604    | 1.161          | 45.5           | 25.7          | PR #316 [H200, full-set, c=16] |
-| S2-Pro | EN, stream=True  | 15.172         | 24.686        | 4.047    | 1.051          | 50.1           | 43.8          | PR #316 [H200, full-set, c=16] |
-| S2-Pro | ZH, stream=False | 15.934         | 24.903        | 2.986    | 1.001          | 45.9           | 40.8          | PR #316 [H200, full-set, c=16] |
-| S2-Pro | ZH, stream=True  | 13.913         | 22.303        | 2.608    | 1.146          | 48.2           | 44.0          | PR #316 [H200, full-set, c=16] |
+| S2-Pro | EN, stream=False | 17.016         | 28.582        | 4.501    | 0.937          | 45.3           | 42.7          | PR #393 [H200, full-set, c=16] |
+| S2-Pro | EN, stream=True  | 16.189         | 27.789        | 4.297    | 0.984          | 46.7           | 44.8          | PR #393 [H200, full-set, c=16] |
+| S2-Pro | ZH, stream=False | 12.428         | 21.057        | 2.318    | 1.282          | 51.7           | 50.4          | PR #393 [H200, full-set, c=16] |
+| S2-Pro | ZH, stream=True  | 9.384          | 13.631        | 1.762    | 1.700          | 57.0           | 56.4          | PR #393 [H200, full-set, c=16] |
 | S2-Pro | EN, stream=False | 9.38           | 14.65         | 2.48     | 1.700          | 56.6           | 56.0          | PR #351 [H100, full-set, c=16] |
 | S2-Pro | EN, stream=True  | 9.92           | 15.49         | 2.62     | 1.607          | 53.9           | 53.2          | PR #351 [H100, full-set, c=16] |
 | S2-Pro | ZH, stream=False | 9.64           | 13.61         | 1.80     | 1.655          | 55.7           | 55.2          | PR #351 [H100, full-set, c=16] |
@@ -104,8 +104,8 @@ ASR speed (accuracy.asr_speed) — Whisper-large-v3 for EN, FunASR paraformer-zh
 
 | Lang | asr_latency_mean_s | asr_rtf_mean | asr_throughput_samples_per_s | Source                                          |
 | ---- | ------------------ | ------------ | ---------------------------- | ----------------------------------------------- |
-| EN   | 0.274              | 0.0713       | 3.65                         | PR #316 [H200, from S2-Pro EN stream=False run] |
-| ZH   | 0.357              | 0.0676       | 2.80                         | PR #316 [H200, from S2-Pro ZH stream=False run] |
+| EN   | 0.297              | 0.0772       | 3.36                         | PR #393 [H200, from S2-Pro EN stream=False run] |
+| ZH   | 0.294              | 0.0556       | 3.40                         | PR #393 [H200, from S2-Pro ZH stream=False run] |
 """
 
 from __future__ import annotations

@@ -10,19 +10,18 @@
 #   live in that same per-variant dir.
 # - Concurrency: CI uses --concurrency 8 (the only fully tuned conc); the
 #   _VC_*_P95 dicts include {1,2,4,8,16}. Discover reads conc=8 row.
-# - Default venv path: /github/home/omni-s2pro to mirror the real CI venv
-#   (test-s2pro-ci-v1.yaml). S2-Pro WER now requires openai-whisper's
-#   EnglishTextNormalizer; a missing normalizer is a benchmark environment
-#   error, not a calibration variant.
+# - Venv: this host shares the omni-qwen3 venv across models; see
+#   default_venv_python below.
 name: s2-pro-v1
 description: "FishAudio S2-Pro voice-clone TTS (v1 pipeline)"
 hf_model_id: "fishaudio/s2-pro"
 hf_datasets:
   - "zhaochenyang20/seed-tts-eval-50"
-default_venv_python: "/github/home/omni-s2pro/bin/python"
-# CI's omni-s2pro venv must resolve `_get_en_normalizer()` to
-# whisper.normalizers.EnglishTextNormalizer.
-expected_wer_normalizer: "english"
+# Per user override: this host shares the omni-qwen3 venv across all
+# models — there is no separate omni-s2pro venv to check.
+default_venv_python:
+  - "/sgl-workspace/sglang-omni/omni-qwen3/bin/python"
+  - "/github/home/omni-qwen3/bin/python"
 auto_env:
   HF_ENDPOINT: "https://hf-mirror.com"
   SGLANG_OMNI_SERVER_VERSION: "v1"
