@@ -89,7 +89,6 @@ def _get_en_normalizer():
             "before rerunning WER."
         ) from exc
 
-    logger.info("Using whisper.normalizers.EnglishTextNormalizer")
     return EnglishTextNormalizer()
 
 
