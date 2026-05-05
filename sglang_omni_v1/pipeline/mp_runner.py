@@ -18,7 +18,6 @@ from typing import Any
 from sglang_omni_v1.config.compiler import (
     _allocate_endpoints,
     _build_relay_config,
-    _detect_same_gpu_targets,
     _resolve_factory_args,
     _resolve_stream_targets,
 )
@@ -45,7 +44,6 @@ def _build_stage_groups(
     stages_cfg, name_map, _ = config.apply_fusion()
     endpoints = _allocate_endpoints(config, stages=stages_cfg)
     stage_endpoints = {s.name: endpoints[f"stage_{s.name}"] for s in stages_cfg}
-    cfg_map = {s.name: s for s in stages_cfg}
 
     stream_receivers: set[str] = set()
     for scfg in stages_cfg:
@@ -59,19 +57,6 @@ def _build_stage_groups(
         tp_size = stage_cfg.tp_size
         gpu_ids = _resolve_gpu_ids(stage_cfg, config)
         nccl_port = nccl_port_counter.allocate() if tp_size > 1 else None
-
-        # Pre-resolve stream targets
-        same_gpu_targets: set[str] = set()
-        if stage_cfg.stream_to:
-            same_gpu_targets = _detect_same_gpu_targets(
-                stage_cfg,
-                stage_cfg.stream_to,
-                gpu_placement=config.gpu_placement,
-                cfg_map=cfg_map,
-            )
-            same_gpu_targets = {
-                name_map.get(target, target) for target in same_gpu_targets
-            }
 
         # Pre-resolve factory args (inject model_path, gpu_id)
         base_factory_args = _resolve_factory_args(stage_cfg, config)
@@ -91,7 +76,6 @@ def _build_stage_groups(
             abort_endpoint=endpoints["abort"],
             stage_endpoints=stage_endpoints,
             stream_targets=_resolve_stream_targets(stage_cfg, name_map),
-            same_gpu_targets=same_gpu_targets,
             is_stream_receiver=stage_cfg.name in stream_receivers,
             name_map=name_map,
         )

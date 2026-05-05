@@ -2,26 +2,20 @@
 """Relay IO utilities for inter-stage data transfer.
 
 Handles payload serialization (tensor extraction/restoration), relay read/write,
-streaming chunk transfer (same-GPU CUDA IPC and cross-GPU relay), and
-NIXL credit deadlock avoidance.
+streaming chunk transfer, and NIXL credit deadlock avoidance.
 
 Extracted from worker/data_plane.py and worker/runtime.py.
 """
 from __future__ import annotations
 
 import base64
-import io
-import logging
 import pickle
-from multiprocessing.reduction import ForkingPickler
 from typing import Any
 
 import torch
 
 from sglang_omni_v1.proto import DataReadyMessage, StagePayload
 from sglang_omni_v1.relay.base import Relay
-
-logger = logging.getLogger(__name__)
 
 
 def _dtype_alignment(dtype: torch.dtype) -> int:
@@ -251,48 +245,8 @@ async def read_blob(
 
 
 # ---------------------------------------------------------------------------
-# Stream chunk send (handles same-GPU IPC vs cross-GPU relay)
+# Stream chunk send
 # ---------------------------------------------------------------------------
-
-
-def ipc_pickle(obj: Any) -> bytes:
-    """Serialize via ForkingPickler (CUDA IPC for GPU tensors, zero data copy)."""
-    buf = io.BytesIO()
-    ForkingPickler(buf, 2).dump(obj)
-    return buf.getvalue()
-
-
-def serialize_ipc_chunk(
-    data: Any,
-    metadata: dict | None,
-) -> dict[str, Any]:
-    """Build IPC metadata for a same-GPU stream chunk."""
-    ipc_metadata: dict[str, Any] = {"_ipc": True}
-    ipc_metadata["tensor_bytes"] = ipc_pickle(data)
-
-    if metadata:
-        serialized_meta: dict[str, Any] = {}
-        for mkey, value in metadata.items():
-            if isinstance(value, torch.Tensor):
-                serialized_meta[mkey] = {"_ipc_tensor": ipc_pickle(value)}
-            else:
-                serialized_meta[mkey] = value
-        ipc_metadata["metadata"] = serialized_meta
-
-    return ipc_metadata
-
-
-def _should_use_stream_ipc(
-    *,
-    target_stage: str,
-    same_gpu_targets: set[str] | None,
-) -> bool:
-    if not same_gpu_targets or target_stage not in same_gpu_targets:
-        return False
-    # Note (Ratish): CUDA IPC is only valid after the stage runtime owns a
-    # cross-process CUDA handle lifetime contract. Single-process stages can
-    # share data through the relay path without opening CUDA IPC handles.
-    return False
 
 
 async def send_stream_chunk(
@@ -306,36 +260,8 @@ async def send_stream_chunk(
     from_stage: str,
     chunk_id: int,
     metadata: dict | None = None,
-    same_gpu_targets: set[str] | None = None,
 ) -> None:
-    """Send a streaming chunk to a downstream stage.
-
-    Handles:
-    - Same-GPU: CUDA IPC (zero copy)
-    - Relay: default transport when CUDA IPC is not selected
-    """
-    use_ipc = _should_use_stream_ipc(
-        target_stage=target_stage,
-        same_gpu_targets=same_gpu_targets,
-    )
-
-    if use_ipc:
-        try:
-            ipc_meta = serialize_ipc_chunk(data, metadata)
-        except Exception:
-            logger.debug("Stream IPC serialization failed; falling back to relay")
-        else:
-            ipc_meta["chunk_id"] = chunk_id
-            msg = DataReadyMessage(
-                request_id=request_id,
-                from_stage=from_stage,
-                to_stage=target_stage,
-                shm_metadata=ipc_meta,
-                chunk_id=chunk_id,
-            )
-            await control_plane.send_to_stage(target_stage, target_endpoint, msg)
-            return
-
+    """Send a streaming chunk to a downstream stage via relay."""
     blob_key = f"{request_id}:stream:{from_stage}:{target_stage}:{chunk_id}"
 
     pending_ops = []

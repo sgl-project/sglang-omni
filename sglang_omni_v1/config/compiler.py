@@ -39,7 +39,6 @@ def compile_pipeline(config: PipelineConfig) -> tuple[Coordinator, list[Stage]]:
 
     # Wire streaming targets
     stage_map = {stage.name: stage for stage in stages}
-    cfg_map = {s.name: s for s in stages_cfg}
     for stage_cfg in stages_cfg:
         stage = stage_map.get(stage_cfg.name)
         if stage is not None:
@@ -47,8 +46,6 @@ def compile_pipeline(config: PipelineConfig) -> tuple[Coordinator, list[Stage]]:
                 stage,
                 stage_cfg,
                 stage_map,
-                gpu_placement=config.gpu_placement,
-                cfg_map=cfg_map,
                 name_map=name_map,
             )
 
@@ -275,8 +272,6 @@ def _wire_stream_targets(
     sender_cfg: StageConfig,
     stage_map: dict[str, Stage],
     *,
-    gpu_placement: dict[str, int | list[int]] | None = None,
-    cfg_map: dict[str, StageConfig] | None = None,
     name_map: dict[str, str] | None = None,
 ) -> None:
     from sglang_omni_v1.pipeline.stage.stream_queue import StreamQueue
@@ -288,53 +283,9 @@ def _wire_stream_targets(
     if not targets:
         return
 
-    same_gpu = _detect_same_gpu_targets(
-        sender_cfg,
-        sender_cfg.stream_to,
-        gpu_placement=gpu_placement,
-        cfg_map=cfg_map,
-    )
-    if name_map is not None:
-        same_gpu = {name_map.get(target, target) for target in same_gpu}
-
     sender_stage._stream_targets = targets
-    sender_stage._same_gpu_targets = same_gpu
 
     for target_name in targets:
         receiver = stage_map.get(target_name)
         if receiver is not None and receiver._stream_queue is None:
             receiver._stream_queue = StreamQueue(max_pending=4096)
-
-
-def _detect_same_gpu_targets(
-    sender_cfg: StageConfig,
-    targets: list[str],
-    *,
-    gpu_placement: dict[str, int | list[int]] | None = None,
-    cfg_map: dict[str, StageConfig] | None = None,
-) -> set[str]:
-    if not gpu_placement or not cfg_map:
-        return set()
-    sender_gpu = _primary_gpu(sender_cfg, gpu_placement)
-    if sender_gpu is None:
-        return set()
-    same: set[str] = set()
-    for target_name in targets:
-        receiver_cfg = cfg_map.get(target_name)
-        if receiver_cfg is None:
-            continue
-        receiver_gpu = _primary_gpu(receiver_cfg, gpu_placement)
-        if receiver_gpu is not None and receiver_gpu == sender_gpu:
-            same.add(target_name)
-    return same
-
-
-def _primary_gpu(
-    stage_cfg: StageConfig,
-    gpu_placement: dict[str, int | list[int]],
-) -> int | None:
-    """Return the primary (rank 0) GPU id for a stage, or None for CPU stages."""
-    raw = gpu_placement.get(stage_cfg.name)
-    if raw is None:
-        return None
-    return raw[0] if isinstance(raw, list) else raw

@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import pickle
 import queue
 from types import SimpleNamespace
 
@@ -38,11 +40,52 @@ class _FakeControlPlane:
 
 
 class _FakeRelay:
+    def __init__(self) -> None:
+        self.puts = []
+
+    async def put_async(self, tensor, request_id):
+        self.puts.append((request_id, tensor))
+        return _DoneOp(tensor.numel())
+
     def close(self) -> None:
         pass
 
     def cleanup(self, request_id: str) -> None:
         pass
+
+
+class _DoneOp:
+    def __init__(self, size: int = 1) -> None:
+        self.metadata = {"transfer_info": {"size": size}}
+
+    async def wait_for_completion(self) -> None:
+        pass
+
+
+class _AbortOnReadRelay(_FakeRelay):
+    def __init__(self, on_wait) -> None:
+        super().__init__()
+        self._on_wait = on_wait
+
+    async def get_async(self, metadata, dest_tensor, request_id):
+        del metadata, dest_tensor, request_id
+        return _CallbackOp(self._on_wait)
+
+
+class _CallbackOp:
+    def __init__(self, on_wait) -> None:
+        self._on_wait = on_wait
+
+    async def wait_for_completion(self) -> None:
+        self._on_wait()
+
+
+def _payload_metadata(payload: StagePayload) -> dict:
+    return {
+        "payload_pickle": base64.b64encode(pickle.dumps(payload)).decode("ascii"),
+        "relay_info": {"transfer_info": {"size": 1}},
+        "tensor_info": [],
+    }
 
 
 def test_terminal_scheduler_stream_routes_to_coordinator() -> None:
@@ -80,21 +123,12 @@ def test_terminal_scheduler_stream_routes_to_coordinator() -> None:
     asyncio.run(_run())
 
 
-def test_explicit_scheduler_stream_target_keeps_stage_to_stage_routing(
-    monkeypatch,
-) -> None:
+def test_explicit_scheduler_stream_target_keeps_stage_to_stage_routing() -> None:
     async def _run() -> None:
-        sent = []
-
-        async def _fake_send_stream_chunk(*args, **kwargs):
-            sent.append(kwargs)
-
-        monkeypatch.setattr(
-            "sglang_omni_v1.pipeline.stage.runtime.relay_io.send_stream_chunk",
-            _fake_send_stream_chunk,
-        )
         control_plane = _FakeControlPlane()
+        relay = _FakeRelay()
         scheduler = SimpleNamespace(outbox=queue.Queue())
+        codes = torch.empty(11, 1, dtype=torch.long)
         stage = Stage(
             name="tts_engine",
             role="single",
@@ -102,7 +136,7 @@ def test_explicit_scheduler_stream_target_keeps_stage_to_stage_routing(
             gpu_id=None,
             endpoints={"vocoder": "inproc://vocoder"},
             control_plane=control_plane,
-            relay=_FakeRelay(),
+            relay=relay,
             scheduler=scheduler,
         )
         stage._active_requests.add("req")
@@ -110,7 +144,7 @@ def test_explicit_scheduler_stream_target_keeps_stage_to_stage_routing(
             OutgoingMessage(
                 request_id="req",
                 type="stream",
-                data="codes",
+                data=codes,
                 target="vocoder",
                 metadata={"modality": "audio_codes"},
             )
@@ -119,53 +153,16 @@ def test_explicit_scheduler_stream_target_keeps_stage_to_stage_routing(
         await stage._drain_outbox_external()
 
         assert control_plane.streams == []
-        assert len(sent) == 1
-        assert sent[0]["target_stage"] == "vocoder"
-        assert sent[0]["data"] == "codes"
-        assert sent[0]["metadata"] == {"modality": "audio_codes"}
-        assert sent[0]["same_gpu_targets"] == set()
-
-    asyncio.run(_run())
-
-
-def test_stage_passes_same_gpu_targets_to_relay_io(monkeypatch) -> None:
-    async def _run() -> None:
-        sent = []
-
-        async def _fake_send_stream_chunk(*args, **kwargs):
-            sent.append(kwargs)
-
-        monkeypatch.setattr(
-            "sglang_omni_v1.pipeline.stage.runtime.relay_io.send_stream_chunk",
-            _fake_send_stream_chunk,
-        )
-        control_plane = _FakeControlPlane()
-        scheduler = SimpleNamespace(outbox=queue.Queue())
-        stage = Stage(
-            name="tts_engine",
-            role="single",
-            get_next=lambda request_id, output: None,
-            gpu_id=None,
-            endpoints={"vocoder": "inproc://vocoder"},
-            control_plane=control_plane,
-            relay=_FakeRelay(),
-            scheduler=scheduler,
-            same_gpu_targets={"vocoder"},
-        )
-        stage._active_requests.add("req")
-        scheduler.outbox.put(
-            OutgoingMessage(
-                request_id="req",
-                type="stream",
-                data="codes",
-                target="vocoder",
-            )
-        )
-
-        await stage._drain_outbox_external()
-
-        assert len(sent) == 1
-        assert sent[0]["same_gpu_targets"] == {"vocoder"}
+        assert len(relay.puts) == 1
+        assert len(control_plane.stage_messages) == 1
+        target, endpoint, msg = control_plane.stage_messages[0]
+        assert target == "vocoder"
+        assert endpoint == "inproc://vocoder"
+        assert msg.request_id == "req"
+        assert msg.from_stage == "tts_engine"
+        assert msg.to_stage == "vocoder"
+        assert msg.chunk_id == 0
+        assert msg.shm_metadata["chunk_metadata"] == {"modality": "audio_codes"}
 
     asyncio.run(_run())
 
@@ -189,28 +186,45 @@ def test_s2pro_config_declares_topology_without_transport_policy() -> None:
     assert not hasattr(tts_stage, "stream_" + "transport")
 
 
-def test_stream_chunk_selector_uses_relay_for_same_gpu_target() -> None:
-    assert not relay_io._should_use_stream_ipc(
-        target_stage="vocoder",
-        same_gpu_targets={"vocoder"},
-    )
-
-
-def test_stream_chunk_selector_uses_relay_for_non_same_gpu() -> None:
-    assert not relay_io._should_use_stream_ipc(
-        target_stage="vocoder",
-        same_gpu_targets={"other"},
-    )
-
-
-def test_stage_drops_stream_chunk_after_abort_during_relay_read(monkeypatch) -> None:
+def test_send_stream_chunk_uses_relay() -> None:
     async def _run() -> None:
         control_plane = _FakeControlPlane()
+        relay = _FakeRelay()
+        codes = torch.empty(11, 1, dtype=torch.long)
+
+        await relay_io.send_stream_chunk(
+            relay,
+            control_plane,
+            request_id="req",
+            data=codes,
+            target_stage="vocoder",
+            target_endpoint="inproc://vocoder",
+            from_stage="tts_engine",
+            chunk_id=0,
+        )
+
+        assert len(relay.puts) == 1
+        assert relay.puts[0][0] == "req:stream:tts_engine:vocoder:0"
+        assert len(control_plane.stage_messages) == 1
+        _, _, msg = control_plane.stage_messages[0]
+        expected_size = codes.contiguous().view(torch.uint8).numel()
+        assert msg.shm_metadata["relay_info"] == {
+            "transfer_info": {"size": expected_size}
+        }
+
+    asyncio.run(_run())
+
+
+def test_stage_drops_stream_chunk_after_abort_during_relay_read() -> None:
+    async def _run() -> None:
+        control_plane = _FakeControlPlane()
+        codes = torch.empty(11, 1, dtype=torch.long)
         scheduler = SimpleNamespace(
             outbox=queue.Queue(),
             inbox=queue.Queue(),
             abort=lambda request_id: None,
         )
+        relay = _AbortOnReadRelay(lambda: stage._on_abort("req"))
         stage = Stage(
             name="vocoder",
             role="single",
@@ -218,20 +232,10 @@ def test_stage_drops_stream_chunk_after_abort_during_relay_read(monkeypatch) -> 
             gpu_id=None,
             endpoints={},
             control_plane=control_plane,
-            relay=_FakeRelay(),
+            relay=relay,
             scheduler=scheduler,
         )
         stage._stream_queue = None
-
-        async def _abort_then_return(*args, **kwargs):
-            del args, kwargs
-            stage._on_abort("req")
-            return torch.empty(11, 1, dtype=torch.long)
-
-        monkeypatch.setattr(
-            "sglang_omni_v1.pipeline.stage.runtime.relay_io.read_blob",
-            _abort_then_return,
-        )
 
         await stage._on_stream_chunk(
             DataReadyMessage(
@@ -239,9 +243,13 @@ def test_stage_drops_stream_chunk_after_abort_during_relay_read(monkeypatch) -> 
                 from_stage="tts_engine",
                 to_stage="vocoder",
                 shm_metadata={
-                    "relay_info": {"transfer_info": {"size": 1}},
-                    "tensor_shape": [11, 1],
-                    "tensor_dtype": "torch.int64",
+                    "relay_info": {
+                        "transfer_info": {
+                            "size": codes.contiguous().view(torch.uint8).numel()
+                        }
+                    },
+                    "tensor_shape": list(codes.shape),
+                    "tensor_dtype": str(codes.dtype),
                 },
                 chunk_id=0,
             )
@@ -252,7 +260,7 @@ def test_stage_drops_stream_chunk_after_abort_during_relay_read(monkeypatch) -> 
     asyncio.run(_run())
 
 
-def test_stage_drops_payload_after_abort_during_relay_read(monkeypatch) -> None:
+def test_stage_drops_payload_after_abort_during_relay_read() -> None:
     async def _run() -> None:
         control_plane = _FakeControlPlane()
         scheduler = SimpleNamespace(
@@ -260,6 +268,7 @@ def test_stage_drops_payload_after_abort_during_relay_read(monkeypatch) -> None:
             inbox=queue.Queue(),
             abort=lambda request_id: None,
         )
+        relay = _AbortOnReadRelay(lambda: stage._on_abort("req"))
         stage = Stage(
             name="vocoder",
             role="single",
@@ -267,22 +276,13 @@ def test_stage_drops_payload_after_abort_during_relay_read(monkeypatch) -> None:
             gpu_id=None,
             endpoints={},
             control_plane=control_plane,
-            relay=_FakeRelay(),
+            relay=relay,
             scheduler=scheduler,
         )
-
-        async def _abort_then_return(*args, **kwargs):
-            del args, kwargs
-            stage._on_abort("req")
-            return StagePayload(
-                request_id="req",
-                request=OmniRequest(inputs="hello"),
-                data={},
-            )
-
-        monkeypatch.setattr(
-            "sglang_omni_v1.pipeline.stage.runtime.relay_io.read_payload",
-            _abort_then_return,
+        payload = StagePayload(
+            request_id="req",
+            request=OmniRequest(inputs="hello"),
+            data={},
         )
 
         await stage._on_data_ready(
@@ -290,7 +290,7 @@ def test_stage_drops_payload_after_abort_during_relay_read(monkeypatch) -> None:
                 request_id="req",
                 from_stage="tts_engine",
                 to_stage="vocoder",
-                shm_metadata={},
+                shm_metadata=_payload_metadata(payload),
             )
         )
 
