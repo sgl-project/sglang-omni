@@ -120,7 +120,6 @@ class Stage:
         self._scheduler_crash_error: BaseException | None = None
         self._background_task_error: BaseException | None = None
 
-
     async def start(self) -> None:
         if self._running:
             return
@@ -214,7 +213,6 @@ class Stage:
                 await outbox_task
             if self._background_task_error is not None:
                 raise self._background_task_error
-
 
     async def _handle_message(self, msg: Any) -> None:
         if isinstance(msg, SubmitMessage):
@@ -508,7 +506,6 @@ class Stage:
                 raise RuntimeError(
                     f"TP follower stage {self.name} received scheduler error: {out.data}"
                 )
-
 
     async def _route_result(self, request_id: str, result: Any) -> None:
         """Route a completed result to next stage(s) or complete at coordinator."""
