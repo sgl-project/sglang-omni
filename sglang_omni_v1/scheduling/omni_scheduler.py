@@ -128,7 +128,7 @@ class OmniScheduler:
         self.page_size = server_args.page_size
         self.enable_overlap = enable_overlap
 
-        # Token / memory info (upstream reads from tp_worker.get_worker_info)
+        # Token / memory limits
         mr = tp_worker.model_runner
         self.max_total_num_tokens = mr.max_total_num_tokens
         self.max_prefill_tokens = server_args.max_prefill_tokens
