@@ -23,11 +23,11 @@ description: "FishAudio S2-Pro voice-clone TTS (v1 pipeline)"
 hf_model_id: "fishaudio/s2-pro"
 hf_datasets:
   - "zhaochenyang20/seed-tts-eval-50"
-default_venv_python: "/github/home/omni-s2pro/bin/python"
-# CI's omni-s2pro venv has neither openai-whisper nor whisper-normalizer
-# installed, so `_get_en_normalizer()` falls back to the punctuation-strip
-# path. precheck warns if the local venv has installed either package.
-expected_wer_normalizer: "fallback"
+# Per user override: this host shares the omni-qwen3 venv across all
+# models — there is no separate omni-s2pro venv to check.
+default_venv_python:
+  - "/sgl-workspace/sglang-omni/omni-qwen3/bin/python"
+  - "/github/home/omni-qwen3/bin/python"
 auto_env:
   HF_ENDPOINT: "https://hf-mirror.com"
   SGLANG_OMNI_SERVER_VERSION: "v1"
