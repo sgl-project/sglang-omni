@@ -9,6 +9,7 @@ import torch
 
 from sglang_omni_v1.models.fishaudio_s2_pro.fish_scheduler import (
     FishIterationController,
+    FishScheduler,
 )
 from sglang_omni_v1.models.fishaudio_s2_pro.model_runner import (
     _collect_s2pro_step_outputs,
@@ -113,6 +114,44 @@ def test_v1_s2pro_immediate_im_end_leaves_no_audio_codebook_frames() -> None:
     assert data.previous_semantic_tokens == []
     assert data.last_codebook_values is None
     assert tree_cache.cached_requests == 0
+
+
+def test_v1_s2pro_emit_finished_errors_before_vocoder_for_empty_codes() -> None:
+    tree_cache = _CountingTreeCache()
+    controller = FishIterationController(tree_cache, IM_END_TOKEN_ID)
+    request = _make_request("req-immediate-terminal")
+
+    result = _collect_model_step([request], [[IM_END_TOKEN_ID, 33, 44]])
+    _update_request_from_result(controller, request, result)
+
+    def result_adapter(_data):
+        raise AssertionError(
+            "empty S2-Pro output_codes must not route to result_adapter"
+        )
+
+    scheduler = FishScheduler(
+        tree_cache=tree_cache,
+        req_to_token_pool=None,
+        token_to_kv_pool_allocator=None,
+        prefill_manager=None,
+        decode_manager=None,
+        server_args=SimpleNamespace(max_running_requests=1),
+        model_runner=None,
+        request_builder=None,
+        result_adapter=result_adapter,
+        im_end_token_id=IM_END_TOKEN_ID,
+        max_new_tokens=2048,
+    )
+    scheduler._submit_times[request.request_id] = 1.0
+
+    scheduler.emit_finished([request])
+    output = scheduler.outbox.get_nowait()
+
+    assert output.request_id == request.request_id
+    assert output.type == "error"
+    assert isinstance(output.data, ValueError)
+    assert "S2-Pro generated no audio codec tokens" in str(output.data)
+    assert scheduler._submit_times == {}
 
 
 def test_v1_s2pro_mixed_batch_keeps_terminal_and_audio_state_separate() -> None:
