@@ -32,8 +32,16 @@ class EncoderRequestData:
     skip_result: dict[str, Any] | None = None
 
 
+@dataclass(slots=True)
 class ARRequestData:
     """AR request data — base for SGLangARRequestData."""
+
+    input_ids: torch.Tensor
+    attention_mask: torch.Tensor | None = None
+    model_inputs: dict[str, Any] | None = None
+    capture_model_output_keys: tuple = ()
+    max_new_tokens: int | None = None
+    temperature: float = 0.0
 
 
 def build_encoder_request(

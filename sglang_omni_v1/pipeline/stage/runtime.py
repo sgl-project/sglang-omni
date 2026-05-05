@@ -682,12 +682,8 @@ class Stage:
             it = iter(self._aborted)
             to_remove = [next(it) for _ in range(excess)]
             self._aborted -= set(to_remove)
-        self._active_requests.discard(request_id)
-        self.input_handler.cancel(request_id)
         self.relay.cleanup(request_id)
-        if self._stream_queue is not None:
-            self._stream_queue.close(request_id)
-        self._pending_stream_data.pop(request_id, None)
+        self._clear_request_state(request_id)
         self.scheduler.abort(request_id)
 
     # ------------------------------------------------------------------
