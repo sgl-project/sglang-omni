@@ -1,10 +1,16 @@
+# SPDX-License-Identifier: Apache-2.0
+"""Proxy request forwarding, response relay, and route logging."""
+
 from __future__ import annotations
 
 import asyncio
 import json
+import threading
 import time
 import uuid
 from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -12,7 +18,6 @@ from fastapi import Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from sglang_omni_router.config import Capability, RouterConfig
-from sglang_omni_router.logging import RouteLogger
 from sglang_omni_router.selector import NoEligibleWorkerError, WorkerSelector
 from sglang_omni_router.worker import Worker
 
@@ -46,6 +51,28 @@ class RouteMetadata:
     idempotency_key_present: bool
 
 
+class RouteLogger:
+    def __init__(self, path: str | None) -> None:
+        self._path = Path(path) if path else None
+        self._lock = threading.Lock()
+        if self._path is not None:
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+
+    def write(self, event: dict[str, Any]) -> None:
+        if self._path is None:
+            return
+
+        record = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            **event,
+        }
+        line = json.dumps(record, sort_keys=True)
+        with self._lock:
+            with self._path.open("a", encoding="utf-8") as f:
+                f.write(line)
+                f.write("\n")
+
+
 def infer_capability(path: str) -> Capability:
     if path == "/v1/audio/speech":
         return "speech"
@@ -53,6 +80,8 @@ def infer_capability(path: str) -> Capability:
 
 
 def extract_route_metadata(request: Request, body: bytes) -> RouteMetadata:
+    # These fields are observational for V1: they make route logs useful now
+    # without committing the router to model-aware routing or retries yet.
     request_id = (
         request.headers.get("x-sglang-omni-request-id")
         or request.headers.get("x-request-id")
@@ -98,6 +127,11 @@ def filter_response_headers(headers: httpx.Headers) -> dict[str, str]:
         for key, value in headers.items()
         if key.lower() not in RESPONSE_HEADERS_TO_STRIP
     }
+
+
+def build_upstream_url(worker: Worker, path: str, request: Request) -> str:
+    query = request.url.query
+    return f"{worker.url}{path}" if not query else f"{worker.url}{path}?{query}"
 
 
 class ProxyHandler:
@@ -163,7 +197,7 @@ class ProxyHandler:
         try:
             response = await self._client.request(
                 request.method,
-                f"{worker.url}{path}",
+                build_upstream_url(worker, path, request),
                 content=body,
                 headers=filter_request_headers(request),
             )
@@ -215,7 +249,7 @@ class ProxyHandler:
         try:
             upstream_request = self._client.build_request(
                 request.method,
-                f"{worker.url}{path}",
+                build_upstream_url(worker, path, request),
                 content=body,
                 headers=filter_request_headers(request),
             )
@@ -300,6 +334,8 @@ class ProxyHandler:
         worker: Worker,
         metadata: RouteMetadata,
     ) -> dict[str, str]:
+        # Attempt is fixed at one until retry support exists, but exposing it
+        # now keeps response headers and route logs aligned from the first PR.
         return {
             "X-SGLang-Omni-Worker": worker.worker_id,
             "X-SGLang-Omni-Request-ID": metadata.request_id,

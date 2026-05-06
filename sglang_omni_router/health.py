@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+"""Background worker health probing for the Omni router."""
+
 from __future__ import annotations
 
 import asyncio

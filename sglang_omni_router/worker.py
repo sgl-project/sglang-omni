@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+"""Worker state tracked by the external Omni router."""
+
 from __future__ import annotations
 
 from contextlib import contextmanager

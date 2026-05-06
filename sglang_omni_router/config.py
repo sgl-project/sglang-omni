@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+"""Configuration and validation for the external Omni router."""
+
 from __future__ import annotations
 
 import ipaddress
@@ -10,11 +13,14 @@ Capability = Literal["chat", "speech", "streaming"]
 RoutingPolicy = Literal["round_robin", "least_request", "random"]
 
 DEFAULT_CAPABILITIES: set[Capability] = {"chat", "speech", "streaming"}
-METADATA_HOSTS = {"169.254.169.254", "metadata.google.internal"}
+BLOCKED_WORKER_HOSTS = {"169.254.169.254", "metadata.google.internal"}
 
 
 def normalize_worker_url(url: str) -> str:
     """Validate and normalize a worker base URL."""
+    if not isinstance(url, str):
+        raise ValueError("worker URL must be a string")
+
     raw_url = url.strip()
     if not raw_url:
         raise ValueError("worker URL must not be empty")
@@ -36,7 +42,10 @@ def normalize_worker_url(url: str) -> str:
         raise ValueError("worker URL must include a host")
 
     normalized_host = host.lower()
-    if normalized_host in METADATA_HOSTS:
+    # Keep the worker URL parser structured instead of regex-based so IPv6,
+    # credentials, ports, and path/query rejection follow URL semantics.
+    # The explicit blocklist matches diffusion-router's metadata-host guard.
+    if normalized_host in BLOCKED_WORKER_HOSTS:
         raise ValueError(f"worker URL host {host!r} is not allowed")
 
     try:

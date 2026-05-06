@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+"""Command-line launcher for the external Omni router."""
+
 from __future__ import annotations
 
 import argparse
@@ -58,3 +61,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         port=config.port,
         log_level=args.log_level,
     )
+
+
+if __name__ == "__main__":
+    main()

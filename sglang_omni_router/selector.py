@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+"""Load-balancing policy selection for healthy Omni workers."""
+
 from __future__ import annotations
 
 import random

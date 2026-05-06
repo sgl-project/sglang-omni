@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+"""FastAPI application wiring for the external Omni router."""
+
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
@@ -11,8 +14,7 @@ from fastapi.responses import JSONResponse, Response
 
 from sglang_omni_router.config import RouterConfig
 from sglang_omni_router.health import HealthChecker
-from sglang_omni_router.logging import RouteLogger
-from sglang_omni_router.proxy import ProxyHandler
+from sglang_omni_router.proxy import ProxyHandler, RouteLogger
 from sglang_omni_router.selector import WorkerSelector
 from sglang_omni_router.worker import Worker, build_workers
 
@@ -45,6 +47,8 @@ def create_app(
         app.state.http_client = client
         app.state.health_checker = health_checker
         app.state.proxy = proxy
+        # Initial probes satisfy the configured success threshold before the
+        # router starts accepting traffic; later probes run in the background.
         for _ in range(config.health_success_threshold):
             await health_checker.check_once()
         await health_checker.start()

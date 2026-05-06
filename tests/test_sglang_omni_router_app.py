@@ -114,6 +114,7 @@ def test_round_robin_proxies_raw_bytes_logs_route_and_alternates_workers(
         if request.url.path == "/health":
             return httpx.Response(200, json={"status": "healthy"}, request=request)
         if request.url.path == "/v1/chat/completions":
+            assert request.url.query == b"trace=abc"
             seen_bodies.append(request.content)
             seen_workers.append(_request_netloc(request))
             return httpx.Response(
@@ -134,9 +135,9 @@ def test_round_robin_proxies_raw_bytes_logs_route_and_alternates_workers(
     }
 
     with TestClient(app) as client:
-        first = client.post("/v1/chat/completions", json=body)
+        first = client.post("/v1/chat/completions?trace=abc", json=body)
         second = client.post(
-            "/v1/chat/completions", json=body | {"request_id": "req-2"}
+            "/v1/chat/completions?trace=abc", json=body | {"request_id": "req-2"}
         )
 
     assert first.status_code == 200
