@@ -134,6 +134,7 @@ def test_worker_crud_updates_runtime_pool_and_validates_payloads() -> None:
 
 def test_models_merge_queries_only_healthy_workers_and_deduplicates() -> None:
     model_requests: list[str] = []
+    model_queries: list[bytes] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/health":
@@ -141,6 +142,7 @@ def test_models_merge_queries_only_healthy_workers_and_deduplicates() -> None:
             return httpx.Response(status, json={"status": "worker"}, request=request)
         if request.url.path == "/v1/models":
             model_requests.append(_request_netloc(request))
+            model_queries.append(request.url.query)
             return httpx.Response(
                 200,
                 json={
@@ -157,13 +159,45 @@ def test_models_merge_queries_only_healthy_workers_and_deduplicates() -> None:
     app = create_app(_router_config(), client=async_client)
 
     with TestClient(app) as client:
-        response = client.get("/v1/models")
+        response = client.get("/v1/models?detail=1")
 
     assert response.status_code == 200
     assert model_requests == ["worker-b:8102"]
+    assert model_queries == [b"detail=1"]
     assert response.json()["data"] == [
         {"id": "qwen3-omni", "object": "model", "created": 0}
     ]
+
+
+def test_models_merge_reports_per_worker_failures_when_all_routable_workers_fail() -> (
+    None
+):
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"status": "worker"}, request=request)
+        if request.url.path == "/v1/models":
+            if _request_netloc(request) == "worker-a:8101":
+                return httpx.Response(500, json={"error": "boom"}, request=request)
+            return httpx.Response(
+                200,
+                json={"object": "list", "data": {"not": "a list"}},
+                request=request,
+            )
+        raise AssertionError(f"unexpected request path: {request.url.path}")
+
+    async_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    app = create_app(_router_config(), client=async_client)
+
+    with TestClient(app) as client:
+        response = client.get("/v1/models")
+
+    assert response.status_code == 502
+    error = response.json()["error"]
+    assert error["message"] == "failed to fetch models from workers"
+    assert error["details"] == {
+        "http://worker-a:8101": "status=500",
+        "http://worker-b:8102": "invalid models payload",
+    }
 
 
 def test_round_robin_proxies_raw_bytes_logs_route_and_alternates_workers(
@@ -216,6 +250,10 @@ def test_round_robin_proxies_raw_bytes_logs_route_and_alternates_workers(
         "http://worker-b:8102",
     ]
     assert {route["policy"] for route in routes} == {"round_robin"}
+    assert {tuple(route["required_capabilities"]) for route in routes} == {("chat",)}
+    assert {route["worker_health_state"] for route in routes} == {"healthy"}
+    assert {route["worker_disabled"] for route in routes} == {False}
+    assert {route["worker_routable"] for route in routes} == {True}
     assert all(route["completed"] is True for route in routes)
 
 

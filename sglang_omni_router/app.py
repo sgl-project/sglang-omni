@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 from contextlib import asynccontextmanager
 from typing import Any
 from urllib.parse import unquote
@@ -15,7 +16,7 @@ from pydantic import ValidationError
 
 from sglang_omni_router.config import RouterConfig, WorkerConfig
 from sglang_omni_router.health import HealthChecker
-from sglang_omni_router.proxy import ProxyHandler, RouteLogger
+from sglang_omni_router.proxy import ProxyHandler, RouteLogger, filter_request_headers
 from sglang_omni_router.selector import WorkerSelector
 from sglang_omni_router.worker import Worker, build_workers
 
@@ -198,8 +199,8 @@ def register_routes(app: FastAPI, workers: list[Worker], proxy: ProxyHandler) ->
         return JSONResponse({"status": "ok", "worker_id": worker.worker_id})
 
     @app.get("/v1/models")
-    async def models() -> JSONResponse:
-        return await _merge_models(workers, app.state.http_client)
+    async def models(request: Request) -> JSONResponse:
+        return await _merge_models(workers, app.state.http_client, request)
 
     @app.post("/v1/chat/completions")
     async def chat_completions(request: Request) -> Response:
@@ -269,7 +270,7 @@ def _error_response(status_code: int, message: str) -> JSONResponse:
 
 
 async def _merge_models(
-    workers: list[Worker], client: httpx.AsyncClient
+    workers: list[Worker], client: httpx.AsyncClient, request: Request
 ) -> JSONResponse:
     healthy_workers = [worker for worker in workers if worker.is_routable]
     if not healthy_workers:
@@ -278,26 +279,57 @@ async def _merge_models(
             content={"error": {"message": "no healthy upstream"}},
         )
 
+    request_headers = filter_request_headers(request)
+    query = request.url.query
     cards_by_id: dict[str, dict[str, Any]] = {}
+    errors: dict[str, str] = {}
     for worker in healthy_workers:
+        worker.increment_active()
         try:
-            response = await client.get(f"{worker.url}/v1/models")
-        except Exception:
-            continue
-        if not 200 <= response.status_code < 300:
-            continue
-        try:
-            payload = response.json()
-        except Exception:
-            continue
-        for card in payload.get("data", []):
-            if isinstance(card, dict) and isinstance(card.get("id"), str):
-                cards_by_id.setdefault(card["id"], card)
+            url = (
+                f"{worker.url}/v1/models"
+                if not query
+                else f"{worker.url}/v1/models?{query}"
+            )
+            try:
+                response = await client.get(url, headers=request_headers)
+            except Exception as exc:
+                errors[worker.url] = type(exc).__name__
+                continue
+            if not 200 <= response.status_code < 300:
+                errors[worker.url] = f"status={response.status_code}"
+                continue
+            try:
+                payload = response.json()
+            except Exception as exc:
+                errors[worker.url] = type(exc).__name__
+                continue
+            data = payload.get("data")
+            if not isinstance(data, list):
+                errors[worker.url] = "invalid models payload"
+                continue
+            for card in data:
+                if not isinstance(card, dict):
+                    continue
+                model_id = card.get("id") or card.get("model")
+                dedupe_key = (
+                    model_id
+                    if isinstance(model_id, str) and model_id
+                    else json.dumps(card, sort_keys=True)
+                )
+                cards_by_id.setdefault(dedupe_key, card)
+        finally:
+            worker.decrement_active()
 
     if not cards_by_id:
         return JSONResponse(
-            status_code=503,
-            content={"error": {"message": "no models available"}},
+            status_code=502,
+            content={
+                "error": {
+                    "message": "failed to fetch models from workers",
+                    "details": errors,
+                }
+            },
         )
 
     return JSONResponse({"object": "list", "data": list(cards_by_id.values())})

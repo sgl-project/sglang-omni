@@ -13,6 +13,8 @@ import uvicorn
 from sglang_omni_router.app import create_app
 from sglang_omni_router.config import RoutingPolicy, build_router_config
 
+logger = logging.getLogger(__name__)
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Serve the SGLang-Omni Router")
@@ -56,6 +58,22 @@ def main(argv: Sequence[str] | None = None) -> None:
         health_check_interval_secs=args.health_check_interval_secs,
         health_check_endpoint=args.health_check_endpoint,
         route_log_path=args.route_log_path,
+    )
+    logger.info(
+        "Starting SGLang-Omni Router on %s:%s | workers=%s | policy=%s | "
+        "max_payload_size=%s | max_connections=%s | "
+        "health_failure_threshold=%s | health_success_threshold=%s | "
+        "health_check_interval_secs=%s | health_check_timeout_secs=%s",
+        config.host,
+        config.port,
+        len(config.worker_urls),
+        config.policy,
+        config.max_payload_size,
+        config.max_connections,
+        config.health_failure_threshold,
+        config.health_success_threshold,
+        config.health_check_interval_secs,
+        config.health_check_timeout_secs,
     )
     uvicorn.run(
         create_app(config),
