@@ -23,12 +23,13 @@ class WorkerSelector:
         self,
         workers: list[Worker],
         *,
-        capability: Capability,
+        required_capabilities: set[Capability],
     ) -> Worker:
         candidates = [
             worker
             for worker in workers
-            if worker.is_routable and worker.supports(capability)
+            if worker.is_routable
+            and all(worker.supports(capability) for capability in required_capabilities)
         ]
         if not candidates:
             raise NoEligibleWorkerError("no eligible healthy workers")

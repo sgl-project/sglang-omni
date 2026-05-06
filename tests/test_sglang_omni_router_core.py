@@ -84,7 +84,10 @@ def test_selector_filters_by_health_and_capability() -> None:
 
     selector = WorkerSelector("round_robin")
 
-    assert selector.select(workers, capability="speech").url == "http://127.0.0.1:8103"
+    assert (
+        selector.select(workers, required_capabilities={"speech"}).url
+        == "http://127.0.0.1:8103"
+    )
 
 
 def test_selector_excludes_disabled_workers() -> None:
@@ -100,7 +103,37 @@ def test_selector_excludes_disabled_workers() -> None:
 
     selector = WorkerSelector("round_robin")
 
-    assert selector.select(workers, capability="chat").url == "http://127.0.0.1:8102"
+    assert (
+        selector.select(workers, required_capabilities={"chat"}).url
+        == "http://127.0.0.1:8102"
+    )
+
+
+def test_selector_requires_all_capabilities() -> None:
+    workers = build_workers(
+        [
+            WorkerConfig(
+                url="http://127.0.0.1:8101",
+                capabilities={"chat", "streaming"},
+            ),
+            WorkerConfig(
+                url="http://127.0.0.1:8102",
+                capabilities={"chat", "streaming", "video_input"},
+            ),
+        ]
+    )
+    for worker in workers:
+        worker.state = "healthy"
+
+    selector = WorkerSelector("round_robin")
+
+    assert (
+        selector.select(
+            workers,
+            required_capabilities={"chat", "streaming", "video_input"},
+        ).url
+        == "http://127.0.0.1:8102"
+    )
 
 
 def test_round_robin_recomputes_candidates_after_health_change() -> None:
@@ -115,12 +148,18 @@ def test_round_robin_recomputes_candidates_after_health_change() -> None:
 
     selector = WorkerSelector("round_robin")
 
-    assert selector.select(workers, capability="speech").url == "http://127.0.0.1:8101"
+    assert (
+        selector.select(workers, required_capabilities={"speech"}).url
+        == "http://127.0.0.1:8101"
+    )
     workers[0].state = "unhealthy"
-    assert selector.select(workers, capability="speech").url == "http://127.0.0.1:8102"
+    assert (
+        selector.select(workers, required_capabilities={"speech"}).url
+        == "http://127.0.0.1:8102"
+    )
     workers[1].state = "unhealthy"
     with pytest.raises(NoEligibleWorkerError):
-        selector.select(workers, capability="speech")
+        selector.select(workers, required_capabilities={"speech"})
 
 
 def test_least_request_selects_lowest_active_request_count() -> None:
@@ -137,10 +176,16 @@ def test_least_request_selects_lowest_active_request_count() -> None:
 
     selector = WorkerSelector("least_request")
 
-    assert selector.select(workers, capability="speech").url == "http://127.0.0.1:8101"
+    assert (
+        selector.select(workers, required_capabilities={"speech"}).url
+        == "http://127.0.0.1:8101"
+    )
 
     workers[0].active_requests = 3
-    assert selector.select(workers, capability="speech").url == "http://127.0.0.1:8102"
+    assert (
+        selector.select(workers, required_capabilities={"speech"}).url
+        == "http://127.0.0.1:8102"
+    )
 
 
 def test_worker_request_guard_cleans_up_count() -> None:

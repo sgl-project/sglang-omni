@@ -48,6 +48,7 @@ class RouteMetadata:
     request_id: str
     model: str | None
     stream: bool
+    required_capabilities: set[Capability]
     idempotency_key_present: bool
 
 
@@ -73,13 +74,41 @@ class RouteLogger:
                 f.write("\n")
 
 
-def infer_capability(path: str) -> Capability:
+def infer_required_capabilities(
+    path: str,
+    payload: dict[str, Any] | None,
+    *,
+    stream: bool,
+) -> set[Capability]:
     if path == "/v1/audio/speech":
-        return "speech"
-    return "chat"
+        capabilities: set[Capability] = {"speech"}
+        if stream:
+            capabilities.add("streaming")
+        return capabilities
+
+    capabilities = {"chat"}
+    if stream:
+        capabilities.add("streaming")
+    if not payload:
+        return capabilities
+
+    if _has_non_empty(payload.get("images")) or _has_non_empty(payload.get("image")):
+        capabilities.add("image_input")
+    if _has_non_empty(payload.get("audios")) or _has_non_empty(
+        payload.get("audio_inputs")
+    ):
+        capabilities.add("audio_input")
+    if _has_non_empty(payload.get("videos")) or _has_non_empty(payload.get("video")):
+        capabilities.add("video_input")
+    if _modalities_include_audio(payload) or _has_non_empty(payload.get("audio")):
+        capabilities.add("audio_output")
+
+    message_capabilities = _infer_message_part_capabilities(payload.get("messages"))
+    capabilities.update(message_capabilities)
+    return capabilities
 
 
-def extract_route_metadata(request: Request, body: bytes) -> RouteMetadata:
+def extract_route_metadata(request: Request, path: str, body: bytes) -> RouteMetadata:
     request_id = (
         request.headers.get("x-sglang-omni-request-id")
         or request.headers.get("x-request-id")
@@ -87,14 +116,16 @@ def extract_route_metadata(request: Request, body: bytes) -> RouteMetadata:
     )
     model: str | None = None
     stream = False
+    payload: dict[str, Any] | None = None
 
     content_type = request.headers.get("content-type", "")
     if "json" in content_type and len(body) <= ROUTE_METADATA_JSON_LIMIT_BYTES:
         try:
-            payload = json.loads(body)
+            parsed_payload = json.loads(body)
         except Exception:
-            payload = None
-        if isinstance(payload, dict):
+            parsed_payload = None
+        if isinstance(parsed_payload, dict):
+            payload = parsed_payload
             request_id = request_id or _string_or_none(payload.get("request_id"))
             model = _string_or_none(payload.get("model"))
             stream = payload.get("stream") is True
@@ -103,12 +134,51 @@ def extract_route_metadata(request: Request, body: bytes) -> RouteMetadata:
         request_id=request_id or str(uuid.uuid4()),
         model=model,
         stream=stream,
+        required_capabilities=infer_required_capabilities(path, payload, stream=stream),
         idempotency_key_present=bool(request.headers.get("idempotency-key")),
     )
 
 
 def _string_or_none(value: Any) -> str | None:
     return value if isinstance(value, str) and value else None
+
+
+def _has_non_empty(value: Any) -> bool:
+    if value is None or value is False:
+        return False
+    if isinstance(value, (str, bytes, list, tuple, dict, set)):
+        return bool(value)
+    return True
+
+
+def _modalities_include_audio(payload: dict[str, Any]) -> bool:
+    modalities = payload.get("modalities")
+    if not isinstance(modalities, list):
+        return False
+    return any(item == "audio" for item in modalities)
+
+
+def _infer_message_part_capabilities(messages: Any) -> set[Capability]:
+    capabilities: set[Capability] = set()
+    if not isinstance(messages, list):
+        return capabilities
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        content = message.get("content")
+        if not isinstance(content, list):
+            continue
+        for part in content:
+            if not isinstance(part, dict):
+                continue
+            part_type = part.get("type")
+            if part_type in {"image", "image_url", "input_image"}:
+                capabilities.add("image_input")
+            elif part_type in {"audio", "audio_url", "input_audio"}:
+                capabilities.add("audio_input")
+            elif part_type in {"video", "video_url", "input_video"}:
+                capabilities.add("video_input")
+    return capabilities
 
 
 def filter_request_headers(request: Request) -> dict[str, str]:
@@ -165,10 +235,12 @@ class ProxyHandler:
                 content={"error": {"message": "payload too large"}},
             )
 
-        metadata = extract_route_metadata(request, body)
-        capability = infer_capability(path)
+        metadata = extract_route_metadata(request, path, body)
         try:
-            worker = self._selector.select(self._workers, capability=capability)
+            worker = self._selector.select(
+                self._workers,
+                required_capabilities=metadata.required_capabilities,
+            )
         except NoEligibleWorkerError:
             return JSONResponse(
                 status_code=503,

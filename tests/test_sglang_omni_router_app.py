@@ -19,9 +19,11 @@ def _router_config(
     *,
     policy: str = "round_robin",
     max_payload_size: int = 512 * 1024 * 1024,
+    worker_configs: list[WorkerConfig] | None = None,
 ) -> RouterConfig:
     return RouterConfig(
-        worker_urls=[
+        worker_urls=worker_configs
+        or [
             WorkerConfig(url="http://worker-a:8101"),
             WorkerConfig(url="http://worker-b:8102"),
         ],
@@ -240,6 +242,90 @@ def test_least_request_avoids_worker_with_active_stream_load() -> None:
 
     assert response.status_code == 200
     assert response.headers["x-sglang-omni-worker"].endswith("worker-b%3A8102")
+
+
+def test_chat_modality_capabilities_filter_mixed_worker_pool() -> None:
+    seen_bodies: list[bytes] = []
+    seen_workers: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"status": "healthy"}, request=request)
+        if request.url.path == "/v1/chat/completions":
+            seen_bodies.append(request.content)
+            seen_workers.append(_request_netloc(request))
+            return httpx.Response(200, json={"ok": True}, request=request)
+        raise AssertionError(f"unexpected request path: {request.url.path}")
+
+    worker_configs = [
+        WorkerConfig(
+            url="http://worker-a:8101",
+            capabilities={"chat", "streaming", "image_input"},
+        ),
+        WorkerConfig(url="http://worker-b:8102"),
+    ]
+    async_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    app = create_app(
+        _router_config(worker_configs=worker_configs),
+        client=async_client,
+    )
+    body = {
+        "model": "qwen3-omni",
+        "request_id": "req-mm",
+        "messages": [{"role": "user", "content": "describe"}],
+        "audios": ["audio.wav"],
+        "videos": ["clip.mp4"],
+        "modalities": ["text", "audio"],
+        "audio": {"format": "wav"},
+        "stage_sampling": {"thinker": {"temperature": 0.7}},
+        "stage_params": {"preprocessor": {"video_fps": 1.0}},
+    }
+
+    with TestClient(app) as client:
+        response = client.post("/v1/chat/completions", json=body)
+
+    assert response.status_code == 200
+    assert seen_workers == ["worker-b:8102"]
+    assert json.loads(seen_bodies[0]) == body
+
+
+def test_speech_stream_requires_speech_and_streaming_capabilities() -> None:
+    seen_workers: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"status": "healthy"}, request=request)
+        if request.url.path == "/v1/audio/speech":
+            seen_workers.append(_request_netloc(request))
+            return httpx.Response(
+                200,
+                content=b"data: [DONE]\n\n",
+                headers={"content-type": "text/event-stream"},
+                request=request,
+            )
+        raise AssertionError(f"unexpected request path: {request.url.path}")
+
+    worker_configs = [
+        WorkerConfig(url="http://worker-a:8101", capabilities={"chat", "streaming"}),
+        WorkerConfig(url="http://worker-b:8102", capabilities={"speech", "streaming"}),
+    ]
+    async_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    app = create_app(
+        _router_config(worker_configs=worker_configs),
+        client=async_client,
+    )
+
+    with TestClient(app) as client:
+        with client.stream(
+            "POST",
+            "/v1/audio/speech",
+            json={"model": "qwen3-omni", "input": "hello", "stream": True},
+        ) as response:
+            body = b"".join(response.iter_bytes())
+
+    assert response.status_code == 200
+    assert seen_workers == ["worker-b:8102"]
+    assert body == b"data: [DONE]\n\n"
 
 
 def test_streaming_chat_relays_exact_sse_bytes() -> None:
