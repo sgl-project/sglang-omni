@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Serve the external Omni router."""
+"""HTTP server entrypoint for the external Omni router."""
 
 from __future__ import annotations
 
