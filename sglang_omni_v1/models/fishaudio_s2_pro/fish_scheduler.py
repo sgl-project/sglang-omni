@@ -423,8 +423,8 @@ class FishScheduler:
         for request in finished:
             data = request.data
             data.output_ids = list(data.req.output_ids)
+            t_submit = self._submit_times.pop(request.request_id, None)
             if not data.output_codes:
-                self._submit_times.pop(request.request_id, None)
                 self.outbox.put(
                     OutgoingMessage(
                         request_id=request.request_id,
@@ -437,7 +437,6 @@ class FishScheduler:
                 )
                 continue
             result = self._result_adapter(data)
-            t_submit = self._submit_times.pop(request.request_id, None)
             if t_submit is not None and isinstance(result.data, dict):
                 result.data["engine_time_s"] = time.perf_counter() - t_submit
             self.outbox.put(

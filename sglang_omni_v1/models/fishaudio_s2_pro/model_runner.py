@@ -23,13 +23,14 @@ def collect_s2pro_step_outputs(
         return
 
     result.next_token_ids = output_semantic_ids[:batch_size].clone()
+    semantic_tokens = output_semantic_ids[:batch_size].tolist()
 
     for row_idx, sched_req in enumerate(requests):
         data = sched_req.data
         if data.req.is_chunked > 0:
             continue
 
-        semantic_token = int(output_semantic_ids[row_idx].item())
+        semantic_token = semantic_tokens[row_idx]
         if semantic_token == im_end_token_id:
             continue
 
