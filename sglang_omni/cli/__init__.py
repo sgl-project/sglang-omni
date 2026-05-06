@@ -9,7 +9,7 @@ app = typer.Typer()
 
 
 def _router(ctx: typer.Context) -> None:
-    from sglang_omni_router.launcher import main
+    from sglang_omni_router.serve.router import main
 
     main(list(ctx.args))
 

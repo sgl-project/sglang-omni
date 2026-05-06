@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Command-line launcher for the external Omni router."""
+"""Serve the external Omni router."""
 
 from __future__ import annotations
 

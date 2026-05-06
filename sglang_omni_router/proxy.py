@@ -40,7 +40,7 @@ REQUEST_HEADERS_TO_STRIP = HOP_BY_HOP_HEADERS | {
 RESPONSE_HEADERS_TO_STRIP = HOP_BY_HOP_HEADERS | {
     "content-length",
 }
-JSON_METADATA_LIMIT_BYTES = 1024 * 1024
+ROUTE_METADATA_JSON_LIMIT_BYTES = 1024 * 1024
 
 
 @dataclass
@@ -80,8 +80,6 @@ def infer_capability(path: str) -> Capability:
 
 
 def extract_route_metadata(request: Request, body: bytes) -> RouteMetadata:
-    # These fields are observational for V1: they make route logs useful now
-    # without committing the router to model-aware routing or retries yet.
     request_id = (
         request.headers.get("x-sglang-omni-request-id")
         or request.headers.get("x-request-id")
@@ -91,7 +89,7 @@ def extract_route_metadata(request: Request, body: bytes) -> RouteMetadata:
     stream = False
 
     content_type = request.headers.get("content-type", "")
-    if "json" in content_type and len(body) <= JSON_METADATA_LIMIT_BYTES:
+    if "json" in content_type and len(body) <= ROUTE_METADATA_JSON_LIMIT_BYTES:
         try:
             payload = json.loads(body)
         except Exception:
@@ -334,8 +332,6 @@ class ProxyHandler:
         worker: Worker,
         metadata: RouteMetadata,
     ) -> dict[str, str]:
-        # Attempt is fixed at one until retry support exists, but exposing it
-        # now keeps response headers and route logs aligned from the first PR.
         return {
             "X-SGLang-Omni-Worker": worker.worker_id,
             "X-SGLang-Omni-Request-ID": metadata.request_id,

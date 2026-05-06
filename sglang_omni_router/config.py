@@ -13,7 +13,7 @@ Capability = Literal["chat", "speech", "streaming"]
 RoutingPolicy = Literal["round_robin", "least_request", "random"]
 
 DEFAULT_CAPABILITIES: set[Capability] = {"chat", "speech", "streaming"}
-BLOCKED_WORKER_HOSTS = {"169.254.169.254", "metadata.google.internal"}
+CLOUD_METADATA_HOSTS = {"169.254.169.254", "metadata.google.internal"}
 
 
 def normalize_worker_url(url: str) -> str:
@@ -42,10 +42,7 @@ def normalize_worker_url(url: str) -> str:
         raise ValueError("worker URL must include a host")
 
     normalized_host = host.lower()
-    # Keep the worker URL parser structured instead of regex-based so IPv6,
-    # credentials, ports, and path/query rejection follow URL semantics.
-    # The explicit blocklist matches diffusion-router's metadata-host guard.
-    if normalized_host in BLOCKED_WORKER_HOSTS:
+    if normalized_host in CLOUD_METADATA_HOSTS:
         raise ValueError(f"worker URL host {host!r} is not allowed")
 
     try:
