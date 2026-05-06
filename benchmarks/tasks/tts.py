@@ -83,10 +83,9 @@ def _get_en_normalizer():
         from whisper.normalizers import EnglishTextNormalizer
     except ImportError as exc:
         raise RuntimeError(
-            "English WER evaluation requires openai-whisper's "
-            "whisper.normalizers.EnglishTextNormalizer. "
-            "Install the pinned project dependencies with `uv pip install -e .` "
-            "before rerunning WER."
+            "English WER requires openai-whisper "
+            "(whisper.normalizers.EnglishTextNormalizer). "
+            "Install pinned deps with `uv pip install -e .`."
         ) from exc
 
     return EnglishTextNormalizer()
