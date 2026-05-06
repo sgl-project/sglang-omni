@@ -28,7 +28,7 @@ class WorkerSelector:
         candidates = [
             worker
             for worker in workers
-            if worker.is_healthy and worker.supports(capability)
+            if worker.is_routable and worker.supports(capability)
         ]
         if not candidates:
             raise NoEligibleWorkerError("no eligible healthy workers")

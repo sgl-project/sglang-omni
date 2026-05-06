@@ -6,7 +6,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
-from collections.abc import Sequence
 
 import httpx
 
@@ -20,11 +19,11 @@ class HealthChecker:
     def __init__(
         self,
         *,
-        workers: Sequence[Worker],
+        workers: list[Worker],
         config: RouterConfig,
         client: httpx.AsyncClient,
     ) -> None:
-        self._workers = list(workers)
+        self._workers = workers
         self._config = config
         self._client = client
         self._task: asyncio.Task[None] | None = None
@@ -34,6 +33,9 @@ class HealthChecker:
             *(self._check_worker(worker) for worker in self._workers),
             return_exceptions=False,
         )
+
+    async def check_worker(self, worker: Worker) -> None:
+        await self._check_worker(worker)
 
     async def start(self) -> None:
         if self._task is None or self._task.done():
@@ -62,6 +64,9 @@ class HealthChecker:
                 logger.exception("unexpected error in router health loop")
 
     async def _check_worker(self, worker: Worker) -> None:
+        if worker.is_dead:
+            return
+
         url = f"{worker.url}{self._config.health_check_endpoint}"
         try:
             response = await self._client.get(

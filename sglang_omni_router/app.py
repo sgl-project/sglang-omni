@@ -11,8 +11,9 @@ import httpx
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
+from pydantic import ValidationError
 
-from sglang_omni_router.config import RouterConfig
+from sglang_omni_router.config import RouterConfig, WorkerConfig
 from sglang_omni_router.health import HealthChecker
 from sglang_omni_router.proxy import ProxyHandler, RouteLogger
 from sglang_omni_router.selector import WorkerSelector
@@ -84,12 +85,43 @@ def register_routes(app: FastAPI, workers: list[Worker], proxy: ProxyHandler) ->
 
     @app.get("/health")
     async def health() -> JSONResponse:
-        healthy = sum(1 for worker in workers if worker.is_healthy)
-        status_code = 200 if healthy > 0 else 503
-        status = "healthy" if healthy > 0 else "unhealthy"
+        routable = sum(1 for worker in workers if worker.is_routable)
+        status_code = 200 if routable > 0 else 503
+        status = "healthy" if routable > 0 else "unhealthy"
         return JSONResponse(
             _pool_summary(workers, status=status), status_code=status_code
         )
+
+    @app.post("/workers")
+    async def create_worker(request: Request) -> JSONResponse:
+        payload, error = await _read_json_object(request)
+        if error is not None:
+            return error
+        worker_url = request.query_params.get("url") or request.query_params.get(
+            "worker_url"
+        )
+        worker_url = worker_url or _string_or_none(
+            payload.get("url") or payload.get("worker_url")
+        )
+        if worker_url is None:
+            return _error_response(400, "worker url is required")
+        worker_config_kwargs: dict[str, Any] = {
+            "url": worker_url,
+            "model": payload.get("model"),
+        }
+        if "capabilities" in payload:
+            worker_config_kwargs["capabilities"] = payload["capabilities"]
+        try:
+            worker_config = WorkerConfig(**worker_config_kwargs)
+        except ValidationError as exc:
+            return _error_response(400, str(exc))
+        if any(worker.url == worker_config.url for worker in workers):
+            return _error_response(409, "worker already registered")
+
+        worker = Worker(config=worker_config)
+        workers.append(worker)
+        await app.state.health_checker.check_worker(worker)
+        return JSONResponse({"status": "ok", "worker": worker.to_dict()})
 
     @app.get("/workers")
     async def list_workers() -> JSONResponse:
@@ -104,6 +136,66 @@ def register_routes(app: FastAPI, workers: list[Worker], proxy: ProxyHandler) ->
                 content={"error": {"message": "worker not found"}},
             )
         return JSONResponse(worker.to_dict())
+
+    @app.put("/workers/{worker_id:path}")
+    async def update_worker(worker_id: str, request: Request) -> JSONResponse:
+        worker = _find_worker(workers, worker_id)
+        if worker is None:
+            return _error_response(404, "worker not found")
+
+        payload, error = await _read_json_object(request)
+        if error is not None:
+            return error
+        allowed_fields = {"is_dead", "disabled", "capabilities", "model"}
+        unknown_fields = sorted(set(payload) - allowed_fields)
+        if unknown_fields:
+            return _error_response(
+                400, f"unsupported fields: {', '.join(unknown_fields)}"
+            )
+        if not payload:
+            return _error_response(400, "at least one worker field is required")
+
+        if "is_dead" in payload:
+            if not isinstance(payload["is_dead"], bool):
+                return _error_response(400, "is_dead must be a boolean")
+            if payload["is_dead"]:
+                worker.mark_dead()
+            else:
+                worker.clear_dead()
+                await app.state.health_checker.check_worker(worker)
+
+        if "disabled" in payload:
+            if not isinstance(payload["disabled"], bool):
+                return _error_response(400, "disabled must be a boolean")
+            worker.set_disabled(payload["disabled"])
+
+        if "capabilities" in payload or "model" in payload:
+            try:
+                worker.replace_config(
+                    WorkerConfig(
+                        url=worker.url,
+                        model=(
+                            payload.get("model") if "model" in payload else worker.model
+                        ),
+                        capabilities=(
+                            payload.get("capabilities")
+                            if "capabilities" in payload
+                            else worker.capabilities
+                        ),
+                    )
+                )
+            except ValidationError as exc:
+                return _error_response(400, str(exc))
+
+        return JSONResponse({"status": "ok", "worker": worker.to_dict()})
+
+    @app.delete("/workers/{worker_id:path}")
+    async def delete_worker(worker_id: str) -> JSONResponse:
+        worker = _find_worker(workers, worker_id)
+        if worker is None:
+            return _error_response(404, "worker not found")
+        workers.remove(worker)
+        return JSONResponse({"status": "ok", "worker_id": worker.worker_id})
 
     @app.get("/v1/models")
     async def models() -> JSONResponse:
@@ -125,9 +217,15 @@ def _pool_summary(
     include_workers: bool = True,
 ) -> dict[str, Any]:
     healthy = sum(1 for worker in workers if worker.is_healthy)
+    dead = sum(1 for worker in workers if worker.is_dead)
+    disabled = sum(1 for worker in workers if worker.disabled)
+    routable = sum(1 for worker in workers if worker.is_routable)
     payload: dict[str, Any] = {
         "status": status,
         "healthy_workers": healthy,
+        "dead_workers": dead,
+        "disabled_workers": disabled,
+        "routable_workers": routable,
         "unhealthy_workers": len(workers) - healthy,
         "total_workers": len(workers),
     }
@@ -144,10 +242,36 @@ def _find_worker(workers: list[Worker], worker_id: str) -> Worker | None:
     return None
 
 
+async def _read_json_object(
+    request: Request,
+) -> tuple[dict[str, Any], JSONResponse | None]:
+    body = await request.body()
+    if not body:
+        return {}, None
+    try:
+        payload = await request.json()
+    except Exception:
+        return {}, _error_response(400, "invalid JSON body")
+    if not isinstance(payload, dict):
+        return {}, _error_response(400, "request body must be a JSON object")
+    return payload, None
+
+
+def _string_or_none(value: Any) -> str | None:
+    return value if isinstance(value, str) and value else None
+
+
+def _error_response(status_code: int, message: str) -> JSONResponse:
+    return JSONResponse(
+        status_code=status_code,
+        content={"error": {"message": message}},
+    )
+
+
 async def _merge_models(
     workers: list[Worker], client: httpx.AsyncClient
 ) -> JSONResponse:
-    healthy_workers = [worker for worker in workers if worker.is_healthy]
+    healthy_workers = [worker for worker in workers if worker.is_routable]
     if not healthy_workers:
         return JSONResponse(
             status_code=503,

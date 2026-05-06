@@ -12,6 +12,10 @@ from urllib.parse import quote, urlsplit
 from sglang_omni_router.config import Capability, WorkerConfig
 
 WorkerState = str
+HEALTH_STATE_DEAD = "dead"
+HEALTH_STATE_HEALTHY = "healthy"
+HEALTH_STATE_UNKNOWN = "unknown"
+HEALTH_STATE_UNHEALTHY = "unhealthy"
 
 
 def worker_id_from_url(url: str) -> str:
@@ -29,7 +33,8 @@ class Worker:
     worker_id: str = field(init=False)
     display_id: str = field(init=False)
     active_requests: int = 0
-    state: WorkerState = "unknown"
+    state: WorkerState = HEALTH_STATE_UNKNOWN
+    disabled: bool = False
     consecutive_failures: int = 0
     consecutive_successes: int = 0
     last_status_code: int | None = None
@@ -54,10 +59,37 @@ class Worker:
 
     @property
     def is_healthy(self) -> bool:
-        return self.state == "healthy"
+        return self.state == HEALTH_STATE_HEALTHY
+
+    @property
+    def is_dead(self) -> bool:
+        return self.state == HEALTH_STATE_DEAD
+
+    @property
+    def is_routable(self) -> bool:
+        return self.is_healthy and not self.disabled
 
     def supports(self, capability: Capability) -> bool:
         return capability in self.capabilities
+
+    def replace_config(self, config: WorkerConfig) -> None:
+        if config.url != self.url:
+            raise ValueError("worker URL cannot be changed")
+        self.config = config
+
+    def mark_dead(self, *, error: str | None = None) -> None:
+        self.state = HEALTH_STATE_DEAD
+        if error is not None:
+            self.last_error = error
+
+    def clear_dead(self) -> None:
+        if self.is_dead:
+            self.state = HEALTH_STATE_UNKNOWN
+        self.consecutive_failures = 0
+        self.consecutive_successes = 0
+
+    def set_disabled(self, disabled: bool) -> None:
+        self.disabled = disabled
 
     def increment_active(self) -> None:
         self.active_requests += 1
@@ -83,6 +115,9 @@ class Worker:
         error: str | None = None,
         checked_at: datetime | None = None,
     ) -> None:
+        if self.is_dead:
+            return
+
         self.last_checked_at = checked_at or datetime.now(timezone.utc)
         self.last_status_code = status_code
         self.last_error = error
@@ -91,13 +126,15 @@ class Worker:
             self.consecutive_successes += 1
             self.consecutive_failures = 0
             if self.consecutive_successes >= success_threshold:
-                self.state = "healthy"
+                self.state = HEALTH_STATE_HEALTHY
             return
 
         self.consecutive_failures += 1
         self.consecutive_successes = 0
         if self.consecutive_failures >= failure_threshold:
-            self.state = "unhealthy"
+            self.state = HEALTH_STATE_DEAD
+        elif not self.is_healthy:
+            self.state = HEALTH_STATE_UNHEALTHY
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -107,7 +144,10 @@ class Worker:
             "model": self.model,
             "capabilities": sorted(self.capabilities),
             "active_requests": self.active_requests,
+            "health_state": self.state,
             "state": self.state,
+            "disabled": self.disabled,
+            "routable": self.is_routable,
             "consecutive_failures": self.consecutive_failures,
             "consecutive_successes": self.consecutive_successes,
             "last_status_code": self.last_status_code,

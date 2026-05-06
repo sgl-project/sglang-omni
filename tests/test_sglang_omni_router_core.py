@@ -87,6 +87,22 @@ def test_selector_filters_by_health_and_capability() -> None:
     assert selector.select(workers, capability="speech").url == "http://127.0.0.1:8103"
 
 
+def test_selector_excludes_disabled_workers() -> None:
+    workers = build_workers(
+        [
+            WorkerConfig(url="http://127.0.0.1:8101"),
+            WorkerConfig(url="http://127.0.0.1:8102"),
+        ]
+    )
+    for worker in workers:
+        worker.state = "healthy"
+    workers[0].disabled = True
+
+    selector = WorkerSelector("round_robin")
+
+    assert selector.select(workers, capability="chat").url == "http://127.0.0.1:8102"
+
+
 def test_round_robin_recomputes_candidates_after_health_change() -> None:
     workers = build_workers(
         [
@@ -156,10 +172,13 @@ async def test_health_checker_uses_failure_and_success_thresholds() -> None:
         checker = HealthChecker(workers=[worker], config=config, client=client)
 
         await checker.check_once()
+        assert worker.state == "unhealthy"
+        await checker.check_once()
+        assert worker.state == "dead"
+        await checker.check_once()
+        assert worker.state == "dead"
+        worker.clear_dead()
+        await checker.check_once()
         assert worker.state == "unknown"
-        await checker.check_once()
-        assert worker.state == "unhealthy"
-        await checker.check_once()
-        assert worker.state == "unhealthy"
         await checker.check_once()
         assert worker.state == "healthy"

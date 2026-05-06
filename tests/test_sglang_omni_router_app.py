@@ -58,15 +58,76 @@ def test_health_surfaces_distinguish_router_readiness_from_pool_health() -> None
         health = client.get("/health")
         assert health.status_code == 200
         assert health.json()["healthy_workers"] == 1
+        assert health.json()["dead_workers"] == 1
+        assert health.json()["routable_workers"] == 1
 
         workers = client.get("/workers").json()["workers"]
-        assert [worker["state"] for worker in workers] == ["unhealthy", "healthy"]
+        assert [worker["health_state"] for worker in workers] == ["dead", "healthy"]
 
     health_status["worker-b:8102"] = 500
     app = create_app(_router_config(), client=async_client)
     with TestClient(app) as client:
         assert client.get("/ready").status_code == 200
         assert client.get("/health").status_code == 503
+
+
+def test_worker_crud_updates_runtime_pool_and_validates_payloads() -> None:
+    health_status = {
+        "worker-a:8101": 200,
+        "worker-b:8102": 200,
+        "worker-c:8103": 200,
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/health":
+            return httpx.Response(
+                health_status[_request_netloc(request)],
+                json={"status": "worker"},
+                request=request,
+            )
+        raise AssertionError(f"unexpected request path: {request.url.path}")
+
+    async_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    app = create_app(_router_config(), client=async_client)
+
+    with TestClient(app) as client:
+        created = client.post(
+            "/workers",
+            json={
+                "url": "http://worker-c:8103",
+                "model": "qwen3-omni",
+                "capabilities": ["chat", "streaming"],
+            },
+        )
+        assert created.status_code == 200
+        worker = created.json()["worker"]
+        assert worker["health_state"] == "healthy"
+        assert worker["capabilities"] == ["chat", "streaming"]
+
+        duplicate = client.post("/workers", json={"url": "http://worker-c:8103"})
+        assert duplicate.status_code == 409
+
+        worker_id = worker["worker_id"]
+        disabled = client.put(f"/workers/{worker_id}", json={"disabled": True})
+        assert disabled.status_code == 200
+        assert disabled.json()["worker"]["disabled"] is True
+        assert disabled.json()["worker"]["routable"] is False
+
+        marked_dead = client.put(f"/workers/{worker_id}", json={"is_dead": True})
+        assert marked_dead.status_code == 200
+        assert marked_dead.json()["worker"]["health_state"] == "dead"
+
+        recovered = client.put(f"/workers/{worker_id}", json={"is_dead": False})
+        assert recovered.status_code == 200
+        assert recovered.json()["worker"]["health_state"] == "healthy"
+        assert recovered.json()["worker"]["disabled"] is True
+
+        unsupported = client.put(f"/workers/{worker_id}", json={"sleeping": True})
+        assert unsupported.status_code == 400
+
+        deleted = client.delete(f"/workers/{worker_id}")
+        assert deleted.status_code == 200
+        assert client.get(f"/workers/{worker_id}").status_code == 404
 
 
 def test_models_merge_queries_only_healthy_workers_and_deduplicates() -> None:
