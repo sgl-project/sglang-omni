@@ -28,7 +28,8 @@ def create_app(
     timeout = httpx.Timeout(config.request_timeout_secs)
     owns_client = client is None
     if client is None:
-        client = httpx.AsyncClient(timeout=timeout)
+        limits = httpx.Limits(max_connections=config.max_connections)
+        client = httpx.AsyncClient(timeout=timeout, limits=limits)
     health_checker = HealthChecker(workers=workers, config=config, client=client)
     selector = WorkerSelector(config.policy)
     route_logger = RouteLogger(config.route_log_path)

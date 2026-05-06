@@ -4,7 +4,7 @@ import httpx
 import pytest
 from pydantic import ValidationError
 
-from sglang_omni_router.config import RouterConfig, WorkerConfig
+from sglang_omni_router.config import DEFAULT_CAPABILITIES, RouterConfig, WorkerConfig
 from sglang_omni_router.health import HealthChecker
 from sglang_omni_router.selector import NoEligibleWorkerError, WorkerSelector
 from sglang_omni_router.worker import build_workers
@@ -33,6 +33,40 @@ def test_router_config_rejects_duplicate_urls_after_normalization() -> None:
                 WorkerConfig(url="HTTP://LOCALHOST:8101/"),
                 WorkerConfig(url="http://localhost:8101"),
             ]
+        )
+
+
+def test_worker_config_defaults_to_complete_omni_v1_replica_capabilities() -> None:
+    worker = WorkerConfig(url="http://127.0.0.1:8101")
+
+    assert worker.capabilities == DEFAULT_CAPABILITIES
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "request_timeout_secs",
+        "max_payload_size",
+        "max_connections",
+        "health_failure_threshold",
+        "health_success_threshold",
+        "health_check_timeout_secs",
+        "health_check_interval_secs",
+    ],
+)
+def test_router_config_rejects_non_positive_integer_knobs(field: str) -> None:
+    with pytest.raises(ValidationError, match="value must be > 0"):
+        RouterConfig(
+            worker_urls=[WorkerConfig(url="http://127.0.0.1:8101")],
+            **{field: 0},
+        )
+
+
+def test_router_config_rejects_hyphenated_policy_aliases() -> None:
+    with pytest.raises(ValidationError):
+        RouterConfig(
+            worker_urls=[WorkerConfig(url="http://127.0.0.1:8101")],
+            policy="round-robin",
         )
 
 

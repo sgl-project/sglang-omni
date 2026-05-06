@@ -9,10 +9,26 @@ from urllib.parse import urlsplit, urlunsplit
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-Capability = Literal["chat", "speech", "streaming"]
+Capability = Literal[
+    "chat",
+    "speech",
+    "streaming",
+    "image_input",
+    "audio_input",
+    "video_input",
+    "audio_output",
+]
 RoutingPolicy = Literal["round_robin", "least_request", "random"]
 
-DEFAULT_CAPABILITIES: set[Capability] = {"chat", "speech", "streaming"}
+DEFAULT_CAPABILITIES: set[Capability] = {
+    "chat",
+    "speech",
+    "streaming",
+    "image_input",
+    "audio_input",
+    "video_input",
+    "audio_output",
+}
 CLOUD_METADATA_HOSTS = {"169.254.169.254", "metadata.google.internal"}
 
 
@@ -89,6 +105,7 @@ class RouterConfig(BaseModel):
     model: str | None = None
     request_timeout_secs: int = 1800
     max_payload_size: int = 512 * 1024 * 1024
+    max_connections: int = 100
     health_failure_threshold: int = 3
     health_success_threshold: int = 2
     health_check_timeout_secs: int = 5
@@ -106,6 +123,7 @@ class RouterConfig(BaseModel):
     @field_validator(
         "request_timeout_secs",
         "max_payload_size",
+        "max_connections",
         "health_failure_threshold",
         "health_success_threshold",
         "health_check_timeout_secs",
@@ -146,6 +164,7 @@ def build_router_config(
     model: str | None = None,
     request_timeout_secs: int = 1800,
     max_payload_size: int = 512 * 1024 * 1024,
+    max_connections: int = 100,
     health_failure_threshold: int = 3,
     health_success_threshold: int = 2,
     health_check_timeout_secs: int = 5,
@@ -162,6 +181,7 @@ def build_router_config(
         model=model,
         request_timeout_secs=request_timeout_secs,
         max_payload_size=max_payload_size,
+        max_connections=max_connections,
         health_failure_threshold=health_failure_threshold,
         health_success_threshold=health_success_threshold,
         health_check_timeout_secs=health_check_timeout_secs,
