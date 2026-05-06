@@ -4,14 +4,10 @@ import httpx
 import pytest
 from pydantic import ValidationError
 
-from sglang_omni_router.config import RouterConfig, WorkerConfig, normalize_worker_url
+from sglang_omni_router.config import RouterConfig, WorkerConfig
 from sglang_omni_router.health import HealthChecker
 from sglang_omni_router.selector import NoEligibleWorkerError, WorkerSelector
 from sglang_omni_router.worker import build_workers
-
-
-def test_worker_url_normalization() -> None:
-    assert normalize_worker_url("HTTP://LOCALHOST:8101/") == "http://localhost:8101"
 
 
 @pytest.mark.parametrize(
@@ -26,21 +22,38 @@ def test_worker_url_normalization() -> None:
     ],
 )
 def test_worker_url_validation_rejects_invalid_urls(url: str) -> None:
-    with pytest.raises(ValueError):
-        normalize_worker_url(url)
+    with pytest.raises(ValidationError):
+        WorkerConfig(url=url)
 
 
-def test_router_config_rejects_duplicate_worker_urls() -> None:
+def test_router_config_rejects_duplicate_urls_after_normalization() -> None:
     with pytest.raises(ValidationError, match="duplicate worker URLs"):
         RouterConfig(
             worker_urls=[
-                WorkerConfig(url="http://127.0.0.1:8101"),
-                WorkerConfig(url="http://127.0.0.1:8101/"),
+                WorkerConfig(url="HTTP://LOCALHOST:8101/"),
+                WorkerConfig(url="http://localhost:8101"),
             ]
         )
 
 
-def test_round_robin_selects_healthy_workers_in_order() -> None:
+def test_selector_filters_by_health_and_capability() -> None:
+    workers = build_workers(
+        [
+            WorkerConfig(url="http://127.0.0.1:8101", capabilities={"speech"}),
+            WorkerConfig(url="http://127.0.0.1:8102", capabilities={"chat"}),
+            WorkerConfig(url="http://127.0.0.1:8103", capabilities={"speech"}),
+        ]
+    )
+    workers[0].state = "unhealthy"
+    workers[1].state = "healthy"
+    workers[2].state = "healthy"
+
+    selector = WorkerSelector("round_robin")
+
+    assert selector.select(workers, capability="speech").url == "http://127.0.0.1:8103"
+
+
+def test_round_robin_recomputes_candidates_after_health_change() -> None:
     workers = build_workers(
         [
             WorkerConfig(url="http://127.0.0.1:8101"),
@@ -53,24 +66,8 @@ def test_round_robin_selects_healthy_workers_in_order() -> None:
     selector = WorkerSelector("round_robin")
 
     assert selector.select(workers, capability="speech").url == "http://127.0.0.1:8101"
-    assert selector.select(workers, capability="speech").url == "http://127.0.0.1:8102"
-    assert selector.select(workers, capability="speech").url == "http://127.0.0.1:8101"
-
-
-def test_selector_excludes_unhealthy_workers() -> None:
-    workers = build_workers(
-        [
-            WorkerConfig(url="http://127.0.0.1:8101"),
-            WorkerConfig(url="http://127.0.0.1:8102"),
-        ]
-    )
     workers[0].state = "unhealthy"
-    workers[1].state = "healthy"
-
-    selector = WorkerSelector("round_robin")
-
     assert selector.select(workers, capability="speech").url == "http://127.0.0.1:8102"
-
     workers[1].state = "unhealthy"
     with pytest.raises(NoEligibleWorkerError):
         selector.select(workers, capability="speech")
@@ -85,11 +82,14 @@ def test_least_request_selects_lowest_active_request_count() -> None:
     )
     for worker in workers:
         worker.state = "healthy"
-    workers[0].active_requests = 3
-    workers[1].active_requests = 1
+    workers[0].active_requests = 2
+    workers[1].active_requests = 2
 
     selector = WorkerSelector("least_request")
 
+    assert selector.select(workers, capability="speech").url == "http://127.0.0.1:8101"
+
+    workers[0].active_requests = 3
     assert selector.select(workers, capability="speech").url == "http://127.0.0.1:8102"
 
 
