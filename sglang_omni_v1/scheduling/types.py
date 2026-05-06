@@ -5,7 +5,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    import torch
 
 
 class SchedulerStatus(Enum):
@@ -49,3 +52,18 @@ class ModelRunnerOutput:
     outputs: dict[str, RequestOutput]
     req_ids: list[str] = field(default_factory=list)
     req_id_to_index: dict[str, int] = field(default_factory=dict)
+
+
+@dataclass
+class ARRequestData:
+    """Backend-neutral autoregressive request state."""
+
+    input_ids: "torch.Tensor | None" = None
+    attention_mask: "torch.Tensor | None" = None
+    model_inputs: dict[str, Any] = field(default_factory=dict)
+    output_ids: list[int] = field(default_factory=list)
+    extra_model_outputs: dict[str, Any] = field(default_factory=dict)
+    finish_reason: str | None = None
+    capture_model_output_keys: tuple[str, ...] = ()
+    max_new_tokens: int | None = None
+    temperature: float = 0.0

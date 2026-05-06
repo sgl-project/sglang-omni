@@ -1,9 +1,7 @@
 # Model-specific config for the qwen3-omni-v1 CI threshold skill.
-# Same tests + datasets + venv as the legacy `qwen3-omni` model — this
-# entry only differs by setting SGLANG_OMNI_SERVER_VERSION=v1 in
-# auto_env, which makes tests/utils.py inject `--version v1` so the
-# server runs the sglang_omni_v1 pipeline instead of legacy
-# sglang_omni. Mirrors the test-qwen3-omni-ci-v1.yaml workflow.
+# Sets SGLANG_OMNI_SERVER_VERSION=v1 in auto_env so tests/utils.py
+# injects `--version v1` and the server runs the sglang_omni_v1
+# pipeline. Mirrors the test-qwen3-omni-ci-v1.yaml workflow.
 name: qwen3-omni-v1
 description: "Qwen3-Omni 30B-A3B Instruct (v1 pipeline — Talker + Thinker)"
 hf_model_id: "Qwen/Qwen3-Omni-30B-A3B-Instruct"
@@ -13,7 +11,9 @@ hf_datasets:
   - "zhaochenyang20/seed-tts-eval-50"
   - "zhaochenyang20/Video_MME_ci"
   - "zhaochenyang20/Video_AMME_ci"
-default_venv_python: "/github/home/omni-qwen3/bin/python"
+default_venv_python:
+  - "/sgl-workspace/sglang-omni/omni-qwen3/bin/python"
+  - "/github/home/omni-qwen3/bin/python"
 # CI's omni-qwen3 venv has openai-whisper installed, so
 # `_get_en_normalizer()` resolves to whisper.normalizers.EnglishTextNormalizer
 # (contractions expanded, numbers→words, etc.). precheck warns if the local

@@ -913,11 +913,11 @@ def create_talker_ar_executor_from_config(
     """Returns OmniScheduler for talker."""
     from sglang_omni_v1.models.qwen3_omni.bootstrap import create_talker_scheduler
 
-    # Note (Chenyang): keep cuda_graph disabled by default for the talker —
-    # the AR talker forward (custom feedback/MTP-style decode) has ops that
-    # break CUDA stream capture; bootstrap.create_talker_scheduler will flip
-    # it back on later if it can. Caller can still override via factory_args.
-    overrides: dict[str, Any] = {"disable_cuda_graph": True}
+    # Note (Xuesong, Chenyang): cuda_graph defaults to ON for the talker
+    # after #384, which routed talker MoE through `self.experts` (FusedMoE)
+    # — the `fused_experts (full graph)` backend picked in #344. Caller can
+    # override via factory_args or the `--talker-cuda-graph off` CLI flag.
+    overrides: dict[str, Any] = {"disable_cuda_graph": False}
     if server_args_overrides:
         overrides.update(server_args_overrides)
     overrides["tp_size"] = tp_size

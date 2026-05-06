@@ -248,7 +248,7 @@ def create_sglang_tts_engine_executor(
         audio_decoder=audio_decoder,
         semantic_begin_id=adapter.semantic_begin_id,
         semantic_end_id=adapter.semantic_end_id,
-        im_end_id=adapter.eos_token_ids[0],
+        im_end_token_id=adapter.eos_token_ids[0],
         max_batch_size=server_args.max_running_requests,
         num_codebooks=num_codebooks,
         codebook_size=codebook_size,

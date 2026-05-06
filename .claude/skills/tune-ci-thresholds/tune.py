@@ -15,7 +15,7 @@ __version__ = "0.3.0"
 
 SKILL_DIR = Path(__file__).resolve().parent
 MODELS_DIR = SKILL_DIR / "models"
-DEFAULT_MODEL = "qwen3-omni"
+DEFAULT_MODEL = "qwen3-omni-v1"
 REPO_ROOT = Path("/sgl-workspace/sglang-omni")
 if not REPO_ROOT.exists():
     REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -86,10 +86,27 @@ def load_model_config(name):
 
 
 def resolve_venv(flag, cfg):
-    if flag: return flag, "flag"
+    """Return (chosen_python, source, tried).
+
+    `tried` is the ordered list of default candidates considered when
+    `source == "default"` and is empty otherwise. precheck uses it to
+    report every candidate path it looked at when none exist.
+    """
+    if flag: return flag, "flag", []
     if os.environ.get("TUNE_VENV_PYTHON"):
-        return os.environ["TUNE_VENV_PYTHON"], "env"
-    return cfg["default_venv_python"], "default"
+        return os.environ["TUNE_VENV_PYTHON"], "env", []
+    default = cfg["default_venv_python"]
+    # Accept either a single path (str) or an ordered list of candidate
+    # paths. For a list, return the first one that exists; if none exist,
+    # return the last entry so existing call sites still get a path.
+    if isinstance(default, list):
+        if not default:
+            raise RuntimeError("default_venv_python list is empty in config.yaml")
+        for p in default:
+            if Path(p).exists():
+                return p, "default", list(default)
+        return default[-1], "default", list(default)
+    return default, "default", [default]
 
 
 def read_pins():
@@ -175,10 +192,12 @@ def pick_free_gpus(n):
     return free[:n], None
 
 
-def precheck(py, src, out, skip_ver, cfg, datasets_override=None):
+def precheck(py, src, out, skip_ver, cfg, datasets_override=None, tried=None):
     errs, warns = [], []
     print(f"model: {cfg['name']}")
     print(f"venv_python: {py} ({src})")
+    if src == "default" and tried and len(tried) > 1:
+        print(f"  (tried in order: {', '.join(tried)})")
     # Container-name / hostname checks removed deliberately — they were
     # fragile heuristics. Equivalence with CI is established by: same
     # image's venv + pinned sglang/torch + cached assets + clean GPUs.
@@ -188,8 +207,14 @@ def precheck(py, src, out, skip_ver, cfg, datasets_override=None):
     gi = git_info()
     print(f"git: {gi['branch']} @ {gi['sha'][:8]}{' (dirty)' if gi['dirty'] else ''}")
     if not Path(py).exists():
-        errs.append(f"venv python missing: {py} — override via --venv-python "
-                    "or $TUNE_VENV_PYTHON")
+        if src == "default" and tried and len(tried) > 1:
+            errs.append(
+                "venv python not found at any default candidate: "
+                f"{', '.join(tried)} — set $TUNE_VENV_PYTHON or pass "
+                "--venv-python <path>")
+        else:
+            errs.append(f"venv python missing: {py} — override via "
+                        "--venv-python or $TUNE_VENV_PYTHON")
         return _summary(errs, warns)
     pins, versions = read_pins(), {}
     for pkg in ("sglang", "torch"):
@@ -209,35 +234,9 @@ def precheck(py, src, out, skip_ver, cfg, datasets_override=None):
     # load_model_config; print them for visibility.
     for k, v in cfg["auto_env"].items():
         print(f"  auto env: {k}={v}")
-    # WER normalizer check: per-model `expected_wer_normalizer` declares which
-    # variant of `_get_en_normalizer()` the venv must yield. CI venvs differ
-    # silently on this — qwen3-omni's omni-qwen3 ships openai-whisper (real
-    # EnglishTextNormalizer; "doesn't" → "does not"), s2-pro's omni-s2pro does
-    # not (fallback strips punctuation but keeps apostrophes; "doesn't"
-    # stays). Mismatch shifts WER by ~2× on contraction-heavy samples and
-    # silently breaks calibration. Warn (not fail) so the user can override
-    # — they may know what they're doing.
-    expected_norm = cfg.get("expected_wer_normalizer")
-    if expected_norm:
-        r = subprocess.run([py, "-c",
-            "from benchmarks.tasks.tts import _get_en_normalizer;"
-            "n = _get_en_normalizer();"
-            "print('english' if n is not None else 'fallback')"],
-            capture_output=True, text=True)
-        actual = (r.stdout or "").strip().splitlines()[-1] if r.stdout else "unknown"
-        ok = actual == expected_norm
-        print(f"  {'✓' if ok else '✗'} wer normalizer: {actual} "
-              f"(expected {expected_norm})")
-        if not ok:
-            hint = ("uv pip install --python {py} openai-whisper"
-                    if expected_norm == "english"
-                    else "uv pip uninstall --python {py} openai-whisper "
-                         "whisper-normalizer").format(py=py)
-            warns.append(
-                f"wer normalizer mismatch: got {actual!r}, "
-                f"expected {expected_norm!r}. To fix: {hint}. "
-                f"(s2-pro CI uses fallback, qwen3-omni CI uses english; "
-                f"mismatch will shift WER ~2× on contraction-heavy samples.)")
+    # WER normalizer check removed — the user manages venv contents
+    # explicitly and the warning was producing noise without changing
+    # behavior. `expected_wer_normalizer` in config.yaml is now ignored.
     def _cached(repo_id, kind):
         extra = ", repo_type='dataset'" if kind == "dataset" else ""
         r = subprocess.run([py, "-c",
@@ -290,9 +289,9 @@ def precheck(py, src, out, skip_ver, cfg, datasets_override=None):
         else:
             print(f"  GPUs: {summary} — {free_count}/{len(all_idx)} free")
         if free_count == 0:
-            errs.append("all GPUs busy — run "
-                        "bash .github/scripts/delete_gpu_process.sh "
-                        "(destructive; asks for user OK from the skill)")
+            errs.append(f"all GPUs busy (busy: {sorted(busy)}) — "
+                        "free them yourself (e.g. stop your own jobs); "
+                        "this skill no longer kills GPU processes")
     if out is not None:
         out.mkdir(parents=True, exist_ok=True)
         (out / "precheck.json").write_text(json.dumps(dict(
@@ -435,7 +434,7 @@ def discover(out, only, cfg):
                         test_file_sha256=sha, last_discovered_at=now_iso(),
                         metrics=metrics, sample_counts=v_sc)
         else:
-            # Legacy single-source flow (qwen3-omni style).
+            # Single-source flow (one result-JSON tree per test file).
             default_file = ms.get("json_file")
             cfg_paths = ms.get("paths", {}) or {}
             sample_counts = _build_sample_counts(
@@ -627,7 +626,7 @@ def stages_list(cfg):
 
 def run_cmd(args):
     cfg = load_model_config(args.model)
-    py, src = resolve_venv(args.venv_python, cfg)
+    py, src, _ = resolve_venv(args.venv_python, cfg)
     out = Path(args.output_dir) if args.output_dir \
         else DEFAULT_RUN_ROOT / f"{cfg['name']}-{ts_dir()}"
     out.mkdir(parents=True, exist_ok=True)
@@ -886,9 +885,10 @@ def _run_shared(test_path, stage_keys, all_stages, out, k, py, total, gpus_neede
     while attempts < 2:
         attempts += 1
         shutil.rmtree("/github/home/.cache/flashinfer", ignore_errors=True)
-        _best(["bash",
-            str(REPO_ROOT / ".github/scripts/delete_gpu_process.sh")],
-            "delete_gpu_process")
+        # GPU process killing was removed: the skill should never kill
+        # other users' processes. If GPUs are busy, pick_free_gpus()
+        # below waits up to 180s; if still busy, the run aborts and the
+        # user frees the GPUs themselves.
         # Clean basetemp so pytest always creates <funcname>0/ — JSON
         # paths in stages.yaml assume the "_0" suffix.
         shutil.rmtree(basetemp, ignore_errors=True)
@@ -1059,20 +1059,6 @@ def _fmt(v, d): return "N/A" if v is None else f"{v * d['scale']:.{d['digits']}f
 def _fmt_count(v): return "N/A" if v is None else str(v)
 
 
-def _fmt_threshold(v, d):
-    """Render a worst-of-N value for the `Threshold:` line.
-
-    Trims trailing zeros after the decimal, appends `%` when the metric
-    is displayed as a percentage (`scale == 100`).
-    """
-    if v is None:
-        return "N/A"
-    s = f"{v * d['scale']:.{d['digits']}f}"
-    if "." in s:
-        s = s.rstrip("0").rstrip(".")
-    return s + ("%" if d["scale"] == 100 else "")
-
-
 def report(run_dir):
     plan = json.loads((run_dir / "plan.json").read_text())
     pre = json.loads((run_dir / "precheck.json").read_text()) \
@@ -1107,7 +1093,6 @@ def report(run_dir):
               "|-----|" + "|".join(["-" * 8] * (len(keys) + len(count_headers))) + "|"]
         vals = {k: [] for k in keys}
         cvals = {"total": [], "ok": []}
-        fail_notes = []
         for i, r in enumerate(results, start=1):
             cells = []
             if has_counts:
@@ -1127,10 +1112,6 @@ def report(run_dir):
                     cells.append(_fmt(v, disp[k]))
                     if v is not None: vals[k].append(v)
             L.append(f"| {i} | " + " | ".join(cells) + " |")
-            if r is not None and r.get("status") != "ok":
-                fail_notes.append(
-                    f"> ⚠ run {i} pytest failed: {r.get('reason') or 'unknown'} "
-                    f"— values above were read from the JSON the test wrote before exiting")
         wc = []
         if has_counts:
             # Samples run/ok are diagnostic counts, not quality metrics.
@@ -1143,25 +1124,14 @@ def report(run_dir):
             v = min(vals[k]) if worst[k] == "min" else max(vals[k])
             wc.append(f"**{_fmt(v, disp[k])}**")
         L += [f"| **Worst-of-{N}** | " + " | ".join(wc) + " |", ""]
-        # Render `Threshold:` line for accuracy / wer stages so the report
-        # documents the proposed bound per metric. Speed thresholds go
-        # through apply_slack downstream and are not surfaced here.
-        if s.get("group") in ("accuracy", "wer"):
-            parts = []
-            for k in keys:
-                if k in nulls or not vals[k]:
-                    continue
-                v = min(vals[k]) if worst[k] == "min" else max(vals[k])
-                op = ">=" if worst[k] == "min" else "<="
-                label = disp[k]["label"].replace(" (%)", "")
-                parts.append(f"{label} {op} {_fmt_threshold(v, disp[k])}")
-            if parts:
-                L += [f"Threshold: {', '.join(parts)}", ""]
+        # `Threshold: ...` lines were removed — what actually got written
+        # into the test files (if anything) is recorded in the
+        # "Applied changes" table appended after mode-smart/mode-full
+        # apply (see SKILL.md step 9).
         for k in nulls:
             L.append(f"> ⚠ {disp[k]['label']}: no `json_path` in stages.yaml "
                      "(config.yaml `metric_sources` missing this metric)")
-        L += fail_notes
-        if nulls or fail_notes: L.append("")
+        if nulls: L.append("")
     dirty = " (dirty)" if plan.get("dirty") else ""
     diff = " — see `workspace.diff`" if plan.get("dirty") else ""
     v = pre.get("versions", {}) or {}
@@ -1177,6 +1147,137 @@ def report(run_dir):
           f"- Ran {plan.get('timestamp', '?')} – {now_iso()}"]
     (run_dir / "report.md").write_text("\n".join(L) + "\n")
     print(f"report written to {run_dir / 'report.md'}")
+    return 0
+
+
+# ---- apply-plan ---------------------------------------------------------
+# Emits a JSON describing, for every metric in the run's stages: the
+# worst-of-N raw value (already rounded to display.digits), the current
+# threshold literal in the test file, the source kind ("bare" vs
+# "nested"), and a direction tag ("tightens" / "loosens" / "equal" /
+# "unknown"). The skill consumes this to drive the apply UX (modes 1/2/3
+# in SKILL.md). Read-only — no files are edited here.
+
+_SOURCE_BARE_RE = re.compile(r"^([A-Z][A-Z0-9_]*)$")
+_SOURCE_NESTED_RE = re.compile(
+    r"^(_?[A-Z][A-Z0-9_]*)\[\s*['\"]([A-Za-z_][A-Za-z0-9_]*)['\"]\s*\]$")
+
+
+def _parse_source(src):
+    m = _SOURCE_BARE_RE.match(src)
+    if m: return ("bare", m.group(1), None)
+    m = _SOURCE_NESTED_RE.match(src)
+    if m: return ("nested", m.group(1), m.group(2))
+    return ("unknown", src, None)
+
+
+def _read_concurrency(text):
+    m = re.search(r"^CONCURRENCY\s*=\s*(\d+)\s*$", text, re.M)
+    return int(m.group(1)) if m else None
+
+
+def _read_bare_value(text, symbol):
+    m = re.search(rf"^{re.escape(symbol)}\s*=\s*([+-]?\d+(?:\.\d+)?)\s*$",
+                  text, re.M)
+    return float(m.group(1)) if m else None
+
+
+def _read_nested_value(text, symbol, conc, subkey):
+    m = re.search(rf"^{re.escape(symbol)}\s*=\s*\{{", text, re.M)
+    if not m or conc is None: return None
+    # Walk braces from the opening `{` to find the matching close.
+    i, depth, end = m.end() - 1, 0, None
+    while i < len(text):
+        ch = text[i]
+        if ch == "{": depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                end = i + 1; break
+        i += 1
+    if end is None: return None
+    block = text[m.start():end]
+    sub = re.search(rf"\b{conc}\s*:\s*\{{(.*?)\}}", block, re.S)
+    if not sub: return None
+    val = re.search(
+        rf"['\"]{re.escape(subkey)}['\"]\s*:\s*([+-]?\d+(?:\.\d+)?)",
+        sub.group(1))
+    return float(val.group(1)) if val else None
+
+
+def _classify_direction(worst_op, current, new):
+    if current is None or new is None: return "unknown"
+    if abs(current - new) < 1e-12: return "equal"
+    if worst_op == "min":
+        return "tightens" if new > current else "loosens"
+    if worst_op == "max":
+        return "tightens" if new < current else "loosens"
+    return "unknown"
+
+
+def apply_plan(run_dir):
+    plan = json.loads((run_dir / "plan.json").read_text())
+    sy = Path(plan.get("stages_yaml")
+              or stages_path(plan.get("model", DEFAULT_MODEL)))
+    all_stages = _load_yaml(sy)
+    N = plan["repeats"]
+    out = {"model": plan["model"], "run_dir": str(run_dir),
+           "repeats": N, "stages": []}
+    for sk in plan["stages"]:
+        s = all_stages[sk]
+        if not s["metrics"]:  # docs stage
+            continue
+        test_path = REPO_ROOT / s["test"]
+        text = test_path.read_text()
+        conc = _read_concurrency(text)
+        per_run = []
+        for k in range(1, N + 1):
+            p = run_dir / sk / f"run{k}.json"
+            per_run.append(json.loads(p.read_text()) if p.exists() else None)
+        sg = {"stage_key": sk, "test": str(test_path), "title": s["title"],
+              "stage_group": s.get("group"), "concurrency": conc,
+              "metrics": []}
+        for mk, m in s["metrics"].items():
+            kind, sym, sub = _parse_source(m["source"])
+            display = m.get("display", {})
+            digits = display.get("digits", 4)
+            worst_op = m["worst"]
+            vals = []
+            for r in per_run:
+                if r and r.get("metrics") is not None:
+                    v = r["metrics"].get(mk)
+                    if v is not None: vals.append(v)
+            if vals:
+                worst = (min if worst_op == "min" else max)(vals)
+                worst_rounded = round(worst, digits)
+            else:
+                worst, worst_rounded = None, None
+            if kind == "bare":
+                cur = _read_bare_value(text, sym)
+            elif kind == "nested":
+                cur = _read_nested_value(text, sym, conc, sub)
+            else:
+                cur = None
+            direction = _classify_direction(worst_op, cur, worst_rounded)
+            sg["metrics"].append({
+                "metric_key": mk,
+                "source": m["source"],
+                "source_kind": kind,
+                "symbol": sym,
+                "subkey": sub,
+                "stage_group": s.get("group"),
+                "worst_op": worst_op,
+                "per_run_raw": vals,
+                "worst_raw": worst,
+                "worst_rounded": worst_rounded,
+                "digits": digits,
+                "scale": display.get("scale", 1),
+                "label": display.get("label", mk),
+                "current_raw": cur,
+                "direction": direction,
+            })
+        out["stages"].append(sg)
+    print(json.dumps(out, indent=2))
     return 0
 
 
@@ -1200,20 +1301,23 @@ def main(argv=None):
     sc.add_argument("--skip-precheck", action="store_true")
     sc.add_argument("--stages-yaml")
     sd = sub.add_parser("report"); sd.add_argument("--run-dir", required=True)
+    se = sub.add_parser("apply-plan"); se.add_argument("--run-dir", required=True)
     args = p.parse_args(argv)
     if args.cmd == "models-list":
         for m in available_models(): print(m)
         return 0
     if args.cmd == "report":
         return report(Path(args.run_dir))
+    if args.cmd == "apply-plan":
+        return apply_plan(Path(args.run_dir))
     cfg = load_model_config(args.model)
     if args.cmd == "stages-list":
         return stages_list(cfg)
-    py, src = resolve_venv(args.venv_python, cfg)
+    py, src, tried = resolve_venv(args.venv_python, cfg)
     if args.cmd == "precheck":
         o = Path(args.output_dir) if args.output_dir else None
         if o: o.mkdir(parents=True, exist_ok=True)
-        return precheck(py, src, o, args.skip_version_check, cfg)
+        return precheck(py, src, o, args.skip_version_check, cfg, tried=tried)
     if args.cmd == "discover":
         out = Path(args.output) if args.output else stages_path(cfg["name"])
         return discover(out, args.stage, cfg)

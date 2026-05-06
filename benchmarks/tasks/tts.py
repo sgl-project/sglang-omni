@@ -19,13 +19,11 @@ import string
 import time
 import wave
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Protocol
 
 import aiohttp
 import soundfile as sf
 import torch
-import transformers
 from jiwer import process_words
 from tqdm import tqdm
 
@@ -80,57 +78,17 @@ class SampleOutput:
 
 @functools.lru_cache(maxsize=1)
 def _get_en_normalizer():
-    """Lazy-load the English text normalizer.
-
-    Tries whisper_normalizer (standalone pip package) first, then openai-whisper,
-    then the transformers built-in normalizer.
-
-    note (Chenyang): The three fallbacks exist because our deployments don't always
-    have whisper_normalizer installed, whisper's own normalizer lives under a
-    different path depending on the release, and on minimal CI images we rely on
-    the transformers copy bundled with the library.  Keeping all three paths lets
-    the WER numbers stay stable across environments (the official seed-tts-eval
-    reference uses whisper_normalizer, so we prefer it when available).
-    """
-    try:
-        from whisper_normalizer.english import EnglishTextNormalizer
-
-        normalizer = EnglishTextNormalizer()
-        logger.info("Using whisper_normalizer.english.EnglishTextNormalizer")
-        return normalizer
-    except ImportError:
-        logger.debug("whisper_normalizer.english.EnglishTextNormalizer failed")
-
+    """Lazy-load the required English WER normalizer from openai-whisper."""
     try:
         from whisper.normalizers import EnglishTextNormalizer
+    except ImportError as exc:
+        raise RuntimeError(
+            "English WER requires openai-whisper "
+            "(whisper.normalizers.EnglishTextNormalizer). "
+            "Install pinned deps with `uv pip install -e .`."
+        ) from exc
 
-        normalizer = EnglishTextNormalizer()
-        logger.info("Using whisper.normalizers.EnglishTextNormalizer")
-        return normalizer
-    except ImportError:
-        logger.debug("whisper.normalizers.EnglishTextNormalizer failed")
-
-    try:
-        from transformers.models.whisper.english_normalizer import EnglishTextNormalizer
-
-        json_path = (
-            Path(transformers.__file__).parent / "models" / "whisper" / "english.json"
-        )
-        with open(json_path) as f:
-            english_spelling_mapping = json.load(f)
-
-        normalizer = EnglishTextNormalizer(english_spelling_mapping)
-        logger.info(
-            "Using transformers.models.whisper.english_normalizer.EnglishTextNormalizer"
-        )
-        return normalizer
-    except (ImportError, FileNotFoundError) as exc:
-        logger.debug(f"transformers EnglishTextNormalizer failed: {exc}")
-
-    logger.warning(
-        "EnglishTextNormalizer not found; falling back to punctuation-strip normalizer."
-    )
-    return None
+    return EnglishTextNormalizer()
 
 
 def normalize_text(text: str, lang: str) -> str:
@@ -147,15 +105,7 @@ def normalize_text(text: str, lang: str) -> str:
         return text
 
     normalizer = _get_en_normalizer()
-    if normalizer is not None:
-        return normalizer(text)
-
-    for ch in string.punctuation:
-        if ch == "'":
-            continue
-        text = text.replace(ch, "")
-    text = text.replace("  ", " ").strip().lower()
-    return text
+    return normalizer(text)
 
 
 def load_asr_model(lang: str, device: str, generation_mode: str | None = None):

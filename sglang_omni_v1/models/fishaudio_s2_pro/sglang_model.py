@@ -242,7 +242,7 @@ class S2ProSGLangTextModel(nn.Module):
         codebook_size: int,
         semantic_begin_id: int,
         semantic_end_id: int,
-        im_end_id: int,
+        im_end_token_id: int,
         max_batch_size: int,
     ) -> None:
         """Attach audio decoder and allocate persistent GPU buffers."""
@@ -254,6 +254,7 @@ class S2ProSGLangTextModel(nn.Module):
         self._num_codebooks = num_codebooks
         self._semantic_begin_id = semantic_begin_id
         self._semantic_end_id = semantic_end_id
+        self._im_end_token_id = int(im_end_token_id)
 
         # Shared codebook embedding from audio decoder (for VQ input combination)
         self._vq_codebook_embeddings = audio_decoder.codebook_embeddings
@@ -271,7 +272,7 @@ class S2ProSGLangTextModel(nn.Module):
             (self.vocab_size,), -float("inf"), device=device, dtype=torch.bfloat16
         )
         bias[semantic_begin_id : semantic_end_id + 1] = 0.0
-        bias[im_end_id] = 0.0
+        bias[im_end_token_id] = 0.0
         self._semantic_bias = bias
 
         # Output buffers: written by _decode_codebooks, read by ModelRunner
