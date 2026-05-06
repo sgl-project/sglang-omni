@@ -35,17 +35,23 @@ class WorkerSelector:
             raise NoEligibleWorkerError("no eligible healthy workers")
 
         if self.policy == "round_robin":
-            worker = candidates[self._rr_index % len(candidates)]
-            self._rr_index = (self._rr_index + 1) % len(candidates)
-            return worker
+            return self._select_round_robin(candidates)
 
         if self.policy == "least_request":
-            return min(
-                candidates,
-                key=lambda worker: (worker.active_requests, worker.url),
-            )
+            min_active_requests = min(worker.active_requests for worker in candidates)
+            least_loaded = [
+                worker
+                for worker in candidates
+                if worker.active_requests == min_active_requests
+            ]
+            return self._select_round_robin(least_loaded)
 
         if self.policy == "random":
             return self._random.choice(candidates)
 
         raise ValueError(f"unsupported routing policy: {self.policy}")
+
+    def _select_round_robin(self, candidates: list[Worker]) -> Worker:
+        worker = candidates[self._rr_index % len(candidates)]
+        self._rr_index = (self._rr_index + 1) % len(candidates)
+        return worker

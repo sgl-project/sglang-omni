@@ -180,6 +180,10 @@ def test_least_request_selects_lowest_active_request_count() -> None:
         selector.select(workers, required_capabilities={"speech"}).url
         == "http://127.0.0.1:8101"
     )
+    assert (
+        selector.select(workers, required_capabilities={"speech"}).url
+        == "http://127.0.0.1:8102"
+    )
 
     workers[0].active_requests = 3
     assert (
@@ -197,6 +201,13 @@ def test_worker_request_guard_cleans_up_count() -> None:
             raise RuntimeError("boom")
 
     assert worker.active_requests == 0
+
+
+def test_worker_decrement_active_fails_on_unbalanced_cleanup() -> None:
+    worker = build_workers([WorkerConfig(url="http://127.0.0.1:8101")])[0]
+
+    with pytest.raises(AssertionError, match="active request count"):
+        worker.decrement_active()
 
 
 @pytest.mark.asyncio

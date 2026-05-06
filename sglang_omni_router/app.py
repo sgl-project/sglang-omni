@@ -284,8 +284,7 @@ async def _merge_models(
     cards_by_id: dict[str, dict[str, Any]] = {}
     errors: dict[str, str] = {}
     for worker in healthy_workers:
-        worker.increment_active()
-        try:
+        with worker.request_guard():
             url = (
                 f"{worker.url}/v1/models"
                 if not query
@@ -318,8 +317,6 @@ async def _merge_models(
                     else json.dumps(card, sort_keys=True)
                 )
                 cards_by_id.setdefault(dedupe_key, card)
-        finally:
-            worker.decrement_active()
 
     if not cards_by_id:
         return JSONResponse(

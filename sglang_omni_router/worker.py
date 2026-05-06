@@ -95,7 +95,8 @@ class Worker:
         self.active_requests += 1
 
     def decrement_active(self) -> None:
-        self.active_requests = max(0, self.active_requests - 1)
+        assert self.active_requests > 0, "active request count cannot be negative"
+        self.active_requests -= 1
 
     @contextmanager
     def request_guard(self) -> Iterator[None]:

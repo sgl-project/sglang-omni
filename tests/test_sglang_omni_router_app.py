@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 import httpx
+import pytest
 from fastapi.testclient import TestClient
 
 from sglang_omni_router.app import create_app
@@ -255,6 +256,101 @@ def test_round_robin_proxies_raw_bytes_logs_route_and_alternates_workers(
     assert {route["worker_disabled"] for route in routes} == {False}
     assert {route["worker_routable"] for route in routes} == {True}
     assert all(route["completed"] is True for route in routes)
+
+
+def test_route_log_write_failure_does_not_fail_proxy(tmp_path: Path) -> None:
+    route_log_path = tmp_path / "routes" / "routes.jsonl"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"status": "healthy"}, request=request)
+        if request.url.path == "/v1/chat/completions":
+            return httpx.Response(200, json={"ok": True}, request=request)
+        raise AssertionError(f"unexpected request path: {request.url.path}")
+
+    async_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    app = create_app(_router_config(route_log_path), client=async_client)
+    route_log_path.parent.rmdir()
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            json={"model": "qwen3-omni", "messages": []},
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True}
+    assert all(worker.active_requests == 0 for worker in app.state.workers)
+
+
+def test_upstream_request_failure_logs_and_cleans_active_count(
+    tmp_path: Path,
+) -> None:
+    route_log_path = tmp_path / "routes.jsonl"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"status": "healthy"}, request=request)
+        if request.url.path == "/v1/chat/completions":
+            raise httpx.ConnectError("worker down", request=request)
+        raise AssertionError(f"unexpected request path: {request.url.path}")
+
+    async_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    app = create_app(_router_config(route_log_path), client=async_client)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            json={"model": "qwen3-omni", "messages": []},
+        )
+
+    assert response.status_code == 502
+    assert all(worker.active_requests == 0 for worker in app.state.workers)
+    route = json.loads(route_log_path.read_text().splitlines()[0])
+    assert route["event"] == "request_complete"
+    assert route["completed"] is False
+    assert route["error_type"] == "ConnectError"
+
+
+def test_streaming_upstream_error_logs_and_cleans_active_count(
+    tmp_path: Path,
+) -> None:
+    route_log_path = tmp_path / "routes.jsonl"
+
+    class BrokenStream(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield b"data: start\n\n"
+            raise RuntimeError("stream boom")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"status": "healthy"}, request=request)
+        if request.url.path == "/v1/chat/completions":
+            return httpx.Response(
+                200,
+                stream=BrokenStream(),
+                headers={"content-type": "text/event-stream"},
+                request=request,
+            )
+        raise AssertionError(f"unexpected request path: {request.url.path}")
+
+    async_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    app = create_app(_router_config(route_log_path), client=async_client)
+
+    with TestClient(app) as client:
+        with pytest.raises(RuntimeError, match="stream boom"):
+            with client.stream(
+                "POST",
+                "/v1/chat/completions",
+                json={"model": "qwen3-omni", "stream": True},
+            ) as response:
+                b"".join(response.iter_bytes())
+
+    assert all(worker.active_requests == 0 for worker in app.state.workers)
+    route = json.loads(route_log_path.read_text().splitlines()[0])
+    assert route["event"] == "stream_error"
+    assert route["completed"] is False
+    assert route["error_type"] == "RuntimeError"
 
 
 def test_least_request_avoids_worker_with_active_stream_load() -> None:

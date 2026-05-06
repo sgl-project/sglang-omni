@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import threading
 import time
 import uuid
@@ -20,6 +21,8 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from sglang_omni_router.config import Capability, RouterConfig
 from sglang_omni_router.selector import NoEligibleWorkerError, WorkerSelector
 from sglang_omni_router.worker import Worker
+
+logger = logging.getLogger(__name__)
 
 HOP_BY_HOP_HEADERS = {
     "connection",
@@ -69,9 +72,12 @@ class RouteLogger:
         }
         line = json.dumps(record, sort_keys=True)
         with self._lock:
-            with self._path.open("a", encoding="utf-8") as f:
-                f.write(line)
-                f.write("\n")
+            try:
+                with self._path.open("a", encoding="utf-8") as f:
+                    f.write(line)
+                    f.write("\n")
+            except OSError as exc:
+                logger.warning("failed to write Omni router route log: %s", exc)
 
 
 def infer_required_capabilities(
@@ -146,7 +152,7 @@ def _string_or_none(value: Any) -> str | None:
 def _has_non_empty(value: Any) -> bool:
     if value is None or value is False:
         return False
-    if isinstance(value, (str, bytes, list, tuple, dict, set)):
+    if isinstance(value, (str, list, dict)):
         return bool(value)
     return True
 
@@ -263,48 +269,47 @@ class ProxyHandler:
         status_code: int | None = None
         response_bytes = 0
         error_type: str | None = None
-        worker.increment_active()
-        try:
-            response = await self._client.request(
-                request.method,
-                build_upstream_url(worker, path, request),
-                content=body,
-                headers=filter_request_headers(request),
-            )
-            status_code = response.status_code
-            response_bytes = len(response.content)
-            headers = filter_response_headers(response.headers)
-            headers.update(self._diagnostic_headers(worker, metadata))
-            return Response(
-                content=response.content,
-                status_code=response.status_code,
-                headers=headers,
-                media_type=response.headers.get("content-type"),
-            )
-        except Exception as exc:
-            error_type = type(exc).__name__
-            return JSONResponse(
-                status_code=502,
-                content={"error": {"message": "upstream request failed"}},
-                headers=self._diagnostic_headers(worker, metadata),
-            )
-        finally:
-            worker.decrement_active()
-            self._log_route(
-                event="request_complete",
-                request=request,
-                metadata=metadata,
-                worker=worker,
-                path=path,
-                status_code=status_code,
-                start=start,
-                request_bytes=len(body),
-                response_bytes=response_bytes,
-                completed=error_type is None,
-                client_disconnected=False,
-                error_type=error_type,
-                ttfb_s=None,
-            )
+        with worker.request_guard():
+            try:
+                response = await self._client.request(
+                    request.method,
+                    build_upstream_url(worker, path, request),
+                    content=body,
+                    headers=filter_request_headers(request),
+                )
+                status_code = response.status_code
+                response_bytes = len(response.content)
+                headers = filter_response_headers(response.headers)
+                headers.update(self._diagnostic_headers(worker, metadata))
+                return Response(
+                    content=response.content,
+                    status_code=response.status_code,
+                    headers=headers,
+                    media_type=response.headers.get("content-type"),
+                )
+            except Exception as exc:
+                error_type = type(exc).__name__
+                return JSONResponse(
+                    status_code=502,
+                    content={"error": {"message": "upstream request failed"}},
+                    headers=self._diagnostic_headers(worker, metadata),
+                )
+            finally:
+                self._log_route(
+                    event="request_complete",
+                    request=request,
+                    metadata=metadata,
+                    worker=worker,
+                    path=path,
+                    status_code=status_code,
+                    start=start,
+                    request_bytes=len(body),
+                    response_bytes=response_bytes,
+                    completed=error_type is None,
+                    client_disconnected=False,
+                    error_type=error_type,
+                    ttfb_s=None,
+                )
 
     async def _forward_streaming(
         self,
@@ -373,7 +378,10 @@ class ProxyHandler:
                 await upstream.aclose()
                 worker.decrement_active()
                 self._log_route(
-                    event="stream_complete" if completed else "stream_error",
+                    event=_stream_log_event(
+                        completed=completed,
+                        client_disconnected=client_disconnected,
+                    ),
                     request=request,
                     metadata=metadata,
                     worker=worker,
@@ -462,3 +470,11 @@ def _exceeds_max_size(value: str, max_size: int) -> bool:
         return int(value) > max_size
     except ValueError:
         return True
+
+
+def _stream_log_event(*, completed: bool, client_disconnected: bool) -> str:
+    if completed:
+        return "stream_complete"
+    if client_disconnected:
+        return "client_disconnected"
+    return "stream_error"
