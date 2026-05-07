@@ -21,6 +21,7 @@ from sglang_omni.models.qwen3_omni.pipeline.visual_budget import (
     QWEN3_IMAGE_ENCODER_ACTIVATION_MULTIPLIER,
     QWEN3_IMAGE_ENCODER_BATCH_BUDGET_BYTES,
 )
+from sglang_omni_v1.models.qwen3_omni.bootstrap import create_thinker_scheduler
 from sglang_omni_v1.models.qwen3_omni.components.audio_encoder import (
     Qwen3OmniAudioEncoder,
 )
@@ -879,9 +880,10 @@ def create_sglang_thinker_executor_from_config(
     speech_enabled: bool = False,
 ):
     """Returns OmniScheduler for thinker."""
-    from sglang_omni_v1.models.qwen3_omni.bootstrap import create_thinker_scheduler
 
-    overrides = dict(server_args_overrides) if server_args_overrides else {}
+    overrides: dict[str, Any] = {"disable_cuda_graph": False}
+    if server_args_overrides:
+        overrides.update(server_args_overrides)
     overrides["tp_size"] = tp_size
     server_args = build_sglang_server_args(
         model_path,

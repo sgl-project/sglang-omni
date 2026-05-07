@@ -151,6 +151,7 @@ class ModelRunner:
             outputs=outputs,
             req_ids=req_ids,
             req_id_to_index=req_id_to_index,
+            can_run_cuda_graph=bool(batch_result.can_run_cuda_graph),
         )
 
     # ------------------------------------------------------------------
