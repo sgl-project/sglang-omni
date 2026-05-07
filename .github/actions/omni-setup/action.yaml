@@ -46,8 +46,9 @@ runs:
         fi
         if ! python -c "from whisper.normalizers import EnglishTextNormalizer" 2>/dev/null; then
           echo "openai-whisper missing from prepared venv, installing pinned dependency..."
-          uv pip install --force-reinstall --no-cache openai-whisper==20250625
+          uv pip install --force-reinstall --no-deps --no-cache openai-whisper==20250625
         fi
+        python -c "from whisper.normalizers import EnglishTextNormalizer"
 
     - name: Validate prepared environment
       if: ${{ inputs.install-deps != 'true' }}
@@ -63,11 +64,6 @@ runs:
           echo "Cached venv is corrupted (torch not importable). Re-run the setup stage."
           exit 1
         }
-        "${VENV_NAME}/bin/python" -c "from whisper.normalizers import EnglishTextNormalizer" 2>/dev/null || {
-          echo "Cached venv is incomplete (openai-whisper normalizer not importable). Re-run the setup stage."
-          exit 1
-        }
-
     - name: Remove flashinfer
       shell: bash
       run: |
