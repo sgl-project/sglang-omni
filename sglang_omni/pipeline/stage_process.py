@@ -196,6 +196,7 @@ def _run_stage(
         stream_targets=spec.stream_targets or None,
         same_gpu_targets=spec.same_gpu_targets or None,
         tp_fanout=tp_fanout,
+        is_terminal=spec.is_terminal,
     )
 
     if spec.is_stream_receiver:

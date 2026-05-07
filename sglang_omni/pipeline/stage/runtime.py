@@ -32,6 +32,7 @@ from sglang_omni.proto import (
     ProfilerStopMessage,
     ShutdownMessage,
     StageInfo,
+    StreamMessage,
     SubmitMessage,
 )
 from sglang_omni.relay.base import Relay, create_relay
@@ -67,6 +68,7 @@ class Stage:
         stream_targets: list[str] | None = None,
         same_gpu_targets: set[str] | None = None,
         tp_fanout: TPLeaderFanout | None = None,
+        is_terminal: bool = False,
     ):
         self.name = name
         self.role = role
@@ -80,6 +82,7 @@ class Stage:
         self._stream_targets = stream_targets or []
         self._same_gpu_targets = same_gpu_targets or set()
         self._tp_fanout = tp_fanout
+        self._is_terminal = is_terminal
         self._owns_external_io = role in {"single", "leader"}
 
         # --- Relay ---
@@ -470,11 +473,18 @@ class Stage:
                 await self._route_result(out.request_id, out.data)
             elif out.type == "stream":
                 if out.target is None:
-                    for target in self._stream_targets:
-                        await self._send_stream_to_target(
+                    if self._stream_targets:
+                        for target in self._stream_targets:
+                            await self._send_stream_to_target(
+                                out.request_id,
+                                out.data,
+                                target,
+                                out.metadata,
+                            )
+                    else:
+                        await self._send_stream_to_coordinator(
                             out.request_id,
                             out.data,
-                            target,
                             out.metadata,
                         )
                 else:
@@ -594,6 +604,33 @@ class Stage:
             metadata=metadata,
             same_gpu_targets=self._same_gpu_targets,
         )
+
+    async def _send_stream_to_coordinator(
+        self,
+        request_id: str,
+        data: Any,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        """Forward a terminal stage's stream chunk to the Coordinator."""
+        if not self._is_terminal:
+            raise RuntimeError(
+                f"Stage {self.name!r} emitted untargeted stream chunk but isn't "
+                "terminal. Set ``terminal=True``, or use ``target=...`` / "
+                "``stream_to=[...]``."
+            )
+        if not self._owns_external_io:
+            return
+        if request_id in self._aborted:
+            return
+        modality = metadata.get("modality") if isinstance(metadata, dict) else None
+        msg = StreamMessage(
+            request_id=request_id,
+            from_stage=self.name,
+            chunk=data,
+            stage_name=self.name,
+            modality=modality,
+        )
+        await self.control_plane.send_stream(msg)
 
     async def _send_failure(self, request_id: str, error: str) -> None:
         if not self._owns_external_io:

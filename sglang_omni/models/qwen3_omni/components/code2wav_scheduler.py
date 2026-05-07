@@ -76,6 +76,7 @@ class Code2WavScheduler:
         self._audio_chunks: dict[str, list[np.ndarray]] = {}
         self._payloads: dict[str, StagePayload] = {}
         self._pending_done: set[str] = set()
+        self._stream_enabled: dict[str, bool] = {}
 
     def start(self) -> None:
         self._running = True
@@ -106,6 +107,7 @@ class Code2WavScheduler:
         self._emitted.pop(request_id, None)
         self._audio_chunks.pop(request_id, None)
         self._payloads.pop(request_id, None)
+        self._stream_enabled.pop(request_id, None)
         self._pending_done.discard(request_id)
 
     def _ensure_request_state(self, request_id: str) -> None:
@@ -117,6 +119,14 @@ class Code2WavScheduler:
 
     def _on_chunk(self, request_id: str, chunk: Any) -> None:
         self._ensure_request_state(request_id)
+
+        # Latch stream flag from talker's metadata once per request; default to
+        # True so a missing metadata never silently drops audio for streamers.
+        if request_id not in self._stream_enabled:
+            meta = chunk.metadata if isinstance(chunk.metadata, dict) else None
+            self._stream_enabled[request_id] = bool(
+                meta.get("stream", True) if meta else True
+            )
 
         codes = chunk.data.to(device=self._device, dtype=torch.long)
         if logger.isEnabledFor(logging.DEBUG):
@@ -185,6 +195,7 @@ class Code2WavScheduler:
         self._emitted.pop(request_id, None)
         self._audio_chunks.pop(request_id, None)
         self._payloads.pop(request_id, None)
+        self._stream_enabled.pop(request_id, None)
 
     def _decode_and_emit(self, request_id: str) -> None:
         chunks = self._code_chunks[request_id]
@@ -194,6 +205,16 @@ class Code2WavScheduler:
         self._emitted[request_id] = end
         if audio.size > 0:
             self._audio_chunks[request_id].append(audio)
+            if self._stream_enabled.get(request_id, True):
+                self.outbox.put(
+                    OutgoingMessage(
+                        request_id=request_id,
+                        type="stream",
+                        target=None,
+                        data=self._build_audio_payload(audio),
+                        metadata={"modality": "audio"},
+                    )
+                )
 
     def _decode_incremental(
         self, request_id: str, code_chunks, start, end

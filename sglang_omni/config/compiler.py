@@ -247,6 +247,7 @@ def _compile_stage(
         relay_config=relay_config,
         scheduler=scheduler,
         project_payload=project_payload or None,
+        is_terminal=bool(stage_cfg.terminal),
     )
 
 

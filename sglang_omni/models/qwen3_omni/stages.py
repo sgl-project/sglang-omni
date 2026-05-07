@@ -13,18 +13,20 @@ from typing import Any
 
 import torch
 import torch.nn.functional as F
-from transformers import AutoTokenizer
 
 from sglang_omni.models.qwen3_omni.bootstrap import create_thinker_scheduler
 from sglang_omni.models.qwen3_omni.components.audio_encoder import Qwen3OmniAudioEncoder
 from sglang_omni.models.qwen3_omni.components.image_encoder import Qwen3OmniImageEncoder
 from sglang_omni.models.qwen3_omni.components.preprocessor import Qwen3OmniPreprocessor
-from sglang_omni.models.qwen3_omni.merge import decode_events
-from sglang_omni.models.qwen3_omni.payload_types import OmniEvent
+from sglang_omni.models.qwen3_omni.components.streaming_detokenizer import (
+    create_streaming_detokenize_scheduler,
+)
+from sglang_omni.models.qwen3_omni.payload_types import PipelineState
 from sglang_omni.models.qwen3_omni.request_builders import (
     apply_encoder_result,
     build_encoder_request,
 )
+from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.sglang_backend import (
     apply_encoder_mem_reserve,
     build_sglang_server_args,
@@ -35,8 +37,6 @@ from sglang_omni.utils.misc import avail_gpu_mem
 IMAGE_STAGE = "image_encoder"
 AUDIO_STAGE = "audio_encoder"
 THINKER_STAGE = "thinker"
-from sglang_omni.models.qwen3_omni.payload_types import PipelineState
-from sglang_omni.proto import StagePayload
 
 logger = logging.getLogger(__name__)
 
@@ -68,15 +68,6 @@ def load_state(payload: StagePayload) -> PipelineState:
 def store_state(payload: StagePayload, state: PipelineState) -> StagePayload:
     payload.data = state.to_dict()
     return payload
-
-
-def _event_to_dict(event: OmniEvent) -> dict[str, Any]:
-    return {
-        "type": event.type,
-        "modality": event.modality,
-        "payload": dict(event.payload),
-        "is_final": bool(event.is_final),
-    }
 
 
 def _run_single_encoder_payload(
@@ -784,83 +775,7 @@ def create_audio_encoder_executor(
 
 
 def create_decode_executor(model_path: str):
-    from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
-
-    tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
-    eos_token_id = tokenizer.eos_token_id
-
-    def _decode(payload: StagePayload) -> StagePayload:
-        state = load_state(payload)
-        thinker_out = state.thinker_out or state.engine_outputs.get(THINKER_STAGE)
-        if not isinstance(thinker_out, dict):
-            thinker_out = {
-                "output_ids": [],
-                "step": 0,
-                "is_final": True,
-                "extra_model_outputs": {},
-            }
-
-        step = int(thinker_out.get("step") or len(thinker_out.get("output_ids", [])))
-        events = list(
-            decode_events(
-                thinker_out=thinker_out,
-                state=state,
-                tokenizer=tokenizer,
-                eos_token_id=eos_token_id,
-                step=step,
-            )
-        )
-        event_dicts = [_event_to_dict(event) for event in events]
-
-        result: dict[str, Any] = {"events": event_dicts}
-        final_event = next(
-            (
-                e
-                for e in reversed(events)
-                if e.is_final or e.type in {"text_final", "final"}
-            ),
-            None,
-        )
-        if final_event is not None:
-            result.update(final_event.payload)
-            result.setdefault("modality", final_event.modality)
-
-        if "text" not in result:
-            output_ids = thinker_out.get("output_ids")
-            if isinstance(output_ids, list) and output_ids:
-                result["text"] = tokenizer.decode(output_ids, skip_special_tokens=True)
-                result.setdefault("modality", "text")
-
-        finish_reason = thinker_out.get("finish_reason")
-        if finish_reason is not None:
-            result.setdefault("finish_reason", finish_reason)
-
-        input_ids = (
-            state.prompt.get("input_ids") if isinstance(state.prompt, dict) else None
-        )
-        if input_ids is None:
-            prompt_tokens = 0
-        elif hasattr(input_ids, "numel"):
-            prompt_tokens = int(input_ids.numel())
-        else:
-            prompt_tokens = len(input_ids)
-
-        completion_ids = thinker_out.get("output_ids") or []
-        completion_tokens = len(completion_ids)
-
-        result.setdefault(
-            "usage",
-            {
-                "prompt_tokens": prompt_tokens,
-                "completion_tokens": completion_tokens,
-                "total_tokens": prompt_tokens + completion_tokens,
-            },
-        )
-
-        payload.data = result
-        return payload
-
-    return SimpleScheduler(_decode)
+    return create_streaming_detokenize_scheduler(model_path)
 
 
 # ---------------------------------------------------------------------------

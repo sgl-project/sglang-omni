@@ -75,6 +75,7 @@ class Qwen3OmniPipelineConfig(PipelineConfig):
             factory_args={"thinker_max_seq_len": 8192},
             gpu=0,
             next="decode",
+            stream_to=["decode"],
         ),
         StageConfig(
             name="decode",
@@ -149,7 +150,7 @@ class Qwen3OmniSpeechPipelineConfig(PipelineConfig):
             factory_args={"thinker_max_seq_len": 8192, "speech_enabled": True},
             gpu=0,
             next=["decode", "talker_ar"],
-            stream_to=["talker_ar"],
+            stream_to=["talker_ar", "decode"],
         ),
         StageConfig(
             name="decode",
