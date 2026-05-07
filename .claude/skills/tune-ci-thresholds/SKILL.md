@@ -250,8 +250,15 @@ python .claude/skills/tune-ci-thresholds/tune.py --model qwen3-omni-v1 run \
    per metric: `source_kind` (bare / nested), `symbol`, `subkey`,
    `concurrency`, `worst_op`, `per_run_raw`, `worst_rounded` (already
    rounded to `display.digits`), `current_raw`, and `direction`
-   (`tightens` / `loosens` / `equal` / `unknown`). Use `worst_rounded`
-   as the value to write — never re-round, never multiply by `scale`.
+   (`tightens` / `loosens` / `equal` / `unknown`). By default, use
+   `worst_rounded` as the value to write — never re-round, never
+   multiply by `scale`.
+   For non-speed pass/fail thresholds, do not allow display rounding to
+   make the written threshold stricter than the observed worst-of-N: for
+   `worst_op == "min"` the written value must be `<= worst_raw`, and for
+   `worst_op == "max"` the written value must be `>= worst_raw`. If
+   `worst_rounded` violates that bound, write `worst_raw` with enough
+   decimal places to preserve the observed value.
 
    **Mode `full`**: for every metric in every non-docs stage, edit the
    test file using the rules in (b) below, no questions asked.
@@ -266,11 +273,11 @@ python .claude/skills/tune-ci-thresholds/tune.py --model qwen3-omni-v1 run \
        (one per metric) showing:
          - the per-run raw values from `per_run_raw`
          - the current literal in the test file (`current_raw`)
-         - the proposed `worst_rounded` value
+         - the proposed bounded worst-of-N value
          - direction tag
        with options:
          1. `Keep current` — leave the literal as-is
-         2. `Apply worst-of-N (<value>)` — write `worst_rounded`
+         2. `Apply worst-of-N (<value>)` — write the proposed bounded worst-of-N value
          3. `Custom value` — the user supplies a number; write it
             verbatim after validating it parses as a float
        Always include the "Other" free-text fallback (the
