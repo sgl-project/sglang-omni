@@ -20,6 +20,7 @@ from sglang_omni.engines.ar.sglang_backend.server_args_builder import (
     apply_encoder_mem_reserve,
     build_sglang_server_args,
 )
+from sglang_omni.models.fishaudio_s2_pro.config import S2ProPipelineConfig
 from sglang_omni.models.ming_omni.config import MingOmniPipelineConfig
 
 try:
@@ -329,6 +330,41 @@ class _FakeConfigManager:
 class TestServeMemFractionStatic(unittest.TestCase):
     @patch("sglang_omni.cli.serve.launch_server")
     @patch("sglang_omni.cli.serve.ConfigManager.from_model_path")
+    def test_serve_routes_global_mem_fraction_to_s2pro_tts_engine(
+        self,
+        from_model_path,
+        launch_server_mock,
+    ) -> None:
+        """Legacy S2-Pro accepts the global mem_fraction flag on its only AR stage."""
+        from_model_path.return_value = _FakeConfigManager(
+            S2ProPipelineConfig(model_path="dummy")
+        )
+
+        serve(
+            ctx=SimpleNamespace(args=[]),
+            model_path="dummy",
+            config=None,
+            text_only=False,
+            host="0.0.0.0",
+            port=8000,
+            model_name=None,
+            mem_fraction_static=0.70,
+            thinker_mem_fraction_static=None,
+            talker_mem_fraction_static=None,
+            log_level="info",
+        )
+
+        passed_config = launch_server_mock.call_args.args[0]
+        tts_stage = next(
+            stage for stage in passed_config.stages if stage.name == "tts_engine"
+        )
+        self.assertEqual(
+            tts_stage.executor.args["server_args_overrides"]["mem_fraction_static"],
+            0.70,
+        )
+
+    @patch("sglang_omni.cli.serve.launch_server")
+    @patch("sglang_omni.cli.serve.ConfigManager.from_model_path")
     def test_serve_rejects_unsupported_talker_flag_before_launch(
         self,
         from_model_path,
@@ -607,3 +643,64 @@ class TestSpeechMemFractionFactoryWiring(unittest.TestCase):
         talker_server_args = create_talker_executor_mock.call_args.kwargs["server_args"]
         self.assertEqual(thinker_server_args.mem_fraction_static, 0.70)
         self.assertEqual(talker_server_args.mem_fraction_static, 0.65)
+
+
+class TestS2ProMemFractionFactoryWiring(unittest.TestCase):
+    @patch(
+        "sglang_omni.models.fishaudio_s2_pro.factory.create_s2pro_sglang_engine"
+    )
+    def test_s2pro_executor_applies_server_args_overrides(
+        self,
+        create_engine_mock,
+    ) -> None:
+        """Legacy S2-Pro executor honors config/CLI server_args overrides."""
+        from sglang_omni.models.fishaudio_s2_pro import factory as factory_module
+        from sglang_omni.models.fishaudio_s2_pro.pipeline import stages as stage_module
+        import sglang.srt.server_args as server_args_module
+
+        class _FakeServerArgs:
+            def __init__(self, **kwargs):
+                self.__dict__.update(kwargs)
+
+        class _FakeAudioDecoder:
+            pass
+
+        def _fake_load_audio_decoder(model_path: str, device: str):
+            del model_path, device
+            return _FakeAudioDecoder(), 10, 4096, object(), "/tmp/fake-model"
+
+        def _fake_patch_config(model_path: str) -> None:
+            del model_path
+
+        with (
+            patch.object(
+                stage_module,
+                "_load_audio_decoder",
+                _fake_load_audio_decoder,
+            ),
+            patch.object(
+                stage_module.torch.cuda,
+                "mem_get_info",
+                lambda gpu_id: (8 * 1024**3, 0),
+            ),
+            patch.object(server_args_module, "ServerArgs", _FakeServerArgs),
+            patch.object(
+                factory_module,
+                "_patch_fish_config_for_sglang",
+                _fake_patch_config,
+            ),
+        ):
+            create_engine_mock.return_value = object()
+            stage_module.create_sglang_tts_engine_executor(
+                model_path="unused",
+                device="cuda:0",
+                server_args_overrides={
+                    "mem_fraction_static": 0.70,
+                    "max_running_requests": 8,
+                },
+                warmup_stream_codec_on_startup=False,
+            )
+
+        server_args = create_engine_mock.call_args.kwargs["server_args"]
+        self.assertEqual(server_args.mem_fraction_static, 0.70)
+        self.assertEqual(server_args.max_running_requests, 8)

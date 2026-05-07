@@ -38,6 +38,7 @@ class S2ProPipelineConfig(PipelineConfig):
             executor=ExecutorConfig(
                 factory=f"{_S2_PKG}.stages.create_sglang_tts_engine_executor",
                 args={
+                    "server_args_overrides": {},
                     "device": "cuda:0",
                     "max_new_tokens": 2048,
                     "stream_stride": 10,
@@ -60,6 +61,13 @@ class S2ProPipelineConfig(PipelineConfig):
             relay=RelayConfig(device="cpu"),
         ),
     ]
+
+    @classmethod
+    def mem_fraction_role_to_stage(cls) -> dict[str, str]:
+        # Legacy S2-Pro has a single GPU-heavy SGLang stage. Reuse the generic
+        # thinker/global mem_fraction_static CLI plumbing so consumer GPUs can
+        # lower KV-cache preallocation without introducing S2-Pro-only flags.
+        return {"thinker": TTS_ENGINE_STAGE}
 
 
 EntryClass = S2ProPipelineConfig
