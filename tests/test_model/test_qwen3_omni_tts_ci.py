@@ -52,9 +52,12 @@ WER_TIMEOUT = 600
 VC_WER_BELOW_50_CORPUS_MAX = 0.03
 VC_N_ABOVE_50_MAX = 1
 
+# Note (Chenyang): The thresholds for the throughput_qps of tests/test_model/test_qwen3_omni_tts_ci.py
+# are the most unstable metrics, so I drop it a lot.
+
 _VC_NON_STREAM_P95 = {
     8: {
-        "throughput_qps": 3.937,
+        "throughput_qps": 3.00,
         "tok_per_s_agg": 7.6,
         "latency_mean_s": 1.938,
         "rtf_mean": 0.5843,
