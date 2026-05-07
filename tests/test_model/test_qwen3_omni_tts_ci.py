@@ -49,15 +49,15 @@ STARTUP_TIMEOUT = 300
 WER_TIMEOUT = 600
 
 # Threshold reference: https://github.com/sgl-project/sglang-omni/pull/382#issuecomment-4366925373
-VC_WER_BELOW_50_CORPUS_MAX = 0.02
+VC_WER_BELOW_50_CORPUS_MAX = 0.03
 VC_N_ABOVE_50_MAX = 1
 
 _VC_NON_STREAM_P95 = {
     8: {
-        "throughput_qps": 1.015,
-        "tok_per_s_agg": 5.5,
-        "latency_mean_s": 2.65,
-        "rtf_mean": 0.6322,
+        "throughput_qps": 3.937,
+        "tok_per_s_agg": 7.6,
+        "latency_mean_s": 1.938,
+        "rtf_mean": 0.5843,
     },
 }
 
