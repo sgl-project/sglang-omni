@@ -120,10 +120,6 @@ class Stage:
         self._scheduler_crash_error: BaseException | None = None
         self._background_task_error: BaseException | None = None
 
-    # ------------------------------------------------------------------
-    # Lifecycle
-    # ------------------------------------------------------------------
-
     async def start(self) -> None:
         if self._running:
             return
@@ -217,10 +213,6 @@ class Stage:
                 await outbox_task
             if self._background_task_error is not None:
                 raise self._background_task_error
-
-    # ------------------------------------------------------------------
-    # Message handling
-    # ------------------------------------------------------------------
 
     async def _handle_message(self, msg: Any) -> None:
         if isinstance(msg, SubmitMessage):
@@ -444,10 +436,6 @@ class Stage:
             IncomingMessage(request_id=request_id, type="stream_chunk", data=item)
         )
 
-    # ------------------------------------------------------------------
-    # Dispatch: always through scheduler
-    # ------------------------------------------------------------------
-
     async def _execute(self, payload: Any) -> None:
         request_id = payload.request_id
         self.scheduler.inbox.put(
@@ -518,10 +506,6 @@ class Stage:
                 raise RuntimeError(
                     f"TP follower stage {self.name} received scheduler error: {out.data}"
                 )
-
-    # ------------------------------------------------------------------
-    # Routing: send results to next stage(s) or coordinator
-    # ------------------------------------------------------------------
 
     async def _route_result(self, request_id: str, result: Any) -> None:
         """Route a completed result to next stage(s) or complete at coordinator."""
@@ -658,10 +642,6 @@ class Stage:
                 self.relay.cleanup(request_id)
         self.control_plane.close()
 
-    # ------------------------------------------------------------------
-    # Abort
-    # ------------------------------------------------------------------
-
     async def _abort_listener(self) -> None:
         try:
             while self._running:
@@ -682,17 +662,9 @@ class Stage:
             it = iter(self._aborted)
             to_remove = [next(it) for _ in range(excess)]
             self._aborted -= set(to_remove)
-        self._active_requests.discard(request_id)
-        self.input_handler.cancel(request_id)
         self.relay.cleanup(request_id)
-        if self._stream_queue is not None:
-            self._stream_queue.close(request_id)
-        self._pending_stream_data.pop(request_id, None)
+        self._clear_request_state(request_id)
         self.scheduler.abort(request_id)
-
-    # ------------------------------------------------------------------
-    # Profiler (kept from original)
-    # ------------------------------------------------------------------
 
     def _on_profiler_start(self, msg: ProfilerStartMessage) -> None:
         if TorchProfiler.is_active():
@@ -711,10 +683,6 @@ class Stage:
             and TorchProfiler.get_active_run_id() == msg.run_id
         ):
             TorchProfiler.stop(run_id=msg.run_id)
-
-    # ------------------------------------------------------------------
-    # Info
-    # ------------------------------------------------------------------
 
     def _on_background_task_done(self, task: asyncio.Task, label: str) -> None:
         if task.cancelled():

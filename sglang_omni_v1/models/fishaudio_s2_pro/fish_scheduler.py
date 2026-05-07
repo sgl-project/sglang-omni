@@ -236,7 +236,7 @@ class FishIterationController:
         self, tree_cache: Any, im_end_token_id: int, max_new_tokens: int = 2048
     ):
         self.tree_cache = tree_cache
-        self._im_end_id = int(im_end_token_id)
+        self._im_end_token_id = int(im_end_token_id)
         self._max_new_tokens = int(max_new_tokens)
 
     def update_request(
@@ -250,7 +250,12 @@ class FishIterationController:
             return
 
         if output_token_id is not None:
-            req.output_ids.append(int(output_token_id))
+            semantic_token = int(output_token_id)
+            req.output_ids.append(semantic_token)
+            # Skip caching the terminal slow-AR EOS regardless of req.finished()
+            # semantics: it is not an audio timestep and has no KV to preserve.
+            if semantic_token == self._im_end_token_id:
+                return
             if not req.finished() and req.decode_batch_idx == 0:
                 self.tree_cache.cache_unfinished_req(req)
 
@@ -265,7 +270,7 @@ class FishIterationController:
         if semantic_token is None and data.previous_semantic_tokens:
             semantic_token = int(data.previous_semantic_tokens[-1])
 
-        if semantic_token == self._im_end_id:
+        if semantic_token == self._im_end_token_id:
             return True
 
         max_tok = data.max_new_tokens or self._max_new_tokens
@@ -418,8 +423,20 @@ class FishScheduler:
         for request in finished:
             data = request.data
             data.output_ids = list(data.req.output_ids)
-            result = self._result_adapter(data)
             t_submit = self._submit_times.pop(request.request_id, None)
+            if not data.output_codes:
+                self.outbox.put(
+                    OutgoingMessage(
+                        request_id=request.request_id,
+                        type="error",
+                        data=ValueError(
+                            f"Request {request.request_id}: "
+                            "S2-Pro generated no audio codec tokens"
+                        ),
+                    )
+                )
+                continue
+            result = self._result_adapter(data)
             if t_submit is not None and isinstance(result.data, dict):
                 result.data["engine_time_s"] = time.perf_counter() - t_submit
             self.outbox.put(

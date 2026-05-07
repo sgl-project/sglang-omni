@@ -10,14 +10,8 @@
 #   live in that same per-variant dir.
 # - Concurrency: CI uses --concurrency 8 (the only fully tuned conc); the
 #   _VC_*_P95 dicts include {1,2,4,8,16}. Discover reads conc=8 row.
-# - Default venv path: /github/home/omni-s2pro to mirror the real CI venv
-#   (test-s2pro-ci-v1.yaml). Critically, omni-s2pro must NOT have
-#   `openai-whisper` / `whisper-normalizer` installed — CI's omni-s2pro
-#   doesn't, which makes `_get_en_normalizer()` fall back to the
-#   punctuation-strip path. omni-qwen3 (used by qwen3-omni-v1 stages) DOES
-#   have openai-whisper installed and uses the real EnglishTextNormalizer,
-#   so the two venvs produce different WER numbers on identical audio.
-#   Keep them separate; do not unify.
+# - Venv: this host shares the omni-qwen3 venv across models; see
+#   default_venv_python below.
 name: s2-pro-v1
 description: "FishAudio S2-Pro voice-clone TTS (v1 pipeline)"
 hf_model_id: "fishaudio/s2-pro"

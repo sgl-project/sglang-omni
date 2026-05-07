@@ -10,6 +10,36 @@ import torch
 from sglang_omni_v1.model_runner.base import ModelRunner
 
 
+def collect_s2pro_step_outputs(
+    result: Any,
+    requests: list,
+    *,
+    output_codes: torch.Tensor,
+    output_semantic_ids: torch.Tensor,
+    im_end_token_id: int,
+) -> None:
+    batch_size = len(requests)
+    if batch_size == 0:
+        return
+
+    result.next_token_ids = output_semantic_ids[:batch_size].clone()
+    semantic_tokens = output_semantic_ids[:batch_size].tolist()
+
+    for row_idx, sched_req in enumerate(requests):
+        data = sched_req.data
+        if data.req.is_chunked > 0:
+            continue
+
+        semantic_token = semantic_tokens[row_idx]
+        if semantic_token == im_end_token_id:
+            continue
+
+        codes = output_codes[row_idx].unsqueeze(-1).clone()
+        data.last_codebook_values = codes[1:, 0].clone()
+        data.previous_semantic_tokens.append(semantic_token)
+        data.output_codes.append(codes)
+
+
 class FishS2ProModelRunner(ModelRunner):
     """Fish TTS runner with unified forward-owned decode and persistent buffers."""
 
@@ -17,6 +47,7 @@ class FishS2ProModelRunner(ModelRunner):
         super().__init__(tp_worker, output_processor)
         self._semantic_begin_id = int(self.model._semantic_begin_id)
         self._semantic_end_id = int(self.model._semantic_end_id)
+        self._im_end_token_id = int(self.model._im_end_token_id)
 
     def prepare_prefill(self, forward_batch, schedule_batch, requests):
         del schedule_batch
@@ -117,19 +148,10 @@ class FishS2ProModelRunner(ModelRunner):
         return text_embeds
 
     def _collect_step_outputs(self, result: Any, requests: list) -> None:
-        batch_size = len(requests)
-        if batch_size == 0:
-            return
-
-        result.next_token_ids = self.model._output_semantic_ids[:batch_size].clone()
-
-        for row_idx, sched_req in enumerate(requests):
-            data = sched_req.data
-            req = data.req
-            if req.is_chunked > 0:
-                continue
-
-            codes = self.model._output_codes[row_idx].unsqueeze(-1).clone()
-            data.last_codebook_values = codes[1:, 0].clone()
-            data.previous_semantic_tokens.append(int(codes[0, -1].item()))
-            data.output_codes.append(codes)
+        collect_s2pro_step_outputs(
+            result,
+            requests,
+            output_codes=self.model._output_codes,
+            output_semantic_ids=self.model._output_semantic_ids,
+            im_end_token_id=self._im_end_token_id,
+        )

@@ -513,7 +513,7 @@ class OmniScheduler:
             return GenerationBatchResult(
                 logits_output=None,
                 next_token_ids=batch.output_ids,
-                can_run_cuda_graph=False,
+                can_run_cuda_graph=mr_output.can_run_cuda_graph,
             )
         # Fallback: call upstream's run_batch (uses tp_worker directly)
         return _Upstream.run_batch(self, batch, pp_proxy_tensors)
