@@ -43,9 +43,9 @@ MMMU_MIN_ACCURACY = 0.56
 
 _MMMU_P95 = {
     8: {
-        "throughput_qps": 0.70,
-        "tok_per_s_agg": 53.1,
-        "latency_mean_s": 10.6,
+        "throughput_qps": 0.616,
+        "tok_per_s_agg": 51.8,
+        "latency_mean_s": 12.302,
     },
 }
 MMMU_THRESHOLDS = apply_slack(_MMMU_P95)

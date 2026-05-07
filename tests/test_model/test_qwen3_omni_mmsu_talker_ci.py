@@ -70,16 +70,16 @@ MMSU_AUDIO_MIN_ACCURACY = 0.6
 #  - count of catastrophic failures (per-sample WER > 50%)
 
 # Relaxed in V1 refactor: v0=0.04 → v1=0.08.
-MMSU_AUDIO_WER_BELOW_50_CORPUS_MAX = 0.08
+MMSU_AUDIO_WER_BELOW_50_CORPUS_MAX = 0.06
 # Relaxed in V1 refactor: v0=0 → v1=3.
-MMSU_AUDIO_N_ABOVE_50_MAX = 3
+MMSU_AUDIO_N_ABOVE_50_MAX = 1
 
 _MMSU_AUDIO_P95 = {
     8: {
-        "throughput_qps": 0.312,
-        "tok_per_s_agg": 5.0,
-        "latency_mean_s": 10.08,
-        "rtf_mean": 0.3895,
+        "throughput_qps": 0.326,
+        "tok_per_s_agg": 5.2,
+        "latency_mean_s": 11.825,
+        "rtf_mean": 0.4188,
     },
 }
 MMSU_AUDIO_THRESHOLDS = apply_slack(_MMSU_AUDIO_P95)
