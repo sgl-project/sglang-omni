@@ -9,7 +9,6 @@ from typing import Iterable, Optional, Tuple
 import torch
 from sglang.srt.layers.logits_processor import LogitsProcessorOutput
 from sglang.srt.model_loader.weight_utils import default_weight_loader
-from sglang.srt.sampling.sampling_batch_info import SamplingBatchInfo
 from sglang.srt.utils import add_prefix
 from torch import nn
 
@@ -803,56 +802,6 @@ class Qwen3OmniTalker(nn.Module):
             dtype=self.model.codec_embedding.weight.dtype,
         )
         self._predictor_v_cache = torch.zeros_like(self._predictor_k_cache)
-        self._sampled_token_ids = torch.zeros(
-            max_batch_size,
-            dtype=torch.long,
-            device=device,
-        )
-        self._repetition_mask = torch.zeros(
-            max_batch_size,
-            config.text_config.vocab_size,
-            dtype=torch.bool,
-            device=device,
-        )
-        self._repetition_penalties = torch.ones(
-            max_batch_size,
-            1,
-            dtype=self.model.codec_embedding.weight.dtype,
-            device=device,
-        )
-        self._suppress_mask = torch.zeros(
-            max_batch_size,
-            config.text_config.vocab_size,
-            dtype=torch.bool,
-            device=device,
-        )
-        self._sampling_temperatures = torch.ones(
-            max_batch_size,
-            1,
-            dtype=self.model.codec_embedding.weight.dtype,
-            device=device,
-        )
-        self._sampling_top_ps = torch.ones(
-            max_batch_size,
-            dtype=self.model.codec_embedding.weight.dtype,
-            device=device,
-        )
-        self._sampling_top_ks = torch.full(
-            (max_batch_size,),
-            1,
-            dtype=torch.int32,
-            device=device,
-        )
-        self._sampling_min_ps = torch.zeros(
-            max_batch_size,
-            dtype=self.model.codec_embedding.weight.dtype,
-            device=device,
-        )
-        self._sampling_seeds = torch.zeros(
-            max_batch_size,
-            dtype=torch.int64,
-            device=device,
-        )
         self._output_codes = torch.zeros(
             max_batch_size,
             config.num_code_groups,
@@ -867,7 +816,6 @@ class Qwen3OmniTalker(nn.Module):
         )
         _bind_default_weight_loaders(self)
         self._cached_params_dict = dict(self.named_parameters())
-        self._sampler = None
 
     def get_input_embeddings(self):
         return self.model.get_input_embeddings()
@@ -880,56 +828,6 @@ class Qwen3OmniTalker(nn.Module):
         if next_code.ndim == 1:
             next_code = next_code.unsqueeze(-1)
         return next_code
-
-    def prepare_decode_buffers(self, requests: list) -> None:
-        batch_size = len(requests)
-        self._repetition_mask[:batch_size] = False
-        self._repetition_penalties[:batch_size].fill_(1.0)
-        self._suppress_mask[:batch_size] = False
-        self._sampling_temperatures[:batch_size].fill_(1.0)
-        self._sampling_top_ps[:batch_size].fill_(1.0)
-        self._sampling_top_ks[:batch_size].fill_(1)
-        self._sampling_min_ps[:batch_size].zero_()
-        self._sampling_seeds[:batch_size].zero_()
-
-        for row_idx, sched_req in enumerate(requests):
-            data = sched_req.data
-            req = data.req
-            sampling_params = req.sampling_params
-
-            penalty = float(sampling_params.repetition_penalty)
-            self._repetition_penalties[row_idx, 0] = penalty
-            self._sampling_temperatures[row_idx, 0] = float(sampling_params.temperature)
-            self._sampling_top_ps[row_idx] = float(sampling_params.top_p)
-            self._sampling_top_ks[row_idx] = int(sampling_params.top_k)
-            self._sampling_min_ps[row_idx] = float(sampling_params.min_p)
-            req_seed = sampling_params.sampling_seed
-            if req_seed is not None:
-                self._sampling_seeds[row_idx] = int(req_seed)
-            if penalty != 1.0 and req.output_ids:
-                token_ids = torch.as_tensor(
-                    list({int(token_id) for token_id in req.output_ids}),
-                    dtype=torch.long,
-                    device=self._repetition_mask.device,
-                )
-                valid = token_ids[
-                    (token_ids >= 0) & (token_ids < self._repetition_mask.shape[1])
-                ]
-                if valid.numel() > 0:
-                    self._repetition_mask[row_idx, valid] = True
-
-            suppress_tokens = data.suppress_tokens or req._codec_suppress_tokens
-            if suppress_tokens:
-                token_ids = torch.as_tensor(
-                    [int(token_id) for token_id in suppress_tokens],
-                    dtype=torch.long,
-                    device=self._suppress_mask.device,
-                )
-                valid = token_ids[
-                    (token_ids >= 0) & (token_ids < self._suppress_mask.shape[1])
-                ]
-                if valid.numel() > 0:
-                    self._suppress_mask[row_idx, valid] = True
 
     def prepare_input_embeds(
         self,
@@ -1017,19 +915,7 @@ class Qwen3OmniTalker(nn.Module):
         )
         if forward_batch.forward_mode.is_extend() and input_embeds is not None:
             return self._manual_extend_logits(hidden_states, forward_batch)
-        logits_output = self._manual_decode_logits(hidden_states)
-        if forward_batch.forward_mode.is_decode():
-            sampled_token_ids = self._sample_decode_tokens(
-                logits_output.next_token_logits,
-                forward_batch,
-            )
-            batch_size = sampled_token_ids.shape[0]
-            self._sampled_token_ids[:batch_size].copy_(sampled_token_ids)
-            self.code_predictor_forward(
-                sampled_token_ids.unsqueeze(1),
-                hidden_states.unsqueeze(1),
-            )
-        return logits_output
+        return self._manual_decode_logits(hidden_states)
 
     def _manual_extend_logits(
         self,
@@ -1059,68 +945,6 @@ class Qwen3OmniTalker(nn.Module):
         return LogitsProcessorOutput(
             next_token_logits=next_token_logits,
             hidden_states=hidden_states,
-        )
-
-    def _sample_decode_tokens(
-        self,
-        logits: torch.Tensor,
-        forward_batch: ForwardBatch,
-    ) -> torch.Tensor:
-        batch_size = logits.shape[0]
-        logits = logits.clone()
-
-        penalties = self._repetition_penalties[:batch_size].to(dtype=logits.dtype)
-        penalized_logits = torch.where(
-            logits > 0, logits / penalties, logits * penalties
-        )
-        logits = torch.where(
-            self._repetition_mask[:batch_size], penalized_logits, logits
-        )
-        logits = logits.masked_fill(self._suppress_mask[:batch_size], float("-inf"))
-
-        logits_output = LogitsProcessorOutput(
-            next_token_logits=logits,
-            hidden_states=None,
-        )
-        if self._sampler is None:
-            return torch.argmax(logits, dim=-1)
-        sampling_info = self._build_static_sampling_info(batch_size)
-        sampled = self._sampler(
-            logits_output,
-            sampling_info,
-            False,
-            [0] * batch_size,
-            [[] for _ in range(batch_size)],
-            forward_batch.positions,
-        )
-        if sampled.ndim > 1:
-            sampled = sampled.squeeze(-1)
-        return sampled
-
-    def _build_static_sampling_info(self, batch_size: int) -> SamplingBatchInfo:
-        return SamplingBatchInfo(
-            temperatures=self._sampling_temperatures[:batch_size],
-            top_ps=self._sampling_top_ps[:batch_size],
-            top_ks=self._sampling_top_ks[:batch_size],
-            min_ps=self._sampling_min_ps[:batch_size],
-            # Keep sampler control flow static during graph capture while
-            # preserving SGLang's actual sampling kernel semantics.
-            is_all_greedy=False,
-            need_top_p_sampling=True,
-            need_top_k_sampling=True,
-            need_min_p_sampling=False,
-            vocab_size=self.config.text_config.vocab_size,
-            grammars=[],
-            vocab_mask=None,
-            apply_mask_func=None,
-            penalizer_orchestrator=None,
-            acc_linear_penalties=None,
-            has_custom_logit_processor=False,
-            custom_params=None,
-            custom_logit_processor=None,
-            sampling_seed=self._sampling_seeds[:batch_size],
-            device="cuda",
-            logit_bias=None,
         )
 
     def _extend_last_index(
