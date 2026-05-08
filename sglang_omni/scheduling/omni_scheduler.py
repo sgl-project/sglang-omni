@@ -495,18 +495,12 @@ class OmniScheduler:
             if self._stream_output_builder is not None:
                 for sched_req in sched_output.requests:
                     req_output = mr_output.outputs[sched_req.request_id]
-                    stream_msgs = self._stream_output_builder(
+                    for msg in self._stream_output_builder(
                         sched_req.request_id,
                         sched_req.data,
                         req_output,
-                    )
-                    if stream_msgs is None:
-                        continue
-                    if isinstance(stream_msgs, OutgoingMessage):
-                        self.outbox.put(stream_msgs)
-                    else:
-                        for msg in stream_msgs:
-                            self.outbox.put(msg)
+                    ):
+                        self.outbox.put(msg)
 
             # Convert ModelRunnerOutput → GenerationBatchResult
             # The upstream process_batch_result reads .next_token_ids and

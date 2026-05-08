@@ -178,6 +178,17 @@ class Code2WavScheduler:
                 len(audio_parts),
                 int(full_audio.shape[0]),
             )
+        # Streaming clients already received per-chunk audio; final result is
+        # metadata-only to avoid IPC-ing full audio that the HTTP layer drops.
+        # Default False so missing latch falls back to non-streaming (safe:
+        # may waste bandwidth, never starves a non-streaming client).
+        if self._stream_enabled.get(request_id, False):
+            final_data: dict[str, Any] = {
+                "modality": "audio",
+                "sample_rate": self._sample_rate,
+            }
+        else:
+            final_data = self._build_audio_payload(full_audio)
         self.outbox.put(
             OutgoingMessage(
                 request_id=request_id,
@@ -185,7 +196,7 @@ class Code2WavScheduler:
                 data=StagePayload(
                     request_id=payload.request_id,
                     request=payload.request,
-                    data=self._build_audio_payload(full_audio),
+                    data=final_data,
                 ),
             )
         )

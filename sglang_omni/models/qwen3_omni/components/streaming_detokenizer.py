@@ -16,6 +16,8 @@ import queue as _queue_mod
 from dataclasses import dataclass, field
 from typing import Any
 
+from transformers import AutoTokenizer
+
 from sglang_omni.models.qwen3_omni.merge import decode_events
 from sglang_omni.models.qwen3_omni.payload_types import OmniEvent, PipelineState
 from sglang_omni.proto import StagePayload
@@ -37,16 +39,13 @@ def _event_to_dict(event: OmniEvent) -> dict[str, Any]:
 
 @dataclass
 class _RequestState:
-    accumulated: list[int] = field(default_factory=list)
-    emitted_text: str = ""
+    pending_tokens: list[int] = field(default_factory=list)
     payload: StagePayload | None = None
     done: bool = False
 
 
 class StreamingDetokenizeScheduler:
-    """Stream-aware decode stage.
-
-    """
+    """Stream-aware decode stage."""
 
     def __init__(
         self,
@@ -95,25 +94,25 @@ class StreamingDetokenizeScheduler:
         data = item.data
         token_id = int(data.item()) if hasattr(data, "item") else int(data)
         s = self._ensure_state(request_id)
-        s.accumulated.append(token_id)
+        s.pending_tokens.append(token_id)
 
-        text = self._tokenizer.decode(s.accumulated, skip_special_tokens=True)
-        new_suffix = text[len(s.emitted_text) :]
-        if not new_suffix:
-            return
-        # Defer emission until UTF-8 byte sequences are complete: HF tokenizers
-        # surface incomplete multi-byte chars as U+FFFD.
-        if "�" in new_suffix:
+        candidate = self._tokenizer.decode(s.pending_tokens, skip_special_tokens=True)
+        # Incomplete multi-byte UTF-8 surfaces as U+FFFD; hold pending
+        # until the next token completes the byte sequence.
+        if "\ufffd" in candidate:
             return
 
-        s.emitted_text = text
+        s.pending_tokens.clear()
+        if not candidate:
+            return  # special tokens suppressed; nothing to emit
+
         self.outbox.put(
             OutgoingMessage(
                 request_id=request_id,
                 type="stream",
                 target=None,  # terminal stream → Coordinator
                 data={
-                    "text": new_suffix,
+                    "text": candidate,
                     "modality": "text",
                     "stage_name": self.stage_name,
                 },
@@ -122,7 +121,10 @@ class StreamingDetokenizeScheduler:
         )
 
     def _on_stream_done(self, request_id: str) -> None:
-        s = self._ensure_state(request_id)
+        # Late stream_done after finalize: state already popped, ignore.
+        s = self._state.get(request_id)
+        if s is None:
+            return
         s.done = True
         if s.payload is not None:
             self._finalize(request_id)
@@ -130,13 +132,35 @@ class StreamingDetokenizeScheduler:
     def _on_new_request(self, request_id: str, payload: StagePayload) -> None:
         s = self._ensure_state(request_id)
         s.payload = payload
-        if s.done:
+        is_streaming = bool((payload.request.params or {}).get("stream", False))
+        if s.done or not is_streaming:
             self._finalize(request_id)
 
     def _finalize(self, request_id: str) -> None:
         s = self._state.pop(request_id, None)
         if s is None or s.payload is None:
             return
+        # Flush leftover pending — UTF-8 may be truncated mid-char (e.g. on
+        # max_tokens); without this the streaming client misses trailing
+        # bytes that non-streaming clients still see in the final result.
+        if s.pending_tokens:
+            leftover = self._tokenizer.decode(
+                s.pending_tokens, skip_special_tokens=True
+            )
+            if leftover:
+                self.outbox.put(
+                    OutgoingMessage(
+                        request_id=request_id,
+                        type="stream",
+                        target=None,
+                        data={
+                            "text": leftover,
+                            "modality": "text",
+                            "stage_name": self.stage_name,
+                        },
+                        metadata={"modality": "text"},
+                    )
+                )
         result = self._build_result(s.payload)
         s.payload.data = result
         self.outbox.put(
@@ -225,8 +249,6 @@ def create_streaming_detokenize_scheduler(
     *,
     stage_name: str = "decode",
 ) -> StreamingDetokenizeScheduler:
-    from transformers import AutoTokenizer
-
     tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
     return StreamingDetokenizeScheduler(
         tokenizer=tokenizer,
