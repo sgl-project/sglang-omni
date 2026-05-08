@@ -10,6 +10,7 @@ from sglang.srt.managers.scheduler import GenerationBatchResult
 
 from sglang_omni_v1.model_runner.base import ModelRunner
 from sglang_omni_v1.scheduling.messages import OutgoingMessage
+from sglang_omni_v1.scheduling.sglang_backend import SGLangARRequestData
 
 
 class QwenTalkerModelRunner(ModelRunner):
@@ -71,18 +72,7 @@ class QwenTalkerModelRunner(ModelRunner):
 
         if result.next_token_ids is None:
             return
-        layer0_codes = result.next_token_ids
-        if layer0_codes.ndim == 1:
-            layer0_codes = layer0_codes.unsqueeze(1)
-        talker_hidden = result.logits_output.hidden_states
-        if isinstance(talker_hidden, torch.Tensor) and talker_hidden.ndim == 2:
-            talker_hidden = talker_hidden.unsqueeze(1)
-        self.model.code_predictor_forward(layer0_codes, talker_hidden)
-        schedule_batch.output_ids = result.next_token_ids
-        self._emit_code_chunks_and_feedback(
-            schedule_batch=schedule_batch,
-            requests=requests,
-        )
+        self._run_residual_code_prediction(result, schedule_batch, requests)
 
     def post_decode(
         self,
@@ -94,13 +84,31 @@ class QwenTalkerModelRunner(ModelRunner):
         if not self._feedback_enabled:
             return
 
-        batch_size = len(requests)
-        layer0_codes = result.next_token_ids.reshape(batch_size, 1)
+        self._run_residual_code_prediction(result, schedule_batch, requests)
+
+    def _run_residual_code_prediction(
+        self,
+        result: Any,
+        schedule_batch: Any,
+        requests: list,
+    ) -> None:
+        if result.next_token_ids is None:
+            raise RuntimeError(
+                "Talker post-hook requires sampled next_token_ids before residual "
+                "code prediction."
+            )
+        layer0_codes = result.next_token_ids.reshape(len(requests), 1)
         talker_hidden = result.logits_output.hidden_states
+        if not isinstance(talker_hidden, torch.Tensor):
+            raise RuntimeError(
+                "Talker post-hook requires logits_output.hidden_states; "
+                f"got {type(talker_hidden).__name__}."
+            )
         if talker_hidden.ndim == 2:
             talker_hidden = talker_hidden.unsqueeze(1)
-        # Keep CUDA graph capture limited to the talker logits path. Sampling is
-        # runner-owned, so residual code prediction runs here after sampling.
+
+        # Sampling stays outside graph capture; residual codebooks still need the
+        # sampled layer-0 codec token before we can stream the full codec chunk.
         self.model.code_predictor_forward(layer0_codes, talker_hidden)
         result.next_token_ids = layer0_codes[:, 0]
         schedule_batch.output_ids = result.next_token_ids
@@ -138,6 +146,7 @@ class QwenTalkerModelRunner(ModelRunner):
     def sample_before_post_decode(
         self, forward_batch: Any, schedule_batch: Any, requests: list
     ) -> bool:
+        """Run base sampling first; post_decode feeds next_token_ids to code prediction."""
         del forward_batch, schedule_batch, requests
         return True
 
@@ -211,9 +220,7 @@ class QwenTalkerModelRunner(ModelRunner):
             feedback_mask[row_idx] = True
 
     @staticmethod
-    def _data_has_next_decode_input(data: Any) -> bool:
-        if data is None:
-            return False
+    def _data_has_next_decode_input(data: SGLangARRequestData) -> bool:
         if not data.pending_feedback_queue:
             return False
         if data.pending_text_queue:
@@ -248,7 +255,7 @@ class QwenTalkerModelRunner(ModelRunner):
     @staticmethod
     def _combine_feedback_with_next_text(
         *,
-        data: Any,
+        data: SGLangARRequestData,
         device: torch.device,
         dtype: torch.dtype,
     ) -> torch.Tensor | None:
