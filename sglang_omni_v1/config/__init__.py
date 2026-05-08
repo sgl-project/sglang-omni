@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 from sglang_omni_v1.config.compiler import (
+    CompiledPipeline,
     IpcRuntimeDir,
     PipelineRuntimePrep,
     compile_pipeline,
@@ -15,6 +16,7 @@ from sglang_omni_v1.config.schema import (
 )
 
 __all__ = [
+    "CompiledPipeline",
     "IpcRuntimeDir",
     "PipelineRuntimePrep",
     "compile_pipeline",

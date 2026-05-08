@@ -353,6 +353,22 @@ class MultiProcessPipelineRunner:
                     return
             await asyncio.sleep(5.0)
 
+    async def _cancel_completion_task(self) -> None:
+        if self._completion_task is None:
+            return
+        self._completion_task.cancel()
+        try:
+            await self._completion_task
+        except asyncio.CancelledError:
+            pass
+        self._completion_task = None
+
+    def _close_runtime_dir(self) -> None:
+        if self._ipc_runtime_dir is None:
+            return
+        self._ipc_runtime_dir.close()
+        self._ipc_runtime_dir = None
+
     async def stop(self) -> None:
         if not self._started:
             return
@@ -376,20 +392,13 @@ class MultiProcessPipelineRunner:
             return_exceptions=True,
         )
 
-        if self._completion_task is not None:
-            self._completion_task.cancel()
-            try:
-                await self._completion_task
-            except asyncio.CancelledError:
-                pass
+        await self._cancel_completion_task()
 
         await self._coordinator.stop()
         self._groups.clear()
         self._coordinator = None
 
-        if self._ipc_runtime_dir is not None:
-            self._ipc_runtime_dir.close()
-            self._ipc_runtime_dir = None
+        self._close_runtime_dir()
 
     async def _cleanup_on_failure(self) -> None:
         """Best-effort cleanup after a failed start()."""
@@ -404,13 +413,7 @@ class MultiProcessPipelineRunner:
                     p.join(timeout=2)
         self._groups.clear()
 
-        if self._completion_task is not None:
-            self._completion_task.cancel()
-            try:
-                await self._completion_task
-            except asyncio.CancelledError:
-                pass
-            self._completion_task = None
+        await self._cancel_completion_task()
 
         if self._coordinator is not None:
             try:
@@ -419,6 +422,4 @@ class MultiProcessPipelineRunner:
                 pass
             self._coordinator = None
 
-        if self._ipc_runtime_dir is not None:
-            self._ipc_runtime_dir.close()
-            self._ipc_runtime_dir = None
+        self._close_runtime_dir()

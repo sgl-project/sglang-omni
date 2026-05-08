@@ -190,13 +190,18 @@ async def _run_server(
             await mp_runner.stop()
             logger.info("Pipeline stopped.")
     else:
-        coordinator, stages, runtime_dir = compile_pipeline_core(pipeline_config)
+        compiled = compile_pipeline_core(pipeline_config)
+        coordinator = compiled.coordinator
+        stages = compiled.stages
+        runtime_dir = compiled.runtime_dir
         completion_task = None
         stage_tasks = []
+        coordinator_started = False
 
         try:
             stage_endpoints = _collect_stage_control_endpoints(stages)
             await coordinator.start()
+            coordinator_started = True
             completion_task = asyncio.create_task(coordinator.run_completion_loop())
             stage_tasks = [asyncio.create_task(s.run()) for s in stages]
             logger.info(
@@ -236,7 +241,11 @@ async def _run_server(
             if stage_tasks:
                 await asyncio.gather(*stage_tasks, return_exceptions=True)
             try:
-                await coordinator.stop()
+                if coordinator_started:
+                    await coordinator.stop()
+                else:
+                    with suppress(Exception):
+                        await coordinator.stop()
             finally:
                 if runtime_dir is not None:
                     runtime_dir.close()

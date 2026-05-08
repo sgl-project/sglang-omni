@@ -15,10 +15,12 @@ from fastapi import FastAPI
 pytest.importorskip("torch")
 
 from sglang_omni_v1.config.compiler import (
+    CompiledPipeline,
     IpcRuntimeDir,
     compile_pipeline,
     compile_pipeline_core,
     create_ipc_runtime_dir,
+    prepare_pipeline_runtime,
 )
 from sglang_omni_v1.config.schema import EndpointsConfig, PipelineConfig, StageConfig
 
@@ -106,18 +108,18 @@ class TestV1IpcRuntimeDir(unittest.TestCase):
             try:
                 self.assertNotEqual(runtime_a.path, runtime_b.path)
 
-                _coordinator_a, stages_a, _ = compile_pipeline_core(
+                compiled_a = compile_pipeline_core(
                     config,
                     ipc_runtime_dir=runtime_a,
                 )
-                _coordinator_b, stages_b, _ = compile_pipeline_core(
+                compiled_b = compile_pipeline_core(
                     config,
                     ipc_runtime_dir=runtime_b,
                 )
 
                 self.assertNotEqual(
-                    stages_a[0].control_plane.recv_endpoint,
-                    stages_b[0].control_plane.recv_endpoint,
+                    compiled_a.stages[0].control_plane.recv_endpoint,
+                    compiled_b.stages[0].control_plane.recv_endpoint,
                 )
             finally:
                 runtime_a.close()
@@ -167,7 +169,8 @@ class TestV1IpcRuntimeDir(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             config = _make_config(tmp_dir)
 
-            _coordinator, stages, runtime_dir = compile_pipeline_core(config)
+            compiled = compile_pipeline_core(config)
+            runtime_dir = compiled.runtime_dir
             self.assertIsNotNone(runtime_dir)
             runtime_path = runtime_dir.path
 
@@ -175,7 +178,7 @@ class TestV1IpcRuntimeDir(unittest.TestCase):
                 self.assertTrue(runtime_path.exists())
                 self.assertIn(
                     str(runtime_path),
-                    stages[0].control_plane.recv_endpoint,
+                    compiled.stages[0].control_plane.recv_endpoint,
                 )
             finally:
                 runtime_dir.close()
@@ -184,6 +187,46 @@ class TestV1IpcRuntimeDir(unittest.TestCase):
 
 
 class TestV1MultiProcessRunnerIpcCleanup(unittest.IsolatedAsyncioTestCase):
+    def test_mp_runner_uses_unique_ipc_endpoints_for_same_model_name(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config = _make_config(tmp_dir)
+            from sglang_omni_v1.pipeline.mp_runner import _build_stage_groups
+
+            prep_a = prepare_pipeline_runtime(config)
+            prep_b = prepare_pipeline_runtime(config)
+            self.assertIsNotNone(prep_a.runtime_dir)
+            self.assertIsNotNone(prep_b.runtime_dir)
+
+            try:
+                groups_a = _build_stage_groups(
+                    config,
+                    stages_cfg=prep_a.stages_cfg,
+                    name_map=prep_a.name_map,
+                    endpoints=prep_a.endpoints,
+                )
+                groups_b = _build_stage_groups(
+                    config,
+                    stages_cfg=prep_b.stages_cfg,
+                    name_map=prep_b.name_map,
+                    endpoints=prep_b.endpoints,
+                )
+
+                self.assertNotEqual(
+                    prep_a.endpoints["completion"],
+                    prep_b.endpoints["completion"],
+                )
+                self.assertNotEqual(
+                    groups_a[0].leader_endpoint,
+                    groups_b[0].leader_endpoint,
+                )
+            finally:
+                prep_a.runtime_dir.close()
+                prep_b.runtime_dir.close()
+
+            self.assertEqual(list(Path(tmp_dir).iterdir()), [])
+
     async def test_mp_runner_cleans_runtime_dir_on_start_failure(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             config = _make_config(tmp_dir)
@@ -244,7 +287,11 @@ class TestV1LauncherIpcCleanup(unittest.IsolatedAsyncioTestCase):
             ),
             patch(
                 "sglang_omni_v1.serve.launcher.compile_pipeline_core",
-                return_value=(coordinator, [stage], runtime_dir),
+                return_value=CompiledPipeline(
+                    coordinator=coordinator,
+                    stages=[stage],
+                    runtime_dir=runtime_dir,
+                ),
             ) as compile_pipeline_core,
             patch(
                 "sglang_omni_v1.serve.launcher.create_app",
@@ -257,7 +304,12 @@ class TestV1LauncherIpcCleanup(unittest.IsolatedAsyncioTestCase):
         ):
             await _run_server(config, port=8000)
 
-        compile_pipeline_core.assert_called_once_with(config)
+        compile_pipeline_core.assert_called_once()
+        call_args = compile_pipeline_core.call_args
+        called_config = (
+            call_args.args[0] if call_args.args else call_args.kwargs.get("config")
+        )
+        self.assertIs(called_config, config)
         create_app.assert_called_once()
 
         return coordinator, app
@@ -306,4 +358,43 @@ class TestV1LauncherIpcCleanup(unittest.IsolatedAsyncioTestCase):
                 )
 
             server_serve.assert_awaited_once()
+            self.assertFalse(runtime_path.exists())
+
+    async def test_single_process_launcher_preserves_pre_start_error(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config = _make_config(tmp_dir)
+            runtime_dir = create_ipc_runtime_dir(config)
+            self.assertIsNotNone(runtime_dir)
+            runtime_path = runtime_dir.path
+            coordinator = _FakeCoordinator()
+            coordinator.stop = AsyncMock(side_effect=RuntimeError("stop failed"))
+            stage = _FakeStage(f"ipc://{runtime_dir.path}/stage_preprocessing.sock")
+
+            from sglang_omni_v1.serve.launcher import _run_server
+
+            with (
+                patch(
+                    "sglang_omni_v1.serve.launcher._find_available_port",
+                    return_value=8000,
+                ),
+                patch(
+                    "sglang_omni_v1.serve.launcher.compile_pipeline_core",
+                    return_value=CompiledPipeline(
+                        coordinator=coordinator,
+                        stages=[stage],
+                        runtime_dir=runtime_dir,
+                    ),
+                ),
+                patch(
+                    "sglang_omni_v1.serve.launcher._collect_stage_control_endpoints",
+                    side_effect=RuntimeError("bad endpoints"),
+                ),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "bad endpoints"):
+                    await _run_server(config, port=8000)
+
+            self.assertFalse(coordinator.started)
+            coordinator.stop.assert_awaited_once()
             self.assertFalse(runtime_path.exists())

@@ -35,6 +35,9 @@ class IpcRuntimeDir:
     def __exit__(self, exc_type, exc, tb) -> None:
         self.close()
 
+    def __repr__(self) -> str:
+        return f"IpcRuntimeDir(path={self.path!s}, closed={self._closed})"
+
     def close(self) -> None:
         if self._closed:
             return
@@ -57,6 +60,15 @@ class PipelineRuntimePrep:
     endpoints: dict[str, str]
     runtime_dir: IpcRuntimeDir | None
     runtime_dir_created_here: bool
+
+
+@dataclass(frozen=True)
+class CompiledPipeline:
+    """Compiled coordinator, stages, and optional managed IPC runtime dir."""
+
+    coordinator: Coordinator
+    stages: list[Stage]
+    runtime_dir: IpcRuntimeDir | None
 
 
 def create_ipc_runtime_dir(config: PipelineConfig) -> IpcRuntimeDir | None:
@@ -117,7 +129,7 @@ def compile_pipeline_core(
     config: PipelineConfig,
     *,
     ipc_runtime_dir: IpcRuntimeDir | None = None,
-) -> tuple[Coordinator, list[Stage], IpcRuntimeDir | None]:
+) -> CompiledPipeline:
     """Build coordinator and stages, returning any managed runtime dir.
 
     Note (Chenyang, Ratish):
@@ -175,7 +187,11 @@ def compile_pipeline_core(
             prep.runtime_dir.close()
         raise
 
-    return coordinator, stages, prep.runtime_dir
+    return CompiledPipeline(
+        coordinator=coordinator,
+        stages=stages,
+        runtime_dir=prep.runtime_dir,
+    )
 
 
 def compile_pipeline(config: PipelineConfig) -> tuple[Coordinator, list[Stage]]:
@@ -187,11 +203,13 @@ def compile_pipeline(config: PipelineConfig) -> tuple[Coordinator, list[Stage]]:
     if config.endpoints.scheme == "ipc":
         raise ValueError(
             "compile_pipeline() does not manage IPC runtime-dir ownership. "
-            "Use compile_pipeline_core(...) or MultiProcessPipelineRunner."
+            "Use MultiProcessPipelineRunner, or compile_pipeline_core(...) "
+            "directly: either let it self-manage the runtime dir, or pair it "
+            "with create_ipc_runtime_dir(...) for caller-managed ownership."
         )
 
-    coordinator, stages, _ = compile_pipeline_core(config)
-    return coordinator, stages
+    compiled = compile_pipeline_core(config)
+    return compiled.coordinator, compiled.stages
 
 
 def _compile_stage(
