@@ -215,31 +215,8 @@ class ModelRunner:
         schedule_batch: Any,
         requests: list,
     ) -> Any:
-        self._apply_repetition_penalty(logits_output, requests)
         self._apply_codec_suppress_tokens(logits_output, requests)
         return self.tp_worker.model_runner.sample(logits_output, forward_batch)
-
-    def _apply_repetition_penalty(self, logits_output: Any, requests: list) -> None:
-        logits = logits_output.next_token_logits
-        if logits is None or logits.ndim != 2:
-            return
-        for row_idx, sched_req in enumerate(requests):
-            data = sched_req.data
-            req = data.req
-            penalty = req.sampling_params.repetition_penalty
-            if penalty == 1.0:
-                continue
-            output_ids = req.output_ids
-            if not output_ids:
-                continue
-            token_ids = list(set(output_ids))
-            valid = [t for t in token_ids if 0 <= t < logits.shape[1]]
-            if not valid:
-                continue
-            idx = torch.tensor(valid, dtype=torch.long, device=logits.device)
-            scores = logits[row_idx, idx]
-            scores = torch.where(scores > 0, scores / penalty, scores * penalty)
-            logits[row_idx, idx] = scores
 
     def _apply_codec_suppress_tokens(self, logits_output: Any, requests: list) -> None:
         logits = logits_output.next_token_logits
