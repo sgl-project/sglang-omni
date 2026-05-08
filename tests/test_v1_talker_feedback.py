@@ -15,55 +15,6 @@ def _sched_req(**data_kwargs):
     return SimpleNamespace(data=data)
 
 
-def test_talker_sampling_path_applies_seed_buffer_before_shared_sampling() -> None:
-    sampling_info = SimpleNamespace(
-        temperatures=torch.empty(2, 1),
-        sampling_seed=None,
-    )
-    forward_batch = SimpleNamespace(sampling_info=sampling_info)
-    logits_output = SimpleNamespace(next_token_logits=torch.zeros(2, 4))
-    captured = {}
-
-    def sample(logits, batch):
-        captured["logits"] = logits
-        captured["sampling_seed"] = batch.sampling_info.sampling_seed
-        return torch.tensor([1, 2])
-
-    runner = object.__new__(QwenTalkerModelRunner)
-    runner._sampling_seed_buffer = torch.empty(2, dtype=torch.int64)
-    runner.tp_worker = SimpleNamespace(model_runner=SimpleNamespace(sample=sample))
-    requests = [
-        _sched_req(
-            suppress_tokens=[],
-            req=SimpleNamespace(
-                sampling_params=SimpleNamespace(sampling_seed=None),
-                _codec_suppress_tokens=[],
-            ),
-        ),
-        _sched_req(
-            suppress_tokens=[],
-            req=SimpleNamespace(
-                sampling_params=SimpleNamespace(sampling_seed=7),
-                _codec_suppress_tokens=[],
-            ),
-        ),
-    ]
-
-    next_token_ids = runner._sample_next_token_ids(
-        logits_output,
-        forward_batch,
-        schedule_batch=None,
-        requests=requests,
-    )
-
-    assert torch.equal(next_token_ids, torch.tensor([1, 2]))
-    assert captured["logits"] is logits_output
-    assert torch.equal(captured["sampling_seed"], torch.tensor([0, 7]))
-    assert (
-        captured["sampling_seed"].data_ptr() == runner._sampling_seed_buffer.data_ptr()
-    )
-
-
 def test_take_next_decode_input_embed_consumes_feedback_and_text_fifo() -> None:
     sched_req = _sched_req(
         pending_feedback_queue=deque([torch.tensor([1.0, 2.0])]),

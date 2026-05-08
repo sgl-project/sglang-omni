@@ -27,11 +27,6 @@ class QwenTalkerModelRunner(ModelRunner):
         self._outbox = outbox
         self._code2wav_target = code2wav_target
         self._feedback_enabled = bool(feedback_enabled)
-        self._sampling_seed_buffer = torch.zeros(
-            tp_worker.server_args.max_running_requests,
-            dtype=torch.int64,
-            device=self.device,
-        )
 
     def execute(self, scheduler_output: Any):
         return super().execute(scheduler_output)
@@ -145,32 +140,6 @@ class QwenTalkerModelRunner(ModelRunner):
     ) -> bool:
         del forward_batch, schedule_batch, requests
         return True
-
-    def _sample_next_token_ids(
-        self,
-        logits_output: Any,
-        forward_batch: Any,
-        schedule_batch: Any,
-        requests: list,
-    ) -> Any:
-        self._apply_talker_sampling_seed(forward_batch, requests)
-        return super()._sample_next_token_ids(
-            logits_output,
-            forward_batch,
-            schedule_batch,
-            requests,
-        )
-
-    def _apply_talker_sampling_seed(self, forward_batch: Any, requests: list) -> None:
-        sampling_info = forward_batch.sampling_info
-        batch_size = len(requests)
-        seeds = self._sampling_seed_buffer[:batch_size]
-        seeds.zero_()
-        for row_idx, sched_req in enumerate(requests):
-            sampling_seed = sched_req.data.req.sampling_params.sampling_seed
-            if sampling_seed is not None:
-                seeds[row_idx] = int(sampling_seed)
-        sampling_info.sampling_seed = seeds
 
     def is_decode_batch_ready(self, schedule_batch: Any) -> bool:
         if not self._feedback_enabled or not schedule_batch.forward_mode.is_decode():

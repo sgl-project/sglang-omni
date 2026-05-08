@@ -761,7 +761,6 @@ def make_talker_scheduler_adapters(
             for token_id in range(max(codec_vocab_size - 1024, 0), codec_vocab_size)
             if token_id != codec_eos_id
         ]
-        seed = params.get("seed")
         return {
             "max_new_tokens": int(params.get("talker_max_new_tokens", 4096)),
             "temperature": float(params.get("talker_temperature", 0.9)),
@@ -770,7 +769,7 @@ def make_talker_scheduler_adapters(
             "repetition_penalty": float(params.get("talker_repetition_penalty", 1.05)),
             "codec_eos_id": codec_eos_id if codec_eos_id >= 0 else None,
             "suppress_tokens": suppress_tokens,
-            "seed": int(seed) if seed is not None else None,
+            "seed": params.get("seed"),
         }
 
     def request_builder(payload: StagePayload) -> SGLangARRequestData:
