@@ -24,6 +24,9 @@ def configure_talker_server_args(
     """
 
     want_cuda_graph = not bool(getattr(server_args, "disable_cuda_graph", False))
+    # Qwen talker preserves its codec-sampling seed tensor outside the graph;
+    # FlashInfer cannot consume seeded top-k/top-p sampling.
+    server_args.sampling_backend = "pytorch"
     if feedback_enabled:
         server_args.disable_overlap_schedule = True
         if want_cuda_graph:
