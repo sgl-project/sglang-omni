@@ -61,11 +61,11 @@ jobs:
         if: always()
         shell: bash
         run: |
-          if omni-s2pro/bin/python -c "import torch" 2>/dev/null; then
+          if omni-s2pro/bin/python -c "import torch; import av; from whisper.normalizers import EnglishTextNormalizer" 2>/dev/null; then
             rm -rf /github/home/omni-s2pro
             cp -p -r omni-s2pro /github/home/
           else
-            echo "::warning::Skipping cache save — venv appears corrupted (torch not importable)"
+            echo "::warning::Skipping cache save — venv appears incomplete or corrupted"
           fi
 
   stage-1-non-streaming:

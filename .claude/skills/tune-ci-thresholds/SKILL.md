@@ -52,11 +52,11 @@ constant-naming convention not covered by `match_metric()` in `tune.py`
 - Model weights and datasets from the config cached locally. `precheck`
   lists each asset as `✓` / `✗` and, on any miss, prints the exact
   `huggingface-cli download …` commands to run.
-- Env vars under `auto_env` in the model's config.yaml (currently
-  `HF_ENDPOINT=https://hf-mirror.com`) are set automatically at tune.py
-  startup. The user does NOT need to `export` them. Proxy env vars
-  (`http_proxy` etc.) are left alone — the tests' own `disable_proxy()`
-  helper strips them for loopback calls, matching real CI.
+- Env vars under `auto_env` in the model's config.yaml are set
+  automatically at tune.py startup. The user does NOT need to `export`
+  them. Proxy env vars (`http_proxy` etc.) are left alone — the tests'
+  own `disable_proxy()` helper strips them for loopback calls, matching
+  real CI.
 - No GPU processes holding memory. If all GPUs are busy, precheck
   fails with the busy PID list and the user must free them. The skill
   does **not** run `delete_gpu_process.sh` or any other kill — never
@@ -70,6 +70,75 @@ yourself and retry.
 - `/tune-ci-thresholds` — default model, all stages, 5 repeats
 - `/tune-ci-thresholds --model qwen3-omni-v1 --stages mmsu_accuracy --repeats 3`
 - `/tune-ci-thresholds --resume <run-dir>` — continue an interrupted run
+
+Common Qwen3-Omni V1 presets:
+```
+# Full threshold stages, excluding docs smoke tests.
+python .claude/skills/tune-ci-thresholds/tune.py --model qwen3-omni-v1 run \
+  --stages mmmu,mmmu_talker,mmsu,mmsu_talker,tts,videoamme,videoamme_talker,videomme,videomme_talker \
+  --repeats 5 --output-dir .tune-runs/<timestamp>_qwen3-omni-v1_cuda-graph_no-docs_r5
+```
+
+## Environment and networking notes
+- Some CI-reproduction hosts need outbound network proxies or a
+  HuggingFace mirror. Keep those values environment-specific and do not
+  commit real proxy hosts, ports, usernames, tokens, or personal paths
+  into this skill.
+- Prefer explicit environment variables in the same shell command that
+  starts `tune.py` when a long run may be backgrounded. Use placeholders
+  in docs and replace them only in the local shell:
+  `TUNE_VENV_PYTHON=<venv-python>`,
+  `ALL_PROXY=<proxy-url>`,
+  `HTTP_PROXY=<proxy-url>`,
+  `HTTPS_PROXY=<proxy-url>`,
+  `NO_PROXY=localhost,127.0.0.1,::1`,
+  `HF_ENDPOINT=<hf-endpoint>`,
+  `HF_HOME=<hf-cache-dir>`, and
+  `HF_HUB_DISABLE_XET=1` when the environment needs them.
+- Do not wrap pytest with `proxychains4`: it can proxy loopback health
+  checks and make local server startup look broken. Use proxy env vars
+  plus `NO_PROXY` for local addresses.
+- If HuggingFace cache locks appear, inspect active pytest/server/download
+  processes first. Only stop processes from the current calibration run.
+
+## Performance optimization checks
+- When recalibrating after performance work, first identify what changed
+  since the last comparable calibration. Use the previous report's
+  provenance commit, the current `precheck.json` commit, or a
+  user-provided baseline, then inspect the commit range before judging
+  the numbers:
+  ```
+  git log --oneline <previous-calibration-commit>..<current-calibration-commit>
+  git diff --stat <previous-calibration-commit>..<current-calibration-commit>
+  ```
+- From that range, list the performance-sensitive changes and their
+  expected enablement signals. Examples: CUDA Graph replay, torch.compile,
+  fused kernels, batching/concurrency changes, cache changes, scheduler
+  changes, or preprocessing/audio/video pipeline changes.
+- Do not infer that an optimization is active from config alone. For
+  every relevant optimization, look for runtime evidence in logs, metrics,
+  or profiler output that proves the optimized path actually ran. For
+  example, CUDA Graph may require `cuda graph: True` decode logs; a future
+  torch.compile change may require compile/cache-hit logs or other
+  project-specific evidence.
+- If performance is unexpectedly flat or worse, inspect both configuration
+  and propagation through server args, runners, schedulers, and stage
+  factories before applying thresholds. An optimization being configured
+  and the optimized path actually being used are different things.
+- In the final report, separate accuracy, WER, and speed conclusions.
+  Explain which stages match the expected optimization gains and which
+  remain dominated by other work such as preprocessing, long prefill,
+  audio synthesis, ASR, or video decoding.
+
+## Monitoring and resume
+- Prefer short polling intervals (about 60-120 seconds) for long
+  calibration jobs. Individual pytest stages usually finish within a
+  few minutes; very long waits hide useful progress.
+- If `run.log` stops changing, inspect the active pytest/server process
+  and the per-test `run{k}.log` before declaring the run hung.
+- On interruptions, resume with the same `--output-dir --resume`; do not
+  rerun completed repeats from scratch unless the run directory is
+  corrupt.
 
 ## Steps I follow
 1. Run `python .claude/skills/tune-ci-thresholds/tune.py models-list` to
@@ -181,8 +250,15 @@ yourself and retry.
    per metric: `source_kind` (bare / nested), `symbol`, `subkey`,
    `concurrency`, `worst_op`, `per_run_raw`, `worst_rounded` (already
    rounded to `display.digits`), `current_raw`, and `direction`
-   (`tightens` / `loosens` / `equal` / `unknown`). Use `worst_rounded`
-   as the value to write — never re-round, never multiply by `scale`.
+   (`tightens` / `loosens` / `equal` / `unknown`). By default, use
+   `worst_rounded` as the value to write — never re-round, never
+   multiply by `scale`.
+   For non-speed pass/fail thresholds, do not allow display rounding to
+   make the written threshold stricter than the observed worst-of-N: for
+   `worst_op == "min"` the written value must be `<= worst_raw`, and for
+   `worst_op == "max"` the written value must be `>= worst_raw`. If
+   `worst_rounded` violates that bound, write `worst_raw` with enough
+   decimal places to preserve the observed value.
 
    **Mode `full`**: for every metric in every non-docs stage, edit the
    test file using the rules in (b) below, no questions asked.
@@ -197,15 +273,17 @@ yourself and retry.
        (one per metric) showing:
          - the per-run raw values from `per_run_raw`
          - the current literal in the test file (`current_raw`)
-         - the proposed `worst_rounded` value
+         - the proposed bounded worst-of-N value
          - direction tag
        with options:
          1. `Keep current` — leave the literal as-is
-         2. `Apply worst-of-N (<value>)` — write `worst_rounded`
+         2. `Apply worst-of-N (<value>)` — write the proposed bounded worst-of-N value
          3. `Custom value` — the user supplies a number; write it
             verbatim after validating it parses as a float
        Always include the "Other" free-text fallback (the
-       AskUserQuestion harness adds it automatically).
+       AskUserQuestion harness adds it automatically). If the user gives
+       a custom numeric value, validate that it parses as a float and
+       write exactly that raw value (not the display-scaled value).
 
    (b) **Edit rules** (used by both `full` and `smart`'s auto-apply
    path, and after the user accepts in interactive prompts):
@@ -255,12 +333,25 @@ yourself and retry.
        the section at all.
 
    **(d) List every changed `<file>:<symbol> = <new>` tuple in one
-   chat message** and stop. Do NOT run pytest, commit, or push.
+   chat message**. If the user has explicitly authorized commit/push,
+   continue to the version-control step below; otherwise stop.
+
+10. **Optional version-control step — only with explicit user
+    authorization.**
+    - Keep `.tune-runs/` local and uncommitted.
+    - Commit only threshold/test edits, skill/config changes, and a
+      lightweight markdown summary under `docs/` if requested.
+    - Run repository pre-commit hooks normally; do not bypass hooks.
+    - Push only the current feature/calibration branch, never `main`.
+    - Provide a PR description with: summary, calibration run directory,
+      CUDA Graph evidence, worst-of-N highlights, threshold-apply policy,
+      and test/pre-commit verification.
 
 ## What I do not do
 - Set up container / venv / caches
 - Check out branches, install packages
-- Run `apply_slack`, generate patch files, commit, push
+- Run `apply_slack` or generate patch files
+- Commit or push without explicit user authorization
 - Edit test files outside of the explicit apply prompt (step 9)
 - Ask mid-run for confirmation. (I may ask once up front for missing
   model/stages/repeats — step 2 — and once at the end for the apply
