@@ -146,7 +146,12 @@ class QwenTalkerModelRunner(ModelRunner):
     def sample_before_post_decode(
         self, forward_batch: Any, schedule_batch: Any, requests: list
     ) -> bool:
-        """Run base sampling first; post_decode feeds next_token_ids to code prediction."""
+        """Talker requires base-runner sampling to complete before post_decode runs.
+
+        post_decode reads ``result.next_token_ids`` and feeds it into
+        ``code_predictor_forward``. Do not flip this to False without moving
+        sampling back into the model forward path.
+        """
         del forward_batch, schedule_batch, requests
         return True
 
