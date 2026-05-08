@@ -36,6 +36,7 @@ from sglang_omni_v1.client.audio import (
     encode_audio,
     to_numpy,
 )
+from sglang_omni_v1.proto.messages import CLIENT_ERROR_CODES
 from sglang_omni_v1.serve.protocol import (
     ChatCompletionAudio,
     ChatCompletionChoice,
@@ -60,6 +61,9 @@ _BAD_REQUEST_MARKERS = (
 
 
 def _is_bad_request_error(exc: Exception) -> bool:
+    error_code = getattr(exc, "error_code", None)
+    if error_code is not None:
+        return error_code in CLIENT_ERROR_CODES
     message = str(exc)
     return any(marker in message for marker in _BAD_REQUEST_MARKERS)
 

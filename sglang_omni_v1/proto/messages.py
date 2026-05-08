@@ -6,6 +6,24 @@ from typing import Any
 
 from sglang_omni_v1.proto.request import StagePayload
 
+_ERROR_PATTERNS: dict[str, tuple[str, ...]] = {
+    "PROMPT_TOO_LONG": (
+        "longer than the model's context length",
+        "Requested token count exceeds the model's maximum context length",
+    ),
+}
+
+CLIENT_ERROR_CODES: set[str] = set(_ERROR_PATTERNS.keys())
+
+
+def classify_error_code(message: str) -> str | None:
+    """Classify an error message into a structured error code."""
+    for code, patterns in _ERROR_PATTERNS.items():
+        for pattern in patterns:
+            if pattern in message:
+                return code
+    return None
+
 
 @dataclass
 class DataReadyMessage:
@@ -147,9 +165,10 @@ class CompleteMessage:
     success: bool
     result: Any = None
     error: str | None = None
+    error_code: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        d = {
             "type": "complete",
             "request_id": self.request_id,
             "from_stage": self.from_stage,
@@ -157,6 +176,9 @@ class CompleteMessage:
             "result": self.result,
             "error": self.error,
         }
+        if self.error_code is not None:
+            d["error_code"] = self.error_code
+        return d
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "CompleteMessage":
@@ -166,6 +188,7 @@ class CompleteMessage:
             success=d["success"],
             result=d.get("result"),
             error=d.get("error"),
+            error_code=d.get("error_code"),
         )
 
 

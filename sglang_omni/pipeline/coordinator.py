@@ -21,6 +21,11 @@ from sglang_omni.proto import (
 logger = logging.getLogger(__name__)
 
 
+def _attach_error_code(exc: RuntimeError, error_code: str | None) -> None:
+    if error_code is not None:
+        exc.error_code = error_code  # type: ignore[attr-defined]
+
+
 class Coordinator:
     """Central coordinator for the multi-stage pipeline.
 
@@ -133,7 +138,9 @@ class Coordinator:
                 msg = await queue.get()
                 if isinstance(msg, CompleteMessage):
                     if not msg.success:
-                        raise RuntimeError(msg.error or "Unknown error")
+                        exc = RuntimeError(msg.error or "Unknown error")
+                        _attach_error_code(exc, msg.error_code)
+                        raise exc
                     yield msg
                     completed_stages.add(msg.from_stage)
                     if (
@@ -288,7 +295,9 @@ class Coordinator:
             if request_id in self._completion_futures:
                 future = self._completion_futures[request_id]
                 if not future.done():
-                    future.set_exception(RuntimeError(msg.error or "Unknown error"))
+                    exc = RuntimeError(msg.error or "Unknown error")
+                    _attach_error_code(exc, msg.error_code)
+                    future.set_exception(exc)
             if request_id in self._stream_queues:
                 await self._stream_queues[request_id].put(msg)
             self._requests.pop(request_id, None)

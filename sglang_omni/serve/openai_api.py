@@ -36,6 +36,7 @@ from sglang_omni.client.audio import (
     encode_audio,
     to_numpy,
 )
+from sglang_omni.proto.messages import CLIENT_ERROR_CODES
 from sglang_omni.serve.protocol import (
     ChatCompletionAudio,
     ChatCompletionChoice,
@@ -52,6 +53,7 @@ from sglang_omni.serve.protocol import (
 
 logger = logging.getLogger(__name__)
 MIME_TO_FORMAT = {mime: fmt for fmt, mime in FORMAT_MIME_TYPES.items()}
+
 _BAD_REQUEST_MARKERS = (
     "longer than the model's context length",
     "Requested token count exceeds the model's maximum context length",
@@ -59,12 +61,9 @@ _BAD_REQUEST_MARKERS = (
 
 
 def _is_bad_request_error(exc: Exception) -> bool:
-    # TODO (Qiujiang): replace with structured error code.
-    # Worker → coordinator currently serializes exceptions to str, so
-    # 400 vs 500 must be recovered via phrase match. See Ccyest's proposal
-    # on #330 for the end-to-end design (CompleteMessage.error_code).
-    # These markers must stay in sync with SGLang's ValueError wording:
-    #   - managers/tokenizer_manager.py:761, 791
+    error_code = getattr(exc, "error_code", None)
+    if error_code is not None:
+        return error_code in CLIENT_ERROR_CODES
     message = str(exc)
     return any(marker in message for marker in _BAD_REQUEST_MARKERS)
 
