@@ -33,6 +33,11 @@ class EncoderRequestData:
     skip_result: dict[str, Any] | None = None
 
 
+def _resolve_sampling_seed(params: dict[str, Any]) -> int | None:
+    seed = params.get("seed")
+    return int(seed) if seed is not None else None
+
+
 def build_encoder_request(
     state: PipelineState, *, stage_name: str
 ) -> EncoderRequestData:
@@ -343,7 +348,7 @@ def build_sglang_thinker_request(
     repetition_penalty = params.get("repetition_penalty", 1.0)
     stop = params.get("stop") or []
     stop_token_ids = params.get("stop_token_ids") or []
-    seed = params.get("seed")
+    seed = _resolve_sampling_seed(params)
 
     # Build SGLang SamplingParams and normalize
     sampling_params = SamplingParams(
@@ -769,7 +774,7 @@ def make_talker_scheduler_adapters(
             "repetition_penalty": float(params.get("talker_repetition_penalty", 1.05)),
             "codec_eos_id": codec_eos_id if codec_eos_id >= 0 else None,
             "suppress_tokens": suppress_tokens,
-            "seed": params.get("seed"),
+            "seed": _resolve_sampling_seed(params),
         }
 
     def request_builder(payload: StagePayload) -> SGLangARRequestData:
