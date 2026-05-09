@@ -33,9 +33,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--health-failure-threshold", type=int, default=3)
     parser.add_argument("--health-success-threshold", type=int, default=2)
     parser.add_argument("--health-check-timeout-secs", type=int, default=5)
-    parser.add_argument("--health-check-interval-secs", type=int, default=60)
+    parser.add_argument("--health-check-interval-secs", type=int, default=10)
     parser.add_argument("--health-check-endpoint", default="/health")
-    parser.add_argument("--route-log-path", default=None)
     parser.add_argument("--log-level", default="info")
     return parser
 
@@ -43,6 +42,8 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> None:
     args = build_parser().parse_args(argv)
     logging.basicConfig(level=getattr(logging, args.log_level.upper(), logging.INFO))
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
     config = build_router_config(
         worker_urls=args.worker_urls,
         host=args.host,
@@ -57,7 +58,6 @@ def main(argv: Sequence[str] | None = None) -> None:
         health_check_timeout_secs=args.health_check_timeout_secs,
         health_check_interval_secs=args.health_check_interval_secs,
         health_check_endpoint=args.health_check_endpoint,
-        route_log_path=args.route_log_path,
     )
     logger.info(
         f"Starting SGLang-Omni Router on {config.host}:{config.port} | "

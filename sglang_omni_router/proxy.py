@@ -1,17 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Proxy request forwarding, response relay, and route logging."""
+"""Proxy request forwarding and response relay."""
 
 from __future__ import annotations
 
-import asyncio
 import json
-import logging
-import threading
-import time
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any
 
 import httpx
@@ -21,8 +15,6 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from sglang_omni_router.config import Capability, RouterConfig
 from sglang_omni_router.selector import NoEligibleWorkerError, WorkerSelector
 from sglang_omni_router.worker import Worker
-
-logger = logging.getLogger(__name__)
 
 HOP_BY_HOP_HEADERS = {
     "connection",
@@ -56,31 +48,6 @@ class RouteMetadata:
     stream: bool
     required_capabilities: set[Capability]
     idempotency_key_present: bool
-
-
-class RouteLogger:
-    def __init__(self, path: str | None) -> None:
-        self._path = Path(path) if path else None
-        self._lock = threading.Lock()
-        if self._path is not None:
-            self._path.parent.mkdir(parents=True, exist_ok=True)
-
-    def write(self, event: dict[str, Any]) -> None:
-        if self._path is None:
-            return
-
-        record = {
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            **event,
-        }
-        line = json.dumps(record, sort_keys=True)
-        with self._lock:
-            try:
-                with self._path.open("a", encoding="utf-8") as f:
-                    f.write(line)
-                    f.write("\n")
-            except OSError as exc:
-                logger.warning(f"failed to write Omni router route log: {exc}")
 
 
 def infer_required_capabilities(
@@ -226,13 +193,11 @@ class ProxyHandler:
         workers: list[Worker],
         selector: WorkerSelector,
         client: httpx.AsyncClient,
-        route_logger: RouteLogger,
     ) -> None:
         self._config = config
         self._workers = workers
         self._selector = selector
         self._client = client
-        self._route_logger = route_logger
 
     async def forward_model_request(self, request: Request, path: str) -> Response:
         content_length = request.headers.get("content-length")
@@ -275,10 +240,6 @@ class ProxyHandler:
         metadata: RouteMetadata,
         worker: Worker,
     ) -> Response:
-        start = time.monotonic()
-        status_code: int | None = None
-        response_bytes = 0
-        error_type: str | None = None
         with worker.request_guard():
             try:
                 response = await self._client.request(
@@ -287,8 +248,6 @@ class ProxyHandler:
                     content=body,
                     headers=filter_request_headers(request),
                 )
-                status_code = response.status_code
-                response_bytes = len(response.content)
                 headers = filter_response_headers(response.headers, buffered=True)
                 headers.update(self._diagnostic_headers(worker, metadata))
                 return Response(
@@ -297,28 +256,11 @@ class ProxyHandler:
                     headers=headers,
                     media_type=response.headers.get("content-type"),
                 )
-            except Exception as exc:
-                error_type = type(exc).__name__
+            except Exception:
                 return JSONResponse(
                     status_code=502,
                     content={"error": {"message": "upstream request failed"}},
                     headers=self._diagnostic_headers(worker, metadata),
-                )
-            finally:
-                self._log_route(
-                    event="request_complete",
-                    request=request,
-                    metadata=metadata,
-                    worker=worker,
-                    path=path,
-                    status_code=status_code,
-                    start=start,
-                    request_bytes=len(body),
-                    response_bytes=response_bytes,
-                    completed=error_type is None,
-                    client_disconnected=False,
-                    error_type=error_type,
-                    ttfb_s=None,
                 )
 
     async def _forward_streaming(
@@ -329,7 +271,6 @@ class ProxyHandler:
         metadata: RouteMetadata,
         worker: Worker,
     ) -> StreamingResponse | JSONResponse:
-        start = time.monotonic()
         worker.increment_active()
         try:
             upstream_request = self._client.build_request(
@@ -339,74 +280,21 @@ class ProxyHandler:
                 headers=filter_request_headers(request),
             )
             upstream = await self._client.send(upstream_request, stream=True)
-        except Exception as exc:
+        except Exception:
             worker.decrement_active()
-            self._log_route(
-                event="request_complete",
-                request=request,
-                metadata=metadata,
-                worker=worker,
-                path=path,
-                status_code=None,
-                start=start,
-                request_bytes=len(body),
-                response_bytes=0,
-                completed=False,
-                client_disconnected=False,
-                error_type=type(exc).__name__,
-                ttfb_s=None,
-            )
             return JSONResponse(
                 status_code=502,
                 content={"error": {"message": "upstream request failed"}},
                 headers=self._diagnostic_headers(worker, metadata),
             )
 
-        response_bytes = 0
-        first_byte_at: float | None = None
-        completed = False
-        client_disconnected = False
-        error_type: str | None = None
-
         async def iter_bytes():
-            nonlocal response_bytes, first_byte_at, completed
-            nonlocal client_disconnected, error_type
             try:
                 async for chunk in upstream.aiter_bytes():
-                    if chunk and first_byte_at is None:
-                        first_byte_at = time.monotonic()
-                    response_bytes += len(chunk)
                     yield chunk
-                completed = True
-            except asyncio.CancelledError:
-                client_disconnected = True
-                raise
-            except Exception as exc:
-                error_type = type(exc).__name__
-                raise
             finally:
                 await upstream.aclose()
                 worker.decrement_active()
-                self._log_route(
-                    event=_stream_log_event(
-                        completed=completed,
-                        client_disconnected=client_disconnected,
-                    ),
-                    request=request,
-                    metadata=metadata,
-                    worker=worker,
-                    path=path,
-                    status_code=upstream.status_code,
-                    start=start,
-                    request_bytes=len(body),
-                    response_bytes=response_bytes,
-                    completed=completed,
-                    client_disconnected=client_disconnected,
-                    error_type=error_type,
-                    ttfb_s=(
-                        first_byte_at - start if first_byte_at is not None else None
-                    ),
-                )
 
         headers = filter_response_headers(upstream.headers)
         headers.update(self._diagnostic_headers(worker, metadata))
@@ -428,62 +316,9 @@ class ProxyHandler:
             "X-SGLang-Omni-Route-Attempt": "1",
         }
 
-    def _log_route(
-        self,
-        *,
-        event: str,
-        request: Request,
-        metadata: RouteMetadata,
-        worker: Worker,
-        path: str,
-        status_code: int | None,
-        start: float,
-        request_bytes: int,
-        response_bytes: int,
-        completed: bool,
-        client_disconnected: bool,
-        error_type: str | None,
-        ttfb_s: float | None,
-    ) -> None:
-        self._route_logger.write(
-            {
-                "event": event,
-                "request_id": metadata.request_id,
-                "method": request.method,
-                "path": path,
-                "model": metadata.model,
-                "stream": metadata.stream,
-                "required_capabilities": sorted(metadata.required_capabilities),
-                "worker_id": worker.worker_id,
-                "worker_url": worker.url,
-                "policy": self._config.policy,
-                "worker_health_state": worker.state,
-                "worker_disabled": worker.disabled,
-                "worker_routable": worker.is_routable,
-                "attempt": 1,
-                "status_code": status_code,
-                "duration_s": time.monotonic() - start,
-                "ttfb_s": ttfb_s,
-                "request_bytes": request_bytes,
-                "response_bytes": response_bytes,
-                "completed": completed,
-                "client_disconnected": client_disconnected,
-                "error_type": error_type,
-                "idempotency_key_present": metadata.idempotency_key_present,
-            }
-        )
-
 
 def _exceeds_max_size(value: str, max_size: int) -> bool:
     try:
         return int(value) > max_size
     except ValueError:
         return True
-
-
-def _stream_log_event(*, completed: bool, client_disconnected: bool) -> str:
-    if completed:
-        return "stream_complete"
-    if client_disconnected:
-        return "client_disconnected"
-    return "stream_error"

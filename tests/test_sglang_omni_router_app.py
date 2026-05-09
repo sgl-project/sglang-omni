@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-from pathlib import Path
 
 import httpx
 import pytest
@@ -17,8 +16,6 @@ def _request_netloc(request: httpx.Request) -> str:
 
 
 def _router_config(
-    route_log_path: Path | None = None,
-    *,
     policy: str = "round_robin",
     max_payload_size: int = 512 * 1024 * 1024,
     worker_configs: list[WorkerConfig] | None = None,
@@ -33,7 +30,6 @@ def _router_config(
         max_payload_size=max_payload_size,
         health_success_threshold=1,
         health_failure_threshold=1,
-        route_log_path=str(route_log_path) if route_log_path else None,
     )
 
 
@@ -247,12 +243,9 @@ def test_models_merge_reports_per_worker_failures_when_all_routable_workers_fail
     }
 
 
-def test_round_robin_proxies_raw_bytes_logs_route_and_alternates_workers(
-    tmp_path: Path,
-) -> None:
+def test_round_robin_proxies_raw_bytes_and_alternates_workers() -> None:
     seen_bodies: list[bytes] = []
     seen_workers: list[str] = []
-    route_log_path = tmp_path / "routes.jsonl"
 
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/health":
@@ -273,7 +266,7 @@ def test_round_robin_proxies_raw_bytes_logs_route_and_alternates_workers(
         raise AssertionError(f"unexpected request path: {request.url.path}")
 
     async_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
-    app = create_app(_router_config(route_log_path), client=async_client)
+    app = create_app(_router_config(), client=async_client)
     body = {
         "model": "qwen3-omni",
         "request_id": "req-1",
@@ -295,49 +288,8 @@ def test_round_robin_proxies_raw_bytes_logs_route_and_alternates_workers(
     assert json.loads(seen_bodies[0]) == body
     assert seen_workers == ["worker-a:8101", "worker-b:8102"]
 
-    routes = [json.loads(line) for line in route_log_path.read_text().splitlines()]
-    assert [route["worker_url"] for route in routes] == [
-        "http://worker-a:8101",
-        "http://worker-b:8102",
-    ]
-    assert {route["policy"] for route in routes} == {"round_robin"}
-    assert {tuple(route["required_capabilities"]) for route in routes} == {("chat",)}
-    assert {route["worker_health_state"] for route in routes} == {"healthy"}
-    assert {route["worker_disabled"] for route in routes} == {False}
-    assert {route["worker_routable"] for route in routes} == {True}
-    assert all(route["completed"] is True for route in routes)
 
-
-def test_route_log_write_failure_does_not_fail_proxy(tmp_path: Path) -> None:
-    route_log_path = tmp_path / "routes" / "routes.jsonl"
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/health":
-            return httpx.Response(200, json={"status": "healthy"}, request=request)
-        if request.url.path == "/v1/chat/completions":
-            return httpx.Response(200, json={"ok": True}, request=request)
-        raise AssertionError(f"unexpected request path: {request.url.path}")
-
-    async_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
-    app = create_app(_router_config(route_log_path), client=async_client)
-    route_log_path.parent.rmdir()
-
-    with TestClient(app) as client:
-        response = client.post(
-            "/v1/chat/completions",
-            json={"model": "qwen3-omni", "messages": []},
-        )
-
-    assert response.status_code == 200
-    assert response.json() == {"ok": True}
-    assert all(worker.active_requests == 0 for worker in app.state.workers)
-
-
-def test_upstream_request_failure_logs_and_cleans_active_count(
-    tmp_path: Path,
-) -> None:
-    route_log_path = tmp_path / "routes.jsonl"
-
+def test_upstream_request_failure_returns_502_and_cleans_active_count() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/health":
             return httpx.Response(200, json={"status": "healthy"}, request=request)
@@ -346,7 +298,7 @@ def test_upstream_request_failure_logs_and_cleans_active_count(
         raise AssertionError(f"unexpected request path: {request.url.path}")
 
     async_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
-    app = create_app(_router_config(route_log_path), client=async_client)
+    app = create_app(_router_config(), client=async_client)
 
     with TestClient(app) as client:
         response = client.post(
@@ -356,17 +308,9 @@ def test_upstream_request_failure_logs_and_cleans_active_count(
 
     assert response.status_code == 502
     assert all(worker.active_requests == 0 for worker in app.state.workers)
-    route = json.loads(route_log_path.read_text().splitlines()[0])
-    assert route["event"] == "request_complete"
-    assert route["completed"] is False
-    assert route["error_type"] == "ConnectError"
 
 
-def test_streaming_upstream_error_logs_and_cleans_active_count(
-    tmp_path: Path,
-) -> None:
-    route_log_path = tmp_path / "routes.jsonl"
-
+def test_streaming_upstream_error_cleans_active_count() -> None:
     class BrokenStream(httpx.AsyncByteStream):
         async def __aiter__(self):
             yield b"data: start\n\n"
@@ -385,7 +329,7 @@ def test_streaming_upstream_error_logs_and_cleans_active_count(
         raise AssertionError(f"unexpected request path: {request.url.path}")
 
     async_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
-    app = create_app(_router_config(route_log_path), client=async_client)
+    app = create_app(_router_config(), client=async_client)
 
     with TestClient(app) as client:
         with pytest.raises(RuntimeError, match="stream boom"):
@@ -397,10 +341,6 @@ def test_streaming_upstream_error_logs_and_cleans_active_count(
                 b"".join(response.iter_bytes())
 
     assert all(worker.active_requests == 0 for worker in app.state.workers)
-    route = json.loads(route_log_path.read_text().splitlines()[0])
-    assert route["event"] == "stream_error"
-    assert route["completed"] is False
-    assert route["error_type"] == "RuntimeError"
 
 
 def test_least_request_avoids_worker_with_active_stream_load() -> None:

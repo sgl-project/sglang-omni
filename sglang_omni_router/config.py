@@ -109,9 +109,8 @@ class RouterConfig(BaseModel):
     health_failure_threshold: int = 3
     health_success_threshold: int = 2
     health_check_timeout_secs: int = 5
-    health_check_interval_secs: int = 60
+    health_check_interval_secs: int = 10
     health_check_endpoint: str = "/health"
-    route_log_path: str | None = None
 
     @field_validator("port")
     @classmethod
@@ -168,9 +167,8 @@ def build_router_config(
     health_failure_threshold: int = 3,
     health_success_threshold: int = 2,
     health_check_timeout_secs: int = 5,
-    health_check_interval_secs: int = 60,
+    health_check_interval_secs: int = 10,
     health_check_endpoint: str = "/health",
-    route_log_path: str | None = None,
 ) -> RouterConfig:
     workers = [WorkerConfig(url=url, model=model) for url in worker_urls]
     return RouterConfig(
@@ -187,5 +185,4 @@ def build_router_config(
         health_check_timeout_secs=health_check_timeout_secs,
         health_check_interval_secs=health_check_interval_secs,
         health_check_endpoint=health_check_endpoint,
-        route_log_path=route_log_path,
     )

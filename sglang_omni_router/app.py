@@ -16,7 +16,7 @@ from pydantic import ValidationError
 
 from sglang_omni_router.config import RouterConfig, WorkerConfig
 from sglang_omni_router.health import HealthChecker
-from sglang_omni_router.proxy import ProxyHandler, RouteLogger, filter_request_headers
+from sglang_omni_router.proxy import ProxyHandler, filter_request_headers
 from sglang_omni_router.selector import WorkerSelector
 from sglang_omni_router.worker import (
     HEALTH_STATE_UNHEALTHY,
@@ -39,13 +39,11 @@ def create_app(
         client = httpx.AsyncClient(timeout=timeout, limits=limits)
     health_checker = HealthChecker(workers=workers, config=config, client=client)
     selector = WorkerSelector(config.policy)
-    route_logger = RouteLogger(config.route_log_path)
     proxy = ProxyHandler(
         config=config,
         workers=workers,
         selector=selector,
         client=client,
-        route_logger=route_logger,
     )
 
     @asynccontextmanager
