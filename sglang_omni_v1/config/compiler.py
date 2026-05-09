@@ -36,7 +36,7 @@ class IpcRuntimeDir:
         self.close()
 
     def __repr__(self) -> str:
-        return f"IpcRuntimeDir(path={self.path!s}, closed={self._closed})"
+        return f"IpcRuntimeDir(path={self.path!r}, closed={self._closed})"
 
     def close(self) -> None:
         if self._closed:

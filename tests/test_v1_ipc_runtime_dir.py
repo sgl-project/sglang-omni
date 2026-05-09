@@ -243,27 +243,37 @@ class TestV1MultiProcessRunnerIpcCleanup(unittest.IsolatedAsyncioTestCase):
 
             self.assertEqual(list(Path(tmp_dir).iterdir()), [])
 
-    async def test_mp_runner_cleans_runtime_dir_on_stop(self) -> None:
+    async def test_mp_runner_starts_two_same_model_instances_and_cleans_on_stop(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             config = _make_config(tmp_dir)
             from sglang_omni_v1.pipeline.mp_runner import MultiProcessPipelineRunner
 
-            runner = MultiProcessPipelineRunner(config)
-            await runner.start(timeout=30.0)
+            runner_a = MultiProcessPipelineRunner(config)
+            runner_b = MultiProcessPipelineRunner(config)
 
-            runtime_path = None
             try:
+                await runner_a.start(timeout=30.0)
+                await runner_b.start(timeout=30.0)
+
                 runtime_dirs = [
                     path for path in Path(tmp_dir).iterdir() if path.is_dir()
                 ]
-                self.assertEqual(len(runtime_dirs), 1)
-                runtime_path = runtime_dirs[0]
-                self.assertTrue(runtime_path.exists())
+                self.assertEqual(len(runtime_dirs), 2)
+                self.assertNotEqual(
+                    runner_a.coordinator.control_plane.completion_endpoint,
+                    runner_b.coordinator.control_plane.completion_endpoint,
+                )
+                self.assertNotEqual(
+                    runner_a._groups[0].leader_endpoint,
+                    runner_b._groups[0].leader_endpoint,
+                )
             finally:
-                await runner.stop()
+                await runner_b.stop()
+                await runner_a.stop()
 
-            self.assertIsNotNone(runtime_path)
-            self.assertFalse(runtime_path.exists())
+            self.assertEqual(list(Path(tmp_dir).iterdir()), [])
 
 
 class TestV1LauncherIpcCleanup(unittest.IsolatedAsyncioTestCase):
