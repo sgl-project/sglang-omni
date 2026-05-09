@@ -10,7 +10,6 @@ from sglang.srt.managers.scheduler import GenerationBatchResult
 
 from sglang_omni_v1.model_runner.base import ModelRunner
 from sglang_omni_v1.scheduling.messages import OutgoingMessage
-from sglang_omni_v1.scheduling.sglang_backend import SGLangARRequestData
 
 
 class QwenTalkerModelRunner(ModelRunner):
@@ -48,6 +47,8 @@ class QwenTalkerModelRunner(ModelRunner):
         schedule_batch: Any,
         requests: list,
     ) -> GenerationBatchResult | None:
+        del forward_batch
+        del schedule_batch
         if not self._feedback_enabled:
             return None
 
@@ -56,7 +57,7 @@ class QwenTalkerModelRunner(ModelRunner):
                 "Talker decode reached model runner without ready feedback/text input"
             )
 
-        del forward_batch, schedule_batch
+        self.model.prepare_decode_buffers(requests)
         self._write_feedback_buffers(requests)
         return None
 
@@ -72,7 +73,18 @@ class QwenTalkerModelRunner(ModelRunner):
 
         if result.next_token_ids is None:
             return
-        self._run_residual_code_prediction(result, schedule_batch, requests)
+        layer0_codes = result.next_token_ids
+        if layer0_codes.ndim == 1:
+            layer0_codes = layer0_codes.unsqueeze(1)
+        talker_hidden = result.logits_output.hidden_states
+        if isinstance(talker_hidden, torch.Tensor) and talker_hidden.ndim == 2:
+            talker_hidden = talker_hidden.unsqueeze(1)
+        self.model.code_predictor_forward(layer0_codes, talker_hidden)
+        schedule_batch.output_ids = result.next_token_ids
+        self._emit_code_chunks_and_feedback(
+            schedule_batch=schedule_batch,
+            requests=requests,
+        )
 
     def post_decode(
         self,
@@ -84,33 +96,8 @@ class QwenTalkerModelRunner(ModelRunner):
         if not self._feedback_enabled:
             return
 
-        self._run_residual_code_prediction(result, schedule_batch, requests)
-
-    def _run_residual_code_prediction(
-        self,
-        result: Any,
-        schedule_batch: Any,
-        requests: list,
-    ) -> None:
-        if result.next_token_ids is None:
-            raise RuntimeError(
-                "Talker post-hook requires sampled next_token_ids before residual "
-                "code prediction."
-            )
-        layer0_codes = result.next_token_ids.reshape(len(requests), 1)
-        talker_hidden = result.logits_output.hidden_states
-        if not isinstance(talker_hidden, torch.Tensor):
-            raise RuntimeError(
-                "Talker post-hook requires logits_output.hidden_states; "
-                f"got {type(talker_hidden).__name__}."
-            )
-        if talker_hidden.ndim == 2:
-            talker_hidden = talker_hidden.unsqueeze(1)
-
-        # Sampling stays outside graph capture; residual codebooks still need the
-        # sampled layer-0 codec token before we can stream the full codec chunk.
-        self.model.code_predictor_forward(layer0_codes, talker_hidden)
-        result.next_token_ids = layer0_codes[:, 0]
+        batch_size = len(requests)
+        result.next_token_ids = self.model._sampled_token_ids[:batch_size].clone()
         schedule_batch.output_ids = result.next_token_ids
         self._emit_code_chunks_and_feedback(
             schedule_batch=schedule_batch,
@@ -146,20 +133,14 @@ class QwenTalkerModelRunner(ModelRunner):
     def sample_before_post_decode(
         self, forward_batch: Any, schedule_batch: Any, requests: list
     ) -> bool:
-        """Talker requires base-runner sampling to complete before post_decode runs.
-
-        post_decode reads ``result.next_token_ids`` and feeds it into
-        ``code_predictor_forward``. Do not flip this to False without moving
-        sampling back into the model forward path.
-        """
         del forward_batch, schedule_batch, requests
-        return True
+        return False
 
     def is_decode_batch_ready(self, schedule_batch: Any) -> bool:
         if not self._feedback_enabled or not schedule_batch.forward_mode.is_decode():
             return True
         return all(
-            self._data_has_next_decode_input(req._omni_data)
+            self._data_has_next_decode_input(getattr(req, "_omni_data", None))
             for req in schedule_batch.reqs
         )
 
@@ -225,12 +206,19 @@ class QwenTalkerModelRunner(ModelRunner):
             feedback_mask[row_idx] = True
 
     @staticmethod
-    def _data_has_next_decode_input(data: SGLangARRequestData) -> bool:
-        if not data.pending_feedback_queue:
+    def _data_has_next_decode_input(data: Any) -> bool:
+        if data is None:
             return False
-        if data.pending_text_queue:
+        pending_feedback_queue = getattr(data, "pending_feedback_queue", None)
+        if not pending_feedback_queue:
+            return False
+        pending_text_queue = getattr(data, "pending_text_queue", None)
+        if pending_text_queue:
             return True
-        return bool(data.thinker_chunks_done and data.tts_pad_embed is not None)
+        return bool(
+            getattr(data, "thinker_chunks_done", False)
+            and getattr(data, "tts_pad_embed", None) is not None
+        )
 
     def _requests_ready_for_decode(self, requests: list) -> bool:
         return all(
@@ -260,22 +248,28 @@ class QwenTalkerModelRunner(ModelRunner):
     @staticmethod
     def _combine_feedback_with_next_text(
         *,
-        data: SGLangARRequestData,
+        data: Any,
         device: torch.device,
         dtype: torch.dtype,
     ) -> torch.Tensor | None:
-        feedback = QwenTalkerModelRunner._peek_left(data.pending_feedback_queue)
+        pending_feedback_queue = getattr(data, "pending_feedback_queue", None)
+        feedback = QwenTalkerModelRunner._peek_left(pending_feedback_queue)
         if feedback is None:
             return None
 
         combined = feedback.to(device=device, dtype=dtype).reshape(-1)
-        next_text = QwenTalkerModelRunner._peek_left(data.pending_text_queue)
+        next_text = QwenTalkerModelRunner._peek_left(
+            getattr(data, "pending_text_queue", None)
+        )
         if next_text is not None:
             combined = combined + next_text.to(
                 device=device,
                 dtype=dtype,
             ).reshape(-1)
-        elif data.thinker_chunks_done and data.tts_pad_embed is not None:
+        elif (
+            bool(getattr(data, "thinker_chunks_done", False))
+            and getattr(data, "tts_pad_embed", None) is not None
+        ):
             combined = combined + data.tts_pad_embed.to(
                 device=device,
                 dtype=dtype,
@@ -300,8 +294,8 @@ class QwenTalkerModelRunner(ModelRunner):
         if combined is None:
             return None
 
-        QwenTalkerModelRunner._pop_left(data.pending_feedback_queue)
-        if data.pending_text_queue:
+        QwenTalkerModelRunner._pop_left(getattr(data, "pending_feedback_queue", None))
+        if getattr(data, "pending_text_queue", None):
             QwenTalkerModelRunner._pop_left(data.pending_text_queue)
         return combined
 

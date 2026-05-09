@@ -138,6 +138,8 @@ def create_talker_scheduler(
         model_arch_override="Qwen3OmniTalker",
         weight_prefix=weight_prefix,
     )
+    if hasattr(model_worker.model_runner, "sampler"):
+        model_worker.model_runner.model._sampler = model_worker.model_runner.sampler
     if want_cuda_graph:
         server_args.disable_cuda_graph = False
         model_worker.model_runner.init_device_graphs()
