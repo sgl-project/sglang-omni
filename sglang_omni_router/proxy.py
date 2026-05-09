@@ -43,6 +43,9 @@ REQUEST_HEADERS_TO_STRIP = HOP_BY_HOP_HEADERS | {
 RESPONSE_HEADERS_TO_STRIP = HOP_BY_HOP_HEADERS | {
     "content-length",
 }
+BUFFERED_RESPONSE_HEADERS_TO_STRIP = RESPONSE_HEADERS_TO_STRIP | {
+    "content-encoding",
+}
 ROUTE_METADATA_JSON_LIMIT_BYTES = 1024 * 1024
 
 
@@ -77,7 +80,7 @@ class RouteLogger:
                     f.write(line)
                     f.write("\n")
             except OSError as exc:
-                logger.warning("failed to write Omni router route log: %s", exc)
+                logger.warning(f"failed to write Omni router route log: {exc}")
 
 
 def infer_required_capabilities(
@@ -195,11 +198,18 @@ def filter_request_headers(request: Request) -> dict[str, str]:
     }
 
 
-def filter_response_headers(headers: httpx.Headers) -> dict[str, str]:
+def filter_response_headers(
+    headers: httpx.Headers,
+    *,
+    buffered: bool = False,
+) -> dict[str, str]:
+    headers_to_strip = (
+        BUFFERED_RESPONSE_HEADERS_TO_STRIP if buffered else RESPONSE_HEADERS_TO_STRIP
+    )
     return {
         key: value
         for key, value in headers.items()
-        if key.lower() not in RESPONSE_HEADERS_TO_STRIP
+        if key.lower() not in headers_to_strip
     }
 
 
@@ -250,7 +260,7 @@ class ProxyHandler:
         except NoEligibleWorkerError:
             return JSONResponse(
                 status_code=503,
-                content={"error": {"message": "no healthy upstream"}},
+                content={"error": {"message": "no eligible upstream"}},
             )
 
         if metadata.stream:
@@ -279,7 +289,7 @@ class ProxyHandler:
                 )
                 status_code = response.status_code
                 response_bytes = len(response.content)
-                headers = filter_response_headers(response.headers)
+                headers = filter_response_headers(response.headers, buffered=True)
                 headers.update(self._diagnostic_headers(worker, metadata))
                 return Response(
                     content=response.content,
@@ -447,7 +457,6 @@ class ProxyHandler:
                 "worker_id": worker.worker_id,
                 "worker_url": worker.url,
                 "policy": self._config.policy,
-                "worker_state": worker.state,
                 "worker_health_state": worker.state,
                 "worker_disabled": worker.disabled,
                 "worker_routable": worker.is_routable,

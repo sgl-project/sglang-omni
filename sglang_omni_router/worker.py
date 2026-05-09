@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import logging
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -16,6 +17,8 @@ HEALTH_STATE_DEAD = "dead"
 HEALTH_STATE_HEALTHY = "healthy"
 HEALTH_STATE_UNKNOWN = "unknown"
 HEALTH_STATE_UNHEALTHY = "unhealthy"
+
+logger = logging.getLogger(__name__)
 
 
 def worker_id_from_url(url: str) -> str:
@@ -78,17 +81,25 @@ class Worker:
         self.config = config
 
     def mark_dead(self, *, error: str | None = None) -> None:
+        previous_state = self.state
         self.state = HEALTH_STATE_DEAD
         if error is not None:
             self.last_error = error
+        self._log_state_transition(previous_state, self.state)
 
     def clear_dead(self) -> None:
+        previous_state = self.state
         if self.is_dead:
             self.state = HEALTH_STATE_UNKNOWN
         self.consecutive_failures = 0
         self.consecutive_successes = 0
+        self._log_state_transition(previous_state, self.state)
 
     def set_disabled(self, disabled: bool) -> None:
+        if self.disabled != disabled:
+            logger.info(
+                f"worker={self.display_id} disabled={disabled}",
+            )
         self.disabled = disabled
 
     def increment_active(self) -> None:
@@ -116,9 +127,7 @@ class Worker:
         error: str | None = None,
         checked_at: datetime | None = None,
     ) -> None:
-        if self.is_dead:
-            return
-
+        previous_state = self.state
         self.last_checked_at = checked_at or datetime.now(timezone.utc)
         self.last_status_code = status_code
         self.last_error = error
@@ -128,14 +137,42 @@ class Worker:
             self.consecutive_failures = 0
             if self.consecutive_successes >= success_threshold:
                 self.state = HEALTH_STATE_HEALTHY
+            self._log_state_transition(previous_state, self.state)
             return
 
         self.consecutive_failures += 1
         self.consecutive_successes = 0
-        if self.consecutive_failures >= failure_threshold:
-            self.state = HEALTH_STATE_DEAD
+        failure_threshold_reached = self.consecutive_failures >= failure_threshold
+        failure_threshold_crossed = self.consecutive_failures == failure_threshold
+        if failure_threshold_reached:
+            self.state = HEALTH_STATE_UNHEALTHY
         elif not self.is_healthy:
             self.state = HEALTH_STATE_UNHEALTHY
+        self._log_state_transition(
+            previous_state,
+            self.state,
+            warn=failure_threshold_crossed,
+        )
+        if failure_threshold_crossed and previous_state == self.state:
+            logger.warning(
+                f"worker={self.display_id} "
+                f"health_failure_threshold_reached "
+                f"failures={self.consecutive_failures} threshold={failure_threshold}",
+            )
+
+    def _log_state_transition(
+        self,
+        previous_state: WorkerState,
+        next_state: WorkerState,
+        *,
+        warn: bool = False,
+    ) -> None:
+        if previous_state == next_state:
+            return
+        log = logger.warning if warn or next_state == HEALTH_STATE_DEAD else logger.info
+        log(
+            f"worker={self.display_id} health_state={previous_state}->{next_state}",
+        )
 
     def to_dict(self) -> dict[str, object]:
         return {

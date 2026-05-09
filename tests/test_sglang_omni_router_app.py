@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 
@@ -61,16 +62,22 @@ def test_health_surfaces_distinguish_router_readiness_from_pool_health() -> None
         health = client.get("/health")
         assert health.status_code == 200
         assert health.json()["healthy_workers"] == 1
-        assert health.json()["dead_workers"] == 1
+        assert health.json()["dead_workers"] == 0
+        assert health.json()["unhealthy_workers"] == 1
         assert health.json()["routable_workers"] == 1
 
         workers = client.get("/workers").json()["workers"]
-        assert [worker["health_state"] for worker in workers] == ["dead", "healthy"]
+        assert [worker["health_state"] for worker in workers] == [
+            "unhealthy",
+            "healthy",
+        ]
 
     health_status["worker-b:8102"] = 500
     app = create_app(_router_config(), client=async_client)
     with TestClient(app) as client:
-        assert client.get("/ready").status_code == 200
+        ready = client.get("/ready")
+        assert ready.status_code == 503
+        assert ready.json()["status"] == "not_ready"
         assert client.get("/health").status_code == 503
 
 
@@ -131,6 +138,45 @@ def test_worker_crud_updates_runtime_pool_and_validates_payloads() -> None:
         deleted = client.delete(f"/workers/{worker_id}")
         assert deleted.status_code == 200
         assert client.get(f"/workers/{worker_id}").status_code == 404
+
+
+def test_manual_dead_worker_is_not_recovered_by_health_check() -> None:
+    health_calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal health_calls
+        if request.url.path == "/health":
+            health_calls += 1
+            return httpx.Response(200, json={"status": "worker"}, request=request)
+        raise AssertionError(f"unexpected request path: {request.url.path}")
+
+    async_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    app = create_app(
+        _router_config(
+            worker_configs=[WorkerConfig(url="http://worker-a:8101")],
+        ),
+        client=async_client,
+    )
+
+    with TestClient(app) as client:
+        worker = app.state.workers[0]
+        worker_id = worker.worker_id
+        assert client.get("/ready").status_code == 200
+
+        marked_dead = client.put(f"/workers/{worker_id}", json={"is_dead": True})
+        assert marked_dead.status_code == 200
+        assert marked_dead.json()["worker"]["health_state"] == "dead"
+        assert client.get("/ready").status_code == 503
+
+        calls_before_check = health_calls
+        asyncio.run(app.state.health_checker.check_worker_health(worker))
+
+        assert health_calls == calls_before_check
+        assert worker.state == "dead"
+        health = client.get("/health")
+        assert health.status_code == 503
+        assert health.json()["dead_workers"] == 1
+        assert health.json()["unhealthy_workers"] == 0
 
 
 def test_models_merge_queries_only_healthy_workers_and_deduplicates() -> None:
@@ -218,7 +264,10 @@ def test_round_robin_proxies_raw_bytes_logs_route_and_alternates_workers(
             return httpx.Response(
                 200,
                 content=b'{"ok": true}',
-                headers={"content-type": "application/json"},
+                headers={
+                    "content-encoding": "identity",
+                    "content-type": "application/json",
+                },
                 request=request,
             )
         raise AssertionError(f"unexpected request path: {request.url.path}")
@@ -240,6 +289,7 @@ def test_round_robin_proxies_raw_bytes_logs_route_and_alternates_workers(
 
     assert first.status_code == 200
     assert second.status_code == 200
+    assert "content-encoding" not in first.headers
     assert first.headers["x-sglang-omni-request-id"] == "req-1"
     assert second.headers["x-sglang-omni-request-id"] == "req-2"
     assert json.loads(seen_bodies[0]) == body

@@ -60,20 +60,14 @@ def main(argv: Sequence[str] | None = None) -> None:
         route_log_path=args.route_log_path,
     )
     logger.info(
-        "Starting SGLang-Omni Router on %s:%s | workers=%s | policy=%s | "
-        "max_payload_size=%s | max_connections=%s | "
-        "health_failure_threshold=%s | health_success_threshold=%s | "
-        "health_check_interval_secs=%s | health_check_timeout_secs=%s",
-        config.host,
-        config.port,
-        len(config.worker_urls),
-        config.policy,
-        config.max_payload_size,
-        config.max_connections,
-        config.health_failure_threshold,
-        config.health_success_threshold,
-        config.health_check_interval_secs,
-        config.health_check_timeout_secs,
+        f"Starting SGLang-Omni Router on {config.host}:{config.port} | "
+        f"workers={len(config.worker_urls)} | policy={config.policy} | "
+        f"max_payload_size={config.max_payload_size} | "
+        f"max_connections={config.max_connections} | "
+        f"health_failure_threshold={config.health_failure_threshold} | "
+        f"health_success_threshold={config.health_success_threshold} | "
+        f"health_check_interval_secs={config.health_check_interval_secs} | "
+        f"health_check_timeout_secs={config.health_check_timeout_secs}"
     )
     uvicorn.run(
         create_app(config),

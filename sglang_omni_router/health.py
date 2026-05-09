@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Background worker health probing for the Omni router."""
+"""Background worker health checks for the Omni router."""
 
 from __future__ import annotations
 
@@ -28,14 +28,14 @@ class HealthChecker:
         self._client = client
         self._task: asyncio.Task[None] | None = None
 
-    async def check_once(self) -> None:
+    async def check_all_workers(self) -> None:
         await asyncio.gather(
-            *(self._check_worker(worker) for worker in self._workers),
+            *(self._check_worker_health(worker) for worker in self._workers),
             return_exceptions=False,
         )
 
-    async def check_worker(self, worker: Worker) -> None:
-        await self._check_worker(worker)
+    async def check_worker_health(self, worker: Worker) -> None:
+        await self._check_worker_health(worker)
 
     async def start(self) -> None:
         if self._task is None or self._task.done():
@@ -57,13 +57,13 @@ class HealthChecker:
             jitter = random.uniform(0.8, 1.2)
             await asyncio.sleep(interval * jitter)
             try:
-                await self.check_once()
+                await self.check_all_workers()
             except asyncio.CancelledError:
                 raise
             except Exception:
                 logger.exception("unexpected error in router health loop")
 
-    async def _check_worker(self, worker: Worker) -> None:
+    async def _check_worker_health(self, worker: Worker) -> None:
         if worker.is_dead:
             return
 

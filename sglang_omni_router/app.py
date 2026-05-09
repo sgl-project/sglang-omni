@@ -18,7 +18,12 @@ from sglang_omni_router.config import RouterConfig, WorkerConfig
 from sglang_omni_router.health import HealthChecker
 from sglang_omni_router.proxy import ProxyHandler, RouteLogger, filter_request_headers
 from sglang_omni_router.selector import WorkerSelector
-from sglang_omni_router.worker import Worker, build_workers
+from sglang_omni_router.worker import (
+    HEALTH_STATE_UNHEALTHY,
+    HEALTH_STATE_UNKNOWN,
+    Worker,
+    build_workers,
+)
 
 
 def create_app(
@@ -50,10 +55,10 @@ def create_app(
         app.state.http_client = client
         app.state.health_checker = health_checker
         app.state.proxy = proxy
-        # Initial probes satisfy the configured success threshold before the
-        # router starts accepting traffic; later probes run in the background.
+        # Initial health checks satisfy the configured success threshold before
+        # the router starts accepting traffic; later checks run in the background.
         for _ in range(config.health_success_threshold):
-            await health_checker.check_once()
+            await health_checker.check_all_workers()
         await health_checker.start()
         try:
             yield
@@ -82,15 +87,18 @@ def register_routes(app: FastAPI, workers: list[Worker], proxy: ProxyHandler) ->
 
     @app.get("/ready")
     async def ready() -> JSONResponse:
-        return JSONResponse(_pool_summary(workers, status="ready"))
+        return _worker_pool_status_response(
+            workers,
+            available_status="ready",
+            unavailable_status="not_ready",
+        )
 
     @app.get("/health")
     async def health() -> JSONResponse:
-        routable = sum(1 for worker in workers if worker.is_routable)
-        status_code = 200 if routable > 0 else 503
-        status = "healthy" if routable > 0 else "unhealthy"
-        return JSONResponse(
-            _pool_summary(workers, status=status), status_code=status_code
+        return _worker_pool_status_response(
+            workers,
+            available_status="healthy",
+            unavailable_status="unhealthy",
         )
 
     @app.post("/workers")
@@ -121,7 +129,7 @@ def register_routes(app: FastAPI, workers: list[Worker], proxy: ProxyHandler) ->
 
         worker = Worker(config=worker_config)
         workers.append(worker)
-        await app.state.health_checker.check_worker(worker)
+        await app.state.health_checker.check_worker_health(worker)
         return JSONResponse({"status": "ok", "worker": worker.to_dict()})
 
     @app.get("/workers")
@@ -163,7 +171,7 @@ def register_routes(app: FastAPI, workers: list[Worker], proxy: ProxyHandler) ->
                 worker.mark_dead()
             else:
                 worker.clear_dead()
-                await app.state.health_checker.check_worker(worker)
+                await app.state.health_checker.check_worker_health(worker)
 
         if "disabled" in payload:
             if not isinstance(payload["disabled"], bool):
@@ -219,6 +227,8 @@ def _pool_summary(
 ) -> dict[str, Any]:
     healthy = sum(1 for worker in workers if worker.is_healthy)
     dead = sum(1 for worker in workers if worker.is_dead)
+    unhealthy = sum(1 for worker in workers if worker.state == HEALTH_STATE_UNHEALTHY)
+    unknown = sum(1 for worker in workers if worker.state == HEALTH_STATE_UNKNOWN)
     disabled = sum(1 for worker in workers if worker.disabled)
     routable = sum(1 for worker in workers if worker.is_routable)
     payload: dict[str, Any] = {
@@ -227,12 +237,28 @@ def _pool_summary(
         "dead_workers": dead,
         "disabled_workers": disabled,
         "routable_workers": routable,
-        "unhealthy_workers": len(workers) - healthy,
+        "unhealthy_workers": unhealthy,
+        "unknown_workers": unknown,
         "total_workers": len(workers),
     }
     if include_workers:
         payload["workers"] = [worker.to_dict() for worker in workers]
     return payload
+
+
+def _worker_pool_status_response(
+    workers: list[Worker],
+    *,
+    available_status: str,
+    unavailable_status: str,
+) -> JSONResponse:
+    routable = sum(1 for worker in workers if worker.is_routable)
+    status_code = 200 if routable > 0 else 503
+    status = available_status if routable > 0 else unavailable_status
+    return JSONResponse(
+        _pool_summary(workers, status=status),
+        status_code=status_code,
+    )
 
 
 def _find_worker(workers: list[Worker], worker_id: str) -> Worker | None:
@@ -272,18 +298,18 @@ def _error_response(status_code: int, message: str) -> JSONResponse:
 async def _merge_models(
     workers: list[Worker], client: httpx.AsyncClient, request: Request
 ) -> JSONResponse:
-    healthy_workers = [worker for worker in workers if worker.is_routable]
-    if not healthy_workers:
+    routable_workers = [worker for worker in workers if worker.is_routable]
+    if not routable_workers:
         return JSONResponse(
             status_code=503,
-            content={"error": {"message": "no healthy upstream"}},
+            content={"error": {"message": "no routable upstream"}},
         )
 
     request_headers = filter_request_headers(request)
     query = request.url.query
     cards_by_id: dict[str, dict[str, Any]] = {}
     errors: dict[str, str] = {}
-    for worker in healthy_workers:
+    for worker in routable_workers:
         with worker.request_guard():
             url = (
                 f"{worker.url}/v1/models"
