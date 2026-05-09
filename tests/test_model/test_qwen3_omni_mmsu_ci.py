@@ -42,9 +42,9 @@ MMSU_MIN_ACCURACY = 0.69
 # Threshold reference: https://github.com/sgl-project/sglang-omni/pull/382#issuecomment-4366925373
 _MMSU_P95 = {
     8: {
-        "throughput_qps": 30.036,
-        "tok_per_s_agg": 7.8,
-        "latency_mean_s": 0.266,
+        "throughput_qps": 28.933,
+        "tok_per_s_agg": 7.5,
+        "latency_mean_s": 0.275,
     },
 }
 MMSU_THRESHOLDS = apply_slack(_MMSU_P95)

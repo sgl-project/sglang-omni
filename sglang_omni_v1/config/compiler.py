@@ -4,7 +4,12 @@
 from __future__ import annotations
 
 import inspect
+import logging
+import re
+import shutil
 import socket
+import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -14,35 +19,162 @@ from sglang_omni_v1.pipeline.control_plane import StageControlPlane
 from sglang_omni_v1.pipeline.stage.input import InputHandler
 from sglang_omni_v1.utils import import_string
 
+logger = logging.getLogger(__name__)
 
-def compile_pipeline(config: PipelineConfig) -> tuple[Coordinator, list[Stage]]:
-    """Build the coordinator and stage objects from the pipeline configuration."""
-    stages_cfg, name_map, entry_stage = config.apply_fusion()
-    endpoints = _allocate_endpoints(config, stages=stages_cfg)
 
-    coordinator = Coordinator(
-        completion_endpoint=endpoints["completion"],
-        abort_endpoint=endpoints["abort"],
+class IpcRuntimeDir:
+    """Runtime-owned IPC directory for one pipeline instance."""
+
+    def __init__(self, path: Path):
+        self.path = path
+        self._closed = False
+
+    def __enter__(self) -> IpcRuntimeDir:
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        self.close()
+
+    def __repr__(self) -> str:
+        return f"IpcRuntimeDir(path={self.path!r}, closed={self._closed})"
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            shutil.rmtree(self.path)
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            logger.warning("Failed to remove IPC runtime dir %s: %s", self.path, exc)
+
+
+@dataclass(frozen=True)
+class PipelineRuntimePrep:
+    """Prepared stage and endpoint state for one pipeline runtime."""
+
+    stages_cfg: list[StageConfig]
+    name_map: dict[str, str]
+    entry_stage: str
+    endpoints: dict[str, str]
+    runtime_dir: IpcRuntimeDir | None
+    runtime_dir_created_here: bool
+
+
+@dataclass(frozen=True)
+class CompiledPipeline:
+    """Compiled coordinator, stages, and optional managed IPC runtime dir."""
+
+    coordinator: Coordinator
+    stages: list[Stage]
+    runtime_dir: IpcRuntimeDir | None
+
+
+def create_ipc_runtime_dir(config: PipelineConfig) -> IpcRuntimeDir | None:
+    """Create a per-run IPC namespace for one pipeline instance."""
+    if config.endpoints.scheme != "ipc":
+        return None
+
+    base_root = Path(config.endpoints.base_path)
+    base_root.mkdir(parents=True, exist_ok=True)
+
+    namespace_prefix = re.sub(r"[^0-9a-z]+", "-", config.name.lower()).strip("-")
+    if not namespace_prefix:
+        namespace_prefix = "pipeline"
+    path = Path(tempfile.mkdtemp(prefix=f"{namespace_prefix}-", dir=base_root))
+    return IpcRuntimeDir(path)
+
+
+def prepare_pipeline_runtime(
+    config: PipelineConfig,
+    *,
+    ipc_runtime_dir: IpcRuntimeDir | None = None,
+) -> PipelineRuntimePrep:
+    """Prepare fused stages and endpoint allocation for one runtime.
+
+    Caller-provided IPC runtime dirs stay caller-owned. This helper only
+    closes runtime dirs it creates internally.
+    """
+    runtime_dir = ipc_runtime_dir
+    created_runtime_dir = None
+    if runtime_dir is None:
+        runtime_dir = create_ipc_runtime_dir(config)
+        created_runtime_dir = runtime_dir
+    runtime_dir_created_here = created_runtime_dir is not None
+
+    try:
+        stages_cfg, name_map, entry_stage = config.apply_fusion()
+        endpoints = _allocate_endpoints(
+            config,
+            stages=stages_cfg,
+            ipc_base_dir=runtime_dir.path if runtime_dir else None,
+        )
+    except Exception:
+        if created_runtime_dir is not None:
+            created_runtime_dir.close()
+        raise
+
+    return PipelineRuntimePrep(
+        stages_cfg=stages_cfg,
+        name_map=name_map,
         entry_stage=entry_stage,
-        terminal_stages=config.terminal_stages or None,
+        endpoints=endpoints,
+        runtime_dir=runtime_dir,
+        runtime_dir_created_here=runtime_dir_created_here,
     )
 
-    stage_endpoints = {s.name: endpoints[f"stage_{s.name}"] for s in stages_cfg}
 
-    stages: list[Stage] = []
-    for stage_cfg in stages_cfg:
-        stage = _compile_stage(
-            stage_cfg, config, stage_endpoints, endpoints, name_map=name_map
+def compile_pipeline_core(
+    config: PipelineConfig,
+    *,
+    ipc_runtime_dir: IpcRuntimeDir | None = None,
+) -> CompiledPipeline:
+    """Build coordinator and stages, returning any managed runtime dir.
+
+    Note (Chenyang, Ratish):
+        1. If the caller passes ipc_runtime_dir, that dir is caller-owned for
+           the full lifetime — this function never closes it, on success or on
+           failure. The same dir is returned back so callers can keep using it.
+        2. If the caller does not pass one, this function may create a new
+           runtime dir internally; that dir is closed automatically on failure
+           and returned to the caller on success. The caller MUST close it.
+    """
+    prep = prepare_pipeline_runtime(
+        config,
+        ipc_runtime_dir=ipc_runtime_dir,
+    )
+
+    try:
+        coordinator = Coordinator(
+            completion_endpoint=prep.endpoints["completion"],
+            abort_endpoint=prep.endpoints["abort"],
+            entry_stage=prep.entry_stage,
+            terminal_stages=config.terminal_stages or None,
         )
-        coordinator.register_stage(stage.name, stage.control_plane.recv_endpoint)
-        stages.append(stage)
 
-    # Wire streaming targets
-    stage_map = {stage.name: stage for stage in stages}
-    cfg_map = {s.name: s for s in stages_cfg}
-    for stage_cfg in stages_cfg:
-        stage = stage_map.get(stage_cfg.name)
-        if stage is not None:
+        stage_endpoints = {
+            s.name: prep.endpoints[f"stage_{s.name}"] for s in prep.stages_cfg
+        }
+
+        stages: list[Stage] = []
+        for stage_cfg in prep.stages_cfg:
+            stage = _compile_stage(
+                stage_cfg,
+                config,
+                stage_endpoints,
+                prep.endpoints,
+                name_map=prep.name_map,
+            )
+            coordinator.register_stage(stage.name, stage.control_plane.recv_endpoint)
+            stages.append(stage)
+
+        stage_map = {stage.name: stage for stage in stages}
+        cfg_map = {s.name: s for s in prep.stages_cfg}
+        for stage_cfg in prep.stages_cfg:
+            stage = stage_map.get(stage_cfg.name)
+            if stage is None:
+                continue
             _wire_stream_targets(
                 stage,
                 stage_cfg,
@@ -50,8 +182,34 @@ def compile_pipeline(config: PipelineConfig) -> tuple[Coordinator, list[Stage]]:
                 gpu_placement=config.gpu_placement,
                 cfg_map=cfg_map,
             )
+    except Exception:
+        if prep.runtime_dir_created_here and prep.runtime_dir is not None:
+            prep.runtime_dir.close()
+        raise
 
-    return coordinator, stages
+    return CompiledPipeline(
+        coordinator=coordinator,
+        stages=stages,
+        runtime_dir=prep.runtime_dir,
+    )
+
+
+def compile_pipeline(config: PipelineConfig) -> tuple[Coordinator, list[Stage]]:
+    """Build coordinator and stages directly from a pipeline config.
+
+    This thin helper is TCP-only. For IPC, use compile_pipeline_core(...)
+    with explicit runtime-dir cleanup, or MultiProcessPipelineRunner.
+    """
+    if config.endpoints.scheme == "ipc":
+        raise ValueError(
+            "compile_pipeline() does not manage IPC runtime-dir ownership. "
+            "Use MultiProcessPipelineRunner, or compile_pipeline_core(...) "
+            "directly: either let it self-manage the runtime dir, or pair it "
+            "with create_ipc_runtime_dir(...) for caller-managed ownership."
+        )
+
+    compiled = compile_pipeline_core(config)
+    return compiled.coordinator, compiled.stages
 
 
 def _compile_stage(
@@ -252,6 +410,7 @@ def _allocate_endpoints(
     config: PipelineConfig,
     *,
     stages: list[StageConfig],
+    ipc_base_dir: Path | None = None,
 ) -> dict[str, str]:
     endpoints: dict[str, str] = {}
 
@@ -261,8 +420,9 @@ def _allocate_endpoints(
         endpoints["abort"] = config.abort_endpoint
 
     if config.endpoints.scheme == "ipc":
-        base_dir = Path(config.endpoints.base_path) / config.name
-        base_dir.mkdir(parents=True, exist_ok=True)
+        if ipc_base_dir is None:
+            raise ValueError("IPC endpoint allocation requires an IPC runtime dir")
+        base_dir = ipc_base_dir
         endpoints.setdefault("completion", f"ipc://{base_dir}/completion.sock")
         endpoints.setdefault("abort", f"ipc://{base_dir}/abort.sock")
         for s in stages:

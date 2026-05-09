@@ -29,6 +29,7 @@ import logging
 import os
 import socket
 import time
+from contextlib import suppress
 from typing import Any
 
 import uvicorn
@@ -36,7 +37,7 @@ from fastapi import APIRouter
 from pydantic import BaseModel
 
 from sglang_omni_v1.client import Client
-from sglang_omni_v1.config import PipelineConfig, compile_pipeline
+from sglang_omni_v1.config import PipelineConfig, compile_pipeline_core
 from sglang_omni_v1.profiler.profiler_control import ProfilerControlClient
 from sglang_omni_v1.serve.openai_api import create_app
 
@@ -189,20 +190,26 @@ async def _run_server(
             await mp_runner.stop()
             logger.info("Pipeline stopped.")
     else:
-        coordinator, stages = compile_pipeline(pipeline_config)
-        stage_endpoints = _collect_stage_control_endpoints(stages)
-
-        # Start coordinator + all stages as async tasks
-        await coordinator.start()
-        completion_task = asyncio.create_task(coordinator.run_completion_loop())
-        stage_tasks = [asyncio.create_task(s.run()) for s in stages]
-        logger.info(
-            "Pipeline '%s' started (%d stages)",
-            pipeline_config.name,
-            len(stages),
-        )
+        compiled = compile_pipeline_core(pipeline_config)
+        coordinator = compiled.coordinator
+        stages = compiled.stages
+        runtime_dir = compiled.runtime_dir
+        completion_task = None
+        stage_tasks = []
+        coordinator_started = False
 
         try:
+            stage_endpoints = _collect_stage_control_endpoints(stages)
+            await coordinator.start()
+            coordinator_started = True
+            completion_task = asyncio.create_task(coordinator.run_completion_loop())
+            stage_tasks = [asyncio.create_task(s.run()) for s in stages]
+            logger.info(
+                "Pipeline '%s' started (%d stages)",
+                pipeline_config.name,
+                len(stages),
+            )
+
             cl_kwargs = client_kwargs or {}
             client = Client(coordinator, **cl_kwargs)
             app = create_app(
@@ -227,8 +234,21 @@ async def _run_server(
             logger.info("Shutting down pipeline …")
             for t in stage_tasks:
                 t.cancel()
-            completion_task.cancel()
-            await coordinator.stop()
+            if completion_task is not None:
+                completion_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await completion_task
+            if stage_tasks:
+                await asyncio.gather(*stage_tasks, return_exceptions=True)
+            try:
+                if coordinator_started:
+                    await coordinator.stop()
+                else:
+                    with suppress(Exception):
+                        await coordinator.stop()
+            finally:
+                if runtime_dir is not None:
+                    runtime_dir.close()
             logger.info("Pipeline stopped.")
 
 
