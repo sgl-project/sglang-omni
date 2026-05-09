@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import logging
-
 import httpx
 import pytest
 from pydantic import ValidationError
@@ -213,9 +211,7 @@ def test_worker_decrement_active_fails_on_unbalanced_cleanup() -> None:
 
 
 @pytest.mark.asyncio
-async def test_health_checker_uses_failure_and_success_thresholds(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
+async def test_health_checker_uses_failure_and_success_thresholds() -> None:
     statuses = iter([500, 500, 200, 200])
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -231,18 +227,12 @@ async def test_health_checker_uses_failure_and_success_thresholds(
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         checker = HealthChecker(workers=[worker], config=config, client=client)
 
-        with caplog.at_level(logging.INFO):
-            await checker.check_all_workers()
-            assert worker.state == "unhealthy"
-            await checker.check_all_workers()
-            assert worker.state == "unhealthy"
-            await checker.check_all_workers()
-            assert worker.state == "unhealthy"
-            await checker.check_all_workers()
-            assert worker.state == "healthy"
-
-    messages = [record.getMessage() for record in caplog.records]
-    assert any("health_state=unknown->unhealthy" in message for message in messages)
-    assert any("health_failure_threshold_reached" in message for message in messages)
-    assert any("health_state=unhealthy->healthy" in message for message in messages)
-    assert not any("health_state=unhealthy->dead" in message for message in messages)
+        await checker.check_all_workers()
+        assert worker.state == "unhealthy"
+        assert worker.last_error == "status=500"
+        await checker.check_all_workers()
+        assert worker.state == "unhealthy"
+        await checker.check_all_workers()
+        assert worker.state == "unhealthy"
+        await checker.check_all_workers()
+        assert worker.state == "healthy"

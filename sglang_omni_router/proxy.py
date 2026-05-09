@@ -4,8 +4,10 @@
 from __future__ import annotations
 
 import json
+import logging
 import uuid
 from dataclasses import dataclass
+from http import HTTPStatus
 from typing import Any
 
 import httpx
@@ -15,6 +17,8 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from sglang_omni_router.config import Capability, RouterConfig
 from sglang_omni_router.selector import NoEligibleWorkerError, WorkerSelector
 from sglang_omni_router.worker import Worker
+
+logger = logging.getLogger(__name__)
 
 HOP_BY_HOP_HEADERS = {
     "connection",
@@ -39,6 +43,14 @@ BUFFERED_RESPONSE_HEADERS_TO_STRIP = RESPONSE_HEADERS_TO_STRIP | {
     "content-encoding",
 }
 ROUTE_METADATA_JSON_LIMIT_BYTES = 1024 * 1024
+WORKER_REQUEST_FAILURE_STATUS_CODES = {
+    HTTPStatus.REQUEST_TIMEOUT.value,
+    HTTPStatus.TOO_MANY_REQUESTS.value,
+    HTTPStatus.INTERNAL_SERVER_ERROR.value,
+    HTTPStatus.BAD_GATEWAY.value,
+    HTTPStatus.SERVICE_UNAVAILABLE.value,
+    HTTPStatus.GATEWAY_TIMEOUT.value,
+}
 
 
 @dataclass
@@ -248,6 +260,12 @@ class ProxyHandler:
                     content=body,
                     headers=filter_request_headers(request),
                 )
+                if response.status_code in WORKER_REQUEST_FAILURE_STATUS_CODES:
+                    self._record_worker_request_failure(
+                        worker,
+                        status_code=response.status_code,
+                        error=_response_error(response),
+                    )
                 headers = filter_response_headers(response.headers, buffered=True)
                 headers.update(self._diagnostic_headers(worker, metadata))
                 return Response(
@@ -256,7 +274,11 @@ class ProxyHandler:
                     headers=headers,
                     media_type=response.headers.get("content-type"),
                 )
-            except Exception:
+            except Exception as exc:
+                self._record_worker_request_failure(
+                    worker,
+                    error=type(exc).__name__,
+                )
                 return JSONResponse(
                     status_code=502,
                     content={"error": {"message": "upstream request failed"}},
@@ -280,18 +302,48 @@ class ProxyHandler:
                 headers=filter_request_headers(request),
             )
             upstream = await self._client.send(upstream_request, stream=True)
-        except Exception:
+        except Exception as exc:
             worker.decrement_active()
+            self._record_worker_request_failure(
+                worker,
+                error=type(exc).__name__,
+            )
             return JSONResponse(
                 status_code=502,
                 content={"error": {"message": "upstream request failed"}},
                 headers=self._diagnostic_headers(worker, metadata),
             )
 
+        worker_failure_recorded = False
+
+        def record_worker_failure_once(
+            *,
+            status_code: int | None = None,
+            error: str | None = None,
+        ) -> None:
+            nonlocal worker_failure_recorded
+            if worker_failure_recorded:
+                return
+            worker_failure_recorded = True
+            self._record_worker_request_failure(
+                worker,
+                status_code=status_code,
+                error=error,
+            )
+
+        if upstream.status_code in WORKER_REQUEST_FAILURE_STATUS_CODES:
+            record_worker_failure_once(
+                status_code=upstream.status_code,
+                error=f"status={upstream.status_code}",
+            )
+
         async def iter_bytes():
             try:
                 async for chunk in upstream.aiter_bytes():
                     yield chunk
+            except Exception as exc:
+                record_worker_failure_once(error=type(exc).__name__)
+                raise
             finally:
                 await upstream.aclose()
                 worker.decrement_active()
@@ -316,9 +368,34 @@ class ProxyHandler:
             "X-SGLang-Omni-Route-Attempt": "1",
         }
 
+    def _record_worker_request_failure(
+        self,
+        worker: Worker,
+        *,
+        status_code: int | None = None,
+        error: str | None = None,
+    ) -> None:
+        if worker.is_dead:
+            return
+        worker.record_request_failure(
+            failure_threshold=self._config.health_failure_threshold,
+            status_code=status_code,
+            error=error,
+        )
+        logger.warning(
+            f"worker={worker.display_id} worker_request_failure "
+            f"status_code={status_code} error={error} "
+            f"consecutive_failures={worker.consecutive_failures}",
+        )
+
 
 def _exceeds_max_size(value: str, max_size: int) -> bool:
     try:
         return int(value) > max_size
     except ValueError:
         return True
+
+
+def _response_error(response: httpx.Response) -> str:
+    content = response.content[:512].decode("utf-8", errors="replace")
+    return content or f"status={response.status_code}"

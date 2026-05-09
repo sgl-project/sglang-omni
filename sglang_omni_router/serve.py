@@ -4,9 +4,11 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import logging
+import logging.config
 from collections.abc import Sequence
-from typing import get_args
+from typing import Any, get_args
 
 import uvicorn
 
@@ -14,6 +16,38 @@ from sglang_omni_router.app import create_app
 from sglang_omni_router.config import RoutingPolicy, build_router_config
 
 logger = logging.getLogger(__name__)
+
+
+def normalize_log_level(log_level: str) -> str:
+    normalized_level = log_level.upper()
+    if not isinstance(getattr(logging, normalized_level, None), int):
+        return "INFO"
+    return normalized_level
+
+
+def build_log_config(log_level: str) -> dict[str, Any]:
+    normalized_level = normalize_log_level(log_level)
+    log_config = copy.deepcopy(uvicorn.config.LOGGING_CONFIG)
+    log_config["formatters"]["default"]["fmt"] = "%(levelprefix)s %(name)s:%(message)s"
+    log_config["loggers"]["sglang_omni_router"] = {
+        "handlers": ["default"],
+        "level": normalized_level,
+        "propagate": False,
+    }
+    log_config["loggers"]["httpx"] = {
+        "handlers": ["default"],
+        "level": "WARNING",
+        "propagate": False,
+    }
+    log_config["loggers"]["httpcore"] = {
+        "handlers": ["default"],
+        "level": "WARNING",
+        "propagate": False,
+    }
+    for logger_name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
+        if logger_name in log_config["loggers"]:
+            log_config["loggers"][logger_name]["level"] = normalized_level
+    return log_config
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -41,9 +75,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> None:
     args = build_parser().parse_args(argv)
-    logging.basicConfig(level=getattr(logging, args.log_level.upper(), logging.INFO))
-    logging.getLogger("httpx").setLevel(logging.WARNING)
-    logging.getLogger("httpcore").setLevel(logging.WARNING)
+    log_level = normalize_log_level(args.log_level)
+    log_config = build_log_config(args.log_level)
+    logging.config.dictConfig(log_config)
     config = build_router_config(
         worker_urls=args.worker_urls,
         host=args.host,
@@ -73,7 +107,8 @@ def main(argv: Sequence[str] | None = None) -> None:
         create_app(config),
         host=config.host,
         port=config.port,
-        log_level=args.log_level,
+        log_level=log_level.lower(),
+        log_config=log_config,
     )
 
 

@@ -140,6 +140,34 @@ class Worker:
             self._log_state_transition(previous_state, self.state)
             return
 
+        self._record_failure(
+            previous_state=previous_state,
+            failure_threshold=failure_threshold,
+        )
+
+    def record_request_failure(
+        self,
+        *,
+        failure_threshold: int,
+        status_code: int | None = None,
+        error: str | None = None,
+        observed_at: datetime | None = None,
+    ) -> None:
+        previous_state = self.state
+        self.last_checked_at = observed_at or datetime.now(timezone.utc)
+        self.last_status_code = status_code
+        self.last_error = error
+        self._record_failure(
+            previous_state=previous_state,
+            failure_threshold=failure_threshold,
+        )
+
+    def _record_failure(
+        self,
+        *,
+        previous_state: WorkerState,
+        failure_threshold: int,
+    ) -> None:
         self.consecutive_failures += 1
         self.consecutive_successes = 0
         failure_threshold_reached = self.consecutive_failures >= failure_threshold
@@ -155,9 +183,9 @@ class Worker:
         )
         if failure_threshold_crossed and previous_state == self.state:
             logger.warning(
-                f"worker={self.display_id} "
-                f"health_failure_threshold_reached "
-                f"failures={self.consecutive_failures} threshold={failure_threshold}",
+                f"worker={self.display_id} marked unhealthy after "
+                f"{self.consecutive_failures} consecutive failures "
+                f"(threshold={failure_threshold})",
             )
 
     def _log_state_transition(
@@ -171,7 +199,8 @@ class Worker:
             return
         log = logger.warning if warn or next_state == HEALTH_STATE_DEAD else logger.info
         log(
-            f"worker={self.display_id} health_state={previous_state}->{next_state}",
+            f"worker={self.display_id} health_state changed "
+            f"from {previous_state} to {next_state}",
         )
 
     def to_dict(self) -> dict[str, object]:
@@ -183,7 +212,6 @@ class Worker:
             "capabilities": sorted(self.capabilities),
             "active_requests": self.active_requests,
             "health_state": self.state,
-            "state": self.state,
             "disabled": self.disabled,
             "routable": self.is_routable,
             "consecutive_failures": self.consecutive_failures,
