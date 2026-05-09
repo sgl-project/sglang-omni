@@ -282,7 +282,7 @@ class Stage:
                     request_id,
                     exc,
                 )
-                self._queue_stream_error(request_id, msg.from_stage, exc)
+                await self._queue_stream_error(request_id, msg.from_stage, exc)
                 return
             self._route_stream_item(request_id, item)
             return
@@ -299,7 +299,7 @@ class Stage:
                 request_id,
                 exc,
             )
-            self._queue_stream_error(request_id, msg.from_stage, exc)
+            await self._queue_stream_error(request_id, msg.from_stage, exc)
             return
 
         item = StreamItem(
@@ -309,12 +309,20 @@ class Stage:
             metadata=metadata,
         )
         if self._stream_queue is None:
+            # A sender targeted a stage that isn't a stream receiver. Fail
+            # the request so the coordinator surfaces the misconfiguration
+            # instead of waiting on downstream stages that never get fed.
+            await self._send_failure(
+                request_id,
+                f"Stage {self.name!r} received stream chunk but is not a "
+                "stream receiver (no stream_queue allocated).",
+            )
             return
         if not self._stream_queue.has(request_id):
             self._stream_queue.open(request_id)
         self._route_stream_item(request_id, item)
 
-    def _queue_stream_error(
+    async def _queue_stream_error(
         self,
         request_id: str,
         from_stage: str | None,
@@ -323,12 +331,17 @@ class Stage:
         if request_id in self._aborted:
             return
         if self._stream_queue is None:
+            # No stream queue means a sender targeted a stage that isn't a
+            # configured stream receiver. Surface as a request failure so
+            # the coordinator times the request out fast instead of waiting
+            # on downstream stages that never get the chunk.
             logger.error(
-                "Stage %s: stream error before queue init for %s: %s",
+                "Stage %s: stream error with no queue for %s: %s",
                 self.name,
                 request_id,
                 error,
             )
+            await self._send_failure(request_id, str(error))
             return
         if not self._stream_queue.has(request_id):
             self._stream_queue.open(request_id)
