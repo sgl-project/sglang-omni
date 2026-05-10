@@ -102,6 +102,12 @@ class ProxyHandler:
         if content_length is not None and _exceeds_max_size(
             content_length, self._config.max_payload_size
         ):
+            self._log_route_rejection(
+                request=request,
+                path=path,
+                status_code=413,
+                reason="payload_too_large",
+            )
             return JSONResponse(
                 status_code=413,
                 content={"error": {"message": "payload too large"}},
@@ -109,6 +115,12 @@ class ProxyHandler:
 
         body = await request.body()
         if len(body) > self._config.max_payload_size:
+            self._log_route_rejection(
+                request=request,
+                path=path,
+                status_code=413,
+                reason="payload_too_large",
+            )
             return JSONResponse(
                 status_code=413,
                 content={"error": {"message": "payload too large"}},
@@ -117,6 +129,12 @@ class ProxyHandler:
         try:
             metadata = extract_route_metadata(request, path, body)
         except RouteMetadataError as exc:
+            self._log_route_rejection(
+                request=request,
+                path=path,
+                status_code=400,
+                reason=str(exc).replace(" ", "_"),
+            )
             return JSONResponse(
                 status_code=400,
                 content={"error": {"message": str(exc)}},
@@ -128,6 +146,13 @@ class ProxyHandler:
                 requested_model=metadata.model,
             )
         except NoEligibleWorkerError:
+            self._log_route_rejection(
+                request=request,
+                path=path,
+                status_code=503,
+                reason="no_eligible_upstream",
+                metadata=metadata,
+            )
             return JSONResponse(
                 status_code=503,
                 content={"error": {"message": "no eligible upstream"}},
@@ -340,6 +365,26 @@ class ProxyHandler:
             f"outcome={outcome}",
         )
 
+    def _log_route_rejection(
+        self,
+        *,
+        request: Request,
+        path: str,
+        status_code: int,
+        reason: str,
+        metadata: RouteMetadata | None = None,
+    ) -> None:
+        request_id = (
+            metadata.request_id if metadata else _request_id_from_headers(request)
+        )
+        model = metadata.model if metadata else None
+        capabilities = metadata.required_capabilities if metadata else set()
+        logger.warning(
+            f"route_rejected request_id={request_id or '-'} path={path} "
+            f"status_code={status_code} reason={reason} "
+            f"model={model or '-'} capabilities={_format_capabilities(capabilities)}",
+        )
+
 
 def _exceeds_max_size(value: str, max_size: int) -> bool:
     try:
@@ -363,3 +408,11 @@ def _format_capabilities(capabilities: set[Capability]) -> str:
     if not capabilities:
         return "-"
     return ",".join(sorted(capabilities))
+
+
+def _request_id_from_headers(request: Request) -> str | None:
+    return (
+        request.headers.get("x-sglang-omni-request-id")
+        or request.headers.get("x-request-id")
+        or request.headers.get("x-correlation-id")
+    )

@@ -100,8 +100,10 @@ def main(argv: Sequence[str] | None = None) -> None:
         f"max_connections={config.max_connections} | "
         f"health_failure_threshold={config.health_failure_threshold} | "
         f"health_success_threshold={config.health_success_threshold} | "
+        f"health_check_endpoint={config.health_check_endpoint} | "
         f"health_check_interval_secs={config.health_check_interval_secs} | "
-        f"health_check_timeout_secs={config.health_check_timeout_secs}"
+        f"health_check_timeout_secs={config.health_check_timeout_secs} | "
+        f"readiness_requires_routable_worker=true"
     )
     uvicorn.run(
         create_app(config),

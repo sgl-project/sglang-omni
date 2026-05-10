@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from contextlib import asynccontextmanager
 from typing import Any
 from urllib.parse import unquote
@@ -24,6 +25,8 @@ from sglang_omni_router.worker import (
     Worker,
     build_workers,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def create_app(
@@ -124,6 +127,12 @@ def register_routes(app: FastAPI, workers: list[Worker], proxy: ProxyHandler) ->
         worker = Worker(config=worker_config)
         workers.append(worker)
         await app.state.health_checker.check_worker_health(worker)
+        logger.info(
+            f"worker_registered worker={worker.display_id} url={worker.url} "
+            f"model={worker.model or '-'} "
+            f"capabilities={','.join(sorted(worker.capabilities))} "
+            f"health_state={worker.state} disabled={worker.disabled}",
+        )
         return JSONResponse({"status": "ok", "worker": worker.to_dict()})
 
     @app.get("/workers")
@@ -201,6 +210,12 @@ def register_routes(app: FastAPI, workers: list[Worker], proxy: ProxyHandler) ->
                 worker.clear_dead()
                 await app.state.health_checker.check_worker_health(worker)
 
+        logger.info(
+            f"worker_updated worker={worker.display_id} url={worker.url} "
+            f"model={worker.model or '-'} "
+            f"capabilities={','.join(sorted(worker.capabilities))} "
+            f"health_state={worker.state} disabled={worker.disabled}",
+        )
         return JSONResponse({"status": "ok", "worker": worker.to_dict()})
 
     @app.delete("/workers/{worker_id:path}")
@@ -209,6 +224,10 @@ def register_routes(app: FastAPI, workers: list[Worker], proxy: ProxyHandler) ->
         if worker is None:
             return _error_response(404, "worker not found")
         workers.remove(worker)
+        logger.info(
+            f"worker_deleted worker={worker.display_id} url={worker.url} "
+            f"model={worker.model or '-'}",
+        )
         return JSONResponse({"status": "ok", "worker_id": worker.worker_id})
 
     @app.get("/v1/models")
