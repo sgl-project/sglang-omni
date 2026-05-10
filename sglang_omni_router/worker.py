@@ -98,7 +98,7 @@ class Worker:
     def set_disabled(self, disabled: bool) -> None:
         if self.disabled != disabled:
             logger.info(
-                f"worker={self.display_id} disabled={disabled}",
+                f"Worker {self.display_id} disabled={disabled}",
             )
         self.disabled = disabled
 
@@ -181,7 +181,7 @@ class Worker:
         )
         if failure_threshold_crossed and previous_state == self.state:
             logger.warning(
-                f"worker={self.display_id} marked unhealthy after "
+                f"Worker {self.display_id} marked unhealthy after "
                 f"{self.consecutive_failures} consecutive failures "
                 f"(threshold={failure_threshold})",
             )
@@ -197,7 +197,7 @@ class Worker:
             return
         log = logger.warning if warn or next_state == HEALTH_STATE_DEAD else logger.info
         log(
-            f"worker={self.display_id} health_state changed "
+            f"Worker {self.display_id} health state changed "
             f"from {previous_state} to {next_state}",
         )
 

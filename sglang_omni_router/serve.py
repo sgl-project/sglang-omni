@@ -21,7 +21,7 @@ from sglang_omni_router.config import (
     load_worker_configs,
 )
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("sglang_omni_router.serve")
 
 
 def normalize_log_level(log_level: str) -> str:
@@ -34,7 +34,6 @@ def normalize_log_level(log_level: str) -> str:
 def build_log_config(log_level: str) -> dict[str, Any]:
     normalized_level = normalize_log_level(log_level)
     log_config = copy.deepcopy(uvicorn.config.LOGGING_CONFIG)
-    log_config["formatters"]["default"]["fmt"] = "%(levelprefix)s %(name)s:%(message)s"
     log_config["loggers"]["sglang_omni_router"] = {
         "handlers": ["default"],
         "level": normalized_level,
@@ -112,9 +111,10 @@ def main(argv: Sequence[str] | None = None) -> None:
         config = build_config_from_args(args)
     except (ValueError, ValidationError) as exc:
         parser.error(str(exc))
+    logger.info(f"Starting SGLang-Omni Router on {config.host}:{config.port}")
     logger.info(
-        f"Starting SGLang-Omni Router on {config.host}:{config.port} | "
-        f"workers={len(config.worker_urls)} | policy={config.policy} | "
+        f"Router configuration: workers={len(config.worker_urls)} | "
+        f"policy={config.policy} | "
         f"max_payload_size={config.max_payload_size} | "
         f"max_connections={config.max_connections} | "
         f"health_failure_threshold={config.health_failure_threshold} | "
