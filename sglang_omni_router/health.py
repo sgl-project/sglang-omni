@@ -74,6 +74,10 @@ class HealthChecker:
                 timeout=self._config.health_check_timeout_secs,
             )
         except httpx.HTTPError as exc:
+            logger.debug(
+                f"Worker {worker.display_id} health check failed: "
+                f"{type(exc).__name__}: {exc}",
+            )
             worker.record_health_result(
                 ok=False,
                 status_code=None,
@@ -87,6 +91,10 @@ class HealthChecker:
         error = None
         if not ok:
             error = response.text[:512] or f"status={response.status_code}"
+            logger.debug(
+                f"Worker {worker.display_id} health check returned "
+                f"status_code={response.status_code}",
+            )
         worker.record_health_result(
             ok=ok,
             status_code=response.status_code,
