@@ -71,6 +71,7 @@ sgl-omni-router \
 The most useful router flags are:
 
 - `--worker-urls`: list of Omni V1 worker base URLs
+- `--worker-config`: JSON file for heterogeneous worker metadata
 - `--policy`: routing policy, one of `round_robin`, `least_request`, or `random`
 - `--health-failure-threshold`: failed worker checks or routed request failures
   before a worker becomes unhealthy
@@ -82,6 +83,37 @@ The most useful router flags are:
 Use `round_robin` first when validating a new deployment because the selected
 worker should alternate clearly. Use `least_request` when streaming or long
 requests should prefer workers with fewer active requests.
+
+Use `--worker-config` when workers serve different models or only a subset of
+Omni capabilities. Use either `--worker-urls` or `--worker-config` for a router
+process:
+
+```json
+{
+  "workers": [
+    {
+      "url": "http://127.0.0.1:8011",
+      "model": "qwen3-omni",
+      "capabilities": ["chat", "image_input", "video_input"]
+    },
+    {
+      "url": "http://127.0.0.1:8012",
+      "model": "qwen3-omni",
+      "capabilities": ["chat", "audio_input", "audio_output", "speech"]
+    }
+  ]
+}
+```
+
+Then launch with:
+
+```bash
+sgl-omni-router \
+  --host 0.0.0.0 \
+  --port 8008 \
+  --worker-config workers.json \
+  --policy least_request
+```
 
 ## Check Router and Worker State
 

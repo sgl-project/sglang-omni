@@ -8,6 +8,7 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
+from sglang_omni_router import proxy as proxy_module
 from sglang_omni_router.app import create_app
 from sglang_omni_router.config import RouterConfig, WorkerConfig
 
@@ -262,11 +263,14 @@ def test_models_merge_queries_only_healthy_workers_and_deduplicates() -> None:
     app = create_app(_router_config(), client=async_client)
 
     with TestClient(app) as client:
+        for worker in app.state.workers:
+            worker.active_requests = 7
         response = client.get("/v1/models?detail=1")
 
     assert response.status_code == 200
     assert model_requests == ["worker-b:8102"]
     assert model_queries == [b"detail=1"]
+    assert [worker.active_requests for worker in app.state.workers] == [7, 7]
     assert response.json()["data"] == [
         {"id": "qwen3-omni", "object": "model", "created": 0}
     ]
@@ -606,6 +610,43 @@ def test_upstream_request_failure_returns_502_and_cleans_active_count() -> None:
     assert worker.last_error == "ConnectError"
 
 
+def test_router_response_errors_do_not_refresh_worker_routability(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"status": "healthy"}, request=request)
+        if request.url.path == "/v1/chat/completions":
+            return httpx.Response(200, json={"ok": True}, request=request)
+        raise AssertionError(f"unexpected request path: {request.url.path}")
+
+    def fail_response_header_filter(
+        *_args: object,
+        **_kwargs: object,
+    ) -> dict[str, str]:
+        raise RuntimeError("router response bug")
+
+    async_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    app = create_app(_router_config(), client=async_client)
+    monkeypatch.setattr(
+        proxy_module,
+        "filter_response_headers",
+        fail_response_header_filter,
+    )
+
+    with TestClient(app) as client:
+        with pytest.raises(RuntimeError, match="router response bug"):
+            client.post(
+                "/v1/chat/completions",
+                json={"model": "qwen3-omni", "messages": []},
+            )
+
+    worker = app.state.workers[0]
+    assert worker.state == "healthy"
+    assert worker.consecutive_failures == 0
+    assert worker.active_requests == 0
+
+
 def test_retryable_upstream_status_refreshes_worker_routability() -> None:
     seen_workers: list[str] = []
 
@@ -677,7 +718,7 @@ def test_streaming_upstream_error_cleans_active_count() -> None:
     class BrokenStream(httpx.AsyncByteStream):
         async def __aiter__(self):
             yield b"data: start\n\n"
-            raise RuntimeError("stream boom")
+            raise httpx.ReadError("stream boom")
 
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/health":
@@ -695,7 +736,7 @@ def test_streaming_upstream_error_cleans_active_count() -> None:
     app = create_app(_router_config(), client=async_client)
 
     with TestClient(app) as client:
-        with pytest.raises(RuntimeError, match="stream boom"):
+        with pytest.raises(httpx.ReadError, match="stream boom"):
             with client.stream(
                 "POST",
                 "/v1/chat/completions",
@@ -710,7 +751,7 @@ def test_streaming_failure_records_single_worker_failure() -> None:
     class BrokenStream(httpx.AsyncByteStream):
         async def __aiter__(self):
             yield b"data: start\n\n"
-            raise RuntimeError("stream boom")
+            raise httpx.ReadError("stream boom")
 
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/health":
@@ -734,7 +775,7 @@ def test_streaming_failure_records_single_worker_failure() -> None:
     )
 
     with TestClient(app) as client:
-        with pytest.raises(RuntimeError, match="stream boom"):
+        with pytest.raises(httpx.ReadError, match="stream boom"):
             with client.stream(
                 "POST",
                 "/v1/chat/completions",

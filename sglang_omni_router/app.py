@@ -334,39 +334,38 @@ async def _merge_models(
     cards_by_id: dict[str, dict[str, Any]] = {}
     errors: dict[str, str] = {}
     for worker in routable_workers:
-        with worker.request_guard():
-            url = (
-                f"{worker.url}/v1/models"
-                if not query
-                else f"{worker.url}/v1/models?{query}"
+        url = (
+            f"{worker.url}/v1/models"
+            if not query
+            else f"{worker.url}/v1/models?{query}"
+        )
+        try:
+            response = await client.get(url, headers=request_headers)
+        except Exception as exc:
+            errors[worker.url] = type(exc).__name__
+            continue
+        if not 200 <= response.status_code < 300:
+            errors[worker.url] = f"status={response.status_code}"
+            continue
+        try:
+            payload = response.json()
+        except Exception as exc:
+            errors[worker.url] = type(exc).__name__
+            continue
+        data = payload.get("data")
+        if not isinstance(data, list):
+            errors[worker.url] = "invalid models payload"
+            continue
+        for card in data:
+            if not isinstance(card, dict):
+                continue
+            model_id = card.get("id") or card.get("model")
+            dedupe_key = (
+                model_id
+                if isinstance(model_id, str) and model_id
+                else json.dumps(card, sort_keys=True)
             )
-            try:
-                response = await client.get(url, headers=request_headers)
-            except Exception as exc:
-                errors[worker.url] = type(exc).__name__
-                continue
-            if not 200 <= response.status_code < 300:
-                errors[worker.url] = f"status={response.status_code}"
-                continue
-            try:
-                payload = response.json()
-            except Exception as exc:
-                errors[worker.url] = type(exc).__name__
-                continue
-            data = payload.get("data")
-            if not isinstance(data, list):
-                errors[worker.url] = "invalid models payload"
-                continue
-            for card in data:
-                if not isinstance(card, dict):
-                    continue
-                model_id = card.get("id") or card.get("model")
-                dedupe_key = (
-                    model_id
-                    if isinstance(model_id, str) and model_id
-                    else json.dumps(card, sort_keys=True)
-                )
-                cards_by_id.setdefault(dedupe_key, card)
+            cards_by_id.setdefault(dedupe_key, card)
 
     if not cards_by_id:
         return JSONResponse(

@@ -195,37 +195,16 @@ class ProxyHandler:
     ) -> Response:
         with worker.request_guard():
             start_time = time.perf_counter()
+            upstream_url = build_upstream_url(worker, path, request)
+            request_headers = filter_request_headers(request)
             try:
                 response = await self._client.request(
                     request.method,
-                    build_upstream_url(worker, path, request),
+                    upstream_url,
                     content=body,
-                    headers=filter_request_headers(request),
+                    headers=request_headers,
                 )
-                if response.status_code in WORKER_REQUEST_FAILURE_STATUS_CODES:
-                    self._record_worker_request_failure(
-                        worker,
-                        status_code=response.status_code,
-                        error=_response_error(response),
-                    )
-                outcome = _response_outcome(response.status_code)
-                self._log_route_completion(
-                    worker=worker,
-                    path=path,
-                    metadata=metadata,
-                    status_code=response.status_code,
-                    outcome=outcome,
-                    start_time=start_time,
-                )
-                headers = filter_response_headers(response.headers, buffered=True)
-                headers.update(self._diagnostic_headers(worker, metadata))
-                return Response(
-                    content=response.content,
-                    status_code=response.status_code,
-                    headers=headers,
-                    media_type=response.headers.get("content-type"),
-                )
-            except Exception as exc:
+            except httpx.HTTPError as exc:
                 self._record_worker_request_failure(
                     worker,
                     error=type(exc).__name__,
@@ -244,6 +223,30 @@ class ProxyHandler:
                     headers=self._diagnostic_headers(worker, metadata),
                 )
 
+            if response.status_code in WORKER_REQUEST_FAILURE_STATUS_CODES:
+                self._record_worker_request_failure(
+                    worker,
+                    status_code=response.status_code,
+                    error=_response_error(response),
+                )
+            outcome = _response_outcome(response.status_code)
+            self._log_route_completion(
+                worker=worker,
+                path=path,
+                metadata=metadata,
+                status_code=response.status_code,
+                outcome=outcome,
+                start_time=start_time,
+            )
+            headers = filter_response_headers(response.headers, buffered=True)
+            headers.update(self._diagnostic_headers(worker, metadata))
+            return Response(
+                content=response.content,
+                status_code=response.status_code,
+                headers=headers,
+                media_type=response.headers.get("content-type"),
+            )
+
     async def _forward_streaming(
         self,
         request: Request,
@@ -252,17 +255,17 @@ class ProxyHandler:
         metadata: RouteMetadata,
         worker: Worker,
     ) -> StreamingResponse | JSONResponse:
-        worker.increment_active()
         start_time = time.perf_counter()
+        upstream_request = self._client.build_request(
+            request.method,
+            build_upstream_url(worker, path, request),
+            content=body,
+            headers=filter_request_headers(request),
+        )
+        worker.increment_active()
         try:
-            upstream_request = self._client.build_request(
-                request.method,
-                build_upstream_url(worker, path, request),
-                content=body,
-                headers=filter_request_headers(request),
-            )
             upstream = await self._client.send(upstream_request, stream=True)
-        except Exception as exc:
+        except httpx.HTTPError as exc:
             worker.decrement_active()
             self._record_worker_request_failure(
                 worker,
@@ -313,7 +316,7 @@ class ProxyHandler:
             except asyncio.CancelledError:
                 outcome = "stream_cancelled"
                 raise
-            except Exception as exc:
+            except httpx.HTTPError as exc:
                 outcome = "stream_error"
                 record_worker_failure_once(error=type(exc).__name__)
                 raise
@@ -329,8 +332,13 @@ class ProxyHandler:
                     start_time=start_time,
                 )
 
-        headers = filter_response_headers(upstream.headers)
-        headers.update(self._diagnostic_headers(worker, metadata))
+        try:
+            headers = filter_response_headers(upstream.headers)
+            headers.update(self._diagnostic_headers(worker, metadata))
+        except Exception:
+            await upstream.aclose()
+            worker.decrement_active()
+            raise
         return StreamingResponse(
             iter_bytes(),
             status_code=upstream.status_code,

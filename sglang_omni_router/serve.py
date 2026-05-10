@@ -11,9 +11,15 @@ from collections.abc import Sequence
 from typing import Any, get_args
 
 import uvicorn
+from pydantic import ValidationError
 
 from sglang_omni_router.app import create_app
-from sglang_omni_router.config import RoutingPolicy, build_router_config
+from sglang_omni_router.config import (
+    RouterConfig,
+    RoutingPolicy,
+    build_router_config,
+    load_worker_configs,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +60,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Serve the SGLang-Omni Router")
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8000)
-    parser.add_argument("--worker-urls", nargs="+", required=True)
+    parser.add_argument("--worker-urls", nargs="+", default=None)
+    parser.add_argument("--worker-config", default=None)
     parser.add_argument(
         "--policy",
         choices=get_args(RoutingPolicy),
@@ -73,13 +80,13 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: Sequence[str] | None = None) -> None:
-    args = build_parser().parse_args(argv)
-    log_level = normalize_log_level(args.log_level)
-    log_config = build_log_config(args.log_level)
-    logging.config.dictConfig(log_config)
-    config = build_router_config(
+def build_config_from_args(args: argparse.Namespace) -> RouterConfig:
+    if args.worker_config and args.model is not None:
+        raise ValueError("--model cannot be used with --worker-config")
+    workers = load_worker_configs(args.worker_config) if args.worker_config else None
+    return build_router_config(
         worker_urls=args.worker_urls,
+        workers=workers,
         host=args.host,
         port=args.port,
         policy=args.policy,
@@ -93,6 +100,18 @@ def main(argv: Sequence[str] | None = None) -> None:
         health_check_interval_secs=args.health_check_interval_secs,
         health_check_endpoint=args.health_check_endpoint,
     )
+
+
+def main(argv: Sequence[str] | None = None) -> None:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    log_level = normalize_log_level(args.log_level)
+    log_config = build_log_config(args.log_level)
+    logging.config.dictConfig(log_config)
+    try:
+        config = build_config_from_args(args)
+    except (ValueError, ValidationError) as exc:
+        parser.error(str(exc))
     logger.info(
         f"Starting SGLang-Omni Router on {config.host}:{config.port} | "
         f"workers={len(config.worker_urls)} | policy={config.policy} | "

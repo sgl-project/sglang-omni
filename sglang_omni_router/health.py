@@ -73,18 +73,7 @@ class HealthChecker:
                 url,
                 timeout=self._config.health_check_timeout_secs,
             )
-            ok = 200 <= response.status_code < 300
-            error = None
-            if not ok:
-                error = response.text[:512] or f"status={response.status_code}"
-            worker.record_health_result(
-                ok=ok,
-                status_code=response.status_code,
-                error=error,
-                failure_threshold=self._config.health_failure_threshold,
-                success_threshold=self._config.health_success_threshold,
-            )
-        except Exception as exc:
+        except httpx.HTTPError as exc:
             worker.record_health_result(
                 ok=False,
                 status_code=None,
@@ -92,3 +81,16 @@ class HealthChecker:
                 failure_threshold=self._config.health_failure_threshold,
                 success_threshold=self._config.health_success_threshold,
             )
+            return
+
+        ok = 200 <= response.status_code < 300
+        error = None
+        if not ok:
+            error = response.text[:512] or f"status={response.status_code}"
+        worker.record_health_result(
+            ok=ok,
+            status_code=response.status_code,
+            error=error,
+            failure_threshold=self._config.health_failure_threshold,
+            success_threshold=self._config.health_success_threshold,
+        )

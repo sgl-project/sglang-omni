@@ -4,10 +4,12 @@
 from __future__ import annotations
 
 import ipaddress
+import json
+from pathlib import Path
 from typing import Literal
 from urllib.parse import urlsplit, urlunsplit
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
 Capability = Literal[
     "chat",
@@ -89,6 +91,16 @@ class WorkerConfig(BaseModel):
     def _normalize_url(cls, value: str) -> str:
         return normalize_worker_url(value)
 
+    @field_validator("model", mode="before")
+    @classmethod
+    def _normalize_model(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            raise ValueError("worker model must be a string")
+        model = value.strip()
+        return model or None
+
     @field_validator("capabilities")
     @classmethod
     def _validate_capabilities(cls, value: set[Capability]) -> set[Capability]:
@@ -156,7 +168,8 @@ class RouterConfig(BaseModel):
 
 def build_router_config(
     *,
-    worker_urls: list[str],
+    worker_urls: list[str] | None = None,
+    workers: list[WorkerConfig] | None = None,
     host: str = "0.0.0.0",
     port: int = 8000,
     policy: RoutingPolicy = "round_robin",
@@ -170,11 +183,17 @@ def build_router_config(
     health_check_interval_secs: int = 10,
     health_check_endpoint: str = "/health",
 ) -> RouterConfig:
-    workers = [WorkerConfig(url=url, model=model) for url in worker_urls]
+    if workers is not None and worker_urls:
+        raise ValueError("worker_urls and workers cannot both be provided")
+    worker_configs = workers
+    if worker_configs is None:
+        worker_configs = [
+            WorkerConfig(url=url, model=model) for url in worker_urls or []
+        ]
     return RouterConfig(
         host=host,
         port=port,
-        worker_urls=workers,
+        worker_urls=worker_configs,
         policy=policy,
         model=model,
         request_timeout_secs=request_timeout_secs,
@@ -186,3 +205,25 @@ def build_router_config(
         health_check_interval_secs=health_check_interval_secs,
         health_check_endpoint=health_check_endpoint,
     )
+
+
+def load_worker_configs(path: str) -> list[WorkerConfig]:
+    try:
+        payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise ValueError(f"failed to read worker config: {exc}") from exc
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"invalid worker config JSON: {exc}") from exc
+
+    if not isinstance(payload, dict) or not isinstance(payload.get("workers"), list):
+        raise ValueError("worker config must be a JSON object with a workers list")
+
+    workers: list[WorkerConfig] = []
+    for index, item in enumerate(payload["workers"]):
+        if not isinstance(item, dict):
+            raise ValueError(f"worker config entry {index} must be an object")
+        try:
+            workers.append(WorkerConfig(**item))
+        except ValidationError as exc:
+            raise ValueError(f"invalid worker config entry {index}: {exc}") from exc
+    return workers

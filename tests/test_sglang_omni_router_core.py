@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import json
 from pathlib import Path
 
 import httpx
@@ -10,6 +11,7 @@ from pydantic import ValidationError
 from sglang_omni_router.config import DEFAULT_CAPABILITIES, RouterConfig, WorkerConfig
 from sglang_omni_router.health import HealthChecker
 from sglang_omni_router.selector import NoEligibleWorkerError, WorkerSelector
+from sglang_omni_router.serve import build_config_from_args, build_parser
 from sglang_omni_router.worker import build_workers
 
 
@@ -43,6 +45,96 @@ def test_worker_config_defaults_to_complete_omni_v1_replica_capabilities() -> No
     worker = WorkerConfig(url="http://127.0.0.1:8101")
 
     assert worker.capabilities == DEFAULT_CAPABILITIES
+
+
+@pytest.mark.parametrize("model", ["", "   "])
+def test_worker_config_normalizes_blank_model_to_none(model: str) -> None:
+    worker = WorkerConfig(url="http://127.0.0.1:8101", model=model)
+
+    assert worker.model is None
+
+
+def test_router_cli_worker_config_supports_heterogeneous_workers(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "workers.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "workers": [
+                    {
+                        "url": "http://127.0.0.1:8101",
+                        "model": "model-a",
+                        "capabilities": ["chat", "image_input"],
+                    },
+                    {
+                        "url": "http://127.0.0.1:8102",
+                        "model": "model-b",
+                        "capabilities": ["chat", "audio_input"],
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    args = build_parser().parse_args(
+        [
+            "--worker-config",
+            str(config_path),
+            "--policy",
+            "least_request",
+        ]
+    )
+
+    config = build_config_from_args(args)
+
+    assert config.policy == "least_request"
+    assert [(worker.url, worker.model) for worker in config.worker_urls] == [
+        ("http://127.0.0.1:8101", "model-a"),
+        ("http://127.0.0.1:8102", "model-b"),
+    ]
+    assert config.worker_urls[0].capabilities == {"chat", "image_input"}
+    assert config.worker_urls[1].capabilities == {"chat", "audio_input"}
+
+
+def test_router_cli_rejects_global_model_with_worker_config(tmp_path: Path) -> None:
+    config_path = tmp_path / "workers.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "workers": [
+                    {
+                        "url": "http://127.0.0.1:8101",
+                        "model": "model-a",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    args = build_parser().parse_args(
+        [
+            "--worker-config",
+            str(config_path),
+            "--model",
+            "model-a",
+        ]
+    )
+
+    with pytest.raises(ValueError, match="--model cannot be used"):
+        build_config_from_args(args)
+
+
+def test_router_worker_config_requires_workers_object(tmp_path: Path) -> None:
+    config_path = tmp_path / "workers.json"
+    config_path.write_text(
+        json.dumps([{"url": "http://127.0.0.1:8101"}]),
+        encoding="utf-8",
+    )
+    args = build_parser().parse_args(["--worker-config", str(config_path)])
+
+    with pytest.raises(ValueError, match="workers list"):
+        build_config_from_args(args)
 
 
 @pytest.mark.parametrize(
@@ -312,3 +404,22 @@ async def test_health_checker_uses_failure_and_success_thresholds() -> None:
         assert worker.state == "unhealthy"
         await checker.check_all_workers()
         assert worker.state == "healthy"
+
+
+@pytest.mark.asyncio
+async def test_health_checker_does_not_record_router_internal_errors() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise RuntimeError("router-side bug")
+
+    worker = build_workers([WorkerConfig(url="http://worker.local:8101")])[0]
+    config = RouterConfig(worker_urls=[WorkerConfig(url="http://worker.local:8101")])
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        checker = HealthChecker(workers=[worker], config=config, client=client)
+
+        with pytest.raises(RuntimeError, match="router-side bug"):
+            await checker.check_worker_health(worker)
+
+    assert worker.state == "unknown"
+    assert worker.consecutive_failures == 0
+    assert worker.last_error is None
