@@ -1,12 +1,9 @@
-from __future__ import annotations
-
-import typer
+from typer import Typer
 
 from .config import config_app
 from .serve import serve as _serve
 
-app = typer.Typer()
-
+app = Typer()
 
 # Register the subcommands.
 app.add_typer(config_app, name="config")
