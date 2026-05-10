@@ -7,16 +7,16 @@ import logging
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Iterator
+from typing import Iterator, Literal
 from urllib.parse import quote, urlsplit
 
 from sglang_omni_router.config import Capability, WorkerConfig
 
-WorkerState = str
-HEALTH_STATE_DEAD = "dead"
-HEALTH_STATE_HEALTHY = "healthy"
-HEALTH_STATE_UNKNOWN = "unknown"
-HEALTH_STATE_UNHEALTHY = "unhealthy"
+WorkerState = Literal["dead", "healthy", "unknown", "unhealthy"]
+HEALTH_STATE_DEAD: WorkerState = "dead"
+HEALTH_STATE_HEALTHY: WorkerState = "healthy"
+HEALTH_STATE_UNKNOWN: WorkerState = "unknown"
+HEALTH_STATE_UNHEALTHY: WorkerState = "unhealthy"
 
 logger = logging.getLogger(__name__)
 
