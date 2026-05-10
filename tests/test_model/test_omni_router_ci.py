@@ -242,7 +242,7 @@ def _print_worker_snapshot(label: str, snapshot: dict) -> None:
     worker_states = [
         (
             worker["display_id"],
-            worker["state"],
+            worker["health_state"],
             worker["active_requests"],
             worker["routable"],
         )
