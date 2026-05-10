@@ -219,8 +219,9 @@ Register narrower worker capabilities only when a worker cannot serve one of
 those request classes.
 
 Large JSON requests are not fully parsed by the router. With a homogeneous pool
-of complete Omni V1 replicas, no extra headers are needed. With mixed models or
-mixed worker capabilities, provide explicit route hints:
+of complete Omni V1 replicas, no extra headers are needed. With mixed models,
+provide a model hint. With mixed worker capabilities, provide a capability hint
+when the router cannot infer a single safe worker set:
 
 - `X-SGLang-Omni-Route-Model`: requested model for mixed-model pools
 - `X-SGLang-Omni-Route-Capabilities`: comma-separated capabilities such as

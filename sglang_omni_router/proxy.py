@@ -145,7 +145,9 @@ class ProxyHandler:
                 content={"error": {"message": str(exc)}},
             )
 
-        large_request_error = _large_request_hint_error(self._workers, metadata)
+        extra_capabilities, large_request_error = (
+            _large_request_extra_capabilities_or_error(self._workers, metadata)
+        )
         if large_request_error is not None:
             self._log_route_rejection(
                 request=request,
@@ -158,6 +160,7 @@ class ProxyHandler:
                 status_code=400,
                 content={"error": {"message": large_request_error}},
             )
+        metadata.required_capabilities.update(extra_capabilities)
 
         try:
             worker = self._selector.select(
@@ -438,12 +441,12 @@ def _request_id_from_headers(request: Request) -> str | None:
     )
 
 
-def _large_request_hint_error(
+def _large_request_extra_capabilities_or_error(
     workers: list[Worker],
     metadata: RouteMetadata,
-) -> str | None:
+) -> tuple[set[Capability], str | None]:
     if not metadata.body_exceeds_metadata_limit:
-        return None
+        return set(), None
 
     candidates = [
         worker
@@ -453,21 +456,31 @@ def _large_request_hint_error(
             worker.supports(capability) for capability in metadata.required_capabilities
         )
     ]
+    if metadata.model is not None and any(worker.model for worker in candidates):
+        candidates = [worker for worker in candidates if worker.model == metadata.model]
     if not candidates:
-        return None
+        return set(), None
 
     models = {worker.model for worker in candidates}
     if metadata.model is None and len(models) > 1:
-        return (
+        return set(), (
             "large JSON requests across mixed-model workers require "
             "x-sglang-omni-route-model"
         )
 
     capability_sets = {frozenset(worker.capabilities) for worker in candidates}
-    if not metadata.route_capabilities_header_present and len(capability_sets) > 1:
-        return (
-            "large JSON requests across mixed-capability workers require "
-            "x-sglang-omni-route-capabilities"
-        )
+    if metadata.route_capabilities_header_present or len(capability_sets) <= 1:
+        return set(), None
 
-    return None
+    maximal_sets = [
+        capability_set
+        for capability_set in capability_sets
+        if not any(capability_set < other for other in capability_sets)
+    ]
+    if len(maximal_sets) == 1:
+        return set(maximal_sets[0]) - metadata.required_capabilities, None
+
+    return set(), (
+        "large JSON requests across mixed-capability workers require "
+        "x-sglang-omni-route-capabilities"
+    )

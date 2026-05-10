@@ -53,17 +53,14 @@ class RouteMetadata:
     model: str | None
     stream: bool
     required_capabilities: set[Capability]
-    idempotency_key_present: bool
     body_exceeds_metadata_limit: bool
-    route_model_header_present: bool
     route_capabilities_header_present: bool
-    route_stream_header_present: bool
 
 
 def extract_route_metadata(request: Request, path: str, body: bytes) -> RouteMetadata:
     request_id = _request_id_from_request(request)
-    model, route_model_header_present = _route_model_from_header(request)
-    stream, route_stream_header_present = _route_stream_from_header(request)
+    route_model, route_model_header_present = _route_model_from_header(request)
+    route_stream, route_stream_header_present = _route_stream_from_header(request)
     route_capabilities, route_capabilities_header_present = (
         _route_capabilities_from_header(request)
     )
@@ -77,27 +74,42 @@ def extract_route_metadata(request: Request, path: str, body: bytes) -> RouteMet
 
     if payload is not None:
         request_id = request_id or _string_or_none(payload.get("request_id"))
-        if not route_model_header_present:
-            model = _string_or_none(payload.get("model"))
-        if not route_stream_header_present:
-            stream = payload.get("stream") is True
+        model = _string_or_none(payload.get("model"))
+        stream = payload.get("stream") is True
+        required_capabilities = _required_capabilities(
+            path,
+            payload,
+            stream=stream,
+            route_capabilities=set(),
+        )
+        _validate_body_route_headers(
+            model=model,
+            stream=stream,
+            required_capabilities=required_capabilities,
+            route_model=route_model,
+            route_model_header_present=route_model_header_present,
+            route_stream=route_stream,
+            route_stream_header_present=route_stream_header_present,
+            route_capabilities=route_capabilities,
+            route_capabilities_header_present=route_capabilities_header_present,
+        )
+    else:
+        model = route_model
+        stream = route_stream
+        required_capabilities = _required_capabilities(
+            path,
+            payload,
+            stream=stream,
+            route_capabilities=route_capabilities,
+        )
 
-    required_capabilities = _required_capabilities(
-        path,
-        payload,
-        stream=stream,
-        route_capabilities=route_capabilities,
-    )
     return RouteMetadata(
         request_id=request_id or str(uuid.uuid4()),
         model=model,
         stream=stream,
         required_capabilities=required_capabilities,
-        idempotency_key_present=bool(request.headers.get("idempotency-key")),
         body_exceeds_metadata_limit=body_exceeds_metadata_limit,
-        route_model_header_present=route_model_header_present,
         route_capabilities_header_present=route_capabilities_header_present,
-        route_stream_header_present=route_stream_header_present,
     )
 
 
@@ -150,6 +162,32 @@ def _route_capabilities_from_header(request: Request) -> tuple[set[Capability], 
     if not capabilities:
         raise RouteMetadataError(f"{ROUTE_CAPABILITIES_HEADER} must not be empty")
     return capabilities, True
+
+
+def _validate_body_route_headers(
+    *,
+    model: str | None,
+    stream: bool,
+    required_capabilities: set[Capability],
+    route_model: str | None,
+    route_model_header_present: bool,
+    route_stream: bool,
+    route_stream_header_present: bool,
+    route_capabilities: set[Capability],
+    route_capabilities_header_present: bool,
+) -> None:
+    if route_model_header_present and model is not None and route_model != model:
+        raise RouteMetadataError(f"{ROUTE_MODEL_HEADER} conflicts with JSON body model")
+    if route_stream_header_present and route_stream != stream:
+        raise RouteMetadataError(
+            f"{ROUTE_STREAM_HEADER} conflicts with JSON body stream"
+        )
+    if route_capabilities_header_present and not route_capabilities.issubset(
+        required_capabilities
+    ):
+        raise RouteMetadataError(
+            f"{ROUTE_CAPABILITIES_HEADER} conflicts with JSON body"
+        )
 
 
 def _is_json_request(request: Request) -> bool:
