@@ -13,6 +13,7 @@ import json
 import os
 import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
@@ -48,18 +49,17 @@ DATASET_CACHE_ENV = "SGLANG_SEEDTTS50_DIR"
 STARTUP_TIMEOUT = 300
 WER_TIMEOUT = 600
 
-# Threshold reference: https://github.com/sgl-project/sglang-omni/pull/382#issuecomment-4366925373
-VC_WER_BELOW_50_CORPUS_MAX = 0.03
-VC_N_ABOVE_50_MAX = 1
+VC_WER_BELOW_50_CORPUS_MAX = 0.014184397163120567
+VC_N_ABOVE_50_MAX = 0
 
 # Note (Chenyang): The thresholds for the throughput_qps of tests/test_model/test_qwen3_omni_tts_ci.py
 # are the most unstable metrics, so I drop it a lot.
 
 _VC_NON_STREAM_P95 = {
     8: {
-        "throughput_qps": 3.00,
+        "throughput_qps": 4.025,
         "tok_per_s_agg": 7.6,
-        "latency_mean_s": 1.938,
+        "latency_mean_s": 1.925,
         "rtf_mean": 0.5843,
     },
 }
@@ -210,45 +210,67 @@ def server_process(tmp_path_factory: pytest.TempPathFactory):
     stop_server(proc)
 
 
+@dataclass
+class _SpeedArtifacts:
+    """Outputs from the voice-clone speed benchmark.
+
+    Speed-threshold assertions are deliberately NOT made here so that a
+    speed miss does not cascade-skip the WER fixture chain. The speed
+    test asserts; the WER test reuses only ``output_dir``.
+    """
+
+    output_dir: str
+    summary: dict
+    per_request: list
+
+
 @pytest.fixture(scope="module")
-def speed_output_dir(
+def speed_artifacts(
     server_process: subprocess.Popen,
     dataset_dir: Path,
     tmp_path_factory: pytest.TempPathFactory,
-) -> str:
-    """Run the speed benchmark once and expose the output directory."""
+) -> _SpeedArtifacts:
+    """Run the speed benchmark once and expose its artifacts."""
     output_dir = str(tmp_path_factory.mktemp("vc_nonstream"))
     results = _run_benchmark(
         server_process.port,
         str(dataset_dir / "en" / "meta.lst"),
         output_dir,
     )
-    summary, per_request = results["summary"], results["per_request"]
-    print_speed_summary(
-        summary, "qwen3-omni", CONCURRENCY, title="TTS Voice-Clone Speed"
+    return _SpeedArtifacts(
+        output_dir=output_dir,
+        summary=results["summary"],
+        per_request=results["per_request"],
     )
-    assert_summary_metrics(summary)
-    assert_per_request_fields(per_request)
-    assert_speed_thresholds(summary, VC_NON_STREAM_THRESHOLDS, CONCURRENCY)
-    return output_dir
 
 
 @pytest.fixture(scope="module")
 def wer_audio_dir(
     server_process: subprocess.Popen,
-    speed_output_dir: str,
+    speed_artifacts: _SpeedArtifacts,
 ) -> str:
     """Reuse speed-benchmark audio for WER after freeing the TTS server GPU."""
     stop_server(server_process)
-    generated_path = Path(speed_output_dir) / "generated.json"
+    generated_path = Path(speed_artifacts.output_dir) / "generated.json"
     assert generated_path.exists(), f"WER metadata missing: {generated_path}"
-    return speed_output_dir
+    return speed_artifacts.output_dir
 
 
 @pytest.mark.benchmark
-def test_voice_cloning_non_streaming(speed_output_dir: str) -> None:
-    """Smoke check: the speed-benchmark fixture asserts metrics/thresholds."""
-    assert Path(speed_output_dir).is_dir()
+def test_voice_cloning_non_streaming(speed_artifacts: _SpeedArtifacts) -> None:
+    """Print speed summary and assert metrics meet thresholds."""
+    print_speed_summary(
+        speed_artifacts.summary,
+        "qwen3-omni",
+        CONCURRENCY,
+        title="TTS Voice-Clone Speed",
+    )
+    assert_summary_metrics(speed_artifacts.summary)
+    assert_per_request_fields(speed_artifacts.per_request)
+    assert_speed_thresholds(
+        speed_artifacts.summary, VC_NON_STREAM_THRESHOLDS, CONCURRENCY
+    )
+    assert Path(speed_artifacts.output_dir).is_dir()
 
 
 @pytest.mark.benchmark

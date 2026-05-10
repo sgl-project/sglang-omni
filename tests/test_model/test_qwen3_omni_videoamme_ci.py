@@ -26,7 +26,6 @@ from tests.utils import ServerHandle, apply_slack, assert_speed_thresholds
 CONCURRENCY = 16
 MAX_SAMPLES = 30
 
-# Threshold reference: https://github.com/sgl-project/sglang-omni/pull/382#issuecomment-4366925373
 VIDEOAMME_MIN_ACCURACY = 0.6667
 
 _VIDEOAMME_P95 = {

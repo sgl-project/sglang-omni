@@ -224,7 +224,10 @@ python .claude/skills/tune-ci-thresholds/tune.py --model qwen3-omni-v1 run \
       `— <N>× <gpu_model>, docs smoke, <N> runs`.
    e. If a context var is not found in the file, write `?`. Never
       guess or copy from another stage.
-8. Tell the user the report path.
+8. Tell the user the report path. Treat `<run-dir>/report.md` as the
+   canonical calibration artifact: it must keep the full per-run tables,
+   worst-of-N rows, provenance, context lines, and (after apply) the
+   applied-changes table. Do not replace it with a lightweight summary.
 9. **Apply prompt — strictly after the entire run is done.** This
    prompt is the LAST thing the skill does, and must only fire once
    ALL of the following have completed for the whole `--stages` set:
@@ -339,8 +342,14 @@ python .claude/skills/tune-ci-thresholds/tune.py --model qwen3-omni-v1 run \
 10. **Optional version-control step — only with explicit user
     authorization.**
     - Keep `.tune-runs/` local and uncommitted.
-    - Commit only threshold/test edits, skill/config changes, and a
-      lightweight markdown summary under `docs/` if requested.
+    - If the calibration evidence should be committed, copy the final
+      `<run-dir>/report.md` (after context replacement and any
+      applied-changes section) to a stable path under `docs/calibration/`
+      and commit that raw observation report. A short summary under
+      `docs/` is optional, but it must not replace the raw per-run
+      report.
+    - Commit only threshold/test edits, skill/config changes, and
+      requested calibration reports / summaries under `docs/`.
     - Run repository pre-commit hooks normally; do not bypass hooks.
     - Push only the current feature/calibration branch, never `main`.
     - Provide a PR description with: summary, calibration run directory,

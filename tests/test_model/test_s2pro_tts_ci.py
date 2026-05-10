@@ -76,7 +76,6 @@ S2PRO_STAGE2_SPEED_RESULTS_DIR_ENV = "S2PRO_STAGE2_SPEED_RESULTS_DIR"
 
 STREAMING_BENCHMARK_MAX_SAMPLES = 16
 
-# Thresholds reference: https://github.com/sgl-project/sglang-omni/pull/242
 # Note (chenyang): the RTF thresholds also includes the reference audio
 # processing time.
 
@@ -90,10 +89,10 @@ STREAMING_BENCHMARK_MAX_SAMPLES = 16
 THRESHOLD_SLACK_HIGHER = 0.75
 THRESHOLD_SLACK_LOWER = 1.25
 
-VC_WER_MAX_CORPUS = 0.012
-VC_WER_MAX_PER_SAMPLE = 0.5
-VC_STREAM_WER_MAX_CORPUS = 0.012
-VC_STREAM_WER_MAX_PER_SAMPLE = 0.5
+VC_WER_MAX_CORPUS = 0.010638297872340425
+VC_WER_MAX_PER_SAMPLE = 0.25
+VC_STREAM_WER_MAX_CORPUS = 0.03
+VC_STREAM_WER_MAX_PER_SAMPLE = 0.17
 
 # Note (Chenyang): Only thresholds for concurrency 8 are dedicatedly tuned, others
 # may not pass the CI.

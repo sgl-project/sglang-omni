@@ -50,6 +50,7 @@ jobs:
         env:
           HF_ENDPOINT: https://hf-mirror.com
           SGLANG_OMNI_SERVER_VERSION: v1
+          TORCHINDUCTOR_CACHE_DIR: /github/home/.torchinductor
 
       - name: Post-stage cleanup
         if: always()
@@ -95,6 +96,7 @@ jobs:
           SGLANG_SEEDTTS50_DIR: /github/home/seedtts-50
           S2PRO_STAGE_OUTPUT_ROOT: ${{ github.workspace }}/stage-results/nonstream
           SGLANG_OMNI_SERVER_VERSION: v1
+          TORCHINDUCTOR_CACHE_DIR: /github/home/.torchinductor
 
       - name: Post-stage cleanup
         if: always()
@@ -136,6 +138,7 @@ jobs:
           SGLANG_SEEDTTS50_DIR: /github/home/seedtts-50
           S2PRO_STAGE_OUTPUT_ROOT: ${{ github.workspace }}/stage-results/stream
           SGLANG_OMNI_SERVER_VERSION: v1
+          TORCHINDUCTOR_CACHE_DIR: /github/home/.torchinductor
 
       - name: Post-stage cleanup
         if: always()

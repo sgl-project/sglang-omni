@@ -919,7 +919,14 @@ def create_talker_ar_executor_from_config(
     # after #384, which routed talker MoE through `self.experts` (FusedMoE)
     # — the `fused_experts (full graph)` backend picked in #344. Caller can
     # override via factory_args or the `--talker-cuda-graph off` CLI flag.
-    overrides: dict[str, Any] = {"disable_cuda_graph": False}
+    # Note (Xuesong): pytorch backend works around an sglang upstream gap —
+    # Sampler.forward doesn't forward sampling_seed to flashinfer, so
+    # under cuda graph the captured RNG is boot-dependent and ~5% of prompts
+    # trigger degenerate AR loops (see #408). Revert once upstream lands.
+    overrides: dict[str, Any] = {
+        "disable_cuda_graph": False,
+        "sampling_backend": "pytorch",
+    }
     if server_args_overrides:
         overrides.update(server_args_overrides)
     overrides["tp_size"] = tp_size
