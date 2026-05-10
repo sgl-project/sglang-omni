@@ -8,6 +8,7 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
+from sglang_omni_router import metadata as metadata_module
 from sglang_omni_router.app import create_app
 from sglang_omni_router.config import RouterConfig, WorkerConfig
 
@@ -670,6 +671,48 @@ def test_chat_modality_capabilities_filter_mixed_worker_pool() -> None:
     assert json.loads(seen_bodies[0]) == body
 
 
+def test_chat_message_part_capabilities_filter_mixed_worker_pool() -> None:
+    seen_workers: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"status": "healthy"}, request=request)
+        if request.url.path == "/v1/chat/completions":
+            seen_workers.append(_request_netloc(request))
+            return httpx.Response(200, json={"ok": True}, request=request)
+        raise AssertionError(f"unexpected request path: {request.url.path}")
+
+    worker_configs = [
+        WorkerConfig(url="http://worker-a:8101", capabilities={"chat"}),
+        WorkerConfig(url="http://worker-b:8102", capabilities={"chat", "image_input"}),
+    ]
+    async_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    app = create_app(
+        _router_config(worker_configs=worker_configs),
+        client=async_client,
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "qwen3-omni",
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": "describe"},
+                            {"type": "image_url", "image_url": {"url": "file.jpg"}},
+                        ],
+                    }
+                ],
+            },
+        )
+
+    assert response.status_code == 200
+    assert seen_workers == ["worker-b:8102"]
+
+
 @pytest.mark.parametrize(
     ("payload_field", "capability"),
     [
@@ -708,6 +751,54 @@ def test_large_chat_body_preserves_modality_capability_routing(
             "model": "qwen3-omni",
             "messages": [{"role": "user", "content": "describe"}],
             payload_field: ["sample"],
+        }
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            content=body,
+            headers={"content-type": "application/json"},
+        )
+
+    assert response.status_code == 200
+    assert seen_workers == ["worker-b:8102"]
+
+
+def test_large_chat_body_metadata_scan_does_not_materialize_padding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen_workers: list[str] = []
+    original_loads = metadata_module.json.loads
+
+    def guarded_loads(raw):
+        assert len(raw) < 1024
+        return original_loads(raw)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"status": "healthy"}, request=request)
+        if request.url.path == "/v1/chat/completions":
+            seen_workers.append(_request_netloc(request))
+            return httpx.Response(200, json={"ok": True}, request=request)
+        raise AssertionError(f"unexpected request path: {request.url.path}")
+
+    monkeypatch.setattr(metadata_module.json, "loads", guarded_loads)
+    worker_configs = [
+        WorkerConfig(url="http://worker-a:8101", capabilities={"chat"}),
+        WorkerConfig(url="http://worker-b:8102", capabilities={"chat", "video_input"}),
+    ]
+    async_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    app = create_app(
+        _router_config(worker_configs=worker_configs),
+        client=async_client,
+    )
+    body = _large_json_body(
+        {
+            "padding_first": "x" * (1024 * 1024 + 128),
+            "model": "qwen3-omni",
+            "messages": [{"role": "user", "content": "describe"}],
+            "videos": ["sample"],
         }
     )
 
@@ -771,6 +862,37 @@ def test_large_streaming_chat_body_preserves_sse_routing() -> None:
     assert response.headers["content-type"].startswith("text/event-stream")
     assert seen_workers == ["worker-b:8102"]
     assert stream_body == chunks
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        b'{"model":"qwen3-omni","padding":"\\x"}',
+        b'{"model":"qwen3-omni","bad":01}',
+        b'["not", "an", "object"]',
+    ],
+)
+def test_route_metadata_scan_rejects_invalid_json(body: bytes) -> None:
+    seen_paths: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen_paths.append(request.url.path)
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"status": "healthy"}, request=request)
+        raise AssertionError(f"unexpected request path: {request.url.path}")
+
+    async_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    app = create_app(_router_config(), client=async_client)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            content=body,
+            headers={"content-type": "application/json"},
+        )
+
+    assert response.status_code == 400
+    assert seen_paths == ["/health", "/health"]
 
 
 def test_speech_stream_requires_speech_and_streaming_capabilities() -> None:

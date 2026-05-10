@@ -4,19 +4,20 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import time
-import uuid
-from dataclasses import dataclass
 from http import HTTPStatus
-from typing import Any
 
 import httpx
 from fastapi import Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from sglang_omni_router.config import Capability, RouterConfig
+from sglang_omni_router.metadata import (
+    RouteMetadata,
+    RouteMetadataError,
+    extract_route_metadata,
+)
 from sglang_omni_router.selector import NoEligibleWorkerError, WorkerSelector
 from sglang_omni_router.worker import Worker
 
@@ -52,127 +53,6 @@ WORKER_REQUEST_FAILURE_STATUS_CODES = {
     HTTPStatus.SERVICE_UNAVAILABLE.value,
     HTTPStatus.GATEWAY_TIMEOUT.value,
 }
-
-
-class RouteMetadataError(ValueError):
-    pass
-
-
-@dataclass
-class RouteMetadata:
-    request_id: str
-    model: str | None
-    stream: bool
-    required_capabilities: set[Capability]
-    idempotency_key_present: bool
-
-
-def infer_required_capabilities(
-    path: str,
-    payload: dict[str, Any] | None,
-    *,
-    stream: bool,
-) -> set[Capability]:
-    if path == "/v1/audio/speech":
-        capabilities: set[Capability] = {"speech"}
-        if stream:
-            capabilities.add("streaming")
-        return capabilities
-
-    capabilities = {"chat"}
-    if stream:
-        capabilities.add("streaming")
-    if not payload:
-        return capabilities
-
-    if _has_non_empty(payload.get("images")) or _has_non_empty(payload.get("image")):
-        capabilities.add("image_input")
-    if _has_non_empty(payload.get("audios")) or _has_non_empty(
-        payload.get("audio_inputs")
-    ):
-        capabilities.add("audio_input")
-    if _has_non_empty(payload.get("videos")) or _has_non_empty(payload.get("video")):
-        capabilities.add("video_input")
-    if _modalities_include_audio(payload) or _has_non_empty(payload.get("audio")):
-        capabilities.add("audio_output")
-
-    message_capabilities = _infer_message_part_capabilities(payload.get("messages"))
-    capabilities.update(message_capabilities)
-    return capabilities
-
-
-def extract_route_metadata(request: Request, path: str, body: bytes) -> RouteMetadata:
-    request_id = (
-        request.headers.get("x-sglang-omni-request-id")
-        or request.headers.get("x-request-id")
-        or request.headers.get("x-correlation-id")
-    )
-    model: str | None = None
-    stream = False
-    payload: dict[str, Any] | None = None
-
-    content_type = request.headers.get("content-type", "").lower()
-    if "json" in content_type and body:
-        try:
-            parsed_payload = json.loads(body)
-        except Exception:
-            raise RouteMetadataError("invalid JSON body") from None
-        if not isinstance(parsed_payload, dict):
-            raise RouteMetadataError("JSON request body must be an object")
-        payload = parsed_payload
-        request_id = request_id or _string_or_none(payload.get("request_id"))
-        model = _string_or_none(payload.get("model"))
-        stream = payload.get("stream") is True
-
-    return RouteMetadata(
-        request_id=request_id or str(uuid.uuid4()),
-        model=model,
-        stream=stream,
-        required_capabilities=infer_required_capabilities(path, payload, stream=stream),
-        idempotency_key_present=bool(request.headers.get("idempotency-key")),
-    )
-
-
-def _string_or_none(value: Any) -> str | None:
-    return value if isinstance(value, str) and value else None
-
-
-def _has_non_empty(value: Any) -> bool:
-    if value is None or value is False:
-        return False
-    if isinstance(value, (str, list, dict)):
-        return bool(value)
-    return True
-
-
-def _modalities_include_audio(payload: dict[str, Any]) -> bool:
-    modalities = payload.get("modalities")
-    if not isinstance(modalities, list):
-        return False
-    return any(item == "audio" for item in modalities)
-
-
-def _infer_message_part_capabilities(messages: Any) -> set[Capability]:
-    capabilities: set[Capability] = set()
-    if not isinstance(messages, list):
-        return capabilities
-    for message in messages:
-        if not isinstance(message, dict):
-            continue
-        content = message.get("content")
-        if not isinstance(content, list):
-            continue
-        for part in content:
-            if not isinstance(part, dict):
-                continue
-            part_type = part.get("type")
-            if part_type in {"image", "image_url", "input_image"}:
-                capabilities.add("image_input")
-            elif part_type in {"audio", "audio_url", "input_audio"}:
-                capabilities.add("audio_input")
-            elif part_type in {"video", "video_url", "input_video"}:
-                capabilities.add("video_input")
-    return capabilities
 
 
 def filter_request_headers(request: Request) -> dict[str, str]:
