@@ -195,10 +195,16 @@ class Worker:
     ) -> None:
         if previous_state == next_state:
             return
-        log = logger.warning if warn or next_state == HEALTH_STATE_DEAD else logger.info
+        log = (
+            logger.warning
+            if next_state == HEALTH_STATE_DEAD
+            or (warn and previous_state == HEALTH_STATE_HEALTHY)
+            else logger.info
+        )
         log(
             f"Worker {self.display_id} health state changed "
-            f"from {previous_state} to {next_state}",
+            f"from {_format_state_for_log(previous_state)} "
+            f"to {_format_state_for_log(next_state)}",
         )
 
     def to_dict(self) -> dict[str, object]:
@@ -224,3 +230,7 @@ class Worker:
 
 def build_workers(configs: list[WorkerConfig]) -> list[Worker]:
     return [Worker(config=config) for config in configs]
+
+
+def _format_state_for_log(state: WorkerState) -> str:
+    return state.replace("_", " ").title()
