@@ -764,9 +764,8 @@ class MooncakeRelay(Relay):
             logger.info(f"[{self.engine_id}] Notification listener task cancelled")
 
         # Deregister memory pool
-        if hasattr(self, "pool_handle"):
-            self.connection.deregister_memory(self.pool_handle)
-            logger.info(f"[{self.engine_id}] Memory pool deregistered")
+        self.connection.deregister_memory(self.pool_handle)
+        logger.info(f"[{self.engine_id}] Memory pool deregistered")
 
         # Close Mooncake connection
         self.connection.close()

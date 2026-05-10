@@ -426,14 +426,13 @@ def _build_chat_generate_request(req: ChatCompletionRequest) -> GenerateRequest:
         metadata["video_total_pixels"] = req.video_total_pixels
 
     extra_params: dict[str, Any] = {}
-    for field_name in (
-        "talker_temperature",
-        "talker_top_p",
-        "talker_top_k",
-        "talker_repetition_penalty",
-        "talker_max_new_tokens",
+    for field_name, value in (
+        ("talker_temperature", req.talker_temperature),
+        ("talker_top_p", req.talker_top_p),
+        ("talker_top_k", req.talker_top_k),
+        ("talker_repetition_penalty", req.talker_repetition_penalty),
+        ("talker_max_new_tokens", req.talker_max_new_tokens),
     ):
-        value = getattr(req, field_name)
         if value is not None:
             extra_params[field_name] = value
 
