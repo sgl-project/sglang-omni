@@ -13,7 +13,8 @@ from fastapi import Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from sglang_omni_router.config import Capability, RouterConfig
-from sglang_omni_router.metadata import (
+from sglang_omni_router.route_metadata import (
+    ROUTE_HEADER_NAMES,
     RouteMetadata,
     RouteMetadataError,
     extract_route_metadata,
@@ -34,11 +35,15 @@ HOP_BY_HOP_HEADERS = {
     "transfer-encoding",
     "upgrade",
 }
-REQUEST_HEADERS_TO_STRIP = HOP_BY_HOP_HEADERS | {
-    "host",
-    "content-length",
-    "accept-encoding",
-}
+REQUEST_HEADERS_TO_STRIP = (
+    HOP_BY_HOP_HEADERS
+    | {
+        "host",
+        "content-length",
+        "accept-encoding",
+    }
+    | ROUTE_HEADER_NAMES
+)
 RESPONSE_HEADERS_TO_STRIP = HOP_BY_HOP_HEADERS | {
     "content-length",
 }
@@ -139,6 +144,21 @@ class ProxyHandler:
                 status_code=400,
                 content={"error": {"message": str(exc)}},
             )
+
+        large_request_error = _large_request_hint_error(self._workers, metadata)
+        if large_request_error is not None:
+            self._log_route_rejection(
+                request=request,
+                path=path,
+                status_code=400,
+                reason=large_request_error.replace(" ", "_"),
+                metadata=metadata,
+            )
+            return JSONResponse(
+                status_code=400,
+                content={"error": {"message": large_request_error}},
+            )
+
         try:
             worker = self._selector.select(
                 self._workers,
@@ -416,3 +436,38 @@ def _request_id_from_headers(request: Request) -> str | None:
         or request.headers.get("x-request-id")
         or request.headers.get("x-correlation-id")
     )
+
+
+def _large_request_hint_error(
+    workers: list[Worker],
+    metadata: RouteMetadata,
+) -> str | None:
+    if not metadata.body_exceeds_metadata_limit:
+        return None
+
+    candidates = [
+        worker
+        for worker in workers
+        if worker.is_routable
+        and all(
+            worker.supports(capability) for capability in metadata.required_capabilities
+        )
+    ]
+    if not candidates:
+        return None
+
+    models = {worker.model for worker in candidates}
+    if metadata.model is None and len(models) > 1:
+        return (
+            "large JSON requests across mixed-model workers require "
+            "x-sglang-omni-route-model"
+        )
+
+    capability_sets = {frozenset(worker.capabilities) for worker in candidates}
+    if not metadata.route_capabilities_header_present and len(capability_sets) > 1:
+        return (
+            "large JSON requests across mixed-capability workers require "
+            "x-sglang-omni-route-capabilities"
+        )
+
+    return None

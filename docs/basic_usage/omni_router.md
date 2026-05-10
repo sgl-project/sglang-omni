@@ -143,9 +143,9 @@ curl -N http://127.0.0.1:8008/v1/chat/completions \
   }'
 ```
 
-The router preserves the original request body. It parses only the fields needed
-for routing, such as `stream`, `images`, `audios`, `videos`, `modalities`, and
-message content parts.
+The router preserves the original request body. For ordinary JSON requests, it
+parses a bounded amount of request metadata for worker selection and forwards
+the original bytes to the selected worker.
 
 ## Manage Workers
 
@@ -217,6 +217,17 @@ The router infers required capabilities from each request:
 
 Register narrower worker capabilities only when a worker cannot serve one of
 those request classes.
+
+Large JSON requests are not fully parsed by the router. With a homogeneous pool
+of complete Omni V1 replicas, no extra headers are needed. With mixed models or
+mixed worker capabilities, provide explicit route hints:
+
+- `X-SGLang-Omni-Route-Model`: requested model for mixed-model pools
+- `X-SGLang-Omni-Route-Capabilities`: comma-separated capabilities such as
+  `image_input`, `audio_input`, `video_input`, `audio_output`, or `streaming`
+- `X-SGLang-Omni-Route-Stream`: `true` or `false` for large streaming requests
+
+These headers are router-only hints and are not forwarded to workers.
 
 ## Request Diagnostics
 
