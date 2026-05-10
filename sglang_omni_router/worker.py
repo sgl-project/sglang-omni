@@ -195,6 +195,17 @@ class Worker:
     ) -> None:
         if previous_state == next_state:
             return
+        if previous_state == HEALTH_STATE_UNKNOWN:
+            if next_state == HEALTH_STATE_HEALTHY:
+                logger.info(f"Worker {self.display_id} is Healthy")
+            else:
+                logger.debug(
+                    f"Worker {self.display_id} health state changed "
+                    f"from {_format_state_for_log(previous_state)} "
+                    f"to {_format_state_for_log(next_state)}",
+                )
+            return
+
         log = (
             logger.warning
             if next_state == HEALTH_STATE_DEAD
