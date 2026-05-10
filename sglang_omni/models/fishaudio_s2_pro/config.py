@@ -22,6 +22,10 @@ _S2_PKG = "sglang_omni.models.fishaudio_s2_pro.pipeline"
 class S2ProPipelineConfig(PipelineConfig):
     architecture: ClassVar[str] = "FishQwen3OmniForCausalLM"
 
+    @classmethod
+    def mem_fraction_role_to_stage(cls) -> dict[str, str]:
+        return {"talker": TTS_ENGINE_STAGE}
+
     model_path: str
     entry_stage: str = "preprocessing"
     stages: list[StageConfig] = [

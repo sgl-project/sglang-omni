@@ -31,6 +31,11 @@ logger = logging.getLogger(__name__)
 
 _VOCODER_BYTES_PER_TOKEN = int(5.3 * 1024 * 1024)
 
+# Used only if ``_measure_vocoder_peak_bytes`` itself fails
+# (e.g. probe OOMs on a tiny GPU or the codec is unreadable).
+_VOCODER_RESERVE_FALLBACK_BYTES = int(2.0 * 1024**3)
+_LOW_MEM_FRACTION_WARN_THRESHOLD = 0.4
+
 
 def _resolve_checkpoint(checkpoint: str) -> str:
     if os.path.isdir(checkpoint):
@@ -109,6 +114,73 @@ def _warmup_codec(codec: Any, *, num_codebooks: int, device: str) -> None:
     with torch.no_grad():
         codec.from_indices(dummy)
     logger.info("Stream codec warmup done in %.2fs", time.perf_counter() - t0)
+
+
+def _measure_vocoder_peak_bytes(
+    checkpoint_dir: str,
+    device: str,
+    num_codebooks: int,
+    probe_tokens: int,
+) -> int:
+    """Probe-load the vocoder codec to measure its real GPU peak.
+
+    Loads the codec on ``device``, runs one dummy decode at the largest
+    per-call shape the vocoder will see in production (``probe_tokens``,
+    typically the streaming-chunk size), and returns
+    ``max_memory_allocated - pre_probe_baseline``. The codec is freed
+    before returning so the probe leaves no permanent allocation.
+
+    The returned value is the reserve SGLang must keep off-limits so the
+    vocoder stage can co-exist on the same GPU.
+    """
+    gpu_id = int(device.split(":")[-1]) if ":" in device else 0
+    torch.cuda.empty_cache()
+    torch.cuda.synchronize(gpu_id)
+    pre = torch.cuda.memory_allocated(gpu_id)
+    torch.cuda.reset_peak_memory_stats(gpu_id)
+
+    t0 = time.perf_counter()
+    codec = _load_codec(checkpoint_dir, device)
+    dummy = torch.zeros(
+        1, num_codebooks - 1, probe_tokens, dtype=torch.long, device=device
+    )
+    with torch.no_grad():
+        codec.from_indices(dummy)
+    torch.cuda.synchronize(gpu_id)
+
+    peak = torch.cuda.max_memory_allocated(gpu_id) - pre
+
+    del codec, dummy
+    torch.cuda.empty_cache()
+    torch.cuda.synchronize(gpu_id)
+
+    logger.info(
+        "Vocoder probe: peak=%.2f GiB on %s (took %.2fs, dummy=%d tokens)",
+        peak / (1024**3),
+        device,
+        time.perf_counter() - t0,
+        probe_tokens,
+    )
+    return peak
+
+
+def _compute_auto_mem_fraction(device: str, vocoder_reserve_bytes: int) -> float:
+    """Size SGLang's static pool from free GPU memory minus the measured vocoder reserve."""
+    gpu_id = int(device.split(":")[-1]) if ":" in device else 0
+    total_bytes = torch.cuda.get_device_properties(gpu_id).total_memory
+    free_bytes = torch.cuda.mem_get_info(gpu_id)[0]
+    target = max(0, free_bytes - vocoder_reserve_bytes)
+    fraction = round(min(0.95, target / total_bytes), 3)
+    log = logger.warning if fraction < _LOW_MEM_FRACTION_WARN_THRESHOLD else logger.info
+    log(
+        "Auto-sized mem_fraction_static=%.3f (free=%.1f GiB, total=%.1f GiB, "
+        "vocoder_reserve=%.2f GiB)",
+        fraction,
+        free_bytes / (1024**3),
+        total_bytes / (1024**3),
+        vocoder_reserve_bytes / (1024**3),
+    )
+    return fraction
 
 
 def create_preprocessing_executor(model_path: str) -> PreprocessingExecutor:
@@ -218,6 +290,7 @@ def create_sglang_tts_engine_executor(
     stream_crossfade_samples: int = 0,
     stream_vocoder_device: str | None = None,
     warmup_stream_codec_on_startup: bool = True,
+    server_args_overrides: dict[str, Any] | None = None,
 ) -> EngineExecutor:
     """Factory for the S2-Pro TTS engine stage."""
     from sglang.srt.server_args import ServerArgs
@@ -265,15 +338,40 @@ def create_sglang_tts_engine_executor(
         _get_stream_codec_bundle()
 
     _patch_fish_config_for_sglang(checkpoint_dir)
-    server_args = ServerArgs(
+
+    # Probe the vocoder codec to measure how much GPU memory the vocoder stage
+    # will need (weights + activation peak + workspace), then size SGLang from
+    # free VRAM minus that measurement. The probe shape matches the largest
+    # per-call workload the vocoder actually sees in production: the streaming
+    # chunk size (``stream_followup_stride``). If the probe itself fails
+    # (e.g. tiny GPU, missing checkpoint shards), fall back to a conservative
+    # constant. Power users can still bypass with ``server_args_overrides``.
+    probe_tokens = max(stream_stride, stream_followup_stride)
+    try:
+        vocoder_reserve_bytes = _measure_vocoder_peak_bytes(
+            checkpoint_dir, device, num_codebooks, probe_tokens
+        )
+    except Exception as exc:
+        logger.warning(
+            "Vocoder probe failed (%s: %s); using fallback reserve %.1f GiB",
+            type(exc).__name__,
+            exc,
+            _VOCODER_RESERVE_FALLBACK_BYTES / (1024**3),
+        )
+        vocoder_reserve_bytes = _VOCODER_RESERVE_FALLBACK_BYTES
+    auto_mem_fraction = _compute_auto_mem_fraction(device, vocoder_reserve_bytes)
+
+    server_args_kwargs: dict[str, Any] = dict(
         model_path=checkpoint_dir,
         tp_size=1,
         dtype="bfloat16",
-        mem_fraction_static=0.85,
-        chunked_prefill_size=8192,
-        max_running_requests=64,
+        mem_fraction_static=auto_mem_fraction,
+        max_running_requests=64,  # int required; omni scheduler does arithmetic on it
         disable_cuda_graph=False,
     )
+    if server_args_overrides:
+        server_args_kwargs.update(server_args_overrides)
+    server_args = ServerArgs(**server_args_kwargs)
 
     engine = create_s2pro_sglang_engine(
         server_args=server_args,

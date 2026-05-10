@@ -114,7 +114,7 @@ def create_s2pro_sglang_engine(
 
     # Set up unified decode: slow head + fast head in one forward
     text_model = model_worker.model_runner.model
-    max_bs = server_args.max_running_requests
+    max_bs = server_args.max_running_requests or server_args.cuda_graph_max_bs
     audio_decoder.setup_caches(max_batch_size=max_bs, dtype=torch.bfloat16)
     text_model.setup_vq_decode(
         audio_decoder,
