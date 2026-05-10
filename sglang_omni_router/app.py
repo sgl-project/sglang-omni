@@ -53,10 +53,6 @@ def create_app(
         app.state.http_client = client
         app.state.health_checker = health_checker
         app.state.proxy = proxy
-        # Initial health checks satisfy the configured success threshold before
-        # the router starts accepting traffic; later checks run in the background.
-        for _ in range(config.health_success_threshold):
-            await health_checker.check_all_workers()
         await health_checker.start()
         try:
             yield
@@ -162,37 +158,48 @@ def register_routes(app: FastAPI, workers: list[Worker], proxy: ProxyHandler) ->
         if not payload:
             return _error_response(400, "at least one worker field is required")
 
+        requested_is_dead: bool | None = None
+        requested_disabled: bool | None = None
+
         if "is_dead" in payload:
-            if not isinstance(payload["is_dead"], bool):
+            requested_is_dead = payload["is_dead"]
+            if not isinstance(requested_is_dead, bool):
                 return _error_response(400, "is_dead must be a boolean")
-            if payload["is_dead"]:
+
+        if "disabled" in payload:
+            requested_disabled = payload["disabled"]
+            if not isinstance(requested_disabled, bool):
+                return _error_response(400, "disabled must be a boolean")
+
+        next_config = worker.config
+
+        if "capabilities" in payload or "model" in payload:
+            try:
+                next_config = WorkerConfig(
+                    url=worker.url,
+                    model=(
+                        payload.get("model") if "model" in payload else worker.model
+                    ),
+                    capabilities=(
+                        payload.get("capabilities")
+                        if "capabilities" in payload
+                        else worker.capabilities
+                    ),
+                )
+            except ValidationError as exc:
+                return _error_response(400, str(exc))
+
+        worker.replace_config(next_config)
+
+        if requested_disabled is not None:
+            worker.set_disabled(requested_disabled)
+
+        if requested_is_dead is not None:
+            if requested_is_dead:
                 worker.mark_dead()
             else:
                 worker.clear_dead()
                 await app.state.health_checker.check_worker_health(worker)
-
-        if "disabled" in payload:
-            if not isinstance(payload["disabled"], bool):
-                return _error_response(400, "disabled must be a boolean")
-            worker.set_disabled(payload["disabled"])
-
-        if "capabilities" in payload or "model" in payload:
-            try:
-                worker.replace_config(
-                    WorkerConfig(
-                        url=worker.url,
-                        model=(
-                            payload.get("model") if "model" in payload else worker.model
-                        ),
-                        capabilities=(
-                            payload.get("capabilities")
-                            if "capabilities" in payload
-                            else worker.capabilities
-                        ),
-                    )
-                )
-            except ValidationError as exc:
-                return _error_response(400, str(exc))
 
         return JSONResponse({"status": "ok", "worker": worker.to_dict()})
 

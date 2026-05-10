@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import importlib
+from pathlib import Path
+
 import httpx
 import pytest
 from pydantic import ValidationError
@@ -68,6 +71,27 @@ def test_router_config_rejects_hyphenated_policy_aliases() -> None:
             worker_urls=[WorkerConfig(url="http://127.0.0.1:8101")],
             policy="round-robin",
         )
+
+
+def test_router_console_script_entrypoint_resolves() -> None:
+    script_target = None
+    in_project_scripts = False
+    pyproject = Path(__file__).resolve().parents[1] / "pyproject.toml"
+    for line in pyproject.read_text().splitlines():
+        stripped = line.strip()
+        if stripped == "[project.scripts]":
+            in_project_scripts = True
+            continue
+        if in_project_scripts and stripped.startswith("["):
+            break
+        if in_project_scripts and stripped.startswith("sgl-omni-router"):
+            script_target = stripped.split("=", 1)[1].strip().strip('"')
+            break
+
+    assert script_target == "sglang_omni_router.serve:main"
+    module_name, function_name = script_target.split(":")
+    entrypoint = getattr(importlib.import_module(module_name), function_name)
+    assert callable(entrypoint)
 
 
 def test_selector_filters_by_health_and_capability() -> None:
@@ -228,7 +252,7 @@ async def test_health_checker_uses_failure_and_success_thresholds() -> None:
         checker = HealthChecker(workers=[worker], config=config, client=client)
 
         await checker.check_all_workers()
-        assert worker.state == "unhealthy"
+        assert worker.state == "unknown"
         assert worker.last_error == "status=500"
         await checker.check_all_workers()
         assert worker.state == "unhealthy"

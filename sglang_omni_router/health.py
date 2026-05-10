@@ -53,15 +53,15 @@ class HealthChecker:
 
     async def _run_loop(self) -> None:
         while True:
-            interval = self._config.health_check_interval_secs
-            jitter = random.uniform(0.8, 1.2)
-            await asyncio.sleep(interval * jitter)
             try:
                 await self.check_all_workers()
             except asyncio.CancelledError:
                 raise
             except Exception:
                 logger.exception("unexpected error in router health loop")
+            interval = self._config.health_check_interval_secs
+            jitter = random.uniform(0.8, 1.2)
+            await asyncio.sleep(interval * jitter)
 
     async def _check_worker_health(self, worker: Worker) -> None:
         if worker.is_dead:

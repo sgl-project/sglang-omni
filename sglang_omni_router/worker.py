@@ -174,8 +174,6 @@ class Worker:
         failure_threshold_crossed = self.consecutive_failures == failure_threshold
         if failure_threshold_reached:
             self.state = HEALTH_STATE_UNHEALTHY
-        elif not self.is_healthy:
-            self.state = HEALTH_STATE_UNHEALTHY
         self._log_state_transition(
             previous_state,
             self.state,

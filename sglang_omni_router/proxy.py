@@ -3,8 +3,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import time
 import uuid
 from dataclasses import dataclass
 from http import HTTPStatus
@@ -42,7 +44,6 @@ RESPONSE_HEADERS_TO_STRIP = HOP_BY_HOP_HEADERS | {
 BUFFERED_RESPONSE_HEADERS_TO_STRIP = RESPONSE_HEADERS_TO_STRIP | {
     "content-encoding",
 }
-ROUTE_METADATA_JSON_LIMIT_BYTES = 1024 * 1024
 WORKER_REQUEST_FAILURE_STATUS_CODES = {
     HTTPStatus.REQUEST_TIMEOUT.value,
     HTTPStatus.TOO_MANY_REQUESTS.value,
@@ -51,6 +52,10 @@ WORKER_REQUEST_FAILURE_STATUS_CODES = {
     HTTPStatus.SERVICE_UNAVAILABLE.value,
     HTTPStatus.GATEWAY_TIMEOUT.value,
 }
+
+
+class RouteMetadataError(ValueError):
+    pass
 
 
 @dataclass
@@ -106,17 +111,18 @@ def extract_route_metadata(request: Request, path: str, body: bytes) -> RouteMet
     stream = False
     payload: dict[str, Any] | None = None
 
-    content_type = request.headers.get("content-type", "")
-    if "json" in content_type and len(body) <= ROUTE_METADATA_JSON_LIMIT_BYTES:
+    content_type = request.headers.get("content-type", "").lower()
+    if "json" in content_type and body:
         try:
             parsed_payload = json.loads(body)
         except Exception:
-            parsed_payload = None
-        if isinstance(parsed_payload, dict):
-            payload = parsed_payload
-            request_id = request_id or _string_or_none(payload.get("request_id"))
-            model = _string_or_none(payload.get("model"))
-            stream = payload.get("stream") is True
+            raise RouteMetadataError("invalid JSON body") from None
+        if not isinstance(parsed_payload, dict):
+            raise RouteMetadataError("JSON request body must be an object")
+        payload = parsed_payload
+        request_id = request_id or _string_or_none(payload.get("request_id"))
+        model = _string_or_none(payload.get("model"))
+        stream = payload.get("stream") is True
 
     return RouteMetadata(
         request_id=request_id or str(uuid.uuid4()),
@@ -228,7 +234,13 @@ class ProxyHandler:
                 content={"error": {"message": "payload too large"}},
             )
 
-        metadata = extract_route_metadata(request, path, body)
+        try:
+            metadata = extract_route_metadata(request, path, body)
+        except RouteMetadataError as exc:
+            return JSONResponse(
+                status_code=400,
+                content={"error": {"message": str(exc)}},
+            )
         try:
             worker = self._selector.select(
                 self._workers,
@@ -253,6 +265,7 @@ class ProxyHandler:
         worker: Worker,
     ) -> Response:
         with worker.request_guard():
+            start_time = time.perf_counter()
             try:
                 response = await self._client.request(
                     request.method,
@@ -266,6 +279,15 @@ class ProxyHandler:
                         status_code=response.status_code,
                         error=_response_error(response),
                     )
+                outcome = _response_outcome(response.status_code)
+                self._log_route_completion(
+                    worker=worker,
+                    path=path,
+                    metadata=metadata,
+                    status_code=response.status_code,
+                    outcome=outcome,
+                    start_time=start_time,
+                )
                 headers = filter_response_headers(response.headers, buffered=True)
                 headers.update(self._diagnostic_headers(worker, metadata))
                 return Response(
@@ -278,6 +300,14 @@ class ProxyHandler:
                 self._record_worker_request_failure(
                     worker,
                     error=type(exc).__name__,
+                )
+                self._log_route_completion(
+                    worker=worker,
+                    path=path,
+                    metadata=metadata,
+                    status_code=502,
+                    outcome="upstream_error",
+                    start_time=start_time,
                 )
                 return JSONResponse(
                     status_code=502,
@@ -294,6 +324,7 @@ class ProxyHandler:
         worker: Worker,
     ) -> StreamingResponse | JSONResponse:
         worker.increment_active()
+        start_time = time.perf_counter()
         try:
             upstream_request = self._client.build_request(
                 request.method,
@@ -307,6 +338,14 @@ class ProxyHandler:
             self._record_worker_request_failure(
                 worker,
                 error=type(exc).__name__,
+            )
+            self._log_route_completion(
+                worker=worker,
+                path=path,
+                metadata=metadata,
+                status_code=502,
+                outcome="upstream_error",
+                start_time=start_time,
             )
             return JSONResponse(
                 status_code=502,
@@ -338,15 +377,28 @@ class ProxyHandler:
             )
 
         async def iter_bytes():
+            outcome = _response_outcome(upstream.status_code)
             try:
                 async for chunk in upstream.aiter_bytes():
                     yield chunk
+            except asyncio.CancelledError:
+                outcome = "stream_cancelled"
+                raise
             except Exception as exc:
+                outcome = "stream_error"
                 record_worker_failure_once(error=type(exc).__name__)
                 raise
             finally:
                 await upstream.aclose()
                 worker.decrement_active()
+                self._log_route_completion(
+                    worker=worker,
+                    path=path,
+                    metadata=metadata,
+                    status_code=upstream.status_code,
+                    outcome=outcome,
+                    start_time=start_time,
+                )
 
         headers = filter_response_headers(upstream.headers)
         headers.update(self._diagnostic_headers(worker, metadata))
@@ -388,6 +440,25 @@ class ProxyHandler:
             f"consecutive_failures={worker.consecutive_failures}",
         )
 
+    def _log_route_completion(
+        self,
+        *,
+        worker: Worker,
+        path: str,
+        metadata: RouteMetadata,
+        status_code: int,
+        outcome: str,
+        start_time: float,
+    ) -> None:
+        duration_ms = (time.perf_counter() - start_time) * 1000
+        logger.info(
+            f"route_completed request_id={metadata.request_id} "
+            f"worker={worker.display_id} path={path} stream={metadata.stream} "
+            f"capabilities={_format_capabilities(metadata.required_capabilities)} "
+            f"status_code={status_code} duration_ms={duration_ms:.2f} "
+            f"outcome={outcome}",
+        )
+
 
 def _exceeds_max_size(value: str, max_size: int) -> bool:
     try:
@@ -399,3 +470,15 @@ def _exceeds_max_size(value: str, max_size: int) -> bool:
 def _response_error(response: httpx.Response) -> str:
     content = response.content[:512].decode("utf-8", errors="replace")
     return content or f"status={response.status_code}"
+
+
+def _response_outcome(status_code: int) -> str:
+    if status_code in WORKER_REQUEST_FAILURE_STATUS_CODES:
+        return "worker_failure_status"
+    return "completed"
+
+
+def _format_capabilities(capabilities: set[Capability]) -> str:
+    if not capabilities:
+        return "-"
+    return ",".join(sorted(capabilities))
