@@ -59,6 +59,135 @@ def _apply_stage_server_args_override(
         stage.factory_args = factory_args
 
 
+def _stage_has_explicit_mem_fraction_static(
+    pipeline_config: PipelineConfig,
+    *,
+    stage_name: str,
+    factory_args: dict[str, object],
+) -> bool:
+    server_args_overrides = dict(factory_args.get("server_args_overrides") or {})
+    if server_args_overrides.get("mem_fraction_static") is not None:
+        return True
+
+    runtime_overrides = dict(pipeline_config.runtime_overrides.get(stage_name, {}))
+    runtime_server_args_overrides = dict(
+        runtime_overrides.get("server_args_overrides") or {}
+    )
+    return runtime_server_args_overrides.get("mem_fraction_static") is not None
+
+
+def _validate_mem_fraction_static(flag_name: str, value: float | None) -> float | None:
+    if value is None:
+        return None
+    if not 0.0 < value < 1.0:
+        raise typer.BadParameter(f"{flag_name} must be > 0 and < 1, got {value}")
+    return float(value)
+
+
+def _validate_encoder_mem_reserve(value: float | None) -> float | None:
+    if value is None:
+        return None
+    if not 0.0 <= value < 1.0:
+        raise typer.BadParameter("--encoder-mem-reserve must be in [0, 1)")
+    return float(value)
+
+
+def apply_mem_fraction_cli_overrides(
+    pipeline_config: PipelineConfig,
+    *,
+    mem_fraction_static: float | None,
+    thinker_mem_fraction_static: float | None,
+    talker_mem_fraction_static: float | None,
+) -> PipelineConfig:
+    mem_fraction_static = _validate_mem_fraction_static(
+        "--mem-fraction-static", mem_fraction_static
+    )
+    thinker_mem_fraction_static = _validate_mem_fraction_static(
+        "--thinker-mem-fraction-static", thinker_mem_fraction_static
+    )
+    talker_mem_fraction_static = _validate_mem_fraction_static(
+        "--talker-mem-fraction-static", talker_mem_fraction_static
+    )
+
+    role_to_stage = type(pipeline_config).mem_fraction_role_to_stage()
+    if mem_fraction_static is not None and not role_to_stage:
+        raise typer.BadParameter(
+            "--mem-fraction-static requires a pipeline with a supported "
+            "SGLang AR mem_fraction_static target"
+        )
+    if thinker_mem_fraction_static is not None and "thinker" not in role_to_stage:
+        raise typer.BadParameter(
+            "--thinker-mem-fraction-static is not supported by pipeline "
+            f"{type(pipeline_config).__name__}."
+        )
+    if talker_mem_fraction_static is not None and "talker" not in role_to_stage:
+        raise typer.BadParameter(
+            "--talker-mem-fraction-static is not supported by pipeline "
+            f"{type(pipeline_config).__name__}."
+        )
+
+    role_values = {
+        "thinker": thinker_mem_fraction_static,
+        "talker": talker_mem_fraction_static,
+    }
+    for role, stage_name in role_to_stage.items():
+        role_value = role_values.get(role)
+        final_value = role_value if role_value is not None else mem_fraction_static
+        if final_value is not None:
+            _apply_stage_server_args_override(
+                pipeline_config,
+                stage_name=stage_name,
+                updates={"mem_fraction_static": final_value},
+                reason=f"{role} SGLang mem_fraction_static override",
+            )
+    return pipeline_config
+
+
+def apply_encoder_mem_reserve_cli_override(
+    pipeline_config: PipelineConfig,
+    *,
+    encoder_mem_reserve: float | None,
+    mem_fraction_static: float | None,
+    thinker_mem_fraction_static: float | None,
+) -> PipelineConfig:
+    if encoder_mem_reserve is None:
+        return pipeline_config
+    if mem_fraction_static is not None or thinker_mem_fraction_static is not None:
+        raise typer.BadParameter(
+            "--encoder-mem-reserve is mutually exclusive with "
+            "--mem-fraction-static and --thinker-mem-fraction-static"
+        )
+    encoder_mem_reserve = _validate_encoder_mem_reserve(encoder_mem_reserve)
+
+    role_to_stage = type(pipeline_config).mem_fraction_role_to_stage()
+    thinker_stage = role_to_stage.get("thinker")
+    if thinker_stage is None:
+        raise typer.BadParameter(
+            "--encoder-mem-reserve requires a pipeline with a supported "
+            "thinker SGLang AR stage"
+        )
+
+    matching_stages = _find_matching_stages(
+        pipeline_config,
+        stage_name=thinker_stage,
+        reason="Qwen thinker encoder memory reserve",
+    )
+    for stage in matching_stages:
+        factory_args = dict(stage.factory_args or {})
+        if _stage_has_explicit_mem_fraction_static(
+            pipeline_config,
+            stage_name=stage.name,
+            factory_args=factory_args,
+        ):
+            raise typer.BadParameter(
+                "--encoder-mem-reserve is only valid when thinker "
+                "mem_fraction_static is not explicitly pinned"
+            )
+        factory_args["encoder_mem_reserve"] = encoder_mem_reserve
+        stage.factory_args = factory_args
+    return pipeline_config
+
+
 def _parse_gpu_placement(flag_name: str, value: str) -> int | list[int]:
     text = value.strip()
     if not text:
@@ -310,6 +439,47 @@ def serve(
     model_name: Annotated[
         str, typer.Option(help="Model name for /v1/models (default: pipeline name).")
     ] = None,
+    mem_fraction_static: Annotated[
+        float | None,
+        typer.Option(
+            "--mem-fraction-static",
+            help=(
+                "Set SGLang mem_fraction_static for all supported Qwen AR stages. "
+                "If omitted, SGLang chooses the value automatically."
+            ),
+        ),
+    ] = None,
+    thinker_mem_fraction_static: Annotated[
+        float | None,
+        typer.Option(
+            "--thinker-mem-fraction-static",
+            help=(
+                "Set SGLang mem_fraction_static for Qwen thinker. Overrides "
+                "--mem-fraction-static for thinker."
+            ),
+        ),
+    ] = None,
+    talker_mem_fraction_static: Annotated[
+        float | None,
+        typer.Option(
+            "--talker-mem-fraction-static",
+            help=(
+                "Set SGLang mem_fraction_static for Qwen talker_ar. Overrides "
+                "--mem-fraction-static for talker_ar."
+            ),
+        ),
+    ] = None,
+    encoder_mem_reserve: Annotated[
+        float | None,
+        typer.Option(
+            "--encoder-mem-reserve",
+            help=(
+                "Subtract this fraction from SGLang's auto-picked Qwen thinker "
+                "mem_fraction_static for colocated external encoders. Valid only "
+                "when thinker mem_fraction_static is not explicitly pinned."
+            ),
+        ),
+    ] = None,
     log_level: Annotated[
         Literal["debug", "info", "warning", "error", "critical"],
         typer.Option(help="Log level (default: info)."),
@@ -416,6 +586,18 @@ def serve(
     extra_args = config_manager.parse_extra_args(ctx.args)
     merged_config = config_manager.merge_config(extra_args)
     merged_config = merged_config.model_copy(update={"model_path": model_path})
+    merged_config = apply_mem_fraction_cli_overrides(
+        merged_config,
+        mem_fraction_static=mem_fraction_static,
+        thinker_mem_fraction_static=thinker_mem_fraction_static,
+        talker_mem_fraction_static=talker_mem_fraction_static,
+    )
+    merged_config = apply_encoder_mem_reserve_cli_override(
+        merged_config,
+        encoder_mem_reserve=encoder_mem_reserve,
+        mem_fraction_static=mem_fraction_static,
+        thinker_mem_fraction_static=thinker_mem_fraction_static,
+    )
     merged_config = apply_parallelism_cli_overrides(
         merged_config,
         thinker_tp_size=thinker_tp_size,

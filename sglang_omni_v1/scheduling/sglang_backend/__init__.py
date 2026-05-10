@@ -7,6 +7,7 @@ from sglang_omni_v1.scheduling.sglang_backend.output_processor import (
 from sglang_omni_v1.scheduling.sglang_backend.prefill import PrefillManager
 from sglang_omni_v1.scheduling.sglang_backend.request_data import SGLangARRequestData
 from sglang_omni_v1.scheduling.sglang_backend.server_args_builder import (
+    apply_encoder_mem_reserve,
     build_sglang_server_args,
 )
 
@@ -16,5 +17,6 @@ __all__ = [
     "PrefillManager",
     "SGLangARRequestData",
     "SGLangOutputProcessor",
+    "apply_encoder_mem_reserve",
     "build_sglang_server_args",
 ]
