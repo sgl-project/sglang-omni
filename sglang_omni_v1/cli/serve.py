@@ -58,6 +58,16 @@ def _apply_stage_server_args_override(
         factory_args["server_args_overrides"] = overrides
         stage.factory_args = factory_args
 
+        # why: _resolve_factory_args shallow-overlays runtime_overrides[stage]
+        # onto factory_args, which would otherwise replace server_args_overrides
+        # wholesale and drop these CLI keys. Merge into the existing nested dict
+        # only — never create a new runtime_overrides entry.
+        stage_runtime_overrides = pipeline_config.runtime_overrides.get(stage.name)
+        if stage_runtime_overrides is not None:
+            runtime_server_args = stage_runtime_overrides.get("server_args_overrides")
+            if isinstance(runtime_server_args, dict):
+                runtime_server_args.update(updates)
+
 
 def _stage_has_explicit_mem_fraction_static(
     pipeline_config: PipelineConfig,
