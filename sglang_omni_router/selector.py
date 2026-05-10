@@ -24,6 +24,7 @@ class WorkerSelector:
         workers: list[Worker],
         *,
         required_capabilities: set[Capability],
+        requested_model: str | None = None,
     ) -> Worker:
         candidates = [
             worker
@@ -31,6 +32,10 @@ class WorkerSelector:
             if worker.is_routable
             and all(worker.supports(capability) for capability in required_capabilities)
         ]
+        if requested_model is not None and any(worker.model for worker in candidates):
+            candidates = [
+                worker for worker in candidates if worker.model == requested_model
+            ]
         if not candidates:
             raise NoEligibleWorkerError("no eligible healthy workers")
 

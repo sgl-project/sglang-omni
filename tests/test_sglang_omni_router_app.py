@@ -272,6 +272,56 @@ def test_models_merge_queries_only_healthy_workers_and_deduplicates() -> None:
     ]
 
 
+def test_requested_model_routes_only_to_matching_model_worker() -> None:
+    seen_workers: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"status": "healthy"}, request=request)
+        if request.url.path == "/v1/models":
+            model_id = (
+                "model-a" if _request_netloc(request) == "worker-a:8101" else "model-b"
+            )
+            return httpx.Response(
+                200,
+                json={"object": "list", "data": [{"id": model_id}]},
+                request=request,
+            )
+        if request.url.path == "/v1/chat/completions":
+            seen_workers.append(_request_netloc(request))
+            return httpx.Response(200, json={"ok": True}, request=request)
+        raise AssertionError(f"unexpected request path: {request.url.path}")
+
+    worker_configs = [
+        WorkerConfig(url="http://worker-a:8101", model="model-a"),
+        WorkerConfig(url="http://worker-b:8102", model="model-b"),
+    ]
+    async_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    app = create_app(_router_config(worker_configs=worker_configs), client=async_client)
+
+    with TestClient(app) as client:
+        models = client.get("/v1/models")
+        first = client.post(
+            "/v1/chat/completions",
+            json={"model": "model-a", "messages": [{"role": "user"}]},
+        )
+        second = client.post(
+            "/v1/chat/completions",
+            json={"model": "model-a", "messages": [{"role": "user"}]},
+        )
+        missing = client.post(
+            "/v1/chat/completions",
+            json={"model": "missing-model", "messages": [{"role": "user"}]},
+        )
+
+    assert models.status_code == 200
+    assert {card["id"] for card in models.json()["data"]} == {"model-a", "model-b"}
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert missing.status_code == 503
+    assert seen_workers == ["worker-a:8101", "worker-a:8101"]
+
+
 def test_models_merge_reports_per_worker_failures_when_all_routable_workers_fail() -> (
     None
 ):

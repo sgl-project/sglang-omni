@@ -245,6 +245,7 @@ class ProxyHandler:
             worker = self._selector.select(
                 self._workers,
                 required_capabilities=metadata.required_capabilities,
+                requested_model=metadata.model,
             )
         except NoEligibleWorkerError:
             return JSONResponse(

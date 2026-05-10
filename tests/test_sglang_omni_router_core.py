@@ -160,6 +160,58 @@ def test_selector_requires_all_capabilities() -> None:
     )
 
 
+def test_selector_filters_by_requested_model_when_pool_declares_models() -> None:
+    workers = build_workers(
+        [
+            WorkerConfig(url="http://127.0.0.1:8101", model="model-a"),
+            WorkerConfig(url="http://127.0.0.1:8102", model="model-b"),
+        ]
+    )
+    for worker in workers:
+        worker.state = "healthy"
+
+    selector = WorkerSelector("round_robin")
+
+    assert (
+        selector.select(
+            workers,
+            required_capabilities={"chat"},
+            requested_model="model-a",
+        ).url
+        == "http://127.0.0.1:8101"
+    )
+
+
+def test_selector_preserves_unannotated_homogeneous_pool_behavior() -> None:
+    workers = build_workers(
+        [
+            WorkerConfig(url="http://127.0.0.1:8101"),
+            WorkerConfig(url="http://127.0.0.1:8102"),
+        ]
+    )
+    for worker in workers:
+        worker.state = "healthy"
+
+    selector = WorkerSelector("round_robin")
+
+    assert (
+        selector.select(
+            workers,
+            required_capabilities={"chat"},
+            requested_model="qwen3-omni",
+        ).url
+        == "http://127.0.0.1:8101"
+    )
+    assert (
+        selector.select(
+            workers,
+            required_capabilities={"chat"},
+            requested_model="qwen3-omni",
+        ).url
+        == "http://127.0.0.1:8102"
+    )
+
+
 def test_round_robin_recomputes_candidates_after_health_change() -> None:
     workers = build_workers(
         [
