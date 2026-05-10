@@ -29,14 +29,14 @@ CI runs on a subset and has its own thresholds elsewhere (see tasks/*.py).
 
 Benchmark: MMMU     |  Dataset: MMMU_val (900 samples, all 30 subjects)
 Hardware:  1 x H200 (default; non-H200 sources are tagged in Source column)
-Last verified: 2026-04-25
+Last verified: 2026-05-04
 
 Accuracy (summary)
 
 | Model      | Config             | accuracy | correct | failed | mc_fallback | Source                                                 |
 | ---------- | ------------------ | -------- | ------- | ------ | ----------- | ------------------------------------------------------ |
-| Qwen3-Omni | enable_audio=False | 67.22%   | 605/900 | 0      | 21          | PR #316 [H200, full-set, c=8, max_tokens=2048]         |
-| Qwen3-Omni | enable_audio=True  | 46.00%   | 23/50   | 15     | 0           | PR #316 [H200, 50-sample subset, c=1, max_tokens=2048] |
+| Qwen3-Omni | enable_audio=False | 66.33%   | 597/900 | 0      | 22          | PR #393 [H200, V1-pipeline, full-set, c=8, max_tokens=2048]         |
+| Qwen3-Omni | enable_audio=True  | 60.00%   | 30/50   | 0      | 2           | PR #393 [H200, V1-pipeline, 50-sample subset, c=1, max_tokens=2048] |
 | Qwen3-Omni | enable_audio=False | 66.11%   | 595/900 | 0      | 28          | PR #351 [H100, full-set, c=8, max_tokens=2048, text-only server] |
 | Qwen3-Omni | enable_audio=True  | 18.00%   | 9/50    | 21     | 20          | PR #351 [H100, 50-sample subset, c=1, max_tokens=64, timeout=120s] |
 
@@ -47,8 +47,8 @@ Speed (speed)
 
 | Model      | Config             | latency_mean_s | latency_p95_s | throughput_qps | tok_per_s_mean | tok_per_s_agg | Source                                                     |
 | ---------- | ------------------ | -------------- | ------------- | -------------- | -------------- | ------------- | ---------------------------------------------------------- |
-| Qwen3-Omni | enable_audio=False | 25.70          | 96.38         | 0.308          | 19.6           | 19.9          | PR #316 [H200, full-set, c=8, max_tokens=2048]             |
-| Qwen3-Omni | enable_audio=True  | 123.13         | 221.52        | 0.004          | 2.2            | 2.1           | PR #316 [H200, **50-sample subset**, c=1, max_tokens=2048] |
+| Qwen3-Omni | enable_audio=False | 5.724          | 20.134        | 1.377          | 83.5           | 88.4          | PR #393 [H200, V1-pipeline, full-set, c=8, max_tokens=2048]             |
+| Qwen3-Omni | enable_audio=True  | 70.927         | 197.541       | 0.014          | 10.2           | 8.2           | PR #393 [H200, V1-pipeline, **50-sample subset**, c=1, max_tokens=2048] |
 | Qwen3-Omni | enable_audio=False | 20.297         | 74.122        | 0.392          | 24.9           | 25.4          | PR #351 [H100, full-set, c=8, max_tokens=2048, text-only server] |
 | Qwen3-Omni | enable_audio=True  | 19.579         | 23.147        | 0.009          | 3.3            | 3.3           | PR #351 [H100, 50-sample subset, c=1, max_tokens=64, timeout=120s] |
 

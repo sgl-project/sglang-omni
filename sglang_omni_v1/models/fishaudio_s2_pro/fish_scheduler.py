@@ -257,6 +257,8 @@ class FishIterationController:
         if output_token_id is not None:
             semantic_token = int(output_token_id)
             req.output_ids.append(semantic_token)
+            # Skip caching the terminal slow-AR EOS regardless of req.finished()
+            # semantics: it is not an audio timestep and has no KV to preserve.
             if semantic_token == self._im_end_token_id:
                 return
             if not req.finished() and req.decode_batch_idx == 0:
@@ -493,8 +495,20 @@ class FishScheduler:
                 continue
             data = request.data
             data.output_ids = list(data.req.output_ids)
-            result = self._result_adapter(data)
             t_submit = self._submit_times.pop(request.request_id, None)
+            if not data.output_codes:
+                self.outbox.put(
+                    OutgoingMessage(
+                        request_id=request.request_id,
+                        type="error",
+                        data=ValueError(
+                            f"Request {request.request_id}: "
+                            "S2-Pro generated no audio codec tokens"
+                        ),
+                    )
+                )
+                continue
+            result = self._result_adapter(data)
             if t_submit is not None and isinstance(result.data, dict):
                 result.data["engine_time_s"] = time.perf_counter() - t_submit
             if request.request_id in self._aborted_request_ids:

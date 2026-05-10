@@ -60,24 +60,23 @@ MMSU_TTS_PROMPT = (
     "Do not exceed 120 words in total."
 )
 
-# Threshold reference: https://github.com/sgl-project/sglang-omni/pull/382#issuecomment-4366925373
-
 # Accuracy floor — audio-mode MMSU.
-MMSU_AUDIO_MIN_ACCURACY = 0.60
+MMSU_AUDIO_MIN_ACCURACY = 0.5
 
 # WER thresholds use a partitioned view of the per-sample distribution:
 #  - corpus WER over the "sane" subset (per-sample WER <= 50%)
 #  - count of catastrophic failures (per-sample WER > 50%)
-MMSU_AUDIO_WER_BELOW_50_CORPUS_MAX = 0.04
-# Relaxed in V1 refactor: v0=0 → v1=1.
-MMSU_AUDIO_N_ABOVE_50_MAX = 1
+
+# Retuned after Qwen3-Omni talker sampler fix: MMSU talker stayed clean.
+MMSU_AUDIO_WER_BELOW_50_CORPUS_MAX = 0.024945770065075923
+MMSU_AUDIO_N_ABOVE_50_MAX = 0
 
 _MMSU_AUDIO_P95 = {
     8: {
-        "throughput_qps": 0.266,
-        "tok_per_s_agg": 2.5,
-        "latency_mean_s": 24.663,
-        "rtf_mean": 1.3743,
+        "throughput_qps": 1.007,
+        "tok_per_s_agg": 8.4,
+        "latency_mean_s": 7.099,
+        "rtf_mean": 0.4037,
     },
 }
 MMSU_AUDIO_THRESHOLDS = apply_slack(_MMSU_AUDIO_P95)

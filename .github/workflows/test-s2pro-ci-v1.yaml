@@ -50,6 +50,7 @@ jobs:
         env:
           HF_ENDPOINT: https://hf-mirror.com
           SGLANG_OMNI_SERVER_VERSION: v1
+          TORCHINDUCTOR_CACHE_DIR: /github/home/.torchinductor
 
       - name: Post-stage cleanup
         if: always()
@@ -61,11 +62,11 @@ jobs:
         if: always()
         shell: bash
         run: |
-          if omni-s2pro/bin/python -c "import torch" 2>/dev/null; then
+          if omni-s2pro/bin/python -c "import torch; import av; from whisper.normalizers import EnglishTextNormalizer" 2>/dev/null; then
             rm -rf /github/home/omni-s2pro
             cp -p -r omni-s2pro /github/home/
           else
-            echo "::warning::Skipping cache save — venv appears corrupted (torch not importable)"
+            echo "::warning::Skipping cache save — venv appears incomplete or corrupted"
           fi
 
   stage-1-non-streaming:
@@ -95,6 +96,7 @@ jobs:
           SGLANG_SEEDTTS50_DIR: /github/home/seedtts-50
           S2PRO_STAGE_OUTPUT_ROOT: ${{ github.workspace }}/stage-results/nonstream
           SGLANG_OMNI_SERVER_VERSION: v1
+          TORCHINDUCTOR_CACHE_DIR: /github/home/.torchinductor
 
       - name: Post-stage cleanup
         if: always()
@@ -136,6 +138,7 @@ jobs:
           SGLANG_SEEDTTS50_DIR: /github/home/seedtts-50
           S2PRO_STAGE_OUTPUT_ROOT: ${{ github.workspace }}/stage-results/stream
           SGLANG_OMNI_SERVER_VERSION: v1
+          TORCHINDUCTOR_CACHE_DIR: /github/home/.torchinductor
 
       - name: Post-stage cleanup
         if: always()

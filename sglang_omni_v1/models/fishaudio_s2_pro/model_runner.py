@@ -10,7 +10,7 @@ import torch
 from sglang_omni_v1.model_runner.base import ModelRunner
 
 
-def _collect_s2pro_step_outputs(
+def collect_s2pro_step_outputs(
     result: Any,
     requests: list,
     *,
@@ -27,11 +27,10 @@ def _collect_s2pro_step_outputs(
 
     for row_idx, sched_req in enumerate(requests):
         data = sched_req.data
-        req = data.req
-        if req.is_chunked > 0:
+        if data.req.is_chunked > 0:
             continue
 
-        semantic_token = int(semantic_tokens[row_idx])
+        semantic_token = semantic_tokens[row_idx]
         if semantic_token == im_end_token_id:
             continue
 
@@ -174,7 +173,7 @@ class FishS2ProModelRunner(ModelRunner):
         return text_embeds
 
     def _collect_step_outputs(self, result: Any, requests: list) -> None:
-        _collect_s2pro_step_outputs(
+        collect_s2pro_step_outputs(
             result,
             requests,
             output_codes=self.model._output_codes,

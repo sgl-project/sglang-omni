@@ -1,6 +1,6 @@
 ---
 name: tune-ci-thresholds
-description: Run CI tests N times per stage on the H20 CI-reproduction host, produce a per-metric worst-of-N observation report, and (on user confirmation) write the worst-of-N values back into the test files as new baselines. Use when recalibrating CI thresholds after an engine update. Currently supports qwen3-omni; extensible via models/<name>/config.yaml.
+description: Run CI tests N times per stage on the H20 CI-reproduction host, produce a per-metric worst-of-N observation report, and (on user confirmation) write the worst-of-N values back into the test files as new baselines. Use when recalibrating CI thresholds after an engine update. Currently supports qwen3-omni-v1 and s2-pro-v1; extensible via models/<name>/config.yaml.
 ---
 
 # tune-ci-thresholds
@@ -35,7 +35,7 @@ List what's configured:
 ```
 python .claude/skills/tune-ci-thresholds/tune.py models-list
 ```
-Today: `qwen3-omni`, `qwen3-omni-v1`, `s2-pro-v1`. To add another model,
+Today: `qwen3-omni-v1`, `s2-pro-v1`. To add another model,
 drop in a new `models/<name>/config.yaml` and run `tune.py discover
 --model <name>`. No Python code changes needed unless the new model
 emits metrics with a
@@ -52,23 +52,93 @@ constant-naming convention not covered by `match_metric()` in `tune.py`
 - Model weights and datasets from the config cached locally. `precheck`
   lists each asset as `✓` / `✗` and, on any miss, prints the exact
   `huggingface-cli download …` commands to run.
-- Env vars under `auto_env` in the model's config.yaml (currently
-  `HF_ENDPOINT=https://hf-mirror.com`) are set automatically at tune.py
-  startup. The user does NOT need to `export` them. Proxy env vars
-  (`http_proxy` etc.) are left alone — the tests' own `disable_proxy()`
-  helper strips them for loopback calls, matching real CI.
-- No GPU processes holding memory. If precheck detects occupying PIDs,
-  offer to run `bash .github/scripts/delete_gpu_process.sh` (the same
-  script `_run_shared` uses between runs) — but ask the user first,
-  because killing processes is destructive.
+- Env vars under `auto_env` in the model's config.yaml are set
+  automatically at tune.py startup. The user does NOT need to `export`
+  them. Proxy env vars (`http_proxy` etc.) are left alone — the tests'
+  own `disable_proxy()` helper strips them for loopback calls, matching
+  real CI.
+- No GPU processes holding memory. If all GPUs are busy, precheck
+  fails with the busy PID list and the user must free them. The skill
+  does **not** run `delete_gpu_process.sh` or any other kill — never
+  invoke it on the user's behalf, even if they ask you to "make it
+  work". Tell them which PIDs are busy and stop.
 
 If anything's off, `precheck` fails with an actionable message; fix it
 yourself and retry.
 
 ## Invocation
 - `/tune-ci-thresholds` — default model, all stages, 5 repeats
-- `/tune-ci-thresholds --model qwen3-omni --stages mmsu_accuracy --repeats 3`
+- `/tune-ci-thresholds --model qwen3-omni-v1 --stages mmsu_accuracy --repeats 3`
 - `/tune-ci-thresholds --resume <run-dir>` — continue an interrupted run
+
+Common Qwen3-Omni V1 presets:
+```
+# Full threshold stages, excluding docs smoke tests.
+python .claude/skills/tune-ci-thresholds/tune.py --model qwen3-omni-v1 run \
+  --stages mmmu,mmmu_talker,mmsu,mmsu_talker,tts,videoamme,videoamme_talker,videomme,videomme_talker \
+  --repeats 5 --output-dir .tune-runs/<timestamp>_qwen3-omni-v1_cuda-graph_no-docs_r5
+```
+
+## Environment and networking notes
+- Some CI-reproduction hosts need outbound network proxies or a
+  HuggingFace mirror. Keep those values environment-specific and do not
+  commit real proxy hosts, ports, usernames, tokens, or personal paths
+  into this skill.
+- Prefer explicit environment variables in the same shell command that
+  starts `tune.py` when a long run may be backgrounded. Use placeholders
+  in docs and replace them only in the local shell:
+  `TUNE_VENV_PYTHON=<venv-python>`,
+  `ALL_PROXY=<proxy-url>`,
+  `HTTP_PROXY=<proxy-url>`,
+  `HTTPS_PROXY=<proxy-url>`,
+  `NO_PROXY=localhost,127.0.0.1,::1`,
+  `HF_ENDPOINT=<hf-endpoint>`,
+  `HF_HOME=<hf-cache-dir>`, and
+  `HF_HUB_DISABLE_XET=1` when the environment needs them.
+- Do not wrap pytest with `proxychains4`: it can proxy loopback health
+  checks and make local server startup look broken. Use proxy env vars
+  plus `NO_PROXY` for local addresses.
+- If HuggingFace cache locks appear, inspect active pytest/server/download
+  processes first. Only stop processes from the current calibration run.
+
+## Performance optimization checks
+- When recalibrating after performance work, first identify what changed
+  since the last comparable calibration. Use the previous report's
+  provenance commit, the current `precheck.json` commit, or a
+  user-provided baseline, then inspect the commit range before judging
+  the numbers:
+  ```
+  git log --oneline <previous-calibration-commit>..<current-calibration-commit>
+  git diff --stat <previous-calibration-commit>..<current-calibration-commit>
+  ```
+- From that range, list the performance-sensitive changes and their
+  expected enablement signals. Examples: CUDA Graph replay, torch.compile,
+  fused kernels, batching/concurrency changes, cache changes, scheduler
+  changes, or preprocessing/audio/video pipeline changes.
+- Do not infer that an optimization is active from config alone. For
+  every relevant optimization, look for runtime evidence in logs, metrics,
+  or profiler output that proves the optimized path actually ran. For
+  example, CUDA Graph may require `cuda graph: True` decode logs; a future
+  torch.compile change may require compile/cache-hit logs or other
+  project-specific evidence.
+- If performance is unexpectedly flat or worse, inspect both configuration
+  and propagation through server args, runners, schedulers, and stage
+  factories before applying thresholds. An optimization being configured
+  and the optimized path actually being used are different things.
+- In the final report, separate accuracy, WER, and speed conclusions.
+  Explain which stages match the expected optimization gains and which
+  remain dominated by other work such as preprocessing, long prefill,
+  audio synthesis, ASR, or video decoding.
+
+## Monitoring and resume
+- Prefer short polling intervals (about 60-120 seconds) for long
+  calibration jobs. Individual pytest stages usually finish within a
+  few minutes; very long waits hide useful progress.
+- If `run.log` stops changing, inspect the active pytest/server process
+  and the per-test `run{k}.log` before declaring the run hung.
+- On interruptions, resume with the same `--output-dir --resume`; do not
+  rerun completed repeats from scratch unless the run directory is
+  corrupt.
 
 ## Steps I follow
 1. Run `python .claude/skills/tune-ci-thresholds/tune.py models-list` to
@@ -154,7 +224,10 @@ yourself and retry.
       `— <N>× <gpu_model>, docs smoke, <N> runs`.
    e. If a context var is not found in the file, write `?`. Never
       guess or copy from another stage.
-8. Tell the user the report path.
+8. Tell the user the report path. Treat `<run-dir>/report.md` as the
+   canonical calibration artifact: it must keep the full per-run tables,
+   worst-of-N rows, provenance, context lines, and (after apply) the
+   applied-changes table. Do not replace it with a lightweight summary.
 9. **Apply prompt — strictly after the entire run is done.** This
    prompt is the LAST thing the skill does, and must only fire once
    ALL of the following have completed for the whole `--stages` set:
@@ -168,43 +241,126 @@ yourself and retry.
    failure, exit code from `tune.py run`, or any stage with no
    completed repeats), skip step 9 entirely.
 
-   Use AskUserQuestion to ask exactly once: "Apply the worst-of-N
-   values from this run into the test files as the new baselines?"
-   with options `yes` / `no`. If `no`, stop without touching any
-   file.
+   Use AskUserQuestion to ask exactly once which **apply mode** to use:
+     - `report` — only the report, no test files touched
+     - `smart` — auto-tighten speed thresholds; ask per metric for
+       acc/wer and any speed metric that would loosen
+     - `full` — write worst-of-N for every metric, no further prompts
+   If the user picks `report`, stop without touching any file.
 
-   If `yes`, for every stage in `models/<M>/stages.yaml` whose
-   `metrics` is non-empty (skip the docs stage):
-   a. For each metric in the stage:
-      - Read each run's value at `metric.json_file` /
-        `metric.json_path`. The N JSON files live at
-        `<run-dir>/_pytest/<test_stem>/basetemp_run<k>/<json_file>`
-        for `k = 1..N`.
-      - Compute the worst across runs per `metric.worst`
-        (`min` ⇒ take the minimum, `max` ⇒ take the maximum).
-        Keep the **raw** numeric value; do NOT multiply by
-        `display.scale` (the test file stores raw, not display
-        units).
-      - Round to `metric.display.digits` significant digits past
-        the decimal.
-   b. Edit `metric.test` in place using the Edit tool:
-      - **Bare `source`** (no `[...]`), e.g. `MMMU_MIN_ACCURACY`:
-        replace the RHS literal of `MMMU_MIN_ACCURACY = <old>`.
-      - **Nested `source`**, e.g. `_MMMU_P95['throughput_qps']`:
-        read `CONCURRENCY = <C>` from the same test file, then
-        replace the entry under `_MMMU_P95[<C>]["throughput_qps"]`.
-        If the file has no `CONCURRENCY` symbol, fall back to the
-        single concurrency key present in the dict; if multiple
-        keys exist and `CONCURRENCY` is missing, abort the apply
-        step for that metric and warn the user.
-   c. After all edits, list every changed `<file>:<symbol> = <new>`
-      tuple in one message and stop. Do NOT run pytest, commit,
-      or push.
+   For `smart` and `full`, first run
+   `python tune.py apply-plan --run-dir <run-dir>` to get a JSON with,
+   per metric: `source_kind` (bare / nested), `symbol`, `subkey`,
+   `concurrency`, `worst_op`, `per_run_raw`, `worst_rounded` (already
+   rounded to `display.digits`), `current_raw`, and `direction`
+   (`tightens` / `loosens` / `equal` / `unknown`). By default, use
+   `worst_rounded` as the value to write — never re-round, never
+   multiply by `scale`.
+   For non-speed pass/fail thresholds, do not allow display rounding to
+   make the written threshold stricter than the observed worst-of-N: for
+   `worst_op == "min"` the written value must be `<= worst_raw`, and for
+   `worst_op == "max"` the written value must be `>= worst_raw`. If
+   `worst_rounded` violates that bound, write `worst_raw` with enough
+   decimal places to preserve the observed value.
+
+   **Mode `full`**: for every metric in every non-docs stage, edit the
+   test file using the rules in (b) below, no questions asked.
+
+   **Mode `smart`**: classify each metric:
+     - **auto-apply** iff `stage_group == "speed"` AND
+       `direction == "tightens"`. Edit using rules in (b).
+     - **auto-skip** iff `direction == "equal"` (nothing to do).
+     - **interactive** otherwise — i.e. all `accuracy` and `wer`
+       metrics, plus any `speed` metric that would `loosen` the
+       threshold. For each interactive metric, fire AskUserQuestion
+       (one per metric) showing:
+         - the per-run raw values from `per_run_raw`
+         - the current literal in the test file (`current_raw`)
+         - the proposed bounded worst-of-N value
+         - direction tag
+       with options:
+         1. `Keep current` — leave the literal as-is
+         2. `Apply worst-of-N (<value>)` — write the proposed bounded worst-of-N value
+         3. `Custom value` — the user supplies a number; write it
+            verbatim after validating it parses as a float
+       Always include the "Other" free-text fallback (the
+       AskUserQuestion harness adds it automatically). If the user gives
+       a custom numeric value, validate that it parses as a float and
+       write exactly that raw value (not the display-scaled value).
+
+   (b) **Edit rules** (used by both `full` and `smart`'s auto-apply
+   path, and after the user accepts in interactive prompts):
+     - **Bare `source`** (no `[...]`), e.g. `MMMU_MIN_ACCURACY`:
+       replace the RHS literal of `MMMU_MIN_ACCURACY = <old>`.
+     - **Nested `source`**, e.g. `_MMMU_P95['throughput_qps']`:
+       use the `concurrency` field from `apply-plan` output, then
+       replace the entry under
+       `_MMMU_P95[<C>]["throughput_qps"]`. If `concurrency` is null
+       (no `CONCURRENCY` symbol in the test file) and the dict has
+       a single key, fall back to that key; if multiple keys exist
+       and `concurrency` is null, abort the apply step for that
+       metric and warn the user.
+     - For any metric whose `direction` came back `unknown` (couldn't
+       parse current literal — usually means the test file diverged
+       from `stages.yaml`), do not edit; warn and continue.
+
+   After all edits across all stages, do two things:
+
+   **(c) Append an "Applied changes" section to `<run-dir>/report.md`**
+   so the artifact records what was actually written. Use the Edit
+   tool to insert this block immediately before the existing
+   `## Provenance` heading:
+
+   ```
+   ## Applied changes
+
+   | Stage | Metric | Old | New |
+   |-------|--------|-----|-----|
+   | <stage_key> | <source> | <current_raw> | <new_raw> |
+   ...
+   ```
+
+   Rules:
+     - Include only metrics that were actually edited. Rows for
+       "Keep current" choices, mode-`report` runs, and `equal` /
+       `unknown` skips are omitted.
+     - `Stage` is the `stage_key` (e.g. `mmsu_accuracy`).
+     - `Metric` is the literal `metric.source` from `apply-plan` —
+       bare (`MMSU_MIN_ACCURACY`) or nested
+       (`_MMSU_P95[8]['throughput_qps']` with the resolved
+       concurrency substituted in).
+     - `Old` / `New` are **raw** numeric values (matching what's in
+       the test file, not display-scaled). Trim trailing zeros for
+       readability.
+     - If nothing was edited (all kept / all skipped), do not append
+       the section at all.
+
+   **(d) List every changed `<file>:<symbol> = <new>` tuple in one
+   chat message**. If the user has explicitly authorized commit/push,
+   continue to the version-control step below; otherwise stop.
+
+10. **Optional version-control step — only with explicit user
+    authorization.**
+    - Keep `.tune-runs/` local and uncommitted.
+    - If the calibration evidence should be committed, copy the final
+      `<run-dir>/report.md` (after context replacement and any
+      applied-changes section) to a stable path under `docs/calibration/`
+      and commit that raw observation report. A short summary under
+      `docs/` is optional, but it must not replace the raw per-run
+      report.
+    - Commit only threshold/test edits, skill/config changes, and
+      requested calibration reports / summaries under `docs/`.
+    - Run repository pre-commit hooks normally; do not bypass hooks.
+    - Push only the current feature/calibration branch, never `main`.
+    - Provide a PR description with: summary, calibration run directory,
+      CUDA Graph evidence, worst-of-N highlights, threshold-apply policy,
+      and test/pre-commit verification.
 
 ## What I do not do
 - Set up container / venv / caches
 - Check out branches, install packages
-- Run `apply_slack`, generate patch files, commit, push
+- Run `apply_slack` or generate patch files
+- Commit or push without explicit user authorization
 - Edit test files outside of the explicit apply prompt (step 9)
 - Ask mid-run for confirmation. (I may ask once up front for missing
   model/stages/repeats — step 2 — and once at the end for the apply
@@ -216,9 +372,6 @@ yourself and retry.
 ├── SKILL.md
 ├── tune.py                              # CLI; METRIC_SPECS + JSON extractor
 └── models/
-    ├── qwen3-omni/                      # legacy v0 pipeline
-    │   ├── config.yaml
-    │   └── stages.yaml
     ├── qwen3-omni-v1/                   # v1 pipeline (qwen3-omni)
     │   ├── config.yaml
     │   └── stages.yaml
@@ -259,7 +412,7 @@ python tune.py --model <M> discover
 This is deterministic (AST + config lookup, no LLM calls).
 
 ## Adding a new model
-1. Create `models/<new-name>/config.yaml` mirroring `qwen3-omni/config.yaml`,
+1. Create `models/<new-name>/config.yaml` mirroring `qwen3-omni-v1/config.yaml`,
    including `metric_sources` entries for every test file the model owns.
 2. Run `python tune.py --model <new-name> discover`.
 3. Any metric that shows up as `NEEDS_CONFIG` means the constant was

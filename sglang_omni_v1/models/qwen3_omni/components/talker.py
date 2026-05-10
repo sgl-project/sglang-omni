@@ -848,6 +848,11 @@ class Qwen3OmniTalker(nn.Module):
             dtype=self.model.codec_embedding.weight.dtype,
             device=device,
         )
+        self._sampling_seeds = torch.zeros(
+            max_batch_size,
+            dtype=torch.int64,
+            device=device,
+        )
         self._output_codes = torch.zeros(
             max_batch_size,
             config.num_code_groups,
@@ -885,6 +890,7 @@ class Qwen3OmniTalker(nn.Module):
         self._sampling_top_ps[:batch_size].fill_(1.0)
         self._sampling_top_ks[:batch_size].fill_(1)
         self._sampling_min_ps[:batch_size].zero_()
+        self._sampling_seeds[:batch_size].zero_()
 
         for row_idx, sched_req in enumerate(requests):
             data = sched_req.data
@@ -897,6 +903,9 @@ class Qwen3OmniTalker(nn.Module):
             self._sampling_top_ps[row_idx] = float(sampling_params.top_p)
             self._sampling_top_ks[row_idx] = int(sampling_params.top_k)
             self._sampling_min_ps[row_idx] = float(sampling_params.min_p)
+            req_seed = sampling_params.sampling_seed
+            if req_seed is not None:
+                self._sampling_seeds[row_idx] = int(req_seed)
             if penalty != 1.0 and req.output_ids:
                 token_ids = torch.as_tensor(
                     list({int(token_id) for token_id in req.output_ids}),
@@ -1109,7 +1118,7 @@ class Qwen3OmniTalker(nn.Module):
             has_custom_logit_processor=False,
             custom_params=None,
             custom_logit_processor=None,
-            sampling_seed=None,
+            sampling_seed=self._sampling_seeds[:batch_size],
             device="cuda",
             logit_bias=None,
         )
