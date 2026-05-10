@@ -8,9 +8,9 @@ Use the router when you launch more than one `sgl-omni serve` process and want
 one stable endpoint for request distribution, health tracking, and worker-pool
 control.
 
-## What This Router Is
+## Router Topology
 
-The router is a traffic-control process:
+The router is an external HTTP process:
 
 ```text
 client
@@ -48,7 +48,7 @@ CUDA_VISIBLE_DEVICES=1 sgl-omni serve \
   --port 8012
 ```
 
-Worker URLs passed to the router should be base URLs such as
+Worker URLs passed to the router must be base URLs such as
 `http://127.0.0.1:8011`. Do not include endpoint paths, query strings, or
 fragments.
 
@@ -68,25 +68,37 @@ sgl-omni-router \
   --log-level info
 ```
 
-The most useful router flags are:
+## Router Arguments
 
-- `--worker-urls`: list of Omni V1 worker base URLs
-- `--worker-config`: JSON file for heterogeneous worker metadata
-- `--policy`: routing policy, one of `round_robin`, `least_request`, or `random`
-- `--health-failure-threshold`: failed worker checks or routed request failures
-  before a worker becomes unhealthy
-- `--health-success-threshold`: successful worker checks before a worker becomes
-  healthy again
-- `--health-check-interval-secs`: background worker health-check interval
-- `--max-payload-size`: maximum request body size accepted by the router
+The table below lists the router command-line arguments.
 
-Use `round_robin` first when validating a new deployment because the selected
-worker should alternate clearly. Use `least_request` when streaming or long
-requests should prefer workers with fewer active requests.
+| Argument | Default | Description |
+|---|---|---|
+| `--host` | `0.0.0.0` | Host interface for the router HTTP server. |
+| `--port` | `8000` | Port for the router HTTP server. |
+| `--worker-urls` | not set | Space-separated Omni V1 worker base URLs for a homogeneous worker pool. |
+| `--worker-config` | not set | JSON file that defines workers and optional per-worker model/capability metadata. |
+| `--policy` | `round_robin` | Routing policy: `round_robin`, `least_request`, or `random`. |
+| `--model` | not set | Model name assigned to every worker when using `--worker-urls`. Do not use with `--worker-config`. |
+| `--request-timeout-secs` | `1800` | Timeout for proxied worker requests. |
+| `--max-payload-size` | `536870912` | Maximum request body size accepted by the router, in bytes. |
+| `--max-connections` | `100` | Maximum number of HTTP connections used by the router's upstream worker client. |
+| `--health-failure-threshold` | `3` | Consecutive failed health checks or routed request failures before a worker becomes unhealthy. |
+| `--health-success-threshold` | `2` | Consecutive successful health checks before an unhealthy or unknown worker becomes healthy. |
+| `--health-check-timeout-secs` | `5` | Timeout for one worker health-check request. |
+| `--health-check-interval-secs` | `10` | Interval between background worker health checks. |
+| `--health-check-endpoint` | `/health` | Worker endpoint used by background health checks. |
+| `--log-level` | `info` | Router and Uvicorn log level. |
 
-Use `--worker-config` when workers serve different models or only a subset of
-Omni capabilities. Use either `--worker-urls` or `--worker-config` for a router
-process:
+Routing policies:
+
+- `round_robin`: rotates through routable workers in order.
+- `least_request`: selects a routable worker with the fewest active data-plane
+  requests, then round-robins among ties.
+- `random`: selects a random routable worker.
+
+Pass exactly one of `--worker-urls` or `--worker-config`. Use `--worker-config`
+when workers serve different models or only a subset of Omni capabilities:
 
 ```json
 {
@@ -141,8 +153,8 @@ The endpoints have different meanings:
 
 ## Send Requests Through the Router
 
-Clients should call the router port instead of worker ports. The request schema
-is the same OpenAI-compatible schema used by the worker server.
+Point clients at the router port instead of the worker ports. The request schema
+is the same OpenAI-compatible schema used by each worker server.
 
 Image input with text output:
 
