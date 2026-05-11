@@ -58,10 +58,6 @@ def _apply_stage_server_args_override(
         factory_args["server_args_overrides"] = overrides
         stage.factory_args = factory_args
 
-        # why: _resolve_factory_args shallow-overlays runtime_overrides[stage]
-        # onto factory_args, which would otherwise replace server_args_overrides
-        # wholesale and drop these CLI keys. Merge into the existing nested dict
-        # only — never create a new runtime_overrides entry.
         stage_runtime_overrides = pipeline_config.runtime_overrides.get(stage.name)
         if stage_runtime_overrides is not None:
             runtime_server_args = stage_runtime_overrides.get("server_args_overrides")
@@ -109,6 +105,18 @@ def apply_mem_fraction_cli_overrides(
     thinker_mem_fraction_static: float | None,
     talker_mem_fraction_static: float | None,
 ) -> PipelineConfig:
+    """Apply CLI mem_fraction_static flags to the pipeline config.
+
+    Precedence (per role): a non-None per-role flag wins over the global flag.
+    `--thinker-mem-fraction-static` overrides `--mem-fraction-static` for the
+    thinker stage; `--talker-mem-fraction-static` overrides it for the talker
+    stage. The global `--mem-fraction-static` is the fallback for any role
+    whose per-role flag is omitted.
+
+    Validation: out-of-range values raise typer.BadParameter atomically, before
+    any stage mutation, so a partially-applied config cannot leak into the
+    launch path.
+    """
     mem_fraction_static = _validate_mem_fraction_static(
         "--mem-fraction-static", mem_fraction_static
     )
@@ -142,6 +150,8 @@ def apply_mem_fraction_cli_overrides(
     }
     for role, stage_name in role_to_stage.items():
         role_value = role_values.get(role)
+        # Precedence: per-role flag wins over the global flag for this role;
+        # the global flag is the fallback when no per-role flag was given.
         final_value = role_value if role_value is not None else mem_fraction_static
         if final_value is not None:
             _apply_stage_server_args_override(
@@ -196,10 +206,6 @@ def apply_encoder_mem_reserve_cli_override(
         factory_args["encoder_mem_reserve"] = encoder_mem_reserve
         stage.factory_args = factory_args
 
-        # why: _resolve_factory_args shallow-overlays runtime_overrides[stage]
-        # onto factory_args, so a pre-existing encoder_mem_reserve there would
-        # silently shadow the CLI write. Refresh only that key in place — never
-        # synthesize a new runtime_overrides entry or add the key if absent.
         stage_runtime_overrides = pipeline_config.runtime_overrides.get(stage.name)
         if (
             isinstance(stage_runtime_overrides, dict)
