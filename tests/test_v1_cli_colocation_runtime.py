@@ -4,7 +4,10 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from sglang_omni_v1.cli.serve import serve
+import pytest
+import typer
+
+from sglang_omni_v1.cli.serve import apply_parallelism_cli_overrides, serve
 from sglang_omni_v1.config import PipelineConfig, StageConfig
 from sglang_omni_v1.models.qwen3_omni.config import (
     Qwen3OmniSpeechColocatedPipelineConfig,
@@ -91,3 +94,44 @@ def test_registry_resolves_qwen_colocated_config_by_class_name():
         )
         is Qwen3OmniSpeechColocatedPipelineConfig
     )
+
+
+def test_speech_colocated_rejects_talker_gpu_override_to_other_gpu():
+    config = Qwen3OmniSpeechColocatedPipelineConfig(model_path="dummy")
+
+    with pytest.raises(typer.BadParameter, match="--talker-gpu"):
+        apply_parallelism_cli_overrides(
+            config,
+            thinker_tp_size=None,
+            thinker_gpus=None,
+            talker_gpu=1,
+            code2wav_gpu=None,
+        )
+
+
+def test_speech_colocated_rejects_code2wav_gpu_override_to_other_gpu():
+    config = Qwen3OmniSpeechColocatedPipelineConfig(model_path="dummy")
+
+    with pytest.raises(typer.BadParameter, match="--code2wav-gpu"):
+        apply_parallelism_cli_overrides(
+            config,
+            thinker_tp_size=None,
+            thinker_gpus=None,
+            talker_gpu=None,
+            code2wav_gpu=1,
+        )
+
+
+def test_speech_colocated_allows_gpu_override_to_same_gpu():
+    config = Qwen3OmniSpeechColocatedPipelineConfig(model_path="dummy")
+
+    apply_parallelism_cli_overrides(
+        config,
+        thinker_tp_size=None,
+        thinker_gpus=None,
+        talker_gpu=0,
+        code2wav_gpu=0,
+    )
+
+    assert next(stage for stage in config.stages if stage.name == "talker_ar").gpu == 0
+    assert next(stage for stage in config.stages if stage.name == "code2wav").gpu == 0

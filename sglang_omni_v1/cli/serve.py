@@ -311,6 +311,37 @@ def _apply_stage_gpu_override(
         stage.gpu = int(gpu)
 
 
+def _qwen_colocated_gpu_id(pipeline_config: PipelineConfig) -> int | None:
+    if type(pipeline_config).__name__ != "Qwen3OmniSpeechColocatedPipelineConfig":
+        return None
+    for stage in pipeline_config.stages:
+        if stage.name == "thinker" and isinstance(stage.gpu, int):
+            return stage.gpu
+    return None
+
+
+def _validate_qwen_colocated_gpu_override(
+    pipeline_config: PipelineConfig,
+    *,
+    stage_name: str,
+    gpu: int | None,
+) -> None:
+    if gpu is None:
+        return
+    colocated_gpu = _qwen_colocated_gpu_id(pipeline_config)
+    if colocated_gpu is None:
+        return
+    if int(gpu) != colocated_gpu:
+        flag_name = {
+            "talker_ar": "--talker-gpu",
+            "code2wav": "--code2wav-gpu",
+        }.get(stage_name, f"--{stage_name.replace('_', '-')}-gpu")
+        raise typer.BadParameter(
+            f"{flag_name} must equal colocated GPU {colocated_gpu} "
+            "for speech-colocated"
+        )
+
+
 def apply_parallelism_cli_overrides(
     pipeline_config: PipelineConfig,
     *,
@@ -339,6 +370,16 @@ def apply_parallelism_cli_overrides(
             if stage.tp_size == 1 and isinstance(stage.gpu, list):
                 stage.gpu = int(stage.gpu[0])
 
+    _validate_qwen_colocated_gpu_override(
+        pipeline_config,
+        stage_name="talker_ar",
+        gpu=talker_gpu,
+    )
+    _validate_qwen_colocated_gpu_override(
+        pipeline_config,
+        stage_name="code2wav",
+        gpu=code2wav_gpu,
+    )
     _apply_stage_gpu_override(
         pipeline_config,
         stage_name="talker_ar",

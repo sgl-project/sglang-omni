@@ -53,6 +53,11 @@ class Qwen3OmniPlacementPolicy:
         if not has_speech_stage:
             return
 
+        if type(config).__name__ == _COLOCATED_CONFIG_CLASS:
+            self._validate_colocated_qwen_topology(plan)
+            self._validate_colocated_qwen_runtime(stage_map)
+            return
+
         thinker = plan.stages.get("thinker")
         talker = plan.stages.get("talker_ar")
         if thinker is None or talker is None:
@@ -76,6 +81,27 @@ class Qwen3OmniPlacementPolicy:
             raise ValueError(
                 "Qwen speech must use the eight v1 stages; "
                 f"missing={missing}, extra={extra}"
+            )
+
+    def _validate_colocated_qwen_topology(self, plan: StagePlacementPlan) -> None:
+        gpu_ids: set[int] = set()
+        invalid: list[str] = []
+        for stage_name in sorted(_COLOCATED_BUDGET_STAGES):
+            placement = plan.stages.get(stage_name)
+            if placement is None or len(placement.gpu_ids) != 1:
+                invalid.append(stage_name)
+                continue
+            gpu_ids.add(placement.gpu_ids[0])
+
+        if invalid:
+            raise ValueError(
+                "Qwen colocated speech requires exactly one GPU id for "
+                f"{invalid}"
+            )
+        if len(gpu_ids) != 1:
+            raise ValueError(
+                "Qwen colocated speech requires image_encoder, audio_encoder, "
+                "thinker, talker_ar, and code2wav to share one GPU"
             )
 
     def _validate_colocated_qwen_runtime(self, stage_map) -> None:
