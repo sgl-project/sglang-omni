@@ -1,0 +1,93 @@
+# SPDX-License-Identifier: Apache-2.0
+from __future__ import annotations
+
+from types import SimpleNamespace
+from unittest.mock import patch
+
+from sglang_omni_v1.cli.serve import serve
+from sglang_omni_v1.config import PipelineConfig, StageConfig
+from sglang_omni_v1.models.qwen3_omni.config import (
+    Qwen3OmniSpeechColocatedPipelineConfig,
+)
+from sglang_omni_v1.models.registry import PIPELINE_CONFIG_REGISTRY
+
+
+class _DummyManager:
+    def __init__(self):
+        self.config = PipelineConfig(
+            model_path="dummy",
+            stages=[
+                StageConfig(
+                    name="stage",
+                    factory="tests.v1_dummy_factories.dummy_factory",
+                    terminal=True,
+                )
+            ],
+        )
+
+    def parse_extra_args(self, args):
+        return {}
+
+    def merge_config(self, extra_args):
+        return self.config
+
+
+def _serve_kwargs(**overrides):
+    data = dict(
+        ctx=SimpleNamespace(args=[]),
+        model_path="dummy",
+        config=None,
+        text_only=False,
+        topology="speech",
+        host="0.0.0.0",
+        port=8000,
+        model_name=None,
+        mem_fraction_static=None,
+        thinker_mem_fraction_static=None,
+        talker_mem_fraction_static=None,
+        encoder_mem_reserve=None,
+        log_level="info",
+        thinker_tp_size=None,
+        thinker_gpus=None,
+        talker_gpu=None,
+        code2wav_gpu=None,
+        thinker_cuda_graph="default",
+        talker_cuda_graph="default",
+        thinker_torch_compile="default",
+        talker_torch_compile="default",
+        thinker_torch_compile_max_bs=None,
+        talker_torch_compile_max_bs=None,
+    )
+    data.update(overrides)
+    return data
+
+
+@patch("sglang_omni_v1.cli.serve.launch_server")
+@patch("sglang_omni_v1.cli.serve.ConfigManager.from_model_path")
+def test_v1_cli_selects_speech_colocated_topology(from_model_path, launch_server):
+    from_model_path.return_value = _DummyManager()
+
+    serve(**_serve_kwargs(topology="speech-colocated"))
+
+    from_model_path.assert_called_once_with("dummy", variant="speech-colocated")
+    launch_server.assert_called_once()
+
+
+@patch("sglang_omni_v1.cli.serve.launch_server")
+@patch("sglang_omni_v1.cli.serve.ConfigManager.from_model_path")
+def test_v1_cli_text_only_overrides_topology(from_model_path, launch_server):
+    from_model_path.return_value = _DummyManager()
+
+    serve(**_serve_kwargs(text_only=True, topology="speech-colocated"))
+
+    from_model_path.assert_called_once_with("dummy", variant="text")
+    launch_server.assert_called_once()
+
+
+def test_registry_resolves_qwen_colocated_config_by_class_name():
+    assert (
+        PIPELINE_CONFIG_REGISTRY.get_config_cls_by_name(
+            "Qwen3OmniSpeechColocatedPipelineConfig"
+        )
+        is Qwen3OmniSpeechColocatedPipelineConfig
+    )

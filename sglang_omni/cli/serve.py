@@ -59,6 +59,13 @@ def serve(
             help="Use thinker-only pipeline (1 GPU, no talker/speech output).",
         ),
     ] = False,
+    topology: Annotated[
+        Literal["speech", "speech-colocated"],
+        typer.Option(
+            "--topology",
+            help="V1 Qwen speech topology. Legacy supports only speech.",
+        ),
+    ] = "speech",
     host: Annotated[
         str, typer.Option(help="Server bind address (default: 0.0.0.0).")
     ] = "0.0.0.0",
@@ -152,6 +159,11 @@ def serve(
         _dispatch_to_v1_cli()
         return
     # Note (Chenyang): End for V1.
+    if topology != "speech":
+        raise typer.BadParameter(
+            "--topology speech-colocated is only supported by --version v1"
+        )
+
     logging.basicConfig(
         level=getattr(logging, log_level.upper()),
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",

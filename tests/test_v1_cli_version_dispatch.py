@@ -88,6 +88,30 @@ def test_build_v1_exec_argv_preserves_v1_memory_flags() -> None:
     ]
 
 
+def test_build_v1_exec_argv_preserves_v1_topology_flag() -> None:
+    argv = [
+        "sgl-omni",
+        "serve",
+        "--model-path",
+        "dummy",
+        "--version",
+        "v1",
+        "--topology",
+        "speech-colocated",
+    ]
+
+    assert _build_v1_exec_argv(argv) == [
+        sys.executable,
+        "-m",
+        "sglang_omni_v1.cli",
+        "serve",
+        "--model-path",
+        "dummy",
+        "--topology",
+        "speech-colocated",
+    ]
+
+
 def test_serve_rejects_legacy_only_flags_for_v1() -> None:
     with pytest.raises(typer.BadParameter, match="legacy server"):
         serve(
@@ -95,6 +119,7 @@ def test_serve_rejects_legacy_only_flags_for_v1() -> None:
             model_path="dummy",
             config=None,
             text_only=False,
+            topology="speech",
             host="0.0.0.0",
             port=8000,
             model_name=None,
@@ -104,6 +129,27 @@ def test_serve_rejects_legacy_only_flags_for_v1() -> None:
             thinker_max_seq_len=8192,
             encoder_mem_reserve=None,
             version="v1",
+            log_level="info",
+        )
+
+
+def test_serve_rejects_v1_only_topology_for_legacy() -> None:
+    with pytest.raises(typer.BadParameter, match="--version v1"):
+        serve(
+            ctx=SimpleNamespace(args=[]),
+            model_path="dummy",
+            config=None,
+            text_only=False,
+            topology="speech-colocated",
+            host="0.0.0.0",
+            port=8000,
+            model_name=None,
+            mem_fraction_static=None,
+            thinker_mem_fraction_static=None,
+            talker_mem_fraction_static=None,
+            thinker_max_seq_len=None,
+            encoder_mem_reserve=None,
+            version="legacy",
             log_level="info",
         )
 
@@ -118,6 +164,7 @@ def test_serve_dispatches_to_v1_before_loading_legacy_config(
         model_path="dummy",
         config=None,
         text_only=False,
+        topology="speech",
         host="0.0.0.0",
         port=8000,
         model_name=None,
