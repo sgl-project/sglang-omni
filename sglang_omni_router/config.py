@@ -112,7 +112,7 @@ class WorkerConfig(BaseModel):
 class RouterConfig(BaseModel):
     host: str = "0.0.0.0"
     port: int = 8000
-    worker_urls: list[WorkerConfig]
+    workers: list[WorkerConfig]
     policy: RoutingPolicy = "round_robin"
     model: str | None = None
     request_timeout_secs: int = 1800
@@ -157,9 +157,9 @@ class RouterConfig(BaseModel):
 
     @model_validator(mode="after")
     def _validate_workers(self) -> "RouterConfig":
-        if not self.worker_urls:
-            raise ValueError("at least one worker URL is required")
-        urls = [worker.url for worker in self.worker_urls]
+        if not self.workers:
+            raise ValueError("at least one worker is required")
+        urls = [worker.url for worker in self.workers]
         duplicates = sorted({url for url in urls if urls.count(url) > 1})
         if duplicates:
             raise ValueError(f"duplicate worker URLs: {', '.join(duplicates)}")
@@ -193,7 +193,7 @@ def build_router_config(
     return RouterConfig(
         host=host,
         port=port,
-        worker_urls=worker_configs,
+        workers=worker_configs,
         policy=policy,
         model=model,
         request_timeout_secs=request_timeout_secs,

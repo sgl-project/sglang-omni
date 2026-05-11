@@ -113,7 +113,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         parser.error(str(exc))
     logger.info(f"Starting SGLang-Omni Router on {config.host}:{config.port}")
     logger.info(
-        f"Router configuration: workers={len(config.worker_urls)} | "
+        f"Router configuration: workers={len(config.workers)} | "
         f"policy={config.policy} | "
         f"max_payload_size={config.max_payload_size} | "
         f"max_connections={config.max_connections} | "

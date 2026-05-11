@@ -34,7 +34,7 @@ def test_worker_url_validation_rejects_invalid_urls(url: str) -> None:
 def test_router_config_rejects_duplicate_urls_after_normalization() -> None:
     with pytest.raises(ValidationError, match="duplicate worker URLs"):
         RouterConfig(
-            worker_urls=[
+            workers=[
                 WorkerConfig(url="HTTP://LOCALHOST:8101/"),
                 WorkerConfig(url="http://localhost:8101"),
             ]
@@ -89,12 +89,12 @@ def test_router_cli_worker_config_supports_heterogeneous_workers(
     config = build_config_from_args(args)
 
     assert config.policy == "least_request"
-    assert [(worker.url, worker.model) for worker in config.worker_urls] == [
+    assert [(worker.url, worker.model) for worker in config.workers] == [
         ("http://127.0.0.1:8101", "model-a"),
         ("http://127.0.0.1:8102", "model-b"),
     ]
-    assert config.worker_urls[0].capabilities == {"chat", "image_input"}
-    assert config.worker_urls[1].capabilities == {"chat", "audio_input"}
+    assert config.workers[0].capabilities == {"chat", "image_input"}
+    assert config.workers[1].capabilities == {"chat", "audio_input"}
 
 
 def test_router_cli_rejects_global_model_with_worker_config(tmp_path: Path) -> None:
@@ -152,7 +152,7 @@ def test_router_worker_config_requires_workers_object(tmp_path: Path) -> None:
 def test_router_config_rejects_non_positive_integer_knobs(field: str) -> None:
     with pytest.raises(ValidationError, match="value must be > 0"):
         RouterConfig(
-            worker_urls=[WorkerConfig(url="http://127.0.0.1:8101")],
+            workers=[WorkerConfig(url="http://127.0.0.1:8101")],
             **{field: 0},
         )
 
@@ -160,7 +160,7 @@ def test_router_config_rejects_non_positive_integer_knobs(field: str) -> None:
 def test_router_config_rejects_hyphenated_policy_aliases() -> None:
     with pytest.raises(ValidationError):
         RouterConfig(
-            worker_urls=[WorkerConfig(url="http://127.0.0.1:8101")],
+            workers=[WorkerConfig(url="http://127.0.0.1:8101")],
             policy="round-robin",
         )
 
@@ -387,7 +387,7 @@ async def test_health_checker_uses_failure_and_success_thresholds() -> None:
 
     worker = build_workers([WorkerConfig(url="http://worker.local:8101")])[0]
     config = RouterConfig(
-        worker_urls=[WorkerConfig(url="http://worker.local:8101")],
+        workers=[WorkerConfig(url="http://worker.local:8101")],
         health_failure_threshold=2,
         health_success_threshold=2,
     )
@@ -395,14 +395,14 @@ async def test_health_checker_uses_failure_and_success_thresholds() -> None:
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         checker = HealthChecker(workers=[worker], config=config, client=client)
 
-        await checker.check_all_workers()
+        await checker.check_all_workers_health()
         assert worker.state == "unknown"
         assert worker.last_error == "status=500"
-        await checker.check_all_workers()
+        await checker.check_all_workers_health()
         assert worker.state == "unhealthy"
-        await checker.check_all_workers()
+        await checker.check_all_workers_health()
         assert worker.state == "unhealthy"
-        await checker.check_all_workers()
+        await checker.check_all_workers_health()
         assert worker.state == "healthy"
 
 
@@ -412,7 +412,7 @@ async def test_health_checker_does_not_record_router_internal_errors() -> None:
         raise RuntimeError("router-side bug")
 
     worker = build_workers([WorkerConfig(url="http://worker.local:8101")])[0]
-    config = RouterConfig(worker_urls=[WorkerConfig(url="http://worker.local:8101")])
+    config = RouterConfig(workers=[WorkerConfig(url="http://worker.local:8101")])
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         checker = HealthChecker(workers=[worker], config=config, client=client)
@@ -423,3 +423,36 @@ async def test_health_checker_does_not_record_router_internal_errors() -> None:
     assert worker.state == "unknown"
     assert worker.consecutive_failures == 0
     assert worker.last_error is None
+
+
+@pytest.mark.asyncio
+async def test_health_checker_isolates_unexpected_worker_check_errors() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "worker-a":
+            raise RuntimeError("router-side bug")
+        return httpx.Response(200, request=request)
+
+    workers = build_workers(
+        [
+            WorkerConfig(url="http://worker-a:8101"),
+            WorkerConfig(url="http://worker-b:8102"),
+        ]
+    )
+    config = RouterConfig(
+        workers=[
+            WorkerConfig(url="http://worker-a:8101"),
+            WorkerConfig(url="http://worker-b:8102"),
+        ],
+        health_success_threshold=1,
+    )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        checker = HealthChecker(workers=workers, config=config, client=client)
+
+        await checker.check_all_workers_health()
+
+    assert workers[0].state == "unknown"
+    assert workers[0].consecutive_failures == 0
+    assert workers[0].last_error is None
+    assert workers[1].state == "healthy"
+    assert workers[1].last_status_code == 200

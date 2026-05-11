@@ -28,11 +28,19 @@ class HealthChecker:
         self._client = client
         self._task: asyncio.Task[None] | None = None
 
-    async def check_all_workers(self) -> None:
-        await asyncio.gather(
-            *(self._check_worker_health(worker) for worker in self._workers),
-            return_exceptions=False,
+    async def check_all_workers_health(self) -> None:
+        workers = tuple(self._workers)
+        results = await asyncio.gather(
+            *(self._check_worker_health(worker) for worker in workers),
+            return_exceptions=True,
         )
+        for worker, result in zip(workers, results, strict=True):
+            if isinstance(result, Exception):
+                logger.error(
+                    f"Unexpected error while checking worker {worker.display_id} "
+                    f"health: {type(result).__name__}: {result}",
+                    exc_info=(type(result), result, result.__traceback__),
+                )
 
     async def check_worker_health(self, worker: Worker) -> None:
         await self._check_worker_health(worker)
@@ -54,7 +62,7 @@ class HealthChecker:
     async def _run_loop(self) -> None:
         while True:
             try:
-                await self.check_all_workers()
+                await self.check_all_workers_health()
             except asyncio.CancelledError:
                 raise
             except Exception:

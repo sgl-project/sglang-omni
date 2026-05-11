@@ -24,7 +24,7 @@ def _router_config(
     worker_configs: list[WorkerConfig] | None = None,
 ) -> RouterConfig:
     return RouterConfig(
-        worker_urls=worker_configs
+        workers=worker_configs
         or [
             WorkerConfig(url="http://worker-a:8101"),
             WorkerConfig(url="http://worker-b:8102"),

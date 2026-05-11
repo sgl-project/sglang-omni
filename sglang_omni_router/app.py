@@ -34,7 +34,7 @@ def create_app(
     *,
     client: httpx.AsyncClient | None = None,
 ) -> FastAPI:
-    workers = build_workers(config.worker_urls)
+    workers = build_workers(config.workers)
     timeout = httpx.Timeout(config.request_timeout_secs)
     owns_client = client is None
     if client is None:
