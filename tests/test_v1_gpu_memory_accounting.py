@@ -2,14 +2,15 @@
 from __future__ import annotations
 
 import os
-from types import SimpleNamespace
+import sys
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
-from sglang_omni_v1.utils import gpu_memory
+import sglang_omni_v1.utils.gpu_memory as gpu_memory
 
 
-class _FakeNVML:
+class _FakeNVML(ModuleType):
     def __init__(
         self,
         *,
@@ -19,6 +20,7 @@ class _FakeNVML:
         query_error: Exception | None = None,
         uuid_requires_bytes: bool = False,
     ) -> None:
+        super().__init__("pynvml")
         self.device_count = device_count
         self.processes = processes or []
         self.init_error = init_error
@@ -58,27 +60,28 @@ class _FakeNVML:
 
 
 def _install_fake_nvml(monkeypatch: pytest.MonkeyPatch, fake: _FakeNVML) -> None:
-    def _import_module(name: str) -> _FakeNVML:
-        assert name == "pynvml"
-        return fake
-
-    monkeypatch.setattr(
-        gpu_memory.importlib,
-        "import_module",
-        _import_module,
-    )
+    monkeypatch.setitem(sys.modules, "pynvml", fake)
 
 
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (None, []),
+        ("", []),
+        (
+            " 0, 2, GPU-deadbeef, MIG-GPU-deadbeef/1/2,, ",
+            [0, 2, "GPU-deadbeef", "MIG-GPU-deadbeef/1/2"],
+        ),
+    ],
+)
 def test_parse_cuda_visible_devices_handles_supported_forms(
     monkeypatch: pytest.MonkeyPatch,
+    value: str | None,
+    expected: list[int | str],
 ) -> None:
     monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
 
-    assert gpu_memory.parse_cuda_visible_devices() == []
-    assert gpu_memory.parse_cuda_visible_devices("") == []
-    assert gpu_memory.parse_cuda_visible_devices(
-        " 0, 2, GPU-deadbeef, MIG-GPU-deadbeef/1/2,, "
-    ) == [0, 2, "GPU-deadbeef", "MIG-GPU-deadbeef/1/2"]
+    assert gpu_memory.parse_cuda_visible_devices(value) == expected
 
 
 def test_parse_cuda_visible_devices_reads_environment(
@@ -89,14 +92,38 @@ def test_parse_cuda_visible_devices_reads_environment(
     assert gpu_memory.parse_cuda_visible_devices() == [3, "GPU-abc"]
 
 
-def test_resolve_visible_device_id_maps_logical_gpu_id() -> None:
-    assert gpu_memory.resolve_visible_device_id(2, []) == 2
-    assert gpu_memory.resolve_visible_device_id(1, [4, "GPU-abc"]) == "GPU-abc"
+@pytest.mark.parametrize(
+    ("logical_gpu_id", "visible_devices", "expected"),
+    [
+        (2, [], 2),
+        (1, [4, "GPU-abc"], "GPU-abc"),
+    ],
+)
+def test_resolve_visible_device_id_maps_logical_gpu_id(
+    logical_gpu_id: int,
+    visible_devices: list[int | str],
+    expected: int | str,
+) -> None:
+    assert (
+        gpu_memory.resolve_visible_device_id(logical_gpu_id, visible_devices)
+        == expected
+    )
 
-    with pytest.raises(RuntimeError, match="Invalid GPU device -1"):
-        gpu_memory.resolve_visible_device_id(-1, [])
-    with pytest.raises(RuntimeError, match="CUDA_VISIBLE_DEVICES exposes 1"):
-        gpu_memory.resolve_visible_device_id(1, [0])
+
+@pytest.mark.parametrize(
+    ("logical_gpu_id", "visible_devices", "match"),
+    [
+        (-1, [], "Invalid GPU device -1"),
+        (1, [0], "CUDA_VISIBLE_DEVICES exposes 1"),
+    ],
+)
+def test_resolve_visible_device_id_rejects_invalid_mapping(
+    logical_gpu_id: int,
+    visible_devices: list[int | str],
+    match: str,
+) -> None:
+    with pytest.raises(RuntimeError, match=match):
+        gpu_memory.resolve_visible_device_id(logical_gpu_id, visible_devices)
 
 
 def test_process_scoped_memory_available_uses_nvml_boundary(
