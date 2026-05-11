@@ -515,13 +515,13 @@ def serve(
             help="Use thinker-only pipeline (1 GPU, no talker/speech output).",
         ),
     ] = False,
-    topology: Annotated[
-        Literal["speech", "speech-colocated"],
+    colocate: Annotated[
+        bool,
         typer.Option(
-            "--topology",
-            help="Qwen speech topology: speech or speech-colocated.",
+            "--colocate",
+            help="Run Qwen speech with GPU stages colocated on one GPU.",
         ),
-    ] = "speech",
+    ] = False,
     host: Annotated[
         str, typer.Option(help="Server bind address (default: 0.0.0.0).")
     ] = "0.0.0.0",
@@ -669,7 +669,8 @@ def serve(
     elif text_only:
         config_manager = ConfigManager.from_model_path(model_path, variant="text")
     else:
-        config_manager = ConfigManager.from_model_path(model_path, variant=topology)
+        variant = "speech-colocated" if colocate else "speech"
+        config_manager = ConfigManager.from_model_path(model_path, variant=variant)
 
     # we use ctx to capture the arguments that are used to modify the configuration on the fly
     # we do expect the extra arguments to be pairs of names and values

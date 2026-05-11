@@ -51,7 +51,7 @@ def _serve_kwargs(**overrides):
         model_path="dummy",
         config=None,
         text_only=False,
-        topology="speech",
+        colocate=False,
         host="0.0.0.0",
         port=8000,
         model_name=None,
@@ -77,10 +77,12 @@ def _serve_kwargs(**overrides):
 
 @patch("sglang_omni_v1.cli.serve.launch_server")
 @patch("sglang_omni_v1.cli.serve.ConfigManager.from_model_path")
-def test_v1_cli_selects_speech_colocated_topology(from_model_path, launch_server):
+def test_v1_cli_colocate_selects_speech_colocated_variant(
+    from_model_path, launch_server
+):
     from_model_path.return_value = _DummyManager()
 
-    serve(**_serve_kwargs(topology="speech-colocated"))
+    serve(**_serve_kwargs(colocate=True))
 
     from_model_path.assert_called_once_with("dummy", variant="speech-colocated")
     launch_server.assert_called_once()
@@ -88,10 +90,10 @@ def test_v1_cli_selects_speech_colocated_topology(from_model_path, launch_server
 
 @patch("sglang_omni_v1.cli.serve.launch_server")
 @patch("sglang_omni_v1.cli.serve.ConfigManager.from_model_path")
-def test_v1_cli_text_only_overrides_topology(from_model_path, launch_server):
+def test_v1_cli_text_only_overrides_colocate(from_model_path, launch_server):
     from_model_path.return_value = _DummyManager()
 
-    serve(**_serve_kwargs(text_only=True, topology="speech-colocated"))
+    serve(**_serve_kwargs(text_only=True, colocate=True))
 
     from_model_path.assert_called_once_with("dummy", variant="text")
     launch_server.assert_called_once()

@@ -88,7 +88,7 @@ def test_build_v1_exec_argv_preserves_v1_memory_flags() -> None:
     ]
 
 
-def test_build_v1_exec_argv_preserves_v1_topology_flag() -> None:
+def test_build_v1_exec_argv_preserves_v1_colocate_flag() -> None:
     argv = [
         "sgl-omni",
         "serve",
@@ -96,8 +96,7 @@ def test_build_v1_exec_argv_preserves_v1_topology_flag() -> None:
         "dummy",
         "--version",
         "v1",
-        "--topology",
-        "speech-colocated",
+        "--colocate",
     ]
 
     assert _build_v1_exec_argv(argv) == [
@@ -107,8 +106,7 @@ def test_build_v1_exec_argv_preserves_v1_topology_flag() -> None:
         "serve",
         "--model-path",
         "dummy",
-        "--topology",
-        "speech-colocated",
+        "--colocate",
     ]
 
 
@@ -119,7 +117,7 @@ def test_serve_rejects_legacy_only_flags_for_v1() -> None:
             model_path="dummy",
             config=None,
             text_only=False,
-            topology="speech",
+            colocate=False,
             host="0.0.0.0",
             port=8000,
             model_name=None,
@@ -133,14 +131,14 @@ def test_serve_rejects_legacy_only_flags_for_v1() -> None:
         )
 
 
-def test_serve_rejects_v1_only_topology_for_legacy() -> None:
+def test_serve_rejects_v1_only_colocate_for_legacy() -> None:
     with pytest.raises(typer.BadParameter, match="--version v1"):
         serve(
             ctx=SimpleNamespace(args=[]),
             model_path="dummy",
             config=None,
             text_only=False,
-            topology="speech-colocated",
+            colocate=True,
             host="0.0.0.0",
             port=8000,
             model_name=None,
@@ -164,7 +162,7 @@ def test_serve_dispatches_to_v1_before_loading_legacy_config(
         model_path="dummy",
         config=None,
         text_only=False,
-        topology="speech",
+        colocate=False,
         host="0.0.0.0",
         port=8000,
         model_name=None,
