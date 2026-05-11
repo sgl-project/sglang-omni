@@ -26,8 +26,8 @@ from sglang_omni_v1.models.registry import PIPELINE_CONFIG_REGISTRY
 
 
 class _DummyManager:
-    def __init__(self):
-        self.config = PipelineConfig(
+    def __init__(self, config: PipelineConfig | None = None):
+        self.config = config or PipelineConfig(
             model_path="dummy",
             stages=[
                 StageConfig(
@@ -75,28 +75,87 @@ def _serve_kwargs(**overrides):
     return data
 
 
+def _stage(config, name: str):
+    return next(stage for stage in config.stages if stage.name == name)
+
+
+def _set_colocated_runtime(config: Qwen3OmniSpeechColocatedPipelineConfig) -> None:
+    for stage_name, fraction in {
+        "image_encoder": 0.05,
+        "audio_encoder": 0.05,
+        "thinker": 0.35,
+        "talker_ar": 0.35,
+        "code2wav": 0.05,
+    }.items():
+        _stage(config, stage_name).runtime.resources.total_gpu_memory_fraction = (
+            fraction
+        )
+    _stage(config, "thinker").runtime.sglang_server_args.mem_fraction_static = 0.70
+    _stage(config, "talker_ar").runtime.sglang_server_args.mem_fraction_static = 0.65
+
+
+@patch("sglang_omni_v1.cli.serve.ConfigManager.from_model_path")
+def test_v1_cli_colocate_requires_config(from_model_path):
+    with pytest.raises(typer.BadParameter, match="requires --config"):
+        serve(**_serve_kwargs(colocate=True))
+
+    from_model_path.assert_not_called()
+
+
+@patch("sglang_omni_v1.cli.serve.launch_server")
+@patch("sglang_omni_v1.cli.serve.ConfigManager.from_file")
+def test_v1_cli_colocate_accepts_budgeted_colocated_config(from_file, launch_server):
+    config = Qwen3OmniSpeechColocatedPipelineConfig(model_path="dummy")
+    _set_colocated_runtime(config)
+    from_file.return_value = _DummyManager(config)
+
+    serve(**_serve_kwargs(config="colocated.yaml", colocate=True))
+
+    from_file.assert_called_once_with("colocated.yaml")
+    launch_server.assert_called_once()
+
+
+@patch("sglang_omni_v1.cli.serve.launch_server")
+@patch("sglang_omni_v1.cli.serve.ConfigManager.from_file")
+def test_v1_cli_colocate_rejects_non_colocated_config(from_file, launch_server):
+    from_file.return_value = _DummyManager(
+        Qwen3OmniSpeechPipelineConfig(model_path="dummy")
+    )
+
+    with pytest.raises(
+        typer.BadParameter,
+        match="Qwen3OmniSpeechColocatedPipelineConfig",
+    ):
+        serve(**_serve_kwargs(config="speech.yaml", colocate=True))
+
+    launch_server.assert_not_called()
+
+
 @patch("sglang_omni_v1.cli.serve.launch_server")
 @patch("sglang_omni_v1.cli.serve.ConfigManager.from_model_path")
-def test_v1_cli_colocate_selects_speech_colocated_variant(
-    from_model_path, launch_server
-):
+def test_v1_cli_selects_speech_variant_by_default(from_model_path, launch_server):
     from_model_path.return_value = _DummyManager()
 
-    serve(**_serve_kwargs(colocate=True))
+    serve(**_serve_kwargs())
 
-    from_model_path.assert_called_once_with("dummy", variant="speech-colocated")
+    from_model_path.assert_called_once_with("dummy", variant="speech")
     launch_server.assert_called_once()
 
 
 @patch("sglang_omni_v1.cli.serve.launch_server")
 @patch("sglang_omni_v1.cli.serve.ConfigManager.from_model_path")
-def test_v1_cli_text_only_overrides_colocate(from_model_path, launch_server):
+def test_v1_cli_text_only_selects_text_variant(from_model_path, launch_server):
     from_model_path.return_value = _DummyManager()
 
-    serve(**_serve_kwargs(text_only=True, colocate=True))
+    serve(**_serve_kwargs(text_only=True))
 
     from_model_path.assert_called_once_with("dummy", variant="text")
     launch_server.assert_called_once()
+
+
+def test_v1_cli_rejects_text_only_with_colocate():
+    with pytest.raises(typer.BadParameter, match="--text-only"):
+        serve(**_serve_kwargs(text_only=True, colocate=True))
 
 
 def test_registry_resolves_qwen_colocated_config_by_class_name():

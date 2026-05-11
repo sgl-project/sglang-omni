@@ -14,6 +14,7 @@ logger = logging.getLogger(__name__)
 
 
 _STAGE_TOGGLE_MODE = Literal["default", "on", "off"]
+_QWEN_COLOCATED_CONFIG_CLASS = "Qwen3OmniSpeechColocatedPipelineConfig"
 
 
 def _normalize_stage_toggle_mode(flag_name: str, value: str) -> _STAGE_TOGGLE_MODE:
@@ -21,6 +22,31 @@ def _normalize_stage_toggle_mode(flag_name: str, value: str) -> _STAGE_TOGGLE_MO
     if normalized not in {"default", "on", "off"}:
         raise typer.BadParameter(f"{flag_name} must be one of: default, on, off")
     return normalized  # type: ignore[return-value]
+
+
+def _validate_colocate_cli_request(
+    *,
+    colocate: bool,
+    config: str | None,
+    text_only: bool,
+) -> None:
+    if not colocate:
+        return
+    if text_only:
+        raise typer.BadParameter("--colocate cannot be used with --text-only")
+    if not config:
+        raise typer.BadParameter(
+            "--colocate requires --config with measured colocated stage memory "
+            "budgets. The built-in Qwen speech config does not guess H100/H200 "
+            "total_gpu_memory_fraction values."
+        )
+
+
+def _validate_colocate_config(pipeline_config: PipelineConfig) -> None:
+    if type(pipeline_config).__name__ != _QWEN_COLOCATED_CONFIG_CLASS:
+        raise typer.BadParameter(
+            f"--colocate requires a config using {_QWEN_COLOCATED_CONFIG_CLASS}"
+        )
 
 
 def _find_matching_stages(
@@ -663,20 +689,27 @@ def serve(
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
 
+    _validate_colocate_cli_request(
+        colocate=colocate,
+        config=config,
+        text_only=text_only,
+    )
+
     # --- Resolve config ---
     if config:
         config_manager = ConfigManager.from_file(config)
     elif text_only:
         config_manager = ConfigManager.from_model_path(model_path, variant="text")
     else:
-        variant = "speech-colocated" if colocate else "speech"
-        config_manager = ConfigManager.from_model_path(model_path, variant=variant)
+        config_manager = ConfigManager.from_model_path(model_path, variant="speech")
 
     # we use ctx to capture the arguments that are used to modify the configuration on the fly
     # we do expect the extra arguments to be pairs of names and values
     extra_args = config_manager.parse_extra_args(ctx.args)
     merged_config = config_manager.merge_config(extra_args)
     merged_config = merged_config.model_copy(update={"model_path": model_path})
+    if colocate:
+        _validate_colocate_config(merged_config)
     merged_config = apply_mem_fraction_cli_overrides(
         merged_config,
         mem_fraction_static=mem_fraction_static,

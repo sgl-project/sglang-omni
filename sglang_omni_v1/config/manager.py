@@ -44,22 +44,11 @@ class ConfigManager:
                 cur_key, cur_value = None, None
         return extra_args
 
-    def _convert_types(self, extra_args: dict[str, str]) -> dict[str, Any]:
+    def _convert_types(self, extra_args: dict[str, Any]) -> dict[str, Any]:
         """
         Convert the configuration to the inferred data types.
         """
-        for key, value in extra_args.items():
-            if value.lower() == "true":
-                extra_args[key] = True
-            elif value.lower() == "false":
-                extra_args[key] = False
-            elif value.lower() == "none":
-                extra_args[key] = None
-            elif value.isnumeric():
-                extra_args[key] = float(value) if "." in value else int(value)
-            else:
-                extra_args[key] = value
-        return extra_args
+        return {key: _convert_scalar(value) for key, value in extra_args.items()}
 
     def merge_config(self, extra_args: dict[str, Any]) -> PipelineConfig:
         """
@@ -119,3 +108,26 @@ class ConfigManager:
         config_cls = PIPELINE_CONFIG_REGISTRY.get_config_cls_by_name(config_cls_str)
         config = config_cls(**data)
         return ConfigManager(config)
+
+
+def _convert_scalar(value: Any) -> Any:
+    if not isinstance(value, str):
+        return value
+
+    lowered = value.lower()
+    if lowered == "true":
+        return True
+    if lowered == "false":
+        return False
+    if lowered == "none":
+        return None
+
+    try:
+        return int(value)
+    except ValueError:
+        pass
+
+    try:
+        return float(value)
+    except ValueError:
+        return value
