@@ -1,16 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Unit tests for the Qwen3-Omni real-streaming path.
-
-Covers:
-1. ``StreamingDetokenizeScheduler`` UTF-8 multi-byte hold/resume.
-2. Zero-token / early-``stream_done`` no-deadlock guarantee.
-3. Non-streaming requests finalize immediately on ``new_request``.
-4. ``abort()`` clears all per-request state.
-5. ``Code2WavScheduler`` streaming emits per-window audio + slim final.
-6. ``Code2WavScheduler`` non-streaming returns full PCM in the final result.
-7. ``Code2WavScheduler`` raises when chunk metadata lacks ``stream`` key.
-8. ``Stage._send_stream_to_coordinator`` raises on a non-terminal stage.
-"""
+"""Unit tests for the Qwen3-Omni real-streaming path."""
 from __future__ import annotations
 
 import asyncio
@@ -28,10 +17,6 @@ from sglang_omni.models.qwen3_omni.components.streaming_detokenizer import (
 from sglang_omni.pipeline.stage.runtime import Stage
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling.messages import OutgoingMessage
-
-# ---------------------------------------------------------------------------
-# Mocks / helpers
-# ---------------------------------------------------------------------------
 
 
 class _ByteTokenizer:
@@ -91,11 +76,6 @@ def _drain_outbox(scheduler: StreamingDetokenizeScheduler) -> list[OutgoingMessa
     while not scheduler.outbox.empty():
         out.append(scheduler.outbox.get_nowait())
     return out
-
-
-# ---------------------------------------------------------------------------
-# StreamingDetokenizeScheduler
-# ---------------------------------------------------------------------------
 
 
 def test_utf8_multibyte_hold_then_emit():
@@ -187,11 +167,6 @@ def test_abort_clears_state():
     assert "req-1" not in sched._state
 
 
-# ---------------------------------------------------------------------------
-# Code2WavScheduler
-# ---------------------------------------------------------------------------
-
-
 class _FakeCode2Wav:
     """Stand-in for the real vocoder; produces 4 audio samples per code frame."""
 
@@ -208,15 +183,23 @@ def _make_code_chunk(metadata: dict | None) -> _StreamItem:
     return _StreamItem(data=torch.tensor([7], dtype=torch.long), metadata=metadata)
 
 
-def test_code2wav_chunk_without_stream_metadata_raises():
+def test_code2wav_chunk_without_stream_metadata_emits_error():
+    """Missing metadata['stream'] surfaces via outbox 'error' instead of raising."""
     sched = Code2WavScheduler(
         model=_FakeCode2Wav(),
         device="cpu",
         stream_chunk_size=10,
         left_context_size=0,
     )
-    with pytest.raises(RuntimeError, match="metadata\\['stream'\\]"):
-        sched._on_chunk("req-1", _make_code_chunk(metadata=None))
+    sched._on_chunk("req-1", _make_code_chunk(metadata=None))
+
+    out = sched.outbox.get_nowait()
+    assert out.type == "error"
+    assert out.request_id == "req-1"
+    assert isinstance(out.data, RuntimeError)
+    assert "metadata['stream']" in str(out.data)
+    assert "req-1" not in sched._code_chunks
+    assert "req-1" not in sched._stream_enabled
 
 
 def test_code2wav_streaming_emits_per_window_and_slim_final():
@@ -286,11 +269,6 @@ def test_code2wav_non_streaming_returns_full_pcm():
     assert not any(m.type == "stream" for m in msgs)
 
 
-# ---------------------------------------------------------------------------
-# Stage._send_stream_to_coordinator
-# ---------------------------------------------------------------------------
-
-
 def _bare_stage(*, is_terminal: bool, owns_io: bool = True) -> Stage:
     """Construct a Stage shell that bypasses __init__ for unit-level checks."""
     s = Stage.__new__(Stage)
@@ -323,7 +301,7 @@ def test_send_stream_to_coordinator_short_circuits_for_followers():
             data={"text": "hi"},
             metadata={"modality": "text"},
         )
-    )  # no raise → pass
+    )
 
 
 def test_queue_stream_error_fast_fails_when_no_queue():
@@ -361,9 +339,7 @@ def test_queue_stream_error_aborted_request_no_op():
 
 
 def test_queue_stream_error_repeated_calls_are_idempotent_at_handler():
-    """Repeated calls with no queue must each invoke _send_failure (the
-    coordinator's _handle_completion drops duplicates by request_id).
-    The handler itself must not raise or skip."""
+    """Each call invokes _send_failure; dedup happens at the coordinator."""
     s = _bare_stage(is_terminal=True)
     s._stream_queue = None
     s._send_failure_calls: list[tuple[str, str]] = []
@@ -382,19 +358,8 @@ def test_queue_stream_error_repeated_calls_are_idempotent_at_handler():
     assert all(rid == "req-1" for rid, _ in s._send_failure_calls)
 
 
-# ---------------------------------------------------------------------------
-# Late-vs-early stream_done discrimination (Codex review follow-up)
-# ---------------------------------------------------------------------------
-
-
 def test_late_stream_done_after_finalize_does_not_re_create_state():
-    """A stream_done that arrives after _finalize must not re-create state.
-
-    A late duplicate done may leak one entry in _done_seen until abort or
-    cap-eviction; that is intentional — the alternative (a _finalized set)
-    has the same cardinality risk. The invariant we care about is that no
-    new ``_RequestState`` row is allocated.
-    """
+    """Invariant: a late duplicate done does not allocate a new _RequestState row."""
     tok = _ByteTokenizer(vocab={1: b"hi"})
     sched = StreamingDetokenizeScheduler(tokenizer=tok, eos_token_id=None)
 
@@ -418,11 +383,6 @@ def test_done_seen_cleared_on_abort():
     assert "req-1" in sched._done_seen
     sched.abort("req-1")
     assert "req-1" not in sched._done_seen
-
-
-# ---------------------------------------------------------------------------
-# Code2WavScheduler.abort cleanup (Codex review follow-up)
-# ---------------------------------------------------------------------------
 
 
 def test_code2wav_abort_clears_all_per_request_state():

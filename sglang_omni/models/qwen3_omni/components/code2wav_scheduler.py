@@ -122,15 +122,25 @@ class Code2WavScheduler:
 
         # Latch the stream flag from talker's metadata once per request. The
         # talker contract is "always populate metadata['stream']"; a missing
-        # field means the upstream changed shape and we'd rather fail loudly
-        # than guess. _on_done falls back to False if no chunks arrived.
+        # field means the upstream changed shape. Surface as a per-request
+        # error via outbox (runtime drains and turns it into a coordinator
+        # failure) instead of raising, so other in-flight requests survive.
         if request_id not in self._stream_enabled:
             meta = chunk.metadata if isinstance(chunk.metadata, dict) else None
             if meta is None or "stream" not in meta:
-                raise RuntimeError(
-                    f"code2wav got a chunk for {request_id!r} without "
-                    "metadata['stream']; talker_model_runner must populate it."
+                self.outbox.put(
+                    OutgoingMessage(
+                        request_id=request_id,
+                        type="error",
+                        data=RuntimeError(
+                            f"code2wav got a chunk for {request_id!r} without "
+                            "metadata['stream']; talker_model_runner must "
+                            "populate it."
+                        ),
+                    )
                 )
+                self.abort(request_id)
+                return
             self._stream_enabled[request_id] = bool(meta["stream"])
 
         codes = chunk.data.to(device=self._device, dtype=torch.long)

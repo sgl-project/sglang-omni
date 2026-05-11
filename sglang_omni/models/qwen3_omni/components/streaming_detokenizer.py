@@ -8,16 +8,12 @@ safety, and emits text deltas as ``OutgoingMessage(type="stream", target=None)``
 which the stage runtime forwards to the Coordinator. Final result is emitted
 on ``new_request`` (the thinker's terminal payload via ``next``), preserving
 the legacy result shape so non-streaming callers see no change.
-
-Delta strategy: keep cumulative ``output_ids``, decode the whole prefix on
-each step, and emit ``decode(prefix)[len(emitted):]``. This matches HF's
-``TextStreamer`` and is robust to tokenizers whose per-token decoding depends
-on neighbors (sentencepiece BOS, leading-space BPE artifacts, etc.).
 """
 from __future__ import annotations
 
 import logging
 import queue as _queue_mod
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -32,6 +28,11 @@ logger = logging.getLogger(__name__)
 
 THINKER_STAGE = "thinker"
 
+# Cap on orphan stream_done entries (zero-token race + late-done leak).
+# When exceeded, evict oldest first down to _DONE_SEEN_EVICT_TO.
+_DONE_SEEN_MAX = 10000
+_DONE_SEEN_EVICT_TO = 5000
+
 
 def _event_to_dict(event: OmniEvent) -> dict[str, Any]:
     return {
@@ -44,8 +45,7 @@ def _event_to_dict(event: OmniEvent) -> dict[str, Any]:
 
 @dataclass
 class _RequestState:
-    output_ids: list[int] = field(default_factory=list)
-    emitted_text: str = ""
+    pending_tokens: list[int] = field(default_factory=list)
     payload: StagePayload | None = None
     done: bool = False
 
@@ -67,10 +67,7 @@ class StreamingDetokenizeScheduler:
         self.stage_name = stage_name
         self._running = False
         self._state: dict[str, _RequestState] = {}
-        # Tracks request_ids where stream_done arrived without an active
-        # state row (zero-token race). _on_new_request consumes the entry;
-        # abort/_finalize clean up to bound the set.
-        self._done_seen: set[str] = set()
+        self._done_seen: OrderedDict[str, None] = OrderedDict()
 
     def start(self) -> None:
         self._running = True
@@ -92,7 +89,7 @@ class StreamingDetokenizeScheduler:
 
     def abort(self, request_id: str) -> None:
         self._state.pop(request_id, None)
-        self._done_seen.discard(request_id)
+        self._done_seen.pop(request_id, None)
 
     def _ensure_state(self, request_id: str) -> _RequestState:
         s = self._state.get(request_id)
@@ -105,19 +102,17 @@ class StreamingDetokenizeScheduler:
         data = item.data
         token_id = int(data.item()) if hasattr(data, "item") else int(data)
         s = self._ensure_state(request_id)
-        s.output_ids.append(token_id)
+        s.pending_tokens.append(token_id)
 
-        # Decode the whole prefix; this is robust to tokenizers whose
-        # per-token decoding depends on neighbors. Incomplete multi-byte
-        # UTF-8 surfaces as U+FFFD; hold and wait for the next token.
-        text = self._tokenizer.decode(s.output_ids, skip_special_tokens=True)
-        if "�" in text:
+        candidate = self._tokenizer.decode(s.pending_tokens, skip_special_tokens=True)
+        # Incomplete multi-byte UTF-8 surfaces as U+FFFD; hold pending
+        # until the next token completes the byte sequence.
+        if "�" in candidate:
             return
 
-        delta = text[len(s.emitted_text) :]
-        s.emitted_text = text
-        if not delta:
-            return  # special-token-only step
+        s.pending_tokens.clear()
+        if not candidate:
+            return  # special tokens suppressed; nothing to emit
 
         self.outbox.put(
             OutgoingMessage(
@@ -125,7 +120,7 @@ class StreamingDetokenizeScheduler:
                 type="stream",
                 target=None,  # terminal stream → Coordinator
                 data={
-                    "text": delta,
+                    "text": candidate,
                     "modality": "text",
                     "stage_name": self.stage_name,
                 },
@@ -134,22 +129,16 @@ class StreamingDetokenizeScheduler:
         )
 
     def _on_stream_done(self, request_id: str) -> None:
-        # Two orderings reach this with no state row:
-        #   1. Late stream_done after _finalize popped state. Drop silently.
-        #   2. stream_done before any chunk and before new_request (e.g.,
-        #      zero-token generation). Latch into _done_seen so
-        #      _on_new_request finalizes when it arrives.
-        # We can't tell them apart cheaply, so we always latch and rely on
-        # _on_new_request / abort to consume. A bounded cap evicts stale
-        # entries from duplicate-done bugs to prevent unbounded growth.
+        # No state row means either zero-token generation (no chunk created
+        # state) or a late duplicate done after _finalize. Latch both;
+        # _on_new_request consumes the zero-token case, the FIFO cap below
+        # evicts duplicates.
         s = self._state.get(request_id)
         if s is None:
-            self._done_seen.add(request_id)
-            if len(self._done_seen) > 10000:
-                excess = len(self._done_seen) - 5000
-                it = iter(self._done_seen)
-                stale = [next(it) for _ in range(excess)]
-                self._done_seen -= set(stale)
+            self._done_seen[request_id] = None
+            if len(self._done_seen) > _DONE_SEEN_MAX:
+                for _ in range(len(self._done_seen) - _DONE_SEEN_EVICT_TO):
+                    self._done_seen.popitem(last=False)
             return
         s.done = True
         if s.payload is not None:
@@ -160,24 +149,24 @@ class StreamingDetokenizeScheduler:
         s.payload = payload
         if request_id in self._done_seen:
             s.done = True
-            self._done_seen.discard(request_id)
+            self._done_seen.pop(request_id, None)
         is_streaming = bool((payload.request.params or {}).get("stream", False))
         if s.done or not is_streaming:
             self._finalize(request_id)
 
     def _finalize(self, request_id: str) -> None:
         s = self._state.pop(request_id, None)
-        self._done_seen.discard(request_id)
+        self._done_seen.pop(request_id, None)
         if s is None or s.payload is None:
             return
-        # Flush leftover bytes that never resolved (e.g. max_tokens cut a
-        # multi-byte char in half). Without this the streaming client misses
-        # trailing bytes that non-streaming clients still see in the final
-        # result.
-        text = self._tokenizer.decode(s.output_ids, skip_special_tokens=True)
-        if text and len(text) > len(s.emitted_text):
-            leftover = text[len(s.emitted_text) :]
-            if leftover and "�" not in leftover:
+        # Flush leftover pending — UTF-8 may be truncated mid-char (e.g. on
+        # max_tokens); without this the streaming client misses trailing
+        # bytes that non-streaming clients still see in the final result.
+        if s.pending_tokens:
+            leftover = self._tokenizer.decode(
+                s.pending_tokens, skip_special_tokens=True
+            )
+            if leftover:
                 self.outbox.put(
                     OutgoingMessage(
                         request_id=request_id,
