@@ -11,6 +11,7 @@ from sglang_omni_v1.config import (
     StageRuntimeConfig,
     resolve_stage_factory_args,
 )
+from sglang_omni_v1.models.qwen3_omni.config import Qwen3OmniSpeechPipelineConfig
 
 
 _FACTORY = "tests.v1_dummy_factories.runtime_factory"
@@ -101,3 +102,28 @@ def test_rank_gpu_id_can_be_supplied_by_launch_planner() -> None:
     args = resolve_stage_factory_args(stage, config, gpu_id=3)
 
     assert args["gpu_id"] == 3
+
+
+def test_legacy_runtime_override_wins_over_qwen_model_default() -> None:
+    config = Qwen3OmniSpeechPipelineConfig(
+        model_path="dummy-model",
+        runtime_overrides={"thinker": {"thinker_max_seq_len": 16384}},
+    )
+    thinker = next(stage for stage in config.stages if stage.name == "thinker")
+
+    args = resolve_stage_factory_args(thinker, config)
+
+    assert args["thinker_max_seq_len"] == 16384
+
+
+def test_explicit_typed_runtime_wins_over_legacy_runtime_override() -> None:
+    config = Qwen3OmniSpeechPipelineConfig(
+        model_path="dummy-model",
+        runtime_overrides={"thinker": {"thinker_max_seq_len": 16384}},
+    )
+    thinker = next(stage for stage in config.stages if stage.name == "thinker")
+    thinker.runtime.max_seq_len = 32768
+
+    args = resolve_stage_factory_args(thinker, config)
+
+    assert args["thinker_max_seq_len"] == 32768

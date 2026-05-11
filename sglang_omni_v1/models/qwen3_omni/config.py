@@ -11,22 +11,17 @@ from sglang_omni_v1.config import (
     PipelineConfig,
     ProcessConfig,
     StageConfig,
-    StageRuntimeConfig,
 )
 
 _PKG = "sglang_omni_v1.models.qwen3_omni"
 _PLACEMENT_POLICY = f"{_PKG}.placement.Qwen3OmniPlacementPolicy"
 
 
-def _runtime(max_seq_len: int | None = None) -> StageRuntimeConfig:
-    return StageRuntimeConfig(max_seq_len=max_seq_len)
-
-
 def _preprocessing_stage() -> StageConfig:
     return StageConfig(
         name="preprocessing",
         factory=f"{_PKG}.stages.create_preprocessing_executor",
-        runtime=_runtime(max_seq_len=8192),
+        factory_args={"thinker_max_seq_len": 8192},
         runtime_arg_map={"max_seq_len": "thinker_max_seq_len"},
         next=["image_encoder", "audio_encoder", "mm_aggregate"],
         project_payload={
@@ -80,13 +75,14 @@ def _aggregate_stage() -> StageConfig:
 
 
 def _thinker_stage(*, gpu: int, speech_enabled: bool) -> StageConfig:
-    factory_args = {"speech_enabled": True} if speech_enabled else {}
+    factory_args = {"thinker_max_seq_len": 8192}
+    if speech_enabled:
+        factory_args["speech_enabled"] = True
     return StageConfig(
         name="thinker",
         factory=f"{_PKG}.stages.create_sglang_thinker_executor_from_config",
         factory_args=factory_args,
         gpu=gpu,
-        runtime=_runtime(max_seq_len=8192),
         runtime_arg_map={"max_seq_len": "thinker_max_seq_len"},
         next=["decode", "talker_ar"] if speech_enabled else "decode",
         stream_to=["talker_ar"] if speech_enabled else [],
@@ -106,11 +102,11 @@ def _talker_stage(*, gpu: int) -> StageConfig:
         name="talker_ar",
         factory=f"{_PKG}.stages.create_talker_ar_executor_from_config",
         factory_args={
+            "talker_max_seq_len": 32768,
             "speech_enabled": True,
             "feedback_enabled": True,
         },
         gpu=gpu,
-        runtime=_runtime(max_seq_len=32768),
         runtime_arg_map={"max_seq_len": "talker_max_seq_len"},
         next="code2wav",
         stream_to=["code2wav"],
