@@ -10,9 +10,15 @@ from sglang_omni_v1.config.compiler import (
 )
 from sglang_omni_v1.config.schema import (
     EndpointsConfig,
+    ParallelismConfig,
     PipelineConfig,
+    PlacementConfig,
+    ProcessConfig,
     RelayConfig,
+    SGLangServerArgsConfig,
     StageConfig,
+    StageResourceConfig,
+    StageRuntimeConfig,
 )
 
 __all__ = [
@@ -25,6 +31,12 @@ __all__ = [
     "prepare_pipeline_runtime",
     "PipelineConfig",
     "StageConfig",
+    "ParallelismConfig",
+    "StageResourceConfig",
+    "SGLangServerArgsConfig",
+    "StageRuntimeConfig",
+    "PlacementConfig",
+    "ProcessConfig",
     "RelayConfig",
     "EndpointsConfig",
 ]
