@@ -233,6 +233,26 @@ def test_cli_encoder_mem_reserve_rejects_runtime_pinned_thinker_mem_fraction() -
         )
 
 
+def test_cli_encoder_mem_reserve_survives_runtime_overrides_overlay() -> None:
+    from sglang_omni_v1.config.compiler import _resolve_factory_args
+
+    config = Qwen3OmniSpeechPipelineConfig(
+        model_path="dummy",
+        runtime_overrides={"thinker": {"encoder_mem_reserve": 0.10}},
+    )
+
+    apply_encoder_mem_reserve_cli_override(
+        config,
+        encoder_mem_reserve=0.15,
+        mem_fraction_static=None,
+        thinker_mem_fraction_static=None,
+    )
+
+    resolved = _resolve_factory_args(_stage(config, "thinker"), config)
+
+    assert resolved["encoder_mem_reserve"] == 0.15
+
+
 def test_qwen_thinker_auto_path_applies_encoder_reserve() -> None:
     server_args = SimpleNamespace(mem_fraction_static=0.929)
 

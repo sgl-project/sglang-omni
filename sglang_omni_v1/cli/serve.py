@@ -195,6 +195,17 @@ def apply_encoder_mem_reserve_cli_override(
             )
         factory_args["encoder_mem_reserve"] = encoder_mem_reserve
         stage.factory_args = factory_args
+
+        # why: _resolve_factory_args shallow-overlays runtime_overrides[stage]
+        # onto factory_args, so a pre-existing encoder_mem_reserve there would
+        # silently shadow the CLI write. Refresh only that key in place — never
+        # synthesize a new runtime_overrides entry or add the key if absent.
+        stage_runtime_overrides = pipeline_config.runtime_overrides.get(stage.name)
+        if (
+            isinstance(stage_runtime_overrides, dict)
+            and "encoder_mem_reserve" in stage_runtime_overrides
+        ):
+            stage_runtime_overrides["encoder_mem_reserve"] = encoder_mem_reserve
     return pipeline_config
 
 
