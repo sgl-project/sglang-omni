@@ -142,6 +142,34 @@ def test_tp_rank_gpu_ids_are_preserved() -> None:
     assert plan.requires_multi_process is True
 
 
+def test_tp_scalar_gpu_is_rejected() -> None:
+    stage = _stage(
+        "thinker",
+        gpu=0,
+        fraction=0.45,
+        tp_size=2,
+        terminal=True,
+    )
+    config = PipelineConfig(model_path="dummy", stages=[stage])
+
+    with pytest.raises(ValueError, match="requires a list"):
+        build_stage_placement_plan(config)
+
+
+def test_tp_duplicate_gpu_ids_are_rejected() -> None:
+    stage = _stage(
+        "thinker",
+        gpu=[0, 0],
+        fraction=0.45,
+        tp_size=2,
+        terminal=True,
+    )
+    config = PipelineConfig(model_path="dummy", stages=[stage])
+
+    with pytest.raises(ValueError, match="unique GPU ids"):
+        build_stage_placement_plan(config)
+
+
 def test_placement_policy_hook_runs_after_generic_plan() -> None:
     config = PipelineConfig(
         model_path="dummy",
