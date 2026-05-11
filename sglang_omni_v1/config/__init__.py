@@ -8,6 +8,7 @@ from sglang_omni_v1.config.compiler import (
     create_ipc_runtime_dir,
     prepare_pipeline_runtime,
 )
+from sglang_omni_v1.config.runtime import resolve_stage_factory_args
 from sglang_omni_v1.config.schema import (
     EndpointsConfig,
     ParallelismConfig,
@@ -29,6 +30,7 @@ __all__ = [
     "compile_pipeline_core",
     "create_ipc_runtime_dir",
     "prepare_pipeline_runtime",
+    "resolve_stage_factory_args",
     "PipelineConfig",
     "StageConfig",
     "ParallelismConfig",

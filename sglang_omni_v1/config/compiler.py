@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import inspect
 import logging
 import re
 import shutil
@@ -13,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from sglang_omni_v1.config.runtime import resolve_stage_factory_args
 from sglang_omni_v1.config.schema import PipelineConfig, StageConfig
 from sglang_omni_v1.pipeline import AggregatedInput, Coordinator, DirectInput, Stage
 from sglang_omni_v1.pipeline.control_plane import StageControlPlane
@@ -298,22 +298,7 @@ def _resolve_factory_args(
     global_cfg: PipelineConfig,
 ) -> dict[str, Any]:
     """Resolve factory args, injecting model_path and gpu_id if accepted."""
-    args = dict(stage_cfg.factory_args)
-    stage_overrides = global_cfg.runtime_overrides.get(stage_cfg.name, {})
-    if stage_overrides:
-        args.update(stage_overrides)
-    factory = import_string(stage_cfg.factory)
-    sig = inspect.signature(factory)
-
-    if "model_path" in sig.parameters and "model_path" not in args:
-        args["model_path"] = global_cfg.model_path
-
-    if "gpu_id" in sig.parameters and "gpu_id" not in args:
-        placement = global_cfg.gpu_placement.get(stage_cfg.name, 0)
-        gpu_id = placement[0] if isinstance(placement, list) else placement
-        args["gpu_id"] = gpu_id
-
-    return args
+    return resolve_stage_factory_args(stage_cfg, global_cfg)
 
 
 def _resolve_project_payload(

@@ -52,11 +52,10 @@ def _apply_stage_server_args_override(
         reason=reason,
     )
     for stage in matching_stages:
-        factory_args = dict(stage.factory_args or {})
-        overrides = dict(factory_args.get("server_args_overrides") or {})
-        overrides.update(updates)
-        factory_args["server_args_overrides"] = overrides
-        stage.factory_args = factory_args
+        if "mem_fraction_static" in updates:
+            stage.runtime.sglang_server_args.mem_fraction_static = float(
+                updates["mem_fraction_static"]
+            )
 
         stage_runtime_overrides = pipeline_config.runtime_overrides.get(stage.name)
         if stage_runtime_overrides is not None:
@@ -71,6 +70,13 @@ def _stage_has_explicit_mem_fraction_static(
     stage_name: str,
     factory_args: dict[str, object],
 ) -> bool:
+    stage = next((s for s in pipeline_config.stages if s.name == stage_name), None)
+    if (
+        stage is not None
+        and stage.runtime.sglang_server_args.mem_fraction_static is not None
+    ):
+        return True
+
     server_args_overrides = dict(factory_args.get("server_args_overrides") or {})
     if server_args_overrides.get("mem_fraction_static") is not None:
         return True

@@ -19,9 +19,9 @@ from sglang_omni_v1.config.compiler import (
     IpcRuntimeDir,
     _build_relay_config,
     _detect_same_gpu_targets,
-    _resolve_factory_args,
     prepare_pipeline_runtime,
 )
+from sglang_omni_v1.config.runtime import resolve_stage_factory_args
 from sglang_omni_v1.config.schema import PipelineConfig, StageConfig
 from sglang_omni_v1.pipeline import Coordinator
 from sglang_omni_v1.pipeline.stage_group import StageGroup
@@ -73,7 +73,7 @@ def _build_stage_groups(
             )
 
         # Pre-resolve factory args (inject model_path, gpu_id)
-        base_factory_args = _resolve_factory_args(stage_cfg, config)
+        base_factory_args = resolve_stage_factory_args(stage_cfg, config)
 
         stage_kwargs = dict(
             stage_name=stage_cfg.name,
