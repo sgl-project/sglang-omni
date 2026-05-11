@@ -120,11 +120,9 @@ class Code2WavScheduler:
     def _on_chunk(self, request_id: str, chunk: Any) -> None:
         self._ensure_request_state(request_id)
 
-        # Latch the stream flag from talker's metadata once per request. The
-        # talker contract is "always populate metadata['stream']"; a missing
-        # field means the upstream changed shape. Surface as a per-request
-        # error via outbox (runtime drains and turns it into a coordinator
-        # failure) instead of raising, so other in-flight requests survive.
+        # Latch the stream flag from talker's metadata once per request.
+        # Talker contract: always populate metadata['stream']; a missing
+        # field means the upstream changed shape.
         if request_id not in self._stream_enabled:
             meta = chunk.metadata if isinstance(chunk.metadata, dict) else None
             if meta is None or "stream" not in meta:
