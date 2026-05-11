@@ -78,7 +78,11 @@ class StagePlacementPlanner:
         plan = StagePlacementPlan(
             stages=placements,
             gpus=gpu_plans,
-            requires_multi_process=_requires_multi_process(gpu_plans, stages),
+            requires_multi_process=_requires_multi_process(
+                self._config,
+                gpu_plans,
+                stages,
+            ),
         )
         self._validate_memory_budgets(plan)
         if apply_policy:
@@ -89,7 +93,7 @@ class StagePlacementPlanner:
         limit = self._config.placement.max_total_gpu_memory_fraction_per_gpu
         require = self._config.placement.require_memory_fraction_for_colocation
         for gpu in plan.gpus.values():
-            colocated = len(gpu.stage_names) > 1
+            colocated = _is_explicit_colocation(gpu, self._config)
             if colocated and require and gpu.missing_fraction_stage_names:
                 missing = ", ".join(sorted(gpu.missing_fraction_stage_names))
                 raise ValueError(
@@ -180,6 +184,7 @@ def _build_gpu_placement(
 
 
 def _requires_multi_process(
+    config: PipelineConfig,
     gpu_plans: dict[int, GpuPlacement],
     stages: list[StageConfig],
 ) -> bool:
@@ -187,7 +192,15 @@ def _requires_multi_process(
         return True
     if any(stage.tp_size > 1 for stage in stages):
         return True
-    return any(len(gpu.stage_names) > 1 for gpu in gpu_plans.values())
+    return any(_is_explicit_colocation(gpu, config) for gpu in gpu_plans.values())
+
+
+def _is_explicit_colocation(gpu: GpuPlacement, config: PipelineConfig) -> bool:
+    if len(gpu.stage_names) <= 1:
+        return False
+    if config.process.mode == "multi":
+        return True
+    return bool(gpu.total_gpu_memory_fraction or gpu.missing_fraction_stage_names)
 
 
 def _apply_placement_policy(

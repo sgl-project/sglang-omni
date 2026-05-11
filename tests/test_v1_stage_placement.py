@@ -53,6 +53,21 @@ def test_same_gpu_colocation_requires_memory_fraction_for_all_stages() -> None:
         build_stage_placement_plan(config)
 
 
+def test_same_gpu_without_budget_stays_legacy_single_process() -> None:
+    config = PipelineConfig(
+        model_path="dummy",
+        stages=[
+            _stage("image_encoder", gpu=0, next_stage="thinker"),
+            _stage("thinker", gpu=0, terminal=True),
+        ],
+    )
+
+    plan = build_stage_placement_plan(config)
+
+    assert plan.requires_multi_process is False
+    assert resolve_pipeline_process_mode(config, plan) is False
+
+
 def test_same_gpu_colocation_sums_budget_and_requires_multi_process() -> None:
     config = PipelineConfig(
         model_path="dummy",
