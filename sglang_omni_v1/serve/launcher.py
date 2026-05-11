@@ -93,6 +93,17 @@ def _collect_stage_control_endpoints(stages) -> dict[str, str]:
     return out
 
 
+def _placement_log_summary(placement_plan) -> dict[int, dict[str, Any]]:
+    return {
+        gpu_id: {
+            "stages": list(gpu.stage_names),
+            "total_gpu_memory_fraction": round(gpu.total_gpu_memory_fraction, 3),
+            "missing_fraction_stages": list(gpu.missing_fraction_stage_names),
+        }
+        for gpu_id, gpu in placement_plan.gpus.items()
+    }
+
+
 class StartReq(BaseModel):
     run_id: str | None = None
     trace_path_template: str | None = None
@@ -147,10 +158,11 @@ async def _run_server(
     placement_plan = build_stage_placement_plan(pipeline_config)
     needs_mp = resolve_pipeline_process_mode(pipeline_config, placement_plan)
     gpu_ids = set(placement_plan.gpus)
+    process_mode = "multi-process" if needs_mp else "single-process"
     logger.info(
-        "GPU placement: %s -> %s",
-        {gpu_id: gpu.stage_names for gpu_id, gpu in placement_plan.gpus.items()},
-        "multi-process" if needs_mp else "single-process",
+        "Placement plan: process_mode=%s gpu_budgets=%s",
+        process_mode,
+        _placement_log_summary(placement_plan),
     )
 
     if needs_mp:
