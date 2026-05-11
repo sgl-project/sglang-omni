@@ -25,6 +25,7 @@ class GpuPlacement:
     gpu_id: int
     stage_names: tuple[str, ...]
     total_gpu_memory_fraction: float
+    has_memory_fraction: bool
     missing_fraction_stage_names: tuple[str, ...]
 
 
@@ -167,6 +168,7 @@ def _build_gpu_placement(
     entries: list[tuple[str, float | None]],
 ) -> GpuPlacement:
     total = 0.0
+    has_memory_fraction = False
     missing: set[str] = set()
     stage_names: list[str] = []
     for stage_name, fraction in entries:
@@ -174,11 +176,13 @@ def _build_gpu_placement(
         if fraction is None:
             missing.add(stage_name)
             continue
+        has_memory_fraction = True
         total += fraction
     return GpuPlacement(
         gpu_id=gpu_id,
         stage_names=tuple(stage_names),
         total_gpu_memory_fraction=total,
+        has_memory_fraction=has_memory_fraction,
         missing_fraction_stage_names=tuple(sorted(missing)),
     )
 
@@ -200,7 +204,7 @@ def _is_explicit_colocation(gpu: GpuPlacement, config: PipelineConfig) -> bool:
         return False
     if config.process.mode == "multi":
         return True
-    return bool(gpu.total_gpu_memory_fraction or gpu.missing_fraction_stage_names)
+    return gpu.has_memory_fraction
 
 
 def _apply_placement_policy(
