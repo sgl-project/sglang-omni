@@ -89,6 +89,62 @@ def test_cli_global_and_specific_mem_fraction_target_only_qwen_ar_stages() -> No
         assert "server_args_overrides" not in _stage(config, non_ar_stage).factory_args
 
 
+def test_cli_per_role_mem_fraction_overrides_global_when_all_three_passed() -> None:
+    config = Qwen3OmniSpeechPipelineConfig(model_path="dummy")
+
+    apply_mem_fraction_cli_overrides(
+        config,
+        mem_fraction_static=0.80,
+        thinker_mem_fraction_static=0.70,
+        talker_mem_fraction_static=0.65,
+    )
+
+    assert _server_args_overrides(config, "thinker")["mem_fraction_static"] == 0.70
+    assert _server_args_overrides(config, "talker_ar")["mem_fraction_static"] == 0.65
+
+
+def test_cli_global_mem_fraction_applies_when_no_per_role_override() -> None:
+    config = Qwen3OmniSpeechPipelineConfig(model_path="dummy")
+
+    apply_mem_fraction_cli_overrides(
+        config,
+        mem_fraction_static=0.80,
+        thinker_mem_fraction_static=None,
+        talker_mem_fraction_static=None,
+    )
+
+    assert _server_args_overrides(config, "thinker")["mem_fraction_static"] == 0.80
+    assert _server_args_overrides(config, "talker_ar")["mem_fraction_static"] == 0.80
+
+
+def test_cli_partial_per_role_falls_back_to_global_for_unspecified_role() -> None:
+    config = Qwen3OmniSpeechPipelineConfig(model_path="dummy")
+
+    apply_mem_fraction_cli_overrides(
+        config,
+        mem_fraction_static=0.80,
+        thinker_mem_fraction_static=0.70,
+        talker_mem_fraction_static=None,
+    )
+
+    assert _server_args_overrides(config, "thinker")["mem_fraction_static"] == 0.70
+    assert _server_args_overrides(config, "talker_ar")["mem_fraction_static"] == 0.80
+
+
+def test_cli_talker_per_role_overrides_global_thinker_falls_back() -> None:
+    config = Qwen3OmniSpeechPipelineConfig(model_path="dummy")
+
+    apply_mem_fraction_cli_overrides(
+        config,
+        mem_fraction_static=0.80,
+        thinker_mem_fraction_static=None,
+        talker_mem_fraction_static=0.65,
+    )
+
+    assert _server_args_overrides(config, "thinker")["mem_fraction_static"] == 0.80
+    assert _server_args_overrides(config, "talker_ar")["mem_fraction_static"] == 0.65
+
+
 def test_cli_mem_fraction_static_survives_runtime_overrides_overlay() -> None:
     from sglang_omni_v1.config.compiler import _resolve_factory_args
 
