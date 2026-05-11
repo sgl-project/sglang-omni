@@ -7,10 +7,20 @@ from unittest.mock import patch
 import pytest
 import typer
 
-from sglang_omni_v1.cli.serve import apply_parallelism_cli_overrides, serve
-from sglang_omni_v1.config import PipelineConfig, StageConfig
+from sglang_omni_v1.cli.serve import (
+    apply_cuda_graph_cli_overrides,
+    apply_parallelism_cli_overrides,
+    apply_torch_compile_cli_overrides,
+    serve,
+)
+from sglang_omni_v1.config import (
+    PipelineConfig,
+    StageConfig,
+    resolve_stage_factory_args,
+)
 from sglang_omni_v1.models.qwen3_omni.config import (
     Qwen3OmniSpeechColocatedPipelineConfig,
+    Qwen3OmniSpeechPipelineConfig,
 )
 from sglang_omni_v1.models.registry import PIPELINE_CONFIG_REGISTRY
 
@@ -135,3 +145,43 @@ def test_speech_colocated_allows_gpu_override_to_same_gpu():
 
     assert next(stage for stage in config.stages if stage.name == "talker_ar").gpu == 0
     assert next(stage for stage in config.stages if stage.name == "code2wav").gpu == 0
+
+
+def test_cuda_graph_cli_override_reaches_resolved_sglang_args():
+    config = Qwen3OmniSpeechPipelineConfig(model_path="dummy")
+
+    apply_cuda_graph_cli_overrides(
+        config,
+        thinker_cuda_graph="off",
+        talker_cuda_graph="on",
+    )
+
+    thinker = next(stage for stage in config.stages if stage.name == "thinker")
+    talker = next(stage for stage in config.stages if stage.name == "talker_ar")
+    thinker_args = resolve_stage_factory_args(thinker, config)
+    talker_args = resolve_stage_factory_args(talker, config)
+
+    assert thinker_args["server_args_overrides"]["disable_cuda_graph"] is True
+    assert talker_args["server_args_overrides"]["disable_cuda_graph"] is False
+
+
+def test_torch_compile_cli_override_reaches_resolved_sglang_args():
+    config = Qwen3OmniSpeechPipelineConfig(model_path="dummy")
+
+    apply_torch_compile_cli_overrides(
+        config,
+        thinker_torch_compile="on",
+        talker_torch_compile="off",
+        thinker_torch_compile_max_bs=4,
+        talker_torch_compile_max_bs=2,
+    )
+
+    thinker = next(stage for stage in config.stages if stage.name == "thinker")
+    talker = next(stage for stage in config.stages if stage.name == "talker_ar")
+    thinker_args = resolve_stage_factory_args(thinker, config)
+    talker_args = resolve_stage_factory_args(talker, config)
+
+    assert thinker_args["server_args_overrides"]["enable_torch_compile"] is True
+    assert thinker_args["server_args_overrides"]["torch_compile_max_bs"] == 4
+    assert talker_args["server_args_overrides"]["enable_torch_compile"] is False
+    assert talker_args["server_args_overrides"]["torch_compile_max_bs"] == 2
