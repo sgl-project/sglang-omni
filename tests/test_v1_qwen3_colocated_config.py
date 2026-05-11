@@ -1,0 +1,116 @@
+# SPDX-License-Identifier: Apache-2.0
+from __future__ import annotations
+
+import pytest
+
+from sglang_omni_v1.config import build_stage_placement_plan
+from sglang_omni_v1.models.qwen3_omni.config import (
+    Qwen3OmniSpeechColocatedPipelineConfig,
+    Qwen3OmniSpeechPipelineConfig,
+    Variants,
+)
+
+
+def _stage(config, name: str):
+    return next(stage for stage in config.stages if stage.name == name)
+
+
+def _set_colocated_runtime(
+    config: Qwen3OmniSpeechColocatedPipelineConfig,
+    *,
+    include_mem_fraction: bool = True,
+) -> None:
+    fractions = {
+        "image_encoder": 0.05,
+        "audio_encoder": 0.05,
+        "thinker": 0.35,
+        "talker_ar": 0.35,
+        "code2wav": 0.05,
+    }
+    for stage_name, fraction in fractions.items():
+        _stage(
+            config, stage_name
+        ).runtime.resources.total_gpu_memory_fraction = fraction
+    if include_mem_fraction:
+        _stage(
+            config, "thinker"
+        ).runtime.sglang_server_args.mem_fraction_static = 0.70
+        _stage(
+            config, "talker_ar"
+        ).runtime.sglang_server_args.mem_fraction_static = 0.65
+
+
+def test_default_speech_topology_stays_disaggregated() -> None:
+    config = Qwen3OmniSpeechPipelineConfig(model_path="dummy")
+
+    assert len(config.stages) == 8
+    assert config.process.mode == "auto"
+    assert _stage(config, "thinker").gpu == 0
+    assert _stage(config, "talker_ar").gpu == 1
+    assert _stage(config, "code2wav").gpu == 1
+    assert "code_predictor" not in {stage.name for stage in config.stages}
+
+
+def test_colocated_topology_is_opt_in_and_uses_one_gpu() -> None:
+    config = Qwen3OmniSpeechColocatedPipelineConfig(model_path="dummy")
+
+    assert Variants["speech-colocated"] is Qwen3OmniSpeechColocatedPipelineConfig
+    assert config.process.mode == "multi"
+    for stage_name in (
+        "image_encoder",
+        "audio_encoder",
+        "thinker",
+        "talker_ar",
+        "code2wav",
+    ):
+        assert _stage(config, stage_name).gpu == 0
+
+
+def test_colocated_config_passes_with_explicit_budgets_and_ar_mem_fraction() -> None:
+    config = Qwen3OmniSpeechColocatedPipelineConfig(model_path="dummy")
+    _set_colocated_runtime(config)
+
+    plan = build_stage_placement_plan(config)
+
+    assert plan.requires_multi_process is True
+    assert plan.gpus[0].total_gpu_memory_fraction == pytest.approx(0.85)
+
+
+def test_colocated_config_rejects_missing_ar_mem_fraction() -> None:
+    config = Qwen3OmniSpeechColocatedPipelineConfig(model_path="dummy")
+    _set_colocated_runtime(config, include_mem_fraction=False)
+
+    with pytest.raises(ValueError, match="mem_fraction_static"):
+        build_stage_placement_plan(config)
+
+
+def test_default_speech_rejects_same_gpu_thinker_and_talker_colocation() -> None:
+    config = Qwen3OmniSpeechPipelineConfig(model_path="dummy")
+    _stage(config, "talker_ar").gpu = 0
+    _stage(config, "code2wav").gpu = 0
+    for stage_name in (
+        "image_encoder",
+        "audio_encoder",
+        "thinker",
+        "talker_ar",
+        "code2wav",
+    ):
+        _stage(
+            config, stage_name
+        ).runtime.resources.total_gpu_memory_fraction = 0.10
+    _stage(config, "thinker").runtime.sglang_server_args.mem_fraction_static = 0.70
+    _stage(config, "talker_ar").runtime.sglang_server_args.mem_fraction_static = 0.65
+
+    with pytest.raises(ValueError, match="Qwen3OmniSpeechColocatedPipelineConfig"):
+        build_stage_placement_plan(config)
+
+
+def test_qwen_phase1_rejects_thinker_and_talker_tp() -> None:
+    config = Qwen3OmniSpeechPipelineConfig(model_path="dummy")
+    thinker = _stage(config, "thinker")
+    thinker.tp_size = 2
+    thinker.parallelism.tp = 2
+    thinker.gpu = [0, 1]
+
+    with pytest.raises(ValueError, match="thinker TP"):
+        build_stage_placement_plan(config)
