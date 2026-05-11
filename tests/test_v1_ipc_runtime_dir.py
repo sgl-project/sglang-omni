@@ -205,12 +205,14 @@ class TestV1MultiProcessRunnerIpcCleanup(unittest.IsolatedAsyncioTestCase):
                     stages_cfg=prep_a.stages_cfg,
                     name_map=prep_a.name_map,
                     endpoints=prep_a.endpoints,
+                    placement_plan=prep_a.placement_plan,
                 )
                 groups_b = _build_stage_groups(
                     config,
                     stages_cfg=prep_b.stages_cfg,
                     name_map=prep_b.name_map,
                     endpoints=prep_b.endpoints,
+                    placement_plan=prep_b.placement_plan,
                 )
 
                 self.assertNotEqual(

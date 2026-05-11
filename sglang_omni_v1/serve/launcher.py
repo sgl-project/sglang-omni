@@ -37,7 +37,12 @@ from fastapi import APIRouter
 from pydantic import BaseModel
 
 from sglang_omni_v1.client import Client
-from sglang_omni_v1.config import PipelineConfig, compile_pipeline_core
+from sglang_omni_v1.config import (
+    PipelineConfig,
+    build_stage_placement_plan,
+    compile_pipeline_core,
+    resolve_pipeline_process_mode,
+)
 from sglang_omni_v1.profiler.profiler_control import ProfilerControlClient
 from sglang_omni_v1.serve.openai_api import create_app
 
@@ -139,19 +144,12 @@ async def _run_server(
     # 0. Check port availability before loading models
     port = _find_available_port(host, port)
 
-    # Determine whether we need multi-process mode.  This is true when
-    # stages span more than one GPU *or* any stage uses tensor parallelism.
-    gpu_ids: set[int] = set()
-    for v in pipeline_config.gpu_placement.values():
-        if isinstance(v, list):
-            gpu_ids.update(v)
-        else:
-            gpu_ids.add(v)
-    any_tp = any(s.tp_size > 1 for s in pipeline_config.stages)
-    needs_mp = len(gpu_ids) > 1 or any_tp
+    placement_plan = build_stage_placement_plan(pipeline_config)
+    needs_mp = resolve_pipeline_process_mode(pipeline_config, placement_plan)
+    gpu_ids = set(placement_plan.gpus)
     logger.info(
-        "GPU placement: %s → %s",
-        dict(pipeline_config.gpu_placement),
+        "GPU placement: %s -> %s",
+        {gpu_id: gpu.stage_names for gpu_id, gpu in placement_plan.gpus.items()},
         "multi-process" if needs_mp else "single-process",
     )
 

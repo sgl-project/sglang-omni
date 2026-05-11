@@ -15,6 +15,10 @@ import multiprocessing
 import socket
 from typing import Any
 
+from sglang_omni_v1.config.placement import (
+    StagePlacementPlan,
+    resolve_stage_gpu_ids,
+)
 from sglang_omni_v1.config.compiler import (
     IpcRuntimeDir,
     _build_relay_config,
@@ -37,6 +41,7 @@ def _build_stage_groups(
     stages_cfg: list[StageConfig],
     name_map: dict[str, str],
     endpoints: dict[str, str],
+    placement_plan: StagePlacementPlan,
 ) -> list[StageGroup]:
     """Build one :class:`StageGroup` per logical stage from prepared endpoints.
 
@@ -59,7 +64,7 @@ def _build_stage_groups(
     groups: list[StageGroup] = []
     for stage_cfg in stages_cfg:
         tp_size = stage_cfg.tp_size
-        gpu_ids = _resolve_gpu_ids(stage_cfg, config)
+        gpu_ids = resolve_stage_gpu_ids(placement_plan, stage_cfg)
         nccl_port = nccl_port_counter.allocate() if tp_size > 1 else None
 
         # Pre-resolve stream targets
@@ -120,22 +125,6 @@ def _build_stage_groups(
         groups.append(StageGroup(stage_cfg.name, specs))
 
     return groups
-
-
-def _resolve_gpu_ids(stage_cfg: StageConfig, config: PipelineConfig) -> list[int]:
-    """Return the list of GPU ids for *stage_cfg* (one per TP rank)."""
-    placement = config.gpu_placement.get(stage_cfg.name)
-    if placement is None:
-        return [0] * stage_cfg.tp_size
-    if isinstance(placement, int):
-        return [placement] * stage_cfg.tp_size
-    # list[int] — one gpu per tp rank
-    if len(placement) != stage_cfg.tp_size:
-        raise ValueError(
-            f"Stage {stage_cfg.name!r}: gpu_placement has {len(placement)} "
-            f"entries but tp_size={stage_cfg.tp_size}"
-        )
-    return list(placement)
 
 
 def _build_single_stage_spec(
@@ -296,6 +285,7 @@ class MultiProcessPipelineRunner:
                 stages_cfg=prep.stages_cfg,
                 name_map=prep.name_map,
                 endpoints=prep.endpoints,
+                placement_plan=prep.placement_plan,
             )
 
             self._coordinator = Coordinator(

@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from sglang_omni_v1.config.schema import PipelineConfig
+
 
 def dummy_factory(**kwargs: Any) -> dict[str, Any]:
     return dict(kwargs)
@@ -25,3 +27,9 @@ def runtime_factory(
         "server_args_overrides": server_args_overrides,
         "encoder_mem_reserve": encoder_mem_reserve,
     }
+
+
+class RejectThinkerPlacementPolicy:
+    def validate(self, config: PipelineConfig, plan) -> None:
+        if "thinker" in plan.stages:
+            raise ValueError("policy rejected thinker")

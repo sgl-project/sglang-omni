@@ -12,6 +12,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from sglang_omni_v1.config.placement import (
+    StagePlacementPlan,
+    build_stage_placement_plan,
+    resolve_pipeline_process_mode,
+)
 from sglang_omni_v1.config.runtime import resolve_stage_factory_args
 from sglang_omni_v1.config.schema import PipelineConfig, StageConfig
 from sglang_omni_v1.pipeline import AggregatedInput, Coordinator, DirectInput, Stage
@@ -58,6 +63,7 @@ class PipelineRuntimePrep:
     name_map: dict[str, str]
     entry_stage: str
     endpoints: dict[str, str]
+    placement_plan: StagePlacementPlan
     runtime_dir: IpcRuntimeDir | None
     runtime_dir_created_here: bool
 
@@ -105,6 +111,7 @@ def prepare_pipeline_runtime(
 
     try:
         stages_cfg, name_map, entry_stage = config.apply_fusion()
+        placement_plan = build_stage_placement_plan(config, stages_cfg=stages_cfg)
         endpoints = _allocate_endpoints(
             config,
             stages=stages_cfg,
@@ -120,6 +127,7 @@ def prepare_pipeline_runtime(
         name_map=name_map,
         entry_stage=entry_stage,
         endpoints=endpoints,
+        placement_plan=placement_plan,
         runtime_dir=runtime_dir,
         runtime_dir_created_here=runtime_dir_created_here,
     )
@@ -146,6 +154,12 @@ def compile_pipeline_core(
     )
 
     try:
+        if resolve_pipeline_process_mode(config, prep.placement_plan):
+            raise ValueError(
+                "compile_pipeline_core() cannot run this placement in one process; "
+                "use MultiProcessPipelineRunner"
+            )
+
         coordinator = Coordinator(
             completion_endpoint=prep.endpoints["completion"],
             abort_endpoint=prep.endpoints["abort"],

@@ -8,6 +8,15 @@ from sglang_omni_v1.config.compiler import (
     create_ipc_runtime_dir,
     prepare_pipeline_runtime,
 )
+from sglang_omni_v1.config.placement import (
+    GpuPlacement,
+    StagePlacement,
+    StagePlacementPlan,
+    StagePlacementPlanner,
+    build_stage_placement_plan,
+    resolve_pipeline_process_mode,
+    resolve_stage_gpu_ids,
+)
 from sglang_omni_v1.config.runtime import resolve_stage_factory_args
 from sglang_omni_v1.config.schema import (
     EndpointsConfig,
@@ -30,6 +39,13 @@ __all__ = [
     "compile_pipeline_core",
     "create_ipc_runtime_dir",
     "prepare_pipeline_runtime",
+    "StagePlacement",
+    "GpuPlacement",
+    "StagePlacementPlan",
+    "StagePlacementPlanner",
+    "build_stage_placement_plan",
+    "resolve_pipeline_process_mode",
+    "resolve_stage_gpu_ids",
     "resolve_stage_factory_args",
     "PipelineConfig",
     "StageConfig",
