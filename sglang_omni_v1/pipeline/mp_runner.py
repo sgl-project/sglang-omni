@@ -17,12 +17,12 @@ from typing import Any
 
 from sglang_omni_v1.config.placement import (
     StagePlacementPlan,
+    resolve_same_gpu_stream_targets,
     resolve_stage_gpu_ids,
 )
 from sglang_omni_v1.config.compiler import (
     IpcRuntimeDir,
     _build_relay_config,
-    _detect_same_gpu_targets,
     prepare_pipeline_runtime,
 )
 from sglang_omni_v1.config.runtime import resolve_stage_factory_args
@@ -52,8 +52,6 @@ def _build_stage_groups(
         ctx = multiprocessing.get_context("spawn")
 
     stage_endpoints = {s.name: endpoints[f"stage_{s.name}"] for s in stages_cfg}
-    cfg_map = {s.name: s for s in stages_cfg}
-
     stream_receivers: set[str] = set()
     for scfg in stages_cfg:
         for target in scfg.stream_to:
@@ -67,15 +65,10 @@ def _build_stage_groups(
         gpu_ids = resolve_stage_gpu_ids(placement_plan, stage_cfg)
         nccl_port = nccl_port_counter.allocate() if tp_size > 1 else None
 
-        # Pre-resolve stream targets
-        same_gpu_targets: set[str] = set()
-        if stage_cfg.stream_to:
-            same_gpu_targets = _detect_same_gpu_targets(
-                stage_cfg,
-                stage_cfg.stream_to,
-                gpu_placement=config.gpu_placement,
-                cfg_map=cfg_map,
-            )
+        same_gpu_targets = resolve_same_gpu_stream_targets(
+            placement_plan,
+            stage_cfg,
+        )
 
         # Pre-resolve factory args (inject model_path, gpu_id)
         base_factory_args = resolve_stage_factory_args(stage_cfg, config)

@@ -76,6 +76,25 @@ def test_colocated_config_passes_with_explicit_budgets_and_ar_mem_fraction() -> 
     assert plan.gpus[0].total_gpu_memory_fraction == pytest.approx(0.85)
 
 
+def test_colocated_config_marks_same_gpu_stream_targets() -> None:
+    config = Qwen3OmniSpeechColocatedPipelineConfig(model_path="dummy")
+    _set_colocated_runtime(config)
+
+    plan = build_stage_placement_plan(config)
+
+    assert plan.same_gpu_stream_targets["thinker"] == frozenset({"talker_ar"})
+    assert plan.same_gpu_stream_targets["talker_ar"] == frozenset({"code2wav"})
+
+
+def test_default_speech_marks_only_talker_to_code2wav_same_gpu_stream() -> None:
+    config = Qwen3OmniSpeechPipelineConfig(model_path="dummy")
+
+    plan = build_stage_placement_plan(config)
+
+    assert "thinker" not in plan.same_gpu_stream_targets
+    assert plan.same_gpu_stream_targets["talker_ar"] == frozenset({"code2wav"})
+
+
 def test_colocated_config_rejects_missing_ar_mem_fraction() -> None:
     config = Qwen3OmniSpeechColocatedPipelineConfig(model_path="dummy")
     _set_colocated_runtime(config, include_mem_fraction=False)

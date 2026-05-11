@@ -15,6 +15,7 @@ from sglang_omni_v1.config.placement import (
     StagePlacementPlanner,
     build_stage_placement_plan,
     resolve_pipeline_process_mode,
+    resolve_same_gpu_stream_targets,
     resolve_stage_gpu_ids,
 )
 from sglang_omni_v1.config.runtime import resolve_stage_factory_args
@@ -45,6 +46,7 @@ __all__ = [
     "StagePlacementPlanner",
     "build_stage_placement_plan",
     "resolve_pipeline_process_mode",
+    "resolve_same_gpu_stream_targets",
     "resolve_stage_gpu_ids",
     "resolve_stage_factory_args",
     "PipelineConfig",
