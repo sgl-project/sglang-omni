@@ -88,26 +88,6 @@ class ModelWorker:
             self.model_runner.token_to_kv_pool_allocator,
         )
 
-    def get_worker_info(self):
-        max_total_num_tokens = self.model_runner.max_total_num_tokens
-        max_req_len = min(self.server_args.context_length - 1, max_total_num_tokens - 1)
-        max_req_input_len = max_req_len - 1
-        req_pool = self.model_runner.req_to_token_pool
-        kv_pool = self.model_runner.token_to_kv_pool_allocator
-        return (
-            max_total_num_tokens,
-            self.server_args.max_prefill_tokens,
-            self.server_args.max_running_requests,
-            self.server_args.max_queued_requests,
-            max_req_len,
-            max_req_input_len,
-            self.random_seed,
-            self.device,
-            req_pool.size,
-            req_pool.max_context_len,
-            kv_pool.size,
-        )
-
     def get_tp_group(self):
         return self.model_runner.tp_group
 
