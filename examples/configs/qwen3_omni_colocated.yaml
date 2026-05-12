@@ -30,15 +30,11 @@ stage_overrides:
     runtime:
       resources:
         total_gpu_memory_fraction: 0.78
-      sglang_server_args:
-        mem_fraction_static: 0.85
 
   talker_ar:
     runtime:
       resources:
         total_gpu_memory_fraction: 0.14
-      sglang_server_args:
-        mem_fraction_static: 0.40
 
   code2wav:
     runtime:

@@ -14,6 +14,9 @@ from sglang_omni_v1.config import (
 from sglang_omni_v1.models.qwen3_omni.config import Qwen3OmniSpeechPipelineConfig
 
 _FACTORY = "tests.unit_test.fixtures.pipeline_fakes.runtime_factory"
+_FACTORY_WITHOUT_TOTAL_BUDGET = (
+    "tests.unit_test.fixtures.pipeline_fakes.runtime_factory_without_total_budget"
+)
 
 
 def _stage(**kwargs) -> StageConfig:
@@ -58,10 +61,26 @@ def test_typed_runtime_maps_to_factory_args_and_sglang_overrides() -> None:
         "disable_cuda_graph": True,
         "mem_fraction_static": 0.72,
     }
+    assert args["total_gpu_memory_fraction"] == 0.25
+
+
+def test_total_gpu_memory_fraction_is_not_injected_into_unrelated_factories() -> None:
+    stage = _stage(
+        factory=_FACTORY_WITHOUT_TOTAL_BUDGET,
+        runtime=StageRuntimeConfig(
+            resources=StageResourceConfig(total_gpu_memory_fraction=0.25),
+            sglang_server_args=SGLangServerArgsConfig(mem_fraction_static=0.72),
+        ),
+    )
+    config = PipelineConfig(model_path="dummy-model", stages=[stage])
+
+    args = resolve_stage_factory_args(stage, config)
+
     assert "total_gpu_memory_fraction" not in args
+    assert args["server_args_overrides"] == {"mem_fraction_static": 0.72}
 
 
-def test_typed_sglang_runtime_rejects_legacy_mem_fraction_duplicate() -> None:
+def test_typed_sglang_runtime_rejects_compat_mem_fraction_duplicate() -> None:
     stage = _stage(
         runtime=StageRuntimeConfig(
             sglang_server_args=SGLangServerArgsConfig(mem_fraction_static=0.70)
@@ -114,7 +133,7 @@ def test_rank_gpu_id_can_be_supplied_by_launch_planner() -> None:
     assert args["gpu_id"] == 3
 
 
-def test_legacy_runtime_override_wins_over_qwen_model_default() -> None:
+def test_runtime_override_wins_over_qwen_model_default() -> None:
     config = Qwen3OmniSpeechPipelineConfig(
         model_path="dummy-model",
         runtime_overrides={"thinker": {"thinker_max_seq_len": 16384}},
@@ -126,7 +145,7 @@ def test_legacy_runtime_override_wins_over_qwen_model_default() -> None:
     assert args["thinker_max_seq_len"] == 16384
 
 
-def test_explicit_typed_runtime_rejects_legacy_runtime_override_duplicate() -> None:
+def test_explicit_typed_runtime_rejects_runtime_override_duplicate() -> None:
     config = Qwen3OmniSpeechPipelineConfig(
         model_path="dummy-model",
         runtime_overrides={"thinker": {"thinker_max_seq_len": 16384}},

@@ -18,6 +18,7 @@ from sglang_omni_v1.pipeline.stage.runtime import Stage
 from sglang_omni_v1.pipeline.stage.stream_queue import StreamQueue
 from sglang_omni_v1.pipeline.tp_control import TPFollowerControlPlane, TPLeaderFanout
 from sglang_omni_v1.utils import import_string
+from sglang_omni_v1.utils.gpu_memory import gpu_startup_lock
 
 
 @dataclass
@@ -129,8 +130,7 @@ def _run_stage(
         spec.tp_size,
     )
 
-    factory = import_string(spec.factory)
-    scheduler = factory(**spec.factory_args)
+    scheduler = _construct_scheduler(spec, gpu_id, log)
 
     # --- Build routing ---
     if spec.is_terminal:
@@ -209,6 +209,22 @@ def _run_stage(
         await stage.run()
 
     asyncio.run(_start_and_run())
+
+
+def _construct_scheduler(
+    spec: StageProcessSpec,
+    gpu_id: int | None,
+    log: logging.Logger,
+) -> Any:
+    """Build a scheduler, serializing GPU factory work per visible device."""
+
+    factory = import_string(spec.factory)
+    if gpu_id is None:
+        return factory(**spec.factory_args)
+
+    with gpu_startup_lock(int(gpu_id)) as lock_path:
+        log.info(f"Acquired GPU startup lock for stage {spec.stage_name}: {lock_path}")
+        return factory(**spec.factory_args)
 
 
 def _factory_args_use_cuda(factory_args: Mapping[str, Any]) -> bool:

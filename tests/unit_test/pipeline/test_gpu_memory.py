@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 from __future__ import annotations
 
+import fcntl
 import os
 import sys
 from types import ModuleType, SimpleNamespace
@@ -256,6 +257,55 @@ def test_get_process_gpu_memory_rejects_invalid_device_mapping(
 def test_format_bytes_gib() -> None:
     assert gpu_memory.format_bytes_gib(None) == "None"
     assert gpu_memory.format_bytes_gib(3 * 1024**3) == "3.00GiB"
+
+
+def test_calculate_process_scoped_available_bytes_subtracts_process_memory() -> None:
+    available = gpu_memory.calculate_process_scoped_available_bytes(
+        total_memory_bytes=1000,
+        process_memory_bytes=300,
+        memory_fraction=0.5,
+    )
+
+    assert available == 200
+
+
+def test_calculate_process_scoped_available_bytes_rejects_no_headroom() -> None:
+    with pytest.raises(RuntimeError, match="leaves no KV-cache headroom"):
+        gpu_memory.calculate_process_scoped_available_bytes(
+            total_memory_bytes=1000,
+            process_memory_bytes=500,
+            memory_fraction=0.5,
+        )
+
+
+def test_gpu_startup_lock_path_uses_visible_device_mapping(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "3,MIG-GPU-deadbeef/1/2")
+
+    first = gpu_memory.get_gpu_startup_lock_path(0, base_dir=tmp_path)
+    second = gpu_memory.get_gpu_startup_lock_path(1, base_dir=tmp_path)
+
+    assert first.name == "sglang_omni_v1_gpu_3_startup.lock"
+    assert second.name == "sglang_omni_v1_gpu_MIG-GPU-deadbeef_1_2_startup.lock"
+
+
+def test_gpu_startup_lock_releases_after_exception(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0")
+    monkeypatch.setattr(gpu_memory.tempfile, "gettempdir", lambda: str(tmp_path))
+
+    with pytest.raises(RuntimeError, match="factory failed"):
+        with gpu_memory.gpu_startup_lock(0):
+            raise RuntimeError("factory failed")
+
+    lock_path = gpu_memory.get_gpu_startup_lock_path(0, base_dir=tmp_path)
+    with open(lock_path, "a+") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
 def test_get_gpu_device_info_reports_name_and_total_memory(

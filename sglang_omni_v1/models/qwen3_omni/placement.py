@@ -117,16 +117,15 @@ class Qwen3OmniPlacementPolicy:
                 f"{missing_budgets}"
             )
 
-        missing_mem_fraction = [
-            stage_name
-            for stage_name in _AR_STAGES
-            if (
-                stage_map[stage_name].runtime.sglang_server_args.mem_fraction_static
-                is None
-            )
-        ]
-        if missing_mem_fraction:
-            raise ValueError(
-                "Qwen colocated speech requires mem_fraction_static for "
-                f"{missing_mem_fraction}"
-            )
+        for stage_name in _AR_STAGES:
+            stage = stage_map[stage_name]
+            total_fraction = stage.runtime.resources.total_gpu_memory_fraction
+            mem_fraction = stage.runtime.sglang_server_args.mem_fraction_static
+            if mem_fraction is None:
+                continue
+            if abs(mem_fraction - total_fraction) > 1e-3:
+                raise ValueError(
+                    f"Qwen colocated speech stage {stage_name} sets conflicting "
+                    "memory fractions: total_gpu_memory_fraction="
+                    f"{total_fraction:.3f}, mem_fraction_static={mem_fraction:.3f}"
+                )

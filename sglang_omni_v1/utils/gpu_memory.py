@@ -6,7 +6,11 @@ from __future__ import annotations
 import importlib
 import logging
 import os
+import re
+import tempfile
+from contextlib import contextmanager
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -95,7 +99,7 @@ def get_process_gpu_memory_bytes(logical_gpu_id: int) -> int | None:
     try:
         pynvml.nvmlInit()
     except Exception as exc:
-        logger.warning("NVML init failed; process GPU memory is unavailable: %s", exc)
+        logger.debug("NVML init failed; process GPU memory is unavailable: %s", exc)
         return None
 
     try:
@@ -125,7 +129,7 @@ def get_process_gpu_memory_bytes(logical_gpu_id: int) -> int | None:
     except _InvalidGpuDeviceError:
         raise
     except Exception as exc:
-        logger.warning("NVML query failed; process GPU memory is unavailable: %s", exc)
+        logger.debug("NVML query failed; process GPU memory is unavailable: %s", exc)
         return None
     finally:
         _shutdown_nvml(pynvml)
@@ -197,6 +201,67 @@ def format_bytes_gib(value: int | None) -> str:
     if value is None:
         return "None"
     return f"{value / (1024**3):.2f}GiB"
+
+
+def calculate_process_scoped_available_bytes(
+    *,
+    total_memory_bytes: int,
+    process_memory_bytes: int,
+    memory_fraction: float,
+) -> int:
+    """Return process-local cache headroom under a total GPU memory fraction."""
+    if total_memory_bytes <= 0:
+        raise ValueError("total_memory_bytes must be positive")
+    if process_memory_bytes < 0:
+        raise ValueError("process_memory_bytes must be non-negative")
+    if not 0.0 < memory_fraction <= 1.0:
+        raise ValueError("memory_fraction must be in (0, 1]")
+
+    requested_bytes = int(total_memory_bytes * memory_fraction)
+    available_bytes = requested_bytes - process_memory_bytes
+    if available_bytes <= 0:
+        raise RuntimeError(
+            "Colocated GPU memory budget leaves no KV-cache headroom: "
+            f"total={format_bytes_gib(total_memory_bytes)}, "
+            f"fraction={memory_fraction:.3f}, "
+            f"budget={format_bytes_gib(requested_bytes)}, "
+            f"process_used={format_bytes_gib(process_memory_bytes)}"
+        )
+    return available_bytes
+
+
+def get_gpu_startup_lock_path(
+    logical_gpu_id: int,
+    *,
+    env: dict[str, str] | None = None,
+    base_dir: str | Path | None = None,
+) -> Path:
+    """Return the launch-time lock path for a CUDA logical GPU id."""
+
+    source_env = env if env is not None else os.environ
+    visible_devices = parse_cuda_visible_devices(source_env.get("CUDA_VISIBLE_DEVICES"))
+    visible_device = resolve_visible_device_id(logical_gpu_id, visible_devices)
+    safe_device = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(visible_device)).strip("_")
+    if not safe_device:
+        safe_device = str(logical_gpu_id)
+    lock_dir = Path(base_dir) if base_dir is not None else Path(tempfile.gettempdir())
+    return lock_dir / f"sglang_omni_v1_gpu_{safe_device}_startup.lock"
+
+
+@contextmanager
+def gpu_startup_lock(logical_gpu_id: int):
+    """Serialize heavyweight scheduler construction on one visible GPU."""
+
+    import fcntl
+
+    lock_path = get_gpu_startup_lock_path(logical_gpu_id)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(lock_path, "a+") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            yield lock_path
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
 def _try_import_pynvml() -> Any | None:

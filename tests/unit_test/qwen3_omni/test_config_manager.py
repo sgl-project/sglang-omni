@@ -29,11 +29,11 @@ def test_config_manager_parses_dotted_fraction_overrides_as_numbers() -> None:
             "--stages.4.runtime.resources.total-gpu-memory-fraction",
             "0.35",
             "--stages.4.runtime.sglang-server-args.mem-fraction-static",
-            "0.70",
+            "0.35",
             "--stages.6.runtime.resources.total-gpu-memory-fraction",
             "0.35",
             "--stages.6.runtime.sglang-server-args.mem-fraction-static",
-            "0.65",
+            "0.35",
             "--stages.7.runtime.resources.total-gpu-memory-fraction",
             "0.05",
         ]
@@ -47,7 +47,7 @@ def test_config_manager_parses_dotted_fraction_overrides_as_numbers() -> None:
     ).runtime.resources.total_gpu_memory_fraction == pytest.approx(0.35)
     assert _stage(
         merged, "thinker"
-    ).runtime.sglang_server_args.mem_fraction_static == pytest.approx(0.70)
+    ).runtime.sglang_server_args.mem_fraction_static == pytest.approx(0.35)
     assert plan.gpus[0].total_gpu_memory_fraction == pytest.approx(0.85)
 
 
@@ -79,12 +79,13 @@ def test_qwen3_omni_colocated_example_config_loads_and_plans() -> None:
     assert config.process.mode == "multi"
     assert plan.requires_multi_process is True
     assert plan.gpus[0].total_gpu_memory_fraction == pytest.approx(1.0)
-    assert _stage(
-        config, "thinker"
-    ).runtime.sglang_server_args.mem_fraction_static == pytest.approx(0.85)
-    assert _stage(
-        config, "talker_ar"
-    ).runtime.sglang_server_args.mem_fraction_static == pytest.approx(0.40)
+    assert (
+        _stage(config, "thinker").runtime.sglang_server_args.mem_fraction_static is None
+    )
+    assert (
+        _stage(config, "talker_ar").runtime.sglang_server_args.mem_fraction_static
+        is None
+    )
     assert {
         stage.name: stage.gpu
         for stage in config.stages
