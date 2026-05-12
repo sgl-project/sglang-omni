@@ -79,7 +79,7 @@ def test_same_gpu_colocation_sums_budget_and_requires_multi_process() -> None:
     plan = build_stage_placement_plan(config)
 
     assert plan.gpus[0].stage_names == ("preprocess", "thinker")
-    assert plan.gpus[0].total_gpu_memory_fraction == 0.80
+    assert plan.gpus[0].total_gpu_memory_fraction == pytest.approx(0.80)
     assert plan.requires_multi_process is True
     assert resolve_pipeline_process_mode(config, plan) is True
 

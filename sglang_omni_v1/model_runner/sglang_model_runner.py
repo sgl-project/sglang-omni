@@ -110,10 +110,7 @@ class SGLModelRunner(ModelRunner):
         SGLang profiling semantics for ordinary non-colocated AR serving.
         """
         if self._total_gpu_memory_fraction is None:
-            return ModelRunnerKVCacheMixin._profile_available_bytes(
-                self,
-                pre_model_load_memory,
-            )
+            return self._profile_upstream_available_bytes(pre_model_load_memory)
 
         process_memory = get_process_gpu_memory_bytes(self.gpu_id)
         device_info = get_gpu_device_info(self.gpu_id)
@@ -122,9 +119,8 @@ class SGLModelRunner(ModelRunner):
         if process_memory is None or process_memory <= 0:
             raise RuntimeError(
                 "Colocated SGLang AR stage requires NVML process memory "
-                f"accounting for gpu_id={self.gpu_id}. Ensure pynvml is installed, "
-                "NVML process queries are available, and the current stage process "
-                "is visible to NVML after model weights load."
+                f"accounting for gpu_id={self.gpu_id} after model weights load. "
+                "NVML did not report current-process GPU memory on this device."
             )
         if total_memory is None:
             raise RuntimeError(
@@ -147,3 +143,75 @@ class SGLModelRunner(ModelRunner):
             f"available_for_kv={format_bytes_gib(available_bytes)}"
         )
         return available_bytes
+
+    def _profile_upstream_available_bytes(self, pre_model_load_memory: int) -> int:
+        """Use the SGLang memory profiler exposed by the installed version."""
+        upstream_profile = getattr(
+            ModelRunnerKVCacheMixin, "_profile_available_bytes", None
+        )
+        if upstream_profile is not None:
+            return upstream_profile(self, pre_model_load_memory)
+        return self._profile_available_bytes_from_free_memory_delta(
+            pre_model_load_memory
+        )
+
+    def _profile_available_bytes_from_free_memory_delta(
+        self, pre_model_load_memory: int
+    ) -> int:
+        """Match SGLang free-memory-delta accounting for non-colocated AR stages."""
+        from sglang.srt.distributed.parallel_state import get_world_group
+        from sglang.srt.utils.common import get_available_gpu_memory
+
+        world_group = get_world_group()
+        post_model_load_memory = get_available_gpu_memory(
+            self.device,
+            self.gpu_id,
+            distributed=world_group.world_size > 1,
+            cpu_group=world_group.cpu_group,
+        )
+        rest_memory = post_model_load_memory - pre_model_load_memory * (
+            1 - self.mem_fraction_static
+        )
+        if self.mambaish_config is not None:
+            rest_memory = self.handle_max_mamba_cache(rest_memory)
+        return int(rest_memory * (1 << 30))
+
+    def profile_max_num_token(self, total_gpu_memory: int) -> int:
+        """Profile token capacity for SGLang versions that size KV cache by tokens."""
+        if self._total_gpu_memory_fraction is None:
+            upstream_profile = getattr(
+                ModelRunnerKVCacheMixin, "profile_max_num_token", None
+            )
+            if upstream_profile is None:
+                raise AttributeError(
+                    "Installed SGLang does not expose profile_max_num_token"
+                )
+            return upstream_profile(self, total_gpu_memory)
+
+        num_layers = self._num_kv_cache_layers()
+        cell_size = self.get_cell_size_per_token(num_layers)
+        available_bytes = self._profile_available_bytes(total_gpu_memory)
+        if self.mambaish_config is not None:
+            available_gib = available_bytes / (1 << 30)
+            available_bytes = int(
+                self.handle_max_mamba_cache(available_gib) * (1 << 30)
+            )
+        return available_bytes // cell_size
+
+    def _num_kv_cache_layers(self) -> int:
+        """Return the number of layers used by SGLang KV-cache sizing."""
+        if self.is_draft_worker:
+            return getattr(
+                self.model_config.hf_config,
+                "num_nextn_predict_layers",
+                self.num_effective_layers,
+            )
+        if mambaish := self.mambaish_config:
+            return len(
+                [
+                    layer_id
+                    for layer_id in mambaish.full_attention_layer_ids
+                    if self.start_layer <= layer_id < self.end_layer
+                ]
+            )
+        return self.num_effective_layers

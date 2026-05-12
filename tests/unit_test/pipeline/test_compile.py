@@ -123,6 +123,7 @@ def test_mp_runner_preserves_tp_rank_and_visible_device_contracts() -> None:
         stages_cfg=prep.stages_cfg,
         name_map=prep.name_map,
         endpoints=prep.endpoints,
+        placement_plan=prep.placement_plan,
     )[0]
     leader, follower = group.specs
     env = get_stage_process_env(follower, env={"CUDA_VISIBLE_DEVICES": "4,5,6,7"})

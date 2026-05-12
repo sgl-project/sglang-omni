@@ -130,6 +130,7 @@ def test_ipc_stage_groups_use_unique_endpoints_for_same_model_name(
             stages_cfg=prep_a.stages_cfg,
             name_map=prep_a.name_map,
             endpoints=prep_a.endpoints,
+            placement_plan=prep_a.placement_plan,
         )
         groups_b = mp_runner._build_stage_groups(
             config,
@@ -137,6 +138,7 @@ def test_ipc_stage_groups_use_unique_endpoints_for_same_model_name(
             stages_cfg=prep_b.stages_cfg,
             name_map=prep_b.name_map,
             endpoints=prep_b.endpoints,
+            placement_plan=prep_b.placement_plan,
         )
 
         assert prep_a.endpoints["completion"] != prep_b.endpoints["completion"]

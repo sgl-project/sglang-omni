@@ -17,6 +17,9 @@ def _runner(*, total_gpu_memory_fraction: float | None):
     runner.gpu_id = 0
     runner.mem_fraction_static = 0.9
     runner._total_gpu_memory_fraction = total_gpu_memory_fraction
+    runner.is_draft_worker = False
+    runner.mambaish_config = None
+    runner.num_effective_layers = 32
     return runner
 
 
@@ -38,6 +41,26 @@ def test_colocated_ar_budget_uses_stage_total_fraction(monkeypatch) -> None:
     assert available == 10 * 1024**3
 
 
+def test_colocated_ar_token_profile_uses_process_scoped_budget(monkeypatch) -> None:
+    runner = _runner(total_gpu_memory_fraction=0.4)
+    runner.get_cell_size_per_token = lambda num_layers: num_layers * 1024**2
+
+    monkeypatch.setattr(
+        runner_mod,
+        "get_process_gpu_memory_bytes",
+        lambda gpu_id: 30 * 1024**3,
+    )
+    monkeypatch.setattr(
+        runner_mod,
+        "get_gpu_device_info",
+        lambda gpu_id: SimpleNamespace(total_memory_bytes=100 * 1024**3),
+    )
+
+    max_tokens = runner_mod.SGLModelRunner.profile_max_num_token(runner, 0)
+
+    assert max_tokens == (10 * 1024**3) // (32 * 1024**2)
+
+
 @pytest.mark.parametrize("process_memory", [None, 0])
 def test_colocated_ar_budget_requires_process_memory(
     monkeypatch,
@@ -54,22 +77,28 @@ def test_colocated_ar_budget_requires_process_memory(
         "get_gpu_device_info",
         lambda gpu_id: SimpleNamespace(total_memory_bytes=100 * 1024**3),
     )
-
     with pytest.raises(RuntimeError, match="requires NVML process memory"):
         runner_mod.SGLModelRunner._profile_available_bytes(runner, 0)
 
 
-def test_non_colocated_ar_uses_upstream_sglang_profile(monkeypatch) -> None:
+def test_non_colocated_ar_uses_free_memory_delta_when_upstream_hook_is_absent(
+    monkeypatch,
+) -> None:
     runner = _runner(total_gpu_memory_fraction=None)
 
-    def _fake_upstream(self, pre_model_load_memory):
+    def _fake_free_memory_delta(self, pre_model_load_memory):
         assert pre_model_load_memory == 123
         return 456
 
-    monkeypatch.setattr(
+    monkeypatch.delattr(
         ModelRunnerKVCacheMixin,
         "_profile_available_bytes",
-        _fake_upstream,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        runner_mod.SGLModelRunner,
+        "_profile_available_bytes_from_free_memory_delta",
+        _fake_free_memory_delta,
     )
 
     assert runner_mod.SGLModelRunner._profile_available_bytes(runner, 123) == 456

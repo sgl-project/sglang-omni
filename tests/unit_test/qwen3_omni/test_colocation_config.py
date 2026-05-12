@@ -125,6 +125,7 @@ def test_colocated_config_rejects_moving_gpu_stage_away(stage_name: str) -> None
 
 def test_colocated_config_rejects_topology_override_before_runtime_validation() -> None:
     config = Qwen3OmniSpeechColocatedPipelineConfig(model_path="dummy")
+    _set_colocated_runtime(config)
     _stage(config, "talker_ar").gpu = 1
 
     with pytest.raises(ValueError, match="share one GPU"):
