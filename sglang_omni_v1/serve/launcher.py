@@ -28,6 +28,7 @@ import asyncio
 import logging
 import os
 import socket
+import tempfile
 import time
 from contextlib import suppress
 from typing import Any
@@ -68,8 +69,9 @@ def _default_run_id() -> str:
     return time.strftime("run_%Y%m%d_%H%M%S")
 
 
-def _default_template(profiler_dir: str, run_id: str) -> str:
-    return os.path.join(profiler_dir, run_id, "trace")
+def _default_template(profiler_dir: str | None, run_id: str) -> str:
+    base_dir = profiler_dir or os.path.join(tempfile.gettempdir(), "sglang_omni_v1")
+    return os.path.join(base_dir, run_id, "trace")
 
 
 # ---------------------------------------------------------------------------
@@ -99,12 +101,14 @@ class StopReq(BaseModel):
 
 
 def _mount_profiler_routes(
-    app, profiler_ctl: ProfilerControlClient, profiler_dir: str
+    app, profiler_ctl: ProfilerControlClient, profiler_dir: str | None
 ) -> None:
     router = APIRouter()
+    active_run_id: str | None = None
 
     @router.post("/start_profile")
     async def start(req: StartReq):
+        nonlocal active_run_id
         run_id = req.run_id or _default_run_id()
         tpl = req.trace_path_template or _default_template(profiler_dir, run_id)
         await profiler_ctl.broadcast_start(
@@ -112,12 +116,16 @@ def _mount_profiler_routes(
             trace_path_template=tpl,
             config=req.config,
         )
+        active_run_id = run_id
         return {"run_id": run_id, "trace_path_template": tpl}
 
     @router.post("/stop_profile")
     async def stop(req: StopReq):
-        run_id = req.run_id or "default"
+        nonlocal active_run_id
+        run_id = req.run_id or active_run_id or "default"
         await profiler_ctl.broadcast_stop(run_id=run_id)
+        if active_run_id == run_id:
+            active_run_id = None
         return {"run_id": run_id}
 
     app.include_router(router)
@@ -168,6 +176,7 @@ async def _run_server(
             len(gpu_ids),
         )
 
+        profiler_ctl: ProfilerControlClient | None = None
         try:
             cl_kwargs = client_kwargs or {}
             client = Client(coordinator, **cl_kwargs)
@@ -175,6 +184,10 @@ async def _run_server(
                 client,
                 model_name=model_name or pipeline_config.name,
             )
+
+            profiler_dir = os.environ.get("SGLANG_TORCH_PROFILER_DIR")
+            profiler_ctl = ProfilerControlClient(mp_runner.stage_control_endpoints)
+            _mount_profiler_routes(app, profiler_ctl, profiler_dir)
 
             config = uvicorn.Config(
                 app,
@@ -186,6 +199,8 @@ async def _run_server(
             server = uvicorn.Server(config)
             await server.serve()
         finally:
+            if profiler_ctl is not None:
+                await profiler_ctl.close()
             logger.info("Shutting down pipeline …")
             await mp_runner.stop()
             logger.info("Pipeline stopped.")
@@ -198,6 +213,7 @@ async def _run_server(
         stage_tasks = []
         coordinator_started = False
 
+        profiler_ctl: ProfilerControlClient | None = None
         try:
             stage_endpoints = _collect_stage_control_endpoints(stages)
             await coordinator.start()
@@ -231,6 +247,8 @@ async def _run_server(
             server = uvicorn.Server(config)
             await server.serve()
         finally:
+            if profiler_ctl is not None:
+                await profiler_ctl.close()
             logger.info("Shutting down pipeline …")
             for t in stage_tasks:
                 t.cancel()
