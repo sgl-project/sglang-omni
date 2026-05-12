@@ -10,6 +10,7 @@ import pytest
 from pydantic import ValidationError
 
 import sglang_omni_router.launcher.local as local_launcher
+import sglang_omni_router.serve as serve_module
 from sglang_omni_router.config import DEFAULT_CAPABILITIES, RouterConfig, WorkerConfig
 from sglang_omni_router.health import HealthChecker
 from sglang_omni_router.launcher import LocalLauncher, LocalLauncherConfig
@@ -462,6 +463,40 @@ def test_router_console_script_entrypoint_resolves() -> None:
     module_name, function_name = script_target.split(":")
     entrypoint = getattr(importlib.import_module(module_name), function_name)
     assert callable(entrypoint)
+
+
+def test_router_main_shuts_down_managed_workers_on_startup_interrupt(
+    monkeypatch, tmp_path: Path
+) -> None:
+    config_path = tmp_path / "launcher.yaml"
+    config_path.write_text(
+        """
+launcher:
+  backend: local
+  model_path: model
+  num_workers: 1
+""",
+        encoding="utf-8",
+    )
+    events: list[str] = []
+
+    class FakeLauncher:
+        def __init__(self, config) -> None:
+            events.append(config.model_path)
+
+        def launch_and_wait(self) -> list[str]:
+            raise KeyboardInterrupt
+
+        def shutdown(self) -> None:
+            events.append("shutdown")
+
+    monkeypatch.setattr(serve_module, "LocalLauncher", FakeLauncher)
+
+    with pytest.raises(SystemExit) as exc:
+        serve_module.main(["--launcher-config", str(config_path)])
+
+    assert exc.value.code == 130
+    assert events == ["model", "shutdown"]
 
 
 def test_selector_filters_by_health_and_capability() -> None:

@@ -147,15 +147,7 @@ def main(argv: Sequence[str] | None = None) -> None:
             )
         else:
             config = build_config_from_args(args)
-    except (ValueError, ValidationError) as exc:
-        if launcher is not None:
-            launcher.shutdown()
-        parser.error(str(exc))
-    except (RuntimeError, TimeoutError) as exc:
-        if launcher is not None:
-            launcher.shutdown()
-        parser.exit(1, f"error: {exc}\n")
-    try:
+
         logger.info(f"Starting SGLang-Omni Router on {config.host}:{config.port}")
         logger.info(
             f"Router configuration: workers={len(config.workers)} | "
@@ -176,6 +168,12 @@ def main(argv: Sequence[str] | None = None) -> None:
             log_level=log_level.lower(),
             log_config=log_config,
         )
+    except (ValueError, ValidationError) as exc:
+        parser.error(str(exc))
+    except (RuntimeError, TimeoutError) as exc:
+        parser.exit(1, f"error: {exc}\n")
+    except KeyboardInterrupt:
+        parser.exit(130)
     finally:
         if launcher is not None:
             logger.info("Stopping managed Omni V1 workers")
