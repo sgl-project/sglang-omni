@@ -108,7 +108,7 @@ class LocalLauncher:
                         process=process,
                     )
                 )
-        except Exception:
+        except BaseException:
             self.shutdown()
             raise
         return self.worker_urls
@@ -128,7 +128,7 @@ class LocalLauncher:
                 done, futures = wait(futures, return_when=FIRST_COMPLETED)
                 for future in done:
                     future.result()
-        except Exception:
+        except BaseException:
             self.shutdown()
             raise
         finally:

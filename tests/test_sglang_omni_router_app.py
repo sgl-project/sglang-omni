@@ -21,6 +21,7 @@ def _router_config(
     policy: str = "round_robin",
     max_payload_size: int = 512 * 1024 * 1024,
     health_failure_threshold: int = 1,
+    health_check_timeout_secs: int = 5,
     worker_configs: list[WorkerConfig] | None = None,
 ) -> RouterConfig:
     return RouterConfig(
@@ -33,6 +34,7 @@ def _router_config(
         max_payload_size=max_payload_size,
         health_success_threshold=1,
         health_failure_threshold=health_failure_threshold,
+        health_check_timeout_secs=health_check_timeout_secs,
     )
 
 
@@ -273,6 +275,51 @@ def test_models_merge_queries_only_healthy_workers_and_deduplicates() -> None:
     assert [worker.active_requests for worker in app.state.workers] == [7, 7]
     assert response.json()["data"] == [
         {"id": "qwen3-omni", "object": "model", "created": 0}
+    ]
+
+
+def test_models_merge_queries_workers_concurrently_with_control_timeout() -> None:
+    started_workers: list[str] = []
+    model_timeouts: list[dict[str, float]] = []
+    release_models: asyncio.Event | None = None
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal release_models
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"status": "worker"}, request=request)
+        if request.url.path == "/v1/models":
+            if release_models is None:
+                release_models = asyncio.Event()
+            started_workers.append(_request_netloc(request))
+            model_timeouts.append(request.extensions["timeout"])
+            if len(started_workers) == 2:
+                release_models.set()
+            await asyncio.wait_for(release_models.wait(), timeout=1)
+            return httpx.Response(
+                200,
+                json={"object": "list", "data": [{"id": _request_netloc(request)}]},
+                request=request,
+            )
+        raise AssertionError(f"unexpected request path: {request.url.path}")
+
+    async_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    app = create_app(
+        _router_config(health_check_timeout_secs=2),
+        client=async_client,
+    )
+
+    with TestClient(app) as client:
+        response = client.get("/v1/models")
+
+    assert response.status_code == 200
+    assert set(started_workers) == {"worker-a:8101", "worker-b:8102"}
+    assert {card["id"] for card in response.json()["data"]} == {
+        "worker-a:8101",
+        "worker-b:8102",
+    }
+    assert model_timeouts == [
+        {"connect": 2, "read": 2, "write": 2, "pool": 2},
+        {"connect": 2, "read": 2, "write": 2, "pool": 2},
     ]
 
 

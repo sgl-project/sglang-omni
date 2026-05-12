@@ -83,7 +83,7 @@ def router_topology(tmp_path_factory: pytest.TempPathFactory):
             router_cmd,
             router_log,
             router_port,
-            timeout=120,
+            timeout=STARTUP_TIMEOUT + 60,
         )
         _wait_for_all_router_workers(router_port, expected_workers=len(worker_ports))
         print(

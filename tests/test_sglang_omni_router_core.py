@@ -353,6 +353,55 @@ def test_launcher_cleans_up_managed_workers_on_health_timeout(monkeypatch) -> No
     assert launcher.worker_urls == []
 
 
+def test_launcher_cleans_up_managed_workers_on_startup_interrupt(monkeypatch) -> None:
+    config = LocalLauncherConfig(
+        model_path="model",
+        num_workers=1,
+        worker_gpu_ids=["7"],
+        wait_timeout=10,
+    )
+    created_processes = []
+    terminated_processes = []
+
+    class StartupInterrupt(BaseException):
+        pass
+
+    class FakeProcess:
+        pid = 12345
+
+        def poll(self):
+            return None
+
+    def fake_popen(command, env, start_new_session):
+        process = FakeProcess()
+        created_processes.append((process, command, env, start_new_session))
+        return process
+
+    def wait_health(**kwargs):
+        return None
+
+    def interrupt_wait(*args, **kwargs):
+        raise StartupInterrupt
+
+    monkeypatch.setattr(local_launcher.shutil, "which", lambda command: command)
+    monkeypatch.setattr(local_launcher, "reserve_worker_ports", lambda config: [8011])
+    monkeypatch.setattr(local_launcher.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(local_launcher, "wait_for_worker_health", wait_health)
+    monkeypatch.setattr(local_launcher, "wait", interrupt_wait)
+    monkeypatch.setattr(
+        local_launcher,
+        "terminate_processes",
+        lambda processes: terminated_processes.extend(processes),
+    )
+
+    launcher = LocalLauncher(config)
+    with pytest.raises(StartupInterrupt):
+        launcher.launch_and_wait()
+
+    assert terminated_processes == [created_processes[0][0]]
+    assert launcher.worker_urls == []
+
+
 def test_launcher_waits_for_managed_workers_in_parallel(monkeypatch) -> None:
     config = LocalLauncherConfig(
         model_path="model",

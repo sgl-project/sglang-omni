@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from contextlib import asynccontextmanager
@@ -73,11 +74,16 @@ def create_app(
         allow_headers=["*"],
     )
 
-    register_routes(app, workers, proxy)
+    register_routes(app, workers, proxy, config)
     return app
 
 
-def register_routes(app: FastAPI, workers: list[Worker], proxy: ProxyHandler) -> None:
+def register_routes(
+    app: FastAPI,
+    workers: list[Worker],
+    proxy: ProxyHandler,
+    config: RouterConfig,
+) -> None:
     @app.get("/live")
     async def live() -> JSONResponse:
         return JSONResponse({"status": "alive"})
@@ -232,7 +238,12 @@ def register_routes(app: FastAPI, workers: list[Worker], proxy: ProxyHandler) ->
 
     @app.get("/v1/models")
     async def models(request: Request) -> JSONResponse:
-        return await _merge_models(workers, app.state.http_client, request)
+        return await _merge_models(
+            workers,
+            app.state.http_client,
+            request,
+            timeout_secs=config.health_check_timeout_secs,
+        )
 
     @app.post("/v1/chat/completions")
     async def chat_completions(request: Request) -> Response:
@@ -320,7 +331,11 @@ def _error_response(status_code: int, message: str) -> JSONResponse:
 
 
 async def _merge_models(
-    workers: list[Worker], client: httpx.AsyncClient, request: Request
+    workers: list[Worker],
+    client: httpx.AsyncClient,
+    request: Request,
+    *,
+    timeout_secs: int,
 ) -> JSONResponse:
     routable_workers = [worker for worker in workers if worker.is_routable]
     if not routable_workers:
@@ -333,27 +348,24 @@ async def _merge_models(
     query = request.url.query
     cards_by_id: dict[str, dict[str, Any]] = {}
     errors: dict[str, str] = {}
-    for worker in routable_workers:
-        url = (
-            f"{worker.url}/v1/models"
-            if not query
-            else f"{worker.url}/v1/models?{query}"
+
+    worker_results = await asyncio.gather(
+        *(
+            _fetch_worker_models(
+                worker,
+                client,
+                request_headers,
+                query,
+                timeout_secs=timeout_secs,
+            )
+            for worker in routable_workers
         )
-        try:
-            response = await client.get(url, headers=request_headers)
-        except Exception as exc:
-            errors[worker.url] = type(exc).__name__
+    )
+    for worker, data, error in worker_results:
+        if error is not None:
+            errors[worker.url] = error
             continue
-        if not 200 <= response.status_code < 300:
-            errors[worker.url] = f"status={response.status_code}"
-            continue
-        try:
-            payload = response.json()
-        except Exception as exc:
-            errors[worker.url] = type(exc).__name__
-            continue
-        data = payload.get("data")
-        if not isinstance(data, list):
+        if data is None:
             errors[worker.url] = "invalid models payload"
             continue
         for card in data:
@@ -379,3 +391,32 @@ async def _merge_models(
         )
 
     return JSONResponse({"object": "list", "data": list(cards_by_id.values())})
+
+
+async def _fetch_worker_models(
+    worker: Worker,
+    client: httpx.AsyncClient,
+    request_headers: dict[str, str],
+    query: bytes,
+    *,
+    timeout_secs: int,
+) -> tuple[Worker, list[Any] | None, str | None]:
+    url = f"{worker.url}/v1/models" if not query else f"{worker.url}/v1/models?{query}"
+    try:
+        response = await client.get(
+            url,
+            headers=request_headers,
+            timeout=timeout_secs,
+        )
+    except Exception as exc:
+        return worker, None, type(exc).__name__
+    if not 200 <= response.status_code < 300:
+        return worker, None, f"status={response.status_code}"
+    try:
+        payload = response.json()
+    except Exception as exc:
+        return worker, None, type(exc).__name__
+    data = payload.get("data")
+    if not isinstance(data, list):
+        return worker, None, "invalid models payload"
+    return worker, data, None
