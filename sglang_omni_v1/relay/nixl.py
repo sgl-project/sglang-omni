@@ -343,7 +343,7 @@ class NixlRelay(Relay):
         pass
 
     def close(self):
-        if NIXL_AVAILABLE and hasattr(self, "pool_handle"):
+        if NIXL_AVAILABLE:
             try:
                 self.connection._nixl.deregister_memory(self.pool_handle)
             except:

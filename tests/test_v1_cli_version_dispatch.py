@@ -60,6 +60,34 @@ def test_build_v1_exec_argv_strips_inline_version_flag() -> None:
     ]
 
 
+def test_build_v1_exec_argv_preserves_v1_memory_flags() -> None:
+    argv = [
+        "sgl-omni",
+        "serve",
+        "--model-path",
+        "dummy",
+        "--version",
+        "v1",
+        "--thinker-mem-fraction-static",
+        "0.82",
+        "--encoder-mem-reserve",
+        "0.15",
+    ]
+
+    assert _build_v1_exec_argv(argv) == [
+        sys.executable,
+        "-m",
+        "sglang_omni_v1.cli",
+        "serve",
+        "--model-path",
+        "dummy",
+        "--thinker-mem-fraction-static",
+        "0.82",
+        "--encoder-mem-reserve",
+        "0.15",
+    ]
+
+
 def test_serve_rejects_legacy_only_flags_for_v1() -> None:
     with pytest.raises(typer.BadParameter, match="legacy server"):
         serve(
@@ -70,10 +98,11 @@ def test_serve_rejects_legacy_only_flags_for_v1() -> None:
             host="0.0.0.0",
             port=8000,
             model_name=None,
-            mem_fraction_static=0.75,
+            mem_fraction_static=None,
             thinker_mem_fraction_static=None,
             talker_mem_fraction_static=None,
-            thinker_max_seq_len=None,
+            thinker_max_seq_len=8192,
+            encoder_mem_reserve=None,
             version="v1",
             log_level="info",
         )
@@ -96,6 +125,7 @@ def test_serve_dispatches_to_v1_before_loading_legacy_config(
         thinker_mem_fraction_static=None,
         talker_mem_fraction_static=None,
         thinker_max_seq_len=None,
+        encoder_mem_reserve=None,
         version="v1",
         log_level="info",
     )
