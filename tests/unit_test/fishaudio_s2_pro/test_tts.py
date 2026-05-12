@@ -109,9 +109,11 @@ def make_fish_scheduler() -> FishScheduler:
     def request_builder(payload):
         return SimpleNamespace(
             req=FakeFishReq(rid=payload.request_id),
+            stage_payload=payload,
             output_codes=[torch.tensor([[100], [1], [2]], dtype=torch.long)],
             previous_semantic_tokens=[],
             last_codebook_values=None,
+            latest_stream_code_chunk=None,
             max_new_tokens=4,
             input_ids=[1, 2, 3],
         )
