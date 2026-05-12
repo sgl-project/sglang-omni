@@ -414,6 +414,7 @@ class S2ProVocoderScheduler:
                 batch.append(msg)
             else:
                 self._pending_messages.append(msg)
+                break
         return batch
 
     def _handle_new_request_batch(self, batch: list[IncomingMessage]) -> None:

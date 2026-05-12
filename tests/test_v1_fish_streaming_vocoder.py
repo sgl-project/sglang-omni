@@ -477,6 +477,37 @@ def test_non_streaming_vocoder_batch_skips_aborted_request() -> None:
     assert scheduler.outbox.empty()
 
 
+def test_non_streaming_vocoder_batch_stops_before_streaming_request() -> None:
+    scheduler = S2ProVocoderScheduler(
+        _FakeCodec(),
+        device="cpu",
+        stream_overlap_tokens=1,
+        stream_crossfade_samples=0,
+        max_batch_wait_ms=0,
+    )
+    first = IncomingMessage(
+        "nonstream-a",
+        "new_request",
+        _payload("nonstream-a", stream=False),
+    )
+    scheduler.inbox.put(
+        IncomingMessage("stream-b", "new_request", _payload("stream-b", stream=True))
+    )
+    scheduler.inbox.put(
+        IncomingMessage(
+            "nonstream-c",
+            "new_request",
+            _payload("nonstream-c", stream=False),
+        )
+    )
+
+    batch = scheduler._collect_new_request_batch(first)
+
+    assert [msg.request_id for msg in batch] == ["nonstream-a"]
+    assert scheduler._next_message().request_id == "stream-b"
+    assert scheduler._next_message().request_id == "nonstream-c"
+
+
 def test_non_streaming_vocoder_abort_during_batch_decode_suppresses_result() -> None:
     scheduler = S2ProVocoderScheduler(
         _FakeCodec(),
