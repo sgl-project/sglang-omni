@@ -209,6 +209,7 @@ def create_preprocessing_executor(model_path: str) -> PreprocessingExecutor:
 def create_sglang_tts_engine_executor(
     model_path: str,
     *,
+    server_args_overrides: dict[str, Any] | None = None,
     device: str = "cuda",
     max_new_tokens: int = 2048,
     top_k: int = 30,
@@ -265,14 +266,26 @@ def create_sglang_tts_engine_executor(
         _get_stream_codec_bundle()
 
     _patch_fish_config_for_sglang(checkpoint_dir)
+    overrides = dict(server_args_overrides or {})
+    server_args_kwargs = {
+        "model_path": checkpoint_dir,
+        "tp_size": 1,
+        "dtype": "bfloat16",
+        "mem_fraction_static": 0.85,
+        "chunked_prefill_size": 8192,
+        "max_running_requests": 64,
+        "disable_cuda_graph": False,
+    }
+    server_args_kwargs.update(overrides)
     server_args = ServerArgs(
-        model_path=checkpoint_dir,
-        tp_size=1,
-        dtype="bfloat16",
-        mem_fraction_static=0.85,
-        chunked_prefill_size=8192,
-        max_running_requests=64,
-        disable_cuda_graph=False,
+        **server_args_kwargs,
+    )
+    logger.info(
+        "Creating S2-Pro TTS executor: gpu=%s mem_fraction_static=%s "
+        "stream_vocoder_device=%s",
+        device,
+        getattr(server_args, "mem_fraction_static", None),
+        stream_vocoder_device,
     )
 
     engine = create_s2pro_sglang_engine(

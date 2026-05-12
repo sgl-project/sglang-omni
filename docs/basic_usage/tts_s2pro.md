@@ -26,6 +26,17 @@ sgl-omni serve \
   --port 8000
 ```
 
+If startup OOMs on consumer GPUs, try lowering SGLang's KV-cache reservation.
+For example, start around `0.70` and tune from there:
+
+```bash
+sgl-omni serve \
+  --model-path fishaudio/s2-pro \
+  --config examples/configs/s2pro_tts.yaml \
+  --mem-fraction-static 0.70 \
+  --port 8000
+```
+
 ## Use Curl
 
 Generate speech from text without any reference audio:
