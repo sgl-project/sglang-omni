@@ -15,6 +15,7 @@ AGGREGATE_STAGE = "mm_aggregate"
 THINKER_STAGE = "thinker"
 DECODE_STAGE = "decode"
 TALKER_STAGE = "talker"
+IMAGE_GEN_STAGE = "img_gen"
 
 
 def preprocessing_next(request_id: str, output: Any) -> list[str]:
@@ -64,5 +65,23 @@ def decode_next(request_id: str, output: Any) -> None:
 
 def talker_next(request_id: str, output: Any) -> None:
     """Talker is terminal."""
+    del request_id, output
+    return None
+
+
+def thinker_next_image(request_id: str, output: Any) -> list[str]:
+    """Image pipeline: thinker fan-out to decode and image generator."""
+    del request_id, output
+    return [DECODE_STAGE, IMAGE_GEN_STAGE]
+
+
+def thinker_next_full(request_id: str, output: Any) -> list[str]:
+    """Full pipeline: thinker fan-out to decode, talker, and image generator."""
+    del request_id, output
+    return [DECODE_STAGE, TALKER_STAGE, IMAGE_GEN_STAGE]
+
+
+def image_gen_next(request_id: str, output: Any) -> None:
+    """Image generator is terminal."""
     del request_id, output
     return None

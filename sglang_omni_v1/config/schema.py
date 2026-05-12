@@ -113,6 +113,11 @@ class PipelineConfig(BaseModel):
     def terminal_stages(self) -> list[str]:
         return [s.name for s in self.stages if s.terminal]
 
+    @classmethod
+    def mem_fraction_role_to_stage(cls) -> dict[str, str]:
+        """Class-level public role map for SGLang mem_fraction_static overrides."""
+        return {}
+
     @property
     def gpu_placement(self) -> dict[str, int | list[int]]:
         out: dict[str, int | list[int]] = {}

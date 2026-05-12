@@ -347,7 +347,11 @@ def create_sglang_ar_engine(
     output_proc = SGLangOutputProcessor(
         capture_hidden=capture_hidden,
         capture_hidden_layers=capture_hidden_layers,
-        model=model_worker.model_runner.model if capture_hidden_layers else None,
+        model=(
+            model_worker.model_runner.model
+            if (capture_hidden or capture_hidden_layers)
+            else None
+        ),
     )
 
     if stream_adapter is None:

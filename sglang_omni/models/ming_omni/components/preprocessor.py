@@ -148,7 +148,7 @@ class MingPreprocessor:
     - Placeholder token insertion for audio/image segments
     """
 
-    def __init__(self, model_path: str):
+    def __init__(self, model_path: str, conditioner=None):
         self._model_path = model_path
         self._config = load_ming_config(model_path)
         self._tokenizer = load_ming_tokenizer(model_path)
@@ -163,6 +163,17 @@ class MingPreprocessor:
 
         # Lazy-init image processor
         self._image_processor = None
+
+        # Image generation conditioner (optional)
+        self._conditioner = conditioner
+        if conditioner is not None:
+            self._image_patch_token_id = conditioner.image_patch_token
+            self._image_start_token_id = conditioner.image_start_token
+            self._image_end_token_id = conditioner.image_end_token
+        else:
+            self._image_patch_token_id = None
+            self._image_start_token_id = None
+            self._image_end_token_id = None
 
     def _get_image_processor(self):
         """Lazy-init Qwen2VLImageProcessor (same processor as Ming-Omni uses)."""
@@ -316,6 +327,35 @@ class MingPreprocessor:
         input_ids_tensor = torch.tensor([input_ids], dtype=torch.long)
         attention_mask = torch.ones_like(input_ids_tensor)
 
+        # --- Detect image_gen request and append query token placeholders ---
+        image_gen_params: dict[str, Any] = {}
+        if isinstance(raw_inputs, dict):
+            image_gen_params = raw_inputs.get("image_generation", {}) or {}
+        if not image_gen_params and hasattr(request, "metadata"):
+            metadata = getattr(request, "metadata", {}) or {}
+            if isinstance(metadata, dict):
+                image_gen_params = metadata.get("image_generation", {}) or {}
+
+        is_image_gen = bool(image_gen_params) and self._conditioner is not None
+        gen_mask = None
+
+        if is_image_gen:
+            num_query_tokens = sum(s * s for s in self._conditioner.img_gen_scales)
+
+            suffix_ids = (
+                [self._image_start_token_id]
+                + [self._image_patch_token_id] * num_query_tokens
+                + [self._image_end_token_id]
+            )
+            suffix_tensor = torch.tensor([suffix_ids], dtype=torch.long)
+            input_ids_tensor = torch.cat([input_ids_tensor, suffix_tensor], dim=1)
+            attention_mask = torch.ones_like(input_ids_tensor)
+
+            # gen_mask: 0 for text, 1 for query tokens, 0 for start/end markers
+            text_len = len(input_ids)
+            gen_mask = torch.zeros(input_ids_tensor.shape[1], dtype=torch.long)
+            gen_mask[text_len + 1 : text_len + 1 + num_query_tokens] = 1
+
         prompt: PromptInputs = {
             "input_ids": input_ids_tensor,
             "attention_mask": attention_mask,
@@ -359,6 +399,16 @@ class MingPreprocessor:
             prompt=prompt,
             encoder_inputs=encoder_inputs,
         )
+
+        # Store image generation metadata for downstream stages
+        if is_image_gen:
+            state.mm_inputs["image_gen"] = {
+                "gen_mask": gen_mask.tolist(),  # msgpack-safe list of ints
+                "query_tokens": self._conditioner.query_tokens.tolist(),
+                "prefill_only": True,
+                "image_patch_token_id": self._image_patch_token_id,
+                "image_gen_params": image_gen_params,
+            }
 
         return StagePayload(
             request_id=payload.request_id,

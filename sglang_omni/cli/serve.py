@@ -140,11 +140,7 @@ def serve(
     # Note (Chenyang): Add for V1.
     if version == "v1":
         unsupported_v1_flags = {
-            "--mem-fraction-static": mem_fraction_static,
-            "--thinker-mem-fraction-static": thinker_mem_fraction_static,
-            "--talker-mem-fraction-static": talker_mem_fraction_static,
             "--thinker-max-seq-len": thinker_max_seq_len,
-            "--encoder-mem-reserve": encoder_mem_reserve,
         }
         for flag_name, value in unsupported_v1_flags.items():
             if value is not None:

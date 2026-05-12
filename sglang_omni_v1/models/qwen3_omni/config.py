@@ -15,6 +15,10 @@ class Qwen3OmniPipelineConfig(PipelineConfig):
 
     architecture: ClassVar[str] = "Qwen3OmniMoeForConditionalGeneration"
 
+    @classmethod
+    def mem_fraction_role_to_stage(cls) -> dict[str, str]:
+        return {"thinker": "thinker"}
+
     model_path: str
     stages: list[StageConfig] = [
         StageConfig(
@@ -84,6 +88,10 @@ class Qwen3OmniSpeechPipelineConfig(PipelineConfig):
     """8-stage speech pipeline (text + audio output)."""
 
     architecture: ClassVar[str] = "Qwen3OmniMoeForConditionalGeneration"
+
+    @classmethod
+    def mem_fraction_role_to_stage(cls) -> dict[str, str]:
+        return {"thinker": "thinker", "talker": "talker_ar"}
 
     model_path: str
     stages: list[StageConfig] = [
