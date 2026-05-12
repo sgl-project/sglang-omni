@@ -1,0 +1,37 @@
+name: Test Layout
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test-layout:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check test file layout
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          invalid_files=()
+          while IFS= read -r path; do
+            case "$path" in
+              tests/__init__.py|tests/utils.py) ;;
+              tests/unit_test/*|tests/docs/*|tests/test_model/*) ;;
+              *) invalid_files+=("$path") ;;
+            esac
+          done < <(find tests -type f -name '*.py' | sort)
+
+          if (( ${#invalid_files[@]} )); then
+            echo "Python test files must live in an explicit test lane."
+            echo "Use tests/unit_test/, tests/docs/, or tests/test_model/."
+            echo
+            echo "Invalid files:"
+            printf '  - %s\n' "${invalid_files[@]}"
+            exit 1
+          fi

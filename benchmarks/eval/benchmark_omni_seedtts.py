@@ -66,6 +66,8 @@ Accuracy (accuracy.wer)
 | Qwen3-Omni | EN, voice_clone=F | 2.40%      | 2.44%               | 0.00%                 | 7.3%               | 1088/1088 | 0       | PR #351 [H100, full-set, c=16] |
 | Qwen3-Omni | ZH, voice_clone=T | 1.49%      | 1.45%               | 0.00%                 | 3.7%               | 2020/2020 | 0       | PR #351 [H100, full-set, c=16] |
 | Qwen3-Omni | ZH, voice_clone=F | 1.76%      | 1.62%               | 0.00%                 | 8.6%               | 2018/2020 | 2       | PR #351 [H100, full-set, c=16] |
+| Qwen3-Omni | EN, voice_clone=T | 2.53%      | 2.79%               | 0.00%                 | 22.2%              | 1088/1088 | 0       | PR #426 [H100, V1-pipeline, full-set, c=16] |
+| Qwen3-Omni | ZH, voice_clone=T | 1.59%      | 1.61%               | 0.00%                 | 10.7%              | 2020/2020 | 0       | PR #426 [H100, V1-pipeline, full-set, c=16] |
 
 
 Generation speed (generation.speed)
@@ -80,6 +82,8 @@ Generation speed (generation.speed)
 | Qwen3-Omni | EN, voice_clone=F | 45.73          | 68.10         | 12.69    | 0.349          | 0.3            | 0.3           | PR #351 [H100, full-set, c=16] |
 | Qwen3-Omni | ZH, voice_clone=T | 55.88          | 74.93         | 13.44    | 0.286          | 0.3            | 0.3           | PR #351 [H100, full-set, c=16] |
 | Qwen3-Omni | ZH, voice_clone=F | 55.09          | 73.68         | 13.19    | 0.288          | 0.3            | 0.3           | PR #351 [H100, full-set, c=16] |
+| Qwen3-Omni | EN, voice_clone=T | 2.725          | 4.324         | 0.7781   | 5.857          | 5.5            | 5.2           | PR #426 [H100, V1-pipeline, full-set, c=16] |
+| Qwen3-Omni | ZH, voice_clone=T | 2.848          | 3.812         | 0.6868   | 5.609          | 6.0            | 6.0           | PR #426 [H100, V1-pipeline, full-set, c=16] |
 
 Note (Chenyang): tok_per_s_{mean,agg} here counts Qwen3-Omni's discrete talker LM
 tokens (code tokens driving code2wav) and therefore runs at audio frame rate, thus
@@ -95,6 +99,8 @@ ASR speed (accuracy.asr_speed) — Whisper-large-v3 for EN, FunASR paraformer-zh
 | ZH   | 0.344              | 0.0861       | 2.90                         | PR #316 [H200, from Qwen3-Omni ZH VC=T run] |
 | EN   | 0.224              | 0.0660       | 4.46                         | PR #351 [H100, from Qwen3-Omni EN VC=F run] |
 | ZH   | 0.261              | 0.0652       | 3.83                         | PR #351 [H100, from Qwen3-Omni ZH VC=T run] |
+| EN   | 0.280              | 0.0816       | 3.58                         | PR #426 [H100, V1-pipeline, from Qwen3-Omni EN VC=T run] |
+| ZH   | 0.268              | 0.0667       | 3.74                         | PR #426 [H100, V1-pipeline, from Qwen3-Omni ZH VC=T run] |
 
 Local v1 Pipeline Result (this workspace, 2026-05-01)
 

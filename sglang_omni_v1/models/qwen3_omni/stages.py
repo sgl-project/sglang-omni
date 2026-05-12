@@ -37,7 +37,11 @@ from sglang_omni_v1.models.qwen3_omni.request_builders import (
     apply_encoder_result,
     build_encoder_request,
 )
-from sglang_omni_v1.scheduling.sglang_backend import build_sglang_server_args
+from sglang_omni_v1.scheduling.sglang_backend import (
+    apply_encoder_mem_reserve,
+    build_sglang_server_args,
+)
+from sglang_omni_v1.utils.misc import avail_gpu_mem
 
 IMAGE_STAGE = "image_encoder"
 AUDIO_STAGE = "audio_encoder"
@@ -51,6 +55,18 @@ logger = logging.getLogger(__name__)
 # tensors. 4096 MiB matches SGLang's disaggregated VLM encode cache default.
 QWEN3_ENCODER_CACHE_MAX_BYTES = 4 * 1024**3
 QWEN3_ENCODER_CACHE_MAX_ENTRIES = 64
+
+
+def _apply_qwen_thinker_encoder_reserve(
+    server_args: Any,
+    *,
+    has_explicit_mem_fraction_static: bool,
+    encoder_mem_reserve: float,
+) -> bool:
+    if has_explicit_mem_fraction_static:
+        return False
+    apply_encoder_mem_reserve(server_args, encoder_mem_reserve)
+    return True
 
 
 def load_state(payload: StagePayload) -> PipelineState:
@@ -877,6 +893,7 @@ def create_sglang_thinker_executor_from_config(
     nccl_port: int | None = None,
     thinker_max_seq_len: int = 8192,
     server_args_overrides: dict[str, Any] | None = None,
+    encoder_mem_reserve: float = 0.05,
     speech_enabled: bool = False,
 ):
     """Returns OmniScheduler for thinker."""
@@ -885,18 +902,36 @@ def create_sglang_thinker_executor_from_config(
     if server_args_overrides:
         overrides.update(server_args_overrides)
     overrides["tp_size"] = tp_size
+    has_explicit_mem_fraction_static = overrides.get("mem_fraction_static") is not None
     server_args = build_sglang_server_args(
         model_path,
         context_length=thinker_max_seq_len,
         **overrides,
     )
-    return create_thinker_scheduler(
+    encoder_reserve_applied = _apply_qwen_thinker_encoder_reserve(
+        server_args,
+        has_explicit_mem_fraction_static=has_explicit_mem_fraction_static,
+        encoder_mem_reserve=encoder_mem_reserve,
+    )
+
+    pre_load_avail_mem = avail_gpu_mem(gpu_id)
+    logger.info(
+        f"sglang_ar_startup stage=thinker gpu_id={gpu_id} tp_rank={tp_rank}/{tp_size} "
+        f"context_length={thinker_max_seq_len} mem_fraction_static={server_args.mem_fraction_static} encoder_mem_reserve={encoder_mem_reserve if encoder_reserve_applied else 0.0} pre_load_avail_mem={pre_load_avail_mem}"
+    )
+    scheduler = create_thinker_scheduler(
         server_args,
         gpu_id,
         speech_enabled=speech_enabled,
         tp_rank=tp_rank,
         nccl_port=nccl_port,
     )
+    logger.info(
+        f"sglang_ar_started stage=thinker gpu_id={gpu_id} tp_rank={tp_rank}/{tp_size} "
+        f"context_length={thinker_max_seq_len} mem_fraction_static={server_args.mem_fraction_static} "
+        f"pre_load_avail_mem={pre_load_avail_mem} post_load_avail_mem={avail_gpu_mem(gpu_id)}"
+    )
+    return scheduler
 
 
 def create_talker_ar_executor_from_config(
@@ -935,7 +970,12 @@ def create_talker_ar_executor_from_config(
         context_length=talker_max_seq_len,
         **overrides,
     )
-    return create_talker_scheduler(
+    pre_load_avail_mem = avail_gpu_mem(gpu_id)
+    logger.info(
+        f"sglang_ar_startup stage=talker_ar gpu_id={gpu_id} tp_rank={tp_rank}/{tp_size} "
+        f"context_length={talker_max_seq_len} mem_fraction_static={server_args.mem_fraction_static} pre_load_avail_mem={pre_load_avail_mem}"
+    )
+    scheduler = create_talker_scheduler(
         server_args,
         gpu_id,
         weight_prefix=weight_prefix,
@@ -944,3 +984,8 @@ def create_talker_ar_executor_from_config(
         tp_rank=tp_rank,
         nccl_port=nccl_port,
     )
+    logger.info(
+        f"sglang_ar_started stage=talker_ar gpu_id={gpu_id} tp_rank={tp_rank}/{tp_size} "
+        f"context_length={talker_max_seq_len} mem_fraction_static={server_args.mem_fraction_static} pre_load_avail_mem={pre_load_avail_mem} post_load_avail_mem={avail_gpu_mem(gpu_id)}"
+    )
+    return scheduler
