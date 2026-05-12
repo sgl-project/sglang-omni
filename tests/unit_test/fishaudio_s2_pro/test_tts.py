@@ -180,6 +180,7 @@ def test_fish_scheduler_lifecycle_abort_and_iteration_contracts() -> None:
         IncomingMessage("req-2", "new_request", make_s2pro_payload(request_id="req-2"))
     )
     assert scheduler.recv_requests() == []
+    scheduler._cleanup_aborted_requests()
     assert "req-2" not in scheduler._requests
 
 
