@@ -243,7 +243,7 @@ def test_send_stream_chunk_uses_relay_for_cpu_same_gpu_chunk() -> None:
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
-def test_send_stream_chunk_uses_ipc_for_cuda_same_gpu_chunk() -> None:
+def test_send_stream_chunk_uses_relay_for_cuda_same_gpu_chunk() -> None:
     async def _run() -> None:
         control_plane = _FakeControlPlane()
         relay = _FakeRelay()
@@ -262,11 +262,11 @@ def test_send_stream_chunk_uses_ipc_for_cuda_same_gpu_chunk() -> None:
             same_gpu_targets={"vocoder"},
         )
 
-        assert relay.puts == []
+        assert len(relay.puts) == 1
         assert len(control_plane.stage_messages) == 1
         _, _, msg = control_plane.stage_messages[0]
-        assert msg.shm_metadata["_ipc"] is True
-        assert msg.shm_metadata["metadata"] == {"modality": "audio_codes"}
+        assert "_ipc" not in msg.shm_metadata
+        assert msg.shm_metadata["chunk_metadata"] == {"modality": "audio_codes"}
 
     asyncio.run(_run())
 
