@@ -12,6 +12,9 @@ import torch
 from sglang_omni_v1.models.fishaudio_s2_pro.fish_scheduler import FishScheduler
 from sglang_omni_v1.models.fishaudio_s2_pro.streaming_vocoder import (
     S2ProVocoderScheduler,
+    _StreamVocoderState,
+    build_stream_vocoder_chunk,
+    flush_stream_vocoder_chunk,
 )
 from sglang_omni_v1.pipeline.stage.stream_queue import StreamItem
 from sglang_omni_v1.proto import OmniRequest, StagePayload
@@ -42,6 +45,30 @@ class _FakeCodec:
             values = torch.arange(tokens * self.frame_length, dtype=torch.float32)
             rows.append(values.unsqueeze(0) + float(row + 1))
         return torch.stack(rows, dim=0)
+
+
+class _ContextCodec:
+    sample_rate = 44100
+    frame_length = 3
+    delay = 3
+
+    def from_indices(self, indices: torch.Tensor) -> torch.Tensor:
+        weights = torch.arange(
+            1,
+            indices.shape[1] + 1,
+            dtype=torch.float32,
+            device=indices.device,
+        ).view(1, -1, 1)
+        token_values = (indices.float() * weights).sum(dim=1)
+        prev_values = torch.nn.functional.pad(token_values[:, :-1], (1, 0))
+        frames = token_values + 0.25 * prev_values
+        frame_offsets = torch.arange(
+            self.frame_length,
+            dtype=torch.float32,
+            device=indices.device,
+        ).view(1, 1, -1)
+        audio = frames.unsqueeze(-1) + frame_offsets
+        return audio.reshape(indices.shape[0], 1, -1)
 
 
 def _payload(
@@ -136,6 +163,42 @@ def test_streaming_vocoder_chunk_cadence() -> None:
             scheduler.outbox.get(timeout=0.1)
     finally:
         _stop_scheduler(scheduler, thread)
+
+
+def test_streaming_vocoder_sample_level_matches_contextual_full_decode() -> None:
+    codec = _ContextCodec()
+    state = _StreamVocoderState()
+    full_codes = torch.arange(11 * 7, dtype=torch.long).reshape(11, 7)
+    chunks = []
+
+    for idx in range(full_codes.shape[1]):
+        output = build_stream_vocoder_chunk(
+            state,
+            full_codes[:, idx : idx + 1],
+            codec=codec,
+            device=torch.device("cpu"),
+            stream_stride=3,
+            stream_followup_stride=2,
+            stream_overlap_tokens=1,
+            stream_crossfade_samples=0,
+        )
+        if output is not None:
+            chunks.append(torch.tensor(output["audio_data"]))
+
+    output = flush_stream_vocoder_chunk(
+        state,
+        codec=codec,
+        device=torch.device("cpu"),
+        stream_overlap_tokens=1,
+        stream_crossfade_samples=0,
+    )
+    if output is not None:
+        chunks.append(torch.tensor(output["audio_data"]))
+
+    streaming_audio = torch.cat(chunks)
+    full_audio = codec.from_indices(full_codes[1:][None])[0, 0]
+
+    torch.testing.assert_close(streaming_audio, full_audio)
 
 
 def test_streaming_vocoder_final_flush_emits_tail_before_result() -> None:

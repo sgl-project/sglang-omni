@@ -66,6 +66,7 @@ class Stage:
         scheduler: Any = None,
         project_payload: dict[str, Callable[[Any], Any]] | None = None,
         stream_targets: list[str] | None = None,
+        same_gpu_targets: set[str] | None = None,
         tp_fanout: TPLeaderFanout | None = None,
     ):
         self.name = name
@@ -78,6 +79,7 @@ class Stage:
         self.scheduler = scheduler
         self._project_payload = project_payload or {}
         self._stream_targets = stream_targets or []
+        self._same_gpu_targets = same_gpu_targets or set()
         self._tp_fanout = tp_fanout
         self._owns_external_io = role in {"single", "leader"}
 
@@ -294,6 +296,26 @@ class Stage:
             return
         self._active_requests.add(request_id)
 
+        if isinstance(msg.shm_metadata, dict) and msg.shm_metadata.get("_ipc"):
+            try:
+                item = self._deserialize_ipc_chunk(msg)
+            except Exception as exc:
+                logger.error(
+                    "Stage %s: IPC deserialize failed for %s: %s",
+                    self.name,
+                    request_id,
+                    exc,
+                )
+                self._queue_stream_error(request_id, msg.from_stage, exc)
+                return
+            if request_id in self._aborted:
+                return
+            if self._stream_queue is None or not self._stream_queue.has(request_id):
+                self._pending_stream_data.setdefault(request_id, []).append(item)
+                return
+            self._route_stream_item(request_id, item)
+            return
+
         blob_key = f"{request_id}:stream:{msg.from_stage}:{msg.to_stage}:{msg.chunk_id}"
         try:
             data = await relay_io.read_blob(self.relay, blob_key, msg.shm_metadata)
@@ -397,6 +419,27 @@ class Stage:
                     type="stream_done",
                 )
             )
+
+    @staticmethod
+    def _deserialize_ipc_chunk(msg: DataReadyMessage) -> StreamItem:
+        import pickle as _pickle
+
+        ipc_meta = msg.shm_metadata
+        data = _pickle.loads(ipc_meta["tensor_bytes"])
+        metadata = {}
+        raw_meta = ipc_meta.get("metadata", {})
+        if isinstance(raw_meta, dict):
+            for key, value in raw_meta.items():
+                if isinstance(value, dict) and "_ipc_tensor" in value:
+                    metadata[key] = _pickle.loads(value["_ipc_tensor"])
+                else:
+                    metadata[key] = value
+        return StreamItem(
+            chunk_id=msg.chunk_id,
+            data=data,
+            from_stage=msg.from_stage,
+            metadata=metadata or None,
+        )
 
     def _route_stream_item(self, request_id: str, item: StreamItem) -> None:
         self.scheduler.inbox.put(
@@ -562,6 +605,7 @@ class Stage:
             from_stage=self.name,
             chunk_id=chunk_id,
             metadata=metadata,
+            same_gpu_targets=self._same_gpu_targets,
         )
 
     async def _send_stream_to_coordinator(self, out: OutgoingMessage) -> None:

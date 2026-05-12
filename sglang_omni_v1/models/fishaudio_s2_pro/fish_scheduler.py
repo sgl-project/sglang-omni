@@ -233,6 +233,8 @@ class FishResourceManager:
             if req.req_pool_idx is not None or req.mamba_pool_idx is not None:
                 release_kv_cache(req, self.tree_cache)
         data.previous_semantic_tokens.clear()
+        data.semantic_history_tokens = None
+        data.semantic_history_count = 0
         data.last_codebook_values = None
 
 
@@ -507,6 +509,7 @@ class FishScheduler:
                         ),
                     )
                 )
+                self._requests.pop(request.request_id, None)
                 continue
             result = self._result_adapter(data)
             if t_submit is not None and isinstance(result.data, dict):

@@ -12,6 +12,7 @@ from sglang_omni_v1.models.fishaudio_s2_pro.fish_scheduler import (
     FishScheduler,
 )
 from sglang_omni_v1.models.fishaudio_s2_pro.model_runner import (
+    FishS2ProModelRunner,
     collect_s2pro_step_outputs,
 )
 from sglang_omni_v1.models.fishaudio_s2_pro.request_builders import (
@@ -59,6 +60,7 @@ def _collect_model_step(
         output_codes=output_codes,
         output_semantic_ids=output_semantic_ids,
         im_end_token_id=IM_END_TOKEN_ID,
+        rep_history_len=4,
     )
     return result
 
@@ -88,7 +90,52 @@ def test_v1_s2pro_audio_timestep_updates_audio_and_stream_state() -> None:
     )
     assert torch.equal(data.latest_stream_code_chunk, data.output_codes[0])
     assert data.previous_semantic_tokens == [SEMANTIC_TOKEN_ID]
+    assert data.semantic_history_count == 1
+    assert torch.equal(
+        data.semantic_history_tokens,
+        torch.tensor([SEMANTIC_TOKEN_ID, 0, 0, 0], dtype=torch.long),
+    )
     assert torch.equal(data.last_codebook_values, torch.tensor([11, 22]))
+
+
+def test_v1_s2pro_prepare_decode_uses_gpu_history_buffer() -> None:
+    request = _make_request("req-history")
+    data = request.data
+    data.previous_semantic_tokens = [9999]
+    data.semantic_history_tokens = torch.tensor(
+        [SEMANTIC_TOKEN_ID + 1, SEMANTIC_TOKEN_ID + 2, 0, 0],
+        dtype=torch.long,
+    )
+    data.semantic_history_count = 2
+    data.last_codebook_values = torch.tensor([11, 22], dtype=torch.long)
+
+    runner = FishS2ProModelRunner.__new__(FishS2ProModelRunner)
+    runner.model = SimpleNamespace(
+        _semantic_begin_id=SEMANTIC_TOKEN_ID,
+        _semantic_end_id=SEMANTIC_TOKEN_ID + 10,
+        _rep_history_len=4,
+        _vq_mask=torch.zeros(1, dtype=torch.bool),
+        _sampling_temperature=torch.zeros(1),
+        _sampling_top_p=torch.zeros(1),
+        _sampling_top_k=torch.zeros(1, dtype=torch.long),
+        _sampling_rep_penalty=torch.zeros(1),
+        _ras_temperature=torch.zeros(1),
+        _ras_top_p=torch.zeros(1),
+        _prev_tokens=torch.zeros(1, 4, dtype=torch.long),
+        _prev_token_count=torch.zeros(1, dtype=torch.long),
+        _vq_codes=torch.zeros(1, 2, dtype=torch.long),
+    )
+    forward_batch = SimpleNamespace(input_ids=torch.tensor([SEMANTIC_TOKEN_ID]))
+
+    runner.prepare_decode(forward_batch, None, [request])
+
+    assert torch.equal(
+        runner.model._prev_tokens[0],
+        torch.tensor([SEMANTIC_TOKEN_ID + 1, SEMANTIC_TOKEN_ID + 2, 0, 0]),
+    )
+    assert int(runner.model._prev_token_count[0].item()) == 2
+    assert torch.equal(runner.model._vq_codes[0], torch.tensor([11, 22]))
+    assert bool(runner.model._vq_mask[0])
 
 
 def test_v1_s2pro_terminal_im_end_is_not_audio_codebook_frame() -> None:
@@ -163,6 +210,7 @@ def test_v1_s2pro_emit_finished_errors_before_vocoder_for_empty_codes() -> None:
         max_new_tokens=2048,
     )
     scheduler._submit_times[request.request_id] = 1.0
+    scheduler._requests[request.request_id] = request
 
     scheduler.emit_finished([request])
     output = scheduler.outbox.get_nowait()
@@ -172,6 +220,7 @@ def test_v1_s2pro_emit_finished_errors_before_vocoder_for_empty_codes() -> None:
     assert isinstance(output.data, ValueError)
     assert "S2-Pro generated no audio codec tokens" in str(output.data)
     assert scheduler._submit_times == {}
+    assert request.request_id not in scheduler._requests
 
 
 def test_v1_s2pro_mixed_batch_keeps_terminal_and_audio_state_separate() -> None:

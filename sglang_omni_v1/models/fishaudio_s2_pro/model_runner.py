@@ -17,6 +17,7 @@ def collect_s2pro_step_outputs(
     output_codes: torch.Tensor,
     output_semantic_ids: torch.Tensor,
     im_end_token_id: int,
+    rep_history_len: int | None = None,
 ) -> None:
     batch_size = len(requests)
     if batch_size == 0:
@@ -37,8 +38,32 @@ def collect_s2pro_step_outputs(
         codes = output_codes[row_idx].unsqueeze(-1).clone()
         data.last_codebook_values = codes[1:, 0].clone()
         data.previous_semantic_tokens.append(semantic_token)
+        if rep_history_len is not None:
+            _append_semantic_history(
+                data, output_semantic_ids[row_idx], rep_history_len
+            )
         data.output_codes.append(codes)
         data.latest_stream_code_chunk = codes
+
+
+def _append_semantic_history(data: Any, token: torch.Tensor, history_len: int) -> None:
+    history = data.semantic_history_tokens
+    if (
+        history is None
+        or history.device != token.device
+        or history.shape[0] != history_len
+    ):
+        history = torch.zeros(history_len, dtype=torch.long, device=token.device)
+        data.semantic_history_tokens = history
+        data.semantic_history_count = 0
+
+    count = int(data.semantic_history_count)
+    if count < history_len:
+        history[count].copy_(token)
+    else:
+        history[:-1].copy_(history[1:].clone())
+        history[-1].copy_(token)
+    data.semantic_history_count = count + 1
 
 
 class FishS2ProModelRunner(ModelRunner):
@@ -65,7 +90,6 @@ class FishS2ProModelRunner(ModelRunner):
             input_ids <= self._semantic_end_id
         )
         self.model._vq_mask[:batch_size].copy_(is_semantic)
-        semantic_flags = is_semantic.tolist()
 
         for row_idx, sched_req in enumerate(requests):
             data = sched_req.data
@@ -76,23 +100,22 @@ class FishS2ProModelRunner(ModelRunner):
             self.model._ras_temperature[row_idx] = data.ras_temperature
             self.model._ras_top_p[row_idx] = data.ras_top_p
 
-            prev = data.previous_semantic_tokens
             history_len = self.model._rep_history_len
-            if prev:
-                recent = prev[-history_len:]
-                self.model._prev_tokens[row_idx, : len(recent)] = torch.tensor(
-                    recent,
-                    dtype=self.model._prev_tokens.dtype,
-                    device=self.model._prev_tokens.device,
+            history = data.semantic_history_tokens
+            if history is not None:
+                self.model._prev_tokens[row_idx].copy_(
+                    history.to(
+                        device=self.model._prev_tokens.device,
+                        dtype=self.model._prev_tokens.dtype,
+                    )
                 )
-                self.model._prev_tokens[row_idx, len(recent) :] = 0
-                self.model._prev_token_count[row_idx] = len(recent)
+                self.model._prev_token_count[row_idx] = min(
+                    int(data.semantic_history_count), history_len
+                )
             else:
                 self.model._prev_tokens[row_idx].zero_()
                 self.model._prev_token_count[row_idx] = 0
 
-            if not semantic_flags[row_idx]:
-                continue
             last_codes = data.last_codebook_values
             if last_codes is None:
                 continue
@@ -179,4 +202,5 @@ class FishS2ProModelRunner(ModelRunner):
             output_codes=self.model._output_codes,
             output_semantic_ids=self.model._output_semantic_ids,
             im_end_token_id=self._im_end_token_id,
+            rep_history_len=self.model._rep_history_len,
         )

@@ -9,7 +9,10 @@ Extracted from worker/data_plane.py and worker/runtime.py.
 from __future__ import annotations
 
 import base64
+import io
+import multiprocessing
 import pickle
+from multiprocessing.reduction import ForkingPickler
 from typing import Any
 
 import torch
@@ -248,6 +251,65 @@ async def read_blob(
 # Stream chunk send
 # ---------------------------------------------------------------------------
 
+# Note (Ratish): spawned stages use relay until the stage runtime owns CUDA IPC
+# device-context and handle-lifetime cleanup across producer/consumer processes.
+_ENABLE_STREAM_CUDA_IPC_IN_SPAWNED_PROCESS = False
+
+
+def _contains_cuda_tensor(obj: Any) -> bool:
+    if isinstance(obj, torch.Tensor):
+        return obj.is_cuda
+    if isinstance(obj, dict):
+        return any(_contains_cuda_tensor(value) for value in obj.values())
+    if isinstance(obj, (list, tuple)):
+        return any(_contains_cuda_tensor(value) for value in obj)
+    return False
+
+
+def _should_use_cuda_ipc(
+    data: Any,
+    *,
+    metadata: dict | None,
+    target_stage: str,
+    same_gpu_targets: set[str] | None,
+) -> bool:
+    if not same_gpu_targets or target_stage not in same_gpu_targets:
+        return False
+    if (
+        not _ENABLE_STREAM_CUDA_IPC_IN_SPAWNED_PROCESS
+        and multiprocessing.current_process().name != "MainProcess"
+    ):
+        return False
+    if not (_contains_cuda_tensor(data) or _contains_cuda_tensor(metadata or {})):
+        return False
+    return True
+
+
+def ipc_pickle(obj: Any) -> bytes:
+    """Serialize via ForkingPickler for CUDA IPC tensor handles."""
+    buf = io.BytesIO()
+    ForkingPickler(buf, 2).dump(obj)
+    return buf.getvalue()
+
+
+def serialize_ipc_chunk(
+    data: Any,
+    metadata: dict | None,
+) -> dict[str, Any]:
+    ipc_metadata: dict[str, Any] = {"_ipc": True}
+    ipc_metadata["tensor_bytes"] = ipc_pickle(data)
+
+    if metadata:
+        serialized_meta: dict[str, Any] = {}
+        for mkey, value in metadata.items():
+            if isinstance(value, torch.Tensor):
+                serialized_meta[mkey] = {"_ipc_tensor": ipc_pickle(value)}
+            else:
+                serialized_meta[mkey] = value
+        ipc_metadata["metadata"] = serialized_meta
+
+    return ipc_metadata
+
 
 async def send_stream_chunk(
     relay: Relay,
@@ -260,8 +322,25 @@ async def send_stream_chunk(
     from_stage: str,
     chunk_id: int,
     metadata: dict | None = None,
+    same_gpu_targets: set[str] | None = None,
 ) -> None:
-    """Send a streaming chunk to a downstream stage via relay."""
+    """Send a streaming chunk to a downstream stage."""
+    if _should_use_cuda_ipc(
+        data,
+        metadata=metadata,
+        target_stage=target_stage,
+        same_gpu_targets=same_gpu_targets,
+    ):
+        msg = DataReadyMessage(
+            request_id=request_id,
+            from_stage=from_stage,
+            to_stage=target_stage,
+            shm_metadata=serialize_ipc_chunk(data, metadata),
+            chunk_id=chunk_id,
+        )
+        await control_plane.send_to_stage(target_stage, target_endpoint, msg)
+        return
+
     blob_key = f"{request_id}:stream:{from_stage}:{target_stage}:{chunk_id}"
 
     pending_ops = []

@@ -30,6 +30,8 @@ class S2ProSGLangRequestData(SGLangARRequestData):
     ras_temperature: float = 1.0
     ras_top_p: float = 0.9
     previous_semantic_tokens: list[int] = field(default_factory=list)
+    semantic_history_tokens: torch.Tensor | None = None
+    semantic_history_count: int = 0
     last_codebook_values: Any = None
     latest_stream_code_chunk: torch.Tensor | None = None
 
