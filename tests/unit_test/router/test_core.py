@@ -580,7 +580,7 @@ def test_router_config_rejects_hyphenated_policy_aliases() -> None:
 def test_router_console_script_entrypoint_resolves() -> None:
     script_target = None
     in_project_scripts = False
-    pyproject = Path(__file__).resolve().parents[1] / "pyproject.toml"
+    pyproject = Path(__file__).resolve().parents[3] / "pyproject.toml"
     for line in pyproject.read_text().splitlines():
         stripped = line.strip()
         if stripped == "[project.scripts]":
