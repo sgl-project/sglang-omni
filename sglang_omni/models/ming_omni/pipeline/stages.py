@@ -16,6 +16,9 @@ from sglang_omni.models.ming_omni.components.common import (
     load_ming_config,
     load_ming_tokenizer,
 )
+from sglang_omni.models.ming_omni.components.image_gen_executor import (
+    MingImageGenExecutor,
+)
 from sglang_omni.models.ming_omni.components.preprocessor import MingPreprocessor
 from sglang_omni.models.ming_omni.components.talker_executor import MingTalkerExecutor
 from sglang_omni.models.ming_omni.io import OmniEvent, ThinkerOutput
@@ -45,8 +48,10 @@ def _event_to_dict(event: OmniEvent) -> dict[str, Any]:
     }
 
 
-def create_preprocessing_executor(model_path: str) -> PreprocessingExecutor:
-    preprocessor = MingPreprocessor(model_path=model_path)
+def create_preprocessing_executor(
+    model_path: str, *, conditioner=None
+) -> PreprocessingExecutor:
+    preprocessor = MingPreprocessor(model_path=model_path, conditioner=conditioner)
 
     async def _preprocess(payload: StagePayload) -> StagePayload:
         return await preprocessor(payload)
@@ -125,6 +130,7 @@ def create_sglang_thinker_executor(
     model_path: str,
     *,
     gpu_id: int = 0,
+    capture_hidden: bool = False,
 ) -> EngineExecutor:
     """Create a thinker executor backed by SGLang's ModelWorker."""
     tokenizer = load_ming_tokenizer(model_path)
@@ -213,6 +219,7 @@ def create_sglang_thinker_executor(
         server_args=server_args,
         gpu_id=gpu_id,
         model_arch_override="BailingMoeV2ForCausalLM",
+        capture_hidden=capture_hidden,
     )
 
     return EngineExecutor(
@@ -301,6 +308,7 @@ def create_sglang_thinker_executor_from_config(
     gpu_id: int = 0,
     thinker_max_seq_len: int = 8192,
     server_args_overrides: dict[str, Any] | None = None,
+    capture_hidden: bool = False,
 ) -> EngineExecutor:
     """Create a SGLang thinker executor from JSON-serializable config args."""
     import logging as _log
@@ -356,6 +364,7 @@ def create_sglang_thinker_executor_from_config(
         server_args=server_args,
         model_path=local_path,
         gpu_id=gpu_id,
+        capture_hidden=capture_hidden,
     )
     post_load_avail_mem = avail_gpu_mem(gpu_id)
     post_load_mem = (
@@ -389,6 +398,31 @@ def create_talker_executor(
         talker_model_path=talker_model_path,
         device=device,
         voice=voice,
+    )
+
+
+def create_image_gen_executor(
+    model_path: str,
+    *,
+    dit_type: str = "zimage",
+    dit_model_path: str | None = None,
+    device: str = "cuda",
+    conditioner=None,
+    skip_semantic_encoder: bool = False,
+) -> MingImageGenExecutor:
+    """Create the Ming image generation executor.
+
+    The executor is a self-contained diffusion pipeline (text encoder + DiT + VAE),
+    wrapped as an Executor for the pipeline.
+    """
+    local_path = _resolve_local_model_path(model_path)
+    return MingImageGenExecutor(
+        model_path=local_path,
+        dit_type=dit_type,
+        dit_model_path=dit_model_path or local_path,
+        device=device,
+        conditioner=conditioner,
+        skip_semantic_encoder=skip_semantic_encoder,
     )
 
 
