@@ -21,20 +21,20 @@ def _set_colocated_runtime(
     include_mem_fraction: bool = True,
 ) -> None:
     fractions = {
-        "image_encoder": 0.05,
-        "audio_encoder": 0.05,
-        "thinker": 0.35,
-        "talker_ar": 0.35,
-        "code2wav": 0.05,
+        "image_encoder": 0.03,
+        "audio_encoder": 0.03,
+        "thinker": 0.78,
+        "talker_ar": 0.14,
+        "code2wav": 0.02,
     }
     for stage_name, fraction in fractions.items():
         _stage(config, stage_name).runtime.resources.total_gpu_memory_fraction = (
             fraction
         )
     if include_mem_fraction:
-        _stage(config, "thinker").runtime.sglang_server_args.mem_fraction_static = 0.70
+        _stage(config, "thinker").runtime.sglang_server_args.mem_fraction_static = 0.85
         _stage(config, "talker_ar").runtime.sglang_server_args.mem_fraction_static = (
-            0.65
+            0.40
         )
 
 
@@ -71,7 +71,7 @@ def test_colocated_config_passes_with_explicit_budgets_and_ar_mem_fraction() -> 
     plan = build_stage_placement_plan(config)
 
     assert plan.requires_multi_process is True
-    assert plan.gpus[0].total_gpu_memory_fraction == pytest.approx(0.85)
+    assert plan.gpus[0].total_gpu_memory_fraction == pytest.approx(1.0)
 
 
 def test_colocated_config_marks_same_gpu_stream_targets() -> None:

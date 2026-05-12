@@ -3,6 +3,12 @@
 # Example single-GPU colocated Qwen3-Omni v1 launcher config.
 # The Python pipeline config owns the stage topology; this file only sets the
 # runtime memory budgets needed for colocated launch.
+#
+# Current values are an initial single-H20 calibration profile. The split is
+# intentionally asymmetric: the thinker owns the largest model/KV footprint,
+# while talker_ar includes the code predictor and is capped to leave launch and
+# request-time headroom. Full SeedTTS validation should replace these values
+# with measured H20 results once available.
 
 config_cls: Qwen3OmniSpeechColocatedPipelineConfig
 name: qwen3-omni-colocated
@@ -13,28 +19,28 @@ stage_overrides:
   image_encoder:
     runtime:
       resources:
-        total_gpu_memory_fraction: 0.05
+        total_gpu_memory_fraction: 0.03
 
   audio_encoder:
     runtime:
       resources:
-        total_gpu_memory_fraction: 0.05
+        total_gpu_memory_fraction: 0.03
 
   thinker:
     runtime:
       resources:
-        total_gpu_memory_fraction: 0.35
+        total_gpu_memory_fraction: 0.78
       sglang_server_args:
-        mem_fraction_static: 0.70
+        mem_fraction_static: 0.85
 
   talker_ar:
     runtime:
       resources:
-        total_gpu_memory_fraction: 0.35
+        total_gpu_memory_fraction: 0.14
       sglang_server_args:
-        mem_fraction_static: 0.65
+        mem_fraction_static: 0.40
 
   code2wav:
     runtime:
       resources:
-        total_gpu_memory_fraction: 0.05
+        total_gpu_memory_fraction: 0.02
