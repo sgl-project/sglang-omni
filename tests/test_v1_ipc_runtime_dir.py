@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Omni V1 IPC runtime directory lifecycle tests."""
+"""Omni V1 IPC runtime directory and launcher profiler lifecycle tests."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 from fastapi import FastAPI
+from fastapi.testclient import TestClient
 
 pytest.importorskip("torch")
 
@@ -69,6 +70,31 @@ def _make_config(base_path: str, *, scheme: str = "ipc") -> PipelineConfig:
                 factory="tests.test_v1_ipc_runtime_dir.noop_factory",
                 terminal=True,
             )
+        ],
+        endpoints=EndpointsConfig(
+            scheme=scheme,
+            base_path=base_path,
+        ),
+    )
+
+
+def _make_mp_config(base_path: str, *, scheme: str = "ipc") -> PipelineConfig:
+    return PipelineConfig(
+        model_path="Qwen/Qwen3-Omni-30B-A3B-Instruct",
+        entry_stage="preprocessing",
+        stages=[
+            StageConfig(
+                name="preprocessing",
+                factory="tests.test_v1_ipc_runtime_dir.noop_factory",
+                next="decode",
+                gpu=0,
+            ),
+            StageConfig(
+                name="decode",
+                factory="tests.test_v1_ipc_runtime_dir.noop_factory",
+                terminal=True,
+                gpu=1,
+            ),
         ],
         endpoints=EndpointsConfig(
             scheme=scheme,
@@ -275,6 +301,28 @@ class TestV1MultiProcessRunnerIpcCleanup(unittest.IsolatedAsyncioTestCase):
 
             self.assertEqual(list(Path(tmp_dir).iterdir()), [])
 
+    async def test_mp_runner_exposes_stage_control_endpoints(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config = _make_config(tmp_dir)
+            from sglang_omni_v1.pipeline.mp_runner import MultiProcessPipelineRunner
+
+            runner = MultiProcessPipelineRunner(config)
+
+            with self.assertRaisesRegex(RuntimeError, "Runner not started"):
+                _ = runner.stage_control_endpoints
+
+            try:
+                await runner.start(timeout=30.0)
+
+                endpoints = runner.stage_control_endpoints
+                self.assertEqual(set(endpoints), {"preprocessing"})
+                self.assertEqual(
+                    endpoints["preprocessing"],
+                    runner._groups[0].leader_endpoint,
+                )
+            finally:
+                await runner.stop()
+
 
 class TestV1LauncherIpcCleanup(unittest.IsolatedAsyncioTestCase):
     async def _run_single_process_launcher_with_mocked_server(
@@ -408,3 +456,158 @@ class TestV1LauncherIpcCleanup(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(coordinator.started)
             coordinator.stop.assert_awaited_once()
             self.assertFalse(runtime_path.exists())
+
+    async def test_multi_process_launcher_mounts_profiler_routes(
+        self,
+    ) -> None:
+        class _FakeMpRunner:
+            instances: list["_FakeMpRunner"] = []
+
+            def __init__(self, config: PipelineConfig):
+                self.config = config
+                self.coordinator = _FakeCoordinator()
+                self.stage_control_endpoints = {
+                    "preprocessing": "ipc://runtime/stage_preprocessing.sock",
+                    "decode": "ipc://runtime/stage_decode.sock",
+                }
+                self.started = False
+                self.stopped = False
+                _FakeMpRunner.instances.append(self)
+
+            async def start(self, timeout: float) -> None:
+                self.started = True
+                self.startup_timeout = timeout
+
+            async def stop(self) -> None:
+                self.stopped = True
+
+        class _FakeProfilerControlClient:
+            instances: list["_FakeProfilerControlClient"] = []
+
+            def __init__(self, stage_endpoints: dict[str, str]):
+                self.stage_endpoints = dict(stage_endpoints)
+                self.start_calls: list[dict] = []
+                self.stop_calls: list[str] = []
+                self.closed = False
+                _FakeProfilerControlClient.instances.append(self)
+
+            async def broadcast_start(
+                self,
+                run_id: str,
+                trace_path_template: str,
+                config: dict | None = None,
+            ) -> None:
+                self.start_calls.append(
+                    {
+                        "run_id": run_id,
+                        "trace_path_template": trace_path_template,
+                        "config": config,
+                    }
+                )
+
+            async def broadcast_stop(self, run_id: str) -> None:
+                self.stop_calls.append(run_id)
+
+            async def close(self) -> None:
+                self.closed = True
+
+        async def _serve_once(server) -> None:
+            app = server.config.app
+            mounted_paths = {route.path for route in app.routes}
+            self.assertIn("/start_profile", mounted_paths)
+            self.assertIn("/stop_profile", mounted_paths)
+
+            with TestClient(app) as client:
+                start_response = client.post(
+                    "/start_profile",
+                    json={
+                        "run_id": "profile-1",
+                        "trace_path_template": "/tmp/{run_id}/{stage}/trace",
+                        "config": {"wait": 1},
+                    },
+                )
+                self.assertEqual(start_response.status_code, 200)
+
+                stop_response = client.post(
+                    "/stop_profile",
+                    json={"run_id": "profile-1"},
+                )
+                self.assertEqual(stop_response.status_code, 200)
+
+                default_start_response = client.post(
+                    "/start_profile",
+                    json={},
+                )
+                self.assertEqual(default_start_response.status_code, 200)
+                default_run_id = default_start_response.json()["run_id"]
+
+                default_stop_response = client.post(
+                    "/stop_profile",
+                    json={},
+                )
+                self.assertEqual(default_stop_response.status_code, 200)
+                self.assertEqual(
+                    default_stop_response.json()["run_id"],
+                    default_run_id,
+                )
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config = _make_mp_config(tmp_dir)
+
+            from sglang_omni_v1.serve.launcher import _run_server
+
+            with (
+                patch(
+                    "sglang_omni_v1.serve.launcher._find_available_port",
+                    return_value=8000,
+                ),
+                patch(
+                    "sglang_omni_v1.pipeline.mp_runner.MultiProcessPipelineRunner",
+                    _FakeMpRunner,
+                ),
+                patch(
+                    "sglang_omni_v1.serve.launcher.ProfilerControlClient",
+                    _FakeProfilerControlClient,
+                ),
+                patch(
+                    "sglang_omni_v1.serve.launcher.uvicorn.Server.serve",
+                    new=_serve_once,
+                ),
+            ):
+                await _run_server(config, port=8000)
+
+        runner = _FakeMpRunner.instances[0]
+        profiler_ctl = _FakeProfilerControlClient.instances[0]
+
+        self.assertTrue(runner.started)
+        self.assertTrue(runner.stopped)
+        self.assertEqual(profiler_ctl.stage_endpoints, runner.stage_control_endpoints)
+        self.assertEqual(
+            profiler_ctl.start_calls,
+            [
+                {
+                    "run_id": "profile-1",
+                    "trace_path_template": "/tmp/{run_id}/{stage}/trace",
+                    "config": {"wait": 1},
+                },
+                {
+                    "run_id": profiler_ctl.start_calls[1]["run_id"],
+                    "trace_path_template": (
+                        f"{tempfile.gettempdir()}/sglang_omni_v1/"
+                        f"{profiler_ctl.start_calls[1]['run_id']}/trace"
+                    ),
+                    "config": None,
+                },
+            ],
+        )
+        self.assertTrue(profiler_ctl.start_calls[1]["run_id"].startswith("run_"))
+        self.assertTrue(
+            profiler_ctl.start_calls[1]["trace_path_template"].endswith(
+                f"{profiler_ctl.start_calls[1]['run_id']}/trace"
+            )
+        )
+        self.assertEqual(
+            profiler_ctl.stop_calls,
+            ["profile-1", profiler_ctl.start_calls[1]["run_id"]],
+        )
+        self.assertTrue(profiler_ctl.closed)

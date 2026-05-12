@@ -279,6 +279,21 @@ class MultiProcessPipelineRunner:
             raise RuntimeError("Runner not started")
         return self._coordinator
 
+    @property
+    def stage_control_endpoints(self) -> dict[str, str]:
+        """Return leader control-plane endpoints for externally addressable stages."""
+        if not self._started:
+            raise RuntimeError("Runner not started")
+        endpoints: dict[str, str] = {}
+        for group in self._groups:
+            endpoint = group.leader_endpoint
+            if not endpoint:
+                raise RuntimeError(
+                    f"Cannot resolve control endpoint for stage={group.stage_name}"
+                )
+            endpoints[group.stage_name] = endpoint
+        return endpoints
+
     async def start(self, timeout: float = 120.0) -> None:
         if self._started:
             raise RuntimeError("Already started")
