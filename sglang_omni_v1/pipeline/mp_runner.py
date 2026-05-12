@@ -15,15 +15,15 @@ import multiprocessing
 import socket
 from typing import Any
 
-from sglang_omni_v1.config.placement import (
-    StagePlacementPlan,
-    resolve_same_gpu_stream_targets,
-    resolve_stage_gpu_ids,
-)
 from sglang_omni_v1.config.compiler import (
     IpcRuntimeDir,
     _build_relay_config,
     prepare_pipeline_runtime,
+)
+from sglang_omni_v1.config.placement import (
+    StagePlacementPlan,
+    resolve_same_gpu_stream_targets,
+    resolve_stage_gpu_ids,
 )
 from sglang_omni_v1.config.runtime import resolve_stage_factory_args
 from sglang_omni_v1.config.schema import PipelineConfig, StageConfig
@@ -292,9 +292,9 @@ class MultiProcessPipelineRunner:
                 self._coordinator.run_completion_loop()
             )
 
-            for group in groups:
-                group.spawn(ctx)
             self._groups = groups
+            for group in self._groups:
+                group.spawn(ctx)
 
             await asyncio.gather(*(g.wait_ready(timeout) for g in self._groups))
 

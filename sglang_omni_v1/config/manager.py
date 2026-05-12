@@ -42,6 +42,8 @@ class ConfigManager:
                 formatted_key = cur_key.lstrip("-").replace("-", "_")
                 extra_args[formatted_key] = cur_value
                 cur_key, cur_value = None, None
+        if cur_key is not None and cur_value is None:
+            raise ValueError(f"Missing value for argument: {cur_key}")
         return extra_args
 
     def _convert_types(self, extra_args: dict[str, Any]) -> dict[str, Any]:

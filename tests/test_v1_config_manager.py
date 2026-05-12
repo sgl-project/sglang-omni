@@ -45,3 +45,16 @@ def test_config_manager_parses_dotted_fraction_overrides_as_numbers() -> None:
         merged, "thinker"
     ).runtime.sglang_server_args.mem_fraction_static == pytest.approx(0.70)
     assert plan.gpus[0].total_gpu_memory_fraction == pytest.approx(0.85)
+
+
+def test_config_manager_rejects_trailing_key_without_value() -> None:
+    manager = ConfigManager(Qwen3OmniSpeechColocatedPipelineConfig(model_path="dummy"))
+
+    with pytest.raises(ValueError, match="Missing value"):
+        manager.parse_extra_args(
+            [
+                "--stages.4.runtime.resources.total-gpu-memory-fraction",
+                "0.35",
+                "--stages.4.runtime.sglang-server-args.mem-fraction-static",
+            ]
+        )

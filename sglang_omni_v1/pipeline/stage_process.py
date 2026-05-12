@@ -230,15 +230,12 @@ def get_stage_process_env(
     original_visible = source_env.get("CUDA_VISIBLE_DEVICES")
     if original_visible:
         visible_devices = [item.strip() for item in original_visible.split(",")]
-        if len(visible_devices) == 1:
-            mapped_gpu = visible_devices[0]
-        elif spec.gpu_id >= len(visible_devices):
+        if spec.gpu_id >= len(visible_devices):
             raise ValueError(
                 f"tp stage {spec.stage_name!r} assigned gpu_id={spec.gpu_id}, "
                 f"but CUDA_VISIBLE_DEVICES only exposes {visible_devices}"
             )
-        else:
-            mapped_gpu = visible_devices[spec.gpu_id]
+        mapped_gpu = visible_devices[spec.gpu_id]
     else:
         mapped_gpu = str(spec.gpu_id)
 

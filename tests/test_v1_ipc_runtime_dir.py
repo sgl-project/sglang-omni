@@ -45,7 +45,7 @@ class _FakeStage:
 
 
 class _FakeCoordinator:
-    def __init__(self):
+    def __init__(self, *args, **kwargs):
         self.started = False
         self.stopped = False
 
@@ -243,6 +243,72 @@ class TestV1MultiProcessRunnerIpcCleanup(unittest.IsolatedAsyncioTestCase):
                 with self.assertRaisesRegex(RuntimeError, "boom"):
                     await runner.start()
 
+            self.assertEqual(list(Path(tmp_dir).iterdir()), [])
+
+    async def test_mp_runner_cleans_spawned_groups_when_later_spawn_fails(
+        self,
+    ) -> None:
+        class _FakeProcess:
+            def __init__(self):
+                self.terminated = False
+                self.killed = False
+                self.join_count = 0
+                self._alive = True
+
+            def is_alive(self):
+                return self._alive
+
+            def terminate(self):
+                self.terminated = True
+                self._alive = False
+
+            def kill(self):
+                self.killed = True
+                self._alive = False
+
+            def join(self, timeout=None):
+                self.join_count += 1
+
+        class _FakeGroup:
+            def __init__(self, stage_name, *, fail_spawn=False):
+                self.stage_name = stage_name
+                self.fail_spawn = fail_spawn
+                self.process = _FakeProcess() if not fail_spawn else None
+
+            @property
+            def processes(self):
+                return [self.process] if self.process is not None else []
+
+            def spawn(self, ctx):
+                if self.fail_spawn:
+                    raise RuntimeError(f"spawn failed for {self.stage_name}")
+
+            async def wait_ready(self, timeout):
+                return None
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config = _make_config(tmp_dir)
+            from sglang_omni_v1.pipeline.mp_runner import MultiProcessPipelineRunner
+
+            first_group = _FakeGroup("preprocessing")
+            second_group = _FakeGroup("thinker", fail_spawn=True)
+            runner = MultiProcessPipelineRunner(config)
+
+            with (
+                patch(
+                    "sglang_omni_v1.pipeline.mp_runner.Coordinator",
+                    _FakeCoordinator,
+                ),
+                patch(
+                    "sglang_omni_v1.pipeline.mp_runner._build_stage_groups",
+                    return_value=[first_group, second_group],
+                ),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "spawn failed"):
+                    await runner.start()
+
+            self.assertTrue(first_group.process.terminated)
+            self.assertGreaterEqual(first_group.process.join_count, 1)
             self.assertEqual(list(Path(tmp_dir).iterdir()), [])
 
     async def test_mp_runner_starts_two_same_model_instances_and_cleans_on_stop(
