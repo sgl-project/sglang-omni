@@ -52,9 +52,9 @@ launcher:
   model_path: Qwen/Qwen3-Omni-30B-A3B-Instruct
   model_name: qwen3-omni
   num_workers: 2
+  num_gpus_per_worker: 2
   worker_host: 127.0.0.1
   worker_base_port: 8011
-  worker_gpu_ids: ["0", "1"]
   wait_timeout: 600
 ```
 
@@ -65,9 +65,19 @@ pipeline stages. The router waits for every managed worker to pass `/health`
 before it starts accepting client traffic, and it stops those managed workers
 when the router exits.
 
-`worker_gpu_ids` maps one `CUDA_VISIBLE_DEVICES` value to each worker. If it is
-omitted, the launcher uses the current `CUDA_VISIBLE_DEVICES` or visible CUDA
-devices to assign GPUs.
+`num_gpus_per_worker` controls automatic GPU grouping. The full Qwen3-Omni
+speech topology uses two logical GPUs per worker by default: thinker, image
+encoder, and audio encoder run on logical GPU 0, while talker and code2wav run
+on logical GPU 1. With `num_workers: 2` and `num_gpus_per_worker: 2`, the
+launcher assigns `0,1` to the first worker and `2,3` to the second worker when
+four CUDA devices are visible.
+
+Set `worker_gpu_ids` only when you need explicit placement. Each entry maps one
+`CUDA_VISIBLE_DEVICES` value to one worker, for example
+`worker_gpu_ids: ["0,1", "2,3"]` for two full Qwen3-Omni speech workers. On a
+two-GPU machine, use `num_workers: 1` for the full speech topology, or add
+`worker_extra_args: "--text-only"` if you intentionally want two one-GPU
+workers for text output.
 
 Use `worker_extra_args` for public Omni V1 serve options that are specific to
 the worker process, such as `--mem-fraction-static`, `--thinker-tp-size`, or
@@ -77,11 +87,11 @@ When no memory flags are provided, Omni V1 uses its normal auto-sizing path.
 
 ## Launch Worker Servers Manually
 
-Start each Omni V1 worker separately. The example below launches two Qwen3-Omni
-workers on different GPUs and ports:
+Start each Omni V1 worker separately. The example below launches two full
+Qwen3-Omni speech workers on different GPU pairs and ports:
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 sgl-omni serve \
+CUDA_VISIBLE_DEVICES=0,1 sgl-omni serve \
   --version v1 \
   --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct \
   --model-name qwen3-omni \
@@ -90,7 +100,7 @@ CUDA_VISIBLE_DEVICES=0 sgl-omni serve \
 ```
 
 ```bash
-CUDA_VISIBLE_DEVICES=1 sgl-omni serve \
+CUDA_VISIBLE_DEVICES=2,3 sgl-omni serve \
   --version v1 \
   --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct \
   --model-name qwen3-omni \

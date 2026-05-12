@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import socket
 import subprocess
 import sys
 import time
@@ -13,6 +14,7 @@ from typing import Any
 
 import pytest
 import requests
+import yaml
 
 from sglang_omni.utils import find_available_port
 from tests.utils import (
@@ -37,47 +39,24 @@ LOG_TAIL_LINES = 120
 @dataclass
 class RouterTopology:
     router_proc: subprocess.Popen
-    worker_procs: list[subprocess.Popen]
     router_port: int
     worker_ports: list[int]
     router_log: Path | None
-    worker_logs: list[Path | None]
 
 
 @pytest.fixture(scope="module")
 def router_topology(tmp_path_factory: pytest.TempPathFactory):
-    ports = _find_available_ports(3)
-    worker_ports = ports[:2]
-    router_port = ports[2]
-    worker_procs: list[subprocess.Popen] = []
-    worker_logs: list[Path | None] = []
+    worker_base_port = _find_available_port_range(2)
+    worker_ports = [worker_base_port, worker_base_port + 1]
+    router_port = _find_available_port_excluding(worker_ports)
     router_proc: subprocess.Popen | None = None
     router_log: Path | None = None
 
     try:
-        for gpu_id, port in enumerate(worker_ports):
-            log_file = server_log_file(tmp_path_factory, f"router_worker_{gpu_id}")
-            worker_logs.append(log_file)
-            cmd = [
-                sys.executable,
-                "examples/run_qwen3_omni_server.py",
-                "--model-path",
-                MODEL_PATH,
-                "--model-name",
-                MODEL_NAME,
-                "--port",
-                str(port),
-            ]
-            proc = start_server_from_cmd(
-                cmd,
-                log_file,
-                port,
-                timeout=STARTUP_TIMEOUT,
-                env={"CUDA_VISIBLE_DEVICES": str(gpu_id)},
-            )
-            worker_procs.append(proc)
-
-        worker_urls = [f"http://127.0.0.1:{port}" for port in worker_ports]
+        launcher_config = _write_ci_launcher_config(
+            tmp_path_factory,
+            worker_base_port=worker_base_port,
+        )
         router_log = server_log_file(tmp_path_factory, "omni_router_logs")
         router_cmd = [
             sys.executable,
@@ -87,8 +66,8 @@ def router_topology(tmp_path_factory: pytest.TempPathFactory):
             "0.0.0.0",
             "--port",
             str(router_port),
-            "--worker-urls",
-            *worker_urls,
+            "--launcher-config",
+            str(launcher_config),
             "--policy",
             "round_robin",
             "--health-success-threshold",
@@ -110,21 +89,45 @@ def router_topology(tmp_path_factory: pytest.TempPathFactory):
         print(
             "[Omni Router CI] topology "
             f"router_port={router_port} worker_ports={worker_ports} "
-            "policy=round_robin"
+            f"launcher_config={launcher_config} policy=round_robin"
         )
         yield RouterTopology(
             router_proc=router_proc,
-            worker_procs=worker_procs,
             router_port=router_port,
             worker_ports=worker_ports,
             router_log=router_log,
-            worker_logs=worker_logs,
         )
     finally:
         if router_proc is not None:
             stop_server(router_proc)
-        for proc in worker_procs:
-            stop_server(proc)
+
+
+def _write_ci_launcher_config(
+    tmp_path_factory: pytest.TempPathFactory,
+    *,
+    worker_base_port: int,
+) -> Path:
+    config_path = tmp_path_factory.mktemp("omni_router_launcher") / "launcher.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "launcher": {
+                    "backend": "local",
+                    "model_path": MODEL_PATH,
+                    "model_name": MODEL_NAME,
+                    "num_workers": 2,
+                    "num_gpus_per_worker": 1,
+                    "worker_host": "127.0.0.1",
+                    "worker_base_port": worker_base_port,
+                    "worker_extra_args": "--text-only",
+                    "wait_timeout": STARTUP_TIMEOUT,
+                }
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    return config_path
 
 
 def _router_get_json(port: int, path: str) -> dict:
@@ -279,8 +282,6 @@ def _print_diagnostics(topology: RouterTopology) -> None:
     except Exception as exc:  # pragma: no cover - diagnostic path
         print(f"[Omni Router CI] failed to fetch /workers during diagnostics: {exc}")
     _print_log_tail("router", topology.router_log)
-    for index, log_file in enumerate(topology.worker_logs):
-        _print_log_tail(f"worker_{index}", log_file)
 
 
 @pytest.mark.benchmark
@@ -369,10 +370,28 @@ def test_router_routes_common_qwen3_omni_requests_across_both_workers(
         raise
 
 
-def _find_available_ports(count: int) -> list[int]:
-    ports: list[int] = []
-    while len(ports) < count:
+def _find_available_port_excluding(excluded: list[int]) -> int:
+    excluded_ports = set(excluded)
+    while True:
         port = find_available_port()
-        if port not in ports:
-            ports.append(port)
-    return ports
+        if port not in excluded_ports:
+            return port
+
+
+def _find_available_port_range(count: int) -> int:
+    for _ in range(100):
+        base_port = find_available_port()
+        candidates = [base_port + offset for offset in range(count)]
+        if all(_port_is_available(port) for port in candidates):
+            return base_port
+    raise RuntimeError(f"failed to find {count} consecutive available ports")
+
+
+def _port_is_available(port: int) -> bool:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            sock.bind(("127.0.0.1", port))
+        except OSError:
+            return False
+    return True

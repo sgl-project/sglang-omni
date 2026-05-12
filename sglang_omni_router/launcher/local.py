@@ -9,6 +9,7 @@ import shlex
 import shutil
 import subprocess
 import time
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 
 from sglang_omni_router.launcher.config import LocalLauncherConfig
@@ -113,24 +114,39 @@ class LocalLauncher:
         return self.worker_urls
 
     def wait_ready(self) -> None:
+        if not self.workers:
+            return
+
         deadline = time.monotonic() + self.config.wait_timeout
+        executor = ThreadPoolExecutor(max_workers=len(self.workers))
+        futures: set[Future[None]] = {
+            executor.submit(self._wait_for_worker_ready, worker, deadline)
+            for worker in self.workers
+        }
         try:
-            for worker in self.workers:
-                timeout = deadline - time.monotonic()
-                if timeout <= 0:
-                    raise TimeoutError(
-                        "managed workers did not become healthy before timeout"
-                    )
-                wait_for_worker_health(
-                    worker_url=worker.url,
-                    health_endpoint=self.health_endpoint,
-                    process=worker.process,
-                    timeout=timeout,
-                )
-                logger.info(f"Managed Omni V1 worker is healthy: {worker.url}")
+            while futures:
+                done, futures = wait(futures, return_when=FIRST_COMPLETED)
+                for future in done:
+                    future.result()
         except Exception:
             self.shutdown()
             raise
+        finally:
+            executor.shutdown(wait=True, cancel_futures=True)
+
+    def _wait_for_worker_ready(
+        self, worker: ManagedWorkerProcess, deadline: float
+    ) -> None:
+        timeout = deadline - time.monotonic()
+        if timeout <= 0:
+            raise TimeoutError("managed workers did not become healthy before timeout")
+        wait_for_worker_health(
+            worker_url=worker.url,
+            health_endpoint=self.health_endpoint,
+            process=worker.process,
+            timeout=timeout,
+        )
+        logger.info(f"Managed Omni V1 worker is healthy: {worker.url}")
 
     def launch_and_wait(self) -> list[str]:
         self.launch()
