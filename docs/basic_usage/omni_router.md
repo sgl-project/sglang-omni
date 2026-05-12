@@ -23,17 +23,66 @@ sgl-omni-router
 ```
 
 Each worker is a complete Omni V1 HTTP server. The router does not load model
-weights, start workers, or split a single request across workers. It selects one
-routable worker for each request, forwards the original request bytes, and
-returns the worker response with router diagnostic headers.
+weights or split a single request across workers. It selects one routable worker
+for each request, forwards the original request bytes, and returns the worker
+response with router diagnostic headers.
 
-## Launch Worker Servers
+## Launch Workers and Router From YAML
+
+For a local homogeneous pool, `sgl-omni-router` can start the worker replicas
+and then start the router after all managed workers pass `/health`:
+
+```bash
+sgl-omni-router \
+  --host 0.0.0.0 \
+  --port 8008 \
+  --launcher-config examples/configs/qwen3_omni_router.yaml \
+  --policy round_robin \
+  --health-failure-threshold 2 \
+  --health-success-threshold 1 \
+  --health-check-interval-secs 10 \
+  --log-level info
+```
+
+Example launcher config:
+
+```yaml
+launcher:
+  backend: local
+  model_path: Qwen/Qwen3-Omni-30B-A3B-Instruct
+  model_name: qwen3-omni
+  num_workers: 2
+  worker_host: 127.0.0.1
+  worker_base_port: 8011
+  worker_gpu_ids: ["0", "1"]
+  wait_timeout: 600
+```
+
+`backend: local` means the router process starts and manages worker
+subprocesses on the same machine. The launched workers are complete Omni V1
+servers started with `sgl-omni serve --version v1`; they are not partial
+pipeline stages. The router waits for every managed worker to pass `/health`
+before it starts accepting client traffic, and it stops those managed workers
+when the router exits.
+
+`worker_gpu_ids` maps one `CUDA_VISIBLE_DEVICES` value to each worker. If it is
+omitted, the launcher uses the current `CUDA_VISIBLE_DEVICES` or visible CUDA
+devices to assign GPUs.
+
+Use `worker_extra_args` for public Omni V1 serve options that are specific to
+the worker process, such as `--mem-fraction-static`, `--thinker-tp-size`, or
+`--text-only`. These arguments are passed to `sgl-omni serve --version v1`
+after the launcher-owned flags. The router does not reinterpret their semantics.
+When no memory flags are provided, Omni V1 uses its normal auto-sizing path.
+
+## Launch Worker Servers Manually
 
 Start each Omni V1 worker separately. The example below launches two Qwen3-Omni
 workers on different GPUs and ports:
 
 ```bash
 CUDA_VISIBLE_DEVICES=0 sgl-omni serve \
+  --version v1 \
   --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct \
   --model-name qwen3-omni \
   --host 0.0.0.0 \
@@ -42,6 +91,7 @@ CUDA_VISIBLE_DEVICES=0 sgl-omni serve \
 
 ```bash
 CUDA_VISIBLE_DEVICES=1 sgl-omni serve \
+  --version v1 \
   --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct \
   --model-name qwen3-omni \
   --host 0.0.0.0 \
@@ -78,6 +128,7 @@ The table below lists the router command-line arguments.
 | `--port` | `8000` | Port for the router HTTP server. |
 | `--worker-urls` | not set | Space-separated Omni V1 worker base URLs for a homogeneous worker pool. |
 | `--worker-config` | not set | JSON file that defines workers and optional per-worker model/capability metadata. |
+| `--launcher-config` | not set | YAML file for a managed local worker pool. Do not use with `--worker-urls` or `--worker-config`. |
 | `--policy` | `round_robin` | Routing policy: `round_robin`, `least_request`, or `random`. |
 | `--model` | not set | Model name assigned to every worker when using `--worker-urls`. Do not use with `--worker-config`. |
 | `--request-timeout-secs` | `1800` | Timeout for proxied worker requests. |
@@ -97,8 +148,9 @@ Routing policies:
   requests, then round-robins among ties.
 - `random`: selects a random routable worker.
 
-Pass exactly one of `--worker-urls` or `--worker-config`. Use `--worker-config`
-when workers serve different models or only a subset of Omni capabilities:
+Pass exactly one of `--launcher-config`, `--worker-urls`, or
+`--worker-config`. Use `--worker-config` when workers serve different models or
+only a subset of Omni capabilities:
 
 ```json
 {

@@ -20,6 +20,7 @@ from sglang_omni_router.config import (
     build_router_config,
     load_worker_configs,
 )
+from sglang_omni_router.launcher import LocalLauncher, load_launcher_config
 
 logger = logging.getLogger("sglang_omni_router.serve")
 
@@ -61,6 +62,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--worker-urls", nargs="+", default=None)
     parser.add_argument("--worker-config", default=None)
+    parser.add_argument("--launcher-config", default=None)
     parser.add_argument(
         "--policy",
         choices=get_args(RoutingPolicy),
@@ -79,17 +81,40 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def build_config_from_args(args: argparse.Namespace) -> RouterConfig:
+def validate_worker_source_args(args: argparse.Namespace) -> None:
+    if args.launcher_config:
+        if args.worker_urls:
+            raise ValueError("--launcher-config cannot be used with --worker-urls")
+        if args.worker_config:
+            raise ValueError("--launcher-config cannot be used with --worker-config")
+        if args.model is not None:
+            raise ValueError(
+                "--model cannot be used with --launcher-config; set model_name "
+                "in the launcher YAML"
+            )
     if args.worker_config and args.model is not None:
         raise ValueError("--model cannot be used with --worker-config")
+
+
+def build_config_from_args(
+    args: argparse.Namespace,
+    *,
+    managed_worker_urls: list[str] | None = None,
+    managed_model: str | None = None,
+) -> RouterConfig:
+    validate_worker_source_args(args)
+    if args.launcher_config and managed_worker_urls is None:
+        raise ValueError("managed worker URLs are required for --launcher-config")
     workers = load_worker_configs(args.worker_config) if args.worker_config else None
+    worker_urls = managed_worker_urls if args.launcher_config else args.worker_urls
+    model = managed_model if args.launcher_config else args.model
     return build_router_config(
-        worker_urls=args.worker_urls,
+        worker_urls=worker_urls,
         workers=workers,
         host=args.host,
         port=args.port,
         policy=args.policy,
-        model=args.model,
+        model=model,
         request_timeout_secs=args.request_timeout_secs,
         max_payload_size=args.max_payload_size,
         max_connections=args.max_connections,
@@ -107,30 +132,54 @@ def main(argv: Sequence[str] | None = None) -> None:
     log_level = normalize_log_level(args.log_level)
     log_config = build_log_config(args.log_level)
     logging.config.dictConfig(log_config)
+    launcher: LocalLauncher | None = None
     try:
-        config = build_config_from_args(args)
+        validate_worker_source_args(args)
+        if args.launcher_config:
+            launcher_config = load_launcher_config(args.launcher_config)
+            launcher = LocalLauncher(launcher_config)
+            logger.info(f"Starting managed Omni V1 workers from {args.launcher_config}")
+            managed_worker_urls = launcher.launch_and_wait()
+            config = build_config_from_args(
+                args,
+                managed_worker_urls=managed_worker_urls,
+                managed_model=launcher_config.model_name,
+            )
+        else:
+            config = build_config_from_args(args)
     except (ValueError, ValidationError) as exc:
+        if launcher is not None:
+            launcher.shutdown()
         parser.error(str(exc))
-    logger.info(f"Starting SGLang-Omni Router on {config.host}:{config.port}")
-    logger.info(
-        f"Router configuration: workers={len(config.workers)} | "
-        f"policy={config.policy} | "
-        f"max_payload_size={config.max_payload_size} | "
-        f"max_connections={config.max_connections} | "
-        f"health_failure_threshold={config.health_failure_threshold} | "
-        f"health_success_threshold={config.health_success_threshold} | "
-        f"health_check_endpoint={config.health_check_endpoint} | "
-        f"health_check_interval_secs={config.health_check_interval_secs} | "
-        f"health_check_timeout_secs={config.health_check_timeout_secs} | "
-        f"readiness_requires_routable_worker=true"
-    )
-    uvicorn.run(
-        create_app(config),
-        host=config.host,
-        port=config.port,
-        log_level=log_level.lower(),
-        log_config=log_config,
-    )
+    except (RuntimeError, TimeoutError) as exc:
+        if launcher is not None:
+            launcher.shutdown()
+        parser.exit(1, f"error: {exc}\n")
+    try:
+        logger.info(f"Starting SGLang-Omni Router on {config.host}:{config.port}")
+        logger.info(
+            f"Router configuration: workers={len(config.workers)} | "
+            f"policy={config.policy} | "
+            f"max_payload_size={config.max_payload_size} | "
+            f"max_connections={config.max_connections} | "
+            f"health_failure_threshold={config.health_failure_threshold} | "
+            f"health_success_threshold={config.health_success_threshold} | "
+            f"health_check_endpoint={config.health_check_endpoint} | "
+            f"health_check_interval_secs={config.health_check_interval_secs} | "
+            f"health_check_timeout_secs={config.health_check_timeout_secs} | "
+            f"readiness_requires_routable_worker=true"
+        )
+        uvicorn.run(
+            create_app(config),
+            host=config.host,
+            port=config.port,
+            log_level=log_level.lower(),
+            log_config=log_config,
+        )
+    finally:
+        if launcher is not None:
+            logger.info("Stopping managed Omni V1 workers")
+            launcher.shutdown()
 
 
 if __name__ == "__main__":

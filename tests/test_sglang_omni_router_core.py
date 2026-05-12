@@ -8,8 +8,12 @@ import httpx
 import pytest
 from pydantic import ValidationError
 
+import sglang_omni_router.launcher.local as local_launcher
 from sglang_omni_router.config import DEFAULT_CAPABILITIES, RouterConfig, WorkerConfig
 from sglang_omni_router.health import HealthChecker
+from sglang_omni_router.launcher import LocalLauncher, LocalLauncherConfig
+from sglang_omni_router.launcher.config import load_launcher_config
+from sglang_omni_router.launcher.utils import build_gpu_assignments
 from sglang_omni_router.selector import NoEligibleWorkerError, WorkerSelector
 from sglang_omni_router.serve import build_config_from_args, build_parser
 from sglang_omni_router.worker import build_workers
@@ -125,6 +129,62 @@ def test_router_cli_rejects_global_model_with_worker_config(tmp_path: Path) -> N
         build_config_from_args(args)
 
 
+@pytest.mark.parametrize(
+    "extra_args, error",
+    [
+        (
+            ["--worker-urls", "http://127.0.0.1:8101"],
+            "--launcher-config cannot be used with --worker-urls",
+        ),
+        (
+            ["--worker-config", "workers.json"],
+            "--launcher-config cannot be used with --worker-config",
+        ),
+        (
+            ["--model", "qwen3-omni"],
+            "--model cannot be used with --launcher-config",
+        ),
+    ],
+)
+def test_router_cli_rejects_launcher_config_with_other_worker_sources(
+    extra_args: list[str],
+    error: str,
+) -> None:
+    args = build_parser().parse_args(
+        ["--launcher-config", "launcher.yaml", *extra_args]
+    )
+
+    with pytest.raises(ValueError, match=error):
+        build_config_from_args(
+            args,
+            managed_worker_urls=["http://127.0.0.1:8101"],
+            managed_model="qwen3-omni",
+        )
+
+
+def test_router_cli_builds_config_from_managed_worker_urls() -> None:
+    args = build_parser().parse_args(
+        [
+            "--launcher-config",
+            "launcher.yaml",
+            "--policy",
+            "least_request",
+        ]
+    )
+
+    config = build_config_from_args(
+        args,
+        managed_worker_urls=["http://127.0.0.1:8101", "http://127.0.0.1:8102"],
+        managed_model="qwen3-omni",
+    )
+
+    assert config.policy == "least_request"
+    assert [(worker.url, worker.model) for worker in config.workers] == [
+        ("http://127.0.0.1:8101", "qwen3-omni"),
+        ("http://127.0.0.1:8102", "qwen3-omni"),
+    ]
+
+
 def test_router_worker_config_requires_workers_object(tmp_path: Path) -> None:
     config_path = tmp_path / "workers.json"
     config_path.write_text(
@@ -135,6 +195,159 @@ def test_router_worker_config_requires_workers_object(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="workers list"):
         build_config_from_args(args)
+
+
+def test_launcher_config_passes_worker_extra_args_to_public_v1_serve_command(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "launcher.yaml"
+    config_path.write_text(
+        """
+launcher:
+  backend: local
+  model_path: Qwen/Qwen3-Omni-30B-A3B-Instruct
+  model_name: qwen3-omni
+  num_workers: 2
+  worker_host: 127.0.0.1
+  worker_base_port: 8011
+  worker_gpu_ids: ["0", "1"]
+  wait_timeout: 600
+  worker_extra_args: >-
+    --mem-fraction-static 0.6 --thinker-tp-size 2
+    --thinker-gpus '0,1'
+""",
+        encoding="utf-8",
+    )
+
+    config = load_launcher_config(config_path)
+    command = LocalLauncher(config).build_worker_command(8011)
+
+    assert command[:9] == [
+        "sgl-omni",
+        "serve",
+        "--version",
+        "v1",
+        "--model-path",
+        "Qwen/Qwen3-Omni-30B-A3B-Instruct",
+        "--host",
+        "127.0.0.1",
+        "--port",
+    ]
+    assert command[9] == "8011"
+    assert command[command.index("--model-name") + 1] == "qwen3-omni"
+    assert command[command.index("--mem-fraction-static") + 1] == "0.6"
+    assert command[command.index("--thinker-tp-size") + 1] == "2"
+    assert command[command.index("--thinker-gpus") + 1] == "0,1"
+
+
+@pytest.mark.parametrize(
+    "yaml_text, error",
+    [
+        ("{}", "top-level launcher object"),
+        ("launcher:\n  model_path: model\n  unknown: true\n", "unknown"),
+        (
+            "launcher:\n" "  model_path: model\n" "  mem_fraction_static: 0.6\n",
+            "mem_fraction_static",
+        ),
+        ("launcher:\n  backend: local\n  num_workers: 1\n", "model_path"),
+        (
+            "launcher:\n"
+            "  backend: local\n"
+            "  model_path: model\n"
+            "  num_workers: 2\n"
+            "  worker_gpu_ids: ['0']\n",
+            "worker_gpu_ids must contain exactly num_workers entries",
+        ),
+    ],
+)
+def test_launcher_config_rejects_invalid_yaml(
+    tmp_path: Path,
+    yaml_text: str,
+    error: str,
+) -> None:
+    config_path = tmp_path / "launcher.yaml"
+    config_path.write_text(yaml_text, encoding="utf-8")
+
+    with pytest.raises(ValueError, match=error):
+        load_launcher_config(config_path)
+
+
+def test_launcher_gpu_assignment_uses_explicit_worker_gpu_ids() -> None:
+    config = LocalLauncherConfig(
+        model_path="model",
+        num_workers=2,
+        worker_gpu_ids=["0,1", "2,3"],
+    )
+
+    assert build_gpu_assignments(config) == ["0,1", "2,3"]
+
+
+def test_launcher_gpu_assignment_groups_visible_devices(monkeypatch) -> None:
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "4,5,6,7")
+    config = LocalLauncherConfig(
+        model_path="model",
+        num_workers=2,
+        num_gpus_per_worker=2,
+    )
+
+    assert build_gpu_assignments(config) == ["4,5", "6,7"]
+
+
+def test_launcher_gpu_assignment_allows_default_process_visibility(monkeypatch) -> None:
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+    monkeypatch.setattr(
+        "sglang_omni_router.launcher.utils.infer_available_cuda_devices",
+        lambda: [],
+    )
+    config = LocalLauncherConfig(model_path="model", num_workers=1)
+
+    assert build_gpu_assignments(config) is None
+
+
+def test_launcher_cleans_up_managed_workers_on_health_timeout(monkeypatch) -> None:
+    config = LocalLauncherConfig(
+        model_path="model",
+        num_workers=1,
+        worker_gpu_ids=["7"],
+        wait_timeout=1,
+    )
+    created_processes = []
+    terminated_processes = []
+
+    class FakeProcess:
+        pid = 12345
+
+        def poll(self):
+            return None
+
+    def fake_popen(command, env, start_new_session):
+        process = FakeProcess()
+        created_processes.append((process, command, env, start_new_session))
+        return process
+
+    def fail_health(**kwargs):
+        raise TimeoutError("worker did not become healthy")
+
+    monkeypatch.setattr(local_launcher.shutil, "which", lambda command: command)
+    monkeypatch.setattr(local_launcher, "reserve_worker_ports", lambda config: [8011])
+    monkeypatch.setattr(local_launcher.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(local_launcher, "wait_for_worker_health", fail_health)
+    monkeypatch.setattr(
+        local_launcher,
+        "terminate_processes",
+        lambda processes: terminated_processes.extend(processes),
+    )
+
+    launcher = LocalLauncher(config)
+    with pytest.raises(TimeoutError, match="worker did not become healthy"):
+        launcher.launch_and_wait()
+
+    process, command, env, start_new_session = created_processes[0]
+    assert command[:4] == ["sgl-omni", "serve", "--version", "v1"]
+    assert env["CUDA_VISIBLE_DEVICES"] == "7"
+    assert start_new_session is True
+    assert terminated_processes == [process]
+    assert launcher.worker_urls == []
 
 
 @pytest.mark.parametrize(
