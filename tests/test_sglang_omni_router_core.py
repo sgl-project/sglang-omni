@@ -491,6 +491,7 @@ launcher:
             events.append("shutdown")
 
     monkeypatch.setattr(serve_module, "LocalLauncher", FakeLauncher)
+    monkeypatch.setattr(serve_module.logging.config, "dictConfig", lambda config: None)
 
     with pytest.raises(SystemExit) as exc:
         serve_module.main(["--launcher-config", str(config_path)])
