@@ -13,7 +13,6 @@ from sglang_omni_v1.config import (
 )
 from sglang_omni_v1.models.qwen3_omni.config import Qwen3OmniSpeechPipelineConfig
 
-
 _FACTORY = "tests.v1_dummy_factories.runtime_factory"
 
 
@@ -62,7 +61,7 @@ def test_typed_runtime_maps_to_factory_args_and_sglang_overrides() -> None:
     assert "total_gpu_memory_fraction" not in args
 
 
-def test_typed_sglang_runtime_wins_over_legacy_runtime_overlay() -> None:
+def test_typed_sglang_runtime_rejects_legacy_mem_fraction_duplicate() -> None:
     stage = _stage(
         runtime=StageRuntimeConfig(
             sglang_server_args=SGLangServerArgsConfig(mem_fraction_static=0.70)
@@ -81,10 +80,21 @@ def test_typed_sglang_runtime_wins_over_legacy_runtime_overlay() -> None:
         },
     )
 
-    args = resolve_stage_factory_args(stage, config)
+    with pytest.raises(ValueError, match="mem_fraction_static"):
+        resolve_stage_factory_args(stage, config)
 
-    assert args["server_args_overrides"]["disable_cuda_graph"] is True
-    assert args["server_args_overrides"]["mem_fraction_static"] == 0.70
+
+def test_typed_sglang_runtime_rejects_factory_mem_fraction_duplicate() -> None:
+    stage = _stage(
+        factory_args={"server_args_overrides": {"mem_fraction_static": 0.85}},
+        runtime=StageRuntimeConfig(
+            sglang_server_args=SGLangServerArgsConfig(mem_fraction_static=0.70)
+        ),
+    )
+    config = PipelineConfig(model_path="dummy-model", stages=[stage])
+
+    with pytest.raises(ValueError, match="mem_fraction_static"):
+        resolve_stage_factory_args(stage, config)
 
 
 def test_mapped_runtime_field_requires_stage_arg_mapping() -> None:
@@ -116,12 +126,22 @@ def test_legacy_runtime_override_wins_over_qwen_model_default() -> None:
     assert args["thinker_max_seq_len"] == 16384
 
 
-def test_explicit_typed_runtime_wins_over_legacy_runtime_override() -> None:
+def test_explicit_typed_runtime_rejects_legacy_runtime_override_duplicate() -> None:
     config = Qwen3OmniSpeechPipelineConfig(
         model_path="dummy-model",
         runtime_overrides={"thinker": {"thinker_max_seq_len": 16384}},
     )
     thinker = next(stage for stage in config.stages if stage.name == "thinker")
+    thinker.runtime.max_seq_len = 32768
+
+    with pytest.raises(ValueError, match="thinker_max_seq_len"):
+        resolve_stage_factory_args(thinker, config)
+
+
+def test_typed_runtime_can_override_static_model_factory_default() -> None:
+    config = Qwen3OmniSpeechPipelineConfig(model_path="dummy-model")
+    thinker = next(stage for stage in config.stages if stage.name == "thinker")
+    assert thinker.factory_args["thinker_max_seq_len"] == 8192
     thinker.runtime.max_seq_len = 32768
 
     args = resolve_stage_factory_args(thinker, config)

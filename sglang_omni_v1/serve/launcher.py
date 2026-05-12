@@ -45,6 +45,11 @@ from sglang_omni_v1.config import (
 )
 from sglang_omni_v1.profiler.profiler_control import ProfilerControlClient
 from sglang_omni_v1.serve.openai_api import create_app
+from sglang_omni_v1.utils.gpu_memory import (
+    GpuDeviceInfo,
+    format_bytes_gib,
+    get_gpu_device_info,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -93,14 +98,54 @@ def _collect_stage_control_endpoints(stages) -> dict[str, str]:
     return out
 
 
-def _placement_log_summary(placement_plan) -> dict[int, dict[str, Any]]:
-    return {
-        gpu_id: {
-            "stages": list(gpu.stage_names),
-            "total_gpu_memory_fraction": round(gpu.total_gpu_memory_fraction, 3),
-            "missing_fraction_stages": list(gpu.missing_fraction_stage_names),
+def _stage_runtime_log_summary(pipeline_config: PipelineConfig) -> dict[str, Any]:
+    summary: dict[str, Any] = {}
+    for stage in pipeline_config.stages:
+        resources = stage.runtime.resources
+        mem_fraction = stage.runtime.sglang_server_args.mem_fraction_static
+        if stage.gpu is None and resources.total_gpu_memory_fraction is None:
+            continue
+        summary[stage.name] = {
+            "gpu": stage.gpu,
+            "total_gpu_memory_fraction": resources.total_gpu_memory_fraction,
+            "mem_fraction_static": mem_fraction,
         }
-        for gpu_id, gpu in placement_plan.gpus.items()
+    return summary
+
+
+def _format_gpu_device_info(info: GpuDeviceInfo) -> dict[str, Any]:
+    return {
+        "device_id": info.device_id,
+        "name": info.name or "unknown",
+        "total_memory": (
+            format_bytes_gib(info.total_memory_bytes)
+            if info.total_memory_bytes is not None
+            else "unknown"
+        ),
+    }
+
+
+def _placement_log_summary(
+    placement_plan,
+    pipeline_config: PipelineConfig,
+) -> dict[str, Any]:
+    hardware = {
+        gpu_id: _format_gpu_device_info(get_gpu_device_info(gpu_id))
+        for gpu_id in sorted(placement_plan.gpus)
+    }
+    return {
+        "topology": pipeline_config.config_cls or type(pipeline_config).__name__,
+        "pipeline": pipeline_config.name,
+        "stage_runtime": _stage_runtime_log_summary(pipeline_config),
+        "gpus": {
+            gpu_id: {
+                "hardware": hardware[gpu_id],
+                "stages": list(gpu.stage_names),
+                "total_gpu_memory_fraction": round(gpu.total_gpu_memory_fraction, 3),
+                "missing_fraction_stages": list(gpu.missing_fraction_stage_names),
+            }
+            for gpu_id, gpu in placement_plan.gpus.items()
+        },
     }
 
 
@@ -160,9 +205,9 @@ async def _run_server(
     gpu_ids = set(placement_plan.gpus)
     process_mode = "multi-process" if needs_mp else "single-process"
     logger.info(
-        "Placement plan: process_mode=%s gpu_budgets=%s",
+        "Placement plan: process_mode=%s summary=%s",
         process_mode,
-        _placement_log_summary(placement_plan),
+        _placement_log_summary(placement_plan, pipeline_config),
     )
 
     if needs_mp:

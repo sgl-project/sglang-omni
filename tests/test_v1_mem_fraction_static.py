@@ -172,6 +172,27 @@ def test_cli_mem_fraction_static_survives_runtime_overrides_overlay() -> None:
     assert resolved["server_args_overrides"]["disable_cuda_graph"] is True
 
 
+def test_cli_mem_fraction_static_rejects_legacy_mem_fraction_duplicate() -> None:
+    from sglang_omni_v1.config.compiler import _resolve_factory_args
+
+    config = Qwen3OmniSpeechPipelineConfig(
+        model_path="dummy",
+        runtime_overrides={
+            "thinker": {"server_args_overrides": {"mem_fraction_static": 0.70}}
+        },
+    )
+
+    apply_mem_fraction_cli_overrides(
+        config,
+        mem_fraction_static=0.80,
+        thinker_mem_fraction_static=None,
+        talker_mem_fraction_static=None,
+    )
+
+    with pytest.raises(ValueError, match="mem_fraction_static"):
+        _resolve_factory_args(_stage(config, "thinker"), config)
+
+
 def test_cli_rejects_talker_override_on_text_only_qwen_without_partial_write() -> None:
     config = Qwen3OmniPipelineConfig(model_path="dummy")
     original = config.model_dump()

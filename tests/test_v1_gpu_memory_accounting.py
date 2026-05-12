@@ -15,6 +15,8 @@ class _FakeNVML(ModuleType):
         self,
         *,
         device_count: int = 4,
+        device_name: str | bytes = b"NVIDIA H200",
+        total_memory: int = 141 * 1024**3,
         processes: list[SimpleNamespace] | None = None,
         init_error: Exception | None = None,
         query_error: Exception | None = None,
@@ -22,6 +24,8 @@ class _FakeNVML(ModuleType):
     ) -> None:
         super().__init__("pynvml")
         self.device_count = device_count
+        self.device_name = device_name
+        self.total_memory = total_memory
         self.processes = processes or []
         self.init_error = init_error
         self.query_error = query_error
@@ -57,6 +61,16 @@ class _FakeNVML(ModuleType):
         if self.query_error is not None:
             raise self.query_error
         return self.processes
+
+    def nvmlDeviceGetName(self, handle: str) -> str | bytes:
+        if self.query_error is not None:
+            raise self.query_error
+        return self.device_name
+
+    def nvmlDeviceGetMemoryInfo(self, handle: str) -> SimpleNamespace:
+        if self.query_error is not None:
+            raise self.query_error
+        return SimpleNamespace(total=self.total_memory)
 
 
 def _install_fake_nvml(monkeypatch: pytest.MonkeyPatch, fake: _FakeNVML) -> None:
@@ -242,3 +256,37 @@ def test_get_process_gpu_memory_rejects_invalid_device_mapping(
 def test_format_bytes_gib() -> None:
     assert gpu_memory.format_bytes_gib(None) == "None"
     assert gpu_memory.format_bytes_gib(3 * 1024**3) == "3.00GiB"
+
+
+def test_get_gpu_device_info_reports_name_and_total_memory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake = _FakeNVML(device_name=b"NVIDIA H200", total_memory=141 * 1024**3)
+    _install_fake_nvml(monkeypatch, fake)
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "3")
+
+    info = gpu_memory.get_gpu_device_info(0)
+
+    assert info.logical_gpu_id == 0
+    assert info.device_id == 3
+    assert info.name == "NVIDIA H200"
+    assert info.total_memory_bytes == 141 * 1024**3
+    assert fake.index_handles == [3]
+    assert fake.shutdown_called is True
+
+
+def test_get_gpu_device_info_returns_unknown_without_nvml(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _raise_module_not_found(name: str) -> None:
+        raise ModuleNotFoundError(name)
+
+    monkeypatch.setattr(gpu_memory.importlib, "import_module", _raise_module_not_found)
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+
+    info = gpu_memory.get_gpu_device_info(0)
+
+    assert info.logical_gpu_id == 0
+    assert info.device_id == 0
+    assert info.name is None
+    assert info.total_memory_bytes is None

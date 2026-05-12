@@ -9,7 +9,6 @@ from typing import Any
 from sglang_omni_v1.config.schema import PipelineConfig, StageConfig
 from sglang_omni_v1.utils import import_string
 
-
 _MAPPED_STAGE_RUNTIME_FIELDS = ("max_seq_len", "video_fps")
 
 
@@ -26,16 +25,17 @@ def resolve_stage_factory_args(
     2. legacy ``pipeline.runtime_overrides`` compatibility overlay,
     3. typed ``stage.runtime`` values.
 
-    The typed runtime layer intentionally wins because it is the canonical v1
-    surface. Placement resource budgets are not translated here; backend memory
-    controls such as SGLang ``mem_fraction_static`` stay backend namespaced.
+    Typed runtime is the canonical v1 surface. Legacy compatibility overlays
+    can still provide unmigrated values, but the same migrated parameter must
+    not be set through both old and typed paths. Placement resource budgets are
+    not translated here; backend memory controls such as SGLang
+    ``mem_fraction_static`` stay backend namespaced.
     """
 
     args = dict(stage_cfg.factory_args)
-    _merge_factory_arg_overrides(
-        args,
-        global_cfg.runtime_overrides.get(stage_cfg.name, {}),
-    )
+    runtime_overrides = global_cfg.runtime_overrides.get(stage_cfg.name, {})
+    _reject_duplicate_runtime_sources(stage_cfg, args, runtime_overrides)
+    _merge_factory_arg_overrides(args, runtime_overrides)
     _apply_typed_runtime_args(args, stage_cfg)
 
     factory = import_string(stage_cfg.factory)
@@ -46,10 +46,56 @@ def resolve_stage_factory_args(
 
     if "gpu_id" in sig.parameters and "gpu_id" not in args:
         args["gpu_id"] = (
-            gpu_id if gpu_id is not None else _resolve_primary_gpu_id(stage_cfg, global_cfg)
+            gpu_id
+            if gpu_id is not None
+            else _resolve_primary_gpu_id(stage_cfg, global_cfg)
         )
 
     return args
+
+
+def _reject_duplicate_runtime_sources(
+    stage_cfg: StageConfig,
+    factory_args: dict[str, Any],
+    runtime_overrides: dict[str, Any],
+) -> None:
+    """Reject old and typed config paths setting the same migrated parameter."""
+
+    typed_mem_fraction = stage_cfg.runtime.sglang_server_args.mem_fraction_static
+    if typed_mem_fraction is not None and _legacy_mem_fraction_static_is_set(
+        factory_args,
+        runtime_overrides,
+    ):
+        raise ValueError(
+            f"Stage {stage_cfg.name!r} sets mem_fraction_static through both "
+            "legacy server_args_overrides and typed "
+            "runtime.sglang_server_args.mem_fraction_static"
+        )
+
+    for field_name in _MAPPED_STAGE_RUNTIME_FIELDS:
+        value = getattr(stage_cfg.runtime, field_name)
+        if value is None:
+            continue
+        target_arg = stage_cfg.runtime_arg_map.get(field_name)
+        if target_arg and target_arg in runtime_overrides:
+            raise ValueError(
+                f"Stage {stage_cfg.name!r} sets {target_arg!r} through both "
+                f"legacy runtime_overrides and typed runtime.{field_name}"
+            )
+
+
+def _legacy_mem_fraction_static_is_set(
+    factory_args: dict[str, Any],
+    runtime_overrides: dict[str, Any],
+) -> bool:
+    for source in (factory_args, runtime_overrides):
+        server_args = source.get("server_args_overrides")
+        if (
+            isinstance(server_args, dict)
+            and server_args.get("mem_fraction_static") is not None
+        ):
+            return True
+    return False
 
 
 def _merge_factory_arg_overrides(

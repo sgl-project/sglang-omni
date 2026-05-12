@@ -43,11 +43,18 @@ class ParallelismConfig(BaseModel):
 
 
 class StageResourceConfig(BaseModel):
-    """Placement-resource intent for one stage."""
+    """Placement-resource intent for one stage rank/process."""
 
     model_config = ConfigDict(extra="forbid")
 
-    total_gpu_memory_fraction: float | None = None
+    total_gpu_memory_fraction: float | None = Field(
+        default=None,
+        description=(
+            "Per-rank/process budget as a fraction of total physical GPU "
+            "memory. After TP expansion, each rank contributes this budget to "
+            "its assigned GPU."
+        ),
+    )
 
     def model_post_init(self, __context: Any = None) -> None:
         value = self.total_gpu_memory_fraction

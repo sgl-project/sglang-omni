@@ -14,7 +14,6 @@ from sglang_omni_v1.config import (
     resolve_stage_gpu_ids,
 )
 
-
 _FACTORY = "tests.v1_dummy_factories.dummy_factory"
 
 
@@ -140,6 +139,24 @@ def test_tp_rank_gpu_ids_are_preserved() -> None:
 
     assert resolve_stage_gpu_ids(plan, stage) == [0, 1]
     assert plan.requires_multi_process is True
+
+
+def test_tp_memory_fraction_is_per_rank_per_assigned_gpu() -> None:
+    stage = _stage(
+        "thinker",
+        gpu=[0, 1],
+        fraction=0.30,
+        tp_size=2,
+        terminal=True,
+    )
+    config = PipelineConfig(model_path="dummy", stages=[stage])
+
+    plan = build_stage_placement_plan(config)
+
+    assert plan.gpus[0].stage_names == ("thinker",)
+    assert plan.gpus[0].total_gpu_memory_fraction == pytest.approx(0.30)
+    assert plan.gpus[1].stage_names == ("thinker",)
+    assert plan.gpus[1].total_gpu_memory_fraction == pytest.approx(0.30)
 
 
 def test_tp_scalar_gpu_is_rejected() -> None:

@@ -6,6 +6,7 @@ from __future__ import annotations
 import importlib
 import logging
 import os
+from dataclasses import dataclass
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -13,6 +14,14 @@ logger = logging.getLogger(__name__)
 
 class _InvalidGpuDeviceError(RuntimeError):
     pass
+
+
+@dataclass(frozen=True)
+class GpuDeviceInfo:
+    logical_gpu_id: int
+    device_id: int | str | None
+    name: str | None
+    total_memory_bytes: int | None
 
 
 def parse_cuda_visible_devices(value: str | None = None) -> list[int | str]:
@@ -122,6 +131,64 @@ def get_process_gpu_memory_bytes(logical_gpu_id: int) -> int | None:
         _shutdown_nvml(pynvml)
 
 
+def get_gpu_device_info(logical_gpu_id: int) -> GpuDeviceInfo:
+    """Return best-effort GPU name and total memory for a CUDA logical device."""
+
+    info = GpuDeviceInfo(
+        logical_gpu_id=logical_gpu_id,
+        device_id=None,
+        name=None,
+        total_memory_bytes=None,
+    )
+    visible_devices = parse_cuda_visible_devices()
+    try:
+        device_id = resolve_visible_device_id(logical_gpu_id, visible_devices)
+    except _InvalidGpuDeviceError as exc:
+        logger.warning("GPU device metadata is unavailable: %s", exc)
+        return info
+
+    pynvml = _try_import_pynvml()
+    if pynvml is None:
+        return GpuDeviceInfo(
+            logical_gpu_id=logical_gpu_id,
+            device_id=device_id,
+            name=None,
+            total_memory_bytes=None,
+        )
+
+    try:
+        pynvml.nvmlInit()
+    except Exception as exc:
+        logger.warning("NVML init failed; GPU device metadata is unavailable: %s", exc)
+        return GpuDeviceInfo(
+            logical_gpu_id=logical_gpu_id,
+            device_id=device_id,
+            name=None,
+            total_memory_bytes=None,
+        )
+
+    try:
+        handle = _get_device_handle(pynvml, device_id)
+        name = _decode_nvml_string(pynvml.nvmlDeviceGetName(handle))
+        memory_info = pynvml.nvmlDeviceGetMemoryInfo(handle)
+        return GpuDeviceInfo(
+            logical_gpu_id=logical_gpu_id,
+            device_id=device_id,
+            name=name,
+            total_memory_bytes=int(memory_info.total),
+        )
+    except Exception as exc:
+        logger.warning("NVML query failed; GPU device metadata is unavailable: %s", exc)
+        return GpuDeviceInfo(
+            logical_gpu_id=logical_gpu_id,
+            device_id=device_id,
+            name=None,
+            total_memory_bytes=None,
+        )
+    finally:
+        _shutdown_nvml(pynvml)
+
+
 def format_bytes_gib(value: int | None) -> str:
     if value is None:
         return "None"
@@ -144,6 +211,12 @@ def _get_device_handle(pynvml: Any, device_id: int | str) -> Any:
         return get_by_uuid(device_id)
     except TypeError:
         return get_by_uuid(device_id.encode("utf-8"))
+
+
+def _decode_nvml_string(value: str | bytes) -> str:
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return value
 
 
 def _shutdown_nvml(pynvml: Any) -> None:
