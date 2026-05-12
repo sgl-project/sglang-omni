@@ -38,8 +38,7 @@ class StagePlacementPlan:
 
 
 class PlacementPolicy(Protocol):
-    def validate(self, config: PipelineConfig, plan: StagePlacementPlan) -> None:
-        ...
+    def validate(self, config: PipelineConfig, plan: StagePlacementPlan) -> None: ...
 
 
 class StagePlacementPlanner:

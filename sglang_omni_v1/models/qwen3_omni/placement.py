@@ -5,7 +5,6 @@ from __future__ import annotations
 
 from sglang_omni_v1.config import PipelineConfig, StagePlacementPlan
 
-
 _SPEECH_STAGE_ORDER = (
     "preprocessing",
     "image_encoder",
@@ -95,8 +94,7 @@ class Qwen3OmniPlacementPolicy:
 
         if invalid:
             raise ValueError(
-                "Qwen colocated speech requires exactly one GPU id for "
-                f"{invalid}"
+                "Qwen colocated speech requires exactly one GPU id for " f"{invalid}"
             )
         if len(gpu_ids) != 1:
             raise ValueError(
@@ -109,8 +107,7 @@ class Qwen3OmniPlacementPolicy:
             stage_name
             for stage_name in sorted(_COLOCATED_BUDGET_STAGES)
             if (
-                stage_map[stage_name]
-                .runtime.resources.total_gpu_memory_fraction
+                stage_map[stage_name].runtime.resources.total_gpu_memory_fraction
                 is None
             )
         ]
@@ -124,8 +121,7 @@ class Qwen3OmniPlacementPolicy:
             stage_name
             for stage_name in _AR_STAGES
             if (
-                stage_map[stage_name]
-                .runtime.sglang_server_args.mem_fraction_static
+                stage_map[stage_name].runtime.sglang_server_args.mem_fraction_static
                 is None
             )
         ]

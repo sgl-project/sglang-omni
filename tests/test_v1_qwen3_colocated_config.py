@@ -28,16 +28,14 @@ def _set_colocated_runtime(
         "code2wav": 0.05,
     }
     for stage_name, fraction in fractions.items():
-        _stage(
-            config, stage_name
-        ).runtime.resources.total_gpu_memory_fraction = fraction
+        _stage(config, stage_name).runtime.resources.total_gpu_memory_fraction = (
+            fraction
+        )
     if include_mem_fraction:
-        _stage(
-            config, "thinker"
-        ).runtime.sglang_server_args.mem_fraction_static = 0.70
-        _stage(
-            config, "talker_ar"
-        ).runtime.sglang_server_args.mem_fraction_static = 0.65
+        _stage(config, "thinker").runtime.sglang_server_args.mem_fraction_static = 0.70
+        _stage(config, "talker_ar").runtime.sglang_server_args.mem_fraction_static = (
+            0.65
+        )
 
 
 def test_default_speech_topology_stays_disaggregated() -> None:
@@ -141,9 +139,7 @@ def test_default_speech_rejects_same_gpu_thinker_and_talker_colocation() -> None
         "talker_ar",
         "code2wav",
     ):
-        _stage(
-            config, stage_name
-        ).runtime.resources.total_gpu_memory_fraction = 0.10
+        _stage(config, stage_name).runtime.resources.total_gpu_memory_fraction = 0.10
     _stage(config, "thinker").runtime.sglang_server_args.mem_fraction_static = 0.70
     _stage(config, "talker_ar").runtime.sglang_server_args.mem_fraction_static = 0.65
 

@@ -7,11 +7,7 @@ from typing import ClassVar
 
 from pydantic import Field
 
-from sglang_omni_v1.config import (
-    PipelineConfig,
-    ProcessConfig,
-    StageConfig,
-)
+from sglang_omni_v1.config import PipelineConfig, ProcessConfig, StageConfig
 
 _PKG = "sglang_omni_v1.models.qwen3_omni"
 _PLACEMENT_POLICY = f"{_PKG}.placement.Qwen3OmniPlacementPolicy"
