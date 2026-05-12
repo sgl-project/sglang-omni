@@ -355,7 +355,9 @@ class SGLangOutputProcessor:
             token_id = token_list[i] if i < len(token_list) else None
             extra = None
             if hidden_states_dict is not None:
-                if "_single" in hidden_states_dict:
+                if "_full" in hidden_states_dict:
+                    extra = {"hidden_states": hidden_states_dict["_full"]}
+                elif "_single" in hidden_states_dict:
                     extra = {"hidden_states": hidden_states_dict["_single"][i]}
                 else:
                     per_req = {}
@@ -382,10 +384,20 @@ class SGLangOutputProcessor:
         """Extract hidden states from model output or side-channel.
 
         Priority:
-        1. Side-channel (_captured_aux_hidden_states) from hidden capture hooks
-        2. logits_output.hidden_states (legacy single-tensor path)
+        1. Full-sequence side-channel (_captured_full_hidden_states) for
+           image_gen prefill-only — preserves the full [seq_len, hidden_dim]
+           tensor so downstream can apply gen_mask.
+        2. Side-channel (_captured_aux_hidden_states) from hidden capture hooks
+        3. logits_output.hidden_states (legacy single-tensor path)
         """
-        # Check side-channel first (set by _hidden_capture hooks)
+        # Full-sequence capture (set by BailingMoeV2ForCausalLM.forward)
+        if self._model is not None:
+            full_hs = getattr(self._model, "_captured_full_hidden_states", None)
+            if full_hs is not None:
+                self._model._captured_full_hidden_states = None
+                return {"_full": full_hs}
+
+        # Side-channel from _hidden_capture hooks
         if self._model is not None and self._capture_hidden_layers:
             aux = getattr(self._model, "_captured_aux_hidden_states", None)
             if aux is not None:
@@ -471,9 +483,18 @@ class SGLangIterationController:
             )
 
         if req.is_chunked > 0:
+            # Accumulate full-sequence hidden states across chunks so
+            # image_gen prefill-only gets the complete [seq_len, hidden_dim].
+            if output.extra:
+                self._accumulate_hidden_states(data, output.extra)
             output.data = None
             req.is_chunked -= 1
             return
+
+        # Transfer captured model outputs (e.g. hidden states) to the
+        # request data so they're available to downstream pipeline stages.
+        if output.extra:
+            self._accumulate_hidden_states(data, output.extra)
 
         token_id = output.data
         if token_id is not None:
@@ -493,6 +514,22 @@ class SGLangIterationController:
                 len(req.output_ids),
                 req.finished(),
             )
+
+    @staticmethod
+    def _accumulate_hidden_states(data, extra: dict) -> None:
+        """Merge extra into data.extra_model_outputs, concatenating hidden_states tensors."""
+        hs = extra.get("hidden_states")
+        if hs is not None and isinstance(hs, torch.Tensor):
+            prev = data.extra_model_outputs.get("hidden_states")
+            if prev is not None and isinstance(prev, torch.Tensor):
+                data.extra_model_outputs["hidden_states"] = torch.cat([prev, hs], dim=0)
+            else:
+                data.extra_model_outputs["hidden_states"] = hs
+            rest = {k: v for k, v in extra.items() if k != "hidden_states"}
+            if rest:
+                data.extra_model_outputs.update(rest)
+        else:
+            data.extra_model_outputs.update(extra)
 
     def is_finished(self, request: SchedulerRequest, output: RequestOutput) -> bool:
         return request.data.req.finished()

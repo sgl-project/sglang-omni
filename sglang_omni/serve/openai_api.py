@@ -39,6 +39,7 @@ from sglang_omni.client.audio import (
 from sglang_omni.serve.protocol import (
     ChatCompletionAudio,
     ChatCompletionChoice,
+    ChatCompletionImageData,
     ChatCompletionRequest,
     ChatCompletionResponse,
     ChatCompletionStreamChoice,
@@ -231,7 +232,18 @@ async def _chat_non_stream(
             "transcript": result.audio.transcript,
         }
 
-    if "content" not in message and "audio" not in message:
+    if "image" in requested_modalities and result.images:
+        message["images"] = [
+            {
+                "b64_json": img.b64_json,
+                "format": img.format,
+                "width": img.width,
+                "height": img.height,
+            }
+            for img in result.images
+        ]
+
+    if "content" not in message and "audio" not in message and "images" not in message:
         message["content"] = result.text
 
     # Build usage
@@ -316,6 +328,22 @@ async def _chat_stream(
                 id=f"audio-{request_id}",
                 data=chunk.audio_b64,
             )
+            emit = True
+
+        # Image chunk (non-streaming: arrives as single final chunk)
+        if (
+            chunk.modality == "image"
+            and chunk.image_b64 is not None
+            and "image" in requested_modalities
+        ):
+            delta.images = [
+                ChatCompletionImageData(
+                    b64_json=chunk.image_b64,
+                    format=chunk.image_format or "png",
+                    width=chunk.image_width,
+                    height=chunk.image_height,
+                )
+            ]
             emit = True
 
         if not emit:
@@ -410,10 +438,12 @@ def _build_chat_generate_request(req: ChatCompletionRequest) -> GenerateRequest:
     if req.videos:
         videos = req.videos
 
-    # Merge audio config, audios, images, and videos into metadata
+    # Merge audio config, image config, audios, images, and videos into metadata
     metadata: dict[str, Any] = {}
     if req.audio:
         metadata["audio_config"] = req.audio
+    if req.image_generation:
+        metadata["image_generation"] = req.image_generation
     if audios:
         metadata["audios"] = audios
     if images:
