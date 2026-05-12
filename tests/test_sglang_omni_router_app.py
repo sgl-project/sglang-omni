@@ -326,7 +326,7 @@ def test_requested_model_routes_only_to_matching_model_worker() -> None:
     assert seen_workers == ["worker-a:8101", "worker-a:8101"]
 
 
-def test_large_body_requires_model_header_for_mixed_model_pool() -> None:
+def test_large_body_uses_scanned_model_for_mixed_model_pool() -> None:
     seen_workers: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -345,29 +345,20 @@ def test_large_body_requires_model_header_for_mixed_model_pool() -> None:
     app = create_app(_router_config(worker_configs=worker_configs), client=async_client)
     body = _large_json_body(
         {
+            "padding_first": "x" * (1024 * 1024 + 128),
             "model": "model-b",
             "messages": [{"role": "user", "content": "hello"}],
         }
     )
 
     with TestClient(app) as client:
-        rejected = client.post(
+        response = client.post(
             "/v1/chat/completions",
             content=body,
             headers={"content-type": "application/json"},
         )
-        routed = client.post(
-            "/v1/chat/completions",
-            content=body,
-            headers={
-                "content-type": "application/json",
-                "x-sglang-omni-route-model": "model-b",
-            },
-        )
 
-    assert rejected.status_code == 400
-    assert "x-sglang-omni-route-model" in rejected.json()["error"]["message"]
-    assert routed.status_code == 200
+    assert response.status_code == 200
     assert seen_workers == ["worker-b:8102"]
 
 
@@ -1156,11 +1147,7 @@ def test_large_streaming_chat_body_preserves_sse_routing() -> None:
             "POST",
             "/v1/chat/completions",
             content=body,
-            headers={
-                "content-type": "application/json",
-                "x-sglang-omni-route-capabilities": "streaming",
-                "x-sglang-omni-route-stream": "true",
-            },
+            headers={"content-type": "application/json"},
         ) as response:
             stream_body = b"".join(response.iter_bytes())
 
@@ -1238,6 +1225,55 @@ def test_speech_stream_requires_speech_and_streaming_capabilities() -> None:
     assert response.status_code == 200
     assert seen_workers == ["worker-b:8102"]
     assert body == b"data: [DONE]\n\n"
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"model": "qwen3-omni", "input": "hello", "ref_audio": "voice.wav"},
+        {
+            "model": "qwen3-omni",
+            "input": "hello",
+            "references": [{"audio_path": "voice.wav", "text": "hello"}],
+        },
+    ],
+)
+def test_speech_reference_audio_requires_audio_input_capability(
+    payload: dict[str, object],
+) -> None:
+    seen_workers: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"status": "healthy"}, request=request)
+        if request.url.path == "/v1/audio/speech":
+            seen_workers.append(_request_netloc(request))
+            return httpx.Response(
+                200,
+                content=b"audio",
+                headers={"content-type": "audio/wav"},
+                request=request,
+            )
+        raise AssertionError(f"unexpected request path: {request.url.path}")
+
+    worker_configs = [
+        WorkerConfig(url="http://worker-a:8101", capabilities={"speech"}),
+        WorkerConfig(
+            url="http://worker-b:8102",
+            capabilities={"speech", "audio_input"},
+        ),
+    ]
+    async_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    app = create_app(
+        _router_config(worker_configs=worker_configs),
+        client=async_client,
+    )
+
+    with TestClient(app) as client:
+        response = client.post("/v1/audio/speech", json=payload)
+
+    assert response.status_code == 200
+    assert seen_workers == ["worker-b:8102"]
 
 
 def test_streaming_chat_relays_exact_sse_bytes() -> None:
