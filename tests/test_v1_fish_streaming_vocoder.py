@@ -12,6 +12,7 @@ import torch
 from sglang_omni_v1.models.fishaudio_s2_pro.fish_scheduler import FishScheduler
 from sglang_omni_v1.models.fishaudio_s2_pro.streaming_vocoder import (
     S2ProVocoderScheduler,
+    _apply_stream_crossfade,
     _StreamVocoderState,
     build_stream_vocoder_chunk,
     flush_stream_vocoder_chunk,
@@ -199,6 +200,24 @@ def test_streaming_vocoder_sample_level_matches_contextual_full_decode() -> None
     full_audio = codec.from_indices(full_codes[1:][None])[0, 0]
 
     torch.testing.assert_close(streaming_audio, full_audio)
+
+
+def test_streaming_vocoder_crossfade_blends_tail_and_retains_next_tail() -> None:
+    state = _StreamVocoderState(
+        pending_tail=torch.tensor([10.0, 20.0, 30.0]),
+    )
+    delta_audio = torch.tensor([100.0, 200.0, 300.0, 400.0])
+
+    output = _apply_stream_crossfade(
+        state,
+        delta_audio,
+        stream_crossfade_samples=2,
+        is_final=False,
+    )
+
+    assert output is not None
+    torch.testing.assert_close(output, torch.tensor([10.0, 20.0, 200.0]))
+    torch.testing.assert_close(state.pending_tail, torch.tensor([300.0, 400.0]))
 
 
 def test_streaming_vocoder_final_flush_emits_tail_before_result() -> None:

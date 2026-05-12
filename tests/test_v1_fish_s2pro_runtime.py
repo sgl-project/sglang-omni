@@ -110,6 +110,8 @@ def test_v1_s2pro_prepare_decode_uses_gpu_history_buffer() -> None:
     data.last_codebook_values = torch.tensor([11, 22], dtype=torch.long)
 
     runner = FishS2ProModelRunner.__new__(FishS2ProModelRunner)
+    runner._semantic_begin_id = SEMANTIC_TOKEN_ID
+    runner._semantic_end_id = SEMANTIC_TOKEN_ID + 10
     runner.model = SimpleNamespace(
         _semantic_begin_id=SEMANTIC_TOKEN_ID,
         _semantic_end_id=SEMANTIC_TOKEN_ID + 10,
