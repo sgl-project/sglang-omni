@@ -77,12 +77,32 @@ class StreamingDetokenizeScheduler:
             except _queue_mod.Empty:
                 continue
 
-            if msg.type == "new_request":
-                self._on_new_request(msg.request_id, msg.data)
-            elif msg.type == "stream_chunk":
-                self._on_stream_chunk(msg.request_id, msg.data)
-            elif msg.type == "stream_done":
-                self._on_stream_done(msg.request_id)
+            # Per-request failure isolation: a malformed payload, tokenizer
+            # edge case, or PipelineState/decode_events bug must fail only
+            # the offending request — letting the exception escape `start()`
+            # trips `Stage._handle_scheduler_crash`, which fails every
+            # active request on the decode stage. Mirrors the
+            # SimpleScheduler / FishScheduler / Code2WavScheduler contract.
+            try:
+                if msg.type == "new_request":
+                    self._on_new_request(msg.request_id, msg.data)
+                elif msg.type == "stream_chunk":
+                    self._on_stream_chunk(msg.request_id, msg.data)
+                elif msg.type == "stream_done":
+                    self._on_stream_done(msg.request_id)
+            except Exception as exc:
+                logger.exception(
+                    "StreamingDetokenizeScheduler failed request %s",
+                    msg.request_id,
+                )
+                self.abort(msg.request_id)
+                self.outbox.put(
+                    OutgoingMessage(
+                        request_id=msg.request_id,
+                        type="error",
+                        data=exc,
+                    )
+                )
 
     def stop(self) -> None:
         self._running = False

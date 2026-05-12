@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from dataclasses import dataclass
 
 import pytest
@@ -16,7 +17,7 @@ from sglang_omni.models.qwen3_omni.components.streaming_detokenizer import (
 )
 from sglang_omni.pipeline.stage.runtime import Stage
 from sglang_omni.proto import OmniRequest, StagePayload
-from sglang_omni.scheduling.messages import OutgoingMessage
+from sglang_omni.scheduling.messages import IncomingMessage, OutgoingMessage
 
 
 class _ByteTokenizer:
@@ -383,6 +384,132 @@ def test_done_seen_cleared_on_abort():
     assert "req-1" in sched._done_seen
     sched.abort("req-1")
     assert "req-1" not in sched._done_seen
+
+
+class _RaisingTokenizer:
+    """Decode raises on a specific marker token; succeeds otherwise.
+
+    Used to force ``_on_stream_chunk`` to raise from inside the scheduler
+    loop without monkey-patching private methods.
+    """
+
+    def __init__(self, *, eos_token_id: int | None = None) -> None:
+        self.eos_token_id = eos_token_id
+
+    def decode(self, ids, skip_special_tokens: bool = False) -> str:
+        if any(tid == 999 for tid in ids):
+            raise RuntimeError("tokenizer-decode-boom")
+        # Map every other id to a single ASCII letter; keeps deltas non-empty.
+        return "".join(chr(ord("a") + (int(tid) % 26)) for tid in ids)
+
+
+def test_scheduler_isolates_per_request_chunk_failure():
+    """An exception inside ``_on_stream_chunk`` must surface as an
+    ``OutgoingMessage(type="error")`` for that request only, and the
+    scheduler thread must stay alive to serve later requests.
+    """
+    sched = StreamingDetokenizeScheduler(
+        tokenizer=_RaisingTokenizer(),
+        eos_token_id=None,
+    )
+    thread = threading.Thread(target=sched.start, daemon=True)
+    thread.start()
+    try:
+        # req-bad: chunk carries the poison token id (999) → decode raises.
+        sched.inbox.put(
+            IncomingMessage(
+                request_id="req-bad",
+                type="stream_chunk",
+                data=_StreamItem(data=999),
+            )
+        )
+        err = sched.outbox.get(timeout=2.0)
+        assert err.type == "error"
+        assert err.request_id == "req-bad"
+        assert isinstance(err.data, RuntimeError)
+        assert "tokenizer-decode-boom" in str(err.data)
+        # State for the failed request must be cleared.
+        assert "req-bad" not in sched._state
+        assert "req-bad" not in sched._done_seen
+
+        # Scheduler thread must still be alive and processing.
+        assert thread.is_alive()
+
+        # req-good: a healthy non-streaming request finalizes normally.
+        sched.inbox.put(
+            IncomingMessage(
+                request_id="req-good",
+                type="new_request",
+                data=_make_payload(stream=False),
+            )
+        )
+        ok = sched.outbox.get(timeout=2.0)
+        assert ok.type == "result"
+        assert ok.request_id == "req-good"
+    finally:
+        sched.stop()
+        thread.join(timeout=2.0)
+
+
+def test_scheduler_isolates_per_request_finalize_failure():
+    """An exception inside ``_finalize`` (e.g., via PipelineState.from_dict
+    on a malformed payload) must isolate to that request without taking
+    down the scheduler thread.
+    """
+    sched = StreamingDetokenizeScheduler(
+        tokenizer=_RaisingTokenizer(),
+        eos_token_id=None,
+    )
+    thread = threading.Thread(target=sched.start, daemon=True)
+    thread.start()
+    try:
+        # Force _finalize to raise: poison token 999 in output_ids makes
+        # _build_result call tokenizer.decode([999], ...) → RuntimeError.
+        bad_payload = StagePayload(
+            request_id="req-bad",
+            request=OmniRequest(inputs=[], params={"stream": False}),
+            data={
+                "engine_outputs": {
+                    "thinker": {
+                        "output_ids": [999],
+                        "step": 1,
+                        "is_final": True,
+                        "extra_model_outputs": {},
+                        "finish_reason": "stop",
+                    }
+                },
+                "thinker_out": None,
+                "prompt": {"input_ids": []},
+            },
+        )
+        sched.inbox.put(
+            IncomingMessage(
+                request_id="req-bad",
+                type="new_request",
+                data=bad_payload,
+            )
+        )
+        err = sched.outbox.get(timeout=2.0)
+        assert err.type == "error"
+        assert err.request_id == "req-bad"
+        assert isinstance(err.data, Exception)
+        assert "req-bad" not in sched._state
+        assert thread.is_alive()
+
+        # Scheduler is still healthy.
+        sched.inbox.put(
+            IncomingMessage(
+                request_id="req-good",
+                type="new_request",
+                data=_make_payload(stream=False),
+            )
+        )
+        ok = sched.outbox.get(timeout=2.0)
+        assert ok.type == "result"
+        assert ok.request_id == "req-good"
+    finally:
+        sched.stop()
+        thread.join(timeout=2.0)
 
 
 def test_code2wav_abort_clears_all_per_request_state():
