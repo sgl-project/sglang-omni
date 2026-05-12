@@ -794,6 +794,11 @@ class BailingMoeV2ForCausalLM(nn.Module):
     ):
         hidden_states = self.model(input_ids, positions, forward_batch, input_embeds)
 
+        # Store full-sequence hidden states for image_gen prefill-only path.
+        # Only activates when capture_hidden=True is set on the thinker executor.
+        if getattr(forward_batch, "capture_hidden_mode", None) is not None:
+            self._captured_full_hidden_states = hidden_states.clone()
+
         return self.logits_processor(
             input_ids, hidden_states, self.lm_head, forward_batch
         )

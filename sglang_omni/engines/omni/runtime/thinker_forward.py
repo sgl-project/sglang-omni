@@ -50,6 +50,9 @@ def thinker_forward_omni(
         input_deepstack_embeds=ds_input,
     )
 
+    if getattr(forward_batch, "capture_hidden_mode", None) is not None:
+        outer_model._captured_full_hidden_states = hidden_states.clone()
+
     return outer_model.logits_processor(
         forward_batch.input_ids,
         hidden_states,
