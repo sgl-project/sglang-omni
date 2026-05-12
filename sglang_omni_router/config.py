@@ -9,7 +9,14 @@ from pathlib import Path
 from typing import Literal
 from urllib.parse import urlsplit, urlunsplit
 
-from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 Capability = Literal[
     "chat",
@@ -80,6 +87,8 @@ def normalize_worker_url(url: str) -> str:
 
 
 class WorkerConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     url: str
     model: str | None = None
     capabilities: set[Capability] = Field(

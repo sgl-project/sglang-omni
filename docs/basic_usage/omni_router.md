@@ -82,8 +82,32 @@ workers for text output.
 Use `worker_extra_args` for public Omni V1 serve options that are specific to
 the worker process, such as `--mem-fraction-static`, `--thinker-tp-size`, or
 `--text-only`. These arguments are passed to `sgl-omni serve --version v1`
-after the launcher-owned flags. The router does not reinterpret their semantics.
-When no memory flags are provided, Omni V1 uses its normal auto-sizing path.
+after the launcher-owned flags. When no memory flags are provided, Omni V1 uses
+its normal auto-sizing path.
+
+Use `worker_capabilities` when managed workers intentionally expose only part
+of the Omni API surface. For example, text-only workers should not advertise
+speech or audio-output support:
+
+```yaml
+launcher:
+  backend: local
+  model_path: Qwen/Qwen3-Omni-30B-A3B-Instruct
+  model_name: qwen3-omni
+  num_workers: 2
+  num_gpus_per_worker: 1
+  worker_extra_args: "--text-only"
+  worker_capabilities:
+    - chat
+    - streaming
+    - image_input
+    - audio_input
+    - video_input
+```
+
+If `worker_capabilities` is omitted and `worker_extra_args` contains
+`--text-only`, the router registers the managed workers with the same text-only
+capability set shown above.
 
 ## Launch Worker Servers Manually
 

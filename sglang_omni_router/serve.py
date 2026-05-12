@@ -7,6 +7,7 @@ import argparse
 import copy
 import logging
 import logging.config
+import shlex
 from collections.abc import Sequence
 from typing import Any, get_args
 
@@ -15,12 +16,19 @@ from pydantic import ValidationError
 
 from sglang_omni_router.app import create_app
 from sglang_omni_router.config import (
+    DEFAULT_CAPABILITIES,
+    Capability,
     RouterConfig,
     RoutingPolicy,
+    WorkerConfig,
     build_router_config,
     load_worker_configs,
 )
-from sglang_omni_router.launcher import LocalLauncher, load_launcher_config
+from sglang_omni_router.launcher import (
+    LocalLauncher,
+    LocalLauncherConfig,
+    load_launcher_config,
+)
 
 logger = logging.getLogger("sglang_omni_router.serve")
 
@@ -101,6 +109,7 @@ def build_config_from_args(
     *,
     managed_worker_urls: list[str] | None = None,
     managed_model: str | None = None,
+    managed_worker_capabilities: set[Capability] | None = None,
 ) -> RouterConfig:
     validate_worker_source_args(args)
     if args.launcher_config and managed_worker_urls is None:
@@ -108,6 +117,16 @@ def build_config_from_args(
     workers = load_worker_configs(args.worker_config) if args.worker_config else None
     worker_urls = managed_worker_urls if args.launcher_config else args.worker_urls
     model = managed_model if args.launcher_config else args.model
+    if args.launcher_config and managed_worker_urls is not None:
+        workers = [
+            WorkerConfig(
+                url=worker_url,
+                model=model,
+                capabilities=set(managed_worker_capabilities or DEFAULT_CAPABILITIES),
+            )
+            for worker_url in managed_worker_urls
+        ]
+        worker_urls = None
     return build_router_config(
         worker_urls=worker_urls,
         workers=workers,
@@ -124,6 +143,19 @@ def build_config_from_args(
         health_check_interval_secs=args.health_check_interval_secs,
         health_check_endpoint=args.health_check_endpoint,
     )
+
+
+def resolve_managed_worker_capabilities(
+    launcher_config: LocalLauncherConfig,
+) -> set[Capability]:
+    if launcher_config.worker_capabilities is not None:
+        return set(launcher_config.worker_capabilities)
+
+    extra_args = shlex.split(launcher_config.worker_extra_args)
+    if "--text-only" in extra_args:
+        return set(DEFAULT_CAPABILITIES) - {"speech", "audio_output"}
+
+    return set(DEFAULT_CAPABILITIES)
 
 
 def main(argv: Sequence[str] | None = None) -> None:
@@ -144,6 +176,9 @@ def main(argv: Sequence[str] | None = None) -> None:
                 args,
                 managed_worker_urls=managed_worker_urls,
                 managed_model=launcher_config.model_name,
+                managed_worker_capabilities=resolve_managed_worker_capabilities(
+                    launcher_config
+                ),
             )
         else:
             config = build_config_from_args(args)

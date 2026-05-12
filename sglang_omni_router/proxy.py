@@ -60,6 +60,10 @@ WORKER_REQUEST_FAILURE_STATUS_CODES = {
 }
 
 
+class PayloadTooLargeError(ValueError):
+    pass
+
+
 def filter_request_headers(request: Request) -> dict[str, str]:
     return {
         key: value
@@ -118,8 +122,9 @@ class ProxyHandler:
                 content={"error": {"message": "payload too large"}},
             )
 
-        body = await request.body()
-        if len(body) > self._config.max_payload_size:
+        try:
+            body = await _read_body_with_limit(request, self._config.max_payload_size)
+        except PayloadTooLargeError:
             self._log_route_rejection(
                 request=request,
                 path=path,
@@ -422,6 +427,17 @@ def _exceeds_max_size(value: str, max_size: int) -> bool:
         return int(value) > max_size
     except ValueError:
         return True
+
+
+async def _read_body_with_limit(request: Request, max_size: int) -> bytes:
+    total_size = 0
+    chunks: list[bytes] = []
+    async for chunk in request.stream():
+        total_size += len(chunk)
+        if total_size > max_size:
+            raise PayloadTooLargeError
+        chunks.append(chunk)
+    return b"".join(chunks)
 
 
 def _response_error(response: httpx.Response) -> str:

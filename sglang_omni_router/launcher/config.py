@@ -15,6 +15,8 @@ from pydantic import (
     model_validator,
 )
 
+from sglang_omni_router.config import Capability
+
 
 class LocalLauncherConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -27,6 +29,7 @@ class LocalLauncherConfig(BaseModel):
     worker_host: str = "127.0.0.1"
     worker_base_port: int = 8011
     worker_gpu_ids: list[str] | None = None
+    worker_capabilities: set[Capability] | None = None
     worker_extra_args: str = ""
     wait_timeout: int = 600
 
@@ -83,6 +86,15 @@ class LocalLauncherConfig(BaseModel):
                 raise ValueError("worker_gpu_ids entries must not be empty")
             normalized.append(item)
         return normalized
+
+    @field_validator("worker_capabilities")
+    @classmethod
+    def _validate_worker_capabilities(
+        cls, value: set[Capability] | None
+    ) -> set[Capability] | None:
+        if value is not None and not value:
+            raise ValueError("worker_capabilities must not be empty")
+        return value
 
     @model_validator(mode="after")
     def _validate_launch_shape(self) -> "LocalLauncherConfig":

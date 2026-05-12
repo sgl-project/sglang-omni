@@ -120,6 +120,13 @@ def _write_ci_launcher_config(
                     "worker_host": "127.0.0.1",
                     "worker_base_port": worker_base_port,
                     "worker_extra_args": "--text-only",
+                    "worker_capabilities": [
+                        "chat",
+                        "streaming",
+                        "image_input",
+                        "audio_input",
+                        "video_input",
+                    ],
                     "wait_timeout": STARTUP_TIMEOUT,
                 }
             },

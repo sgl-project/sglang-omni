@@ -34,6 +34,7 @@ def create_app(
     config: RouterConfig,
     *,
     client: httpx.AsyncClient | None = None,
+    health_client: httpx.AsyncClient | None = None,
 ) -> FastAPI:
     workers = build_workers(config.workers)
     timeout = httpx.Timeout(config.request_timeout_secs)
@@ -41,7 +42,24 @@ def create_app(
     if client is None:
         limits = httpx.Limits(max_connections=config.max_connections)
         client = httpx.AsyncClient(timeout=timeout, limits=limits)
-    health_checker = HealthChecker(workers=workers, config=config, client=client)
+    owns_health_client = health_client is None and owns_client
+    if health_client is None:
+        if owns_client:
+            health_limits = httpx.Limits(
+                max_connections=max(1, len(workers)),
+                max_keepalive_connections=max(1, len(workers)),
+            )
+            health_client = httpx.AsyncClient(
+                timeout=httpx.Timeout(config.health_check_timeout_secs),
+                limits=health_limits,
+            )
+        else:
+            health_client = client
+    health_checker = HealthChecker(
+        workers=workers,
+        config=config,
+        client=health_client,
+    )
     selector = WorkerSelector(config.policy)
     proxy = ProxyHandler(
         config=config,
@@ -55,6 +73,7 @@ def create_app(
         app.state.router_config = config
         app.state.workers = workers
         app.state.http_client = client
+        app.state.health_http_client = health_client
         app.state.health_checker = health_checker
         app.state.proxy = proxy
         await health_checker.start()
@@ -62,6 +81,8 @@ def create_app(
             yield
         finally:
             await health_checker.stop()
+            if owns_health_client:
+                await health_client.aclose()
             if owns_client:
                 await client.aclose()
 

@@ -6,11 +6,14 @@ import logging
 
 import httpx
 import pytest
+from fastapi import Request
 from fastapi.testclient import TestClient
 
 from sglang_omni_router import proxy as proxy_module
 from sglang_omni_router.app import create_app
 from sglang_omni_router.config import RouterConfig, WorkerConfig
+from sglang_omni_router.selector import WorkerSelector
+from sglang_omni_router.worker import build_workers
 
 
 def _request_netloc(request: httpx.Request) -> str:
@@ -20,6 +23,7 @@ def _request_netloc(request: httpx.Request) -> str:
 def _router_config(
     policy: str = "round_robin",
     max_payload_size: int = 512 * 1024 * 1024,
+    max_connections: int = 100,
     health_failure_threshold: int = 1,
     health_check_timeout_secs: int = 5,
     worker_configs: list[WorkerConfig] | None = None,
@@ -32,6 +36,7 @@ def _router_config(
         ],
         policy=policy,
         max_payload_size=max_payload_size,
+        max_connections=max_connections,
         health_success_threshold=1,
         health_failure_threshold=health_failure_threshold,
         health_check_timeout_secs=health_check_timeout_secs,
@@ -40,6 +45,39 @@ def _router_config(
 
 def _large_json_body(payload: dict[str, object]) -> bytes:
     return json.dumps(payload | {"padding": "x" * (1024 * 1024 + 128)}).encode()
+
+
+def _request_without_content_length(chunks: list[bytes]) -> Request:
+    messages = [
+        {"type": "http.request", "body": chunk, "more_body": True}
+        for chunk in chunks[:-1]
+    ]
+    messages.append(
+        {
+            "type": "http.request",
+            "body": chunks[-1] if chunks else b"",
+            "more_body": False,
+        }
+    )
+
+    async def receive():
+        if messages:
+            return messages.pop(0)
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    return Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/v1/chat/completions",
+            "headers": [(b"content-type", b"application/json")],
+            "query_string": b"",
+            "scheme": "http",
+            "server": ("testserver", 80),
+            "client": ("testclient", 50000),
+        },
+        receive,
+    )
 
 
 def test_health_surfaces_distinguish_router_readiness_from_pool_health() -> None:
@@ -85,6 +123,43 @@ def test_health_surfaces_distinguish_router_readiness_from_pool_health() -> None
         assert ready.status_code == 503
         assert ready.json()["status"] == "not_ready"
         assert client.get("/health").status_code == 503
+
+
+def test_health_checks_use_separate_client_from_data_plane_client() -> None:
+    health_paths: list[str] = []
+    data_paths: list[str] = []
+
+    def data_handler(request: httpx.Request) -> httpx.Response:
+        data_paths.append(request.url.path)
+        if request.url.path == "/v1/chat/completions":
+            return httpx.Response(200, json={"ok": True}, request=request)
+        raise AssertionError(f"data-plane client should not call {request.url.path}")
+
+    def health_handler(request: httpx.Request) -> httpx.Response:
+        health_paths.append(request.url.path)
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"status": "healthy"}, request=request)
+        raise AssertionError(f"health client should not call {request.url.path}")
+
+    data_client = httpx.AsyncClient(transport=httpx.MockTransport(data_handler))
+    health_client = httpx.AsyncClient(transport=httpx.MockTransport(health_handler))
+    app = create_app(
+        _router_config(worker_configs=[WorkerConfig(url="http://worker-a:8101")]),
+        client=data_client,
+        health_client=health_client,
+    )
+
+    with TestClient(app) as client:
+        ready = client.get("/ready")
+        response = client.post(
+            "/v1/chat/completions",
+            json={"model": "qwen3-omni", "messages": [{"role": "user"}]},
+        )
+
+    assert ready.status_code == 200
+    assert response.status_code == 200
+    assert health_paths == ["/health"]
+    assert data_paths == ["/v1/chat/completions"]
 
 
 def test_router_liveness_does_not_wait_for_worker_health_probe() -> None:
@@ -1420,3 +1495,26 @@ def test_payload_too_large_is_rejected_before_worker_selection() -> None:
 
     assert response.status_code == 413
     assert seen_paths == ["/health", "/health"]
+
+
+def test_payload_without_content_length_is_rejected_while_streaming_body() -> None:
+    seen_paths: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen_paths.append(request.url.path)
+        raise AssertionError("over-limit request should not reach a worker")
+
+    config = _router_config(max_payload_size=8)
+    workers = build_workers(config.workers)
+    proxy = proxy_module.ProxyHandler(
+        config=config,
+        workers=workers,
+        selector=WorkerSelector(config.policy),
+        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+    request = _request_without_content_length([b'{"model"', b':"qwen3-omni"}'])
+
+    response = asyncio.run(proxy.forward_model_request(request, "/v1/chat/completions"))
+
+    assert response.status_code == 413
+    assert seen_paths == []

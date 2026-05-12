@@ -17,7 +17,11 @@ from sglang_omni_router.launcher import LocalLauncher, LocalLauncherConfig
 from sglang_omni_router.launcher.config import load_launcher_config
 from sglang_omni_router.launcher.utils import build_gpu_assignments
 from sglang_omni_router.selector import NoEligibleWorkerError, WorkerSelector
-from sglang_omni_router.serve import build_config_from_args, build_parser
+from sglang_omni_router.serve import (
+    build_config_from_args,
+    build_parser,
+    resolve_managed_worker_capabilities,
+)
 from sglang_omni_router.worker import build_workers
 
 
@@ -103,6 +107,27 @@ def test_router_cli_worker_config_supports_heterogeneous_workers(
     assert config.workers[1].capabilities == {"chat", "audio_input"}
 
 
+def test_router_worker_config_rejects_unknown_worker_fields(tmp_path: Path) -> None:
+    config_path = tmp_path / "workers.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "workers": [
+                    {
+                        "url": "http://127.0.0.1:8101",
+                        "capabilites": ["chat"],
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    args = build_parser().parse_args(["--worker-config", str(config_path)])
+
+    with pytest.raises(ValueError, match="capabilites"):
+        build_config_from_args(args)
+
+
 def test_router_cli_rejects_global_model_with_worker_config(tmp_path: Path) -> None:
     config_path = tmp_path / "workers.json"
     config_path.write_text(
@@ -185,6 +210,48 @@ def test_router_cli_builds_config_from_managed_worker_urls() -> None:
         ("http://127.0.0.1:8101", "qwen3-omni"),
         ("http://127.0.0.1:8102", "qwen3-omni"),
     ]
+    assert [worker.capabilities for worker in config.workers] == [
+        DEFAULT_CAPABILITIES,
+        DEFAULT_CAPABILITIES,
+    ]
+
+
+def test_router_cli_uses_managed_worker_capabilities() -> None:
+    args = build_parser().parse_args(["--launcher-config", "launcher.yaml"])
+
+    config = build_config_from_args(
+        args,
+        managed_worker_urls=["http://127.0.0.1:8101"],
+        managed_model="qwen3-omni",
+        managed_worker_capabilities={"chat", "streaming", "image_input"},
+    )
+
+    assert config.workers[0].capabilities == {"chat", "streaming", "image_input"}
+
+
+def test_router_cli_infers_text_only_managed_worker_capabilities() -> None:
+    launcher_config = LocalLauncherConfig(
+        model_path="model",
+        worker_extra_args="--text-only --mem-fraction-static 0.7",
+    )
+    args = build_parser().parse_args(["--launcher-config", "launcher.yaml"])
+
+    config = build_config_from_args(
+        args,
+        managed_worker_urls=["http://127.0.0.1:8101"],
+        managed_model="qwen3-omni",
+        managed_worker_capabilities=resolve_managed_worker_capabilities(
+            launcher_config
+        ),
+    )
+
+    assert config.workers[0].capabilities == {
+        "chat",
+        "streaming",
+        "image_input",
+        "audio_input",
+        "video_input",
+    }
 
 
 def test_router_worker_config_requires_workers_object(tmp_path: Path) -> None:
@@ -241,6 +308,23 @@ launcher:
     assert command[command.index("--mem-fraction-static") + 1] == "0.6"
     assert command[command.index("--thinker-tp-size") + 1] == "2"
     assert command[command.index("--thinker-gpus") + 1] == "0,1"
+
+
+def test_launcher_config_accepts_managed_worker_capabilities(tmp_path: Path) -> None:
+    config_path = tmp_path / "launcher.yaml"
+    config_path.write_text(
+        """
+launcher:
+  backend: local
+  model_path: model
+  worker_capabilities: ["chat", "streaming", "image_input"]
+""",
+        encoding="utf-8",
+    )
+
+    config = load_launcher_config(config_path)
+
+    assert config.worker_capabilities == {"chat", "streaming", "image_input"}
 
 
 @pytest.mark.parametrize(
