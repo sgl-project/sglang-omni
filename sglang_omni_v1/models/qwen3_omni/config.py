@@ -174,11 +174,13 @@ class Qwen3OmniSpeechPipelineConfig(PipelineConfig):
 
 
 class Qwen3OmniSpeechColocatedPipelineConfig(Qwen3OmniSpeechPipelineConfig):
-    """8-stage speech pipeline with all GPU stages placed on one GPU.
+    """8-stage speech pipeline for single-GPU stage colocation.
 
-    This class intentionally does not provide default memory fractions. A
-    launch config must set measured ``total_gpu_memory_fraction`` values for
-    every GPU stage and SGLang ``mem_fraction_static`` for both AR stages.
+    The topology places image_encoder, audio_encoder, thinker, talker_ar, and
+    code2wav on the same GPU while keeping preprocessing, aggregation, and
+    decode as CPU stages. Runtime memory budgets are supplied by the selected
+    config file so deployments can use hardware-appropriate stage fractions and
+    SGLang AR cache fractions.
     """
 
     process: ProcessConfig = Field(default_factory=lambda: ProcessConfig(mode="multi"))
