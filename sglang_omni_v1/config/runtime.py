@@ -21,15 +21,15 @@ def resolve_stage_factory_args(
     """Resolve final factory args for a stage.
 
     Resolution order is:
-    1. static ``stage.factory_args`` from the model config,
-    2. legacy ``pipeline.runtime_overrides`` compatibility overlay,
-    3. typed ``stage.runtime`` values.
+    1. static stage.factory_args from the model config,
+    2. legacy pipeline.runtime_overrides compatibility overlay,
+    3. typed stage.runtime values.
 
     Typed runtime is the canonical v1 surface. Legacy compatibility overlays
     can still provide unmigrated values, but the same migrated parameter must
     not be set through both old and typed paths. Placement resource budgets are
     not translated here; backend memory controls such as SGLang
-    ``mem_fraction_static`` stay backend namespaced.
+    mem_fraction_static stay backend namespaced.
     """
 
     args = dict(stage_cfg.factory_args)

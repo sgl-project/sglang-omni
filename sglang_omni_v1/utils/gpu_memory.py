@@ -80,8 +80,8 @@ def is_process_scoped_memory_available() -> bool:
 def get_process_gpu_memory_bytes(logical_gpu_id: int) -> int | None:
     """Return current-process GPU memory on a CUDA logical device.
 
-    The returned value is in bytes. ``None`` means NVML is unavailable or the
-    process-scoped query failed. Invalid device mappings raise ``RuntimeError``
+    The returned value is in bytes. None means NVML is unavailable or the
+    process-scoped query failed. Invalid device mappings raise RuntimeError
     because those are launch/configuration errors.
     """
 
@@ -132,7 +132,11 @@ def get_process_gpu_memory_bytes(logical_gpu_id: int) -> int | None:
 
 
 def get_gpu_device_info(logical_gpu_id: int) -> GpuDeviceInfo:
-    """Return best-effort GPU name and total memory for a CUDA logical device."""
+    """Return best-effort CUDA device metadata.
+
+    Missing NVML support or metadata query failures return GpuDeviceInfo
+    with unknown fields instead of failing launch.
+    """
 
     info = GpuDeviceInfo(
         logical_gpu_id=logical_gpu_id,
@@ -144,7 +148,7 @@ def get_gpu_device_info(logical_gpu_id: int) -> GpuDeviceInfo:
     try:
         device_id = resolve_visible_device_id(logical_gpu_id, visible_devices)
     except _InvalidGpuDeviceError as exc:
-        logger.warning("GPU device metadata is unavailable: %s", exc)
+        logger.debug(f"GPU device metadata is unavailable: {exc}")
         return info
 
     pynvml = _try_import_pynvml()
@@ -159,7 +163,7 @@ def get_gpu_device_info(logical_gpu_id: int) -> GpuDeviceInfo:
     try:
         pynvml.nvmlInit()
     except Exception as exc:
-        logger.warning("NVML init failed; GPU device metadata is unavailable: %s", exc)
+        logger.debug(f"NVML init failed; GPU device metadata is unavailable: {exc}")
         return GpuDeviceInfo(
             logical_gpu_id=logical_gpu_id,
             device_id=device_id,
@@ -178,7 +182,7 @@ def get_gpu_device_info(logical_gpu_id: int) -> GpuDeviceInfo:
             total_memory_bytes=int(memory_info.total),
         )
     except Exception as exc:
-        logger.warning("NVML query failed; GPU device metadata is unavailable: %s", exc)
+        logger.debug(f"NVML query failed; GPU device metadata is unavailable: {exc}")
         return GpuDeviceInfo(
             logical_gpu_id=logical_gpu_id,
             device_id=device_id,

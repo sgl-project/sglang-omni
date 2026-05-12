@@ -99,6 +99,8 @@ def _collect_stage_control_endpoints(stages) -> dict[str, str]:
 
 
 def _stage_runtime_log_summary(pipeline_config: PipelineConfig) -> dict[str, Any]:
+    """Build stage placement and runtime budget fields for startup logs."""
+
     summary: dict[str, Any] = {}
     for stage in pipeline_config.stages:
         resources = stage.runtime.resources
@@ -129,6 +131,12 @@ def _placement_log_summary(
     placement_plan,
     pipeline_config: PipelineConfig,
 ) -> dict[str, Any]:
+    """Build the resolved startup placement summary.
+
+    The summary includes topology, stage placement, stage budgets, per-GPU
+    totals, and best-effort hardware metadata.
+    """
+
     hardware = {
         gpu_id: _format_gpu_device_info(get_gpu_device_info(gpu_id))
         for gpu_id in sorted(placement_plan.gpus)
@@ -204,10 +212,10 @@ async def _run_server(
     needs_mp = resolve_pipeline_process_mode(pipeline_config, placement_plan)
     gpu_ids = set(placement_plan.gpus)
     process_mode = "multi-process" if needs_mp else "single-process"
+    placement_summary = _placement_log_summary(placement_plan, pipeline_config)
     logger.info(
-        "Placement plan: process_mode=%s summary=%s",
-        process_mode,
-        _placement_log_summary(placement_plan, pipeline_config),
+        f"Resolved placement plan: process_mode={process_mode} "
+        f"placement={placement_summary}"
     )
 
     if needs_mp:
@@ -322,7 +330,7 @@ def launch_server(
         pipeline_config: Declarative pipeline configuration.
         host: Bind address for the HTTP server.
         port: Bind port for the HTTP server.
-        model_name: Model name reported in ``/v1/models`` responses.
+        model_name: Model name reported in /v1/models responses.
             Defaults to the pipeline name.
         log_level: Uvicorn log level.
         client_kwargs: Extra keyword arguments forwarded to

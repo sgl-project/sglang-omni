@@ -83,7 +83,7 @@ class StageRuntimeConfig(BaseModel):
     """Typed runtime intent for one stage.
 
     Backend-specific values stay namespaced. For example,
-    ``sglang_server_args`` is translated into SGLang ``ServerArgs`` by the
+    sglang_server_args is translated into SGLang ServerArgs by the
     runtime adapter, not by placement planning.
     """
 
