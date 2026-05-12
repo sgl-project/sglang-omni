@@ -105,11 +105,70 @@ class ConfigManager:
         """
         with open(file_path, "r") as f:
             data = yaml.safe_load(f)
+        if not isinstance(data, dict):
+            raise ValueError(f"Config file {file_path!r} must contain a mapping")
 
+        data = dict(data)
+        has_stage_overrides = "stage_overrides" in data
+        stage_overrides = data.pop("stage_overrides", {})
         config_cls_str = data["config_cls"]
         config_cls = PIPELINE_CONFIG_REGISTRY.get_config_cls_by_name(config_cls_str)
         config = config_cls(**data)
+        if has_stage_overrides:
+            config = _apply_stage_overrides(config, stage_overrides)
         return ConfigManager(config)
+
+
+def _apply_stage_overrides(
+    config: PipelineConfig,
+    stage_overrides: dict[str, Any],
+) -> PipelineConfig:
+    """Apply compact file-level runtime overrides by stage name."""
+
+    if not isinstance(stage_overrides, dict):
+        raise ValueError(
+            "stage_overrides must be a mapping from stage name to overrides"
+        )
+
+    config_data = config.model_dump()
+    stages = config_data["stages"]
+    stage_by_name = {stage["name"]: stage for stage in stages}
+
+    for stage_name, override in stage_overrides.items():
+        if stage_name not in stage_by_name:
+            raise ValueError(f"stage_overrides references unknown stage {stage_name!r}")
+        if not isinstance(override, dict):
+            raise ValueError(f"stage_overrides.{stage_name} must be a mapping")
+
+        unsupported = sorted(set(override) - {"runtime"})
+        if unsupported:
+            raise ValueError(
+                f"stage_overrides.{stage_name} supports only runtime overrides; "
+                f"got unsupported keys {unsupported}"
+            )
+
+        if "runtime" not in override:
+            continue
+        runtime_override = override["runtime"]
+        if not isinstance(runtime_override, dict):
+            raise ValueError(f"stage_overrides.{stage_name}.runtime must be a mapping")
+        stage = stage_by_name[stage_name]
+        stage["runtime"] = _deep_merge_dict(
+            stage.get("runtime", {}),
+            runtime_override,
+        )
+
+    return type(config)(**config_data)
+
+
+def _deep_merge_dict(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
+    merged = deepcopy(base)
+    for key, value in overlay.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _deep_merge_dict(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
 
 
 def _convert_scalar(value: Any) -> Any:

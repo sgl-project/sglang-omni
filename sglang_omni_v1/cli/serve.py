@@ -36,9 +36,8 @@ def _validate_colocate_cli_request(
         raise typer.BadParameter("--colocate cannot be used with --text-only")
     if not config:
         raise typer.BadParameter(
-            "--colocate requires --config with measured colocated stage memory "
-            "budgets. The built-in Qwen speech config does not guess H100/H200 "
-            "total_gpu_memory_fraction values."
+            "--colocate requires --config with explicit colocated stage memory "
+            "budgets, such as examples/configs/qwen3_omni_colocated.yaml."
         )
 
 

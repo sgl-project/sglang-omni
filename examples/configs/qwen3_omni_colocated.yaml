@@ -1,0 +1,40 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# Example single-GPU colocated Qwen3-Omni v1 launcher config.
+# The Python pipeline config owns the stage topology; this file only sets the
+# runtime memory budgets needed for colocated launch.
+
+config_cls: Qwen3OmniSpeechColocatedPipelineConfig
+name: qwen3-omni-colocated
+model_path: Qwen/Qwen3-Omni-30B-A3B-Instruct
+relay_backend: shm
+
+stage_overrides:
+  image_encoder:
+    runtime:
+      resources:
+        total_gpu_memory_fraction: 0.05
+
+  audio_encoder:
+    runtime:
+      resources:
+        total_gpu_memory_fraction: 0.05
+
+  thinker:
+    runtime:
+      resources:
+        total_gpu_memory_fraction: 0.35
+      sglang_server_args:
+        mem_fraction_static: 0.70
+
+  talker_ar:
+    runtime:
+      resources:
+        total_gpu_memory_fraction: 0.35
+      sglang_server_args:
+        mem_fraction_static: 0.65
+
+  code2wav:
+    runtime:
+      resources:
+        total_gpu_memory_fraction: 0.05
