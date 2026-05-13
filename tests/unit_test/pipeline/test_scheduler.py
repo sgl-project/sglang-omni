@@ -5,9 +5,12 @@ from __future__ import annotations
 import threading
 from types import SimpleNamespace
 
+import torch
+
 from sglang_omni_v1.scheduling.messages import IncomingMessage
 from sglang_omni_v1.scheduling.omni_scheduler import OmniScheduler
 from sglang_omni_v1.scheduling.simple_scheduler import SimpleScheduler
+from sglang_omni_v1.scheduling.stage_cache import StageOutputCache
 from sglang_omni_v1.scheduling.threaded_simple_scheduler import ThreadedSimpleScheduler
 from tests.unit_test.pipeline.helpers import run_scheduler
 
@@ -121,3 +124,33 @@ def test_omni_scheduler_default_stream_done_sets_generic_flag() -> None:
     scheduler._mark_stream_done(req_data)
 
     assert req_data.stream_done is True
+
+
+def test_stage_output_cache_eviction_uses_lru_order() -> None:
+    cache = StageOutputCache(max_size=2)
+
+    cache.put("a", torch.tensor([1]))
+    cache.put("b", torch.tensor([2]))
+    assert torch.equal(cache.get("a"), torch.tensor([1]))
+
+    cache.put("c", torch.tensor([3]))
+
+    assert cache.get("b") is None
+    assert torch.equal(cache.get("a"), torch.tensor([1]))
+    assert torch.equal(cache.get("c"), torch.tensor([3]))
+
+
+def test_stage_output_cache_tracks_bytes_and_detaches() -> None:
+    cache = StageOutputCache(max_bytes=8, cache_device="cpu")
+
+    cache.put("fit", {"x": torch.ones(2, dtype=torch.float32, requires_grad=True)})
+    cached = cache.get("fit")
+
+    assert cache.current_bytes == 8
+    assert cached["x"].device.type == "cpu"
+    assert cached["x"].requires_grad is False
+
+    cache.put("too-large", torch.ones(3, dtype=torch.float32))
+
+    assert cache.get("too-large") is None
+    assert cache.current_bytes == 8
