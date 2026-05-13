@@ -138,8 +138,9 @@ def get_process_gpu_memory_bytes(logical_gpu_id: int) -> int | None:
 def get_gpu_device_info(logical_gpu_id: int) -> GpuDeviceInfo:
     """Return best-effort CUDA device metadata.
 
-    Missing NVML support or metadata query failures return GpuDeviceInfo
-    with unknown fields instead of failing launch.
+    NVML is preferred because it follows CUDA_VISIBLE_DEVICES mappings for
+    physical ids and UUIDs. If NVML metadata is unavailable, PyTorch CUDA
+    metadata is used for total memory when possible.
     """
 
     info = GpuDeviceInfo(
@@ -157,23 +158,15 @@ def get_gpu_device_info(logical_gpu_id: int) -> GpuDeviceInfo:
 
     pynvml = _try_import_pynvml()
     if pynvml is None:
-        return GpuDeviceInfo(
-            logical_gpu_id=logical_gpu_id,
-            device_id=device_id,
-            name=None,
-            total_memory_bytes=None,
-        )
+        return _get_torch_gpu_device_info(logical_gpu_id, device_id)
 
     try:
         pynvml.nvmlInit()
     except Exception as exc:
-        logger.debug(f"NVML init failed; GPU device metadata is unavailable: {exc}")
-        return GpuDeviceInfo(
-            logical_gpu_id=logical_gpu_id,
-            device_id=device_id,
-            name=None,
-            total_memory_bytes=None,
+        logger.debug(
+            f"NVML init failed; using PyTorch GPU metadata if available: {exc}"
         )
+        return _get_torch_gpu_device_info(logical_gpu_id, device_id)
 
     try:
         handle = _get_device_handle(pynvml, device_id)
@@ -186,15 +179,39 @@ def get_gpu_device_info(logical_gpu_id: int) -> GpuDeviceInfo:
             total_memory_bytes=int(memory_info.total),
         )
     except Exception as exc:
-        logger.debug(f"NVML query failed; GPU device metadata is unavailable: {exc}")
+        logger.debug(
+            f"NVML metadata query failed; using PyTorch GPU metadata if available: "
+            f"{exc}"
+        )
+        return _get_torch_gpu_device_info(logical_gpu_id, device_id)
+    finally:
+        _shutdown_nvml(pynvml)
+
+
+def _get_torch_gpu_device_info(
+    logical_gpu_id: int,
+    device_id: int | str | None,
+) -> GpuDeviceInfo:
+    """Return CUDA device metadata available through PyTorch."""
+    try:
+        torch = importlib.import_module("torch")
+        if not torch.cuda.is_available():
+            raise RuntimeError("CUDA is unavailable")
+        properties = torch.cuda.get_device_properties(logical_gpu_id)
+        return GpuDeviceInfo(
+            logical_gpu_id=logical_gpu_id,
+            device_id=device_id,
+            name=getattr(properties, "name", None),
+            total_memory_bytes=int(properties.total_memory),
+        )
+    except Exception as exc:
+        logger.debug(f"PyTorch GPU device metadata is unavailable: {exc}")
         return GpuDeviceInfo(
             logical_gpu_id=logical_gpu_id,
             device_id=device_id,
             name=None,
             total_memory_bytes=None,
         )
-    finally:
-        _shutdown_nvml(pynvml)
 
 
 def format_bytes_gib(value: int | None) -> str:
@@ -203,31 +220,52 @@ def format_bytes_gib(value: int | None) -> str:
     return f"{value / (1024**3):.2f}GiB"
 
 
-def calculate_process_scoped_available_bytes(
+def calculate_stage_budget_available_bytes(
     *,
     total_memory_bytes: int,
-    process_memory_bytes: int,
+    accounted_memory_bytes: int,
     memory_fraction: float,
+    accounted_memory_label: str = "accounted_used",
 ) -> int:
-    """Return process-local cache headroom under a total GPU memory fraction."""
+    """Return stage KV headroom under a total GPU memory fraction."""
     if total_memory_bytes <= 0:
         raise ValueError("total_memory_bytes must be positive")
-    if process_memory_bytes < 0:
-        raise ValueError("process_memory_bytes must be non-negative")
+    if accounted_memory_bytes < 0:
+        raise ValueError("accounted_memory_bytes must be non-negative")
     if not 0.0 < memory_fraction <= 1.0:
         raise ValueError("memory_fraction must be in (0, 1]")
 
     requested_bytes = int(total_memory_bytes * memory_fraction)
-    available_bytes = requested_bytes - process_memory_bytes
+    available_bytes = requested_bytes - accounted_memory_bytes
     if available_bytes <= 0:
         raise RuntimeError(
             "Colocated GPU memory budget leaves no KV-cache headroom: "
             f"total={format_bytes_gib(total_memory_bytes)}, "
             f"fraction={memory_fraction:.3f}, "
             f"budget={format_bytes_gib(requested_bytes)}, "
-            f"process_used={format_bytes_gib(process_memory_bytes)}"
+            f"{accounted_memory_label}={format_bytes_gib(accounted_memory_bytes)}"
         )
     return available_bytes
+
+
+def calculate_stage_load_delta_bytes(
+    *,
+    pre_model_load_memory_gib: float,
+    post_model_load_memory_gib: float,
+) -> int:
+    """Return GPU memory consumed between two free-memory samples."""
+    if pre_model_load_memory_gib < 0:
+        raise ValueError("pre_model_load_memory_gib must be non-negative")
+    if post_model_load_memory_gib < 0:
+        raise ValueError("post_model_load_memory_gib must be non-negative")
+    if post_model_load_memory_gib > pre_model_load_memory_gib:
+        raise RuntimeError(
+            "Stage load memory delta is negative: "
+            f"pre_load={pre_model_load_memory_gib:.2f}GiB, "
+            f"post_load={post_model_load_memory_gib:.2f}GiB"
+        )
+
+    return int((pre_model_load_memory_gib - post_model_load_memory_gib) * (1024**3))
 
 
 def get_gpu_startup_lock_path(

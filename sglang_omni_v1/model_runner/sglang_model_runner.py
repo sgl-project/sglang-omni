@@ -12,7 +12,8 @@ from sglang.srt.model_executor.model_runner_kv_cache_mixin import (
 from sglang.srt.server_args import PortArgs, ServerArgs
 
 from sglang_omni_v1.utils.gpu_memory import (
-    calculate_process_scoped_available_bytes,
+    calculate_stage_budget_available_bytes,
+    calculate_stage_load_delta_bytes,
     format_bytes_gib,
     get_gpu_device_info,
     get_process_gpu_memory_bytes,
@@ -95,7 +96,7 @@ class SGLModelRunner(ModelRunner):
             Qwen3OmniThinkerForCausalLM
         )
 
-    def _profile_available_bytes(self, pre_model_load_memory: int) -> int:
+    def _profile_available_bytes(self, pre_model_load_memory: float) -> int:
         """Profile KV-cache headroom for colocated SGLang AR stages.
 
         Upstream SGLang profiles from global free-memory deltas. That is valid
@@ -104,10 +105,13 @@ class SGLModelRunner(ModelRunner):
         another process can change global free memory while this process is
         loading weights, making the global delta too small or negative.
 
-        When a stage total-memory budget is provided, compute this process'
-        cache headroom as total GPU memory times that budget minus this
-        process' current GPU memory. Without a stage budget, keep upstream
-        SGLang profiling semantics for ordinary non-colocated AR serving.
+        When a stage total-memory budget is provided, compute cache headroom as
+        total GPU memory times that budget minus this stage's measured memory.
+        NVML process accounting is preferred. If NVML cannot identify the
+        current process, use the stage-local load delta measured inside
+        SGLang's serialized initialization window. Without a stage budget, keep
+        upstream SGLang profiling semantics for ordinary non-colocated AR
+        serving.
         """
         if self._total_gpu_memory_fraction is None:
             return self._profile_upstream_available_bytes(pre_model_load_memory)
@@ -116,26 +120,28 @@ class SGLModelRunner(ModelRunner):
         device_info = get_gpu_device_info(self.gpu_id)
         total_memory = device_info.total_memory_bytes
 
-        if process_memory is None or process_memory <= 0:
-            raise RuntimeError(
-                "Colocated SGLang AR stage requires NVML process memory "
-                f"accounting for gpu_id={self.gpu_id} after model weights load. "
-                "NVML did not report current-process GPU memory on this device."
-            )
         if total_memory is None:
             raise RuntimeError(
-                "Colocated SGLang AR stage requires total GPU memory from NVML "
-                f"for gpu_id={self.gpu_id}. Check CUDA_VISIBLE_DEVICES and NVML "
-                "permissions."
+                "Colocated SGLang AR stage requires total GPU memory for "
+                f"gpu_id={self.gpu_id}. Check CUDA_VISIBLE_DEVICES and CUDA "
+                "device visibility."
             )
 
-        available_bytes = calculate_process_scoped_available_bytes(
+        if process_memory is None or process_memory <= 0:
+            return self._profile_available_bytes_from_stage_load_delta(
+                pre_model_load_memory,
+                total_memory,
+            )
+
+        available_bytes = calculate_stage_budget_available_bytes(
             total_memory_bytes=total_memory,
-            process_memory_bytes=process_memory,
+            accounted_memory_bytes=process_memory,
             memory_fraction=self._total_gpu_memory_fraction,
+            accounted_memory_label="process_used",
         )
         logger.info(
-            f"SGLang AR process-scoped memory profile: gpu_id={self.gpu_id} "
+            f"SGLang AR memory profile: gpu_mem_accounting=nvml_process "
+            f"gpu_id={self.gpu_id} "
             f"total_gpu_memory_fraction={self._total_gpu_memory_fraction:.3f} "
             f"mem_fraction_static={self.mem_fraction_static:.3f} "
             f"total={format_bytes_gib(total_memory)} "
@@ -144,7 +150,44 @@ class SGLModelRunner(ModelRunner):
         )
         return available_bytes
 
-    def _profile_upstream_available_bytes(self, pre_model_load_memory: int) -> int:
+    def _profile_available_bytes_from_stage_load_delta(
+        self,
+        pre_model_load_memory: float,
+        total_memory: int,
+    ) -> int:
+        """Profile colocated KV headroom from this stage's load-time delta."""
+        from sglang.srt.distributed.parallel_state import get_world_group
+        from sglang.srt.utils.common import get_available_gpu_memory
+
+        world_group = get_world_group()
+        post_model_load_memory = get_available_gpu_memory(
+            self.device,
+            self.gpu_id,
+            distributed=world_group.world_size > 1,
+            cpu_group=world_group.cpu_group,
+        )
+        stage_load_bytes = calculate_stage_load_delta_bytes(
+            pre_model_load_memory_gib=pre_model_load_memory,
+            post_model_load_memory_gib=post_model_load_memory,
+        )
+        available_bytes = calculate_stage_budget_available_bytes(
+            total_memory_bytes=total_memory,
+            accounted_memory_bytes=stage_load_bytes,
+            memory_fraction=self._total_gpu_memory_fraction,
+            accounted_memory_label="stage_load_used",
+        )
+        logger.info(
+            f"SGLang AR memory profile: gpu_mem_accounting=stage_load_fallback "
+            f"gpu_id={self.gpu_id} "
+            f"total_gpu_memory_fraction={self._total_gpu_memory_fraction:.3f} "
+            f"mem_fraction_static={self.mem_fraction_static:.3f} "
+            f"total={format_bytes_gib(total_memory)} "
+            f"stage_load_used={format_bytes_gib(stage_load_bytes)} "
+            f"available_for_kv={format_bytes_gib(available_bytes)}"
+        )
+        return available_bytes
+
+    def _profile_upstream_available_bytes(self, pre_model_load_memory: float) -> int:
         """Use the SGLang memory profiler exposed by the installed version."""
         upstream_profile = getattr(
             ModelRunnerKVCacheMixin, "_profile_available_bytes", None
@@ -156,7 +199,7 @@ class SGLModelRunner(ModelRunner):
         )
 
     def _profile_available_bytes_from_free_memory_delta(
-        self, pre_model_load_memory: int
+        self, pre_model_load_memory: float
     ) -> int:
         """Match SGLang free-memory-delta accounting for non-colocated AR stages."""
         from sglang.srt.distributed.parallel_state import get_world_group

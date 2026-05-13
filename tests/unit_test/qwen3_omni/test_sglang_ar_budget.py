@@ -62,7 +62,7 @@ def test_colocated_ar_token_profile_uses_process_scoped_budget(monkeypatch) -> N
 
 
 @pytest.mark.parametrize("process_memory", [None, 0])
-def test_colocated_ar_budget_requires_process_memory(
+def test_colocated_ar_budget_uses_stage_load_delta_when_process_memory_unavailable(
     monkeypatch,
     process_memory,
 ) -> None:
@@ -77,8 +77,21 @@ def test_colocated_ar_budget_requires_process_memory(
         "get_gpu_device_info",
         lambda gpu_id: SimpleNamespace(total_memory_bytes=100 * 1024**3),
     )
-    with pytest.raises(RuntimeError, match="requires NVML process memory"):
-        runner_mod.SGLModelRunner._profile_available_bytes(runner, 0)
+
+    def _fake_stage_load_delta(self, pre_model_load_memory, total_memory):
+        assert pre_model_load_memory == 95.0
+        assert total_memory == 100 * 1024**3
+        return 7 * 1024**3
+
+    monkeypatch.setattr(
+        runner_mod.SGLModelRunner,
+        "_profile_available_bytes_from_stage_load_delta",
+        _fake_stage_load_delta,
+    )
+
+    assert runner_mod.SGLModelRunner._profile_available_bytes(runner, 95.0) == (
+        7 * 1024**3
+    )
 
 
 def test_non_colocated_ar_uses_free_memory_delta_when_upstream_hook_is_absent(

@@ -78,7 +78,7 @@ def test_qwen3_omni_colocated_example_config_loads_and_plans() -> None:
     assert config.name == "qwen3-omni-colocated"
     assert config.process.mode == "multi"
     assert plan.requires_multi_process is True
-    assert plan.gpus[0].total_gpu_memory_fraction == pytest.approx(1.0)
+    assert plan.gpus[0].total_gpu_memory_fraction == pytest.approx(0.94)
     assert (
         _stage(config, "thinker").runtime.sglang_server_args.mem_fraction_static is None
     )

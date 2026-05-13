@@ -238,6 +238,38 @@ def test_get_process_gpu_memory_returns_none_on_query_failure(
     assert gpu_memory.get_process_gpu_memory_bytes(0) is None
 
 
+def test_get_gpu_device_info_falls_back_to_torch_when_nvml_import_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _FakeCuda:
+        @staticmethod
+        def is_available() -> bool:
+            return True
+
+        @staticmethod
+        def get_device_properties(device_id: int) -> SimpleNamespace:
+            assert device_id == 0
+            return SimpleNamespace(name="NVIDIA H20", total_memory=96 * 1024**3)
+
+    fake_torch = SimpleNamespace(cuda=_FakeCuda())
+
+    def _import_module(name: str):
+        if name == "pynvml":
+            raise ModuleNotFoundError(name)
+        if name == "torch":
+            return fake_torch
+        raise AssertionError(name)
+
+    monkeypatch.setattr(gpu_memory.importlib, "import_module", _import_module)
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "1")
+
+    info = gpu_memory.get_gpu_device_info(0)
+
+    assert info.device_id == 1
+    assert info.name == "NVIDIA H20"
+    assert info.total_memory_bytes == 96 * 1024**3
+
+
 def test_get_process_gpu_memory_rejects_invalid_device_mapping(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -259,22 +291,38 @@ def test_format_bytes_gib() -> None:
     assert gpu_memory.format_bytes_gib(3 * 1024**3) == "3.00GiB"
 
 
-def test_calculate_process_scoped_available_bytes_subtracts_process_memory() -> None:
-    available = gpu_memory.calculate_process_scoped_available_bytes(
+def test_calculate_stage_budget_available_bytes_subtracts_accounted_memory() -> None:
+    available = gpu_memory.calculate_stage_budget_available_bytes(
         total_memory_bytes=1000,
-        process_memory_bytes=300,
+        accounted_memory_bytes=300,
         memory_fraction=0.5,
     )
 
     assert available == 200
 
 
-def test_calculate_process_scoped_available_bytes_rejects_no_headroom() -> None:
-    with pytest.raises(RuntimeError, match="leaves no KV-cache headroom"):
-        gpu_memory.calculate_process_scoped_available_bytes(
+def test_calculate_stage_budget_available_bytes_rejects_no_headroom() -> None:
+    with pytest.raises(RuntimeError, match="stage_load_used"):
+        gpu_memory.calculate_stage_budget_available_bytes(
             total_memory_bytes=1000,
-            process_memory_bytes=500,
+            accounted_memory_bytes=500,
             memory_fraction=0.5,
+            accounted_memory_label="stage_load_used",
+        )
+
+
+def test_calculate_stage_load_delta_bytes_uses_free_memory_samples() -> None:
+    assert gpu_memory.calculate_stage_load_delta_bytes(
+        pre_model_load_memory_gib=95.0,
+        post_model_load_memory_gib=35.5,
+    ) == int(59.5 * 1024**3)
+
+
+def test_calculate_stage_load_delta_bytes_rejects_memory_growth() -> None:
+    with pytest.raises(RuntimeError, match="delta is negative"):
+        gpu_memory.calculate_stage_load_delta_bytes(
+            pre_model_load_memory_gib=35.0,
+            post_model_load_memory_gib=36.0,
         )
 
 
