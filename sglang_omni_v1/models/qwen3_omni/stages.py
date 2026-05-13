@@ -46,14 +46,11 @@ from sglang_omni_v1.proto import StagePayload
 
 logger = logging.getLogger(__name__)
 
-# V0 guardrail for image-encoder admission. This is deliberately explicit,
-# not derived from transient free GPU memory during multiprocess startup.
+# Image-encoder batching budget; the multiplier accounts for transient activations.
 QWEN3_IMAGE_ENCODER_BATCH_BUDGET_BYTES = 10 * 1024**3
-# Covers temporary visual-forward activations beyond input/output tensors.
 QWEN3_IMAGE_ENCODER_ACTIVATION_MULTIPLIER = 5
 
-# Keep repeated-media encoder cache useful without retaining unbounded host
-# tensors. 4096 MiB matches SGLang's disaggregated VLM encode cache default.
+# CPU LRU cap for repeated-media encoder outputs.
 QWEN3_ENCODER_CACHE_MAX_BYTES = 4 * 1024**3
 QWEN3_ENCODER_CACHE_MAX_ENTRIES = 64
 
