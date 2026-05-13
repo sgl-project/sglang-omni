@@ -67,6 +67,7 @@ class Stage:
         project_payload: dict[str, Callable[[Any], Any]] | None = None,
         stream_targets: list[str] | None = None,
         same_gpu_targets: set[str] | None = None,
+        can_accept_stream_before_payload: bool = False,
         tp_fanout: TPLeaderFanout | None = None,
     ):
         self.name = name
@@ -80,6 +81,7 @@ class Stage:
         self._project_payload = project_payload or {}
         self._stream_targets = stream_targets or []
         self._same_gpu_targets = same_gpu_targets or set()
+        self._can_accept_stream_before_payload = can_accept_stream_before_payload
         self._tp_fanout = tp_fanout
         self._owns_external_io = role in {"single", "leader"}
 
@@ -310,10 +312,7 @@ class Stage:
                 return
             if request_id in self._aborted:
                 return
-            if self._stream_queue is None or not self._stream_queue.has(request_id):
-                self._pending_stream_data.setdefault(request_id, []).append(item)
-                return
-            self._route_stream_item(request_id, item)
+            self._route_or_buffer_stream_item(request_id, item)
             return
 
         blob_key = f"{request_id}:stream:{msg.from_stage}:{msg.to_stage}:{msg.chunk_id}"
@@ -339,10 +338,13 @@ class Stage:
             from_stage=msg.from_stage,
             metadata=metadata,
         )
-        if self._stream_queue is None or not self._stream_queue.has(request_id):
-            self._pending_stream_data.setdefault(request_id, []).append(item)
+        self._route_or_buffer_stream_item(request_id, item)
+
+    def _route_or_buffer_stream_item(self, request_id: str, item: StreamItem) -> None:
+        if self._open_pre_payload_stream_if_allowed(request_id):
+            self._route_stream_item(request_id, item)
             return
-        self._route_stream_item(request_id, item)
+        self._pending_stream_data.setdefault(request_id, []).append(item)
 
     def _queue_stream_error(
         self,
@@ -360,6 +362,17 @@ class Stage:
         self._pending_stream_data.setdefault(request_id, []).append(
             StreamSignal(from_stage=from_stage, error=error)
         )
+
+    def _open_pre_payload_stream_if_allowed(self, request_id: str) -> bool:
+        if self._stream_queue is None:
+            return False
+        if self._stream_queue.has(request_id):
+            return True
+        if not self._can_accept_stream_before_payload:
+            return False
+        self._active_requests.add(request_id)
+        self._stream_queue.open(request_id)
+        return True
 
     async def _read_chunk_metadata(
         self, shm_metadata: dict, blob_key: str
@@ -397,7 +410,7 @@ class Stage:
         if request_id in self._aborted:
             return
         self._active_requests.add(request_id)
-        if self._stream_queue is None or not self._stream_queue.has(request_id):
+        if not self._open_pre_payload_stream_if_allowed(request_id):
             if msg.error:
                 self._pending_stream_data.setdefault(request_id, []).append(
                     StreamSignal(

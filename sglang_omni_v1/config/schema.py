@@ -71,6 +71,7 @@ class StageConfig(BaseModel):
 
     # --- Streaming ---
     stream_to: list[str] = Field(default_factory=list)
+    can_accept_stream_before_payload: bool = False
 
     # --- Route-specific payload projection ---
     project_payload: dict[str, str] = Field(default_factory=dict)

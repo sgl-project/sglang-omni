@@ -248,6 +248,7 @@ def _compile_stage(
         relay_config=relay_config,
         scheduler=scheduler,
         project_payload=project_payload or None,
+        can_accept_stream_before_payload=stage_cfg.can_accept_stream_before_payload,
     )
 
 

@@ -237,10 +237,6 @@ class S2ProSGLangTextModel(nn.Module):
 
             self.lm_head = ParallelLMHead(vocab_size, hidden_size)
 
-    # ------------------------------------------------------------------
-    # Post-load setup
-    # ------------------------------------------------------------------
-
     def setup_vq_decode(
         self,
         audio_decoder: nn.Module,
@@ -318,10 +314,6 @@ class S2ProSGLangTextModel(nn.Module):
         self._ras_range = torch.arange(4, 0, -1, device=device)
 
         self._vq_ready = True
-
-    # ------------------------------------------------------------------
-    # Forward
-    # ------------------------------------------------------------------
 
     def forward(
         self,
@@ -462,10 +454,6 @@ class S2ProSGLangTextModel(nn.Module):
             self._output_codes[:bs, cb_idx + 1] = cb_token
 
         self._output_semantic_ids[:bs] = semantic_token
-
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
 
     def get_embed_tokens(self):
         return self.embed_tokens

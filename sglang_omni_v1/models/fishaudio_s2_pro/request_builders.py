@@ -11,6 +11,8 @@ from sglang_omni_v1.models.fishaudio_s2_pro.payload_types import S2ProState
 from sglang_omni_v1.proto import StagePayload
 from sglang_omni_v1.scheduling.sglang_backend import SGLangARRequestData
 
+_S2PRO_GRAPH_TOP_K = 30
+
 
 @dataclass
 class S2ProSGLangRequestData(SGLangARRequestData):
@@ -34,6 +36,16 @@ class S2ProSGLangRequestData(SGLangARRequestData):
     semantic_history_count: int = 0
     last_codebook_values: Any = None
     latest_stream_code_chunk: torch.Tensor | None = None
+
+    def __post_init__(self) -> None:
+        validate_s2pro_top_k(self.top_k)
+
+
+def validate_s2pro_top_k(top_k: int) -> None:
+    if not 1 <= top_k <= _S2PRO_GRAPH_TOP_K:
+        raise ValueError(
+            f"S2-Pro top_k must be between 1 and {_S2PRO_GRAPH_TOP_K}; got {top_k}"
+        )
 
 
 def build_sglang_tts_request(

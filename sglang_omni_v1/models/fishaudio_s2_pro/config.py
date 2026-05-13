@@ -35,6 +35,7 @@ class S2ProPipelineConfig(PipelineConfig):
             factory=f"{_PKG}.stages.create_vocoder_executor",
             gpu=0,
             terminal=True,
+            can_accept_stream_before_payload=True,
         ),
     ]
 

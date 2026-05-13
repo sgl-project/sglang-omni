@@ -62,6 +62,7 @@ class StageProcessSpec:
     stream_targets: list[str] = field(default_factory=list)
     same_gpu_targets: set[str] = field(default_factory=set)
     is_stream_receiver: bool = False
+    can_accept_stream_before_payload: bool = False
 
     # Fusion name map
     name_map: dict[str, str] = field(default_factory=dict)
@@ -195,6 +196,7 @@ def _run_stage(
         project_payload=project_payload or None,
         stream_targets=spec.stream_targets or None,
         same_gpu_targets=spec.same_gpu_targets or None,
+        can_accept_stream_before_payload=spec.can_accept_stream_before_payload,
         tp_fanout=tp_fanout,
     )
 

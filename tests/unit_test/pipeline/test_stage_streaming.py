@@ -183,8 +183,139 @@ def test_stage_config_rejects_unknown_model_transport_field() -> None:
 def test_s2pro_config_declares_topology_without_transport_policy() -> None:
     config = S2ProPipelineConfig(model_path="dummy")
     tts_stage = next(stage for stage in config.stages if stage.name == "tts_engine")
+    vocoder_stage = next(stage for stage in config.stages if stage.name == "vocoder")
     assert tts_stage.stream_to == ["vocoder"]
+    assert vocoder_stage.can_accept_stream_before_payload
     assert "stream_transport" not in StageConfig.model_fields
+
+
+def test_stage_buffers_pre_payload_stream_chunk_by_default() -> None:
+    async def _run() -> None:
+        control_plane = _FakeControlPlane()
+        scheduler = SimpleNamespace(
+            outbox=queue.Queue(),
+            inbox=queue.Queue(),
+            abort=lambda request_id: None,
+        )
+        stage = Stage(
+            name="vocoder",
+            role="single",
+            get_next=lambda request_id, output: None,
+            gpu_id=None,
+            endpoints={},
+            control_plane=control_plane,
+            relay=_AbortOnReadRelay(lambda: None),
+            scheduler=scheduler,
+        )
+        stage._stream_queue = StreamQueue(max_pending=4096)
+        codes = torch.arange(11, dtype=torch.float32)
+
+        await stage._on_stream_chunk(
+            DataReadyMessage(
+                request_id="req",
+                from_stage="tts_engine",
+                to_stage="vocoder",
+                shm_metadata=relay_io.serialize_ipc_chunk(codes, None),
+                chunk_id=0,
+            )
+        )
+
+        assert scheduler.inbox.empty()
+
+        payload = StagePayload(
+            request_id="req",
+            request=OmniRequest(inputs="hello"),
+            data={"ready": True},
+        )
+        await stage._on_data_ready(
+            DataReadyMessage(
+                request_id="req",
+                from_stage="tts_engine",
+                to_stage="vocoder",
+                shm_metadata=_payload_metadata(payload),
+            )
+        )
+        payload_msg = scheduler.inbox.get_nowait()
+        chunk_msg = scheduler.inbox.get_nowait()
+        assert payload_msg.type == "new_request"
+        assert chunk_msg.type == "stream_chunk"
+        assert torch.equal(chunk_msg.data.data, codes)
+
+    asyncio.run(_run())
+
+
+def test_stage_routes_pre_payload_stream_events_for_capable_receiver() -> None:
+    async def _run() -> None:
+        control_plane = _FakeControlPlane()
+        scheduler = SimpleNamespace(
+            outbox=queue.Queue(),
+            inbox=queue.Queue(),
+            abort=lambda request_id: None,
+        )
+        stage = Stage(
+            name="vocoder",
+            role="single",
+            get_next=lambda request_id, output: None,
+            gpu_id=None,
+            endpoints={},
+            control_plane=control_plane,
+            relay=_AbortOnReadRelay(lambda: None),
+            scheduler=scheduler,
+            can_accept_stream_before_payload=True,
+        )
+        stage._stream_queue = StreamQueue(max_pending=4096)
+        codes = torch.arange(11, dtype=torch.float32)
+
+        await stage._on_stream_chunk(
+            DataReadyMessage(
+                request_id="req",
+                from_stage="tts_engine",
+                to_stage="vocoder",
+                shm_metadata=relay_io.serialize_ipc_chunk(
+                    codes, {"modality": "audio_codes"}
+                ),
+                chunk_id=0,
+            )
+        )
+
+        chunk_msg = scheduler.inbox.get_nowait()
+        assert chunk_msg.request_id == "req"
+        assert chunk_msg.type == "stream_chunk"
+        assert torch.equal(chunk_msg.data.data, codes)
+        assert chunk_msg.data.metadata == {"modality": "audio_codes"}
+
+        stage._on_stream_signal(
+            DataReadyMessage(
+                request_id="req",
+                from_stage="tts_engine",
+                to_stage="vocoder",
+                shm_metadata={},
+                is_done=True,
+            )
+        )
+        early_done_msg = scheduler.inbox.get_nowait()
+        assert early_done_msg.request_id == "req"
+        assert early_done_msg.type == "stream_done"
+
+        payload = StagePayload(
+            request_id="req",
+            request=OmniRequest(inputs="hello"),
+            data={"ready": True},
+        )
+        await stage._on_data_ready(
+            DataReadyMessage(
+                request_id="req",
+                from_stage="tts_engine",
+                to_stage="vocoder",
+                shm_metadata=_payload_metadata(payload),
+            )
+        )
+        payload_msg = scheduler.inbox.get_nowait()
+        assert payload_msg.request_id == "req"
+        assert payload_msg.type == "new_request"
+        assert payload_msg.data.data == {"ready": True}
+
+    asyncio.run(_run())
 
 
 def test_send_stream_chunk_uses_relay() -> None:

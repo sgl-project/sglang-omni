@@ -90,6 +90,7 @@ def _build_stage_groups(
             stream_targets=stream_targets,
             same_gpu_targets=same_gpu_targets,
             is_stream_receiver=stage_cfg.name in stream_receivers,
+            can_accept_stream_before_payload=stage_cfg.can_accept_stream_before_payload,
             name_map=name_map,
         )
         if tp_size == 1:
