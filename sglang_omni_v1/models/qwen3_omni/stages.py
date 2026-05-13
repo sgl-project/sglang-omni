@@ -15,12 +15,6 @@ import torch
 import torch.nn.functional as F
 from transformers import AutoTokenizer
 
-from sglang_omni.engines.omni.runtime.cache import SimpleCacheManager
-from sglang_omni.engines.omni.types import RequestOutput, SchedulerRequest
-from sglang_omni.models.qwen3_omni.pipeline.visual_budget import (
-    QWEN3_IMAGE_ENCODER_ACTIVATION_MULTIPLIER,
-    QWEN3_IMAGE_ENCODER_BATCH_BUDGET_BYTES,
-)
 from sglang_omni_v1.models.qwen3_omni.bootstrap import create_thinker_scheduler
 from sglang_omni_v1.models.qwen3_omni.components.audio_encoder import (
     Qwen3OmniAudioEncoder,
@@ -41,6 +35,7 @@ from sglang_omni_v1.scheduling.sglang_backend import (
     apply_encoder_mem_reserve,
     build_sglang_server_args,
 )
+from sglang_omni_v1.scheduling.stage_cache import StageOutputCache
 from sglang_omni_v1.utils.gpu_memory import (
     format_bytes_gib,
     get_process_gpu_memory_bytes,
@@ -55,8 +50,11 @@ from sglang_omni_v1.proto import StagePayload
 
 logger = logging.getLogger(__name__)
 
-# Keep repeated-media encoder cache useful without retaining unbounded host
-# tensors. 4096 MiB matches SGLang's disaggregated VLM encode cache default.
+# Image-encoder batching budget; the multiplier accounts for transient activations.
+QWEN3_IMAGE_ENCODER_BATCH_BUDGET_BYTES = 10 * 1024**3
+QWEN3_IMAGE_ENCODER_ACTIVATION_MULTIPLIER = 5
+
+# CPU LRU cap for repeated-media encoder outputs.
 QWEN3_ENCODER_CACHE_MAX_BYTES = 4 * 1024**3
 QWEN3_ENCODER_CACHE_MAX_ENTRIES = 64
 
@@ -124,7 +122,7 @@ def _run_single_encoder_payload(
     *,
     stage_name: str,
     model: Any,
-    cache_manager: SimpleCacheManager | None = None,
+    cache: StageOutputCache | None = None,
 ) -> StagePayload:
     state = load_state(payload)
     request = build_encoder_request(state, stage_name=stage_name)
@@ -135,7 +133,7 @@ def _run_single_encoder_payload(
             request=request,
             request_id=payload.request_id,
             stage_name=stage_name,
-            cache_manager=cache_manager,
+            cache=cache,
         )
         if result is None:
             with torch.no_grad():
@@ -144,7 +142,7 @@ def _run_single_encoder_payload(
                 request=request,
                 request_id=payload.request_id,
                 stage_name=stage_name,
-                cache_manager=cache_manager,
+                cache=cache,
                 result=result,
             )
     apply_encoder_result(state, stage_name=stage_name, result=result)
@@ -275,11 +273,11 @@ def _lookup_cached_encoder_output(
     request: Any,
     request_id: str,
     stage_name: str,
-    cache_manager: SimpleCacheManager | None,
+    cache: StageOutputCache | None,
 ) -> Any | None:
-    if cache_manager is None or request.cache_key is None:
+    if cache is None or request.cache_key is None:
         return None
-    cached = cache_manager.get(SchedulerRequest(request_id=request_id, data=request))
+    cached = cache.get(request.cache_key)
     if cached is None:
         _trace_encoder_cache(
             stage_name,
@@ -295,9 +293,9 @@ def _lookup_cached_encoder_output(
         request_id=request_id,
         cache_key=request.cache_key,
         input_bytes=_nested_tensor_bytes(request.model_inputs),
-        output_bytes=_nested_tensor_bytes(cached.data),
+        output_bytes=_nested_tensor_bytes(cached),
     )
-    return cached.data
+    return cached
 
 
 def _store_cached_encoder_output(
@@ -305,20 +303,12 @@ def _store_cached_encoder_output(
     request: Any,
     request_id: str,
     stage_name: str,
-    cache_manager: SimpleCacheManager | None,
+    cache: StageOutputCache | None,
     result: Any,
 ) -> None:
-    if cache_manager is None or request.cache_key is None:
+    if cache is None or request.cache_key is None:
         return
-    cache_manager.put(
-        SchedulerRequest(request_id=request_id, data=request),
-        RequestOutput(
-            request_id=request_id,
-            data=result,
-            finished=True,
-            finish_reason="stop",
-        ),
-    )
+    cache.put(request.cache_key, result)
     _trace_encoder_cache(
         stage_name,
         "store",
@@ -339,7 +329,7 @@ def _batch_image_encoder_payloads(
     payloads: list[StagePayload],
     *,
     model: Any,
-    cache_manager: SimpleCacheManager | None = None,
+    cache: StageOutputCache | None = None,
 ) -> list[StagePayload]:
     results: list[StagePayload | None] = [None] * len(payloads)
     active: list[tuple[int, StagePayload, Any, Any]] = []
@@ -355,7 +345,7 @@ def _batch_image_encoder_payloads(
                 payload,
                 stage_name=IMAGE_STAGE,
                 model=model,
-                cache_manager=cache_manager,
+                cache=cache,
             )
             continue
 
@@ -363,7 +353,7 @@ def _batch_image_encoder_payloads(
             request=request,
             request_id=payload.request_id,
             stage_name=IMAGE_STAGE,
-            cache_manager=cache_manager,
+            cache=cache,
         )
         if cached is not None:
             apply_encoder_result(state, stage_name=IMAGE_STAGE, result=cached)
@@ -375,7 +365,7 @@ def _batch_image_encoder_payloads(
                 payload,
                 stage_name=IMAGE_STAGE,
                 model=model,
-                cache_manager=cache_manager,
+                cache=cache,
             )
             continue
 
@@ -522,7 +512,7 @@ def _batch_image_encoder_payloads(
             request=request,
             request_id=meta["payload"].request_id,
             stage_name=IMAGE_STAGE,
-            cache_manager=cache_manager,
+            cache=cache,
             result=stage_result,
         )
         if request.cache_key is not None:
@@ -602,7 +592,7 @@ def _batch_audio_encoder_payloads(
     payloads: list[StagePayload],
     *,
     model: Any,
-    cache_manager: SimpleCacheManager | None = None,
+    cache: StageOutputCache | None = None,
 ) -> list[StagePayload]:
     results: list[StagePayload | None] = [None] * len(payloads)
     active: list[tuple[int, StagePayload, Any, Any]] = []
@@ -615,7 +605,7 @@ def _batch_audio_encoder_payloads(
                 payload,
                 stage_name=AUDIO_STAGE,
                 model=model,
-                cache_manager=cache_manager,
+                cache=cache,
             )
             continue
 
@@ -623,7 +613,7 @@ def _batch_audio_encoder_payloads(
             request=request,
             request_id=payload.request_id,
             stage_name=AUDIO_STAGE,
-            cache_manager=cache_manager,
+            cache=cache,
         )
         if cached is not None:
             apply_encoder_result(state, stage_name=AUDIO_STAGE, result=cached)
@@ -635,7 +625,7 @@ def _batch_audio_encoder_payloads(
                 payload,
                 stage_name=AUDIO_STAGE,
                 model=model,
-                cache_manager=cache_manager,
+                cache=cache,
             )
             continue
 
@@ -696,7 +686,7 @@ def _batch_audio_encoder_payloads(
             request=item["request"],
             request_id=item["payload"].request_id,
             stage_name=AUDIO_STAGE,
-            cache_manager=cache_manager,
+            cache=cache,
             result=stage_result,
         )
         apply_encoder_result(item["state"], stage_name=AUDIO_STAGE, result=stage_result)
@@ -758,7 +748,7 @@ def create_image_encoder_executor(
     from sglang_omni_v1.scheduling.simple_scheduler import SimpleScheduler
 
     model = Qwen3OmniImageEncoder(model_path=model_path, device=device, dtype=dtype)
-    cache_manager = SimpleCacheManager(
+    cache = StageOutputCache(
         max_size=QWEN3_ENCODER_CACHE_MAX_ENTRIES,
         max_bytes=QWEN3_ENCODER_CACHE_MAX_BYTES,
         cache_device="cpu",
@@ -769,14 +759,14 @@ def create_image_encoder_executor(
             payload,
             stage_name=IMAGE_STAGE,
             model=model,
-            cache_manager=cache_manager,
+            cache=cache,
         )
 
     def _encode_batch(payloads: list[StagePayload]) -> list[StagePayload]:
         return _batch_image_encoder_payloads(
             payloads,
             model=model,
-            cache_manager=cache_manager,
+            cache=cache,
         )
 
     # Note (Chenyang): match v0's image-encoder batching shape (max=32) and
@@ -802,7 +792,7 @@ def create_audio_encoder_executor(
     from sglang_omni_v1.scheduling.simple_scheduler import SimpleScheduler
 
     model = Qwen3OmniAudioEncoder(model_path=model_path, device=device, dtype=dtype)
-    cache_manager = SimpleCacheManager(
+    cache = StageOutputCache(
         max_size=QWEN3_ENCODER_CACHE_MAX_ENTRIES,
         max_bytes=QWEN3_ENCODER_CACHE_MAX_BYTES,
         cache_device="cpu",
@@ -813,14 +803,14 @@ def create_audio_encoder_executor(
             payload,
             stage_name=AUDIO_STAGE,
             model=model,
-            cache_manager=cache_manager,
+            cache=cache,
         )
 
     def _encode_batch(payloads: list[StagePayload]) -> list[StagePayload]:
         return _batch_audio_encoder_payloads(
             payloads,
             model=model,
-            cache_manager=cache_manager,
+            cache=cache,
         )
 
     return SimpleScheduler(
