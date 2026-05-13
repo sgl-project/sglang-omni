@@ -48,6 +48,25 @@ def _validate_colocate_config(pipeline_config: PipelineConfig) -> None:
         )
 
 
+def _should_print_merged_config(*, colocate: bool, log_level: str) -> bool:
+    """Return whether to print the full resolved pipeline config."""
+
+    return colocate or log_level.lower() == "debug"
+
+
+def _print_merged_config(pipeline_config: PipelineConfig) -> None:
+    print("=" * 20, "Merged Configuration", "=" * 20)
+    print(
+        yaml.dump(
+            pipeline_config.model_dump(mode="json"),
+            sort_keys=False,
+            default_flow_style=False,
+            indent=2,
+        )
+    )
+    print("=" * 50)
+
+
 def _find_matching_stages(
     pipeline_config: PipelineConfig,
     *,
@@ -741,17 +760,8 @@ def serve(
         talker_torch_compile_max_bs=talker_torch_compile_max_bs,
     )
 
-    # print merged configuration
-    print("=" * 20, "Merged Configuration", "=" * 20)
-    print(
-        yaml.dump(
-            merged_config.model_dump(mode="json"),
-            sort_keys=False,
-            default_flow_style=False,
-            indent=2,
-        )
-    )
-    print("=" * 50)
+    if _should_print_merged_config(colocate=colocate, log_level=log_level):
+        _print_merged_config(merged_config)
 
     launch_server(
         merged_config,

@@ -102,13 +102,18 @@ def test_v1_cli_colocate_requires_config(from_model_path):
 
 @patch("sglang_omni_v1.cli.serve.launch_server")
 @patch("sglang_omni_v1.cli.serve.ConfigManager.from_file")
-def test_v1_cli_colocate_accepts_budgeted_colocated_config(from_file, launch_server):
+def test_v1_cli_colocate_accepts_budgeted_colocated_config(
+    from_file,
+    launch_server,
+    capsys,
+):
     config = Qwen3OmniSpeechColocatedPipelineConfig(model_path="dummy")
     _set_colocated_runtime(config)
     from_file.return_value = _DummyManager(config)
 
     serve(**_serve_kwargs(config="colocated.yaml", colocate=True))
 
+    assert "Merged Configuration" in capsys.readouterr().out
     from_file.assert_called_once_with("colocated.yaml")
     launch_server.assert_called_once()
 
@@ -148,6 +153,36 @@ def test_v1_cli_text_only_selects_text_variant(from_model_path, launch_server):
     serve(**_serve_kwargs(text_only=True))
 
     from_model_path.assert_called_once_with("dummy", variant="text")
+    launch_server.assert_called_once()
+
+
+@patch("sglang_omni_v1.cli.serve.launch_server")
+@patch("sglang_omni_v1.cli.serve.ConfigManager.from_model_path")
+def test_v1_cli_hides_merged_config_for_normal_info_launch(
+    from_model_path,
+    launch_server,
+    capsys,
+):
+    from_model_path.return_value = _DummyManager()
+
+    serve(**_serve_kwargs())
+
+    assert "Merged Configuration" not in capsys.readouterr().out
+    launch_server.assert_called_once()
+
+
+@patch("sglang_omni_v1.cli.serve.launch_server")
+@patch("sglang_omni_v1.cli.serve.ConfigManager.from_model_path")
+def test_v1_cli_prints_merged_config_at_debug(
+    from_model_path,
+    launch_server,
+    capsys,
+):
+    from_model_path.return_value = _DummyManager()
+
+    serve(**_serve_kwargs(log_level="debug"))
+
+    assert "Merged Configuration" in capsys.readouterr().out
     launch_server.assert_called_once()
 
 
