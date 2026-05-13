@@ -130,6 +130,12 @@ def register_routes(
         payload, error = await _read_json_object(request)
         if error is not None:
             return error
+        allowed_fields = {"url", "worker_url", "capabilities", "model"}
+        unknown_fields = sorted(set(payload) - allowed_fields)
+        if unknown_fields:
+            return _error_response(
+                400, f"unsupported fields: {', '.join(unknown_fields)}"
+            )
         worker_url = request.query_params.get("url") or request.query_params.get(
             "worker_url"
         )

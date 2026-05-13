@@ -218,6 +218,17 @@ def test_worker_crud_updates_runtime_pool_and_validates_payloads() -> None:
         duplicate = client.post("/workers", json={"url": "http://worker-c:8103"})
         assert duplicate.status_code == 409
 
+        misspelled = client.post(
+            "/workers",
+            json={
+                "url": "http://worker-d:8104",
+                "capabilites": ["chat"],
+            },
+        )
+        assert misspelled.status_code == 400
+        assert "capabilites" in misspelled.json()["error"]["message"]
+        assert client.get("/workers").json()["total_workers"] == 3
+
         worker_id = worker["worker_id"]
         disabled = client.put(f"/workers/{worker_id}", json={"disabled": True})
         assert disabled.status_code == 200
