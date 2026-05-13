@@ -5,24 +5,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from sglang_omni_v1.model_runner.checkpoint_filter import CheckpointFilterConfig
-
-QWEN_THINKER_CHECKPOINT_FILTER = CheckpointFilterConfig(
-    name="qwen3_omni_thinker_ar",
-    accept_prefixes=(
-        "thinker.model.",
-        "thinker.lm_head.",
-        "model.",
-        "lm_head.",
-    ),
-    strip_prefixes=("thinker.",),
-)
-QWEN_TALKER_CHECKPOINT_FILTER = CheckpointFilterConfig(
-    name="qwen3_omni_talker_ar",
-    accept_prefixes=("talker.",),
-    strip_prefixes=("talker.",),
-)
-
 
 def create_thinker_scheduler(
     server_args: Any,
@@ -66,11 +48,6 @@ def create_thinker_scheduler(
         tp_rank=tp_rank,
         nccl_port=nccl_port,
         model_arch_override="Qwen3OmniThinkerForCausalLM",
-        checkpoint_filter=(
-            QWEN_THINKER_CHECKPOINT_FILTER
-            if total_gpu_memory_fraction is not None
-            else None
-        ),
         capture_hidden_layers=capture_hidden_layers,
         total_gpu_memory_fraction=total_gpu_memory_fraction,
     )
@@ -163,11 +140,6 @@ def create_talker_scheduler(
         nccl_port=nccl_port,
         model_arch_override="Qwen3OmniTalker",
         weight_prefix=weight_prefix,
-        checkpoint_filter=(
-            QWEN_TALKER_CHECKPOINT_FILTER
-            if total_gpu_memory_fraction is not None
-            else None
-        ),
         total_gpu_memory_fraction=total_gpu_memory_fraction,
     )
     if hasattr(model_worker.model_runner, "sampler"):
