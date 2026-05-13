@@ -27,7 +27,7 @@ from tests.utils import (
 MODEL_PATH = "Qwen/Qwen3-Omni-30B-A3B-Instruct"
 MODEL_NAME = "qwen3-omni"
 STARTUP_TIMEOUT = 600
-REQUEST_TIMEOUT = 300
+REQUEST_TIMEOUT = 20
 DATA_DIR = Path(__file__).resolve().parents[1] / "data"
 IMAGE_PATH = DATA_DIR / "cars.jpg"
 AUDIO_PATH = DATA_DIR / "query_to_cars.wav"
