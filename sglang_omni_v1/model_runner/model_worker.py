@@ -5,6 +5,8 @@ import socket
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from sglang_omni_v1.model_runner.checkpoint_filter import CheckpointFilterConfig
+
 if TYPE_CHECKING:
     from sglang.srt.configs.model_config import ModelConfig
     from sglang.srt.server_args import ServerArgs
@@ -14,6 +16,7 @@ if TYPE_CHECKING:
 class ModelWorkerConfig:
     model_arch_override: str | None = None
     weight_prefix: str | None = None
+    checkpoint_filter: CheckpointFilterConfig | None = None
     nccl_port: int | None = None
     total_gpu_memory_fraction: float | None = None
 
@@ -35,6 +38,7 @@ class ModelWorker:
         self.server_args = server_args
         self.model_arch_override = config.model_arch_override
         self.weight_prefix = config.weight_prefix
+        self.checkpoint_filter = config.checkpoint_filter
         self.nccl_port = config.nccl_port
         self.total_gpu_memory_fraction = config.total_gpu_memory_fraction
 
@@ -140,6 +144,7 @@ class ModelWorker:
             nccl_port=nccl_port,
             model_arch_override=self.model_arch_override,
             weight_prefix=self.weight_prefix,
+            checkpoint_filter=self.checkpoint_filter,
             total_gpu_memory_fraction=self.total_gpu_memory_fraction,
         )
 

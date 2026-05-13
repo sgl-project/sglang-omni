@@ -5,6 +5,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from sglang_omni_v1.model_runner.checkpoint_filter import CheckpointFilterConfig
+
 
 def create_sglang_infrastructure(
     server_args: Any,
@@ -14,6 +16,7 @@ def create_sglang_infrastructure(
     nccl_port: int | None = None,
     model_arch_override: str | None = None,
     weight_prefix: str | None = None,
+    checkpoint_filter: CheckpointFilterConfig | None = None,
     capture_hidden_layers: list[int] | None = None,
     total_gpu_memory_fraction: float | None = None,
 ):
@@ -29,6 +32,7 @@ def create_sglang_infrastructure(
         config=ModelWorkerConfig(
             model_arch_override=model_arch_override,
             weight_prefix=weight_prefix,
+            checkpoint_filter=checkpoint_filter,
             nccl_port=nccl_port,
             total_gpu_memory_fraction=total_gpu_memory_fraction,
         ),

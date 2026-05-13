@@ -1,8 +1,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterator
-from typing import Any
+from contextlib import contextmanager
 
 from sglang.srt.configs.model_config import ModelConfig
 from sglang.srt.model_executor.model_runner import ModelRunner
@@ -11,6 +10,10 @@ from sglang.srt.model_executor.model_runner_kv_cache_mixin import (
 )
 from sglang.srt.server_args import PortArgs, ServerArgs
 
+from sglang_omni_v1.model_runner.checkpoint_filter import (
+    CheckpointFilterConfig,
+    install_checkpoint_filter,
+)
 from sglang_omni_v1.utils.gpu_memory import (
     calculate_process_scoped_available_bytes,
     format_bytes_gib,
@@ -19,19 +22,6 @@ from sglang_omni_v1.utils.gpu_memory import (
 )
 
 logger = logging.getLogger(__name__)
-
-
-def filter_weights_by_prefix(
-    weights: Iterator[tuple[str, Any]],
-    prefix: str | None,
-) -> Iterator[tuple[str, Any]]:
-    """Filter weight iterator by prefix, stripping matched prefix from names."""
-    if not prefix:
-        yield from weights
-        return
-    for name, tensor in weights:
-        if name.startswith(prefix):
-            yield name[len(prefix) :], tensor
 
 
 class SGLModelRunner(ModelRunner):
@@ -50,9 +40,11 @@ class SGLModelRunner(ModelRunner):
         nccl_port: int,
         model_arch_override: str | None = None,
         weight_prefix: str | None = None,
+        checkpoint_filter: CheckpointFilterConfig | None = None,
         total_gpu_memory_fraction: float | None = None,
     ) -> None:
         self._weight_prefix = weight_prefix
+        self._checkpoint_filter = checkpoint_filter
         self._total_gpu_memory_fraction = total_gpu_memory_fraction
         self._register_omni_model()
 
@@ -94,6 +86,13 @@ class SGLModelRunner(ModelRunner):
         ModelRegistry.models["Qwen3OmniThinkerForCausalLM"] = (
             Qwen3OmniThinkerForCausalLM
         )
+
+    def load_model(self):
+        """Load model weights with optional stage-aware checkpoint filtering."""
+        if self._checkpoint_filter is None:
+            return super().load_model()
+        with _scoped_checkpoint_filter(self._checkpoint_filter):
+            return super().load_model()
 
     def _profile_available_bytes(self, pre_model_load_memory: int) -> int:
         """Profile KV-cache headroom for colocated SGLang AR stages.
@@ -215,3 +214,24 @@ class SGLModelRunner(ModelRunner):
                 ]
             )
         return self.num_effective_layers
+
+
+@contextmanager
+def _scoped_checkpoint_filter(profile: CheckpointFilterConfig):
+    """Apply a checkpoint filter only while one SGLang model is loading."""
+    from sglang.srt.model_executor import model_runner as sglang_model_runner
+    from sglang.srt.model_loader.loader import DefaultModelLoader
+
+    original_get_model_loader = sglang_model_runner.get_model_loader
+
+    def _get_model_loader(*args, **kwargs):
+        loader = original_get_model_loader(*args, **kwargs)
+        if isinstance(loader, DefaultModelLoader):
+            install_checkpoint_filter(loader, profile, log=logger)
+        return loader
+
+    sglang_model_runner.get_model_loader = _get_model_loader
+    try:
+        yield
+    finally:
+        sglang_model_runner.get_model_loader = original_get_model_loader
