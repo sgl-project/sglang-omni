@@ -12,13 +12,18 @@ import sglang_omni_v1.model_runner.sglang_model_runner as runner_mod
 import sglang_omni_v1.models.qwen3_omni.stages as qwen_stages
 
 
+class _BudgetTestRunner(runner_mod.SGLModelRunner):
+    @property
+    def mambaish_config(self) -> None:
+        return None
+
+
 def _runner(*, total_gpu_memory_fraction: float | None):
-    runner = runner_mod.SGLModelRunner.__new__(runner_mod.SGLModelRunner)
+    runner = _BudgetTestRunner.__new__(_BudgetTestRunner)
     runner.gpu_id = 0
     runner.mem_fraction_static = 0.9
     runner._total_gpu_memory_fraction = total_gpu_memory_fraction
     runner.is_draft_worker = False
-    runner.mambaish_config = None
     runner.num_effective_layers = 32
     return runner
 
