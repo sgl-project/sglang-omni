@@ -158,6 +158,82 @@ def test_streaming_finalize_after_chunks_then_done_then_new_request():
     assert types.count("result") == 1
 
 
+def _payload_with_output_ids(stream: bool, output_ids: list[int]) -> StagePayload:
+    """Variant of _make_payload that injects a non-empty output_ids list so
+    decode_events produces a text_final event with the full reconstructed
+    text in its payload — the case the slim-final invariant guards against.
+    """
+    return StagePayload(
+        request_id="req-1",
+        request=OmniRequest(inputs=[], params={"stream": stream}),
+        data={
+            "engine_outputs": {
+                "thinker": {
+                    "output_ids": list(output_ids),
+                    "step": len(output_ids),
+                    "is_final": True,
+                    "extra_model_outputs": {},
+                    "finish_reason": "stop",
+                }
+            },
+            "thinker_out": None,
+            "prompt": {"input_ids": []},
+            "stream_state": {},
+        },
+    )
+
+
+def test_streaming_final_result_drops_full_text_to_avoid_duplication():
+    """When stream=True, the terminal result must NOT carry the full
+    reconstructed text — text deltas were already streamed via
+    OutgoingMessage(type='stream'). A direct client that appends every
+    chunk's text would otherwise emit the whole response twice.
+    """
+    tok = _ByteTokenizer(vocab={1: b"hi", 2: b" there"})
+    sched = StreamingDetokenizeScheduler(tokenizer=tok, eos_token_id=None)
+
+    # Two text deltas streamed first.
+    sched._on_stream_chunk("req-1", _StreamItem(data=1))
+    sched._on_stream_chunk("req-1", _StreamItem(data=2))
+    sched._on_stream_done("req-1")
+    sched._on_new_request(
+        "req-1", _payload_with_output_ids(stream=True, output_ids=[1, 2])
+    )
+
+    out = _drain_outbox(sched)
+    stream_msgs = [m for m in out if m.type == "stream"]
+    result_msgs = [m for m in out if m.type == "result"]
+    assert stream_msgs, "deltas must reach the client before the final result"
+    assert len(result_msgs) == 1
+
+    final_data = result_msgs[0].data.data
+    assert "text" not in final_data, (
+        "streaming final must not duplicate text already emitted as deltas"
+    )
+    # Slim, but still useful for completion signaling.
+    assert "events" in final_data
+    assert "usage" in final_data
+    assert final_data.get("finish_reason") == "stop"
+
+
+def test_non_streaming_final_result_keeps_full_text():
+    """Non-streaming clients receive a single terminal result and must
+    still see the full reconstructed text (regression guard for the
+    slim-final branch in _build_result).
+    """
+    tok = _ByteTokenizer(vocab={1: b"hi", 2: b" there"})
+    sched = StreamingDetokenizeScheduler(tokenizer=tok, eos_token_id=None)
+
+    sched._on_new_request(
+        "req-1", _payload_with_output_ids(stream=False, output_ids=[1, 2])
+    )
+    result_msgs = [m for m in _drain_outbox(sched) if m.type == "result"]
+    assert len(result_msgs) == 1
+    final_data = result_msgs[0].data.data
+    assert final_data.get("text") == "hi there"
+    assert final_data.get("finish_reason") == "stop"
+
+
 def test_abort_clears_state():
     tok = _ByteTokenizer(vocab={1: b"hi"})
     sched = StreamingDetokenizeScheduler(tokenizer=tok, eos_token_id=None)

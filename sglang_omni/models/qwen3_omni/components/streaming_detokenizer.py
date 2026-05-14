@@ -200,7 +200,10 @@ class StreamingDetokenizeScheduler:
                         metadata={"modality": "text"},
                     )
                 )
-        result = self._build_result(s.payload)
+        is_streaming = bool(
+            (s.payload.request.params or {}).get("stream", False)
+        )
+        result = self._build_result(s.payload, is_streaming=is_streaming)
         s.payload.data = result
         self.outbox.put(
             OutgoingMessage(
@@ -210,7 +213,9 @@ class StreamingDetokenizeScheduler:
             )
         )
 
-    def _build_result(self, payload: StagePayload) -> dict[str, Any]:
+    def _build_result(
+        self, payload: StagePayload, *, is_streaming: bool = False
+    ) -> dict[str, Any]:
         state = PipelineState.from_dict(payload.data)
         thinker_out = state.thinker_out or state.engine_outputs.get(THINKER_STAGE)
         if not isinstance(thinker_out, dict):
@@ -246,7 +251,15 @@ class StreamingDetokenizeScheduler:
             result.update(final_event.payload)
             result.setdefault("modality", final_event.modality)
 
-        if "text" not in result:
+        # Streaming clients already received the full output as per-token
+        # text deltas via OutgoingMessage(type="stream"). The terminal
+        # result must NOT carry the reconstructed full text — direct
+        # consumers of Client.completion_stream() append every chunk's
+        # "text" field and would otherwise emit the whole response twice.
+        # Mirrors the code2wav slim-final contract for audio.
+        if is_streaming:
+            result.pop("text", None)
+        elif "text" not in result:
             output_ids = thinker_out.get("output_ids")
             if isinstance(output_ids, list) and output_ids:
                 result["text"] = self._tokenizer.decode(
