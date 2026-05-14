@@ -34,7 +34,7 @@ from sglang.srt.layers.moe.fused_moe_triton.layer import FusedMoE
 from sglang.srt.layers.moe.topk import TopK
 from sglang.srt.layers.moe.utils import RoutingMethodType
 from sglang.srt.layers.quantization.base_config import QuantizationConfig
-from sglang.srt.layers.radix_attention import RadixAttention
+from sglang.srt.layers.radix_attention import AttentionType, RadixAttention
 from sglang.srt.layers.rotary_embedding import MRotaryEmbedding, get_rope
 from sglang.srt.layers.utils import get_layer_id
 from sglang.srt.layers.vocab_parallel_embedding import VocabParallelEmbedding
@@ -137,6 +137,7 @@ def _patched_forward_with_allreduce_fusion(
 RMSNorm.forward_with_allreduce_fusion = _patched_forward_with_allreduce_fusion
 
 __all__ = [
+    "AttentionType",
     "RadixAttention",
     "VocabParallelEmbedding",
     "MRotaryEmbedding",

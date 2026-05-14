@@ -40,6 +40,7 @@ class ModelWorker:
         self.tp_rank = tp_rank
         self._init_model_config()
         self._init_model_runner()
+        self._init_dllm_algorithm()
 
         self.device = self.model_runner.device
         from sglang.srt.utils import broadcast_pyobj, set_random_seed
@@ -140,11 +141,30 @@ class ModelWorker:
             weight_prefix=self.weight_prefix,
         )
 
+    def _init_dllm_algorithm(self):
+        if self.server_args.dllm_algorithm is None:
+            self.dllm_algorithm = None
+            return
+
+        from sglang.srt.dllm.algorithm.base import DllmAlgorithm
+
+        self.dllm_algorithm = DllmAlgorithm.from_server_args(self.server_args)
+
     def forward_batch_generation(
         self,
         forward_batch,
     ):
         from sglang.srt.managers.scheduler import GenerationBatchResult
+
+        if self.dllm_algorithm is not None:
+            logits_output, next_token_ids, can_run_cuda_graph = self.dllm_algorithm.run(
+                self.model_runner, forward_batch
+            )
+            return GenerationBatchResult(
+                logits_output=logits_output,
+                next_token_ids=next_token_ids,
+                can_run_cuda_graph=can_run_cuda_graph,
+            )
 
         out = self.model_runner.forward(forward_batch=forward_batch)
         logits_output, can_run_cuda_graph = out.logits_output, out.can_run_graph
