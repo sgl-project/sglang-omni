@@ -21,6 +21,7 @@ from sglang_omni.proto import (
     DataReadyMessage,
     StagePayload,
     StreamMessage,
+    classify_error_code,
 )
 
 if TYPE_CHECKING:
@@ -380,12 +381,14 @@ class Worker:
 
     async def _send_failure(self, request_id: str, error: str) -> None:
         """Send failure to coordinator."""
+        error_code = classify_error_code(error)
         await self.stage.control_plane.send_complete(
             CompleteMessage(
                 request_id=request_id,
                 from_stage=self.stage.name,
                 success=False,
                 error=error,
+                error_code=error_code,
             )
         )
 

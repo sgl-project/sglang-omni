@@ -33,6 +33,7 @@ from sglang_omni_v1.proto import (
     ShutdownMessage,
     StageInfo,
     SubmitMessage,
+    classify_error_code,
 )
 from sglang_omni_v1.relay.base import Relay, create_relay
 from sglang_omni_v1.scheduling.messages import IncomingMessage
@@ -596,6 +597,7 @@ class Stage:
         )
 
     async def _send_failure(self, request_id: str, error: str) -> None:
+        error_code = classify_error_code(error)
         if not self._owns_external_io:
             self._clear_request_state(request_id)
             raise RuntimeError(f"Follower stage {self.name} failed: {error}")
@@ -605,6 +607,7 @@ class Stage:
                 from_stage=self.name,
                 success=False,
                 error=error,
+                error_code=error_code,
             )
         )
         self._clear_request_state(request_id)
