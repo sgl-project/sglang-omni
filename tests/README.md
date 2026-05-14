@@ -25,6 +25,9 @@ tests/
     │   ├── test_code2wav.py
     │   ├── test_pipeline.py
     │   └── test_talker.py
+    ├── router/
+    │   ├── test_app.py
+    │   └── test_core.py
     └── fishaudio_s2_pro/
         ├── test_pipeline.py
         ├── test_tts.py
@@ -109,6 +112,13 @@ that happened to contain an older version of the test.
   - `PipelineState` request builders
   - talker behavior
   - Code2Wav streaming/cleanup behavior.
+
+- `unit_test/router/`: SGLang-Omni Router unit tests:
+  - router CLI/config behavior
+  - worker metadata and health-state contracts
+  - request routing, proxying, and streaming relay
+  - worker selection policy behavior
+  - managed launcher command construction and cleanup.
 
 - `unit_test/fishaudio_s2_pro/`: FishAudio S2-Pro unit tests:
   - tokenizer/state contracts

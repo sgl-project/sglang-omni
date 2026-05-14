@@ -15,6 +15,7 @@ dependencies = [
     "msgpack>=1.0.0",         # Message serialization
     "numpy>=1.24.0",          # Array operations
     "pydantic>=2.0.0",        # Data validation and serialization
+    "PyYAML>=6.0",            # YAML config parsing
     "torch==2.9.1",          # PyTorch for tensor operations
     "torchvision==0.24.1",    # torchvision for vision processor
     "accelerate>=0.27.0",     # init_empty_weights for meta initialization
@@ -63,6 +64,7 @@ dependencies = [
 
 [project.scripts]
 sgl-omni = "sglang_omni.cli:app"
+sgl-omni-router = "sglang_omni_router.serve:main"
 
 [tool.uv]
 override-dependencies = [
