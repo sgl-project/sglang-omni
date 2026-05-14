@@ -192,7 +192,6 @@ def test_streaming_final_result_drops_full_text_to_avoid_duplication():
     tok = _ByteTokenizer(vocab={1: b"hi", 2: b" there"})
     sched = StreamingDetokenizeScheduler(tokenizer=tok, eos_token_id=None)
 
-    # Two text deltas streamed first.
     sched._on_stream_chunk("req-1", _StreamItem(data=1))
     sched._on_stream_chunk("req-1", _StreamItem(data=2))
     sched._on_stream_done("req-1")
@@ -210,7 +209,6 @@ def test_streaming_final_result_drops_full_text_to_avoid_duplication():
     assert "text" not in final_data, (
         "streaming final must not duplicate text already emitted as deltas"
     )
-    # Slim, but still useful for completion signaling.
     assert "events" in final_data
     assert "usage" in final_data
     assert final_data.get("finish_reason") == "stop"
@@ -606,3 +604,135 @@ def test_code2wav_abort_clears_all_per_request_state():
     assert "req-1" not in sched._payloads
     assert "req-1" not in sched._stream_enabled
     assert "req-1" not in sched._pending_done
+
+
+class _FakeCoordinatorForClient:
+    """Async-iterates a pre-seeded message list as a Coordinator.stream() stand-in."""
+
+    def __init__(self, messages):
+        self._messages = list(messages)
+
+    async def stream(self, request_id, omni_request):
+        del request_id, omni_request
+        for m in self._messages:
+            yield m
+
+
+def test_client_completion_stream_does_not_duplicate_full_text():
+    """Two text deltas + a slim completion must yield a chunk sequence whose
+    concatenated text equals the response once, not twice. Covers the
+    `_default_stream_builder` / `_default_result_builder` translation path
+    that scheduler-level tests can't reach.
+    """
+    from sglang_omni_v1.client.client import Client
+    from sglang_omni_v1.client.types import GenerateRequest
+    from sglang_omni_v1.proto import CompleteMessage, StreamMessage
+
+    messages = [
+        StreamMessage(
+            request_id="req-1",
+            from_stage="decode",
+            chunk={"text": "hi", "modality": "text", "stage_name": "decode"},
+            stage_name="decode",
+            modality="text",
+        ),
+        StreamMessage(
+            request_id="req-1",
+            from_stage="decode",
+            chunk={"text": " there", "modality": "text", "stage_name": "decode"},
+            stage_name="decode",
+            modality="text",
+        ),
+        CompleteMessage(
+            request_id="req-1",
+            from_stage="decode",
+            success=True,
+            # Slim shape produced by StreamingDetokenizeScheduler when
+            # stream=True: no top-level "text".
+            result={
+                "events": [],
+                "usage": {
+                    "prompt_tokens": 0,
+                    "completion_tokens": 2,
+                    "total_tokens": 2,
+                },
+                "finish_reason": "stop",
+                "modality": "text",
+            },
+        ),
+    ]
+    client = Client(coordinator=_FakeCoordinatorForClient(messages))
+
+    request = GenerateRequest(prompt="ignored-in-fake", stream=True)
+
+    async def _collect():
+        out = []
+        async for chunk in client.completion_stream(request, request_id="req-1"):
+            out.append(chunk)
+        return out
+
+    chunks = asyncio.run(_collect())
+
+    text_parts = [c.text for c in chunks if c.text]
+    assert text_parts == ["hi", " there"], (
+        f"streaming consumer must see each delta exactly once and no "
+        f"reconstructed full text, got {text_parts!r}"
+    )
+
+    final = chunks[-1]
+    assert final.finish_reason == "stop"
+    # The terminal chunk must not re-emit the full response text.
+    assert final.text in (None, "", "hi", " there"), (
+        f"final chunk text must not be the full reconstructed response, "
+        f"got {final.text!r}"
+    )
+
+    full = "".join(c.text or "" for c in chunks)
+    assert full == "hi there", (
+        f"concatenated stream must equal the response once, got {full!r}"
+    )
+
+
+def test_client_completion_stream_non_streaming_keeps_full_text():
+    """Regression guard: when the scheduler does NOT slim (non-streaming
+    path), `Client.completion_stream()` must surface the full text on
+    the terminal chunk so callers using the unified API still receive it.
+    """
+    from sglang_omni_v1.client.client import Client
+    from sglang_omni_v1.client.types import GenerateRequest
+    from sglang_omni_v1.proto import CompleteMessage
+
+    messages = [
+        CompleteMessage(
+            request_id="req-1",
+            from_stage="decode",
+            success=True,
+            result={
+                "events": [],
+                "text": "hi there",
+                "usage": {
+                    "prompt_tokens": 0,
+                    "completion_tokens": 2,
+                    "total_tokens": 2,
+                },
+                "finish_reason": "stop",
+                "modality": "text",
+            },
+        ),
+    ]
+    client = Client(coordinator=_FakeCoordinatorForClient(messages))
+
+    # stream=True at the client surface still drives the streaming path;
+    # what matters is that the coordinator hands us a non-slim result.
+    request = GenerateRequest(prompt="ignored", stream=True)
+
+    async def _collect():
+        out = []
+        async for chunk in client.completion_stream(request, request_id="req-1"):
+            out.append(chunk)
+        return out
+
+    chunks = asyncio.run(_collect())
+    assert len(chunks) == 1
+    assert chunks[0].text == "hi there"
+    assert chunks[0].finish_reason == "stop"
