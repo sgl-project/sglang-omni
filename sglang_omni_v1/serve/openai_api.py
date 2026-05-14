@@ -53,6 +53,11 @@ from sglang_omni_v1.serve.protocol import (
 logger = logging.getLogger(__name__)
 MIME_TO_FORMAT = {mime: fmt for fmt, mime in FORMAT_MIME_TYPES.items()}
 
+
+def _sse_event(data: dict[str, Any]) -> str:
+    return f"data: {json.dumps(data)}\n\n"
+
+
 _BAD_REQUEST_MARKERS = (
     "longer than the model's context length",
     "Requested token count exceeds the model's maximum context length",
@@ -270,70 +275,93 @@ async def _chat_stream(
     finish_reason: str | None = None
     final_usage: UsageResponse | None = None
 
-    async for chunk in client.completion_stream(
-        gen_req,
-        request_id=request_id,
-        audio_format=audio_format,
-    ):
-        # Capture finish info for the dedicated finish chunk after the loop.
-        if chunk.finish_reason is not None:
-            finish_reason = chunk.finish_reason
-            if chunk.usage is not None:
-                final_usage = UsageResponse(
-                    prompt_tokens=chunk.usage.prompt_tokens or 0,
-                    completion_tokens=chunk.usage.completion_tokens or 0,
-                    total_tokens=chunk.usage.total_tokens or 0,
-                )
-            continue
-
-        delta = ChatCompletionStreamDelta()
-        emit = False
-
-        # Send role on first chunk
-        if not role_sent:
-            delta.role = "assistant"
-            role_sent = True
-            emit = True
-
-        # Text chunk
-        if chunk.modality == "text" and chunk.text and "text" in requested_modalities:
-            delta.content = chunk.text
-            emit = True
-
-        # Audio chunk
-        if (
-            chunk.modality == "audio"
-            and chunk.audio_b64 is not None
-            and "audio" in requested_modalities
+    try:
+        async for chunk in client.completion_stream(
+            gen_req,
+            request_id=request_id,
+            audio_format=audio_format,
         ):
-            delta.audio = ChatCompletionAudio(
-                id=f"audio-{request_id}",
-                data=chunk.audio_b64,
-            )
-            emit = True
+            if chunk.finish_reason is not None:
+                finish_reason = chunk.finish_reason
+                if chunk.usage is not None:
+                    final_usage = UsageResponse(
+                        prompt_tokens=chunk.usage.prompt_tokens or 0,
+                        completion_tokens=chunk.usage.completion_tokens or 0,
+                        total_tokens=chunk.usage.total_tokens or 0,
+                    )
+                continue
 
-        if not emit:
-            continue
+            delta = ChatCompletionStreamDelta()
+            emit = False
 
-        stream_resp = ChatCompletionStreamResponse(
-            id=response_id,
-            created=created,
-            model=model,
-            choices=[
-                ChatCompletionStreamChoice(
-                    index=0,
-                    delta=delta,
-                    finish_reason=None,
+            if not role_sent:
+                delta.role = "assistant"
+                role_sent = True
+                emit = True
+
+            if (
+                chunk.modality == "text"
+                and chunk.text
+                and "text" in requested_modalities
+            ):
+                delta.content = chunk.text
+                emit = True
+
+            if (
+                chunk.modality == "audio"
+                and chunk.audio_b64 is not None
+                and "audio" in requested_modalities
+            ):
+                delta.audio = ChatCompletionAudio(
+                    id=f"audio-{request_id}",
+                    data=chunk.audio_b64,
                 )
-            ],
+                emit = True
+
+            if not emit:
+                continue
+
+            stream_resp = ChatCompletionStreamResponse(
+                id=response_id,
+                created=created,
+                model=model,
+                choices=[
+                    ChatCompletionStreamChoice(
+                        index=0,
+                        delta=delta,
+                        finish_reason=None,
+                    )
+                ],
+            )
+            data = stream_resp.model_dump(exclude_none=True)
+            for choice in data.get("choices", []):
+                choice.setdefault("finish_reason", None)
+            yield _sse_event(data)
+
+    except ClientError as exc:
+        yield _sse_event(
+            {
+                "error": {
+                    "code": 400 if _is_bad_request_error(exc) else 500,
+                    "message": str(exc),
+                }
+            }
         )
+        yield "data: [DONE]\n\n"
+        return
+    except Exception as exc:
+        logger.exception("Error streaming response for request %s", request_id)
+        yield _sse_event(
+            {
+                "error": {
+                    "code": 400 if _is_bad_request_error(exc) else 500,
+                    "message": str(exc),
+                }
+            }
+        )
+        yield "data: [DONE]\n\n"
+        return
 
-        data = stream_resp.model_dump(exclude_none=True)
-        for choice in data.get("choices", []):
-            choice.setdefault("finish_reason", None)
-        yield f"data: {json.dumps(data)}\n\n"
-
-    # Finish chunk: empty delta + finish_reason.
     finish_resp = ChatCompletionStreamResponse(
         id=response_id,
         created=created,
@@ -350,8 +378,7 @@ async def _chat_stream(
     data = finish_resp.model_dump(exclude_none=True)
     for choice in data.get("choices", []):
         choice.setdefault("finish_reason", None)
-    yield f"data: {json.dumps(data)}\n\n"
-
+    yield _sse_event(data)
     yield "data: [DONE]\n\n"
 
 
@@ -553,13 +580,31 @@ async def _speech_stream(
                 },
                 "finish_reason": None,
             }
-            yield f"data: {json.dumps(payload)}\n\n"
+            yield _sse_event(payload)
             chunk_index += 1
     except ClientError as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        yield _sse_event(
+            {
+                "error": {
+                    "code": 500,
+                    "message": str(exc),
+                }
+            }
+        )
+        yield "data: [DONE]\n\n"
+        return
     except Exception as exc:
         logger.exception("Error streaming speech for request %s", request_id)
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        yield _sse_event(
+            {
+                "error": {
+                    "code": 500,
+                    "message": str(exc),
+                }
+            }
+        )
+        yield "data: [DONE]\n\n"
+        return
 
     final_payload = {
         "id": f"speech-{request_id}",
@@ -569,7 +614,7 @@ async def _speech_stream(
         "finish_reason": finish_reason or "stop",
         "usage": usage,
     }
-    yield f"data: {json.dumps(final_payload)}\n\n"
+    yield _sse_event(final_payload)
     yield "data: [DONE]\n\n"
 
 
