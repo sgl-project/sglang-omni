@@ -200,9 +200,7 @@ class StreamingDetokenizeScheduler:
                         metadata={"modality": "text"},
                     )
                 )
-        is_streaming = bool(
-            (s.payload.request.params or {}).get("stream", False)
-        )
+        is_streaming = bool((s.payload.request.params or {}).get("stream", False))
         result = self._build_result(s.payload, is_streaming=is_streaming)
         s.payload.data = result
         self.outbox.put(

@@ -8,7 +8,7 @@ import torch
 
 from sglang_omni.pipeline import relay_io
 from sglang_omni.pipeline.stage.input import AggregatedInput
-from sglang_omni.pipeline.stage.stream_queue import StreamItem, StreamQueue
+from sglang_omni.pipeline.stage.stream_queue import StreamQueue
 from sglang_omni.proto import DataReadyMessage
 from tests.unit_test.fixtures.pipeline_fakes import (
     EventLog,
@@ -79,15 +79,12 @@ def test_stage_routes_results_streams_and_clears_abort_state() -> None:
 
         stage_obj._stream_queue = StreamQueue()
         stage_obj._stream_queue.open("req-1")
-        stage_obj._pending_stream_data["req-1"] = [
-            StreamItem(0, torch.tensor([1]), "t")
-        ]
         stage_obj._on_abort("req-1")
 
         assert "req-1" in stage_obj._aborted
         assert relay.cleaned[-1] == "req-1"
         assert scheduler.aborted == ["req-1"]
-        assert "req-1" not in stage_obj._pending_stream_data
+        assert not stage_obj._stream_queue.has("req-1")
 
     asyncio.run(_run())
 

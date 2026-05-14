@@ -206,9 +206,9 @@ def test_streaming_final_result_drops_full_text_to_avoid_duplication():
     assert len(result_msgs) == 1
 
     final_data = result_msgs[0].data.data
-    assert "text" not in final_data, (
-        "streaming final must not duplicate text already emitted as deltas"
-    )
+    assert (
+        "text" not in final_data
+    ), "streaming final must not duplicate text already emitted as deltas"
     assert "events" in final_data
     assert "usage" in final_data
     assert final_data.get("finish_reason") == "stop"
@@ -624,9 +624,9 @@ def test_client_completion_stream_does_not_duplicate_full_text():
     `_default_stream_builder` / `_default_result_builder` translation path
     that scheduler-level tests can't reach.
     """
-    from sglang_omni_v1.client.client import Client
-    from sglang_omni_v1.client.types import GenerateRequest
-    from sglang_omni_v1.proto import CompleteMessage, StreamMessage
+    from sglang_omni.client.client import Client
+    from sglang_omni.client.types import GenerateRequest
+    from sglang_omni.proto import CompleteMessage, StreamMessage
 
     messages = [
         StreamMessage(
@@ -688,9 +688,9 @@ def test_client_completion_stream_does_not_duplicate_full_text():
     )
 
     full = "".join(c.text or "" for c in chunks)
-    assert full == "hi there", (
-        f"concatenated stream must equal the response once, got {full!r}"
-    )
+    assert (
+        full == "hi there"
+    ), f"concatenated stream must equal the response once, got {full!r}"
 
 
 def test_client_completion_stream_non_streaming_keeps_full_text():
@@ -698,9 +698,9 @@ def test_client_completion_stream_non_streaming_keeps_full_text():
     path), `Client.completion_stream()` must surface the full text on
     the terminal chunk so callers using the unified API still receive it.
     """
-    from sglang_omni_v1.client.client import Client
-    from sglang_omni_v1.client.types import GenerateRequest
-    from sglang_omni_v1.proto import CompleteMessage
+    from sglang_omni.client.client import Client
+    from sglang_omni.client.types import GenerateRequest
+    from sglang_omni.proto import CompleteMessage
 
     messages = [
         CompleteMessage(
