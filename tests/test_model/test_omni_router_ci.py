@@ -55,11 +55,11 @@ COLOCATED_WORKER_ARGS = "--config examples/configs/qwen3_omni_colocated.yaml --c
 
 _ROUTER_COLOCATED_SEEDTTS_REFERENCE = {
     16: {
-        "throughput_qps": 4.033,
-        "tok_per_s_agg": 3.6,
-        "latency_mean_s": 3.960,
-        "latency_p95_s": 5.772,
-        "rtf_mean": 1.1038,
+        "throughput_qps": 5.657,
+        "tok_per_s_agg": 5.7,
+        "latency_mean_s": 2.585,
+        "latency_p95_s": 4.154,
+        "rtf_mean": 0.8431,
     },
 }
 ROUTER_COLOCATED_SEEDTTS_THRESHOLDS = apply_slack(
@@ -71,8 +71,8 @@ ROUTER_SEEDTTS_LATENCY_P95_MAX = round(
     _ROUTER_COLOCATED_SEEDTTS_REFERENCE[CONCURRENCY]["latency_p95_s"] * 1.50,
     1,
 )
-ROUTER_SEEDTTS_WER_BELOW_50_CORPUS_MAX = 0.06
-ROUTER_SEEDTTS_N_ABOVE_50_MAX = 1
+ROUTER_SEEDTTS_WER_BELOW_50_CORPUS_MAX = 0.014184397163120567
+ROUTER_SEEDTTS_N_ABOVE_50_MAX = 0
 
 
 @dataclass

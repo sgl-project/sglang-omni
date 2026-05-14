@@ -21,6 +21,15 @@ if not REPO_ROOT.exists():
     REPO_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_RUN_ROOT = Path("/github/home/ci-threshold-runs")
 RETRY_SIGS = ("OOM", "exit 137", "exit 139", "TimeoutExpired")
+ROUTER_CLEANUP_PATTERNS = (
+    "examples/configs/qwen3_omni_colocated.yaml",
+    "--colocate",
+)
+ROUTER_CLEANUP_COMMAND_PATTERNS = (
+    "sgl-omni serve",
+    "sglang_omni.cli serve",
+    "sglang_omni_v1.cli serve",
+)
 
 # Metric registry. Each entry encodes how a named metric should be
 # displayed in the report and which stage group it belongs to. Scales
@@ -35,9 +44,10 @@ METRIC_SPECS = {
     "throughput_qps":       dict(worst="min", label="Throughput (req/s)",    digits=3, scale=1,   group="speed"),
     "tok_per_s_agg":        dict(worst="min", label="Tok/s (aggregate)",     digits=2, scale=1,   group="speed"),
     "latency_mean_s":       dict(worst="max", label="Latency mean (s)",      digits=3, scale=1,   group="speed"),
+    "latency_p95_s":        dict(worst="max", label="Latency p95 (s)",       digits=3, scale=1,   group="speed"),
     "rtf_mean":             dict(worst="max", label="RTF mean",              digits=4, scale=1,   group="speed"),
 }
-_NESTED = {"throughput_qps", "tok_per_s_agg", "latency_mean_s", "rtf_mean"}
+_NESTED = {"throughput_qps", "tok_per_s_agg", "latency_mean_s", "latency_p95_s", "rtf_mean"}
 
 
 def match_metric(name, nested):
@@ -926,6 +936,7 @@ def _run_shared(test_path, stage_keys, all_stages, out, k, py, total, gpus_neede
         with open(log, "w") as lf:
             rc = subprocess.Popen(pytest_cmd, cwd=REPO_ROOT, env=env,
                 stdout=lf, stderr=subprocess.STDOUT).wait()
+        _cleanup_after_pytest(test_path)
         dur = time.monotonic() - t0
         text = log.read_text()
         if rc == 0:
@@ -979,6 +990,50 @@ def _run_shared(test_path, stage_keys, all_stages, out, k, py, total, gpus_neede
         if len(extraction_warnings) > 20:
             print(f"  ... and {len(extraction_warnings) - 20} more "
                   f"(see {basetemp} listing to debug)")
+
+
+def _cleanup_after_pytest(test_path):
+    """Clean up child processes known to outlive a completed pytest run."""
+    if Path(test_path).name != "test_omni_router_ci.py":
+        return
+    procs = subprocess.run(["pgrep", "-af", "sgl-omni|sglang_omni"],
+                           capture_output=True, text=True, check=False)
+    pids = []
+    for line in procs.stdout.splitlines():
+        parts = line.split(maxsplit=1)
+        if len(parts) != 2:
+            continue
+        pid, cmdline = parts
+        is_router_worker = (
+            any(pattern in cmdline for pattern in ROUTER_CLEANUP_COMMAND_PATTERNS)
+            and all(pattern in cmdline for pattern in ROUTER_CLEANUP_PATTERNS)
+        )
+        if is_router_worker:
+            try:
+                pids.append(int(pid))
+            except ValueError:
+                pass
+    if not pids:
+        return
+    print(f"  cleanup: stopping router worker leftovers {pids}")
+    for sig in ("TERM", "KILL"):
+        for pid in pids:
+            subprocess.run(["kill", f"-{sig}", f"-{pid}"],
+                           stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL,
+                           check=False)
+        time.sleep(5 if sig == "TERM" else 1)
+        remaining = []
+        for pid in pids:
+            alive = subprocess.run(["kill", "-0", f"-{pid}"],
+                                   stdout=subprocess.DEVNULL,
+                                   stderr=subprocess.DEVNULL,
+                                   check=False)
+            if alive.returncode == 0:
+                remaining.append(pid)
+        if not remaining:
+            break
+        pids = remaining
 
 
 def _classify(text, rc):
