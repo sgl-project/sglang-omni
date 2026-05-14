@@ -271,7 +271,7 @@ def _run_seedtts_generate(
         output_dir=str(output_dir),
         max_samples=MAX_SAMPLES,
         max_concurrency=CONCURRENCY,
-        voice_clone=False,
+        voice_clone=True,
     )
     results = asyncio.run(run_omni_seedtts_benchmark(config))
     assert "summary" in results
