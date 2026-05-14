@@ -818,6 +818,22 @@ def test_worker_request_guard_cleans_up_count() -> None:
     assert worker.active_requests == 0
 
 
+def test_worker_records_routed_request_outcomes() -> None:
+    worker = build_workers([WorkerConfig(url="http://127.0.0.1:8101")])[0]
+
+    worker.record_routed_request(status_code=200)
+    worker.record_routed_request(status_code=503)
+    worker.record_routed_request()
+
+    assert worker.routed_requests == 3
+    assert worker.successful_requests == 1
+    assert worker.failed_requests == 2
+    payload = worker.to_dict()
+    assert payload["routed_requests"] == 3
+    assert payload["successful_requests"] == 1
+    assert payload["failed_requests"] == 2
+
+
 def test_worker_decrement_active_fails_on_unbalanced_cleanup() -> None:
     worker = build_workers([WorkerConfig(url="http://127.0.0.1:8101")])[0]
 

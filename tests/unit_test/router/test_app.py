@@ -696,6 +696,10 @@ def test_buffered_route_completion_log_includes_selection_context(
             )
 
     assert response.status_code == 200
+    worker = app.state.workers[0]
+    assert worker.routed_requests == 1
+    assert worker.successful_requests == 1
+    assert worker.failed_requests == 0
     route_logs = [
         record.getMessage()
         for record in caplog.records
@@ -730,6 +734,9 @@ def test_upstream_request_failure_returns_502_and_cleans_active_count() -> None:
     assert response.status_code == 502
     assert all(worker.active_requests == 0 for worker in app.state.workers)
     worker = app.state.workers[0]
+    assert worker.routed_requests == 1
+    assert worker.successful_requests == 0
+    assert worker.failed_requests == 1
     assert worker.state == "unhealthy"
     assert worker.last_error == "ConnectError"
 
@@ -908,6 +915,9 @@ def test_streaming_failure_records_single_worker_failure() -> None:
                 b"".join(response.iter_bytes())
 
     worker = app.state.workers[0]
+    assert worker.routed_requests == 1
+    assert worker.successful_requests == 0
+    assert worker.failed_requests == 1
     assert worker.consecutive_failures == 1
     assert worker.state == "healthy"
 

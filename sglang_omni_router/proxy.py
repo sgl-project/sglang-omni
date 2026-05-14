@@ -210,6 +210,7 @@ class ProxyHandler:
                     headers=request_headers,
                 )
             except httpx.HTTPError as exc:
+                worker.record_routed_request()
                 self._record_worker_request_failure(
                     worker,
                     error=type(exc).__name__,
@@ -234,6 +235,7 @@ class ProxyHandler:
                     status_code=response.status_code,
                     error=_response_error(response),
                 )
+            worker.record_routed_request(status_code=response.status_code)
             outcome = _response_outcome(response.status_code)
             self._log_route_completion(
                 worker=worker,
@@ -272,6 +274,7 @@ class ProxyHandler:
             upstream = await self._client.send(upstream_request, stream=True)
         except httpx.HTTPError as exc:
             worker.decrement_active()
+            worker.record_routed_request()
             self._record_worker_request_failure(
                 worker,
                 error=type(exc).__name__,
@@ -328,6 +331,8 @@ class ProxyHandler:
             finally:
                 await upstream.aclose()
                 worker.decrement_active()
+                status_code = upstream.status_code if outcome == "completed" else None
+                worker.record_routed_request(status_code=status_code)
                 self._log_route_completion(
                     worker=worker,
                     path=path,
