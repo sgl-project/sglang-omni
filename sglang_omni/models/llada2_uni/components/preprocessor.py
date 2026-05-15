@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import logging
-import os
+from pathlib import Path
 from typing import Any
 
 import PIL.Image
@@ -13,8 +13,10 @@ import torch
 from sglang_omni.models.llada2_uni.components.common import (
     load_llada2_config,
     load_llada2_tokenizer,
+    resolve_local_model_dir,
 )
 from sglang_omni.models.llada2_uni.payload_types import PipelineState, PromptInputs
+from sglang_omni.models.weight_loader import resolve_model_path
 from sglang_omni.preprocessing.image import ensure_image_list_async
 from sglang_omni.proto import StagePayload
 
@@ -91,19 +93,34 @@ class LLaDA2Preprocessor:
 
     def __init__(self, model_path: str):
         self._model_path = model_path
+        self._model_dir = resolve_local_model_dir(model_path)
         self._config = load_llada2_config(model_path)
         self._tokenizer = load_llada2_tokenizer(model_path)
 
         # Load HF Qwen2VLImageProcessor (do_resize=False, crop handles sizing)
         from transformers import Qwen2VLImageProcessor
 
-        tokenizer_path = os.path.join(model_path, "image_tokenizer")
+        tokenizer_path = str(Path(self._model_dir) / "image_tokenizer")
 
-        self._image_processor = Qwen2VLImageProcessor.from_pretrained(
-            tokenizer_path,
-            local_files_only=True,
-            do_resize=False,  # Disable resize, use manual crop instead
-        )
+        try:
+            self._image_processor = Qwen2VLImageProcessor.from_pretrained(
+                tokenizer_path,
+                local_files_only=True,
+                do_resize=False,  # Disable resize, use manual crop instead
+            )
+        except (OSError, ValueError, RuntimeError):
+            if Path(model_path).exists():
+                raise
+            self._image_processor = Qwen2VLImageProcessor.from_pretrained(
+                model_path,
+                trust_remote_code=True,
+                local_files_only=False,
+                subfolder="image_tokenizer",
+                do_resize=False,
+            )
+            self._model_dir = str(
+                resolve_model_path(model_path, local_files_only=False)
+            )
         self._merge_size = self._image_processor.merge_size
         self._factor = self._image_processor.patch_size * self._merge_size
 
@@ -116,11 +133,12 @@ class LLaDA2Preprocessor:
         raw_inputs = request.inputs if hasattr(request, "inputs") else {}
         if isinstance(raw_inputs, list):
             messages = raw_inputs
+            raw_images = self._extract_raw_images(messages)
         else:
             messages = raw_inputs.get("messages", [])
-
-        # Extract image URLs/paths from messages
-        raw_images = self._extract_raw_images(messages)
+            raw_images = raw_inputs.get("images")
+            if raw_images is None:
+                raw_images = self._extract_raw_images(messages)
 
         # Load images asynchronously via framework utility
         images = await ensure_image_list_async(raw_images) if raw_images else []
@@ -195,8 +213,8 @@ class LLaDA2Preprocessor:
         )
 
     @staticmethod
-    def _extract_raw_images(messages: list[dict[str, Any]]) -> list[str]:
-        raw_images: list[str] = []
+    def _extract_raw_images(messages: list[dict[str, Any]]) -> list[Any]:
+        raw_images: list[Any] = []
         for msg in messages:
             content = msg.get("content", "")
             if isinstance(content, list):

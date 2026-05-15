@@ -13,7 +13,12 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from sglang_omni.models.weight_loader import load_module, resolve_dtype
+from sglang_omni.models.llada2_uni.components.common import resolve_local_model_dir
+from sglang_omni.models.weight_loader import (
+    load_module,
+    resolve_dtype,
+    resolve_model_path,
+)
 
 # ============================================================
 # Config helpers
@@ -312,14 +317,21 @@ class LLaDA2ImageEncoder(nn.Module):
     ) -> None:
         super().__init__()
         self.device = torch.device(device)
+        self.model_dir = resolve_local_model_dir(model_path)
         torch_dtype = resolve_dtype(dtype)
         self.dtype = torch_dtype
 
-        raw_config = _load_image_tokenizer_config(model_path)
+        try:
+            raw_config = _load_image_tokenizer_config(self.model_dir)
+        except (FileNotFoundError, OSError):
+            if Path(model_path).exists():
+                raise
+            self.model_dir = str(resolve_model_path(model_path, local_files_only=False))
+            raw_config = _load_image_tokenizer_config(self.model_dir)
         vision_cfg = _make_vision_config(raw_config)
         vq_cfg = _make_vq_config(raw_config)
 
-        tokenizer_path = str(Path(model_path) / "image_tokenizer")
+        tokenizer_path = str(Path(self.model_dir) / "image_tokenizer")
         self.visual = load_module(
             VisionEncoder(vision_cfg),
             tokenizer_path,
