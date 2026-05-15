@@ -118,10 +118,24 @@ def build_dllm_thinker_request(
 
     max_new_tokens = params.get("max_new_tokens", 2048)
     temperature = params.get("temperature", 0.0)
+    top_p = params.get("top_p", 1.0)
+    top_k = params.get("top_k", -1)
+    min_p = params.get("min_p", 0.0)
+    repetition_penalty = params.get("repetition_penalty", 1.0)
+    stop = params.get("stop") or []
+    stop_token_ids = params.get("stop_token_ids") or []
+    seed = params.get("seed")
 
     sampling_params = SamplingParams(
         max_new_tokens=max_new_tokens,
         temperature=temperature,
+        top_p=top_p,
+        top_k=top_k,
+        min_p=min_p,
+        repetition_penalty=repetition_penalty,
+        stop=stop,
+        stop_token_ids=stop_token_ids,
+        sampling_seed=seed,
     )
     sampling_params.normalize(tokenizer)
     sampling_params.verify(vocab_size)
@@ -139,6 +153,7 @@ def build_dllm_thinker_request(
         eos_token_ids=eos_token_ids,
         dllm_config=dllm_config,
     )
+    req.tokenizer = tokenizer
 
     req.omni_model_inputs = model_inputs if model_inputs else None
     req._omni_consumed = None
