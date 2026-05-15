@@ -29,6 +29,10 @@ def create_dllm_thinker_scheduler(
 
     dllm_config = DllmConfig.from_server_args(server_args)
 
+    # Explicitly disable radix cache until the sglang we depend on
+    # supports radix cache for DLLM.
+    server_args.disable_radix_cache = True
+
     (
         model_worker,
         tree_cache,
