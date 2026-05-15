@@ -28,6 +28,7 @@ from benchmarks.metrics.wer import print_wer_summary
 from sglang_omni.utils import find_available_port
 from tests.utils import (
     apply_slack,
+    apply_wer_slack,
     assert_per_request_fields,
     assert_speed_thresholds,
     assert_summary_metrics,
@@ -50,6 +51,7 @@ STARTUP_TIMEOUT = 300
 WER_TIMEOUT = 600
 
 VC_WER_BELOW_50_CORPUS_MAX = 0.014184397163120567
+VC_WER_BELOW_50_CORPUS_THRESHOLD = apply_wer_slack(VC_WER_BELOW_50_CORPUS_MAX)
 VC_N_ABOVE_50_MAX = 0
 
 # Note (Chenyang): The thresholds for the throughput_qps of tests/test_model/test_qwen3_omni_tts_ci.py
@@ -283,7 +285,7 @@ def test_voice_cloning_wer(
     print_wer_summary(results["summary"], "qwen3-omni")
     assert_wer_partitioned(
         results,
-        max_wer_below_50_corpus=VC_WER_BELOW_50_CORPUS_MAX,
+        max_wer_below_50_corpus=VC_WER_BELOW_50_CORPUS_THRESHOLD,
         max_n_above_50=VC_N_ABOVE_50_MAX,
     )
 

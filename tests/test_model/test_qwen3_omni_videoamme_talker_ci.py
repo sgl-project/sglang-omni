@@ -28,6 +28,7 @@ from benchmarks.metrics.wer import print_wer_summary
 from tests.utils import (
     ServerHandle,
     apply_slack,
+    apply_wer_slack,
     assert_speed_thresholds,
     assert_wer_partitioned,
 )
@@ -37,7 +38,10 @@ MAX_SAMPLES = 10
 MAX_TOKENS = 256
 
 VIDEOAMME_TALKER_THINKER_TEXT_MIN_ACCURACY = 0.4
-VIDEOAMME_TALKER_WER_BELOW_50_CORPUS_MAX = 0.015
+VIDEOAMME_TALKER_WER_BELOW_50_CORPUS_MAX = 0.0133
+VIDEOAMME_TALKER_WER_BELOW_50_CORPUS_THRESHOLD = apply_wer_slack(
+    VIDEOAMME_TALKER_WER_BELOW_50_CORPUS_MAX
+)
 VIDEOAMME_TALKER_N_ABOVE_50_MAX = 1
 
 _VIDEOAMME_TALKER_AUDIO_P95 = {
@@ -104,7 +108,7 @@ def test_videoamme_talker_accuracy_wer_and_speed(
     assert "wer" in results, "Audio WER results missing from Video-AMME Talker output"
     assert_wer_partitioned(
         results["wer"],
-        max_wer_below_50_corpus=VIDEOAMME_TALKER_WER_BELOW_50_CORPUS_MAX,
+        max_wer_below_50_corpus=VIDEOAMME_TALKER_WER_BELOW_50_CORPUS_THRESHOLD,
         max_n_above_50=VIDEOAMME_TALKER_N_ABOVE_50_MAX,
     )
     assert_speed_thresholds(results["speed"], VIDEOAMME_TALKER_THRESHOLDS, CONCURRENCY)

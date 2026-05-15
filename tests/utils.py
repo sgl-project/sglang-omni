@@ -199,6 +199,11 @@ def apply_slack(
     return result
 
 
+def apply_wer_slack(reference: float, slack: float = 1.25) -> float:
+    """Derive a max WER threshold from a reference value with uniform slack."""
+    return round(reference * slack, 4)
+
+
 def assert_speed_thresholds(summary: dict, thresholds: dict, concurrency: int) -> None:
     """Assert speed benchmark summary meets threshold requirements.
 

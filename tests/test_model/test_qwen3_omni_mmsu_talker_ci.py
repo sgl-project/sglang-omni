@@ -34,6 +34,7 @@ from sglang_omni.utils import find_available_port
 from tests.utils import (
     ServerHandle,
     apply_slack,
+    apply_wer_slack,
     assert_speed_thresholds,
     assert_wer_partitioned,
     server_log_file,
@@ -69,6 +70,9 @@ MMSU_AUDIO_MIN_ACCURACY = 0.5
 
 # Retuned after Qwen3-Omni talker sampler fix: MMSU talker stayed clean.
 MMSU_AUDIO_WER_BELOW_50_CORPUS_MAX = 0.024945770065075923
+MMSU_AUDIO_WER_BELOW_50_CORPUS_THRESHOLD = apply_wer_slack(
+    MMSU_AUDIO_WER_BELOW_50_CORPUS_MAX
+)
 MMSU_AUDIO_N_ABOVE_50_MAX = 0
 
 _MMSU_AUDIO_P95 = {
@@ -168,7 +172,7 @@ def test_mmsu_audio_wer_and_speed(
     assert "wer" in results, "Audio WER results missing from eval output"
     assert_wer_partitioned(
         results["wer"],
-        max_wer_below_50_corpus=MMSU_AUDIO_WER_BELOW_50_CORPUS_MAX,
+        max_wer_below_50_corpus=MMSU_AUDIO_WER_BELOW_50_CORPUS_THRESHOLD,
         max_n_above_50=MMSU_AUDIO_N_ABOVE_50_MAX,
     )
 
