@@ -205,21 +205,18 @@ class DllmScheduler:
                 )
 
     def _post_step_operations(self, batch: Any) -> None:
-        chunked_req_to_exclude = set()
+        for req in batch.reqs:
+            if req.finished():
+                release_kv_cache(req, self.tree_cache)
 
+        chunked_req_to_exclude = set()
         if self._manager.any_staging_reqs():
-            chunked_req_to_exclude.update(self._manager.staging_queue)
             for req in self._manager.staging_queue:
+                if req.finished():
+                    continue
+                chunked_req_to_exclude.add(req)
                 self._manager.tree_cache.cache_unfinished_req(req, chunked=True)
                 if req.req_pool_idx is not None:
                     self._manager.req_to_token_pool.free(req.req_pool_idx)
 
-        if batch.forward_mode.is_dllm_extend():
-            if batch.chunked_req is not None:
-                chunked_req_to_exclude.add(batch.chunked_req)
-            if batch.reqs:
-                batch.filter_batch(chunked_req_to_exclude=list(chunked_req_to_exclude))
-
-        for req in batch.reqs:
-            if req.finished():
-                release_kv_cache(req, self.tree_cache)
+        batch.filter_batch(chunked_req_to_exclude=list(chunked_req_to_exclude))
