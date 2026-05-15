@@ -68,10 +68,6 @@ class DllmScheduler:
             dllm_config=dllm_config,
         )
 
-    # ------------------------------------------------------------------
-    # Lifecycle
-    # ------------------------------------------------------------------
-
     def start(self) -> None:
         self._running = True
         self._event_loop()
@@ -84,10 +80,6 @@ class DllmScheduler:
 
     def abort(self, request_id: str) -> None:
         self._aborted_request_ids.add(request_id)
-
-    # ------------------------------------------------------------------
-    # Event loop
-    # ------------------------------------------------------------------
 
     def _event_loop(self) -> None:
         while self._running:
@@ -109,10 +101,6 @@ class DllmScheduler:
             batch.output_ids = batch_result.next_token_ids
             self._apply_results(batch, batch_result)
             self._post_step_operations(batch)
-
-    # ------------------------------------------------------------------
-    # Inbox processing
-    # ------------------------------------------------------------------
 
     def _drain_inbox(self) -> None:
         while True:
@@ -159,10 +147,6 @@ class DllmScheduler:
                 self._rid_to_req_data.pop(rid, None)
 
         self._aborted_cleanup_pending = set(self._aborted_request_ids)
-
-    # ------------------------------------------------------------------
-    # Result processing
-    # ------------------------------------------------------------------
 
     def _apply_results(self, batch: Any, batch_result: Any) -> None:
         next_token_ids_list = batch_result.next_token_ids

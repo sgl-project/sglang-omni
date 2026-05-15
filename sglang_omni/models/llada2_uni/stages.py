@@ -21,11 +21,6 @@ def _event_to_dict(event) -> dict[str, Any]:
     }
 
 
-# -------------------------------------------------------------------------
-# Preprocessing
-# -------------------------------------------------------------------------
-
-
 def create_preprocessing_executor(model_path: str):
     from sglang_omni.models.llada2_uni.components.preprocessor import LLaDA2Preprocessor
     from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
@@ -36,11 +31,6 @@ def create_preprocessing_executor(model_path: str):
         return await preprocessor(payload)
 
     return SimpleScheduler(_preprocess)
-
-
-# -------------------------------------------------------------------------
-# Image encoder
-# -------------------------------------------------------------------------
 
 
 def create_image_encoder_executor(
@@ -89,11 +79,6 @@ def create_image_encoder_executor(
     return SimpleScheduler(_encode)
 
 
-# -------------------------------------------------------------------------
-# DLLM Thinker
-# -------------------------------------------------------------------------
-
-
 def create_sglang_dllm_thinker_executor_from_config(
     model_path: str,
     *,
@@ -121,11 +106,6 @@ def create_sglang_dllm_thinker_executor_from_config(
         server_args.mem_fraction_static,
     )
     return create_dllm_thinker_scheduler(server_args, gpu_id)
-
-
-# -------------------------------------------------------------------------
-# Decode
-# -------------------------------------------------------------------------
 
 
 def create_decode_executor(model_path: str):

@@ -39,11 +39,6 @@ DUMMY_IMAGE_TOKEN_ID = IMAGE_TOKEN_OFFSET  # <IMAGE0>, used as placeholder
 IMAGE_STAGE = "image_encoder"
 
 
-# ============================================================
-# Image crop utilities
-# ============================================================
-
-
 def _center_crop(pil_image, crop_size):
     cw, ch = crop_size
     w, h = pil_image.size
@@ -81,11 +76,6 @@ def _crop_images(images: list[PIL.Image.Image], factor: int) -> list[PIL.Image.I
     """Crop PIL images to valid patch-aligned sizes for LLaDA2 ViT."""
     crop_size_list = _generate_crop_size_list((512 // factor) ** 2, factor)
     return [_var_center_crop(img, crop_size_list) for img in images]
-
-
-# ============================================================
-# Preprocessor
-# ============================================================
 
 
 class LLaDA2Preprocessor:

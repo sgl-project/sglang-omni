@@ -20,10 +20,6 @@ from sglang_omni.models.weight_loader import (
     resolve_model_path,
 )
 
-# ============================================================
-# Config helpers
-# ============================================================
-
 
 def _load_image_tokenizer_config(model_dir: str | Path) -> dict:
     with open(Path(model_dir) / "image_tokenizer" / "config.json", "r") as f:
@@ -53,11 +49,6 @@ def _make_vq_config(raw: dict) -> SimpleNamespace:
         embed_dim=vq["embed_dim"],
         latent_channels=vq["latent_channels"],
     )
-
-
-# ============================================================
-# Vision model components
-# ============================================================
 
 
 class VisionMLP(nn.Module):
@@ -256,11 +247,6 @@ class VisionEncoder(nn.Module):
         return hidden_states
 
 
-# ============================================================
-# VQ-VAE quantizer
-# ============================================================
-
-
 class VQVAEVectorQuantizer(nn.Module):
     def __init__(self, config):
         super().__init__()
@@ -289,11 +275,6 @@ class VQVAE(nn.Module):
 
     def encode(self, hidden_states):
         return self.quantize(self.quant_conv(hidden_states))
-
-
-# ============================================================
-# Top-level encoder for the sglang-omni pipeline
-# ============================================================
 
 
 class LLaDA2ImageEncoder(nn.Module):

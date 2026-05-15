@@ -12,10 +12,6 @@ from sglang_omni.models.llada2_uni.payload_types import PipelineState, ThinkerOu
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.sglang_backend import SGLangDLLMRequestData
 
-# -------------------------------------------------------------------------
-# Encoder request/result helpers
-# -------------------------------------------------------------------------
-
 
 def build_encoder_request(
     state: PipelineState,
@@ -87,11 +83,6 @@ def merge_image_tokens_for_thinker(state: PipelineState) -> None:
         new_ids.extend(all_vq_tokens[vq_idx:])
 
     prompt["input_ids"] = torch.tensor([new_ids], dtype=torch.long)
-
-
-# -------------------------------------------------------------------------
-# DLLM Thinker request/result helpers
-# -------------------------------------------------------------------------
 
 
 def build_dllm_thinker_request(
@@ -179,11 +170,6 @@ def apply_dllm_thinker_result(
     state.thinker_out = thinker_out
     state.engine_outputs[stage_name] = thinker_out
     return thinker_out
-
-
-# -------------------------------------------------------------------------
-# Scheduler adapter factory
-# -------------------------------------------------------------------------
 
 
 def make_dllm_thinker_scheduler_adapters(

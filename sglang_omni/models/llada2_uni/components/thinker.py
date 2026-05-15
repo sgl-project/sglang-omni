@@ -33,10 +33,6 @@ from sglang_omni.vendor.sglang.models import (
 )
 from sglang_omni.vendor.sglang.utils import make_layers
 
-# ============================================================================
-# Attention Layer
-# ============================================================================
-
 
 class LLaDA2MoeAttention(nn.Module):
     """Multi-head attention with GQA, partial RoPE, and QK normalization."""
@@ -154,11 +150,6 @@ class LLaDA2MoeAttention(nn.Module):
         return output
 
 
-# ============================================================================
-# MLP (for dense layers and shared experts)
-# ============================================================================
-
-
 class LLaDA2MoeMLP(nn.Module):
     """Standard SiLU-gated MLP."""
 
@@ -188,11 +179,6 @@ class LLaDA2MoeMLP(nn.Module):
         hidden_states = self.act_fn(gate_up)
         hidden_states, _ = self.down_proj(hidden_states)
         return hidden_states
-
-
-# ============================================================================
-# Sparse MoE Block
-# ============================================================================
 
 
 class LLaDA2MoeGate(nn.Module):
@@ -362,11 +348,6 @@ class LLaDA2MoeSparseMoeBlock(nn.Module):
         return topk_weights, topk_ids
 
 
-# ============================================================================
-# Decoder Layer
-# ============================================================================
-
-
 class LLaDA2MoeBlock(nn.Module):
     """Single transformer decoder layer with attention + MoE/MLP."""
 
@@ -414,11 +395,6 @@ class LLaDA2MoeBlock(nn.Module):
         hidden_states = self.mlp(hidden_states)
 
         return hidden_states, residual
-
-
-# ============================================================================
-# Full Model
-# ============================================================================
 
 
 class LLaDA2MoeTextModel(nn.Module):
@@ -527,11 +503,6 @@ class LLaDA2MoeTextModel(nn.Module):
                         param, "weight_loader", default_weight_loader
                     )
                     weight_loader(param, loaded_weight)
-
-
-# ============================================================================
-# ForCausalLM Wrapper (top-level SGLang model class)
-# ============================================================================
 
 
 class LLaDA2MoeModelLM(nn.Module):
