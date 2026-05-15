@@ -59,9 +59,16 @@ def test_qwen_pipeline_config_and_state_contracts() -> None:
         "decode",
     ]
     assert speech_config.terminal_stages == ["decode", "code2wav"]
+    # Speech-mode thinker streams hidden states to talker_ar AND text-token
+    # ids to decode (for the streaming detokenizer); text-mode thinker
+    # streams only to decode. Lock both so a regression here can't silently
+    # disable per-token streaming for either path.
     assert {stage.name: stage for stage in speech_config.stages}[
         "thinker"
-    ].stream_to == ["talker_ar"]
+    ].stream_to == ["talker_ar", "decode"]
+    assert {stage.name: stage for stage in text_config.stages}["thinker"].stream_to == [
+        "decode"
+    ]
 
     state = PipelineState.from_dict(
         {
