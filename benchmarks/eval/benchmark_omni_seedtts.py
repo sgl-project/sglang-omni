@@ -176,6 +176,7 @@ class OmniSeedttsBenchmarkConfig:
     lang: str = "en"
     speaker: str = "Ethan"
     voice_clone: bool = False
+    stream: bool = False
     output_dir: str = "results/omni_seedtts"
     max_samples: int | None = None
     max_new_tokens: int = 256
@@ -198,6 +199,7 @@ def _build_results_config(
         "base_url": base_url,
         "meta": config.meta,
         "voice_clone": config.voice_clone,
+        "stream": config.stream,
         "lang": config.lang,
         "speaker": config.speaker,
         "max_samples": config.max_samples,
@@ -217,6 +219,7 @@ def make_send_fn(
     speaker: str,
     max_tokens: int,
     temperature: float,
+    stream: bool,
     save_audio_dir: str,
 ) -> SendFn:
     """Return a SendFn that calls Qwen3-Omni via VoiceCloneOmni and saves WAV."""
@@ -241,6 +244,7 @@ def make_send_fn(
                 max_tokens=max_tokens,
                 temperature=temperature,
                 voice_clone=voice_clone,
+                stream=stream,
             )
             result.audio_duration_s = get_wav_duration(wav_bytes)
             elapsed = time.perf_counter() - start_time
@@ -304,6 +308,7 @@ async def run_omni_seedtts_benchmark(
         speaker=config.speaker,
         max_tokens=config.max_new_tokens,
         temperature=config.temperature,
+        stream=config.stream,
         save_audio_dir=save_audio_dir,
     )
 
@@ -362,6 +367,7 @@ def _config_from_args(args: argparse.Namespace) -> OmniSeedttsBenchmarkConfig:
         lang=args.lang,
         speaker=args.speaker,
         voice_clone=voice_clone,
+        stream=args.stream,
         output_dir=args.output_dir,
         max_samples=args.max_samples,
         max_new_tokens=args.max_new_tokens,
@@ -444,6 +450,11 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-samples", type=int, default=None)
     parser.add_argument("--max-new-tokens", type=int, default=256)
     parser.add_argument("--temperature", type=float, default=0.7)
+    parser.add_argument(
+        "--stream",
+        action="store_true",
+        help="Use streaming chat completions and concatenate audio chunks.",
+    )
     parser.add_argument("--warmup", type=int, default=1)
     parser.add_argument(
         "--max-concurrency",
