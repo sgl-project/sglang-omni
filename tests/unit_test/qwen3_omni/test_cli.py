@@ -89,7 +89,7 @@ def _set_colocated_runtime(config: Qwen3OmniSpeechColocatedPipelineConfig) -> No
 
 
 @patch("sglang_omni.cli.serve.ConfigManager.from_model_path")
-def test_v1_cli_colocate_requires_config(from_model_path):
+def test_cli_colocate_requires_config(from_model_path):
     with pytest.raises(typer.BadParameter, match="requires --config"):
         serve(**_serve_kwargs(colocate=True))
 
@@ -98,7 +98,7 @@ def test_v1_cli_colocate_requires_config(from_model_path):
 
 @patch("sglang_omni.cli.serve.launch_server")
 @patch("sglang_omni.cli.serve.ConfigManager.from_file")
-def test_v1_cli_colocate_accepts_budgeted_colocated_config(
+def test_cli_colocate_accepts_budgeted_colocated_config(
     from_file,
     launch_server,
     capsys,
@@ -116,7 +116,7 @@ def test_v1_cli_colocate_accepts_budgeted_colocated_config(
 
 @patch("sglang_omni.cli.serve.launch_server")
 @patch("sglang_omni.cli.serve.ConfigManager.from_file")
-def test_v1_cli_colocate_rejects_non_colocated_config(from_file, launch_server):
+def test_cli_colocate_rejects_non_colocated_config(from_file, launch_server):
     from_file.return_value = _DummyManager(
         Qwen3OmniSpeechPipelineConfig(model_path="dummy")
     )
@@ -132,7 +132,7 @@ def test_v1_cli_colocate_rejects_non_colocated_config(from_file, launch_server):
 
 @patch("sglang_omni.cli.serve.launch_server")
 @patch("sglang_omni.cli.serve.ConfigManager.from_model_path")
-def test_v1_cli_selects_speech_variant_by_default(from_model_path, launch_server):
+def test_cli_selects_speech_variant_by_default(from_model_path, launch_server):
     from_model_path.return_value = _DummyManager()
 
     serve(**_serve_kwargs())
@@ -143,7 +143,7 @@ def test_v1_cli_selects_speech_variant_by_default(from_model_path, launch_server
 
 @patch("sglang_omni.cli.serve.launch_server")
 @patch("sglang_omni.cli.serve.ConfigManager.from_model_path")
-def test_v1_cli_text_only_selects_text_variant(from_model_path, launch_server):
+def test_cli_text_only_selects_text_variant(from_model_path, launch_server):
     from_model_path.return_value = _DummyManager()
 
     serve(**_serve_kwargs(text_only=True))
@@ -154,7 +154,7 @@ def test_v1_cli_text_only_selects_text_variant(from_model_path, launch_server):
 
 @patch("sglang_omni.cli.serve.launch_server")
 @patch("sglang_omni.cli.serve.ConfigManager.from_model_path")
-def test_v1_cli_hides_merged_config_for_normal_info_launch(
+def test_cli_hides_merged_config_for_normal_info_launch(
     from_model_path,
     launch_server,
     capsys,
@@ -169,7 +169,7 @@ def test_v1_cli_hides_merged_config_for_normal_info_launch(
 
 @patch("sglang_omni.cli.serve.launch_server")
 @patch("sglang_omni.cli.serve.ConfigManager.from_model_path")
-def test_v1_cli_prints_merged_config_at_debug(
+def test_cli_prints_merged_config_at_debug(
     from_model_path,
     launch_server,
     capsys,
@@ -182,7 +182,7 @@ def test_v1_cli_prints_merged_config_at_debug(
     launch_server.assert_called_once()
 
 
-def test_v1_cli_rejects_text_only_with_colocate():
+def test_cli_rejects_text_only_with_colocate():
     with pytest.raises(typer.BadParameter, match="--text-only"):
         serve(**_serve_kwargs(text_only=True, colocate=True))
 
