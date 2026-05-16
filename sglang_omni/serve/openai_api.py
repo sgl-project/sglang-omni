@@ -556,10 +556,16 @@ async def _speech_stream(
             yield f"data: {json.dumps(payload)}\n\n"
             chunk_index += 1
     except ClientError as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        payload = _speech_stream_error_payload(request_id, chunk_index, exc)
+        yield f"data: {json.dumps(payload)}\n\n"
+        yield "data: [DONE]\n\n"
+        return
     except Exception as exc:
         logger.exception("Error streaming speech for request %s", request_id)
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        payload = _speech_stream_error_payload(request_id, chunk_index, exc)
+        yield f"data: {json.dumps(payload)}\n\n"
+        yield "data: [DONE]\n\n"
+        return
 
     final_payload = {
         "id": f"speech-{request_id}",
@@ -571,6 +577,24 @@ async def _speech_stream(
     }
     yield f"data: {json.dumps(final_payload)}\n\n"
     yield "data: [DONE]\n\n"
+
+
+def _speech_stream_error_payload(
+    request_id: str,
+    chunk_index: int,
+    exc: Exception,
+) -> dict[str, Any]:
+    return {
+        "id": f"speech-{request_id}",
+        "object": "audio.speech.chunk",
+        "index": chunk_index,
+        "audio": None,
+        "finish_reason": "error",
+        "error": {
+            "type": type(exc).__name__,
+            "message": str(exc),
+        },
+    }
 
 
 def _select_speech_audio_delta(

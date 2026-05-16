@@ -26,6 +26,9 @@ from sglang_omni.scheduling.types import (
 
 logger = logging.getLogger(__name__)
 
+_ABORTED_REQUEST_ID_LIMIT = 10000
+_ABORTED_REQUEST_ID_RETAINED = 5000
+
 
 class FishBatchPlanner:
     """SGLang-backed batch planner ported from the old Fish runtime."""
@@ -226,8 +229,12 @@ class FishResourceManager:
     def free(self, request: SchedulerRequest) -> None:
         data = request.data
         if data.req is not None:
-            release_kv_cache(data.req, self.tree_cache)
+            req = data.req
+            if req.req_pool_idx is not None or req.mamba_pool_idx is not None:
+                release_kv_cache(req, self.tree_cache)
         data.previous_semantic_tokens.clear()
+        data.semantic_history_tokens = None
+        data.semantic_history_count = 0
         data.last_codebook_values = None
 
 
@@ -255,6 +262,7 @@ class FishIterationController:
             # Skip caching the terminal slow-AR EOS regardless of req.finished()
             # semantics: it is not an audio timestep and has no KV to preserve.
             if semantic_token == self._im_end_token_id:
+                data.finish_reason = "stop"
                 return
             if not req.finished() and req.decode_batch_idx == 0:
                 self.tree_cache.cache_unfinished_req(req)
@@ -271,10 +279,12 @@ class FishIterationController:
             semantic_token = int(data.previous_semantic_tokens[-1])
 
         if semantic_token == self._im_end_token_id:
+            data.finish_reason = "stop"
             return True
 
         max_tok = data.max_new_tokens or self._max_new_tokens
         if len(data.output_codes) >= max_tok:
+            data.finish_reason = "length"
             return True
 
         return False
@@ -312,6 +322,7 @@ class FishScheduler:
         self._waiting: deque[str] = deque()
         self._running_ids: list[str] = []
         self._submit_times: dict[str, float] = {}
+        self._inflight_request_ids: set[str] = set()
         self._step_id = 0
 
         self.batch_planner = FishBatchPlanner(
@@ -385,7 +396,7 @@ class FishScheduler:
         finished: list[SchedulerRequest] = []
 
         for request in scheduler_output.requests:
-            if request.request_id in self._aborted_request_ids:
+            if self._finish_if_aborted(request):
                 continue
             if request.status != SchedulerStatus.RUNNING:
                 continue
@@ -397,22 +408,84 @@ class FishScheduler:
                 )
                 continue
 
+            if self._finish_if_aborted(request):
+                continue
             self.iteration_controller.update_request(request, output.data)
+            if self._finish_if_aborted(request):
+                continue
+            self._emit_stream_chunk(request)
+            if self._finish_if_aborted(request):
+                continue
             if self.iteration_controller.is_finished(request, output.data):
+                if self._finish_if_aborted(request):
+                    continue
                 self._finish_request(request)
                 finished.append(request)
 
         return finished
 
+    def _emit_stream_chunk(self, request: SchedulerRequest) -> None:
+        if request.request_id in self._aborted_request_ids:
+            return
+        data = request.data
+        payload = data.stage_payload
+        if not payload.request.params.get("stream"):
+            return
+        codes = data.latest_stream_code_chunk
+        if codes is None:
+            return
+        self.outbox.put(
+            OutgoingMessage(
+                request_id=request.request_id,
+                type="stream",
+                data=codes,
+                target="vocoder",
+                metadata={"modality": "audio_codes"},
+            )
+        )
+        data.latest_stream_code_chunk = None
+
     def _finish_request(self, request: SchedulerRequest) -> None:
         request.status = SchedulerStatus.FINISHED
         request.finish_time = time.time()
         self.resource_manager.free(request)
-        if request.request_id in self._running_ids:
-            self._running_ids.remove(request.request_id)
-        if request.request_id in self._waiting:
-            self._waiting.remove(request.request_id)
-        self._aborted_request_ids.discard(request.request_id)
+        self._remove_request_id(request.request_id)
+
+    def _finish_aborted_request(self, request: SchedulerRequest) -> None:
+        request.status = SchedulerStatus.ABORTED
+        request.finish_time = time.time()
+        self.resource_manager.free(request)
+        self._remove_request_id(request.request_id)
+        self._requests.pop(request.request_id, None)
+        self._submit_times.pop(request.request_id, None)
+
+    def _finish_if_aborted(self, request: SchedulerRequest) -> bool:
+        if request.request_id not in self._aborted_request_ids:
+            return False
+        if request.request_id in self._requests:
+            self._finish_aborted_request(request)
+        return True
+
+    def _cleanup_aborted_requests(self) -> None:
+        for request_id in list(self._aborted_request_ids):
+            request = self._requests.get(request_id)
+            if request is None:
+                self._remove_request_id(request_id)
+                self._submit_times.pop(request_id, None)
+                continue
+            if request.status == SchedulerStatus.FINISHED:
+                self._requests.pop(request_id, None)
+                self._submit_times.pop(request_id, None)
+                continue
+            if request_id in self._inflight_request_ids:
+                continue
+            self._finish_aborted_request(request)
+
+    def _remove_request_id(self, request_id: str) -> None:
+        if request_id in self._running_ids:
+            self._running_ids.remove(request_id)
+        if request_id in self._waiting:
+            self._waiting.remove(request_id)
 
     def run_batch(self, scheduler_output: SchedulerOutput) -> ModelRunnerOutput:
         model_output = self._model_runner.execute(scheduler_output)
@@ -421,6 +494,10 @@ class FishScheduler:
 
     def emit_finished(self, finished: list[SchedulerRequest]) -> None:
         for request in finished:
+            if request.request_id in self._aborted_request_ids:
+                self._requests.pop(request.request_id, None)
+                self._submit_times.pop(request.request_id, None)
+                continue
             data = request.data
             data.output_ids = list(data.req.output_ids)
             t_submit = self._submit_times.pop(request.request_id, None)
@@ -435,10 +512,14 @@ class FishScheduler:
                         ),
                     )
                 )
+                self._requests.pop(request.request_id, None)
                 continue
             result = self._result_adapter(data)
             if t_submit is not None and isinstance(result.data, dict):
                 result.data["engine_time_s"] = time.perf_counter() - t_submit
+            if request.request_id in self._aborted_request_ids:
+                self._requests.pop(request.request_id, None)
+                continue
             self.outbox.put(
                 OutgoingMessage(
                     request_id=request.request_id,
@@ -446,12 +527,14 @@ class FishScheduler:
                     data=result,
                 )
             )
+            self._requests.pop(request.request_id, None)
 
     def start(self) -> None:
         self._running = True
         while self._running:
             recv_reqs = self.recv_requests()
             self.process_input_requests(recv_reqs)
+            self._cleanup_aborted_requests()
 
             batch = self.schedule()
             if batch is None:
@@ -459,30 +542,50 @@ class FishScheduler:
                 continue
 
             try:
+                self._inflight_request_ids = set(batch.request_ids)
                 result = self.run_batch(batch)
+                self._inflight_request_ids.clear()
                 finished = self.update(batch, result)
                 self.emit_finished(finished)
             except Exception as exc:
+                self._inflight_request_ids.clear()
                 logger.exception("FishScheduler batch failed")
-                for request in batch.requests:
-                    self.outbox.put(
-                        OutgoingMessage(
-                            request_id=request.request_id,
-                            type="error",
-                            data=exc,
-                        )
-                    )
-                    self.abort(request.request_id)
+                self._handle_batch_exception(batch, exc)
+
+    def _handle_batch_exception(self, batch: SchedulerOutput, exc: Exception) -> None:
+        for request in batch.requests:
+            self.outbox.put(
+                OutgoingMessage(
+                    request_id=request.request_id,
+                    type="error",
+                    data=exc,
+                )
+            )
+            if request.status == SchedulerStatus.FINISHED:
+                self._requests.pop(request.request_id, None)
+                self._submit_times.pop(request.request_id, None)
+                continue
+            self.abort(request.request_id)
+        self._cleanup_aborted_requests()
 
     def stop(self) -> None:
         self._running = False
 
     def abort(self, request_id: str) -> None:
+        self._record_aborted_request_id(request_id)
+        request = self._requests.get(request_id)
+        if request is None:
+            self._remove_request_id(request_id)
+            self._submit_times.pop(request_id, None)
+            return
+
+        request.status = SchedulerStatus.ABORTED
+
+    def _record_aborted_request_id(self, request_id: str) -> None:
         self._aborted_request_ids.add(request_id)
-        self._requests.pop(request_id, None)
-        self._submit_times.pop(request_id, None)
-        self._waiting = deque(
-            req_id for req_id in self._waiting if req_id != request_id
-        )
-        if request_id in self._running_ids:
-            self._running_ids.remove(request_id)
+        if len(self._aborted_request_ids) <= _ABORTED_REQUEST_ID_LIMIT:
+            return
+
+        excess = len(self._aborted_request_ids) - _ABORTED_REQUEST_ID_RETAINED
+        to_remove = list(self._aborted_request_ids)[:excess]
+        self._aborted_request_ids -= set(to_remove)

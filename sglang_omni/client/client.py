@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import uuid
+from dataclasses import replace
 from typing import Any, AsyncIterator, Callable
 
 import numpy as np
@@ -177,6 +178,9 @@ class Client:
         audio_chunks: list[Any] = []
         sample_rate: int | None = None
         last_chunk: GenerateChunk | None = None
+        extra_params = dict(request.extra_params)
+        extra_params.pop("stream", None)
+        request = replace(request, stream=False, extra_params=extra_params)
 
         async for chunk in self.generate(request, request_id=request_id):
             if chunk.audio_data is not None:

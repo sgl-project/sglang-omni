@@ -264,6 +264,7 @@ def _compile_stage(
         scheduler=scheduler,
         project_payload=project_payload or None,
         is_terminal=bool(stage_cfg.terminal),
+        can_accept_stream_before_payload=stage_cfg.can_accept_stream_before_payload,
     )
 
 

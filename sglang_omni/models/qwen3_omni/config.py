@@ -93,6 +93,7 @@ def _decode_stage() -> StageConfig:
         name="decode",
         factory=f"{_PKG}.stages.create_decode_executor",
         terminal=True,
+        can_accept_stream_before_payload=True,
     )
 
 
@@ -101,8 +102,13 @@ def _talker_stage(*, gpu: int) -> StageConfig:
         name="talker_ar",
         factory=f"{_PKG}.stages.create_talker_ar_executor_from_config",
         factory_args={
-            # Must exceed talker_max_new_tokens plus the replayed thinker prompt.
-            # Video prompts can exceed 20K positions after projection.
+            # Note (Xuesong): must exceed talker_max_new_tokens (4096) +
+            # prefill, else req_to_token_pool OOBs and crashes talker_ar.
+            # Note (Chenyang): bumped 8192 → 32768 because the V1 talker
+            # prefill replays the full thinker prompt as projected
+            # embeddings, and a 30-frame video prompt is ~22K positions,
+            # which overflows 8192 and triggers a FusedAddRMSNorm illegal
+            # memory access in the talker forward.
             "talker_max_seq_len": 32768,
             "speech_enabled": True,
             "feedback_enabled": True,
@@ -111,6 +117,7 @@ def _talker_stage(*, gpu: int) -> StageConfig:
         runtime_arg_map={"max_seq_len": "talker_max_seq_len"},
         next="code2wav",
         stream_to=["code2wav"],
+        can_accept_stream_before_payload=True,
     )
 
 
@@ -121,6 +128,7 @@ def _code2wav_stage(*, gpu: int) -> StageConfig:
         factory_args={"device": "cuda"},
         gpu=gpu,
         terminal=True,
+        can_accept_stream_before_payload=True,
     )
 
 

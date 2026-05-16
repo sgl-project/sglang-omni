@@ -11,6 +11,8 @@ from sglang_omni.models.fishaudio_s2_pro.payload_types import S2ProState
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.sglang_backend import SGLangARRequestData
 
+_S2PRO_GRAPH_TOP_K = 30
+
 
 @dataclass
 class S2ProSGLangRequestData(SGLangARRequestData):
@@ -20,14 +22,33 @@ class S2ProSGLangRequestData(SGLangARRequestData):
     vq_parts: list | None = None
     num_codebooks: int = 10
     codebook_size: int = 4096
-    output_codes: list = field(default_factory=list)
+    output_codes: list[torch.Tensor] = field(default_factory=list)
     max_new_tokens: int = 2048
     temperature: float = 0.8
     top_p: float = 0.8
     top_k: int = 30
     repetition_penalty: float = 1.1
-    previous_semantic_tokens: list = field(default_factory=list)
+    ras_window: int = 16
+    ras_temperature: float = 1.0
+    ras_top_p: float = 0.9
+    previous_semantic_tokens: list[int] = field(default_factory=list)
+    semantic_history_tokens: torch.Tensor | None = None
+    semantic_history_count: int = 0
     last_codebook_values: Any = None
+    latest_stream_code_chunk: torch.Tensor | None = None
+    finish_reason: str | None = None
+
+    def __post_init__(self) -> None:
+        validate_s2pro_top_k(self.top_k)
+
+
+def validate_s2pro_top_k(top_k: int) -> None:
+    if top_k == -1:
+        return
+    if not 1 <= top_k <= _S2PRO_GRAPH_TOP_K:
+        raise ValueError(
+            f"S2-Pro top_k must be -1 or between 1 and {_S2PRO_GRAPH_TOP_K}; got {top_k}"
+        )
 
 
 def build_sglang_tts_request(
@@ -97,6 +118,9 @@ def build_sglang_tts_request(
         top_p=state.top_p,
         top_k=state.top_k,
         repetition_penalty=state.repetition_penalty,
+        ras_window=state.ras_window,
+        ras_temperature=state.ras_temperature,
+        ras_top_p=state.ras_top_p,
     )
 
 
@@ -108,6 +132,7 @@ def apply_tts_result(state: S2ProState, result: S2ProSGLangRequestData) -> None:
     state.output_codes = torch.cat(result.output_codes, dim=1)
     state.completion_tokens = state.output_codes.shape[1]
     state.prompt_tokens = len(result.input_ids) if result.input_ids is not None else 0
+    state.finish_reason = result.finish_reason or "stop"
 
 
 def make_tts_scheduler_adapters(*, tokenizer: Any):
