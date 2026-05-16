@@ -15,6 +15,7 @@ from sglang_omni.models.fishaudio_s2_pro.model_runner import (
     collect_s2pro_step_outputs,
 )
 from sglang_omni.models.fishaudio_s2_pro.request_builders import S2ProSGLangRequestData
+from sglang_omni.models.fishaudio_s2_pro.sglang_model import S2ProSGLangTextModel
 from sglang_omni.scheduling.messages import IncomingMessage
 from sglang_omni.scheduling.types import (
     ModelRunnerOutput,
@@ -310,6 +311,42 @@ def test_fish_s2pro_prepare_decode_uses_gpu_history_buffer() -> None:
     assert int(runner.model._prev_token_count[0].item()) == 2
     assert torch.equal(runner.model._vq_codes[0], torch.tensor([11, 22]))
     assert bool(runner.model._vq_mask[0])
+
+
+def test_fish_s2pro_setup_vq_decode_allocates_sampling_state() -> None:
+    model = SimpleNamespace(
+        vocab_size=80,
+        embed_tokens=SimpleNamespace(weight=torch.empty(1, device="cpu")),
+    )
+    audio_decoder = SimpleNamespace(
+        codebook_embeddings=torch.nn.Embedding(16, 4),
+        codebook_offsets=torch.tensor([0, 8], dtype=torch.long),
+    )
+
+    S2ProSGLangTextModel.setup_vq_decode(
+        model,
+        audio_decoder,
+        num_codebooks=2,
+        codebook_size=8,
+        semantic_begin_id=10,
+        semantic_end_id=20,
+        im_end_token_id=30,
+        max_batch_size=3,
+        rep_history_len=5,
+    )
+
+    assert model._rep_history_len == 5
+    assert model._prev_tokens.shape == (3, 5)
+    assert model._prev_token_count.shape == (3,)
+    assert model._sampling_temperature.shape == (3,)
+    assert model._sampling_top_p.shape == (3,)
+    assert model._sampling_top_k.tolist() == [30, 30, 30]
+    assert model._sampling_rep_penalty.shape == (3,)
+    assert model._ras_temperature.shape == (3,)
+    assert model._ras_top_p.shape == (3,)
+    assert model._rep_positions.tolist() == [0, 1, 2, 3, 4]
+    assert model._top_k_positions.shape == (30,)
+    assert model._vq_ready
 
 
 def test_fish_s2pro_terminal_im_end_is_not_audio_codebook_frame() -> None:
