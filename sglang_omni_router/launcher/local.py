@@ -22,6 +22,7 @@ from sglang_omni_router.launcher.utils import (
 )
 
 logger = logging.getLogger("sglang_omni_router.launcher")
+_CLEANUP_MANIFEST_ENV = "SGLANG_OMNI_ROUTER_CLEANUP_MANIFEST"
 
 
 @dataclass
@@ -98,6 +99,7 @@ class LocalLauncher:
                     env=env,
                     start_new_session=True,
                 )
+                _record_cleanup_process_group(process.pid)
                 self.workers.append(
                     ManagedWorkerProcess(
                         url=worker_url,
@@ -156,3 +158,12 @@ class LocalLauncher:
             return
         terminate_processes([worker.process for worker in self.workers])
         self.workers.clear()
+
+
+def _record_cleanup_process_group(pid: int | None) -> None:
+    manifest = os.environ.get(_CLEANUP_MANIFEST_ENV)
+    if not manifest or pid is None:
+        return
+    process_group_id = os.getpgid(pid)
+    with open(manifest, "a", encoding="utf-8") as handle:
+        handle.write(f"{process_group_id}\n")

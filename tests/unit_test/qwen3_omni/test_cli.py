@@ -132,12 +132,12 @@ def test_cli_colocate_rejects_non_colocated_config(from_file, launch_server):
 
 @patch("sglang_omni.cli.serve.launch_server")
 @patch("sglang_omni.cli.serve.ConfigManager.from_model_path")
-def test_cli_selects_speech_variant_by_default(from_model_path, launch_server):
+def test_cli_uses_model_registry_default_by_default(from_model_path, launch_server):
     from_model_path.return_value = _DummyManager()
 
     serve(**_serve_kwargs())
 
-    from_model_path.assert_called_once_with("dummy", variant="speech")
+    from_model_path.assert_called_once_with("dummy")
     launch_server.assert_called_once()
 
 

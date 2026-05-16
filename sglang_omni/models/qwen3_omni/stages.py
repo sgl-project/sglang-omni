@@ -751,10 +751,8 @@ def create_image_encoder_executor(
             cache=cache,
         )
 
-    # Note (Chenyang): match v0's image-encoder batching shape (max=32) and
-    # add a small batch_wait so video benchmarks at concurrency=16 batch
-    # together. Without the wait, requests arriving microseconds apart end
-    # up in batches of 1; with the wait, all 16 land in one forward pass.
+    # Preserve the calibrated image-encoder batching shape and add a small
+    # batch_wait so video benchmarks at concurrency=16 batch together.
     return SimpleScheduler(
         _encode,
         batch_compute_fn=_encode_batch,

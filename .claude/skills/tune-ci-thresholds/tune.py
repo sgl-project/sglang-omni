@@ -932,7 +932,7 @@ def _run_shared(test_path, stage_keys, all_stages, out, k, py, total, gpus_neede
                 start_new_session=True,
             )
             rc = pytest_proc.wait()
-        _cleanup_after_pytest(test_path, pytest_proc.pid)
+        _cleanup_after_pytest(test_path, pytest_proc.pid, basetemp)
         dur = time.monotonic() - t0
         text = log.read_text()
         if rc == 0:
@@ -988,16 +988,31 @@ def _run_shared(test_path, stage_keys, all_stages, out, k, py, total, gpus_neede
                   f"(see {basetemp} listing to debug)")
 
 
-def _cleanup_after_pytest(test_path, process_group_id):
+def _cleanup_after_pytest(test_path, process_group_id, basetemp):
     """Clean up subprocesses owned by this pytest invocation."""
     if Path(test_path).name != "test_omni_router_ci.py":
         return
+    cleanup_process_group_ids = {process_group_id}
+    cleanup_process_group_ids.update(_read_cleanup_manifest_process_groups(basetemp))
+
     for sig, delay in ((signal.SIGTERM, 5), (signal.SIGKILL, 1)):
-        try:
-            os.killpg(process_group_id, sig)
-        except ProcessLookupError:
-            return
+        for process_group in sorted(cleanup_process_group_ids):
+            try:
+                os.killpg(process_group, sig)
+            except ProcessLookupError:
+                continue
         time.sleep(delay)
+
+
+def _read_cleanup_manifest_process_groups(basetemp):
+    process_groups = set()
+    for manifest in Path(basetemp).rglob("router_pgids.txt"):
+        for line in manifest.read_text().splitlines():
+            try:
+                process_groups.add(int(line.strip()))
+            except ValueError:
+                continue
+    return process_groups
 
 
 def _classify(text, rc):

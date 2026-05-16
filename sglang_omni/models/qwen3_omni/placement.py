@@ -42,17 +42,11 @@ class Qwen3OmniPlacementPolicy:
         if has_speech_stage:
             self._validate_speech_topology(stage_map)
 
-        for stage_name in _AR_STAGES:
-            stage = stage_map.get(stage_name)
-            if stage is not None and stage.tp_size != 1:
-                raise ValueError(
-                    f"Qwen Phase 1 colocation does not support {stage_name} TP"
-                )
-
         if not has_speech_stage:
             return
 
         if type(config).__name__ == _COLOCATED_CONFIG_CLASS:
+            self._validate_colocated_qwen_parallelism(stage_map)
             self._validate_colocated_qwen_topology(plan)
             self._validate_colocated_qwen_runtime(stage_map)
             return
@@ -71,6 +65,14 @@ class Qwen3OmniPlacementPolicy:
             )
 
         self._validate_colocated_qwen_runtime(stage_map)
+
+    def _validate_colocated_qwen_parallelism(self, stage_map) -> None:
+        for stage_name in _AR_STAGES:
+            stage = stage_map.get(stage_name)
+            if stage is not None and stage.tp_size != 1:
+                raise ValueError(
+                    f"Qwen Phase 1 colocation does not support {stage_name} TP"
+                )
 
     def _validate_speech_topology(self, stage_map) -> None:
         names = set(stage_map)

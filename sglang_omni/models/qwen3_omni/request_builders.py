@@ -607,8 +607,8 @@ def make_thinker_stream_output_builder():
     ) -> list[OutgoingMessage]:
         req = getattr(req_data, "req", None)
         if req is not None and int(getattr(req, "is_chunked", 0) or 0) > 0:
-            # Match the legacy thinker stream adapter: while chunked prefill is still
-            # consuming prompt tokens, suppress hidden-state streaming to the talker.
+            # While chunked prefill is still consuming prompt tokens, suppress
+            # hidden-state streaming to the talker.
             # Emitting chunks this early lets prompt-side states masquerade as the
             # first assistant token and can leak the user/ref-text prompt into TTS.
             return []

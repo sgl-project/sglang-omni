@@ -719,7 +719,7 @@ def serve(
     elif text_only:
         config_manager = ConfigManager.from_model_path(model_path, variant="text")
     else:
-        config_manager = ConfigManager.from_model_path(model_path, variant="speech")
+        config_manager = ConfigManager.from_model_path(model_path)
 
     # we use ctx to capture the arguments that are used to modify the configuration on the fly
     # we do expect the extra arguments to be pairs of names and values

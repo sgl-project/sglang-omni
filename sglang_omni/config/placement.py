@@ -152,10 +152,10 @@ def resolve_pipeline_process_mode(
 def resolve_stage_gpu_ids(
     plan: StagePlacementPlan,
     stage_cfg: StageConfig,
-) -> list[int]:
+) -> list[int | None]:
     placement = plan.stages.get(stage_cfg.name)
     if placement is None:
-        return [0] * stage_cfg.tp_size
+        return [None] * stage_cfg.tp_size
     return list(placement.gpu_ids)
 
 

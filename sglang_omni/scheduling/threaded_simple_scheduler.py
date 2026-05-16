@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 class ThreadedSimpleScheduler:
     """Run per-request work concurrently while preserving scheduler IO shape.
 
-    This is meant for CPU-bound or blocking simple stages where legacy used
+    This is meant for CPU-bound or blocking simple stages that previously used
     async workers plus ``asyncio.to_thread``. GPU stages should usually prefer
     true tensor batching through ``SimpleScheduler(batch_compute_fn=...)``.
     """

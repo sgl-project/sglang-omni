@@ -161,8 +161,13 @@ def _apply_typed_runtime_args(args: dict[str, Any], stage_cfg: StageConfig) -> N
         args["server_args_overrides"] = overrides
 
 
-def _resolve_primary_gpu_id(stage_cfg: StageConfig, global_cfg: PipelineConfig) -> int:
-    placement = global_cfg.gpu_placement.get(stage_cfg.name, 0)
+def _resolve_primary_gpu_id(
+    stage_cfg: StageConfig,
+    global_cfg: PipelineConfig,
+) -> int | None:
+    placement = global_cfg.gpu_placement.get(stage_cfg.name)
+    if placement is None:
+        return None
     if isinstance(placement, list):
         return placement[0]
     return int(placement)

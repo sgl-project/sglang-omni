@@ -34,6 +34,11 @@ def test_tp_process_env_rejects_single_visible_device_for_second_gpu() -> None:
         get_stage_process_env(_tp_spec(gpu_id=1), {"CUDA_VISIBLE_DEVICES": "0"})
 
 
+def test_tp_process_env_requires_gpu_id() -> None:
+    with pytest.raises(ValueError, match="requires a GPU id"):
+        get_stage_process_env(StageProcessSpec(stage_name="thinker", tp_size=2), {})
+
+
 def test_tp_child_keeps_parent_mapped_visible_device(monkeypatch) -> None:
     """Child startup normalizes the already-mapped TP device to local cuda:0."""
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "4")

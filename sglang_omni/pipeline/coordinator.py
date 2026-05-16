@@ -95,6 +95,28 @@ class Coordinator:
         self.control_plane.close()
         logger.info("Coordinator stopped")
 
+    async def fail_pending_requests(self, error: BaseException | str) -> None:
+        """Fail all requests currently owned by the coordinator."""
+        message = str(error)
+        for request_id, info in list(self._requests.items()):
+            info.state = RequestState.FAILED
+            info.error = message
+            future = self._completion_futures.get(request_id)
+            if future is not None and not future.done():
+                future.set_exception(RuntimeError(message))
+            queue = self._stream_queues.get(request_id)
+            if queue is not None:
+                await queue.put(
+                    CompleteMessage(
+                        request_id=request_id,
+                        from_stage="coordinator",
+                        success=False,
+                        error=message,
+                    )
+                )
+        self._requests.clear()
+        self._partial_results.clear()
+
     async def shutdown_stages(self) -> None:
         """Send shutdown signal to all registered stages."""
         for name, info in self._stages.items():

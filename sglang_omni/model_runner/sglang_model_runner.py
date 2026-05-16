@@ -18,7 +18,6 @@ from sglang_omni.utils.gpu_memory import (
     get_gpu_device_info,
     get_process_gpu_memory_bytes,
 )
-from sglang_omni.utils.misc import avail_gpu_mem
 
 logger = logging.getLogger(__name__)
 
@@ -56,9 +55,6 @@ class SGLModelRunner(ModelRunner):
     ) -> None:
         self._weight_prefix = weight_prefix
         self._total_gpu_memory_fraction = total_gpu_memory_fraction
-        self._pre_model_load_memory_gib = (
-            avail_gpu_mem(gpu_id) if total_gpu_memory_fraction is not None else None
-        )
         self._register_omni_model()
 
         port_args = PortArgs.init_new(server_args)
@@ -211,7 +207,7 @@ class SGLModelRunner(ModelRunner):
             rest_memory = self.handle_max_mamba_cache(rest_memory)
         return int(rest_memory * (1 << 30))
 
-    def profile_max_num_token(self, total_gpu_memory: int) -> int:
+    def profile_max_num_token(self, pre_model_load_memory: float) -> int:
         """Profile token capacity for SGLang versions that size KV cache by tokens."""
         if self._total_gpu_memory_fraction is None:
             upstream_profile = getattr(
@@ -221,40 +217,17 @@ class SGLModelRunner(ModelRunner):
                 raise AttributeError(
                     "Installed SGLang does not expose profile_max_num_token"
                 )
-            return upstream_profile(self, total_gpu_memory)
+            return upstream_profile(self, pre_model_load_memory)
 
         num_layers = self._num_kv_cache_layers()
         cell_size = self.get_cell_size_per_token(num_layers)
-        available_bytes = self._profile_available_bytes_from_total_memory(
-            total_gpu_memory
-        )
+        available_bytes = self._profile_available_bytes(pre_model_load_memory)
         if self.mambaish_config is not None:
             available_gib = available_bytes / (1 << 30)
             available_bytes = int(
                 self.handle_max_mamba_cache(available_gib) * (1 << 30)
             )
         return available_bytes // cell_size
-
-    def _profile_available_bytes_from_total_memory(
-        self,
-        total_memory: int,
-    ) -> int:
-        process_memory = get_process_gpu_memory_bytes(self.gpu_id)
-        if process_memory is not None and process_memory > 0:
-            return self._profile_available_bytes_from_process_memory(
-                total_memory,
-                process_memory,
-            )
-
-        if self._pre_model_load_memory_gib is None:
-            raise RuntimeError(
-                "Colocated SGLang AR stage requires either process memory "
-                "accounting or a pre-load memory sample before token profiling."
-            )
-        return self._profile_available_bytes_from_stage_load_delta(
-            self._pre_model_load_memory_gib,
-            total_memory,
-        )
 
     def _profile_available_bytes_from_process_memory(
         self,

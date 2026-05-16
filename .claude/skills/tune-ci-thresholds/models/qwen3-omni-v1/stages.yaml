@@ -914,8 +914,8 @@ test_omni_router_speed:
   context_vars:
     - MAX_SAMPLES
     - CONCURRENCY
-  test_file_sha256: b690db3b225991b9b918a2971aad4fc92210f9c09766ac483730f7e77de3abf5
-  last_discovered_at: 2026-05-16T11:08:53Z
+  test_file_sha256: 156617b9df8f56cd9eb578489982fe0afd68feb8b78be3579c247116b31bfdf5
+  last_discovered_at: 2026-05-14T16:51:06Z
   sample_counts:
     total:
       json_file: "test_colocated_router_seedtts_0/qwen3_omni_colocated_router_seedtts50/wer_results.json"
@@ -983,8 +983,8 @@ test_omni_router_wer:
   context_vars:
     - MAX_SAMPLES
     - CONCURRENCY
-  test_file_sha256: b690db3b225991b9b918a2971aad4fc92210f9c09766ac483730f7e77de3abf5
-  last_discovered_at: 2026-05-16T11:08:53Z
+  test_file_sha256: 156617b9df8f56cd9eb578489982fe0afd68feb8b78be3579c247116b31bfdf5
+  last_discovered_at: 2026-05-14T16:51:06Z
   sample_counts:
     total:
       json_file: "test_colocated_router_seedtts_0/qwen3_omni_colocated_router_seedtts50/wer_results.json"

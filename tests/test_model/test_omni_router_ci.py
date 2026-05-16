@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import signal
 import socket
 import subprocess
 import sys
@@ -52,6 +53,7 @@ WER_TIMEOUT = 600
 ROUTED_WORKER_MIN_SHARE = 0.10
 ROUTER_POLICY = "least_request"
 COLOCATED_WORKER_ARGS = "--config examples/configs/qwen3_omni_colocated.yaml --colocate"
+ROUTER_CLEANUP_MANIFEST_ENV = "SGLANG_OMNI_ROUTER_CLEANUP_MANIFEST"
 
 _ROUTER_COLOCATED_SEEDTTS_REFERENCE = {
     16: {
@@ -98,6 +100,7 @@ def router_topology(tmp_path_factory: pytest.TempPathFactory):
     router_proc: subprocess.Popen | None = None
     router_log: Path | None = None
     topology: RouterTopology | None = None
+    cleanup_manifest: Path | None = None
 
     try:
         launcher_config = _write_ci_launcher_config(
@@ -105,6 +108,9 @@ def router_topology(tmp_path_factory: pytest.TempPathFactory):
             worker_base_port=worker_base_port,
         )
         router_log = server_log_file(tmp_path_factory, "omni_router_logs")
+        cleanup_manifest = (
+            tmp_path_factory.mktemp("omni_router_cleanup") / "router_pgids.txt"
+        )
         router_cmd = [
             sys.executable,
             "-m",
@@ -131,7 +137,10 @@ def router_topology(tmp_path_factory: pytest.TempPathFactory):
             router_log,
             router_port,
             timeout=STARTUP_TIMEOUT + 60,
+            env={ROUTER_CLEANUP_MANIFEST_ENV: str(cleanup_manifest)},
         )
+        with cleanup_manifest.open("a", encoding="utf-8") as handle:
+            handle.write(f"{os.getpgid(router_proc.pid)}\n")
         _wait_for_all_router_workers(router_port, expected_workers=len(worker_ports))
         print(
             "[Omni Router CI] topology "
@@ -150,6 +159,43 @@ def router_topology(tmp_path_factory: pytest.TempPathFactory):
             topology.stop()
         elif router_proc is not None:
             stop_server(router_proc)
+        if cleanup_manifest is not None:
+            _cleanup_process_groups_from_manifest(cleanup_manifest)
+
+
+def _cleanup_process_groups_from_manifest(manifest: Path) -> None:
+    if not manifest.exists():
+        return
+    process_group_ids: set[int] = set()
+    for line in manifest.read_text().splitlines():
+        try:
+            process_group_ids.add(int(line.strip()))
+        except ValueError:
+            continue
+    for sig, wait_seconds in ((signal.SIGTERM, 5), (signal.SIGKILL, 1)):
+        remaining: set[int] = set()
+        for process_group_id in process_group_ids:
+            try:
+                os.killpg(process_group_id, sig)
+                remaining.add(process_group_id)
+            except ProcessLookupError:
+                continue
+        if not remaining:
+            return
+        time.sleep(wait_seconds)
+        process_group_ids = {
+            process_group_id
+            for process_group_id in remaining
+            if _process_group_exists(process_group_id)
+        }
+
+
+def _process_group_exists(process_group_id: int) -> bool:
+    try:
+        os.killpg(process_group_id, 0)
+        return True
+    except ProcessLookupError:
+        return False
 
 
 def _write_ci_launcher_config(

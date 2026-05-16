@@ -250,7 +250,7 @@ async def _run_server(
                 timeout_keep_alive=120,
             )
             server = uvicorn.Server(config)
-            await server.serve()
+            await _serve_with_failure_watch(server, [mp_runner.wait_failed()])
         finally:
             logger.info("Shutting down pipeline …")
             await mp_runner.stop()
@@ -295,7 +295,8 @@ async def _run_server(
                 timeout_keep_alive=120,
             )
             server = uvicorn.Server(config)
-            await server.serve()
+            runtime_tasks = [completion_task, *stage_tasks]
+            await _serve_with_failure_watch(server, runtime_tasks)
         finally:
             logger.info("Shutting down pipeline …")
             for t in stage_tasks:
@@ -316,6 +317,44 @@ async def _run_server(
                 if runtime_dir is not None:
                     runtime_dir.close()
             logger.info("Pipeline stopped.")
+
+
+async def _serve_with_failure_watch(
+    server: uvicorn.Server,
+    runtime_watchers,
+) -> None:
+    server_task = asyncio.create_task(server.serve())
+    watcher_tasks = [
+        watcher if isinstance(watcher, asyncio.Task) else asyncio.create_task(watcher)
+        for watcher in runtime_watchers
+        if watcher is not None
+    ]
+    try:
+        done, _ = await asyncio.wait(
+            [server_task, *watcher_tasks],
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if server_task in done:
+            await server_task
+            return
+
+        server.should_exit = True
+        with suppress(asyncio.CancelledError):
+            await server_task
+
+        for task in done:
+            if task is server_task:
+                continue
+            if task.cancelled():
+                raise RuntimeError("Pipeline runtime task was cancelled")
+            exc = task.exception()
+            if exc is not None:
+                raise exc
+            raise RuntimeError("Pipeline runtime task exited unexpectedly")
+    finally:
+        for task in watcher_tasks:
+            if not task.done():
+                task.cancel()
 
 
 def launch_server(

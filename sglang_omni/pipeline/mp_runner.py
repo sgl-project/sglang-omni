@@ -124,7 +124,7 @@ def _build_single_stage_spec(
     *,
     stage_cfg: StageConfig,
     config: PipelineConfig,
-    gpu_id: int,
+    gpu_id: int | None,
     recv_endpoint: str,
     base_factory_args: dict[str, Any],
     stage_kwargs: dict[str, Any],
@@ -151,7 +151,7 @@ def _build_tp_stage_specs(
     ctx: multiprocessing.context.BaseContext,
     stage_cfg: StageConfig,
     config: PipelineConfig,
-    gpu_ids: list[int],
+    gpu_ids: list[int | None],
     nccl_port: int | None,
     recv_endpoint: str,
     base_factory_args: dict[str, Any],
@@ -163,6 +163,8 @@ def _build_tp_stage_specs(
 
     for tp_rank in range(stage_cfg.tp_size):
         gpu_id = gpu_ids[tp_rank] if tp_rank < len(gpu_ids) else gpu_ids[0]
+        if gpu_id is None:
+            raise ValueError(f"TP stage {stage_cfg.name!r} requires GPU placement")
         factory_args = dict(base_factory_args)
         if "gpu_id" in base_factory_args:
             factory_args["gpu_id"] = gpu_id
@@ -214,7 +216,7 @@ def _resolve_relay_config(
     stage_cfg: StageConfig,
     config: PipelineConfig,
     *,
-    gpu_id: int,
+    gpu_id: int | None,
 ) -> dict[str, Any]:
     """Build relay config, overriding gpu_id from placement."""
     relay_config = _build_relay_config(stage_cfg, config)
@@ -253,6 +255,8 @@ class MultiProcessPipelineRunner:
         self._groups: list[StageGroup] = []
         self._completion_task: asyncio.Task | None = None
         self._monitor_task: asyncio.Task | None = None
+        self._fatal_event: asyncio.Event | None = None
+        self._fatal_error: BaseException | None = None
         self._started = False
 
     @property
@@ -273,6 +277,8 @@ class MultiProcessPipelineRunner:
 
         try:
             ctx = multiprocessing.get_context("spawn")
+            self._fatal_event = asyncio.Event()
+            self._fatal_error = None
             prep = prepare_pipeline_runtime(
                 self._config,
                 ipc_runtime_dir=self._ipc_runtime_dir,
@@ -334,13 +340,29 @@ class MultiProcessPipelineRunner:
         while self._started:
             for group in self._groups:
                 if group.any_dead():
-                    logger.error(
-                        "Dead stage process(es) detected: %s",
-                        group.dead_summary(),
+                    error = RuntimeError(
+                        f"Dead stage process(es) detected: {group.dead_summary()}"
                     )
-                    await self.stop()
+                    logger.error("%s", error)
+                    await self._fail_runtime(error)
                     return
             await asyncio.sleep(5.0)
+
+    async def _fail_runtime(self, error: BaseException) -> None:
+        self._fatal_error = error
+        if self._coordinator is not None:
+            await self._coordinator.fail_pending_requests(error)
+        await self.stop()
+        if self._fatal_event is not None:
+            self._fatal_event.set()
+
+    async def wait_failed(self) -> None:
+        if self._fatal_event is None:
+            raise RuntimeError("Runner not started")
+        await self._fatal_event.wait()
+        if self._fatal_error is not None:
+            raise self._fatal_error
+        raise RuntimeError("Pipeline runtime failed")
 
     async def _cancel_completion_task(self) -> None:
         if self._completion_task is None:

@@ -34,7 +34,7 @@ class StageProcessSpec:
     role: Literal["single", "leader", "follower"] = "single"
     tp_rank: int = 0
     tp_size: int = 1
-    gpu_id: int = 0
+    gpu_id: int | None = None
     nccl_port: int | None = None
 
     # Factory
@@ -245,6 +245,8 @@ def get_stage_process_env(
 
     source_env = env if env is not None else os.environ
     original_visible = source_env.get("CUDA_VISIBLE_DEVICES")
+    if spec.gpu_id is None:
+        raise ValueError(f"tp stage {spec.stage_name!r} requires a GPU id")
     if original_visible:
         visible_devices = [item.strip() for item in original_visible.split(",")]
         if spec.gpu_id >= len(visible_devices):

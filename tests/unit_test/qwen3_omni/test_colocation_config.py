@@ -149,8 +149,21 @@ def test_default_speech_rejects_same_gpu_thinker_and_talker_colocation() -> None
         build_stage_placement_plan(config)
 
 
-def test_qwen_phase1_rejects_thinker_and_talker_tp() -> None:
+def test_default_speech_allows_thinker_tp_placement() -> None:
     config = Qwen3OmniSpeechPipelineConfig(model_path="dummy")
+    thinker = _stage(config, "thinker")
+    thinker.tp_size = 2
+    thinker.parallelism.tp = 2
+    thinker.gpu = [0, 1]
+
+    plan = build_stage_placement_plan(config)
+
+    assert plan.stages["thinker"].gpu_ids == (0, 1)
+
+
+def test_colocated_config_rejects_thinker_tp() -> None:
+    config = Qwen3OmniSpeechColocatedPipelineConfig(model_path="dummy")
+    _set_colocated_runtime(config)
     thinker = _stage(config, "thinker")
     thinker.tp_size = 2
     thinker.parallelism.tp = 2

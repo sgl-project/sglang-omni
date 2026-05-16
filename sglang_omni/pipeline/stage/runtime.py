@@ -211,6 +211,10 @@ class Stage:
                 await outbox_task
             if self._background_task_error is not None:
                 raise self._background_task_error
+            if self._scheduler_crash_error is not None:
+                raise RuntimeError(
+                    f"Scheduler thread for stage {self.name} crashed"
+                ) from self._scheduler_crash_error
 
     async def _handle_message(self, msg: Any) -> None:
         if isinstance(msg, SubmitMessage):
