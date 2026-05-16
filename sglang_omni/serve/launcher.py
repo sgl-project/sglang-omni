@@ -33,7 +33,7 @@ from contextlib import suppress
 from typing import Any
 
 import uvicorn
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from sglang_omni.client import Client
@@ -168,14 +168,25 @@ class StopReq(BaseModel):
 
 
 def _mount_profiler_routes(
-    app, profiler_ctl: ProfilerControlClient, profiler_dir: str
+    app, profiler_ctl: ProfilerControlClient, profiler_dir: str | None
 ) -> None:
     router = APIRouter()
 
     @router.post("/start_profile")
     async def start(req: StartReq):
         run_id = req.run_id or _default_run_id()
-        tpl = req.trace_path_template or _default_template(profiler_dir, run_id)
+        if req.trace_path_template is not None:
+            tpl = req.trace_path_template
+        elif profiler_dir is not None:
+            tpl = _default_template(profiler_dir, run_id)
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "trace_path_template is required when "
+                    "SGLANG_TORCH_PROFILER_DIR is not set"
+                ),
+            )
         await profiler_ctl.broadcast_start(
             run_id=run_id,
             trace_path_template=tpl,

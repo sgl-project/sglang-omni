@@ -3,30 +3,14 @@
 
 from __future__ import annotations
 
-import importlib
 import pickle
 import random
 import re
-from typing import Any, List, Optional
+from typing import List, Optional
 
 import numpy as np
 import torch
 import torch.distributed as dist
-
-
-def import_string(path: str) -> Any:
-    if not path or not isinstance(path, str):
-        raise ValueError("Import path must be a non-empty string")
-
-    module_path, _, attr = path.rpartition(".")
-    if not module_path or not attr:
-        raise ValueError(f"Invalid import path: {path!r}")
-
-    module = importlib.import_module(module_path)
-    try:
-        return getattr(module, attr)
-    except AttributeError as exc:
-        raise ImportError(f"Module {module_path!r} has no attribute {attr!r}") from exc
 
 
 def get_layer_id(weight_name):

@@ -42,10 +42,8 @@ GetNextFn = Callable[[str, Any], str | list[str] | None]
 class Stage:
     """IO shell for one pipeline stage.
 
-    For AR stages: owns a Scheduler (runs in dedicated thread),
-    communicates via inbox/outbox queues.
-
-    For simple stages: calls compute_fn directly.
+    All stage compute is dispatched through the scheduler inbox/outbox
+    contract, independent of scheduler implementation.
     """
 
     def __init__(

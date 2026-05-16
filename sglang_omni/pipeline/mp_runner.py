@@ -352,9 +352,9 @@ class MultiProcessPipelineRunner:
         self._fatal_error = error
         if self._coordinator is not None:
             await self._coordinator.fail_pending_requests(error)
-        await self.stop()
         if self._fatal_event is not None:
             self._fatal_event.set()
+        await self.stop()
 
     async def wait_failed(self) -> None:
         if self._fatal_event is None:

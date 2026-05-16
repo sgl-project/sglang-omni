@@ -105,16 +105,15 @@ class SGLModelRunner(ModelRunner):
         another process can change global free memory while this process is
         loading weights, making the global delta too small or negative.
 
-        When a stage total-memory budget is provided, compute cache headroom as
-        total GPU memory times that budget minus this stage's measured memory.
-        NVML process accounting is preferred. If NVML cannot identify the
-        current process, use the stage-local load delta measured inside
-        SGLang's serialized initialization window. Without a stage budget, keep
-        upstream SGLang profiling semantics for ordinary non-colocated AR
-        serving.
+        Compute cache headroom as total GPU memory times that budget minus this
+        stage's measured memory. NVML process accounting is preferred. If NVML
+        cannot identify the current process, use the stage-local load delta
+        measured inside SGLang's serialized initialization window.
         """
         if self._total_gpu_memory_fraction is None:
-            return self._profile_upstream_available_bytes(pre_model_load_memory)
+            raise RuntimeError(
+                "Stage-budgeted KV profiling requires total_gpu_memory_fraction"
+            )
 
         process_memory = get_process_gpu_memory_bytes(self.gpu_id)
         device_info = get_gpu_device_info(self.gpu_id)
@@ -175,49 +174,13 @@ class SGLModelRunner(ModelRunner):
         )
         return available_bytes
 
-    def _profile_upstream_available_bytes(self, pre_model_load_memory: float) -> int:
-        """Use the SGLang memory profiler exposed by the installed version."""
-        upstream_profile = getattr(
-            ModelRunnerKVCacheMixin, "_profile_available_bytes", None
-        )
-        if upstream_profile is not None:
-            return upstream_profile(self, pre_model_load_memory)
-        return self._profile_available_bytes_from_free_memory_delta(
-            pre_model_load_memory
-        )
-
-    def _profile_available_bytes_from_free_memory_delta(
-        self, pre_model_load_memory: float
-    ) -> int:
-        """Match SGLang free-memory-delta accounting for non-colocated AR stages."""
-        from sglang.srt.distributed.parallel_state import get_world_group
-        from sglang.srt.utils.common import get_available_gpu_memory
-
-        world_group = get_world_group()
-        post_model_load_memory = get_available_gpu_memory(
-            self.device,
-            self.gpu_id,
-            distributed=world_group.world_size > 1,
-            cpu_group=world_group.cpu_group,
-        )
-        rest_memory = post_model_load_memory - pre_model_load_memory * (
-            1 - self.mem_fraction_static
-        )
-        if self.mambaish_config is not None:
-            rest_memory = self.handle_max_mamba_cache(rest_memory)
-        return int(rest_memory * (1 << 30))
-
     def profile_max_num_token(self, pre_model_load_memory: float) -> int:
-        """Profile token capacity for SGLang versions that size KV cache by tokens."""
+        """Profile token capacity for stage-budgeted colocated AR stages."""
         if self._total_gpu_memory_fraction is None:
-            upstream_profile = getattr(
-                ModelRunnerKVCacheMixin, "profile_max_num_token", None
+            return ModelRunnerKVCacheMixin.profile_max_num_token(
+                self,
+                pre_model_load_memory,
             )
-            if upstream_profile is None:
-                raise AttributeError(
-                    "Installed SGLang does not expose profile_max_num_token"
-                )
-            return upstream_profile(self, pre_model_load_memory)
 
         num_layers = self._num_kv_cache_layers()
         cell_size = self.get_cell_size_per_token(num_layers)

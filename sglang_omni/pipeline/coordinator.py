@@ -72,6 +72,7 @@ class Coordinator:
 
         # State
         self._running = False
+        self._fatal_error: str | None = None
 
     def register_stage(self, name: str, endpoint: str) -> None:
         """Register a stage.
@@ -97,7 +98,9 @@ class Coordinator:
 
     async def fail_pending_requests(self, error: BaseException | str) -> None:
         """Fail all requests currently owned by the coordinator."""
+        self._running = False
         message = str(error)
+        self._fatal_error = message
         for request_id, info in list(self._requests.items()):
             info.state = RequestState.FAILED
             info.error = message
@@ -173,6 +176,8 @@ class Coordinator:
         self, request_id: str, request: OmniRequest | Any
     ) -> None:
         """Submit a request without waiting for completion."""
+        if self._fatal_error is not None:
+            raise RuntimeError(self._fatal_error)
         if request_id in self._requests:
             raise ValueError(f"Request {request_id} already exists")
 
