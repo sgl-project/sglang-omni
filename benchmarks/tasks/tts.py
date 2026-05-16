@@ -647,6 +647,7 @@ class VoiceCloneOmni:
         max_tokens: int | None = None,
         temperature: float = 0.7,
         voice_clone: bool = False,
+        stream: bool = False,
     ) -> tuple[bytes, float, dict]:
         if max_tokens is None:
             max_tokens = self.THINKER_MAX_NEW_TOKENS
@@ -679,7 +680,7 @@ class VoiceCloneOmni:
             "audio": {"format": "wav"},
             "max_tokens": max_tokens,
             "temperature": temperature,
-            "stream": False,
+            "stream": stream,
         }
         if voice_clone:
             payload["audios"] = [sample.ref_audio]
@@ -689,6 +690,10 @@ class VoiceCloneOmni:
             if response.status != 200:
                 error_text = await response.text()
                 raise RuntimeError(f"HTTP {response.status}: {error_text}")
+            if stream:
+                wav_bytes, usage = await self._read_streaming_chat_audio(response)
+                latency = time.perf_counter() - t0
+                return wav_bytes, latency, usage
             resp_json = await response.json()
         latency = time.perf_counter() - t0
 
@@ -712,6 +717,41 @@ class VoiceCloneOmni:
         usage = resp_json.get("usage", {})
         return wav_bytes, latency, usage
 
+    async def _read_streaming_chat_audio(
+        self,
+        response: aiohttp.ClientResponse,
+    ) -> tuple[bytes, dict]:
+        """Read OpenAI chat SSE audio deltas and concatenate them into one WAV."""
+        pcm_chunks: list[bytes] = []
+        stream_format: tuple[int, int, int] | None = None
+        usage: dict = {}
+        buffer = bytearray()
+
+        async for chunk in response.content.iter_any():
+            buffer.extend(chunk)
+            while b"\n" in buffer:
+                idx = buffer.index(b"\n")
+                raw_line = bytes(buffer[:idx])
+                del buffer[: idx + 1]
+                stream_format = _collect_chat_streaming_audio(
+                    raw_line.decode("utf-8", errors="replace").strip(),
+                    pcm_chunks,
+                    stream_format,
+                    usage,
+                )
+
+        if buffer.strip():
+            stream_format = _collect_chat_streaming_audio(
+                bytes(buffer).decode("utf-8", errors="replace").strip(),
+                pcm_chunks,
+                stream_format,
+                usage,
+            )
+
+        if not pcm_chunks or stream_format is None:
+            raise ValueError("No audio chunks received from streaming response")
+        return _build_streaming_wav_bytes(pcm_chunks, stream_format), usage
+
     async def evaluate_sample(
         self,
         session: aiohttp.ClientSession,
@@ -725,6 +765,7 @@ class VoiceCloneOmni:
         speaker: str = "Ethan",
         max_tokens: int | None = None,
         voice_clone: bool = False,
+        stream: bool = False,
     ) -> SampleOutput:
         output = SampleOutput(
             sample_id=sample.sample_id,
@@ -742,6 +783,7 @@ class VoiceCloneOmni:
                 speaker,
                 max_tokens,
                 voice_clone=voice_clone,
+                stream=stream,
             )
             with open(wav_path, "wb") as f:
                 f.write(wav_bytes)
@@ -902,6 +944,48 @@ def _collect_streaming_audio(
     except (binascii.Error, wave.Error, EOFError) as exc:
         logger.debug(f"Skipping malformed streaming audio chunk: {exc}")
         return stream_format
+
+
+def _collect_chat_streaming_audio(
+    line: str,
+    pcm_chunks: list[bytes],
+    stream_format: tuple[int, int, int] | None,
+    usage: dict,
+) -> tuple[int, int, int] | None:
+    event = parse_sse_event(line)
+    if event is None:
+        return stream_format
+
+    event_usage = event.get("usage")
+    if isinstance(event_usage, dict):
+        usage.clear()
+        usage.update(event_usage)
+
+    for choice in event.get("choices", []):
+        if not isinstance(choice, dict):
+            continue
+        delta = choice.get("delta")
+        if not isinstance(delta, dict):
+            continue
+        audio = delta.get("audio")
+        if not isinstance(audio, dict) or not audio.get("data"):
+            continue
+        try:
+            chunk_bytes = base64.b64decode(audio["data"])
+            if len(chunk_bytes) <= WAV_HEADER_SIZE:
+                continue
+            with io.BytesIO(chunk_bytes) as buf:
+                with wave.open(buf, "rb") as wf:
+                    pcm_chunks.append(wf.readframes(wf.getnframes()))
+                    if stream_format is None:
+                        stream_format = (
+                            wf.getframerate(),
+                            wf.getnchannels(),
+                            wf.getsampwidth(),
+                        )
+        except (binascii.Error, wave.Error, EOFError) as exc:
+            logger.debug(f"Skipping malformed chat streaming audio chunk: {exc}")
+    return stream_format
 
 
 def _build_streaming_wav_bytes(

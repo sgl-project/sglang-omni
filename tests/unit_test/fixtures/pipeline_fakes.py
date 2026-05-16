@@ -14,8 +14,8 @@ from typing import Any, Callable
 
 import torch
 
-from sglang_omni_v1.proto import OmniRequest, StagePayload
-from sglang_omni_v1.scheduling.messages import IncomingMessage, OutgoingMessage
+from sglang_omni.proto import OmniRequest, StagePayload
+from sglang_omni.scheduling.messages import IncomingMessage, OutgoingMessage
 
 
 @dataclass

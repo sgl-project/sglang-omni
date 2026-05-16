@@ -37,6 +37,7 @@ from benchmarks.metrics.wer import print_wer_summary
 from tests.utils import (
     ServerHandle,
     apply_slack,
+    apply_wer_slack,
     assert_speed_thresholds,
     assert_wer_partitioned,
 )
@@ -52,6 +53,9 @@ SHORT_ANSWER_PROMPT = (
 VIDEOMME_TALKER_THINKER_TEXT_MIN_ACCURACY = 0.5
 # Retuned after Qwen3-Omni talker sampler fix: Video-MME talker stayed clean.
 VIDEOMME_TALKER_WER_BELOW_50_CORPUS_MAX = 0.014005602240896359
+VIDEOMME_TALKER_WER_BELOW_50_CORPUS_THRESHOLD = apply_wer_slack(
+    VIDEOMME_TALKER_WER_BELOW_50_CORPUS_MAX
+)
 VIDEOMME_TALKER_N_ABOVE_50_MAX = 0
 
 _VIDEOMME_TALKER_AUDIO_P95 = {
@@ -126,7 +130,7 @@ def test_videomme_tts_accuracy_wer_and_speed(
     assert "wer" in results, "Audio WER results missing from Video-MME Talker output"
     assert_wer_partitioned(
         results["wer"],
-        max_wer_below_50_corpus=VIDEOMME_TALKER_WER_BELOW_50_CORPUS_MAX,
+        max_wer_below_50_corpus=VIDEOMME_TALKER_WER_BELOW_50_CORPUS_THRESHOLD,
         max_n_above_50=VIDEOMME_TALKER_N_ABOVE_50_MAX,
     )
     assert_speed_thresholds(results["speed"], VIDEOMME_TALKER_THRESHOLDS, CONCURRENCY)

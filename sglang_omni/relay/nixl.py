@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
 import time
 import uuid
@@ -29,34 +28,11 @@ except ImportError as e:
 
 
 class Connection:
-    def __init__(self, engine_id: str, device_id: int = 0, num_threads: int = 2):
+    def __init__(self, engine_id: str, num_threads: int = 2):
         self.name = engine_id
-        self.device_id = device_id
-        self._cuda_enabled = torch.cuda.is_available() and device_id >= 0
-
-        # Note (Chenyang):
-        # NIXL spawns worker threads that inherit the current CUDA primary context.
-        # Pin the device before constructing the agent so those threads can open
-        # CUDA IPC handles and register VRAM on the correct device.
-        if self._cuda_enabled:
-            torch.cuda.set_device(device_id)
         config = nixl_agent_config(num_threads=num_threads)
         self._nixl = NixlAgent(str(uuid.uuid4()), config)
         self._remote_agents: Dict[str, str] = {}
-
-    def device_context(self):
-        """Context manager that pins this connection's CUDA device.
-
-        Note (Chenyang):
-        When multiple NIXL connections coexist in one process (e.g. sender on
-        cuda:0 and receiver on cuda:1), the most recent constructor leaves
-        torch.cuda.current_device() pointing at whichever device was created
-        last. UCX / CUDA IPC then fail with "invalid device context" or backend
-        errors. Every NIXL entrypoint goes through this to stay pinned.
-        """
-        if self._cuda_enabled:
-            return torch.cuda.device(self.device_id)
-        return contextlib.nullcontext()
 
     def get_agent_metadata(self) -> bytes:
         return self._nixl.get_agent_metadata()
@@ -108,8 +84,7 @@ class PutOperation(NixlOperation):
         start = time.time()
         try:
             while True:
-                with self._conn.device_context():
-                    notifs = self._conn._nixl.get_new_notifs()
+                notifs = self._conn._nixl.get_new_notifs()
                 found = False
                 for msgs in notifs.values():
                     if self._expected_notification in msgs:
@@ -164,26 +139,36 @@ class GetOperation(NixlOperation):
             return
 
         try:
-            with self._conn.device_context():
-                while True:
-                    state = self._conn._nixl.check_xfer_state(self._handle)
-                    if state == "DONE":
-                        break
-                    elif state != "PROC":
-                        raise RuntimeError(f"Transfer failed with state: {state}")
+            # 1. Wait for RDMA Transfer
+            while True:
+                state = self._conn._nixl.check_xfer_state(self._handle)
+                if state == "DONE":
+                    break
+                elif state != "PROC":
+                    raise RuntimeError(f"Transfer failed with state: {state}")
 
-                    await asyncio.sleep(0.00001)
+                await asyncio.sleep(0.00001)
 
-                self._conn._nixl.release_xfer_handle(self._handle)
-                self._handle = None
+            # 2. Cleanup Handle
+            self._conn._nixl.release_xfer_handle(self._handle)
+            self._handle = None
 
-                src_view = self._src_pool_tensor[: self._copy_size]
-                dest_view = self._dest_tensor.view(torch.uint8).reshape(-1)
-                dest_view.copy_(src_view)
+            # 3. Perform Copy (Pool -> Dest)
+            # This ensures data is valid before the user gets control back
+            # Note: This is a GPU-GPU copy (fast), but conceptually blocking the stream.
+            src_view = self._src_pool_tensor[: self._copy_size]
+            dest_view = self._dest_tensor.view(torch.uint8).reshape(-1)
+            dest_view.copy_(src_view)
 
         finally:
             self._completed = True
+            # 4. Release Local Credit (Buffer is now free)
             self._on_completion_cb()
+
+
+# ==========================================
+# NixlRelay (Async Only)
+# ==========================================
 
 
 @register_relay("nixl")
@@ -197,7 +182,9 @@ class NixlRelay(Relay):
     ):
         self.engine_id = engine_id
         self.device = device
+        self.connection = Connection(engine_id)
 
+        # 1. Parse Device ID
         self.device_id = 0
         if "cuda" in device and ":" in device:
             try:
@@ -205,8 +192,7 @@ class NixlRelay(Relay):
             except ValueError:
                 self.device_id = 0
 
-        self.connection = Connection(engine_id, device_id=self.device_id)
-
+        # 2. Initialize memory pool
         slot_bytes = slot_size_mb * 1024 * 1024
         total_pool_bytes = slot_bytes * credits
 
@@ -219,16 +205,14 @@ class NixlRelay(Relay):
             credits=credits, slot_size=slot_bytes, base_ptr=self.pool_ptr
         )
 
+        # 3. Register memory pool
         logger.info(
             f"[{engine_id}] Registering Pool ({total_pool_bytes / 1024**2:.2f} MB) on {device}..."
         )
         if NIXL_AVAILABLE:
             mem_type = "VRAM" if "cuda" in device else "DRAM"
             reg_list = [(self.pool_ptr, total_pool_bytes, self.device_id, mem_type)]
-            with self.connection.device_context():
-                self.pool_handle = self.connection._nixl.register_memory(
-                    reg_list, mem_type
-                )
+            self.pool_handle = self.connection._nixl.register_memory(reg_list, mem_type)
         else:
             self.pool_handle = 1
 
@@ -242,27 +226,31 @@ class NixlRelay(Relay):
         if size_bytes > self.allocator.slot_size:
             raise ValueError(f"Tensor size {size_bytes} exceeds slot size")
 
+        # 1. Async Wait for Credit
         offset = await self.allocator.acquire_async()
 
         try:
-            with self.connection.device_context():
-                pool_slice = self.pool_tensor[offset : offset + size_bytes]
-                tensor_view = tensor.view(torch.uint8).reshape(-1)
-                pool_slice.copy_(tensor_view)
+            # 2. Copy Data to Pool
+            pool_slice = self.pool_tensor[offset : offset + size_bytes]
+            tensor_view = tensor.view(torch.uint8).reshape(-1)
+            pool_slice.copy_(tensor_view)
 
-                mem_type = "VRAM" if "cuda" in self.device else "DRAM"
-                payload = {
-                    "engine_id": self.engine_id,
-                    "agent_meta": self.connection.get_agent_metadata(),
-                    "mem_type": mem_type,
-                    "transfer_info": {
-                        "offset": offset,
-                        "size": size_bytes,
-                        "ptr": self.pool_ptr + offset,
-                        "device_id": self.device_id,
-                    },
-                }
+            # 3. Prepare Metadata
+            mem_type = "VRAM" if "cuda" in self.device else "DRAM"
+            payload = {
+                "engine_id": self.engine_id,
+                "agent_meta": self.connection.get_agent_metadata(),
+                "mem_type": mem_type,
+                "transfer_info": {
+                    "offset": offset,
+                    "size": size_bytes,
+                    "ptr": self.pool_ptr + offset,
+                    "device_id": self.device_id,
+                },
+            }
 
+            # 4. Create Operation
+            # Credit will be released when PutOperation.wait() completes
             return PutOperation(
                 connection=self.connection,
                 metadata=payload,
@@ -271,6 +259,7 @@ class NixlRelay(Relay):
             )
 
         except Exception as e:
+            # If creating the op fails, release immediately
             self.allocator.release(offset)
             raise e
 
@@ -280,6 +269,7 @@ class NixlRelay(Relay):
         """
         Asynchronously get tensor. Returns a GetOperation.
         """
+        # Parse Metadata
         remote_engine_id = metadata["engine_id"]
         remote_agent_meta = metadata["agent_meta"]
 
@@ -294,42 +284,46 @@ class NixlRelay(Relay):
         if data_size > self.allocator.slot_size:
             raise ValueError("Data size exceeds local slot size")
 
+        # 1. Async Wait for Local Credit (Buffer)
         local_offset = await self.allocator.acquire_async()
 
         try:
-            with self.connection.device_context():
-                remote_agent_name = self.connection.ensure_remote_agent(
-                    remote_engine_id, remote_agent_meta
-                )
-                mem_type = "VRAM" if "cuda" in self.device else "DRAM"
-                remote_mem_type = metadata.get("mem_type", mem_type)
+            remote_agent_name = self.connection.ensure_remote_agent(
+                remote_engine_id, remote_agent_meta
+            )
+            mem_type = "VRAM" if "cuda" in self.device else "DRAM"
+            remote_mem_type = metadata.get("mem_type", mem_type)
 
-                local_phys_addr = self.pool_ptr + local_offset
-                local_descs = self.connection._nixl.get_xfer_descs(
-                    [(local_phys_addr, data_size, self.device_id)], mem_type
-                )
-                local_handle = self.connection._nixl.prep_xfer_dlist(
-                    "NIXL_INIT_AGENT", local_descs
-                )
+            # 2. Prepare RDMA
+            local_phys_addr = self.pool_ptr + local_offset
+            local_descs = self.connection._nixl.get_xfer_descs(
+                [(local_phys_addr, data_size, self.device_id)], mem_type
+            )
+            local_handle = self.connection._nixl.prep_xfer_dlist(
+                "NIXL_INIT_AGENT", local_descs
+            )
 
-                remote_descs = self.connection._nixl.get_xfer_descs(
-                    [(remote_ptr, data_size, remote_device_id)], remote_mem_type
-                )
-                remote_handle = self.connection._nixl.prep_xfer_dlist(
-                    remote_agent_name, remote_descs
-                )
+            remote_descs = self.connection._nixl.get_xfer_descs(
+                [(remote_ptr, data_size, remote_device_id)], remote_mem_type
+            )
+            remote_handle = self.connection._nixl.prep_xfer_dlist(
+                remote_agent_name, remote_descs
+            )
 
-                indices = np.arange(1, dtype=np.int64)
-                xfer_handle = self.connection._nixl.make_prepped_xfer(
-                    "READ",
-                    local_handle,
-                    indices,
-                    remote_handle,
-                    indices,
-                    notif_msg=f"done".encode(),
-                )
-                self.connection._nixl.transfer(xfer_handle)
+            # 3. Trigger Transfer
+            indices = np.arange(1, dtype=np.int64)
+            xfer_handle = self.connection._nixl.make_prepped_xfer(
+                "READ",
+                local_handle,
+                indices,
+                remote_handle,
+                indices,
+                notif_msg=f"done".encode(),
+            )
+            self.connection._nixl.transfer(xfer_handle)
 
+            # 4. Create Operation
+            # Pass the pool slice (buffer) so the Operation can copy it out later
             pool_slice = self.pool_tensor[local_offset : local_offset + data_size]
 
             return GetOperation(
@@ -349,9 +343,8 @@ class NixlRelay(Relay):
         pass
 
     def close(self):
-        if NIXL_AVAILABLE and hasattr(self, "pool_handle"):
+        if NIXL_AVAILABLE:
             try:
-                with self.connection.device_context():
-                    self.connection._nixl.deregister_memory(self.pool_handle)
-            except Exception:
+                self.connection._nixl.deregister_memory(self.pool_handle)
+            except:
                 pass

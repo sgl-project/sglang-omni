@@ -25,6 +25,7 @@ Our core features include:
 
    basic_usage/qwen3_omni.md
    basic_usage/tts_s2pro.md
+   basic_usage/omni_router.md
 
 
 .. toctree::
@@ -38,6 +39,8 @@ Our core features include:
    :maxdepth: 1
    :caption: Developer Reference
 
-   developer_reference/architecture.md
-   developer_reference/relay_design.md
-   developer_reference/talker_decode_parity.md
+   developer_reference/main.md
+   developer_reference/apiserver_design.md
+   developer_reference/pipeline.md
+   developer_reference/config.md
+   developer_reference/communication.md

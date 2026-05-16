@@ -103,7 +103,6 @@ OmniEventType = Literal[
     "text_final",
     "audio_chunk",
     "audio_final",
-    "image_final",
     "debug",
     "final",
 ]

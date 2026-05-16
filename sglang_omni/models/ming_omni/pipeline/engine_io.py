@@ -125,29 +125,11 @@ def build_sglang_thinker_request(
         model_inputs = {
             k: v for k, v in thinker_inputs.items() if k != "capture_model_output_keys"
         }
-    capture_keys = list(thinker_inputs.get("capture_model_output_keys", ()))
+    capture_keys = thinker_inputs.get("capture_model_output_keys", ())
     model_inputs.pop("attention_mask", None)
 
     max_new_tokens = params.get("max_new_tokens", 2048)
     temperature = params.get("temperature", 0.0)
-
-    # --- Image generation: prefill-only mode + query token injection ---
-    image_gen = (state.mm_inputs or {}).get("image_gen", {})
-    if image_gen.get("prefill_only"):
-        # Prefill-only: no autoregressive decoding, just run the forward pass
-        max_new_tokens = 0
-
-        # Convert serialised query_tokens list back to a tensor and inject
-        # as image_embeds so that _inject_multimodal_embeds() replaces
-        # image_patch_token positions with query embeddings.
-        query_tokens_list = image_gen.get("query_tokens")
-        if query_tokens_list is not None:
-            query_tokens = torch.tensor(query_tokens_list, dtype=torch.bfloat16)
-            model_inputs["image_embeds"] = query_tokens
-
-        # Ensure hidden states are captured for downstream image generation
-        if "hidden_states" not in capture_keys:
-            capture_keys.append("hidden_states")
 
     sampling_params = SamplingParams(
         max_new_tokens=max_new_tokens,

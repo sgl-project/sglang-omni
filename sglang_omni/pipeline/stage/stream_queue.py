@@ -32,9 +32,9 @@ class StreamSignal:
 class StreamQueue:
     """Manages per-request unbounded async queues for streaming between stages.
 
-    Backpressure is applied at the sender side (Worker's ``_stream_send_queue``
-    with maxsize=4096 and blocking put).  The per-request queues here are
-    unbounded so that ordered chunks are never dropped.
+    Backpressure is applied at the sender stage / scheduler boundary before
+    chunks enter this queue. The per-request queues here are unbounded so that
+    ordered chunks are never dropped.
 
     Usage:
         sq.open("req-1")              # create queue for request

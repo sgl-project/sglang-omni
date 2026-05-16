@@ -218,8 +218,6 @@ class TestSpeechMode:
             "0",
             "--gpu-talker",
             "1",
-            "--gpu-code-predictor",
-            "1",
             "--gpu-code2wav",
             "1",
             "--port",

@@ -11,13 +11,13 @@ import pytest
 import torch
 from pydantic import ValidationError
 
-from sglang_omni_v1.config.schema import StageConfig
-from sglang_omni_v1.models.fishaudio_s2_pro.config import S2ProPipelineConfig
-from sglang_omni_v1.pipeline import relay_io
-from sglang_omni_v1.pipeline.stage.runtime import Stage
-from sglang_omni_v1.pipeline.stage.stream_queue import StreamQueue
-from sglang_omni_v1.proto import DataReadyMessage, OmniRequest, StagePayload
-from sglang_omni_v1.scheduling.messages import OutgoingMessage
+from sglang_omni.config.schema import StageConfig
+from sglang_omni.models.fishaudio_s2_pro.config import S2ProPipelineConfig
+from sglang_omni.pipeline import relay_io
+from sglang_omni.pipeline.stage.runtime import Stage
+from sglang_omni.pipeline.stage.stream_queue import StreamQueue
+from sglang_omni.proto import DataReadyMessage, OmniRequest, StagePayload
+from sglang_omni.scheduling.messages import OutgoingMessage
 
 
 class _FakeControlPlane:

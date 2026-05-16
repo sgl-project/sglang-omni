@@ -6,7 +6,6 @@ from __future__ import annotations
 from typing import Any
 
 from sglang_omni.engines.ar.sglang_backend.server_args_builder import (
-    apply_encoder_mem_reserve,
     build_sglang_server_args,
 )
 from sglang_omni.engines.omni import create_sglang_ar_engine, create_single_pass_engine
@@ -15,9 +14,6 @@ from sglang_omni.models.ming_omni.components.audio_encoder import MingAudioEncod
 from sglang_omni.models.ming_omni.components.common import (
     load_ming_config,
     load_ming_tokenizer,
-)
-from sglang_omni.models.ming_omni.components.image_gen_executor import (
-    MingImageGenExecutor,
 )
 from sglang_omni.models.ming_omni.components.preprocessor import MingPreprocessor
 from sglang_omni.models.ming_omni.components.talker_executor import MingTalkerExecutor
@@ -36,7 +32,6 @@ from sglang_omni.models.ming_omni.pipeline.next_stage import (
 )
 from sglang_omni.models.ming_omni.pipeline.state_io import load_state, store_state
 from sglang_omni.proto import StagePayload
-from sglang_omni.utils.misc import avail_gpu_mem
 
 
 def _event_to_dict(event: OmniEvent) -> dict[str, Any]:
@@ -48,10 +43,8 @@ def _event_to_dict(event: OmniEvent) -> dict[str, Any]:
     }
 
 
-def create_preprocessing_executor(
-    model_path: str, *, conditioner=None
-) -> PreprocessingExecutor:
-    preprocessor = MingPreprocessor(model_path=model_path, conditioner=conditioner)
+def create_preprocessing_executor(model_path: str) -> PreprocessingExecutor:
+    preprocessor = MingPreprocessor(model_path=model_path)
 
     async def _preprocess(payload: StagePayload) -> StagePayload:
         return await preprocessor(payload)
@@ -130,7 +123,6 @@ def create_sglang_thinker_executor(
     model_path: str,
     *,
     gpu_id: int = 0,
-    capture_hidden: bool = False,
 ) -> EngineExecutor:
     """Create a thinker executor backed by SGLang's ModelWorker."""
     tokenizer = load_ming_tokenizer(model_path)
@@ -219,7 +211,6 @@ def create_sglang_thinker_executor(
         server_args=server_args,
         gpu_id=gpu_id,
         model_arch_override="BailingMoeV2ForCausalLM",
-        capture_hidden=capture_hidden,
     )
 
     return EngineExecutor(
@@ -308,74 +299,30 @@ def create_sglang_thinker_executor_from_config(
     gpu_id: int = 0,
     thinker_max_seq_len: int = 8192,
     server_args_overrides: dict[str, Any] | None = None,
-    capture_hidden: bool = False,
 ) -> EngineExecutor:
     """Create a SGLang thinker executor from JSON-serializable config args."""
     import logging as _log
 
     _log.getLogger(__name__).info(
-        f"create_sglang_thinker_executor_from_config: "
-        f"server_args_overrides={server_args_overrides}"
+        "create_sglang_thinker_executor_from_config: server_args_overrides=%s",
+        server_args_overrides,
     )
     _ensure_ming_config_registered(model_path)
     # Use local snapshot path so AutoConfig finds our patched files
     local_path = _resolve_local_model_path(model_path)
-
-    overrides = dict(server_args_overrides or {})
-    tp_size = overrides.get("tp_size", 1)
-
-    if tp_size > 1:
-        import json as _json
-
-        config = load_ming_config(model_path)
-        llm_cfg = getattr(config, "llm_config", config)
-        model_override = _json.dumps(
-            {
-                "architectures": ["BailingMoeV2ForCausalLM"],
-                "num_attention_heads": llm_cfg.num_attention_heads,
-                "num_key_value_heads": llm_cfg.num_key_value_heads,
-                "hidden_size": llm_cfg.hidden_size,
-                "num_hidden_layers": llm_cfg.num_hidden_layers,
-                "vocab_size": llm_cfg.vocab_size,
-            }
-        )
-        overrides["json_model_override_args"] = model_override
-        overrides.setdefault("base_gpu_id", gpu_id)
-
-    pre_load_avail_mem = avail_gpu_mem(gpu_id)
     server_args = build_sglang_server_args(
-        local_path,
-        context_length=thinker_max_seq_len,
-        **overrides,
-    )
-    if "mem_fraction_static" not in overrides:
-        apply_encoder_mem_reserve(server_args, 0.05)
-    pre_load_mem = (
-        f", pre_load_avail_mem={pre_load_avail_mem:.2f} GB"
-        if pre_load_avail_mem is not None
-        else ""
+        local_path, context_length=thinker_max_seq_len, **(server_args_overrides or {})
     )
     _log.getLogger(__name__).info(
-        f"ServerArgs: cpu_offload_gb={server_args.cpu_offload_gb}, "
-        f"mem_fraction_static={server_args.mem_fraction_static}"
-        f"{pre_load_mem}"
+        "ServerArgs: cpu_offload_gb=%s, mem_fraction_static=%s",
+        server_args.cpu_offload_gb,
+        server_args.mem_fraction_static,
     )
-    executor = create_sglang_thinker_executor(
+    return create_sglang_thinker_executor(
         server_args=server_args,
         model_path=local_path,
         gpu_id=gpu_id,
-        capture_hidden=capture_hidden,
     )
-    post_load_avail_mem = avail_gpu_mem(gpu_id)
-    post_load_mem = (
-        f" post_load_avail_mem={post_load_avail_mem:.2f} GB"
-        if post_load_avail_mem is not None
-        else ""
-    )
-    _log.getLogger(__name__).info(
-        f"Ming thinker SGLang executor initialized: gpu_id={gpu_id}{post_load_mem}"
-    )
-    return executor
 
 
 def create_talker_executor(
@@ -398,31 +345,6 @@ def create_talker_executor(
         talker_model_path=talker_model_path,
         device=device,
         voice=voice,
-    )
-
-
-def create_image_gen_executor(
-    model_path: str,
-    *,
-    dit_type: str = "zimage",
-    dit_model_path: str | None = None,
-    device: str = "cuda",
-    conditioner=None,
-    skip_semantic_encoder: bool = False,
-) -> MingImageGenExecutor:
-    """Create the Ming image generation executor.
-
-    The executor is a self-contained diffusion pipeline (text encoder + DiT + VAE),
-    wrapped as an Executor for the pipeline.
-    """
-    local_path = _resolve_local_model_path(model_path)
-    return MingImageGenExecutor(
-        model_path=local_path,
-        dit_type=dit_type,
-        dit_model_path=dit_model_path or local_path,
-        device=device,
-        conditioner=conditioner,
-        skip_semantic_encoder=skip_semantic_encoder,
     )
 
 

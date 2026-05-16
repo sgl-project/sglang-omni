@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import numpy as np
 import torch
 
-from sglang_omni_v1.models.qwen3_omni.components.code2wav_scheduler import (
+from sglang_omni.models.qwen3_omni.components.code2wav_scheduler import (
     Code2WavScheduler,
 )
 from tests.unit_test.fixtures.qwen_fakes import FakeCode2WavModel, make_qwen_payload
@@ -26,9 +26,16 @@ def test_qwen_code2wav_streams_incrementally_and_abort_clears_state() -> None:
     scheduler._payloads["req-1"] = make_qwen_payload(request_id="req-1")
     scheduler._ensure_request_state("req-1")
 
-    scheduler._on_chunk("req-1", SimpleNamespace(data=torch.tensor([1, 10])))
-    scheduler._on_chunk("req-1", SimpleNamespace(data=torch.tensor([2, 20])))
-    scheduler._on_chunk("req-1", SimpleNamespace(data=torch.tensor([3, 30])))
+    chunk_meta = {"stream": False}  # non-streaming: final result carries full PCM
+    scheduler._on_chunk(
+        "req-1", SimpleNamespace(data=torch.tensor([1, 10]), metadata=chunk_meta)
+    )
+    scheduler._on_chunk(
+        "req-1", SimpleNamespace(data=torch.tensor([2, 20]), metadata=chunk_meta)
+    )
+    scheduler._on_chunk(
+        "req-1", SimpleNamespace(data=torch.tensor([3, 30]), metadata=chunk_meta)
+    )
     scheduler._on_done("req-1")
 
     message = scheduler.outbox.get_nowait()

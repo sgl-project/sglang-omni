@@ -15,6 +15,6 @@ Our core features include:
 We will host the documentation upon open-sourcing. For now, you can find the documentation in the [docs](./docs) folder.
 
 - [Get Started](./docs/get_started/installation.md)
-- [Developer Reference](./docs/developer_reference/architecture.md)
-- [Benchmarks](./docs/benchmarks/relay.md)
+- [Developer Reference](./docs/developer_reference/main.md)
+- [Benchmarks](./benchmarks/README.md)
 - [Examples](./examples/README.md)

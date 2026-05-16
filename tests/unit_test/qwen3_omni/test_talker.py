@@ -7,16 +7,12 @@ from types import SimpleNamespace
 
 import torch
 
-from sglang_omni_v1.model_runner.thinker_model_runner import ThinkerModelRunner
-from sglang_omni_v1.models.qwen3_omni.components.talker import Qwen3OmniTalker
-from sglang_omni_v1.models.qwen3_omni.components.talker_input import (
-    build_assistant_part,
-)
-from sglang_omni_v1.models.qwen3_omni.components.talker_prefill import (
-    TalkerPrefillBuilder,
-)
-from sglang_omni_v1.models.qwen3_omni.talker_model_runner import QwenTalkerModelRunner
-from sglang_omni_v1.models.qwen3_omni.talker_scheduler import QwenTalkerScheduler
+from sglang_omni.model_runner.thinker_model_runner import ThinkerModelRunner
+from sglang_omni.models.qwen3_omni.components.talker import Qwen3OmniTalker
+from sglang_omni.models.qwen3_omni.components.talker_input import build_assistant_part
+from sglang_omni.models.qwen3_omni.components.talker_prefill import TalkerPrefillBuilder
+from sglang_omni.models.qwen3_omni.talker_model_runner import QwenTalkerModelRunner
+from sglang_omni.models.qwen3_omni.talker_scheduler import QwenTalkerScheduler
 
 
 def _sched_req(**data_kwargs: object) -> SimpleNamespace:

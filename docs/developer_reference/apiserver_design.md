@@ -8,9 +8,13 @@ If you only want to launch the server and call it, start with [API Server Quicks
 
 The API server is the outer protocol layer on top of the `sglang-omni` pipeline runtime.
 
-At a high level, the request path is:
+At a high level, the built-in server startup path is:
 
 `CLI / Python entrypoint` → `PipelineConfig` → `Pipeline Startup` → `Coordinator` → `Client` → `FastAPI`
+
+After startup, the request path is:
+
+`HTTP request` → `FastAPI route` → `Client` → `Coordinator` → `Stage pipeline` → `Client aggregation` → `HTTP/SSE response`
 
 That split keeps responsibilities clean:
 
@@ -57,10 +61,10 @@ Use it when you already have a live `Client` and want to embed the HTTP layer yo
 It:
 
 - compiles the pipeline config
-- starts the runner
+- starts the pipeline runtime
 - creates the `Client`
 - creates the FastAPI app
-- mounts profiling routes
+- mounts profiling routes on the single-process path
 - runs Uvicorn
 - stops the runtime on shutdown
 
@@ -75,11 +79,12 @@ The current server exposes these main routes:
 | `GET` | `/health` | Health status from `client.health()` |
 | `GET` | `/v1/models` | Single-model listing for the active pipeline |
 | `POST` | `/v1/chat/completions` | Chat completions, including streaming and optional audio |
-| `POST` | `/v1/audio/speech` | Text-to-speech |
-| `POST` | `/start_profile` | Added by the built-in launcher |
-| `POST` | `/stop_profile` | Added by the built-in launcher |
+| `POST` | `/v1/audio/speech` | Text-to-speech, raw audio response or SSE chunks when `stream=true` |
+| `POST` | `/start_profile` | Added by the single-process built-in launcher |
+| `POST` | `/stop_profile` | Added by the single-process built-in launcher |
 
-The profiling routes are only present when the server is started through `launch_server()`.
+The profiling routes are mounted by the single-process `launch_server()` path. The
+current multi-process launcher path does not mount them.
 
 ## Request Mapping
 
@@ -103,10 +108,12 @@ It also includes `sglang-omni` extensions such as:
 - `images`
 - `audios`
 - `videos`
+- video processing overrides such as `video_fps` and frame/pixel limits
 - `modalities`
 - `audio`
 - `stage_sampling`
 - `stage_params`
+- talker-specific generation overrides
 - `request_id`
 
 ### Conversion into `GenerateRequest`
@@ -117,10 +124,13 @@ It also includes `sglang-omni` extensions such as:
 - builds `SamplingParams`
 - converts chat messages into internal `Message` objects
 - maps per-stage sampling overrides
-- stores media input and audio config in request metadata
+- passes per-stage runtime params through `stage_params`
+- stores media input, audio config, and video processing overrides in request metadata
+- stores talker-specific generation overrides in `extra_params`
 - copies `modalities` into `output_modalities`
 
-From that point on, the runtime works with an internal `GenerateRequest`, not the original OpenAI-style payload.
+The route hands that `GenerateRequest` to `Client`. The client then converts it
+to an `OmniRequest` before submitting it to the coordinator.
 
 ## Response Paths
 
@@ -161,4 +171,9 @@ The speech route reuses the same internal request path rather than introducing a
 - `task="tts"` in metadata
 - TTS-specific parameters stored under `tts_params`
 
-`Client.speech()` then collects audio chunks, encodes them, and returns raw audio bytes to the HTTP layer.
+For non-streaming requests, `Client.speech()` collects audio chunks, encodes
+them, and returns raw audio bytes to the HTTP layer.
+
+For `stream=true`, the route returns SSE events. Each event carries a
+base64-encoded audio chunk and format metadata; the stream ends with a final
+chunk carrying `finish_reason` followed by `data: [DONE]`.

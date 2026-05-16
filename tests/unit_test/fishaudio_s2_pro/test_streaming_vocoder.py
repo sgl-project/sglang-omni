@@ -9,18 +9,18 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from sglang_omni_v1.models.fishaudio_s2_pro.fish_scheduler import FishScheduler
-from sglang_omni_v1.models.fishaudio_s2_pro.streaming_vocoder import (
+from sglang_omni.models.fishaudio_s2_pro.fish_scheduler import FishScheduler
+from sglang_omni.models.fishaudio_s2_pro.streaming_vocoder import (
     S2ProVocoderScheduler,
     _apply_stream_crossfade,
     _StreamVocoderState,
     build_stream_vocoder_chunk,
     flush_stream_vocoder_chunk,
 )
-from sglang_omni_v1.pipeline.stage.stream_queue import StreamItem
-from sglang_omni_v1.proto import OmniRequest, StagePayload
-from sglang_omni_v1.scheduling.messages import IncomingMessage
-from sglang_omni_v1.scheduling.types import (
+from sglang_omni.pipeline.stage.stream_queue import StreamItem
+from sglang_omni.proto import OmniRequest, StagePayload
+from sglang_omni.scheduling.messages import IncomingMessage
+from sglang_omni.scheduling.types import (
     ModelRunnerOutput,
     RequestOutput,
     SchedulerOutput,

@@ -7,8 +7,8 @@ from typing import Any
 
 from fastapi.testclient import TestClient
 
-from sglang_omni_v1.client import ClientError, GenerateChunk
-from sglang_omni_v1.serve import create_app
+from sglang_omni.client import ClientError, GenerateChunk
+from sglang_omni.serve import create_app
 
 
 class FailingSpeechClient:

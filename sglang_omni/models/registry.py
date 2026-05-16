@@ -14,49 +14,48 @@ logger = logging.getLogger(__name__)
 def import_pipeline_configs(
     package_name: str, config_path: str, strict: bool = False
 ) -> Dict[str, Type[PipelineConfig]]:
-    # import the package
+    # Import the package first so pkgutil can enumerate its model subpackages.
     package = importlib.import_module(package_name)
     model_arch_to_config_cls = {}
 
-    # copy from sglang for on-the-fly model discovery
     for _, name, ispkg in pkgutil.iter_modules(package.__path__, package_name + "."):
-        # if this is a package, we import it
-        if ispkg:
-            try:
-                importlib.import_module(name)
-            except Exception as e:
+        if not ispkg:
+            continue
+        try:
+            importlib.import_module(name)
+        except Exception as exc:
+            if strict:
+                raise
+            logger.warning(f"Ignore import error when loading {name}: {exc}")
+            continue
+        config_module_name = f"{name}.{config_path}"
+        try:
+            config_module = importlib.import_module(config_module_name)
+        except ModuleNotFoundError as exc:
+            if exc.name == config_module_name:
                 if strict:
                     raise
-                logger.warning(f"Ignore import error when loading {name}: {e}")
+                logger.debug(f"Skipping {name}: no submodule {config_path}")
                 continue
-            expected_config_module = f"{name}.{config_path}"
-            try:
-                config_module = importlib.import_module(expected_config_module)
-            except ModuleNotFoundError as e:
-                if e.name == expected_config_module:
-                    if strict:
-                        raise
-                    logger.debug(f"Skipping {name}: no submodule {config_path}")
-                    continue
-                if strict:
-                    raise
-                logger.warning(
-                    f"Ignore import error when loading {expected_config_module}: {e}"
-                )
-                continue
-            except ImportError as e:
-                if strict:
-                    raise
-                logger.warning(
-                    f"Ignore import error when loading {expected_config_module}: {e}"
-                )
-                continue
-            if not hasattr(config_module, "EntryClass"):
-                raise AssertionError(
-                    f"Config module {name}.{config_path} must have an EntryClass"
-                )
-            config_cls = config_module.EntryClass
-            model_arch_to_config_cls[config_cls.architecture] = config_cls
+            if strict:
+                raise
+            logger.warning(
+                f"Ignore import error when loading {config_module_name}: {exc}"
+            )
+            continue
+        except ImportError as exc:
+            if strict:
+                raise
+            logger.warning(
+                f"Ignore import error when loading {config_module_name}: {exc}"
+            )
+            continue
+        if not hasattr(config_module, "EntryClass"):
+            raise AssertionError(
+                f"Config module {name}.{config_path} must have an EntryClass"
+            )
+        config_cls = config_module.EntryClass
+        model_arch_to_config_cls[config_cls.architecture] = config_cls
     return model_arch_to_config_cls
 
 
@@ -71,7 +70,6 @@ class _PipelineConfigRegistry:
         overwrite: bool = False,
         strict: bool = False,
     ) -> None:
-        # we register the model
         pipeline_configs = import_pipeline_configs(package_name, config_path, strict)
 
         if overwrite:

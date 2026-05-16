@@ -8,10 +8,10 @@ from types import SimpleNamespace
 
 import pytest
 
-import sglang_omni_v1.config.compiler as compiler
-import sglang_omni_v1.pipeline.mp_runner as mp_runner
-import sglang_omni_v1.pipeline.stage.runtime as stage_runtime
-from sglang_omni_v1.config.schema import EndpointsConfig, PipelineConfig, StageConfig
+import sglang_omni.config.compiler as compiler
+import sglang_omni.pipeline.mp_runner as mp_runner
+import sglang_omni.pipeline.stage.runtime as stage_runtime
+from sglang_omni.config.schema import EndpointsConfig, PipelineConfig, StageConfig
 from tests.unit_test.fixtures.pipeline_fakes import FakeMpContext, FakeRelay
 
 

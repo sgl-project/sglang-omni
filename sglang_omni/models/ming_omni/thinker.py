@@ -344,7 +344,7 @@ class BailingMoeV2SparseMoeBlock(nn.Module):
         else:
             self.expert_bias = None
 
-        # FusedMoE implementation.
+        # FusedMoE implementation
         FusedMoE = get_moe_impl_class(quant_config)
         self.experts = FusedMoE(
             num_experts=config.num_experts,
@@ -353,7 +353,7 @@ class BailingMoeV2SparseMoeBlock(nn.Module):
             intermediate_size=config.moe_intermediate_size,
             layer_id=layer_id,
             quant_config=quant_config,
-            reduce_results=True,
+            reduce_results=False,
         )
 
         # Shared expert
@@ -793,11 +793,6 @@ class BailingMoeV2ForCausalLM(nn.Module):
         input_embeds: Optional[torch.Tensor] = None,
     ):
         hidden_states = self.model(input_ids, positions, forward_batch, input_embeds)
-
-        # Store full-sequence hidden states for image_gen prefill-only path.
-        # Only activates when capture_hidden=True is set on the thinker executor.
-        if getattr(forward_batch, "capture_hidden_mode", None) is not None:
-            self._captured_full_hidden_states = hidden_states.clone()
 
         return self.logits_processor(
             input_ids, hidden_states, self.lm_head, forward_batch

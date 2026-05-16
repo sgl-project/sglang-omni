@@ -9,6 +9,7 @@ tests/
 │   ├── qwen3_omni/
 │   └── s2pro/
 ├── test_model/
+│   └── conftest.py
 └── unit_test/
     ├── fixtures/
     │   ├── fish_fakes.py
@@ -25,6 +26,9 @@ tests/
     │   ├── test_code2wav.py
     │   ├── test_pipeline.py
     │   └── test_talker.py
+    ├── router/
+    │   ├── test_app.py
+    │   └── test_core.py
     └── fishaudio_s2_pro/
         ├── test_pipeline.py
         ├── test_tts.py
@@ -43,6 +47,20 @@ General rules:
   lifecycle helper.
 - Add a one-sentence docstring to non-obvious contract tests.
 - Do not add root-level `tests/test_*.py` files.
+
+
+## Markers
+
+Markers are registered in `pyproject.toml` under `[tool.pytest.ini_options]`.
+Tag each test with the marker that matches its lane and use it to filter runs.
+
+- `benchmark`: GPU performance / parity tests in `test_model/`. May require a
+  populated HF cache and tens of GB of GPU memory; per-test docstrings call
+  out hardware needs.
+- `docs`: documented-example tests in `docs/`. Verify documented request
+  shapes and CLI snippets still work.
+- `s2pro_stage(name)`: in-file CI stage selector for S2-Pro benchmarks.
+  Combined with `--s2pro-stage` (see `test_model/conftest.py`).
 
 
 ## Root Files
@@ -71,11 +89,35 @@ Use this lane when the test protects:
 
 These tests are not the default fast unit lane.
 
+Expected command:
+
+```bash
+pytest tests/docs -m docs -v
+```
+
 ## `test_model/`
 
 End-to-end and model CI tests. These are allowed to depend on real servers,
 model snapshots, benchmark artifacts, optional packages, and GPU/runtime
 resources.
+
+Expected command (GPU benchmark subset):
+
+```bash
+pytest tests/test_model -m benchmark -v -s
+```
+
+`conftest.py` owns shared bring-up for everything in this directory:
+
+- `qwen3_omni_thinker_server` / `qwen3_omni_talker_server`: start a real
+  Qwen3-Omni server and yield a `ServerHandle`.
+- `qwen3_omni_vision_sglang_env`: session-scoped SGLang dist + DP-attention
+  init shared by every Qwen3-Omni vision-encoder benchmark module — avoids
+  re-initializing the process-global TP group when the combined `-m benchmark`
+  command runs more than one module.
+- CLI flags `--s2pro-stage {nonstream,stream,consistency,all}` and
+  `--concurrency {1,2,4,8,16,all}`: scope an S2-Pro CI sweep without editing
+  source.
 
 
 ## `unit_test/`
@@ -109,6 +151,13 @@ that happened to contain an older version of the test.
   - `PipelineState` request builders
   - talker behavior
   - Code2Wav streaming/cleanup behavior.
+
+- `unit_test/router/`: SGLang-Omni Router unit tests:
+  - router CLI/config behavior
+  - worker metadata and health-state contracts
+  - request routing, proxying, and streaming relay
+  - worker selection policy behavior
+  - managed launcher command construction and cleanup.
 
 - `unit_test/fishaudio_s2_pro/`: FishAudio S2-Pro unit tests:
   - tokenizer/state contracts

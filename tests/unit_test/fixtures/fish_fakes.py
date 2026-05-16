@@ -8,8 +8,8 @@ from typing import Any
 
 import torch
 
-from sglang_omni_v1.models.fishaudio_s2_pro.payload_types import S2ProState
-from sglang_omni_v1.proto import OmniRequest, StagePayload
+from sglang_omni.models.fishaudio_s2_pro.payload_types import S2ProState
+from sglang_omni.proto import OmniRequest, StagePayload
 
 
 def make_s2pro_state(**kwargs: Any) -> S2ProState:

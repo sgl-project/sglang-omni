@@ -88,6 +88,9 @@ def build_assistant_part(
     projected = text_projection(assistant_embed)  # [N, hidden]
 
     # Text side: [first 3] + [4x pad] + [bos] + [4th token]
+    # The initial talker request can be built before the thinker has emitted
+    # four assistant tokens, so keep the slot stable and fill it later through
+    # future text-row queue updates.
     fourth_token = (
         projected[3:4]
         if projected.shape[0] > 3
@@ -134,16 +137,17 @@ def build_assistant_part(
         device=device,
     )
 
-    # trailing_text_hidden: tokens after first 4 + tts_eos
+    # HF's trailing_text_hidden is a FIFO stream of future assistant text rows:
+    # assistant tokens after the first spoken token, then TTS EOS.
     if projected.shape[0] > 4:
-        trailing = torch.cat([projected[4:], tts_eos_embed], dim=0)
+        future_text_rows = torch.cat([projected[4:], tts_eos_embed], dim=0)
     else:
-        trailing = tts_eos_embed.clone()
+        future_text_rows = tts_eos_embed.clone()
 
     return {
         "input_embeds": input_embeds,
         "input_ids": input_ids,
-        "trailing_text_hidden": trailing,
+        "future_text_rows": future_text_rows,
     }
 
 
@@ -179,7 +183,7 @@ def build_prefill_input(
     from the assistant segment before projection.  HF's ``thinker_embed``
     never contains a hidden state for the EOS token (``generate()`` stops
     before emitting one), so including the raw embedding introduces an
-    off-by-one that shifts the trailing text hidden sequence.
+    off-by-one that shifts the future text-row queue.
     """
     segments = segment_chat_template(
         thinker_input_ids,
@@ -191,7 +195,7 @@ def build_prefill_input(
 
     all_embeds = []
     all_ids = []
-    trailing = None
+    future_text_rows = None
     assistant_segment_indices = [
         idx for idx, seg in enumerate(segments) if seg["role"] == "assistant"
     ]
@@ -254,16 +258,16 @@ def build_prefill_input(
                     dtype=torch.long,
                 )
             )
-            trailing = assistant_result["trailing_text_hidden"]
+            future_text_rows = assistant_result["future_text_rows"]
             if (
                 not include_assistant_eos
-                and trailing is not None
-                and trailing.shape[0] > 0
+                and future_text_rows is not None
+                and future_text_rows.shape[0] > 0
             ):
-                trailing = trailing[:-1]
+                future_text_rows = future_text_rows[:-1]
 
     return {
         "input_embeds": torch.cat(all_embeds, dim=0),
         "input_ids": torch.cat(all_ids, dim=0),
-        "trailing_text_hidden": trailing,
+        "future_text_rows": future_text_rows,
     }
