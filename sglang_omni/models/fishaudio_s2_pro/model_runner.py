@@ -77,6 +77,7 @@ class FishS2ProModelRunner(ModelRunner):
 
     def prepare_prefill(self, forward_batch, schedule_batch, requests):
         del schedule_batch
+        self._sync_decode_state(requests)
         input_embeds = self._build_prefill_input_embeds(forward_batch, requests)
         if input_embeds is not None:
             forward_batch.input_embeds = input_embeds
@@ -93,28 +94,7 @@ class FishS2ProModelRunner(ModelRunner):
 
         for row_idx, sched_req in enumerate(requests):
             data = sched_req.data
-            self.model._sampling_temperature[row_idx] = data.temperature
-            self.model._sampling_top_p[row_idx] = data.top_p
-            self.model._sampling_top_k[row_idx] = data.top_k
-            self.model._sampling_rep_penalty[row_idx] = data.repetition_penalty
-            self.model._ras_temperature[row_idx] = data.ras_temperature
-            self.model._ras_top_p[row_idx] = data.ras_top_p
-
-            history_len = self.model._rep_history_len
-            history = data.semantic_history_tokens
-            if history is not None:
-                self.model._prev_tokens[row_idx].copy_(
-                    history.to(
-                        device=self.model._prev_tokens.device,
-                        dtype=self.model._prev_tokens.dtype,
-                    )
-                )
-                self.model._prev_token_count[row_idx] = min(
-                    int(data.semantic_history_count), history_len
-                )
-            else:
-                self.model._prev_tokens[row_idx].zero_()
-                self.model._prev_token_count[row_idx] = 0
+            self._sync_decode_row_state(row_idx, data)
 
             last_codes = data.last_codebook_values
             if last_codes is None:
@@ -134,6 +114,34 @@ class FishS2ProModelRunner(ModelRunner):
     def post_decode(self, result, forward_batch, schedule_batch, requests):
         del forward_batch, schedule_batch
         self._collect_step_outputs(result, requests)
+
+    def _sync_decode_state(self, requests: list) -> None:
+        for row_idx, sched_req in enumerate(requests):
+            self._sync_decode_row_state(row_idx, sched_req.data)
+
+    def _sync_decode_row_state(self, row_idx: int, data: Any) -> None:
+        self.model._sampling_temperature[row_idx] = data.temperature
+        self.model._sampling_top_p[row_idx] = data.top_p
+        self.model._sampling_top_k[row_idx] = data.top_k
+        self.model._sampling_rep_penalty[row_idx] = data.repetition_penalty
+        self.model._ras_temperature[row_idx] = data.ras_temperature
+        self.model._ras_top_p[row_idx] = data.ras_top_p
+
+        history_len = self.model._rep_history_len
+        history = data.semantic_history_tokens
+        if history is not None:
+            self.model._prev_tokens[row_idx].copy_(
+                history.to(
+                    device=self.model._prev_tokens.device,
+                    dtype=self.model._prev_tokens.dtype,
+                )
+            )
+            self.model._prev_token_count[row_idx] = min(
+                int(data.semantic_history_count), history_len
+            )
+        else:
+            self.model._prev_tokens[row_idx].zero_()
+            self.model._prev_token_count[row_idx] = 0
 
     def _build_prefill_input_embeds(
         self,

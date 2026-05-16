@@ -21,16 +21,21 @@ tests/
     │   ├── test_coordinator.py
     │   ├── test_ipc.py
     │   ├── test_scheduler.py
-    │   └── test_stage.py
+    │   ├── test_stage.py
+    │   └── test_stage_streaming.py
     ├── qwen3_omni/
     │   ├── test_code2wav.py
     │   ├── test_pipeline.py
+    │   ├── test_streaming.py
     │   └── test_talker.py
     ├── router/
     │   ├── test_app.py
     │   └── test_core.py
+    ├── serve/
+    │   └── test_openai_api.py
     └── fishaudio_s2_pro/
         ├── test_pipeline.py
+        ├── test_streaming_vocoder.py
         ├── test_tts.py
         └── test_vocoder.py
 ```
@@ -159,11 +164,16 @@ that happened to contain an older version of the test.
   - worker selection policy behavior
   - managed launcher command construction and cleanup.
 
+- `unit_test/serve/`: In-process serving API unit tests:
+  - OpenAI-compatible request/response behavior
+  - streaming response framing and failure semantics.
+
 - `unit_test/fishaudio_s2_pro/`: FishAudio S2-Pro unit tests:
   - tokenizer/state contracts
   - TTS scheduler behavior
   - model-runner state transitions
-  - vocoder batching/trim behavior.
+  - vocoder batching/trim behavior
+  - streaming vocoder chunking, flush, and abort behavior.
 
 - `unit_test/fixtures/`: Shared fakes. Single-test
   helpers should stay local until a second test needs them.
