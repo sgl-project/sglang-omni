@@ -32,10 +32,10 @@ def _validate_colocate_cli_request(
 ) -> None:
     if not colocate:
         return
-    if not config:
-        raise typer.BadParameter("--colocate requires --config")
     if text_only:
         raise typer.BadParameter("--colocate cannot be combined with --text-only")
+    if not config:
+        raise typer.BadParameter("--colocate requires --config")
 
 
 def _validate_colocate_config(pipeline_config: PipelineConfig) -> None:
