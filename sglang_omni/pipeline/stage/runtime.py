@@ -267,6 +267,9 @@ class Stage:
             await self._send_failure(request_id, f"relay read failed: {exc}")
             return
 
+        if request_id in self._aborted:
+            return
+
         # Input aggregation
         merged = self.input_handler.receive(request_id, msg.from_stage, payload)
         if merged is not None:
@@ -312,7 +315,7 @@ class Stage:
                     request_id,
                     exc,
                 )
-                self._queue_stream_error(request_id, msg.from_stage, exc)
+                await self._queue_stream_error(request_id, msg.from_stage, exc)
                 return
             if request_id in self._aborted:
                 return
@@ -331,7 +334,7 @@ class Stage:
                 request_id,
                 exc,
             )
-            self._queue_stream_error(request_id, msg.from_stage, exc)
+            await self._queue_stream_error(request_id, msg.from_stage, exc)
             return
 
         if request_id in self._aborted:
@@ -351,13 +354,31 @@ class Stage:
             return
         self._pending_stream_data.setdefault(request_id, []).append(item)
 
-    def _queue_stream_error(
+    async def _queue_stream_error(
         self,
         request_id: str,
         from_stage: str | None,
         error: BaseException,
     ) -> None:
-        if self._stream_queue is not None and self._stream_queue.has(request_id):
+        if request_id in self._aborted:
+            return
+        if self._stream_queue is None:
+            logger.error(
+                "Stage %s: stream error with no queue for %s: %s",
+                self.name,
+                request_id,
+                error,
+            )
+            await self._send_failure(request_id, str(error))
+            return
+        if self._stream_queue.has(request_id):
+            self._stream_queue.put_error(
+                request_id,
+                error,
+                from_stage=from_stage,
+            )
+            return
+        if self._open_pre_payload_stream_if_allowed(request_id):
             self._stream_queue.put_error(
                 request_id,
                 error,
