@@ -649,6 +649,8 @@ class Stage:
         if request_id in self._aborted:
             return
         modality = metadata.get("modality") if isinstance(metadata, dict) else None
+        if modality is None and isinstance(data, dict):
+            modality = data.get("modality")
         msg = StreamMessage(
             request_id=request_id,
             from_stage=self.name,
