@@ -8,8 +8,8 @@ from sglang.srt.model_executor.model_runner_kv_cache_mixin import (
     ModelRunnerKVCacheMixin,
 )
 
-import sglang_omni_v1.model_runner.sglang_model_runner as runner_mod
-import sglang_omni_v1.models.qwen3_omni.stages as qwen_stages
+import sglang_omni.model_runner.sglang_model_runner as runner_mod
+import sglang_omni.models.qwen3_omni.stages as qwen_stages
 
 
 class _BudgetTestRunner(runner_mod.SGLModelRunner):

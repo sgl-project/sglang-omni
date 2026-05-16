@@ -266,7 +266,7 @@ def test_router_worker_config_requires_workers_object(tmp_path: Path) -> None:
         build_config_from_args(args)
 
 
-def test_launcher_config_passes_worker_extra_args_to_public_v1_serve_command(
+def test_launcher_config_passes_worker_extra_args_to_public_serve_command(
     tmp_path: Path,
 ) -> None:
     config_path = tmp_path / "launcher.yaml"
@@ -292,18 +292,16 @@ launcher:
     config = load_launcher_config(config_path)
     command = LocalLauncher(config).build_worker_command(8011)
 
-    assert command[:9] == [
+    assert command[:7] == [
         "sgl-omni",
         "serve",
-        "--version",
-        "v1",
         "--model-path",
         "Qwen/Qwen3-Omni-30B-A3B-Instruct",
         "--host",
         "127.0.0.1",
         "--port",
     ]
-    assert command[9] == "8011"
+    assert command[7] == "8011"
     assert command[command.index("--model-name") + 1] == "qwen3-omni"
     assert command[command.index("--mem-fraction-static") + 1] == "0.6"
     assert command[command.index("--thinker-tp-size") + 1] == "2"
@@ -430,7 +428,7 @@ def test_launcher_cleans_up_managed_workers_on_health_timeout(monkeypatch) -> No
         launcher.launch_and_wait()
 
     process, command, env, start_new_session = created_processes[0]
-    assert command[:4] == ["sgl-omni", "serve", "--version", "v1"]
+    assert command[:2] == ["sgl-omni", "serve"]
     assert env["CUDA_VISIBLE_DEVICES"] == "7"
     assert start_new_session is True
     assert terminated_processes == [process]

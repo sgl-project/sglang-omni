@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Omni V1 IPC runtime directory lifecycle tests."""
+"""Omni IPC runtime directory lifecycle tests."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from fastapi import FastAPI
 
 pytest.importorskip("torch")
 
-from sglang_omni_v1.config.compiler import (
+from sglang_omni.config.compiler import (
     CompiledPipeline,
     IpcRuntimeDir,
     compile_pipeline,
@@ -22,7 +22,7 @@ from sglang_omni_v1.config.compiler import (
     create_ipc_runtime_dir,
     prepare_pipeline_runtime,
 )
-from sglang_omni_v1.config.schema import EndpointsConfig, PipelineConfig, StageConfig
+from sglang_omni.config.schema import EndpointsConfig, PipelineConfig, StageConfig
 
 
 def noop_factory():
@@ -77,7 +77,7 @@ def _make_config(base_path: str, *, scheme: str = "ipc") -> PipelineConfig:
     )
 
 
-class TestV1IpcRuntimeDir(unittest.TestCase):
+class TestIpcRuntimeDir(unittest.TestCase):
     def test_ipc_runtime_dir_close_is_idempotent(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             config = _make_config(tmp_dir)
@@ -137,7 +137,7 @@ class TestV1IpcRuntimeDir(unittest.TestCase):
             config = _make_config(tmp_dir)
 
             with patch(
-                "sglang_omni_v1.config.compiler._compile_stage",
+                "sglang_omni.config.compiler._compile_stage",
                 side_effect=RuntimeError("boom"),
             ):
                 with self.assertRaisesRegex(RuntimeError, "boom"):
@@ -153,7 +153,7 @@ class TestV1IpcRuntimeDir(unittest.TestCase):
             runtime_path = runtime_dir.path
 
             with patch(
-                "sglang_omni_v1.config.compiler._compile_stage",
+                "sglang_omni.config.compiler._compile_stage",
                 side_effect=RuntimeError("boom"),
             ):
                 with self.assertRaisesRegex(RuntimeError, "boom"):
@@ -186,13 +186,13 @@ class TestV1IpcRuntimeDir(unittest.TestCase):
             self.assertFalse(runtime_path.exists())
 
 
-class TestV1MultiProcessRunnerIpcCleanup(unittest.IsolatedAsyncioTestCase):
+class TestMultiProcessRunnerIpcCleanup(unittest.IsolatedAsyncioTestCase):
     def test_mp_runner_uses_unique_ipc_endpoints_for_same_model_name(
         self,
     ) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             config = _make_config(tmp_dir)
-            from sglang_omni_v1.pipeline.mp_runner import _build_stage_groups
+            from sglang_omni.pipeline.mp_runner import _build_stage_groups
 
             prep_a = prepare_pipeline_runtime(config)
             prep_b = prepare_pipeline_runtime(config)
@@ -232,12 +232,12 @@ class TestV1MultiProcessRunnerIpcCleanup(unittest.IsolatedAsyncioTestCase):
     async def test_mp_runner_cleans_runtime_dir_on_start_failure(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             config = _make_config(tmp_dir)
-            from sglang_omni_v1.pipeline.mp_runner import MultiProcessPipelineRunner
+            from sglang_omni.pipeline.mp_runner import MultiProcessPipelineRunner
 
             runner = MultiProcessPipelineRunner(config)
 
             with patch(
-                "sglang_omni_v1.pipeline.mp_runner.Coordinator.start",
+                "sglang_omni.pipeline.mp_runner.Coordinator.start",
                 new=AsyncMock(side_effect=RuntimeError("boom")),
             ):
                 with self.assertRaisesRegex(RuntimeError, "boom"):
@@ -288,7 +288,7 @@ class TestV1MultiProcessRunnerIpcCleanup(unittest.IsolatedAsyncioTestCase):
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             config = _make_config(tmp_dir)
-            from sglang_omni_v1.pipeline.mp_runner import MultiProcessPipelineRunner
+            from sglang_omni.pipeline.mp_runner import MultiProcessPipelineRunner
 
             first_group = _FakeGroup("preprocessing")
             second_group = _FakeGroup("thinker", fail_spawn=True)
@@ -296,11 +296,11 @@ class TestV1MultiProcessRunnerIpcCleanup(unittest.IsolatedAsyncioTestCase):
 
             with (
                 patch(
-                    "sglang_omni_v1.pipeline.mp_runner.Coordinator",
+                    "sglang_omni.pipeline.mp_runner.Coordinator",
                     _FakeCoordinator,
                 ),
                 patch(
-                    "sglang_omni_v1.pipeline.mp_runner._build_stage_groups",
+                    "sglang_omni.pipeline.mp_runner._build_stage_groups",
                     return_value=[first_group, second_group],
                 ),
             ):
@@ -316,7 +316,7 @@ class TestV1MultiProcessRunnerIpcCleanup(unittest.IsolatedAsyncioTestCase):
     ) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             config = _make_config(tmp_dir)
-            from sglang_omni_v1.pipeline.mp_runner import MultiProcessPipelineRunner
+            from sglang_omni.pipeline.mp_runner import MultiProcessPipelineRunner
 
             runner_a = MultiProcessPipelineRunner(config)
             runner_b = MultiProcessPipelineRunner(config)
@@ -344,7 +344,7 @@ class TestV1MultiProcessRunnerIpcCleanup(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(list(Path(tmp_dir).iterdir()), [])
 
 
-class TestV1LauncherIpcCleanup(unittest.IsolatedAsyncioTestCase):
+class TestLauncherIpcCleanup(unittest.IsolatedAsyncioTestCase):
     async def _run_single_process_launcher_with_mocked_server(
         self,
         *,
@@ -356,15 +356,15 @@ class TestV1LauncherIpcCleanup(unittest.IsolatedAsyncioTestCase):
         coordinator = _FakeCoordinator()
         app = FastAPI()
 
-        from sglang_omni_v1.serve.launcher import _run_server
+        from sglang_omni.serve.launcher import _run_server
 
         with (
             patch(
-                "sglang_omni_v1.serve.launcher._find_available_port",
+                "sglang_omni.serve.launcher._find_available_port",
                 return_value=8000,
             ),
             patch(
-                "sglang_omni_v1.serve.launcher.compile_pipeline_core",
+                "sglang_omni.serve.launcher.compile_pipeline_core",
                 return_value=CompiledPipeline(
                     coordinator=coordinator,
                     stages=[stage],
@@ -372,11 +372,11 @@ class TestV1LauncherIpcCleanup(unittest.IsolatedAsyncioTestCase):
                 ),
             ) as compile_pipeline_core,
             patch(
-                "sglang_omni_v1.serve.launcher.create_app",
+                "sglang_omni.serve.launcher.create_app",
                 return_value=app,
             ) as create_app,
             patch(
-                "sglang_omni_v1.serve.launcher.uvicorn.Server.serve",
+                "sglang_omni.serve.launcher.uvicorn.Server.serve",
                 new=serve_mock,
             ),
         ):
@@ -450,15 +450,15 @@ class TestV1LauncherIpcCleanup(unittest.IsolatedAsyncioTestCase):
             coordinator.stop = AsyncMock(side_effect=RuntimeError("stop failed"))
             stage = _FakeStage(f"ipc://{runtime_dir.path}/stage_preprocessing.sock")
 
-            from sglang_omni_v1.serve.launcher import _run_server
+            from sglang_omni.serve.launcher import _run_server
 
             with (
                 patch(
-                    "sglang_omni_v1.serve.launcher._find_available_port",
+                    "sglang_omni.serve.launcher._find_available_port",
                     return_value=8000,
                 ),
                 patch(
-                    "sglang_omni_v1.serve.launcher.compile_pipeline_core",
+                    "sglang_omni.serve.launcher.compile_pipeline_core",
                     return_value=CompiledPipeline(
                         coordinator=coordinator,
                         stages=[stage],
@@ -466,7 +466,7 @@ class TestV1LauncherIpcCleanup(unittest.IsolatedAsyncioTestCase):
                     ),
                 ),
                 patch(
-                    "sglang_omni_v1.serve.launcher._collect_stage_control_endpoints",
+                    "sglang_omni.serve.launcher._collect_stage_control_endpoints",
                     side_effect=RuntimeError("bad endpoints"),
                 ),
             ):

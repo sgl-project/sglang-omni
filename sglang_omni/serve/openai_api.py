@@ -39,7 +39,6 @@ from sglang_omni.client.audio import (
 from sglang_omni.serve.protocol import (
     ChatCompletionAudio,
     ChatCompletionChoice,
-    ChatCompletionImageData,
     ChatCompletionRequest,
     ChatCompletionResponse,
     ChatCompletionStreamChoice,
@@ -53,6 +52,7 @@ from sglang_omni.serve.protocol import (
 
 logger = logging.getLogger(__name__)
 MIME_TO_FORMAT = {mime: fmt for fmt, mime in FORMAT_MIME_TYPES.items()}
+
 _BAD_REQUEST_MARKERS = (
     "longer than the model's context length",
     "Requested token count exceeds the model's maximum context length",
@@ -60,12 +60,6 @@ _BAD_REQUEST_MARKERS = (
 
 
 def _is_bad_request_error(exc: Exception) -> bool:
-    # TODO (Qiujiang): replace with structured error code.
-    # Worker → coordinator currently serializes exceptions to str, so
-    # 400 vs 500 must be recovered via phrase match. See Ccyest's proposal
-    # on #330 for the end-to-end design (CompleteMessage.error_code).
-    # These markers must stay in sync with SGLang's ValueError wording:
-    #   - managers/tokenizer_manager.py:761, 791
     message = str(exc)
     return any(marker in message for marker in _BAD_REQUEST_MARKERS)
 
@@ -163,7 +157,6 @@ def _register_chat_completions(app: FastAPI) -> None:
             audio_format = req.audio.get("format", "wav")
 
         if req.stream:
-            # TODO (Qiujiang): Align streaming bad-request behavior with upstream SGLang.
             return StreamingResponse(
                 _chat_stream(
                     client,
@@ -207,14 +200,14 @@ async def _chat_non_stream(
             request_id=request_id,
             audio_format=audio_format,
         )
-    except RuntimeError as exc:
+    except ClientError as exc:
         if _is_bad_request_error(exc):
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         raise HTTPException(status_code=500, detail=str(exc)) from exc
-    except ClientError as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
     except Exception as exc:
         logger.exception("Error generating response for request %s", request_id)
+        if _is_bad_request_error(exc):
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     requested_modalities = req.modalities or ["text"]
@@ -232,18 +225,7 @@ async def _chat_non_stream(
             "transcript": result.audio.transcript,
         }
 
-    if "image" in requested_modalities and result.images:
-        message["images"] = [
-            {
-                "b64_json": img.b64_json,
-                "format": img.format,
-                "width": img.width,
-                "height": img.height,
-            }
-            for img in result.images
-        ]
-
-    if "content" not in message and "audio" not in message and "images" not in message:
+    if "content" not in message and "audio" not in message:
         message["content"] = result.text
 
     # Build usage
@@ -328,22 +310,6 @@ async def _chat_stream(
                 id=f"audio-{request_id}",
                 data=chunk.audio_b64,
             )
-            emit = True
-
-        # Image chunk (non-streaming: arrives as single final chunk)
-        if (
-            chunk.modality == "image"
-            and chunk.image_b64 is not None
-            and "image" in requested_modalities
-        ):
-            delta.images = [
-                ChatCompletionImageData(
-                    b64_json=chunk.image_b64,
-                    format=chunk.image_format or "png",
-                    width=chunk.image_width,
-                    height=chunk.image_height,
-                )
-            ]
             emit = True
 
         if not emit:
@@ -438,12 +404,10 @@ def _build_chat_generate_request(req: ChatCompletionRequest) -> GenerateRequest:
     if req.videos:
         videos = req.videos
 
-    # Merge audio config, image config, audios, images, and videos into metadata
+    # Merge audio config, audios, images, and videos into metadata
     metadata: dict[str, Any] = {}
     if req.audio:
         metadata["audio_config"] = req.audio
-    if req.image_generation:
-        metadata["image_generation"] = req.image_generation
     if audios:
         metadata["audios"] = audios
     if images:
@@ -461,12 +425,24 @@ def _build_chat_generate_request(req: ChatCompletionRequest) -> GenerateRequest:
     if req.video_total_pixels is not None:
         metadata["video_total_pixels"] = req.video_total_pixels
 
+    extra_params: dict[str, Any] = {}
+    for field_name, value in (
+        ("talker_temperature", req.talker_temperature),
+        ("talker_top_p", req.talker_top_p),
+        ("talker_top_k", req.talker_top_k),
+        ("talker_repetition_penalty", req.talker_repetition_penalty),
+        ("talker_max_new_tokens", req.talker_max_new_tokens),
+    ):
+        if value is not None:
+            extra_params[field_name] = value
+
     return GenerateRequest(
         model=req.model,
         messages=messages,
         sampling=sampling,
         stage_sampling=stage_sampling,
         stage_params=req.stage_params,
+        extra_params=extra_params,
         stream=req.stream,
         max_tokens=req.effective_max_tokens,
         output_modalities=output_modalities,
@@ -613,8 +589,6 @@ def _select_speech_audio_delta(
             audio = audio[:, 0]
 
     total_samples = int(audio.shape[-1]) if audio.ndim else 0
-    if total_samples == 0:
-        return None, emitted_samples
     if not is_terminal:
         return audio, emitted_samples + total_samples
     if total_samples <= emitted_samples:

@@ -53,8 +53,6 @@ class LocalLauncher:
         command = [
             self.command,
             "serve",
-            "--version",
-            "v1",
             "--model-path",
             self.config.model_path,
             "--host",

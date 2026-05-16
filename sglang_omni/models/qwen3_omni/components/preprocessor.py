@@ -13,11 +13,8 @@ from transformers.models.qwen3_omni_moe.processing_qwen3_omni_moe import (
     Qwen3OmniMoeProcessor,
 )
 
-from sglang_omni.models.qwen3_omni.io import PipelineState
-from sglang_omni.models.qwen3_omni.pipeline.engine_io import (
-    DEFAULT_THINKER_MAX_NEW_TOKENS,
-    validate_prompt_seq_len,
-)
+from sglang_omni.models.qwen3_omni.payload_types import PipelineState
+from sglang_omni.models.qwen3_omni.request_builders import build_lightweight_mm_inputs
 from sglang_omni.models.weight_loader import resolve_model_path
 from sglang_omni.preprocessing import (
     build_audio_mm_inputs,
@@ -71,12 +68,74 @@ def _contextualize_cache_key(base_key: str | None, **context: Any) -> str | None
     return "|".join(parts)
 
 
+DEFAULT_THINKER_MAX_NEW_TOKENS = 2048
+
+
+def validate_prompt_seq_len(
+    input_ids: torch.Tensor,
+    *,
+    max_seq_len: int | None,
+    max_new_tokens: int = DEFAULT_THINKER_MAX_NEW_TOKENS,
+    request_id: str | None = None,
+) -> None:
+    if max_seq_len is None:
+        return
+    prompt_len = int(input_ids.numel())
+    if prompt_len >= max_seq_len:
+        logger.info(
+            f"rejecting request {request_id}: prompt {prompt_len} tokens "
+            f">= max_seq_len {max_seq_len}"
+        )
+        raise ValueError(
+            f"The input ({prompt_len} tokens) is longer than the model's "
+            f"context length ({max_seq_len} tokens)."
+        )
+    total_tokens = prompt_len + int(max_new_tokens)
+    if total_tokens >= max_seq_len:
+        logger.info(
+            f"rejecting request {request_id}: prompt {prompt_len} + "
+            f"max_new_tokens {int(max_new_tokens)} = {total_tokens} tokens "
+            f">= max_seq_len {max_seq_len}"
+        )
+        raise ValueError(
+            f"Requested token count exceeds the model's maximum context length "
+            f"of {max_seq_len} tokens. You requested a total of {total_tokens} "
+            f"tokens: {prompt_len} tokens from the input messages and "
+            f"{int(max_new_tokens)} tokens for the completion. Please reduce "
+            f"the number of tokens in the input messages or the completion to "
+            f"fit within the limit."
+        )
+
+
 class Qwen3OmniPreprocessor:
     """CPU-side preprocessing and tokenization using the HF processor."""
 
-    def __init__(self, model_path: str, max_seq_len: int | None = None):
+    def __init__(
+        self,
+        model_path: str,
+        max_seq_len: int | None = None,
+        *,
+        video_fps: float | None = None,
+        video_max_frames: int | None = None,
+        video_min_pixels: int | None = None,
+        video_max_pixels: int | None = None,
+        video_total_pixels: int | None = None,
+    ):
         self.model_path = model_path
         self.max_seq_len = max_seq_len
+        self.default_video_fps = float(video_fps) if video_fps is not None else None
+        self.default_video_max_frames = (
+            int(video_max_frames) if video_max_frames is not None else None
+        )
+        self.default_video_min_pixels = (
+            int(video_min_pixels) if video_min_pixels is not None else None
+        )
+        self.default_video_max_pixels = (
+            int(video_max_pixels) if video_max_pixels is not None else None
+        )
+        self.default_video_total_pixels = (
+            int(video_total_pixels) if video_total_pixels is not None else None
+        )
         self.model_dir = _resolve_local_model_dir(model_path)
         try:
             self.processor = Qwen3OmniMoeProcessor.from_pretrained(
@@ -138,17 +197,51 @@ class Qwen3OmniPreprocessor:
             raw_videos = inputs.get("videos") or inputs.get("video")
             raw_audios = inputs.get("audio") or inputs.get("audios")
             audio_target_sr = int(inputs.get("audio_target_sr", 16000))
-            # TODO (Qiujiang): route video options through the unified runtime parameter path.
-            video_fps = inputs.get("video_fps", 1.0)
-            video_max_frames = inputs.get("video_max_frames")
-            video_min_pixels = inputs.get("video_min_pixels")
-            video_max_pixels = inputs.get("video_max_pixels")
-            video_total_pixels = inputs.get("video_total_pixels")
+            video_fps = inputs.get("video_fps", self.default_video_fps)
+            video_max_frames = inputs.get(
+                "video_max_frames",
+                self.default_video_max_frames,
+            )
+            video_min_pixels = inputs.get(
+                "video_min_pixels",
+                self.default_video_min_pixels,
+            )
+            video_max_pixels = inputs.get(
+                "video_max_pixels",
+                self.default_video_max_pixels,
+            )
+            video_total_pixels = inputs.get(
+                "video_total_pixels",
+                self.default_video_total_pixels,
+            )
             use_audio_in_video = inputs.get("use_audio_in_video")
             video_seconds_per_chunk = inputs.get("video_seconds_per_chunk")
             video_position_id_per_seconds = inputs.get("video_position_id_per_seconds")
             audio_from_video = False
             num_explicit_audios = 0
+            resolved_video_fps = float(video_fps) if video_fps is not None else None
+            resolved_video_max_frames = (
+                int(video_max_frames) if video_max_frames is not None else None
+            )
+            resolved_video_min_pixels = (
+                int(video_min_pixels) if video_min_pixels is not None else None
+            )
+            resolved_video_max_pixels = (
+                int(video_max_pixels) if video_max_pixels is not None else None
+            )
+            resolved_video_total_pixels = (
+                int(video_total_pixels) if video_total_pixels is not None else None
+            )
+            resolved_video_seconds_per_chunk = (
+                float(video_seconds_per_chunk)
+                if video_seconds_per_chunk is not None
+                else None
+            )
+            resolved_video_position_id_per_seconds = (
+                float(video_position_id_per_seconds)
+                if video_position_id_per_seconds is not None
+                else None
+            )
 
             # Compute cache keys BEFORE conversion (paths are cheap to hash)
             image_cache_key = compute_image_cache_key(raw_images)
@@ -169,11 +262,11 @@ class Qwen3OmniPreprocessor:
                 ensure_image_list_async(raw_images),
                 ensure_video_list_async(
                     raw_videos,
-                    fps=video_fps,
-                    max_frames=video_max_frames,
-                    min_pixels=video_min_pixels,
-                    max_pixels=video_max_pixels,
-                    total_pixels=video_total_pixels,
+                    fps=resolved_video_fps,
+                    max_frames=resolved_video_max_frames,
+                    min_pixels=resolved_video_min_pixels,
+                    max_pixels=resolved_video_max_pixels,
+                    total_pixels=resolved_video_total_pixels,
                     extract_audio=extract_audio_from_video_flag,
                     audio_target_sr=audio_target_sr,
                 ),
@@ -206,22 +299,28 @@ class Qwen3OmniPreprocessor:
             images = []
             videos = []
             audios = []
-            audio_target_sr = None
             image_cache_key = None
             raw_audio_cache_key = None
             video_cache_key = None
             audio_target_sr = 16000
-            video_fps = None
-            video_max_frames = None
-            video_min_pixels = None
-            video_max_pixels = None
-            video_total_pixels = None
+            video_fps = self.default_video_fps
+            video_max_frames = self.default_video_max_frames
+            video_min_pixels = self.default_video_min_pixels
+            video_max_pixels = self.default_video_max_pixels
+            video_total_pixels = self.default_video_total_pixels
             sampled_video_fps = None
             use_audio_in_video = None
             video_seconds_per_chunk = None
             video_position_id_per_seconds = None
             audio_from_video = False
             num_explicit_audios = 0
+            resolved_video_fps = None
+            resolved_video_max_frames = None
+            resolved_video_min_pixels = None
+            resolved_video_max_pixels = None
+            resolved_video_total_pixels = None
+            resolved_video_seconds_per_chunk = None
+            resolved_video_position_id_per_seconds = None
 
         messages_norm = normalize_messages(messages)
         # Insert placeholders:
@@ -247,23 +346,23 @@ class Qwen3OmniPreprocessor:
                 if len(sampled_video_fps) == 1
                 else sampled_video_fps
             )
-        elif video_fps is not None:
-            videos_kwargs["fps"] = video_fps
-        if video_max_frames is not None:
-            videos_kwargs["max_frames"] = int(video_max_frames)
-        if video_min_pixels is not None:
-            videos_kwargs["min_pixels"] = int(video_min_pixels)
-        if video_max_pixels is not None:
-            videos_kwargs["max_pixels"] = int(video_max_pixels)
-        if video_total_pixels is not None:
-            videos_kwargs["total_pixels"] = int(video_total_pixels)
+        elif resolved_video_fps is not None:
+            videos_kwargs["fps"] = resolved_video_fps
+        if resolved_video_max_frames is not None:
+            videos_kwargs["max_frames"] = resolved_video_max_frames
+        if resolved_video_min_pixels is not None:
+            videos_kwargs["min_pixels"] = resolved_video_min_pixels
+        if resolved_video_max_pixels is not None:
+            videos_kwargs["max_pixels"] = resolved_video_max_pixels
+        if resolved_video_total_pixels is not None:
+            videos_kwargs["total_pixels"] = resolved_video_total_pixels
         if use_audio_in_video is not None:
             videos_kwargs["use_audio_in_video"] = bool(use_audio_in_video)
-        if video_seconds_per_chunk is not None:
-            videos_kwargs["seconds_per_chunk"] = float(video_seconds_per_chunk)
-        if video_position_id_per_seconds is not None:
+        if resolved_video_seconds_per_chunk is not None:
+            videos_kwargs["seconds_per_chunk"] = resolved_video_seconds_per_chunk
+        if resolved_video_position_id_per_seconds is not None:
             videos_kwargs["position_id_per_seconds"] = float(
-                video_position_id_per_seconds
+                resolved_video_position_id_per_seconds
             )
         if videos:
             # torchcodec backend expects a non-None device string
@@ -288,6 +387,7 @@ class Qwen3OmniPreprocessor:
             attention_mask = attention_mask[0]
         else:
             attention_mask = torch.ones_like(input_ids)
+
         validate_prompt_seq_len(
             input_ids,
             max_seq_len=self.max_seq_len,
@@ -297,30 +397,34 @@ class Qwen3OmniPreprocessor:
             request_id=payload.request_id,
         )
 
-        mm_inputs: dict[str, Any] = {
+        full_mm_inputs: dict[str, Any] = {
             "image": build_image_mm_inputs(hf_inputs),
             "audio": build_audio_mm_inputs(hf_inputs),
             "video": build_video_mm_inputs(hf_inputs),
         }
         if use_audio_in_video is not None:
-            mm_inputs["video"]["use_audio_in_video"] = bool(use_audio_in_video)
+            full_mm_inputs["video"]["use_audio_in_video"] = bool(use_audio_in_video)
 
         # Build encoder_inputs with cache_key for efficient caching.
         # Include preprocessing parameters that materially change encoder outputs.
-        image_encoder_inputs = {**mm_inputs["image"], **mm_inputs["video"]}
+        image_encoder_inputs = {
+            **full_mm_inputs["image"],
+            **full_mm_inputs["video"],
+        }
         effective_video_fps: tuple[float, ...] | None = None
         if sampled_video_fps is not None:
             effective_video_fps = tuple(float(fps) for fps in sampled_video_fps)
-        elif video_fps is not None:
-            effective_video_fps = (float(video_fps),)
+        elif resolved_video_fps is not None:
+            effective_video_fps = (resolved_video_fps,)
 
         contextual_video_cache_key = _contextualize_cache_key(
             video_cache_key,
             fps=effective_video_fps,
-            max_frames=video_max_frames,
-            min_pixels=video_min_pixels,
-            max_pixels=video_max_pixels,
-            total_pixels=video_total_pixels,
+            max_frames=resolved_video_max_frames,
+            min_pixels=resolved_video_min_pixels,
+            max_pixels=resolved_video_max_pixels,
+            total_pixels=resolved_video_total_pixels,
+            seconds_per_chunk=resolved_video_seconds_per_chunk,
         )
         combined_cache_key = _combine_cache_keys(
             image_cache_key, contextual_video_cache_key
@@ -328,7 +432,7 @@ class Qwen3OmniPreprocessor:
         if combined_cache_key:
             image_encoder_inputs["cache_key"] = combined_cache_key
 
-        audio_encoder_inputs = {**mm_inputs["audio"]}
+        audio_encoder_inputs = {**full_mm_inputs["audio"]}
         contextualized_audio_cache_key = _contextualize_cache_key(
             raw_audio_cache_key,
             target_sr=audio_target_sr,
@@ -362,8 +466,7 @@ class Qwen3OmniPreprocessor:
             encoder_inputs["audio_encoder"] = {"_skip": True, "_result": {}}
 
         state = PipelineState(
-            raw_inputs=inputs,
-            mm_inputs=mm_inputs,
+            mm_inputs=build_lightweight_mm_inputs(full_mm_inputs),
             prompt={
                 "prompt_text": prompt_text,
                 "input_ids": input_ids,

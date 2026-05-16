@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from sglang_omni_v1.config import (
+from sglang_omni.config import (
     PipelineConfig,
     SGLangServerArgsConfig,
     StageConfig,
@@ -11,7 +11,7 @@ from sglang_omni_v1.config import (
     StageRuntimeConfig,
     resolve_stage_factory_args,
 )
-from sglang_omni_v1.models.qwen3_omni.config import Qwen3OmniSpeechPipelineConfig
+from sglang_omni.models.qwen3_omni.config import Qwen3OmniSpeechPipelineConfig
 
 _FACTORY = "tests.unit_test.fixtures.pipeline_fakes.runtime_factory"
 _FACTORY_WITHOUT_TOTAL_BUDGET = (

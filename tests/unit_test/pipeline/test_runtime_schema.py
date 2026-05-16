@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from sglang_omni_v1.config import (
+from sglang_omni.config import (
     ParallelismConfig,
     PipelineConfig,
     PlacementConfig,

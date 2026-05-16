@@ -47,6 +47,7 @@ from tests.test_model.conftest import (
 )
 from tests.utils import (
     apply_slack,
+    apply_wer_slack,
     assert_per_request_fields,
     assert_speed_thresholds,
     assert_streaming_consistency,
@@ -90,8 +91,10 @@ THRESHOLD_SLACK_HIGHER = 0.75
 THRESHOLD_SLACK_LOWER = 1.25
 
 VC_WER_MAX_CORPUS = 0.010638297872340425
+VC_WER_CORPUS_THRESHOLD = apply_wer_slack(VC_WER_MAX_CORPUS)
 VC_WER_MAX_PER_SAMPLE = 0.25
-VC_STREAM_WER_MAX_CORPUS = 0.03
+VC_STREAM_WER_MAX_CORPUS = 0.0258
+VC_STREAM_WER_CORPUS_THRESHOLD = apply_wer_slack(VC_STREAM_WER_MAX_CORPUS)
 VC_STREAM_WER_MAX_PER_SAMPLE = 0.17
 
 # Note (Chenyang): Only thresholds for concurrency 8 are dedicatedly tuned, others
@@ -539,7 +542,7 @@ def test_voice_cloning_wer(
             str(dataset_dir / "en" / "meta.lst"),
             wer_input_dirs["non_stream"][concurrency],
         )
-        assert_wer_results(results, VC_WER_MAX_CORPUS, VC_WER_MAX_PER_SAMPLE)
+        assert_wer_results(results, VC_WER_CORPUS_THRESHOLD, VC_WER_MAX_PER_SAMPLE)
 
 
 @pytest.mark.s2pro_stage(S2PRO_STAGE_STREAM)
@@ -562,7 +565,9 @@ def test_voice_cloning_streaming_wer(
             stream=True,
         )
         assert_wer_results(
-            results, VC_STREAM_WER_MAX_CORPUS, VC_STREAM_WER_MAX_PER_SAMPLE
+            results,
+            VC_STREAM_WER_CORPUS_THRESHOLD,
+            VC_STREAM_WER_MAX_PER_SAMPLE,
         )
 
 

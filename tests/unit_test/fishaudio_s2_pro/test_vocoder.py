@@ -5,9 +5,9 @@ from __future__ import annotations
 import pytest
 import torch
 
-from sglang_omni_v1.models.fishaudio_s2_pro import stages
-from sglang_omni_v1.models.fishaudio_s2_pro.payload_types import S2ProState
-from sglang_omni_v1.scheduling.messages import IncomingMessage
+from sglang_omni.models.fishaudio_s2_pro import stages
+from sglang_omni.models.fishaudio_s2_pro.payload_types import S2ProState
+from sglang_omni.scheduling.messages import IncomingMessage
 from tests.unit_test.fixtures.fish_fakes import FakeFishCodec, make_s2pro_payload
 from tests.unit_test.pipeline.helpers import run_scheduler
 

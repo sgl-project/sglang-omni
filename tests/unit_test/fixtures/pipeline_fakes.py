@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Small test doubles for the V1 pipeline unit tests.
+"""Small test doubles for pipeline unit tests.
 
 These fakes model the public contracts between Coordinator, Stage, Scheduler,
 and Relay. They intentionally avoid real ZMQ, CUDA, SGLang, and relay backends.
@@ -14,9 +14,9 @@ from typing import Any, Callable
 
 import torch
 
-from sglang_omni_v1.config.schema import PipelineConfig
-from sglang_omni_v1.proto import OmniRequest, StagePayload
-from sglang_omni_v1.scheduling.messages import IncomingMessage, OutgoingMessage
+from sglang_omni.config.schema import PipelineConfig
+from sglang_omni.proto import OmniRequest, StagePayload
+from sglang_omni.scheduling.messages import IncomingMessage, OutgoingMessage
 
 
 @dataclass

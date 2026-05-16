@@ -13,21 +13,6 @@ import numpy as np
 import torch
 import torch.distributed as dist
 
-_SERVER_VERSION_BANNER_WIDTH = 72
-
-
-def print_server_version_banner(version: str, entry: str) -> None:
-    """Loudly announce which server version is starting up."""
-    width = _SERVER_VERSION_BANNER_WIDTH
-    label = version.upper()
-    border = "=" * width
-    title = f"SGLANG-OMNI SERVER VERSION = {label}"
-    entry_line = f"entry: {entry}"
-    print(f"\n{border}\n", flush=True)
-    print(title.center(width), flush=True)
-    print(entry_line.center(width), flush=True)
-    print(f"{border}\n", flush=True)
-
 
 def import_string(path: str) -> Any:
     if not path or not isinstance(path, str):
@@ -75,12 +60,14 @@ def set_random_seed(seed: int) -> None:
 
 
 def avail_gpu_mem(gpu_id: int) -> float | None:
-    """Return available GPU memory in GiB."""
+    """Return currently free GPU memory in GiB, or None when unavailable."""
     try:
+        if not torch.cuda.is_available():
+            return None
         free_bytes, _ = torch.cuda.mem_get_info(gpu_id)
-    except RuntimeError:
+        return free_bytes / (1024**3)
+    except Exception:
         return None
-    return free_bytes / (1024**3)
 
 
 def broadcast_pyobj(

@@ -6,11 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from sglang_omni_v1.pipeline import stage_process
-from sglang_omni_v1.pipeline.stage_process import (
-    StageProcessSpec,
-    get_stage_process_env,
-)
+from sglang_omni.pipeline import stage_process
+from sglang_omni.pipeline.stage_process import StageProcessSpec, get_stage_process_env
 from tests.unit_test.fixtures.pipeline_fakes import FakeScheduler, fake_factory_path
 
 

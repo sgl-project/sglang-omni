@@ -6,8 +6,8 @@ import asyncio
 
 import pytest
 
-from sglang_omni_v1.pipeline.coordinator import Coordinator
-from sglang_omni_v1.proto import CompleteMessage
+from sglang_omni.pipeline.coordinator import Coordinator
+from sglang_omni.proto import CompleteMessage
 from tests.unit_test.fixtures.pipeline_fakes import RecordingCoordinatorControlPlane
 
 

@@ -7,11 +7,11 @@ from types import SimpleNamespace
 
 import torch
 
-from sglang_omni_v1.scheduling.messages import IncomingMessage
-from sglang_omni_v1.scheduling.omni_scheduler import OmniScheduler
-from sglang_omni_v1.scheduling.simple_scheduler import SimpleScheduler
-from sglang_omni_v1.scheduling.stage_cache import StageOutputCache
-from sglang_omni_v1.scheduling.threaded_simple_scheduler import ThreadedSimpleScheduler
+from sglang_omni.scheduling.messages import IncomingMessage
+from sglang_omni.scheduling.omni_scheduler import OmniScheduler
+from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
+from sglang_omni.scheduling.stage_cache import StageOutputCache
+from sglang_omni.scheduling.threaded_simple_scheduler import ThreadedSimpleScheduler
 from tests.unit_test.pipeline.helpers import run_scheduler
 
 

@@ -129,7 +129,6 @@ class MingAudioEncoder(nn.Module):
         self,
         audio_feats: torch.Tensor,
         audio_feats_lengths: torch.Tensor | None = None,
-        **kwargs,
     ) -> dict[str, torch.Tensor]:
         """Encode mel-spectrogram features to LLM-compatible embeddings.
 
@@ -153,15 +152,7 @@ class MingAudioEncoder(nn.Module):
                 [audio_feats.shape[1]], device=audio_feats.device, dtype=torch.long
             )
 
-        with (
-            torch.no_grad(),
-            torch.autocast(
-                device_type="cuda", dtype=torch.bfloat16, enabled=segments.is_cuda
-            ),
-        ):
-            # Cast input to float32 for Whisper conv layers, autocast handles the rest
-            segments = segments.float()
-
+        with torch.no_grad():
             # Whisper encoder forward: [B, T, n_mels] -> [B, T, n_state]
             # The whisper encoder expects [B, T, n_mels], transposes internally
             encoded = self._whisper_forward(segments)

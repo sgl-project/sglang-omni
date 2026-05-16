@@ -7,22 +7,18 @@ from unittest.mock import patch
 import pytest
 import typer
 
-from sglang_omni_v1.cli.serve import (
+from sglang_omni.cli.serve import (
     apply_cuda_graph_cli_overrides,
     apply_parallelism_cli_overrides,
     apply_torch_compile_cli_overrides,
     serve,
 )
-from sglang_omni_v1.config import (
-    PipelineConfig,
-    StageConfig,
-    resolve_stage_factory_args,
-)
-from sglang_omni_v1.models.qwen3_omni.config import (
+from sglang_omni.config import PipelineConfig, StageConfig, resolve_stage_factory_args
+from sglang_omni.models.qwen3_omni.config import (
     Qwen3OmniSpeechColocatedPipelineConfig,
     Qwen3OmniSpeechPipelineConfig,
 )
-from sglang_omni_v1.models.registry import PIPELINE_CONFIG_REGISTRY
+from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
 
 
 class _DummyManager:
@@ -92,7 +88,7 @@ def _set_colocated_runtime(config: Qwen3OmniSpeechColocatedPipelineConfig) -> No
         )
 
 
-@patch("sglang_omni_v1.cli.serve.ConfigManager.from_model_path")
+@patch("sglang_omni.cli.serve.ConfigManager.from_model_path")
 def test_v1_cli_colocate_requires_config(from_model_path):
     with pytest.raises(typer.BadParameter, match="requires --config"):
         serve(**_serve_kwargs(colocate=True))
@@ -100,8 +96,8 @@ def test_v1_cli_colocate_requires_config(from_model_path):
     from_model_path.assert_not_called()
 
 
-@patch("sglang_omni_v1.cli.serve.launch_server")
-@patch("sglang_omni_v1.cli.serve.ConfigManager.from_file")
+@patch("sglang_omni.cli.serve.launch_server")
+@patch("sglang_omni.cli.serve.ConfigManager.from_file")
 def test_v1_cli_colocate_accepts_budgeted_colocated_config(
     from_file,
     launch_server,
@@ -118,8 +114,8 @@ def test_v1_cli_colocate_accepts_budgeted_colocated_config(
     launch_server.assert_called_once()
 
 
-@patch("sglang_omni_v1.cli.serve.launch_server")
-@patch("sglang_omni_v1.cli.serve.ConfigManager.from_file")
+@patch("sglang_omni.cli.serve.launch_server")
+@patch("sglang_omni.cli.serve.ConfigManager.from_file")
 def test_v1_cli_colocate_rejects_non_colocated_config(from_file, launch_server):
     from_file.return_value = _DummyManager(
         Qwen3OmniSpeechPipelineConfig(model_path="dummy")
@@ -134,8 +130,8 @@ def test_v1_cli_colocate_rejects_non_colocated_config(from_file, launch_server):
     launch_server.assert_not_called()
 
 
-@patch("sglang_omni_v1.cli.serve.launch_server")
-@patch("sglang_omni_v1.cli.serve.ConfigManager.from_model_path")
+@patch("sglang_omni.cli.serve.launch_server")
+@patch("sglang_omni.cli.serve.ConfigManager.from_model_path")
 def test_v1_cli_selects_speech_variant_by_default(from_model_path, launch_server):
     from_model_path.return_value = _DummyManager()
 
@@ -145,8 +141,8 @@ def test_v1_cli_selects_speech_variant_by_default(from_model_path, launch_server
     launch_server.assert_called_once()
 
 
-@patch("sglang_omni_v1.cli.serve.launch_server")
-@patch("sglang_omni_v1.cli.serve.ConfigManager.from_model_path")
+@patch("sglang_omni.cli.serve.launch_server")
+@patch("sglang_omni.cli.serve.ConfigManager.from_model_path")
 def test_v1_cli_text_only_selects_text_variant(from_model_path, launch_server):
     from_model_path.return_value = _DummyManager()
 
@@ -156,8 +152,8 @@ def test_v1_cli_text_only_selects_text_variant(from_model_path, launch_server):
     launch_server.assert_called_once()
 
 
-@patch("sglang_omni_v1.cli.serve.launch_server")
-@patch("sglang_omni_v1.cli.serve.ConfigManager.from_model_path")
+@patch("sglang_omni.cli.serve.launch_server")
+@patch("sglang_omni.cli.serve.ConfigManager.from_model_path")
 def test_v1_cli_hides_merged_config_for_normal_info_launch(
     from_model_path,
     launch_server,
@@ -171,8 +167,8 @@ def test_v1_cli_hides_merged_config_for_normal_info_launch(
     launch_server.assert_called_once()
 
 
-@patch("sglang_omni_v1.cli.serve.launch_server")
-@patch("sglang_omni_v1.cli.serve.ConfigManager.from_model_path")
+@patch("sglang_omni.cli.serve.launch_server")
+@patch("sglang_omni.cli.serve.ConfigManager.from_model_path")
 def test_v1_cli_prints_merged_config_at_debug(
     from_model_path,
     launch_server,

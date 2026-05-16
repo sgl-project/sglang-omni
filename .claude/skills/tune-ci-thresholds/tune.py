@@ -28,7 +28,6 @@ ROUTER_CLEANUP_PATTERNS = (
 ROUTER_CLEANUP_COMMAND_PATTERNS = (
     "sgl-omni serve",
     "sglang_omni.cli serve",
-    "sglang_omni_v1.cli serve",
 )
 
 # Metric registry. Each entry encodes how a named metric should be
@@ -878,10 +877,8 @@ def _run_shared(test_path, stage_keys, all_stages, out, k, py, total, gpus_neede
     env = os.environ.copy()
     # Match CI's `export PYTHONPATH=$PWD`: server subprocesses launched by
     # tests are invoked as `python examples/<launcher>.py`, which only puts
-    # `examples/` on sys.path. The v1 package isn't editable-installed
-    # (only `sglang_omni` is registered in the venv's editable finder), so
-    # imports of `sglang_omni_v1` from those launchers need the repo root
-    # explicitly on PYTHONPATH. Prepend so we don't clobber user-set values.
+    # `examples/` on sys.path. Prepend the repo root so local package imports
+    # resolve without clobbering user-set values.
     existing_pp = env.get("PYTHONPATH", "")
     env["PYTHONPATH"] = (
         f"{REPO_ROOT}{os.pathsep}{existing_pp}" if existing_pp else str(REPO_ROOT)

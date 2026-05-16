@@ -8,7 +8,7 @@ from types import ModuleType, SimpleNamespace
 
 import pytest
 
-import sglang_omni_v1.utils.gpu_memory as gpu_memory
+import sglang_omni.utils.gpu_memory as gpu_memory
 
 
 class _FakeNVML(ModuleType):
@@ -335,8 +335,8 @@ def test_gpu_startup_lock_path_uses_visible_device_mapping(
     first = gpu_memory.get_gpu_startup_lock_path(0, base_dir=tmp_path)
     second = gpu_memory.get_gpu_startup_lock_path(1, base_dir=tmp_path)
 
-    assert first.name == "sglang_omni_v1_gpu_3_startup.lock"
-    assert second.name == "sglang_omni_v1_gpu_MIG-GPU-deadbeef_1_2_startup.lock"
+    assert first.name == "sglang_omni_gpu_3_startup.lock"
+    assert second.name == "sglang_omni_gpu_MIG-GPU-deadbeef_1_2_startup.lock"
 
 
 def test_gpu_startup_lock_releases_after_exception(

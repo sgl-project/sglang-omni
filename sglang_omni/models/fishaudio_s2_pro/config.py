@@ -1,63 +1,39 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Pipeline configuration for FishAudio S2-Pro TTS.
-
-Provides the PipelineConfig subclass for registry-based discovery
-(via ``sglang_omni serve --config s2pro.yaml``).
-"""
+"""Pipeline configuration for FishAudio S2-Pro TTS."""
 
 from __future__ import annotations
 
 from typing import ClassVar
 
-from sglang_omni.config import ExecutorConfig, PipelineConfig, RelayConfig, StageConfig
-from sglang_omni.models.fishaudio_s2_pro.pipeline.next_stage import (
-    PREPROCESSING_STAGE,
-    TTS_ENGINE_STAGE,
-    VOCODER_STAGE,
-)
+from sglang_omni.config import PipelineConfig, StageConfig
 
-_S2_PKG = "sglang_omni.models.fishaudio_s2_pro.pipeline"
+_PKG = "sglang_omni.models.fishaudio_s2_pro"
 
 
 class S2ProPipelineConfig(PipelineConfig):
+    """3-stage TTS pipeline: preprocessing → tts_engine → vocoder."""
+
     architecture: ClassVar[str] = "FishQwen3OmniForCausalLM"
 
     model_path: str
-    entry_stage: str = "preprocessing"
     stages: list[StageConfig] = [
         StageConfig(
-            name=PREPROCESSING_STAGE,
-            executor=ExecutorConfig(
-                factory=f"{_S2_PKG}.stages.create_preprocessing_executor",
-            ),
-            get_next=f"{_S2_PKG}.next_stage.preprocessing_next",
-            relay=RelayConfig(device="cpu"),
+            name="preprocessing",
+            factory=f"{_PKG}.stages.create_preprocessing_executor",
+            next="tts_engine",
         ),
         StageConfig(
-            name=TTS_ENGINE_STAGE,
-            executor=ExecutorConfig(
-                factory=f"{_S2_PKG}.stages.create_sglang_tts_engine_executor",
-                args={
-                    "device": "cuda:0",
-                    "max_new_tokens": 2048,
-                    "stream_stride": 10,
-                    "stream_followup_stride": 90,
-                    "stream_overlap_tokens": 20,
-                    "stream_crossfade_samples": 512,
-                    "stream_vocoder_device": "cuda:0",
-                    "warmup_stream_codec_on_startup": True,
-                },
-            ),
-            get_next=f"{_S2_PKG}.next_stage.tts_engine_next",
-            relay=RelayConfig(device="cuda"),
+            name="tts_engine",
+            factory=f"{_PKG}.stages.create_sglang_tts_engine_executor",
+            factory_args={"device": "cuda:0", "max_new_tokens": 2048},
+            gpu=0,
+            next="vocoder",
         ),
         StageConfig(
-            name=VOCODER_STAGE,
-            executor=ExecutorConfig(
-                factory=f"{_S2_PKG}.stages.create_vocoder_executor",
-            ),
-            get_next=f"{_S2_PKG}.next_stage.vocoder_next",
-            relay=RelayConfig(device="cpu"),
+            name="vocoder",
+            factory=f"{_PKG}.stages.create_vocoder_executor",
+            gpu=0,
+            terminal=True,
         ),
     ]
 

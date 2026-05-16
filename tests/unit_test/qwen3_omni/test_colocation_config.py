@@ -3,8 +3,8 @@ from __future__ import annotations
 
 import pytest
 
-from sglang_omni_v1.config import build_stage_placement_plan
-from sglang_omni_v1.models.qwen3_omni.config import (
+from sglang_omni.config import build_stage_placement_plan
+from sglang_omni.models.qwen3_omni.config import (
     Qwen3OmniSpeechColocatedPipelineConfig,
     Qwen3OmniSpeechPipelineConfig,
     Variants,

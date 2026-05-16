@@ -13,13 +13,16 @@ def load_chat_template(model_path: str) -> str | None:
     """Load chat_template.json from the local HF cache if available."""
     try:
         path = cached_file(model_path, "chat_template.json", local_files_only=True)
-    except Exception:
+    except (OSError, ValueError):
+        return None
+
+    if path is None:
         return None
 
     try:
         with open(path, encoding="utf-8") as f:
             payload = json.load(f)
-    except Exception:
+    except (OSError, TypeError, json.JSONDecodeError):
         return None
 
     if not isinstance(payload, Mapping):
@@ -30,7 +33,7 @@ def load_chat_template(model_path: str) -> str | None:
 
 def ensure_chat_template(tokenizer: Any, *, model_path: str) -> None:
     """Ensure tokenizer.chat_template is populated when possible."""
-    if getattr(tokenizer, "chat_template", None):
+    if tokenizer.chat_template:
         return
     template = load_chat_template(model_path)
     if template:
@@ -83,10 +86,6 @@ def append_modality_placeholders(
 
 def apply_chat_template(tokenizer: Any, messages: list[dict[str, str]]) -> str:
     """Apply the tokenizer's chat template with a generation prompt."""
-    if not hasattr(tokenizer, "apply_chat_template"):
-        raise ValueError("Tokenizer does not support apply_chat_template")
-    if not getattr(tokenizer, "chat_template", None):
-        raise ValueError("Tokenizer chat_template is not set")
     return tokenizer.apply_chat_template(
         messages,
         tokenize=False,

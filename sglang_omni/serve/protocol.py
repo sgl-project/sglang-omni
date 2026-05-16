@@ -72,9 +72,6 @@ class ChatCompletionRequest(BaseModel):
     # Audio output configuration
     audio: dict[str, Any] | None = None  # {"voice": "...", "format": "wav"}
 
-    # Image generation configuration (sglang-omni extension)
-    image_generation: dict[str, Any] | None = None
-
     # Audio input (sglang-omni extension)
     # Can be a list of audio file paths (local paths or URLs)
     audios: list[str] | None = None
@@ -95,6 +92,13 @@ class ChatCompletionRequest(BaseModel):
     # Per-stage sampling overrides (sglang-omni specific)
     stage_sampling: dict[str, dict[str, Any]] | None = None
     stage_params: dict[str, dict[str, Any]] | None = None
+
+    # Talker-specific overrides for Qwen3-Omni speech output
+    talker_temperature: float | None = None
+    talker_top_p: float | None = None
+    talker_top_k: int | None = None
+    talker_repetition_penalty: float | None = None
+    talker_max_new_tokens: int | None = None
 
     # Misc
     request_id: str | None = None
@@ -124,22 +128,12 @@ class ChatCompletionResponse(BaseModel):
     usage: UsageResponse | None = None
 
 
-class ChatCompletionImageData(BaseModel):
-    """Image data returned in a chat completion response."""
-
-    b64_json: str
-    format: str = "png"
-    width: int | None = None
-    height: int | None = None
-
-
 class ChatCompletionStreamDelta(BaseModel):
     """Delta content in a streaming chunk."""
 
     role: str | None = None
     content: str | None = None
     audio: ChatCompletionAudio | None = None
-    images: list[ChatCompletionImageData] | None = None
 
 
 class ChatCompletionStreamChoice(BaseModel):

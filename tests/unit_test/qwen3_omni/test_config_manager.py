@@ -5,11 +5,9 @@ from pathlib import Path
 
 import pytest
 
-from sglang_omni_v1.config import build_stage_placement_plan
-from sglang_omni_v1.config.manager import ConfigManager
-from sglang_omni_v1.models.qwen3_omni.config import (
-    Qwen3OmniSpeechColocatedPipelineConfig,
-)
+from sglang_omni.config import build_stage_placement_plan
+from sglang_omni.config.manager import ConfigManager
+from sglang_omni.models.qwen3_omni.config import Qwen3OmniSpeechColocatedPipelineConfig
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 

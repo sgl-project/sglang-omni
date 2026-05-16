@@ -60,7 +60,7 @@ launcher:
 
 `backend: local` means the router process starts and manages worker
 subprocesses on the same machine. The launched workers are complete Omni V1
-servers started with `sgl-omni serve --version v1`; they are not partial
+servers started with `sgl-omni serve`; they are not partial
 pipeline stages. The router waits for every managed worker to pass `/health`
 before it starts accepting client traffic, and it stops those managed workers
 when the router exits.
@@ -81,7 +81,7 @@ workers for text output.
 
 Use `worker_extra_args` for public Omni V1 serve options that are specific to
 the worker process, such as `--mem-fraction-static`, `--thinker-tp-size`, or
-`--text-only`. These arguments are passed to `sgl-omni serve --version v1`
+`--text-only`. These arguments are passed to `sgl-omni serve`
 after the launcher-owned flags. When no memory flags are provided, Omni V1 uses
 its normal auto-sizing path.
 
@@ -116,7 +116,6 @@ Qwen3-Omni speech workers on different GPU pairs and ports:
 
 ```bash
 CUDA_VISIBLE_DEVICES=0,1 sgl-omni serve \
-  --version v1 \
   --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct \
   --model-name qwen3-omni \
   --host 0.0.0.0 \
@@ -125,7 +124,6 @@ CUDA_VISIBLE_DEVICES=0,1 sgl-omni serve \
 
 ```bash
 CUDA_VISIBLE_DEVICES=2,3 sgl-omni serve \
-  --version v1 \
   --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct \
   --model-name qwen3-omni \
   --host 0.0.0.0 \

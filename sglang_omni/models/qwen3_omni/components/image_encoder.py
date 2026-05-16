@@ -131,7 +131,6 @@ class Qwen3OmniImageEncoder(nn.Module):
         self.spatial_merge_size = int(vision_cfg.spatial_merge_size)
         self.out_hidden_size = int(vision_cfg.out_hidden_size)
         self.deepstack_layers = len(vision_cfg.deepstack_visual_indexes)
-        # Avoid constructing a visual output tensor just to learn dtype width.
         self.visual_dtype_bytes = torch.empty(
             (), dtype=self.visual.dtype
         ).element_size()

@@ -6,9 +6,9 @@ import threading
 from collections.abc import Callable
 from typing import Any
 
-from sglang_omni_v1.config.schema import StageConfig
-from sglang_omni_v1.pipeline.stage.runtime import Stage
-from sglang_omni_v1.scheduling.messages import IncomingMessage
+from sglang_omni.config.schema import StageConfig
+from sglang_omni.pipeline.stage.runtime import Stage
+from sglang_omni.scheduling.messages import IncomingMessage
 from tests.unit_test.fixtures.pipeline_fakes import (
     FakeRelay,
     FakeScheduler,

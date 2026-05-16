@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import pytest
 
-from sglang_omni_v1.config.compiler import compile_pipeline, prepare_pipeline_runtime
-from sglang_omni_v1.config.schema import EndpointsConfig, PipelineConfig
-from sglang_omni_v1.pipeline.mp_runner import _build_stage_groups
-from sglang_omni_v1.pipeline.stage.input import AggregatedInput
-from sglang_omni_v1.pipeline.stage.stream_queue import StreamQueue
-from sglang_omni_v1.pipeline.stage_process import get_stage_process_env
+from sglang_omni.config.compiler import compile_pipeline, prepare_pipeline_runtime
+from sglang_omni.config.schema import EndpointsConfig, PipelineConfig
+from sglang_omni.pipeline.mp_runner import _build_stage_groups
+from sglang_omni.pipeline.stage.input import AggregatedInput
+from sglang_omni.pipeline.stage.stream_queue import StreamQueue
+from sglang_omni.pipeline.stage_process import get_stage_process_env
 from tests.unit_test.fixtures.pipeline_fakes import (
     FakeMpContext,
     FakeRelay,
@@ -54,7 +54,7 @@ def test_compile_pipeline_wires_routes_overrides_aggregation_and_streams(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Preserves config-to-runtime wiring for routes, overrides, fan-in, and streams."""
-    import sglang_omni_v1.pipeline.stage.runtime as runtime
+    import sglang_omni.pipeline.stage.runtime as runtime
 
     monkeypatch.setattr(
         runtime,

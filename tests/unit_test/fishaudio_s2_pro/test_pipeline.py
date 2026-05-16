@@ -5,14 +5,14 @@ from __future__ import annotations
 import pytest
 import torch
 
-from sglang_omni_v1.models.fishaudio_s2_pro.config import S2ProPipelineConfig
-from sglang_omni_v1.models.fishaudio_s2_pro.payload_types import S2ProState
-from sglang_omni_v1.models.fishaudio_s2_pro.request_builders import (
+from sglang_omni.models.fishaudio_s2_pro.config import S2ProPipelineConfig
+from sglang_omni.models.fishaudio_s2_pro.payload_types import S2ProState
+from sglang_omni.models.fishaudio_s2_pro.request_builders import (
     apply_tts_result,
     build_sglang_tts_request,
     make_tts_scheduler_adapters,
 )
-from sglang_omni_v1.models.fishaudio_s2_pro.tokenizer import (
+from sglang_omni.models.fishaudio_s2_pro.tokenizer import (
     Reference,
     S2ProTokenizerAdapter,
 )

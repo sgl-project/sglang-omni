@@ -194,4 +194,4 @@ If you see a 500 error, check the server logs for the full traceback. Common iss
 ## Next Reading
 
 - [API Server Design](../developer_reference/apiserver_design.md)
-- [Architecture](../developer_reference/architecture.md)
+- [Developer Reference](../developer_reference/main.md)

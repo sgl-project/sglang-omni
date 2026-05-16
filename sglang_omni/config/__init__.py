@@ -1,23 +1,62 @@
 # SPDX-License-Identifier: Apache-2.0
-from sglang_omni.config.compiler import compile_pipeline
-from sglang_omni.config.runner import PipelineRunner, build_pipeline_runner
+from sglang_omni.config.compiler import (
+    CompiledPipeline,
+    IpcRuntimeDir,
+    PipelineRuntimePrep,
+    compile_pipeline,
+    compile_pipeline_core,
+    create_ipc_runtime_dir,
+    prepare_pipeline_runtime,
+)
+from sglang_omni.config.placement import (
+    GpuPlacement,
+    StagePlacement,
+    StagePlacementPlan,
+    StagePlacementPlanner,
+    build_stage_placement_plan,
+    resolve_pipeline_process_mode,
+    resolve_same_gpu_stream_targets,
+    resolve_stage_gpu_ids,
+)
+from sglang_omni.config.runtime import resolve_stage_factory_args
 from sglang_omni.config.schema import (
     EndpointsConfig,
-    ExecutorConfig,
-    InputHandlerConfig,
+    ParallelismConfig,
     PipelineConfig,
+    PlacementConfig,
+    ProcessConfig,
     RelayConfig,
+    SGLangServerArgsConfig,
     StageConfig,
+    StageResourceConfig,
+    StageRuntimeConfig,
 )
 
 __all__ = [
+    "CompiledPipeline",
+    "IpcRuntimeDir",
+    "PipelineRuntimePrep",
     "compile_pipeline",
-    "build_pipeline_runner",
+    "compile_pipeline_core",
+    "create_ipc_runtime_dir",
+    "prepare_pipeline_runtime",
+    "StagePlacement",
+    "GpuPlacement",
+    "StagePlacementPlan",
+    "StagePlacementPlanner",
+    "build_stage_placement_plan",
+    "resolve_pipeline_process_mode",
+    "resolve_same_gpu_stream_targets",
+    "resolve_stage_gpu_ids",
+    "resolve_stage_factory_args",
     "PipelineConfig",
     "StageConfig",
-    "ExecutorConfig",
-    "InputHandlerConfig",
+    "ParallelismConfig",
+    "StageResourceConfig",
+    "SGLangServerArgsConfig",
+    "StageRuntimeConfig",
+    "PlacementConfig",
+    "ProcessConfig",
     "RelayConfig",
     "EndpointsConfig",
-    "PipelineRunner",
 ]

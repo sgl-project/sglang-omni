@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""End-to-end CI for colocated Qwen3-Omni V1 replicas behind the router."""
+"""End-to-end CI for colocated Qwen3-Omni replicas behind the router."""
 
 from __future__ import annotations
 

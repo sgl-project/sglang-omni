@@ -9,8 +9,8 @@ from typing import Any
 import torch
 from torch import nn
 
-from sglang_omni_v1.models.qwen3_omni.payload_types import PipelineState
-from sglang_omni_v1.proto import OmniRequest, StagePayload
+from sglang_omni.models.qwen3_omni.payload_types import PipelineState
+from sglang_omni.proto import OmniRequest, StagePayload
 
 
 class FakeQwenTokenizer:

@@ -29,14 +29,14 @@ class UsageInfo:
     engine_time_s: float | None = None
 
     @classmethod
-    def from_dict(cls, raw: dict[str, Any] | None) -> "UsageInfo | None":
-        if not raw:
+    def from_dict(cls, data: dict[str, Any] | None) -> "UsageInfo | None":
+        if not data:
             return None
         return cls(
-            prompt_tokens=raw.get("prompt_tokens"),
-            completion_tokens=raw.get("completion_tokens"),
-            total_tokens=raw.get("total_tokens"),
-            engine_time_s=raw.get("engine_time_s"),
+            prompt_tokens=data.get("prompt_tokens"),
+            completion_tokens=data.get("completion_tokens"),
+            total_tokens=data.get("total_tokens"),
+            engine_time_s=data.get("engine_time_s"),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -91,6 +91,7 @@ class GenerateRequest:
     sampling: SamplingParams = field(default_factory=SamplingParams)
     stage_sampling: dict[str, SamplingParams] | None = None
     stage_params: dict[str, dict[str, Any]] | None = None
+    extra_params: dict[str, Any] = field(default_factory=dict)
     stream: bool = True
     max_tokens: int | None = None
 
@@ -112,6 +113,7 @@ class GenerateRequest:
                 else None
             ),
             "stage_params": self.stage_params,
+            "extra_params": dict(self.extra_params),
             "stream": self.stream,
             "max_tokens": self.max_tokens,
             "output_modalities": self.output_modalities,
@@ -133,13 +135,8 @@ class GenerateChunk:
     stage_id: int | None = None
     stage_name: str | None = None
     modality: str = "text"
-    # Multi-modal output data
     audio_data: Any = None
     sample_rate: int | None = None
-    image_data: str | None = None  # base64-encoded image
-    image_format: str | None = None
-    image_width: int | None = None
-    image_height: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -155,10 +152,6 @@ class GenerateChunk:
             "modality": self.modality,
             "audio_data": self.audio_data,
             "sample_rate": self.sample_rate,
-            "image_data": self.image_data,
-            "image_format": self.image_format,
-            "image_width": self.image_width,
-            "image_height": self.image_height,
         }
 
 
@@ -193,23 +186,12 @@ class CompletionAudio:
 
 
 @dataclass
-class CompletionImage:
-    """Image data from a non-streaming completion."""
-
-    b64_json: str
-    format: str = "png"
-    width: int | None = None
-    height: int | None = None
-
-
-@dataclass
 class CompletionResult:
     """Result of a non-streaming completion call."""
 
     request_id: str
     text: str
     audio: CompletionAudio | None = None
-    images: list[CompletionImage] | None = None
     finish_reason: str = "stop"
     usage: UsageInfo | None = None
 
@@ -222,10 +204,6 @@ class CompletionStreamChunk:
     text: str = ""
     modality: str = "text"
     audio_b64: str | None = None  # already base64-encoded
-    image_b64: str | None = None  # already base64-encoded
-    image_format: str | None = None
-    image_width: int | None = None
-    image_height: int | None = None
     finish_reason: str | None = None
     usage: UsageInfo | None = None
     stage_name: str | None = None
@@ -237,7 +215,7 @@ class SpeechResult:
 
     audio_bytes: bytes
     mime_type: str
-    format: str  # actual format used
+    format: str
     usage: UsageInfo | None = None
 
 
