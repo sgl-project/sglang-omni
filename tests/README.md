@@ -9,7 +9,10 @@ tests/
 │   ├── qwen3_omni/
 │   └── s2pro/
 ├── test_model/
-│   └── conftest.py
+│   ├── conftest.py
+│   ├── test_omni_router_ci.py
+│   ├── test_qwen3_omni_*_ci.py
+│   └── test_s2pro_tts_ci.py
 └── unit_test/
     ├── fixtures/
     │   ├── fish_fakes.py
@@ -19,12 +22,21 @@ tests/
     │   ├── helpers.py
     │   ├── test_compile.py
     │   ├── test_coordinator.py
+    │   ├── test_gpu_memory.py
     │   ├── test_ipc.py
+    │   ├── test_placement.py
+    │   ├── test_runtime_adapter.py
+    │   ├── test_runtime_schema.py
     │   ├── test_scheduler.py
-    │   └── test_stage.py
+    │   ├── test_stage.py
+    │   └── test_stage_process_env.py
     ├── qwen3_omni/
     │   ├── test_code2wav.py
+    │   ├── test_colocation_config.py
+    │   ├── test_config_manager.py
     │   ├── test_pipeline.py
+    │   ├── test_sglang_ar_budget.py
+    │   ├── test_streaming.py
     │   └── test_talker.py
     ├── router/
     │   ├── test_app.py
@@ -107,14 +119,17 @@ Expected command (GPU benchmark subset):
 pytest tests/test_model -m benchmark -v -s
 ```
 
-`conftest.py` owns shared bring-up for everything in this directory:
+Relevant model CI ownership:
 
 - `qwen3_omni_thinker_server` / `qwen3_omni_talker_server`: start a real
-  Qwen3-Omni server and yield a `ServerHandle`.
+  Qwen3-Omni server and yield a `ServerHandle` from `conftest.py`.
+- `test_omni_router_ci.py`: starts two colocated Qwen3-Omni workers behind the
+  router and gates the full client-to-router-to-worker SeedTTS path, including
+  per-worker traffic, speed, and WER.
 - `qwen3_omni_vision_sglang_env`: session-scoped SGLang dist + DP-attention
-  init shared by every Qwen3-Omni vision-encoder benchmark module — avoids
-  re-initializing the process-global TP group when the combined `-m benchmark`
-  command runs more than one module.
+  init from `conftest.py`, shared by every Qwen3-Omni vision-encoder benchmark
+  module — avoids re-initializing the process-global TP group when the combined
+  `-m benchmark` command runs more than one module.
 - CLI flags `--s2pro-stage {nonstream,stream,consistency,all}` and
   `--concurrency {1,2,4,8,16,all}`: scope an S2-Pro CI sweep without editing
   source.
@@ -135,10 +150,14 @@ that happened to contain an older version of the test.
 
 - `unit_test/pipeline/`: Model-agnostic pipeline tests:
   - compile
+  - placement planning
   - runtime wiring
+  - runtime schema/adapter behavior
   - coordinator behavior
   - stage routing
+  - stage process environment
   - relay handling
+  - GPU memory accounting helpers
   - IPC lifecycle
   - scheduler batching
   - scheduler errors
@@ -148,6 +167,7 @@ that happened to contain an older version of the test.
   - public CLI/config behavior
   - SGLang argument builders
   - memory flag contracts
+  - colocation config and SGLang AR budget contracts
   - `PipelineState` request builders
   - talker behavior
   - Code2Wav streaming/cleanup behavior.
