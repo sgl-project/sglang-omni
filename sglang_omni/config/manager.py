@@ -73,6 +73,8 @@ class ConfigManager:
             # update the value
             current[keys[-1]] = value
 
+        _sync_stage_parallelism_aliases(cfg_copy, set(extra_args))
+
         # validate the configuration
         merged_config = config_cls(**cfg_copy)
         return merged_config
@@ -169,6 +171,33 @@ def _deep_merge_dict(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str,
         else:
             merged[key] = value
     return merged
+
+
+def _sync_stage_parallelism_aliases(
+    config_data: dict[str, Any],
+    override_keys: set[str],
+) -> None:
+    """Keep StageConfig.tp_size and parallelism.tp coherent for dotted CLI args."""
+    stages = config_data.get("stages")
+    if not isinstance(stages, list):
+        return
+
+    for index, stage in enumerate(stages):
+        if not isinstance(stage, dict):
+            continue
+        tp_size_key = f"stages.{index}.tp_size"
+        parallelism_key = f"stages.{index}.parallelism.tp"
+        has_tp_size_override = tp_size_key in override_keys
+        has_parallelism_override = parallelism_key in override_keys
+        if has_tp_size_override == has_parallelism_override:
+            continue
+
+        if has_tp_size_override:
+            parallelism = dict(stage.get("parallelism") or {})
+            parallelism["tp"] = stage["tp_size"]
+            stage["parallelism"] = parallelism
+        else:
+            stage["tp_size"] = stage["parallelism"]["tp"]
 
 
 def _convert_scalar(value: Any) -> Any:

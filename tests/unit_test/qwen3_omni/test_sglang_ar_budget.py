@@ -23,6 +23,7 @@ def _runner(*, total_gpu_memory_fraction: float | None):
     runner.gpu_id = 0
     runner.mem_fraction_static = 0.9
     runner._total_gpu_memory_fraction = total_gpu_memory_fraction
+    runner._pre_model_load_memory_gib = None
     runner.is_draft_worker = False
     runner.num_effective_layers = 32
     return runner
@@ -64,6 +65,52 @@ def test_colocated_ar_token_profile_uses_process_scoped_budget(monkeypatch) -> N
     max_tokens = runner_mod.SGLModelRunner.profile_max_num_token(runner, 0)
 
     assert max_tokens == (10 * 1024**3) // (32 * 1024**2)
+
+
+def test_colocated_ar_token_profile_uses_preload_sample_when_process_memory_missing(
+    monkeypatch,
+) -> None:
+    runner = _runner(total_gpu_memory_fraction=0.4)
+    runner._pre_model_load_memory_gib = 95.0
+    runner.get_cell_size_per_token = lambda num_layers: num_layers * 1024**2
+    monkeypatch.setattr(
+        runner_mod,
+        "get_process_gpu_memory_bytes",
+        lambda gpu_id: None,
+    )
+
+    def _fake_stage_load_delta(self, pre_model_load_memory, total_memory):
+        assert pre_model_load_memory == 95.0
+        assert total_memory == 100 * 1024**3
+        return 7 * 1024**3
+
+    monkeypatch.setattr(
+        runner_mod.SGLModelRunner,
+        "_profile_available_bytes_from_stage_load_delta",
+        _fake_stage_load_delta,
+    )
+
+    max_tokens = runner_mod.SGLModelRunner.profile_max_num_token(
+        runner,
+        100 * 1024**3,
+    )
+
+    assert max_tokens == (7 * 1024**3) // (32 * 1024**2)
+
+
+def test_colocated_ar_token_profile_rejects_missing_memory_accounting(
+    monkeypatch,
+) -> None:
+    runner = _runner(total_gpu_memory_fraction=0.4)
+    runner.get_cell_size_per_token = lambda num_layers: num_layers * 1024**2
+    monkeypatch.setattr(
+        runner_mod,
+        "get_process_gpu_memory_bytes",
+        lambda gpu_id: None,
+    )
+
+    with pytest.raises(RuntimeError, match="pre-load memory sample"):
+        runner_mod.SGLModelRunner.profile_max_num_token(runner, 100 * 1024**3)
 
 
 @pytest.mark.parametrize("process_memory", [None, 0])

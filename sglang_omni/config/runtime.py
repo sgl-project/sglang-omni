@@ -80,6 +80,17 @@ def _reject_duplicate_runtime_sources(
             "runtime.sglang_server_args.mem_fraction_static"
         )
 
+    typed_total_fraction = stage_cfg.runtime.resources.total_gpu_memory_fraction
+    if typed_total_fraction is not None and (
+        factory_args.get("total_gpu_memory_fraction") is not None
+        or runtime_overrides.get("total_gpu_memory_fraction") is not None
+    ):
+        raise ValueError(
+            f"Stage {stage_cfg.name!r} sets total_gpu_memory_fraction through both "
+            "factory/runtime overrides and typed "
+            "runtime.resources.total_gpu_memory_fraction"
+        )
+
     for field_name in _MAPPED_STAGE_RUNTIME_FIELDS:
         value = getattr(stage_cfg.runtime, field_name)
         if value is None:

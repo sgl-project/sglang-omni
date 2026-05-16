@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 from __future__ import annotations
 
+import os
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -31,6 +32,28 @@ def test_tp_process_env_maps_logical_gpu_through_visible_devices() -> None:
 def test_tp_process_env_rejects_single_visible_device_for_second_gpu() -> None:
     with pytest.raises(ValueError, match="CUDA_VISIBLE_DEVICES only exposes"):
         get_stage_process_env(_tp_spec(gpu_id=1), {"CUDA_VISIBLE_DEVICES": "0"})
+
+
+def test_tp_child_keeps_parent_mapped_visible_device(monkeypatch) -> None:
+    """Child startup normalizes the already-mapped TP device to local cuda:0."""
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "4")
+    monkeypatch.setenv("SGLANG_ONE_VISIBLE_DEVICE_PER_PROCESS", "true")
+    spec = StageProcessSpec(
+        stage_name="thinker",
+        role="follower",
+        tp_rank=1,
+        tp_size=2,
+        gpu_id=1,
+        factory_args={"gpu_id": 1},
+        relay_config={"gpu_id": 1},
+    )
+
+    stage_process._prepare_cuda_environment(spec, _RecordingLog())
+
+    assert spec.gpu_id == 0
+    assert spec.factory_args["gpu_id"] == 0
+    assert spec.relay_config["gpu_id"] == 0
+    assert os.environ["CUDA_VISIBLE_DEVICES"] == "4"
 
 
 class _RecordingLog:

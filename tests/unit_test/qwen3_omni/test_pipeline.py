@@ -13,6 +13,7 @@ import sglang_omni.models.qwen3_omni.stages as qwen_stages
 from sglang_omni.cli.serve import (
     apply_encoder_mem_reserve_cli_override,
     apply_mem_fraction_cli_overrides,
+    apply_parallelism_cli_overrides,
 )
 from sglang_omni.config import PipelineConfig, StageConfig
 from sglang_omni.config.compiler import _resolve_factory_args
@@ -379,6 +380,21 @@ def test_qwen_cli_encoder_mem_reserve_rejects_runtime_pinned_thinker_mem_fractio
         )
 
 
+def test_qwen_cli_encoder_mem_reserve_rejects_typed_pinned_thinker_mem_fraction() -> (
+    None
+):
+    config = Qwen3OmniSpeechPipelineConfig(model_path="dummy")
+    _stage(config, "thinker").runtime.sglang_server_args.mem_fraction_static = 0.70
+
+    with pytest.raises(typer.BadParameter, match="not explicitly pinned"):
+        apply_encoder_mem_reserve_cli_override(
+            config,
+            encoder_mem_reserve=0.15,
+            mem_fraction_static=None,
+            thinker_mem_fraction_static=None,
+        )
+
+
 def test_qwen_cli_encoder_mem_reserve_survives_runtime_overrides_overlay() -> None:
     config = Qwen3OmniSpeechPipelineConfig(
         model_path="dummy",
@@ -395,6 +411,23 @@ def test_qwen_cli_encoder_mem_reserve_survives_runtime_overrides_overlay() -> No
     resolved = _resolve_factory_args(_stage(config, "thinker"), config)
 
     assert resolved["encoder_mem_reserve"] == 0.15
+
+
+def test_qwen_cli_thinker_tp_override_keeps_parallelism_alias_in_sync() -> None:
+    config = Qwen3OmniSpeechPipelineConfig(model_path="dummy")
+
+    apply_parallelism_cli_overrides(
+        config,
+        thinker_tp_size=2,
+        thinker_gpus="0,1",
+        talker_gpu=None,
+        code2wav_gpu=None,
+    )
+
+    thinker = _stage(config, "thinker")
+    assert thinker.tp_size == 2
+    assert thinker.parallelism.tp == 2
+    assert thinker.gpu == [0, 1]
 
 
 def test_qwen_thinker_auto_path_applies_encoder_reserve() -> None:

@@ -268,6 +268,17 @@ def _prepare_cuda_environment(
     log: logging.Logger,
 ) -> None:
     """Map TP rank processes to one visible CUDA device before torch init."""
+    if os.environ.get("SGLANG_ONE_VISIBLE_DEVICE_PER_PROCESS") == "true":
+        mapped_gpu = os.environ.get("CUDA_VISIBLE_DEVICES", str(spec.gpu_id))
+        _normalize_spec_gpu_id_to_local_device(spec)
+        log.info(
+            "TP stage %s rank %d sees CUDA_VISIBLE_DEVICES=%s (local gpu_id=0)",
+            spec.stage_name,
+            spec.tp_rank,
+            mapped_gpu,
+        )
+        return
+
     env_updates = get_stage_process_env(spec)
     if not env_updates:
         return
@@ -276,15 +287,18 @@ def _prepare_cuda_environment(
     for key, value in env_updates.items():
         os.environ[key] = value
 
-    if "gpu_id" in spec.factory_args:
-        spec.factory_args["gpu_id"] = 0
-    if "gpu_id" in spec.relay_config:
-        spec.relay_config["gpu_id"] = 0
-    spec.gpu_id = 0
-
+    _normalize_spec_gpu_id_to_local_device(spec)
     log.info(
         "Mapped TP stage %s rank %d to CUDA_VISIBLE_DEVICES=%s (local gpu_id=0)",
         spec.stage_name,
         spec.tp_rank,
         mapped_gpu,
     )
+
+
+def _normalize_spec_gpu_id_to_local_device(spec: StageProcessSpec) -> None:
+    if "gpu_id" in spec.factory_args:
+        spec.factory_args["gpu_id"] = 0
+    if "gpu_id" in spec.relay_config:
+        spec.relay_config["gpu_id"] = 0
+    spec.gpu_id = 0

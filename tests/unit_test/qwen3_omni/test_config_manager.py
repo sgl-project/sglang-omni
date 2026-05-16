@@ -49,6 +49,28 @@ def test_config_manager_parses_dotted_fraction_overrides_as_numbers() -> None:
     assert plan.gpus[0].total_gpu_memory_fraction == pytest.approx(0.85)
 
 
+def test_config_manager_dotted_tp_size_override_updates_parallelism_alias() -> None:
+    manager = ConfigManager(Qwen3OmniSpeechColocatedPipelineConfig(model_path="dummy"))
+    merged = manager.merge_config({"stages.4.tp_size": 2, "stages.4.gpu": [0, 1]})
+    thinker = _stage(merged, "thinker")
+
+    assert thinker.tp_size == 2
+    assert thinker.parallelism.tp == 2
+    assert thinker.gpu == [0, 1]
+
+
+def test_config_manager_dotted_parallelism_override_updates_tp_size_alias() -> None:
+    manager = ConfigManager(Qwen3OmniSpeechColocatedPipelineConfig(model_path="dummy"))
+    merged = manager.merge_config(
+        {"stages.4.parallelism.tp": 2, "stages.4.gpu": [0, 1]}
+    )
+    thinker = _stage(merged, "thinker")
+
+    assert thinker.tp_size == 2
+    assert thinker.parallelism.tp == 2
+    assert thinker.gpu == [0, 1]
+
+
 def test_config_manager_rejects_trailing_key_without_value() -> None:
     manager = ConfigManager(Qwen3OmniSpeechColocatedPipelineConfig(model_path="dummy"))
 

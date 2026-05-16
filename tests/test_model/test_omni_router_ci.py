@@ -81,6 +81,13 @@ class RouterTopology:
     router_port: int
     worker_ports: list[int]
     router_log: Path | None
+    stopped: bool = False
+
+    def stop(self) -> None:
+        if self.stopped:
+            return
+        stop_server(self.router_proc)
+        self.stopped = True
 
 
 @pytest.fixture(scope="module")
@@ -90,6 +97,7 @@ def router_topology(tmp_path_factory: pytest.TempPathFactory):
     router_port = _find_available_port_excluding(worker_ports)
     router_proc: subprocess.Popen | None = None
     router_log: Path | None = None
+    topology: RouterTopology | None = None
 
     try:
         launcher_config = _write_ci_launcher_config(
@@ -130,14 +138,17 @@ def router_topology(tmp_path_factory: pytest.TempPathFactory):
             f"router_port={router_port} worker_ports={worker_ports} "
             f"launcher_config={launcher_config} policy={ROUTER_POLICY}"
         )
-        yield RouterTopology(
+        topology = RouterTopology(
             router_proc=router_proc,
             router_port=router_port,
             worker_ports=worker_ports,
             router_log=router_log,
         )
+        yield topology
     finally:
-        if router_proc is not None:
+        if topology is not None:
+            topology.stop()
+        elif router_proc is not None:
             stop_server(router_proc)
 
 
@@ -401,7 +412,7 @@ def test_colocated_router_seedtts_uses_both_workers(
         )
         _assert_both_workers_served_requests(final_workers)
 
-        stop_server(router_topology.router_proc)
+        router_topology.stop()
         wer_results = _run_seedtts_transcribe(
             meta_path=meta_path,
             output_dir=output_dir,

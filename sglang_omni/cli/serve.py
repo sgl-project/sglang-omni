@@ -127,6 +127,17 @@ def _stage_has_explicit_mem_fraction_static(
     stage_name: str,
     factory_args: dict[str, object],
 ) -> bool:
+    matching_stages = _find_matching_stages(
+        pipeline_config,
+        stage_name=stage_name,
+        reason="mem_fraction_static validation",
+    )
+    if any(
+        stage.runtime.sglang_server_args.mem_fraction_static is not None
+        for stage in matching_stages
+    ):
+        return True
+
     server_args_overrides = dict(factory_args.get("server_args_overrides") or {})
     if server_args_overrides.get("mem_fraction_static") is not None:
         return True
@@ -403,6 +414,7 @@ def apply_parallelism_cli_overrides(
         for stage in thinker_stages:
             if thinker_tp_size is not None:
                 stage.tp_size = int(thinker_tp_size)
+                stage.parallelism.tp = stage.tp_size
             if thinker_gpu_override is not None:
                 stage.gpu = thinker_gpu_override
             _validate_stage_parallelism_config("thinker", stage.tp_size, stage.gpu)
