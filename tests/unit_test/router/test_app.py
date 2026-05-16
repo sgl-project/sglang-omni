@@ -589,6 +589,8 @@ def test_round_robin_proxies_raw_bytes_and_alternates_workers() -> None:
                 headers={
                     "content-encoding": "identity",
                     "content-type": "application/json",
+                    "date": "Sat, 16 May 2026 10:00:00 GMT",
+                    "server": "upstream-server",
                 },
                 request=request,
             )
@@ -612,6 +614,8 @@ def test_round_robin_proxies_raw_bytes_and_alternates_workers() -> None:
     assert first.status_code == 200
     assert second.status_code == 200
     assert "content-encoding" not in first.headers
+    assert "Sat, 16 May 2026" not in first.headers.get("date", "")
+    assert "upstream-server" not in first.headers.get("server", "")
     assert first.headers["x-sglang-omni-request-id"] == "req-1"
     assert second.headers["x-sglang-omni-request-id"] == "req-2"
     assert json.loads(seen_bodies[0]) == body

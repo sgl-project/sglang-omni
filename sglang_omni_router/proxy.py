@@ -46,6 +46,8 @@ REQUEST_HEADERS_TO_STRIP = (
 )
 RESPONSE_HEADERS_TO_STRIP = HOP_BY_HOP_HEADERS | {
     "content-length",
+    "date",
+    "server",
 }
 BUFFERED_RESPONSE_HEADERS_TO_STRIP = RESPONSE_HEADERS_TO_STRIP | {
     "content-encoding",
