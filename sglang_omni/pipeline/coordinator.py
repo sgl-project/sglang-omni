@@ -284,6 +284,9 @@ class Coordinator:
         if not msg.success:
             info.state = RequestState.FAILED
             info.error = msg.error
+            await self.control_plane.broadcast_abort(
+                AbortMessage(request_id=request_id)
+            )
             self._partial_results.pop(request_id, None)
             if request_id in self._completion_futures:
                 future = self._completion_futures[request_id]

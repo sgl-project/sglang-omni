@@ -438,7 +438,12 @@ class S2ProSGLangTextModel(nn.Module):
         fast_input = fast_input.unsqueeze(1)  # [bs, 1, fast_dim]
         self._audio_decoder.forward_kvcached(fast_input, codebook_idx=0)
 
-        sem_id = (semantic_token - self._semantic_begin_id).clamp(min=0)
+        is_eos = semantic_token == self._im_end_token_id
+        sem_id = (semantic_token - self._semantic_begin_id).clamp(
+            min=0,
+            max=self._codebook_size - 1,
+        )
+        sem_id = torch.where(is_eos, torch.zeros_like(sem_id), sem_id)
         cb_hidden = self._audio_decoder.embeddings(sem_id).unsqueeze(1)
 
         self._output_codes[:bs, 0] = semantic_token

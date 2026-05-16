@@ -35,6 +35,7 @@ class S2ProState:
     prompt_tokens: int = 0
     completion_tokens: int = 0
     engine_time_s: float = 0.0
+    finish_reason: str | None = None
 
     # -- From vocoder ------------------------------------------------------
     audio_samples: Any | None = None
@@ -74,6 +75,8 @@ class S2ProState:
             data["completion_tokens"] = self.completion_tokens
         if self.engine_time_s:
             data["engine_time_s"] = self.engine_time_s
+        if self.finish_reason is not None:
+            data["finish_reason"] = self.finish_reason
         if self.audio_samples is not None:
             data["audio_samples"] = self._tensor_to_list(self.audio_samples)
         data["sample_rate"] = self.sample_rate
@@ -104,6 +107,7 @@ class S2ProState:
             prompt_tokens=data.get("prompt_tokens", 0),
             completion_tokens=data.get("completion_tokens", 0),
             engine_time_s=data.get("engine_time_s", 0.0),
+            finish_reason=data.get("finish_reason"),
             audio_samples=data.get("audio_samples"),
             sample_rate=data.get("sample_rate", 44100),
         )

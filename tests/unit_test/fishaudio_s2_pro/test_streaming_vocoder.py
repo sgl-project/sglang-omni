@@ -10,6 +10,8 @@ import pytest
 import torch
 
 from sglang_omni.models.fishaudio_s2_pro.fish_scheduler import FishScheduler
+from sglang_omni.models.fishaudio_s2_pro.payload_types import S2ProState
+from sglang_omni.models.fishaudio_s2_pro.request_builders import apply_tts_result
 from sglang_omni.models.fishaudio_s2_pro.streaming_vocoder import (
     S2ProVocoderScheduler,
     _apply_stream_crossfade,
@@ -218,6 +220,60 @@ def test_streaming_vocoder_crossfade_blends_tail_and_retains_next_tail() -> None
     assert output is not None
     torch.testing.assert_close(output, torch.tensor([10.0, 20.0, 200.0]))
     torch.testing.assert_close(state.pending_tail, torch.tensor([300.0, 400.0]))
+
+
+def test_streaming_vocoder_zero_overlap_final_flush_emits_retained_tail() -> None:
+    codec = _FakeCodec()
+    state = _StreamVocoderState()
+
+    first = build_stream_vocoder_chunk(
+        state,
+        torch.arange(22, dtype=torch.long).reshape(11, 2),
+        codec=codec,
+        device=torch.device("cpu"),
+        stream_stride=2,
+        stream_followup_stride=10,
+        stream_overlap_tokens=0,
+        stream_crossfade_samples=3,
+    )
+    assert first is not None
+    assert state.codes == []
+    assert state.pending_tail is not None
+
+    flush = flush_stream_vocoder_chunk(
+        state,
+        codec=codec,
+        device=torch.device("cpu"),
+        stream_overlap_tokens=0,
+        stream_crossfade_samples=3,
+    )
+
+    assert flush is not None
+    assert flush["modality"] == "audio"
+    assert len(flush["audio_data"]) == 3
+    assert state.pending_tail is None
+
+
+def test_streaming_vocoder_final_flush_clears_tail_when_codes_remain() -> None:
+    codec = _FakeCodec()
+    state = _StreamVocoderState(
+        codes=[torch.arange(11, dtype=torch.long).reshape(11, 1)],
+        last_vocode_tokens=1,
+        total_tokens=1,
+        pending_tail=torch.tensor([1.0, 2.0, 3.0]),
+    )
+
+    flush = flush_stream_vocoder_chunk(
+        state,
+        codec=codec,
+        device=torch.device("cpu"),
+        stream_overlap_tokens=1,
+        stream_crossfade_samples=0,
+    )
+
+    assert flush is not None
+    assert flush["audio_data"] == [1.0, 2.0, 3.0]
+    assert state.pending_tail is None
 
 
 def test_streaming_vocoder_final_flush_emits_tail_before_result() -> None:
@@ -452,6 +508,57 @@ def test_non_streaming_vocoder_batch_rejects_zero_length_before_decode() -> None
             ]
         )
     assert scheduler._codec.calls == []
+
+
+def test_non_streaming_vocoder_batch_isolates_invalid_payload() -> None:
+    scheduler = S2ProVocoderScheduler(
+        _FakeCodec(),
+        device="cpu",
+        stream_overlap_tokens=1,
+        stream_crossfade_samples=0,
+    )
+    messages = [
+        IncomingMessage("req-good", "new_request", _payload("req-good", stream=False)),
+        IncomingMessage(
+            "req-zero",
+            "new_request",
+            _zero_length_payload("req-zero"),
+        ),
+    ]
+
+    scheduler._vocode_non_streaming_batch(messages)
+
+    outputs = [scheduler.outbox.get_nowait(), scheduler.outbox.get_nowait()]
+    by_request = {out.request_id: out for out in outputs}
+    assert by_request["req-zero"].type == "error"
+    assert isinstance(by_request["req-zero"].data, ValueError)
+    assert by_request["req-good"].type == "result"
+    assert scheduler._codec.calls == [(1, 10, 4)]
+
+
+def test_vocoder_preserves_finish_reason_from_tts_payload() -> None:
+    req_data = SimpleNamespace(
+        output_codes=[torch.arange(11, dtype=torch.long).reshape(11, 1)],
+        input_ids=[1, 2, 3],
+        finish_reason="length",
+    )
+    state = S2ProState(sample_rate=44100)
+    apply_tts_result(state, req_data)
+    payload = StagePayload(
+        request_id="req-length",
+        request=OmniRequest(inputs="hello", params={"stream": False}),
+        data=state.to_dict(),
+    )
+    scheduler = S2ProVocoderScheduler(
+        _FakeCodec(),
+        device="cpu",
+        stream_overlap_tokens=1,
+        stream_crossfade_samples=0,
+    )
+
+    result = scheduler._vocode_payload(payload)
+
+    assert result.data["finish_reason"] == "length"
 
 
 def test_non_streaming_vocoder_batch_skips_aborted_request() -> None:

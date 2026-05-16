@@ -26,6 +26,7 @@ class _FakeControlPlane:
     def __init__(self) -> None:
         self.streams = []
         self.stage_messages = []
+        self.completions = []
 
     async def start(self) -> None:
         pass
@@ -38,6 +39,9 @@ class _FakeControlPlane:
 
     async def send_to_stage(self, target, endpoint, msg) -> None:
         self.stage_messages.append((target, endpoint, msg))
+
+    async def send_complete(self, msg) -> None:
+        self.completions.append(msg)
 
 
 class _FakeRelay:
@@ -67,9 +71,11 @@ class _AbortOnReadRelay(_FakeRelay):
     def __init__(self, on_wait) -> None:
         super().__init__()
         self._on_wait = on_wait
+        self.gets = 0
 
     async def get_async(self, metadata, dest_tensor, request_id):
         del metadata, dest_tensor, request_id
+        self.gets += 1
         return _CallbackOp(self._on_wait)
 
 
@@ -190,7 +196,7 @@ def test_s2pro_config_declares_topology_without_transport_policy() -> None:
     assert "stream_transport" not in StageConfig.model_fields
 
 
-def test_stage_buffers_pre_payload_stream_chunk_by_default() -> None:
+def test_stage_fails_pre_payload_stream_chunk_by_default() -> None:
     async def _run() -> None:
         control_plane = _FakeControlPlane()
         scheduler = SimpleNamespace(
@@ -222,7 +228,32 @@ def test_stage_buffers_pre_payload_stream_chunk_by_default() -> None:
         )
 
         assert scheduler.inbox.empty()
+        assert len(control_plane.completions) == 1
+        assert control_plane.completions[0].success is False
+        assert "pre-payload stream data" in control_plane.completions[0].error
 
+    asyncio.run(_run())
+
+
+def test_stage_routes_stream_chunk_after_payload_by_default() -> None:
+    async def _run() -> None:
+        control_plane = _FakeControlPlane()
+        scheduler = SimpleNamespace(
+            outbox=queue.Queue(),
+            inbox=queue.Queue(),
+            abort=lambda request_id: None,
+        )
+        stage = Stage(
+            name="vocoder",
+            role="single",
+            get_next=lambda request_id, output: None,
+            gpu_id=None,
+            endpoints={},
+            control_plane=control_plane,
+            relay=_AbortOnReadRelay(lambda: None),
+            scheduler=scheduler,
+        )
+        stage._stream_queue = StreamQueue(max_pending=4096)
         payload = StagePayload(
             request_id="req",
             request=OmniRequest(inputs="hello"),
@@ -234,6 +265,16 @@ def test_stage_buffers_pre_payload_stream_chunk_by_default() -> None:
                 from_stage="tts_engine",
                 to_stage="vocoder",
                 shm_metadata=_payload_metadata(payload),
+            )
+        )
+        codes = torch.arange(11, dtype=torch.float32)
+        await stage._on_stream_chunk(
+            DataReadyMessage(
+                request_id="req",
+                from_stage="tts_engine",
+                to_stage="vocoder",
+                shm_metadata=relay_io.serialize_ipc_chunk(codes, None),
+                chunk_id=0,
             )
         )
         payload_msg = scheduler.inbox.get_nowait()
@@ -285,7 +326,7 @@ def test_stage_routes_pre_payload_stream_events_for_capable_receiver() -> None:
         assert torch.equal(chunk_msg.data.data, codes)
         assert chunk_msg.data.metadata == {"modality": "audio_codes"}
 
-        stage._on_stream_signal(
+        await stage._on_stream_signal(
             DataReadyMessage(
                 request_id="req",
                 from_stage="tts_engine",
@@ -315,6 +356,45 @@ def test_stage_routes_pre_payload_stream_events_for_capable_receiver() -> None:
         assert payload_msg.request_id == "req"
         assert payload_msg.type == "new_request"
         assert payload_msg.data.data == {"ready": True}
+
+    asyncio.run(_run())
+
+
+def test_stage_stream_error_fails_request_even_with_stream_queue() -> None:
+    async def _run() -> None:
+        control_plane = _FakeControlPlane()
+        scheduler = SimpleNamespace(
+            outbox=queue.Queue(),
+            inbox=queue.Queue(),
+            aborted=[],
+            abort=lambda request_id: scheduler.aborted.append(request_id),
+        )
+        stage = Stage(
+            name="decode",
+            role="single",
+            get_next=lambda request_id, output: None,
+            gpu_id=None,
+            endpoints={},
+            control_plane=control_plane,
+            relay=_FakeRelay(),
+            scheduler=scheduler,
+            is_terminal=True,
+        )
+        stage._stream_queue = StreamQueue(max_pending=4096)
+        stage._stream_queue.open("req")
+
+        await stage._queue_stream_error(
+            "req",
+            from_stage="thinker",
+            error=RuntimeError("stream failed"),
+        )
+
+        assert scheduler.aborted == ["req"]
+        assert len(control_plane.completions) == 1
+        assert control_plane.completions[0].success is False
+        assert control_plane.completions[0].error == "stream failed"
+        assert not stage._stream_queue.has("req")
+        assert "req" in stage._aborted
 
     asyncio.run(_run())
 
@@ -444,6 +524,103 @@ def test_stage_drops_stream_chunk_after_abort_during_relay_read() -> None:
         )
 
         assert scheduler.inbox.empty()
+        assert relay.gets == 1
+
+    asyncio.run(_run())
+
+
+def test_stage_drains_relay_stream_chunk_for_already_aborted_request() -> None:
+    async def _run() -> None:
+        control_plane = _FakeControlPlane()
+        codes = torch.empty(11, 1, dtype=torch.long)
+        scheduler = SimpleNamespace(
+            outbox=queue.Queue(),
+            inbox=queue.Queue(),
+            abort=lambda request_id: None,
+        )
+        relay = _AbortOnReadRelay(lambda: None)
+        stage = Stage(
+            name="vocoder",
+            role="single",
+            get_next=lambda request_id, output: None,
+            gpu_id=None,
+            endpoints={},
+            control_plane=control_plane,
+            relay=relay,
+            scheduler=scheduler,
+        )
+        stage._aborted.add("req")
+        size = codes.contiguous().view(torch.uint8).numel()
+        metadata = {
+            "relay_info": {"transfer_info": {"size": size}},
+            "tensor_shape": list(codes.shape),
+            "tensor_dtype": str(codes.dtype),
+            "chunk_metadata": {"latency": {"_tensor_placeholder": "latency"}},
+            "chunk_metadata_tensors": {
+                "latency": {
+                    "blob_key": "req:stream:tts_engine:vocoder:0:meta:0",
+                    "relay_metadata": {
+                        "relay_info": {"transfer_info": {"size": 4}},
+                        "tensor_shape": [1],
+                        "tensor_dtype": "torch.float32",
+                    },
+                }
+            },
+        }
+
+        await stage._on_stream_chunk(
+            DataReadyMessage(
+                request_id="req",
+                from_stage="tts_engine",
+                to_stage="vocoder",
+                shm_metadata=metadata,
+                chunk_id=0,
+            )
+        )
+
+        assert scheduler.inbox.empty()
+        assert relay.gets == 2
+
+    asyncio.run(_run())
+
+
+def test_stage_drains_relay_payload_for_already_aborted_request() -> None:
+    async def _run() -> None:
+        control_plane = _FakeControlPlane()
+        scheduler = SimpleNamespace(
+            outbox=queue.Queue(),
+            inbox=queue.Queue(),
+            abort=lambda request_id: None,
+        )
+        relay = _AbortOnReadRelay(lambda: None)
+        stage = Stage(
+            name="vocoder",
+            role="single",
+            get_next=lambda request_id, output: None,
+            gpu_id=None,
+            endpoints={},
+            control_plane=control_plane,
+            relay=relay,
+            scheduler=scheduler,
+        )
+        stage._aborted.add("req")
+        payload = StagePayload(
+            request_id="req",
+            request=OmniRequest(inputs="hello"),
+            data={},
+        )
+
+        await stage._on_data_ready(
+            DataReadyMessage(
+                request_id="req",
+                from_stage="tts_engine",
+                to_stage="vocoder",
+                shm_metadata=_payload_metadata(payload),
+            )
+        )
+
+        assert scheduler.inbox.empty()
+        assert relay.gets == 1
 
     asyncio.run(_run())
 

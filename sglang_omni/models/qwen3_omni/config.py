@@ -81,6 +81,7 @@ class Qwen3OmniPipelineConfig(PipelineConfig):
             name="decode",
             factory=f"{_PKG}.stages.create_decode_executor",
             terminal=True,
+            can_accept_stream_before_payload=True,
         ),
     ]
 
@@ -156,6 +157,7 @@ class Qwen3OmniSpeechPipelineConfig(PipelineConfig):
             name="decode",
             factory=f"{_PKG}.stages.create_decode_executor",
             terminal=True,
+            can_accept_stream_before_payload=True,
         ),
         StageConfig(
             name="talker_ar",
@@ -175,6 +177,7 @@ class Qwen3OmniSpeechPipelineConfig(PipelineConfig):
             gpu=1,
             next="code2wav",
             stream_to=["code2wav"],
+            can_accept_stream_before_payload=True,
         ),
         StageConfig(
             name="code2wav",
@@ -182,6 +185,7 @@ class Qwen3OmniSpeechPipelineConfig(PipelineConfig):
             factory_args={"device": "cuda"},
             gpu=1,
             terminal=True,
+            can_accept_stream_before_payload=True,
         ),
     ]
 

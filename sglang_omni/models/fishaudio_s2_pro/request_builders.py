@@ -36,15 +36,18 @@ class S2ProSGLangRequestData(SGLangARRequestData):
     semantic_history_count: int = 0
     last_codebook_values: Any = None
     latest_stream_code_chunk: torch.Tensor | None = None
+    finish_reason: str | None = None
 
     def __post_init__(self) -> None:
         validate_s2pro_top_k(self.top_k)
 
 
 def validate_s2pro_top_k(top_k: int) -> None:
+    if top_k == -1:
+        return
     if not 1 <= top_k <= _S2PRO_GRAPH_TOP_K:
         raise ValueError(
-            f"S2-Pro top_k must be between 1 and {_S2PRO_GRAPH_TOP_K}; got {top_k}"
+            f"S2-Pro top_k must be -1 or between 1 and {_S2PRO_GRAPH_TOP_K}; got {top_k}"
         )
 
 
@@ -129,6 +132,7 @@ def apply_tts_result(state: S2ProState, result: S2ProSGLangRequestData) -> None:
     state.output_codes = torch.cat(result.output_codes, dim=1)
     state.completion_tokens = state.output_codes.shape[1]
     state.prompt_tokens = len(result.input_ids) if result.input_ids is not None else 0
+    state.finish_reason = result.finish_reason or "stop"
 
 
 def make_tts_scheduler_adapters(*, tokenizer: Any):

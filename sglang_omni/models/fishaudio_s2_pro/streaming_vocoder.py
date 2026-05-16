@@ -98,6 +98,13 @@ def flush_stream_vocoder_chunk(
     if not has_codes and not has_pending_tail:
         return None
 
+    if not has_codes and has_pending_tail:
+        state.pending_tail = None
+        return _build_audio_chunk_payload(
+            pending_tail,
+            sample_rate=codec.sample_rate,
+        )
+
     if state.total_tokens <= state.last_vocode_tokens and not has_pending_tail:
         return None
 
@@ -132,6 +139,7 @@ def _build_stream_vocoder_chunk(
         pending_tail = state.pending_tail
         if pending_tail is None or pending_tail.numel() == 0:
             return None
+        state.pending_tail = None
         return _build_audio_chunk_payload(
             pending_tail,
             sample_rate=codec.sample_rate,
@@ -514,16 +522,37 @@ class S2ProVocoderScheduler:
             return
         for msg in batch:
             self._pending_done.discard(msg.request_id)
+
+        valid_messages: list[IncomingMessage] = []
+        valid_payloads: list[StagePayload] = []
+        for msg in batch:
+            try:
+                self._validate_payload_state(msg.data)
+            except Exception as exc:
+                self.outbox.put(
+                    OutgoingMessage(
+                        request_id=msg.request_id,
+                        type="error",
+                        data=exc,
+                    )
+                )
+                continue
+            valid_messages.append(msg)
+            valid_payloads.append(msg.data)
+
+        if not valid_messages:
+            return
+
         try:
-            results = self._vocode_payloads([msg.data for msg in batch])
+            results = self._vocode_payloads(valid_payloads)
         except Exception as exc:
-            for msg in batch:
+            for msg in valid_messages:
                 self.outbox.put(
                     OutgoingMessage(request_id=msg.request_id, type="error", data=exc)
                 )
             return
 
-        for msg, result in zip(batch, results):
+        for msg, result in zip(valid_messages, results):
             if msg.request_id in self._aborted_request_ids:
                 continue
             self.outbox.put(
@@ -537,13 +566,20 @@ class S2ProVocoderScheduler:
     def _vocode_payload(self, payload: StagePayload) -> StagePayload:
         return self._vocode_payloads([payload])[0]
 
+    def _validate_payload_state(self, payload: StagePayload) -> S2ProState:
+        state = S2ProState.from_dict(payload.data)
+        if (
+            state.output_codes is None
+            or state.output_codes.ndim != 2
+            or state.output_codes.shape[1] == 0
+        ):
+            raise ValueError(
+                f"Request {payload.request_id}: S2-Pro generated no audio codec tokens"
+            )
+        return state
+
     def _vocode_payloads(self, payloads: list[StagePayload]) -> list[StagePayload]:
-        states = [S2ProState.from_dict(payload.data) for payload in payloads]
-        for payload, state in zip(payloads, states):
-            if state.output_codes is None or state.output_codes.shape[1] == 0:
-                raise ValueError(
-                    f"Request {payload.request_id}: S2-Pro generated no audio codec tokens"
-                )
+        states = [self._validate_payload_state(payload) for payload in payloads]
         code_batches = [state.output_codes[1:].to(self._device) for state in states]
         lengths = [int(codes.shape[-1]) for codes in code_batches]
         max_len = max(lengths)

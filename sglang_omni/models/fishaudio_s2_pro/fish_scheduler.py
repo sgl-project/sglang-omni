@@ -262,6 +262,7 @@ class FishIterationController:
             # Skip caching the terminal slow-AR EOS regardless of req.finished()
             # semantics: it is not an audio timestep and has no KV to preserve.
             if semantic_token == self._im_end_token_id:
+                data.finish_reason = "stop"
                 return
             if not req.finished() and req.decode_batch_idx == 0:
                 self.tree_cache.cache_unfinished_req(req)
@@ -278,10 +279,12 @@ class FishIterationController:
             semantic_token = int(data.previous_semantic_tokens[-1])
 
         if semantic_token == self._im_end_token_id:
+            data.finish_reason = "stop"
             return True
 
         max_tok = data.max_new_tokens or self._max_new_tokens
         if len(data.output_codes) >= max_tok:
+            data.finish_reason = "length"
             return True
 
         return False

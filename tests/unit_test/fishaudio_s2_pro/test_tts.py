@@ -14,7 +14,10 @@ from sglang_omni.models.fishaudio_s2_pro.model_runner import (
     FishS2ProModelRunner,
     collect_s2pro_step_outputs,
 )
-from sglang_omni.models.fishaudio_s2_pro.request_builders import S2ProSGLangRequestData
+from sglang_omni.models.fishaudio_s2_pro.request_builders import (
+    S2ProSGLangRequestData,
+    validate_s2pro_top_k,
+)
 from sglang_omni.models.fishaudio_s2_pro.sglang_model import S2ProSGLangTextModel
 from sglang_omni.scheduling.messages import IncomingMessage
 from sglang_omni.scheduling.types import (
@@ -313,6 +316,10 @@ def test_fish_s2pro_prepare_decode_uses_gpu_history_buffer() -> None:
     assert bool(runner.model._vq_mask[0])
 
 
+def test_fish_s2pro_accepts_default_top_k_sentinel() -> None:
+    validate_s2pro_top_k(-1)
+
+
 def test_fish_s2pro_setup_vq_decode_allocates_sampling_state() -> None:
     model = SimpleNamespace(
         vocab_size=80,
@@ -347,6 +354,70 @@ def test_fish_s2pro_setup_vq_decode_allocates_sampling_state() -> None:
     assert model._rep_positions.tolist() == [0, 1, 2, 3, 4]
     assert model._top_k_positions.shape == (30,)
     assert model._vq_ready
+
+
+def test_fish_s2pro_decode_codebooks_keeps_eos_out_of_audio_embedding() -> None:
+    class _AudioDecoder:
+        def __init__(self) -> None:
+            self.seen_embedding_ids: list[torch.Tensor] = []
+
+        def reset_caches(self) -> None:
+            pass
+
+        def project_in(self, hidden_states: torch.Tensor) -> torch.Tensor:
+            return hidden_states
+
+        def forward_kvcached(
+            self,
+            hidden_states: torch.Tensor,
+            *,
+            codebook_idx: int,
+        ) -> torch.Tensor:
+            del hidden_states, codebook_idx
+            return torch.zeros(1, 1, 8)
+
+        def embeddings(self, ids: torch.Tensor) -> torch.Tensor:
+            assert int(ids.max().item()) < 8
+            self.seen_embedding_ids.append(ids.detach().clone())
+            return torch.zeros(ids.shape[0], 4)
+
+    audio_decoder = _AudioDecoder()
+    model = SimpleNamespace(
+        _semantic_bias=torch.full((40,), -float("inf")),
+        _prev_token_count=torch.zeros(1, dtype=torch.long),
+        _ras_range=torch.arange(4, 0, -1),
+        _prev_tokens=torch.zeros(1, 4, dtype=torch.long),
+        _ras_temperature=torch.ones(1),
+        _sampling_temperature=torch.ones(1),
+        _ras_top_p=torch.ones(1),
+        _sampling_top_p=torch.ones(1),
+        _sampling_rep_penalty=torch.ones(1),
+        _rep_positions=torch.arange(4),
+        _graph_top_k=30,
+        _sampling_top_k=torch.full((1,), 30, dtype=torch.long),
+        _top_k_positions=torch.arange(30),
+        _audio_decoder=audio_decoder,
+        _semantic_begin_id=10,
+        _im_end_token_id=30,
+        _codebook_size=8,
+        _num_codebooks=2,
+        _output_codes=torch.zeros(1, 3, dtype=torch.long),
+        _output_semantic_ids=torch.zeros(1, dtype=torch.long),
+    )
+    model._semantic_bias[10:18] = 0.0
+    model._semantic_bias[30] = 0.0
+    logits = torch.full((1, 40), -1_000_000.0)
+    logits[0, 30] = 1_000_000.0
+
+    S2ProSGLangTextModel._decode_codebooks(
+        model,
+        logits,
+        torch.zeros(1, 4),
+    )
+
+    assert int(model._output_semantic_ids[0].item()) == 30
+    assert int(model._output_codes[0, 0].item()) == 30
+    assert int(audio_decoder.seen_embedding_ids[0][0].item()) == 0
 
 
 def test_fish_s2pro_terminal_im_end_is_not_audio_codebook_frame() -> None:
@@ -489,3 +560,16 @@ def test_fish_s2pro_chunked_step_does_not_mutate_decode_state() -> None:
     assert request.data.previous_semantic_tokens == []
     assert request.data.last_codebook_values is None
     assert tree_cache.cached_requests == 0
+
+
+def test_fish_s2pro_max_tokens_sets_length_finish_reason() -> None:
+    tree_cache = _CountingTreeCache()
+    controller = FishIterationController(tree_cache, IM_END_TOKEN_ID)
+    request = _make_s2pro_request("req-length")
+    request.data.max_new_tokens = 1
+
+    result = _collect_s2pro_step([request], [[SEMANTIC_TOKEN_ID, 11, 22]])
+    semantic_token = _update_request_from_step(controller, request, result)
+
+    assert controller.is_finished(request, semantic_token)
+    assert request.data.finish_reason == "length"

@@ -18,11 +18,7 @@ from typing import Any, Callable, Literal
 
 from sglang_omni.pipeline import relay_io
 from sglang_omni.pipeline.stage.input import DirectInput, InputHandler
-from sglang_omni.pipeline.stage.stream_queue import (
-    StreamItem,
-    StreamQueue,
-    StreamSignal,
-)
+from sglang_omni.pipeline.stage.stream_queue import StreamItem, StreamQueue
 from sglang_omni.pipeline.tp_control import TPLeaderFanout
 from sglang_omni.profiler.torch_profiler import TorchProfiler
 from sglang_omni.proto import (
@@ -118,7 +114,6 @@ class Stage:
         self._aborted: set[str] = set()
         self._active_requests: set[str] = set()
         self._stream_queue: StreamQueue | None = None
-        self._pending_stream_data: dict[str, list[StreamItem | StreamSignal]] = {}
         self._stream_chunk_counters: dict[tuple[str, str], int] = {}
         self._scheduler_thread: threading.Thread | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -224,7 +219,7 @@ class Stage:
             await self._on_submit(msg)
         elif isinstance(msg, DataReadyMessage):
             if msg.is_done or msg.error:
-                self._on_stream_signal(msg)
+                await self._on_stream_signal(msg)
             elif msg.chunk_id is not None:
                 await self._on_stream_chunk(msg)
             else:
@@ -248,7 +243,7 @@ class Stage:
     async def _on_data_ready(self, msg: DataReadyMessage) -> None:
         request_id = msg.request_id
         if request_id in self._aborted:
-            self.relay.cleanup(request_id)
+            await self._discard_payload_data(msg)
             return
         self._active_requests.add(request_id)
         if self._stream_queue is not None and not self._stream_queue.has(request_id):
@@ -274,33 +269,11 @@ class Stage:
         merged = self.input_handler.receive(request_id, msg.from_stage, payload)
         if merged is not None:
             await self._execute(merged)
-            for pending in self._pending_stream_data.pop(request_id, []):
-                if self._stream_queue is None:
-                    continue
-                if isinstance(pending, StreamItem):
-                    self._stream_queue.put(request_id, pending)
-                    self._route_stream_item(request_id, pending)
-                elif pending.error:
-                    self._stream_queue.put_error(
-                        request_id,
-                        pending.error,
-                        from_stage=pending.from_stage,
-                    )
-                elif pending.is_done:
-                    self._stream_queue.put_done(
-                        request_id,
-                        from_stage=pending.from_stage,
-                    )
-                    self.scheduler.inbox.put(
-                        IncomingMessage(
-                            request_id=request_id,
-                            type="stream_done",
-                        )
-                    )
 
     async def _on_stream_chunk(self, msg: DataReadyMessage) -> None:
         request_id = msg.request_id
         if request_id in self._aborted:
+            await self._discard_stream_chunk_data(msg)
             return
         self._active_requests.add(request_id)
 
@@ -319,7 +292,7 @@ class Stage:
                 return
             if request_id in self._aborted:
                 return
-            self._route_or_buffer_stream_item(request_id, item)
+            await self._route_stream_item_or_fail(request_id, item)
             return
 
         # Cross-GPU: relay
@@ -346,13 +319,24 @@ class Stage:
             from_stage=msg.from_stage,
             metadata=metadata,
         )
-        self._route_or_buffer_stream_item(request_id, item)
+        await self._route_stream_item_or_fail(request_id, item)
 
-    def _route_or_buffer_stream_item(self, request_id: str, item: StreamItem) -> None:
+    async def _route_stream_item_or_fail(
+        self, request_id: str, item: StreamItem
+    ) -> None:
         if self._open_pre_payload_stream_if_allowed(request_id):
             self._route_stream_item(request_id, item)
             return
-        self._pending_stream_data.setdefault(request_id, []).append(item)
+        with suppress(Exception):
+            self.scheduler.abort(request_id)
+        await self._send_failure(
+            request_id,
+            (
+                f"Stage {self.name}: stream chunk from {item.from_stage!r} arrived "
+                "before the request payload, but this stage is not configured to "
+                "accept pre-payload stream data"
+            ),
+        )
 
     async def _queue_stream_error(
         self,
@@ -362,32 +346,16 @@ class Stage:
     ) -> None:
         if request_id in self._aborted:
             return
-        if self._stream_queue is None:
-            logger.error(
-                "Stage %s: stream error with no queue for %s: %s",
-                self.name,
-                request_id,
-                error,
-            )
-            await self._send_failure(request_id, str(error))
-            return
-        if self._stream_queue.has(request_id):
-            self._stream_queue.put_error(
-                request_id,
-                error,
-                from_stage=from_stage,
-            )
-            return
-        if self._open_pre_payload_stream_if_allowed(request_id):
-            self._stream_queue.put_error(
-                request_id,
-                error,
-                from_stage=from_stage,
-            )
-            return
-        self._pending_stream_data.setdefault(request_id, []).append(
-            StreamSignal(from_stage=from_stage, error=error)
+        logger.error(
+            "Stage %s: stream error from %s for %s: %s",
+            self.name,
+            from_stage,
+            request_id,
+            error,
         )
+        with suppress(Exception):
+            self.scheduler.abort(request_id)
+        await self._send_failure(request_id, str(error))
 
     async def _read_chunk_metadata(
         self, shm_metadata: dict, blob_key: str
@@ -420,27 +388,64 @@ class Stage:
                 metadata = relay_io.restore_tensors(metadata, tensor_dict)
         return metadata or None
 
-    def _on_stream_signal(self, msg: DataReadyMessage) -> None:
+    async def _discard_payload_data(self, msg: DataReadyMessage) -> None:
+        request_id = msg.request_id
+        try:
+            await relay_io.read_payload(self.relay, request_id, msg.shm_metadata)
+        except Exception:
+            logger.debug(
+                "Stage %s: failed to drain aborted payload for %s",
+                self.name,
+                request_id,
+                exc_info=True,
+            )
+            self.relay.cleanup(request_id)
+
+    async def _discard_stream_chunk_data(self, msg: DataReadyMessage) -> None:
+        if isinstance(msg.shm_metadata, dict) and msg.shm_metadata.get("_ipc"):
+            return
+        if msg.chunk_id is None:
+            return
+        blob_key = (
+            f"{msg.request_id}:stream:{msg.from_stage}:{msg.to_stage}:{msg.chunk_id}"
+        )
+        try:
+            await relay_io.read_blob(self.relay, blob_key, msg.shm_metadata)
+            await self._read_chunk_metadata(msg.shm_metadata, blob_key)
+        except Exception:
+            logger.debug(
+                "Stage %s: failed to drain aborted stream chunk for %s",
+                self.name,
+                msg.request_id,
+                exc_info=True,
+            )
+
+    async def _on_stream_signal(self, msg: DataReadyMessage) -> None:
         request_id = msg.request_id
         if request_id in self._aborted:
             return
         self._active_requests.add(request_id)
-        if not self._open_pre_payload_stream_if_allowed(request_id):
-            if msg.error:
-                self._pending_stream_data.setdefault(request_id, []).append(
-                    StreamSignal(
-                        from_stage=msg.from_stage,
-                        error=RuntimeError(msg.error),
-                    )
-                )
-            elif msg.is_done:
-                self._pending_stream_data.setdefault(request_id, []).append(
-                    StreamSignal(from_stage=msg.from_stage, is_done=True)
-                )
-            return
         if msg.error:
-            self._stream_queue.put_error(request_id, RuntimeError(msg.error))
-        elif msg.is_done:
+            await self._queue_stream_error(
+                request_id,
+                msg.from_stage,
+                RuntimeError(msg.error),
+            )
+            return
+
+        if msg.is_done:
+            if not self._open_pre_payload_stream_if_allowed(request_id):
+                with suppress(Exception):
+                    self.scheduler.abort(request_id)
+                await self._send_failure(
+                    request_id,
+                    (
+                        f"Stage {self.name}: stream_done from {msg.from_stage!r} "
+                        "arrived before the request payload, but this stage is not "
+                        "configured to accept pre-payload stream data"
+                    ),
+                )
+                return
             self._stream_queue.put_done(request_id, from_stage=msg.from_stage)
             self.scheduler.inbox.put(
                 IncomingMessage(
@@ -682,6 +687,7 @@ class Stage:
         await self.control_plane.send_stream(msg)
 
     async def _send_failure(self, request_id: str, error: str) -> None:
+        self._record_aborted_request_id(request_id)
         if not self._owns_external_io:
             self._clear_request_state(request_id)
             raise RuntimeError(f"Follower stage {self.name} failed: {error}")
@@ -698,7 +704,6 @@ class Stage:
     def _clear_request_state(self, request_id: str) -> None:
         self._active_requests.discard(request_id)
         self.input_handler.cancel(request_id)
-        self._pending_stream_data.pop(request_id, None)
         if self._stream_queue is not None:
             self._stream_queue.close(request_id)
         stale_keys = [
@@ -741,13 +746,16 @@ class Stage:
             if self._scheduler_crash_error is None and self._running:
                 logger.exception("Stage %s abort listener crashed", self.name)
 
-    def _on_abort(self, request_id: str) -> None:
+    def _record_aborted_request_id(self, request_id: str) -> None:
         self._aborted.add(request_id)
         if len(self._aborted) > 10000:
             excess = len(self._aborted) - 5000
             it = iter(self._aborted)
             to_remove = [next(it) for _ in range(excess)]
             self._aborted -= set(to_remove)
+
+    def _on_abort(self, request_id: str) -> None:
+        self._record_aborted_request_id(request_id)
         self.relay.cleanup(request_id)
         self._clear_request_state(request_id)
         self.scheduler.abort(request_id)

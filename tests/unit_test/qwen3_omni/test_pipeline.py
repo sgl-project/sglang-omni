@@ -69,6 +69,10 @@ def test_qwen_pipeline_config_and_state_contracts() -> None:
     assert {stage.name: stage for stage in text_config.stages}["thinker"].stream_to == [
         "decode"
     ]
+    assert _stage(text_config, "decode").can_accept_stream_before_payload
+    assert _stage(speech_config, "decode").can_accept_stream_before_payload
+    assert _stage(speech_config, "talker_ar").can_accept_stream_before_payload
+    assert _stage(speech_config, "code2wav").can_accept_stream_before_payload
 
     state = PipelineState.from_dict(
         {
