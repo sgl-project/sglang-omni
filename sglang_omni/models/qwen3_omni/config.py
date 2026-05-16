@@ -18,7 +18,10 @@ def _preprocessing_stage() -> StageConfig:
         name="preprocessing",
         factory=f"{_PKG}.stages.create_preprocessing_executor",
         factory_args={"thinker_max_seq_len": 8192},
-        runtime_arg_map={"max_seq_len": "thinker_max_seq_len"},
+        runtime_arg_map={
+            "max_seq_len": "thinker_max_seq_len",
+            "video_fps": "video_fps",
+        },
         next=["image_encoder", "audio_encoder", "mm_aggregate"],
         project_payload={
             "image_encoder": (

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
+from dataclasses import dataclass
 from typing import Any
 
 import torch
@@ -50,6 +51,13 @@ QWEN3_ENCODER_CACHE_MAX_BYTES = 4 * 1024**3
 QWEN3_ENCODER_CACHE_MAX_ENTRIES = 64
 
 
+@dataclass(frozen=True)
+class _ArMemoryContract:
+    mem_fraction_static_pinned: bool
+    effective_total_gpu_memory_fraction: float | None
+    applied_encoder_mem_reserve: float
+
+
 def _apply_qwen_thinker_encoder_reserve(
     server_args: Any,
     *,
@@ -67,14 +75,24 @@ def _apply_colocated_ar_memory_contract(
     *,
     stage_name: str,
     total_gpu_memory_fraction: float | None,
-) -> bool:
+    encoder_mem_reserve: float = 0.0,
+) -> _ArMemoryContract:
     """Derive or validate SGLang AR memory args for a colocated stage."""
 
     if total_gpu_memory_fraction is None:
-        return overrides.get("mem_fraction_static") is not None
+        return _ArMemoryContract(
+            mem_fraction_static_pinned=overrides.get("mem_fraction_static") is not None,
+            effective_total_gpu_memory_fraction=None,
+            applied_encoder_mem_reserve=0.0,
+        )
 
     explicit_mem_fraction = overrides.get("mem_fraction_static")
     if explicit_mem_fraction is not None:
+        if encoder_mem_reserve:
+            raise ValueError(
+                f"Stage {stage_name} cannot apply encoder_mem_reserve when "
+                "runtime.sglang_server_args.mem_fraction_static is explicitly set."
+            )
         if abs(float(explicit_mem_fraction) - total_gpu_memory_fraction) > 1e-3:
             raise ValueError(
                 f"Stage {stage_name} sets conflicting colocated memory "
@@ -84,10 +102,49 @@ def _apply_colocated_ar_memory_contract(
                 f"{float(explicit_mem_fraction):.3f}. Use one value or make "
                 "the explicit SGLang override match the stage total budget."
             )
-        return True
+        return _ArMemoryContract(
+            mem_fraction_static_pinned=True,
+            effective_total_gpu_memory_fraction=total_gpu_memory_fraction,
+            applied_encoder_mem_reserve=0.0,
+        )
 
-    overrides["mem_fraction_static"] = total_gpu_memory_fraction
-    return True
+    effective_total_gpu_memory_fraction = _apply_colocated_encoder_mem_reserve(
+        total_gpu_memory_fraction,
+        encoder_mem_reserve,
+    )
+    overrides["mem_fraction_static"] = effective_total_gpu_memory_fraction
+    applied_encoder_mem_reserve = (
+        encoder_mem_reserve
+        if effective_total_gpu_memory_fraction != total_gpu_memory_fraction
+        else 0.0
+    )
+    return _ArMemoryContract(
+        mem_fraction_static_pinned=True,
+        effective_total_gpu_memory_fraction=effective_total_gpu_memory_fraction,
+        applied_encoder_mem_reserve=applied_encoder_mem_reserve,
+    )
+
+
+def _apply_colocated_encoder_mem_reserve(
+    total_gpu_memory_fraction: float,
+    encoder_mem_reserve: float,
+) -> float:
+    if not 0.0 <= encoder_mem_reserve < 1.0:
+        raise ValueError("encoder_mem_reserve must be in [0, 1)")
+    if encoder_mem_reserve == 0:
+        return total_gpu_memory_fraction
+
+    effective_total_gpu_memory_fraction = (
+        total_gpu_memory_fraction - encoder_mem_reserve
+    )
+    if effective_total_gpu_memory_fraction < 0.1:
+        raise ValueError(
+            f"colocated total_gpu_memory_fraction {total_gpu_memory_fraction:.3f} "
+            f"minus encoder_mem_reserve {encoder_mem_reserve:.3f} = "
+            f"{effective_total_gpu_memory_fraction:.3f} is below the safe floor "
+            "0.1; lower encoder_mem_reserve or increase the thinker stage budget."
+        )
+    return round(effective_total_gpu_memory_fraction, 3)
 
 
 def load_state(payload: StagePayload) -> PipelineState:
@@ -829,29 +886,52 @@ def create_sglang_thinker_executor_from_config(
     if server_args_overrides:
         overrides.update(server_args_overrides)
     overrides["tp_size"] = tp_size
-    mem_fraction_static_pinned = _apply_colocated_ar_memory_contract(
+    has_explicit_colocated_mem_fraction = (
+        total_gpu_memory_fraction is not None
+        and overrides.get("mem_fraction_static") is not None
+    )
+    colocated_encoder_mem_reserve = (
+        encoder_mem_reserve
+        if total_gpu_memory_fraction is not None
+        and not has_explicit_colocated_mem_fraction
+        else 0.0
+    )
+    memory_contract = _apply_colocated_ar_memory_contract(
         overrides,
         stage_name="thinker",
         total_gpu_memory_fraction=total_gpu_memory_fraction,
+        encoder_mem_reserve=colocated_encoder_mem_reserve,
     )
     server_args = build_sglang_server_args(
         model_path,
         context_length=thinker_max_seq_len,
         **overrides,
     )
-    encoder_reserve_applied = _apply_qwen_thinker_encoder_reserve(
-        server_args,
-        has_explicit_mem_fraction_static=mem_fraction_static_pinned,
-        encoder_mem_reserve=encoder_mem_reserve,
-    )
+    if total_gpu_memory_fraction is None:
+        encoder_reserve_applied = _apply_qwen_thinker_encoder_reserve(
+            server_args,
+            has_explicit_mem_fraction_static=(
+                memory_contract.mem_fraction_static_pinned
+            ),
+            encoder_mem_reserve=encoder_mem_reserve,
+        )
+        effective_total_gpu_memory_fraction = total_gpu_memory_fraction
+        applied_encoder_reserve = (
+            encoder_mem_reserve if encoder_reserve_applied else 0.0
+        )
+    else:
+        effective_total_gpu_memory_fraction = (
+            memory_contract.effective_total_gpu_memory_fraction
+        )
+        applied_encoder_reserve = memory_contract.applied_encoder_mem_reserve
 
     pre_load_avail_mem = avail_gpu_mem(gpu_id)
     pre_load_process_mem = get_process_gpu_memory_bytes(gpu_id)
-    applied_encoder_reserve = encoder_mem_reserve if encoder_reserve_applied else 0.0
     logger.info(
         f"sglang_ar_startup stage=thinker gpu_id={gpu_id} tp_rank={tp_rank}/{tp_size} "
         f"context_length={thinker_max_seq_len} "
         f"total_gpu_memory_fraction={total_gpu_memory_fraction} "
+        f"effective_total_gpu_memory_fraction={effective_total_gpu_memory_fraction} "
         f"mem_fraction_static={server_args.mem_fraction_static} "
         f"encoder_mem_reserve={applied_encoder_reserve} "
         f"pre_load_avail_mem={pre_load_avail_mem} "
@@ -864,13 +944,14 @@ def create_sglang_thinker_executor_from_config(
         speech_enabled=speech_enabled,
         tp_rank=tp_rank,
         nccl_port=nccl_port,
-        total_gpu_memory_fraction=total_gpu_memory_fraction,
+        total_gpu_memory_fraction=effective_total_gpu_memory_fraction,
     )
     post_load_process_mem = get_process_gpu_memory_bytes(gpu_id)
     logger.info(
         f"sglang_ar_started stage=thinker gpu_id={gpu_id} tp_rank={tp_rank}/{tp_size} "
         f"context_length={thinker_max_seq_len} "
         f"total_gpu_memory_fraction={total_gpu_memory_fraction} "
+        f"effective_total_gpu_memory_fraction={effective_total_gpu_memory_fraction} "
         f"mem_fraction_static={server_args.mem_fraction_static} "
         f"pre_load_avail_mem={pre_load_avail_mem} "
         f"post_load_avail_mem={avail_gpu_mem(gpu_id)} "

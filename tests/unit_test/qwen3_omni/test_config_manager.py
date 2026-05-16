@@ -5,7 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from sglang_omni.config import build_stage_placement_plan
+from sglang_omni.cli.serve import apply_encoder_mem_reserve_cli_override
+from sglang_omni.config import build_stage_placement_plan, resolve_stage_factory_args
 from sglang_omni.config.manager import ConfigManager
 from sglang_omni.models.qwen3_omni.config import Qwen3OmniSpeechColocatedPipelineConfig
 
@@ -124,6 +125,36 @@ def test_qwen3_omni_colocated_example_config_loads_and_plans() -> None:
         "talker_ar": 0,
         "code2wav": 0,
     }
+
+
+def test_qwen_preprocessing_runtime_video_fps_resolves_to_factory_arg() -> None:
+    config = Qwen3OmniSpeechColocatedPipelineConfig(model_path="dummy")
+    preprocessing = _stage(config, "preprocessing")
+    preprocessing.runtime.video_fps = 2.0
+
+    args = resolve_stage_factory_args(preprocessing, config)
+
+    assert args["video_fps"] == 2.0
+
+
+def test_colocated_example_reserve_keeps_raw_budget_in_resolved_config() -> None:
+    config_path = _REPO_ROOT / "examples" / "configs" / "qwen3_omni_colocated.yaml"
+    config = ConfigManager.from_file(str(config_path)).config
+
+    apply_encoder_mem_reserve_cli_override(
+        config,
+        encoder_mem_reserve=0.05,
+        mem_fraction_static=None,
+        thinker_mem_fraction_static=None,
+    )
+    plan = build_stage_placement_plan(config)
+    thinker = _stage(config, "thinker")
+    thinker_args = resolve_stage_factory_args(thinker, config)
+
+    assert plan.gpus[0].total_gpu_memory_fraction == pytest.approx(0.94)
+    assert thinker.runtime.resources.total_gpu_memory_fraction == pytest.approx(0.75)
+    assert thinker_args["total_gpu_memory_fraction"] == pytest.approx(0.75)
+    assert thinker_args["encoder_mem_reserve"] == pytest.approx(0.05)
 
 
 def test_config_manager_rejects_unknown_stage_override(tmp_path: Path) -> None:
