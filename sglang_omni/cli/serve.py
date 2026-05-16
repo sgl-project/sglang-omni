@@ -106,6 +106,21 @@ def _apply_stage_server_args_override(
                 runtime_server_args.update(updates)
 
 
+def _apply_stage_mem_fraction_override(
+    pipeline_config: PipelineConfig,
+    *,
+    stage_name: str,
+    value: float,
+) -> None:
+    matching_stages = _find_matching_stages(
+        pipeline_config,
+        stage_name=stage_name,
+        reason="SGLang mem_fraction_static override",
+    )
+    for stage in matching_stages:
+        stage.runtime.sglang_server_args.mem_fraction_static = value
+
+
 def _stage_has_explicit_mem_fraction_static(
     pipeline_config: PipelineConfig,
     *,
@@ -195,11 +210,10 @@ def apply_mem_fraction_cli_overrides(
         # the global flag is the fallback when no per-role flag was given.
         final_value = role_value if role_value is not None else mem_fraction_static
         if final_value is not None:
-            _apply_stage_server_args_override(
+            _apply_stage_mem_fraction_override(
                 pipeline_config,
                 stage_name=stage_name,
-                updates={"mem_fraction_static": final_value},
-                reason=f"{role} SGLang mem_fraction_static override",
+                value=final_value,
             )
     return pipeline_config
 
@@ -346,6 +360,27 @@ def _apply_stage_gpu_override(
         stage.gpu = int(gpu)
 
 
+def _validate_colocated_gpu_override(
+    pipeline_config: PipelineConfig,
+    *,
+    stage_name: str,
+    flag_name: str,
+    gpu: int | None,
+) -> None:
+    if gpu is None or type(pipeline_config).__name__ != _QWEN_COLOCATED_CONFIG_CLASS:
+        return
+    matching_stages = _find_matching_stages(
+        pipeline_config,
+        stage_name=stage_name,
+        reason=f"{flag_name} placement validation",
+    )
+    current_gpu = matching_stages[0].gpu
+    if current_gpu != gpu:
+        raise typer.BadParameter(
+            f"{flag_name} cannot move {stage_name} away from the colocated GPU"
+        )
+
+
 def apply_parallelism_cli_overrides(
     pipeline_config: PipelineConfig,
     *,
@@ -374,6 +409,18 @@ def apply_parallelism_cli_overrides(
             if stage.tp_size == 1 and isinstance(stage.gpu, list):
                 stage.gpu = int(stage.gpu[0])
 
+    _validate_colocated_gpu_override(
+        pipeline_config,
+        stage_name="talker_ar",
+        flag_name="--talker-gpu",
+        gpu=talker_gpu,
+    )
+    _validate_colocated_gpu_override(
+        pipeline_config,
+        stage_name="code2wav",
+        flag_name="--code2wav-gpu",
+        gpu=code2wav_gpu,
+    )
     _apply_stage_gpu_override(
         pipeline_config,
         stage_name="talker_ar",
