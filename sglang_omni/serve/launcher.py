@@ -238,6 +238,9 @@ async def _run_server(
                 client,
                 model_name=model_name or pipeline_config.name,
             )
+            profiler_dir = os.environ.get("SGLANG_TORCH_PROFILER_DIR")
+            profiler_ctl = ProfilerControlClient(mp_runner.stage_control_endpoints)
+            _mount_profiler_routes(app, profiler_ctl, profiler_dir)
 
             config = uvicorn.Config(
                 app,

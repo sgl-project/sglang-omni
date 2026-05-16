@@ -8,6 +8,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from typing import Protocol
 
+from sglang_omni.config.runtime import reject_untyped_total_gpu_memory_fraction
 from sglang_omni.config.schema import PipelineConfig, StageConfig
 from sglang_omni.utils.imports import import_string
 
@@ -58,6 +59,11 @@ class StagePlacementPlanner:
         gpu_entries: dict[int, list[tuple[str, float | None]]] = defaultdict(list)
 
         for stage in stages:
+            reject_untyped_total_gpu_memory_fraction(
+                stage.name,
+                stage.factory_args,
+                self._config.runtime_overrides.get(stage.name, {}),
+            )
             gpu_ids = _resolve_stage_gpu_ids(stage)
             if not gpu_ids:
                 continue

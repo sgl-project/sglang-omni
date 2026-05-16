@@ -267,8 +267,11 @@ class PipelineConfig(BaseModel):
         for s in self.stages:
             if not s.factory:
                 raise ValueError(f"Stage {s.name!r} missing factory")
-            if s.next is None and not s.terminal:
-                raise ValueError(f"Stage {s.name!r} must set 'next' or 'terminal'")
+            has_next = s.next is not None
+            if has_next == bool(s.terminal):
+                raise ValueError(
+                    f"Stage {s.name!r} must set exactly one of 'next' or 'terminal'"
+                )
             if s.tp_size < 1:
                 raise ValueError(f"Stage {s.name!r} must have tp_size >= 1")
             if s.parallelism.tp != s.tp_size:

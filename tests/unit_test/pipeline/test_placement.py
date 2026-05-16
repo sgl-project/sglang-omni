@@ -52,7 +52,7 @@ def test_same_gpu_colocation_requires_memory_fraction_for_all_stages() -> None:
         build_stage_placement_plan(config)
 
 
-def test_same_gpu_without_budget_stays_legacy_single_process() -> None:
+def test_same_gpu_without_budget_stays_single_process() -> None:
     config = PipelineConfig(
         model_path="dummy",
         stages=[
@@ -65,6 +65,35 @@ def test_same_gpu_without_budget_stays_legacy_single_process() -> None:
 
     assert plan.requires_multi_process is False
     assert resolve_pipeline_process_mode(config, plan) is False
+
+
+def test_untyped_factory_budget_is_rejected_before_placement() -> None:
+    config = PipelineConfig(
+        model_path="dummy",
+        stages=[
+            StageConfig(
+                name="thinker",
+                factory=_FACTORY,
+                factory_args={"total_gpu_memory_fraction": 0.50},
+                gpu=0,
+                terminal=True,
+            )
+        ],
+    )
+
+    with pytest.raises(ValueError, match="runtime.resources.total_gpu_memory_fraction"):
+        build_stage_placement_plan(config)
+
+
+def test_untyped_runtime_override_budget_is_rejected_before_placement() -> None:
+    config = PipelineConfig(
+        model_path="dummy",
+        runtime_overrides={"thinker": {"total_gpu_memory_fraction": 0.50}},
+        stages=[_stage("thinker", gpu=0, terminal=True)],
+    )
+
+    with pytest.raises(ValueError, match="runtime.resources.total_gpu_memory_fraction"):
+        build_stage_placement_plan(config)
 
 
 def test_same_gpu_colocation_sums_budget_and_requires_multi_process() -> None:

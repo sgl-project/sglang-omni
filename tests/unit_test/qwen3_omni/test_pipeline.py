@@ -230,7 +230,7 @@ def test_qwen_cli_mem_fraction_static_survives_runtime_overrides_overlay() -> No
     assert resolved["server_args_overrides"]["disable_cuda_graph"] is True
 
 
-def test_qwen_cli_mem_fraction_static_rejects_legacy_mem_fraction_duplicate() -> None:
+def test_qwen_cli_mem_fraction_static_rejects_runtime_override_duplicate() -> None:
     config = Qwen3OmniSpeechPipelineConfig(
         model_path="dummy",
         runtime_overrides={

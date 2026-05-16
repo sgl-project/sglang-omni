@@ -60,6 +60,17 @@ def test_invalid_stage_runtime_values_raise() -> None:
         StageRuntimeConfig(video_fps=-1.0)
 
 
+def test_stage_rejects_terminal_with_next() -> None:
+    with pytest.raises(ValueError, match="exactly one"):
+        PipelineConfig(
+            model_path="dummy",
+            stages=[
+                _stage(name="source", next="sink", terminal=True),
+                _stage(name="sink"),
+            ],
+        )
+
+
 def test_tp_size_normalizes_into_parallelism_tp() -> None:
     stage = _stage(tp_size=2, gpu=[0, 1])
 

@@ -18,23 +18,16 @@ def resolve_stage_factory_args(
     *,
     gpu_id: int | None = None,
 ) -> dict[str, Any]:
-    """Resolve final factory args for a stage.
+    """Resolve final factory kwargs for a stage.
 
-    Resolution order is:
-    1. static stage.factory_args from the model config,
-    2. pipeline.runtime_overrides compatibility overlay,
-    3. typed stage.runtime values.
-
-    Typed runtime is the canonical pipeline config surface. Compatibility
-    overlays can still provide values not yet expressed as typed runtime fields,
-    but the same parameter must not be set through both paths. SGLang memory
-    controls stay backend namespaced; placement resource budgets are passed only
-    to stage factories that explicitly declare them.
+    Values are built from stage.factory_args, runtime_overrides, and typed
+    stage.runtime fields, with typed runtime owning V1 resource contracts.
+    Placement budgets are injected only when the factory declares them.
     """
 
     args = dict(stage_cfg.factory_args)
     runtime_overrides = global_cfg.runtime_overrides.get(stage_cfg.name, {})
-    _reject_duplicate_runtime_sources(stage_cfg, args, runtime_overrides)
+    _validate_runtime_sources(stage_cfg, args, runtime_overrides)
     _merge_factory_arg_overrides(args, runtime_overrides)
     _apply_typed_runtime_args(args, stage_cfg)
 
@@ -62,12 +55,29 @@ def resolve_stage_factory_args(
     return args
 
 
-def _reject_duplicate_runtime_sources(
+def reject_untyped_total_gpu_memory_fraction(
+    stage_name: str,
+    factory_args: dict[str, Any],
+    runtime_overrides: dict[str, Any],
+) -> None:
+    if (
+        factory_args.get("total_gpu_memory_fraction") is None
+        and runtime_overrides.get("total_gpu_memory_fraction") is None
+    ):
+        return
+    raise ValueError(
+        f"Stage {stage_name!r} sets total_gpu_memory_fraction through "
+        "factory_args/runtime_overrides; set "
+        "runtime.resources.total_gpu_memory_fraction instead"
+    )
+
+
+def _validate_runtime_sources(
     stage_cfg: StageConfig,
     factory_args: dict[str, Any],
     runtime_overrides: dict[str, Any],
 ) -> None:
-    """Reject old and typed config paths setting the same migrated parameter."""
+    """Validate ownership of runtime fields."""
 
     typed_mem_fraction = stage_cfg.runtime.sglang_server_args.mem_fraction_static
     if typed_mem_fraction is not None and _server_args_mem_fraction_static_is_set(
@@ -80,16 +90,11 @@ def _reject_duplicate_runtime_sources(
             "runtime.sglang_server_args.mem_fraction_static"
         )
 
-    typed_total_fraction = stage_cfg.runtime.resources.total_gpu_memory_fraction
-    if typed_total_fraction is not None and (
-        factory_args.get("total_gpu_memory_fraction") is not None
-        or runtime_overrides.get("total_gpu_memory_fraction") is not None
-    ):
-        raise ValueError(
-            f"Stage {stage_cfg.name!r} sets total_gpu_memory_fraction through both "
-            "factory/runtime overrides and typed "
-            "runtime.resources.total_gpu_memory_fraction"
-        )
+    reject_untyped_total_gpu_memory_fraction(
+        stage_cfg.name,
+        factory_args,
+        runtime_overrides,
+    )
 
     for field_name in _MAPPED_STAGE_RUNTIME_FIELDS:
         value = getattr(stage_cfg.runtime, field_name)

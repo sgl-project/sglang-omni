@@ -145,6 +145,26 @@ def test_typed_total_memory_fraction_rejects_factory_duplicate() -> None:
         resolve_stage_factory_args(stage, config)
 
 
+def test_untyped_total_memory_fraction_factory_arg_is_rejected() -> None:
+    stage = _stage(factory_args={"total_gpu_memory_fraction": 0.40})
+    config = PipelineConfig(model_path="dummy-model", stages=[stage])
+
+    with pytest.raises(ValueError, match="runtime.resources.total_gpu_memory_fraction"):
+        resolve_stage_factory_args(stage, config)
+
+
+def test_untyped_total_memory_fraction_runtime_override_is_rejected() -> None:
+    stage = _stage()
+    config = PipelineConfig(
+        model_path="dummy-model",
+        stages=[stage],
+        runtime_overrides={"thinker": {"total_gpu_memory_fraction": 0.40}},
+    )
+
+    with pytest.raises(ValueError, match="runtime.resources.total_gpu_memory_fraction"):
+        resolve_stage_factory_args(stage, config)
+
+
 def test_mapped_runtime_field_requires_stage_arg_mapping() -> None:
     stage = _stage(runtime=StageRuntimeConfig(max_seq_len=8192))
     config = PipelineConfig(model_path="dummy-model", stages=[stage])

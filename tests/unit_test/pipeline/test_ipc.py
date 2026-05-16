@@ -13,7 +13,12 @@ from fastapi import FastAPI
 import sglang_omni.config.compiler as compiler
 import sglang_omni.pipeline.mp_runner as mp_runner
 import sglang_omni.pipeline.stage.runtime as stage_runtime
-from sglang_omni.config.schema import EndpointsConfig, PipelineConfig, StageConfig
+from sglang_omni.config.schema import (
+    EndpointsConfig,
+    PipelineConfig,
+    ProcessConfig,
+    StageConfig,
+)
 from tests.unit_test.fixtures.pipeline_fakes import FakeMpContext, FakeRelay
 
 
@@ -429,6 +434,51 @@ async def test_single_process_launcher_cleans_runtime_dir_on_server_error(
 
     server_serve.assert_awaited_once()
     assert not runtime_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_multi_process_launcher_mounts_profiler_routes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _make_config(tmp_path)
+    config.process = ProcessConfig(mode="multi")
+    app = FastAPI()
+    server_serve = AsyncMock(return_value=None)
+
+    from sglang_omni.serve import launcher
+
+    runner_ref = None
+
+    class FakeRunner:
+        def __init__(self, pipeline_config: PipelineConfig) -> None:
+            del pipeline_config
+            nonlocal runner_ref
+            self.coordinator = _FakeCoordinator()
+            self.stage_control_endpoints = {
+                "preprocessing": "ipc://stage_preprocessing.sock"
+            }
+            self.stopped = False
+            runner_ref = self
+
+        async def start(self, timeout: float) -> None:
+            del timeout
+
+        async def stop(self) -> None:
+            self.stopped = True
+
+    monkeypatch.setattr(launcher, "_find_available_port", lambda host, port: port)
+    monkeypatch.setattr(mp_runner, "MultiProcessPipelineRunner", FakeRunner)
+    monkeypatch.setattr(launcher, "create_app", lambda *a, **k: app)
+    monkeypatch.setattr(launcher.uvicorn.Server, "serve", server_serve)
+
+    await launcher._run_server(config, port=8000)
+
+    mounted_paths = {route.path for route in app.routes}
+    assert "/start_profile" in mounted_paths
+    assert "/stop_profile" in mounted_paths
+    assert runner_ref is not None
+    assert runner_ref.stopped
 
 
 @pytest.mark.asyncio
