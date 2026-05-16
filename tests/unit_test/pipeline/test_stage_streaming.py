@@ -102,6 +102,7 @@ def test_terminal_scheduler_stream_routes_to_coordinator() -> None:
             control_plane=control_plane,
             relay=_FakeRelay(),
             scheduler=scheduler,
+            is_terminal=True,
         )
         stage._active_requests.add("req")
         scheduler.outbox.put(
