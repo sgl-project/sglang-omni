@@ -55,16 +55,15 @@ class Qwen3OmniPlacementPolicy:
         talker = plan.stages.get("talker_ar")
         if thinker is None or talker is None:
             return
+        if thinker.tp_size != 1 or talker.tp_size != 1:
+            return
         if not set(thinker.gpu_ids).intersection(talker.gpu_ids):
             return
 
-        if type(config).__name__ != _COLOCATED_CONFIG_CLASS:
-            raise ValueError(
-                "Qwen thinker and talker_ar may share a GPU only with "
-                f"{_COLOCATED_CONFIG_CLASS}"
-            )
-
-        self._validate_colocated_qwen_runtime(stage_map)
+        raise ValueError(
+            "Qwen thinker and talker_ar may share a GPU only with "
+            f"{_COLOCATED_CONFIG_CLASS}"
+        )
 
     def _validate_colocated_qwen_parallelism(self, stage_map) -> None:
         for stage_name in _AR_STAGES:

@@ -467,6 +467,9 @@ async def test_multi_process_launcher_mounts_profiler_routes(
         async def stop(self) -> None:
             self.stopped = True
 
+        async def wait_failed(self) -> None:
+            await asyncio.Future()
+
     monkeypatch.setattr(launcher, "_find_available_port", lambda host, port: port)
     monkeypatch.setattr(mp_runner, "MultiProcessPipelineRunner", FakeRunner)
     monkeypatch.setattr(launcher, "create_app", lambda *a, **k: app)

@@ -105,14 +105,17 @@ class SGLModelRunner(ModelRunner):
         another process can change global free memory while this process is
         loading weights, making the global delta too small or negative.
 
-        Compute cache headroom as total GPU memory times that budget minus this
-        stage's measured memory. NVML process accounting is preferred. If NVML
-        cannot identify the current process, use the stage-local load delta
-        measured inside SGLang's serialized initialization window.
+        When a stage total-memory budget is provided, compute cache headroom as
+        total GPU memory times that budget minus this stage's measured memory.
+        NVML process accounting is preferred. If NVML cannot identify the
+        current process, use the stage-local load delta measured inside
+        SGLang's serialized initialization window. Without a stage budget, keep
+        upstream SGLang profiling semantics for ordinary non-colocated AR
+        serving.
         """
         if self._total_gpu_memory_fraction is None:
-            raise RuntimeError(
-                "Stage-budgeted KV profiling requires total_gpu_memory_fraction"
+            return self._profile_available_bytes_from_free_memory_delta(
+                pre_model_load_memory
             )
 
         process_memory = get_process_gpu_memory_bytes(self.gpu_id)
@@ -173,6 +176,27 @@ class SGLModelRunner(ModelRunner):
             f"available_for_kv={format_bytes_gib(available_bytes)}"
         )
         return available_bytes
+
+    def _profile_available_bytes_from_free_memory_delta(
+        self, pre_model_load_memory: float
+    ) -> int:
+        """Match SGLang free-memory-delta accounting for non-colocated AR stages."""
+        from sglang.srt.distributed.parallel_state import get_world_group
+        from sglang.srt.utils.common import get_available_gpu_memory
+
+        world_group = get_world_group()
+        post_model_load_memory = get_available_gpu_memory(
+            self.device,
+            self.gpu_id,
+            distributed=world_group.world_size > 1,
+            cpu_group=world_group.cpu_group,
+        )
+        rest_memory = post_model_load_memory - pre_model_load_memory * (
+            1 - self.mem_fraction_static
+        )
+        if self.mambaish_config is not None:
+            rest_memory = self.handle_max_mamba_cache(rest_memory)
+        return int(rest_memory * (1 << 30))
 
     def profile_max_num_token(self, pre_model_load_memory: float) -> int:
         """Profile token capacity for stage-budgeted colocated AR stages."""
