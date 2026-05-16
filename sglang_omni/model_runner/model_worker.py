@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 import socket
 from dataclasses import dataclass
@@ -8,6 +9,8 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from sglang.srt.configs.model_config import ModelConfig
     from sglang.srt.server_args import ServerArgs
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -39,6 +42,7 @@ class ModelWorker:
         self.gpu_id = gpu_id
         self.tp_rank = tp_rank
         self._init_model_config()
+        self._configure_backend_policy()
         self._init_model_runner()
 
         self.device = self.model_runner.device
@@ -81,6 +85,18 @@ class ModelWorker:
         model_config.num_key_value_heads = text_cfg.num_key_value_heads
         model_config.hidden_size = text_cfg.hidden_size
         model_config.num_hidden_layers = text_cfg.num_hidden_layers
+
+    def _configure_backend_policy(self) -> None:
+        effective_quantization = _apply_model_worker_backend_policy(
+            self.server_args,
+            self.model_config,
+            self.model_arch_override,
+        )
+        _initialize_model_worker_backend_globals(
+            self.server_args,
+            self.model_config,
+            effective_quantization,
+        )
 
     def get_memory_pool(self):
         return (
@@ -174,3 +190,80 @@ def _resolve_nccl_port() -> int:
 
     os.environ["MASTER_PORT"] = str(port)
     return port
+
+
+def _apply_model_worker_backend_policy(
+    server_args: ServerArgs,
+    model_config: ModelConfig,
+    model_arch_override: str | None,
+) -> str | None:
+    """Apply Omni backend policy after checkpoint quantization is known."""
+
+    effective_quantization = _normalize_quantization(
+        getattr(model_config, "quantization", None)
+    )
+    server_quantization = _normalize_quantization(
+        getattr(server_args, "quantization", None)
+    )
+    if server_quantization is not None:
+        effective_quantization = server_quantization
+
+    moe_runner_backend = getattr(server_args, "moe_runner_backend", "auto")
+    if (
+        model_arch_override == "Qwen3OmniTalker"
+        and effective_quantization is None
+        and moe_runner_backend == "auto"
+    ):
+        server_args.moe_runner_backend = "flashinfer_cutlass"
+        moe_runner_backend = server_args.moe_runner_backend
+
+    if effective_quantization == "fp8" and moe_runner_backend == "flashinfer_cutlass":
+        raise ValueError(
+            "Qwen3-Omni native FP8 checkpoints cannot use "
+            "moe_runner_backend='flashinfer_cutlass'. Leave the backend as "
+            "'auto' so upstream SGLang selects a native-FP8-compatible MoE "
+            "runner."
+        )
+
+    logger.info(
+        "Configured SGLang backend policy: arch=%s effective_quantization=%s "
+        "server_quantization=%s moe_runner_backend=%s fp8_gemm_backend=%s",
+        model_arch_override,
+        effective_quantization,
+        getattr(server_args, "quantization", None),
+        getattr(server_args, "moe_runner_backend", None),
+        getattr(server_args, "fp8_gemm_runner_backend", None),
+    )
+    return effective_quantization
+
+
+def _normalize_quantization(value: object) -> str | None:
+    if value is None:
+        return None
+    return str(value).lower()
+
+
+def _model_config_has_moe(model_config: ModelConfig) -> bool:
+    config_to_check = getattr(model_config, "hf_text_config", None)
+    if config_to_check is None:
+        hf_config = getattr(model_config, "hf_config", None)
+        config_to_check = getattr(hf_config, "text_config", hf_config)
+    return hasattr(config_to_check, "num_experts_per_tok")
+
+
+def _initialize_model_worker_backend_globals(
+    server_args: ServerArgs,
+    model_config: ModelConfig,
+    effective_quantization: str | None,
+) -> None:
+    """Initialize backend globals needed by direct workers before model loading."""
+
+    if _model_config_has_moe(model_config):
+        from sglang.srt.layers.moe import initialize_moe_config
+
+        initialize_moe_config(server_args)
+
+    if effective_quantization == "fp8":
+        from sglang.srt.layers.quantization.fp8_utils import initialize_fp8_gemm_config
+
+        initialize_fp8_gemm_config(server_args)
