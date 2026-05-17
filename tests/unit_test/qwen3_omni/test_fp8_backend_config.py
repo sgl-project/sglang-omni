@@ -3,23 +3,33 @@
 from __future__ import annotations
 
 import sys
+from dataclasses import dataclass
 from types import ModuleType, SimpleNamespace
 
 import pytest
 
-from sglang_omni.model_runner.model_worker import (
-    _apply_model_worker_backend_policy,
-    _initialize_model_worker_backend_globals,
-    _is_fp8_cutlass_moe_supported,
-    _model_config_has_moe,
-)
+from sglang_omni.model_runner import model_worker
+
+
+@dataclass(frozen=True)
+class BackendPolicyCase:
+    name: str
+    model_quantization: str | None
+    server_quantization: str | None
+    model_arch_override: str | None
+    has_moe: bool
+    initial_moe_backend: str
+    cutlass_supported: bool
+    expected_quantization: str | None
+    expected_moe_backend: str | None = None
+    error_match: str | None = None
 
 
 def _server_args(
     *,
     quantization: str | None = None,
     moe_runner_backend: str = "auto",
-):
+) -> SimpleNamespace:
     return SimpleNamespace(
         quantization=quantization,
         moe_runner_backend=moe_runner_backend,
@@ -32,7 +42,7 @@ def _model_config(
     *,
     quantization: str | None,
     has_moe: bool = True,
-):
+) -> SimpleNamespace:
     attrs = {"num_experts_per_tok": 8} if has_moe else {}
     return SimpleNamespace(
         quantization=quantization,
@@ -40,120 +50,170 @@ def _model_config(
     )
 
 
-def test_bf16_talker_preserves_existing_flashinfer_cutlass_default() -> None:
-    server_args = _server_args()
-    model_config = _model_config(quantization=None)
-
-    effective = _apply_model_worker_backend_policy(
-        server_args,
-        model_config,
-        "Qwen3OmniTalker",
-    )
-
-    assert effective is None
-    assert server_args.quantization is None
-    assert server_args.moe_runner_backend == "flashinfer_cutlass"
-
-
-def test_native_fp8_talker_defaults_auto_moe_to_cutlass(monkeypatch) -> None:
-    monkeypatch.setattr(
-        "sglang_omni.model_runner.model_worker._is_fp8_cutlass_moe_supported",
-        lambda: True,
-    )
-    server_args = _server_args()
-    model_config = _model_config(quantization="fp8")
-
-    effective = _apply_model_worker_backend_policy(
-        server_args,
-        model_config,
-        "Qwen3OmniTalker",
-    )
-
-    assert effective == "fp8"
-    assert server_args.quantization is None
-    assert server_args.moe_runner_backend == "cutlass"
-
-
-def test_native_fp8_talker_preserves_explicit_triton_moe_backend() -> None:
-    server_args = _server_args(moe_runner_backend="triton")
-    model_config = _model_config(quantization="fp8")
-
-    effective = _apply_model_worker_backend_policy(
-        server_args,
-        model_config,
-        "Qwen3OmniTalker",
-    )
-
-    assert effective == "fp8"
-    assert server_args.quantization is None
-    assert server_args.moe_runner_backend == "triton"
-
-
-def test_native_fp8_talker_rejects_flashinfer_cutlass_backend() -> None:
-    server_args = _server_args(moe_runner_backend="flashinfer_cutlass")
-    model_config = _model_config(quantization="fp8")
-
-    with pytest.raises(ValueError, match="native FP8.*flashinfer_cutlass"):
-        _apply_model_worker_backend_policy(
-            server_args,
-            model_config,
-            "Qwen3OmniTalker",
-        )
-
-
-def test_native_fp8_thinker_defaults_auto_moe_to_cutlass(monkeypatch) -> None:
-    monkeypatch.setattr(
-        "sglang_omni.model_runner.model_worker._is_fp8_cutlass_moe_supported",
-        lambda: True,
-    )
-    server_args = _server_args()
-    model_config = _model_config(quantization="fp8")
-
-    effective = _apply_model_worker_backend_policy(
-        server_args,
-        model_config,
-        "Qwen3OmniThinkerForCausalLM",
-    )
-
-    assert effective == "fp8"
-    assert server_args.quantization is None
-    assert server_args.moe_runner_backend == "cutlass"
-
-
-def test_native_fp8_non_moe_model_preserves_auto_moe_backend() -> None:
-    server_args = _server_args()
-    model_config = _model_config(quantization="fp8", has_moe=False)
-
-    effective = _apply_model_worker_backend_policy(
-        server_args,
-        model_config,
-        "Qwen3OmniTalker",
-    )
-
-    assert effective == "fp8"
-    assert server_args.quantization is None
-    assert server_args.moe_runner_backend == "auto"
-
-
-def test_native_fp8_preserves_auto_moe_when_cutlass_is_not_supported(
-    monkeypatch,
+@pytest.mark.parametrize(
+    "case",
+    [
+        BackendPolicyCase(
+            name="bf16_talker_auto_uses_flashinfer_cutlass",
+            model_quantization=None,
+            server_quantization=None,
+            model_arch_override="Qwen3OmniTalker",
+            has_moe=True,
+            initial_moe_backend="auto",
+            cutlass_supported=True,
+            expected_quantization=None,
+            expected_moe_backend="flashinfer_cutlass",
+        ),
+        BackendPolicyCase(
+            name="bf16_talker_explicit_triton_is_preserved",
+            model_quantization=None,
+            server_quantization=None,
+            model_arch_override="Qwen3OmniTalker",
+            has_moe=True,
+            initial_moe_backend="triton",
+            cutlass_supported=True,
+            expected_quantization=None,
+            expected_moe_backend="triton",
+        ),
+        BackendPolicyCase(
+            name="fp8_talker_auto_uses_cutlass_when_supported",
+            model_quantization="fp8",
+            server_quantization=None,
+            model_arch_override="Qwen3OmniTalker",
+            has_moe=True,
+            initial_moe_backend="auto",
+            cutlass_supported=True,
+            expected_quantization="fp8",
+            expected_moe_backend="cutlass",
+        ),
+        BackendPolicyCase(
+            name="fp8_thinker_auto_uses_cutlass_when_supported",
+            model_quantization="fp8",
+            server_quantization=None,
+            model_arch_override="Qwen3OmniThinkerForCausalLM",
+            has_moe=True,
+            initial_moe_backend="auto",
+            cutlass_supported=True,
+            expected_quantization="fp8",
+            expected_moe_backend="cutlass",
+        ),
+        BackendPolicyCase(
+            name="server_fp8_override_drives_cutlass_policy",
+            model_quantization=None,
+            server_quantization="fp8",
+            model_arch_override="Qwen3OmniTalker",
+            has_moe=True,
+            initial_moe_backend="auto",
+            cutlass_supported=True,
+            expected_quantization="fp8",
+            expected_moe_backend="cutlass",
+        ),
+        BackendPolicyCase(
+            name="fp8_auto_stays_auto_when_cutlass_is_unsupported",
+            model_quantization="fp8",
+            server_quantization=None,
+            model_arch_override="Qwen3OmniTalker",
+            has_moe=True,
+            initial_moe_backend="auto",
+            cutlass_supported=False,
+            expected_quantization="fp8",
+            expected_moe_backend="auto",
+        ),
+        BackendPolicyCase(
+            name="fp8_non_moe_stays_auto",
+            model_quantization="fp8",
+            server_quantization=None,
+            model_arch_override="Qwen3OmniTalker",
+            has_moe=False,
+            initial_moe_backend="auto",
+            cutlass_supported=True,
+            expected_quantization="fp8",
+            expected_moe_backend="auto",
+        ),
+        BackendPolicyCase(
+            name="fp8_non_qwen_omni_arch_stays_auto",
+            model_quantization="fp8",
+            server_quantization=None,
+            model_arch_override="OtherMoEForCausalLM",
+            has_moe=True,
+            initial_moe_backend="auto",
+            cutlass_supported=True,
+            expected_quantization="fp8",
+            expected_moe_backend="auto",
+        ),
+        BackendPolicyCase(
+            name="fp8_explicit_triton_is_preserved",
+            model_quantization="fp8",
+            server_quantization=None,
+            model_arch_override="Qwen3OmniTalker",
+            has_moe=True,
+            initial_moe_backend="triton",
+            cutlass_supported=True,
+            expected_quantization="fp8",
+            expected_moe_backend="triton",
+        ),
+        BackendPolicyCase(
+            name="fp8_explicit_cutlass_is_preserved",
+            model_quantization="fp8",
+            server_quantization=None,
+            model_arch_override="Qwen3OmniTalker",
+            has_moe=True,
+            initial_moe_backend="cutlass",
+            cutlass_supported=True,
+            expected_quantization="fp8",
+            expected_moe_backend="cutlass",
+        ),
+        BackendPolicyCase(
+            name="fp8_rejects_flashinfer_cutlass",
+            model_quantization="fp8",
+            server_quantization=None,
+            model_arch_override="Qwen3OmniTalker",
+            has_moe=True,
+            initial_moe_backend="flashinfer_cutlass",
+            cutlass_supported=True,
+            expected_quantization="fp8",
+            error_match="native FP8.*flashinfer_cutlass",
+        ),
+    ],
+    ids=lambda case: case.name,
+)
+def test_model_worker_backend_policy_precedence(
+    monkeypatch: pytest.MonkeyPatch,
+    case: BackendPolicyCase,
 ) -> None:
+    """Covers quantization, architecture, MoE, hardware, and explicit override precedence."""
     monkeypatch.setattr(
-        "sglang_omni.model_runner.model_worker._is_fp8_cutlass_moe_supported",
-        lambda: False,
+        model_worker,
+        "_is_fp8_cutlass_moe_supported",
+        lambda: case.cutlass_supported,
     )
-    server_args = _server_args()
-    model_config = _model_config(quantization="fp8")
+    server_args = _server_args(
+        quantization=case.server_quantization,
+        moe_runner_backend=case.initial_moe_backend,
+    )
+    model_config = _model_config(
+        quantization=case.model_quantization,
+        has_moe=case.has_moe,
+    )
 
-    effective = _apply_model_worker_backend_policy(
+    if case.error_match:
+        with pytest.raises(ValueError, match=case.error_match):
+            model_worker._apply_model_worker_backend_policy(
+                server_args,
+                model_config,
+                case.model_arch_override,
+            )
+        return
+
+    effective_quantization = model_worker._apply_model_worker_backend_policy(
         server_args,
         model_config,
-        "Qwen3OmniTalker",
+        case.model_arch_override,
     )
 
-    assert effective == "fp8"
-    assert server_args.quantization is None
-    assert server_args.moe_runner_backend == "auto"
+    assert effective_quantization == case.expected_quantization
+    assert server_args.quantization == case.server_quantization
+    assert server_args.moe_runner_backend == case.expected_moe_backend
 
 
 def test_model_config_has_moe_prefers_effective_text_config() -> None:
@@ -162,27 +222,39 @@ def test_model_config_has_moe_prefers_effective_text_config() -> None:
         hf_text_config=SimpleNamespace(num_experts_per_tok=8),
     )
 
-    assert _model_config_has_moe(model_config)
+    assert model_worker._model_config_has_moe(model_config)
 
 
-def test_fp8_cutlass_moe_support_uses_sglang_hardware_predicates(monkeypatch) -> None:
+@pytest.mark.parametrize(
+    (
+        "cutlass_supported",
+        "sm90_supported",
+        "sm100_supported",
+        "expected_supported",
+    ),
+    [
+        pytest.param(True, True, False, True, id="h100_h200_h20_supported"),
+        pytest.param(True, False, True, True, id="sm100_supported"),
+        pytest.param(True, False, False, False, id="unsupported_gpu_rejected"),
+        pytest.param(False, True, False, False, id="cutlass_runtime_rejected"),
+    ],
+)
+def test_fp8_cutlass_moe_support_matches_sglang_0_5_8_contract(
+    monkeypatch: pytest.MonkeyPatch,
+    cutlass_supported: bool,
+    sm90_supported: bool,
+    sm100_supported: bool,
+    expected_supported: bool,
+) -> None:
+    """Mirrors the CUTLASS FP8 MoE assertions in pinned SGLang 0.5.8."""
     _install_fake_cutlass_support_modules(
         monkeypatch,
-        cutlass_supported=True,
-        sm90_supported=True,
+        cutlass_supported=cutlass_supported,
+        sm90_supported=sm90_supported,
+        sm100_supported=sm100_supported,
     )
 
-    assert _is_fp8_cutlass_moe_supported()
-
-
-def test_fp8_cutlass_moe_support_rejects_unsupported_hardware(monkeypatch) -> None:
-    _install_fake_cutlass_support_modules(
-        monkeypatch,
-        cutlass_supported=True,
-        sm90_supported=False,
-    )
-
-    assert not _is_fp8_cutlass_moe_supported()
+    assert model_worker._is_fp8_cutlass_moe_supported() is expected_supported
 
 
 def test_backend_global_initialization_for_fp8_moe_model(monkeypatch) -> None:
@@ -190,7 +262,7 @@ def test_backend_global_initialization_for_fp8_moe_model(monkeypatch) -> None:
 
     _install_fake_backend_modules(monkeypatch, calls)
 
-    _initialize_model_worker_backend_globals(
+    model_worker._initialize_model_worker_backend_globals(
         _server_args(),
         _model_config(quantization="fp8"),
         "fp8",
@@ -204,7 +276,7 @@ def test_backend_global_initialization_for_bf16_moe_omits_fp8(monkeypatch) -> No
 
     _install_fake_backend_modules(monkeypatch, calls)
 
-    _initialize_model_worker_backend_globals(
+    model_worker._initialize_model_worker_backend_globals(
         _server_args(),
         _model_config(quantization=None),
         None,
@@ -238,6 +310,7 @@ def _install_fake_cutlass_support_modules(
     *,
     cutlass_supported: bool,
     sm90_supported: bool,
+    sm100_supported: bool,
 ) -> None:
     _install_fake_module(monkeypatch, "sglang")
     _install_fake_module(monkeypatch, "sglang.srt")
@@ -251,10 +324,8 @@ def _install_fake_cutlass_support_modules(
     _install_fake_module(
         monkeypatch,
         "sglang.srt.utils",
-        is_blackwell_supported=lambda: False,
         is_sm90_supported=lambda: sm90_supported,
-        is_sm100_supported=lambda: False,
-        is_sm120_supported=lambda: False,
+        is_sm100_supported=lambda: sm100_supported,
     )
 
 
