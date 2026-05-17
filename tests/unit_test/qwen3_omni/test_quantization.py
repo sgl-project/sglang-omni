@@ -10,11 +10,21 @@ from sglang_omni.models.qwen3_omni.quantization import (
 )
 
 
-def test_convert_fp8_weight_scale_inv_inverts_large_block_scales() -> None:
+@pytest.mark.parametrize(
+    "target_name",
+    [
+        "model.layers.0.self_attn.qkv_proj.weight_scale_inv",
+        "model.layers.0.mlp.experts.w13_weight_scale_inv",
+        "model.layers.0.mlp.experts.w2_weight_scale_inv",
+    ],
+)
+def test_convert_fp8_weight_scale_inv_inverts_large_checkpoint_scales(
+    target_name: str,
+) -> None:
     source = torch.tensor([[2.0, 4.0], [8.0, 16.0]], dtype=torch.float32)
 
     converted = convert_fp8_weight_scale_inv_for_sglang(
-        "model.layers.0.self_attn.qkv_proj.weight_scale_inv",
+        target_name,
         source,
     )
 
@@ -22,21 +32,7 @@ def test_convert_fp8_weight_scale_inv_inverts_large_block_scales() -> None:
         converted,
         torch.tensor([[0.5, 0.25], [0.125, 0.0625]], dtype=torch.float32),
     )
-    assert torch.equal(
-        source,
-        torch.tensor([[2.0, 4.0], [8.0, 16.0]], dtype=torch.float32),
-    )
-
-
-def test_convert_fp8_weight_scale_inv_handles_moe_scale_names() -> None:
-    for name in (
-        "model.layers.0.mlp.experts.w13_weight_scale_inv",
-        "model.layers.0.mlp.experts.w2_weight_scale_inv",
-    ):
-        converted = convert_fp8_weight_scale_inv_for_sglang(
-            name, torch.tensor([128.0], dtype=torch.float32)
-        )
-        assert torch.allclose(converted, torch.tensor([1.0 / 128.0]))
+    assert torch.equal(source, torch.tensor([[2.0, 4.0], [8.0, 16.0]]))
 
 
 def test_convert_fp8_weight_scale_inv_leaves_non_scale_or_existing_scale() -> None:
@@ -52,18 +48,10 @@ def test_convert_fp8_weight_scale_inv_leaves_non_scale_or_existing_scale() -> No
     )
 
 
-def test_convert_fp8_weight_scale_inv_leaves_non_floating_tensors() -> None:
-    packed = torch.tensor([2, 4], dtype=torch.int32)
-
-    assert (
-        convert_fp8_weight_scale_inv_for_sglang("linear.weight_scale_inv", packed)
-        is packed
-    )
-
-
 @pytest.mark.parametrize(
     "scale",
     [
+        torch.tensor([], dtype=torch.float32),
         torch.tensor([0.0], dtype=torch.float32),
         torch.tensor([float("inf")], dtype=torch.float32),
         torch.tensor([float("nan")], dtype=torch.float32),
@@ -74,3 +62,11 @@ def test_convert_fp8_weight_scale_inv_rejects_invalid_scale(
 ) -> None:
     with pytest.raises(ValueError):
         convert_fp8_weight_scale_inv_for_sglang("linear.weight_scale_inv", scale)
+
+
+def test_convert_fp8_weight_scale_inv_rejects_non_floating_scale() -> None:
+    with pytest.raises(TypeError):
+        convert_fp8_weight_scale_inv_for_sglang(
+            "linear.weight_scale_inv",
+            torch.tensor([2, 4], dtype=torch.int32),
+        )

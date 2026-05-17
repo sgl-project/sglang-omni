@@ -33,13 +33,17 @@ tests/
     │   ├── test_stage_process_env.py
     │   └── test_stage_streaming.py
     ├── qwen3_omni/
+    │   ├── test_cli.py
     │   ├── test_code2wav.py
     │   ├── test_colocation_config.py
     │   ├── test_config_manager.py
+    │   ├── test_fp8_backend_config.py
     │   ├── test_pipeline.py
+    │   ├── test_quantization.py
     │   ├── test_sglang_ar_budget.py
     │   ├── test_streaming.py
-    │   └── test_talker.py
+    │   ├── test_talker.py
+    │   └── test_text_template.py
     ├── router/
     │   ├── test_app.py
     │   └── test_core.py
@@ -173,6 +177,8 @@ that happened to contain an older version of the test.
 
   - public CLI/config behavior
   - SGLang argument builders
+  - backend policy and quantization compatibility contracts
+  - tokenizer and preprocessing fallback behavior
   - memory flag contracts
   - colocation config and SGLang AR budget contracts
   - `PipelineState` request builders
