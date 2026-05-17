@@ -252,6 +252,11 @@ def _launch_speech_server(args: argparse.Namespace) -> None:
             server_arg_updates={"disable_custom_all_reduce": True},
         )
     else:
+        if args.gpu_thinker_tp is not None:
+            raise ValueError(
+                "--gpu-thinker-tp only applies when --thinker-tp-size > 1; "
+                "for TP=1, use --gpu-thinker."
+            )
         _set_stage_gpu(config, "thinker", args.gpu_thinker)
 
     _set_stage_gpu(config, "talker_ar", args.gpu_talker)
