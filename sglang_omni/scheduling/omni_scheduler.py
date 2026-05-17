@@ -611,6 +611,12 @@ class OmniScheduler:
         # AR scheduler loop pins the GIL and the audio_encoder forward pass
         # (which is mostly Python-side dispatch into many small CUDA kernels)
         # slows ~600x, dropping audio QPS from >10 to <0.5.
+        #
+        # Note (Hayden): sleep(0) is sufficient — CPython yields the GIL and
+        # triggers the thread scheduler without entering the kernel via the
+        # nanosleep syscall. Verified on H200 / Qwen3-Omni: text c=8 wall
+        # -10% / TTFT -76%, audio c=4 (30s input) wall -10% / TTFT -12% /
+        # throughput +8%; no regression on either path. See #463.
         while self._running:
             recv_reqs = self.recv_requests()
             recv_reqs.extend(self._take_deferred_request_payloads())
@@ -627,7 +633,7 @@ class OmniScheduler:
                 self.process_batch_result(batch, result)
             else:
                 self.self_check_during_idle()
-                time.sleep(0.001)
+                time.sleep(0)
 
             self.last_batch = batch
             if envs.SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_BUSY.get():
