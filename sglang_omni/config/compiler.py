@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
 import shutil
 import socket
@@ -172,6 +173,7 @@ def compile_pipeline_core(
             s.name: prep.endpoints[f"stage_{s.name}"] for s in prep.stages_cfg
         }
 
+        _apply_env_defaults(config.env_defaults)
         stages: list[Stage] = []
         for stage_cfg in prep.stages_cfg:
             stage = _compile_stage(
@@ -226,6 +228,14 @@ def compile_pipeline(config: PipelineConfig) -> tuple[Coordinator, list[Stage]]:
 
     compiled = compile_pipeline_core(config)
     return compiled.coordinator, compiled.stages
+
+
+def _apply_env_defaults(env_defaults: dict[str, str]) -> None:
+    for key, value in env_defaults.items():
+        if key in os.environ:
+            continue
+        os.environ[key] = value
+        logger.info("Defaulted env %s before stage factory import", key)
 
 
 def _compile_stage(

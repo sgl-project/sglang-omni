@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from sglang_omni.pipeline import stage_process
+from sglang_omni.pipeline.stage_group import _patched_spawn_env
 from sglang_omni.pipeline.stage_process import StageProcessSpec, get_stage_process_env
 from tests.unit_test.fixtures.pipeline_fakes import FakeScheduler, fake_factory_path
 
@@ -59,6 +60,32 @@ def test_tp_child_keeps_parent_mapped_visible_device(monkeypatch) -> None:
     assert spec.factory_args["gpu_id"] == 0
     assert spec.relay_config["gpu_id"] == 0
     assert os.environ["CUDA_VISIBLE_DEVICES"] == "4"
+
+
+def test_spawn_env_applies_stage_defaults_before_child_start(monkeypatch) -> None:
+    monkeypatch.delenv("SGLANG_TEST_STAGE_ENV", raising=False)
+    spec = StageProcessSpec(
+        stage_name="thinker",
+        env_defaults={"SGLANG_TEST_STAGE_ENV": "default"},
+    )
+
+    with _patched_spawn_env(spec):
+        assert os.environ["SGLANG_TEST_STAGE_ENV"] == "default"
+
+    assert "SGLANG_TEST_STAGE_ENV" not in os.environ
+
+
+def test_spawn_env_preserves_operator_stage_defaults(monkeypatch) -> None:
+    monkeypatch.setenv("SGLANG_TEST_STAGE_ENV", "operator")
+    spec = StageProcessSpec(
+        stage_name="thinker",
+        env_defaults={"SGLANG_TEST_STAGE_ENV": "default"},
+    )
+
+    with _patched_spawn_env(spec):
+        assert os.environ["SGLANG_TEST_STAGE_ENV"] == "operator"
+
+    assert os.environ["SGLANG_TEST_STAGE_ENV"] == "operator"
 
 
 class _RecordingLog:

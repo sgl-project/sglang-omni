@@ -253,7 +253,11 @@ def _apply_model_worker_backend_policy(
                 "block-FP8 checkpoint with weight_block_size."
             )
 
-    if effective_quantization == "fp8" and moe_runner_backend == "flashinfer_cutlass":
+    if (
+        is_qwen3_omni_arch
+        and effective_quantization == "fp8"
+        and moe_runner_backend == "flashinfer_cutlass"
+    ):
         raise ValueError(
             "Qwen3-Omni native FP8 checkpoints cannot use "
             "moe_runner_backend='flashinfer_cutlass'. Leave the backend as "

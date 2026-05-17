@@ -213,6 +213,7 @@ class PipelineConfig(BaseModel):
     relay_backend: Literal["shm", "nccl", "nixl", "mooncake"] = "shm"
     fused_stages: list[list[str]] = Field(default_factory=list)
     runtime_overrides: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    env_defaults: dict[str, str] = Field(default_factory=dict)
     placement: PlacementConfig = Field(default_factory=PlacementConfig)
     process: ProcessConfig = Field(default_factory=ProcessConfig)
     placement_policy: str | None = None

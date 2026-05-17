@@ -22,7 +22,13 @@ logger = logging.getLogger(__name__)
 
 @contextmanager
 def _patched_spawn_env(spec: StageProcessSpec):
-    updates = get_stage_process_env(spec)
+    env_default_updates = {
+        key: value for key, value in spec.env_defaults.items() if key not in os.environ
+    }
+    updates = {
+        **env_default_updates,
+        **get_stage_process_env(spec),
+    }
     if not updates:
         yield
         return

@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
+from sglang_omni.config import compiler
 from sglang_omni.config.compiler import compile_pipeline, prepare_pipeline_runtime
 from sglang_omni.config.schema import EndpointsConfig, PipelineConfig
 from sglang_omni.pipeline.mp_runner import _build_stage_groups
@@ -105,6 +108,7 @@ def test_mp_runner_preserves_tp_rank_and_visible_device_contracts() -> None:
         name="mp",
         endpoints=EndpointsConfig(scheme="tcp"),
         relay_backend="nccl",
+        env_defaults={"SGLANG_TEST_STAGE_ENV": "1"},
         stages=[
             stage(
                 "thinker",
@@ -133,7 +137,25 @@ def test_mp_runner_preserves_tp_rank_and_visible_device_contracts() -> None:
     assert leader.factory_args["tp_rank"] == 0
     assert follower.factory_args["tp_rank"] == 1
     assert leader.factory_args["nccl_port"] == follower.factory_args["nccl_port"]
+    assert leader.env_defaults == {"SGLANG_TEST_STAGE_ENV": "1"}
+    assert follower.env_defaults == {"SGLANG_TEST_STAGE_ENV": "1"}
     assert env["CUDA_VISIBLE_DEVICES"] == "7"
+
+
+def test_single_process_env_defaults_preserve_operator_env(monkeypatch) -> None:
+    monkeypatch.setenv("SGLANG_TEST_STAGE_ENV", "operator")
+
+    compiler._apply_env_defaults({"SGLANG_TEST_STAGE_ENV": "default"})
+
+    assert os.environ["SGLANG_TEST_STAGE_ENV"] == "operator"
+
+
+def test_single_process_env_defaults_apply_before_stage_import(monkeypatch) -> None:
+    monkeypatch.delenv("SGLANG_TEST_STAGE_ENV", raising=False)
+
+    compiler._apply_env_defaults({"SGLANG_TEST_STAGE_ENV": "default"})
+
+    assert os.environ["SGLANG_TEST_STAGE_ENV"] == "default"
 
 
 def test_mp_runner_keeps_cpu_stage_without_gpu_identity() -> None:

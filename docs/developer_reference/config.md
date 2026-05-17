@@ -97,6 +97,7 @@ Derived from stages:
 | `relay_backend` | one of `shm`, `nccl`, `nixl`, `mooncake` | `shm` | Global relay backend used when creating per-stage relays. |
 | `fused_stages` | `list[list[str]]` | `[]` | Validated as adjacent stage groups, but fusion is not implemented yet. |
 | `runtime_overrides` | `dict[str, dict[str, Any]]` | `{}` | Per-stage factory argument overrides applied by the compiler. |
+| `env_defaults` | `dict[str, str]` | `{}` | Environment variables to set before importing stage factories. Existing process values take precedence. |
 | `endpoints` | `EndpointsConfig` | IPC defaults | Endpoint allocation settings: `scheme`, `base_path`, and `base_port`. |
 | `completion_endpoint` | `str` or `None` | `None` | Optional explicit coordinator completion endpoint. |
 | `abort_endpoint` | `str` or `None` | `None` | Optional explicit coordinator abort broadcast endpoint. |
