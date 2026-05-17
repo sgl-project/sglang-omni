@@ -128,7 +128,7 @@ def compute_media_cache_key(items: Any, *, prefix: str) -> str | None:
 def compute_cache_key(
     items: Any, *, item_to_part: Callable[[Any], str | None]
 ) -> str | None:
-    """Compute cache key from a list-like input (legacy API).
+    """Compute cache key from a list-like input.
 
     The item_to_part callback must return a string part or None to
     indicate the item type is unsupported (no cache key).

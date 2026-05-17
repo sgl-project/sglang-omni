@@ -72,6 +72,7 @@ class Coordinator:
 
         # State
         self._running = False
+        self._fatal_error: str | None = None
 
     def register_stage(self, name: str, endpoint: str) -> None:
         """Register a stage.
@@ -94,6 +95,30 @@ class Coordinator:
         self._running = False
         self.control_plane.close()
         logger.info("Coordinator stopped")
+
+    async def fail_pending_requests(self, error: BaseException | str) -> None:
+        """Fail all requests currently owned by the coordinator."""
+        self._running = False
+        message = str(error)
+        self._fatal_error = message
+        for request_id, info in list(self._requests.items()):
+            info.state = RequestState.FAILED
+            info.error = message
+            future = self._completion_futures.get(request_id)
+            if future is not None and not future.done():
+                future.set_exception(RuntimeError(message))
+            queue = self._stream_queues.get(request_id)
+            if queue is not None:
+                await queue.put(
+                    CompleteMessage(
+                        request_id=request_id,
+                        from_stage="coordinator",
+                        success=False,
+                        error=message,
+                    )
+                )
+        self._requests.clear()
+        self._partial_results.clear()
 
     async def shutdown_stages(self) -> None:
         """Send shutdown signal to all registered stages."""
@@ -151,6 +176,8 @@ class Coordinator:
         self, request_id: str, request: OmniRequest | Any
     ) -> None:
         """Submit a request without waiting for completion."""
+        if self._fatal_error is not None:
+            raise RuntimeError(self._fatal_error)
         if request_id in self._requests:
             raise ValueError(f"Request {request_id} already exists")
 
@@ -284,6 +311,9 @@ class Coordinator:
         if not msg.success:
             info.state = RequestState.FAILED
             info.error = msg.error
+            await self.control_plane.broadcast_abort(
+                AbortMessage(request_id=request_id)
+            )
             self._partial_results.pop(request_id, None)
             if request_id in self._completion_futures:
                 future = self._completion_futures[request_id]

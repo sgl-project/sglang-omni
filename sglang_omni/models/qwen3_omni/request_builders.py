@@ -602,43 +602,70 @@ def make_thinker_stream_output_builder():
                 break
         return _normalize_chunk_hidden(embed), _normalize_chunk_hidden(layer_hidden)
 
-    def _build_stream_output(request_id: str, req_data: Any, req_output: Any):
+    def _build_stream_output(
+        request_id: str, req_data: Any, req_output: Any
+    ) -> list[OutgoingMessage]:
         req = getattr(req_data, "req", None)
         if req is not None and int(getattr(req, "is_chunked", 0) or 0) > 0:
-            # Match the legacy thinker stream adapter: while chunked prefill is still
-            # consuming prompt tokens, suppress hidden-state streaming to the talker.
+            # While chunked prefill is still consuming prompt tokens, suppress
+            # hidden-state streaming to the talker.
             # Emitting chunks this early lets prompt-side states masquerade as the
             # first assistant token and can leak the user/ref-text prompt into TTS.
-            return None
+            return []
         if req_output.data is None:
-            return None
-        extra = req_output.extra
-        if not isinstance(extra, dict) or "hidden_states" not in extra:
-            return None
+            return []
 
-        embed, layer_hidden = _split_dual_layer_hidden(extra["hidden_states"])
         token_id = int(req_output.data)
+        messages: list[OutgoingMessage] = []
 
-        if embed is not None:
-            metadata = {"token_id": token_id}
-            if layer_hidden is not None:
-                metadata["layer_hidden"] = layer_hidden
-            return OutgoingMessage(
-                request_id=request_id,
-                type="stream",
-                data=embed,
-                metadata=metadata,
+        # Skip per-token decode emit when not streaming; talker_ar below stays
+        # unconditional since talker generates audio either way.
+        stage_payload = req_data.stage_payload
+        is_streaming = bool(
+            stage_payload is not None
+            and (stage_payload.request.params or {}).get("stream", False)
+        )
+        if is_streaming:
+            # Wrap int — relay_io.write_blob is tensor-only.
+            messages.append(
+                OutgoingMessage(
+                    request_id=request_id,
+                    type="stream",
+                    data=torch.tensor([token_id], dtype=torch.long),
+                    target="decode",
+                    metadata={"token_id": token_id},
+                )
             )
 
-        if layer_hidden is not None:
-            return OutgoingMessage(
-                request_id=request_id,
-                type="stream",
-                data=layer_hidden,
-                metadata={"token_id": token_id},
-            )
+        # Speech mode: also stream hidden states to the talker for codec gen.
+        extra = req_output.extra
+        if isinstance(extra, dict) and "hidden_states" in extra:
+            embed, layer_hidden = _split_dual_layer_hidden(extra["hidden_states"])
+            if embed is not None:
+                metadata = {"token_id": token_id}
+                if layer_hidden is not None:
+                    metadata["layer_hidden"] = layer_hidden
+                messages.append(
+                    OutgoingMessage(
+                        request_id=request_id,
+                        type="stream",
+                        data=embed,
+                        target="talker_ar",
+                        metadata=metadata,
+                    )
+                )
+            elif layer_hidden is not None:
+                messages.append(
+                    OutgoingMessage(
+                        request_id=request_id,
+                        type="stream",
+                        data=layer_hidden,
+                        target="talker_ar",
+                        metadata={"token_id": token_id},
+                    )
+                )
 
-        return None
+        return messages
 
     return _build_stream_output
 

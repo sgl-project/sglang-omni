@@ -413,14 +413,18 @@ def test_launcher_cleans_up_managed_workers_on_health_timeout(monkeypatch) -> No
     def fail_health(**kwargs):
         raise TimeoutError("worker did not become healthy")
 
+    def record_terminated_workers(workers):
+        terminated_processes.extend(worker.process for worker in workers)
+
     monkeypatch.setattr(local_launcher.shutil, "which", lambda command: command)
     monkeypatch.setattr(local_launcher, "reserve_worker_ports", lambda config: [8011])
     monkeypatch.setattr(local_launcher.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(local_launcher.os, "getpgid", lambda pid: pid + 1000)
     monkeypatch.setattr(local_launcher, "wait_for_worker_health", fail_health)
     monkeypatch.setattr(
         local_launcher,
-        "terminate_processes",
-        lambda processes: terminated_processes.extend(processes),
+        "_terminate_worker_process_groups",
+        record_terminated_workers,
     )
 
     launcher = LocalLauncher(config)
@@ -465,15 +469,19 @@ def test_launcher_cleans_up_managed_workers_on_startup_interrupt(monkeypatch) ->
     def interrupt_wait(*args, **kwargs):
         raise StartupInterrupt
 
+    def record_terminated_workers(workers):
+        terminated_processes.extend(worker.process for worker in workers)
+
     monkeypatch.setattr(local_launcher.shutil, "which", lambda command: command)
     monkeypatch.setattr(local_launcher, "reserve_worker_ports", lambda config: [8011])
     monkeypatch.setattr(local_launcher.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(local_launcher.os, "getpgid", lambda pid: pid + 1000)
     monkeypatch.setattr(local_launcher, "wait_for_worker_health", wait_health)
     monkeypatch.setattr(local_launcher, "wait", interrupt_wait)
     monkeypatch.setattr(
         local_launcher,
-        "terminate_processes",
-        lambda processes: terminated_processes.extend(processes),
+        "_terminate_worker_process_groups",
+        record_terminated_workers,
     )
 
     launcher = LocalLauncher(config)
@@ -520,16 +528,20 @@ def test_launcher_waits_for_managed_workers_in_parallel(monkeypatch) -> None:
         if worker_url.endswith(":8012"):
             raise RuntimeError("worker 2 failed")
 
+    def record_terminated_workers(workers):
+        terminated_processes.extend(worker.process for worker in workers)
+
     monkeypatch.setattr(local_launcher.shutil, "which", lambda command: command)
     monkeypatch.setattr(
         local_launcher, "reserve_worker_ports", lambda config: [8011, 8012]
     )
     monkeypatch.setattr(local_launcher.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(local_launcher.os, "getpgid", lambda pid: pid + 1000)
     monkeypatch.setattr(local_launcher, "wait_for_worker_health", wait_health)
     monkeypatch.setattr(
         local_launcher,
-        "terminate_processes",
-        lambda processes: terminated_processes.extend(processes),
+        "_terminate_worker_process_groups",
+        record_terminated_workers,
     )
 
     launcher = LocalLauncher(config)
@@ -814,6 +826,22 @@ def test_worker_request_guard_cleans_up_count() -> None:
             raise RuntimeError("boom")
 
     assert worker.active_requests == 0
+
+
+def test_worker_records_routed_request_outcomes() -> None:
+    worker = build_workers([WorkerConfig(url="http://127.0.0.1:8101")])[0]
+
+    worker.record_routed_request(status_code=200)
+    worker.record_routed_request(status_code=503)
+    worker.record_routed_request()
+
+    assert worker.routed_requests == 3
+    assert worker.successful_requests == 1
+    assert worker.failed_requests == 2
+    payload = worker.to_dict()
+    assert payload["routed_requests"] == 3
+    assert payload["successful_requests"] == 1
+    assert payload["failed_requests"] == 2
 
 
 def test_worker_decrement_active_fails_on_unbalanced_cleanup() -> None:

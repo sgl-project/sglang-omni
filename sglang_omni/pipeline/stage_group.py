@@ -128,8 +128,8 @@ class StageGroup:
             logger.info("Stage %s ready", tp_label)
 
     def any_dead(self) -> bool:
-        """Return True if any process in the group has exited unexpectedly."""
-        return any(not p.is_alive() and p.exitcode != 0 for p in self._processes)
+        """Return True if any process in the group exited while runner is active."""
+        return any(not p.is_alive() for p in self._processes)
 
     def dead_summary(self) -> str:
         """Human-readable summary of dead processes (for error messages)."""

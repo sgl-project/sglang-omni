@@ -28,12 +28,14 @@ class S2ProPipelineConfig(PipelineConfig):
             factory_args={"device": "cuda:0", "max_new_tokens": 2048},
             gpu=0,
             next="vocoder",
+            stream_to=["vocoder"],
         ),
         StageConfig(
             name="vocoder",
             factory=f"{_PKG}.stages.create_vocoder_executor",
             gpu=0,
             terminal=True,
+            can_accept_stream_before_payload=True,
         ),
     ]
 

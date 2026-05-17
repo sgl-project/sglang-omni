@@ -8,6 +8,7 @@ import torch
 from sglang_omni.models.fishaudio_s2_pro.config import S2ProPipelineConfig
 from sglang_omni.models.fishaudio_s2_pro.payload_types import S2ProState
 from sglang_omni.models.fishaudio_s2_pro.request_builders import (
+    S2ProSGLangRequestData,
     apply_tts_result,
     build_sglang_tts_request,
     make_tts_scheduler_adapters,
@@ -117,3 +118,37 @@ def test_fish_tts_request_and_result_adapters_preserve_tensor_contracts() -> Non
     assert adapted.stage_payload is payload
     assert result_payload.request is payload.request
     assert result_payload.data["output_codes"] == [[100], [1], [2]]
+
+
+@pytest.mark.parametrize("top_k", [0, 31])
+def test_fish_tts_rejects_top_k_outside_graph_width(top_k: int) -> None:
+    tokenizer = FakeFishTokenizer()
+    state = make_s2pro_state(top_k=top_k)
+
+    with pytest.raises(ValueError, match="S2-Pro top_k must be -1 or between 1 and 30"):
+        build_sglang_tts_request(state, tokenizer, request_id="bad-top-k")
+
+    with pytest.raises(ValueError, match="S2-Pro top_k must be -1 or between 1 and 30"):
+        S2ProSGLangRequestData(
+            input_ids=torch.tensor([], dtype=torch.long),
+            req=object(),
+            top_k=top_k,
+        )
+
+
+def test_fish_tts_accepts_graph_top_k_width() -> None:
+    tokenizer = FakeFishTokenizer()
+    state = make_s2pro_state(top_k=30)
+
+    req_data = build_sglang_tts_request(state, tokenizer, request_id="top-k-30")
+
+    assert req_data.top_k == 30
+
+
+def test_fish_tts_accepts_default_top_k_sentinel() -> None:
+    tokenizer = FakeFishTokenizer()
+    state = make_s2pro_state(top_k=-1)
+
+    req_data = build_sglang_tts_request(state, tokenizer, request_id="top-k-default")
+
+    assert req_data.top_k == -1

@@ -120,6 +120,7 @@ class FakeFishModel:
     def __init__(self) -> None:
         self._semantic_begin_id = 200
         self._semantic_end_id = 295
+        self._rep_history_len = 4
         self._vq_mask = torch.zeros(4, dtype=torch.bool)
         self._vq_codes = torch.zeros((4, 2), dtype=torch.long)
         self._output_semantic_ids = torch.tensor([201, 202, 203, 204], dtype=torch.long)

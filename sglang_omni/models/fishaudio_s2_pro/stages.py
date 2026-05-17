@@ -60,20 +60,6 @@ def store_state(payload: StagePayload, state: S2ProState) -> StagePayload:
     return payload
 
 
-def _build_usage(state: S2ProState) -> dict[str, Any] | None:
-    if not (state.prompt_tokens or state.completion_tokens or state.engine_time_s):
-        return None
-
-    usage = {
-        "prompt_tokens": state.prompt_tokens,
-        "completion_tokens": state.completion_tokens,
-        "total_tokens": state.prompt_tokens + state.completion_tokens,
-    }
-    if state.engine_time_s:
-        usage["engine_time_s"] = round(float(state.engine_time_s), 6)
-    return usage
-
-
 # ---------------------------------------------------------------------------
 # Preprocessing — returns callable
 # ---------------------------------------------------------------------------
@@ -174,6 +160,7 @@ def create_sglang_tts_engine_executor(
     device: str = "cuda",
     max_new_tokens: int = 2048,
     top_k: int = 30,
+    ras_window: int = 16,
     server_args_overrides: dict[str, Any] | None = None,
 ):
     """Returns OmniScheduler for the Fish TTS AR engine."""
@@ -250,6 +237,7 @@ def create_sglang_tts_engine_executor(
         max_batch_size=server_args.max_running_requests,
         num_codebooks=num_codebooks,
         codebook_size=codebook_size,
+        ras_window=ras_window,
     )
 
     if want_cuda_graph:
@@ -290,67 +278,27 @@ def create_vocoder_executor(
     gpu_id: int | None = None,
     max_batch_size: int = 8,
     max_batch_wait_ms: int = 2,
+    stream_stride: int = 10,
+    stream_followup_stride: int = 90,
+    stream_overlap_tokens: int | None = 20,
+    stream_crossfade_samples: int = 512,
 ):
-    from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
+    from sglang_omni.models.fishaudio_s2_pro.streaming_vocoder import (
+        S2ProVocoderScheduler,
+    )
 
     if device is None:
         device = f"cuda:{gpu_id}" if gpu_id is not None else "cpu"
     checkpoint_dir = _resolve_checkpoint(model_path)
     codec = _load_codec(checkpoint_dir, device)
 
-    def _store_audio(
-        payload: StagePayload,
-        state: S2ProState,
-        audio_np: torch.Tensor,
-    ) -> StagePayload:
-        state.audio_samples = audio_np
-        state.sample_rate = codec.sample_rate
-        payload = store_state(payload, state)
-        payload.data["audio_data"] = audio_np.tolist()
-        payload.data["sample_rate"] = codec.sample_rate
-        payload.data["modality"] = "audio"
-        usage = _build_usage(state)
-        if usage is not None:
-            payload.data["usage"] = usage
-        return payload
-
-    def _vocode(payload: StagePayload) -> StagePayload:
-        state = load_state(payload)
-        output_codes = state.output_codes
-        codebook_codes = output_codes[1:].to(device)
-        with torch.no_grad():
-            audio = codec.from_indices(codebook_codes[None])
-        audio_np = audio[0, 0].float().cpu()
-        return _store_audio(payload, state, audio_np)
-
-    def _vocode_batch(payloads: list[StagePayload]) -> list[StagePayload]:
-        states = [load_state(payload) for payload in payloads]
-        code_batches = [state.output_codes[1:].to(device) for state in states]
-        lengths = [int(codes.shape[-1]) for codes in code_batches]
-        max_len = max(lengths)
-        padded = [
-            torch.nn.functional.pad(codes, (0, max_len - length), value=0)
-            for codes, length in zip(code_batches, lengths)
-        ]
-        batch_codes = torch.stack(padded, dim=0)
-
-        with torch.no_grad():
-            audio = codec.from_indices(batch_codes)
-
-        samples_per_token = int(getattr(codec, "frame_length", 0) or 0)
-        if samples_per_token <= 0:
-            samples_per_token = int(audio.shape[-1] // max(max_len, 1))
-
-        results: list[StagePayload] = []
-        for idx, (payload, state, length) in enumerate(zip(payloads, states, lengths)):
-            sample_len = int(length * samples_per_token)
-            audio_np = audio[idx, 0, :sample_len].float().cpu()
-            results.append(_store_audio(payload, state, audio_np))
-        return results
-
-    return SimpleScheduler(
-        _vocode,
-        batch_compute_fn=_vocode_batch,
+    return S2ProVocoderScheduler(
+        codec,
+        device=device,
+        stream_stride=stream_stride,
+        stream_followup_stride=stream_followup_stride,
+        stream_overlap_tokens=stream_overlap_tokens,
+        stream_crossfade_samples=stream_crossfade_samples,
         max_batch_size=max_batch_size,
         max_batch_wait_ms=max_batch_wait_ms,
     )

@@ -14,6 +14,7 @@ logger = logging.getLogger(__name__)
 
 
 _STAGE_TOGGLE_MODE = Literal["default", "on", "off"]
+_QWEN_COLOCATED_CONFIG_CLASS = "Qwen3OmniSpeechColocatedPipelineConfig"
 
 
 def _normalize_stage_toggle_mode(flag_name: str, value: str) -> _STAGE_TOGGLE_MODE:
@@ -21,6 +22,46 @@ def _normalize_stage_toggle_mode(flag_name: str, value: str) -> _STAGE_TOGGLE_MO
     if normalized not in {"default", "on", "off"}:
         raise typer.BadParameter(f"{flag_name} must be one of: default, on, off")
     return normalized  # type: ignore[return-value]
+
+
+def _validate_colocate_cli_request(
+    *,
+    colocate: bool,
+    config: str | None,
+    text_only: bool,
+) -> None:
+    if not colocate:
+        return
+    if text_only:
+        raise typer.BadParameter("--colocate cannot be combined with --text-only")
+    if not config:
+        raise typer.BadParameter("--colocate requires --config")
+
+
+def _validate_colocate_config(pipeline_config: PipelineConfig) -> None:
+    if type(pipeline_config).__name__ != _QWEN_COLOCATED_CONFIG_CLASS:
+        raise typer.BadParameter(
+            f"--colocate requires a {_QWEN_COLOCATED_CONFIG_CLASS} config file"
+        )
+
+
+def _should_print_merged_config(*, colocate: bool, log_level: str) -> bool:
+    """Return whether to print the full resolved pipeline config."""
+
+    return colocate or log_level.lower() == "debug"
+
+
+def _print_merged_config(pipeline_config: PipelineConfig) -> None:
+    print("=" * 20, "Merged Configuration", "=" * 20)
+    print(
+        yaml.dump(
+            pipeline_config.model_dump(mode="json"),
+            sort_keys=False,
+            default_flow_style=False,
+            indent=2,
+        )
+    )
+    print("=" * 50)
 
 
 def _find_matching_stages(
@@ -65,12 +106,38 @@ def _apply_stage_server_args_override(
                 runtime_server_args.update(updates)
 
 
+def _apply_stage_mem_fraction_override(
+    pipeline_config: PipelineConfig,
+    *,
+    stage_name: str,
+    value: float,
+) -> None:
+    matching_stages = _find_matching_stages(
+        pipeline_config,
+        stage_name=stage_name,
+        reason="SGLang mem_fraction_static override",
+    )
+    for stage in matching_stages:
+        stage.runtime.sglang_server_args.mem_fraction_static = value
+
+
 def _stage_has_explicit_mem_fraction_static(
     pipeline_config: PipelineConfig,
     *,
     stage_name: str,
     factory_args: dict[str, object],
 ) -> bool:
+    matching_stages = _find_matching_stages(
+        pipeline_config,
+        stage_name=stage_name,
+        reason="mem_fraction_static validation",
+    )
+    if any(
+        stage.runtime.sglang_server_args.mem_fraction_static is not None
+        for stage in matching_stages
+    ):
+        return True
+
     server_args_overrides = dict(factory_args.get("server_args_overrides") or {})
     if server_args_overrides.get("mem_fraction_static") is not None:
         return True
@@ -154,11 +221,10 @@ def apply_mem_fraction_cli_overrides(
         # the global flag is the fallback when no per-role flag was given.
         final_value = role_value if role_value is not None else mem_fraction_static
         if final_value is not None:
-            _apply_stage_server_args_override(
+            _apply_stage_mem_fraction_override(
                 pipeline_config,
                 stage_name=stage_name,
-                updates={"mem_fraction_static": final_value},
-                reason=f"{role} SGLang mem_fraction_static override",
+                value=final_value,
             )
     return pipeline_config
 
@@ -305,6 +371,27 @@ def _apply_stage_gpu_override(
         stage.gpu = int(gpu)
 
 
+def _validate_colocated_gpu_override(
+    pipeline_config: PipelineConfig,
+    *,
+    stage_name: str,
+    flag_name: str,
+    gpu: int | None,
+) -> None:
+    if gpu is None or type(pipeline_config).__name__ != _QWEN_COLOCATED_CONFIG_CLASS:
+        return
+    matching_stages = _find_matching_stages(
+        pipeline_config,
+        stage_name=stage_name,
+        reason=f"{flag_name} placement validation",
+    )
+    current_gpu = matching_stages[0].gpu
+    if current_gpu != gpu:
+        raise typer.BadParameter(
+            f"{flag_name} cannot move {stage_name} away from the colocated GPU"
+        )
+
+
 def apply_parallelism_cli_overrides(
     pipeline_config: PipelineConfig,
     *,
@@ -327,12 +414,25 @@ def apply_parallelism_cli_overrides(
         for stage in thinker_stages:
             if thinker_tp_size is not None:
                 stage.tp_size = int(thinker_tp_size)
+                stage.parallelism.tp = stage.tp_size
             if thinker_gpu_override is not None:
                 stage.gpu = thinker_gpu_override
             _validate_stage_parallelism_config("thinker", stage.tp_size, stage.gpu)
             if stage.tp_size == 1 and isinstance(stage.gpu, list):
                 stage.gpu = int(stage.gpu[0])
 
+    _validate_colocated_gpu_override(
+        pipeline_config,
+        stage_name="talker_ar",
+        flag_name="--talker-gpu",
+        gpu=talker_gpu,
+    )
+    _validate_colocated_gpu_override(
+        pipeline_config,
+        stage_name="code2wav",
+        flag_name="--code2wav-gpu",
+        gpu=code2wav_gpu,
+    )
     _apply_stage_gpu_override(
         pipeline_config,
         stage_name="talker_ar",
@@ -457,6 +557,13 @@ def serve(
         typer.Option(
             "--text-only",
             help="Use thinker-only pipeline (1 GPU, no talker/speech output).",
+        ),
+    ] = False,
+    colocate: Annotated[
+        bool,
+        typer.Option(
+            "--colocate",
+            help="Run Qwen speech with GPU stages colocated on one GPU.",
         ),
     ] = False,
     host: Annotated[
@@ -600,6 +707,12 @@ def serve(
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
 
+    _validate_colocate_cli_request(
+        colocate=colocate,
+        config=config,
+        text_only=text_only,
+    )
+
     # --- Resolve config ---
     if config:
         config_manager = ConfigManager.from_file(config)
@@ -613,6 +726,8 @@ def serve(
     extra_args = config_manager.parse_extra_args(ctx.args)
     merged_config = config_manager.merge_config(extra_args)
     merged_config = merged_config.model_copy(update={"model_path": model_path})
+    if colocate:
+        _validate_colocate_config(merged_config)
     merged_config = apply_mem_fraction_cli_overrides(
         merged_config,
         mem_fraction_static=mem_fraction_static,
@@ -645,17 +760,8 @@ def serve(
         talker_torch_compile_max_bs=talker_torch_compile_max_bs,
     )
 
-    # print merged configuration
-    print("=" * 20, "Merged Configuration", "=" * 20)
-    print(
-        yaml.dump(
-            merged_config.model_dump(mode="json"),
-            sort_keys=False,
-            default_flow_style=False,
-            indent=2,
-        )
-    )
-    print("=" * 50)
+    if _should_print_merged_config(colocate=colocate, log_level=log_level):
+        _print_merged_config(merged_config)
 
     launch_server(
         merged_config,

@@ -58,7 +58,8 @@ def test_coordinator_failure_completion_fails_fast_and_cleans_state() -> None:
             entry_stage="preprocess",
             terminal_stages=["decode", "code2wav"],
         )
-        coordinator.control_plane = RecordingCoordinatorControlPlane()
+        control_plane = RecordingCoordinatorControlPlane()
+        coordinator.control_plane = control_plane
         coordinator.register_stage("preprocess", "inproc://preprocess")
 
         await coordinator._submit_request("req-1", "hello")
@@ -76,5 +77,30 @@ def test_coordinator_failure_completion_fails_fast_and_cleans_state() -> None:
             await future
         assert "req-1" not in coordinator._requests
         assert "req-1" not in coordinator._partial_results
+        assert control_plane.aborts[-1].request_id == "req-1"
+
+    asyncio.run(_run())
+
+
+def test_coordinator_fail_pending_requests_resolves_waiters() -> None:
+    async def _run() -> None:
+        coordinator = Coordinator(
+            "inproc://complete",
+            "inproc://abort",
+            entry_stage="preprocess",
+            terminal_stages=["decode", "code2wav"],
+        )
+        coordinator.control_plane = RecordingCoordinatorControlPlane()
+        coordinator.register_stage("preprocess", "inproc://preprocess")
+
+        await coordinator._submit_request("req-1", "hello")
+        future = coordinator._completion_futures["req-1"]
+
+        await coordinator.fail_pending_requests(RuntimeError("stage died"))
+
+        with pytest.raises(RuntimeError, match="stage died"):
+            await future
+        assert coordinator._requests == {}
+        assert coordinator._partial_results == {}
 
     asyncio.run(_run())

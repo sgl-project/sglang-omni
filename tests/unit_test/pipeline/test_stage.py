@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
 import torch
 
 from sglang_omni.pipeline import relay_io
 from sglang_omni.pipeline.stage.input import AggregatedInput
-from sglang_omni.pipeline.stage.stream_queue import StreamItem, StreamQueue
+from sglang_omni.pipeline.stage.stream_queue import StreamQueue
 from sglang_omni.proto import DataReadyMessage
 from tests.unit_test.fixtures.pipeline_fakes import (
     EventLog,
@@ -24,6 +25,13 @@ from tests.unit_test.fixtures.pipeline_fakes import (
     tensor_equal,
 )
 from tests.unit_test.pipeline.helpers import make_stage
+
+
+class _CloseAwareControlPlane(RecordingStageControlPlane):
+    async def recv(self):
+        while not self.closed:
+            await asyncio.sleep(0)
+        raise RuntimeError("control plane closed")
 
 
 def test_aggregated_input_waits_per_request_without_cross_talk() -> None:
@@ -79,15 +87,28 @@ def test_stage_routes_results_streams_and_clears_abort_state() -> None:
 
         stage_obj._stream_queue = StreamQueue()
         stage_obj._stream_queue.open("req-1")
-        stage_obj._pending_stream_data["req-1"] = [
-            StreamItem(0, torch.tensor([1]), "t")
-        ]
         stage_obj._on_abort("req-1")
 
         assert "req-1" in stage_obj._aborted
         assert relay.cleaned[-1] == "req-1"
         assert scheduler.aborted == ["req-1"]
-        assert "req-1" not in stage_obj._pending_stream_data
+        assert not stage_obj._stream_queue.has("req-1")
+
+    asyncio.run(_run())
+
+
+def test_stage_run_raises_when_scheduler_thread_crashes() -> None:
+    async def _run() -> None:
+        scheduler = FakeScheduler(fail_start=RuntimeError("boom"))
+        stage_obj = make_stage(
+            scheduler=scheduler,
+            control_plane=_CloseAwareControlPlane(),
+        )
+
+        with pytest.raises(RuntimeError, match="Scheduler thread"):
+            await asyncio.wait_for(stage_obj.run(), timeout=2.0)
+
+        assert scheduler.stopped is True
 
     asyncio.run(_run())
 

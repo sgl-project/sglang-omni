@@ -97,6 +97,11 @@ class _PipelineConfigRegistry:
         for config_cls in self.configs.values():
             if config_cls.__name__ == name:
                 return config_cls
+            config_module = importlib.import_module(config_cls.__module__)
+            variants = getattr(config_module, "Variants", {})
+            for variant_cls in variants.values():
+                if variant_cls.__name__ == name:
+                    return variant_cls
         raise ValueError(
             f"Config class {name} not found in the pipeline config registry"
         )

@@ -123,6 +123,7 @@ def test_mp_runner_preserves_tp_rank_and_visible_device_contracts() -> None:
         stages_cfg=prep.stages_cfg,
         name_map=prep.name_map,
         endpoints=prep.endpoints,
+        placement_plan=prep.placement_plan,
     )[0]
     leader, follower = group.specs
     env = get_stage_process_env(follower, env={"CUDA_VISIBLE_DEVICES": "4,5,6,7"})
@@ -133,3 +134,25 @@ def test_mp_runner_preserves_tp_rank_and_visible_device_contracts() -> None:
     assert follower.factory_args["tp_rank"] == 1
     assert leader.factory_args["nccl_port"] == follower.factory_args["nccl_port"]
     assert env["CUDA_VISIBLE_DEVICES"] == "7"
+
+
+def test_mp_runner_keeps_cpu_stage_without_gpu_identity() -> None:
+    config = PipelineConfig(
+        model_path="model",
+        name="mp",
+        endpoints=EndpointsConfig(scheme="tcp"),
+        stages=[stage("preprocess", next="decode"), stage("decode", terminal=True)],
+    )
+    prep = prepare_pipeline_runtime(config)
+
+    group = _build_stage_groups(
+        config,
+        ctx=FakeMpContext(),
+        stages_cfg=prep.stages_cfg,
+        name_map=prep.name_map,
+        endpoints=prep.endpoints,
+        placement_plan=prep.placement_plan,
+    )[0]
+
+    assert group.specs[0].gpu_id is None
+    assert group.specs[0].relay_config["gpu_id"] is None

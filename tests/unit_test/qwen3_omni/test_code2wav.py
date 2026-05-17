@@ -26,9 +26,16 @@ def test_qwen_code2wav_streams_incrementally_and_abort_clears_state() -> None:
     scheduler._payloads["req-1"] = make_qwen_payload(request_id="req-1")
     scheduler._ensure_request_state("req-1")
 
-    scheduler._on_chunk("req-1", SimpleNamespace(data=torch.tensor([1, 10])))
-    scheduler._on_chunk("req-1", SimpleNamespace(data=torch.tensor([2, 20])))
-    scheduler._on_chunk("req-1", SimpleNamespace(data=torch.tensor([3, 30])))
+    chunk_meta = {"stream": False}  # non-streaming: final result carries full PCM
+    scheduler._on_chunk(
+        "req-1", SimpleNamespace(data=torch.tensor([1, 10]), metadata=chunk_meta)
+    )
+    scheduler._on_chunk(
+        "req-1", SimpleNamespace(data=torch.tensor([2, 20]), metadata=chunk_meta)
+    )
+    scheduler._on_chunk(
+        "req-1", SimpleNamespace(data=torch.tensor([3, 30]), metadata=chunk_meta)
+    )
     scheduler._on_done("req-1")
 
     message = scheduler.outbox.get_nowait()

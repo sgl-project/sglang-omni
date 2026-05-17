@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Small test doubles for the V1 pipeline unit tests.
+"""Small test doubles for pipeline unit tests.
 
 These fakes model the public contracts between Coordinator, Stage, Scheduler,
 and Relay. They intentionally avoid real ZMQ, CUDA, SGLang, and relay backends.
@@ -14,6 +14,7 @@ from typing import Any, Callable
 
 import torch
 
+from sglang_omni.config.schema import PipelineConfig
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling.messages import IncomingMessage, OutgoingMessage
 
@@ -182,6 +183,44 @@ def make_scheduler(**_: Any) -> FakeScheduler:
     return FakeScheduler()
 
 
+def dummy_factory(**kwargs: Any) -> dict[str, Any]:
+    return dict(kwargs)
+
+
+def runtime_factory(
+    *,
+    model_path: str,
+    gpu_id: int,
+    thinker_max_seq_len: int | None = None,
+    video_fps: float | None = None,
+    server_args_overrides: dict[str, Any] | None = None,
+    encoder_mem_reserve: float | None = None,
+    total_gpu_memory_fraction: float | None = None,
+) -> dict[str, Any]:
+    return {
+        "model_path": model_path,
+        "gpu_id": gpu_id,
+        "thinker_max_seq_len": thinker_max_seq_len,
+        "video_fps": video_fps,
+        "server_args_overrides": server_args_overrides,
+        "encoder_mem_reserve": encoder_mem_reserve,
+        "total_gpu_memory_fraction": total_gpu_memory_fraction,
+    }
+
+
+def runtime_factory_without_total_budget(
+    *,
+    model_path: str,
+    gpu_id: int,
+    server_args_overrides: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return {
+        "model_path": model_path,
+        "gpu_id": gpu_id,
+        "server_args_overrides": server_args_overrides,
+    }
+
+
 def make_scheduler_accepting_model_path(
     model_path: str, **kwargs: Any
 ) -> FakeScheduler:
@@ -291,6 +330,13 @@ def make_stream_message(
 
 def fake_factory_path(name: str) -> str:
     return f"tests.unit_test.fixtures.pipeline_fakes.{name}"
+
+
+class RejectThinkerPlacementPolicy:
+    def validate(self, config: PipelineConfig, plan) -> None:
+        del config
+        if "thinker" in plan.stages:
+            raise ValueError("policy rejected thinker")
 
 
 def tensor_equal(left: Any, right: Any) -> bool:

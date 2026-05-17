@@ -7,7 +7,7 @@ models/<name>/config.yaml. Metrics come from result JSONs that tests
 already write under pytest's --basetemp (set fresh per run).
 """
 from __future__ import annotations
-import argparse, ast, datetime as dt, hashlib, json, os, re, shutil
+import argparse, ast, datetime as dt, hashlib, json, os, re, shutil, signal
 import subprocess, sys, time, tomllib
 from pathlib import Path
 
@@ -35,9 +35,10 @@ METRIC_SPECS = {
     "throughput_qps":       dict(worst="min", label="Throughput (req/s)",    digits=3, scale=1,   group="speed"),
     "tok_per_s_agg":        dict(worst="min", label="Tok/s (aggregate)",     digits=2, scale=1,   group="speed"),
     "latency_mean_s":       dict(worst="max", label="Latency mean (s)",      digits=3, scale=1,   group="speed"),
+    "latency_p95_s":        dict(worst="max", label="Latency p95 (s)",       digits=3, scale=1,   group="speed"),
     "rtf_mean":             dict(worst="max", label="RTF mean",              digits=4, scale=1,   group="speed"),
 }
-_NESTED = {"throughput_qps", "tok_per_s_agg", "latency_mean_s", "rtf_mean"}
+_NESTED = {"throughput_qps", "tok_per_s_agg", "latency_mean_s", "latency_p95_s", "rtf_mean"}
 
 
 def match_metric(name, nested):
@@ -868,10 +869,8 @@ def _run_shared(test_path, stage_keys, all_stages, out, k, py, total, gpus_neede
     env = os.environ.copy()
     # Match CI's `export PYTHONPATH=$PWD`: server subprocesses launched by
     # tests are invoked as `python examples/<launcher>.py`, which only puts
-    # `examples/` on sys.path. The v1 package isn't editable-installed
-    # (only `sglang_omni` is registered in the venv's editable finder), so
-    # imports of `sglang_omni_v1` from those launchers need the repo root
-    # explicitly on PYTHONPATH. Prepend so we don't clobber user-set values.
+    # `examples/` on sys.path. Prepend the repo root so local package imports
+    # resolve without clobbering user-set values.
     existing_pp = env.get("PYTHONPATH", "")
     env["PYTHONPATH"] = (
         f"{REPO_ROOT}{os.pathsep}{existing_pp}" if existing_pp else str(REPO_ROOT)
@@ -924,8 +923,16 @@ def _run_shared(test_path, stage_keys, all_stages, out, k, py, total, gpus_neede
         if extra_args:
             pytest_cmd.extend(extra_args)
         with open(log, "w") as lf:
-            rc = subprocess.Popen(pytest_cmd, cwd=REPO_ROOT, env=env,
-                stdout=lf, stderr=subprocess.STDOUT).wait()
+            pytest_proc = subprocess.Popen(
+                pytest_cmd,
+                cwd=REPO_ROOT,
+                env=env,
+                stdout=lf,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
+            rc = pytest_proc.wait()
+        _cleanup_after_pytest(test_path, pytest_proc.pid, basetemp)
         dur = time.monotonic() - t0
         text = log.read_text()
         if rc == 0:
@@ -979,6 +986,33 @@ def _run_shared(test_path, stage_keys, all_stages, out, k, py, total, gpus_neede
         if len(extraction_warnings) > 20:
             print(f"  ... and {len(extraction_warnings) - 20} more "
                   f"(see {basetemp} listing to debug)")
+
+
+def _cleanup_after_pytest(test_path, process_group_id, basetemp):
+    """Clean up subprocesses owned by this pytest invocation."""
+    if Path(test_path).name != "test_omni_router_ci.py":
+        return
+    cleanup_process_group_ids = {process_group_id}
+    cleanup_process_group_ids.update(_read_cleanup_manifest_process_groups(basetemp))
+
+    for sig, delay in ((signal.SIGTERM, 5), (signal.SIGKILL, 1)):
+        for process_group in sorted(cleanup_process_group_ids):
+            try:
+                os.killpg(process_group, sig)
+            except ProcessLookupError:
+                continue
+        time.sleep(delay)
+
+
+def _read_cleanup_manifest_process_groups(basetemp):
+    process_groups = set()
+    for manifest in Path(basetemp).rglob("router_pgids.txt"):
+        for line in manifest.read_text().splitlines():
+            try:
+                process_groups.add(int(line.strip()))
+            except ValueError:
+                continue
+    return process_groups
 
 
 def _classify(text, rc):

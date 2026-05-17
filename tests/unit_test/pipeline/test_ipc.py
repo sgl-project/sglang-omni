@@ -5,18 +5,56 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
+from fastapi import FastAPI
 
 import sglang_omni.config.compiler as compiler
 import sglang_omni.pipeline.mp_runner as mp_runner
 import sglang_omni.pipeline.stage.runtime as stage_runtime
-from sglang_omni.config.schema import EndpointsConfig, PipelineConfig, StageConfig
+from sglang_omni.config.schema import (
+    EndpointsConfig,
+    PipelineConfig,
+    ProcessConfig,
+    StageConfig,
+)
 from tests.unit_test.fixtures.pipeline_fakes import FakeMpContext, FakeRelay
 
 
 def noop_factory():
     return None
+
+
+class _FakeControlPlane:
+    def __init__(self, recv_endpoint: str):
+        self.recv_endpoint = recv_endpoint
+
+
+class _FakeStage:
+    name = "preprocessing"
+
+    def __init__(self, recv_endpoint: str):
+        self.control_plane = _FakeControlPlane(recv_endpoint)
+
+    async def run(self) -> None:
+        await asyncio.Event().wait()
+
+
+class _FakeCoordinator:
+    def __init__(self, *args, **kwargs):
+        del args, kwargs
+        self.started = False
+        self.stopped = False
+
+    async def start(self) -> None:
+        self.started = True
+
+    async def run_completion_loop(self) -> None:
+        await asyncio.Event().wait()
+
+    async def stop(self) -> None:
+        self.stopped = True
 
 
 def _make_config(base_path: Path, *, scheme: str = "ipc") -> PipelineConfig:
@@ -130,6 +168,7 @@ def test_ipc_stage_groups_use_unique_endpoints_for_same_model_name(
             stages_cfg=prep_a.stages_cfg,
             name_map=prep_a.name_map,
             endpoints=prep_a.endpoints,
+            placement_plan=prep_a.placement_plan,
         )
         groups_b = mp_runner._build_stage_groups(
             config,
@@ -137,6 +176,7 @@ def test_ipc_stage_groups_use_unique_endpoints_for_same_model_name(
             stages_cfg=prep_b.stages_cfg,
             name_map=prep_b.name_map,
             endpoints=prep_b.endpoints,
+            placement_plan=prep_b.placement_plan,
         )
 
         assert prep_a.endpoints["completion"] != prep_b.endpoints["completion"]
@@ -171,6 +211,71 @@ async def test_mp_runner_cleans_runtime_dir_on_start_failure(
     with pytest.raises(RuntimeError, match="boom"):
         await runner.start()
 
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.asyncio
+async def test_mp_runner_cleans_spawned_groups_when_later_spawn_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Preserves spawned process cleanup if a later stage group fails to spawn."""
+
+    class FakeProcess:
+        def __init__(self) -> None:
+            self.terminated = False
+            self.killed = False
+            self.join_count = 0
+            self._alive = True
+
+        def is_alive(self) -> bool:
+            return self._alive
+
+        def terminate(self) -> None:
+            self.terminated = True
+            self._alive = False
+
+        def kill(self) -> None:
+            self.killed = True
+            self._alive = False
+
+        def join(self, timeout=None) -> None:
+            del timeout
+            self.join_count += 1
+
+    class FakeGroup:
+        def __init__(self, stage_name: str, *, fail_spawn: bool = False) -> None:
+            self.stage_name = stage_name
+            self.fail_spawn = fail_spawn
+            self.process = FakeProcess() if not fail_spawn else None
+
+        @property
+        def processes(self) -> list[FakeProcess]:
+            return [self.process] if self.process is not None else []
+
+        def spawn(self, ctx) -> None:
+            del ctx
+            if self.fail_spawn:
+                raise RuntimeError(f"spawn failed for {self.stage_name}")
+
+        async def wait_ready(self, timeout: float) -> None:
+            del timeout
+
+    first_group = FakeGroup("preprocessing")
+    second_group = FakeGroup("thinker", fail_spawn=True)
+    monkeypatch.setattr(mp_runner, "Coordinator", _FakeCoordinator)
+    monkeypatch.setattr(
+        mp_runner,
+        "_build_stage_groups",
+        lambda *a, **k: [first_group, second_group],
+    )
+
+    runner = mp_runner.MultiProcessPipelineRunner(_make_config(tmp_path))
+    with pytest.raises(RuntimeError, match="spawn failed"):
+        await runner.start()
+
+    assert first_group.process.terminated
+    assert first_group.process.join_count >= 1
     assert list(tmp_path.iterdir()) == []
 
 
@@ -245,3 +350,181 @@ async def test_mp_runner_stop_cleans_runtime_dir(
 
     assert group.shutdown_called
     assert list(tmp_path.iterdir()) == []
+
+
+async def _run_single_process_launcher_with_mocked_server(
+    *,
+    config: PipelineConfig,
+    runtime_dir: compiler.IpcRuntimeDir,
+    serve_mock: AsyncMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[_FakeCoordinator, FastAPI]:
+    stage = _FakeStage(f"ipc://{runtime_dir.path}/stage_preprocessing.sock")
+    coordinator = _FakeCoordinator()
+    app = FastAPI()
+
+    from sglang_omni.serve import launcher
+
+    monkeypatch.setattr(launcher, "_find_available_port", lambda host, port: port)
+    monkeypatch.setattr(
+        launcher,
+        "compile_pipeline_core",
+        lambda pipeline_config: compiler.CompiledPipeline(
+            coordinator=coordinator,
+            stages=[stage],
+            runtime_dir=runtime_dir,
+        ),
+    )
+    monkeypatch.setattr(launcher, "create_app", lambda *a, **k: app)
+    monkeypatch.setattr(launcher.uvicorn.Server, "serve", serve_mock)
+
+    await launcher._run_server(config, port=8000)
+    return coordinator, app
+
+
+@pytest.mark.asyncio
+async def test_single_process_launcher_cleans_runtime_dir_on_server_exit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Preserves single-process launcher IPC cleanup after normal server exit."""
+
+    config = _make_config(tmp_path)
+    runtime_dir = compiler.create_ipc_runtime_dir(config)
+    assert runtime_dir is not None
+    runtime_path = runtime_dir.path
+    server_serve = AsyncMock(return_value=None)
+
+    coordinator, app = await _run_single_process_launcher_with_mocked_server(
+        config=config,
+        runtime_dir=runtime_dir,
+        serve_mock=server_serve,
+        monkeypatch=monkeypatch,
+    )
+
+    assert coordinator.started
+    assert coordinator.stopped
+    server_serve.assert_awaited_once()
+    mounted_paths = {route.path for route in app.routes}
+    assert "/start_profile" in mounted_paths
+    assert "/stop_profile" in mounted_paths
+    assert not runtime_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_single_process_launcher_cleans_runtime_dir_on_server_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Preserves single-process launcher IPC cleanup after server failure."""
+
+    config = _make_config(tmp_path)
+    runtime_dir = compiler.create_ipc_runtime_dir(config)
+    assert runtime_dir is not None
+    runtime_path = runtime_dir.path
+    server_serve = AsyncMock(side_effect=RuntimeError("server failed"))
+
+    with pytest.raises(RuntimeError, match="server failed"):
+        await _run_single_process_launcher_with_mocked_server(
+            config=config,
+            runtime_dir=runtime_dir,
+            serve_mock=server_serve,
+            monkeypatch=monkeypatch,
+        )
+
+    server_serve.assert_awaited_once()
+    assert not runtime_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_multi_process_launcher_mounts_profiler_routes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _make_config(tmp_path)
+    config.process = ProcessConfig(mode="multi")
+    app = FastAPI()
+    server_serve = AsyncMock(return_value=None)
+
+    from sglang_omni.serve import launcher
+
+    runner_ref = None
+
+    class FakeRunner:
+        def __init__(self, pipeline_config: PipelineConfig) -> None:
+            del pipeline_config
+            nonlocal runner_ref
+            self.coordinator = _FakeCoordinator()
+            self.stage_control_endpoints = {
+                "preprocessing": "ipc://stage_preprocessing.sock"
+            }
+            self.stopped = False
+            runner_ref = self
+
+        async def start(self, timeout: float) -> None:
+            del timeout
+
+        async def stop(self) -> None:
+            self.stopped = True
+
+        async def wait_failed(self) -> None:
+            await asyncio.Future()
+
+    monkeypatch.setattr(launcher, "_find_available_port", lambda host, port: port)
+    monkeypatch.setattr(mp_runner, "MultiProcessPipelineRunner", FakeRunner)
+    monkeypatch.setattr(launcher, "create_app", lambda *a, **k: app)
+    monkeypatch.setattr(launcher.uvicorn.Server, "serve", server_serve)
+
+    await launcher._run_server(config, port=8000)
+
+    mounted_paths = {route.path for route in app.routes}
+    assert "/start_profile" in mounted_paths
+    assert "/stop_profile" in mounted_paths
+    assert runner_ref is not None
+    assert runner_ref.stopped
+
+
+@pytest.mark.asyncio
+async def test_single_process_launcher_preserves_pre_start_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Preserves original startup error while still closing IPC runtime dirs."""
+
+    config = _make_config(tmp_path)
+    runtime_dir = compiler.create_ipc_runtime_dir(config)
+    assert runtime_dir is not None
+    runtime_path = runtime_dir.path
+    coordinator = _FakeCoordinator()
+    coordinator.stop = AsyncMock(side_effect=RuntimeError("stop failed"))
+    stage = _FakeStage(f"ipc://{runtime_dir.path}/stage_preprocessing.sock")
+
+    from sglang_omni.serve import launcher
+
+    monkeypatch.setattr(launcher, "_find_available_port", lambda host, port: port)
+    monkeypatch.setattr(
+        launcher,
+        "compile_pipeline_core",
+        lambda pipeline_config: compiler.CompiledPipeline(
+            coordinator=coordinator,
+            stages=[stage],
+            runtime_dir=runtime_dir,
+        ),
+    )
+
+    def fail_collect_stage_control_endpoints(stages) -> dict[str, str]:
+        del stages
+        raise RuntimeError("bad endpoints")
+
+    monkeypatch.setattr(
+        launcher,
+        "_collect_stage_control_endpoints",
+        fail_collect_stage_control_endpoints,
+    )
+
+    with pytest.raises(RuntimeError, match="bad endpoints"):
+        await launcher._run_server(config, port=8000)
+
+    assert not coordinator.started
+    coordinator.stop.assert_awaited_once()
+    assert not runtime_path.exists()

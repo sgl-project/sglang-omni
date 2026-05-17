@@ -110,6 +110,7 @@ def bootstrap_text_model_for_decode(
     max_batch_size: int,
     num_codebooks: int,
     codebook_size: int,
+    ras_window: int = 16,
 ) -> None:
     """Attach the fast codebook head and allocate persistent decode buffers."""
     audio_decoder.setup_caches(max_batch_size=max_batch_size, dtype=torch.bfloat16)
@@ -121,4 +122,5 @@ def bootstrap_text_model_for_decode(
         semantic_end_id=semantic_end_id,
         im_end_token_id=im_end_token_id,
         max_batch_size=max_batch_size,
+        rep_history_len=ras_window,
     )

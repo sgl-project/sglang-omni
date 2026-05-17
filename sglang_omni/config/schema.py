@@ -30,6 +30,103 @@ class EndpointsConfig(BaseModel):
     base_port: int = 16000
 
 
+class ParallelismConfig(BaseModel):
+    """Supported parallelism for one logical stage."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    tp: int = 1
+
+    def model_post_init(self, __context: Any = None) -> None:
+        if self.tp < 1:
+            raise ValueError("parallelism.tp must be >= 1")
+
+
+class StageResourceConfig(BaseModel):
+    """Placement-resource intent for one stage rank/process."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    total_gpu_memory_fraction: float | None = Field(
+        default=None,
+        description=(
+            "Per-rank/process budget as a fraction of total physical GPU "
+            "memory. After TP expansion, each rank contributes this budget to "
+            "its assigned GPU."
+        ),
+    )
+
+    def model_post_init(self, __context: Any = None) -> None:
+        value = self.total_gpu_memory_fraction
+        if value is not None and not 0.0 < value <= 1.0:
+            raise ValueError(
+                "runtime.resources.total_gpu_memory_fraction must be in (0, 1]"
+            )
+
+
+class SGLangServerArgsConfig(BaseModel):
+    """Typed subset of SGLang ServerArgs exposed through pipeline config."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    mem_fraction_static: float | None = None
+
+    def model_post_init(self, __context: Any = None) -> None:
+        value = self.mem_fraction_static
+        if value is not None and not 0.0 < value < 1.0:
+            raise ValueError(
+                "runtime.sglang_server_args.mem_fraction_static must be in (0, 1)"
+            )
+
+
+class StageRuntimeConfig(BaseModel):
+    """Typed runtime intent for one stage.
+
+    Backend-specific values stay namespaced. For example,
+    sglang_server_args is translated into SGLang ServerArgs by the
+    runtime adapter, not by placement planning.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    resources: StageResourceConfig = Field(default_factory=StageResourceConfig)
+    max_seq_len: int | None = None
+    video_fps: float | None = None
+    sglang_server_args: SGLangServerArgsConfig = Field(
+        default_factory=SGLangServerArgsConfig
+    )
+
+    def model_post_init(self, __context: Any = None) -> None:
+        if self.max_seq_len is not None and self.max_seq_len <= 0:
+            raise ValueError("runtime.max_seq_len must be positive")
+        if self.video_fps is not None and self.video_fps <= 0:
+            raise ValueError("runtime.video_fps must be positive")
+
+
+class PlacementConfig(BaseModel):
+    """Pipeline-level placement planning limits."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    max_total_gpu_memory_fraction_per_gpu: float = 1.0
+    require_memory_fraction_for_colocation: bool = True
+
+    def model_post_init(self, __context: Any = None) -> None:
+        value = self.max_total_gpu_memory_fraction_per_gpu
+        if not 0.0 < value <= 1.0:
+            raise ValueError(
+                "placement.max_total_gpu_memory_fraction_per_gpu must be in (0, 1]"
+            )
+
+
+class ProcessConfig(BaseModel):
+    """Process launch mode for a pipeline."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    mode: Literal["auto", "single", "multi"] = "auto"
+
+
 class StageConfig(BaseModel):
     """Single pipeline stage configuration.
 
@@ -64,6 +161,11 @@ class StageConfig(BaseModel):
     # --- GPU / parallelism ---
     gpu: int | list[int] | None = None
     tp_size: int = 1
+    parallelism: ParallelismConfig = Field(default_factory=ParallelismConfig)
+
+    # --- Runtime intent ---
+    runtime: StageRuntimeConfig = Field(default_factory=StageRuntimeConfig)
+    runtime_arg_map: dict[str, str] = Field(default_factory=dict)
 
     # --- Fan-in ---
     wait_for: list[str] | None = None
@@ -71,12 +173,32 @@ class StageConfig(BaseModel):
 
     # --- Streaming ---
     stream_to: list[str] = Field(default_factory=list)
+    can_accept_stream_before_payload: bool = False
 
     # --- Route-specific payload projection ---
     project_payload: dict[str, str] = Field(default_factory=dict)
 
     # --- Relay (auto-inferred from gpu when None) ---
     relay: RelayConfig | None = None
+
+    def model_post_init(self, __context: Any = None) -> None:
+        fields_set = self.__pydantic_fields_set__
+        tp_size_set = "tp_size" in fields_set
+        parallelism_set = "parallelism" in fields_set
+        if self.tp_size < 1:
+            raise ValueError(f"Stage {self.name!r} must have tp_size >= 1")
+
+        if parallelism_set and tp_size_set and self.parallelism.tp != self.tp_size:
+            raise ValueError(
+                f"Stage {self.name!r}: tp_size={self.tp_size} conflicts with "
+                f"parallelism.tp={self.parallelism.tp}"
+            )
+        if not parallelism_set and self.tp_size != self.parallelism.tp:
+            self.parallelism.tp = self.tp_size
+        elif (
+            parallelism_set and not tp_size_set and self.tp_size != self.parallelism.tp
+        ):
+            self.tp_size = self.parallelism.tp
 
 
 class PipelineConfig(BaseModel):
@@ -91,6 +213,9 @@ class PipelineConfig(BaseModel):
     relay_backend: Literal["shm", "nccl", "nixl", "mooncake"] = "shm"
     fused_stages: list[list[str]] = Field(default_factory=list)
     runtime_overrides: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    placement: PlacementConfig = Field(default_factory=PlacementConfig)
+    process: ProcessConfig = Field(default_factory=ProcessConfig)
+    placement_policy: str | None = None
     endpoints: EndpointsConfig = Field(default_factory=EndpointsConfig)
     completion_endpoint: str | None = None
     abort_endpoint: str | None = None
@@ -143,10 +268,18 @@ class PipelineConfig(BaseModel):
         for s in self.stages:
             if not s.factory:
                 raise ValueError(f"Stage {s.name!r} missing factory")
-            if s.next is None and not s.terminal:
-                raise ValueError(f"Stage {s.name!r} must set 'next' or 'terminal'")
+            has_next = s.next is not None
+            if has_next == bool(s.terminal):
+                raise ValueError(
+                    f"Stage {s.name!r} must set exactly one of 'next' or 'terminal'"
+                )
             if s.tp_size < 1:
                 raise ValueError(f"Stage {s.name!r} must have tp_size >= 1")
+            if s.parallelism.tp != s.tp_size:
+                raise ValueError(
+                    f"Stage {s.name!r}: tp_size={s.tp_size} conflicts with "
+                    f"parallelism.tp={s.parallelism.tp}"
+                )
             if isinstance(s.gpu, list) and len(s.gpu) != s.tp_size:
                 raise ValueError(
                     f"Stage {s.name!r}: gpu has {len(s.gpu)} entries "

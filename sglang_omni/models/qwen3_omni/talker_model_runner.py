@@ -114,12 +114,19 @@ class QwenTalkerModelRunner(ModelRunner):
             req = schedule_batch.reqs[idx]
             code_chunk = self.model._output_codes[idx].detach().clone()
             feedback_row = self.model._output_embeds[idx].detach().clone()
+            # Tell code2wav whether to forward audio chunks to the Coordinator.
+            stage_payload = sched_req.data.stage_payload
+            is_streaming = bool(
+                stage_payload is not None
+                and (stage_payload.request.params or {}).get("stream", False)
+            )
             self._outbox.put(
                 OutgoingMessage(
                     request_id=req.rid,
                     type="stream",
                     data=code_chunk,
                     target=self._code2wav_target,
+                    metadata={"stream": is_streaming},
                 )
             )
             sched_req.data.pending_feedback_queue.append(feedback_row)

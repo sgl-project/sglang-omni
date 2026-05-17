@@ -13,6 +13,7 @@ def create_thinker_scheduler(
     speech_enabled: bool = False,
     tp_rank: int = 0,
     nccl_port: int | None = None,
+    total_gpu_memory_fraction: float | None = None,
 ):
     """Create the Qwen thinker scheduler."""
     from sglang.srt.utils.hf_transformers_utils import get_tokenizer
@@ -48,6 +49,7 @@ def create_thinker_scheduler(
         nccl_port=nccl_port,
         model_arch_override="Qwen3OmniThinkerForCausalLM",
         capture_hidden_layers=capture_hidden_layers,
+        total_gpu_memory_fraction=total_gpu_memory_fraction,
     )
 
     if want_cuda_graph:
@@ -99,6 +101,7 @@ def create_talker_scheduler(
     feedback_enabled: bool = True,
     tp_rank: int = 0,
     nccl_port: int | None = None,
+    total_gpu_memory_fraction: float | None = None,
 ):
     """Create the Qwen talker scheduler."""
     del speech_enabled
@@ -135,6 +138,7 @@ def create_talker_scheduler(
         nccl_port=nccl_port,
         model_arch_override="Qwen3OmniTalker",
         weight_prefix=weight_prefix,
+        total_gpu_memory_fraction=total_gpu_memory_fraction,
     )
     if hasattr(model_worker.model_runner, "sampler"):
         model_worker.model_runner.model._sampler = model_worker.model_runner.sampler

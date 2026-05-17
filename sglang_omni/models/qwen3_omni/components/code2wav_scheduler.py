@@ -76,6 +76,7 @@ class Code2WavScheduler:
         self._audio_chunks: dict[str, list[np.ndarray]] = {}
         self._payloads: dict[str, StagePayload] = {}
         self._pending_done: set[str] = set()
+        self._stream_enabled: dict[str, bool] = {}
 
     def start(self) -> None:
         self._running = True
@@ -106,6 +107,7 @@ class Code2WavScheduler:
         self._emitted.pop(request_id, None)
         self._audio_chunks.pop(request_id, None)
         self._payloads.pop(request_id, None)
+        self._stream_enabled.pop(request_id, None)
         self._pending_done.discard(request_id)
 
     def _ensure_request_state(self, request_id: str) -> None:
@@ -117,6 +119,27 @@ class Code2WavScheduler:
 
     def _on_chunk(self, request_id: str, chunk: Any) -> None:
         self._ensure_request_state(request_id)
+
+        # Latch the stream flag from talker's metadata once per request.
+        # Talker contract: always populate metadata['stream']; a missing
+        # field means the upstream changed shape.
+        if request_id not in self._stream_enabled:
+            meta = chunk.metadata if isinstance(chunk.metadata, dict) else None
+            if meta is None or "stream" not in meta:
+                self.outbox.put(
+                    OutgoingMessage(
+                        request_id=request_id,
+                        type="error",
+                        data=RuntimeError(
+                            f"code2wav got a chunk for {request_id!r} without "
+                            "metadata['stream']; talker_model_runner must "
+                            "populate it."
+                        ),
+                    )
+                )
+                self.abort(request_id)
+                return
+            self._stream_enabled[request_id] = bool(meta["stream"])
 
         codes = chunk.data.to(device=self._device, dtype=torch.long)
         if logger.isEnabledFor(logging.DEBUG):
@@ -168,6 +191,17 @@ class Code2WavScheduler:
                 len(audio_parts),
                 int(full_audio.shape[0]),
             )
+        # Streaming clients already received per-chunk audio; final result is
+        # metadata-only to avoid IPC-ing full audio that the HTTP layer drops.
+        # Default False so missing latch falls back to non-streaming (safe:
+        # may waste bandwidth, never starves a non-streaming client).
+        if self._stream_enabled.get(request_id, False):
+            final_data: dict[str, Any] = {
+                "modality": "audio",
+                "sample_rate": self._sample_rate,
+            }
+        else:
+            final_data = self._build_audio_payload(full_audio)
         self.outbox.put(
             OutgoingMessage(
                 request_id=request_id,
@@ -175,7 +209,7 @@ class Code2WavScheduler:
                 data=StagePayload(
                     request_id=payload.request_id,
                     request=payload.request,
-                    data=self._build_audio_payload(full_audio),
+                    data=final_data,
                 ),
             )
         )
@@ -185,6 +219,7 @@ class Code2WavScheduler:
         self._emitted.pop(request_id, None)
         self._audio_chunks.pop(request_id, None)
         self._payloads.pop(request_id, None)
+        self._stream_enabled.pop(request_id, None)
 
     def _decode_and_emit(self, request_id: str) -> None:
         chunks = self._code_chunks[request_id]
@@ -194,6 +229,16 @@ class Code2WavScheduler:
         self._emitted[request_id] = end
         if audio.size > 0:
             self._audio_chunks[request_id].append(audio)
+            if self._stream_enabled.get(request_id, True):
+                self.outbox.put(
+                    OutgoingMessage(
+                        request_id=request_id,
+                        type="stream",
+                        target=None,
+                        data=self._build_audio_payload(audio),
+                        metadata={"modality": "audio"},
+                    )
+                )
 
     def _decode_incremental(
         self, request_id: str, code_chunks, start, end
