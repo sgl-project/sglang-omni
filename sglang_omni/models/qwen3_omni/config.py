@@ -184,6 +184,9 @@ class Qwen3OmniSpeechPipelineConfig(PipelineConfig):
     """8-stage speech pipeline (text + audio output)."""
 
     architecture: ClassVar[str] = "Qwen3OmniMoeForConditionalGeneration"
+    env_defaults: dict[str, str] = Field(
+        default_factory=lambda: dict(_DEEPGEMM_PRECOMPILE_ENV_DEFAULTS)
+    )
 
     @classmethod
     def mem_fraction_role_to_stage(cls) -> dict[str, str]:
