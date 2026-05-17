@@ -173,7 +173,6 @@ that happened to contain an older version of the test.
 
   - public CLI/config behavior
   - SGLang argument builders
-  - SGLang backend policy contracts
   - memory flag contracts
   - colocation config and SGLang AR budget contracts
   - `PipelineState` request builders
