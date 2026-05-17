@@ -35,7 +35,6 @@ class StagePlacementPlan:
     stages: dict[str, StagePlacement]
     gpus: dict[int, GpuPlacement]
     same_gpu_stream_targets: dict[str, frozenset[str]]
-    requires_multi_process: bool
 
 
 class PlacementPolicy(Protocol):
@@ -89,11 +88,6 @@ class StagePlacementPlanner:
                 stages,
                 placements,
             ),
-            requires_multi_process=_requires_multi_process(
-                self._config,
-                gpu_plans,
-                stages,
-            ),
         )
         self._validate_memory_budgets(plan)
         if apply_policy:
@@ -102,15 +96,7 @@ class StagePlacementPlanner:
 
     def _validate_memory_budgets(self, plan: StagePlacementPlan) -> None:
         limit = self._config.placement.max_total_gpu_memory_fraction_per_gpu
-        require = self._config.placement.require_memory_fraction_for_colocation
         for gpu in plan.gpus.values():
-            colocated = _is_explicit_colocation(gpu, self._config)
-            if colocated and require and gpu.missing_fraction_stage_names:
-                missing = ", ".join(sorted(gpu.missing_fraction_stage_names))
-                raise ValueError(
-                    f"GPU {gpu.gpu_id} colocates stages without "
-                    f"runtime.resources.total_gpu_memory_fraction: {missing}"
-                )
             if gpu.total_gpu_memory_fraction > limit + 1e-9:
                 raise ValueError(
                     f"GPU {gpu.gpu_id} total_gpu_memory_fraction="
@@ -129,24 +115,6 @@ def build_stage_placement_plan(
         stages_cfg=stages_cfg,
         apply_policy=apply_policy,
     )
-
-
-def resolve_pipeline_process_mode(
-    config: PipelineConfig,
-    plan: StagePlacementPlan,
-) -> bool:
-    """Return whether the pipeline must run with the multi-process runner."""
-
-    if config.process.mode == "multi":
-        return True
-    if config.process.mode == "single":
-        if plan.requires_multi_process:
-            raise ValueError(
-                "process.mode='single' is incompatible with this placement; "
-                "use process.mode='auto' or process.mode='multi'"
-            )
-        return False
-    return plan.requires_multi_process
 
 
 def resolve_stage_gpu_ids(
@@ -244,26 +212,6 @@ def _build_gpu_placement(
         has_memory_fraction=has_memory_fraction,
         missing_fraction_stage_names=tuple(sorted(missing)),
     )
-
-
-def _requires_multi_process(
-    config: PipelineConfig,
-    gpu_plans: dict[int, GpuPlacement],
-    stages: list[StageConfig],
-) -> bool:
-    if len(gpu_plans) > 1:
-        return True
-    if any(stage.tp_size > 1 for stage in stages):
-        return True
-    return any(_is_explicit_colocation(gpu, config) for gpu in gpu_plans.values())
-
-
-def _is_explicit_colocation(gpu: GpuPlacement, config: PipelineConfig) -> bool:
-    if len(gpu.stage_names) <= 1:
-        return False
-    if config.process.mode == "multi":
-        return True
-    return gpu.has_memory_fraction
 
 
 def _apply_placement_policy(

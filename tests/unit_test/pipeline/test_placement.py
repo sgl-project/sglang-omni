@@ -9,8 +9,6 @@ from sglang_omni.config import (
     StageResourceConfig,
     StageRuntimeConfig,
     build_stage_placement_plan,
-    compile_pipeline_core,
-    resolve_pipeline_process_mode,
     resolve_stage_gpu_ids,
 )
 
@@ -28,6 +26,7 @@ def _stage(
 ) -> StageConfig:
     return StageConfig(
         name=name,
+        process="pipeline",
         factory=_FACTORY,
         gpu=gpu,
         tp_size=tp_size,
@@ -39,7 +38,7 @@ def _stage(
     )
 
 
-def test_same_gpu_colocation_requires_memory_fraction_for_all_stages() -> None:
+def test_same_gpu_placement_records_missing_memory_fraction_stages() -> None:
     config = PipelineConfig(
         model_path="dummy",
         stages=[
@@ -48,11 +47,12 @@ def test_same_gpu_colocation_requires_memory_fraction_for_all_stages() -> None:
         ],
     )
 
-    with pytest.raises(ValueError, match="total_gpu_memory_fraction"):
-        build_stage_placement_plan(config)
+    plan = build_stage_placement_plan(config)
+
+    assert plan.gpus[0].missing_fraction_stage_names == ("thinker",)
 
 
-def test_same_gpu_without_budget_stays_single_process() -> None:
+def test_same_gpu_without_budget_records_placement() -> None:
     config = PipelineConfig(
         model_path="dummy",
         stages=[
@@ -63,8 +63,11 @@ def test_same_gpu_without_budget_stays_single_process() -> None:
 
     plan = build_stage_placement_plan(config)
 
-    assert plan.requires_multi_process is False
-    assert resolve_pipeline_process_mode(config, plan) is False
+    assert plan.gpus[0].stage_names == ("image_encoder", "thinker")
+    assert plan.gpus[0].missing_fraction_stage_names == (
+        "image_encoder",
+        "thinker",
+    )
 
 
 def test_untyped_factory_budget_is_rejected_before_placement() -> None:
@@ -73,6 +76,7 @@ def test_untyped_factory_budget_is_rejected_before_placement() -> None:
         stages=[
             StageConfig(
                 name="thinker",
+                process="pipeline",
                 factory=_FACTORY,
                 factory_args={"total_gpu_memory_fraction": 0.50},
                 gpu=0,
@@ -96,7 +100,7 @@ def test_untyped_runtime_override_budget_is_rejected_before_placement() -> None:
         build_stage_placement_plan(config)
 
 
-def test_same_gpu_colocation_sums_budget_and_requires_multi_process() -> None:
+def test_same_gpu_colocation_sums_budget() -> None:
     config = PipelineConfig(
         model_path="dummy",
         stages=[
@@ -109,8 +113,6 @@ def test_same_gpu_colocation_sums_budget_and_requires_multi_process() -> None:
 
     assert plan.gpus[0].stage_names == ("preprocess", "thinker")
     assert plan.gpus[0].total_gpu_memory_fraction == pytest.approx(0.80)
-    assert plan.requires_multi_process is True
-    assert resolve_pipeline_process_mode(config, plan) is True
 
 
 def test_same_gpu_colocation_rejects_over_budget() -> None:
@@ -126,34 +128,6 @@ def test_same_gpu_colocation_rejects_over_budget() -> None:
         build_stage_placement_plan(config)
 
 
-def test_single_process_mode_rejects_colocated_gpu_plan() -> None:
-    config = PipelineConfig(
-        model_path="dummy",
-        process={"mode": "single"},
-        stages=[
-            _stage("preprocess", gpu=0, fraction=0.10, next_stage="thinker"),
-            _stage("thinker", gpu=0, fraction=0.70, terminal=True),
-        ],
-    )
-    plan = build_stage_placement_plan(config)
-
-    with pytest.raises(ValueError, match="process.mode='single'"):
-        resolve_pipeline_process_mode(config, plan)
-
-
-def test_single_process_compiler_rejects_colocated_gpu_plan() -> None:
-    config = PipelineConfig(
-        model_path="dummy",
-        stages=[
-            _stage("preprocess", gpu=0, fraction=0.10, next_stage="thinker"),
-            _stage("thinker", gpu=0, fraction=0.70, terminal=True),
-        ],
-    )
-
-    with pytest.raises(ValueError, match="MultiProcessPipelineRunner"):
-        compile_pipeline_core(config)
-
-
 def test_tp_rank_gpu_ids_are_preserved() -> None:
     stage = _stage(
         "thinker",
@@ -167,7 +141,6 @@ def test_tp_rank_gpu_ids_are_preserved() -> None:
     plan = build_stage_placement_plan(config)
 
     assert resolve_stage_gpu_ids(plan, stage) == [0, 1]
-    assert plan.requires_multi_process is True
 
 
 def test_tp_memory_fraction_is_per_rank_per_assigned_gpu() -> None:

@@ -21,6 +21,8 @@ FACTORY = fake_factory_path("make_scheduler")
 
 def stage(name: str, **kwargs: Any) -> StageConfig:
     kwargs.setdefault("factory", FACTORY)
+    if kwargs.get("tp_size", 1) == 1:
+        kwargs.setdefault("process", "pipeline")
     return StageConfig(name=name, **kwargs)
 
 

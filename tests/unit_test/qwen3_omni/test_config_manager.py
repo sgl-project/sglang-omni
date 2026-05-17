@@ -6,7 +6,11 @@ from pathlib import Path
 import pytest
 
 from sglang_omni.cli.serve import apply_encoder_mem_reserve_cli_override
-from sglang_omni.config import build_stage_placement_plan, resolve_stage_factory_args
+from sglang_omni.config import (
+    build_process_topology_plan,
+    build_stage_placement_plan,
+    resolve_stage_factory_args,
+)
 from sglang_omni.config.manager import ConfigManager
 from sglang_omni.models.qwen3_omni.config import Qwen3OmniSpeechColocatedPipelineConfig
 
@@ -92,14 +96,23 @@ def test_qwen3_omni_colocated_example_config_loads_and_plans() -> None:
     manager = ConfigManager.from_file(str(config_path))
     config = manager.config
     plan = build_stage_placement_plan(config)
+    topology = build_process_topology_plan(config, plan)
 
     assert "stages:" not in config_text
     assert "factory:" not in config_text
     assert isinstance(config, Qwen3OmniSpeechColocatedPipelineConfig)
     assert config.name == "qwen3-omni-colocated"
-    assert config.process.mode == "multi"
-    assert plan.requires_multi_process is True
     assert plan.gpus[0].total_gpu_memory_fraction == pytest.approx(0.94)
+    assert [group.name for group in topology.groups] == [
+        "preprocessing",
+        "image_encoder",
+        "audio_encoder",
+        "mm_aggregate",
+        "thinker",
+        "decode",
+        "talker_ar",
+        "code2wav",
+    ]
     assert (
         _stage(config, "thinker").runtime.sglang_server_args.mem_fraction_static is None
     )

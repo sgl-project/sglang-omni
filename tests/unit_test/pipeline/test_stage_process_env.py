@@ -9,7 +9,11 @@ import pytest
 
 from sglang_omni.pipeline import stage_process
 from sglang_omni.pipeline.stage_group import _patched_spawn_env
-from sglang_omni.pipeline.stage_process import StageProcessSpec, get_stage_process_env
+from sglang_omni.pipeline.stage_process import (
+    StageProcessSpec,
+    StageWorkerProcessSpec,
+    get_stage_process_env,
+)
 from tests.unit_test.fixtures.pipeline_fakes import FakeScheduler, fake_factory_path
 
 
@@ -20,6 +24,13 @@ def _tp_spec(*, gpu_id: int) -> StageProcessSpec:
         tp_rank=0,
         tp_size=2,
         gpu_id=gpu_id,
+    )
+
+
+def _worker_spec(*stage_specs: StageProcessSpec) -> StageWorkerProcessSpec:
+    return StageWorkerProcessSpec(
+        process_name="worker",
+        stage_specs=list(stage_specs),
     )
 
 
@@ -69,7 +80,7 @@ def test_spawn_env_applies_stage_defaults_before_child_start(monkeypatch) -> Non
         env_defaults={"SGLANG_TEST_STAGE_ENV": "default"},
     )
 
-    with _patched_spawn_env(spec):
+    with _patched_spawn_env(_worker_spec(spec)):
         assert os.environ["SGLANG_TEST_STAGE_ENV"] == "default"
 
     assert "SGLANG_TEST_STAGE_ENV" not in os.environ
@@ -82,10 +93,25 @@ def test_spawn_env_preserves_operator_stage_defaults(monkeypatch) -> None:
         env_defaults={"SGLANG_TEST_STAGE_ENV": "default"},
     )
 
-    with _patched_spawn_env(spec):
+    with _patched_spawn_env(_worker_spec(spec)):
         assert os.environ["SGLANG_TEST_STAGE_ENV"] == "operator"
 
     assert os.environ["SGLANG_TEST_STAGE_ENV"] == "operator"
+
+
+def test_spawn_env_combines_stage_defaults_with_tp_visible_device(monkeypatch) -> None:
+    monkeypatch.delenv("SGLANG_TEST_STAGE_ENV", raising=False)
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "3,4")
+    stage_spec = _tp_spec(gpu_id=1)
+    stage_spec.env_defaults = {"SGLANG_TEST_STAGE_ENV": "default"}
+
+    with _patched_spawn_env(_worker_spec(stage_spec)):
+        assert os.environ["SGLANG_TEST_STAGE_ENV"] == "default"
+        assert os.environ["CUDA_VISIBLE_DEVICES"] == "4"
+        assert os.environ["SGLANG_ONE_VISIBLE_DEVICE_PER_PROCESS"] == "true"
+
+    assert "SGLANG_TEST_STAGE_ENV" not in os.environ
+    assert os.environ["CUDA_VISIBLE_DEVICES"] == "3,4"
 
 
 class _RecordingLog:

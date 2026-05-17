@@ -76,7 +76,7 @@ transport path.
 
 For same-GPU stream targets:
 
-- the compiler/runner detects targets whose sender and receiver share the same
+- runtime prep detects targets whose sender and receiver share the same
   primary GPU
 - `send_stream_chunk()` serializes the chunk with `ForkingPickler`
 - CUDA tensors are shared through CUDA IPC instead of copied through relay
@@ -124,7 +124,7 @@ the transfer is safe to release.
 
 `PipelineConfig.relay_backend` accepts `shm`, `nccl`, `nixl`, or `mooncake`.
 `RelayConfig` can override slot size, credits, rank, world size, and device per
-stage. If no per-stage relay config is provided, the compiler infers the relay
+stage. If no per-stage relay config is provided, runtime prep infers the relay
 device from stage placement. For `shm`, it keeps relay buffers on CPU because
 the backend copies through host shared memory.
 
