@@ -229,10 +229,28 @@ def _apply_model_worker_backend_policy(
         and effective_quantization == "fp8"
         and _model_config_has_moe(model_config)
         and moe_runner_backend == "auto"
+        and _model_config_has_native_fp8_block_quant(model_config)
+        and getattr(server_args, "ep_size", 1) == 1
         and _is_fp8_cutlass_moe_supported()
     ):
         server_args.moe_runner_backend = "cutlass"
         moe_runner_backend = server_args.moe_runner_backend
+
+    if (
+        is_qwen3_omni_arch
+        and effective_quantization == "fp8"
+        and _model_config_has_moe(model_config)
+        and moe_runner_backend == "cutlass"
+    ):
+        if not _model_config_has_native_fp8_block_quant(model_config):
+            raise ValueError(
+                "Qwen3-Omni FP8 CUTLASS MoE requires a native serialized "
+                "block-FP8 checkpoint with weight_block_size."
+            )
+        if getattr(server_args, "ep_size", 1) != 1:
+            raise ValueError(
+                "Qwen3-Omni FP8 CUTLASS MoE is only supported with ep_size == 1."
+            )
 
     if effective_quantization == "fp8" and moe_runner_backend == "flashinfer_cutlass":
         raise ValueError(
@@ -265,6 +283,33 @@ def _model_config_has_moe(model_config: ModelConfig) -> bool:
         hf_config = getattr(model_config, "hf_config", None)
         config_to_check = getattr(hf_config, "text_config", hf_config)
     return hasattr(config_to_check, "num_experts_per_tok")
+
+
+def _model_config_has_native_fp8_block_quant(model_config: ModelConfig) -> bool:
+    quant_config = _get_hf_quantization_config(model_config)
+    if quant_config is None:
+        return False
+    quant_method = _get_config_value(quant_config, "quant_method")
+    weight_block_size = _get_config_value(quant_config, "weight_block_size")
+    return (
+        _normalize_quantization(quant_method) == "fp8" and weight_block_size is not None
+    )
+
+
+def _get_hf_quantization_config(model_config: ModelConfig) -> object | None:
+    hf_config = getattr(model_config, "hf_config", None)
+    quant_config = getattr(hf_config, "quantization_config", None)
+    if quant_config is not None:
+        return quant_config
+
+    hf_text_config = getattr(model_config, "hf_text_config", None)
+    return getattr(hf_text_config, "quantization_config", None)
+
+
+def _get_config_value(config: object, key: str) -> object | None:
+    if isinstance(config, dict):
+        return config.get(key)
+    return getattr(config, key, None)
 
 
 def _is_fp8_cutlass_moe_supported() -> bool:

@@ -22,7 +22,4 @@ def convert_fp8_weight_scale_inv_for_sglang(
     if bool(torch.any(loaded_weight == 0).item()):
         raise ValueError(f"Invalid zero FP8 scale tensor for {target_name}")
 
-    # Avoid double-converting checkpoints that already store dequant scales.
-    if float(loaded_weight.detach().abs().max().item()) <= 1.0:
-        return loaded_weight
     return torch.reciprocal(loaded_weight)

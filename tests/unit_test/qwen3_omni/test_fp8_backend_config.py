@@ -16,9 +16,11 @@ class BackendPolicyCase:
     name: str
     model_quantization: str | None
     server_quantization: str | None
+    native_fp8_block_quant: bool
     model_arch_override: str | None
     has_moe: bool
     initial_moe_backend: str
+    ep_size: int
     cutlass_supported: bool
     expected_quantization: str | None
     expected_moe_backend: str | None = None
@@ -29,24 +31,33 @@ def _server_args(
     *,
     quantization: str | None = None,
     moe_runner_backend: str = "auto",
+    ep_size: int = 1,
 ) -> SimpleNamespace:
     return SimpleNamespace(
         quantization=quantization,
         moe_runner_backend=moe_runner_backend,
         fp8_gemm_runner_backend="auto",
         fp4_gemm_runner_backend="auto",
+        ep_size=ep_size,
     )
 
 
 def _model_config(
     *,
     quantization: str | None,
+    native_fp8_block_quant: bool = False,
     has_moe: bool = True,
 ) -> SimpleNamespace:
     attrs = {"num_experts_per_tok": 8} if has_moe else {}
+    quantization_config = (
+        {"quant_method": "fp8", "weight_block_size": [128, 128]}
+        if native_fp8_block_quant
+        else None
+    )
     return SimpleNamespace(
         quantization=quantization,
         hf_text_config=SimpleNamespace(**attrs),
+        hf_config=SimpleNamespace(quantization_config=quantization_config),
     )
 
 
@@ -57,9 +68,11 @@ def _model_config(
             name="bf16_talker_auto_uses_flashinfer_cutlass",
             model_quantization=None,
             server_quantization=None,
+            native_fp8_block_quant=False,
             model_arch_override="Qwen3OmniTalker",
             has_moe=True,
             initial_moe_backend="auto",
+            ep_size=1,
             cutlass_supported=True,
             expected_quantization=None,
             expected_moe_backend="flashinfer_cutlass",
@@ -68,9 +81,11 @@ def _model_config(
             name="bf16_talker_explicit_triton_is_preserved",
             model_quantization=None,
             server_quantization=None,
+            native_fp8_block_quant=False,
             model_arch_override="Qwen3OmniTalker",
             has_moe=True,
             initial_moe_backend="triton",
+            ep_size=1,
             cutlass_supported=True,
             expected_quantization=None,
             expected_moe_backend="triton",
@@ -79,9 +94,11 @@ def _model_config(
             name="fp8_talker_auto_uses_cutlass_when_supported",
             model_quantization="fp8",
             server_quantization=None,
+            native_fp8_block_quant=True,
             model_arch_override="Qwen3OmniTalker",
             has_moe=True,
             initial_moe_backend="auto",
+            ep_size=1,
             cutlass_supported=True,
             expected_quantization="fp8",
             expected_moe_backend="cutlass",
@@ -90,32 +107,51 @@ def _model_config(
             name="fp8_thinker_auto_uses_cutlass_when_supported",
             model_quantization="fp8",
             server_quantization=None,
+            native_fp8_block_quant=True,
             model_arch_override="Qwen3OmniThinkerForCausalLM",
             has_moe=True,
             initial_moe_backend="auto",
+            ep_size=1,
             cutlass_supported=True,
             expected_quantization="fp8",
             expected_moe_backend="cutlass",
         ),
         BackendPolicyCase(
-            name="server_fp8_override_drives_cutlass_policy",
+            name="server_fp8_override_without_native_block_quant_stays_auto",
             model_quantization=None,
             server_quantization="fp8",
+            native_fp8_block_quant=False,
             model_arch_override="Qwen3OmniTalker",
             has_moe=True,
             initial_moe_backend="auto",
+            ep_size=1,
             cutlass_supported=True,
             expected_quantization="fp8",
-            expected_moe_backend="cutlass",
+            expected_moe_backend="auto",
         ),
         BackendPolicyCase(
             name="fp8_auto_stays_auto_when_cutlass_is_unsupported",
             model_quantization="fp8",
             server_quantization=None,
+            native_fp8_block_quant=True,
             model_arch_override="Qwen3OmniTalker",
             has_moe=True,
             initial_moe_backend="auto",
+            ep_size=1,
             cutlass_supported=False,
+            expected_quantization="fp8",
+            expected_moe_backend="auto",
+        ),
+        BackendPolicyCase(
+            name="fp8_auto_stays_auto_when_ep_size_is_not_one",
+            model_quantization="fp8",
+            server_quantization=None,
+            native_fp8_block_quant=True,
+            model_arch_override="Qwen3OmniTalker",
+            has_moe=True,
+            initial_moe_backend="auto",
+            ep_size=2,
+            cutlass_supported=True,
             expected_quantization="fp8",
             expected_moe_backend="auto",
         ),
@@ -123,9 +159,11 @@ def _model_config(
             name="fp8_non_moe_stays_auto",
             model_quantization="fp8",
             server_quantization=None,
+            native_fp8_block_quant=True,
             model_arch_override="Qwen3OmniTalker",
             has_moe=False,
             initial_moe_backend="auto",
+            ep_size=1,
             cutlass_supported=True,
             expected_quantization="fp8",
             expected_moe_backend="auto",
@@ -134,9 +172,11 @@ def _model_config(
             name="fp8_non_qwen_omni_arch_stays_auto",
             model_quantization="fp8",
             server_quantization=None,
+            native_fp8_block_quant=True,
             model_arch_override="OtherMoEForCausalLM",
             has_moe=True,
             initial_moe_backend="auto",
+            ep_size=1,
             cutlass_supported=True,
             expected_quantization="fp8",
             expected_moe_backend="auto",
@@ -145,9 +185,11 @@ def _model_config(
             name="fp8_explicit_triton_is_preserved",
             model_quantization="fp8",
             server_quantization=None,
+            native_fp8_block_quant=True,
             model_arch_override="Qwen3OmniTalker",
             has_moe=True,
             initial_moe_backend="triton",
+            ep_size=1,
             cutlass_supported=True,
             expected_quantization="fp8",
             expected_moe_backend="triton",
@@ -156,20 +198,50 @@ def _model_config(
             name="fp8_explicit_cutlass_is_preserved",
             model_quantization="fp8",
             server_quantization=None,
+            native_fp8_block_quant=True,
             model_arch_override="Qwen3OmniTalker",
             has_moe=True,
             initial_moe_backend="cutlass",
+            ep_size=1,
             cutlass_supported=True,
             expected_quantization="fp8",
             expected_moe_backend="cutlass",
         ),
         BackendPolicyCase(
+            name="fp8_explicit_cutlass_requires_native_block_quant",
+            model_quantization=None,
+            server_quantization="fp8",
+            native_fp8_block_quant=False,
+            model_arch_override="Qwen3OmniTalker",
+            has_moe=True,
+            initial_moe_backend="cutlass",
+            ep_size=1,
+            cutlass_supported=True,
+            expected_quantization="fp8",
+            error_match="requires a native serialized block-FP8 checkpoint",
+        ),
+        BackendPolicyCase(
+            name="fp8_explicit_cutlass_rejects_ep_size_above_one",
+            model_quantization="fp8",
+            server_quantization=None,
+            native_fp8_block_quant=True,
+            model_arch_override="Qwen3OmniTalker",
+            has_moe=True,
+            initial_moe_backend="cutlass",
+            ep_size=2,
+            cutlass_supported=True,
+            expected_quantization="fp8",
+            error_match="ep_size == 1",
+        ),
+        BackendPolicyCase(
             name="fp8_rejects_flashinfer_cutlass",
             model_quantization="fp8",
             server_quantization=None,
+            native_fp8_block_quant=True,
             model_arch_override="Qwen3OmniTalker",
             has_moe=True,
             initial_moe_backend="flashinfer_cutlass",
+            ep_size=1,
             cutlass_supported=True,
             expected_quantization="fp8",
             error_match="native FP8.*flashinfer_cutlass",
@@ -190,9 +262,11 @@ def test_model_worker_backend_policy_precedence(
     server_args = _server_args(
         quantization=case.server_quantization,
         moe_runner_backend=case.initial_moe_backend,
+        ep_size=case.ep_size,
     )
     model_config = _model_config(
         quantization=case.model_quantization,
+        native_fp8_block_quant=case.native_fp8_block_quant,
         has_moe=case.has_moe,
     )
 
@@ -264,7 +338,7 @@ def test_backend_global_initialization_for_fp8_moe_model(monkeypatch) -> None:
 
     model_worker._initialize_model_worker_backend_globals(
         _server_args(),
-        _model_config(quantization="fp8"),
+        _model_config(quantization="fp8", native_fp8_block_quant=True),
         "fp8",
     )
 

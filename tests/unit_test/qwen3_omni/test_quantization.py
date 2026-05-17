@@ -35,17 +35,23 @@ def test_convert_fp8_weight_scale_inv_inverts_large_checkpoint_scales(
     assert torch.equal(source, torch.tensor([[2.0, 4.0], [8.0, 16.0]]))
 
 
-def test_convert_fp8_weight_scale_inv_leaves_non_scale_or_existing_scale() -> None:
+def test_convert_fp8_weight_scale_inv_inverts_by_loader_contract_not_magnitude() -> (
+    None
+):
+    checkpoint_scale_inv = torch.tensor([0.125, 0.25], dtype=torch.float32)
+
+    converted = convert_fp8_weight_scale_inv_for_sglang(
+        "linear.weight_scale_inv",
+        checkpoint_scale_inv,
+    )
+
+    assert torch.allclose(converted, torch.tensor([8.0, 4.0], dtype=torch.float32))
+
+
+def test_convert_fp8_weight_scale_inv_leaves_non_scale_weight() -> None:
     weight = torch.tensor([2.0, 4.0], dtype=torch.float32)
-    runtime_scale = torch.tensor([0.125, 0.25], dtype=torch.float32)
 
     assert convert_fp8_weight_scale_inv_for_sglang("linear.weight", weight) is weight
-    assert (
-        convert_fp8_weight_scale_inv_for_sglang(
-            "linear.weight_scale_inv", runtime_scale
-        )
-        is runtime_scale
-    )
 
 
 @pytest.mark.parametrize(
