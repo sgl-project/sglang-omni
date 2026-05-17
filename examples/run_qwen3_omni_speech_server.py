@@ -188,6 +188,11 @@ def _parse_thinker_tp_gpu_list(spec: str, tp_size: int) -> list[int]:
             f"--gpu-thinker-tp must be a comma-separated list of integers, "
             f"got {spec!r}"
         ) from exc
+    for gpu in gpu_ids:
+        if gpu < 0:
+            raise ValueError(
+                f"--gpu-thinker-tp GPU ids must be >= 0, got {gpu_ids}"
+            )
     if len(gpu_ids) != tp_size:
         raise ValueError(
             f"--gpu-thinker-tp has {len(gpu_ids)} entries but --thinker-tp-size="

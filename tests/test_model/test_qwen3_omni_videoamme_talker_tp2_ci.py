@@ -100,7 +100,7 @@ def test_videoamme_talker_tp2_accuracy_wer_and_speed(
         video_max_frames=128,
         video_max_pixels=401408,
         enable_audio=True,
-        asr_device="cuda:7",
+        asr_device="cuda:0",
         disable_tqdm=False,
         timeout_s=500,
     )

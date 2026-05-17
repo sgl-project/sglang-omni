@@ -135,15 +135,19 @@ def start_server_from_cmd(
         # Tee (file + stdout): TP=2 fixture wants the file for grep + live
         # output for `pytest -s`. Pattern from sglang's popen_launch_server.
         log_handle = open(log_file, "w")
-        proc = subprocess.Popen(
-            cmd,
-            env=process_env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            start_new_session=True,
-            text=True,
-            bufsize=1,
-        )
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                env=process_env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+                text=True,
+                bufsize=1,
+            )
+        except Exception:
+            log_handle.close()
+            raise
 
         def _tee_stdout(src, sink) -> None:
             try:
@@ -156,6 +160,7 @@ def start_server_from_cmd(
                 src.close()
                 sink.close()
 
+        # log_handle ownership is handed to the thread; its finally closes it.
         threading.Thread(
             target=_tee_stdout,
             args=(proc.stdout, log_handle),
