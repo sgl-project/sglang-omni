@@ -216,6 +216,12 @@ def _apply_model_worker_backend_policy(
         "Qwen3OmniTalker",
         "Qwen3OmniThinkerForCausalLM",
     )
+    if is_qwen3_omni_arch and getattr(server_args, "ep_size", 1) != 1:
+        raise ValueError(
+            "Qwen3-Omni ModelWorker does not support expert parallelism; "
+            "use ep_size=1."
+        )
+
     if (
         model_arch_override == "Qwen3OmniTalker"
         and effective_quantization is None
@@ -230,7 +236,6 @@ def _apply_model_worker_backend_policy(
         and _model_config_has_moe(model_config)
         and moe_runner_backend == "auto"
         and _model_config_has_native_fp8_block_quant(model_config)
-        and getattr(server_args, "ep_size", 1) == 1
         and _is_fp8_cutlass_moe_supported()
     ):
         server_args.moe_runner_backend = "cutlass"
@@ -246,10 +251,6 @@ def _apply_model_worker_backend_policy(
             raise ValueError(
                 "Qwen3-Omni FP8 CUTLASS MoE requires a native serialized "
                 "block-FP8 checkpoint with weight_block_size."
-            )
-        if getattr(server_args, "ep_size", 1) != 1:
-            raise ValueError(
-                "Qwen3-Omni FP8 CUTLASS MoE is only supported with ep_size == 1."
             )
 
     if effective_quantization == "fp8" and moe_runner_backend == "flashinfer_cutlass":
