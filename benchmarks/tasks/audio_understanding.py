@@ -116,7 +116,7 @@ def _build_result_from_response(
     message = response_json.get("choices", [{}])[0].get("message", {})
     result.text = _extract_message_text(message)
 
-    usage = response_json.get("usage", {})
+    usage = response_json.get("usage") or {}
     result.prompt_tokens = usage.get("prompt_tokens", 0)
     result.completion_tokens = usage.get("completion_tokens", 0)
 

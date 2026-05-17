@@ -1,0 +1,282 @@
+# SPDX-License-Identifier: Apache-2.0
+from __future__ import annotations
+
+import logging
+from types import SimpleNamespace
+
+import pytest
+from sglang.srt.model_executor.model_runner_kv_cache_mixin import (
+    ModelRunnerKVCacheMixin,
+)
+
+import sglang_omni.model_runner.sglang_model_runner as runner_mod
+import sglang_omni.models.qwen3_omni.stages as qwen_stages
+
+
+class _BudgetTestRunner(runner_mod.SGLModelRunner):
+    @property
+    def mambaish_config(self) -> None:
+        return None
+
+
+def _runner(*, total_gpu_memory_fraction: float | None):
+    runner = _BudgetTestRunner.__new__(_BudgetTestRunner)
+    runner.gpu_id = 0
+    runner.mem_fraction_static = 0.9
+    runner._total_gpu_memory_fraction = total_gpu_memory_fraction
+    runner.is_draft_worker = False
+    runner.num_effective_layers = 32
+    return runner
+
+
+def _patch_thinker_startup(monkeypatch) -> list[dict[str, object]]:
+    scheduler_calls: list[dict[str, object]] = []
+
+    def _fake_server_args_builder(model_path, context_length, **overrides):
+        assert model_path == "dummy"
+        assert context_length == 8192
+        return SimpleNamespace(mem_fraction_static=overrides["mem_fraction_static"])
+
+    def _fake_create_thinker_scheduler(server_args, gpu_id, **kwargs):
+        scheduler_calls.append(
+            {
+                "mem_fraction_static": server_args.mem_fraction_static,
+                "gpu_id": gpu_id,
+                "total_gpu_memory_fraction": kwargs["total_gpu_memory_fraction"],
+            }
+        )
+        return object()
+
+    monkeypatch.setattr(
+        qwen_stages,
+        "build_sglang_server_args",
+        _fake_server_args_builder,
+    )
+    monkeypatch.setattr(
+        qwen_stages,
+        "create_thinker_scheduler",
+        _fake_create_thinker_scheduler,
+    )
+    monkeypatch.setattr(qwen_stages, "avail_gpu_mem", lambda gpu_id: 90.0)
+    monkeypatch.setattr(
+        qwen_stages,
+        "get_process_gpu_memory_bytes",
+        lambda gpu_id: None,
+    )
+    return scheduler_calls
+
+
+def test_colocated_ar_budget_uses_stage_total_fraction(monkeypatch) -> None:
+    runner = _runner(total_gpu_memory_fraction=0.4)
+    monkeypatch.setattr(
+        runner_mod,
+        "get_process_gpu_memory_bytes",
+        lambda gpu_id: 30 * 1024**3,
+    )
+    monkeypatch.setattr(
+        runner_mod,
+        "get_gpu_device_info",
+        lambda gpu_id: SimpleNamespace(total_memory_bytes=100 * 1024**3),
+    )
+
+    available = runner_mod.SGLModelRunner._profile_available_bytes(runner, 0)
+
+    assert available == 10 * 1024**3
+
+
+def test_colocated_ar_token_profile_uses_process_scoped_budget(monkeypatch) -> None:
+    runner = _runner(total_gpu_memory_fraction=0.4)
+    runner.get_cell_size_per_token = lambda num_layers: num_layers * 1024**2
+
+    monkeypatch.setattr(
+        runner_mod,
+        "get_process_gpu_memory_bytes",
+        lambda gpu_id: 30 * 1024**3,
+    )
+    monkeypatch.setattr(
+        runner_mod,
+        "get_gpu_device_info",
+        lambda gpu_id: SimpleNamespace(total_memory_bytes=100 * 1024**3),
+    )
+
+    max_tokens = runner_mod.SGLModelRunner.profile_max_num_token(runner, 95.0)
+
+    assert max_tokens == (10 * 1024**3) // (32 * 1024**2)
+
+
+def test_colocated_ar_token_profile_passes_preload_sample_to_budget_profile(
+    monkeypatch,
+) -> None:
+    runner = _runner(total_gpu_memory_fraction=0.4)
+    runner.get_cell_size_per_token = lambda num_layers: num_layers * 1024**2
+
+    def _fake_profile(self, pre_model_load_memory):
+        assert pre_model_load_memory == 95.0
+        return 7 * 1024**3
+
+    monkeypatch.setattr(
+        runner_mod.SGLModelRunner,
+        "_profile_available_bytes",
+        _fake_profile,
+    )
+
+    max_tokens = runner_mod.SGLModelRunner.profile_max_num_token(runner, 95.0)
+
+    assert max_tokens == (7 * 1024**3) // (32 * 1024**2)
+
+
+@pytest.mark.parametrize("process_memory", [None, 0])
+def test_colocated_ar_budget_uses_stage_load_delta_when_process_memory_unavailable(
+    monkeypatch,
+    process_memory,
+) -> None:
+    runner = _runner(total_gpu_memory_fraction=0.4)
+    monkeypatch.setattr(
+        runner_mod,
+        "get_process_gpu_memory_bytes",
+        lambda gpu_id: process_memory,
+    )
+    monkeypatch.setattr(
+        runner_mod,
+        "get_gpu_device_info",
+        lambda gpu_id: SimpleNamespace(total_memory_bytes=100 * 1024**3),
+    )
+
+    def _fake_stage_load_delta(self, pre_model_load_memory, total_memory):
+        assert pre_model_load_memory == 95.0
+        assert total_memory == 100 * 1024**3
+        return 7 * 1024**3
+
+    monkeypatch.setattr(
+        runner_mod.SGLModelRunner,
+        "_profile_available_bytes_from_stage_load_delta",
+        _fake_stage_load_delta,
+    )
+
+    assert runner_mod.SGLModelRunner._profile_available_bytes(runner, 95.0) == (
+        7 * 1024**3
+    )
+
+
+def test_non_colocated_ar_uses_free_memory_delta_when_upstream_hook_is_absent(
+    monkeypatch,
+) -> None:
+    runner = _runner(total_gpu_memory_fraction=None)
+
+    def _fake_free_memory_delta(self, pre_model_load_memory):
+        assert pre_model_load_memory == 123
+        return 456
+
+    monkeypatch.delattr(
+        ModelRunnerKVCacheMixin,
+        "_profile_available_bytes",
+        raising=False,
+    )
+    monkeypatch.setattr(
+        runner_mod.SGLModelRunner,
+        "_profile_available_bytes_from_free_memory_delta",
+        _fake_free_memory_delta,
+    )
+
+    assert runner_mod.SGLModelRunner._profile_available_bytes(runner, 123) == 456
+
+
+def test_qwen_ar_factory_derives_mem_fraction_from_total_budget() -> None:
+    overrides = {"disable_cuda_graph": False}
+
+    contract = qwen_stages._apply_colocated_ar_memory_contract(
+        overrides,
+        stage_name="thinker",
+        total_gpu_memory_fraction=0.78,
+    )
+
+    assert overrides["mem_fraction_static"] == 0.78
+    assert contract.effective_total_gpu_memory_fraction == 0.78
+    assert contract.applied_encoder_mem_reserve == 0.0
+
+
+def test_qwen_colocated_thinker_reserve_reduces_effective_ar_budget() -> None:
+    overrides = {"disable_cuda_graph": False}
+
+    contract = qwen_stages._apply_colocated_ar_memory_contract(
+        overrides,
+        stage_name="thinker",
+        total_gpu_memory_fraction=0.75,
+        encoder_mem_reserve=0.05,
+    )
+
+    assert overrides["mem_fraction_static"] == 0.70
+    assert contract.effective_total_gpu_memory_fraction == 0.70
+    assert contract.applied_encoder_mem_reserve == 0.05
+
+
+def test_qwen_colocated_ar_explicit_matching_mem_fraction_keeps_stage_budget() -> None:
+    overrides = {"mem_fraction_static": 0.75}
+
+    contract = qwen_stages._apply_colocated_ar_memory_contract(
+        overrides,
+        stage_name="thinker",
+        total_gpu_memory_fraction=0.75,
+    )
+
+    assert overrides["mem_fraction_static"] == 0.75
+    assert contract.effective_total_gpu_memory_fraction == 0.75
+    assert contract.applied_encoder_mem_reserve == 0.0
+
+
+def test_qwen_ar_factory_rejects_conflicting_memory_contract() -> None:
+    with pytest.raises(ValueError, match="conflicting colocated memory contracts"):
+        qwen_stages._apply_colocated_ar_memory_contract(
+            {"mem_fraction_static": 0.7},
+            stage_name="thinker",
+            total_gpu_memory_fraction=0.78,
+        )
+
+
+def test_qwen_colocated_thinker_startup_threads_effective_budget(
+    monkeypatch,
+    caplog,
+) -> None:
+    scheduler_calls = _patch_thinker_startup(monkeypatch)
+
+    with caplog.at_level(logging.INFO, logger=qwen_stages.logger.name):
+        qwen_stages.create_sglang_thinker_executor_from_config(
+            "dummy",
+            total_gpu_memory_fraction=0.75,
+            encoder_mem_reserve=0.05,
+        )
+
+    assert scheduler_calls == [
+        {
+            "mem_fraction_static": 0.70,
+            "gpu_id": 0,
+            "total_gpu_memory_fraction": 0.70,
+        }
+    ]
+    assert "total_gpu_memory_fraction=0.75" in caplog.text
+    assert "effective_total_gpu_memory_fraction=0.7" in caplog.text
+    assert "encoder_mem_reserve=0.05" in caplog.text
+
+
+def test_qwen_colocated_thinker_explicit_mem_fraction_skips_default_reserve(
+    monkeypatch,
+    caplog,
+) -> None:
+    scheduler_calls = _patch_thinker_startup(monkeypatch)
+
+    with caplog.at_level(logging.INFO, logger=qwen_stages.logger.name):
+        qwen_stages.create_sglang_thinker_executor_from_config(
+            "dummy",
+            server_args_overrides={"mem_fraction_static": 0.75},
+            total_gpu_memory_fraction=0.75,
+        )
+
+    assert scheduler_calls == [
+        {
+            "mem_fraction_static": 0.75,
+            "gpu_id": 0,
+            "total_gpu_memory_fraction": 0.75,
+        }
+    ]
+    assert "effective_total_gpu_memory_fraction=0.75" in caplog.text
+    assert "encoder_mem_reserve=0.0" in caplog.text

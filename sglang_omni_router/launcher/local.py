@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Local subprocess launcher for complete Omni V1 worker replicas."""
+"""Local subprocess launcher for complete Omni worker replicas."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ import logging
 import os
 import shlex
 import shutil
+import signal
 import subprocess
 import time
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
@@ -17,11 +18,11 @@ from sglang_omni_router.launcher.utils import (
     build_gpu_assignments,
     build_worker_url,
     reserve_worker_ports,
-    terminate_processes,
     wait_for_worker_health,
 )
 
 logger = logging.getLogger("sglang_omni_router.launcher")
+_CLEANUP_MANIFEST_ENV = "SGLANG_OMNI_ROUTER_CLEANUP_MANIFEST"
 
 
 @dataclass
@@ -30,6 +31,7 @@ class ManagedWorkerProcess:
     port: int
     cuda_visible_devices: str | None
     process: subprocess.Popen
+    process_group_id: int
 
 
 class LocalLauncher:
@@ -90,7 +92,7 @@ class LocalLauncher:
                     env["CUDA_VISIBLE_DEVICES"] = cuda_visible_devices
                     placement = f"CUDA_VISIBLE_DEVICES={cuda_visible_devices}"
                 logger.info(
-                    f"Starting managed Omni V1 worker {worker_index} on {worker_url} "
+                    f"Starting managed Omni worker {worker_index} on {worker_url} "
                     f"with {placement}: {' '.join(shlex.quote(arg) for arg in command)}"
                 )
                 process = subprocess.Popen(
@@ -98,12 +100,15 @@ class LocalLauncher:
                     env=env,
                     start_new_session=True,
                 )
+                process_group_id = os.getpgid(process.pid)
+                _record_cleanup_process_group(process_group_id)
                 self.workers.append(
                     ManagedWorkerProcess(
                         url=worker_url,
                         port=port,
                         cuda_visible_devices=cuda_visible_devices,
                         process=process,
+                        process_group_id=process_group_id,
                     )
                 )
         except BaseException:
@@ -144,7 +149,7 @@ class LocalLauncher:
             process=worker.process,
             timeout=timeout,
         )
-        logger.info(f"Managed Omni V1 worker is healthy: {worker.url}")
+        logger.info(f"Managed Omni worker is healthy: {worker.url}")
 
     def launch_and_wait(self) -> list[str]:
         self.launch()
@@ -154,5 +159,34 @@ class LocalLauncher:
     def shutdown(self) -> None:
         if not self.workers:
             return
-        terminate_processes([worker.process for worker in self.workers])
+        _terminate_worker_process_groups(self.workers)
         self.workers.clear()
+
+
+def _terminate_worker_process_groups(workers: list[ManagedWorkerProcess]) -> None:
+    for worker in workers:
+        _signal_process_group(worker.process_group_id, signal.SIGINT)
+
+    deadline = time.monotonic() + 30
+    for worker in workers:
+        timeout = max(0.0, deadline - time.monotonic())
+        try:
+            worker.process.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            _signal_process_group(worker.process_group_id, signal.SIGKILL)
+            worker.process.wait(timeout=10)
+
+
+def _signal_process_group(process_group_id: int, sig: signal.Signals) -> None:
+    try:
+        os.killpg(process_group_id, sig)
+    except ProcessLookupError:
+        pass
+
+
+def _record_cleanup_process_group(process_group_id: int | None) -> None:
+    manifest = os.environ.get(_CLEANUP_MANIFEST_ENV)
+    if not manifest or process_group_id is None:
+        return
+    with open(manifest, "a", encoding="utf-8") as handle:
+        handle.write(f"{process_group_id}\n")

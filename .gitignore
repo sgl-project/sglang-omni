@@ -41,5 +41,7 @@ results/
 .benchmark-data/
 
 .tune-runs/
+.eval-runs/
+benchmarks/eval/*.edit.lock
 .claude/*
 !.claude/skills/

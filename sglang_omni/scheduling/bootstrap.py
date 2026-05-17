@@ -15,6 +15,7 @@ def create_sglang_infrastructure(
     model_arch_override: str | None = None,
     weight_prefix: str | None = None,
     capture_hidden_layers: list[int] | None = None,
+    total_gpu_memory_fraction: float | None = None,
 ):
     """Create SGLang worker, memory pools, tree cache, and prefill/decode managers."""
     from sglang_omni.model_runner.model_worker import ModelWorker, ModelWorkerConfig
@@ -29,6 +30,7 @@ def create_sglang_infrastructure(
             model_arch_override=model_arch_override,
             weight_prefix=weight_prefix,
             nccl_port=nccl_port,
+            total_gpu_memory_fraction=total_gpu_memory_fraction,
         ),
         server_args=server_args,
         gpu_id=gpu_id,

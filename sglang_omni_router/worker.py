@@ -40,6 +40,9 @@ class Worker:
     disabled: bool = False
     consecutive_failures: int = 0
     consecutive_successes: int = 0
+    routed_requests: int = 0
+    successful_requests: int = 0
+    failed_requests: int = 0
     last_status_code: int | None = None
     last_error: str | None = None
     last_checked_at: datetime | None = None
@@ -108,6 +111,13 @@ class Worker:
     def decrement_active(self) -> None:
         assert self.active_requests > 0, "active request count cannot be negative"
         self.active_requests -= 1
+
+    def record_routed_request(self, *, status_code: int | None = None) -> None:
+        self.routed_requests += 1
+        if status_code is not None and 200 <= status_code < 400:
+            self.successful_requests += 1
+            return
+        self.failed_requests += 1
 
     @contextmanager
     def request_guard(self) -> Iterator[None]:
@@ -231,6 +241,9 @@ class Worker:
             "routable": self.is_routable,
             "consecutive_failures": self.consecutive_failures,
             "consecutive_successes": self.consecutive_successes,
+            "routed_requests": self.routed_requests,
+            "successful_requests": self.successful_requests,
+            "failed_requests": self.failed_requests,
             "last_status_code": self.last_status_code,
             "last_error": self.last_error,
             "last_checked_at": (

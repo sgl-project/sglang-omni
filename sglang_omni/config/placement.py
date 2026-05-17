@@ -1,0 +1,287 @@
+# SPDX-License-Identifier: Apache-2.0
+"""Stage placement planning and validation for Omni pipelines."""
+
+from __future__ import annotations
+
+import inspect
+from collections import defaultdict
+from dataclasses import dataclass
+from typing import Protocol
+
+from sglang_omni.config.runtime import reject_untyped_total_gpu_memory_fraction
+from sglang_omni.config.schema import PipelineConfig, StageConfig
+from sglang_omni.utils.imports import import_string
+
+
+@dataclass(frozen=True)
+class StagePlacement:
+    stage_name: str
+    gpu_ids: tuple[int, ...]
+    tp_size: int
+    total_gpu_memory_fraction: float | None
+
+
+@dataclass(frozen=True)
+class GpuPlacement:
+    gpu_id: int
+    stage_names: tuple[str, ...]
+    total_gpu_memory_fraction: float
+    has_memory_fraction: bool
+    missing_fraction_stage_names: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class StagePlacementPlan:
+    stages: dict[str, StagePlacement]
+    gpus: dict[int, GpuPlacement]
+    same_gpu_stream_targets: dict[str, frozenset[str]]
+    requires_multi_process: bool
+
+
+class PlacementPolicy(Protocol):
+    def validate(self, config: PipelineConfig, plan: StagePlacementPlan) -> None: ...
+
+
+class StagePlacementPlanner:
+    """Build a model-agnostic placement plan from pipeline stage config."""
+
+    def __init__(self, config: PipelineConfig):
+        self._config = config
+
+    def build(
+        self,
+        *,
+        stages_cfg: list[StageConfig] | None = None,
+        apply_policy: bool = True,
+    ) -> StagePlacementPlan:
+        stages = stages_cfg if stages_cfg is not None else self._config.stages
+        placements: dict[str, StagePlacement] = {}
+        gpu_entries: dict[int, list[tuple[str, float | None]]] = defaultdict(list)
+
+        for stage in stages:
+            reject_untyped_total_gpu_memory_fraction(
+                stage.name,
+                stage.factory_args,
+                self._config.runtime_overrides.get(stage.name, {}),
+            )
+            gpu_ids = _resolve_stage_gpu_ids(stage)
+            if not gpu_ids:
+                continue
+
+            fraction = stage.runtime.resources.total_gpu_memory_fraction
+            placements[stage.name] = StagePlacement(
+                stage_name=stage.name,
+                gpu_ids=gpu_ids,
+                tp_size=stage.tp_size,
+                total_gpu_memory_fraction=fraction,
+            )
+            for gpu_id in gpu_ids:
+                gpu_entries[gpu_id].append((stage.name, fraction))
+
+        gpu_plans = {
+            gpu_id: _build_gpu_placement(gpu_id, entries)
+            for gpu_id, entries in gpu_entries.items()
+        }
+        plan = StagePlacementPlan(
+            stages=placements,
+            gpus=gpu_plans,
+            same_gpu_stream_targets=_build_same_gpu_stream_targets(
+                stages,
+                placements,
+            ),
+            requires_multi_process=_requires_multi_process(
+                self._config,
+                gpu_plans,
+                stages,
+            ),
+        )
+        self._validate_memory_budgets(plan)
+        if apply_policy:
+            _apply_placement_policy(self._config, plan)
+        return plan
+
+    def _validate_memory_budgets(self, plan: StagePlacementPlan) -> None:
+        limit = self._config.placement.max_total_gpu_memory_fraction_per_gpu
+        require = self._config.placement.require_memory_fraction_for_colocation
+        for gpu in plan.gpus.values():
+            colocated = _is_explicit_colocation(gpu, self._config)
+            if colocated and require and gpu.missing_fraction_stage_names:
+                missing = ", ".join(sorted(gpu.missing_fraction_stage_names))
+                raise ValueError(
+                    f"GPU {gpu.gpu_id} colocates stages without "
+                    f"runtime.resources.total_gpu_memory_fraction: {missing}"
+                )
+            if gpu.total_gpu_memory_fraction > limit + 1e-9:
+                raise ValueError(
+                    f"GPU {gpu.gpu_id} total_gpu_memory_fraction="
+                    f"{gpu.total_gpu_memory_fraction:.3f} exceeds placement limit "
+                    f"{limit:.3f}"
+                )
+
+
+def build_stage_placement_plan(
+    config: PipelineConfig,
+    *,
+    stages_cfg: list[StageConfig] | None = None,
+    apply_policy: bool = True,
+) -> StagePlacementPlan:
+    return StagePlacementPlanner(config).build(
+        stages_cfg=stages_cfg,
+        apply_policy=apply_policy,
+    )
+
+
+def resolve_pipeline_process_mode(
+    config: PipelineConfig,
+    plan: StagePlacementPlan,
+) -> bool:
+    """Return whether the pipeline must run with the multi-process runner."""
+
+    if config.process.mode == "multi":
+        return True
+    if config.process.mode == "single":
+        if plan.requires_multi_process:
+            raise ValueError(
+                "process.mode='single' is incompatible with this placement; "
+                "use process.mode='auto' or process.mode='multi'"
+            )
+        return False
+    return plan.requires_multi_process
+
+
+def resolve_stage_gpu_ids(
+    plan: StagePlacementPlan,
+    stage_cfg: StageConfig,
+) -> list[int | None]:
+    placement = plan.stages.get(stage_cfg.name)
+    if placement is None:
+        return [None] * stage_cfg.tp_size
+    return list(placement.gpu_ids)
+
+
+def resolve_same_gpu_stream_targets(
+    plan: StagePlacementPlan,
+    stage_cfg: StageConfig,
+) -> set[str]:
+    return set(plan.same_gpu_stream_targets.get(stage_cfg.name, frozenset()))
+
+
+def _resolve_stage_gpu_ids(stage: StageConfig) -> tuple[int, ...]:
+    gpu = stage.gpu
+    if gpu is None:
+        return ()
+    if isinstance(gpu, int):
+        if stage.tp_size > 1:
+            raise ValueError(
+                f"Stage {stage.name!r}: TP placement requires a list of "
+                f"{stage.tp_size} unique GPU ids, got scalar gpu={gpu}"
+            )
+        return tuple(gpu for _ in range(stage.tp_size))
+    if len(gpu) != stage.tp_size:
+        raise ValueError(
+            f"Stage {stage.name!r}: gpu has {len(gpu)} entries "
+            f"but tp_size={stage.tp_size}"
+        )
+    gpu_ids = tuple(int(gpu_id) for gpu_id in gpu)
+    if len(set(gpu_ids)) != len(gpu_ids):
+        raise ValueError(
+            f"Stage {stage.name!r}: TP placement requires unique GPU ids, "
+            f"got {list(gpu_ids)}"
+        )
+    return gpu_ids
+
+
+def _build_same_gpu_stream_targets(
+    stages: list[StageConfig],
+    placements: dict[str, StagePlacement],
+) -> dict[str, frozenset[str]]:
+    out: dict[str, frozenset[str]] = {}
+    for stage in stages:
+        if not stage.stream_to:
+            continue
+        sender_gpu = _primary_gpu(stage.name, placements)
+        if sender_gpu is None:
+            continue
+        same_gpu_targets = {
+            target_name
+            for target_name in stage.stream_to
+            if _primary_gpu(target_name, placements) == sender_gpu
+        }
+        if same_gpu_targets:
+            out[stage.name] = frozenset(same_gpu_targets)
+    return out
+
+
+def _primary_gpu(
+    stage_name: str,
+    placements: dict[str, StagePlacement],
+) -> int | None:
+    placement = placements.get(stage_name)
+    if placement is None or not placement.gpu_ids:
+        return None
+    return placement.gpu_ids[0]
+
+
+def _build_gpu_placement(
+    gpu_id: int,
+    entries: list[tuple[str, float | None]],
+) -> GpuPlacement:
+    total = 0.0
+    has_memory_fraction = False
+    missing: set[str] = set()
+    stage_names: list[str] = []
+    for stage_name, fraction in entries:
+        stage_names.append(stage_name)
+        if fraction is None:
+            missing.add(stage_name)
+            continue
+        has_memory_fraction = True
+        total += fraction
+    return GpuPlacement(
+        gpu_id=gpu_id,
+        stage_names=tuple(stage_names),
+        total_gpu_memory_fraction=total,
+        has_memory_fraction=has_memory_fraction,
+        missing_fraction_stage_names=tuple(sorted(missing)),
+    )
+
+
+def _requires_multi_process(
+    config: PipelineConfig,
+    gpu_plans: dict[int, GpuPlacement],
+    stages: list[StageConfig],
+) -> bool:
+    if len(gpu_plans) > 1:
+        return True
+    if any(stage.tp_size > 1 for stage in stages):
+        return True
+    return any(_is_explicit_colocation(gpu, config) for gpu in gpu_plans.values())
+
+
+def _is_explicit_colocation(gpu: GpuPlacement, config: PipelineConfig) -> bool:
+    if len(gpu.stage_names) <= 1:
+        return False
+    if config.process.mode == "multi":
+        return True
+    return gpu.has_memory_fraction
+
+
+def _apply_placement_policy(
+    config: PipelineConfig,
+    plan: StagePlacementPlan,
+) -> None:
+    if config.placement_policy is None:
+        return
+    policy = import_string(config.placement_policy)
+    if inspect.isclass(policy):
+        policy = policy()
+    if hasattr(policy, "validate"):
+        policy.validate(config, plan)
+        return
+    if callable(policy):
+        policy(config, plan)
+        return
+    raise TypeError(
+        f"placement_policy {config.placement_policy!r} must be callable or expose "
+        "validate(config, plan)"
+    )

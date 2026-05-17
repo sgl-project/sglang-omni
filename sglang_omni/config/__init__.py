@@ -8,11 +8,28 @@ from sglang_omni.config.compiler import (
     create_ipc_runtime_dir,
     prepare_pipeline_runtime,
 )
+from sglang_omni.config.placement import (
+    GpuPlacement,
+    StagePlacement,
+    StagePlacementPlan,
+    StagePlacementPlanner,
+    build_stage_placement_plan,
+    resolve_pipeline_process_mode,
+    resolve_same_gpu_stream_targets,
+    resolve_stage_gpu_ids,
+)
+from sglang_omni.config.runtime import resolve_stage_factory_args
 from sglang_omni.config.schema import (
     EndpointsConfig,
+    ParallelismConfig,
     PipelineConfig,
+    PlacementConfig,
+    ProcessConfig,
     RelayConfig,
+    SGLangServerArgsConfig,
     StageConfig,
+    StageResourceConfig,
+    StageRuntimeConfig,
 )
 
 __all__ = [
@@ -23,8 +40,23 @@ __all__ = [
     "compile_pipeline_core",
     "create_ipc_runtime_dir",
     "prepare_pipeline_runtime",
+    "StagePlacement",
+    "GpuPlacement",
+    "StagePlacementPlan",
+    "StagePlacementPlanner",
+    "build_stage_placement_plan",
+    "resolve_pipeline_process_mode",
+    "resolve_same_gpu_stream_targets",
+    "resolve_stage_gpu_ids",
+    "resolve_stage_factory_args",
     "PipelineConfig",
     "StageConfig",
+    "ParallelismConfig",
+    "StageResourceConfig",
+    "SGLangServerArgsConfig",
+    "StageRuntimeConfig",
+    "PlacementConfig",
+    "ProcessConfig",
     "RelayConfig",
     "EndpointsConfig",
 ]

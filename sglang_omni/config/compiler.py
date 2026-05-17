@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import inspect
 import logging
 import re
 import shutil
@@ -13,11 +12,18 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from sglang_omni.config.placement import (
+    StagePlacementPlan,
+    build_stage_placement_plan,
+    resolve_pipeline_process_mode,
+    resolve_same_gpu_stream_targets,
+)
+from sglang_omni.config.runtime import resolve_stage_factory_args
 from sglang_omni.config.schema import PipelineConfig, StageConfig
 from sglang_omni.pipeline import AggregatedInput, Coordinator, DirectInput, Stage
 from sglang_omni.pipeline.control_plane import StageControlPlane
 from sglang_omni.pipeline.stage.input import InputHandler
-from sglang_omni.utils import import_string
+from sglang_omni.utils.imports import import_string
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +64,7 @@ class PipelineRuntimePrep:
     name_map: dict[str, str]
     entry_stage: str
     endpoints: dict[str, str]
+    placement_plan: StagePlacementPlan
     runtime_dir: IpcRuntimeDir | None
     runtime_dir_created_here: bool
 
@@ -105,6 +112,7 @@ def prepare_pipeline_runtime(
 
     try:
         stages_cfg, name_map, entry_stage = config.apply_fusion()
+        placement_plan = build_stage_placement_plan(config, stages_cfg=stages_cfg)
         endpoints = _allocate_endpoints(
             config,
             stages=stages_cfg,
@@ -120,6 +128,7 @@ def prepare_pipeline_runtime(
         name_map=name_map,
         entry_stage=entry_stage,
         endpoints=endpoints,
+        placement_plan=placement_plan,
         runtime_dir=runtime_dir,
         runtime_dir_created_here=runtime_dir_created_here,
     )
@@ -146,6 +155,12 @@ def compile_pipeline_core(
     )
 
     try:
+        if resolve_pipeline_process_mode(config, prep.placement_plan):
+            raise ValueError(
+                "compile_pipeline_core() cannot run this placement in one process; "
+                "use MultiProcessPipelineRunner"
+            )
+
         coordinator = Coordinator(
             completion_endpoint=prep.endpoints["completion"],
             abort_endpoint=prep.endpoints["abort"],
@@ -170,7 +185,6 @@ def compile_pipeline_core(
             stages.append(stage)
 
         stage_map = {stage.name: stage for stage in stages}
-        cfg_map = {s.name: s for s in prep.stages_cfg}
         for stage_cfg in prep.stages_cfg:
             stage = stage_map.get(stage_cfg.name)
             if stage is None:
@@ -179,8 +193,10 @@ def compile_pipeline_core(
                 stage,
                 stage_cfg,
                 stage_map,
-                gpu_placement=config.gpu_placement,
-                cfg_map=cfg_map,
+                same_gpu_targets=resolve_same_gpu_stream_targets(
+                    prep.placement_plan,
+                    stage_cfg,
+                ),
             )
     except Exception:
         if prep.runtime_dir_created_here and prep.runtime_dir is not None:
@@ -248,6 +264,7 @@ def _compile_stage(
         scheduler=scheduler,
         project_payload=project_payload or None,
         is_terminal=bool(stage_cfg.terminal),
+        can_accept_stream_before_payload=stage_cfg.can_accept_stream_before_payload,
     )
 
 
@@ -299,22 +316,7 @@ def _resolve_factory_args(
     global_cfg: PipelineConfig,
 ) -> dict[str, Any]:
     """Resolve factory args, injecting model_path and gpu_id if accepted."""
-    args = dict(stage_cfg.factory_args)
-    stage_overrides = global_cfg.runtime_overrides.get(stage_cfg.name, {})
-    if stage_overrides:
-        args.update(stage_overrides)
-    factory = import_string(stage_cfg.factory)
-    sig = inspect.signature(factory)
-
-    if "model_path" in sig.parameters and "model_path" not in args:
-        args["model_path"] = global_cfg.model_path
-
-    if "gpu_id" in sig.parameters and "gpu_id" not in args:
-        placement = global_cfg.gpu_placement.get(stage_cfg.name, 0)
-        gpu_id = placement[0] if isinstance(placement, list) else placement
-        args["gpu_id"] = gpu_id
-
-    return args
+    return resolve_stage_factory_args(stage_cfg, global_cfg)
 
 
 def _resolve_project_payload(
@@ -458,8 +460,7 @@ def _wire_stream_targets(
     sender_cfg: StageConfig,
     stage_map: dict[str, Stage],
     *,
-    gpu_placement: dict[str, int | list[int]] | None = None,
-    cfg_map: dict[str, StageConfig] | None = None,
+    same_gpu_targets: set[str] | None = None,
 ) -> None:
     from sglang_omni.pipeline.stage.stream_queue import StreamQueue
 
@@ -467,51 +468,10 @@ def _wire_stream_targets(
     if not targets:
         return
 
-    same_gpu = _detect_same_gpu_targets(
-        sender_cfg,
-        targets,
-        gpu_placement=gpu_placement,
-        cfg_map=cfg_map,
-    )
-
     sender_stage._stream_targets = targets
-    sender_stage._same_gpu_targets = same_gpu
+    sender_stage._same_gpu_targets = same_gpu_targets or set()
 
     for target_name in targets:
         receiver = stage_map.get(target_name)
         if receiver is not None and receiver._stream_queue is None:
             receiver._stream_queue = StreamQueue(max_pending=4096)
-
-
-def _detect_same_gpu_targets(
-    sender_cfg: StageConfig,
-    targets: list[str],
-    *,
-    gpu_placement: dict[str, int | list[int]] | None = None,
-    cfg_map: dict[str, StageConfig] | None = None,
-) -> set[str]:
-    if not gpu_placement or not cfg_map:
-        return set()
-    sender_gpu = _primary_gpu(sender_cfg, gpu_placement)
-    if sender_gpu is None:
-        return set()
-    same: set[str] = set()
-    for target_name in targets:
-        receiver_cfg = cfg_map.get(target_name)
-        if receiver_cfg is None:
-            continue
-        receiver_gpu = _primary_gpu(receiver_cfg, gpu_placement)
-        if receiver_gpu is not None and receiver_gpu == sender_gpu:
-            same.add(target_name)
-    return same
-
-
-def _primary_gpu(
-    stage_cfg: StageConfig,
-    gpu_placement: dict[str, int | list[int]],
-) -> int | None:
-    """Return the primary (rank 0) GPU id for a stage, or None for CPU stages."""
-    raw = gpu_placement.get(stage_cfg.name)
-    if raw is None:
-        return None
-    return raw[0] if isinstance(raw, list) else raw

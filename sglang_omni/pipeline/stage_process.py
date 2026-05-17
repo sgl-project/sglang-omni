@@ -17,7 +17,8 @@ from sglang_omni.pipeline.stage.input import AggregatedInput, DirectInput
 from sglang_omni.pipeline.stage.runtime import Stage
 from sglang_omni.pipeline.stage.stream_queue import StreamQueue
 from sglang_omni.pipeline.tp_control import TPFollowerControlPlane, TPLeaderFanout
-from sglang_omni.utils import import_string
+from sglang_omni.utils.gpu_memory import gpu_startup_lock
+from sglang_omni.utils.imports import import_string
 
 
 @dataclass
@@ -33,7 +34,7 @@ class StageProcessSpec:
     role: Literal["single", "leader", "follower"] = "single"
     tp_rank: int = 0
     tp_size: int = 1
-    gpu_id: int = 0
+    gpu_id: int | None = None
     nccl_port: int | None = None
 
     # Factory
@@ -62,6 +63,7 @@ class StageProcessSpec:
     stream_targets: list[str] = field(default_factory=list)
     same_gpu_targets: set[str] = field(default_factory=set)
     is_stream_receiver: bool = False
+    can_accept_stream_before_payload: bool = False
 
     # Fusion name map
     name_map: dict[str, str] = field(default_factory=dict)
@@ -129,8 +131,7 @@ def _run_stage(
         spec.tp_size,
     )
 
-    factory = import_string(spec.factory)
-    scheduler = factory(**spec.factory_args)
+    scheduler = _construct_scheduler(spec, gpu_id, log)
 
     # --- Build routing ---
     if spec.is_terminal:
@@ -195,6 +196,7 @@ def _run_stage(
         project_payload=project_payload or None,
         stream_targets=spec.stream_targets or None,
         same_gpu_targets=spec.same_gpu_targets or None,
+        can_accept_stream_before_payload=spec.can_accept_stream_before_payload,
         tp_fanout=tp_fanout,
         is_terminal=spec.is_terminal,
     )
@@ -210,6 +212,22 @@ def _run_stage(
         await stage.run()
 
     asyncio.run(_start_and_run())
+
+
+def _construct_scheduler(
+    spec: StageProcessSpec,
+    gpu_id: int | None,
+    log: logging.Logger,
+) -> Any:
+    """Build a scheduler, serializing GPU factory work per visible device."""
+
+    factory = import_string(spec.factory)
+    if gpu_id is None:
+        return factory(**spec.factory_args)
+
+    with gpu_startup_lock(int(gpu_id)) as lock_path:
+        log.info(f"Acquired GPU startup lock for stage {spec.stage_name}: {lock_path}")
+        return factory(**spec.factory_args)
 
 
 def _factory_args_use_cuda(factory_args: Mapping[str, Any]) -> bool:
@@ -229,17 +247,16 @@ def get_stage_process_env(
 
     source_env = env if env is not None else os.environ
     original_visible = source_env.get("CUDA_VISIBLE_DEVICES")
+    if spec.gpu_id is None:
+        raise ValueError(f"tp stage {spec.stage_name!r} requires a GPU id")
     if original_visible:
         visible_devices = [item.strip() for item in original_visible.split(",")]
-        if len(visible_devices) == 1:
-            mapped_gpu = visible_devices[0]
-        elif spec.gpu_id >= len(visible_devices):
+        if spec.gpu_id >= len(visible_devices):
             raise ValueError(
                 f"tp stage {spec.stage_name!r} assigned gpu_id={spec.gpu_id}, "
                 f"but CUDA_VISIBLE_DEVICES only exposes {visible_devices}"
             )
-        else:
-            mapped_gpu = visible_devices[spec.gpu_id]
+        mapped_gpu = visible_devices[spec.gpu_id]
     else:
         mapped_gpu = str(spec.gpu_id)
 
@@ -255,6 +272,17 @@ def _prepare_cuda_environment(
     log: logging.Logger,
 ) -> None:
     """Map TP rank processes to one visible CUDA device before torch init."""
+    if os.environ.get("SGLANG_ONE_VISIBLE_DEVICE_PER_PROCESS") == "true":
+        mapped_gpu = os.environ.get("CUDA_VISIBLE_DEVICES", str(spec.gpu_id))
+        _normalize_spec_gpu_id_to_local_device(spec)
+        log.info(
+            "TP stage %s rank %d sees CUDA_VISIBLE_DEVICES=%s (local gpu_id=0)",
+            spec.stage_name,
+            spec.tp_rank,
+            mapped_gpu,
+        )
+        return
+
     env_updates = get_stage_process_env(spec)
     if not env_updates:
         return
@@ -263,15 +291,18 @@ def _prepare_cuda_environment(
     for key, value in env_updates.items():
         os.environ[key] = value
 
-    if "gpu_id" in spec.factory_args:
-        spec.factory_args["gpu_id"] = 0
-    if "gpu_id" in spec.relay_config:
-        spec.relay_config["gpu_id"] = 0
-    spec.gpu_id = 0
-
+    _normalize_spec_gpu_id_to_local_device(spec)
     log.info(
         "Mapped TP stage %s rank %d to CUDA_VISIBLE_DEVICES=%s (local gpu_id=0)",
         spec.stage_name,
         spec.tp_rank,
         mapped_gpu,
     )
+
+
+def _normalize_spec_gpu_id_to_local_device(spec: StageProcessSpec) -> None:
+    if "gpu_id" in spec.factory_args:
+        spec.factory_args["gpu_id"] = 0
+    if "gpu_id" in spec.relay_config:
+        spec.relay_config["gpu_id"] = 0
+    spec.gpu_id = 0

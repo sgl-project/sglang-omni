@@ -42,24 +42,15 @@ class ConfigManager:
                 formatted_key = cur_key.lstrip("-").replace("-", "_")
                 extra_args[formatted_key] = cur_value
                 cur_key, cur_value = None, None
+        if cur_key is not None and cur_value is None:
+            raise ValueError(f"Missing value for argument: {cur_key}")
         return extra_args
 
-    def _convert_types(self, extra_args: dict[str, str]) -> dict[str, Any]:
+    def _convert_types(self, extra_args: dict[str, Any]) -> dict[str, Any]:
         """
         Convert the configuration to the inferred data types.
         """
-        for key, value in extra_args.items():
-            if value.lower() == "true":
-                extra_args[key] = True
-            elif value.lower() == "false":
-                extra_args[key] = False
-            elif value.lower() == "none":
-                extra_args[key] = None
-            elif value.isnumeric():
-                extra_args[key] = float(value) if "." in value else int(value)
-            else:
-                extra_args[key] = value
-        return extra_args
+        return {key: _convert_scalar(value) for key, value in extra_args.items()}
 
     def merge_config(self, extra_args: dict[str, Any]) -> PipelineConfig:
         """
@@ -81,6 +72,8 @@ class ConfigManager:
 
             # update the value
             current[keys[-1]] = value
+
+        _sync_stage_parallelism_aliases(cfg_copy, set(extra_args))
 
         # validate the configuration
         merged_config = config_cls(**cfg_copy)
@@ -114,8 +107,117 @@ class ConfigManager:
         """
         with open(file_path, "r") as f:
             data = yaml.safe_load(f)
+        if not isinstance(data, dict):
+            raise ValueError(f"Config file {file_path!r} must contain a mapping")
 
+        data = dict(data)
+        has_stage_overrides = "stage_overrides" in data
+        stage_overrides = data.pop("stage_overrides", {})
         config_cls_str = data["config_cls"]
         config_cls = PIPELINE_CONFIG_REGISTRY.get_config_cls_by_name(config_cls_str)
         config = config_cls(**data)
+        if has_stage_overrides:
+            config = _apply_stage_overrides(config, stage_overrides)
         return ConfigManager(config)
+
+
+def _apply_stage_overrides(
+    config: PipelineConfig,
+    stage_overrides: dict[str, Any],
+) -> PipelineConfig:
+    """Apply compact file-level runtime overrides by stage name."""
+
+    if not isinstance(stage_overrides, dict):
+        raise ValueError(
+            "stage_overrides must be a mapping from stage name to overrides"
+        )
+
+    config_data = config.model_dump()
+    stages = config_data["stages"]
+    stage_by_name = {stage["name"]: stage for stage in stages}
+
+    for stage_name, override in stage_overrides.items():
+        if stage_name not in stage_by_name:
+            raise ValueError(f"stage_overrides references unknown stage {stage_name!r}")
+        if not isinstance(override, dict):
+            raise ValueError(f"stage_overrides.{stage_name} must be a mapping")
+
+        unsupported = sorted(set(override) - {"runtime"})
+        if unsupported:
+            raise ValueError(
+                f"stage_overrides.{stage_name} supports only runtime overrides; "
+                f"got unsupported keys {unsupported}"
+            )
+
+        if "runtime" not in override:
+            continue
+        runtime_override = override["runtime"]
+        if not isinstance(runtime_override, dict):
+            raise ValueError(f"stage_overrides.{stage_name}.runtime must be a mapping")
+        stage = stage_by_name[stage_name]
+        stage["runtime"] = _deep_merge_dict(
+            stage.get("runtime", {}),
+            runtime_override,
+        )
+
+    return type(config)(**config_data)
+
+
+def _deep_merge_dict(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
+    merged = deepcopy(base)
+    for key, value in overlay.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _deep_merge_dict(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def _sync_stage_parallelism_aliases(
+    config_data: dict[str, Any],
+    override_keys: set[str],
+) -> None:
+    """Keep StageConfig.tp_size and parallelism.tp coherent for dotted CLI args."""
+    stages = config_data.get("stages")
+    if not isinstance(stages, list):
+        return
+
+    for index, stage in enumerate(stages):
+        if not isinstance(stage, dict):
+            continue
+        tp_size_key = f"stages.{index}.tp_size"
+        parallelism_key = f"stages.{index}.parallelism.tp"
+        has_tp_size_override = tp_size_key in override_keys
+        has_parallelism_override = parallelism_key in override_keys
+        if has_tp_size_override == has_parallelism_override:
+            continue
+
+        if has_tp_size_override:
+            parallelism = dict(stage.get("parallelism") or {})
+            parallelism["tp"] = stage["tp_size"]
+            stage["parallelism"] = parallelism
+        else:
+            stage["tp_size"] = stage["parallelism"]["tp"]
+
+
+def _convert_scalar(value: Any) -> Any:
+    if not isinstance(value, str):
+        return value
+
+    lowered = value.lower()
+    if lowered == "true":
+        return True
+    if lowered == "false":
+        return False
+    if lowered == "none":
+        return None
+
+    try:
+        return int(value)
+    except ValueError:
+        pass
+
+    try:
+        return float(value)
+    except ValueError:
+        return value

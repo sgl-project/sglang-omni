@@ -52,13 +52,15 @@ Accuracy (full set)
 
 | Model      | Config                      | accuracy | correct   | failed | mc_fallback | Source                                                                    |
 | ---------- | --------------------------- | -------- | --------- | ------ | ----------- | ------------------------------------------------------------------------- |
-| Qwen3-Omni | thinker-only, full-set, c=4 | 63.97%   | 1612/2520 | 24     | 64          | main 0298e70b59d941e894283dd6a7aeb83bfc71c602 [H200, c=4, max_tokens=256] |
+| Qwen3-Omni | thinker-only, full-set, c=4 | 64.74%   | 1616/2496 | 0      | 81          | PR #411 [H200, c=4, max_tokens=256]                                 |
+| Qwen3-Omni | thinker-only, full-set, c=4 | 65.06%   | 1624/2496 | 0      | 72          | PR #411 [H100, c=4, max_tokens=256]                                 |
 
 Speed (full set)
 
 | Model      | Config                      | completed | failed | latency_mean_s | latency_median_s | latency_p95_s | latency_p99_s | tok_per_s_mean | tok_per_s_agg | gen_tokens_mean | gen_tokens_total | prompt_tokens_mean | prompt_tokens_total | throughput_qps | Source                                                                    |
 | ---------- | --------------------------- | --------- | ------ | -------------- | ---------------- | ------------- | ------------- | -------------- | ------------- | --------------- | ---------------- | ------------------ | ------------------- | -------------- | ------------------------------------------------------------------------- |
-| Qwen3-Omni | thinker-only, full-set, c=4 | 2496      | 24     | 30.172         | 28.859           | 48.639        | 59.039        | 3.8            | 3.8           | 115             | 286801           | 13769              | 34366523            | 0.133          | main 0298e70b59d941e894283dd6a7aeb83bfc71c602 [H200, c=4, max_tokens=256] |
+| Qwen3-Omni | thinker-only, full-set, c=4 | 2496      | 0      | 17.763         | 18.324           | 21.299        | 22.501        | 6.6            | 6.5           | 115.0           | 286459           | 13769.0            | 34366523            | 0.225          | PR #411 [H200, c=4, max_tokens=256]                                 |
+| Qwen3-Omni | thinker-only, full-set, c=4 | 2496      | 0      | 15.468         | 16.089           | 18.826        | 19.790        | 7.6            | 7.4           | 115.0           | 287139           | 13769.0            | 34366523            | 0.258          | PR #411 [H100, c=4, max_tokens=256]                                 |
 """
 
 

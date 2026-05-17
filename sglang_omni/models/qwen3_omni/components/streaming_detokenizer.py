@@ -7,7 +7,7 @@ token id), incrementally detokenizes via HF tokenizer with UTF-8 boundary
 safety, and emits text deltas as ``OutgoingMessage(type="stream", target=None)``
 which the stage runtime forwards to the Coordinator. Final result is emitted
 on ``new_request`` (the thinker's terminal payload via ``next``), preserving
-the legacy result shape so non-streaming callers see no change.
+the existing non-streaming result shape.
 """
 from __future__ import annotations
 
