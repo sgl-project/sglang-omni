@@ -212,6 +212,10 @@ def _apply_model_worker_backend_policy(
         effective_quantization = server_quantization
 
     moe_runner_backend = getattr(server_args, "moe_runner_backend", "auto")
+    is_qwen3_omni_arch = model_arch_override in (
+        "Qwen3OmniTalker",
+        "Qwen3OmniThinkerForCausalLM",
+    )
     if (
         model_arch_override == "Qwen3OmniTalker"
         and effective_quantization is None
@@ -220,12 +224,21 @@ def _apply_model_worker_backend_policy(
         server_args.moe_runner_backend = "flashinfer_cutlass"
         moe_runner_backend = server_args.moe_runner_backend
 
+    if (
+        is_qwen3_omni_arch
+        and effective_quantization == "fp8"
+        and _model_config_has_moe(model_config)
+        and moe_runner_backend == "auto"
+        and _is_fp8_cutlass_moe_supported()
+    ):
+        server_args.moe_runner_backend = "cutlass"
+        moe_runner_backend = server_args.moe_runner_backend
+
     if effective_quantization == "fp8" and moe_runner_backend == "flashinfer_cutlass":
         raise ValueError(
             "Qwen3-Omni native FP8 checkpoints cannot use "
             "moe_runner_backend='flashinfer_cutlass'. Leave the backend as "
-            "'auto' so upstream SGLang selects a native-FP8-compatible MoE "
-            "runner."
+            "'auto' so Omni selects a native-FP8-compatible MoE runner."
         )
 
     logger.info(
@@ -252,6 +265,29 @@ def _model_config_has_moe(model_config: ModelConfig) -> bool:
         hf_config = getattr(model_config, "hf_config", None)
         config_to_check = getattr(hf_config, "text_config", hf_config)
     return hasattr(config_to_check, "num_experts_per_tok")
+
+
+def _is_fp8_cutlass_moe_supported() -> bool:
+    try:
+        from sglang.srt.layers.quantization.fp8_utils import cutlass_fp8_supported
+        from sglang.srt.utils import (
+            is_blackwell_supported,
+            is_sm90_supported,
+            is_sm100_supported,
+            is_sm120_supported,
+        )
+    except ImportError:
+        return False
+
+    return bool(
+        cutlass_fp8_supported()
+        and (
+            is_sm90_supported()
+            or is_sm100_supported()
+            or is_sm120_supported()
+            or is_blackwell_supported()
+        )
+    )
 
 
 def _initialize_model_worker_backend_globals(

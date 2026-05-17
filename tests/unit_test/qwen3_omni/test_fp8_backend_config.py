@@ -10,6 +10,7 @@ import pytest
 from sglang_omni.model_runner.model_worker import (
     _apply_model_worker_backend_policy,
     _initialize_model_worker_backend_globals,
+    _is_fp8_cutlass_moe_supported,
     _model_config_has_moe,
 )
 
@@ -54,7 +55,11 @@ def test_bf16_talker_preserves_existing_flashinfer_cutlass_default() -> None:
     assert server_args.moe_runner_backend == "flashinfer_cutlass"
 
 
-def test_native_fp8_talker_leaves_server_quantization_unset() -> None:
+def test_native_fp8_talker_defaults_auto_moe_to_cutlass(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "sglang_omni.model_runner.model_worker._is_fp8_cutlass_moe_supported",
+        lambda: True,
+    )
     server_args = _server_args()
     model_config = _model_config(quantization="fp8")
 
@@ -66,7 +71,22 @@ def test_native_fp8_talker_leaves_server_quantization_unset() -> None:
 
     assert effective == "fp8"
     assert server_args.quantization is None
-    assert server_args.moe_runner_backend == "auto"
+    assert server_args.moe_runner_backend == "cutlass"
+
+
+def test_native_fp8_talker_preserves_explicit_triton_moe_backend() -> None:
+    server_args = _server_args(moe_runner_backend="triton")
+    model_config = _model_config(quantization="fp8")
+
+    effective = _apply_model_worker_backend_policy(
+        server_args,
+        model_config,
+        "Qwen3OmniTalker",
+    )
+
+    assert effective == "fp8"
+    assert server_args.quantization is None
+    assert server_args.moe_runner_backend == "triton"
 
 
 def test_native_fp8_talker_rejects_flashinfer_cutlass_backend() -> None:
@@ -81,7 +101,11 @@ def test_native_fp8_talker_rejects_flashinfer_cutlass_backend() -> None:
         )
 
 
-def test_native_fp8_thinker_leaves_server_quantization_unset() -> None:
+def test_native_fp8_thinker_defaults_auto_moe_to_cutlass(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "sglang_omni.model_runner.model_worker._is_fp8_cutlass_moe_supported",
+        lambda: True,
+    )
     server_args = _server_args()
     model_config = _model_config(quantization="fp8")
 
@@ -89,6 +113,42 @@ def test_native_fp8_thinker_leaves_server_quantization_unset() -> None:
         server_args,
         model_config,
         "Qwen3OmniThinkerForCausalLM",
+    )
+
+    assert effective == "fp8"
+    assert server_args.quantization is None
+    assert server_args.moe_runner_backend == "cutlass"
+
+
+def test_native_fp8_non_moe_model_preserves_auto_moe_backend() -> None:
+    server_args = _server_args()
+    model_config = _model_config(quantization="fp8", has_moe=False)
+
+    effective = _apply_model_worker_backend_policy(
+        server_args,
+        model_config,
+        "Qwen3OmniTalker",
+    )
+
+    assert effective == "fp8"
+    assert server_args.quantization is None
+    assert server_args.moe_runner_backend == "auto"
+
+
+def test_native_fp8_preserves_auto_moe_when_cutlass_is_not_supported(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        "sglang_omni.model_runner.model_worker._is_fp8_cutlass_moe_supported",
+        lambda: False,
+    )
+    server_args = _server_args()
+    model_config = _model_config(quantization="fp8")
+
+    effective = _apply_model_worker_backend_policy(
+        server_args,
+        model_config,
+        "Qwen3OmniTalker",
     )
 
     assert effective == "fp8"
@@ -103,6 +163,26 @@ def test_model_config_has_moe_prefers_effective_text_config() -> None:
     )
 
     assert _model_config_has_moe(model_config)
+
+
+def test_fp8_cutlass_moe_support_uses_sglang_hardware_predicates(monkeypatch) -> None:
+    _install_fake_cutlass_support_modules(
+        monkeypatch,
+        cutlass_supported=True,
+        sm90_supported=True,
+    )
+
+    assert _is_fp8_cutlass_moe_supported()
+
+
+def test_fp8_cutlass_moe_support_rejects_unsupported_hardware(monkeypatch) -> None:
+    _install_fake_cutlass_support_modules(
+        monkeypatch,
+        cutlass_supported=True,
+        sm90_supported=False,
+    )
+
+    assert not _is_fp8_cutlass_moe_supported()
 
 
 def test_backend_global_initialization_for_fp8_moe_model(monkeypatch) -> None:
@@ -150,6 +230,31 @@ def _install_fake_backend_modules(
         monkeypatch,
         "sglang.srt.layers.quantization.fp8_utils",
         initialize_fp8_gemm_config=lambda server_args: calls.append("fp8"),
+    )
+
+
+def _install_fake_cutlass_support_modules(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    cutlass_supported: bool,
+    sm90_supported: bool,
+) -> None:
+    _install_fake_module(monkeypatch, "sglang")
+    _install_fake_module(monkeypatch, "sglang.srt")
+    _install_fake_module(monkeypatch, "sglang.srt.layers")
+    _install_fake_module(monkeypatch, "sglang.srt.layers.quantization")
+    _install_fake_module(
+        monkeypatch,
+        "sglang.srt.layers.quantization.fp8_utils",
+        cutlass_fp8_supported=lambda: cutlass_supported,
+    )
+    _install_fake_module(
+        monkeypatch,
+        "sglang.srt.utils",
+        is_blackwell_supported=lambda: False,
+        is_sm90_supported=lambda: sm90_supported,
+        is_sm100_supported=lambda: False,
+        is_sm120_supported=lambda: False,
     )
 
 
