@@ -12,7 +12,6 @@ Author:
 from __future__ import annotations
 
 import asyncio
-import subprocess
 import sys
 from pathlib import Path
 
@@ -22,19 +21,10 @@ from benchmarks.dataset.prepare import DATASETS
 from benchmarks.eval.benchmark_omni_mmmu import MMMUEvalConfig, run_mmmu_eval
 from benchmarks.metrics.mmmu import print_mmmu_accuracy_summary
 from benchmarks.metrics.performance import print_speed_summary
-from sglang_omni.utils import find_available_port
-from tests.utils import (
-    apply_slack,
-    assert_speed_thresholds,
-    server_log_file,
-    start_server_from_cmd,
-    stop_server,
-)
-
-MODEL_PATH = "Qwen/Qwen3-Omni-30B-A3B-Instruct"
+from tests.test_model.omni_router_utils import ManagedRouterHandle
+from tests.utils import apply_slack, assert_speed_thresholds
 
 CONCURRENCY = 8
-STARTUP_TIMEOUT = 300
 
 MMMU_MIN_ACCURACY = 0.56
 
@@ -48,36 +38,15 @@ _MMMU_P95 = {
 MMMU_THRESHOLDS = apply_slack(_MMMU_P95)
 
 
-@pytest.fixture(scope="module")
-def server_process(tmp_path_factory: pytest.TempPathFactory):
-    """Start the text-only Qwen3-Omni server and wait until healthy."""
-    port = find_available_port()
-    log_file = server_log_file(tmp_path_factory)
-    cmd = [
-        sys.executable,
-        "examples/run_qwen3_omni_server.py",
-        "--model-path",
-        MODEL_PATH,
-        "--port",
-        str(port),
-        "--model-name",
-        "qwen3-omni",
-    ]
-    proc = start_server_from_cmd(cmd, log_file, port, timeout=STARTUP_TIMEOUT)
-    proc.port = port
-    yield proc
-    stop_server(proc)
-
-
 @pytest.mark.benchmark
 def test_mmmu_accuracy_and_speed(
-    server_process: subprocess.Popen,
+    qwen3_omni_router_server: ManagedRouterHandle,
     tmp_path: Path,
 ) -> None:
     """Run MMMU eval and assert accuracy and speed meet thresholds."""
     config = MMMUEvalConfig(
         model="qwen3-omni",
-        port=server_process.port,
+        port=qwen3_omni_router_server.port,
         max_concurrency=CONCURRENCY,
         output_dir=str(tmp_path / "mmmu"),
         repo_id=DATASETS["mmmu-ci-50"],

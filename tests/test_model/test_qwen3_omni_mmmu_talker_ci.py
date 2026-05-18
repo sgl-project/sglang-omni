@@ -20,7 +20,6 @@ Author:
 from __future__ import annotations
 
 import asyncio
-import subprocess
 import sys
 from pathlib import Path
 
@@ -31,22 +30,16 @@ from benchmarks.eval.benchmark_omni_mmmu import MMMUEvalConfig, run_mmmu_eval
 from benchmarks.metrics.mmmu import print_mmmu_accuracy_summary
 from benchmarks.metrics.performance import print_speed_summary
 from benchmarks.metrics.wer import print_wer_summary
-from sglang_omni.utils import find_available_port
+from tests.test_model.omni_router_utils import ManagedRouterHandle
 from tests.utils import (
     apply_slack,
     apply_wer_slack,
     assert_speed_thresholds,
     assert_wer_partitioned,
-    server_log_file,
-    start_server_from_cmd,
-    stop_server,
 )
 
-MODEL_PATH = "Qwen/Qwen3-Omni-30B-A3B-Instruct"
-
-MAX_SAMPLES = 10
+MAX_SAMPLES = 20
 MAX_TOKENS = 256
-STARTUP_TIMEOUT = 300
 
 CONCURRENCY = 8
 
@@ -84,42 +77,15 @@ _MMMU_AUDIO_P95 = {
 MMMU_AUDIO_THRESHOLDS = apply_slack(_MMMU_AUDIO_P95)
 
 
-@pytest.fixture(scope="module")
-def server_process(tmp_path_factory: pytest.TempPathFactory):
-    """Start the Qwen3-Omni speech server (talker ON) and wait until healthy."""
-    port = find_available_port()
-    log_file = server_log_file(tmp_path_factory)
-    cmd = [
-        sys.executable,
-        "examples/run_qwen3_omni_speech_server.py",
-        "--model-path",
-        MODEL_PATH,
-        "--gpu-thinker",
-        "0",
-        "--gpu-talker",
-        "1",
-        "--gpu-code2wav",
-        "1",
-        "--port",
-        str(port),
-        "--model-name",
-        "qwen3-omni",
-    ]
-    proc = start_server_from_cmd(cmd, log_file, port, timeout=STARTUP_TIMEOUT)
-    proc.port = port
-    yield proc
-    stop_server(proc)
-
-
 @pytest.mark.benchmark
 def test_mmmu_audio_wer_and_speed(
-    server_process: subprocess.Popen,
+    qwen3_omni_router_server: ManagedRouterHandle,
     tmp_path: Path,
 ) -> None:
     """Run MMMU eval with audio and assert WER and speed meet thresholds."""
     config = MMMUEvalConfig(
         model="qwen3-omni",
-        port=server_process.port,
+        port=qwen3_omni_router_server.port,
         max_samples=MAX_SAMPLES,
         max_tokens=MAX_TOKENS,
         max_concurrency=CONCURRENCY,

@@ -1013,10 +1013,10 @@ def _run_shared(test_path, stage_keys, all_stages, out, k, py, total, gpus_neede
 
 def _cleanup_after_pytest(test_path, process_group_id, basetemp):
     """Clean up subprocesses owned by this pytest invocation."""
-    if Path(test_path).name != "test_omni_router_ci.py":
+    cleanup_process_group_ids = _read_cleanup_manifest_process_groups(basetemp)
+    if not cleanup_process_group_ids:
         return
-    cleanup_process_group_ids = {process_group_id}
-    cleanup_process_group_ids.update(_read_cleanup_manifest_process_groups(basetemp))
+    cleanup_process_group_ids.add(process_group_id)
 
     for sig, delay in ((signal.SIGTERM, 5), (signal.SIGKILL, 1)):
         for process_group in sorted(cleanup_process_group_ids):

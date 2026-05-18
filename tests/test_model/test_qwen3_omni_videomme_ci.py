@@ -22,10 +22,11 @@ from benchmarks.dataset.prepare import DATASETS
 from benchmarks.eval.benchmark_omni_videomme import VideoEvalConfig, run_video_eval
 from benchmarks.metrics.performance import print_speed_summary
 from benchmarks.metrics.video import print_videomme_accuracy_summary
-from tests.utils import ServerHandle, apply_slack, assert_speed_thresholds
+from tests.test_model.omni_router_utils import ManagedRouterHandle
+from tests.utils import apply_slack, assert_speed_thresholds
 
 CONCURRENCY = 16
-MAX_SAMPLES = 30
+MAX_SAMPLES = 50
 
 VIDEOMME_MIN_ACCURACY = 0.53
 
@@ -41,10 +42,10 @@ VIDEOMME_THRESHOLDS = apply_slack(_VIDEOMME_P95)
 
 @pytest.mark.benchmark
 def test_videomme_accuracy_and_speed(
-    qwen3_omni_thinker_server: ServerHandle,
+    qwen3_omni_thinker_server: ManagedRouterHandle,
     tmp_path: Path,
 ) -> None:
-    """Run first 30 of videomme-ci-50 at concurrency=16 and report accuracy + speed."""
+    """Run videomme-ci-50 at concurrency=16 and report accuracy + speed."""
     config = VideoEvalConfig(
         model="qwen3-omni",
         port=qwen3_omni_thinker_server.port,

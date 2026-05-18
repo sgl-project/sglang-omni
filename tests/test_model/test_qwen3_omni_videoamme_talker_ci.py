@@ -25,8 +25,8 @@ from benchmarks.eval.benchmark_omni_videomme import VideoEvalConfig
 from benchmarks.metrics.performance import print_speed_summary
 from benchmarks.metrics.video import print_videomme_accuracy_summary
 from benchmarks.metrics.wer import print_wer_summary
+from tests.test_model.omni_router_utils import ManagedRouterHandle
 from tests.utils import (
-    ServerHandle,
     apply_slack,
     apply_wer_slack,
     assert_speed_thresholds,
@@ -34,7 +34,7 @@ from tests.utils import (
 )
 
 CONCURRENCY = 8
-MAX_SAMPLES = 10
+MAX_SAMPLES = 20
 MAX_TOKENS = 256
 
 VIDEOAMME_TALKER_THINKER_TEXT_MIN_ACCURACY = 0.4
@@ -57,7 +57,7 @@ VIDEOAMME_TALKER_THRESHOLDS = apply_slack(_VIDEOAMME_TALKER_AUDIO_P95)
 
 @pytest.mark.benchmark
 def test_videoamme_talker_accuracy_wer_and_speed(
-    qwen3_omni_talker_server: ServerHandle,
+    qwen3_omni_talker_server: ManagedRouterHandle,
     tmp_path: Path,
 ) -> None:
     """Run Video-AMME with Talker enabled and report text/audio metrics."""

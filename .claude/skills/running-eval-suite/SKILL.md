@@ -167,8 +167,8 @@ This matches the `tune-ci-thresholds` contract: type
    above the table, the row's **Config** column substring, and the
    **workload tag** inside the row's Source column (the part inside
    the `[…]` brackets, **without** the leading hardware token —
-   e.g. `V1-pipeline, full-set, c=8` from
-   `[H200, V1-pipeline, full-set, c=8]`).
+   e.g. `router, 2-worker, full-set, c=8` from
+   `[H200, router, 2-worker, full-set, c=8]`).
 2. Append a new entry to `models/<model>/config.yaml`:
    ```yaml
    - id: <unique-handle>          # informational; not used to select rows
@@ -177,11 +177,11 @@ This matches the `tune-ci-thresholds` contract: type
      locate:
        section_substring: "Accuracy (accuracy)"
        config_substring: "modalities=text "
-       source_workload: "V1-pipeline, full-set, c=8"
-     server: "python -m sglang_omni.cli serve --model-path {model} --version v1 --text-only --port {port}"
-     server_gpus: 1
-     server_health: "http://localhost:{port}/health"
-     server_boot_timeout_s: 300
+       source_workload: "router, 2-worker, full-set, c=8"
+     # Server launch is normally inherited from default_server_profile or
+     # server_profile_by_hf_model_id. Set server_profile only when a row needs
+     # a different managed-router topology.
+     server_profile: qwen3_omni_colocated_router
      client: "python benchmarks/eval/benchmark_omni_<name>.py --model qwen3-omni --port {port} --output-dir {output_dir} ..."
      result_json: "<benchmark>_results.json"
      cells:

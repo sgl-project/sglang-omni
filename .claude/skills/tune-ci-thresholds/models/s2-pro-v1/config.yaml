@@ -25,7 +25,7 @@ default_venv_python:
 auto_env:
   HF_ENDPOINT: "https://hf-mirror.com"
 gpus_per_test:
-  test_s2pro_tts_ci.py: 1
+  test_s2pro_tts_ci.py: 2
 test_globs:
   - "tests/test_model/test_s2pro_tts_ci.py"
 extra_env:

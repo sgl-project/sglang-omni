@@ -34,8 +34,8 @@ from benchmarks.eval.benchmark_omni_videomme import VideoEvalConfig, run_video_e
 from benchmarks.metrics.performance import print_speed_summary
 from benchmarks.metrics.video import print_videomme_accuracy_summary
 from benchmarks.metrics.wer import print_wer_summary
+from tests.test_model.omni_router_utils import ManagedRouterHandle
 from tests.utils import (
-    ServerHandle,
     apply_slack,
     apply_wer_slack,
     assert_speed_thresholds,
@@ -43,7 +43,7 @@ from tests.utils import (
 )
 
 CONCURRENCY = 8
-MAX_SAMPLES = 10
+MAX_SAMPLES = 20
 MAX_TOKENS = 256
 SHORT_ANSWER_PROMPT = (
     "For the audio response, answer briefly in one sentence and end with "
@@ -81,7 +81,7 @@ def _load_short_answer_samples() -> list[VideoMMESample]:
 
 @pytest.mark.benchmark
 def test_videomme_tts_accuracy_wer_and_speed(
-    qwen3_omni_talker_server: ServerHandle,
+    qwen3_omni_talker_server: ManagedRouterHandle,
     tmp_path: Path,
 ) -> None:
     """Run Video-MME with Talker enabled and report text/audio metrics."""

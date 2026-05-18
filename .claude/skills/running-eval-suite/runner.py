@@ -64,9 +64,17 @@ try:
     def load_yaml(path: Path) -> Any:
         with open(path) as fh:
             return yaml.safe_load(fh)
+
+    def dump_yaml(data: Any) -> str:
+        return yaml.safe_dump(data, sort_keys=False)
 except ImportError:  # pragma: no cover
 
     def load_yaml(path: Path) -> Any:
+        raise SystemExit(
+            "PyYAML missing — `pip install pyyaml` in your venv first"
+        )
+
+    def dump_yaml(data: Any) -> str:
         raise SystemExit(
             "PyYAML missing — `pip install pyyaml` in your venv first"
         )
@@ -198,6 +206,24 @@ def free_port() -> int:
     port = sock.getsockname()[1]
     sock.close()
     return port
+
+
+def port_is_available(port: int, host: str = "127.0.0.1") -> bool:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            sock.bind((host, port))
+        except OSError:
+            return False
+    return True
+
+
+def free_port_range(count: int) -> int:
+    for _ in range(100):
+        base_port = free_port()
+        if all(port_is_available(base_port + offset) for offset in range(count)):
+            return base_port
+    raise RuntimeError(f"failed to find {count} consecutive available ports")
 
 
 def parse_gpu_status() -> tuple[list[dict], str | None]:
@@ -572,29 +598,40 @@ def _emit_precheck_summary(errs, warns, out_dir, cfg, py, src, **extra) -> int:
 # ---------- run ----------
 
 class ServerHandle:
-    def __init__(self, popen: subprocess.Popen, port: int, log_path: Path):
+    def __init__(
+        self,
+        popen: subprocess.Popen,
+        port: int,
+        log_path: Path,
+        cleanup_manifest: Path | None = None,
+    ):
         self.popen = popen
         self.port = port
         self.log_path = log_path
+        self.cleanup_manifest = cleanup_manifest
 
     def stop(self) -> None:
         try:
-            os.killpg(os.getpgid(self.popen.pid), signal.SIGTERM)
-        except ProcessLookupError:
-            return
-        try:
-            self.popen.wait(timeout=15)
-            return
-        except subprocess.TimeoutExpired:
-            pass
-        try:
-            os.killpg(os.getpgid(self.popen.pid), signal.SIGKILL)
-        except ProcessLookupError:
-            return
-        try:
-            self.popen.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            pass
+            try:
+                os.killpg(os.getpgid(self.popen.pid), signal.SIGTERM)
+            except ProcessLookupError:
+                return
+            try:
+                self.popen.wait(timeout=15)
+                return
+            except subprocess.TimeoutExpired:
+                pass
+            try:
+                os.killpg(os.getpgid(self.popen.pid), signal.SIGKILL)
+            except ProcessLookupError:
+                return
+            try:
+                self.popen.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
+        finally:
+            if self.cleanup_manifest is not None:
+                _cleanup_process_groups_from_manifest(self.cleanup_manifest)
 
 
 def launch_server(cmd_template: str, *, port: int, model: str,
@@ -609,11 +646,212 @@ def launch_server(cmd_template: str, *, port: int, model: str,
         env["CUDA_VISIBLE_DEVICES"] = gpus_csv
     log_path.parent.mkdir(parents=True, exist_ok=True)
     log_fh = open(log_path, "w")
-    popen = subprocess.Popen(
-        cmd, shell=True, stdout=log_fh, stderr=subprocess.STDOUT,
-        env=env, cwd=str(repo_root), start_new_session=True,
-    )
+    try:
+        popen = subprocess.Popen(
+            cmd, shell=True, stdout=log_fh, stderr=subprocess.STDOUT,
+            env=env, cwd=str(repo_root), start_new_session=True,
+        )
+    finally:
+        log_fh.close()
     return ServerHandle(popen, port, log_path)
+
+
+def launch_row_server(
+    row: dict,
+    cfg: dict,
+    py: str,
+    *,
+    port: int,
+    model: str,
+    gpus_csv: str,
+    log_path: Path,
+    round_dir: Path,
+    repo_root: Path,
+) -> ServerHandle:
+    profile = _resolve_server_profile(row, cfg, model)
+    if profile is None:
+        return launch_server(
+            row["server"],
+            port=port,
+            model=model,
+            gpus_csv=gpus_csv,
+            log_path=log_path,
+            repo_root=repo_root,
+        )
+    return launch_managed_router_server(
+        profile,
+        py,
+        port=port,
+        model=model,
+        gpus_csv=gpus_csv,
+        log_path=log_path,
+        round_dir=round_dir,
+        repo_root=repo_root,
+    )
+
+
+def launch_managed_router_server(
+    profile: dict,
+    py: str,
+    *,
+    port: int,
+    model: str,
+    gpus_csv: str,
+    log_path: Path,
+    round_dir: Path,
+    repo_root: Path,
+) -> ServerHandle:
+    num_workers = int(profile.get("num_workers", 2))
+    worker_base_port = free_port_range(num_workers)
+    cleanup_manifest = round_dir / "router_pgids.txt"
+    launcher_config = round_dir / "launcher.yaml"
+    worker_extra_args = str(profile.get("worker_extra_args", "")).format(
+        model=model,
+        repo_root=str(repo_root),
+    )
+    launcher_config.write_text(
+        dump_yaml(
+            {
+                "launcher": {
+                    "backend": "local",
+                    "model_path": str(profile.get("model_path", model)).format(
+                        model=model,
+                        repo_root=str(repo_root),
+                    ),
+                    "model_name": str(profile["model_name"]).format(
+                        model=model,
+                        repo_root=str(repo_root),
+                    ),
+                    "num_workers": num_workers,
+                    "num_gpus_per_worker": int(profile.get("num_gpus_per_worker", 1)),
+                    "worker_host": profile.get("worker_host", "127.0.0.1"),
+                    "worker_base_port": worker_base_port,
+                    "worker_extra_args": worker_extra_args,
+                    "wait_timeout": int(profile.get("wait_timeout", 900)),
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    env = dict(os.environ)
+    if gpus_csv:
+        env["CUDA_VISIBLE_DEVICES"] = gpus_csv
+    env["SGLANG_OMNI_ROUTER_CLEANUP_MANIFEST"] = str(cleanup_manifest)
+    cmd = [
+        py,
+        "-m",
+        "sglang_omni_router.serve",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        str(port),
+        "--launcher-config",
+        str(launcher_config),
+        "--policy",
+        profile.get("router_policy", "least_request"),
+        "--health-success-threshold",
+        "1",
+        "--health-failure-threshold",
+        "2",
+        "--health-check-interval-secs",
+        "2",
+        "--log-level",
+        "info",
+    ]
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log_fh = open(log_path, "w")
+    try:
+        popen = subprocess.Popen(
+            cmd,
+            stdout=log_fh,
+            stderr=subprocess.STDOUT,
+            env=env,
+            cwd=str(repo_root),
+            start_new_session=True,
+        )
+    finally:
+        log_fh.close()
+    try:
+        _record_process_group(cleanup_manifest, os.getpgid(popen.pid))
+    except Exception:
+        ServerHandle(popen, port, log_path, cleanup_manifest=cleanup_manifest).stop()
+        raise
+    return ServerHandle(popen, port, log_path, cleanup_manifest=cleanup_manifest)
+
+
+def _resolve_server_profile(row: dict, cfg: dict, model_id: str) -> dict | None:
+    profiles = cfg.get("server_profiles") or {}
+    profile_name = row.get("server_profile")
+    if profile_name is None:
+        profile_name = (cfg.get("server_profile_by_hf_model_id") or {}).get(model_id)
+    if profile_name is None:
+        profile_name = cfg.get("default_server_profile")
+    if profile_name is None:
+        return None
+    try:
+        profile = dict(profiles[profile_name])
+    except KeyError as exc:
+        raise SystemExit(f"server profile not found: {profile_name}") from exc
+    profile["name"] = profile_name
+    return profile
+
+
+def _row_server_gpus(row: dict, cfg: dict) -> int:
+    model_id = row.get("hf_model_id") or cfg.get("hf_model_id", "")
+    profile = _resolve_server_profile(row, cfg, model_id)
+    if profile is not None:
+        return int(profile.get("server_gpus", row.get("server_gpus", 1)))
+    return int(row.get("server_gpus", 1))
+
+
+def _row_server_boot_timeout(row: dict, cfg: dict) -> int:
+    model_id = row.get("hf_model_id") or cfg.get("hf_model_id", "")
+    profile = _resolve_server_profile(row, cfg, model_id)
+    if profile is not None:
+        return int(
+            profile.get("server_boot_timeout_s", row.get("server_boot_timeout_s", 300))
+        )
+    return int(row.get("server_boot_timeout_s", 300))
+
+
+def _record_process_group(manifest: Path, process_group_id: int) -> None:
+    with manifest.open("a", encoding="utf-8") as handle:
+        handle.write(f"{process_group_id}\n")
+
+
+def _cleanup_process_groups_from_manifest(manifest: Path) -> None:
+    if not manifest.exists():
+        return
+    process_group_ids: set[int] = set()
+    for line in manifest.read_text().splitlines():
+        try:
+            process_group_ids.add(int(line.strip()))
+        except ValueError:
+            continue
+    for sig, delay in ((signal.SIGTERM, 5), (signal.SIGKILL, 1)):
+        remaining: set[int] = set()
+        for process_group_id in process_group_ids:
+            try:
+                os.killpg(process_group_id, sig)
+                remaining.add(process_group_id)
+            except ProcessLookupError:
+                continue
+        if not remaining:
+            return
+        time.sleep(delay)
+        process_group_ids = {
+            process_group_id
+            for process_group_id in remaining
+            if _process_group_exists(process_group_id)
+        }
+
+
+def _process_group_exists(process_group_id: int) -> bool:
+    try:
+        os.killpg(process_group_id, 0)
+        return True
+    except ProcessLookupError:
+        return False
 
 
 def wait_health(url: str, timeout_s: int) -> tuple[bool, str]:
@@ -758,7 +996,7 @@ def _run_one_row(row: dict, py: str, root: Path, out_root: Path,
     row_dir.mkdir(parents=True, exist_ok=True)
     print(f"\n[row] {row_id}")
 
-    gpu_count = int(row.get("server_gpus", 1))
+    gpu_count = _row_server_gpus(row, cfg)
     pool_set = set(gpu_pool) if gpu_pool is not None else None
     last_err = ""
     free: list[int] = []
@@ -840,18 +1078,23 @@ def _run_one_round(row: dict, py: str, root: Path, round_dir: Path,
     out_dir = round_dir / "out"
     out_dir.mkdir(exist_ok=True)
 
-    server_cmd_tmpl = row["server"]
     model_id = row.get("hf_model_id") or cfg.get("hf_model_id", "")
 
     print(f"  [{round_dir.name}] launching server (port={port}) ...", flush=True)
-    handle = launch_server(
-        server_cmd_tmpl,
-        port=port, model=model_id, gpus_csv=gpus_csv, log_path=server_log,
+    handle = launch_row_server(
+        row,
+        cfg,
+        py,
+        port=port,
+        model=model_id,
+        gpus_csv=gpus_csv,
+        log_path=server_log,
+        round_dir=round_dir,
         repo_root=root,
     )
     try:
         health = row.get("server_health", "http://localhost:{port}/health").format(port=port)
-        timeout = int(row.get("server_boot_timeout_s", 300))
+        timeout = _row_server_boot_timeout(row, cfg)
         ok, msg = wait_health(health, timeout)
         if not ok:
             return {
