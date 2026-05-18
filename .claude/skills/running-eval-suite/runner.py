@@ -218,10 +218,14 @@ def port_is_available(port: int, host: str = "127.0.0.1") -> bool:
     return True
 
 
-def free_port_range(count: int) -> int:
+def free_port_range(count: int, excluded: set[int] | None = None) -> int:
+    excluded_ports = excluded or set()
     for _ in range(100):
         base_port = free_port()
-        if all(port_is_available(base_port + offset) for offset in range(count)):
+        candidates = [base_port + offset for offset in range(count)]
+        if any(port in excluded_ports for port in candidates):
+            continue
+        if all(port_is_available(port) for port in candidates):
             return base_port
     raise RuntimeError(f"failed to find {count} consecutive available ports")
 
@@ -334,12 +338,19 @@ def gpu_busy_processes() -> list[dict]:
     return items
 
 
-def _benchmark_name(row: dict) -> str:
+def _benchmark_selectors(row: dict) -> set[str]:
     stem = Path(row.get("file", "")).stem
-    for prefix in ("benchmark_omni_", "benchmark_tts_"):
-        if stem.startswith(prefix):
-            return stem[len(prefix):]
-    return stem
+    if stem.startswith("benchmark_omni_"):
+        short_name = stem[len("benchmark_omni_"):]
+        if short_name == "seedtts":
+            return {"omni_seedtts", "qwen_seedtts"}
+        return {short_name}
+    if stem.startswith("benchmark_tts_"):
+        short_name = stem[len("benchmark_tts_"):]
+        if short_name == "seedtts":
+            return {"tts_seedtts", "s2pro_seedtts"}
+        return {f"tts_{short_name}"}
+    return {stem}
 
 
 def _select_rows(rows: list[dict], spec: str | None,
@@ -348,13 +359,28 @@ def _select_rows(rows: list[dict], spec: str | None,
         kept = list(rows)
     else:
         wanted = {s.strip() for s in spec.split(",") if s.strip()}
-        kept = [r for r in rows if _benchmark_name(r) in wanted]
+        known = set().union(*(_benchmark_selectors(row) for row in rows))
+        unknown = wanted - known
+        if unknown:
+            raise SystemExit(
+                f"unknown benchmark selector(s): {sorted(unknown)}. "
+                f"Known: {sorted(known)}"
+            )
+        kept = [r for r in rows if _benchmark_selectors(r) & wanted]
     if exclude_ids:
         tokens = [s.strip() for s in exclude_ids.split(",") if s.strip()]
         if tokens:
             kept = [r for r in kept
                     if not any(t in str(r.get("id", "")) for t in tokens)]
     return kept
+
+
+def _row_needs_asr_gpu(row: dict) -> bool:
+    return "{asr_gpu}" in str(row.get("client", ""))
+
+
+def _row_total_gpus(row: dict, cfg: dict) -> int:
+    return _row_server_gpus(row, cfg) + (1 if _row_needs_asr_gpu(row) else 0)
 
 
 # ---------- precheck ----------
@@ -475,12 +501,26 @@ def cmd_precheck(args: argparse.Namespace) -> int:
         print(f"  ⚠ GPU: {gpu_err}")
     else:
         free = free_gpu_indices(gpus)
+        gpu_pool = getattr(args, "gpu_pool", None)
+        if gpu_pool:
+            pool_set = {int(s.strip()) for s in gpu_pool.split(",") if s.strip()}
+            free = [gpu for gpu in free if gpu in pool_set]
         busy_pids = gpu_busy_processes()
         print(f"  GPUs: total {len(gpus)}, free {len(free)} ({free}), "
               f"busy {len(gpus) - len(free)}")
-        if not free:
+        rows_for_gpu_check = _select_rows(
+            cfg.get("rows", []),
+            getattr(args, "benchmarks", "all"),
+            getattr(args, "exclude_ids", None),
+        )
+        required_gpus = max(
+            (_row_total_gpus(row, cfg) for row in rows_for_gpu_check),
+            default=1,
+        )
+        if len(free) < required_gpus:
             err = (
-                f"no free GPUs — busy: {gpus}; free them yourself "
+                f"need {required_gpus} free GPU(s), found {len(free)} — "
+                f"busy: {gpus}; free them yourself "
                 "(this skill never kills user processes)"
             )
             if busy_pids:
@@ -636,9 +676,11 @@ class ServerHandle:
 
 def launch_server(cmd_template: str, *, port: int, model: str,
                   gpus_csv: str, log_path: Path, repo_root: Path = Path("."),
+                  server_extra: str = "",
                   env_extra: dict | None = None) -> ServerHandle:
-    cmd = cmd_template.format(port=port, model=model, gpus=gpus_csv,
-                              repo_root=str(repo_root))
+    cmd = " ".join(part for part in (cmd_template, server_extra) if part)
+    cmd = cmd.format(port=port, model=model, gpus=gpus_csv,
+                     repo_root=str(repo_root))
     env = dict(os.environ)
     if env_extra:
         env.update(env_extra)
@@ -667,6 +709,7 @@ def launch_row_server(
     log_path: Path,
     round_dir: Path,
     repo_root: Path,
+    server_extra: str = "",
 ) -> ServerHandle:
     profile = _resolve_server_profile(row, cfg, model)
     if profile is None:
@@ -677,6 +720,7 @@ def launch_row_server(
             gpus_csv=gpus_csv,
             log_path=log_path,
             repo_root=repo_root,
+            server_extra=server_extra,
         )
     return launch_managed_router_server(
         profile,
@@ -687,6 +731,7 @@ def launch_row_server(
         log_path=log_path,
         round_dir=round_dir,
         repo_root=repo_root,
+        server_extra=server_extra,
     )
 
 
@@ -700,15 +745,18 @@ def launch_managed_router_server(
     log_path: Path,
     round_dir: Path,
     repo_root: Path,
+    server_extra: str = "",
 ) -> ServerHandle:
     num_workers = int(profile.get("num_workers", 2))
-    worker_base_port = free_port_range(num_workers)
+    worker_base_port = free_port_range(num_workers, excluded={port})
     cleanup_manifest = round_dir / "router_pgids.txt"
     launcher_config = round_dir / "launcher.yaml"
     worker_extra_args = str(profile.get("worker_extra_args", "")).format(
         model=model,
         repo_root=str(repo_root),
     )
+    if server_extra:
+        worker_extra_args = f"{worker_extra_args} {server_extra}".strip()
     launcher_config.write_text(
         dump_yaml(
             {
@@ -909,9 +957,10 @@ def cmd_run(args: argparse.Namespace) -> int:
               f"skipping {skipped} row(s) already done")
 
     if not selected:
+        known = set().union(*(_benchmark_selectors(row) for row in rows))
         raise SystemExit(
             "no rows selected — pass --benchmarks NAME,NAME or --benchmarks all. "
-            f"Known: {sorted({_benchmark_name(r) for r in rows})}"
+            f"Known: {sorted(known)}"
         )
 
     rounds = max(1, args.rounds)
@@ -936,7 +985,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         gpu_pool = [int(s.strip()) for s in args.gpu_pool.split(",") if s.strip()]
         print(f"gpu_pool: {gpu_pool}")
     for row in selected:
-        row_state = _run_one_row(row, py, root, out, rounds, smoke, cfg,
+        row_state = _run_one_row(row, py, root, out, rounds, smoke, cfg, hw,
                                  gpu_pool=gpu_pool)
         if row_state["status"] == "ok" and smoke is None:
             row_state["edit"] = _try_edit_inplace(
@@ -989,7 +1038,7 @@ def cmd_run(args: argparse.Namespace) -> int:
 
 
 def _run_one_row(row: dict, py: str, root: Path, out_root: Path,
-                 rounds: int, smoke: int | None, cfg: dict,
+                 rounds: int, smoke: int | None, cfg: dict, hw: str,
                  gpu_pool: list[int] | None = None) -> dict:
     row_id = row["id"]
     row_dir = out_root / row_id
@@ -997,6 +1046,7 @@ def _run_one_row(row: dict, py: str, root: Path, out_root: Path,
     print(f"\n[row] {row_id}")
 
     gpu_count = _row_server_gpus(row, cfg)
+    total_gpu_count = _row_total_gpus(row, cfg)
     pool_set = set(gpu_pool) if gpu_pool is not None else None
     last_err = ""
     free: list[int] = []
@@ -1010,24 +1060,24 @@ def _run_one_row(row: dict, py: str, root: Path, out_root: Path,
         free = free_gpu_indices(gpus)
         if pool_set is not None:
             free = [g for g in free if g in pool_set]
-        if len(free) >= gpu_count:
+        if len(free) >= total_gpu_count:
             break
         time.sleep(3)
     else:
         pool_note = f" (pool={gpu_pool})" if gpu_pool is not None else ""
         reason = last_err or (
-            f"not enough free GPUs (need {gpu_count}, have {len(free)})"
+            f"not enough free GPUs (need {total_gpu_count}, have {len(free)})"
             f"{pool_note}"
         )
         return {"id": row_id, "status": "fail", "reason": reason, "rounds": []}
     chosen = free[:gpu_count]
     gpus_csv = ",".join(str(g) for g in chosen)
     # Pick an ASR GPU from the leftover free pool (highest index first, to
-    # leave low indices for subsequent server allocations). If none free,
-    # fall back to CPU — slower but won't OOM. Available to client cmd
-    # templates as `{asr_gpu}` and substitutes the literal device string.
+    # leave low indices for subsequent server allocations). Rows with
+    # `{asr_gpu}` require a real free GPU because the server remains live while
+    # the client transcribes.
     remaining_free = [g for g in free if g not in set(chosen)]
-    asr_device = f"cuda:{remaining_free[-1]}" if remaining_free else "cpu"
+    asr_device = f"cuda:{remaining_free[-1]}" if _row_needs_asr_gpu(row) else "cpu"
     print(f"  gpus: {gpus_csv}  asr: {asr_device}")
 
     rounds_state: list[dict] = []
@@ -1035,6 +1085,7 @@ def _run_one_row(row: dict, py: str, root: Path, out_root: Path,
         round_dir = row_dir / f"round_{k}"
         round_dir.mkdir(parents=True, exist_ok=True)
         rstate = _run_one_round(row, py, root, round_dir, gpus_csv, smoke, cfg,
+                                hw,
                                 asr_device=asr_device)
         rounds_state.append(rstate)
         if rstate["status"] != "ok":
@@ -1070,7 +1121,7 @@ def _run_one_row(row: dict, py: str, root: Path, out_root: Path,
 
 
 def _run_one_round(row: dict, py: str, root: Path, round_dir: Path,
-                   gpus_csv: str, smoke: int | None, cfg: dict, *,
+                   gpus_csv: str, smoke: int | None, cfg: dict, hw: str, *,
                    asr_device: str = "cpu") -> dict:
     port = free_port()
     server_log = round_dir / "server.log"
@@ -1078,6 +1129,7 @@ def _run_one_round(row: dict, py: str, root: Path, round_dir: Path,
     out_dir = round_dir / "out"
     out_dir.mkdir(exist_ok=True)
 
+    server_extra = (row.get("server_extra_by_hardware") or {}).get(hw, "")
     model_id = row.get("hf_model_id") or cfg.get("hf_model_id", "")
 
     print(f"  [{round_dir.name}] launching server (port={port}) ...", flush=True)
@@ -1091,6 +1143,7 @@ def _run_one_round(row: dict, py: str, root: Path, round_dir: Path,
         log_path=server_log,
         round_dir=round_dir,
         repo_root=root,
+        server_extra=server_extra,
     )
     try:
         health = row.get("server_health", "http://localhost:{port}/health").format(port=port)
@@ -1576,13 +1629,20 @@ def main(argv: list[str] | None = None) -> int:
                        help="verify env (venv, sglang/torch, HF cache, GPU, hardware)")
     p.add_argument("--output-dir", default=None,
                    help="dir to write precheck.json (default: stdout only)")
+    p.add_argument("--benchmarks", default="all",
+                   help="same benchmark selector filter as run; used for GPU "
+                        "requirement checks")
+    p.add_argument("--exclude-ids", default=None,
+                   help="same row-id substring exclusion filter as run")
+    p.add_argument("--gpu-pool", default=None,
+                   help="same GPU pool restriction as run")
 
     p = sub.add_parser("run",
                        help="launch server + client per row, edit benchmark_*.py in place")
     p.add_argument("--benchmarks", default="all",
                    help="comma-separated benchmark short names "
-                        "(e.g. mmsu,mmmu,seedtts), or 'all' for every "
-                        "row in the model's config.yaml")
+                        "(e.g. mmsu,mmmu,omni_seedtts,tts_seedtts), "
+                        "or 'all' for every row in the model's config.yaml")
     p.add_argument("--exclude-ids", default=None,
                    help="comma-separated row-id substrings to skip "
                         "(e.g. 's2pro-' to drop S2-Pro rows when --benchmarks "

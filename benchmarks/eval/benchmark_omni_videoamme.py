@@ -34,7 +34,7 @@ Accuracy
 | Qwen3-Omni | thinker-only, ci-50, c=8 | 66.00%   | 33/50   | 0      | 0           | PR #411 [H200, c=8, max_tokens=256] |
 | Qwen3-Omni | thinker-talker, ci-50, c=8 | 64.00%   | 32/50   | 0      | 0           | PR #411 [H200, c=8, max_tokens=256] |
 | Qwen3-Omni | thinker-only, ci-50, c=8 | 66.00%   | 33/50   | 0      | 0           | PR #411 [H100, c=8, max_tokens=256] |
-<!-- thinker-talker accuracy row omitted on H100: same hang as the speed/wer tables — talker pipeline never returns under --enable-audio + video input on H100, so all 50 requests time out at 300 s and the row would be 0/50 garbage. -->
+| Qwen3-Omni | thinker-talker, ci-50, c=8 | 68.00%   | 34/50   | 0      | 0           | local [H100, c=8, max_tokens=256] |
 
 Speed
 
@@ -43,7 +43,7 @@ Speed
 | Qwen3-Omni | thinker-only, ci-50, c=8 | 50        | 0      | 44.530         | 46.846           | 52.694        | 53.180        | 1.0            | 0.9           | 40.0            | 2025             | 21684.0            | 1084218             | 0.167          | PR #411 [H200, c=8, max_tokens=256] |
 | Qwen3-Omni | thinker-talker, ci-50, c=8 | 50        | 0      | 40.423         | 40.063           | 63.088        | 81.046        | 1.1            | 1.0           | 41.0            | 2050             | 21684.0            | 1084218             | 0.193          | PR #411 [H200, c=8, max_tokens=256] |
 | Qwen3-Omni | thinker-only, ci-50, c=8 | 50        | 0      | 38.408         | 40.320           | 44.883        | 45.764        | 1.2            | 1.1           | 44.0            | 2181             | 21684.0            | 1084218             | 0.194          | PR #411 [H100, c=8, max_tokens=256] |
-<!-- thinker-talker speed/wer rows omitted on H100: Qwen3-Omni audio output via talker pipeline hangs server-side at c=8 --enable-audio (preprocessing completes, generation never returns); all requests time out at 300 s. Workload not reproducible on this hardware/build. -->
+| Qwen3-Omni | thinker-talker, ci-50, c=8 | 50        | 0      | 33.618         | 33.365           | 46.380        | 58.321        | 1.3            | 1.3           | 42.0            | 2123             | 21684.0            | 1084218             | 0.230          | local [H100, c=8, max_tokens=256] |
 
 
 Talker WER
@@ -51,7 +51,7 @@ Talker WER
 | Model      | Config                    | evaluated | skipped | wer_corpus | wer_per_sample_mean | wer_per_sample_p95 | wer_per_sample_max | n_above_50_pct_wer | rtf_mean | audio_duration_mean_s | Source                                                              |
 | ---------- | ------------------------- | --------- | ------- | ---------- | ------------------- | ------------------ | ------------------ | ------------------ | -------- | --------------------- | ------------------------------------------------------------------- |
 | Qwen3-Omni | thinker-talker, ci-50, c=8 | 50/50     | 0       | 2.58%      | 18.87%              | 155.00%            | 200.00%            | 6                  | 6.3183   | 11.750                | PR #411 [H200, c=8, max_tokens=256] |
-<!-- thinker-talker WER row omitted on H100: same talker hang as accuracy/speed — server never produces audio output under --enable-audio + video input on H100, so there is nothing to transcribe. -->
+| Qwen3-Omni | thinker-talker, ci-50, c=8 | 50/50     | 0       | 2.29%      | 11.94%              | 100.00%            | 200.00%            | 4                  | 6.0412   | 12.356                | local [H100, c=8, max_tokens=256] |
 
 Local v1 Pipeline Result (this workspace, 2026-05-01)
 

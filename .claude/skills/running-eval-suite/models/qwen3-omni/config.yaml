@@ -19,6 +19,7 @@
 #   server_profile              optional server profile override. If omitted,
 #                               default_server_profile or server_profile_by_hf_model_id is used.
 #   server                      legacy direct server launch template fallback
+#   server_extra_by_hardware    optional hardware tag -> extra server args appended to server or profiled worker args
 #   server_gpus                 legacy direct server GPU count fallback
 #   server_health               optional health URL ({port} substituted), defaults to /health
 #   server_boot_timeout_s       optional seconds to wait for /health 2xx; profiles own this by default

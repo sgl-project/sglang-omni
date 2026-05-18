@@ -10,6 +10,7 @@ When an upstream method (e.g. ``get_next_batch_to_run``) internally calls
 it to this instance.  This gives us the full scheduling MRO without
 inheriting from ``SGLangScheduler``.
 """
+
 from __future__ import annotations
 
 import logging
@@ -437,6 +438,21 @@ class OmniScheduler:
             req = req_data.req
             req._omni_data = req_data
             req_id = req.rid
+            kv_error = self._request_kv_capacity_error(req)
+            if kv_error is not None:
+                logger.warning(
+                    "Rejecting request %s before scheduling: %s",
+                    req_id,
+                    kv_error,
+                )
+                self.outbox.put(
+                    OutgoingMessage(
+                        request_id=req_id,
+                        type="error",
+                        data=ValueError(kv_error),
+                    )
+                )
+                continue
             self._initialize_request_stream_state(req_data, payload)
             if req_id in self._aborted_request_ids:
                 continue
@@ -467,6 +483,30 @@ class OmniScheduler:
     def _is_batch_ready_to_run(self, batch: Any) -> bool:
         del batch
         return True
+
+    def _request_kv_capacity_error(self, req: Any) -> str | None:
+        input_len = len(req.origin_input_ids)
+        max_new_tokens = int(req.sampling_params.max_new_tokens or 0)
+        required_tokens = input_len + max_new_tokens
+        kv_capacity = int(self.max_req_len)
+        if required_tokens <= kv_capacity:
+            return None
+
+        mem_fraction = self.server_args.mem_fraction_static
+        if mem_fraction is not None:
+            mem_hint = (
+                f" Current mem_fraction_static is {mem_fraction:.3f}; try setting "
+                "--thinker-mem-fraction-static higher."
+            )
+        else:
+            mem_hint = " Try setting a higher --thinker-mem-fraction-static value."
+
+        return (
+            "Request requires more tokens than the thinker KV cache can hold "
+            f"(input_tokens={input_len}, max_new_tokens={max_new_tokens}, "
+            f"required_tokens={required_tokens}, kv_capacity={kv_capacity})."
+            f"{mem_hint}"
+        )
 
     def run_batch(self, batch, pp_proxy_tensors=None):
         """Run a batch through the model runner.
