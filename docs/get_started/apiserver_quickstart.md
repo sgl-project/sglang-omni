@@ -41,7 +41,7 @@ The most useful flags are:
 - `--model-name`: override the model name returned by `/v1/models`
 - `--log-level`: logging level for the server process
 
-If you already have a pipeline config file, you can also pass `--config path/to/config.yaml`. In the current CLI, `--model-path` is still required even when `--config` is provided.
+If you already have a pipeline config file, you can also pass `--config path/to/config.yaml`. When the config file contains `model_path`, `--model-path` is optional and can be used as an override.
 
 ## Check That It Works
 
