@@ -87,6 +87,11 @@ def build_thinker_inputs(
         if isinstance(image_out, dict)
         else None
     )
+    video_embeds = (
+        _as_tensor(image_out.get("video_embeds"))
+        if isinstance(image_out, dict)
+        else None
+    )
 
     thinker_model_inputs: dict[str, Any] = {}
 
@@ -102,11 +107,18 @@ def build_thinker_inputs(
             image_embeds = image_embeds.squeeze(0)
         thinker_model_inputs["image_embeds"] = image_embeds
 
+    if _non_empty(video_embeds):
+        if video_embeds.dim() == 3:
+            video_embeds = video_embeds.squeeze(0)
+        thinker_model_inputs["video_embeds"] = video_embeds
+
     media_cache_keys: dict[str, str] = {}
     encoder_inputs = state.encoder_inputs or {}
     image_ck = (encoder_inputs.get(IMAGE_STAGE) or {}).get("cache_key")
     audio_ck = (encoder_inputs.get(AUDIO_STAGE) or {}).get("cache_key")
     if image_ck:
+        # image_ck already namespaces image vs video (img:.../vid:...) when both
+        # are present so we keep one cache key for the combined visual stage.
         media_cache_keys["image"] = f"image:{image_ck}"
     if audio_ck:
         media_cache_keys["audio"] = f"audio:{audio_ck}"

@@ -485,3 +485,100 @@ def test_ming_decode_metadata_includes_usage_and_finish_reason() -> None:
         "completion_tokens": 3,
         "total_tokens": 8,
     }
+
+
+def test_ming_preprocessor_injects_top_level_videos_as_inline_content() -> None:
+    """``videos=[...]`` at the top level becomes an inline ``video_url`` item.
+
+    Mirrors the existing ``_inject_top_level_images`` contract so the rest of
+    the preprocessor handles top-level and inline video requests identically.
+    """
+    from sglang_omni.models.ming_omni.components.preprocessor import (
+        _inject_top_level_videos,
+    )
+
+    messages = [
+        {"role": "system", "content": "你是助手"},
+        {"role": "user", "content": "What is happening?"},
+    ]
+    out = _inject_top_level_videos(messages, ["/tmp/clip.mp4"])
+
+    # System message untouched, only first user message extended.
+    assert out[0] == {"role": "system", "content": "你是助手"}
+    assert out[1]["role"] == "user"
+    # Ming-Omni was trained with text BEFORE the media item in user turns
+    # (see _inject_top_level_audios docstring), so videos go after text too.
+    assert out[1]["content"] == [
+        {"type": "text", "text": "What is happening?"},
+        {"type": "video_url", "video_url": {"url": "/tmp/clip.mp4"}},
+    ]
+    # Original list unchanged (helper does a shallow copy).
+    assert messages[1]["content"] == "What is happening?"
+
+
+def test_ming_image_encoder_forward_accepts_video_inputs() -> None:
+    """MingImageEncoder.forward should accept optional video kwargs.
+
+    Videos reuse the image encoder stage (Qwen3-Omni pattern); the signature
+    must expose ``pixel_values_videos`` + ``video_grid_thw`` so the
+    preprocessing → image_encoder stage path can flow both modalities.
+    """
+    from sglang_omni.models.ming_omni.components.image_encoder import MingImageEncoder
+
+    params = inspect.signature(MingImageEncoder.forward).parameters
+    for name in (
+        "pixel_values",
+        "image_grid_thw",
+        "pixel_values_videos",
+        "video_grid_thw",
+    ):
+        assert name in params, f"missing forward kwarg: {name}"
+        assert params[name].default is None, (
+            f"{name} must default to None so the image stage can be invoked "
+            "with images only, videos only, or both."
+        )
+
+
+def test_ming_merge_extracts_video_embeds_into_thinker_inputs() -> None:
+    """build_thinker_inputs must route ``video_embeds`` from the image stage.
+
+    The thinker model_runner injects multimodal embeddings by token id; this
+    test verifies ``merge.build_thinker_inputs`` exposes video_embeds the same
+    way it already exposes image_embeds/audio_embeds.
+    """
+    import torch
+
+    from sglang_omni.models.ming_omni.io import PipelineState
+    from sglang_omni.models.ming_omni.pipeline.merge import build_thinker_inputs
+    from sglang_omni.models.ming_omni.pipeline.next_stage import (
+        AUDIO_STAGE,
+        IMAGE_STAGE,
+    )
+
+    state = PipelineState(
+        raw_inputs={},
+        prompt={
+            "input_ids": torch.zeros((1, 1), dtype=torch.long),
+            "attention_mask": torch.ones((1, 1), dtype=torch.long),
+            "prompt_text": "",
+        },
+        encoder_inputs={
+            IMAGE_STAGE: {"cache_key": "img:abc|vid:def"},
+        },
+    )
+
+    encoder_outs = {
+        AUDIO_STAGE: {},
+        IMAGE_STAGE: {
+            "image_embeds": torch.randn(4, 8),
+            "video_embeds": torch.randn(12, 8),
+        },
+    }
+
+    result = build_thinker_inputs(state, encoder_outs)
+
+    model_inputs = result.get("model_inputs", {})
+    assert "image_embeds" in model_inputs
+    assert "video_embeds" in model_inputs
+    assert tuple(model_inputs["video_embeds"].shape) == (12, 8)
+    assert result["media_cache_keys"]["image"] == "image:img:abc|vid:def"
