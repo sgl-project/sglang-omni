@@ -1,26 +1,25 @@
 # SPDX-License-Identifier: Apache-2.0
 """DllmScheduler — stage-facing scheduler for Diffusion LLM stages.
 
-Unlike OmniScheduler (which delegates to SGLang's AR scheduling methods),
-DLLM scheduling uses its own DllmManager for batch construction and drives
-ForwardBatch directly.  This class provides the same public contract
-(inbox, outbox, start, stop, abort) so it is interchangeable from the
-Stage's perspective.
+Provides the same public contract (inbox, outbox, start, stop, abort)
+as OmniScheduler so it is interchangeable from the Stage's perspective.
 """
 
 from __future__ import annotations
 
 import logging
 import queue as _queue_mod
+import threading
 import time
 from typing import Any, Callable
 
-import torch
+from sglang.srt.managers.schedule_batch import Req, ScheduleBatch
+from sglang.srt.managers.schedule_policy import AddReqResult, PrefillAdder
 from sglang.srt.mem_cache.common import release_kv_cache
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch
+from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
 
 from sglang_omni.scheduling.messages import IncomingMessage, OutgoingMessage
-from sglang_omni.scheduling.sglang_backend.dllm import DllmManager
 
 logger = logging.getLogger(__name__)
 
@@ -53,20 +52,18 @@ class DllmScheduler:
 
         self.tp_worker = tp_worker
         self.tree_cache = tree_cache
+        self.req_to_token_pool = req_to_token_pool
+        self.token_to_kv_pool_allocator = token_to_kv_pool_allocator
+        self.server_args = server_args
+        self.model_config = model_config
+        self.dllm_config = dllm_config
 
         self._running = False
+        self._abort_lock = threading.Lock()
         self._aborted_request_ids: set[str] = set()
-        self._aborted_cleanup_pending: set[str] = set()
         self._rid_to_req_data: dict[str, Any] = {}
-
-        self._manager = DllmManager(
-            server_args=server_args,
-            req_to_token_pool=req_to_token_pool,
-            token_to_kv_pool_allocator=token_to_kv_pool_allocator,
-            tree_cache=tree_cache,
-            model_config=model_config,
-            dllm_config=dllm_config,
-        )
+        self._waiting_queue: list[Req] = []
+        self._staging_queue: list[Req] = []
 
     def start(self) -> None:
         self._running = True
@@ -79,14 +76,13 @@ class DllmScheduler:
         self._running = False
 
     def abort(self, request_id: str) -> None:
-        self._aborted_request_ids.add(request_id)
+        with self._abort_lock:
+            self._aborted_request_ids.add(request_id)
 
     def _event_loop(self) -> None:
         while self._running:
-            self._drain_inbox()
-            self._purge_aborted()
-            self._manager.filter_finished_reqs()
-            batch = self._manager.schedule_next_batch()
+            self._drain_and_purge()
+            batch = self._schedule_next_batch()
 
             if batch is None:
                 time.sleep(0.001)
@@ -100,24 +96,27 @@ class DllmScheduler:
 
             batch.output_ids = batch_result.next_token_ids
             self._apply_results(batch, batch_result)
-            self._post_step_operations(batch)
+            self._post_step(batch)
 
-    def _drain_inbox(self) -> None:
+    def _drain_and_purge(self) -> None:
+        with self._abort_lock:
+            aborted = self._aborted_request_ids
+            self._aborted_request_ids = set()
+
         while True:
             try:
                 msg = self.inbox.get_nowait()
             except _queue_mod.Empty:
                 break
 
-            if msg.request_id in self._aborted_request_ids:
+            if msg.request_id in aborted:
                 continue
 
             if msg.type == "new_request":
-                payload = msg.data
-                req_data = self._request_builder(payload)
+                req_data = self._request_builder(msg.data)
                 req = req_data.req
                 self._rid_to_req_data[req.rid] = req_data
-                self._manager.add_waiting_reqs(req)
+                self._waiting_queue.append(req)
             else:
                 logger.warning(
                     "DllmScheduler: unhandled message type %r for request %s",
@@ -125,53 +124,99 @@ class DllmScheduler:
                     msg.request_id,
                 )
 
-    def _purge_aborted(self) -> None:
-        if self._aborted_cleanup_pending:
-            self._aborted_request_ids -= self._aborted_cleanup_pending
-            self._aborted_cleanup_pending = set()
-
-        if not self._aborted_request_ids:
-            return
-        self._manager.waiting_queue = [
-            r
-            for r in self._manager.waiting_queue
-            if r.rid not in self._aborted_request_ids
+        self._waiting_queue = [
+            r for r in self._waiting_queue if r.rid not in aborted and not r.finished()
         ]
-        self._manager.staging_queue = [
-            r
-            for r in self._manager.staging_queue
-            if r.rid not in self._aborted_request_ids
-        ]
-        for rid in list(self._rid_to_req_data):
-            if rid in self._aborted_request_ids:
-                self._rid_to_req_data.pop(rid, None)
+        new_staging = []
+        for req in self._staging_queue:
+            if req.rid in aborted:
+                release_kv_cache(req, self.tree_cache)
+            elif not req.finished():
+                new_staging.append(req)
+        self._staging_queue = new_staging
 
-        self._aborted_cleanup_pending = set(self._aborted_request_ids)
+        for rid in aborted:
+            self._rid_to_req_data.pop(rid, None)
+
+    def _schedule_next_batch(self) -> ScheduleBatch | None:
+        if not self._waiting_queue and not self._staging_queue:
+            return None
+
+        adder = PrefillAdder(
+            self.server_args.page_size,
+            self.tree_cache,
+            self.token_to_kv_pool_allocator,
+            None,  # running_batch
+            0.5,  # new_token_ratio
+            self.server_args.max_prefill_tokens,
+            self.server_args.chunked_prefill_size,
+            dllm_config=self.dllm_config,
+        )
+
+        # Re-submit existing staging (chunked) requests.
+        for req in self._staging_queue:
+            req.init_next_round_input()
+            adder.add_chunked_req(req)
+
+        # Add new waiting requests.
+        for req in self._waiting_queue:
+            req.init_next_round_input(self.tree_cache)
+            if (
+                adder.add_one_req(
+                    req,
+                    has_chunked_req=bool(self._staging_queue),
+                    truncation_align_size=None,
+                )
+                != AddReqResult.CONTINUE
+            ):
+                break
+
+        if not adder.can_run_list:
+            return None
+
+        # Promote newly staged requests and remove them from waiting queue.
+        staging_rids = {r.rid for r in self._staging_queue}
+        for req in adder.dllm_staging_reqs:
+            if req.rid not in staging_rids:
+                self._staging_queue.append(req)
+                staging_rids.add(req.rid)
+        self._waiting_queue = [
+            r for r in self._waiting_queue if r.rid not in staging_rids
+        ]
+
+        for req in self._staging_queue:
+            req.is_chunked += 1
+
+        new_batch = ScheduleBatch.init_new(
+            reqs=adder.can_run_list,
+            req_to_token_pool=self.req_to_token_pool,
+            token_to_kv_pool_allocator=self.token_to_kv_pool_allocator,
+            tree_cache=self.tree_cache,
+            model_config=self.model_config,
+            enable_overlap=False,
+            spec_algorithm=SpeculativeAlgorithm.NONE,
+            dllm_config=self.dllm_config,
+        )
+        new_batch.prepare_for_extend()
+        return new_batch
 
     def _apply_results(self, batch: Any, batch_result: Any) -> None:
         next_token_ids_list = batch_result.next_token_ids
 
-        for i, req in enumerate(batch.reqs):
-            if req.rid in self._aborted_request_ids:
-                continue
+        if not next_token_ids_list:
+            return
 
-            if next_token_ids_list and i < len(next_token_ids_list):
-                token_ids = next_token_ids_list[i]
-                if isinstance(token_ids, torch.Tensor):
-                    token_ids = token_ids.tolist()
-            else:
-                token_ids = []
+        for i, req in enumerate(batch.reqs):
+            token_ids = next_token_ids_list[i].tolist()
 
             if token_ids:
                 req.output_ids.extend(token_ids)
                 req.check_finished(new_accepted_len=len(token_ids))
 
-            req_data = self._rid_to_req_data.get(req.rid)
-            if req_data is None:
-                continue
-
             if req.finished():
-                self._rid_to_req_data.pop(req.rid, None)
+                req_data = self._rid_to_req_data.pop(req.rid, None)
+                if req_data is None:
+                    continue
                 req_data.output_ids = list(req.output_ids_through_stop)
                 finished_reason = req.finished_reason
                 req_data.finish_reason = (
@@ -179,28 +224,30 @@ class DllmScheduler:
                     if finished_reason is not None
                     else None
                 )
-                result_payload = self._result_adapter(req_data)
                 self.outbox.put(
                     OutgoingMessage(
                         request_id=req.rid,
                         type="result",
-                        data=result_payload,
+                        data=self._result_adapter(req_data),
                     )
                 )
 
-    def _post_step_operations(self, batch: Any) -> None:
+    def _post_step(self, batch: Any) -> None:
+        exclude = set()
         for req in batch.reqs:
             if req.finished():
                 release_kv_cache(req, self.tree_cache)
+                exclude.add(req)
 
-        chunked_req_to_exclude = set()
-        if self._manager.any_staging_reqs():
-            for req in self._manager.staging_queue:
-                if req.finished():
-                    continue
-                chunked_req_to_exclude.add(req)
-                self._manager.tree_cache.cache_unfinished_req(req, chunked=True)
-                if req.req_pool_idx is not None:
-                    self._manager.req_to_token_pool.free(req.req_pool_idx)
+        new_staging = []
+        for req in self._staging_queue:
+            exclude.add(req)
+            if req.finished():
+                continue
+            self.tree_cache.cache_unfinished_req(req, chunked=True)
+            if req.req_pool_idx is not None:
+                self.req_to_token_pool.free(req.req_pool_idx)
+            new_staging.append(req)
+        self._staging_queue = new_staging
 
-        batch.filter_batch(chunked_req_to_exclude=list(chunked_req_to_exclude))
+        batch.filter_batch(chunked_req_to_exclude=list(exclude))
