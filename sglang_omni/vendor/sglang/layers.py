@@ -31,7 +31,7 @@ from sglang.srt.layers.moe import (
 )
 from sglang.srt.layers.moe.ep_moe.layer import get_moe_impl_class
 from sglang.srt.layers.moe.fused_moe_triton.layer import FusedMoE
-from sglang.srt.layers.moe.topk import TopK
+from sglang.srt.layers.moe.topk import StandardTopKOutput, TopK
 from sglang.srt.layers.moe.utils import RoutingMethodType
 from sglang.srt.layers.quantization.base_config import QuantizationConfig
 from sglang.srt.layers.radix_attention import AttentionType, RadixAttention
@@ -149,6 +149,7 @@ __all__ = [
     "QKVParallelLinear",
     "ReplicatedLinear",
     "RowParallelLinear",
+    "StandardTopKOutput",
     "TopK",
     "get_moe_a2a_backend",
     "should_use_flashinfer_cutlass_moe_fp4_allgather",

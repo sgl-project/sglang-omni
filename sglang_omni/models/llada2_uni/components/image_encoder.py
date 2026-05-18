@@ -343,7 +343,6 @@ class LLaDA2ImageEncoder(nn.Module):
         Returns:
             dict with:
                 image_token_ids: list[list[int]] — VQ token IDs per image (without offset)
-                image_grid_thw: original image_grid_thw tensor
         """
         hidden_states = self.visual(
             pixel_values.to(self.device, self.dtype),
@@ -359,7 +358,4 @@ class LLaDA2ImageEncoder(nn.Module):
             tokens = self.vqmodel.encode(hs)
             all_token_ids.append(tokens.flatten().tolist())
 
-        return {
-            "image_token_ids": all_token_ids,
-            "image_grid_thw": image_grid_thw,
-        }
+        return {"image_token_ids": all_token_ids}

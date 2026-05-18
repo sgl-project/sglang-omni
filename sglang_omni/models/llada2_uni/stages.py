@@ -6,10 +6,9 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-logger = logging.getLogger(__name__)
+from sglang_omni.models.llada2_uni.config import IMAGE_STAGE, THINKER_STAGE
 
-IMAGE_STAGE = "image_encoder"
-THINKER_STAGE = "thinker"
+logger = logging.getLogger(__name__)
 
 
 def _event_to_dict(event) -> dict[str, Any]:
@@ -21,16 +20,19 @@ def _event_to_dict(event) -> dict[str, Any]:
     }
 
 
-def create_preprocessing_executor(model_path: str):
+def create_preprocessing_executor(
+    model_path: str,
+    *,
+    thinker_max_seq_len: int | None = None,
+):
     from sglang_omni.models.llada2_uni.components.preprocessor import LLaDA2Preprocessor
     from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 
-    preprocessor = LLaDA2Preprocessor(model_path=model_path)
-
-    async def _preprocess(payload):
-        return await preprocessor(payload)
-
-    return SimpleScheduler(_preprocess)
+    preprocessor = LLaDA2Preprocessor(
+        model_path=model_path,
+        max_seq_len=thinker_max_seq_len,
+    )
+    return SimpleScheduler(preprocessor)
 
 
 def create_image_encoder_executor(
@@ -50,12 +52,10 @@ def create_image_encoder_executor(
         build_encoder_request,
         merge_image_tokens_for_thinker,
     )
+    from sglang_omni.models.weight_loader import resolve_dtype
     from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 
-    if dtype is None:
-        dtype = torch.bfloat16
-    elif isinstance(dtype, str):
-        dtype = getattr(torch, dtype)
+    dtype = resolve_dtype(dtype)
 
     model = LLaDA2ImageEncoder(model_path=model_path, device=device, dtype=dtype)
 
@@ -115,45 +115,31 @@ def create_decode_executor(model_path: str):
     from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 
     tokenizer = load_llada2_tokenizer(model_path)
-    eos_token_id = getattr(tokenizer, "eos_token_id", None)
 
     def _decode(payload):
         state = PipelineState.from_dict(payload.data)
         thinker_out = state.thinker_out or state.engine_outputs.get(THINKER_STAGE)
         if not isinstance(thinker_out, dict):
+            logger.warning(
+                "request %s: thinker produced no output (got %s), returning empty text",
+                payload.request_id,
+                type(thinker_out).__name__,
+            )
             thinker_out = {
                 "output_ids": [],
                 "is_final": True,
             }
 
-        events = list(
-            decode_events(
-                thinker_out=thinker_out,
-                state=state,
-                tokenizer=tokenizer,
-                eos_token_id=eos_token_id,
-            )
+        events = decode_events(
+            thinker_out=thinker_out,
+            tokenizer=tokenizer,
         )
         event_dicts = [_event_to_dict(event) for event in events]
 
         result: dict[str, Any] = {"events": event_dicts}
-        final_event = next(
-            (
-                event
-                for event in reversed(events)
-                if event.is_final or event.type in {"text_final", "final"}
-            ),
-            None,
-        )
-        if final_event is not None:
-            result.update(final_event.payload)
-            result.setdefault("modality", final_event.modality)
-
-        if "text" not in result:
-            output_ids = thinker_out.get("output_ids")
-            if output_ids:
-                result["text"] = tokenizer.decode(output_ids, skip_special_tokens=True)
-                result.setdefault("modality", "text")
+        if events:
+            result.update(events[0].payload)
+            result.setdefault("modality", events[0].modality)
 
         finish_reason = thinker_out.get("finish_reason")
         if finish_reason is not None:

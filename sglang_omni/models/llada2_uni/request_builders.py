@@ -7,7 +7,15 @@ from typing import Any
 
 import torch
 
-from sglang_omni.models.llada2_uni.components.preprocessor import DUMMY_IMAGE_TOKEN_ID
+from sglang_omni.models.llada2_uni.components.preprocessor import (
+    DUMMY_IMAGE_TOKEN_ID,
+    IMAGE_TOKEN_OFFSET,
+)
+from sglang_omni.models.llada2_uni.config import (
+    DEFAULT_THINKER_MAX_NEW_TOKENS,
+    IMAGE_STAGE,
+    THINKER_STAGE,
+)
 from sglang_omni.models.llada2_uni.payload_types import PipelineState, ThinkerOutput
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.sglang_backend import SGLangDLLMRequestData
@@ -34,9 +42,7 @@ def apply_encoder_result(
     result: Any,
 ) -> None:
     """Apply encoder result to pipeline state."""
-    encoder_out = result
-    state.encoder_outs[stage_name] = encoder_out
-    state.engine_outputs[stage_name] = encoder_out
+    state.encoder_outs[stage_name] = result
 
 
 def merge_image_tokens_for_thinker(state: PipelineState) -> None:
@@ -45,7 +51,7 @@ def merge_image_tokens_for_thinker(state: PipelineState) -> None:
     Replaces DUMMY_IMAGE_TOKEN_ID placeholders with actual VQ token IDs
     offset by image_token_offset.
     """
-    image_out = state.encoder_outs.get("image_encoder")
+    image_out = state.encoder_outs.get(IMAGE_STAGE)
     if not image_out:
         return
 
@@ -61,11 +67,9 @@ def merge_image_tokens_for_thinker(state: PipelineState) -> None:
     if isinstance(input_ids, torch.Tensor):
         input_ids = input_ids.flatten().tolist()
 
-    image_token_offset = image_out.get("image_token_offset", 157184)
-
     all_vq_tokens = []
     for token_ids in image_token_ids_list:
-        all_vq_tokens.extend(tid + image_token_offset for tid in token_ids)
+        all_vq_tokens.extend(tid + IMAGE_TOKEN_OFFSET for tid in token_ids)
 
     if not all_vq_tokens:
         return
@@ -73,14 +77,21 @@ def merge_image_tokens_for_thinker(state: PipelineState) -> None:
     new_ids = []
     vq_idx = 0
     for tid in input_ids:
-        if tid == DUMMY_IMAGE_TOKEN_ID and vq_idx < len(all_vq_tokens):
+        if tid == DUMMY_IMAGE_TOKEN_ID:
+            if vq_idx >= len(all_vq_tokens):
+                raise ValueError(
+                    f"More placeholders than VQ tokens ({len(all_vq_tokens)})"
+                )
             new_ids.append(all_vq_tokens[vq_idx])
             vq_idx += 1
         else:
             new_ids.append(tid)
 
-    if vq_idx < len(all_vq_tokens):
-        new_ids.extend(all_vq_tokens[vq_idx:])
+    if vq_idx != len(all_vq_tokens):
+        raise ValueError(
+            f"VQ token count mismatch: {len(all_vq_tokens)} VQ tokens "
+            f"but only {vq_idx} placeholders"
+        )
 
     prompt["input_ids"] = torch.tensor([new_ids], dtype=torch.long)
 
@@ -108,34 +119,16 @@ def build_dllm_thinker_request(
 
     input_ids_list = input_ids.to(dtype=torch.long).flatten().tolist()
 
-    thinker_inputs = state.thinker_inputs or {}
-
-    model_inputs = dict(thinker_inputs.get("model_inputs", {}))
-    if not model_inputs:
-        model_inputs = {
-            k: v for k, v in thinker_inputs.items() if k != "capture_model_output_keys"
-        }
-
-    max_new_tokens = params.get("max_new_tokens", 2048)
-    temperature = params.get("temperature", 0.0)
-    top_p = params.get("top_p", 1.0)
-    top_k = params.get("top_k", -1)
-    min_p = params.get("min_p", 0.0)
-    repetition_penalty = params.get("repetition_penalty", 1.0)
-    stop = params.get("stop") or []
-    stop_token_ids = params.get("stop_token_ids") or []
-    seed = params.get("seed")
-
     sampling_params = SamplingParams(
-        max_new_tokens=max_new_tokens,
-        temperature=temperature,
-        top_p=top_p,
-        top_k=top_k,
-        min_p=min_p,
-        repetition_penalty=repetition_penalty,
-        stop=stop,
-        stop_token_ids=stop_token_ids,
-        sampling_seed=seed,
+        max_new_tokens=params.get("max_new_tokens", DEFAULT_THINKER_MAX_NEW_TOKENS),
+        temperature=params.get("temperature", 0.0),
+        top_p=params.get("top_p", 1.0),
+        top_k=params.get("top_k", -1),
+        min_p=params.get("min_p", 0.0),
+        repetition_penalty=params.get("repetition_penalty", 1.0),
+        stop=params.get("stop") or [],
+        stop_token_ids=params.get("stop_token_ids") or [],
+        sampling_seed=params.get("seed"),
     )
     sampling_params.normalize(tokenizer)
     sampling_params.verify(vocab_size)
@@ -155,12 +148,10 @@ def build_dllm_thinker_request(
     )
     req.tokenizer = tokenizer
 
-    req.omni_model_inputs = model_inputs if model_inputs else None
+    req.omni_model_inputs = None
     req._omni_consumed = None
 
     data = SGLangDLLMRequestData(
-        input_ids=input_ids.to(dtype=torch.long).flatten(),
-        model_inputs=model_inputs,
         output_ids=req.output_ids,
         req=req,
     )
@@ -192,7 +183,7 @@ def make_dllm_thinker_scheduler_adapters(
     tokenizer: Any,
     vocab_size: int,
     dllm_config: Any,
-    stage_name: str = "thinker",
+    stage_name: str = THINKER_STAGE,
 ):
     """Build StagePayload <-> scheduler adapters for the dLLM thinker."""
 

@@ -35,8 +35,6 @@ class SGLangARRequestData(ARRequestData):
 class SGLangDLLMRequestData:
     """Per-request state for SGLang-backed dLLM stages."""
 
-    input_ids: "torch.Tensor | None" = None
-    model_inputs: dict[str, Any] = field(default_factory=dict)
     output_ids: list[int] = field(default_factory=list)
     req: Any = None
     stage_payload: Any = None

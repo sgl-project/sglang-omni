@@ -5,10 +5,8 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any
 
 from sglang_omni.models.weight_loader import resolve_model_path
-from sglang_omni.utils import load_hf_config
 
 logger = logging.getLogger(__name__)
 
@@ -32,16 +30,6 @@ def resolve_local_model_dir(model_path: str) -> str:
 
 def load_llada2_tokenizer(model_path: str):
     """Load LLaDA2 tokenizer from model checkpoint."""
-    from transformers import AutoTokenizer, PreTrainedTokenizerFast
+    from sglang.srt.utils.hf_transformers_utils import get_tokenizer
 
-    try:
-        return AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
-    except (OSError, ValueError):
-        pass
-
-    return PreTrainedTokenizerFast.from_pretrained(model_path)
-
-
-def load_llada2_config(model_path: str) -> Any:
-    """Load LLaDA2 configuration from model checkpoint."""
-    return load_hf_config(model_path, trust_remote_code=True, local_files_only=True)
+    return get_tokenizer(model_path, trust_remote_code=True)

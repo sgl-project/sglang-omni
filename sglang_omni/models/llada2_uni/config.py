@@ -9,6 +9,13 @@ from sglang_omni.config import PipelineConfig, StageConfig
 
 _PKG = "sglang_omni.models.llada2_uni"
 
+PREPROCESSING_STAGE = "preprocessing"
+IMAGE_STAGE = "image_encoder"
+THINKER_STAGE = "thinker"
+DECODE_STAGE = "decode"
+
+DEFAULT_THINKER_MAX_NEW_TOKENS = 2048
+
 
 class LLaDA2UniPipelineConfig(PipelineConfig):
     """4-stage DLLM pipeline: preprocessing → image_encoder → thinker → decode."""
@@ -17,31 +24,33 @@ class LLaDA2UniPipelineConfig(PipelineConfig):
 
     @classmethod
     def mem_fraction_role_to_stage(cls) -> dict[str, str]:
-        return {"thinker": "thinker"}
+        return {THINKER_STAGE: THINKER_STAGE}
 
     model_path: str
     stages: list[StageConfig] = [
         StageConfig(
-            name="preprocessing",
+            name=PREPROCESSING_STAGE,
             factory=f"{_PKG}.stages.create_preprocessing_executor",
-            next="image_encoder",
+            factory_args={"thinker_max_seq_len": 8192},
+            runtime_arg_map={"max_seq_len": "thinker_max_seq_len"},
+            next=IMAGE_STAGE,
         ),
         StageConfig(
-            name="image_encoder",
+            name=IMAGE_STAGE,
             factory=f"{_PKG}.stages.create_image_encoder_executor",
             factory_args={"device": "cuda", "dtype": None},
             gpu=0,
-            next="thinker",
+            next=THINKER_STAGE,
         ),
         StageConfig(
-            name="thinker",
+            name=THINKER_STAGE,
             factory=f"{_PKG}.stages.create_sglang_dllm_thinker_executor_from_config",
             factory_args={"thinker_max_seq_len": 8192},
             gpu=0,
-            next="decode",
+            next=DECODE_STAGE,
         ),
         StageConfig(
-            name="decode",
+            name=DECODE_STAGE,
             factory=f"{_PKG}.stages.create_decode_executor",
             terminal=True,
         ),
@@ -49,3 +58,7 @@ class LLaDA2UniPipelineConfig(PipelineConfig):
 
 
 EntryClass = LLaDA2UniPipelineConfig
+
+Variants = {
+    "text": LLaDA2UniPipelineConfig,
+}

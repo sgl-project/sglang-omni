@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
+"""LLaDA2-Uni thinker: unified dLLM-MoE backbone."""
 
 from __future__ import annotations
 
@@ -22,6 +23,7 @@ from sglang_omni.vendor.sglang.layers import (
     RMSNorm,
     RowParallelLinear,
     SiluAndMul,
+    StandardTopKOutput,
     VocabParallelEmbedding,
     get_moe_impl_class,
     get_rope,
@@ -109,9 +111,6 @@ class LLaDA2MoeAttention(nn.Module):
         hidden_states: torch.Tensor,
         forward_batch: ForwardBatch,
     ) -> torch.Tensor:
-        if hidden_states.shape[0] == 0:
-            return hidden_states
-
         qkv, _ = self.query_key_value(hidden_states)
         q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
 
@@ -296,9 +295,6 @@ class LLaDA2MoeSparseMoeBlock(nn.Module):
                 topk_weights.sum(dim=-1, keepdim=True) + 1e-20
             )
         topk_weights = topk_weights * self.routed_scaling_factor
-
-        # FusedMoE forward — wrap in StandardTopKOutput
-        from sglang.srt.layers.moe.topk import StandardTopKOutput
 
         topk_output = StandardTopKOutput(
             topk_weights=topk_weights,
