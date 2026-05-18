@@ -148,7 +148,7 @@ class LLaDA2Preprocessor:
                 "image_grid_thw": image_grid_thw,
             }
 
-            # Build image placeholder tokens for each image
+            # Build one image block per image.
             for i in range(image_grid_thw.shape[0]):
                 t, h, w = image_grid_thw[i].tolist()
                 # h, w are in patch grid units; convert to reserved token indices
@@ -167,8 +167,7 @@ class LLaDA2Preprocessor:
                     }
                 )
                 prompt_text_parts.append(img_header)
-
-            prompt_text_parts.append(EOI_TOKEN)
+                prompt_text_parts.append(EOI_TOKEN)
         else:
             encoder_inputs[IMAGE_STAGE] = {"_skip": True, "_result": {}}
 
@@ -260,14 +259,11 @@ class LLaDA2Preprocessor:
             else:
                 parts.append(f"{role_tag}{content}")
 
-        # Insert image tokens before the last ASSISTANT tag
-        # Format: <|image|><h><w><boi> [VQ placeholders] <|/image|> question_text
+        # Insert image blocks at the start of the final HUMAN message content.
+        # Format: <|image|><h><w><boi>[VQ placeholders]<|/image|>...question_text
         if image_prefix_parts:
-            # Images go right before the user text in the last user message
-            # We insert them at the start of the last user message content
-            # The actual format from understand_image: img_header + image_tokens + eoi + question
-            # We build: <role>HUMAN</role> img_prefixes question
-            # Find last HUMAN message and prepend image tokens
+            # Find the last HUMAN message and prepend the serialized image blocks
+            # before its text payload.
             last_human_idx = None
             for i, part in enumerate(parts):
                 if ROLE_HUMAN in part:
@@ -275,14 +271,12 @@ class LLaDA2Preprocessor:
 
             img_prefix = "".join(image_prefix_parts)
             if last_human_idx is not None:
-                # Insert image header + eoi at start of user content
                 original = parts[last_human_idx]
-                # After <role>HUMAN</role>, before the text
                 marker = ROLE_HUMAN
                 idx = original.find(marker) + len(marker)
                 parts[last_human_idx] = original[:idx] + img_prefix + original[idx:]
             else:
-                # No user message found; prepend before ASSISTANT
+                # No user message found; prepend before the trailing assistant role tag.
                 parts.insert(-1 if parts else 0, img_prefix)
 
         parts.append(ROLE_ASSISTANT)
@@ -293,23 +287,41 @@ class LLaDA2Preprocessor:
         input_ids: list[int],
         image_info_list: list[dict],
     ) -> list[int]:
-        boi_idx = next(
-            (i for i, tid in enumerate(input_ids) if tid == self._boi_id), None
-        )
-        if boi_idx is None:
-            logger.warning(
-                "No <boi> token found in input_ids; cannot insert image placeholders"
+        new_ids: list[int] = []
+        cursor = 0
+        search_start = 0
+
+        for image_idx, info in enumerate(image_info_list):
+            boi_idx = next(
+                (
+                    i
+                    for i in range(search_start, len(input_ids))
+                    if input_ids[i] == self._boi_id
+                ),
+                None,
             )
-            return input_ids
+            if boi_idx is None:
+                raise ValueError(
+                    f"Expected image block {image_idx} but no matching <boi> token was found"
+                )
 
-        eoi_idx = next(
-            (i for i, tid in enumerate(input_ids) if tid == self._eoi_id), None
-        )
-        if eoi_idx is None:
-            raise ValueError("No <eoi> token found after <boi>; malformed prompt")
+            eoi_idx = next(
+                (
+                    i
+                    for i in range(boi_idx + 1, len(input_ids))
+                    if input_ids[i] == self._eoi_id
+                ),
+                None,
+            )
+            if eoi_idx is None:
+                raise ValueError(
+                    f"No <eoi> token found after <boi> for image block {image_idx}"
+                )
 
-        all_image_tokens = sum(
-            ([DUMMY_IMAGE_TOKEN_ID] * info["num_tokens"] for info in image_info_list),
-            [],
-        )
-        return input_ids[: boi_idx + 1] + all_image_tokens + input_ids[eoi_idx:]
+            new_ids.extend(input_ids[cursor : boi_idx + 1])
+            new_ids.extend([DUMMY_IMAGE_TOKEN_ID] * info["num_tokens"])
+            cursor = eoi_idx
+            search_start = eoi_idx + 1
+
+        new_ids.extend(input_ids[cursor:])
+        return new_ids
