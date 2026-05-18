@@ -38,12 +38,8 @@ CONCURRENCY = 8
 MAX_SAMPLES = 10
 MAX_TOKENS = 256
 
-# PLACEHOLDER: copied from the TP=1 baseline as a starting point. To be replaced
-# by H20 `tune-ci-thresholds` worst-of-5 in Step 9 of the rollout plan. Do NOT
-# merge while these values are still here — TP=2 adds NCCL overhead and shrinks
-# per-shard KV, so TP=1 numbers are wrong in both directions.
 VIDEOAMME_TALKER_TP2_THINKER_TEXT_MIN_ACCURACY = 0.4
-VIDEOAMME_TALKER_TP2_WER_BELOW_50_CORPUS_MAX = 0.0133
+VIDEOAMME_TALKER_TP2_WER_BELOW_50_CORPUS_MAX = 0.01
 VIDEOAMME_TALKER_TP2_WER_BELOW_50_CORPUS_THRESHOLD = apply_wer_slack(
     VIDEOAMME_TALKER_TP2_WER_BELOW_50_CORPUS_MAX
 )
@@ -51,10 +47,10 @@ VIDEOAMME_TALKER_TP2_N_ABOVE_50_MAX = 1
 
 _VIDEOAMME_TALKER_TP2_AUDIO_P95 = {
     8: {
-        "throughput_qps": 0.231,
-        "tok_per_s_agg": 1.5,
-        "latency_mean_s": 30.169,
-        "rtf_mean": 4.9824,
+        "throughput_qps": 0.058,
+        "tok_per_s_agg": 0.4,
+        "latency_mean_s": 117.72,
+        "rtf_mean": 18.7753,
     },
 }
 VIDEOAMME_TALKER_TP2_THRESHOLDS = apply_slack(_VIDEOAMME_TALKER_TP2_AUDIO_P95)

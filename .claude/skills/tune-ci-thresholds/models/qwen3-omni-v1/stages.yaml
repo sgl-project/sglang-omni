@@ -702,6 +702,133 @@ videoamme_talker_speed:
         scale: 1
         digits: 4
       status: OK
+videoamme_talker_tp2_accuracy:
+  test: tests/test_model/test_qwen3_omni_videoamme_talker_tp2_ci.py
+  title: "VIDEOAMME TALKER TP2 Accuracy"
+  group: accuracy
+  extra_env: {}
+  context_vars:
+    - MAX_SAMPLES
+    - MAX_TOKENS
+    - CONCURRENCY
+  test_file_sha256: 7c614626043574b5ec7a8b1c98fcffbdc5c0e3a6c4e23a0ef0d048967de012cc
+  last_discovered_at: 2026-05-18T06:56:49Z
+  sample_counts:
+    total:
+      json_file: "test_videoamme_talker_tp2_accu0/videoamme_audio/videoamme_results.json"
+      json_path: "summary.total_samples"
+    ok:
+      json_file: "test_videoamme_talker_tp2_accu0/videoamme_audio/videoamme_results.json"
+      json_path: "speed.completed_requests"
+  metrics:
+    accuracy:
+      source: "VIDEOAMME_TALKER_TP2_THINKER_TEXT_MIN_ACCURACY"
+      json_file: "test_videoamme_talker_tp2_accu0/videoamme_audio/videoamme_results.json"
+      json_path: "summary.accuracy"
+      worst: min
+      display:
+        label: "Acc (%)"
+        scale: 100
+        digits: 2
+      status: OK
+videoamme_talker_tp2_wer:
+  test: tests/test_model/test_qwen3_omni_videoamme_talker_tp2_ci.py
+  title: "VIDEOAMME TALKER TP2 Wer"
+  group: wer
+  extra_env: {}
+  context_vars:
+    - MAX_SAMPLES
+    - MAX_TOKENS
+    - CONCURRENCY
+  test_file_sha256: 7c614626043574b5ec7a8b1c98fcffbdc5c0e3a6c4e23a0ef0d048967de012cc
+  last_discovered_at: 2026-05-18T06:56:49Z
+  sample_counts:
+    total:
+      json_file: "test_videoamme_talker_tp2_accu0/videoamme_audio/videoamme_results.json"
+      json_path: "summary.total_samples"
+    ok:
+      json_file: "test_videoamme_talker_tp2_accu0/videoamme_audio/videoamme_results.json"
+      json_path: "speed.completed_requests"
+  metrics:
+    wer_below_50_corpus:
+      source: "VIDEOAMME_TALKER_TP2_WER_BELOW_50_CORPUS_MAX"
+      json_file: "test_videoamme_talker_tp2_accu0/videoamme_audio/videoamme_results.json"
+      json_path: "wer.summary.wer_below_50_corpus"
+      worst: max
+      display:
+        label: "Corpus WER ≤50% (%)"
+        scale: 100
+        digits: 2
+      status: OK
+    n_above_50:
+      source: "VIDEOAMME_TALKER_TP2_N_ABOVE_50_MAX"
+      json_file: "test_videoamme_talker_tp2_accu0/videoamme_audio/videoamme_results.json"
+      json_path: "wer.summary.n_above_50_pct_wer"
+      worst: max
+      display:
+        label: "Samples >50% WER"
+        scale: 1
+        digits: 0
+      status: OK
+videoamme_talker_tp2_speed:
+  test: tests/test_model/test_qwen3_omni_videoamme_talker_tp2_ci.py
+  title: "VIDEOAMME TALKER TP2 Speed"
+  group: speed
+  extra_env: {}
+  context_vars:
+    - MAX_SAMPLES
+    - MAX_TOKENS
+    - CONCURRENCY
+  test_file_sha256: 7c614626043574b5ec7a8b1c98fcffbdc5c0e3a6c4e23a0ef0d048967de012cc
+  last_discovered_at: 2026-05-18T06:56:49Z
+  sample_counts:
+    total:
+      json_file: "test_videoamme_talker_tp2_accu0/videoamme_audio/videoamme_results.json"
+      json_path: "summary.total_samples"
+    ok:
+      json_file: "test_videoamme_talker_tp2_accu0/videoamme_audio/videoamme_results.json"
+      json_path: "speed.completed_requests"
+  metrics:
+    throughput_qps:
+      source: "_VIDEOAMME_TALKER_TP2_AUDIO_P95['throughput_qps']"
+      json_file: "test_videoamme_talker_tp2_accu0/videoamme_audio/videoamme_results.json"
+      json_path: "speed.throughput_qps"
+      worst: min
+      display:
+        label: "Throughput (req/s)"
+        scale: 1
+        digits: 3
+      status: OK
+    tok_per_s_agg:
+      source: "_VIDEOAMME_TALKER_TP2_AUDIO_P95['tok_per_s_agg']"
+      json_file: "test_videoamme_talker_tp2_accu0/videoamme_audio/videoamme_results.json"
+      json_path: "speed.tok_per_s_agg"
+      worst: min
+      display:
+        label: "Tok/s (aggregate)"
+        scale: 1
+        digits: 2
+      status: OK
+    latency_mean_s:
+      source: "_VIDEOAMME_TALKER_TP2_AUDIO_P95['latency_mean_s']"
+      json_file: "test_videoamme_talker_tp2_accu0/videoamme_audio/videoamme_results.json"
+      json_path: "speed.latency_mean_s"
+      worst: max
+      display:
+        label: "Latency mean (s)"
+        scale: 1
+        digits: 3
+      status: OK
+    rtf_mean:
+      source: "_VIDEOAMME_TALKER_TP2_AUDIO_P95['rtf_mean']"
+      json_file: "test_videoamme_talker_tp2_accu0/videoamme_audio/videoamme_results.json"
+      json_path: "speed.rtf_mean"
+      worst: max
+      display:
+        label: "RTF mean"
+        scale: 1
+        digits: 4
+      status: OK
 videomme_accuracy:
   test: tests/test_model/test_qwen3_omni_videomme_ci.py
   title: "VIDEOMME Accuracy"

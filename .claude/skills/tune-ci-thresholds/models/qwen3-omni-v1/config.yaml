@@ -32,6 +32,7 @@ gpus_per_test:
   test_qwen3_omni_mmsu_talker_ci.py: 2
   test_qwen3_omni_videomme_talker_ci.py: 2
   test_qwen3_omni_videoamme_talker_ci.py: 2
+  test_qwen3_omni_videoamme_talker_tp2_ci.py: 2
   test_docs_qwen3_omni.py: 2
 test_globs:
   - "tests/test_model/test_qwen3_omni_*_ci.py"
@@ -139,6 +140,19 @@ metric_sources:
       latency_mean_s: "speed.latency_mean_s"
   test_qwen3_omni_videoamme_talker_ci.py:
     json_file: "test_videoamme_talker_accuracy0/videoamme_audio/videoamme_results.json"
+    sample_counts:
+      total: "summary.total_samples"
+      ok: "speed.completed_requests"
+    paths:
+      accuracy: "summary.accuracy"
+      wer_below_50_corpus: "wer.summary.wer_below_50_corpus"
+      n_above_50: "wer.summary.n_above_50_pct_wer"
+      throughput_qps: "speed.throughput_qps"
+      tok_per_s_agg: "speed.tok_per_s_agg"
+      latency_mean_s: "speed.latency_mean_s"
+      rtf_mean: "speed.rtf_mean"
+  test_qwen3_omni_videoamme_talker_tp2_ci.py:
+    json_file: "test_videoamme_talker_tp2_accu0/videoamme_audio/videoamme_results.json"
     sample_counts:
       total: "summary.total_samples"
       ok: "speed.completed_requests"
