@@ -8,8 +8,6 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
-from huggingface_hub import hf_hub_download
-
 from sglang_omni.models.ming_omni.hf_config import (
     AudioConfig,
     BailingMoeV2LLMConfig,

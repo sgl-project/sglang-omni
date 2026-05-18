@@ -47,9 +47,7 @@ def _preprocessing_stage(*, process: str) -> StageConfig:
         project_payload={
             AUDIO_STAGE: f"{_PKG}.stages.project_preprocessing_to_audio_encoder",
             IMAGE_STAGE: f"{_PKG}.stages.project_preprocessing_to_image_encoder",
-            AGGREGATE_STAGE: (
-                f"{_PKG}.stages.project_preprocessing_to_mm_aggregate"
-            ),
+            AGGREGATE_STAGE: (f"{_PKG}.stages.project_preprocessing_to_mm_aggregate"),
         },
     )
 

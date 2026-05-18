@@ -116,9 +116,7 @@ def create_audio_encoder_executor(
     device: str = "cuda",
     dtype: str | None = None,
 ):
-    from sglang_omni.models.ming_omni.components.audio_encoder import (
-        MingAudioEncoder,
-    )
+    from sglang_omni.models.ming_omni.components.audio_encoder import MingAudioEncoder
     from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 
     model = MingAudioEncoder(model_path=model_path, device=device, dtype=dtype)
@@ -149,9 +147,7 @@ def create_image_encoder_executor(
     device: str = "cuda",
     dtype: str | None = None,
 ):
-    from sglang_omni.models.ming_omni.components.image_encoder import (
-        MingImageEncoder,
-    )
+    from sglang_omni.models.ming_omni.components.image_encoder import MingImageEncoder
     from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 
     model = MingImageEncoder(model_path=model_path, device=device, dtype=dtype)

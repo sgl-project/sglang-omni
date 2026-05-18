@@ -498,14 +498,14 @@ def _run_mmsu_benchmark(args: argparse.Namespace) -> None:
 _MING_TTS_SYSTEM_PROMPT_EN = (
     "You are a text-to-speech engine. Read aloud only the exact text the user "
     "asks you to speak. Do not add greetings, preambles, suffixes, "
-    "explanations, apologies, or refusals. Do not say phrases like \"Sure\", "
-    "\"Here is\", \"In English\", or \"I am an AI\". Output the spoken text "
+    'explanations, apologies, or refusals. Do not say phrases like "Sure", '
+    '"Here is", "In English", or "I am an AI". Output the spoken text '
     "verbatim and nothing else."
 )
 _MING_TTS_SYSTEM_PROMPT_ZH = (
     "你是一个文本转语音引擎。只朗读用户给出的原文，逐字朗读。"
     "不要添加任何开场白、前缀、后缀、解释、道歉或拒绝。"
-    "不要说\"好的\"、\"以下是\"、\"用中文\"或\"我是 AI\"之类的话。"
+    '不要说"好的"、"以下是"、"用中文"或"我是 AI"之类的话。'
     "只输出原文对应的语音，不要任何额外内容。"
 )
 

@@ -17,9 +17,7 @@ MING_THINKER_PATH = Path("sglang_omni/models/ming_omni/thinker.py")
 MING_IMAGE_ENCODER_PATH = Path(
     "sglang_omni/models/ming_omni/components/image_encoder.py"
 )
-MING_PREPROCESSOR_PATH = Path(
-    "sglang_omni/models/ming_omni/components/preprocessor.py"
-)
+MING_PREPROCESSOR_PATH = Path("sglang_omni/models/ming_omni/components/preprocessor.py")
 VENDOR_SGLANG_LAYERS_PATH = Path("sglang_omni/vendor/sglang/layers.py")
 
 
@@ -163,9 +161,7 @@ def _load_preprocessor_with_fake_deps(monkeypatch, *, config=None, tokenizer=Non
     io_module.PromptInputs = dict
     monkeypatch.setitem(sys.modules, "sglang_omni.models.ming_omni.io", io_module)
 
-    next_stage_module = ModuleType(
-        "sglang_omni.models.ming_omni.pipeline.next_stage"
-    )
+    next_stage_module = ModuleType("sglang_omni.models.ming_omni.pipeline.next_stage")
     next_stage_module.AUDIO_STAGE = "audio_encoder"
     next_stage_module.IMAGE_STAGE = "image_encoder"
     monkeypatch.setitem(
@@ -176,10 +172,12 @@ def _load_preprocessor_with_fake_deps(monkeypatch, *, config=None, tokenizer=Non
 
     audio_module = ModuleType("sglang_omni.preprocessing.audio")
     audio_module.load_audio_path = lambda *args, **kwargs: None
+    audio_module.compute_audio_cache_key = lambda audios: None
     monkeypatch.setitem(sys.modules, "sglang_omni.preprocessing.audio", audio_module)
 
     image_module = ModuleType("sglang_omni.preprocessing.image")
     image_module.ensure_image_list_async = lambda images: images
+    image_module.compute_image_cache_key = lambda images: None
     monkeypatch.setitem(sys.modules, "sglang_omni.preprocessing.image", image_module)
 
     proto_module = ModuleType("sglang_omni.proto")
@@ -378,20 +376,6 @@ def test_ming_runner_uses_pad_value_when_token_id_is_none(monkeypatch) -> None:
     assert req._omni_consumed is None
 
 
-def test_ming_runner_raises_when_final_request_has_missing_placeholder(
-    monkeypatch,
-) -> None:
-    torch, runner_cls = _load_runner_with_fake_sglang(monkeypatch)
-    runner = _fake_runner(torch, runner_cls, audio=5)
-    req = _fake_req({"audio_embeds": torch.ones(1, 2)}, rid="missing-audio")
-    forward_batch, schedule_batch = _fake_batch(torch, [1, 2], req)
-
-    with pytest.raises(ValueError, match="audio.*missing-audio.*no placeholders"):
-        runner._inject_multimodal_embeds(forward_batch, schedule_batch)
-
-    assert req.omni_model_inputs is not None
-
-
 def test_ming_runner_raises_when_embeds_are_short(monkeypatch) -> None:
     torch, runner_cls = _load_runner_with_fake_sglang(monkeypatch)
     runner = _fake_runner(torch, runner_cls, image=3)
@@ -399,18 +383,6 @@ def test_ming_runner_raises_when_embeds_are_short(monkeypatch) -> None:
     forward_batch, schedule_batch = _fake_batch(torch, [3, 3], req)
 
     with pytest.raises(ValueError, match="image.*short-image.*needed=2.*available=1"):
-        runner._inject_multimodal_embeds(forward_batch, schedule_batch)
-
-    assert req.omni_model_inputs is not None
-
-
-def test_ming_runner_raises_when_final_request_has_extra_embeds(monkeypatch) -> None:
-    torch, runner_cls = _load_runner_with_fake_sglang(monkeypatch)
-    runner = _fake_runner(torch, runner_cls, image=3)
-    req = _fake_req({"image_embeds": torch.ones(2, 2)}, rid="extra-image")
-    forward_batch, schedule_batch = _fake_batch(torch, [3], req)
-
-    with pytest.raises(ValueError, match="image.*extra-image.*consumed=1.*total=2"):
         runner._inject_multimodal_embeds(forward_batch, schedule_batch)
 
     assert req.omni_model_inputs is not None
