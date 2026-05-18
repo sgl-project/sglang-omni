@@ -128,9 +128,9 @@ def test_videoamme_talker_tp2_accuracy_wer_and_speed(
         f"({VIDEOAMME_TALKER_TP2_THINKER_TEXT_MIN_ACCURACY * 100:.0f}%)"
     )
 
-    assert "wer" in results, (
-        "Audio WER results missing from Video-AMME Talker TP=2 output"
-    )
+    assert (
+        "wer" in results
+    ), "Audio WER results missing from Video-AMME Talker TP=2 output"
     assert_wer_partitioned(
         results["wer"],
         max_wer_below_50_corpus=VIDEOAMME_TALKER_TP2_WER_BELOW_50_CORPUS_THRESHOLD,

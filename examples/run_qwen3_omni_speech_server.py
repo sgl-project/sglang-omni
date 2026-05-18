@@ -158,9 +158,7 @@ def _apply_stage_factory_updates(
     )
 
 
-def _set_stage_gpu(
-    config: Any, stage_name: str, gpu_id: int | list[int]
-) -> None:
+def _set_stage_gpu(config: Any, stage_name: str, gpu_id: int | list[int]) -> None:
     for stage in config.stages:
         if stage.name == stage_name:
             stage.gpu = gpu_id
@@ -190,18 +188,14 @@ def _parse_thinker_tp_gpu_list(spec: str, tp_size: int) -> list[int]:
         ) from exc
     for gpu in gpu_ids:
         if gpu < 0:
-            raise ValueError(
-                f"--gpu-thinker-tp GPU ids must be >= 0, got {gpu_ids}"
-            )
+            raise ValueError(f"--gpu-thinker-tp GPU ids must be >= 0, got {gpu_ids}")
     if len(gpu_ids) != tp_size:
         raise ValueError(
             f"--gpu-thinker-tp has {len(gpu_ids)} entries but --thinker-tp-size="
             f"{tp_size} requires exactly {tp_size}"
         )
     if len(set(gpu_ids)) != len(gpu_ids):
-        raise ValueError(
-            f"--gpu-thinker-tp must list distinct GPU ids, got {gpu_ids}"
-        )
+        raise ValueError(f"--gpu-thinker-tp must list distinct GPU ids, got {gpu_ids}")
     return gpu_ids
 
 

@@ -158,9 +158,7 @@ def _start_qwen3_omni_speech_server(
         "32768",
         *extra_args,
     ]
-    proc = start_server_from_cmd(
-        cmd, log_file, port, timeout=timeout, tee=force_log
-    )
+    proc = start_server_from_cmd(cmd, log_file, port, timeout=timeout, tee=force_log)
     try:
         yield ServerHandle(proc=proc, port=port, log_file=log_file)
     finally:
