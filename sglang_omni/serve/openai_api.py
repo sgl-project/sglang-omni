@@ -8,6 +8,7 @@ Provides the following endpoints:
 - GET  /v1/fs/list           — Browse filesystem directories
 - GET  /v1/fs/file           — Download a file
 - GET  /health               — Health check
+- WS   /v1/realtime          — OpenAI-compatible Realtime API (when enabled)
 """
 
 from __future__ import annotations
@@ -19,7 +20,7 @@ import time
 import uuid
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
@@ -68,15 +69,15 @@ def create_app(
     client: Client,
     *,
     model_name: str | None = None,
+    enable_realtime: bool = False,
 ) -> FastAPI:
     """Create a FastAPI application with OpenAI-compatible endpoints.
 
     Args:
         client: Client instance connected to the pipeline coordinator.
         model_name: Default model name to report in responses and /v1/models.
-        serve_playground: Path to the playground directory to serve as static
-            files.  When set, the filesystem browser API and static file
-            serving are enabled so the entire playground runs on a single port.
+        enable_realtime: If True, mount the WebSocket ``/v1/realtime``
+            endpoint (OpenAI Realtime API).
 
     Returns:
         Configured FastAPI application.
@@ -94,12 +95,15 @@ def create_app(
     # Store references in app state for access from route handlers
     app.state.client = client
     app.state.model_name = model_name or "sglang-omni"
+    app.state.realtime_enabled = enable_realtime
 
     # Register all routes
     _register_health(app)
     _register_models(app)
     _register_chat_completions(app)
     _register_speech(app)
+    if enable_realtime:
+        _register_realtime(app)
 
     return app
 
@@ -448,6 +452,25 @@ def _build_chat_generate_request(req: ChatCompletionRequest) -> GenerateRequest:
         output_modalities=output_modalities,
         metadata=metadata,
     )
+
+
+def _register_realtime(app: FastAPI) -> None:
+    """Mount the OpenAI-compatible WebSocket Realtime endpoint."""
+    from sglang_omni.serve.realtime import RealtimeSessionManager
+
+    client: Client = app.state.client
+    model_name: str = app.state.model_name
+    manager = RealtimeSessionManager(client=client, model_name=model_name)
+    app.state.realtime_manager = manager
+
+    @app.websocket("/v1/realtime")
+    async def realtime(websocket: WebSocket) -> None:
+        await websocket.accept()
+        session = manager.open(websocket)
+        try:
+            await session.run()
+        finally:
+            await manager.close(session.session_id)
 
 
 def _register_speech(app: FastAPI) -> None:

@@ -201,6 +201,7 @@ async def _run_server(
     model_name: str | None = None,
     log_level: str = "info",
     client_kwargs: dict[str, Any] | None = None,
+    enable_realtime: bool = False,
 ) -> None:
     """Start the pipeline and run the OpenAI server.
 
@@ -241,6 +242,7 @@ async def _run_server(
         app = create_app(
             client,
             model_name=model_name or pipeline_config.name,
+            enable_realtime=enable_realtime,
         )
         profiler_dir = os.environ.get("SGLANG_TORCH_PROFILER_DIR")
         profiler_ctl = ProfilerControlClient(mp_runner.stage_control_endpoints)
@@ -307,6 +309,7 @@ def launch_server(
     model_name: str | None = None,
     log_level: str = "info",
     client_kwargs: dict[str, Any] | None = None,
+    enable_realtime: bool = False,
 ) -> None:
     """Blocking helper: start the pipeline and OpenAI-compatible server.
 
@@ -319,6 +322,8 @@ def launch_server(
         log_level: Uvicorn log level.
         client_kwargs: Extra keyword arguments forwarded to
             :class:`~sglang_omni.client.Client`.
+        enable_realtime: If True, mount the WebSocket ``/v1/realtime``
+            endpoint (OpenAI Realtime API).
     """
     asyncio.run(
         _run_server(
@@ -328,5 +333,6 @@ def launch_server(
             model_name=model_name,
             log_level=log_level,
             client_kwargs=client_kwargs,
+            enable_realtime=enable_realtime,
         )
     )

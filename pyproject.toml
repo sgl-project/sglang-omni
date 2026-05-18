@@ -42,6 +42,10 @@ dependencies = [
     "openai-harmony==0.0.4",
     "soundfile>=0.12.0",
     "mistral-common[audio]>=1.8.0",
+    # /v1/realtime — server-side VAD
+    "silero-vad>=5.1",
+    "onnxruntime>=1.17",
+    "websockets>=12.0",       # FastAPI WebSocket library + example clients
     # Testing
     "pytest>=7.0.0",
     "pytest-asyncio>=0.21.0",

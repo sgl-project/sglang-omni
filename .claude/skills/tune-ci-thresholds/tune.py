@@ -875,6 +875,29 @@ def _run_shared(test_path, stage_keys, all_stages, out, k, py, total, gpus_neede
     env["PYTHONPATH"] = (
         f"{REPO_ROOT}{os.pathsep}{existing_pp}" if existing_pp else str(REPO_ROOT)
     )
+    # Match `source <venv>/bin/activate`: put the venv's bin dir on PATH so
+    # console_scripts installed by the venv (e.g. `sgl-omni`, used by the
+    # router's local launcher) resolve. We invoke pytest via the venv's
+    # python directly without activating the venv, so PATH would otherwise
+    # only contain the parent shell's entries.
+    venv_bin = str(Path(py).parent)
+    existing_path = env.get("PATH", "")
+    env["PATH"] = (
+        f"{venv_bin}{os.pathsep}{existing_path}" if existing_path else venv_bin
+    )
+    # Exclude loopback addresses from any inherited HTTP_PROXY/HTTPS_PROXY.
+    # Servers spawned by tests (router, workers) make loopback health-check
+    # calls with httpx/requests, which honor *_PROXY by default; without
+    # NO_PROXY the proxy intercepts the loopback request and returns 502,
+    # so the router never sees its workers as healthy.
+    loopback_no_proxy = "localhost,127.0.0.1,::1"
+    existing_no_proxy = env.get("NO_PROXY") or env.get("no_proxy") or ""
+    merged = (
+        f"{loopback_no_proxy},{existing_no_proxy}"
+        if existing_no_proxy else loopback_no_proxy
+    )
+    env["NO_PROXY"] = merged
+    env["no_proxy"] = merged
     env.update(all_stages[stage_keys[0]].get("extra_env") or {})
     label = f"[{test_base}] run {k}/{total} ({len(stage_keys)} stage(s), needs {gpus_needed} GPU)"
     _print_run_banner(label, test_path, stage_keys, all_stages)
