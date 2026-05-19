@@ -142,7 +142,7 @@ def make_thinker_scheduler_adapters(
                 if _ck is None:
                     continue
                 _h = xxhash.xxh3_64(_ck.encode()).intdigest()
-                _pad = vocab_size + _h % (1 << 30)
+                _pad = vocab_size + _h % (1 << 62)
                 pad_values[_modality] = _pad
                 token_id_map[int(_orig)] = _pad
             if token_id_map:

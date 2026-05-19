@@ -311,6 +311,7 @@ class OmniScheduler:
             getattr(server_args, "enable_priority_scheduling", False)
             and not getattr(server_args, "disable_priority_preemption", False)
         )
+        # High-water mark, not a cap. Mirrors upstream Scheduler.__init__ (sglang/srt/managers/scheduler.py).
         self.max_prefill_bs = 0
         self.use_ngram_embedding = False
         self.return_health_check_ipcs = []

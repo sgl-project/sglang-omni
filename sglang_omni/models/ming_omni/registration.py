@@ -16,10 +16,7 @@ def register_ming_hf_config() -> None:
 
     from sglang_omni.models.ming_omni.thinker import BailingMM2Config
 
-    try:
-        AutoConfig.register("bailingmm_moe_v2_lite", BailingMM2Config)
-    except ValueError:
-        pass
+    AutoConfig.register("bailingmm_moe_v2_lite", BailingMM2Config, exist_ok=True)
     _ming_hf_config_registered = True
 
 
