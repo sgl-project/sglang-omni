@@ -90,7 +90,7 @@ After:
 - `disable_cuda_graph` still `True`; no perf change expected at this
   stage.
 
-### Stage 2 — Vectorize sampler step (3 days)
+### Stage 2 — Vectorize sampler step (3 days) ✅
 
 **Files**: `sampler.py`
 
