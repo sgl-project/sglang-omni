@@ -172,6 +172,7 @@ def _set_stage_tp_size(config: Any, stage_name: str, tp_size: int) -> None:
     for stage in config.stages:
         if stage.name == stage_name:
             stage.tp_size = tp_size
+            stage.parallelism.tp = tp_size
             return
     raise ValueError(
         f"Stage {stage_name!r} not found in config {type(config).__name__}"
