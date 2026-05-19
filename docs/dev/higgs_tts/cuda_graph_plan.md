@@ -133,7 +133,7 @@ def batched_step(logits_BNV, state, batch_indices, *,
 - Microbench: `batched_step` < 0.6 ms at batch=8 (slightly slower than
   per-row `step` is fine; CUDA Graph recovers the cost).
 
-### Stage 3 — Row allocation / recycling (2 days)
+### Stage 3 — Row allocation / recycling (2 days) ✅
 
 **Files**: `model.py`, `model_runner.py`
 
@@ -154,7 +154,7 @@ def batched_step(logits_BNV, state, batch_indices, *,
   similar path), not via a hard crash.
 - Abort mid-decode releases the row; subsequent request reuses it.
 
-### Stage 4 — Hook into sglang `CudaGraphRunner` (1-2 days)
+### Stage 4 — Hook into sglang `CudaGraphRunner` (1-2 days) ✅
 
 **Files**: `stages.py`
 
@@ -178,7 +178,7 @@ buffers()` method returning the 4 `HiggsBatchedSamplerState` tensors.
 - First inference after capture is fast (no JIT warm-up); subsequent
   warmer.
 
-### Stage 5 — Padding (1 day)
+### Stage 5 — Padding (1 day) ✅
 
 **Files**: `model_runner.py`
 
