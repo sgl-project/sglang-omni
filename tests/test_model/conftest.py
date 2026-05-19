@@ -33,9 +33,6 @@ QWEN3_OMNI_TEST_MODEL_PATH = os.environ.get(
     "SGLANG_OMNI_TEST_QWEN3_MODEL", QWEN3_OMNI_MODEL_PATH
 )
 QWEN3_OMNI_STARTUP_TIMEOUT = 300
-MMMU_MODEL_OPTION = "--mmmu-model"
-MMMU_MODEL_IDS = ("qwen3-omni", "llada2-uni")
-SELECTED_MMMU_MODEL = pytest.StashKey[str]()
 
 
 @pytest.fixture(scope="module")
@@ -244,12 +241,6 @@ def pytest_addoption(parser: pytest.Parser) -> None:
             f"Use one of {S2PRO_CI_STAGES} or '{S2PRO_STAGE_ALL}'."
         ),
     )
-    parser.addoption(
-        MMMU_MODEL_OPTION,
-        action="store",
-        default=MMMU_MODEL_IDS[0],
-        help=(f"Select the model for MMMU CI tests. Use one of {MMMU_MODEL_IDS}."),
-    )
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -259,8 +250,6 @@ def pytest_configure(config: pytest.Config) -> None:
     )
     stage_value = config.getoption(S2PRO_STAGE_OPTION)
     config.stash[SELECTED_S2PRO_CI_STAGE] = _parse_s2pro_ci_stage(stage_value)
-    mmmu_model_value = config.getoption(MMMU_MODEL_OPTION)
-    config.stash[SELECTED_MMMU_MODEL] = _parse_mmmu_model(mmmu_model_value)
 
 
 @pytest.fixture(scope="session")
@@ -273,11 +262,6 @@ def selected_s2pro_tts_concurrencies(
 @pytest.fixture(scope="session")
 def selected_s2pro_ci_stage(pytestconfig: pytest.Config) -> str:
     return pytestconfig.stash[SELECTED_S2PRO_CI_STAGE]
-
-
-@pytest.fixture(scope="module")
-def selected_mmmu_model(pytestconfig: pytest.Config) -> str:
-    return pytestconfig.stash[SELECTED_MMMU_MODEL]
 
 
 def _parse_s2pro_tts_concurrency(option_value: str) -> tuple[int, ...]:
@@ -308,16 +292,6 @@ def _parse_s2pro_ci_stage(option_value: str) -> str:
         raise pytest.UsageError(
             f"Unsupported value for {S2PRO_STAGE_OPTION}: {option_value!r}. "
             f"Use one of {S2PRO_CI_STAGES} or '{S2PRO_STAGE_ALL}'."
-        )
-    return normalized_value
-
-
-def _parse_mmmu_model(option_value: str) -> str:
-    normalized_value = option_value.strip().lower()
-    if normalized_value not in MMMU_MODEL_IDS:
-        raise pytest.UsageError(
-            f"Unsupported value for {MMMU_MODEL_OPTION}: {option_value!r}. "
-            f"Use one of {MMMU_MODEL_IDS}."
         )
     return normalized_value
 

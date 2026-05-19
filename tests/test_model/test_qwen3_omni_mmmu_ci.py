@@ -1,14 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
-"""MMMU accuracy and speed CI for Qwen3-Omni and other multi-modal models (Text+Image → Text).
-
-Supported models: qwen3-omni (default), llada2-uni.
+"""MMMU accuracy and speed CI for Qwen3-Omni (Text+Image → Text, Talker OFF).
 
 Usage:
-    # Default (qwen3-omni):
     pytest tests/test_model/test_qwen3_omni_mmmu_ci.py -s -x
-
-    # LLaDA2-Uni:
-    pytest tests/test_model/test_qwen3_omni_mmmu_ci.py -s -x --mmmu-model llada2-uni
 
 Author:
     Yifei Gao https://github.com/PasserBy4
@@ -37,55 +31,37 @@ from tests.utils import (
     stop_server,
 )
 
-MODEL_CONFIGS = {
-    "qwen3-omni": {
-        "model_path": "Qwen/Qwen3-Omni-30B-A3B-Instruct",
-        "server_script": "examples/run_qwen3_omni_server.py",
-        "min_accuracy": 0.56,
-        "speed_thresholds_raw": {
-            8: {
-                "throughput_qps": 0.661,
-                "tok_per_s_agg": 52.5,
-                "latency_mean_s": 11.383,
-            },
-        },
-    },
-    "llada2-uni": {
-        "model_path": "inclusionAI/LLaDA2.0-Uni",
-        "server_script": "examples/run_llada2_uni_server.py",
-        "min_accuracy": 0.35,
-        "speed_thresholds_raw": {
-            8: {
-                "throughput_qps": 0.50,
-                "tok_per_s_agg": 30.0,
-                "latency_mean_s": 15.0,
-            },
-        },
-    },
-}
+MODEL_PATH = "Qwen/Qwen3-Omni-30B-A3B-Instruct"
 
 CONCURRENCY = 8
 STARTUP_TIMEOUT = 300
 
+MMMU_MIN_ACCURACY = 0.56
+
+_MMMU_P95 = {
+    8: {
+        "throughput_qps": 0.661,
+        "tok_per_s_agg": 52.5,
+        "latency_mean_s": 11.383,
+    },
+}
+MMMU_THRESHOLDS = apply_slack(_MMMU_P95)
+
 
 @pytest.fixture(scope="module")
-def server_process(
-    tmp_path_factory: pytest.TempPathFactory,
-    selected_mmmu_model: str,
-):
-    """Start the model server and wait until healthy."""
-    cfg = MODEL_CONFIGS[selected_mmmu_model]
+def server_process(tmp_path_factory: pytest.TempPathFactory):
+    """Start the text-only Qwen3-Omni server and wait until healthy."""
     port = find_available_port()
     log_file = server_log_file(tmp_path_factory)
     cmd = [
         sys.executable,
-        cfg["server_script"],
+        "examples/run_qwen3_omni_server.py",
         "--model-path",
-        cfg["model_path"],
+        MODEL_PATH,
         "--port",
         str(port),
         "--model-name",
-        selected_mmmu_model,
+        "qwen3-omni",
     ]
     proc = start_server_from_cmd(cmd, log_file, port, timeout=STARTUP_TIMEOUT)
     proc.port = port
@@ -96,15 +72,11 @@ def server_process(
 @pytest.mark.benchmark
 def test_mmmu_accuracy_and_speed(
     server_process: subprocess.Popen,
-    selected_mmmu_model: str,
     tmp_path: Path,
 ) -> None:
     """Run MMMU eval and assert accuracy and speed meet thresholds."""
-    cfg = MODEL_CONFIGS[selected_mmmu_model]
-    thresholds = apply_slack(cfg["speed_thresholds_raw"])
-
     config = MMMUEvalConfig(
-        model=selected_mmmu_model,
+        model="qwen3-omni",
         port=server_process.port,
         max_concurrency=CONCURRENCY,
         output_dir=str(tmp_path / "mmmu"),
@@ -129,13 +101,13 @@ def test_mmmu_accuracy_and_speed(
         f"any failure fails the test"
     )
 
-    assert summary["accuracy"] >= cfg["min_accuracy"], (
+    assert summary["accuracy"] >= MMMU_MIN_ACCURACY, (
         f"MMMU accuracy {summary['accuracy']:.4f} "
         f"({summary['accuracy'] * 100:.1f}%) < "
-        f"threshold {cfg['min_accuracy']} ({cfg['min_accuracy'] * 100:.0f}%)"
+        f"threshold {MMMU_MIN_ACCURACY} ({MMMU_MIN_ACCURACY * 100:.0f}%)"
     )
 
-    assert_speed_thresholds(speed, thresholds, CONCURRENCY)
+    assert_speed_thresholds(speed, MMMU_THRESHOLDS, CONCURRENCY)
 
 
 if __name__ == "__main__":
