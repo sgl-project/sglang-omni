@@ -93,9 +93,9 @@ class HiggsTTSModelRunner(ModelRunner):
         return text_embeds
 
     def _collect_step_outputs(self, result: Any, requests: list) -> None:
-        """Pull per-request newly emitted codes from model slots into
-        ``data.output_codes`` and overwrite ``result.next_token_ids`` with
-        codebook-0 so the base runner skips its text-vocab sampler.
+        """Pull per-request newly emitted codes from the model into
+        ``data.output_codes`` and overwrite ``result.next_token_ids``
+        with codebook-0 so the base runner skips its text-vocab sampler.
         """
         batch_size = len(requests)
         if batch_size == 0:
@@ -106,13 +106,15 @@ class HiggsTTSModelRunner(ModelRunner):
         for sched_req in requests:
             data = sched_req.data
             req = data.req
-            slot = model._slots.get(sched_req.request_id)
-            if req.is_chunked > 0 or slot is None or not slot.output_codes:
+            rid = sched_req.request_id
+            row = model._rid_to_row.get(rid)
+            codes_log = model._output_codes.get(rid)
+            if req.is_chunked > 0 or row is None or not codes_log:
                 cb0_per_row.append(0)
                 continue
-            codes_N = slot.output_codes[-1]
+            codes_N = codes_log[-1]
             data.output_codes.append(codes_N.detach().cpu().clone())
-            data.generation_done = bool(slot.sampler.generation_done)
+            data.generation_done = bool(model._sampler_pool.generation_done[row].item())
             cb0_per_row.append(int(codes_N[0].item()))
 
         result.next_token_ids = torch.tensor(

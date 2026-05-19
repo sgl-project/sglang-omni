@@ -23,7 +23,11 @@ from sglang_omni.models.higgs_tts.modeling import (
     HiggsFusedMultiTextEmbedding,
     HiggsFusedMultiTextHead,
 )
-from sglang_omni.models.higgs_tts.sampler import STOP_CODE, HiggsSamplerState
+from sglang_omni.models.higgs_tts.sampler import (
+    STOP_CODE,
+    HiggsBatchedSamplerState,
+    HiggsSamplerState,
+)
 from sglang_omni.models.higgs_tts.sampler import step as sampler_step
 from sglang_omni.models.higgs_tts.weight_loader import DiscreteWeightMapper
 
@@ -45,9 +49,20 @@ class HiggsGenParams:
     top_k: int | None = None
 
 
+_DEFAULT_MAX_BATCH_SIZE = 64
+
+
 @dataclass
 class _RequestSlot:
-    """Per-request runtime bookkeeping inside :class:`HiggsTTSModel`."""
+    """Per-request runtime bookkeeping inside :class:`HiggsTTSModel`.
+
+    Stage 1 of CUDA Graph migration: the ``sampler`` field is now a
+    *view* of one row from :attr:`HiggsTTSModel._sampler_pool`. Mutating
+    it in-place still works because the per-row Python dataclass shares
+    references with the pool tensors; an explicit writeback through
+    :meth:`HiggsBatchedSamplerState.write_row` is what actually persists
+    new state values back into the pool.
+    """
 
     sampler: HiggsSamplerState
     output_codes: list[torch.Tensor] = field(default_factory=list)
@@ -89,6 +104,7 @@ class HiggsTTSModel(nn.Module):
         config: HiggsMultimodalQwen3Config,
         quant_config=None,
         prefix: str = "",
+        max_batch_size: int = _DEFAULT_MAX_BATCH_SIZE,
     ) -> None:
         super().__init__()
         self.config = config
@@ -135,7 +151,20 @@ class HiggsTTSModel(nn.Module):
                 self.multimodal_embedding.modality_embedding_0.weight
             )
 
-        self._slots: dict[str, _RequestSlot] = {}
+        # Per-request sampler state lives in a fixed-size GPU pool (Stage 1
+        # of the CUDA Graph migration). ``_rid_to_row`` maps request id →
+        # row index; ``_free_rows`` tracks unused rows; ``_output_codes``
+        # holds the variable-length per-request code log (cannot be
+        # tensorised cleanly).
+        self._max_batch_size = int(max_batch_size)
+        self._sampler_pool = HiggsBatchedSamplerState(
+            max_batch_size=self._max_batch_size,
+            num_codebooks=num_codebooks,
+            device=self.backbone.model.embed_tokens.weight.device,
+        )
+        self._rid_to_row: dict[str, int] = {}
+        self._free_rows: list[int] = list(range(self._max_batch_size))
+        self._output_codes: dict[str, list[torch.Tensor]] = {}
 
     def get_input_embeddings(self) -> nn.Embedding:
         return self.backbone.get_input_embeddings()
@@ -154,27 +183,64 @@ class HiggsTTSModel(nn.Module):
     def codebook_vocab_size(self) -> int:
         return self._codebook_vocab_size
 
-    def get_slot(self, req_id: str) -> _RequestSlot:
-        slot = self._slots.get(req_id)
-        if slot is None:
-            slot = _RequestSlot(
-                sampler=HiggsSamplerState(num_codebooks=self._num_codebooks)
+    def acquire_row(self, req_id: str) -> int:
+        """Allocate or look up the sampler-pool row for ``req_id``.
+
+        Idempotent: returns the existing row index when ``req_id`` is
+        already mapped. On first call, pops a free row, resets its
+        state, and registers the mapping.
+        """
+        row = self._rid_to_row.get(req_id)
+        if row is not None:
+            return row
+        if not self._free_rows:
+            raise RuntimeError(
+                f"HiggsTTSModel sampler pool exhausted (max_batch_size="
+                f"{self._max_batch_size}); raise ``max_batch_size`` or limit "
+                f"concurrent requests."
             )
-            self._slots[req_id] = slot
-        return slot
+        row = self._free_rows.pop()
+        self._rid_to_row[req_id] = row
+        self._sampler_pool.reset_row(row)
+        return row
+
+    def release_row(self, req_id: str) -> None:
+        """Return ``req_id``'s row to the free pool and drop its output
+        codes. Idempotent: a no-op when the request isn't mapped."""
+        row = self._rid_to_row.pop(req_id, None)
+        if row is not None:
+            self._free_rows.append(row)
+        self._output_codes.pop(req_id, None)
+
+    def get_slot(self, req_id: str) -> _RequestSlot:
+        """Return a read/write view of one request's slot.
+
+        The ``sampler`` field is a snapshot of the pool row at call time;
+        mutating it and then re-reading without going through
+        :meth:`HiggsBatchedSamplerState.write_row` will not persist back
+        to the pool. Internal call sites that mutate state always end
+        with an explicit writeback; external callers (model_runner /
+        tests) typically only read.
+        """
+        row = self.acquire_row(req_id)
+        return _RequestSlot(
+            sampler=self._sampler_pool.view_row(row),
+            output_codes=self._output_codes.setdefault(req_id, []),
+        )
 
     def reset_request(self, req_id: str) -> None:
-        self._slots.pop(req_id, None)
+        """Drop all per-request state. Compat shim over :meth:`release_row`."""
+        self.release_row(req_id)
 
     def get_output_codes(self, req_id: str) -> torch.Tensor:
-        slot = self._slots.get(req_id)
-        if slot is None or not slot.output_codes:
+        codes = self._output_codes.get(req_id)
+        if not codes:
             return torch.empty(
                 (0, self._num_codebooks),
                 dtype=torch.long,
                 device=self.multimodal_embedding.modality_embedding_0.weight.device,
             )
-        return torch.stack(slot.output_codes, dim=0).to(torch.long)
+        return torch.stack(codes, dim=0).to(torch.long)
 
     @torch.no_grad()
     def decode_codebooks_batch(
@@ -185,7 +251,7 @@ class HiggsTTSModel(nn.Module):
     ) -> torch.Tensor:
         """Sample multi-codebook tokens for one forward step.
 
-        Real codes land in ``self._slots[req_id].output_codes``; the returned
+        Real codes land in ``self._output_codes[req_id]``; the returned
         text-vocab logits are a structural placeholder that sglang's downstream
         sampler walks over but whose ``next_token_ids`` are discarded by
         :class:`HiggsTTSModelRunner`.
@@ -201,19 +267,27 @@ class HiggsTTSModel(nn.Module):
         logits_BNV = self.modality_head.generate(hidden_states_BD).to(torch.float32)
 
         for b in range(batch_size):
-            slot = self.get_slot(req_ids[b])
+            rid = req_ids[b]
+            row = self.acquire_row(rid)
             params = gen_params[b]
+            # Read pool row → Python state → step → writeback.
+            # Stage 2 replaces this read/step/write triple with a single
+            # batched_step that mutates the pool tensors in place.
+            sampler_state = self._sampler_pool.view_row(row)
             codes_N = sampler_step(
                 logits_BNV[b],
-                slot.sampler,
+                sampler_state,
                 temperature=params.temperature,
                 top_p=params.top_p,
                 top_k=params.top_k,
             )
+            self._sampler_pool.write_row(row, sampler_state)
             # STOP_CODE sentinel rows can arrive if a finished request is
             # accidentally re-stepped; guard so output_codes stays clean.
             if int(codes_N[0].item()) != STOP_CODE:
-                slot.output_codes.append(codes_N.detach().to(torch.long))
+                self._output_codes.setdefault(rid, []).append(
+                    codes_N.detach().to(torch.long)
+                )
 
         text_vocab_size = self.backbone.config.vocab_size
         return torch.zeros(
@@ -321,23 +395,29 @@ class HiggsTTSModel(nn.Module):
     def _decode_step_embeds(
         self, req_ids: list[str], input_ids: torch.Tensor
     ) -> torch.Tensor:
-        """Build per-step embeddings from each slot's ``last_codes``.
+        """Build per-step embeddings from each request's last sampled codes.
 
-        Falls back to the text embedding for any request whose slot has no
-        ``last_codes`` yet (scheduler may send us a token before we've decoded).
+        Reads ``last_codes`` directly from the GPU sampler pool. A row
+        whose ``delay_count == 0`` has never sampled (the scheduler may
+        send us a token before our first decode step for it), so the
+        fused-codec embedding is masked out in favour of the text embed
+        at those positions.
         """
         device = input_ids.device
         N = self._num_codebooks
         last_codes_stack: list[torch.Tensor] = []
         mask: list[bool] = []
         for rid in req_ids:
-            slot = self._slots.get(rid)
-            last = None if slot is None else slot.sampler.last_codes
-            if last is None:
+            row = self._rid_to_row.get(rid)
+            if row is None or int(self._sampler_pool.delay_count[row].item()) == 0:
                 last_codes_stack.append(torch.zeros(N, dtype=torch.long, device=device))
                 mask.append(False)
             else:
-                last_codes_stack.append(last.to(device=device, dtype=torch.long))
+                last_codes_stack.append(
+                    self._sampler_pool.last_codes[row].to(
+                        device=device, dtype=torch.long
+                    )
+                )
                 mask.append(True)
         codes_BN = torch.stack(last_codes_stack, dim=0)
         fused_embeds = self.multimodal_embedding.modality_embedding_0(codes_BN)
