@@ -24,11 +24,10 @@ from sglang_omni.models.higgs_tts.modeling import (
     HiggsFusedMultiTextHead,
 )
 from sglang_omni.models.higgs_tts.sampler import (
-    STOP_CODE,
     HiggsBatchedSamplerState,
     HiggsSamplerState,
+    batched_step,
 )
-from sglang_omni.models.higgs_tts.sampler import step as sampler_step
 from sglang_omni.models.higgs_tts.weight_loader import DiscreteWeightMapper
 
 # Higgs ckpt prefixes → sglang Qwen3ForCausalLM parameter tree (under ``backbone.``).
@@ -255,6 +254,13 @@ class HiggsTTSModel(nn.Module):
         text-vocab logits are a structural placeholder that sglang's downstream
         sampler walks over but whose ``next_token_ids`` are discarded by
         :class:`HiggsTTSModelRunner`.
+
+        Stage 2 of the CUDA Graph migration: the per-row Python sampler
+        loop is replaced with a single :func:`batched_step` call. The
+        per-row ``.item()`` sync inside the old loop is gone; the only
+        remaining D2H copy per step is a single ``[B]``-shape transfer
+        of the "was already done at entry" flags so we know which rows
+        to skip appending to :attr:`_output_codes`.
         """
         batch_size = hidden_states_BD.shape[0]
         if len(req_ids) != batch_size or len(gen_params) != batch_size:
@@ -265,34 +271,66 @@ class HiggsTTSModel(nn.Module):
 
         # fp32 for softmax numerical stability.
         logits_BNV = self.modality_head.generate(hidden_states_BD).to(torch.float32)
+        device = logits_BNV.device
 
-        for b in range(batch_size):
-            rid = req_ids[b]
-            row = self.acquire_row(rid)
-            params = gen_params[b]
-            # Read pool row → Python state → step → writeback.
-            # Stage 2 replaces this read/step/write triple with a single
-            # batched_step that mutates the pool tensors in place.
-            sampler_state = self._sampler_pool.view_row(row)
-            codes_N = sampler_step(
-                logits_BNV[b],
-                sampler_state,
-                temperature=params.temperature,
-                top_p=params.top_p,
-                top_k=params.top_k,
+        # Allocate / look up pool rows. ``acquire_row`` resets new rows so
+        # stale state from a previous owner can't leak in.
+        row_indices = torch.tensor(
+            [self.acquire_row(rid) for rid in req_ids],
+            dtype=torch.long,
+            device=device,
+        )
+
+        temperature = torch.tensor(
+            [p.temperature for p in gen_params],
+            dtype=torch.float32,
+            device=device,
+        )
+        has_top_p = any(p.top_p is not None for p in gen_params)
+        top_p = (
+            torch.tensor(
+                [p.top_p if p.top_p is not None else 1.0 for p in gen_params],
+                dtype=torch.float32,
+                device=device,
             )
-            self._sampler_pool.write_row(row, sampler_state)
-            # STOP_CODE sentinel rows can arrive if a finished request is
-            # accidentally re-stepped; guard so output_codes stays clean.
-            if int(codes_N[0].item()) != STOP_CODE:
-                self._output_codes.setdefault(rid, []).append(
-                    codes_N.detach().to(torch.long)
-                )
+            if has_top_p
+            else None
+        )
+        # ``batched_step`` requires uniform top_k across the batch (matches
+        # how every Higgs request is configured in practice). If callers
+        # ever pass heterogeneous top_k we want to know — fail loudly.
+        distinct_top_k = {p.top_k for p in gen_params}
+        if len(distinct_top_k) > 1:
+            raise ValueError(
+                f"batched_step requires uniform top_k across the batch; "
+                f"got {distinct_top_k}"
+            )
+        top_k = next(iter(distinct_top_k))
+
+        was_done = self._sampler_pool.generation_done[row_indices].clone()
+
+        codes_BN = batched_step(
+            logits_BNV,
+            self._sampler_pool,
+            row_indices,
+            temperature=temperature,
+            top_p=top_p,
+            top_k=top_k,
+        )
+
+        # One D2H per step: which rows were already finished at entry.
+        # Their codes are STOP_CODE sentinels; don't append to output_codes.
+        was_done_cpu = was_done.cpu().tolist()
+        codes_BN = codes_BN.detach().to(torch.long)
+        for b in range(batch_size):
+            if was_done_cpu[b]:
+                continue
+            self._output_codes.setdefault(req_ids[b], []).append(codes_BN[b])
 
         text_vocab_size = self.backbone.config.vocab_size
         return torch.zeros(
             (batch_size, text_vocab_size),
-            device=hidden_states_BD.device,
+            device=device,
             dtype=torch.float32,
         )
 
@@ -363,27 +401,46 @@ class HiggsTTSModel(nn.Module):
             req_ids = [str(r) for r in req_ids_raw]
 
         sampling_info = getattr(forward_batch, "sampling_info", None)
-        gen_params: list[HiggsGenParams] = []
-        for b in range(batch_size):
-            gen_params.append(self._gen_params_for_row(sampling_info, b))
+        gen_params = self._gen_params_for_batch(sampling_info, batch_size)
         return req_ids, gen_params
 
     @staticmethod
-    def _gen_params_for_row(sampling_info, row: int) -> HiggsGenParams:
+    def _gen_params_for_batch(
+        sampling_info, batch_size: int
+    ) -> list[HiggsGenParams]:
+        """Pull per-row sampling params off ``sampling_info`` with at most
+        one D2H per attribute (instead of one per row).
+        """
         if sampling_info is None:
-            return HiggsGenParams()
+            return [HiggsGenParams() for _ in range(batch_size)]
 
-        def _pick(attr: str, default):
+        def _to_list(attr: str):
             val = getattr(sampling_info, attr, None)
             if val is None:
-                return default
-            return float(val[row].item() if hasattr(val[row], "item") else val[row])
+                return None
+            if hasattr(val, "cpu"):
+                # sglang stores some of these as [B, 1] — flatten first
+                # so we always get a flat per-row list.
+                return val.detach().cpu().flatten().tolist()
+            return list(val)
 
-        return HiggsGenParams(
-            temperature=_pick("temperatures", 1.0),
-            top_p=_pick("top_ps", None),
-            top_k=int(_pick("top_ks", 0)) or None,
-        )
+        temps = _to_list("temperatures")
+        top_ps = _to_list("top_ps")
+        top_ks = _to_list("top_ks")
+
+        params: list[HiggsGenParams] = []
+        for b in range(batch_size):
+            temp = float(temps[b]) if temps is not None else 1.0
+            tp = float(top_ps[b]) if top_ps is not None else None
+            tk_raw = int(top_ks[b]) if top_ks is not None else 0
+            params.append(
+                HiggsGenParams(
+                    temperature=temp,
+                    top_p=tp,
+                    top_k=tk_raw or None,
+                )
+            )
+        return params
 
     @staticmethod
     def _infer_batch_size(forward_batch) -> int:
@@ -402,32 +459,34 @@ class HiggsTTSModel(nn.Module):
         send us a token before our first decode step for it), so the
         fused-codec embedding is masked out in favour of the text embed
         at those positions.
+
+        Vectorised — zero per-row D2H sync: row mapping uses a single
+        Python ``dict.get`` per request, but every GPU read is a single
+        gather over ``[B]`` rows.
         """
         device = input_ids.device
-        N = self._num_codebooks
-        last_codes_stack: list[torch.Tensor] = []
-        mask: list[bool] = []
-        for rid in req_ids:
-            row = self._rid_to_row.get(rid)
-            if row is None or int(self._sampler_pool.delay_count[row].item()) == 0:
-                last_codes_stack.append(torch.zeros(N, dtype=torch.long, device=device))
-                mask.append(False)
-            else:
-                last_codes_stack.append(
-                    self._sampler_pool.last_codes[row].to(
-                        device=device, dtype=torch.long
-                    )
-                )
-                mask.append(True)
-        codes_BN = torch.stack(last_codes_stack, dim=0)
-        fused_embeds = self.multimodal_embedding.modality_embedding_0(codes_BN)
+
+        rows_py = [self._rid_to_row.get(rid, -1) for rid in req_ids]
+        rows = torch.tensor(rows_py, dtype=torch.long, device=device)
+        has_row = rows >= 0
+        # ``safe_rows`` lets us gather without an OOB branch; the mask
+        # below discards rows we shouldn't have read.
+        safe_rows = torch.where(has_row, rows, torch.zeros_like(rows))
+        delay_counts = self._sampler_pool.delay_count[safe_rows].to(torch.long)
+        has_codes = has_row & (delay_counts > 0)
+
+        last_codes_BN = self._sampler_pool.last_codes[safe_rows].to(torch.long)
+        fused_embeds = self.multimodal_embedding.modality_embedding_0(last_codes_BN)
 
         text_embeds = self.backbone.model.embed_tokens(input_ids)
         if text_embeds.ndim == 3:
             text_embeds = text_embeds[:, -1, :]
 
-        mask_t = torch.tensor(mask, device=device).unsqueeze(-1)
-        return torch.where(mask_t, fused_embeds.to(text_embeds.dtype), text_embeds)
+        return torch.where(
+            has_codes.unsqueeze(-1),
+            fused_embeds.to(text_embeds.dtype),
+            text_embeds,
+        )
 
     def load_weights(self, weights: Iterable[Tuple[str, torch.Tensor]]) -> set[str]:
         """Remap Higgs ckpt names then split between backbone and own modules.
