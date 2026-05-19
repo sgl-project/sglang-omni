@@ -197,7 +197,7 @@ rows must not pollute real rows:
 - Run mixed batch_size = 3, 5, 7, 9 concurrent loads. Per-request
   output is identical to running each request alone with the same seed.
 
-### Stage 6 — Test + numerical parity (3 days)
+### Stage 6 — Test + numerical parity (3 days) ⏳ partial
 
 **Tests** (new file `tests/test_higgs_tts_cuda_graph.py`):
 
