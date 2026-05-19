@@ -156,14 +156,45 @@ class HiggsTTSModel(nn.Module):
         # holds the variable-length per-request code log (cannot be
         # tensorised cleanly).
         self._max_batch_size = int(max_batch_size)
+        # +1 row reserved for graph-capture padding (sglang's CudaGraphRunner
+        # captures specific batch sizes 1, 2, 4, 8, 16, 32 and pads the actual
+        # batch up to the next supported one). The padding row's state is
+        # reset by the model_runner each step so it never bleeds into real rows.
+        pool_size = self._max_batch_size + 1
         self._sampler_pool = HiggsBatchedSamplerState(
-            max_batch_size=self._max_batch_size,
+            max_batch_size=pool_size,
             num_codebooks=num_codebooks,
             device=self.backbone.model.embed_tokens.weight.device,
         )
+        self._padding_row = self._max_batch_size  # last row reserved
         self._rid_to_row: dict[str, int] = {}
         self._free_rows: list[int] = list(range(self._max_batch_size))
         self._output_codes: dict[str, list[torch.Tensor]] = {}
+
+        # ----- CUDA Graph buffers (Stage 4) -----------------------------
+        # Allocated once, written by ``model_runner.prepare_decode`` before
+        # each forward, read by ``model.forward`` in decode mode. Sized
+        # ``[pool_size]`` so padding rows index safely into the pool too.
+        cg_device = self.backbone.model.embed_tokens.weight.device
+        self._cg_row_indices = torch.zeros(
+            pool_size, dtype=torch.long, device=cg_device
+        )
+        self._cg_temperature = torch.ones(
+            pool_size, dtype=torch.float32, device=cg_device
+        )
+        self._cg_top_p = torch.ones(
+            pool_size, dtype=torch.float32, device=cg_device
+        )
+        # top_k is uniform across the batch in practice; stored as plain int
+        # because batched_step takes a scalar. Updated outside the captured graph.
+        self._cg_top_k: int | None = None
+        # Outputs of the captured forward.
+        self._cg_codes_BN = torch.zeros(
+            pool_size, num_codebooks, dtype=torch.long, device=cg_device
+        )
+        self._cg_was_done = torch.zeros(
+            pool_size, dtype=torch.bool, device=cg_device
+        )
 
     def get_input_embeddings(self) -> nn.Embedding:
         return self.backbone.get_input_embeddings()
@@ -334,6 +365,56 @@ class HiggsTTSModel(nn.Module):
             dtype=torch.float32,
         )
 
+    @torch.no_grad()
+    def decode_codebooks_batch_cg(
+        self, hidden_states_BD: torch.Tensor
+    ) -> torch.Tensor:
+        """CUDA-Graph-friendly variant of :meth:`decode_codebooks_batch`.
+
+        Reads sampling params + row indices from preallocated buffers
+        (populated by ``model_runner.prepare_decode`` before invocation),
+        writes outputs into preallocated buffers (read by
+        ``model_runner.post_decode`` afterwards). Contains no Python
+        control flow that depends on tensor values, no D2H syncs, and
+        no dict mutations — safe to capture into a CUDA Graph.
+
+        Returns a text-vocab placeholder logits tensor so sglang's
+        downstream sampler still receives the shape it expects; the
+        actual codebook samples live in :attr:`_cg_codes_BN`.
+        """
+        batch_size = hidden_states_BD.shape[0]
+        device = hidden_states_BD.device
+
+        logits_BNV = self.modality_head.generate(hidden_states_BD).to(torch.float32)
+
+        row_indices = self._cg_row_indices[:batch_size]
+        temperature = self._cg_temperature[:batch_size]
+        top_p = self._cg_top_p[:batch_size]
+        top_k = self._cg_top_k
+
+        # Snapshot done flags BEFORE the step; STOP_CODE rows mustn't be
+        # appended to output_codes downstream.
+        self._cg_was_done[:batch_size] = self._sampler_pool.generation_done[
+            row_indices
+        ]
+
+        codes_BN = batched_step(
+            logits_BNV,
+            self._sampler_pool,
+            row_indices,
+            temperature=temperature,
+            top_p=top_p,
+            top_k=top_k,
+        )
+        self._cg_codes_BN[:batch_size] = codes_BN
+
+        text_vocab_size = self.backbone.config.vocab_size
+        return torch.zeros(
+            (batch_size, text_vocab_size),
+            device=device,
+            dtype=torch.float32,
+        )
+
     def forward(
         self,
         input_ids: torch.Tensor,
@@ -344,15 +425,32 @@ class HiggsTTSModel(nn.Module):
     ):
         """Run the backbone then sample multi-codebook codes per request.
 
-        Prefill: caller supplies ``input_embeds`` with the ref-audio overlay
-        already pasted at ``-100`` positions (see
-        :class:`HiggsTTSModelRunner._build_prefill_input_embeds`).
-        Decode: input_embeds is rebuilt here from each slot's ``last_codes``.
-        """
-        req_ids, gen_params = self._extract_batch_metadata(forward_batch)
+        - **Prefill** (extend): caller supplies ``input_embeds`` with the
+          ref-audio overlay already pasted at ``-100`` positions (see
+          :class:`HiggsTTSModelRunner._build_prefill_input_embeds`).
+          Row allocation and per-row sampling params come from the
+          Python-side path via ``forward_batch.req_ids`` /
+          ``forward_batch.sampling_info``.
 
-        if input_embeds is None and self._is_decode_step(forward_batch):
-            input_embeds = self._decode_step_embeds(req_ids, input_ids)
+        - **Decode**: graph-capture-friendly path. Row allocation,
+          per-row sampling params, and the output-codes append are
+          all handled by :class:`HiggsTTSModelRunner` outside this
+          forward; the model reads / writes the preallocated CG
+          buffers (``_cg_row_indices`` etc.) — no Python control flow
+          inside this method depends on tensor values.
+        """
+        is_decode = self._is_decode_step(forward_batch)
+
+        if is_decode:
+            input_embeds = self._decode_step_embeds_cg(
+                input_ids, batch_size=input_ids.shape[0]
+            )
+        else:
+            req_ids, gen_params = self._extract_batch_metadata(forward_batch)
+            if input_embeds is None:
+                # Prefill always supplies input_embeds via the runner, but
+                # keep the no-op fallback so a stray call doesn't crash.
+                pass
 
         hidden_states = self.backbone.model(
             input_ids,
@@ -362,7 +460,8 @@ class HiggsTTSModel(nn.Module):
         )
 
         if (
-            hasattr(forward_batch, "forward_mode")
+            not is_decode
+            and hasattr(forward_batch, "forward_mode")
             and forward_batch.forward_mode.is_extend()
             and hasattr(forward_batch, "extend_seq_lens")
         ):
@@ -373,13 +472,40 @@ class HiggsTTSModel(nn.Module):
             if hidden_states_last.ndim == 3:
                 hidden_states_last = hidden_states_last[:, -1, :]
 
-        text_logits_BV = self.decode_codebooks_batch(
-            hidden_states_last, req_ids, gen_params
-        )
+        if is_decode:
+            text_logits_BV = self.decode_codebooks_batch_cg(hidden_states_last)
+        else:
+            text_logits_BV = self.decode_codebooks_batch(
+                hidden_states_last, req_ids, gen_params
+            )
 
         return LogitsProcessorOutput(
             next_token_logits=text_logits_BV,
             hidden_states=hidden_states_last,
+        )
+
+    def _decode_step_embeds_cg(
+        self, input_ids: torch.Tensor, batch_size: int
+    ) -> torch.Tensor:
+        """Graph-capture-friendly decode-step embedding lookup.
+
+        Same semantics as :meth:`_decode_step_embeds` but reads
+        ``row_indices`` from :attr:`_cg_row_indices` instead of the
+        Python ``_rid_to_row`` dict, so the body is pure tensor ops.
+        """
+        rows = self._cg_row_indices[:batch_size]
+        delay_counts = self._sampler_pool.delay_count[rows].to(torch.long)
+        has_codes = (delay_counts > 0).unsqueeze(-1)
+
+        last_codes_BN = self._sampler_pool.last_codes[rows].to(torch.long)
+        fused_embeds = self.multimodal_embedding.modality_embedding_0(last_codes_BN)
+
+        text_embeds = self.backbone.model.embed_tokens(input_ids)
+        if text_embeds.ndim == 3:
+            text_embeds = text_embeds[:, -1, :]
+
+        return torch.where(
+            has_codes, fused_embeds.to(text_embeds.dtype), text_embeds
         )
 
     @staticmethod
