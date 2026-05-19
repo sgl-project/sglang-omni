@@ -8,8 +8,8 @@ tts_nonstream_wer:
   context_vars:
     - STREAMING_BENCHMARK_MAX_SAMPLES
   variant: "nonstream"
-  test_file_sha256: 4ff989f698c76fb5c24c03ad9ad51e37ac1fd0c2b725f810f28083479609d2fb
-  last_discovered_at: 2026-05-18T19:10:27Z
+  test_file_sha256: 2863105e9c48472b73636344f3191a0e121a0187b6d03a638c3af9e5f088232c
+  last_discovered_at: 2026-05-19T16:47:10Z
   sample_counts:
     total:
       json_file: "test_voice_cloning_non_streami0/vc_nonstream_c8/wer_results.json"
@@ -47,8 +47,8 @@ tts_nonstream_speed:
   context_vars:
     - STREAMING_BENCHMARK_MAX_SAMPLES
   variant: "nonstream"
-  test_file_sha256: 4ff989f698c76fb5c24c03ad9ad51e37ac1fd0c2b725f810f28083479609d2fb
-  last_discovered_at: 2026-05-18T19:10:27Z
+  test_file_sha256: 2863105e9c48472b73636344f3191a0e121a0187b6d03a638c3af9e5f088232c
+  last_discovered_at: 2026-05-19T16:47:10Z
   sample_counts:
     total:
       json_file: "test_voice_cloning_non_streami0/vc_nonstream_c8/wer_results.json"
@@ -106,8 +106,8 @@ tts_stream_wer:
   context_vars:
     - STREAMING_BENCHMARK_MAX_SAMPLES
   variant: "stream"
-  test_file_sha256: 4ff989f698c76fb5c24c03ad9ad51e37ac1fd0c2b725f810f28083479609d2fb
-  last_discovered_at: 2026-05-18T19:10:27Z
+  test_file_sha256: 2863105e9c48472b73636344f3191a0e121a0187b6d03a638c3af9e5f088232c
+  last_discovered_at: 2026-05-19T16:47:10Z
   sample_counts:
     total:
       json_file: "test_voice_cloning_streaming0/vc_stream_c8/wer_results.json"
@@ -145,8 +145,8 @@ tts_stream_speed:
   context_vars:
     - STREAMING_BENCHMARK_MAX_SAMPLES
   variant: "stream"
-  test_file_sha256: 4ff989f698c76fb5c24c03ad9ad51e37ac1fd0c2b725f810f28083479609d2fb
-  last_discovered_at: 2026-05-18T19:10:27Z
+  test_file_sha256: 2863105e9c48472b73636344f3191a0e121a0187b6d03a638c3af9e5f088232c
+  last_discovered_at: 2026-05-19T16:47:10Z
   sample_counts:
     total:
       json_file: "test_voice_cloning_streaming0/vc_stream_c8/wer_results.json"

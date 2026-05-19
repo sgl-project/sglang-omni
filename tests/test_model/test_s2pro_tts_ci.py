@@ -92,8 +92,8 @@ THRESHOLD_SLACK_LOWER = 1.25
 
 VC_WER_MAX_CORPUS = 0.010638297872340425
 VC_WER_CORPUS_THRESHOLD = apply_wer_slack(VC_WER_MAX_CORPUS)
-VC_WER_MAX_PER_SAMPLE = 0.25
-VC_STREAM_WER_MAX_CORPUS = 0.0258
+VC_WER_MAX_PER_SAMPLE = 0.17
+VC_STREAM_WER_MAX_CORPUS = 0.013262599469496022
 VC_STREAM_WER_CORPUS_THRESHOLD = apply_wer_slack(VC_STREAM_WER_MAX_CORPUS)
 VC_STREAM_WER_MAX_PER_SAMPLE = 0.17
 
@@ -102,19 +102,19 @@ VC_STREAM_WER_MAX_PER_SAMPLE = 0.17
 
 _VC_NON_STREAM_P95 = {
     8: {
-        "throughput_qps": 0.850,
-        "tok_per_s_agg": 70.5,
-        "latency_mean_s": 8.567,
-        "rtf_mean": 2.5022,
+        "throughput_qps": 0.863,
+        "tok_per_s_agg": 72.8,
+        "latency_mean_s": 8.452,
+        "rtf_mean": 2.5859,
     }
 }
 
 _VC_STREAM_P95 = {
     8: {
-        "throughput_qps": 0.715,
-        "tok_per_s_agg": 70.0,
-        "latency_mean_s": 9.403,
-        "rtf_mean": 2.5614,
+        "throughput_qps": 0.836,
+        "tok_per_s_agg": 67.0,
+        "latency_mean_s": 8.889,
+        "rtf_mean": 2.4463,
     }
 }
 

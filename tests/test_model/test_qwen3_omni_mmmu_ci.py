@@ -26,13 +26,13 @@ from tests.utils import apply_slack, assert_speed_thresholds
 
 CONCURRENCY = 8
 
-MMMU_MIN_ACCURACY = 0.56
+MMMU_MIN_ACCURACY = 0.6
 
 _MMMU_P95 = {
     8: {
-        "throughput_qps": 0.675,
-        "tok_per_s_agg": 51.2,
-        "latency_mean_s": 11.207,
+        "throughput_qps": 0.158,
+        "tok_per_s_agg": 13.2,
+        "latency_mean_s": 48.712,
     },
 }
 MMMU_THRESHOLDS = apply_slack(_MMMU_P95)

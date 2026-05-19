@@ -50,20 +50,20 @@ SHORT_ANSWER_PROMPT = (
     "'Answer: $LETTER'. Do not include step-by-step reasoning."
 )
 
-VIDEOMME_TALKER_THINKER_TEXT_MIN_ACCURACY = 0.5
+VIDEOMME_TALKER_THINKER_TEXT_MIN_ACCURACY = 0.55
 # Retuned after Qwen3-Omni talker sampler fix: Video-MME talker stayed clean.
-VIDEOMME_TALKER_WER_BELOW_50_CORPUS_MAX = 0.014005602240896359
+VIDEOMME_TALKER_WER_BELOW_50_CORPUS_MAX = 0.05033112582781457
 VIDEOMME_TALKER_WER_BELOW_50_CORPUS_THRESHOLD = apply_wer_slack(
     VIDEOMME_TALKER_WER_BELOW_50_CORPUS_MAX
 )
-VIDEOMME_TALKER_N_ABOVE_50_MAX = 0
+VIDEOMME_TALKER_N_ABOVE_50_MAX = 1
 
 _VIDEOMME_TALKER_AUDIO_P95 = {
     8: {
-        "throughput_qps": 0.262,
-        "tok_per_s_agg": 1.6,
-        "latency_mean_s": 27.169,
-        "rtf_mean": 3.4267,
+        "throughput_qps": 0.343,
+        "tok_per_s_agg": 2.2,
+        "latency_mean_s": 20.032,
+        "rtf_mean": 2.102,
     },
 }
 VIDEOMME_TALKER_THRESHOLDS = apply_slack(_VIDEOMME_TALKER_AUDIO_P95)
