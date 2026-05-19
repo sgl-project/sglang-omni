@@ -37,34 +37,58 @@ QWEN3_OMNI_ROUTER_WAIT_TIMEOUT = 600
 QWEN3_OMNI_COLOCATED_WORKER_ARGS = (
     "--config examples/configs/qwen3_omni_colocated.yaml --colocate"
 )
+QWEN3_OMNI_VIDEO_WORKER_ARGS = (
+    f"{QWEN3_OMNI_COLOCATED_WORKER_ARGS} "
+    "--stages.0.factory-args.thinker-max-seq-len 32768 "
+    "--stages.4.factory-args.thinker-max-seq-len 32768"
+)
 
 
 @pytest.fixture(scope="module")
 def qwen3_omni_router_server(tmp_path_factory: pytest.TempPathFactory):
     """Start two colocated Qwen3-Omni workers behind the router."""
-    from tests.test_model.omni_router_utils import launch_managed_router
-
-    with launch_managed_router(
-        tmp_path_factory=tmp_path_factory,
-        model_path=QWEN3_OMNI_TEST_MODEL_PATH,
-        model_name=QWEN3_OMNI_MODEL_NAME,
+    with _launch_qwen3_omni_router(
+        tmp_path_factory,
         worker_extra_args=QWEN3_OMNI_COLOCATED_WORKER_ARGS,
-        wait_timeout=QWEN3_OMNI_ROUTER_WAIT_TIMEOUT,
-        startup_timeout=QWEN3_OMNI_ROUTER_STARTUP_TIMEOUT,
     ) as router:
         yield router
 
 
 @pytest.fixture(scope="module")
-def qwen3_omni_thinker_server(qwen3_omni_router_server):
+def qwen3_omni_thinker_server(tmp_path_factory: pytest.TempPathFactory):
     """Router-backed Qwen3-Omni endpoint used by text-output benchmarks."""
-    yield qwen3_omni_router_server
+    with _launch_qwen3_omni_router(
+        tmp_path_factory,
+        worker_extra_args=QWEN3_OMNI_VIDEO_WORKER_ARGS,
+    ) as router:
+        yield router
 
 
 @pytest.fixture(scope="module")
-def qwen3_omni_talker_server(qwen3_omni_router_server):
+def qwen3_omni_talker_server(tmp_path_factory: pytest.TempPathFactory):
     """Router-backed Qwen3-Omni endpoint used by audio-output benchmarks."""
-    yield qwen3_omni_router_server
+    with _launch_qwen3_omni_router(
+        tmp_path_factory,
+        worker_extra_args=QWEN3_OMNI_VIDEO_WORKER_ARGS,
+    ) as router:
+        yield router
+
+
+def _launch_qwen3_omni_router(
+    tmp_path_factory: pytest.TempPathFactory,
+    *,
+    worker_extra_args: str,
+):
+    from tests.test_model.omni_router_utils import launch_managed_router
+
+    return launch_managed_router(
+        tmp_path_factory=tmp_path_factory,
+        model_path=QWEN3_OMNI_TEST_MODEL_PATH,
+        model_name=QWEN3_OMNI_MODEL_NAME,
+        worker_extra_args=worker_extra_args,
+        wait_timeout=QWEN3_OMNI_ROUTER_WAIT_TIMEOUT,
+        startup_timeout=QWEN3_OMNI_ROUTER_STARTUP_TIMEOUT,
+    )
 
 
 def _model_cache_present(model_path: str) -> bool:

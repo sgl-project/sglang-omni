@@ -102,6 +102,15 @@ server_profiles:
     wait_timeout: 600
     server_boot_timeout_s: 660
     router_policy: least_request
+  qwen3_omni_video_router:
+    server_gpus: 2
+    model_name: qwen3-omni
+    num_workers: 2
+    num_gpus_per_worker: 1
+    worker_extra_args: "--config {repo_root}/examples/configs/qwen3_omni_colocated.yaml --colocate --stages.0.factory-args.thinker-max-seq-len 32768 --stages.4.factory-args.thinker-max-seq-len 32768"
+    wait_timeout: 600
+    server_boot_timeout_s: 660
+    router_policy: least_request
   s2pro_router:
     server_gpus: 2
     model_name: fishaudio/s2-pro
@@ -366,6 +375,7 @@ rows:
   # ===================== videomme (Qwen3-Omni text-only c=4, 2520 samples) =====================
   - id: videomme-thinker-only-c4-accuracy
     file: "benchmarks/eval/benchmark_omni_videomme.py"
+    server_profile: qwen3_omni_video_router
     locate:
       section_substring: "Accuracy (full set)"
       config_substring: "thinker-only, full-set, c=4"
@@ -380,6 +390,7 @@ rows:
 
   - id: videomme-thinker-only-c4-speed
     file: "benchmarks/eval/benchmark_omni_videomme.py"
+    server_profile: qwen3_omni_video_router
     locate:
       section_substring: "Speed (full set)"
       config_substring: "thinker-only, full-set, c=4"
@@ -404,6 +415,7 @@ rows:
   # ===================== videoamme (Qwen3-Omni; ci-50 thinker-only + ci-50 thinker-talker) =====================
   - id: videoamme-thinker-only-ci50-c8-accuracy
     file: "benchmarks/eval/benchmark_omni_videoamme.py"
+    server_profile: qwen3_omni_video_router
     locate:
       section_substring: "Accuracy"
       config_substring: "thinker-only, ci-50, c=8"
@@ -418,6 +430,7 @@ rows:
 
   - id: videoamme-thinker-talker-ci50-c8-accuracy
     file: "benchmarks/eval/benchmark_omni_videoamme.py"
+    server_profile: qwen3_omni_video_router
     locate:
       section_substring: "Accuracy"
       config_substring: "thinker-talker, ci-50, c=8"
@@ -432,6 +445,7 @@ rows:
 
   - id: videoamme-thinker-only-ci50-c8-speed
     file: "benchmarks/eval/benchmark_omni_videoamme.py"
+    server_profile: qwen3_omni_video_router
     locate:
       section_substring: "Speed"
       config_substring: "thinker-only, ci-50, c=8"
@@ -455,6 +469,7 @@ rows:
 
   - id: videoamme-thinker-talker-ci50-c8-speed
     file: "benchmarks/eval/benchmark_omni_videoamme.py"
+    server_profile: qwen3_omni_video_router
     locate:
       section_substring: "Speed"
       config_substring: "thinker-talker, ci-50, c=8"
@@ -478,6 +493,7 @@ rows:
 
   - id: videoamme-thinker-talker-ci50-c8-wer
     file: "benchmarks/eval/benchmark_omni_videoamme.py"
+    server_profile: qwen3_omni_video_router
     locate:
       section_substring: "Talker WER"
       config_substring: "thinker-talker, ci-50, c=8"
