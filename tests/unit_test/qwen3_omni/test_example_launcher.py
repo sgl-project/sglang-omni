@@ -79,7 +79,10 @@ def test_tp2_config_contract(mock_launch_server):
     assert thinker.tp_size == 2
     assert thinker.parallelism.tp == 2
     assert thinker.gpu == [0, 1]
-    assert thinker.factory_args["server_args_overrides"]["disable_custom_all_reduce"] is True
+    assert (
+        thinker.factory_args["server_args_overrides"]["disable_custom_all_reduce"]
+        is True
+    )
 
 
 def test_tp1_default_config_contract(mock_launch_server):
