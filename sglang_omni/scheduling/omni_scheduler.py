@@ -259,6 +259,7 @@ class OmniScheduler:
         self.soft_watchdog = None
         self.recv_skipper = None
         self.idle_sleeper = None
+        self._init_upstream_compat_flags(server_args)
         self.grammar_manager = _NoOpGrammarManager()
         self.grammar_queue = []
         self.grammar_backend = None
@@ -302,6 +303,28 @@ class OmniScheduler:
         self._pending_stream_chunks: dict[str, list[Any]] = {}
         self._pending_stream_done: set[str] = set()
         self._deferred_request_payloads: dict[str, Any] = {}
+
+    def _init_upstream_compat_flags(self, server_args: Any) -> None:
+        self.enable_hisparse = bool(getattr(server_args, "enable_hisparse", False))
+        self.hisparse_coordinator = None
+        self.enable_priority_preemption = bool(
+            getattr(server_args, "enable_priority_scheduling", False)
+            and not getattr(server_args, "disable_priority_preemption", False)
+        )
+        # High-water mark, not a cap. Mirrors upstream Scheduler.__init__ (sglang/srt/managers/scheduler.py).
+        self.max_prefill_bs = 0
+        self.use_ngram_embedding = False
+        self.return_health_check_ipcs = []
+        self.enable_overlap_mlx = False
+
+    def self_check_during_idle(self) -> None:
+        self.new_token_ratio = self.init_new_token_ratio
+        idle_sleeper = self.__dict__.get("idle_sleeper")
+        if idle_sleeper is not None:
+            idle_sleeper.maybe_sleep()
+
+    def self_check_during_busy(self) -> None:
+        return None
 
     # ------------------------------------------------------------------
     # Composition: delegate missing attributes to the upstream class

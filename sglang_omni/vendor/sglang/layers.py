@@ -14,7 +14,6 @@ from __future__ import annotations
 from typing import Optional, Tuple, Union
 
 import torch
-from sgl_kernel import top_k_top_p_sampling_from_probs
 from sglang.srt.layers.activation import SiluAndMul
 from sglang.srt.layers.communicator import LayerCommunicator, LayerScatterModes
 from sglang.srt.layers.dp_attention import get_attention_tp_rank, get_attention_tp_size
@@ -159,5 +158,4 @@ __all__ = [
     "LayerCommunicator",
     "LayerScatterModes",
     "FusedMoE",
-    "top_k_top_p_sampling_from_probs",
 ]

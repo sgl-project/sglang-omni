@@ -19,6 +19,7 @@ Skips (can be added later):
 
 from __future__ import annotations
 
+import inspect
 import logging
 import re
 from functools import partial
@@ -72,6 +73,32 @@ def _remap_ming_vision_weight(name: str) -> str:
     name = name.replace("attn.out_proj.", "attn.proj.")
 
     return name
+
+
+def _build_qwen3_vision_block_kwargs(
+    block_cls,
+    *,
+    dim: int,
+    num_heads: int,
+    head_size: int,
+    intermediate_dim: int,
+    hidden_act: str,
+    norm_layer,
+    quant_config: Optional[object],
+    prefix: str,
+) -> dict:
+    kwargs = {
+        "dim": dim,
+        "num_heads": num_heads,
+        "intermediate_dim": intermediate_dim,
+        "hidden_act": hidden_act,
+        "norm_layer": norm_layer,
+        "quant_config": quant_config,
+        "prefix": prefix,
+    }
+    if "head_size" in inspect.signature(block_cls.__init__).parameters:
+        kwargs["head_size"] = head_size
+    return kwargs
 
 
 class MingOmniVisionEncoder(nn.Module):
@@ -153,13 +180,17 @@ class MingOmniVisionEncoder(nn.Module):
         self.blocks = nn.ModuleList(
             [
                 Qwen3_VisionBlock(
-                    dim=self.hidden_size,
-                    num_heads=self.num_heads,
-                    intermediate_dim=vision_config.intermediate_size,
-                    hidden_act=vision_config.hidden_act,
-                    norm_layer=norm_layer,
-                    quant_config=quant_config,
-                    prefix=add_prefix(f"blocks.{layer_idx}", prefix),
+                    **_build_qwen3_vision_block_kwargs(
+                        Qwen3_VisionBlock,
+                        dim=self.hidden_size,
+                        num_heads=self.num_heads,
+                        head_size=head_dim,
+                        intermediate_dim=vision_config.intermediate_size,
+                        hidden_act=vision_config.hidden_act,
+                        norm_layer=norm_layer,
+                        quant_config=quant_config,
+                        prefix=add_prefix(f"blocks.{layer_idx}", prefix),
+                    )
                 )
                 for layer_idx in range(vision_config.depth)
             ]

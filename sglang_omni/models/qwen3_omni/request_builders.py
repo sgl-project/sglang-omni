@@ -320,7 +320,7 @@ def build_sglang_thinker_request(
             if cache_key is None:
                 continue
             h = xxhash.xxh3_64(cache_key.encode()).intdigest()
-            pad_val = vocab_size + h % (1 << 30)
+            pad_val = vocab_size + h % (1 << 62)
             pad_values[modality] = pad_val
             token_id_map[orig_token_id] = pad_val
         if token_id_map:

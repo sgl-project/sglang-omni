@@ -344,7 +344,13 @@ class BailingMoeV2SparseMoeBlock(nn.Module):
         else:
             self.expert_bias = None
 
-        # FusedMoE implementation
+        # （wenyao）reduce_results=True so the expert output is all_reduced across TP
+        # ranks before it is combined with the replicated shared-expert output.
+        # Upstream sglang bailing_moe.py uses reduce_results=False + a manual
+        # all_reduce after adding a parallel shared_experts; since our
+        # shared_experts is ReplicatedLinear (full value on every rank), we
+        # must reduce the experts output before the add to avoid double
+        # counting the shared expert contribution.
         FusedMoE = get_moe_impl_class(quant_config)
         self.experts = FusedMoE(
             num_experts=config.num_experts,
@@ -353,7 +359,7 @@ class BailingMoeV2SparseMoeBlock(nn.Module):
             intermediate_size=config.moe_intermediate_size,
             layer_id=layer_id,
             quant_config=quant_config,
-            reduce_results=False,
+            reduce_results=True,
         )
 
         # Shared expert
@@ -557,7 +563,9 @@ class BailingMoeV2TextModel(nn.Module):
     def load_weights(self, weights: Iterable[Tuple[str, torch.Tensor]]):
         """Load weights with prefix-based selection and MoE mapping."""
 
-        from sglang_omni.models.qwen3_omni.thinker import extract_fused_experts
+        from sglang_omni.models.qwen3_omni.components.thinker_model import (
+            extract_fused_experts,
+        )
 
         # Fused QKV: attention q/k/v -> qkv_proj
         _attn_fused_map = {

@@ -35,10 +35,17 @@ tests/
     │   ├── test_code2wav.py
     │   ├── test_colocation_config.py
     │   ├── test_config_manager.py
+    │   ├── test_logit_shaping.py
     │   ├── test_pipeline.py
     │   ├── test_sglang_ar_budget.py
     │   ├── test_streaming.py
     │   └── test_talker.py
+    ├── ming_omni/
+    │   ├── test_pipeline.py
+    │   ├── test_talker.py
+    │   ├── test_thinker.py
+    │   ├── test_tokenizer.py
+    │   └── test_tp.py
     ├── router/
     │   ├── test_app.py
     │   └── test_core.py
@@ -179,7 +186,21 @@ that happened to contain an older version of the test.
   - colocation config and SGLang AR budget contracts
   - `PipelineState` request builders
   - talker behavior
-  - Code2Wav streaming/cleanup behavior.
+  - Code2Wav streaming/cleanup behavior
+  - logit-shaping helpers (e.g. repetition penalty) numerical equivalence with the original per-row scalar formulas.
+
+- `unit_test/ming_omni/` Ming-Omni unit tests:
+
+  - text + speech pipeline config and stage schema
+  - launcher argparse, GPU placement, and TP wiring
+  - stage factory and scheduler contracts (preprocessing, encoders, thinker, talker, decode)
+  - thinker bootstrap registration and Ming model runner wiring
+  - multimodal embed injection (per-modality consumed state, pad-value fallback, short-embeds detection)
+  - image/vision encoder TP context preservation
+  - audio/image preprocessor placeholder construction and cache-key plumbing
+  - talker executor request gating and result-builder modality merging
+  - Bailing tokenizer loader fallback for vocab compatibility
+  - TP topology validation (rank-specific stage specs, talker/thinker GPU collision detection, server_args alignment before infra init).
 
 - `unit_test/router/`: SGLang-Omni Router unit tests:
   - router CLI/config behavior

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Talker executor for Ming-Omni.
 
-Wraps MingOmniTalker as a pipeline Executor stage. The talker
+Wraps MingOmniTalker as a pipeline stage. The talker
 receives decoded text from the thinker and independently generates speech audio
 using its own internal LLM + CFM + DiT + AudioVAE pipeline.
 
@@ -23,7 +23,6 @@ from pathlib import Path
 
 import torch
 
-from sglang_omni.executors.interface import Executor
 from sglang_omni.proto import StagePayload
 
 logger = logging.getLogger(__name__)
@@ -31,7 +30,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_VOICE = "DB30"
 
 
-class MingTalkerExecutor(Executor):
+class MingTalkerExecutor:
     """Executor that wraps MingOmniTalker for speech generation."""
 
     def __init__(
@@ -168,6 +167,14 @@ class MingTalkerExecutor(Executor):
         request_id = payload.request_id
         if request_id in self._aborted:
             return
+        if not self.should_generate_audio(payload):
+            logger.info(
+                "[TALKER] Skipping TTS for request %s; output_modalities=%s",
+                request_id,
+                self._output_modalities(payload),
+            )
+            await self._results.put(self.build_empty_audio_result(payload))
+            return
 
         text = self._extract_text(payload)
         logger.info(
@@ -186,20 +193,12 @@ class MingTalkerExecutor(Executor):
 
         t0 = time.time()
         logger.info("[TALKER] Starting TTS generation for %d chars...", len(text))
-        try:
-            waveform, sample_rate, duration = await asyncio.to_thread(
-                self._generate_speech, text
-            )
-            logger.info(
-                "[TALKER] TTS done in %.1fs, audio=%.2fs", time.time() - t0, duration
-            )
-        except Exception as e:
-            logger.error(
-                "[TALKER] ERROR after %.1fs: %s", time.time() - t0, e, exc_info=True
-            )
-            waveform = None
-            sample_rate = 44100
-            duration = 0.0
+        waveform, sample_rate, duration = await asyncio.to_thread(
+            self._generate_speech, text
+        )
+        logger.info(
+            "[TALKER] TTS done in %.1fs, audio=%.2fs", time.time() - t0, duration
+        )
 
         # Serialize tensor to bytes for cross-process msgpack transport
         if waveform is not None:
@@ -234,6 +233,37 @@ class MingTalkerExecutor(Executor):
 
     async def abort(self, request_id: str) -> None:
         self._aborted.add(request_id)
+
+    def should_generate_audio(self, payload: StagePayload) -> bool:
+        modalities = self._output_modalities(payload)
+        return modalities is None or "audio" in modalities
+
+    @staticmethod
+    def _output_modalities(payload: StagePayload) -> set[str] | None:
+        metadata = getattr(payload.request, "metadata", None)
+        if not isinstance(metadata, dict):
+            return None
+        modalities = metadata.get("output_modalities")
+        if modalities is None:
+            return None
+        if isinstance(modalities, str):
+            return {modalities}
+        if isinstance(modalities, (list, tuple, set)):
+            return {str(modality) for modality in modalities}
+        return None
+
+    @staticmethod
+    def build_empty_audio_result(payload: StagePayload) -> StagePayload:
+        return StagePayload(
+            request_id=payload.request_id,
+            request=payload.request,
+            data={
+                "audio_waveform": None,
+                "sample_rate": 44100,
+                "duration": 0.0,
+                "skipped": True,
+            },
+        )
 
     def _extract_text(self, payload: StagePayload) -> str:
         """Extract generated text from the thinker output in the payload."""

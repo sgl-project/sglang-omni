@@ -280,6 +280,8 @@ async def _chat_stream(
         audio_format=audio_format,
     ):
         # Capture finish info for the dedicated finish chunk after the loop.
+        # Some pipelines only emit a final aggregate chunk; do not drop its
+        # text/audio just because it already carries a finish reason.
         if chunk.finish_reason is not None:
             finish_reason = chunk.finish_reason
             if chunk.usage is not None:
@@ -288,7 +290,17 @@ async def _chat_stream(
                     completion_tokens=chunk.usage.completion_tokens or 0,
                     total_tokens=chunk.usage.total_tokens or 0,
                 )
-            continue
+            has_payload = (
+                chunk.modality == "text"
+                and bool(chunk.text)
+                and "text" in requested_modalities
+            ) or (
+                chunk.modality == "audio"
+                and chunk.audio_b64 is not None
+                and "audio" in requested_modalities
+            )
+            if not has_payload:
+                continue
 
         delta = ChatCompletionStreamDelta()
         emit = False
@@ -386,7 +398,7 @@ def _build_chat_generate_request(req: ChatCompletionRequest) -> GenerateRequest:
     messages = [Message(role=m.role, content=m.content) for m in req.messages]
 
     # Determine output modalities
-    output_modalities = req.modalities  # e.g. ["text", "audio"]
+    output_modalities = req.modalities or ["text"]  # e.g. ["text", "audio"]
 
     # Build per-stage sampling overrides
     stage_sampling: dict[str, SamplingParams] | None = None

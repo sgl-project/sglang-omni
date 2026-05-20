@@ -201,6 +201,8 @@ class QwenTalkerModelRunner(ModelRunner):
         feedback_mask = self.model._feedback_mask
         feedback_mask[:batch_size] = False
 
+        rows: list[int] = []
+        embeds: list[torch.Tensor] = []
         for row_idx, sched_req in enumerate(requests):
             combined = self._take_next_decode_input_embed(
                 sched_req=sched_req,
@@ -209,8 +211,13 @@ class QwenTalkerModelRunner(ModelRunner):
             )
             if combined is None:
                 continue
-            feedback_buffer[row_idx].copy_(combined)
-            feedback_mask[row_idx] = True
+            rows.append(row_idx)
+            embeds.append(combined)
+        if rows:
+            rows_t = torch.tensor(rows, dtype=torch.long, device=feedback_buffer.device)
+            embeds_stacked = torch.stack(embeds, dim=0)
+            feedback_buffer[rows_t] = embeds_stacked
+            feedback_mask[rows_t] = True
 
     @staticmethod
     def _data_has_next_decode_input(data: Any) -> bool:

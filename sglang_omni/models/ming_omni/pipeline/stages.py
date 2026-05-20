@@ -241,10 +241,7 @@ def _ensure_ming_config_registered(model_path: str = "inclusionAI/Ming-flash-omn
 
     from sglang_omni.models.ming_omni.thinker import BailingMM2Config
 
-    try:
-        AutoConfig.register("bailingmm_moe_v2_lite", BailingMM2Config)
-    except ValueError:
-        pass
+    AutoConfig.register("bailingmm_moe_v2_lite", BailingMM2Config, exist_ok=True)
 
     # Patch HF cache with missing files
     try:

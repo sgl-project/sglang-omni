@@ -648,6 +648,7 @@ class VoiceCloneOmni:
         temperature: float = 0.7,
         voice_clone: bool = False,
         stream: bool = False,
+        system_prompt: str | None = None,
     ) -> tuple[bytes, float, dict]:
         if max_tokens is None:
             max_tokens = self.THINKER_MAX_NEW_TOKENS
@@ -673,9 +674,14 @@ class VoiceCloneOmni:
             else:
                 prompt_text = f"请用中文朗读以下文本: {sample.target_text}"
 
+        messages: list[dict] = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": prompt_text})
+
         payload = {
             "model": model_name,
-            "messages": [{"role": "user", "content": prompt_text}],
+            "messages": messages,
             "modalities": ["text", "audio"],
             "audio": {"format": "wav"},
             "max_tokens": max_tokens,
@@ -766,6 +772,7 @@ class VoiceCloneOmni:
         max_tokens: int | None = None,
         voice_clone: bool = False,
         stream: bool = False,
+        system_prompt: str | None = None,
     ) -> SampleOutput:
         output = SampleOutput(
             sample_id=sample.sample_id,
@@ -784,6 +791,7 @@ class VoiceCloneOmni:
                 max_tokens,
                 voice_clone=voice_clone,
                 stream=stream,
+                system_prompt=system_prompt,
             )
             with open(wav_path, "wb") as f:
                 f.write(wav_bytes)
