@@ -8,13 +8,18 @@ import yaml
 
 from sglang_omni.config import PipelineConfig
 from sglang_omni.config.manager import ConfigManager
-from sglang_omni.serve.launcher import launch_server
 
 logger = logging.getLogger(__name__)
 
 
 _STAGE_TOGGLE_MODE = Literal["default", "on", "off"]
 _QWEN_COLOCATED_CONFIG_CLASS = "Qwen3OmniSpeechColocatedPipelineConfig"
+
+
+def launch_server(*args: object, **kwargs: object) -> object:
+    from sglang_omni.serve.launcher import launch_server as _launch_server
+
+    return _launch_server(*args, **kwargs)
 
 
 def _normalize_stage_toggle_mode(flag_name: str, value: str) -> _STAGE_TOGGLE_MODE:
@@ -371,6 +376,26 @@ def _apply_stage_gpu_override(
         stage.gpu = int(gpu)
 
 
+def _apply_talker_gpu_override(
+    pipeline_config: PipelineConfig,
+    *,
+    gpu: int | None,
+) -> None:
+    if gpu is None:
+        return
+    for stage_name in ("talker_ar", "talker"):
+        if any(stage.name == stage_name for stage in pipeline_config.stages):
+            _apply_stage_gpu_override(
+                pipeline_config,
+                stage_name=stage_name,
+                gpu=gpu,
+            )
+            return
+    raise typer.BadParameter(
+        "No talker stage found in pipeline; cannot set --talker-gpu"
+    )
+
+
 def _validate_colocated_gpu_override(
     pipeline_config: PipelineConfig,
     *,
@@ -390,6 +415,59 @@ def _validate_colocated_gpu_override(
         raise typer.BadParameter(
             f"{flag_name} cannot move {stage_name} away from the colocated GPU"
         )
+
+
+def _apply_tensor_parallel_server_args_overrides(
+    pipeline_config: PipelineConfig,
+) -> None:
+    config_cls = type(pipeline_config)
+    for stage in pipeline_config.stages:
+        updates = config_cls.tensor_parallel_server_args_overrides(
+            stage_name=stage.name,
+            tp_size=stage.tp_size,
+        )
+        if not updates:
+            continue
+        _apply_stage_server_args_override(
+            pipeline_config,
+            stage_name=stage.name,
+            updates=updates,
+            reason=f"tensor parallel server args for {stage.name}",
+        )
+
+
+def _validate_parallelism_config(pipeline_config: PipelineConfig) -> None:
+    try:
+        type(pipeline_config)(**pipeline_config.model_dump())
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+
+
+def apply_thinker_server_args_cli_overrides(
+    pipeline_config: PipelineConfig,
+    *,
+    cpu_offload_gb: int | None,
+    quantization: str | None,
+) -> PipelineConfig:
+    updates: dict[str, object] = {}
+    if cpu_offload_gb is not None:
+        if cpu_offload_gb < 0:
+            raise typer.BadParameter("--cpu-offload-gb must be >= 0")
+        updates["cpu_offload_gb"] = int(cpu_offload_gb)
+    if quantization is not None:
+        quantization = quantization.strip()
+        if not quantization:
+            raise typer.BadParameter("--quantization must not be empty")
+        updates["quantization"] = quantization
+
+    if updates:
+        _apply_stage_server_args_override(
+            pipeline_config,
+            stage_name="thinker",
+            updates=updates,
+            reason="thinker SGLang ServerArgs override",
+        )
+    return pipeline_config
 
 
 def apply_parallelism_cli_overrides(
@@ -433,16 +511,15 @@ def apply_parallelism_cli_overrides(
         flag_name="--code2wav-gpu",
         gpu=code2wav_gpu,
     )
-    _apply_stage_gpu_override(
-        pipeline_config,
-        stage_name="talker_ar",
-        gpu=talker_gpu,
-    )
-    _apply_stage_gpu_override(
-        pipeline_config,
-        stage_name="code2wav",
-        gpu=code2wav_gpu,
-    )
+    _apply_talker_gpu_override(pipeline_config, gpu=talker_gpu)
+    if code2wav_gpu is not None:
+        _apply_stage_gpu_override(
+            pipeline_config,
+            stage_name="code2wav",
+            gpu=code2wav_gpu,
+        )
+    _apply_tensor_parallel_server_args_overrides(pipeline_config)
+    _validate_parallelism_config(pipeline_config)
     return pipeline_config
 
 
@@ -578,7 +655,7 @@ def serve(
         typer.Option(
             "--mem-fraction-static",
             help=(
-                "Set SGLang mem_fraction_static for all supported Qwen AR stages. "
+                "Set SGLang mem_fraction_static for supported SGLang AR stages. "
                 "If omitted, SGLang chooses the value automatically."
             ),
         ),
@@ -588,7 +665,7 @@ def serve(
         typer.Option(
             "--thinker-mem-fraction-static",
             help=(
-                "Set SGLang mem_fraction_static for Qwen thinker. Overrides "
+                "Set SGLang mem_fraction_static for the thinker stage. Overrides "
                 "--mem-fraction-static for thinker."
             ),
         ),
@@ -598,8 +675,8 @@ def serve(
         typer.Option(
             "--talker-mem-fraction-static",
             help=(
-                "Set SGLang mem_fraction_static for Qwen talker_ar. Overrides "
-                "--mem-fraction-static for talker_ar."
+                "Set SGLang mem_fraction_static for supported talker AR stages. "
+                "Overrides --mem-fraction-static for talker."
             ),
         ),
     ] = None,
@@ -612,6 +689,21 @@ def serve(
                 "mem_fraction_static for colocated external encoders. Valid only "
                 "when thinker mem_fraction_static is not explicitly pinned."
             ),
+        ),
+    ] = None,
+    cpu_offload_gb: Annotated[
+        int | None,
+        typer.Option(
+            "--cpu-offload-gb",
+            "--cpu_offload_gb",
+            help="Set SGLang cpu_offload_gb for the thinker stage.",
+        ),
+    ] = None,
+    quantization: Annotated[
+        str | None,
+        typer.Option(
+            "--quantization",
+            help="Set SGLang quantization mode for the thinker stage.",
         ),
     ] = None,
     log_level: Annotated[
@@ -747,6 +839,11 @@ def serve(
         encoder_mem_reserve=encoder_mem_reserve,
         mem_fraction_static=mem_fraction_static,
         thinker_mem_fraction_static=thinker_mem_fraction_static,
+    )
+    merged_config = apply_thinker_server_args_cli_overrides(
+        merged_config,
+        cpu_offload_gb=cpu_offload_gb,
+        quantization=quantization,
     )
     merged_config = apply_parallelism_cli_overrides(
         merged_config,
