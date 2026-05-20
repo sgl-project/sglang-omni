@@ -525,11 +525,7 @@ class Stage:
         metadata = {}
         raw_meta = ipc_meta.get("metadata", {})
         if isinstance(raw_meta, dict):
-            for key, value in raw_meta.items():
-                if isinstance(value, dict) and "_ipc_tensor" in value:
-                    metadata[key] = _pickle.loads(value["_ipc_tensor"])
-                else:
-                    metadata[key] = value
+            metadata = relay_io.deserialize_ipc_metadata(raw_meta)
         return StreamItem(
             chunk_id=msg.chunk_id,
             data=data,
