@@ -1,11 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """Multi-process pipeline runner.
 
-Spawns each pipeline stage (possibly with multiple TP ranks) in its own OS
-process(es).  The main process runs only the Coordinator.
-
-Architecture
-``PipelineConfig`` → ``_build_stage_groups()`` → ``list[StageGroup]``
+The runner owns the single serving path. It can start one OS process containing
+multiple non-TP stages, multiple OS processes on the same GPU, and the existing
+one-process-per-rank TP topology.
 """
 from __future__ import annotations
 
@@ -15,11 +13,6 @@ import multiprocessing
 import socket
 from typing import Any
 
-from sglang_omni.config.compiler import (
-    IpcRuntimeDir,
-    _build_relay_config,
-    prepare_pipeline_runtime,
-)
 from sglang_omni.config.placement import (
     StagePlacementPlan,
     resolve_same_gpu_stream_targets,
@@ -27,9 +20,16 @@ from sglang_omni.config.placement import (
 )
 from sglang_omni.config.runtime import resolve_stage_factory_args
 from sglang_omni.config.schema import PipelineConfig, StageConfig
+from sglang_omni.config.topology import ProcessTopologyPlan
 from sglang_omni.pipeline import Coordinator
+from sglang_omni.pipeline.runtime_config import (
+    IpcRuntimeDir,
+    PipelineRuntimePrep,
+    build_relay_config,
+    prepare_pipeline_runtime,
+)
 from sglang_omni.pipeline.stage_group import StageGroup
-from sglang_omni.pipeline.stage_process import StageProcessSpec
+from sglang_omni.pipeline.stage_process import StageProcessSpec, StageWorkerProcessSpec
 
 logger = logging.getLogger(__name__)
 
@@ -42,8 +42,9 @@ def _build_stage_groups(
     name_map: dict[str, str],
     endpoints: dict[str, str],
     placement_plan: StagePlacementPlan,
+    process_plan: ProcessTopologyPlan,
 ) -> list[StageGroup]:
-    """Build one :class:`StageGroup` per logical stage from prepared endpoints.
+    """Build lifecycle groups from prepared endpoints and process topology.
 
     The caller owns endpoint allocation and IPC runtime-dir lifecycle. This
     helper only converts prepared runtime state into subprocess specs.
@@ -59,7 +60,8 @@ def _build_stage_groups(
 
     nccl_port_counter = _NcclPortAllocator()
 
-    groups: list[StageGroup] = []
+    single_stage_specs: dict[str, StageProcessSpec] = {}
+    tp_groups: list[StageGroup] = []
     for stage_cfg in stages_cfg:
         tp_size = stage_cfg.tp_size
         gpu_ids = resolve_stage_gpu_ids(placement_plan, stage_cfg)
@@ -94,16 +96,14 @@ def _build_stage_groups(
             name_map=name_map,
         )
         if tp_size == 1:
-            specs = [
-                _build_single_stage_spec(
-                    stage_cfg=stage_cfg,
-                    config=config,
-                    gpu_id=gpu_ids[0],
-                    recv_endpoint=stage_endpoints[stage_cfg.name],
-                    base_factory_args=base_factory_args,
-                    stage_kwargs=stage_kwargs,
-                )
-            ]
+            single_stage_specs[stage_cfg.name] = _build_single_stage_spec(
+                stage_cfg=stage_cfg,
+                config=config,
+                gpu_id=gpu_ids[0],
+                recv_endpoint=stage_endpoints[stage_cfg.name],
+                base_factory_args=base_factory_args,
+                stage_kwargs=stage_kwargs,
+            )
         else:
             specs = _build_tp_stage_specs(
                 ctx=ctx,
@@ -115,8 +115,36 @@ def _build_stage_groups(
                 base_factory_args=base_factory_args,
                 stage_kwargs=stage_kwargs,
             )
+            process_specs = [
+                StageWorkerProcessSpec(
+                    process_name=process_plan.tp_stage_to_processes[stage_cfg.name][
+                        spec.tp_rank
+                    ],
+                    stage_specs=[spec],
+                    gpu_id=spec.gpu_id,
+                )
+                for spec in specs
+            ]
+            tp_groups.append(StageGroup(stage_cfg.name, process_specs))
 
-        groups.append(StageGroup(stage_cfg.name, specs))
+    groups: list[StageGroup] = []
+    for group in process_plan.groups:
+        groups.append(
+            StageGroup(
+                group.name,
+                [
+                    StageWorkerProcessSpec(
+                        process_name=group.name,
+                        stage_specs=[
+                            single_stage_specs[stage_name]
+                            for stage_name in group.stage_names
+                        ],
+                        gpu_id=group.gpu_id,
+                    )
+                ],
+            )
+        )
+    groups.extend(tp_groups)
 
     return groups
 
@@ -220,7 +248,7 @@ def _resolve_relay_config(
     gpu_id: int | None,
 ) -> dict[str, Any]:
     """Build relay config, overriding gpu_id from placement."""
-    relay_config = _build_relay_config(stage_cfg, config)
+    relay_config = build_relay_config(stage_cfg, config)
     # shm copies into host shared memory, so CUDA staging only creates extra
     # GPU allocator pressure.
     if stage_cfg.gpu is not None and config.relay_backend != "shm":
@@ -258,6 +286,7 @@ class MultiProcessPipelineRunner:
         self._monitor_task: asyncio.Task | None = None
         self._fatal_event: asyncio.Event | None = None
         self._fatal_error: BaseException | None = None
+        self._prep: PipelineRuntimePrep | None = None
         self._started = False
 
     @property
@@ -267,10 +296,21 @@ class MultiProcessPipelineRunner:
         return self._coordinator
 
     @property
+    def prep(self) -> PipelineRuntimePrep:
+        """Return the resolved runtime prep (placement plan, process plan,
+        endpoints, fused stages). Valid only after :meth:`start`."""
+        if self._prep is None:
+            raise RuntimeError("Runner not started")
+        return self._prep
+
+    @property
     def stage_control_endpoints(self) -> dict[str, str]:
         if not self._started:
             raise RuntimeError("Runner not started")
-        return {group.stage_name: group.leader_endpoint for group in self._groups}
+        endpoints: dict[str, str] = {}
+        for group in self._groups:
+            endpoints.update(group.stage_control_endpoints)
+        return endpoints
 
     async def start(self, timeout: float = 120.0) -> None:
         if self._started:
@@ -284,6 +324,7 @@ class MultiProcessPipelineRunner:
                 self._config,
                 ipc_runtime_dir=self._ipc_runtime_dir,
             )
+            self._prep = prep
             self._ipc_runtime_dir = prep.runtime_dir
             groups = _build_stage_groups(
                 self._config,
@@ -292,6 +333,7 @@ class MultiProcessPipelineRunner:
                 name_map=prep.name_map,
                 endpoints=prep.endpoints,
                 placement_plan=prep.placement_plan,
+                process_plan=prep.process_plan,
             )
 
             self._coordinator = Coordinator(
@@ -319,17 +361,19 @@ class MultiProcessPipelineRunner:
                     )
 
             for group in self._groups:
-                self._coordinator.register_stage(
-                    group.stage_name, group.leader_endpoint
-                )
+                for stage_name, endpoint in group.stage_control_endpoints.items():
+                    self._coordinator.register_stage(stage_name, endpoint)
 
             self._started = True
             self._monitor_task = asyncio.create_task(self._monitor_children())
 
-            total_procs = sum(g.tp_size for g in self._groups)
+            total_stages = sum(
+                len(group.stage_control_endpoints) for group in self._groups
+            )
+            total_procs = sum(g.process_count for g in self._groups)
             logger.info(
                 "MultiProcessPipelineRunner started: %d stage(s), %d process(es)",
-                len(self._groups),
+                total_stages,
                 total_procs,
             )
 

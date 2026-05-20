@@ -28,6 +28,7 @@ class _DummyManager:
             stages=[
                 StageConfig(
                     name="stage",
+                    process="pipeline",
                     factory="tests.unit_test.fixtures.pipeline_fakes.dummy_factory",
                     terminal=True,
                 )

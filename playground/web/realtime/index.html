@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>WIRE SERVICE — sglang-omni /v1/realtime</title>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght,SOFT@9..144,300..900,0..100&family=Newsreader:opsz,wght@6..72,400..700&family=JetBrains+Mono:wght@400;700&display=swap" />
+
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+
+  <!-- ─────────────────────  MASTHEAD  ───────────────────── -->
+  <header class="masthead">
+    <div class="masthead-meta-left">
+      <span class="meta-line">VOL. I · No. 1</span>
+      <span class="meta-line">FILED FROM sglang-omni</span>
+    </div>
+    <div class="masthead-meta-right">
+      <span class="meta-line">A LIVE TRANSCRIPT</span>
+      <span class="meta-line">EST. 2026</span>
+    </div>
+
+    <hr class="rule rule-double" />
+
+    <h1 class="masthead-title">
+      <span class="title-word title-word-1">Wire</span>
+      <span class="title-word title-word-2">Service</span>
+    </h1>
+
+    <hr class="rule rule-thin" />
+
+    <p class="masthead-tagline">
+      A demonstration of <code>/v1/realtime</code> — voice in, reply out, in the time it takes to hear yourself stop talking. Server VAD detects when you stop; the engine answers, then transcribes what you said.
+    </p>
+
+    <hr class="rule rule-thick" />
+  </header>
+
+  <main class="layout">
+
+    <!-- ─────────────────────  CONTROL DESK (LEFT RAIL)  ───────────────────── -->
+    <aside class="controls">
+
+      <section class="control-section">
+        <h2 class="section-head">
+          <span class="section-num">i</span>
+          <span class="section-name">Connection</span>
+        </h2>
+
+        <label class="field">
+          <span class="field-label">Endpoint</span>
+          <input id="ws-url" type="text" value="ws://127.0.0.1:8765/v1/realtime" />
+        </label>
+
+        <label class="field">
+          <span class="field-label">Instructions to the Engine</span>
+          <textarea id="instructions" rows="4">You are a helpful realtime voice assistant. Respond conversationally to the user's spoken question.</textarea>
+        </label>
+
+        <div class="action-row">
+          <button id="connect" class="btn btn-primary">Open Wire</button>
+          <button id="disconnect" class="btn btn-ghost" disabled>Sever</button>
+        </div>
+
+        <div class="status-strip">
+          <span class="status-dot" id="status-dot" aria-hidden="true"></span>
+          <span class="status-label" id="status">Standing by</span>
+        </div>
+      </section>
+
+      <hr class="rule rule-fleuron" data-fleuron="❦" />
+
+      <section class="control-section">
+        <h2 class="section-head">
+          <span class="section-num">ii</span>
+          <span class="section-name">Microphone</span>
+        </h2>
+
+        <div class="action-row">
+          <button id="mic-start" class="btn btn-primary" disabled>Begin Transmission</button>
+          <button id="mic-stop" class="btn btn-ghost" disabled>End</button>
+        </div>
+
+        <div class="action-row action-row-secondary">
+          <button id="clear-buffer" class="btn btn-ghost" disabled>Clear buffer</button>
+        </div>
+
+        <div class="oscilloscope-frame">
+          <canvas id="oscilloscope" width="320" height="64" aria-label="Microphone waveform"></canvas>
+          <span class="oscilloscope-caption" id="mic-status">Channel cold</span>
+        </div>
+      </section>
+
+    </aside>
+
+
+    <!-- ─────────────────────  TRANSCRIPT  (HERO COLUMN) ───────────────────── -->
+    <article class="transcripts">
+
+      <header class="transcripts-head">
+        <h2 class="transcripts-title">
+          <span class="transcripts-label">The Transcript</span>
+          <span class="live-pill" id="live-pill">
+            <span class="live-dot"></span>
+            <span class="live-text">OFFLINE</span>
+          </span>
+        </h2>
+        <p class="transcripts-tagline">
+          Each utterance is set in <em>Newsreader Italic</em>, lifted from the wire as the engine emits it. Drop caps mark the start of every committed turn. Tap an utterance to see the wire payload that produced it.
+        </p>
+        <hr class="rule rule-thin" />
+      </header>
+
+      <div id="transcripts" class="utterance-stack">
+        <p class="empty-state">
+          The wire is quiet. Open it, then speak.
+        </p>
+      </div>
+
+    </article>
+
+  </main>
+
+
+  <!-- ─────────────────────  COLOPHON  ───────────────────── -->
+  <footer class="colophon">
+    <hr class="rule rule-double" />
+    <div class="colophon-content">
+      <span>Set in <em>Fraunces</em> &amp; <em>Newsreader</em>. Code in <em>JetBrains Mono</em>.</span>
+      <span>Server: <code>sglang_omni/serve/realtime/</code></span>
+      <span>Protocol: <code>OpenAI Realtime · v1</code></span>
+    </div>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>

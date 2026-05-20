@@ -7,7 +7,6 @@ from sglang_omni.config import (
     ParallelismConfig,
     PipelineConfig,
     PlacementConfig,
-    ProcessConfig,
     SGLangServerArgsConfig,
     StageConfig,
     StageResourceConfig,
@@ -20,6 +19,7 @@ _FACTORY = "tests.unit_test.fixtures.pipeline_fakes.dummy_factory"
 def _stage(**kwargs) -> StageConfig:
     data = {
         "name": "stage",
+        "process": "pipeline",
         "factory": _FACTORY,
         "terminal": True,
     }
@@ -90,15 +90,13 @@ def test_conflicting_tp_size_and_parallelism_tp_raise() -> None:
         _stage(tp_size=2, parallelism=ParallelismConfig(tp=3), gpu=[0, 1])
 
 
-def test_pipeline_accepts_process_and_placement_config() -> None:
+def test_pipeline_accepts_placement_config() -> None:
     config = PipelineConfig(
         model_path="dummy",
-        process=ProcessConfig(mode="multi"),
         placement=PlacementConfig(max_total_gpu_memory_fraction_per_gpu=0.95),
         stages=[_stage()],
     )
 
-    assert config.process.mode == "multi"
     assert config.placement.max_total_gpu_memory_fraction_per_gpu == 0.95
 
 

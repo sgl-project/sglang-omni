@@ -30,6 +30,7 @@ class LLaDA2UniPipelineConfig(PipelineConfig):
     stages: list[StageConfig] = [
         StageConfig(
             name=PREPROCESSING_STAGE,
+            process="pipeline",
             factory=f"{_PKG}.stages.create_preprocessing_executor",
             factory_args={"thinker_max_seq_len": 8192},
             runtime_arg_map={"max_seq_len": "thinker_max_seq_len"},
@@ -37,6 +38,7 @@ class LLaDA2UniPipelineConfig(PipelineConfig):
         ),
         StageConfig(
             name=IMAGE_STAGE,
+            process="pipeline",
             factory=f"{_PKG}.stages.create_image_encoder_executor",
             factory_args={"device": "cuda", "dtype": None},
             gpu=0,
@@ -44,6 +46,7 @@ class LLaDA2UniPipelineConfig(PipelineConfig):
         ),
         StageConfig(
             name=THINKER_STAGE,
+            process="pipeline",
             factory=f"{_PKG}.stages.create_sglang_dllm_thinker_executor_from_config",
             factory_args={"thinker_max_seq_len": 8192},
             gpu=0,
@@ -51,6 +54,7 @@ class LLaDA2UniPipelineConfig(PipelineConfig):
         ),
         StageConfig(
             name=DECODE_STAGE,
+            process="pipeline",
             factory=f"{_PKG}.stages.create_decode_executor",
             terminal=True,
         ),

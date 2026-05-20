@@ -7,15 +7,16 @@ from typing import ClassVar
 
 from pydantic import Field
 
-from sglang_omni.config import PipelineConfig, ProcessConfig, StageConfig
+from sglang_omni.config import PipelineConfig, PlacementConfig, StageConfig
 
 _PKG = "sglang_omni.models.qwen3_omni"
 _PLACEMENT_POLICY = f"{_PKG}.placement.Qwen3OmniPlacementPolicy"
 
 
-def _preprocessing_stage() -> StageConfig:
+def _preprocessing_stage(*, process: str) -> StageConfig:
     return StageConfig(
         name="preprocessing",
+        process=process,
         factory=f"{_PKG}.stages.create_preprocessing_executor",
         factory_args={"thinker_max_seq_len": 8192},
         runtime_arg_map={
@@ -37,9 +38,10 @@ def _preprocessing_stage() -> StageConfig:
     )
 
 
-def _image_encoder_stage(*, gpu: int) -> StageConfig:
+def _image_encoder_stage(*, gpu: int, process: str) -> StageConfig:
     return StageConfig(
         name="image_encoder",
+        process=process,
         factory=f"{_PKG}.stages.create_image_encoder_executor",
         factory_args={"device": "cuda", "dtype": None},
         gpu=gpu,
@@ -50,9 +52,10 @@ def _image_encoder_stage(*, gpu: int) -> StageConfig:
     )
 
 
-def _audio_encoder_stage(*, gpu: int) -> StageConfig:
+def _audio_encoder_stage(*, gpu: int, process: str) -> StageConfig:
     return StageConfig(
         name="audio_encoder",
+        process=process,
         factory=f"{_PKG}.stages.create_audio_encoder_executor",
         factory_args={"device": "cuda", "dtype": None},
         gpu=gpu,
@@ -63,9 +66,10 @@ def _audio_encoder_stage(*, gpu: int) -> StageConfig:
     )
 
 
-def _aggregate_stage() -> StageConfig:
+def _aggregate_stage(*, process: str) -> StageConfig:
     return StageConfig(
         name="mm_aggregate",
+        process=process,
         factory=f"{_PKG}.stages.create_aggregate_executor",
         wait_for=["preprocessing", "image_encoder", "audio_encoder"],
         merge_fn=f"{_PKG}.merge.merge_for_thinker",
@@ -73,12 +77,13 @@ def _aggregate_stage() -> StageConfig:
     )
 
 
-def _thinker_stage(*, gpu: int, speech_enabled: bool) -> StageConfig:
+def _thinker_stage(*, gpu: int, speech_enabled: bool, process: str) -> StageConfig:
     factory_args = {"thinker_max_seq_len": 8192}
     if speech_enabled:
         factory_args["speech_enabled"] = True
     return StageConfig(
         name="thinker",
+        process=process,
         factory=f"{_PKG}.stages.create_sglang_thinker_executor_from_config",
         factory_args=factory_args,
         gpu=gpu,
@@ -88,18 +93,20 @@ def _thinker_stage(*, gpu: int, speech_enabled: bool) -> StageConfig:
     )
 
 
-def _decode_stage() -> StageConfig:
+def _decode_stage(*, process: str) -> StageConfig:
     return StageConfig(
         name="decode",
+        process=process,
         factory=f"{_PKG}.stages.create_decode_executor",
         terminal=True,
         can_accept_stream_before_payload=True,
     )
 
 
-def _talker_stage(*, gpu: int) -> StageConfig:
+def _talker_stage(*, gpu: int, process: str) -> StageConfig:
     return StageConfig(
         name="talker_ar",
+        process=process,
         factory=f"{_PKG}.stages.create_talker_ar_executor_from_config",
         factory_args={
             # Note (Xuesong): must exceed talker_max_new_tokens (4096) +
@@ -121,9 +128,10 @@ def _talker_stage(*, gpu: int) -> StageConfig:
     )
 
 
-def _code2wav_stage(*, gpu: int) -> StageConfig:
+def _code2wav_stage(*, gpu: int, process: str) -> StageConfig:
     return StageConfig(
         name="code2wav",
+        process=process,
         factory=f"{_PKG}.components.code2wav_scheduler.create_code2wav_scheduler",
         factory_args={"device": "cuda"},
         gpu=gpu,
@@ -134,26 +142,64 @@ def _code2wav_stage(*, gpu: int) -> StageConfig:
 
 def _text_stages() -> list[StageConfig]:
     return [
-        _preprocessing_stage(),
-        _image_encoder_stage(gpu=0),
-        _audio_encoder_stage(gpu=0),
-        _aggregate_stage(),
-        _thinker_stage(gpu=0, speech_enabled=False),
-        _decode_stage(),
+        _preprocessing_stage(process="pipeline"),
+        _image_encoder_stage(gpu=0, process="pipeline"),
+        _audio_encoder_stage(gpu=0, process="pipeline"),
+        _aggregate_stage(process="pipeline"),
+        _thinker_stage(gpu=0, speech_enabled=False, process="pipeline"),
+        _decode_stage(process="pipeline"),
     ]
 
 
-def _speech_stages(*, thinker_gpu: int, talker_gpu: int) -> list[StageConfig]:
+def _speech_stages(
+    *,
+    thinker_gpu: int,
+    talker_gpu: int,
+    process_by_stage: dict[str, str],
+) -> list[StageConfig]:
     return [
-        _preprocessing_stage(),
-        _image_encoder_stage(gpu=thinker_gpu),
-        _audio_encoder_stage(gpu=thinker_gpu),
-        _aggregate_stage(),
-        _thinker_stage(gpu=thinker_gpu, speech_enabled=True),
-        _decode_stage(),
-        _talker_stage(gpu=talker_gpu),
-        _code2wav_stage(gpu=talker_gpu),
+        _preprocessing_stage(process=process_by_stage["preprocessing"]),
+        _image_encoder_stage(
+            gpu=thinker_gpu,
+            process=process_by_stage["image_encoder"],
+        ),
+        _audio_encoder_stage(
+            gpu=thinker_gpu,
+            process=process_by_stage["audio_encoder"],
+        ),
+        _aggregate_stage(process=process_by_stage["mm_aggregate"]),
+        _thinker_stage(
+            gpu=thinker_gpu,
+            speech_enabled=True,
+            process=process_by_stage["thinker"],
+        ),
+        _decode_stage(process=process_by_stage["decode"]),
+        _talker_stage(gpu=talker_gpu, process=process_by_stage["talker_ar"]),
+        _code2wav_stage(gpu=talker_gpu, process=process_by_stage["code2wav"]),
     ]
+
+
+_SPEECH_DEFAULT_PROCESSES = {
+    "preprocessing": "preprocessing",
+    "image_encoder": "image_encoder",
+    "audio_encoder": "audio_encoder",
+    "mm_aggregate": "mm_aggregate",
+    "thinker": "thinker",
+    "decode": "decode",
+    "talker_ar": "talker_ar",
+    "code2wav": "code2wav",
+}
+
+_SPEECH_COLOCATED_PROCESSES = {
+    "preprocessing": "preprocessing",
+    "image_encoder": "image_encoder",
+    "audio_encoder": "audio_encoder",
+    "mm_aggregate": "mm_aggregate",
+    "thinker": "thinker",
+    "decode": "decode",
+    "talker_ar": "talker_ar",
+    "code2wav": "code2wav",
+}
 
 
 class Qwen3OmniPipelineConfig(PipelineConfig):
@@ -181,8 +227,17 @@ class Qwen3OmniSpeechPipelineConfig(PipelineConfig):
 
     model_path: str
     placement_policy: str | None = _PLACEMENT_POLICY
+    placement: PlacementConfig = Field(
+        default_factory=lambda: PlacementConfig(
+            require_memory_fraction_for_colocation=False
+        )
+    )
     stages: list[StageConfig] = Field(
-        default_factory=lambda: _speech_stages(thinker_gpu=0, talker_gpu=1)
+        default_factory=lambda: _speech_stages(
+            thinker_gpu=0,
+            talker_gpu=1,
+            process_by_stage=_SPEECH_DEFAULT_PROCESSES,
+        )
     )
 
 
@@ -196,9 +251,12 @@ class Qwen3OmniSpeechColocatedPipelineConfig(Qwen3OmniSpeechPipelineConfig):
     SGLang AR cache fractions.
     """
 
-    process: ProcessConfig = Field(default_factory=lambda: ProcessConfig(mode="multi"))
     stages: list[StageConfig] = Field(
-        default_factory=lambda: _speech_stages(thinker_gpu=0, talker_gpu=0)
+        default_factory=lambda: _speech_stages(
+            thinker_gpu=0,
+            talker_gpu=0,
+            process_by_stage=_SPEECH_COLOCATED_PROCESSES,
+        )
     )
 
 

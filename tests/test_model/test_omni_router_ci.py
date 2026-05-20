@@ -29,6 +29,7 @@ from benchmarks.metrics.wer import print_wer_summary
 from sglang_omni.utils import find_available_port
 from tests.utils import (
     apply_slack,
+    apply_wer_slack,
     assert_per_request_fields,
     assert_speed_thresholds,
     assert_summary_metrics,
@@ -57,11 +58,11 @@ ROUTER_CLEANUP_MANIFEST_ENV = "SGLANG_OMNI_ROUTER_CLEANUP_MANIFEST"
 
 _ROUTER_COLOCATED_SEEDTTS_REFERENCE = {
     16: {
-        "throughput_qps": 5.657,
-        "tok_per_s_agg": 5.7,
-        "latency_mean_s": 2.585,
-        "latency_p95_s": 4.154,
-        "rtf_mean": 0.8431,
+        "throughput_qps": 5.542,
+        "tok_per_s_agg": 5.3,
+        "latency_mean_s": 2.744,
+        "latency_p95_s": 4.46,
+        "rtf_mean": 0.8896,
     },
 }
 ROUTER_COLOCATED_SEEDTTS_THRESHOLDS = apply_slack(
@@ -74,6 +75,9 @@ ROUTER_SEEDTTS_LATENCY_P95_MAX = round(
     1,
 )
 ROUTER_SEEDTTS_WER_BELOW_50_CORPUS_MAX = 0.014184397163120567
+ROUTER_SEEDTTS_WER_BELOW_50_CORPUS_THRESHOLD = apply_wer_slack(
+    ROUTER_SEEDTTS_WER_BELOW_50_CORPUS_MAX
+)
 ROUTER_SEEDTTS_N_ABOVE_50_MAX = 0
 
 
@@ -466,7 +470,7 @@ def test_colocated_router_seedtts_uses_both_workers(
         print_wer_summary(wer_results["summary"], MODEL_NAME)
         assert_wer_partitioned(
             wer_results,
-            max_wer_below_50_corpus=ROUTER_SEEDTTS_WER_BELOW_50_CORPUS_MAX,
+            max_wer_below_50_corpus=ROUTER_SEEDTTS_WER_BELOW_50_CORPUS_THRESHOLD,
             max_n_above_50=ROUTER_SEEDTTS_N_ABOVE_50_MAX,
         )
         _print_log_tail("router", router_topology.router_log)

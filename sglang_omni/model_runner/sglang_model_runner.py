@@ -85,16 +85,27 @@ class SGLModelRunner(ModelRunner):
         from sglang_omni.models.fishaudio_s2_pro.sglang_model import (
             S2ProSGLangTextModel,
         )
+        from sglang_omni.models.higgs_tts.model import HiggsTTSModel
         from sglang_omni.models.llada2_uni.components.thinker import LLaDA2MoeModelLM
+        from sglang_omni.models.ming_omni.registration import (
+            register_ming_hf_config,
+            register_ming_model_registry,
+        )
         from sglang_omni.models.qwen3_omni.components.sglang_thinker import (
             Qwen3OmniThinkerForCausalLM,
         )
         from sglang_omni.models.qwen3_omni.components.talker import Qwen3OmniTalker
 
+        register_ming_hf_config()
+        register_ming_model_registry()
+
         ModelRegistry.models["S2ProSGLangTextModel"] = S2ProSGLangTextModel
         ModelRegistry.models["Qwen3OmniTalker"] = Qwen3OmniTalker
         ModelRegistry.models["Qwen3OmniThinkerForCausalLM"] = (
             Qwen3OmniThinkerForCausalLM
+        )
+        ModelRegistry.models["HiggsMultimodalQwen3ForConditionalGeneration"] = (
+            HiggsTTSModel
         )
         ModelRegistry.models["LLaDA2MoeModelLM"] = LLaDA2MoeModelLM
 

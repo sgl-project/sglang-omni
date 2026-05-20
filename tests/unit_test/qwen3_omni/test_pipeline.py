@@ -15,8 +15,7 @@ from sglang_omni.cli.serve import (
     apply_mem_fraction_cli_overrides,
     apply_parallelism_cli_overrides,
 )
-from sglang_omni.config import PipelineConfig, StageConfig
-from sglang_omni.config.compiler import _resolve_factory_args
+from sglang_omni.config import PipelineConfig, StageConfig, resolve_stage_factory_args
 from sglang_omni.models.qwen3_omni.config import (
     Qwen3OmniPipelineConfig,
     Qwen3OmniSpeechPipelineConfig,
@@ -229,7 +228,7 @@ def test_qwen_cli_mem_fraction_static_survives_runtime_overrides_overlay() -> No
         talker_mem_fraction_static=None,
     )
 
-    resolved = _resolve_factory_args(_stage(config, "thinker"), config)
+    resolved = resolve_stage_factory_args(_stage(config, "thinker"), config)
     assert resolved["server_args_overrides"]["mem_fraction_static"] == 0.80
     assert resolved["server_args_overrides"]["disable_cuda_graph"] is True
 
@@ -250,7 +249,7 @@ def test_qwen_cli_mem_fraction_static_rejects_runtime_override_duplicate() -> No
     )
 
     with pytest.raises(ValueError, match="mem_fraction_static"):
-        _resolve_factory_args(_stage(config, "thinker"), config)
+        resolve_stage_factory_args(_stage(config, "thinker"), config)
 
 
 def test_qwen_cli_rejects_talker_override_on_text_only_qwen_without_partial_write() -> (
@@ -293,6 +292,7 @@ def test_qwen_cli_rejects_global_mem_fraction_when_pipeline_has_no_supported_rol
         stages=[
             StageConfig(
                 name="preprocessing",
+                process="pipeline",
                 factory=(
                     "sglang_omni.models.qwen3_omni.stages."
                     "create_preprocessing_executor"
@@ -412,7 +412,7 @@ def test_qwen_cli_encoder_mem_reserve_survives_runtime_overrides_overlay() -> No
         thinker_mem_fraction_static=None,
     )
 
-    resolved = _resolve_factory_args(_stage(config, "thinker"), config)
+    resolved = resolve_stage_factory_args(_stage(config, "thinker"), config)
 
     assert resolved["encoder_mem_reserve"] == 0.15
 

@@ -22,6 +22,7 @@ _FACTORY_WITHOUT_TOTAL_BUDGET = (
 def _stage(**kwargs) -> StageConfig:
     data = {
         "name": "thinker",
+        "process": "pipeline",
         "factory": _FACTORY,
         "terminal": True,
         "gpu": 1,

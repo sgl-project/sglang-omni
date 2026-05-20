@@ -16,8 +16,11 @@ from sglang_omni.models.ming_omni.components.common import (
 )
 from sglang_omni.models.ming_omni.io import PipelineState, PromptInputs
 from sglang_omni.models.ming_omni.pipeline.next_stage import AUDIO_STAGE, IMAGE_STAGE
-from sglang_omni.preprocessing.audio import load_audio_path
-from sglang_omni.preprocessing.image import ensure_image_list_async
+from sglang_omni.preprocessing.audio import compute_audio_cache_key, load_audio_path
+from sglang_omni.preprocessing.image import (
+    compute_image_cache_key,
+    ensure_image_list_async,
+)
 from sglang_omni.proto import StagePayload
 
 logger = logging.getLogger(__name__)
@@ -28,6 +31,7 @@ ROLE_ASSISTANT = "<role>ASSISTANT</role>"
 ROLE_SYSTEM = "<role>SYSTEM</role>"
 ROLE_END = "<|role_end|>"
 DEFAULT_SYSTEM_PROMPT = "你是一个友好的AI助手。"
+THINKING_SUFFIX = "\n\ndetailed thinking off"
 
 # Modality tokens
 AUDIO_START = "<audio>"
@@ -138,6 +142,37 @@ def _inject_top_level_images(
     return messages
 
 
+def _inject_top_level_audios(
+    messages: list[dict[str, Any]],
+    audios: list[str],
+) -> list[dict[str, Any]]:
+    """Convert top-level ``audios`` into inline content items.
+
+    Ming-Omni was trained with text BEFORE audio in user turns
+    (see /tmp/Ming-src/test_audio_tasks.py and processing_bailingmm2.py
+    apply_chat_template, which renders content list in order). The
+    instruction must precede the audio so attention can condition the
+    audio interpretation on the task description.
+    """
+    messages = list(messages)
+    audio_items: list[dict[str, Any]] = [
+        {"type": "audio_url", "audio_url": {"url": url}} for url in audios
+    ]
+    for idx, msg in enumerate(messages):
+        if msg.get("role") != "user":
+            continue
+        content = msg.get("content", "")
+        new_content: list[dict[str, Any]] = []
+        if isinstance(content, str):
+            new_content.append({"type": "text", "text": content})
+        elif isinstance(content, list):
+            new_content.extend(content)
+        new_content.extend(audio_items)
+        messages[idx] = {**msg, "content": new_content}
+        break
+    return messages
+
+
 class MingPreprocessor:
     """Preprocessor for Ming-Omni model.
 
@@ -159,7 +194,10 @@ class MingPreprocessor:
         self._audio_patch_id = self._tokenizer.convert_tokens_to_ids(AUDIO_PATCH)
         self._audio_start_id = self._tokenizer.convert_tokens_to_ids(AUDIO_START)
         self._audio_end_id = self._tokenizer.convert_tokens_to_ids(AUDIO_END)
-        self._image_patch_id = self._tokenizer.convert_tokens_to_ids(IMAGE_PATCH)
+        llm_config = getattr(self._config, "llm_config", None)
+        self._image_patch_id = getattr(llm_config, "image_patch_token", None)
+        if self._image_patch_id is None:
+            self._image_patch_id = self._tokenizer.convert_tokens_to_ids(IMAGE_PATCH)
 
         # Lazy-init image processor
         self._image_processor = None
@@ -218,6 +256,8 @@ class MingPreprocessor:
         # placeholder insertion and image extraction use a single code path.
         if top_level_images:
             messages = _inject_top_level_images(messages, top_level_images)
+        if audio_urls:
+            messages = _inject_top_level_audios(messages, audio_urls)
 
         # --- Extract image URLs/data from messages ---
         raw_images: list[Any] = []
@@ -240,6 +280,13 @@ class MingPreprocessor:
                             img = item.get("image", "")
                             if img:
                                 raw_images.append(img)
+
+        # Compute cache keys BEFORE async loading; same content -> same key so
+        # SGLang's radix prefix cache can correctly reuse KVs across requests, and
+        # different content -> different key so it never falsely aliases image
+        # placeholder positions (which share the same generic image_patch_token).
+        image_cache_key = compute_image_cache_key(raw_images) if raw_images else None
+        audio_cache_key = compute_audio_cache_key(audio_urls) if audio_urls else None
 
         # --- Load images and audio concurrently ---
         image_coro = ensure_image_list_async(raw_images) if raw_images else None
@@ -306,13 +353,12 @@ class MingPreprocessor:
                 )
             )
 
-        # --- Build prompt with correct placeholder counts, then tokenize ---
-        prompt_text, audio_positions = self._build_prompt(
+        # Build prompt with placeholder counts and token IDs
+        prompt_text, input_ids, audio_positions = self._build_prompt(
             messages,
             audio_token_counts=audio_token_counts,
             image_token_counts=image_token_counts,
         )
-        input_ids = self._tokenizer.encode(prompt_text, add_special_tokens=False)
         input_ids_tensor = torch.tensor([input_ids], dtype=torch.long)
         attention_mask = torch.ones_like(input_ids_tensor)
 
@@ -347,12 +393,16 @@ class MingPreprocessor:
                 "audio_feats_lengths": mel_lens,
                 "audio_placeholder_loc_lens": placeholder_locs,
             }
+            if audio_cache_key:
+                encoder_inputs[AUDIO_STAGE]["cache_key"] = audio_cache_key
 
         if pixel_values is not None and image_grid_thw is not None:
             encoder_inputs[IMAGE_STAGE] = {
                 "pixel_values": pixel_values,
                 "image_grid_thw": image_grid_thw,
             }
+            if image_cache_key:
+                encoder_inputs[IMAGE_STAGE]["cache_key"] = image_cache_key
 
         state = PipelineState(
             raw_inputs=raw_inputs,
@@ -372,8 +422,8 @@ class MingPreprocessor:
         *,
         audio_token_counts: list[int] | None = None,
         image_token_counts: list[int] | None = None,
-    ) -> tuple[str, list[int]]:
-        """Build Ming-Omni chat format prompt with audio/image placeholders.
+    ) -> tuple[str, list[int], list[int]]:
+        """Build Ming-Omni chat prompt and token IDs with modality placeholders.
 
         Args:
             messages: Chat messages.
@@ -385,29 +435,67 @@ class MingPreprocessor:
 
         Returns:
             prompt_text: The formatted prompt string.
+            input_ids: Token IDs with modality patch IDs inserted directly.
             audio_positions: Token positions where <audioPatch> placeholders start.
         """
         a_counts = audio_token_counts or []
         i_counts = image_token_counts or []
         parts: list[str] = []
+        input_ids: list[int] = []
+        text_buffer: list[str] = []
         audio_idx = 0
         image_idx = 0
 
-        # System message: match the Jinja template behavior exactly.
-        # Always include system prompt + "\n\ndetailed thinking off".
-        # If no explicit system message, use the default system prompt.
+        def flush_text() -> None:
+            if not text_buffer:
+                return
+            input_ids.extend(
+                self._tokenizer.encode("".join(text_buffer), add_special_tokens=False)
+            )
+            text_buffer.clear()
+
+        def append_text(text: Any) -> None:
+            value = str(text)
+            if not value:
+                return
+            parts.append(value)
+            text_buffer.append(value)
+
+        def append_placeholder(
+            start_token: str,
+            patch_token: str,
+            end_token: str,
+            patch_id: int,
+            n_tokens: int,
+        ) -> int:
+            n_tokens = int(n_tokens)
+            parts.append(start_token + patch_token * n_tokens + end_token)
+            flush_text()
+
+            input_ids.extend(
+                self._tokenizer.encode(start_token, add_special_tokens=False)
+            )
+            patch_start = len(input_ids)
+            input_ids.extend([int(patch_id)] * n_tokens)
+            input_ids.extend(
+                self._tokenizer.encode(end_token, add_special_tokens=False)
+            )
+            return patch_start
+
+        # Keep the Ming prompt text aligned with the known-good Ming reference path.
+        role_end = ROLE_END
+
+        # Match Ming V0's system template.
         has_system = messages and messages[0].get("role") == "system"
         if has_system:
             system_content = messages[0].get("content", DEFAULT_SYSTEM_PROMPT)
-            parts.append(
-                f"{ROLE_SYSTEM}{system_content}\n\ndetailed thinking off{ROLE_END}"
-            )
+            append_text(f"{ROLE_SYSTEM}{system_content}{THINKING_SUFFIX}{role_end}")
         else:
-            # Official Jinja template always includes the default system prompt
-            parts.append(
-                f"{ROLE_SYSTEM}{DEFAULT_SYSTEM_PROMPT}\n\ndetailed thinking off{ROLE_END}"
+            append_text(
+                f"{ROLE_SYSTEM}{DEFAULT_SYSTEM_PROMPT}{THINKING_SUFFIX}{role_end}"
             )
 
+        audio_positions: list[int] = []
         for msg in messages:
             role = msg.get("role", "user")
             content = msg.get("content", "")
@@ -418,53 +506,50 @@ class MingPreprocessor:
             role_tag = ROLE_HUMAN if role == "user" else ROLE_ASSISTANT
 
             if isinstance(content, str):
-                parts.append(f"{role_tag}{content}{ROLE_END}")
+                append_text(f"{role_tag}{content}{role_end}")
             elif isinstance(content, list):
-                text_parts: list[str] = []
+                append_text(role_tag)
                 for item in content:
                     if isinstance(item, dict):
                         item_type = item.get("type", "text")
                         if item_type == "text":
-                            text_parts.append(item.get("text", ""))
+                            append_text(item.get("text", ""))
                         elif item_type in ("audio_url", "input_audio"):
                             n_tokens = (
                                 a_counts[audio_idx] if audio_idx < len(a_counts) else 1
                             )
-                            placeholder = (
-                                f"{AUDIO_START}"
-                                + AUDIO_PATCH * n_tokens
-                                + f"{AUDIO_END}"
+                            audio_positions.append(
+                                append_placeholder(
+                                    AUDIO_START,
+                                    AUDIO_PATCH,
+                                    AUDIO_END,
+                                    self._audio_patch_id,
+                                    n_tokens,
+                                )
                             )
-                            text_parts.append(placeholder)
                             audio_idx += 1
                         elif item_type in ("image_url", "image"):
                             n_tokens = (
                                 i_counts[image_idx] if image_idx < len(i_counts) else 1
                             )
-                            placeholder = (
-                                f"{IMAGE_START}"
-                                + IMAGE_PATCH * n_tokens
-                                + f"{IMAGE_END}"
+                            append_placeholder(
+                                IMAGE_START,
+                                IMAGE_PATCH,
+                                IMAGE_END,
+                                self._image_patch_id,
+                                n_tokens,
                             )
-                            text_parts.append(placeholder)
                             image_idx += 1
                     elif isinstance(item, str):
-                        text_parts.append(item)
-                parts.append(f"{role_tag}{''.join(text_parts)}{ROLE_END}")
+                        append_text(item)
+                append_text(role_end)
             else:
-                parts.append(f"{role_tag}{content}{ROLE_END}")
+                append_text(f"{role_tag}{content}{role_end}")
 
         # Add assistant prefix for generation
-        parts.append(ROLE_ASSISTANT)
+        append_text(ROLE_ASSISTANT)
+        flush_text()
 
         prompt_text = "".join(parts)
 
-        # Find audio placeholder positions in tokenized prompt
-        audio_positions: list[int] = []
-        tokens = self._tokenizer.encode(prompt_text, add_special_tokens=False)
-        for i, tok in enumerate(tokens):
-            if tok == self._audio_start_id:
-                # The audio patch tokens start after <audio>
-                audio_positions.append(i + 1)
-
-        return prompt_text, audio_positions
+        return prompt_text, input_ids, audio_positions

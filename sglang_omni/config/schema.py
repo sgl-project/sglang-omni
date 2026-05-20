@@ -119,14 +119,6 @@ class PlacementConfig(BaseModel):
             )
 
 
-class ProcessConfig(BaseModel):
-    """Process launch mode for a pipeline."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    mode: Literal["auto", "single", "multi"] = "auto"
-
-
 class StageConfig(BaseModel):
     """Single pipeline stage configuration.
 
@@ -162,6 +154,7 @@ class StageConfig(BaseModel):
     gpu: int | list[int] | None = None
     tp_size: int = 1
     parallelism: ParallelismConfig = Field(default_factory=ParallelismConfig)
+    process: str | None = None
 
     # --- Runtime intent ---
     runtime: StageRuntimeConfig = Field(default_factory=StageRuntimeConfig)
@@ -187,7 +180,10 @@ class StageConfig(BaseModel):
         parallelism_set = "parallelism" in fields_set
         if self.tp_size < 1:
             raise ValueError(f"Stage {self.name!r} must have tp_size >= 1")
-
+        if self.process is not None:
+            self.process = self.process.strip()
+            if not self.process:
+                raise ValueError(f"Stage {self.name!r} process must not be empty")
         if parallelism_set and tp_size_set and self.parallelism.tp != self.tp_size:
             raise ValueError(
                 f"Stage {self.name!r}: tp_size={self.tp_size} conflicts with "
@@ -214,7 +210,6 @@ class PipelineConfig(BaseModel):
     fused_stages: list[list[str]] = Field(default_factory=list)
     runtime_overrides: dict[str, dict[str, Any]] = Field(default_factory=dict)
     placement: PlacementConfig = Field(default_factory=PlacementConfig)
-    process: ProcessConfig = Field(default_factory=ProcessConfig)
     placement_policy: str | None = None
     endpoints: EndpointsConfig = Field(default_factory=EndpointsConfig)
     completion_endpoint: str | None = None
@@ -316,6 +311,15 @@ class PipelineConfig(BaseModel):
                 raise ValueError(
                     f"runtime_overrides references unknown stage {stage_name!r}"
                 )
+
+        missing_process = [
+            s.name for s in self.stages if s.tp_size == 1 and not s.process
+        ]
+        if missing_process:
+            raise ValueError(
+                "Non-TP stages must declare process; "
+                f"missing process for {missing_process}"
+            )
 
     def _validate_fusion(self) -> None:
         names = [s.name for s in self.stages]

@@ -314,9 +314,9 @@ python .claude/skills/tune-ci-thresholds/tune.py --model qwen3-omni-v1 run \
    ```
    ## Applied changes
 
-   | Stage | Metric | Old | New |
-   |-------|--------|-----|-----|
-   | <stage_key> | <source> | <current_raw> | <new_raw> |
+   | Stage | Metric | Old | New | Direction |
+   |-------|--------|-----|-----|-----------|
+   | <stage_key> | <source> | <current_raw> | <new_raw> | <direction> |
    ...
    ```
 
@@ -332,6 +332,20 @@ python .claude/skills/tune-ci-thresholds/tune.py --model qwen3-omni-v1 run \
      - `Old` / `New` are **raw** numeric values (matching what's in
        the test file, not display-scaled). Trim trailing zeros for
        readability.
+     - `Direction` describes the effect on CI strictness — derived
+       from `worst_op` and the sign of `new - old`:
+         - `worst_op == "min"` (threshold is a lower bound, e.g.
+           `throughput_qps`): `new > old` → `tightens`,
+           `new < old` → `loosens`.
+         - `worst_op == "max"` (threshold is an upper bound, e.g.
+           `latency_mean_s`, `rtf_mean`, `WER_..._MAX`): `new < old`
+           → `tightens`, `new > old` → `loosens`.
+       Format the cell as `tightens (Δ%)` or `loosens (Δ%)` where
+       `Δ%` is the signed percent change of the **raw** value
+       relative to the old raw value, e.g. `tightens (+2.1%)`,
+       `loosens (-7.9%)`. Use one decimal place. Direction MUST come
+       from `worst_op` (not from sign-of-Δ alone) — for `max`-bounded
+       metrics, a negative Δ% is a tightening.
      - If nothing was edited (all kept / all skipped), do not append
        the section at all.
 

@@ -192,6 +192,12 @@ class OmniSeedttsBenchmarkConfig:
     disable_tqdm: bool = False
     # Transcribe phase
     device: str = "cuda:0"
+    # Optional system prompt prepended to chat messages. Default ``None``
+    # preserves the legacy Qwen3-Omni behavior (no system role). Pass a
+    # strict TTS-only prompt to suppress chat-mode leakage on models that
+    # were not fine-tuned to robustly interpret "please read aloud" as a
+    # verbatim-TTS command (e.g. Ming-Omni).
+    system_prompt: str | None = None
 
 
 def _build_results_config(
@@ -226,6 +232,7 @@ def make_send_fn(
     temperature: float,
     stream: bool,
     save_audio_dir: str,
+    system_prompt: str | None = None,
 ) -> SendFn:
     """Return a SendFn that calls Qwen3-Omni via VoiceCloneOmni and saves WAV."""
     task = VoiceCloneOmni()
@@ -250,6 +257,7 @@ def make_send_fn(
                 temperature=temperature,
                 voice_clone=voice_clone,
                 stream=stream,
+                system_prompt=system_prompt,
             )
             result.audio_duration_s = get_wav_duration(wav_bytes)
             elapsed = time.perf_counter() - start_time
@@ -315,6 +323,7 @@ async def run_omni_seedtts_benchmark(
         temperature=config.temperature,
         stream=config.stream,
         save_audio_dir=save_audio_dir,
+        system_prompt=config.system_prompt,
     )
 
     runner = BenchmarkRunner(
@@ -382,6 +391,7 @@ def _config_from_args(args: argparse.Namespace) -> OmniSeedttsBenchmarkConfig:
         request_rate=args.request_rate,
         disable_tqdm=args.disable_tqdm,
         device=device,
+        system_prompt=args.system_prompt,
     )
 
 
@@ -499,6 +509,15 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         type=int,
         default=1200,
         help="Timeout in seconds to wait for server readiness.",
+    )
+    parser.add_argument(
+        "--system-prompt",
+        type=str,
+        default=None,
+        help="Optional system role content prepended to every chat request. "
+        "Default omits the system message (Qwen3-Omni-tuned legacy behavior). "
+        "Pass a strict TTS-only prompt for models that leak chat-style "
+        "preambles or refusals (e.g. Ming-Omni).",
     )
 
     mode = parser.add_mutually_exclusive_group()

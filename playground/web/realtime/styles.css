@@ -1,0 +1,644 @@
+/* ────────────────────────────────────────────────────────────────────
+   WIRE SERVICE  ·  /v1/realtime demo
+   Editorial broadsheet aesthetic. Cream paper, deep ink, expressive
+   serif display, monospace for technical instruments.
+   ──────────────────────────────────────────────────────────────────── */
+
+:root {
+  /* Colours — printer's palette, NOT screen-corporate. */
+  --paper:        #f4f0e6;     /* warm cream */
+  --paper-edge:   #e8dfc7;     /* sun-faded edge */
+  --ink:          #1a1814;     /* deep ink, slightly warm */
+  --ink-soft:     #4a443c;     /* mid-tone */
+  --ink-faint:    #8a8377;     /* tertiary, captions */
+  --vermilion:    #c5392b;     /* press red — used for LIVE / accents */
+  --field-blue:   #2d4259;     /* old field-survey blue, secondary accent */
+  --rule:         #1a1814;     /* match ink */
+  --thread:       #b8a979;     /* warm thread for fleurons / pulls */
+
+  /* Typography — distinctive, not Inter/Roboto. */
+  --font-display: "Fraunces", "Cormorant Garamond", "Iowan Old Style", "Hoefler Text", Georgia, serif;
+  --font-body:    "Newsreader", "Iowan Old Style", "Charter", Georgia, serif;
+  --font-mono:    "JetBrains Mono", "IBM Plex Mono", "Menlo", "Courier New", monospace;
+
+  /* Rhythm */
+  --baseline:    24px;
+  --col-gap:     56px;
+  --pad:         32px;
+}
+
+* { box-sizing: border-box; }
+
+html, body { margin: 0; padding: 0; }
+
+body {
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-body);
+  font-size: 16px;
+  line-height: 1.5;
+  font-feature-settings: "kern", "liga", "onum" 1;   /* old-style figures */
+  /* Subtle paper grain via repeating SVG noise. */
+  background-image:
+    radial-gradient(ellipse at top left,    rgba(232,223,199,0.55), transparent 60%),
+    radial-gradient(ellipse at bottom right, rgba(232,223,199,0.45), transparent 60%);
+  background-attachment: fixed;
+}
+
+/* ─────────────────────────  RULES & ORNAMENTS  ───────────────────────── */
+
+.rule {
+  border: 0;
+  margin: 12px 0;
+  height: 0;
+  background: transparent;
+}
+.rule-thick { border-top: 3px solid var(--rule); margin: 8px 0; }
+.rule-thin  { border-top: 1px solid var(--rule); margin: 8px 0; }
+.rule-double {
+  border: 0;
+  border-top: 1px solid var(--rule);
+  border-bottom: 1px solid var(--rule);
+  height: 4px;
+  margin: 6px 0;
+}
+/* Centered fleuron with a hairline rule passing through — rendered with
+   a single horizontal background gradient (the rule) and a centered
+   serif glyph supplied via the data-fleuron attribute. */
+.rule-fleuron {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 28px 0;
+  height: 22px;
+  border: 0;
+  background-image: linear-gradient(
+    to right,
+    var(--ink-faint) 0,
+    var(--ink-faint) 100%
+  );
+  background-repeat: no-repeat;
+  background-position: 0 50%;
+  background-size: 100% 1px;
+}
+.rule-fleuron::before {
+  content: attr(data-fleuron);
+  display: inline-block;
+  padding: 0 14px;
+  background: var(--paper);   /* mask the rule behind the glyph */
+  font-family: var(--font-display);
+  font-style: italic;
+  font-size: 22px;
+  color: var(--thread);
+  font-feature-settings: "ss01";
+  line-height: 1;
+}
+
+
+/* ─────────────────────────  MASTHEAD  ───────────────────── */
+
+.masthead {
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: 48px var(--pad) 24px;
+  position: relative;
+  animation: fade-rise 720ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.masthead-meta-left,
+.masthead-meta-right {
+  position: absolute;
+  top: 56px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+.masthead-meta-left  { left:  var(--pad); }
+.masthead-meta-right { right: var(--pad); text-align: right; align-items: flex-end; }
+
+.masthead-title {
+  margin: 18px 0 4px;
+  font-family: var(--font-display);
+  font-variation-settings: "opsz" 144, "wght" 700, "SOFT" 30;
+  font-size: clamp(64px, 13vw, 160px);
+  line-height: 0.88;
+  text-align: center;
+  letter-spacing: -0.04em;
+  font-style: italic;
+}
+
+.title-word {
+  display: inline-block;
+  animation: title-rise 900ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+.title-word-1 { animation-delay: 100ms; }
+.title-word-2 { animation-delay: 220ms; color: var(--vermilion); }
+
+.masthead-tagline {
+  text-align: center;
+  font-family: var(--font-body);
+  font-style: italic;
+  font-size: 17px;
+  color: var(--ink-soft);
+  max-width: 640px;
+  margin: 8px auto 0;
+  animation: fade-rise 720ms cubic-bezier(0.16, 1, 0.3, 1) 380ms both;
+}
+
+.masthead-tagline code {
+  font-family: var(--font-mono);
+  font-style: normal;
+  font-size: 14px;
+  background: rgba(197, 57, 43, 0.08);
+  padding: 1px 6px;
+  border-radius: 2px;
+  color: var(--vermilion);
+}
+
+
+/* ─────────────────────────  LAYOUT  ───────────────────── */
+
+.layout {
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: 32px var(--pad) 0;
+  display: grid;
+  grid-template-columns: 320px 1fr;
+  gap: var(--col-gap);
+  animation: fade-rise 720ms cubic-bezier(0.16, 1, 0.3, 1) 480ms both;
+}
+
+@media (max-width: 880px) {
+  .layout { grid-template-columns: 1fr; gap: 32px; }
+  .masthead-meta-left, .masthead-meta-right { display: none; }
+}
+
+
+/* ─────────────────────────  CONTROL DESK  ───────────────────── */
+
+.controls {
+  border-top: 3px double var(--rule);
+  padding-top: 18px;
+}
+
+.control-section { margin-bottom: 28px; }
+
+.section-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin: 0 0 14px;
+  font-family: var(--font-display);
+  font-style: italic;
+  font-size: 22px;
+  font-weight: 600;
+  font-variation-settings: "opsz" 36, "wght" 600, "SOFT" 50;
+  letter-spacing: -0.01em;
+}
+
+.section-num {
+  font-family: var(--font-display);
+  font-style: italic;
+  font-size: 26px;
+  color: var(--vermilion);
+  font-variation-settings: "opsz" 144, "wght" 400;
+  font-feature-settings: "lnum";
+}
+
+.section-name { color: var(--ink); }
+
+.field {
+  display: block;
+  margin-bottom: 14px;
+}
+.field-label {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  margin-bottom: 4px;
+}
+
+.field input,
+.field textarea,
+.field select {
+  width: 100%;
+  border: 0;
+  border-bottom: 1px solid var(--ink);
+  background: transparent;
+  padding: 6px 0;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--ink);
+  border-radius: 0;
+  outline: none;
+  transition: border-color 200ms ease;
+}
+.field textarea {
+  font-family: var(--font-body);
+  font-size: 14px;
+  line-height: 1.45;
+  resize: vertical;
+  min-height: 56px;
+}
+.field input:focus,
+.field textarea:focus,
+.field select:focus { border-bottom-color: var(--vermilion); }
+
+.field select {
+  appearance: none;
+  -webkit-appearance: none;
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--ink) 50%),
+    linear-gradient(135deg, var(--ink) 50%, transparent 50%);
+  background-position:
+    calc(100% - 12px) 14px,
+    calc(100% - 7px)  14px;
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+  padding-right: 28px;
+}
+
+
+/* ─────────────────────────  BUTTONS  ───────────────────── */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1.5px solid var(--ink);
+  background: transparent;
+  color: var(--ink);
+  padding: 9px 18px;
+  font-family: var(--font-display);
+  font-style: italic;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  cursor: pointer;
+  border-radius: 0;
+  transition: background 180ms ease, color 180ms ease, transform 120ms ease;
+}
+.btn:hover:not(:disabled) {
+  background: var(--ink);
+  color: var(--paper);
+}
+.btn:active:not(:disabled) { transform: translateY(1px); }
+.btn:disabled {
+  border-color: var(--ink-faint);
+  color: var(--ink-faint);
+  cursor: not-allowed;
+}
+
+.btn-primary {
+  background: var(--ink);
+  color: var(--paper);
+}
+.btn-primary:hover:not(:disabled) {
+  background: var(--vermilion);
+  color: var(--paper);
+  border-color: var(--vermilion);
+}
+.btn-primary:disabled { background: transparent; }
+
+.btn-secondary {
+  border-color: var(--vermilion);
+  color: var(--vermilion);
+}
+.btn-secondary:hover:not(:disabled) {
+  background: var(--vermilion);
+  color: var(--paper);
+}
+.btn-secondary:disabled { border-color: var(--ink-faint); color: var(--ink-faint); }
+
+.btn-ghost {
+  border-color: var(--ink-faint);
+  color: var(--ink-soft);
+  font-style: normal;
+  font-weight: 400;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+.btn-ghost:hover:not(:disabled) {
+  background: var(--ink);
+  border-color: var(--ink);
+  color: var(--paper);
+}
+
+.btn-small { padding: 5px 12px; font-size: 10px; }
+
+.action-row {
+  display: flex;
+  gap: 10px;
+  margin: 14px 0;
+}
+.action-row-secondary { margin-top: 8px; }
+
+
+/* ─────────────────────────  STATUS / LIVE PILL  ───────────────────── */
+
+.status-strip {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 18px;
+  padding-top: 12px;
+  border-top: 1px dashed var(--ink-faint);
+}
+.status-dot {
+  width: 9px; height: 9px;
+  border-radius: 50%;
+  background: var(--ink-faint);
+  box-shadow: 0 0 0 3px var(--paper), 0 0 0 4px var(--ink-faint);
+  transition: background 200ms ease, box-shadow 200ms ease;
+}
+.status-dot.connected { background: var(--vermilion); box-shadow: 0 0 0 3px var(--paper), 0 0 0 4px var(--vermilion); }
+.status-dot.error     { background: var(--vermilion); animation: pulse-error 600ms ease infinite alternate; }
+
+.status-label {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+}
+
+.live-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px 4px 8px;
+  border: 1.5px solid var(--ink-faint);
+  border-radius: 999px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  color: var(--ink-faint);
+  vertical-align: middle;
+  margin-left: 12px;
+  transition: color 200ms ease, border-color 200ms ease;
+}
+.live-pill .live-dot {
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  background: var(--ink-faint);
+}
+.live-pill.on {
+  color: var(--vermilion);
+  border-color: var(--vermilion);
+}
+.live-pill.on .live-dot {
+  background: var(--vermilion);
+  animation: pulse-live 1.4s ease-in-out infinite;
+}
+
+
+/* ─────────────────────────  OSCILLOSCOPE  ───────────────────── */
+
+.oscilloscope-frame {
+  margin-top: 14px;
+  padding: 10px 12px 8px;
+  border: 1px solid var(--ink);
+  background:
+    repeating-linear-gradient(
+      0deg,
+      rgba(26, 24, 20, 0.04) 0,
+      rgba(26, 24, 20, 0.04) 1px,
+      transparent 1px,
+      transparent 8px
+    ),
+    repeating-linear-gradient(
+      90deg,
+      rgba(26, 24, 20, 0.04) 0,
+      rgba(26, 24, 20, 0.04) 1px,
+      transparent 1px,
+      transparent 8px
+    ),
+    var(--paper);
+  position: relative;
+}
+
+#oscilloscope {
+  display: block;
+  width: 100%;
+  height: 64px;
+}
+
+.oscilloscope-caption {
+  display: block;
+  margin-top: 4px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+
+
+/* ─────────────────────────  TRANSCRIPTS  ───────────────────── */
+
+.transcripts {
+  border-top: 3px double var(--rule);
+  padding-top: 18px;
+}
+
+.transcripts-head { margin-bottom: 18px; }
+
+.transcripts-title {
+  display: flex;
+  align-items: baseline;
+  margin: 0 0 8px;
+  font-family: var(--font-display);
+  font-variation-settings: "opsz" 144, "wght" 600, "SOFT" 30;
+  font-style: italic;
+  font-size: 38px;
+  letter-spacing: -0.02em;
+  line-height: 1;
+}
+
+.transcripts-label { color: var(--ink); }
+
+.transcripts-tagline {
+  margin: 6px 0 14px;
+  font-family: var(--font-body);
+  font-style: italic;
+  font-size: 14px;
+  color: var(--ink-soft);
+  max-width: 56ch;
+}
+.transcripts-tagline code {
+  font-family: var(--font-mono);
+  font-style: normal;
+  font-size: 12px;
+  color: var(--vermilion);
+}
+
+
+/* ─────────────────────────  UTTERANCE CARD  ───────────────────── */
+
+.utterance-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.empty-state {
+  font-family: var(--font-display);
+  font-style: italic;
+  font-size: 22px;
+  color: var(--ink-faint);
+  text-align: center;
+  padding: 48px 0;
+}
+
+.utterance {
+  position: relative;
+  padding: 4px 0 18px 28px;
+  border-left: 1px solid var(--ink-faint);
+  animation: utter-rise 520ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.utterance[data-state="in-progress"] {
+  border-left-color: var(--vermilion);
+}
+.utterance[data-state="in-progress"]::before {
+  content: "";
+  position: absolute;
+  left: -2px;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: var(--vermilion);
+  animation: pulse-stripe 1.4s ease-in-out infinite;
+}
+
+.utterance[data-state="failed"] {
+  border-left-color: var(--ink-faint);
+  opacity: 0.6;
+}
+
+.utterance-meta {
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  margin-bottom: 6px;
+}
+.utterance-meta .serial {
+  color: var(--vermilion);
+  font-weight: 700;
+}
+.utterance-meta .state {
+  margin-left: auto;
+}
+
+.utterance-body {
+  margin: 0;
+  font-family: var(--font-body);
+  font-size: 21px;
+  line-height: 1.4;
+  color: var(--ink);
+  font-style: italic;
+  font-variation-settings: "opsz" 32;
+  text-wrap: pretty;
+}
+
+/* Drop-cap disabled — keep transcript text uniform so the first letter
+   isn't mis-cased. */
+
+
+/* ─────────────────────────  COLOPHON  ───────────────────── */
+
+.colophon {
+  max-width: 1080px;
+  margin: 56px auto 32px;
+  padding: 0 var(--pad);
+}
+.colophon-content {
+  display: flex;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  padding: 12px 0;
+}
+.colophon-content em {
+  font-family: var(--font-display);
+  font-style: italic;
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--ink-soft);
+  font-size: 13px;
+}
+.colophon-content code {
+  font-size: 10px;
+  letter-spacing: 0.05em;
+  text-transform: none;
+  color: var(--field-blue);
+  background: transparent;
+  border: 0;
+  padding: 0;
+}
+
+
+/* ─────────────────────────  ANIMATIONS  ───────────────────── */
+
+@keyframes fade-rise {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes title-rise {
+  from { opacity: 0; transform: translateY(20px) scale(0.97); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes utter-rise {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes pulse-live {
+  0%, 100% { transform: scale(1);   opacity: 1;   }
+  50%      { transform: scale(1.4); opacity: 0.55; }
+}
+
+@keyframes pulse-stripe {
+  0%, 100% { opacity: 1;   }
+  50%      { opacity: 0.4; }
+}
+
+@keyframes pulse-error {
+  from { opacity: 0.4; }
+  to   { opacity: 1;   }
+}
+
+
+/* Reduce motion respectfully. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0ms !important;
+    animation-delay: 0ms !important;
+    transition-duration: 0ms !important;
+  }
+}

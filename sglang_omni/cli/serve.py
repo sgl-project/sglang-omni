@@ -700,6 +700,14 @@ def serve(
             help="Override torch_compile_max_bs for talker_ar stage.",
         ),
     ] = None,
+    enable_realtime: Annotated[
+        bool,
+        typer.Option(
+            "--enable-realtime",
+            "--enable_realtime",
+            help="Mount the OpenAI Realtime WebSocket endpoint at /v1/realtime.",
+        ),
+    ] = False,
 ) -> None:
     """Serve the pipeline."""
     logging.basicConfig(
@@ -769,4 +777,5 @@ def serve(
         port=port,
         model_name=model_name,
         log_level=log_level,
+        enable_realtime=enable_realtime,
     )

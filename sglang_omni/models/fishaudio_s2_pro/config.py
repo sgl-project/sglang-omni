@@ -19,11 +19,13 @@ class S2ProPipelineConfig(PipelineConfig):
     stages: list[StageConfig] = [
         StageConfig(
             name="preprocessing",
+            process="pipeline",
             factory=f"{_PKG}.stages.create_preprocessing_executor",
             next="tts_engine",
         ),
         StageConfig(
             name="tts_engine",
+            process="pipeline",
             factory=f"{_PKG}.stages.create_sglang_tts_engine_executor",
             factory_args={"device": "cuda:0", "max_new_tokens": 2048},
             gpu=0,
@@ -32,6 +34,7 @@ class S2ProPipelineConfig(PipelineConfig):
         ),
         StageConfig(
             name="vocoder",
+            process="pipeline",
             factory=f"{_PKG}.stages.create_vocoder_executor",
             gpu=0,
             terminal=True,

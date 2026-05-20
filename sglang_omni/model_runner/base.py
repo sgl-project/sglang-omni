@@ -223,6 +223,11 @@ class ModelRunner:
         logits = logits_output.next_token_logits
         if logits is None or logits.ndim != 2:
             return
+        vocab = logits.shape[1]
+        device = logits.device
+        rep_rows: list[int] = []
+        rep_toks: list[int] = []
+        rep_penalties: list[float] = []
         for row_idx, sched_req in enumerate(requests):
             data = sched_req.data
             req = data.req
@@ -232,27 +237,44 @@ class ModelRunner:
             output_ids = req.output_ids
             if not output_ids:
                 continue
-            token_ids = list(set(output_ids))
-            valid = [t for t in token_ids if 0 <= t < logits.shape[1]]
-            if not valid:
+            unique = {int(t) for t in output_ids if 0 <= int(t) < vocab}
+            if not unique:
                 continue
-            idx = torch.tensor(valid, dtype=torch.long, device=logits.device)
-            scores = logits[row_idx, idx]
-            scores = torch.where(scores > 0, scores / penalty, scores * penalty)
-            logits[row_idx, idx] = scores
+            rep_rows.extend([row_idx] * len(unique))
+            rep_toks.extend(unique)
+            rep_penalties.extend([float(penalty)] * len(unique))
+        if rep_rows:
+            orig_dtype = logits.dtype
+            rows_t = torch.tensor(rep_rows, dtype=torch.long, device=device)
+            toks_t = torch.tensor(rep_toks, dtype=torch.long, device=device)
+            pens_t = torch.tensor(rep_penalties, dtype=torch.float32, device=device)
+            scores = logits[rows_t, toks_t].to(torch.float32)
+            scores = torch.where(scores > 0, scores / pens_t, scores * pens_t)
+            logits[rows_t, toks_t] = scores.to(orig_dtype)
 
     def _apply_codec_suppress_tokens(self, logits_output: Any, requests: list) -> None:
         logits = logits_output.next_token_logits
         if logits is None or logits.ndim != 2:
             return
+        vocab = logits.shape[1]
+        device = logits.device
+        sup_rows: list[int] = []
+        sup_toks: list[int] = []
         for row_idx, sched_req in enumerate(requests):
             data = sched_req.data
             suppress_tokens = data.suppress_tokens
             if not suppress_tokens:
                 req = data.req
-                suppress_tokens = req._codec_suppress_tokens
+                suppress_tokens = getattr(req, "_codec_suppress_tokens", None)
             if not suppress_tokens:
                 continue
             for token_id in suppress_tokens:
-                if 0 <= int(token_id) < logits.shape[1]:
-                    logits[row_idx, int(token_id)] = float("-inf")
+                tok = int(token_id)
+                if 0 <= tok < vocab:
+                    sup_rows.append(row_idx)
+                    sup_toks.append(tok)
+        if sup_rows:
+            logits[
+                torch.tensor(sup_rows, dtype=torch.long, device=device),
+                torch.tensor(sup_toks, dtype=torch.long, device=device),
+            ] = float("-inf")
