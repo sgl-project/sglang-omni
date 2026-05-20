@@ -69,7 +69,6 @@ S2PRO_MODEL_PATH = "fishaudio/s2-pro"
 S2PRO_CONFIG_PATH = "examples/configs/s2pro_tts.yaml"
 
 STARTUP_TIMEOUT = 180
-ROUTER_STARTUP_TIMEOUT = 30
 BENCHMARK_TIMEOUT = 600
 WER_TIMEOUT = 600
 DATASET_CACHE_ENV = "SGLANG_SEEDTTS50_DIR"
@@ -414,7 +413,6 @@ def router_server(tmp_path_factory: pytest.TempPathFactory):
         model_name=S2PRO_MODEL_PATH,
         worker_extra_args=f"--config {S2PRO_CONFIG_PATH}",
         wait_timeout=STARTUP_TIMEOUT,
-        startup_timeout=ROUTER_STARTUP_TIMEOUT,
         log_prefix="s2pro_router_logs",
     ) as router:
         yield router

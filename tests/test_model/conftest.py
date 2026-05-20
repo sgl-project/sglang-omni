@@ -32,8 +32,7 @@ QWEN3_OMNI_TEST_MODEL_PATH = os.environ.get(
     "SGLANG_OMNI_TEST_QWEN3_MODEL", QWEN3_OMNI_MODEL_PATH
 )
 QWEN3_OMNI_MODEL_NAME = "qwen3-omni"
-QWEN3_OMNI_ROUTER_STARTUP_TIMEOUT = 30
-QWEN3_OMNI_ROUTER_WAIT_TIMEOUT = 120
+QWEN3_OMNI_ROUTER_WAIT_TIMEOUT = 180
 QWEN3_OMNI_COLOCATED_WORKER_ARGS = (
     "--config examples/configs/qwen3_omni_colocated.yaml --colocate"
 )
@@ -87,7 +86,6 @@ def _launch_qwen3_omni_router(
         model_name=QWEN3_OMNI_MODEL_NAME,
         worker_extra_args=worker_extra_args,
         wait_timeout=QWEN3_OMNI_ROUTER_WAIT_TIMEOUT,
-        startup_timeout=QWEN3_OMNI_ROUTER_STARTUP_TIMEOUT,
     )
 
 

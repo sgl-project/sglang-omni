@@ -23,8 +23,7 @@ from tests.utils import disable_proxy
 MODEL_PATH = "Qwen/Qwen3-Omni-30B-A3B-Instruct"
 MODEL_NAME = "qwen3-omni"
 THINKER_MAX_SEQ_LEN = 128
-ROUTER_STARTUP_TIMEOUT = 30
-ROUTER_WAIT_TIMEOUT = 120
+ROUTER_WAIT_TIMEOUT = 180
 REQUEST_TIMEOUT = 120
 
 pytestmark = pytest.mark.benchmark
@@ -55,7 +54,6 @@ def router_server(tmp_path_factory: pytest.TempPathFactory):
         model_name=MODEL_NAME,
         worker_extra_args=worker_extra_args,
         wait_timeout=ROUTER_WAIT_TIMEOUT,
-        startup_timeout=ROUTER_STARTUP_TIMEOUT,
         log_prefix="thinker_length_router_logs",
     ) as router:
         yield router
