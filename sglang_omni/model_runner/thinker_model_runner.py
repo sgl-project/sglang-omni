@@ -33,6 +33,32 @@ class ThinkerModelRunner(ModelRunner):
         self._video_token_id = thinker_cfg.video_token_id
         self._audio_token_id = thinker_cfg.audio_token_id
 
+    def execute(self, scheduler_output: Any):
+        capture_layers = getattr(self._text_model, "layers_to_capture", None)
+        if capture_layers and not self._batch_should_generate_audio_output(
+            scheduler_output.requests
+        ):
+            saved_capture_layers = list(capture_layers)
+            self._text_model.layers_to_capture = []
+            try:
+                return super().execute(scheduler_output)
+            finally:
+                self._text_model.layers_to_capture = saved_capture_layers
+        return super().execute(scheduler_output)
+
+    @staticmethod
+    def _batch_should_generate_audio_output(requests: list[Any]) -> bool:
+        from sglang_omni.models.qwen3_omni.request_builders import (
+            should_generate_audio_output,
+        )
+
+        for request in requests:
+            data = getattr(request, "data", None)
+            payload = getattr(data, "stage_payload", None)
+            if should_generate_audio_output(payload):
+                return True
+        return False
+
     def prepare_prefill(self, forward_batch, schedule_batch, requests):
         """Inject multimodal embeddings. Returns batch_result if custom forward needed."""
         if not schedule_batch.forward_mode.is_extend():

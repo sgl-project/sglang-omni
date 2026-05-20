@@ -22,6 +22,7 @@ def create_thinker_scheduler(
     from sglang_omni.models.qwen3_omni.request_builders import (
         make_thinker_scheduler_adapters,
         make_thinker_stream_output_builder,
+        should_generate_audio_output,
     )
     from sglang_omni.scheduling.bootstrap import create_sglang_infrastructure
     from sglang_omni.scheduling.omni_scheduler import OmniScheduler
@@ -60,6 +61,9 @@ def create_thinker_scheduler(
         capture_hidden=capture_hidden,
         capture_hidden_layers=capture_hidden_layers,
         model=model_worker.model_runner.model if capture_hidden_layers else None,
+        should_emit_hidden=lambda request: should_generate_audio_output(
+            getattr(getattr(request, "data", None), "stage_payload", None)
+        ),
     )
 
     model_runner = ThinkerModelRunner(model_worker, output_proc)

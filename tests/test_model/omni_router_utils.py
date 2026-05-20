@@ -55,6 +55,27 @@ class ManagedRouterHandle:
             self.stopped = True
 
 
+@dataclass
+class RouterWorkerTrafficGuard:
+    """Router worker counter snapshot for one benchmark run."""
+
+    handle: ManagedRouterHandle
+    label: str
+    before_snapshot: dict
+
+    def assert_served(self, *, min_total_requests: int | None = None) -> None:
+        try:
+            assert_workers_served_requests_since(
+                port=self.handle.port,
+                before_snapshot=self.before_snapshot,
+                label=self.label,
+                min_total_requests=min_total_requests,
+            )
+        except Exception:
+            print_router_diagnostics(self.handle)
+            raise
+
+
 @contextmanager
 def launch_managed_router(
     *,
@@ -118,7 +139,11 @@ def launch_managed_router(
             env={ROUTER_CLEANUP_MANIFEST_ENV: str(cleanup_manifest)},
         )
         _record_process_group(cleanup_manifest, os.getpgid(router_proc.pid))
-        wait_for_all_router_workers(router_port, expected_workers=num_workers)
+        wait_for_all_router_workers(
+            router_port,
+            expected_workers=num_workers,
+            timeout=wait_timeout,
+        )
         print(
             "[Omni Router CI] topology "
             f"router_port={router_port} worker_ports={worker_ports} "
@@ -139,6 +164,24 @@ def launch_managed_router(
         elif router_proc is not None:
             stop_server(router_proc)
         cleanup_process_groups_from_manifest(cleanup_manifest)
+
+
+@contextmanager
+def router_worker_traffic_guard(
+    handle: ManagedRouterHandle,
+    *,
+    label: str,
+) -> Iterator[RouterWorkerTrafficGuard]:
+    guard = RouterWorkerTrafficGuard(
+        handle=handle,
+        label=label,
+        before_snapshot=router_get_json(handle.port, "/workers"),
+    )
+    try:
+        yield guard
+    except Exception:
+        print_router_diagnostics(handle)
+        raise
 
 
 def router_get_json(port: int, path: str) -> dict:

@@ -43,6 +43,7 @@ class StageProcessSpec:
 
     # Routing: static next stage(s)
     next_stages: str | list[str] | None = None
+    route_fn: str | None = None
     is_terminal: bool = False
 
     # Fan-in
@@ -61,6 +62,7 @@ class StageProcessSpec:
 
     # Stream wiring
     stream_targets: list[str] = field(default_factory=list)
+    stream_done_to_fn: str | None = None
     same_gpu_targets: set[str] = field(default_factory=set)
     is_stream_receiver: bool = False
     can_accept_stream_before_payload: bool = False
@@ -192,9 +194,60 @@ def _construct_stage(
 
     scheduler = _construct_scheduler(spec, gpu_id, log)
 
+    def _target_list(targets: str | list[str] | None) -> list[str]:
+        if targets is None:
+            return []
+        if isinstance(targets, str):
+            return [targets]
+        if isinstance(targets, list):
+            return list(targets)
+        raise ValueError(
+            f"Dynamic route function for stage {spec.stage_name!r} returned "
+            f"unsupported target value {targets!r}"
+        )
+
+    def _map_target_list(targets: str | list[str] | None) -> list[str]:
+        return [spec.name_map.get(t, t) for t in _target_list(targets)]
+
+    def _target_result(
+        targets: str | list[str] | None,
+        *,
+        allowed_targets: set[str],
+        allow_empty: bool,
+        hook_name: str,
+    ) -> str | list[str] | None:
+        mapped_targets = _map_target_list(targets)
+        if not mapped_targets:
+            if allow_empty:
+                return None
+            raise ValueError(
+                f"{hook_name} for stage {spec.stage_name!r} returned no targets; "
+                "dynamic route functions must return downstream stage(s)"
+            )
+        unknown = set(mapped_targets) - allowed_targets
+        if unknown:
+            raise ValueError(
+                f"{hook_name} for stage {spec.stage_name!r} returned targets "
+                f"outside the static topology: {sorted(unknown)}. "
+                f"Allowed targets: {sorted(allowed_targets)}"
+            )
+        return mapped_targets[0] if isinstance(targets, str) else mapped_targets
+
     # --- Build routing ---
     if spec.is_terminal:
         get_next = lambda request_id, output: None
+    elif spec.route_fn:
+        route_fn = import_string(spec.route_fn)
+        allowed_route_targets = set(_map_target_list(spec.next_stages))
+
+        def get_next(request_id, output, _fn=route_fn):
+            return _target_result(
+                _fn(request_id, output),
+                allowed_targets=allowed_route_targets,
+                allow_empty=False,
+                hook_name="route_fn",
+            )
+
     else:
         target = spec.next_stages
         if isinstance(target, str):
@@ -205,6 +258,20 @@ def _construct_stage(
             get_next = lambda request_id, output, _t=mapped: _t
         else:
             get_next = lambda request_id, output: None
+
+    if spec.stream_done_to_fn:
+        stream_done_to_fn = import_string(spec.stream_done_to_fn)
+        allowed_stream_targets = set(_map_target_list(spec.stream_targets))
+        get_stream_done_targets = (
+            lambda request_id, output, _fn=stream_done_to_fn: _target_result(
+                _fn(request_id, output),
+                allowed_targets=allowed_stream_targets,
+                allow_empty=True,
+                hook_name="stream_done_to_fn",
+            )
+        )
+    else:
+        get_stream_done_targets = None
 
     # --- Build input handler ---
     if spec.wait_for and spec.merge_fn:
@@ -254,6 +321,7 @@ def _construct_stage(
         scheduler=scheduler,
         project_payload=project_payload or None,
         stream_targets=spec.stream_targets or None,
+        get_stream_done_targets=get_stream_done_targets,
         same_gpu_targets=spec.same_gpu_targets or None,
         can_accept_stream_before_payload=spec.can_accept_stream_before_payload,
         tp_fanout=tp_fanout,

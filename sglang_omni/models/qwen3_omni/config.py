@@ -90,6 +90,16 @@ def _thinker_stage(*, gpu: int, speech_enabled: bool, process: str) -> StageConf
         runtime_arg_map={"max_seq_len": "thinker_max_seq_len"},
         next=["decode", "talker_ar"] if speech_enabled else "decode",
         stream_to=["talker_ar", "decode"] if speech_enabled else ["decode"],
+        route_fn=(
+            f"{_PKG}.request_builders.resolve_thinker_next_stages"
+            if speech_enabled
+            else None
+        ),
+        stream_done_to_fn=(
+            f"{_PKG}.request_builders.resolve_thinker_stream_done_targets"
+            if speech_enabled
+            else None
+        ),
     )
 
 
@@ -227,6 +237,7 @@ class Qwen3OmniSpeechPipelineConfig(PipelineConfig):
 
     model_path: str
     placement_policy: str | None = _PLACEMENT_POLICY
+    terminal_stages_fn: str | None = f"{_PKG}.request_builders.resolve_terminal_stages"
     placement: PlacementConfig = Field(
         default_factory=lambda: PlacementConfig(
             require_memory_fraction_for_colocation=False

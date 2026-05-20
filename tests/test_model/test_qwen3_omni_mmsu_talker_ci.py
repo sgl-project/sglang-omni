@@ -30,7 +30,10 @@ from benchmarks.dataset.prepare import DATASETS
 from benchmarks.eval.benchmark_omni_mmsu import run as run_mmsu
 from benchmarks.metrics.mmsu import print_mmsu_summary
 from benchmarks.metrics.wer import print_wer_summary
-from tests.test_model.omni_router_utils import ManagedRouterHandle
+from tests.test_model.omni_router_utils import (
+    ManagedRouterHandle,
+    router_worker_traffic_guard,
+)
 from tests.utils import (
     apply_slack,
     apply_wer_slack,
@@ -117,7 +120,11 @@ def test_mmsu_audio_wer_and_speed(
         max_samples=MAX_SAMPLES, repo_id=DATASETS["mmsu-ci-2000"]
     )
 
-    results = asyncio.run(run_mmsu(args, samples=samples))
+    with router_worker_traffic_guard(
+        qwen3_omni_router_server,
+        label="Qwen3-Omni MMSU Talker",
+    ) as router_guard:
+        results = asyncio.run(run_mmsu(args, samples=samples))
 
     print_mmsu_summary(results["accuracy"], args.model, speed_metrics=results["speed"])
     if "wer" in results:
@@ -125,6 +132,7 @@ def test_mmsu_audio_wer_and_speed(
 
     failed = results["accuracy"].get("failed_samples", 0)
     total = results["accuracy"].get("total_samples", 0)
+    router_guard.assert_served(min_total_requests=total)
     assert failed == 0, (
         f"MMSU Talker had {failed}/{total} failed requests "
         f"(timeouts or empty responses); any failure fails the test"

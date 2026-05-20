@@ -3,6 +3,7 @@
 
 import asyncio
 import logging
+from collections.abc import Callable, Sequence
 from typing import Any, AsyncIterator
 
 from sglang_omni.pipeline.control_plane import CoordinatorControlPlane
@@ -38,6 +39,9 @@ class Coordinator:
         abort_endpoint: str,
         entry_stage: str,
         terminal_stages: list[str] | None = None,
+        terminal_stages_resolver: (
+            Callable[[OmniRequest], list[str] | None] | None
+        ) = None,
     ):
         """Initialize coordinator.
 
@@ -52,6 +56,7 @@ class Coordinator:
         self._terminal_stages: set[str] = (
             set(terminal_stages) if terminal_stages else set()
         )
+        self._terminal_stages_resolver = terminal_stages_resolver
         self._partial_results: dict[str, dict[str, Any]] = {}
 
         # Control plane
@@ -150,10 +155,11 @@ class Coordinator:
         queue: asyncio.Queue[CompleteMessage | StreamMessage] = asyncio.Queue()
         self._stream_queues[request_id] = queue
 
-        await self._submit_request(request_id, request)
-
-        completed_stages: set[str] = set()
         try:
+            await self._submit_request(request_id, request)
+            expected_terminal_stages = self._expected_terminal_stages(request_id)
+
+            completed_stages: set[str] = set()
             while True:
                 msg = await queue.get()
                 if isinstance(msg, CompleteMessage):
@@ -162,8 +168,8 @@ class Coordinator:
                     yield msg
                     completed_stages.add(msg.from_stage)
                     if (
-                        not self._terminal_stages
-                        or completed_stages >= self._terminal_stages
+                        not expected_terminal_stages
+                        or completed_stages >= expected_terminal_stages
                     ):
                         return
                 else:
@@ -184,20 +190,21 @@ class Coordinator:
         if self.entry_stage not in self._stages:
             raise ValueError(f"Entry stage {self.entry_stage} not registered")
 
+        if not isinstance(request, OmniRequest):
+            request = OmniRequest(inputs=request)
+
         # Track request
         self._requests[request_id] = RequestInfo(
             request_id=request_id,
             state=RequestState.PENDING,
             current_stage=self.entry_stage,
+            terminal_stages=self._resolve_terminal_stages(request),
         )
 
         # Create future for completion
         loop = asyncio.get_running_loop()
         future: asyncio.Future = loop.create_future()
         self._completion_futures[request_id] = future
-
-        if not isinstance(request, OmniRequest):
-            request = OmniRequest(inputs=request)
 
         payload = StagePayload(
             request_id=request_id,
@@ -324,8 +331,19 @@ class Coordinator:
             self._requests.pop(request_id, None)
             return
 
-        # Single terminal (original behavior) or no terminal_stages configured
-        if len(self._terminal_stages) <= 1:
+        expected_terminal_stages = self._expected_terminal_stages(request_id)
+        if expected_terminal_stages and msg.from_stage not in expected_terminal_stages:
+            logger.debug(
+                "Coordinator ignoring completion from inactive terminal: "
+                "req=%s stage=%s expected=%s",
+                request_id,
+                msg.from_stage,
+                sorted(expected_terminal_stages),
+            )
+            return
+
+        # Single active terminal (original behavior) or no terminal_stages configured
+        if len(expected_terminal_stages) <= 1:
             info.state = RequestState.COMPLETED
             info.result = msg.result
             if request_id in self._completion_futures:
@@ -345,7 +363,7 @@ class Coordinator:
         if request_id in self._stream_queues:
             await self._stream_queues[request_id].put(msg)
 
-        if len(partials) < len(self._terminal_stages):
+        if set(partials) < expected_terminal_stages:
             return  # still waiting
 
         # All terminal stages done -> merge and resolve
@@ -371,6 +389,39 @@ class Coordinator:
         """Get info about a request."""
         return self._requests.get(request_id)
 
+    def _resolve_terminal_stages(self, request: OmniRequest) -> set[str]:
+        if self._terminal_stages_resolver is None:
+            return set(self._terminal_stages)
+        resolved = self._terminal_stages_resolver(request)
+        if resolved is None:
+            return set(self._terminal_stages)
+        if isinstance(resolved, str) or not isinstance(resolved, Sequence):
+            raise ValueError(
+                "terminal_stages_resolver must return a sequence of terminal "
+                "stage names or None"
+            )
+        if not all(isinstance(stage, str) for stage in resolved):
+            raise ValueError(
+                "terminal_stages_resolver must return terminal stage names"
+            )
+        resolved_stages = set(resolved)
+        if not resolved_stages:
+            raise ValueError("terminal_stages_resolver returned no terminal stages")
+        unknown = resolved_stages - self._terminal_stages
+        if unknown:
+            raise ValueError(
+                "terminal_stages_resolver returned stages outside the static "
+                f"terminal stages: {sorted(unknown)}. Allowed terminal stages: "
+                f"{sorted(self._terminal_stages)}"
+            )
+        return resolved_stages
+
+    def _expected_terminal_stages(self, request_id: str) -> set[str]:
+        info = self._requests.get(request_id)
+        if info is None or info.terminal_stages is None:
+            return set(self._terminal_stages)
+        return info.terminal_stages
+
     def health(self) -> dict[str, Any]:
         """Return health status."""
         state_counts = {}
@@ -394,6 +445,7 @@ async def run_coordinator(
     entry_stage: str,
     stages: dict[str, str],  # name -> endpoint
     terminal_stages: list[str] | None = None,
+    terminal_stages_resolver: Callable[[OmniRequest], list[str] | None] | None = None,
 ) -> Coordinator:
     """Create and start a coordinator.
 
@@ -412,6 +464,7 @@ async def run_coordinator(
         abort_endpoint=abort_endpoint,
         entry_stage=entry_stage,
         terminal_stages=terminal_stages,
+        terminal_stages_resolver=terminal_stages_resolver,
     )
 
     # Register stages

@@ -25,7 +25,10 @@ from benchmarks.eval.benchmark_omni_videomme import VideoEvalConfig
 from benchmarks.metrics.performance import print_speed_summary
 from benchmarks.metrics.video import print_videomme_accuracy_summary
 from benchmarks.metrics.wer import print_wer_summary
-from tests.test_model.omni_router_utils import ManagedRouterHandle
+from tests.test_model.omni_router_utils import (
+    ManagedRouterHandle,
+    router_worker_traffic_guard,
+)
 from tests.utils import (
     apply_slack,
     apply_wer_slack,
@@ -77,7 +80,11 @@ def test_videoamme_talker_accuracy_wer_and_speed(
         disable_tqdm=False,
         timeout_s=500,
     )
-    results = asyncio.run(run_videoamme_eval(config))
+    with router_worker_traffic_guard(
+        qwen3_omni_talker_server,
+        label="Qwen3-Omni Video-AMME Talker",
+    ) as router_guard:
+        results = asyncio.run(run_videoamme_eval(config))
 
     summary = results["summary"]
     print_videomme_accuracy_summary(
@@ -94,6 +101,7 @@ def test_videoamme_talker_accuracy_wer_and_speed(
     print_wer_summary(results["wer"]["summary"], config.model)
     failed = summary.get("failed", 0)
     total = summary.get("total_samples", 0)
+    router_guard.assert_served(min_total_requests=total)
     assert failed == 0, (
         f"Video-AMME Talker had {failed}/{total} failed requests "
         f"(timeouts or empty responses); any failure fails the test"

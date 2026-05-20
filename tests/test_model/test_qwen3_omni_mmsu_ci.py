@@ -22,7 +22,10 @@ import pytest
 from benchmarks.dataset.prepare import DATASETS
 from benchmarks.eval.benchmark_omni_mmsu import run as run_mmsu
 from benchmarks.metrics.mmsu import print_mmsu_summary
-from tests.test_model.omni_router_utils import ManagedRouterHandle
+from tests.test_model.omni_router_utils import (
+    ManagedRouterHandle,
+    router_worker_traffic_guard,
+)
 from tests.utils import apply_slack, assert_speed_thresholds
 
 CONCURRENCY = 16
@@ -74,12 +77,17 @@ def test_mmsu_accuracy_and_speed(
 ) -> None:
     """Run MMSU eval and assert accuracy and speed meet thresholds."""
     args = _build_args(qwen3_omni_router_server.port, str(tmp_path / "mmsu"))
-    results = asyncio.run(run_mmsu(args))
+    with router_worker_traffic_guard(
+        qwen3_omni_router_server,
+        label="Qwen3-Omni MMSU",
+    ) as router_guard:
+        results = asyncio.run(run_mmsu(args))
 
     print_mmsu_summary(results["accuracy"], args.model, speed_metrics=results["speed"])
 
     failed = results["accuracy"].get("failed_samples", 0)
     total = results["accuracy"].get("total_samples", 0)
+    router_guard.assert_served(min_total_requests=total)
     assert failed == 0, (
         f"MMSU had {failed}/{total} failed requests (timeouts or empty responses); "
         f"any failure fails the test"

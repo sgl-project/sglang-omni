@@ -149,6 +149,7 @@ class StageConfig(BaseModel):
     # --- Routing (set `next` for static routing or `terminal`) ---
     next: str | list[str] | None = None
     terminal: bool = False
+    route_fn: str | None = None
 
     # --- GPU / parallelism ---
     gpu: int | list[int] | None = None
@@ -166,6 +167,7 @@ class StageConfig(BaseModel):
 
     # --- Streaming ---
     stream_to: list[str] = Field(default_factory=list)
+    stream_done_to_fn: str | None = None
     can_accept_stream_before_payload: bool = False
 
     # --- Route-specific payload projection ---
@@ -214,6 +216,7 @@ class PipelineConfig(BaseModel):
     endpoints: EndpointsConfig = Field(default_factory=EndpointsConfig)
     completion_endpoint: str | None = None
     abort_endpoint: str | None = None
+    terminal_stages_fn: str | None = None
     config_cls: str | None = None
 
     def model_post_init(self, __context: Any = None) -> None:
@@ -267,6 +270,14 @@ class PipelineConfig(BaseModel):
             if has_next == bool(s.terminal):
                 raise ValueError(
                     f"Stage {s.name!r} must set exactly one of 'next' or 'terminal'"
+                )
+            if s.terminal and s.route_fn is not None:
+                raise ValueError(
+                    f"Stage {s.name!r} cannot set route_fn on a terminal stage"
+                )
+            if s.stream_done_to_fn is not None and not s.stream_to:
+                raise ValueError(
+                    f"Stage {s.name!r} cannot set stream_done_to_fn without stream_to"
                 )
             if s.tp_size < 1:
                 raise ValueError(f"Stage {s.name!r} must have tp_size >= 1")

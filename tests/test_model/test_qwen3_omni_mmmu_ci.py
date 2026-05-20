@@ -21,7 +21,10 @@ from benchmarks.dataset.prepare import DATASETS
 from benchmarks.eval.benchmark_omni_mmmu import MMMUEvalConfig, run_mmmu_eval
 from benchmarks.metrics.mmmu import print_mmmu_accuracy_summary
 from benchmarks.metrics.performance import print_speed_summary
-from tests.test_model.omni_router_utils import ManagedRouterHandle
+from tests.test_model.omni_router_utils import (
+    ManagedRouterHandle,
+    router_worker_traffic_guard,
+)
 from tests.utils import apply_slack, assert_speed_thresholds
 
 CONCURRENCY = 16
@@ -56,7 +59,11 @@ def test_mmmu_accuracy_and_speed(
         # requests. warmup > 1 keeps the lone hit from landing alone.
         warmup=2,
     )
-    results = asyncio.run(run_mmmu_eval(config))
+    with router_worker_traffic_guard(
+        qwen3_omni_router_server,
+        label="Qwen3-Omni MMMU",
+    ) as router_guard:
+        results = asyncio.run(run_mmmu_eval(config))
 
     summary = results["summary"]
     speed = results["speed"]
@@ -65,6 +72,7 @@ def test_mmmu_accuracy_and_speed(
 
     failed = summary.get("failed", 0)
     total = summary.get("total_samples", 0)
+    router_guard.assert_served(min_total_requests=total)
     assert failed == 0, (
         f"MMMU had {failed}/{total} failed requests (timeouts or empty responses); "
         f"any failure fails the test"

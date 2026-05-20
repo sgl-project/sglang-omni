@@ -13,13 +13,66 @@ import xxhash
 
 from sglang_omni.models.qwen3_omni.components.talker_prefill import TalkerPrefillBuilder
 from sglang_omni.models.qwen3_omni.payload_types import PipelineState, ThinkerOutput
-from sglang_omni.proto import StagePayload
+from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling.messages import OutgoingMessage
 from sglang_omni.scheduling.sglang_backend import SGLangARRequestData
 from sglang_omni.scheduling.types import ARRequestData
 
 IMAGE_STAGE = "image_encoder"
 AUDIO_STAGE = "audio_encoder"
+DECODE_STAGE = "decode"
+TALKER_STAGE = "talker_ar"
+CODE2WAV_STAGE = "code2wav"
+
+
+def output_modalities(request: OmniRequest | None) -> set[str] | None:
+    metadata = getattr(request, "metadata", None)
+    if not isinstance(metadata, dict):
+        return None
+    modalities = metadata.get("output_modalities")
+    if modalities is None:
+        return None
+    if isinstance(modalities, str):
+        return {modalities.lower()}
+    if isinstance(modalities, (list, tuple, set)):
+        return {str(modality).lower() for modality in modalities}
+    return None
+
+
+def should_generate_audio_output(
+    payload_or_request: StagePayload | OmniRequest | None,
+) -> bool:
+    request = (
+        payload_or_request.request
+        if isinstance(payload_or_request, StagePayload)
+        else payload_or_request
+    )
+    modalities = output_modalities(request)
+    return modalities is None or "audio" in modalities
+
+
+def resolve_thinker_next_stages(
+    request_id: str, output: StagePayload
+) -> str | list[str]:
+    del request_id
+    if should_generate_audio_output(output):
+        return [DECODE_STAGE, TALKER_STAGE]
+    return DECODE_STAGE
+
+
+def resolve_thinker_stream_done_targets(
+    request_id: str, output: StagePayload
+) -> list[str]:
+    del request_id
+    if should_generate_audio_output(output):
+        return [TALKER_STAGE, DECODE_STAGE]
+    return [DECODE_STAGE]
+
+
+def resolve_terminal_stages(request: OmniRequest) -> list[str]:
+    if should_generate_audio_output(request):
+        return [DECODE_STAGE, CODE2WAV_STAGE]
+    return [DECODE_STAGE]
 
 
 @dataclass(slots=True)
@@ -636,6 +689,9 @@ def make_thinker_stream_output_builder():
                     metadata={"token_id": token_id},
                 )
             )
+
+        if not should_generate_audio_output(stage_payload):
+            return messages
 
         # Speech mode: also stream hidden states to the talker for codec gen.
         extra = req_output.extra
