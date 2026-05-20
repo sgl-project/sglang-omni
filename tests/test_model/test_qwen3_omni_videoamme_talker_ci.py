@@ -33,7 +33,7 @@ from tests.utils import (
     assert_wer_partitioned,
 )
 
-CONCURRENCY = 8
+CONCURRENCY = 16
 MAX_SAMPLES = 20
 MAX_TOKENS = 256
 
@@ -45,7 +45,7 @@ VIDEOAMME_TALKER_WER_BELOW_50_CORPUS_THRESHOLD = apply_wer_slack(
 VIDEOAMME_TALKER_N_ABOVE_50_MAX = 1
 
 _VIDEOAMME_TALKER_AUDIO_P95 = {
-    8: {
+    16: {
         "throughput_qps": 0.366,
         "tok_per_s_agg": 2.1,
         "latency_mean_s": 19.59,

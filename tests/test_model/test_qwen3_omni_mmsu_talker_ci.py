@@ -41,7 +41,7 @@ from tests.utils import (
 MAX_SAMPLES = 40
 MAX_TOKENS = 256
 
-CONCURRENCY = 8
+CONCURRENCY = 16
 
 # Note (Yifei): "2-3 sentences" floor prevents terse "Answer: X" replies that
 # would starve the WER signal; the 120-word cap keeps p95 output well under
@@ -69,7 +69,7 @@ MMSU_AUDIO_WER_BELOW_50_CORPUS_THRESHOLD = apply_wer_slack(
 MMSU_AUDIO_N_ABOVE_50_MAX = 0
 
 _MMSU_AUDIO_P95 = {
-    8: {
+    16: {
         "throughput_qps": 1.25,
         "tok_per_s_agg": 10.1,
         "latency_mean_s": 6.094,

@@ -23,9 +23,11 @@ from tests.utils import disable_proxy
 MODEL_PATH = "Qwen/Qwen3-Omni-30B-A3B-Instruct"
 MODEL_NAME = "qwen3-omni"
 THINKER_MAX_SEQ_LEN = 128
-ROUTER_STARTUP_TIMEOUT = 660
-ROUTER_WAIT_TIMEOUT = 600
+ROUTER_STARTUP_TIMEOUT = 30
+ROUTER_WAIT_TIMEOUT = 120
 REQUEST_TIMEOUT = 120
+
+pytestmark = pytest.mark.benchmark
 
 
 def _post_chat(
@@ -111,7 +113,7 @@ def test_length_finish_reason_is_preserved(router_server: ManagedRouterHandle) -
                     "content": "Count from 1 to 20, separated by commas.",
                 }
             ],
-            "max_tokens": 2,
+            "max_tokens": 1,
             "stream": False,
         },
     )

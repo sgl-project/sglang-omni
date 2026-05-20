@@ -45,7 +45,7 @@ from tests.utils import (
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
-CONCURRENCY = 8
+CONCURRENCY = 16
 MAX_SAMPLES = 50
 DATASET_CACHE_ENV = "SGLANG_SEEDTTS50_DIR"
 
@@ -59,7 +59,7 @@ VC_N_ABOVE_50_MAX = 0
 # are the most unstable metrics, so I drop it a lot.
 
 _VC_NON_STREAM_P95 = {
-    8: {
+    16: {
         "throughput_qps": 4.445,
         "tok_per_s_agg": 8.6,
         "latency_mean_s": 1.71,

@@ -251,6 +251,24 @@ def assert_workers_served_requests(
     assert sum(failed_counts) == 0, f"Router recorded request failures: {failed_counts}"
 
 
+def assert_workers_served_requests_since(
+    *,
+    port: int,
+    before_snapshot: dict,
+    label: str,
+    min_total_requests: int | None = None,
+) -> None:
+    delta_snapshot = _worker_request_delta(
+        before_snapshot,
+        router_get_json(port, "/workers"),
+    )
+    print_worker_snapshot(f"{label} /workers delta", delta_snapshot)
+    assert_workers_served_requests(
+        delta_snapshot,
+        min_total_requests=min_total_requests,
+    )
+
+
 def cleanup_process_groups_from_manifest(manifest: Path) -> None:
     if not manifest.exists():
         return
@@ -350,3 +368,17 @@ def _port_is_available(port: int) -> bool:
         except OSError:
             return False
     return True
+
+
+def _worker_request_delta(before: dict, after: dict) -> dict:
+    before_workers = {worker["display_id"]: worker for worker in before["workers"]}
+    delta_workers = []
+    for worker in after["workers"]:
+        previous = before_workers.get(worker["display_id"], {})
+        delta_worker = dict(worker)
+        for field in ("routed_requests", "successful_requests", "failed_requests"):
+            delta_worker[field] = int(worker.get(field, 0)) - int(
+                previous.get(field, 0)
+            )
+        delta_workers.append(delta_worker)
+    return {**after, "workers": delta_workers}

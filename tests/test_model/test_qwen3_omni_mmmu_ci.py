@@ -24,12 +24,12 @@ from benchmarks.metrics.performance import print_speed_summary
 from tests.test_model.omni_router_utils import ManagedRouterHandle
 from tests.utils import apply_slack, assert_speed_thresholds
 
-CONCURRENCY = 8
+CONCURRENCY = 16
 
 MMMU_MIN_ACCURACY = 0.6
 
 _MMMU_P95 = {
-    8: {
+    16: {
         "throughput_qps": 0.158,
         "tok_per_s_agg": 13.2,
         "latency_mean_s": 48.712,
