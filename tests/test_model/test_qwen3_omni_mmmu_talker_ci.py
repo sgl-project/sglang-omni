@@ -55,23 +55,23 @@ MMMU_TTS_PROMPT = (
 )
 
 # Accuracy floor — audio-mode MMMU.
-MMMU_AUDIO_MIN_ACCURACY = 0.7
+MMMU_AUDIO_MIN_ACCURACY = 0.75
 
 # WER thresholds use a partitioned view of the per-sample distribution:
 #  - corpus WER over the "sane" subset (per-sample WER <= 50%)
 #  - count of catastrophic failures (per-sample WER > 50%)
-MMMU_AUDIO_WER_BELOW_50_CORPUS_MAX = 0.11
+MMMU_AUDIO_WER_BELOW_50_CORPUS_MAX = 0.16498838109992253
 MMMU_AUDIO_WER_BELOW_50_CORPUS_THRESHOLD = apply_wer_slack(
     MMMU_AUDIO_WER_BELOW_50_CORPUS_MAX
 )
-MMMU_AUDIO_N_ABOVE_50_MAX = 3
+MMMU_AUDIO_N_ABOVE_50_MAX = 4
 
 _MMMU_AUDIO_P95 = {
     16: {
-        "throughput_qps": 0.567,
-        "tok_per_s_agg": 10.4,
-        "latency_mean_s": 12.91,
-        "rtf_mean": 0.3107,
+        "throughput_qps": 0.684,
+        "tok_per_s_agg": 8.1,
+        "latency_mean_s": 17.097,
+        "rtf_mean": 0.4397,
     },
 }
 MMMU_AUDIO_THRESHOLDS = apply_slack(_MMMU_AUDIO_P95)

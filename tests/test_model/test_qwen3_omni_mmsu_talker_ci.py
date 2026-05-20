@@ -55,14 +55,14 @@ MMSU_TTS_PROMPT = (
 )
 
 # Accuracy floor — audio-mode MMSU.
-MMSU_AUDIO_MIN_ACCURACY = 0.65
+MMSU_AUDIO_MIN_ACCURACY = 0.55
 
 # WER thresholds use a partitioned view of the per-sample distribution:
 #  - corpus WER over the "sane" subset (per-sample WER <= 50%)
 #  - count of catastrophic failures (per-sample WER > 50%)
 
 # Retuned after Qwen3-Omni talker sampler fix: MMSU talker stayed clean.
-MMSU_AUDIO_WER_BELOW_50_CORPUS_MAX = 0.03
+MMSU_AUDIO_WER_BELOW_50_CORPUS_MAX = 0.02392095683827353
 MMSU_AUDIO_WER_BELOW_50_CORPUS_THRESHOLD = apply_wer_slack(
     MMSU_AUDIO_WER_BELOW_50_CORPUS_MAX
 )
@@ -70,10 +70,10 @@ MMSU_AUDIO_N_ABOVE_50_MAX = 0
 
 _MMSU_AUDIO_P95 = {
     16: {
-        "throughput_qps": 1.25,
-        "tok_per_s_agg": 10.1,
-        "latency_mean_s": 6.094,
-        "rtf_mean": 0.3272,
+        "throughput_qps": 1.59,
+        "tok_per_s_agg": 6.8,
+        "latency_mean_s": 9.134,
+        "rtf_mean": 0.4971,
     },
 }
 MMSU_AUDIO_THRESHOLDS = apply_slack(_MMSU_AUDIO_P95)

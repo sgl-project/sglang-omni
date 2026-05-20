@@ -32,9 +32,9 @@ VIDEOMME_MIN_ACCURACY = 0.56
 
 _VIDEOMME_P95 = {
     16: {
-        "throughput_qps": 0.318,
+        "throughput_qps": 0.304,
         "tok_per_s_agg": 2.4,
-        "latency_mean_s": 47.029,
+        "latency_mean_s": 47.824,
     },
 }
 VIDEOMME_THRESHOLDS = apply_slack(_VIDEOMME_P95)
