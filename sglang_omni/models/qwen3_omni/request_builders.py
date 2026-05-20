@@ -33,10 +33,12 @@ def output_modalities(request: OmniRequest | None) -> set[str] | None:
     if modalities is None:
         return None
     if isinstance(modalities, str):
-        return {modalities.lower()}
-    if isinstance(modalities, (list, tuple, set)):
-        return {str(modality).lower() for modality in modalities}
-    return None
+        values = (modalities,)
+    elif isinstance(modalities, (list, tuple, set)):
+        values = modalities
+    else:
+        return None
+    return {str(modality).lower() for modality in values}
 
 
 def should_generate_audio_output(

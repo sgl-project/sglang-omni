@@ -93,31 +93,31 @@ STREAMING_BENCHMARK_MAX_SAMPLES = 32
 THRESHOLD_SLACK_HIGHER = 0.75
 THRESHOLD_SLACK_LOWER = 1.25
 
-VC_WER_MAX_CORPUS = 0.014184397163120567
+VC_WER_MAX_CORPUS = 0.010638297872340425
 VC_WER_CORPUS_THRESHOLD = apply_wer_slack(VC_WER_MAX_CORPUS)
-VC_WER_MAX_PER_SAMPLE = 0.25
-VC_STREAM_WER_MAX_CORPUS = 0.013262599469496022
+VC_WER_MAX_PER_SAMPLE = 0.17
+VC_STREAM_WER_MAX_CORPUS = 0.010610079575596816
 VC_STREAM_WER_CORPUS_THRESHOLD = apply_wer_slack(VC_STREAM_WER_MAX_CORPUS)
-VC_STREAM_WER_MAX_PER_SAMPLE = 0.17
+VC_STREAM_WER_MAX_PER_SAMPLE = 0.14285714285714285
 
 # Note (Chenyang): Only thresholds for the CI concurrency are dedicatedly tuned,
 # others may not pass the CI.
 
 _VC_NON_STREAM_P95 = {
     16: {
-        "throughput_qps": 1.412,
-        "tok_per_s_agg": 67.3,
-        "latency_mean_s": 9.703,
-        "rtf_mean": 2.9942,
+        "throughput_qps": 1.405,
+        "tok_per_s_agg": 67.5,
+        "latency_mean_s": 9.83,
+        "rtf_mean": 3.0378,
     }
 }
 
 _VC_STREAM_P95 = {
     16: {
-        "throughput_qps": 1.259,
-        "tok_per_s_agg": 58.7,
-        "latency_mean_s": 10.287,
-        "rtf_mean": 2.8993,
+        "throughput_qps": 1.285,
+        "tok_per_s_agg": 60.8,
+        "latency_mean_s": 10.403,
+        "rtf_mean": 2.8678,
     }
 }
 

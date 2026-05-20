@@ -60,10 +60,10 @@ VC_N_ABOVE_50_MAX = 0
 
 _VC_NON_STREAM_P95 = {
     16: {
-        "throughput_qps": 5.544,
-        "tok_per_s_agg": 5.4,
-        "latency_mean_s": 2.713,
-        "rtf_mean": 0.8919,
+        "throughput_qps": 5.865,
+        "tok_per_s_agg": 5.8,
+        "latency_mean_s": 2.536,
+        "rtf_mean": 0.8369,
     },
 }
 

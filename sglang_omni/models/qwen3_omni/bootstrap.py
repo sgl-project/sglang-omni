@@ -57,16 +57,21 @@ def create_thinker_scheduler(
         server_args.disable_cuda_graph = False
         model_worker.model_runner.init_device_graphs()
 
+    def _should_generate_qwen_audio_output(request: Any) -> bool:
+        return should_generate_audio_output(request.data.stage_payload)
+
     output_proc = SGLangOutputProcessor(
         capture_hidden=capture_hidden,
         capture_hidden_layers=capture_hidden_layers,
         model=model_worker.model_runner.model if capture_hidden_layers else None,
-        should_emit_hidden=lambda request: should_generate_audio_output(
-            getattr(getattr(request, "data", None), "stage_payload", None)
-        ),
+        should_emit_hidden=_should_generate_qwen_audio_output,
     )
 
-    model_runner = ThinkerModelRunner(model_worker, output_proc)
+    model_runner = ThinkerModelRunner(
+        model_worker,
+        output_proc,
+        should_capture_hidden=_should_generate_qwen_audio_output,
+    )
 
     tokenizer = get_tokenizer(
         model_config.model_path,

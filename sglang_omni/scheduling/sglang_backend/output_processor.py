@@ -80,15 +80,15 @@ class SGLangOutputProcessor:
         ]
 
         if self._model is not None and self._capture_hidden_layers:
-            aux = self._model._captured_aux_hidden_states
-            if aux is not None:
+            captured_aux_hidden_states = self._model._captured_aux_hidden_states
+            if captured_aux_hidden_states is not None:
                 self._model._captured_aux_hidden_states = None
                 if not request_indexes:
                     return {}
                 stream_hidden_states = self._extract_stream_hidden_states(model_output)
                 return {
                     request_index: self._build_aux_hidden_extra(
-                        aux,
+                        captured_aux_hidden_states,
                         request_index=request_index,
                         scheduler_output=scheduler_output,
                         stream_hidden_states=stream_hidden_states,
