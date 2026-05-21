@@ -192,6 +192,7 @@ def create_sglang_thinker_executor_from_config(
     nccl_port: int | None = None,
     thinker_max_seq_len: int = 8192,
     server_args_overrides: dict[str, Any] | None = None,
+    enable_streaming_tts: bool = False,
 ):
     from sglang_omni.models.ming_omni.bootstrap import create_thinker_scheduler
     from sglang_omni.models.ming_omni.registration import register_ming_hf_config
@@ -214,6 +215,7 @@ def create_sglang_thinker_executor_from_config(
         tp_rank=tp_rank,
         tp_size=tp_size,
         nccl_port=nccl_port,
+        enable_streaming_tts=enable_streaming_tts,
     )
 
 
