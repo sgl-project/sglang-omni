@@ -17,6 +17,7 @@ from sglang_omni.models.ming_omni.pipeline.next_stage import (
     TALKER_STAGE,
     THINKER_STAGE,
 )
+from sglang_omni.models.ming_omni.tp_utils import validate_stage_tp_support
 
 _PKG = "sglang_omni.models.ming_omni"
 
@@ -36,6 +37,11 @@ def _stage_gpu_set(gpu: int | list[int] | None, tp_size: int) -> set[int]:
     if gpu is None:
         return set()
     return set(range(int(gpu), int(gpu) + tp_size))
+
+
+def _validate_ming_stage_tp_support(stages: list[StageConfig]) -> None:
+    for stage in stages:
+        validate_stage_tp_support(stage_name=stage.name, tp_size=stage.tp_size)
 
 
 def _preprocessing_stage(*, process: str) -> StageConfig:
@@ -159,6 +165,10 @@ class MingOmniPipelineConfig(PipelineConfig):
     )
     stages: list[StageConfig] = Field(default_factory=_ming_text_stages)
 
+    def model_post_init(self, __context: Any = None) -> None:
+        super().model_post_init(__context)
+        _validate_ming_stage_tp_support(self.stages)
+
 
 class MingOmniSpeechPipelineConfig(PipelineConfig):
     """7-stage speech pipeline."""
@@ -176,6 +186,7 @@ class MingOmniSpeechPipelineConfig(PipelineConfig):
 
     def model_post_init(self, __context: Any = None) -> None:
         super().model_post_init(__context)
+        _validate_ming_stage_tp_support(self.stages)
         self._validate_talker_gpu_not_in_thinker_tp_range()
 
     def _validate_talker_gpu_not_in_thinker_tp_range(self) -> None:

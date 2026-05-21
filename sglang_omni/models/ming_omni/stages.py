@@ -12,6 +12,7 @@ from typing import Any
 from sglang_omni.models.ming_omni.io import PipelineState
 from sglang_omni.models.ming_omni.pipeline.next_stage import AUDIO_STAGE, IMAGE_STAGE
 from sglang_omni.models.ming_omni.pipeline.usage import build_text_usage
+from sglang_omni.models.ming_omni.tp_utils import validate_stage_tp_support
 from sglang_omni.proto import StagePayload
 
 
@@ -193,6 +194,8 @@ def create_sglang_thinker_executor_from_config(
     thinker_max_seq_len: int = 8192,
     server_args_overrides: dict[str, Any] | None = None,
 ):
+    validate_stage_tp_support(stage_name="thinker", tp_size=tp_size)
+
     from sglang_omni.models.ming_omni.bootstrap import create_thinker_scheduler
     from sglang_omni.models.ming_omni.registration import register_ming_hf_config
     from sglang_omni.scheduling.sglang_backend import build_sglang_server_args
