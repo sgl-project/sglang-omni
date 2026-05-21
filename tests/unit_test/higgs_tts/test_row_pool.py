@@ -66,9 +66,7 @@ class _StubModel:
         if row is not None:
             return row
         if not self._free_rows:
-            raise RuntimeError(
-                f"sampler pool exhausted (max={self._max_batch_size})"
-            )
+            raise RuntimeError(f"sampler pool exhausted (max={self._max_batch_size})")
         row = self._free_rows.pop()
         self._rid_to_row[req_id] = row
         self._sampler_pool.reset_row(row)

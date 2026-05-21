@@ -73,9 +73,7 @@ class HiggsTTSModelRunner(ModelRunner):
         # state machine inert so the captured graph can't poison real rows.
         model._sampler_pool.reset_row(model._padding_row)
 
-        rows_py: list[int] = [
-            model.acquire_row(req.request_id) for req in requests
-        ]
+        rows_py: list[int] = [model.acquire_row(req.request_id) for req in requests]
         # Pad with the reserved padding row.
         rows_py.extend([model._padding_row] * (bs - n_real))
         model._cg_row_indices[:bs] = torch.tensor(
@@ -159,9 +157,7 @@ class HiggsTTSModelRunner(ModelRunner):
         was_done_cpu = model._cg_was_done[:n_real].cpu().tolist()
         codes_BN_cpu = model._cg_codes_BN[:n_real].detach().cpu().clone()
         gen_done_after_cpu = (
-            model._sampler_pool.generation_done[
-                model._cg_row_indices[:n_real]
-            ]
+            model._sampler_pool.generation_done[model._cg_row_indices[:n_real]]
             .cpu()
             .tolist()
         )

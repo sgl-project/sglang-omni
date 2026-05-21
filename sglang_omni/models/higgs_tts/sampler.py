@@ -345,24 +345,19 @@ def batched_step(
     cb_idx = torch.arange(N, device=device).unsqueeze(0).expand(B, N)
     in_delay = (delay_count < N).unsqueeze(-1)
     delay_mask = in_delay & (cb_idx > delay_count.unsqueeze(-1))
-    codes_BN = torch.where(
-        delay_mask, torch.full_like(codes_BN, boc_id), codes_BN
-    )
+    codes_BN = torch.where(delay_mask, torch.full_like(codes_BN, boc_id), codes_BN)
 
     # ----- State machine (all torch ops, no Python branches) -----------
-    active = ~generation_done                         # [B]
+    active = ~generation_done  # [B]
     in_delay_active = active & (delay_count < N)
     in_winddown_active = active & (eoc_countdown >= 0) & (~in_delay_active)
     cb0_eoc_now_active = (
-        active
-        & (~in_delay_active)
-        & (~in_winddown_active)
-        & (codes_BN[:, 0] == eoc_id)
+        active & (~in_delay_active) & (~in_winddown_active) & (codes_BN[:, 0] == eoc_id)
     )
 
-    new_delay_count = torch.where(
-        in_delay_active, delay_count + 1, delay_count
-    ).to(state.delay_count.dtype)
+    new_delay_count = torch.where(in_delay_active, delay_count + 1, delay_count).to(
+        state.delay_count.dtype
+    )
 
     # ``N`` is a static module dimension (fixed at model init) so a
     # Python branch on it does NOT break CUDA Graph capture — both

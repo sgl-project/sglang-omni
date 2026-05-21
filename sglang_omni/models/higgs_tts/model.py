@@ -182,9 +182,7 @@ class HiggsTTSModel(nn.Module):
         self._cg_temperature = torch.ones(
             pool_size, dtype=torch.float32, device=cg_device
         )
-        self._cg_top_p = torch.ones(
-            pool_size, dtype=torch.float32, device=cg_device
-        )
+        self._cg_top_p = torch.ones(pool_size, dtype=torch.float32, device=cg_device)
         # top_k is uniform across the batch in practice; stored as plain int
         # because batched_step takes a scalar. Updated outside the captured graph.
         self._cg_top_k: int | None = None
@@ -192,9 +190,7 @@ class HiggsTTSModel(nn.Module):
         self._cg_codes_BN = torch.zeros(
             pool_size, num_codebooks, dtype=torch.long, device=cg_device
         )
-        self._cg_was_done = torch.zeros(
-            pool_size, dtype=torch.bool, device=cg_device
-        )
+        self._cg_was_done = torch.zeros(pool_size, dtype=torch.bool, device=cg_device)
 
     def get_input_embeddings(self) -> nn.Embedding:
         return self.backbone.get_input_embeddings()
@@ -366,9 +362,7 @@ class HiggsTTSModel(nn.Module):
         )
 
     @torch.no_grad()
-    def decode_codebooks_batch_cg(
-        self, hidden_states_BD: torch.Tensor
-    ) -> torch.Tensor:
+    def decode_codebooks_batch_cg(self, hidden_states_BD: torch.Tensor) -> torch.Tensor:
         """CUDA-Graph-friendly variant of :meth:`decode_codebooks_batch`.
 
         Reads sampling params + row indices from preallocated buffers
@@ -394,9 +388,7 @@ class HiggsTTSModel(nn.Module):
 
         # Snapshot done flags BEFORE the step; STOP_CODE rows mustn't be
         # appended to output_codes downstream.
-        self._cg_was_done[:batch_size] = self._sampler_pool.generation_done[
-            row_indices
-        ]
+        self._cg_was_done[:batch_size] = self._sampler_pool.generation_done[row_indices]
 
         codes_BN = batched_step(
             logits_BNV,
@@ -504,9 +496,7 @@ class HiggsTTSModel(nn.Module):
         if text_embeds.ndim == 3:
             text_embeds = text_embeds[:, -1, :]
 
-        return torch.where(
-            has_codes, fused_embeds.to(text_embeds.dtype), text_embeds
-        )
+        return torch.where(has_codes, fused_embeds.to(text_embeds.dtype), text_embeds)
 
     @staticmethod
     def _is_decode_step(forward_batch) -> bool:
@@ -531,9 +521,7 @@ class HiggsTTSModel(nn.Module):
         return req_ids, gen_params
 
     @staticmethod
-    def _gen_params_for_batch(
-        sampling_info, batch_size: int
-    ) -> list[HiggsGenParams]:
+    def _gen_params_for_batch(sampling_info, batch_size: int) -> list[HiggsGenParams]:
         """Pull per-row sampling params off ``sampling_info`` with at most
         one D2H per attribute (instead of one per row).
         """

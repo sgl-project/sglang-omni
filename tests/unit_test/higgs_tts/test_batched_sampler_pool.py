@@ -26,12 +26,8 @@ from sglang_omni.models.higgs_tts.sampler import (
 @pytest.fixture
 def pool() -> HiggsBatchedSamplerState:
     if not torch.cuda.is_available():
-        return HiggsBatchedSamplerState(
-            max_batch_size=4, num_codebooks=8, device="cpu"
-        )
-    return HiggsBatchedSamplerState(
-        max_batch_size=4, num_codebooks=8, device="cuda"
-    )
+        return HiggsBatchedSamplerState(max_batch_size=4, num_codebooks=8, device="cpu")
+    return HiggsBatchedSamplerState(max_batch_size=4, num_codebooks=8, device="cuda")
 
 
 def test_fresh_pool_view_matches_fresh_state(pool):
