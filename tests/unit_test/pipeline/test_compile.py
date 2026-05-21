@@ -65,6 +65,17 @@ def test_pipeline_schema_keeps_topology_and_validation_contracts() -> None:
                 stage("decode", terminal=True),
             ],
         )
+    with pytest.raises(ValueError, match="wait_for_fn but no wait_for"):
+        PipelineConfig(
+            model_path="model",
+            stages=[
+                stage(
+                    "aggregate",
+                    terminal=True,
+                    wait_for_fn=fake_factory_path("identity_wait_sources"),
+                )
+            ],
+        )
 
 
 def test_runner_specs_wire_routes_overrides_aggregation_and_streams() -> None:
@@ -89,6 +100,7 @@ def test_runner_specs_wire_routes_overrides_aggregation_and_streams() -> None:
             stage(
                 "aggregate",
                 wait_for=["preprocess", "thinker"],
+                wait_for_fn=fake_factory_path("identity_wait_sources"),
                 merge_fn=fake_factory_path("merge_payloads"),
                 terminal=True,
             ),
@@ -115,6 +127,7 @@ def test_runner_specs_wire_routes_overrides_aggregation_and_streams() -> None:
         "identity_stream_targets"
     )
     assert specs["aggregate"].wait_for == ["preprocess", "thinker"]
+    assert specs["aggregate"].wait_for_fn == fake_factory_path("identity_wait_sources")
     assert specs["aggregate"].merge_fn == fake_factory_path("merge_payloads")
     assert specs["talker"].is_stream_receiver
     assert specs["thinker"].same_gpu_targets == {"talker"}

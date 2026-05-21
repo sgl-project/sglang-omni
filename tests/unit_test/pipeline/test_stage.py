@@ -53,6 +53,52 @@ def test_aggregated_input_waits_per_request_without_cross_talk() -> None:
     assert req1.data == {"sources": ["image", "preprocess"]}
 
 
+def test_aggregated_input_supports_request_dynamic_source_sets() -> None:
+    """Preserves early-arriving payloads while narrowing fan-in per request."""
+
+    def _expected_sources(request_id, from_stage, payload):
+        del request_id
+        if from_stage != "preprocess":
+            return None
+        return payload.data["expected"]
+
+    handler = AggregatedInput(
+        {"preprocess", "image", "audio"},
+        lambda payloads: make_stage_payload(data={"sources": sorted(payloads)}),
+        expected_sources_fn=_expected_sources,
+    )
+
+    assert handler.receive("req-audio", "audio", make_stage_payload()) is None
+    audio = handler.receive(
+        "req-audio",
+        "preprocess",
+        make_stage_payload(data={"expected": ["preprocess", "audio"]}),
+    )
+    assert audio.data == {"sources": ["audio", "preprocess"]}
+
+    text = handler.receive(
+        "req-text",
+        "preprocess",
+        make_stage_payload(data={"expected": ["preprocess"]}),
+    )
+    assert text.data == {"sources": ["preprocess"]}
+
+
+def test_aggregated_input_rejects_dynamic_sources_outside_static_fanin() -> None:
+    def _invalid_sources(request_id, from_stage, payload):
+        del request_id, from_stage, payload
+        return ["preprocess", "audio"]
+
+    handler = AggregatedInput(
+        {"preprocess", "image"},
+        lambda payloads: make_stage_payload(data={"sources": sorted(payloads)}),
+        expected_sources_fn=_invalid_sources,
+    )
+
+    with pytest.raises(ValueError, match="outside static wait_for"):
+        handler.receive("req-1", "preprocess", make_stage_payload())
+
+
 def test_stage_routes_results_streams_and_clears_abort_state() -> None:
     """Preserves result routing, stream forwarding, and abort cleanup."""
 
@@ -127,6 +173,52 @@ def test_stage_process_rejects_dynamic_targets_outside_static_topology() -> None
         ValueError, match="stream_done_to_fn.*outside the static topology"
     ):
         stage_obj.get_stream_done_targets("req-1", payload)
+
+
+def test_stage_process_rejects_dynamic_wait_sources_outside_static_fanin() -> None:
+    spec = StageProcessSpec(
+        stage_name="aggregate",
+        factory=fake_factory_path("make_scheduler"),
+        next_stages="decode",
+        wait_for=["preprocess", "thinker"],
+        wait_for_fn=fake_factory_path("wait_sources_to_undeclared_stage"),
+        merge_fn=fake_factory_path("merge_payloads"),
+        recv_endpoint="inproc://aggregate",
+        coordinator_endpoint="inproc://coordinator",
+        abort_endpoint="inproc://abort",
+        stage_endpoints={"decode": "inproc://decode"},
+        relay_config={"relay_type": "shm", "slot_size_mb": 1},
+    )
+    stage_obj = _construct_stage(spec, logging.getLogger(__name__))
+
+    with pytest.raises(ValueError, match="outside static wait_for"):
+        stage_obj.input_handler.receive("req-1", "preprocess", make_stage_payload())
+
+
+def test_stage_process_accepts_iterable_dynamic_wait_sources() -> None:
+    spec = StageProcessSpec(
+        stage_name="aggregate",
+        factory=fake_factory_path("make_scheduler"),
+        next_stages="decode",
+        wait_for=["preprocess", "thinker"],
+        wait_for_fn=fake_factory_path("tuple_wait_sources"),
+        merge_fn=fake_factory_path("merge_payloads"),
+        recv_endpoint="inproc://aggregate",
+        coordinator_endpoint="inproc://coordinator",
+        abort_endpoint="inproc://abort",
+        stage_endpoints={"decode": "inproc://decode"},
+        relay_config={"relay_type": "shm", "slot_size_mb": 1},
+    )
+    stage_obj = _construct_stage(spec, logging.getLogger(__name__))
+
+    assert (
+        stage_obj.input_handler.receive("req-1", "preprocess", make_stage_payload())
+        is None
+    )
+    merged = stage_obj.input_handler.receive("req-1", "thinker", make_stage_payload())
+
+    assert merged is not None
+    assert merged.data["merged_sources"] == ["preprocess", "thinker"]
 
 
 def test_stage_run_raises_when_scheduler_thread_crashes() -> None:
