@@ -148,6 +148,19 @@ def test_ming_thinker_tp2_builds_rank_specific_stage_specs(monkeypatch) -> None:
     fake_transformers_utils = ModuleType("transformers.utils")
     fake_transformers_hub = ModuleType("transformers.utils.hub")
     fake_transformers_hub.cached_file = lambda *a, **k: ""
+    fake_msgpack = ModuleType("msgpack")
+    fake_zmq = ModuleType("zmq")
+    fake_zmq_asyncio = ModuleType("zmq.asyncio")
+    fake_zmq_asyncio.Context = object
+    fake_zmq_asyncio.Socket = object
+    fake_zmq.asyncio = fake_zmq_asyncio
+    fake_zmq.PUSH = object()
+    fake_zmq.PULL = object()
+    fake_zmq.PUB = object()
+    fake_zmq.SUB = object()
+    fake_zmq.SUBSCRIBE = object()
+    fake_zmq.POLLIN = 1
+    fake_numpy = ModuleType("numpy")
     fake_refs = (
         fake_torch,
         fake_torch_nn,
@@ -157,6 +170,10 @@ def test_ming_thinker_tp2_builds_rank_specific_stage_specs(monkeypatch) -> None:
         fake_transformers_init,
         fake_transformers_utils,
         fake_transformers_hub,
+        fake_msgpack,
+        fake_zmq,
+        fake_zmq_asyncio,
+        fake_numpy,
     )
 
     try:
@@ -171,6 +188,10 @@ def test_ming_thinker_tp2_builds_rank_specific_stage_specs(monkeypatch) -> None:
             )
             mp.setitem(sys.modules, "transformers.utils", fake_transformers_utils)
             mp.setitem(sys.modules, "transformers.utils.hub", fake_transformers_hub)
+            mp.setitem(sys.modules, "msgpack", fake_msgpack)
+            mp.setitem(sys.modules, "zmq", fake_zmq)
+            mp.setitem(sys.modules, "zmq.asyncio", fake_zmq_asyncio)
+            mp.setitem(sys.modules, "numpy", fake_numpy)
 
             from sglang_omni.models.ming_omni.config import MingOmniPipelineConfig
             from sglang_omni.pipeline.mp_runner import _build_stage_groups
@@ -239,6 +260,34 @@ def test_ming_speech_rejects_talker_inside_explicit_thinker_tp_gpus() -> None:
         MingOmniSpeechPipelineConfig(model_path="dummy", stages=stages)
 
 
+@pytest.mark.parametrize(
+    ("config_cls_name", "stage_name", "gpu"),
+    [
+        ("MingOmniPipelineConfig", "image_encoder", [0, 1]),
+        ("MingOmniPipelineConfig", "audio_encoder", [0, 1]),
+        ("MingOmniSpeechPipelineConfig", "talker", [2, 3]),
+    ],
+)
+def test_ming_rejects_non_ar_stage_tp_size_gt_one(
+    config_cls_name: str,
+    stage_name: str,
+    gpu: list[int],
+) -> None:
+    import sglang_omni.models.ming_omni.config as ming_config
+
+    config_cls = getattr(ming_config, config_cls_name)
+    config = config_cls(model_path="dummy")
+    stages = [stage.model_copy(deep=True) for stage in config.stages]
+    for stage in stages:
+        if stage.name == stage_name:
+            stage.tp_size = 2
+            stage.parallelism = stage.parallelism.model_copy(update={"tp": 2})
+            stage.gpu = gpu
+
+    with pytest.raises(ValueError, match=f"{stage_name}.*does not support TP"):
+        config_cls(model_path="dummy", stages=stages)
+
+
 def test_ming_speech_rejects_talker_on_non_contiguous_thinker_tp_gpu() -> None:
     from sglang_omni.models.ming_omni.config import MingOmniSpeechPipelineConfig
 
@@ -261,9 +310,7 @@ def test_ming_speech_rejects_any_talker_gpu_list_overlap_with_thinker_tp() -> No
         if stage.name == "thinker":
             stage.gpu = [0, 2]
         if stage.name == "talker":
-            stage.tp_size = 2
-            stage.parallelism = stage.parallelism.model_copy(update={"tp": 2})
-            stage.gpu = [3, 2]
+            stage.gpu = [2]
 
     with pytest.raises(ValueError, match="collides"):
         MingOmniSpeechPipelineConfig(model_path="dummy", stages=stages)
