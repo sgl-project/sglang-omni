@@ -34,7 +34,7 @@ QWEN3_OMNI_TEST_MODEL_PATH = os.environ.get(
 QWEN3_OMNI_MODEL_NAME = "qwen3-omni"
 QWEN3_OMNI_ROUTER_WAIT_TIMEOUT = 180
 QWEN3_OMNI_COLOCATED_WORKER_ARGS = (
-    "--config examples/configs/qwen3_omni_colocated.yaml --colocate"
+    "--config examples/configs/qwen3_omni_colocated_h20.yaml --colocate"
 )
 QWEN3_OMNI_VIDEO_WORKER_ARGS = (
     f"{QWEN3_OMNI_COLOCATED_WORKER_ARGS} "

@@ -164,10 +164,12 @@ Speech mode can run as a colocated one-GPU worker using the colocated config:
 ```bash
 sgl-omni serve \
   --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct \
-  --config examples/configs/qwen3_omni_colocated.yaml \
+  --config examples/configs/qwen3_omni_colocated_h20.yaml \
   --colocate \
   --port 8008
 ```
+
+Use `examples/configs/qwen3_omni_colocated_h200.yaml` on single-H200 workers.
 
 For manual multi-GPU placement, use the example script:
 

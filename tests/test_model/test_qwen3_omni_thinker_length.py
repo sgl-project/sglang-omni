@@ -43,7 +43,7 @@ def _post_chat(
 @pytest.fixture(scope="module")
 def router_server(tmp_path_factory: pytest.TempPathFactory):
     worker_extra_args = (
-        "--config examples/configs/qwen3_omni_colocated.yaml "
+        "--config examples/configs/qwen3_omni_colocated_h20.yaml "
         "--colocate "
         f"--stages.0.factory-args.thinker-max-seq-len {THINKER_MAX_SEQ_LEN} "
         f"--stages.4.factory-args.thinker-max-seq-len {THINKER_MAX_SEQ_LEN}"
