@@ -4,11 +4,12 @@
 from __future__ import annotations
 
 import logging
+import math
 from pathlib import Path
 from typing import Any
 
-import PIL.Image
 import torch
+from PIL import Image
 
 from sglang_omni.models.llada2_uni.components.common import (
     load_llada2_tokenizer,
@@ -39,6 +40,12 @@ BOI_TOKEN = "<boi>"  # id=156904
 
 IMAGE_TOKEN_OFFSET = 157184  # VQ codebook indices are offset by this value
 DUMMY_IMAGE_TOKEN_ID = IMAGE_TOKEN_OFFSET  # <IMAGE0>, used as placeholder
+
+# Pixel budgets for image resize (single-image / multi-image)
+SINGLE_IMAGE_MIN_PIXELS = 128 * 128
+SINGLE_IMAGE_MAX_PIXELS = 800 * 800
+MULTI_IMAGE_MIN_PIXELS = 128 * 128
+MULTI_IMAGE_MAX_PIXELS = 448 * 448
 
 logger = logging.getLogger(__name__)
 
@@ -85,43 +92,67 @@ def validate_prompt_seq_len(
         )
 
 
-def _center_crop(pil_image, crop_size):
-    cw, ch = crop_size
-    w, h = pil_image.size
-    left = max(0, (w - cw) // 2)
-    top = max(0, (h - ch) // 2)
-    return pil_image.crop((left, top, left + cw, top + ch)).resize(
-        (cw, ch), PIL.Image.LANCZOS
-    )
+def _compute_target_dims(
+    height: int,
+    width: int,
+    min_pixels: int,
+    max_pixels: int,
+    factor: int,
+) -> tuple[int, int]:
+    """Scale dimensions to fit within [min_pixels, max_pixels], aligned to factor."""
+    new_h = max(round(height / factor) * factor, factor)
+    new_w = max(round(width / factor) * factor, factor)
+
+    if new_h * new_w > max_pixels:
+        scale = math.sqrt(max_pixels / (height * width))
+        new_h = max(math.floor(height * scale / factor) * factor, factor)
+        new_w = max(math.floor(width * scale / factor) * factor, factor)
+    elif new_h * new_w < min_pixels:
+        scale = math.sqrt(min_pixels / (height * width))
+        new_h = math.ceil(height * scale / factor) * factor
+        new_w = math.ceil(width * scale / factor) * factor
+
+    return new_h, new_w
 
 
-def _var_center_crop(pil_image, crop_size_list):
-    w, h = pil_image.size
-    rem_percent = [
-        min(cw / w, ch / h) / max(cw / w, ch / h) for cw, ch in crop_size_list
-    ]
-    crop_size = max(zip(rem_percent, crop_size_list))[1]
-    return _center_crop(pil_image, crop_size)
+def _resize_and_center_crop(
+    img: Image.Image,
+    target_h: int,
+    target_w: int,
+    factor: int,
+) -> Image.Image:
+    """Resize a PIL Image to cover the target area, then center-crop to a factor-aligned size."""
+    width, height = img.size
+    scale = max(target_h / height, target_w / width)
+    resize_h = int(round(height * scale))
+    resize_w = int(round(width * scale))
+    img = img.resize((resize_w, resize_h), resample=Image.BICUBIC)
+
+    crop_h = max((resize_h // factor) * factor, target_h)
+    crop_w = max((resize_w // factor) * factor, target_w)
+    top = (resize_h - crop_h) // 2
+    left = (resize_w - crop_w) // 2
+    return img.crop((left, top, left + crop_w, top + crop_h))
 
 
-def _generate_crop_size_list(num_patches, patch_size, max_ratio=4.0):
-    assert max_ratio >= 1.0
-    crop_size_list = []
-    wp, hp = num_patches, 1
-    while wp > 0:
-        if max(wp, hp) / min(wp, hp) <= max_ratio:
-            crop_size_list.append((wp * patch_size, hp * patch_size))
-        if (hp + 1) * wp <= num_patches:
-            hp += 1
-        else:
-            wp -= 1
-    return crop_size_list
+def _resize_images(
+    images: list[Image.Image],
+    factor: int,
+) -> list[Image.Image]:
+    """Resize PIL Images to fit within pixel budgets, preserving aspect ratio."""
+    if len(images) == 1:
+        min_pixels, max_pixels = SINGLE_IMAGE_MIN_PIXELS, SINGLE_IMAGE_MAX_PIXELS
+    else:
+        min_pixels, max_pixels = MULTI_IMAGE_MIN_PIXELS, MULTI_IMAGE_MAX_PIXELS
 
-
-def _crop_images(images: list[PIL.Image.Image], factor: int) -> list[PIL.Image.Image]:
-    """Crop PIL images to valid patch-aligned sizes for LLaDA2 ViT."""
-    crop_size_list = _generate_crop_size_list((512 // factor) ** 2, factor)
-    return [_var_center_crop(img, crop_size_list) for img in images]
+    result = []
+    for img in images:
+        width, height = img.size
+        target_h, target_w = _compute_target_dims(
+            height, width, min_pixels, max_pixels, factor
+        )
+        result.append(_resize_and_center_crop(img, target_h, target_w, factor))
+    return result
 
 
 class LLaDA2Preprocessor:
@@ -187,7 +218,7 @@ class LLaDA2Preprocessor:
         image_parts_by_msg: dict[int, list[str]] = {}
 
         if images:
-            cropped = _crop_images(images, self._factor)
+            cropped = _resize_images(images, self._factor)
             img_result = self._image_processor(images=cropped, return_tensors="pt")
             pixel_values = img_result["pixel_values"]
             image_grid_thw = img_result["image_grid_thw"]
