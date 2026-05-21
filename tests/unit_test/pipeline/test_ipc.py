@@ -21,6 +21,10 @@ def noop_factory():
     return None
 
 
+def failing_factory():
+    raise RuntimeError("factory boom")
+
+
 class _FakeControlPlane:
     def __init__(self, recv_endpoint: str):
         self.recv_endpoint = recv_endpoint
@@ -240,6 +244,7 @@ async def test_mp_runner_cleans_spawned_groups_when_later_spawn_fails(
             self.stage_name = stage_name
             self.fail_spawn = fail_spawn
             self.process = FakeProcess() if not fail_spawn else None
+            self.channels_closed = False
 
         @property
         def processes(self) -> list[FakeProcess]:
@@ -252,6 +257,9 @@ async def test_mp_runner_cleans_spawned_groups_when_later_spawn_fails(
 
         async def wait_ready(self, timeout: float) -> None:
             del timeout
+
+        def close_control_channels(self) -> None:
+            self.channels_closed = True
 
     first_group = FakeGroup("preprocessing")
     second_group = FakeGroup("thinker", fail_spawn=True)
@@ -268,6 +276,34 @@ async def test_mp_runner_cleans_spawned_groups_when_later_spawn_fails(
 
     assert first_group.process.terminated
     assert first_group.process.join_count >= 1
+    assert first_group.channels_closed
+    assert second_group.channels_closed
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.asyncio
+async def test_mp_runner_startup_failure_includes_child_factory_traceback(
+    tmp_path: Path,
+) -> None:
+    config = PipelineConfig(
+        model_path="Qwen/Qwen3-Omni-30B-A3B-Instruct",
+        name="x",
+        entry_stage="preprocessing",
+        stages=[
+            StageConfig(
+                name="preprocessing",
+                process="pipeline",
+                factory=f"{__name__}.failing_factory",
+                terminal=True,
+            )
+        ],
+        endpoints=EndpointsConfig(scheme="ipc", base_path=str(tmp_path)),
+    )
+    runner = mp_runner.MultiProcessPipelineRunner(config)
+
+    with pytest.raises(RuntimeError, match="factory boom"):
+        await runner.start(timeout=10.0)
+
     assert list(tmp_path.iterdir()) == []
 
 
