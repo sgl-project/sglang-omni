@@ -316,6 +316,13 @@ def make_thinker_stream_output_builder(
             list(delta.encode("utf-8")),
             dtype=torch.uint8,
         )
+        # Only emit to the segmenter. The thinker is not a terminal stage,
+        # so it cannot send chunks directly to the coordinator via
+        # target=None — the runtime would fan that out to ``stream_to``
+        # peers, and the relay transport requires torch.Tensor payloads.
+        # Streaming text deltas to the client requires either a stream-
+        # aware decode stage or a dedicated text fan-out stage; left as a
+        # follow-up. Streaming audio still works via the talker_stream.
         return [
             OutgoingMessage(
                 request_id=request_id,

@@ -209,11 +209,13 @@ class MingStreamingSegmenterScheduler:
 
         final_segments = state.segmenter.flush()
         if not final_segments:
-            final_segments = [TextSegment(
-                segment_id=state.segment_count,
-                text="",
-                is_final_segment=True,
-            )]
+            final_segments = [
+                TextSegment(
+                    segment_id=state.segment_count,
+                    text="",
+                    is_final_segment=True,
+                )
+            ]
         for segment in final_segments:
             self._emit_segment(request_id, segment)
             state.segment_count += 1
@@ -223,9 +225,12 @@ class MingStreamingSegmenterScheduler:
         # synthesize an empty payload so the result channel is closed.
         if payload is None:
             payload = StagePayload(request_id=request_id, request=None, data={})
-        data = payload.data if isinstance(payload.data, dict) else {}
+        # Strip the upstream tensor-laden state dict; only forward the
+        # segmenter's own summary stats. The talker_stream stage doesn't
+        # need the thinker_out / prompt / encoder_outs fields, and they
+        # carry torch.Tensor instances that downstream msgpack can't
+        # serialize when emitting the terminal result.
         payload.data = {
-            **data,
             "segment_count": state.segment_count,
             "aborted": False,
         }

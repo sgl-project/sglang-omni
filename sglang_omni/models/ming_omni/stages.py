@@ -281,6 +281,31 @@ def create_talker_executor(
     return SimpleScheduler(_talk)
 
 
+def create_streaming_talker_executor(
+    model_path: str,
+    *,
+    device: str = "cuda",
+    voice: str = "DB30",
+):
+    """Factory for the streaming TTS talker stage.
+
+    Consumes text segments emitted by the segmenter and produces audio
+    chunks on the outbox stream channel. Terminal stage — chunks go to
+    the coordinator and out to the client.
+    """
+    from sglang_omni.models.ming_omni.components.streaming_talker import (
+        MingStreamingTalkerScheduler,
+    )
+    from sglang_omni.models.weight_loader import resolve_model_path
+
+    local_path = resolve_model_path(model_path)
+    return MingStreamingTalkerScheduler(
+        model_path=local_path,
+        device=device,
+        voice=voice,
+    )
+
+
 def create_decode_executor(model_path: str):
     from sglang_omni.models.ming_omni.components.common import load_ming_tokenizer
     from sglang_omni.models.ming_omni.io import OmniEvent

@@ -115,8 +115,10 @@ def test_segmenter_emits_sentence_then_finalizes_on_done():
         assert m.target == TALKER_STREAM_STAGE
     # Final segment is flagged.
     assert streams[-1].metadata["is_final_segment"] is True
-    # Original payload data must be preserved on the result.
-    assert results[0].data.data["keep"] == "me"
+    # Final-result payload must be a clean small dict (no tensor-laden
+    # upstream state, which would break msgpack serialization to coord).
+    assert "keep" not in results[0].data.data
+    assert results[0].data.data["aborted"] is False
 
 
 def test_segmenter_handles_stream_arriving_before_payload():
