@@ -37,6 +37,7 @@ from sglang_omni.scheduling.messages import IncomingMessage
 logger = logging.getLogger(__name__)
 
 GetNextFn = Callable[[str, Any], str | list[str] | None]
+GetStreamDoneTargetsFn = Callable[[str, Any], str | list[str] | None]
 
 
 class Stage:
@@ -70,6 +71,7 @@ class Stage:
         scheduler: Any = None,
         project_payload: dict[str, Callable[[Any], Any]] | None = None,
         stream_targets: list[str] | None = None,
+        get_stream_done_targets: GetStreamDoneTargetsFn | None = None,
         same_gpu_targets: set[str] | None = None,
         can_accept_stream_before_payload: bool = False,
         tp_fanout: TPLeaderFanout | None = None,
@@ -85,6 +87,7 @@ class Stage:
         self.scheduler = scheduler
         self._project_payload = project_payload or {}
         self._stream_targets = stream_targets or []
+        self.get_stream_done_targets = get_stream_done_targets
         self._same_gpu_targets = same_gpu_targets or set()
         self._can_accept_stream_before_payload = can_accept_stream_before_payload
         self._tp_fanout = tp_fanout
@@ -586,8 +589,17 @@ class Stage:
         if not self._owns_external_io:
             self._clear_request_state(request_id)
             return
-        # Send stream done to all stream targets
-        for target in self._stream_targets:
+        # Send stream done to the active stream targets for this request.
+        stream_targets = self._stream_targets
+        if self.get_stream_done_targets is not None:
+            resolved = self.get_stream_done_targets(request_id, result)
+            if isinstance(resolved, str):
+                stream_targets = [resolved]
+            elif isinstance(resolved, list):
+                stream_targets = resolved
+            elif resolved is None:
+                stream_targets = []
+        for target in stream_targets:
             endpoint = self.endpoints.get(target)
             if endpoint:
                 await relay_io.send_stream_signal(

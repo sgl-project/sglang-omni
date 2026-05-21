@@ -3,8 +3,8 @@
 
 Usage:
     pytest tests/test_model/test_s2pro_tts_ci.py -s -x
-    pytest tests/test_model/test_s2pro_tts_ci.py -s -x --concurrency 8
-    pytest tests/test_model/test_s2pro_tts_ci.py -s -x --concurrency 8 \
+    pytest tests/test_model/test_s2pro_tts_ci.py -s -x --concurrency 16
+    pytest tests/test_model/test_s2pro_tts_ci.py -s -x --concurrency 16 \
         --s2pro-stage s2pro-stage-1-nonstream
     pytest tests/test_model/test_s2pro_tts_ci.py -s -x --concurrency all
 
@@ -16,7 +16,7 @@ Author:
     Yitong Guan https://github.com/minleminzui
     Xuesong Ye https://github.com/yxs
 
-The benchmark supports one selected concurrency per test run. Use --concurrency 8
+The benchmark supports one selected concurrency per test run. Use --concurrency 16
 in CI, run without the flag to use concurrency 1, or pass --concurrency all
 to sweep all supported concurrency values locally.
 """
@@ -39,11 +39,17 @@ from benchmarks.eval.benchmark_tts_seedtts import (
     TtsSeedttsBenchmarkConfig,
     run_tts_seedtts_benchmark,
 )
-from sglang_omni.utils import find_available_port
 from tests.test_model.conftest import (
     S2PRO_STAGE_CONSISTENCY,
     S2PRO_STAGE_NONSTREAM,
     S2PRO_STAGE_STREAM,
+)
+from tests.test_model.omni_router_utils import (
+    ManagedRouterHandle,
+    assert_workers_served_requests_since,
+    launch_managed_router,
+    print_router_diagnostics,
+    router_get_json,
 )
 from tests.utils import (
     apply_slack,
@@ -54,9 +60,6 @@ from tests.utils import (
     assert_summary_metrics,
     assert_wer_results,
     no_proxy_env,
-    server_log_file,
-    start_server_from_cmd,
-    stop_server,
 )
 
 PER_REQUEST_STORE: dict[str, list[dict]] = {}
@@ -65,7 +68,7 @@ SPEED_OUTPUT_DIRS: dict[str, dict[int, str]] = {"non_stream": {}, "stream": {}}
 S2PRO_MODEL_PATH = "fishaudio/s2-pro"
 S2PRO_CONFIG_PATH = "examples/configs/s2pro_tts.yaml"
 
-STARTUP_TIMEOUT = 600
+STARTUP_TIMEOUT = 180
 BENCHMARK_TIMEOUT = 600
 WER_TIMEOUT = 600
 DATASET_CACHE_ENV = "SGLANG_SEEDTTS50_DIR"
@@ -73,9 +76,9 @@ S2PRO_STAGE_OUTPUT_ROOT_ENV = "S2PRO_STAGE_OUTPUT_ROOT"
 S2PRO_STAGE1_SPEED_RESULTS_DIR_ENV = "S2PRO_STAGE1_SPEED_RESULTS_DIR"
 S2PRO_STAGE2_SPEED_RESULTS_DIR_ENV = "S2PRO_STAGE2_SPEED_RESULTS_DIR"
 
-# Note (Chenyang): The streaming mode evaluation is only run at first 16.
+# Note (Chenyang): The streaming mode evaluation is only run at first 32.
 
-STREAMING_BENCHMARK_MAX_SAMPLES = 16
+STREAMING_BENCHMARK_MAX_SAMPLES = 32
 
 # Note (chenyang): the RTF thresholds also includes the reference audio
 # processing time.
@@ -92,29 +95,29 @@ THRESHOLD_SLACK_LOWER = 1.25
 
 VC_WER_MAX_CORPUS = 0.010638297872340425
 VC_WER_CORPUS_THRESHOLD = apply_wer_slack(VC_WER_MAX_CORPUS)
-VC_WER_MAX_PER_SAMPLE = 0.25
-VC_STREAM_WER_MAX_CORPUS = 0.0258
+VC_WER_MAX_PER_SAMPLE = 0.17
+VC_STREAM_WER_MAX_CORPUS = 0.010610079575596816
 VC_STREAM_WER_CORPUS_THRESHOLD = apply_wer_slack(VC_STREAM_WER_MAX_CORPUS)
-VC_STREAM_WER_MAX_PER_SAMPLE = 0.17
+VC_STREAM_WER_MAX_PER_SAMPLE = 0.14285714285714285
 
-# Note (Chenyang): Only thresholds for concurrency 8 are dedicatedly tuned, others
-# may not pass the CI.
+# Note (Chenyang): Only thresholds for the CI concurrency are dedicatedly tuned,
+# others may not pass the CI.
 
 _VC_NON_STREAM_P95 = {
-    8: {
-        "throughput_qps": 0.850,
-        "tok_per_s_agg": 70.5,
-        "latency_mean_s": 8.567,
-        "rtf_mean": 2.5022,
+    16: {
+        "throughput_qps": 1.405,
+        "tok_per_s_agg": 67.5,
+        "latency_mean_s": 9.83,
+        "rtf_mean": 3.0378,
     }
 }
 
 _VC_STREAM_P95 = {
-    8: {
-        "throughput_qps": 0.715,
-        "tok_per_s_agg": 70.0,
-        "latency_mean_s": 9.403,
-        "rtf_mean": 2.5614,
+    16: {
+        "throughput_qps": 1.285,
+        "tok_per_s_agg": 60.8,
+        "latency_mean_s": 10.403,
+        "rtf_mean": 2.8678,
     }
 }
 
@@ -258,6 +261,21 @@ def _store_consistency_inputs(
     SPEED_OUTPUT_DIRS[mode][concurrency] = output_dir
 
 
+def _assert_stage_used_all_router_workers(
+    *,
+    router_server: ManagedRouterHandle,
+    before_workers: dict,
+    results: dict,
+    label: str,
+) -> None:
+    assert_workers_served_requests_since(
+        port=router_server.port,
+        before_snapshot=before_workers,
+        label=label,
+        min_total_requests=results["summary"]["completed_requests"],
+    )
+
+
 def _find_downloaded_speed_results(
     artifact_root: str,
     output_dir_name: str,
@@ -309,7 +327,7 @@ def _generate_consistency_inputs(
     # Lazily resolve fixtures via getfixturevalue so that the server is only
     # started when stage 3 actually needs to generate its own inputs (local
     # dev path).  In CI the artifact path returns early above.
-    server_process = request.getfixturevalue("server_process")
+    router_server = request.getfixturevalue("router_server")
     dataset_dir = request.getfixturevalue("dataset_dir")
     output_root = tmp_path_factory.mktemp("s2pro_consistency")
     for concurrency in selected_s2pro_tts_concurrencies:
@@ -319,7 +337,7 @@ def _generate_consistency_inputs(
         if non_stream_key not in PER_REQUEST_STORE:
             output_dir = str(output_root / f"vc_nonstream_c{concurrency}")
             results = _run_benchmark(
-                server_process.port,
+                router_server.port,
                 str(dataset_dir / "en" / "meta.lst"),
                 output_dir,
                 concurrency=concurrency,
@@ -334,7 +352,7 @@ def _generate_consistency_inputs(
         if stream_key not in PER_REQUEST_STORE:
             output_dir = str(output_root / f"vc_stream_c{concurrency}")
             results = _run_benchmark(
-                server_process.port,
+                router_server.port,
                 str(dataset_dir / "en" / "meta.lst"),
                 output_dir,
                 concurrency=concurrency,
@@ -387,26 +405,17 @@ def cleanup_generated_audio_fixture():
 
 
 @pytest.fixture(scope="module")
-def server_process(tmp_path_factory: pytest.TempPathFactory):
-    """Start the s2-pro server and wait until healthy."""
-    port = find_available_port()
-    log_file = server_log_file(tmp_path_factory)
-    cmd = [
-        sys.executable,
-        "-m",
-        "sglang_omni.cli",
-        "serve",
-        "--model-path",
-        S2PRO_MODEL_PATH,
-        "--config",
-        S2PRO_CONFIG_PATH,
-        "--port",
-        str(port),
-    ]
-    proc = start_server_from_cmd(cmd, log_file, port)
-    proc.port = port
-    yield proc
-    stop_server(proc)
+def router_server(tmp_path_factory: pytest.TempPathFactory):
+    """Start two S2-Pro workers behind the router and wait until healthy."""
+    with launch_managed_router(
+        tmp_path_factory=tmp_path_factory,
+        model_path=S2PRO_MODEL_PATH,
+        model_name=S2PRO_MODEL_PATH,
+        worker_extra_args=f"--config {S2PRO_CONFIG_PATH}",
+        wait_timeout=STARTUP_TIMEOUT,
+        log_prefix="s2pro_router_logs",
+    ) as router:
+        yield router
 
 
 @pytest.fixture(scope="module")
@@ -436,10 +445,10 @@ def consistency_stage_inputs(
 
 @pytest.fixture(scope="module")
 def wer_input_dirs(
-    server_process: subprocess.Popen,
+    router_server: ManagedRouterHandle,
 ) -> dict[str, dict[int, str]]:
     """Reuse saved benchmark audio for WER after freeing the TTS server GPU."""
-    stop_server(server_process)
+    router_server.stop()
 
     for output_dirs in SPEED_OUTPUT_DIRS.values():
         for output_dir in output_dirs.values():
@@ -451,7 +460,7 @@ def wer_input_dirs(
 @pytest.mark.s2pro_stage(S2PRO_STAGE_NONSTREAM)
 @pytest.mark.benchmark
 def test_voice_cloning_non_streaming(
-    server_process: subprocess.Popen,
+    router_server: ManagedRouterHandle,
     dataset_dir: Path,
     tmp_path: Path,
     selected_s2pro_tts_concurrencies: tuple[int, ...],
@@ -462,12 +471,23 @@ def test_voice_cloning_non_streaming(
     for concurrency in selected_s2pro_tts_concurrencies:
         _print_stage("TTS speed", "non-streaming", concurrency, "generate WAVs for WER")
         output_dir = _resolve_stage_output_dir(tmp_path, f"vc_nonstream_c{concurrency}")
-        results = _run_benchmark(
-            server_process.port,
-            str(dataset_dir / "en" / "meta.lst"),
-            output_dir,
-            concurrency=concurrency,
-        )
+        before_workers = router_get_json(router_server.port, "/workers")
+        try:
+            results = _run_benchmark(
+                router_server.port,
+                str(dataset_dir / "en" / "meta.lst"),
+                output_dir,
+                concurrency=concurrency,
+            )
+            _assert_stage_used_all_router_workers(
+                router_server=router_server,
+                before_workers=before_workers,
+                results=results,
+                label=f"S2-Pro non-stream c{concurrency}",
+            )
+        except Exception:
+            print_router_diagnostics(router_server)
+            raise
         _store_consistency_inputs(
             mode="non_stream",
             concurrency=concurrency,
@@ -479,7 +499,7 @@ def test_voice_cloning_non_streaming(
 @pytest.mark.s2pro_stage(S2PRO_STAGE_STREAM)
 @pytest.mark.benchmark
 def test_voice_cloning_streaming(
-    server_process: subprocess.Popen,
+    router_server: ManagedRouterHandle,
     dataset_dir: Path,
     tmp_path: Path,
     selected_s2pro_tts_concurrencies: tuple[int, ...],
@@ -492,14 +512,25 @@ def test_voice_cloning_streaming(
             f"max_samples={STREAMING_BENCHMARK_MAX_SAMPLES} | generate WAVs for WER",
         )
         output_dir = _resolve_stage_output_dir(tmp_path, f"vc_stream_c{concurrency}")
-        results = _run_benchmark(
-            server_process.port,
-            str(dataset_dir / "en" / "meta.lst"),
-            output_dir,
-            concurrency=concurrency,
-            max_samples=STREAMING_BENCHMARK_MAX_SAMPLES,
-            stream=True,
-        )
+        before_workers = router_get_json(router_server.port, "/workers")
+        try:
+            results = _run_benchmark(
+                router_server.port,
+                str(dataset_dir / "en" / "meta.lst"),
+                output_dir,
+                concurrency=concurrency,
+                max_samples=STREAMING_BENCHMARK_MAX_SAMPLES,
+                stream=True,
+            )
+            _assert_stage_used_all_router_workers(
+                router_server=router_server,
+                before_workers=before_workers,
+                results=results,
+                label=f"S2-Pro stream c{concurrency}",
+            )
+        except Exception:
+            print_router_diagnostics(router_server)
+            raise
         _store_consistency_inputs(
             mode="stream",
             concurrency=concurrency,

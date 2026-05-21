@@ -193,7 +193,8 @@ def pick_free_gpus(n):
     return free[:n], None
 
 
-def precheck(py, src, out, skip_ver, cfg, datasets_override=None, tried=None):
+def precheck(py, src, out, skip_ver, cfg, datasets_override=None, tried=None,
+             gpu_required_override=None):
     errs, warns = [], []
     print(f"model: {cfg['name']}")
     print(f"venv_python: {py} ({src})")
@@ -289,8 +290,12 @@ def precheck(py, src, out, skip_ver, cfg, datasets_override=None, tried=None):
                   f"(busy: {sorted(busy)})")
         else:
             print(f"  GPUs: {summary} — {free_count}/{len(all_idx)} free")
-        if free_count == 0:
-            errs.append(f"all GPUs busy (busy: {sorted(busy)}) — "
+        gpu_required = gpu_required_override
+        if gpu_required is None:
+            gpu_required = max((cfg.get("gpus_per_test") or {}).values(), default=1)
+        if free_count < gpu_required:
+            errs.append(f"need {gpu_required} free GPU(s); only {free_count} free "
+                        f"(busy: {sorted(busy)}) — "
                         "free them yourself (e.g. stop your own jobs); "
                         "this skill no longer kills GPU processes")
     if out is not None:
@@ -691,9 +696,15 @@ def _run_cmd_inner(args, cfg, py, src, out):
     if extras:
         print(f"note: test(s) reference repo(s) not listed in "
               f"config.yaml hf_datasets: {extras}")
+    gpus_per_test = cfg.get("gpus_per_test", {}) or {}
+    selected_gpu_requirement = max(
+        (gpus_per_test.get(Path(all_stages[s]["test"]).name, 2) for s in sel),
+        default=1,
+    )
     if not args.skip_precheck:
         rc = precheck(py, src, out, args.skip_version_check, cfg,
-                      datasets_override=required_ds)
+                      datasets_override=required_ds,
+                      gpu_required_override=selected_gpu_requirement)
         if rc: return rc
     else:
         smi = nvidia_smi_L()
@@ -721,7 +732,6 @@ def _run_cmd_inner(args, cfg, py, src, out):
         by_test.setdefault(all_stages[sk]["test"], []).append(sk)
     for sk in sel:
         (out / sk).mkdir(parents=True, exist_ok=True)
-    gpus_per_test = cfg.get("gpus_per_test", {}) or {}
     for k in range(1, args.repeats + 1):
         for test_path, stage_keys in by_test.items():
             if args.resume and all(
@@ -1013,10 +1023,10 @@ def _run_shared(test_path, stage_keys, all_stages, out, k, py, total, gpus_neede
 
 def _cleanup_after_pytest(test_path, process_group_id, basetemp):
     """Clean up subprocesses owned by this pytest invocation."""
-    if Path(test_path).name != "test_omni_router_ci.py":
+    cleanup_process_group_ids = _read_cleanup_manifest_process_groups(basetemp)
+    if not cleanup_process_group_ids:
         return
-    cleanup_process_group_ids = {process_group_id}
-    cleanup_process_group_ids.update(_read_cleanup_manifest_process_groups(basetemp))
+    cleanup_process_group_ids.add(process_group_id)
 
     for sig, delay in ((signal.SIGTERM, 5), (signal.SIGKILL, 1)):
         for process_group in sorted(cleanup_process_group_ids):

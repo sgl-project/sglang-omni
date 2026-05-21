@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-import collections
+from collections.abc import Iterable
 from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any
@@ -13,13 +13,72 @@ import xxhash
 
 from sglang_omni.models.qwen3_omni.components.talker_prefill import TalkerPrefillBuilder
 from sglang_omni.models.qwen3_omni.payload_types import PipelineState, ThinkerOutput
-from sglang_omni.proto import StagePayload
+from sglang_omni.models.qwen3_omni.pending_text_queue import (
+    PendingTextTensorQueue,
+    coerce_pending_text_queue,
+)
+from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling.messages import OutgoingMessage
 from sglang_omni.scheduling.sglang_backend import SGLangARRequestData
 from sglang_omni.scheduling.types import ARRequestData
 
 IMAGE_STAGE = "image_encoder"
 AUDIO_STAGE = "audio_encoder"
+DECODE_STAGE = "decode"
+TALKER_STAGE = "talker_ar"
+CODE2WAV_STAGE = "code2wav"
+
+
+def output_modalities(request: OmniRequest | None) -> set[str] | None:
+    metadata = getattr(request, "metadata", None)
+    if not isinstance(metadata, dict):
+        return None
+    modalities = metadata.get("output_modalities")
+    if modalities is None:
+        return None
+    if isinstance(modalities, str):
+        values = (modalities,)
+    elif isinstance(modalities, (list, tuple, set)):
+        values = modalities
+    else:
+        return None
+    return {str(modality).lower() for modality in values}
+
+
+def should_generate_audio_output(
+    payload_or_request: StagePayload | OmniRequest | None,
+) -> bool:
+    request = (
+        payload_or_request.request
+        if isinstance(payload_or_request, StagePayload)
+        else payload_or_request
+    )
+    modalities = output_modalities(request)
+    return modalities is None or "audio" in modalities
+
+
+def resolve_thinker_next_stages(
+    request_id: str, output: StagePayload
+) -> str | list[str]:
+    del request_id
+    if should_generate_audio_output(output):
+        return [DECODE_STAGE, TALKER_STAGE]
+    return DECODE_STAGE
+
+
+def resolve_thinker_stream_done_targets(
+    request_id: str, output: StagePayload
+) -> list[str]:
+    del request_id
+    if should_generate_audio_output(output):
+        return [TALKER_STAGE, DECODE_STAGE]
+    return [DECODE_STAGE]
+
+
+def resolve_terminal_stages(request: OmniRequest) -> list[str]:
+    if should_generate_audio_output(request):
+        return [DECODE_STAGE, CODE2WAV_STAGE]
+    return [DECODE_STAGE]
 
 
 @dataclass(slots=True)
@@ -424,7 +483,7 @@ def build_sglang_talker_request(
     talker_input_ids: torch.Tensor | list[int] | None = None,
     input_embeds_are_projected: bool = False,
     pending_text_queue: (
-        collections.deque[torch.Tensor] | list[torch.Tensor] | torch.Tensor | None
+        PendingTextTensorQueue | Iterable[torch.Tensor] | torch.Tensor | None
     ) = None,
     tts_pad_embed: torch.Tensor | None = None,
     thinker_chunks_done: bool = True,
@@ -437,7 +496,7 @@ def build_sglang_talker_request(
     Stores thinker hidden states as Req.input_embeds so SGLang's pipeline
     passes them through ForwardBatch.input_embeds -> model.forward(input_embeds=...).
     Uses dummy input_ids of matching length for position tracking, while the
-    host-side request data keeps a FIFO queue of future text rows for decode.
+    request data keeps a device-backed FIFO of future text rows for decode.
 
     Args:
         thinker_hidden_states: Embed layer hidden states [seq_len, hidden_size].
@@ -541,9 +600,7 @@ def build_sglang_talker_request(
         data.extra_model_outputs["talker_multimodal_mask"] = multimodal_mask
     data.input_embeds_are_projected = bool(input_embeds_are_projected)
     data.thinker_chunks_done = bool(thinker_chunks_done)
-    if isinstance(pending_text_queue, torch.Tensor):
-        pending_text_queue = [row.detach().cpu() for row in pending_text_queue]
-    data.pending_text_queue = collections.deque(pending_text_queue or [])
+    data.pending_text_queue = coerce_pending_text_queue(pending_text_queue)
     data.tts_pad_embed = tts_pad_embed
     return data
 
@@ -636,6 +693,9 @@ def make_thinker_stream_output_builder():
                     metadata={"token_id": token_id},
                 )
             )
+
+        if not should_generate_audio_output(stage_payload):
+            return messages
 
         # Speech mode: also stream hidden states to the talker for codec gen.
         extra = req_output.extra

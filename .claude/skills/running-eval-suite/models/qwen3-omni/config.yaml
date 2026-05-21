@@ -14,13 +14,15 @@
 #   hf_model_id                 (optional) overrides the config-level default; needed for s2-pro rows
 #   locate.section_substring    substring of the section header above the table (e.g. "Accuracy (accuracy)")
 #   locate.config_substring     substring of the row's Config cell (e.g. "modalities=text ")
-#   locate.source_workload      workload tag WITHOUT the [hardware,] prefix; e.g. "V1-pipeline, full-set, c=8".
-#                               At runtime the skill prepends the detected hw tag → "[H200, V1-pipeline, full-set, c=8]"
-#   server                      server launch template; {port} {model} {gpus} {repo_root} substituted
-#   server_extra_by_hardware    optional hardware tag -> extra server args appended to server
-#   server_gpus                 1 (text-only) or 2 (full-pipeline talker)
-#   server_health               health URL ({port} substituted)
-#   server_boot_timeout_s       seconds to wait for /health 2xx
+#   locate.source_workload      workload tag WITHOUT the [hardware,] prefix; e.g. "router, 2-worker, full-set, c=8".
+#                               At runtime the skill prepends the detected hw tag → "[H200, router, 2-worker, full-set, c=8]"
+#   server_profile              optional server profile override. If omitted,
+#                               default_server_profile or server_profile_by_hf_model_id is used.
+#   server                      legacy direct server launch template fallback
+#   server_extra_by_hardware    optional hardware tag -> extra server args appended to server or profiled worker args
+#   server_gpus                 legacy direct server GPU count fallback
+#   server_health               optional health URL ({port} substituted), defaults to /health
+#   server_boot_timeout_s       optional seconds to wait for /health 2xx; profiles own this by default
 #   client                      client launch template; {port} {output_dir} {model} {asr_gpu} substituted.
 #                               {asr_gpu} = "cuda:N" of a GPU not given to the server
 #                               (or "cpu" if no free GPUs left); use in --asr-device / --device flags.
@@ -85,6 +87,40 @@ auto_env:
   FLASHINFER_DISABLE_VERSION_CHECK: "1"
   HF_ENDPOINT: "https://hf-mirror.com"
 
+default_server_profile: qwen3_omni_colocated_router
+
+server_profile_by_hf_model_id:
+  fishaudio/s2-pro: s2pro_router
+
+server_profiles:
+  qwen3_omni_colocated_router:
+    server_gpus: 2
+    model_name: qwen3-omni
+    num_workers: 2
+    num_gpus_per_worker: 1
+    worker_extra_args: "--config {repo_root}/examples/configs/qwen3_omni_colocated.yaml --colocate"
+    wait_timeout: 600
+    server_boot_timeout_s: 660
+    router_policy: least_request
+  qwen3_omni_video_router:
+    server_gpus: 2
+    model_name: qwen3-omni
+    num_workers: 2
+    num_gpus_per_worker: 1
+    worker_extra_args: "--config {repo_root}/examples/configs/qwen3_omni_colocated.yaml --colocate --stages.0.factory-args.thinker-max-seq-len 32768 --stages.4.factory-args.thinker-max-seq-len 32768"
+    wait_timeout: 600
+    server_boot_timeout_s: 660
+    router_policy: least_request
+  s2pro_router:
+    server_gpus: 2
+    model_name: fishaudio/s2-pro
+    num_workers: 2
+    num_gpus_per_worker: 1
+    worker_extra_args: "--config {repo_root}/examples/configs/s2pro_tts.yaml"
+    wait_timeout: 180
+    server_boot_timeout_s: 240
+    router_policy: least_request
+
 rows:
   # ===================== mmsu (Qwen3-Omni text-only) =====================
   - id: mmsu-text-c8-accuracy
@@ -92,11 +128,7 @@ rows:
     locate:
       section_substring: "Accuracy (accuracy)"
       config_substring: "modalities=text "
-      source_workload: "V1-pipeline, full-set, c=8"
-    server: "python -m sglang_omni.cli serve --model-path {model} --text-only --port {port}"
-    server_gpus: 1
-    server_health: "http://localhost:{port}/health"
-    server_boot_timeout_s: 300
+      source_workload: "router, 2-worker, full-set, c=8"
     client: "python benchmarks/eval/benchmark_omni_mmsu.py --model qwen3-omni --port {port} --modalities text --max-concurrency 8 --output-dir {output_dir}"
     result_json: "mmsu_results.json"
     cells:
@@ -109,11 +141,7 @@ rows:
     locate:
       section_substring: "Accuracy (accuracy)"
       config_substring: "modalities=text+audio"
-      source_workload: "V1-pipeline, full-set, c=8"
-    server: "python -m sglang_omni.cli serve --model-path {model} --text-only --port {port}"
-    server_gpus: 1
-    server_health: "http://localhost:{port}/health"
-    server_boot_timeout_s: 300
+      source_workload: "router, 2-worker, full-set, c=8"
     client: "python benchmarks/eval/benchmark_omni_mmsu.py --model qwen3-omni --port {port} --modalities text+audio --max-concurrency 8 --output-dir {output_dir} --asr-device {asr_gpu}"
     result_json: "mmsu_results.json"
     cells:
@@ -126,11 +154,7 @@ rows:
     locate:
       section_substring: "Speed (speed)"
       config_substring: "modalities=text "
-      source_workload: "V1-pipeline, full-set, c=8"
-    server: "python -m sglang_omni.cli serve --model-path {model} --text-only --port {port}"
-    server_gpus: 1
-    server_health: "http://localhost:{port}/health"
-    server_boot_timeout_s: 300
+      source_workload: "router, 2-worker, full-set, c=8"
     client: "python benchmarks/eval/benchmark_omni_mmsu.py --model qwen3-omni --port {port} --modalities text --max-concurrency 8 --output-dir {output_dir}"
     result_json: "mmsu_results.json"
     cells:
@@ -145,11 +169,7 @@ rows:
     locate:
       section_substring: "Speed (speed)"
       config_substring: "modalities=text+audio"
-      source_workload: "V1-pipeline, full-set, c=8, text-only server"
-    server: "python -m sglang_omni.cli serve --model-path {model} --text-only --port {port}"
-    server_gpus: 1
-    server_health: "http://localhost:{port}/health"
-    server_boot_timeout_s: 300
+      source_workload: "router, 2-worker, full-set, c=8"
     client: "python benchmarks/eval/benchmark_omni_mmsu.py --model qwen3-omni --port {port} --modalities text+audio --max-concurrency 8 --output-dir {output_dir} --asr-device {asr_gpu}"
     result_json: "mmsu_results.json"
     cells:
@@ -165,11 +185,7 @@ rows:
     locate:
       section_substring: "Accuracy (summary)"
       config_substring: "enable_audio=False"
-      source_workload: "V1-pipeline, full-set, c=8, max_tokens=2048"
-    server: "python -m sglang_omni.cli serve --model-path {model} --text-only --port {port}"
-    server_gpus: 1
-    server_health: "http://localhost:{port}/health"
-    server_boot_timeout_s: 300
+      source_workload: "router, 2-worker, full-set, c=8, max_tokens=2048"
     client: "python benchmarks/eval/benchmark_omni_mmmu.py --model qwen3-omni --port {port} --max-concurrency 8 --max-tokens 2048 --output-dir {output_dir}"
     result_json: "mmmu_results.json"
     cells:
@@ -183,11 +199,7 @@ rows:
     locate:
       section_substring: "Accuracy (summary)"
       config_substring: "enable_audio=True"
-      source_workload: "V1-pipeline, 50-sample subset, c=1, max_tokens=2048"
-    server: "python -m sglang_omni.cli serve --model-path {model} --talker-cuda-graph on --port {port}"
-    server_gpus: 2
-    server_health: "http://localhost:{port}/health"
-    server_boot_timeout_s: 600
+      source_workload: "router, 2-worker, 50-sample subset, c=1, max_tokens=2048"
     client: "python benchmarks/eval/benchmark_omni_mmmu.py --model qwen3-omni --port {port} --max-concurrency 1 --max-tokens 2048 --enable-audio --max-samples 50 --output-dir {output_dir} --asr-device {asr_gpu}"
     result_json: "mmmu_results.json"
     cells:
@@ -201,11 +213,7 @@ rows:
     locate:
       section_substring: "Speed (speed)"
       config_substring: "enable_audio=False"
-      source_workload: "V1-pipeline, full-set, c=8, max_tokens=2048"
-    server: "python -m sglang_omni.cli serve --model-path {model} --text-only --port {port}"
-    server_gpus: 1
-    server_health: "http://localhost:{port}/health"
-    server_boot_timeout_s: 300
+      source_workload: "router, 2-worker, full-set, c=8, max_tokens=2048"
     client: "python benchmarks/eval/benchmark_omni_mmmu.py --model qwen3-omni --port {port} --max-concurrency 8 --max-tokens 2048 --output-dir {output_dir}"
     result_json: "mmmu_results.json"
     cells:
@@ -220,11 +228,7 @@ rows:
     locate:
       section_substring: "Speed (speed)"
       config_substring: "enable_audio=True"
-      source_workload: "V1-pipeline, **50-sample subset**, c=1, max_tokens=2048"
-    server: "python -m sglang_omni.cli serve --model-path {model} --talker-cuda-graph on --port {port}"
-    server_gpus: 2
-    server_health: "http://localhost:{port}/health"
-    server_boot_timeout_s: 600
+      source_workload: "router, 2-worker, **50-sample subset**, c=1, max_tokens=2048"
     client: "python benchmarks/eval/benchmark_omni_mmmu.py --model qwen3-omni --port {port} --max-concurrency 1 --max-tokens 2048 --enable-audio --max-samples 50 --output-dir {output_dir} --asr-device {asr_gpu}"
     result_json: "mmmu_results.json"
     cells:
@@ -245,11 +249,7 @@ rows:
     locate:
       section_substring: "Accuracy (accuracy.wer)"
       config_substring: "EN, voice_clone=T"
-      source_workload: "V1-pipeline, full-set, c=16, n=3 mean"
-    server: "python -m sglang_omni.cli serve --model-path {model} --talker-cuda-graph on --port {port}"
-    server_gpus: 2
-    server_health: "http://localhost:{port}/health"
-    server_boot_timeout_s: 600
+      source_workload: "router, 2-worker, full-set, c=16, n=3 mean"
     client: "python -m benchmarks.eval.benchmark_omni_seedtts --voice-clone --model qwen3-omni --port {port} --meta seedtts_testset/en/meta.lst --max-concurrency 16 --lang en --output-dir {output_dir} --asr-device {asr_gpu}"
     result_json: "wer_results.json"
     cells:
@@ -265,11 +265,7 @@ rows:
     locate:
       section_substring: "Accuracy (accuracy.wer)"
       config_substring: "EN, voice_clone=F"
-      source_workload: "V1-pipeline, full-set, c=16"
-    server: "python -m sglang_omni.cli serve --model-path {model} --talker-cuda-graph on --port {port}"
-    server_gpus: 2
-    server_health: "http://localhost:{port}/health"
-    server_boot_timeout_s: 600
+      source_workload: "router, 2-worker, full-set, c=16"
     client: "python -m benchmarks.eval.benchmark_omni_seedtts --model qwen3-omni --port {port} --meta seedtts_testset/en/meta.lst --max-concurrency 16 --lang en --output-dir {output_dir} --asr-device {asr_gpu}"
     result_json: "wer_results.json"
     cells:
@@ -285,11 +281,7 @@ rows:
     locate:
       section_substring: "Accuracy (accuracy.wer)"
       config_substring: "ZH, voice_clone=T"
-      source_workload: "V1-pipeline, full-set, c=16"
-    server: "python -m sglang_omni.cli serve --model-path {model} --talker-cuda-graph on --port {port}"
-    server_gpus: 2
-    server_health: "http://localhost:{port}/health"
-    server_boot_timeout_s: 600
+      source_workload: "router, 2-worker, full-set, c=16"
     client: "python -m benchmarks.eval.benchmark_omni_seedtts --voice-clone --model qwen3-omni --port {port} --meta seedtts_testset/zh/meta.lst --max-concurrency 16 --lang zh --output-dir {output_dir} --asr-device {asr_gpu}"
     result_json: "wer_results.json"
     cells:
@@ -305,11 +297,7 @@ rows:
     locate:
       section_substring: "Accuracy (accuracy.wer)"
       config_substring: "ZH, voice_clone=F"
-      source_workload: "V1-pipeline, full-set, c=16"
-    server: "python -m sglang_omni.cli serve --model-path {model} --talker-cuda-graph on --port {port}"
-    server_gpus: 2
-    server_health: "http://localhost:{port}/health"
-    server_boot_timeout_s: 600
+      source_workload: "router, 2-worker, full-set, c=16"
     client: "python -m benchmarks.eval.benchmark_omni_seedtts --model qwen3-omni --port {port} --meta seedtts_testset/zh/meta.lst --max-concurrency 16 --lang zh --output-dir {output_dir} --asr-device {asr_gpu}"
     result_json: "wer_results.json"
     cells:
@@ -325,11 +313,7 @@ rows:
     locate:
       section_substring: "Generation speed (generation.speed)"
       config_substring: "EN, voice_clone=T"
-      source_workload: "V1-pipeline, full-set, c=16"
-    server: "python -m sglang_omni.cli serve --model-path {model} --talker-cuda-graph on --port {port}"
-    server_gpus: 2
-    server_health: "http://localhost:{port}/health"
-    server_boot_timeout_s: 600
+      source_workload: "router, 2-worker, full-set, c=16"
     client: "python -m benchmarks.eval.benchmark_omni_seedtts --voice-clone --model qwen3-omni --port {port} --meta seedtts_testset/en/meta.lst --max-concurrency 16 --lang en --output-dir {output_dir} --asr-device {asr_gpu}"
     result_json: "speed_results.json"
     cells:
@@ -345,11 +329,7 @@ rows:
     locate:
       section_substring: "Generation speed (generation.speed)"
       config_substring: "EN, voice_clone=F"
-      source_workload: "V1-pipeline, full-set, c=16"
-    server: "python -m sglang_omni.cli serve --model-path {model} --talker-cuda-graph on --port {port}"
-    server_gpus: 2
-    server_health: "http://localhost:{port}/health"
-    server_boot_timeout_s: 600
+      source_workload: "router, 2-worker, full-set, c=16"
     client: "python -m benchmarks.eval.benchmark_omni_seedtts --model qwen3-omni --port {port} --meta seedtts_testset/en/meta.lst --max-concurrency 16 --lang en --output-dir {output_dir} --asr-device {asr_gpu}"
     result_json: "speed_results.json"
     cells:
@@ -365,11 +345,7 @@ rows:
     locate:
       section_substring: "Generation speed (generation.speed)"
       config_substring: "ZH, voice_clone=T"
-      source_workload: "V1-pipeline, full-set, c=16"
-    server: "python -m sglang_omni.cli serve --model-path {model} --talker-cuda-graph on --port {port}"
-    server_gpus: 2
-    server_health: "http://localhost:{port}/health"
-    server_boot_timeout_s: 600
+      source_workload: "router, 2-worker, full-set, c=16"
     client: "python -m benchmarks.eval.benchmark_omni_seedtts --voice-clone --model qwen3-omni --port {port} --meta seedtts_testset/zh/meta.lst --max-concurrency 16 --lang zh --output-dir {output_dir} --asr-device {asr_gpu}"
     result_json: "speed_results.json"
     cells:
@@ -385,11 +361,7 @@ rows:
     locate:
       section_substring: "Generation speed (generation.speed)"
       config_substring: "ZH, voice_clone=F"
-      source_workload: "V1-pipeline, full-set, c=16"
-    server: "python -m sglang_omni.cli serve --model-path {model} --talker-cuda-graph on --port {port}"
-    server_gpus: 2
-    server_health: "http://localhost:{port}/health"
-    server_boot_timeout_s: 600
+      source_workload: "router, 2-worker, full-set, c=16"
     client: "python -m benchmarks.eval.benchmark_omni_seedtts --model qwen3-omni --port {port} --meta seedtts_testset/zh/meta.lst --max-concurrency 16 --lang zh --output-dir {output_dir} --asr-device {asr_gpu}"
     result_json: "speed_results.json"
     cells:
@@ -403,14 +375,11 @@ rows:
   # ===================== videomme (Qwen3-Omni text-only c=4, 2520 samples) =====================
   - id: videomme-thinker-only-c4-accuracy
     file: "benchmarks/eval/benchmark_omni_videomme.py"
+    server_profile: qwen3_omni_video_router
     locate:
       section_substring: "Accuracy (full set)"
       config_substring: "thinker-only, full-set, c=4"
-      source_workload: "c=4, max_tokens=256"
-    server: "python -m sglang_omni.cli serve --model-path {model} --text-only --port {port}"
-    server_gpus: 1
-    server_health: "http://localhost:{port}/health"
-    server_boot_timeout_s: 300
+      source_workload: "router, 2-worker, c=4, max_tokens=256"
     client: "python -m benchmarks.eval.benchmark_omni_videomme --model qwen3-omni --port {port} --max-concurrency 4 --max-tokens 256 --video-fps 2 --video-max-frames 128 --video-max-pixels 401408 --output-dir {output_dir}"
     result_json: "videomme_results.json"
     cells:
@@ -421,14 +390,11 @@ rows:
 
   - id: videomme-thinker-only-c4-speed
     file: "benchmarks/eval/benchmark_omni_videomme.py"
+    server_profile: qwen3_omni_video_router
     locate:
       section_substring: "Speed (full set)"
       config_substring: "thinker-only, full-set, c=4"
-      source_workload: "c=4, max_tokens=256"
-    server: "python -m sglang_omni.cli serve --model-path {model} --text-only --port {port}"
-    server_gpus: 1
-    server_health: "http://localhost:{port}/health"
-    server_boot_timeout_s: 300
+      source_workload: "router, 2-worker, c=4, max_tokens=256"
     client: "python -m benchmarks.eval.benchmark_omni_videomme --model qwen3-omni --port {port} --max-concurrency 4 --max-tokens 256 --video-fps 2 --video-max-frames 128 --video-max-pixels 401408 --output-dir {output_dir}"
     result_json: "videomme_results.json"
     cells:
@@ -449,14 +415,11 @@ rows:
   # ===================== videoamme (Qwen3-Omni; ci-50 thinker-only + ci-50 thinker-talker) =====================
   - id: videoamme-thinker-only-ci50-c8-accuracy
     file: "benchmarks/eval/benchmark_omni_videoamme.py"
+    server_profile: qwen3_omni_video_router
     locate:
       section_substring: "Accuracy"
       config_substring: "thinker-only, ci-50, c=8"
-      source_workload: "c=8, max_tokens=256"
-    server: "python -m sglang_omni.cli serve --model-path {model} --text-only --port {port}"
-    server_gpus: 1
-    server_health: "http://localhost:{port}/health"
-    server_boot_timeout_s: 300
+      source_workload: "router, 2-worker, c=8, max_tokens=256"
     client: "python -m benchmarks.eval.benchmark_omni_videoamme --model qwen3-omni --port {port} --max-concurrency 8 --max-tokens 256 --output-dir {output_dir}"
     result_json: "videoamme_results.json"
     cells:
@@ -465,18 +428,13 @@ rows:
       failed:      { path: "summary.failed", format: "{v}" }
       mc_fallback: { path: "summary.mc_fallback", format: "{v}" }
 
-  - id: videoamme-thinker-talker-ci10-c8-accuracy
+  - id: videoamme-thinker-talker-ci50-c8-accuracy
     file: "benchmarks/eval/benchmark_omni_videoamme.py"
+    server_profile: qwen3_omni_video_router
     locate:
       section_substring: "Accuracy"
       config_substring: "thinker-talker, ci-50, c=8"
-      source_workload: "c=8, max_tokens=256"
-    server: "python -m sglang_omni.cli serve --model-path {model} --talker-cuda-graph on --port {port}"
-    server_extra_by_hardware:
-      H100: "--thinker-mem-fraction-static 0.8"
-    server_gpus: 2
-    server_health: "http://localhost:{port}/health"
-    server_boot_timeout_s: 600
+      source_workload: "router, 2-worker, c=8, max_tokens=256"
     client: "python -m benchmarks.eval.benchmark_omni_videoamme --model qwen3-omni --port {port} --enable-audio --max-concurrency 8 --max-tokens 256 --output-dir {output_dir} --asr-device {asr_gpu}"
     result_json: "videoamme_results.json"
     cells:
@@ -487,14 +445,11 @@ rows:
 
   - id: videoamme-thinker-only-ci50-c8-speed
     file: "benchmarks/eval/benchmark_omni_videoamme.py"
+    server_profile: qwen3_omni_video_router
     locate:
       section_substring: "Speed"
       config_substring: "thinker-only, ci-50, c=8"
-      source_workload: "c=8, max_tokens=256"
-    server: "python -m sglang_omni.cli serve --model-path {model} --text-only --port {port}"
-    server_gpus: 1
-    server_health: "http://localhost:{port}/health"
-    server_boot_timeout_s: 300
+      source_workload: "router, 2-worker, c=8, max_tokens=256"
     client: "python -m benchmarks.eval.benchmark_omni_videoamme --model qwen3-omni --port {port} --max-concurrency 8 --max-tokens 256 --output-dir {output_dir}"
     result_json: "videoamme_results.json"
     cells:
@@ -512,18 +467,13 @@ rows:
       prompt_tokens_total: { path: "speed.prompt_tokens_total", format: "{v}" }
       throughput_qps:      { path: "speed.throughput_qps",   format: "{v:.3f}" }
 
-  - id: videoamme-thinker-talker-ci10-c8-speed
+  - id: videoamme-thinker-talker-ci50-c8-speed
     file: "benchmarks/eval/benchmark_omni_videoamme.py"
+    server_profile: qwen3_omni_video_router
     locate:
       section_substring: "Speed"
       config_substring: "thinker-talker, ci-50, c=8"
-      source_workload: "c=8, max_tokens=256"
-    server: "python -m sglang_omni.cli serve --model-path {model} --talker-cuda-graph on --port {port}"
-    server_extra_by_hardware:
-      H100: "--thinker-mem-fraction-static 0.8"
-    server_gpus: 2
-    server_health: "http://localhost:{port}/health"
-    server_boot_timeout_s: 600
+      source_workload: "router, 2-worker, c=8, max_tokens=256"
     client: "python -m benchmarks.eval.benchmark_omni_videoamme --model qwen3-omni --port {port} --enable-audio --max-concurrency 8 --max-tokens 256 --output-dir {output_dir} --asr-device {asr_gpu}"
     result_json: "videoamme_results.json"
     cells:
@@ -541,18 +491,13 @@ rows:
       prompt_tokens_total: { path: "speed.prompt_tokens_total", format: "{v}" }
       throughput_qps:      { path: "speed.throughput_qps",   format: "{v:.3f}" }
 
-  - id: videoamme-thinker-talker-ci10-c8-wer
+  - id: videoamme-thinker-talker-ci50-c8-wer
     file: "benchmarks/eval/benchmark_omni_videoamme.py"
+    server_profile: qwen3_omni_video_router
     locate:
       section_substring: "Talker WER"
       config_substring: "thinker-talker, ci-50, c=8"
-      source_workload: "c=8, max_tokens=256"
-    server: "python -m sglang_omni.cli serve --model-path {model} --talker-cuda-graph on --port {port}"
-    server_extra_by_hardware:
-      H100: "--thinker-mem-fraction-static 0.8"
-    server_gpus: 2
-    server_health: "http://localhost:{port}/health"
-    server_boot_timeout_s: 600
+      source_workload: "router, 2-worker, c=8, max_tokens=256"
     client: "python -m benchmarks.eval.benchmark_omni_videoamme --model qwen3-omni --port {port} --enable-audio --max-concurrency 8 --max-tokens 256 --output-dir {output_dir} --asr-device {asr_gpu}"
     result_json: "videoamme_results.json"
     cells:
@@ -572,11 +517,7 @@ rows:
     locate:
       section_substring: "Accuracy (accuracy.wer)"
       config_substring: "EN, stream=False"
-      source_workload: "full-set, c=16"
-    server: "python -m sglang_omni.cli serve --config {repo_root}/examples/configs/s2pro_tts.yaml --port {port}"
-    server_gpus: 1
-    server_health: "http://localhost:{port}/health"
-    server_boot_timeout_s: 300
+      source_workload: "router, 2-worker, full-set, c=16"
     client: "python -m benchmarks.eval.benchmark_tts_seedtts --model fishaudio/s2-pro --port {port} --meta seedtts_testset/en/meta.lst --max-concurrency 16 --lang en --output-dir {output_dir} --device {asr_gpu}"
     result_json: "wer_results.json"
     cells:
@@ -593,11 +534,7 @@ rows:
     locate:
       section_substring: "Accuracy (accuracy.wer)"
       config_substring: "EN, stream=True"
-      source_workload: "full-set, c=16"
-    server: "python -m sglang_omni.cli serve --config {repo_root}/examples/configs/s2pro_tts.yaml --port {port}"
-    server_gpus: 1
-    server_health: "http://localhost:{port}/health"
-    server_boot_timeout_s: 300
+      source_workload: "router, 2-worker, full-set, c=16"
     client: "python -m benchmarks.eval.benchmark_tts_seedtts --stream --model fishaudio/s2-pro --port {port} --meta seedtts_testset/en/meta.lst --max-concurrency 16 --lang en --output-dir {output_dir} --device {asr_gpu}"
     result_json: "wer_results.json"
     cells:
@@ -614,11 +551,7 @@ rows:
     locate:
       section_substring: "Accuracy (accuracy.wer)"
       config_substring: "ZH, stream=False"
-      source_workload: "full-set, c=16"
-    server: "python -m sglang_omni.cli serve --config {repo_root}/examples/configs/s2pro_tts.yaml --port {port}"
-    server_gpus: 1
-    server_health: "http://localhost:{port}/health"
-    server_boot_timeout_s: 300
+      source_workload: "router, 2-worker, full-set, c=16"
     client: "python -m benchmarks.eval.benchmark_tts_seedtts --model fishaudio/s2-pro --port {port} --meta seedtts_testset/zh/meta.lst --max-concurrency 16 --lang zh --output-dir {output_dir} --device {asr_gpu}"
     result_json: "wer_results.json"
     cells:
@@ -635,11 +568,7 @@ rows:
     locate:
       section_substring: "Accuracy (accuracy.wer)"
       config_substring: "ZH, stream=True"
-      source_workload: "full-set, c=16"
-    server: "python -m sglang_omni.cli serve --config {repo_root}/examples/configs/s2pro_tts.yaml --port {port}"
-    server_gpus: 1
-    server_health: "http://localhost:{port}/health"
-    server_boot_timeout_s: 300
+      source_workload: "router, 2-worker, full-set, c=16"
     client: "python -m benchmarks.eval.benchmark_tts_seedtts --stream --model fishaudio/s2-pro --port {port} --meta seedtts_testset/zh/meta.lst --max-concurrency 16 --lang zh --output-dir {output_dir} --device {asr_gpu}"
     result_json: "wer_results.json"
     cells:
@@ -656,11 +585,7 @@ rows:
     locate:
       section_substring: "Generation speed (generation.speed)"
       config_substring: "EN, stream=False"
-      source_workload: "full-set, c=16"
-    server: "python -m sglang_omni.cli serve --config {repo_root}/examples/configs/s2pro_tts.yaml --port {port}"
-    server_gpus: 1
-    server_health: "http://localhost:{port}/health"
-    server_boot_timeout_s: 300
+      source_workload: "router, 2-worker, full-set, c=16"
     client: "python -m benchmarks.eval.benchmark_tts_seedtts --model fishaudio/s2-pro --port {port} --meta seedtts_testset/en/meta.lst --max-concurrency 16 --lang en --output-dir {output_dir} --device {asr_gpu}"
     result_json: "speed_results.json"
     cells:
@@ -677,11 +602,7 @@ rows:
     locate:
       section_substring: "Generation speed (generation.speed)"
       config_substring: "EN, stream=True"
-      source_workload: "full-set, c=16"
-    server: "python -m sglang_omni.cli serve --config {repo_root}/examples/configs/s2pro_tts.yaml --port {port}"
-    server_gpus: 1
-    server_health: "http://localhost:{port}/health"
-    server_boot_timeout_s: 300
+      source_workload: "router, 2-worker, full-set, c=16"
     client: "python -m benchmarks.eval.benchmark_tts_seedtts --stream --model fishaudio/s2-pro --port {port} --meta seedtts_testset/en/meta.lst --max-concurrency 16 --lang en --output-dir {output_dir} --device {asr_gpu}"
     result_json: "speed_results.json"
     cells:
@@ -698,11 +619,7 @@ rows:
     locate:
       section_substring: "Generation speed (generation.speed)"
       config_substring: "ZH, stream=False"
-      source_workload: "full-set, c=16"
-    server: "python -m sglang_omni.cli serve --config {repo_root}/examples/configs/s2pro_tts.yaml --port {port}"
-    server_gpus: 1
-    server_health: "http://localhost:{port}/health"
-    server_boot_timeout_s: 300
+      source_workload: "router, 2-worker, full-set, c=16"
     client: "python -m benchmarks.eval.benchmark_tts_seedtts --model fishaudio/s2-pro --port {port} --meta seedtts_testset/zh/meta.lst --max-concurrency 16 --lang zh --output-dir {output_dir} --device {asr_gpu}"
     result_json: "speed_results.json"
     cells:
@@ -719,11 +636,7 @@ rows:
     locate:
       section_substring: "Generation speed (generation.speed)"
       config_substring: "ZH, stream=True"
-      source_workload: "full-set, c=16"
-    server: "python -m sglang_omni.cli serve --config {repo_root}/examples/configs/s2pro_tts.yaml --port {port}"
-    server_gpus: 1
-    server_health: "http://localhost:{port}/health"
-    server_boot_timeout_s: 300
+      source_workload: "router, 2-worker, full-set, c=16"
     client: "python -m benchmarks.eval.benchmark_tts_seedtts --stream --model fishaudio/s2-pro --port {port} --meta seedtts_testset/zh/meta.lst --max-concurrency 16 --lang zh --output-dir {output_dir} --device {asr_gpu}"
     result_json: "speed_results.json"
     cells:

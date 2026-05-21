@@ -23,9 +23,8 @@ permissions:
 #        ├─► stage-7-videomme
 #        ├─► stage-8-videomme-talker
 #        ├─► stage-9-videoamme
-#        ├─► stage-10-videoamme-talker
-#        └─► stage-11-colocated-router
-# All 11 stages run in parallel after docs passes — they are independent.
+#        └─► stage-10-videoamme-talker
+# All 10 stages run in parallel after docs passes — they are independent.
 
 jobs:
   docs:
@@ -435,42 +434,3 @@ jobs:
             */videoamme_audio/videoamme_results.json
           artifact-upload-name: qwen3-omni-videoamme-talker-results
           artifact-upload-path: /tmp/**/videoamme_audio/videoamme_results.json
-
-  stage-11-colocated-router:
-    name: stage 11 - Colocated Router TTS
-    needs: docs
-    runs-on: [self-hosted]
-    timeout-minutes: 60
-    container:
-      image: frankleeeee/sglang-omni:dev
-      options: --gpus all --rm -v /dev/shm:/dev/shm
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - uses: ./.github/actions/omni-setup
-        with:
-          venv-name: omni-qwen3
-
-      - name: Run colocated router TTS CI
-        shell: bash
-        run: |
-          source omni-qwen3/bin/activate
-          export PYTHONPATH=$PWD
-          pytest tests/test_model/test_omni_router_ci.py -v -s -x
-        env:
-          HF_ENDPOINT: https://hf-mirror.com
-          SGLANG_SEEDTTS50_DIR: /github/home/seedtts-50
-          TORCHINDUCTOR_CACHE_DIR: /github/home/.torchinductor
-
-      - name: Post-stage cleanup
-        if: always()
-        uses: ./.github/actions/omni-post-stage
-        with:
-          stage-label: Colocated Router TTS
-          artifact-path-globs: |
-            */speed_results.json
-            */wer_results.json
-            */eval_results.json
-          artifact-upload-name: qwen3-omni-colocated-router-seedtts-results
-          artifact-upload-path: /tmp/**/*_results.json

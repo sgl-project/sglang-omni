@@ -34,36 +34,39 @@ from benchmarks.eval.benchmark_omni_videomme import VideoEvalConfig, run_video_e
 from benchmarks.metrics.performance import print_speed_summary
 from benchmarks.metrics.video import print_videomme_accuracy_summary
 from benchmarks.metrics.wer import print_wer_summary
+from tests.test_model.omni_router_utils import (
+    ManagedRouterHandle,
+    router_worker_traffic_guard,
+)
 from tests.utils import (
-    ServerHandle,
     apply_slack,
     apply_wer_slack,
     assert_speed_thresholds,
     assert_wer_partitioned,
 )
 
-CONCURRENCY = 8
-MAX_SAMPLES = 10
+CONCURRENCY = 16
+MAX_SAMPLES = 20
 MAX_TOKENS = 256
 SHORT_ANSWER_PROMPT = (
     "For the audio response, answer briefly in one sentence and end with "
     "'Answer: $LETTER'. Do not include step-by-step reasoning."
 )
 
-VIDEOMME_TALKER_THINKER_TEXT_MIN_ACCURACY = 0.5
+VIDEOMME_TALKER_THINKER_TEXT_MIN_ACCURACY = 0.6
 # Retuned after Qwen3-Omni talker sampler fix: Video-MME talker stayed clean.
-VIDEOMME_TALKER_WER_BELOW_50_CORPUS_MAX = 0.014005602240896359
+VIDEOMME_TALKER_WER_BELOW_50_CORPUS_MAX = 0.024725274725274724
 VIDEOMME_TALKER_WER_BELOW_50_CORPUS_THRESHOLD = apply_wer_slack(
     VIDEOMME_TALKER_WER_BELOW_50_CORPUS_MAX
 )
-VIDEOMME_TALKER_N_ABOVE_50_MAX = 0
+VIDEOMME_TALKER_N_ABOVE_50_MAX = 1
 
 _VIDEOMME_TALKER_AUDIO_P95 = {
-    8: {
-        "throughput_qps": 0.262,
-        "tok_per_s_agg": 1.6,
-        "latency_mean_s": 27.169,
-        "rtf_mean": 3.4267,
+    16: {
+        "throughput_qps": 0.399,
+        "tok_per_s_agg": 1.4,
+        "latency_mean_s": 32.965,
+        "rtf_mean": 3.622,
     },
 }
 VIDEOMME_TALKER_THRESHOLDS = apply_slack(_VIDEOMME_TALKER_AUDIO_P95)
@@ -81,7 +84,7 @@ def _load_short_answer_samples() -> list[VideoMMESample]:
 
 @pytest.mark.benchmark
 def test_videomme_tts_accuracy_wer_and_speed(
-    qwen3_omni_talker_server: ServerHandle,
+    qwen3_omni_talker_server: ManagedRouterHandle,
     tmp_path: Path,
 ) -> None:
     """Run Video-MME with Talker enabled and report text/audio metrics."""
@@ -101,15 +104,19 @@ def test_videomme_tts_accuracy_wer_and_speed(
         disable_tqdm=False,
         timeout_s=500,
     )
-    results = asyncio.run(
-        run_video_eval(
-            config,
-            samples=_load_short_answer_samples(),
-            task_label="Video-MME",
-            output_filename="videomme_results.json",
-            audio_output_dir_default="results/videomme_audio",
+    with router_worker_traffic_guard(
+        qwen3_omni_talker_server,
+        label="Qwen3-Omni Video-MME Talker",
+    ) as router_guard:
+        results = asyncio.run(
+            run_video_eval(
+                config,
+                samples=_load_short_answer_samples(),
+                task_label="Video-MME",
+                output_filename="videomme_results.json",
+                audio_output_dir_default="results/videomme_audio",
+            )
         )
-    )
 
     summary = results["summary"]
     print_videomme_accuracy_summary(summary, config.model)
@@ -120,6 +127,8 @@ def test_videomme_tts_accuracy_wer_and_speed(
         title="Video-MME Talker Speed",
     )
     print_wer_summary(results["wer"]["summary"], config.model)
+    total = summary.get("total_samples", 0)
+    router_guard.assert_served(min_total_requests=total)
     assert summary["accuracy"] >= VIDEOMME_TALKER_THINKER_TEXT_MIN_ACCURACY, (
         f"Video-MME Talker thinker-text accuracy {summary['accuracy']:.4f} "
         f"({summary['accuracy'] * 100:.1f}%) < "

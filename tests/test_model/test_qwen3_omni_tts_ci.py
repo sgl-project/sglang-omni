@@ -25,7 +25,14 @@ from benchmarks.eval.benchmark_omni_seedtts import (
 )
 from benchmarks.metrics.performance import print_speed_summary
 from benchmarks.metrics.wer import print_wer_summary
-from sglang_omni.utils import find_available_port
+from tests.test_model.omni_router_utils import (
+    ManagedRouterHandle,
+    assert_workers_served_requests,
+    print_log_tail,
+    print_router_diagnostics,
+    print_worker_snapshot,
+    router_get_json,
+)
 from tests.utils import (
     apply_slack,
     apply_wer_slack,
@@ -34,20 +41,14 @@ from tests.utils import (
     assert_summary_metrics,
     assert_wer_partitioned,
     no_proxy_env,
-    server_log_file,
-    start_server_from_cmd,
-    stop_server,
 )
-
-MODEL_PATH = "Qwen/Qwen3-Omni-30B-A3B-Instruct"
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
-CONCURRENCY = 8
+CONCURRENCY = 16
 MAX_SAMPLES = 50
 DATASET_CACHE_ENV = "SGLANG_SEEDTTS50_DIR"
 
-STARTUP_TIMEOUT = 300
 WER_TIMEOUT = 600
 
 VC_WER_BELOW_50_CORPUS_MAX = 0.014184397163120567
@@ -58,11 +59,11 @@ VC_N_ABOVE_50_MAX = 0
 # are the most unstable metrics, so I drop it a lot.
 
 _VC_NON_STREAM_P95 = {
-    8: {
-        "throughput_qps": 3.687,
-        "tok_per_s_agg": 7,
-        "latency_mean_s": 2.095,
-        "rtf_mean": 0.6459,
+    16: {
+        "throughput_qps": 5.865,
+        "tok_per_s_agg": 5.8,
+        "latency_mean_s": 2.536,
+        "rtf_mean": 0.8369,
     },
 }
 
@@ -183,33 +184,6 @@ def dataset_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
     return root
 
 
-@pytest.fixture(scope="module")
-def server_process(tmp_path_factory: pytest.TempPathFactory):
-    """Start the Qwen3-Omni speech server and wait until healthy."""
-    port = find_available_port()
-    log_file = server_log_file(tmp_path_factory)
-    cmd = [
-        sys.executable,
-        "examples/run_qwen3_omni_speech_server.py",
-        "--model-path",
-        MODEL_PATH,
-        "--gpu-thinker",
-        "0",
-        "--gpu-talker",
-        "1",
-        "--gpu-code2wav",
-        "1",
-        "--port",
-        str(port),
-        "--model-name",
-        "qwen3-omni",
-    ]
-    proc = start_server_from_cmd(cmd, log_file, port, timeout=STARTUP_TIMEOUT)
-    proc.port = port
-    yield proc
-    stop_server(proc)
-
-
 @dataclass
 class _SpeedArtifacts:
     """Outputs from the voice-clone speed benchmark.
@@ -226,17 +200,30 @@ class _SpeedArtifacts:
 
 @pytest.fixture(scope="module")
 def speed_artifacts(
-    server_process: subprocess.Popen,
+    qwen3_omni_router_server: ManagedRouterHandle,
     dataset_dir: Path,
     tmp_path_factory: pytest.TempPathFactory,
 ) -> _SpeedArtifacts:
     """Run the speed benchmark once and expose its artifacts."""
     output_dir = str(tmp_path_factory.mktemp("vc_nonstream"))
-    results = _run_benchmark(
-        server_process.port,
-        str(dataset_dir / "en" / "meta.lst"),
-        output_dir,
-    )
+    try:
+        workers = router_get_json(qwen3_omni_router_server.port, "/workers")
+        print_worker_snapshot("initial /workers snapshot", workers)
+        assert workers["total_workers"] == 2
+        assert workers["healthy_workers"] == 2
+        assert workers["routable_workers"] == 2
+
+        models = router_get_json(qwen3_omni_router_server.port, "/v1/models")
+        assert {card["id"] for card in models["data"]} == {"qwen3-omni"}
+
+        results = _run_benchmark(
+            qwen3_omni_router_server.port,
+            str(dataset_dir / "en" / "meta.lst"),
+            output_dir,
+        )
+    except Exception:
+        print_router_diagnostics(qwen3_omni_router_server)
+        raise
     return _SpeedArtifacts(
         output_dir=output_dir,
         summary=results["summary"],
@@ -246,35 +233,54 @@ def speed_artifacts(
 
 @pytest.fixture(scope="module")
 def wer_audio_dir(
-    server_process: subprocess.Popen,
+    qwen3_omni_router_server: ManagedRouterHandle,
     speed_artifacts: _SpeedArtifacts,
 ) -> str:
     """Reuse speed-benchmark audio for WER after freeing the TTS server GPU."""
-    stop_server(server_process)
+    qwen3_omni_router_server.stop()
     generated_path = Path(speed_artifacts.output_dir) / "generated.json"
     assert generated_path.exists(), f"WER metadata missing: {generated_path}"
     return speed_artifacts.output_dir
 
 
 @pytest.mark.benchmark
-def test_voice_cloning_non_streaming(speed_artifacts: _SpeedArtifacts) -> None:
+def test_voice_cloning_non_streaming(
+    qwen3_omni_router_server: ManagedRouterHandle,
+    speed_artifacts: _SpeedArtifacts,
+) -> None:
     """Print speed summary and assert metrics meet thresholds."""
-    print_speed_summary(
-        speed_artifacts.summary,
-        "qwen3-omni",
-        CONCURRENCY,
-        title="TTS Voice-Clone Speed",
-    )
-    assert_summary_metrics(speed_artifacts.summary)
-    assert_per_request_fields(speed_artifacts.per_request)
-    assert_speed_thresholds(
-        speed_artifacts.summary, VC_NON_STREAM_THRESHOLDS, CONCURRENCY
-    )
-    assert Path(speed_artifacts.output_dir).is_dir()
+    try:
+        print_speed_summary(
+            speed_artifacts.summary,
+            "qwen3-omni",
+            CONCURRENCY,
+            title="TTS Voice-Clone Speed",
+        )
+        assert_summary_metrics(speed_artifacts.summary)
+        assert_per_request_fields(speed_artifacts.per_request)
+        assert_speed_thresholds(
+            speed_artifacts.summary, VC_NON_STREAM_THRESHOLDS, CONCURRENCY
+        )
+        assert Path(speed_artifacts.output_dir).is_dir()
+
+        final_workers = router_get_json(qwen3_omni_router_server.port, "/workers")
+        print_worker_snapshot("final /workers snapshot", final_workers)
+        assert final_workers["routable_workers"] == 2
+        assert all(
+            worker["active_requests"] == 0 for worker in final_workers["workers"]
+        )
+        assert_workers_served_requests(
+            final_workers,
+            min_total_requests=MAX_SAMPLES,
+        )
+    except Exception:
+        print_router_diagnostics(qwen3_omni_router_server)
+        raise
 
 
 @pytest.mark.benchmark
 def test_voice_cloning_wer(
+    qwen3_omni_router_server: ManagedRouterHandle,
     wer_audio_dir: str,
     dataset_dir: Path,
 ) -> None:
@@ -288,6 +294,7 @@ def test_voice_cloning_wer(
         max_wer_below_50_corpus=VC_WER_BELOW_50_CORPUS_THRESHOLD,
         max_n_above_50=VC_N_ABOVE_50_MAX,
     )
+    print_log_tail("router", qwen3_omni_router_server.log_file)
 
 
 if __name__ == "__main__":

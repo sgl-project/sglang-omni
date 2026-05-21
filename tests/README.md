@@ -10,7 +10,6 @@ tests/
 │   └── s2pro/
 ├── test_model/
 │   ├── conftest.py
-│   ├── test_omni_router_ci.py
 │   ├── test_qwen3_omni_*_ci.py
 │   └── test_s2pro_tts_ci.py
 └── unit_test/
@@ -133,11 +132,10 @@ pytest tests/test_model -m benchmark -v -s
 
 Relevant model CI ownership:
 
-- `qwen3_omni_thinker_server` / `qwen3_omni_talker_server`: start a real
-  Qwen3-Omni server and yield a `ServerHandle` from `conftest.py`.
-- `test_omni_router_ci.py`: starts two colocated Qwen3-Omni workers behind the
-  router and gates the full client-to-router-to-worker SeedTTS path, including
-  per-worker traffic, speed, and WER.
+- `qwen3_omni_thinker_server` / `qwen3_omni_talker_server`: expose the shared
+  router-backed Qwen3-Omni endpoint from `conftest.py`.
+- `test_qwen3_omni_tts_ci.py`: gates the SeedTTS speed/WER path through the
+  router and verifies both colocated workers receive traffic.
 - `qwen3_omni_vision_sglang_env`: session-scoped SGLang dist + DP-attention
   init from `conftest.py`, shared by every Qwen3-Omni vision-encoder benchmark
   module — avoids re-initializing the process-global TP group when the combined

@@ -22,50 +22,24 @@ import pytest
 from benchmarks.dataset.prepare import DATASETS
 from benchmarks.eval.benchmark_omni_mmsu import run as run_mmsu
 from benchmarks.metrics.mmsu import print_mmsu_summary
-from sglang_omni.utils import find_available_port
-from tests.utils import (
-    ServerHandle,
-    apply_slack,
-    assert_speed_thresholds,
-    server_log_file,
-    start_server_from_cmd,
-    stop_server,
+from tests.test_model.omni_router_utils import (
+    ManagedRouterHandle,
+    router_worker_traffic_guard,
 )
+from tests.utils import apply_slack, assert_speed_thresholds
 
-MODEL_PATH = "Qwen/Qwen3-Omni-30B-A3B-Instruct"
+CONCURRENCY = 16
 
-CONCURRENCY = 8
-STARTUP_TIMEOUT = 300
-
-MMSU_MIN_ACCURACY = 0.69
+MMSU_MIN_ACCURACY = 0.7065
 
 _MMSU_P95 = {
-    8: {
-        "throughput_qps": 30.117,
-        "tok_per_s_agg": 7.8,
-        "latency_mean_s": 0.265,
+    16: {
+        "throughput_qps": 11.135,
+        "tok_per_s_agg": 1.4,
+        "latency_mean_s": 1.434,
     },
 }
 MMSU_THRESHOLDS = apply_slack(_MMSU_P95)
-
-
-@pytest.fixture(scope="module")
-def server_process(tmp_path_factory: pytest.TempPathFactory):
-    port = find_available_port()
-    log_file = server_log_file(tmp_path_factory)
-    cmd = [
-        sys.executable,
-        "examples/run_qwen3_omni_server.py",
-        "--model-path",
-        MODEL_PATH,
-        "--port",
-        str(port),
-        "--model-name",
-        "qwen3-omni",
-    ]
-    proc = start_server_from_cmd(cmd, log_file, port, timeout=STARTUP_TIMEOUT)
-    yield ServerHandle(proc=proc, port=port)
-    stop_server(proc)
 
 
 def _build_args(port: int, output_dir: str) -> argparse.Namespace:
@@ -98,17 +72,22 @@ def _build_args(port: int, output_dir: str) -> argparse.Namespace:
 
 @pytest.mark.benchmark
 def test_mmsu_accuracy_and_speed(
-    server_process: ServerHandle,
+    qwen3_omni_router_server: ManagedRouterHandle,
     tmp_path: Path,
 ) -> None:
     """Run MMSU eval and assert accuracy and speed meet thresholds."""
-    args = _build_args(server_process.port, str(tmp_path / "mmsu"))
-    results = asyncio.run(run_mmsu(args))
+    args = _build_args(qwen3_omni_router_server.port, str(tmp_path / "mmsu"))
+    with router_worker_traffic_guard(
+        qwen3_omni_router_server,
+        label="Qwen3-Omni MMSU",
+    ) as router_guard:
+        results = asyncio.run(run_mmsu(args))
 
     print_mmsu_summary(results["accuracy"], args.model, speed_metrics=results["speed"])
 
     failed = results["accuracy"].get("failed_samples", 0)
     total = results["accuracy"].get("total_samples", 0)
+    router_guard.assert_served(min_total_requests=total)
     assert failed == 0, (
         f"MMSU had {failed}/{total} failed requests (timeouts or empty responses); "
         f"any failure fails the test"

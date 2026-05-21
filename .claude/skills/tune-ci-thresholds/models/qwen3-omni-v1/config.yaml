@@ -20,30 +20,25 @@ expected_wer_normalizer: "english"
 auto_env:
   HF_ENDPOINT: "https://hf-mirror.com"
 # Number of GPUs each test needs. tune.py picks that many free GPUs
-# via CUDA_VISIBLE_DEVICES before each pytest invocation. Tests that
-# launch the text-only server need 1; speech-server tests use
-# device indices 0+1 in-process, so they need 2. Unknown test → 2.
+# via CUDA_VISIBLE_DEVICES before each pytest invocation. Qwen benchmark CI
+# runs one router plus two colocated one-GPU workers, so non-docs stages need 2.
 gpus_per_test:
-  test_qwen3_omni_mmmu_ci.py: 1
-  test_qwen3_omni_mmsu_ci.py: 1
-  test_qwen3_omni_videomme_ci.py: 1
-  test_qwen3_omni_videoamme_ci.py: 1
+  test_qwen3_omni_mmmu_ci.py: 2
+  test_qwen3_omni_mmsu_ci.py: 2
+  test_qwen3_omni_videomme_ci.py: 2
+  test_qwen3_omni_videoamme_ci.py: 2
   test_qwen3_omni_tts_ci.py: 2
   test_qwen3_omni_mmmu_talker_ci.py: 2
   test_qwen3_omni_mmsu_talker_ci.py: 2
   test_qwen3_omni_videomme_talker_ci.py: 2
   test_qwen3_omni_videoamme_talker_ci.py: 2
   test_docs_qwen3_omni.py: 2
-  test_omni_router_ci.py: 2
 test_globs:
   - "tests/test_model/test_qwen3_omni_*_ci.py"
-  - "tests/test_model/test_omni_router_ci.py"
   - "tests/docs/qwen3_omni/test_docs_qwen3_omni.py"
 # Per-test extra env vars. Key is the test filename (basename).
 extra_env:
   test_qwen3_omni_tts_ci.py:
-    SGLANG_SEEDTTS50_DIR: "/github/home/seedtts-50"
-  test_omni_router_ci.py:
     SGLANG_SEEDTTS50_DIR: "/github/home/seedtts-50"
 # Stage-key base derivation: strip prefix + strip suffix from the test
 # stem. Docs tests (path contains "docs/") use the override instead.
@@ -168,15 +163,3 @@ metric_sources:
       per_sample_wer_max: "vc_nonstream0/wer_results.json::summary.wer_per_sample_max"
       wer_below_50_corpus: "vc_nonstream0/wer_results.json::summary.wer_below_50_corpus"
       n_above_50: "vc_nonstream0/wer_results.json::summary.n_above_50_pct_wer"
-  test_omni_router_ci.py:
-    sample_counts:
-      total: "test_colocated_router_seedtts_0/qwen3_omni_colocated_router_seedtts50/wer_results.json::summary.total_samples"
-      ok: "test_colocated_router_seedtts_0/qwen3_omni_colocated_router_seedtts50/wer_results.json::summary.evaluated"
-    paths:
-      throughput_qps: "test_colocated_router_seedtts_0/qwen3_omni_colocated_router_seedtts50/speed_results.json::summary.throughput_qps"
-      tok_per_s_agg: "test_colocated_router_seedtts_0/qwen3_omni_colocated_router_seedtts50/speed_results.json::summary.tok_per_s_agg"
-      latency_mean_s: "test_colocated_router_seedtts_0/qwen3_omni_colocated_router_seedtts50/speed_results.json::summary.latency_mean_s"
-      latency_p95_s: "test_colocated_router_seedtts_0/qwen3_omni_colocated_router_seedtts50/speed_results.json::summary.latency_p95_s"
-      rtf_mean: "test_colocated_router_seedtts_0/qwen3_omni_colocated_router_seedtts50/speed_results.json::summary.rtf_mean"
-      wer_below_50_corpus: "test_colocated_router_seedtts_0/qwen3_omni_colocated_router_seedtts50/wer_results.json::summary.wer_below_50_corpus"
-      n_above_50: "test_colocated_router_seedtts_0/qwen3_omni_colocated_router_seedtts50/wer_results.json::summary.n_above_50_pct_wer"

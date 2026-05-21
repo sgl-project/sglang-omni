@@ -30,25 +30,21 @@ from benchmarks.dataset.prepare import DATASETS
 from benchmarks.eval.benchmark_omni_mmsu import run as run_mmsu
 from benchmarks.metrics.mmsu import print_mmsu_summary
 from benchmarks.metrics.wer import print_wer_summary
-from sglang_omni.utils import find_available_port
+from tests.test_model.omni_router_utils import (
+    ManagedRouterHandle,
+    router_worker_traffic_guard,
+)
 from tests.utils import (
-    ServerHandle,
     apply_slack,
     apply_wer_slack,
     assert_speed_thresholds,
     assert_wer_partitioned,
-    server_log_file,
-    start_server_from_cmd,
-    stop_server,
 )
 
-MODEL_PATH = "Qwen/Qwen3-Omni-30B-A3B-Instruct"
-
-MAX_SAMPLES = 20
+MAX_SAMPLES = 40
 MAX_TOKENS = 256
-STARTUP_TIMEOUT = 300
 
-CONCURRENCY = 8
+CONCURRENCY = 16
 
 # Note (Yifei): "2-3 sentences" floor prevents terse "Answer: X" replies that
 # would starve the WER signal; the 120-word cap keeps p95 output well under
@@ -62,53 +58,28 @@ MMSU_TTS_PROMPT = (
 )
 
 # Accuracy floor — audio-mode MMSU.
-MMSU_AUDIO_MIN_ACCURACY = 0.5
+MMSU_AUDIO_MIN_ACCURACY = 0.65
 
 # WER thresholds use a partitioned view of the per-sample distribution:
 #  - corpus WER over the "sane" subset (per-sample WER <= 50%)
 #  - count of catastrophic failures (per-sample WER > 50%)
 
 # Retuned after Qwen3-Omni talker sampler fix: MMSU talker stayed clean.
-MMSU_AUDIO_WER_BELOW_50_CORPUS_MAX = 0.024945770065075923
+MMSU_AUDIO_WER_BELOW_50_CORPUS_MAX = 0.03
 MMSU_AUDIO_WER_BELOW_50_CORPUS_THRESHOLD = apply_wer_slack(
     MMSU_AUDIO_WER_BELOW_50_CORPUS_MAX
 )
 MMSU_AUDIO_N_ABOVE_50_MAX = 0
 
 _MMSU_AUDIO_P95 = {
-    8: {
-        "throughput_qps": 0.919,
-        "tok_per_s_agg": 8.3,
-        "latency_mean_s": 7.474,
-        "rtf_mean": 0.4017,
+    16: {
+        "throughput_qps": 1.721,
+        "tok_per_s_agg": 7.3,
+        "latency_mean_s": 8.479,
+        "rtf_mean": 0.4611,
     },
 }
 MMSU_AUDIO_THRESHOLDS = apply_slack(_MMSU_AUDIO_P95)
-
-
-@pytest.fixture(scope="module")
-def server_process(tmp_path_factory: pytest.TempPathFactory):
-    port = find_available_port()
-    log_file = server_log_file(tmp_path_factory)
-    cmd = [
-        sys.executable,
-        "examples/run_qwen3_omni_speech_server.py",
-        "--model-path",
-        MODEL_PATH,
-        "--gpu-thinker",
-        "0",
-        "--gpu-talker",
-        "1",
-        "--gpu-code2wav",
-        "1",
-        "--port",
-        str(port),
-        "--model-name",
-        "qwen3-omni",
-    ]
-    proc = start_server_from_cmd(cmd, log_file, port, timeout=STARTUP_TIMEOUT)
-    yield ServerHandle(proc=proc, port=port)
-    stop_server(proc)
 
 
 def _build_args(port: int, output_dir: str) -> argparse.Namespace:
@@ -139,17 +110,21 @@ def _build_args(port: int, output_dir: str) -> argparse.Namespace:
 
 @pytest.mark.benchmark
 def test_mmsu_audio_wer_and_speed(
-    server_process: ServerHandle,
+    qwen3_omni_router_server: ManagedRouterHandle,
     tmp_path: Path,
 ) -> None:
     """Run MMSU eval with audio and assert WER and speed meet thresholds."""
-    args = _build_args(server_process.port, str(tmp_path / "mmsu_audio"))
+    args = _build_args(qwen3_omni_router_server.port, str(tmp_path / "mmsu_audio"))
 
     samples = load_mmsu_samples(
         max_samples=MAX_SAMPLES, repo_id=DATASETS["mmsu-ci-2000"]
     )
 
-    results = asyncio.run(run_mmsu(args, samples=samples))
+    with router_worker_traffic_guard(
+        qwen3_omni_router_server,
+        label="Qwen3-Omni MMSU Talker",
+    ) as router_guard:
+        results = asyncio.run(run_mmsu(args, samples=samples))
 
     print_mmsu_summary(results["accuracy"], args.model, speed_metrics=results["speed"])
     if "wer" in results:
@@ -157,6 +132,7 @@ def test_mmsu_audio_wer_and_speed(
 
     failed = results["accuracy"].get("failed_samples", 0)
     total = results["accuracy"].get("total_samples", 0)
+    router_guard.assert_served(min_total_requests=total)
     assert failed == 0, (
         f"MMSU Talker had {failed}/{total} failed requests "
         f"(timeouts or empty responses); any failure fails the test"

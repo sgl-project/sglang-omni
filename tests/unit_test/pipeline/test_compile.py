@@ -42,6 +42,29 @@ def test_pipeline_schema_keeps_topology_and_validation_contracts() -> None:
             model_path="model",
             stages=[stage("tp", gpu=[0], tp_size=2, terminal=True)],
         )
+    with pytest.raises(ValueError, match="route_fn on a terminal stage"):
+        PipelineConfig(
+            model_path="model",
+            stages=[
+                stage(
+                    "decode",
+                    terminal=True,
+                    route_fn=fake_factory_path("identity_route"),
+                )
+            ],
+        )
+    with pytest.raises(ValueError, match="stream_done_to_fn without stream_to"):
+        PipelineConfig(
+            model_path="model",
+            stages=[
+                stage(
+                    "thinker",
+                    next="decode",
+                    stream_done_to_fn=fake_factory_path("identity_stream_targets"),
+                ),
+                stage("decode", terminal=True),
+            ],
+        )
 
 
 def test_runner_specs_wire_routes_overrides_aggregation_and_streams() -> None:
@@ -59,7 +82,9 @@ def test_runner_specs_wire_routes_overrides_aggregation_and_streams() -> None:
                 factory_args={"extra": "factory"},
                 gpu=0,
                 next="aggregate",
+                route_fn=fake_factory_path("identity_route"),
                 stream_to=["talker"],
+                stream_done_to_fn=fake_factory_path("identity_stream_targets"),
             ),
             stage(
                 "aggregate",
@@ -85,6 +110,10 @@ def test_runner_specs_wire_routes_overrides_aggregation_and_streams() -> None:
 
     assert prep.entry_stage == "preprocess"
     assert specs["preprocess"].next_stages == ["thinker", "aggregate"]
+    assert specs["thinker"].route_fn == fake_factory_path("identity_route")
+    assert specs["thinker"].stream_done_to_fn == fake_factory_path(
+        "identity_stream_targets"
+    )
     assert specs["aggregate"].wait_for == ["preprocess", "thinker"]
     assert specs["aggregate"].merge_fn == fake_factory_path("merge_payloads")
     assert specs["talker"].is_stream_receiver

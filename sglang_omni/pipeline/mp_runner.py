@@ -30,6 +30,7 @@ from sglang_omni.pipeline.runtime_config import (
 )
 from sglang_omni.pipeline.stage_group import StageGroup
 from sglang_omni.pipeline.stage_process import StageProcessSpec, StageWorkerProcessSpec
+from sglang_omni.utils.imports import import_string
 
 logger = logging.getLogger(__name__)
 
@@ -79,6 +80,7 @@ def _build_stage_groups(
             stage_name=stage_cfg.name,
             factory=stage_cfg.factory,
             next_stages=stage_cfg.next,
+            route_fn=stage_cfg.route_fn,
             is_terminal=stage_cfg.terminal,
             wait_for=stage_cfg.wait_for,
             merge_fn=stage_cfg.merge_fn,
@@ -90,6 +92,7 @@ def _build_stage_groups(
             abort_endpoint=endpoints["abort"],
             stage_endpoints=stage_endpoints,
             stream_targets=list(stage_cfg.stream_to),
+            stream_done_to_fn=stage_cfg.stream_done_to_fn,
             same_gpu_targets=same_gpu_targets,
             is_stream_receiver=stage_cfg.name in stream_receivers,
             can_accept_stream_before_payload=stage_cfg.can_accept_stream_before_payload,
@@ -336,11 +339,17 @@ class MultiProcessPipelineRunner:
                 process_plan=prep.process_plan,
             )
 
+            terminal_stages_resolver = (
+                import_string(self._config.terminal_stages_fn)
+                if self._config.terminal_stages_fn
+                else None
+            )
             self._coordinator = Coordinator(
                 completion_endpoint=prep.endpoints["completion"],
                 abort_endpoint=prep.endpoints["abort"],
                 entry_stage=prep.entry_stage,
                 terminal_stages=self._config.terminal_stages or None,
+                terminal_stages_resolver=terminal_stages_resolver,
             )
             await self._coordinator.start()
             self._completion_task = asyncio.create_task(

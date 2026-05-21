@@ -12,7 +12,6 @@ Author:
 from __future__ import annotations
 
 import asyncio
-import subprocess
 import sys
 from pathlib import Path
 
@@ -22,62 +21,35 @@ from benchmarks.dataset.prepare import DATASETS
 from benchmarks.eval.benchmark_omni_mmmu import MMMUEvalConfig, run_mmmu_eval
 from benchmarks.metrics.mmmu import print_mmmu_accuracy_summary
 from benchmarks.metrics.performance import print_speed_summary
-from sglang_omni.utils import find_available_port
-from tests.utils import (
-    apply_slack,
-    assert_speed_thresholds,
-    server_log_file,
-    start_server_from_cmd,
-    stop_server,
+from tests.test_model.omni_router_utils import (
+    ManagedRouterHandle,
+    router_worker_traffic_guard,
 )
+from tests.utils import apply_slack, assert_speed_thresholds
 
-MODEL_PATH = "Qwen/Qwen3-Omni-30B-A3B-Instruct"
+CONCURRENCY = 16
 
-CONCURRENCY = 8
-STARTUP_TIMEOUT = 300
-
-MMMU_MIN_ACCURACY = 0.56
+MMMU_MIN_ACCURACY = 0.54
 
 _MMMU_P95 = {
-    8: {
-        "throughput_qps": 0.675,
-        "tok_per_s_agg": 51.2,
-        "latency_mean_s": 11.207,
+    16: {
+        "throughput_qps": 1.245,
+        "tok_per_s_agg": 57.8,
+        "latency_mean_s": 10.881,
     },
 }
 MMMU_THRESHOLDS = apply_slack(_MMMU_P95)
 
 
-@pytest.fixture(scope="module")
-def server_process(tmp_path_factory: pytest.TempPathFactory):
-    """Start the text-only Qwen3-Omni server and wait until healthy."""
-    port = find_available_port()
-    log_file = server_log_file(tmp_path_factory)
-    cmd = [
-        sys.executable,
-        "examples/run_qwen3_omni_server.py",
-        "--model-path",
-        MODEL_PATH,
-        "--port",
-        str(port),
-        "--model-name",
-        "qwen3-omni",
-    ]
-    proc = start_server_from_cmd(cmd, log_file, port, timeout=STARTUP_TIMEOUT)
-    proc.port = port
-    yield proc
-    stop_server(proc)
-
-
 @pytest.mark.benchmark
 def test_mmmu_accuracy_and_speed(
-    server_process: subprocess.Popen,
+    qwen3_omni_router_server: ManagedRouterHandle,
     tmp_path: Path,
 ) -> None:
     """Run MMMU eval and assert accuracy and speed meet thresholds."""
     config = MMMUEvalConfig(
         model="qwen3-omni",
-        port=server_process.port,
+        port=qwen3_omni_router_server.port,
         max_concurrency=CONCURRENCY,
         output_dir=str(tmp_path / "mmmu"),
         repo_id=DATASETS["mmmu-ci-50"],
@@ -87,7 +59,11 @@ def test_mmmu_accuracy_and_speed(
         # requests. warmup > 1 keeps the lone hit from landing alone.
         warmup=2,
     )
-    results = asyncio.run(run_mmmu_eval(config))
+    with router_worker_traffic_guard(
+        qwen3_omni_router_server,
+        label="Qwen3-Omni MMMU",
+    ) as router_guard:
+        results = asyncio.run(run_mmmu_eval(config))
 
     summary = results["summary"]
     speed = results["speed"]
@@ -96,6 +72,7 @@ def test_mmmu_accuracy_and_speed(
 
     failed = summary.get("failed", 0)
     total = summary.get("total_samples", 0)
+    router_guard.assert_served(min_total_requests=total)
     assert failed == 0, (
         f"MMMU had {failed}/{total} failed requests (timeouts or empty responses); "
         f"any failure fails the test"

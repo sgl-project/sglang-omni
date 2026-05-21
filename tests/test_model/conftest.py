@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import os
-import sys
 from pathlib import Path
 
 import pytest
@@ -32,81 +31,62 @@ QWEN3_OMNI_MODEL_PATH = "Qwen/Qwen3-Omni-30B-A3B-Instruct"
 QWEN3_OMNI_TEST_MODEL_PATH = os.environ.get(
     "SGLANG_OMNI_TEST_QWEN3_MODEL", QWEN3_OMNI_MODEL_PATH
 )
-QWEN3_OMNI_STARTUP_TIMEOUT = 300
+QWEN3_OMNI_MODEL_NAME = "qwen3-omni"
+QWEN3_OMNI_ROUTER_WAIT_TIMEOUT = 180
+QWEN3_OMNI_COLOCATED_WORKER_ARGS = (
+    "--config examples/configs/qwen3_omni_colocated.yaml --colocate"
+)
+QWEN3_OMNI_VIDEO_WORKER_ARGS = (
+    f"{QWEN3_OMNI_COLOCATED_WORKER_ARGS} "
+    "--stages.0.factory-args.thinker-max-seq-len 32768 "
+    "--stages.4.factory-args.thinker-max-seq-len 32768"
+)
+
+
+@pytest.fixture(scope="module")
+def qwen3_omni_router_server(tmp_path_factory: pytest.TempPathFactory):
+    """Start two colocated Qwen3-Omni workers behind the router."""
+    with _launch_qwen3_omni_router(
+        tmp_path_factory,
+        worker_extra_args=QWEN3_OMNI_COLOCATED_WORKER_ARGS,
+    ) as router:
+        yield router
 
 
 @pytest.fixture(scope="module")
 def qwen3_omni_thinker_server(tmp_path_factory: pytest.TempPathFactory):
-    """Start the text-only Qwen3-Omni server and wait until healthy."""
-    from sglang_omni.utils import find_available_port
-    from tests.utils import (
-        ServerHandle,
-        server_log_file,
-        start_server_from_cmd,
-        stop_server,
-    )
-
-    port = find_available_port()
-    log_file = server_log_file(tmp_path_factory)
-    cmd = [
-        sys.executable,
-        "examples/run_qwen3_omni_server.py",
-        "--model-path",
-        QWEN3_OMNI_MODEL_PATH,
-        "--port",
-        str(port),
-        "--model-name",
-        "qwen3-omni",
-        "--thinker-max-seq-len",
-        "32768",
-        "--mem-fraction-static",
-        "0.78",
-    ]
-    proc = start_server_from_cmd(
-        cmd, log_file, port, timeout=QWEN3_OMNI_STARTUP_TIMEOUT
-    )
-    yield ServerHandle(proc=proc, port=port)
-    stop_server(proc)
+    """Router-backed Qwen3-Omni endpoint used by text-output benchmarks."""
+    with _launch_qwen3_omni_router(
+        tmp_path_factory,
+        worker_extra_args=QWEN3_OMNI_VIDEO_WORKER_ARGS,
+    ) as router:
+        yield router
 
 
 @pytest.fixture(scope="module")
 def qwen3_omni_talker_server(tmp_path_factory: pytest.TempPathFactory):
-    """Start the Qwen3-Omni speech server and wait until healthy."""
-    from sglang_omni.utils import find_available_port
-    from tests.utils import (
-        ServerHandle,
-        server_log_file,
-        start_server_from_cmd,
-        stop_server,
-    )
+    """Router-backed Qwen3-Omni endpoint used by audio-output benchmarks."""
+    with _launch_qwen3_omni_router(
+        tmp_path_factory,
+        worker_extra_args=QWEN3_OMNI_VIDEO_WORKER_ARGS,
+    ) as router:
+        yield router
 
-    port = find_available_port()
-    log_file = server_log_file(tmp_path_factory)
-    cmd = [
-        sys.executable,
-        "examples/run_qwen3_omni_speech_server.py",
-        "--model-path",
-        QWEN3_OMNI_MODEL_PATH,
-        "--gpu-thinker",
-        "0",
-        "--gpu-talker",
-        "1",
-        "--gpu-code2wav",
-        "1",
-        "--port",
-        str(port),
-        "--model-name",
-        "qwen3-omni",
-        "--thinker-max-seq-len",
-        "32768",
-        "--thinker-mem-fraction-static",
-        "0.78",
-    ]
-    proc = start_server_from_cmd(
-        cmd, log_file, port, timeout=QWEN3_OMNI_STARTUP_TIMEOUT
+
+def _launch_qwen3_omni_router(
+    tmp_path_factory: pytest.TempPathFactory,
+    *,
+    worker_extra_args: str,
+):
+    from tests.test_model.omni_router_utils import launch_managed_router
+
+    return launch_managed_router(
+        tmp_path_factory=tmp_path_factory,
+        model_path=QWEN3_OMNI_TEST_MODEL_PATH,
+        model_name=QWEN3_OMNI_MODEL_NAME,
+        worker_extra_args=worker_extra_args,
+        wait_timeout=QWEN3_OMNI_ROUTER_WAIT_TIMEOUT,
     )
-    yield ServerHandle(proc=proc, port=port)
-    stop_server(proc)
 
 
 def _model_cache_present(model_path: str) -> bool:

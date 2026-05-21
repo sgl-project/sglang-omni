@@ -260,6 +260,22 @@ class QwenTalkerModelRunner(ModelRunner):
         return None
 
     @staticmethod
+    def _decode_row(
+        row: torch.Tensor,
+        *,
+        device: torch.device,
+        dtype: torch.dtype,
+    ) -> torch.Tensor:
+        row = row.reshape(-1)
+        if row.device != device or row.dtype != dtype:
+            raise RuntimeError(
+                "Talker decode rows must already match the feedback buffer "
+                f"device/dtype, got {row.device}/{row.dtype}, "
+                f"expected {device}/{dtype}"
+            )
+        return row
+
+    @staticmethod
     def _combine_feedback_with_next_text(
         *,
         data: Any,
@@ -271,26 +287,24 @@ class QwenTalkerModelRunner(ModelRunner):
         if feedback is None:
             return None
 
-        combined = feedback.to(device=device, dtype=dtype).reshape(-1)
+        combined = QwenTalkerModelRunner._decode_row(
+            feedback,
+            device=device,
+            dtype=dtype,
+        )
         next_text = QwenTalkerModelRunner._peek_left(
             getattr(data, "pending_text_queue", None)
         )
-        if next_text is not None:
-            combined = combined + next_text.to(
-                device=device,
-                dtype=dtype,
-            ).reshape(-1)
-        elif (
-            bool(getattr(data, "thinker_chunks_done", False))
-            and getattr(data, "tts_pad_embed", None) is not None
-        ):
-            combined = combined + data.tts_pad_embed.to(
-                device=device,
-                dtype=dtype,
-            ).reshape(-1)
-        else:
-            return None
-        return combined
+        if next_text is None:
+            if not data.thinker_chunks_done:
+                return None
+            next_text = data.tts_pad_embed
+
+        return combined + QwenTalkerModelRunner._decode_row(
+            next_text,
+            device=device,
+            dtype=dtype,
+        )
 
     @staticmethod
     def _take_next_decode_input_embed(

@@ -5,12 +5,17 @@ from __future__ import annotations
 from collections import deque
 from types import SimpleNamespace
 
+import pytest
 import torch
 
 from sglang_omni.model_runner.thinker_model_runner import ThinkerModelRunner
 from sglang_omni.models.qwen3_omni.components.talker import Qwen3OmniTalker
 from sglang_omni.models.qwen3_omni.components.talker_input import build_assistant_part
 from sglang_omni.models.qwen3_omni.components.talker_prefill import TalkerPrefillBuilder
+from sglang_omni.models.qwen3_omni.pending_text_queue import (
+    PendingTextTensorQueue,
+    coerce_pending_text_queue,
+)
 from sglang_omni.models.qwen3_omni.talker_model_runner import QwenTalkerModelRunner
 from sglang_omni.models.qwen3_omni.talker_scheduler import QwenTalkerScheduler
 
@@ -52,6 +57,38 @@ def test_qwen_talker_decode_input_consumes_feedback_and_text_or_pad() -> None:
     assert torch.equal(_take_decode_input(pad_req), torch.tensor([8.0, 10.0]))
     assert len(pad_req.data.pending_feedback_queue) == 0
     assert len(pad_req.data.pending_text_queue) == 0
+
+
+def test_qwen_talker_decode_input_consumes_device_text_queue() -> None:
+    """Preserves FIFO decode semantics for tensor-backed future text rows."""
+    text_req = _sched_req(
+        pending_feedback_queue=deque(
+            [torch.tensor([1.0, 2.0]), torch.tensor([3.0, 4.0])]
+        ),
+        pending_text_queue=PendingTextTensorQueue.from_tensor(
+            torch.tensor([[20.0, 20.0], [30.0, 30.0]])
+        ),
+        tts_pad_embed=torch.tensor([7.0, 8.0]),
+        thinker_chunks_done=False,
+    )
+
+    assert torch.equal(_take_decode_input(text_req), torch.tensor([21.0, 22.0]))
+    assert len(text_req.data.pending_text_queue) == 1
+    assert torch.equal(_take_decode_input(text_req), torch.tensor([33.0, 34.0]))
+    assert len(text_req.data.pending_text_queue) == 0
+
+
+def test_qwen_talker_decode_input_rejects_implicit_row_transfer() -> None:
+    """Keeps decode hot path free of implicit dtype/device conversions."""
+    sched_req = _sched_req(
+        pending_feedback_queue=deque([torch.tensor([1.0, 2.0])]),
+        pending_text_queue=deque([torch.tensor([20.0, 20.0], dtype=torch.float64)]),
+        tts_pad_embed=torch.tensor([7.0, 8.0]),
+        thinker_chunks_done=False,
+    )
+
+    with pytest.raises(RuntimeError, match="must already match"):
+        _take_decode_input(sched_req)
 
 
 def test_qwen_talker_decode_input_preserves_feedback_until_text_arrives() -> None:
@@ -194,6 +231,73 @@ def test_qwen_talker_prefill_ignores_late_text_after_thinker_done() -> None:
     builder.append_text_chunk(req_data, chunk)
 
     assert list(req_data.pending_text_queue) == []
+
+
+def test_qwen_talker_prefill_keeps_future_rows_device_backed() -> None:
+    """Avoids splitting future text rows into per-row CPU tensors."""
+    builder = object.__new__(TalkerPrefillBuilder)
+    rows = torch.empty((2, 3), device="meta")
+
+    queue = builder.tensor_rows_to_queue(rows)
+
+    assert isinstance(queue, PendingTextTensorQueue)
+    assert len(queue) == 2
+    assert queue[0].device.type == "meta"
+
+
+def test_pending_text_queue_rejects_unexpected_rank() -> None:
+    """Keeps queue shape handling explicit instead of flattening unknown ranks."""
+    queue = PendingTextTensorQueue()
+
+    with pytest.raises(ValueError, match="1D row tensor or a 2D row batch"):
+        queue.append_rows(torch.zeros((1, 2, 3)))
+    with pytest.raises(ValueError, match="non-empty hidden dimension"):
+        queue.append_rows(torch.zeros((1, 0)))
+
+
+def test_pending_text_queue_rejects_non_tensor_input() -> None:
+    """Keeps conversion failures explicit instead of skipping invalid rows."""
+    with pytest.raises(TypeError, match="pending text rows must be tensors"):
+        PendingTextTensorQueue.from_tensor(None)
+
+    with pytest.raises(TypeError, match="pending text rows must be tensors"):
+        coerce_pending_text_queue([torch.tensor([1.0]), object()])
+    with pytest.raises(TypeError, match="pending text queue must be None"):
+        coerce_pending_text_queue(object())
+
+
+def test_coerce_pending_text_queue_copies_cursor_state() -> None:
+    """Avoids sharing mutable FIFO cursor state across request data objects."""
+    queue = PendingTextTensorQueue.from_tensor(torch.tensor([[1.0], [2.0]]))
+
+    copied = coerce_pending_text_queue(queue)
+    copied.popleft()
+
+    assert copied is not queue
+    assert len(copied) == 1
+    assert len(queue) == 2
+
+
+def test_qwen_talker_prefill_appends_text_chunks_to_tensor_queue() -> None:
+    """Preserves incremental text appends without switching back to deque."""
+    builder = object.__new__(TalkerPrefillBuilder)
+    builder._im_end_token_id = 99
+
+    def project_assistant_chunk(chunk: SimpleNamespace) -> torch.Tensor:
+        del chunk
+        return torch.tensor([11.0, 12.0])
+
+    builder.project_assistant_chunk = project_assistant_chunk
+    req_data = SimpleNamespace(
+        thinker_chunks_done=False,
+        pending_text_queue=None,
+    )
+    chunk = SimpleNamespace(data=None, metadata={})
+
+    builder.append_text_chunk(req_data, chunk)
+
+    assert isinstance(req_data.pending_text_queue, PendingTextTensorQueue)
+    assert torch.equal(req_data.pending_text_queue[0], torch.tensor([11.0, 12.0]))
 
 
 def test_qwen_code_predictor_keeps_4d_logits_token_shape() -> None:

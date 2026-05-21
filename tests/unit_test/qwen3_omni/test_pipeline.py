@@ -26,10 +26,12 @@ from sglang_omni.models.qwen3_omni.request_builders import (
     build_sglang_thinker_request,
     project_preprocessing_to_mm_aggregate,
 )
+from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling.sglang_backend.server_args_builder import (
     apply_encoder_mem_reserve,
     build_sglang_server_args,
 )
+from sglang_omni.utils.imports import import_string
 from tests.unit_test.fixtures.qwen_fakes import (
     FakeQwenTokenizer,
     make_qwen_payload,
@@ -63,16 +65,25 @@ def test_qwen_pipeline_config_and_state_contracts() -> None:
         "decode",
     ]
     assert speech_config.terminal_stages == ["decode", "code2wav"]
+    assert (
+        speech_config.terminal_stages_fn
+        == "sglang_omni.models.qwen3_omni.request_builders.resolve_terminal_stages"
+    )
+    speech_thinker = _stage(speech_config, "thinker")
+    text_thinker = _stage(text_config, "thinker")
     # Speech-mode thinker streams hidden states to talker_ar AND text-token
     # ids to decode (for the streaming detokenizer); text-mode thinker
     # streams only to decode. Lock both so a regression here can't silently
     # disable per-token streaming for either path.
-    assert {stage.name: stage for stage in speech_config.stages}[
-        "thinker"
-    ].stream_to == ["talker_ar", "decode"]
-    assert {stage.name: stage for stage in text_config.stages}["thinker"].stream_to == [
-        "decode"
-    ]
+    request_builders_path = "sglang_omni.models.qwen3_omni.request_builders"
+    assert speech_thinker.stream_to == ["talker_ar", "decode"]
+    assert speech_thinker.route_fn == (
+        f"{request_builders_path}.resolve_thinker_next_stages"
+    )
+    assert speech_thinker.stream_done_to_fn == (
+        f"{request_builders_path}.resolve_thinker_stream_done_targets"
+    )
+    assert text_thinker.stream_to == ["decode"]
     assert _stage(text_config, "decode").can_accept_stream_before_payload
     assert _stage(speech_config, "decode").can_accept_stream_before_payload
     assert _stage(speech_config, "talker_ar").can_accept_stream_before_payload
@@ -90,6 +101,42 @@ def test_qwen_pipeline_config_and_state_contracts() -> None:
     assert state.mm_inputs == {}
     assert state.encoder_inputs["image_encoder"]["cache_key"] == "img"
     assert state.thinker_out["is_final"] is True
+
+
+def test_qwen_speech_config_wires_request_granular_active_subgraph() -> None:
+    config = Qwen3OmniSpeechPipelineConfig(model_path="model")
+    thinker = _stage(config, "thinker")
+    route_fn = import_string(thinker.route_fn)
+    stream_done_to_fn = import_string(thinker.stream_done_to_fn)
+    terminal_stages_fn = import_string(config.terminal_stages_fn)
+
+    text_payload = StagePayload(
+        request_id="text",
+        request=OmniRequest(inputs=[], metadata={"output_modalities": ["text"]}),
+        data={},
+    )
+    audio_payload = StagePayload(
+        request_id="audio",
+        request=OmniRequest(inputs=[], metadata={"output_modalities": ["audio"]}),
+        data={},
+    )
+    default_payload = StagePayload(
+        request_id="default",
+        request=OmniRequest(inputs=[]),
+        data={},
+    )
+
+    assert route_fn("text", text_payload) == "decode"
+    assert stream_done_to_fn("text", text_payload) == ["decode"]
+    assert terminal_stages_fn(text_payload.request) == ["decode"]
+
+    assert route_fn("audio", audio_payload) == ["decode", "talker_ar"]
+    assert stream_done_to_fn("audio", audio_payload) == ["talker_ar", "decode"]
+    assert terminal_stages_fn(audio_payload.request) == ["decode", "code2wav"]
+
+    assert route_fn("default", default_payload) == ["decode", "talker_ar"]
+    assert stream_done_to_fn("default", default_payload) == ["talker_ar", "decode"]
+    assert terminal_stages_fn(default_payload.request) == ["decode", "code2wav"]
 
 
 def test_qwen_builder_omits_mem_fraction_static_by_default() -> None:

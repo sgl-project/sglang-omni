@@ -159,7 +159,17 @@ Speech mode runs the full 9-stage pipeline across multiple GPUs. It produces bot
 
 ### Launch the Server
 
-Speech mode requires multiple GPUs. Use the example script with GPU placement control:
+Speech mode can run as a colocated one-GPU worker using the colocated config:
+
+```bash
+sgl-omni serve \
+  --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct \
+  --config examples/configs/qwen3_omni_colocated.yaml \
+  --colocate \
+  --port 8008
+```
+
+For manual multi-GPU placement, use the example script:
 
 ```bash
 python examples/run_qwen3_omni_speech_server.py \
@@ -171,7 +181,7 @@ python examples/run_qwen3_omni_speech_server.py \
   --port 8008
 ```
 
-Or use the CLI without `--text-only` (defaults to speech mode):
+Or use the CLI without `--text-only` for the standard speech pipeline:
 
 ```bash
 sgl-omni serve \

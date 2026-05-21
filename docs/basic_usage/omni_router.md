@@ -52,9 +52,10 @@ launcher:
   model_path: Qwen/Qwen3-Omni-30B-A3B-Instruct
   model_name: qwen3-omni
   num_workers: 2
-  num_gpus_per_worker: 2
+  num_gpus_per_worker: 1
   worker_host: 127.0.0.1
   worker_base_port: 8011
+  worker_extra_args: "--config examples/configs/qwen3_omni_colocated.yaml --colocate"
   wait_timeout: 600
 ```
 
@@ -65,19 +66,18 @@ pipeline stages. The router waits for every managed worker to pass `/health`
 before it starts accepting client traffic, and it stops those managed workers
 when the router exits.
 
-`num_gpus_per_worker` controls automatic GPU grouping. The full Qwen3-Omni
-speech topology uses two logical GPUs per worker by default: thinker, image
-encoder, and audio encoder run on logical GPU 0, while talker and code2wav run
-on logical GPU 1. With `num_workers: 2` and `num_gpus_per_worker: 2`, the
-launcher assigns `0,1` to the first worker and `2,3` to the second worker when
-four CUDA devices are visible.
+`num_gpus_per_worker` controls automatic GPU grouping. The default Qwen3-Omni
+router example uses colocated workers: each complete speech worker runs on one
+GPU through `examples/configs/qwen3_omni_colocated.yaml`. With
+`num_workers: 2` and `num_gpus_per_worker: 1`, the launcher assigns GPU `0` to
+the first worker and GPU `1` to the second worker when two CUDA devices are
+visible.
 
 Set `worker_gpu_ids` only when you need explicit placement. Each entry maps one
 `CUDA_VISIBLE_DEVICES` value to one worker, for example
-`worker_gpu_ids: ["0,1", "2,3"]` for two full Qwen3-Omni speech workers. On a
-two-GPU machine, use `num_workers: 1` for the full speech topology, or add
-`worker_extra_args: "--text-only"` if you intentionally want two one-GPU
-workers for text output.
+`worker_gpu_ids: ["0", "1"]` for two one-GPU colocated Qwen3-Omni workers. Use
+`worker_extra_args: "--text-only"` only if you intentionally want text-output
+workers instead of speech-output workers.
 
 Use `worker_extra_args` for public Omni V1 serve options that are specific to
 the worker process, such as `--mem-fraction-static`, `--thinker-tp-size`, or
@@ -111,21 +111,25 @@ capability set shown above.
 
 ## Launch Worker Servers Manually
 
-Start each Omni V1 worker separately. The example below launches two full
-Qwen3-Omni speech workers on different GPU pairs and ports:
+Start each Omni V1 worker separately. The example below launches two colocated
+Qwen3-Omni speech workers on different GPUs and ports:
 
 ```bash
-CUDA_VISIBLE_DEVICES=0,1 sgl-omni serve \
+CUDA_VISIBLE_DEVICES=0 sgl-omni serve \
   --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct \
   --model-name qwen3-omni \
+  --config examples/configs/qwen3_omni_colocated.yaml \
+  --colocate \
   --host 0.0.0.0 \
   --port 8011
 ```
 
 ```bash
-CUDA_VISIBLE_DEVICES=2,3 sgl-omni serve \
+CUDA_VISIBLE_DEVICES=1 sgl-omni serve \
   --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct \
   --model-name qwen3-omni \
+  --config examples/configs/qwen3_omni_colocated.yaml \
+  --colocate \
   --host 0.0.0.0 \
   --port 8012
 ```

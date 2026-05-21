@@ -25,31 +25,34 @@ from benchmarks.eval.benchmark_omni_videomme import VideoEvalConfig
 from benchmarks.metrics.performance import print_speed_summary
 from benchmarks.metrics.video import print_videomme_accuracy_summary
 from benchmarks.metrics.wer import print_wer_summary
+from tests.test_model.omni_router_utils import (
+    ManagedRouterHandle,
+    router_worker_traffic_guard,
+)
 from tests.utils import (
-    ServerHandle,
     apply_slack,
     apply_wer_slack,
     assert_speed_thresholds,
     assert_wer_partitioned,
 )
 
-CONCURRENCY = 8
-MAX_SAMPLES = 10
+CONCURRENCY = 16
+MAX_SAMPLES = 20
 MAX_TOKENS = 256
 
-VIDEOAMME_TALKER_THINKER_TEXT_MIN_ACCURACY = 0.4
-VIDEOAMME_TALKER_WER_BELOW_50_CORPUS_MAX = 0.0133
+VIDEOAMME_TALKER_THINKER_TEXT_MIN_ACCURACY = 0.65
+VIDEOAMME_TALKER_WER_BELOW_50_CORPUS_MAX = 0.014144271570014143
 VIDEOAMME_TALKER_WER_BELOW_50_CORPUS_THRESHOLD = apply_wer_slack(
     VIDEOAMME_TALKER_WER_BELOW_50_CORPUS_MAX
 )
 VIDEOAMME_TALKER_N_ABOVE_50_MAX = 1
 
 _VIDEOAMME_TALKER_AUDIO_P95 = {
-    8: {
-        "throughput_qps": 0.252,
-        "tok_per_s_agg": 1.6,
-        "latency_mean_s": 28.75,
-        "rtf_mean": 4.0481,
+    16: {
+        "throughput_qps": 0.389,
+        "tok_per_s_agg": 1.3,
+        "latency_mean_s": 35.61,
+        "rtf_mean": 4.4573,
     },
 }
 VIDEOAMME_TALKER_THRESHOLDS = apply_slack(_VIDEOAMME_TALKER_AUDIO_P95)
@@ -57,7 +60,7 @@ VIDEOAMME_TALKER_THRESHOLDS = apply_slack(_VIDEOAMME_TALKER_AUDIO_P95)
 
 @pytest.mark.benchmark
 def test_videoamme_talker_accuracy_wer_and_speed(
-    qwen3_omni_talker_server: ServerHandle,
+    qwen3_omni_talker_server: ManagedRouterHandle,
     tmp_path: Path,
 ) -> None:
     """Run Video-AMME with Talker enabled and report text/audio metrics."""
@@ -77,7 +80,11 @@ def test_videoamme_talker_accuracy_wer_and_speed(
         disable_tqdm=False,
         timeout_s=500,
     )
-    results = asyncio.run(run_videoamme_eval(config))
+    with router_worker_traffic_guard(
+        qwen3_omni_talker_server,
+        label="Qwen3-Omni Video-AMME Talker",
+    ) as router_guard:
+        results = asyncio.run(run_videoamme_eval(config))
 
     summary = results["summary"]
     print_videomme_accuracy_summary(
@@ -94,6 +101,7 @@ def test_videoamme_talker_accuracy_wer_and_speed(
     print_wer_summary(results["wer"]["summary"], config.model)
     failed = summary.get("failed", 0)
     total = summary.get("total_samples", 0)
+    router_guard.assert_served(min_total_requests=total)
     assert failed == 0, (
         f"Video-AMME Talker had {failed}/{total} failed requests "
         f"(timeouts or empty responses); any failure fails the test"
