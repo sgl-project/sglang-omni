@@ -23,7 +23,6 @@ permissions:
 #        ├─► stage-7-videomme
 #        ├─► stage-8-videomme-talker
 #        ├─► stage-9-videoamme
-<<<<<<< HEAD
 #        ├─► stage-10-videoamme-talker
 #        └─► stage-11-thinker-tp2
 # All 11 stages run in parallel after docs passes — they are independent.
