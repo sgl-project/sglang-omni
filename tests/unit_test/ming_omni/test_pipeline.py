@@ -168,8 +168,8 @@ def test_ming_talker_factory_returns_scheduler_contract(monkeypatch) -> None:
     )
 
     weight_loader_module = ModuleType("sglang_omni.models.weight_loader")
-    weight_loader_module.resolve_model_path = (
-        lambda model_path: f"/resolved/{model_path}"
+    weight_loader_module.resolve_model_path = lambda model_path: (
+        f"/resolved/{model_path}"
     )
     monkeypatch.setitem(
         sys.modules,

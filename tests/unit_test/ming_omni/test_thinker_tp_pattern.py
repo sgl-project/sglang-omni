@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-
 _THINKER = (
     Path(__file__).resolve().parents[3]
     / "sglang_omni"

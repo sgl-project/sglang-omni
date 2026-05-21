@@ -155,7 +155,7 @@ def _expand_number(m):
 def _expand_version(m):
     if not _HAS_INFLECT:
         return m.group(0)
-    prefix, sep, num_str = m.group(1), m.group(2), m.group(3)
+    prefix, _, num_str = m.group(1), m.group(2), m.group(3)
     try:
         if "." in num_str:
             parts = num_str.split(".", 1)
