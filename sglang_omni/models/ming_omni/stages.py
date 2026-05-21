@@ -122,6 +122,33 @@ def create_aggregate_executor():
     return SimpleScheduler(_identity)
 
 
+def create_streaming_segmenter_executor(
+    *,
+    segment_min_tokens: int = 8,
+    segment_max_tokens: int = 40,
+    first_segment_min_tokens: int = 4,
+    first_segment_max_wait_ms: int = 450,
+):
+    """Factory for the streaming TTS segmenter stage.
+
+    Returns a stream-aware scheduler that consumes text deltas from the
+    thinker's stream channel and emits speakable segments on its own
+    stream channel to the talker stream stage.
+    """
+    from sglang_omni.models.ming_omni.components.streaming_segmenter import (
+        MingStreamingSegmenterScheduler,
+    )
+    from sglang_omni.models.ming_omni.components.streaming_text import SegmenterConfig
+
+    config = SegmenterConfig(
+        segment_min_tokens=segment_min_tokens,
+        segment_max_tokens=segment_max_tokens,
+        first_segment_min_tokens=first_segment_min_tokens,
+        first_segment_max_wait_ms=first_segment_max_wait_ms,
+    )
+    return MingStreamingSegmenterScheduler(config=config)
+
+
 def create_audio_encoder_executor(
     model_path: str,
     *,
