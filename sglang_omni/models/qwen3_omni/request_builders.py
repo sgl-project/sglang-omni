@@ -87,7 +87,10 @@ def resolve_preprocessing_next_stages(
 ) -> list[str]:
     del request_id
     state = PipelineState.from_dict(output.data)
-    return [*_active_encoder_stages(state.encoder_inputs), MM_AGGREGATE_STAGE]
+    return [
+        *_encoder_stages_with_model_inputs(state.encoder_inputs),
+        MM_AGGREGATE_STAGE,
+    ]
 
 
 def resolve_mm_aggregate_wait_sources(
@@ -124,7 +127,9 @@ def build_encoder_request(
             skip_result=skip_result if isinstance(skip_result, dict) else {},
         )
     cache_key = inputs.get("cache_key")
-    model_inputs = {k: v for k, v in inputs.items() if k != "cache_key"}
+    model_inputs = {
+        k: v for k, v in inputs.items() if k not in ("cache_key", "_active")
+    }
     return EncoderRequestData(
         model_inputs=model_inputs,
         cache_key=str(cache_key) if cache_key is not None else None,
@@ -236,11 +241,21 @@ def _project_encoder_input_metadata(
             stage_metadata["cache_key"] = cache_key
         if stage_inputs.get("_skip"):
             stage_metadata["_skip"] = True
-        elif _is_active_encoder_input(stage_inputs):
+        elif _is_active_encoder_branch(stage_name, stage_inputs):
             stage_metadata["_active"] = True
         if stage_metadata:
             projected[stage_name] = stage_metadata
     return projected
+
+
+def _encoder_stages_with_model_inputs(
+    encoder_inputs: dict[str, dict[str, Any]],
+) -> list[str]:
+    return [
+        stage_name
+        for stage_name in (IMAGE_STAGE, AUDIO_STAGE)
+        if _has_encoder_model_input(stage_name, encoder_inputs.get(stage_name))
+    ]
 
 
 def _active_encoder_stages(
@@ -249,16 +264,32 @@ def _active_encoder_stages(
     return [
         stage_name
         for stage_name in (IMAGE_STAGE, AUDIO_STAGE)
-        if _is_active_encoder_input(encoder_inputs.get(stage_name))
+        if _is_active_encoder_branch(stage_name, encoder_inputs.get(stage_name))
     ]
 
 
-def _is_active_encoder_input(stage_inputs: Any) -> bool:
-    return (
-        isinstance(stage_inputs, dict)
-        and bool(stage_inputs)
-        and not bool(stage_inputs.get("_skip"))
-    )
+def _is_active_encoder_branch(stage_name: str, stage_inputs: Any) -> bool:
+    if not isinstance(stage_inputs, dict) or stage_inputs.get("_skip"):
+        return False
+    active_marker = stage_inputs.get("_active")
+    if active_marker is not None:
+        return active_marker is True
+    return _has_encoder_model_input(stage_name, stage_inputs)
+
+
+def _has_encoder_model_input(stage_name: str, stage_inputs: Any) -> bool:
+    if not isinstance(stage_inputs, dict) or stage_inputs.get("_skip"):
+        return False
+    if stage_inputs.get("_active") is False:
+        return False
+    if stage_name == IMAGE_STAGE:
+        return (
+            stage_inputs.get("pixel_values") is not None
+            or stage_inputs.get("pixel_values_videos") is not None
+        )
+    if stage_name == AUDIO_STAGE:
+        return stage_inputs.get("input_features") is not None
+    return False
 
 
 def _select_present_fields(

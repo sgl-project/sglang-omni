@@ -170,6 +170,21 @@ def test_qwen_preprocessing_routes_only_active_encoder_branches() -> None:
             ["preprocessing"],
         ),
         (
+            {"audio_encoder": {"cache_key": "audio-cache"}},
+            ["mm_aggregate"],
+            ["preprocessing"],
+        ),
+        (
+            {
+                "audio_encoder": {
+                    "_active": False,
+                    "input_features": torch.ones((1, 2, 3)),
+                }
+            },
+            ["mm_aggregate"],
+            ["preprocessing"],
+        ),
+        (
             {"image_encoder": {}},
             ["mm_aggregate"],
             ["preprocessing"],
@@ -221,6 +236,22 @@ def test_qwen_preprocessing_routes_only_active_encoder_branches() -> None:
             )
             is None
         )
+
+
+def test_qwen_aggregate_wait_sources_accept_projected_active_metadata() -> None:
+    payload = make_qwen_payload(
+        make_qwen_state(
+            encoder_inputs={
+                "audio_encoder": {"cache_key": "audio-cache", "_active": True}
+            }
+        )
+    )
+
+    assert resolve_mm_aggregate_wait_sources(
+        payload.request_id,
+        "preprocessing",
+        payload,
+    ) == ["preprocessing", "audio_encoder"]
 
 
 def test_qwen_aggregate_projection_marks_uncached_active_encoder_inputs() -> None:
@@ -640,11 +671,20 @@ def test_qwen_mm_aggregate_keeps_lightweight_inputs_and_prunes_after_merge() -> 
                 "pixel_values": torch.ones((2, 3)),
                 "image_grid_thw": torch.tensor([[1, 1, 2]]),
             },
-            "audio": {"audio_feature_lengths": torch.tensor([1])},
+            "audio": {
+                "feature_attention_mask": torch.ones((1, 2), dtype=torch.long),
+                "audio_feature_lengths": torch.tensor([2]),
+            },
         },
         encoder_inputs={
-            "image_encoder": {"cache_key": "image-cache"},
-            "audio_encoder": {"cache_key": "audio-cache"},
+            "image_encoder": {
+                "cache_key": "image-cache",
+                "pixel_values": torch.ones((2, 3)),
+            },
+            "audio_encoder": {
+                "cache_key": "audio-cache",
+                "input_features": torch.ones((1, 2, 3)),
+            },
         },
     )
 
@@ -659,16 +699,28 @@ def test_qwen_mm_aggregate_keeps_lightweight_inputs_and_prunes_after_merge() -> 
     image_state = PipelineState(
         encoder_outs={"image_encoder": {"image_embeds": torch.ones((2, 2))}}
     )
+    audio_state = PipelineState(
+        encoder_outs={
+            "audio_encoder": {
+                "audio_embeds": torch.ones((2, 2)),
+                "audio_feature_lengths": torch.tensor([2]),
+            }
+        }
+    )
     merged = merge_for_thinker(
         {
-            "preprocessing": make_qwen_payload(state),
+            "preprocessing": projected,
             "image_encoder": make_qwen_payload(image_state),
+            "audio_encoder": make_qwen_payload(audio_state),
         }
     )
     merged_state = PipelineState.from_dict(merged.data)
     assert merged_state.encoder_inputs == {}
     assert merged_state.encoder_outs == {}
     assert "image_embeds" in merged_state.thinker_inputs["model_inputs"]
+    assert "audio_embeds" in merged_state.thinker_inputs["model_inputs"]
+    assert "pixel_values" not in merged_state.mm_inputs["image"]
+    assert "input_features" not in merged_state.mm_inputs["audio"]
     assert merged_state.thinker_inputs["media_cache_keys"] == {
         "image": "image:image-cache",
         "video": "video:image-cache",
