@@ -27,6 +27,7 @@ AUDIO_STAGE = "audio_encoder"
 DECODE_STAGE = "decode"
 TALKER_STAGE = "talker_ar"
 CODE2WAV_STAGE = "code2wav"
+MM_AGGREGATE_STAGE = "mm_aggregate"
 
 
 def output_modalities(request: OmniRequest | None) -> set[str] | None:
@@ -79,6 +80,26 @@ def resolve_terminal_stages(request: OmniRequest) -> list[str]:
     if should_generate_audio_output(request):
         return [DECODE_STAGE, CODE2WAV_STAGE]
     return [DECODE_STAGE]
+
+
+def resolve_preprocessing_next_stages(
+    request_id: str, output: StagePayload
+) -> list[str]:
+    del request_id
+    state = PipelineState.from_dict(output.data)
+    return [*_active_encoder_stages(state.encoder_inputs), MM_AGGREGATE_STAGE]
+
+
+def resolve_mm_aggregate_wait_sources(
+    request_id: str,
+    from_stage: str,
+    payload: StagePayload,
+) -> list[str] | None:
+    del request_id
+    if from_stage != "preprocessing":
+        return None
+    state = PipelineState.from_dict(payload.data)
+    return ["preprocessing", *_active_encoder_stages(state.encoder_inputs)]
 
 
 @dataclass(slots=True)
@@ -215,9 +236,29 @@ def _project_encoder_input_metadata(
             stage_metadata["cache_key"] = cache_key
         if stage_inputs.get("_skip"):
             stage_metadata["_skip"] = True
+        elif _is_active_encoder_input(stage_inputs):
+            stage_metadata["_active"] = True
         if stage_metadata:
             projected[stage_name] = stage_metadata
     return projected
+
+
+def _active_encoder_stages(
+    encoder_inputs: dict[str, dict[str, Any]],
+) -> list[str]:
+    return [
+        stage_name
+        for stage_name in (IMAGE_STAGE, AUDIO_STAGE)
+        if _is_active_encoder_input(encoder_inputs.get(stage_name))
+    ]
+
+
+def _is_active_encoder_input(stage_inputs: Any) -> bool:
+    return (
+        isinstance(stage_inputs, dict)
+        and bool(stage_inputs)
+        and not bool(stage_inputs.get("_skip"))
+    )
 
 
 def _select_present_fields(
