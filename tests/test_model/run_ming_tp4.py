@@ -34,6 +34,10 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--model-path", default="inclusionAI/Ming-flash-omni-2.0")
     parser.add_argument(
+        "--model-name",
+        default=os.environ.get("MING_OMNI_MODEL_NAME", "ming-omni"),
+    )
+    parser.add_argument(
         "--launcher",
         default=str(
             Path(__file__).resolve().parents[2]
@@ -217,10 +221,10 @@ def _start_server(args: argparse.Namespace, log_path: Path) -> subprocess.Popen:
         sys.executable,
         "-u",
         args.launcher,
-        "--version",
-        "v1",
         "--model-path",
         args.model_path,
+        "--model-name",
+        args.model_name,
         "--tp-size",
         str(args.tp_size),
         "--gpu-thinker",
@@ -345,7 +349,7 @@ def _run_smoke_tests(args: argparse.Namespace) -> None:
             args,
             "/v1/chat/completions",
             {
-                "model": "ming-omni",
+                "model": args.model_name,
                 "messages": [{"role": "user", "content": "What is capital of japan?"}],
                 "max_tokens": 256,
                 "temperature": 0,
@@ -362,7 +366,7 @@ def _run_smoke_tests(args: argparse.Namespace) -> None:
             args,
             "/v1/chat/completions",
             {
-                "model": "ming-omni",
+                "model": args.model_name,
                 "messages": [
                     {
                         "role": "user",
@@ -392,7 +396,7 @@ def _run_smoke_tests(args: argparse.Namespace) -> None:
         events = _stream_sse(
             args,
             {
-                "model": "ming-omni",
+                "model": args.model_name,
                 "messages": [{"role": "user", "content": "Say: stream ok"}],
                 "modalities": ["text"],
                 "stream": True,
@@ -429,7 +433,7 @@ def _run_mmmu_benchmark(args: argparse.Namespace) -> None:
         "-m",
         "benchmarks.eval.benchmark_omni_mmmu",
         "--model",
-        "ming-omni",
+        args.model_name,
         "--host",
         args.host,
         "--port",
@@ -468,7 +472,7 @@ def _run_mmsu_benchmark(args: argparse.Namespace) -> None:
         "-m",
         "benchmarks.eval.benchmark_omni_mmsu",
         "--model",
-        "ming-omni",
+        args.model_name,
         "--host",
         args.host,
         "--port",
@@ -527,7 +531,7 @@ def _run_tts_benchmark(args: argparse.Namespace) -> None:
         "-m",
         "benchmarks.eval.benchmark_omni_seedtts",
         "--model",
-        "ming-omni",
+        args.model_name,
         "--host",
         args.host,
         "--port",

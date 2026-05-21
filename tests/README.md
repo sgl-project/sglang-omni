@@ -161,6 +161,23 @@ Relevant model CI ownership:
   `--concurrency {1,2,4,8,16,all}`: scope an S2-Pro CI sweep without editing
   source.
 
+### Ming TP Parity
+
+`tests/test_model/test_ming_tp_parity_ci.py` launches Ming-Omni twice, first
+with TP=1 and then with TP=N, and compares deterministic text responses. It is
+skipped by default because it requires a Ming checkpoint and enough GPUs.
+
+Remote GPU example:
+
+```bash
+RUN_MING_TP_PARITY=1 \
+MING_TP_PARITY_TP_SIZE=4 \
+MING_TP_PARITY_CUDA_VISIBLE_DEVICES=0,1,2,3,4 \
+MING_OMNI_MODEL_PATH=inclusionAI/Ming-flash-omni-2.0 \
+MING_OMNI_MODEL_NAME=ming-omni \
+python3 -m pytest tests/test_model/test_ming_tp_parity_ci.py -q -s
+```
+
 
 ## `unit_test/`
 
