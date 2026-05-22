@@ -240,9 +240,7 @@ def _launch_speech_server(args: argparse.Namespace) -> None:
     _set_stage_gpu(config, "audio_encoder", args.gpu_audio_encoder)
 
     if args.thinker_tp_size < 1:
-        raise ValueError(
-            f"--thinker-tp-size must be >= 1, got {args.thinker_tp_size}"
-        )
+        raise ValueError(f"--thinker-tp-size must be >= 1, got {args.thinker_tp_size}")
 
     if args.thinker_tp_size > 1:
         if args.gpu_thinker_tp is None:
