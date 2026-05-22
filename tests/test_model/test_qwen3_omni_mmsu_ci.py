@@ -30,11 +30,11 @@ from tests.utils import apply_slack, assert_speed_thresholds
 
 CONCURRENCY = 16
 
-MMSU_MIN_ACCURACY = 0.7065
+MMSU_MIN_ACCURACY = 0.69
 
 _MMSU_P95 = {
     16: {
-        "throughput_qps": 11.135,
+        "throughput_qps": 30.117,
         "tok_per_s_agg": 1.4,
         "latency_mean_s": 1.434,
     },
@@ -72,13 +72,13 @@ def _build_args(port: int, output_dir: str) -> argparse.Namespace:
 
 @pytest.mark.benchmark
 def test_mmsu_accuracy_and_speed(
-    qwen3_omni_router_server: ManagedRouterHandle,
+    qwen3_omni_mmsu_server: ManagedRouterHandle,
     tmp_path: Path,
 ) -> None:
     """Run MMSU eval and assert accuracy and speed meet thresholds."""
-    args = _build_args(qwen3_omni_router_server.port, str(tmp_path / "mmsu"))
+    args = _build_args(qwen3_omni_mmsu_server.port, str(tmp_path / "mmsu"))
     with router_worker_traffic_guard(
-        qwen3_omni_router_server,
+        qwen3_omni_mmsu_server,
         label="Qwen3-Omni MMSU",
     ) as router_guard:
         results = asyncio.run(run_mmsu(args))

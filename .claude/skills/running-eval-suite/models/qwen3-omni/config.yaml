@@ -111,6 +111,15 @@ server_profiles:
     wait_timeout: 600
     server_boot_timeout_s: 660
     router_policy: least_request
+  qwen3_omni_mmsu_router:
+    server_gpus: 2
+    model_name: qwen3-omni
+    num_workers: 2
+    num_gpus_per_worker: 1
+    worker_extra_args: "--config {repo_root}/examples/configs/qwen3_omni_mmsu.yaml --text-only"
+    wait_timeout: 600
+    server_boot_timeout_s: 660
+    router_policy: least_request
   s2pro_router:
     server_gpus: 2
     model_name: fishaudio/s2-pro
@@ -125,6 +134,7 @@ rows:
   # ===================== mmsu (Qwen3-Omni text-only) =====================
   - id: mmsu-text-c8-accuracy
     file: "benchmarks/eval/benchmark_omni_mmsu.py"
+    server_profile: qwen3_omni_mmsu_router
     locate:
       section_substring: "Accuracy (accuracy)"
       config_substring: "modalities=text "
@@ -138,6 +148,7 @@ rows:
 
   - id: mmsu-text-audio-c8-accuracy
     file: "benchmarks/eval/benchmark_omni_mmsu.py"
+    server_profile: qwen3_omni_mmsu_router
     locate:
       section_substring: "Accuracy (accuracy)"
       config_substring: "modalities=text+audio"
@@ -151,6 +162,7 @@ rows:
 
   - id: mmsu-text-c8-speed
     file: "benchmarks/eval/benchmark_omni_mmsu.py"
+    server_profile: qwen3_omni_mmsu_router
     locate:
       section_substring: "Speed (speed)"
       config_substring: "modalities=text "
@@ -166,6 +178,7 @@ rows:
 
   - id: mmsu-text-audio-c8-speed
     file: "benchmarks/eval/benchmark_omni_mmsu.py"
+    server_profile: qwen3_omni_mmsu_router
     locate:
       section_substring: "Speed (speed)"
       config_substring: "modalities=text+audio"

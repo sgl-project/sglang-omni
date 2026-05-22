@@ -112,6 +112,22 @@ If `worker_capabilities` is omitted and `worker_extra_args` contains
 `--text-only`, the router registers the managed workers with the same text-only
 capability set shown above.
 
+For short audio-input / text-output MMSU-style workloads, use the fused
+text-path Qwen3-Omni config instead of the default speech-colocated worker:
+
+```yaml
+launcher:
+  backend: local
+  model_path: Qwen/Qwen3-Omni-30B-A3B-Instruct
+  model_name: qwen3-omni
+  num_workers: 2
+  num_gpus_per_worker: 1
+  worker_extra_args: "--config examples/configs/qwen3_omni_mmsu.yaml --text-only"
+```
+
+This keeps preprocessing, encoders, aggregation, thinker, and decode in one
+worker process while leaving the general speech-colocated topology unchanged.
+
 ## Launch Worker Servers Manually
 
 Start each Omni V1 worker separately. The example below launches two colocated

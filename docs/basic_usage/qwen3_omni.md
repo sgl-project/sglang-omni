@@ -29,6 +29,18 @@ sgl-omni serve \
   --port 8008
 ```
 
+For MMSU-style audio-input / text-output benchmarks with short requests, use
+the fused text-path config so the full text path stays inside one worker
+process:
+
+```bash
+sgl-omni serve \
+  --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct \
+  --config examples/configs/qwen3_omni_mmsu.yaml \
+  --text-only \
+  --port 8008
+```
+
 ### Image and Text Input
 
 Send an image with a text question to get a text response.
