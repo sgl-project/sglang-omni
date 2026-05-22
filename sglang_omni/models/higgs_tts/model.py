@@ -24,6 +24,7 @@ from sglang_omni.models.higgs_tts.modeling import (
     HiggsFusedMultiTextHead,
 )
 from sglang_omni.models.higgs_tts.sampler import (
+    K_MAX,
     HiggsBatchedSamplerState,
     HiggsSamplerState,
     batched_step,
@@ -183,9 +184,12 @@ class HiggsTTSModel(nn.Module):
             pool_size, dtype=torch.float32, device=cg_device
         )
         self._cg_top_p = torch.ones(pool_size, dtype=torch.float32, device=cg_device)
-        # top_k is uniform across the batch in practice; stored as plain int
-        # because batched_step takes a scalar. Updated outside the captured graph.
-        self._cg_top_k: int | None = None
+        # Per-row top_k buffer (long, in [1, K_MAX]). Default K_MAX means
+        # "no filter" — selects all K_MAX top values, equivalent to a
+        # very wide top-k. Populated outside the captured graph each step.
+        self._cg_top_k_buf = torch.full(
+            (pool_size,), K_MAX, dtype=torch.long, device=cg_device,
+        )
         # Outputs of the captured forward.
         self._cg_codes_BN = torch.zeros(
             pool_size, num_codebooks, dtype=torch.long, device=cg_device
@@ -384,7 +388,7 @@ class HiggsTTSModel(nn.Module):
         row_indices = self._cg_row_indices[:batch_size]
         temperature = self._cg_temperature[:batch_size]
         top_p = self._cg_top_p[:batch_size]
-        top_k = self._cg_top_k
+        top_k_buf = self._cg_top_k_buf[:batch_size]
 
         # Snapshot done flags BEFORE the step; STOP_CODE rows mustn't be
         # appended to output_codes downstream.
@@ -396,7 +400,7 @@ class HiggsTTSModel(nn.Module):
             row_indices,
             temperature=temperature,
             top_p=top_p,
-            top_k=top_k,
+            top_k_buf=top_k_buf,
         )
         self._cg_codes_BN[:batch_size] = codes_BN
 

@@ -1,17 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Stage 2 acceptance tests for the CUDA Graph migration.
-
-Locks in numerical / state parity between the per-row :func:`step` and
-the new batched :func:`batched_step`. Sampling parity is tested at
-greedy temperature (deterministic argmax) — the random-draw kernels of
-``_sample_independent`` (per-row multinomial) and
-``_sample_independent_batched`` (flattened ``[B*N]`` multinomial) draw
-in different orders, so bit-identical parity at high temperature is
-not attainable; statistical equivalence is covered by the existing
-per-row sampler tests.
-
-The state machine itself (delay window, EOC detection, wind-down,
-``generation_done``, ``last_codes``) is fully covered here.
+"""Parity + CG-capture tests for batched_step. Sampling parity is at
+greedy temp only (per-row and batched multinomials draw in different
+orders); state-machine parity is exact.
 """
 
 from __future__ import annotations
@@ -48,10 +38,7 @@ def _run_per_row(
     *,
     temperature: float,
 ) -> torch.Tensor:
-    """Drive the per-row :func:`step` on each row sequentially.
-
-    Returns the same ``[B, N]`` codes a ``batched_step`` would.
-    """
+    """Per-row :func:`step` over each row; returns same ``[B, N]`` as batched."""
     B = logits_BNV.shape[0]
     codes_out = torch.empty((B, N), dtype=torch.long, device=logits_BNV.device)
     for b in range(B):
@@ -229,6 +216,89 @@ def test_batched_matches_per_row_mixed_phases():
 # ---------------------------------------------------------------------------
 # CUDA Graph readiness sanity: no Python-side state branch per step
 # ---------------------------------------------------------------------------
+
+
+def _top5_logits(top_indices_B5: torch.Tensor, *, n: int, v: int) -> torch.Tensor:
+    """``[B, N, V]`` logits with 5 strong (=5.0) columns per row, rest = -1e9."""
+    B = top_indices_B5.shape[0]
+    logits = torch.full((B, n, v), -1e9, device=top_indices_B5.device)
+    # Same 5 indices for every codebook within a batch row.
+    idx = top_indices_B5.unsqueeze(1).expand(B, n, 5)
+    logits.scatter_(-1, idx, 5.0)
+    return logits
+
+
+def test_batched_step_top_k_filter_actually_applied_in_cg_path():
+    """5 strong tokens + -1e9 rest, temp=1.0; sampled code must be in
+    the 5-set both eagerly and under CG capture + replay.
+    """
+    if not torch.cuda.is_available():
+        pytest.skip("test requires CUDA")
+
+    torch.manual_seed(0)
+    B = 2
+    top_indices = torch.tensor(
+        [[3, 17, 42, 100, 500], [7, 9, 11, 13, 800]],
+        device="cuda",
+        dtype=torch.long,
+    )
+    assert top_indices.max().item() < V
+    assert top_indices.shape[1] == 5
+
+    # ---- Phase 1: eager (no graph capture). delay_count=N skips the
+    # leading-window BOC override so every cb position actually samples.
+    pool_eager = HiggsBatchedSamplerState(B, N, device="cuda")
+    pool_eager.delay_count.fill_(N)
+    row_indices = torch.arange(B, device="cuda")
+    temp = torch.full((B,), 1.0, device="cuda")
+    top_k_buf = torch.tensor([5, 5], dtype=torch.long, device="cuda")
+    logits = _top5_logits(top_indices, n=N, v=V).contiguous()
+
+    codes = batched_step(
+        logits, pool_eager, row_indices,
+        temperature=temp, top_k_buf=top_k_buf,
+    )
+    for b in range(B):
+        allowed = set(top_indices[b].tolist())
+        for cb in range(N):
+            assert int(codes[b, cb].item()) in allowed, (
+                f"eager: row {b} cb {cb} sampled "
+                f"{int(codes[b, cb].item())} outside top-5 {allowed}"
+            )
+
+    # ---- Phase 2: capture into a CUDA Graph and replay ----
+    pool_cg = HiggsBatchedSamplerState(B, N, device="cuda")
+    pool_cg.delay_count.fill_(N)
+    s = torch.cuda.Stream()
+    s.wait_stream(torch.cuda.current_stream())
+    with torch.cuda.stream(s):
+        batched_step(
+            logits, pool_cg, row_indices,
+            temperature=temp, top_k_buf=top_k_buf,
+        )
+    torch.cuda.current_stream().wait_stream(s)
+
+    # Reset pool to past-delay-window starting state for the captured graph.
+    pool_cg.delay_count.fill_(N)
+    pool_cg.eoc_countdown.fill_(-1)
+    pool_cg.generation_done.zero_()
+    pool_cg.last_codes.zero_()
+    g = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(g):
+        out = batched_step(
+            logits, pool_cg, row_indices,
+            temperature=temp, top_k_buf=top_k_buf,
+        )
+
+    g.replay()
+    torch.cuda.synchronize()
+    for b in range(B):
+        allowed = set(top_indices[b].tolist())
+        for cb in range(N):
+            assert int(out[b, cb].item()) in allowed, (
+                f"cg: row {b} cb {cb} sampled "
+                f"{int(out[b, cb].item())} outside top-5 {allowed}"
+            )
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA Graph requires CUDA")

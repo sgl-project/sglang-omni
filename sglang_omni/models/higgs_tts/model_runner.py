@@ -22,6 +22,7 @@ from typing import Any
 import torch
 
 from sglang_omni.model_runner.base import ModelRunner
+from sglang_omni.models.higgs_tts.sampler import K_MAX
 from sglang_omni.models.higgs_tts.text_tokenizer import AUDIO_PLACEHOLDER_ID
 
 logger = logging.getLogger(__name__)
@@ -81,7 +82,7 @@ class HiggsTTSModelRunner(ModelRunner):
         )
 
         # Per-row sampling params: pull off sglang sampling_info if available.
-        temps, top_ps, top_k = self._extract_decode_sampling_params(
+        temps, top_ps, top_ks = self._extract_decode_sampling_params(
             forward_batch, n_real
         )
         # Pad to bs with safe defaults (temp=1.0, top_p=1.0).
@@ -93,17 +94,27 @@ class HiggsTTSModelRunner(ModelRunner):
         model._cg_top_p[:bs] = torch.tensor(
             top_ps, dtype=torch.float32, device=model._cg_top_p.device
         )
-        model._cg_top_k = top_k
+        # Per-row top_k buffer: default K_MAX = no-op filter (covers
+        # padding rows and rows whose top_k was None / non-positive).
+        top_k_vals = [
+            (tk if (tk is not None and tk > 0) else K_MAX) for tk in top_ks
+        ]
+        top_k_vals.extend([K_MAX] * (bs - n_real))
+        model._cg_top_k_buf[:bs] = torch.tensor(
+            top_k_vals, dtype=torch.long, device=model._cg_top_k_buf.device
+        )
 
     @staticmethod
     def _extract_decode_sampling_params(forward_batch, n_real: int):
-        """Pull per-row temperature / top_p (lists) + uniform top_k (scalar
-        or None) off sglang's ``sampling_info``. Falls back to safe defaults
-        when missing or shapes are unexpected.
+        """Pull per-row temperature / top_p / top_k lists off sglang's
+        ``sampling_info``. Falls back to safe defaults when missing.
+
+        Top_k > K_MAX is rejected here at the boundary so the inner
+        CG sampler path can assume all values fit the buffer.
         """
         sampling_info = getattr(forward_batch, "sampling_info", None)
         if sampling_info is None or n_real == 0:
-            return ([1.0] * n_real, [1.0] * n_real, None)
+            return ([1.0] * n_real, [1.0] * n_real, [None] * n_real)
 
         def _flat_list(attr: str):
             val = getattr(sampling_info, attr, None)
@@ -121,17 +132,18 @@ class HiggsTTSModelRunner(ModelRunner):
 
         temps = [float(t) for t in temps_raw[:n_real]]
         top_ps = [float(t) for t in top_ps_raw[:n_real]]
-        top_k: int | None = None
-        if top_ks_raw is not None:
-            distinct = {int(t) for t in top_ks_raw[:n_real]}
-            if len(distinct) > 1:
-                raise ValueError(
-                    f"HiggsTTSModelRunner requires uniform top_k across the "
-                    f"decode batch; got {distinct}"
-                )
-            tk = next(iter(distinct))
-            top_k = tk if tk > 0 else None
-        return temps, top_ps, top_k
+        top_ks: list[int | None]
+        if top_ks_raw is None:
+            top_ks = [None] * n_real
+        else:
+            top_ks = [int(t) for t in top_ks_raw[:n_real]]
+            for tk in top_ks:
+                if tk is not None and tk > K_MAX:
+                    raise ValueError(
+                        f"top_k={tk} > K_MAX={K_MAX} not supported in the "
+                        f"CG path, see sampler.py."
+                    )
+        return temps, top_ps, top_ks
 
     def _collect_step_outputs_cg(
         self, result: Any, forward_batch: Any, requests: list

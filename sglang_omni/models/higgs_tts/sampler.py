@@ -30,6 +30,11 @@ from sglang_omni.models.higgs_tts.utils import BOC_ID, EOC_ID
 # Sentinel returned by ``step`` after ``generation_done``; engine treats as stop.
 STOP_CODE = -1
 
+# Baked top-k upper bound for the CG-friendly batched sampler. Equals the
+# full codec vocab so the default buffer value is a no-op filter and EOC
+# stays sample-able even when it falls into the long tail.
+K_MAX = 1026
+
 
 @dataclass
 class HiggsSamplerState:
@@ -244,21 +249,24 @@ def _sample_independent_batched(
     *,
     temperature: torch.Tensor,
     top_p: torch.Tensor | None,
-    top_k: int | None,
+    top_k: int | None = None,
+    top_k_buf: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Batched analogue of :func:`_sample_independent`.
 
     Operates on ``logits_BNV`` of shape ``[B, N, V]`` and returns codes
     ``[B, N]``. ``temperature`` is per-row ``[B]``; ``top_p`` is
-    per-row ``[B]`` or ``None``; ``top_k`` is a scalar (uniform across
-    the batch) or ``None`` for "no top-k". Heterogeneous ``top_k``
-    across the batch is intentionally not supported in Stage 2 — every
-    Higgs request uses the same value in practice, and a uniform
-    ``topk(...)`` call keeps the kernel sequence CUDA-Graph stable.
+    per-row ``[B]`` or ``None``.
 
-    No Python control flow (other than the static ``top_k`` / ``top_p``
-    None checks evaluated once at trace time), so this body is safe to
-    capture into a CUDA Graph.
+    Top-k filtering is mutually exclusive between the two paths:
+
+    * CG callers pass ``top_k_buf`` — a per-row ``[B]`` long tensor with
+      values in ``[1, K_MAX]``. ``topk(K_MAX)`` is baked at trace time
+      and the per-row threshold is selected via ``gather`` so the
+      kernel sequence is CUDA-Graph stable while ``k`` remains
+      runtime-mutable.
+    * Eager callers pass scalar ``top_k`` (or ``None`` to skip). The
+      Python branch is fine here because no capture is happening.
     """
     B, N, V = logits_BNV.shape
     # Per-row temperature scaling. We do NOT short-circuit greedy
@@ -269,7 +277,14 @@ def _sample_independent_batched(
     safe_temp = temperature.clamp(min=_GREEDY_TEMP_THRESHOLD).view(B, 1, 1)
     logits = logits_BNV / safe_temp
 
-    if top_k is not None and top_k > 0:
+    if top_k_buf is not None:
+        # CG path: K_MAX baked at trace time, no Python branch on tensor values.
+        top_vals = logits.topk(K_MAX, dim=-1).values  # [B, N, K_MAX]
+        k_idx = top_k_buf.view(B, 1, 1).expand(-1, N, 1).clamp(min=1, max=K_MAX) - 1
+        kth = top_vals.gather(-1, k_idx)  # [B, N, 1]
+        logits = torch.where(logits < kth, float("-inf"), logits)
+    elif top_k is not None and top_k > 0:
+        # Eager path: Python branch is fine (no capture happening).
         k = min(int(top_k), V)
         kth = logits.topk(k, dim=-1).values[..., -1:]
         logits = torch.where(logits < kth, float("-inf"), logits)
@@ -300,6 +315,7 @@ def batched_step(
     temperature: torch.Tensor,
     top_p: torch.Tensor | None = None,
     top_k: int | None = None,
+    top_k_buf: torch.Tensor | None = None,
     boc_id: int = BOC_ID,
     eoc_id: int = EOC_ID,
 ) -> torch.Tensor:
@@ -316,7 +332,11 @@ def batched_step(
         row_indices: ``[B]`` int64 mapping batch index → pool row.
         temperature: ``[B]`` float per-row sampling temperature.
         top_p:      ``[B]`` float per-row top-p (or ``None``).
-        top_k:      Scalar uniform top-k across the batch (or ``None``).
+        top_k:      Scalar uniform top-k across the batch (eager path),
+            or ``None`` to skip the filter. Mutually exclusive with
+            ``top_k_buf``.
+        top_k_buf:  ``[B]`` int64 per-row top-k in ``[1, K_MAX]`` (CG
+            path), or ``None``. Mutually exclusive with ``top_k``.
 
     Returns:
         ``[B, N]`` int64 sampled codes. Rows whose ``generation_done`` was
@@ -337,6 +357,7 @@ def batched_step(
         temperature=temperature,
         top_p=top_p,
         top_k=top_k,
+        top_k_buf=top_k_buf,
     )
 
     # ----- Delay window: force later codebooks to BOC_ID ---------------
@@ -399,6 +420,7 @@ def batched_step(
 
 
 __all__ = [
+    "K_MAX",
     "STOP_CODE",
     "HiggsBatchedSamplerState",
     "HiggsSamplerState",
