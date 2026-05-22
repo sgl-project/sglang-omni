@@ -101,6 +101,7 @@ class StageWorkerProcessSpec:
 def stage_process_main(
     spec: StageWorkerProcessSpec,
     ready_event: multiprocessing.Event,
+    startup_error_channel: Any | None = None,
 ) -> None:
     """Subprocess entrypoint: construct stage(s) from *spec* and run them."""
     logging.basicConfig(level=logging.INFO, stream=sys.stdout)
@@ -115,11 +116,9 @@ def stage_process_main(
     except Exception:
         import traceback
 
-        log.error(
-            "Stage process %s failed:\n%s",
-            spec.process_name,
-            traceback.format_exc(),
-        )
+        log.exception("Stage process %s failed", spec.process_name)
+        if startup_error_channel is not None:
+            startup_error_channel.put(traceback.format_exc())
         sys.exit(1)
 
 

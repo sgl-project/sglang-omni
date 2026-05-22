@@ -476,6 +476,7 @@ class MultiProcessPipelineRunner:
                 if p.is_alive():
                     p.kill()
                     p.join(timeout=2)
+            group.close_control_channels()
         self._groups.clear()
 
         await self._cancel_completion_task()
