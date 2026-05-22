@@ -149,7 +149,7 @@ def _start_qwen3_omni_speech_server(
         sys.executable,
         "examples/run_qwen3_omni_speech_server.py",
         "--model-path",
-        QWEN3_OMNI_MODEL_PATH,
+        QWEN3_OMNI_TEST_MODEL_PATH,
         "--port",
         str(port),
         "--model-name",
