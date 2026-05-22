@@ -71,7 +71,12 @@ S2PRO_CONFIG_PATH = "examples/configs/s2pro_tts.yaml"
 STARTUP_TIMEOUT = 180
 BENCHMARK_TIMEOUT = 600
 WER_TIMEOUT = 600
+SIMILARITY_TIMEOUT = 600
 DATASET_CACHE_ENV = "SGLANG_SEEDTTS50_DIR"
+# Optional user override: a path to a custom fine-tuned WavLM checkpoint.
+# When unset, the bootstrapper in benchmarks.metrics.speaker_similarity_assets
+# auto-downloads the official weights into the shared cache directory.
+SIMILARITY_CHECKPOINT_ENV = "SEEDTTS_SIM_CHECKPOINT"
 S2PRO_STAGE_OUTPUT_ROOT_ENV = "S2PRO_STAGE_OUTPUT_ROOT"
 S2PRO_STAGE1_SPEED_RESULTS_DIR_ENV = "S2PRO_STAGE1_SPEED_RESULTS_DIR"
 S2PRO_STAGE2_SPEED_RESULTS_DIR_ENV = "S2PRO_STAGE2_SPEED_RESULTS_DIR"
@@ -99,6 +104,13 @@ VC_WER_MAX_PER_SAMPLE = 0.17
 VC_STREAM_WER_MAX_CORPUS = 0.010610079575596816
 VC_STREAM_WER_CORPUS_THRESHOLD = apply_wer_slack(VC_STREAM_WER_MAX_CORPUS)
 VC_STREAM_WER_MAX_PER_SAMPLE = 0.14285714285714285
+# Calibrated per PR #469 review (item 5): worst-of-5 = 63.24, mean = 63.74,
+# stdev = 0.56 over 5 independent SeedTTS-50 EN runs on H200 (Spec GPU 4-7),
+# same scorer (popsoda2002/seedtts-wavlm-sim @ wavlm_large_finetune.pth).
+# All five comfortably above 60.0 (margin +5.4%) — current floor has
+# worst-of-5 support. See the "Speaker similarity calibration" section of
+# the PR description for the full per-run table.
+VC_SIMILARITY_MEAN_MIN = 60.0
 
 # Note (Chenyang): Only thresholds for the CI concurrency are dedicatedly tuned,
 # others may not pass the CI.
@@ -231,6 +243,75 @@ def _run_wer_transcribe(
                 print(f"  FAILED sample {sample['id']}: {sample.get('error')}")
 
     return wer_results
+
+
+def _run_similarity(
+    meta_path: str,
+    output_dir: str,
+    checkpoint_path: str | None,
+    *,
+    device: str = "cuda:0",
+) -> dict:
+    """Compute SeedTTS speaker similarity in CI."""
+    cmd = [
+        sys.executable,
+        "-m",
+        WER_MODULE,
+        "--similarity-only",
+        "--meta",
+        meta_path,
+        "--output-dir",
+        output_dir,
+        "--model",
+        S2PRO_MODEL_PATH,
+        "--device",
+        device,
+    ]
+    if checkpoint_path is not None:
+        cmd += ["--similarity-checkpoint", checkpoint_path]
+
+    env = no_proxy_env()
+    existing_pp = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = (
+        f"{PROJECT_ROOT}{os.pathsep}{existing_pp}" if existing_pp else str(PROJECT_ROOT)
+    )
+
+    result = subprocess.run(
+        cmd,
+        text=True,
+        timeout=SIMILARITY_TIMEOUT,
+        env=env,
+        cwd=str(PROJECT_ROOT),
+    )
+    assert result.returncode == 0, f"Similarity eval failed (rc={result.returncode})"
+
+    results_path = Path(output_dir) / "similarity_results.json"
+    assert results_path.exists(), f"Similarity results file not found: {results_path}"
+
+    with open(results_path) as f:
+        similarity_results = json.load(f)
+    assert "summary" in similarity_results, (
+        "Missing 'summary' key in similarity results. "
+        f"Keys: {list(similarity_results.keys())}"
+    )
+    assert "per_sample" in similarity_results, (
+        "Missing 'per_sample' key in similarity results. "
+        f"Keys: {list(similarity_results.keys())}"
+    )
+    return similarity_results
+
+
+def _assert_similarity_results(results: dict, min_mean: float) -> None:
+    summary = results["summary"]
+    per_sample = results["per_sample"]
+    assert per_sample, "Expected per-sample speaker similarity results"
+    assert (
+        summary.get("skipped", 0) == 0
+    ), f"speaker similarity: {summary.get('skipped')} skipped samples ≠ 0"
+    mean = summary["speaker_similarity_mean"]
+    assert (
+        mean >= min_mean
+    ), f"speaker_similarity_mean {mean:.4f} < threshold {min_mean:.4f}"
 
 
 def _load_speed_results(results_path: Path) -> dict:
@@ -392,6 +473,16 @@ def dataset_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
         root = tmp_path_factory.mktemp("seed_tts_eval") / "data"
     download_dataset(DATASETS["seedtts-50"], str(root), quiet=True)
     return root
+
+
+@pytest.fixture(scope="module")
+def similarity_checkpoint() -> str | None:
+    """User-specified WavLM checkpoint override, or None to let the bootstrapper
+    auto-resolve the default weights from the shared cache directory."""
+    raw = os.environ.get(SIMILARITY_CHECKPOINT_ENV)
+    if not raw:
+        return None
+    return str(Path(raw).expanduser())
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -574,6 +665,29 @@ def test_voice_cloning_wer(
             wer_input_dirs["non_stream"][concurrency],
         )
         assert_wer_results(results, VC_WER_CORPUS_THRESHOLD, VC_WER_MAX_PER_SAMPLE)
+
+
+@pytest.mark.s2pro_stage(S2PRO_STAGE_NONSTREAM)
+@pytest.mark.benchmark
+def test_voice_cloning_similarity(
+    wer_input_dirs: dict[str, dict[int, str]],
+    dataset_dir: Path,
+    similarity_checkpoint: str | None,
+    selected_s2pro_tts_concurrencies: tuple[int, ...],
+) -> None:
+    for concurrency in selected_s2pro_tts_concurrencies:
+        _print_stage(
+            "SIM",
+            "non-streaming",
+            concurrency,
+            "score speed-stage WAVs",
+        )
+        results = _run_similarity(
+            str(dataset_dir / "en" / "meta.lst"),
+            wer_input_dirs["non_stream"][concurrency],
+            similarity_checkpoint,
+        )
+        _assert_similarity_results(results, VC_SIMILARITY_MEAN_MIN)
 
 
 @pytest.mark.s2pro_stage(S2PRO_STAGE_STREAM)

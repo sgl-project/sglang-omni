@@ -6,6 +6,7 @@ import asyncio
 import logging
 import multiprocessing
 import os
+import queue
 import time
 from contextlib import contextmanager
 from typing import Sequence
@@ -76,6 +77,7 @@ class StageGroup:
         self.process_specs = list(process_specs)
         self._processes: list[multiprocessing.Process] = []
         self._ready_events: list[multiprocessing.Event] = []
+        self._startup_error_channels: list[object] = []
 
     @property
     def process_count(self) -> int:
@@ -117,17 +119,23 @@ class StageGroup:
         """Spawn the OS process(es) owned by this group."""
         for spec in self.process_specs:
             event = ctx.Event()
+            startup_error_channel = ctx.Queue()
             proc_name = _process_name(spec)
             proc = ctx.Process(
                 target=stage_process_main,
-                args=(spec, event),
+                args=(spec, event, startup_error_channel),
                 name=proc_name,
                 daemon=True,
             )
-            with _patched_spawn_env(spec):
-                proc.start()
+            try:
+                with _patched_spawn_env(spec):
+                    proc.start()
+            except Exception:
+                _close_queue(startup_error_channel)
+                raise
             self._processes.append(proc)
             self._ready_events.append(event)
+            self._startup_error_channels.append(startup_error_channel)
 
         logger.info(
             "StageGroup %s: spawned %d process(es) (pids=%s)",
@@ -145,18 +153,33 @@ class StageGroup:
             proc = self._processes[i]
             spec = self.process_specs[i]
             process_label = spec.process_name
+            startup_error_channel = self._startup_error_channels[i]
 
             while not event.is_set():
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
+                    details = ""
+                    try:
+                        traceback_text = startup_error_channel.get_nowait()
+                    except queue.Empty:
+                        pass
+                    else:
+                        details = f"\nStartup failure detail:\n{traceback_text}"
                     raise TimeoutError(
                         f"Process {process_label} did not become ready "
-                        f"within {timeout:.0f}s"
+                        f"within {timeout:.0f}s{details}"
                     )
                 if not proc.is_alive():
+                    details = ""
+                    try:
+                        traceback_text = startup_error_channel.get(timeout=0.2)
+                    except queue.Empty:
+                        pass
+                    else:
+                        details = f"\nStartup failure detail:\n{traceback_text}"
                     raise RuntimeError(
                         f"Process {process_label} died during startup "
-                        f"(exit code {proc.exitcode})"
+                        f"(exit code {proc.exitcode}){details}"
                     )
                 await loop.run_in_executor(None, event.wait, min(remaining, 1.0))
 
@@ -177,20 +200,34 @@ class StageGroup:
                 )
         return ", ".join(parts) if parts else "(none)"
 
+    def close_control_channels(self) -> None:
+        for q in self._startup_error_channels:
+            _close_queue(q)
+        for stage_spec in self.specs:
+            for q in stage_spec.follower_work_queues + stage_spec.follower_abort_queues:
+                _close_queue(q)
+
     async def shutdown(self, join_timeout: float = 30.0) -> None:
 
-        for p in self._processes:
-            p.join(timeout=join_timeout)
-            if p.is_alive():
-                logger.warning("Terminating stuck process %s (pid=%s)", p.name, p.pid)
-                p.terminate()
-                p.join(timeout=5)
+        try:
+            for p in self._processes:
+                p.join(timeout=join_timeout)
                 if p.is_alive():
-                    p.kill()
-                    p.join(timeout=2)
-
-        self._processes.clear()
-        self._ready_events.clear()
+                    logger.warning(
+                        "Terminating stuck process %s (pid=%s)",
+                        p.name,
+                        p.pid,
+                    )
+                    p.terminate()
+                    p.join(timeout=5)
+                    if p.is_alive():
+                        p.kill()
+                        p.join(timeout=2)
+        finally:
+            self.close_control_channels()
+            self._processes.clear()
+            self._ready_events.clear()
+            self._startup_error_channels.clear()
 
 
 def _process_name(spec: StageWorkerProcessSpec) -> str:
@@ -202,3 +239,8 @@ def _process_name(spec: StageWorkerProcessSpec) -> str:
     if stage_spec.role == "leader":
         return f"stage-{stage_spec.stage_name}-leader"
     return f"stage-{stage_spec.stage_name}-tp{stage_spec.tp_rank}-follower"
+
+
+def _close_queue(q: object) -> None:
+    q.close()
+    q.join_thread()

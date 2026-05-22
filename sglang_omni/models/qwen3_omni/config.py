@@ -24,6 +24,7 @@ def _preprocessing_stage(*, process: str) -> StageConfig:
             "video_fps": "video_fps",
         },
         next=["image_encoder", "audio_encoder", "mm_aggregate"],
+        route_fn=f"{_PKG}.request_builders.resolve_preprocessing_next_stages",
         project_payload={
             "image_encoder": (
                 f"{_PKG}.request_builders.project_preprocessing_to_image_encoder"
@@ -72,6 +73,7 @@ def _aggregate_stage(*, process: str) -> StageConfig:
         process=process,
         factory=f"{_PKG}.stages.create_aggregate_executor",
         wait_for=["preprocessing", "image_encoder", "audio_encoder"],
+        wait_for_fn=f"{_PKG}.request_builders.resolve_mm_aggregate_wait_sources",
         merge_fn=f"{_PKG}.merge.merge_for_thinker",
         next="thinker",
     )

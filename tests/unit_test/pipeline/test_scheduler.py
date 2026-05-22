@@ -126,6 +126,61 @@ def test_omni_scheduler_default_stream_done_sets_generic_flag() -> None:
     assert req_data.stream_done is True
 
 
+def test_omni_scheduler_initializes_upstream_queue_limit(monkeypatch) -> None:
+    """Upstream requeue helpers read max_queued_requests on OmniScheduler."""
+    monkeypatch.setattr(
+        OmniScheduler, "_init_parallel_state", lambda self, _tp_worker: None
+    )
+    monkeypatch.setattr(
+        OmniScheduler,
+        "init_metrics",
+        lambda self, *_args, **_kwargs: None,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "sglang.srt.server_args.get_global_server_args",
+        lambda: SimpleNamespace(pp_max_micro_batch_size=None),
+    )
+    tp_worker = SimpleNamespace(
+        gpu_id=0,
+        tp_rank=0,
+        model_runner=SimpleNamespace(max_total_num_tokens=128),
+        random_seed=0,
+        device=torch.device("cpu"),
+    )
+    server_args = SimpleNamespace(
+        tp_size=1,
+        pp_size=1,
+        page_size=1,
+        max_prefill_tokens=32,
+        max_running_requests=2,
+        max_queued_requests=7,
+        context_length=128,
+        chunked_prefill_size=0,
+        enable_mixed_chunk=False,
+        schedule_policy="fcfs",
+        enable_hierarchical_cache=False,
+        enable_priority_scheduling=False,
+        schedule_low_priority_values_first=False,
+        priority_scheduling_preemption_threshold=0,
+        schedule_conservativeness=1.0,
+        enable_metrics=False,
+        enable_metrics_for_all_schedulers=False,
+    )
+
+    scheduler = OmniScheduler(
+        tp_worker=tp_worker,
+        tree_cache=None,
+        req_to_token_pool=None,
+        token_to_kv_pool_allocator=None,
+        server_args=server_args,
+        model_config=SimpleNamespace(),
+    )
+
+    assert scheduler.max_queued_requests == 7
+    assert scheduler._abort_on_queued_limit(object()) is False
+
+
 def test_stage_output_cache_eviction_uses_lru_order() -> None:
     cache = StageOutputCache(max_size=2)
 

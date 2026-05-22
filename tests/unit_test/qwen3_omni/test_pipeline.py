@@ -25,6 +25,8 @@ from sglang_omni.models.qwen3_omni.payload_types import PipelineState
 from sglang_omni.models.qwen3_omni.request_builders import (
     build_sglang_thinker_request,
     project_preprocessing_to_mm_aggregate,
+    resolve_mm_aggregate_wait_sources,
+    resolve_preprocessing_next_stages,
 )
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling.sglang_backend.server_args_builder import (
@@ -71,11 +73,21 @@ def test_qwen_pipeline_config_and_state_contracts() -> None:
     )
     speech_thinker = _stage(speech_config, "thinker")
     text_thinker = _stage(text_config, "thinker")
+    preprocessing = _stage(speech_config, "preprocessing")
+    aggregate = _stage(speech_config, "mm_aggregate")
     # Speech-mode thinker streams hidden states to talker_ar AND text-token
     # ids to decode (for the streaming detokenizer); text-mode thinker
     # streams only to decode. Lock both so a regression here can't silently
     # disable per-token streaming for either path.
     request_builders_path = "sglang_omni.models.qwen3_omni.request_builders"
+    assert preprocessing.next == ["image_encoder", "audio_encoder", "mm_aggregate"]
+    assert preprocessing.route_fn == (
+        f"{request_builders_path}.resolve_preprocessing_next_stages"
+    )
+    assert aggregate.wait_for == ["preprocessing", "image_encoder", "audio_encoder"]
+    assert aggregate.wait_for_fn == (
+        f"{request_builders_path}.resolve_mm_aggregate_wait_sources"
+    )
     assert speech_thinker.stream_to == ["talker_ar", "decode"]
     assert speech_thinker.route_fn == (
         f"{request_builders_path}.resolve_thinker_next_stages"
@@ -137,6 +149,131 @@ def test_qwen_speech_config_wires_request_granular_active_subgraph() -> None:
     assert route_fn("default", default_payload) == ["decode", "talker_ar"]
     assert stream_done_to_fn("default", default_payload) == ["talker_ar", "decode"]
     assert terminal_stages_fn(default_payload.request) == ["decode", "code2wav"]
+
+
+def test_qwen_preprocessing_routes_only_active_encoder_branches() -> None:
+    def _payload(encoder_inputs):
+        return make_qwen_payload(make_qwen_state(encoder_inputs=encoder_inputs))
+
+    cases = [
+        (
+            {
+                "image_encoder": {"_skip": True, "_result": {}},
+                "audio_encoder": {"_skip": True, "_result": {}},
+            },
+            ["mm_aggregate"],
+            ["preprocessing"],
+        ),
+        (
+            {"audio_encoder": {}},
+            ["mm_aggregate"],
+            ["preprocessing"],
+        ),
+        (
+            {"audio_encoder": {"cache_key": "audio-cache"}},
+            ["mm_aggregate"],
+            ["preprocessing"],
+        ),
+        (
+            {
+                "audio_encoder": {
+                    "_active": False,
+                    "input_features": torch.ones((1, 2, 3)),
+                }
+            },
+            ["mm_aggregate"],
+            ["preprocessing"],
+        ),
+        (
+            {"image_encoder": {}},
+            ["mm_aggregate"],
+            ["preprocessing"],
+        ),
+        (
+            {"audio_encoder": {"input_features": torch.ones((1, 2, 3))}},
+            ["audio_encoder", "mm_aggregate"],
+            ["preprocessing", "audio_encoder"],
+        ),
+        (
+            {"image_encoder": {"pixel_values": torch.ones((1, 3))}},
+            ["image_encoder", "mm_aggregate"],
+            ["preprocessing", "image_encoder"],
+        ),
+        (
+            {"image_encoder": {"pixel_values_videos": torch.ones((1, 3))}},
+            ["image_encoder", "mm_aggregate"],
+            ["preprocessing", "image_encoder"],
+        ),
+        (
+            {
+                "image_encoder": {"pixel_values": torch.ones((1, 3))},
+                "audio_encoder": {"input_features": torch.ones((1, 2, 3))},
+            },
+            ["image_encoder", "audio_encoder", "mm_aggregate"],
+            ["preprocessing", "image_encoder", "audio_encoder"],
+        ),
+    ]
+
+    for encoder_inputs, expected_next, expected_wait in cases:
+        payload = _payload(encoder_inputs)
+        assert resolve_preprocessing_next_stages(payload.request_id, payload) == (
+            expected_next
+        )
+        aggregate_payload = project_preprocessing_to_mm_aggregate(payload)
+        assert (
+            resolve_mm_aggregate_wait_sources(
+                aggregate_payload.request_id,
+                "preprocessing",
+                aggregate_payload,
+            )
+            == expected_wait
+        )
+        assert (
+            resolve_mm_aggregate_wait_sources(
+                aggregate_payload.request_id,
+                "audio_encoder",
+                aggregate_payload,
+            )
+            is None
+        )
+
+
+def test_qwen_aggregate_wait_sources_accept_projected_active_metadata() -> None:
+    payload = make_qwen_payload(
+        make_qwen_state(
+            encoder_inputs={
+                "audio_encoder": {"cache_key": "audio-cache", "_active": True}
+            }
+        )
+    )
+
+    assert resolve_mm_aggregate_wait_sources(
+        payload.request_id,
+        "preprocessing",
+        payload,
+    ) == ["preprocessing", "audio_encoder"]
+
+
+def test_qwen_aggregate_projection_marks_uncached_active_encoder_inputs() -> None:
+    state = make_qwen_state(
+        encoder_inputs={
+            "audio_encoder": {"input_features": torch.ones((1, 2, 3))},
+            "image_encoder": {"_skip": True, "_result": {}},
+        }
+    )
+
+    projected = project_preprocessing_to_mm_aggregate(make_qwen_payload(state))
+    projected_state = PipelineState.from_dict(projected.data)
+
+    assert projected_state.encoder_inputs == {
+        "audio_encoder": {"_active": True},
+        "image_encoder": {"_skip": True},
+    }
+    assert resolve_mm_aggregate_wait_sources(
+        projected.request_id,
+        "preprocessing",
+        projected,
+    ) == ["preprocessing", "audio_encoder"]
 
 
 def test_qwen_builder_omits_mem_fraction_static_by_default() -> None:
@@ -534,11 +671,20 @@ def test_qwen_mm_aggregate_keeps_lightweight_inputs_and_prunes_after_merge() -> 
                 "pixel_values": torch.ones((2, 3)),
                 "image_grid_thw": torch.tensor([[1, 1, 2]]),
             },
-            "audio": {"audio_feature_lengths": torch.tensor([1])},
+            "audio": {
+                "feature_attention_mask": torch.ones((1, 2), dtype=torch.long),
+                "audio_feature_lengths": torch.tensor([2]),
+            },
         },
         encoder_inputs={
-            "image_encoder": {"cache_key": "image-cache"},
-            "audio_encoder": {"cache_key": "audio-cache"},
+            "image_encoder": {
+                "cache_key": "image-cache",
+                "pixel_values": torch.ones((2, 3)),
+            },
+            "audio_encoder": {
+                "cache_key": "audio-cache",
+                "input_features": torch.ones((1, 2, 3)),
+            },
         },
     )
 
@@ -546,23 +692,35 @@ def test_qwen_mm_aggregate_keeps_lightweight_inputs_and_prunes_after_merge() -> 
     projected_state = PipelineState.from_dict(projected.data)
     assert "pixel_values" not in projected_state.mm_inputs["image"]
     assert projected_state.encoder_inputs == {
-        "image_encoder": {"cache_key": "image-cache"},
-        "audio_encoder": {"cache_key": "audio-cache"},
+        "image_encoder": {"cache_key": "image-cache", "_active": True},
+        "audio_encoder": {"cache_key": "audio-cache", "_active": True},
     }
 
     image_state = PipelineState(
         encoder_outs={"image_encoder": {"image_embeds": torch.ones((2, 2))}}
     )
+    audio_state = PipelineState(
+        encoder_outs={
+            "audio_encoder": {
+                "audio_embeds": torch.ones((2, 2)),
+                "audio_feature_lengths": torch.tensor([2]),
+            }
+        }
+    )
     merged = merge_for_thinker(
         {
-            "preprocessing": make_qwen_payload(state),
+            "preprocessing": projected,
             "image_encoder": make_qwen_payload(image_state),
+            "audio_encoder": make_qwen_payload(audio_state),
         }
     )
     merged_state = PipelineState.from_dict(merged.data)
     assert merged_state.encoder_inputs == {}
     assert merged_state.encoder_outs == {}
     assert "image_embeds" in merged_state.thinker_inputs["model_inputs"]
+    assert "audio_embeds" in merged_state.thinker_inputs["model_inputs"]
+    assert "pixel_values" not in merged_state.mm_inputs["image"]
+    assert "input_features" not in merged_state.mm_inputs["audio"]
     assert merged_state.thinker_inputs["media_cache_keys"] == {
         "image": "image:image-cache",
         "video": "video:image-cache",

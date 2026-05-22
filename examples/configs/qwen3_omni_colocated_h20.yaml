@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 #
-# Example single-GPU colocated Qwen3-Omni launcher config.
+# Example single-H20 colocated Qwen3-Omni launcher config.
 # The Python pipeline config owns the stage topology; this file only sets the
 # runtime memory budgets needed for colocated launch.
 #
@@ -9,7 +9,7 @@
 # backend workspaces, activation peaks, and allocator fragmentation.
 
 config_cls: Qwen3OmniSpeechColocatedPipelineConfig
-name: qwen3-omni-colocated
+name: qwen3-omni-colocated-h20
 model_path: Qwen/Qwen3-Omni-30B-A3B-Instruct
 relay_backend: shm
 

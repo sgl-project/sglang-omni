@@ -11,6 +11,7 @@ tests/
 ├── test_model/
 │   ├── conftest.py
 │   ├── test_qwen3_omni_*_ci.py
+│   ├── test_qwen3_omni_videoamme_talker_tp2_ci.py
 │   └── test_s2pro_tts_ci.py
 └── unit_test/
     ├── fixtures/
@@ -32,9 +33,11 @@ tests/
     │   ├── test_stage_process_env.py
     │   └── test_stage_streaming.py
     ├── qwen3_omni/
+    │   ├── test_cli.py
     │   ├── test_code2wav.py
     │   ├── test_colocation_config.py
     │   ├── test_config_manager.py
+    │   ├── test_example_launcher.py
     │   ├── test_logit_shaping.py
     │   ├── test_pipeline.py
     │   ├── test_sglang_ar_budget.py
@@ -181,11 +184,14 @@ that happened to contain an older version of the test.
 - `unit_test/qwen3_omni/` Qwen3-Omni unit tests:
 
   - public CLI/config behavior
+  - example launcher config contract (TP/GPU/mem-fraction overrides)
   - SGLang argument builders
   - memory flag contracts
   - colocation config and SGLang AR budget contracts
   - `PipelineState` request builders
-  - talker behavior
+  - talker behavior, including projected prefill tensor storage/slicing, decode
+    feedback/text FIFO consumption, and replay of generated-token input embeds
+    after decode retract
   - Code2Wav streaming/cleanup behavior
   - logit-shaping helpers (e.g. repetition penalty) numerical equivalence with the original per-row scalar formulas.
 

@@ -134,6 +134,7 @@ class OmniScheduler:
         self.max_total_num_tokens = mr.max_total_num_tokens
         self.max_prefill_tokens = server_args.max_prefill_tokens
         self.max_running_requests = server_args.max_running_requests
+        self.max_queued_requests = server_args.max_queued_requests
         self.max_req_len = min(
             server_args.context_length - 1,
             self.max_total_num_tokens - 1,
@@ -602,6 +603,9 @@ class OmniScheduler:
                 else None
             )
             result = self._result_adapter(data)
+
+            data.prefill_input_embeds = None
+            data.decode_input_embeds = None
 
             self.outbox.put(
                 OutgoingMessage(

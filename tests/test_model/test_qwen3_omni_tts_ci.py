@@ -48,12 +48,28 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 CONCURRENCY = 16
 MAX_SAMPLES = 50
 DATASET_CACHE_ENV = "SGLANG_SEEDTTS50_DIR"
+# Optional user override: a path to a custom fine-tuned WavLM checkpoint.
+# When unset, the bootstrapper in benchmarks.metrics.speaker_similarity_assets
+# auto-downloads the official weights into the shared cache directory.
+SIMILARITY_CHECKPOINT_ENV = "SEEDTTS_SIM_CHECKPOINT"
 
 WER_TIMEOUT = 600
+SIMILARITY_TIMEOUT = 600
 
 VC_WER_BELOW_50_CORPUS_MAX = 0.014184397163120567
 VC_WER_BELOW_50_CORPUS_THRESHOLD = apply_wer_slack(VC_WER_BELOW_50_CORPUS_MAX)
 VC_N_ABOVE_50_MAX = 0
+# 60.0 mirrors the S2-Pro floor and is a placeholder until upstream issue
+# #483 is fixed; the hard assertion is currently disabled in
+# test_voice_cloning_similarity (see docstring there). PR #469 also collected
+# five Qwen3-Omni SeedTTS-50 EN runs for the record — all in the 2.90–3.48
+# range (worst = 2.90, stdev = 0.21), which confirms #483 deterministically
+# rather than producing a usable lower bound: no meaningful CI floor can be
+# derived from broken-state data. When #483 lands, re-run the five-shot
+# calibration with the fix and reset this constant from the lowest of the
+# five with the standard slack margin. See the "Speaker similarity
+# calibration" section of the PR description for the per-run numbers.
+VC_SIMILARITY_MEAN_MIN = 60.0
 
 # Note (Chenyang): The thresholds for the throughput_qps of tests/test_model/test_qwen3_omni_tts_ci.py
 # are the most unstable metrics, so I drop it a lot.
@@ -173,6 +189,76 @@ def _run_wer_transcribe(
     return wer_results
 
 
+def _run_similarity(
+    meta_path: str,
+    output_dir: str,
+    checkpoint_path: str | None,
+    *,
+    device: str = "cuda:0",
+) -> dict:
+    """Compute SeedTTS speaker similarity in CI (mirrors WER subprocess pattern)."""
+    cmd = [
+        sys.executable,
+        "-m",
+        "benchmarks.eval.benchmark_omni_seedtts",
+        "--similarity-only",
+        "--meta",
+        meta_path,
+        "--output-dir",
+        output_dir,
+        "--model",
+        "qwen3-omni",
+        "--device",
+        device,
+    ]
+    if checkpoint_path is not None:
+        cmd += ["--similarity-checkpoint", checkpoint_path]
+
+    env = no_proxy_env()
+    existing = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = (
+        f"{PROJECT_ROOT}{os.pathsep}{existing}" if existing else str(PROJECT_ROOT)
+    )
+
+    result = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        timeout=SIMILARITY_TIMEOUT,
+        env=env,
+        cwd=str(PROJECT_ROOT),
+    )
+    assert result.returncode == 0, (
+        f"Similarity eval failed (rc={result.returncode}).\n"
+        f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    )
+
+    results_path = Path(output_dir) / "similarity_results.json"
+    assert results_path.exists(), f"Similarity results file not found: {results_path}"
+
+    with open(results_path) as f:
+        similarity_results = json.load(f)
+    assert "summary" in similarity_results, (
+        "Missing 'summary' key in similarity results. "
+        f"Keys: {list(similarity_results.keys())}"
+    )
+    assert "per_sample" in similarity_results, (
+        "Missing 'per_sample' key in similarity results. "
+        f"Keys: {list(similarity_results.keys())}"
+    )
+    return similarity_results
+
+
+def _assert_similarity_results(results: dict, min_mean: float) -> None:
+    summary = results["summary"]
+    per_sample = results["per_sample"]
+    mean = summary["speaker_similarity_mean"]
+    assert per_sample, "Expected per-sample speaker similarity results"
+    assert (
+        mean >= min_mean
+    ), f"speaker_similarity_mean {mean:.4f} < threshold {min_mean:.4f}"
+
+
 @pytest.fixture(scope="module")
 def dataset_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
     override_dir = os.environ.get(DATASET_CACHE_ENV)
@@ -182,6 +268,16 @@ def dataset_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
         root = tmp_path_factory.mktemp("seed_tts_eval") / "data"
     download_dataset(DATASETS["seedtts-50"], str(root), quiet=True)
     return root
+
+
+@pytest.fixture(scope="module")
+def similarity_checkpoint() -> str | None:
+    """User-specified WavLM checkpoint override, or None to let the bootstrapper
+    auto-resolve the default weights from the shared cache directory."""
+    raw = os.environ.get(SIMILARITY_CHECKPOINT_ENV)
+    if not raw:
+        return None
+    return str(Path(raw).expanduser())
 
 
 @dataclass
@@ -295,6 +391,45 @@ def test_voice_cloning_wer(
         max_n_above_50=VC_N_ABOVE_50_MAX,
     )
     print_log_tail("router", qwen3_omni_router_server.log_file)
+
+
+@pytest.mark.benchmark
+def test_voice_cloning_similarity(
+    wer_audio_dir: str,
+    dataset_dir: Path,
+    similarity_checkpoint: str | None,
+) -> None:
+    """Speaker similarity for Qwen3-Omni voice-clone output.
+
+    Quality gating against ``VC_SIMILARITY_MEAN_MIN`` is intentionally
+    DISABLED while upstream issue sgl-project/sglang-omni#483 is open:
+    Qwen3-Omni currently emits a default voice (multimodal prompt
+    features do not reach talker prefill ``input_embeds``), so a
+    50-sample EN dry-run measures SIM mean ~3 vs ~64 for S2-Pro on the
+    same samples.
+
+    The test still runs and persists ``similarity_results.json`` so the
+    metric tracks longitudinally and will catch the day #483 is fixed.
+    Once #483 lands, swap the structural assert below back to
+    ``_assert_similarity_results(results, VC_SIMILARITY_MEAN_MIN)``.
+    """
+    results = _run_similarity(
+        str(dataset_dir / "en" / "meta.lst"),
+        wer_audio_dir,
+        similarity_checkpoint,
+    )
+    # Structural sanity only — quality gate disabled per docstring above.
+    # `skipped == 0` is a structural assertion (generation succeeded and WAVs
+    # are on disk), not a voice-quality gate, so it stays enabled even while
+    # #483 keeps the similarity-mean assertion soft.
+    summary = results.get("summary", {})
+    assert (
+        summary.get("speaker_similarity_mean") is not None
+    ), "Missing speaker_similarity_mean in summary"
+    assert results.get("per_sample"), "Expected per-sample speaker similarity results"
+    assert (
+        summary.get("skipped", 0) == 0
+    ), f"speaker similarity: {summary.get('skipped')} skipped samples ≠ 0"
 
 
 if __name__ == "__main__":

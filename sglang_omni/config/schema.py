@@ -25,9 +25,7 @@ class EndpointsConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    scheme: Literal["ipc", "tcp"] = "ipc"
     base_path: str = "/tmp/sglang_omni"
-    base_port: int = 16000
 
 
 class ParallelismConfig(BaseModel):
@@ -163,6 +161,7 @@ class StageConfig(BaseModel):
 
     # --- Fan-in ---
     wait_for: list[str] | None = None
+    wait_for_fn: str | None = None
     merge_fn: str | None = None
 
     # --- Streaming ---
@@ -214,8 +213,6 @@ class PipelineConfig(BaseModel):
     placement: PlacementConfig = Field(default_factory=PlacementConfig)
     placement_policy: str | None = None
     endpoints: EndpointsConfig = Field(default_factory=EndpointsConfig)
-    completion_endpoint: str | None = None
-    abort_endpoint: str | None = None
     terminal_stages_fn: str | None = None
     config_cls: str | None = None
 
@@ -258,7 +255,6 @@ class PipelineConfig(BaseModel):
             raise ValueError("Pipeline must define at least one stage")
         if len(names) != len(set(names)):
             raise ValueError("Stage names must be unique")
-
         entry = self.resolved_entry_stage
         if entry not in names:
             raise ValueError(f"entry_stage {entry!r} is not defined")
@@ -299,6 +295,8 @@ class PipelineConfig(BaseModel):
                     raise ValueError(
                         f"Stage {s.name!r} wait_for has unknown stages: {sorted(unknown)}"
                     )
+            elif s.wait_for_fn is not None:
+                raise ValueError(f"Stage {s.name!r} has wait_for_fn but no wait_for")
             if s.next is not None:
                 targets = [s.next] if isinstance(s.next, str) else s.next
                 unknown = set(targets) - set(names)
