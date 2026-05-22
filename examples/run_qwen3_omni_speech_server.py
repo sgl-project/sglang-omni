@@ -17,6 +17,11 @@ Usage::
         --thinker-tp-size 2 --gpu-thinker-tp 0,1 \
         --gpu-talker 1 --gpu-code2wav 1
 
+    # Thinker TP=4 across four cards, talker + code2wav on a fifth card:
+    python examples/run_qwen3_omni_speech_server.py \
+        --thinker-tp-size 4 --gpu-thinker-tp 0,1,2,3 \
+        --gpu-talker 4 --gpu-code2wav 4
+
     # Then test:
     curl http://localhost:8000/v1/chat/completions \\
         -H "Content-Type: application/json" \\
@@ -66,7 +71,11 @@ def parse_args() -> argparse.Namespace:
         "--thinker-tp-size",
         type=int,
         default=1,
-        help="Tensor-parallel size for the thinker stage (1 or 2).",
+        help=(
+            "Tensor-parallel size for the thinker stage. Accepts any integer "
+            ">= 1; common values are 1, 2, 4, 8. When > 1, also pass "
+            "--gpu-thinker-tp with exactly that many GPU ids."
+        ),
     )
     parser.add_argument(
         "--gpu-thinker-tp",
@@ -229,6 +238,11 @@ def _launch_speech_server(args: argparse.Namespace) -> None:
 
     _set_stage_gpu(config, "image_encoder", args.gpu_image_encoder)
     _set_stage_gpu(config, "audio_encoder", args.gpu_audio_encoder)
+
+    if args.thinker_tp_size < 1:
+        raise ValueError(
+            f"--thinker-tp-size must be >= 1, got {args.thinker_tp_size}"
+        )
 
     if args.thinker_tp_size > 1:
         if args.gpu_thinker_tp is None:
