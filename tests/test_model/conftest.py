@@ -36,6 +36,7 @@ QWEN3_OMNI_ROUTER_WAIT_TIMEOUT = 180
 QWEN3_OMNI_COLOCATED_WORKER_ARGS = (
     "--config examples/configs/qwen3_omni_colocated.yaml --colocate"
 )
+QWEN3_OMNI_MMSU_WORKER_ARGS = "--config examples/configs/qwen3_omni_mmsu.yaml"
 QWEN3_OMNI_VIDEO_WORKER_ARGS = (
     f"{QWEN3_OMNI_COLOCATED_WORKER_ARGS} "
     "--stages.0.factory-args.thinker-max-seq-len 32768 "
@@ -49,6 +50,16 @@ def qwen3_omni_router_server(tmp_path_factory: pytest.TempPathFactory):
     with _launch_qwen3_omni_router(
         tmp_path_factory,
         worker_extra_args=QWEN3_OMNI_COLOCATED_WORKER_ARGS,
+    ) as router:
+        yield router
+
+
+@pytest.fixture(scope="module")
+def qwen3_omni_mmsu_server(tmp_path_factory: pytest.TempPathFactory):
+    """Router-backed Qwen3-Omni endpoint tuned for MMSU text-output CI."""
+    with _launch_qwen3_omni_router(
+        tmp_path_factory,
+        worker_extra_args=QWEN3_OMNI_MMSU_WORKER_ARGS,
     ) as router:
         yield router
 
