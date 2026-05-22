@@ -56,6 +56,7 @@ _VIDEOAMME_TALKER_TP2_AUDIO_P95 = {
 VIDEOAMME_TALKER_TP2_THRESHOLDS = apply_slack(_VIDEOAMME_TALKER_TP2_AUDIO_P95)
 
 
+@pytest.mark.benchmark
 def test_thinker_tp2_actually_applied(
     qwen3_omni_talker_server_tp2: ServerHandle,
 ) -> None:
