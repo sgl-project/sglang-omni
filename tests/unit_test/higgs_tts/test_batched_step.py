@@ -255,8 +255,11 @@ def test_batched_step_top_k_filter_actually_applied_in_cg_path():
     logits = _top5_logits(top_indices, n=N, v=V).contiguous()
 
     codes = batched_step(
-        logits, pool_eager, row_indices,
-        temperature=temp, top_k_buf=top_k_buf,
+        logits,
+        pool_eager,
+        row_indices,
+        temperature=temp,
+        top_k_buf=top_k_buf,
     )
     for b in range(B):
         allowed = set(top_indices[b].tolist())
@@ -273,8 +276,11 @@ def test_batched_step_top_k_filter_actually_applied_in_cg_path():
     s.wait_stream(torch.cuda.current_stream())
     with torch.cuda.stream(s):
         batched_step(
-            logits, pool_cg, row_indices,
-            temperature=temp, top_k_buf=top_k_buf,
+            logits,
+            pool_cg,
+            row_indices,
+            temperature=temp,
+            top_k_buf=top_k_buf,
         )
     torch.cuda.current_stream().wait_stream(s)
 
@@ -286,8 +292,11 @@ def test_batched_step_top_k_filter_actually_applied_in_cg_path():
     g = torch.cuda.CUDAGraph()
     with torch.cuda.graph(g):
         out = batched_step(
-            logits, pool_cg, row_indices,
-            temperature=temp, top_k_buf=top_k_buf,
+            logits,
+            pool_cg,
+            row_indices,
+            temperature=temp,
+            top_k_buf=top_k_buf,
         )
 
     g.replay()
