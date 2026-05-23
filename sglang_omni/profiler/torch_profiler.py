@@ -9,7 +9,6 @@ import subprocess
 import threading
 from contextlib import nullcontext
 
-import torch
 from torch.profiler import ProfilerActivity, profile
 
 from .base_profiler import ProfilerBase
@@ -106,14 +105,16 @@ class TorchProfiler(ProfilerBase):
                 except Exception as e:
                     logger.warning(f"[Rank {rank}] Failed to export trace: {e}")
 
-            # 4. Initialize profiler with long active period
+            # 4. Initialize profiler. We deliberately omit ``schedule`` so
+            # the profile records everything between ``start()`` and
+            # ``stop()``. With a schedule, ``on_trace_ready`` only fires
+            # after the active phase ends, which requires explicit
+            # ``step()`` calls — none of the AR loops drive that, so a
+            # scheduled profile silently drops its trace on stop. The
+            # default (no schedule) treats start/stop as one continuous
+            # active window and exports on stop.
             cls._profiler = profile(
                 activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
-                schedule=torch.profiler.schedule(
-                    wait=0,
-                    warmup=0,
-                    active=100000,  # long capture window
-                ),
                 on_trace_ready=trace_handler,
                 record_shapes=True,
                 profile_memory=True,
@@ -152,12 +153,38 @@ class TorchProfiler(ProfilerBase):
                 return None
 
             base_path = f"{cls._trace_template}_rank{rank}"
-            gz_path = f"{base_path}.trace.json.gz"
+            json_path = f"{base_path}.trace.json"
+            gz_path = f"{json_path}.gz"
 
+            profiler = cls._profiler
             try:
-                cls._profiler.stop()
+                profiler.stop()
             except Exception as e:
                 logger.warning("[Rank %s] Profiler stop failed: %s", rank, e)
+
+            # Export the trace directly. Without a `schedule`, the
+            # ``on_trace_ready`` callback isn't invoked automatically on
+            # stop, so we do the export here. ``export_chrome_trace``
+            # is safe to call after ``stop()``.
+            try:
+                os.makedirs(os.path.dirname(json_path), exist_ok=True)
+                profiler.export_chrome_trace(json_path)
+                logger.info("[Rank %s] Trace exported to %s", rank, json_path)
+                try:
+                    subprocess.Popen(["gzip", "-f", json_path])
+                    logger.info(
+                        "[Rank %s] Triggered background compression for %s",
+                        rank,
+                        json_path,
+                    )
+                except Exception as compress_err:
+                    logger.warning(
+                        "[Rank %s] Background gzip failed: %s",
+                        rank,
+                        compress_err,
+                    )
+            except Exception as e:
+                logger.warning("[Rank %s] Failed to export trace: %s", rank, e)
 
             cls._profiler = None
             cls._active_run_id = None
