@@ -188,7 +188,7 @@ def load_weights_by_prefix(
 
     try:
         state_dict = _load_weights_from_resolved_path(resolved_model_path, prefixes)
-    except Exception:  # noqa: BLE001
+    except Exception:
         if not should_retry_remote_load:
             raise
         state_dict = {}
@@ -260,7 +260,7 @@ def default_weight_loader(param: torch.Tensor, loaded_weight: torch.Tensor) -> N
             )
 
             param.data.copy_(loaded_weight)
-    except Exception:  # noqa: BLE001
+    except Exception:
         # NOTE: This exception is added for the purpose of setting breakpoint to
         # debug weight loading issues.
         raise

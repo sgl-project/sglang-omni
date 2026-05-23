@@ -150,7 +150,7 @@ class MingImageEncoder(nn.Module):
 
         try:
             set_global_server_args_for_scheduler(ServerArgs(model_path="dummy"))
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass  # Already set
 
         if not parallel_state.model_parallel_is_initialized():

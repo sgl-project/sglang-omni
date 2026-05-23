@@ -96,7 +96,7 @@ def prepare_pipeline_runtime(
             stages=stages_cfg,
             ipc_base_dir=runtime_dir.path,
         )
-    except Exception:  # noqa: BLE001
+    except Exception:
         if runtime_dir_created_here:
             runtime_dir.close()
         raise

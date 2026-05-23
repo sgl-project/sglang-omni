@@ -295,7 +295,7 @@ def _extract_audio_from_path(video_path: Path, target_sr: int) -> Any | None:
     try:
         audio, _ = librosa.load(str(video_path), sr=target_sr)
         return audio
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         logger.debug(f"Failed to extract audio from {video_path}: {e}")
         return None
 
@@ -324,7 +324,7 @@ def load_video_path(
     backend = qwen_vision.get_video_reader_backend()
     try:
         video, sample_fps = qwen_vision.VIDEO_READER_BACKENDS[backend](ele)
-    except Exception as backend_exc:  # noqa: BLE001
+    except Exception as backend_exc:
         if backend == "torchvision":
             raise VideoDecodeError(
                 f"Failed to decode video path={path}; torchvision failed with "
@@ -333,7 +333,7 @@ def load_video_path(
         logger.warning("Video reader %s failed, falling back to torchvision", backend)
         try:
             video, sample_fps = qwen_vision.VIDEO_READER_BACKENDS["torchvision"](ele)
-        except Exception as fallback_exc:  # noqa: BLE001
+        except Exception as fallback_exc:
             raise VideoDecodeError(
                 f"Failed to decode video path={path}; {backend} failed with "
                 f"{type(backend_exc).__name__}: {backend_exc}; "
@@ -395,6 +395,6 @@ def _check_if_video_has_audio(video_path: str | Path) -> bool:
         ]
         container.close()
         return len(audio_streams) > 0
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         logger.debug(f"Failed to check audio in video {video_path}: {e}")
         return False

@@ -12,7 +12,7 @@ def is_package_available(package_name: str) -> bool:
 
         package_exists = importlib.util.find_spec(package_name) is not None
         return package_exists
-    except Exception:  # noqa: BLE001
+    except Exception:
         return False
 
 

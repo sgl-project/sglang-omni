@@ -60,7 +60,7 @@ def load_mistral_params_json(model_path: str) -> dict | None:
         cached = hf_hub_download(repo_id=model_path, filename="params.json")
         with open(cached) as f:
             return json.load(f)
-    except Exception:  # noqa: BLE001
+    except Exception:
         return None
 
 
@@ -96,7 +96,7 @@ def try_resolve_arch_from_raw_config(model_path: str) -> str | None:
             cached = hf_hub_download(repo_id=model_path, filename="config.json")
             with open(cached) as f:
                 raw = json.load(f)
-        except Exception:  # noqa: BLE001
+        except Exception:
             return None
 
     if raw is None:
@@ -139,7 +139,7 @@ def load_hf_config(
             trust_remote_code=trust_remote_code,
             local_files_only=local_files_only,
         )
-    except Exception:  # noqa: BLE001
+    except Exception:
         cfg = AutoConfig.from_pretrained(
             model_path, trust_remote_code=trust_remote_code
         )

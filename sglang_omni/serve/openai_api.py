@@ -209,7 +209,7 @@ async def _chat_non_stream(
         if _is_bad_request_error(exc):
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         raise HTTPException(status_code=500, detail=str(exc)) from exc
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.exception("Error generating response for request %s", request_id)
         if _is_bad_request_error(exc):
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -516,7 +516,7 @@ def _register_speech(app: FastAPI) -> None:
             )
         except ClientError as exc:
             raise HTTPException(status_code=500, detail=str(exc)) from exc
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.exception("Error generating speech for request %s", request_id)
             raise HTTPException(status_code=500, detail=str(exc)) from exc
 

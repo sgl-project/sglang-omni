@@ -153,7 +153,7 @@ class MingTalkerExecutor:
                 "[TALKER] Thinker tokenizer loaded: %s",
                 type(self._thinker_tokenizer).__name__,
             )
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             logger.warning("[TALKER] Could not load thinker tokenizer: %s", e)
 
         # 10. Initialize CUDA graphs

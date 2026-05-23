@@ -158,7 +158,7 @@ class ShmRelay(Relay):
 
             return ShmPutOperation(metadata, shm)
 
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             self._sem.release()
             raise e
 

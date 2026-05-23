@@ -785,7 +785,7 @@ class BailingMoeV2ForCausalLM(nn.Module):
                             "Could not resolve <audioPatch> token ID from %s",
                             model_path,
                         )
-                except Exception:  # noqa: BLE001
+                except Exception:
                     config.audio_token_id = None
                     logger.warning(
                         "Failed to load tokenizer for audio_token_id resolution"

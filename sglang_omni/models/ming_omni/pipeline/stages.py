@@ -164,7 +164,7 @@ def create_sglang_thinker_executor(
 
         try:
             token_id = int(item)
-        except Exception:  # noqa: BLE001
+        except Exception:
             return {"token_id": item, "step": step}
 
         state = load_state(payload)
@@ -268,7 +268,7 @@ def _ensure_ming_config_registered(model_path: str = "inclusionAI/Ming-flash-omn
             if not os.path.exists(dst):
                 src = hf_hub_download(_TOKENIZER_FALLBACK_REPO, fname)
                 shutil.copy2(src, dst)
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass  # Best-effort
 
 
@@ -286,7 +286,7 @@ def _resolve_local_model_path(model_path: str) -> str:
         from huggingface_hub import snapshot_download
 
         return snapshot_download(model_path)
-    except Exception:  # noqa: BLE001
+    except Exception:
         return model_path
 
 

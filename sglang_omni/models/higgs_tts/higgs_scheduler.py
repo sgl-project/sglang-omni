@@ -442,7 +442,7 @@ class HiggsScheduler:
                 result = self.run_batch(batch)
                 finished = self.update(batch, result)
                 self.emit_finished(finished)
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 logger.exception("HiggsScheduler batch failed")
                 for request in batch.requests:
                     self.outbox.put(

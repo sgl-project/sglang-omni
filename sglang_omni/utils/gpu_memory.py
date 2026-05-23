@@ -75,7 +75,7 @@ def is_process_scoped_memory_available() -> bool:
     try:
         pynvml.nvmlInit()
         return True
-    except Exception:  # noqa: BLE001
+    except Exception:
         return False
     finally:
         _shutdown_nvml(pynvml)
@@ -98,7 +98,7 @@ def get_process_gpu_memory_bytes(logical_gpu_id: int) -> int | None:
 
     try:
         pynvml.nvmlInit()
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.debug("NVML init failed; process GPU memory is unavailable: %s", exc)
         return None
 
@@ -106,7 +106,7 @@ def get_process_gpu_memory_bytes(logical_gpu_id: int) -> int | None:
         if visible_devices:
             try:
                 handle = _get_device_handle(pynvml, device_id)
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 raise _InvalidGpuDeviceError(
                     f"Failed to get NVML handle for visible device {device_id!r} "
                     f"(logical_gpu_id={logical_gpu_id}). Check CUDA_VISIBLE_DEVICES "
@@ -128,7 +128,7 @@ def get_process_gpu_memory_bytes(logical_gpu_id: int) -> int | None:
         return 0
     except _InvalidGpuDeviceError:
         raise
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.debug("NVML query failed; process GPU memory is unavailable: %s", exc)
         return None
     finally:
@@ -162,7 +162,7 @@ def get_gpu_device_info(logical_gpu_id: int) -> GpuDeviceInfo:
 
     try:
         pynvml.nvmlInit()
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.debug(
             f"NVML init failed; using PyTorch GPU metadata if available: {exc}"
         )
@@ -178,7 +178,7 @@ def get_gpu_device_info(logical_gpu_id: int) -> GpuDeviceInfo:
             name=name,
             total_memory_bytes=int(memory_info.total),
         )
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.debug(
             f"NVML metadata query failed; using PyTorch GPU metadata if available: "
             f"{exc}"
@@ -204,7 +204,7 @@ def _get_torch_gpu_device_info(
             name=getattr(properties, "name", None),
             total_memory_bytes=int(properties.total_memory),
         )
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.debug(f"PyTorch GPU device metadata is unavailable: {exc}")
         return GpuDeviceInfo(
             logical_gpu_id=logical_gpu_id,
@@ -329,5 +329,5 @@ def _decode_nvml_string(value: str | bytes) -> str:
 def _shutdown_nvml(pynvml: Any) -> None:
     try:
         pynvml.nvmlShutdown()
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass

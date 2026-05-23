@@ -73,7 +73,7 @@ class SimpleScheduler:
             return
         try:
             self._abort_callback(request_id)
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.exception("SimpleScheduler: abort cleanup failed for %s", request_id)
 
     def _consume_if_aborted(self, request_id: str) -> bool:
@@ -161,7 +161,7 @@ class SimpleScheduler:
             result = self._fn(msg.data)
             if asyncio.iscoroutine(result):
                 result = loop.run_until_complete(result)
-        except Exception:  # noqa: BLE001
+        except Exception:
             if self._consume_if_aborted(msg.request_id):
                 return
             raise
@@ -225,7 +225,7 @@ class SimpleScheduler:
                     try:
                         batch = self._collect_batch(msg)
                         self._run_batch(batch, loop)
-                    except Exception as exc:  # noqa: BLE001
+                    except Exception as exc:
                         logger.exception(
                             "SimpleScheduler: compute_fn failed for %s", msg.request_id
                         )
@@ -277,7 +277,7 @@ class SimpleScheduler:
                     if self._consume_if_aborted(msg.request_id):
                         continue
                     self._emit_result(msg.request_id, result, self.outbox)
-                except Exception as exc:  # noqa: BLE001
+                except Exception as exc:
                     if self._consume_if_aborted(msg.request_id):
                         continue
                     logger.exception(

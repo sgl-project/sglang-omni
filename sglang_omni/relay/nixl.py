@@ -258,7 +258,7 @@ class NixlRelay(Relay):
                 on_completion_cb=lambda: self.allocator.release(offset),
             )
 
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             # If creating the op fails, release immediately
             self.allocator.release(offset)
             raise e
@@ -335,7 +335,7 @@ class NixlRelay(Relay):
                 on_completion_cb=lambda: self.allocator.release(local_offset),
             )
 
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             self.allocator.release(local_offset)
             raise e
 

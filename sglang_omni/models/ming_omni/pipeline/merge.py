@@ -19,7 +19,7 @@ def _as_tensor(value: Any, dtype: torch.dtype | None = None) -> torch.Tensor | N
         return value.to(dtype=dtype) if dtype is not None else value
     try:
         return torch.as_tensor(value, dtype=dtype)
-    except Exception:  # noqa: BLE001
+    except Exception:
         return None
 
 

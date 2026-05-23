@@ -47,7 +47,7 @@ def load_ming_tokenizer(model_path: str):
     try:
         tokenizer = PreTrainedTokenizerFast.from_pretrained(model_path)
         return _attach_ming_tokenizer_compat(tokenizer)
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
 
     # Strategy 3: fallback repo with matching thinker vocab
@@ -76,7 +76,7 @@ def _attach_ming_tokenizer_compat(tokenizer):
     """
     try:
         tokenizer.additional_stop_token_ids = None
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
     return tokenizer
 

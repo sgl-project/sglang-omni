@@ -50,7 +50,7 @@ def avail_gpu_mem(gpu_id: int) -> float | None:
             return None
         free_bytes, _ = torch.cuda.mem_get_info(gpu_id)
         return free_bytes / (1024**3)
-    except Exception:  # noqa: BLE001
+    except Exception:
         return None
 
 

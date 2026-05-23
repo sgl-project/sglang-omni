@@ -58,7 +58,7 @@ class TorchProfiler(ProfilerBase):
                 )
                 try:
                     cls._profiler.stop()
-                except Exception as e:  # noqa: BLE001
+                except Exception as e:
                     logger.warning(
                         "[Rank %s] Failed to stop existing profiler: %s", rank, e
                     )
@@ -98,12 +98,12 @@ class TorchProfiler(ProfilerBase):
                         )
                         # Update variable to point to the eventual file
                         json_file = f"{json_file}.gz"
-                    except Exception as compress_err:  # noqa: BLE001
+                    except Exception as compress_err:
                         logger.warning(
                             f"[Rank {rank}] Background gzip failed to start: {compress_err}"
                         )
 
-                except Exception as e:  # noqa: BLE001
+                except Exception as e:
                     logger.warning(f"[Rank {rank}] Failed to export trace: {e}")
 
             # 4. Initialize profiler with long active period
@@ -156,7 +156,7 @@ class TorchProfiler(ProfilerBase):
 
             try:
                 cls._profiler.stop()
-            except Exception as e:  # noqa: BLE001
+            except Exception as e:
                 logger.warning("[Rank %s] Profiler stop failed: %s", rank, e)
 
             cls._profiler = None
