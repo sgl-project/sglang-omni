@@ -319,12 +319,9 @@ def batched_step(
     boc_id: int = BOC_ID,
     eoc_id: int = EOC_ID,
 ) -> torch.Tensor:
-    """Run one AR step for a batch of requests, mutating ``state`` in place.
-
-    Stage 2 of the CUDA Graph migration: vectorised replacement for
-    per-row :func:`step`. Identical state machine, expressed entirely
-    as tensor ops + ``torch.where`` so the kernel sequence is fixed
-    and capturable.
+    """Eager-path wrapper around :func:`batched_step_direct`.
+    Used by ``decode_codebooks_batch`` (``disable_cuda_graph=True``); the
+    CG path skips this and calls ``batched_step_direct`` directly.
 
     Args:
         logits_BNV: ``[B, N, V]`` model logits for this AR step.
@@ -343,15 +340,59 @@ def batched_step(
         ``True`` on entry produce :data:`STOP_CODE` sentinels; their
         state is left unchanged.
     """
+    delay_count = state.delay_count[row_indices]
+    eoc_countdown = state.eoc_countdown[row_indices]
+    generation_done = state.generation_done[row_indices]
+    last_codes = state.last_codes[row_indices]
+
+    out_codes, new_delay_count, new_eoc_countdown, new_generation_done, new_last_codes = (
+        batched_step_direct(
+            logits_BNV,
+            delay_count,
+            eoc_countdown,
+            generation_done,
+            last_codes,
+            temperature=temperature,
+            top_p=top_p,
+            top_k=top_k,
+            top_k_buf=top_k_buf,
+            boc_id=boc_id,
+            eoc_id=eoc_id,
+        )
+    )
+
+    state.delay_count[row_indices] = new_delay_count.to(state.delay_count.dtype)
+    state.eoc_countdown[row_indices] = new_eoc_countdown.to(state.eoc_countdown.dtype)
+    state.generation_done[row_indices] = new_generation_done
+    state.last_codes[row_indices] = new_last_codes
+
+    return out_codes
+
+
+def batched_step_direct(
+    logits_BNV: torch.Tensor,
+    delay_count: torch.Tensor,
+    eoc_countdown: torch.Tensor,
+    generation_done: torch.Tensor,
+    last_codes: torch.Tensor,
+    *,
+    temperature: torch.Tensor,
+    top_p: torch.Tensor | None = None,
+    top_k: int | None = None,
+    top_k_buf: torch.Tensor | None = None,
+    boc_id: int = BOC_ID,
+    eoc_id: int = EOC_ID,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """CG-friendly state machine: state in/out as direct ``[B, ...]`` tensors,
+    no ``state``/``row_indices`` indirection. Caller persists the returned
+    new state. See :func:`batched_step` for arg semantics.
+    """
     B, N, V = logits_BNV.shape
     device = logits_BNV.device
 
-    # ----- Gather per-row state ---------------------------------------
-    delay_count = state.delay_count[row_indices].to(torch.long)
-    eoc_countdown = state.eoc_countdown[row_indices].to(torch.long)
-    generation_done = state.generation_done[row_indices]
+    delay_count = delay_count.to(torch.long)
+    eoc_countdown = eoc_countdown.to(torch.long)
 
-    # ----- Independent sampling ---------------------------------------
     codes_BN = _sample_independent_batched(
         logits_BNV,
         temperature=temperature,
@@ -360,29 +401,23 @@ def batched_step(
         top_k_buf=top_k_buf,
     )
 
-    # ----- Delay window: force later codebooks to BOC_ID ---------------
-    # Mask matches step()'s ``if delay_count + 1 < N: codes[delay_count+1:] = BOC``:
-    # any cb index > delay_count (1-indexed past current frontier) gets BOC.
     cb_idx = torch.arange(N, device=device).unsqueeze(0).expand(B, N)
     in_delay = (delay_count < N).unsqueeze(-1)
     delay_mask = in_delay & (cb_idx > delay_count.unsqueeze(-1))
     codes_BN = torch.where(delay_mask, torch.full_like(codes_BN, boc_id), codes_BN)
 
-    # ----- State machine (all torch ops, no Python branches) -----------
-    active = ~generation_done  # [B]
+    active = ~generation_done
     in_delay_active = active & (delay_count < N)
     in_winddown_active = active & (eoc_countdown >= 0) & (~in_delay_active)
     cb0_eoc_now_active = (
-        active & (~in_delay_active) & (~in_winddown_active) & (codes_BN[:, 0] == eoc_id)
+        active
+        & (~in_delay_active)
+        & (~in_winddown_active)
+        & (codes_BN[:, 0] == eoc_id)
     )
 
-    new_delay_count = torch.where(in_delay_active, delay_count + 1, delay_count).to(
-        state.delay_count.dtype
-    )
+    new_delay_count = torch.where(in_delay_active, delay_count + 1, delay_count)
 
-    # ``N`` is a static module dimension (fixed at model init) so a
-    # Python branch on it does NOT break CUDA Graph capture — both
-    # arms produce the same kernel sequence each time the graph runs.
     if N > 2:
         new_eoc_countdown = torch.where(
             cb0_eoc_now_active,
@@ -391,8 +426,6 @@ def batched_step(
         )
         done_this_step = in_winddown_active & (new_eoc_countdown <= 0)
     else:
-        # N <= 2: per-row step() sets generation_done without writing
-        # eoc_countdown, so we mirror that exactly to keep states equal.
         new_eoc_countdown = torch.where(
             in_winddown_active, eoc_countdown - 1, eoc_countdown
         )
@@ -401,22 +434,18 @@ def batched_step(
         )
     new_generation_done = generation_done | done_this_step
 
-    new_eoc_countdown = new_eoc_countdown.to(state.eoc_countdown.dtype)
-
-    # ----- last_codes update: only when active and not just-finished ---
     update_codes = (active & (~done_this_step)).unsqueeze(-1)
-    prev_last = state.last_codes[row_indices]
-    new_last_codes = torch.where(update_codes, codes_BN, prev_last)
+    new_last_codes = torch.where(update_codes, codes_BN, last_codes)
 
-    # ----- Scatter back to pool ----------------------------------------
-    state.delay_count[row_indices] = new_delay_count
-    state.eoc_countdown[row_indices] = new_eoc_countdown
-    state.generation_done[row_indices] = new_generation_done
-    state.last_codes[row_indices] = new_last_codes
-
-    # ----- Return codes (STOP for rows already done at entry) ----------
     stop = torch.full_like(codes_BN, STOP_CODE)
-    return torch.where(generation_done.unsqueeze(-1), stop, codes_BN)
+    out_codes = torch.where(generation_done.unsqueeze(-1), stop, codes_BN)
+    return (
+        out_codes,
+        new_delay_count,
+        new_eoc_countdown,
+        new_generation_done,
+        new_last_codes,
+    )
 
 
 __all__ = [
@@ -425,5 +454,6 @@ __all__ = [
     "HiggsBatchedSamplerState",
     "HiggsSamplerState",
     "batched_step",
+    "batched_step_direct",
     "step",
 ]

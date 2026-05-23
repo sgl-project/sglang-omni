@@ -28,6 +28,7 @@ from sglang_omni.models.higgs_tts.sampler import (
     HiggsBatchedSamplerState,
     HiggsSamplerState,
     batched_step,
+    batched_step_direct,
 )
 from sglang_omni.models.higgs_tts.weight_loader import DiscreteWeightMapper
 
@@ -195,6 +196,20 @@ class HiggsTTSModel(nn.Module):
             pool_size, num_codebooks, dtype=torch.long, device=cg_device
         )
         self._cg_was_done = torch.zeros(pool_size, dtype=torch.bool, device=cg_device)
+
+        # Shadow sampler state, copied from the pool at entry to the CG forward.
+        self._cg_active_delay_count = torch.zeros(
+            pool_size, dtype=torch.int32, device=cg_device
+        )
+        self._cg_active_eoc_countdown = torch.full(
+            (pool_size,), -1, dtype=torch.int32, device=cg_device
+        )
+        self._cg_active_generation_done = torch.zeros(
+            pool_size, dtype=torch.bool, device=cg_device
+        )
+        self._cg_active_last_codes = torch.zeros(
+            pool_size, num_codebooks, dtype=torch.long, device=cg_device
+        )
 
     def get_input_embeddings(self) -> nn.Embedding:
         return self.backbone.get_input_embeddings()
@@ -385,23 +400,43 @@ class HiggsTTSModel(nn.Module):
 
         logits_BNV = self.modality_head.generate(hidden_states_BD).to(torch.float32)
 
-        row_indices = self._cg_row_indices[:batch_size]
         temperature = self._cg_temperature[:batch_size]
         top_p = self._cg_top_p[:batch_size]
         top_k_buf = self._cg_top_k_buf[:batch_size]
 
+        delay_count_B = self._cg_active_delay_count[:batch_size].to(torch.long)
+        eoc_countdown_B = self._cg_active_eoc_countdown[:batch_size].to(torch.long)
+        generation_done_B = self._cg_active_generation_done[:batch_size]
+        last_codes_BN_in = self._cg_active_last_codes[:batch_size]
+
         # Snapshot done flags BEFORE the step; STOP_CODE rows mustn't be
         # appended to output_codes downstream.
-        self._cg_was_done[:batch_size] = self._sampler_pool.generation_done[row_indices]
+        self._cg_was_done[:batch_size] = generation_done_B
 
-        codes_BN = batched_step(
+        (
+            codes_BN,
+            new_delay_count_B,
+            new_eoc_countdown_B,
+            new_generation_done_B,
+            new_last_codes_BN,
+        ) = batched_step_direct(
             logits_BNV,
-            self._sampler_pool,
-            row_indices,
+            delay_count_B,
+            eoc_countdown_B,
+            generation_done_B,
+            last_codes_BN_in,
             temperature=temperature,
             top_p=top_p,
             top_k_buf=top_k_buf,
         )
+        self._cg_active_delay_count[:batch_size] = new_delay_count_B.to(
+            self._cg_active_delay_count.dtype
+        )
+        self._cg_active_eoc_countdown[:batch_size] = new_eoc_countdown_B.to(
+            self._cg_active_eoc_countdown.dtype
+        )
+        self._cg_active_generation_done[:batch_size] = new_generation_done_B
+        self._cg_active_last_codes[:batch_size] = new_last_codes_BN
         self._cg_codes_BN[:batch_size] = codes_BN
 
         text_vocab_size = self.backbone.config.vocab_size
@@ -483,17 +518,13 @@ class HiggsTTSModel(nn.Module):
     def _decode_step_embeds_cg(
         self, input_ids: torch.Tensor, batch_size: int
     ) -> torch.Tensor:
-        """Graph-capture-friendly decode-step embedding lookup.
-
-        Same semantics as :meth:`_decode_step_embeds` but reads
-        ``row_indices`` from :attr:`_cg_row_indices` instead of the
-        Python ``_rid_to_row`` dict, so the body is pure tensor ops.
+        """Graph-capture-friendly decode-step embedding lookup; reads from
+        shadow `_cg_active_*[:bs]` populated by ``prepare_decode``.
         """
-        rows = self._cg_row_indices[:batch_size]
-        delay_counts = self._sampler_pool.delay_count[rows].to(torch.long)
+        delay_counts = self._cg_active_delay_count[:batch_size].to(torch.long)
         has_codes = (delay_counts > 0).unsqueeze(-1)
 
-        last_codes_BN = self._sampler_pool.last_codes[rows].to(torch.long)
+        last_codes_BN = self._cg_active_last_codes[:batch_size].to(torch.long)
         fused_embeds = self.multimodal_embedding.modality_embedding_0(last_codes_BN)
 
         text_embeds = self.backbone.model.embed_tokens(input_ids)

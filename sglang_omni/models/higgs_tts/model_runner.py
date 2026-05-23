@@ -104,6 +104,15 @@ class HiggsTTSModelRunner(ModelRunner):
             top_k_vals, dtype=torch.long, device=model._cg_top_k_buf.device
         )
 
+        # Shadow-buffer: copy active rows' state out of the pool so the CUDA graph can read by index.
+        rows_t = model._cg_row_indices[:bs]
+        pool = model._sampler_pool
+        model._cg_active_delay_count[:bs] = pool.delay_count[rows_t]
+        model._cg_active_eoc_countdown[:bs] = pool.eoc_countdown[rows_t]
+        model._cg_active_generation_done[:bs] = pool.generation_done[rows_t]
+        model._cg_active_last_codes[:bs] = pool.last_codes[rows_t]
+
+
     @staticmethod
     def _extract_decode_sampling_params(forward_batch, n_real: int):
         """Pull per-row temperature / top_p / top_k lists off sglang's
@@ -165,13 +174,18 @@ class HiggsTTSModelRunner(ModelRunner):
             raise ValueError(
                 f"forward_batch.batch_size ({bs}) < len(requests) ({n_real})"
             )
+        
+        rows_t = model._cg_row_indices[:n_real]
+        pool = model._sampler_pool
+        pool.delay_count[rows_t] = model._cg_active_delay_count[:n_real]
+        pool.eoc_countdown[rows_t] = model._cg_active_eoc_countdown[:n_real]
+        pool.generation_done[rows_t] = model._cg_active_generation_done[:n_real]
+        pool.last_codes[rows_t] = model._cg_active_last_codes[:n_real]
 
         was_done_cpu = model._cg_was_done[:n_real].cpu().tolist()
         codes_BN_cpu = model._cg_codes_BN[:n_real].detach().cpu().clone()
         gen_done_after_cpu = (
-            model._sampler_pool.generation_done[model._cg_row_indices[:n_real]]
-            .cpu()
-            .tolist()
+            model._cg_active_generation_done[:n_real].cpu().tolist()
         )
         cb0_per_row: list[int] = []
         for b, sched_req in enumerate(requests):
