@@ -293,14 +293,14 @@ def _apply_model_worker_backend_policy(
             "'auto' so Omni selects a native-FP8-compatible MoE runner."
         )
 
+    server_quantization = getattr(server_args, "quantization", None)
+    fp8_gemm_backend = getattr(server_args, "fp8_gemm_runner_backend", None)
     logger.info(
-        "Configured SGLang backend policy: arch=%s effective_quantization=%s "
-        "server_quantization=%s moe_runner_backend=%s fp8_gemm_backend=%s",
-        model_arch_override,
-        effective_quantization,
-        getattr(server_args, "quantization", None),
-        getattr(server_args, "moe_runner_backend", None),
-        getattr(server_args, "fp8_gemm_runner_backend", None),
+        f"Configured SGLang backend policy: arch={model_arch_override} "
+        f"effective_quantization={effective_quantization} "
+        f"server_quantization={server_quantization} "
+        f"moe_runner_backend={moe_runner_backend} "
+        f"fp8_gemm_backend={fp8_gemm_backend}"
     )
     return effective_quantization
 

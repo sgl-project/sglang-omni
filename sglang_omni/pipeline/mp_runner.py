@@ -360,10 +360,8 @@ class MultiProcessPipelineRunner:
 
             self._groups = groups
             if self._config.env_defaults:
-                logger.info(
-                    "Configured stage process env defaults: %s",
-                    ", ".join(sorted(self._config.env_defaults)),
-                )
+                env_names = ", ".join(sorted(self._config.env_defaults))
+                logger.info(f"Configured stage process env defaults: {env_names}")
             for group in self._groups:
                 group.spawn(ctx)
 
