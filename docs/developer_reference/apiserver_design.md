@@ -99,6 +99,10 @@ current multi-process launcher path does not mount them.
 }
 ```
 
+`/stop_profile` and `/stop_request_profile` both accept an optional
+`run_id`. Omitting it is a wildcard: every stage stops whatever profiler
+session is currently active.
+
 Request-level events are emitted as JSON lines under
 `<event_dir>/events_<stage>_<pid>.jsonl`. Use `python -m sglang_omni.profiler
 <event_dir>` to derive the timeline / stage / hop reports described in

@@ -354,3 +354,57 @@ def test_emit_with_tensor_metadata_does_not_materialize(tmp_path: Path) -> None:
     summary = events[0]["metadata"]["hidden_states"]
     assert summary["__tensor_summary__"] is True
     assert summary["shape"] == [1024, 4096]
+
+
+# ---------------------------------------------------------------------------
+# Active-stage lifecycle (review finding P3)
+# ---------------------------------------------------------------------------
+
+
+def test_reset_active_stage_without_token_clears_both_thread_local_and_contextvar() -> (
+    None
+):
+    """``reset_active_stage(None)`` must clear the contextvar too.
+
+    Regression for review finding P3: the previous implementation only
+    cleared the ``threading.local`` slot. The contextvar value persisted,
+    so anyone using the helper to scrub state (test fixtures, ad-hoc
+    cleanup) would silently leak the active stage into the next caller
+    in the same context.
+    """
+    from sglang_omni.profiler import event_recorder
+
+    set_active_stage("leaks")
+    # Sanity: both backends are bound.
+    assert event_recorder._active_stage_cv.get() == "leaks"
+    assert getattr(event_recorder._thread_active_stage, "stage", None) == "leaks"
+
+    reset_active_stage(None)
+
+    # Both must now be empty.
+    assert (
+        event_recorder._active_stage_cv.get() is None
+    ), "contextvar still bound after reset_active_stage(None)"
+    assert getattr(event_recorder._thread_active_stage, "stage", None) is None
+    # And the public accessor agrees.
+    from sglang_omni.profiler.event_recorder import get_active_stage
+
+    assert get_active_stage() is None
+
+
+def test_reset_active_stage_with_token_restores_previous_value() -> None:
+    """The ``Token`` form must still work — the standard ContextVar contract."""
+    from sglang_omni.profiler.event_recorder import get_active_stage
+
+    outer_token = set_active_stage("outer")
+    try:
+        inner_token = set_active_stage("inner")
+        assert get_active_stage() == "inner"
+        reset_active_stage(inner_token)
+        # Reset restores the contextvar to "outer"; thread-local was
+        # blanked, but the contextvar takes precedence in get_active_stage.
+        assert get_active_stage() == "outer"
+    finally:
+        reset_active_stage(outer_token)
+        # After the outer reset, contextvar is back to its initial None.
+        assert get_active_stage() is None

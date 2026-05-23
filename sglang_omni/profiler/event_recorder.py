@@ -70,9 +70,18 @@ def set_active_stage(stage: str | None) -> contextvars.Token | None:
 
 
 def reset_active_stage(token: contextvars.Token | None) -> None:
-    """Reverse a prior :func:`set_active_stage` call."""
+    """Reverse a prior :func:`set_active_stage` call.
+
+    With a ``token``, restores the previous contextvar value (the standard
+    ``ContextVar.reset`` contract). Without a token, clears the binding by
+    setting the contextvar back to ``None`` — this is the form fixtures
+    use to scrub leaked active-stage state between tests, so it must
+    actually clear the contextvar and not just the ``threading.local``.
+    """
     if token is not None:
         _active_stage_cv.reset(token)
+    else:
+        _active_stage_cv.set(None)
     _thread_active_stage.stage = None
 
 
@@ -319,6 +328,10 @@ def _json_default(obj: Any) -> Any:
     dtype = getattr(obj, "dtype", None)
     if shape is not None and dtype is not None:
         # 0-D tensor / array → behaves like a scalar.
+        # ``len(shape)`` works for ``torch.Size`` and ``numpy.ndarray.shape``
+        # (tuples). Some duck-typed objects expose a ``.shape`` that isn't
+        # sized — ``len()`` raises ``TypeError`` on those, and we fall
+        # through to the summary path instead of crashing the recorder.
         try:
             if len(shape) == 0 and hasattr(obj, "item"):
                 return obj.item()
