@@ -10,8 +10,8 @@ tests/
 │   └── s2pro/
 ├── test_model/
 │   ├── conftest.py
-│   ├── test_omni_router_ci.py
 │   ├── test_qwen3_omni_*_ci.py
+│   ├── test_qwen3_omni_videoamme_talker_tp2_ci.py
 │   └── test_s2pro_tts_ci.py
 └── unit_test/
     ├── fixtures/
@@ -33,9 +33,11 @@ tests/
     │   ├── test_stage_process_env.py
     │   └── test_stage_streaming.py
     ├── qwen3_omni/
+    │   ├── test_cli.py
     │   ├── test_code2wav.py
     │   ├── test_colocation_config.py
     │   ├── test_config_manager.py
+    │   ├── test_example_launcher.py
     │   ├── test_logit_shaping.py
     │   ├── test_pipeline.py
     │   ├── test_sglang_ar_budget.py
@@ -47,16 +49,20 @@ tests/
     │   ├── test_thinker.py
     │   ├── test_tokenizer.py
     │   └── test_tp.py
+    ├── qwen3_tts/
+    │   └── test_pipeline.py
     ├── router/
     │   ├── test_app.py
     │   └── test_core.py
     ├── serve/
     │   └── test_openai_api.py
-    └── fishaudio_s2_pro/
-        ├── test_pipeline.py
-        ├── test_streaming_vocoder.py
-        ├── test_tts.py
-        └── test_vocoder.py
+    ├── fishaudio_s2_pro/
+    │   ├── test_pipeline.py
+    │   ├── test_streaming_vocoder.py
+    │   ├── test_tts.py
+    │   └── test_vocoder.py
+    └── voxtral_tts/
+        └── test_pipeline.py
 ```
 
 ## How To Add A Test
@@ -133,11 +139,10 @@ pytest tests/test_model -m benchmark -v -s
 
 Relevant model CI ownership:
 
-- `qwen3_omni_thinker_server` / `qwen3_omni_talker_server`: start a real
-  Qwen3-Omni server and yield a `ServerHandle` from `conftest.py`.
-- `test_omni_router_ci.py`: starts two colocated Qwen3-Omni workers behind the
-  router and gates the full client-to-router-to-worker SeedTTS path, including
-  per-worker traffic, speed, and WER.
+- `qwen3_omni_thinker_server` / `qwen3_omni_talker_server`: expose the shared
+  router-backed Qwen3-Omni endpoint from `conftest.py`.
+- `test_qwen3_omni_tts_ci.py`: gates the SeedTTS speed/WER path through the
+  router and verifies both colocated workers receive traffic.
 - `qwen3_omni_vision_sglang_env`: session-scoped SGLang dist + DP-attention
   init from `conftest.py`, shared by every Qwen3-Omni vision-encoder benchmark
   module — avoids re-initializing the process-global TP group when the combined
@@ -183,11 +188,14 @@ that happened to contain an older version of the test.
 - `unit_test/qwen3_omni/` Qwen3-Omni unit tests:
 
   - public CLI/config behavior
+  - example launcher config contract (TP/GPU/mem-fraction overrides)
   - SGLang argument builders
   - memory flag contracts
   - colocation config and SGLang AR budget contracts
   - `PipelineState` request builders
-  - talker behavior
+  - talker behavior, including projected prefill tensor storage/slicing, decode
+    feedback/text FIFO consumption, and replay of generated-token input embeds
+    after decode retract
   - Code2Wav streaming/cleanup behavior
   - logit-shaping helpers (e.g. repetition penalty) numerical equivalence with the original per-row scalar formulas.
 
@@ -203,6 +211,14 @@ that happened to contain an older version of the test.
   - talker executor request gating and result-builder modality merging
   - Bailing tokenizer loader fallback for vocab compatibility
   - TP topology validation (rank-specific stage specs, talker/thinker GPU collision detection, server_args alignment before infra init).
+
+- `unit_test/qwen3_tts/`: Qwen3-TTS Base unit tests:
+  - pipeline config and registry contracts
+  - OmniScheduler-backed AR stage factory wiring
+  - request mapping for `ref_audio` / `ref_text` and `references`
+  - model-owned default preservation for language and sampling parameters
+  - voice-clone reference validation
+  - pipeline payload state serialization.
 
 - `unit_test/router/`: SGLang-Omni Router unit tests:
   - router CLI/config behavior
@@ -221,6 +237,12 @@ that happened to contain an older version of the test.
   - model-runner state transitions
   - vocoder batching/trim behavior
   - streaming vocoder chunking, flush, and abort behavior.
+
+- `unit_test/voxtral_tts/`: Voxtral-TTS unit tests:
+  - pipeline config and registry contracts
+  - current `StageConfig` schema wiring
+  - SGLang-backed generation and vocoder GPU placement contracts
+  - terminal stage behavior.
 
 - `unit_test/fixtures/`: Shared fakes. Single-test
   helpers should stay local until a second test needs them.

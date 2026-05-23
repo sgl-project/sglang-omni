@@ -1,10 +1,11 @@
+# SPDX-License-Identifier: Apache-2.0
 """Pipeline configuration for Voxtral TTS."""
 
 from __future__ import annotations
 
 from typing import ClassVar
 
-from sglang_omni.config import ExecutorConfig, PipelineConfig, RelayConfig, StageConfig
+from sglang_omni.config import PipelineConfig, StageConfig
 from sglang_omni.models.voxtral_tts.pipeline.next_stage import (
     GENERATION_STAGE,
     PREPROCESSING_STAGE,
@@ -22,34 +23,25 @@ class VoxtralTTSPipelineConfig(PipelineConfig):
     stages: list[StageConfig] = [
         StageConfig(
             name=PREPROCESSING_STAGE,
-            executor=ExecutorConfig(
-                factory=f"{_PKG}.stages.create_preprocessing_executor",
-            ),
-            get_next=f"{_PKG}.next_stage.preprocessing_next",
-            relay=RelayConfig(device="cpu"),
+            process="pipeline",
+            factory=f"{_PKG}.stages.create_preprocessing_executor",
+            next=GENERATION_STAGE,
         ),
         StageConfig(
             name=GENERATION_STAGE,
-            executor=ExecutorConfig(
-                factory=f"{_PKG}.stages.create_generation_executor",
-                args={
-                    "device": "cuda:0",
-                    "max_new_tokens": 4096,
-                },
-            ),
-            get_next=f"{_PKG}.next_stage.generation_next",
-            relay=RelayConfig(device="cpu"),
+            process="pipeline",
+            factory=f"{_PKG}.stages.create_generation_executor",
+            factory_args={"device": "cuda:0", "max_new_tokens": 4096},
+            gpu=0,
+            next=VOCODER_STAGE,
         ),
         StageConfig(
             name=VOCODER_STAGE,
-            executor=ExecutorConfig(
-                factory=f"{_PKG}.stages.create_vocoder_executor",
-                args={
-                    "device": "cuda:0",
-                },
-            ),
-            get_next=f"{_PKG}.next_stage.vocoder_next",
-            relay=RelayConfig(device="cpu"),
+            process="pipeline",
+            factory=f"{_PKG}.stages.create_vocoder_executor",
+            factory_args={"device": "cuda:0"},
+            gpu=0,
+            terminal=True,
         ),
     ]
 

@@ -38,8 +38,12 @@ from benchmarks.benchmarker.utils import (
     process_sse_line,
     save_json_results,
 )
-from benchmarks.dataset.seedtts import SampleInput
+from benchmarks.dataset.seedtts import SampleInput, load_seedtts_samples
 from benchmarks.metrics.performance import build_speed_results
+from benchmarks.metrics.speaker_similarity import WavLMSpeakerSimilarity
+from benchmarks.metrics.speaker_similarity_assets import (
+    ensure_speaker_similarity_assets,
+)
 from benchmarks.metrics.wer import (
     calculate_asr_speed_metrics,
     calculate_wer_metrics,
@@ -50,6 +54,7 @@ from benchmarks.metrics.wer import (
 logger = logging.getLogger(__name__)
 
 TEXT_PREVIEW_LENGTH = 60
+SPEAKER_SIMILARITY_BATCH_SIZE = 8
 
 
 # ---------------------------------------------------------------------------
@@ -298,6 +303,173 @@ def save_wer_results(
                     o.error or "",
                 ]
             )
+
+
+class SeedttsSimilarityConfig(Protocol):
+    """Subset of config fields the shared speaker-similarity pipeline reads.
+
+    Both :class:`OmniSeedttsBenchmarkConfig` and
+    :class:`TtsSeedttsBenchmarkConfig` satisfy this protocol via their
+    dataclass fields; entry-point parsers default ``similarity_checkpoint``
+    to ``None`` when the user does not pass ``--similarity-checkpoint``.
+    """
+
+    model: str
+    meta: str
+    output_dir: str
+    device: str
+    similarity_checkpoint: str | None
+
+
+def run_seedtts_similarity(
+    config: SeedttsSimilarityConfig,
+    *,
+    log_per_sample: bool = False,
+) -> dict:
+    """Compute prompt-vs-generated speaker similarity for saved SeedTTS audio."""
+    output_dir = os.path.abspath(config.output_dir)
+    generated_path = os.path.join(output_dir, "generated.json")
+    with open(generated_path) as f:
+        generated: list[dict] = json.load(f)
+    logger.info(f"Loaded {len(generated)} entries from {generated_path}")
+
+    ref_audio_by_id = {
+        sample.sample_id: sample.ref_audio
+        for sample in load_seedtts_samples(config.meta)
+    }
+    device = config.device
+    if "cuda" in device:
+        torch.cuda.set_device(device)
+        logger.info(f"Set speaker-similarity CUDA device to {device}")
+
+    # Partition entries up-front. Only rows that have a successful generation
+    # AND a readable WAV AND a known reference audio AND a readable reference
+    # WAV enter the batch scorer; everything else is recorded as skipped so
+    # the per_sample table stays exhaustive and a generation failure cannot
+    # crash the scorer or contaminate the cosine-similarity batch.
+    scoreable: list[dict] = []
+    skipped_rows: list[dict] = []
+    for entry in generated:
+        sample_id = entry.get("sample_id")
+        wav_path = entry.get("wav_path")
+        ref_audio = ref_audio_by_id.get(sample_id) if sample_id else None
+        if (
+            entry.get("is_success")
+            and isinstance(wav_path, str)
+            and wav_path
+            and os.path.isfile(wav_path)
+            and isinstance(ref_audio, str)
+            and os.path.isfile(ref_audio)
+        ):
+            scoreable.append(entry)
+            continue
+
+        if not entry.get("is_success"):
+            reason = entry.get("error") or "generation reported is_success=False"
+        elif not (isinstance(wav_path, str) and wav_path):
+            reason = "wav_path missing from generated.json entry"
+        elif not os.path.isfile(wav_path):
+            reason = f"wav file not on disk: {wav_path}"
+        elif sample_id not in ref_audio_by_id:
+            reason = f"no reference audio in meta for sample_id {sample_id!r}"
+        else:
+            reason = f"reference audio not on disk: {ref_audio}"
+
+        skipped_rows.append(
+            {
+                "id": sample_id,
+                "ref_audio": ref_audio,
+                "wav_path": wav_path,
+                "speaker_similarity": None,
+                "is_success": False,
+                "error": reason,
+            }
+        )
+
+    if not scoreable:
+        raise RuntimeError(
+            "SeedTTS speaker similarity: no scoreable samples "
+            f"({len(skipped_rows)}/{len(generated)} skipped — see per_sample "
+            f"for details). Refusing to write empty similarity_results.json."
+        )
+
+    assets = ensure_speaker_similarity_assets(
+        finetune_checkpoint_override=config.similarity_checkpoint,
+    )
+    scorer = WavLMSpeakerSimilarity(
+        finetune_checkpoint=assets.finetune_checkpoint,
+        wavlm_base=assets.wavlm_base,
+        device=device,
+    )
+    scored_rows: list[dict] = []
+    scores: list[float] = []
+    for start in tqdm(
+        range(0, len(scoreable), SPEAKER_SIMILARITY_BATCH_SIZE),
+        desc="Speaker similarity",
+    ):
+        batch = scoreable[start : start + SPEAKER_SIMILARITY_BATCH_SIZE]
+        sample_ids = [entry["sample_id"] for entry in batch]
+        ref_audio_paths = [
+            os.path.abspath(ref_audio_by_id[sample_id]) for sample_id in sample_ids
+        ]
+        wav_paths = [os.path.abspath(entry["wav_path"]) for entry in batch]
+        similarities = scorer.score_batch(ref_audio_paths, wav_paths)
+
+        for sample_id, ref_audio, wav_path, similarity in zip(
+            sample_ids,
+            ref_audio_paths,
+            wav_paths,
+            similarities,
+        ):
+            scores.append(similarity)
+            scored_rows.append(
+                {
+                    "id": sample_id,
+                    "ref_audio": ref_audio,
+                    "wav_path": wav_path,
+                    "speaker_similarity": similarity,
+                    "is_success": True,
+                    "error": None,
+                }
+            )
+            if log_per_sample:
+                logger.info(f"[{sample_id}] similarity={similarity:.3f}")
+
+    similarity_mean = sum(scores) / len(scores)
+    metrics = {
+        "speaker_similarity_mean": similarity_mean,
+        "total_samples": len(generated),
+        "evaluated": len(scored_rows),
+        "skipped": len(skipped_rows),
+    }
+    print(
+        "SeedTTS speaker similarity: "
+        f"{similarity_mean:.4f} ({len(scored_rows)}/{len(generated)} evaluated, "
+        f"{len(skipped_rows)} skipped)"
+    )
+    if skipped_rows:
+        logger.warning(
+            "SeedTTS speaker similarity: %d samples skipped "
+            "(see per_sample with is_success=False for details).",
+            len(skipped_rows),
+        )
+
+    per_sample = scored_rows + skipped_rows
+    save_json_results(
+        {
+            "summary": metrics,
+            "config": {
+                "model": config.model,
+                "meta": config.meta,
+                "device": device,
+                "similarity_checkpoint": str(assets.finetune_checkpoint),
+            },
+            "per_sample": per_sample,
+        },
+        config.output_dir,
+        "similarity_results.json",
+    )
+    return {"summary": metrics, "per_sample": per_sample}
 
 
 # ---------------------------------------------------------------------------

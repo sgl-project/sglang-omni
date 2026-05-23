@@ -86,6 +86,7 @@ class SGLModelRunner(ModelRunner):
             S2ProSGLangTextModel,
         )
         from sglang_omni.models.higgs_tts.model import HiggsTTSModel
+        from sglang_omni.models.llada2_uni.components.thinker import LLaDA2MoeModelLM
         from sglang_omni.models.ming_omni.registration import (
             register_ming_hf_config,
             register_ming_model_registry,
@@ -94,6 +95,8 @@ class SGLModelRunner(ModelRunner):
             Qwen3OmniThinkerForCausalLM,
         )
         from sglang_omni.models.qwen3_omni.components.talker import Qwen3OmniTalker
+        from sglang_omni.models.qwen3_tts.sglang_model import Qwen3TTSTalker
+        from sglang_omni.models.voxtral_tts.sglang_model import VoxtralSGLangTTSModel
 
         register_ming_hf_config()
         register_ming_model_registry()
@@ -106,6 +109,9 @@ class SGLModelRunner(ModelRunner):
         ModelRegistry.models["HiggsMultimodalQwen3ForConditionalGeneration"] = (
             HiggsTTSModel
         )
+        ModelRegistry.models["Qwen3TTSTalker"] = Qwen3TTSTalker
+        ModelRegistry.models["VoxtralSGLangTTSModel"] = VoxtralSGLangTTSModel
+        ModelRegistry.models["LLaDA2MoeModelLM"] = LLaDA2MoeModelLM
 
     def _profile_available_bytes(self, pre_model_load_memory: float) -> int:
         """Profile KV-cache headroom for colocated SGLang AR stages.

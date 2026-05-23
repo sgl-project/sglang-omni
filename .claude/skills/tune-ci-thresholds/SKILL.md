@@ -57,11 +57,12 @@ constant-naming convention not covered by `match_metric()` in `tune.py`
   them. Proxy env vars (`http_proxy` etc.) are left alone — the tests'
   own `disable_proxy()` helper strips them for loopback calls, matching
   real CI.
-- No GPU processes holding memory. If all GPUs are busy, precheck
-  fails with the busy PID list and the user must free them. The skill
-  does **not** run `delete_gpu_process.sh` or any other kill — never
-  invoke it on the user's behalf, even if they ask you to "make it
-  work". Tell them which PIDs are busy and stop.
+- No GPU processes holding memory at **precheck** time. If all GPUs are
+  busy, precheck fails with the busy PID list and the user must free them.
+  **During `tune.py run`**, the tool runs `delete_gpu_process.sh` and
+  waits until each selected GPU is **≤ 2048 MiB** before every pytest
+  invocation and retry — this matches CI's per-stage cleanup, but only
+  inside an active calibration run. Precheck itself never kills processes.
 
 If anything's off, `precheck` fails with an actionable message; fix it
 yourself and retry.
@@ -130,15 +131,63 @@ python .claude/skills/tune-ci-thresholds/tune.py --model qwen3-omni-v1 run \
   remain dominated by other work such as preprocessing, long prefill,
   audio synthesis, ASR, or video decoding.
 
-## Monitoring and resume
-- Prefer short polling intervals (about 60-120 seconds) for long
-  calibration jobs. Individual pytest stages usually finish within a
-  few minutes; very long waits hide useful progress.
-- If `run.log` stops changing, inspect the active pytest/server process
-  and the per-test `run{k}.log` before declaring the run hung.
-- On interruptions, resume with the same `--output-dir --resume`; do not
-  rerun completed repeats from scratch unless the run directory is
-  corrupt.
+## Monitoring, failures, and completeness (mandatory)
+
+### Agent polling — never blind-wait
+- **Maximum idle poll interval: 120 seconds (2 minutes).** Never use
+  `block_until_ms` ≥ 50 minutes or any equivalent long sleep while a
+  calibration run is active. Long blind waits hide server crashes and
+  waste hours.
+- While `tune.py run` is in progress, **every 120s at most**:
+  1. Run `python tune.py status --run-dir <run-dir>` and read JSON.
+  2. Tail `<run-dir>/run.log` and the active
+     `<run-dir>/_pytest/<test>/run{k}.log` (last ~30 lines).
+  3. Report `ok/total` completeness and GPU memory to yourself.
+- If `status` shows `pytest_active: false` but completeness is not
+  `complete: true` and the last log lines show **crash / OOM / server
+  startup failure**, do **not** keep waiting — immediately resume:
+  ```
+  python tune.py --model <M> run --output-dir <run-dir> --resume
+  ```
+- If GPU memory is **> 2048 MiB** on any GPU needed for the next run,
+  do not start another pytest — wait for `tune.py` cleanup or run
+  `status` until memory drops.
+
+### tune.py built-in safeguards (v0.4+)
+- **GPU hard gate (< 2 GiB):** no pytest restart unless **every selected
+  GPU** has `memory.used <= 2048 MiB` and no compute apps. Enforced at:
+  1. `_ensure_gpus_free()` — kill stale processes, poll up to 10 min
+  2. `_pick_gpus_for_launch()` — select GPUs only after cleanup
+  3. `_launch_gpu_gate()` — recheck 3s before `pytest` Popen; if memory
+     rose, abort launch and cleanup again
+  4. After every run / before every retry — `_ensure_gpus_free()` again
+  **Never** launch on 17 GiB stale contexts. If gate fails, the run
+  aborts that attempt and retries only after memory drops.
+- **Pytest watchdog:** polls every 30s; kills pytest early when the
+  log shows server crash signatures (OOM, segfault, router/worker death).
+- **Auto-retry passes:** after the first pass, `run` automatically
+  re-executes any stage-run whose metrics are incomplete (up to
+  `--max-passes`, default 10), with GPU cleanup between passes.
+- **Per-run retries:** up to 4 attempts for OOM / crash / GPU-not-clear
+  failures before marking a stage-run incomplete.
+- **`status` subcommand:** machine-readable snapshot for agent polling.
+- **`report` gate:** refuses to write `report.md` unless **every**
+  stage × repeat has complete metrics (`130/130` for full qwen3, etc.).
+
+### Completeness is a hard prerequisite for thresholds
+- **Never** show the apply prompt (step 9) or write thresholds unless
+  `tune.py status --run-dir <run-dir>` returns `"complete": true`.
+- Partial runs may exist on disk for debugging, but they are **not**
+  valid calibration artifacts. Do not infer worst-of-N from missing runs.
+- If completeness fails after `--max-passes`, relay the `missing` list
+  from `status` JSON and `--resume` — do not proceed to apply.
+
+### Resume
+- On interruptions or failed stage-runs, resume with the same
+  `--output-dir --resume`; completed stage-runs are skipped, incomplete
+  ones are purged and re-run automatically.
+- Do not rerun completed repeats from scratch unless the run directory
+  is corrupt.
 
 ## Steps I follow
 1. Run `python .claude/skills/tune-ci-thresholds/tune.py models-list` to
@@ -200,17 +249,22 @@ python .claude/skills/tune-ci-thresholds/tune.py --model qwen3-omni-v1 run \
 4. State plan in one line:
    `Running <M>: <stages>, <N> repeats, est. <T>.`
    No further confirmation.
-5. **Before** launching run, tell the user the output dir and the two
-   tailable log paths so they can watch mid-run:
+5. **Before** launching run, tell the user the output dir and the log
+   paths, plus the **2-minute polling contract**:
    ```
    Output dir: <run-dir>
    tail -f <run-dir>/run.log                               # tune.py progress
    tail -f <run-dir>/_pytest/<test>/run1.log               # pytest subprocess
+   Agent polls every ≤120s:
+     python tune.py status --run-dir <run-dir>
    ```
    Then run `python tune.py --model <M> run --stages ... --repeats N
-   --output-dir <run-dir>`. Stream progress lines. Do not interrupt
-   the user mid-run.
-6. When the run completes, open `<run-dir>/report.md`.
+   --output-dir <run-dir>`. While the subprocess runs, poll with
+   `status` every **≤120s** — never blind-wait ≥50 min. On crash or
+   incomplete metrics, `--resume` immediately.
+6. When `tune.py run` exits 0, verify completeness once more:
+   `python tune.py status --run-dir <run-dir>` must show
+   `"complete": true`. Then open `<run-dir>/report.md`.
 7. For every `{{CONTEXT:<stage_key>}}` placeholder:
    a. Load `models/<M>/stages.yaml`; find that stage's `test` path and
       `context_vars`.
@@ -228,18 +282,19 @@ python .claude/skills/tune-ci-thresholds/tune.py --model qwen3-omni-v1 run \
    canonical calibration artifact: it must keep the full per-run tables,
    worst-of-N rows, provenance, context lines, and (after apply) the
    applied-changes table. Do not replace it with a lightweight summary.
-9. **Apply prompt — strictly after the entire run is done.** This
-   prompt is the LAST thing the skill does, and must only fire once
+9. **Apply prompt — strictly after the entire run is done AND complete.**
+   This prompt is the LAST thing the skill does, and must only fire once
    ALL of the following have completed for the whole `--stages` set:
-   `tune.py run` has exited with all repeats finished, `report.md`
-   has been written, every `{{CONTEXT:...}}` placeholder in step 7
-   has been resolved, and step 8 has shown the user the report
-   path. Never ask between stages, between repeats, on partial
-   failure, or while any pytest subprocess is still alive — the
-   user may be running unattended for an hour+ and must not be
-   interrupted mid-run. If the run was aborted (Ctrl+C, precheck
-   failure, exit code from `tune.py run`, or any stage with no
-   completed repeats), skip step 9 entirely.
+   `tune.py run` has exited with exit code 0,
+   `tune.py status --run-dir <run-dir>` shows `"complete": true`
+   (every stage × repeat has full metrics — e.g. 130/130 for full qwen3),
+   `report.md` has been written, every `{{CONTEXT:...}}` placeholder in
+   step 7 has been resolved, and step 8 has shown the user the report
+   path. Never ask between stages, between repeats, on partial failure,
+   or while any pytest subprocess is still alive — the user may be
+   running unattended for an hour+ and must not be interrupted mid-run.
+   If the run was aborted, completeness check failed, or any stage-run
+   is missing metrics, skip step 9 entirely.
 
    Use AskUserQuestion to ask exactly once which **apply mode** to use:
      - `report` — only the report, no test files touched
@@ -251,17 +306,25 @@ python .claude/skills/tune-ci-thresholds/tune.py --model qwen3-omni-v1 run \
    For `smart` and `full`, first run
    `python tune.py apply-plan --run-dir <run-dir>` to get a JSON with,
    per metric: `source_kind` (bare / nested), `symbol`, `subkey`,
-   `concurrency`, `worst_op`, `per_run_raw`, `worst_rounded` (already
-   rounded to `display.digits`), `current_raw`, and `direction`
-   (`tightens` / `loosens` / `equal` / `unknown`). By default, use
-   `worst_rounded` as the value to write — never re-round, never
-   multiply by `scale`.
-   For non-speed pass/fail thresholds, do not allow display rounding to
-   make the written threshold stricter than the observed worst-of-N: for
-   `worst_op == "min"` the written value must be `<= worst_raw`, and for
-   `worst_op == "max"` the written value must be `>= worst_raw`. If
-   `worst_rounded` violates that bound, write `worst_raw` with enough
-   decimal places to preserve the observed value.
+   `concurrency`, `worst_op`, `per_run_raw`, `worst_raw`, `worst_rounded`
+   (display-only), `write_value` (the literal to write), `current_raw`,
+   and `direction` (`tightens` / `loosens` / `equal` / `unknown`).
+
+   **Which value to write:**
+     - **`wer` and `accuracy`:** always `write_value` (= `worst_raw` exactly).
+       **Never** round WER/accuracy to `display.digits` — report percentages
+       use 2 decimal places for readability, but test-file literals must
+       preserve the full observed float so a max-bound WER threshold is
+       never accidentally tightened (e.g. 0.010596 → 0.01).
+     - **`speed`:** use `write_value` from apply-plan (rounded unless that
+       would tighten beyond `worst_raw`). Never re-round or multiply by
+       `scale`.
+
+   Bounded write rules (enforced in `write_value`):
+     - `worst_op == "min"`: written value must be `<= worst_raw`
+     - `worst_op == "max"`: written value must be `>= worst_raw`
+     If display rounding would violate either bound, `write_value` falls
+     back to `worst_raw` with full precision.
 
    **Mode `full`**: for every metric in every non-docs stage, edit the
    test file using the rules in (b) below, no questions asked.
@@ -276,11 +339,11 @@ python .claude/skills/tune-ci-thresholds/tune.py --model qwen3-omni-v1 run \
        (one per metric) showing:
          - the per-run raw values from `per_run_raw`
          - the current literal in the test file (`current_raw`)
-         - the proposed bounded worst-of-N value
+         - the proposed value (`write_value` — full-precision for wer/acc)
          - direction tag
        with options:
          1. `Keep current` — leave the literal as-is
-         2. `Apply worst-of-N (<value>)` — write the proposed bounded worst-of-N value
+         2. `Apply worst-of-N (<write_value>)` — write `write_value`
          3. `Custom value` — the user supplies a number; write it
             verbatim after validating it parses as a float
        Always include the "Other" free-text fallback (the
@@ -290,16 +353,19 @@ python .claude/skills/tune-ci-thresholds/tune.py --model qwen3-omni-v1 run \
 
    (b) **Edit rules** (used by both `full` and `smart`'s auto-apply
    path, and after the user accepts in interactive prompts):
+     - Write **`write_value`** from `apply-plan` — never `worst_rounded`
+       directly, and never re-format with `display.digits`.
      - **Bare `source`** (no `[...]`), e.g. `MMMU_MIN_ACCURACY`:
-       replace the RHS literal of `MMMU_MIN_ACCURACY = <old>`.
+       replace the RHS literal of `MMMU_MIN_ACCURACY = <old>` with
+       `write_value`.
      - **Nested `source`**, e.g. `_MMMU_P95['throughput_qps']`:
        use the `concurrency` field from `apply-plan` output, then
        replace the entry under
-       `_MMMU_P95[<C>]["throughput_qps"]`. If `concurrency` is null
-       (no `CONCURRENCY` symbol in the test file) and the dict has
-       a single key, fall back to that key; if multiple keys exist
-       and `concurrency` is null, abort the apply step for that
-       metric and warn the user.
+       `_MMMU_P95[<C>]["throughput_qps"]` with `write_value`. If
+       `concurrency` is null (no `CONCURRENCY` symbol in the test file)
+       and the dict has a single key, fall back to that key; if multiple
+       keys exist and `concurrency` is null, abort the apply step for
+       that metric and warn the user.
      - For any metric whose `direction` came back `unknown` (couldn't
        parse current literal — usually means the test file diverged
        from `stages.yaml`), do not edit; warn and continue.
@@ -376,6 +442,9 @@ python .claude/skills/tune-ci-thresholds/tune.py --model qwen3-omni-v1 run \
 - Run `apply_slack` or generate patch files
 - Commit or push without explicit user authorization
 - Edit test files outside of the explicit apply prompt (step 9)
+- Write ad-hoc apply scripts that re-round metrics — always use
+  `apply-plan`'s `write_value` field when editing test files
+- Round WER or accuracy thresholds to `display.digits` (report-only)
 - Ask mid-run for confirmation. (I may ask once up front for missing
   model/stages/repeats — step 2 — and once at the end for the apply
   prompt — step 9. No other questions.)
@@ -385,6 +454,8 @@ python .claude/skills/tune-ci-thresholds/tune.py --model qwen3-omni-v1 run \
 .claude/skills/tune-ci-thresholds/
 ├── SKILL.md
 ├── tune.py                              # CLI; METRIC_SPECS + JSON extractor
+│                                        # subcommands: run, report, status,
+│                                        # apply-plan, precheck, discover
 └── models/
     ├── qwen3-omni-v1/                   # v1 pipeline (qwen3-omni)
     │   ├── config.yaml

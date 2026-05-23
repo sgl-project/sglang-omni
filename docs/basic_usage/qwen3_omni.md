@@ -29,6 +29,18 @@ sgl-omni serve \
   --port 8008
 ```
 
+For MMSU-style audio-input / text-output benchmarks with short requests, use
+the fused text-path config so the full text path stays inside one worker
+process:
+
+```bash
+sgl-omni serve \
+  --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct \
+  --config examples/configs/qwen3_omni_mmsu.yaml \
+  --text-only \
+  --port 8008
+```
+
 ### Image and Text Input
 
 Send an image with a text question to get a text response.
@@ -159,7 +171,19 @@ Speech mode runs the full 9-stage pipeline across multiple GPUs. It produces bot
 
 ### Launch the Server
 
-Speech mode requires multiple GPUs. Use the example script with GPU placement control:
+Speech mode can run as a colocated one-GPU worker using the colocated config:
+
+```bash
+sgl-omni serve \
+  --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct \
+  --config examples/configs/qwen3_omni_colocated_h20.yaml \
+  --colocate \
+  --port 8008
+```
+
+Use `examples/configs/qwen3_omni_colocated_h200.yaml` on single-H200 workers.
+
+For manual multi-GPU placement, use the example script:
 
 ```bash
 python examples/run_qwen3_omni_speech_server.py \
@@ -171,7 +195,7 @@ python examples/run_qwen3_omni_speech_server.py \
   --port 8008
 ```
 
-Or use the CLI without `--text-only` (defaults to speech mode):
+Or use the CLI without `--text-only` for the standard speech pipeline:
 
 ```bash
 sgl-omni serve \

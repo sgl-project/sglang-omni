@@ -12,7 +12,10 @@ from sglang_omni.config import (
     resolve_stage_factory_args,
 )
 from sglang_omni.config.manager import ConfigManager
-from sglang_omni.models.qwen3_omni.config import Qwen3OmniSpeechColocatedPipelineConfig
+from sglang_omni.models.qwen3_omni.config import (
+    Qwen3OmniPipelineConfig,
+    Qwen3OmniSpeechColocatedPipelineConfig,
+)
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 
@@ -89,8 +92,8 @@ def test_config_manager_rejects_trailing_key_without_value() -> None:
         )
 
 
-def test_qwen3_omni_colocated_example_config_loads_and_plans() -> None:
-    config_path = _REPO_ROOT / "examples" / "configs" / "qwen3_omni_colocated.yaml"
+def test_qwen3_omni_h20_colocated_example_config_loads_and_plans() -> None:
+    config_path = _REPO_ROOT / "examples" / "configs" / "qwen3_omni_colocated_h20.yaml"
     config_text = config_path.read_text()
 
     manager = ConfigManager.from_file(str(config_path))
@@ -101,7 +104,7 @@ def test_qwen3_omni_colocated_example_config_loads_and_plans() -> None:
     assert "stages:" not in config_text
     assert "factory:" not in config_text
     assert isinstance(config, Qwen3OmniSpeechColocatedPipelineConfig)
-    assert config.name == "qwen3-omni-colocated"
+    assert config.name == "qwen3-omni-colocated-h20"
     assert plan.gpus[0].total_gpu_memory_fraction == pytest.approx(0.94)
     assert [group.name for group in topology.groups] == [
         "preprocessing",
@@ -140,6 +143,32 @@ def test_qwen3_omni_colocated_example_config_loads_and_plans() -> None:
     }
 
 
+def test_qwen3_omni_mmsu_example_config_uses_text_pipeline() -> None:
+    config_path = _REPO_ROOT / "examples" / "configs" / "qwen3_omni_mmsu.yaml"
+
+    manager = ConfigManager.from_file(str(config_path))
+    config = manager.config
+    plan = build_stage_placement_plan(config)
+    thinker_args = resolve_stage_factory_args(_stage(config, "thinker"), config)
+
+    assert isinstance(config, Qwen3OmniPipelineConfig)
+    assert config.name == "qwen3-omni-mmsu"
+    assert [stage.name for stage in config.stages] == [
+        "preprocessing",
+        "image_encoder",
+        "audio_encoder",
+        "mm_aggregate",
+        "thinker",
+        "decode",
+    ]
+    assert {stage.process for stage in config.stages} == {"pipeline"}
+    assert "talker_ar" not in {stage.name for stage in config.stages}
+    assert "code2wav" not in {stage.name for stage in config.stages}
+    assert plan.gpus[0].total_gpu_memory_fraction == pytest.approx(0.8)
+    assert thinker_args["total_gpu_memory_fraction"] == pytest.approx(0.75)
+    assert thinker_args["server_args_overrides"]["max_running_requests"] == 4
+
+
 def test_qwen_preprocessing_runtime_video_fps_resolves_to_factory_arg() -> None:
     config = Qwen3OmniSpeechColocatedPipelineConfig(model_path="dummy")
     preprocessing = _stage(config, "preprocessing")
@@ -150,8 +179,8 @@ def test_qwen_preprocessing_runtime_video_fps_resolves_to_factory_arg() -> None:
     assert args["video_fps"] == 2.0
 
 
-def test_colocated_example_reserve_keeps_raw_budget_in_resolved_config() -> None:
-    config_path = _REPO_ROOT / "examples" / "configs" / "qwen3_omni_colocated.yaml"
+def test_h20_colocated_example_reserve_keeps_raw_budget_in_resolved_config() -> None:
+    config_path = _REPO_ROOT / "examples" / "configs" / "qwen3_omni_colocated_h20.yaml"
     config = ConfigManager.from_file(str(config_path)).config
 
     apply_encoder_mem_reserve_cli_override(

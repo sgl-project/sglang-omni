@@ -24,7 +24,7 @@ Our core features include:
    :caption: Basic Usage
 
    basic_usage/qwen3_omni.md
-   basic_usage/tts_s2pro.md
+   basic_usage/tts.md
    basic_usage/omni_router.md
 
 

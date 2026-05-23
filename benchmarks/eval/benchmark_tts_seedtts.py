@@ -135,6 +135,7 @@ from benchmarks.metrics.performance import (
 from benchmarks.tasks.tts import (
     build_base_url,
     make_tts_send_fn,
+    run_seedtts_similarity,
     run_seedtts_transcribe,
     save_generated_audio_metadata,
     save_speed_results,
@@ -178,6 +179,7 @@ class TtsSeedttsBenchmarkConfig:
     # Transcribe phase
     lang: str = "en"
     device: str = "cuda:0"
+    similarity_checkpoint: str | None = None
 
 
 def _build_generation_kwargs(config: TtsSeedttsBenchmarkConfig) -> dict:
@@ -315,6 +317,7 @@ def _config_from_args(args: argparse.Namespace) -> TtsSeedttsBenchmarkConfig:
         disable_tqdm=args.disable_tqdm,
         lang=args.lang,
         device=args.device,
+        similarity_checkpoint=args.similarity_checkpoint,
     )
 
 
@@ -417,6 +420,14 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         help="Device for ASR model (transcribe phase).",
     )
     parser.add_argument(
+        "--similarity-checkpoint",
+        type=str,
+        default=None,
+        help="Optional path to a custom fine-tuned WavLM checkpoint. "
+        "If omitted, the official weights are downloaded into a local cache "
+        "directory (override the cache root with SEEDTTS_SIM_CACHE_DIR).",
+    )
+    parser.add_argument(
         "--server-timeout",
         type=int,
         default=1200,
@@ -434,6 +445,11 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Only run ASR transcription and WER on existing output-dir.",
     )
+    mode.add_argument(
+        "--similarity-only",
+        action="store_true",
+        help="Only run speaker similarity on existing output-dir.",
+    )
     return parser
 
 
@@ -444,6 +460,10 @@ def main() -> None:
 
     if args.save_audio:
         logger.info("--save-audio is a no-op: the unified benchmark always saves WAVs.")
+
+    if args.similarity_only:
+        run_seedtts_similarity(config)
+        return
 
     if args.transcribe_only:
         run_tts_seedtts_transcribe(config)

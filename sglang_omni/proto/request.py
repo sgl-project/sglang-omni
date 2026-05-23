@@ -23,6 +23,7 @@ class RequestInfo:
     request_id: str
     state: RequestState = RequestState.PENDING
     current_stage: str | None = None
+    terminal_stages: set[str] | None = None
     result: Any = None
     error: str | None = None
 

@@ -24,7 +24,7 @@ permissions:
 #        ├─► stage-8-videomme-talker
 #        ├─► stage-9-videoamme
 #        ├─► stage-10-videoamme-talker
-#        └─► stage-11-colocated-router
+#        └─► stage-11-thinker-tp2
 # All 11 stages run in parallel after docs passes — they are independent.
 
 jobs:
@@ -110,10 +110,10 @@ jobs:
           stage-label: thinker-length
 
   stage-2-tts:
-    name: stage 2 - TTS speed + WER
+    name: stage 2 - TTS speed + WER + SIM
     needs: docs
     runs-on: [self-hosted]
-    timeout-minutes: 15
+    timeout-minutes: 25
     container:
       image: frankleeeee/sglang-omni:dev
       options: --gpus all --rm -v /dev/shm:/dev/shm
@@ -125,7 +125,16 @@ jobs:
         with:
           venv-name: omni-qwen3
 
-      - name: Run TTS CI (speed + WER)
+      - name: Prepare speaker similarity assets
+        shell: bash
+        run: |
+          source omni-qwen3/bin/activate
+          python -m benchmarks.metrics.speaker_similarity_assets --warm-cache
+        env:
+          HF_ENDPOINT: https://hf-mirror.com
+          SEEDTTS_SIM_CACHE_DIR: /github/home/seedtts-wavlm-sim
+
+      - name: Run TTS CI (speed + WER + SIM)
         shell: bash
         run: |
           source omni-qwen3/bin/activate
@@ -134,16 +143,18 @@ jobs:
         env:
           HF_ENDPOINT: https://hf-mirror.com
           SGLANG_SEEDTTS50_DIR: /github/home/seedtts-50
+          SEEDTTS_SIM_CACHE_DIR: /github/home/seedtts-wavlm-sim
           TORCHINDUCTOR_CACHE_DIR: /github/home/.torchinductor
 
       - name: Post-stage cleanup
         if: always()
         uses: ./.github/actions/omni-post-stage
         with:
-          stage-label: TTS (speed + WER)
+          stage-label: TTS (speed + WER + SIM)
           artifact-path-globs: |
             */speed_results.json
             */wer_results.json
+            */similarity_results.json
           artifact-upload-name: qwen3-omni-tts-results
           artifact-upload-path: /tmp/**/*_results.json
 
@@ -436,11 +447,11 @@ jobs:
           artifact-upload-name: qwen3-omni-videoamme-talker-results
           artifact-upload-path: /tmp/**/videoamme_audio/videoamme_results.json
 
-  stage-11-colocated-router:
-    name: stage 11 - Colocated Router TTS
+  stage-11-thinker-tp2:
+    name: stage 11 - Thinker TP=2 (Video-AMME Talker)
     needs: docs
     runs-on: [self-hosted]
-    timeout-minutes: 60
+    timeout-minutes: 35
     container:
       image: frankleeeee/sglang-omni:dev
       options: --gpus all --rm -v /dev/shm:/dev/shm
@@ -452,25 +463,22 @@ jobs:
         with:
           venv-name: omni-qwen3
 
-      - name: Run colocated router TTS CI
+      - name: Run Thinker TP=2 CI
         shell: bash
         run: |
           source omni-qwen3/bin/activate
           export PYTHONPATH=$PWD
-          pytest tests/test_model/test_omni_router_ci.py -v -s -x
+          pytest tests/test_model/test_qwen3_omni_videoamme_talker_tp2_ci.py -v -s -x
         env:
           HF_ENDPOINT: https://hf-mirror.com
-          SGLANG_SEEDTTS50_DIR: /github/home/seedtts-50
           TORCHINDUCTOR_CACHE_DIR: /github/home/.torchinductor
 
       - name: Post-stage cleanup
         if: always()
         uses: ./.github/actions/omni-post-stage
         with:
-          stage-label: Colocated Router TTS
+          stage-label: Thinker TP=2 (Video-AMME Talker accuracy + WER + speed)
           artifact-path-globs: |
-            */speed_results.json
-            */wer_results.json
-            */eval_results.json
-          artifact-upload-name: qwen3-omni-colocated-router-seedtts-results
-          artifact-upload-path: /tmp/**/*_results.json
+            */videoamme_audio/videoamme_results.json
+          artifact-upload-name: qwen3-omni-thinker-tp2-results
+          artifact-upload-path: /tmp/**/videoamme_audio/videoamme_results.json

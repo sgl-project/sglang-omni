@@ -1,0 +1,40 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# Example single-H200 colocated Qwen3-Omni launcher config.
+# The Python pipeline config owns the stage topology; this file only sets the
+# runtime memory budgets needed for colocated launch.
+#
+# This profile keeps about 6% of device memory outside stage budgets for CUDA
+# graph capture, backend workspaces, activation peaks, and allocator
+# fragmentation.
+
+config_cls: Qwen3OmniSpeechColocatedPipelineConfig
+name: qwen3-omni-colocated-h200
+model_path: Qwen/Qwen3-Omni-30B-A3B-Instruct
+relay_backend: shm
+
+stage_overrides:
+  image_encoder:
+    runtime:
+      resources:
+        total_gpu_memory_fraction: 0.017
+
+  audio_encoder:
+    runtime:
+      resources:
+        total_gpu_memory_fraction: 0.017
+
+  thinker:
+    runtime:
+      resources:
+        total_gpu_memory_fraction: 0.769
+
+  talker_ar:
+    runtime:
+      resources:
+        total_gpu_memory_fraction: 0.123
+
+  code2wav:
+    runtime:
+      resources:
+        total_gpu_memory_fraction: 0.014

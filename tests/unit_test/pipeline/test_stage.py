@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 
 import pytest
 import torch
@@ -10,6 +11,7 @@ import torch
 from sglang_omni.pipeline import relay_io
 from sglang_omni.pipeline.stage.input import AggregatedInput
 from sglang_omni.pipeline.stage.stream_queue import StreamQueue
+from sglang_omni.pipeline.stage_process import StageProcessSpec, _construct_stage
 from sglang_omni.proto import DataReadyMessage
 from tests.unit_test.fixtures.pipeline_fakes import (
     EventLog,
@@ -17,6 +19,7 @@ from tests.unit_test.fixtures.pipeline_fakes import (
     FakeScheduler,
     RecordingStageControlPlane,
     collect_event_names,
+    fake_factory_path,
     make_noop_projector,
     make_result_message,
     make_stage_payload,
@@ -48,6 +51,52 @@ def test_aggregated_input_waits_per_request_without_cross_talk() -> None:
 
     assert req2.data == {"sources": ["image", "preprocess"]}
     assert req1.data == {"sources": ["image", "preprocess"]}
+
+
+def test_aggregated_input_supports_request_dynamic_source_sets() -> None:
+    """Preserves early-arriving payloads while narrowing fan-in per request."""
+
+    def _expected_sources(request_id, from_stage, payload):
+        del request_id
+        if from_stage != "preprocess":
+            return None
+        return payload.data["expected"]
+
+    handler = AggregatedInput(
+        {"preprocess", "image", "audio"},
+        lambda payloads: make_stage_payload(data={"sources": sorted(payloads)}),
+        expected_sources_fn=_expected_sources,
+    )
+
+    assert handler.receive("req-audio", "audio", make_stage_payload()) is None
+    audio = handler.receive(
+        "req-audio",
+        "preprocess",
+        make_stage_payload(data={"expected": ["preprocess", "audio"]}),
+    )
+    assert audio.data == {"sources": ["audio", "preprocess"]}
+
+    text = handler.receive(
+        "req-text",
+        "preprocess",
+        make_stage_payload(data={"expected": ["preprocess"]}),
+    )
+    assert text.data == {"sources": ["preprocess"]}
+
+
+def test_aggregated_input_rejects_dynamic_sources_outside_static_fanin() -> None:
+    def _invalid_sources(request_id, from_stage, payload):
+        del request_id, from_stage, payload
+        return ["preprocess", "audio"]
+
+    handler = AggregatedInput(
+        {"preprocess", "image"},
+        lambda payloads: make_stage_payload(data={"sources": sorted(payloads)}),
+        expected_sources_fn=_invalid_sources,
+    )
+
+    with pytest.raises(ValueError, match="outside static wait_for"):
+        handler.receive("req-1", "preprocess", make_stage_payload())
 
 
 def test_stage_routes_results_streams_and_clears_abort_state() -> None:
@@ -95,6 +144,81 @@ def test_stage_routes_results_streams_and_clears_abort_state() -> None:
         assert not stage_obj._stream_queue.has("req-1")
 
     asyncio.run(_run())
+
+
+def test_stage_process_rejects_dynamic_targets_outside_static_topology() -> None:
+    spec = StageProcessSpec(
+        stage_name="thinker",
+        factory=fake_factory_path("make_scheduler"),
+        next_stages=["decode"],
+        route_fn=fake_factory_path("route_to_undeclared_talker"),
+        stream_targets=["decode"],
+        stream_done_to_fn=fake_factory_path("stream_done_to_undeclared_talker"),
+        recv_endpoint="inproc://thinker",
+        coordinator_endpoint="inproc://coordinator",
+        abort_endpoint="inproc://abort",
+        stage_endpoints={
+            "decode": "inproc://decode",
+            "talker": "inproc://talker",
+        },
+        relay_config={"relay_type": "shm", "slot_size_mb": 1},
+    )
+    stage_obj = _construct_stage(spec, logging.getLogger(__name__))
+    payload = make_stage_payload()
+
+    with pytest.raises(ValueError, match="route_fn.*outside the static topology"):
+        stage_obj.get_next("req-1", payload)
+
+    with pytest.raises(
+        ValueError, match="stream_done_to_fn.*outside the static topology"
+    ):
+        stage_obj.get_stream_done_targets("req-1", payload)
+
+
+def test_stage_process_rejects_dynamic_wait_sources_outside_static_fanin() -> None:
+    spec = StageProcessSpec(
+        stage_name="aggregate",
+        factory=fake_factory_path("make_scheduler"),
+        next_stages="decode",
+        wait_for=["preprocess", "thinker"],
+        wait_for_fn=fake_factory_path("wait_sources_to_undeclared_stage"),
+        merge_fn=fake_factory_path("merge_payloads"),
+        recv_endpoint="inproc://aggregate",
+        coordinator_endpoint="inproc://coordinator",
+        abort_endpoint="inproc://abort",
+        stage_endpoints={"decode": "inproc://decode"},
+        relay_config={"relay_type": "shm", "slot_size_mb": 1},
+    )
+    stage_obj = _construct_stage(spec, logging.getLogger(__name__))
+
+    with pytest.raises(ValueError, match="outside static wait_for"):
+        stage_obj.input_handler.receive("req-1", "preprocess", make_stage_payload())
+
+
+def test_stage_process_accepts_iterable_dynamic_wait_sources() -> None:
+    spec = StageProcessSpec(
+        stage_name="aggregate",
+        factory=fake_factory_path("make_scheduler"),
+        next_stages="decode",
+        wait_for=["preprocess", "thinker"],
+        wait_for_fn=fake_factory_path("tuple_wait_sources"),
+        merge_fn=fake_factory_path("merge_payloads"),
+        recv_endpoint="inproc://aggregate",
+        coordinator_endpoint="inproc://coordinator",
+        abort_endpoint="inproc://abort",
+        stage_endpoints={"decode": "inproc://decode"},
+        relay_config={"relay_type": "shm", "slot_size_mb": 1},
+    )
+    stage_obj = _construct_stage(spec, logging.getLogger(__name__))
+
+    assert (
+        stage_obj.input_handler.receive("req-1", "preprocess", make_stage_payload())
+        is None
+    )
+    merged = stage_obj.input_handler.receive("req-1", "thinker", make_stage_payload())
+
+    assert merged is not None
+    assert merged.data["merged_sources"] == ["preprocess", "thinker"]
 
 
 def test_stage_run_raises_when_scheduler_thread_crashes() -> None:
@@ -167,5 +291,36 @@ def test_stage_relay_read_failure_completes_with_error() -> None:
         assert control_plane.completions[0].success is False
         assert "relay read failed" in control_plane.completions[0].error
         assert relay.cleaned[-1] == "req-1"
+
+    asyncio.run(_run())
+
+
+def test_stage_uses_dynamic_route_and_stream_done_targets() -> None:
+    async def _run() -> None:
+        control_plane = RecordingStageControlPlane()
+        stage_obj = make_stage(
+            control_plane=control_plane,
+            endpoints={"decode": "inproc://decode", "talker": "inproc://talker"},
+            get_next=lambda request_id, output: output.request.metadata["next"],
+            stream_targets=["talker", "decode"],
+            get_stream_done_targets=lambda request_id, output: output.request.metadata[
+                "stream_targets"
+            ],
+        )
+        payload = make_stage_payload(request_id="req-1")
+        payload.request.metadata["next"] = "decode"
+        payload.request.metadata["stream_targets"] = ["decode"]
+        stage_obj._active_requests.add("req-1")
+
+        await stage_obj._route_result("req-1", payload)
+
+        stream_done_target, _, stream_done_msg = control_plane.sent_to_stage[0]
+        routed_target, _, routed_msg = control_plane.sent_to_stage[1]
+        assert stream_done_target == "decode"
+        assert isinstance(stream_done_msg, DataReadyMessage)
+        assert stream_done_msg.is_done
+        assert routed_target == "decode"
+        assert isinstance(routed_msg, DataReadyMessage)
+        assert not routed_msg.is_done
 
     asyncio.run(_run())
