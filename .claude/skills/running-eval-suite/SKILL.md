@@ -1,6 +1,6 @@
 ---
 name: running-eval-suite
-description: Run all reference benchmarks under benchmarks/eval/ and refresh the reference-table cells in benchmark_*.py. Auto-detects host hardware (H200/H100/H800/...). For each row's matching hw entry: replace cells in place. For new hardware: append a new row to the section's table. Local-Pipeline-Result tables are skipped. The skill takes no input; one slash command runs everything end-to-end and auto-commits.
+description: Run all reference benchmarks under benchmarks/eval/ and refresh the reference-table cells in benchmark_*.py. Auto-detects host hardware (H200/H100/H800/...). For each row's matching hw entry: replace cells in place. For new hardware or a new workload tag: append a new row to the section's table. Local-Pipeline-Result tables are skipped. One slash command runs everything end-to-end and auto-commits.
 ---
 
 # running-eval-suite
@@ -50,9 +50,8 @@ distinguishes the model launched per row).
   missing.
 - Free GPUs. The skill **never** kills another user's processes; if
   GPUs are busy precheck fails with the busy PID list and stops.
-- `auto_env` env vars from `config.yaml` (`HF_ENDPOINT`,
-  `SGLANG_OMNI_SERVER_VERSION=v1`, `FLASHINFER_DISABLE_VERSION_CHECK=1`)
-  are set automatically when the runner starts.
+- `auto_env` env vars from `config.yaml` are set automatically when the
+  runner starts.
 
 If anything's off, `precheck` fails with an actionable message; fix it
 yourself and retry.
@@ -62,8 +61,9 @@ yourself and retry.
 - `/running-eval-suite` — runs everything end-to-end with defaults
   (model `qwen3-omni`, all benchmarks, 1 round, real apply,
   auto-commit).
-- `/running-eval-suite --benchmarks mmsu,seedtts` — run only those
-  benchmark files (short names from `benchmarks/eval/benchmark_*.py`).
+- `/running-eval-suite --benchmarks mmsu,omni_seedtts` — run only those
+  benchmark files. Use `omni_seedtts` / `qwen_seedtts` for Qwen3-Omni
+  SeedTTS rows and `tts_seedtts` / `s2pro_seedtts` for S2-Pro rows.
 - `/running-eval-suite --rounds 3` — multi-round; only round 1 is used
   for apply (multi-round aggregation is a follow-up).
 - `/running-eval-suite --smoke 50` — `--max-samples 50` injected; no
@@ -71,11 +71,17 @@ yourself and retry.
   smoke flag is effectively a no-op (they run their full set anyway).
 - `/running-eval-suite --venv-python /usr/bin/python3` — override the
   default venv detection (also via `$EVAL_VENV_PYTHON`).
+- `/running-eval-suite --exclude-ids s2pro-` — skip rows whose id
+  contains a substring.
+- `/running-eval-suite --retry-failed-from <run-dir>` — rerun rows that
+  were not successfully edited in a previous run.
+- `/running-eval-suite --gpu-pool 0,1,2` — restrict server and ASR GPU
+  allocation to a specific free GPU pool.
 
-**The skill takes no other input.** I never call `AskUserQuestion`.
-Defaults handle every case; errors halt the run with a printed reason.
-This matches the `tune-ci-thresholds` contract: type
-`/running-eval-suite` and walk away.
+I never call `AskUserQuestion`. Defaults handle the full run; optional
+flags above are only for filtering, recovery, or explicit GPU placement.
+Errors halt the run with a printed reason. This matches the
+`tune-ci-thresholds` contract: type `/running-eval-suite` and walk away.
 
 ## Steps I follow
 
@@ -88,7 +94,9 @@ This matches the `tune-ci-thresholds` contract: type
    invocation:
    ```
    python .claude/skills/running-eval-suite/runner.py \
-     --model <M> precheck --output-dir <run-dir>
+     --model <M> precheck --benchmarks <names|all> \
+     [--exclude-ids <substr>] [--gpu-pool <ids>] \
+     --output-dir <run-dir>
    ```
    If exit code != 0, surface the `✗` lines and stop.
 
@@ -98,6 +106,7 @@ This matches the `tune-ci-thresholds` contract: type
    python .claude/skills/running-eval-suite/runner.py \
      --model <M> run --benchmarks <names|all> \
      --rounds <K> [--smoke <N>] \
+     [--exclude-ids <substr>] [--gpu-pool <ids>] \
      --output-dir <run-dir>
    ```
    - For each row: launch server (process-group SIGTERM at end, never
@@ -105,6 +114,10 @@ This matches the `tune-ci-thresholds` contract: type
      edit the matching row in `benchmarks/eval/benchmark_*.py`
      (replace existing hw row OR append new hw row at end of the
      section's table; Local sections never touched).
+   - Managed-router rows use `router, 2-worker, ...` Source workload
+     tags. The first run on a hardware target appends new router-tagged
+     rows next to the older direct/V1-pipeline rows; later runs replace
+     those router rows in place.
    - Per-row state lands in `<run-dir>/run-state.json`. Stream the
      runner's stdout to the user so they can watch progress.
    - **If a row fails** (server boot timeout / client crash / locator
@@ -167,8 +180,8 @@ This matches the `tune-ci-thresholds` contract: type
    above the table, the row's **Config** column substring, and the
    **workload tag** inside the row's Source column (the part inside
    the `[…]` brackets, **without** the leading hardware token —
-   e.g. `V1-pipeline, full-set, c=8` from
-   `[H200, V1-pipeline, full-set, c=8]`).
+   e.g. `router, 2-worker, full-set, c=8` from
+   `[H200, router, 2-worker, full-set, c=8]`).
 2. Append a new entry to `models/<model>/config.yaml`:
    ```yaml
    - id: <unique-handle>          # informational; not used to select rows
@@ -177,11 +190,11 @@ This matches the `tune-ci-thresholds` contract: type
      locate:
        section_substring: "Accuracy (accuracy)"
        config_substring: "modalities=text "
-       source_workload: "V1-pipeline, full-set, c=8"
-     server: "python -m sglang_omni.cli serve --model-path {model} --version v1 --text-only --port {port}"
-     server_gpus: 1
-     server_health: "http://localhost:{port}/health"
-     server_boot_timeout_s: 300
+       source_workload: "router, 2-worker, full-set, c=8"
+     # Server launch is normally inherited from default_server_profile or
+     # server_profile_by_hf_model_id. Set server_profile only when a row needs
+     # a different managed-router topology.
+     server_profile: qwen3_omni_colocated_router
      client: "python benchmarks/eval/benchmark_omni_<name>.py --model qwen3-omni --port {port} --output-dir {output_dir} ..."
      result_json: "<benchmark>_results.json"
      cells:

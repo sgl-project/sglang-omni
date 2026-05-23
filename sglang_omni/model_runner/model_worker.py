@@ -19,8 +19,10 @@ class ModelWorkerConfig:
 
 
 _ARCH_CONFIG_MAP: dict[str, tuple[str, str | None]] = {
+    "BailingMoeV2ForCausalLM": ("llm_config", None),
     "Qwen3OmniTalker": ("talker_config", "text_config"),
     "Qwen3OmniThinkerForCausalLM": ("thinker_config", "text_config"),
+    "Qwen3TTSTalker": ("talker_config", None),
 }
 
 
@@ -42,6 +44,7 @@ class ModelWorker:
         self.tp_rank = tp_rank
         self._init_model_config()
         self._init_model_runner()
+        self._init_dllm_algorithm()
 
         self.device = self.model_runner.device
         from sglang.srt.utils import broadcast_pyobj, set_random_seed
@@ -54,6 +57,13 @@ class ModelWorker:
         set_random_seed(self.random_seed)
 
     def _init_model_config(self):
+        if self.model_arch_override == "BailingMoeV2ForCausalLM":
+            from sglang_omni.models.ming_omni.registration import (
+                register_ming_hf_config,
+            )
+
+            register_ming_hf_config()
+
         from sglang.srt.configs.model_config import ModelConfig
 
         self.model_config = ModelConfig.from_server_args(
@@ -143,11 +153,30 @@ class ModelWorker:
             total_gpu_memory_fraction=self.total_gpu_memory_fraction,
         )
 
+    def _init_dllm_algorithm(self):
+        if self.server_args.dllm_algorithm is None:
+            self.dllm_algorithm = None
+            return
+
+        from sglang.srt.dllm.algorithm.base import DllmAlgorithm
+
+        self.dllm_algorithm = DllmAlgorithm.from_server_args(self.server_args)
+
     def forward_batch_generation(
         self,
         forward_batch,
     ):
         from sglang.srt.managers.scheduler import GenerationBatchResult
+
+        if self.dllm_algorithm is not None:
+            logits_output, next_token_ids, can_run_cuda_graph = self.dllm_algorithm.run(
+                self.model_runner, forward_batch
+            )
+            return GenerationBatchResult(
+                logits_output=logits_output,
+                next_token_ids=next_token_ids,
+                can_run_cuda_graph=can_run_cuda_graph,
+            )
 
         out = self.model_runner.forward(forward_batch=forward_batch)
         logits_output, can_run_cuda_graph = out.logits_output, out.can_run_graph

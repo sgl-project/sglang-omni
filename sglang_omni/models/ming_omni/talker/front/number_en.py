@@ -82,7 +82,7 @@ def _num_to_words(num_str):
         if is_negative:
             num_word = f"minus {num_word}"
         return num_word
-    except Exception:
+    except Exception:  # noqa: BLE001
         return None
 
 
@@ -133,7 +133,7 @@ def _expand_fraction(m):
             return " one quarter "
         ordinal = _inflect.ordinal(_inflect.number_to_words(d))
         return f" {_inflect.number_to_words(n)} {ordinal} "
-    except Exception:
+    except Exception:  # noqa: BLE001
         return m.group(0)
 
 
@@ -143,7 +143,7 @@ def _expand_ordinal(m):
     try:
         num = int(re.sub(r"(st|nd|rd|th)", "", m.group(0)))
         return f" {_inflect.number_to_words(num)} "
-    except Exception:
+    except Exception:  # noqa: BLE001
         return m.group(0)
 
 
@@ -170,7 +170,7 @@ def _expand_version(m):
             if not num_str.isdigit():
                 return m.group(0)
             word = _inflect.number_to_words(int(num_str))
-    except Exception:
+    except Exception:  # noqa: BLE001
         return m.group(0)
     return f"{prefix} {word}"
 

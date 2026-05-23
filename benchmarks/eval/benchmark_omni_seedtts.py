@@ -157,6 +157,7 @@ from benchmarks.metrics.performance import (
 from benchmarks.tasks.tts import (
     VoiceCloneOmni,
     build_base_url,
+    run_seedtts_similarity,
     run_seedtts_transcribe,
     save_generated_audio_metadata,
     save_speed_results,
@@ -192,6 +193,13 @@ class OmniSeedttsBenchmarkConfig:
     disable_tqdm: bool = False
     # Transcribe phase
     device: str = "cuda:0"
+    similarity_checkpoint: str | None = None
+    # Optional system prompt prepended to chat messages. Default ``None``
+    # preserves the legacy Qwen3-Omni behavior (no system role). Pass a
+    # strict TTS-only prompt to suppress chat-mode leakage on models that
+    # were not fine-tuned to robustly interpret "please read aloud" as a
+    # verbatim-TTS command (e.g. Ming-Omni).
+    system_prompt: str | None = None
 
 
 def _build_results_config(
@@ -226,6 +234,7 @@ def make_send_fn(
     temperature: float,
     stream: bool,
     save_audio_dir: str,
+    system_prompt: str | None = None,
 ) -> SendFn:
     """Return a SendFn that calls Qwen3-Omni via VoiceCloneOmni and saves WAV."""
     task = VoiceCloneOmni()
@@ -250,6 +259,7 @@ def make_send_fn(
                 temperature=temperature,
                 voice_clone=voice_clone,
                 stream=stream,
+                system_prompt=system_prompt,
             )
             result.audio_duration_s = get_wav_duration(wav_bytes)
             elapsed = time.perf_counter() - start_time
@@ -315,6 +325,7 @@ async def run_omni_seedtts_benchmark(
         temperature=config.temperature,
         stream=config.stream,
         save_audio_dir=save_audio_dir,
+        system_prompt=config.system_prompt,
     )
 
     runner = BenchmarkRunner(
@@ -382,6 +393,8 @@ def _config_from_args(args: argparse.Namespace) -> OmniSeedttsBenchmarkConfig:
         request_rate=args.request_rate,
         disable_tqdm=args.disable_tqdm,
         device=device,
+        similarity_checkpoint=args.similarity_checkpoint,
+        system_prompt=args.system_prompt,
     )
 
 
@@ -495,10 +508,27 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         help="Legacy alias for --device (ASR transcription device).",
     )
     parser.add_argument(
+        "--similarity-checkpoint",
+        type=str,
+        default=None,
+        help="Optional path to a custom fine-tuned WavLM checkpoint. "
+        "If omitted, the official weights are downloaded into a local cache "
+        "directory (override the cache root with SEEDTTS_SIM_CACHE_DIR).",
+    )
+    parser.add_argument(
         "--server-timeout",
         type=int,
         default=1200,
         help="Timeout in seconds to wait for server readiness.",
+    )
+    parser.add_argument(
+        "--system-prompt",
+        type=str,
+        default=None,
+        help="Optional system role content prepended to every chat request. "
+        "Default omits the system message (Qwen3-Omni-tuned legacy behavior). "
+        "Pass a strict TTS-only prompt for models that leak chat-style "
+        "preambles or refusals (e.g. Ming-Omni).",
     )
 
     mode = parser.add_mutually_exclusive_group()
@@ -512,6 +542,11 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Only run ASR transcription and WER on existing output-dir.",
     )
+    mode.add_argument(
+        "--similarity-only",
+        action="store_true",
+        help="Only run speaker similarity on existing output-dir.",
+    )
     return parser
 
 
@@ -522,6 +557,10 @@ def main() -> None:
 
     if args.save_audio:
         logger.info("--save-audio is a no-op: the unified benchmark always saves WAVs.")
+
+    if args.similarity_only:
+        run_seedtts_similarity(config, log_per_sample=True)
+        return
 
     if args.transcribe_only:
         evaluate_generated_audio(config)

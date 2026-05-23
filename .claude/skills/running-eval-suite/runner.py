@@ -64,9 +64,17 @@ try:
     def load_yaml(path: Path) -> Any:
         with open(path) as fh:
             return yaml.safe_load(fh)
+
+    def dump_yaml(data: Any) -> str:
+        return yaml.safe_dump(data, sort_keys=False)
 except ImportError:  # pragma: no cover
 
     def load_yaml(path: Path) -> Any:
+        raise SystemExit(
+            "PyYAML missing — `pip install pyyaml` in your venv first"
+        )
+
+    def dump_yaml(data: Any) -> str:
         raise SystemExit(
             "PyYAML missing — `pip install pyyaml` in your venv first"
         )
@@ -200,6 +208,28 @@ def free_port() -> int:
     return port
 
 
+def port_is_available(port: int, host: str = "127.0.0.1") -> bool:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            sock.bind((host, port))
+        except OSError:
+            return False
+    return True
+
+
+def free_port_range(count: int, excluded: set[int] | None = None) -> int:
+    excluded_ports = excluded or set()
+    for _ in range(100):
+        base_port = free_port()
+        candidates = [base_port + offset for offset in range(count)]
+        if any(port in excluded_ports for port in candidates):
+            continue
+        if all(port_is_available(port) for port in candidates):
+            return base_port
+    raise RuntimeError(f"failed to find {count} consecutive available ports")
+
+
 def parse_gpu_status() -> tuple[list[dict], str | None]:
     try:
         out = subprocess.check_output(
@@ -308,12 +338,19 @@ def gpu_busy_processes() -> list[dict]:
     return items
 
 
-def _benchmark_name(row: dict) -> str:
+def _benchmark_selectors(row: dict) -> set[str]:
     stem = Path(row.get("file", "")).stem
-    for prefix in ("benchmark_omni_", "benchmark_tts_"):
-        if stem.startswith(prefix):
-            return stem[len(prefix):]
-    return stem
+    if stem.startswith("benchmark_omni_"):
+        short_name = stem[len("benchmark_omni_"):]
+        if short_name == "seedtts":
+            return {"omni_seedtts", "qwen_seedtts"}
+        return {short_name}
+    if stem.startswith("benchmark_tts_"):
+        short_name = stem[len("benchmark_tts_"):]
+        if short_name == "seedtts":
+            return {"tts_seedtts", "s2pro_seedtts"}
+        return {f"tts_{short_name}"}
+    return {stem}
 
 
 def _select_rows(rows: list[dict], spec: str | None,
@@ -322,13 +359,28 @@ def _select_rows(rows: list[dict], spec: str | None,
         kept = list(rows)
     else:
         wanted = {s.strip() for s in spec.split(",") if s.strip()}
-        kept = [r for r in rows if _benchmark_name(r) in wanted]
+        known = set().union(*(_benchmark_selectors(row) for row in rows))
+        unknown = wanted - known
+        if unknown:
+            raise SystemExit(
+                f"unknown benchmark selector(s): {sorted(unknown)}. "
+                f"Known: {sorted(known)}"
+            )
+        kept = [r for r in rows if _benchmark_selectors(r) & wanted]
     if exclude_ids:
         tokens = [s.strip() for s in exclude_ids.split(",") if s.strip()]
         if tokens:
             kept = [r for r in kept
                     if not any(t in str(r.get("id", "")) for t in tokens)]
     return kept
+
+
+def _row_needs_asr_gpu(row: dict) -> bool:
+    return "{asr_gpu}" in str(row.get("client", ""))
+
+
+def _row_total_gpus(row: dict, cfg: dict) -> int:
+    return _row_server_gpus(row, cfg) + (1 if _row_needs_asr_gpu(row) else 0)
 
 
 # ---------- precheck ----------
@@ -449,12 +501,26 @@ def cmd_precheck(args: argparse.Namespace) -> int:
         print(f"  ⚠ GPU: {gpu_err}")
     else:
         free = free_gpu_indices(gpus)
+        gpu_pool = getattr(args, "gpu_pool", None)
+        if gpu_pool:
+            pool_set = {int(s.strip()) for s in gpu_pool.split(",") if s.strip()}
+            free = [gpu for gpu in free if gpu in pool_set]
         busy_pids = gpu_busy_processes()
         print(f"  GPUs: total {len(gpus)}, free {len(free)} ({free}), "
               f"busy {len(gpus) - len(free)}")
-        if not free:
+        rows_for_gpu_check = _select_rows(
+            cfg.get("rows", []),
+            getattr(args, "benchmarks", "all"),
+            getattr(args, "exclude_ids", None),
+        )
+        required_gpus = max(
+            (_row_total_gpus(row, cfg) for row in rows_for_gpu_check),
+            default=1,
+        )
+        if len(free) < required_gpus:
             err = (
-                f"no free GPUs — busy: {gpus}; free them yourself "
+                f"need {required_gpus} free GPU(s), found {len(free)} — "
+                f"busy: {gpus}; free them yourself "
                 "(this skill never kills user processes)"
             )
             if busy_pids:
@@ -572,29 +638,40 @@ def _emit_precheck_summary(errs, warns, out_dir, cfg, py, src, **extra) -> int:
 # ---------- run ----------
 
 class ServerHandle:
-    def __init__(self, popen: subprocess.Popen, port: int, log_path: Path):
+    def __init__(
+        self,
+        popen: subprocess.Popen,
+        port: int,
+        log_path: Path,
+        cleanup_manifest: Path | None = None,
+    ):
         self.popen = popen
         self.port = port
         self.log_path = log_path
+        self.cleanup_manifest = cleanup_manifest
 
     def stop(self) -> None:
         try:
-            os.killpg(os.getpgid(self.popen.pid), signal.SIGTERM)
-        except ProcessLookupError:
-            return
-        try:
-            self.popen.wait(timeout=15)
-            return
-        except subprocess.TimeoutExpired:
-            pass
-        try:
-            os.killpg(os.getpgid(self.popen.pid), signal.SIGKILL)
-        except ProcessLookupError:
-            return
-        try:
-            self.popen.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            pass
+            try:
+                os.killpg(os.getpgid(self.popen.pid), signal.SIGTERM)
+            except ProcessLookupError:
+                return
+            try:
+                self.popen.wait(timeout=15)
+                return
+            except subprocess.TimeoutExpired:
+                pass
+            try:
+                os.killpg(os.getpgid(self.popen.pid), signal.SIGKILL)
+            except ProcessLookupError:
+                return
+            try:
+                self.popen.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
+        finally:
+            if self.cleanup_manifest is not None:
+                _cleanup_process_groups_from_manifest(self.cleanup_manifest)
 
 
 def launch_server(cmd_template: str, *, port: int, model: str,
@@ -611,11 +688,218 @@ def launch_server(cmd_template: str, *, port: int, model: str,
         env["CUDA_VISIBLE_DEVICES"] = gpus_csv
     log_path.parent.mkdir(parents=True, exist_ok=True)
     log_fh = open(log_path, "w")
-    popen = subprocess.Popen(
-        cmd, shell=True, stdout=log_fh, stderr=subprocess.STDOUT,
-        env=env, cwd=str(repo_root), start_new_session=True,
-    )
+    try:
+        popen = subprocess.Popen(
+            cmd, shell=True, stdout=log_fh, stderr=subprocess.STDOUT,
+            env=env, cwd=str(repo_root), start_new_session=True,
+        )
+    finally:
+        log_fh.close()
     return ServerHandle(popen, port, log_path)
+
+
+def launch_row_server(
+    row: dict,
+    cfg: dict,
+    py: str,
+    *,
+    port: int,
+    model: str,
+    gpus_csv: str,
+    log_path: Path,
+    round_dir: Path,
+    repo_root: Path,
+    server_extra: str = "",
+) -> ServerHandle:
+    profile = _resolve_server_profile(row, cfg, model)
+    if profile is None:
+        return launch_server(
+            row["server"],
+            port=port,
+            model=model,
+            gpus_csv=gpus_csv,
+            log_path=log_path,
+            repo_root=repo_root,
+            server_extra=server_extra,
+        )
+    return launch_managed_router_server(
+        profile,
+        py,
+        port=port,
+        model=model,
+        gpus_csv=gpus_csv,
+        log_path=log_path,
+        round_dir=round_dir,
+        repo_root=repo_root,
+        server_extra=server_extra,
+    )
+
+
+def launch_managed_router_server(
+    profile: dict,
+    py: str,
+    *,
+    port: int,
+    model: str,
+    gpus_csv: str,
+    log_path: Path,
+    round_dir: Path,
+    repo_root: Path,
+    server_extra: str = "",
+) -> ServerHandle:
+    num_workers = int(profile.get("num_workers", 2))
+    worker_base_port = free_port_range(num_workers, excluded={port})
+    cleanup_manifest = round_dir / "router_pgids.txt"
+    launcher_config = round_dir / "launcher.yaml"
+    worker_extra_args = str(profile.get("worker_extra_args", "")).format(
+        model=model,
+        repo_root=str(repo_root),
+    )
+    if server_extra:
+        worker_extra_args = f"{worker_extra_args} {server_extra}".strip()
+    launcher_config.write_text(
+        dump_yaml(
+            {
+                "launcher": {
+                    "backend": "local",
+                    "model_path": str(profile.get("model_path", model)).format(
+                        model=model,
+                        repo_root=str(repo_root),
+                    ),
+                    "model_name": str(profile["model_name"]).format(
+                        model=model,
+                        repo_root=str(repo_root),
+                    ),
+                    "num_workers": num_workers,
+                    "num_gpus_per_worker": int(profile.get("num_gpus_per_worker", 1)),
+                    "worker_host": profile.get("worker_host", "127.0.0.1"),
+                    "worker_base_port": worker_base_port,
+                    "worker_extra_args": worker_extra_args,
+                    "wait_timeout": int(profile.get("wait_timeout", 900)),
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    env = dict(os.environ)
+    if gpus_csv:
+        env["CUDA_VISIBLE_DEVICES"] = gpus_csv
+    env["SGLANG_OMNI_ROUTER_CLEANUP_MANIFEST"] = str(cleanup_manifest)
+    cmd = [
+        py,
+        "-m",
+        "sglang_omni_router.serve",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        str(port),
+        "--launcher-config",
+        str(launcher_config),
+        "--policy",
+        profile.get("router_policy", "least_request"),
+        "--health-success-threshold",
+        "1",
+        "--health-failure-threshold",
+        "2",
+        "--health-check-interval-secs",
+        "2",
+        "--log-level",
+        "info",
+    ]
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log_fh = open(log_path, "w")
+    try:
+        popen = subprocess.Popen(
+            cmd,
+            stdout=log_fh,
+            stderr=subprocess.STDOUT,
+            env=env,
+            cwd=str(repo_root),
+            start_new_session=True,
+        )
+    finally:
+        log_fh.close()
+    try:
+        _record_process_group(cleanup_manifest, os.getpgid(popen.pid))
+    except Exception:
+        ServerHandle(popen, port, log_path, cleanup_manifest=cleanup_manifest).stop()
+        raise
+    return ServerHandle(popen, port, log_path, cleanup_manifest=cleanup_manifest)
+
+
+def _resolve_server_profile(row: dict, cfg: dict, model_id: str) -> dict | None:
+    profiles = cfg.get("server_profiles") or {}
+    profile_name = row.get("server_profile")
+    if profile_name is None:
+        profile_name = (cfg.get("server_profile_by_hf_model_id") or {}).get(model_id)
+    if profile_name is None:
+        profile_name = cfg.get("default_server_profile")
+    if profile_name is None:
+        return None
+    try:
+        profile = dict(profiles[profile_name])
+    except KeyError as exc:
+        raise SystemExit(f"server profile not found: {profile_name}") from exc
+    profile["name"] = profile_name
+    return profile
+
+
+def _row_server_gpus(row: dict, cfg: dict) -> int:
+    model_id = row.get("hf_model_id") or cfg.get("hf_model_id", "")
+    profile = _resolve_server_profile(row, cfg, model_id)
+    if profile is not None:
+        return int(profile.get("server_gpus", row.get("server_gpus", 1)))
+    return int(row.get("server_gpus", 1))
+
+
+def _row_server_boot_timeout(row: dict, cfg: dict) -> int:
+    model_id = row.get("hf_model_id") or cfg.get("hf_model_id", "")
+    profile = _resolve_server_profile(row, cfg, model_id)
+    if profile is not None:
+        return int(
+            profile.get("server_boot_timeout_s", row.get("server_boot_timeout_s", 300))
+        )
+    return int(row.get("server_boot_timeout_s", 300))
+
+
+def _record_process_group(manifest: Path, process_group_id: int) -> None:
+    with manifest.open("a", encoding="utf-8") as handle:
+        handle.write(f"{process_group_id}\n")
+
+
+def _cleanup_process_groups_from_manifest(manifest: Path) -> None:
+    if not manifest.exists():
+        return
+    process_group_ids: set[int] = set()
+    for line in manifest.read_text().splitlines():
+        try:
+            process_group_ids.add(int(line.strip()))
+        except ValueError:
+            continue
+    for sig, delay in ((signal.SIGTERM, 5), (signal.SIGKILL, 1)):
+        remaining: set[int] = set()
+        for process_group_id in process_group_ids:
+            try:
+                os.killpg(process_group_id, sig)
+                remaining.add(process_group_id)
+            except ProcessLookupError:
+                continue
+        if not remaining:
+            return
+        time.sleep(delay)
+        process_group_ids = {
+            process_group_id
+            for process_group_id in remaining
+            if _process_group_exists(process_group_id)
+        }
+
+
+def _process_group_exists(process_group_id: int) -> bool:
+    try:
+        os.killpg(process_group_id, 0)
+        return True
+    except ProcessLookupError:
+        return False
 
 
 def wait_health(url: str, timeout_s: int) -> tuple[bool, str]:
@@ -673,9 +957,10 @@ def cmd_run(args: argparse.Namespace) -> int:
               f"skipping {skipped} row(s) already done")
 
     if not selected:
+        known = set().union(*(_benchmark_selectors(row) for row in rows))
         raise SystemExit(
             "no rows selected — pass --benchmarks NAME,NAME or --benchmarks all. "
-            f"Known: {sorted({_benchmark_name(r) for r in rows})}"
+            f"Known: {sorted(known)}"
         )
 
     rounds = max(1, args.rounds)
@@ -760,7 +1045,8 @@ def _run_one_row(row: dict, py: str, root: Path, out_root: Path,
     row_dir.mkdir(parents=True, exist_ok=True)
     print(f"\n[row] {row_id}")
 
-    gpu_count = int(row.get("server_gpus", 1))
+    gpu_count = _row_server_gpus(row, cfg)
+    total_gpu_count = _row_total_gpus(row, cfg)
     pool_set = set(gpu_pool) if gpu_pool is not None else None
     last_err = ""
     free: list[int] = []
@@ -774,24 +1060,24 @@ def _run_one_row(row: dict, py: str, root: Path, out_root: Path,
         free = free_gpu_indices(gpus)
         if pool_set is not None:
             free = [g for g in free if g in pool_set]
-        if len(free) >= gpu_count:
+        if len(free) >= total_gpu_count:
             break
         time.sleep(3)
     else:
         pool_note = f" (pool={gpu_pool})" if gpu_pool is not None else ""
         reason = last_err or (
-            f"not enough free GPUs (need {gpu_count}, have {len(free)})"
+            f"not enough free GPUs (need {total_gpu_count}, have {len(free)})"
             f"{pool_note}"
         )
         return {"id": row_id, "status": "fail", "reason": reason, "rounds": []}
     chosen = free[:gpu_count]
     gpus_csv = ",".join(str(g) for g in chosen)
     # Pick an ASR GPU from the leftover free pool (highest index first, to
-    # leave low indices for subsequent server allocations). If none free,
-    # fall back to CPU — slower but won't OOM. Available to client cmd
-    # templates as `{asr_gpu}` and substitutes the literal device string.
+    # leave low indices for subsequent server allocations). Rows with
+    # `{asr_gpu}` require a real free GPU because the server remains live while
+    # the client transcribes.
     remaining_free = [g for g in free if g not in set(chosen)]
-    asr_device = f"cuda:{remaining_free[-1]}" if remaining_free else "cpu"
+    asr_device = f"cuda:{remaining_free[-1]}" if _row_needs_asr_gpu(row) else "cpu"
     print(f"  gpus: {gpus_csv}  asr: {asr_device}")
 
     rounds_state: list[dict] = []
@@ -843,19 +1129,25 @@ def _run_one_round(row: dict, py: str, root: Path, round_dir: Path,
     out_dir = round_dir / "out"
     out_dir.mkdir(exist_ok=True)
 
-    server_cmd_tmpl = row["server"]
     server_extra = (row.get("server_extra_by_hardware") or {}).get(hw, "")
     model_id = row.get("hf_model_id") or cfg.get("hf_model_id", "")
 
     print(f"  [{round_dir.name}] launching server (port={port}) ...", flush=True)
-    handle = launch_server(
-        server_cmd_tmpl,
-        port=port, model=model_id, gpus_csv=gpus_csv, log_path=server_log,
-        repo_root=root, server_extra=server_extra,
+    handle = launch_row_server(
+        row,
+        cfg,
+        py,
+        port=port,
+        model=model_id,
+        gpus_csv=gpus_csv,
+        log_path=server_log,
+        round_dir=round_dir,
+        repo_root=root,
+        server_extra=server_extra,
     )
     try:
         health = row.get("server_health", "http://localhost:{port}/health").format(port=port)
-        timeout = int(row.get("server_boot_timeout_s", 300))
+        timeout = _row_server_boot_timeout(row, cfg)
         ok, msg = wait_health(health, timeout)
         if not ok:
             return {
@@ -1337,13 +1629,20 @@ def main(argv: list[str] | None = None) -> int:
                        help="verify env (venv, sglang/torch, HF cache, GPU, hardware)")
     p.add_argument("--output-dir", default=None,
                    help="dir to write precheck.json (default: stdout only)")
+    p.add_argument("--benchmarks", default="all",
+                   help="same benchmark selector filter as run; used for GPU "
+                        "requirement checks")
+    p.add_argument("--exclude-ids", default=None,
+                   help="same row-id substring exclusion filter as run")
+    p.add_argument("--gpu-pool", default=None,
+                   help="same GPU pool restriction as run")
 
     p = sub.add_parser("run",
                        help="launch server + client per row, edit benchmark_*.py in place")
     p.add_argument("--benchmarks", default="all",
                    help="comma-separated benchmark short names "
-                        "(e.g. mmsu,mmmu,seedtts), or 'all' for every "
-                        "row in the model's config.yaml")
+                        "(e.g. mmsu,mmmu,omni_seedtts,tts_seedtts), "
+                        "or 'all' for every row in the model's config.yaml")
     p.add_argument("--exclude-ids", default=None,
                    help="comma-separated row-id substrings to skip "
                         "(e.g. 's2pro-' to drop S2-Pro rows when --benchmarks "

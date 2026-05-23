@@ -166,7 +166,7 @@ class MooncakeConnection:
             self.engine.unregister_memory(handle)
             del self._memory_handles[handle]
             logger.debug(f"Deregistered memory: handle={hex(handle)}")
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             logger.error(f"Failed to deregister memory: {e}")
 
     def transfer_sync_write(
@@ -557,7 +557,7 @@ class MooncakeRelay(Relay):
                 on_completion_cb=cleanup_callback,
             )
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             # Release credit on error
             self.allocator.release(credit_id)
             raise e
@@ -635,7 +635,7 @@ class MooncakeRelay(Relay):
                 on_completion_cb=cleanup_callback,
             )
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             self.allocator.release(local_credit_id)
             raise e
 
@@ -687,7 +687,7 @@ class MooncakeRelay(Relay):
                 # Sleep briefly to avoid busy-waiting
                 await asyncio.sleep(0.001)  # 1ms polling interval
 
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 if self._running:
                     logger.error(
                         f"[{self.engine_id}] Error in notification listener: {e}"

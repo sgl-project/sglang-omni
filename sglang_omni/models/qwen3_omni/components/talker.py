@@ -883,53 +883,93 @@ class Qwen3OmniTalker(nn.Module):
 
     def prepare_decode_buffers(self, requests: list) -> None:
         batch_size = len(requests)
+        if batch_size == 0:
+            return
+
+        device = self._repetition_mask.device
+        rep_vocab = self._repetition_mask.shape[1]
+        sup_vocab = self._suppress_mask.shape[1]
+
         self._repetition_mask[:batch_size] = False
-        self._repetition_penalties[:batch_size].fill_(1.0)
         self._suppress_mask[:batch_size] = False
-        self._sampling_temperatures[:batch_size].fill_(1.0)
-        self._sampling_top_ps[:batch_size].fill_(1.0)
-        self._sampling_top_ks[:batch_size].fill_(1)
-        self._sampling_min_ps[:batch_size].zero_()
-        self._sampling_seeds[:batch_size].zero_()
+
+        rep_penalties: list[float] = []
+        temperatures: list[float] = []
+        top_ps: list[float] = []
+        top_ks: list[int] = []
+        min_ps: list[float] = []
+        sampling_seeds: list[int] = []
+        rep_rows: list[int] = []
+        rep_toks: list[int] = []
+        sup_rows: list[int] = []
+        sup_toks: list[int] = []
 
         for row_idx, sched_req in enumerate(requests):
             data = sched_req.data
             req = data.req
-            sampling_params = req.sampling_params
+            sp = req.sampling_params
 
-            penalty = float(sampling_params.repetition_penalty)
-            self._repetition_penalties[row_idx, 0] = penalty
-            self._sampling_temperatures[row_idx, 0] = float(sampling_params.temperature)
-            self._sampling_top_ps[row_idx] = float(sampling_params.top_p)
-            self._sampling_top_ks[row_idx] = int(sampling_params.top_k)
-            self._sampling_min_ps[row_idx] = float(sampling_params.min_p)
-            req_seed = sampling_params.sampling_seed
-            if req_seed is not None:
-                self._sampling_seeds[row_idx] = int(req_seed)
+            penalty = float(sp.repetition_penalty)
+            rep_penalties.append(penalty)
+            temperatures.append(float(sp.temperature))
+            top_ps.append(float(sp.top_p))
+            top_ks.append(int(sp.top_k))
+            min_ps.append(float(sp.min_p))
+            seed = sp.sampling_seed
+            sampling_seeds.append(int(seed) if seed is not None else 0)
+
             if penalty != 1.0 and req.output_ids:
-                token_ids = torch.as_tensor(
-                    list({int(token_id) for token_id in req.output_ids}),
-                    dtype=torch.long,
-                    device=self._repetition_mask.device,
-                )
-                valid = token_ids[
-                    (token_ids >= 0) & (token_ids < self._repetition_mask.shape[1])
-                ]
-                if valid.numel() > 0:
-                    self._repetition_mask[row_idx, valid] = True
+                unique = {
+                    t
+                    for t in (int(tok) for tok in req.output_ids)
+                    if 0 <= t < rep_vocab
+                }
+                if unique:
+                    rep_rows.extend([row_idx] * len(unique))
+                    rep_toks.extend(unique)
 
             suppress_tokens = data.suppress_tokens or req._codec_suppress_tokens
             if suppress_tokens:
-                token_ids = torch.as_tensor(
-                    [int(token_id) for token_id in suppress_tokens],
-                    dtype=torch.long,
-                    device=self._suppress_mask.device,
-                )
-                valid = token_ids[
-                    (token_ids >= 0) & (token_ids < self._suppress_mask.shape[1])
+                valid_sup = [
+                    t
+                    for t in (int(tok) for tok in suppress_tokens)
+                    if 0 <= t < sup_vocab
                 ]
-                if valid.numel() > 0:
-                    self._suppress_mask[row_idx, valid] = True
+                if valid_sup:
+                    sup_rows.extend([row_idx] * len(valid_sup))
+                    sup_toks.extend(valid_sup)
+
+        rep_pen_dtype = self._repetition_penalties.dtype
+        self._repetition_penalties[:batch_size, 0] = torch.tensor(
+            rep_penalties, dtype=rep_pen_dtype, device=device
+        )
+        self._sampling_temperatures[:batch_size, 0] = torch.tensor(
+            temperatures, dtype=self._sampling_temperatures.dtype, device=device
+        )
+        self._sampling_top_ps[:batch_size] = torch.tensor(
+            top_ps, dtype=self._sampling_top_ps.dtype, device=device
+        )
+        self._sampling_top_ks[:batch_size] = torch.tensor(
+            top_ks, dtype=self._sampling_top_ks.dtype, device=device
+        )
+        self._sampling_min_ps[:batch_size] = torch.tensor(
+            min_ps, dtype=self._sampling_min_ps.dtype, device=device
+        )
+        self._sampling_seeds[:batch_size] = torch.tensor(
+            sampling_seeds, dtype=self._sampling_seeds.dtype, device=device
+        )
+
+        if rep_rows:
+            self._repetition_mask[
+                torch.tensor(rep_rows, dtype=torch.long, device=device),
+                torch.tensor(rep_toks, dtype=torch.long, device=device),
+            ] = True
+
+        if sup_rows:
+            self._suppress_mask[
+                torch.tensor(sup_rows, dtype=torch.long, device=device),
+                torch.tensor(sup_toks, dtype=torch.long, device=device),
+            ] = True
 
     def prepare_input_embeds(
         self,

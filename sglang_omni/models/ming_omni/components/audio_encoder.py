@@ -141,6 +141,10 @@ class MingAudioEncoder(nn.Module):
                 audio_embeds: Projected embeddings [B, T', hidden_size]
                 audio_embed_lengths: Output lengths [B, N]
         """
+        audio_feats = audio_feats.to(device=self._device)
+        if audio_feats_lengths is not None:
+            audio_feats_lengths = audio_feats_lengths.to(device=self._device)
+
         # Whisper encoder expects [B, T, n_mels] and we process segments independently
         # Unwrap segments for per-segment encoding
         if audio_feats_lengths is not None and audio_feats_lengths.dim() == 2:
@@ -152,7 +156,14 @@ class MingAudioEncoder(nn.Module):
                 [audio_feats.shape[1]], device=audio_feats.device, dtype=torch.long
             )
 
-        with torch.no_grad():
+        with (
+            torch.no_grad(),
+            torch.autocast(
+                device_type="cuda", dtype=torch.bfloat16, enabled=segments.is_cuda
+            ),
+        ):
+            # Cast input to float32 for Whisper conv layers, autocast handles the rest
+            segments = segments.float()
             # Whisper encoder forward: [B, T, n_mels] -> [B, T, n_state]
             # The whisper encoder expects [B, T, n_mels], transposes internally
             encoded = self._whisper_forward(segments)

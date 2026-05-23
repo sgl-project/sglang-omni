@@ -90,7 +90,7 @@ class StreamingDetokenizeScheduler:
                     self._on_stream_chunk(msg.request_id, msg.data)
                 elif msg.type == "stream_done":
                     self._on_stream_done(msg.request_id)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 logger.exception(
                     "StreamingDetokenizeScheduler failed request %s",
                     msg.request_id,

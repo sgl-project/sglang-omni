@@ -350,7 +350,7 @@ class S2ProVocoderScheduler:
                     self._on_done(msg.request_id)
                 else:
                     raise ValueError(f"Unsupported vocoder message type: {msg.type}")
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 logger.exception("S2ProVocoderScheduler failed for %s", msg.request_id)
                 self.outbox.put(
                     OutgoingMessage(
@@ -528,7 +528,7 @@ class S2ProVocoderScheduler:
         for msg in batch:
             try:
                 self._validate_payload_state(msg.data)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 self.outbox.put(
                     OutgoingMessage(
                         request_id=msg.request_id,
@@ -545,7 +545,7 @@ class S2ProVocoderScheduler:
 
         try:
             results = self._vocode_payloads(valid_payloads)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             for msg in valid_messages:
                 self.outbox.put(
                     OutgoingMessage(request_id=msg.request_id, type="error", data=exc)

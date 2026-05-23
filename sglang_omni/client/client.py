@@ -303,17 +303,22 @@ class Client:
             result.request_id = request_id
             return result
         if isinstance(result, dict):
-            # Multi-terminal merged result: {"decode": {...}, "code2wav": {...}}
-            if "decode" in result and "code2wav" in result:
+            # Multi-terminal merged result, e.g. decode + code2wav/talker.
+            audio_result = None
+            if "decode" in result:
+                for audio_stage in ("code2wav", "talker"):
+                    if audio_stage in result:
+                        audio_result = result[audio_stage] or {}
+                        break
+            if audio_result is not None:
                 decode_result = result["decode"] or {}
-                c2w_result = result["code2wav"] or {}
                 text = decode_result.get("text")
                 if isinstance(text, str):
                     chunk.text = text
-                Client._set_audio_data(chunk, c2w_result)
+                Client._set_audio_data(chunk, audio_result)
                 chunk.usage = Client._build_usage_info(
                     decode_result
-                ) or Client._build_usage_info(c2w_result)
+                ) or Client._build_usage_info(audio_result)
                 return chunk
             text = result.get("text")
             if isinstance(text, str):

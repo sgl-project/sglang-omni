@@ -237,6 +237,53 @@ def make_scheduler_accepting_gpu_id(gpu_id: int = -1, **kwargs: Any) -> FakeSche
     return scheduler
 
 
+def identity_route(request_id: str, output: Any) -> str:
+    del request_id, output
+    return "aggregate"
+
+
+def identity_stream_targets(request_id: str, output: Any) -> list[str]:
+    del request_id, output
+    return ["talker"]
+
+
+def identity_wait_sources(
+    request_id: str,
+    from_stage: str,
+    payload: StagePayload,
+) -> list[str]:
+    del request_id, from_stage, payload
+    return ["preprocess", "thinker"]
+
+
+def tuple_wait_sources(
+    request_id: str,
+    from_stage: str,
+    payload: StagePayload,
+) -> tuple[str, str]:
+    del request_id, from_stage, payload
+    return ("preprocess", "thinker")
+
+
+def wait_sources_to_undeclared_stage(
+    request_id: str,
+    from_stage: str,
+    payload: StagePayload,
+) -> list[str]:
+    del request_id, from_stage, payload
+    return ["preprocess", "missing"]
+
+
+def route_to_undeclared_talker(request_id: str, output: Any) -> str:
+    del request_id, output
+    return "talker"
+
+
+def stream_done_to_undeclared_talker(request_id: str, output: Any) -> list[str]:
+    del request_id, output
+    return ["talker"]
+
+
 def merge_payloads(payloads: dict[str, StagePayload]) -> StagePayload:
     first = next(iter(payloads.values()))
     return StagePayload(

@@ -67,4 +67,5 @@ class ARRequestData:
     finish_reason: str | None = None
     capture_model_output_keys: tuple[str, ...] = ()
     max_new_tokens: int | None = None
+    enforce_request_limits: bool = False
     temperature: float = 0.0

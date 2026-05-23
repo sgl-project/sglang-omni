@@ -547,7 +547,7 @@ class FishScheduler:
                 self._inflight_request_ids.clear()
                 finished = self.update(batch, result)
                 self.emit_finished(finished)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 self._inflight_request_ids.clear()
                 logger.exception("FishScheduler batch failed")
                 self._handle_batch_exception(batch, exc)

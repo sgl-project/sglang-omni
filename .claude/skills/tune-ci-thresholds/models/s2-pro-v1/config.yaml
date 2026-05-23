@@ -5,11 +5,10 @@
 #   (nonstream / stream / consistency) controlled by --s2pro-stage. With no
 #   flag the test runs all three by default, which is what we want here.
 # - Voice-clone speed and WER artifacts are written to per-variant dirs
-#   under each pytest-function tmp_path: vc_nonstream_c8/ for nonstream and
-#   vc_stream_c8/ for stream. Both speed_results.json and wer_results.json
+#   under each pytest-function tmp_path: vc_nonstream_c16/ for nonstream and
+#   vc_stream_c16/ for stream. Both speed_results.json and wer_results.json
 #   live in that same per-variant dir.
-# - Concurrency: CI uses --concurrency 8 (the only fully tuned conc); the
-#   _VC_*_P95 dicts include {1,2,4,8,16}. Discover reads conc=8 row.
+# - Concurrency: CI uses --concurrency 16. Discover reads the conc=16 row.
 # - Venv: this host shares the omni-qwen3 venv across models; see
 #   default_venv_python below.
 name: s2-pro-v1
@@ -25,20 +24,20 @@ default_venv_python:
 auto_env:
   HF_ENDPOINT: "https://hf-mirror.com"
 gpus_per_test:
-  test_s2pro_tts_ci.py: 1
+  test_s2pro_tts_ci.py: 2
 test_globs:
   - "tests/test_model/test_s2pro_tts_ci.py"
 extra_env:
   test_s2pro_tts_ci.py:
     SGLANG_SEEDTTS50_DIR: "/github/home/seedtts-50"
-# Per-test extra pytest CLI args. test_s2pro_tts_ci.py needs `--concurrency 8`
+# Per-test extra pytest CLI args. test_s2pro_tts_ci.py needs `--concurrency 16`
 # to match the CI invocation; without it the test defaults to concurrency=1
-# (and writes results into vc_*_c1/ subdirs, not vc_*_c8/ where this config
+# (and writes results into vc_*_c1/ subdirs, not vc_*_c16/ where this config
 # expects them).
 pytest_extra_args:
   test_s2pro_tts_ci.py:
     - "--concurrency"
-    - "8"
+    - "16"
 stage_base_strip_prefix: "test_s2pro_"
 stage_base_strip_suffix: "_ci"
 stage_base_docs_override: "s2pro_docs"
@@ -58,27 +57,27 @@ metric_sources:
         # below use the truncated form. The WER test reuses that dir
         # via SPEED_OUTPUT_DIRS, so wer_results.json lands in the same
         # place; both are accessed via the per-metric ::path form.
-        json_file: "test_voice_cloning_non_streami0/vc_nonstream_c8/speed_results.json"
+        json_file: "test_voice_cloning_non_streami0/vc_nonstream_c16/speed_results.json"
         sample_counts:
-          total: "test_voice_cloning_non_streami0/vc_nonstream_c8/wer_results.json::summary.total_samples"
-          ok: "test_voice_cloning_non_streami0/vc_nonstream_c8/wer_results.json::summary.evaluated"
+          total: "test_voice_cloning_non_streami0/vc_nonstream_c16/wer_results.json::summary.total_samples"
+          ok: "test_voice_cloning_non_streami0/vc_nonstream_c16/wer_results.json::summary.evaluated"
         paths:
           throughput_qps: "summary.throughput_qps"
           tok_per_s_agg: "summary.tok_per_s_agg"
           latency_mean_s: "summary.latency_mean_s"
           rtf_mean: "summary.rtf_mean"
-          corpus_wer: "test_voice_cloning_non_streami0/vc_nonstream_c8/wer_results.json::summary.wer_corpus"
-          per_sample_wer_max: "test_voice_cloning_non_streami0/vc_nonstream_c8/wer_results.json::summary.wer_per_sample_max"
+          corpus_wer: "test_voice_cloning_non_streami0/vc_nonstream_c16/wer_results.json::summary.wer_corpus"
+          per_sample_wer_max: "test_voice_cloning_non_streami0/vc_nonstream_c16/wer_results.json::summary.wer_per_sample_max"
       stream:
         constant_filter: "^VC_STREAM_.*"
-        json_file: "test_voice_cloning_streaming0/vc_stream_c8/speed_results.json"
+        json_file: "test_voice_cloning_streaming0/vc_stream_c16/speed_results.json"
         sample_counts:
-          total: "test_voice_cloning_streaming0/vc_stream_c8/wer_results.json::summary.total_samples"
-          ok: "test_voice_cloning_streaming0/vc_stream_c8/wer_results.json::summary.evaluated"
+          total: "test_voice_cloning_streaming0/vc_stream_c16/wer_results.json::summary.total_samples"
+          ok: "test_voice_cloning_streaming0/vc_stream_c16/wer_results.json::summary.evaluated"
         paths:
           throughput_qps: "summary.throughput_qps"
           tok_per_s_agg: "summary.tok_per_s_agg"
           latency_mean_s: "summary.latency_mean_s"
           rtf_mean: "summary.rtf_mean"
-          corpus_wer: "test_voice_cloning_streaming0/vc_stream_c8/wer_results.json::summary.wer_corpus"
-          per_sample_wer_max: "test_voice_cloning_streaming0/vc_stream_c8/wer_results.json::summary.wer_per_sample_max"
+          corpus_wer: "test_voice_cloning_streaming0/vc_stream_c16/wer_results.json::summary.wer_corpus"
+          per_sample_wer_max: "test_voice_cloning_streaming0/vc_stream_c16/wer_results.json::summary.wer_per_sample_max"

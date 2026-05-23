@@ -23,7 +23,7 @@ def import_pipeline_configs(
             continue
         try:
             importlib.import_module(name)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             if strict:
                 raise
             logger.warning(f"Ignore import error when loading {name}: {exc}")

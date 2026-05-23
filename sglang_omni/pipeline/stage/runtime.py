@@ -37,6 +37,7 @@ from sglang_omni.scheduling.messages import IncomingMessage
 logger = logging.getLogger(__name__)
 
 GetNextFn = Callable[[str, Any], str | list[str] | None]
+GetStreamDoneTargetsFn = Callable[[str, Any], str | list[str] | None]
 
 
 class Stage:
@@ -70,6 +71,7 @@ class Stage:
         scheduler: Any = None,
         project_payload: dict[str, Callable[[Any], Any]] | None = None,
         stream_targets: list[str] | None = None,
+        get_stream_done_targets: GetStreamDoneTargetsFn | None = None,
         same_gpu_targets: set[str] | None = None,
         can_accept_stream_before_payload: bool = False,
         tp_fanout: TPLeaderFanout | None = None,
@@ -85,6 +87,7 @@ class Stage:
         self.scheduler = scheduler
         self._project_payload = project_payload or {}
         self._stream_targets = stream_targets or []
+        self.get_stream_done_targets = get_stream_done_targets
         self._same_gpu_targets = same_gpu_targets or set()
         self._can_accept_stream_before_payload = can_accept_stream_before_payload
         self._tp_fanout = tp_fanout
@@ -150,7 +153,7 @@ class Stage:
                             self.gpu_id,
                         )
                     self.scheduler.start()
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001
                     logger.exception("Scheduler thread for stage %s crashed", self.name)
                     self._running = False
                     loop = self._loop
@@ -208,7 +211,7 @@ class Stage:
                 await self._handle_message(msg)
         except asyncio.CancelledError:
             pass
-        except Exception:
+        except Exception:  # noqa: BLE001
             if self._scheduler_crash_error is None:
                 raise
         finally:
@@ -266,7 +269,7 @@ class Stage:
             payload = await relay_io.read_payload(
                 self.relay, request_id, msg.shm_metadata
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             logger.exception(
                 "Stage %s: relay read failed for %s", self.name, request_id
             )
@@ -293,7 +296,7 @@ class Stage:
         if isinstance(msg.shm_metadata, dict) and msg.shm_metadata.get("_ipc"):
             try:
                 item = self._deserialize_ipc_chunk(msg)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 logger.error(
                     "Stage %s: IPC deserialize failed for %s: %s",
                     self.name,
@@ -312,7 +315,7 @@ class Stage:
         try:
             data = await relay_io.read_blob(self.relay, blob_key, msg.shm_metadata)
             metadata = await self._read_chunk_metadata(msg.shm_metadata, blob_key)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             logger.error(
                 "Stage %s: stream chunk read failed for %s: %s",
                 self.name,
@@ -404,7 +407,7 @@ class Stage:
         request_id = msg.request_id
         try:
             await relay_io.read_payload(self.relay, request_id, msg.shm_metadata)
-        except Exception:
+        except Exception:  # noqa: BLE001
             logger.debug(
                 "Stage %s: failed to drain aborted payload for %s",
                 self.name,
@@ -424,7 +427,7 @@ class Stage:
         try:
             await relay_io.read_blob(self.relay, blob_key, msg.shm_metadata)
             await self._read_chunk_metadata(msg.shm_metadata, blob_key)
-        except Exception:
+        except Exception:  # noqa: BLE001
             logger.debug(
                 "Stage %s: failed to drain aborted stream chunk for %s",
                 self.name,
@@ -586,8 +589,17 @@ class Stage:
         if not self._owns_external_io:
             self._clear_request_state(request_id)
             return
-        # Send stream done to all stream targets
-        for target in self._stream_targets:
+        # Send stream done to the active stream targets for this request.
+        stream_targets = self._stream_targets
+        if self.get_stream_done_targets is not None:
+            resolved = self.get_stream_done_targets(request_id, result)
+            if isinstance(resolved, str):
+                stream_targets = [resolved]
+            elif isinstance(resolved, list):
+                stream_targets = resolved
+            elif resolved is None:
+                stream_targets = []
+        for target in stream_targets:
             endpoint = self.endpoints.get(target)
             if endpoint:
                 await relay_io.send_stream_signal(
@@ -754,7 +766,7 @@ class Stage:
                 self._on_abort(abort_msg.request_id)
         except asyncio.CancelledError:
             pass
-        except Exception:
+        except Exception:  # noqa: BLE001
             if self._scheduler_crash_error is None and self._running:
                 logger.exception("Stage %s abort listener crashed", self.name)
 

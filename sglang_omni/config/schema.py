@@ -25,9 +25,7 @@ class EndpointsConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    scheme: Literal["ipc", "tcp"] = "ipc"
     base_path: str = "/tmp/sglang_omni"
-    base_port: int = 16000
 
 
 class ParallelismConfig(BaseModel):
@@ -149,6 +147,7 @@ class StageConfig(BaseModel):
     # --- Routing (set `next` for static routing or `terminal`) ---
     next: str | list[str] | None = None
     terminal: bool = False
+    route_fn: str | None = None
 
     # --- GPU / parallelism ---
     gpu: int | list[int] | None = None
@@ -162,10 +161,12 @@ class StageConfig(BaseModel):
 
     # --- Fan-in ---
     wait_for: list[str] | None = None
+    wait_for_fn: str | None = None
     merge_fn: str | None = None
 
     # --- Streaming ---
     stream_to: list[str] = Field(default_factory=list)
+    stream_done_to_fn: str | None = None
     can_accept_stream_before_payload: bool = False
 
     # --- Route-specific payload projection ---
@@ -212,8 +213,7 @@ class PipelineConfig(BaseModel):
     placement: PlacementConfig = Field(default_factory=PlacementConfig)
     placement_policy: str | None = None
     endpoints: EndpointsConfig = Field(default_factory=EndpointsConfig)
-    completion_endpoint: str | None = None
-    abort_endpoint: str | None = None
+    terminal_stages_fn: str | None = None
     config_cls: str | None = None
 
     def model_post_init(self, __context: Any = None) -> None:
@@ -255,7 +255,6 @@ class PipelineConfig(BaseModel):
             raise ValueError("Pipeline must define at least one stage")
         if len(names) != len(set(names)):
             raise ValueError("Stage names must be unique")
-
         entry = self.resolved_entry_stage
         if entry not in names:
             raise ValueError(f"entry_stage {entry!r} is not defined")
@@ -267,6 +266,14 @@ class PipelineConfig(BaseModel):
             if has_next == bool(s.terminal):
                 raise ValueError(
                     f"Stage {s.name!r} must set exactly one of 'next' or 'terminal'"
+                )
+            if s.terminal and s.route_fn is not None:
+                raise ValueError(
+                    f"Stage {s.name!r} cannot set route_fn on a terminal stage"
+                )
+            if s.stream_done_to_fn is not None and not s.stream_to:
+                raise ValueError(
+                    f"Stage {s.name!r} cannot set stream_done_to_fn without stream_to"
                 )
             if s.tp_size < 1:
                 raise ValueError(f"Stage {s.name!r} must have tp_size >= 1")
@@ -288,6 +295,8 @@ class PipelineConfig(BaseModel):
                     raise ValueError(
                         f"Stage {s.name!r} wait_for has unknown stages: {sorted(unknown)}"
                     )
+            elif s.wait_for_fn is not None:
+                raise ValueError(f"Stage {s.name!r} has wait_for_fn but no wait_for")
             if s.next is not None:
                 targets = [s.next] if isinstance(s.next, str) else s.next
                 unknown = set(targets) - set(names)

@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-import collections
+from collections.abc import Iterable
 from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any
@@ -13,13 +13,96 @@ import xxhash
 
 from sglang_omni.models.qwen3_omni.components.talker_prefill import TalkerPrefillBuilder
 from sglang_omni.models.qwen3_omni.payload_types import PipelineState, ThinkerOutput
-from sglang_omni.proto import StagePayload
+from sglang_omni.models.qwen3_omni.pending_text_queue import (
+    PendingTextTensorQueue,
+    coerce_pending_text_queue,
+)
+from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling.messages import OutgoingMessage
 from sglang_omni.scheduling.sglang_backend import SGLangARRequestData
 from sglang_omni.scheduling.types import ARRequestData
 
 IMAGE_STAGE = "image_encoder"
 AUDIO_STAGE = "audio_encoder"
+DECODE_STAGE = "decode"
+TALKER_STAGE = "talker_ar"
+CODE2WAV_STAGE = "code2wav"
+MM_AGGREGATE_STAGE = "mm_aggregate"
+
+
+def output_modalities(request: OmniRequest | None) -> set[str] | None:
+    metadata = getattr(request, "metadata", None)
+    if not isinstance(metadata, dict):
+        return None
+    modalities = metadata.get("output_modalities")
+    if modalities is None:
+        return None
+    if isinstance(modalities, str):
+        values = (modalities,)
+    elif isinstance(modalities, (list, tuple, set)):
+        values = modalities
+    else:
+        return None
+    return {str(modality).lower() for modality in values}
+
+
+def should_generate_audio_output(
+    payload_or_request: StagePayload | OmniRequest | None,
+) -> bool:
+    request = (
+        payload_or_request.request
+        if isinstance(payload_or_request, StagePayload)
+        else payload_or_request
+    )
+    modalities = output_modalities(request)
+    return modalities is None or "audio" in modalities
+
+
+def resolve_thinker_next_stages(
+    request_id: str, output: StagePayload
+) -> str | list[str]:
+    del request_id
+    if should_generate_audio_output(output):
+        return [DECODE_STAGE, TALKER_STAGE]
+    return DECODE_STAGE
+
+
+def resolve_thinker_stream_done_targets(
+    request_id: str, output: StagePayload
+) -> list[str]:
+    del request_id
+    if should_generate_audio_output(output):
+        return [TALKER_STAGE, DECODE_STAGE]
+    return [DECODE_STAGE]
+
+
+def resolve_terminal_stages(request: OmniRequest) -> list[str]:
+    if should_generate_audio_output(request):
+        return [DECODE_STAGE, CODE2WAV_STAGE]
+    return [DECODE_STAGE]
+
+
+def resolve_preprocessing_next_stages(
+    request_id: str, output: StagePayload
+) -> list[str]:
+    del request_id
+    state = PipelineState.from_dict(output.data)
+    return [
+        *_encoder_stages_with_model_inputs(state.encoder_inputs),
+        MM_AGGREGATE_STAGE,
+    ]
+
+
+def resolve_mm_aggregate_wait_sources(
+    request_id: str,
+    from_stage: str,
+    payload: StagePayload,
+) -> list[str] | None:
+    del request_id
+    if from_stage != "preprocessing":
+        return None
+    state = PipelineState.from_dict(payload.data)
+    return ["preprocessing", *_active_encoder_stages(state.encoder_inputs)]
 
 
 @dataclass(slots=True)
@@ -44,7 +127,9 @@ def build_encoder_request(
             skip_result=skip_result if isinstance(skip_result, dict) else {},
         )
     cache_key = inputs.get("cache_key")
-    model_inputs = {k: v for k, v in inputs.items() if k != "cache_key"}
+    model_inputs = {
+        k: v for k, v in inputs.items() if k not in ("cache_key", "_active")
+    }
     return EncoderRequestData(
         model_inputs=model_inputs,
         cache_key=str(cache_key) if cache_key is not None else None,
@@ -156,9 +241,55 @@ def _project_encoder_input_metadata(
             stage_metadata["cache_key"] = cache_key
         if stage_inputs.get("_skip"):
             stage_metadata["_skip"] = True
+        elif _is_active_encoder_branch(stage_name, stage_inputs):
+            stage_metadata["_active"] = True
         if stage_metadata:
             projected[stage_name] = stage_metadata
     return projected
+
+
+def _encoder_stages_with_model_inputs(
+    encoder_inputs: dict[str, dict[str, Any]],
+) -> list[str]:
+    return [
+        stage_name
+        for stage_name in (IMAGE_STAGE, AUDIO_STAGE)
+        if _has_encoder_model_input(stage_name, encoder_inputs.get(stage_name))
+    ]
+
+
+def _active_encoder_stages(
+    encoder_inputs: dict[str, dict[str, Any]],
+) -> list[str]:
+    return [
+        stage_name
+        for stage_name in (IMAGE_STAGE, AUDIO_STAGE)
+        if _is_active_encoder_branch(stage_name, encoder_inputs.get(stage_name))
+    ]
+
+
+def _is_active_encoder_branch(stage_name: str, stage_inputs: Any) -> bool:
+    if not isinstance(stage_inputs, dict) or stage_inputs.get("_skip"):
+        return False
+    active_marker = stage_inputs.get("_active")
+    if active_marker is not None:
+        return active_marker is True
+    return _has_encoder_model_input(stage_name, stage_inputs)
+
+
+def _has_encoder_model_input(stage_name: str, stage_inputs: Any) -> bool:
+    if not isinstance(stage_inputs, dict) or stage_inputs.get("_skip"):
+        return False
+    if stage_inputs.get("_active") is False:
+        return False
+    if stage_name == IMAGE_STAGE:
+        return (
+            stage_inputs.get("pixel_values") is not None
+            or stage_inputs.get("pixel_values_videos") is not None
+        )
+    if stage_name == AUDIO_STAGE:
+        return stage_inputs.get("input_features") is not None
+    return False
 
 
 def _select_present_fields(
@@ -320,7 +451,7 @@ def build_sglang_thinker_request(
             if cache_key is None:
                 continue
             h = xxhash.xxh3_64(cache_key.encode()).intdigest()
-            pad_val = vocab_size + h % (1 << 30)
+            pad_val = vocab_size + h % (1 << 62)
             pad_values[modality] = pad_val
             token_id_map[orig_token_id] = pad_val
         if token_id_map:
@@ -424,7 +555,7 @@ def build_sglang_talker_request(
     talker_input_ids: torch.Tensor | list[int] | None = None,
     input_embeds_are_projected: bool = False,
     pending_text_queue: (
-        collections.deque[torch.Tensor] | list[torch.Tensor] | torch.Tensor | None
+        PendingTextTensorQueue | Iterable[torch.Tensor] | torch.Tensor | None
     ) = None,
     tts_pad_embed: torch.Tensor | None = None,
     thinker_chunks_done: bool = True,
@@ -434,10 +565,12 @@ def build_sglang_talker_request(
 ) -> "SGLangARRequestData":
     """Build SGLang AR request for the Talker from thinker hidden states.
 
-    Stores thinker hidden states as Req.input_embeds so SGLang's pipeline
-    passes them through ForwardBatch.input_embeds -> model.forward(input_embeds=...).
     Uses dummy input_ids of matching length for position tracking, while the
-    host-side request data keeps a FIFO queue of future text rows for decode.
+    request data keeps a device-backed FIFO of future text rows for decode.
+
+    Stores the original tensor on SGLangARRequestData.prefill_input_embeds
+    when input_embeds_are_projected, so the model runner can skip the
+    list→tensor reconversion during prefill.
 
     Args:
         thinker_hidden_states: Embed layer hidden states [seq_len, hidden_size].
@@ -450,7 +583,7 @@ def build_sglang_talker_request(
     # SGLangARRequestData already imported at module level
 
     if talker_input_embeds is not None:
-        input_embeds = talker_input_embeds.float().cpu().tolist()
+        prefill_embeds_tensor = talker_input_embeds
         input_ids_tensor = torch.as_tensor(talker_input_ids, dtype=torch.long)
         input_ids_list = input_ids_tensor.tolist()
         seq_len = len(input_ids_list)
@@ -462,8 +595,7 @@ def build_sglang_talker_request(
         input_ids_list = [codec_bos_id] * seq_len
         input_ids_tensor = torch.tensor(input_ids_list, dtype=torch.long)
 
-        # Convert hidden states to list-of-lists for Req.input_embeds
-        input_embeds = thinker_hidden_states.float().cpu().tolist()
+        prefill_embeds_tensor = thinker_hidden_states
 
     sampling_params = SamplingParams(
         max_new_tokens=max_new_tokens,
@@ -484,11 +616,15 @@ def build_sglang_talker_request(
         origin_input_text="",
         origin_input_ids=input_ids_list,
         sampling_params=sampling_params,
-        input_embeds=input_embeds,
+        # Convert hidden states to list-of-lists for Req.input_embeds
+        input_embeds=(
+            None if input_embeds_are_projected else prefill_embeds_tensor.cpu().tolist()
+        ),
         eos_token_ids={int(codec_eos_id)} if codec_eos_id is not None else None,
         vocab_size=codec_vocab_size,
     )
     req.tokenizer = tokenizer
+    req._input_embeds_are_projected = bool(input_embeds_are_projected)
     req.omni_model_inputs = dict(talker_model_inputs or {})
     req._omni_consumed = None
     req._codec_suppress_tokens = (
@@ -532,6 +668,9 @@ def build_sglang_talker_request(
         temperature=temperature,
         output_ids=req.output_ids,
         req=req,
+        prefill_input_embeds=(
+            prefill_embeds_tensor if input_embeds_are_projected else None
+        ),
     )
     data.suppress_tokens = list(req._codec_suppress_tokens or [])
     data.talker_model_inputs = dict(talker_model_inputs or {})
@@ -541,9 +680,7 @@ def build_sglang_talker_request(
         data.extra_model_outputs["talker_multimodal_mask"] = multimodal_mask
     data.input_embeds_are_projected = bool(input_embeds_are_projected)
     data.thinker_chunks_done = bool(thinker_chunks_done)
-    if isinstance(pending_text_queue, torch.Tensor):
-        pending_text_queue = [row.detach().cpu() for row in pending_text_queue]
-    data.pending_text_queue = collections.deque(pending_text_queue or [])
+    data.pending_text_queue = coerce_pending_text_queue(pending_text_queue)
     data.tts_pad_embed = tts_pad_embed
     return data
 
@@ -636,6 +773,9 @@ def make_thinker_stream_output_builder():
                     metadata={"token_id": token_id},
                 )
             )
+
+        if not should_generate_audio_output(stage_payload):
+            return messages
 
         # Speech mode: also stream hidden states to the talker for codec gen.
         extra = req_output.extra

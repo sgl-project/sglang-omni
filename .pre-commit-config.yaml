@@ -43,7 +43,7 @@ repos:
         alias: ruff-qwen-broad-exception
         name: ruff-qwen-broad-exception
         args: [--select=BLE001]
-        files: ^sglang_omni/(model_runner/|models/qwen3_omni/)
+        files: ^sglang_omni/
         exclude: ^sglang_omni/models/qwen3_omni/components/streaming_detokenizer\.py$
   - repo: https://github.com/psf/black
     rev: 24.10.0

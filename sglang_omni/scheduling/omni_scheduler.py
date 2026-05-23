@@ -24,6 +24,7 @@ from sglang.srt.environ import envs
 from sglang.srt.layers.dp_attention import compute_dp_attention_world_info
 from sglang.srt.managers.schedule_batch import ScheduleBatch
 from sglang.srt.managers.scheduler import Scheduler as _Upstream
+from sglang.srt.managers.scheduler import validate_input_length
 from sglang.srt.utils import broadcast_pyobj
 
 from sglang_omni.scheduling.messages import IncomingMessage, OutgoingMessage
@@ -93,6 +94,7 @@ class OmniScheduler:
         stream_output_builder: Callable | None = None,
         stream_chunk_handler: Callable | None = None,
         stream_done_handler: Callable | None = None,
+        abort_callback: Callable[[str], None] | None = None,
         enable_overlap: bool = False,
     ):
         self.inbox: _queue_mod.Queue[IncomingMessage] = _queue_mod.Queue()
@@ -105,6 +107,7 @@ class OmniScheduler:
         self._stream_output_builder = stream_output_builder
         self._stream_chunk_handler = stream_chunk_handler
         self._stream_done_handler = stream_done_handler
+        self._abort_callback = abort_callback
 
         # --- Core scheduling state (read/written by upstream methods) -----
         self.server_args = server_args
@@ -126,6 +129,7 @@ class OmniScheduler:
         self.max_total_num_tokens = mr.max_total_num_tokens
         self.max_prefill_tokens = server_args.max_prefill_tokens
         self.max_running_requests = server_args.max_running_requests
+        self.max_queued_requests = server_args.max_queued_requests
         self.max_req_len = min(
             server_args.context_length - 1,
             self.max_total_num_tokens - 1,
@@ -251,6 +255,7 @@ class OmniScheduler:
         self.soft_watchdog = None
         self.recv_skipper = None
         self.idle_sleeper = None
+        self._init_upstream_compat_flags(server_args)
         self.grammar_manager = _NoOpGrammarManager()
         self.grammar_queue = []
         self.grammar_backend = None
@@ -294,6 +299,32 @@ class OmniScheduler:
         self._pending_stream_chunks: dict[str, list[Any]] = {}
         self._pending_stream_done: set[str] = set()
         self._deferred_request_payloads: dict[str, Any] = {}
+
+    def _init_upstream_compat_flags(self, server_args: Any) -> None:
+        self.enable_hisparse = bool(getattr(server_args, "enable_hisparse", False))
+        self.hisparse_coordinator = None
+        self.enable_priority_preemption = bool(
+            getattr(server_args, "enable_priority_scheduling", False)
+            and not getattr(server_args, "disable_priority_preemption", False)
+        )
+        # High-water mark, not a cap. Mirrors upstream Scheduler.__init__ (sglang/srt/managers/scheduler.py).
+        self.max_prefill_bs = 0
+        self.use_ngram_embedding = False
+        self.return_health_check_ipcs = []
+        self.enable_overlap_mlx = False
+
+    def self_check_during_idle(self) -> None:
+        self.new_token_ratio = self.init_new_token_ratio
+        idle_sleeper = self.__dict__.get("idle_sleeper")
+        if idle_sleeper is not None:
+            idle_sleeper.maybe_sleep()
+
+    def self_check_during_busy(self) -> None:
+        return None
+
+    # ------------------------------------------------------------------
+    # Composition: delegate missing attributes to the upstream class
+    # ------------------------------------------------------------------
 
     def __getattr__(self, name: str):
         """Look up methods on the upstream SGLang Scheduler class.
@@ -415,19 +446,37 @@ class OmniScheduler:
             ):
                 self._deferred_request_payloads[req_id] = payload
                 continue
-            req_data = self._request_builder(payload)
+            try:
+                req_data = self._request_builder(payload)
+            except Exception as exc:  # noqa: BLE001
+                logger.exception(f"OmniScheduler: request builder failed for {req_id}")
+                self._pending_stream_done.discard(req_id)
+                self._deferred_request_payloads.pop(req_id, None)
+                self.outbox.put(
+                    OutgoingMessage(request_id=req_id, type="error", data=exc)
+                )
+                continue
             if pending_stream_done:
                 self._pending_stream_done.discard(req_id)
             self._deferred_request_payloads.pop(req_id, None)
             req = req_data.req
             req._omni_data = req_data
             req_id = req.rid
+            if bool(getattr(req_data, "enforce_request_limits", False)):
+                error_msg = self._prepare_request_limits(req_data)
+                if error_msg:
+                    self.outbox.put(
+                        OutgoingMessage(
+                            request_id=req_id,
+                            type="error",
+                            data=ValueError(error_msg),
+                        )
+                    )
+                    continue
             kv_error = self._request_kv_capacity_error(req)
             if kv_error is not None:
                 logger.warning(
-                    "Rejecting request %s before scheduling: %s",
-                    req_id,
-                    kv_error,
+                    f"Rejecting request {req_id} before scheduling: {kv_error}"
                 )
                 self.outbox.put(
                     OutgoingMessage(
@@ -441,6 +490,20 @@ class OmniScheduler:
             if req_id in self._aborted_request_ids:
                 continue
             self.waiting_queue.append(req)
+
+    def _prepare_request_limits(self, req_data: Any) -> str | None:
+        req = req_data.req
+        self.init_req_max_new_tokens(req)
+        error_msg = validate_input_length(
+            req,
+            self.max_req_input_len,
+            allow_auto_truncate=False,
+        )
+        if error_msg:
+            return error_msg
+        if hasattr(req_data, "max_new_tokens"):
+            req_data.max_new_tokens = int(req.sampling_params.max_new_tokens)
+        return None
 
     def _take_deferred_request_payloads(self) -> list[Any]:
         if not self._deferred_request_payloads:
@@ -586,6 +649,9 @@ class OmniScheduler:
             )
             result = self._result_adapter(data)
 
+            data.prefill_input_embeds = None
+            data.decode_input_embeds = None
+
             self.outbox.put(
                 OutgoingMessage(
                     request_id=rid,
@@ -626,6 +692,13 @@ class OmniScheduler:
         self._running = False
 
     def abort(self, request_id: str) -> None:
+        if self._abort_callback is not None:
+            try:
+                self._abort_callback(request_id)
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "OmniScheduler: abort cleanup failed for %s", request_id
+                )
         self._aborted_request_ids.add(request_id)
         self._pending_stream_chunks.pop(request_id, None)
         self._pending_stream_done.discard(request_id)

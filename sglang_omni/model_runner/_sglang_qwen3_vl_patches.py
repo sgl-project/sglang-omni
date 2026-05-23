@@ -295,7 +295,7 @@ def apply_qwen3_vl_hf_parity_patches() -> None:
                 _patched_fast_pos_embed_interpolate
             )
             Qwen3VLMoeVisionModel.rot_pos_emb = _patched_rot_pos_emb
-        except Exception:
+        except Exception:  # noqa: BLE001
             Qwen3VLMoeVisionModel.fast_pos_embed_interpolate = original_fpei
             Qwen3VLMoeVisionModel.rot_pos_emb = original_rope
             raise

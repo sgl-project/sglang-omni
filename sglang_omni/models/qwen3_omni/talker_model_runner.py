@@ -68,6 +68,8 @@ class QwenTalkerModelRunner(ModelRunner):
         schedule_batch: Any,
         requests: list,
     ) -> None:
+        # Note (Xuesong): Do not clear data.prefill_input_embeds: decode retract may requeue
+        # the Req for another prefill pass and Req.input_embeds is None.
         if not self._feedback_enabled:
             return
 
@@ -164,25 +166,43 @@ class QwenTalkerModelRunner(ModelRunner):
         if not has_projected:
             return None
 
-        input_embeds = forward_batch.input_embeds
         projected_flags = [
             bool(req.data.input_embeds_are_projected) for req in requests
         ]
-        input_embeds_are_projected = bool(projected_flags) and all(projected_flags)
-        if input_embeds is None:
-            rows = []
+        has_projected_requests = any(projected_flags)
+        if has_projected_requests and not all(projected_flags):
+            raise RuntimeError(
+                "Talker projected and unprojected prefill requests cannot be "
+                "batched together"
+            )
+
+        input_embeds_are_projected = has_projected_requests
+        input_embeds = forward_batch.input_embeds
+        if has_projected_requests:
+            parts: list[torch.Tensor] = []
             for sched_req in requests:
                 req = sched_req.data.req
-                embeds = req.input_embeds
-                if embeds:
-                    prefix_len = len(req.prefix_indices)
-                    rows.extend(embeds[prefix_len:])
-            if not rows:
+                prefix_len = len(req.prefix_indices)
+                extend_len = int(req.extend_input_len)
+                part = self._projected_prefill_slice(
+                    sched_req=sched_req,
+                    prefix_len=prefix_len,
+                    extend_len=extend_len,
+                    device=forward_batch.input_ids.device,
+                )
+                if part is not None and part.shape[0] > 0:
+                    parts.append(part)
+            if not parts:
                 return None
-            input_embeds = torch.as_tensor(
-                rows,
-                device=forward_batch.input_ids.device,
-                dtype=torch.float32,
+            input_embeds = torch.cat(parts, dim=0)
+        elif input_embeds is None:
+            return None
+
+        expected_rows = int(forward_batch.input_ids.shape[0])
+        if input_embeds.shape[0] != expected_rows:
+            raise RuntimeError(
+                "Talker projected prefill embeds must align with forward input_ids: "
+                f"got {input_embeds.shape[0]} rows for {expected_rows} input ids"
             )
 
         result = self._forward_with_input_embeds(
@@ -191,6 +211,127 @@ class QwenTalkerModelRunner(ModelRunner):
             input_embeds_are_projected=input_embeds_are_projected,
         )
         return result
+
+    @staticmethod
+    def _projected_prefill_slice(
+        *,
+        sched_req: Any,
+        prefix_len: int,
+        extend_len: int,
+        device: torch.device,
+    ) -> torch.Tensor | None:
+        if extend_len <= 0:
+            return None
+
+        data = sched_req.data
+        req = data.req
+        end = prefix_len + extend_len
+        tensor = data.prefill_input_embeds
+        if tensor is not None:
+            prompt_len = int(tensor.shape[0])
+            dtype = tensor.dtype
+            embed_device = tensor.device
+            parts = QwenTalkerModelRunner._prefill_prompt_parts_from_tensor(
+                tensor=tensor,
+                prefix_len=prefix_len,
+                end=end,
+            )
+        else:
+            embeds = req.input_embeds
+            if not embeds:
+                return None
+            prompt_len = len(embeds)
+            dtype = torch.float32
+            embed_device = device
+            parts = QwenTalkerModelRunner._prefill_prompt_parts_from_list(
+                embeds=embeds,
+                prefix_len=prefix_len,
+                end=end,
+                device=device,
+            )
+
+        if end > prompt_len:
+            generated = QwenTalkerModelRunner._generated_prefill_slice(
+                sched_req=sched_req,
+                gen_start=max(prefix_len, prompt_len) - prompt_len,
+                gen_end=end - prompt_len,
+                device=embed_device,
+                dtype=dtype,
+            )
+            if generated is not None:
+                parts.append(generated)
+
+        if not parts:
+            return None
+        return torch.cat(parts, dim=0)
+
+    @staticmethod
+    def _prefill_prompt_parts_from_tensor(
+        *,
+        tensor: torch.Tensor,
+        prefix_len: int,
+        end: int,
+    ) -> list[torch.Tensor]:
+        prompt_len = int(tensor.shape[0])
+        start = min(prefix_len, prompt_len)
+        stop = min(end, prompt_len)
+        return [tensor[start:stop]] if stop > start else []
+
+    @staticmethod
+    def _prefill_prompt_parts_from_list(
+        *,
+        embeds: list,
+        prefix_len: int,
+        end: int,
+        device: torch.device,
+    ) -> list[torch.Tensor]:
+        prompt_len = len(embeds)
+        start = min(prefix_len, prompt_len)
+        stop = min(end, prompt_len)
+        if stop <= start:
+            return []
+        return [
+            torch.as_tensor(
+                embeds[start:stop],
+                device=device,
+                dtype=torch.float32,
+            )
+        ]
+
+    @staticmethod
+    def _generated_prefill_slice(
+        *,
+        sched_req: Any,
+        gen_start: int,
+        gen_end: int,
+        device: torch.device,
+        dtype: torch.dtype,
+    ) -> torch.Tensor | None:
+        if gen_end <= gen_start:
+            return None
+
+        data = sched_req.data
+        history = QwenTalkerModelRunner._decode_input_history(data)
+        while len(history) < gen_end:
+            combined = QwenTalkerModelRunner._take_next_decode_input_embed(
+                sched_req=sched_req,
+                device=device,
+                dtype=dtype,
+            )
+            if combined is None:
+                raise RuntimeError(
+                    "Cannot replay retracted talker decode tokens: missing "
+                    "feedback/text input embeds for generated-token prefill"
+                )
+            QwenTalkerModelRunner._append_decode_input_history(data, combined)
+
+        rows = [
+            QwenTalkerModelRunner._decode_row(row, device=device, dtype=dtype)
+            for row in history[gen_start:gen_end]
+        ]
+        if not rows:
+            return None
+        return torch.stack(rows, dim=0)
 
     def _write_feedback_buffers(self, requests: list) -> None:
         batch_size = len(requests)
@@ -201,6 +342,8 @@ class QwenTalkerModelRunner(ModelRunner):
         feedback_mask = self.model._feedback_mask
         feedback_mask[:batch_size] = False
 
+        rows: list[int] = []
+        embeds: list[torch.Tensor] = []
         for row_idx, sched_req in enumerate(requests):
             combined = self._take_next_decode_input_embed(
                 sched_req=sched_req,
@@ -209,8 +352,14 @@ class QwenTalkerModelRunner(ModelRunner):
             )
             if combined is None:
                 continue
-            feedback_buffer[row_idx].copy_(combined)
-            feedback_mask[row_idx] = True
+            self._append_decode_input_history(sched_req.data, combined)
+            rows.append(row_idx)
+            embeds.append(combined)
+        if rows:
+            rows_t = torch.tensor(rows, dtype=torch.long, device=feedback_buffer.device)
+            embeds_stacked = torch.stack(embeds, dim=0)
+            feedback_buffer[rows_t] = embeds_stacked
+            feedback_mask[rows_t] = True
 
     @staticmethod
     def _data_has_next_decode_input(data: Any) -> bool:
@@ -253,6 +402,34 @@ class QwenTalkerModelRunner(ModelRunner):
         return None
 
     @staticmethod
+    def _decode_input_history(data: Any) -> list[torch.Tensor]:
+        history = getattr(data, "decode_input_embeds", None)
+        if history is None:
+            history = []
+            data.decode_input_embeds = history
+        return history
+
+    @staticmethod
+    def _append_decode_input_history(data: Any, row: torch.Tensor) -> None:
+        QwenTalkerModelRunner._decode_input_history(data).append(row.detach())
+
+    @staticmethod
+    def _decode_row(
+        row: torch.Tensor,
+        *,
+        device: torch.device,
+        dtype: torch.dtype,
+    ) -> torch.Tensor:
+        row = row.reshape(-1)
+        if row.device != device or row.dtype != dtype:
+            raise RuntimeError(
+                "Talker decode rows must already match the feedback buffer "
+                f"device/dtype, got {row.device}/{row.dtype}, "
+                f"expected {device}/{dtype}"
+            )
+        return row
+
+    @staticmethod
     def _combine_feedback_with_next_text(
         *,
         data: Any,
@@ -264,26 +441,24 @@ class QwenTalkerModelRunner(ModelRunner):
         if feedback is None:
             return None
 
-        combined = feedback.to(device=device, dtype=dtype).reshape(-1)
+        combined = QwenTalkerModelRunner._decode_row(
+            feedback,
+            device=device,
+            dtype=dtype,
+        )
         next_text = QwenTalkerModelRunner._peek_left(
             getattr(data, "pending_text_queue", None)
         )
-        if next_text is not None:
-            combined = combined + next_text.to(
-                device=device,
-                dtype=dtype,
-            ).reshape(-1)
-        elif (
-            bool(getattr(data, "thinker_chunks_done", False))
-            and getattr(data, "tts_pad_embed", None) is not None
-        ):
-            combined = combined + data.tts_pad_embed.to(
-                device=device,
-                dtype=dtype,
-            ).reshape(-1)
-        else:
-            return None
-        return combined
+        if next_text is None:
+            if not data.thinker_chunks_done:
+                return None
+            next_text = data.tts_pad_embed
+
+        return combined + QwenTalkerModelRunner._decode_row(
+            next_text,
+            device=device,
+            dtype=dtype,
+        )
 
     @staticmethod
     def _take_next_decode_input_embed(

@@ -12,6 +12,16 @@ Usage::
     python examples/run_qwen3_omni_speech_server.py \
         --gpu-thinker 0 --gpu-talker 1 --gpu-code2wav 1
 
+    # Thinker TP=2 across two cards, talker disaggregated on one of them:
+    python examples/run_qwen3_omni_speech_server.py \
+        --thinker-tp-size 2 --gpu-thinker-tp 0,1 \
+        --gpu-talker 1 --gpu-code2wav 1
+
+    # Thinker TP=4 across four cards, talker + code2wav on a fifth card:
+    python examples/run_qwen3_omni_speech_server.py \
+        --thinker-tp-size 4 --gpu-thinker-tp 0,1,2,3 \
+        --gpu-talker 4 --gpu-code2wav 4
+
     # Then test:
     curl http://localhost:8000/v1/chat/completions \\
         -H "Content-Type: application/json" \\
@@ -55,6 +65,28 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--gpu-code2wav", type=int, default=0)
     parser.add_argument("--gpu-image-encoder", type=int, default=0)
     parser.add_argument("--gpu-audio-encoder", type=int, default=0)
+
+    # Thinker tensor parallelism (disaggregated path; not used by colocation).
+    parser.add_argument(
+        "--thinker-tp-size",
+        type=int,
+        default=1,
+        help=(
+            "Tensor-parallel size for the thinker stage. Accepts any integer "
+            ">= 1; common values are 1, 2, 4, 8. When > 1, also pass "
+            "--gpu-thinker-tp with exactly that many GPU ids."
+        ),
+    )
+    parser.add_argument(
+        "--gpu-thinker-tp",
+        type=str,
+        default=None,
+        help=(
+            "Comma-separated GPU ids for thinker when --thinker-tp-size > 1, "
+            "e.g. '0,1'. Length must equal --thinker-tp-size. Overrides "
+            "--gpu-thinker when set."
+        ),
+    )
 
     # Pipeline
     parser.add_argument(
@@ -135,7 +167,7 @@ def _apply_stage_factory_updates(
     )
 
 
-def _set_stage_gpu(config: Any, stage_name: str, gpu_id: int) -> None:
+def _set_stage_gpu(config: Any, stage_name: str, gpu_id: int | list[int]) -> None:
     for stage in config.stages:
         if stage.name == stage_name:
             stage.gpu = gpu_id
@@ -143,6 +175,38 @@ def _set_stage_gpu(config: Any, stage_name: str, gpu_id: int) -> None:
     raise ValueError(
         f"Stage {stage_name!r} not found in config {type(config).__name__}"
     )
+
+
+def _set_stage_tp_size(config: Any, stage_name: str, tp_size: int) -> None:
+    for stage in config.stages:
+        if stage.name == stage_name:
+            stage.tp_size = tp_size
+            stage.parallelism.tp = tp_size
+            return
+    raise ValueError(
+        f"Stage {stage_name!r} not found in config {type(config).__name__}"
+    )
+
+
+def _parse_thinker_tp_gpu_list(spec: str, tp_size: int) -> list[int]:
+    try:
+        gpu_ids = [int(piece.strip()) for piece in spec.split(",") if piece.strip()]
+    except ValueError as exc:
+        raise ValueError(
+            f"--gpu-thinker-tp must be a comma-separated list of integers, "
+            f"got {spec!r}"
+        ) from exc
+    for gpu in gpu_ids:
+        if gpu < 0:
+            raise ValueError(f"--gpu-thinker-tp GPU ids must be >= 0, got {gpu_ids}")
+    if len(gpu_ids) != tp_size:
+        raise ValueError(
+            f"--gpu-thinker-tp has {len(gpu_ids)} entries but --thinker-tp-size="
+            f"{tp_size} requires exactly {tp_size}"
+        )
+    if len(set(gpu_ids)) != len(gpu_ids):
+        raise ValueError(f"--gpu-thinker-tp must list distinct GPU ids, got {gpu_ids}")
+    return gpu_ids
 
 
 def _launch_speech_server(args: argparse.Namespace) -> None:
@@ -174,7 +238,34 @@ def _launch_speech_server(args: argparse.Namespace) -> None:
 
     _set_stage_gpu(config, "image_encoder", args.gpu_image_encoder)
     _set_stage_gpu(config, "audio_encoder", args.gpu_audio_encoder)
-    _set_stage_gpu(config, "thinker", args.gpu_thinker)
+
+    if args.thinker_tp_size < 1:
+        raise ValueError(f"--thinker-tp-size must be >= 1, got {args.thinker_tp_size}")
+
+    if args.thinker_tp_size > 1:
+        if args.gpu_thinker_tp is None:
+            raise ValueError(
+                "--thinker-tp-size > 1 requires --gpu-thinker-tp "
+                "(comma-separated GPU ids, one per TP rank)."
+            )
+        thinker_gpu_ids = _parse_thinker_tp_gpu_list(
+            args.gpu_thinker_tp, args.thinker_tp_size
+        )
+        _set_stage_tp_size(config, "thinker", args.thinker_tp_size)
+        _set_stage_gpu(config, "thinker", thinker_gpu_ids)
+        _apply_stage_factory_updates(
+            config,
+            stage_name="thinker",
+            server_arg_updates={"disable_custom_all_reduce": True},
+        )
+    else:
+        if args.gpu_thinker_tp is not None:
+            raise ValueError(
+                "--gpu-thinker-tp only applies when --thinker-tp-size > 1; "
+                "for TP=1, use --gpu-thinker."
+            )
+        _set_stage_gpu(config, "thinker", args.gpu_thinker)
+
     _set_stage_gpu(config, "talker_ar", args.gpu_talker)
     _set_stage_gpu(config, "code2wav", args.gpu_code2wav)
 
