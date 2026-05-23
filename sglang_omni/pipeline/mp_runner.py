@@ -79,13 +79,6 @@ def _build_stage_groups(
             name_map,
             process_plan,
         )
-        same_gpu_payload_targets = _resolve_same_gpu_payload_targets(
-            stage_cfg,
-            stage_cfg_by_name,
-            name_map,
-            placement_plan,
-            process_plan,
-        )
 
         # Pre-resolve factory args (inject model_path, gpu_id)
         base_factory_args = resolve_stage_factory_args(stage_cfg, config)
@@ -111,7 +104,6 @@ def _build_stage_groups(
             stream_done_to_fn=stage_cfg.stream_done_to_fn,
             same_gpu_targets=same_gpu_targets,
             same_process_targets=same_process_targets,
-            same_gpu_payload_targets=same_gpu_payload_targets,
             is_stream_receiver=stage_cfg.name in stream_receivers,
             can_accept_stream_before_payload=stage_cfg.can_accept_stream_before_payload,
             name_map=name_map,
@@ -198,46 +190,6 @@ def _resolve_same_process_targets(
         if process_plan.stage_to_process.get(target) == source_process:
             same_process_targets.add(target)
     return same_process_targets
-
-
-def _resolve_same_gpu_payload_targets(
-    stage_cfg: StageConfig,
-    stage_cfg_by_name: dict[str, StageConfig],
-    name_map: dict[str, str],
-    placement_plan: StagePlacementPlan,
-    process_plan: ProcessTopologyPlan,
-) -> set[str]:
-    if stage_cfg.tp_size > 1 or stage_cfg.next is None:
-        return set()
-    source_process = process_plan.stage_to_process.get(stage_cfg.name)
-    source_gpu = _primary_stage_gpu(placement_plan, stage_cfg.name)
-    if source_process is None or source_gpu is None:
-        return set()
-
-    raw_targets = (
-        [stage_cfg.next] if isinstance(stage_cfg.next, str) else list(stage_cfg.next)
-    )
-    same_gpu_targets: set[str] = set()
-    for raw_target in raw_targets:
-        target = name_map.get(raw_target, raw_target)
-        target_cfg = stage_cfg_by_name.get(target)
-        if target_cfg is None or target_cfg.tp_size > 1:
-            continue
-        if process_plan.stage_to_process.get(target) == source_process:
-            continue
-        if _primary_stage_gpu(placement_plan, target) == source_gpu:
-            same_gpu_targets.add(target)
-    return same_gpu_targets
-
-
-def _primary_stage_gpu(
-    placement_plan: StagePlacementPlan,
-    stage_name: str,
-) -> int | None:
-    placement = placement_plan.stages.get(stage_name)
-    if placement is None or not placement.gpu_ids:
-        return None
-    return placement.gpu_ids[0]
 
 
 def _build_single_stage_spec(

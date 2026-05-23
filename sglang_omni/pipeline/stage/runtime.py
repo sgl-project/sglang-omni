@@ -77,7 +77,6 @@ class Stage:
         get_stream_done_targets: GetStreamDoneTargetsFn | None = None,
         same_gpu_targets: set[str] | None = None,
         same_process_targets: set[str] | None = None,
-        same_gpu_payload_targets: set[str] | None = None,
         local_dispatcher: Any | None = None,
         can_accept_stream_before_payload: bool = False,
         tp_fanout: TPLeaderFanout | None = None,
@@ -96,7 +95,6 @@ class Stage:
         self.get_stream_done_targets = get_stream_done_targets
         self._same_gpu_targets = same_gpu_targets or set()
         self._same_process_targets = same_process_targets or set()
-        self._same_gpu_payload_targets = same_gpu_payload_targets or set()
         self._local_dispatcher = local_dispatcher
         self._can_accept_stream_before_payload = can_accept_stream_before_payload
         self._tp_fanout = tp_fanout
@@ -286,24 +284,17 @@ class Stage:
         if self._stream_queue is not None and not self._stream_queue.has(request_id):
             self._stream_queue.open(request_id)
 
+        # Read payload from relay
         try:
-            if relay_io.is_ipc_payload_metadata(msg.shm_metadata):
-                payload = relay_io.deserialize_ipc_payload(msg.shm_metadata)
-            else:
-                payload = await relay_io.read_payload(
-                    self.relay, request_id, msg.shm_metadata
-                )
+            payload = await relay_io.read_payload(
+                self.relay, request_id, msg.shm_metadata
+            )
         except Exception as exc:
-            is_ipc_payload = relay_io.is_ipc_payload_metadata(msg.shm_metadata)
-            error_prefix = (
-                "ipc payload read failed" if is_ipc_payload else "relay read failed"
-            )
             logger.exception(
-                "Stage %s: %s for %s", self.name, error_prefix, request_id
+                "Stage %s: relay read failed for %s", self.name, request_id
             )
-            if not is_ipc_payload:
-                self.relay.cleanup(request_id)
-            await self._send_failure(request_id, f"{error_prefix}: {exc}")
+            self.relay.cleanup(request_id)
+            await self._send_failure(request_id, f"relay read failed: {exc}")
             return
 
         await self._receive_payload_from_stage(request_id, msg.from_stage, payload)
@@ -511,8 +502,6 @@ class Stage:
 
     async def _discard_payload_data(self, msg: DataReadyMessage) -> None:
         request_id = msg.request_id
-        if relay_io.is_ipc_payload_metadata(msg.shm_metadata):
-            return
         try:
             await relay_io.read_payload(self.relay, request_id, msg.shm_metadata)
         except Exception:
@@ -764,7 +753,6 @@ class Stage:
                     result,
                     allow_local_object=is_single_target,
                     allow_projected_local_object=not is_single_target,
-                    allow_cuda_ipc_payload=is_single_target,
                     stream_targets_for_request=stream_targets_for_request,
                 )
 
@@ -778,7 +766,6 @@ class Stage:
         *,
         allow_local_object: bool = False,
         allow_projected_local_object: bool = False,
-        allow_cuda_ipc_payload: bool = False,
         stream_targets_for_request: set[str] | None = None,
     ) -> None:
         if not self._owns_external_io:
@@ -831,26 +818,6 @@ class Stage:
                 request_id=request_id,
                 payload=projected_payload,
             )
-            return
-
-        if (
-            allow_cuda_ipc_payload
-            and target in self._same_gpu_payload_targets
-            and relay_io.contains_ipc_payload_tensor(projected_payload.data)
-        ):
-            logger.debug(
-                "full_payload transport=cuda_ipc from=%s to=%s request_id=%s",
-                self.name,
-                target,
-                request_id,
-            )
-            msg = DataReadyMessage(
-                request_id=request_id,
-                from_stage=self.name,
-                to_stage=target,
-                shm_metadata=relay_io.serialize_ipc_payload(projected_payload),
-            )
-            await self.control_plane.send_to_stage(target, endpoint, msg)
             return
 
         logger.debug(

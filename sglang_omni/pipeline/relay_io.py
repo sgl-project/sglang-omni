@@ -72,57 +72,6 @@ def extract_tensors(obj: Any, path: str = "") -> tuple[Any, dict[str, torch.Tens
         return obj, tensors
 
 
-def extract_cuda_tensors(
-    obj: Any, path: str = ""
-) -> tuple[Any, dict[str, torch.Tensor]]:
-    """Extract only CUDA tensor leaves, leaving CPU tensors in the object."""
-    tensors = {}
-
-    if isinstance(obj, torch.Tensor):
-        if not obj.is_cuda:
-            return obj, tensors
-        placeholder = {
-            "_tensor_placeholder": path,
-            "shape": list(obj.shape),
-            "dtype": str(obj.dtype),
-            "device": str(obj.device),
-        }
-        tensors[path] = obj
-        return placeholder, tensors
-
-    elif isinstance(obj, dict):
-        new_dict = {}
-        for key, value in obj.items():
-            new_path = f"{path}.{key}" if path else key
-            new_value, sub_tensors = extract_cuda_tensors(value, new_path)
-            new_dict[key] = new_value
-            tensors.update(sub_tensors)
-        return new_dict, tensors
-
-    elif isinstance(obj, (list, tuple)):
-        new_list = []
-        for i, item in enumerate(obj):
-            new_path = f"{path}[{i}]"
-            new_item, sub_tensors = extract_cuda_tensors(item, new_path)
-            new_list.append(new_item)
-            tensors.update(sub_tensors)
-        return (type(obj)(new_list), tensors)
-
-    else:
-        return obj, tensors
-
-
-def contains_ipc_payload_tensor(obj: Any) -> bool:
-    """Return whether ``extract_cuda_tensors`` can extract a CUDA tensor from obj."""
-    if isinstance(obj, torch.Tensor):
-        return obj.is_cuda
-    if isinstance(obj, dict):
-        return any(contains_ipc_payload_tensor(value) for value in obj.values())
-    if isinstance(obj, (list, tuple)):
-        return any(contains_ipc_payload_tensor(value) for value in obj)
-    return False
-
-
 def restore_tensors(obj: Any, tensor_dict: dict[str, torch.Tensor]) -> Any:
     """Recursively restore tensors from placeholders."""
     if isinstance(obj, dict):
@@ -242,46 +191,6 @@ async def read_payload(
     )
     relay.cleanup(request_id)
     return payload
-
-
-def serialize_ipc_payload(payload: StagePayload) -> dict[str, Any]:
-    """Serialize a StagePayload by passing CUDA tensor leaves via CUDA IPC."""
-    modified_data, tensor_dict = extract_cuda_tensors(payload.data)
-    payload_no_cuda_tensors = StagePayload(
-        request_id=payload.request_id,
-        request=payload.request,
-        data=modified_data,
-    )
-    metadata_bytes = pickle.dumps(payload_no_cuda_tensors)
-
-    return {
-        "_ipc_payload": True,
-        "payload_pickle": base64.b64encode(metadata_bytes).decode("ascii"),
-        "cuda_tensors": {
-            path: {"tensor_bytes": ipc_pickle(tensor)}
-            for path, tensor in tensor_dict.items()
-        },
-    }
-
-
-def deserialize_ipc_payload(metadata: dict[str, Any]) -> StagePayload:
-    """Restore a StagePayload serialized by ``serialize_ipc_payload``."""
-    payload_bytes = base64.b64decode(metadata["payload_pickle"])
-    payload_no_cuda_tensors = pickle.loads(payload_bytes)
-    tensor_dict = {
-        path: pickle.loads(info["tensor_bytes"])
-        for path, info in metadata.get("cuda_tensors", {}).items()
-    }
-    restored_data = restore_tensors(payload_no_cuda_tensors.data, tensor_dict)
-    return StagePayload(
-        request_id=payload_no_cuda_tensors.request_id,
-        request=payload_no_cuda_tensors.request,
-        data=restored_data,
-    )
-
-
-def is_ipc_payload_metadata(metadata: Any) -> bool:
-    return isinstance(metadata, dict) and bool(metadata.get("_ipc_payload"))
 
 
 # ---------------------------------------------------------------------------

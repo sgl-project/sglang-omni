@@ -7,7 +7,6 @@ import pytest
 from sglang_omni.config.schema import EndpointsConfig, PipelineConfig
 from sglang_omni.pipeline.mp_runner import (
     _build_stage_groups,
-    _resolve_same_gpu_payload_targets,
     _resolve_same_process_targets,
 )
 from sglang_omni.pipeline.runtime_config import prepare_pipeline_runtime
@@ -191,60 +190,6 @@ def test_runner_specs_wire_same_process_stream_targets() -> None:
     specs = {spec.stage_name: spec for group in groups for spec in group.specs}
 
     assert specs["thinker"].same_process_targets == {"decode"}
-
-
-def test_runner_specs_wire_same_gpu_cross_process_full_payload_targets() -> None:
-    config = PipelineConfig(
-        model_path="model",
-        placement={"require_memory_fraction_for_colocation": False},
-        stages=[
-            stage("encoder", gpu=0, next="thinker", process="p0"),
-            stage("thinker", gpu=0, terminal=True, process="p1"),
-        ],
-    )
-    prep = prepare_pipeline_runtime(config)
-    groups = _build_stage_groups(
-        config,
-        ctx=FakeMpContext(),
-        stages_cfg=prep.stages_cfg,
-        name_map=prep.name_map,
-        endpoints=prep.endpoints,
-        placement_plan=prep.placement_plan,
-        process_plan=prep.process_plan,
-    )
-    specs = {spec.stage_name: spec for group in groups for spec in group.specs}
-
-    assert specs["encoder"].same_process_targets == set()
-    assert specs["encoder"].same_gpu_payload_targets == {"thinker"}
-
-
-def test_runner_specs_do_not_wire_same_gpu_payload_for_local_cross_gpu_or_tp_edges() -> None:
-    config = PipelineConfig(
-        model_path="model",
-        placement={"require_memory_fraction_for_colocation": False},
-        stages=[
-            stage("local_src", gpu=0, next="local_dst", process="p0"),
-            stage("local_dst", gpu=0, terminal=True, process="p0"),
-            stage("cross_src", gpu=0, next="cross_dst", process="p1"),
-            stage("cross_dst", gpu=1, terminal=True, process="p2"),
-            stage("tp_src", gpu=0, next="tp_dst", process="p3"),
-            stage("tp_dst", gpu=[0, 1], tp_size=2, terminal=True),
-        ],
-    )
-    prep = prepare_pipeline_runtime(config)
-    stage_cfg_by_name = {stage_cfg.name: stage_cfg for stage_cfg in prep.stages_cfg}
-
-    for stage_name in ("local_src", "cross_src", "tp_src", "tp_dst"):
-        assert (
-            _resolve_same_gpu_payload_targets(
-                stage_cfg_by_name[stage_name],
-                stage_cfg_by_name,
-                prep.name_map,
-                prep.placement_plan,
-                prep.process_plan,
-            )
-            == set()
-        )
 
 
 def test_runner_specs_do_not_wire_same_process_targets_to_tp_stages() -> None:

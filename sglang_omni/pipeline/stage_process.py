@@ -71,9 +71,8 @@ class StageProcessSpec:
     is_stream_receiver: bool = False
     can_accept_stream_before_payload: bool = False
 
-    # Topology-aware full payload wiring
+    # Same-process full payload wiring
     same_process_targets: set[str] = field(default_factory=set)
-    same_gpu_payload_targets: set[str] = field(default_factory=set)
 
     # Fusion name map
     name_map: dict[str, str] = field(default_factory=dict)
@@ -364,7 +363,6 @@ def _construct_stage(
         get_stream_done_targets=get_stream_done_targets,
         same_gpu_targets=spec.same_gpu_targets or None,
         same_process_targets=spec.same_process_targets or None,
-        same_gpu_payload_targets=spec.same_gpu_payload_targets or None,
         local_dispatcher=local_dispatcher,
         can_accept_stream_before_payload=spec.can_accept_stream_before_payload,
         tp_fanout=tp_fanout,
