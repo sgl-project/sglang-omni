@@ -105,20 +105,9 @@ class TorchProfiler(ProfilerBase):
                 except Exception as e:
                     logger.warning(f"[Rank {rank}] Failed to export trace: {e}")
 
-            # 4. Initialize profiler. We deliberately omit ``schedule`` so
-            # the profile records everything between ``start()`` and
-            # ``stop()``. With a schedule, ``on_trace_ready`` only fires
-            # after the active phase ends, which requires explicit
-            # ``step()`` calls — none of the AR loops drive that, so a
-            # scheduled profile silently drops its trace on stop. The
-            # default (no schedule) treats start/stop as one continuous
-            # active window and exports on stop.
-            #
-            # ``record_shapes`` / ``profile_memory`` / ``with_stack`` /
-            # ``with_flops`` are off by default because they balloon the
-            # trace into the multi-GB range over a typical benchmark
-            # window (filled host disks during a Qwen3-Omni MMMU run on
-            # H200). Opt them in via env vars for a deeper inspection.
+            # No ``schedule``: record continuously between start/stop.
+            # Expensive flags are env-var opt-in (default off keeps the
+            # trace tens of MB; all on can hit multi-GB).
             cls._profiler = profile(
                 activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
                 on_trace_ready=trace_handler,
@@ -170,10 +159,8 @@ class TorchProfiler(ProfilerBase):
             except Exception as e:
                 logger.warning("[Rank %s] Profiler stop failed: %s", rank, e)
 
-            # Export the trace directly. Without a `schedule`, the
-            # ``on_trace_ready`` callback isn't invoked automatically on
-            # stop, so we do the export here. ``export_chrome_trace``
-            # is safe to call after ``stop()``.
+            # No schedule → on_trace_ready isn't fired on stop, so
+            # export here.
             try:
                 os.makedirs(os.path.dirname(json_path), exist_ok=True)
                 profiler.export_chrome_trace(json_path)

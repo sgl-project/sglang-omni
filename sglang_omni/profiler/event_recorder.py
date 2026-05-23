@@ -1,14 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """Request-level event recorder.
 
-Emits a stream of small JSONL events covering the per-request milestones laid
-out in https://github.com/sgl-project/sglang-omni/issues/501. Events from every
-process are written to ``<dir>/events_<stage>_<pid>.jsonl``; the views layer
-merges them back into a single per-request timeline.
-
-This module deliberately stays free of any sglang-omni dependency so it can be
-imported safely from any process (coordinator, stage, scheduler, model runner)
-without circular-import risk.
+Each process appends events to ``<dir>/events_<stage>_<pid>.jsonl``; the
+views layer merges files by ``request_id``. Kept free of sglang-omni
+imports so it can be loaded from any process without circular risk.
 """
 
 from __future__ import annotations
@@ -26,27 +21,12 @@ from typing import Any, Mapping
 logger = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------
-# Active-stage attribution
-# ---------------------------------------------------------------------------
-#
-# When multiple stages live in the same OS process (the declarative topology
-# does this for co-located ``role="single"`` stages), the recorder keeps ONE
-# file per process and the per-event ``stage`` field is the source of truth.
-# Most callsites pass ``stage=self.name`` explicitly, but library code that
-# can't easily plumb the stage name down (preprocessors, encoder callables,
-# OmniScheduler internals) calls ``emit(stage=None)`` and expects the
-# recorder to fill it in.
-#
-# A process-global fallback (the recorder's ``_stage``) is wrong: in a shared
-# process it's whichever stage called ``start()`` first, so every event from
-# every co-located stage would get that one name.
-#
-# Instead we expose a per-thread / per-task active stage. Stage's scheduler
-# thread sets it before invoking ``scheduler.start()``; emits in that thread
-# (and in any ``asyncio.to_thread`` / ``loop.run_in_executor`` descendants
-# that copy the context) see the correct stage name. Explicit ``stage=`` on
-# emit always wins.
+# Active-stage binding used when ``emit(stage=None)`` is called from code
+# that can't plumb the stage name down (preprocessor, encoder callable,
+# scheduler internals). Stage._run_scheduler binds the active stage on
+# the scheduler thread; the contextvar propagates through
+# ``asyncio.to_thread`` / ``loop.run_in_executor``, the thread-local
+# covers plain ``threading.Thread`` workers.
 
 _thread_active_stage = threading.local()
 _active_stage_cv: contextvars.ContextVar[str | None] = contextvars.ContextVar(
@@ -54,30 +34,14 @@ _active_stage_cv: contextvars.ContextVar[str | None] = contextvars.ContextVar(
 )
 
 
-def set_active_stage(stage: str | None) -> contextvars.Token | None:
-    """Bind ``stage`` as the active stage for the current thread / task.
-
-    Returns a ``contextvars.Token`` that ``reset_active_stage`` can use to
-    restore the previous value, or ``None`` if no contextvar binding was
-    performed (e.g. when ``stage`` is ``None`` and clearing was requested).
-
-    Sets BOTH a ``threading.local`` slot (for plain-thread callsites that
-    don't propagate contextvars) AND the contextvar (for asyncio /
-    ``run_in_executor`` callsites that copy context).
-    """
+def set_active_stage(stage: str | None) -> contextvars.Token:
+    """Bind ``stage`` for this thread / task. Returns a Token for reset."""
     _thread_active_stage.stage = stage
     return _active_stage_cv.set(stage)
 
 
 def reset_active_stage(token: contextvars.Token | None) -> None:
-    """Reverse a prior :func:`set_active_stage` call.
-
-    With a ``token``, restores the previous contextvar value (the standard
-    ``ContextVar.reset`` contract). Without a token, clears the binding by
-    setting the contextvar back to ``None`` — this is the form fixtures
-    use to scrub leaked active-stage state between tests, so it must
-    actually clear the contextvar and not just the ``threading.local``.
-    """
+    """Undo :func:`set_active_stage`. ``token=None`` clears the binding."""
     if token is not None:
         _active_stage_cv.reset(token)
     else:
@@ -86,13 +50,7 @@ def reset_active_stage(token: contextvars.Token | None) -> None:
 
 
 def get_active_stage() -> str | None:
-    """Return the active stage for this thread / task, or ``None``.
-
-    The contextvar takes precedence so asyncio tasks see the binding even
-    when running inside ``loop.run_in_executor`` (which copies context but
-    not thread-local). Thread-local is the fallback for plain
-    ``threading.Thread`` workers.
-    """
+    """Active stage for this thread / task, contextvar first."""
     stage = _active_stage_cv.get()
     if stage is not None:
         return stage
@@ -101,14 +59,7 @@ def get_active_stage() -> str | None:
 
 @dataclass(frozen=True)
 class RequestEvent:
-    """A single point-in-time profiling event for one request.
-
-    The shape is intentionally narrow:
-    ``request_id``/``stage``/``event_name``/``timestamp_ns`` are required, and
-    free-form metadata lives in ``metadata`` so callers can attach token counts,
-    chunk ids, audio duration, queue depth, error strings, etc. without
-    forcing every event to grow new top-level fields.
-    """
+    """A single point-in-time profiling event for one request."""
 
     request_id: str
     stage: str
@@ -123,17 +74,7 @@ class RequestEvent:
 
 
 class RequestEventRecorder:
-    """Process-local JSONL event sink.
-
-    Thread-safe append: each call serializes one JSON object on its own line.
-    Lifetimes are controlled by ``start(run_id, event_dir, stage)`` /
-    ``stop()`` so the recorder can be toggled live via the existing
-    profiler control plane (``ProfilerStartMessage`` / ``ProfilerStopMessage``).
-
-    The recorder is exposed as a module-level singleton (`get_recorder`) so
-    arbitrary callsites can emit without threading a handle through every
-    constructor.
-    """
+    """Process-local JSONL event sink. Toggled via profiler control plane."""
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
@@ -157,25 +98,14 @@ class RequestEventRecorder:
         return None if self._path is None else str(self._path)
 
     def start(self, run_id: str, event_dir: str, stage: str) -> str:
-        """Open (or join) the per-process JSONL file for this ``run_id``.
+        """Open (or join) the per-process JSONL file for ``run_id``.
 
-        Multiple stages can share one OS process (declarative topology,
-        co-located non-AR stages). When that happens each Stage will call
-        ``start()`` independently as it receives the profiler-start
-        broadcast. We keep ONE file per ``(run_id, pid)`` and let every
-        stage write into it — the per-event ``stage`` field makes the
-        owner unambiguous, and the views layer groups by ``request_id``
-        anyway. Only a different ``run_id`` (a brand-new profiling
-        session) triggers a rotation.
-
-        Returns the absolute path of the file the caller will write to.
+        Co-located stages share one file per ``(run_id, pid)``; only a
+        new ``run_id`` rotates. Returns the absolute path.
         """
         with self._lock:
             if self._fp is not None:
                 if self._run_id == run_id:
-                    # Same session — just register the additional stage so
-                    # the filename reflects the full set, and keep writing
-                    # to the existing file.
                     if stage not in self._stages:
                         self._stages.add(stage)
                     assert self._path is not None
@@ -190,11 +120,9 @@ class RequestEventRecorder:
 
             directory = Path(event_dir).expanduser().resolve()
             directory.mkdir(parents=True, exist_ok=True)
-            # Filename carries the FIRST stage to call start() in this
-            # process. Other stages in the same process append to this
-            # same file; their identity lives in each event's `stage`.
+            # Filename uses the first stage to join; per-event ``stage``
+            # disambiguates owners once others join.
             path = directory / f"events_{stage}_{self._pid}.jsonl"
-            # Append mode keeps history if the same run_id is reused.
             self._fp = path.open("a", buffering=1, encoding="utf-8")
             self._run_id = run_id
             self._stage = stage
@@ -210,11 +138,7 @@ class RequestEventRecorder:
             return str(path)
 
     def stop(self, *, run_id: str | None = None) -> str | None:
-        """Close the active file. Returns the path that was written, if any.
-
-        If ``run_id`` is provided, the call is ignored unless it matches the
-        active run — mirrors :class:`TorchProfiler`.
-        """
+        """Close the active file. ``run_id=None`` stops any active session."""
         with self._lock:
             if self._fp is None:
                 return None
@@ -259,28 +183,17 @@ class RequestEventRecorder:
         metadata: Mapping[str, Any] | None = None,
         timestamp_ns: int | None = None,
     ) -> None:
-        """Append a single event. Silent no-op when the recorder is inactive.
-
-        The recorder is intentionally tolerant: any unexpected error during
-        emission must NOT propagate to the caller — profiling must never
-        break serving. Errors are logged once per occurrence and counted in
-        ``self._dropped``.
-        """
+        """Append one event. No-op when inactive; errors are swallowed."""
         if self._fp is None:
             return
         ts = timestamp_ns if timestamp_ns is not None else time.time_ns()
-        # Capture file/run state under the lock so we can detect a concurrent
-        # stop() that closed the file out from under us.
         with self._lock:
             fp = self._fp
             if fp is None:
                 return
             if stage is None:
-                # Prefer the per-thread / per-task binding (Stage._run_scheduler
-                # sets it before invoking the scheduler). The process-global
-                # ``_stage`` is only used when nothing better is available,
-                # and is wrong in shared-process topologies — see module
-                # docstring.
+                # Prefer thread/task binding over the process-global
+                # ``_stage``, which is wrong in shared-process topologies.
                 stage = get_active_stage() or self._stage or "unknown"
             event = RequestEvent(
                 request_id=request_id,
@@ -296,8 +209,6 @@ class RequestEventRecorder:
                 fp.write("\n")
             except Exception:
                 self._dropped += 1
-                # Log only the first failure per recorder lifetime to avoid
-                # swamping the log file.
                 if self._dropped == 1:
                     logger.warning(
                         "RequestEventRecorder failed to write event %s for %s",
@@ -308,36 +219,22 @@ class RequestEventRecorder:
 
 
 def _json_default(obj: Any) -> Any:
-    """Fallback serializer for objects ``json.dumps`` doesn't know.
+    """Safe fallback for ``json.dumps``: summarise tensors, never materialise.
 
-    Profiler metadata must stay tiny — the profiler docs explicitly say
-    "large blobs stay out of metadata". Earlier versions of this function
-    called ``.tolist()`` on anything that had it, which materialised
-    arbitrarily large numpy arrays AND synchronised + copied GPU tensors
-    to CPU. Both can balloon a JSON line into megabytes and stall the hot
-    path.
-
-    Current behaviour:
-
-    - 0-D tensors / arrays (``shape == ()``) are scalars; return ``item()``.
-    - Higher-rank tensors / arrays return a SUMMARY dict
-      (``type``, ``shape``, ``dtype``, ``device``) — never the data.
-    - Everything else falls back to ``repr``.
+    Tensors / arrays return ``{__tensor_summary__, type, shape, dtype,
+    device}``; 0-D variants serialise as plain scalars; everything else
+    falls back to ``repr``.
     """
     shape = getattr(obj, "shape", None)
     dtype = getattr(obj, "dtype", None)
     if shape is not None and dtype is not None:
-        # 0-D tensor / array → behaves like a scalar.
-        # ``len(shape)`` works for ``torch.Size`` and ``numpy.ndarray.shape``
-        # (tuples). Some duck-typed objects expose a ``.shape`` that isn't
-        # sized — ``len()`` raises ``TypeError`` on those, and we fall
-        # through to the summary path instead of crashing the recorder.
         try:
             if len(shape) == 0 and hasattr(obj, "item"):
                 return obj.item()
         except TypeError:
+            # ``.shape`` without ``__len__`` — skip the 0-D fast path
+            # and fall through to the summary serializer below.
             pass
-        # Real tensor / array — refuse to materialise. Summary only.
         try:
             shape_list: Any = [int(d) for d in shape]
         except Exception:
@@ -369,11 +266,7 @@ def emit(
     metadata: Mapping[str, Any] | None = None,
     timestamp_ns: int | None = None,
 ) -> None:
-    """Convenience wrapper: ``emit(request_id=..., event_name=...)``.
-
-    Equivalent to ``get_recorder().emit(...)`` and is the form callers should
-    use at instrumentation sites.
-    """
+    """Module-level shortcut for ``get_recorder().emit(...)``."""
     _RECORDER.emit(
         request_id=request_id,
         stage=stage,

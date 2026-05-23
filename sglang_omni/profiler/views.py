@@ -1,21 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Request-level profiler views.
+"""Profiler views: per-request timeline, stage breakdown, hop breakdown.
 
-Reads JSONL event files emitted by :mod:`sglang_omni.profiler.event_recorder`
-and derives the three standard reports specified by
-https://github.com/sgl-project/sglang-omni/issues/501:
-
-1. End-to-end latency timeline (per request)
-2. Stage breakdown (aggregate time per stage)
-3. Hop breakdown (aggregate time per stage-to-stage hop)
-
-The merge logic accepts:
-- a single JSONL file
-- a directory containing ``events_*_<pid>.jsonl`` files
-- a list of either of the above
-
-It is intentionally framework-free so reports can be generated on a laptop
-from a downloaded run directory.
+Reads JSONL events emitted by :mod:`sglang_omni.profiler.event_recorder`.
+Input may be a single file, a directory of ``events_*_<pid>.jsonl``, or a
+list of either. Framework-free so reports can be regenerated locally.
 """
 
 from __future__ import annotations
@@ -142,17 +130,14 @@ def reconstruct_timelines(
 # ---------------------------------------------------------------------------
 
 
-# Stage-level event pairs that frame an interval. The first event opens the
-# interval, the second closes it. Both are stage-local — they cannot span
-# multiple stages.
+# (opener, closer) pairs framing a stage-local interval. Opener can
+# appear in multiple pairs (e.g. prefill_start closes against both
+# first_emit and first_stream_chunk_sent → thinker TTFT / talker TTFCC).
 _STAGE_INTERVAL_EVENTS = (
     ("stage_input_received", "stage_complete"),
     ("encoder_start", "encoder_end"),
     ("preprocess_start", "preprocess_end"),
     ("scheduler_request_build_start", "scheduler_request_build_end"),
-    # prefill_start → first stream chunk sent gives us thinker/talker
-    # TTFT and TTFCC (time-to-first-code-chunk) automatically because
-    # both events live in the same per-rank scheduler process.
     ("scheduler_prefill_start", "stage_first_stream_chunk_sent"),
     ("scheduler_prefill_start", "scheduler_first_emit"),
 )
@@ -218,19 +203,14 @@ def compute_stage_intervals(
     source: str | Path | Iterable[str | Path] | None = None,
     interval_events: tuple[tuple[str, str], ...] = _STAGE_INTERVAL_EVENTS,
 ) -> list[StageInterval]:
-    """Pair open/close events into (stage, request_id)-scoped intervals.
-
-    The same opener can participate in multiple pairs (e.g.,
-    ``scheduler_prefill_start`` closes against both ``scheduler_first_emit``
-    *and* ``stage_first_stream_chunk_sent``). Each (opener, closer) pair owns
-    its own pending stack so a close event for pair A does not consume the
-    opener of pair B.
-    """
+    """Pair open/close events into (stage, request_id)-scoped intervals."""
     if timelines is None:
         if source is None:
             raise ValueError("compute_stage_intervals requires timelines or source")
         timelines = reconstruct_timelines(source)
 
+    # Per-pair lookup: one opener event seeds every pair it's in; each
+    # closer consumes only its own pair's stack.
     opens_to_pairs: dict[str, list[tuple[str, str]]] = defaultdict(list)
     closes_to_pairs: dict[str, list[tuple[str, str]]] = defaultdict(list)
     for opener, closer in interval_events:
@@ -239,17 +219,12 @@ def compute_stage_intervals(
 
     out: list[StageInterval] = []
     for rid, tl in timelines.items():
-        # Pending stack per (stage, opener, closer). One opener event seeds
-        # every pair it's part of; one closer event consumes only its own
-        # pair's stack, leaving sibling pairs unaffected.
         pending: dict[tuple[str, str, str], list[int]] = defaultdict(list)
         for ev in tl.events:
             name = ev.get("event_name")
             stage = ev.get("stage", "unknown")
             ts = int(ev.get("timestamp_ns", 0))
-            # An event may be both opener (for one pair) and closer (for
-            # another), e.g. in chained intervals (X, Y), (Y, Z) — handle
-            # both legs.
+            # An event may be both opener and closer (chained intervals).
             if name in opens_to_pairs:
                 for opener, closer in opens_to_pairs[name]:
                     pending[(stage, opener, closer)].append(ts)

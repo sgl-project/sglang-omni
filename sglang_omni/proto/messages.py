@@ -266,14 +266,7 @@ class ProfilerStartMessage:
 
 @dataclass
 class ProfilerStopMessage:
-    """Profiler stop for an entry.
-
-    ``run_id`` is optional. When ``None``, the receiving stage stops
-    whatever profiler session is currently active (used when a caller
-    invokes ``/stop_profile`` or ``/stop_request_profile`` without
-    specifying which session). When set, the stage only stops if its
-    active run matches.
-    """
+    """Profiler stop. ``run_id=None`` is a wildcard (stop active session)."""
 
     run_id: str | None = None
 

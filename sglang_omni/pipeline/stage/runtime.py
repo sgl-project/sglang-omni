@@ -129,10 +129,7 @@ class Stage:
         self._active_requests: set[str] = set()
         self._stream_queue: StreamQueue | None = None
         self._stream_chunk_counters: dict[tuple[str, str], int] = {}
-        # Per-request marker: have we already emitted the first stream-chunk
-        # event for this request from this stage? Used to derive request-level
-        # milestones (thinker first token, talker first code chunk, etc.)
-        # without coupling Stage to model-specific naming.
+        # Per-request: did we already emit the first stream-chunk event?
         self._first_stream_chunk_seen: set[str] = set()
         self._scheduler_thread: threading.Thread | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -150,13 +147,8 @@ class Stage:
         if self.scheduler is not None:
 
             def _run_scheduler():
-                # Bind this stage's name to the active-stage context for
-                # this thread (and any asyncio.to_thread / run_in_executor
-                # descendants that copy contextvars). Callsites that pass
-                # ``stage=None`` to ``emit()`` — preprocessor, encoder
-                # callables, OmniScheduler internals, code2wav — will get
-                # the correct stage name even when this stage shares its
-                # process with siblings.
+                # Active-stage binding so ``emit(stage=None)`` from
+                # scheduler-thread descendants resolves to this stage.
                 _set_active_stage(self.name)
                 try:
                     if self.gpu_id is not None:
@@ -905,9 +897,7 @@ class Stage:
                 )
 
     def _on_profiler_stop(self, msg: ProfilerStopMessage) -> None:
-        # msg.run_id is None when the HTTP caller didn't specify a run id;
-        # in that case stop whatever's active. Otherwise only stop when
-        # the run id matches.
+        # run_id=None is a wildcard (stop whatever's active).
         if TorchProfiler.is_active() and (
             msg.run_id is None or TorchProfiler.get_active_run_id() == msg.run_id
         ):
