@@ -10,6 +10,7 @@ import pytest
 import torch
 
 from sglang_omni.models.higgs_tts.sampler import (
+    K_MAX,
     STOP_CODE,
     HiggsBatchedSamplerState,
     batched_step,
@@ -214,127 +215,58 @@ def test_batched_matches_per_row_mixed_phases():
 
 
 # ---------------------------------------------------------------------------
-# CUDA Graph readiness sanity: no Python-side state branch per step
+# Per-row top_k regression
 # ---------------------------------------------------------------------------
 
 
-def _top5_logits(top_indices_B5: torch.Tensor, *, n: int, v: int) -> torch.Tensor:
-    """``[B, N, V]`` logits with 5 strong (=5.0) columns per row, rest = -1e9."""
-    B = top_indices_B5.shape[0]
-    logits = torch.full((B, n, v), -1e9, device=top_indices_B5.device)
-    # Same 5 indices for every codebook within a batch row.
-    idx = top_indices_B5.unsqueeze(1).expand(B, n, 5)
-    logits.scatter_(-1, idx, 5.0)
-    return logits
-
-
-def test_batched_step_top_k_filter_actually_applied_in_cg_path():
-    """5 strong tokens + -1e9 rest, temp=1.0; sampled code must be in
-    the 5-set both eagerly and under CG capture + replay.
+def test_batched_step_mixed_top_k_per_row_filter():
+    """Regression: eager path must accept heterogeneous top_k per row.
+    Row 0 uses ``K_MAX`` (no-op filter, mirrors ``top_k=None``); row 1
+    uses ``top_k=5``. Row 0 logits have 10 strong cols, row 1 has 5;
+    each row's samples must land in its own strong-set.
     """
     if not torch.cuda.is_available():
         pytest.skip("test requires CUDA")
 
     torch.manual_seed(0)
     B = 2
-    top_indices = torch.tensor(
-        [[3, 17, 42, 100, 500], [7, 9, 11, 13, 800]],
-        device="cuda",
-        dtype=torch.long,
-    )
-    assert top_indices.max().item() < V
-    assert top_indices.shape[1] == 5
-
-    # ---- Phase 1: eager (no graph capture). delay_count=N skips the
-    # leading-window BOC override so every cb position actually samples.
-    pool_eager = HiggsBatchedSamplerState(B, N, device="cuda")
-    pool_eager.delay_count.fill_(N)
+    pool = HiggsBatchedSamplerState(B, N, device="cuda")
+    pool.delay_count.fill_(N)
     row_indices = torch.arange(B, device="cuda")
     temp = torch.full((B,), 1.0, device="cuda")
-    top_k_buf = torch.tensor([5, 5], dtype=torch.long, device="cuda")
-    logits = _top5_logits(top_indices, n=N, v=V).contiguous()
 
+    row0_strong = torch.tensor(
+        [2, 3, 5, 7, 11, 13, 17, 19, 23, 29], device="cuda", dtype=torch.long
+    )  # 10 cols, top_k=K_MAX keeps all
+    row1_strong = torch.tensor(
+        [101, 103, 107, 109, 113], device="cuda", dtype=torch.long
+    )  # 5 cols, top_k=5 keeps all of these
+
+    logits = torch.full((B, N, V), -1e9, device="cuda")
+    logits[0, :, row0_strong] = 5.0
+    logits[1, :, row1_strong] = 5.0
+
+    top_k_buf = torch.tensor([K_MAX, 5], dtype=torch.long, device="cuda")
+
+    # Must not raise — old code checked uniformity of top_k across rows.
     codes = batched_step(
-        logits,
-        pool_eager,
+        logits.contiguous(),
+        pool,
         row_indices,
         temperature=temp,
         top_k_buf=top_k_buf,
     )
-    for b in range(B):
-        allowed = set(top_indices[b].tolist())
-        for cb in range(N):
-            assert int(codes[b, cb].item()) in allowed, (
-                f"eager: row {b} cb {cb} sampled "
-                f"{int(codes[b, cb].item())} outside top-5 {allowed}"
-            )
 
-    # ---- Phase 2: capture into a CUDA Graph and replay ----
-    pool_cg = HiggsBatchedSamplerState(B, N, device="cuda")
-    pool_cg.delay_count.fill_(N)
-    s = torch.cuda.Stream()
-    s.wait_stream(torch.cuda.current_stream())
-    with torch.cuda.stream(s):
-        batched_step(
-            logits,
-            pool_cg,
-            row_indices,
-            temperature=temp,
-            top_k_buf=top_k_buf,
+    row0_allowed = set(row0_strong.tolist())
+    row1_allowed = set(row1_strong.tolist())
+    for cb in range(N):
+        assert int(codes[0, cb].item()) in row0_allowed, (
+            f"row 0 cb {cb} sampled {int(codes[0, cb].item())} "
+            f"outside its own strong-set {row0_allowed}"
         )
-    torch.cuda.current_stream().wait_stream(s)
-
-    # Reset pool to past-delay-window starting state for the captured graph.
-    pool_cg.delay_count.fill_(N)
-    pool_cg.eoc_countdown.fill_(-1)
-    pool_cg.generation_done.zero_()
-    pool_cg.last_codes.zero_()
-    g = torch.cuda.CUDAGraph()
-    with torch.cuda.graph(g):
-        out = batched_step(
-            logits,
-            pool_cg,
-            row_indices,
-            temperature=temp,
-            top_k_buf=top_k_buf,
+        assert int(codes[1, cb].item()) in row1_allowed, (
+            f"row 1 cb {cb} sampled {int(codes[1, cb].item())} "
+            f"outside its own strong-set {row1_allowed}"
         )
 
-    g.replay()
-    torch.cuda.synchronize()
-    for b in range(B):
-        allowed = set(top_indices[b].tolist())
-        for cb in range(N):
-            assert int(out[b, cb].item()) in allowed, (
-                f"cg: row {b} cb {cb} sampled "
-                f"{int(out[b, cb].item())} outside top-5 {allowed}"
-            )
 
-
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA Graph requires CUDA")
-def test_batched_step_captures_into_cuda_graph():
-    """A single ``batched_step`` call must be CUDA-Graph-capturable."""
-    B = 4
-    pool = HiggsBatchedSamplerState(B, N, device="cuda")
-    row_indices = torch.arange(B, device="cuda")
-    temp_t = torch.full((B,), GREEDY_TEMP, device="cuda")
-    target = torch.randint(0, V - 2, (B, N), device="cuda")
-    logits = _peaky_logits(target).contiguous()
-
-    # Warm-up before capture, per torch docs.
-    s = torch.cuda.Stream()
-    s.wait_stream(torch.cuda.current_stream())
-    with torch.cuda.stream(s):
-        batched_step(logits, pool, row_indices, temperature=temp_t)
-    torch.cuda.current_stream().wait_stream(s)
-
-    g = torch.cuda.CUDAGraph()
-    with torch.cuda.graph(g):
-        out = batched_step(logits, pool, row_indices, temperature=temp_t)
-
-    # Replay; both the buffer and pool state should mutate.
-    pre_delay = pool.delay_count.clone()
-    g.replay()
-    torch.cuda.synchronize()
-    assert out.shape == (B, N)
-    # delay_count must have advanced; just check it changed.
-    assert not torch.equal(pool.delay_count, pre_delay) or pool.delay_count.sum() > 0

@@ -1,12 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""sglang-native Higgs Multimodal Qwen3 TTS model.
-
-Composes sglang's built-in :class:`sglang.srt.models.qwen3.Qwen3ForCausalLM`
-as the text backbone with the fused multi-codebook embedding / head.
-Registered in sglang's ``ModelRegistry`` under
-``HiggsMultimodalQwen3ForConditionalGeneration`` by
-:meth:`sglang_omni.model_runner.sglang_model_runner.SGLModelRunner._register_omni_model`.
-"""
+"""sglang-native Higgs Multimodal Qwen3 TTS model."""
 
 from __future__ import annotations
 
@@ -152,16 +145,7 @@ class HiggsTTSModel(nn.Module):
                 self.multimodal_embedding.modality_embedding_0.weight
             )
 
-        # Per-request sampler state lives in a fixed-size GPU pool (Stage 1
-        # of the CUDA Graph migration). ``_rid_to_row`` maps request id →
-        # row index; ``_free_rows`` tracks unused rows; ``_output_codes``
-        # holds the variable-length per-request code log (cannot be
-        # tensorised cleanly).
         self._max_batch_size = int(max_batch_size)
-        # +1 row reserved for graph-capture padding (sglang's CudaGraphRunner
-        # captures specific batch sizes 1, 2, 4, 8, 16, 32 and pads the actual
-        # batch up to the next supported one). The padding row's state is
-        # reset by the model_runner each step so it never bleeds into real rows.
         pool_size = self._max_batch_size + 1
         self._sampler_pool = HiggsBatchedSamplerState(
             max_batch_size=pool_size,
@@ -173,10 +157,6 @@ class HiggsTTSModel(nn.Module):
         self._free_rows: list[int] = list(range(self._max_batch_size))
         self._output_codes: dict[str, list[torch.Tensor]] = {}
 
-        # ----- CUDA Graph buffers (Stage 4) -----------------------------
-        # Allocated once, written by ``model_runner.prepare_decode`` before
-        # each forward, read by ``model.forward`` in decode mode. Sized
-        # ``[pool_size]`` so padding rows index safely into the pool too.
         cg_device = self.backbone.model.embed_tokens.weight.device
         self._cg_row_indices = torch.zeros(
             pool_size, dtype=torch.long, device=cg_device
@@ -345,16 +325,15 @@ class HiggsTTSModel(nn.Module):
             if has_top_p
             else None
         )
-        # ``batched_step`` requires uniform top_k across the batch (matches
-        # how every Higgs request is configured in practice). If callers
-        # ever pass heterogeneous top_k we want to know — fail loudly.
-        distinct_top_k = {p.top_k for p in gen_params}
-        if len(distinct_top_k) > 1:
-            raise ValueError(
-                f"batched_step requires uniform top_k across the batch; "
-                f"got {distinct_top_k}"
-            )
-        top_k = next(iter(distinct_top_k))
+        # Per-row top_k: map None / non-positive to K_MAX (no-op filter).
+        top_k_buf = torch.tensor(
+            [
+                (p.top_k if (p.top_k is not None and p.top_k > 0) else K_MAX)
+                for p in gen_params
+            ],
+            dtype=torch.long,
+            device=device,
+        )
 
         was_done = self._sampler_pool.generation_done[row_indices].clone()
 
@@ -364,7 +343,7 @@ class HiggsTTSModel(nn.Module):
             row_indices,
             temperature=temperature,
             top_p=top_p,
-            top_k=top_k,
+            top_k_buf=top_k_buf,
         )
 
         # One D2H per step: which rows were already finished at entry.

@@ -1,17 +1,22 @@
 # SPDX-License-Identifier: Apache-2.0
 """Higgs TTS model runner — phase-aware AR base-runner subclass.
 
-- ``prepare_prefill``: run the model's fused multi-codebook embedding on each
-  request's delayed ref codes inline, paste the result at the ``-100``
-  placeholder positions, and set ``forward_batch.input_embeds``; also
-  propagate ``req_ids`` so :class:`HiggsTTSModel.forward` can route per-row
-  slot lookups.
-- ``prepare_decode``: just propagate ``req_ids``. The model itself rebuilds
-  the per-step embed via ``last_codes`` inside its ``forward``.
-- ``post_prefill`` / ``post_decode``: read each request's newly emitted
-  multi-codebook row from ``model._slots[req_id].output_codes[-1]``,
-  append to ``data.output_codes``, and overwrite ``result.next_token_ids``
-  with codebook-0 so the base skips its own (text-vocab) sampler.
+- ``prepare_prefill``: build per-request fused multi-codebook input embeds,
+  paste them at the ``-100`` placeholder positions, set
+  ``forward_batch.input_embeds``, and propagate ``req_ids``.
+- ``prepare_decode``: populate CG buffers (``_cg_row_indices``,
+  ``_cg_temperature``, ``_cg_top_p``, ``_cg_top_k_buf``) and gather the
+  sampler pool's per-row state (``delay_count``, ``eoc_countdown``,
+  ``generation_done``, ``last_codes``) into the model's ``_cg_active_*``
+  shadow buffers. The captured forward only ever reads/writes
+  ``_cg_active_*[:bs]`` via direct slicing — gather/scatter via
+  ``pool[row_indices]`` is kept out of the graph.
+- ``post_prefill``: append each request's newly emitted multi-codebook
+  row from ``model._output_codes[req_id][-1]`` to ``data.output_codes``
+  and overwrite ``result.next_token_ids`` with codebook-0.
+- ``post_decode``: scatter the model's ``_cg_active_*`` shadow buffers
+  back into the sampler pool, then read ``_cg_codes_BN`` / ``_cg_was_done``
+  to append per-request codes (skipping rows already done at step entry).
 """
 
 from __future__ import annotations
