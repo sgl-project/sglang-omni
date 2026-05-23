@@ -65,6 +65,7 @@ class RequestEventRecorder:
         self._lock = threading.Lock()
         self._run_id: str | None = None
         self._stage: str | None = None
+        self._stages: set[str] = set()
         self._path: Path | None = None
         self._fp: Any = None
         self._pid: int = os.getpid()
@@ -82,32 +83,48 @@ class RequestEventRecorder:
         return None if self._path is None else str(self._path)
 
     def start(self, run_id: str, event_dir: str, stage: str) -> str:
-        """Open a fresh per-process JSONL file for this ``run_id``/``stage``.
+        """Open (or join) the per-process JSONL file for this ``run_id``.
 
-        Returns the absolute path of the opened file.
+        Multiple stages can share one OS process (declarative topology,
+        co-located non-AR stages). When that happens each Stage will call
+        ``start()`` independently as it receives the profiler-start
+        broadcast. We keep ONE file per ``(run_id, pid)`` and let every
+        stage write into it — the per-event ``stage`` field makes the
+        owner unambiguous, and the views layer groups by ``request_id``
+        anyway. Only a different ``run_id`` (a brand-new profiling
+        session) triggers a rotation.
+
+        Returns the absolute path of the file the caller will write to.
         """
         with self._lock:
             if self._fp is not None:
-                if self._run_id == run_id and self._stage == stage:
+                if self._run_id == run_id:
+                    # Same session — just register the additional stage so
+                    # the filename reflects the full set, and keep writing
+                    # to the existing file.
+                    if stage not in self._stages:
+                        self._stages.add(stage)
                     assert self._path is not None
                     return str(self._path)
                 logger.warning(
-                    "RequestEventRecorder already active (run_id=%s, stage=%s); "
-                    "rotating to (run_id=%s, stage=%s)",
+                    "RequestEventRecorder already active (run_id=%s); "
+                    "rotating to run_id=%s",
                     self._run_id,
-                    self._stage,
                     run_id,
-                    stage,
                 )
                 self._close_unlocked()
 
             directory = Path(event_dir).expanduser().resolve()
             directory.mkdir(parents=True, exist_ok=True)
+            # Filename carries the FIRST stage to call start() in this
+            # process. Other stages in the same process append to this
+            # same file; their identity lives in each event's `stage`.
             path = directory / f"events_{stage}_{self._pid}.jsonl"
             # Append mode keeps history if the same run_id is reused.
             self._fp = path.open("a", buffering=1, encoding="utf-8")
             self._run_id = run_id
             self._stage = stage
+            self._stages = {stage}
             self._path = path
             self._dropped = 0
             logger.info(
@@ -154,6 +171,7 @@ class RequestEventRecorder:
         self._fp = None
         self._run_id = None
         self._stage = None
+        self._stages = set()
         self._path = None
 
     # ---- emit ----------------------------------------------------------

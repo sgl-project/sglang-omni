@@ -150,3 +150,29 @@ def test_module_level_emit_uses_singleton(tmp_path: Path) -> None:
     rec.stop()
     events = _read_events(path)
     assert any(e["event_name"] == "request_admission" for e in events)
+
+
+def test_multi_stage_same_process_share_one_file(tmp_path: Path) -> None:
+    """Stages sharing one process must write to ONE JSONL file.
+
+    The previous rotating-per-stage behavior caused data routing bugs
+    when declarative topology co-located multiple non-AR stages in one
+    OS process. The first stage to call ``start()`` wins the filename;
+    later stages join the same file and rely on each event's ``stage``
+    field for identity.
+    """
+    rec = get_recorder()
+    p1 = rec.start(run_id="r0", event_dir=str(tmp_path), stage="preprocessing")
+    p2 = rec.start(run_id="r0", event_dir=str(tmp_path), stage="image_encoder")
+    p3 = rec.start(run_id="r0", event_dir=str(tmp_path), stage="thinker")
+    assert p1 == p2 == p3, "shared-process stages must reuse one file"
+    assert Path(p1).name.startswith("events_preprocessing_")
+
+    rec.emit(request_id="r1", stage="preprocessing", event_name="preprocess_start")
+    rec.emit(request_id="r1", stage="image_encoder", event_name="encoder_start")
+    rec.emit(request_id="r1", stage="thinker", event_name="stage_dispatch")
+    rec.stop()
+
+    events = _read_events(p1)
+    stages = {e["stage"] for e in events}
+    assert stages == {"preprocessing", "image_encoder", "thinker"}
