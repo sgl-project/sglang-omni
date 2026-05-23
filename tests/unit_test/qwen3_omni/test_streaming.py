@@ -639,6 +639,7 @@ def _bare_stage(*, is_terminal: bool, owns_io: bool = True) -> Stage:
     s._active_requests = set()
     s._stream_queue = None
     s._stream_chunk_counters = {}
+    s._first_stream_chunk_seen = set()
     s.input_handler = SimpleNamespace(cancel=lambda request_id: None)
     s.scheduler = SimpleNamespace(abort=lambda request_id: None)
     s.control_plane = SimpleNamespace(completions=[])
