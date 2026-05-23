@@ -25,11 +25,11 @@ python examples/run_qwen3_omni_speech_server.py \
   --model-name qwen3-omni
 ```
 
-Native FP8, one-GPU colocated H100:
+Qwen3-Omni FP8, one-GPU colocated H100/H20:
 
 ```bash
 sgl-omni serve \
-  --config examples/configs/qwen3_omni_fp8_colocated_h100.yaml \
+  --config examples/configs/qwen3_omni_fp8_colocated.yaml \
   --colocate \
   --model-name qwen3-omni \
   --port 8000

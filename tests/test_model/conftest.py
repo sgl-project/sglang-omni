@@ -47,7 +47,7 @@ QWEN3_OMNI_COLOCATED_WORKER_ARGS = (
     "--config examples/configs/qwen3_omni_colocated_h20.yaml --colocate"
 )
 QWEN3_OMNI_FP8_COLOCATED_WORKER_ARGS = (
-    "--config examples/configs/qwen3_omni_fp8_colocated_h20.yaml --colocate"
+    "--config examples/configs/qwen3_omni_fp8_colocated.yaml --colocate"
 )
 QWEN3_OMNI_MMSU_WORKER_ARGS = (
     "--config examples/configs/qwen3_omni_mmsu.yaml --text-only"
@@ -76,7 +76,7 @@ def qwen3_omni_router_server(tmp_path_factory: pytest.TempPathFactory):
 
 @pytest.fixture(scope="module")
 def qwen3_omni_fp8_router_server(tmp_path_factory: pytest.TempPathFactory):
-    """Router-backed native FP8 Qwen3-Omni endpoint for selected CI stages."""
+    """Router-backed Qwen3-Omni FP8 endpoint for selected CI stages."""
     with _launch_qwen3_omni_router(
         tmp_path_factory,
         model_path=QWEN3_OMNI_FP8_TEST_MODEL_PATH,
@@ -153,7 +153,7 @@ def qwen3_omni_talker_server_tp2(tmp_path_factory: pytest.TempPathFactory):
 
 @pytest.fixture(scope="module")
 def qwen3_omni_fp8_talker_server_tp2(tmp_path_factory: pytest.TempPathFactory):
-    """Start native FP8 Qwen3-Omni with TP=2 thinker and TP=1 talker."""
+    """Start Qwen3-Omni FP8 with TP=2 thinker and TP=1 talker."""
     yield from _start_qwen3_omni_speech_server(
         tmp_path_factory,
         model_path=QWEN3_OMNI_FP8_TEST_MODEL_PATH,

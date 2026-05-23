@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""MMMU Talker CI for native FP8 Qwen3-Omni (Text+Image → Text+Audio).
+"""MMMU Talker CI for Qwen3-Omni FP8 (Text+Image → Text+Audio, Talker ON).
 
 Evaluates text-audio consistency by comparing the model's text output
 with ASR transcription of its audio output on MMMU image-QA tasks.

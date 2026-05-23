@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Video-MME accuracy and speed CI for native FP8 Qwen3-Omni.
+"""Video-MME accuracy and speed CI for Qwen3-Omni FP8 (Text+Video -> Text, Talker OFF).
 
 Usage:
     pytest tests/test_model/test_qwen3_omni_videomme_ci.py -s -x

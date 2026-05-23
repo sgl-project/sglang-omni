@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Video-AMME Talker TP=2 CI for native FP8 Qwen3-Omni.
+"""Video-AMME Talker TP=2 CI for Qwen3-Omni FP8 (Video+Audio -> Text+Audio).
 
 Runs a small Video-AMME subset through Video+Audio -> Text+Audio with the
 thinker stage sharded across two GPUs (tp_size=2), then checks text answer
