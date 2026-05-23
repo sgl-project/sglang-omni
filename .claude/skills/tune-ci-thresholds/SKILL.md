@@ -193,8 +193,8 @@ python .claude/skills/tune-ci-thresholds/tune.py --model qwen3-omni-v1 run \
 1. Run `python .claude/skills/tune-ci-thresholds/tune.py models-list` to
    discover available models. Then for the selected model, run
    `python tune.py --model <M> stages-list` to read the per-test-file
-   bases (e.g. `mmmu`, `mmmu_talker`, `mmsu`, `mmsu_talker`, `tts`, …) and
-   group aliases (`@accuracy`, `@speed`, `@wer`, `@docs`).
+   bases (e.g. `mmmu`, `mmmu_talker`, `mmsu`, `mmsu_talker`, `tts`, ...) and
+   group aliases such as `@accuracy`, `@speed`, and `@wer`.
 2. **One-time parameter prompt.** If the invocation omits `--model`,
    `--stages`, or `--repeats`, collect missing fields from the user
    exactly once. After this, do not ask the user anything else for
@@ -219,8 +219,7 @@ python .claude/skills/tune-ci-thresholds/tune.py --model qwen3-omni-v1 run \
      videoamme                    tests/test_model/test_qwen3_omni_videoamme_ci.py — acc + speed
      videoamme_talker             tests/test_model/test_qwen3_omni_videoamme_talker_ci.py — acc + wer + speed
      tts                          tests/test_model/test_qwen3_omni_tts_ci.py — speed + wer
-     qwen3_omni_docs              tests/docs/qwen3_omni/test_docs_qwen3_omni.py — docs smoke
-   Shortcuts: @accuracy, @speed, @wer, @docs (metric-group aliases).
+   Shortcuts: @accuracy, @speed, @wer (metric-group aliases).
    Combine with commas (e.g. "mmmu,mmsu" or "mmmu,@wer").
    ```
    Parse the user's free-text reply (trim whitespace, split on commas)

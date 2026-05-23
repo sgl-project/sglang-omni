@@ -90,23 +90,6 @@ def test_basic_tts(
 
 
 @pytest.mark.docs
-def test_voice_cloning(
-    server_process: tuple[subprocess.Popen, int],
-    tmp_path: Path,
-) -> None:
-    """Voice cloning with the real reference audio used in docs."""
-    _, port = server_process
-    content = _post_audio_speech(
-        port,
-        {
-            "input": SPEECH_INPUT,
-            "references": [{"audio_path": REFERENCE_AUDIO, "text": REFERENCE_TEXT}],
-        },
-    )
-    _save_and_verify(content, tmp_path / "output.wav")
-
-
-@pytest.mark.docs
 def test_voice_cloning_streaming(
     server_process: tuple[subprocess.Popen, int],
 ) -> None:

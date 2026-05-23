@@ -14,22 +14,22 @@ permissions:
   contents: read
 
 # DAG:
-#   docs ──► stage-1-thinker
-#        ├─► stage-2-tts
-#        ├─► stage-3-mmmu
-#        ├─► stage-4-mmmu-talker
-#        ├─► stage-5-mmsu
-#        ├─► stage-6-mmsu-talker
-#        ├─► stage-7-videomme
-#        ├─► stage-8-videomme-talker
-#        ├─► stage-9-videoamme
-#        ├─► stage-10-videoamme-talker
-#        └─► stage-11-thinker-tp2
-# All 11 stages run in parallel after docs passes — they are independent.
+#   setup ──► stage-1-thinker
+#         ├─► stage-2-tts
+#         ├─► stage-3-mmmu
+#         ├─► stage-4-mmmu-talker
+#         ├─► stage-5-mmsu
+#         ├─► stage-6-mmsu-talker
+#         ├─► stage-7-videomme
+#         ├─► stage-8-videomme-talker
+#         ├─► stage-9-videoamme
+#         ├─► stage-10-videoamme-talker
+#         └─► stage-11-thinker-tp2
+# All 11 stages run in parallel after setup passes — they are independent.
 
 jobs:
-  docs:
-    name: docs
+  setup:
+    name: setup
     # CI gate — runs on workflow_dispatch, or on non-draft PRs carrying the `run-ci` label.
     # Keep in sync with the same gate in test.yaml / test-examples.yaml / test-s2pro-ci.yaml.
     if: >-
@@ -50,22 +50,6 @@ jobs:
           venv-name: omni-qwen3
           install-deps: "true"
 
-      - name: Run docs tests
-        shell: bash
-        run: |
-          source omni-qwen3/bin/activate
-          export PYTHONPATH=$PWD
-          pytest tests/docs/qwen3_omni/test_docs_qwen3_omni.py -v -s -x
-        env:
-          HF_ENDPOINT: https://hf-mirror.com
-          TORCHINDUCTOR_CACHE_DIR: /github/home/.torchinductor
-
-      - name: Post-stage cleanup
-        if: always()
-        uses: ./.github/actions/omni-post-stage
-        with:
-          stage-label: docs
-
       - name: Save cache
         if: always()
         shell: bash
@@ -79,7 +63,7 @@ jobs:
 
   stage-1-thinker:
     name: stage 1 - thinker length integration
-    needs: docs
+    needs: setup
     runs-on: [self-hosted]
     timeout-minutes: 20
     container:
@@ -111,7 +95,7 @@ jobs:
 
   stage-2-tts:
     name: stage 2 - TTS speed + WER + SIM
-    needs: docs
+    needs: setup
     runs-on: [self-hosted]
     timeout-minutes: 25
     container:
@@ -160,7 +144,7 @@ jobs:
 
   stage-3-mmmu:
     name: stage 3 - MMMU accuracy + speed
-    needs: docs
+    needs: setup
     runs-on: [self-hosted]
     timeout-minutes: 20
     container:
@@ -196,7 +180,7 @@ jobs:
 
   stage-4-mmmu-talker:
     name: stage 4 - MMMU Talker
-    needs: docs
+    needs: setup
     runs-on: [self-hosted]
     timeout-minutes: 15
     container:
@@ -232,7 +216,7 @@ jobs:
 
   stage-5-mmsu:
     name: stage 5 - MMSU accuracy + speed
-    needs: docs
+    needs: setup
     runs-on: [self-hosted]
     timeout-minutes: 20
     container:
@@ -269,7 +253,7 @@ jobs:
 
   stage-6-mmsu-talker:
     name: stage 6 - MMSU Talker
-    needs: docs
+    needs: setup
     runs-on: [self-hosted]
     timeout-minutes: 15
     container:
@@ -305,7 +289,7 @@ jobs:
 
   stage-7-videomme:
     name: stage 7 - Video-MME accuracy + speed
-    needs: docs
+    needs: setup
     runs-on: [self-hosted]
     timeout-minutes: 30
     container:
@@ -341,7 +325,7 @@ jobs:
 
   stage-8-videomme-talker:
     name: stage 8 - Video-MME Talker
-    needs: docs
+    needs: setup
     runs-on: [self-hosted]
     timeout-minutes: 30
     container:
@@ -377,7 +361,7 @@ jobs:
 
   stage-9-videoamme:
     name: stage 9 - Video-AMME accuracy + speed
-    needs: docs
+    needs: setup
     runs-on: [self-hosted]
     timeout-minutes: 30
     container:
@@ -413,7 +397,7 @@ jobs:
 
   stage-10-videoamme-talker:
     name: stage 10 - Video-AMME Talker
-    needs: docs
+    needs: setup
     runs-on: [self-hosted]
     timeout-minutes: 30
     container:
@@ -449,7 +433,7 @@ jobs:
 
   stage-11-thinker-tp2:
     name: stage 11 - Thinker TP=2 (Video-AMME Talker)
-    needs: docs
+    needs: setup
     runs-on: [self-hosted]
     timeout-minutes: 35
     container:

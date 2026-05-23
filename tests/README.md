@@ -6,7 +6,6 @@ tests/
 ├── utils.py
 ├── data/
 ├── docs/
-│   ├── qwen3_omni/
 │   └── s2pro/
 ├── test_model/
 │   ├── conftest.py

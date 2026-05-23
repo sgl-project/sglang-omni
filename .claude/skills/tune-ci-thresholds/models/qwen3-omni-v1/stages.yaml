@@ -1032,12 +1032,3 @@ videomme_talker_speed:
         scale: 1
         digits: 4
       status: OK
-qwen3_omni_docs:
-  test: tests/docs/qwen3_omni/test_docs_qwen3_omni.py
-  title: "Docs smoke"
-  group: docs
-  extra_env: {}
-  context_vars: []
-  test_file_sha256: 3c59a61000ada650912f751f42690379477891e0f8d7f1fc6fe03a0acbf396cc
-  last_discovered_at: 2026-05-22T16:52:36Z
-  metrics: {}

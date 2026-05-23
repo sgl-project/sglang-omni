@@ -22,7 +22,7 @@ auto_env:
   TORCHINDUCTOR_CACHE_DIR: "/github/home/.torchinductor"
 # Number of GPUs each test needs. tune.py picks that many free GPUs
 # via CUDA_VISIBLE_DEVICES before each pytest invocation. Qwen benchmark CI
-# runs one router plus two colocated one-GPU workers, so non-docs stages need 2.
+# runs one router plus two colocated one-GPU workers, so stages need 2.
 gpus_per_test:
   test_qwen3_omni_mmmu_ci.py: 2
   test_qwen3_omni_mmsu_ci.py: 2
@@ -34,19 +34,15 @@ gpus_per_test:
   test_qwen3_omni_videomme_talker_ci.py: 2
   test_qwen3_omni_videoamme_talker_ci.py: 2
   test_qwen3_omni_videoamme_talker_tp2_ci.py: 2
-  test_docs_qwen3_omni.py: 2
 test_globs:
   - "tests/test_model/test_qwen3_omni_*_ci.py"
-  - "tests/docs/qwen3_omni/test_docs_qwen3_omni.py"
 # Per-test extra env vars. Key is the test filename (basename).
 extra_env:
   test_qwen3_omni_tts_ci.py:
     SGLANG_SEEDTTS50_DIR: "/github/home/seedtts-50"
-# Stage-key base derivation: strip prefix + strip suffix from the test
-# stem. Docs tests (path contains "docs/") use the override instead.
+# Stage-key base derivation: strip prefix + strip suffix from the test stem.
 stage_base_strip_prefix: "test_qwen3_omni_"
 stage_base_strip_suffix: "_ci"
-stage_base_docs_override: "qwen3_omni_docs"
 # Per-test metric source JSONs. `json_file` is relative to pytest's
 # `--basetemp` dir (set fresh per run by tune.py). `paths` maps a
 # recognized metric key (accuracy / corpus_wer / per_sample_wer_max /
