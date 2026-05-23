@@ -24,6 +24,7 @@ from sglang_omni.scheduling.types import ARRequestData
 
 IMAGE_STAGE = "image_encoder"
 AUDIO_STAGE = "audio_encoder"
+THINKER_STAGE = "thinker"
 DECODE_STAGE = "decode"
 TALKER_STAGE = "talker_ar"
 CODE2WAV_STAGE = "code2wav"
@@ -103,6 +104,43 @@ def resolve_mm_aggregate_wait_sources(
         return None
     state = PipelineState.from_dict(payload.data)
     return ["preprocessing", *_active_encoder_stages(state.encoder_inputs)]
+
+
+def project_thinker_to_decode(payload: StagePayload) -> StagePayload:
+    """Keep decode payload focused on text detokenization state."""
+    state = PipelineState.from_dict(payload.data)
+    state.thinker_inputs = {}
+
+    if isinstance(state.thinker_out, dict):
+        thinker_out = dict(state.thinker_out)
+        if "extra_model_outputs" in thinker_out:
+            thinker_out["extra_model_outputs"] = {}
+        state.thinker_out = thinker_out
+
+    if state.engine_outputs:
+        engine_outputs = dict(state.engine_outputs)
+        thinker_engine_out = engine_outputs.get(THINKER_STAGE)
+        if isinstance(thinker_engine_out, dict):
+            thinker_engine_out = dict(thinker_engine_out)
+            if "extra_model_outputs" in thinker_engine_out:
+                thinker_engine_out["extra_model_outputs"] = {}
+            engine_outputs[THINKER_STAGE] = thinker_engine_out
+        state.engine_outputs = engine_outputs
+
+    return StagePayload(
+        request_id=payload.request_id,
+        request=payload.request,
+        data=state.to_dict(),
+    )
+
+
+def project_talker_to_code2wav(payload: StagePayload) -> StagePayload:
+    """Keep code2wav payload as a request latch; code tensors arrive by stream."""
+    return StagePayload(
+        request_id=payload.request_id,
+        request=payload.request,
+        data={},
+    )
 
 
 @dataclass(slots=True)
