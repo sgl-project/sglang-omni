@@ -7,6 +7,7 @@ visual embeddings for Qwen3-Omni's thinker stage.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from typing import Any
 
 import torch
@@ -20,8 +21,15 @@ logger = logging.getLogger(__name__)
 class ThinkerModelRunner(ModelRunner):
     """Thinker: injects multimodal embeddings in the prefill phase."""
 
-    def __init__(self, tp_worker: Any, output_processor: Any):
+    def __init__(
+        self,
+        tp_worker: Any,
+        output_processor: Any,
+        *,
+        should_capture_hidden: Callable[[Any], bool] | None = None,
+    ):
         super().__init__(tp_worker, output_processor)
+        self._should_capture_hidden = should_capture_hidden
 
         model = self.model
         self._outer_model = model.thinker
@@ -32,6 +40,27 @@ class ThinkerModelRunner(ModelRunner):
         self._image_token_id = thinker_cfg.image_token_id
         self._video_token_id = thinker_cfg.video_token_id
         self._audio_token_id = thinker_cfg.audio_token_id
+
+    def execute(self, scheduler_output: Any):
+        capture_layers = getattr(self._text_model, "layers_to_capture", None)
+        if capture_layers and not self._batch_should_capture_hidden(
+            scheduler_output.requests
+        ):
+            saved_capture_layers = list(capture_layers)
+            self._text_model.layers_to_capture = []
+            try:
+                return super().execute(scheduler_output)
+            finally:
+                self._text_model.layers_to_capture = saved_capture_layers
+        return super().execute(scheduler_output)
+
+    def _batch_should_capture_hidden(self, requests: list[Any]) -> bool:
+        if self._should_capture_hidden is None:
+            return True
+        for request in requests:
+            if self._should_capture_hidden(request):
+                return True
+        return False
 
     def prepare_prefill(self, forward_batch, schedule_batch, requests):
         """Inject multimodal embeddings. Returns batch_result if custom forward needed."""

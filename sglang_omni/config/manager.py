@@ -6,6 +6,29 @@ from transformers import AutoConfig
 
 from sglang_omni.config.schema import PipelineConfig
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
+from sglang_omni.utils import (
+    architecture_from_hf_config,
+    try_resolve_arch_from_mistral_config,
+    try_resolve_arch_from_raw_config,
+)
+
+
+def resolve_config_cls_for_model_path(model_path: str):
+    """Resolve a PipelineConfig class from HF config metadata."""
+    hf_config = None
+    try:
+        hf_config = AutoConfig.from_pretrained(model_path)
+    except (OSError, ValueError, KeyError):
+        hf_config = None
+
+    arch = architecture_from_hf_config(hf_config) if hf_config is not None else None
+    if arch is None:
+        arch = try_resolve_arch_from_raw_config(model_path)
+    if arch is None:
+        arch = try_resolve_arch_from_mistral_config(model_path)
+    if arch is None:
+        raise ValueError(f"Could not resolve model architecture for {model_path!r}")
+    return PIPELINE_CONFIG_REGISTRY.get_config(arch)
 
 
 class ConfigManager:
@@ -84,8 +107,7 @@ class ConfigManager:
         """Load config from model path, optionally selecting a variant."""
         import importlib
 
-        hf_config = AutoConfig.from_pretrained(model_path)
-        config_cls = PIPELINE_CONFIG_REGISTRY.get_config(hf_config.architectures[0])
+        config_cls = resolve_config_cls_for_model_path(model_path)
 
         if variant:
             module = importlib.import_module(config_cls.__module__)

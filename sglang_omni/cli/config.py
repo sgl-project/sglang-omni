@@ -5,9 +5,8 @@ from typing import Annotated
 
 import typer
 import yaml
-from transformers import AutoConfig
 
-from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
+from sglang_omni.config.manager import resolve_config_cls_for_model_path
 
 logger = logging.getLogger(__name__)
 
@@ -26,8 +25,7 @@ def view(
     ],
 ) -> None:
     """View the model's pipeline configuration."""
-    hf_config = AutoConfig.from_pretrained(model_path)
-    config_cls = PIPELINE_CONFIG_REGISTRY.get_config(hf_config.architectures[0])
+    config_cls = resolve_config_cls_for_model_path(model_path)
     config = config_cls(model_path=model_path)
     config_json = config.model_dump(mode="json")
     print(
@@ -56,8 +54,7 @@ def export(
     """Export the default pipeline configuration to a YAML file."""
     # get the default pipeline config for the model
 
-    hf_config = AutoConfig.from_pretrained(model_path)
-    config_cls = PIPELINE_CONFIG_REGISTRY.get_config(hf_config.architectures[0])
+    config_cls = resolve_config_cls_for_model_path(model_path)
     config = config_cls(model_path=model_path)
 
     # export config in a yaml file

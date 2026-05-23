@@ -8,19 +8,19 @@ tts_nonstream_wer:
   context_vars:
     - STREAMING_BENCHMARK_MAX_SAMPLES
   variant: "nonstream"
-  test_file_sha256: 439c6cc7981df7320be70d9a0afd4b42d4d2b0f82796bbfd01bd058671c618f7
-  last_discovered_at: 2026-05-06T21:41:18Z
+  test_file_sha256: 3067ac841cb11ddb8230f9b320ad7752436a6a74c661196faf22d284ec8a694e
+  last_discovered_at: 2026-05-20T18:30:20Z
   sample_counts:
     total:
-      json_file: "test_voice_cloning_non_streami0/vc_nonstream_c8/wer_results.json"
+      json_file: "test_voice_cloning_non_streami0/vc_nonstream_c16/wer_results.json"
       json_path: "summary.total_samples"
     ok:
-      json_file: "test_voice_cloning_non_streami0/vc_nonstream_c8/wer_results.json"
+      json_file: "test_voice_cloning_non_streami0/vc_nonstream_c16/wer_results.json"
       json_path: "summary.evaluated"
   metrics:
     corpus_wer:
       source: "VC_WER_MAX_CORPUS"
-      json_file: "test_voice_cloning_non_streami0/vc_nonstream_c8/wer_results.json"
+      json_file: "test_voice_cloning_non_streami0/vc_nonstream_c16/wer_results.json"
       json_path: "summary.wer_corpus"
       worst: max
       display:
@@ -30,7 +30,7 @@ tts_nonstream_wer:
       status: OK
     per_sample_wer_max:
       source: "VC_WER_MAX_PER_SAMPLE"
-      json_file: "test_voice_cloning_non_streami0/vc_nonstream_c8/wer_results.json"
+      json_file: "test_voice_cloning_non_streami0/vc_nonstream_c16/wer_results.json"
       json_path: "summary.wer_per_sample_max"
       worst: max
       display:
@@ -47,19 +47,19 @@ tts_nonstream_speed:
   context_vars:
     - STREAMING_BENCHMARK_MAX_SAMPLES
   variant: "nonstream"
-  test_file_sha256: 439c6cc7981df7320be70d9a0afd4b42d4d2b0f82796bbfd01bd058671c618f7
-  last_discovered_at: 2026-05-06T21:41:18Z
+  test_file_sha256: 3067ac841cb11ddb8230f9b320ad7752436a6a74c661196faf22d284ec8a694e
+  last_discovered_at: 2026-05-20T18:30:20Z
   sample_counts:
     total:
-      json_file: "test_voice_cloning_non_streami0/vc_nonstream_c8/wer_results.json"
+      json_file: "test_voice_cloning_non_streami0/vc_nonstream_c16/wer_results.json"
       json_path: "summary.total_samples"
     ok:
-      json_file: "test_voice_cloning_non_streami0/vc_nonstream_c8/wer_results.json"
+      json_file: "test_voice_cloning_non_streami0/vc_nonstream_c16/wer_results.json"
       json_path: "summary.evaluated"
   metrics:
     throughput_qps:
       source: "_VC_NON_STREAM_P95['throughput_qps']"
-      json_file: "test_voice_cloning_non_streami0/vc_nonstream_c8/speed_results.json"
+      json_file: "test_voice_cloning_non_streami0/vc_nonstream_c16/speed_results.json"
       json_path: "summary.throughput_qps"
       worst: min
       display:
@@ -69,7 +69,7 @@ tts_nonstream_speed:
       status: OK
     tok_per_s_agg:
       source: "_VC_NON_STREAM_P95['tok_per_s_agg']"
-      json_file: "test_voice_cloning_non_streami0/vc_nonstream_c8/speed_results.json"
+      json_file: "test_voice_cloning_non_streami0/vc_nonstream_c16/speed_results.json"
       json_path: "summary.tok_per_s_agg"
       worst: min
       display:
@@ -79,7 +79,7 @@ tts_nonstream_speed:
       status: OK
     latency_mean_s:
       source: "_VC_NON_STREAM_P95['latency_mean_s']"
-      json_file: "test_voice_cloning_non_streami0/vc_nonstream_c8/speed_results.json"
+      json_file: "test_voice_cloning_non_streami0/vc_nonstream_c16/speed_results.json"
       json_path: "summary.latency_mean_s"
       worst: max
       display:
@@ -89,7 +89,7 @@ tts_nonstream_speed:
       status: OK
     rtf_mean:
       source: "_VC_NON_STREAM_P95['rtf_mean']"
-      json_file: "test_voice_cloning_non_streami0/vc_nonstream_c8/speed_results.json"
+      json_file: "test_voice_cloning_non_streami0/vc_nonstream_c16/speed_results.json"
       json_path: "summary.rtf_mean"
       worst: max
       display:
@@ -106,19 +106,19 @@ tts_stream_wer:
   context_vars:
     - STREAMING_BENCHMARK_MAX_SAMPLES
   variant: "stream"
-  test_file_sha256: 439c6cc7981df7320be70d9a0afd4b42d4d2b0f82796bbfd01bd058671c618f7
-  last_discovered_at: 2026-05-06T21:41:18Z
+  test_file_sha256: 3067ac841cb11ddb8230f9b320ad7752436a6a74c661196faf22d284ec8a694e
+  last_discovered_at: 2026-05-20T18:30:20Z
   sample_counts:
     total:
-      json_file: "test_voice_cloning_streaming0/vc_stream_c8/wer_results.json"
+      json_file: "test_voice_cloning_streaming0/vc_stream_c16/wer_results.json"
       json_path: "summary.total_samples"
     ok:
-      json_file: "test_voice_cloning_streaming0/vc_stream_c8/wer_results.json"
+      json_file: "test_voice_cloning_streaming0/vc_stream_c16/wer_results.json"
       json_path: "summary.evaluated"
   metrics:
     corpus_wer:
       source: "VC_STREAM_WER_MAX_CORPUS"
-      json_file: "test_voice_cloning_streaming0/vc_stream_c8/wer_results.json"
+      json_file: "test_voice_cloning_streaming0/vc_stream_c16/wer_results.json"
       json_path: "summary.wer_corpus"
       worst: max
       display:
@@ -128,7 +128,7 @@ tts_stream_wer:
       status: OK
     per_sample_wer_max:
       source: "VC_STREAM_WER_MAX_PER_SAMPLE"
-      json_file: "test_voice_cloning_streaming0/vc_stream_c8/wer_results.json"
+      json_file: "test_voice_cloning_streaming0/vc_stream_c16/wer_results.json"
       json_path: "summary.wer_per_sample_max"
       worst: max
       display:
@@ -145,19 +145,19 @@ tts_stream_speed:
   context_vars:
     - STREAMING_BENCHMARK_MAX_SAMPLES
   variant: "stream"
-  test_file_sha256: 439c6cc7981df7320be70d9a0afd4b42d4d2b0f82796bbfd01bd058671c618f7
-  last_discovered_at: 2026-05-06T21:41:18Z
+  test_file_sha256: 3067ac841cb11ddb8230f9b320ad7752436a6a74c661196faf22d284ec8a694e
+  last_discovered_at: 2026-05-20T18:30:20Z
   sample_counts:
     total:
-      json_file: "test_voice_cloning_streaming0/vc_stream_c8/wer_results.json"
+      json_file: "test_voice_cloning_streaming0/vc_stream_c16/wer_results.json"
       json_path: "summary.total_samples"
     ok:
-      json_file: "test_voice_cloning_streaming0/vc_stream_c8/wer_results.json"
+      json_file: "test_voice_cloning_streaming0/vc_stream_c16/wer_results.json"
       json_path: "summary.evaluated"
   metrics:
     throughput_qps:
       source: "_VC_STREAM_P95['throughput_qps']"
-      json_file: "test_voice_cloning_streaming0/vc_stream_c8/speed_results.json"
+      json_file: "test_voice_cloning_streaming0/vc_stream_c16/speed_results.json"
       json_path: "summary.throughput_qps"
       worst: min
       display:
@@ -167,7 +167,7 @@ tts_stream_speed:
       status: OK
     tok_per_s_agg:
       source: "_VC_STREAM_P95['tok_per_s_agg']"
-      json_file: "test_voice_cloning_streaming0/vc_stream_c8/speed_results.json"
+      json_file: "test_voice_cloning_streaming0/vc_stream_c16/speed_results.json"
       json_path: "summary.tok_per_s_agg"
       worst: min
       display:
@@ -177,7 +177,7 @@ tts_stream_speed:
       status: OK
     latency_mean_s:
       source: "_VC_STREAM_P95['latency_mean_s']"
-      json_file: "test_voice_cloning_streaming0/vc_stream_c8/speed_results.json"
+      json_file: "test_voice_cloning_streaming0/vc_stream_c16/speed_results.json"
       json_path: "summary.latency_mean_s"
       worst: max
       display:
@@ -187,7 +187,7 @@ tts_stream_speed:
       status: OK
     rtf_mean:
       source: "_VC_STREAM_P95['rtf_mean']"
-      json_file: "test_voice_cloning_streaming0/vc_stream_c8/speed_results.json"
+      json_file: "test_voice_cloning_streaming0/vc_stream_c16/speed_results.json"
       json_path: "summary.rtf_mean"
       worst: max
       display:

@@ -105,10 +105,10 @@ class MingImageEncoder(nn.Module):
         self.to(device=device, dtype=torch_dtype)
         self.eval()
 
-        # Release model parallel state so the thinker (loaded later) can
-        # reinitialize it.  At runtime, the thinker's TP context will be
-        # active and this encoder can use it transparently (TP=1).
-        self._cleanup_sglang_tp()
+        # Keep this stage's TP=1 context alive. In multiprocess mode the
+        # image encoder and thinker run in separate processes, so the image
+        # encoder cannot rely on the thinker's tensor-parallel state at
+        # request time.
 
     @staticmethod
     def _vision_dict(vision_cfg: Any) -> dict:
@@ -127,8 +127,12 @@ class MingImageEncoder(nn.Module):
         import os
 
         import sglang.srt.layers.dp_attention as dp
+        from sglang.srt.distributed import parallel_state
 
-        if getattr(dp, "_ATTN_TP_SIZE", None) is not None and dp._ATTN_TP_SIZE > 0:
+        dp_tp_ready = (
+            getattr(dp, "_ATTN_TP_SIZE", None) is not None and dp._ATTN_TP_SIZE > 0
+        )
+        if dp_tp_ready and parallel_state.model_parallel_is_initialized():
             return  # Already initialized
 
         os.environ.setdefault("MASTER_ADDR", "127.0.0.1")
@@ -148,8 +152,6 @@ class MingImageEncoder(nn.Module):
             set_global_server_args_for_scheduler(ServerArgs(model_path="dummy"))
         except Exception:
             pass  # Already set
-
-        from sglang.srt.distributed import parallel_state
 
         if not parallel_state.model_parallel_is_initialized():
             parallel_state.init_distributed_environment(

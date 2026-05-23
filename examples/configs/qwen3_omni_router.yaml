@@ -3,7 +3,8 @@ launcher:
   model_path: Qwen/Qwen3-Omni-30B-A3B-Instruct
   model_name: qwen3-omni
   num_workers: 2
-  num_gpus_per_worker: 2
+  num_gpus_per_worker: 1
   worker_host: 127.0.0.1
   worker_base_port: 8011
+  worker_extra_args: "--config examples/configs/qwen3_omni_colocated_h20.yaml --colocate"
   wait_timeout: 600

@@ -1,19 +1,22 @@
+# SPDX-License-Identifier: Apache-2.0
 """Stage executor factories for the Voxtral TTS pipeline."""
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
+import tempfile
 import time
 from typing import Any
 
 import torch
 
-from sglang_omni.executors import PreprocessingExecutor
 from sglang_omni.models.voxtral_tts.io import VoxtralTTSState
 from sglang_omni.models.voxtral_tts.pipeline.state_io import load_state, store_state
 from sglang_omni.proto import StagePayload
+from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +49,7 @@ def _resolve_checkpoint(checkpoint: str) -> str:
 # ---- Preprocessing ----
 
 
-def create_preprocessing_executor(model_path: str) -> PreprocessingExecutor:
+def create_preprocessing_executor(model_path: str) -> SimpleScheduler:
     """Factory for the preprocessing stage."""
     checkpoint_dir = _resolve_checkpoint(model_path)
 
@@ -69,7 +72,7 @@ def create_preprocessing_executor(model_path: str) -> PreprocessingExecutor:
 
         tts_params = metadata.get("tts_params", {})
         voice = tts_params.get("voice") or params.get("voice")
-        if voice is None:
+        if voice in (None, "", "default"):
             voice = "cheerful_female"
 
         encoded = tokenizer.encode_speech_request(
@@ -90,92 +93,10 @@ def create_preprocessing_executor(model_path: str) -> PreprocessingExecutor:
 
         return store_state(payload, state)
 
-    return PreprocessingExecutor(_preprocess)
+    return SimpleScheduler(_preprocess)
 
 
 # ---- Generation ----
-
-
-@torch.no_grad()
-def _run_ar_generation(
-    model: Any,
-    voice_embeddings: dict[str, torch.Tensor],
-    config: Any,
-    input_ids: list[int],
-    voice: str,
-    max_new_tokens: int,
-    device: str,
-) -> tuple[torch.Tensor, int, int]:
-    """Run AR generation loop using VoxtralTTSAudioGeneration model."""
-    from sglang_omni.models.voxtral_tts.acoustic_transformer import AudioSpecialTokens
-
-    audio_token_id = config.audio_model_args.audio_token_id
-
-    input_ids_t = torch.tensor(input_ids, dtype=torch.long, device=device).unsqueeze(0)
-    prompt_len = input_ids_t.shape[1]
-
-    input_embeds = model.language_model.embed_tokens(input_ids_t)
-
-    voice_emb = voice_embeddings.get(voice)
-    if voice_emb is not None:
-        audio_mask = input_ids_t[0] == audio_token_id
-        audio_positions = audio_mask.nonzero(as_tuple=True)[0]
-        n_voice_frames = min(len(audio_positions), voice_emb.shape[0])
-        if n_voice_frames > 0:
-            input_embeds[0, audio_positions[:n_voice_frames]] = voice_emb[
-                :n_voice_frames
-            ].to(input_embeds.dtype)
-
-    position_ids = torch.arange(prompt_len, device=device).unsqueeze(0)
-
-    # Prefill with per-layer debug logging
-    hidden, past_kv = model.forward_llm(
-        inputs_embeds=input_embeds,
-        position_ids=position_ids,
-        past_key_values=None,
-        use_cache=True,
-        do_layer_debug=True,
-    )
-
-    last_hidden = hidden[:, -1:, :]
-
-    audio_codes_list = []
-    semantic_codes_debug = []
-
-    for step in range(max_new_tokens):
-        codes = model.acoustic_transformer(last_hidden.squeeze(1))
-        audio_codes_list.append(codes)
-
-        semantic_code = codes[:, 0].item()
-        semantic_codes_debug.append(semantic_code)
-
-        if semantic_code == AudioSpecialTokens.id(AudioSpecialTokens.end_audio):
-            break
-
-        codes_for_embed = codes.unsqueeze(2)
-        multi_cb_emb = model.audio_token_embedding(codes_for_embed)
-        next_embeds = multi_cb_emb.sum(dim=1)
-
-        cur_pos = prompt_len + step
-        next_pos = torch.tensor([[cur_pos]], dtype=torch.long, device=device)
-
-        hidden, past_kv = model.forward_llm(
-            inputs_embeds=next_embeds,
-            position_ids=next_pos,
-            past_key_values=past_kv,
-            use_cache=True,
-            do_layer_debug=False,
-        )
-        last_hidden = hidden[:, -1:, :]
-
-    total_steps = len(audio_codes_list)
-
-    if audio_codes_list:
-        all_codes = torch.stack([c.squeeze(0) for c in audio_codes_list], dim=0)
-    else:
-        all_codes = torch.empty(0, 37, dtype=torch.long)
-
-    return all_codes, prompt_len, len(audio_codes_list)
 
 
 def create_generation_executor(
@@ -183,39 +104,119 @@ def create_generation_executor(
     *,
     device: str = "cuda:0",
     max_new_tokens: int = 4096,
-) -> PreprocessingExecutor:
-    """Factory for the AR generation stage."""
-    from sglang_omni.models.voxtral_tts.voxtral_tts_audio_generation import (
-        VoxtralTTSAudioGeneration,
+) -> Any:
+    """Factory for the SGLang-backed AR generation stage."""
+    del max_new_tokens
+    from sglang_omni.models.voxtral_tts.model_runner import VoxtralTTSModelRunner
+    from sglang_omni.models.voxtral_tts.request_builders import (
+        make_voxtral_scheduler_adapters,
+    )
+    from sglang_omni.scheduling.bootstrap import create_sglang_infrastructure
+    from sglang_omni.scheduling.omni_scheduler import OmniScheduler
+    from sglang_omni.scheduling.sglang_backend import (
+        SGLangOutputProcessor,
+        build_sglang_server_args,
     )
 
     checkpoint_dir = _resolve_checkpoint(model_path)
+    gpu_id = int(device.split(":")[-1]) if ":" in device else 0
 
-    logger.info("Loading Voxtral TTS model for generation...")
-    model, voice_embeddings, config = VoxtralTTSAudioGeneration.from_checkpoint(
-        checkpoint_dir, device
+    server_args = build_sglang_server_args(
+        checkpoint_dir,
+        context_length=8192,
+        dtype="bfloat16",
+        disable_cuda_graph=True,
+        disable_overlap_schedule=True,
+        decrypted_config_file=_write_voxtral_sglang_config(checkpoint_dir),
+        mem_fraction_static=0.85,
+        max_prefill_tokens=8192,
+        max_running_requests=16,
     )
 
-    def _generate(payload: StagePayload) -> StagePayload:
-        state = load_state(payload)
+    (
+        model_worker,
+        tree_cache,
+        req_to_token_pool,
+        token_to_kv_pool_allocator,
+        prefill_mgr,
+        decode_mgr,
+        model_config,
+    ) = create_sglang_infrastructure(server_args, gpu_id)
 
-        effective_max = state.max_new_tokens or max_new_tokens
-        all_codes, prompt_tokens, completion_tokens = _run_ar_generation(
-            model=model,
-            voice_embeddings=voice_embeddings,
-            config=config,
-            input_ids=state.input_ids,
-            voice=state.voice or "cheerful_female",
-            max_new_tokens=effective_max,
-            device=device,
+    voice_embeddings = _load_voxtral_voice_embeddings(checkpoint_dir, device)
+    model = model_worker.model_runner.model
+    request_builder, result_adapter = make_voxtral_scheduler_adapters(
+        model=model,
+        voice_embeddings=voice_embeddings,
+    )
+    output_proc = SGLangOutputProcessor(
+        capture_hidden=False,
+        capture_hidden_layers=None,
+        model=model,
+    )
+
+    return OmniScheduler(
+        tp_worker=model_worker,
+        tree_cache=tree_cache,
+        req_to_token_pool=req_to_token_pool,
+        token_to_kv_pool_allocator=token_to_kv_pool_allocator,
+        server_args=server_args,
+        model_config=model_config,
+        prefill_manager=prefill_mgr,
+        decode_manager=decode_mgr,
+        model_runner=VoxtralTTSModelRunner(model_worker, output_proc),
+        request_builder=request_builder,
+        result_adapter=result_adapter,
+    )
+
+
+def _write_voxtral_sglang_config(checkpoint_dir: str) -> str:
+    from sglang_omni.models.voxtral_tts.model_config import VoxtralModelConfig
+
+    cfg = VoxtralModelConfig.from_model_path(checkpoint_dir).text_config
+    path = os.path.join(
+        tempfile.gettempdir(),
+        f"voxtral_sglang_config_{abs(hash(checkpoint_dir))}.json",
+    )
+    data = {
+        "model_type": "llama",
+        "architectures": ["VoxtralSGLangTTSModel"],
+        "hidden_size": cfg.dim,
+        "intermediate_size": cfg.hidden_dim,
+        "num_hidden_layers": cfg.n_layers,
+        "num_attention_heads": cfg.n_heads,
+        "num_key_value_heads": cfg.n_kv_heads,
+        "head_dim": cfg.head_dim,
+        "vocab_size": cfg.vocab_size,
+        "max_position_embeddings": cfg.max_seq_len,
+        "rope_theta": cfg.rope_theta,
+        "rms_norm_eps": cfg.norm_eps,
+        "tie_word_embeddings": cfg.tied_embeddings,
+    }
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f)
+    return path
+
+
+def _load_voxtral_voice_embeddings(
+    checkpoint_dir: str,
+    device: str,
+) -> dict[str, torch.Tensor]:
+    voice_embeddings: dict[str, torch.Tensor] = {}
+    voice_dir = os.path.join(checkpoint_dir, "voice_embedding")
+    if not os.path.isdir(voice_dir):
+        return voice_embeddings
+    for fname in sorted(os.listdir(voice_dir)):
+        if not fname.endswith(".pt"):
+            continue
+        name = fname.removesuffix(".pt")
+        emb = torch.load(
+            os.path.join(voice_dir, fname),
+            map_location=device,
+            weights_only=True,
         )
-
-        state.audio_codes = all_codes
-        state.prompt_tokens = prompt_tokens
-        state.completion_tokens = completion_tokens
-        return store_state(payload, state)
-
-    return PreprocessingExecutor(_generate)
+        voice_embeddings[name] = emb.to(dtype=torch.bfloat16)
+    return voice_embeddings
 
 
 # ---- Vocoder ----
@@ -269,7 +270,7 @@ def _load_audio_tokenizer(checkpoint_dir: str, audio_config: dict, device: str):
         tokenizer.load_weight((remapped, tensor))
 
     tokenizer = tokenizer.to(dtype=torch.bfloat16, device=device).eval()
-    logger.info("Audio tokenizer loaded in %.2fs", time.perf_counter() - t0)
+    logger.info(f"Audio tokenizer loaded in {time.perf_counter() - t0:.2f}s")
     return tokenizer
 
 
@@ -277,7 +278,7 @@ def create_vocoder_executor(
     model_path: str,
     *,
     device: str = "cuda:0",
-) -> PreprocessingExecutor:
+) -> SimpleScheduler:
     """Factory for the vocoder (audio tokenizer decode) stage."""
     checkpoint_dir = _resolve_checkpoint(model_path)
 
@@ -355,4 +356,4 @@ def create_vocoder_executor(
 
         return payload
 
-    return PreprocessingExecutor(_vocode)
+    return SimpleScheduler(_vocode)

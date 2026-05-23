@@ -9,6 +9,11 @@ from fastapi.testclient import TestClient
 
 from sglang_omni.client import ClientError, GenerateChunk
 from sglang_omni.serve import create_app
+from sglang_omni.serve.openai_api import (
+    _build_speech_generate_request,
+    build_speech_generate_request,
+)
+from sglang_omni.serve.protocol import CreateSpeechRequest
 
 
 class FailingSpeechClient:
@@ -63,3 +68,24 @@ def test_speech_stream_returns_error_event_after_chunk_failure() -> None:
         "type": "ClientError",
         "message": "stream failed",
     }
+
+
+def test_speech_request_records_explicit_generation_params() -> None:
+    req = CreateSpeechRequest(
+        input="hello",
+        temperature=0.8,
+        top_k=30,
+        seed=123,
+    )
+
+    gen_req = build_speech_generate_request(req, "qwen3-tts")
+
+    assert _build_speech_generate_request is build_speech_generate_request
+    assert gen_req.sampling.temperature == 0.8
+    assert gen_req.sampling.top_k == 30
+    assert gen_req.sampling.seed == 123
+    assert gen_req.metadata["tts_params"]["explicit_generation_params"] == [
+        "seed",
+        "temperature",
+        "top_k",
+    ]

@@ -102,9 +102,23 @@ def build_thinker_inputs(
             image_embeds = image_embeds.squeeze(0)
         thinker_model_inputs["image_embeds"] = image_embeds
 
+    media_cache_keys: dict[str, str] = {}
+    encoder_inputs = state.encoder_inputs or {}
+    image_ck = (encoder_inputs.get(IMAGE_STAGE) or {}).get("cache_key")
+    audio_ck = (encoder_inputs.get(AUDIO_STAGE) or {}).get("cache_key")
+    if image_ck:
+        media_cache_keys["image"] = f"image:{image_ck}"
+    if audio_ck:
+        media_cache_keys["audio"] = f"audio:{audio_ck}"
+
     if not thinker_model_inputs:
+        if media_cache_keys:
+            return {"media_cache_keys": media_cache_keys}
         return {}
-    return {"model_inputs": thinker_model_inputs}
+    result: dict[str, Any] = {"model_inputs": thinker_model_inputs}
+    if media_cache_keys:
+        result["media_cache_keys"] = media_cache_keys
+    return result
 
 
 def decode_events(

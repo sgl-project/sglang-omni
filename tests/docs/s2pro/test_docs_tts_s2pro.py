@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Tests for TTS S2-Pro documentation examples.
 
-Every test replicates an API call from `docs/basic_usage/tts_s2pro.md`
+Every test replicates an API call from `docs/basic_usage/tts.md`
 so documentation can never silently go stale.
 
 Usage:

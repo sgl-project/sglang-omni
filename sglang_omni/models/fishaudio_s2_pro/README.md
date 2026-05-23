@@ -36,7 +36,7 @@ Text input ──► Preprocessing ──► SGLang AR Engine ──► DAC Voco
 
 ## Usage
 
-Please refer to [TTS Model Usage](https://github.com/sgl-project/sglang-omni/blob/main/docs/basic_usage/tts_s2pro.md) for more details.
+Please refer to [TTS Model Usage](https://github.com/sgl-project/sglang-omni/blob/main/docs/basic_usage/tts.md) for more details.
 
 ## Optimizations with SGLang Omni
 

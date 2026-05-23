@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable, Sequence
 from typing import Any
 
 import torch
@@ -18,10 +19,12 @@ class SGLangOutputProcessor:
         capture_hidden: bool = False,
         capture_hidden_layers: list[int] | None = None,
         model: Any = None,
+        should_emit_hidden: Callable[[Any], bool] | None = None,
     ):
         self._capture_hidden = capture_hidden
         self._capture_hidden_layers = capture_hidden_layers
         self._model = model
+        self._should_emit_hidden = should_emit_hidden
 
     def process(
         self,
@@ -34,40 +37,22 @@ class SGLangOutputProcessor:
             else []
         )
 
-        hidden_states_dict = None
-        stream_hidden_states = None
+        hidden_extras_by_request: dict[int, dict[str, Any] | None] = {}
         if self._capture_hidden:
-            hidden_states_dict = self._extract_hidden_states(model_output)
-            stream_hidden_states = self._extract_stream_hidden_states(model_output)
+            should_emit_hidden_by_request = [
+                self._should_emit_hidden_for_request(request)
+                for request in scheduler_output.requests
+            ]
+            hidden_extras_by_request = self._build_hidden_extras_by_request(
+                model_output,
+                scheduler_output=scheduler_output,
+                should_emit_hidden_by_request=should_emit_hidden_by_request,
+            )
 
         outputs = {}
         for i, sched_req in enumerate(scheduler_output.requests):
             token_id = token_list[i] if i < len(token_list) else None
-            extra = None
-            if hidden_states_dict is not None:
-                if "_single" in hidden_states_dict:
-                    extra = {
-                        "hidden_states": self._slice_per_request_tensor(
-                            hidden_states_dict["_single"],
-                            request_index=i,
-                            scheduler_output=scheduler_output,
-                        )
-                    }
-                else:
-                    per_req = {}
-                    for key, tensor in hidden_states_dict.items():
-                        per_req[key] = self._slice_per_request_tensor(
-                            tensor,
-                            request_index=i,
-                            scheduler_output=scheduler_output,
-                        )
-                    extra = {"hidden_states": per_req}
-                    if stream_hidden_states is not None:
-                        extra["stream_hidden_states"] = self._slice_per_request_tensor(
-                            stream_hidden_states,
-                            request_index=i,
-                            scheduler_output=scheduler_output,
-                        )
+            extra = hidden_extras_by_request.get(i)
             outputs[sched_req.request_id] = RequestOutput(
                 request_id=sched_req.request_id,
                 data=token_id,
@@ -76,32 +61,119 @@ class SGLangOutputProcessor:
             )
         return outputs
 
-    def _extract_hidden_states(
+    def _should_emit_hidden_for_request(self, request: Any) -> bool:
+        if self._should_emit_hidden is None:
+            return True
+        return self._should_emit_hidden(request)
+
+    def _build_hidden_extras_by_request(
         self,
         model_output: Any,
-    ) -> dict[str, torch.Tensor] | None:
+        *,
+        scheduler_output: SchedulerOutput,
+        should_emit_hidden_by_request: list[bool],
+    ) -> dict[int, dict[str, Any] | None]:
+        request_indexes = [
+            i
+            for i, should_emit in enumerate(should_emit_hidden_by_request)
+            if should_emit
+        ]
+
         if self._model is not None and self._capture_hidden_layers:
-            aux = self._model._captured_aux_hidden_states
-            if aux is not None:
+            captured_aux_hidden_states = self._model._captured_aux_hidden_states
+            if captured_aux_hidden_states is not None:
                 self._model._captured_aux_hidden_states = None
-                result = {}
-                for layer_id, tensor in zip(self._capture_hidden_layers, aux):
-                    key = "embed" if layer_id == 0 else layer_id
-                    result[key] = tensor.clone()
-                return result
+                if not request_indexes:
+                    return {}
+                stream_hidden_states = self._extract_stream_hidden_states(model_output)
+                return {
+                    request_index: self._build_aux_hidden_extra(
+                        captured_aux_hidden_states,
+                        request_index=request_index,
+                        scheduler_output=scheduler_output,
+                        stream_hidden_states=stream_hidden_states,
+                    )
+                    for request_index in request_indexes
+                }
+
+        if not request_indexes:
+            return {}
 
         logits_output = model_output.logits_output
         if logits_output is None:
-            return None
+            return {}
         raw_hidden = logits_output.hidden_states
         if raw_hidden is None:
-            return None
+            return {}
 
         if isinstance(raw_hidden, dict):
-            return raw_hidden
+            return {
+                request_index: self._build_dict_hidden_extra(
+                    raw_hidden,
+                    request_index=request_index,
+                    scheduler_output=scheduler_output,
+                )
+                for request_index in request_indexes
+            }
         elif isinstance(raw_hidden, torch.Tensor):
-            return {"_single": raw_hidden}
-        return None
+            return {
+                request_index: {
+                    "hidden_states": self._slice_per_request_tensor(
+                        raw_hidden,
+                        request_index=request_index,
+                        scheduler_output=scheduler_output,
+                    )
+                }
+                for request_index in request_indexes
+            }
+        return {}
+
+    def _build_aux_hidden_extra(
+        self,
+        aux_hidden_states: Sequence[torch.Tensor],
+        *,
+        request_index: int,
+        scheduler_output: SchedulerOutput,
+        stream_hidden_states: torch.Tensor | None,
+    ) -> dict[str, Any]:
+        per_request_hidden = {}
+        for layer_id, tensor in zip(
+            self._capture_hidden_layers or [],
+            aux_hidden_states,
+        ):
+            key = "embed" if layer_id == 0 else layer_id
+            per_request_hidden[key] = self._slice_per_request_tensor(
+                tensor,
+                request_index=request_index,
+                scheduler_output=scheduler_output,
+            ).clone()
+
+        extra: dict[str, Any] = {"hidden_states": per_request_hidden}
+        if stream_hidden_states is not None:
+            extra["stream_hidden_states"] = self._slice_per_request_tensor(
+                stream_hidden_states,
+                request_index=request_index,
+                scheduler_output=scheduler_output,
+            ).clone()
+        return extra
+
+    def _build_dict_hidden_extra(
+        self,
+        hidden_states: dict[Any, torch.Tensor],
+        *,
+        request_index: int,
+        scheduler_output: SchedulerOutput,
+    ) -> dict[str, Any]:
+        return {
+            "hidden_states": {
+                key: self._slice_per_request_tensor(
+                    tensor,
+                    request_index=request_index,
+                    scheduler_output=scheduler_output,
+                )
+                for key, tensor in hidden_states.items()
+            }
+        }
 
     def _extract_stream_hidden_states(self, model_output: Any) -> torch.Tensor | None:
         logits_output = model_output.logits_output

@@ -3,15 +3,11 @@
 
 from __future__ import annotations
 
-from typing import ClassVar
+from typing import Any, ClassVar
 
-from sglang_omni.config import (
-    ExecutorConfig,
-    InputHandlerConfig,
-    PipelineConfig,
-    RelayConfig,
-    StageConfig,
-)
+from pydantic import Field
+
+from sglang_omni.config.schema import PipelineConfig, PlacementConfig, StageConfig
 from sglang_omni.models.ming_omni.pipeline.next_stage import (
     AGGREGATE_STAGE,
     AUDIO_STAGE,
@@ -22,203 +18,189 @@ from sglang_omni.models.ming_omni.pipeline.next_stage import (
     THINKER_STAGE,
 )
 
+_PKG = "sglang_omni.models.ming_omni"
 
-class MingOmniPipelineConfig(PipelineConfig):
-    """6-stage text/vision pipeline for Ming-Omni.
 
-    preprocessing → audio_encoder + image_encoder → mm_aggregate → thinker → decode
+def _stage_by_name(stages: list[StageConfig], name: str) -> StageConfig | None:
+    return next((stage for stage in stages if stage.name == name), None)
+
+
+def _stage_gpu_set(gpu: int | list[int] | None, tp_size: int) -> set[int]:
+    """Return GPUs occupied by a stage.
+
+    Explicit list placement is authoritative; scalar placement preserves the
+    legacy contiguous TP range interpretation.
     """
+    if isinstance(gpu, list):
+        return {int(gpu_id) for gpu_id in gpu}
+    if gpu is None:
+        return set()
+    return set(range(int(gpu), int(gpu) + tp_size))
 
-    architecture: ClassVar[str] = "BailingMM2NativeForConditionalGeneration"
 
-    model_path: str
-    entry_stage: str = "preprocessing"
-    stages: list[StageConfig] = [
-        StageConfig(
-            name=PREPROCESSING_STAGE,
-            executor=ExecutorConfig(
-                factory="sglang_omni.models.ming_omni.pipeline.stages.create_preprocessing_executor",
-            ),
-            get_next="sglang_omni.models.ming_omni.pipeline.next_stage.preprocessing_next",
-            relay=RelayConfig(device="cpu"),
-        ),
-        StageConfig(
-            name=AUDIO_STAGE,
-            executor=ExecutorConfig(
-                factory="sglang_omni.models.ming_omni.pipeline.stages.create_audio_encoder_executor",
-                args={
-                    "device": "cuda",
-                    "dtype": None,
-                },
-            ),
-            get_next="sglang_omni.models.ming_omni.pipeline.next_stage.encoder_next",
-            relay=RelayConfig(device="cuda"),
-        ),
-        StageConfig(
-            name=IMAGE_STAGE,
-            executor=ExecutorConfig(
-                factory="sglang_omni.models.ming_omni.pipeline.stages.create_image_encoder_executor",
-                args={
-                    "device": "cuda",
-                    "dtype": None,
-                },
-            ),
-            get_next="sglang_omni.models.ming_omni.pipeline.next_stage.encoder_next",
-            relay=RelayConfig(device="cuda"),
-        ),
-        StageConfig(
-            name=AGGREGATE_STAGE,
-            executor=ExecutorConfig(
-                factory="sglang_omni.models.ming_omni.pipeline.stages.create_aggregate_executor",
-                args={},
-            ),
-            get_next="sglang_omni.models.ming_omni.pipeline.next_stage.aggregate_next",
-            input_handler=InputHandlerConfig(
-                type="aggregated",
-                sources=[PREPROCESSING_STAGE, AUDIO_STAGE, IMAGE_STAGE],
-                merge_fn="sglang_omni.models.ming_omni.pipeline.merge.merge_for_thinker",
-            ),
-            relay=RelayConfig(device="cpu"),
-        ),
-        StageConfig(
-            name=THINKER_STAGE,
-            executor=ExecutorConfig(
-                factory="sglang_omni.models.ming_omni.pipeline.stages.create_sglang_thinker_executor_from_config",
-                args={
-                    "thinker_max_seq_len": 8192,
-                },
-            ),
-            get_next="sglang_omni.models.ming_omni.pipeline.next_stage.thinker_next",
-            relay=RelayConfig(device="cuda"),
-        ),
-        StageConfig(
-            name=DECODE_STAGE,
-            executor=ExecutorConfig(
-                factory="sglang_omni.models.ming_omni.pipeline.stages.create_decode_executor",
-                args={},
-            ),
-            get_next="sglang_omni.models.ming_omni.pipeline.next_stage.decode_next",
-            relay=RelayConfig(device="cpu"),
-        ),
+def _preprocessing_stage(*, process: str) -> StageConfig:
+    return StageConfig(
+        name=PREPROCESSING_STAGE,
+        process=process,
+        factory=f"{_PKG}.stages.create_preprocessing_executor",
+        next=[AUDIO_STAGE, IMAGE_STAGE, AGGREGATE_STAGE],
+        project_payload={
+            AUDIO_STAGE: f"{_PKG}.stages.project_preprocessing_to_audio_encoder",
+            IMAGE_STAGE: f"{_PKG}.stages.project_preprocessing_to_image_encoder",
+            AGGREGATE_STAGE: (f"{_PKG}.stages.project_preprocessing_to_mm_aggregate"),
+        },
+    )
+
+
+def _audio_encoder_stage(*, gpu: int, process: str) -> StageConfig:
+    return StageConfig(
+        name=AUDIO_STAGE,
+        process=process,
+        factory=f"{_PKG}.stages.create_audio_encoder_executor",
+        factory_args={"device": "cuda", "dtype": None},
+        gpu=gpu,
+        next=AGGREGATE_STAGE,
+        project_payload={
+            AGGREGATE_STAGE: f"{_PKG}.stages.project_encoder_to_mm_aggregate"
+        },
+    )
+
+
+def _image_encoder_stage(*, gpu: int, process: str) -> StageConfig:
+    return StageConfig(
+        name=IMAGE_STAGE,
+        process=process,
+        factory=f"{_PKG}.stages.create_image_encoder_executor",
+        factory_args={"device": "cuda", "dtype": None},
+        gpu=gpu,
+        next=AGGREGATE_STAGE,
+        project_payload={
+            AGGREGATE_STAGE: f"{_PKG}.stages.project_encoder_to_mm_aggregate"
+        },
+    )
+
+
+def _aggregate_stage(*, process: str) -> StageConfig:
+    return StageConfig(
+        name=AGGREGATE_STAGE,
+        process=process,
+        factory=f"{_PKG}.stages.create_aggregate_executor",
+        wait_for=[PREPROCESSING_STAGE, AUDIO_STAGE, IMAGE_STAGE],
+        merge_fn=f"{_PKG}.pipeline.merge.merge_for_thinker",
+        next=THINKER_STAGE,
+    )
+
+
+def _thinker_stage(*, gpu: int, speech_enabled: bool, process: str) -> StageConfig:
+    return StageConfig(
+        name=THINKER_STAGE,
+        process=process,
+        factory=f"{_PKG}.stages.create_sglang_thinker_executor_from_config",
+        factory_args={"thinker_max_seq_len": 8192},
+        gpu=gpu,
+        next=[DECODE_STAGE, TALKER_STAGE] if speech_enabled else DECODE_STAGE,
+    )
+
+
+def _decode_stage(*, process: str) -> StageConfig:
+    return StageConfig(
+        name=DECODE_STAGE,
+        process=process,
+        factory=f"{_PKG}.stages.create_decode_executor",
+        terminal=True,
+    )
+
+
+def _talker_stage(*, gpu: int, process: str) -> StageConfig:
+    return StageConfig(
+        name=TALKER_STAGE,
+        process=process,
+        factory=f"{_PKG}.stages.create_talker_executor",
+        factory_args={"device": "cuda", "voice": "DB30"},
+        gpu=gpu,
+        terminal=True,
+    )
+
+
+def _ming_text_stages() -> list[StageConfig]:
+    return [
+        _preprocessing_stage(process="preprocessing"),
+        _audio_encoder_stage(gpu=0, process="audio_encoder"),
+        _image_encoder_stage(gpu=0, process="image_encoder"),
+        _aggregate_stage(process="mm_aggregate"),
+        _thinker_stage(gpu=0, speech_enabled=False, process="thinker"),
+        _decode_stage(process="decode"),
     ]
 
-    def __init__(self, **kwargs):
-        # Extract server_args_overrides and inject into thinker stage
-        server_args_overrides = kwargs.pop("server_args_overrides", None)
-        super().__init__(**kwargs)
-        if server_args_overrides:
-            for stage in self.stages:
-                if stage.name == THINKER_STAGE:
-                    if stage.executor.args is None:
-                        stage.executor.args = {}
-                    existing = stage.executor.args.setdefault(
-                        "server_args_overrides", {}
-                    )
-                    existing.update(server_args_overrides)
+
+def _ming_speech_stages() -> list[StageConfig]:
+    return [
+        _preprocessing_stage(process="preprocessing"),
+        _audio_encoder_stage(gpu=0, process="audio_encoder"),
+        _image_encoder_stage(gpu=0, process="image_encoder"),
+        _aggregate_stage(process="mm_aggregate"),
+        _thinker_stage(gpu=0, speech_enabled=True, process="thinker"),
+        _decode_stage(process="decode"),
+        _talker_stage(gpu=1, process="talker"),
+    ]
+
+
+class MingOmniPipelineConfig(PipelineConfig):
+    """6-stage text pipeline."""
+
+    architecture: ClassVar[str] = "BailingMoeV2ForCausalLM"
+
+    model_path: str
+    entry_stage: str = PREPROCESSING_STAGE
+    placement: PlacementConfig = Field(
+        default_factory=lambda: PlacementConfig(
+            require_memory_fraction_for_colocation=False
+        )
+    )
+    stages: list[StageConfig] = Field(default_factory=_ming_text_stages)
 
 
 class MingOmniSpeechPipelineConfig(PipelineConfig):
-    """7-stage pipeline for Ming-Omni with text + speech output.
+    """7-stage speech pipeline."""
 
-    Adds a talker stage that generates audio from thinker's decoded text.
-    The talker is a self-contained MingOmniTalker (own LLM + CFM + AudioVAE).
-    """
-
-    architecture: ClassVar[str] = "BailingMM2NativeForConditionalGeneration"
+    architecture: ClassVar[str] = "BailingMoeV2ForCausalLM"
 
     model_path: str
-    entry_stage: str = "preprocessing"
-    terminal_stages: list[str] = [DECODE_STAGE, TALKER_STAGE]
-    gpu_placement: dict[str, int] = {
-        "thinker": 0,
-        "talker": 1,
-    }
+    entry_stage: str = PREPROCESSING_STAGE
+    placement: PlacementConfig = Field(
+        default_factory=lambda: PlacementConfig(
+            require_memory_fraction_for_colocation=False
+        )
+    )
+    stages: list[StageConfig] = Field(default_factory=_ming_speech_stages)
 
-    def __init__(self, **kwargs):
-        server_args_overrides = kwargs.pop("server_args_overrides", None)
-        super().__init__(**kwargs)
-        if server_args_overrides:
-            for stage in self.stages:
-                if stage.name == THINKER_STAGE:
-                    if stage.executor.args is None:
-                        stage.executor.args = {}
-                    existing = stage.executor.args.setdefault(
-                        "server_args_overrides", {}
-                    )
-                    existing.update(server_args_overrides)
+    def model_post_init(self, __context: Any = None) -> None:
+        super().model_post_init(__context)
+        self._validate_talker_gpu_not_in_thinker_tp_range()
 
-    stages: list[StageConfig] = [
-        StageConfig(
-            name=PREPROCESSING_STAGE,
-            executor=ExecutorConfig(
-                factory="sglang_omni.models.ming_omni.pipeline.stages.create_preprocessing_executor",
-            ),
-            get_next="sglang_omni.models.ming_omni.pipeline.next_stage.preprocessing_next",
-            relay=RelayConfig(device="cpu"),
-        ),
-        StageConfig(
-            name=AUDIO_STAGE,
-            executor=ExecutorConfig(
-                factory="sglang_omni.models.ming_omni.pipeline.stages.create_audio_encoder_executor",
-                args={"device": "cuda", "dtype": None},
-            ),
-            get_next="sglang_omni.models.ming_omni.pipeline.next_stage.encoder_next",
-            relay=RelayConfig(device="cuda"),
-        ),
-        StageConfig(
-            name=IMAGE_STAGE,
-            executor=ExecutorConfig(
-                factory="sglang_omni.models.ming_omni.pipeline.stages.create_image_encoder_executor",
-                args={"device": "cuda", "dtype": None},
-            ),
-            get_next="sglang_omni.models.ming_omni.pipeline.next_stage.encoder_next",
-            relay=RelayConfig(device="cuda"),
-        ),
-        StageConfig(
-            name=AGGREGATE_STAGE,
-            executor=ExecutorConfig(
-                factory="sglang_omni.models.ming_omni.pipeline.stages.create_aggregate_executor",
-                args={},
-            ),
-            get_next="sglang_omni.models.ming_omni.pipeline.next_stage.aggregate_next",
-            input_handler=InputHandlerConfig(
-                type="aggregated",
-                sources=[PREPROCESSING_STAGE, AUDIO_STAGE, IMAGE_STAGE],
-                merge_fn="sglang_omni.models.ming_omni.pipeline.merge.merge_for_thinker",
-            ),
-            relay=RelayConfig(device="cpu"),
-        ),
-        StageConfig(
-            name=THINKER_STAGE,
-            executor=ExecutorConfig(
-                factory="sglang_omni.models.ming_omni.pipeline.stages.create_sglang_thinker_executor_from_config",
-                args={"thinker_max_seq_len": 8192},
-            ),
-            get_next="sglang_omni.models.ming_omni.pipeline.next_stage.thinker_next_speech",
-            relay=RelayConfig(device="cuda"),
-        ),
-        StageConfig(
-            name=DECODE_STAGE,
-            executor=ExecutorConfig(
-                factory="sglang_omni.models.ming_omni.pipeline.stages.create_decode_executor",
-                args={},
-            ),
-            get_next="sglang_omni.models.ming_omni.pipeline.next_stage.decode_next",
-            relay=RelayConfig(device="cpu"),
-        ),
-        StageConfig(
-            name=TALKER_STAGE,
-            executor=ExecutorConfig(
-                factory="sglang_omni.models.ming_omni.pipeline.stages.create_talker_executor",
-                args={
-                    "device": "cuda",
-                    "voice": "DB30",
-                },
-            ),
-            get_next="sglang_omni.models.ming_omni.pipeline.next_stage.talker_next",
-            relay=RelayConfig(device="cuda"),
-        ),
-    ]
+    def _validate_talker_gpu_not_in_thinker_tp_range(self) -> None:
+        thinker = _stage_by_name(self.stages, THINKER_STAGE)
+        talker = _stage_by_name(self.stages, TALKER_STAGE)
+        if thinker is None or talker is None:
+            return
+
+        thinker_gpus = _stage_gpu_set(thinker.gpu, thinker.tp_size)
+        talker_gpus = _stage_gpu_set(talker.gpu, talker.tp_size)
+        collisions = thinker_gpus & talker_gpus
+        if not collisions:
+            return
+
+        raise ValueError(
+            "Ming-Omni speech talker GPU collides with thinker TP range: "
+            f"talker gpus={sorted(talker_gpus)}, "
+            f"thinker gpus={sorted(thinker_gpus)}, "
+            f"collisions={sorted(collisions)}"
+        )
 
 
 EntryClass = MingOmniPipelineConfig
+
+Variants = {
+    "text": MingOmniPipelineConfig,
+    "speech": MingOmniSpeechPipelineConfig,
+}

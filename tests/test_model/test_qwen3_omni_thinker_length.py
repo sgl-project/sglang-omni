@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Integration tests for thinker length validation and finish_reason propagation.
 
-Starts a real text-only Qwen3-Omni server and verifies that:
+Starts router-backed colocated Qwen3-Omni workers and verifies that:
 1. overlong prompts return HTTP 400 with SGLang-aligned wording;
 2. prompt + max_tokens overflow returns HTTP 400 with SGLang-aligned wording;
 3. decode hitting max_tokens returns HTTP 200 with finish_reason="length".
@@ -9,25 +9,24 @@ Starts a real text-only Qwen3-Omni server and verifies that:
 
 from __future__ import annotations
 
-import subprocess
 import sys
 
 import pytest
 import requests
 
-from sglang_omni.utils import find_available_port
-from tests.utils import (
-    disable_proxy,
-    server_log_file,
-    start_server_from_cmd,
-    stop_server,
+from tests.test_model.omni_router_utils import (
+    ManagedRouterHandle,
+    launch_managed_router,
 )
+from tests.utils import disable_proxy
 
 MODEL_PATH = "Qwen/Qwen3-Omni-30B-A3B-Instruct"
 MODEL_NAME = "qwen3-omni"
 THINKER_MAX_SEQ_LEN = 128
-STARTUP_TIMEOUT = 300
+ROUTER_WAIT_TIMEOUT = 180
 REQUEST_TIMEOUT = 120
+
+pytestmark = pytest.mark.benchmark
 
 
 def _post_chat(
@@ -42,30 +41,27 @@ def _post_chat(
 
 
 @pytest.fixture(scope="module")
-def server_process(tmp_path_factory: pytest.TempPathFactory):
-    port = find_available_port()
-    log_file = server_log_file(tmp_path_factory, "thinker_length_logs")
-    cmd = [
-        sys.executable,
-        "examples/run_qwen3_omni_server.py",
-        "--model-path",
-        MODEL_PATH,
-        "--model-name",
-        MODEL_NAME,
-        "--thinker-max-seq-len",
-        str(THINKER_MAX_SEQ_LEN),
-        "--port",
-        str(port),
-    ]
-    proc = start_server_from_cmd(cmd, log_file, port, timeout=STARTUP_TIMEOUT)
-    proc.port = port
-    yield proc
-    stop_server(proc)
+def router_server(tmp_path_factory: pytest.TempPathFactory):
+    worker_extra_args = (
+        "--config examples/configs/qwen3_omni_colocated_h20.yaml "
+        "--colocate "
+        f"--stages.0.factory-args.thinker-max-seq-len {THINKER_MAX_SEQ_LEN} "
+        f"--stages.4.factory-args.thinker-max-seq-len {THINKER_MAX_SEQ_LEN}"
+    )
+    with launch_managed_router(
+        tmp_path_factory=tmp_path_factory,
+        model_path=MODEL_PATH,
+        model_name=MODEL_NAME,
+        worker_extra_args=worker_extra_args,
+        wait_timeout=ROUTER_WAIT_TIMEOUT,
+        log_prefix="thinker_length_router_logs",
+    ) as router:
+        yield router
 
 
-def test_overlong_prompt_returns_400(server_process: subprocess.Popen) -> None:
+def test_overlong_prompt_returns_400(router_server: ManagedRouterHandle) -> None:
     resp = _post_chat(
-        server_process.port,
+        router_server.port,
         {
             "model": MODEL_NAME,
             "messages": [
@@ -85,9 +81,9 @@ def test_overlong_prompt_returns_400(server_process: subprocess.Popen) -> None:
     assert "is longer than the model's context length" in body["detail"]
 
 
-def test_total_token_overflow_returns_400(server_process: subprocess.Popen) -> None:
+def test_total_token_overflow_returns_400(router_server: ManagedRouterHandle) -> None:
     resp = _post_chat(
-        server_process.port,
+        router_server.port,
         {
             "model": MODEL_NAME,
             "messages": [{"role": "user", "content": "hello"}],
@@ -104,9 +100,9 @@ def test_total_token_overflow_returns_400(server_process: subprocess.Popen) -> N
     )
 
 
-def test_length_finish_reason_is_preserved(server_process: subprocess.Popen) -> None:
+def test_length_finish_reason_is_preserved(router_server: ManagedRouterHandle) -> None:
     resp = _post_chat(
-        server_process.port,
+        router_server.port,
         {
             "model": MODEL_NAME,
             "messages": [
@@ -115,7 +111,7 @@ def test_length_finish_reason_is_preserved(server_process: subprocess.Popen) -> 
                     "content": "Count from 1 to 20, separated by commas.",
                 }
             ],
-            "max_tokens": 2,
+            "max_tokens": 1,
             "stream": False,
         },
     )

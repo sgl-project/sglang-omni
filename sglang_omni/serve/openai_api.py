@@ -280,6 +280,8 @@ async def _chat_stream(
         audio_format=audio_format,
     ):
         # Capture finish info for the dedicated finish chunk after the loop.
+        # Some pipelines only emit a final aggregate chunk; do not drop its
+        # text/audio just because it already carries a finish reason.
         if chunk.finish_reason is not None:
             finish_reason = chunk.finish_reason
             if chunk.usage is not None:
@@ -288,7 +290,17 @@ async def _chat_stream(
                     completion_tokens=chunk.usage.completion_tokens or 0,
                     total_tokens=chunk.usage.total_tokens or 0,
                 )
-            continue
+            has_payload = (
+                chunk.modality == "text"
+                and bool(chunk.text)
+                and "text" in requested_modalities
+            ) or (
+                chunk.modality == "audio"
+                and chunk.audio_b64 is not None
+                and "audio" in requested_modalities
+            )
+            if not has_payload:
+                continue
 
         delta = ChatCompletionStreamDelta()
         emit = False
@@ -386,7 +398,7 @@ def _build_chat_generate_request(req: ChatCompletionRequest) -> GenerateRequest:
     messages = [Message(role=m.role, content=m.content) for m in req.messages]
 
     # Determine output modalities
-    output_modalities = req.modalities  # e.g. ["text", "audio"]
+    output_modalities = req.modalities or ["text"]  # e.g. ["text", "audio"]
 
     # Build per-stage sampling overrides
     stage_sampling: dict[str, SamplingParams] | None = None
@@ -481,7 +493,7 @@ def _register_speech(app: FastAPI) -> None:
 
         request_id = f"speech-{uuid.uuid4()}"
 
-        gen_req = _build_speech_generate_request(req, default_model)
+        gen_req = build_speech_generate_request(req, default_model)
         if req.stream:
             return StreamingResponse(
                 _speech_stream(
@@ -643,11 +655,23 @@ def _select_speech_audio_delta(
     return audio[emitted_samples:], total_samples
 
 
-def _build_speech_generate_request(
+def build_speech_generate_request(
     req: CreateSpeechRequest,
     default_model: str,
 ) -> GenerateRequest:
     """Convert a CreateSpeechRequest into a client GenerateRequest."""
+
+    generation_fields = (
+        "max_new_tokens",
+        "temperature",
+        "top_p",
+        "top_k",
+        "repetition_penalty",
+        "seed",
+    )
+    explicit_generation_params = sorted(
+        field for field in generation_fields if field in req.model_fields_set
+    )
 
     # Build TTS-specific parameters to pass through the pipeline
     tts_params: dict[str, Any] = {
@@ -655,6 +679,8 @@ def _build_speech_generate_request(
         "response_format": req.response_format,
         "speed": req.speed,
     }
+    if explicit_generation_params:
+        tts_params["explicit_generation_params"] = explicit_generation_params
     if req.task_type is not None:
         tts_params["task_type"] = req.task_type
     if req.language is not None:
@@ -682,6 +708,8 @@ def _build_speech_generate_request(
         sampling.top_k = req.top_k
     if req.repetition_penalty is not None:
         sampling.repetition_penalty = req.repetition_penalty
+    if req.seed is not None:
+        sampling.seed = req.seed
 
     # Build prompt: plain string if no references, dict otherwise
     prompt: Any = req.input
@@ -713,3 +741,6 @@ def _build_speech_generate_request(
             "tts_params": tts_params,
         },
     )
+
+
+_build_speech_generate_request = build_speech_generate_request
