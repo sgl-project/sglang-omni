@@ -210,6 +210,53 @@ def test_hop_breakdown_pairs_stream_chunks_by_id(tmp_path: Path) -> None:
     assert r.count == 2
 
 
+def test_hop_breakdown_pairs_terminal_stream_chunks_to_coordinator(
+    tmp_path: Path,
+) -> None:
+    events = [
+        _ev(
+            "r1",
+            "decode",
+            "stage_stream_chunk_sent",
+            0,
+            to_stage="coordinator",
+            chunk_id=0,
+        ),
+        _ev(
+            "r1",
+            "decode",
+            "stage_stream_chunk_sent",
+            100_000,
+            to_stage="coordinator",
+            chunk_id=1,
+        ),
+        _ev(
+            "r1",
+            "coordinator",
+            "stage_stream_chunk_received",
+            1_000_000,
+            from_stage="decode",
+            chunk_id=0,
+        ),
+        _ev(
+            "r1",
+            "coordinator",
+            "stage_stream_chunk_received",
+            1_500_000,
+            from_stage="decode",
+            chunk_id=1,
+        ),
+    ]
+    _write_events(tmp_path / "events_x.jsonl", events)
+    rows = hop_breakdown(source=tmp_path)
+    assert len(rows) == 1
+    r = rows[0]
+    assert r.src_stage == "decode"
+    assert r.dst_stage == "coordinator"
+    assert r.kind == "stream_chunk"
+    assert r.count == 2
+
+
 def test_stage_breakdown_covers_preprocess_encoder_and_prefill(
     tmp_path: Path,
 ) -> None:
@@ -303,6 +350,32 @@ def test_stage_breakdown_emits_both_intervals_sharing_opener(
     )
     assert by_key[first_emit_key].total_ms == 3.0
     assert by_key[first_chunk_key].total_ms == 7.0
+
+
+def test_stage_breakdown_uses_prefill_start_not_queue_enter(
+    tmp_path: Path,
+) -> None:
+    events = [
+        _ev("r1", "thinker", "scheduler_queue_enter", 0),
+        _ev("r1", "thinker", "scheduler_prefill_start", 5_000_000),
+        _ev("r1", "thinker", "scheduler_first_emit", 7_000_000),
+        _ev("r1", "thinker", "stage_first_stream_chunk_sent", 10_000_000),
+    ]
+    _write_events(tmp_path / "events_x.jsonl", events)
+    rows = stage_breakdown(source=tmp_path)
+    by_key = {(r.stage, r.interval_name): r for r in rows}
+
+    assert (
+        by_key[("thinker", "scheduler_prefill_start->scheduler_first_emit")].total_ms
+        == 2.0
+    )
+    assert (
+        by_key[
+            ("thinker", "scheduler_prefill_start->stage_first_stream_chunk_sent")
+        ].total_ms
+        == 5.0
+    )
+    assert all("scheduler_queue_enter->" not in r.interval_name for r in rows)
 
 
 def test_build_report_returns_all_three_views(tmp_path: Path) -> None:

@@ -152,6 +152,7 @@ def test_omni_scheduler_run_batch_failure_emits_error_and_aborts() -> None:
     scheduler._abort_callback = None
     scheduler.waiting_queue = []
     scheduler.last_batch = None
+    scheduler._prefill_start_done = set()
 
     batch = SimpleNamespace(
         reqs=[
@@ -176,6 +177,50 @@ def test_omni_scheduler_run_batch_failure_emits_error_and_aborts() -> None:
     assert scheduler._pending_stream_chunks == {}
     assert scheduler._pending_stream_done == set()
     assert scheduler._deferred_request_payloads == {}
+
+
+def test_omni_scheduler_distinguishes_queue_enter_from_prefill_start(
+    monkeypatch,
+) -> None:
+    """Queueing a built request must not report actual prefill execution."""
+    events: list[dict] = []
+    monkeypatch.setattr(
+        "sglang_omni.scheduling.omni_scheduler._emit_event",
+        lambda **kwargs: events.append(kwargs),
+    )
+    scheduler = object.__new__(OmniScheduler)
+    scheduler.outbox = Queue()
+    scheduler.waiting_queue = []
+    scheduler._pending_stream_chunks = {}
+    scheduler._pending_stream_done = set()
+    scheduler._deferred_request_payloads = {}
+    scheduler._aborted_request_ids = set()
+    scheduler._prefill_start_done = set()
+    scheduler.max_req_len = 16
+    scheduler.max_req_input_len = 16
+
+    req = SimpleNamespace(
+        rid="req-delayed",
+        origin_input_ids=[1, 2, 3],
+        sampling_params=SimpleNamespace(max_new_tokens=1),
+        output_ids=[],
+    )
+    scheduler._request_builder = lambda payload: SimpleNamespace(req=req)
+
+    scheduler.process_input_requests([SimpleNamespace(request_id="req-delayed")])
+
+    names = [event["event_name"] for event in events]
+    assert "scheduler_queue_enter" in names
+    assert "scheduler_prefill_start" not in names
+    assert scheduler.waiting_queue == [req]
+
+    batch = SimpleNamespace(reqs=[req], is_prefill_only=True)
+    scheduler._emit_prefill_start_for_batch(batch)
+    scheduler._emit_prefill_start_for_batch(batch)
+
+    names = [event["event_name"] for event in events]
+    assert names.count("scheduler_prefill_start") == 1
+    assert names.index("scheduler_queue_enter") < names.index("scheduler_prefill_start")
 
 
 def test_omni_scheduler_initializes_upstream_queue_limit(monkeypatch) -> None:

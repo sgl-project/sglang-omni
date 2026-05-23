@@ -301,6 +301,7 @@ class OmniScheduler:
         self._pending_stream_done: set[str] = set()
         self._deferred_request_payloads: dict[str, Any] = {}
         self._first_emit_done: set[str] = set()
+        self._prefill_start_done: set[str] = set()
 
     def _init_upstream_compat_flags(self, server_args: Any) -> None:
         self.enable_hisparse = bool(getattr(server_args, "enable_hisparse", False))
@@ -504,7 +505,7 @@ class OmniScheduler:
             _emit_event(
                 request_id=req_id,
                 stage=None,
-                event_name="scheduler_prefill_start",
+                event_name="scheduler_queue_enter",
             )
             self.waiting_queue.append(req)
 
@@ -588,6 +589,7 @@ class OmniScheduler:
         ``ModelRunnerOutput``.  The upstream ``process_batch_result`` expects
         a ``GenerationBatchResult``.  We bridge the two formats here.
         """
+        self._emit_prefill_start_for_batch(batch)
         if self._model_runner is not None:
             from sglang.srt.managers.scheduler import GenerationBatchResult
 
@@ -651,6 +653,24 @@ class OmniScheduler:
                 )
             self.abort(req.rid)
 
+    def _emit_prefill_start_for_batch(self, batch: Any) -> None:
+        """Emit once when a request's first executable batch is selected."""
+        metadata = {}
+        for attr in ("is_prefill_only", "is_extend_in_batch"):
+            if hasattr(batch, attr):
+                metadata[attr] = bool(getattr(batch, attr))
+        for req in getattr(batch, "reqs", []) or []:
+            rid = req.rid
+            if rid in self._prefill_start_done:
+                continue
+            self._prefill_start_done.add(rid)
+            _emit_event(
+                request_id=rid,
+                stage=None,
+                event_name="scheduler_prefill_start",
+                metadata=metadata,
+            )
+
     def stream_output(self, reqs, return_logprob=False, skip_req=None):
         """Intercept finished requests and emit to outbox.
 
@@ -681,6 +701,7 @@ class OmniScheduler:
             data.decode_input_embeds = None
 
             self._first_emit_done.discard(rid)
+            self._prefill_start_done.discard(rid)
             self.outbox.put(
                 OutgoingMessage(
                     request_id=rid,
@@ -733,6 +754,7 @@ class OmniScheduler:
         self._pending_stream_done.discard(request_id)
         self._deferred_request_payloads.pop(request_id, None)
         self._first_emit_done.discard(request_id)
+        self._prefill_start_done.discard(request_id)
         self.waiting_queue = [
             req for req in self.waiting_queue if req.rid != request_id
         ]

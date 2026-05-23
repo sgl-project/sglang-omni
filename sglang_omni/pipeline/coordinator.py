@@ -404,7 +404,21 @@ class Coordinator:
             request_id=request_id,
             stage="coordinator",
             event_name="coordinator_stream_received",
-            metadata={"from_stage": msg.from_stage, "modality": msg.modality},
+            metadata={
+                "from_stage": msg.from_stage,
+                "chunk_id": msg.chunk_id,
+                "modality": msg.modality,
+            },
+        )
+        _emit_event(
+            request_id=request_id,
+            stage="coordinator",
+            event_name="stage_stream_chunk_received",
+            metadata={
+                "from_stage": msg.from_stage,
+                "chunk_id": msg.chunk_id,
+                "modality": msg.modality,
+            },
         )
         await self._stream_queues[request_id].put(msg)
 

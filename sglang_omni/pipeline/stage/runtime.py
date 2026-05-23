@@ -317,12 +317,6 @@ class Stage:
             await self._discard_stream_chunk_data(msg)
             return
         self._active_requests.add(request_id)
-        _emit_event(
-            request_id=request_id,
-            stage=self.name,
-            event_name="stage_stream_chunk_received",
-            metadata={"from_stage": msg.from_stage, "chunk_id": msg.chunk_id},
-        )
 
         # Same-GPU CUDA IPC
         if isinstance(msg.shm_metadata, dict) and msg.shm_metadata.get("_ipc"):
@@ -339,6 +333,7 @@ class Stage:
                 return
             if request_id in self._aborted:
                 return
+            self._emit_stream_chunk_received(msg)
             await self._route_stream_item_or_fail(request_id, item)
             return
 
@@ -366,7 +361,16 @@ class Stage:
             from_stage=msg.from_stage,
             metadata=metadata,
         )
+        self._emit_stream_chunk_received(msg)
         await self._route_stream_item_or_fail(request_id, item)
+
+    def _emit_stream_chunk_received(self, msg: DataReadyMessage) -> None:
+        _emit_event(
+            request_id=msg.request_id,
+            stage=self.name,
+            event_name="stage_stream_chunk_received",
+            metadata={"from_stage": msg.from_stage, "chunk_id": msg.chunk_id},
+        )
 
     async def _route_stream_item_or_fail(
         self, request_id: str, item: StreamItem
@@ -777,12 +781,16 @@ class Stage:
         modality = metadata.get("modality") if isinstance(metadata, dict) else None
         if modality is None and isinstance(data, dict):
             modality = data.get("modality")
+        key = (request_id, "coordinator")
+        chunk_id = self._stream_chunk_counters.get(key, 0)
+        self._stream_chunk_counters[key] = chunk_id + 1
         msg = StreamMessage(
             request_id=request_id,
             from_stage=self.name,
             chunk=data,
             stage_name=self.name,
             modality=modality,
+            chunk_id=chunk_id,
         )
         if request_id not in self._first_stream_chunk_seen:
             self._first_stream_chunk_seen.add(request_id)
@@ -790,13 +798,21 @@ class Stage:
                 request_id=request_id,
                 stage=self.name,
                 event_name="stage_first_stream_chunk_sent",
-                metadata={"to_stage": "coordinator", "modality": modality},
+                metadata={
+                    "to_stage": "coordinator",
+                    "chunk_id": chunk_id,
+                    "modality": modality,
+                },
             )
         _emit_event(
             request_id=request_id,
             stage=self.name,
             event_name="stage_stream_chunk_sent",
-            metadata={"to_stage": "coordinator", "modality": modality},
+            metadata={
+                "to_stage": "coordinator",
+                "chunk_id": chunk_id,
+                "modality": modality,
+            },
         )
         await self.control_plane.send_stream(msg)
 

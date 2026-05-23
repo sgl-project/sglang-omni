@@ -179,9 +179,10 @@ class StreamMessage:
     stage_id: int | None = None
     stage_name: str | None = None
     modality: str | None = None
+    chunk_id: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        d = {
             "type": "stream",
             "request_id": self.request_id,
             "from_stage": self.from_stage,
@@ -190,6 +191,9 @@ class StreamMessage:
             "stage_name": self.stage_name,
             "modality": self.modality,
         }
+        if self.chunk_id is not None:
+            d["chunk_id"] = self.chunk_id
+        return d
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "StreamMessage":
@@ -200,6 +204,7 @@ class StreamMessage:
             stage_id=d.get("stage_id"),
             stage_name=d.get("stage_name"),
             modality=d.get("modality"),
+            chunk_id=d.get("chunk_id"),
         )
 
 

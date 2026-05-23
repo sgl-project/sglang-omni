@@ -15,7 +15,7 @@ from sglang_omni.config.schema import StageConfig
 from sglang_omni.models.fishaudio_s2_pro.config import S2ProPipelineConfig
 from sglang_omni.pipeline import relay_io
 from sglang_omni.pipeline.stage.runtime import Stage
-from sglang_omni.pipeline.stage.stream_queue import StreamQueue
+from sglang_omni.pipeline.stage.stream_queue import StreamItem, StreamQueue
 from sglang_omni.proto import DataReadyMessage, OmniRequest, StagePayload
 from sglang_omni.scheduling.messages import OutgoingMessage
 
@@ -118,15 +118,23 @@ def test_terminal_scheduler_stream_routes_to_coordinator() -> None:
                 data={"audio_data": [0.1], "modality": "audio"},
             )
         )
+        scheduler.outbox.put(
+            OutgoingMessage(
+                request_id="req",
+                type="stream",
+                data={"audio_data": [0.2], "modality": "audio"},
+            )
+        )
 
         await stage._drain_outbox_external()
 
-        assert len(control_plane.streams) == 1
+        assert len(control_plane.streams) == 2
         msg = control_plane.streams[0]
         assert msg.request_id == "req"
         assert msg.from_stage == "vocoder"
         assert msg.chunk == {"audio_data": [0.1], "modality": "audio"}
         assert msg.modality == "audio"
+        assert [msg.chunk_id for msg in control_plane.streams] == [0, 1]
 
     asyncio.run(_run())
 
@@ -358,6 +366,110 @@ def test_stage_routes_pre_payload_stream_events_for_capable_receiver() -> None:
         assert payload_msg.data.data == {"ready": True}
 
     asyncio.run(_run())
+
+
+def test_stage_stream_chunk_received_after_ipc_materialization(monkeypatch) -> None:
+    """The paired receive event marks scheduler-ready chunks, not control arrival."""
+    order: list[str] = []
+
+    def fake_deserialize(msg):
+        order.append("deserialized")
+        return StreamItem(
+            chunk_id=msg.chunk_id,
+            data="chunk",
+            from_stage=msg.from_stage,
+            metadata=None,
+        )
+
+    async def fake_route(self, request_id, item):
+        del self, request_id, item
+        order.append("routed")
+
+    monkeypatch.setattr(Stage, "_deserialize_ipc_chunk", staticmethod(fake_deserialize))
+    monkeypatch.setattr(Stage, "_route_stream_item_or_fail", fake_route)
+    monkeypatch.setattr(
+        "sglang_omni.pipeline.stage.runtime._emit_event",
+        lambda **kwargs: order.append(kwargs["event_name"]),
+    )
+
+    async def _run() -> None:
+        stage = Stage(
+            name="vocoder",
+            role="single",
+            get_next=lambda request_id, output: None,
+            gpu_id=None,
+            endpoints={},
+            control_plane=_FakeControlPlane(),
+            relay=_FakeRelay(),
+            scheduler=SimpleNamespace(outbox=queue.Queue()),
+            can_accept_stream_before_payload=True,
+        )
+        await stage._on_stream_chunk(
+            DataReadyMessage(
+                request_id="req",
+                from_stage="tts_engine",
+                to_stage="vocoder",
+                shm_metadata={"_ipc": True, "tensor_bytes": b"unused"},
+                chunk_id=0,
+            )
+        )
+
+    asyncio.run(_run())
+
+    assert order == ["deserialized", "stage_stream_chunk_received", "routed"]
+
+
+def test_stage_stream_chunk_received_after_relay_materialization(monkeypatch) -> None:
+    """Cross-GPU chunks emit receive only after relay data and metadata are restored."""
+    order: list[str] = []
+
+    async def fake_read_blob(relay, key, metadata):
+        del relay, key, metadata
+        order.append("blob")
+        return "chunk"
+
+    async def fake_read_metadata(self, shm_metadata, blob_key):
+        del self, shm_metadata, blob_key
+        order.append("metadata")
+        return {"modality": "audio_codes"}
+
+    async def fake_route(self, request_id, item):
+        del self, request_id, item
+        order.append("routed")
+
+    monkeypatch.setattr(relay_io, "read_blob", fake_read_blob)
+    monkeypatch.setattr(Stage, "_read_chunk_metadata", fake_read_metadata)
+    monkeypatch.setattr(Stage, "_route_stream_item_or_fail", fake_route)
+    monkeypatch.setattr(
+        "sglang_omni.pipeline.stage.runtime._emit_event",
+        lambda **kwargs: order.append(kwargs["event_name"]),
+    )
+
+    async def _run() -> None:
+        stage = Stage(
+            name="vocoder",
+            role="single",
+            get_next=lambda request_id, output: None,
+            gpu_id=None,
+            endpoints={},
+            control_plane=_FakeControlPlane(),
+            relay=_FakeRelay(),
+            scheduler=SimpleNamespace(outbox=queue.Queue()),
+            can_accept_stream_before_payload=True,
+        )
+        await stage._on_stream_chunk(
+            DataReadyMessage(
+                request_id="req",
+                from_stage="tts_engine",
+                to_stage="vocoder",
+                shm_metadata={"relay_info": {}},
+                chunk_id=0,
+            )
+        )
+
+    asyncio.run(_run())
+
+    assert order == ["blob", "metadata", "stage_stream_chunk_received", "routed"]
 
 
 def test_stage_stream_error_fails_request_even_with_stream_queue() -> None:

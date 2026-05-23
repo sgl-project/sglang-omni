@@ -43,7 +43,9 @@ identifies the owner. The views layer merges files from every process by
 The recorder always attaches the active `stage` name to every event, so the
 same `scheduler_prefill_start` becomes "thinker prefill start" when emitted
 from the thinker process and "talker prefill start" when emitted from the
-talker process.
+talker process. `scheduler_queue_enter` marks a built request entering the
+scheduler queue; `scheduler_prefill_start` is emitted later, when the request's
+first executable prefill / extend batch is selected.
 
 | Pipeline milestone | Concrete event | Source |
 |---|---|---|
@@ -51,7 +53,7 @@ talker process.
 | Preprocessing start / end | `preprocess_start` / `preprocess_end` | model preprocessor `__call__` |
 | Encoder start / end | `encoder_start` / `encoder_end` (metadata `modality`, `batch_size`) | image / audio encoder executors |
 | Aggregate ready | `stage_aggregate_ready` | `Stage._on_data_ready` after `InputHandler.receive` returns a merged payload |
-| Thinker prefill start | `scheduler_prefill_start` (stage = thinker) | `OmniScheduler.process_input_requests` |
+| Thinker prefill start | `scheduler_prefill_start` (stage = thinker) | `OmniScheduler.run_batch` |
 | Thinker first token | `stage_first_stream_chunk_sent` (stage = thinker) | `Stage._send_stream_to_target` / `_send_stream_to_coordinator` |
 | First stream chunk to client | `stage_first_stream_chunk_sent` (terminal stage → coordinator) | same |
 | Talker request build start / end | `scheduler_request_build_start` / `_end` (stage = talker) | `OmniScheduler.process_input_requests` |
@@ -70,7 +72,8 @@ Supporting events used for finer-grained breakdown:
 | Stage | `stage_complete` | Scheduler result routed onward (metadata `terminal`, `next`) |
 | Stage | `stage_hop_sent` | Payload `DataReadyMessage` sent to next stage |
 | Stage | `stage_stream_chunk_sent` | Each stream chunk (metadata `to_stage`, `chunk_id`, `modality`) |
-| Stage | `stage_stream_chunk_received` | Each stream chunk received |
+| Stage | `stage_stream_chunk_received` | Each stream chunk materialized and ready for the receiver scheduler, including coordinator terminal chunks |
+| AR scheduler | `scheduler_queue_enter` | Built request entered the scheduler queue |
 | AR scheduler | `scheduler_first_emit` | First `stream_output_builder` emission per request |
 
 Custom callsites can call `sglang_omni.profiler.event_recorder.emit(...)` to
@@ -165,7 +168,8 @@ stream:
    not consume the opener of pair B.
 3. **Hop breakdown** — `stage_hop_sent` / `stage_input_received` and
    `stage_stream_chunk_sent` / `stage_stream_chunk_received` durations per
-   (source, destination, kind).
+   (source, destination, kind). Terminal stage stream chunks are paired the
+   same way with destination `coordinator`.
 
 Hop pairs match across processes by `(request_id, source_stage, dest_stage,
 chunk_id?)`, so a single request's path through subprocesses can be

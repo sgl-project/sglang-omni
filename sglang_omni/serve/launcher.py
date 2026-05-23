@@ -177,21 +177,32 @@ def _mount_profiler_routes(
     @router.post("/start_profile")
     async def start(req: StartReq):
         run_id = req.run_id or _default_run_id()
-        if req.trace_path_template is not None:
-            tpl = req.trace_path_template
-        elif profiler_dir is not None:
-            tpl = _default_template(profiler_dir, run_id)
-        else:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "trace_path_template is required when "
-                    "SGLANG_TORCH_PROFILER_DIR is not set"
-                ),
-            )
         event_dir = req.event_dir
         if event_dir is None and profiler_dir is not None:
             event_dir = _default_event_dir(profiler_dir, run_id)
+        if req.enable_torch:
+            if req.trace_path_template is not None:
+                tpl = req.trace_path_template
+            elif profiler_dir is not None:
+                tpl = _default_template(profiler_dir, run_id)
+            else:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "trace_path_template is required when "
+                        "SGLANG_TORCH_PROFILER_DIR is not set"
+                    ),
+                )
+        else:
+            if event_dir is None:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "event_dir is required when enable_torch=false and "
+                        "SGLANG_TORCH_PROFILER_DIR is not set"
+                    ),
+                )
+            tpl = req.trace_path_template or ""
         if event_dir is not None:
             try:
                 _get_event_recorder().start(
