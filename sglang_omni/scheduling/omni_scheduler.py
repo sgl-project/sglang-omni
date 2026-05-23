@@ -27,6 +27,7 @@ from sglang.srt.managers.scheduler import Scheduler as _Upstream
 from sglang.srt.managers.scheduler import validate_input_length
 from sglang.srt.utils import broadcast_pyobj
 
+from sglang_omni.profiler.event_recorder import emit as _emit_event
 from sglang_omni.scheduling.messages import IncomingMessage, OutgoingMessage
 
 logger = logging.getLogger(__name__)
@@ -299,6 +300,7 @@ class OmniScheduler:
         self._pending_stream_chunks: dict[str, list[Any]] = {}
         self._pending_stream_done: set[str] = set()
         self._deferred_request_payloads: dict[str, Any] = {}
+        self._first_emit_done: set[str] = set()
 
     def _init_upstream_compat_flags(self, server_args: Any) -> None:
         self.enable_hisparse = bool(getattr(server_args, "enable_hisparse", False))
@@ -446,6 +448,11 @@ class OmniScheduler:
             ):
                 self._deferred_request_payloads[req_id] = payload
                 continue
+            _emit_event(
+                request_id=req_id,
+                stage=None,
+                event_name="scheduler_request_build_start",
+            )
             try:
                 req_data = self._request_builder(payload)
             except Exception as exc:
@@ -462,6 +469,11 @@ class OmniScheduler:
             req = req_data.req
             req._omni_data = req_data
             req_id = req.rid
+            _emit_event(
+                request_id=req_id,
+                stage=None,
+                event_name="scheduler_request_build_end",
+            )
             if bool(getattr(req_data, "enforce_request_limits", False)):
                 error_msg = self._prepare_request_limits(req_data)
                 if error_msg:
@@ -489,6 +501,11 @@ class OmniScheduler:
             self._initialize_request_stream_state(req_data, payload)
             if req_id in self._aborted_request_ids:
                 continue
+            _emit_event(
+                request_id=req_id,
+                stage=None,
+                event_name="scheduler_prefill_start",
+            )
             self.waiting_queue.append(req)
 
     def _prepare_request_limits(self, req_data: Any) -> str | None:
@@ -588,12 +605,23 @@ class OmniScheduler:
 
             if self._stream_output_builder is not None:
                 for sched_req in sched_output.requests:
-                    req_output = mr_output.outputs[sched_req.request_id]
+                    rid = sched_req.request_id
+                    req_output = mr_output.outputs[rid]
+                    emitted_any = False
                     for msg in self._stream_output_builder(
-                        sched_req.request_id,
+                        rid,
                         sched_req.data,
                         req_output,
                     ):
+                        if not emitted_any:
+                            if rid not in self._first_emit_done:
+                                self._first_emit_done.add(rid)
+                                _emit_event(
+                                    request_id=rid,
+                                    stage=None,
+                                    event_name="scheduler_first_emit",
+                                )
+                            emitted_any = True
                         self.outbox.put(msg)
 
             # Convert ModelRunnerOutput → GenerationBatchResult
@@ -652,6 +680,7 @@ class OmniScheduler:
             data.prefill_input_embeds = None
             data.decode_input_embeds = None
 
+            self._first_emit_done.discard(rid)
             self.outbox.put(
                 OutgoingMessage(
                     request_id=rid,
@@ -703,6 +732,7 @@ class OmniScheduler:
         self._pending_stream_chunks.pop(request_id, None)
         self._pending_stream_done.discard(request_id)
         self._deferred_request_payloads.pop(request_id, None)
+        self._first_emit_done.discard(request_id)
         self.waiting_queue = [
             req for req in self.waiting_queue if req.rid != request_id
         ]

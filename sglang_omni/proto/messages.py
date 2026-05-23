@@ -242,12 +242,16 @@ class ProfilerStartMessage:
 
     run_id: str
     trace_path_template: str  # e.g. "/tmp/profiles/{run_id}/{stage}/trace"
+    event_dir: str | None = None  # Per-stage JSONL event sink dir for request profiling
+    enable_torch: bool = True  # When False, only request-level events are captured
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "type": "profiler_start",
             "run_id": self.run_id,
             "trace_path_template": self.trace_path_template,
+            "event_dir": self.event_dir,
+            "enable_torch": self.enable_torch,
         }
 
     @classmethod
@@ -255,6 +259,8 @@ class ProfilerStartMessage:
         return cls(
             run_id=d["run_id"],
             trace_path_template=d["trace_path_template"],
+            event_dir=d.get("event_dir"),
+            enable_torch=bool(d.get("enable_torch", True)),
         )
 
 

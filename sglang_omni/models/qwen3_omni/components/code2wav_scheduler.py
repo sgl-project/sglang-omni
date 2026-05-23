@@ -13,6 +13,7 @@ from typing import Any
 import numpy as np
 import torch
 
+from sglang_omni.profiler.event_recorder import emit as _emit_event
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.messages import IncomingMessage, OutgoingMessage
 
@@ -237,7 +238,15 @@ class Code2WavScheduler:
         audio = self._decode_incremental(request_id, chunks, start, end)
         self._emitted[request_id] = end
         if audio.size > 0:
+            is_first = not self._audio_chunks[request_id]
             self._audio_chunks[request_id].append(audio)
+            if is_first:
+                _emit_event(
+                    request_id=request_id,
+                    stage=None,
+                    event_name="code2wav_first_audio",
+                    metadata={"samples": int(audio.shape[0])},
+                )
             if self._stream_enabled.get(request_id, True):
                 self.outbox.put(
                     OutgoingMessage(

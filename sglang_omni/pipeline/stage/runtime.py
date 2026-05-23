@@ -20,6 +20,8 @@ from sglang_omni.pipeline import relay_io
 from sglang_omni.pipeline.stage.input import DirectInput, InputHandler
 from sglang_omni.pipeline.stage.stream_queue import StreamItem, StreamQueue
 from sglang_omni.pipeline.tp_control import TPLeaderFanout
+from sglang_omni.profiler.event_recorder import emit as _emit_event
+from sglang_omni.profiler.event_recorder import get_recorder as _get_recorder
 from sglang_omni.profiler.torch_profiler import TorchProfiler
 from sglang_omni.proto import (
     CompleteMessage,
@@ -251,6 +253,12 @@ class Stage:
         self._active_requests.add(request_id)
         if self._stream_queue is not None and not self._stream_queue.has(request_id):
             self._stream_queue.open(request_id)
+        _emit_event(
+            request_id=request_id,
+            stage=self.name,
+            event_name="stage_input_received",
+            metadata={"from_stage": "coordinator", "kind": "submit"},
+        )
 
         payload = msg.data  # StagePayload from coordinator
         await self._execute(payload)
@@ -280,9 +288,21 @@ class Stage:
         if request_id in self._aborted:
             return
 
+        _emit_event(
+            request_id=request_id,
+            stage=self.name,
+            event_name="stage_input_received",
+            metadata={"from_stage": msg.from_stage, "kind": "payload"},
+        )
         # Input aggregation
         merged = self.input_handler.receive(request_id, msg.from_stage, payload)
         if merged is not None:
+            _emit_event(
+                request_id=request_id,
+                stage=self.name,
+                event_name="stage_aggregate_ready",
+                metadata={"from_stage": msg.from_stage},
+            )
             await self._execute(merged)
 
     async def _on_stream_chunk(self, msg: DataReadyMessage) -> None:
@@ -291,6 +311,12 @@ class Stage:
             await self._discard_stream_chunk_data(msg)
             return
         self._active_requests.add(request_id)
+        _emit_event(
+            request_id=request_id,
+            stage=self.name,
+            event_name="stage_stream_chunk_received",
+            metadata={"from_stage": msg.from_stage, "chunk_id": msg.chunk_id},
+        )
 
         # Same-GPU CUDA IPC
         if isinstance(msg.shm_metadata, dict) and msg.shm_metadata.get("_ipc"):
@@ -508,6 +534,11 @@ class Stage:
 
     async def _execute(self, payload: Any) -> None:
         request_id = payload.request_id
+        _emit_event(
+            request_id=request_id,
+            stage=self.name,
+            event_name="stage_dispatch",
+        )
         self.scheduler.inbox.put(
             IncomingMessage(request_id=request_id, type="new_request", data=payload)
         )
@@ -614,6 +645,12 @@ class Stage:
         next_stages = self.get_next(request_id, result)
         if next_stages is None:
             # Terminal: notify coordinator
+            _emit_event(
+                request_id=request_id,
+                stage=self.name,
+                event_name="stage_complete",
+                metadata={"terminal": True},
+            )
             await self.control_plane.send_complete(
                 CompleteMessage(
                     request_id=request_id,
@@ -625,6 +662,12 @@ class Stage:
         else:
             if isinstance(next_stages, str):
                 next_stages = [next_stages]
+            _emit_event(
+                request_id=request_id,
+                stage=self.name,
+                event_name="stage_complete",
+                metadata={"terminal": False, "next": list(next_stages)},
+            )
             for target in next_stages:
                 await self._send_to_stage(request_id, target, result)
 
@@ -650,6 +693,12 @@ class Stage:
             to_stage=target,
             shm_metadata=metadata,
         )
+        _emit_event(
+            request_id=request_id,
+            stage=self.name,
+            event_name="stage_hop_sent",
+            metadata={"to_stage": target},
+        )
         await self.control_plane.send_to_stage(target, endpoint, msg)
         await op.wait_for_completion()
 
@@ -668,6 +717,18 @@ class Stage:
         key = (request_id, target)
         chunk_id = self._stream_chunk_counters.get(key, 0)
         self._stream_chunk_counters[key] = chunk_id + 1
+        _emit_event(
+            request_id=request_id,
+            stage=self.name,
+            event_name="stage_stream_chunk_sent",
+            metadata={
+                "to_stage": target,
+                "chunk_id": chunk_id,
+                "modality": (
+                    metadata.get("modality") if isinstance(metadata, dict) else None
+                ),
+            },
+        )
         await relay_io.send_stream_chunk(
             self.relay,
             self.control_plane,
@@ -707,6 +768,12 @@ class Stage:
             chunk=data,
             stage_name=self.name,
             modality=modality,
+        )
+        _emit_event(
+            request_id=request_id,
+            stage=self.name,
+            event_name="stage_stream_chunk_sent",
+            metadata={"to_stage": "coordinator", "modality": modality},
         )
         await self.control_plane.send_stream(msg)
 
@@ -785,15 +852,25 @@ class Stage:
         self.scheduler.abort(request_id)
 
     def _on_profiler_start(self, msg: ProfilerStartMessage) -> None:
-        if TorchProfiler.is_active():
-            return
         run_id = msg.run_id
-        base_tpl = msg.trace_path_template.format(run_id=run_id, stage=self.name)
-        template = f"{base_tpl}_pid{os.getpid()}"
-        prof_dir = os.environ.get("SGLANG_TORCH_PROFILER_DIR")
-        if prof_dir and not os.path.isabs(template):
-            template = os.path.join(prof_dir, template)
-        TorchProfiler.start(template, run_id=run_id)
+        if msg.enable_torch and not TorchProfiler.is_active():
+            base_tpl = msg.trace_path_template.format(run_id=run_id, stage=self.name)
+            template = f"{base_tpl}_pid{os.getpid()}"
+            prof_dir = os.environ.get("SGLANG_TORCH_PROFILER_DIR")
+            if prof_dir and not os.path.isabs(template):
+                template = os.path.join(prof_dir, template)
+            TorchProfiler.start(template, run_id=run_id)
+        if msg.event_dir is not None:
+            try:
+                _get_recorder().start(
+                    run_id=run_id, event_dir=msg.event_dir, stage=self.name
+                )
+            except Exception:
+                logger.warning(
+                    "Stage %s failed to start request event recorder",
+                    self.name,
+                    exc_info=True,
+                )
 
     def _on_profiler_stop(self, msg: ProfilerStopMessage) -> None:
         if (
@@ -801,6 +878,9 @@ class Stage:
             and TorchProfiler.get_active_run_id() == msg.run_id
         ):
             TorchProfiler.stop(run_id=msg.run_id)
+        recorder = _get_recorder()
+        if recorder.is_active() and recorder.active_run_id() == msg.run_id:
+            recorder.stop(run_id=msg.run_id)
 
     def _on_background_task_done(self, task: asyncio.Task, label: str) -> None:
         if task.cancelled():
