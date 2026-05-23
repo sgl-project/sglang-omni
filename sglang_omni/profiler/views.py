@@ -147,12 +147,14 @@ def reconstruct_timelines(
 # multiple stages.
 _STAGE_INTERVAL_EVENTS = (
     ("stage_input_received", "stage_complete"),
-    ("scheduler_dispatch_start", "scheduler_dispatch_end"),
     ("encoder_start", "encoder_end"),
     ("preprocess_start", "preprocess_end"),
-    ("talker_request_build_start", "talker_request_build_end"),
-    ("thinker_prefill_start", "thinker_first_token"),
-    ("talker_prefill_start", "first_code_chunk"),
+    ("scheduler_request_build_start", "scheduler_request_build_end"),
+    # prefill_start → first stream chunk sent gives us thinker/talker
+    # TTFT and TTFCC (time-to-first-code-chunk) automatically because
+    # both events live in the same per-rank scheduler process.
+    ("scheduler_prefill_start", "stage_first_stream_chunk_sent"),
+    ("scheduler_prefill_start", "scheduler_first_emit"),
 )
 
 

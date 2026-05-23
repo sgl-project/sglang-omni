@@ -128,6 +128,11 @@ class Stage:
         self._active_requests: set[str] = set()
         self._stream_queue: StreamQueue | None = None
         self._stream_chunk_counters: dict[tuple[str, str], int] = {}
+        # Per-request marker: have we already emitted the first stream-chunk
+        # event for this request from this stage? Used to derive request-level
+        # milestones (thinker first token, talker first code chunk, etc.)
+        # without coupling Stage to model-specific naming.
+        self._first_stream_chunk_seen: set[str] = set()
         self._scheduler_thread: threading.Thread | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._scheduler_crash_error: BaseException | None = None
@@ -717,6 +722,17 @@ class Stage:
         key = (request_id, target)
         chunk_id = self._stream_chunk_counters.get(key, 0)
         self._stream_chunk_counters[key] = chunk_id + 1
+        chunk_modality = (
+            metadata.get("modality") if isinstance(metadata, dict) else None
+        )
+        if request_id not in self._first_stream_chunk_seen:
+            self._first_stream_chunk_seen.add(request_id)
+            _emit_event(
+                request_id=request_id,
+                stage=self.name,
+                event_name="stage_first_stream_chunk_sent",
+                metadata={"to_stage": target, "modality": chunk_modality},
+            )
         _emit_event(
             request_id=request_id,
             stage=self.name,
@@ -724,9 +740,7 @@ class Stage:
             metadata={
                 "to_stage": target,
                 "chunk_id": chunk_id,
-                "modality": (
-                    metadata.get("modality") if isinstance(metadata, dict) else None
-                ),
+                "modality": chunk_modality,
             },
         )
         await relay_io.send_stream_chunk(
@@ -769,6 +783,14 @@ class Stage:
             stage_name=self.name,
             modality=modality,
         )
+        if request_id not in self._first_stream_chunk_seen:
+            self._first_stream_chunk_seen.add(request_id)
+            _emit_event(
+                request_id=request_id,
+                stage=self.name,
+                event_name="stage_first_stream_chunk_sent",
+                metadata={"to_stage": "coordinator", "modality": modality},
+            )
         _emit_event(
             request_id=request_id,
             stage=self.name,
@@ -802,6 +824,7 @@ class Stage:
         ]
         for key in stale_keys:
             self._stream_chunk_counters.pop(key, None)
+        self._first_stream_chunk_seen.discard(request_id)
 
     async def _handle_scheduler_crash(self, exc: BaseException) -> None:
         if self._scheduler_crash_error is not None:

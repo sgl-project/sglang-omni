@@ -210,6 +210,66 @@ def test_hop_breakdown_pairs_stream_chunks_by_id(tmp_path: Path) -> None:
     assert r.count == 2
 
 
+def test_stage_breakdown_covers_preprocess_encoder_and_prefill(
+    tmp_path: Path,
+) -> None:
+    """The required intervals for #501 must be wired into the views layer."""
+    events = [
+        _ev("r1", "preprocessor", "preprocess_start", 0),
+        _ev("r1", "preprocessor", "preprocess_end", 1_000_000),  # 1ms
+        _ev("r1", "audio_encoder", "encoder_start", 1_100_000, modality="audio"),
+        _ev("r1", "audio_encoder", "encoder_end", 6_100_000, modality="audio"),  # 5ms
+        _ev("r1", "thinker", "scheduler_prefill_start", 6_200_000),
+        _ev(
+            "r1",
+            "thinker",
+            "stage_first_stream_chunk_sent",
+            10_200_000,  # 4ms thinker TTFT
+            to_stage="talker",
+        ),
+        _ev("r1", "talker", "scheduler_request_build_start", 10_300_000),
+        _ev("r1", "talker", "scheduler_request_build_end", 10_700_000),  # 0.4ms
+        _ev("r1", "talker", "scheduler_prefill_start", 10_800_000),
+        _ev(
+            "r1",
+            "talker",
+            "stage_first_stream_chunk_sent",
+            14_800_000,  # 4ms first code chunk
+            to_stage="code2wav",
+        ),
+    ]
+    _write_events(tmp_path / "events_x.jsonl", events)
+    rows = stage_breakdown(source=tmp_path)
+    by_key = {(r.stage, r.interval_name): r for r in rows}
+
+    assert ("preprocessor", "preprocess_start->preprocess_end") in by_key
+    assert by_key[("preprocessor", "preprocess_start->preprocess_end")].total_ms == 1.0
+
+    assert ("audio_encoder", "encoder_start->encoder_end") in by_key
+    assert by_key[("audio_encoder", "encoder_start->encoder_end")].total_ms == 5.0
+
+    thinker_ttft_key = (
+        "thinker",
+        "scheduler_prefill_start->stage_first_stream_chunk_sent",
+    )
+    assert thinker_ttft_key in by_key
+    assert by_key[thinker_ttft_key].total_ms == 4.0
+
+    talker_build_key = (
+        "talker",
+        "scheduler_request_build_start->scheduler_request_build_end",
+    )
+    assert talker_build_key in by_key
+    assert abs(by_key[talker_build_key].total_ms - 0.4) < 1e-9
+
+    talker_ttfcc_key = (
+        "talker",
+        "scheduler_prefill_start->stage_first_stream_chunk_sent",
+    )
+    assert talker_ttfcc_key in by_key
+    assert by_key[talker_ttfcc_key].total_ms == 4.0
+
+
 def test_build_report_returns_all_three_views(tmp_path: Path) -> None:
     events = [
         _ev("r1", "coordinator", "request_admission", 0),

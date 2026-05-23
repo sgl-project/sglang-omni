@@ -32,22 +32,39 @@ can be merged transparently by passing the directory to the views layer.
 
 ### Standard event names
 
-| Layer | Event | Where it is emitted |
+The event taxonomy maps the high-level milestones laid out in issue #501 to
+concrete callsites. The recorder always attaches the active `stage` name to
+every event, so the same `scheduler_prefill_start` becomes "thinker prefill
+start" when emitted from the thinker process and "talker prefill start" when
+emitted from the talker process.
+
+| #501 milestone | Concrete event | Where |
 |---|---|---|
-| Coordinator | `request_admission` | `Coordinator._submit_request` |
-| Coordinator | `coordinator_stream_received` | `Coordinator._handle_stream` |
-| Coordinator | `terminal_response` | `Coordinator._handle_completion` |
-| Stage | `stage_input_received` | `Stage._on_submit` / `Stage._on_data_ready` |
-| Stage | `stage_aggregate_ready` | `Stage._on_data_ready` after `InputHandler.receive` returns a merged payload |
-| Stage | `stage_dispatch` | `Stage._execute` (scheduler inbox put) |
-| Stage | `stage_complete` | `Stage._route_result` |
-| Stage | `stage_hop_sent` | `Stage._send_to_stage` |
-| Stage | `stage_stream_chunk_sent` | `Stage._send_stream_to_target` / `_send_stream_to_coordinator` |
-| Stage | `stage_stream_chunk_received` | `Stage._on_stream_chunk` |
-| AR scheduler | `scheduler_request_build_start` / `_end` | `OmniScheduler.process_input_requests` |
-| AR scheduler | `scheduler_prefill_start` | `OmniScheduler.process_input_requests` |
-| AR scheduler | `scheduler_first_emit` | `OmniScheduler.run_batch` (first stream-output emit per request) |
-| Code2Wav | `code2wav_first_audio` | `Code2WavScheduler._decode_and_emit` (first non-empty audio chunk) |
+| request admission | `request_admission` | `Coordinator._submit_request` |
+| preprocessing start / end | `preprocess_start` / `preprocess_end` | `Qwen3OmniPreprocessor.__call__` |
+| encoder start / end | `encoder_start` / `encoder_end` (metadata `modality`, `batch_size`) | `create_image_encoder_executor`, `create_audio_encoder_executor` |
+| aggregate ready | `stage_aggregate_ready` | `Stage._on_data_ready` after `InputHandler.receive` returns a merged payload |
+| thinker prefill start | `scheduler_prefill_start` (stage=thinker) | `OmniScheduler.process_input_requests` |
+| thinker first token | `stage_first_stream_chunk_sent` (stage=thinker) | `Stage._send_stream_to_target` / `_send_stream_to_coordinator` |
+| first stream chunk sent | `stage_first_stream_chunk_sent` (terminal stage → coordinator) | same |
+| talker request build start / end | `scheduler_request_build_start` / `_end` (stage=talker) | `OmniScheduler.process_input_requests` |
+| talker prefill start | `scheduler_prefill_start` (stage=talker) | same |
+| first code chunk | `stage_first_stream_chunk_sent` (stage=talker) | `Stage._send_stream_to_target` |
+| code2wav first audio | `code2wav_first_audio` | `Code2WavScheduler._decode_and_emit` |
+| terminal response | `terminal_response` | `Coordinator._handle_completion` |
+
+Additional supporting events used for finer-grained breakdown:
+
+| Layer | Event | Notes |
+|---|---|---|
+| Coordinator | `coordinator_stream_received` | Each `StreamMessage` received on the coordinator |
+| Stage | `stage_input_received` | Submit or relay payload accepted (metadata `from_stage`) |
+| Stage | `stage_dispatch` | Scheduler inbox put |
+| Stage | `stage_complete` | Scheduler result routed onward (metadata `terminal`, `next`) |
+| Stage | `stage_hop_sent` | Payload `DataReadyMessage` sent to next stage |
+| Stage | `stage_stream_chunk_sent` | Each stream chunk (metadata `to_stage`, `chunk_id`, `modality`) |
+| Stage | `stage_stream_chunk_received` | Each stream chunk received |
+| AR scheduler | `scheduler_first_emit` | First `stream_output_builder` emission per request |
 
 Custom callsites can call `sglang_omni.profiler.event_recorder.emit(...)` to add
 domain-specific events — for example, model-specific preprocess timings or
