@@ -1,7 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Parity + CG-capture tests for batched_step. Sampling parity is at
-greedy temp only (per-row and batched multinomials draw in different
-orders); state-machine parity is exact.
+"""Parity + CG-capture tests for batched_step.
+
+Sampling parity uses ``top_k=1`` to force greedy choices; stochastic
+multinomial parity is not asserted because per-row and batched modes draw
+in different orders. State-machine parity is exact.
 """
 
 from __future__ import annotations
