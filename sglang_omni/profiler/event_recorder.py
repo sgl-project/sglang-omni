@@ -13,6 +13,7 @@ without circular-import risk.
 
 from __future__ import annotations
 
+import contextvars
 import json
 import logging
 import os
@@ -23,6 +24,70 @@ from pathlib import Path
 from typing import Any, Mapping
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Active-stage attribution
+# ---------------------------------------------------------------------------
+#
+# When multiple stages live in the same OS process (the declarative topology
+# does this for co-located ``role="single"`` stages), the recorder keeps ONE
+# file per process and the per-event ``stage`` field is the source of truth.
+# Most callsites pass ``stage=self.name`` explicitly, but library code that
+# can't easily plumb the stage name down (preprocessors, encoder callables,
+# OmniScheduler internals) calls ``emit(stage=None)`` and expects the
+# recorder to fill it in.
+#
+# A process-global fallback (the recorder's ``_stage``) is wrong: in a shared
+# process it's whichever stage called ``start()`` first, so every event from
+# every co-located stage would get that one name.
+#
+# Instead we expose a per-thread / per-task active stage. Stage's scheduler
+# thread sets it before invoking ``scheduler.start()``; emits in that thread
+# (and in any ``asyncio.to_thread`` / ``loop.run_in_executor`` descendants
+# that copy the context) see the correct stage name. Explicit ``stage=`` on
+# emit always wins.
+
+_thread_active_stage = threading.local()
+_active_stage_cv: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "sglang_omni_active_stage", default=None
+)
+
+
+def set_active_stage(stage: str | None) -> contextvars.Token | None:
+    """Bind ``stage`` as the active stage for the current thread / task.
+
+    Returns a ``contextvars.Token`` that ``reset_active_stage`` can use to
+    restore the previous value, or ``None`` if no contextvar binding was
+    performed (e.g. when ``stage`` is ``None`` and clearing was requested).
+
+    Sets BOTH a ``threading.local`` slot (for plain-thread callsites that
+    don't propagate contextvars) AND the contextvar (for asyncio /
+    ``run_in_executor`` callsites that copy context).
+    """
+    _thread_active_stage.stage = stage
+    return _active_stage_cv.set(stage)
+
+
+def reset_active_stage(token: contextvars.Token | None) -> None:
+    """Reverse a prior :func:`set_active_stage` call."""
+    if token is not None:
+        _active_stage_cv.reset(token)
+    _thread_active_stage.stage = None
+
+
+def get_active_stage() -> str | None:
+    """Return the active stage for this thread / task, or ``None``.
+
+    The contextvar takes precedence so asyncio tasks see the binding even
+    when running inside ``loop.run_in_executor`` (which copies context but
+    not thread-local). Thread-local is the fallback for plain
+    ``threading.Thread`` workers.
+    """
+    stage = _active_stage_cv.get()
+    if stage is not None:
+        return stage
+    return getattr(_thread_active_stage, "stage", None)
 
 
 @dataclass(frozen=True)
@@ -201,9 +266,16 @@ class RequestEventRecorder:
             fp = self._fp
             if fp is None:
                 return
+            if stage is None:
+                # Prefer the per-thread / per-task binding (Stage._run_scheduler
+                # sets it before invoking the scheduler). The process-global
+                # ``_stage`` is only used when nothing better is available,
+                # and is wrong in shared-process topologies — see module
+                # docstring.
+                stage = get_active_stage() or self._stage or "unknown"
             event = RequestEvent(
                 request_id=request_id,
-                stage=stage if stage is not None else (self._stage or "unknown"),
+                stage=stage,
                 event_name=event_name,
                 timestamp_ns=ts,
                 run_id=self._run_id,
@@ -227,12 +299,44 @@ class RequestEventRecorder:
 
 
 def _json_default(obj: Any) -> Any:
-    # Conservative fallback so unknown metadata types never break the recorder.
-    if hasattr(obj, "tolist"):
+    """Fallback serializer for objects ``json.dumps`` doesn't know.
+
+    Profiler metadata must stay tiny — the profiler docs explicitly say
+    "large blobs stay out of metadata". Earlier versions of this function
+    called ``.tolist()`` on anything that had it, which materialised
+    arbitrarily large numpy arrays AND synchronised + copied GPU tensors
+    to CPU. Both can balloon a JSON line into megabytes and stall the hot
+    path.
+
+    Current behaviour:
+
+    - 0-D tensors / arrays (``shape == ()``) are scalars; return ``item()``.
+    - Higher-rank tensors / arrays return a SUMMARY dict
+      (``type``, ``shape``, ``dtype``, ``device``) — never the data.
+    - Everything else falls back to ``repr``.
+    """
+    shape = getattr(obj, "shape", None)
+    dtype = getattr(obj, "dtype", None)
+    if shape is not None and dtype is not None:
+        # 0-D tensor / array → behaves like a scalar.
         try:
-            return obj.tolist()
-        except Exception:  # pragma: no cover - last-resort path
+            if len(shape) == 0 and hasattr(obj, "item"):
+                return obj.item()
+        except TypeError:
             pass
+        # Real tensor / array — refuse to materialise. Summary only.
+        try:
+            shape_list: Any = [int(d) for d in shape]
+        except Exception:
+            shape_list = repr(shape)
+        device = getattr(obj, "device", None)
+        return {
+            "__tensor_summary__": True,
+            "type": type(obj).__name__,
+            "shape": shape_list,
+            "dtype": str(dtype),
+            "device": str(device) if device is not None else None,
+        }
     return repr(obj)
 
 

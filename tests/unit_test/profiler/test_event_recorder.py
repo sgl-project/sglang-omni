@@ -12,8 +12,11 @@ import pytest
 from sglang_omni.profiler.event_recorder import (
     RequestEvent,
     RequestEventRecorder,
+    _json_default,
     emit,
     get_recorder,
+    reset_active_stage,
+    set_active_stage,
 )
 
 
@@ -23,6 +26,8 @@ def _reset_recorder():
     rec = get_recorder()
     if rec.is_active():
         rec.stop()
+    # Clear any active-stage binding leaked from prior tests.
+    reset_active_stage(None)
     yield
     if rec.is_active():
         rec.stop()
@@ -176,3 +181,176 @@ def test_multi_stage_same_process_share_one_file(tmp_path: Path) -> None:
     events = _read_events(p1)
     stages = {e["stage"] for e in events}
     assert stages == {"preprocessing", "image_encoder", "thinker"}
+
+
+# ---------------------------------------------------------------------------
+# Active-stage attribution (review finding P1)
+# ---------------------------------------------------------------------------
+
+
+def test_emit_stage_none_uses_thread_local_active_stage(tmp_path: Path) -> None:
+    """``emit(stage=None)`` must pick up the per-thread active stage, not
+    the process-global ``_stage`` (which is the first stage to call start()
+    in a shared-process topology).
+
+    Regression for review finding P1: previously preprocessor / encoder /
+    OmniScheduler / code2wav all called ``emit(stage=None)`` and got
+    attributed to the first stage in the process.
+    """
+    rec = get_recorder()
+    p = rec.start(run_id="r0", event_dir=str(tmp_path), stage="preprocessing")
+    rec.start(run_id="r0", event_dir=str(tmp_path), stage="thinker")
+    rec.start(run_id="r0", event_dir=str(tmp_path), stage="decode")
+
+    # Main thread: no active stage → falls back to recorder's _stage
+    # ("preprocessing", first to call start()).
+    emit(request_id="r1", stage=None, event_name="from_main")
+
+    # Worker threads: each binds its own active stage, then emits.
+    def _worker(stage_name: str) -> None:
+        set_active_stage(stage_name)
+        try:
+            emit(request_id="r1", stage=None, event_name=f"from_{stage_name}")
+        finally:
+            reset_active_stage(None)
+
+    t_thinker = threading.Thread(target=_worker, args=("thinker",))
+    t_decode = threading.Thread(target=_worker, args=("decode",))
+    t_thinker.start()
+    t_decode.start()
+    t_thinker.join()
+    t_decode.join()
+
+    rec.stop()
+
+    events = _read_events(p)
+    by_event = {e["event_name"]: e["stage"] for e in events}
+    assert (
+        by_event["from_main"] == "preprocessing"
+    ), "main thread had no active stage; should fall back to recorder._stage"
+    assert (
+        by_event["from_thinker"] == "thinker"
+    ), "worker thread's set_active_stage('thinker') was ignored"
+    assert (
+        by_event["from_decode"] == "decode"
+    ), "worker thread's set_active_stage('decode') was ignored"
+
+
+def test_emit_stage_none_uses_contextvar_in_asyncio_executor(
+    tmp_path: Path,
+) -> None:
+    """The contextvar must propagate through asyncio.to_thread / executor.
+
+    SimpleScheduler in concurrent mode runs each compute_fn via
+    ``asyncio.to_thread``, which copies the context but NOT the parent
+    thread's threading.local. The contextvar variant is what makes
+    stage attribution work in that path.
+    """
+    import asyncio
+
+    rec = get_recorder()
+    p = rec.start(run_id="r0", event_dir=str(tmp_path), stage="first")
+    rec.start(run_id="r0", event_dir=str(tmp_path), stage="encoder")
+
+    seen: dict[str, str | None] = {}
+
+    def _compute() -> None:
+        # Simulate what SimpleScheduler's worker does after stage binding.
+        emit(request_id="r1", stage=None, event_name="from_executor")
+
+    async def _run() -> None:
+        set_active_stage("encoder")
+        try:
+            await asyncio.to_thread(_compute)
+        finally:
+            reset_active_stage(None)
+
+    asyncio.run(_run())
+    rec.stop()
+
+    events = _read_events(p)
+    by_event = {e["event_name"]: e["stage"] for e in events}
+    seen.update(by_event)
+    assert (
+        seen["from_executor"] == "encoder"
+    ), "contextvar didn't propagate through asyncio.to_thread"
+
+
+# ---------------------------------------------------------------------------
+# Safe metadata serialization (review finding P2)
+# ---------------------------------------------------------------------------
+
+
+def test_json_default_summarizes_tensor_without_materializing() -> None:
+    """``_json_default`` must NOT call .tolist() on tensors / arrays.
+
+    Regression for review finding P2: previously any object with .tolist()
+    got fully expanded; on a GPU tensor this synchronizes, copies to CPU,
+    and serializes potentially MBs of data inline — violating the "large
+    blobs stay out of metadata" rule.
+    """
+
+    class FakeTensor:
+        shape = (32, 1024, 4096)
+        dtype = "torch.float16"
+        device = "cuda:0"
+
+        def tolist(self):  # pragma: no cover - must not be called
+            raise AssertionError(
+                "_json_default called tolist() on a tensor — this is the "
+                "exact bug we're regressing against"
+            )
+
+        def item(self):  # pragma: no cover
+            raise AssertionError("item() called on multi-dim tensor")
+
+    out = _json_default(FakeTensor())
+    assert isinstance(out, dict)
+    assert out["__tensor_summary__"] is True
+    assert out["type"] == "FakeTensor"
+    assert out["shape"] == [32, 1024, 4096]
+    assert out["dtype"] == "torch.float16"
+    assert out["device"] == "cuda:0"
+
+
+def test_json_default_unwraps_zero_d_tensor_as_scalar() -> None:
+    """0-D tensors / numpy scalars should serialize as plain scalars."""
+
+    class FakeScalar:
+        shape = ()
+        dtype = "float32"
+
+        def item(self):
+            return 3.14
+
+    assert _json_default(FakeScalar()) == 3.14
+
+
+def test_emit_with_tensor_metadata_does_not_materialize(tmp_path: Path) -> None:
+    """End-to-end: even if a caller hands us a tensor in metadata, the
+    JSONL line must stay small and never call .tolist()."""
+
+    rec = get_recorder()
+    p = rec.start(run_id="r0", event_dir=str(tmp_path), stage="encoder")
+
+    class HugeTensor:
+        shape = (1024, 4096)
+        dtype = "torch.bfloat16"
+        device = "cuda:0"
+
+        def tolist(self):  # pragma: no cover
+            raise AssertionError("hot-path emit called tolist()")
+
+    rec.emit(
+        request_id="r1",
+        stage="encoder",
+        event_name="encoder_end",
+        metadata={"hidden_states": HugeTensor()},
+    )
+    rec.stop()
+
+    events = _read_events(p)
+    assert len(events) == 1
+    summary = events[0]["metadata"]["hidden_states"]
+    assert summary["__tensor_summary__"] is True
+    assert summary["shape"] == [1024, 4096]

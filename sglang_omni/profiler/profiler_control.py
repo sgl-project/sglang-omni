@@ -71,9 +71,15 @@ class ProfilerControlClient:
 
     async def broadcast_stop(
         self,
-        run_id: str,
+        run_id: str | None = None,
         stages: list[str] | None = None,
     ) -> None:
+        """Broadcast a stop message to all (or selected) stages.
+
+        ``run_id=None`` is a wildcard: each stage stops whatever profiler
+        session it currently has active. Use this when the HTTP caller
+        didn't specify a run id.
+        """
         await self.start()
         assert self._socks is not None
         targets = stages or list(self._socks.keys())

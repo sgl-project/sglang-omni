@@ -250,22 +250,27 @@ def _mount_profiler_routes(
 
     @router.post("/stop_profile")
     async def stop(req: StopReq):
-        run_id = req.run_id or "default"
+        # When the caller omits run_id we stop whatever's active (matches
+        # start_profile's auto-generated default behaviour). When they
+        # provide one, only stop if it matches.
+        run_id = req.run_id  # may be None
         recorder = _get_event_recorder()
-        if recorder.is_active() and recorder.active_run_id() in (run_id, "default"):
-            recorder.stop(run_id=recorder.active_run_id())
+        active = recorder.active_run_id() if recorder.is_active() else None
+        if recorder.is_active() and (run_id is None or active == run_id):
+            recorder.stop(run_id=active)
         await profiler_ctl.broadcast_stop(run_id=run_id)
-        return {"run_id": run_id}
+        return {"run_id": run_id or active}
 
     @router.post("/stop_request_profile")
     async def stop_request(req: StopReq):
         """Stop request-level event profiling."""
-        run_id = req.run_id or "default"
+        run_id = req.run_id  # may be None — see /stop_profile rationale
         recorder = _get_event_recorder()
-        if recorder.is_active() and recorder.active_run_id() in (run_id, "default"):
-            recorder.stop(run_id=recorder.active_run_id())
+        active = recorder.active_run_id() if recorder.is_active() else None
+        if recorder.is_active() and (run_id is None or active == run_id):
+            recorder.stop(run_id=active)
         await profiler_ctl.broadcast_stop(run_id=run_id)
-        return {"run_id": run_id}
+        return {"run_id": run_id or active}
 
     app.include_router(router)
 

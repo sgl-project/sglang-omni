@@ -266,16 +266,23 @@ class ProfilerStartMessage:
 
 @dataclass
 class ProfilerStopMessage:
-    """Profiler stop for an entry."""
+    """Profiler stop for an entry.
 
-    run_id: str
+    ``run_id`` is optional. When ``None``, the receiving stage stops
+    whatever profiler session is currently active (used when a caller
+    invokes ``/stop_profile`` or ``/stop_request_profile`` without
+    specifying which session). When set, the stage only stops if its
+    active run matches.
+    """
+
+    run_id: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {"type": "profiler_stop", "run_id": self.run_id}
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "ProfilerStopMessage":
-        return cls(run_id=d["run_id"])
+        return cls(run_id=d.get("run_id"))
 
 
 def parse_message(

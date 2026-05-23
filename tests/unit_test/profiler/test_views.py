@@ -270,6 +270,41 @@ def test_stage_breakdown_covers_preprocess_encoder_and_prefill(
     assert by_key[talker_ttfcc_key].total_ms == 4.0
 
 
+def test_stage_breakdown_emits_both_intervals_sharing_opener(
+    tmp_path: Path,
+) -> None:
+    """Two intervals sharing the same opener must both appear.
+
+    Regression for review finding P1: ``scheduler_prefill_start`` participates
+    in both ``-> scheduler_first_emit`` AND ``-> stage_first_stream_chunk_sent``.
+    Before the fix, the earlier-arriving close (``scheduler_first_emit``) popped
+    the opener, leaving nothing for the later close — so the issue #501
+    "thinker first token" / TTFCC interval silently disappeared from the
+    report.
+    """
+    events = [
+        _ev("r1", "thinker", "scheduler_prefill_start", 0),
+        _ev("r1", "thinker", "scheduler_first_emit", 3_000_000),  # 3 ms
+        _ev("r1", "thinker", "stage_first_stream_chunk_sent", 7_000_000),  # 7 ms
+    ]
+    _write_events(tmp_path / "events_x.jsonl", events)
+    rows = stage_breakdown(source=tmp_path)
+    by_key = {(r.stage, r.interval_name): r for r in rows}
+
+    first_emit_key = ("thinker", "scheduler_prefill_start->scheduler_first_emit")
+    first_chunk_key = (
+        "thinker",
+        "scheduler_prefill_start->stage_first_stream_chunk_sent",
+    )
+    assert first_emit_key in by_key, "scheduler_first_emit interval was dropped"
+    assert first_chunk_key in by_key, (
+        "stage_first_stream_chunk_sent interval was dropped — opener was "
+        "consumed by the sibling pair"
+    )
+    assert by_key[first_emit_key].total_ms == 3.0
+    assert by_key[first_chunk_key].total_ms == 7.0
+
+
 def test_build_report_returns_all_three_views(tmp_path: Path) -> None:
     events = [
         _ev("r1", "coordinator", "request_admission", 0),

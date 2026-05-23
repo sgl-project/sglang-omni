@@ -22,6 +22,7 @@ from sglang_omni.pipeline.stage.stream_queue import StreamItem, StreamQueue
 from sglang_omni.pipeline.tp_control import TPLeaderFanout
 from sglang_omni.profiler.event_recorder import emit as _emit_event
 from sglang_omni.profiler.event_recorder import get_recorder as _get_recorder
+from sglang_omni.profiler.event_recorder import set_active_stage as _set_active_stage
 from sglang_omni.profiler.torch_profiler import TorchProfiler
 from sglang_omni.proto import (
     CompleteMessage,
@@ -149,6 +150,14 @@ class Stage:
         if self.scheduler is not None:
 
             def _run_scheduler():
+                # Bind this stage's name to the active-stage context for
+                # this thread (and any asyncio.to_thread / run_in_executor
+                # descendants that copy contextvars). Callsites that pass
+                # ``stage=None`` to ``emit()`` — preprocessor, encoder
+                # callables, OmniScheduler internals, code2wav — will get
+                # the correct stage name even when this stage shares its
+                # process with siblings.
+                _set_active_stage(self.name)
                 try:
                     if self.gpu_id is not None:
                         import torch
@@ -896,13 +905,17 @@ class Stage:
                 )
 
     def _on_profiler_stop(self, msg: ProfilerStopMessage) -> None:
-        if (
-            TorchProfiler.is_active()
-            and TorchProfiler.get_active_run_id() == msg.run_id
+        # msg.run_id is None when the HTTP caller didn't specify a run id;
+        # in that case stop whatever's active. Otherwise only stop when
+        # the run id matches.
+        if TorchProfiler.is_active() and (
+            msg.run_id is None or TorchProfiler.get_active_run_id() == msg.run_id
         ):
             TorchProfiler.stop(run_id=msg.run_id)
         recorder = _get_recorder()
-        if recorder.is_active() and recorder.active_run_id() == msg.run_id:
+        if recorder.is_active() and (
+            msg.run_id is None or recorder.active_run_id() == msg.run_id
+        ):
             recorder.stop(run_id=msg.run_id)
 
     def _on_background_task_done(self, task: asyncio.Task, label: str) -> None:

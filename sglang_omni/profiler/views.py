@@ -218,40 +218,57 @@ def compute_stage_intervals(
     source: str | Path | Iterable[str | Path] | None = None,
     interval_events: tuple[tuple[str, str], ...] = _STAGE_INTERVAL_EVENTS,
 ) -> list[StageInterval]:
-    """Pair open/close events into (stage, request_id)-scoped intervals."""
+    """Pair open/close events into (stage, request_id)-scoped intervals.
+
+    The same opener can participate in multiple pairs (e.g.,
+    ``scheduler_prefill_start`` closes against both ``scheduler_first_emit``
+    *and* ``stage_first_stream_chunk_sent``). Each (opener, closer) pair owns
+    its own pending stack so a close event for pair A does not consume the
+    opener of pair B.
+    """
     if timelines is None:
         if source is None:
             raise ValueError("compute_stage_intervals requires timelines or source")
         timelines = reconstruct_timelines(source)
-    opens_by_name = {open_ev: close_ev for open_ev, close_ev in interval_events}
-    close_by_name = {close_ev: open_ev for open_ev, close_ev in interval_events}
+
+    opens_to_pairs: dict[str, list[tuple[str, str]]] = defaultdict(list)
+    closes_to_pairs: dict[str, list[tuple[str, str]]] = defaultdict(list)
+    for opener, closer in interval_events:
+        opens_to_pairs[opener].append((opener, closer))
+        closes_to_pairs[closer].append((opener, closer))
 
     out: list[StageInterval] = []
     for rid, tl in timelines.items():
-        # Per-stage stack of pending open events keyed by event_name.
-        pending: dict[tuple[str, str], list[int]] = defaultdict(list)
+        # Pending stack per (stage, opener, closer). One opener event seeds
+        # every pair it's part of; one closer event consumes only its own
+        # pair's stack, leaving sibling pairs unaffected.
+        pending: dict[tuple[str, str, str], list[int]] = defaultdict(list)
         for ev in tl.events:
             name = ev.get("event_name")
             stage = ev.get("stage", "unknown")
             ts = int(ev.get("timestamp_ns", 0))
-            if name in opens_by_name:
-                pending[(stage, name)].append(ts)
-            elif name in close_by_name:
-                open_name = close_by_name[name]
-                stack = pending.get((stage, open_name))
-                if not stack:
-                    continue
-                open_ns = stack.pop(0)
-                out.append(
-                    StageInterval(
-                        request_id=rid,
-                        stage=stage,
-                        open_event=open_name,
-                        close_event=name,
-                        open_ns=open_ns,
-                        close_ns=ts,
+            # An event may be both opener (for one pair) and closer (for
+            # another), e.g. in chained intervals (X, Y), (Y, Z) — handle
+            # both legs.
+            if name in opens_to_pairs:
+                for opener, closer in opens_to_pairs[name]:
+                    pending[(stage, opener, closer)].append(ts)
+            if name in closes_to_pairs:
+                for opener, closer in closes_to_pairs[name]:
+                    stack = pending.get((stage, opener, closer))
+                    if not stack:
+                        continue
+                    open_ns = stack.pop(0)
+                    out.append(
+                        StageInterval(
+                            request_id=rid,
+                            stage=stage,
+                            open_event=opener,
+                            close_event=closer,
+                            open_ns=open_ns,
+                            close_ns=ts,
+                        )
                     )
-                )
     return out
 
 
