@@ -29,7 +29,7 @@ from tests.utils import apply_slack, assert_speed_thresholds
 
 CONCURRENCY = 16
 
-MMMU_MIN_ACCURACY = 0.54
+MMMU_MIN_ACCURACY = 0.62
 
 _MMMU_P95 = {
     16: {

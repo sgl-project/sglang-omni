@@ -11,7 +11,7 @@ import argparse, ast, datetime as dt, hashlib, json, os, re, shutil, signal
 import subprocess, sys, time, tomllib
 from pathlib import Path
 
-__version__ = "0.3.0"
+__version__ = "0.4.1"
 
 SKILL_DIR = Path(__file__).resolve().parent
 MODELS_DIR = SKILL_DIR / "models"
@@ -21,6 +21,28 @@ if not REPO_ROOT.exists():
     REPO_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_RUN_ROOT = Path("/github/home/ci-threshold-runs")
 RETRY_SIGS = ("OOM", "exit 137", "exit 139", "TimeoutExpired")
+# Per-GPU memory must be strictly below this (MiB) before any pytest/server
+# restart. 2048 MiB = 2 GiB. Do not launch on stale 17 GiB contexts.
+_GPU_RETRY_MEM_MIB = 2048
+_GPU_LAUNCH_RECHECK_S = 3
+_GPU_WAIT_POLL_S = 5
+_GPU_WAIT_TIMEOUT_S = 600
+_PYTEST_POLL_S = 30
+_MAX_RUN_ATTEMPTS = 4
+_DEFAULT_CALIBRATION_PASSES = 10
+_AGENT_POLL_INTERVAL_S = 120
+_CRASH_SIGS = (
+    "Fatal Python error",
+    "Segmentation fault",
+    "CUDA error: an illegal memory access",
+    "Child process died",
+    "All workers failed",
+    "Router failed to start",
+    "Address already in use",
+    "Connection refused",
+    "Server process exited",
+    "worker crashed",
+)
 
 # Metric registry. Each entry encodes how a named metric should be
 # displayed in the report and which stage group it belongs to. Scales
@@ -154,6 +176,216 @@ def _smi_lines(cols):
     return [ln.strip() for ln in r.stdout.splitlines() if ln.strip()]
 
 
+def _gpu_memory_by_index():
+    r = subprocess.run(
+        ["nvidia-smi", "--query-gpu=index,memory.used",
+         "--format=csv,noheader,nounits"],
+        capture_output=True, text=True, check=False)
+    out = {}
+    for ln in r.stdout.splitlines():
+        parts = [p.strip() for p in ln.split(",")]
+        if len(parts) < 2:
+            continue
+        try:
+            idx = int(parts[0])
+            mem_m = re.search(r"(\d+)", parts[1])
+            if mem_m:
+                out[idx] = int(mem_m.group(1))
+        except ValueError:
+            continue
+    return out
+
+
+def _gpu_memory_used_mib():
+    return list(_gpu_memory_by_index().values())
+
+
+def _kill_calibration_gpu_processes():
+    """Match CI omni-post-stage cleanup between calibration runs."""
+    script = REPO_ROOT / ".github/scripts/delete_gpu_process.sh"
+    if script.exists():
+        subprocess.run(["bash", str(script)], capture_output=True, check=False)
+    for pattern in (
+        "sgl-omni serve",
+        "sglang_omni_router.serve",
+        "stage_process",
+        "pytest tests/test_model",
+    ):
+        subprocess.run(["pkill", "-9", "-f", pattern], check=False)
+
+
+def _picked_gpus_mem_snapshot(picked: list[int]) -> dict[int, int]:
+    mem = _gpu_memory_by_index()
+    return {i: mem.get(i, -1) for i in picked}
+
+
+def _picked_gpus_under_limit(picked: list[int]) -> bool:
+    """True iff every picked GPU has no compute app and memory < 2 GiB."""
+    if not picked:
+        return False
+    mem = _gpu_memory_by_index()
+    busy = busy_gpu_indices()
+    return all(
+        i not in busy and mem.get(i, 99999) <= _GPU_RETRY_MEM_MIB
+        for i in picked
+    )
+
+
+def _ready_gpu_indices(gpus_needed: int):
+    """GPU indices with no compute app and memory <= _GPU_RETRY_MEM_MIB."""
+    mem = _gpu_memory_by_index()
+    busy = busy_gpu_indices()
+    ready = [
+        idx for idx in sorted(mem)
+        if idx not in busy and mem[idx] <= _GPU_RETRY_MEM_MIB
+    ]
+    return ready, mem, busy
+
+
+def _ensure_gpus_free(gpus_needed: int, timeout: int = _GPU_WAIT_TIMEOUT_S) -> bool:
+    """Kill stale processes and wait until >= gpus_needed GPUs are each < 2 GiB."""
+    _kill_calibration_gpu_processes()
+    time.sleep(3)
+    waited = 0
+    last_log = -30
+    while waited < timeout:
+        ready, mem, busy = _ready_gpu_indices(gpus_needed)
+        if len(ready) >= gpus_needed:
+            picked_mem = {i: mem[i] for i in ready[:gpus_needed]}
+            print(f"  GPU ready for launch {picked_mem} MiB (each <= "
+                  f"{_GPU_RETRY_MEM_MIB}) after {waited}s")
+            return True
+        if waited - last_log >= 30:
+            print(f"  waiting: need {gpus_needed} GPU(s) each <= "
+                  f"{_GPU_RETRY_MEM_MIB} MiB ({waited}s/{timeout}s): "
+                  f"mem={mem} busy={sorted(busy)} ready={len(ready)}")
+            last_log = waited
+        time.sleep(_GPU_WAIT_POLL_S)
+        waited += _GPU_WAIT_POLL_S
+        if waited % 60 == 0:
+            _kill_calibration_gpu_processes()
+    subprocess.run(["pkill", "-9", "-f", "sgl-omni"], check=False)
+    time.sleep(5)
+    ready, mem, busy = _ready_gpu_indices(gpus_needed)
+    if len(ready) >= gpus_needed:
+        print(f"  GPU ready after forced pkill: "
+              f"{ {i: mem[i] for i in ready[:gpus_needed]} } MiB")
+        return True
+    print(f"  error: cannot launch — need {gpus_needed} GPU(s) each <= "
+          f"{_GPU_RETRY_MEM_MIB} MiB; after {timeout}s mem={mem} "
+          f"busy={sorted(busy)} ready={len(ready)}")
+    return False
+
+
+def _pick_gpus_for_launch(gpus_needed: int, label: str) -> tuple[list[int] | None, str]:
+    """Select GPUs only after _ensure_gpus_free; abort if any picked GPU >= 2 GiB."""
+    if not _ensure_gpus_free(gpus_needed):
+        return None, "GPU memory not released after cleanup"
+    picked, err = pick_free_gpus(gpus_needed)
+    if picked is None:
+        if not _ensure_gpus_free(gpus_needed):
+            return None, err or "GPU memory not released after cleanup"
+        picked, err = pick_free_gpus(gpus_needed)
+    if picked is None:
+        return None, err or "no GPU under 2 GiB memory limit"
+    if not _picked_gpus_under_limit(picked):
+        snap = _picked_gpus_mem_snapshot(picked)
+        return None, f"picked GPUs not under {_GPU_RETRY_MEM_MIB} MiB: {snap}"
+    return picked, ""
+
+
+def _launch_gpu_gate(picked: list[int], gpus_needed: int, label: str) -> tuple[list[int] | None, str]:
+    """Hard gate immediately before pytest Popen — recheck memory after brief pause."""
+    time.sleep(_GPU_LAUNCH_RECHECK_S)
+    if _picked_gpus_under_limit(picked):
+        snap = _picked_gpus_mem_snapshot(picked)
+        print(f"{label} launch gate: GPU mem={snap} MiB (each <= "
+              f"{_GPU_RETRY_MEM_MIB}) — starting pytest")
+        return picked, ""
+    snap = _picked_gpus_mem_snapshot(picked)
+    print(f"{label} launch gate BLOCKED: GPU mem={snap} MiB — "
+          f"releasing before restart")
+    return _pick_gpus_for_launch(gpus_needed, label)
+
+
+def _stage_metrics_complete(stage, metrics):
+    """True when every metric with a json_path has a non-None value."""
+    stage_metrics = stage.get("metrics") or {}
+    if not stage_metrics:
+        return False
+    for _mk, meta in stage_metrics.items():
+        if meta.get("json_path") and metrics.get(_mk) is None:
+            return False
+    return True
+
+
+def _observation_status(stage, metrics, pytest_status, pytest_reason):
+    """Calibration treats a run as complete once metrics are extracted."""
+    if not stage.get("metrics"):
+        return pytest_status, pytest_reason
+    if not _stage_metrics_complete(stage, metrics):
+        return pytest_status, pytest_reason
+    if pytest_status == "ok":
+        return "ok", ""
+    return "ok", f"threshold_assertion ({pytest_reason})"
+
+
+def _run_json_ok(path: Path, stage=None) -> bool:
+    if not path.exists():
+        return False
+    try:
+        data = json.loads(path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return False
+    if stage is not None and stage.get("metrics"):
+        return _stage_metrics_complete(stage, data.get("metrics") or {})
+    return data.get("status") == "ok"
+
+
+def _purge_incomplete_run(out: Path, stage_keys, all_stages, k: int):
+    for sk in stage_keys:
+        stage = all_stages[sk]
+        p = out / sk / f"run{k}.json"
+        if p.exists() and not _run_json_ok(p, stage):
+            p.unlink(missing_ok=True)
+
+
+def audit_completeness(run_dir: Path, all_stages=None, plan=None):
+    plan = plan or json.loads((run_dir / "plan.json").read_text())
+    if all_stages is None:
+        sy = Path(plan.get("stages_yaml")
+                  or stages_path(plan.get("model", DEFAULT_MODEL)))
+        all_stages = _load_yaml(sy)
+    repeats = plan["repeats"]
+    total = len(plan["stages"]) * repeats
+    ok = 0
+    missing = []
+    for sk in plan["stages"]:
+        stage = all_stages[sk]
+        for k in range(1, repeats + 1):
+            p = run_dir / sk / f"run{k}.json"
+            if _run_json_ok(p, stage):
+                ok += 1
+            else:
+                reason = "missing file"
+                if p.exists():
+                    try:
+                        d = json.loads(p.read_text())
+                        reason = d.get("reason") or d.get("status") or "incomplete metrics"
+                    except (json.JSONDecodeError, OSError):
+                        reason = "corrupt json"
+                missing.append({"stage_key": sk, "run": k, "reason": reason})
+    return dict(
+        complete=(ok == total),
+        ok=ok,
+        total=total,
+        missing_count=len(missing),
+        missing=missing,
+        repeats=repeats,
+        model=plan.get("model"),
+    )
+
+
 def busy_gpu_indices():
     """GPU indices with any running compute app."""
     r = subprocess.run(["nvidia-smi", "--query-compute-apps=gpu_uuid",
@@ -183,14 +415,19 @@ def all_gpu_indices():
 
 
 def pick_free_gpus(n):
-    """Pick n free GPU indices. Returns (list, None) on success, (None, msg) on failure."""
+    """Pick n GPUs with no compute app and memory <= _GPU_RETRY_MEM_MIB (2 GiB)."""
+    ready, mem, busy = _ready_gpu_indices(n)
     all_idx = all_gpu_indices()
-    busy = busy_gpu_indices()
-    free = [i for i in all_idx if i not in busy]
-    if len(free) < n:
-        return None, (f"need {n} free GPU(s); only {len(free)} free "
-                      f"(total {len(all_idx)}, busy {sorted(busy)})")
-    return free[:n], None
+    if len(ready) >= n:
+        picked = ready[:n]
+        if not _picked_gpus_under_limit(picked):
+            snap = _picked_gpus_mem_snapshot(picked)
+            return None, f"internal: picked GPUs exceed {_GPU_RETRY_MEM_MIB} MiB: {snap}"
+        return picked, None
+    return None, (
+        f"need {n} GPU(s) each <= {_GPU_RETRY_MEM_MIB} MiB (2 GiB); "
+        f"ready {len(ready)}/{len(all_idx)} mem={mem} busy={sorted(busy)}"
+    )
 
 
 def precheck(py, src, out, skip_ver, cfg, datasets_override=None, tried=None,
@@ -732,18 +969,53 @@ def _run_cmd_inner(args, cfg, py, src, out):
         by_test.setdefault(all_stages[sk]["test"], []).append(sk)
     for sk in sel:
         (out / sk).mkdir(parents=True, exist_ok=True)
-    for k in range(1, args.repeats + 1):
-        for test_path, stage_keys in by_test.items():
-            if args.resume and all(
-                    (out / sk / f"run{k}.json").exists() for sk in stage_keys):
-                print(f"[{Path(test_path).stem}] run {k}/{args.repeats} "
-                      f"skipped (resume, {len(stage_keys)} stage(s))")
-                continue
-            needed = gpus_per_test.get(Path(test_path).name, 2)
-            extra_args = (cfg.get("pytest_extra_args", {}) or {}).get(
-                Path(test_path).name, []) or []
-            _run_shared(test_path, stage_keys, all_stages, out, k, py,
-                        args.repeats, needed, extra_args)
+    max_passes = getattr(args, "max_passes", _DEFAULT_CALIBRATION_PASSES)
+    max_gpus = max(
+        (gpus_per_test.get(Path(all_stages[s]["test"]).name, 2) for s in sel),
+        default=2,
+    )
+    for pass_num in range(1, max_passes + 1):
+        ran_any = False
+        for k in range(1, args.repeats + 1):
+            for test_path, stage_keys in by_test.items():
+                if all(_run_json_ok(out / sk / f"run{k}.json", all_stages[sk])
+                       for sk in stage_keys):
+                    if pass_num == 1 and args.resume:
+                        print(f"[{Path(test_path).stem}] run {k}/{args.repeats} "
+                              f"skipped (complete, {len(stage_keys)} stage(s))")
+                    continue
+                _purge_incomplete_run(out, stage_keys, all_stages, k)
+                needed = gpus_per_test.get(Path(test_path).name, 2)
+                extra_args = (cfg.get("pytest_extra_args", {}) or {}).get(
+                    Path(test_path).name, []) or []
+                if pass_num > 1:
+                    print(f"=== calibration pass {pass_num}/{max_passes}: "
+                          f"retry {Path(test_path).stem} run {k} ===")
+                _run_shared(test_path, stage_keys, all_stages, out, k, py,
+                            args.repeats, needed, extra_args)
+                ran_any = True
+        audit = audit_completeness(out, all_stages)
+        print(f"completeness after pass {pass_num}: "
+              f"{audit['ok']}/{audit['total']} stage-runs complete")
+        if audit["complete"]:
+            break
+        if not ran_any:
+            break
+        if pass_num < max_passes:
+            print(f"{audit['missing_count']} incomplete — GPU cleanup before next pass")
+            if not _ensure_gpus_free(max_gpus):
+                print("error: GPU memory not cleared; stopping calibration passes")
+                break
+    audit = audit_completeness(out, all_stages)
+    if not audit["complete"]:
+        print(f"error: calibration incomplete ({audit['ok']}/{audit['total']}). "
+              f"Missing {audit['missing_count']} stage-run(s):")
+        for m in audit["missing"][:20]:
+            print(f"  {m['stage_key']}/run{m['run']}: {m['reason']}")
+        if audit["missing_count"] > 20:
+            print(f"  … and {audit['missing_count'] - 20} more")
+        print("resume with: tune.py --model … run --output-dir … --resume")
+        return 1
     return report(out)
 
 
@@ -877,6 +1149,9 @@ def _run_shared(test_path, stage_keys, all_stages, out, k, py, total, gpus_neede
     # extra_env is derived from test filename at discover — all stages
     # sharing a test file have identical extra_env; just use the first.
     env = os.environ.copy()
+    # Never inherit a shell-level CUDA_VISIBLE_DEVICES — CI gets a fresh
+    # container per stage; tune.py picks GPUs after cleanup instead.
+    env.pop("CUDA_VISIBLE_DEVICES", None)
     # Match CI's `export PYTHONPATH=$PWD`: server subprocesses launched by
     # tests are invoked as `python examples/<launcher>.py`, which only puts
     # `examples/` on sys.path. Prepend the repo root so local package imports
@@ -911,45 +1186,25 @@ def _run_shared(test_path, stage_keys, all_stages, out, k, py, total, gpus_neede
     env.update(all_stages[stage_keys[0]].get("extra_env") or {})
     label = f"[{test_base}] run {k}/{total} ({len(stage_keys)} stage(s), needs {gpus_needed} GPU)"
     _print_run_banner(label, test_path, stage_keys, all_stages)
-    # Respect CUDA_VISIBLE_DEVICES if user set it; otherwise auto-pick.
-    auto_pick_gpus = "CUDA_VISIBLE_DEVICES" not in os.environ
-    attempts, status, reason, dur, text = 0, "ok", "", 0.0, ""
-    while attempts < 2:
+    attempts, status, reason, dur, text, pytest_rc = 0, "ok", "", 0.0, "", 0
+    while attempts < _MAX_RUN_ATTEMPTS:
         attempts += 1
+        picked, pick_err = _pick_gpus_for_launch(gpus_needed, label)
+        if picked is None:
+            status, reason, dur = "failed", pick_err, 0.0
+            print(f"{label} {pick_err}")
+            break
         shutil.rmtree("/github/home/.cache/flashinfer", ignore_errors=True)
-        # GPU process killing was removed: the skill should never kill
-        # other users' processes. If GPUs are busy, pick_free_gpus()
-        # below waits up to 180s; if still busy, the run aborts and the
-        # user frees the GPUs themselves.
-        # Clean basetemp so pytest always creates <funcname>0/ — JSON
-        # paths in stages.yaml assume the "_0" suffix.
         shutil.rmtree(basetemp, ignore_errors=True)
         basetemp.mkdir(parents=True)
-        if auto_pick_gpus:
-            # Wait up to 180s for GPUs to become free. In containerized
-            # environments delete_gpu_process.sh can't kill host-PID
-            # CUDA contexts; they release naturally after the server
-            # subprocess exits.
-            picked, err = pick_free_gpus(gpus_needed)
-            if picked is None:
-                waited = 0
-                while waited < 180:
-                    time.sleep(5)
-                    waited += 5
-                    picked, err = pick_free_gpus(gpus_needed)
-                    if picked is not None:
-                        print(f"{label} GPUs freed after {waited}s wait")
-                        break
-            if picked is None:
-                status, reason, dur = "failed", err, 0.0
-                print(f"{label} {err}")
-                break
-            env["CUDA_VISIBLE_DEVICES"] = ",".join(map(str, picked))
-            print(f"{label} using GPU(s) {picked} "
-                  f"(CUDA_VISIBLE_DEVICES={env['CUDA_VISIBLE_DEVICES']})")
-        else:
-            print(f"{label} using CUDA_VISIBLE_DEVICES="
-                  f"{os.environ['CUDA_VISIBLE_DEVICES']} (from user env)")
+        picked, gate_err = _launch_gpu_gate(picked, gpus_needed, label)
+        if picked is None:
+            status, reason, dur = "failed", gate_err or "launch GPU gate failed", 0.0
+            print(f"{label} {reason}")
+            break
+        env["CUDA_VISIBLE_DEVICES"] = ",".join(map(str, picked))
+        print(f"{label} using GPU(s) {picked} "
+              f"(CUDA_VISIBLE_DEVICES={env['CUDA_VISIBLE_DEVICES']})")
         t0 = time.monotonic()
         pytest_cmd = [py, "-m", "pytest", test_path,
                       "-v", "-s", "-x", f"--basetemp={basetemp}"]
@@ -964,17 +1219,29 @@ def _run_shared(test_path, stage_keys, all_stages, out, k, py, total, gpus_neede
                 stderr=subprocess.STDOUT,
                 start_new_session=True,
             )
-            rc = pytest_proc.wait()
+            pytest_rc = _wait_pytest_with_watchdog(pytest_proc, log, label)
         _cleanup_after_pytest(test_path, pytest_proc.pid, basetemp)
+        if not _ensure_gpus_free(gpus_needed):
+            status, reason, dur = "failed", "GPU memory not released after run", 0.0
+            break
         dur = time.monotonic() - t0
-        text = log.read_text()
-        if rc == 0:
+        text = log.read_text(errors="replace")
+        if pytest_rc == 0:
             status, reason = "ok", ""
             break
-        reason = _classify(text, rc)
+        reason = _classify(text, pytest_rc)
         status = "failed"
-        if attempts == 1 and any(s in reason for s in RETRY_SIGS):
-            print(f"{label} {reason} — retrying once")
+        retryable = (
+            any(s in reason for s in RETRY_SIGS)
+            or reason.startswith("crashed")
+            or "GPU memory" in reason
+        )
+        if attempts < _MAX_RUN_ATTEMPTS and retryable:
+            print(f"{label} {reason} — must clear GPU to <2 GiB before retry "
+                  f"({attempts}/{_MAX_RUN_ATTEMPTS})")
+            if not _ensure_gpus_free(gpus_needed):
+                status, reason = "failed", "GPU memory not released before retry"
+                break
             continue
         break
     if status == "ok":
@@ -987,12 +1254,17 @@ def _run_shared(test_path, stage_keys, all_stages, out, k, py, total, gpus_neede
         sd = out / sk
         metrics = _extract(stage, basetemp, stage_key=sk, warnings=extraction_warnings)
         sample_counts = _extract_counts(stage, basetemp)
-        (sd / f"run{k}.json").write_text(json.dumps(dict(
-            status=status, reason=reason, metrics=metrics,
+        obs_status, obs_reason = _observation_status(
+            stage, metrics, status, reason)
+        run_payload = dict(
+            status=obs_status, reason=obs_reason, metrics=metrics,
             sample_counts=sample_counts,
             duration_s=round(dur, 2), attempts=attempts,
             pytest_log=str(log.resolve()),
-            basetemp=str(basetemp.resolve())), indent=2))
+            basetemp=str(basetemp.resolve()))
+        if stage.get("metrics"):
+            run_payload["pytest_rc"] = pytest_rc
+        (sd / f"run{k}.json").write_text(json.dumps(run_payload, indent=2))
         (sd / f"run{k}.log").write_text(
             f"# Shared pytest log (one invocation covered all stages from "
             f"{test_path}):\n# {log.resolve()}\n# basetemp: {basetemp.resolve()}\n")
@@ -1007,10 +1279,11 @@ def _run_shared(test_path, stage_keys, all_stages, out, k, py, total, gpus_neede
         if stage.get("metrics") and all(v is None for v in metrics.values()):
             print(f"  → {sk}: ⚠ ALL metrics None — likely config bug "
                   f"(check models/<M>/config.yaml metric_sources for {Path(test_path).name})")
-        if status == "ok":
-            print(f"  → {sk}: {brief or '(no metrics extracted)'}")
+        if obs_status == "ok":
+            note = (f" (pytest rc={pytest_rc})" if obs_reason else "")
+            print(f"  → {sk}: {brief or '(no metrics extracted)'}{note}")
         else:
-            print(f"  → {sk}: failed ({reason})"
+            print(f"  → {sk}: failed ({obs_reason or reason})"
                   + (f" — {brief}" if brief else ""))
     if extraction_warnings:
         print(f"  ⚠ metric extraction warnings ({len(extraction_warnings)}):")
@@ -1048,11 +1321,57 @@ def _read_cleanup_manifest_process_groups(basetemp):
     return process_groups
 
 
+def _log_crash_detected(text: str) -> str | None:
+    lower = text.lower()
+    for sig in _CRASH_SIGS:
+        if sig.lower() in lower:
+            return sig
+    if "assertionerror" in lower and any(
+            x in lower for x in ("router", "worker", "server", "health")):
+        return "server startup failure"
+    return None
+
+
+def _wait_pytest_with_watchdog(pytest_proc, log_path: Path, label: str) -> int:
+    """Poll pytest every _PYTEST_POLL_S; abort early on log crash signatures."""
+    last_size = 0
+    stall_s = 0
+    while True:
+        rc = pytest_proc.poll()
+        text = ""
+        if log_path.exists():
+            text = log_path.read_text(errors="replace")
+            size = len(text)
+            stall_s = 0 if size > last_size else stall_s + _PYTEST_POLL_S
+            last_size = size
+        if rc is not None:
+            return rc
+        crash = _log_crash_detected(text[-8000:] if text else "")
+        if crash:
+            print(f"{label} crash detected in log ({crash}) — stopping pytest")
+            try:
+                os.killpg(pytest_proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pytest_proc.kill()
+            pytest_proc.wait(timeout=30)
+            return -1
+        mem = _gpu_memory_by_index()
+        print(f"{label} running… GPU mem={mem} log={last_size}B stall={stall_s}s")
+        time.sleep(_PYTEST_POLL_S)
+
+
 def _classify(text, rc):
-    if "CUDA out of memory" in text or "OutOfMemoryError" in text: return "OOM"
-    if rc == 137: return "exit 137 (killed)"
-    if rc == 139: return "exit 139 (segfault)"
-    if "TimeoutExpired" in text: return "TimeoutExpired"
+    if rc == -1:
+        crash = _log_crash_detected(text)
+        return f"crashed ({crash})" if crash else "crashed (watchdog)"
+    if "CUDA out of memory" in text or "OutOfMemoryError" in text:
+        return "OOM"
+    if rc == 137:
+        return "exit 137 (killed)"
+    if rc == 139:
+        return "exit 139 (segfault)"
+    if "TimeoutExpired" in text:
+        return "TimeoutExpired"
     return f"exit {rc}"
 
 
@@ -1126,7 +1445,66 @@ def _fmt(v, d): return "N/A" if v is None else f"{v * d['scale']:.{d['digits']}f
 def _fmt_count(v): return "N/A" if v is None else str(v)
 
 
+def status_cmd(run_dir: Path):
+    """JSON snapshot for agent polling (every ~120s during calibration)."""
+    plan_path = run_dir / "plan.json"
+    if not plan_path.exists():
+        print(json.dumps({"error": f"no plan.json in {run_dir}"}, indent=2))
+        return 1
+    plan = json.loads(plan_path.read_text())
+    sy = Path(plan.get("stages_yaml")
+              or stages_path(plan.get("model", DEFAULT_MODEL)))
+    all_stages = _load_yaml(sy)
+    audit = audit_completeness(run_dir, all_stages, plan)
+    mem = _gpu_memory_by_index()
+    busy = sorted(busy_gpu_indices())
+    ready, _, _ = _ready_gpu_indices(max(len(mem), 1))
+    under_2gb = {
+        str(i): m for i, m in mem.items() if m <= _GPU_RETRY_MEM_MIB and i not in busy
+    }
+    launch_allowed = len(ready) >= max(len(mem), 1) and all(
+        m <= _GPU_RETRY_MEM_MIB for i, m in mem.items() if i not in busy
+    ) if mem else False
+    run_log = run_dir / "run.log"
+    log_tail = []
+    if run_log.exists():
+        lines = run_log.read_text(errors="replace").splitlines()
+        log_tail = lines[-15:]
+    pytest_active = bool(subprocess.run(
+        ["pgrep", "-f", f"pytest.*{run_dir.name}"],
+        capture_output=True, check=False).stdout.strip())
+    out = dict(
+        run_dir=str(run_dir),
+        model=plan.get("model"),
+        repeats=plan["repeats"],
+        complete=audit["complete"],
+        ok=audit["ok"],
+        total=audit["total"],
+        missing_count=audit["missing_count"],
+        missing=audit["missing"][:30],
+        gpu_memory_mib=mem,
+        gpu_busy=sorted(busy),
+        gpu_ready=len(ready),
+        gpus_under_2gb_mib=under_2gb,
+        launch_allowed=launch_allowed,
+        gpu_mem_limit_mib=_GPU_RETRY_MEM_MIB,
+        pytest_active=pytest_active,
+        run_log_tail=log_tail,
+        agent_poll_interval_s=_AGENT_POLL_INTERVAL_S,
+        timestamp=now_iso(),
+    )
+    print(json.dumps(out, indent=2))
+    return 0 if audit["complete"] else 1
+
+
 def report(run_dir):
+    audit = audit_completeness(run_dir)
+    if not audit["complete"]:
+        print(f"error: refusing report — incomplete calibration "
+              f"({audit['ok']}/{audit['total']})")
+        for m in audit["missing"][:15]:
+            print(f"  {m['stage_key']}/run{m['run']}: {m['reason']}")
+        return 1
     plan = json.loads((run_dir / "plan.json").read_text())
     pre = json.loads((run_dir / "precheck.json").read_text()) \
         if (run_dir / "precheck.json").exists() else {}
@@ -1282,6 +1660,27 @@ def _classify_direction(worst_op, current, new):
     return "unknown"
 
 
+def _apply_write_value(worst_op: str, worst_raw: float | None,
+                       worst_rounded: float | None,
+                       stage_group: str | None) -> float | None:
+    """Return the literal to write into a test file.
+
+    WER and accuracy are pass/fail thresholds — never display-round them.
+    For speed, use worst_rounded unless it would tighten beyond worst_raw.
+    """
+    if worst_raw is None:
+        return None
+    if stage_group in ("wer", "accuracy"):
+        return worst_raw
+    if worst_rounded is None:
+        return worst_raw
+    if worst_op == "min" and worst_rounded > worst_raw:
+        return worst_raw
+    if worst_op == "max" and worst_rounded < worst_raw:
+        return worst_raw
+    return worst_rounded
+
+
 def apply_plan(run_dir):
     plan = json.loads((run_dir / "plan.json").read_text())
     sy = Path(plan.get("stages_yaml")
@@ -1319,13 +1718,15 @@ def apply_plan(run_dir):
                 worst_rounded = round(worst, digits)
             else:
                 worst, worst_rounded = None, None
+            write_value = _apply_write_value(
+                worst_op, worst, worst_rounded, s.get("group"))
             if kind == "bare":
                 cur = _read_bare_value(text, sym)
             elif kind == "nested":
                 cur = _read_nested_value(text, sym, conc, sub)
             else:
                 cur = None
-            direction = _classify_direction(worst_op, cur, worst_rounded)
+            direction = _classify_direction(worst_op, cur, write_value)
             sg["metrics"].append({
                 "metric_key": mk,
                 "source": m["source"],
@@ -1337,6 +1738,7 @@ def apply_plan(run_dir):
                 "per_run_raw": vals,
                 "worst_raw": worst,
                 "worst_rounded": worst_rounded,
+                "write_value": write_value,
                 "digits": digits,
                 "scale": display.get("scale", 1),
                 "label": display.get("label", mk),
@@ -1367,8 +1769,11 @@ def main(argv=None):
     sc.add_argument("--resume", action="store_true")
     sc.add_argument("--skip-precheck", action="store_true")
     sc.add_argument("--stages-yaml")
+    sc.add_argument("--max-passes", type=int, default=_DEFAULT_CALIBRATION_PASSES,
+                    help="max retry passes until all stage-runs have complete metrics")
     sd = sub.add_parser("report"); sd.add_argument("--run-dir", required=True)
     se = sub.add_parser("apply-plan"); se.add_argument("--run-dir", required=True)
+    sf = sub.add_parser("status"); sf.add_argument("--run-dir", required=True)
     args = p.parse_args(argv)
     if args.cmd == "models-list":
         for m in available_models(): print(m)
@@ -1377,6 +1782,8 @@ def main(argv=None):
         return report(Path(args.run_dir))
     if args.cmd == "apply-plan":
         return apply_plan(Path(args.run_dir))
+    if args.cmd == "status":
+        return status_cmd(Path(args.run_dir))
     cfg = load_model_config(args.model)
     if args.cmd == "stages-list":
         return stages_list(cfg)

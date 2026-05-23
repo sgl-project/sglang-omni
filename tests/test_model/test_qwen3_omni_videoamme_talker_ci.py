@@ -41,7 +41,7 @@ MAX_SAMPLES = 20
 MAX_TOKENS = 256
 
 VIDEOAMME_TALKER_THINKER_TEXT_MIN_ACCURACY = 0.65
-VIDEOAMME_TALKER_WER_BELOW_50_CORPUS_MAX = 0.014144271570014143
+VIDEOAMME_TALKER_WER_BELOW_50_CORPUS_MAX = 0.010596026490066225
 VIDEOAMME_TALKER_WER_BELOW_50_CORPUS_THRESHOLD = apply_wer_slack(
     VIDEOAMME_TALKER_WER_BELOW_50_CORPUS_MAX
 )
@@ -49,10 +49,10 @@ VIDEOAMME_TALKER_N_ABOVE_50_MAX = 1
 
 _VIDEOAMME_TALKER_AUDIO_P95 = {
     16: {
-        "throughput_qps": 0.389,
-        "tok_per_s_agg": 1.3,
-        "latency_mean_s": 35.61,
-        "rtf_mean": 4.4573,
+        "throughput_qps": 0.624,
+        "tok_per_s_agg": 2.2,
+        "latency_mean_s": 20.656,
+        "rtf_mean": 3.7926,
     },
 }
 VIDEOAMME_TALKER_THRESHOLDS = apply_slack(_VIDEOAMME_TALKER_AUDIO_P95)

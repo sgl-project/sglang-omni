@@ -7,7 +7,7 @@ mmmu_accuracy:
   context_vars:
     - CONCURRENCY
   test_file_sha256: 51d622ca8330f4a8ded677127155a138cfd4bc484080c620537fe072770fa20a
-  last_discovered_at: 2026-05-22T01:02:12Z
+  last_discovered_at: 2026-05-22T16:52:36Z
   sample_counts:
     total:
       json_file: "test_mmmu_accuracy_and_speed0/mmmu/mmmu_results.json"
@@ -34,7 +34,7 @@ mmmu_speed:
   context_vars:
     - CONCURRENCY
   test_file_sha256: 51d622ca8330f4a8ded677127155a138cfd4bc484080c620537fe072770fa20a
-  last_discovered_at: 2026-05-22T01:02:12Z
+  last_discovered_at: 2026-05-22T16:52:36Z
   sample_counts:
     total:
       json_file: "test_mmmu_accuracy_and_speed0/mmmu/mmmu_results.json"
@@ -83,7 +83,7 @@ mmmu_talker_accuracy:
     - MAX_TOKENS
     - CONCURRENCY
   test_file_sha256: 2547144f0d175e81fa00cd42eab33ea2a9def4ef8574c0dc2e045b9212c5c1ff
-  last_discovered_at: 2026-05-22T01:02:12Z
+  last_discovered_at: 2026-05-22T16:52:36Z
   sample_counts:
     total:
       json_file: "test_mmmu_audio_wer_and_speed0/mmmu_audio/mmmu_results.json"
@@ -112,7 +112,7 @@ mmmu_talker_wer:
     - MAX_TOKENS
     - CONCURRENCY
   test_file_sha256: 2547144f0d175e81fa00cd42eab33ea2a9def4ef8574c0dc2e045b9212c5c1ff
-  last_discovered_at: 2026-05-22T01:02:12Z
+  last_discovered_at: 2026-05-22T16:52:36Z
   sample_counts:
     total:
       json_file: "test_mmmu_audio_wer_and_speed0/mmmu_audio/mmmu_results.json"
@@ -151,7 +151,7 @@ mmmu_talker_speed:
     - MAX_TOKENS
     - CONCURRENCY
   test_file_sha256: 2547144f0d175e81fa00cd42eab33ea2a9def4ef8574c0dc2e045b9212c5c1ff
-  last_discovered_at: 2026-05-22T01:02:12Z
+  last_discovered_at: 2026-05-22T16:52:36Z
   sample_counts:
     total:
       json_file: "test_mmmu_audio_wer_and_speed0/mmmu_audio/mmmu_results.json"
@@ -207,8 +207,8 @@ mmsu_accuracy:
   extra_env: {}
   context_vars:
     - CONCURRENCY
-  test_file_sha256: 6025ab18a86c3852bef8606d7f175ad19beae644428a53b36b3831edf4e1d8b5
-  last_discovered_at: 2026-05-22T01:02:12Z
+  test_file_sha256: 521b05dddd6f4fe4faa755e268e1d4b4989a26123e06e91bd47d360e32667bc3
+  last_discovered_at: 2026-05-22T16:52:36Z
   sample_counts:
     total:
       json_file: "test_mmsu_accuracy_and_speed0/mmsu/mmsu_results.json"
@@ -234,8 +234,8 @@ mmsu_speed:
   extra_env: {}
   context_vars:
     - CONCURRENCY
-  test_file_sha256: 6025ab18a86c3852bef8606d7f175ad19beae644428a53b36b3831edf4e1d8b5
-  last_discovered_at: 2026-05-22T01:02:12Z
+  test_file_sha256: 521b05dddd6f4fe4faa755e268e1d4b4989a26123e06e91bd47d360e32667bc3
+  last_discovered_at: 2026-05-22T16:52:36Z
   sample_counts:
     total:
       json_file: "test_mmsu_accuracy_and_speed0/mmsu/mmsu_results.json"
@@ -284,7 +284,7 @@ mmsu_talker_accuracy:
     - MAX_TOKENS
     - CONCURRENCY
   test_file_sha256: e97f207194e3867add2335368e61158ae2cbb5a9b0cd9cd23cea901c8bcf4290
-  last_discovered_at: 2026-05-22T01:02:12Z
+  last_discovered_at: 2026-05-22T16:52:36Z
   sample_counts:
     total:
       json_file: "test_mmsu_audio_wer_and_speed0/mmsu_audio/mmsu_results.json"
@@ -313,7 +313,7 @@ mmsu_talker_wer:
     - MAX_TOKENS
     - CONCURRENCY
   test_file_sha256: e97f207194e3867add2335368e61158ae2cbb5a9b0cd9cd23cea901c8bcf4290
-  last_discovered_at: 2026-05-22T01:02:12Z
+  last_discovered_at: 2026-05-22T16:52:36Z
   sample_counts:
     total:
       json_file: "test_mmsu_audio_wer_and_speed0/mmsu_audio/mmsu_results.json"
@@ -352,7 +352,7 @@ mmsu_talker_speed:
     - MAX_TOKENS
     - CONCURRENCY
   test_file_sha256: e97f207194e3867add2335368e61158ae2cbb5a9b0cd9cd23cea901c8bcf4290
-  last_discovered_at: 2026-05-22T01:02:12Z
+  last_discovered_at: 2026-05-22T16:52:36Z
   sample_counts:
     total:
       json_file: "test_mmsu_audio_wer_and_speed0/mmsu_audio/mmsu_results.json"
@@ -410,8 +410,8 @@ tts_wer:
   context_vars:
     - MAX_SAMPLES
     - CONCURRENCY
-  test_file_sha256: 93ee825af5152d7d9e4064aea4297e15e4fbbf1ab7e61941bd147f90639e1da6
-  last_discovered_at: 2026-05-22T01:02:12Z
+  test_file_sha256: 00662371bee5fe110c7a153c544775e20baed31b9c46de3cdd196c5f9a5068aa
+  last_discovered_at: 2026-05-22T16:52:36Z
   sample_counts:
     total:
       json_file: "vc_nonstream0/wer_results.json"
@@ -449,8 +449,8 @@ tts_speed:
   context_vars:
     - MAX_SAMPLES
     - CONCURRENCY
-  test_file_sha256: 93ee825af5152d7d9e4064aea4297e15e4fbbf1ab7e61941bd147f90639e1da6
-  last_discovered_at: 2026-05-22T01:02:12Z
+  test_file_sha256: 00662371bee5fe110c7a153c544775e20baed31b9c46de3cdd196c5f9a5068aa
+  last_discovered_at: 2026-05-22T16:52:36Z
   sample_counts:
     total:
       json_file: "vc_nonstream0/wer_results.json"
@@ -508,7 +508,7 @@ videoamme_accuracy:
     - MAX_SAMPLES
     - CONCURRENCY
   test_file_sha256: 4c94f4e9913ff8b44c222c337db059269afb8997d8b74a25da3d5594a9fa59d4
-  last_discovered_at: 2026-05-22T01:02:12Z
+  last_discovered_at: 2026-05-22T16:52:36Z
   sample_counts:
     total:
       json_file: "test_videoamme_accuracy_and_sp0/videoamme/videoamme_results.json"
@@ -536,7 +536,7 @@ videoamme_speed:
     - MAX_SAMPLES
     - CONCURRENCY
   test_file_sha256: 4c94f4e9913ff8b44c222c337db059269afb8997d8b74a25da3d5594a9fa59d4
-  last_discovered_at: 2026-05-22T01:02:12Z
+  last_discovered_at: 2026-05-22T16:52:36Z
   sample_counts:
     total:
       json_file: "test_videoamme_accuracy_and_sp0/videoamme/videoamme_results.json"
@@ -585,7 +585,7 @@ videoamme_talker_accuracy:
     - MAX_TOKENS
     - CONCURRENCY
   test_file_sha256: ac98b989a16c9b21cc9e8a1800c3a4efb422e81ace4187796a3637dec664203d
-  last_discovered_at: 2026-05-22T01:02:12Z
+  last_discovered_at: 2026-05-22T16:52:36Z
   sample_counts:
     total:
       json_file: "test_videoamme_talker_accuracy0/videoamme_audio/videoamme_results.json"
@@ -614,7 +614,7 @@ videoamme_talker_wer:
     - MAX_TOKENS
     - CONCURRENCY
   test_file_sha256: ac98b989a16c9b21cc9e8a1800c3a4efb422e81ace4187796a3637dec664203d
-  last_discovered_at: 2026-05-22T01:02:12Z
+  last_discovered_at: 2026-05-22T16:52:36Z
   sample_counts:
     total:
       json_file: "test_videoamme_talker_accuracy0/videoamme_audio/videoamme_results.json"
@@ -653,7 +653,7 @@ videoamme_talker_speed:
     - MAX_TOKENS
     - CONCURRENCY
   test_file_sha256: ac98b989a16c9b21cc9e8a1800c3a4efb422e81ace4187796a3637dec664203d
-  last_discovered_at: 2026-05-22T01:02:12Z
+  last_discovered_at: 2026-05-22T16:52:36Z
   sample_counts:
     total:
       json_file: "test_videoamme_talker_accuracy0/videoamme_audio/videoamme_results.json"
@@ -712,7 +712,7 @@ videoamme_talker_tp2_accuracy:
     - MAX_TOKENS
     - CONCURRENCY
   test_file_sha256: 223dafd2196e479ee888ba514badacb296e3b5ca8c91fefddcb4a057540a9eab
-  last_discovered_at: 2026-05-22T01:02:12Z
+  last_discovered_at: 2026-05-22T16:52:36Z
   sample_counts:
     total:
       json_file: "test_videoamme_talker_tp2_accu0/videoamme_audio/videoamme_results.json"
@@ -741,7 +741,7 @@ videoamme_talker_tp2_wer:
     - MAX_TOKENS
     - CONCURRENCY
   test_file_sha256: 223dafd2196e479ee888ba514badacb296e3b5ca8c91fefddcb4a057540a9eab
-  last_discovered_at: 2026-05-22T01:02:12Z
+  last_discovered_at: 2026-05-22T16:52:36Z
   sample_counts:
     total:
       json_file: "test_videoamme_talker_tp2_accu0/videoamme_audio/videoamme_results.json"
@@ -780,7 +780,7 @@ videoamme_talker_tp2_speed:
     - MAX_TOKENS
     - CONCURRENCY
   test_file_sha256: 223dafd2196e479ee888ba514badacb296e3b5ca8c91fefddcb4a057540a9eab
-  last_discovered_at: 2026-05-22T01:02:12Z
+  last_discovered_at: 2026-05-22T16:52:36Z
   sample_counts:
     total:
       json_file: "test_videoamme_talker_tp2_accu0/videoamme_audio/videoamme_results.json"
@@ -838,7 +838,7 @@ videomme_accuracy:
     - MAX_SAMPLES
     - CONCURRENCY
   test_file_sha256: 66b1a91d960d318cb663caf591a42d24b7c162db479a5adc9ef74bf2c4cd207e
-  last_discovered_at: 2026-05-22T01:02:12Z
+  last_discovered_at: 2026-05-22T16:52:36Z
   sample_counts:
     total:
       json_file: "test_videomme_accuracy_and_spe0/videomme/videomme_results.json"
@@ -866,7 +866,7 @@ videomme_speed:
     - MAX_SAMPLES
     - CONCURRENCY
   test_file_sha256: 66b1a91d960d318cb663caf591a42d24b7c162db479a5adc9ef74bf2c4cd207e
-  last_discovered_at: 2026-05-22T01:02:12Z
+  last_discovered_at: 2026-05-22T16:52:36Z
   sample_counts:
     total:
       json_file: "test_videomme_accuracy_and_spe0/videomme/videomme_results.json"
@@ -915,7 +915,7 @@ videomme_talker_accuracy:
     - MAX_TOKENS
     - CONCURRENCY
   test_file_sha256: ebf873027c230a7b4816501935d459d8ddf826f69b8aa773a78e50bd6979aedd
-  last_discovered_at: 2026-05-22T01:02:12Z
+  last_discovered_at: 2026-05-22T16:52:36Z
   sample_counts:
     total:
       json_file: "test_videomme_tts_accuracy_wer0/videomme_audio/videomme_results.json"
@@ -944,7 +944,7 @@ videomme_talker_wer:
     - MAX_TOKENS
     - CONCURRENCY
   test_file_sha256: ebf873027c230a7b4816501935d459d8ddf826f69b8aa773a78e50bd6979aedd
-  last_discovered_at: 2026-05-22T01:02:12Z
+  last_discovered_at: 2026-05-22T16:52:36Z
   sample_counts:
     total:
       json_file: "test_videomme_tts_accuracy_wer0/videomme_audio/videomme_results.json"
@@ -983,7 +983,7 @@ videomme_talker_speed:
     - MAX_TOKENS
     - CONCURRENCY
   test_file_sha256: ebf873027c230a7b4816501935d459d8ddf826f69b8aa773a78e50bd6979aedd
-  last_discovered_at: 2026-05-22T01:02:12Z
+  last_discovered_at: 2026-05-22T16:52:36Z
   sample_counts:
     total:
       json_file: "test_videomme_tts_accuracy_wer0/videomme_audio/videomme_results.json"
@@ -1039,5 +1039,5 @@ qwen3_omni_docs:
   extra_env: {}
   context_vars: []
   test_file_sha256: 3c59a61000ada650912f751f42690379477891e0f8d7f1fc6fe03a0acbf396cc
-  last_discovered_at: 2026-05-22T01:02:12Z
+  last_discovered_at: 2026-05-22T16:52:36Z
   metrics: {}
