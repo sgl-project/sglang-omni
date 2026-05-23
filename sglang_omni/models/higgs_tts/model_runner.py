@@ -96,9 +96,7 @@ class HiggsTTSModelRunner(ModelRunner):
         )
         # Per-row top_k buffer: default K_MAX = no-op filter (covers
         # padding rows and rows whose top_k was None / non-positive).
-        top_k_vals = [
-            (tk if (tk is not None and tk > 0) else K_MAX) for tk in top_ks
-        ]
+        top_k_vals = [(tk if (tk is not None and tk > 0) else K_MAX) for tk in top_ks]
         top_k_vals.extend([K_MAX] * (bs - n_real))
         model._cg_top_k_buf[:bs] = torch.tensor(
             top_k_vals, dtype=torch.long, device=model._cg_top_k_buf.device
@@ -111,7 +109,6 @@ class HiggsTTSModelRunner(ModelRunner):
         model._cg_active_eoc_countdown[:bs] = pool.eoc_countdown[rows_t]
         model._cg_active_generation_done[:bs] = pool.generation_done[rows_t]
         model._cg_active_last_codes[:bs] = pool.last_codes[rows_t]
-
 
     @staticmethod
     def _extract_decode_sampling_params(forward_batch, n_real: int):
@@ -174,7 +171,7 @@ class HiggsTTSModelRunner(ModelRunner):
             raise ValueError(
                 f"forward_batch.batch_size ({bs}) < len(requests) ({n_real})"
             )
-        
+
         rows_t = model._cg_row_indices[:n_real]
         pool = model._sampler_pool
         pool.delay_count[rows_t] = model._cg_active_delay_count[:n_real]
@@ -184,9 +181,7 @@ class HiggsTTSModelRunner(ModelRunner):
 
         was_done_cpu = model._cg_was_done[:n_real].cpu().tolist()
         codes_BN_cpu = model._cg_codes_BN[:n_real].detach().cpu().clone()
-        gen_done_after_cpu = (
-            model._cg_active_generation_done[:n_real].cpu().tolist()
-        )
+        gen_done_after_cpu = model._cg_active_generation_done[:n_real].cpu().tolist()
         cb0_per_row: list[int] = []
         for b, sched_req in enumerate(requests):
             data = sched_req.data

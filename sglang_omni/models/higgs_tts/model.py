@@ -189,7 +189,10 @@ class HiggsTTSModel(nn.Module):
         # "no filter" — selects all K_MAX top values, equivalent to a
         # very wide top-k. Populated outside the captured graph each step.
         self._cg_top_k_buf = torch.full(
-            (pool_size,), K_MAX, dtype=torch.long, device=cg_device,
+            (pool_size,),
+            K_MAX,
+            dtype=torch.long,
+            device=cg_device,
         )
         # Outputs of the captured forward.
         self._cg_codes_BN = torch.zeros(

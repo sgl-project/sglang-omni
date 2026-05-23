@@ -345,20 +345,24 @@ def batched_step(
     generation_done = state.generation_done[row_indices]
     last_codes = state.last_codes[row_indices]
 
-    out_codes, new_delay_count, new_eoc_countdown, new_generation_done, new_last_codes = (
-        batched_step_direct(
-            logits_BNV,
-            delay_count,
-            eoc_countdown,
-            generation_done,
-            last_codes,
-            temperature=temperature,
-            top_p=top_p,
-            top_k=top_k,
-            top_k_buf=top_k_buf,
-            boc_id=boc_id,
-            eoc_id=eoc_id,
-        )
+    (
+        out_codes,
+        new_delay_count,
+        new_eoc_countdown,
+        new_generation_done,
+        new_last_codes,
+    ) = batched_step_direct(
+        logits_BNV,
+        delay_count,
+        eoc_countdown,
+        generation_done,
+        last_codes,
+        temperature=temperature,
+        top_p=top_p,
+        top_k=top_k,
+        top_k_buf=top_k_buf,
+        boc_id=boc_id,
+        eoc_id=eoc_id,
     )
 
     state.delay_count[row_indices] = new_delay_count.to(state.delay_count.dtype)
@@ -410,10 +414,7 @@ def batched_step_direct(
     in_delay_active = active & (delay_count < N)
     in_winddown_active = active & (eoc_countdown >= 0) & (~in_delay_active)
     cb0_eoc_now_active = (
-        active
-        & (~in_delay_active)
-        & (~in_winddown_active)
-        & (codes_BN[:, 0] == eoc_id)
+        active & (~in_delay_active) & (~in_winddown_active) & (codes_BN[:, 0] == eoc_id)
     )
 
     new_delay_count = torch.where(in_delay_active, delay_count + 1, delay_count)
