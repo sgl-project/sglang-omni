@@ -240,10 +240,6 @@ def create_sglang_tts_engine_executor(
     gpu_id = int(device.split(":")[-1]) if ":" in device else 0
 
     overrides: dict[str, Any] = {
-        # Stage 4 of the CUDA Graph migration: the decode-mode forward
-        # is now graph-capturable (sampler state in GPU pool, per-row
-        # params + outputs in preallocated CG buffers, no Python control
-        # flow inside model.forward in decode mode).
         "disable_cuda_graph": False,
         "cuda_graph_max_bs": 32,
         "mem_fraction_static": 0.85,

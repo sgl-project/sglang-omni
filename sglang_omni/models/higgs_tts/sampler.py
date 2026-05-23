@@ -30,9 +30,7 @@ from sglang_omni.models.higgs_tts.utils import BOC_ID, EOC_ID
 # Sentinel returned by ``step`` after ``generation_done``; engine treats as stop.
 STOP_CODE = -1
 
-# Baked top-k upper bound for the CG-friendly batched sampler. Equals the
-# full codec vocab so the default buffer value is a no-op filter and EOC
-# stays sample-able even when it falls into the long tail.
+# CG-baked top-k upper bound = full codec vocab, so the default value is a no-op filter.
 K_MAX = 1026
 
 
@@ -52,11 +50,6 @@ class HiggsSamplerState:
 
 class HiggsBatchedSamplerState:
     """Per-request sampler state stored as ``[max_bs, ...]`` GPU tensors.
-
-    This is the storage half of the CUDA Graph migration (Stage 1). The
-    sampler itself still runs the Python state machine in :func:`step`
-    on a per-row :class:`HiggsSamplerState`; Stage 2 vectorises the step
-    so it operates on this batched state directly.
 
     Per-row meaning (matches :class:`HiggsSamplerState`):
 
@@ -97,11 +90,7 @@ class HiggsBatchedSamplerState:
         )
 
     def reset_row(self, row: int) -> None:
-        """Wipe row ``row`` back to its initial state.
-
-        Called when a slot is acquired for a new request (so a previously
-        finished or aborted request can't leave stale flags behind).
-        """
+        """Wipe row ``row`` so the next owner can't read stale state."""
         self.delay_count[row] = 0
         self.eoc_countdown[row] = -1
         self.generation_done[row] = False
@@ -109,18 +98,7 @@ class HiggsBatchedSamplerState:
 
     def view_row(self, row: int) -> HiggsSamplerState:
         """Materialise row ``row`` as a per-request :class:`HiggsSamplerState`.
-
-        Stage 1 transitional helper: the existing :func:`step` is per-row,
-        so we read out one row's tensors as Python scalars + a 1-D tensor,
-        run the step, then call :meth:`write_row` to commit changes. Stage
-        2 replaces this with a true batched step that mutates the pool
-        tensors in place.
-
-        ``last_codes`` is returned as ``None`` while ``delay_count == 0``
-        (i.e. the row hasn't produced any AR steps yet) to match the old
-        per-request dict's "freshly constructed" semantics. The model
-        runner uses that signal to fall back to text-only embed at decode
-        time for never-sampled rows.
+        ``last_codes`` is ``None`` while ``delay_count == 0`` (never sampled).
         """
         delay = int(self.delay_count[row].item())
         eoc = int(self.eoc_countdown[row].item())
@@ -240,7 +218,7 @@ def step(
 
 
 # ---------------------------------------------------------------------------
-# Batched (CUDA-Graph-friendly) sampler step — Stage 2
+# Batched (CUDA-Graph-friendly) sampler step
 # ---------------------------------------------------------------------------
 
 
@@ -252,45 +230,30 @@ def _sample_independent_batched(
     top_k: int | None = None,
     top_k_buf: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    """Batched analogue of :func:`_sample_independent`.
+    """Batched ``[B, N, V] → [B, N]`` sampler.
 
-    Operates on ``logits_BNV`` of shape ``[B, N, V]`` and returns codes
-    ``[B, N]``. ``temperature`` is per-row ``[B]``; ``top_p`` is
-    per-row ``[B]`` or ``None``.
-
-    Top-k filtering is mutually exclusive between the two paths:
-
-    * CG callers pass ``top_k_buf`` — a per-row ``[B]`` long tensor with
-      values in ``[1, K_MAX]``. ``topk(K_MAX)`` is baked at trace time
-      and the per-row threshold is selected via ``gather`` so the
-      kernel sequence is CUDA-Graph stable while ``k`` remains
-      runtime-mutable.
-    * Eager callers pass scalar ``top_k`` (or ``None`` to skip). The
-      Python branch is fine here because no capture is happening.
+    ``top_k`` (scalar) and ``top_k_buf`` (``[B]`` per-row) are mutually
+    exclusive: CG callers pass ``top_k_buf`` so ``topk(K_MAX)`` bakes at
+    trace time and per-row ``k`` selects via ``gather``; eager callers
+    pass scalar ``top_k``.
     """
     B, N, V = logits_BNV.shape
-    # Per-row temperature scaling. We do NOT short-circuit greedy
-    # because the resulting Python branch would break graph capture;
-    # callers wanting deterministic argmax should pass temperature very
-    # low (e.g. 1e-3) — the softmax then concentrates ~all probability
-    # on the argmax token.
+    # No greedy short-circuit — the Python branch would break graph capture.
+    # For deterministic argmax pass temperature ~ 1e-3.
     safe_temp = temperature.clamp(min=_GREEDY_TEMP_THRESHOLD).view(B, 1, 1)
     logits = logits_BNV / safe_temp
 
     if top_k_buf is not None:
-        # CG path: K_MAX baked at trace time, no Python branch on tensor values.
         top_vals = logits.topk(K_MAX, dim=-1).values  # [B, N, K_MAX]
         k_idx = top_k_buf.view(B, 1, 1).expand(-1, N, 1).clamp(min=1, max=K_MAX) - 1
         kth = top_vals.gather(-1, k_idx)  # [B, N, 1]
         logits = torch.where(logits < kth, float("-inf"), logits)
     elif top_k is not None and top_k > 0:
-        # Eager path: Python branch is fine (no capture happening).
         k = min(int(top_k), V)
         kth = logits.topk(k, dim=-1).values[..., -1:]
         logits = torch.where(logits < kth, float("-inf"), logits)
 
     if top_p is not None:
-        # top_p as per-row [B] tensor; broadcast over (N, V)
         sorted_logits, sorted_indices = torch.sort(logits, descending=True, dim=-1)
         cum_probs = sorted_logits.softmax(dim=-1).cumsum(dim=-1)
         thresh = top_p.view(B, 1, 1)
@@ -302,7 +265,7 @@ def _sample_independent_batched(
         logits = torch.where(scatter, float("-inf"), logits)
 
     probs = logits.softmax(dim=-1)
-    # multinomial wants 2-D input; collapse the [B, N] rows then reshape.
+    # multinomial needs 2-D input; flatten [B, N] then unflatten.
     codes_flat = probs.reshape(B * N, V).multinomial(num_samples=1).squeeze(-1)
     return codes_flat.view(B, N).to(torch.long)
 
@@ -319,26 +282,9 @@ def batched_step(
     boc_id: int = BOC_ID,
     eoc_id: int = EOC_ID,
 ) -> torch.Tensor:
-    """Eager-path wrapper around :func:`batched_step_direct`.
-    Used by ``decode_codebooks_batch`` (``disable_cuda_graph=True``); the
-    CG path skips this and calls ``batched_step_direct`` directly.
-
-    Args:
-        logits_BNV: ``[B, N, V]`` model logits for this AR step.
-        state:      :class:`HiggsBatchedSamplerState` pool (``max_bs`` rows).
-        row_indices: ``[B]`` int64 mapping batch index → pool row.
-        temperature: ``[B]`` float per-row sampling temperature.
-        top_p:      ``[B]`` float per-row top-p (or ``None``).
-        top_k:      Scalar uniform top-k across the batch (eager path),
-            or ``None`` to skip the filter. Mutually exclusive with
-            ``top_k_buf``.
-        top_k_buf:  ``[B]`` int64 per-row top-k in ``[1, K_MAX]`` (CG
-            path), or ``None``. Mutually exclusive with ``top_k``.
-
-    Returns:
-        ``[B, N]`` int64 sampled codes. Rows whose ``generation_done`` was
-        ``True`` on entry produce :data:`STOP_CODE` sentinels; their
-        state is left unchanged.
+    """Eager-path wrapper: gather pool state by ``row_indices``, call
+    :func:`batched_step_direct`, scatter the new state back. Done rows
+    return :data:`STOP_CODE` with state untouched.
     """
     delay_count = state.delay_count[row_indices]
     eoc_countdown = state.eoc_countdown[row_indices]

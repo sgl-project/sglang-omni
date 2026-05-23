@@ -1,22 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
 """Higgs TTS model runner — phase-aware AR base-runner subclass.
 
-- ``prepare_prefill``: build per-request fused multi-codebook input embeds,
-  paste them at the ``-100`` placeholder positions, set
-  ``forward_batch.input_embeds``, and propagate ``req_ids``.
-- ``prepare_decode``: populate CG buffers (``_cg_row_indices``,
-  ``_cg_temperature``, ``_cg_top_p``, ``_cg_top_k_buf``) and gather the
-  sampler pool's per-row state (``delay_count``, ``eoc_countdown``,
-  ``generation_done``, ``last_codes``) into the model's ``_cg_active_*``
-  shadow buffers. The captured forward only ever reads/writes
-  ``_cg_active_*[:bs]`` via direct slicing — gather/scatter via
-  ``pool[row_indices]`` is kept out of the graph.
-- ``post_prefill``: append each request's newly emitted multi-codebook
-  row from ``model._output_codes[req_id][-1]`` to ``data.output_codes``
-  and overwrite ``result.next_token_ids`` with codebook-0.
-- ``post_decode``: scatter the model's ``_cg_active_*`` shadow buffers
-  back into the sampler pool, then read ``_cg_codes_BN`` / ``_cg_was_done``
-  to append per-request codes (skipping rows already done at step entry).
+Decode-mode hooks gather sampler-pool state into ``_cg_active_*`` shadow
+buffers before the captured forward and scatter results back after, so
+the graph itself only ever does ``_cg_active_*[:bs]`` slicing — no
+``pool[row_indices]`` gather/scatter under capture (capture-time
+``row_indices`` are all-zero placeholders → duplicate-index UB).
 """
 
 from __future__ import annotations
@@ -59,13 +48,11 @@ class HiggsTTSModelRunner(ModelRunner):
         self._collect_step_outputs_cg(result, forward_batch, requests)
 
     def _populate_cg_buffers(self, forward_batch, requests) -> None:
-        """Write per-row decode state (row indices, sampling params) into
-        the model's CUDA-Graph buffers so the captured forward can read
-        them without any Python control flow.
+        """Fill the model's CG buffers for one decode step.
 
-        Padding rows (``forward_batch.batch_size > len(requests)``) point
-        at the model's reserved padding row; their sampler state is
-        reset each step so they never bleed into real rows.
+        Padding rows (``batch_size > len(requests)``) point at the
+        reserved padding row, which is reset every step so it can't
+        leak state into real rows.
         """
         model = self.model
         bs = int(forward_batch.batch_size)
@@ -75,22 +62,17 @@ class HiggsTTSModelRunner(ModelRunner):
                 f"forward_batch.batch_size ({bs}) < len(requests) ({n_real})"
             )
 
-        # Always reset the padding row before each decode — keeps its
-        # state machine inert so the captured graph can't poison real rows.
         model._sampler_pool.reset_row(model._padding_row)
 
         rows_py: list[int] = [model.acquire_row(req.request_id) for req in requests]
-        # Pad with the reserved padding row.
         rows_py.extend([model._padding_row] * (bs - n_real))
         model._cg_row_indices[:bs] = torch.tensor(
             rows_py, dtype=torch.long, device=model._cg_row_indices.device
         )
 
-        # Per-row sampling params: pull off sglang sampling_info if available.
         temps, top_ps, top_ks = self._extract_decode_sampling_params(
             forward_batch, n_real
         )
-        # Pad to bs with safe defaults (temp=1.0, top_p=1.0).
         temps.extend([1.0] * (bs - n_real))
         top_ps.extend([1.0] * (bs - n_real))
         model._cg_temperature[:bs] = torch.tensor(
@@ -99,15 +81,13 @@ class HiggsTTSModelRunner(ModelRunner):
         model._cg_top_p[:bs] = torch.tensor(
             top_ps, dtype=torch.float32, device=model._cg_top_p.device
         )
-        # Per-row top_k buffer: default K_MAX = no-op filter (covers
-        # padding rows and rows whose top_k was None / non-positive).
+        # K_MAX = no-op filter, used for padding rows and None/non-positive top_k.
         top_k_vals = [(tk if (tk is not None and tk > 0) else K_MAX) for tk in top_ks]
         top_k_vals.extend([K_MAX] * (bs - n_real))
         model._cg_top_k_buf[:bs] = torch.tensor(
             top_k_vals, dtype=torch.long, device=model._cg_top_k_buf.device
         )
 
-        # Shadow-buffer: copy active rows' state out of the pool so the CUDA graph can read by index.
         rows_t = model._cg_row_indices[:bs]
         pool = model._sampler_pool
         model._cg_active_delay_count[:bs] = pool.delay_count[rows_t]
@@ -117,11 +97,9 @@ class HiggsTTSModelRunner(ModelRunner):
 
     @staticmethod
     def _extract_decode_sampling_params(forward_batch, n_real: int):
-        """Pull per-row temperature / top_p / top_k lists off sglang's
-        ``sampling_info``. Falls back to safe defaults when missing.
-
-        Top_k > K_MAX is rejected here at the boundary so the inner
-        CG sampler path can assume all values fit the buffer.
+        """Pull per-row temperature / top_p / top_k off sglang's
+        ``sampling_info`` (with safe defaults), rejecting ``top_k > K_MAX``
+        at the boundary so the inner CG path can assume valid values.
         """
         sampling_info = getattr(forward_batch, "sampling_info", None)
         if sampling_info is None or n_real == 0:
@@ -132,8 +110,7 @@ class HiggsTTSModelRunner(ModelRunner):
             if val is None:
                 return None
             if hasattr(val, "cpu"):
-                # sglang stores some of these as [B, 1] — flatten so we
-                # always get a flat per-row list.
+                # sglang stores some of these as [B, 1] — flatten to per-row.
                 return val.detach().cpu().flatten().tolist()
             return list(val)
 
@@ -159,13 +136,8 @@ class HiggsTTSModelRunner(ModelRunner):
     def _collect_step_outputs_cg(
         self, result: Any, forward_batch: Any, requests: list
     ) -> None:
-        """Read decode-step outputs out of the model's CG buffers and
-        append them to per-request ``output_codes`` logs.
-
-        Mirrors :meth:`_collect_step_outputs` but pulls from the pool /
-        CG buffers rather than from the now-removed model._output_codes
-        decode path. Padding rows are skipped because we only iterate
-        the real ``requests`` slice.
+        """Scatter shadow state back into the pool and append per-request
+        codes from the CG output buffers.
         """
         if len(requests) == 0:
             return

@@ -48,15 +48,7 @@ _DEFAULT_MAX_BATCH_SIZE = 64
 
 @dataclass
 class _RequestSlot:
-    """Per-request runtime bookkeeping inside :class:`HiggsTTSModel`.
-
-    Stage 1 of CUDA Graph migration: the ``sampler`` field is now a
-    *view* of one row from :attr:`HiggsTTSModel._sampler_pool`. Mutating
-    it in-place still works because the per-row Python dataclass shares
-    references with the pool tensors; an explicit writeback through
-    :meth:`HiggsBatchedSamplerState.write_row` is what actually persists
-    new state values back into the pool.
-    """
+    """Per-request runtime bookkeeping inside :class:`HiggsTTSModel`."""
 
     sampler: HiggsSamplerState
     output_codes: list[torch.Tensor] = field(default_factory=list)
@@ -165,22 +157,19 @@ class HiggsTTSModel(nn.Module):
             pool_size, dtype=torch.float32, device=cg_device
         )
         self._cg_top_p = torch.ones(pool_size, dtype=torch.float32, device=cg_device)
-        # Per-row top_k buffer (long, in [1, K_MAX]). Default K_MAX means
-        # "no filter" — selects all K_MAX top values, equivalent to a
-        # very wide top-k. Populated outside the captured graph each step.
+        # Default K_MAX = no-op top-k filter.
         self._cg_top_k_buf = torch.full(
             (pool_size,),
             K_MAX,
             dtype=torch.long,
             device=cg_device,
         )
-        # Outputs of the captured forward.
         self._cg_codes_BN = torch.zeros(
             pool_size, num_codebooks, dtype=torch.long, device=cg_device
         )
         self._cg_was_done = torch.zeros(pool_size, dtype=torch.bool, device=cg_device)
 
-        # Shadow sampler state, copied from the pool at entry to the CG forward.
+        # Shadow buffers — gathered from the pool before each captured forward.
         self._cg_active_delay_count = torch.zeros(
             pool_size, dtype=torch.int32, device=cg_device
         )
@@ -212,12 +201,7 @@ class HiggsTTSModel(nn.Module):
         return self._codebook_vocab_size
 
     def acquire_row(self, req_id: str) -> int:
-        """Allocate or look up the sampler-pool row for ``req_id``.
-
-        Idempotent: returns the existing row index when ``req_id`` is
-        already mapped. On first call, pops a free row, resets its
-        state, and registers the mapping.
-        """
+        """Allocate or look up the sampler-pool row for ``req_id``. Idempotent."""
         row = self._rid_to_row.get(req_id)
         if row is not None:
             return row
@@ -233,23 +217,13 @@ class HiggsTTSModel(nn.Module):
         return row
 
     def release_row(self, req_id: str) -> None:
-        """Return ``req_id``'s row to the free pool and drop its output
-        codes. Idempotent: a no-op when the request isn't mapped."""
+        """Return ``req_id``'s row to the free pool and drop its output codes."""
         row = self._rid_to_row.pop(req_id, None)
         if row is not None:
             self._free_rows.append(row)
         self._output_codes.pop(req_id, None)
 
     def get_slot(self, req_id: str) -> _RequestSlot:
-        """Return a read/write view of one request's slot.
-
-        The ``sampler`` field is a snapshot of the pool row at call time;
-        mutating it and then re-reading without going through
-        :meth:`HiggsBatchedSamplerState.write_row` will not persist back
-        to the pool. Internal call sites that mutate state always end
-        with an explicit writeback; external callers (model_runner /
-        tests) typically only read.
-        """
         row = self.acquire_row(req_id)
         return _RequestSlot(
             sampler=self._sampler_pool.view_row(row),
@@ -257,7 +231,6 @@ class HiggsTTSModel(nn.Module):
         )
 
     def reset_request(self, req_id: str) -> None:
-        """Drop all per-request state. Compat shim over :meth:`release_row`."""
         self.release_row(req_id)
 
     def get_output_codes(self, req_id: str) -> torch.Tensor:
@@ -277,20 +250,7 @@ class HiggsTTSModel(nn.Module):
         req_ids: list[str],
         gen_params: list[HiggsGenParams],
     ) -> torch.Tensor:
-        """Sample multi-codebook tokens for one forward step.
-
-        Real codes land in ``self._output_codes[req_id]``; the returned
-        text-vocab logits are a structural placeholder that sglang's downstream
-        sampler walks over but whose ``next_token_ids`` are discarded by
-        :class:`HiggsTTSModelRunner`.
-
-        Stage 2 of the CUDA Graph migration: the per-row Python sampler
-        loop is replaced with a single :func:`batched_step` call. The
-        per-row ``.item()`` sync inside the old loop is gone; the only
-        remaining D2H copy per step is a single ``[B]``-shape transfer
-        of the "was already done at entry" flags so we know which rows
-        to skip appending to :attr:`_output_codes`.
-        """
+        """Sample multi-codebook tokens for one forward step."""
         batch_size = hidden_states_BD.shape[0]
         if len(req_ids) != batch_size or len(gen_params) != batch_size:
             raise ValueError(
@@ -302,8 +262,6 @@ class HiggsTTSModel(nn.Module):
         logits_BNV = self.modality_head.generate(hidden_states_BD).to(torch.float32)
         device = logits_BNV.device
 
-        # Allocate / look up pool rows. ``acquire_row`` resets new rows so
-        # stale state from a previous owner can't leak in.
         row_indices = torch.tensor(
             [self.acquire_row(rid) for rid in req_ids],
             dtype=torch.long,
@@ -364,18 +322,9 @@ class HiggsTTSModel(nn.Module):
 
     @torch.no_grad()
     def decode_codebooks_batch_cg(self, hidden_states_BD: torch.Tensor) -> torch.Tensor:
-        """CUDA-Graph-friendly variant of :meth:`decode_codebooks_batch`.
-
-        Reads sampling params + row indices from preallocated buffers
-        (populated by ``model_runner.prepare_decode`` before invocation),
-        writes outputs into preallocated buffers (read by
-        ``model_runner.post_decode`` afterwards). Contains no Python
-        control flow that depends on tensor values, no D2H syncs, and
-        no dict mutations — safe to capture into a CUDA Graph.
-
-        Returns a text-vocab placeholder logits tensor so sglang's
-        downstream sampler still receives the shape it expects; the
-        actual codebook samples live in :attr:`_cg_codes_BN`.
+        """CG-friendly variant of :meth:`decode_codebooks_batch`: reads/writes
+        only preallocated ``_cg_*`` buffers, no Python control flow on
+        tensor values, no D2H syncs.
         """
         batch_size = hidden_states_BD.shape[0]
         device = hidden_states_BD.device
@@ -391,8 +340,7 @@ class HiggsTTSModel(nn.Module):
         generation_done_B = self._cg_active_generation_done[:batch_size]
         last_codes_BN_in = self._cg_active_last_codes[:batch_size]
 
-        # Snapshot done flags BEFORE the step; STOP_CODE rows mustn't be
-        # appended to output_codes downstream.
+        # Snapshot done flags BEFORE the step — STOP_CODE rows skip append.
         self._cg_was_done[:batch_size] = generation_done_B
 
         (
@@ -438,19 +386,9 @@ class HiggsTTSModel(nn.Module):
     ):
         """Run the backbone then sample multi-codebook codes per request.
 
-        - **Prefill** (extend): caller supplies ``input_embeds`` with the
-          ref-audio overlay already pasted at ``-100`` positions (see
-          :class:`HiggsTTSModelRunner._build_prefill_input_embeds`).
-          Row allocation and per-row sampling params come from the
-          Python-side path via ``forward_batch.req_ids`` /
-          ``forward_batch.sampling_info``.
-
-        - **Decode**: graph-capture-friendly path. Row allocation,
-          per-row sampling params, and the output-codes append are
-          all handled by :class:`HiggsTTSModelRunner` outside this
-          forward; the model reads / writes the preallocated CG
-          buffers (``_cg_row_indices`` etc.) — no Python control flow
-          inside this method depends on tensor values.
+        Prefill takes runner-supplied ``input_embeds`` (ref-audio pasted
+        at ``-100``); decode reads embeds and sampling state from
+        ``_cg_active_*`` shadow buffers populated by the runner.
         """
         is_decode = self._is_decode_step(forward_batch)
 
@@ -460,10 +398,6 @@ class HiggsTTSModel(nn.Module):
             )
         else:
             req_ids, gen_params = self._extract_batch_metadata(forward_batch)
-            if input_embeds is None:
-                # Prefill always supplies input_embeds via the runner, but
-                # keep the no-op fallback so a stray call doesn't crash.
-                pass
 
         hidden_states = self.backbone.model(
             input_ids,
@@ -539,8 +473,8 @@ class HiggsTTSModel(nn.Module):
 
     @staticmethod
     def _gen_params_for_batch(sampling_info, batch_size: int) -> list[HiggsGenParams]:
-        """Pull per-row sampling params off ``sampling_info`` with at most
-        one D2H per attribute (instead of one per row).
+        """Pull per-row sampling params off ``sampling_info`` with one D2H
+        per attribute (not per row).
         """
         if sampling_info is None:
             return [HiggsGenParams() for _ in range(batch_size)]
@@ -550,8 +484,7 @@ class HiggsTTSModel(nn.Module):
             if val is None:
                 return None
             if hasattr(val, "cpu"):
-                # sglang stores some of these as [B, 1] — flatten first
-                # so we always get a flat per-row list.
+                # sglang stores some as [B, 1] — flatten to per-row.
                 return val.detach().cpu().flatten().tolist()
             return list(val)
 
@@ -585,23 +518,16 @@ class HiggsTTSModel(nn.Module):
     ) -> torch.Tensor:
         """Build per-step embeddings from each request's last sampled codes.
 
-        Reads ``last_codes`` directly from the GPU sampler pool. A row
-        whose ``delay_count == 0`` has never sampled (the scheduler may
-        send us a token before our first decode step for it), so the
-        fused-codec embedding is masked out in favour of the text embed
-        at those positions.
-
-        Vectorised — zero per-row D2H sync: row mapping uses a single
-        Python ``dict.get`` per request, but every GPU read is a single
-        gather over ``[B]`` rows.
+        Rows with ``delay_count == 0`` haven't sampled yet (scheduler can
+        send a token before our first decode for them); those positions
+        fall back to the text embed.
         """
         device = input_ids.device
 
         rows_py = [self._rid_to_row.get(rid, -1) for rid in req_ids]
         rows = torch.tensor(rows_py, dtype=torch.long, device=device)
         has_row = rows >= 0
-        # ``safe_rows`` lets us gather without an OOB branch; the mask
-        # below discards rows we shouldn't have read.
+        # ``safe_rows`` gathers without an OOB branch; mask below masks reads we shouldn't have.
         safe_rows = torch.where(has_row, rows, torch.zeros_like(rows))
         delay_counts = self._sampler_pool.delay_count[safe_rows].to(torch.long)
         has_codes = has_row & (delay_counts > 0)
