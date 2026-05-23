@@ -72,9 +72,6 @@ def truncate_rope_to_bf16(model: torch.nn.Module) -> None:
     """bf16-truncate sglang's fp32 ``cos_sin_cache`` in-place (stored as fp32)
     to match Higgs's bf16 training-time RoPE.
     """
-    # In-place ``copy_`` keeps the cache's storage pointer stable. Reassigning
-    # ``cache.data`` would swap to a fresh allocation, leaving CUDA Graph
-    # RoPE kernels (captured later by sglang) pointing at the freed buffer.
     for module in model.modules():
         if hasattr(module, "cos_sin_cache"):
             cache = module.cos_sin_cache

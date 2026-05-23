@@ -157,7 +157,7 @@ class HiggsTTSModel(nn.Module):
             pool_size, dtype=torch.float32, device=cg_device
         )
         self._cg_top_p = torch.ones(pool_size, dtype=torch.float32, device=cg_device)
-        # Default K_MAX = no-op top-k filter.
+        # Note(yichi): top_k buffer for CG capture.
         self._cg_top_k_buf = torch.full(
             (pool_size,),
             K_MAX,
@@ -169,7 +169,7 @@ class HiggsTTSModel(nn.Module):
         )
         self._cg_was_done = torch.zeros(pool_size, dtype=torch.bool, device=cg_device)
 
-        # Shadow buffers — gathered from the pool before each captured forward.
+        # Note(yichi)Shadow buffers for CG decode step state.
         self._cg_active_delay_count = torch.zeros(
             pool_size, dtype=torch.int32, device=cg_device
         )
@@ -283,7 +283,6 @@ class HiggsTTSModel(nn.Module):
             if has_top_p
             else None
         )
-        # Per-row top_k: map None / non-positive to K_MAX (no-op filter).
         top_k_buf = torch.tensor(
             [
                 (p.top_k if (p.top_k is not None and p.top_k > 0) else K_MAX)
@@ -304,8 +303,7 @@ class HiggsTTSModel(nn.Module):
             top_k_buf=top_k_buf,
         )
 
-        # One D2H per step: which rows were already finished at entry.
-        # Their codes are STOP_CODE sentinels; don't append to output_codes.
+        # Note(yichi): One D2H per step to skip STOP-sentinel rows in the Python append loop.
         was_done_cpu = was_done.cpu().tolist()
         codes_BN = codes_BN.detach().to(torch.long)
         for b in range(batch_size):
@@ -340,7 +338,6 @@ class HiggsTTSModel(nn.Module):
         generation_done_B = self._cg_active_generation_done[:batch_size]
         last_codes_BN_in = self._cg_active_last_codes[:batch_size]
 
-        # Snapshot done flags BEFORE the step — STOP_CODE rows skip append.
         self._cg_was_done[:batch_size] = generation_done_B
 
         (
@@ -484,7 +481,6 @@ class HiggsTTSModel(nn.Module):
             if val is None:
                 return None
             if hasattr(val, "cpu"):
-                # sglang stores some as [B, 1] — flatten to per-row.
                 return val.detach().cpu().flatten().tolist()
             return list(val)
 

@@ -1,22 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Multi-codebook sampler state machine for Higgs TTS.
+"""Higgs TTS multi-codebook sampler — two parallel implementations of
+the same delay/EOC state machine:
 
-Pure torch / pure Python so it can be unit-tested in isolation from sglang.
-
-Per-request algorithm each step (codebook logits ``[N, V]`` in, codes
-``[N]`` out):
-
-1. If ``generation_done``: return ``[-1, ..., -1]`` (stop signal).
-2. Sample ``N`` codebooks independently from the logits (temperature / top-k /
-   top-p / multinomial; or argmax when temperature <= 0).
-3. **Delay window** (``delay_count < N``): force codebooks at indices
-   ``> delay_count`` to :data:`BOC_ID`. Increment ``delay_count``.
-4. **Wind-down** (``eoc_countdown is not None``): free sampling, decrement.
-   When the counter hits 0, set ``generation_done``.
-5. **EOC detection**: if codebook-0's sampled code equals :data:`EOC_ID`,
-   start wind-down (``eoc_countdown = N - 2``); for ``N <= 2`` mark done
-   immediately.
-6. Update ``last_codes`` unless ``generation_done`` was just set.
+- ``step`` / ``HiggsSamplerState``: per-row, Python control flow.
+  Reference / test oracle.
+- ``batched_step`` / ``batched_step_direct`` / ``HiggsBatchedSamplerState``:
+  batched, ``torch.where``-vectorised, CUDA-Graph-friendly. Production.
 """
 
 from __future__ import annotations
@@ -227,30 +216,17 @@ def _sample_independent_batched(
     *,
     temperature: torch.Tensor,
     top_p: torch.Tensor | None,
-    top_k: int | None = None,
     top_k_buf: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    """Batched ``[B, N, V] → [B, N]`` sampler.
-
-    ``top_k`` (scalar) and ``top_k_buf`` (``[B]`` per-row) are mutually
-    exclusive: CG callers pass ``top_k_buf`` so ``topk(K_MAX)`` bakes at
-    trace time and per-row ``k`` selects via ``gather``; eager callers
-    pass scalar ``top_k``.
-    """
+    """Batched ``[B, N, V] → [B, N]`` sampler."""
     B, N, V = logits_BNV.shape
-    # No greedy short-circuit — the Python branch would break graph capture.
-    # For deterministic argmax pass temperature ~ 1e-3.
     safe_temp = temperature.clamp(min=_GREEDY_TEMP_THRESHOLD).view(B, 1, 1)
     logits = logits_BNV / safe_temp
 
     if top_k_buf is not None:
-        top_vals = logits.topk(K_MAX, dim=-1).values  # [B, N, K_MAX]
+        top_vals = logits.topk(K_MAX, dim=-1).values
         k_idx = top_k_buf.view(B, 1, 1).expand(-1, N, 1).clamp(min=1, max=K_MAX) - 1
-        kth = top_vals.gather(-1, k_idx)  # [B, N, 1]
-        logits = torch.where(logits < kth, float("-inf"), logits)
-    elif top_k is not None and top_k > 0:
-        k = min(int(top_k), V)
-        kth = logits.topk(k, dim=-1).values[..., -1:]
+        kth = top_vals.gather(-1, k_idx)
         logits = torch.where(logits < kth, float("-inf"), logits)
 
     if top_p is not None:
@@ -265,7 +241,6 @@ def _sample_independent_batched(
         logits = torch.where(scatter, float("-inf"), logits)
 
     probs = logits.softmax(dim=-1)
-    # multinomial needs 2-D input; flatten [B, N] then unflatten.
     codes_flat = probs.reshape(B * N, V).multinomial(num_samples=1).squeeze(-1)
     return codes_flat.view(B, N).to(torch.long)
 
@@ -277,7 +252,6 @@ def batched_step(
     *,
     temperature: torch.Tensor,
     top_p: torch.Tensor | None = None,
-    top_k: int | None = None,
     top_k_buf: torch.Tensor | None = None,
     boc_id: int = BOC_ID,
     eoc_id: int = EOC_ID,
@@ -305,7 +279,6 @@ def batched_step(
         last_codes,
         temperature=temperature,
         top_p=top_p,
-        top_k=top_k,
         top_k_buf=top_k_buf,
         boc_id=boc_id,
         eoc_id=eoc_id,
@@ -328,7 +301,6 @@ def batched_step_direct(
     *,
     temperature: torch.Tensor,
     top_p: torch.Tensor | None = None,
-    top_k: int | None = None,
     top_k_buf: torch.Tensor | None = None,
     boc_id: int = BOC_ID,
     eoc_id: int = EOC_ID,
@@ -347,7 +319,6 @@ def batched_step_direct(
         logits_BNV,
         temperature=temperature,
         top_p=top_p,
-        top_k=top_k,
         top_k_buf=top_k_buf,
     )
 

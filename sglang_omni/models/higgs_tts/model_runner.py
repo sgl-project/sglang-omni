@@ -81,7 +81,7 @@ class HiggsTTSModelRunner(ModelRunner):
         model._cg_top_p[:bs] = torch.tensor(
             top_ps, dtype=torch.float32, device=model._cg_top_p.device
         )
-        # K_MAX = no-op filter, used for padding rows and None/non-positive top_k.
+
         top_k_vals = [(tk if (tk is not None and tk > 0) else K_MAX) for tk in top_ks]
         top_k_vals.extend([K_MAX] * (bs - n_real))
         model._cg_top_k_buf[:bs] = torch.tensor(
@@ -110,7 +110,6 @@ class HiggsTTSModelRunner(ModelRunner):
             if val is None:
                 return None
             if hasattr(val, "cpu"):
-                # sglang stores some of these as [B, 1] — flatten to per-row.
                 return val.detach().cpu().flatten().tolist()
             return list(val)
 
@@ -190,7 +189,6 @@ class HiggsTTSModelRunner(ModelRunner):
         embed_tokens = self.model.backbone.model.embed_tokens
         fused_embed = self.model.multimodal_embedding.modality_embedding_0
 
-        # embed_tokens would OOB on -100; embed 0 first, overwrite placeholders below.
         placeholder_mask = input_ids == AUDIO_PLACEHOLDER_ID
         safe_ids = torch.where(placeholder_mask, torch.zeros_like(input_ids), input_ids)
         text_embeds = embed_tokens(safe_ids)
