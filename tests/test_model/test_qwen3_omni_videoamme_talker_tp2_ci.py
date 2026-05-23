@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Video-AMME Talker TP=2 CI for Qwen3-Omni (Video+Audio -> Text+Audio).
+"""Video-AMME Talker TP=2 CI for native FP8 Qwen3-Omni.
 
 Runs a small Video-AMME subset through Video+Audio -> Text+Audio with the
 thinker stage sharded across two GPUs (tp_size=2), then checks text answer
@@ -58,12 +58,12 @@ VIDEOAMME_TALKER_TP2_THRESHOLDS = apply_slack(_VIDEOAMME_TALKER_TP2_AUDIO_P95)
 
 @pytest.mark.benchmark
 def test_thinker_tp2_actually_applied(
-    qwen3_omni_talker_server_tp2: ServerHandle,
+    qwen3_omni_fp8_talker_server_tp2: ServerHandle,
 ) -> None:
     """Confirm the thinker stage actually came up at tp_size=2.
     Prevents silent fallback to TP=1
     """
-    log_file = qwen3_omni_talker_server_tp2.log_file
+    log_file = qwen3_omni_fp8_talker_server_tp2.log_file
     assert log_file is not None and log_file.exists(), (
         "TP=2 fixture did not capture a server log — check that the fixture "
         "passes log_file=... to ServerHandle"
@@ -81,13 +81,13 @@ def test_thinker_tp2_actually_applied(
 
 @pytest.mark.benchmark
 def test_videoamme_talker_tp2_accuracy_wer_and_speed(
-    qwen3_omni_talker_server_tp2: ServerHandle,
+    qwen3_omni_fp8_talker_server_tp2: ServerHandle,
     tmp_path: Path,
 ) -> None:
     """Run Video-AMME with TP=2 thinker + Talker enabled."""
     config = VideoEvalConfig(
         model="qwen3-omni",
-        port=qwen3_omni_talker_server_tp2.port,
+        port=qwen3_omni_fp8_talker_server_tp2.port,
         max_samples=MAX_SAMPLES,
         max_tokens=MAX_TOKENS,
         max_concurrency=CONCURRENCY,

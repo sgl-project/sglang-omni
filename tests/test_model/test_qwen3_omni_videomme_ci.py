@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Video-MME accuracy and speed CI for Qwen3-Omni (Text+Video -> Text, Talker OFF).
+"""Video-MME accuracy and speed CI for native FP8 Qwen3-Omni.
 
 Usage:
     pytest tests/test_model/test_qwen3_omni_videomme_ci.py -s -x
@@ -45,13 +45,13 @@ VIDEOMME_THRESHOLDS = apply_slack(_VIDEOMME_P95)
 
 @pytest.mark.benchmark
 def test_videomme_accuracy_and_speed(
-    qwen3_omni_thinker_server: ManagedRouterHandle,
+    qwen3_omni_fp8_thinker_server: ManagedRouterHandle,
     tmp_path: Path,
 ) -> None:
     """Run videomme-ci-50 at concurrency=16 and report accuracy + speed."""
     config = VideoEvalConfig(
         model="qwen3-omni",
-        port=qwen3_omni_thinker_server.port,
+        port=qwen3_omni_fp8_thinker_server.port,
         max_samples=MAX_SAMPLES,
         max_concurrency=CONCURRENCY,
         output_dir=str(tmp_path / "videomme"),
@@ -63,8 +63,8 @@ def test_videomme_accuracy_and_speed(
         timeout_s=500,
     )
     with router_worker_traffic_guard(
-        qwen3_omni_thinker_server,
-        label="Qwen3-Omni Video-MME",
+        qwen3_omni_fp8_thinker_server,
+        label="Qwen3-Omni FP8 Video-MME",
     ) as router_guard:
         results = asyncio.run(
             run_video_eval(
