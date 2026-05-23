@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Iterable, Tuple
 
 import torch
@@ -19,7 +19,6 @@ from sglang_omni.models.higgs_tts.modeling import (
 from sglang_omni.models.higgs_tts.sampler import (
     K_MAX,
     HiggsBatchedSamplerState,
-    HiggsSamplerState,
     batched_step,
     batched_step_direct,
 )
@@ -46,12 +45,17 @@ class HiggsGenParams:
 _DEFAULT_MAX_BATCH_SIZE = 64
 
 
-@dataclass
-class _RequestSlot:
-    """Per-request runtime bookkeeping inside :class:`HiggsTTSModel`."""
+def _flat_sampling_attr(sampling_info, attr: str) -> list | None:
+    """Return ``sampling_info.<attr>`` as a flat Python list, or ``None``.
 
-    sampler: HiggsSamplerState
-    output_codes: list[torch.Tensor] = field(default_factory=list)
+    One D2H per attribute (not per row).
+    """
+    val = getattr(sampling_info, attr, None)
+    if val is None:
+        return None
+    if hasattr(val, "cpu"):
+        return val.detach().cpu().flatten().tolist()
+    return list(val)
 
 
 class _HiggsMultimodalEmbedding(nn.Module):
@@ -157,7 +161,6 @@ class HiggsTTSModel(nn.Module):
             pool_size, dtype=torch.float32, device=cg_device
         )
         self._cg_top_p = torch.ones(pool_size, dtype=torch.float32, device=cg_device)
-        # Note(yichi): top_k buffer for CG capture.
         self._cg_top_k_buf = torch.full(
             (pool_size,),
             K_MAX,
@@ -169,7 +172,6 @@ class HiggsTTSModel(nn.Module):
         )
         self._cg_was_done = torch.zeros(pool_size, dtype=torch.bool, device=cg_device)
 
-        # Note(yichi)Shadow buffers for CG decode step state.
         self._cg_active_delay_count = torch.zeros(
             pool_size, dtype=torch.int32, device=cg_device
         )
@@ -222,13 +224,6 @@ class HiggsTTSModel(nn.Module):
         if row is not None:
             self._free_rows.append(row)
         self._output_codes.pop(req_id, None)
-
-    def get_slot(self, req_id: str) -> _RequestSlot:
-        row = self.acquire_row(req_id)
-        return _RequestSlot(
-            sampler=self._sampler_pool.view_row(row),
-            output_codes=self._output_codes.setdefault(req_id, []),
-        )
 
     def reset_request(self, req_id: str) -> None:
         self.release_row(req_id)
@@ -470,23 +465,13 @@ class HiggsTTSModel(nn.Module):
 
     @staticmethod
     def _gen_params_for_batch(sampling_info, batch_size: int) -> list[HiggsGenParams]:
-        """Pull per-row sampling params off ``sampling_info`` with one D2H
-        per attribute (not per row).
-        """
+        """Pull per-row sampling params off ``sampling_info``."""
         if sampling_info is None:
             return [HiggsGenParams() for _ in range(batch_size)]
 
-        def _to_list(attr: str):
-            val = getattr(sampling_info, attr, None)
-            if val is None:
-                return None
-            if hasattr(val, "cpu"):
-                return val.detach().cpu().flatten().tolist()
-            return list(val)
-
-        temps = _to_list("temperatures")
-        top_ps = _to_list("top_ps")
-        top_ks = _to_list("top_ks")
+        temps = _flat_sampling_attr(sampling_info, "temperatures")
+        top_ps = _flat_sampling_attr(sampling_info, "top_ps")
+        top_ks = _flat_sampling_attr(sampling_info, "top_ks")
 
         params: list[HiggsGenParams] = []
         for b in range(batch_size):
@@ -508,38 +493,6 @@ class HiggsTTSModel(nn.Module):
         if seq_lens is not None and hasattr(seq_lens, "shape"):
             return int(seq_lens.shape[0])
         return int(getattr(forward_batch, "batch_size", 1))
-
-    def _decode_step_embeds(
-        self, req_ids: list[str], input_ids: torch.Tensor
-    ) -> torch.Tensor:
-        """Build per-step embeddings from each request's last sampled codes.
-
-        Rows with ``delay_count == 0`` haven't sampled yet (scheduler can
-        send a token before our first decode for them); those positions
-        fall back to the text embed.
-        """
-        device = input_ids.device
-
-        rows_py = [self._rid_to_row.get(rid, -1) for rid in req_ids]
-        rows = torch.tensor(rows_py, dtype=torch.long, device=device)
-        has_row = rows >= 0
-        # ``safe_rows`` gathers without an OOB branch; mask below masks reads we shouldn't have.
-        safe_rows = torch.where(has_row, rows, torch.zeros_like(rows))
-        delay_counts = self._sampler_pool.delay_count[safe_rows].to(torch.long)
-        has_codes = has_row & (delay_counts > 0)
-
-        last_codes_BN = self._sampler_pool.last_codes[safe_rows].to(torch.long)
-        fused_embeds = self.multimodal_embedding.modality_embedding_0(last_codes_BN)
-
-        text_embeds = self.backbone.model.embed_tokens(input_ids)
-        if text_embeds.ndim == 3:
-            text_embeds = text_embeds[:, -1, :]
-
-        return torch.where(
-            has_codes.unsqueeze(-1),
-            fused_embeds.to(text_embeds.dtype),
-            text_embeds,
-        )
 
     def load_weights(self, weights: Iterable[Tuple[str, torch.Tensor]]) -> set[str]:
         """Remap Higgs ckpt names then split between backbone and own modules.

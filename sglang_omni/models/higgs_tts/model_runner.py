@@ -16,6 +16,7 @@ from typing import Any
 import torch
 
 from sglang_omni.model_runner.base import ModelRunner
+from sglang_omni.models.higgs_tts.model import _flat_sampling_attr
 from sglang_omni.models.higgs_tts.sampler import K_MAX
 from sglang_omni.models.higgs_tts.text_tokenizer import AUDIO_PLACEHOLDER_ID
 
@@ -107,17 +108,9 @@ class HiggsTTSModelRunner(ModelRunner):
         if sampling_info is None or n_real == 0:
             return ([1.0] * n_real, [1.0] * n_real, [None] * n_real)
 
-        def _flat_list(attr: str):
-            val = getattr(sampling_info, attr, None)
-            if val is None:
-                return None
-            if hasattr(val, "cpu"):
-                return val.detach().cpu().flatten().tolist()
-            return list(val)
-
-        temps_raw = _flat_list("temperatures") or [1.0] * n_real
-        top_ps_raw = _flat_list("top_ps") or [1.0] * n_real
-        top_ks_raw = _flat_list("top_ks")
+        temps_raw = _flat_sampling_attr(sampling_info, "temperatures") or [1.0] * n_real
+        top_ps_raw = _flat_sampling_attr(sampling_info, "top_ps") or [1.0] * n_real
+        top_ks_raw = _flat_sampling_attr(sampling_info, "top_ks")
 
         temps = [float(t) for t in temps_raw[:n_real]]
         top_ps = [float(t) for t in top_ps_raw[:n_real]]
