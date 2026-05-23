@@ -52,6 +52,7 @@ from tests.test_model.omni_router_utils import (
     router_get_json,
 )
 from tests.utils import (
+    MetricCheckCollector,
     apply_slack,
     apply_wer_slack,
     assert_per_request_fields,
@@ -301,17 +302,30 @@ def _run_similarity(
     return similarity_results
 
 
-def _assert_similarity_results(results: dict, min_mean: float) -> None:
+def _assert_similarity_results(
+    results: dict,
+    min_mean: float,
+    *,
+    collector: MetricCheckCollector | None = None,
+) -> None:
+    checks = collector or MetricCheckCollector("speaker similarity")
     summary = results["summary"]
     per_sample = results["per_sample"]
-    assert per_sample, "Expected per-sample speaker similarity results"
-    assert (
-        summary.get("skipped", 0) == 0
-    ), f"speaker similarity: {summary.get('skipped')} skipped samples ≠ 0"
-    mean = summary["speaker_similarity_mean"]
-    assert (
-        mean >= min_mean
-    ), f"speaker_similarity_mean {mean:.4f} < threshold {min_mean:.4f}"
+    checks.check(bool(per_sample), "Expected per-sample speaker similarity results")
+    checks.check(
+        summary.get("skipped", 0) == 0,
+        f"speaker similarity: {summary.get('skipped')} skipped samples != 0",
+    )
+    mean = summary.get("speaker_similarity_mean")
+    if mean is None:
+        checks.fail("Missing speaker_similarity_mean in summary")
+    else:
+        checks.check(
+            mean >= min_mean,
+            f"speaker_similarity_mean {mean:.4f} < threshold {min_mean:.4f}",
+        )
+    if collector is None:
+        checks.assert_all()
 
 
 def _load_speed_results(results_path: Path) -> dict:
@@ -328,18 +342,28 @@ def _store_consistency_inputs(
     concurrency: int,
     output_dir: str,
     results: dict,
+    collector: MetricCheckCollector | None = None,
 ) -> None:
+    checks = collector or MetricCheckCollector(
+        f"S2-Pro {mode} speed results at concurrency {concurrency}"
+    )
     summary, per_request = results["summary"], results["per_request"]
-    assert_summary_metrics(summary)
-    assert_per_request_fields(per_request)
+    assert_summary_metrics(summary, collector=checks)
+    assert_per_request_fields(per_request, collector=checks)
     if mode == "non_stream":
-        assert_speed_thresholds(summary, VC_NON_STREAM_THRESHOLDS, concurrency)
+        assert_speed_thresholds(
+            summary, VC_NON_STREAM_THRESHOLDS, concurrency, collector=checks
+        )
         store_key = f"vc_nonstream_c{concurrency}"
     else:
-        assert_speed_thresholds(summary, VC_STREAM_THRESHOLDS, concurrency)
+        assert_speed_thresholds(
+            summary, VC_STREAM_THRESHOLDS, concurrency, collector=checks
+        )
         store_key = f"vc_stream_c{concurrency}"
     PER_REQUEST_STORE[store_key] = per_request
     SPEED_OUTPUT_DIRS[mode][concurrency] = output_dir
+    if collector is None:
+        checks.assert_all()
 
 
 def _assert_stage_used_all_router_workers(
@@ -348,13 +372,22 @@ def _assert_stage_used_all_router_workers(
     before_workers: dict,
     results: dict,
     label: str,
+    collector: MetricCheckCollector | None = None,
 ) -> None:
-    assert_workers_served_requests_since(
-        port=router_server.port,
-        before_snapshot=before_workers,
-        label=label,
-        min_total_requests=results["summary"]["completed_requests"],
-    )
+    kwargs = {
+        "port": router_server.port,
+        "before_snapshot": before_workers,
+        "label": label,
+        "min_total_requests": results["summary"]["completed_requests"],
+    }
+    if collector is None:
+        assert_workers_served_requests_since(**kwargs)
+    else:
+        collector.check_assertion(
+            f"{label} router worker traffic",
+            assert_workers_served_requests_since,
+            **kwargs,
+        )
 
 
 def _find_downloaded_speed_results(
@@ -570,11 +603,15 @@ def test_voice_cloning_non_streaming(
                 output_dir,
                 concurrency=concurrency,
             )
+            checks = MetricCheckCollector(
+                f"S2-Pro non-streaming benchmark c{concurrency}"
+            )
             _assert_stage_used_all_router_workers(
                 router_server=router_server,
                 before_workers=before_workers,
                 results=results,
                 label=f"S2-Pro non-stream c{concurrency}",
+                collector=checks,
             )
         except Exception:
             print_router_diagnostics(router_server)
@@ -584,7 +621,9 @@ def test_voice_cloning_non_streaming(
             concurrency=concurrency,
             output_dir=output_dir,
             results=results,
+            collector=checks,
         )
+        checks.assert_all()
 
 
 @pytest.mark.s2pro_stage(S2PRO_STAGE_STREAM)
@@ -613,11 +652,13 @@ def test_voice_cloning_streaming(
                 max_samples=STREAMING_BENCHMARK_MAX_SAMPLES,
                 stream=True,
             )
+            checks = MetricCheckCollector(f"S2-Pro streaming benchmark c{concurrency}")
             _assert_stage_used_all_router_workers(
                 router_server=router_server,
                 before_workers=before_workers,
                 results=results,
                 label=f"S2-Pro stream c{concurrency}",
+                collector=checks,
             )
         except Exception:
             print_router_diagnostics(router_server)
@@ -627,7 +668,9 @@ def test_voice_cloning_streaming(
             concurrency=concurrency,
             output_dir=output_dir,
             results=results,
+            collector=checks,
         )
+        checks.assert_all()
 
 
 @pytest.mark.s2pro_stage(S2PRO_STAGE_CONSISTENCY)
@@ -636,14 +679,23 @@ def test_voice_cloning_streaming_consistency(
     consistency_stage_inputs: None,
     selected_s2pro_tts_concurrencies: tuple[int, ...],
 ) -> None:
+    checks = MetricCheckCollector("S2-Pro streaming consistency")
     for concurrency in selected_s2pro_tts_concurrencies:
         ns = PER_REQUEST_STORE.get(f"vc_nonstream_c{concurrency}")
         st = PER_REQUEST_STORE.get(f"vc_stream_c{concurrency}")
-        assert ns is not None, f"vc_nonstream_c{concurrency} results missing"
-        assert st is not None, f"vc_stream_c{concurrency} results missing"
+        if ns is None:
+            checks.fail(f"vc_nonstream_c{concurrency} results missing")
+        if st is None:
+            checks.fail(f"vc_stream_c{concurrency} results missing")
+        if ns is None or st is None:
+            continue
         assert_streaming_consistency(
-            ns, st, expected_stream_count=STREAMING_BENCHMARK_MAX_SAMPLES
+            ns,
+            st,
+            expected_stream_count=STREAMING_BENCHMARK_MAX_SAMPLES,
+            collector=checks,
         )
+    checks.assert_all()
 
 
 @pytest.mark.s2pro_stage(S2PRO_STAGE_NONSTREAM)
@@ -653,6 +705,7 @@ def test_voice_cloning_wer(
     dataset_dir: Path,
     selected_s2pro_tts_concurrencies: tuple[int, ...],
 ) -> None:
+    checks = MetricCheckCollector("S2-Pro non-streaming WER")
     for concurrency in selected_s2pro_tts_concurrencies:
         _print_stage(
             "WER",
@@ -664,7 +717,13 @@ def test_voice_cloning_wer(
             str(dataset_dir / "en" / "meta.lst"),
             wer_input_dirs["non_stream"][concurrency],
         )
-        assert_wer_results(results, VC_WER_CORPUS_THRESHOLD, VC_WER_MAX_PER_SAMPLE)
+        assert_wer_results(
+            results,
+            VC_WER_CORPUS_THRESHOLD,
+            VC_WER_MAX_PER_SAMPLE,
+            collector=checks,
+        )
+    checks.assert_all()
 
 
 @pytest.mark.s2pro_stage(S2PRO_STAGE_NONSTREAM)
@@ -675,6 +734,7 @@ def test_voice_cloning_similarity(
     similarity_checkpoint: str | None,
     selected_s2pro_tts_concurrencies: tuple[int, ...],
 ) -> None:
+    checks = MetricCheckCollector("S2-Pro non-streaming speaker similarity")
     for concurrency in selected_s2pro_tts_concurrencies:
         _print_stage(
             "SIM",
@@ -687,7 +747,8 @@ def test_voice_cloning_similarity(
             wer_input_dirs["non_stream"][concurrency],
             similarity_checkpoint,
         )
-        _assert_similarity_results(results, VC_SIMILARITY_MEAN_MIN)
+        _assert_similarity_results(results, VC_SIMILARITY_MEAN_MIN, collector=checks)
+    checks.assert_all()
 
 
 @pytest.mark.s2pro_stage(S2PRO_STAGE_STREAM)
@@ -697,6 +758,7 @@ def test_voice_cloning_streaming_wer(
     dataset_dir: Path,
     selected_s2pro_tts_concurrencies: tuple[int, ...],
 ) -> None:
+    checks = MetricCheckCollector("S2-Pro streaming WER")
     for concurrency in selected_s2pro_tts_concurrencies:
         _print_stage(
             "WER",
@@ -713,7 +775,9 @@ def test_voice_cloning_streaming_wer(
             results,
             VC_STREAM_WER_CORPUS_THRESHOLD,
             VC_STREAM_WER_MAX_PER_SAMPLE,
+            collector=checks,
         )
+    checks.assert_all()
 
 
 if __name__ == "__main__":

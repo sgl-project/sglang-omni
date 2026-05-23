@@ -25,7 +25,7 @@ from tests.test_model.omni_router_utils import (
     ManagedRouterHandle,
     router_worker_traffic_guard,
 )
-from tests.utils import apply_slack, assert_speed_thresholds
+from tests.utils import MetricCheckCollector, apply_slack, assert_speed_thresholds
 
 CONCURRENCY = 16
 
@@ -72,19 +72,31 @@ def test_mmmu_accuracy_and_speed(
 
     failed = summary.get("failed", 0)
     total = summary.get("total_samples", 0)
-    router_guard.assert_served(min_total_requests=total)
-    assert failed == 0, (
+    checks = MetricCheckCollector("MMMU accuracy and speed")
+    checks.check_assertion(
+        "router traffic",
+        router_guard.assert_served,
+        min_total_requests=total,
+    )
+    checks.check(
+        failed == 0,
         f"MMMU had {failed}/{total} failed requests (timeouts or empty responses); "
-        f"any failure fails the test"
+        f"any failure fails the test",
     )
 
-    assert summary["accuracy"] >= MMMU_MIN_ACCURACY, (
-        f"MMMU accuracy {summary['accuracy']:.4f} "
-        f"({summary['accuracy'] * 100:.1f}%) < "
-        f"threshold {MMMU_MIN_ACCURACY} ({MMMU_MIN_ACCURACY * 100:.0f}%)"
-    )
+    accuracy = summary.get("accuracy")
+    if accuracy is None:
+        checks.fail("MMMU accuracy missing from summary")
+    else:
+        checks.check(
+            accuracy >= MMMU_MIN_ACCURACY,
+            f"MMMU accuracy {accuracy:.4f} "
+            f"({accuracy * 100:.1f}%) < "
+            f"threshold {MMMU_MIN_ACCURACY} ({MMMU_MIN_ACCURACY * 100:.0f}%)",
+        )
 
-    assert_speed_thresholds(speed, MMMU_THRESHOLDS, CONCURRENCY)
+    assert_speed_thresholds(speed, MMMU_THRESHOLDS, CONCURRENCY, collector=checks)
+    checks.assert_all()
 
 
 if __name__ == "__main__":

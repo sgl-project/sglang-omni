@@ -35,6 +35,7 @@ from tests.test_model.omni_router_utils import (
     router_worker_traffic_guard,
 )
 from tests.utils import (
+    MetricCheckCollector,
     apply_slack,
     apply_wer_slack,
     assert_speed_thresholds,
@@ -113,27 +114,41 @@ def test_mmmu_audio_wer_and_speed(
 
     failed = summary.get("failed", 0)
     total = summary.get("total_samples", 0)
-    router_guard.assert_served(min_total_requests=total)
-    assert failed == 0, (
+    checks = MetricCheckCollector("MMMU Talker accuracy, WER, and speed")
+    checks.check_assertion(
+        "router traffic",
+        router_guard.assert_served,
+        min_total_requests=total,
+    )
+    checks.check(
+        failed == 0,
         f"MMMU Talker had {failed}/{total} failed requests "
-        f"(timeouts or empty responses); any failure fails the test"
+        f"(timeouts or empty responses); any failure fails the test",
     )
 
-    accuracy = summary["accuracy"]
-    assert accuracy >= MMMU_AUDIO_MIN_ACCURACY, (
-        f"MMMU audio accuracy {accuracy:.4f} ({accuracy * 100:.1f}%) < "
-        f"threshold {MMMU_AUDIO_MIN_ACCURACY} "
-        f"({MMMU_AUDIO_MIN_ACCURACY * 100:.0f}%)"
-    )
+    accuracy = summary.get("accuracy")
+    if accuracy is None:
+        checks.fail("MMMU audio accuracy missing from summary")
+    else:
+        checks.check(
+            accuracy >= MMMU_AUDIO_MIN_ACCURACY,
+            f"MMMU audio accuracy {accuracy:.4f} ({accuracy * 100:.1f}%) < "
+            f"threshold {MMMU_AUDIO_MIN_ACCURACY} "
+            f"({MMMU_AUDIO_MIN_ACCURACY * 100:.0f}%)",
+        )
 
-    assert "wer" in results, "Audio WER results missing from eval output"
-    assert_wer_partitioned(
-        results["wer"],
-        max_wer_below_50_corpus=MMMU_AUDIO_WER_BELOW_50_CORPUS_THRESHOLD,
-        max_n_above_50=MMMU_AUDIO_N_ABOVE_50_MAX,
-    )
+    if "wer" not in results:
+        checks.fail("Audio WER results missing from eval output")
+    else:
+        assert_wer_partitioned(
+            results["wer"],
+            max_wer_below_50_corpus=MMMU_AUDIO_WER_BELOW_50_CORPUS_THRESHOLD,
+            max_n_above_50=MMMU_AUDIO_N_ABOVE_50_MAX,
+            collector=checks,
+        )
 
-    assert_speed_thresholds(speed, MMMU_AUDIO_THRESHOLDS, CONCURRENCY)
+    assert_speed_thresholds(speed, MMMU_AUDIO_THRESHOLDS, CONCURRENCY, collector=checks)
+    checks.assert_all()
 
 
 if __name__ == "__main__":

@@ -34,6 +34,7 @@ from tests.test_model.omni_router_utils import (
     router_get_json,
 )
 from tests.utils import (
+    MetricCheckCollector,
     apply_slack,
     apply_wer_slack,
     assert_per_request_fields,
@@ -249,14 +250,26 @@ def _run_similarity(
     return similarity_results
 
 
-def _assert_similarity_results(results: dict, min_mean: float) -> None:
+def _assert_similarity_results(
+    results: dict,
+    min_mean: float,
+    *,
+    collector: MetricCheckCollector | None = None,
+) -> None:
+    checks = collector or MetricCheckCollector("speaker similarity")
     summary = results["summary"]
     per_sample = results["per_sample"]
-    mean = summary["speaker_similarity_mean"]
-    assert per_sample, "Expected per-sample speaker similarity results"
-    assert (
-        mean >= min_mean
-    ), f"speaker_similarity_mean {mean:.4f} < threshold {min_mean:.4f}"
+    mean = summary.get("speaker_similarity_mean")
+    checks.check(bool(per_sample), "Expected per-sample speaker similarity results")
+    if mean is None:
+        checks.fail("Missing speaker_similarity_mean in summary")
+    else:
+        checks.check(
+            mean >= min_mean,
+            f"speaker_similarity_mean {mean:.4f} < threshold {min_mean:.4f}",
+        )
+    if collector is None:
+        checks.assert_all()
 
 
 @pytest.fixture(scope="module")
@@ -352,23 +365,42 @@ def test_voice_cloning_non_streaming(
             CONCURRENCY,
             title="TTS Voice-Clone Speed",
         )
-        assert_summary_metrics(speed_artifacts.summary)
-        assert_per_request_fields(speed_artifacts.per_request)
+        checks = MetricCheckCollector("Qwen3-Omni voice-cloning speed")
+        assert_summary_metrics(speed_artifacts.summary, collector=checks)
+        assert_per_request_fields(speed_artifacts.per_request, collector=checks)
         assert_speed_thresholds(
-            speed_artifacts.summary, VC_NON_STREAM_THRESHOLDS, CONCURRENCY
+            speed_artifacts.summary,
+            VC_NON_STREAM_THRESHOLDS,
+            CONCURRENCY,
+            collector=checks,
         )
-        assert Path(speed_artifacts.output_dir).is_dir()
+        checks.check(
+            Path(speed_artifacts.output_dir).is_dir(),
+            f"Speed output directory missing: {speed_artifacts.output_dir}",
+        )
 
         final_workers = router_get_json(qwen3_omni_router_server.port, "/workers")
         print_worker_snapshot("final /workers snapshot", final_workers)
-        assert final_workers["routable_workers"] == 2
-        assert all(
-            worker["active_requests"] == 0 for worker in final_workers["workers"]
+        checks.check(
+            final_workers.get("routable_workers") == 2,
+            f"Expected 2 routable workers, got {final_workers.get('routable_workers')}",
         )
-        assert_workers_served_requests(
+        active_workers = [
+            worker
+            for worker in final_workers.get("workers", [])
+            if worker.get("active_requests") != 0
+        ]
+        checks.check(
+            not active_workers,
+            f"Expected no active requests after benchmark, got {active_workers}",
+        )
+        checks.check_assertion(
+            "router worker traffic",
+            assert_workers_served_requests,
             final_workers,
             min_total_requests=MAX_SAMPLES,
         )
+        checks.assert_all()
     except Exception:
         print_router_diagnostics(qwen3_omni_router_server)
         raise
@@ -385,11 +417,14 @@ def test_voice_cloning_wer(
         wer_audio_dir,
     )
     print_wer_summary(results["summary"], "qwen3-omni")
+    checks = MetricCheckCollector("Qwen3-Omni voice-cloning WER")
     assert_wer_partitioned(
         results,
         max_wer_below_50_corpus=VC_WER_BELOW_50_CORPUS_THRESHOLD,
         max_n_above_50=VC_N_ABOVE_50_MAX,
+        collector=checks,
     )
+    checks.assert_all()
     print_log_tail("router", qwen3_omni_router_server.log_file)
 
 
@@ -423,13 +458,20 @@ def test_voice_cloning_similarity(
     # are on disk), not a voice-quality gate, so it stays enabled even while
     # #483 keeps the similarity-mean assertion soft.
     summary = results.get("summary", {})
-    assert (
-        summary.get("speaker_similarity_mean") is not None
-    ), "Missing speaker_similarity_mean in summary"
-    assert results.get("per_sample"), "Expected per-sample speaker similarity results"
-    assert (
-        summary.get("skipped", 0) == 0
-    ), f"speaker similarity: {summary.get('skipped')} skipped samples ≠ 0"
+    checks = MetricCheckCollector("Qwen3-Omni speaker similarity structure")
+    checks.check(
+        summary.get("speaker_similarity_mean") is not None,
+        "Missing speaker_similarity_mean in summary",
+    )
+    checks.check(
+        bool(results.get("per_sample")),
+        "Expected per-sample speaker similarity results",
+    )
+    checks.check(
+        summary.get("skipped", 0) == 0,
+        f"speaker similarity: {summary.get('skipped')} skipped samples != 0",
+    )
+    checks.assert_all()
 
 
 if __name__ == "__main__":
