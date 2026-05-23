@@ -268,5 +268,3 @@ def test_batched_step_mixed_top_k_per_row_filter():
             f"row 1 cb {cb} sampled {int(codes[1, cb].item())} "
             f"outside its own strong-set {row1_allowed}"
         )
-
-
