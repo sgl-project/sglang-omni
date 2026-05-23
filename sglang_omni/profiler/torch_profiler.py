@@ -113,13 +113,21 @@ class TorchProfiler(ProfilerBase):
             # scheduled profile silently drops its trace on stop. The
             # default (no schedule) treats start/stop as one continuous
             # active window and exports on stop.
+            #
+            # ``record_shapes`` / ``profile_memory`` / ``with_stack`` /
+            # ``with_flops`` are off by default because they balloon the
+            # trace into the multi-GB range over a typical benchmark
+            # window (filled host disks during a Qwen3-Omni MMMU run on
+            # H200). Opt them in via env vars for a deeper inspection.
             cls._profiler = profile(
                 activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
                 on_trace_ready=trace_handler,
-                record_shapes=True,
-                profile_memory=True,
-                with_stack=True,
-                with_flops=True,
+                record_shapes=os.environ.get("SGLANG_TORCH_PROFILER_RECORD_SHAPES")
+                == "1",
+                profile_memory=os.environ.get("SGLANG_TORCH_PROFILER_PROFILE_MEMORY")
+                == "1",
+                with_stack=os.environ.get("SGLANG_TORCH_PROFILER_WITH_STACK") == "1",
+                with_flops=os.environ.get("SGLANG_TORCH_PROFILER_WITH_FLOPS") == "1",
             )
 
             # 5. Start profiling
