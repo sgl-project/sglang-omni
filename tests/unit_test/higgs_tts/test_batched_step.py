@@ -19,7 +19,9 @@ from sglang_omni.models.higgs_tts.sampler import (
 from sglang_omni.models.higgs_tts.utils import EOC_ID
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-GREEDY_TEMP = 1e-3  # below _GREEDY_TEMP_THRESHOLD for per-row argmax path
+# top_k=1 forces greedy (only argmax stays finite after the filter), matching
+# sglang's normalization of ``SamplingParams(temperature=0)`` to ``top_k=1``.
+GREEDY_TOP_K = 1
 N = 8
 V = 1026
 
@@ -36,8 +38,6 @@ def _run_per_row(
     logits_BNV: torch.Tensor,
     pool: HiggsBatchedSamplerState,
     row_indices: torch.Tensor,
-    *,
-    temperature: float,
 ) -> torch.Tensor:
     """Per-row :func:`step` over each row; returns same ``[B, N]`` as batched."""
     B = logits_BNV.shape[0]
@@ -45,11 +45,7 @@ def _run_per_row(
     for b in range(B):
         row = int(row_indices[b].item())
         state = pool.view_row(row)
-        codes_b = step(
-            logits_BNV[b],
-            state,
-            temperature=temperature,
-        )
+        codes_b = step(logits_BNV[b], state, top_k=GREEDY_TOP_K)
         pool.write_row(row, state)
         codes_out[b] = codes_b
     return codes_out
@@ -83,15 +79,18 @@ def test_batched_matches_per_row_delay_window():
     pool_pr = HiggsBatchedSamplerState(B, N, device=DEVICE)
     pool_bt = HiggsBatchedSamplerState(B, N, device=DEVICE)
     row_indices = torch.arange(B, device=DEVICE)
-    temp_t = torch.full((B,), GREEDY_TEMP, device=DEVICE)
+    temp_t = torch.full((B,), 1.0, device=DEVICE)
+    top_k_buf = torch.full((B,), GREEDY_TOP_K, dtype=torch.long, device=DEVICE)
 
     torch.manual_seed(0)
     for t in range(N + 2):
         target = torch.randint(0, V, (B, N), device=DEVICE)
         logits = _peaky_logits(target)
 
-        codes_pr = _run_per_row(logits, pool_pr, row_indices, temperature=GREEDY_TEMP)
-        codes_bt = batched_step(logits, pool_bt, row_indices, temperature=temp_t)
+        codes_pr = _run_per_row(logits, pool_pr, row_indices)
+        codes_bt = batched_step(
+            logits, pool_bt, row_indices, temperature=temp_t, top_k_buf=top_k_buf
+        )
 
         assert torch.equal(codes_pr, codes_bt), f"codes mismatch at t={t}"
         _assert_pools_equal(_snapshot_pool(pool_pr), _snapshot_pool(pool_bt))
@@ -108,23 +107,28 @@ def test_batched_matches_per_row_eoc_winddown():
     pool_pr = HiggsBatchedSamplerState(B, N, device=DEVICE)
     pool_bt = HiggsBatchedSamplerState(B, N, device=DEVICE)
     row_indices = torch.arange(B, device=DEVICE)
-    temp_t = torch.full((B,), GREEDY_TEMP, device=DEVICE)
+    temp_t = torch.full((B,), 1.0, device=DEVICE)
+    top_k_buf = torch.full((B,), GREEDY_TOP_K, dtype=torch.long, device=DEVICE)
 
     # Phase 1: fill delay window (N steps) with arbitrary codes.
     torch.manual_seed(1)
     for _ in range(N):
         target = torch.randint(0, V - 2, (B, N), device=DEVICE)
         logits = _peaky_logits(target)
-        codes_pr = _run_per_row(logits, pool_pr, row_indices, temperature=GREEDY_TEMP)
-        codes_bt = batched_step(logits, pool_bt, row_indices, temperature=temp_t)
+        codes_pr = _run_per_row(logits, pool_pr, row_indices)
+        codes_bt = batched_step(
+            logits, pool_bt, row_indices, temperature=temp_t, top_k_buf=top_k_buf
+        )
         assert torch.equal(codes_pr, codes_bt)
 
     # Phase 2: cb0 emits EOC; rest of codebooks any value.
     target = torch.randint(0, V - 2, (B, N), device=DEVICE)
     target[:, 0] = EOC_ID
     logits = _peaky_logits(target)
-    codes_pr = _run_per_row(logits, pool_pr, row_indices, temperature=GREEDY_TEMP)
-    codes_bt = batched_step(logits, pool_bt, row_indices, temperature=temp_t)
+    codes_pr = _run_per_row(logits, pool_pr, row_indices)
+    codes_bt = batched_step(
+        logits, pool_bt, row_indices, temperature=temp_t, top_k_buf=top_k_buf
+    )
     assert torch.equal(codes_pr, codes_bt)
     _assert_pools_equal(_snapshot_pool(pool_pr), _snapshot_pool(pool_bt))
     # eoc_countdown should now be N-2 on both rows.
@@ -137,8 +141,10 @@ def test_batched_matches_per_row_eoc_winddown():
     for k in range(N - 2):
         target = torch.randint(0, V - 2, (B, N), device=DEVICE)
         logits = _peaky_logits(target)
-        codes_pr = _run_per_row(logits, pool_pr, row_indices, temperature=GREEDY_TEMP)
-        codes_bt = batched_step(logits, pool_bt, row_indices, temperature=temp_t)
+        codes_pr = _run_per_row(logits, pool_pr, row_indices)
+        codes_bt = batched_step(
+            logits, pool_bt, row_indices, temperature=temp_t, top_k_buf=top_k_buf
+        )
         assert torch.equal(codes_pr, codes_bt), f"mismatch at wind-down step {k}"
         _assert_pools_equal(_snapshot_pool(pool_pr), _snapshot_pool(pool_bt))
 
@@ -160,11 +166,14 @@ def test_batched_done_row_returns_stop_and_freezes_state():
     pool.last_codes[0] = torch.arange(N, device=DEVICE)
 
     row_indices = torch.tensor([0, 1], device=DEVICE)
-    temp_t = torch.full((2,), GREEDY_TEMP, device=DEVICE)
+    temp_t = torch.full((2,), 1.0, device=DEVICE)
+    top_k_buf = torch.full((2,), GREEDY_TOP_K, dtype=torch.long, device=DEVICE)
     target = torch.randint(0, V - 2, (2, N), device=DEVICE)
     logits = _peaky_logits(target)
 
-    codes = batched_step(logits, pool, row_indices, temperature=temp_t)
+    codes = batched_step(
+        logits, pool, row_indices, temperature=temp_t, top_k_buf=top_k_buf
+    )
 
     # Row 0 must return STOP and have unchanged state.
     assert torch.equal(
@@ -202,14 +211,17 @@ def test_batched_matches_per_row_mixed_phases():
         pool.last_codes[2] = torch.arange(N, device=DEVICE) + 10
 
     row_indices = torch.arange(3, device=DEVICE)
-    temp_t = torch.full((3,), GREEDY_TEMP, device=DEVICE)
+    temp_t = torch.full((3,), 1.0, device=DEVICE)
+    top_k_buf = torch.full((3,), GREEDY_TOP_K, dtype=torch.long, device=DEVICE)
 
     torch.manual_seed(2)
     for t in range(N + 2):
         target = torch.randint(0, V - 2, (3, N), device=DEVICE)
         logits = _peaky_logits(target)
-        codes_pr = _run_per_row(logits, pool_pr, row_indices, temperature=GREEDY_TEMP)
-        codes_bt = batched_step(logits, pool_bt, row_indices, temperature=temp_t)
+        codes_pr = _run_per_row(logits, pool_pr, row_indices)
+        codes_bt = batched_step(
+            logits, pool_bt, row_indices, temperature=temp_t, top_k_buf=top_k_buf
+        )
         assert torch.equal(codes_pr, codes_bt), f"mixed-phase mismatch at t={t}"
         _assert_pools_equal(_snapshot_pool(pool_pr), _snapshot_pool(pool_bt))
 

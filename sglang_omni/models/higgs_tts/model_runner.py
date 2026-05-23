@@ -98,8 +98,10 @@ class HiggsTTSModelRunner(ModelRunner):
     @staticmethod
     def _extract_decode_sampling_params(forward_batch, n_real: int):
         """Pull per-row temperature / top_p / top_k off sglang's
-        ``sampling_info`` (with safe defaults), rejecting ``top_k > K_MAX``
-        at the boundary so the inner CG path can assume valid values.
+        ``sampling_info`` with safe defaults. ``top_k`` values outside
+        ``(0, K_MAX)`` (including sglang's ``TOP_K_ALL`` sentinel for
+        unspecified top_k) are normalized to ``None`` — the downstream
+        buffer maps that to ``K_MAX`` = no-op filter.
         """
         sampling_info = getattr(forward_batch, "sampling_info", None)
         if sampling_info is None or n_real == 0:
@@ -119,17 +121,13 @@ class HiggsTTSModelRunner(ModelRunner):
 
         temps = [float(t) for t in temps_raw[:n_real]]
         top_ps = [float(t) for t in top_ps_raw[:n_real]]
-        top_ks: list[int | None]
         if top_ks_raw is None:
-            top_ks = [None] * n_real
+            top_ks: list[int | None] = [None] * n_real
         else:
-            top_ks = [int(t) for t in top_ks_raw[:n_real]]
-            for tk in top_ks:
-                if tk is not None and tk > K_MAX:
-                    raise ValueError(
-                        f"top_k={tk} > K_MAX={K_MAX} not supported in the "
-                        f"CG path, see sampler.py."
-                    )
+            top_ks = [
+                int(t) if (t is not None and 0 < int(t) < K_MAX) else None
+                for t in top_ks_raw[:n_real]
+            ]
         return temps, top_ps, top_ks
 
     def _collect_step_outputs_cg(
