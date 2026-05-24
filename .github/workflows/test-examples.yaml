@@ -1,9 +1,6 @@
 name: PR Test (Examples)
 
 on:
-  pull_request:
-    branches: [ main ]
-    types: [labeled, synchronize, reopened, ready_for_review]
   workflow_dispatch:
 
 concurrency:
