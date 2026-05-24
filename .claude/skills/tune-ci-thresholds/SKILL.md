@@ -109,6 +109,96 @@ python .claude/skills/tune-ci-thresholds/tune.py --model qwen3-omni-v1 run \
 - If HuggingFace cache locks appear, inspect active pytest/server/download
   processes first. Only stop processes from the current calibration run.
 
+## CI Environment Alignment and Server Startup Debugging
+- Calibration must reproduce the CI runtime, not merely run the same
+  pytest command. Before trusting timing numbers, align:
+  - CI image / container semantics as closely as the host allows
+    (`frankleeeee/sglang-omni:dev` for Qwen3-Omni CI).
+  - `HOME=/github/home` and `XDG_CACHE_HOME=/github/home/.cache`.
+  - `TORCHINDUCTOR_CACHE_DIR=/github/home/.torchinductor`.
+  - `FLASHINFER_DISABLE_VERSION_CHECK=1` for Qwen3-Omni / S2-Pro
+    calibration, matching the FlashInfer JIT-cache tolerance used by
+    related eval tooling.
+  - `HF_ENDPOINT` / `HF_HOME` / `HF_HUB_DISABLE_XET` as needed so model
+    and dataset caches are visible under the aligned home. If the real
+    HF cache lives elsewhere, symlink it into `/github/home/.cache/`
+    rather than redownloading large checkpoints.
+- Do not assume the current Cursor container equals CI. Check the actual
+  runtime when startup is suspicious:
+  ```
+  hostname
+  python -V
+  python - <<'PY'
+  import os, torch, flashinfer
+  print("HOME", os.environ.get("HOME"))
+  print("XDG_CACHE_HOME", os.environ.get("XDG_CACHE_HOME"))
+  print("TORCHINDUCTOR_CACHE_DIR", os.environ.get("TORCHINDUCTOR_CACHE_DIR"))
+  print("FLASHINFER_DISABLE_VERSION_CHECK", os.environ.get("FLASHINFER_DISABLE_VERSION_CHECK"))
+  print("torch", torch.__version__, "cuda", torch.version.cuda)
+  print("flashinfer", flashinfer.__version__, flashinfer.__file__)
+  PY
+  ```
+- If Qwen3-Omni server startup is much slower locally than CI, first run
+  the exact CI-like smoke test before calibration:
+  ```
+  source omni-qwen3/bin/activate
+  export GITHUB_ACTIONS=true RUNNER_TEMP=/tmp
+  export HOME=/github/home XDG_CACHE_HOME=/github/home/.cache
+  export PYTHONPATH=$PWD HF_ENDPOINT=https://hf-mirror.com HF_HUB_DISABLE_XET=1
+  export TORCHINDUCTOR_CACHE_DIR=/github/home/.torchinductor
+  export FLASHINFER_DISABLE_VERSION_CHECK=1
+  export NO_PROXY=localhost,127.0.0.1,::1
+  bash .github/scripts/run_flaky_pytest.sh \
+    pytest tests/test_model/test_qwen3_omni_videomme_ci.py -v -s -x
+  ```
+  A healthy run should show the router topology, both workers Healthy,
+  and the 50-sample Video-MME benchmark completing.
+- Known failure signatures and fixes:
+  - `Loading safetensors checkpoint shards` is very slow, with processes
+    in `D (disk sleep)` / `wait_on_page_bit_common`: this is storage /
+    page-cache pressure, not an incomplete model. Check
+    `/proc/pressure/io`, top process `read_bytes`, and competing Cursor /
+    shell / codex processes before judging CI thresholds.
+  - `flashinfer.fused_moe.core -> gen_cutlass_fused_moe_sm90_module(...).build_and_load()`
+    during CUDA graph capture, followed by router timeout: the venv is
+    missing FlashInfer JIT cache or is using the wrong cache home. Install
+    the CUDA-matching `flashinfer-jit-cache` package and keep
+    `FLASHINFER_DISABLE_VERSION_CHECK=1`.
+  - `nvcc` / `ninja` commands referencing `/root/.python/omni` or
+    `python3.12` while the active venv is `omni-qwen3` / Python 3.11:
+    stale FlashInfer cache from the wrong environment is being reused.
+    Delete both `/github/home/.cache/flashinfer` and the actual
+    `Path.home()/.cache/flashinfer`, then rerun after aligning `HOME`.
+- FlashInfer JIT cache is not on normal PyPI. Use the FlashInfer wheel
+  index for the CUDA version, or a direct wheel URL from that index. For
+  the verified local CI repro with `flashinfer-python==0.6.1` and CUDA
+  12.8, this wheel resolved the startup timeout:
+  ```
+  source omni-qwen3/bin/activate
+  export HTTPS_PROXY=<proxy-url> https_proxy=<proxy-url>  # only if needed
+  uv pip install \
+    https://github.com/flashinfer-ai/flashinfer/releases/download/nightly-v0.6.1-20260121/flashinfer_jit_cache-0.6.1.dev20260121+cu128-cp39-abi3-manylinux_2_28_x86_64.whl
+  python - <<'PY'
+  import importlib.util, importlib.metadata as md
+  print(importlib.util.find_spec("flashinfer_jit_cache").origin)
+  print(md.distribution("flashinfer-jit-cache").version)
+  PY
+  ```
+  If `uv pip install flashinfer-jit-cache --index-url ...` cannot resolve
+  the package, inspect the simple index and install the concrete wheel URL.
+- GPU cleanup can cross container PID namespaces. If `nvidia-smi` shows
+  `[Not Found]` PIDs or `kill` says "No such process", identify and stop
+  the container-visible Python stage processes instead:
+  ```
+  pgrep -af "multiprocessing.spawn|sglang_omni_router|sgl-omni serve|pytest|nvcc|ninja"
+  ```
+  Kill only processes from the current calibration / smoke run, then
+  confirm `nvidia-smi --query-gpu=index,memory.used --format=csv` is back
+  near zero before restarting.
+- After fixing alignment, rerun `tune.py precheck` and the Video-MME smoke
+  before resuming a large calibration. Do not continue calibration from
+  runs that failed before the CI-like smoke passed.
+
 ## Performance optimization checks
 - When recalibrating after performance work, first identify what changed
   since the last comparable calibration. Use the previous report's
@@ -444,8 +534,14 @@ python .claude/skills/tune-ci-thresholds/tune.py --model qwen3-omni-v1 run \
       and test/pre-commit verification.
 
 ## What I do not do
-- Set up container / venv / caches
-- Check out branches, install packages
+- Set up container / venv / caches during an ordinary calibration run.
+  Exception: if a CI-equivalent smoke test proves that local server
+  startup is not comparable to CI, pause calibration and fix environment
+  alignment first (see "CI Environment Alignment and Server Startup
+  Debugging").
+- Check out branches or install packages unless the user explicitly asks
+  or CI-alignment debugging proves a missing CI dependency such as
+  `flashinfer-jit-cache`.
 - Run `apply_slack` or generate patch files
 - Commit or push without explicit user authorization
 - Edit test files outside of the explicit apply prompt (step 9)

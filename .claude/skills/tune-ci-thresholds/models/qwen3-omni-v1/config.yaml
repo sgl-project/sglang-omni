@@ -22,8 +22,11 @@ default_venv_python:
 expected_wer_normalizer: "english"
 # Env vars that tune.py auto-sets at startup (matches CI behavior).
 auto_env:
+  HOME: "/github/home"
+  XDG_CACHE_HOME: "/github/home/.cache"
   HF_ENDPOINT: "https://hf-mirror.com"
   TORCHINDUCTOR_CACHE_DIR: "/github/home/.torchinductor"
+  FLASHINFER_DISABLE_VERSION_CHECK: "1"
 # Number of GPUs each test needs. tune.py picks that many free GPUs
 # via CUDA_VISIBLE_DEVICES before each pytest invocation. Qwen benchmark CI
 # runs one router plus two colocated one-GPU workers, so stages need 2.

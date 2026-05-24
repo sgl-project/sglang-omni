@@ -31,6 +31,7 @@ _PYTEST_POLL_S = 30
 _MAX_RUN_ATTEMPTS = 4
 _DEFAULT_CALIBRATION_PASSES = 10
 _AGENT_POLL_INTERVAL_S = 120
+_CI_HOME = Path("/github/home")
 _CRASH_SIGS = (
     "Fatal Python error",
     "Segmentation fault",
@@ -43,6 +44,35 @@ _CRASH_SIGS = (
     "Server process exited",
     "worker crashed",
 )
+
+
+def _flashinfer_cache_dirs(env: dict[str, str] | None = None) -> list[Path]:
+    env = env or os.environ
+    candidates = [
+        Path(env.get("XDG_CACHE_HOME", "")) / "flashinfer"
+        if env.get("XDG_CACHE_HOME")
+        else None,
+        Path(env.get("HOME", "")) / ".cache" / "flashinfer"
+        if env.get("HOME")
+        else None,
+        _CI_HOME / ".cache" / "flashinfer",
+    ]
+    seen: set[Path] = set()
+    paths: list[Path] = []
+    for candidate in candidates:
+        if candidate is None:
+            continue
+        path = candidate.expanduser()
+        if path in seen:
+            continue
+        seen.add(path)
+        paths.append(path)
+    return paths
+
+
+def _cleanup_flashinfer_cache(env: dict[str, str] | None = None) -> None:
+    for cache_dir in _flashinfer_cache_dirs(env):
+        shutil.rmtree(cache_dir, ignore_errors=True)
 
 # Metric registry. Each entry encodes how a named metric should be
 # displayed in the report and which stage group it belongs to. Scales
@@ -1375,7 +1405,7 @@ def _run_shared(test_path, stage_keys, all_stages, out, k, py, total, gpus_neede
             status, reason, dur = "failed", pick_err, 0.0
             print(f"{label} {pick_err}")
             break
-        shutil.rmtree("/github/home/.cache/flashinfer", ignore_errors=True)
+        _cleanup_flashinfer_cache(env)
         shutil.rmtree(basetemp, ignore_errors=True)
         basetemp.mkdir(parents=True)
         picked, gate_err = _launch_gpu_gate(picked, gpus_needed, label)

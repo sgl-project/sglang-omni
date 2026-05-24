@@ -22,7 +22,11 @@ default_venv_python:
   - "/sgl-workspace/sglang-omni/omni-qwen3/bin/python"
   - "/github/home/omni-qwen3/bin/python"
 auto_env:
+  HOME: "/github/home"
+  XDG_CACHE_HOME: "/github/home/.cache"
   HF_ENDPOINT: "https://hf-mirror.com"
+  TORCHINDUCTOR_CACHE_DIR: "/github/home/.torchinductor"
+  FLASHINFER_DISABLE_VERSION_CHECK: "1"
 gpus_per_test:
   test_s2pro_tts_ci.py: 2
 test_globs:
