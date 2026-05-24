@@ -146,6 +146,7 @@ def test_mp_runner_preserves_tp_rank_and_visible_device_contracts(tmp_path) -> N
         name="mp",
         endpoints=EndpointsConfig(base_path=str(tmp_path)),
         relay_backend="nccl",
+        env_defaults={"SGLANG_TEST_STAGE_ENV": "1"},
         stages=[
             stage(
                 "thinker",
@@ -178,6 +179,8 @@ def test_mp_runner_preserves_tp_rank_and_visible_device_contracts(tmp_path) -> N
     assert leader.factory_args["tp_rank"] == 0
     assert follower.factory_args["tp_rank"] == 1
     assert leader.factory_args["nccl_port"] == follower.factory_args["nccl_port"]
+    assert leader.env_defaults == {"SGLANG_TEST_STAGE_ENV": "1"}
+    assert follower.env_defaults == {"SGLANG_TEST_STAGE_ENV": "1"}
     assert env["CUDA_VISIBLE_DEVICES"] == "7"
 
 

@@ -30,6 +30,8 @@ jobs:
             const repoFullName = `${owner}/${repo}`;
             const prHeadRepoFullName = pr.head.repo?.full_name;
             const activeStatuses = ['queued', 'in_progress', 'waiting', 'pending', 'requested'];
+            const legacyOmniCiRunTitle =
+              /^omni-ci pr=(?<prNumber>\d+) sha=(?<headSha>\S+) stage=(?<stageId>\S+) rerun=(?<rerunId>\S+)$/;
 
             const action = context.payload.action;
             const currentHeadSha = pr.head.sha;
@@ -59,9 +61,29 @@ jobs:
               }
             }
 
-            const isRunForPullRequest = (run) => {
+            const legacyOmniCiRun = (run) => {
+              const match = legacyOmniCiRunTitle.exec(run.display_title || '');
+              if (!match?.groups) {
+                return null;
+              }
+              return {
+                prNumber: Number(match.groups.prNumber),
+                headSha: match.groups.headSha,
+                stageId: match.groups.stageId,
+              };
+            };
+
+            const matchRunForPullRequest = (run) => {
               if (run.id === context.runId) {
-                return false;
+                return null;
+              }
+
+              const legacyRun = legacyOmniCiRun(run);
+              if (legacyRun?.prNumber === pr.number) {
+                return {
+                  headSha: legacyRun.headSha,
+                  reason: `legacy staged CI ${legacyRun.stageId}`,
+                };
               }
 
               const referencedPullRequests = run.pull_requests || [];
@@ -71,7 +93,10 @@ jobs:
                   referencedPr.base.repo.full_name === repoFullName;
                 return sameNumber && sameBaseRepo;
               })) {
-                return true;
+                return {
+                  headSha: run.head_sha || run.head_commit?.id,
+                  reason: 'pull_requests metadata',
+                };
               }
 
               // Some pull_request runs are recorded against refs/pull/*/merge,
@@ -79,18 +104,26 @@ jobs:
               // for older runs that do not expose pull_requests in the API.
               const sameHeadRepo = prHeadRepoFullName &&
                 run.head_repository?.full_name === prHeadRepoFullName;
-              return run.event === 'pull_request' &&
+              if (run.event === 'pull_request' &&
                 sameHeadRepo &&
-                run.head_branch === pr.head.ref;
+                run.head_branch === pr.head.ref) {
+                return {
+                  headSha: run.head_sha || run.head_commit?.id,
+                  reason: 'pull_request head branch fallback',
+                };
+              }
+
+              return null;
             };
 
             let cancelled = 0;
             for (const run of activeRuns) {
-              if (!isRunForPullRequest(run)) {
+              const matchedRun = matchRunForPullRequest(run);
+              if (!matchedRun) {
                 continue;
               }
 
-              const runHeadSha = run.head_sha || run.head_commit?.id;
+              const runHeadSha = matchedRun.headSha || run.head_sha || run.head_commit?.id;
               if (!cancelAllForPr) {
                 if (!runHeadSha) {
                   console.log(
@@ -106,7 +139,9 @@ jobs:
                 }
               }
 
-              console.log(`Cancelling ${run.name} (run_id=${run.id}, status=${run.status})`);
+              console.log(
+                `Cancelling ${run.name} (run_id=${run.id}, status=${run.status}, match=${matchedRun.reason})`
+              );
               try {
                 await github.rest.actions.cancelWorkflowRun({
                   owner,

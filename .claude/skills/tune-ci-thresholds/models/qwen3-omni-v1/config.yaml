@@ -2,6 +2,10 @@
 name: qwen3-omni-v1
 description: "Qwen3-Omni 30B-A3B Instruct (Talker + Thinker)"
 hf_model_id: "Qwen/Qwen3-Omni-30B-A3B-Instruct"
+# Extra model checkpoints required by tests that do not use hf_model_id.
+hf_model_ids_by_test:
+  test_qwen3_omni_videoamme_talker_tp2_ci.py:
+    - "marksverdhei/Qwen3-Omni-30B-A3B-FP8"
 hf_datasets:
   - "zhaochenyang20/mmsu-ci-2000"
   - "zhaochenyang20/mmmu-ci-50"

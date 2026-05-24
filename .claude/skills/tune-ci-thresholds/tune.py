@@ -133,6 +133,7 @@ def load_model_config(name):
     cfg.setdefault("extra_env", {})
     cfg.setdefault("auto_env", {})
     cfg.setdefault("metric_sources", {})
+    cfg.setdefault("hf_model_ids_by_test", {})
     # Auto-apply env vars so the user doesn't need to export them
     # manually. Overrides any pre-existing value to match CI.
     for k, v in cfg["auto_env"].items():
@@ -186,6 +187,31 @@ def git_info():
     return dict(sha=q(["git", "rev-parse", "HEAD"]),
                 branch=q(["git", "rev-parse", "--abbrev-ref", "HEAD"]),
                 dirty=bool(q(["git", "status", "--porcelain"])))
+
+
+def _unique_ordered(items):
+    seen, out = set(), []
+    for item in items:
+        if not item or item in seen:
+            continue
+        seen.add(item)
+        out.append(item)
+    return out
+
+
+def _all_model_ids(cfg):
+    model_ids = [cfg["hf_model_id"]]
+    for ids in (cfg.get("hf_model_ids_by_test") or {}).values():
+        model_ids.extend(ids or [])
+    return _unique_ordered(model_ids)
+
+
+def _required_model_ids_for_tests(cfg, test_names):
+    by_test = cfg.get("hf_model_ids_by_test") or {}
+    model_ids = []
+    for test_name in sorted(set(test_names)):
+        model_ids.extend(by_test.get(test_name) or [cfg["hf_model_id"]])
+    return _unique_ordered(model_ids)
 
 
 def nvidia_smi_L():
@@ -462,8 +488,8 @@ def pick_free_gpus(n):
     )
 
 
-def precheck(py, src, out, skip_ver, cfg, datasets_override=None, tried=None,
-             gpu_required_override=None):
+def precheck(py, src, out, skip_ver, cfg, datasets_override=None,
+             model_ids_override=None, tried=None, gpu_required_override=None):
     errs, warns = [], []
     print(f"model: {cfg['name']}")
     print(f"venv_python: {py} ({src})")
@@ -516,8 +542,12 @@ def precheck(py, src, out, skip_ver, cfg, datasets_override=None, tried=None,
             capture_output=True, text=True)
         return r.returncode == 0
     # When called from `run` with a resolved stage selection, only the
-    # datasets those tests actually use are required; others become
-    # "optional" (printed if cached, absent is not an error).
+    # model checkpoints and datasets those tests actually use are required;
+    # others become "optional" (printed if cached, absent is not an error).
+    model_ids_required = (_all_model_ids(cfg) if model_ids_override is None
+                          else model_ids_override)
+    model_ids_optional = [m for m in _all_model_ids(cfg)
+                          if m not in model_ids_required]
     datasets_required = (cfg["hf_datasets"] if datasets_override is None
                          else datasets_override)
     datasets_optional = [d for d in cfg["hf_datasets"]
@@ -526,13 +556,19 @@ def precheck(py, src, out, skip_ver, cfg, datasets_override=None, tried=None,
         else f"assets (required for selected stages, {len(datasets_required)} dataset(s))"
     print(f"  {label}:")
     missing = []  # list of (repo_id, kind) — only for required
-    for repo_id, kind in [(cfg["hf_model_id"], "model")] + \
+    for repo_id, kind in [(m, "model") for m in model_ids_required] + \
                          [(ds, "dataset") for ds in datasets_required]:
         ok = _cached(repo_id, kind)
         mark = "✓" if ok else "✗"
         print(f"    {mark} {kind}: {repo_id}")
         if not ok:
             missing.append((repo_id, kind))
+    if model_ids_optional:
+        print("  other models (not needed for this run):")
+        for model_id in model_ids_optional:
+            ok = _cached(model_id, "model")
+            mark = "✓" if ok else "·"
+            print(f"    {mark} model: {model_id}")
     if datasets_optional:
         print("  other datasets (not needed for this run):")
         for ds in datasets_optional:
@@ -1075,6 +1111,8 @@ def _run_cmd_inner(args, cfg, py, src, out):
     if extras:
         print(f"note: test(s) reference repo(s) not listed in "
               f"config.yaml hf_datasets: {extras}")
+    selected_tests = [Path(all_stages[s]["test"]).name for s in sel]
+    required_models = _required_model_ids_for_tests(cfg, selected_tests)
     gpus_per_test = cfg.get("gpus_per_test", {}) or {}
     selected_gpu_requirement = max(
         (gpus_per_test.get(Path(all_stages[s]["test"]).name, 2) for s in sel),
@@ -1083,6 +1121,7 @@ def _run_cmd_inner(args, cfg, py, src, out):
     if not args.skip_precheck:
         rc = precheck(py, src, out, args.skip_version_check, cfg,
                       datasets_override=required_ds,
+                      model_ids_override=required_models,
                       gpu_required_override=selected_gpu_requirement)
         if rc: return rc
     else:

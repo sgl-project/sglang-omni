@@ -544,13 +544,16 @@ def apply_torch_compile_cli_overrides(
 def serve(
     ctx: typer.Context,
     model_path: Annotated[
-        str,
+        str | None,
         typer.Option(
-            help="The Hugging Face model ID or the path to the model directory."
+            help=(
+                "The Hugging Face model ID or the path to the model directory. "
+                "Required unless --config provides model_path."
+            )
         ),
-    ],
+    ] = None,
     config: Annotated[
-        str, typer.Option(help="Path to a pipeline config JSON file.")
+        str | None, typer.Option(help="Path to a pipeline config file.")
     ] = None,
     text_only: Annotated[
         bool,
@@ -725,15 +728,20 @@ def serve(
     if config:
         config_manager = ConfigManager.from_file(config)
     elif text_only:
+        if model_path is None:
+            raise typer.BadParameter("--model-path is required unless --config is set")
         config_manager = ConfigManager.from_model_path(model_path, variant="text")
     else:
+        if model_path is None:
+            raise typer.BadParameter("--model-path is required unless --config is set")
         config_manager = ConfigManager.from_model_path(model_path)
 
     # we use ctx to capture the arguments that are used to modify the configuration on the fly
     # we do expect the extra arguments to be pairs of names and values
     extra_args = config_manager.parse_extra_args(ctx.args)
     merged_config = config_manager.merge_config(extra_args)
-    merged_config = merged_config.model_copy(update={"model_path": model_path})
+    if model_path is not None:
+        merged_config = merged_config.model_copy(update={"model_path": model_path})
     if colocate:
         _validate_colocate_config(merged_config)
     merged_config = apply_mem_fraction_cli_overrides(

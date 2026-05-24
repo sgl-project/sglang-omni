@@ -9,6 +9,9 @@ from torch import nn
 from transformers import PretrainedConfig
 
 from sglang_omni.models.qwen3_omni.hf_config import Qwen3OmniMoeTextConfig
+from sglang_omni.models.qwen3_omni.quantization import (
+    convert_fp8_weight_scale_inv_for_sglang,
+)
 from sglang_omni.models.weight_loader import default_weight_loader
 from sglang_omni.utils import add_prefix
 from sglang_omni.vendor.sglang.core import ForwardBatch
@@ -49,7 +52,7 @@ logger = logging.getLogger(__name__)
 
 def _bind_default_weight_loaders(module: nn.Module) -> None:
     for param in module.parameters():
-        if "weight_loader" not in param.__dict__:
+        if not hasattr(param, "weight_loader"):
             param.weight_loader = default_weight_loader
 
 
@@ -729,6 +732,9 @@ class Qwen3OmniMoeThinkerTextModel(nn.Module):
             else:
                 if name in params_dict.keys():
                     param = params_dict[name]
+                    loaded_weight = convert_fp8_weight_scale_inv_for_sglang(
+                        name, loaded_weight
+                    )
                     param.weight_loader(param, loaded_weight)
                     continue
             logger.warning(f"Parameter {name} not found in params_dict")
@@ -757,6 +763,7 @@ def maybe_update_fused_qkv_proj(
 
             name = name.replace(shard_name, fused_param_name)
             param = params_dict[name]
+            loaded_weight = convert_fp8_weight_scale_inv_for_sglang(name, loaded_weight)
             param.weight_loader(param, loaded_weight, shard_id)
             return True
     return False
@@ -777,6 +784,7 @@ def maybe_update_fused_moe_proj(params_dict, name, loaded_weight, config):
 
         if name in params_dict:
             param = params_dict[name]
+            loaded_weight = convert_fp8_weight_scale_inv_for_sglang(name, loaded_weight)
             param.weight_loader(
                 param,
                 loaded_weight,

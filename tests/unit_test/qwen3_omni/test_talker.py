@@ -10,7 +10,11 @@ import pytest
 import torch
 
 from sglang_omni.model_runner.thinker_model_runner import ThinkerModelRunner
-from sglang_omni.models.qwen3_omni.components.talker import Qwen3OmniTalker
+from sglang_omni.models.qwen3_omni.components.talker import (
+    Qwen3OmniTalker,
+    _bind_default_weight_loaders,
+    _quant_config_for_code_predictor_dense_mlp,
+)
 from sglang_omni.models.qwen3_omni.components.talker_input import build_assistant_part
 from sglang_omni.models.qwen3_omni.components.talker_prefill import TalkerPrefillBuilder
 from sglang_omni.models.qwen3_omni.pending_text_queue import (
@@ -359,6 +363,115 @@ def test_qwen_model_runner_and_code_predictor_tensor_contracts() -> None:
     sampled = Qwen3OmniTalker._sample_code_predictor_token(logits)
     assert sampled.shape == (2, 1)
     assert sampled[:, 0].tolist() == [2, 0]
+
+
+def test_qwen_talker_keeps_existing_read_only_weight_loader() -> None:
+    """Preserves FP8 parameter weight_loader properties during default binding."""
+
+    class ReadOnlyWeightLoaderParam:
+        @property
+        def weight_loader(self):
+            return "existing"
+
+    class FakeModule:
+        def __init__(self) -> None:
+            self.param = ReadOnlyWeightLoaderParam()
+
+        def parameters(self):
+            return iter([self.param])
+
+    module = FakeModule()
+
+    _bind_default_weight_loaders(module)
+
+    assert module.param.weight_loader == "existing"
+
+
+def test_qwen_talker_code_predictor_dense_mlp_ignores_only_router_gate_skip() -> None:
+    """Prevents SGLang 0.5.8 substring skips from dequantizing gate_up_proj."""
+
+    class FakeQuantConfig:
+        ignored_layers = ["mlp.gate", "lm_head", "thinker.visual"]
+
+    original = FakeQuantConfig()
+
+    dense_mlp_config = _quant_config_for_code_predictor_dense_mlp(original)
+
+    assert dense_mlp_config is not original
+    assert original.ignored_layers == ["mlp.gate", "lm_head", "thinker.visual"]
+    assert dense_mlp_config.ignored_layers == ["lm_head", "thinker.visual"]
+
+
+def test_qwen_talker_code_predictor_quant_config_is_unchanged_without_router_skip() -> (
+    None
+):
+    class FakeQuantConfig:
+        ignored_layers = ["lm_head"]
+
+    original = FakeQuantConfig()
+
+    assert _quant_config_for_code_predictor_dense_mlp(original) is original
+    assert _quant_config_for_code_predictor_dense_mlp(None) is None
+
+
+def test_qwen_talker_activation_dtype_comes_from_codec_embedding() -> None:
+    talker = object.__new__(Qwen3OmniTalker)
+    talker.model = SimpleNamespace(
+        codec_embedding=SimpleNamespace(
+            weight=torch.empty((1, 1), dtype=torch.bfloat16)
+        )
+    )
+
+    assert talker.activation_dtype is torch.bfloat16
+
+
+def test_qwen_talker_load_weights_converts_fp8_scales_after_name_mapping() -> None:
+    """Converts reciprocal scales for stacked, expert, and direct talker params."""
+
+    class RecordingParam:
+        def __init__(self) -> None:
+            self.calls = []
+
+        def weight_loader(self, param, loaded_weight, *args, **kwargs) -> None:
+            self.calls.append((param, loaded_weight.clone(), args, kwargs))
+
+    qkv_param = RecordingParam()
+    expert_param = RecordingParam()
+    direct_param = RecordingParam()
+    talker = object.__new__(Qwen3OmniTalker)
+    talker.config = SimpleNamespace(text_config=SimpleNamespace(num_experts=1))
+    talker._cached_params_dict = {
+        "model.layers.0.self_attn.qkv_proj.weight_scale_inv": qkv_param,
+        "model.layers.0.mlp.experts.w13_weight_scale_inv": expert_param,
+        "code_predictor.model.layers.0.mlp.gate_up_proj.weight_scale_inv": direct_param,
+    }
+
+    Qwen3OmniTalker.load_weights(
+        talker,
+        [
+            (
+                "talker.model.layers.0.self_attn.q_proj.weight_scale_inv",
+                torch.tensor([128.0], dtype=torch.float32),
+            ),
+            (
+                "talker.model.layers.0.mlp.experts.0.gate_proj.weight_scale_inv",
+                torch.tensor([256.0], dtype=torch.float32),
+            ),
+            (
+                "talker.code_predictor.model.layers.0.mlp.gate_up_proj.weight_scale_inv",
+                torch.tensor([512.0], dtype=torch.float32),
+            ),
+        ],
+    )
+
+    assert torch.allclose(qkv_param.calls[0][1], torch.tensor([1.0 / 128.0]))
+    assert qkv_param.calls[0][2] == ("q",)
+    assert torch.allclose(expert_param.calls[0][1], torch.tensor([1.0 / 256.0]))
+    assert expert_param.calls[0][2] == (
+        "model.layers.0.mlp.experts.w13_weight_scale_inv",
+    )
+    assert expert_param.calls[0][3] == {"shard_id": "w1", "expert_id": 0}
+    assert torch.allclose(direct_param.calls[0][1], torch.tensor([1.0 / 512.0]))
 
 
 @pytest.fixture()

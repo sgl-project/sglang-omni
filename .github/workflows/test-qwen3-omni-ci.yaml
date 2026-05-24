@@ -439,7 +439,7 @@ jobs:
           artifact-upload-path: /tmp/**/videoamme_audio/videoamme_results.json
 
   stage-11-thinker-tp2:
-    name: stage 11 - Thinker TP=2 (Video-AMME Talker)
+    name: stage 11 - FP8 Thinker TP=2 (Video-AMME Talker)
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (!github.event.pull_request.draft &&
@@ -458,7 +458,7 @@ jobs:
           venv-name: omni-qwen3
           install-deps: "true"
 
-      - name: Run Thinker TP=2 CI
+      - name: Run FP8 Thinker TP=2 CI
         shell: bash
         run: |
           source omni-qwen3/bin/activate
@@ -473,7 +473,7 @@ jobs:
         if: always()
         uses: ./.github/actions/omni-post-stage
         with:
-          stage-label: Thinker TP=2 (Video-AMME Talker accuracy + WER + speed)
+          stage-label: FP8 Thinker TP=2 (Video-AMME Talker accuracy + WER + speed)
           artifact-path-globs: |
             */videoamme_audio/videoamme_results.json
           artifact-upload-name: qwen3-omni-thinker-tp2-results

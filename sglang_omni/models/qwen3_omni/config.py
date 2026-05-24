@@ -12,6 +12,13 @@ from sglang_omni.config import PipelineConfig, PlacementConfig, StageConfig
 _PKG = "sglang_omni.models.qwen3_omni"
 _PLACEMENT_POLICY = f"{_PKG}.placement.Qwen3OmniPlacementPolicy"
 
+# SGLang reads this when DeepGEMM compile utilities are imported. Qwen AR
+# stages can first hit some dense FP8 shapes after readiness; disable all-M
+# precompile so that miss does not become a long post-ready compile session.
+# FIXME (Ratish): Replace this with a bounded/pre-ready SGLang DeepGEMM compile
+# policy once that exists outside import-time environment globals.
+_DEEPGEMM_PRECOMPILE_ENV_DEFAULTS = {"SGLANG_JIT_DEEPGEMM_PRECOMPILE": "0"}
+
 
 def _preprocessing_stage(*, process: str) -> StageConfig:
     return StageConfig(
@@ -218,6 +225,9 @@ class Qwen3OmniPipelineConfig(PipelineConfig):
     """6-stage text-only pipeline."""
 
     architecture: ClassVar[str] = "Qwen3OmniMoeForConditionalGeneration"
+    env_defaults: dict[str, str] = Field(
+        default_factory=lambda: dict(_DEEPGEMM_PRECOMPILE_ENV_DEFAULTS)
+    )
 
     @classmethod
     def mem_fraction_role_to_stage(cls) -> dict[str, str]:
@@ -232,6 +242,9 @@ class Qwen3OmniSpeechPipelineConfig(PipelineConfig):
     """8-stage speech pipeline (text + audio output)."""
 
     architecture: ClassVar[str] = "Qwen3OmniMoeForConditionalGeneration"
+    env_defaults: dict[str, str] = Field(
+        default_factory=lambda: dict(_DEEPGEMM_PRECOMPILE_ENV_DEFAULTS)
+    )
 
     @classmethod
     def mem_fraction_role_to_stage(cls) -> dict[str, str]:

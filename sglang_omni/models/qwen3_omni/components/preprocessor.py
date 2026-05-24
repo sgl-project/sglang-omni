@@ -70,6 +70,7 @@ def _contextualize_cache_key(base_key: str | None, **context: Any) -> str | None
 
 
 DEFAULT_THINKER_MAX_NEW_TOKENS = 2048
+QWEN3_OMNI_CHAT_TEMPLATE_FALLBACK_MODEL = "Qwen/Qwen3-Omni-30B-A3B-Instruct"
 
 
 def validate_prompt_seq_len(
@@ -154,7 +155,15 @@ class Qwen3OmniPreprocessor:
             )
             self.model_dir = str(resolve_model_path(model_path, local_files_only=False))
         self.tokenizer = self.processor.tokenizer
-        ensure_chat_template(self.tokenizer, model_path=self.model_dir)
+        ensure_chat_template(
+            self.tokenizer,
+            model_path=self.model_dir,
+            fallback_model_paths=(QWEN3_OMNI_CHAT_TEMPLATE_FALLBACK_MODEL,),
+        )
+        if not getattr(self.processor, "chat_template", None) and getattr(
+            self.tokenizer, "chat_template", None
+        ):
+            self.processor.chat_template = self.tokenizer.chat_template
 
     def _build_multimodal_messages(
         self,

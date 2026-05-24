@@ -117,6 +117,38 @@ def test_cli_colocate_accepts_budgeted_colocated_config(
 
 @patch("sglang_omni.cli.serve.launch_server")
 @patch("sglang_omni.cli.serve.ConfigManager.from_file")
+def test_cli_config_can_own_model_path(from_file, launch_server):
+    config = Qwen3OmniSpeechColocatedPipelineConfig(model_path="config-model")
+    _set_colocated_runtime(config)
+    from_file.return_value = _DummyManager(config)
+
+    serve(**_serve_kwargs(config="colocated.yaml", colocate=True, model_path=None))
+
+    launched_config = launch_server.call_args.args[0]
+    assert launched_config.model_path == "config-model"
+
+
+@patch("sglang_omni.cli.serve.launch_server")
+@patch("sglang_omni.cli.serve.ConfigManager.from_file")
+def test_cli_model_path_overrides_config_model_path(from_file, launch_server):
+    config = Qwen3OmniSpeechColocatedPipelineConfig(model_path="config-model")
+    _set_colocated_runtime(config)
+    from_file.return_value = _DummyManager(config)
+
+    serve(
+        **_serve_kwargs(
+            config="colocated.yaml",
+            colocate=True,
+            model_path="override-model",
+        )
+    )
+
+    launched_config = launch_server.call_args.args[0]
+    assert launched_config.model_path == "override-model"
+
+
+@patch("sglang_omni.cli.serve.launch_server")
+@patch("sglang_omni.cli.serve.ConfigManager.from_file")
 def test_cli_colocate_rejects_non_colocated_config(from_file, launch_server):
     from_file.return_value = _DummyManager(
         Qwen3OmniSpeechPipelineConfig(model_path="dummy")
@@ -140,6 +172,16 @@ def test_cli_uses_model_registry_default_by_default(from_model_path, launch_serv
 
     from_model_path.assert_called_once_with("dummy")
     launch_server.assert_called_once()
+
+
+@patch("sglang_omni.cli.serve.launch_server")
+@patch("sglang_omni.cli.serve.ConfigManager.from_model_path")
+def test_cli_requires_model_path_without_config(from_model_path, launch_server):
+    with pytest.raises(typer.BadParameter, match="--model-path is required"):
+        serve(**_serve_kwargs(model_path=None))
+
+    from_model_path.assert_not_called()
+    launch_server.assert_not_called()
 
 
 @patch("sglang_omni.cli.serve.launch_server")

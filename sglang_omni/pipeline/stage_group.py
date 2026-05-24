@@ -43,7 +43,22 @@ def _get_worker_process_env(spec: StageWorkerProcessSpec) -> dict[str, str]:
 
 @contextmanager
 def _patched_spawn_env(spec: StageWorkerProcessSpec):
-    updates = _get_worker_process_env(spec)
+    env_default_updates: dict[str, str] = {}
+    for stage_spec in spec.stage_specs:
+        for key, value in stage_spec.env_defaults.items():
+            existing = env_default_updates.get(key)
+            if existing is not None and existing != value:
+                raise AssertionError(
+                    f"Process {spec.process_name!r} has conflicting env default "
+                    f"for {key!r}: {existing!r} != {value!r}"
+                )
+            if key not in os.environ:
+                env_default_updates[key] = value
+
+    updates = {
+        **env_default_updates,
+        **_get_worker_process_env(spec),
+    }
     if not updates:
         yield
         return

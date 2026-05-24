@@ -14,7 +14,7 @@ Pipeline shape::
 - ``create_sglang_tts_engine_executor``: runs :class:`HiggsTTSModel` under
   sglang's worker; the model runner computes the fused multi-codebook
   embedding inline in prefill from ``reference_codes_delayed`` and overlays
-  it at ``-100`` placeholder positions. Returns a :class:`HiggsScheduler`.
+  it at ``-100`` placeholder positions. Returns a :class:`OmniScheduler`.
 - ``create_vocoder_executor``: reverses the delay pattern, decodes via
   :class:`HiggsAudioCodec` into a mono 24 kHz waveform. Returns a
   :class:`SimpleScheduler`.
@@ -32,7 +32,6 @@ from tokenizers import Tokenizer
 from transformers import PreTrainedTokenizerFast
 
 from sglang_omni.models.higgs_tts.audio_codec import HiggsAudioCodec
-from sglang_omni.models.higgs_tts.higgs_scheduler import HiggsScheduler
 from sglang_omni.models.higgs_tts.model_runner import HiggsTTSModelRunner
 from sglang_omni.models.higgs_tts.payload_types import HiggsTtsState
 from sglang_omni.models.higgs_tts.request_builders import make_higgs_scheduler_adapters
@@ -48,6 +47,7 @@ from sglang_omni.models.higgs_tts.utils import (
 )
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.bootstrap import create_sglang_infrastructure
+from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 from sglang_omni.scheduling.sglang_backend import (
     SGLangOutputProcessor,
     build_sglang_server_args,
@@ -232,7 +232,7 @@ def create_sglang_tts_engine_executor(
     model_path: str,
     *,
     device: str = "cuda:0",
-    max_new_tokens: int = 2048,
+    max_new_tokens: int | None = 2048,
     server_args_overrides: dict[str, Any] | None = None,
 ):
     """sglang-backed AR engine for Higgs TTS."""
@@ -267,7 +267,7 @@ def create_sglang_tts_engine_executor(
         token_to_kv_pool_allocator,
         prefill_mgr,
         decode_mgr,
-        _model_config,
+        model_config,
     ) = create_sglang_infrastructure(server_args, gpu_id)
 
     truncate_rope_to_bf16(model_worker.model_runner.model)
@@ -278,19 +278,25 @@ def create_sglang_tts_engine_executor(
         model=model_worker.model_runner.model,
     )
     model_runner = HiggsTTSModelRunner(model_worker, output_proc)
-    request_builder, result_adapter = make_higgs_scheduler_adapters()
+    model = model_worker.model_runner.model
+    request_builder, result_adapter = make_higgs_scheduler_adapters(
+        model,
+        max_new_tokens_cap=max_new_tokens,
+    )
 
-    return HiggsScheduler(
+    return OmniScheduler(
+        tp_worker=model_worker,
         tree_cache=tree_cache,
         req_to_token_pool=req_to_token_pool,
         token_to_kv_pool_allocator=token_to_kv_pool_allocator,
+        server_args=server_args,
+        model_config=model_config,
         prefill_manager=prefill_mgr,
         decode_manager=decode_mgr,
-        server_args=server_args,
         model_runner=model_runner,
         request_builder=request_builder,
         result_adapter=result_adapter,
-        max_new_tokens=max_new_tokens,
+        abort_callback=model.reset_request,
     )
 
 
