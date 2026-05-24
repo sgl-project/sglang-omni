@@ -22,7 +22,7 @@ Usage:
 
     # Full pipeline (generate + transcribe)
     python -m benchmarks.eval.benchmark_omni_seedtts \
-        --meta seedtts_testset/en/meta.lst \
+        --meta zhaochenyang20/seed-tts-eval-arrow \
         --output-dir results/qwen3_omni_en \
         --max-concurrency 16 \
         --model qwen3-omni --port 8000 --max-samples 50
@@ -32,7 +32,7 @@ CI Usage:
     # Generate audio only (server must be running)
     python -m benchmarks.eval.benchmark_omni_seedtts \
         --generate-only \
-        --meta seedtts_testset/en/meta.lst \
+        --meta zhaochenyang20/seed-tts-eval-arrow \
         --output-dir results/qwen3_omni_en \
         --max-concurrency 16 \
         --model qwen3-omni --port 8000 --max-samples 50
@@ -40,7 +40,7 @@ CI Usage:
     # Transcribe + WER only (server not needed)
     python -m benchmarks.eval.benchmark_omni_seedtts \
         --transcribe-only \
-        --meta seedtts_testset/en/meta.lst \
+        --meta zhaochenyang20/seed-tts-eval-arrow \
         --output-dir results/qwen3_omni_en \
         --model qwen3-omni --lang en --device cuda:0
 
@@ -75,26 +75,26 @@ Accuracy (accuracy.wer)
 
 Generation speed (generation.speed)
 
-| Model      | Config            | latency_mean_s | latency_p95_s | rtf_mean | throughput_qps | tok_per_s_mean | tok_per_s_agg | Source                         |
-| ---------- | ----------------- | -------------- | ------------- | -------- | -------------- | -------------- | ------------- | ------------------------------ |
-| Qwen3-Omni | EN, voice_clone=T | 3.06           | 4.32          | 0.87     | 5.224          | 4.8            | 4.7           | PR #411 [H200, V1-pipeline, full-set, c=16] |
-| Qwen3-Omni | EN, voice_clone=F | 2.60           | 3.70          | 0.73     | 6.151          | 5.6            | 5.5           | PR #411 [H200, V1-pipeline, full-set, c=16] |
-| Qwen3-Omni | ZH, voice_clone=T | 3.31           | 4.31          | 0.80     | 4.826          | 5.2            | 5.1           | PR #411 [H200, V1-pipeline, full-set, c=16] |
-| Qwen3-Omni | ZH, voice_clone=F | 2.92           | 3.85          | 0.70     | 5.474          | 5.8            | 5.8           | PR #411 [H200, V1-pipeline, full-set, c=16] |
-| Qwen3-Omni | EN, voice_clone=T | 44.94          | 67.44         | 12.43    | 0.355          | 0.3            | 0.3           | PR #351 [H100, full-set, c=16] |
-| Qwen3-Omni | EN, voice_clone=F | 45.73          | 68.10         | 12.69    | 0.349          | 0.3            | 0.3           | PR #351 [H100, full-set, c=16] |
-| Qwen3-Omni | ZH, voice_clone=T | 55.88          | 74.93         | 13.44    | 0.286          | 0.3            | 0.3           | PR #351 [H100, full-set, c=16] |
-| Qwen3-Omni | ZH, voice_clone=F | 55.09          | 73.68         | 13.19    | 0.288          | 0.3            | 0.3           | PR #351 [H100, full-set, c=16] |
-| Qwen3-Omni | EN, voice_clone=T | 2.56           | 3.70          | 0.73     | 6.225          | 5.7            | 5.6           | PR #411 [H100, V1-pipeline, full-set, c=16] |
-| Qwen3-Omni | ZH, voice_clone=T | 2.79           | 3.68          | 0.67     | 5.737          | 6.1            | 6.1           | PR #411 [H100, V1-pipeline, full-set, c=16] |
-| Qwen3-Omni | EN, voice_clone=F | 2.30           | 3.32          | 0.64     | 6.948          | 6.4            | 6.2           | PR #411 [H100, V1-pipeline, full-set, c=16] |
-| Qwen3-Omni | ZH, voice_clone=F | 2.52           | 3.31          | 0.61     | 6.350          | 6.8            | 6.8           | PR #411 [H100, V1-pipeline, full-set, c=16] |
+| Model      | Config            | latency_mean_s | latency_p95_s | rtf_mean | throughput_qps | output_tok_per_req_s | Source                         |
+| ---------- | ----------------- | -------------- | ------------- | -------- | -------------- | ------------------------------ | ------------------------------ |
+| Qwen3-Omni | EN, voice_clone=T | 3.06           | 4.32          | 0.87     | 5.224          | 4.7                            | PR #411 [H200, V1-pipeline, full-set, c=16] |
+| Qwen3-Omni | EN, voice_clone=F | 2.60           | 3.70          | 0.73     | 6.151          | 5.5                            | PR #411 [H200, V1-pipeline, full-set, c=16] |
+| Qwen3-Omni | ZH, voice_clone=T | 3.31           | 4.31          | 0.80     | 4.826          | 5.1                            | PR #411 [H200, V1-pipeline, full-set, c=16] |
+| Qwen3-Omni | ZH, voice_clone=F | 2.92           | 3.85          | 0.70     | 5.474          | 5.8                            | PR #411 [H200, V1-pipeline, full-set, c=16] |
+| Qwen3-Omni | EN, voice_clone=T | 44.94          | 67.44         | 12.43    | 0.355          | 0.3                            | PR #351 [H100, full-set, c=16] |
+| Qwen3-Omni | EN, voice_clone=F | 45.73          | 68.10         | 12.69    | 0.349          | 0.3                            | PR #351 [H100, full-set, c=16] |
+| Qwen3-Omni | ZH, voice_clone=T | 55.88          | 74.93         | 13.44    | 0.286          | 0.3                            | PR #351 [H100, full-set, c=16] |
+| Qwen3-Omni | ZH, voice_clone=F | 55.09          | 73.68         | 13.19    | 0.288          | 0.3                            | PR #351 [H100, full-set, c=16] |
+| Qwen3-Omni | EN, voice_clone=T | 2.56           | 3.70          | 0.73     | 6.225          | 5.6                            | PR #411 [H100, V1-pipeline, full-set, c=16] |
+| Qwen3-Omni | ZH, voice_clone=T | 2.79           | 3.68          | 0.67     | 5.737          | 6.1                            | PR #411 [H100, V1-pipeline, full-set, c=16] |
+| Qwen3-Omni | EN, voice_clone=F | 2.30           | 3.32          | 0.64     | 6.948          | 6.2                            | PR #411 [H100, V1-pipeline, full-set, c=16] |
+| Qwen3-Omni | ZH, voice_clone=F | 2.52           | 3.31          | 0.61     | 6.350          | 6.8                            | PR #411 [H100, V1-pipeline, full-set, c=16] |
 
-Note (Chenyang): tok_per_s_{mean,agg} here counts Qwen3-Omni's discrete talker LM
-tokens (code tokens driving code2wav) and therefore runs at audio frame rate, thus
- the values are sub-1. It is NOT comparable to the tok_per_s column reported for
-codec-token TTS models (e.g. S2-Pro in benchmark_tts_seedtts.py); the two backends
-emit token streams with different semantics and rates.
+Note (Chenyang): output-token rates here count Qwen3-Omni's discrete talker LM
+tokens (code tokens driving code2wav) and therefore run at audio frame rate. They
+are not comparable to codec-token TTS models (e.g. S2-Pro in
+benchmark_tts_seedtts.py); the two backends emit token streams with different
+semantics and rates.
 
 ASR speed (accuracy.asr_speed) — Whisper-large-v3 for EN, FunASR paraformer-zh for ZH
 
@@ -120,12 +120,12 @@ Accuracy (accuracy.wer)
 
 Generation speed (generation.speed)
 
-| Model      | Config            | latency_mean_s | latency_p95_s | rtf_mean | throughput_qps | tok_per_s_mean | tok_per_s_agg | Source                                                                  |
-| ---------- | ----------------- | -------------- | ------------- | -------- | -------------- | -------------- | ------------- | ----------------------------------------------------------------------- |
-| Qwen3-Omni | EN, voice_clone=T | 7.961          | 11.789        | 2.2217   | 2.001          | 1.8            | 1.8           | local v1 sweep [H200, full-set, c=16, sequential generate+transcribe]  |
-| Qwen3-Omni | EN, voice_clone=F | 6.906          | 10.342        | 1.9382   | 2.307          | 2.1            | 2.1           | local v1 sweep [H200, full-set, c=16, sequential generate+transcribe]  |
-| Qwen3-Omni | ZH, voice_clone=T | 9.004          | 12.117        | 2.1632   | 1.774          | 1.9            | 1.9           | local v1 sweep [H200, full-set, c=16, sequential generate+transcribe]  |
-| Qwen3-Omni | ZH, voice_clone=F | 8.043          | 10.736        | 1.9326   | 1.983          | 2.2            | 2.1           | local v1 sweep [H200, full-set, c=16, sequential generate+transcribe]  |
+| Model      | Config            | latency_mean_s | latency_p95_s | rtf_mean | throughput_qps | output_tok_per_req_s | Source                                                                  |
+| ---------- | ----------------- | -------------- | ------------- | -------- | -------------- | ------------------------------ | ----------------------------------------------------------------------- |
+| Qwen3-Omni | EN, voice_clone=T | 7.961          | 11.789        | 2.2217   | 2.001          | 1.8                            | local v1 sweep [H200, full-set, c=16, sequential generate+transcribe]  |
+| Qwen3-Omni | EN, voice_clone=F | 6.906          | 10.342        | 1.9382   | 2.307          | 2.1                            | local v1 sweep [H200, full-set, c=16, sequential generate+transcribe]  |
+| Qwen3-Omni | ZH, voice_clone=T | 9.004          | 12.117        | 2.1632   | 1.774          | 1.9                            | local v1 sweep [H200, full-set, c=16, sequential generate+transcribe]  |
+| Qwen3-Omni | ZH, voice_clone=F | 8.043          | 10.736        | 1.9326   | 1.983          | 2.1                            | local v1 sweep [H200, full-set, c=16, sequential generate+transcribe]  |
 
 Standalone ASR speed was not logged separately in the local v1 sweep above.
 """
@@ -303,13 +303,10 @@ async def run_omni_seedtts_benchmark(
 
     Returns a dict with keys: summary, per_request, config.
     """
-    if not os.path.isfile(config.meta):
-        raise FileNotFoundError(f"Meta file not found: {config.meta}")
-
     base_url = build_base_url(config)
     api_url = f"{base_url}/v1/chat/completions"
 
-    samples = load_seedtts_samples(config.meta, config.max_samples)
+    samples = load_seedtts_samples(config.meta, config.max_samples, split=config.lang)
     logger.info(f"Prepared {len(samples)} requests")
 
     save_audio_dir = os.path.abspath(os.path.join(config.output_dir, "audio"))
@@ -429,8 +426,8 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         "--testset",
         dest="meta",
         type=str,
-        default="seedtts_testset/en/meta.lst",
-        help="Path to a meta.lst file (seed-tts-eval format).",
+        default="zhaochenyang20/seed-tts-eval-arrow",
+        help="HuggingFace Arrow/Parquet dataset repo id or local meta.lst path.",
     )
     parser.add_argument(
         "--lang",

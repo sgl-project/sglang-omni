@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 import torch
 
+from sglang_omni.scheduling import omni_scheduler as omni_scheduler_module
 from sglang_omni.scheduling.messages import IncomingMessage
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
@@ -125,6 +126,101 @@ def test_omni_scheduler_default_stream_done_sets_generic_flag() -> None:
     scheduler._mark_stream_done(req_data)
 
     assert req_data.stream_done is True
+
+
+def test_omni_scheduler_run_batch_failure_emits_error_and_aborts() -> None:
+    """Forward failures are owned by the scheduler, not model executors."""
+
+    class BoomModelRunner:
+        def execute(self, sched_output):
+            assert [req.request_id for req in sched_output.requests] == [
+                "req-1",
+                "req-2",
+            ]
+            raise RuntimeError("cuda out of memory")
+
+    scheduler = object.__new__(OmniScheduler)
+    scheduler._model_runner = BoomModelRunner()
+    scheduler._stream_output_builder = None
+    scheduler.outbox = Queue()
+    scheduler.inbox = Queue()
+    scheduler.is_entry_rank = True
+    scheduler._aborted_request_ids = set()
+    scheduler._pending_stream_chunks = {"req-1": ["stale"]}
+    scheduler._pending_stream_done = {"req-2"}
+    scheduler._deferred_request_payloads = {"req-1": object()}
+    scheduler._abort_callback = None
+    scheduler.waiting_queue = []
+    scheduler.last_batch = None
+    scheduler._prefill_start_done = set()
+
+    batch = SimpleNamespace(
+        reqs=[
+            SimpleNamespace(rid="req-1", _omni_data=SimpleNamespace()),
+            SimpleNamespace(rid="req-2", _omni_data=SimpleNamespace()),
+        ],
+        batch_is_full=True,
+    )
+    scheduler.running_batch = batch
+    scheduler.cur_batch = batch
+
+    result = scheduler.run_batch(batch)
+
+    assert result is omni_scheduler_module._FAILED_BATCH_RESULT
+    outputs = [scheduler.outbox.get_nowait(), scheduler.outbox.get_nowait()]
+    assert {output.request_id for output in outputs} == {"req-1", "req-2"}
+    assert all(output.type == "error" for output in outputs)
+    assert all(isinstance(output.data, RuntimeError) for output in outputs)
+    assert all("cuda out of memory" in str(output.data) for output in outputs)
+    assert scheduler._aborted_request_ids == {"req-1", "req-2"}
+    assert batch.reqs == []
+    assert scheduler._pending_stream_chunks == {}
+    assert scheduler._pending_stream_done == set()
+    assert scheduler._deferred_request_payloads == {}
+
+
+def test_omni_scheduler_distinguishes_queue_enter_from_prefill_start(
+    monkeypatch,
+) -> None:
+    """Queueing a built request must not report actual prefill execution."""
+    events: list[dict] = []
+    monkeypatch.setattr(
+        "sglang_omni.scheduling.omni_scheduler._emit_event",
+        lambda **kwargs: events.append(kwargs),
+    )
+    scheduler = object.__new__(OmniScheduler)
+    scheduler.outbox = Queue()
+    scheduler.waiting_queue = []
+    scheduler._pending_stream_chunks = {}
+    scheduler._pending_stream_done = set()
+    scheduler._deferred_request_payloads = {}
+    scheduler._aborted_request_ids = set()
+    scheduler._prefill_start_done = set()
+    scheduler.max_req_len = 16
+    scheduler.max_req_input_len = 16
+
+    req = SimpleNamespace(
+        rid="req-delayed",
+        origin_input_ids=[1, 2, 3],
+        sampling_params=SimpleNamespace(max_new_tokens=1),
+        output_ids=[],
+    )
+    scheduler._request_builder = lambda payload: SimpleNamespace(req=req)
+
+    scheduler.process_input_requests([SimpleNamespace(request_id="req-delayed")])
+
+    names = [event["event_name"] for event in events]
+    assert "scheduler_queue_enter" in names
+    assert "scheduler_prefill_start" not in names
+    assert scheduler.waiting_queue == [req]
+
+    batch = SimpleNamespace(reqs=[req], is_prefill_only=True)
+    scheduler._emit_prefill_start_for_batch(batch)
+    scheduler._emit_prefill_start_for_batch(batch)
+
+    names = [event["event_name"] for event in events]
+    assert names.count("scheduler_prefill_start") == 1
+    assert names.index("scheduler_queue_enter") < names.index("scheduler_prefill_start")
 
 
 def test_omni_scheduler_initializes_upstream_queue_limit(monkeypatch) -> None:

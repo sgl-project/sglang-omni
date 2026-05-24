@@ -9,11 +9,13 @@ from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import FastAPI
+from fastapi.testclient import TestClient
 
 import sglang_omni.pipeline.mp_runner as mp_runner
 import sglang_omni.pipeline.runtime_config as runtime_config
 import sglang_omni.pipeline.stage.runtime as stage_runtime
 from sglang_omni.config.schema import EndpointsConfig, PipelineConfig, StageConfig
+from sglang_omni.profiler.event_recorder import get_recorder
 from tests.unit_test.fixtures.pipeline_fakes import FakeMpContext, FakeRelay
 
 
@@ -454,6 +456,60 @@ async def test_launcher_uses_runner_and_mounts_profiler_routes(
     mounted_paths = {route.path for route in app.routes}
     assert "/start_profile" in mounted_paths
     assert "/stop_profile" in mounted_paths
+
+
+def test_start_profile_request_only_mode_does_not_require_trace_template(
+    tmp_path: Path,
+) -> None:
+    from sglang_omni.serve import launcher
+
+    class FakeProfilerControl:
+        def __init__(self) -> None:
+            self.starts: list[dict] = []
+
+        async def broadcast_start(self, **kwargs) -> None:
+            self.starts.append(kwargs)
+
+    app = FastAPI()
+    ctl = FakeProfilerControl()
+    launcher._mount_profiler_routes(app, ctl, profiler_dir=None)
+    event_dir = str(tmp_path / "events")
+
+    try:
+        with TestClient(app) as client:
+            resp = client.post(
+                "/start_profile",
+                json={"enable_torch": False, "event_dir": event_dir},
+            )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["enable_torch"] is False
+        assert body["trace_path_template"] == ""
+        assert body["event_dir"] == event_dir
+        assert ctl.starts
+        assert ctl.starts[0]["enable_torch"] is False
+        assert ctl.starts[0]["trace_path_template"] == ""
+        assert ctl.starts[0]["event_dir"] == event_dir
+    finally:
+        rec = get_recorder()
+        if rec.is_active():
+            rec.stop()
+
+
+def test_start_profile_torch_mode_still_requires_trace_template() -> None:
+    from sglang_omni.serve import launcher
+
+    class FakeProfilerControl:
+        async def broadcast_start(self, **kwargs) -> None:
+            raise AssertionError("start_profile should fail before broadcasting")
+
+    app = FastAPI()
+    launcher._mount_profiler_routes(app, FakeProfilerControl(), profiler_dir=None)
+
+    with TestClient(app) as client:
+        resp = client.post("/start_profile", json={"enable_torch": True})
+    assert resp.status_code == 400
+    assert "trace_path_template is required" in resp.json()["detail"]
 
 
 @pytest.mark.asyncio

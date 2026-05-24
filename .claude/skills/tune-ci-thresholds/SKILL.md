@@ -193,8 +193,8 @@ python .claude/skills/tune-ci-thresholds/tune.py --model qwen3-omni-v1 run \
 1. Run `python .claude/skills/tune-ci-thresholds/tune.py models-list` to
    discover available models. Then for the selected model, run
    `python tune.py --model <M> stages-list` to read the per-test-file
-   bases (e.g. `mmmu`, `mmmu_talker`, `mmsu`, `mmsu_talker`, `tts`, …) and
-   group aliases (`@accuracy`, `@speed`, `@wer`, `@docs`).
+   bases (e.g. `mmmu`, `mmmu_talker`, `mmsu`, `mmsu_talker`, `tts`, ...) and
+   group aliases such as `@accuracy`, `@speed`, and `@wer`.
 2. **One-time parameter prompt.** If the invocation omits `--model`,
    `--stages`, or `--repeats`, collect missing fields from the user
    exactly once. After this, do not ask the user anything else for
@@ -219,8 +219,7 @@ python .claude/skills/tune-ci-thresholds/tune.py --model qwen3-omni-v1 run \
      videoamme                    tests/test_model/test_qwen3_omni_videoamme_ci.py — acc + speed
      videoamme_talker             tests/test_model/test_qwen3_omni_videoamme_talker_ci.py — acc + wer + speed
      tts                          tests/test_model/test_qwen3_omni_tts_ci.py — speed + wer
-     qwen3_omni_docs              tests/docs/qwen3_omni/test_docs_qwen3_omni.py — docs smoke
-   Shortcuts: @accuracy, @speed, @wer, @docs (metric-group aliases).
+   Shortcuts: @accuracy, @speed, @wer (metric-group aliases).
    Combine with commas (e.g. "mmmu,mmsu" or "mmmu,@wer").
    ```
    Parse the user's free-text reply (trim whitespace, split on commas)
@@ -472,6 +471,15 @@ under that dir at a deterministic path. After pytest exits, tune.py
 loads those JSONs and pulls each metric by dotted key. Nothing is
 parsed from stdout — the test doesn't need to print anything.
 
+For `tmp_path`-based tests (MMMU, MMSU, VideoMME, VideoAMME and their
+talker variants), `discover` **auto-infers** `json_file`, `paths`, and
+`sample_counts` from the test file's AST using convention-based defaults.
+MMSU's non-standard JSON layout (`speed_metrics.*` instead of `speed.*`)
+is detected automatically via its benchmark module import. When a test
+has no `metric_sources` entry in `config.yaml`, discover prints a
+suggested config entry and uses the inferred values as fallback — so
+stages.yaml is correct even without a config update.
+
 The `metric_sources` block in `config.yaml` declares, per test file:
 - `json_file` — path relative to pytest basetemp (the default file
   for every metric in this test)
@@ -488,27 +496,42 @@ The `metric_sources` block in `config.yaml` declares, per test file:
   `tts_stream_wer`). The bare base (`tts`) still resolves to all
   variants via the alias system.
 
+Config.yaml entries always override auto-inferred values. For TTS tests
+(`tmp_path_factory`-based), auto-inference is not available — config.yaml
+entries are required.
+
 ## Regenerating stages.yaml
 If a test file's sha256 no longer matches `models/<M>/stages.yaml`,
 `run` will warn. Regenerate with:
 ```
 python tune.py --model <M> discover
 ```
-This is deterministic (AST + config lookup, no LLM calls).
+This is deterministic (AST + config lookup, no LLM calls). For
+`tmp_path`-based tests, discover auto-infers metric_sources from the
+test file's AST and prints suggested config.yaml entries for any test
+not yet in config. It also validates existing config entries against
+the inferred values.
 
 ## Adding a new model
-1. Create `models/<new-name>/config.yaml` mirroring `qwen3-omni-v1/config.yaml`,
-   including `metric_sources` entries for every test file the model owns.
-2. Run `python tune.py --model <new-name> discover`.
+1. Create `models/<new-name>/config.yaml` mirroring `qwen3-omni-v1/config.yaml`.
+   For `tmp_path`-based tests (MMMU, MMSU, VideoMME, VideoAMME + talker
+   variants), `metric_sources` entries are auto-inferred by discover — you
+   can omit them. For TTS tests (`tmp_path_factory`-based), add
+   `metric_sources` entries manually (use existing TTS entries as template).
+2. Run `python tune.py --model <new-name> discover`. Discover prints
+   suggested config.yaml entries for any test not yet in config — copy
+   them in for PR reviewability.
 3. Any metric that shows up as `NEEDS_CONFIG` means the constant was
-   recognized but the config is missing a `paths` entry for it — add
-   the dotted JSON key and re-run discover.
+   recognized but neither auto-inference nor config provides a path — add
+   the dotted JSON key under `metric_sources` and re-run discover.
 
 ## Adding a new metric to an existing model
 If a new test file adds a threshold constant:
 - Matching an existing naming pattern (`*_ACC_MIN`, `*_WER_MAX_CORPUS`,
   nested `_*_P95[*].<known_key>`) → `discover` picks it up for free.
-  Add its JSON dotted key under `metric_sources.<test_file>.paths`.
+  For `tmp_path`-based tests following standard conventions, the JSON
+  path is auto-inferred. Otherwise, add its JSON dotted key under
+  `metric_sources.<test_file>.paths`.
 - New nested-dict key (e.g. `_*_P95[*].ttft_ms`) → add to `_NESTED` and
   `METRIC_SPECS` in `tune.py`.
 - New naming pattern (e.g. `*_BLEU_MIN`) → extend `match_metric()` and

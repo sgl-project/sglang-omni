@@ -27,14 +27,12 @@ from sglang.srt.managers.scheduler import Scheduler as _Upstream
 from sglang.srt.managers.scheduler import validate_input_length
 from sglang.srt.utils import broadcast_pyobj
 
+from sglang_omni.profiler.event_recorder import emit as _emit_event
 from sglang_omni.scheduling.messages import IncomingMessage, OutgoingMessage
 
 logger = logging.getLogger(__name__)
 
-
-# ---------------------------------------------------------------------------
-# Stubs for upstream subsystems we don't use
-# ---------------------------------------------------------------------------
+_FAILED_BATCH_RESULT = object()
 
 
 class _NoOpSender:
@@ -63,11 +61,6 @@ class _NoOpGrammarManager:
 
     def __len__(self) -> int:
         return 0
-
-
-# ---------------------------------------------------------------------------
-# OmniScheduler
-# ---------------------------------------------------------------------------
 
 
 class OmniScheduler:
@@ -307,6 +300,8 @@ class OmniScheduler:
         self._pending_stream_chunks: dict[str, list[Any]] = {}
         self._pending_stream_done: set[str] = set()
         self._deferred_request_payloads: dict[str, Any] = {}
+        self._first_emit_done: set[str] = set()
+        self._prefill_start_done: set[str] = set()
 
     def _init_upstream_compat_flags(self, server_args: Any) -> None:
         self.enable_hisparse = bool(getattr(server_args, "enable_hisparse", False))
@@ -391,10 +386,6 @@ class OmniScheduler:
             self.attn_tp_rank == 0 or self.enable_metrics_for_all_schedulers
         )
 
-    # ------------------------------------------------------------------
-    # Overridden methods (take precedence over __getattr__)
-    # ------------------------------------------------------------------
-
     def get_next_batch_to_run(self):
         batch = _Upstream.get_next_batch_to_run(self)
         if batch is not None and not self._is_batch_ready_to_run(batch):
@@ -458,6 +449,11 @@ class OmniScheduler:
             ):
                 self._deferred_request_payloads[req_id] = payload
                 continue
+            _emit_event(
+                request_id=req_id,
+                stage=None,
+                event_name="scheduler_request_build_start",
+            )
             try:
                 req_data = self._request_builder(payload)
             except Exception as exc:
@@ -474,6 +470,11 @@ class OmniScheduler:
             req = req_data.req
             req._omni_data = req_data
             req_id = req.rid
+            _emit_event(
+                request_id=req_id,
+                stage=None,
+                event_name="scheduler_request_build_end",
+            )
             if bool(getattr(req_data, "enforce_request_limits", False)):
                 error_msg = self._prepare_request_limits(req_data)
                 if error_msg:
@@ -501,6 +502,11 @@ class OmniScheduler:
             self._initialize_request_stream_state(req_data, payload)
             if req_id in self._aborted_request_ids:
                 continue
+            _emit_event(
+                request_id=req_id,
+                stage=None,
+                event_name="scheduler_queue_enter",
+            )
             self.waiting_queue.append(req)
 
     def _prepare_request_limits(self, req_data: Any) -> str | None:
@@ -568,6 +574,13 @@ class OmniScheduler:
         )
 
     def run_batch(self, batch, pp_proxy_tensors=None):
+        try:
+            return self._run_batch(batch, pp_proxy_tensors)
+        except Exception as exc:
+            self._handle_batch_failure(batch, exc)
+            return _FAILED_BATCH_RESULT
+
+    def _run_batch(self, batch, pp_proxy_tensors=None):
         """Run a batch through the model runner.
 
         The custom model runner (for example ThinkerModelRunner or a
@@ -576,6 +589,7 @@ class OmniScheduler:
         ``ModelRunnerOutput``.  The upstream ``process_batch_result`` expects
         a ``GenerationBatchResult``.  We bridge the two formats here.
         """
+        self._emit_prefill_start_for_batch(batch)
         if self._model_runner is not None:
             from sglang.srt.managers.scheduler import GenerationBatchResult
 
@@ -593,12 +607,23 @@ class OmniScheduler:
 
             if self._stream_output_builder is not None:
                 for sched_req in sched_output.requests:
-                    req_output = mr_output.outputs[sched_req.request_id]
+                    rid = sched_req.request_id
+                    req_output = mr_output.outputs[rid]
+                    emitted_any = False
                     for msg in self._stream_output_builder(
-                        sched_req.request_id,
+                        rid,
                         sched_req.data,
                         req_output,
                     ):
+                        if not emitted_any:
+                            if rid not in self._first_emit_done:
+                                self._first_emit_done.add(rid)
+                                _emit_event(
+                                    request_id=rid,
+                                    stage=None,
+                                    event_name="scheduler_first_emit",
+                                )
+                            emitted_any = True
                         self.outbox.put(msg)
 
             # Convert ModelRunnerOutput → GenerationBatchResult
@@ -612,6 +637,39 @@ class OmniScheduler:
             )
         # Fallback: call upstream's run_batch (uses tp_worker directly)
         return _Upstream.run_batch(self, batch, pp_proxy_tensors)
+
+    def _handle_batch_failure(self, batch: Any, error: Exception) -> None:
+        reqs = list(batch.reqs)
+        request_ids = [req.rid for req in reqs]
+        logger.exception("OmniScheduler batch failed for requests=%s", request_ids)
+        for req in reqs:
+            if self.is_entry_rank:
+                self.outbox.put(
+                    OutgoingMessage(
+                        request_id=req.rid,
+                        type="error",
+                        data=error,
+                    )
+                )
+            self.abort(req.rid)
+
+    def _emit_prefill_start_for_batch(self, batch: Any) -> None:
+        """Emit once when a request's first executable batch is selected."""
+        metadata = {}
+        for attr in ("is_prefill_only", "is_extend_in_batch"):
+            if hasattr(batch, attr):
+                metadata[attr] = bool(getattr(batch, attr))
+        for req in getattr(batch, "reqs", []) or []:
+            rid = req.rid
+            if rid in self._prefill_start_done:
+                continue
+            self._prefill_start_done.add(rid)
+            _emit_event(
+                request_id=rid,
+                stage=None,
+                event_name="scheduler_prefill_start",
+                metadata=metadata,
+            )
 
     def stream_output(self, reqs, return_logprob=False, skip_req=None):
         """Intercept finished requests and emit to outbox.
@@ -642,6 +700,8 @@ class OmniScheduler:
             data.prefill_input_embeds = None
             data.decode_input_embeds = None
 
+            self._first_emit_done.discard(rid)
+            self._prefill_start_done.discard(rid)
             self.outbox.put(
                 OutgoingMessage(
                     request_id=rid,
@@ -653,10 +713,6 @@ class OmniScheduler:
     def send_to_tokenizer(self):
         """No-op — results are routed through the stage outbox."""
         return None
-
-    # ------------------------------------------------------------------
-    # Stream chunk handling
-    # ------------------------------------------------------------------
 
     def _on_stream_chunk(self, request_id: str, chunk: Any) -> None:
         req_data = self._find_request_data(request_id)
@@ -671,10 +727,6 @@ class OmniScheduler:
             self._mark_stream_done(req_data)
             return
         self._pending_stream_done.add(request_id)
-
-    # ------------------------------------------------------------------
-    # Lifecycle
-    # ------------------------------------------------------------------
 
     def start(self) -> None:
         self._running = True
@@ -701,6 +753,8 @@ class OmniScheduler:
         self._pending_stream_chunks.pop(request_id, None)
         self._pending_stream_done.discard(request_id)
         self._deferred_request_payloads.pop(request_id, None)
+        self.__dict__.setdefault("_first_emit_done", set()).discard(request_id)
+        self.__dict__.setdefault("_prefill_start_done", set()).discard(request_id)
         self.waiting_queue = [
             req for req in self.waiting_queue if req.rid != request_id
         ]
@@ -708,10 +762,6 @@ class OmniScheduler:
         _remove_from_batch(self.cur_batch, request_id)
         _remove_from_batch(self.last_batch, request_id)
         self._drain_inbox_for_request(request_id)
-
-    # ------------------------------------------------------------------
-    # Event loops
-    # ------------------------------------------------------------------
 
     def _event_loop_normal(self) -> None:
         # Note (Chenyang): yield the GIL when idle so co-located non-AR stages
@@ -733,7 +783,8 @@ class OmniScheduler:
 
             if batch:
                 result = self.run_batch(batch)
-                self.process_batch_result(batch, result)
+                if result is not _FAILED_BATCH_RESULT:
+                    self.process_batch_result(batch, result)
             else:
                 self.self_check_during_idle()
                 time.sleep(0.001)
@@ -765,7 +816,10 @@ class OmniScheduler:
 
             if batch:
                 batch_result = self.run_batch(batch)
-                self.result_queue.append((batch.copy(), batch_result))
+                if batch_result is not _FAILED_BATCH_RESULT:
+                    self.result_queue.append((batch.copy(), batch_result))
+                else:
+                    batch_result = None
             else:
                 batch_result = None
 
@@ -781,10 +835,6 @@ class OmniScheduler:
             self.last_batch = batch
             if envs.SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_BUSY.get():
                 self.self_check_during_busy()
-
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
 
     def _drain_inbox_for_request(self, request_id: str) -> None:
         retained: list[IncomingMessage] = []

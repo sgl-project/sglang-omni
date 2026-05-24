@@ -80,11 +80,33 @@ The current server exposes these main routes:
 | `GET` | `/v1/models` | Single-model listing for the active pipeline |
 | `POST` | `/v1/chat/completions` | Chat completions, including streaming and optional audio |
 | `POST` | `/v1/audio/speech` | Text-to-speech, raw audio response or SSE chunks when `stream=true` |
-| `POST` | `/start_profile` | Added by the single-process built-in launcher |
-| `POST` | `/stop_profile` | Added by the single-process built-in launcher |
+| `POST` | `/start_profile` | Torch trace + (optional) request-level events. Added by the built-in launcher |
+| `POST` | `/stop_profile` | Stops both torch trace and request-level events |
+| `POST` | `/start_request_profile` | Request-level event recorder only (no torch trace) |
+| `POST` | `/stop_request_profile` | Stops the request-level event recorder |
 
 The profiling routes are mounted by the single-process `launch_server()` path. The
 current multi-process launcher path does not mount them.
+
+`/start_profile` accepts:
+
+```jsonc
+{
+  "run_id": "demo-run",
+  "trace_path_template": "/tmp/profiles/demo-run/trace",  // torch trace template
+  "event_dir": "/tmp/profiles/demo-run/events",            // request-event JSONL dir (optional)
+  "enable_torch": true                                     // set false to skip torch trace
+}
+```
+
+`/stop_profile` and `/stop_request_profile` both accept an optional
+`run_id`. Omitting it is a wildcard: every stage stops whatever profiler
+session is currently active.
+
+Request-level events are emitted as JSON lines under
+`<event_dir>/events_<stage>_<pid>.jsonl`. Use `python -m sglang_omni.profiler
+<event_dir>` to derive the timeline / stage / hop reports described in
+`docs/developer_reference/profiler.md`.
 
 ## Request Mapping
 

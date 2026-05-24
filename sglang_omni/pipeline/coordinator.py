@@ -7,6 +7,7 @@ from collections.abc import Callable, Sequence
 from typing import Any, AsyncIterator
 
 from sglang_omni.pipeline.control_plane import CoordinatorControlPlane
+from sglang_omni.profiler.event_recorder import emit as _emit_event
 from sglang_omni.proto import (
     AbortMessage,
     CompleteMessage,
@@ -212,6 +213,13 @@ class Coordinator:
             data={"raw_inputs": request.inputs},
         )
 
+        _emit_event(
+            request_id=request_id,
+            stage="coordinator",
+            event_name="request_admission",
+            metadata={"entry_stage": self.entry_stage},
+        )
+
         # Submit to entry stage
         entry_info = self._stages[self.entry_stage]
         await self.control_plane.submit_to_stage(
@@ -305,6 +313,15 @@ class Coordinator:
             msg.from_stage,
             msg.success,
         )
+        _emit_event(
+            request_id=request_id,
+            stage="coordinator",
+            event_name="terminal_response",
+            metadata={
+                "from_stage": msg.from_stage,
+                "success": msg.success,
+            },
+        )
 
         if request_id not in self._requests:
             logger.warning(
@@ -383,6 +400,26 @@ class Coordinator:
         request_id = msg.request_id
         if request_id not in self._stream_queues:
             return
+        _emit_event(
+            request_id=request_id,
+            stage="coordinator",
+            event_name="coordinator_stream_received",
+            metadata={
+                "from_stage": msg.from_stage,
+                "chunk_id": msg.chunk_id,
+                "modality": msg.modality,
+            },
+        )
+        _emit_event(
+            request_id=request_id,
+            stage="coordinator",
+            event_name="stage_stream_chunk_received",
+            metadata={
+                "from_stage": msg.from_stage,
+                "chunk_id": msg.chunk_id,
+                "modality": msg.modality,
+            },
+        )
         await self._stream_queues[request_id].put(msg)
 
     def get_request_info(self, request_id: str) -> RequestInfo | None:

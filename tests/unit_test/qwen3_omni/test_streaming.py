@@ -597,6 +597,38 @@ def test_code2wav_non_streaming_returns_full_pcm():
     assert not any(m.type == "stream" for m in msgs)
 
 
+def test_code2wav_done_without_audio_emits_error():
+    sched = Code2WavScheduler(
+        model=_FakeCode2Wav(),
+        device="cpu",
+        stream_chunk_size=10,
+        left_context_size=0,
+    )
+    payload = StagePayload(
+        request_id="req-1",
+        request=OmniRequest(inputs=[], params={"stream": False}),
+        data={},
+    )
+    sched._ensure_request_state("req-1")
+    sched._payloads["req-1"] = payload
+    sched._stream_enabled["req-1"] = False
+
+    sched._on_done("req-1")
+
+    msgs: list[OutgoingMessage] = []
+    while not sched.outbox.empty():
+        msgs.append(sched.outbox.get_nowait())
+    assert len(msgs) == 1
+    assert msgs[0].type == "error"
+    assert msgs[0].request_id == "req-1"
+    assert isinstance(msgs[0].data, RuntimeError)
+    assert "produced no audio" in str(msgs[0].data)
+    assert "req-1" not in sched._code_chunks
+    assert "req-1" not in sched._audio_chunks
+    assert "req-1" not in sched._payloads
+    assert "req-1" not in sched._stream_enabled
+
+
 def _bare_stage(*, is_terminal: bool, owns_io: bool = True) -> Stage:
     """Construct a Stage shell that bypasses __init__ for unit-level checks."""
     s = Stage.__new__(Stage)
@@ -607,6 +639,7 @@ def _bare_stage(*, is_terminal: bool, owns_io: bool = True) -> Stage:
     s._active_requests = set()
     s._stream_queue = None
     s._stream_chunk_counters = {}
+    s._first_stream_chunk_seen = set()
     s.input_handler = SimpleNamespace(cancel=lambda request_id: None)
     s.scheduler = SimpleNamespace(abort=lambda request_id: None)
     s.control_plane = SimpleNamespace(completions=[])

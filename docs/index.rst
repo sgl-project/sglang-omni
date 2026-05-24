@@ -44,3 +44,4 @@ Our core features include:
    developer_reference/pipeline.md
    developer_reference/config.md
    developer_reference/communication.md
+   developer_reference/profiler.md

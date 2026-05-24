@@ -613,6 +613,8 @@ def test_qwen3_tts_ar_scheduler_abort_cleans_prepared_state() -> None:
         scheduler._pending_stream_chunks = {}
         scheduler._pending_stream_done = set()
         scheduler._deferred_request_payloads = {}
+        scheduler._first_emit_done = set()
+        scheduler._prefill_start_done = set()
         scheduler.waiting_queue = []
         scheduler.running_batch = SimpleNamespace(reqs=[], batch_is_full=False)
         scheduler.cur_batch = None

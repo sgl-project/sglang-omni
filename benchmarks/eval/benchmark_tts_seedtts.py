@@ -26,13 +26,13 @@ Usage:
 
     # Full pipeline (generate + transcribe) — voice cloning
     python -m benchmarks.eval.benchmark_tts_seedtts \
-        --meta seedtts_testset/en/meta.lst \
+        --meta zhaochenyang20/seed-tts-eval-arrow \
         --max-concurrency 16 \
         --model fishaudio/s2-pro --port 8000
 
     # Full pipeline — plain TTS (no ref audio from testset)
     python -m benchmarks.eval.benchmark_tts_seedtts \
-        --meta seedtts_testset/en/meta.lst \
+        --meta zhaochenyang20/seed-tts-eval-arrow \
         --model mistralai/Voxtral-4B-TTS-2603 --port 8000 \
         --max-concurrency 16 \
         --no-ref-audio --voice cheerful_female --max-samples 50
@@ -44,7 +44,7 @@ Usage (CI):
     # Generate audio only
     python -m benchmarks.eval.benchmark_tts_seedtts \
         --generate-only \
-        --meta seedtts_testset/en/meta.lst \
+        --meta zhaochenyang20/seed-tts-eval-arrow \
         --max-concurrency 16 \
         --output-dir results/s2pro_en \
         --model fishaudio/s2-pro --port 8000
@@ -52,7 +52,7 @@ Usage (CI):
     # Transcribe + WER only
     python -m benchmarks.eval.benchmark_tts_seedtts \
         --transcribe-only \
-        --meta seedtts_testset/en/meta.lst \
+        --meta zhaochenyang20/seed-tts-eval-arrow \
         --model fishaudio/s2-pro \
         --output-dir results/s2pro_en \
         --lang en --device cuda:0
@@ -87,25 +87,25 @@ Accuracy (accuracy.wer)
 
 Generation speed (generation.speed)
 
-| Model  | Config           | latency_mean_s | latency_p95_s | rtf_mean | throughput_qps | tok_per_s_mean | tok_per_s_agg | Source                         |
-| ------ | ---------------- | -------------- | ------------- | -------- | -------------- | -------------- | ------------- | ------------------------------ |
-| S2-Pro | EN, stream=False | 15.836         | 21.509        | 4.269    | 1.005          | 75.3           | 75.0          | PR #411 [H200, full-set, c=16] |
-| S2-Pro | EN, stream=True  | 16.135         | 21.733        | 4.357    | 0.985          | 74.5           | 74.1          | PR #411 [H200, full-set, c=16] |
-| S2-Pro | ZH, stream=False | 16.114         | 20.092        | 3.018    | 0.990          | 73.6           | 73.1          | PR #411 [H200, full-set, c=16] |
-| S2-Pro | ZH, stream=True  | 17.070         | 22.120        | 3.203    | 0.935          | 72.1           | 71.5          | PR #411 [H200, full-set, c=16] |
-| S2-Pro | EN, stream=False | 9.38           | 14.65         | 2.48     | 1.700          | 56.6           | 56.0          | PR #351 [H100, full-set, c=16] |
-| S2-Pro | EN, stream=True  | 9.92           | 15.49         | 2.62     | 1.607          | 53.9           | 53.2          | PR #351 [H100, full-set, c=16] |
-| S2-Pro | ZH, stream=False | 9.64           | 13.61         | 1.80     | 1.655          | 55.7           | 55.2          | PR #351 [H100, full-set, c=16] |
-| S2-Pro | ZH, stream=True  | 9.27           | 13.11         | 1.74     | 1.722          | 51.7           | 51.1          | PR #351 [H100, full-set, c=16] |
-| S2-Pro | EN, stream=False | 12.247         | 16.703        | 3.289    | 1.299          | 67.9           | 67.8          | PR #411 [H100, V1-pipeline, full-set, c=16] |
-| S2-Pro | EN, stream=True  | 12.164         | 16.717        | 3.265    | 1.308          | 67.1           | 67.0          | PR #411 [H100, V1-pipeline, full-set, c=16] |
-| S2-Pro | ZH, stream=False | 12.028         | 15.526        | 2.256    | 1.327          | 65.9           | 65.7          | PR #411 [H100, V1-pipeline, full-set, c=16] |
-| S2-Pro | ZH, stream=True  | 11.417         | 15.020        | 2.141    | 1.398          | 65.7           | 65.5          | PR #411 [H100, V1-pipeline, full-set, c=16] |
+| Model  | Config           | latency_mean_s | latency_p95_s | rtf_mean | throughput_qps | output_tok_per_req_s | Source                         |
+| ------ | ---------------- | -------------- | ------------- | -------- | -------------- | ------------------------------ | ------------------------------ |
+| S2-Pro | EN, stream=False | 15.836         | 21.509        | 4.269    | 1.005          | 75.0                           | PR #411 [H200, full-set, c=16] |
+| S2-Pro | EN, stream=True  | 16.135         | 21.733        | 4.357    | 0.985          | 74.1                           | PR #411 [H200, full-set, c=16] |
+| S2-Pro | ZH, stream=False | 16.114         | 20.092        | 3.018    | 0.990          | 73.1                           | PR #411 [H200, full-set, c=16] |
+| S2-Pro | ZH, stream=True  | 17.070         | 22.120        | 3.203    | 0.935          | 71.5                           | PR #411 [H200, full-set, c=16] |
+| S2-Pro | EN, stream=False | 9.38           | 14.65         | 2.48     | 1.700          | 56.0                           | PR #351 [H100, full-set, c=16] |
+| S2-Pro | EN, stream=True  | 9.92           | 15.49         | 2.62     | 1.607          | 53.2                           | PR #351 [H100, full-set, c=16] |
+| S2-Pro | ZH, stream=False | 9.64           | 13.61         | 1.80     | 1.655          | 55.2                           | PR #351 [H100, full-set, c=16] |
+| S2-Pro | ZH, stream=True  | 9.27           | 13.11         | 1.74     | 1.722          | 51.1                           | PR #351 [H100, full-set, c=16] |
+| S2-Pro | EN, stream=False | 12.247         | 16.703        | 3.289    | 1.299          | 67.8                           | PR #411 [H100, V1-pipeline, full-set, c=16] |
+| S2-Pro | EN, stream=True  | 12.164         | 16.717        | 3.265    | 1.308          | 67.0                           | PR #411 [H100, V1-pipeline, full-set, c=16] |
+| S2-Pro | ZH, stream=False | 12.028         | 15.526        | 2.256    | 1.327          | 65.7                           | PR #411 [H100, V1-pipeline, full-set, c=16] |
+| S2-Pro | ZH, stream=True  | 11.417         | 15.020        | 2.141    | 1.398          | 65.5                           | PR #411 [H100, V1-pipeline, full-set, c=16] |
 
-Note (Chenyang): tok_per_s_{mean,agg} here counts S2-Pro's codec tokens.  It is NOT
-comparable to the tok_per_s column reported for Qwen3-Omni in benchmark_omni_seedtts.py,
-whose tokens are discrete talker LM tokens emitted at audio frame rate. Cross-model
-comparison of this column is not meaningful — use latency_mean_s / rtf_mean / throughput_qps
+Note (Chenyang): output-token rates here count S2-Pro's codec tokens. They are not
+comparable to Qwen3-Omni rates in benchmark_omni_seedtts.py, whose tokens are
+discrete talker LM tokens emitted at audio frame rate. Cross-model comparison of
+this rate is not meaningful; use latency_mean_s / rtf_mean / throughput_qps
 instead when comparing backends.
 
 ASR speed (accuracy.asr_speed) — Whisper-large-v3 for EN, FunASR paraformer-zh for ZH
@@ -224,13 +224,10 @@ async def run_tts_seedtts_benchmark(
 
     Returns a dict with keys: summary, per_request, config.
     """
-    if not os.path.isfile(config.meta):
-        raise FileNotFoundError(f"Meta file not found: {config.meta}")
-
     base_url = build_base_url(config)
     api_url = f"{base_url}/v1/audio/speech"
 
-    samples = load_seedtts_samples(config.meta, config.max_samples)
+    samples = load_seedtts_samples(config.meta, config.max_samples, split=config.lang)
     logger.info(f"Prepared {len(samples)} requests")
 
     save_audio_dir = os.path.abspath(os.path.join(config.output_dir, "audio"))
@@ -362,8 +359,8 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         "--testset",
         dest="meta",
         type=str,
-        default="seedtts_testset/en/meta.lst",
-        help="Path to a meta.lst file (seed-tts-eval format).",
+        default="zhaochenyang20/seed-tts-eval-arrow",
+        help="HuggingFace Arrow/Parquet dataset repo id or local meta.lst path.",
     )
     parser.add_argument(
         "--no-ref-audio",

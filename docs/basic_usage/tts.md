@@ -232,7 +232,7 @@ Run EN and ZH after launching the target server on port 8000. Do not add benchma
 
 ```bash
 python -m benchmarks.eval.benchmark_tts_seedtts \
-  --meta seedtts_testset/en/meta.lst \
+  --meta zhaochenyang20/seed-tts-eval-arrow \
   --model Qwen/Qwen3-TTS-12Hz-0.6B-Base \
   --port 8000 \
   --output-dir results/qwen3_tts_0_6b_en \
@@ -240,7 +240,7 @@ python -m benchmarks.eval.benchmark_tts_seedtts \
   --max-concurrency 16
 
 python -m benchmarks.eval.benchmark_tts_seedtts \
-  --meta seedtts_testset/zh/meta.lst \
+  --meta zhaochenyang20/seed-tts-eval-arrow \
   --model Qwen/Qwen3-TTS-12Hz-0.6B-Base \
   --port 8000 \
   --output-dir results/qwen3_tts_0_6b_zh \
@@ -248,7 +248,7 @@ python -m benchmarks.eval.benchmark_tts_seedtts \
   --max-concurrency 16
 
 python -m benchmarks.eval.benchmark_tts_seedtts \
-  --meta seedtts_testset/en/meta.lst \
+  --meta zhaochenyang20/seed-tts-eval-arrow \
   --model Qwen/Qwen3-TTS-12Hz-1.7B-Base \
   --port 8000 \
   --output-dir results/qwen3_tts_1_7b_en \
@@ -256,7 +256,7 @@ python -m benchmarks.eval.benchmark_tts_seedtts \
   --max-concurrency 16
 
 python -m benchmarks.eval.benchmark_tts_seedtts \
-  --meta seedtts_testset/zh/meta.lst \
+  --meta zhaochenyang20/seed-tts-eval-arrow \
   --model Qwen/Qwen3-TTS-12Hz-1.7B-Base \
   --port 8000 \
   --output-dir results/qwen3_tts_1_7b_zh \
@@ -264,7 +264,7 @@ python -m benchmarks.eval.benchmark_tts_seedtts \
   --max-concurrency 16
 
 python -m benchmarks.eval.benchmark_tts_seedtts \
-  --meta seedtts_testset/en/meta.lst \
+  --meta zhaochenyang20/seed-tts-eval-arrow \
   --model mistralai/Voxtral-4B-TTS-2603 \
   --port 8000 \
   --output-dir results/voxtral_en \
@@ -275,7 +275,7 @@ python -m benchmarks.eval.benchmark_tts_seedtts \
   --voice cheerful_female
 
 python -m benchmarks.eval.benchmark_tts_seedtts \
-  --meta seedtts_testset/zh/meta.lst \
+  --meta zhaochenyang20/seed-tts-eval-arrow \
   --model mistralai/Voxtral-4B-TTS-2603 \
   --port 8000 \
   --output-dir results/voxtral_zh \

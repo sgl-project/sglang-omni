@@ -36,7 +36,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.utils import assert_streaming_consistency
+from tests.utils import MetricCheckCollector, assert_streaming_consistency
 
 S2PRO_STAGE1_SPEED_RESULTS_DIR_ENV = "S2PRO_STAGE1_SPEED_RESULTS_DIR"
 S2PRO_STAGE2_SPEED_RESULTS_DIR_ENV = "S2PRO_STAGE2_SPEED_RESULTS_DIR"
@@ -86,8 +86,11 @@ def test_s2pro_streaming_consistency_from_artifacts() -> None:
         f"vc_stream_c{concurrency}",
     )
 
+    checks = MetricCheckCollector("S2-Pro artifact streaming consistency")
     assert_streaming_consistency(
         non_stream_results["per_request"],
         stream_results["per_request"],
         expected_stream_count=STREAMING_BENCHMARK_MAX_SAMPLES,
+        collector=checks,
     )
+    checks.assert_all()

@@ -99,7 +99,12 @@ def print_mmsu_summary(
         if speed_metrics.get("rtf_mean") is not None:
             print(f"  RTF mean:         {speed_metrics.get('rtf_mean', 0):.4f}")
         print(f"  Throughput:       {speed_metrics.get('throughput_qps', 0):.2f} req/s")
-        print(f"  Tok/s agg:        {speed_metrics.get('tok_per_s_agg', 0):.2f}")
+        output_throughput = speed_metrics.get("output_throughput")
+        if output_throughput is not None:
+            print(f"  Output throughput: {output_throughput:.2f} tok/s")
+        output_tok_per_req_s = speed_metrics.get("output_tok_per_req_s")
+        if output_tok_per_req_s is not None:
+            print(f"  Output tok/req-s: {output_tok_per_req_s:.2f}")
         audio_returned = speed_metrics.get("audio_returned")
         audio_expected = speed_metrics.get("audio_expected")
         if audio_expected:

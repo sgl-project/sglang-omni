@@ -7,7 +7,7 @@ import asyncio
 import pytest
 
 from sglang_omni.pipeline.coordinator import Coordinator
-from sglang_omni.proto import CompleteMessage, OmniRequest
+from sglang_omni.proto import CompleteMessage, OmniRequest, StreamMessage
 from tests.unit_test.fixtures.pipeline_fakes import RecordingCoordinatorControlPlane
 
 
@@ -187,6 +187,67 @@ def test_coordinator_stream_uses_request_terminal_subset_after_cleanup() -> None
         assert [event.from_stage for event in events] == ["decode"]
 
     asyncio.run(_run())
+
+
+def test_coordinator_stream_received_event_pairs_terminal_chunk(monkeypatch) -> None:
+    events: list[dict] = []
+    monkeypatch.setattr(
+        "sglang_omni.pipeline.coordinator._emit_event",
+        lambda **kwargs: events.append(kwargs),
+    )
+
+    async def _run() -> None:
+        coordinator = Coordinator(
+            "inproc://complete",
+            "inproc://abort",
+            entry_stage="preprocess",
+            terminal_stages=["decode"],
+        )
+        queue: asyncio.Queue = asyncio.Queue()
+        coordinator._stream_queues["req-1"] = queue
+
+        await coordinator._handle_stream(
+            StreamMessage(
+                request_id="req-1",
+                from_stage="decode",
+                chunk={"text": "hi"},
+                modality="text",
+                chunk_id=1,
+            )
+        )
+
+        routed = queue.get_nowait()
+        assert routed.chunk_id == 1
+
+    asyncio.run(_run())
+
+    receive_events = [
+        event
+        for event in events
+        if event["event_name"] == "stage_stream_chunk_received"
+    ]
+    assert len(receive_events) == 1
+    assert receive_events[0]["stage"] == "coordinator"
+    assert receive_events[0]["metadata"] == {
+        "from_stage": "decode",
+        "chunk_id": 1,
+        "modality": "text",
+    }
+
+
+def test_stream_message_round_trips_terminal_chunk_id() -> None:
+    msg = StreamMessage(
+        request_id="req-1",
+        from_stage="decode",
+        chunk={"text": "hi"},
+        modality="text",
+        chunk_id=3,
+    )
+
+    round_trip = StreamMessage.from_dict(msg.to_dict())
+
+    assert round_trip.chunk_id == 3
+    assert round_trip.modality == "text"
 
 
 def test_coordinator_failure_completion_fails_fast_and_cleans_state() -> None:

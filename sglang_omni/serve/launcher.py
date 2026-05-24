@@ -39,6 +39,7 @@ from pydantic import BaseModel
 from sglang_omni.client import Client
 from sglang_omni.config import PipelineConfig
 from sglang_omni.pipeline.mp_runner import MultiProcessPipelineRunner
+from sglang_omni.profiler.event_recorder import get_recorder as _get_event_recorder
 from sglang_omni.profiler.profiler_control import ProfilerControlClient
 from sglang_omni.serve.openai_api import create_app
 from sglang_omni.utils.gpu_memory import (
@@ -151,10 +152,21 @@ class StartReq(BaseModel):
     run_id: str | None = None
     trace_path_template: str | None = None
     config: dict[str, Any] | None = None
+    event_dir: str | None = None
+    enable_torch: bool = True
 
 
 class StopReq(BaseModel):
     run_id: str | None = None
+
+
+class StartRequestProfileReq(BaseModel):
+    run_id: str | None = None
+    event_dir: str | None = None
+
+
+def _default_event_dir(profiler_dir: str, run_id: str) -> str:
+    return os.path.join(profiler_dir, run_id, "events")
 
 
 def _mount_profiler_routes(
@@ -165,30 +177,109 @@ def _mount_profiler_routes(
     @router.post("/start_profile")
     async def start(req: StartReq):
         run_id = req.run_id or _default_run_id()
-        if req.trace_path_template is not None:
-            tpl = req.trace_path_template
-        elif profiler_dir is not None:
-            tpl = _default_template(profiler_dir, run_id)
+        event_dir = req.event_dir
+        if event_dir is None and profiler_dir is not None:
+            event_dir = _default_event_dir(profiler_dir, run_id)
+        if req.enable_torch:
+            if req.trace_path_template is not None:
+                tpl = req.trace_path_template
+            elif profiler_dir is not None:
+                tpl = _default_template(profiler_dir, run_id)
+            else:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "trace_path_template is required when "
+                        "SGLANG_TORCH_PROFILER_DIR is not set"
+                    ),
+                )
         else:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "trace_path_template is required when "
-                    "SGLANG_TORCH_PROFILER_DIR is not set"
-                ),
-            )
+            if event_dir is None:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "event_dir is required when enable_torch=false and "
+                        "SGLANG_TORCH_PROFILER_DIR is not set"
+                    ),
+                )
+            tpl = req.trace_path_template or ""
+        if event_dir is not None:
+            try:
+                _get_event_recorder().start(
+                    run_id=run_id, event_dir=event_dir, stage="coordinator"
+                )
+            except Exception:
+                logger.warning(
+                    "Failed to start coordinator request event recorder",
+                    exc_info=True,
+                )
         await profiler_ctl.broadcast_start(
             run_id=run_id,
             trace_path_template=tpl,
             config=req.config,
+            event_dir=event_dir,
+            enable_torch=req.enable_torch,
         )
-        return {"run_id": run_id, "trace_path_template": tpl}
+        return {
+            "run_id": run_id,
+            "trace_path_template": tpl,
+            "event_dir": event_dir,
+            "enable_torch": req.enable_torch,
+        }
+
+    @router.post("/start_request_profile")
+    async def start_request(req: StartRequestProfileReq):
+        """Start request-level (JSONL) event profiling only (no torch trace)."""
+        run_id = req.run_id or _default_run_id()
+        event_dir = req.event_dir
+        if event_dir is None:
+            if profiler_dir is None:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "event_dir is required when "
+                        "SGLANG_TORCH_PROFILER_DIR is not set"
+                    ),
+                )
+            event_dir = _default_event_dir(profiler_dir, run_id)
+        try:
+            _get_event_recorder().start(
+                run_id=run_id, event_dir=event_dir, stage="coordinator"
+            )
+        except Exception:
+            logger.warning(
+                "Failed to start coordinator request event recorder",
+                exc_info=True,
+            )
+        await profiler_ctl.broadcast_start(
+            run_id=run_id,
+            trace_path_template="",
+            event_dir=event_dir,
+            enable_torch=False,
+        )
+        return {"run_id": run_id, "event_dir": event_dir}
 
     @router.post("/stop_profile")
     async def stop(req: StopReq):
-        run_id = req.run_id or "default"
+        # run_id=None is a wildcard (stop whatever's active).
+        run_id = req.run_id
+        recorder = _get_event_recorder()
+        active = recorder.active_run_id() if recorder.is_active() else None
+        if recorder.is_active() and (run_id is None or active == run_id):
+            recorder.stop(run_id=active)
         await profiler_ctl.broadcast_stop(run_id=run_id)
-        return {"run_id": run_id}
+        return {"run_id": run_id or active}
+
+    @router.post("/stop_request_profile")
+    async def stop_request(req: StopReq):
+        """Stop request-level event profiling."""
+        run_id = req.run_id
+        recorder = _get_event_recorder()
+        active = recorder.active_run_id() if recorder.is_active() else None
+        if recorder.is_active() and (run_id is None or active == run_id):
+            recorder.stop(run_id=active)
+        await profiler_ctl.broadcast_stop(run_id=run_id)
+        return {"run_id": run_id or active}
 
     app.include_router(router)
 

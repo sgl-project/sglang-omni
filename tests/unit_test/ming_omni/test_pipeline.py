@@ -460,3 +460,28 @@ def test_ming_init_model_config_registers_auto_config_before_loading(
     worker._init_model_config()
 
     assert call_order == ["register", "from_server_args"]
+
+
+def test_ming_decode_metadata_includes_usage_and_finish_reason() -> None:
+    from sglang_omni.models.ming_omni.io import PipelineState
+    from sglang_omni.models.ming_omni.stages import _attach_decode_final_metadata
+
+    class TensorLike:
+        def numel(self) -> int:
+            return 5
+
+    state = PipelineState(prompt={"input_ids": TensorLike()})
+    thinker_out = {
+        "output_ids": [10, 11, 12],
+        "finish_reason": "length",
+    }
+    result: dict[str, object] = {}
+
+    _attach_decode_final_metadata(result, state, thinker_out)
+
+    assert result["finish_reason"] == "length"
+    assert result["usage"] == {
+        "prompt_tokens": 5,
+        "completion_tokens": 3,
+        "total_tokens": 8,
+    }

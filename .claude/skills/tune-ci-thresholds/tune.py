@@ -55,12 +55,44 @@ METRIC_SPECS = {
     "wer_below_50_corpus":  dict(worst="max", label="Corpus WER ≤50% (%)", digits=2, scale=100, group="wer"),
     "n_above_50":           dict(worst="max", label="Samples >50% WER",      digits=0, scale=1,   group="wer"),
     "throughput_qps":       dict(worst="min", label="Throughput (req/s)",    digits=3, scale=1,   group="speed"),
-    "tok_per_s_agg":        dict(worst="min", label="Tok/s (aggregate)",     digits=2, scale=1,   group="speed"),
+    "output_tok_per_req_s": dict(
+        worst="min", label="Output tok/req-s", digits=1, scale=1, group="speed"
+    ),
     "latency_mean_s":       dict(worst="max", label="Latency mean (s)",      digits=3, scale=1,   group="speed"),
     "latency_p95_s":        dict(worst="max", label="Latency p95 (s)",       digits=3, scale=1,   group="speed"),
     "rtf_mean":             dict(worst="max", label="RTF mean",              digits=4, scale=1,   group="speed"),
 }
-_NESTED = {"throughput_qps", "tok_per_s_agg", "latency_mean_s", "latency_p95_s", "rtf_mean"}
+_NESTED = {"throughput_qps", "output_tok_per_req_s", "latency_mean_s", "latency_p95_s", "rtf_mean"}
+
+_DEFAULT_METRIC_PATHS = {
+    "accuracy": "summary.accuracy",
+    "corpus_wer": "wer.summary.wer_corpus",
+    "per_sample_wer_max": "wer.summary.wer_per_sample_max",
+    "wer_below_50_corpus": "wer.summary.wer_below_50_corpus",
+    "n_above_50": "wer.summary.n_above_50_pct_wer",
+    "throughput_qps": "speed.throughput_qps",
+    "tok_per_s_agg": "speed.tok_per_s_agg",
+    "latency_mean_s": "speed.latency_mean_s",
+    "latency_p95_s": "speed.latency_p95_s",
+    "rtf_mean": "speed.rtf_mean",
+}
+_DEFAULT_SAMPLE_COUNTS = {
+    "total": "summary.total_samples",
+    "ok": "speed.completed_requests",
+}
+_BENCHMARK_PATH_OVERRIDES = {
+    "benchmark_omni_mmsu": {
+        "paths": {
+            "accuracy": "summary.overall_accuracy",
+            "throughput_qps": "speed_metrics.throughput_qps",
+            "tok_per_s_agg": "speed_metrics.tok_per_s_agg",
+            "latency_mean_s": "speed_metrics.latency_mean_s",
+            "latency_p95_s": "speed_metrics.latency_p95_s",
+            "rtf_mean": "speed_metrics.rtf_mean",
+        },
+        "sample_counts": {"ok": "summary.successful_samples"},
+    },
+}
 
 
 def match_metric(name, nested):
@@ -633,6 +665,107 @@ def _emit_groups(constants, cfg_paths, default_file, counters):
     return groups
 
 
+def _find_tmp_path_test(tree):
+    """Return (func_name, output_subdir) from the test function using tmp_path."""
+    for node in tree.body:
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if not any(a.arg == "tmp_path" for a in node.args.args):
+            continue
+        for child in ast.walk(node):
+            if (isinstance(child, ast.BinOp) and isinstance(child.op, ast.Div)
+                    and isinstance(child.left, ast.Name) and child.left.id == "tmp_path"
+                    and isinstance(child.right, ast.Constant)
+                    and isinstance(child.right.value, str)):
+                return node.name, child.right.value
+    return None, None
+
+
+def _find_benchmark_module(tree):
+    """Return the benchmark module short name from imports, or None."""
+    found = []
+    for node in tree.body:
+        if isinstance(node, ast.ImportFrom) and node.module \
+                and node.module.startswith("benchmarks.eval."):
+            found.append(node.module.split(".")[-1])
+    for mod in found:
+        if mod in _BENCHMARK_PATH_OVERRIDES:
+            return mod
+    return found[0] if found else None
+
+
+def _infer_metric_sources(tree):
+    """Auto-infer metric_sources from AST for tmp_path-based tests."""
+    func_name, output_subdir = _find_tmp_path_test(tree)
+    if not func_name or not output_subdir:
+        return None
+    base = output_subdir[:-6] if output_subdir.endswith("_audio") else output_subdir
+    json_file = f"{func_name[:30]}0/{output_subdir}/{base}_results.json"
+    paths = dict(_DEFAULT_METRIC_PATHS)
+    sample_counts = dict(_DEFAULT_SAMPLE_COUNTS)
+    bench_mod = _find_benchmark_module(tree)
+    overrides = _BENCHMARK_PATH_OVERRIDES.get(bench_mod) if bench_mod else None
+    if overrides:
+        paths.update(overrides.get("paths") or {})
+        sample_counts.update(overrides.get("sample_counts") or {})
+    return {"json_file": json_file, "paths": paths, "sample_counts": sample_counts}
+
+
+def _merge_metric_sources(inferred, config):
+    """Merge auto-inferred and config.yaml metric_sources (config wins)."""
+    if not inferred:
+        return config or {}
+    if not config:
+        return inferred
+    merged = dict(inferred)
+    for key, val in config.items():
+        if key in merged and isinstance(merged[key], dict) and isinstance(val, dict):
+            merged[key] = {**merged[key], **val}
+        else:
+            merged[key] = val
+    return merged
+
+
+def _print_config_suggestion(test_name, inferred):
+    """Print inferred metric_sources as a suggested config.yaml entry."""
+    print(f"  [auto] {test_name}: inferred from AST (convention).")
+    print(f"         Suggested config.yaml entry:")
+    print(f"           {test_name}:")
+    print(f"             json_file: \"{inferred['json_file']}\"")
+    sc = inferred.get("sample_counts") or {}
+    if sc:
+        print(f"             sample_counts:")
+        for ck in ("total", "ok"):
+            if ck in sc:
+                print(f"               {ck}: \"{sc[ck]}\"")
+    paths = inferred.get("paths") or {}
+    if paths:
+        print(f"             paths:")
+        for mk, jp in paths.items():
+            print(f"               {mk}: \"{jp}\"")
+
+
+def _validate_config(test_name, inferred, config):
+    """Compare inferred metric_sources with config.yaml entry."""
+    cfg_jf = config.get("json_file", "")
+    inf_jf = inferred.get("json_file", "")
+    inf_paths = inferred.get("paths") or {}
+    cfg_paths = config.get("paths") or {}
+    jf_match = cfg_jf == inf_jf
+    paths_match = all(cfg_paths.get(k) == v for k, v in inf_paths.items()
+                      if k in cfg_paths)
+    if jf_match and paths_match:
+        print(f"  [ok] {test_name}: config matches inference")
+    else:
+        diffs = []
+        if not jf_match:
+            diffs.append("json_file")
+        if not paths_match:
+            diffs.append("paths")
+        print(f"  [override] {test_name}: config.yaml overrides "
+              f"convention ({', '.join(diffs)} differ)")
+
+
 def discover(out, only, cfg):
     files = []
     for g in cfg["test_globs"]:
@@ -653,6 +786,15 @@ def discover(out, only, cfg):
                 last_discovered_at=now_iso(), metrics={})
             continue
         ms = sources.get(tp.name, {}) or {}
+        inferred = _infer_metric_sources(tree)
+        if inferred and not ms:
+            _print_config_suggestion(tp.name, inferred)
+        elif inferred and ms:
+            _validate_config(tp.name, inferred, ms)
+        elif not inferred and not ms:
+            print(f"  [warn] {tp.name}: no auto-inference available, "
+                  f"needs metric_sources in config.yaml")
+        ms = _merge_metric_sources(inferred, ms)
         all_constants = list(_constants(tree))
         variants = ms.get("variants") or {}
         if variants:

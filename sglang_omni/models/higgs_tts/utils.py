@@ -74,9 +74,9 @@ def truncate_rope_to_bf16(model: torch.nn.Module) -> None:
     """
     for module in model.modules():
         if hasattr(module, "cos_sin_cache"):
-            module.cos_sin_cache.data = module.cos_sin_cache.data.to(torch.bfloat16).to(
-                torch.float32
-            )
+            cache = module.cos_sin_cache
+            truncated = cache.to(torch.bfloat16).to(cache.dtype)
+            cache.copy_(truncated)
 
 
 def resolve_checkpoint(checkpoint: str) -> str:

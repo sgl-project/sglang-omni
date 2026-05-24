@@ -53,6 +53,7 @@ from sglang_omni.serve.protocol import (
 
 logger = logging.getLogger(__name__)
 MIME_TO_FORMAT = {mime: fmt for fmt, mime in FORMAT_MIME_TYPES.items()}
+STREAM_DONE_SENTINEL = "[DONE]"
 
 _BAD_REQUEST_MARKERS = (
     "longer than the model's context length",
@@ -368,7 +369,7 @@ async def _chat_stream(
         choice.setdefault("finish_reason", None)
     yield f"data: {json.dumps(data)}\n\n"
 
-    yield "data: [DONE]\n\n"
+    yield f"data: {STREAM_DONE_SENTINEL}\n\n"
 
 
 def _build_chat_generate_request(req: ChatCompletionRequest) -> GenerateRequest:
@@ -550,57 +551,45 @@ async def _speech_stream(
     finish_reason: str | None = None
     usage: dict | None = None
 
-    try:
-        async for chunk in client.generate(gen_req, request_id=request_id):
-            if chunk.finish_reason is not None:
-                finish_reason = chunk.finish_reason
-                if chunk.usage is not None:
-                    usage = chunk.usage.to_dict()
+    async for chunk in client.generate(gen_req, request_id=request_id):
+        if chunk.finish_reason is not None:
+            finish_reason = chunk.finish_reason
+            if chunk.usage is not None:
+                usage = chunk.usage.to_dict()
 
-            if chunk.audio_data is None:
-                continue
+        if chunk.audio_data is None:
+            continue
 
-            sample_rate = chunk.sample_rate or DEFAULT_SAMPLE_RATE
-            audio_data, emitted_samples = _select_speech_audio_delta(
-                chunk.audio_data,
-                emitted_samples=emitted_samples,
-                is_terminal=chunk.finish_reason is not None,
-            )
-            if audio_data is None:
-                continue
+        sample_rate = chunk.sample_rate or DEFAULT_SAMPLE_RATE
+        audio_data, emitted_samples = _select_speech_audio_delta(
+            chunk.audio_data,
+            emitted_samples=emitted_samples,
+            is_terminal=chunk.finish_reason is not None,
+        )
+        if audio_data is None:
+            continue
 
-            audio_bytes, mime_type = encode_audio(
-                audio_data,
-                response_format=response_format,
-                sample_rate=sample_rate,
-                speed=speed,
-            )
-            actual_format = MIME_TO_FORMAT.get(mime_type, response_format)
-            payload = {
-                "id": f"speech-{request_id}",
-                "object": "audio.speech.chunk",
-                "index": chunk_index,
-                "audio": {
-                    "data": base64.b64encode(audio_bytes).decode("ascii"),
-                    "format": actual_format,
-                    "mime_type": mime_type,
-                    "sample_rate": sample_rate,
-                },
-                "finish_reason": None,
-            }
-            yield f"data: {json.dumps(payload)}\n\n"
-            chunk_index += 1
-    except ClientError as exc:
-        payload = _speech_stream_error_payload(request_id, chunk_index, exc)
+        audio_bytes, mime_type = encode_audio(
+            audio_data,
+            response_format=response_format,
+            sample_rate=sample_rate,
+            speed=speed,
+        )
+        actual_format = MIME_TO_FORMAT.get(mime_type, response_format)
+        payload = {
+            "id": f"speech-{request_id}",
+            "object": "audio.speech.chunk",
+            "index": chunk_index,
+            "audio": {
+                "data": base64.b64encode(audio_bytes).decode("ascii"),
+                "format": actual_format,
+                "mime_type": mime_type,
+                "sample_rate": sample_rate,
+            },
+            "finish_reason": None,
+        }
         yield f"data: {json.dumps(payload)}\n\n"
-        yield "data: [DONE]\n\n"
-        return
-    except Exception as exc:
-        logger.exception("Error streaming speech for request %s", request_id)
-        payload = _speech_stream_error_payload(request_id, chunk_index, exc)
-        yield f"data: {json.dumps(payload)}\n\n"
-        yield "data: [DONE]\n\n"
-        return
+        chunk_index += 1
 
     final_payload = {
         "id": f"speech-{request_id}",
@@ -611,25 +600,7 @@ async def _speech_stream(
         "usage": usage,
     }
     yield f"data: {json.dumps(final_payload)}\n\n"
-    yield "data: [DONE]\n\n"
-
-
-def _speech_stream_error_payload(
-    request_id: str,
-    chunk_index: int,
-    exc: Exception,
-) -> dict[str, Any]:
-    return {
-        "id": f"speech-{request_id}",
-        "object": "audio.speech.chunk",
-        "index": chunk_index,
-        "audio": None,
-        "finish_reason": "error",
-        "error": {
-            "type": type(exc).__name__,
-            "message": str(exc),
-        },
-    }
+    yield f"data: {STREAM_DONE_SENTINEL}\n\n"
 
 
 def _select_speech_audio_delta(
