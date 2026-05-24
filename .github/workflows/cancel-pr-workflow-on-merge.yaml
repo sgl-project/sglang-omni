@@ -2,7 +2,11 @@ name: Cancel PR Workflow Runs
 
 on:
   pull_request_target:
-    types: [closed, unlabeled]
+    types: [closed, synchronize, unlabeled]
+
+concurrency:
+  group: cancel-pr-workflow-runs-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 
 permissions:
   actions: write
@@ -12,6 +16,7 @@ jobs:
   cancel:
     if: >-
       github.event.action == 'closed' ||
+      github.event.action == 'synchronize' ||
       (github.event.action == 'unlabeled' && github.event.label.name == 'run-ci')
     runs-on: ubuntu-latest
     steps:
@@ -26,9 +31,15 @@ jobs:
             const prHeadRepoFullName = pr.head.repo?.full_name;
             const activeStatuses = ['queued', 'in_progress', 'waiting', 'pending', 'requested'];
 
-            const reason = context.payload.action === 'unlabeled'
-              ? '`run-ci` label was removed'
-              : (pr.merged ? 'PR was merged' : 'PR was closed');
+            const action = context.payload.action;
+            const currentHeadSha = pr.head.sha;
+            const cancelAllForPr = action === 'closed' ||
+              (action === 'unlabeled' && context.payload.label.name === 'run-ci');
+            const reason = action === 'synchronize'
+              ? `PR head moved to ${currentHeadSha}; cancelling stale runs`
+              : (action === 'unlabeled'
+                ? '`run-ci` label was removed'
+                : (pr.merged ? 'PR was merged' : 'PR was closed'));
             console.log(`Cancelling in-flight workflow runs for PR #${pr.number}: ${reason}`);
 
             const activeRuns = [];
@@ -77,6 +88,22 @@ jobs:
             for (const run of activeRuns) {
               if (!isRunForPullRequest(run)) {
                 continue;
+              }
+
+              const runHeadSha = run.head_sha || run.head_commit?.id;
+              if (!cancelAllForPr) {
+                if (!runHeadSha) {
+                  console.log(
+                    `Keeping ${run.name} (run_id=${run.id}) because its head SHA is unavailable`
+                  );
+                  continue;
+                }
+                if (runHeadSha === currentHeadSha) {
+                  console.log(
+                    `Keeping ${run.name} (run_id=${run.id}, head_sha=${runHeadSha}) because it matches the latest PR head`
+                  );
+                  continue;
+                }
               }
 
               console.log(`Cancelling ${run.name} (run_id=${run.id}, status=${run.status})`);
