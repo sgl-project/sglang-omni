@@ -4,10 +4,6 @@ description: "Qwen3-Omni 30B-A3B Instruct (Talker + Thinker)"
 hf_model_id: "Qwen/Qwen3-Omni-30B-A3B-Instruct"
 # Extra model checkpoints required by tests that do not use hf_model_id.
 hf_model_ids_by_test:
-  test_qwen3_omni_mmmu_talker_ci.py:
-    - "marksverdhei/Qwen3-Omni-30B-A3B-FP8"
-  test_qwen3_omni_videomme_ci.py:
-    - "marksverdhei/Qwen3-Omni-30B-A3B-FP8"
   test_qwen3_omni_videoamme_talker_tp2_ci.py:
     - "marksverdhei/Qwen3-Omni-30B-A3B-FP8"
 hf_datasets:

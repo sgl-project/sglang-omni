@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""MMMU Talker CI for Qwen3-Omni FP8 (Text+Image → Text+Audio, Talker ON).
+"""MMMU Talker CI for Qwen3-Omni (Text+Image → Text+Audio, Talker ON).
 
 Evaluates text-audio consistency by comparing the model's text output
 with ASR transcription of its audio output on MMMU image-QA tasks.
@@ -83,13 +83,13 @@ MMMU_AUDIO_THRESHOLDS = apply_slack(_MMMU_AUDIO_P95)
 
 @pytest.mark.benchmark
 def test_mmmu_audio_wer_and_speed(
-    qwen3_omni_fp8_router_server: ManagedRouterHandle,
+    qwen3_omni_router_server: ManagedRouterHandle,
     tmp_path: Path,
 ) -> None:
     """Run MMMU eval with audio and assert WER and speed meet thresholds."""
     config = MMMUEvalConfig(
         model="qwen3-omni",
-        port=qwen3_omni_fp8_router_server.port,
+        port=qwen3_omni_router_server.port,
         max_samples=MAX_SAMPLES,
         max_tokens=MAX_TOKENS,
         max_concurrency=CONCURRENCY,
@@ -100,8 +100,8 @@ def test_mmmu_audio_wer_and_speed(
         timeout_s=500,
     )
     with router_worker_traffic_guard(
-        qwen3_omni_fp8_router_server,
-        label="Qwen3-Omni FP8 MMMU Talker",
+        qwen3_omni_router_server,
+        label="Qwen3-Omni MMMU Talker",
     ) as router_guard:
         results = asyncio.run(run_mmmu_eval(config))
 

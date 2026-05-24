@@ -151,7 +151,7 @@ jobs:
           artifact-upload-path: /tmp/**/mmmu_results.json
 
   stage-4-mmmu-talker:
-    name: stage 4 - FP8 MMMU Talker
+    name: stage 4 - MMMU Talker
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (!github.event.pull_request.draft &&
@@ -170,7 +170,7 @@ jobs:
           venv-name: omni-qwen3
           install-deps: "true"
 
-      - name: Run FP8 MMMU Talker CI (WER + speed)
+      - name: Run MMMU Talker CI (WER + speed)
         shell: bash
         run: |
           source omni-qwen3/bin/activate
@@ -185,7 +185,7 @@ jobs:
         if: always()
         uses: ./.github/actions/omni-post-stage
         with:
-          stage-label: FP8 MMMU Talker (WER + speed)
+          stage-label: MMMU Talker (WER + speed)
           artifact-path-globs: |
             */mmmu_audio/mmmu_results.json
           artifact-upload-name: qwen3-omni-mmmu-talker-results
@@ -275,7 +275,7 @@ jobs:
           artifact-upload-path: /tmp/**/mmsu_audio/mmsu_results.json
 
   stage-7-videomme:
-    name: stage 7 - FP8 Video-MME accuracy + speed
+    name: stage 7 - Video-MME accuracy + speed
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (!github.event.pull_request.draft &&
@@ -294,7 +294,7 @@ jobs:
           venv-name: omni-qwen3
           install-deps: "true"
 
-      - name: Run FP8 Video-MME CI (accuracy + speed)
+      - name: Run Video-MME CI (accuracy + speed)
         shell: bash
         run: |
           source omni-qwen3/bin/activate
@@ -309,7 +309,7 @@ jobs:
         if: always()
         uses: ./.github/actions/omni-post-stage
         with:
-          stage-label: FP8 Video-MME (accuracy + speed)
+          stage-label: Video-MME (accuracy + speed)
           artifact-path-globs: |
             */videomme/videomme_results.json
           artifact-upload-name: qwen3-omni-videomme-results

@@ -46,19 +46,11 @@ QWEN3_OMNI_ROUTER_WAIT_TIMEOUT = 180
 QWEN3_OMNI_COLOCATED_WORKER_ARGS = (
     "--config examples/configs/qwen3_omni_colocated_h20.yaml --colocate"
 )
-QWEN3_OMNI_FP8_COLOCATED_WORKER_ARGS = (
-    "--config examples/configs/qwen3_omni_fp8_colocated.yaml --colocate"
-)
 QWEN3_OMNI_MMSU_WORKER_ARGS = (
     "--config examples/configs/qwen3_omni_mmsu.yaml --text-only"
 )
 QWEN3_OMNI_VIDEO_WORKER_ARGS = (
     f"{QWEN3_OMNI_COLOCATED_WORKER_ARGS} "
-    "--stages.0.factory-args.thinker-max-seq-len 32768 "
-    "--stages.4.factory-args.thinker-max-seq-len 32768"
-)
-QWEN3_OMNI_FP8_VIDEO_WORKER_ARGS = (
-    f"{QWEN3_OMNI_FP8_COLOCATED_WORKER_ARGS} "
     "--stages.0.factory-args.thinker-max-seq-len 32768 "
     "--stages.4.factory-args.thinker-max-seq-len 32768"
 )
@@ -70,17 +62,6 @@ def qwen3_omni_router_server(tmp_path_factory: pytest.TempPathFactory):
     with _launch_qwen3_omni_router(
         tmp_path_factory,
         worker_extra_args=QWEN3_OMNI_COLOCATED_WORKER_ARGS,
-    ) as router:
-        yield router
-
-
-@pytest.fixture(scope="module")
-def qwen3_omni_fp8_router_server(tmp_path_factory: pytest.TempPathFactory):
-    """Router-backed Qwen3-Omni FP8 endpoint for selected CI stages."""
-    with _launch_qwen3_omni_router(
-        tmp_path_factory,
-        model_path=QWEN3_OMNI_FP8_TEST_MODEL_PATH,
-        worker_extra_args=QWEN3_OMNI_FP8_COLOCATED_WORKER_ARGS,
     ) as router:
         yield router
 
@@ -101,17 +82,6 @@ def qwen3_omni_thinker_server(tmp_path_factory: pytest.TempPathFactory):
     with _launch_qwen3_omni_router(
         tmp_path_factory,
         worker_extra_args=QWEN3_OMNI_VIDEO_WORKER_ARGS,
-    ) as router:
-        yield router
-
-
-@pytest.fixture(scope="module")
-def qwen3_omni_fp8_thinker_server(tmp_path_factory: pytest.TempPathFactory):
-    """Router-backed native FP8 endpoint used by selected text-output benchmarks."""
-    with _launch_qwen3_omni_router(
-        tmp_path_factory,
-        model_path=QWEN3_OMNI_FP8_TEST_MODEL_PATH,
-        worker_extra_args=QWEN3_OMNI_FP8_VIDEO_WORKER_ARGS,
     ) as router:
         yield router
 
