@@ -230,7 +230,7 @@ class MingOmniSpeechPipelineConfig(PipelineConfig):
         )
 
 
-EntryClass = MingOmniPipelineConfig
+EntryClass = MingOmniSpeechPipelineConfig
 
 Variants = {
     "text": MingOmniPipelineConfig,

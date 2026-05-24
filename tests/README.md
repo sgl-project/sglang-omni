@@ -202,7 +202,8 @@ that happened to contain an older version of the test.
 - `unit_test/ming_omni/` Ming-Omni unit tests:
 
   - text + speech pipeline config and stage schema
-  - omni serve CLI/config merge, launcher handoff, GPU placement, and TP wiring
+  - omni serve CLI/config merge, default speech vs. text-only selection,
+    launcher handoff, GPU placement, and TP wiring
   - stage factory and scheduler contracts (preprocessing, encoders, thinker, talker, decode)
   - thinker bootstrap registration and Ming model runner wiring
   - multimodal embed injection (per-modality consumed state, pad-value fallback, short-embeds detection)

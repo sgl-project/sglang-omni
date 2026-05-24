@@ -50,8 +50,9 @@ def test_ming_config_manager_resolves_top_level_hf_architecture(monkeypatch) -> 
     config_manager = ConfigManager.from_model_path("inclusionAI/Ming-flash-omni-2.0")
 
     assert calls == [(("inclusionAI/Ming-flash-omni-2.0",), {})]
-    assert isinstance(config_manager.config, MingOmniPipelineConfig)
+    assert isinstance(config_manager.config, MingOmniSpeechPipelineConfig)
     assert config_manager.config.model_path == "inclusionAI/Ming-flash-omni-2.0"
+    assert config_manager.config.terminal_stages == ["decode", "talker"]
 
 
 def test_ming_config_manager_resolves_single_architecture_attribute(
@@ -66,17 +67,17 @@ def test_ming_config_manager_resolves_single_architecture_attribute(
 
     config_manager = ConfigManager.from_model_path("dummy-ming")
 
-    assert isinstance(config_manager.config, MingOmniPipelineConfig)
+    assert isinstance(config_manager.config, MingOmniSpeechPipelineConfig)
 
 
 def test_ming_registry_keeps_thinker_architecture_alias() -> None:
     assert (
         PIPELINE_CONFIG_REGISTRY.get_config("BailingMM2NativeForConditionalGeneration")
-        is MingOmniPipelineConfig
+        is MingOmniSpeechPipelineConfig
     )
     assert (
         PIPELINE_CONFIG_REGISTRY.get_config("BailingMoeV2ForCausalLM")
-        is MingOmniPipelineConfig
+        is MingOmniSpeechPipelineConfig
     )
 
 
@@ -325,6 +326,62 @@ def test_v1_serve_builds_ming_text_config_without_launching(monkeypatch) -> None
     assert overrides["disable_custom_all_reduce"] is True
     assert (
         _stage(config, "thinker").runtime.sglang_server_args.mem_fraction_static == 0.8
+    )
+    assert captured["kwargs"]["host"] == "127.0.0.1"
+    assert captured["kwargs"]["port"] == 8000
+    assert captured["kwargs"]["model_name"] == "ming-omni"
+
+
+def test_v1_serve_builds_ming_speech_config_by_default(monkeypatch) -> None:
+    from typer.testing import CliRunner
+
+    from sglang_omni.cli import app
+
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        "sglang_omni.config.manager.AutoConfig.from_pretrained",
+        lambda *args, **kwargs: SimpleNamespace(
+            architectures=["BailingMM2NativeForConditionalGeneration"]
+        ),
+    )
+
+    def fake_launch_server(config, **kwargs):
+        captured["config"] = config
+        captured["kwargs"] = kwargs
+
+    monkeypatch.setattr("sglang_omni.cli.serve.launch_server", fake_launch_server)
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "serve",
+            "--model-path",
+            "inclusionAI/Ming-flash-omni-2.0",
+            "--thinker-tp-size",
+            "2",
+            "--thinker-gpus",
+            "0,1",
+            "--talker-gpu",
+            "3",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            "8000",
+            "--model-name",
+            "ming-omni",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    config = captured["config"]
+    assert isinstance(config, MingOmniSpeechPipelineConfig)
+    assert config.terminal_stages == ["decode", "talker"]
+    assert _stage(config, "thinker").tp_size == 2
+    assert _stage(config, "thinker").gpu == [0, 1]
+    assert _stage(config, "talker").gpu == 3
+    assert (
+        _server_args_overrides(config, "thinker")["disable_custom_all_reduce"] is True
     )
     assert captured["kwargs"]["host"] == "127.0.0.1"
     assert captured["kwargs"]["port"] == 8000
