@@ -28,6 +28,7 @@ from typing import Iterable, Optional, Tuple
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from sglang_omni.models.weight_loader import default_weight_loader
 
@@ -326,7 +327,17 @@ class MingOmniVisionEncoder(nn.Module):
             Otherwise: [seq_len, out_hidden_size].
         """
         x = pixel_values.to(device=self.device, dtype=self.dtype)
-        x = self.patch_embed(x)
+        # (wenyao) Qwen3VLVisionPatchEmbed wraps nn.Conv3d with kernel_size ==
+        # input spatial dim (1x1x1 output). cuDNN has no fast algorithm for
+        # this shape and falls back to ~3.7s/call on H100 bf16. Same math as
+        # Linear((C*Tp*Pp*Pp) -> embed_dim); cuBLAS GEMM handles it instantly.
+        _pe = self.patch_embed
+        x = F.linear(
+            x.view(-1, _pe.in_channels * _pe.temporal_patch_size
+                       * _pe.patch_size * _pe.patch_size),
+            _pe.proj.weight.view(_pe.embed_dim, -1),
+            _pe.proj.bias,
+        )
 
         # Convert grid_thw to list for iteration
         if isinstance(grid_thw, torch.Tensor):

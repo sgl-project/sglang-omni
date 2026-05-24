@@ -45,7 +45,8 @@ tests/
     │   ├── test_talker.py
     │   ├── test_thinker.py
     │   ├── test_tokenizer.py
-    │   └── test_tp.py
+    │   ├── test_tp.py
+    │   └── test_vision_patch_embed_linear.py
     ├── router/
     │   ├── test_app.py
     │   └── test_core.py
@@ -200,7 +201,8 @@ that happened to contain an older version of the test.
   - audio/image preprocessor placeholder construction and cache-key plumbing
   - talker executor request gating and result-builder modality merging
   - Bailing tokenizer loader fallback for vocab compatibility
-  - TP topology validation (rank-specific stage specs, talker/thinker GPU collision detection, server_args alignment before infra init).
+  - TP topology validation (rank-specific stage specs, talker/thinker GPU collision detection, server_args alignment before infra init)
+  - vision encoder `patch_embed` numerical equivalence: cuDNN `nn.Conv3d` vs `F.linear` reshape, asserting bf16-precision parity at the substitution boundary (requires CUDA + real Ming weights via `MING_MODEL_PATH`).
 
 - `unit_test/router/`: SGLang-Omni Router unit tests:
   - router CLI/config behavior
