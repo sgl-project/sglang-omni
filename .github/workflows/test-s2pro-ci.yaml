@@ -1,6 +1,9 @@
 name: S2-Pro CI
 
 on:
+  pull_request:
+    branches: [main]
+    types: [labeled, synchronize, reopened, ready_for_review]
   workflow_dispatch:
 
 concurrency:
@@ -9,16 +12,11 @@ concurrency:
 
 permissions:
   contents: read
-  actions: read
-  pull-requests: read
-  issues: read
 
 # DAG:
 #   docs ──► stage-1-non-streaming ──┐
-#      └─► stage-2-streaming ────────┤
+#        └─► stage-2-streaming ──────┤
 #                                    └──► stage-3-consistency
-# The reusable self-hosted stages run an internal ubuntu-latest priority gate
-# before requesting a self-hosted runner.
 
 jobs:
   docs:
@@ -29,84 +27,141 @@ jobs:
       github.event_name == 'workflow_dispatch' ||
       (!github.event.pull_request.draft &&
        contains(github.event.pull_request.labels.*.name, 'run-ci'))
-    uses: ./.github/workflows/_omni-priority-stage.yaml
-    with:
-      stage-name: docs
-      job-timeout-minutes: "10"
-      venv-name: omni-s2pro
-      install-deps: "true"
-      run-script: |
-        source omni-s2pro/bin/activate
-        export PYTHONPATH=$PWD
-        export HF_ENDPOINT=https://hf-mirror.com
-        export TORCHINDUCTOR_CACHE_DIR=/github/home/.torchinductor
-        pytest tests/docs/s2pro/test_docs_tts_s2pro.py -v -s -x
-      post-stage-label: S2-Pro docs
-      save-cache-always: "true"
-      save-cache-script: |
-        if omni-s2pro/bin/python -c "import torch; import av; from whisper.normalizers import EnglishTextNormalizer" 2>/dev/null; then
-          rm -rf /github/home/omni-s2pro
-          cp -p -r omni-s2pro /github/home/
-        else
-          echo "::warning::Skipping cache save — venv appears incomplete or corrupted"
-        fi
+    runs-on: [self-hosted]
+    timeout-minutes: 10
+    container:
+      image: frankleeeee/sglang-omni:dev
+      options: --gpus all --rm -v /dev/shm:/dev/shm
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - uses: ./.github/actions/omni-setup
+        with:
+          venv-name: omni-s2pro
+          install-deps: "true"
+
+      - name: Run docs tests
+        shell: bash
+        run: |
+          source omni-s2pro/bin/activate
+          export PYTHONPATH=$PWD
+          pytest tests/docs/s2pro/test_docs_tts_s2pro.py -v -s -x
+        env:
+          HF_ENDPOINT: https://hf-mirror.com
+          TORCHINDUCTOR_CACHE_DIR: /github/home/.torchinductor
+
+      - name: Post-stage cleanup
+        if: always()
+        uses: ./.github/actions/omni-post-stage
+        with:
+          stage-label: S2-Pro docs
+
+      - name: Save cache
+        if: always()
+        shell: bash
+        run: |
+          if omni-s2pro/bin/python -c "import torch; import av; from whisper.normalizers import EnglishTextNormalizer" 2>/dev/null; then
+            rm -rf /github/home/omni-s2pro
+            cp -p -r omni-s2pro /github/home/
+          else
+            echo "::warning::Skipping cache save — venv appears incomplete or corrupted"
+          fi
 
   stage-1-non-streaming:
     name: stage 1 - non-streaming
     needs: docs
-    uses: ./.github/workflows/_omni-priority-stage.yaml
-    with:
-      stage-name: stage 1 - non-streaming
-      job-timeout-minutes: "10"
-      venv-name: omni-s2pro
-      pre-run-script: |
-        source omni-s2pro/bin/activate
-        export HF_ENDPOINT=https://hf-mirror.com
-        export SEEDTTS_SIM_CACHE_DIR=/github/home/seedtts-wavlm-sim
-        python -m benchmarks.metrics.speaker_similarity_assets --warm-cache
-      run-script: |
-        source omni-s2pro/bin/activate
-        export PYTHONPATH=$PWD
-        export HF_ENDPOINT=https://hf-mirror.com
-        export SEEDTTS_SIM_CACHE_DIR=/github/home/seedtts-wavlm-sim
-        export S2PRO_STAGE_OUTPUT_ROOT="${GITHUB_WORKSPACE}/stage-results/nonstream"
-        export TORCHINDUCTOR_CACHE_DIR=/github/home/.torchinductor
-        bash .github/scripts/run_flaky_pytest.sh \
-          pytest tests/test_model/test_s2pro_tts_ci.py -v -s -x --concurrency 16 --s2pro-stage s2pro-stage-1-nonstream
-      post-stage-label: S2-Pro stage 1 (non-streaming)
-      artifact-search-root: stage-results/nonstream
-      artifact-path-globs: |
-        */speed_results.json
-        */wer_results.json
-        */similarity_results.json
-      artifact-upload-name: s2pro-stage-1-results
-      artifact-upload-path: stage-results/nonstream
-      artifact-if-no-files-found: error
+    runs-on: [self-hosted]
+    timeout-minutes: 15
+    container:
+      image: frankleeeee/sglang-omni:dev
+      options: --gpus all --rm -v /dev/shm:/dev/shm
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - uses: ./.github/actions/omni-setup
+        with:
+          venv-name: omni-s2pro
+
+      - name: Prepare speaker similarity assets
+        shell: bash
+        run: |
+          source omni-s2pro/bin/activate
+          python -m benchmarks.metrics.speaker_similarity_assets --warm-cache
+        env:
+          HF_ENDPOINT: https://hf-mirror.com
+          SEEDTTS_SIM_CACHE_DIR: /github/home/seedtts-wavlm-sim
+
+      - name: Run benchmark stage
+        shell: bash
+        run: |
+          source omni-s2pro/bin/activate
+          export PYTHONPATH=$PWD
+          bash .github/scripts/run_flaky_pytest.sh \
+            pytest tests/test_model/test_s2pro_tts_ci.py -v -s -x --concurrency 16 --s2pro-stage s2pro-stage-1-nonstream
+        env:
+          HF_ENDPOINT: https://hf-mirror.com
+          SGLANG_SEEDTTS50_DIR: /github/home/seedtts-50
+          SEEDTTS_SIM_CACHE_DIR: /github/home/seedtts-wavlm-sim
+          S2PRO_STAGE_OUTPUT_ROOT: ${{ github.workspace }}/stage-results/nonstream
+          TORCHINDUCTOR_CACHE_DIR: /github/home/.torchinductor
+
+      - name: Post-stage cleanup
+        if: always()
+        uses: ./.github/actions/omni-post-stage
+        with:
+          stage-label: S2-Pro stage 1 (non-streaming)
+          artifact-search-root: stage-results/nonstream
+          artifact-path-globs: |
+            */speed_results.json
+            */wer_results.json
+            */similarity_results.json
+          artifact-upload-name: s2pro-stage-1-results
+          artifact-upload-path: stage-results/nonstream
+          artifact-if-no-files-found: error
 
   stage-2-streaming:
     name: stage 2 - streaming
     needs: docs
-    uses: ./.github/workflows/_omni-priority-stage.yaml
-    with:
-      stage-name: stage 2 - streaming
-      job-timeout-minutes: "10"
-      venv-name: omni-s2pro
-      run-script: |
-        source omni-s2pro/bin/activate
-        export PYTHONPATH=$PWD
-        export HF_ENDPOINT=https://hf-mirror.com
-        export S2PRO_STAGE_OUTPUT_ROOT="${GITHUB_WORKSPACE}/stage-results/stream"
-        export TORCHINDUCTOR_CACHE_DIR=/github/home/.torchinductor
-        bash .github/scripts/run_flaky_pytest.sh \
-          pytest tests/test_model/test_s2pro_tts_ci.py -v -s -x --concurrency 16 --s2pro-stage s2pro-stage-2-stream
-      post-stage-label: S2-Pro stage 2 (streaming)
-      artifact-search-root: stage-results/stream
-      artifact-path-globs: |
-        */speed_results.json
-        */wer_results.json
-      artifact-upload-name: s2pro-stage-2-results
-      artifact-upload-path: stage-results/stream
-      artifact-if-no-files-found: error
+    runs-on: [self-hosted]
+    timeout-minutes: 5
+    container:
+      image: frankleeeee/sglang-omni:dev
+      options: --gpus all --rm -v /dev/shm:/dev/shm
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - uses: ./.github/actions/omni-setup
+        with:
+          venv-name: omni-s2pro
+
+      - name: Run benchmark stage
+        shell: bash
+        run: |
+          source omni-s2pro/bin/activate
+          export PYTHONPATH=$PWD
+          bash .github/scripts/run_flaky_pytest.sh \
+            pytest tests/test_model/test_s2pro_tts_ci.py -v -s -x --concurrency 16 --s2pro-stage s2pro-stage-2-stream
+        env:
+          HF_ENDPOINT: https://hf-mirror.com
+          SGLANG_SEEDTTS50_DIR: /github/home/seedtts-50
+          S2PRO_STAGE_OUTPUT_ROOT: ${{ github.workspace }}/stage-results/stream
+          TORCHINDUCTOR_CACHE_DIR: /github/home/.torchinductor
+
+      - name: Post-stage cleanup
+        if: always()
+        uses: ./.github/actions/omni-post-stage
+        with:
+          stage-label: S2-Pro stage 2 (streaming)
+          artifact-search-root: stage-results/stream
+          artifact-path-globs: |
+            */speed_results.json
+            */wer_results.json
+          artifact-upload-name: s2pro-stage-2-results
+          artifact-upload-path: stage-results/stream
+          artifact-if-no-files-found: error
 
   stage-3-consistency:
     name: stage 3 - consistency
