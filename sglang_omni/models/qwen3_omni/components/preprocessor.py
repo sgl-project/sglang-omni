@@ -29,6 +29,7 @@ from sglang_omni.preprocessing import (
     ensure_video_list_async,
     normalize_messages,
 )
+from sglang_omni.profiler.event_recorder import emit as _emit_event
 from sglang_omni.proto import StagePayload
 
 logger = logging.getLogger(__name__)
@@ -190,6 +191,22 @@ class Qwen3OmniPreprocessor:
         return result
 
     async def __call__(self, payload: StagePayload) -> StagePayload:
+        _emit_event(
+            request_id=payload.request_id,
+            stage=None,
+            event_name="preprocess_start",
+        )
+        try:
+            result = await self._call_impl(payload)
+        finally:
+            _emit_event(
+                request_id=payload.request_id,
+                stage=None,
+                event_name="preprocess_end",
+            )
+        return result
+
+    async def _call_impl(self, payload: StagePayload) -> StagePayload:
         inputs = payload.request.inputs
         if isinstance(inputs, dict):
             messages = inputs.get("messages", [])

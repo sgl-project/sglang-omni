@@ -3,8 +3,7 @@ tts_nonstream_wer:
   test: tests/test_model/test_s2pro_tts_ci.py
   title: "TTS NONSTREAM Wer"
   group: wer
-  extra_env:
-    SGLANG_SEEDTTS50_DIR: "/github/home/seedtts-50"
+  extra_env: {}
   context_vars:
     - STREAMING_BENCHMARK_MAX_SAMPLES
   variant: "nonstream"
@@ -42,8 +41,7 @@ tts_nonstream_speed:
   test: tests/test_model/test_s2pro_tts_ci.py
   title: "TTS NONSTREAM Speed"
   group: speed
-  extra_env:
-    SGLANG_SEEDTTS50_DIR: "/github/home/seedtts-50"
+  extra_env: {}
   context_vars:
     - STREAMING_BENCHMARK_MAX_SAMPLES
   variant: "nonstream"
@@ -101,8 +99,7 @@ tts_stream_wer:
   test: tests/test_model/test_s2pro_tts_ci.py
   title: "TTS STREAM Wer"
   group: wer
-  extra_env:
-    SGLANG_SEEDTTS50_DIR: "/github/home/seedtts-50"
+  extra_env: {}
   context_vars:
     - STREAMING_BENCHMARK_MAX_SAMPLES
   variant: "stream"
@@ -140,8 +137,7 @@ tts_stream_speed:
   test: tests/test_model/test_s2pro_tts_ci.py
   title: "TTS STREAM Speed"
   group: speed
-  extra_env:
-    SGLANG_SEEDTTS50_DIR: "/github/home/seedtts-50"
+  extra_env: {}
   context_vars:
     - STREAMING_BENCHMARK_MAX_SAMPLES
   variant: "stream"

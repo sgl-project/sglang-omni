@@ -20,6 +20,7 @@ HTTP API -> Client -> Coordinator -> Stage -> Scheduler -> ModelRunner -> model 
 | [Scheduler](./pipeline.md)        | Per-stage execution loop and failure propagation to stage outbox                       |
 | [ModelRunner](./pipeline.md)      | AR forward preparation, model forward dispatch, output extraction                      |
 | [Communication](./communication.md) | Control-plane messages and relay data transfer between stages                         |
+| [TTS Integration](./tts_model_integration.md) | Checklist and lifecycle rules for adding TTS model families                         |
 
 Refer to the layer-specific document for specific design details.
 

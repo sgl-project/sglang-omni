@@ -6,11 +6,11 @@ tests/
 ├── utils.py
 ├── data/
 ├── docs/
-│   ├── qwen3_omni/
 │   └── s2pro/
 ├── test_model/
 │   ├── conftest.py
 │   ├── test_qwen3_omni_*_ci.py
+│   ├── test_qwen3_omni_videoamme_talker_tp2_ci.py
 │   └── test_s2pro_tts_ci.py
 └── unit_test/
     ├── fixtures/
@@ -32,9 +32,11 @@ tests/
     │   ├── test_stage_process_env.py
     │   └── test_stage_streaming.py
     ├── qwen3_omni/
+    │   ├── test_cli.py
     │   ├── test_code2wav.py
     │   ├── test_colocation_config.py
     │   ├── test_config_manager.py
+    │   ├── test_example_launcher.py
     │   ├── test_logit_shaping.py
     │   ├── test_pipeline.py
     │   ├── test_sglang_ar_budget.py
@@ -47,16 +49,21 @@ tests/
     │   ├── test_tokenizer.py
     │   ├── test_tp.py
     │   └── test_vision_patch_embed_linear.py
+    │   └── test_tp.py
+    ├── qwen3_tts/
+    │   └── test_pipeline.py
     ├── router/
     │   ├── test_app.py
     │   └── test_core.py
     ├── serve/
     │   └── test_openai_api.py
-    └── fishaudio_s2_pro/
-        ├── test_pipeline.py
-        ├── test_streaming_vocoder.py
-        ├── test_tts.py
-        └── test_vocoder.py
+    ├── fishaudio_s2_pro/
+    │   ├── test_pipeline.py
+    │   ├── test_streaming_vocoder.py
+    │   ├── test_tts.py
+    │   └── test_vocoder.py
+    └── voxtral_tts/
+        └── test_pipeline.py
 ```
 
 ## How To Add A Test
@@ -182,11 +189,14 @@ that happened to contain an older version of the test.
 - `unit_test/qwen3_omni/` Qwen3-Omni unit tests:
 
   - public CLI/config behavior
+  - example launcher config contract (TP/GPU/mem-fraction overrides)
   - SGLang argument builders
   - memory flag contracts
   - colocation config and SGLang AR budget contracts
   - `PipelineState` request builders
-  - talker behavior
+  - talker behavior, including projected prefill tensor storage/slicing, decode
+    feedback/text FIFO consumption, and replay of generated-token input embeds
+    after decode retract
   - Code2Wav streaming/cleanup behavior
   - logit-shaping helpers (e.g. repetition penalty) numerical equivalence with the original per-row scalar formulas.
 
@@ -203,6 +213,14 @@ that happened to contain an older version of the test.
   - Bailing tokenizer loader fallback for vocab compatibility
   - TP topology validation (rank-specific stage specs, talker/thinker GPU collision detection, server_args alignment before infra init)
   - vision encoder `patch_embed` numerical equivalence: cuDNN `nn.Conv3d` vs `F.linear` reshape, asserting bf16-precision parity at the substitution boundary (requires CUDA + real Ming weights via `MING_MODEL_PATH`).
+
+- `unit_test/qwen3_tts/`: Qwen3-TTS Base unit tests:
+  - pipeline config and registry contracts
+  - OmniScheduler-backed AR stage factory wiring
+  - request mapping for `ref_audio` / `ref_text` and `references`
+  - model-owned default preservation for language and sampling parameters
+  - voice-clone reference validation
+  - pipeline payload state serialization.
 
 - `unit_test/router/`: SGLang-Omni Router unit tests:
   - router CLI/config behavior
@@ -221,6 +239,18 @@ that happened to contain an older version of the test.
   - model-runner state transitions
   - vocoder batching/trim behavior
   - streaming vocoder chunking, flush, and abort behavior.
+
+- `unit_test/voxtral_tts/`: Voxtral-TTS unit tests:
+  - pipeline config and registry contracts
+  - current `StageConfig` schema wiring
+  - SGLang-backed generation and vocoder GPU placement contracts
+  - terminal stage behavior.
+
+- `unit_test/profiler/`: Request-level profiler unit tests:
+  - `RequestEvent` schema and JSONL emit/append behavior
+  - concurrent emit safety under multiple threads
+  - lifecycle (start / stop / run_id mismatch / stage substitution)
+  - timeline reconstruction, stage breakdown, hop breakdown, malformed-line tolerance.
 
 - `unit_test/fixtures/`: Shared fakes. Single-test
   helpers should stay local until a second test needs them.

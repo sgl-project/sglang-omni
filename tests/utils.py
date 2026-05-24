@@ -7,8 +7,11 @@ import os
 import signal
 import statistics
 import subprocess
+import sys
+import threading
+from collections.abc import Callable
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Generator
 
@@ -17,10 +20,64 @@ STARTUP_TIMEOUT = 600
 
 @dataclass
 class ServerHandle:
-    """Typed bundle of a running server's process and its port."""
+    """Typed bundle of a running server's process, port, and log file."""
 
     proc: subprocess.Popen
     port: int
+    log_file: Path | None = None
+
+
+@dataclass
+class MetricCheckCollector:
+    """Collect metric-check failures and raise them together at the end."""
+
+    label: str = "CI metric checks"
+    failures: list[str] = field(default_factory=list)
+
+    def fail(self, message: str) -> None:
+        self.failures.append(message)
+
+    def check(self, condition: bool, message: str) -> None:
+        if not condition:
+            self.fail(message)
+
+    def check_assertion(
+        self,
+        label: str,
+        func: Callable,
+        *args,
+        **kwargs,
+    ) -> None:
+        try:
+            func(*args, **kwargs)
+        except AssertionError as exc:
+            detail = str(exc) or exc.__class__.__name__
+            self.fail(f"{label}: {detail}")
+
+    def assert_all(self) -> None:
+        if not self.failures:
+            return
+        details = "\n".join(
+            f"{idx}. {failure}" for idx, failure in enumerate(self.failures, start=1)
+        )
+        raise AssertionError(
+            f"{self.label} failed {len(self.failures)} check(s):\n{details}"
+        )
+
+
+def _metric_collector(
+    collector: MetricCheckCollector | None,
+    label: str,
+) -> MetricCheckCollector:
+    return collector if collector is not None else MetricCheckCollector(label)
+
+
+def _assert_metric_collector_if_local(
+    collector_arg: MetricCheckCollector | None,
+    collector: MetricCheckCollector,
+) -> None:
+    if collector_arg is None:
+        collector.assert_all()
 
 
 @contextmanager
@@ -116,6 +173,7 @@ def start_server_from_cmd(
     port: int,
     timeout: int = STARTUP_TIMEOUT,
     env: dict[str, str] | None = None,
+    tee: bool = False,
 ) -> subprocess.Popen:
     """Start a server from an arbitrary command and wait until healthy."""
     process_env = os.environ.copy()
@@ -127,6 +185,41 @@ def start_server_from_cmd(
             env=process_env,
             start_new_session=True,
         )
+    elif tee:
+        # Tee (file + stdout): TP=2 fixture wants the file for grep + live
+        # output for `pytest -s`. Pattern from sglang's popen_launch_server.
+        log_handle = open(log_file, "w")
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                env=process_env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+                text=True,
+                bufsize=1,
+            )
+        except Exception:
+            log_handle.close()
+            raise
+
+        def _tee_stdout(src, sink) -> None:
+            try:
+                for line in iter(src.readline, ""):
+                    sink.write(line)
+                    sink.flush()
+                    sys.stdout.write(line)
+                    sys.stdout.flush()
+            finally:
+                src.close()
+                sink.close()
+
+        # log_handle ownership is handed to the thread; its finally closes it.
+        threading.Thread(
+            target=_tee_stdout,
+            args=(proc.stdout, log_handle),
+            daemon=True,
+        ).start()
     else:
         with open(log_file, "w") as log_handle:
             proc = subprocess.Popen(
@@ -140,40 +233,68 @@ def start_server_from_cmd(
     return proc
 
 
-def assert_summary_metrics(summary: dict, *, check_tokens: bool = True) -> None:
+def assert_summary_metrics(
+    summary: dict,
+    *,
+    check_tokens: bool = True,
+    collector: MetricCheckCollector | None = None,
+) -> None:
     """Verify summary-level sanity invariants that must hold for every run."""
-    assert (
-        summary["failed_requests"] == 0
-    ), f"Expected 0 failed requests, got {summary['failed_requests']}"
-    assert (
-        summary["audio_duration_mean_s"] > 0
-    ), f"Expected positive audio duration, got {summary['audio_duration_mean_s']}"
+    checks = _metric_collector(collector, "summary metrics")
+    failed_requests = summary.get("failed_requests")
+    checks.check(
+        failed_requests == 0,
+        f"Expected 0 failed requests, got {failed_requests}",
+    )
+    audio_duration_mean_s = summary.get("audio_duration_mean_s")
+    checks.check(
+        audio_duration_mean_s is not None and audio_duration_mean_s > 0,
+        f"Expected positive audio duration, got {audio_duration_mean_s}",
+    )
     if check_tokens:
-        assert (
-            summary.get("gen_tokens_mean", 0) > 0
-        ), f"Expected positive gen_tokens_mean, got {summary.get('gen_tokens_mean', 0)}"
-        assert (
-            summary.get("prompt_tokens_mean", 0) > 0
-        ), f"Expected positive prompt_tokens_mean, got {summary.get('prompt_tokens_mean', 0)}"
+        gen_tokens_mean = summary.get("gen_tokens_mean", 0)
+        checks.check(
+            gen_tokens_mean > 0,
+            f"Expected positive gen_tokens_mean, got {gen_tokens_mean}",
+        )
+        prompt_tokens_mean = summary.get("prompt_tokens_mean", 0)
+        checks.check(
+            prompt_tokens_mean > 0,
+            f"Expected positive prompt_tokens_mean, got {prompt_tokens_mean}",
+        )
+    _assert_metric_collector_if_local(collector, checks)
 
 
 def assert_per_request_fields(
-    per_request: list[dict], *, check_tokens: bool = True
+    per_request: list[dict],
+    *,
+    check_tokens: bool = True,
+    collector: MetricCheckCollector | None = None,
 ) -> None:
     """Verify every request has valid audio, prompt_tokens, and completion_tokens."""
+    checks = _metric_collector(collector, "per-request fields")
     for req in per_request:
-        rid = req["id"]
-        assert req["is_success"], f"Request {rid} failed: {req.get('error')}"
-        assert (
-            req["audio_duration_s"] is not None and req["audio_duration_s"] > 0
-        ), f"Request {rid}: audio_duration_s={req['audio_duration_s']}, expected > 0"
+        rid = req.get("id", "<missing id>")
+        checks.check(
+            req.get("is_success") is True, f"Request {rid} failed: {req.get('error')}"
+        )
+        audio_duration_s = req.get("audio_duration_s")
+        checks.check(
+            audio_duration_s is not None and audio_duration_s > 0,
+            f"Request {rid}: audio_duration_s={audio_duration_s}, expected > 0",
+        )
         if check_tokens:
-            assert (
-                req["prompt_tokens"] is not None and req["prompt_tokens"] > 0
-            ), f"Request {rid}: prompt_tokens={req['prompt_tokens']}, expected > 0"
-            assert (
-                req["completion_tokens"] is not None and req["completion_tokens"] > 0
-            ), f"Request {rid}: completion_tokens={req['completion_tokens']}, expected > 0"
+            prompt_tokens = req.get("prompt_tokens")
+            completion_tokens = req.get("completion_tokens")
+            checks.check(
+                prompt_tokens is not None and prompt_tokens > 0,
+                f"Request {rid}: prompt_tokens={prompt_tokens}, expected > 0",
+            )
+            checks.check(
+                completion_tokens is not None and completion_tokens > 0,
+                f"Request {rid}: completion_tokens={completion_tokens}, expected > 0",
+            )
+    _assert_metric_collector_if_local(collector, checks)
 
 
 def apply_slack(
@@ -204,7 +325,13 @@ def apply_wer_slack(reference: float, slack: float = 1.25) -> float:
     return round(reference * slack, 4)
 
 
-def assert_speed_thresholds(summary: dict, thresholds: dict, concurrency: int) -> None:
+def assert_speed_thresholds(
+    summary: dict,
+    thresholds: dict,
+    concurrency: int,
+    *,
+    collector: MetricCheckCollector | None = None,
+) -> None:
     """Assert speed benchmark summary meets threshold requirements.
 
     Whether RTF is checked is driven entirely by the thresholds dict: if
@@ -212,24 +339,42 @@ def assert_speed_thresholds(summary: dict, thresholds: dict, concurrency: int) -
     corresponding ``rtf_mean_max`` is present here and enforced; otherwise
     (e.g. VLM / text-only tasks) the RTF assertion is skipped automatically.
     """
-    level_thresholds = thresholds[concurrency]
-    assert summary["throughput_qps"] >= level_thresholds["throughput_qps_min"], (
-        f"throughput_qps {summary['throughput_qps']} < "
-        f"{level_thresholds['throughput_qps_min']} at concurrency {concurrency}"
+    checks = _metric_collector(collector, "speed thresholds")
+    level_thresholds = thresholds.get(concurrency)
+    if level_thresholds is None:
+        checks.fail(f"No speed thresholds configured for concurrency {concurrency}")
+        _assert_metric_collector_if_local(collector, checks)
+        return
+
+    throughput_qps = summary.get("throughput_qps")
+    checks.check(
+        throughput_qps is not None
+        and throughput_qps >= level_thresholds["throughput_qps_min"],
+        f"throughput_qps {throughput_qps} < "
+        f"{level_thresholds['throughput_qps_min']} at concurrency {concurrency}",
     )
-    assert summary["tok_per_s_agg"] >= level_thresholds["tok_per_s_agg_min"], (
-        f"tok_per_s_agg {summary['tok_per_s_agg']} < "
-        f"{level_thresholds['tok_per_s_agg_min']} at concurrency {concurrency}"
+    tok_per_s_agg = summary.get("tok_per_s_agg")
+    checks.check(
+        tok_per_s_agg is not None
+        and tok_per_s_agg >= level_thresholds["tok_per_s_agg_min"],
+        f"tok_per_s_agg {tok_per_s_agg} < "
+        f"{level_thresholds['tok_per_s_agg_min']} at concurrency {concurrency}",
     )
-    assert summary["latency_mean_s"] <= level_thresholds["latency_mean_s_max"], (
-        f"latency_mean_s {summary['latency_mean_s']} > "
-        f"{level_thresholds['latency_mean_s_max']} at concurrency {concurrency}"
+    latency_mean_s = summary.get("latency_mean_s")
+    checks.check(
+        latency_mean_s is not None
+        and latency_mean_s <= level_thresholds["latency_mean_s_max"],
+        f"latency_mean_s {latency_mean_s} > "
+        f"{level_thresholds['latency_mean_s_max']} at concurrency {concurrency}",
     )
     if "rtf_mean_max" in level_thresholds:
-        assert summary["rtf_mean"] <= level_thresholds["rtf_mean_max"], (
-            f"rtf_mean {summary['rtf_mean']} > "
-            f"{level_thresholds['rtf_mean_max']} at concurrency {concurrency}"
+        rtf_mean = summary.get("rtf_mean")
+        checks.check(
+            rtf_mean is not None and rtf_mean <= level_thresholds["rtf_mean_max"],
+            f"rtf_mean {rtf_mean} > "
+            f"{level_thresholds['rtf_mean_max']} at concurrency {concurrency}",
         )
+    _assert_metric_collector_if_local(collector, checks)
 
 
 DEFAULT_TOTAL_COMPLETION_TOKEN_RTOL = 0.12
@@ -238,24 +383,33 @@ DEFAULT_TOTAL_AUDIO_DURATION_RTOL = 0.12
 
 
 def _request_by_id(requests: list[dict]) -> dict:
-    return {request["id"]: request for request in requests}
+    return {
+        request.get("id", f"<missing id {idx}>"): request
+        for idx, request in enumerate(requests)
+    }
 
 
 def _assert_request_sets(
     non_stream_by_id: dict,
     stream_by_id: dict,
     expected_stream_count: int | None,
+    collector: MetricCheckCollector,
 ) -> list:
     common_ids = sorted(set(non_stream_by_id) & set(stream_by_id))
-    assert common_ids, "No overlapping request IDs between non-stream and stream runs"
-    assert set(stream_by_id).issubset(set(non_stream_by_id)), (
+    collector.check(
+        bool(common_ids),
+        "No overlapping request IDs between non-stream and stream runs",
+    )
+    collector.check(
+        set(stream_by_id).issubset(set(non_stream_by_id)),
         "Streaming requests must be a subset of non-streaming requests: "
-        f"non_stream={sorted(non_stream_by_id)}, stream={sorted(stream_by_id)}"
+        f"non_stream={sorted(non_stream_by_id)}, stream={sorted(stream_by_id)}",
     )
     if expected_stream_count is not None:
-        assert len(stream_by_id) == expected_stream_count, (
+        collector.check(
+            len(stream_by_id) == expected_stream_count,
             f"Expected {expected_stream_count} streaming requests, "
-            f"got {len(stream_by_id)}"
+            f"got {len(stream_by_id)}",
         )
     return common_ids
 
@@ -265,12 +419,14 @@ def _assert_relative_difference(
     non_stream_value: float,
     stream_value: float,
     relative_tolerance: float,
+    collector: MetricCheckCollector,
 ) -> None:
     max_value = max(non_stream_value, stream_value)
-    assert abs(non_stream_value - stream_value) <= (relative_tolerance * max_value), (
+    collector.check(
+        abs(non_stream_value - stream_value) <= (relative_tolerance * max_value),
         f"{metric_name} differ too much - "
         f"non_stream={non_stream_value}, stream={stream_value} "
-        f"(rtol={relative_tolerance})"
+        f"(rtol={relative_tolerance})",
     )
 
 
@@ -282,15 +438,17 @@ def assert_streaming_consistency(
     total_completion_token_rtol: float = DEFAULT_TOTAL_COMPLETION_TOKEN_RTOL,
     median_completion_token_rtol: float = DEFAULT_MEDIAN_COMPLETION_TOKEN_RTOL,
     total_audio_duration_rtol: float = DEFAULT_TOTAL_AUDIO_DURATION_RTOL,
+    collector: MetricCheckCollector | None = None,
 ) -> None:
     """Assert stable invariants on the shared request subset between
     non-streaming and streaming runs (matching prompt tokens, total/median
     completion tokens within tolerance, total audio duration within tolerance).
     """
+    checks = _metric_collector(collector, "streaming consistency")
     non_stream_by_id = _request_by_id(non_stream_requests)
     stream_by_id = _request_by_id(stream_requests)
     common_ids = _assert_request_sets(
-        non_stream_by_id, stream_by_id, expected_stream_count
+        non_stream_by_id, stream_by_id, expected_stream_count, checks
     )
 
     non_stream_completion_tokens: list[int] = []
@@ -301,34 +459,129 @@ def assert_streaming_consistency(
     for request_id in common_ids:
         non_stream_request = non_stream_by_id[request_id]
         stream_request = stream_by_id[request_id]
-        assert non_stream_request["prompt_tokens"] == stream_request["prompt_tokens"], (
+        checks.check(
+            non_stream_request.get("prompt_tokens")
+            == stream_request.get("prompt_tokens"),
             f"Request {request_id}: prompt_tokens mismatch - "
-            f"non_stream={non_stream_request['prompt_tokens']}, "
-            f"stream={stream_request['prompt_tokens']}"
+            f"non_stream={non_stream_request.get('prompt_tokens')}, "
+            f"stream={stream_request.get('prompt_tokens')}",
         )
-        non_stream_completion_tokens.append(non_stream_request["completion_tokens"])
-        stream_completion_tokens.append(stream_request["completion_tokens"])
-        non_stream_audio_duration_total += non_stream_request["audio_duration_s"]
-        stream_audio_duration_total += stream_request["audio_duration_s"]
+        non_stream_completion = non_stream_request.get("completion_tokens")
+        stream_completion = stream_request.get("completion_tokens")
+        non_stream_audio = non_stream_request.get("audio_duration_s")
+        stream_audio = stream_request.get("audio_duration_s")
+        if non_stream_completion is None or stream_completion is None:
+            checks.fail(
+                f"Request {request_id}: completion_tokens missing - "
+                f"non_stream={non_stream_completion}, stream={stream_completion}"
+            )
+        else:
+            non_stream_completion_tokens.append(non_stream_completion)
+            stream_completion_tokens.append(stream_completion)
+        if non_stream_audio is None or stream_audio is None:
+            checks.fail(
+                f"Request {request_id}: audio_duration_s missing - "
+                f"non_stream={non_stream_audio}, stream={stream_audio}"
+            )
+        else:
+            non_stream_audio_duration_total += non_stream_audio
+            stream_audio_duration_total += stream_audio
 
-    _assert_relative_difference(
-        "Total completion_tokens",
-        sum(non_stream_completion_tokens),
-        sum(stream_completion_tokens),
-        total_completion_token_rtol,
-    )
-    _assert_relative_difference(
-        "Median completion_tokens",
-        statistics.median(non_stream_completion_tokens),
-        statistics.median(stream_completion_tokens),
-        median_completion_token_rtol,
-    )
-    _assert_relative_difference(
-        "Total audio_duration_s",
-        non_stream_audio_duration_total,
-        stream_audio_duration_total,
-        total_audio_duration_rtol,
-    )
+    if non_stream_completion_tokens and stream_completion_tokens:
+        _assert_relative_difference(
+            "Total completion_tokens",
+            sum(non_stream_completion_tokens),
+            sum(stream_completion_tokens),
+            total_completion_token_rtol,
+            checks,
+        )
+        _assert_relative_difference(
+            "Median completion_tokens",
+            statistics.median(non_stream_completion_tokens),
+            statistics.median(stream_completion_tokens),
+            median_completion_token_rtol,
+            checks,
+        )
+    if common_ids:
+        _assert_relative_difference(
+            "Total audio_duration_s",
+            non_stream_audio_duration_total,
+            stream_audio_duration_total,
+            total_audio_duration_rtol,
+            checks,
+        )
+    _assert_metric_collector_if_local(collector, checks)
+
+
+def _wer_sample_label(sample: dict, index: int) -> str:
+    sample_id = sample.get("id")
+    if sample_id is None:
+        return f"per_sample[{index}]"
+    return f"sample {sample_id}"
+
+
+def _wer_result_sections(
+    results: dict,
+    checks: MetricCheckCollector,
+) -> tuple[dict, list[dict]]:
+    summary = results.get("summary")
+    if summary is None:
+        checks.fail("WER results schema: missing summary")
+        summary = {}
+    elif not isinstance(summary, dict):
+        checks.fail(
+            "WER results schema: summary must be a dict, "
+            f"got {type(summary).__name__}"
+        )
+        summary = {}
+
+    per_sample = results.get("per_sample")
+    if per_sample is None:
+        checks.fail("WER results schema: missing per_sample")
+        return summary, []
+    if not isinstance(per_sample, list):
+        checks.fail(
+            "WER results schema: per_sample must be a list, "
+            f"got {type(per_sample).__name__}"
+        )
+        return summary, []
+
+    valid_samples: list[dict] = []
+    for index, sample in enumerate(per_sample):
+        if isinstance(sample, dict):
+            valid_samples.append(sample)
+        else:
+            checks.fail(
+                f"WER results schema: per_sample[{index}] must be a dict, "
+                f"got {type(sample).__name__}"
+            )
+    return summary, valid_samples
+
+
+def _check_wer_per_sample_schema(
+    per_sample: list[dict],
+    checks: MetricCheckCollector,
+) -> None:
+    for index, sample in enumerate(per_sample):
+        label = _wer_sample_label(sample, index)
+        if "wer" not in sample:
+            checks.fail(f"WER results schema: {label} missing required 'wer' field")
+            continue
+
+        wer = sample["wer"]
+        if wer is None:
+            if sample.get("is_success") is True:
+                checks.fail(
+                    f"WER results schema: {label} has wer=None "
+                    "despite is_success=True"
+                )
+            continue
+
+        if isinstance(wer, bool) or not isinstance(wer, (int, float)):
+            checks.fail(
+                f"WER results schema: {label} wer must be numeric or None, "
+                f"got {type(wer).__name__}"
+            )
 
 
 def assert_wer_partitioned(
@@ -336,6 +589,7 @@ def assert_wer_partitioned(
     *,
     max_wer_below_50_corpus: float,
     max_n_above_50: int,
+    collector: MetricCheckCollector | None = None,
 ) -> None:
     """Verify WER results using a partitioned view of the per-sample WER
     distribution, suited to large-scale audio-QA TTS consistency tests:
@@ -350,70 +604,104 @@ def assert_wer_partitioned(
     tail of wildly-wrong outputs, without the length-sensitivity of a
     single corpus-wide WER.
     """
-    summary = results["summary"]
-    per_sample = results["per_sample"]
+    checks = _metric_collector(collector, "partitioned WER")
+    summary, per_sample = _wer_result_sections(results, checks)
+    _check_wer_per_sample_schema(per_sample, checks)
 
     failed_details = [
-        f"  sample {s['id']}: {s.get('error')}"
+        f"  sample {s.get('id')}: {s.get('error')}"
         for s in per_sample
         if not s.get("is_success", True)
     ]
-    assert summary["evaluated"] == summary["total_samples"], (
-        f"Only {summary['evaluated']}/{summary['total_samples']} samples evaluated, "
-        f"{summary['skipped']} skipped.\n"
-        f"Per-sample errors:\n" + "\n".join(failed_details)
+    evaluated = summary.get("evaluated")
+    total_samples = summary.get("total_samples")
+    skipped = summary.get("skipped")
+    checks.check(
+        evaluated == total_samples,
+        f"Only {evaluated}/{total_samples} samples evaluated, "
+        f"{skipped} skipped.\n"
+        f"Per-sample errors:\n" + "\n".join(failed_details),
     )
 
-    wer_below_50 = summary.get("wer_below_50_corpus", 0.0)
-    assert wer_below_50 <= max_wer_below_50_corpus, (
-        f"Corpus WER over samples with WER<=50% is "
-        f"{wer_below_50:.4f} ({wer_below_50 * 100:.2f}%) > threshold "
-        f"{max_wer_below_50_corpus} ({max_wer_below_50_corpus * 100:.2f}%)"
-    )
+    wer_below_50 = summary.get("wer_below_50_corpus")
+    if wer_below_50 is None:
+        checks.fail("Missing wer_below_50_corpus in WER summary")
+    else:
+        checks.check(
+            wer_below_50 <= max_wer_below_50_corpus,
+            f"Corpus WER over samples with WER<=50% is "
+            f"{wer_below_50:.4f} ({wer_below_50 * 100:.2f}%) > threshold "
+            f"{max_wer_below_50_corpus} ({max_wer_below_50_corpus * 100:.2f}%)",
+        )
 
-    n_above_50 = summary.get("n_above_50_pct_wer", 0)
-    assert (
-        n_above_50 <= max_n_above_50
-    ), f"{n_above_50} samples have WER>50% > threshold {max_n_above_50}"
+    n_above_50 = summary.get("n_above_50_pct_wer")
+    if n_above_50 is None:
+        checks.fail("Missing n_above_50_pct_wer in WER summary")
+    else:
+        checks.check(
+            n_above_50 <= max_n_above_50,
+            f"{n_above_50} samples have WER>50% > threshold {max_n_above_50}",
+        )
+    _assert_metric_collector_if_local(collector, checks)
 
 
 def assert_wer_results(
     results: dict,
     max_corpus_wer: float,
     max_per_sample_wer: float,
+    *,
+    collector: MetricCheckCollector | None = None,
 ) -> None:
     """Verify WER results are within thresholds."""
-    summary = results["summary"]
-    per_sample = results["per_sample"]
+    checks = _metric_collector(collector, "WER results")
+    summary, per_sample = _wer_result_sections(results, checks)
+    _check_wer_per_sample_schema(per_sample, checks)
 
     failed_details = [
-        f"  sample {s['id']}: {s.get('error')}"
+        f"  sample {s.get('id')}: {s.get('error')}"
         for s in per_sample
         if not s.get("is_success", True)
     ]
-    assert summary["evaluated"] == summary["total_samples"], (
-        f"Only {summary['evaluated']}/{summary['total_samples']} samples evaluated, "
-        f"{summary['skipped']} skipped.\n"
-        f"Per-sample errors:\n" + "\n".join(failed_details)
+    evaluated = summary.get("evaluated")
+    total_samples = summary.get("total_samples")
+    skipped = summary.get("skipped")
+    checks.check(
+        evaluated == total_samples,
+        f"Only {evaluated}/{total_samples} samples evaluated, "
+        f"{skipped} skipped.\n"
+        f"Per-sample errors:\n" + "\n".join(failed_details),
     )
 
-    assert summary["wer_corpus"] <= max_corpus_wer, (
-        f"Corpus WER {summary['wer_corpus']:.4f} ({summary['wer_corpus'] * 100:.2f}%) "
-        f"> threshold {max_corpus_wer} ({max_corpus_wer * 100:.0f}%)"
-    )
+    wer_corpus = summary.get("wer_corpus")
+    if wer_corpus is None:
+        checks.fail("Missing wer_corpus in WER summary")
+    else:
+        checks.check(
+            wer_corpus <= max_corpus_wer,
+            f"Corpus WER {wer_corpus:.4f} ({wer_corpus * 100:.2f}%) "
+            f"> threshold {max_corpus_wer} ({max_corpus_wer * 100:.0f}%)",
+        )
 
     for sample in per_sample:
-        assert sample[
-            "is_success"
-        ], f"Sample {sample['id']} failed: {sample.get('error')}"
+        checks.check(
+            sample.get("is_success") is True,
+            f"Sample {sample.get('id')} failed: {sample.get('error')}",
+        )
 
-    assert summary["n_above_50_pct_wer"] == 0, (
-        f"{summary['n_above_50_pct_wer']} samples have >50% WER — "
-        f"expected 0 catastrophic failures"
+    n_above_50 = summary.get("n_above_50_pct_wer")
+    checks.check(
+        n_above_50 == 0,
+        f"{n_above_50} samples have >50% WER - " f"expected 0 catastrophic failures",
     )
     for sample in per_sample:
-        if sample["wer"] is not None:
-            assert sample["wer"] <= max_per_sample_wer, (
-                f"Sample {sample['id']} WER {sample['wer']:.4f} "
-                f"> {max_per_sample_wer}"
+        wer = sample.get("wer")
+        if (
+            wer is not None
+            and not isinstance(wer, bool)
+            and isinstance(wer, (int, float))
+        ):
+            checks.check(
+                wer <= max_per_sample_wer,
+                f"Sample {sample.get('id')} WER {wer:.4f} > {max_per_sample_wer}",
             )
+    _assert_metric_collector_if_local(collector, checks)

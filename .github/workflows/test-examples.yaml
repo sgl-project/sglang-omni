@@ -12,9 +12,34 @@ concurrency:
 
 permissions:
   contents: read
+  actions: read
+  pull-requests: read
+  issues: read
 
 jobs:
+  priority-gate:
+    name: priority gate
+    # CI gate — runs on workflow_dispatch, or on non-draft PRs carrying the `run-ci` label.
+    # Keep in sync with the same gate in test.yaml / test-qwen3-omni-ci.yaml / test-s2pro-ci.yaml.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (!github.event.pull_request.draft &&
+       contains(github.event.pull_request.labels.*.name, 'run-ci'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Wait behind high-priority CI
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python .github/scripts/ci_priority_gate.py
+
   unit-test:
+    needs: priority-gate
     # CI gate — runs on workflow_dispatch, or on non-draft PRs carrying the `run-ci` label.
     # Keep in sync with the same gate in test.yaml / test-qwen3-omni-ci.yaml / test-s2pro-ci.yaml.
     if: >-

@@ -1,22 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Multi-codebook sampler state machine for Higgs TTS.
+"""Higgs TTS multi-codebook sampler — two parallel implementations of
+the same delay/EOC state machine:
 
-Pure torch / pure Python so it can be unit-tested in isolation from sglang.
-
-Per-request algorithm each step (codebook logits ``[N, V]`` in, codes
-``[N]`` out):
-
-1. If ``generation_done``: return ``[-1, ..., -1]`` (stop signal).
-2. Sample ``N`` codebooks independently from the logits (temperature / top-k /
-   top-p / multinomial; or argmax when temperature <= 0).
-3. **Delay window** (``delay_count < N``): force codebooks at indices
-   ``> delay_count`` to :data:`BOC_ID`. Increment ``delay_count``.
-4. **Wind-down** (``eoc_countdown is not None``): free sampling, decrement.
-   When the counter hits 0, set ``generation_done``.
-5. **EOC detection**: if codebook-0's sampled code equals :data:`EOC_ID`,
-   start wind-down (``eoc_countdown = N - 2``); for ``N <= 2`` mark done
-   immediately.
-6. Update ``last_codes`` unless ``generation_done`` was just set.
+- ``step`` / ``HiggsSamplerState``: per-row, Python control flow.
+  Reference / test oracle.
+- ``batched_step`` / ``batched_step_direct`` / ``HiggsBatchedSamplerState``:
+  batched, ``torch.where``-vectorised, CUDA-Graph-friendly. Production.
 """
 
 from __future__ import annotations
@@ -30,6 +19,9 @@ from sglang_omni.models.higgs_tts.utils import BOC_ID, EOC_ID
 # Sentinel returned by ``step`` after ``generation_done``; engine treats as stop.
 STOP_CODE = -1
 
+# CG-baked top-k upper bound = full codec vocab, so the default value is a no-op filter.
+K_MAX = 1026
+
 
 @dataclass
 class HiggsSamplerState:
@@ -38,6 +30,84 @@ class HiggsSamplerState:
     eoc_countdown: int | None = None
     generation_done: bool = False
     last_codes: torch.Tensor | None = None
+
+
+# ---------------------------------------------------------------------------
+# Batched (CUDA-Graph-compatible) sampler state
+# ---------------------------------------------------------------------------
+
+
+class HiggsBatchedSamplerState:
+    """Per-request sampler state stored as ``[max_bs, ...]`` GPU tensors.
+
+    Per-row meaning (matches :class:`HiggsSamplerState`):
+
+    - ``delay_count[i]``: how many AR steps row ``i`` has produced so far.
+      While ``delay_count < num_codebooks`` we're in the delay window.
+    - ``eoc_countdown[i]``: ``-1`` when cb0 hasn't emitted EOC yet, else
+      remaining wind-down steps. Once it hits ``0`` we set
+      ``generation_done[i] = True``.
+    - ``generation_done[i]``: terminal flag; the model runner reads this
+      back each step and sets ``Req.finished_reason``.
+    - ``last_codes[i]``: last sampled multi-codebook row, used by the
+      model's decode-step input overlay.
+    """
+
+    def __init__(
+        self,
+        max_batch_size: int,
+        num_codebooks: int,
+        device: torch.device | str = "cuda",
+    ) -> None:
+        self.max_batch_size = int(max_batch_size)
+        self.num_codebooks = int(num_codebooks)
+        self.device = torch.device(device)
+        self.delay_count = torch.zeros(
+            self.max_batch_size, dtype=torch.int32, device=self.device
+        )
+        self.eoc_countdown = torch.full(
+            (self.max_batch_size,), -1, dtype=torch.int32, device=self.device
+        )
+        self.generation_done = torch.zeros(
+            self.max_batch_size, dtype=torch.bool, device=self.device
+        )
+        self.last_codes = torch.zeros(
+            self.max_batch_size,
+            self.num_codebooks,
+            dtype=torch.long,
+            device=self.device,
+        )
+
+    def reset_row(self, row: int) -> None:
+        """Wipe row ``row`` so the next owner can't read stale state."""
+        self.delay_count[row] = 0
+        self.eoc_countdown[row] = -1
+        self.generation_done[row] = False
+        self.last_codes[row].zero_()
+
+    def view_row(self, row: int) -> HiggsSamplerState:
+        """Materialise row ``row`` as a per-request :class:`HiggsSamplerState`.
+        ``last_codes`` is ``None`` while ``delay_count == 0`` (never sampled).
+        """
+        delay = int(self.delay_count[row].item())
+        eoc = int(self.eoc_countdown[row].item())
+        return HiggsSamplerState(
+            num_codebooks=self.num_codebooks,
+            delay_count=delay,
+            eoc_countdown=None if eoc < 0 else eoc,
+            generation_done=bool(self.generation_done[row].item()),
+            last_codes=None if delay == 0 else self.last_codes[row],
+        )
+
+    def write_row(self, row: int, state: HiggsSamplerState) -> None:
+        """Commit a per-row :class:`HiggsSamplerState` back to the pool."""
+        self.delay_count[row] = state.delay_count
+        self.eoc_countdown[row] = (
+            -1 if state.eoc_countdown is None else state.eoc_countdown
+        )
+        self.generation_done[row] = state.generation_done
+        if state.last_codes is not None:
+            self.last_codes[row].copy_(state.last_codes.to(self.last_codes.dtype))
 
 
 _GREEDY_TEMP_THRESHOLD = 1e-5
@@ -136,4 +206,172 @@ def step(
     return codes_N
 
 
-__all__ = ["STOP_CODE", "HiggsSamplerState", "step"]
+# ---------------------------------------------------------------------------
+# Batched (CUDA-Graph-friendly) sampler step
+# ---------------------------------------------------------------------------
+
+
+def _sample_independent_batched(
+    logits_BNV: torch.Tensor,
+    *,
+    temperature: torch.Tensor,
+    top_p: torch.Tensor | None,
+    top_k_buf: torch.Tensor | None = None,
+) -> torch.Tensor:
+    """Batched ``[B, N, V] → [B, N]`` sampler."""
+    B, N, V = logits_BNV.shape
+    safe_temp = temperature.clamp(min=_GREEDY_TEMP_THRESHOLD).view(B, 1, 1)
+    logits = logits_BNV / safe_temp
+
+    if top_k_buf is not None:
+        top_vals = logits.topk(K_MAX, dim=-1).values
+        k_idx = top_k_buf.view(B, 1, 1).expand(-1, N, 1).clamp(min=1, max=K_MAX) - 1
+        kth = top_vals.gather(-1, k_idx)
+        logits = torch.where(logits < kth, float("-inf"), logits)
+
+    if top_p is not None:
+        sorted_logits, sorted_indices = torch.sort(logits, descending=True, dim=-1)
+        cum_probs = sorted_logits.softmax(dim=-1).cumsum(dim=-1)
+        thresh = top_p.view(B, 1, 1)
+        remove = cum_probs > thresh
+        remove[..., 1:] = remove[..., :-1].clone()
+        remove[..., 0] = False
+        scatter = torch.zeros_like(remove)
+        scatter.scatter_(-1, sorted_indices, remove)
+        logits = torch.where(scatter, float("-inf"), logits)
+
+    probs = logits.softmax(dim=-1)
+    codes_flat = probs.reshape(B * N, V).multinomial(num_samples=1).squeeze(-1)
+    return codes_flat.view(B, N).to(torch.long)
+
+
+def batched_step(
+    logits_BNV: torch.Tensor,
+    state: HiggsBatchedSamplerState,
+    row_indices: torch.Tensor,
+    *,
+    temperature: torch.Tensor,
+    top_p: torch.Tensor | None = None,
+    top_k_buf: torch.Tensor | None = None,
+    boc_id: int = BOC_ID,
+    eoc_id: int = EOC_ID,
+) -> torch.Tensor:
+    """Eager-path wrapper: gather pool state by ``row_indices``, call
+    :func:`batched_step_direct`, scatter the new state back. Done rows
+    return :data:`STOP_CODE` with state untouched.
+    """
+    delay_count = state.delay_count[row_indices]
+    eoc_countdown = state.eoc_countdown[row_indices]
+    generation_done = state.generation_done[row_indices]
+    last_codes = state.last_codes[row_indices]
+
+    (
+        out_codes,
+        new_delay_count,
+        new_eoc_countdown,
+        new_generation_done,
+        new_last_codes,
+    ) = batched_step_direct(
+        logits_BNV,
+        delay_count,
+        eoc_countdown,
+        generation_done,
+        last_codes,
+        temperature=temperature,
+        top_p=top_p,
+        top_k_buf=top_k_buf,
+        boc_id=boc_id,
+        eoc_id=eoc_id,
+    )
+
+    state.delay_count[row_indices] = new_delay_count.to(state.delay_count.dtype)
+    state.eoc_countdown[row_indices] = new_eoc_countdown.to(state.eoc_countdown.dtype)
+    state.generation_done[row_indices] = new_generation_done
+    state.last_codes[row_indices] = new_last_codes
+
+    return out_codes
+
+
+def batched_step_direct(
+    logits_BNV: torch.Tensor,
+    delay_count: torch.Tensor,
+    eoc_countdown: torch.Tensor,
+    generation_done: torch.Tensor,
+    last_codes: torch.Tensor,
+    *,
+    temperature: torch.Tensor,
+    top_p: torch.Tensor | None = None,
+    top_k_buf: torch.Tensor | None = None,
+    boc_id: int = BOC_ID,
+    eoc_id: int = EOC_ID,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """CG-friendly state machine: state in/out as direct ``[B, ...]`` tensors,
+    no ``state``/``row_indices`` indirection. Caller persists the returned
+    new state. See :func:`batched_step` for arg semantics.
+    """
+    B, N, V = logits_BNV.shape
+    device = logits_BNV.device
+
+    delay_count = delay_count.to(torch.long)
+    eoc_countdown = eoc_countdown.to(torch.long)
+
+    codes_BN = _sample_independent_batched(
+        logits_BNV,
+        temperature=temperature,
+        top_p=top_p,
+        top_k_buf=top_k_buf,
+    )
+
+    cb_idx = torch.arange(N, device=device).unsqueeze(0).expand(B, N)
+    in_delay = (delay_count < N).unsqueeze(-1)
+    delay_mask = in_delay & (cb_idx > delay_count.unsqueeze(-1))
+    codes_BN = torch.where(delay_mask, torch.full_like(codes_BN, boc_id), codes_BN)
+
+    active = ~generation_done
+    in_delay_active = active & (delay_count < N)
+    in_winddown_active = active & (eoc_countdown >= 0) & (~in_delay_active)
+    cb0_eoc_now_active = (
+        active & (~in_delay_active) & (~in_winddown_active) & (codes_BN[:, 0] == eoc_id)
+    )
+
+    new_delay_count = torch.where(in_delay_active, delay_count + 1, delay_count)
+
+    if N > 2:
+        new_eoc_countdown = torch.where(
+            cb0_eoc_now_active,
+            torch.full_like(eoc_countdown, N - 2),
+            torch.where(in_winddown_active, eoc_countdown - 1, eoc_countdown),
+        )
+        done_this_step = in_winddown_active & (new_eoc_countdown <= 0)
+    else:
+        new_eoc_countdown = torch.where(
+            in_winddown_active, eoc_countdown - 1, eoc_countdown
+        )
+        done_this_step = cb0_eoc_now_active | (
+            in_winddown_active & (new_eoc_countdown <= 0)
+        )
+    new_generation_done = generation_done | done_this_step
+
+    update_codes = (active & (~done_this_step)).unsqueeze(-1)
+    new_last_codes = torch.where(update_codes, codes_BN, last_codes)
+
+    stop = torch.full_like(codes_BN, STOP_CODE)
+    out_codes = torch.where(generation_done.unsqueeze(-1), stop, codes_BN)
+    return (
+        out_codes,
+        new_delay_count,
+        new_eoc_countdown,
+        new_generation_done,
+        new_last_codes,
+    )
+
+
+__all__ = [
+    "K_MAX",
+    "STOP_CODE",
+    "HiggsBatchedSamplerState",
+    "HiggsSamplerState",
+    "batched_step",
+    "batched_step_direct",
+    "step",
+]

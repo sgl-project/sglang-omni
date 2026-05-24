@@ -5,7 +5,7 @@ hf_model_id: "Qwen/Qwen3-Omni-30B-A3B-Instruct"
 hf_datasets:
   - "zhaochenyang20/mmsu-ci-2000"
   - "zhaochenyang20/mmmu-ci-50"
-  - "zhaochenyang20/seed-tts-eval-50"
+  - "zhaochenyang20/seed-tts-eval-50-arrow"
   - "zhaochenyang20/Video_MME_ci"
   - "zhaochenyang20/Video_AMME_ci"
 default_venv_python:
@@ -19,9 +19,10 @@ expected_wer_normalizer: "english"
 # Env vars that tune.py auto-sets at startup (matches CI behavior).
 auto_env:
   HF_ENDPOINT: "https://hf-mirror.com"
+  TORCHINDUCTOR_CACHE_DIR: "/github/home/.torchinductor"
 # Number of GPUs each test needs. tune.py picks that many free GPUs
 # via CUDA_VISIBLE_DEVICES before each pytest invocation. Qwen benchmark CI
-# runs one router plus two colocated one-GPU workers, so non-docs stages need 2.
+# runs one router plus two colocated one-GPU workers, so stages need 2.
 gpus_per_test:
   test_qwen3_omni_mmmu_ci.py: 2
   test_qwen3_omni_mmsu_ci.py: 2
@@ -32,19 +33,14 @@ gpus_per_test:
   test_qwen3_omni_mmsu_talker_ci.py: 2
   test_qwen3_omni_videomme_talker_ci.py: 2
   test_qwen3_omni_videoamme_talker_ci.py: 2
-  test_docs_qwen3_omni.py: 2
+  test_qwen3_omni_videoamme_talker_tp2_ci.py: 2
 test_globs:
   - "tests/test_model/test_qwen3_omni_*_ci.py"
-  - "tests/docs/qwen3_omni/test_docs_qwen3_omni.py"
 # Per-test extra env vars. Key is the test filename (basename).
-extra_env:
-  test_qwen3_omni_tts_ci.py:
-    SGLANG_SEEDTTS50_DIR: "/github/home/seedtts-50"
-# Stage-key base derivation: strip prefix + strip suffix from the test
-# stem. Docs tests (path contains "docs/") use the override instead.
+extra_env: {}
+# Stage-key base derivation: strip prefix + strip suffix from the test stem.
 stage_base_strip_prefix: "test_qwen3_omni_"
 stage_base_strip_suffix: "_ci"
-stage_base_docs_override: "qwen3_omni_docs"
 # Per-test metric source JSONs. `json_file` is relative to pytest's
 # `--basetemp` dir (set fresh per run by tune.py). `paths` maps a
 # recognized metric key (accuracy / corpus_wer / per_sample_wer_max /
@@ -139,6 +135,19 @@ metric_sources:
       latency_mean_s: "speed.latency_mean_s"
   test_qwen3_omni_videoamme_talker_ci.py:
     json_file: "test_videoamme_talker_accuracy0/videoamme_audio/videoamme_results.json"
+    sample_counts:
+      total: "summary.total_samples"
+      ok: "speed.completed_requests"
+    paths:
+      accuracy: "summary.accuracy"
+      wer_below_50_corpus: "wer.summary.wer_below_50_corpus"
+      n_above_50: "wer.summary.n_above_50_pct_wer"
+      throughput_qps: "speed.throughput_qps"
+      tok_per_s_agg: "speed.tok_per_s_agg"
+      latency_mean_s: "speed.latency_mean_s"
+      rtf_mean: "speed.rtf_mean"
+  test_qwen3_omni_videoamme_talker_tp2_ci.py:
+    json_file: "test_videoamme_talker_tp2_accu0/videoamme_audio/videoamme_results.json"
     sample_counts:
       total: "summary.total_samples"
       ok: "speed.completed_requests"

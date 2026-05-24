@@ -5,6 +5,8 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from sglang_omni.models.ming_omni.pipeline.sampling import build_ming_sampling_params
+
 logger = logging.getLogger(__name__)
 
 
@@ -107,7 +109,6 @@ def make_thinker_scheduler_adapters(
 
     def request_builder(payload):
         from sglang.srt.managers.schedule_batch import Req
-        from sglang.srt.sampling.sampling_params import SamplingParams
 
         from sglang_omni.models.ming_omni.io import PipelineState
         from sglang_omni.scheduling.sglang_backend import SGLangARRequestData
@@ -153,14 +154,11 @@ def make_thinker_scheduler_adapters(
         input_ids_list = input_ids.to(dtype=_torch_long()).flatten().tolist()
 
         params = payload.request.params or {}
-        max_new_tokens = params.get("max_new_tokens", 2048)
-        temperature = params.get("temperature", 0.0)
-        sampling_params = SamplingParams(
-            max_new_tokens=max_new_tokens,
-            temperature=temperature,
+        sampling_params, max_new_tokens, temperature = build_ming_sampling_params(
+            params,
+            tokenizer=tokenizer,
+            vocab_size=vocab_size,
         )
-        sampling_params.normalize(tokenizer)
-        sampling_params.verify(vocab_size)
 
         eos_token_ids = _collect_eos_token_ids(tokenizer)
         req = Req(

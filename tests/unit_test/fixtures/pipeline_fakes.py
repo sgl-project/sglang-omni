@@ -247,6 +247,33 @@ def identity_stream_targets(request_id: str, output: Any) -> list[str]:
     return ["talker"]
 
 
+def identity_wait_sources(
+    request_id: str,
+    from_stage: str,
+    payload: StagePayload,
+) -> list[str]:
+    del request_id, from_stage, payload
+    return ["preprocess", "thinker"]
+
+
+def tuple_wait_sources(
+    request_id: str,
+    from_stage: str,
+    payload: StagePayload,
+) -> tuple[str, str]:
+    del request_id, from_stage, payload
+    return ("preprocess", "thinker")
+
+
+def wait_sources_to_undeclared_stage(
+    request_id: str,
+    from_stage: str,
+    payload: StagePayload,
+) -> list[str]:
+    del request_id, from_stage, payload
+    return ["preprocess", "missing"]
+
+
 def route_to_undeclared_talker(request_id: str, output: Any) -> str:
     del request_id, output
     return "talker"

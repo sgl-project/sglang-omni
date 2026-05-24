@@ -315,6 +315,9 @@ class Client:
                 text = decode_result.get("text")
                 if isinstance(text, str):
                     chunk.text = text
+                finish_reason = decode_result.get("finish_reason")
+                if finish_reason is not None:
+                    chunk.finish_reason = finish_reason
                 Client._set_audio_data(chunk, audio_result)
                 chunk.usage = Client._build_usage_info(
                     decode_result

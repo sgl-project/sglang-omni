@@ -41,7 +41,7 @@ hf_datasets:
   - "zhaochenyang20/Video_MME"
   - "zhaochenyang20/Video_AMME_ci"
   - "zhaochenyang20/Video_MME_ci"
-  - "zhaochenyang20/seed-tts-eval"
+  - "zhaochenyang20/seed-tts-eval-arrow"
 
 # Auxiliary scoring resources — orthogonal to the main model+dataset; without
 # them rows usually run-to-completion but skip every sample at the ASR/WER
@@ -67,11 +67,6 @@ python_packages:
   - name: "zhon"
     install_cmd: "uv pip install zhon"
     used_for: "ZH punctuation set used by normalize_text(text, 'zh')"
-
-path_links:
-  - target: "seedtts_testset"
-    install_cmd: 'SNAP=$(ls -d ~/.cache/huggingface/hub/datasets--zhaochenyang20--seed-tts-eval/snapshots/*/ | head -1); ln -sfn "$SNAP" seedtts_testset'
-    used_for: "all seedtts + s2pro client cmds reference --meta seedtts_testset/{en,zh}/meta.lst relative to repo root"
 
 default_venv_python:
   - "/sgl-workspace/sglang-omni/.venv/bin/python"
@@ -111,6 +106,15 @@ server_profiles:
     wait_timeout: 600
     server_boot_timeout_s: 660
     router_policy: least_request
+  qwen3_omni_mmsu_router:
+    server_gpus: 2
+    model_name: qwen3-omni
+    num_workers: 2
+    num_gpus_per_worker: 1
+    worker_extra_args: "--config {repo_root}/examples/configs/qwen3_omni_mmsu.yaml --text-only"
+    wait_timeout: 600
+    server_boot_timeout_s: 660
+    router_policy: least_request
   s2pro_router:
     server_gpus: 2
     model_name: fishaudio/s2-pro
@@ -125,6 +129,7 @@ rows:
   # ===================== mmsu (Qwen3-Omni text-only) =====================
   - id: mmsu-text-c8-accuracy
     file: "benchmarks/eval/benchmark_omni_mmsu.py"
+    server_profile: qwen3_omni_mmsu_router
     locate:
       section_substring: "Accuracy (accuracy)"
       config_substring: "modalities=text "
@@ -138,6 +143,7 @@ rows:
 
   - id: mmsu-text-audio-c8-accuracy
     file: "benchmarks/eval/benchmark_omni_mmsu.py"
+    server_profile: qwen3_omni_mmsu_router
     locate:
       section_substring: "Accuracy (accuracy)"
       config_substring: "modalities=text+audio"
@@ -151,6 +157,7 @@ rows:
 
   - id: mmsu-text-c8-speed
     file: "benchmarks/eval/benchmark_omni_mmsu.py"
+    server_profile: qwen3_omni_mmsu_router
     locate:
       section_substring: "Speed (speed)"
       config_substring: "modalities=text "
@@ -166,6 +173,7 @@ rows:
 
   - id: mmsu-text-audio-c8-speed
     file: "benchmarks/eval/benchmark_omni_mmsu.py"
+    server_profile: qwen3_omni_mmsu_router
     locate:
       section_substring: "Speed (speed)"
       config_substring: "modalities=text+audio"
@@ -250,7 +258,7 @@ rows:
       section_substring: "Accuracy (accuracy.wer)"
       config_substring: "EN, voice_clone=T"
       source_workload: "router, 2-worker, full-set, c=16, n=3 mean"
-    client: "python -m benchmarks.eval.benchmark_omni_seedtts --voice-clone --model qwen3-omni --port {port} --meta seedtts_testset/en/meta.lst --max-concurrency 16 --lang en --output-dir {output_dir} --asr-device {asr_gpu}"
+    client: "python -m benchmarks.eval.benchmark_omni_seedtts --voice-clone --model qwen3-omni --port {port} --meta zhaochenyang20/seed-tts-eval-arrow --max-concurrency 16 --lang en --output-dir {output_dir} --asr-device {asr_gpu}"
     result_json: "wer_results.json"
     cells:
       wer_corpus:            { path: "summary.wer_corpus",            format: "{v:.2%}" }
@@ -266,7 +274,7 @@ rows:
       section_substring: "Accuracy (accuracy.wer)"
       config_substring: "EN, voice_clone=F"
       source_workload: "router, 2-worker, full-set, c=16"
-    client: "python -m benchmarks.eval.benchmark_omni_seedtts --model qwen3-omni --port {port} --meta seedtts_testset/en/meta.lst --max-concurrency 16 --lang en --output-dir {output_dir} --asr-device {asr_gpu}"
+    client: "python -m benchmarks.eval.benchmark_omni_seedtts --model qwen3-omni --port {port} --meta zhaochenyang20/seed-tts-eval-arrow --max-concurrency 16 --lang en --output-dir {output_dir} --asr-device {asr_gpu}"
     result_json: "wer_results.json"
     cells:
       wer_corpus:            { path: "summary.wer_corpus",            format: "{v:.2%}" }
@@ -282,7 +290,7 @@ rows:
       section_substring: "Accuracy (accuracy.wer)"
       config_substring: "ZH, voice_clone=T"
       source_workload: "router, 2-worker, full-set, c=16"
-    client: "python -m benchmarks.eval.benchmark_omni_seedtts --voice-clone --model qwen3-omni --port {port} --meta seedtts_testset/zh/meta.lst --max-concurrency 16 --lang zh --output-dir {output_dir} --asr-device {asr_gpu}"
+    client: "python -m benchmarks.eval.benchmark_omni_seedtts --voice-clone --model qwen3-omni --port {port} --meta zhaochenyang20/seed-tts-eval-arrow --max-concurrency 16 --lang zh --output-dir {output_dir} --asr-device {asr_gpu}"
     result_json: "wer_results.json"
     cells:
       wer_corpus:            { path: "summary.wer_corpus",            format: "{v:.2%}" }
@@ -298,7 +306,7 @@ rows:
       section_substring: "Accuracy (accuracy.wer)"
       config_substring: "ZH, voice_clone=F"
       source_workload: "router, 2-worker, full-set, c=16"
-    client: "python -m benchmarks.eval.benchmark_omni_seedtts --model qwen3-omni --port {port} --meta seedtts_testset/zh/meta.lst --max-concurrency 16 --lang zh --output-dir {output_dir} --asr-device {asr_gpu}"
+    client: "python -m benchmarks.eval.benchmark_omni_seedtts --model qwen3-omni --port {port} --meta zhaochenyang20/seed-tts-eval-arrow --max-concurrency 16 --lang zh --output-dir {output_dir} --asr-device {asr_gpu}"
     result_json: "wer_results.json"
     cells:
       wer_corpus:            { path: "summary.wer_corpus",            format: "{v:.2%}" }
@@ -314,7 +322,7 @@ rows:
       section_substring: "Generation speed (generation.speed)"
       config_substring: "EN, voice_clone=T"
       source_workload: "router, 2-worker, full-set, c=16"
-    client: "python -m benchmarks.eval.benchmark_omni_seedtts --voice-clone --model qwen3-omni --port {port} --meta seedtts_testset/en/meta.lst --max-concurrency 16 --lang en --output-dir {output_dir} --asr-device {asr_gpu}"
+    client: "python -m benchmarks.eval.benchmark_omni_seedtts --voice-clone --model qwen3-omni --port {port} --meta zhaochenyang20/seed-tts-eval-arrow --max-concurrency 16 --lang en --output-dir {output_dir} --asr-device {asr_gpu}"
     result_json: "speed_results.json"
     cells:
       latency_mean_s: { path: "summary.latency_mean_s", format: "{v:.2f}" }
@@ -330,7 +338,7 @@ rows:
       section_substring: "Generation speed (generation.speed)"
       config_substring: "EN, voice_clone=F"
       source_workload: "router, 2-worker, full-set, c=16"
-    client: "python -m benchmarks.eval.benchmark_omni_seedtts --model qwen3-omni --port {port} --meta seedtts_testset/en/meta.lst --max-concurrency 16 --lang en --output-dir {output_dir} --asr-device {asr_gpu}"
+    client: "python -m benchmarks.eval.benchmark_omni_seedtts --model qwen3-omni --port {port} --meta zhaochenyang20/seed-tts-eval-arrow --max-concurrency 16 --lang en --output-dir {output_dir} --asr-device {asr_gpu}"
     result_json: "speed_results.json"
     cells:
       latency_mean_s: { path: "summary.latency_mean_s", format: "{v:.2f}" }
@@ -346,7 +354,7 @@ rows:
       section_substring: "Generation speed (generation.speed)"
       config_substring: "ZH, voice_clone=T"
       source_workload: "router, 2-worker, full-set, c=16"
-    client: "python -m benchmarks.eval.benchmark_omni_seedtts --voice-clone --model qwen3-omni --port {port} --meta seedtts_testset/zh/meta.lst --max-concurrency 16 --lang zh --output-dir {output_dir} --asr-device {asr_gpu}"
+    client: "python -m benchmarks.eval.benchmark_omni_seedtts --voice-clone --model qwen3-omni --port {port} --meta zhaochenyang20/seed-tts-eval-arrow --max-concurrency 16 --lang zh --output-dir {output_dir} --asr-device {asr_gpu}"
     result_json: "speed_results.json"
     cells:
       latency_mean_s: { path: "summary.latency_mean_s", format: "{v:.2f}" }
@@ -362,7 +370,7 @@ rows:
       section_substring: "Generation speed (generation.speed)"
       config_substring: "ZH, voice_clone=F"
       source_workload: "router, 2-worker, full-set, c=16"
-    client: "python -m benchmarks.eval.benchmark_omni_seedtts --model qwen3-omni --port {port} --meta seedtts_testset/zh/meta.lst --max-concurrency 16 --lang zh --output-dir {output_dir} --asr-device {asr_gpu}"
+    client: "python -m benchmarks.eval.benchmark_omni_seedtts --model qwen3-omni --port {port} --meta zhaochenyang20/seed-tts-eval-arrow --max-concurrency 16 --lang zh --output-dir {output_dir} --asr-device {asr_gpu}"
     result_json: "speed_results.json"
     cells:
       latency_mean_s: { path: "summary.latency_mean_s", format: "{v:.2f}" }
@@ -518,7 +526,7 @@ rows:
       section_substring: "Accuracy (accuracy.wer)"
       config_substring: "EN, stream=False"
       source_workload: "router, 2-worker, full-set, c=16"
-    client: "python -m benchmarks.eval.benchmark_tts_seedtts --model fishaudio/s2-pro --port {port} --meta seedtts_testset/en/meta.lst --max-concurrency 16 --lang en --output-dir {output_dir} --device {asr_gpu}"
+    client: "python -m benchmarks.eval.benchmark_tts_seedtts --model fishaudio/s2-pro --port {port} --meta zhaochenyang20/seed-tts-eval-arrow --max-concurrency 16 --lang en --output-dir {output_dir} --device {asr_gpu}"
     result_json: "wer_results.json"
     cells:
       wer_corpus:            { path: "summary.wer_corpus",            format: "{v:.2%}" }
@@ -535,7 +543,7 @@ rows:
       section_substring: "Accuracy (accuracy.wer)"
       config_substring: "EN, stream=True"
       source_workload: "router, 2-worker, full-set, c=16"
-    client: "python -m benchmarks.eval.benchmark_tts_seedtts --stream --model fishaudio/s2-pro --port {port} --meta seedtts_testset/en/meta.lst --max-concurrency 16 --lang en --output-dir {output_dir} --device {asr_gpu}"
+    client: "python -m benchmarks.eval.benchmark_tts_seedtts --stream --model fishaudio/s2-pro --port {port} --meta zhaochenyang20/seed-tts-eval-arrow --max-concurrency 16 --lang en --output-dir {output_dir} --device {asr_gpu}"
     result_json: "wer_results.json"
     cells:
       wer_corpus:            { path: "summary.wer_corpus",            format: "{v:.2%}" }
@@ -552,7 +560,7 @@ rows:
       section_substring: "Accuracy (accuracy.wer)"
       config_substring: "ZH, stream=False"
       source_workload: "router, 2-worker, full-set, c=16"
-    client: "python -m benchmarks.eval.benchmark_tts_seedtts --model fishaudio/s2-pro --port {port} --meta seedtts_testset/zh/meta.lst --max-concurrency 16 --lang zh --output-dir {output_dir} --device {asr_gpu}"
+    client: "python -m benchmarks.eval.benchmark_tts_seedtts --model fishaudio/s2-pro --port {port} --meta zhaochenyang20/seed-tts-eval-arrow --max-concurrency 16 --lang zh --output-dir {output_dir} --device {asr_gpu}"
     result_json: "wer_results.json"
     cells:
       wer_corpus:            { path: "summary.wer_corpus",            format: "{v:.2%}" }
@@ -569,7 +577,7 @@ rows:
       section_substring: "Accuracy (accuracy.wer)"
       config_substring: "ZH, stream=True"
       source_workload: "router, 2-worker, full-set, c=16"
-    client: "python -m benchmarks.eval.benchmark_tts_seedtts --stream --model fishaudio/s2-pro --port {port} --meta seedtts_testset/zh/meta.lst --max-concurrency 16 --lang zh --output-dir {output_dir} --device {asr_gpu}"
+    client: "python -m benchmarks.eval.benchmark_tts_seedtts --stream --model fishaudio/s2-pro --port {port} --meta zhaochenyang20/seed-tts-eval-arrow --max-concurrency 16 --lang zh --output-dir {output_dir} --device {asr_gpu}"
     result_json: "wer_results.json"
     cells:
       wer_corpus:            { path: "summary.wer_corpus",            format: "{v:.2%}" }
@@ -586,7 +594,7 @@ rows:
       section_substring: "Generation speed (generation.speed)"
       config_substring: "EN, stream=False"
       source_workload: "router, 2-worker, full-set, c=16"
-    client: "python -m benchmarks.eval.benchmark_tts_seedtts --model fishaudio/s2-pro --port {port} --meta seedtts_testset/en/meta.lst --max-concurrency 16 --lang en --output-dir {output_dir} --device {asr_gpu}"
+    client: "python -m benchmarks.eval.benchmark_tts_seedtts --model fishaudio/s2-pro --port {port} --meta zhaochenyang20/seed-tts-eval-arrow --max-concurrency 16 --lang en --output-dir {output_dir} --device {asr_gpu}"
     result_json: "speed_results.json"
     cells:
       latency_mean_s: { path: "summary.latency_mean_s", format: "{v:.3f}" }
@@ -603,7 +611,7 @@ rows:
       section_substring: "Generation speed (generation.speed)"
       config_substring: "EN, stream=True"
       source_workload: "router, 2-worker, full-set, c=16"
-    client: "python -m benchmarks.eval.benchmark_tts_seedtts --stream --model fishaudio/s2-pro --port {port} --meta seedtts_testset/en/meta.lst --max-concurrency 16 --lang en --output-dir {output_dir} --device {asr_gpu}"
+    client: "python -m benchmarks.eval.benchmark_tts_seedtts --stream --model fishaudio/s2-pro --port {port} --meta zhaochenyang20/seed-tts-eval-arrow --max-concurrency 16 --lang en --output-dir {output_dir} --device {asr_gpu}"
     result_json: "speed_results.json"
     cells:
       latency_mean_s: { path: "summary.latency_mean_s", format: "{v:.3f}" }
@@ -620,7 +628,7 @@ rows:
       section_substring: "Generation speed (generation.speed)"
       config_substring: "ZH, stream=False"
       source_workload: "router, 2-worker, full-set, c=16"
-    client: "python -m benchmarks.eval.benchmark_tts_seedtts --model fishaudio/s2-pro --port {port} --meta seedtts_testset/zh/meta.lst --max-concurrency 16 --lang zh --output-dir {output_dir} --device {asr_gpu}"
+    client: "python -m benchmarks.eval.benchmark_tts_seedtts --model fishaudio/s2-pro --port {port} --meta zhaochenyang20/seed-tts-eval-arrow --max-concurrency 16 --lang zh --output-dir {output_dir} --device {asr_gpu}"
     result_json: "speed_results.json"
     cells:
       latency_mean_s: { path: "summary.latency_mean_s", format: "{v:.3f}" }
@@ -637,7 +645,7 @@ rows:
       section_substring: "Generation speed (generation.speed)"
       config_substring: "ZH, stream=True"
       source_workload: "router, 2-worker, full-set, c=16"
-    client: "python -m benchmarks.eval.benchmark_tts_seedtts --stream --model fishaudio/s2-pro --port {port} --meta seedtts_testset/zh/meta.lst --max-concurrency 16 --lang zh --output-dir {output_dir} --device {asr_gpu}"
+    client: "python -m benchmarks.eval.benchmark_tts_seedtts --stream --model fishaudio/s2-pro --port {port} --meta zhaochenyang20/seed-tts-eval-arrow --max-concurrency 16 --lang zh --output-dir {output_dir} --device {asr_gpu}"
     result_json: "speed_results.json"
     cells:
       latency_mean_s: { path: "summary.latency_mean_s", format: "{v:.3f}" }

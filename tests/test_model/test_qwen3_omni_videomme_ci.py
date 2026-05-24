@@ -26,7 +26,7 @@ from tests.test_model.omni_router_utils import (
     ManagedRouterHandle,
     router_worker_traffic_guard,
 )
-from tests.utils import apply_slack, assert_speed_thresholds
+from tests.utils import MetricCheckCollector, apply_slack, assert_speed_thresholds
 
 CONCURRENCY = 16
 MAX_SAMPLES = 50
@@ -84,13 +84,26 @@ def test_videomme_accuracy_and_speed(
         title="Video-MME Speed",
     )
     total = summary.get("total_samples", 0)
-    router_guard.assert_served(min_total_requests=total)
-    assert summary["accuracy"] >= VIDEOMME_MIN_ACCURACY, (
-        f"Video-MME accuracy {summary['accuracy']:.4f} "
-        f"({summary['accuracy'] * 100:.1f}%) < "
-        f"threshold {VIDEOMME_MIN_ACCURACY} ({VIDEOMME_MIN_ACCURACY * 100:.0f}%)"
+    checks = MetricCheckCollector("Video-MME accuracy and speed")
+    checks.check_assertion(
+        "router traffic",
+        router_guard.assert_served,
+        min_total_requests=total,
     )
-    assert_speed_thresholds(results["speed"], VIDEOMME_THRESHOLDS, CONCURRENCY)
+    accuracy = summary.get("accuracy")
+    if accuracy is None:
+        checks.fail("Video-MME accuracy missing from summary")
+    else:
+        checks.check(
+            accuracy >= VIDEOMME_MIN_ACCURACY,
+            f"Video-MME accuracy {accuracy:.4f} "
+            f"({accuracy * 100:.1f}%) < "
+            f"threshold {VIDEOMME_MIN_ACCURACY} ({VIDEOMME_MIN_ACCURACY * 100:.0f}%)",
+        )
+    assert_speed_thresholds(
+        results["speed"], VIDEOMME_THRESHOLDS, CONCURRENCY, collector=checks
+    )
+    checks.assert_all()
 
 
 if __name__ == "__main__":

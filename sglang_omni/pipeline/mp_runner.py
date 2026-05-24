@@ -83,6 +83,7 @@ def _build_stage_groups(
             route_fn=stage_cfg.route_fn,
             is_terminal=stage_cfg.terminal,
             wait_for=stage_cfg.wait_for,
+            wait_for_fn=stage_cfg.wait_for_fn,
             merge_fn=stage_cfg.merge_fn,
             project_payload={
                 name_map.get(target, target): dotted_path

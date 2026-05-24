@@ -15,7 +15,7 @@ name: s2-pro-v1
 description: "FishAudio S2-Pro voice-clone TTS"
 hf_model_id: "fishaudio/s2-pro"
 hf_datasets:
-  - "zhaochenyang20/seed-tts-eval-50"
+  - "zhaochenyang20/seed-tts-eval-50-arrow"
 # Per user override: this host shares the omni-qwen3 venv across all
 # models — there is no separate omni-s2pro venv to check.
 default_venv_python:
@@ -27,9 +27,7 @@ gpus_per_test:
   test_s2pro_tts_ci.py: 2
 test_globs:
   - "tests/test_model/test_s2pro_tts_ci.py"
-extra_env:
-  test_s2pro_tts_ci.py:
-    SGLANG_SEEDTTS50_DIR: "/github/home/seedtts-50"
+extra_env: {}
 # Per-test extra pytest CLI args. test_s2pro_tts_ci.py needs `--concurrency 16`
 # to match the CI invocation; without it the test defaults to concurrency=1
 # (and writes results into vc_*_c1/ subdirs, not vc_*_c16/ where this config

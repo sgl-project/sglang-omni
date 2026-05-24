@@ -9,6 +9,7 @@ import logging
 import multiprocessing
 import os
 import sys
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any, Literal, Mapping
 
@@ -48,6 +49,7 @@ class StageProcessSpec:
 
     # Fan-in
     wait_for: list[str] | None = None
+    wait_for_fn: str | None = None
     merge_fn: str | None = None
     project_payload: dict[str, str] = field(default_factory=dict)
 
@@ -208,6 +210,21 @@ def _construct_stage(
     def _map_target_list(targets: str | list[str] | None) -> list[str]:
         return [spec.name_map.get(t, t) for t in _target_list(targets)]
 
+    def _map_wait_source_list(sources: str | Iterable[str] | None) -> list[Any] | None:
+        if sources is None:
+            return None
+        if isinstance(sources, str):
+            return [spec.name_map.get(sources, sources)]
+        if isinstance(sources, Iterable):
+            return [
+                spec.name_map.get(source, source) if isinstance(source, str) else source
+                for source in sources
+            ]
+        raise ValueError(
+            f"wait_for_fn for stage {spec.stage_name!r} returned unsupported "
+            f"source value {sources!r}"
+        )
+
     def _target_result(
         targets: str | list[str] | None,
         *,
@@ -276,7 +293,19 @@ def _construct_stage(
     if spec.wait_for and spec.merge_fn:
         merge_fn = import_string(spec.merge_fn)
         sources = {spec.name_map.get(n, n) for n in spec.wait_for}
-        input_handler = AggregatedInput(sources=sources, merge=merge_fn)
+        expected_sources_fn = None
+        if spec.wait_for_fn:
+            wait_for_fn = import_string(spec.wait_for_fn)
+
+            def expected_sources_fn(request_id, from_stage, data, _fn=wait_for_fn):
+                resolved_sources = _fn(request_id, from_stage, data)
+                return _map_wait_source_list(resolved_sources)
+
+        input_handler = AggregatedInput(
+            sources=sources,
+            merge=merge_fn,
+            expected_sources_fn=expected_sources_fn,
+        )
     else:
         input_handler = DirectInput()
     project_payload = {

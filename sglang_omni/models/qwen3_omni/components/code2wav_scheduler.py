@@ -13,6 +13,7 @@ from typing import Any
 import numpy as np
 import torch
 
+from sglang_omni.profiler.event_recorder import emit as _emit_event
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.messages import IncomingMessage, OutgoingMessage
 
@@ -110,6 +111,16 @@ class Code2WavScheduler:
         self._stream_enabled.pop(request_id, None)
         self._pending_done.discard(request_id)
 
+    def _fail_request(self, request_id: str, error: Exception) -> None:
+        self.outbox.put(
+            OutgoingMessage(
+                request_id=request_id,
+                type="error",
+                data=error,
+            )
+        )
+        self.abort(request_id)
+
     def _ensure_request_state(self, request_id: str) -> None:
         if request_id in self._code_chunks:
             return
@@ -126,18 +137,14 @@ class Code2WavScheduler:
         if request_id not in self._stream_enabled:
             meta = chunk.metadata if isinstance(chunk.metadata, dict) else None
             if meta is None or "stream" not in meta:
-                self.outbox.put(
-                    OutgoingMessage(
-                        request_id=request_id,
-                        type="error",
-                        data=RuntimeError(
-                            f"code2wav got a chunk for {request_id!r} without "
-                            "metadata['stream']; talker_model_runner must "
-                            "populate it."
-                        ),
-                    )
+                self._fail_request(
+                    request_id,
+                    RuntimeError(
+                        f"code2wav got a chunk for {request_id!r} without "
+                        "metadata['stream']; talker_model_runner must "
+                        "populate it."
+                    ),
                 )
-                self.abort(request_id)
                 return
             self._stream_enabled[request_id] = bool(meta["stream"])
 
@@ -178,10 +185,13 @@ class Code2WavScheduler:
 
         # Build final output
         audio_parts = self._audio_chunks.get(request_id, [])
-        if audio_parts:
-            full_audio = np.concatenate(audio_parts).astype(np.float32, copy=False)
-        else:
-            full_audio = np.zeros((0,), dtype=np.float32)
+        if not audio_parts:
+            self._fail_request(
+                request_id,
+                RuntimeError(f"code2wav produced no audio for {request_id!r}"),
+            )
+            return
+        full_audio = np.concatenate(audio_parts).astype(np.float32, copy=False)
         payload = self._payloads[request_id]
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug(
@@ -228,7 +238,15 @@ class Code2WavScheduler:
         audio = self._decode_incremental(request_id, chunks, start, end)
         self._emitted[request_id] = end
         if audio.size > 0:
+            is_first = not self._audio_chunks[request_id]
             self._audio_chunks[request_id].append(audio)
+            if is_first:
+                _emit_event(
+                    request_id=request_id,
+                    stage=None,
+                    event_name="code2wav_first_audio",
+                    metadata={"samples": int(audio.shape[0])},
+                )
             if self._stream_enabled.get(request_id, True):
                 self.outbox.put(
                     OutgoingMessage(

@@ -9,6 +9,7 @@ import torch
 
 from sglang_omni.engines.omni.runtime import ARRequestData, EncoderRequestData
 from sglang_omni.models.ming_omni.io import PipelineState, ThinkerOutput
+from sglang_omni.models.ming_omni.pipeline.sampling import build_ming_sampling_params
 
 if TYPE_CHECKING:
     from sglang_omni.engines.omni.runtime.sglang_ar import SGLangARRequestData
@@ -103,7 +104,6 @@ def build_sglang_thinker_request(
     Ming uses standard 1D RoPE (no M-RoPE), so no special position computation needed.
     """
     from sglang.srt.managers.schedule_batch import Req
-    from sglang.srt.sampling.sampling_params import SamplingParams
 
     from sglang_omni.engines.omni.runtime.sglang_ar import SGLangARRequestData
 
@@ -128,15 +128,11 @@ def build_sglang_thinker_request(
     capture_keys = thinker_inputs.get("capture_model_output_keys", ())
     model_inputs.pop("attention_mask", None)
 
-    max_new_tokens = params.get("max_new_tokens", 2048)
-    temperature = params.get("temperature", 0.0)
-
-    sampling_params = SamplingParams(
-        max_new_tokens=max_new_tokens,
-        temperature=temperature,
+    sampling_params, max_new_tokens, temperature = build_ming_sampling_params(
+        params,
+        tokenizer=tokenizer,
+        vocab_size=vocab_size,
     )
-    sampling_params.normalize(tokenizer)
-    sampling_params.verify(vocab_size)
 
     eos_token_id = getattr(tokenizer, "eos_token_id", None)
     eos_token_ids = {eos_token_id} if eos_token_id is not None else None

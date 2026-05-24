@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from collections import deque
 from types import SimpleNamespace
 
@@ -16,8 +17,10 @@ from sglang_omni.models.qwen3_omni.pending_text_queue import (
     PendingTextTensorQueue,
     coerce_pending_text_queue,
 )
+from sglang_omni.models.qwen3_omni.request_builders import build_sglang_talker_request
 from sglang_omni.models.qwen3_omni.talker_model_runner import QwenTalkerModelRunner
 from sglang_omni.models.qwen3_omni.talker_scheduler import QwenTalkerScheduler
+from tests.unit_test.fixtures.qwen_fakes import FakeQwenTokenizer
 
 
 def _sched_req(**data_kwargs: object) -> SimpleNamespace:
@@ -356,3 +359,452 @@ def test_qwen_model_runner_and_code_predictor_tensor_contracts() -> None:
     sampled = Qwen3OmniTalker._sample_code_predictor_token(logits)
     assert sampled.shape == (2, 1)
     assert sampled[:, 0].tolist() == [2, 0]
+
+
+@pytest.fixture()
+def _patch_sampling(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "sglang.srt.sampling.sampling_params.SamplingParams.normalize",
+        lambda _self, _tok: None,
+    )
+    monkeypatch.setattr(
+        "sglang.srt.sampling.sampling_params.SamplingParams.verify",
+        lambda _self, _vs: None,
+    )
+
+
+@pytest.mark.usefixtures("_patch_sampling")
+class TestBuildTalkerRequestTensorStorage:
+    """build_sglang_talker_request stores the tensor and honours the Req list contract."""
+
+    def test_projected_embeds_path(self) -> None:
+        seq_len, hidden = 64, 128
+        embeds = torch.randn(seq_len, hidden)
+        ids = torch.arange(seq_len, dtype=torch.long)
+
+        data = build_sglang_talker_request(
+            thinker_hidden_states=torch.empty(0),
+            tokenizer=FakeQwenTokenizer(),
+            codec_vocab_size=4096,
+            talker_input_embeds=embeds,
+            talker_input_ids=ids,
+            input_embeds_are_projected=True,
+        )
+
+        assert data.prefill_input_embeds is embeds
+        assert data.req.input_embeds is None
+        assert data.req._input_embeds_are_projected is True
+        assert data.input_embeds_are_projected is True
+
+    def test_hidden_states_path(self) -> None:
+        seq_len, hidden = 32, 256
+        hidden_states = torch.randn(seq_len, hidden)
+
+        data = build_sglang_talker_request(
+            thinker_hidden_states=hidden_states,
+            tokenizer=FakeQwenTokenizer(),
+            codec_vocab_size=4096,
+        )
+
+        assert data.prefill_input_embeds is None
+        assert isinstance(data.req.input_embeds, list)
+        assert len(data.req.input_embeds) == seq_len
+        assert data.req._input_embeds_are_projected is False
+
+
+def test_projected_prefill_reads_tensor_from_data() -> None:
+    """Model runner reads prefill_input_embeds, not Req.input_embeds."""
+    embeds = torch.randn(10, 64)
+    sched_req = _sched_req(
+        input_embeds_are_projected=True,
+        prefill_input_embeds=embeds,
+        req=SimpleNamespace(input_embeds=None, prefix_indices=[], extend_input_len=10),
+    )
+    forward_batch = SimpleNamespace(
+        input_embeds=None,
+        input_ids=torch.zeros(10, dtype=torch.long),
+    )
+
+    runner = object.__new__(QwenTalkerModelRunner)
+    runner._forward_with_input_embeds = (
+        lambda self, fb, *, input_embeds, **kw: SimpleNamespace(
+            next_token_ids=None, logits_output=None, _embeds=input_embeds
+        )
+    ).__get__(runner)
+
+    result = runner._run_projected_prefill_forward(
+        forward_batch, schedule_batch=None, requests=[sched_req]
+    )
+
+    assert torch.equal(result._embeds, embeds)
+
+
+def test_projected_prefill_slices_tensor_by_prefix_indices() -> None:
+    """Tensor path slices by prefix_indices, matching the list fallback."""
+    full_embeds = torch.randn(10, 64)
+    prefix_len = 3
+    sched_req = _sched_req(
+        input_embeds_are_projected=True,
+        prefill_input_embeds=full_embeds,
+        req=SimpleNamespace(
+            input_embeds=None,
+            prefix_indices=list(range(prefix_len)),
+            extend_input_len=7,
+        ),
+    )
+    forward_batch = SimpleNamespace(
+        input_embeds=None,
+        input_ids=torch.zeros(7, dtype=torch.long),
+    )
+
+    runner = object.__new__(QwenTalkerModelRunner)
+    runner._forward_with_input_embeds = (
+        lambda self, fb, *, input_embeds, **kw: SimpleNamespace(
+            next_token_ids=None, logits_output=None, _embeds=input_embeds
+        )
+    ).__get__(runner)
+
+    result = runner._run_projected_prefill_forward(
+        forward_batch, schedule_batch=None, requests=[sched_req]
+    )
+
+    expected = full_embeds[prefix_len:]
+    assert result._embeds.shape == expected.shape
+    assert torch.equal(result._embeds, expected)
+
+
+def test_projected_prefill_slices_tensor_by_extend_input_len() -> None:
+    """Tensor path slices by prefix and extend length, matching SGLang prefill."""
+    full_embeds = torch.randn(10, 64)
+    prefix_len = 3
+    extend_len = 4
+    sched_req = _sched_req(
+        input_embeds_are_projected=True,
+        prefill_input_embeds=full_embeds,
+        req=SimpleNamespace(
+            input_embeds=None,
+            prefix_indices=list(range(prefix_len)),
+            extend_input_len=extend_len,
+        ),
+    )
+    forward_batch = SimpleNamespace(
+        input_embeds=None,
+        input_ids=torch.zeros(extend_len, dtype=torch.long),
+    )
+
+    runner = object.__new__(QwenTalkerModelRunner)
+    runner._forward_with_input_embeds = (
+        lambda self, fb, *, input_embeds, **kw: SimpleNamespace(
+            next_token_ids=None, logits_output=None, _embeds=input_embeds
+        )
+    ).__get__(runner)
+
+    result = runner._run_projected_prefill_forward(
+        forward_batch, schedule_batch=None, requests=[sched_req]
+    )
+
+    expected = full_embeds[prefix_len : prefix_len + extend_len]
+    assert result._embeds.shape == expected.shape
+    assert torch.equal(result._embeds, expected)
+
+
+def test_projected_prefill_list_fallback_slices_by_extend_input_len() -> None:
+    """List fallback keeps the same prefill slice contract as the tensor path."""
+    full_embeds = torch.randn(10, 64)
+    prefix_len = 2
+    extend_len = 5
+    sched_req = _sched_req(
+        input_embeds_are_projected=True,
+        prefill_input_embeds=None,
+        req=SimpleNamespace(
+            input_embeds=full_embeds.tolist(),
+            prefix_indices=list(range(prefix_len)),
+            extend_input_len=extend_len,
+        ),
+    )
+    forward_batch = SimpleNamespace(
+        input_embeds=None,
+        input_ids=torch.zeros(extend_len, dtype=torch.long),
+    )
+
+    runner = object.__new__(QwenTalkerModelRunner)
+    runner._forward_with_input_embeds = (
+        lambda self, fb, *, input_embeds, **kw: SimpleNamespace(
+            next_token_ids=None, logits_output=None, _embeds=input_embeds
+        )
+    ).__get__(runner)
+
+    result = runner._run_projected_prefill_forward(
+        forward_batch, schedule_batch=None, requests=[sched_req]
+    )
+
+    expected = full_embeds[prefix_len : prefix_len + extend_len]
+    assert result._embeds.shape == expected.shape
+    assert torch.allclose(result._embeds, expected)
+
+
+def test_projected_prefill_prefers_request_data_over_forward_embeds() -> None:
+    """Projected rows live on request data, not ForwardBatch.input_embeds."""
+    embeds = torch.randn(4, 8)
+    stale_forward_embeds = torch.full((2, 8), -1.0)
+    sched_req = _sched_req(
+        input_embeds_are_projected=True,
+        prefill_input_embeds=embeds,
+        req=SimpleNamespace(input_embeds=None, prefix_indices=[], extend_input_len=4),
+    )
+    forward_batch = SimpleNamespace(
+        input_embeds=stale_forward_embeds,
+        input_ids=torch.zeros(4, dtype=torch.long),
+    )
+
+    runner = object.__new__(QwenTalkerModelRunner)
+    runner._forward_with_input_embeds = (
+        lambda self, fb, *, input_embeds, **kw: SimpleNamespace(
+            next_token_ids=None, logits_output=None, _embeds=input_embeds
+        )
+    ).__get__(runner)
+
+    result = runner._run_projected_prefill_forward(
+        forward_batch, schedule_batch=None, requests=[sched_req]
+    )
+
+    assert torch.equal(result._embeds, embeds)
+
+
+def test_projected_prefill_rejects_mixed_projected_and_list_batch() -> None:
+    """The model forward has one projection mode, so mixed batches are invalid."""
+    projected_req = _sched_req(
+        input_embeds_are_projected=True,
+        prefill_input_embeds=torch.randn(2, 8),
+        req=SimpleNamespace(input_embeds=None, prefix_indices=[], extend_input_len=2),
+    )
+    list_req = _sched_req(
+        input_embeds_are_projected=False,
+        prefill_input_embeds=None,
+        req=SimpleNamespace(
+            input_embeds=torch.randn(2, 8).tolist(),
+            prefix_indices=[],
+            extend_input_len=2,
+        ),
+    )
+    forward_batch = SimpleNamespace(
+        input_embeds=torch.randn(2, 8),
+        input_ids=torch.zeros(4, dtype=torch.long),
+    )
+
+    runner = object.__new__(QwenTalkerModelRunner)
+
+    with pytest.raises(RuntimeError, match="cannot be batched together"):
+        runner._run_projected_prefill_forward(
+            forward_batch, schedule_batch=None, requests=[projected_req, list_req]
+        )
+
+
+def test_projected_prefill_full_prefix_hit_returns_none() -> None:
+    """Full prefix hit produces no embeds, method returns None."""
+    embeds = torch.randn(5, 64)
+    sched_req = _sched_req(
+        input_embeds_are_projected=True,
+        prefill_input_embeds=embeds,
+        req=SimpleNamespace(
+            input_embeds=None, prefix_indices=list(range(5)), extend_input_len=0
+        ),
+    )
+    forward_batch = SimpleNamespace(
+        input_embeds=None,
+        input_ids=torch.zeros(0, dtype=torch.long),
+    )
+
+    runner = object.__new__(QwenTalkerModelRunner)
+
+    result = runner._run_projected_prefill_forward(
+        forward_batch, schedule_batch=None, requests=[sched_req]
+    )
+
+    assert result is None
+
+
+def test_post_prefill_preserves_prefill_embeds_for_retract() -> None:
+    """post_prefill keeps prefill_input_embeds so retract can re-prefill."""
+    embeds = torch.randn(4, 8)
+    sched_req = _sched_req(
+        prefill_input_embeds=embeds,
+        pending_feedback_queue=deque(),
+        pending_text_queue=deque(),
+        tts_pad_embed=None,
+        thinker_chunks_done=True,
+    )
+
+    runner = object.__new__(QwenTalkerModelRunner)
+    runner._feedback_enabled = False
+
+    runner.post_prefill(
+        SimpleNamespace(next_token_ids=None),
+        forward_batch=None,
+        schedule_batch=None,
+        requests=[sched_req],
+    )
+    assert sched_req.data.prefill_input_embeds is embeds
+
+
+def test_projected_prefill_survives_decode_retract() -> None:
+    """Re-prefill after a simulated decode retract still feeds projected embeds."""
+    full_embeds = torch.randn(10, 64)
+    sched_req = _sched_req(
+        input_embeds_are_projected=True,
+        prefill_input_embeds=full_embeds,
+        req=SimpleNamespace(
+            input_embeds=None,
+            prefix_indices=[],
+            extend_input_len=10,
+        ),
+        pending_feedback_queue=deque(),
+        pending_text_queue=deque(),
+        tts_pad_embed=None,
+        thinker_chunks_done=True,
+    )
+    forward_batch = SimpleNamespace(
+        input_embeds=None,
+        input_ids=torch.zeros(10, dtype=torch.long),
+    )
+
+    runner = object.__new__(QwenTalkerModelRunner)
+    runner._feedback_enabled = False
+    runner._forward_with_input_embeds = (
+        lambda self, fb, *, input_embeds, **kw: SimpleNamespace(
+            next_token_ids=None, logits_output=None, _embeds=input_embeds
+        )
+    ).__get__(runner)
+
+    first = runner._run_projected_prefill_forward(
+        forward_batch, schedule_batch=None, requests=[sched_req]
+    )
+    assert torch.equal(first._embeds, full_embeds)
+
+    runner.post_prefill(
+        first,
+        forward_batch=None,
+        schedule_batch=None,
+        requests=[sched_req],
+    )
+
+    sched_req.data.req.prefix_indices = []
+    sched_req.data.req.extend_input_len = 10
+
+    second = runner._run_projected_prefill_forward(
+        forward_batch, schedule_batch=None, requests=[sched_req]
+    )
+    assert second is not None, "retract+re-prefill must not silently lose embeds"
+    assert torch.equal(second._embeds, full_embeds)
+
+
+def test_write_feedback_buffers_records_decode_input_history() -> None:
+    """Decode inputs consumed by the feedback buffer are replayable after retract."""
+    feedback_buffer = torch.zeros(1, 2)
+    feedback_mask = torch.zeros(1, dtype=torch.bool)
+    sched_req = _sched_req(
+        pending_feedback_queue=deque([torch.tensor([1.0, 2.0])]),
+        pending_text_queue=deque([torch.tensor([20.0, 30.0])]),
+        decode_input_embeds=[],
+    )
+
+    runner = object.__new__(QwenTalkerModelRunner)
+    runner.model = SimpleNamespace(
+        _feedback_buffer=feedback_buffer,
+        _feedback_mask=feedback_mask,
+    )
+
+    runner._write_feedback_buffers([sched_req])
+
+    assert feedback_mask.tolist() == [True]
+    assert torch.equal(feedback_buffer[0], torch.tensor([21.0, 32.0]))
+    assert len(sched_req.data.decode_input_embeds) == 1
+    assert torch.equal(
+        sched_req.data.decode_input_embeds[0],
+        torch.tensor([21.0, 32.0]),
+    )
+
+
+def test_projected_prefill_retract_replays_generated_decode_inputs() -> None:
+    """Retracted prefill can span prompt suffix and generated codec tokens."""
+    full_embeds = torch.arange(20, dtype=torch.float32).reshape(10, 2)
+    decode_history = [
+        torch.tensor([100.0, 101.0]),
+        torch.tensor([200.0, 201.0]),
+    ]
+    sched_req = _sched_req(
+        input_embeds_are_projected=True,
+        prefill_input_embeds=full_embeds,
+        decode_input_embeds=decode_history,
+        pending_feedback_queue=deque([torch.tensor([3.0, 4.0])]),
+        pending_text_queue=deque([torch.tensor([30.0, 40.0])]),
+        req=SimpleNamespace(
+            input_embeds=None,
+            prefix_indices=list(range(8)),
+            extend_input_len=5,
+            output_ids=[11, 12, 13],
+        ),
+    )
+    forward_batch = SimpleNamespace(
+        input_embeds=None,
+        input_ids=torch.zeros(5, dtype=torch.long),
+    )
+
+    runner = object.__new__(QwenTalkerModelRunner)
+    runner._forward_with_input_embeds = (
+        lambda self, fb, *, input_embeds, **kw: SimpleNamespace(
+            next_token_ids=None, logits_output=None, _embeds=input_embeds
+        )
+    ).__get__(runner)
+
+    result = runner._run_projected_prefill_forward(
+        forward_batch, schedule_batch=None, requests=[sched_req]
+    )
+
+    expected = torch.cat(
+        [
+            full_embeds[8:10],
+            torch.stack(
+                [
+                    torch.tensor([100.0, 101.0]),
+                    torch.tensor([200.0, 201.0]),
+                    torch.tensor([33.0, 44.0]),
+                ]
+            ),
+        ],
+        dim=0,
+    )
+    assert torch.equal(result._embeds, expected)
+    assert len(sched_req.data.decode_input_embeds) == 3
+    assert len(sched_req.data.pending_feedback_queue) == 0
+    assert len(sched_req.data.pending_text_queue) == 0
+
+
+@pytest.mark.benchmark
+@pytest.mark.usefixtures("_patch_sampling")
+@pytest.mark.parametrize("seq_len", [256, 2048, 4096])
+def test_build_talker_request_wall_clock(seq_len: int) -> None:
+    """Wall-clock for request build at representative seq_lens."""
+    embeds = torch.randn(seq_len, 2048)
+    ids = torch.arange(seq_len, dtype=torch.long)
+    tokenizer = FakeQwenTokenizer()
+
+    def _build():
+        return build_sglang_talker_request(
+            thinker_hidden_states=torch.empty(0),
+            tokenizer=tokenizer,
+            codec_vocab_size=4096,
+            talker_input_embeds=embeds,
+            talker_input_ids=ids,
+            input_embeds_are_projected=True,
+        )
+
+    for _ in range(3):
+        _build()
+
+    t0 = time.perf_counter()
+    for _ in range(20):
+        _build()
+    mean_ms = (time.perf_counter() - t0) / 20 * 1000
+
+    print(f"\n[seq_len={seq_len}] mean={mean_ms:.2f}ms  floats={seq_len * 2048:,}")

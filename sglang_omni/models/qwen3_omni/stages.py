@@ -27,6 +27,7 @@ from sglang_omni.models.qwen3_omni.request_builders import (
     apply_encoder_result,
     build_encoder_request,
 )
+from sglang_omni.profiler.event_recorder import emit as _emit_event
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.sglang_backend import (
     apply_encoder_mem_reserve,
@@ -794,19 +795,49 @@ def create_image_encoder_executor(
     )
 
     def _encode(payload: StagePayload) -> StagePayload:
-        return _run_single_encoder_payload(
-            payload,
-            stage_name=IMAGE_STAGE,
-            model=model,
-            cache=cache,
+        _emit_event(
+            request_id=payload.request_id,
+            stage=None,
+            event_name="encoder_start",
+            metadata={"modality": "image", "batch_size": 1},
         )
+        try:
+            return _run_single_encoder_payload(
+                payload,
+                stage_name=IMAGE_STAGE,
+                model=model,
+                cache=cache,
+            )
+        finally:
+            _emit_event(
+                request_id=payload.request_id,
+                stage=None,
+                event_name="encoder_end",
+                metadata={"modality": "image", "batch_size": 1},
+            )
 
     def _encode_batch(payloads: list[StagePayload]) -> list[StagePayload]:
-        return _batch_image_encoder_payloads(
-            payloads,
-            model=model,
-            cache=cache,
-        )
+        for p in payloads:
+            _emit_event(
+                request_id=p.request_id,
+                stage=None,
+                event_name="encoder_start",
+                metadata={"modality": "image", "batch_size": len(payloads)},
+            )
+        try:
+            return _batch_image_encoder_payloads(
+                payloads,
+                model=model,
+                cache=cache,
+            )
+        finally:
+            for p in payloads:
+                _emit_event(
+                    request_id=p.request_id,
+                    stage=None,
+                    event_name="encoder_end",
+                    metadata={"modality": "image", "batch_size": len(payloads)},
+                )
 
     # Preserve the calibrated image-encoder batching shape and add a small
     # batch_wait so video benchmarks at concurrency=16 batch together.
@@ -836,19 +867,49 @@ def create_audio_encoder_executor(
     )
 
     def _encode(payload: StagePayload) -> StagePayload:
-        return _run_single_encoder_payload(
-            payload,
-            stage_name=AUDIO_STAGE,
-            model=model,
-            cache=cache,
+        _emit_event(
+            request_id=payload.request_id,
+            stage=None,
+            event_name="encoder_start",
+            metadata={"modality": "audio", "batch_size": 1},
         )
+        try:
+            return _run_single_encoder_payload(
+                payload,
+                stage_name=AUDIO_STAGE,
+                model=model,
+                cache=cache,
+            )
+        finally:
+            _emit_event(
+                request_id=payload.request_id,
+                stage=None,
+                event_name="encoder_end",
+                metadata={"modality": "audio", "batch_size": 1},
+            )
 
     def _encode_batch(payloads: list[StagePayload]) -> list[StagePayload]:
-        return _batch_audio_encoder_payloads(
-            payloads,
-            model=model,
-            cache=cache,
-        )
+        for p in payloads:
+            _emit_event(
+                request_id=p.request_id,
+                stage=None,
+                event_name="encoder_start",
+                metadata={"modality": "audio", "batch_size": len(payloads)},
+            )
+        try:
+            return _batch_audio_encoder_payloads(
+                payloads,
+                model=model,
+                cache=cache,
+            )
+        finally:
+            for p in payloads:
+                _emit_event(
+                    request_id=p.request_id,
+                    stage=None,
+                    event_name="encoder_end",
+                    metadata={"modality": "audio", "batch_size": len(payloads)},
+                )
 
     return SimpleScheduler(
         _encode,

@@ -179,9 +179,10 @@ class StreamMessage:
     stage_id: int | None = None
     stage_name: str | None = None
     modality: str | None = None
+    chunk_id: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        d = {
             "type": "stream",
             "request_id": self.request_id,
             "from_stage": self.from_stage,
@@ -190,6 +191,9 @@ class StreamMessage:
             "stage_name": self.stage_name,
             "modality": self.modality,
         }
+        if self.chunk_id is not None:
+            d["chunk_id"] = self.chunk_id
+        return d
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "StreamMessage":
@@ -200,6 +204,7 @@ class StreamMessage:
             stage_id=d.get("stage_id"),
             stage_name=d.get("stage_name"),
             modality=d.get("modality"),
+            chunk_id=d.get("chunk_id"),
         )
 
 
@@ -242,12 +247,16 @@ class ProfilerStartMessage:
 
     run_id: str
     trace_path_template: str  # e.g. "/tmp/profiles/{run_id}/{stage}/trace"
+    event_dir: str | None = None  # Per-stage JSONL event sink dir for request profiling
+    enable_torch: bool = True  # When False, only request-level events are captured
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "type": "profiler_start",
             "run_id": self.run_id,
             "trace_path_template": self.trace_path_template,
+            "event_dir": self.event_dir,
+            "enable_torch": self.enable_torch,
         }
 
     @classmethod
@@ -255,21 +264,23 @@ class ProfilerStartMessage:
         return cls(
             run_id=d["run_id"],
             trace_path_template=d["trace_path_template"],
+            event_dir=d.get("event_dir"),
+            enable_torch=bool(d.get("enable_torch", True)),
         )
 
 
 @dataclass
 class ProfilerStopMessage:
-    """Profiler stop for an entry."""
+    """Profiler stop. ``run_id=None`` is a wildcard (stop active session)."""
 
-    run_id: str
+    run_id: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {"type": "profiler_stop", "run_id": self.run_id}
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "ProfilerStopMessage":
-        return cls(run_id=d["run_id"])
+        return cls(run_id=d.get("run_id"))
 
 
 def parse_message(

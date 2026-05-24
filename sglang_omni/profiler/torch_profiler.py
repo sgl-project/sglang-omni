@@ -9,7 +9,6 @@ import subprocess
 import threading
 from contextlib import nullcontext
 
-import torch
 from torch.profiler import ProfilerActivity, profile
 
 from .base_profiler import ProfilerBase
@@ -106,19 +105,18 @@ class TorchProfiler(ProfilerBase):
                 except Exception as e:
                     logger.warning(f"[Rank {rank}] Failed to export trace: {e}")
 
-            # 4. Initialize profiler with long active period
+            # No ``schedule``: record continuously between start/stop.
+            # Expensive flags are env-var opt-in (default off keeps the
+            # trace tens of MB; all on can hit multi-GB).
             cls._profiler = profile(
                 activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
-                schedule=torch.profiler.schedule(
-                    wait=0,
-                    warmup=0,
-                    active=100000,  # long capture window
-                ),
                 on_trace_ready=trace_handler,
-                record_shapes=True,
-                profile_memory=True,
-                with_stack=True,
-                with_flops=True,
+                record_shapes=os.environ.get("SGLANG_TORCH_PROFILER_RECORD_SHAPES")
+                == "1",
+                profile_memory=os.environ.get("SGLANG_TORCH_PROFILER_PROFILE_MEMORY")
+                == "1",
+                with_stack=os.environ.get("SGLANG_TORCH_PROFILER_WITH_STACK") == "1",
+                with_flops=os.environ.get("SGLANG_TORCH_PROFILER_WITH_FLOPS") == "1",
             )
 
             # 5. Start profiling
@@ -152,12 +150,36 @@ class TorchProfiler(ProfilerBase):
                 return None
 
             base_path = f"{cls._trace_template}_rank{rank}"
-            gz_path = f"{base_path}.trace.json.gz"
+            json_path = f"{base_path}.trace.json"
+            gz_path = f"{json_path}.gz"
 
+            profiler = cls._profiler
             try:
-                cls._profiler.stop()
+                profiler.stop()
             except Exception as e:
                 logger.warning("[Rank %s] Profiler stop failed: %s", rank, e)
+
+            # No schedule → on_trace_ready isn't fired on stop, so
+            # export here.
+            try:
+                os.makedirs(os.path.dirname(json_path), exist_ok=True)
+                profiler.export_chrome_trace(json_path)
+                logger.info("[Rank %s] Trace exported to %s", rank, json_path)
+                try:
+                    subprocess.Popen(["gzip", "-f", json_path])
+                    logger.info(
+                        "[Rank %s] Triggered background compression for %s",
+                        rank,
+                        json_path,
+                    )
+                except Exception as compress_err:
+                    logger.warning(
+                        "[Rank %s] Background gzip failed: %s",
+                        rank,
+                        compress_err,
+                    )
+            except Exception as e:
+                logger.warning("[Rank %s] Failed to export trace: %s", rank, e)
 
             cls._profiler = None
             cls._active_run_id = None

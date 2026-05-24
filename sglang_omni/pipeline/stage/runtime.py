@@ -20,6 +20,9 @@ from sglang_omni.pipeline import relay_io
 from sglang_omni.pipeline.stage.input import DirectInput, InputHandler
 from sglang_omni.pipeline.stage.stream_queue import StreamItem, StreamQueue
 from sglang_omni.pipeline.tp_control import TPLeaderFanout
+from sglang_omni.profiler.event_recorder import emit as _emit_event
+from sglang_omni.profiler.event_recorder import get_recorder as _get_recorder
+from sglang_omni.profiler.event_recorder import set_active_stage as _set_active_stage
 from sglang_omni.profiler.torch_profiler import TorchProfiler
 from sglang_omni.proto import (
     CompleteMessage,
@@ -126,6 +129,8 @@ class Stage:
         self._active_requests: set[str] = set()
         self._stream_queue: StreamQueue | None = None
         self._stream_chunk_counters: dict[tuple[str, str], int] = {}
+        # Per-request: did we already emit the first stream-chunk event?
+        self._first_stream_chunk_seen: set[str] = set()
         self._scheduler_thread: threading.Thread | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._scheduler_crash_error: BaseException | None = None
@@ -142,6 +147,9 @@ class Stage:
         if self.scheduler is not None:
 
             def _run_scheduler():
+                # Active-stage binding so ``emit(stage=None)`` from
+                # scheduler-thread descendants resolves to this stage.
+                _set_active_stage(self.name)
                 try:
                     if self.gpu_id is not None:
                         import torch
@@ -251,6 +259,12 @@ class Stage:
         self._active_requests.add(request_id)
         if self._stream_queue is not None and not self._stream_queue.has(request_id):
             self._stream_queue.open(request_id)
+        _emit_event(
+            request_id=request_id,
+            stage=self.name,
+            event_name="stage_input_received",
+            metadata={"from_stage": "coordinator", "kind": "submit"},
+        )
 
         payload = msg.data  # StagePayload from coordinator
         await self._execute(payload)
@@ -280,9 +294,21 @@ class Stage:
         if request_id in self._aborted:
             return
 
+        _emit_event(
+            request_id=request_id,
+            stage=self.name,
+            event_name="stage_input_received",
+            metadata={"from_stage": msg.from_stage, "kind": "payload"},
+        )
         # Input aggregation
         merged = self.input_handler.receive(request_id, msg.from_stage, payload)
         if merged is not None:
+            _emit_event(
+                request_id=request_id,
+                stage=self.name,
+                event_name="stage_aggregate_ready",
+                metadata={"from_stage": msg.from_stage},
+            )
             await self._execute(merged)
 
     async def _on_stream_chunk(self, msg: DataReadyMessage) -> None:
@@ -307,6 +333,7 @@ class Stage:
                 return
             if request_id in self._aborted:
                 return
+            self._emit_stream_chunk_received(msg)
             await self._route_stream_item_or_fail(request_id, item)
             return
 
@@ -334,7 +361,16 @@ class Stage:
             from_stage=msg.from_stage,
             metadata=metadata,
         )
+        self._emit_stream_chunk_received(msg)
         await self._route_stream_item_or_fail(request_id, item)
+
+    def _emit_stream_chunk_received(self, msg: DataReadyMessage) -> None:
+        _emit_event(
+            request_id=msg.request_id,
+            stage=self.name,
+            event_name="stage_stream_chunk_received",
+            metadata={"from_stage": msg.from_stage, "chunk_id": msg.chunk_id},
+        )
 
     async def _route_stream_item_or_fail(
         self, request_id: str, item: StreamItem
@@ -508,6 +544,11 @@ class Stage:
 
     async def _execute(self, payload: Any) -> None:
         request_id = payload.request_id
+        _emit_event(
+            request_id=request_id,
+            stage=self.name,
+            event_name="stage_dispatch",
+        )
         self.scheduler.inbox.put(
             IncomingMessage(request_id=request_id, type="new_request", data=payload)
         )
@@ -614,6 +655,12 @@ class Stage:
         next_stages = self.get_next(request_id, result)
         if next_stages is None:
             # Terminal: notify coordinator
+            _emit_event(
+                request_id=request_id,
+                stage=self.name,
+                event_name="stage_complete",
+                metadata={"terminal": True},
+            )
             await self.control_plane.send_complete(
                 CompleteMessage(
                     request_id=request_id,
@@ -625,6 +672,12 @@ class Stage:
         else:
             if isinstance(next_stages, str):
                 next_stages = [next_stages]
+            _emit_event(
+                request_id=request_id,
+                stage=self.name,
+                event_name="stage_complete",
+                metadata={"terminal": False, "next": list(next_stages)},
+            )
             for target in next_stages:
                 await self._send_to_stage(request_id, target, result)
 
@@ -650,6 +703,12 @@ class Stage:
             to_stage=target,
             shm_metadata=metadata,
         )
+        _emit_event(
+            request_id=request_id,
+            stage=self.name,
+            event_name="stage_hop_sent",
+            metadata={"to_stage": target},
+        )
         await self.control_plane.send_to_stage(target, endpoint, msg)
         await op.wait_for_completion()
 
@@ -668,6 +727,27 @@ class Stage:
         key = (request_id, target)
         chunk_id = self._stream_chunk_counters.get(key, 0)
         self._stream_chunk_counters[key] = chunk_id + 1
+        chunk_modality = (
+            metadata.get("modality") if isinstance(metadata, dict) else None
+        )
+        if request_id not in self._first_stream_chunk_seen:
+            self._first_stream_chunk_seen.add(request_id)
+            _emit_event(
+                request_id=request_id,
+                stage=self.name,
+                event_name="stage_first_stream_chunk_sent",
+                metadata={"to_stage": target, "modality": chunk_modality},
+            )
+        _emit_event(
+            request_id=request_id,
+            stage=self.name,
+            event_name="stage_stream_chunk_sent",
+            metadata={
+                "to_stage": target,
+                "chunk_id": chunk_id,
+                "modality": chunk_modality,
+            },
+        )
         await relay_io.send_stream_chunk(
             self.relay,
             self.control_plane,
@@ -701,12 +781,38 @@ class Stage:
         modality = metadata.get("modality") if isinstance(metadata, dict) else None
         if modality is None and isinstance(data, dict):
             modality = data.get("modality")
+        key = (request_id, "coordinator")
+        chunk_id = self._stream_chunk_counters.get(key, 0)
+        self._stream_chunk_counters[key] = chunk_id + 1
         msg = StreamMessage(
             request_id=request_id,
             from_stage=self.name,
             chunk=data,
             stage_name=self.name,
             modality=modality,
+            chunk_id=chunk_id,
+        )
+        if request_id not in self._first_stream_chunk_seen:
+            self._first_stream_chunk_seen.add(request_id)
+            _emit_event(
+                request_id=request_id,
+                stage=self.name,
+                event_name="stage_first_stream_chunk_sent",
+                metadata={
+                    "to_stage": "coordinator",
+                    "chunk_id": chunk_id,
+                    "modality": modality,
+                },
+            )
+        _emit_event(
+            request_id=request_id,
+            stage=self.name,
+            event_name="stage_stream_chunk_sent",
+            metadata={
+                "to_stage": "coordinator",
+                "chunk_id": chunk_id,
+                "modality": modality,
+            },
         )
         await self.control_plane.send_stream(msg)
 
@@ -735,6 +841,7 @@ class Stage:
         ]
         for key in stale_keys:
             self._stream_chunk_counters.pop(key, None)
+        self._first_stream_chunk_seen.discard(request_id)
 
     async def _handle_scheduler_crash(self, exc: BaseException) -> None:
         if self._scheduler_crash_error is not None:
@@ -785,22 +892,37 @@ class Stage:
         self.scheduler.abort(request_id)
 
     def _on_profiler_start(self, msg: ProfilerStartMessage) -> None:
-        if TorchProfiler.is_active():
-            return
         run_id = msg.run_id
-        base_tpl = msg.trace_path_template.format(run_id=run_id, stage=self.name)
-        template = f"{base_tpl}_pid{os.getpid()}"
-        prof_dir = os.environ.get("SGLANG_TORCH_PROFILER_DIR")
-        if prof_dir and not os.path.isabs(template):
-            template = os.path.join(prof_dir, template)
-        TorchProfiler.start(template, run_id=run_id)
+        if msg.enable_torch and not TorchProfiler.is_active():
+            base_tpl = msg.trace_path_template.format(run_id=run_id, stage=self.name)
+            template = f"{base_tpl}_pid{os.getpid()}"
+            prof_dir = os.environ.get("SGLANG_TORCH_PROFILER_DIR")
+            if prof_dir and not os.path.isabs(template):
+                template = os.path.join(prof_dir, template)
+            TorchProfiler.start(template, run_id=run_id)
+        if msg.event_dir is not None:
+            try:
+                _get_recorder().start(
+                    run_id=run_id, event_dir=msg.event_dir, stage=self.name
+                )
+            except Exception:
+                logger.warning(
+                    "Stage %s failed to start request event recorder",
+                    self.name,
+                    exc_info=True,
+                )
 
     def _on_profiler_stop(self, msg: ProfilerStopMessage) -> None:
-        if (
-            TorchProfiler.is_active()
-            and TorchProfiler.get_active_run_id() == msg.run_id
+        # run_id=None is a wildcard (stop whatever's active).
+        if TorchProfiler.is_active() and (
+            msg.run_id is None or TorchProfiler.get_active_run_id() == msg.run_id
         ):
             TorchProfiler.stop(run_id=msg.run_id)
+        recorder = _get_recorder()
+        if recorder.is_active() and (
+            msg.run_id is None or recorder.active_run_id() == msg.run_id
+        ):
+            recorder.stop(run_id=msg.run_id)
 
     def _on_background_task_done(self, task: asyncio.Task, label: str) -> None:
         if task.cancelled():

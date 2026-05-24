@@ -44,25 +44,37 @@ class ProfilerControlClient:
         trace_path_template: str,
         config: dict[str, Any] | None = None,
         stages: list[str] | None = None,
+        event_dir: str | None = None,
+        enable_torch: bool = True,
     ) -> None:
         await self.start()
         assert self._socks is not None
         targets = stages or list(self._socks.keys())
         msg = ProfilerStartMessage(
-            run_id=run_id, trace_path_template=trace_path_template
+            run_id=run_id,
+            trace_path_template=trace_path_template,
+            event_dir=event_dir,
+            enable_torch=enable_torch,
         )
         for s in targets:
             sock = self._socks.get(s)
             if sock is None:
                 continue
             await sock.send(msg)
-        logger.info("Broadcast profiler_start run_id=%s to stages=%s", run_id, targets)
+        logger.info(
+            "Broadcast profiler_start run_id=%s event_dir=%s torch=%s to stages=%s",
+            run_id,
+            event_dir,
+            enable_torch,
+            targets,
+        )
 
     async def broadcast_stop(
         self,
-        run_id: str,
+        run_id: str | None = None,
         stages: list[str] | None = None,
     ) -> None:
+        """Broadcast stop. ``run_id=None`` is a wildcard."""
         await self.start()
         assert self._socks is not None
         targets = stages or list(self._socks.keys())

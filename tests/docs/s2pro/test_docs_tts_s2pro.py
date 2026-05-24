@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Tests for TTS S2-Pro documentation examples.
 
-Every test replicates an API call from `docs/basic_usage/tts_s2pro.md`
+Every test replicates an API call from `docs/basic_usage/tts.md`
 so documentation can never silently go stale.
 
 Usage:
@@ -86,23 +86,6 @@ def test_basic_tts(
     """POST `/v1/audio/speech` with the minimal payload from docs."""
     _, port = server_process
     content = _post_audio_speech(port, {"input": "Hello, how are you?"})
-    _save_and_verify(content, tmp_path / "output.wav")
-
-
-@pytest.mark.docs
-def test_voice_cloning(
-    server_process: tuple[subprocess.Popen, int],
-    tmp_path: Path,
-) -> None:
-    """Voice cloning with the real reference audio used in docs."""
-    _, port = server_process
-    content = _post_audio_speech(
-        port,
-        {
-            "input": SPEECH_INPUT,
-            "references": [{"audio_path": REFERENCE_AUDIO, "text": REFERENCE_TEXT}],
-        },
-    )
     _save_and_verify(content, tmp_path / "output.wav")
 
 

@@ -110,8 +110,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--tts-max-concurrency", type=int, default=1)
     parser.add_argument(
         "--tts-meta",
-        default="seedtts_testset/en/meta.lst",
-        help="Path to a seed-tts-eval meta.lst file.",
+        default="zhaochenyang20/seed-tts-eval-arrow",
+        help="HuggingFace Arrow/Parquet dataset repo id or local meta.lst path.",
     )
     parser.add_argument("--tts-lang", choices=["en", "zh"], default="en")
     parser.add_argument(

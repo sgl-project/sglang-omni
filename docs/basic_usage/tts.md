@@ -1,6 +1,6 @@
 # TTS Model Usage
 
-This guide uses [Fish Speech S2-Pro](https://huggingface.co/fishaudio/s2-pro) as an example TTS (text-to-speech) model with SGLang-Omni and the OpenAI-compatible API.
+This guide uses [Fish Speech S2-Pro](https://huggingface.co/fishaudio/s2-pro) as an example TTS (text-to-speech) model with SGLang-Omni and the OpenAI-compatible API. The same `/v1/audio/speech` endpoint also supports Voxtral TTS and Qwen3-TTS Base.
 
 ## Prerequisites
 
@@ -17,12 +17,46 @@ uv pip install -v .
 hf download fishaudio/s2-pro
 ```
 
+Qwen3-TTS Base uses the upstream `qwen-tts` package, which currently requires
+Transformers 4.57.3. Install it only in environments that serve Qwen3-TTS:
+
+```bash
+uv pip install --upgrade transformers==4.57.3 accelerate==1.12.0 sox einops
+uv pip install --no-deps qwen-tts==0.1.1
+```
+
+## Supported TTS Models
+
+| Model family | Example config | Request notes |
+|---|---|---|
+| Fish Speech S2-Pro | `examples/configs/s2pro_tts.yaml` | Supports plain TTS and voice cloning with `references` |
+| Voxtral TTS | `examples/configs/voxtral_tts.yaml` | Uses `input`, `voice`, `response_format`, and `max_new_tokens`; use `--no-ref-audio` for SeedTTS benchmarking |
+| Qwen3-TTS Base | `examples/configs/qwen3_tts_0_6b.yaml`, `examples/configs/qwen3_tts_1_7b.yaml` | Requires reference audio through `ref_audio` or `references[0].audio_path`; `language` defaults to `auto` |
+
 ## Launch the Server
 
 ```bash
 sgl-omni serve \
   --model-path fishaudio/s2-pro \
   --config examples/configs/s2pro_tts.yaml \
+  --port 8000
+```
+
+For Voxtral:
+
+```bash
+sgl-omni serve \
+  --model-path mistralai/Voxtral-4B-TTS-2603 \
+  --config examples/configs/voxtral_tts.yaml \
+  --port 8000
+```
+
+For Qwen3-TTS Base:
+
+```bash
+sgl-omni serve \
+  --model-path Qwen/Qwen3-TTS-12Hz-0.6B-Base \
+  --config examples/configs/qwen3_tts_0_6b.yaml \
   --port 8000
 ```
 
@@ -176,12 +210,81 @@ The table below lists all parameters accepted by the `/v1/audio/speech` endpoint
 | `speed` | float | `1.0` | Playback speed multiplier |
 | `stream` | bool | `false` | Enable streaming via SSE |
 | `references` | list | `null` | Reference audio for voice cloning; each item has `audio_path` (local path / remote url) and `text` |
+| `ref_audio` | string | `null` | Reference audio path / URL / base64 string; equivalent to `references[0].audio_path` |
+| `ref_text` | string | `null` | Transcript for `ref_audio`; equivalent to `references[0].text` |
+| `language` | string | `null` | Model-specific language hint; Qwen3-TTS Base defaults to `auto` |
 | `max_new_tokens` | int | `null` | Maximum number of generated tokens |
 | `temperature` | float | `null` | Sampling temperature |
 | `top_p` | float | `null` | Top-p sampling |
 | `top_k` | int | `null` | Top-k sampling |
 | `repetition_penalty` | float | `null` | Repetition penalty |
 | `seed` | int | `null` | Random seed for reproducibility |
+
+## H200 SeedTTS Benchmark Commands
+
+Download the full SeedTTS set first:
+
+```bash
+python -m benchmarks.dataset.prepare --dataset seedtts
+```
+
+Run EN and ZH after launching the target server on port 8000. Do not add benchmark results to docs until the full H200 runs complete.
+
+```bash
+python -m benchmarks.eval.benchmark_tts_seedtts \
+  --meta zhaochenyang20/seed-tts-eval-arrow \
+  --model Qwen/Qwen3-TTS-12Hz-0.6B-Base \
+  --port 8000 \
+  --output-dir results/qwen3_tts_0_6b_en \
+  --lang en \
+  --max-concurrency 16
+
+python -m benchmarks.eval.benchmark_tts_seedtts \
+  --meta zhaochenyang20/seed-tts-eval-arrow \
+  --model Qwen/Qwen3-TTS-12Hz-0.6B-Base \
+  --port 8000 \
+  --output-dir results/qwen3_tts_0_6b_zh \
+  --lang zh \
+  --max-concurrency 16
+
+python -m benchmarks.eval.benchmark_tts_seedtts \
+  --meta zhaochenyang20/seed-tts-eval-arrow \
+  --model Qwen/Qwen3-TTS-12Hz-1.7B-Base \
+  --port 8000 \
+  --output-dir results/qwen3_tts_1_7b_en \
+  --lang en \
+  --max-concurrency 16
+
+python -m benchmarks.eval.benchmark_tts_seedtts \
+  --meta zhaochenyang20/seed-tts-eval-arrow \
+  --model Qwen/Qwen3-TTS-12Hz-1.7B-Base \
+  --port 8000 \
+  --output-dir results/qwen3_tts_1_7b_zh \
+  --lang zh \
+  --max-concurrency 16
+
+python -m benchmarks.eval.benchmark_tts_seedtts \
+  --meta zhaochenyang20/seed-tts-eval-arrow \
+  --model mistralai/Voxtral-4B-TTS-2603 \
+  --port 8000 \
+  --output-dir results/voxtral_en \
+  --lang en \
+  --max-new-tokens 4096 \
+  --max-concurrency 16 \
+  --no-ref-audio \
+  --voice cheerful_female
+
+python -m benchmarks.eval.benchmark_tts_seedtts \
+  --meta zhaochenyang20/seed-tts-eval-arrow \
+  --model mistralai/Voxtral-4B-TTS-2603 \
+  --port 8000 \
+  --output-dir results/voxtral_zh \
+  --lang zh \
+  --max-new-tokens 4096 \
+  --max-concurrency 16 \
+  --no-ref-audio \
+  --voice cheerful_female
+```
 
 ## Interactive Playground
 

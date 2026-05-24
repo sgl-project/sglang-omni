@@ -52,6 +52,7 @@ from tests.test_model.omni_router_utils import (
     router_get_json,
 )
 from tests.utils import (
+    MetricCheckCollector,
     apply_slack,
     apply_wer_slack,
     assert_per_request_fields,
@@ -71,7 +72,11 @@ S2PRO_CONFIG_PATH = "examples/configs/s2pro_tts.yaml"
 STARTUP_TIMEOUT = 180
 BENCHMARK_TIMEOUT = 600
 WER_TIMEOUT = 600
-DATASET_CACHE_ENV = "SGLANG_SEEDTTS50_DIR"
+SIMILARITY_TIMEOUT = 600
+# Optional user override: a path to a custom fine-tuned WavLM checkpoint.
+# When unset, the bootstrapper in benchmarks.metrics.speaker_similarity_assets
+# auto-downloads the official weights into the shared cache directory.
+SIMILARITY_CHECKPOINT_ENV = "SEEDTTS_SIM_CHECKPOINT"
 S2PRO_STAGE_OUTPUT_ROOT_ENV = "S2PRO_STAGE_OUTPUT_ROOT"
 S2PRO_STAGE1_SPEED_RESULTS_DIR_ENV = "S2PRO_STAGE1_SPEED_RESULTS_DIR"
 S2PRO_STAGE2_SPEED_RESULTS_DIR_ENV = "S2PRO_STAGE2_SPEED_RESULTS_DIR"
@@ -93,22 +98,29 @@ STREAMING_BENCHMARK_MAX_SAMPLES = 32
 THRESHOLD_SLACK_HIGHER = 0.75
 THRESHOLD_SLACK_LOWER = 1.25
 
-VC_WER_MAX_CORPUS = 0.010638297872340425
+VC_WER_MAX_CORPUS = 0.012411347517730497
 VC_WER_CORPUS_THRESHOLD = apply_wer_slack(VC_WER_MAX_CORPUS)
 VC_WER_MAX_PER_SAMPLE = 0.17
 VC_STREAM_WER_MAX_CORPUS = 0.010610079575596816
 VC_STREAM_WER_CORPUS_THRESHOLD = apply_wer_slack(VC_STREAM_WER_MAX_CORPUS)
 VC_STREAM_WER_MAX_PER_SAMPLE = 0.14285714285714285
+# Calibrated per PR #469 review (item 5): worst-of-5 = 63.24, mean = 63.74,
+# stdev = 0.56 over 5 independent SeedTTS-50 EN runs on H200 (Spec GPU 4-7),
+# same scorer (popsoda2002/seedtts-wavlm-sim @ wavlm_large_finetune.pth).
+# All five comfortably above 60.0 (margin +5.4%) — current floor has
+# worst-of-5 support. See the "Speaker similarity calibration" section of
+# the PR description for the full per-run table.
+VC_SIMILARITY_MEAN_MIN = 60.0
 
 # Note (Chenyang): Only thresholds for the CI concurrency are dedicatedly tuned,
 # others may not pass the CI.
 
 _VC_NON_STREAM_P95 = {
     16: {
-        "throughput_qps": 1.405,
+        "throughput_qps": 1.433,
         "tok_per_s_agg": 67.5,
-        "latency_mean_s": 9.83,
-        "rtf_mean": 3.0378,
+        "latency_mean_s": 9.769,
+        "rtf_mean": 3.0009,
     }
 }
 
@@ -116,8 +128,8 @@ _VC_STREAM_P95 = {
     16: {
         "throughput_qps": 1.285,
         "tok_per_s_agg": 60.8,
-        "latency_mean_s": 10.403,
-        "rtf_mean": 2.8678,
+        "latency_mean_s": 10.289,
+        "rtf_mean": 2.8576,
     }
 }
 
@@ -166,7 +178,7 @@ def _run_benchmark(
 
 
 def _run_wer_transcribe(
-    meta_path: str,
+    meta: str,
     output_dir: str,
     *,
     stream: bool = False,
@@ -180,7 +192,7 @@ def _run_wer_transcribe(
         WER_MODULE,
         "--transcribe-only",
         "--meta",
-        meta_path,
+        meta,
         "--output-dir",
         output_dir,
         "--model",
@@ -233,6 +245,88 @@ def _run_wer_transcribe(
     return wer_results
 
 
+def _run_similarity(
+    meta: str,
+    output_dir: str,
+    checkpoint_path: str | None,
+    *,
+    device: str = "cuda:0",
+) -> dict:
+    """Compute SeedTTS speaker similarity in CI."""
+    cmd = [
+        sys.executable,
+        "-m",
+        WER_MODULE,
+        "--similarity-only",
+        "--meta",
+        meta,
+        "--output-dir",
+        output_dir,
+        "--model",
+        S2PRO_MODEL_PATH,
+        "--device",
+        device,
+    ]
+    if checkpoint_path is not None:
+        cmd += ["--similarity-checkpoint", checkpoint_path]
+
+    env = no_proxy_env()
+    existing_pp = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = (
+        f"{PROJECT_ROOT}{os.pathsep}{existing_pp}" if existing_pp else str(PROJECT_ROOT)
+    )
+
+    result = subprocess.run(
+        cmd,
+        text=True,
+        timeout=SIMILARITY_TIMEOUT,
+        env=env,
+        cwd=str(PROJECT_ROOT),
+    )
+    assert result.returncode == 0, f"Similarity eval failed (rc={result.returncode})"
+
+    results_path = Path(output_dir) / "similarity_results.json"
+    assert results_path.exists(), f"Similarity results file not found: {results_path}"
+
+    with open(results_path) as f:
+        similarity_results = json.load(f)
+    assert "summary" in similarity_results, (
+        "Missing 'summary' key in similarity results. "
+        f"Keys: {list(similarity_results.keys())}"
+    )
+    assert "per_sample" in similarity_results, (
+        "Missing 'per_sample' key in similarity results. "
+        f"Keys: {list(similarity_results.keys())}"
+    )
+    return similarity_results
+
+
+def _assert_similarity_results(
+    results: dict,
+    min_mean: float,
+    *,
+    collector: MetricCheckCollector | None = None,
+) -> None:
+    checks = collector or MetricCheckCollector("speaker similarity")
+    summary = results["summary"]
+    per_sample = results["per_sample"]
+    checks.check(bool(per_sample), "Expected per-sample speaker similarity results")
+    checks.check(
+        summary.get("skipped", 0) == 0,
+        f"speaker similarity: {summary.get('skipped')} skipped samples != 0",
+    )
+    mean = summary.get("speaker_similarity_mean")
+    if mean is None:
+        checks.fail("Missing speaker_similarity_mean in summary")
+    else:
+        checks.check(
+            mean >= min_mean,
+            f"speaker_similarity_mean {mean:.4f} < threshold {min_mean:.4f}",
+        )
+    if collector is None:
+        checks.assert_all()
+
+
 def _load_speed_results(results_path: Path) -> dict:
     assert results_path.exists(), f"Speed results file not found: {results_path}"
     with open(results_path) as f:
@@ -247,18 +341,28 @@ def _store_consistency_inputs(
     concurrency: int,
     output_dir: str,
     results: dict,
+    collector: MetricCheckCollector | None = None,
 ) -> None:
+    checks = collector or MetricCheckCollector(
+        f"S2-Pro {mode} speed results at concurrency {concurrency}"
+    )
     summary, per_request = results["summary"], results["per_request"]
-    assert_summary_metrics(summary)
-    assert_per_request_fields(per_request)
+    assert_summary_metrics(summary, collector=checks)
+    assert_per_request_fields(per_request, collector=checks)
     if mode == "non_stream":
-        assert_speed_thresholds(summary, VC_NON_STREAM_THRESHOLDS, concurrency)
+        assert_speed_thresholds(
+            summary, VC_NON_STREAM_THRESHOLDS, concurrency, collector=checks
+        )
         store_key = f"vc_nonstream_c{concurrency}"
     else:
-        assert_speed_thresholds(summary, VC_STREAM_THRESHOLDS, concurrency)
+        assert_speed_thresholds(
+            summary, VC_STREAM_THRESHOLDS, concurrency, collector=checks
+        )
         store_key = f"vc_stream_c{concurrency}"
     PER_REQUEST_STORE[store_key] = per_request
     SPEED_OUTPUT_DIRS[mode][concurrency] = output_dir
+    if collector is None:
+        checks.assert_all()
 
 
 def _assert_stage_used_all_router_workers(
@@ -267,13 +371,22 @@ def _assert_stage_used_all_router_workers(
     before_workers: dict,
     results: dict,
     label: str,
+    collector: MetricCheckCollector | None = None,
 ) -> None:
-    assert_workers_served_requests_since(
-        port=router_server.port,
-        before_snapshot=before_workers,
-        label=label,
-        min_total_requests=results["summary"]["completed_requests"],
-    )
+    kwargs = {
+        "port": router_server.port,
+        "before_snapshot": before_workers,
+        "label": label,
+        "min_total_requests": results["summary"]["completed_requests"],
+    }
+    if collector is None:
+        assert_workers_served_requests_since(**kwargs)
+    else:
+        collector.check_assertion(
+            f"{label} router worker traffic",
+            assert_workers_served_requests_since,
+            **kwargs,
+        )
 
 
 def _find_downloaded_speed_results(
@@ -328,7 +441,7 @@ def _generate_consistency_inputs(
     # started when stage 3 actually needs to generate its own inputs (local
     # dev path).  In CI the artifact path returns early above.
     router_server = request.getfixturevalue("router_server")
-    dataset_dir = request.getfixturevalue("dataset_dir")
+    dataset_repo = request.getfixturevalue("dataset_repo")
     output_root = tmp_path_factory.mktemp("s2pro_consistency")
     for concurrency in selected_s2pro_tts_concurrencies:
         non_stream_key = f"vc_nonstream_c{concurrency}"
@@ -338,7 +451,7 @@ def _generate_consistency_inputs(
             output_dir = str(output_root / f"vc_nonstream_c{concurrency}")
             results = _run_benchmark(
                 router_server.port,
-                str(dataset_dir / "en" / "meta.lst"),
+                dataset_repo,
                 output_dir,
                 concurrency=concurrency,
             )
@@ -353,7 +466,7 @@ def _generate_consistency_inputs(
             output_dir = str(output_root / f"vc_stream_c{concurrency}")
             results = _run_benchmark(
                 router_server.port,
-                str(dataset_dir / "en" / "meta.lst"),
+                dataset_repo,
                 output_dir,
                 concurrency=concurrency,
                 max_samples=STREAMING_BENCHMARK_MAX_SAMPLES,
@@ -384,14 +497,20 @@ def _print_stage(stage: str, mode: str, concurrency: int, details: str = "") -> 
 
 
 @pytest.fixture(scope="module")
-def dataset_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    override_dir = os.environ.get(DATASET_CACHE_ENV)
-    if override_dir:
-        root = Path(override_dir).expanduser()
-    else:
-        root = tmp_path_factory.mktemp("seed_tts_eval") / "data"
-    download_dataset(DATASETS["seedtts-50"], str(root), quiet=True)
-    return root
+def dataset_repo() -> str:
+    repo_id = DATASETS["seedtts-50"]
+    download_dataset(repo_id, quiet=True)
+    return repo_id
+
+
+@pytest.fixture(scope="module")
+def similarity_checkpoint() -> str | None:
+    """User-specified WavLM checkpoint override, or None to let the bootstrapper
+    auto-resolve the default weights from the shared cache directory."""
+    raw = os.environ.get(SIMILARITY_CHECKPOINT_ENV)
+    if not raw:
+        return None
+    return str(Path(raw).expanduser())
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -461,7 +580,7 @@ def wer_input_dirs(
 @pytest.mark.benchmark
 def test_voice_cloning_non_streaming(
     router_server: ManagedRouterHandle,
-    dataset_dir: Path,
+    dataset_repo: str,
     tmp_path: Path,
     selected_s2pro_tts_concurrencies: tuple[int, ...],
 ) -> None:
@@ -475,15 +594,19 @@ def test_voice_cloning_non_streaming(
         try:
             results = _run_benchmark(
                 router_server.port,
-                str(dataset_dir / "en" / "meta.lst"),
+                dataset_repo,
                 output_dir,
                 concurrency=concurrency,
+            )
+            checks = MetricCheckCollector(
+                f"S2-Pro non-streaming benchmark c{concurrency}"
             )
             _assert_stage_used_all_router_workers(
                 router_server=router_server,
                 before_workers=before_workers,
                 results=results,
                 label=f"S2-Pro non-stream c{concurrency}",
+                collector=checks,
             )
         except Exception:
             print_router_diagnostics(router_server)
@@ -493,14 +616,16 @@ def test_voice_cloning_non_streaming(
             concurrency=concurrency,
             output_dir=output_dir,
             results=results,
+            collector=checks,
         )
+        checks.assert_all()
 
 
 @pytest.mark.s2pro_stage(S2PRO_STAGE_STREAM)
 @pytest.mark.benchmark
 def test_voice_cloning_streaming(
     router_server: ManagedRouterHandle,
-    dataset_dir: Path,
+    dataset_repo: str,
     tmp_path: Path,
     selected_s2pro_tts_concurrencies: tuple[int, ...],
 ) -> None:
@@ -516,17 +641,19 @@ def test_voice_cloning_streaming(
         try:
             results = _run_benchmark(
                 router_server.port,
-                str(dataset_dir / "en" / "meta.lst"),
+                dataset_repo,
                 output_dir,
                 concurrency=concurrency,
                 max_samples=STREAMING_BENCHMARK_MAX_SAMPLES,
                 stream=True,
             )
+            checks = MetricCheckCollector(f"S2-Pro streaming benchmark c{concurrency}")
             _assert_stage_used_all_router_workers(
                 router_server=router_server,
                 before_workers=before_workers,
                 results=results,
                 label=f"S2-Pro stream c{concurrency}",
+                collector=checks,
             )
         except Exception:
             print_router_diagnostics(router_server)
@@ -536,7 +663,9 @@ def test_voice_cloning_streaming(
             concurrency=concurrency,
             output_dir=output_dir,
             results=results,
+            collector=checks,
         )
+        checks.assert_all()
 
 
 @pytest.mark.s2pro_stage(S2PRO_STAGE_CONSISTENCY)
@@ -545,23 +674,33 @@ def test_voice_cloning_streaming_consistency(
     consistency_stage_inputs: None,
     selected_s2pro_tts_concurrencies: tuple[int, ...],
 ) -> None:
+    checks = MetricCheckCollector("S2-Pro streaming consistency")
     for concurrency in selected_s2pro_tts_concurrencies:
         ns = PER_REQUEST_STORE.get(f"vc_nonstream_c{concurrency}")
         st = PER_REQUEST_STORE.get(f"vc_stream_c{concurrency}")
-        assert ns is not None, f"vc_nonstream_c{concurrency} results missing"
-        assert st is not None, f"vc_stream_c{concurrency} results missing"
+        if ns is None:
+            checks.fail(f"vc_nonstream_c{concurrency} results missing")
+        if st is None:
+            checks.fail(f"vc_stream_c{concurrency} results missing")
+        if ns is None or st is None:
+            continue
         assert_streaming_consistency(
-            ns, st, expected_stream_count=STREAMING_BENCHMARK_MAX_SAMPLES
+            ns,
+            st,
+            expected_stream_count=STREAMING_BENCHMARK_MAX_SAMPLES,
+            collector=checks,
         )
+    checks.assert_all()
 
 
 @pytest.mark.s2pro_stage(S2PRO_STAGE_NONSTREAM)
 @pytest.mark.benchmark
 def test_voice_cloning_wer(
     wer_input_dirs: dict[str, dict[int, str]],
-    dataset_dir: Path,
+    dataset_repo: str,
     selected_s2pro_tts_concurrencies: tuple[int, ...],
 ) -> None:
+    checks = MetricCheckCollector("S2-Pro non-streaming WER")
     for concurrency in selected_s2pro_tts_concurrencies:
         _print_stage(
             "WER",
@@ -570,19 +709,51 @@ def test_voice_cloning_wer(
             "transcribe speed-stage WAVs",
         )
         results = _run_wer_transcribe(
-            str(dataset_dir / "en" / "meta.lst"),
+            dataset_repo,
             wer_input_dirs["non_stream"][concurrency],
         )
-        assert_wer_results(results, VC_WER_CORPUS_THRESHOLD, VC_WER_MAX_PER_SAMPLE)
+        assert_wer_results(
+            results,
+            VC_WER_CORPUS_THRESHOLD,
+            VC_WER_MAX_PER_SAMPLE,
+            collector=checks,
+        )
+    checks.assert_all()
+
+
+@pytest.mark.s2pro_stage(S2PRO_STAGE_NONSTREAM)
+@pytest.mark.benchmark
+def test_voice_cloning_similarity(
+    wer_input_dirs: dict[str, dict[int, str]],
+    dataset_repo: str,
+    similarity_checkpoint: str | None,
+    selected_s2pro_tts_concurrencies: tuple[int, ...],
+) -> None:
+    checks = MetricCheckCollector("S2-Pro non-streaming speaker similarity")
+    for concurrency in selected_s2pro_tts_concurrencies:
+        _print_stage(
+            "SIM",
+            "non-streaming",
+            concurrency,
+            "score speed-stage WAVs",
+        )
+        results = _run_similarity(
+            dataset_repo,
+            wer_input_dirs["non_stream"][concurrency],
+            similarity_checkpoint,
+        )
+        _assert_similarity_results(results, VC_SIMILARITY_MEAN_MIN, collector=checks)
+    checks.assert_all()
 
 
 @pytest.mark.s2pro_stage(S2PRO_STAGE_STREAM)
 @pytest.mark.benchmark
 def test_voice_cloning_streaming_wer(
     wer_input_dirs: dict[str, dict[int, str]],
-    dataset_dir: Path,
+    dataset_repo: str,
     selected_s2pro_tts_concurrencies: tuple[int, ...],
 ) -> None:
+    checks = MetricCheckCollector("S2-Pro streaming WER")
     for concurrency in selected_s2pro_tts_concurrencies:
         _print_stage(
             "WER",
@@ -591,7 +762,7 @@ def test_voice_cloning_streaming_wer(
             f"transcribe {STREAMING_BENCHMARK_MAX_SAMPLES} speed-stage WAVs",
         )
         results = _run_wer_transcribe(
-            str(dataset_dir / "en" / "meta.lst"),
+            dataset_repo,
             wer_input_dirs["stream"][concurrency],
             stream=True,
         )
@@ -599,7 +770,9 @@ def test_voice_cloning_streaming_wer(
             results,
             VC_STREAM_WER_CORPUS_THRESHOLD,
             VC_STREAM_WER_MAX_PER_SAMPLE,
+            collector=checks,
         )
+    checks.assert_all()
 
 
 if __name__ == "__main__":

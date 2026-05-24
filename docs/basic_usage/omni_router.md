@@ -55,7 +55,7 @@ launcher:
   num_gpus_per_worker: 1
   worker_host: 127.0.0.1
   worker_base_port: 8011
-  worker_extra_args: "--config examples/configs/qwen3_omni_colocated.yaml --colocate"
+  worker_extra_args: "--config examples/configs/qwen3_omni_colocated_h20.yaml --colocate"
   wait_timeout: 600
 ```
 
@@ -68,10 +68,13 @@ when the router exits.
 
 `num_gpus_per_worker` controls automatic GPU grouping. The default Qwen3-Omni
 router example uses colocated workers: each complete speech worker runs on one
-GPU through `examples/configs/qwen3_omni_colocated.yaml`. With
+GPU through `examples/configs/qwen3_omni_colocated_h20.yaml`. With
 `num_workers: 2` and `num_gpus_per_worker: 1`, the launcher assigns GPU `0` to
 the first worker and GPU `1` to the second worker when two CUDA devices are
 visible.
+
+Use `examples/configs/qwen3_omni_colocated_h200.yaml` instead for single-H200
+workers.
 
 Set `worker_gpu_ids` only when you need explicit placement. Each entry maps one
 `CUDA_VISIBLE_DEVICES` value to one worker, for example
@@ -109,6 +112,22 @@ If `worker_capabilities` is omitted and `worker_extra_args` contains
 `--text-only`, the router registers the managed workers with the same text-only
 capability set shown above.
 
+For short audio-input / text-output MMSU-style workloads, use the fused
+text-path Qwen3-Omni config instead of the default speech-colocated worker:
+
+```yaml
+launcher:
+  backend: local
+  model_path: Qwen/Qwen3-Omni-30B-A3B-Instruct
+  model_name: qwen3-omni
+  num_workers: 2
+  num_gpus_per_worker: 1
+  worker_extra_args: "--config examples/configs/qwen3_omni_mmsu.yaml --text-only"
+```
+
+This keeps preprocessing, encoders, aggregation, thinker, and decode in one
+worker process while leaving the general speech-colocated topology unchanged.
+
 ## Launch Worker Servers Manually
 
 Start each Omni V1 worker separately. The example below launches two colocated
@@ -118,7 +137,7 @@ Qwen3-Omni speech workers on different GPUs and ports:
 CUDA_VISIBLE_DEVICES=0 sgl-omni serve \
   --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct \
   --model-name qwen3-omni \
-  --config examples/configs/qwen3_omni_colocated.yaml \
+  --config examples/configs/qwen3_omni_colocated_h20.yaml \
   --colocate \
   --host 0.0.0.0 \
   --port 8011
@@ -128,7 +147,7 @@ CUDA_VISIBLE_DEVICES=0 sgl-omni serve \
 CUDA_VISIBLE_DEVICES=1 sgl-omni serve \
   --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct \
   --model-name qwen3-omni \
-  --config examples/configs/qwen3_omni_colocated.yaml \
+  --config examples/configs/qwen3_omni_colocated_h20.yaml \
   --colocate \
   --host 0.0.0.0 \
   --port 8012

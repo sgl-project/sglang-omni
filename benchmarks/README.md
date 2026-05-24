@@ -44,26 +44,26 @@ python -m sglang_omni.cli serve \
 
 # 2a. S2-Pro — full pipeline: generate + WER (server needed for phase 1 only)
 python -m benchmarks.eval.benchmark_tts_seedtts \
-    --meta seedtts_testset/en/meta.lst \
+    --meta zhaochenyang20/seed-tts-eval-arrow \
     --model fishaudio/s2-pro --port 8000 \
     --output-dir results/s2pro_en --lang en --max-samples 50 --concurrency 8
 
 # 2b. S2-Pro — generate only (speed metrics, no transcription)
 python -m benchmarks.eval.benchmark_tts_seedtts \
     --generate-only --stream \
-    --meta seedtts_testset/en/meta.lst \
+    --meta zhaochenyang20/seed-tts-eval-arrow \
     --model fishaudio/s2-pro --port 8000 --max-samples 50 --concurrency 8
 
 # 2c. S2-Pro — transcribe only (reuses audio from a prior generate run; no server)
 python -m benchmarks.eval.benchmark_tts_seedtts \
     --transcribe-only \
-    --meta seedtts_testset/en/meta.lst \
+    --meta zhaochenyang20/seed-tts-eval-arrow \
     --model fishaudio/s2-pro \
     --output-dir results/s2pro_en --lang en --device cuda:0
 
 # 2d. Voxtral — full pipeline without voice cloning
 python -m benchmarks.eval.benchmark_tts_seedtts \
-    --meta seedtts_testset/en/meta.lst \
+    --meta zhaochenyang20/seed-tts-eval-arrow \
     --model mistralai/Voxtral-4B-TTS-2603 --port 8000 \
     --max-concurrency 16 \
     --output-dir results/voxtral_en --lang en --max-samples 50 \
@@ -71,7 +71,7 @@ python -m benchmarks.eval.benchmark_tts_seedtts \
 
 # 3a. Qwen3-Omni — full pipeline (generate + transcribe)
 python -m benchmarks.eval.benchmark_omni_seedtts \
-    --meta seedtts_testset/en/meta.lst \
+    --meta zhaochenyang20/seed-tts-eval-arrow \
     --output-dir results/qwen3_omni_en \
     --max-concurrency 16 \
     --model qwen3-omni --port 8000 --max-samples 50
@@ -79,7 +79,7 @@ python -m benchmarks.eval.benchmark_omni_seedtts \
 # 3b. Qwen3-Omni — generate only (server required; use in CI to split phases)
 python -m benchmarks.eval.benchmark_omni_seedtts \
     --generate-only \
-    --meta seedtts_testset/en/meta.lst \
+    --meta zhaochenyang20/seed-tts-eval-arrow \
     --output-dir results/qwen3_omni_en \
     --max-concurrency 16 \
     --model qwen3-omni --port 8000 --max-samples 50
@@ -87,7 +87,7 @@ python -m benchmarks.eval.benchmark_omni_seedtts \
 # 3c. Qwen3-Omni — transcribe only (reuses audio; no server)
 python -m benchmarks.eval.benchmark_omni_seedtts \
     --transcribe-only \
-    --meta seedtts_testset/en/meta.lst \
+    --meta zhaochenyang20/seed-tts-eval-arrow \
     --output-dir results/qwen3_omni_en \
     --model qwen3-omni --lang en --device cuda:0
 
@@ -165,10 +165,9 @@ python -m benchmarks.dataset.prepare --dataset videomme      # full Video-MME
 python -m benchmarks.dataset.prepare --dataset videoamme-ci-50  # Video-AMME CI subset
 ```
 
-SeedTTS datasets are materialized into `./seedtts_testset/` (override with
-`--local-dir`). MMMU/MMSU/Video-MME/Video-AMME datasets are pre-warmed into the
-default HuggingFace cache and then consumed via `datasets.load_dataset(repo_id)`,
-so `--local-dir` is a no-op for them.
+All datasets are pre-warmed into the default HuggingFace cache via
+`datasets.load_dataset(repo_id)`.  SeedTTS Arrow repos stage audio to
+process-local tempfiles at load time; no manual `--local-dir` step is needed.
 
 Video-AMME is generated from the Video-MME CI subset by moving the
 question/options/instruction into per-sample WAV files. The benchmark request
