@@ -80,6 +80,11 @@ Common Qwen3-Omni V1 presets:
 python .claude/skills/tune-ci-thresholds/tune.py --model qwen3-omni-v1 run \
   --stages mmmu,mmmu_talker,mmsu,mmsu_talker,tts,videoamme,videoamme_talker,videoamme_talker_tp2,videomme,videomme_talker \
   --repeats 5 --output-dir .tune-runs/<timestamp>_qwen3-omni-v1_cuda-graph_no-docs_r5
+
+# FP8 CI stages 4, 7, and 11.
+python .claude/skills/tune-ci-thresholds/tune.py --model qwen3-omni-v1 run \
+  --stages mmmu_talker,videomme,videoamme_talker_tp2 \
+  --repeats 5 --output-dir .tune-runs/<timestamp>_qwen3-omni-v1_fp8_stages_4_7_11_r5
 ```
 
 ## Environment and networking notes
