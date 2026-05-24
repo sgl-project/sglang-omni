@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""V1 multimodal prefill injection."""
+"""Multimodal prefill injection for Ming."""
 
 from __future__ import annotations
 

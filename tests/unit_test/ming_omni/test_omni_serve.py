@@ -272,7 +272,7 @@ def test_registry_rejects_duplicate_architecture_aliases(tmp_path, monkeypatch) 
     import_pipeline_configs.cache_clear()
 
 
-def test_v1_serve_builds_ming_text_config_without_launching(monkeypatch) -> None:
+def test_omni_serve_builds_ming_text_config_without_launching(monkeypatch) -> None:
     from typer.testing import CliRunner
 
     from sglang_omni.cli import app
@@ -332,7 +332,7 @@ def test_v1_serve_builds_ming_text_config_without_launching(monkeypatch) -> None
     assert captured["kwargs"]["model_name"] == "ming-omni"
 
 
-def test_v1_serve_builds_ming_speech_config_by_default(monkeypatch) -> None:
+def test_omni_serve_builds_ming_speech_config_by_default(monkeypatch) -> None:
     from typer.testing import CliRunner
 
     from sglang_omni.cli import app
