@@ -1,6 +1,9 @@
 name: PR Test
 
 on:
+  pull_request:
+    branches: [ main ]
+    types: [labeled, synchronize, reopened, ready_for_review]
   workflow_dispatch:
 
 concurrency:
@@ -9,54 +12,66 @@ concurrency:
 
 permissions:
   contents: read
-  actions: read
-  pull-requests: read
-  issues: read
 
 jobs:
   unit-test:
-    name: unit-test
     # CI gate — runs on workflow_dispatch, or on non-draft PRs carrying the `run-ci` label.
     # Keep in sync with the same gate in test-examples.yaml / test-qwen3-omni-ci.yaml / test-s2pro-ci.yaml.
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (!github.event.pull_request.draft &&
        contains(github.event.pull_request.labels.*.name, 'run-ci'))
-    uses: ./.github/workflows/_omni-priority-stage.yaml
-    with:
-      stage-name: unit-test
-      job-timeout-minutes: "60"
-      run-timeout-minutes: "30"
-      container-options: --gpus all --shm-size=2g --rm -v /dev/shm
-      setup-action: "false"
-      pre-run-script: |
-        if [ -d /github/home/omni ] && [ ! -z "$(ls -A /github/home/omni/)" ]; then
-          cp -p -r /github/home/omni ./
-        fi
+    runs-on: [self-hosted]
+    container:
+      image: frankleeeee/sglang-omni:dev # we lock to this version to avoid repeated docker pull
+      options: --gpus all --shm-size=2g --rm -v /dev/shm
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-        rm -rf /github/home/.cache/flashinfer
+      - name: Restore cache
+        run: |
+          if [ -d /github/home/omni ] && [ ! -z "$(ls -A /github/home/omni/)" ]; then
+            cp -p -r /github/home/omni ./
+          fi
 
-        if [ -d omni ] && ! omni/bin/python -c "import torch" 2>/dev/null; then
-          echo "Cached venv is corrupted, removing..."
-          rm -rf omni
-        fi
-        if [ ! -d omni ]; then
-          uv venv omni -p 3.11
-        fi
-        source omni/bin/activate
-        uv pip install -v -e .
-        # Repair PyAV if its bundled shared libs got corrupted in the cached
-        # venv (e.g. "libx265-...so.215: file too short"). The editable install
-        # above does not reinstall an already-present package, so force it.
-        if ! python -c "import av" 2>/dev/null; then
-          echo "PyAV native libraries corrupted in cached venv, force-reinstalling..."
-          uv pip install --force-reinstall --no-deps --no-cache av
-        fi
+      - name: Remove flashinfer # this is needed to avoid flashinfer jit compilation makes the program hang
+        run: |
+          rm -rf /github/home/.cache/flashinfer
 
-        bash .github/scripts/delete_gpu_process.sh
-      run-script: |
-        source omni/bin/activate
-        export PYTHONPATH=$PWD
-        pytest tests/ -v -m "not benchmark and not docs" -x
-      save-cache-script: |
-        cp -p -r omni /github/home/
+      - name: Install dependencies
+        shell: bash
+        run: |
+          if [ -d omni ] && ! omni/bin/python -c "import torch" 2>/dev/null; then
+            echo "Cached venv is corrupted, removing..."
+            rm -rf omni
+          fi
+          if [ ! -d omni ]; then
+            uv venv omni -p 3.11
+          fi
+          source omni/bin/activate
+          uv pip install -v -e .
+          # Repair PyAV if its bundled shared libs got corrupted in the cached
+          # venv (e.g. "libx265-...so.215: file too short"). The editable install
+          # above does not reinstall an already-present package, so force it.
+          if ! python -c "import av" 2>/dev/null; then
+            echo "PyAV native libraries corrupted in cached venv, force-reinstalling..."
+            uv pip install --force-reinstall --no-deps --no-cache av
+          fi
+
+      - name: Kill GPU processes
+        shell: bash
+        run: |
+          bash .github/scripts/delete_gpu_process.sh
+
+      - name: Run test
+        timeout-minutes: 30
+        shell: bash
+        run: |
+          source omni/bin/activate
+          export PYTHONPATH=$PWD
+          pytest tests/ -v -m "not benchmark and not docs" -x
+
+      - name: Save cache
+        run: |
+          cp -p -r omni /github/home/
