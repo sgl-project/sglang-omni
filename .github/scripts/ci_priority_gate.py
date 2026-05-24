@@ -510,6 +510,7 @@ def main() -> int:
     stage_name = os.environ.get("OMNI_CI_PRIORITY_STAGE", "")
     poll_seconds = _env_int("OMNI_CI_PRIORITY_POLL_SECONDS", 30)
     timeout_seconds = _env_int("OMNI_CI_PRIORITY_TIMEOUT_SECONDS", 6 * 60 * 60)
+    settle_seconds = _env_int("OMNI_CI_PRIORITY_SETTLE_SECONDS", 15)
     workflows = _priority_workflows()
     event = _load_event()
     client = GitHubClient(repo, token)
@@ -525,6 +526,12 @@ def main() -> int:
         return 0
 
     deadline = time.monotonic() + timeout_seconds
+    if stage_name and settle_seconds:
+        print(
+            "Waiting "
+            f"{settle_seconds} seconds for GitHub to materialize peer stage gates."
+        )
+        time.sleep(settle_seconds)
 
     while True:
         try:
