@@ -34,7 +34,6 @@ RERUN_COMMAND = "/rerun-failed-ci"
 class PullRequestMeta:
     state: PullRequestState
     head_repo: str
-    dispatch_ref: str
 
 
 class GitHubClient:
@@ -180,7 +179,6 @@ def _open_pull_requests(client: GitHubClient) -> list[PullRequestMeta]:
             PullRequestMeta(
                 state=state,
                 head_repo=head["repo"]["full_name"],
-                dispatch_ref=f"refs/pull/{number}/head",
             )
         )
     return pull_requests
@@ -295,7 +293,9 @@ def _dispatch_stage(client: GitHubClient, meta: PullRequestMeta, selected) -> No
         f"at {meta.state.head_sha}."
     )
     payload = {
-        "ref": meta.dispatch_ref,
+        # Dispatch the trusted workflow definition from the default branch; the
+        # runner job checks out the PR head SHA explicitly.
+        "ref": "main",
         "inputs": {
             "pr_number": str(meta.state.number),
             "head_sha": meta.state.head_sha,
@@ -308,17 +308,7 @@ def _dispatch_stage(client: GitHubClient, meta: PullRequestMeta, selected) -> No
             ),
         },
     }
-    try:
-        client.post(f"/actions/workflows/{workflow_id}/dispatches", payload)
-    except urllib.error.HTTPError as exc:
-        if exc.code != 422:
-            raise
-        print(
-            f"Dispatch with ref {meta.dispatch_ref} failed; retrying on main. "
-            "The runner will still checkout the PR head SHA."
-        )
-        payload["ref"] = "main"
-        client.post(f"/actions/workflows/{workflow_id}/dispatches", payload)
+    client.post(f"/actions/workflows/{workflow_id}/dispatches", payload)
 
 
 if __name__ == "__main__":
