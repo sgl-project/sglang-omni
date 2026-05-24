@@ -31,6 +31,7 @@ from sglang_omni.proto import (
     ProfilerStopMessage,
     ShutdownMessage,
     StageInfo,
+    StagePayload,
     StreamMessage,
     SubmitMessage,
 )
@@ -324,6 +325,11 @@ class Stage:
             from_stage=from_stage,
             metadata=metadata,
         )
+        self._emit_stream_chunk_received(
+            request_id=request_id,
+            from_stage=from_stage,
+            chunk_id=chunk_id,
+        )
         await self._route_stream_item_or_fail(request_id, item)
 
     async def receive_local_stream_signal(
@@ -394,7 +400,11 @@ class Stage:
                 return
             if request_id in self._aborted:
                 return
-            self._emit_stream_chunk_received(msg)
+            self._emit_stream_chunk_received(
+                request_id=msg.request_id,
+                from_stage=msg.from_stage,
+                chunk_id=msg.chunk_id,
+            )
             await self._route_stream_item_or_fail(request_id, item)
             return
 
@@ -422,15 +432,25 @@ class Stage:
             from_stage=msg.from_stage,
             metadata=metadata,
         )
-        self._emit_stream_chunk_received(msg)
+        self._emit_stream_chunk_received(
+            request_id=msg.request_id,
+            from_stage=msg.from_stage,
+            chunk_id=msg.chunk_id,
+        )
         await self._route_stream_item_or_fail(request_id, item)
 
-    def _emit_stream_chunk_received(self, msg: DataReadyMessage) -> None:
+    def _emit_stream_chunk_received(
+        self,
+        *,
+        request_id: str,
+        from_stage: str,
+        chunk_id: int | None,
+    ) -> None:
         _emit_event(
-            request_id=msg.request_id,
+            request_id=request_id,
             stage=self.name,
             event_name="stage_stream_chunk_received",
-            metadata={"from_stage": msg.from_stage, "chunk_id": msg.chunk_id},
+            metadata={"from_stage": from_stage, "chunk_id": chunk_id},
         )
 
     async def _route_stream_item_or_fail(
@@ -806,6 +826,12 @@ class Stage:
                     "a local dispatcher"
                 )
 
+            _emit_event(
+                request_id=request_id,
+                stage=self.name,
+                event_name="stage_hop_sent",
+                metadata={"to_stage": target, "transport": "local_object"},
+            )
             await self._local_dispatcher.send_payload(
                 from_stage=self.name,
                 to_stage=target,
@@ -841,10 +867,16 @@ class Stage:
     ) -> bool:
         if not projector_present or projected_payload is original_payload:
             return False
-        if not hasattr(original_payload, "data") or not hasattr(
-            projected_payload, "data"
-        ):
-            return False
+        if not isinstance(original_payload, StagePayload):
+            raise TypeError(
+                "projected local-object dispatch requires the original payload "
+                f"to be StagePayload, got {type(original_payload).__name__}"
+            )
+        if not isinstance(projected_payload, StagePayload):
+            raise TypeError(
+                "projected local-object dispatch requires projectors to return "
+                f"StagePayload, got {type(projected_payload).__name__}"
+            )
         # A fan-out edge may use process-local dispatch only when projection
         # gives the target its own mutable payload/data container. Tensor leaves
         # inside that container may still be shared intentionally.

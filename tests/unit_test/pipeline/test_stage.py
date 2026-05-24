@@ -327,7 +327,13 @@ def test_stage_uses_dynamic_route_and_stream_done_targets() -> None:
     asyncio.run(_run())
 
 
-def test_stage_sends_same_process_payload_as_local_object() -> None:
+def test_stage_sends_same_process_payload_as_local_object(monkeypatch) -> None:
+    events: list[dict] = []
+    monkeypatch.setattr(
+        "sglang_omni.pipeline.stage.runtime._emit_event",
+        lambda **kwargs: events.append(kwargs),
+    )
+
     async def _run() -> None:
         dispatcher = LocalStageDispatcher()
         relay = FakeRelay()
@@ -362,6 +368,16 @@ def test_stage_sends_same_process_payload_as_local_object() -> None:
         assert queued.data.data["tensor"] is tensor
 
     asyncio.run(_run())
+
+    hop_events = [event for event in events if event["event_name"] == "stage_hop_sent"]
+    assert hop_events == [
+        {
+            "request_id": "req-local",
+            "stage": "thinker",
+            "event_name": "stage_hop_sent",
+            "metadata": {"to_stage": "decode", "transport": "local_object"},
+        }
+    ]
 
 
 def test_stage_applies_projector_before_local_object_send() -> None:
@@ -576,7 +592,46 @@ def test_stage_projected_fan_out_requires_isolated_data_container() -> None:
     asyncio.run(_run())
 
 
-def test_stage_sends_same_process_stream_chunk_as_local_object() -> None:
+def test_stage_projected_fan_out_requires_stage_payload_projection() -> None:
+    def _invalid_projector(payload):
+        del payload
+        return {"not": "a-stage-payload"}
+
+    async def _run() -> None:
+        sender = make_stage(
+            name="thinker",
+            get_next=lambda request_id, output: ["decode", "archive"],
+            endpoints={
+                "decode": "inproc://decode",
+                "archive": "inproc://archive",
+            },
+            project_payload={
+                "decode": _invalid_projector,
+                "archive": _invalid_projector,
+            },
+            same_process_targets={"decode", "archive"},
+            local_dispatcher=LocalStageDispatcher(),
+        )
+
+        with pytest.raises(
+            TypeError,
+            match="projectors to return StagePayload",
+        ):
+            await sender._route_result(
+                "req-fanout",
+                make_stage_payload(request_id="req-fanout", data={"answer": 7}),
+            )
+
+    asyncio.run(_run())
+
+
+def test_stage_sends_same_process_stream_chunk_as_local_object(monkeypatch) -> None:
+    events: list[dict] = []
+    monkeypatch.setattr(
+        "sglang_omni.pipeline.stage.runtime._emit_event",
+        lambda **kwargs: events.append(kwargs),
+    )
+
     async def _run() -> None:
         dispatcher = LocalStageDispatcher()
         relay = FakeRelay()
@@ -617,6 +672,20 @@ def test_stage_sends_same_process_stream_chunk_as_local_object() -> None:
         assert queued.data.metadata is metadata
 
     asyncio.run(_run())
+
+    receive_events = [
+        event
+        for event in events
+        if event["event_name"] == "stage_stream_chunk_received"
+    ]
+    assert receive_events == [
+        {
+            "request_id": "req-stream-local",
+            "stage": "talker",
+            "event_name": "stage_stream_chunk_received",
+            "metadata": {"from_stage": "thinker", "chunk_id": 0},
+        }
+    ]
 
 
 def test_stage_sends_same_process_stream_done_and_final_payload_locally() -> None:
