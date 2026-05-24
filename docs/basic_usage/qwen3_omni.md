@@ -242,17 +242,17 @@ python examples/run_qwen3_omni_speech_server.py \
 the global value for that stage. Values must be greater than `0` and less than
 `1`.
 
-## Single-GPU Native FP8 on H100
+## Single-GPU FP8 on H100/H20
 
 SGLang-Omni can also serve native FP8 Qwen3-Omni checkpoints. Native FP8 uses
 the checkpoint quantization config when loading the thinker and talker AR stages,
 while keeping the same Qwen3-Omni request format shown below.
 
-For one-GPU H100 colocated launch, use the FP8 colocated config:
+For one-GPU H100/H20 colocated launch, use the FP8 colocated config:
 
 ```bash
 sgl-omni serve \
-  --config examples/configs/qwen3_omni_fp8_colocated_h100.yaml \
+  --config examples/configs/qwen3_omni_fp8_colocated.yaml \
   --colocate \
   --model-name qwen3-omni \
   --port 8008
@@ -272,7 +272,7 @@ To opt back into SGLang's all-M DeepGEMM precompile behavior:
 
 ```bash
 SGLANG_JIT_DEEPGEMM_PRECOMPILE=1 sgl-omni serve \
-  --config examples/configs/qwen3_omni_fp8_colocated_h100.yaml \
+  --config examples/configs/qwen3_omni_fp8_colocated.yaml \
   --colocate \
   --model-name qwen3-omni \
   --port 8008
