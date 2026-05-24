@@ -333,8 +333,13 @@ class MingOmniVisionEncoder(nn.Module):
         # Linear((C*Tp*Pp*Pp) -> embed_dim); cuBLAS GEMM handles it instantly.
         _pe = self.patch_embed
         x = F.linear(
-            x.view(-1, _pe.in_channels * _pe.temporal_patch_size
-                       * _pe.patch_size * _pe.patch_size),
+            x.view(
+                -1,
+                _pe.in_channels
+                * _pe.temporal_patch_size
+                * _pe.patch_size
+                * _pe.patch_size,
+            ),
             _pe.proj.weight.view(_pe.embed_dim, -1),
             _pe.proj.bias,
         )

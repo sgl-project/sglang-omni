@@ -4,7 +4,9 @@
 # via MMMU regression: 27 downstream blocks in bf16 amplify input noise, so
 # end-to-end bit equivalence is the wrong guarantee — equal answer quality is.
 from __future__ import annotations
+
 import os
+
 import pytest
 import torch
 
@@ -19,12 +21,9 @@ _MODEL_PATH = os.environ.get(
 
 
 def _build_encoder():
-    from sglang_omni.models.ming_omni.components.image_encoder import (
-        MingImageEncoder,
-    )
-    enc = MingImageEncoder(
-        model_path=_MODEL_PATH, device="cuda", dtype="bfloat16"
-    )
+    from sglang_omni.models.ming_omni.components.image_encoder import MingImageEncoder
+
+    enc = MingImageEncoder(model_path=_MODEL_PATH, device="cuda", dtype="bfloat16")
     return enc.visual
 
 
@@ -36,12 +35,8 @@ def test_patch_embed_linear_matches_conv3d():
     enc = _build_encoder()
     pe = enc.patch_embed
     seq_len = 840
-    patch_dim = (
-        pe.in_channels * pe.temporal_patch_size * pe.patch_size * pe.patch_size
-    )
-    x = torch.randn(
-        seq_len, patch_dim, dtype=torch.bfloat16, device="cuda"
-    )
+    patch_dim = pe.in_channels * pe.temporal_patch_size * pe.patch_size * pe.patch_size
+    x = torch.randn(seq_len, patch_dim, dtype=torch.bfloat16, device="cuda")
 
     conv_out = pe(x).view(seq_len, pe.embed_dim)
     linear_out = F.linear(
