@@ -15,9 +15,12 @@ from typing import Any
 
 from ci_priority_scheduler import (
     FAILED_CONCLUSIONS,
+    QUEUED_STATUSES,
+    RUNNING_STATUSES,
     PullRequestState,
     RerunRequest,
     StageRunState,
+    ci_enabled,
     select_next_stage,
 )
 from ci_priority_stage_config import dispatch_config_for_stage, stage_specs
@@ -48,6 +51,9 @@ class GitHubClient:
 
     def post(self, path: str, payload: dict[str, Any] | None = None) -> Any:
         return self._request("POST", path, payload=payload)
+
+    def patch(self, path: str, payload: dict[str, Any]) -> Any:
+        return self._request("PATCH", path, payload=payload)
 
     def paginate(
         self,
@@ -117,6 +123,7 @@ def main() -> int:
 
     runs = _stage_runs(client)
     rerun_requests = _rerun_requests(client, pull_requests, runs)
+    _sync_stage_check_runs(client, pull_requests, runs)
     decision = select_next_stage(
         pull_requests=[meta.state for meta in pull_requests],
         stages=stage_specs(),
@@ -141,6 +148,7 @@ def main() -> int:
 
     meta_by_pr = {meta.state.number: meta for meta in pull_requests}
     meta = meta_by_pr[decision.selected_stage.pr.number]
+    _mark_selected_check_in_progress(client, decision.selected_stage)
     _dispatch_stage(client, meta, decision.selected_stage)
     return 0
 
@@ -206,6 +214,179 @@ def _stage_runs(client: GitHubClient) -> list[StageRunState]:
             )
         )
     return runs
+
+
+def _sync_stage_check_runs(
+    client: GitHubClient,
+    pull_requests: list[PullRequestMeta],
+    runs: list[StageRunState],
+) -> None:
+    stages = stage_specs()
+    for meta in pull_requests:
+        existing_checks = _stage_check_runs_for_sha(client, meta.state.head_sha)
+        for stage in stages:
+            latest = _latest_stage_run(meta.state, stage.id, runs)
+            if ci_enabled(meta.state):
+                payload = _check_payload_for_stage_run(
+                    meta.state,
+                    stage,
+                    latest,
+                    status="queued",
+                )
+                _upsert_check_run(client, existing_checks, payload)
+                continue
+
+            existing = existing_checks.get(_stage_check_name(stage))
+            if existing and existing.get("status") != "completed":
+                _update_check_run(
+                    client,
+                    existing,
+                    {
+                        "name": _stage_check_name(stage),
+                        "status": "completed",
+                        "conclusion": "skipped",
+                        "completed_at": _now_utc(),
+                    },
+                )
+
+
+def _mark_selected_check_in_progress(client: GitHubClient, selected) -> None:
+    existing_checks = _stage_check_runs_for_sha(client, selected.pr.head_sha)
+    payload = {
+        "name": _stage_check_name(selected.stage),
+        "head_sha": selected.pr.head_sha,
+        "status": "in_progress",
+        "started_at": _now_utc(),
+        "external_id": _stage_external_id(
+            selected.pr.number,
+            selected.pr.head_sha,
+            selected.stage.id,
+        ),
+    }
+    _upsert_check_run(client, existing_checks, payload)
+
+
+def _check_payload_for_stage_run(
+    pr: PullRequestState,
+    stage,
+    run: StageRunState | None,
+    *,
+    status: str,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "name": _stage_check_name(stage),
+        "head_sha": pr.head_sha,
+        "status": status,
+        "external_id": _stage_external_id(pr.number, pr.head_sha, stage.id),
+    }
+    if run is None:
+        return payload
+
+    if run.status in QUEUED_STATUSES:
+        payload["status"] = "queued"
+    elif run.status in RUNNING_STATUSES:
+        payload["status"] = "in_progress"
+        payload["started_at"] = run.created_at
+    elif run.status == "completed":
+        payload["status"] = "completed"
+        payload["conclusion"] = run.conclusion or "failure"
+        payload["completed_at"] = _now_utc()
+
+    if run.run_id is not None:
+        payload["details_url"] = (
+            f"https://github.com/{client_repo()}/actions/runs/{run.run_id}"
+        )
+    return payload
+
+
+def _stage_check_runs_for_sha(
+    client: GitHubClient,
+    head_sha: str,
+) -> dict[str, dict[str, Any]]:
+    checks_by_name: dict[str, dict[str, Any]] = {}
+    for check in client.paginate(
+        f"/commits/{head_sha}/check-runs",
+        {"filter": "latest"},
+    ):
+        name = check.get("name")
+        if not name:
+            continue
+        existing = checks_by_name.get(name)
+        if existing is None or _check_sort_key(check) > _check_sort_key(existing):
+            checks_by_name[name] = check
+    return checks_by_name
+
+
+def _check_sort_key(check: dict[str, Any]) -> tuple[str, int]:
+    return (
+        check.get("started_at")
+        or check.get("completed_at")
+        or check.get("created_at")
+        or "",
+        int(check.get("id") or 0),
+    )
+
+
+def _upsert_check_run(
+    client: GitHubClient,
+    existing_checks: dict[str, dict[str, Any]],
+    payload: dict[str, Any],
+) -> None:
+    existing = existing_checks.get(payload["name"])
+    if existing is None:
+        created = client.post("/check-runs", payload)
+        if isinstance(created, dict):
+            existing_checks[payload["name"]] = created
+        return
+    if existing.get("status") == "completed" and payload.get("status") != "completed":
+        created = client.post("/check-runs", payload)
+        if isinstance(created, dict):
+            existing_checks[payload["name"]] = created
+        return
+    _update_check_run(client, existing, payload)
+
+
+def _update_check_run(
+    client: GitHubClient,
+    existing: dict[str, Any],
+    payload: dict[str, Any],
+) -> None:
+    update_payload = dict(payload)
+    update_payload.pop("head_sha", None)
+    client.patch(f"/check-runs/{existing['id']}", update_payload)
+
+
+def _stage_check_name(stage) -> str:
+    return f"{stage.workflow} / {stage.name}"
+
+
+def _stage_external_id(pr_number: int, head_sha: str, stage_id: str) -> str:
+    return f"pr={pr_number} sha={head_sha} stage={stage_id}"
+
+
+def _latest_stage_run(
+    pr: PullRequestState,
+    stage_id: str,
+    runs: list[StageRunState],
+) -> StageRunState | None:
+    matches = [
+        run
+        for run in runs
+        if run.pr_number == pr.number
+        and run.head_sha == pr.head_sha
+        and run.stage_id == stage_id
+    ]
+    if not matches:
+        return None
+    return max(matches, key=lambda run: (run.created_at, run.run_id or 0))
+
+
+def _now_utc() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def client_repo() -> str:
+    return os.environ["GITHUB_REPOSITORY"]
 
 
 def _parse_stage_run_title(title: str) -> dict[str, Any] | None:
