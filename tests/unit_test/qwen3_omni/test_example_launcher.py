@@ -4,11 +4,30 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import pathlib
+import subprocess
 import sys
 from types import ModuleType
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+_EXAMPLES_DIR = pathlib.Path(__file__).resolve().parents[3] / "examples"
+
+
+@pytest.mark.parametrize(
+    "script",
+    [
+        "run_qwen3_omni_server.py",
+        "run_qwen3_omni_speech.py",
+    ],
+)
+def test_example_script_help(script):
+    result = subprocess.run(
+        [sys.executable, str(_EXAMPLES_DIR / script), "--help"],
+        capture_output=True,
+    )
+    assert result.returncode == 0, result.stderr.decode()
+
 
 _EXAMPLE_MODULE_PATH = (
     pathlib.Path(__file__).resolve().parents[3]
