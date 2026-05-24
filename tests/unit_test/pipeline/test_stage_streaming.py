@@ -3,8 +3,10 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import multiprocessing
 import pickle
 import queue
+import traceback
 from types import SimpleNamespace
 
 import pytest
@@ -93,6 +95,57 @@ def _payload_metadata(payload: StagePayload) -> dict:
         "relay_info": {"transfer_info": {"size": 1}},
         "tensor_info": [],
     }
+
+
+def _cuda_ipc_stage_receiver(msg_queue, result_queue) -> None:
+    try:
+        torch.cuda.set_device(0)
+        msg = msg_queue.get(timeout=30)
+
+        async def _run() -> None:
+            scheduler = SimpleNamespace(
+                outbox=queue.Queue(),
+                inbox=queue.Queue(),
+                abort=lambda request_id: None,
+            )
+            stage = Stage(
+                name="vocoder",
+                role="single",
+                get_next=lambda request_id, output: None,
+                gpu_id=0,
+                endpoints={},
+                control_plane=_FakeControlPlane(),
+                relay=_FakeRelay(),
+                scheduler=scheduler,
+            )
+            stage._stream_queue = StreamQueue(max_pending=4096)
+            stage._stream_queue.open("req")
+
+            await stage._on_stream_chunk(msg)
+
+            queued = scheduler.inbox.get_nowait()
+            item = queued.data
+            result_queue.put(
+                {
+                    "message_type": queued.type,
+                    "chunk_id": item.chunk_id,
+                    "data": item.data.detach().cpu().tolist(),
+                    "modality": item.metadata["modality"],
+                    "nested_hidden": item.metadata["nested"]["layer_hidden"]
+                    .detach()
+                    .cpu()
+                    .tolist(),
+                    "pair_tensor": item.metadata["pair"][0].detach().cpu().tolist(),
+                    "pair_value": item.metadata["pair"][1],
+                }
+            )
+
+            del item, queued, stage, scheduler
+            torch.cuda.synchronize()
+
+        asyncio.run(_run())
+    except BaseException:
+        result_queue.put({"error": traceback.format_exc()})
 
 
 def test_terminal_scheduler_stream_routes_to_coordinator() -> None:
@@ -613,61 +666,67 @@ def test_send_stream_chunk_uses_ipc_for_detected_cuda_same_gpu_chunk(
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
 def test_send_stream_chunk_uses_cuda_ipc_for_cuda_same_gpu_chunk() -> None:
     async def _run() -> None:
+        ctx = multiprocessing.get_context("spawn")
+        msg_queue = ctx.Queue()
+        result_queue = ctx.Queue()
+        receiver = ctx.Process(
+            target=_cuda_ipc_stage_receiver,
+            args=(msg_queue, result_queue),
+        )
+        receiver.start()
+
         control_plane = _FakeControlPlane()
         relay = _FakeRelay()
         codes = torch.arange(11, dtype=torch.float32, device="cuda")
         hidden = torch.ones(2, dtype=torch.float32, device="cuda")
+        pair_hidden = hidden + 1
+        metadata = {
+            "modality": "audio_codes",
+            "nested": {"layer_hidden": hidden},
+            "pair": (pair_hidden, "kept"),
+        }
 
-        await relay_io.send_stream_chunk(
-            relay,
-            control_plane,
-            request_id="req",
-            data=codes,
-            target_stage="vocoder",
-            target_endpoint="inproc://vocoder",
-            from_stage="tts_engine",
-            chunk_id=0,
-            metadata={
-                "modality": "audio_codes",
-                "nested": {"layer_hidden": hidden},
-                "pair": (hidden + 1, "kept"),
-            },
-            same_gpu_targets={"vocoder"},
-        )
+        try:
+            await relay_io.send_stream_chunk(
+                relay,
+                control_plane,
+                request_id="req",
+                data=codes,
+                target_stage="vocoder",
+                target_endpoint="inproc://vocoder",
+                from_stage="tts_engine",
+                chunk_id=0,
+                metadata=metadata,
+                same_gpu_targets={"vocoder"},
+            )
 
-        assert relay.puts == []
-        assert len(control_plane.stage_messages) == 1
-        _, _, msg = control_plane.stage_messages[0]
-        assert msg.shm_metadata["_ipc"] is True
-        assert "relay_info" not in msg.shm_metadata
+            assert relay.puts == []
+            assert len(control_plane.stage_messages) == 1
+            _, _, msg = control_plane.stage_messages[0]
+            assert msg.shm_metadata["_ipc"] is True
+            assert "relay_info" not in msg.shm_metadata
 
-        scheduler = SimpleNamespace(
-            outbox=queue.Queue(),
-            inbox=queue.Queue(),
-            abort=lambda request_id: None,
-        )
-        stage = Stage(
-            name="vocoder",
-            role="single",
-            get_next=lambda request_id, output: None,
-            gpu_id=0,
-            endpoints={},
-            control_plane=_FakeControlPlane(),
-            relay=_FakeRelay(),
-            scheduler=scheduler,
-        )
-        stage._stream_queue = StreamQueue(max_pending=4096)
-        stage._stream_queue.open("req")
+            msg_queue.put(msg)
+            result = result_queue.get(timeout=30)
+        finally:
+            receiver.join(timeout=30)
+            if receiver.is_alive():
+                receiver.terminate()
+                receiver.join(timeout=10)
+            msg_queue.close()
+            result_queue.close()
 
-        await stage._on_stream_chunk(msg)
-
-        queued = scheduler.inbox.get_nowait()
-        assert queued.type == "stream_chunk"
-        assert torch.equal(queued.data.data, codes)
-        assert queued.data.metadata["modality"] == "audio_codes"
-        assert torch.equal(queued.data.metadata["nested"]["layer_hidden"], hidden)
-        assert torch.equal(queued.data.metadata["pair"][0], hidden + 1)
-        assert queued.data.metadata["pair"][1] == "kept"
+        assert receiver.exitcode == 0
+        assert "error" not in result, result.get("error")
+        assert result == {
+            "message_type": "stream_chunk",
+            "chunk_id": 0,
+            "data": codes.detach().cpu().tolist(),
+            "modality": "audio_codes",
+            "nested_hidden": hidden.detach().cpu().tolist(),
+            "pair_tensor": pair_hidden.detach().cpu().tolist(),
+            "pair_value": "kept",
+        }
 
     asyncio.run(_run())
 

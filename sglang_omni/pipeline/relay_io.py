@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import base64
 import io
-import logging
 import pickle
 from multiprocessing.reduction import ForkingPickler
 from typing import Any
@@ -19,8 +18,6 @@ import torch
 
 from sglang_omni.proto import DataReadyMessage, StagePayload
 from sglang_omni.relay.base import Relay
-
-logger = logging.getLogger(__name__)
 
 
 def _dtype_alignment(dtype: torch.dtype) -> int:
@@ -324,18 +321,14 @@ async def send_stream_chunk(
     same_gpu_targets: set[str] | None = None,
 ) -> None:
     """Send a streaming chunk to a downstream stage."""
+    # CUDA IPC keeps CUDA tensors off the relay path, but CPU tensors and plain
+    # Python values in this object are still pickled into the control message.
+    # Keep this path for CUDA-dominant chunks with small CPU metadata.
     if (
         same_gpu_targets
         and target_stage in same_gpu_targets
         and _contains_cuda_tensor(data)
     ):
-        logger.debug(
-            "stream transport=cuda_ipc from=%s to=%s request_id=%s chunk_id=%s",
-            from_stage,
-            target_stage,
-            request_id,
-            chunk_id,
-        )
         msg = DataReadyMessage(
             request_id=request_id,
             from_stage=from_stage,
@@ -345,14 +338,6 @@ async def send_stream_chunk(
         )
         await control_plane.send_to_stage(target_stage, target_endpoint, msg)
         return
-
-    logger.debug(
-        "stream transport=relay from=%s to=%s request_id=%s chunk_id=%s",
-        from_stage,
-        target_stage,
-        request_id,
-        chunk_id,
-    )
 
     blob_key = f"{request_id}:stream:{from_stage}:{target_stage}:{chunk_id}"
 

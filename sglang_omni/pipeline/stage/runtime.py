@@ -806,12 +806,6 @@ class Stage:
                     "a local dispatcher"
                 )
 
-            logger.debug(
-                "full_payload transport=local_object from=%s to=%s request_id=%s",
-                self.name,
-                target,
-                request_id,
-            )
             await self._local_dispatcher.send_payload(
                 from_stage=self.name,
                 to_stage=target,
@@ -820,12 +814,6 @@ class Stage:
             )
             return
 
-        logger.debug(
-            "full_payload transport=relay from=%s to=%s request_id=%s",
-            self.name,
-            target,
-            request_id,
-        )
         metadata, op = await relay_io.write_payload(
             self.relay, request_id, projected_payload
         )
@@ -922,13 +910,6 @@ class Stage:
                     f"Stage {self.name}: same-process stream target {target!r} "
                     "requires a local dispatcher"
                 )
-            logger.debug(
-                "stream transport=local_object from=%s to=%s request_id=%s chunk_id=%s",
-                self.name,
-                target,
-                request_id,
-                chunk_id,
-            )
             self._record_local_stream_target(request_id, target)
             await self._local_dispatcher.send_stream_chunk(
                 from_stage=self.name,
@@ -972,15 +953,6 @@ class Stage:
                     f"Stage {self.name}: same-process stream target {target!r} "
                     "requires a local dispatcher"
                 )
-            logger.debug(
-                "stream_signal transport=local_object from=%s to=%s request_id=%s "
-                "is_done=%s error=%s",
-                self.name,
-                target,
-                request_id,
-                is_done,
-                error is not None,
-            )
             self._record_local_stream_target(request_id, target)
             await self._local_dispatcher.send_stream_signal(
                 from_stage=self.name,

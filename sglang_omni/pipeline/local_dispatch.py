@@ -7,7 +7,12 @@ from typing import Any, Iterable
 
 
 class LocalStageDispatcher:
-    """Dispatch stage objects between stages in the same OS process."""
+    """Dispatch stage objects between stages in the same OS process.
+
+    Process-local dispatch passes Python object references directly. Receivers
+    must treat payloads, stream data, and metadata as read-only unless the edge
+    explicitly gives them an isolated projected object.
+    """
 
     def __init__(self) -> None:
         self._stages: dict[str, Any] = {}
