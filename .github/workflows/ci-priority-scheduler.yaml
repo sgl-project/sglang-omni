@@ -1,0 +1,46 @@
+name: CI Priority Scheduler
+
+on:
+  pull_request_target:
+    branches: [main]
+    types:
+      - opened
+      - labeled
+      - unlabeled
+      - synchronize
+      - reopened
+      - closed
+      - ready_for_review
+      - converted_to_draft
+  issue_comment:
+    types: [created, edited]
+  workflow_run:
+    workflows: ["CI Priority Stage Runner"]
+    types: [completed]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-priority-scheduler
+  cancel-in-progress: false
+
+permissions:
+  actions: write
+  contents: read
+  pull-requests: read
+  issues: read
+
+jobs:
+  schedule-next-stage:
+    if: >-
+      github.event_name != 'issue_comment' ||
+      (github.event.issue.pull_request &&
+       contains(github.event.comment.body, '/rerun-failed-ci'))
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout scheduler code
+        uses: actions/checkout@v4
+
+      - name: Dispatch next priority CI stage
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python .github/scripts/ci_priority_dispatcher.py

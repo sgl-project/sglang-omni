@@ -1,0 +1,114 @@
+name: CI Priority Stage Runner
+
+run-name: >-
+  omni-ci pr=${{ inputs.pr_number }} sha=${{ inputs.head_sha }}
+  stage=${{ inputs.stage_id }} rerun=${{ inputs.rerun_request_id }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        required: true
+        type: string
+      head_sha:
+        required: true
+        type: string
+      head_repo:
+        required: true
+        type: string
+      stage_id:
+        required: true
+        type: string
+      stage_name:
+        required: true
+        type: string
+      stage_config:
+        required: true
+        type: string
+      rerun_request_id:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+  pull-requests: read
+  issues: read
+
+concurrency:
+  group: ci-priority-stage-runner
+  cancel-in-progress: false
+
+jobs:
+  run-stage:
+    name: ${{ inputs.stage_name }}
+    runs-on: ${{ fromJSON(inputs.stage_config).runs_on }}
+    timeout-minutes: ${{ fromJSON(inputs.stage_config).job_timeout_minutes }}
+    container:
+      image: ${{ fromJSON(inputs.stage_config).container_image }}
+      options: ${{ fromJSON(inputs.stage_config).container_options }}
+    steps:
+      - name: Checkout PR code
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.head_repo }}
+          ref: ${{ inputs.head_sha }}
+
+      - uses: ./.github/actions/omni-setup
+        if: ${{ fromJSON(inputs.stage_config).setup_action == 'true' }}
+        with:
+          venv-name: ${{ fromJSON(inputs.stage_config).venv_name }}
+          install-deps: ${{ fromJSON(inputs.stage_config).install_deps }}
+
+      - name: Prepare stage
+        if: ${{ fromJSON(inputs.stage_config).pre_run_script != '' }}
+        shell: bash
+        env:
+          OMNI_CI_HEAD_SHA: ${{ inputs.head_sha }}
+          OMNI_CI_PR_NUMBER: ${{ inputs.pr_number }}
+          OMNI_CI_STAGE_ID: ${{ inputs.stage_id }}
+          OMNI_CI_STAGE_LABEL: ${{ inputs.stage_name }}
+        run: ${{ fromJSON(inputs.stage_config).pre_run_script }}
+
+      - name: Run stage
+        if: ${{ fromJSON(inputs.stage_config).run_script != '' }}
+        timeout-minutes: ${{ fromJSON(inputs.stage_config).run_timeout_minutes }}
+        shell: bash
+        env:
+          OMNI_CI_HEAD_SHA: ${{ inputs.head_sha }}
+          OMNI_CI_PR_NUMBER: ${{ inputs.pr_number }}
+          OMNI_CI_STAGE_ID: ${{ inputs.stage_id }}
+          OMNI_CI_STAGE_LABEL: ${{ inputs.stage_name }}
+        run: ${{ fromJSON(inputs.stage_config).run_script }}
+
+      - name: Post-stage cleanup
+        if: ${{ always() && fromJSON(inputs.stage_config).post_stage_label != '' }}
+        uses: ./.github/actions/omni-post-stage
+        with:
+          stage-label: ${{ fromJSON(inputs.stage_config).post_stage_label }}
+          artifact-search-root: ${{ fromJSON(inputs.stage_config).artifact_search_root }}
+          artifact-path-globs: ${{ fromJSON(inputs.stage_config).artifact_path_globs }}
+          artifact-upload-name: ${{ fromJSON(inputs.stage_config).artifact_upload_name }}
+          artifact-upload-path: ${{ fromJSON(inputs.stage_config).artifact_upload_path }}
+          artifact-if-no-files-found: ${{ fromJSON(inputs.stage_config).artifact_if_no_files_found }}
+          summary-only: ${{ fromJSON(inputs.stage_config).summary_only }}
+
+      - name: Save cache
+        if: ${{ fromJSON(inputs.stage_config).save_cache_script != '' && fromJSON(inputs.stage_config).save_cache_always != 'true' }}
+        shell: bash
+        env:
+          OMNI_CI_HEAD_SHA: ${{ inputs.head_sha }}
+          OMNI_CI_PR_NUMBER: ${{ inputs.pr_number }}
+          OMNI_CI_STAGE_ID: ${{ inputs.stage_id }}
+          OMNI_CI_STAGE_LABEL: ${{ inputs.stage_name }}
+        run: ${{ fromJSON(inputs.stage_config).save_cache_script }}
+
+      - name: Save cache
+        if: ${{ always() && fromJSON(inputs.stage_config).save_cache_script != '' && fromJSON(inputs.stage_config).save_cache_always == 'true' }}
+        shell: bash
+        env:
+          OMNI_CI_HEAD_SHA: ${{ inputs.head_sha }}
+          OMNI_CI_PR_NUMBER: ${{ inputs.pr_number }}
+          OMNI_CI_STAGE_ID: ${{ inputs.stage_id }}
+          OMNI_CI_STAGE_LABEL: ${{ inputs.stage_name }}
+        run: ${{ fromJSON(inputs.stage_config).save_cache_script }}
