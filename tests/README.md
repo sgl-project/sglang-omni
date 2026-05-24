@@ -211,7 +211,7 @@ that happened to contain an older version of the test.
   - talker executor request gating and result-builder modality merging
   - Bailing tokenizer loader fallback for vocab compatibility
   - TP topology validation (rank-specific stage specs, talker/thinker GPU collision detection, server_args alignment before infra init)
-  - vision encoder `patch_embed` numerical equivalence: cuDNN `nn.Conv3d` vs `F.linear` reshape, asserting bf16-precision parity at the substitution boundary (requires CUDA + real Ming weights via `MING_MODEL_PATH`).
+  - vision encoder `patch_embed` numerical equivalence: `nn.Conv3d` vs `F.linear` reshape at the substitution boundary, using synthetic weights without loading real Ming checkpoints.
 
 - `unit_test/qwen3_tts/`: Qwen3-TTS Base unit tests:
   - pipeline config and registry contracts

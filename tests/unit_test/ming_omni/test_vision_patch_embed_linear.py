@@ -1,58 +1,73 @@
 # SPDX-License-Identifier: Apache-2.0
-# (wenyao) Asserts Conv3d vs F.linear patch_embed match within bf16 precision
-# at the substitution boundary. End-to-end correctness is verified separately
-# via MMMU regression: 27 downstream blocks in bf16 amplify input noise, so
-# end-to-end bit equivalence is the wrong guarantee — equal answer quality is.
+"""Patch embedding equivalence tests."""
+
 from __future__ import annotations
 
-import os
-
-import pytest
 import torch
+import torch.nn as nn
 
-pytest.importorskip("torch.cuda")
-if not torch.cuda.is_available():
-    pytest.skip("CUDA required", allow_module_level=True)
-
-
-_MODEL_PATH = os.environ.get(
-    "MING_MODEL_PATH", "/data/repo/vllm-omni/Ming-flash-omni-2.0"
-)
+from sglang_omni.models.ming_omni.components.vision_encoder import _linear_patch_embed
 
 
-def _build_encoder():
-    from sglang_omni.models.ming_omni.components.image_encoder import MingImageEncoder
-
-    enc = MingImageEncoder(model_path=_MODEL_PATH, device="cuda", dtype="bfloat16")
-    return enc.visual
+class _TinyPatchEmbed(nn.Module):
+    def __init__(
+        self,
+        *,
+        in_channels: int,
+        temporal_patch_size: int,
+        patch_size: int,
+        embed_dim: int,
+        device: torch.device,
+        dtype: torch.dtype,
+    ) -> None:
+        super().__init__()
+        self.in_channels = in_channels
+        self.temporal_patch_size = temporal_patch_size
+        self.patch_size = patch_size
+        self.embed_dim = embed_dim
+        self.proj = nn.Conv3d(
+            in_channels,
+            embed_dim,
+            kernel_size=(temporal_patch_size, patch_size, patch_size),
+            bias=True,
+            device=device,
+            dtype=dtype,
+        )
 
 
 @torch.no_grad()
 def test_patch_embed_linear_matches_conv3d():
-    """Conv3d vs F.linear with identical weights yield bf16-equivalent outputs."""
-    import torch.nn.functional as F
+    """Conv3d vs F.linear with identical weights yield equivalent outputs."""
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    dtype = torch.bfloat16 if device.type == "cuda" else torch.float32
 
-    enc = _build_encoder()
-    pe = enc.patch_embed
-    seq_len = 840
-    patch_dim = pe.in_channels * pe.temporal_patch_size * pe.patch_size * pe.patch_size
-    x = torch.randn(seq_len, patch_dim, dtype=torch.bfloat16, device="cuda")
-
-    conv_out = pe(x).view(seq_len, pe.embed_dim)
-    linear_out = F.linear(
-        x.view(seq_len, -1),
-        pe.proj.weight.view(pe.embed_dim, -1),
-        pe.proj.bias,
+    torch.manual_seed(0)
+    pe = _TinyPatchEmbed(
+        in_channels=3,
+        temporal_patch_size=2,
+        patch_size=14,
+        embed_dim=16,
+        device=device,
+        dtype=dtype,
     )
+    seq_len = 7
+    patch_dim = pe.in_channels * pe.temporal_patch_size * pe.patch_size * pe.patch_size
+    x = torch.randn(seq_len, patch_dim, dtype=dtype, device=device)
 
-    assert conv_out.shape == linear_out.shape
-    assert not torch.isnan(linear_out).any()
-    max_diff = (conv_out.float() - linear_out.float()).abs().max().item()
-    # (wenyao) bf16 has ~0.78% relative precision; 2× slack covers
-    # cuDNN-conv vs cuBLAS-GEMM accumulation-order differences.
-    tol = 0.02 * conv_out.abs().max().item()
-    assert max_diff <= tol, (
-        f"patch_embed Conv3d vs F.linear diverged beyond bf16 precision: "
-        f"max_abs_diff={max_diff:.4e}, tol={tol:.4e} "
-        f"(output max_abs={conv_out.abs().max().item():.4e})"
+    conv_out = pe.proj(
+        x.view(
+            seq_len,
+            pe.in_channels,
+            pe.temporal_patch_size,
+            pe.patch_size,
+            pe.patch_size,
+        )
+    ).view(seq_len, pe.embed_dim)
+    linear_out = _linear_patch_embed(pe, x)
+
+    torch.testing.assert_close(
+        linear_out,
+        conv_out,
+        rtol=2e-2 if dtype is torch.bfloat16 else 1e-5,
+        atol=2e-2 if dtype is torch.bfloat16 else 1e-5,
     )

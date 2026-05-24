@@ -102,6 +102,23 @@ def _build_qwen3_vision_block_kwargs(
     return kwargs
 
 
+def _linear_patch_embed(
+    patch_embed: nn.Module, pixel_values: torch.Tensor
+) -> torch.Tensor:
+    """Run Qwen3VLVisionPatchEmbed's Conv3d projection as an equivalent Linear."""
+    patch_dim = (
+        patch_embed.in_channels
+        * patch_embed.temporal_patch_size
+        * patch_embed.patch_size
+        * patch_embed.patch_size
+    )
+    return F.linear(
+        pixel_values.view(-1, patch_dim),
+        patch_embed.proj.weight.view(patch_embed.embed_dim, -1),
+        patch_embed.proj.bias,
+    )
+
+
 class MingOmniVisionEncoder(nn.Module):
     """ViT for Ming-Omni, composed from sglang sub-modules.
 
@@ -327,22 +344,9 @@ class MingOmniVisionEncoder(nn.Module):
             Otherwise: [seq_len, out_hidden_size].
         """
         x = pixel_values.to(device=self.device, dtype=self.dtype)
-        # (wenyao) Qwen3VLVisionPatchEmbed wraps nn.Conv3d with kernel_size ==
-        # input spatial dim (1x1x1 output). cuDNN has no fast algorithm for
-        # this shape and falls back to ~3.7s/call on H100 bf16. Same math as
-        # Linear((C*Tp*Pp*Pp) -> embed_dim); cuBLAS GEMM handles it instantly.
-        _pe = self.patch_embed
-        x = F.linear(
-            x.view(
-                -1,
-                _pe.in_channels
-                * _pe.temporal_patch_size
-                * _pe.patch_size
-                * _pe.patch_size,
-            ),
-            _pe.proj.weight.view(_pe.embed_dim, -1),
-            _pe.proj.bias,
-        )
+        # Qwen3VLVisionPatchEmbed wraps a Conv3d with one output cell per
+        # patch. This is equivalent to Linear and avoids a slow cuDNN path.
+        x = _linear_patch_embed(self.patch_embed, x)
 
         # Convert grid_thw to list for iteration
         if isinstance(grid_thw, torch.Tensor):
