@@ -207,10 +207,10 @@ def _all_model_ids(cfg):
 
 
 def _required_model_ids_for_tests(cfg, test_names):
-    model_ids = [cfg["hf_model_id"]]
     by_test = cfg.get("hf_model_ids_by_test") or {}
+    model_ids = []
     for test_name in sorted(set(test_names)):
-        model_ids.extend(by_test.get(test_name) or [])
+        model_ids.extend(by_test.get(test_name) or [cfg["hf_model_id"]])
     return _unique_ordered(model_ids)
 
 
