@@ -513,6 +513,77 @@ def assert_streaming_consistency(
     _assert_metric_collector_if_local(collector, checks)
 
 
+def _wer_sample_label(sample: dict, index: int) -> str:
+    sample_id = sample.get("id")
+    if sample_id is None:
+        return f"per_sample[{index}]"
+    return f"sample {sample_id}"
+
+
+def _wer_result_sections(
+    results: dict,
+    checks: MetricCheckCollector,
+) -> tuple[dict, list[dict]]:
+    summary = results.get("summary")
+    if summary is None:
+        checks.fail("WER results schema: missing summary")
+        summary = {}
+    elif not isinstance(summary, dict):
+        checks.fail(
+            "WER results schema: summary must be a dict, "
+            f"got {type(summary).__name__}"
+        )
+        summary = {}
+
+    per_sample = results.get("per_sample")
+    if per_sample is None:
+        checks.fail("WER results schema: missing per_sample")
+        return summary, []
+    if not isinstance(per_sample, list):
+        checks.fail(
+            "WER results schema: per_sample must be a list, "
+            f"got {type(per_sample).__name__}"
+        )
+        return summary, []
+
+    valid_samples: list[dict] = []
+    for index, sample in enumerate(per_sample):
+        if isinstance(sample, dict):
+            valid_samples.append(sample)
+        else:
+            checks.fail(
+                f"WER results schema: per_sample[{index}] must be a dict, "
+                f"got {type(sample).__name__}"
+            )
+    return summary, valid_samples
+
+
+def _check_wer_per_sample_schema(
+    per_sample: list[dict],
+    checks: MetricCheckCollector,
+) -> None:
+    for index, sample in enumerate(per_sample):
+        label = _wer_sample_label(sample, index)
+        if "wer" not in sample:
+            checks.fail(f"WER results schema: {label} missing required 'wer' field")
+            continue
+
+        wer = sample["wer"]
+        if wer is None:
+            if sample.get("is_success") is True:
+                checks.fail(
+                    f"WER results schema: {label} has wer=None "
+                    "despite is_success=True"
+                )
+            continue
+
+        if isinstance(wer, bool) or not isinstance(wer, (int, float)):
+            checks.fail(
+                f"WER results schema: {label} wer must be numeric or None, "
+                f"got {type(wer).__name__}"
+            )
+
+
 def assert_wer_partitioned(
     results: dict,
     *,
@@ -534,8 +605,8 @@ def assert_wer_partitioned(
     single corpus-wide WER.
     """
     checks = _metric_collector(collector, "partitioned WER")
-    summary = results.get("summary", {})
-    per_sample = results.get("per_sample", [])
+    summary, per_sample = _wer_result_sections(results, checks)
+    _check_wer_per_sample_schema(per_sample, checks)
 
     failed_details = [
         f"  sample {s.get('id')}: {s.get('error')}"
@@ -583,8 +654,8 @@ def assert_wer_results(
 ) -> None:
     """Verify WER results are within thresholds."""
     checks = _metric_collector(collector, "WER results")
-    summary = results.get("summary", {})
-    per_sample = results.get("per_sample", [])
+    summary, per_sample = _wer_result_sections(results, checks)
+    _check_wer_per_sample_schema(per_sample, checks)
 
     failed_details = [
         f"  sample {s.get('id')}: {s.get('error')}"
@@ -624,7 +695,11 @@ def assert_wer_results(
     )
     for sample in per_sample:
         wer = sample.get("wer")
-        if wer is not None:
+        if (
+            wer is not None
+            and not isinstance(wer, bool)
+            and isinstance(wer, (int, float))
+        ):
             checks.check(
                 wer <= max_per_sample_wer,
                 f"Sample {sample.get('id')} WER {wer:.4f} > {max_per_sample_wer}",
