@@ -372,11 +372,7 @@ def main() -> int:
         print("Waiting for active high-priority CI work:")
         for run in active_runs:
             job_state = run.get("job_conclusion") or run.get("job_status")
-            job_message = (
-                f", job={run['job']} ({job_state})"
-                if "job" in run
-                else ""
-            )
+            job_message = f", job={run['job']} ({job_state})" if "job" in run else ""
             print(
                 f"  - {run['name']} for PR #{run['pr']} "
                 f"({run['status']}, run_id={run['id']}{job_message}): "
