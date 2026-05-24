@@ -53,15 +53,15 @@ mmmu_speed:
         scale: 1
         digits: 3
       status: OK
-    tok_per_s_agg:
-      source: "_MMMU_P95['tok_per_s_agg']"
+    output_tok_per_req_s:
+      source: "_MMMU_P95['output_tok_per_req_s']"
       json_file: "test_mmmu_accuracy_and_speed0/mmmu/mmmu_results.json"
-      json_path: "speed.tok_per_s_agg"
+      json_path: "speed.output_tok_per_req_s"
       worst: min
       display:
-        label: "Tok/s (aggregate)"
+        label: "Output tok/req-s"
         scale: 1
-        digits: 2
+        digits: 1
       status: OK
     latency_mean_s:
       source: "_MMMU_P95['latency_mean_s']"
@@ -170,15 +170,15 @@ mmmu_talker_speed:
         scale: 1
         digits: 3
       status: OK
-    tok_per_s_agg:
-      source: "_MMMU_AUDIO_P95['tok_per_s_agg']"
+    output_tok_per_req_s:
+      source: "_MMMU_AUDIO_P95['output_tok_per_req_s']"
       json_file: "test_mmmu_audio_wer_and_speed0/mmmu_audio/mmmu_results.json"
-      json_path: "speed.tok_per_s_agg"
+      json_path: "speed.output_tok_per_req_s"
       worst: min
       display:
-        label: "Tok/s (aggregate)"
+        label: "Output tok/req-s"
         scale: 1
-        digits: 2
+        digits: 1
       status: OK
     latency_mean_s:
       source: "_MMMU_AUDIO_P95['latency_mean_s']"
@@ -254,15 +254,15 @@ mmsu_speed:
         scale: 1
         digits: 3
       status: OK
-    tok_per_s_agg:
-      source: "_MMSU_P95['tok_per_s_agg']"
+    output_tok_per_req_s:
+      source: "_MMSU_P95['output_tok_per_req_s']"
       json_file: "test_mmsu_accuracy_and_speed0/mmsu/mmsu_results.json"
-      json_path: "speed_metrics.tok_per_s_agg"
+      json_path: "speed_metrics.output_tok_per_req_s"
       worst: min
       display:
-        label: "Tok/s (aggregate)"
+        label: "Output tok/req-s"
         scale: 1
-        digits: 2
+        digits: 1
       status: OK
     latency_mean_s:
       source: "_MMSU_P95['latency_mean_s']"
@@ -371,15 +371,15 @@ mmsu_talker_speed:
         scale: 1
         digits: 3
       status: OK
-    tok_per_s_agg:
-      source: "_MMSU_AUDIO_P95['tok_per_s_agg']"
+    output_tok_per_req_s:
+      source: "_MMSU_AUDIO_P95['output_tok_per_req_s']"
       json_file: "test_mmsu_audio_wer_and_speed0/mmsu_audio/mmsu_results.json"
-      json_path: "speed_metrics.tok_per_s_agg"
+      json_path: "speed_metrics.output_tok_per_req_s"
       worst: min
       display:
-        label: "Tok/s (aggregate)"
+        label: "Output tok/req-s"
         scale: 1
-        digits: 2
+        digits: 1
       status: OK
     latency_mean_s:
       source: "_MMSU_AUDIO_P95['latency_mean_s']"
@@ -467,15 +467,15 @@ tts_speed:
         scale: 1
         digits: 3
       status: OK
-    tok_per_s_agg:
-      source: "_VC_NON_STREAM_P95['tok_per_s_agg']"
+    output_tok_per_req_s:
+      source: "_VC_NON_STREAM_P95['output_tok_per_req_s']"
       json_file: "vc_nonstream0/speed_results.json"
-      json_path: "summary.tok_per_s_agg"
+      json_path: "summary.output_tok_per_req_s"
       worst: min
       display:
-        label: "Tok/s (aggregate)"
+        label: "Output tok/req-s"
         scale: 1
-        digits: 2
+        digits: 1
       status: OK
     latency_mean_s:
       source: "_VC_NON_STREAM_P95['latency_mean_s']"
@@ -553,15 +553,15 @@ videoamme_speed:
         scale: 1
         digits: 3
       status: OK
-    tok_per_s_agg:
-      source: "_VIDEOAMME_P95['tok_per_s_agg']"
+    output_tok_per_req_s:
+      source: "_VIDEOAMME_P95['output_tok_per_req_s']"
       json_file: "test_videoamme_accuracy_and_sp0/videoamme/videoamme_results.json"
-      json_path: "speed.tok_per_s_agg"
+      json_path: "speed.output_tok_per_req_s"
       worst: min
       display:
-        label: "Tok/s (aggregate)"
+        label: "Output tok/req-s"
         scale: 1
-        digits: 2
+        digits: 1
       status: OK
     latency_mean_s:
       source: "_VIDEOAMME_P95['latency_mean_s']"
@@ -670,15 +670,15 @@ videoamme_talker_speed:
         scale: 1
         digits: 3
       status: OK
-    tok_per_s_agg:
-      source: "_VIDEOAMME_TALKER_AUDIO_P95['tok_per_s_agg']"
+    output_tok_per_req_s:
+      source: "_VIDEOAMME_TALKER_AUDIO_P95['output_tok_per_req_s']"
       json_file: "test_videoamme_talker_accuracy0/videoamme_audio/videoamme_results.json"
-      json_path: "speed.tok_per_s_agg"
+      json_path: "speed.output_tok_per_req_s"
       worst: min
       display:
-        label: "Tok/s (aggregate)"
+        label: "Output tok/req-s"
         scale: 1
-        digits: 2
+        digits: 1
       status: OK
     latency_mean_s:
       source: "_VIDEOAMME_TALKER_AUDIO_P95['latency_mean_s']"
@@ -797,15 +797,15 @@ videoamme_talker_tp2_speed:
         scale: 1
         digits: 3
       status: OK
-    tok_per_s_agg:
-      source: "_VIDEOAMME_TALKER_TP2_AUDIO_P95['tok_per_s_agg']"
+    output_tok_per_req_s:
+      source: "_VIDEOAMME_TALKER_TP2_AUDIO_P95['output_tok_per_req_s']"
       json_file: "test_videoamme_talker_tp2_accu0/videoamme_audio/videoamme_results.json"
-      json_path: "speed.tok_per_s_agg"
+      json_path: "speed.output_tok_per_req_s"
       worst: min
       display:
-        label: "Tok/s (aggregate)"
+        label: "Output tok/req-s"
         scale: 1
-        digits: 2
+        digits: 1
       status: OK
     latency_mean_s:
       source: "_VIDEOAMME_TALKER_TP2_AUDIO_P95['latency_mean_s']"
@@ -883,15 +883,15 @@ videomme_speed:
         scale: 1
         digits: 3
       status: OK
-    tok_per_s_agg:
-      source: "_VIDEOMME_P95['tok_per_s_agg']"
+    output_tok_per_req_s:
+      source: "_VIDEOMME_P95['output_tok_per_req_s']"
       json_file: "test_videomme_accuracy_and_spe0/videomme/videomme_results.json"
-      json_path: "speed.tok_per_s_agg"
+      json_path: "speed.output_tok_per_req_s"
       worst: min
       display:
-        label: "Tok/s (aggregate)"
+        label: "Output tok/req-s"
         scale: 1
-        digits: 2
+        digits: 1
       status: OK
     latency_mean_s:
       source: "_VIDEOMME_P95['latency_mean_s']"
@@ -1000,15 +1000,15 @@ videomme_talker_speed:
         scale: 1
         digits: 3
       status: OK
-    tok_per_s_agg:
-      source: "_VIDEOMME_TALKER_AUDIO_P95['tok_per_s_agg']"
+    output_tok_per_req_s:
+      source: "_VIDEOMME_TALKER_AUDIO_P95['output_tok_per_req_s']"
       json_file: "test_videomme_tts_accuracy_wer0/videomme_audio/videomme_results.json"
-      json_path: "speed.tok_per_s_agg"
+      json_path: "speed.output_tok_per_req_s"
       worst: min
       display:
-        label: "Tok/s (aggregate)"
+        label: "Output tok/req-s"
         scale: 1
-        digits: 2
+        digits: 1
       status: OK
     latency_mean_s:
       source: "_VIDEOMME_TALKER_AUDIO_P95['latency_mean_s']"

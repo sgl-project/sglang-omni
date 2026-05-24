@@ -37,7 +37,7 @@ class MMMURecord(TypedDict):
     latency_s: float
     prompt_tokens: int
     completion_tokens: int
-    tok_per_s: float | None
+    output_token_rate: float | None
     predicted: str
     raw_response: str
     is_correct: bool
@@ -333,7 +333,9 @@ def build_mmmu_result_records(
             "latency_s": round(result.latency_s, 4),
             "prompt_tokens": result.prompt_tokens,
             "completion_tokens": result.completion_tokens,
-            "tok_per_s": (round(result.tok_per_s, 1) if result.tok_per_s > 0 else None),
+            "output_token_rate": (
+                round(result.tok_per_s, 1) if result.tok_per_s > 0 else None
+            ),
             "predicted": "",
             "raw_response": result.error,
             "is_correct": False,

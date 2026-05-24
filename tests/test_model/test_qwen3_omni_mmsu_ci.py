@@ -35,7 +35,7 @@ MMSU_MIN_ACCURACY = 0.7
 _MMSU_P95 = {
     16: {
         "throughput_qps": 50.399,
-        "tok_per_s_agg": 6.5,
+        "output_tok_per_req_s": 6.5,
         "latency_mean_s": 0.317,
     },
 }

@@ -43,7 +43,7 @@ class VideoMMERecord(TypedDict):
     latency_s: float
     prompt_tokens: int
     completion_tokens: int
-    tok_per_s: float | None
+    output_token_rate: float | None
     audio_duration_s: float | None
     rtf: float | None
     wav_path: str
@@ -211,7 +211,9 @@ def build_videomme_result_records(
             "latency_s": round(result.latency_s, 4),
             "prompt_tokens": result.prompt_tokens,
             "completion_tokens": result.completion_tokens,
-            "tok_per_s": (round(result.tok_per_s, 1) if result.tok_per_s > 0 else None),
+            "output_token_rate": (
+                round(result.tok_per_s, 1) if result.tok_per_s > 0 else None
+            ),
             "audio_duration_s": (
                 round(result.audio_duration_s, 4)
                 if result.audio_duration_s > 0

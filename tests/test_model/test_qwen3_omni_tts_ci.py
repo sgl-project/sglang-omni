@@ -77,7 +77,7 @@ VC_SIMILARITY_MEAN_MIN = 60.0
 _VC_NON_STREAM_P95 = {
     16: {
         "throughput_qps": 6.187,
-        "tok_per_s_agg": 6.1,
+        "output_tok_per_req_s": 6.1,
         "latency_mean_s": 2.418,
         "rtf_mean": 0.7912,
     },
@@ -85,10 +85,15 @@ _VC_NON_STREAM_P95 = {
 
 
 # Slack factors applied to P95 reference values to derive CI thresholds.
-# Higher-is-better metrics (throughput): threshold = P95 x slack_higher
+# Higher-is-better metrics (throughput, output tok/req-s): threshold = P95 x slack_higher
 # Lower-is-better metrics (latency, rtf): threshold = P95 x slack_lower
 
+QWEN3_OMNI_SEEDTTS_RTF_MEAN_MAX = 0.95
 VC_NON_STREAM_THRESHOLDS = apply_slack(_VC_NON_STREAM_P95)
+VC_NON_STREAM_THRESHOLDS[CONCURRENCY]["rtf_mean_max"] = min(
+    VC_NON_STREAM_THRESHOLDS[CONCURRENCY]["rtf_mean_max"],
+    QWEN3_OMNI_SEEDTTS_RTF_MEAN_MAX,
+)
 
 
 def _run_benchmark(

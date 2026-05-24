@@ -57,14 +57,14 @@ Accuracy (accuracy)
 
 Speed (speed)
 
-| Model      | Config                | latency_mean_s | latency_p95_s | throughput_qps | tok_per_s_mean | tok_per_s_agg | Source                                          |
-| ---------- | --------------------- | -------------- | ------------- | -------------- | -------------- | ------------- | ----------------------------------------------- |
-| Qwen3-Omni | modalities=text       | 0.209          | 0.290         | 38.31          | 10.2           | 9.9           | PR #411 [H200, V1-pipeline, full-set, c=8]             |
-| Qwen3-Omni | modalities=text+audio | 0.207          | 0.278         | 38.59          | 10.2           | 10.0          | PR #411 [H200, V1-pipeline, full-set, c=8, text-only server] |
-| Qwen3-Omni | modalities=text       | 0.512          | 0.864         | 15.598         | 4.5            | 4.0           | PR #351 [H100, full-set, c=8]                   |
-| Qwen3-Omni | modalities=text+audio | 0.515          | 0.884         | 15.521         | 4.4            | 4.0           | PR #351 [H100, full-set, c=8] (text-only server) |
-| Qwen3-Omni | modalities=text       | 0.188          | 0.261         | 42.64          | 11.3           | 11.0          | PR #411 [H100, V1-pipeline, full-set, c=8] |
-| Qwen3-Omni | modalities=text+audio | 0.191          | 0.264         | 41.82          | 11.1           | 10.8          | PR #411 [H100, V1-pipeline, full-set, c=8, text-only server] |
+| Model      | Config                | latency_mean_s | latency_p95_s | throughput_qps | output_tok_per_req_s | Source                                          |
+| ---------- | --------------------- | -------------- | ------------- | -------------- | ------------------------------ | ----------------------------------------------- |
+| Qwen3-Omni | modalities=text       | 0.209          | 0.290         | 38.31          | 9.9                            | PR #411 [H200, V1-pipeline, full-set, c=8]             |
+| Qwen3-Omni | modalities=text+audio | 0.207          | 0.278         | 38.59          | 10.0                           | PR #411 [H200, V1-pipeline, full-set, c=8, text-only server] |
+| Qwen3-Omni | modalities=text       | 0.512          | 0.864         | 15.598         | 4.0                            | PR #351 [H100, full-set, c=8]                   |
+| Qwen3-Omni | modalities=text+audio | 0.515          | 0.884         | 15.521         | 4.0                            | PR #351 [H100, full-set, c=8] (text-only server) |
+| Qwen3-Omni | modalities=text       | 0.188          | 0.261         | 42.64          | 11.0                           | PR #411 [H100, V1-pipeline, full-set, c=8] |
+| Qwen3-Omni | modalities=text+audio | 0.191          | 0.264         | 41.82          | 10.8                           | PR #411 [H100, V1-pipeline, full-set, c=8, text-only server] |
 
 Local v1 Pipeline Result (this workspace, 2026-05-01)
 
@@ -81,9 +81,9 @@ Accuracy (summary)
 
 Speed (speed)
 
-| Model      | Config                         | latency_mean_s | latency_p95_s | throughput_qps | tok_per_s_mean | tok_per_s_agg | Source                                                                       |
-| ---------- | ------------------------------ | -------------- | ------------- | -------------- | -------------- | ------------- | ---------------------------------------------------------------------------- |
-| Qwen3-Omni | stage6 talker, mmsu-ci-2000    | 22.049         | 31.935        | 0.362          | 2.7            | 2.7           | local v1 run [H200, 2000-sample stage-6 backing set, speech pipeline, c=1] |
+| Model      | Config                         | latency_mean_s | latency_p95_s | throughput_qps | output_tok_per_req_s | Source                                                                       |
+| ---------- | ------------------------------ | -------------- | ------------- | -------------- | ------------------------------ | ---------------------------------------------------------------------------- |
+| Qwen3-Omni | stage6 talker, mmsu-ci-2000    | 22.049         | 31.935        | 0.362          | 2.7                            | local v1 run [H200, 2000-sample stage-6 backing set, speech pipeline, c=1] |
 
 Additional local notes: `audio_returned=2000/2000`, `rtf_mean=1.2704`.
 """

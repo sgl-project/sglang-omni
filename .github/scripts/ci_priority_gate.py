@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-"""Wait normal-priority CI behind active high-priority PR CI runs."""
+"""Wait normal-priority CI behind active high-priority PR CI work."""
 
 from __future__ import annotations
 
@@ -13,6 +13,8 @@ import urllib.parse
 import urllib.request
 
 ACTIVE_STATUSES = ("queued", "in_progress", "waiting", "pending", "requested")
+BLOCKING_COMPLETED_STATUSES = ("failure", "timed_out", "cancelled")
+BLOCKING_JOB_CONCLUSIONS = {"failure", "timed_out", "cancelled"}
 DEFAULT_PRIORITY_WORKFLOWS = (
     "PR Test",
     "PR Test (Examples)",
@@ -81,6 +83,14 @@ def _label_names_from_payload(event: dict) -> set[str]:
     return {label["name"] for label in pull_request.get("labels", [])}
 
 
+def _pr_number_from_payload(event: dict) -> int | None:
+    pull_request = event.get("pull_request") or {}
+    number = pull_request.get("number") or event.get("number")
+    if number is None:
+        return None
+    return int(number)
+
+
 def _priority_workflows() -> set[str]:
     raw = os.environ.get("OMNI_CI_PRIORITY_WORKFLOWS")
     if raw:
@@ -89,26 +99,41 @@ def _priority_workflows() -> set[str]:
 
 
 def _is_current_run_high_priority(
+    client: GitHubClient,
     event: dict,
     *,
     run_label: str,
     high_priority_label: str,
+    stage_name: str,
 ) -> bool:
-    if os.environ.get("GITHUB_EVENT_NAME") != "pull_request":
+    if os.environ.get("GITHUB_EVENT_NAME") != "pull_request" and not event.get(
+        "pull_request"
+    ):
         print("Non-PR event; priority gate is bypassed.")
         return True
 
+    pr_number = _pr_number_from_payload(event)
     labels = _label_names_from_payload(event)
+    if pr_number is not None:
+        try:
+            labels = _labels_for_pr(client, {}, pr_number)
+        except urllib.error.HTTPError as exc:
+            print(
+                "Failed to refresh current PR labels from GitHub API; "
+                f"falling back to event payload labels: HTTP {exc.code} {exc.reason}"
+            )
     if high_priority_label in labels and run_label in labels:
+        stage_message = f" for `{stage_name}`" if stage_name else ""
         print(
             f"Current PR has both `{run_label}` and `{high_priority_label}`; "
-            "priority gate is bypassed."
+            f"priority gate is bypassed{stage_message}."
         )
         return True
 
+    stage_message = f" `{stage_name}`" if stage_name else ""
     print(
-        f"Current PR is normal priority; waiting behind active `{run_label}` + "
-        f"`{high_priority_label}` CI runs."
+        f"Current PR is normal priority; waiting behind active{stage_message} "
+        f"`{run_label}` + `{high_priority_label}` CI work."
     )
     return False
 
@@ -124,6 +149,68 @@ def _labels_for_pr(
     return label_cache[pr_number]
 
 
+def _head_sha_for_pr(
+    client: GitHubClient,
+    head_sha_cache: dict[int, str | None],
+    pr_number: int,
+) -> str | None:
+    if pr_number not in head_sha_cache:
+        pull_request = client.get(f"/pulls/{pr_number}")
+        head = pull_request.get("head") or {}
+        head_sha_cache[pr_number] = head.get("sha")
+    return head_sha_cache[pr_number]
+
+
+def _job_matches_stage(job_name: str | None, stage_name: str) -> bool:
+    if not stage_name:
+        return True
+    if not job_name:
+        return False
+    if job_name == stage_name:
+        return True
+    # Matrix jobs append their matrix values to the configured job name.
+    if job_name.startswith(f"{stage_name} ("):
+        return True
+    # Reusable workflow jobs can be reported as "<caller job> / <called job>".
+    if job_name.endswith(f" / {stage_name}"):
+        return True
+    return f" / {stage_name} (" in job_name
+
+
+def _active_matching_jobs(
+    client: GitHubClient,
+    *,
+    run_id: int,
+    stage_name: str,
+) -> list[dict]:
+    matches: list[dict] = []
+    for job in client.paginate(f"/actions/runs/{run_id}/jobs"):
+        if job.get("status") not in ACTIVE_STATUSES:
+            continue
+        if not _job_matches_stage(job.get("name"), stage_name):
+            continue
+        matches.append(job)
+    return matches
+
+
+def _blocking_completed_jobs(
+    client: GitHubClient,
+    *,
+    run_id: int,
+    stage_name: str,
+) -> list[dict]:
+    matches: list[dict] = []
+    for job in client.paginate(f"/actions/runs/{run_id}/jobs"):
+        if job.get("status") != "completed":
+            continue
+        if job.get("conclusion") not in BLOCKING_JOB_CONCLUSIONS:
+            continue
+        if not _job_matches_stage(job.get("name"), stage_name):
+            continue
+        matches.append(job)
+    return matches
+
+
 def _active_high_priority_runs(
     client: GitHubClient,
     *,
@@ -131,12 +218,18 @@ def _active_high_priority_runs(
     priority_workflows: set[str],
     run_label: str,
     high_priority_label: str,
+    stage_name: str,
 ) -> list[dict]:
     label_cache: dict[int, set[str]] = {}
+    head_sha_cache: dict[int, str | None] = {}
     matches: list[dict] = []
     seen_run_ids: set[int] = set()
 
-    for status in ACTIVE_STATUSES:
+    statuses = ACTIVE_STATUSES
+    if stage_name:
+        statuses += BLOCKING_COMPLETED_STATUSES
+
+    for status in statuses:
         for run in client.paginate("/actions/runs", {"status": status}):
             run_id = int(run["id"])
             if run_id == current_run_id or run_id in seen_run_ids:
@@ -151,7 +244,70 @@ def _active_high_priority_runs(
             for pr in run.get("pull_requests") or []:
                 pr_number = int(pr["number"])
                 labels = _labels_for_pr(client, label_cache, pr_number)
-                if run_label in labels and high_priority_label in labels:
+                if run_label not in labels or high_priority_label not in labels:
+                    continue
+
+                if stage_name:
+                    if status in BLOCKING_COMPLETED_STATUSES:
+                        current_head_sha = _head_sha_for_pr(
+                            client,
+                            head_sha_cache,
+                            pr_number,
+                        )
+                        if current_head_sha != run.get("head_sha"):
+                            continue
+                        jobs = _blocking_completed_jobs(
+                            client,
+                            run_id=run_id,
+                            stage_name=stage_name,
+                        )
+                    else:
+                        jobs = _active_matching_jobs(
+                            client,
+                            run_id=run_id,
+                            stage_name=stage_name,
+                        )
+                        if not jobs:
+                            jobs = _blocking_completed_jobs(
+                                client,
+                                run_id=run_id,
+                                stage_name=stage_name,
+                            )
+                        if not jobs:
+                            # A freshly queued run can briefly have no materialized
+                            # jobs. Block conservatively until GitHub exposes them.
+                            if run.get("status") in {"queued", "requested", "pending"}:
+                                matches.append(
+                                    {
+                                        "id": run_id,
+                                        "name": run.get("name"),
+                                        "pr": pr_number,
+                                        "status": run.get("status"),
+                                        "url": run.get("html_url"),
+                                        "job": stage_name,
+                                        "job_status": "not materialized",
+                                        "job_conclusion": None,
+                                    }
+                                )
+                                break
+                            continue
+
+                    for job in jobs:
+                        matches.append(
+                            {
+                                "id": run_id,
+                                "name": run.get("name"),
+                                "pr": pr_number,
+                                "status": run.get("status"),
+                                "url": run.get("html_url"),
+                                "job": job.get("name"),
+                                "job_status": job.get("status"),
+                                "job_conclusion": job.get("conclusion"),
+                            }
+                        )
+                    break
+
+                else:
                     matches.append(
                         {
                             "id": run_id,
@@ -172,19 +328,22 @@ def main() -> int:
     current_run_id = int(os.environ["GITHUB_RUN_ID"])
     run_label = os.environ.get("OMNI_CI_RUN_LABEL", "run-ci")
     high_priority_label = os.environ.get("OMNI_CI_HIGH_PRIORITY_LABEL", "high-priority")
+    stage_name = os.environ.get("OMNI_CI_PRIORITY_STAGE", "")
     poll_seconds = _env_int("OMNI_CI_PRIORITY_POLL_SECONDS", 30)
     timeout_seconds = _env_int("OMNI_CI_PRIORITY_TIMEOUT_SECONDS", 6 * 60 * 60)
     workflows = _priority_workflows()
     event = _load_event()
+    client = GitHubClient(repo, token)
 
     if _is_current_run_high_priority(
+        client,
         event,
         run_label=run_label,
         high_priority_label=high_priority_label,
+        stage_name=stage_name,
     ):
         return 0
 
-    client = GitHubClient(repo, token)
     deadline = time.monotonic() + timeout_seconds
 
     while True:
@@ -195,6 +354,7 @@ def main() -> int:
                 priority_workflows=workflows,
                 run_label=run_label,
                 high_priority_label=high_priority_label,
+                stage_name=stage_name,
             )
         except urllib.error.HTTPError as exc:
             print(f"GitHub API request failed: HTTP {exc.code} {exc.reason}")
@@ -202,16 +362,25 @@ def main() -> int:
             return 1
 
         if not active_runs:
+            stage_message = f" `{stage_name}`" if stage_name else ""
             print(
-                "No active high-priority CI runs found; normal-priority CI can start."
+                f"No active high-priority{stage_message} CI work found; "
+                "normal-priority CI can start."
             )
             return 0
 
-        print("Waiting for active high-priority CI runs:")
+        print("Waiting for active high-priority CI work:")
         for run in active_runs:
+            job_state = run.get("job_conclusion") or run.get("job_status")
+            job_message = (
+                f", job={run['job']} ({job_state})"
+                if "job" in run
+                else ""
+            )
             print(
                 f"  - {run['name']} for PR #{run['pr']} "
-                f"({run['status']}, run_id={run['id']}): {run['url']}"
+                f"({run['status']}, run_id={run['id']}{job_message}): "
+                f"{run['url']}"
             )
 
         if time.monotonic() >= deadline:
