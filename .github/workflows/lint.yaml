@@ -1,6 +1,11 @@
 name: Lint
 
-on: [ pull_request ]
+on:
+  pull_request:
+
+concurrency:
+  group: lint-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   lint:
