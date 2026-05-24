@@ -28,6 +28,8 @@ RUN_TITLE_RE = re.compile(
     r"stage=(?P<stage>\S+) rerun=(?P<rerun>\S+)$"
 )
 RERUN_COMMAND = "/rerun-failed-ci"
+DISPATCH_VISIBILITY_TIMEOUT_SECONDS = 60
+DISPATCH_VISIBILITY_POLL_SECONDS = 3
 
 
 @dataclass(frozen=True)
@@ -309,6 +311,43 @@ def _dispatch_stage(client: GitHubClient, meta: PullRequestMeta, selected) -> No
         },
     }
     client.post(f"/actions/workflows/{workflow_id}/dispatches", payload)
+    _wait_for_dispatched_stage(client, selected)
+
+
+def _wait_for_dispatched_stage(client: GitHubClient, selected) -> None:
+    timeout_seconds = int(
+        os.environ.get(
+            "OMNI_CI_DISPATCH_VISIBILITY_TIMEOUT_SECONDS",
+            str(DISPATCH_VISIBILITY_TIMEOUT_SECONDS),
+        )
+    )
+    poll_seconds = int(
+        os.environ.get(
+            "OMNI_CI_DISPATCH_VISIBILITY_POLL_SECONDS",
+            str(DISPATCH_VISIBILITY_POLL_SECONDS),
+        )
+    )
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        for run in _stage_runs(client):
+            if (
+                run.pr_number == selected.pr.number
+                and run.head_sha == selected.pr.head_sha
+                and run.stage_id == selected.stage.id
+                and run.rerun_request_id == selected.rerun_request_id
+            ):
+                print(
+                    "Dispatched stage is now visible to the scheduler: "
+                    f"run_id={run.run_id} status={run.status}."
+                )
+                return
+
+        if time.monotonic() >= deadline:
+            raise RuntimeError(
+                "Timed out waiting for the dispatched CI stage runner to become "
+                "visible through the GitHub Actions API."
+            )
+        time.sleep(poll_seconds)
 
 
 if __name__ == "__main__":

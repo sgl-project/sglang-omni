@@ -35,6 +35,10 @@ permissions:
   pull-requests: read
   issues: read
 
+concurrency:
+  group: ci-priority-stage-runner
+  cancel-in-progress: false
+
 jobs:
   run-stage:
     name: ${{ inputs.stage_name }}
