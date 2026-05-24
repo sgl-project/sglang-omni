@@ -17,52 +17,32 @@ permissions:
   issues: read
 
 # DAG:
-#   setup ──► stage-1-thinker
-#         ├─► stage-2-tts
-#         ├─► stage-3-mmmu
-#         ├─► stage-4-mmmu-talker
-#         ├─► stage-5-mmsu
-#         ├─► stage-6-mmsu-talker
-#         ├─► stage-7-videomme
-#         ├─► stage-8-videomme-talker
-#         ├─► stage-9-videoamme
-#         ├─► stage-10-videoamme-talker
-#         └─► stage-11-thinker-tp2
-# Each reusable stage runs an internal ubuntu-latest priority gate before
-# requesting a self-hosted runner.
+#   All 11 stages are dispatched in parallel.
+#   stage-1-thinker
+#   stage-2-tts
+#   stage-3-mmmu
+#   stage-4-mmmu-talker
+#   stage-5-mmsu
+#   stage-6-mmsu-talker
+#   stage-7-videomme
+#   stage-8-videomme-talker
+#   stage-9-videoamme
+#   stage-10-videoamme-talker
+#   stage-11-thinker-tp2
 
 jobs:
-  setup:
-    name: setup
-    # CI gate — runs on workflow_dispatch, or on non-draft PRs carrying the `run-ci` label.
-    # Keep in sync with the same gate in test.yaml / test-examples.yaml / test-s2pro-ci.yaml.
+  stage-1-thinker:
+    name: stage 1 - thinker length integration
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (!github.event.pull_request.draft &&
        contains(github.event.pull_request.labels.*.name, 'run-ci'))
     uses: ./.github/workflows/_omni-priority-stage.yaml
     with:
-      stage-name: setup
-      job-timeout-minutes: "15"
-      venv-name: omni-qwen3
-      install-deps: "true"
-      save-cache-always: "true"
-      save-cache-script: |
-        if omni-qwen3/bin/python -c "import torch; import av; from whisper.normalizers import EnglishTextNormalizer" 2>/dev/null; then
-          rm -rf /github/home/omni-qwen3
-          cp -p -r omni-qwen3 /github/home/
-        else
-          echo "::warning::Skipping cache save — venv appears incomplete or corrupted"
-        fi
-
-  stage-1-thinker:
-    name: stage 1 - thinker length integration
-    needs: setup
-    uses: ./.github/workflows/_omni-priority-stage.yaml
-    with:
       stage-name: stage 1 - thinker length integration
       job-timeout-minutes: "10"
       venv-name: omni-qwen3
+      install-deps: "true"
       run-script: |
         source omni-qwen3/bin/activate
         export PYTHONPATH=$PWD
@@ -74,12 +54,16 @@ jobs:
 
   stage-2-tts:
     name: stage 2 - TTS speed + WER + SIM
-    needs: setup
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (!github.event.pull_request.draft &&
+       contains(github.event.pull_request.labels.*.name, 'run-ci'))
     uses: ./.github/workflows/_omni-priority-stage.yaml
     with:
       stage-name: stage 2 - TTS speed + WER + SIM
       job-timeout-minutes: "10"
       venv-name: omni-qwen3
+      install-deps: "true"
       pre-run-script: |
         source omni-qwen3/bin/activate
         export HF_ENDPOINT=https://hf-mirror.com
@@ -103,12 +87,16 @@ jobs:
 
   stage-3-mmmu:
     name: stage 3 - MMMU accuracy + speed
-    needs: setup
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (!github.event.pull_request.draft &&
+       contains(github.event.pull_request.labels.*.name, 'run-ci'))
     uses: ./.github/workflows/_omni-priority-stage.yaml
     with:
       stage-name: stage 3 - MMMU accuracy + speed
       job-timeout-minutes: "10"
       venv-name: omni-qwen3
+      install-deps: "true"
       run-script: |
         source omni-qwen3/bin/activate
         export PYTHONPATH=$PWD
@@ -124,12 +112,16 @@ jobs:
 
   stage-4-mmmu-talker:
     name: stage 4 - MMMU Talker
-    needs: setup
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (!github.event.pull_request.draft &&
+       contains(github.event.pull_request.labels.*.name, 'run-ci'))
     uses: ./.github/workflows/_omni-priority-stage.yaml
     with:
       stage-name: stage 4 - MMMU Talker
       job-timeout-minutes: "10"
       venv-name: omni-qwen3
+      install-deps: "true"
       run-script: |
         source omni-qwen3/bin/activate
         export PYTHONPATH=$PWD
@@ -145,12 +137,16 @@ jobs:
 
   stage-5-mmsu:
     name: stage 5 - MMSU accuracy + speed
-    needs: setup
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (!github.event.pull_request.draft &&
+       contains(github.event.pull_request.labels.*.name, 'run-ci'))
     uses: ./.github/workflows/_omni-priority-stage.yaml
     with:
       stage-name: stage 5 - MMSU accuracy + speed
       job-timeout-minutes: "10"
       venv-name: omni-qwen3
+      install-deps: "true"
       run-script: |
         source omni-qwen3/bin/activate
         export PYTHONPATH=$PWD
@@ -167,12 +163,16 @@ jobs:
 
   stage-6-mmsu-talker:
     name: stage 6 - MMSU Talker
-    needs: setup
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (!github.event.pull_request.draft &&
+       contains(github.event.pull_request.labels.*.name, 'run-ci'))
     uses: ./.github/workflows/_omni-priority-stage.yaml
     with:
       stage-name: stage 6 - MMSU Talker
       job-timeout-minutes: "10"
       venv-name: omni-qwen3
+      install-deps: "true"
       run-script: |
         source omni-qwen3/bin/activate
         export PYTHONPATH=$PWD
@@ -188,12 +188,16 @@ jobs:
 
   stage-7-videomme:
     name: stage 7 - Video-MME accuracy + speed
-    needs: setup
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (!github.event.pull_request.draft &&
+       contains(github.event.pull_request.labels.*.name, 'run-ci'))
     uses: ./.github/workflows/_omni-priority-stage.yaml
     with:
       stage-name: stage 7 - Video-MME accuracy + speed
       job-timeout-minutes: "10"
       venv-name: omni-qwen3
+      install-deps: "true"
       run-script: |
         source omni-qwen3/bin/activate
         export PYTHONPATH=$PWD
@@ -209,12 +213,16 @@ jobs:
 
   stage-8-videomme-talker:
     name: stage 8 - Video-MME Talker
-    needs: setup
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (!github.event.pull_request.draft &&
+       contains(github.event.pull_request.labels.*.name, 'run-ci'))
     uses: ./.github/workflows/_omni-priority-stage.yaml
     with:
       stage-name: stage 8 - Video-MME Talker
       job-timeout-minutes: "10"
       venv-name: omni-qwen3
+      install-deps: "true"
       run-script: |
         source omni-qwen3/bin/activate
         export PYTHONPATH=$PWD
@@ -230,12 +238,16 @@ jobs:
 
   stage-9-videoamme:
     name: stage 9 - Video-AMME accuracy + speed
-    needs: setup
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (!github.event.pull_request.draft &&
+       contains(github.event.pull_request.labels.*.name, 'run-ci'))
     uses: ./.github/workflows/_omni-priority-stage.yaml
     with:
       stage-name: stage 9 - Video-AMME accuracy + speed
       job-timeout-minutes: "10"
       venv-name: omni-qwen3
+      install-deps: "true"
       run-script: |
         source omni-qwen3/bin/activate
         export PYTHONPATH=$PWD
@@ -251,12 +263,16 @@ jobs:
 
   stage-10-videoamme-talker:
     name: stage 10 - Video-AMME Talker
-    needs: setup
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (!github.event.pull_request.draft &&
+       contains(github.event.pull_request.labels.*.name, 'run-ci'))
     uses: ./.github/workflows/_omni-priority-stage.yaml
     with:
       stage-name: stage 10 - Video-AMME Talker
       job-timeout-minutes: "10"
       venv-name: omni-qwen3
+      install-deps: "true"
       run-script: |
         source omni-qwen3/bin/activate
         export PYTHONPATH=$PWD
@@ -272,12 +288,16 @@ jobs:
 
   stage-11-thinker-tp2:
     name: stage 11 - Thinker TP=2 (Video-AMME Talker)
-    needs: setup
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (!github.event.pull_request.draft &&
+       contains(github.event.pull_request.labels.*.name, 'run-ci'))
     uses: ./.github/workflows/_omni-priority-stage.yaml
     with:
       stage-name: stage 11 - Thinker TP=2 (Video-AMME Talker)
       job-timeout-minutes: "10"
       venv-name: omni-qwen3
+      install-deps: "true"
       run-script: |
         source omni-qwen3/bin/activate
         export PYTHONPATH=$PWD
