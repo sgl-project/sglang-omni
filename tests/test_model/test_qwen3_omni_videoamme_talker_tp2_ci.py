@@ -27,6 +27,7 @@ from benchmarks.metrics.performance import print_speed_summary
 from benchmarks.metrics.video import print_videomme_accuracy_summary
 from benchmarks.metrics.wer import print_wer_summary
 from tests.utils import (
+    MetricCheckCollector,
     ServerHandle,
     apply_slack,
     apply_wer_slack,
@@ -64,19 +65,27 @@ def test_thinker_tp2_actually_applied(
     Prevents silent fallback to TP=1
     """
     log_file = qwen3_omni_talker_server_tp2.log_file
-    assert log_file is not None and log_file.exists(), (
-        "TP=2 fixture did not capture a server log — check that the fixture "
-        "passes log_file=... to ServerHandle"
+    checks = MetricCheckCollector("Thinker TP=2 server log checks")
+    checks.check(
+        log_file is not None and log_file.exists(),
+        "TP=2 fixture did not capture a server log - check that the fixture "
+        "passes log_file=... to ServerHandle",
     )
+    if log_file is None or not log_file.exists():
+        checks.assert_all()
+        return
     text = log_file.read_text()
-    assert "tp_rank=0/2" in text, (
+    checks.check(
+        "tp_rank=0/2" in text,
         f"Thinker leader (rank 0) is not running at tp_size=2; "
-        f"'tp_rank=0/2' missing from server log:\n{text[-2000:]}"
+        f"'tp_rank=0/2' missing from server log:\n{text[-2000:]}",
     )
-    assert "tp_rank=1/2" in text, (
+    checks.check(
+        "tp_rank=1/2" in text,
         f"Thinker follower (rank 1) did not come up; 'tp_rank=1/2' "
-        f"missing from server log:\n{text[-2000:]}"
+        f"missing from server log:\n{text[-2000:]}",
     )
+    checks.assert_all()
 
 
 @pytest.mark.benchmark
@@ -115,31 +124,44 @@ def test_videoamme_talker_tp2_accuracy_wer_and_speed(
         CONCURRENCY,
         title="Video-AMME Talker TP=2 Speed",
     )
-    print_wer_summary(results["wer"]["summary"], config.model)
+    if "wer" in results:
+        print_wer_summary(results["wer"]["summary"], config.model)
     failed = summary.get("failed", 0)
     total = summary.get("total_samples", 0)
-    assert failed == 0, (
+    checks = MetricCheckCollector("Video-AMME Talker TP=2 accuracy, WER, and speed")
+    checks.check(
+        failed == 0,
         f"Video-AMME Talker TP=2 had {failed}/{total} failed requests "
-        f"(timeouts or empty responses); any failure fails the test"
+        f"(timeouts or empty responses); any failure fails the test",
     )
-    assert summary["accuracy"] >= VIDEOAMME_TALKER_TP2_THINKER_TEXT_MIN_ACCURACY, (
-        f"Video-AMME Talker TP=2 thinker-text accuracy {summary['accuracy']:.4f} "
-        f"({summary['accuracy'] * 100:.1f}%) < "
-        f"threshold {VIDEOAMME_TALKER_TP2_THINKER_TEXT_MIN_ACCURACY} "
-        f"({VIDEOAMME_TALKER_TP2_THINKER_TEXT_MIN_ACCURACY * 100:.0f}%)"
-    )
+    accuracy = summary.get("accuracy")
+    if accuracy is None:
+        checks.fail("Video-AMME Talker TP=2 thinker-text accuracy missing from summary")
+    else:
+        checks.check(
+            accuracy >= VIDEOAMME_TALKER_TP2_THINKER_TEXT_MIN_ACCURACY,
+            f"Video-AMME Talker TP=2 thinker-text accuracy {accuracy:.4f} "
+            f"({accuracy * 100:.1f}%) < "
+            f"threshold {VIDEOAMME_TALKER_TP2_THINKER_TEXT_MIN_ACCURACY} "
+            f"({VIDEOAMME_TALKER_TP2_THINKER_TEXT_MIN_ACCURACY * 100:.0f}%)",
+        )
 
-    assert (
-        "wer" in results
-    ), "Audio WER results missing from Video-AMME Talker TP=2 output"
-    assert_wer_partitioned(
-        results["wer"],
-        max_wer_below_50_corpus=VIDEOAMME_TALKER_TP2_WER_BELOW_50_CORPUS_THRESHOLD,
-        max_n_above_50=VIDEOAMME_TALKER_TP2_N_ABOVE_50_MAX,
-    )
+    if "wer" not in results:
+        checks.fail("Audio WER results missing from Video-AMME Talker TP=2 output")
+    else:
+        assert_wer_partitioned(
+            results["wer"],
+            max_wer_below_50_corpus=VIDEOAMME_TALKER_TP2_WER_BELOW_50_CORPUS_THRESHOLD,
+            max_n_above_50=VIDEOAMME_TALKER_TP2_N_ABOVE_50_MAX,
+            collector=checks,
+        )
     assert_speed_thresholds(
-        results["speed"], VIDEOAMME_TALKER_TP2_THRESHOLDS, CONCURRENCY
+        results["speed"],
+        VIDEOAMME_TALKER_TP2_THRESHOLDS,
+        CONCURRENCY,
+        collector=checks,
     )
+    checks.assert_all()
 
 
 if __name__ == "__main__":

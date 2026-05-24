@@ -30,6 +30,7 @@ from tests.test_model.omni_router_utils import (
     router_worker_traffic_guard,
 )
 from tests.utils import (
+    MetricCheckCollector,
     apply_slack,
     apply_wer_slack,
     assert_speed_thresholds,
@@ -98,28 +99,46 @@ def test_videoamme_talker_accuracy_wer_and_speed(
         CONCURRENCY,
         title="Video-AMME Talker Speed",
     )
-    print_wer_summary(results["wer"]["summary"], config.model)
+    if "wer" in results:
+        print_wer_summary(results["wer"]["summary"], config.model)
     failed = summary.get("failed", 0)
     total = summary.get("total_samples", 0)
-    router_guard.assert_served(min_total_requests=total)
-    assert failed == 0, (
+    checks = MetricCheckCollector("Video-AMME Talker accuracy, WER, and speed")
+    checks.check_assertion(
+        "router traffic",
+        router_guard.assert_served,
+        min_total_requests=total,
+    )
+    checks.check(
+        failed == 0,
         f"Video-AMME Talker had {failed}/{total} failed requests "
-        f"(timeouts or empty responses); any failure fails the test"
+        f"(timeouts or empty responses); any failure fails the test",
     )
-    assert summary["accuracy"] >= VIDEOAMME_TALKER_THINKER_TEXT_MIN_ACCURACY, (
-        f"Video-AMME Talker thinker-text accuracy {summary['accuracy']:.4f} "
-        f"({summary['accuracy'] * 100:.1f}%) < "
-        f"threshold {VIDEOAMME_TALKER_THINKER_TEXT_MIN_ACCURACY} "
-        f"({VIDEOAMME_TALKER_THINKER_TEXT_MIN_ACCURACY * 100:.0f}%)"
-    )
+    accuracy = summary.get("accuracy")
+    if accuracy is None:
+        checks.fail("Video-AMME Talker thinker-text accuracy missing from summary")
+    else:
+        checks.check(
+            accuracy >= VIDEOAMME_TALKER_THINKER_TEXT_MIN_ACCURACY,
+            f"Video-AMME Talker thinker-text accuracy {accuracy:.4f} "
+            f"({accuracy * 100:.1f}%) < "
+            f"threshold {VIDEOAMME_TALKER_THINKER_TEXT_MIN_ACCURACY} "
+            f"({VIDEOAMME_TALKER_THINKER_TEXT_MIN_ACCURACY * 100:.0f}%)",
+        )
 
-    assert "wer" in results, "Audio WER results missing from Video-AMME Talker output"
-    assert_wer_partitioned(
-        results["wer"],
-        max_wer_below_50_corpus=VIDEOAMME_TALKER_WER_BELOW_50_CORPUS_THRESHOLD,
-        max_n_above_50=VIDEOAMME_TALKER_N_ABOVE_50_MAX,
+    if "wer" not in results:
+        checks.fail("Audio WER results missing from Video-AMME Talker output")
+    else:
+        assert_wer_partitioned(
+            results["wer"],
+            max_wer_below_50_corpus=VIDEOAMME_TALKER_WER_BELOW_50_CORPUS_THRESHOLD,
+            max_n_above_50=VIDEOAMME_TALKER_N_ABOVE_50_MAX,
+            collector=checks,
+        )
+    assert_speed_thresholds(
+        results["speed"], VIDEOAMME_TALKER_THRESHOLDS, CONCURRENCY, collector=checks
     )
-    assert_speed_thresholds(results["speed"], VIDEOAMME_TALKER_THRESHOLDS, CONCURRENCY)
+    checks.assert_all()
 
 
 if __name__ == "__main__":

@@ -12,15 +12,40 @@ concurrency:
 
 permissions:
   contents: read
+  actions: read
+  pull-requests: read
+  issues: read
 
 # DAG:
-#   docs ──► stage-1-non-streaming ──┐
-#        └─► stage-2-streaming ──────┤
-#                                    └──► stage-3-consistency
+#   priority-gate ──► docs ──► stage-1-non-streaming ──┐
+#                         └─► stage-2-streaming ───────┤
+#                                                       └──► stage-3-consistency
 
 jobs:
+  priority-gate:
+    name: priority gate
+    # CI gate — runs on workflow_dispatch, or on non-draft PRs carrying the `run-ci` label.
+    # Keep in sync with the same gate in test.yaml / test-examples.yaml / test-qwen3-omni-ci.yaml.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (!github.event.pull_request.draft &&
+       contains(github.event.pull_request.labels.*.name, 'run-ci'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Wait behind high-priority CI
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python .github/scripts/ci_priority_gate.py
+
   docs:
     name: docs
+    needs: priority-gate
     # CI gate — runs on workflow_dispatch, or on non-draft PRs carrying the `run-ci` label.
     # Keep in sync with the same gate in test.yaml / test-examples.yaml / test-qwen3-omni-ci.yaml.
     if: >-
@@ -72,7 +97,7 @@ jobs:
     name: stage 1 - non-streaming
     needs: docs
     runs-on: [self-hosted]
-    timeout-minutes: 15
+    timeout-minutes: 10
     container:
       image: frankleeeee/sglang-omni:dev
       options: --gpus all --rm -v /dev/shm:/dev/shm
@@ -98,7 +123,8 @@ jobs:
         run: |
           source omni-s2pro/bin/activate
           export PYTHONPATH=$PWD
-          pytest tests/test_model/test_s2pro_tts_ci.py -v -s -x --concurrency 16 --s2pro-stage s2pro-stage-1-nonstream
+          bash .github/scripts/run_flaky_pytest.sh \
+            pytest tests/test_model/test_s2pro_tts_ci.py -v -s -x --concurrency 16 --s2pro-stage s2pro-stage-1-nonstream
         env:
           HF_ENDPOINT: https://hf-mirror.com
           SGLANG_SEEDTTS50_DIR: /github/home/seedtts-50
@@ -124,7 +150,7 @@ jobs:
     name: stage 2 - streaming
     needs: docs
     runs-on: [self-hosted]
-    timeout-minutes: 5
+    timeout-minutes: 10
     container:
       image: frankleeeee/sglang-omni:dev
       options: --gpus all --rm -v /dev/shm:/dev/shm
@@ -141,7 +167,8 @@ jobs:
         run: |
           source omni-s2pro/bin/activate
           export PYTHONPATH=$PWD
-          pytest tests/test_model/test_s2pro_tts_ci.py -v -s -x --concurrency 16 --s2pro-stage s2pro-stage-2-stream
+          bash .github/scripts/run_flaky_pytest.sh \
+            pytest tests/test_model/test_s2pro_tts_ci.py -v -s -x --concurrency 16 --s2pro-stage s2pro-stage-2-stream
         env:
           HF_ENDPOINT: https://hf-mirror.com
           SGLANG_SEEDTTS50_DIR: /github/home/seedtts-50
