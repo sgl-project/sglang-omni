@@ -753,8 +753,8 @@ class OmniScheduler:
         self._pending_stream_chunks.pop(request_id, None)
         self._pending_stream_done.discard(request_id)
         self._deferred_request_payloads.pop(request_id, None)
-        self._first_emit_done.discard(request_id)
-        self._prefill_start_done.discard(request_id)
+        self.__dict__.setdefault("_first_emit_done", set()).discard(request_id)
+        self.__dict__.setdefault("_prefill_start_done", set()).discard(request_id)
         self.waiting_queue = [
             req for req in self.waiting_queue if req.rid != request_id
         ]

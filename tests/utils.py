@@ -43,8 +43,9 @@ class MetricCheckCollector:
 
     def check_assertion(
         self,
-        label: str,
+        check_label: str,
         func: Callable,
+        /,
         *args,
         **kwargs,
     ) -> None:
@@ -52,7 +53,7 @@ class MetricCheckCollector:
             func(*args, **kwargs)
         except AssertionError as exc:
             detail = str(exc) or exc.__class__.__name__
-            self.fail(f"{label}: {detail}")
+            self.fail(f"{check_label}: {detail}")
 
     def assert_all(self) -> None:
         if not self.failures:
@@ -252,10 +253,10 @@ def assert_summary_metrics(
         f"Expected positive audio duration, got {audio_duration_mean_s}",
     )
     if check_tokens:
-        gen_tokens_mean = summary.get("gen_tokens_mean", 0)
+        output_tokens_mean = summary.get("output_tokens_mean", 0)
         checks.check(
-            gen_tokens_mean > 0,
-            f"Expected positive gen_tokens_mean, got {gen_tokens_mean}",
+            output_tokens_mean > 0,
+            f"Expected positive output_tokens_mean, got {output_tokens_mean}",
         )
         prompt_tokens_mean = summary.get("prompt_tokens_mean", 0)
         checks.check(
@@ -304,14 +305,17 @@ def apply_slack(
 ) -> dict[int, dict[str, float]]:
     """Derive CI thresholds from P95 references with uniform slack.
 
-    Higher-is-better metrics (throughput, tok/s): threshold = P95 x slack_higher
-    Lower-is-better metrics (latency, rtf):      threshold = P95 x slack_lower
+    Higher-is-better metrics (throughput, output tok/req-s): threshold = P95 x slack_higher
+    Lower-is-better metrics (latency, rtf):            threshold = P95 x slack_lower
     """
     result: dict[int, dict[str, float]] = {}
     for conc, m in p95.items():
         thresholds = {
             "throughput_qps_min": round(m["throughput_qps"] * slack_higher, 2),
-            "tok_per_s_agg_min": round(m["tok_per_s_agg"] * slack_higher, 1),
+            "output_tok_per_req_s_min": round(
+                m["output_tok_per_req_s"] * slack_higher,
+                1,
+            ),
             "latency_mean_s_max": round(m["latency_mean_s"] * slack_lower, 1),
         }
         if "rtf_mean" in m:
@@ -353,12 +357,13 @@ def assert_speed_thresholds(
         f"throughput_qps {throughput_qps} < "
         f"{level_thresholds['throughput_qps_min']} at concurrency {concurrency}",
     )
-    tok_per_s_agg = summary.get("tok_per_s_agg")
+    output_tok_per_req_s = summary.get("output_tok_per_req_s")
     checks.check(
-        tok_per_s_agg is not None
-        and tok_per_s_agg >= level_thresholds["tok_per_s_agg_min"],
-        f"tok_per_s_agg {tok_per_s_agg} < "
-        f"{level_thresholds['tok_per_s_agg_min']} at concurrency {concurrency}",
+        output_tok_per_req_s is not None
+        and output_tok_per_req_s >= level_thresholds["output_tok_per_req_s_min"],
+        f"output_tok_per_req_s {output_tok_per_req_s} < "
+        f"{level_thresholds['output_tok_per_req_s_min']} "
+        f"at concurrency {concurrency}",
     )
     latency_mean_s = summary.get("latency_mean_s")
     checks.check(

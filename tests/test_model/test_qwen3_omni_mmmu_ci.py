@@ -34,7 +34,7 @@ MMMU_MIN_ACCURACY = 0.62
 _MMMU_P95 = {
     16: {
         "throughput_qps": 1.245,
-        "tok_per_s_agg": 57.8,
+        "output_tok_per_req_s": 57.8,
         "latency_mean_s": 10.881,
     },
 }

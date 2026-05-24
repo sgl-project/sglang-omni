@@ -73,7 +73,7 @@ MMMU_AUDIO_N_ABOVE_50_MAX = 3
 _MMMU_AUDIO_P95 = {
     16: {
         "throughput_qps": 0.758,
-        "tok_per_s_agg": 8.9,
+        "output_tok_per_req_s": 8.9,
         "latency_mean_s": 14.645,
         "rtf_mean": 0.4056,
     },

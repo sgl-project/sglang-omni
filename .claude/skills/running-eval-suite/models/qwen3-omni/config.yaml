@@ -168,8 +168,7 @@ rows:
       latency_mean_s: { path: "speed_metrics.latency_mean_s", format: "{v:.3f}" }
       latency_p95_s:  { path: "speed_metrics.latency_p95_s",  format: "{v:.3f}" }
       throughput_qps: { path: "speed_metrics.throughput_qps", format: "{v:.2f}" }
-      tok_per_s_mean: { path: "speed_metrics.tok_per_s_mean", format: "{v:.1f}" }
-      tok_per_s_agg:  { path: "speed_metrics.tok_per_s_agg",  format: "{v:.1f}" }
+      output_tok_per_req_s:  { path: "speed_metrics.output_tok_per_req_s",  format: "{v:.1f}" }
 
   - id: mmsu-text-audio-c8-speed
     file: "benchmarks/eval/benchmark_omni_mmsu.py"
@@ -184,8 +183,7 @@ rows:
       latency_mean_s: { path: "speed_metrics.latency_mean_s", format: "{v:.3f}" }
       latency_p95_s:  { path: "speed_metrics.latency_p95_s",  format: "{v:.3f}" }
       throughput_qps: { path: "speed_metrics.throughput_qps", format: "{v:.2f}" }
-      tok_per_s_mean: { path: "speed_metrics.tok_per_s_mean", format: "{v:.1f}" }
-      tok_per_s_agg:  { path: "speed_metrics.tok_per_s_agg",  format: "{v:.1f}" }
+      output_tok_per_req_s:  { path: "speed_metrics.output_tok_per_req_s",  format: "{v:.1f}" }
 
   # ===================== mmmu (Qwen3-Omni text-only c=8 + full-pipeline c=1) =====================
   - id: mmmu-no-audio-c8-accuracy
@@ -228,8 +226,7 @@ rows:
       latency_mean_s: { path: "speed.latency_mean_s", format: "{v:.3f}" }
       latency_p95_s:  { path: "speed.latency_p95_s",  format: "{v:.3f}" }
       throughput_qps: { path: "speed.throughput_qps", format: "{v:.3f}" }
-      tok_per_s_mean: { path: "speed.tok_per_s_mean", format: "{v:.1f}" }
-      tok_per_s_agg:  { path: "speed.tok_per_s_agg",  format: "{v:.1f}" }
+      output_tok_per_req_s:  { path: "speed.output_tok_per_req_s",  format: "{v:.1f}" }
 
   - id: mmmu-audio-c1-speed
     file: "benchmarks/eval/benchmark_omni_mmmu.py"
@@ -243,8 +240,7 @@ rows:
       latency_mean_s: { path: "speed.latency_mean_s", format: "{v:.3f}" }
       latency_p95_s:  { path: "speed.latency_p95_s",  format: "{v:.3f}" }
       throughput_qps: { path: "speed.throughput_qps", format: "{v:.3f}" }
-      tok_per_s_mean: { path: "speed.tok_per_s_mean", format: "{v:.1f}" }
-      tok_per_s_agg:  { path: "speed.tok_per_s_agg",  format: "{v:.1f}" }
+      output_tok_per_req_s:  { path: "speed.output_tok_per_req_s",  format: "{v:.1f}" }
 
   # ===================== seedtts (Qwen3-Omni full-pipeline talker, c=16) =====================
   # NOTE: the EN VC=T accuracy row's reference Source carries `n=3 mean`. If
@@ -329,8 +325,7 @@ rows:
       latency_p95_s:  { path: "summary.latency_p95_s",  format: "{v:.2f}" }
       rtf_mean:       { path: "summary.rtf_mean",       format: "{v:.2f}" }
       throughput_qps: { path: "summary.throughput_qps", format: "{v:.3f}" }
-      tok_per_s_mean: { path: "summary.tok_per_s_mean", format: "{v:.1f}" }
-      tok_per_s_agg:  { path: "summary.tok_per_s_agg",  format: "{v:.1f}" }
+      output_tok_per_req_s:  { path: "summary.output_tok_per_req_s",  format: "{v:.1f}" }
 
   - id: seedtts-en-vc-f-c16-speed
     file: "benchmarks/eval/benchmark_omni_seedtts.py"
@@ -345,8 +340,7 @@ rows:
       latency_p95_s:  { path: "summary.latency_p95_s",  format: "{v:.2f}" }
       rtf_mean:       { path: "summary.rtf_mean",       format: "{v:.2f}" }
       throughput_qps: { path: "summary.throughput_qps", format: "{v:.3f}" }
-      tok_per_s_mean: { path: "summary.tok_per_s_mean", format: "{v:.1f}" }
-      tok_per_s_agg:  { path: "summary.tok_per_s_agg",  format: "{v:.1f}" }
+      output_tok_per_req_s:  { path: "summary.output_tok_per_req_s",  format: "{v:.1f}" }
 
   - id: seedtts-zh-vc-t-c16-speed
     file: "benchmarks/eval/benchmark_omni_seedtts.py"
@@ -361,8 +355,7 @@ rows:
       latency_p95_s:  { path: "summary.latency_p95_s",  format: "{v:.2f}" }
       rtf_mean:       { path: "summary.rtf_mean",       format: "{v:.2f}" }
       throughput_qps: { path: "summary.throughput_qps", format: "{v:.3f}" }
-      tok_per_s_mean: { path: "summary.tok_per_s_mean", format: "{v:.1f}" }
-      tok_per_s_agg:  { path: "summary.tok_per_s_agg",  format: "{v:.1f}" }
+      output_tok_per_req_s:  { path: "summary.output_tok_per_req_s",  format: "{v:.1f}" }
 
   - id: seedtts-zh-vc-f-c16-speed
     file: "benchmarks/eval/benchmark_omni_seedtts.py"
@@ -377,8 +370,7 @@ rows:
       latency_p95_s:  { path: "summary.latency_p95_s",  format: "{v:.2f}" }
       rtf_mean:       { path: "summary.rtf_mean",       format: "{v:.2f}" }
       throughput_qps: { path: "summary.throughput_qps", format: "{v:.3f}" }
-      tok_per_s_mean: { path: "summary.tok_per_s_mean", format: "{v:.1f}" }
-      tok_per_s_agg:  { path: "summary.tok_per_s_agg",  format: "{v:.1f}" }
+      output_tok_per_req_s:  { path: "summary.output_tok_per_req_s",  format: "{v:.1f}" }
 
   # ===================== videomme (Qwen3-Omni text-only c=4, 2520 samples) =====================
   - id: videomme-thinker-only-c4-accuracy
@@ -412,10 +404,9 @@ rows:
       latency_median_s:    { path: "speed.latency_median_s", format: "{v:.3f}" }
       latency_p95_s:       { path: "speed.latency_p95_s",    format: "{v:.3f}" }
       latency_p99_s:       { path: "speed.latency_p99_s",    format: "{v:.3f}" }
-      tok_per_s_mean:      { path: "speed.tok_per_s_mean",   format: "{v:.1f}" }
-      tok_per_s_agg:       { path: "speed.tok_per_s_agg",    format: "{v:.1f}" }
-      gen_tokens_mean:     { path: "speed.gen_tokens_mean",  format: "{v}" }
-      gen_tokens_total:    { path: "speed.gen_tokens_total", format: "{v}" }
+      output_tok_per_req_s:       { path: "speed.output_tok_per_req_s",    format: "{v:.1f}" }
+      output_tokens_mean:     { path: "speed.output_tokens_mean",  format: "{v}" }
+      output_tokens_total:    { path: "speed.output_tokens_total", format: "{v}" }
       prompt_tokens_mean:  { path: "speed.prompt_tokens_mean",  format: "{v}" }
       prompt_tokens_total: { path: "speed.prompt_tokens_total", format: "{v}" }
       throughput_qps:      { path: "speed.throughput_qps",   format: "{v:.3f}" }
@@ -467,10 +458,9 @@ rows:
       latency_median_s:    { path: "speed.latency_median_s", format: "{v:.3f}" }
       latency_p95_s:       { path: "speed.latency_p95_s",    format: "{v:.3f}" }
       latency_p99_s:       { path: "speed.latency_p99_s",    format: "{v:.3f}" }
-      tok_per_s_mean:      { path: "speed.tok_per_s_mean",   format: "{v:.1f}" }
-      tok_per_s_agg:       { path: "speed.tok_per_s_agg",    format: "{v:.1f}" }
-      gen_tokens_mean:     { path: "speed.gen_tokens_mean",  format: "{v}" }
-      gen_tokens_total:    { path: "speed.gen_tokens_total", format: "{v}" }
+      output_tok_per_req_s:       { path: "speed.output_tok_per_req_s",    format: "{v:.1f}" }
+      output_tokens_mean:     { path: "speed.output_tokens_mean",  format: "{v}" }
+      output_tokens_total:    { path: "speed.output_tokens_total", format: "{v}" }
       prompt_tokens_mean:  { path: "speed.prompt_tokens_mean",  format: "{v}" }
       prompt_tokens_total: { path: "speed.prompt_tokens_total", format: "{v}" }
       throughput_qps:      { path: "speed.throughput_qps",   format: "{v:.3f}" }
@@ -491,10 +481,9 @@ rows:
       latency_median_s:    { path: "speed.latency_median_s", format: "{v:.3f}" }
       latency_p95_s:       { path: "speed.latency_p95_s",    format: "{v:.3f}" }
       latency_p99_s:       { path: "speed.latency_p99_s",    format: "{v:.3f}" }
-      tok_per_s_mean:      { path: "speed.tok_per_s_mean",   format: "{v:.1f}" }
-      tok_per_s_agg:       { path: "speed.tok_per_s_agg",    format: "{v:.1f}" }
-      gen_tokens_mean:     { path: "speed.gen_tokens_mean",  format: "{v}" }
-      gen_tokens_total:    { path: "speed.gen_tokens_total", format: "{v}" }
+      output_tok_per_req_s:       { path: "speed.output_tok_per_req_s",    format: "{v:.1f}" }
+      output_tokens_mean:     { path: "speed.output_tokens_mean",  format: "{v}" }
+      output_tokens_total:    { path: "speed.output_tokens_total", format: "{v}" }
       prompt_tokens_mean:  { path: "speed.prompt_tokens_mean",  format: "{v}" }
       prompt_tokens_total: { path: "speed.prompt_tokens_total", format: "{v}" }
       throughput_qps:      { path: "speed.throughput_qps",   format: "{v:.3f}" }
@@ -601,8 +590,7 @@ rows:
       latency_p95_s:  { path: "summary.latency_p95_s",  format: "{v:.3f}" }
       rtf_mean:       { path: "summary.rtf_mean",       format: "{v:.3f}" }
       throughput_qps: { path: "summary.throughput_qps", format: "{v:.3f}" }
-      tok_per_s_mean: { path: "summary.tok_per_s_mean", format: "{v:.1f}" }
-      tok_per_s_agg:  { path: "summary.tok_per_s_agg",  format: "{v:.1f}" }
+      output_tok_per_req_s:  { path: "summary.output_tok_per_req_s",  format: "{v:.1f}" }
 
   - id: s2pro-tts-en-stream-true-c16-speed
     file: "benchmarks/eval/benchmark_tts_seedtts.py"
@@ -618,8 +606,7 @@ rows:
       latency_p95_s:  { path: "summary.latency_p95_s",  format: "{v:.3f}" }
       rtf_mean:       { path: "summary.rtf_mean",       format: "{v:.3f}" }
       throughput_qps: { path: "summary.throughput_qps", format: "{v:.3f}" }
-      tok_per_s_mean: { path: "summary.tok_per_s_mean", format: "{v:.1f}" }
-      tok_per_s_agg:  { path: "summary.tok_per_s_agg",  format: "{v:.1f}" }
+      output_tok_per_req_s:  { path: "summary.output_tok_per_req_s",  format: "{v:.1f}" }
 
   - id: s2pro-tts-zh-stream-false-c16-speed
     file: "benchmarks/eval/benchmark_tts_seedtts.py"
@@ -635,8 +622,7 @@ rows:
       latency_p95_s:  { path: "summary.latency_p95_s",  format: "{v:.3f}" }
       rtf_mean:       { path: "summary.rtf_mean",       format: "{v:.3f}" }
       throughput_qps: { path: "summary.throughput_qps", format: "{v:.3f}" }
-      tok_per_s_mean: { path: "summary.tok_per_s_mean", format: "{v:.1f}" }
-      tok_per_s_agg:  { path: "summary.tok_per_s_agg",  format: "{v:.1f}" }
+      output_tok_per_req_s:  { path: "summary.output_tok_per_req_s",  format: "{v:.1f}" }
 
   - id: s2pro-tts-zh-stream-true-c16-speed
     file: "benchmarks/eval/benchmark_tts_seedtts.py"
@@ -652,5 +638,4 @@ rows:
       latency_p95_s:  { path: "summary.latency_p95_s",  format: "{v:.3f}" }
       rtf_mean:       { path: "summary.rtf_mean",       format: "{v:.3f}" }
       throughput_qps: { path: "summary.throughput_qps", format: "{v:.3f}" }
-      tok_per_s_mean: { path: "summary.tok_per_s_mean", format: "{v:.1f}" }
-      tok_per_s_agg:  { path: "summary.tok_per_s_agg",  format: "{v:.1f}" }
+      output_tok_per_req_s:  { path: "summary.output_tok_per_req_s",  format: "{v:.1f}" }

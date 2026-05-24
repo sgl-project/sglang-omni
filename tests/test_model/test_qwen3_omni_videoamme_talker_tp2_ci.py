@@ -49,7 +49,7 @@ VIDEOAMME_TALKER_TP2_N_ABOVE_50_MAX = 1
 _VIDEOAMME_TALKER_TP2_AUDIO_P95 = {
     8: {
         "throughput_qps": 0.064,
-        "tok_per_s_agg": 0.4,
+        "output_tok_per_req_s": 0.4,
         "latency_mean_s": 107.537,
         "rtf_mean": 18.622,
     },

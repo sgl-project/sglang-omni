@@ -61,7 +61,7 @@ metric_sources:
           ok: "test_voice_cloning_non_streami0/vc_nonstream_c16/wer_results.json::summary.evaluated"
         paths:
           throughput_qps: "summary.throughput_qps"
-          tok_per_s_agg: "summary.tok_per_s_agg"
+          output_tok_per_req_s: "summary.output_tok_per_req_s"
           latency_mean_s: "summary.latency_mean_s"
           rtf_mean: "summary.rtf_mean"
           corpus_wer: "test_voice_cloning_non_streami0/vc_nonstream_c16/wer_results.json::summary.wer_corpus"
@@ -74,7 +74,7 @@ metric_sources:
           ok: "test_voice_cloning_streaming0/vc_stream_c16/wer_results.json::summary.evaluated"
         paths:
           throughput_qps: "summary.throughput_qps"
-          tok_per_s_agg: "summary.tok_per_s_agg"
+          output_tok_per_req_s: "summary.output_tok_per_req_s"
           latency_mean_s: "summary.latency_mean_s"
           rtf_mean: "summary.rtf_mean"
           corpus_wer: "test_voice_cloning_streaming0/vc_stream_c16/wer_results.json::summary.wer_corpus"

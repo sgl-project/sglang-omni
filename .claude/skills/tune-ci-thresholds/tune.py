@@ -55,12 +55,14 @@ METRIC_SPECS = {
     "wer_below_50_corpus":  dict(worst="max", label="Corpus WER ≤50% (%)", digits=2, scale=100, group="wer"),
     "n_above_50":           dict(worst="max", label="Samples >50% WER",      digits=0, scale=1,   group="wer"),
     "throughput_qps":       dict(worst="min", label="Throughput (req/s)",    digits=3, scale=1,   group="speed"),
-    "tok_per_s_agg":        dict(worst="min", label="Tok/s (aggregate)",     digits=2, scale=1,   group="speed"),
+    "output_tok_per_req_s": dict(
+        worst="min", label="Output tok/req-s", digits=1, scale=1, group="speed"
+    ),
     "latency_mean_s":       dict(worst="max", label="Latency mean (s)",      digits=3, scale=1,   group="speed"),
     "latency_p95_s":        dict(worst="max", label="Latency p95 (s)",       digits=3, scale=1,   group="speed"),
     "rtf_mean":             dict(worst="max", label="RTF mean",              digits=4, scale=1,   group="speed"),
 }
-_NESTED = {"throughput_qps", "tok_per_s_agg", "latency_mean_s", "latency_p95_s", "rtf_mean"}
+_NESTED = {"throughput_qps", "output_tok_per_req_s", "latency_mean_s", "latency_p95_s", "rtf_mean"}
 
 _DEFAULT_METRIC_PATHS = {
     "accuracy": "summary.accuracy",

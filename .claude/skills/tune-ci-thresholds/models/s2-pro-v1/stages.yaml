@@ -65,15 +65,15 @@ tts_nonstream_speed:
         scale: 1
         digits: 3
       status: OK
-    tok_per_s_agg:
-      source: "_VC_NON_STREAM_P95['tok_per_s_agg']"
+    output_tok_per_req_s:
+      source: "_VC_NON_STREAM_P95['output_tok_per_req_s']"
       json_file: "test_voice_cloning_non_streami0/vc_nonstream_c16/speed_results.json"
-      json_path: "summary.tok_per_s_agg"
+      json_path: "summary.output_tok_per_req_s"
       worst: min
       display:
-        label: "Tok/s (aggregate)"
+        label: "Output tok/req-s"
         scale: 1
-        digits: 2
+        digits: 1
       status: OK
     latency_mean_s:
       source: "_VC_NON_STREAM_P95['latency_mean_s']"
@@ -161,15 +161,15 @@ tts_stream_speed:
         scale: 1
         digits: 3
       status: OK
-    tok_per_s_agg:
-      source: "_VC_STREAM_P95['tok_per_s_agg']"
+    output_tok_per_req_s:
+      source: "_VC_STREAM_P95['output_tok_per_req_s']"
       json_file: "test_voice_cloning_streaming0/vc_stream_c16/speed_results.json"
-      json_path: "summary.tok_per_s_agg"
+      json_path: "summary.output_tok_per_req_s"
       worst: min
       display:
-        label: "Tok/s (aggregate)"
+        label: "Output tok/req-s"
         scale: 1
-        digits: 2
+        digits: 1
       status: OK
     latency_mean_s:
       source: "_VC_STREAM_P95['latency_mean_s']"
