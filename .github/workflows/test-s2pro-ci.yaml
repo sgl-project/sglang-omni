@@ -18,7 +18,7 @@ permissions:
 #     └── docs ──► stage-1-non-streaming ──┐
 #              └── stage-2-streaming ──────┤
 #                                         └──► stage-3-consistency
-#     └── cleanup (reclaim host SSD)
+#           └── cleanup (after every job above reaches a terminal state)
 
 jobs:
   setup:
@@ -236,7 +236,12 @@ jobs:
 
   cleanup:
     name: cleanup - reclaim host cache
-    needs: [setup, docs, stage-1-non-streaming, stage-2-streaming]
+    needs:
+      - setup
+      - docs
+      - stage-1-non-streaming
+      - stage-2-streaming
+      - stage-3-consistency
     if: >-
       always() &&
       (github.event_name == 'workflow_dispatch' ||

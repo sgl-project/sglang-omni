@@ -16,7 +16,7 @@ permissions:
 # DAG:
 #   setup (install-deps in /github/home)
 #     └── unit-test (restore cached venv only; excludes docs/benchmark)
-#           └── cleanup (reclaim host SSD)
+#           └── cleanup (after setup + unit-test reach a terminal state)
 #
 # Docs tests run in test-s2pro-ci.yaml after the same setup pattern.
 

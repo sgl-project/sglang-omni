@@ -16,7 +16,7 @@ permissions:
 # DAG:
 #   setup (install-deps in /github/home + verify model weights)
 #     └── stage 1 … stage 11 (restore only; parallel after setup)
-#           └── cleanup (reclaim host SSD)
+#           └── cleanup (after every stage/setup reaches a terminal state)
 
 jobs:
   setup:
