@@ -27,6 +27,13 @@ _VOXTRAL_MISTRAL_COMMON_HINT = (
     "  uv pip install 'mistral-common[audio]>=1.8.0'"
 )
 
+_IMPLICIT_SPEECH_SAMPLING_DEFAULTS = {
+    "temperature": {0.8, 1.0},
+    "top_p": {0.8, 1.0},
+    "top_k": {-1, 30},
+    "repetition_penalty": {1.0, 1.1},
+}
+
 
 def _import_mistral_common_for_voxtral():
     """Lazy import so the rest of sglang-omni does not depend on mistral-common."""
@@ -46,6 +53,56 @@ def _resolve_checkpoint(checkpoint: str) -> str:
     return snapshot_download(checkpoint)
 
 
+def _validate_voxtral_speech_params(
+    *,
+    inputs: Any,
+    params: dict[str, Any],
+    tts_params: dict[str, Any],
+) -> None:
+    explicit_generation_params = tts_params.get("explicit_generation_params")
+    if isinstance(explicit_generation_params, (list, tuple, set)):
+        explicit_fields = {str(field) for field in explicit_generation_params}
+    else:
+        explicit_fields = set()
+
+    unsupported: set[str] = set()
+    for field in explicit_fields:
+        if field != "max_new_tokens":
+            unsupported.add(field)
+
+    for field, implicit_values in _IMPLICIT_SPEECH_SAMPLING_DEFAULTS.items():
+        value = params.get(field)
+        if value is not None and value not in implicit_values:
+            unsupported.add(field)
+    if params.get("seed") is not None:
+        unsupported.add("seed")
+    if params.get("stage_sampling"):
+        unsupported.add("stage_sampling")
+    if params.get("stage_params"):
+        unsupported.add("stage_params")
+
+    for field in ("task_type", "language", "instructions", "ref_audio", "ref_text"):
+        if tts_params.get(field) not in (None, ""):
+            unsupported.add(field)
+
+    if isinstance(inputs, dict) and inputs.get("references"):
+        unsupported.add("references")
+
+    if unsupported:
+        fields = ", ".join(sorted(unsupported))
+        raise ValueError(
+            "Voxtral TTS does not support these /v1/audio/speech fields: "
+            f"{fields}. Supported model-specific fields are voice and max_new_tokens."
+        )
+
+
+def _ensure_non_empty_audio_codes(audio_codes: Any) -> None:
+    if audio_codes is None:
+        raise ValueError("Voxtral TTS generated no audio codes")
+    if isinstance(audio_codes, torch.Tensor) and audio_codes.numel() == 0:
+        raise ValueError("Voxtral TTS generated no audio codes")
+
+
 # ---- Preprocessing ----
 
 
@@ -62,6 +119,14 @@ def create_preprocessing_executor(model_path: str) -> SimpleScheduler:
         inputs = payload.request.inputs
         params = payload.request.params or {}
         metadata = payload.request.metadata or {}
+        tts_params = metadata.get("tts_params", {})
+        if not isinstance(tts_params, dict):
+            tts_params = {}
+        _validate_voxtral_speech_params(
+            inputs=inputs,
+            params=params,
+            tts_params=tts_params,
+        )
 
         if isinstance(inputs, str):
             text = inputs
@@ -70,7 +135,6 @@ def create_preprocessing_executor(model_path: str) -> SimpleScheduler:
         else:
             text = str(inputs) if inputs else ""
 
-        tts_params = metadata.get("tts_params", {})
         voice = tts_params.get("voice") or params.get("voice")
         if voice in (None, "", "default"):
             voice = "cheerful_female"
@@ -289,15 +353,7 @@ def create_vocoder_executor(
         state = load_state(payload)
         audio_codes = state.audio_codes
 
-        if audio_codes is None or (
-            isinstance(audio_codes, torch.Tensor) and audio_codes.numel() == 0
-        ):
-            state.audio_samples = []
-            payload = store_state(payload, state)
-            payload.data["audio_data"] = []
-            payload.data["sample_rate"] = 24000
-            payload.data["modality"] = "audio"
-            return payload
+        _ensure_non_empty_audio_codes(audio_codes)
 
         if not isinstance(audio_codes, torch.Tensor):
             audio_codes = torch.tensor(audio_codes)
