@@ -29,40 +29,10 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Restore cache
-        run: |
-          if [ -d /github/home/omni ] && [ ! -z "$(ls -A /github/home/omni/)" ]; then
-            cp -p -r /github/home/omni ./
-          fi
-
-      - name: Remove flashinfer # this is needed to avoid flashinfer jit compilation makes the program hang
-        run: |
-          rm -rf /github/home/.cache/flashinfer
-
-      - name: Install dependencies
-        shell: bash
-        run: |
-          if [ -d omni ] && ! omni/bin/python -c "import torch" 2>/dev/null; then
-            echo "Cached venv is corrupted, removing..."
-            rm -rf omni
-          fi
-          if [ ! -d omni ]; then
-            uv venv omni -p 3.11
-          fi
-          source omni/bin/activate
-          uv pip install -v -e .
-          # Repair PyAV if its bundled shared libs got corrupted in the cached
-          # venv (e.g. "libx265-...so.215: file too short"). The editable install
-          # above does not reinstall an already-present package, so force it.
-          if ! python -c "import av" 2>/dev/null; then
-            echo "PyAV native libraries corrupted in cached venv, force-reinstalling..."
-            uv pip install --force-reinstall --no-deps --no-cache av
-          fi
-
-      - name: Kill GPU processes
-        shell: bash
-        run: |
-          bash .github/scripts/delete_gpu_process.sh
+      - uses: ./.github/actions/omni-setup
+        with:
+          venv-name: omni
+          install-deps: "true"
 
       - name: Run test
         timeout-minutes: 30
