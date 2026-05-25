@@ -14,13 +14,50 @@ permissions:
   contents: read
 
 # DAG:
-#   docs ──► stage-1-non-streaming ──┐
-#        └─► stage-2-streaming ──────┤
-#                                    └──► stage-3-consistency
+#   setup (install-deps + verify model weights + save venv cache)
+#     └── docs ──► stage-1-non-streaming ──┐
+#              └── stage-2-streaming ──────┤
+#                                         └──► stage-3-consistency
+#     └── cleanup (reclaim host SSD)
 
 jobs:
+  setup:
+    name: setup - omni-s2pro venv
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (!github.event.pull_request.draft &&
+       contains(github.event.pull_request.labels.*.name, 'run-ci'))
+    runs-on: [self-hosted]
+    timeout-minutes: 15
+    container:
+      image: frankleeeee/sglang-omni:dev
+      options: --gpus all --rm -v /dev/shm:/dev/shm
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Remove stale host cache
+        shell: bash
+        run: rm -rf /github/home/omni-s2pro
+
+      - uses: ./.github/actions/omni-setup
+        with:
+          venv-name: omni-s2pro
+          install-deps: "true"
+
+      - uses: ./.github/actions/omni-save-cache
+        with:
+          venv-name: omni-s2pro
+
+      - name: Ensure S2-Pro model weights
+        shell: bash
+        env:
+          HF_ENDPOINT: https://hf-mirror.com
+        run: bash .github/scripts/ensure_hf_models.sh omni-s2pro fishaudio/s2-pro
+
   docs:
     name: docs
+    needs: setup
     # CI gate — runs on workflow_dispatch, or on non-draft PRs carrying the `run-ci` label.
     # Keep in sync with the same gate in test.yaml / test-examples.yaml / test-qwen3-omni-ci.yaml.
     if: >-
@@ -39,7 +76,6 @@ jobs:
       - uses: ./.github/actions/omni-setup
         with:
           venv-name: omni-s2pro
-          install-deps: "true"
 
       - name: Run docs tests
         shell: bash
@@ -57,20 +93,13 @@ jobs:
         with:
           stage-label: S2-Pro docs
 
-      - name: Save cache
-        if: always()
-        shell: bash
-        run: |
-          if omni-s2pro/bin/python -c "import torch; import av; from whisper.normalizers import EnglishTextNormalizer" 2>/dev/null; then
-            rm -rf /github/home/omni-s2pro
-            cp -p -r omni-s2pro /github/home/
-          else
-            echo "::warning::Skipping cache save — venv appears incomplete or corrupted"
-          fi
-
   stage-1-non-streaming:
     name: stage 1 - non-streaming
-    needs: docs
+    needs: [setup, docs]
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (!github.event.pull_request.draft &&
+       contains(github.event.pull_request.labels.*.name, 'run-ci'))
     runs-on: [self-hosted]
     timeout-minutes: 15
     container:
@@ -123,7 +152,11 @@ jobs:
 
   stage-2-streaming:
     name: stage 2 - streaming
-    needs: docs
+    needs: [setup, docs]
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (!github.event.pull_request.draft &&
+       contains(github.event.pull_request.labels.*.name, 'run-ci'))
     runs-on: [self-hosted]
     timeout-minutes: 5
     container:
@@ -204,3 +237,24 @@ jobs:
           S2PRO_STAGE1_SPEED_RESULTS_DIR: ${{ github.workspace }}/stage-artifacts/nonstream
           S2PRO_STAGE2_SPEED_RESULTS_DIR: ${{ github.workspace }}/stage-artifacts/stream
           S2PRO_CONSISTENCY_CONCURRENCY: "16"
+
+  cleanup:
+    name: cleanup - reclaim host cache
+    needs: [setup, docs, stage-1-non-streaming, stage-2-streaming]
+    if: >-
+      always() &&
+      (github.event_name == 'workflow_dispatch' ||
+       (!github.event.pull_request.draft &&
+        contains(github.event.pull_request.labels.*.name, 'run-ci')))
+    runs-on: [self-hosted]
+    timeout-minutes: 5
+    container:
+      image: frankleeeee/sglang-omni:dev
+      options: --gpus all --rm -v /dev/shm:/dev/shm
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - uses: ./.github/actions/omni-cleanup-host
+        with:
+          venv-names: omni-s2pro

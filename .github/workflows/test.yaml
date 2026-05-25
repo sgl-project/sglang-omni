@@ -13,17 +13,52 @@ concurrency:
 permissions:
   contents: read
 
+# DAG:
+#   setup (install-deps + save venv cache)
+#     └── unit-test (restore cached venv only; excludes docs/benchmark)
+#           └── cleanup (reclaim host SSD)
+#
+# Docs tests run in test-s2pro-ci.yaml after the same setup pattern.
+
 jobs:
+  setup:
+    name: setup - omni venv
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (!github.event.pull_request.draft &&
+       contains(github.event.pull_request.labels.*.name, 'run-ci'))
+    runs-on: [self-hosted]
+    timeout-minutes: 15
+    container:
+      image: frankleeeee/sglang-omni:dev
+      options: --gpus all --shm-size=2g --rm -v /dev/shm
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Remove stale host cache
+        shell: bash
+        run: rm -rf /github/home/omni
+
+      - uses: ./.github/actions/omni-setup
+        with:
+          venv-name: omni
+          install-deps: "true"
+
+      - uses: ./.github/actions/omni-save-cache
+        with:
+          venv-name: omni
+
   unit-test:
-    # CI gate — runs on workflow_dispatch, or on non-draft PRs carrying the `run-ci` label.
-    # Keep in sync with the same gate in test-qwen3-omni-ci.yaml / test-s2pro-ci.yaml.
+    name: unit-test
+    needs: setup
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (!github.event.pull_request.draft &&
        contains(github.event.pull_request.labels.*.name, 'run-ci'))
     runs-on: [self-hosted]
     container:
-      image: frankleeeee/sglang-omni:dev # we lock to this version to avoid repeated docker pull
+      image: frankleeeee/sglang-omni:dev
       options: --gpus all --shm-size=2g --rm -v /dev/shm
     steps:
       - name: Checkout code
@@ -32,7 +67,6 @@ jobs:
       - uses: ./.github/actions/omni-setup
         with:
           venv-name: omni
-          install-deps: "true"
 
       - name: Run test
         timeout-minutes: 30
@@ -42,6 +76,23 @@ jobs:
           export PYTHONPATH=$PWD
           pytest tests/ -v -m "not benchmark and not docs" -x
 
-      - name: Save cache
-        run: |
-          cp -p -r omni /github/home/
+  cleanup:
+    name: cleanup - reclaim host cache
+    needs: [setup, unit-test]
+    if: >-
+      always() &&
+      (github.event_name == 'workflow_dispatch' ||
+       (!github.event.pull_request.draft &&
+        contains(github.event.pull_request.labels.*.name, 'run-ci')))
+    runs-on: [self-hosted]
+    timeout-minutes: 5
+    container:
+      image: frankleeeee/sglang-omni:dev
+      options: --gpus all --rm -v /dev/shm:/dev/shm
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - uses: ./.github/actions/omni-cleanup-host
+        with:
+          venv-names: omni

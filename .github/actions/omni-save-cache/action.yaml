@@ -1,0 +1,14 @@
+name: Omni Save Cache
+description: Publish a validated Omni virtualenv to the self-hosted host cache.
+
+inputs:
+  venv-name:
+    description: Name of the virtualenv directory to save under /github/home/.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Save cache
+      shell: bash
+      run: bash .github/scripts/save_omni_venv_cache.sh "${{ inputs.venv-name }}"

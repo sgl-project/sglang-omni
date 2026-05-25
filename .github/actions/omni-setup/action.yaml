@@ -13,6 +13,15 @@ inputs:
 runs:
   using: composite
   steps:
+    - name: Align CI cache home
+      shell: bash
+      run: |
+        echo "HOME=/github/home" >> "${GITHUB_ENV}"
+        echo "XDG_CACHE_HOME=/github/home/.cache" >> "${GITHUB_ENV}"
+        echo "HF_HOME=/github/home/.cache/huggingface" >> "${GITHUB_ENV}"
+        echo "MODELSCOPE_CACHE=/github/home/.cache/modelscope" >> "${GITHUB_ENV}"
+        echo "HF_HUB_DISABLE_XET=1" >> "${GITHUB_ENV}"
+
     - name: Restore cache
       shell: bash
       env:
