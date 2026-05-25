@@ -461,9 +461,7 @@ class OmniScheduler:
                 logger.exception(f"OmniScheduler: request builder failed for {req_id}")
                 self._pending_stream_done.discard(req_id)
                 self._deferred_request_payloads.pop(req_id, None)
-                self.outbox.put(
-                    OutgoingMessage(request_id=req_id, type="error", data=exc)
-                )
+                self._emit_request_error(req_id, exc)
                 continue
             if pending_stream_done:
                 self._pending_stream_done.discard(req_id)
@@ -479,26 +477,14 @@ class OmniScheduler:
             if bool(getattr(req_data, "enforce_request_limits", False)):
                 error_msg = self._prepare_request_limits(req_data)
                 if error_msg:
-                    self.outbox.put(
-                        OutgoingMessage(
-                            request_id=req_id,
-                            type="error",
-                            data=ValueError(error_msg),
-                        )
-                    )
+                    self._emit_request_error(req_id, ValueError(error_msg))
                     continue
             kv_error = self._request_kv_capacity_error(req)
             if kv_error is not None:
                 logger.warning(
                     f"Rejecting request {req_id} before scheduling: {kv_error}"
                 )
-                self.outbox.put(
-                    OutgoingMessage(
-                        request_id=req_id,
-                        type="error",
-                        data=ValueError(kv_error),
-                    )
-                )
+                self._emit_request_error(req_id, ValueError(kv_error))
                 continue
             self._initialize_request_stream_state(req_data, payload)
             if req_id in self._aborted_request_ids:
@@ -574,6 +560,17 @@ class OmniScheduler:
             f"{mem_hint}"
         )
 
+    def _emit_request_error(self, request_id: str, error: Exception) -> None:
+        if not getattr(self, "is_entry_rank", True):
+            return
+        self.outbox.put(
+            OutgoingMessage(
+                request_id=request_id,
+                type="error",
+                data=error,
+            )
+        )
+
     def run_batch(self, batch, pp_proxy_tensors=None):
         try:
             return self._run_batch(batch, pp_proxy_tensors)
@@ -644,14 +641,7 @@ class OmniScheduler:
         request_ids = [req.rid for req in reqs]
         logger.exception("OmniScheduler batch failed for requests=%s", request_ids)
         for req in reqs:
-            if self.is_entry_rank:
-                self.outbox.put(
-                    OutgoingMessage(
-                        request_id=req.rid,
-                        type="error",
-                        data=error,
-                    )
-                )
+            self._emit_request_error(req.rid, error)
             self.abort(req.rid, defer_running_cleanup=False)
 
     def _emit_prefill_start_for_batch(self, batch: Any) -> None:
@@ -696,7 +686,16 @@ class OmniScheduler:
                 if finished_reason is not None
                 else None
             )
-            result = self._result_adapter(data)
+            try:
+                result = self._result_adapter(data)
+            except Exception as exc:
+                logger.exception(
+                    "OmniScheduler result adapter failed for request %s", rid
+                )
+                self._first_emit_done.discard(rid)
+                self._prefill_start_done.discard(rid)
+                self._emit_request_error(rid, exc)
+                continue
 
             data.prefill_input_embeds = None
             data.decode_input_embeds = None
