@@ -9,6 +9,7 @@ import types
 from queue import Queue
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 import torch
 
@@ -200,6 +201,8 @@ def test_qwen3_tts_config_and_registry_contracts() -> None:
     assert config.stages[1].factory.endswith("create_sglang_tts_engine_executor")
     assert config.terminal_stages == ["vocoder"]
     assert config.gpu_placement == {"tts_engine": 0, "vocoder": 0}
+    assert "device" not in config.stages[1].factory_args
+    assert "device" not in config.stages[2].factory_args
     assert {stage.process for stage in config.stages} == {"pipeline"}
     assert (
         PIPELINE_CONFIG_REGISTRY.get_config("Qwen3TTSForConditionalGeneration")
@@ -504,9 +507,13 @@ def test_qwen3_tts_vocoder_batches_decode_requests(
     assert scheduler._max_batch_wait_s == pytest.approx(0.003)
     assert decode_batch_sizes == [2]
     assert results[0].data["sample_rate"] == 24000
-    assert results[0].data["audio_data"] == [3.0, 4.0, 5.0]
+    first_audio = np.frombuffer(results[0].data["audio_waveform"], dtype=np.float32)
+    assert first_audio.tolist() == [3.0, 4.0, 5.0]
+    assert results[0].data["audio_waveform_shape"] == [3]
+    assert results[0].data["audio_waveform_dtype"] == "float32"
     assert "audio_codes" not in results[0].data
-    assert results[1].data["audio_data"] == [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0]
+    second_audio = np.frombuffer(results[1].data["audio_waveform"], dtype=np.float32)
+    assert second_audio.tolist() == [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0]
 
 
 def test_qwen3_tts_result_adapter_keeps_code_handoff_tensor_native() -> None:

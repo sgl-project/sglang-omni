@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 import torch
 
@@ -24,6 +25,8 @@ def test_voxtral_tts_config_uses_current_stage_schema() -> None:
     ]
     assert config.terminal_stages == ["vocoder"]
     assert config.gpu_placement == {"tts_generation": 0, "vocoder": 0}
+    assert "device" not in config.stages[1].factory_args
+    assert "device" not in config.stages[2].factory_args
     assert {stage.process for stage in config.stages} == {"pipeline"}
     assert (
         PIPELINE_CONFIG_REGISTRY.get_config("VoxtralTTSForConditionalGeneration")
@@ -126,3 +129,12 @@ def test_voxtral_speech_validation_rejects_ignored_fields(
 def test_voxtral_vocoder_rejects_empty_audio_codes(audio_codes) -> None:
     with pytest.raises(ValueError, match="generated no audio codes"):
         stages._ensure_non_empty_audio_codes(audio_codes)
+
+
+def test_voxtral_audio_waveform_payload_is_compact() -> None:
+    payload = stages._audio_waveform_payload(torch.tensor([0.0, 0.5, -0.5]))
+
+    audio = np.frombuffer(payload["audio_waveform"], dtype=np.float32)
+    assert audio.tolist() == [0.0, 0.5, -0.5]
+    assert payload["audio_waveform_shape"] == [3]
+    assert payload["audio_waveform_dtype"] == "float32"

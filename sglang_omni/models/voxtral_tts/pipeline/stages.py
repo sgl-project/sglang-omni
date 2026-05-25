@@ -11,6 +11,7 @@ import tempfile
 import time
 from typing import Any
 
+import numpy as np
 import torch
 
 from sglang_omni.models.voxtral_tts.io import VoxtralTTSState
@@ -103,6 +104,23 @@ def _ensure_non_empty_audio_codes(audio_codes: Any) -> None:
         raise ValueError("Voxtral TTS generated no audio codes")
 
 
+def _resolve_device(device: str | None, gpu_id: int | None) -> str:
+    if device is not None:
+        return device
+    return f"cuda:{0 if gpu_id is None else int(gpu_id)}"
+
+
+def _audio_waveform_payload(audio: Any) -> dict[str, Any]:
+    if isinstance(audio, torch.Tensor):
+        audio = audio.detach().float().cpu().reshape(-1).numpy()
+    array = np.asarray(audio, dtype=np.float32).reshape(-1)
+    return {
+        "audio_waveform": array.tobytes(),
+        "audio_waveform_shape": list(array.shape),
+        "audio_waveform_dtype": "float32",
+    }
+
+
 # ---- Preprocessing ----
 
 
@@ -166,7 +184,8 @@ def create_preprocessing_executor(model_path: str) -> SimpleScheduler:
 def create_generation_executor(
     model_path: str,
     *,
-    device: str = "cuda:0",
+    device: str | None = None,
+    gpu_id: int | None = None,
     max_new_tokens: int = 4096,
 ) -> Any:
     """Factory for the SGLang-backed AR generation stage."""
@@ -183,6 +202,7 @@ def create_generation_executor(
     )
 
     checkpoint_dir = _resolve_checkpoint(model_path)
+    device = _resolve_device(device, gpu_id)
     gpu_id = int(device.split(":")[-1]) if ":" in device else 0
 
     server_args = build_sglang_server_args(
@@ -341,10 +361,12 @@ def _load_audio_tokenizer(checkpoint_dir: str, audio_config: dict, device: str):
 def create_vocoder_executor(
     model_path: str,
     *,
-    device: str = "cuda:0",
+    device: str | None = None,
+    gpu_id: int | None = None,
 ) -> SimpleScheduler:
     """Factory for the vocoder (audio tokenizer decode) stage."""
     checkpoint_dir = _resolve_checkpoint(model_path)
+    device = _resolve_device(device, gpu_id)
 
     logger.info("Loading Voxtral audio tokenizer for vocoding...")
     audio_tokenizer = _load_audio_tokenizer(checkpoint_dir, {}, device)
@@ -395,11 +417,12 @@ def create_vocoder_executor(
             )
             audio_np[:fade_samples] = audio_np[:fade_samples] * fade_in
 
-        state.audio_samples = audio_np
+        audio_payload = _audio_waveform_payload(audio_np)
+        state.audio_samples = None
         state.sample_rate = audio_tokenizer.sampling_rate
         payload = store_state(payload, state)
 
-        payload.data["audio_data"] = audio_np.tolist()
+        payload.data.update(audio_payload)
         payload.data["sample_rate"] = audio_tokenizer.sampling_rate
         payload.data["modality"] = "audio"
 
