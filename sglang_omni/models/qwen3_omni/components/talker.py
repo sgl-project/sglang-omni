@@ -4,6 +4,7 @@ SGLang-native Talker model for Qwen3-Omni compatiable with hf formatting.
 
 from __future__ import annotations
 
+import copy
 from typing import Iterable, Optional, Tuple
 
 import torch
@@ -21,6 +22,9 @@ from sglang_omni.models.qwen3_omni.components.thinker_model import (
 from sglang_omni.models.qwen3_omni.hf_config import (
     Qwen3OmniMoeTalkerConfig,
     Qwen3OmniMoeTalkerTextConfig,
+)
+from sglang_omni.models.qwen3_omni.quantization import (
+    convert_fp8_weight_scale_inv_for_sglang,
 )
 from sglang_omni.vendor.sglang.core import ForwardBatch
 from sglang_omni.vendor.sglang.distributed import tensor_model_parallel_all_reduce
@@ -40,8 +44,24 @@ from sglang_omni.vendor.sglang.utils import make_layers
 
 def _bind_default_weight_loaders(module: nn.Module) -> None:
     for param in module.parameters():
-        if "weight_loader" not in param.__dict__:
+        if not hasattr(param, "weight_loader"):
             param.weight_loader = default_weight_loader
+
+
+def _quant_config_for_code_predictor_dense_mlp(
+    quant_config: Optional[QuantizationConfig],
+) -> Optional[QuantizationConfig]:
+    """Keep dense code-predictor MLP projections quantized under SGLang 0.5.8."""
+    ignored_layers = getattr(quant_config, "ignored_layers", None)
+    if not ignored_layers or "mlp.gate" not in ignored_layers:
+        return quant_config
+
+    # FIXME (Ratish): when upgrading past SGLang 0.5.8. Newer SGLang uses
+    # dotted-boundary ignored-layer matching, so this local workaround should be
+    # removed once this repo depends on that behavior.
+    cloned = copy.copy(quant_config)
+    cloned.ignored_layers = [layer for layer in ignored_layers if layer != "mlp.gate"]
+    return cloned
 
 
 def _repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
@@ -486,6 +506,9 @@ class Qwen3OmniMoeTalkerCodePredictor(nn.Module):
         # 5 dense decoder layers
         alt_stream = torch.cuda.Stream()
         self.model.layers = nn.ModuleList()
+        dense_mlp_quant_config = _quant_config_for_code_predictor_dense_mlp(
+            quant_config
+        )
         for idx in range(cp_config.num_hidden_layers):
             # Create a decoder layer similar to Thinker but with dense MLP
             layer = nn.Module()
@@ -509,7 +532,7 @@ class Qwen3OmniMoeTalkerCodePredictor(nn.Module):
             layer.mlp = Qwen3OmniMoeTalkerDenseMLP(
                 cp_config.hidden_size,
                 cp_config.intermediate_size,
-                quant_config=quant_config,
+                quant_config=dense_mlp_quant_config,
                 prefix=add_prefix(f"model.layers.{idx}.mlp", prefix),
             )
             layer.input_layernorm = RMSNorm(
@@ -871,6 +894,10 @@ class Qwen3OmniTalker(nn.Module):
 
     def get_input_embeddings(self):
         return self.model.get_input_embeddings()
+
+    @property
+    def activation_dtype(self) -> torch.dtype:
+        return self.model.codec_embedding.weight.dtype
 
     @staticmethod
     def _sample_code_predictor_token(logits: torch.Tensor) -> torch.Tensor:
@@ -1429,8 +1456,12 @@ class Qwen3OmniTalker(nn.Module):
             handled = False
             for param_name, weight_name, shard_id in stacked_params:
                 if weight_name in name and "mlp.experts" not in name:
-                    param = params_dict.get(name.replace(weight_name, param_name))
+                    mapped = name.replace(weight_name, param_name)
+                    param = params_dict.get(mapped)
                     if param is not None:
+                        loaded_weight = convert_fp8_weight_scale_inv_for_sglang(
+                            mapped, loaded_weight
+                        )
                         param.weight_loader(param, loaded_weight, shard_id)
                         handled = True
                         break
@@ -1443,6 +1474,9 @@ class Qwen3OmniTalker(nn.Module):
                     mapped = name.replace(weight_name, param_name)
                     param = params_dict.get(mapped)
                     if param is not None:
+                        loaded_weight = convert_fp8_weight_scale_inv_for_sglang(
+                            mapped, loaded_weight
+                        )
                         param.weight_loader(
                             param,
                             loaded_weight,
@@ -1458,4 +1492,7 @@ class Qwen3OmniTalker(nn.Module):
             # 3. Direct parameter loading
             param = params_dict.get(name)
             if param is not None:
+                loaded_weight = convert_fp8_weight_scale_inv_for_sglang(
+                    name, loaded_weight
+                )
                 param.weight_loader(param, loaded_weight)

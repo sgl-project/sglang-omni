@@ -491,7 +491,7 @@ class QwenTalkerModelRunner(ModelRunner):
         input_embeds_are_projected: bool = False,
     ) -> GenerationBatchResult:
         model_runner = self.tp_worker.model_runner
-        model_dtype = next(self.model.parameters()).dtype
+        model_dtype = self.model.activation_dtype
 
         model_runner.attn_backend.init_forward_metadata(forward_batch)
 

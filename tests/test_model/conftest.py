@@ -37,6 +37,10 @@ QWEN3_OMNI_MODEL_PATH = "Qwen/Qwen3-Omni-30B-A3B-Instruct"
 QWEN3_OMNI_TEST_MODEL_PATH = os.environ.get(
     "SGLANG_OMNI_TEST_QWEN3_MODEL", QWEN3_OMNI_MODEL_PATH
 )
+QWEN3_OMNI_FP8_MODEL_PATH = "marksverdhei/Qwen3-Omni-30B-A3B-FP8"
+QWEN3_OMNI_FP8_TEST_MODEL_PATH = os.environ.get(
+    "SGLANG_OMNI_TEST_QWEN3_FP8_MODEL", QWEN3_OMNI_FP8_MODEL_PATH
+)
 QWEN3_OMNI_MODEL_NAME = "qwen3-omni"
 QWEN3_OMNI_ROUTER_WAIT_TIMEOUT = 180
 QWEN3_OMNI_COLOCATED_WORKER_ARGS = (
@@ -117,16 +121,43 @@ def qwen3_omni_talker_server_tp2(tmp_path_factory: pytest.TempPathFactory):
     )
 
 
+@pytest.fixture(scope="module")
+def qwen3_omni_fp8_talker_server_tp2(tmp_path_factory: pytest.TempPathFactory):
+    """Start Qwen3-Omni FP8 with TP=2 thinker and TP=1 talker."""
+    yield from _start_qwen3_omni_speech_server(
+        tmp_path_factory,
+        model_path=QWEN3_OMNI_FP8_TEST_MODEL_PATH,
+        extra_args=[
+            "--thinker-tp-size",
+            "2",
+            "--gpu-thinker-tp",
+            "0,1",
+            "--gpu-talker",
+            "1",
+            "--gpu-code2wav",
+            "1",
+            "--thinker-mem-fraction-static",
+            "0.55",
+            "--talker-mem-fraction-static",
+            "0.20",
+        ],
+        timeout=450,
+        log_prefix="server_logs_fp8_tp2",
+        force_log=True,
+    )
+
+
 def _launch_qwen3_omni_router(
     tmp_path_factory: pytest.TempPathFactory,
     *,
+    model_path: str = QWEN3_OMNI_TEST_MODEL_PATH,
     worker_extra_args: str,
 ):
     from tests.test_model.omni_router_utils import launch_managed_router
 
     return launch_managed_router(
         tmp_path_factory=tmp_path_factory,
-        model_path=QWEN3_OMNI_TEST_MODEL_PATH,
+        model_path=model_path,
         model_name=QWEN3_OMNI_MODEL_NAME,
         worker_extra_args=worker_extra_args,
         wait_timeout=QWEN3_OMNI_ROUTER_WAIT_TIMEOUT,
@@ -136,6 +167,7 @@ def _launch_qwen3_omni_router(
 def _start_qwen3_omni_speech_server(
     tmp_path_factory: pytest.TempPathFactory,
     *,
+    model_path: str = QWEN3_OMNI_TEST_MODEL_PATH,
     extra_args: list[str],
     timeout: int,
     log_prefix: str,
@@ -162,7 +194,7 @@ def _start_qwen3_omni_speech_server(
         sys.executable,
         "examples/run_qwen3_omni_speech_server.py",
         "--model-path",
-        QWEN3_OMNI_TEST_MODEL_PATH,
+        model_path,
         "--port",
         str(port),
         "--model-name",

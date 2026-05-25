@@ -22,9 +22,10 @@ from typing import Any, Callable
 
 from sglang.srt.environ import envs
 from sglang.srt.layers.dp_attention import compute_dp_attention_world_info
-from sglang.srt.managers.schedule_batch import ScheduleBatch
+from sglang.srt.managers.schedule_batch import FINISH_ABORT, ScheduleBatch
 from sglang.srt.managers.scheduler import Scheduler as _Upstream
 from sglang.srt.managers.scheduler import validate_input_length
+from sglang.srt.mem_cache.common import release_kv_cache
 from sglang.srt.utils import broadcast_pyobj
 
 from sglang_omni.profiler.event_recorder import emit as _emit_event
@@ -651,7 +652,7 @@ class OmniScheduler:
                         data=error,
                     )
                 )
-            self.abort(req.rid)
+            self.abort(req.rid, defer_running_cleanup=False)
 
     def _emit_prefill_start_for_batch(self, batch: Any) -> None:
         """Emit once when a request's first executable batch is selected."""
@@ -741,8 +742,13 @@ class OmniScheduler:
     def stop(self) -> None:
         self._running = False
 
-    def abort(self, request_id: str) -> None:
-        if self._abort_callback is not None:
+    def abort(self, request_id: str, *, defer_running_cleanup: bool = True) -> None:
+        running_abort = (
+            self._mark_running_request_aborted(request_id)
+            if defer_running_cleanup
+            else False
+        )
+        if self._abort_callback is not None and not running_abort:
             try:
                 self._abort_callback(request_id)
             except Exception:
@@ -758,10 +764,42 @@ class OmniScheduler:
         self.waiting_queue = [
             req for req in self.waiting_queue if req.rid != request_id
         ]
-        _remove_from_batch(self.running_batch, request_id)
-        _remove_from_batch(self.cur_batch, request_id)
-        _remove_from_batch(self.last_batch, request_id)
+        if not running_abort:
+            self._release_immediate_request_resources(request_id)
+            _remove_from_batch(self.running_batch, request_id)
+            _remove_from_batch(self.cur_batch, request_id)
+            _remove_from_batch(self.last_batch, request_id)
         self._drain_inbox_for_request(request_id)
+
+    def _mark_running_request_aborted(self, request_id: str) -> bool:
+        marked = False
+        seen: set[int] = set()
+        for batch in (self.running_batch, self.cur_batch, self.last_batch):
+            if batch is None or id(batch) in seen:
+                continue
+            seen.add(id(batch))
+            for req in batch.reqs:
+                if req.rid != request_id or req.finished():
+                    continue
+                req.to_finish = FINISH_ABORT()
+                marked = True
+        return marked
+
+    def _release_immediate_request_resources(self, request_id: str) -> None:
+        seen: set[int] = set()
+        for batch in (self.running_batch, self.cur_batch, self.last_batch):
+            if batch is None:
+                continue
+            for req in batch.reqs:
+                if req.rid != request_id or id(req) in seen:
+                    continue
+                seen.add(id(req))
+                self._release_request_kv_cache(req)
+
+    def _release_request_kv_cache(self, req: Any) -> None:
+        if req.req_pool_idx is None and req.mamba_pool_idx is None:
+            return
+        release_kv_cache(req, self.tree_cache)
 
     def _event_loop_normal(self) -> None:
         # Note (Chenyang): yield the GIL when idle so co-located non-AR stages
@@ -805,6 +843,7 @@ class OmniScheduler:
             recv_reqs.extend(self._take_deferred_request_payloads())
             self.process_input_requests(recv_reqs)
             if self._engine_paused:
+                time.sleep(0.001)
                 continue
 
             batch = self.get_next_batch_to_run()
@@ -828,6 +867,7 @@ class OmniScheduler:
                     pop_and_process()
             elif batch is None:
                 self.self_check_during_idle()
+                time.sleep(0.001)
 
             if self.is_generation:
                 self.launch_batch_sample_if_needed(batch_result)

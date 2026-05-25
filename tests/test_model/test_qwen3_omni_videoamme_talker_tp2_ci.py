@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Video-AMME Talker TP=2 CI for Qwen3-Omni (Video+Audio -> Text+Audio).
+"""Video-AMME Talker TP=2 CI for Qwen3-Omni FP8 (Video+Audio -> Text+Audio).
 
 Runs a small Video-AMME subset through Video+Audio -> Text+Audio with the
 thinker stage sharded across two GPUs (tp_size=2), then checks text answer
@@ -40,7 +40,7 @@ MAX_SAMPLES = 10
 MAX_TOKENS = 256
 
 VIDEOAMME_TALKER_TP2_THINKER_TEXT_MIN_ACCURACY = 0.4
-VIDEOAMME_TALKER_TP2_WER_BELOW_50_CORPUS_MAX = 0.01
+VIDEOAMME_TALKER_TP2_WER_BELOW_50_CORPUS_MAX = 0.008426966292134831
 VIDEOAMME_TALKER_TP2_WER_BELOW_50_CORPUS_THRESHOLD = apply_wer_slack(
     VIDEOAMME_TALKER_TP2_WER_BELOW_50_CORPUS_MAX
 )
@@ -48,10 +48,10 @@ VIDEOAMME_TALKER_TP2_N_ABOVE_50_MAX = 1
 
 _VIDEOAMME_TALKER_TP2_AUDIO_P95 = {
     8: {
-        "throughput_qps": 0.064,
+        "throughput_qps": 0.067,
         "output_tok_per_req_s": 0.4,
-        "latency_mean_s": 107.537,
-        "rtf_mean": 18.622,
+        "latency_mean_s": 103.549,
+        "rtf_mean": 20.3784,
     },
 }
 VIDEOAMME_TALKER_TP2_THRESHOLDS = apply_slack(_VIDEOAMME_TALKER_TP2_AUDIO_P95)
@@ -59,12 +59,12 @@ VIDEOAMME_TALKER_TP2_THRESHOLDS = apply_slack(_VIDEOAMME_TALKER_TP2_AUDIO_P95)
 
 @pytest.mark.benchmark
 def test_thinker_tp2_actually_applied(
-    qwen3_omni_talker_server_tp2: ServerHandle,
+    qwen3_omni_fp8_talker_server_tp2: ServerHandle,
 ) -> None:
     """Confirm the thinker stage actually came up at tp_size=2.
     Prevents silent fallback to TP=1
     """
-    log_file = qwen3_omni_talker_server_tp2.log_file
+    log_file = qwen3_omni_fp8_talker_server_tp2.log_file
     checks = MetricCheckCollector("Thinker TP=2 server log checks")
     checks.check(
         log_file is not None and log_file.exists(),
@@ -90,13 +90,13 @@ def test_thinker_tp2_actually_applied(
 
 @pytest.mark.benchmark
 def test_videoamme_talker_tp2_accuracy_wer_and_speed(
-    qwen3_omni_talker_server_tp2: ServerHandle,
+    qwen3_omni_fp8_talker_server_tp2: ServerHandle,
     tmp_path: Path,
 ) -> None:
     """Run Video-AMME with TP=2 thinker + Talker enabled."""
     config = VideoEvalConfig(
         model="qwen3-omni",
-        port=qwen3_omni_talker_server_tp2.port,
+        port=qwen3_omni_fp8_talker_server_tp2.port,
         max_samples=MAX_SAMPLES,
         max_tokens=MAX_TOKENS,
         max_concurrency=CONCURRENCY,

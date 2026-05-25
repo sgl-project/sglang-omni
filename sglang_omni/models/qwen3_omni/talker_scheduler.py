@@ -28,7 +28,6 @@ def configure_talker_server_args(
         server_args.disable_overlap_schedule = True
         if want_cuda_graph:
             server_args.disable_cuda_graph = True
-        server_args.moe_runner_backend = "flashinfer_cutlass"
     server_args.disable_radix_cache = True
     server_args.chunked_prefill_size = 0
     return want_cuda_graph

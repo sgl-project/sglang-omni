@@ -82,6 +82,7 @@ def _build_stage_groups(
             next_stages=stage_cfg.next,
             route_fn=stage_cfg.route_fn,
             is_terminal=stage_cfg.terminal,
+            env_defaults=dict(config.env_defaults),
             wait_for=stage_cfg.wait_for,
             wait_for_fn=stage_cfg.wait_for_fn,
             merge_fn=stage_cfg.merge_fn,
@@ -358,6 +359,9 @@ class MultiProcessPipelineRunner:
             )
 
             self._groups = groups
+            if self._config.env_defaults:
+                env_names = ", ".join(sorted(self._config.env_defaults))
+                logger.info(f"Configured stage process env defaults: {env_names}")
             for group in self._groups:
                 group.spawn(ctx)
 

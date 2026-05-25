@@ -171,9 +171,8 @@ class TalkerPrefillBuilder:
             for name, speaker_id in (speaker_map or {}).items()
         }
 
-        parameter = next(model.parameters())
-        self._device = parameter.device
-        self._dtype = parameter.dtype
+        self._device = model.model.codec_embedding.weight.device
+        self._dtype = model.activation_dtype
         self._thinker_embed_cache: dict[int, torch.Tensor] = {}
         self._tts_special_cache: (
             tuple[torch.Tensor, torch.Tensor, torch.Tensor] | None

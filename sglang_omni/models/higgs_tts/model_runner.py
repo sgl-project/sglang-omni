@@ -14,11 +14,13 @@ import logging
 from typing import Any
 
 import torch
+from sglang.srt.managers.schedule_batch import FINISH_MATCHED_TOKEN
 
 from sglang_omni.model_runner.base import ModelRunner
 from sglang_omni.models.higgs_tts.model import _flat_sampling_attr
 from sglang_omni.models.higgs_tts.sampler import K_MAX
 from sglang_omni.models.higgs_tts.text_tokenizer import AUDIO_PLACEHOLDER_ID
+from sglang_omni.models.higgs_tts.utils import EOC_ID
 
 logger = logging.getLogger(__name__)
 
@@ -162,6 +164,7 @@ class HiggsTTSModelRunner(ModelRunner):
             codes_N = codes_BN_cpu[b]
             data.output_codes.append(codes_N.to(torch.long))
             data.generation_done = bool(gen_done_after_cpu[b])
+            self._mark_sampler_finished(req, data.generation_done)
             cb0_per_row.append(int(codes_N[0].item()))
 
         result.next_token_ids = torch.tensor(
@@ -227,12 +230,13 @@ class HiggsTTSModelRunner(ModelRunner):
             rid = sched_req.request_id
             row = model._rid_to_row.get(rid)
             codes_log = model._output_codes.get(rid)
-            if req.is_chunked > 0 or row is None or not codes_log:
+            if req.is_chunked > 0 or row is None or not codes_log or req.finished():
                 cb0_per_row.append(0)
                 continue
             codes_N = codes_log[-1]
             data.output_codes.append(codes_N.detach().cpu().clone())
             data.generation_done = bool(model._sampler_pool.generation_done[row].item())
+            self._mark_sampler_finished(req, data.generation_done)
             cb0_per_row.append(int(codes_N[0].item()))
 
         result.next_token_ids = torch.tensor(
@@ -240,6 +244,12 @@ class HiggsTTSModelRunner(ModelRunner):
             dtype=torch.long,
             device=result.logits_output.next_token_logits.device,
         )
+
+    @staticmethod
+    def _mark_sampler_finished(req: Any, generation_done: bool) -> None:
+        """Bridge Higgs sampler completion into upstream SGLang finish state."""
+        if generation_done and req.finished_reason is None:
+            req.finished_reason = FINISH_MATCHED_TOKEN(EOC_ID)
 
 
 __all__ = ["HiggsTTSModelRunner"]

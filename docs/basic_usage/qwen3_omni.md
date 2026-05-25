@@ -242,6 +242,42 @@ python examples/run_qwen3_omni_speech_server.py \
 the global value for that stage. Values must be greater than `0` and less than
 `1`.
 
+## Single-GPU FP8 on H100/H20
+
+SGLang-Omni can also serve native FP8 Qwen3-Omni checkpoints. Native FP8 uses
+the checkpoint quantization config when loading the thinker and talker AR stages,
+while keeping the same Qwen3-Omni request format shown below.
+
+For one-GPU H100/H20 colocated launch, use the FP8 colocated config:
+
+```bash
+sgl-omni serve \
+  --config examples/configs/qwen3_omni_fp8_colocated.yaml \
+  --colocate \
+  --model-name qwen3-omni \
+  --port 8008
+```
+
+The config file contains the FP8 checkpoint path:
+`marksverdhei/Qwen3-Omni-30B-A3B-FP8`. You can still pass `--model-path` to
+override the config value.
+
+The FP8 path keeps dense FP8 GEMM on SGLang `auto` and defaults native FP8 MoE
+to CUTLASS when supported. For Qwen3-Omni pipeline launches,
+`SGLANG_JIT_DEEPGEMM_PRECOMPILE=0` is set as a default unless the operator has
+already set that environment variable. This disables SGLang's all-M DeepGEMM
+precompile session while keeping DeepGEMM available for dense FP8 GEMMs.
+
+To opt back into SGLang's all-M DeepGEMM precompile behavior:
+
+```bash
+SGLANG_JIT_DEEPGEMM_PRECOMPILE=1 sgl-omni serve \
+  --config examples/configs/qwen3_omni_fp8_colocated.yaml \
+  --colocate \
+  --model-name qwen3-omni \
+  --port 8008
+```
+
 ### Image and Text Input
 
 Send an image with a text question to get both text and audio responses. Set `"modalities": ["text", "audio"]` to enable audio output.
