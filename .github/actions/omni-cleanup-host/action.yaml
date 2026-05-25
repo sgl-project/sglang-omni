@@ -1,20 +1,17 @@
 name: Omni Cleanup Host
 description: >
-  Reclaim self-hosted SSD space after a CI workflow by removing published
-  virtualenv caches and ephemeral compile directories. HuggingFace model
-  weights and ModelScope model caches are preserved; HF datasets are untouched.
+  Reclaim a PR-scoped CI home directory on the self-hosted runner. Model
+  weights under /github/home/.cache/huggingface are never removed.
 
 inputs:
-  venv-names:
+  ci-home:
     description: >
-      Space-separated virtualenv names to remove from /github/home/. When empty,
-      removes all known Omni CI venvs (omni, omni-qwen3, omni-s2pro).
-    required: false
-    default: ""
+      PR-scoped CI home directory (for example /github/home/pr-557/qwen3).
+    required: true
 
 runs:
   using: composite
   steps:
-    - name: Cleanup host cache
+    - name: Cleanup PR CI home
       shell: bash
-      run: bash .github/scripts/cleanup_ci_host_cache.sh ${{ inputs.venv-names }}
+      run: bash .github/scripts/cleanup_ci_pr_home.sh "${{ inputs.ci-home }}"

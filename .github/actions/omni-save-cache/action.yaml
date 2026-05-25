@@ -1,11 +1,11 @@
 name: Omni Save Cache
 description: >
-  Validate the prepared Omni virtualenv published under /github/home/.
-  The venv is installed in place on the host; this step does not copy files.
+  Validate the prepared Omni virtualenv under OMNI_CI_HOME. The venv is
+  installed in place on the host; this step does not copy files.
 
 inputs:
   venv-name:
-    description: Name of the virtualenv directory under /github/home/.
+    description: Name of the virtualenv directory under OMNI_CI_HOME.
     required: true
 
 runs:

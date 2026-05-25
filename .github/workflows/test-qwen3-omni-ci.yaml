@@ -13,10 +13,17 @@ concurrency:
 permissions:
   contents: read
 
+env:
+  OMNI_CI_HOME: >-
+    ${{ github.event_name == 'pull_request'
+        && format('/github/home/pr-{0}/qwen3', github.event.pull_request.number)
+        || format('/github/home/run-{0}/qwen3', github.run_id) }}
+
 # DAG:
-#   setup (install-deps in /github/home + verify model weights)
+#   setup (install-deps under OMNI_CI_HOME + verify model weights)
 #     └── stage 1 … stage 11 (restore only; parallel after setup)
-#           └── cleanup (after every stage/setup reaches a terminal state)
+#           └── cleanup on full success only (kept on failure for re-run)
+#   PR close → cleanup-pr-ci-home-on-close.yaml removes /github/home/pr-N/
 
 jobs:
   setup:
@@ -81,7 +88,7 @@ jobs:
             pytest tests/test_model/test_qwen3_omni_thinker_length.py -v -s -x
         env:
           HF_ENDPOINT: https://hf-mirror.com
-          TORCHINDUCTOR_CACHE_DIR: /github/home/.torchinductor
+          TORCHINDUCTOR_CACHE_DIR: ${{ env.OMNI_CI_HOME }}/.torchinductor
 
       - name: Post-stage cleanup
         if: always()
@@ -129,7 +136,7 @@ jobs:
           HF_ENDPOINT: https://hf-mirror.com
           SGLANG_SEEDTTS50_DIR: /github/home/seedtts-50
           SEEDTTS_SIM_CACHE_DIR: /github/home/seedtts-wavlm-sim
-          TORCHINDUCTOR_CACHE_DIR: /github/home/.torchinductor
+          TORCHINDUCTOR_CACHE_DIR: ${{ env.OMNI_CI_HOME }}/.torchinductor
 
       - name: Post-stage cleanup
         if: always()
@@ -172,7 +179,7 @@ jobs:
             pytest tests/test_model/test_qwen3_omni_mmmu_ci.py -v -s -x
         env:
           HF_ENDPOINT: https://hf-mirror.com
-          TORCHINDUCTOR_CACHE_DIR: /github/home/.torchinductor
+          TORCHINDUCTOR_CACHE_DIR: ${{ env.OMNI_CI_HOME }}/.torchinductor
 
       - name: Post-stage cleanup
         if: always()
@@ -213,7 +220,7 @@ jobs:
             pytest tests/test_model/test_qwen3_omni_mmmu_talker_ci.py -v -s -x
         env:
           HF_ENDPOINT: https://hf-mirror.com
-          TORCHINDUCTOR_CACHE_DIR: /github/home/.torchinductor
+          TORCHINDUCTOR_CACHE_DIR: ${{ env.OMNI_CI_HOME }}/.torchinductor
 
       - name: Post-stage cleanup
         if: always()
@@ -254,7 +261,7 @@ jobs:
             pytest tests/test_model/test_qwen3_omni_mmsu_ci.py -v -s -x
         env:
           HF_ENDPOINT: https://hf-mirror.com
-          TORCHINDUCTOR_CACHE_DIR: /github/home/.torchinductor
+          TORCHINDUCTOR_CACHE_DIR: ${{ env.OMNI_CI_HOME }}/.torchinductor
 
       - name: Post-stage cleanup
         if: always()
@@ -296,7 +303,7 @@ jobs:
             pytest tests/test_model/test_qwen3_omni_mmsu_talker_ci.py -v -s -x
         env:
           HF_ENDPOINT: https://hf-mirror.com
-          TORCHINDUCTOR_CACHE_DIR: /github/home/.torchinductor
+          TORCHINDUCTOR_CACHE_DIR: ${{ env.OMNI_CI_HOME }}/.torchinductor
 
       - name: Post-stage cleanup
         if: always()
@@ -337,7 +344,7 @@ jobs:
             pytest tests/test_model/test_qwen3_omni_videomme_ci.py -v -s -x
         env:
           HF_ENDPOINT: https://hf-mirror.com
-          TORCHINDUCTOR_CACHE_DIR: /github/home/.torchinductor
+          TORCHINDUCTOR_CACHE_DIR: ${{ env.OMNI_CI_HOME }}/.torchinductor
 
       - name: Post-stage cleanup
         if: always()
@@ -378,7 +385,7 @@ jobs:
             pytest tests/test_model/test_qwen3_omni_videomme_talker_ci.py -v -s -x
         env:
           HF_ENDPOINT: https://hf-mirror.com
-          TORCHINDUCTOR_CACHE_DIR: /github/home/.torchinductor
+          TORCHINDUCTOR_CACHE_DIR: ${{ env.OMNI_CI_HOME }}/.torchinductor
 
       - name: Post-stage cleanup
         if: always()
@@ -419,7 +426,7 @@ jobs:
             pytest tests/test_model/test_qwen3_omni_videoamme_ci.py -v -s -x
         env:
           HF_ENDPOINT: https://hf-mirror.com
-          TORCHINDUCTOR_CACHE_DIR: /github/home/.torchinductor
+          TORCHINDUCTOR_CACHE_DIR: ${{ env.OMNI_CI_HOME }}/.torchinductor
 
       - name: Post-stage cleanup
         if: always()
@@ -460,7 +467,7 @@ jobs:
             pytest tests/test_model/test_qwen3_omni_videoamme_talker_ci.py -v -s -x
         env:
           HF_ENDPOINT: https://hf-mirror.com
-          TORCHINDUCTOR_CACHE_DIR: /github/home/.torchinductor
+          TORCHINDUCTOR_CACHE_DIR: ${{ env.OMNI_CI_HOME }}/.torchinductor
 
       - name: Post-stage cleanup
         if: always()
@@ -501,7 +508,7 @@ jobs:
             pytest tests/test_model/test_qwen3_omni_videoamme_talker_tp2_ci.py -v -s -x
         env:
           HF_ENDPOINT: https://hf-mirror.com
-          TORCHINDUCTOR_CACHE_DIR: /github/home/.torchinductor
+          TORCHINDUCTOR_CACHE_DIR: ${{ env.OMNI_CI_HOME }}/.torchinductor
 
       - name: Post-stage cleanup
         if: always()
@@ -529,7 +536,7 @@ jobs:
       - stage-10-videoamme-talker
       - stage-11-thinker-tp2
     if: >-
-      always() &&
+      success() &&
       (github.event_name == 'workflow_dispatch' ||
        (!github.event.pull_request.draft &&
         contains(github.event.pull_request.labels.*.name, 'run-ci')))
@@ -544,4 +551,4 @@ jobs:
 
       - uses: ./.github/actions/omni-cleanup-host
         with:
-          venv-names: omni-qwen3
+          ci-home: ${{ env.OMNI_CI_HOME }}

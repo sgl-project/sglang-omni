@@ -13,21 +13,29 @@ inputs:
 runs:
   using: composite
   steps:
+    - name: Validate PR-scoped CI home
+      shell: bash
+      run: bash .github/scripts/validate_omni_ci_home.sh
+
     - name: Align CI cache home
       shell: bash
       run: |
         echo "HOME=/github/home" >> "${GITHUB_ENV}"
-        echo "XDG_CACHE_HOME=/github/home/.cache" >> "${GITHUB_ENV}"
         echo "HF_HOME=/github/home/.cache/huggingface" >> "${GITHUB_ENV}"
         echo "MODELSCOPE_CACHE=/github/home/.cache/modelscope" >> "${GITHUB_ENV}"
+        echo "XDG_CACHE_HOME=${OMNI_CI_HOME}/.cache" >> "${GITHUB_ENV}"
         echo "HF_HUB_DISABLE_XET=1" >> "${GITHUB_ENV}"
+        echo "HF_ENDPOINT=${HF_ENDPOINT:-https://hf-mirror.com}" >> "${GITHUB_ENV}"
+        # PyPI mirror + shared wheel cache (HF mirror does not accelerate pip/uv).
+        echo "UV_INDEX_URL=${UV_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}" >> "${GITHUB_ENV}"
+        echo "UV_CACHE_DIR=/github/home/.cache/uv" >> "${GITHUB_ENV}"
 
     - name: Restore cache
       shell: bash
       env:
         VENV_NAME: ${{ inputs.venv-name }}
       run: |
-        HOST="/github/home/${VENV_NAME}"
+        HOST="${OMNI_CI_HOME}/${VENV_NAME}"
         if [ -d "${HOST}" ] && [ -n "$(ls -A "${HOST}/")" ]; then
           rm -rf "./${VENV_NAME}"
           ln -sfn "${HOST}" "./${VENV_NAME}"
@@ -39,13 +47,16 @@ runs:
       env:
         VENV_NAME: ${{ inputs.venv-name }}
       run: |
-        HOST="/github/home/${VENV_NAME}"
-        rm -rf "${HOST}"
+        # New workflow run for this PR/workflow slice: drop the previous commit's
+        # environment before preparing a fresh venv (also covers cancel+push).
+        rm -rf "${OMNI_CI_HOME}"
+        mkdir -p "${OMNI_CI_HOME}"
+        HOST="${OMNI_CI_HOME}/${VENV_NAME}"
         uv venv "${HOST}" -p 3.11
         rm -rf "./${VENV_NAME}"
         ln -sfn "${HOST}" "./${VENV_NAME}"
         source "${VENV_NAME}/bin/activate"
-        uv pip install -v -e .
+        uv pip install -e .
         # Repair PyAV if its bundled shared libs got corrupted in the cached
         # venv (e.g. "libx265-...so.215: file too short"). The editable install
         # above does not reinstall an already-present package, so force it.
@@ -66,7 +77,7 @@ runs:
         VENV_NAME: ${{ inputs.venv-name }}
       run: |
         test -x "${VENV_NAME}/bin/python" || {
-          echo "Prepared ${VENV_NAME} environment is missing. Run the setup stage first."
+          echo "Prepared ${VENV_NAME} environment is missing under ${OMNI_CI_HOME}. Run the setup stage first."
           exit 1
         }
         "${VENV_NAME}/bin/python" -c "import torch" 2>/dev/null || {
@@ -76,7 +87,7 @@ runs:
     - name: Remove flashinfer
       shell: bash
       run: |
-        rm -rf /github/home/.cache/flashinfer
+        rm -rf "${OMNI_CI_HOME}/.cache/flashinfer"
 
     - name: Ensure flashinfer-jit-cache
       shell: bash

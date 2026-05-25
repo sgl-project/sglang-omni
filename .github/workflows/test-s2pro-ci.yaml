@@ -13,12 +13,18 @@ concurrency:
 permissions:
   contents: read
 
+env:
+  OMNI_CI_HOME: >-
+    ${{ github.event_name == 'pull_request'
+        && format('/github/home/pr-{0}/s2pro', github.event.pull_request.number)
+        || format('/github/home/run-{0}/s2pro', github.run_id) }}
+
 # DAG:
-#   setup (install-deps in /github/home + verify model weights)
+#   setup (install-deps under OMNI_CI_HOME + verify model weights)
 #     └── docs ──► stage-1-non-streaming ──┐
 #              └── stage-2-streaming ──────┤
 #                                         └──► stage-3-consistency
-#           └── cleanup (after every job above reaches a terminal state)
+#           └── cleanup on full success only (kept on failure for re-run)
 
 jobs:
   setup:
@@ -81,7 +87,7 @@ jobs:
           pytest tests/docs/s2pro/test_docs_tts_s2pro.py -v -s -x
         env:
           HF_ENDPOINT: https://hf-mirror.com
-          TORCHINDUCTOR_CACHE_DIR: /github/home/.torchinductor
+          TORCHINDUCTOR_CACHE_DIR: ${{ env.OMNI_CI_HOME }}/.torchinductor
 
       - name: Post-stage cleanup
         if: always()
@@ -130,7 +136,7 @@ jobs:
           SGLANG_SEEDTTS50_DIR: /github/home/seedtts-50
           SEEDTTS_SIM_CACHE_DIR: /github/home/seedtts-wavlm-sim
           S2PRO_STAGE_OUTPUT_ROOT: ${{ github.workspace }}/stage-results/nonstream
-          TORCHINDUCTOR_CACHE_DIR: /github/home/.torchinductor
+          TORCHINDUCTOR_CACHE_DIR: ${{ env.OMNI_CI_HOME }}/.torchinductor
 
       - name: Post-stage cleanup
         if: always()
@@ -177,7 +183,7 @@ jobs:
           HF_ENDPOINT: https://hf-mirror.com
           SGLANG_SEEDTTS50_DIR: /github/home/seedtts-50
           S2PRO_STAGE_OUTPUT_ROOT: ${{ github.workspace }}/stage-results/stream
-          TORCHINDUCTOR_CACHE_DIR: /github/home/.torchinductor
+          TORCHINDUCTOR_CACHE_DIR: ${{ env.OMNI_CI_HOME }}/.torchinductor
 
       - name: Post-stage cleanup
         if: always()
@@ -243,7 +249,7 @@ jobs:
       - stage-2-streaming
       - stage-3-consistency
     if: >-
-      always() &&
+      success() &&
       (github.event_name == 'workflow_dispatch' ||
        (!github.event.pull_request.draft &&
         contains(github.event.pull_request.labels.*.name, 'run-ci')))
@@ -258,4 +264,4 @@ jobs:
 
       - uses: ./.github/actions/omni-cleanup-host
         with:
-          venv-names: omni-s2pro
+          ci-home: ${{ env.OMNI_CI_HOME }}
