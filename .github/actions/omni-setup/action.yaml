@@ -69,6 +69,14 @@ runs:
       run: |
         rm -rf /github/home/.cache/flashinfer
 
+    - name: Ensure flashinfer-jit-cache
+      shell: bash
+      env:
+        VENV_NAME: ${{ inputs.venv-name }}
+      run: |
+        bash .github/scripts/install_flashinfer_jit_cache.sh "${VENV_NAME}"
+        echo "FLASHINFER_DISABLE_VERSION_CHECK=1" >> "${GITHUB_ENV}"
+
     - name: Kill GPU processes
       shell: bash
       run: |
