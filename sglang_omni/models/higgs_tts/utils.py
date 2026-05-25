@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -118,6 +119,10 @@ def load_audio_to_24k(reference_audio: Any) -> tuple[np.ndarray, int]:
 
     Accepts local path, HTTP/HTTPS URL, or ``{audio_path|path|bytes|base64|data}`` dict.
     """
+    missing_payload_msg = (
+        "reference_audio dict must provide one of audio_path, path, bytes, "
+        "base64, data"
+    )
     io = AudioMediaIO(target_sr=HiggsAudioCodec.SAMPLE_RATE)
 
     def _load_path_or_url(src: str | Path) -> tuple[np.ndarray, int]:
@@ -132,15 +137,27 @@ def load_audio_to_24k(reference_audio: Any) -> tuple[np.ndarray, int]:
     if isinstance(reference_audio, (str, Path)):
         return _load_path_or_url(reference_audio)
 
-    if "audio_path" in reference_audio or "path" in reference_audio:
-        return _load_path_or_url(
-            reference_audio.get("audio_path") or reference_audio["path"]
+    if not isinstance(reference_audio, Mapping):
+        raise TypeError(
+            "reference_audio must be a path, URL, or dict with audio_path, "
+            "path, bytes, base64, or data"
         )
+
+    if "audio_path" in reference_audio or "path" in reference_audio:
+        src = reference_audio.get("audio_path") or reference_audio.get("path")
+        if src is None:
+            raise ValueError(missing_payload_msg)
+        return _load_path_or_url(src)
     if "bytes" in reference_audio:
-        audio, sr = io.load_bytes(reference_audio["bytes"])
+        data = reference_audio["bytes"]
+        if data is None:
+            raise ValueError(missing_payload_msg)
+        audio, sr = io.load_bytes(data)
         return np.asarray(audio, dtype=np.float32), int(sr)
     media_type = reference_audio.get("media_type", "audio/wav")
-    data = reference_audio.get("base64") or reference_audio["data"]
+    data = reference_audio.get("base64") or reference_audio.get("data")
+    if data is None:
+        raise ValueError(missing_payload_msg)
     audio, sr = io.load_base64(media_type, data)
     return np.asarray(audio, dtype=np.float32), int(sr)
 
