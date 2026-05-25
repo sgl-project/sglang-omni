@@ -696,9 +696,9 @@ class OmniScheduler:
                 self._prefill_start_done.discard(rid)
                 self._emit_request_error(rid, exc)
                 continue
-
-            data.prefill_input_embeds = None
-            data.decode_input_embeds = None
+            finally:
+                data.prefill_input_embeds = None
+                data.decode_input_embeds = None
 
             self._first_emit_done.discard(rid)
             self._prefill_start_done.discard(rid)

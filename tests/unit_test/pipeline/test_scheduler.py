@@ -637,9 +637,13 @@ def test_omni_scheduler_result_adapter_failure_emits_error_without_raise() -> No
         raise RuntimeError("adapter failed")
 
     scheduler._result_adapter = fail_adapter
+    request_data = SimpleNamespace(
+        prefill_input_embeds=torch.ones(1),
+        decode_input_embeds=[torch.ones(1)],
+    )
     req = SimpleNamespace(
         rid="req-adapter",
-        _omni_data=SimpleNamespace(),
+        _omni_data=request_data,
         output_ids=[1, 2],
         finished=lambda: True,
         finished_reason=None,
@@ -653,3 +657,5 @@ def test_omni_scheduler_result_adapter_failure_emits_error_without_raise() -> No
     assert isinstance(output.data, RuntimeError)
     assert scheduler._first_emit_done == set()
     assert scheduler._prefill_start_done == set()
+    assert request_data.prefill_input_embeds is None
+    assert request_data.decode_input_embeds is None
