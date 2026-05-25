@@ -62,7 +62,7 @@ sgl-omni serve \
 
 ## Use Curl
 
-Generate speech from text without any reference audio:
+For Fish Speech S2-Pro and Voxtral TTS, generate speech from text without any reference audio:
 
 ```bash
 curl -X POST http://localhost:8000/v1/audio/speech \
@@ -71,7 +71,20 @@ curl -X POST http://localhost:8000/v1/audio/speech \
     --output output.wav
 ```
 
-Note that without reference audio, the generated voice will sound robotic. For natural-sounding results, use Voice Cloning with a reference audio clip.
+Qwen3-TTS Base requires reference audio:
+
+```bash
+curl -X POST http://localhost:8000/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{
+    "input": "Get the trust fund to the bank early.",
+    "ref_audio": "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav",
+    "ref_text": "We asked over twenty different people, and they all said it was his."
+  }' \
+  --output output.wav
+```
+
+For natural-sounding Fish Speech S2-Pro results, use Voice Cloning with a reference audio clip.
 
 ### Voice Cloning
 
@@ -114,6 +127,8 @@ The server returns a stream of SSE events. Each event contains an `audio.speech.
 ## Use Python
 
 ### Basic TTS
+
+This no-reference request applies to Fish Speech S2-Pro and Voxtral TTS.
 
 ```python
 import requests
