@@ -233,7 +233,7 @@ The table below lists all parameters accepted by the `/v1/audio/speech` endpoint
 | `top_p` | float | `null` | Top-p sampling |
 | `top_k` | int | `null` | Top-k sampling |
 | `repetition_penalty` | float | `null` | Repetition penalty |
-| `seed` | int | `null` | Random seed for reproducibility |
+| `seed` | int | `null` | Model-specific; Qwen3-TTS Base and Voxtral TTS currently reject seed |
 
 ## H200 SeedTTS Benchmark Commands
 

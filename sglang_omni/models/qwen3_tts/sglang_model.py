@@ -296,7 +296,6 @@ class Qwen3TTSTalker(nn.Module):
         self._sub_temperature: list[float] = []
         self._sub_top_p: list[float] = []
         self._sub_top_k: list[int] = []
-        self._sub_generators: list[torch.Generator | None] = []
         _bind_default_weight_loaders(self)
         self._cached_params_dict = dict(self.named_parameters())
         self._sampler = None
@@ -559,8 +558,6 @@ class Qwen3TTSTalker(nn.Module):
         self._sub_temperature = []
         self._sub_top_p = []
         self._sub_top_k = []
-        self._sub_generators = []
-        generator_device = self.device
         for sched_req in requests:
             data = sched_req.data
             self._sub_dosample.append(bool(getattr(data, "subtalker_dosample", True)))
@@ -569,25 +566,6 @@ class Qwen3TTSTalker(nn.Module):
             )
             self._sub_top_p.append(float(getattr(data, "subtalker_top_p", 1.0)))
             self._sub_top_k.append(int(getattr(data, "subtalker_top_k", 50)))
-            seed = getattr(data.req.sampling_params, "sampling_seed", None)
-            if seed is None:
-                self._sub_generators.append(None)
-                continue
-
-            seed = int(seed)
-            generator = getattr(data, "_subtalker_generator", None)
-            if (
-                not isinstance(generator, torch.Generator)
-                or getattr(data, "_subtalker_generator_seed", None) != seed
-                or getattr(data, "_subtalker_generator_device", None)
-                != generator_device
-            ):
-                generator = torch.Generator(device=generator_device)
-                generator.manual_seed(seed)
-                data._subtalker_generator = generator
-                data._subtalker_generator_seed = seed
-                data._subtalker_generator_device = generator_device
-            self._sub_generators.append(generator)
 
     @torch.no_grad()
     def forward(
@@ -732,11 +710,6 @@ class Qwen3TTSTalker(nn.Module):
                 mask[keep] = scores[keep]
                 scores = mask
             probs = torch.softmax(scores, dim=-1)
-            generator = (
-                self._sub_generators[row_idx]
-                if row_idx < len(self._sub_generators)
-                else None
-            )
             top_p = float(self._sub_top_p[row_idx])
             if 0.0 < top_p < 1.0:
                 sorted_probs, sorted_idx = torch.sort(probs, descending=True)
@@ -745,10 +718,10 @@ class Qwen3TTSTalker(nn.Module):
                 remove[0] = False
                 sorted_probs = sorted_probs.masked_fill(remove, 0)
                 sorted_probs = sorted_probs / sorted_probs.sum().clamp_min(1e-12)
-                sample = torch.multinomial(sorted_probs, 1, generator=generator)[0]
+                sample = torch.multinomial(sorted_probs, 1)[0]
                 tokens.append(sorted_idx[sample])
             else:
-                tokens.append(torch.multinomial(probs, 1, generator=generator)[0])
+                tokens.append(torch.multinomial(probs, 1)[0])
         return torch.stack(tokens).to(dtype=torch.long)
 
     def _can_sample_subtalker_batch(self, logits: torch.Tensor) -> bool:

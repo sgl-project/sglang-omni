@@ -217,7 +217,6 @@ def test_qwen3_tts_state_round_trip_preserves_request_fields() -> None:
         ref_audio="voice.wav",
         ref_text="reference",
         generation_kwargs={"max_new_tokens": 128, "temperature": 0.7},
-        seed=123,
         audio_codes=[[1, 2], [3, 4]],
         ref_code_len=1,
         audio_samples=[0.0, 0.1],
@@ -329,12 +328,22 @@ def test_qwen3_tts_maps_ref_audio_form_and_explicit_sampling() -> None:
     }
 
 
+def test_qwen3_tts_rejects_seed_until_semantic_sampling_is_deterministic() -> None:
+    payload = make_payload(
+        inputs="target",
+        tts_params={"ref_audio": "voice.wav", "ref_text": "reference", "seed": 123},
+    )
+
+    with pytest.raises(ValueError, match="does not support seed"):
+        build_qwen3_tts_state(payload)
+
+
 def test_qwen3_tts_preprocessing_does_not_mutate_global_rng(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     payload = make_payload(
         inputs="target",
-        tts_params={"ref_audio": "voice.wav", "ref_text": "reference", "seed": 123},
+        tts_params={"ref_audio": "voice.wav", "ref_text": "reference"},
     )
 
     class FakeWrapper:
@@ -388,7 +397,7 @@ def test_qwen3_tts_preprocessing_does_not_mutate_global_rng(
         wrapper=FakeWrapper(),
     )
 
-    assert prepared.state.seed == 123
+    assert prepared.state.seed is None
 
 
 def test_qwen3_tts_uses_x_vector_only_when_ref_text_is_missing() -> None:
@@ -544,7 +553,7 @@ def test_qwen3_tts_request_data_keeps_decode_tensors_on_prepared_device(
         qwen3_request_builders._QWEN3_TTS_PREPARED_MARKER: payload.request_id
     }
     prepared = Qwen3TTSPreparedRequest(
-        state=Qwen3TTSState(seed=123),
+        state=Qwen3TTSState(),
         input_ids_list=[11, 12, 13],
         input_ids=torch.tensor([11, 12, 13], dtype=torch.long),
         attention_mask=torch.ones((1, 3), dtype=torch.long),
@@ -720,51 +729,6 @@ def test_qwen3_tts_prefill_prepares_subtalker_buffers_before_forward(
     assert calls == ["prepare", "embeds", "forward"]
 
 
-def test_qwen3_tts_subtalker_sampling_reuses_request_generator(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    install_fake_sglang(monkeypatch)
-    from sglang_omni.models.qwen3_tts.sglang_model import Qwen3TTSTalker
-
-    talker = Qwen3TTSTalker.__new__(Qwen3TTSTalker)
-    talker.model = SimpleNamespace(
-        codec_embedding=SimpleNamespace(weight=torch.empty(1))
-    )
-    data = SimpleNamespace(
-        req=SimpleNamespace(
-            sampling_params=SimpleNamespace(sampling_seed=7),
-        )
-    )
-
-    Qwen3TTSTalker.prepare_decode_buffers(talker, [SimpleNamespace(data=data)])
-    generator = data._subtalker_generator
-    Qwen3TTSTalker.prepare_decode_buffers(talker, [SimpleNamespace(data=data)])
-
-    assert data._subtalker_generator is generator
-    assert talker._sub_generators == [generator]
-
-
-def test_qwen3_tts_subtalker_sampling_advances_request_generator(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    install_fake_sglang(monkeypatch)
-    from sglang_omni.models.qwen3_tts.sglang_model import Qwen3TTSTalker
-
-    talker = Qwen3TTSTalker.__new__(Qwen3TTSTalker)
-    generator = torch.Generator(device="cpu")
-    generator.manual_seed(11)
-    before = generator.get_state().clone()
-    talker._sub_dosample = [True]
-    talker._sub_temperature = [1.0]
-    talker._sub_top_p = [1.0]
-    talker._sub_top_k = [-1]
-    talker._sub_generators = [generator]
-
-    Qwen3TTSTalker._sample_subtalker_token(talker, torch.tensor([[0.2, 0.8]]), 0)
-
-    assert not torch.equal(generator.get_state(), before)
-
-
 def test_qwen3_tts_subtalker_sampling_batches_argmax_path(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -776,7 +740,6 @@ def test_qwen3_tts_subtalker_sampling_batches_argmax_path(
     talker._sub_temperature = [1.0, 1.0]
     talker._sub_top_p = [1.0, 1.0]
     talker._sub_top_k = [-1, -1]
-    talker._sub_generators = [None, None]
 
     tokens = Qwen3TTSTalker._sample_subtalker_token(
         talker,
@@ -798,7 +761,6 @@ def test_qwen3_tts_subtalker_sampling_keeps_sampled_path_rowwise(
     talker._sub_temperature = [1.0, 1.0]
     talker._sub_top_p = [1.0, 1.0]
     talker._sub_top_k = [-1, -1]
-    talker._sub_generators = [None, None]
 
     def fail_batched_sample(_self, _logits):
         raise AssertionError("sampled subtalker path must stay row-wise")

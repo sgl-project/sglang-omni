@@ -20,6 +20,7 @@ import types
 from collections import deque
 from typing import Any, Callable
 
+import torch
 from sglang.srt.environ import envs
 from sglang.srt.layers.dp_attention import compute_dp_attention_world_info
 from sglang.srt.managers.schedule_batch import FINISH_ABORT, ScheduleBatch
@@ -628,9 +629,12 @@ class OmniScheduler:
             # The upstream process_batch_result reads .next_token_ids and
             # .logits_output from the result; both are already on batch via
             # the model runner's execute() (batch.output_ids is set there).
+            next_token_ids = batch.output_ids
+            if isinstance(next_token_ids, torch.Tensor):
+                batch.input_ids = next_token_ids.to(torch.int64)
             return GenerationBatchResult(
                 logits_output=None,
-                next_token_ids=batch.output_ids,
+                next_token_ids=next_token_ids,
                 can_run_cuda_graph=mr_output.can_run_cuda_graph,
             )
         # Fallback: call upstream's run_batch (uses tp_worker directly)

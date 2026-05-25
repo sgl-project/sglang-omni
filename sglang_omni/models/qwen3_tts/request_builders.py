@@ -152,6 +152,12 @@ def build_qwen3_tts_state(payload: StagePayload) -> Qwen3TTSState:
         tts_params=tts_params,
         ref_text=ref_text,
     )
+    seed = tts_params["seed"] if "seed" in tts_params else params.get("seed")
+    if seed is not None:
+        raise ValueError(
+            "Qwen3-TTS Base does not support seed yet; deterministic sampled "
+            "decoding requires per-request semantic sampling."
+        )
 
     return Qwen3TTSState(
         text=text,
@@ -161,7 +167,7 @@ def build_qwen3_tts_state(payload: StagePayload) -> Qwen3TTSState:
         x_vector_only_mode=x_vector_only_mode,
         non_streaming_mode=bool(params.get("non_streaming_mode", False)),
         generation_kwargs=build_generation_kwargs(params, tts_params=tts_params),
-        seed=tts_params["seed"] if "seed" in tts_params else params.get("seed"),
+        seed=None,
     )
 
 
@@ -414,7 +420,6 @@ def build_sglang_qwen3_tts_request(
         top_k=int(gen_kwargs.get("top_k", 50)),
         repetition_penalty=float(gen_kwargs.get("repetition_penalty", 1.05)),
         stop_token_ids=[int(model.config.codec_eos_token_id)],
-        sampling_seed=state.seed,
     )
     sampling_params.normalize(None)
     sampling_params.verify(int(model.config.vocab_size))

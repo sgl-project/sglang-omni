@@ -200,6 +200,36 @@ def test_omni_scheduler_run_batch_failure_emits_error_and_aborts(monkeypatch) ->
     assert scheduler._deferred_request_payloads == {}
 
 
+def test_omni_scheduler_custom_runner_updates_next_input_ids() -> None:
+    """Custom AR runners must preserve SGLang's decode handoff contract."""
+
+    next_token_ids = torch.tensor([11, 12], dtype=torch.int32)
+
+    class FakeModelRunner:
+        def execute(self, sched_output):
+            sched_output.batch_data.output_ids = next_token_ids
+            return SimpleNamespace(outputs={}, can_run_cuda_graph=False)
+
+    scheduler = object.__new__(OmniScheduler)
+    scheduler._model_runner = FakeModelRunner()
+    scheduler._stream_output_builder = None
+    scheduler._prefill_start_done = set()
+
+    batch = SimpleNamespace(
+        reqs=[
+            SimpleNamespace(rid="req-1", _omni_data=SimpleNamespace()),
+            SimpleNamespace(rid="req-2", _omni_data=SimpleNamespace()),
+        ],
+        output_ids=None,
+    )
+
+    result = scheduler._run_batch(batch)
+
+    assert result.next_token_ids is next_token_ids
+    assert batch.input_ids.dtype == torch.int64
+    assert batch.input_ids.tolist() == [11, 12]
+
+
 def test_omni_scheduler_abort_propagates_immediate_kv_cleanup_failure(
     monkeypatch,
 ) -> None:
