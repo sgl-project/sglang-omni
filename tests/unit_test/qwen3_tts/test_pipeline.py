@@ -326,6 +326,68 @@ def test_qwen3_tts_maps_ref_audio_form_and_explicit_sampling() -> None:
     }
 
 
+def test_qwen3_tts_preprocessing_does_not_mutate_global_rng(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = make_payload(
+        inputs="target",
+        tts_params={"ref_audio": "voice.wav", "ref_text": "reference", "seed": 123},
+    )
+
+    class FakeWrapper:
+        def create_voice_clone_prompt(self, **kwargs):
+            del kwargs
+            return [SimpleNamespace(ref_text="reference")]
+
+        def _prompt_items_to_voice_clone_prompt(self, prompt_items):
+            return prompt_items[0]
+
+        def _tokenize_texts(self, texts):
+            return [[idx + 1 for idx, _ in enumerate(texts[0])]]
+
+        def _build_assistant_text(self, text):
+            return text
+
+        def _build_ref_text(self, text):
+            return text
+
+        def _merge_generate_kwargs(self, **kwargs):
+            return kwargs
+
+    class FakeModel:
+        device = torch.device("cpu")
+        root_config = SimpleNamespace(tts_pad_token_id=0)
+        model = SimpleNamespace(_feedback_buffer=torch.empty((1, 4)))
+
+        def build_voice_clone_inputs(self, **kwargs):
+            del kwargs
+            return (
+                torch.ones((1, 2, 4)),
+                torch.ones((1, 2), dtype=torch.long),
+                torch.ones((1, 1, 4)),
+                None,
+            )
+
+        def get_text_embeddings(self):
+            return lambda ids: torch.ones((*ids.shape, 4), device=ids.device)
+
+        def text_projection(self, embeds):
+            return embeds
+
+    def fail_manual_seed(seed):
+        raise AssertionError(f"global seed mutated: {seed}")
+
+    monkeypatch.setattr(torch, "manual_seed", fail_manual_seed)
+
+    prepared = qwen3_request_builders._prepare_qwen3_tts_request(
+        payload,
+        model=FakeModel(),
+        wrapper=FakeWrapper(),
+    )
+
+    assert prepared.state.seed == 123
+
+
 def test_qwen3_tts_uses_x_vector_only_when_ref_text_is_missing() -> None:
     payload = make_payload(
         inputs={"text": "target", "references": [{"audio_path": "voice.wav"}]},
@@ -694,6 +756,28 @@ def test_qwen3_tts_subtalker_sampling_advances_request_generator(
     Qwen3TTSTalker._sample_subtalker_token(talker, torch.tensor([[0.2, 0.8]]), 0)
 
     assert not torch.equal(generator.get_state(), before)
+
+
+def test_qwen3_tts_subtalker_sampling_uses_batched_common_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_fake_sglang(monkeypatch)
+    from sglang_omni.models.qwen3_tts.sglang_model import Qwen3TTSTalker
+
+    talker = Qwen3TTSTalker.__new__(Qwen3TTSTalker)
+    talker._sub_dosample = [False, False]
+    talker._sub_temperature = [1.0, 1.0]
+    talker._sub_top_p = [1.0, 1.0]
+    talker._sub_top_k = [-1, -1]
+    talker._sub_generators = [None, None]
+
+    tokens = Qwen3TTSTalker._sample_subtalker_token(
+        talker,
+        torch.tensor([[0.1, 0.9], [0.7, 0.2]]),
+        0,
+    )
+
+    assert tokens.tolist() == [1, 0]
 
 
 def test_qwen3_tts_engine_keeps_cuda_graph_disabled_after_bootstrap(

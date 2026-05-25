@@ -714,6 +714,9 @@ class Qwen3TTSTalker(nn.Module):
         layer_idx: int,
     ) -> torch.Tensor:
         del layer_idx
+        if self._can_sample_subtalker_batch(logits):
+            return self._sample_subtalker_token_batch(logits)
+
         tokens = []
         for row_idx, row in enumerate(logits):
             if row_idx >= len(self._sub_dosample) or not self._sub_dosample[row_idx]:
@@ -747,6 +750,63 @@ class Qwen3TTSTalker(nn.Module):
             else:
                 tokens.append(torch.multinomial(probs, 1, generator=generator)[0])
         return torch.stack(tokens).to(dtype=torch.long)
+
+    def _can_sample_subtalker_batch(self, logits: torch.Tensor) -> bool:
+        batch_size = int(logits.shape[0])
+        if batch_size == 0:
+            return True
+        if batch_size > len(self._sub_dosample):
+            return False
+        dosample = bool(self._sub_dosample[0])
+        if any(bool(value) != dosample for value in self._sub_dosample[:batch_size]):
+            return False
+        if not dosample:
+            return True
+        if any(
+            generator is not None for generator in self._sub_generators[:batch_size]
+        ):
+            return False
+        temperature = float(self._sub_temperature[0])
+        top_p = float(self._sub_top_p[0])
+        top_k = int(self._sub_top_k[0])
+        return all(
+            float(self._sub_temperature[idx]) == temperature
+            and float(self._sub_top_p[idx]) == top_p
+            and int(self._sub_top_k[idx]) == top_k
+            for idx in range(batch_size)
+        )
+
+    def _sample_subtalker_token_batch(self, logits: torch.Tensor) -> torch.Tensor:
+        if logits.shape[0] == 0:
+            return torch.empty((0,), device=logits.device, dtype=torch.long)
+        if not bool(self._sub_dosample[0]):
+            return torch.argmax(logits, dim=-1).to(dtype=torch.long)
+
+        scores = logits.float()
+        temperature = max(float(self._sub_temperature[0]), 1e-5)
+        scores = scores / temperature
+        top_k = int(self._sub_top_k[0])
+        if top_k > 0 and top_k < scores.shape[-1]:
+            keep = torch.topk(scores, top_k, dim=-1).indices
+            kept_scores = scores.gather(1, keep)
+            masked = torch.full_like(scores, -float("inf"))
+            scores = masked.scatter(1, keep, kept_scores)
+
+        probs = torch.softmax(scores, dim=-1)
+        top_p = float(self._sub_top_p[0])
+        if 0.0 < top_p < 1.0:
+            sorted_probs, sorted_idx = torch.sort(probs, descending=True, dim=-1)
+            cdf = torch.cumsum(sorted_probs, dim=-1)
+            remove = cdf > top_p
+            remove[:, 0] = False
+            sorted_probs = sorted_probs.masked_fill(remove, 0)
+            sorted_probs = sorted_probs / sorted_probs.sum(
+                dim=-1, keepdim=True
+            ).clamp_min(1e-12)
+            sample = torch.multinomial(sorted_probs, 1)
+            return sorted_idx.gather(1, sample).squeeze(1).to(dtype=torch.long)
+
+        return torch.multinomial(probs, 1).squeeze(1).to(dtype=torch.long)
 
     def _predictor_forward_one_token(
         self,

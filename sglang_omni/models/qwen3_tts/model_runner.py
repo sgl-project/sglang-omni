@@ -86,10 +86,10 @@ class Qwen3TTSModelRunner(ModelRunner):
         schedule_batch.output_ids = result.next_token_ids
 
         eos_id = int(self.model.config.codec_eos_token_id)
-        for row_idx, sched_req in enumerate(requests):
-            semantic_token = int(result.next_token_ids[row_idx].item())
-            if semantic_token == eos_id:
-                continue
+        semantic_ids = result.next_token_ids.reshape(-1)
+        active_rows = (semantic_ids != eos_id).nonzero(as_tuple=True)[0].tolist()
+        for row_idx in active_rows:
+            sched_req = requests[row_idx]
             code_chunk = self.model._output_codes[row_idx].detach().clone()
             feedback = self.model._output_embeds[row_idx].detach().clone()
             sched_req.data.output_codes.append(code_chunk)

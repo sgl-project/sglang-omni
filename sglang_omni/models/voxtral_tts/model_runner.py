@@ -116,9 +116,9 @@ class VoxtralTTSModelRunner(ModelRunner):
 
         eos_id = AudioSpecialTokens.id(AudioSpecialTokens.end_audio)
         embeds = self.model.audio_token_embedding(codes.unsqueeze(2)).sum(dim=1)
-        for row_idx, sched_req in enumerate(requests):
-            if int(semantic_ids[row_idx].item()) == eos_id:
-                continue
+        active_rows = (semantic_ids != eos_id).nonzero(as_tuple=True)[0].tolist()
+        for row_idx in active_rows:
+            sched_req = requests[row_idx]
             sched_req.data.output_codes.append(codes[row_idx].detach().clone())
             sched_req.data.pending_feedback_queue.append(
                 embeds[row_idx, 0].detach().clone()

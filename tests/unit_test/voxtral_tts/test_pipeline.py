@@ -69,6 +69,7 @@ def test_voxtral_radix_cache_is_namespaced_by_voice() -> None:
     assert cheerful.req.origin_input_ids == neutral.req.origin_input_ids
     assert cheerful.req.extra_key != neutral.req.extra_key
     assert cheerful.req.extra_key.startswith("voxtral_voice:")
+    assert cheerful.voice_embedding is voice_embeddings["cheerful_female"]
 
 
 def test_voxtral_speech_validation_accepts_supported_fields() -> None:

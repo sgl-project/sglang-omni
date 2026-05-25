@@ -287,8 +287,6 @@ def _prepare_qwen3_tts_request(
     wrapper: Any,
 ) -> Qwen3TTSPreparedRequest:
     state = build_qwen3_tts_state(payload)
-    if state.seed is not None:
-        torch.manual_seed(int(state.seed))
 
     with torch.no_grad():
         prompt_items = wrapper.create_voice_clone_prompt(
