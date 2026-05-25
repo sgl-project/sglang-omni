@@ -18,10 +18,22 @@ PY
 fi
 
 # Pin matches flashinfer-python 0.6.1 on frankleeeee/sglang-omni:dev (CUDA 12.8).
-wheel_url="https://github.com/flashinfer-ai/flashinfer/releases/download/nightly-v0.6.1-20260121/flashinfer_jit_cache-0.6.1.dev20260121+cu128-cp39-abi3-manylinux_2_28_x86_64.whl"
+wheel_filename="flashinfer_jit_cache-0.6.1.dev20260121+cu128-cp39-abi3-manylinux_2_28_x86_64.whl"
+wheel_url="https://github.com/flashinfer-ai/flashinfer/releases/download/nightly-v0.6.1-20260121/${wheel_filename}"
+wheel_cache_dir="${FLASHINFER_JIT_CACHE_WHEEL_DIR:-/github/home/.cache/wheels}"
+cached_wheel="${wheel_cache_dir}/${wheel_filename}"
 
-echo "Installing flashinfer-jit-cache from ${wheel_url}"
-uv pip install "${wheel_url}"
+mkdir -p "${wheel_cache_dir}"
+
+if [ ! -f "${cached_wheel}" ]; then
+  echo "Downloading flashinfer-jit-cache wheel to ${cached_wheel}"
+  curl -fsSL --retry 3 --retry-delay 5 -o "${cached_wheel}" "${wheel_url}"
+else
+  echo "Using cached flashinfer-jit-cache wheel: ${cached_wheel}"
+fi
+
+echo "Installing flashinfer-jit-cache from ${cached_wheel}"
+uv pip install "${cached_wheel}"
 
 python - <<'PY'
 import importlib.metadata as md
