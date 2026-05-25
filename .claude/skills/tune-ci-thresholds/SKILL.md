@@ -1,6 +1,6 @@
 ---
 name: tune-ci-thresholds
-description: Run CI tests N times per stage on the H20 CI-reproduction host, produce a per-metric worst-of-N observation report, and (on user confirmation) write the worst-of-N values back into the test files as new baselines. Use when recalibrating CI thresholds after an engine update. Currently supports qwen3-omni-v1 and s2-pro-v1; extensible via models/<name>/config.yaml.
+description: Run CI tests N times per stage on the H20 CI-reproduction host, produce a per-metric strict worst-of-N observation report (every stage must have N full-sample repeats), and (on user confirmation) write the worst-of-N values back into the test files as new baselines. Use when recalibrating CI thresholds after an engine update. Currently supports qwen3-omni-v1 and s2-pro-v1; extensible via models/<name>/config.yaml.
 ---
 
 # tune-ci-thresholds
@@ -15,14 +15,113 @@ run the tests locally, use pytest directly — this skill is not for
 that.
 
 The skill is observation-first: it runs tests N times and produces a
-worst-of-N report. After the report is shown, it offers a one-shot
-**apply step** that writes the worst-of-N values directly into the
-test files as the new P95 baselines and accuracy / WER thresholds —
-**only** if the user explicitly confirms. The skill still does NOT
-re-run `apply_slack` separately, generate patch files, or
-commit / push anything; if the user rejects the apply prompt, the
+**strict worst-of-N** report. After the report is shown, it offers a
+one-shot **apply step** that writes the worst-of-N values directly
+into the test files as the new P95 baselines and accuracy / WER
+thresholds — **only** if the user explicitly confirms. The skill
+still does NOT re-run `apply_slack` separately, generate patch files,
+or commit / push anything; if the user rejects the apply prompt, the
 test files stay untouched and the user picks values manually from
 the report.
+
+## Strict worst-of-N (mandatory — non-negotiable)
+
+**Worst-of-N is only valid when every stage has N full-sample repeats.**
+This is a hard requirement for report, apply, and any threshold change —
+now and in all future calibrations.
+
+### What counts as a valid repeat
+
+A stage-run is **strict-complete** (✓) only when **both** hold:
+
+1. **All tracked metrics extracted** — every metric in `stages.yaml`
+   for that stage is non-null in `run{k}.json`.
+2. **Full sample coverage** — `sample_counts.ok == sample_counts.total`
+   and both are non-null (e.g. MMSU `2000/2000`, talker `20/20`).
+
+Anything else is **not** a valid worst-of-N input:
+
+| Symbol | Meaning | Valid for worst-of-N? |
+|--------|---------|----------------------|
+| **✓** | Strict-complete (`ok == total`, all metrics present) | **Yes** |
+| **△** | Partial — metrics exist but `ok < total` (OOM mid-benchmark, early abort) | **No** |
+| **✗** | No usable metrics — missing JSON, OOM before results, extraction failed | **No** |
+| **—** | Not yet run | **No** |
+
+**Partial runs are never acceptable for worst-of-N**, even when
+`tune.py` marks the stage-run `status: ok` with reason
+`threshold_assertion (OOM)` — that only means metrics were *read*, not
+that the repeat was *complete*.
+
+### tune.py `complete: true` ≠ strict-ready
+
+`tune.py status` counts a stage-run toward `ok/total` when metrics
+were extracted (including △ partial and threshold-failure runs). That
+counter is a **scheduling/progress** signal, **not** strict readiness.
+
+Before **report**, **apply**, or telling the user calibration is
+done, you **must** run the strict audit below and confirm:
+
+```
+strict-ready stages: <S> / <total stages>   (each stage has N/N ✓)
+```
+
+If any stage has fewer than N ✓ repeats, calibration is **incomplete
+for threshold purposes** — `--resume` / targeted re-runs until every
+gap is filled. Do **not** apply thresholds from a mix of ✓, △, and ✗.
+
+### Strict audit command (run before report / apply / status updates to user)
+
+From repo root, after each major progress checkpoint and always before
+steps 6–9:
+
+```
+python3 << 'PY'
+import json
+from pathlib import Path
+
+run_dir = Path("<run-dir>")
+plan = json.loads((run_dir / "plan.json").read_text())
+repeats = plan["repeats"]
+stage_keys = plan["stages"]
+
+def classify(p):
+    if not p.exists():
+        return "—"
+    d = json.loads(p.read_text())
+    sc = d.get("sample_counts") or {}
+    tot, ok = sc.get("total"), sc.get("ok")
+    metrics = d.get("metrics") or {}
+    has_all = bool(metrics) and all(v is not None for v in metrics.values())
+    if not has_all:
+        return "✗"
+    if tot is not None and ok is not None and ok >= tot:
+        return "✓"
+    if tot is not None and ok is not None and ok < tot:
+        return "△"
+    return "✗"
+
+ready = 0
+for sk in stage_keys:
+    cells = [classify(run_dir / sk / f"run{k}.json") for k in range(1, repeats + 1)]
+    if cells.count("✓") == repeats:
+        ready += 1
+    print(f"{sk}: {''.join(cells)} ({cells.count('✓')}/{repeats} strict)")
+print(f"STRICT READY: {ready}/{len(stage_keys)} stages ({repeats} repeats each)")
+PY
+```
+
+When reporting progress to the user, show **strict ✓ counts** (and △/✗
+gaps), not only `tune.py status` `ok/total`.
+
+### Re-run policy for △ and ✗
+
+- **△ partial** (e.g. videoamme_talker `15/20`): treat as **failed for
+  calibration** — re-run that pytest repeat until ✓ or exhaust retries.
+- **✗ no metrics**: re-run after GPU cleanup; check OOM / missing
+  `*_results.json` in `_pytest/<test>/run{k}.log`.
+- Do **not** skip a bad repeat because other repeats for the same stage
+  already passed — worst-of-N requires **all N** valid observations.
 
 ## Models
 Each supported model has a config under `models/<name>/`:
@@ -239,7 +338,9 @@ python .claude/skills/tune-ci-thresholds/tune.py --model qwen3-omni-v1 run \
   1. Run `python tune.py status --run-dir <run-dir>` and read JSON.
   2. Tail `<run-dir>/run.log` and the active
      `<run-dir>/_pytest/<test>/run{k}.log` (last ~30 lines).
-  3. Report `ok/total` completeness and GPU memory to yourself.
+  3. Report **strict** progress (✓/△/✗ per stage, see strict audit
+     above) **and** `tune.py` `ok/total` / GPU memory. Never cite
+     `ok/total` alone as "calibration progress" — it includes △ partial.
 - If `status` shows `pytest_active: false` but completeness is not
   `complete: true` and the last log lines show **crash / OOM / server
   startup failure**, do **not** keep waiting — immediately resume:
@@ -265,25 +366,44 @@ python .claude/skills/tune-ci-thresholds/tune.py --model qwen3-omni-v1 run \
 - **Auto-retry passes:** after the first pass, `run` automatically
   re-executes any stage-run whose metrics are incomplete (up to
   `--max-passes`, default 10), with GPU cleanup between passes.
+  This retries ✗ (missing metrics) — it does **not** automatically
+  reject or re-run △ partial repeats. After each pass, run the **strict
+  audit**; manually `--resume` until every stage is N/N ✓.
 - **Per-run retries:** up to 4 attempts for OOM / crash / GPU-not-clear
   failures before marking a stage-run incomplete.
 - **`status` subcommand:** machine-readable snapshot for agent polling.
 - **`report` gate:** refuses to write `report.md` unless **every**
-  stage × repeat has complete metrics (`130/130` for full qwen3, etc.).
+  stage × repeat has complete metrics (`125/125` for full qwen3 ALL×5,
+  etc.) — this is tune.py's extraction gate, **not** strict worst-of-N.
+  You must still run the **strict audit** before trusting the report
+  for apply.
 
 ### Completeness is a hard prerequisite for thresholds
-- **Never** show the apply prompt (step 9) or write thresholds unless
-  `tune.py status --run-dir <run-dir>` returns `"complete": true`.
-- Partial runs may exist on disk for debugging, but they are **not**
-  valid calibration artifacts. Do not infer worst-of-N from missing runs.
-- If completeness fails after `--max-passes`, relay the `missing` list
-  from `status` JSON and `--resume` — do not proceed to apply.
+
+Two gates — **both** required before apply:
+
+1. **tune.py gate:** `tune.py status --run-dir <run-dir>` returns
+   `"complete": true` (every stage × repeat has extractable metrics).
+2. **Strict gate:** strict audit shows **every stage has N/N ✓**
+   (full-sample repeats only; no △, no ✗).
+
+- **Never** show the apply prompt (step 9), run `report` for final
+  artifacts, or write thresholds unless **both gates pass**.
+- Partial runs (△) may exist on disk for debugging but are **never**
+  valid calibration artifacts. Do not infer worst-of-N from △ or ✗ runs.
+- If tune.py completeness fails after `--max-passes`, relay the
+  `missing` list from `status` JSON and `--resume` — do not proceed.
+- If tune.py is `complete: true` but strict audit fails, **keep
+  resuming / re-running** until strict-ready — do not proceed to apply.
 
 ### Resume
 - On interruptions or failed stage-runs, resume with the same
   `--output-dir --resume`; completed stage-runs are skipped, incomplete
   ones are purged and re-run automatically.
-- Do not rerun completed repeats from scratch unless the run directory
+- **△ partial repeats are not auto-purged** — if strict audit shows △,
+  delete the offending `run{k}.json` files for that stage (or the whole
+  pytest repeat) and `--resume` so tune.py re-executes them.
+- Do not rerun completed ✓ repeats from scratch unless the run directory
   is corrupt.
 
 ## Steps I follow
@@ -359,9 +479,14 @@ python .claude/skills/tune-ci-thresholds/tune.py --model qwen3-omni-v1 run \
    --output-dir <run-dir>`. While the subprocess runs, poll with
    `status` every **≤120s** — never blind-wait ≥50 min. On crash or
    incomplete metrics, `--resume` immediately.
-6. When `tune.py run` exits 0, verify completeness once more:
-   `python tune.py status --run-dir <run-dir>` must show
-   `"complete": true`. Then open `<run-dir>/report.md`.
+6. When `tune.py run` exits 0, verify **both** gates:
+   - `python tune.py status --run-dir <run-dir>` → `"complete": true`
+   - Strict audit → every stage **N/N ✓** (see "Strict worst-of-N")
+   If strict audit fails, `--resume` (or targeted re-runs) until it
+   passes — **do not** open `report.md` for final threshold work yet.
+   When both pass, run `python tune.py report --run-dir <run-dir>` if
+   needed, then open `<run-dir>/report.md`. In the report narrative,
+   note any △ runs that were superseded by successful re-runs.
 7. For every `{{CONTEXT:<stage_key>}}` placeholder:
    a. Load `models/<M>/stages.yaml`; find that stage's `test` path and
       `context_vars`.
@@ -379,19 +504,22 @@ python .claude/skills/tune-ci-thresholds/tune.py --model qwen3-omni-v1 run \
    canonical calibration artifact: it must keep the full per-run tables,
    worst-of-N rows, provenance, context lines, and (after apply) the
    applied-changes table. Do not replace it with a lightweight summary.
-9. **Apply prompt — strictly after the entire run is done AND complete.**
-   This prompt is the LAST thing the skill does, and must only fire once
-   ALL of the following have completed for the whole `--stages` set:
+9. **Apply prompt — strictly after the entire run is done AND both
+   completeness gates pass.** This prompt is the LAST thing the skill
+   does, and must only fire once ALL of the following have completed
+   for the whole `--stages` set:
    `tune.py run` has exited with exit code 0,
-   `tune.py status --run-dir <run-dir>` shows `"complete": true`
-   (every stage × repeat has full metrics — e.g. 130/130 for full qwen3),
+   `tune.py status --run-dir <run-dir>` shows `"complete": true`,
+   **strict audit shows every stage N/N ✓** (full-sample repeats —
+   e.g. 25/25 stages × 5 for full qwen3 ALL),
    `report.md` has been written, every `{{CONTEXT:...}}` placeholder in
    step 7 has been resolved, and step 8 has shown the user the report
    path. Never ask between stages, between repeats, on partial failure,
    or while any pytest subprocess is still alive — the user may be
    running unattended for an hour+ and must not be interrupted mid-run.
-   If the run was aborted, completeness check failed, or any stage-run
-   is missing metrics, skip step 9 entirely.
+   If the run was aborted, either completeness gate failed, any stage has
+   △/✗ repeats, or any stage-run is missing metrics, skip step 9
+   entirely.
 
    Use AskUserQuestion to ask exactly once which **apply mode** to use:
      - `report` — only the report, no test files touched
@@ -534,6 +662,10 @@ python .claude/skills/tune-ci-thresholds/tune.py --model qwen3-omni-v1 run \
       and test/pre-commit verification.
 
 ## What I do not do
+- Treat `tune.py status` `ok/total` or `complete: true` as strict
+  worst-of-N readiness — always run the strict audit (✓ = full samples).
+- Include △ partial or ✗ failed repeats in worst-of-N calculations or
+  apply decisions.
 - Set up container / venv / caches during an ordinary calibration run.
   Exception: if a CI-equivalent smoke test proves that local server
   startup is not comparable to CI, pause calibration and fix environment
