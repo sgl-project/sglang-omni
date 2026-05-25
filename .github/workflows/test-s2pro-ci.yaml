@@ -14,7 +14,7 @@ permissions:
   contents: read
 
 # DAG:
-#   setup (install-deps + verify model weights + save venv cache)
+#   setup (install-deps in /github/home + verify model weights)
 #     └── docs ──► stage-1-non-streaming ──┐
 #              └── stage-2-streaming ──────┤
 #                                         └──► stage-3-consistency
@@ -35,10 +35,6 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-
-      - name: Remove stale host cache
-        shell: bash
-        run: rm -rf /github/home/omni-s2pro
 
       - uses: ./.github/actions/omni-setup
         with:

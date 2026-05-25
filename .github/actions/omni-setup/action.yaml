@@ -27,8 +27,10 @@ runs:
       env:
         VENV_NAME: ${{ inputs.venv-name }}
       run: |
-        if [ -d "/github/home/${VENV_NAME}" ] && [ -n "$(ls -A "/github/home/${VENV_NAME}/")" ]; then
-          cp -p -r "/github/home/${VENV_NAME}" "./${VENV_NAME}"
+        HOST="/github/home/${VENV_NAME}"
+        if [ -d "${HOST}" ] && [ -n "$(ls -A "${HOST}/")" ]; then
+          rm -rf "./${VENV_NAME}"
+          ln -sfn "${HOST}" "./${VENV_NAME}"
         fi
 
     - name: Install dependencies
@@ -37,13 +39,11 @@ runs:
       env:
         VENV_NAME: ${{ inputs.venv-name }}
       run: |
-        if [ -d "${VENV_NAME}" ] && ! "${VENV_NAME}/bin/python" -c "import torch" 2>/dev/null; then
-          echo "Cached venv is corrupted, removing..."
-          rm -rf "${VENV_NAME}"
-        fi
-        if [ ! -d "${VENV_NAME}" ]; then
-          uv venv "${VENV_NAME}" -p 3.11
-        fi
+        HOST="/github/home/${VENV_NAME}"
+        rm -rf "${HOST}"
+        uv venv "${HOST}" -p 3.11
+        rm -rf "./${VENV_NAME}"
+        ln -sfn "${HOST}" "./${VENV_NAME}"
         source "${VENV_NAME}/bin/activate"
         uv pip install -v -e .
         # Repair PyAV if its bundled shared libs got corrupted in the cached

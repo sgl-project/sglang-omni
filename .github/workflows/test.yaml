@@ -14,7 +14,7 @@ permissions:
   contents: read
 
 # DAG:
-#   setup (install-deps + save venv cache)
+#   setup (install-deps in /github/home)
 #     └── unit-test (restore cached venv only; excludes docs/benchmark)
 #           └── cleanup (reclaim host SSD)
 #
@@ -35,10 +35,6 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-
-      - name: Remove stale host cache
-        shell: bash
-        run: rm -rf /github/home/omni
 
       - uses: ./.github/actions/omni-setup
         with:

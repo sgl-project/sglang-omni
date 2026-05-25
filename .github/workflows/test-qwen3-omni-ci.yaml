@@ -14,8 +14,8 @@ permissions:
   contents: read
 
 # DAG:
-#   setup (install-deps + verify model weights + save venv cache)
-#     └── stage 1 → stage 2 → … → stage 11 (restore only; serial)
+#   setup (install-deps in /github/home + verify model weights)
+#     └── stage 1 … stage 11 (restore only; parallel after setup)
 #           └── cleanup (reclaim host SSD)
 
 jobs:
@@ -33,10 +33,6 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-
-      - name: Remove stale host cache
-        shell: bash
-        run: rm -rf /github/home/omni-qwen3
 
       - uses: ./.github/actions/omni-setup
         with:
@@ -95,7 +91,7 @@ jobs:
 
   stage-2-tts:
     name: stage 2 - TTS speed + WER + SIM
-    needs: stage-1-thinker
+    needs: setup
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (!github.event.pull_request.draft &&
@@ -149,7 +145,7 @@ jobs:
 
   stage-3-mmmu:
     name: stage 3 - MMMU accuracy + speed
-    needs: stage-2-tts
+    needs: setup
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (!github.event.pull_request.draft &&
@@ -190,7 +186,7 @@ jobs:
 
   stage-4-mmmu-talker:
     name: stage 4 - MMMU Talker
-    needs: stage-3-mmmu
+    needs: setup
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (!github.event.pull_request.draft &&
@@ -231,7 +227,7 @@ jobs:
 
   stage-5-mmsu:
     name: stage 5 - MMSU accuracy + speed
-    needs: stage-4-mmmu-talker
+    needs: setup
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (!github.event.pull_request.draft &&
@@ -273,7 +269,7 @@ jobs:
 
   stage-6-mmsu-talker:
     name: stage 6 - MMSU Talker
-    needs: stage-5-mmsu
+    needs: setup
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (!github.event.pull_request.draft &&
@@ -314,7 +310,7 @@ jobs:
 
   stage-7-videomme:
     name: stage 7 - Video-MME accuracy + speed
-    needs: stage-6-mmsu-talker
+    needs: setup
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (!github.event.pull_request.draft &&
@@ -355,7 +351,7 @@ jobs:
 
   stage-8-videomme-talker:
     name: stage 8 - Video-MME Talker
-    needs: stage-7-videomme
+    needs: setup
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (!github.event.pull_request.draft &&
@@ -396,7 +392,7 @@ jobs:
 
   stage-9-videoamme:
     name: stage 9 - Video-AMME accuracy + speed
-    needs: stage-8-videomme-talker
+    needs: setup
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (!github.event.pull_request.draft &&
@@ -437,7 +433,7 @@ jobs:
 
   stage-10-videoamme-talker:
     name: stage 10 - Video-AMME Talker
-    needs: stage-9-videoamme
+    needs: setup
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (!github.event.pull_request.draft &&
@@ -478,7 +474,7 @@ jobs:
 
   stage-11-thinker-tp2:
     name: stage 11 - FP8 Thinker TP=2 (Video-AMME Talker)
-    needs: stage-10-videoamme-talker
+    needs: setup
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (!github.event.pull_request.draft &&
