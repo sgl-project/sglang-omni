@@ -65,6 +65,8 @@ runs:
     - name: Remove flashinfer
       shell: bash
       run: |
+        # Runtime JIT artifacts only; host wheel cache is under
+        # /github/home/.cache/flashinfer-jit-cache/ and is never removed here.
         rm -rf "${OMNI_CI_HOME}/.cache/flashinfer"
 
     - name: Ensure flashinfer-jit-cache
