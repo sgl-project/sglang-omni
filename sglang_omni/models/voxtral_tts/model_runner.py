@@ -76,7 +76,7 @@ class VoxtralTTSModelRunner(ModelRunner):
             req = data.req
             req_len = int(req.extend_input_len)
             prefix_len = len(req.prefix_indices)
-            full_ids = data.input_ids.to(device=input_ids.device)
+            full_ids = data.input_ids
             current_ids = full_ids[prefix_len : prefix_len + req_len]
             audio_positions = (current_ids == int(data.audio_token_id)).nonzero(
                 as_tuple=True
@@ -85,7 +85,7 @@ class VoxtralTTSModelRunner(ModelRunner):
                 offset += req_len
                 continue
             previous_audio = int(
-                (full_ids[:prefix_len] == int(data.audio_token_id)).sum().item()
+                (full_ids[:prefix_len] == int(data.audio_token_id)).sum()
             )
             voice = data.voice_embedding.to(
                 device=input_embeds.device,
@@ -95,7 +95,9 @@ class VoxtralTTSModelRunner(ModelRunner):
                 int(audio_positions.numel()), voice.shape[0] - previous_audio
             )
             if n_frames > 0:
-                rows = audio_positions[:n_frames] + offset
+                rows = (
+                    audio_positions[:n_frames].to(device=input_embeds.device) + offset
+                )
                 input_embeds[rows] = voice[previous_audio : previous_audio + n_frames]
             offset += req_len
         return input_embeds
