@@ -28,13 +28,6 @@ _VOXTRAL_MISTRAL_COMMON_HINT = (
     "  uv pip install 'mistral-common[audio]>=1.8.0'"
 )
 
-_IMPLICIT_SPEECH_SAMPLING_DEFAULTS = {
-    "temperature": {0.8, 1.0},
-    "top_p": {0.8, 1.0},
-    "top_k": {-1, 30},
-    "repetition_penalty": {1.0, 1.1},
-}
-
 
 def _import_mistral_common_for_voxtral():
     """Lazy import so the rest of sglang-omni does not depend on mistral-common."""
@@ -71,10 +64,6 @@ def _validate_voxtral_speech_params(
         if field != "max_new_tokens":
             unsupported.add(field)
 
-    for field, implicit_values in _IMPLICIT_SPEECH_SAMPLING_DEFAULTS.items():
-        value = params.get(field)
-        if value is not None and value not in implicit_values:
-            unsupported.add(field)
     if params.get("seed") is not None:
         unsupported.add("seed")
     if params.get("stage_sampling"):
@@ -102,12 +91,6 @@ def _ensure_non_empty_audio_codes(audio_codes: Any) -> None:
         raise ValueError("Voxtral TTS generated no audio codes")
     if isinstance(audio_codes, torch.Tensor) and audio_codes.numel() == 0:
         raise ValueError("Voxtral TTS generated no audio codes")
-
-
-def _resolve_device(device: str | None, gpu_id: int | None) -> str:
-    if device is not None:
-        return device
-    return f"cuda:{0 if gpu_id is None else int(gpu_id)}"
 
 
 def _audio_waveform_payload(audio: Any) -> dict[str, Any]:
@@ -184,7 +167,7 @@ def create_preprocessing_executor(model_path: str) -> SimpleScheduler:
 def create_generation_executor(
     model_path: str,
     *,
-    device: str | None = None,
+    device: str = "cuda:0",
     gpu_id: int | None = None,
     max_new_tokens: int = 4096,
 ) -> Any:
@@ -202,7 +185,8 @@ def create_generation_executor(
     )
 
     checkpoint_dir = _resolve_checkpoint(model_path)
-    device = _resolve_device(device, gpu_id)
+    if gpu_id is not None:
+        device = f"cuda:{gpu_id}"
     gpu_id = int(device.split(":")[-1]) if ":" in device else 0
 
     server_args = build_sglang_server_args(
@@ -361,12 +345,13 @@ def _load_audio_tokenizer(checkpoint_dir: str, audio_config: dict, device: str):
 def create_vocoder_executor(
     model_path: str,
     *,
-    device: str | None = None,
+    device: str = "cuda:0",
     gpu_id: int | None = None,
 ) -> SimpleScheduler:
     """Factory for the vocoder (audio tokenizer decode) stage."""
     checkpoint_dir = _resolve_checkpoint(model_path)
-    device = _resolve_device(device, gpu_id)
+    if gpu_id is not None:
+        device = f"cuda:{gpu_id}"
 
     logger.info("Loading Voxtral audio tokenizer for vocoding...")
     audio_tokenizer = _load_audio_tokenizer(checkpoint_dir, {}, device)

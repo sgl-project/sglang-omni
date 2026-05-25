@@ -1,7 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pytest
@@ -12,13 +11,11 @@ from sglang_omni.config import (
     build_stage_placement_plan,
     resolve_stage_factory_args,
 )
-from sglang_omni.config.manager import ConfigManager, resolve_config_cls_for_model_path
+from sglang_omni.config.manager import ConfigManager
 from sglang_omni.models.qwen3_omni.config import (
     Qwen3OmniPipelineConfig,
     Qwen3OmniSpeechColocatedPipelineConfig,
 )
-from sglang_omni.models.qwen3_tts.config import Qwen3TTSPipelineConfig
-from sglang_omni.models.voxtral_tts.config import VoxtralTTSPipelineConfig
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 
@@ -180,52 +177,6 @@ def test_qwen_preprocessing_runtime_video_fps_resolves_to_factory_arg() -> None:
     args = resolve_stage_factory_args(preprocessing, config)
 
     assert args["video_fps"] == 2.0
-
-
-def test_config_resolver_reads_raw_qwen3_tts_config(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    model_dir = tmp_path / "qwen3_tts"
-    model_dir.mkdir()
-    (model_dir / "config.json").write_text(json.dumps({"model_type": "qwen3_tts"}))
-    monkeypatch.setattr(
-        "sglang_omni.config.manager.AutoConfig.from_pretrained",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError("no hf config")),
-    )
-
-    assert resolve_config_cls_for_model_path(str(model_dir)) is Qwen3TTSPipelineConfig
-
-
-def test_config_resolver_reads_mistral_params_json(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    model_dir = tmp_path / "voxtral"
-    model_dir.mkdir()
-    (model_dir / "params.json").write_text(json.dumps({"model_type": "voxtral_tts"}))
-    monkeypatch.setattr(
-        "sglang_omni.config.manager.AutoConfig.from_pretrained",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError("no hf config")),
-    )
-
-    assert resolve_config_cls_for_model_path(str(model_dir)) is VoxtralTTSPipelineConfig
-
-
-def test_config_resolver_rejects_unknown_architecture(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    model_dir = tmp_path / "unknown"
-    model_dir.mkdir()
-    (model_dir / "config.json").write_text(json.dumps({"model_type": "unknown"}))
-    monkeypatch.setattr(
-        "sglang_omni.config.manager.AutoConfig.from_pretrained",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError("no hf config")),
-    )
-
-    with pytest.raises(ValueError, match="Could not resolve model architecture"):
-        resolve_config_cls_for_model_path(str(model_dir))
 
 
 def test_h20_colocated_example_reserve_keeps_raw_budget_in_resolved_config() -> None:

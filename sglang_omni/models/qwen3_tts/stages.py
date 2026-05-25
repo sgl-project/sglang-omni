@@ -106,12 +106,6 @@ def _load_qwen3_tts_generate_defaults(checkpoint_dir: str) -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
-def _resolve_device(device: str | None, gpu_id: int | None) -> str:
-    if device is not None:
-        return device
-    return f"cuda:{0 if gpu_id is None else int(gpu_id)}"
-
-
 def _audio_waveform_payload(audio: Any) -> dict[str, Any]:
     if isinstance(audio, torch.Tensor):
         audio = audio.detach().float().cpu().reshape(-1).numpy()
@@ -152,7 +146,7 @@ def create_preprocessing_executor(model_path: str) -> SimpleScheduler:
 def create_sglang_tts_engine_executor(
     model_path: str,
     *,
-    device: str | None = None,
+    device: str = "cuda:0",
     gpu_id: int | None = None,
     dtype: str = "bfloat16",
     attn_implementation: str | None = None,
@@ -170,7 +164,8 @@ def create_sglang_tts_engine_executor(
 
     _register_qwen3_tts_hf_config()
     checkpoint_dir = _resolve_checkpoint(model_path)
-    device = _resolve_device(device, gpu_id)
+    if gpu_id is not None:
+        device = f"cuda:{gpu_id}"
     gpu_id = int(device.split(":")[-1]) if ":" in device else 0
 
     server_args = build_sglang_server_args(
@@ -249,14 +244,15 @@ def create_tts_engine_executor(*args, **kwargs) -> Any:
 def create_vocoder_executor(
     model_path: str,
     *,
-    device: str | None = None,
+    device: str = "cuda:0",
     gpu_id: int | None = None,
     dtype: str = "bfloat16",
     attn_implementation: str | None = None,
     max_batch_size: int = 8,
     max_batch_wait_ms: int = 2,
 ) -> SimpleScheduler:
-    device = _resolve_device(device, gpu_id)
+    if gpu_id is not None:
+        device = f"cuda:{gpu_id}"
     tokenizer = _load_qwen3_tts_tokenizer(
         model_path,
         device=device,

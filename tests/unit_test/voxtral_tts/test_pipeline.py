@@ -98,7 +98,12 @@ def test_voxtral_speech_validation_accepts_supported_fields() -> None:
 @pytest.mark.parametrize(
     ("params", "tts_params", "inputs", "field"),
     [
-        ({"temperature": 0.2}, {}, "hello", "temperature"),
+        (
+            {"temperature": 0.2},
+            {"explicit_generation_params": ["temperature"]},
+            "hello",
+            "temperature",
+        ),
         ({}, {"explicit_generation_params": ["seed"], "seed": 7}, "hello", "seed"),
         ({}, {"language": "en"}, "hello", "language"),
         ({}, {"ref_audio": "ref.wav"}, "hello", "ref_audio"),
