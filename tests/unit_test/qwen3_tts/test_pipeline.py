@@ -765,7 +765,7 @@ def test_qwen3_tts_subtalker_sampling_advances_request_generator(
     assert not torch.equal(generator.get_state(), before)
 
 
-def test_qwen3_tts_subtalker_sampling_uses_batched_common_path(
+def test_qwen3_tts_subtalker_sampling_batches_argmax_path(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     install_fake_sglang(monkeypatch)
@@ -785,6 +785,37 @@ def test_qwen3_tts_subtalker_sampling_uses_batched_common_path(
     )
 
     assert tokens.tolist() == [1, 0]
+
+
+def test_qwen3_tts_subtalker_sampling_keeps_sampled_path_rowwise(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_fake_sglang(monkeypatch)
+    from sglang_omni.models.qwen3_tts.sglang_model import Qwen3TTSTalker
+
+    talker = Qwen3TTSTalker.__new__(Qwen3TTSTalker)
+    talker._sub_dosample = [True, True]
+    talker._sub_temperature = [1.0, 1.0]
+    talker._sub_top_p = [1.0, 1.0]
+    talker._sub_top_k = [-1, -1]
+    talker._sub_generators = [None, None]
+
+    def fail_batched_sample(_self, _logits):
+        raise AssertionError("sampled subtalker path must stay row-wise")
+
+    monkeypatch.setattr(
+        Qwen3TTSTalker,
+        "_sample_subtalker_token_batch",
+        fail_batched_sample,
+    )
+
+    tokens = Qwen3TTSTalker._sample_subtalker_token(
+        talker,
+        torch.tensor([[1000.0, -1000.0], [1000.0, -1000.0]]),
+        0,
+    )
+
+    assert tokens.tolist() == [0, 0]
 
 
 def test_qwen3_tts_engine_keeps_cuda_graph_disabled_after_bootstrap(
