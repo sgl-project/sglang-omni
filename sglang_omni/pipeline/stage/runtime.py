@@ -878,9 +878,63 @@ class Stage:
                 f"StagePayload, got {type(projected_payload).__name__}"
             )
         # A fan-out edge may use process-local dispatch only when projection
-        # gives the target its own mutable payload/data container. Tensor leaves
-        # inside that container may still be shared intentionally.
-        return projected_payload.data is not original_payload.data
+        # gives the target its own mutable payload/data containers. Tensor leaves
+        # inside those containers may still be shared intentionally.
+        if projected_payload.data is original_payload.data:
+            return False
+        return not Stage._shares_mutable_container(
+            original_payload.data, projected_payload.data
+        )
+
+    @staticmethod
+    def _shares_mutable_container(original: Any, projected: Any) -> bool:
+        original_ids = Stage._collect_mutable_container_ids(original)
+        if not original_ids:
+            return False
+        return Stage._contains_mutable_container_id(projected, original_ids)
+
+    @staticmethod
+    def _collect_mutable_container_ids(
+        obj: Any, seen: set[int] | None = None
+    ) -> set[int]:
+        seen = set() if seen is None else seen
+        obj_id = id(obj)
+        if obj_id in seen:
+            return set()
+        seen.add(obj_id)
+
+        ids: set[int] = set()
+        if isinstance(obj, (dict, list, set, bytearray)):
+            ids.add(obj_id)
+
+        for child in Stage._iter_container_children(obj):
+            ids.update(Stage._collect_mutable_container_ids(child, seen))
+        return ids
+
+    @staticmethod
+    def _contains_mutable_container_id(
+        obj: Any, original_ids: set[int], seen: set[int] | None = None
+    ) -> bool:
+        seen = set() if seen is None else seen
+        obj_id = id(obj)
+        if obj_id in seen:
+            return False
+        seen.add(obj_id)
+
+        if isinstance(obj, (dict, list, set, bytearray)) and obj_id in original_ids:
+            return True
+        return any(
+            Stage._contains_mutable_container_id(child, original_ids, seen)
+            for child in Stage._iter_container_children(obj)
+        )
+
+    @staticmethod
+    def _iter_container_children(obj: Any):
+        if isinstance(obj, dict):
+            return obj.values()
+        if isinstance(obj, (list, tuple, set, frozenset)):
+            return obj
+        return ()
 
     def _can_send_full_payload_locally(
         self,

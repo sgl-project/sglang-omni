@@ -502,6 +502,17 @@ def test_stage_fan_out_payloads_fall_back_to_relay() -> None:
 
 
 def test_stage_projected_fan_out_payloads_use_local_object_when_isolated() -> None:
+    def _isolated_projector(marker):
+        def _project(payload):
+            return make_stage_payload(
+                request_id=payload.request_id,
+                inputs=payload.request.inputs,
+                params=payload.request.params,
+                data={"marker": marker, "data": dict(payload.data)},
+            )
+
+        return _project
+
     async def _run() -> None:
         dispatcher = LocalStageDispatcher()
         relay = FakeRelay()
@@ -520,8 +531,8 @@ def test_stage_projected_fan_out_payloads_use_local_object_when_isolated() -> No
             relay=relay,
             control_plane=control_plane,
             project_payload={
-                "decode": make_noop_projector("decode-only"),
-                "archive": make_noop_projector("archive-only"),
+                "decode": _isolated_projector("decode-only"),
+                "archive": _isolated_projector("archive-only"),
             },
             same_process_targets={"decode", "archive"},
             local_dispatcher=dispatcher,
@@ -581,6 +592,56 @@ def test_stage_projected_fan_out_requires_isolated_data_container() -> None:
         await sender._route_result(
             "req-fanout",
             make_stage_payload(request_id="req-fanout", data={"answer": 7}),
+        )
+
+        assert [target for target, _, _ in control_plane.sent_to_stage] == [
+            "decode",
+            "archive",
+        ]
+        assert relay.storage
+
+    asyncio.run(_run())
+
+
+def test_stage_projected_fan_out_rejects_nested_mutable_aliases() -> None:
+    def _shallow_copy_projector(payload):
+        return make_stage_payload(
+            request_id=payload.request_id,
+            inputs=payload.request.inputs,
+            params=payload.request.params,
+            data={"projected": dict(payload.data)},
+        )
+
+    async def _run() -> None:
+        dispatcher = LocalStageDispatcher()
+        relay = FakeRelay()
+        control_plane = RecordingStageControlPlane()
+        decode = make_stage(name="decode", scheduler=FakeScheduler())
+        archive = make_stage(name="archive", scheduler=FakeScheduler())
+        sender = make_stage(
+            name="thinker",
+            get_next=lambda request_id, output: ["decode", "archive"],
+            endpoints={
+                "decode": "inproc://decode",
+                "archive": "inproc://archive",
+            },
+            relay=relay,
+            control_plane=control_plane,
+            project_payload={
+                "decode": _shallow_copy_projector,
+                "archive": _shallow_copy_projector,
+            },
+            same_process_targets={"decode", "archive"},
+            local_dispatcher=dispatcher,
+        )
+        dispatcher.register_many([sender, decode, archive])
+
+        await sender._route_result(
+            "req-fanout",
+            make_stage_payload(
+                request_id="req-fanout",
+                data={"nested": {"tokens": [1, 2, 3]}, "answer": 7},
+            ),
         )
 
         assert [target for target, _, _ in control_plane.sent_to_stage] == [

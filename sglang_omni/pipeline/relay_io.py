@@ -250,15 +250,75 @@ async def read_blob(
 # Stream chunk send
 # ---------------------------------------------------------------------------
 
+_IPC_INLINE_CPU_BYTES_LIMIT = 64 * 1024
+
+
+def _is_cuda_tensor(obj: Any) -> bool:
+    return isinstance(obj, torch.Tensor) and obj.is_cuda
+
 
 def _contains_cuda_tensor(obj: Any) -> bool:
+    if _is_cuda_tensor(obj):
+        return True
     if isinstance(obj, torch.Tensor):
-        return obj.is_cuda
+        return False
     if isinstance(obj, dict):
         return any(_contains_cuda_tensor(value) for value in obj.values())
     if isinstance(obj, (list, tuple, set, frozenset)):
         return any(_contains_cuda_tensor(value) for value in obj)
     return False
+
+
+def _contains_cpu_tensor(obj: Any, seen: set[int] | None = None) -> bool:
+    if obj is None:
+        return False
+    seen = set() if seen is None else seen
+    obj_id = id(obj)
+    if obj_id in seen:
+        return False
+    seen.add(obj_id)
+
+    if isinstance(obj, torch.Tensor):
+        return not _is_cuda_tensor(obj)
+    if isinstance(obj, dict):
+        return any(_contains_cpu_tensor(value, seen) for value in obj.values())
+    if isinstance(obj, (list, tuple, set, frozenset)):
+        return any(_contains_cpu_tensor(value, seen) for value in obj)
+    return False
+
+
+def _inline_cpu_pickle_size(obj: Any, seen: set[int] | None = None) -> int:
+    if obj is None:
+        return 0
+    seen = set() if seen is None else seen
+    obj_id = id(obj)
+    if obj_id in seen:
+        return 0
+    seen.add(obj_id)
+
+    if isinstance(obj, torch.Tensor):
+        return 0
+    if isinstance(obj, dict):
+        return sum(
+            _inline_cpu_pickle_size(key, seen) + _inline_cpu_pickle_size(value, seen)
+            for key, value in obj.items()
+        )
+    if isinstance(obj, (list, tuple, set, frozenset)):
+        return sum(_inline_cpu_pickle_size(value, seen) for value in obj)
+
+    try:
+        return len(pickle.dumps(obj))
+    except Exception:
+        return _IPC_INLINE_CPU_BYTES_LIMIT + 1
+
+
+def _should_use_cuda_ipc_stream_chunk(data: Any, metadata: dict | None) -> bool:
+    if not _contains_cuda_tensor(data):
+        return False
+    if _contains_cpu_tensor(data) or _contains_cpu_tensor(metadata):
+        return False
+    inline_size = _inline_cpu_pickle_size(data) + _inline_cpu_pickle_size(metadata)
+    return inline_size <= _IPC_INLINE_CPU_BYTES_LIMIT
 
 
 def ipc_pickle(obj: Any) -> bytes:
@@ -321,13 +381,13 @@ async def send_stream_chunk(
     same_gpu_targets: set[str] | None = None,
 ) -> None:
     """Send a streaming chunk to a downstream stage."""
-    # CUDA IPC keeps CUDA tensors off the relay path, but CPU tensors and plain
-    # Python values in this object are still pickled into the control message.
-    # Keep this path for CUDA-dominant chunks with small CPU metadata.
+    # Keep CUDA IPC limited to CUDA-dominant chunks with no CPU tensors and only
+    # small inline Python metadata; otherwise the relay path keeps CPU-heavy
+    # pieces out of the IPC control-plane pickle.
     if (
         same_gpu_targets
         and target_stage in same_gpu_targets
-        and _contains_cuda_tensor(data)
+        and _should_use_cuda_ipc_stream_chunk(data, metadata)
     ):
         msg = DataReadyMessage(
             request_id=request_id,
@@ -338,6 +398,18 @@ async def send_stream_chunk(
         )
         await control_plane.send_to_stage(target_stage, target_endpoint, msg)
         return
+
+    if (
+        same_gpu_targets
+        and target_stage in same_gpu_targets
+        and _contains_cuda_tensor(data)
+        and not isinstance(data, torch.Tensor)
+    ):
+        raise ValueError(
+            "CUDA IPC stream chunks with mixed object graphs must not carry "
+            "CPU-heavy data through the control plane; use tensor data with "
+            "relay-backed metadata instead"
+        )
 
     blob_key = f"{request_id}:stream:{from_stage}:{target_stage}:{chunk_id}"
 
