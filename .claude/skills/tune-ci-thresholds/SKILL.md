@@ -200,7 +200,10 @@ python .claude/skills/tune-ci-thresholds/tune.py --model qwen3-omni-v1 run \
   `HTTPS_PROXY=<proxy-url>`,
   `NO_PROXY=localhost,127.0.0.1,::1`,
   `HF_ENDPOINT=<hf-endpoint>`,
-  `HF_HOME=<hf-cache-dir>`, and
+  `HF_HOME=<hf-cache-dir>`,
+  `OMNI_CI_HOME=<ci-slice-dir>`,
+  `UV_INDEX_URL=<pypi-mirror>`,
+  `UV_CACHE_DIR=/github/home/.cache/uv`, and
   `HF_HUB_DISABLE_XET=1` when the environment needs them.
 - Do not wrap pytest with `proxychains4`: it can proxy loopback health
   checks and make local server startup look broken. Use proxy env vars
@@ -209,94 +212,111 @@ python .claude/skills/tune-ci-thresholds/tune.py --model qwen3-omni-v1 run \
   processes first. Only stop processes from the current calibration run.
 
 ## CI Environment Alignment and Server Startup Debugging
-- Calibration must reproduce the CI runtime, not merely run the same
-  pytest command. Before trusting timing numbers, align:
-  - CI image / container semantics as closely as the host allows
-    (`frankleeeee/sglang-omni:dev` for Qwen3-Omni CI).
-  - `HOME=/github/home` and `XDG_CACHE_HOME=/github/home/.cache`.
-  - `TORCHINDUCTOR_CACHE_DIR=/github/home/.torchinductor`.
-  - `FLASHINFER_DISABLE_VERSION_CHECK=1` for Qwen3-Omni / S2-Pro
-    calibration, matching the FlashInfer JIT-cache tolerance used by
-    related eval tooling.
-  - `HF_ENDPOINT` / `HF_HOME` / `HF_HUB_DISABLE_XET` as needed so model
-    and dataset caches are visible under the aligned home. If the real
-    HF cache lives elsewhere, symlink it into `/github/home/.cache/`
-    rather than redownloading large checkpoints.
-- Do not assume the current Cursor container equals CI. Check the actual
-  runtime when startup is suspicious:
-  ```
-  hostname
-  python -V
-  python - <<'PY'
-  import os, torch, flashinfer
-  print("HOME", os.environ.get("HOME"))
-  print("XDG_CACHE_HOME", os.environ.get("XDG_CACHE_HOME"))
-  print("TORCHINDUCTOR_CACHE_DIR", os.environ.get("TORCHINDUCTOR_CACHE_DIR"))
-  print("FLASHINFER_DISABLE_VERSION_CHECK", os.environ.get("FLASHINFER_DISABLE_VERSION_CHECK"))
-  print("torch", torch.__version__, "cuda", torch.version.cuda)
-  print("flashinfer", flashinfer.__version__, flashinfer.__file__)
-  PY
-  ```
-- If Qwen3-Omni server startup is much slower locally than CI, first run
-  the exact CI-like smoke test before calibration:
-  ```
-  source omni-qwen3/bin/activate
-  export GITHUB_ACTIONS=true RUNNER_TEMP=/tmp
-  export HOME=/github/home XDG_CACHE_HOME=/github/home/.cache
-  export PYTHONPATH=$PWD HF_ENDPOINT=https://hf-mirror.com HF_HUB_DISABLE_XET=1
-  export TORCHINDUCTOR_CACHE_DIR=/github/home/.torchinductor
-  export FLASHINFER_DISABLE_VERSION_CHECK=1
-  export NO_PROXY=localhost,127.0.0.1,::1
-  bash .github/scripts/run_flaky_pytest.sh \
-    pytest tests/test_model/test_qwen3_omni_videomme_ci.py -v -s -x
-  ```
-  A healthy run should show the router topology, both workers Healthy,
-  and the 50-sample Video-MME benchmark completing.
-- Known failure signatures and fixes:
-  - `Loading safetensors checkpoint shards` is very slow, with processes
-    in `D (disk sleep)` / `wait_on_page_bit_common`: this is storage /
-    page-cache pressure, not an incomplete model. Check
-    `/proc/pressure/io`, top process `read_bytes`, and competing Cursor /
-    shell / codex processes before judging CI thresholds.
-  - `flashinfer.fused_moe.core -> gen_cutlass_fused_moe_sm90_module(...).build_and_load()`
-    during CUDA graph capture, followed by router timeout: the venv is
-    missing FlashInfer JIT cache or is using the wrong cache home. Install
-    the CUDA-matching `flashinfer-jit-cache` package and keep
-    `FLASHINFER_DISABLE_VERSION_CHECK=1`.
-  - `nvcc` / `ninja` commands referencing `/root/.python/omni` or
-    `python3.12` while the active venv is `omni-qwen3` / Python 3.11:
-    stale FlashInfer cache from the wrong environment is being reused.
-    Delete both `/github/home/.cache/flashinfer` and the actual
-    `Path.home()/.cache/flashinfer`, then rerun after aligning `HOME`.
-- FlashInfer JIT cache is not on normal PyPI. Use the FlashInfer wheel
-  index for the CUDA version, or a direct wheel URL from that index. For
-  the verified local CI repro with `flashinfer-python==0.6.1` and CUDA
-  12.8, this wheel resolved the startup timeout:
-  ```
-  source omni-qwen3/bin/activate
-  export HTTPS_PROXY=<proxy-url> https_proxy=<proxy-url>  # only if needed
-  uv pip install \
-    https://github.com/flashinfer-ai/flashinfer/releases/download/nightly-v0.6.1-20260121/flashinfer_jit_cache-0.6.1.dev20260121+cu128-cp39-abi3-manylinux_2_28_x86_64.whl
-  python - <<'PY'
-  import importlib.util, importlib.metadata as md
-  print(importlib.util.find_spec("flashinfer_jit_cache").origin)
-  print(md.distribution("flashinfer-jit-cache").version)
-  PY
-  ```
-  If `uv pip install flashinfer-jit-cache --index-url ...` cannot resolve
-  the package, inspect the simple index and install the concrete wheel URL.
-- GPU cleanup can cross container PID namespaces. If `nvidia-smi` shows
-  `[Not Found]` PIDs or `kill` says "No such process", identify and stop
-  the container-visible Python stage processes instead:
-  ```
-  pgrep -af "multiprocessing.spawn|sglang_omni_router|sgl-omni serve|pytest|nvcc|ninja"
-  ```
-  Kill only processes from the current calibration / smoke run, then
-  confirm `nvidia-smi --query-gpu=index,memory.used --format=csv` is back
-  near zero before restarting.
-- After fixing alignment, rerun `tune.py precheck` and the Video-MME smoke
-  before resuming a large calibration. Do not continue calibration from
-  runs that failed before the CI-like smoke passed.
+
+Calibration must reproduce the **same runtime layout as GitHub Actions omni-setup**,
+not merely run the same pytest command.
+
+### Cache layout (matches `.github/actions/omni-setup`)
+
+| Scope | Path | Notes |
+|-------|------|-------|
+| **Global (shared)** | `/github/home/.cache/huggingface` | `HF_HOME`; model weights |
+| | `/github/home/.cache/modelscope` | `MODELSCOPE_CACHE` |
+| | `/github/home/.cache/uv` | `UV_CACHE_DIR`; PyPI wheels |
+| | `/github/home/.cache/flashinfer-jit-cache/` | Host-resident flashinfer-jit-cache **wheel**; download only when pin changes |
+| **Per slice (`OMNI_CI_HOME`)** | `<OMNI_CI_HOME>/omni-qwen3` or `omni-s2pro` | Python venv |
+| | `<OMNI_CI_HOME>/.cache` | `XDG_CACHE_HOME`; uv/torch compile artifacts |
+| | `<OMNI_CI_HOME>/.cache/flashinfer` | Runtime FlashInfer JIT dir — **safe to delete** between runs |
+| | `<OMNI_CI_HOME>/.torchinductor` | `TORCHINDUCTOR_CACHE_DIR` |
+
+- **CI Actions runners** use `OMNI_CI_HOME=/github/home/pr-<N>/qwen3` (or `/s2pro`, `/unit`).
+- **Calibration host** uses fixed slices from each model's `config.yaml`:
+  `omni_ci_home: /github/home/calibration/qwen3` (or `.../s2pro`).
+- `tune.py` / `runner.py` apply `auto_env` from `config.yaml` and **override** shell env to match CI.
+
+### Prepare a calibration venv (first time or after deps change)
+
+From repo root on the H20 repro host (`frankleeeee/sglang-omni:dev` semantics):
+
+```bash
+# Qwen3-Omni example (S2-Pro: OMNI_CI_HOME=/github/home/calibration/s2pro, venv omni-s2pro)
+export OMNI_CI_HOME=/github/home/calibration/qwen3
+export HOME=/github/home
+export HF_HOME=/github/home/.cache/huggingface
+export MODELSCOPE_CACHE=/github/home/.cache/modelscope
+export HF_ENDPOINT=https://hf-mirror.com HF_HUB_DISABLE_XET=1
+export UV_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+export UV_CACHE_DIR=/github/home/.cache/uv
+export XDG_CACHE_HOME=${OMNI_CI_HOME}/.cache
+export TORCHINDUCTOR_CACHE_DIR=${OMNI_CI_HOME}/.torchinductor
+
+bash .github/scripts/prepare_omni_venv.sh omni-qwen3
+ln -sfn "${OMNI_CI_HOME}/omni-qwen3" ./omni-qwen3
+bash .github/scripts/install_flashinfer_jit_cache.sh omni-qwen3
+bash .github/scripts/ensure_hf_models.sh omni-qwen3 \
+  Qwen/Qwen3-Omni-30B-A3B-Instruct marksverdhei/Qwen3-Omni-30B-A3B-FP8
+```
+
+Subsequent runs with unchanged `pyproject.toml`: `prepare_omni_venv.sh` reuses the
+venv and only refreshes the editable install (same as CI setup on a new commit).
+
+### Required env vars (auto-set from `config.yaml`)
+
+- `HOME=/github/home`
+- `OMNI_CI_HOME`, `XDG_CACHE_HOME`, `TORCHINDUCTOR_CACHE_DIR` — per-slice paths above
+- `HF_HOME`, `MODELSCOPE_CACHE`, `HF_ENDPOINT=https://hf-mirror.com`, `HF_HUB_DISABLE_XET=1`
+- `UV_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple`, `UV_CACHE_DIR=/github/home/.cache/uv`
+- `FLASHINFER_DISABLE_VERSION_CHECK=1`
+
+If HF cache lives elsewhere, symlink into `/github/home/.cache/huggingface` rather
+than redownloading checkpoints.
+
+### Verify runtime before calibration
+
+```
+hostname
+python -V
+python - <<'PY'
+import os, torch, flashinfer
+print("OMNI_CI_HOME", os.environ.get("OMNI_CI_HOME"))
+print("HOME", os.environ.get("HOME"))
+print("XDG_CACHE_HOME", os.environ.get("XDG_CACHE_HOME"))
+print("TORCHINDUCTOR_CACHE_DIR", os.environ.get("TORCHINDUCTOR_CACHE_DIR"))
+print("HF_HOME", os.environ.get("HF_HOME"))
+print("UV_CACHE_DIR", os.environ.get("UV_CACHE_DIR"))
+print("FLASHINFER_DISABLE_VERSION_CHECK", os.environ.get("FLASHINFER_DISABLE_VERSION_CHECK"))
+print("torch", torch.__version__, "cuda", torch.version.cuda)
+print("flashinfer", flashinfer.__version__, flashinfer.__file__)
+PY
+```
+
+### CI-like smoke test (before large calibration)
+
+```bash
+source /github/home/calibration/qwen3/omni-qwen3/bin/activate
+export GITHUB_ACTIONS=true RUNNER_TEMP=/tmp PYTHONPATH=$PWD
+export HOME=/github/home OMNI_CI_HOME=/github/home/calibration/qwen3
+export HF_HOME=/github/home/.cache/huggingface HF_ENDPOINT=https://hf-mirror.com HF_HUB_DISABLE_XET=1
+export XDG_CACHE_HOME=${OMNI_CI_HOME}/.cache
+export TORCHINDUCTOR_CACHE_DIR=${OMNI_CI_HOME}/.torchinductor
+export UV_CACHE_DIR=/github/home/.cache/uv FLASHINFER_DISABLE_VERSION_CHECK=1
+export NO_PROXY=localhost,127.0.0.1,::1
+bash .github/scripts/run_flaky_pytest.sh \
+  pytest tests/test_model/test_qwen3_omni_videomme_ci.py -v -s -x
+```
+
+### Known failure signatures
+
+- **Slow safetensors load / disk sleep**: IO pressure — check competing processes, not thresholds.
+- **`gen_cutlass_fused_moe_sm90_module` + router timeout**: missing flashinfer-jit-cache in venv.
+  Run `.github/scripts/install_flashinfer_jit_cache.sh` (uses host wheel cache).
+- **nvcc/ninja referencing wrong Python home**: stale `${OMNI_CI_HOME}/.cache/flashinfer` or
+  wrong `HOME`. Delete `${OMNI_CI_HOME}/.cache/flashinfer` only — **never** delete
+  `/github/home/.cache/flashinfer-jit-cache/`.
+- **GPU cleanup / `[Not Found]` PIDs**: kill container-visible pytest/server processes:
+  `pgrep -af "multiprocessing.spawn|sglang_omni_router|sgl-omni serve|pytest|nvcc|ninja"`
+
+After alignment fixes, rerun `tune.py precheck` and the smoke test before resuming calibration.
 
 ## Performance optimization checks
 - When recalibrating after performance work, first identify what changed
@@ -523,8 +543,8 @@ Two gates — **both** required before apply:
 
    Use AskUserQuestion to ask exactly once which **apply mode** to use:
      - `report` — only the report, no test files touched
-     - `smart` — auto-tighten speed thresholds; ask per metric for
-       acc/wer and any speed metric that would loosen
+     - `smart` — auto-apply accuracy and WER worst-of-N; auto-tighten
+       speed thresholds; ask only for speed metrics that would loosen
      - `full` — write worst-of-N for every metric, no further prompts
    If the user picks `report`, stop without touching any file.
 
@@ -541,6 +561,11 @@ Two gates — **both** required before apply:
        use 2 decimal places for readability, but test-file literals must
        preserve the full observed float so a max-bound WER threshold is
        never accidentally tightened (e.g. 0.010596 → 0.01).
+       For **WER**, calibration writes the worst-of-N reference into the
+       `*_MAX` / `*_CORPUS_MAX` bare constant; CI tests then derive the
+       assertion threshold at runtime via `apply_wer_slack(reference)` (×1.25).
+       For **accuracy**, the written `*_MIN_ACCURACY` literal is asserted
+       directly — no post-calibration slack multiplier.
      - **`speed`:** use `write_value` from apply-plan (rounded unless that
        would tighten beyond `worst_raw`). Never re-round or multiply by
        `scale`.
@@ -555,13 +580,13 @@ Two gates — **both** required before apply:
    test file using the rules in (b) below, no questions asked.
 
    **Mode `smart`**: classify each metric:
-     - **auto-apply** iff `stage_group == "speed"` AND
-       `direction == "tightens"`. Edit using rules in (b).
+     - **auto-apply** iff `stage_group` in (`accuracy`, `wer`), OR
+       (`stage_group == "speed"` AND `direction == "tightens"`).
+       Edit using rules in (b).
      - **auto-skip** iff `direction == "equal"` (nothing to do).
-     - **interactive** otherwise — i.e. all `accuracy` and `wer`
-       metrics, plus any `speed` metric that would `loosen` the
-       threshold. For each interactive metric, fire AskUserQuestion
-       (one per metric) showing:
+     - **interactive** otherwise — i.e. any `speed` metric that would
+       `loosen` the threshold. For each interactive metric, fire
+       AskUserQuestion (one per metric) showing:
          - the per-run raw values from `per_run_raw`
          - the current literal in the test file (`current_raw`)
          - the proposed value (`write_value` — full-precision for wer/acc)
@@ -672,8 +697,9 @@ Two gates — **both** required before apply:
   alignment first (see "CI Environment Alignment and Server Startup
   Debugging").
 - Check out branches or install packages unless the user explicitly asks
-  or CI-alignment debugging proves a missing CI dependency such as
-  `flashinfer-jit-cache`.
+  or CI-alignment debugging proves a missing dependency — use
+  `.github/scripts/prepare_omni_venv.sh` and
+  `.github/scripts/install_flashinfer_jit_cache.sh` (not ad-hoc wheel URLs).
 - Run `apply_slack` or generate patch files
 - Commit or push without explicit user authorization
 - Edit test files outside of the explicit apply prompt (step 9)
