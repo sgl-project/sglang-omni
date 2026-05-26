@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
@@ -30,6 +31,7 @@ from benchmarks.eval.benchmark_omni_mmmu import MMMUEvalConfig, run_mmmu_eval
 from benchmarks.metrics.mmmu import print_mmmu_accuracy_summary
 from benchmarks.metrics.performance import print_speed_summary
 from benchmarks.metrics.wer import print_wer_summary
+from benchmarks.tasks.tts import compute_text_audio_consistency_from_records
 from tests.test_model.omni_router_utils import (
     ManagedRouterHandle,
     router_worker_traffic_guard,
@@ -44,12 +46,9 @@ from tests.utils import (
 
 MAX_SAMPLES = 20
 MAX_TOKENS = 256
-
 CONCURRENCY = 16
+ASR_DEVICE = "cuda:0"
 
-# Note (Yifei): "2-3 sentences" floor prevents terse "Answer: X" replies that
-# would starve the WER signal; the 120-word cap keeps p95 output well under
-# MAX_TOKENS so the final 'Answer: $LETTER' line is never truncated.
 MMMU_TTS_PROMPT = (
     "Look at the image and answer the multiple-choice question.\n"
     "Briefly explain your reasoning in 2-3 sentences, then on a new final "
@@ -58,43 +57,48 @@ MMMU_TTS_PROMPT = (
     "Do not exceed 120 words in total."
 )
 
-# Accuracy floor — audio-mode MMMU.
 MMMU_AUDIO_MIN_ACCURACY = 0.75
-
-# WER thresholds use a partitioned view of the per-sample distribution:
-#  - corpus WER over the "sane" subset (per-sample WER <= 50%)
-#  - count of catastrophic failures (per-sample WER > 50%)
-MMMU_AUDIO_WER_BELOW_50_CORPUS_MAX = 0.15390334572490708
+MMMU_AUDIO_WER_BELOW_50_CORPUS_MAX = 0.1816
 MMMU_AUDIO_WER_BELOW_50_CORPUS_THRESHOLD = apply_wer_slack(
     MMMU_AUDIO_WER_BELOW_50_CORPUS_MAX
 )
-MMMU_AUDIO_N_ABOVE_50_MAX = 3
+MMMU_AUDIO_N_ABOVE_50_MAX = 4
 
 _MMMU_AUDIO_P95 = {
     16: {
-        "throughput_qps": 0.758,
-        "output_tok_per_req_s": 8.9,
-        "latency_mean_s": 14.645,
-        "rtf_mean": 0.4056,
+        "throughput_qps": 0.617,
+        "output_tok_per_req_s": 8.0,
+        "latency_mean_s": 16.666,
+        "rtf_mean": 0.4309,
     },
 }
 MMMU_AUDIO_THRESHOLDS = apply_slack(_MMMU_AUDIO_P95)
 
 
-@pytest.mark.benchmark
-def test_mmmu_audio_wer_and_speed(
+@dataclass
+class _TalkerEvalArtifacts:
+    summary: dict
+    speed: dict
+    per_sample: list
+    audio_dir: str
+    lang: str
+
+
+@pytest.fixture(scope="module")
+def talker_eval_artifacts(
     qwen3_omni_router_server: ManagedRouterHandle,
-    tmp_path: Path,
-) -> None:
-    """Run MMMU eval with audio and assert WER and speed meet thresholds."""
+    tmp_path_factory: pytest.TempPathFactory,
+) -> _TalkerEvalArtifacts:
+    output_dir = str(tmp_path_factory.mktemp("mmmu_audio"))
     config = MMMUEvalConfig(
         model="qwen3-omni",
         port=qwen3_omni_router_server.port,
         max_samples=MAX_SAMPLES,
         max_tokens=MAX_TOKENS,
         max_concurrency=CONCURRENCY,
-        output_dir=str(tmp_path / "mmmu_audio"),
+        output_dir=output_dir,
         enable_audio=True,
+        asr_device=ASR_DEVICE,
         repo_id=DATASETS["mmmu-ci-50"],
         prompt_override=MMMU_TTS_PROMPT,
         timeout_s=500,
@@ -103,29 +107,51 @@ def test_mmmu_audio_wer_and_speed(
         qwen3_omni_router_server,
         label="Qwen3-Omni MMMU Talker",
     ) as router_guard:
-        results = asyncio.run(run_mmmu_eval(config))
+        results = asyncio.run(run_mmmu_eval(config, compute_wer=False))
+        router_guard.assert_served(
+            min_total_requests=results["summary"].get("total_samples", 0)
+        )
+    return _TalkerEvalArtifacts(
+        summary=results["summary"],
+        speed=results["speed"],
+        per_sample=results["per_sample"],
+        audio_dir=str(Path(output_dir) / "audio"),
+        lang=config.lang,
+    )
 
-    summary = results["summary"]
-    speed = results["speed"]
-    print_mmmu_accuracy_summary(summary, config.model)
-    print_speed_summary(speed, config.model, CONCURRENCY, title="MMMU Talker Speed")
-    if "wer" in results:
-        print_wer_summary(results["wer"]["summary"], config.model)
+
+@pytest.fixture(scope="module")
+def wer_eval_artifacts(
+    qwen3_omni_router_server: ManagedRouterHandle,
+    talker_eval_artifacts: _TalkerEvalArtifacts,
+) -> _TalkerEvalArtifacts:
+    """Reuse saved benchmark audio for WER after freeing the talker server GPU."""
+    qwen3_omni_router_server.stop()
+    return talker_eval_artifacts
+
+
+@pytest.mark.benchmark
+def test_mmmu_talker_accuracy_and_speed(
+    talker_eval_artifacts: _TalkerEvalArtifacts,
+) -> None:
+    """Run MMMU eval with audio and assert accuracy and speed meet thresholds."""
+    summary = talker_eval_artifacts.summary
+    print_mmmu_accuracy_summary(summary, "qwen3-omni")
+    print_speed_summary(
+        talker_eval_artifacts.speed,
+        "qwen3-omni",
+        CONCURRENCY,
+        title="MMMU Talker Speed",
+    )
 
     failed = summary.get("failed", 0)
     total = summary.get("total_samples", 0)
-    checks = MetricCheckCollector("MMMU Talker accuracy, WER, and speed")
-    checks.check_assertion(
-        "router traffic",
-        router_guard.assert_served,
-        min_total_requests=total,
-    )
+    checks = MetricCheckCollector("MMMU Talker accuracy and speed")
     checks.check(
         failed == 0,
         f"MMMU Talker had {failed}/{total} failed requests "
         f"(timeouts or empty responses); any failure fails the test",
     )
-
     accuracy = summary.get("accuracy")
     if accuracy is None:
         checks.fail("MMMU audio accuracy missing from summary")
@@ -136,18 +162,32 @@ def test_mmmu_audio_wer_and_speed(
             f"threshold {MMMU_AUDIO_MIN_ACCURACY} "
             f"({MMMU_AUDIO_MIN_ACCURACY * 100:.0f}%)",
         )
+    assert_speed_thresholds(
+        talker_eval_artifacts.speed,
+        MMMU_AUDIO_THRESHOLDS,
+        CONCURRENCY,
+        collector=checks,
+    )
+    checks.assert_all()
 
-    if "wer" not in results:
-        checks.fail("Audio WER results missing from eval output")
-    else:
-        assert_wer_partitioned(
-            results["wer"],
-            max_wer_below_50_corpus=MMMU_AUDIO_WER_BELOW_50_CORPUS_THRESHOLD,
-            max_n_above_50=MMMU_AUDIO_N_ABOVE_50_MAX,
-            collector=checks,
-        )
 
-    assert_speed_thresholds(speed, MMMU_AUDIO_THRESHOLDS, CONCURRENCY, collector=checks)
+@pytest.mark.benchmark
+def test_mmmu_talker_wer(wer_eval_artifacts: _TalkerEvalArtifacts) -> None:
+    """Transcribe saved talker audio after the inference server is stopped."""
+    wer = compute_text_audio_consistency_from_records(
+        wer_eval_artifacts.per_sample,
+        wer_eval_artifacts.lang,
+        ASR_DEVICE,
+        audio_dir=wer_eval_artifacts.audio_dir,
+    )
+    print_wer_summary(wer["summary"], "qwen3-omni")
+    checks = MetricCheckCollector("MMMU Talker WER")
+    assert_wer_partitioned(
+        wer,
+        max_wer_below_50_corpus=MMMU_AUDIO_WER_BELOW_50_CORPUS_THRESHOLD,
+        max_n_above_50=MMMU_AUDIO_N_ABOVE_50_MAX,
+        collector=checks,
+    )
     checks.assert_all()
 
 

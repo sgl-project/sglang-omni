@@ -1,0 +1,17 @@
+name: Omni Cleanup Host
+description: >
+  Reclaim a PR-scoped CI home directory on the self-hosted runner. Model
+  weights under /github/home/.cache/huggingface are never removed.
+
+inputs:
+  ci-home:
+    description: >
+      PR-scoped CI home directory (for example /github/home/pr-557/qwen3).
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Cleanup PR CI home
+      shell: bash
+      run: bash .github/scripts/cleanup_ci_pr_home.sh "${{ inputs.ci-home }}"

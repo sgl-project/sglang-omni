@@ -9,20 +9,29 @@
 #   vc_stream_c16/ for stream. Both speed_results.json and wer_results.json
 #   live in that same per-variant dir.
 # - Concurrency: CI uses --concurrency 16. Discover reads the conc=16 row.
-# - Venv: this host shares the omni-qwen3 venv across models; see
-#   default_venv_python below.
+# - Venv: CI uses omni-s2pro under OMNI_CI_HOME (see omni_ci_home below).
 name: s2-pro-v1
 description: "FishAudio S2-Pro voice-clone TTS"
 hf_model_id: "fishaudio/s2-pro"
 hf_datasets:
   - "zhaochenyang20/seed-tts-eval-50-arrow"
-# Per user override: this host shares the omni-qwen3 venv across all
-# models — there is no separate omni-s2pro venv to check.
+omni_ci_home: "/github/home/calibration/s2pro"
 default_venv_python:
-  - "/sgl-workspace/sglang-omni/omni-qwen3/bin/python"
-  - "/github/home/omni-qwen3/bin/python"
+  - "/sgl-workspace/sglang-omni/omni-s2pro/bin/python"
+  - "/github/home/calibration/s2pro/omni-s2pro/bin/python"
+  - "/github/home/omni-s2pro/bin/python"
 auto_env:
+  HOME: "/github/home"
+  OMNI_CI_HOME: "/github/home/calibration/s2pro"
+  HF_HOME: "/github/home/.cache/huggingface"
+  MODELSCOPE_CACHE: "/github/home/.cache/modelscope"
+  XDG_CACHE_HOME: "/github/home/calibration/s2pro/.cache"
   HF_ENDPOINT: "https://hf-mirror.com"
+  HF_HUB_DISABLE_XET: "1"
+  UV_INDEX_URL: "https://pypi.tuna.tsinghua.edu.cn/simple"
+  UV_CACHE_DIR: "/github/home/.cache/uv"
+  TORCHINDUCTOR_CACHE_DIR: "/github/home/calibration/s2pro/.torchinductor"
+  FLASHINFER_DISABLE_VERSION_CHECK: "1"
 gpus_per_test:
   test_s2pro_tts_ci.py: 2
 test_globs:

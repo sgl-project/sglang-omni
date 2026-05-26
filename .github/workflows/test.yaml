@@ -13,56 +13,62 @@ concurrency:
 permissions:
   contents: read
 
+env:
+  OMNI_CI_HOME: >-
+    ${{ github.event_name == 'pull_request'
+        && format('/github/home/pr-{0}/unit', github.event.pull_request.number)
+        || format('/github/home/run-{0}/unit', github.run_id) }}
+
+# DAG:
+#   setup (install-deps under OMNI_CI_HOME)
+#     └── unit-test (restore cached venv only; excludes docs/benchmark)
+#           └── cleanup on full success only (kept on failure for re-run)
+#
+# Docs tests run in test-s2pro-ci.yaml after the same setup pattern.
+
 jobs:
+  setup:
+    name: setup - omni venv
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (!github.event.pull_request.draft &&
+       contains(github.event.pull_request.labels.*.name, 'run-ci'))
+    runs-on: [self-hosted]
+    timeout-minutes: 15
+    container:
+      image: frankleeeee/sglang-omni:dev
+      options: --gpus all --shm-size=2g --rm -v /dev/shm
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - uses: ./.github/actions/omni-setup
+        with:
+          venv-name: omni
+          install-deps: "true"
+
+      - uses: ./.github/actions/omni-save-cache
+        with:
+          venv-name: omni
+
   unit-test:
-    # CI gate — runs on workflow_dispatch, or on non-draft PRs carrying the `run-ci` label.
-    # Keep in sync with the same gate in test-qwen3-omni-ci.yaml / test-s2pro-ci.yaml.
+    name: unit-test
+    needs: setup
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (!github.event.pull_request.draft &&
        contains(github.event.pull_request.labels.*.name, 'run-ci'))
     runs-on: [self-hosted]
     container:
-      image: frankleeeee/sglang-omni:dev # we lock to this version to avoid repeated docker pull
+      image: frankleeeee/sglang-omni:dev
       options: --gpus all --shm-size=2g --rm -v /dev/shm
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Restore cache
-        run: |
-          if [ -d /github/home/omni ] && [ ! -z "$(ls -A /github/home/omni/)" ]; then
-            cp -p -r /github/home/omni ./
-          fi
-
-      - name: Remove flashinfer # this is needed to avoid flashinfer jit compilation makes the program hang
-        run: |
-          rm -rf /github/home/.cache/flashinfer
-
-      - name: Install dependencies
-        shell: bash
-        run: |
-          if [ -d omni ] && ! omni/bin/python -c "import torch" 2>/dev/null; then
-            echo "Cached venv is corrupted, removing..."
-            rm -rf omni
-          fi
-          if [ ! -d omni ]; then
-            uv venv omni -p 3.11
-          fi
-          source omni/bin/activate
-          uv pip install -v -e .
-          # Repair PyAV if its bundled shared libs got corrupted in the cached
-          # venv (e.g. "libx265-...so.215: file too short"). The editable install
-          # above does not reinstall an already-present package, so force it.
-          if ! python -c "import av" 2>/dev/null; then
-            echo "PyAV native libraries corrupted in cached venv, force-reinstalling..."
-            uv pip install --force-reinstall --no-deps --no-cache av
-          fi
-
-      - name: Kill GPU processes
-        shell: bash
-        run: |
-          bash .github/scripts/delete_gpu_process.sh
+      - uses: ./.github/actions/omni-setup
+        with:
+          venv-name: omni
 
       - name: Run test
         timeout-minutes: 30
@@ -72,6 +78,23 @@ jobs:
           export PYTHONPATH=$PWD
           pytest tests/ -v -m "not benchmark and not docs" -x
 
-      - name: Save cache
-        run: |
-          cp -p -r omni /github/home/
+  cleanup:
+    name: cleanup - reclaim host cache
+    needs: [setup, unit-test]
+    if: >-
+      success() &&
+      (github.event_name == 'workflow_dispatch' ||
+       (!github.event.pull_request.draft &&
+        contains(github.event.pull_request.labels.*.name, 'run-ci')))
+    runs-on: [self-hosted]
+    timeout-minutes: 5
+    container:
+      image: frankleeeee/sglang-omni:dev
+      options: --gpus all --rm -v /dev/shm:/dev/shm
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - uses: ./.github/actions/omni-cleanup-host
+        with:
+          ci-home: ${{ env.OMNI_CI_HOME }}
