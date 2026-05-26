@@ -12,18 +12,31 @@ hf_datasets:
   - "zhaochenyang20/seed-tts-eval-50-arrow"
   - "zhaochenyang20/Video_MME_ci"
   - "zhaochenyang20/Video_AMME_ci"
+# CI uses OMNI_CI_HOME=/github/home/pr-<N>/qwen3 on Actions runners.
+# Calibration uses a fixed slice with the same layout (no PR number).
+omni_ci_home: "/github/home/calibration/qwen3"
 default_venv_python:
   - "/sgl-workspace/sglang-omni/omni-qwen3/bin/python"
+  - "/github/home/calibration/qwen3/omni-qwen3/bin/python"
   - "/github/home/omni-qwen3/bin/python"
 # CI's omni-qwen3 venv has openai-whisper installed, so
 # `_get_en_normalizer()` resolves to whisper.normalizers.EnglishTextNormalizer
 # (contractions expanded, numbers→words, etc.). precheck warns if the local
 # venv falls back to the punctuation-strip path.
 expected_wer_normalizer: "english"
-# Env vars that tune.py auto-sets at startup (matches CI behavior).
+# Env vars tune.py applies at startup (matches .github/actions/omni-setup).
 auto_env:
+  HOME: "/github/home"
+  OMNI_CI_HOME: "/github/home/calibration/qwen3"
+  HF_HOME: "/github/home/.cache/huggingface"
+  MODELSCOPE_CACHE: "/github/home/.cache/modelscope"
+  XDG_CACHE_HOME: "/github/home/calibration/qwen3/.cache"
   HF_ENDPOINT: "https://hf-mirror.com"
-  TORCHINDUCTOR_CACHE_DIR: "/github/home/.torchinductor"
+  HF_HUB_DISABLE_XET: "1"
+  UV_INDEX_URL: "https://pypi.tuna.tsinghua.edu.cn/simple"
+  UV_CACHE_DIR: "/github/home/.cache/uv"
+  TORCHINDUCTOR_CACHE_DIR: "/github/home/calibration/qwen3/.torchinductor"
+  FLASHINFER_DISABLE_VERSION_CHECK: "1"
 # Number of GPUs each test needs. tune.py picks that many free GPUs
 # via CUDA_VISIBLE_DEVICES before each pytest invocation. Qwen benchmark CI
 # runs one router plus two colocated one-GPU workers, so stages need 2.

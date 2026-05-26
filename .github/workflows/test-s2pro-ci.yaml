@@ -13,14 +13,53 @@ concurrency:
 permissions:
   contents: read
 
+env:
+  OMNI_CI_HOME: >-
+    ${{ github.event_name == 'pull_request'
+        && format('/github/home/pr-{0}/s2pro', github.event.pull_request.number)
+        || format('/github/home/run-{0}/s2pro', github.run_id) }}
+
 # DAG:
-#   docs ──► stage-1-non-streaming ──┐
-#        └─► stage-2-streaming ──────┤
-#                                    └──► stage-3-consistency
+#   setup (install-deps under OMNI_CI_HOME + verify model weights)
+#     └── docs ──► stage-1-non-streaming ──┐
+#              └── stage-2-streaming ──────┤
+#                                         └──► stage-3-consistency
+#           └── cleanup on full success only (kept on failure for re-run)
 
 jobs:
+  setup:
+    name: setup - omni-s2pro venv
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (!github.event.pull_request.draft &&
+       contains(github.event.pull_request.labels.*.name, 'run-ci'))
+    runs-on: [self-hosted]
+    timeout-minutes: 15
+    container:
+      image: frankleeeee/sglang-omni:dev
+      options: --gpus all --rm -v /dev/shm:/dev/shm
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - uses: ./.github/actions/omni-setup
+        with:
+          venv-name: omni-s2pro
+          install-deps: "true"
+
+      - uses: ./.github/actions/omni-save-cache
+        with:
+          venv-name: omni-s2pro
+
+      - name: Ensure S2-Pro model weights
+        shell: bash
+        env:
+          HF_ENDPOINT: https://hf-mirror.com
+        run: bash .github/scripts/ensure_hf_models.sh omni-s2pro fishaudio/s2-pro
+
   docs:
     name: docs
+    needs: setup
     # CI gate — runs on workflow_dispatch, or on non-draft PRs carrying the `run-ci` label.
     # Keep in sync with the same gate in test.yaml / test-examples.yaml / test-qwen3-omni-ci.yaml.
     if: >-
@@ -39,7 +78,6 @@ jobs:
       - uses: ./.github/actions/omni-setup
         with:
           venv-name: omni-s2pro
-          install-deps: "true"
 
       - name: Run docs tests
         shell: bash
@@ -49,7 +87,7 @@ jobs:
           pytest tests/docs/s2pro/test_docs_tts_s2pro.py -v -s -x
         env:
           HF_ENDPOINT: https://hf-mirror.com
-          TORCHINDUCTOR_CACHE_DIR: /github/home/.torchinductor
+          TORCHINDUCTOR_CACHE_DIR: ${{ env.OMNI_CI_HOME }}/.torchinductor
 
       - name: Post-stage cleanup
         if: always()
@@ -57,20 +95,13 @@ jobs:
         with:
           stage-label: S2-Pro docs
 
-      - name: Save cache
-        if: always()
-        shell: bash
-        run: |
-          if omni-s2pro/bin/python -c "import torch; import av; from whisper.normalizers import EnglishTextNormalizer" 2>/dev/null; then
-            rm -rf /github/home/omni-s2pro
-            cp -p -r omni-s2pro /github/home/
-          else
-            echo "::warning::Skipping cache save — venv appears incomplete or corrupted"
-          fi
-
   stage-1-non-streaming:
     name: stage 1 - non-streaming
-    needs: docs
+    needs: [setup, docs]
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (!github.event.pull_request.draft &&
+       contains(github.event.pull_request.labels.*.name, 'run-ci'))
     runs-on: [self-hosted]
     timeout-minutes: 15
     container:
@@ -105,7 +136,7 @@ jobs:
           SGLANG_SEEDTTS50_DIR: /github/home/seedtts-50
           SEEDTTS_SIM_CACHE_DIR: /github/home/seedtts-wavlm-sim
           S2PRO_STAGE_OUTPUT_ROOT: ${{ github.workspace }}/stage-results/nonstream
-          TORCHINDUCTOR_CACHE_DIR: /github/home/.torchinductor
+          TORCHINDUCTOR_CACHE_DIR: ${{ env.OMNI_CI_HOME }}/.torchinductor
 
       - name: Post-stage cleanup
         if: always()
@@ -123,7 +154,11 @@ jobs:
 
   stage-2-streaming:
     name: stage 2 - streaming
-    needs: docs
+    needs: [setup, docs]
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (!github.event.pull_request.draft &&
+       contains(github.event.pull_request.labels.*.name, 'run-ci'))
     runs-on: [self-hosted]
     timeout-minutes: 5
     container:
@@ -148,7 +183,7 @@ jobs:
           HF_ENDPOINT: https://hf-mirror.com
           SGLANG_SEEDTTS50_DIR: /github/home/seedtts-50
           S2PRO_STAGE_OUTPUT_ROOT: ${{ github.workspace }}/stage-results/stream
-          TORCHINDUCTOR_CACHE_DIR: /github/home/.torchinductor
+          TORCHINDUCTOR_CACHE_DIR: ${{ env.OMNI_CI_HOME }}/.torchinductor
 
       - name: Post-stage cleanup
         if: always()
@@ -204,3 +239,29 @@ jobs:
           S2PRO_STAGE1_SPEED_RESULTS_DIR: ${{ github.workspace }}/stage-artifacts/nonstream
           S2PRO_STAGE2_SPEED_RESULTS_DIR: ${{ github.workspace }}/stage-artifacts/stream
           S2PRO_CONSISTENCY_CONCURRENCY: "16"
+
+  cleanup:
+    name: cleanup - reclaim host cache
+    needs:
+      - setup
+      - docs
+      - stage-1-non-streaming
+      - stage-2-streaming
+      - stage-3-consistency
+    if: >-
+      success() &&
+      (github.event_name == 'workflow_dispatch' ||
+       (!github.event.pull_request.draft &&
+        contains(github.event.pull_request.labels.*.name, 'run-ci')))
+    runs-on: [self-hosted]
+    timeout-minutes: 5
+    container:
+      image: frankleeeee/sglang-omni:dev
+      options: --gpus all --rm -v /dev/shm:/dev/shm
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - uses: ./.github/actions/omni-cleanup-host
+        with:
+          ci-home: ${{ env.OMNI_CI_HOME }}

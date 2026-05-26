@@ -56,7 +56,7 @@ SIMILARITY_CHECKPOINT_ENV = "SEEDTTS_SIM_CHECKPOINT"
 WER_TIMEOUT = 600
 SIMILARITY_TIMEOUT = 600
 
-VC_WER_BELOW_50_CORPUS_MAX = 0.014184397163120567
+VC_WER_BELOW_50_CORPUS_MAX = 0.0142
 VC_WER_BELOW_50_CORPUS_THRESHOLD = apply_wer_slack(VC_WER_BELOW_50_CORPUS_MAX)
 VC_N_ABOVE_50_MAX = 0
 # 60.0 mirrors the S2-Pro floor and is a placeholder until upstream issue
@@ -76,10 +76,10 @@ VC_SIMILARITY_MEAN_MIN = 60.0
 
 _VC_NON_STREAM_P95 = {
     16: {
-        "throughput_qps": 6.187,
-        "output_tok_per_req_s": 6.1,
-        "latency_mean_s": 2.418,
-        "rtf_mean": 0.7912,
+        "throughput_qps": 5.750,
+        "output_tok_per_req_s": 5.7,
+        "latency_mean_s": 2.581,
+        "rtf_mean": 0.8149,
     },
 }
 

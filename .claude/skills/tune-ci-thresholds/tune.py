@@ -7,7 +7,7 @@ models/<name>/config.yaml. Metrics come from result JSONs that tests
 already write under pytest's --basetemp (set fresh per run).
 """
 from __future__ import annotations
-import argparse, ast, datetime as dt, hashlib, json, os, re, shutil, signal
+import argparse, ast, datetime as dt, hashlib, json, math, os, re, shutil, signal
 import subprocess, sys, time, tomllib
 from pathlib import Path
 
@@ -31,6 +31,7 @@ _PYTEST_POLL_S = 30
 _MAX_RUN_ATTEMPTS = 4
 _DEFAULT_CALIBRATION_PASSES = 10
 _AGENT_POLL_INTERVAL_S = 120
+_CI_HOME = Path("/github/home")
 _CRASH_SIGS = (
     "Fatal Python error",
     "Segmentation fault",
@@ -43,6 +44,51 @@ _CRASH_SIGS = (
     "Server process exited",
     "worker crashed",
 )
+
+
+def _flashinfer_cache_dirs(env: dict[str, str] | None = None) -> list[Path]:
+    env = env or os.environ
+    candidates = [
+        Path(env.get("XDG_CACHE_HOME", "")) / "flashinfer"
+        if env.get("XDG_CACHE_HOME")
+        else None,
+        Path(env.get("HOME", "")) / ".cache" / "flashinfer"
+        if env.get("HOME")
+        else None,
+        _CI_HOME / ".cache" / "flashinfer",
+    ]
+    seen: set[Path] = set()
+    paths: list[Path] = []
+    for candidate in candidates:
+        if candidate is None:
+            continue
+        path = candidate.expanduser()
+        if path in seen:
+            continue
+        seen.add(path)
+        paths.append(path)
+    return paths
+
+
+def _cleanup_flashinfer_cache(env: dict[str, str] | None = None) -> None:
+    # Runtime JIT dirs only — never remove the host wheel cache under
+    # /github/home/.cache/flashinfer-jit-cache/ (see install_flashinfer_jit_cache.sh).
+    for cache_dir in _flashinfer_cache_dirs(env):
+        shutil.rmtree(cache_dir, ignore_errors=True)
+
+
+def _venv_has_flashinfer_jit_cache(py: str) -> bool:
+    r = subprocess.run(
+        [
+            py,
+            "-c",
+            "import importlib.util, sys;"
+            "sys.exit(0 if importlib.util.find_spec('flashinfer_jit_cache') else 1)",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    return r.returncode == 0
 
 # Metric registry. Each entry encodes how a named metric should be
 # displayed in the report and which stage group it belongs to. Scales
@@ -124,6 +170,22 @@ def model_dir(name):  return MODELS_DIR / name
 def stages_path(name): return model_dir(name) / "stages.yaml"
 
 
+def _merge_omni_ci_home(cfg: dict) -> None:
+    omni_home = cfg.get("omni_ci_home")
+    if not omni_home:
+        return
+    auto = cfg.setdefault("auto_env", {})
+    auto.setdefault("OMNI_CI_HOME", omni_home)
+    auto.setdefault("XDG_CACHE_HOME", f"{omni_home}/.cache")
+    auto.setdefault("TORCHINDUCTOR_CACHE_DIR", f"{omni_home}/.torchinductor")
+
+
+def _apply_auto_env(cfg: dict) -> None:
+    _merge_omni_ci_home(cfg)
+    for key, value in cfg.setdefault("auto_env", {}).items():
+        os.environ[key] = str(value)
+
+
 def load_model_config(name):
     p = model_dir(name) / "config.yaml"
     if not p.exists():
@@ -136,8 +198,7 @@ def load_model_config(name):
     cfg.setdefault("hf_model_ids_by_test", {})
     # Auto-apply env vars so the user doesn't need to export them
     # manually. Overrides any pre-existing value to match CI.
-    for k, v in cfg["auto_env"].items():
-        os.environ[k] = str(v)
+    _apply_auto_env(cfg)
     return cfg
 
 
@@ -531,6 +592,16 @@ def precheck(py, src, out, skip_ver, cfg, datasets_override=None,
     # load_model_config; print them for visibility.
     for k, v in cfg["auto_env"].items():
         print(f"  auto env: {k}={v}")
+    if not _venv_has_flashinfer_jit_cache(py):
+        venv_root = Path(py).resolve().parent.parent
+        venv_name = venv_root.name
+        errs.append(
+            "flashinfer-jit-cache missing from venv (CI MoE graph capture needs it).\n"
+            f"  From repo root with OMNI_CI_HOME={cfg['auto_env'].get('OMNI_CI_HOME', '<set>')}:\n"
+            f"    ln -sfn {venv_root} ./{venv_name}\n"
+            f"    bash .github/scripts/install_flashinfer_jit_cache.sh {venv_name}\n"
+            "  Host wheel cache: /github/home/.cache/flashinfer-jit-cache/ (shared across PRs)."
+        )
     # WER normalizer check removed — the user manages venv contents
     # explicitly and the warning was producing noise without changing
     # behavior. `expected_wer_normalizer` in config.yaml is now ignored.
@@ -1375,7 +1446,7 @@ def _run_shared(test_path, stage_keys, all_stages, out, k, py, total, gpus_neede
             status, reason, dur = "failed", pick_err, 0.0
             print(f"{label} {pick_err}")
             break
-        shutil.rmtree("/github/home/.cache/flashinfer", ignore_errors=True)
+        _cleanup_flashinfer_cache(env)
         shutil.rmtree(basetemp, ignore_errors=True)
         basetemp.mkdir(parents=True)
         picked, gate_err = _launch_gpu_gate(picked, gpus_needed, label)
@@ -1841,17 +1912,24 @@ def _classify_direction(worst_op, current, new):
     return "unknown"
 
 
+def _ceil_wer_reference(worst_raw: float) -> float:
+    """Ceil worst-of-N WER to 4 decimal places (max-bound must not tighten)."""
+    return math.ceil(worst_raw * 10000) / 10000
+
+
 def _apply_write_value(worst_op: str, worst_raw: float | None,
                        worst_rounded: float | None,
                        stage_group: str | None) -> float | None:
     """Return the literal to write into a test file.
 
-    WER and accuracy are pass/fail thresholds — never display-round them.
-    For speed, use worst_rounded unless it would tighten beyond worst_raw.
+    WER max-bound references are ceiled to 4 dp; accuracy uses worst_raw.
+    For speed, use worst_rounded unless that would tighten beyond worst_raw.
     """
     if worst_raw is None:
         return None
-    if stage_group in ("wer", "accuracy"):
+    if stage_group == "wer":
+        return _ceil_wer_reference(worst_raw)
+    if stage_group == "accuracy":
         return worst_raw
     if worst_rounded is None:
         return worst_raw
