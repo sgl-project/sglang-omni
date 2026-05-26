@@ -457,11 +457,10 @@ class OmniScheduler:
                 req_data = self._request_builder(payload)
             except Exception as exc:
                 logger.exception(f"OmniScheduler: request builder failed for {req_id}")
-                self._pending_stream_done.discard(req_id)
-                self._deferred_request_payloads.pop(req_id, None)
                 self.outbox.put(
                     OutgoingMessage(request_id=req_id, type="error", data=exc)
                 )
+                self.abort(req_id)
                 continue
             if pending_stream_done:
                 self._pending_stream_done.discard(req_id)
@@ -484,6 +483,7 @@ class OmniScheduler:
                             data=ValueError(error_msg),
                         )
                     )
+                    self.abort(req_id)
                     continue
             kv_error = self._request_kv_capacity_error(req)
             if kv_error is not None:
@@ -497,6 +497,7 @@ class OmniScheduler:
                         data=ValueError(kv_error),
                     )
                 )
+                self.abort(req_id)
                 continue
             self._initialize_request_stream_state(req_data, payload)
             if req_id in self._aborted_request_ids:
@@ -543,10 +544,6 @@ class OmniScheduler:
             self._append_stream_chunk(req_data, chunk)
         if bool(getattr(payload, "prefetched_stream_done", False)):
             self._mark_stream_done(req_data)
-
-    def _is_batch_ready_to_run(self, batch: Any) -> bool:
-        del batch
-        return True
 
     def _request_kv_capacity_error(self, req: Any) -> str | None:
         input_len = len(req.origin_input_ids)

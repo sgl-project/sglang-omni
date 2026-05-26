@@ -158,6 +158,10 @@ class QwenTalkerScheduler(OmniScheduler):
     def _rollback_decode_prep_after_skip(self, batch: Any) -> None:
         if not batch.forward_mode.is_decode():
             return
+        assert isinstance(batch.seq_lens_sum, int), (
+            f"seq_lens_sum is {type(batch.seq_lens_sum).__name__}, expected int "
+            "— sglang upstream prepare_for_decode changed; update rollback."
+        )
         if batch.out_cache_loc is not None:
             self.token_to_kv_pool_allocator.free(batch.out_cache_loc)
             batch.out_cache_loc = None
