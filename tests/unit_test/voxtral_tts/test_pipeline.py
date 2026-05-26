@@ -14,6 +14,7 @@ from sglang_omni.models.voxtral_tts.io import VoxtralTTSState
 from sglang_omni.models.voxtral_tts.pipeline import stages
 from sglang_omni.models.voxtral_tts.request_builders import build_sglang_voxtral_request
 from sglang_omni.proto import OmniRequest, StagePayload
+from sglang_omni.utils.audio_payload import audio_waveform_payload
 
 
 def test_voxtral_tts_config_uses_current_stage_schema() -> None:
@@ -27,6 +28,8 @@ def test_voxtral_tts_config_uses_current_stage_schema() -> None:
     assert config.gpu_placement == {"tts_generation": 0, "vocoder": 0}
     assert "device" not in config.stages[1].factory_args
     assert "device" not in config.stages[2].factory_args
+    assert config.stages[1].factory_args["gpu_id"] == 0
+    assert config.stages[2].factory_args["gpu_id"] == 0
     assert {stage.process for stage in config.stages} == {"pipeline"}
     assert (
         PIPELINE_CONFIG_REGISTRY.get_config("VoxtralTTSForConditionalGeneration")
@@ -137,7 +140,10 @@ def test_voxtral_vocoder_rejects_empty_audio_codes(audio_codes) -> None:
 
 
 def test_voxtral_audio_waveform_payload_is_compact() -> None:
-    payload = stages._audio_waveform_payload(torch.tensor([0.0, 0.5, -0.5]))
+    payload = audio_waveform_payload(
+        torch.tensor([0.0, 0.5, -0.5]),
+        source_hint="Voxtral TTS",
+    )
 
     audio = np.frombuffer(payload["audio_waveform"], dtype=np.float32)
     assert audio.tolist() == [0.0, 0.5, -0.5]

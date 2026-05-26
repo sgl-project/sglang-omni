@@ -11,13 +11,13 @@ import tempfile
 import time
 from typing import Any
 
-import numpy as np
 import torch
 
 from sglang_omni.models.voxtral_tts.io import VoxtralTTSState
 from sglang_omni.models.voxtral_tts.pipeline.state_io import load_state, store_state
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
+from sglang_omni.utils.audio_payload import audio_waveform_payload
 
 logger = logging.getLogger(__name__)
 
@@ -91,17 +91,6 @@ def _ensure_non_empty_audio_codes(audio_codes: Any) -> None:
         raise ValueError("Voxtral TTS generated no audio codes")
     if isinstance(audio_codes, torch.Tensor) and audio_codes.numel() == 0:
         raise ValueError("Voxtral TTS generated no audio codes")
-
-
-def _audio_waveform_payload(audio: Any) -> dict[str, Any]:
-    if isinstance(audio, torch.Tensor):
-        audio = audio.detach().float().cpu().reshape(-1).numpy()
-    array = np.asarray(audio, dtype=np.float32).reshape(-1)
-    return {
-        "audio_waveform": array.tobytes(),
-        "audio_waveform_shape": list(array.shape),
-        "audio_waveform_dtype": "float32",
-    }
 
 
 # ---- Preprocessing ----
@@ -402,7 +391,7 @@ def create_vocoder_executor(
             )
             audio_np[:fade_samples] = audio_np[:fade_samples] * fade_in
 
-        audio_payload = _audio_waveform_payload(audio_np)
+        audio_payload = audio_waveform_payload(audio_np, source_hint="Voxtral TTS")
         state.audio_samples = None
         state.sample_rate = audio_tokenizer.sampling_rate
         payload = store_state(payload, state)

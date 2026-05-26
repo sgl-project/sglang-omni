@@ -220,6 +220,8 @@ def test_qwen3_tts_config_and_registry_contracts() -> None:
     assert config.gpu_placement == {"tts_engine": 0, "vocoder": 0}
     assert "device" not in config.stages[1].factory_args
     assert "device" not in config.stages[2].factory_args
+    assert config.stages[1].factory_args["gpu_id"] == 0
+    assert config.stages[2].factory_args["gpu_id"] == 0
     assert {stage.process for stage in config.stages} == {"pipeline"}
     assert (
         PIPELINE_CONFIG_REGISTRY.get_config("Qwen3TTSForConditionalGeneration")
@@ -1016,7 +1018,7 @@ def test_qwen3_tts_prepare_decode_buffers_requires_owned_request_data(
     talker._sub_temperature_tensor = torch.empty(1, dtype=torch.float32)
     requests = [SimpleNamespace(data=SimpleNamespace())]
 
-    with pytest.raises(TypeError, match="Qwen3TTSSGLangRequestData"):
+    with pytest.raises(TypeError, match="request data with"):
         Qwen3TTSTalker.prepare_decode_buffers(talker, requests)
 
 

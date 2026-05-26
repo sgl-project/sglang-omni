@@ -7,7 +7,6 @@ import logging
 import os
 from typing import Any
 
-import numpy as np
 import torch
 
 from sglang_omni.models.qwen3_tts.payload_types import Qwen3TTSState
@@ -19,6 +18,7 @@ from sglang_omni.models.qwen3_tts.request_builders import (
 )
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
+from sglang_omni.utils.audio_payload import audio_waveform_payload
 
 logger = logging.getLogger(__name__)
 
@@ -104,22 +104,6 @@ def _load_qwen3_tts_generate_defaults(checkpoint_dir: str) -> dict[str, Any]:
     with open(path, encoding="utf-8") as f:
         data = json.load(f)
     return data if isinstance(data, dict) else {}
-
-
-def _audio_waveform_payload(audio: Any) -> dict[str, Any]:
-    if isinstance(audio, torch.Tensor):
-        audio = audio.detach().float().cpu().reshape(-1).numpy()
-    try:
-        array = np.asarray(audio, dtype=np.float32).reshape(-1)
-    except (TypeError, ValueError) as exc:
-        raise TypeError(
-            f"Unsupported Qwen3-TTS audio output type: {type(audio)}"
-        ) from exc
-    return {
-        "audio_waveform": array.tobytes(),
-        "audio_waveform_shape": list(array.shape),
-        "audio_waveform_dtype": "float32",
-    }
 
 
 def _build_usage(state: Qwen3TTSState) -> dict[str, Any] | None:
@@ -284,7 +268,7 @@ def create_vocoder_executor(
             total_len = int(codes.shape[0])
             cut = int(state.ref_code_len / max(total_len, 1) * wav.shape[0])
             wav = wav[cut:]
-        audio_payload = _audio_waveform_payload(wav)
+        audio_payload = audio_waveform_payload(wav, source_hint="Qwen3-TTS")
         state.audio_samples = None
         state.sample_rate = int(sample_rate)
         state.audio_codes = None

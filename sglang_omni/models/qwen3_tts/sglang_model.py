@@ -20,7 +20,6 @@ from sglang_omni.models.qwen3_omni.components.talker import (  # noqa: E501
 from sglang_omni.models.qwen3_omni.components.thinker_model import (
     Qwen3OmniMoeThinkerTextAttention,
 )
-from sglang_omni.models.qwen3_tts.request_builders import Qwen3TTSSGLangRequestData
 from sglang_omni.vendor.sglang.core import ForwardBatch
 from sglang_omni.vendor.sglang.layers import ReplicatedLinear, RMSNorm
 from sglang_omni.vendor.sglang.models import apply_qk_norm
@@ -597,16 +596,28 @@ class Qwen3TTSTalker(nn.Module):
         self._sub_sample_rows = []
         for row_idx, sched_req in enumerate(requests):
             data = sched_req.data
-            if not isinstance(data, Qwen3TTSSGLangRequestData):
+            try:
+                semantic_seed = int(data.semantic_sampling_seed)
+                do_sample = bool(data.subtalker_dosample)
+                subtalker_temperature = float(data.subtalker_temperature)
+                subtalker_top_p = float(data.subtalker_top_p)
+                subtalker_top_k = int(data.subtalker_top_k)
+                subtalker_seed = int(data.subtalker_sampling_seed)
+            except AttributeError as exc:
                 raise TypeError(
-                    "Qwen3-TTS decode buffers require Qwen3TTSSGLangRequestData"
-                )
-            do_sample = bool(data.subtalker_dosample)
-            semantic_seeds.append(int(data.semantic_sampling_seed))
-            sub_temperatures.append(float(data.subtalker_temperature))
-            sub_top_ps.append(float(data.subtalker_top_p))
-            sub_top_ks.append(int(data.subtalker_top_k))
-            sub_seeds.append(int(data.subtalker_sampling_seed))
+                    "Qwen3-TTS decode buffers require request data with semantic "
+                    "and subtalker sampling fields"
+                ) from exc
+            except (TypeError, ValueError) as exc:
+                raise TypeError(
+                    "Qwen3-TTS decode buffers require numeric semantic and "
+                    "subtalker sampling fields"
+                ) from exc
+            semantic_seeds.append(semantic_seed)
+            sub_temperatures.append(subtalker_temperature)
+            sub_top_ps.append(subtalker_top_p)
+            sub_top_ks.append(subtalker_top_k)
+            sub_seeds.append(subtalker_seed)
             if do_sample:
                 self._sub_sample_rows.append(row_idx)
 
@@ -766,7 +777,7 @@ class Qwen3TTSTalker(nn.Module):
                 next_code = self._sample_subtalker_token(
                     logits[:, -1, :],
                     layer_idx,
-                    semantic_positions[:, pos],
+                    semantic_positions=semantic_positions[:, pos],
                 )
                 pos_codes[:, layer_idx + 1].copy_(next_code)
                 new_embed = self.code_predictor.model.codec_embedding[layer_idx](
@@ -806,18 +817,6 @@ class Qwen3TTSTalker(nn.Module):
         return base.unsqueeze(1) + offsets.unsqueeze(0)
 
     def _sample_subtalker_token(
-        self,
-        logits: torch.Tensor,
-        layer_idx: int,
-        semantic_positions: torch.Tensor | None = None,
-    ) -> torch.Tensor:
-        return self._sample_subtalker_token_batch(
-            logits,
-            layer_idx,
-            semantic_positions=semantic_positions,
-        )
-
-    def _sample_subtalker_token_batch(
         self,
         logits: torch.Tensor,
         layer_idx: int = 0,
