@@ -104,6 +104,7 @@ async def run_videoamme_eval(
     config: VideoEvalConfig,
     *,
     samples: list[VideoAMMESample] | None = None,
+    compute_wer: bool = True,
 ) -> dict:
     return await run_video_eval(
         config,
@@ -114,6 +115,7 @@ async def run_videoamme_eval(
         audio_output_dir_default="results/videoamme_audio",
         enable_audio_input=True,
         fixed_prompt=VIDEOAMME_REQUEST_TEXT,
+        compute_wer=compute_wer,
     )
 
 

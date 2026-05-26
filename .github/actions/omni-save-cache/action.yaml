@@ -1,0 +1,16 @@
+name: Omni Save Cache
+description: >
+  Validate the prepared Omni virtualenv under OMNI_CI_HOME. The venv is
+  installed in place on the host; this step does not copy files.
+
+inputs:
+  venv-name:
+    description: Name of the virtualenv directory under OMNI_CI_HOME.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Validate host venv cache
+      shell: bash
+      run: bash .github/scripts/validate_omni_venv_cache.sh "${{ inputs.venv-name }}"

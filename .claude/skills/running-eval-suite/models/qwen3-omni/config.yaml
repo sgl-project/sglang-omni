@@ -71,16 +71,24 @@ python_packages:
 default_venv_python:
   - "/sgl-workspace/sglang-omni/.venv/bin/python"
   - "/sgl-workspace/sglang-omni/omni-qwen3/bin/python"
+  - "/github/home/calibration/qwen3/omni-qwen3/bin/python"
   - "/github/home/omni-qwen3/bin/python"
   - "/data/sglang-omni/omni-qwen3/bin/python"
 
-# FLASHINFER_DISABLE_VERSION_CHECK silences the flashinfer / flashinfer-jit-cache
-# version mismatch raise on dev images where the JIT cache is pinned to an older
-# minor (verified on frankleeeee/sglang-omni:dev 2026-05-05: jit-cache 0.5.3 vs
-# flashinfer 0.6.1). The mismatch is benign on these images.
+# Matches .github/actions/omni-setup (calibration slice = /github/home/calibration/qwen3).
+omni_ci_home: "/github/home/calibration/qwen3"
 auto_env:
-  FLASHINFER_DISABLE_VERSION_CHECK: "1"
+  HOME: "/github/home"
+  OMNI_CI_HOME: "/github/home/calibration/qwen3"
+  HF_HOME: "/github/home/.cache/huggingface"
+  MODELSCOPE_CACHE: "/github/home/.cache/modelscope"
+  XDG_CACHE_HOME: "/github/home/calibration/qwen3/.cache"
   HF_ENDPOINT: "https://hf-mirror.com"
+  HF_HUB_DISABLE_XET: "1"
+  UV_INDEX_URL: "https://pypi.tuna.tsinghua.edu.cn/simple"
+  UV_CACHE_DIR: "/github/home/.cache/uv"
+  TORCHINDUCTOR_CACHE_DIR: "/github/home/calibration/qwen3/.torchinductor"
+  FLASHINFER_DISABLE_VERSION_CHECK: "1"
 
 default_server_profile: qwen3_omni_colocated_router
 

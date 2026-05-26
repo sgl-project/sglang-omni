@@ -1,0 +1,26 @@
+name: Cleanup PR CI Home On Close
+
+on:
+  pull_request:
+    types: [closed]
+
+permissions:
+  contents: read
+
+jobs:
+  cleanup-pr-ci-home:
+    name: cleanup - PR CI home on close
+    runs-on: [self-hosted]
+    timeout-minutes: 5
+    container:
+      image: frankleeeee/sglang-omni:dev
+      options: --gpus all --rm -v /dev/shm:/dev/shm
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Remove PR CI home
+        shell: bash
+        run: |
+          bash .github/scripts/cleanup_ci_pr_home.sh \
+            "/github/home/pr-${{ github.event.pull_request.number }}"

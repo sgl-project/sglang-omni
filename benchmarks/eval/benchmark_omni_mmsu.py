@@ -96,6 +96,7 @@ import asyncio
 import logging
 import os
 import sys
+from dataclasses import asdict
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -123,6 +124,7 @@ async def run(
     args: argparse.Namespace,
     *,
     samples: list[MmsuSample] | None = None,
+    compute_wer: bool = True,
 ) -> dict:
     base_url = args.base_url or f"http://{args.host}:{args.port}"
     api_url = f"{base_url}/v1/chat/completions"
@@ -172,9 +174,13 @@ async def run(
         )
         speed["audio_expected"] = len(request_results)
 
-    output: dict = {"accuracy": metrics, "speed": speed}
+    output: dict = {
+        "accuracy": metrics,
+        "speed": speed,
+        "per_sample": [asdict(result) for result in results],
+    }
     wer_results = None
-    if audio_mode:
+    if audio_mode and compute_wer:
         wer_results = compute_text_audio_consistency(
             request_results,
             args.lang,
