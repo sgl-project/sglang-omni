@@ -1020,6 +1020,7 @@ def _build_tts_payload(
     *,
     stream: bool = False,
     no_ref_audio: bool = False,
+    ref_format: str = "flat",
     voice: str | None = None,
     **gen_kwargs,
 ) -> dict:
@@ -1029,8 +1030,13 @@ def _build_tts_payload(
         "response_format": "wav",
     }
     if not no_ref_audio:
-        payload["ref_audio"] = sample.ref_audio
-        payload["ref_text"] = sample.ref_text
+        if ref_format == "references":
+            payload["references"] = [
+                {"audio_path": sample.ref_audio, "text": sample.ref_text}
+            ]
+        else:
+            payload["ref_audio"] = sample.ref_audio
+            payload["ref_text"] = sample.ref_text
     if voice is not None:
         payload["voice"] = voice
     for key, value in gen_kwargs.items():
@@ -1220,6 +1226,7 @@ def make_tts_send_fn(
     *,
     stream: bool = False,
     no_ref_audio: bool = False,
+    ref_format: str = "flat",
     voice: str | None = None,
     save_audio_dir: str | None = None,
     **gen_kwargs,
@@ -1238,6 +1245,7 @@ def make_tts_send_fn(
             model_name,
             stream=stream,
             no_ref_audio=no_ref_audio,
+            ref_format=ref_format,
             voice=voice,
             **gen_kwargs,
         )
