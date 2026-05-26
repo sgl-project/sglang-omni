@@ -24,10 +24,10 @@ from typing import Protocol
 import aiohttp
 import numpy as np
 import requests
+import numpy as np
 import soundfile as sf
 import torch
 from jiwer import process_words
-import numpy as np
 from tqdm import tqdm
 
 from benchmarks.benchmarker.data import RequestResult

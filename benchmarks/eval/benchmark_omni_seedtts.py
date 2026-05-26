@@ -158,7 +158,6 @@ from benchmarks.tasks.tts import (
     VoiceCloneOmni,
     build_base_url,
     run_seedtts_similarity,
-    run_seedtts_utmos,
     run_seedtts_transcribe,
     run_seedtts_utmos,
     save_generated_audio_metadata,
