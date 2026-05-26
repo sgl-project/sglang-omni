@@ -387,10 +387,6 @@ class OmniScheduler:
             self.attn_tp_rank == 0 or self.enable_metrics_for_all_schedulers
         )
 
-    # ------------------------------------------------------------------
-    # Overridden methods (take precedence over __getattr__)
-    # ------------------------------------------------------------------
-
     def recv_requests(self):
         """Drain inbox on rank 0 and broadcast scheduler inputs to TP followers."""
         recv_msgs = self._recv_scheduler_messages()
