@@ -239,6 +239,36 @@ def compute_text_audio_consistency(
     return {"summary": calculate_wer_metrics(outputs, lang), "per_sample": per_sample}
 
 
+def compute_text_audio_consistency_from_records(
+    per_sample: list[dict],
+    lang: str,
+    asr_device: str,
+    *,
+    audio_dir: str | None = None,
+    sample_id_key: str = "sample_id",
+    text_key: str = "raw_response",
+) -> dict:
+    """Compute WER from saved eval records after the inference server is stopped."""
+    request_results: list[RequestResult] = []
+    for record in per_sample:
+        sample_id = record.get(sample_id_key)
+        wav_path = record.get("wav_path") or ""
+        if not wav_path and audio_dir and sample_id:
+            wav_path = os.path.join(audio_dir, f"{sample_id}.wav")
+        request_results.append(
+            RequestResult(
+                request_id=str(sample_id or ""),
+                text=str(record.get(text_key) or ""),
+                is_success=bool(record.get("is_success")),
+                latency_s=float(record.get("latency_s") or 0),
+                audio_duration_s=float(record.get("audio_duration_s") or 0),
+                wav_path=wav_path,
+                error=str(record.get("error") or ""),
+            )
+        )
+    return compute_text_audio_consistency(request_results, lang, asr_device)
+
+
 def save_wer_results(
     outputs: list[SampleOutput], metrics: dict, config: dict, output_dir: str
 ) -> None:
