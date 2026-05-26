@@ -13,14 +13,14 @@ Usage:
     python examples/run_qwen3_omni_speech_server.py --port 8001 ...
     python benchmarks/eval/benchmark_omni_streaming_ttft.py \\
         --base-url http://localhost:8001 \\
-        --label baseline --output results/ttft_baseline.json --repeats 5
+        --label baseline --repeats 5
 
     # Treatment server (partial-start enabled):
     python examples/run_qwen3_omni_speech_server.py --port 8001 \\
         --enable-partial-start --partial-start-min-chunks 5 ...
     python benchmarks/eval/benchmark_omni_streaming_ttft.py \\
         --base-url http://localhost:8001 \\
-        --label partial5 --output results/ttft_partial5.json --repeats 5
+        --label partial5 --repeats 5
 """
 
 from __future__ import annotations
@@ -229,6 +229,11 @@ def _print_summary(summary: Summary) -> None:
     print("=" * 60)
 
 
+def _default_output_path(label: str) -> Path:
+    run_id = time.strftime("%Y%m%d-%H%M%S")
+    return Path("results") / f"ttft_{label}_{run_id}.json"
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Measure streaming TTFT for Qwen3-Omni speech.",
@@ -244,13 +249,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--output",
         type=Path,
-        required=True,
-        help="Path to write JSON results.",
+        default=None,
+        help="Path to write JSON results. Defaults to results/ttft_<label>_<run-id>.json.",
     )
     parser.add_argument("--warmup", type=int, default=2)
     parser.add_argument("--repeats", type=int, default=5)
     parser.add_argument("--timeout-s", type=float, default=300.0)
     args = parser.parse_args(argv)
+    if args.output is None:
+        args.output = _default_output_path(args.label)
+    elif args.output.exists():
+        raise FileExistsError(f"output path already exists: {args.output}")
 
     wait_for_service(args.base_url)
     summary = asyncio.run(_run(args))
