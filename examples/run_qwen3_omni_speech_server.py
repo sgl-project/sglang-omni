@@ -60,11 +60,11 @@ def parse_args() -> argparse.Namespace:
 
     # GPU placement
     parser.add_argument("--gpu-thinker", type=int, default=0)
-    parser.add_argument("--gpu-talker", type=int, default=1)
+    parser.add_argument("--gpu-talker", type=int, default=None)
     parser.add_argument("--gpu-code-predictor", type=int, default=None)
-    parser.add_argument("--gpu-code2wav", type=int, default=0)
-    parser.add_argument("--gpu-image-encoder", type=int, default=0)
-    parser.add_argument("--gpu-audio-encoder", type=int, default=0)
+    parser.add_argument("--gpu-code2wav", type=int, default=None)
+    parser.add_argument("--gpu-image-encoder", type=int, default=None)
+    parser.add_argument("--gpu-audio-encoder", type=int, default=None)
 
     # Thinker tensor parallelism (disaggregated path; not used by colocation).
     parser.add_argument(
@@ -235,6 +235,7 @@ def _parse_thinker_tp_gpu_list(spec: str, tp_size: int) -> list[int]:
 
 def _launch_speech_server(args: argparse.Namespace) -> None:
     from sglang_omni.models.qwen3_omni.config import (
+        MIN_PARTIAL_START_CHUNKS,
         Qwen3OmniSpeechColocatedPipelineConfig,
         Qwen3OmniSpeechPipelineConfig,
     )
@@ -247,12 +248,53 @@ def _launch_speech_server(args: argparse.Namespace) -> None:
     ):
         _validate_fraction(flag_name, value)
 
-    gpu_code_predictor = (
-        args.gpu_code_predictor
-        if args.gpu_code_predictor is not None
-        else args.gpu_talker
+    if (
+        args.enable_partial_start
+        and args.partial_start_min_chunks < MIN_PARTIAL_START_CHUNKS
+    ):
+        raise ValueError(
+            f"--partial-start-min-chunks must be >= {MIN_PARTIAL_START_CHUNKS}, "
+            f"got {args.partial_start_min_chunks}"
+        )
+
+    gpu_talker = (
+        args.gpu_talker
+        if args.gpu_talker is not None
+        else (args.gpu_thinker if args.colocated else 1)
     )
-    if gpu_code_predictor != args.gpu_talker:
+    gpu_code2wav = (
+        args.gpu_code2wav
+        if args.gpu_code2wav is not None
+        else (args.gpu_thinker if args.colocated else 0)
+    )
+    gpu_image_encoder = (
+        args.gpu_image_encoder
+        if args.gpu_image_encoder is not None
+        else (args.gpu_thinker if args.colocated else 0)
+    )
+    gpu_audio_encoder = (
+        args.gpu_audio_encoder
+        if args.gpu_audio_encoder is not None
+        else (args.gpu_thinker if args.colocated else 0)
+    )
+    if args.colocated:
+        colocated_gpus = {
+            "--gpu-thinker": args.gpu_thinker,
+            "--gpu-talker": gpu_talker,
+            "--gpu-code2wav": gpu_code2wav,
+            "--gpu-image-encoder": gpu_image_encoder,
+            "--gpu-audio-encoder": gpu_audio_encoder,
+        }
+        if len(set(colocated_gpus.values())) != 1:
+            raise ValueError(
+                "--colocated requires all GPU stage flags to use the same GPU, "
+                f"got {colocated_gpus}"
+            )
+
+    gpu_code_predictor = (
+        args.gpu_code_predictor if args.gpu_code_predictor is not None else gpu_talker
+    )
+    if gpu_code_predictor != gpu_talker:
         raise ValueError(
             "Qwen3 speech pipeline does not expose a separate code_predictor "
             "stage. Use the same GPU for --gpu-code-predictor and --gpu-talker."
@@ -268,8 +310,8 @@ def _launch_speech_server(args: argparse.Namespace) -> None:
         relay_backend=args.relay_backend,
     )
 
-    _set_stage_gpu(config, "image_encoder", args.gpu_image_encoder)
-    _set_stage_gpu(config, "audio_encoder", args.gpu_audio_encoder)
+    _set_stage_gpu(config, "image_encoder", gpu_image_encoder)
+    _set_stage_gpu(config, "audio_encoder", gpu_audio_encoder)
 
     if args.thinker_tp_size < 1:
         raise ValueError(f"--thinker-tp-size must be >= 1, got {args.thinker_tp_size}")
@@ -298,8 +340,8 @@ def _launch_speech_server(args: argparse.Namespace) -> None:
             )
         _set_stage_gpu(config, "thinker", args.gpu_thinker)
 
-    _set_stage_gpu(config, "talker_ar", args.gpu_talker)
-    _set_stage_gpu(config, "code2wav", args.gpu_code2wav)
+    _set_stage_gpu(config, "talker_ar", gpu_talker)
+    _set_stage_gpu(config, "code2wav", gpu_code2wav)
 
     thinker_mem_fraction = (
         args.thinker_mem_fraction_static

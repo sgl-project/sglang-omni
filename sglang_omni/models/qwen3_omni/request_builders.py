@@ -4,9 +4,8 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from types import SimpleNamespace
 from typing import Any
 
 import torch
@@ -32,6 +31,9 @@ DECODE_STAGE = "decode"
 TALKER_STAGE = "talker_ar"
 CODE2WAV_STAGE = "code2wav"
 MM_AGGREGATE_STAGE = "mm_aggregate"
+
+# Note(Chenchen Hong): PyTorch sampling_seed must fit a positive int32.
+MAX_INT32_POSITIVE = 0x7FFFFFFF
 
 
 def output_modalities(request: OmniRequest | None) -> set[str] | None:
@@ -919,29 +921,6 @@ def make_talker_scheduler_adapters(
         speaker_map=speaker_map,
     )
 
-    def _fallback_thinker_chunks_from_state(payload: StagePayload) -> list[Any]:
-        state = PipelineState.from_dict(payload.data)
-        thinker_out = state.thinker_out or state.engine_outputs.get("thinker")
-        if not isinstance(thinker_out, dict):
-            return []
-
-        output_ids = thinker_out.get("output_ids")
-        if not isinstance(output_ids, list) or not output_ids:
-            return []
-
-        token_ids = torch.tensor(
-            [int(token_id) for token_id in output_ids],
-            dtype=torch.long,
-        )
-        token_embeds = prefill_builder._load_prompt_token_embeddings(token_ids)
-        return [
-            SimpleNamespace(
-                data=row.detach().cpu(),
-                metadata={"token_id": int(token_id)},
-            )
-            for token_id, row in zip(token_ids.tolist(), token_embeds)
-        ]
-
     def _resolve_talker_sampling_config(params: dict[str, Any]) -> dict[str, Any]:
         codec_eos_id = int(getattr(model.config, "codec_eos_token_id", -1))
         suppress_tokens = [
@@ -972,7 +951,6 @@ def make_talker_scheduler_adapters(
             video_token_id=video_token_id,
             thinker_config=thinker_config,
             resolve_sampling_config=_resolve_talker_sampling_config,
-            fallback_chunks_from_state=_fallback_thinker_chunks_from_state,
         )
 
     def result_adapter(data: SGLangARRequestData) -> StagePayload:
@@ -1002,33 +980,23 @@ def _build_talker_request_data(
     image_token_id: int | None,
     video_token_id: int | None,
     thinker_config: Any,
-    resolve_sampling_config: Any,
-    fallback_chunks_from_state: Any,
+    resolve_sampling_config: Callable[[dict[str, Any]], dict[str, Any]],
 ) -> SGLangARRequestData:
-    """Production talker request_builder body — extracted so tests can drive
-    the real closure with stubbed prefill_builder/build_sglang_talker_request
-    instead of validating a hand-written copy."""
     params = payload.request.params
     sampling_cfg = resolve_sampling_config(params)
     if sampling_cfg.get("seed") is None:
         sampling_cfg["seed"] = (
-            xxhash.xxh64_intdigest(str(payload.request_id).encode("utf-8")) & 0x7FFFFFFF
+            xxhash.xxh64_intdigest(str(payload.request_id).encode("utf-8"))
+            & MAX_INT32_POSITIVE
         )
     thinker_chunks = list(payload.prefetched_chunks)
     thinker_done = bool(payload.prefetched_stream_done)
 
     if not thinker_chunks:
-        if thinker_done:
-            thinker_chunks = fallback_chunks_from_state(payload)
-            if not thinker_chunks:
-                raise ValueError(
-                    "talker request_builder requires thinker output tokens"
-                )
-        else:
-            raise RuntimeError(
-                "talker partial-start path entered with zero usable thinker "
-                "chunks; check the partial-start readiness policy"
-            )
+        raise RuntimeError(
+            "talker request_builder requires prefetched thinker chunks; "
+            "check the partial-start readiness policy or upstream wiring"
+        )
 
     prompt_prefill = prefill_builder.build_prompt_prefill(
         payload,

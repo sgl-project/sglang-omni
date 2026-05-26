@@ -9,6 +9,7 @@ from typing import Any
 
 from sglang.srt.managers.scheduler import Scheduler as _Upstream
 
+from sglang_omni.models.qwen3_omni.config import MIN_PARTIAL_START_CHUNKS
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 
 logger = logging.getLogger(__name__)
@@ -35,45 +36,8 @@ def configure_talker_server_args(
     return want_cuda_graph
 
 
-# Floor for the partial-start gate; pinned by
-# ``test_partial_prompt_prefill_layout_invariants``.
-MIN_PARTIAL_START_CHUNKS = 3
-
-
 class QwenTalkerScheduler(OmniScheduler):
-    """Talker scheduler with Qwen-specific request and decode readiness.
-
-    The decode-stall handling (``get_next_batch_to_run`` override +
-    ``_rollback_decode_prep_after_skip``) is scoped here, not on the shared
-    ``OmniScheduler``, because the rollback is **not a full inverse** of
-    upstream ``ScheduleBatch.prepare_for_decode``. Upstream writes/clears
-    (depending on server_args): ``out_cache_loc``, ``input_ids`` /
-    ``output_ids``, ``seq_lens`` / ``seq_lens_cpu`` / ``orig_seq_lens`` /
-    ``seq_lens_sum``, per-req ``decode_batch_idx`` / ``kv_committed_len`` /
-    ``kv_allocated_len``, ``forward_mode``, ``input_embeds``,
-    ``attn_cp_metadata``, ``sampling_info.penalizer_orchestrator``
-    cumulate-output-tokens state, ``hisparse_coordinator``, Mamba buffers,
-    and ``req_to_token_pool`` writes.
-
-    This rollback only undoes the first set explicitly. The remainder is
-    safe **only** because the talker config disables them or makes them
-    idempotent: ``configure_talker_server_args`` sets
-    ``disable_overlap_schedule=True`` (so ``enable_overlap`` is False and
-    no overlap tensor swap fires), Qwen3-Omni has no Mamba state (so
-    ``mamba_track_indices`` / ``mamba_track_mask`` are unused), the
-    repetition-penalty scatter inside
-    ``sampling_info.penalizer_orchestrator`` is idempotent on the same
-    output_id within one step, ``is_spec_v2`` is False (no spec-decode
-    fast path), and hisparse is unused. Other schedulers MUST NOT inherit
-    this rollback without verifying their server_args produce the same
-    effective subset; see
-    ``test_prepare_for_decode_side_effect_contract_with_upstream``.
-    """
-
-    # Class-level defaults so object.__new__ test helpers see a disabled state.
-    _enable_partial_start: bool = False
-    _partial_start_min_chunks: int = MIN_PARTIAL_START_CHUNKS
-    _im_end_token_id: int | None = None
+    """Talker scheduler with Qwen-specific request and decode readiness."""
 
     def __init__(
         self,
@@ -94,18 +58,14 @@ class QwenTalkerScheduler(OmniScheduler):
         self._im_end_token_id = im_end_token_id
 
     def _count_usable_prefetched_chunks(self, prefetched: list[Any]) -> int:
-        """Count chunks that survive prefill's <|im_end|> stripping."""
         im_end = self._im_end_token_id
-        if im_end is None:
+        if im_end is None or not prefetched:
             return len(prefetched)
-        usable = 0
-        for chunk in prefetched:
-            metadata = getattr(chunk, "metadata", None) or {}
-            token_id = metadata.get("token_id")
-            if token_id is not None and int(token_id) == int(im_end):
-                continue
-            usable += 1
-        return usable
+        metadata = getattr(prefetched[-1], "metadata", None) or {}
+        token_id = metadata.get("token_id")
+        if token_id is not None and int(token_id) == int(im_end):
+            return len(prefetched) - 1
+        return len(prefetched)
 
     def _is_request_build_ready(
         self,
@@ -124,7 +84,6 @@ class QwenTalkerScheduler(OmniScheduler):
         )
 
     def _initialize_request_stream_state(self, req_data: Any, payload: Any) -> None:
-        # No-op: request_builder seeds pending_text_queue itself.
         del req_data, payload
         return None
 
@@ -142,13 +101,7 @@ class QwenTalkerScheduler(OmniScheduler):
             return False
         return True
 
-    # ------------------------------------------------------------------
-    # Talker-scoped decode-stall handling. Shared OmniScheduler stays
-    # pure; the side-effect rollback is safe only under the talker
-    # server_args (disable_overlap_schedule=True, no Mamba).
-    # ------------------------------------------------------------------
-
-    def get_next_batch_to_run(self):
+    def get_next_batch_to_run(self) -> Any | None:
         batch = _Upstream.get_next_batch_to_run(self)
         if batch is not None and not self._is_batch_ready_to_run(batch):
             self._rollback_decode_prep_after_skip(batch)
@@ -156,12 +109,16 @@ class QwenTalkerScheduler(OmniScheduler):
         return batch
 
     def _rollback_decode_prep_after_skip(self, batch: Any) -> None:
+        # Note(Chenchen Hong): This is talker-only. It does not fully invert
+        # prepare_for_decode; talker disables overlap/spec/Mamba/hisparse, and
+        # its SamplingParams defaults keep the upstream penalizer branch inactive.
         if not batch.forward_mode.is_decode():
             return
-        assert isinstance(batch.seq_lens_sum, int), (
-            f"seq_lens_sum is {type(batch.seq_lens_sum).__name__}, expected int "
-            "— sglang upstream prepare_for_decode changed; update rollback."
-        )
+        if not isinstance(batch.seq_lens_sum, int):
+            raise TypeError(
+                f"seq_lens_sum is {type(batch.seq_lens_sum).__name__}, expected int; "
+                "sglang upstream prepare_for_decode changed; update rollback."
+            )
         if batch.out_cache_loc is not None:
             self.token_to_kv_pool_allocator.free(batch.out_cache_loc)
             batch.out_cache_loc = None
@@ -177,12 +134,11 @@ class QwenTalkerScheduler(OmniScheduler):
         batch.seq_lens_sum -= len(batch.reqs)
 
     def self_check_during_idle(self) -> None:
-        # Partial-start stalled reqs hold live KV slots; not a leak.
         if self.running_batch is not None and not self.running_batch.is_empty():
             return
         if self.waiting_queue:
             return
-        _Upstream.self_check_during_idle(self)
+        super().self_check_during_idle()
 
     @staticmethod
     def _append_stream_chunk_default(req_data: Any, chunk: Any) -> None:

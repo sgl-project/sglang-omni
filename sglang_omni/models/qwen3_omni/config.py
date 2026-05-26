@@ -11,6 +11,7 @@ from sglang_omni.config import PipelineConfig, PlacementConfig, StageConfig
 
 _PKG = "sglang_omni.models.qwen3_omni"
 _PLACEMENT_POLICY = f"{_PKG}.placement.Qwen3OmniPlacementPolicy"
+MIN_PARTIAL_START_CHUNKS = 3
 
 # SGLang reads this when DeepGEMM compile utilities are imported. Qwen AR
 # stages can first hit some dense FP8 shapes after readiness; disable all-M
@@ -156,8 +157,6 @@ def _talker_stage(*, gpu: int, process: str) -> StageConfig:
             "talker_max_seq_len": 32768,
             "speech_enabled": True,
             "feedback_enabled": True,
-            # Opt in via enable_partial_start=True; min_chunks must be a
-            # positive int >= MIN_PARTIAL_START_CHUNKS.
             "enable_partial_start": False,
             "partial_start_min_chunks": 5,
         },

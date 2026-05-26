@@ -157,12 +157,15 @@ async def _run(args: argparse.Namespace) -> Summary:
                     timeout_s=args.timeout_s,
                 )
                 logger.info(
-                    "[%s] WARMUP prompt=%s repeat=%d ttft=%.3fs total=%.3fs",
+                    "[%s] WARMUP prompt=%s repeat=%d ttft=%.3fs total=%.3fs "
+                    "audio_chunks=%d status_code=%d",
                     args.label,
                     prompt_id,
                     warm,
                     ttft,
                     total,
+                    audio_chunks,
+                    status_code,
                 )
 
             ttfts: list[float] = []
