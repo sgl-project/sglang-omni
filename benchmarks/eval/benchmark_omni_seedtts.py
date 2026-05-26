@@ -158,6 +158,7 @@ from benchmarks.tasks.tts import (
     VoiceCloneOmni,
     build_base_url,
     run_seedtts_similarity,
+    run_seedtts_utmos,
     run_seedtts_transcribe,
     run_seedtts_utmos,
     save_generated_audio_metadata,
@@ -195,6 +196,7 @@ class OmniSeedttsBenchmarkConfig:
     # Transcribe phase
     device: str = "cuda:0"
     similarity_checkpoint: str | None = None
+    with_utmos: bool = False
     # Optional system prompt prepended to chat messages. Default ``None``
     # preserves the legacy Qwen3-Omni behavior (no system role). Pass a
     # strict TTS-only prompt to suppress chat-mode leakage on models that
@@ -410,6 +412,7 @@ def _config_from_args(args: argparse.Namespace) -> OmniSeedttsBenchmarkConfig:
         disable_tqdm=args.disable_tqdm,
         device=device,
         similarity_checkpoint=args.similarity_checkpoint,
+        with_utmos=args.with_utmos,
         system_prompt=args.system_prompt,
     )
 
@@ -538,6 +541,11 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         help="Timeout in seconds to wait for server readiness.",
     )
     parser.add_argument(
+        "--with-utmos",
+        action="store_true",
+        help="Also score UTMOS MOS after WER.",
+    )
+    parser.add_argument(
         "--system-prompt",
         type=str,
         default=None,
@@ -620,6 +628,11 @@ def main() -> None:
     }
     if similarity_results is not None:
         combined["similarity"] = similarity_results.get("summary", similarity_results)
+    utmos_results = None
+    if args.with_utmos:
+        utmos_results = run_seedtts_utmos(config, log_per_sample=False)
+    if utmos_results is not None:
+        combined["utmos"] = utmos_results.get("summary", utmos_results)
     save_json_results(combined, config.output_dir, "eval_results.json")
 
 
