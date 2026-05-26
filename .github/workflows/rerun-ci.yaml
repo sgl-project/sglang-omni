@@ -27,17 +27,22 @@ jobs:
               repo: context.repo.repo,
               pull_number: context.issue.number,
             });
+            if (pr.state !== 'open') {
+              console.log(`PR #${pr.number} is ${pr.state}; refusing to rerun stale CI.`);
+              return;
+            }
             const headSha = pr.head.sha;
 
             // List workflow runs for this commit
-            const { data: runs } = await github.rest.actions.listWorkflowRunsForRepo({
+            const runs = await github.paginate(github.rest.actions.listWorkflowRunsForRepo, {
               owner: context.repo.owner,
               repo: context.repo.repo,
               head_sha: headSha,
+              per_page: 100,
             });
 
             let reranCount = 0;
-            for (const run of runs.workflow_runs) {
+            for (const run of runs) {
               if (run.conclusion === 'failure' || run.conclusion === 'cancelled') {
                 await github.rest.actions.reRunWorkflowFailedJobs({
                   owner: context.repo.owner,

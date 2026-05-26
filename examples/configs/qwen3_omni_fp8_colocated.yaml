@@ -1,0 +1,36 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# Example single-H100/H20 colocated Qwen3-Omni FP8 launcher config.
+# The Python pipeline config owns the stage topology; this file sets the model
+# path and runtime memory budgets used for one-GPU colocated launch.
+
+config_cls: Qwen3OmniSpeechColocatedPipelineConfig
+name: qwen3-omni-fp8-colocated
+model_path: marksverdhei/Qwen3-Omni-30B-A3B-FP8
+relay_backend: shm
+
+stage_overrides:
+  image_encoder:
+    runtime:
+      resources:
+        total_gpu_memory_fraction: 0.025
+
+  audio_encoder:
+    runtime:
+      resources:
+        total_gpu_memory_fraction: 0.025
+
+  thinker:
+    runtime:
+      resources:
+        total_gpu_memory_fraction: 0.75
+
+  talker_ar:
+    runtime:
+      resources:
+        total_gpu_memory_fraction: 0.12
+
+  code2wav:
+    runtime:
+      resources:
+        total_gpu_memory_fraction: 0.02

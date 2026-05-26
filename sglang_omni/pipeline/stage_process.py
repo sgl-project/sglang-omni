@@ -41,6 +41,7 @@ class StageProcessSpec:
     # Factory
     factory: str = ""
     factory_args: dict[str, Any] = field(default_factory=dict)
+    env_defaults: dict[str, str] = field(default_factory=dict)
 
     # Routing: static next stage(s)
     next_stages: str | list[str] | None = None

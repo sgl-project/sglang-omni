@@ -4,8 +4,9 @@
 from __future__ import annotations
 
 import hashlib
+import time
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable, Protocol
 
 import torch
 from sglang.srt.managers.schedule_batch import Req
@@ -26,6 +27,15 @@ class HiggsSGLangRequestData(SGLangARRequestData):
     codebook_size: int = 1026
     output_codes: list[torch.Tensor] = field(default_factory=list)
     generation_done: bool = False
+    engine_start_s: float = 0.0
+
+
+class _ResettableHiggsModel(Protocol):
+    def reset_request(self, req_id: str) -> None: ...
+
+
+_HiggsRequestBuilder = Callable[[StagePayload], HiggsSGLangRequestData]
+_HiggsResultAdapter = Callable[[HiggsSGLangRequestData], StagePayload]
 
 
 def _ref_audio_fingerprint(codes: list[list[int]] | None) -> str | None:
@@ -65,6 +75,10 @@ def build_sglang_higgs_request(
     if state.seed is not None:
         sp_kwargs["seed"] = int(state.seed)
     sampling_params = SamplingParams(**sp_kwargs)
+    # tokenizer_manager.normalize() is bypassed in our custom pipeline;
+    # without it stop_strs / stop_regex_strs stay None and the upstream
+    # scheduler's check_finished trips on ``len(None)``.
+    sampling_params.normalize(tokenizer=None)
 
     # vocab_size = backbone text vocab so cb0 rides sglang's standard sampler path.
     # extra_key namespaces the radix cache per ref-audio fingerprint so prompts
@@ -104,10 +118,28 @@ def apply_higgs_result(state: HiggsTtsState, data: HiggsSGLangRequestData) -> No
     state.prompt_tokens = len(data.input_ids)
 
 
-def make_higgs_scheduler_adapters():
+def make_higgs_scheduler_adapters(
+    model: _ResettableHiggsModel,
+    *,
+    max_new_tokens_cap: int | None = None,
+) -> tuple[_HiggsRequestBuilder, _HiggsResultAdapter]:
+    """Build (request_builder, result_adapter) closures bound to a
+    :class:`HiggsTTSModel` instance.
+
+    The result adapter drops the model's per-request slot (sampler state +
+    accumulated codes) once a result is emitted so a long-running server
+    doesn't accumulate dead slots.
+    """
+
     def request_builder(payload: StagePayload) -> HiggsSGLangRequestData:
         state = HiggsTtsState.from_dict(payload.data)
+        if max_new_tokens_cap is not None:
+            state.max_new_tokens = min(
+                int(state.max_new_tokens),
+                int(max_new_tokens_cap),
+            )
         data = build_sglang_higgs_request(state, request_id=payload.request_id)
+        data.engine_start_s = time.perf_counter()
         data.stage_payload = payload
         return data
 
@@ -115,6 +147,9 @@ def make_higgs_scheduler_adapters():
         payload = data.stage_payload
         state = HiggsTtsState.from_dict(payload.data)
         apply_higgs_result(state, data)
+        if data.engine_start_s:
+            state.engine_time_s = time.perf_counter() - data.engine_start_s
+        model.reset_request(payload.request_id)
         return StagePayload(
             request_id=payload.request_id,
             request=payload.request,

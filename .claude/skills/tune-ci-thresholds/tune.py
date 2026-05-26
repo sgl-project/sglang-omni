@@ -7,7 +7,7 @@ models/<name>/config.yaml. Metrics come from result JSONs that tests
 already write under pytest's --basetemp (set fresh per run).
 """
 from __future__ import annotations
-import argparse, ast, datetime as dt, hashlib, json, os, re, shutil, signal
+import argparse, ast, datetime as dt, hashlib, json, math, os, re, shutil, signal
 import subprocess, sys, time, tomllib
 from pathlib import Path
 
@@ -31,6 +31,7 @@ _PYTEST_POLL_S = 30
 _MAX_RUN_ATTEMPTS = 4
 _DEFAULT_CALIBRATION_PASSES = 10
 _AGENT_POLL_INTERVAL_S = 120
+_CI_HOME = Path("/github/home")
 _CRASH_SIGS = (
     "Fatal Python error",
     "Segmentation fault",
@@ -43,6 +44,51 @@ _CRASH_SIGS = (
     "Server process exited",
     "worker crashed",
 )
+
+
+def _flashinfer_cache_dirs(env: dict[str, str] | None = None) -> list[Path]:
+    env = env or os.environ
+    candidates = [
+        Path(env.get("XDG_CACHE_HOME", "")) / "flashinfer"
+        if env.get("XDG_CACHE_HOME")
+        else None,
+        Path(env.get("HOME", "")) / ".cache" / "flashinfer"
+        if env.get("HOME")
+        else None,
+        _CI_HOME / ".cache" / "flashinfer",
+    ]
+    seen: set[Path] = set()
+    paths: list[Path] = []
+    for candidate in candidates:
+        if candidate is None:
+            continue
+        path = candidate.expanduser()
+        if path in seen:
+            continue
+        seen.add(path)
+        paths.append(path)
+    return paths
+
+
+def _cleanup_flashinfer_cache(env: dict[str, str] | None = None) -> None:
+    # Runtime JIT dirs only — never remove the host wheel cache under
+    # /github/home/.cache/flashinfer-jit-cache/ (see install_flashinfer_jit_cache.sh).
+    for cache_dir in _flashinfer_cache_dirs(env):
+        shutil.rmtree(cache_dir, ignore_errors=True)
+
+
+def _venv_has_flashinfer_jit_cache(py: str) -> bool:
+    r = subprocess.run(
+        [
+            py,
+            "-c",
+            "import importlib.util, sys;"
+            "sys.exit(0 if importlib.util.find_spec('flashinfer_jit_cache') else 1)",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    return r.returncode == 0
 
 # Metric registry. Each entry encodes how a named metric should be
 # displayed in the report and which stage group it belongs to. Scales
@@ -124,6 +170,22 @@ def model_dir(name):  return MODELS_DIR / name
 def stages_path(name): return model_dir(name) / "stages.yaml"
 
 
+def _merge_omni_ci_home(cfg: dict) -> None:
+    omni_home = cfg.get("omni_ci_home")
+    if not omni_home:
+        return
+    auto = cfg.setdefault("auto_env", {})
+    auto.setdefault("OMNI_CI_HOME", omni_home)
+    auto.setdefault("XDG_CACHE_HOME", f"{omni_home}/.cache")
+    auto.setdefault("TORCHINDUCTOR_CACHE_DIR", f"{omni_home}/.torchinductor")
+
+
+def _apply_auto_env(cfg: dict) -> None:
+    _merge_omni_ci_home(cfg)
+    for key, value in cfg.setdefault("auto_env", {}).items():
+        os.environ[key] = str(value)
+
+
 def load_model_config(name):
     p = model_dir(name) / "config.yaml"
     if not p.exists():
@@ -133,10 +195,10 @@ def load_model_config(name):
     cfg.setdefault("extra_env", {})
     cfg.setdefault("auto_env", {})
     cfg.setdefault("metric_sources", {})
+    cfg.setdefault("hf_model_ids_by_test", {})
     # Auto-apply env vars so the user doesn't need to export them
     # manually. Overrides any pre-existing value to match CI.
-    for k, v in cfg["auto_env"].items():
-        os.environ[k] = str(v)
+    _apply_auto_env(cfg)
     return cfg
 
 
@@ -186,6 +248,31 @@ def git_info():
     return dict(sha=q(["git", "rev-parse", "HEAD"]),
                 branch=q(["git", "rev-parse", "--abbrev-ref", "HEAD"]),
                 dirty=bool(q(["git", "status", "--porcelain"])))
+
+
+def _unique_ordered(items):
+    seen, out = set(), []
+    for item in items:
+        if not item or item in seen:
+            continue
+        seen.add(item)
+        out.append(item)
+    return out
+
+
+def _all_model_ids(cfg):
+    model_ids = [cfg["hf_model_id"]]
+    for ids in (cfg.get("hf_model_ids_by_test") or {}).values():
+        model_ids.extend(ids or [])
+    return _unique_ordered(model_ids)
+
+
+def _required_model_ids_for_tests(cfg, test_names):
+    by_test = cfg.get("hf_model_ids_by_test") or {}
+    model_ids = []
+    for test_name in sorted(set(test_names)):
+        model_ids.extend(by_test.get(test_name) or [cfg["hf_model_id"]])
+    return _unique_ordered(model_ids)
 
 
 def nvidia_smi_L():
@@ -462,8 +549,8 @@ def pick_free_gpus(n):
     )
 
 
-def precheck(py, src, out, skip_ver, cfg, datasets_override=None, tried=None,
-             gpu_required_override=None):
+def precheck(py, src, out, skip_ver, cfg, datasets_override=None,
+             model_ids_override=None, tried=None, gpu_required_override=None):
     errs, warns = [], []
     print(f"model: {cfg['name']}")
     print(f"venv_python: {py} ({src})")
@@ -505,6 +592,16 @@ def precheck(py, src, out, skip_ver, cfg, datasets_override=None, tried=None,
     # load_model_config; print them for visibility.
     for k, v in cfg["auto_env"].items():
         print(f"  auto env: {k}={v}")
+    if not _venv_has_flashinfer_jit_cache(py):
+        venv_root = Path(py).resolve().parent.parent
+        venv_name = venv_root.name
+        errs.append(
+            "flashinfer-jit-cache missing from venv (CI MoE graph capture needs it).\n"
+            f"  From repo root with OMNI_CI_HOME={cfg['auto_env'].get('OMNI_CI_HOME', '<set>')}:\n"
+            f"    ln -sfn {venv_root} ./{venv_name}\n"
+            f"    bash .github/scripts/install_flashinfer_jit_cache.sh {venv_name}\n"
+            "  Host wheel cache: /github/home/.cache/flashinfer-jit-cache/ (shared across PRs)."
+        )
     # WER normalizer check removed — the user manages venv contents
     # explicitly and the warning was producing noise without changing
     # behavior. `expected_wer_normalizer` in config.yaml is now ignored.
@@ -516,8 +613,12 @@ def precheck(py, src, out, skip_ver, cfg, datasets_override=None, tried=None,
             capture_output=True, text=True)
         return r.returncode == 0
     # When called from `run` with a resolved stage selection, only the
-    # datasets those tests actually use are required; others become
-    # "optional" (printed if cached, absent is not an error).
+    # model checkpoints and datasets those tests actually use are required;
+    # others become "optional" (printed if cached, absent is not an error).
+    model_ids_required = (_all_model_ids(cfg) if model_ids_override is None
+                          else model_ids_override)
+    model_ids_optional = [m for m in _all_model_ids(cfg)
+                          if m not in model_ids_required]
     datasets_required = (cfg["hf_datasets"] if datasets_override is None
                          else datasets_override)
     datasets_optional = [d for d in cfg["hf_datasets"]
@@ -526,13 +627,19 @@ def precheck(py, src, out, skip_ver, cfg, datasets_override=None, tried=None,
         else f"assets (required for selected stages, {len(datasets_required)} dataset(s))"
     print(f"  {label}:")
     missing = []  # list of (repo_id, kind) — only for required
-    for repo_id, kind in [(cfg["hf_model_id"], "model")] + \
+    for repo_id, kind in [(m, "model") for m in model_ids_required] + \
                          [(ds, "dataset") for ds in datasets_required]:
         ok = _cached(repo_id, kind)
         mark = "✓" if ok else "✗"
         print(f"    {mark} {kind}: {repo_id}")
         if not ok:
             missing.append((repo_id, kind))
+    if model_ids_optional:
+        print("  other models (not needed for this run):")
+        for model_id in model_ids_optional:
+            ok = _cached(model_id, "model")
+            mark = "✓" if ok else "·"
+            print(f"    {mark} model: {model_id}")
     if datasets_optional:
         print("  other datasets (not needed for this run):")
         for ds in datasets_optional:
@@ -1075,6 +1182,8 @@ def _run_cmd_inner(args, cfg, py, src, out):
     if extras:
         print(f"note: test(s) reference repo(s) not listed in "
               f"config.yaml hf_datasets: {extras}")
+    selected_tests = [Path(all_stages[s]["test"]).name for s in sel]
+    required_models = _required_model_ids_for_tests(cfg, selected_tests)
     gpus_per_test = cfg.get("gpus_per_test", {}) or {}
     selected_gpu_requirement = max(
         (gpus_per_test.get(Path(all_stages[s]["test"]).name, 2) for s in sel),
@@ -1083,6 +1192,7 @@ def _run_cmd_inner(args, cfg, py, src, out):
     if not args.skip_precheck:
         rc = precheck(py, src, out, args.skip_version_check, cfg,
                       datasets_override=required_ds,
+                      model_ids_override=required_models,
                       gpu_required_override=selected_gpu_requirement)
         if rc: return rc
     else:
@@ -1336,7 +1446,7 @@ def _run_shared(test_path, stage_keys, all_stages, out, k, py, total, gpus_neede
             status, reason, dur = "failed", pick_err, 0.0
             print(f"{label} {pick_err}")
             break
-        shutil.rmtree("/github/home/.cache/flashinfer", ignore_errors=True)
+        _cleanup_flashinfer_cache(env)
         shutil.rmtree(basetemp, ignore_errors=True)
         basetemp.mkdir(parents=True)
         picked, gate_err = _launch_gpu_gate(picked, gpus_needed, label)
@@ -1802,17 +1912,24 @@ def _classify_direction(worst_op, current, new):
     return "unknown"
 
 
+def _ceil_wer_reference(worst_raw: float) -> float:
+    """Ceil worst-of-N WER to 4 decimal places (max-bound must not tighten)."""
+    return math.ceil(worst_raw * 10000) / 10000
+
+
 def _apply_write_value(worst_op: str, worst_raw: float | None,
                        worst_rounded: float | None,
                        stage_group: str | None) -> float | None:
     """Return the literal to write into a test file.
 
-    WER and accuracy are pass/fail thresholds — never display-round them.
-    For speed, use worst_rounded unless it would tighten beyond worst_raw.
+    WER max-bound references are ceiled to 4 dp; accuracy uses worst_raw.
+    For speed, use worst_rounded unless that would tighten beyond worst_raw.
     """
     if worst_raw is None:
         return None
-    if stage_group in ("wer", "accuracy"):
+    if stage_group == "wer":
+        return _ceil_wer_reference(worst_raw)
+    if stage_group == "accuracy":
         return worst_raw
     if worst_rounded is None:
         return worst_raw
