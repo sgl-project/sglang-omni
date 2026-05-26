@@ -58,6 +58,14 @@ def test_invalid_stage_runtime_values_raise() -> None:
         StageRuntimeConfig(max_seq_len=0)
     with pytest.raises(ValueError, match="video_fps"):
         StageRuntimeConfig(video_fps=-1.0)
+    with pytest.raises(ValueError, match="video_max_frames"):
+        StageRuntimeConfig(video_max_frames=0)
+    with pytest.raises(ValueError, match="video_min_pixels"):
+        StageRuntimeConfig(video_min_pixels=0)
+    with pytest.raises(ValueError, match="video_max_pixels"):
+        StageRuntimeConfig(video_max_pixels=0)
+    with pytest.raises(ValueError, match="video_total_pixels"):
+        StageRuntimeConfig(video_total_pixels=0)
 
 
 def test_stage_rejects_terminal_with_next() -> None:

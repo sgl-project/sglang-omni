@@ -9,7 +9,14 @@ from typing import Any
 from sglang_omni.config.schema import PipelineConfig, StageConfig
 from sglang_omni.utils.imports import import_string
 
-_MAPPED_STAGE_RUNTIME_FIELDS = ("max_seq_len", "video_fps")
+_MAPPED_STAGE_RUNTIME_FIELDS = (
+    "max_seq_len",
+    "video_fps",
+    "video_max_frames",
+    "video_min_pixels",
+    "video_max_pixels",
+    "video_total_pixels",
+)
 
 
 def resolve_stage_factory_args(

@@ -90,6 +90,10 @@ class StageRuntimeConfig(BaseModel):
     resources: StageResourceConfig = Field(default_factory=StageResourceConfig)
     max_seq_len: int | None = None
     video_fps: float | None = None
+    video_max_frames: int | None = None
+    video_min_pixels: int | None = None
+    video_max_pixels: int | None = None
+    video_total_pixels: int | None = None
     sglang_server_args: SGLangServerArgsConfig = Field(
         default_factory=SGLangServerArgsConfig
     )
@@ -99,6 +103,15 @@ class StageRuntimeConfig(BaseModel):
             raise ValueError("runtime.max_seq_len must be positive")
         if self.video_fps is not None and self.video_fps <= 0:
             raise ValueError("runtime.video_fps must be positive")
+        for field_name in (
+            "video_max_frames",
+            "video_min_pixels",
+            "video_max_pixels",
+            "video_total_pixels",
+        ):
+            value = getattr(self, field_name)
+            if value is not None and value <= 0:
+                raise ValueError(f"runtime.{field_name} must be positive")
 
 
 class PlacementConfig(BaseModel):

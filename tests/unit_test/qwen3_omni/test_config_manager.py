@@ -4,6 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from qwen_vl_utils import vision_process as qwen_vision
 
 from sglang_omni.cli.serve import apply_encoder_mem_reserve_cli_override
 from sglang_omni.config import (
@@ -18,6 +19,12 @@ from sglang_omni.models.qwen3_omni.config import (
 )
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
+
+_QWEN_VIDEO_FPS = qwen_vision.FPS
+_QWEN_VIDEO_MAX_FRAMES = qwen_vision.FPS_MAX_FRAMES
+_QWEN_VIDEO_MIN_PIXELS = qwen_vision.VIDEO_MIN_PIXELS
+_QWEN_VIDEO_MAX_PIXELS = qwen_vision.VIDEO_MAX_PIXELS
+_QWEN_VIDEO_TOTAL_PIXELS = qwen_vision.VIDEO_TOTAL_PIXELS
 
 
 def _stage(config, name: str):
@@ -169,14 +176,53 @@ def test_qwen3_omni_mmsu_example_config_uses_text_pipeline() -> None:
     assert thinker_args["server_args_overrides"]["max_running_requests"] == 4
 
 
-def test_qwen_preprocessing_runtime_video_fps_resolves_to_factory_arg() -> None:
+def test_qwen_preprocessing_runtime_video_budget_resolves_to_factory_arg() -> None:
     config = Qwen3OmniSpeechColocatedPipelineConfig(model_path="dummy")
     preprocessing = _stage(config, "preprocessing")
-    preprocessing.runtime.video_fps = 2.0
+    preprocessing.runtime.video_fps = _QWEN_VIDEO_FPS
+    preprocessing.runtime.video_max_frames = _QWEN_VIDEO_MAX_FRAMES
+    preprocessing.runtime.video_min_pixels = _QWEN_VIDEO_MIN_PIXELS
+    preprocessing.runtime.video_max_pixels = _QWEN_VIDEO_MAX_PIXELS
+    preprocessing.runtime.video_total_pixels = _QWEN_VIDEO_TOTAL_PIXELS
 
     args = resolve_stage_factory_args(preprocessing, config)
 
-    assert args["video_fps"] == 2.0
+    assert args["video_fps"] == _QWEN_VIDEO_FPS
+    assert args["video_max_frames"] == _QWEN_VIDEO_MAX_FRAMES
+    assert args["video_min_pixels"] == _QWEN_VIDEO_MIN_PIXELS
+    assert args["video_max_pixels"] == _QWEN_VIDEO_MAX_PIXELS
+    assert args["video_total_pixels"] == _QWEN_VIDEO_TOTAL_PIXELS
+
+
+def test_qwen_preprocessing_stage_override_video_budget_resolves_to_factory_arg(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "qwen_video_budget.yaml"
+    config_path.write_text(
+        f"""
+config_cls: Qwen3OmniSpeechColocatedPipelineConfig
+model_path: dummy
+stage_overrides:
+  preprocessing:
+    runtime:
+      video_fps: {_QWEN_VIDEO_FPS}
+      video_max_frames: {_QWEN_VIDEO_MAX_FRAMES}
+      video_min_pixels: {_QWEN_VIDEO_MIN_PIXELS}
+      video_max_pixels: {_QWEN_VIDEO_MAX_PIXELS}
+      video_total_pixels: {_QWEN_VIDEO_TOTAL_PIXELS}
+"""
+    )
+
+    config = ConfigManager.from_file(str(config_path)).config
+    preprocessing = _stage(config, "preprocessing")
+
+    args = resolve_stage_factory_args(preprocessing, config)
+
+    assert args["video_fps"] == _QWEN_VIDEO_FPS
+    assert args["video_max_frames"] == _QWEN_VIDEO_MAX_FRAMES
+    assert args["video_min_pixels"] == _QWEN_VIDEO_MIN_PIXELS
+    assert args["video_max_pixels"] == _QWEN_VIDEO_MAX_PIXELS
+    assert args["video_total_pixels"] == _QWEN_VIDEO_TOTAL_PIXELS
 
 
 def test_h20_colocated_example_reserve_keeps_raw_budget_in_resolved_config() -> None:
