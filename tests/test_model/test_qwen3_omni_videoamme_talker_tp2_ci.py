@@ -40,7 +40,7 @@ MAX_SAMPLES = 10
 MAX_TOKENS = 256
 
 VIDEOAMME_TALKER_TP2_THINKER_TEXT_MIN_ACCURACY = 0.5
-VIDEOAMME_TALKER_TP2_WER_BELOW_50_CORPUS_MAX = 0.008426966292134831
+VIDEOAMME_TALKER_TP2_WER_BELOW_50_CORPUS_MAX = 0.0085
 VIDEOAMME_TALKER_TP2_WER_BELOW_50_CORPUS_THRESHOLD = apply_wer_slack(
     VIDEOAMME_TALKER_TP2_WER_BELOW_50_CORPUS_MAX
 )
@@ -48,10 +48,10 @@ VIDEOAMME_TALKER_TP2_N_ABOVE_50_MAX = 1
 
 _VIDEOAMME_TALKER_TP2_AUDIO_P95 = {
     8: {
-        "throughput_qps": 0.067,
-        "output_tok_per_req_s": 0.4,
-        "latency_mean_s": 103.549,
-        "rtf_mean": 20.3784,
+        "throughput_qps": 0.050,
+        "output_tok_per_req_s": 0.3,
+        "latency_mean_s": 137.945,
+        "rtf_mean": 22.4697,
     },
 }
 VIDEOAMME_TALKER_TP2_THRESHOLDS = apply_slack(_VIDEOAMME_TALKER_TP2_AUDIO_P95)

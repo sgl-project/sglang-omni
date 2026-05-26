@@ -556,16 +556,14 @@ Two gates — **both** required before apply:
    and `direction` (`tightens` / `loosens` / `equal` / `unknown`).
 
    **Which value to write:**
-     - **`wer` and `accuracy`:** always `write_value` (= `worst_raw` exactly).
-       **Never** round WER/accuracy to `display.digits` — report percentages
-       use 2 decimal places for readability, but test-file literals must
-       preserve the full observed float so a max-bound WER threshold is
-       never accidentally tightened (e.g. 0.010596 → 0.01).
-       For **WER**, calibration writes the worst-of-N reference into the
-       `*_MAX` / `*_CORPUS_MAX` bare constant; CI tests then derive the
-       assertion threshold at runtime via `apply_wer_slack(reference)` (×1.25).
-       For **accuracy**, the written `*_MIN_ACCURACY` literal is asserted
-       directly — no post-calibration slack multiplier.
+     - **`wer`:** `write_value` = `ceil(worst_raw, 4 dp)` — never round
+       down or to `display.digits` (e.g. 0.02387640 → 0.0239, not
+       0.023876404494382022 or 0.0238). Write into `*_MAX` /
+       `*_CORPUS_MAX`; CI tests derive the assertion threshold via
+       `apply_wer_slack(reference)` (×1.25).
+     - **`accuracy`:** `write_value` = `worst_raw` exactly into
+       `*_MIN_ACCURACY` — no post-calibration slack multiplier.
+       Report percentages use 2 decimal places for readability only.
      - **`speed`:** use `write_value` from apply-plan (rounded unless that
        would tighten beyond `worst_raw`). Never re-round or multiply by
        `scale`.

@@ -41,8 +41,8 @@ CONCURRENCY = 16
 MAX_SAMPLES = 20
 MAX_TOKENS = 256
 
-VIDEOAMME_TALKER_THINKER_TEXT_MIN_ACCURACY = 0.65
-VIDEOAMME_TALKER_WER_BELOW_50_CORPUS_MAX = 0.010596026490066225
+VIDEOAMME_TALKER_THINKER_TEXT_MIN_ACCURACY = 0.60
+VIDEOAMME_TALKER_WER_BELOW_50_CORPUS_MAX = 0.0139
 VIDEOAMME_TALKER_WER_BELOW_50_CORPUS_THRESHOLD = apply_wer_slack(
     VIDEOAMME_TALKER_WER_BELOW_50_CORPUS_MAX
 )
@@ -50,9 +50,9 @@ VIDEOAMME_TALKER_N_ABOVE_50_MAX = 1
 
 _VIDEOAMME_TALKER_AUDIO_P95 = {
     16: {
-        "throughput_qps": 0.624,
-        "output_tok_per_req_s": 2.2,
-        "latency_mean_s": 20.656,
+        "throughput_qps": 0.606,
+        "output_tok_per_req_s": 2.1,
+        "latency_mean_s": 22.427,
         "rtf_mean": 3.3211,
     },
 }

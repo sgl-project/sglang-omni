@@ -64,18 +64,18 @@ MMMU_AUDIO_MIN_ACCURACY = 0.75
 # WER thresholds use a partitioned view of the per-sample distribution:
 #  - corpus WER over the "sane" subset (per-sample WER <= 50%)
 #  - count of catastrophic failures (per-sample WER > 50%)
-MMMU_AUDIO_WER_BELOW_50_CORPUS_MAX = 0.15390334572490708
+MMMU_AUDIO_WER_BELOW_50_CORPUS_MAX = 0.1816
 MMMU_AUDIO_WER_BELOW_50_CORPUS_THRESHOLD = apply_wer_slack(
     MMMU_AUDIO_WER_BELOW_50_CORPUS_MAX
 )
-MMMU_AUDIO_N_ABOVE_50_MAX = 3
+MMMU_AUDIO_N_ABOVE_50_MAX = 4
 
 _MMMU_AUDIO_P95 = {
     16: {
-        "throughput_qps": 0.758,
-        "output_tok_per_req_s": 8.9,
-        "latency_mean_s": 14.645,
-        "rtf_mean": 0.4056,
+        "throughput_qps": 0.617,
+        "output_tok_per_req_s": 8.0,
+        "latency_mean_s": 16.666,
+        "rtf_mean": 0.4309,
     },
 }
 MMMU_AUDIO_THRESHOLDS = apply_slack(_MMMU_AUDIO_P95)

@@ -7,7 +7,7 @@ models/<name>/config.yaml. Metrics come from result JSONs that tests
 already write under pytest's --basetemp (set fresh per run).
 """
 from __future__ import annotations
-import argparse, ast, datetime as dt, hashlib, json, os, re, shutil, signal
+import argparse, ast, datetime as dt, hashlib, json, math, os, re, shutil, signal
 import subprocess, sys, time, tomllib
 from pathlib import Path
 
@@ -1912,17 +1912,24 @@ def _classify_direction(worst_op, current, new):
     return "unknown"
 
 
+def _ceil_wer_reference(worst_raw: float) -> float:
+    """Ceil worst-of-N WER to 4 decimal places (max-bound must not tighten)."""
+    return math.ceil(worst_raw * 10000) / 10000
+
+
 def _apply_write_value(worst_op: str, worst_raw: float | None,
                        worst_rounded: float | None,
                        stage_group: str | None) -> float | None:
     """Return the literal to write into a test file.
 
-    WER and accuracy are pass/fail thresholds — never display-round them.
-    For speed, use worst_rounded unless it would tighten beyond worst_raw.
+    WER max-bound references are ceiled to 4 dp; accuracy uses worst_raw.
+    For speed, use worst_rounded unless that would tighten beyond worst_raw.
     """
     if worst_raw is None:
         return None
-    if stage_group in ("wer", "accuracy"):
+    if stage_group == "wer":
+        return _ceil_wer_reference(worst_raw)
+    if stage_group == "accuracy":
         return worst_raw
     if worst_rounded is None:
         return worst_raw
