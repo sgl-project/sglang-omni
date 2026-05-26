@@ -8,7 +8,6 @@ from typing import Iterable, Tuple
 
 import torch
 from sglang.srt.layers.logits_processor import LogitsProcessorOutput
-from sglang.srt.models.qwen3 import Qwen3ForCausalLM
 from torch import nn
 
 from sglang_omni.models.higgs_tts.hf_config import HiggsMultimodalQwen3Config
@@ -22,6 +21,7 @@ from sglang_omni.models.higgs_tts.sampler import (
     batched_step,
     batched_step_direct,
 )
+from sglang_omni.models.higgs_tts.sglang_qwen3_backbone import HiggsQwen3ForCausalLM
 from sglang_omni.models.higgs_tts.weight_loader import DiscreteWeightMapper
 
 # Higgs ckpt prefixes → sglang Qwen3ForCausalLM parameter tree (under ``backbone.``).
@@ -100,7 +100,7 @@ class HiggsTTSModel(nn.Module):
         self.config = config
 
         text_config = config.get_text_config()
-        self.backbone = Qwen3ForCausalLM(
+        self.backbone = HiggsQwen3ForCausalLM(
             text_config,
             quant_config=quant_config,
             prefix=prefix + "backbone" if prefix else "backbone",
@@ -319,6 +319,12 @@ class HiggsTTSModel(nn.Module):
         only preallocated ``_cg_*`` buffers, no Python control flow on
         tensor values, no D2H syncs.
         """
+        # TODO(#578): at bs >= 16 (CUDA graph bucket), a small fraction of
+        # samples (~0.1-0.4%) produce catastrophic WER (>50%) that drags
+        # corpus WER from ~1.3% to ~4.7%. PR #503 shadow-buffer fix reduced
+        # the rate 10x but did not eliminate it. Root-cause is unknown —
+        # needs layer-by-layer diff of a catastrophic sample (bs>=16) vs the
+        # same prompt at bs=1 to find the first divergence point.
         batch_size = hidden_states_BD.shape[0]
         device = hidden_states_BD.device
 

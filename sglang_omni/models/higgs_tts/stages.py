@@ -228,6 +228,31 @@ def create_audio_encoder_executor(
     )
 
 
+def _compile_higgs_backbone(model: Any) -> None:
+    """Compile the Qwen3 decoder layers into ``_compiled_decode_layers``."""
+    backbone = getattr(model, "backbone", None)
+    inner = getattr(backbone, "model", None) if backbone is not None else None
+    layers = getattr(inner, "layers", None) if inner is not None else None
+    if layers is None:
+        return
+
+    from sglang.srt.model_executor.cuda_graph_runner import set_torch_compile_config
+
+    set_torch_compile_config()
+    compile_mode = os.environ.get(
+        "SGLANG_TORCH_COMPILE_MODE", "max-autotune-no-cudagraphs"
+    )
+    inner._compiled_decode_layers = [
+        torch.compile(layer, mode=compile_mode) for layer in layers
+    ]
+    # bs above this falls back to eager ``self.layers`` to dodge an upstream
+    # sglang × inductor CG-capture bug at ``bs == cuda_graph_max_bs`` — see
+    # ``issue_565_torch_compile_result.md``.
+    # TODO (yichi): lift this cap to 16 (i.e. drop ``_compiled_max_decode_bs``
+    # entirely) once the upstream sglang × inductor CG-capture bug is fixed.
+    inner._compiled_max_decode_bs = 12
+
+
 def create_sglang_tts_engine_executor(
     model_path: str,
     *,
@@ -246,6 +271,11 @@ def create_sglang_tts_engine_executor(
         "max_running_requests": 16,
         "chunked_prefill_size": 8192,
         "dtype": "bfloat16",
+        # Issue #565: torch.compile on the AR backbone (manual layer-by-layer,
+        # see :func:`_compile_higgs_backbone`). bs > 12 falls back to eager.
+        "enable_torch_compile": True,
+        "torch_compile_max_bs": 12,
+        "sampling_backend": "pytorch",
         # Radix cache is namespaced per ref-audio via Req.extra_key (set in
         # build_sglang_higgs_request); shared -100 placeholder prefixes from
         # different ref audios can't cross-contaminate the KV tree.
@@ -260,6 +290,12 @@ def create_sglang_tts_engine_executor(
     )
     server_args.disable_overlap_schedule = True
 
+    # Defer CG capture until AFTER manual layer-by-layer torch.compile so the
+    # captured graphs record the compiled kernels rather than eager ones.
+    want_cuda_graph = not bool(getattr(server_args, "disable_cuda_graph", False))
+    if want_cuda_graph:
+        server_args.disable_cuda_graph = True
+
     (
         model_worker,
         tree_cache,
@@ -270,7 +306,20 @@ def create_sglang_tts_engine_executor(
         model_config,
     ) = create_sglang_infrastructure(server_args, gpu_id)
 
+    if want_cuda_graph:
+        server_args.disable_cuda_graph = False
+
     truncate_rope_to_bf16(model_worker.model_runner.model)
+
+    if bool(getattr(server_args, "enable_torch_compile", False)):
+        _compile_higgs_backbone(model_worker.model_runner.model)
+        # Disable sglang's auto-compile path: we already wrapped the layers,
+        # and letting ``patch_model`` re-wrap the whole forward at capture
+        # time triggers a device-side assert at bs ≥ 8.
+        server_args.enable_torch_compile = False
+
+    if want_cuda_graph:
+        model_worker.model_runner.init_device_graphs()
 
     output_proc = SGLangOutputProcessor(
         capture_hidden=False,
