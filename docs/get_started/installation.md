@@ -20,6 +20,15 @@ uv pip install -v .
 uv pip install -v -e .
 ```
 
+> **Note:** On Debian Bookworm / Ubuntu 23.04+ systems with an externally-managed system Python (including the `frankleeeee/sglang-omni:dev` Docker image), use the `uv venv` flow above. Installing into system Python directly (e.g., `pip install -e .`) triggers [PEP 668](https://peps.python.org/pep-0668/):
+>
+> ```
+> error: externally-managed-environment
+> × This environment is externally managed
+> ```
+>
+> Either use the venv flow, or pass `--break-system-packages` explicitly (e.g., `pip install -e . --break-system-packages` or `uv pip install --system --break-system-packages -e .`).
+
 
 ## 🐳 Use Docker
 
