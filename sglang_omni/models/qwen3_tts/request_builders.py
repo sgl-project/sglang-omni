@@ -40,9 +40,41 @@ _IMPLICIT_SAMPLING_DEFAULTS = {
     "repetition_penalty": {1.0, 1.1},
 }
 
+_QWEN3_TTS_SAMPLING_SEED_MASK = 0x7FFFFFFF
 
-def _new_subtalker_sampling_seed() -> int:
-    return int.from_bytes(os.urandom(4), "little") & 0x7FFFFFFF
+
+def _new_qwen3_tts_sampling_seed() -> int:
+    return int.from_bytes(os.urandom(4), "little") & _QWEN3_TTS_SAMPLING_SEED_MASK
+
+
+def _normalize_qwen3_tts_seed(seed: Any) -> int:
+    if isinstance(seed, bool):
+        raise ValueError("Qwen3-TTS seed must be an integer")
+    if isinstance(seed, float) and not seed.is_integer():
+        raise ValueError("Qwen3-TTS seed must be an integer")
+    try:
+        normalized = int(seed)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Qwen3-TTS seed must be an integer") from exc
+    return normalized & _QWEN3_TTS_SAMPLING_SEED_MASK
+
+
+def _derive_qwen3_tts_child_seed(seed: int, label: str) -> int:
+    digest = hashlib.blake2b(
+        f"qwen3-tts:{seed}:{label}".encode("utf-8"),
+        digest_size=8,
+    ).digest()
+    return int.from_bytes(digest, "little") & _QWEN3_TTS_SAMPLING_SEED_MASK
+
+
+def derive_qwen3_tts_sampling_seeds(seed: int) -> tuple[int, int]:
+    """Split a public request seed into semantic and subtalker sampling seeds."""
+
+    normalized = _normalize_qwen3_tts_seed(seed)
+    return (
+        _derive_qwen3_tts_child_seed(normalized, "semantic"),
+        _derive_qwen3_tts_child_seed(normalized, "subtalker"),
+    )
 
 
 @dataclass
@@ -54,11 +86,12 @@ class Qwen3TTSSGLangRequestData(SGLangARRequestData):
     ref_code: torch.Tensor | None = None
     ref_code_len: int = 0
     prompt_input_embeds: torch.Tensor | None = None
+    semantic_sampling_seed: int = field(default_factory=_new_qwen3_tts_sampling_seed)
     subtalker_dosample: bool = True
     subtalker_temperature: float = 0.9
     subtalker_top_p: float = 1.0
     subtalker_top_k: int = 50
-    subtalker_sampling_seed: int = field(default_factory=_new_subtalker_sampling_seed)
+    subtalker_sampling_seed: int = field(default_factory=_new_qwen3_tts_sampling_seed)
     engine_start_s: float = 0.0
 
 
@@ -159,11 +192,7 @@ def build_qwen3_tts_state(payload: StagePayload) -> Qwen3TTSState:
         ref_text=ref_text,
     )
     seed = tts_params["seed"] if "seed" in tts_params else params.get("seed")
-    if seed is not None:
-        raise ValueError(
-            "Qwen3-TTS Base does not support seed yet; deterministic sampled "
-            "decoding requires per-request semantic sampling."
-        )
+    normalized_seed = _normalize_qwen3_tts_seed(seed) if seed is not None else None
 
     return Qwen3TTSState(
         text=text,
@@ -173,7 +202,7 @@ def build_qwen3_tts_state(payload: StagePayload) -> Qwen3TTSState:
         x_vector_only_mode=x_vector_only_mode,
         non_streaming_mode=bool(params.get("non_streaming_mode", False)),
         generation_kwargs=build_generation_kwargs(params, tts_params=tts_params),
-        seed=None,
+        seed=normalized_seed,
     )
 
 
@@ -417,6 +446,13 @@ def build_sglang_qwen3_tts_request(
     state = prepared.state
     do_sample = bool(gen_kwargs.get("do_sample", True))
     temperature = float(gen_kwargs.get("temperature", 0.9)) if do_sample else 0.0
+    if state.seed is None:
+        semantic_sampling_seed = _new_qwen3_tts_sampling_seed()
+        subtalker_sampling_seed = _new_qwen3_tts_sampling_seed()
+    else:
+        semantic_sampling_seed, subtalker_sampling_seed = (
+            derive_qwen3_tts_sampling_seeds(state.seed)
+        )
     sampling_params = SamplingParams(
         max_new_tokens=int(
             gen_kwargs.get("max_new_tokens", QWEN3_TTS_DEFAULT_MAX_NEW_TOKENS)
@@ -426,6 +462,7 @@ def build_sglang_qwen3_tts_request(
         top_k=int(gen_kwargs.get("top_k", 50)),
         repetition_penalty=float(gen_kwargs.get("repetition_penalty", 1.05)),
         stop_token_ids=[int(model.config.codec_eos_token_id)],
+        sampling_seed=semantic_sampling_seed,
     )
     sampling_params.normalize(None)
     sampling_params.verify(int(model.config.vocab_size))
@@ -461,10 +498,12 @@ def build_sglang_qwen3_tts_request(
         ref_code=prepared.ref_code,
         ref_code_len=ref_code_len,
         prompt_input_embeds=prepared.prompt_input_embeds,
+        semantic_sampling_seed=semantic_sampling_seed,
         subtalker_dosample=bool(gen_kwargs.get("subtalker_dosample", True)),
         subtalker_temperature=float(gen_kwargs.get("subtalker_temperature", 0.9)),
         subtalker_top_p=float(gen_kwargs.get("subtalker_top_p", 1.0)),
         subtalker_top_k=int(gen_kwargs.get("subtalker_top_k", 50)),
+        subtalker_sampling_seed=subtalker_sampling_seed,
         engine_start_s=time.perf_counter(),
     )
     data.suppress_tokens = list(req._codec_suppress_tokens)

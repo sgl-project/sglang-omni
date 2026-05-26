@@ -70,6 +70,31 @@ class Qwen3TTSModelRunner(ModelRunner):
         del forward_batch, schedule_batch, requests
         return True
 
+    def _sample_next_token_ids(
+        self,
+        logits_output: Any,
+        forward_batch: Any,
+        schedule_batch: Any,
+        requests: list,
+    ) -> Any:
+        self._install_semantic_sampling_seeds(forward_batch, requests)
+        return super()._sample_next_token_ids(
+            logits_output,
+            forward_batch,
+            schedule_batch,
+            requests,
+        )
+
+    def _install_semantic_sampling_seeds(
+        self,
+        forward_batch: Any,
+        requests: list,
+    ) -> None:
+        batch_size = len(requests)
+        forward_batch.sampling_info.sampling_seed = (
+            self.model._semantic_sampling_seed_tensor[:batch_size]
+        )
+
     def _collect_codes(
         self,
         result: Any,
@@ -96,8 +121,10 @@ class Qwen3TTSModelRunner(ModelRunner):
 
         eos_id = int(self.model.config.codec_eos_token_id)
         semantic_ids = result.next_token_ids.reshape(-1)
-        active_rows = (semantic_ids != eos_id).nonzero(as_tuple=True)[0].tolist()
-        for row_idx in active_rows:
+        semantic_tokens = semantic_ids[: len(requests)].tolist()
+        for row_idx, semantic_token in enumerate(semantic_tokens):
+            if semantic_token == eos_id:
+                continue
             sched_req = requests[row_idx]
             code_chunk = self.model._output_codes[row_idx].detach().clone()
             feedback = self.model._output_embeds[row_idx].detach().clone()

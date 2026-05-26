@@ -312,6 +312,9 @@ class Qwen3TTSTalker(nn.Module):
         self._sub_top_k_tensor = torch.full(
             (max_batch_size,), 50, device=device, dtype=torch.long
         )
+        self._semantic_sampling_seed_tensor = torch.zeros(
+            max_batch_size, device=device, dtype=torch.long
+        )
         self._sub_sampling_seed_tensor = torch.zeros(
             max_batch_size, device=device, dtype=torch.long
         )
@@ -584,8 +587,9 @@ class Qwen3TTSTalker(nn.Module):
     def prepare_decode_buffers(self, requests: list[Any]) -> None:
         batch_size = len(requests)
         if batch_size > self._sub_temperature_tensor.shape[0]:
-            raise RuntimeError("Qwen3-TTS subtalker sampling buffers are too small")
+            raise RuntimeError("Qwen3-TTS sampling buffers are too small")
 
+        semantic_seeds: list[int] = []
         sub_temperatures: list[float] = []
         sub_top_ps: list[float] = []
         sub_top_ks: list[int] = []
@@ -598,6 +602,7 @@ class Qwen3TTSTalker(nn.Module):
                     "Qwen3-TTS decode buffers require Qwen3TTSSGLangRequestData"
                 )
             do_sample = bool(data.subtalker_dosample)
+            semantic_seeds.append(int(data.semantic_sampling_seed))
             sub_temperatures.append(float(data.subtalker_temperature))
             sub_top_ps.append(float(data.subtalker_top_p))
             sub_top_ks.append(int(data.subtalker_top_k))
@@ -625,6 +630,11 @@ class Qwen3TTSTalker(nn.Module):
             return
 
         device = self._sub_temperature_tensor.device
+        self._semantic_sampling_seed_tensor[:batch_size] = torch.tensor(
+            semantic_seeds,
+            device=device,
+            dtype=self._semantic_sampling_seed_tensor.dtype,
+        )
         self._sub_temperature_tensor[:batch_size] = torch.tensor(
             sub_temperatures, device=device, dtype=self._sub_temperature_tensor.dtype
         )

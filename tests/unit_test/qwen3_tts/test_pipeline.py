@@ -24,6 +24,7 @@ from sglang_omni.models.qwen3_tts.request_builders import (
     build_embedding_cache_key_ids,
     build_qwen3_tts_state,
     build_sglang_qwen3_tts_request,
+    derive_qwen3_tts_sampling_seeds,
 )
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
 from sglang_omni.proto import OmniRequest, StagePayload
@@ -344,13 +345,25 @@ def test_qwen3_tts_maps_ref_audio_form_and_explicit_sampling() -> None:
     }
 
 
-def test_qwen3_tts_rejects_seed_until_semantic_sampling_is_deterministic() -> None:
+def test_qwen3_tts_accepts_seed_as_request_metadata() -> None:
     payload = make_payload(
         inputs="target",
         tts_params={"ref_audio": "voice.wav", "ref_text": "reference", "seed": 123},
     )
 
-    with pytest.raises(ValueError, match="does not support seed"):
+    state = build_qwen3_tts_state(payload)
+
+    assert state.seed == 123
+    assert "seed" not in state.generation_kwargs
+
+
+def test_qwen3_tts_rejects_invalid_seed() -> None:
+    payload = make_payload(
+        inputs="target",
+        tts_params={"ref_audio": "voice.wav", "ref_text": "reference", "seed": True},
+    )
+
+    with pytest.raises(ValueError, match="seed must be an integer"):
         build_qwen3_tts_state(payload)
 
 
@@ -414,6 +427,18 @@ def test_qwen3_tts_preprocessing_does_not_mutate_global_rng(
     )
 
     assert prepared.state.seed is None
+
+
+def test_qwen3_tts_public_seed_derivation_is_stable() -> None:
+    first = derive_qwen3_tts_sampling_seeds(123)
+    second = derive_qwen3_tts_sampling_seeds(123)
+    different = derive_qwen3_tts_sampling_seeds(124)
+
+    assert first == second
+    assert first != different
+    assert first[0] != first[1]
+    assert all(0 <= seed <= 0x7FFFFFFF for seed in first)
+    assert derive_qwen3_tts_sampling_seeds(123456) == (709979716, 2088621061)
 
 
 def test_qwen3_tts_uses_x_vector_only_when_ref_text_is_missing() -> None:
@@ -597,18 +622,22 @@ def test_qwen3_tts_request_data_keeps_decode_tensors_on_prepared_device(
     assert data.pending_text_queue.rows is not None
     assert data.pending_text_queue.rows.device == prepared.trailing_text_hidden.device
     assert data.pending_text_queue.rows.dtype == prepared.trailing_text_hidden.dtype
+    assert isinstance(data.semantic_sampling_seed, int)
+    assert 0 <= data.semantic_sampling_seed <= 0x7FFFFFFF
+    assert data.req.sampling_params.sampling_seed == data.semantic_sampling_seed
     assert isinstance(data.subtalker_sampling_seed, int)
     assert 0 <= data.subtalker_sampling_seed <= 0x7FFFFFFF
 
 
-def test_qwen3_tts_request_data_uses_private_subtalker_seed(
+def test_qwen3_tts_request_data_uses_private_sampling_seeds(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     install_fake_sglang(monkeypatch)
+    urandom_values = iter([b"\x39\x30\x00\x00", b"\x32\x09\x01\x00"])
     monkeypatch.setattr(
         qwen3_request_builders.os,
         "urandom",
-        lambda size: b"\x39\x30\x00\x00" if size == 4 else b"\x00" * size,
+        lambda size: next(urandom_values) if size == 4 else b"\x00" * size,
     )
     payload = make_payload(inputs="target")
     payload.data = {
@@ -636,8 +665,47 @@ def test_qwen3_tts_request_data_uses_private_subtalker_seed(
         wrapper=object(),
     )
 
-    assert data.subtalker_sampling_seed == 12345
-    assert data.req.sampling_params.__dict__.get("sampling_seed") is None
+    assert data.semantic_sampling_seed == 12345
+    assert data.subtalker_sampling_seed == 67890
+    assert data.req.sampling_params.sampling_seed == data.semantic_sampling_seed
+
+
+def test_qwen3_tts_request_data_uses_public_seed_split(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_fake_sglang(monkeypatch)
+    payload = make_payload(inputs="target")
+    payload.data = {
+        qwen3_request_builders._QWEN3_TTS_PREPARED_MARKER: payload.request_id
+    }
+    prepared = Qwen3TTSPreparedRequest(
+        state=Qwen3TTSState(seed=123),
+        input_ids_list=[11, 12],
+        input_ids=torch.tensor([11, 12], dtype=torch.long),
+        attention_mask=torch.ones((1, 2), dtype=torch.long),
+        trailing_text_hidden=torch.randn(1, 4),
+        ref_code=None,
+        prompt_input_embeds=torch.randn(2, 4),
+        tts_pad_embed=torch.randn(4),
+        gen_kwargs={"max_new_tokens": 16},
+    )
+    with qwen3_request_builders._PREPARED_REQUESTS_LOCK:
+        qwen3_request_builders._PREPARED_REQUESTS[payload.request_id] = prepared
+
+    data = build_sglang_qwen3_tts_request(
+        payload,
+        model=SimpleNamespace(
+            config=SimpleNamespace(codec_eos_token_id=42, vocab_size=1200)
+        ),
+        wrapper=object(),
+    )
+    expected_semantic_seed, expected_subtalker_seed = derive_qwen3_tts_sampling_seeds(
+        123
+    )
+
+    assert data.semantic_sampling_seed == expected_semantic_seed
+    assert data.subtalker_sampling_seed == expected_subtalker_seed
+    assert data.req.sampling_params.sampling_seed == expected_semantic_seed
 
 
 def test_qwen3_tts_prepared_payload_missing_state_fails_without_rebuild(
@@ -786,6 +854,101 @@ def test_qwen3_tts_prefill_prepares_subtalker_buffers_before_forward(
     assert calls == ["prepare", "embeds", "forward"]
 
 
+def test_qwen3_tts_sampling_installs_semantic_seed_tensor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_fake_sglang(monkeypatch)
+    from sglang_omni.models.qwen3_tts.model_runner import Qwen3TTSModelRunner
+
+    sample_calls: list[list[int]] = []
+
+    def sample(logits_output, forward_batch):
+        del logits_output
+        sample_calls.append(forward_batch.sampling_info.sampling_seed.tolist())
+        return torch.tensor([2, 3], dtype=torch.long)
+
+    runner = Qwen3TTSModelRunner.__new__(Qwen3TTSModelRunner)
+    runner.model = SimpleNamespace(
+        _semantic_sampling_seed_tensor=torch.tensor([101, 202], dtype=torch.long)
+    )
+    runner.tp_worker = SimpleNamespace(model_runner=SimpleNamespace(sample=sample))
+    forward_batch = SimpleNamespace(sampling_info=SimpleNamespace(sampling_seed=None))
+    logits_output = SimpleNamespace(next_token_logits=torch.zeros((2, 4)))
+    requests = [
+        SimpleNamespace(
+            data=SimpleNamespace(
+                req=SimpleNamespace(
+                    sampling_params=SimpleNamespace(repetition_penalty=1.0),
+                    output_ids=[],
+                ),
+                suppress_tokens=[],
+            )
+        ),
+        SimpleNamespace(
+            data=SimpleNamespace(
+                req=SimpleNamespace(
+                    sampling_params=SimpleNamespace(repetition_penalty=1.0),
+                    output_ids=[],
+                ),
+                suppress_tokens=[],
+            )
+        ),
+    ]
+
+    token_ids = runner._sample_next_token_ids(
+        logits_output,
+        forward_batch,
+        object(),
+        requests,
+    )
+
+    assert token_ids.tolist() == [2, 3]
+    assert sample_calls == [[101, 202]]
+    assert forward_batch.sampling_info.sampling_seed.tolist() == [101, 202]
+
+
+def test_qwen3_tts_collect_codes_excludes_semantic_eos(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_fake_sglang(monkeypatch)
+    from sglang_omni.models.qwen3_tts.model_runner import Qwen3TTSModelRunner
+
+    runner = Qwen3TTSModelRunner.__new__(Qwen3TTSModelRunner)
+
+    def code_predictor_forward(layer0_codes, hidden, semantic_positions=None):
+        assert layer0_codes.tolist() == [[7], [42]]
+        assert hidden.shape == (2, 1, 4)
+        assert semantic_positions.tolist() == [3, 3]
+
+    runner.model = SimpleNamespace(
+        config=SimpleNamespace(codec_eos_token_id=42),
+        code_predictor_forward=code_predictor_forward,
+        _output_codes=torch.tensor([[1, 2], [3, 4]], dtype=torch.long),
+        _output_embeds=torch.tensor([[0.1, 0.2], [0.3, 0.4]]),
+    )
+    result = SimpleNamespace(
+        next_token_ids=torch.tensor([7, 42], dtype=torch.long),
+        logits_output=SimpleNamespace(hidden_states=torch.ones((2, 4))),
+    )
+    schedule_batch = SimpleNamespace(output_ids=None)
+    forward_batch = SimpleNamespace(
+        forward_mode=SimpleNamespace(is_decode=lambda: True),
+        positions=torch.tensor([3, 3], dtype=torch.long),
+    )
+    requests = [
+        SimpleNamespace(data=Qwen3TTSSGLangRequestData()),
+        SimpleNamespace(data=Qwen3TTSSGLangRequestData()),
+    ]
+
+    runner._collect_codes(result, forward_batch, schedule_batch, requests)
+
+    assert schedule_batch.output_ids.tolist() == [7, 42]
+    assert [chunk.tolist() for chunk in requests[0].data.output_codes] == [[1, 2]]
+    assert len(requests[0].data.pending_feedback_queue) == 1
+    assert requests[1].data.output_codes == []
+    assert len(requests[1].data.pending_feedback_queue) == 0
+
+
 def test_qwen3_tts_prepare_decode_buffers_collects_private_subtalker_seeds(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -802,11 +965,13 @@ def test_qwen3_tts_prepare_decode_buffers_collects_private_subtalker_seeds(
     talker._sub_temperature_tensor = torch.empty(2, dtype=torch.float32)
     talker._sub_top_p_tensor = torch.empty(2, dtype=torch.float32)
     talker._sub_top_k_tensor = torch.empty(2, dtype=torch.long)
+    talker._semantic_sampling_seed_tensor = torch.empty(2, dtype=torch.long)
     talker._sub_sampling_seed_tensor = torch.empty(2, dtype=torch.long)
     talker._sub_sample_row_indices_tensor = torch.empty(2, dtype=torch.long)
     requests = [
         SimpleNamespace(
             data=Qwen3TTSSGLangRequestData(
+                semantic_sampling_seed=5,
                 subtalker_dosample=True,
                 subtalker_temperature=0.8,
                 subtalker_top_p=0.9,
@@ -816,6 +981,7 @@ def test_qwen3_tts_prepare_decode_buffers_collects_private_subtalker_seeds(
         ),
         SimpleNamespace(
             data=Qwen3TTSSGLangRequestData(
+                semantic_sampling_seed=9,
                 subtalker_dosample=False,
                 subtalker_temperature=1.0,
                 subtalker_top_p=1.0,
@@ -828,6 +994,7 @@ def test_qwen3_tts_prepare_decode_buffers_collects_private_subtalker_seeds(
     Qwen3TTSTalker.prepare_decode_buffers(talker, requests)
 
     assert talker._sub_batch_size == 2
+    assert talker._semantic_sampling_seed_tensor[:2].tolist() == [5, 9]
     assert talker._sub_sampling_seed_tensor[:2].tolist() == [7, 11]
     assert talker._sub_temperature_tensor[:2].tolist() == pytest.approx([0.8, 1.0])
     assert talker._sub_sample_rows == [0]
