@@ -117,9 +117,14 @@ def build_thinker_inputs(
     image_ck = (encoder_inputs.get(IMAGE_STAGE) or {}).get("cache_key")
     audio_ck = (encoder_inputs.get(AUDIO_STAGE) or {}).get("cache_key")
     if image_ck:
-        # image_ck already namespaces image vs video (img:.../vid:...) when both
-        # are present so we keep one cache key for the combined visual stage.
+        # Image and video share the same encoder cache key, so prefix them
+        # differently so the SGLang adapter's modality-keyed lookup
+        # (media_cache_keys.get("image"|"video")) gives each its own hashed
+        # pad value. Without the "video" entry, video placeholder tokens
+        # keep their raw token id and alias in the radix prefix cache
+        # across different videos with the same placeholder count.
         media_cache_keys["image"] = f"image:{image_ck}"
+        media_cache_keys["video"] = f"video:{image_ck}"
     if audio_ck:
         media_cache_keys["audio"] = f"audio:{audio_ck}"
 

@@ -295,9 +295,12 @@ class MingPreprocessor:
         for v in videos:
             t = v
             if isinstance(t, torch.Tensor):
-                arr = t.detach().cpu().to(torch.uint8).numpy()
+                # load_video_path resizes with BICUBIC + antialias and returns
+                # a float tensor; BICUBIC can overshoot outside [0, 255] and
+                # to(uint8) wraps rather than saturates. Clamp before casting.
+                arr = t.detach().cpu().clamp_(0, 255).to(torch.uint8).numpy()
             else:
-                arr = np.asarray(t).astype(np.uint8)
+                arr = np.clip(np.asarray(t), 0, 255).astype(np.uint8)
             # (T, C, H, W) -> (T, H, W, C)
             if arr.ndim == 4 and arr.shape[1] in (1, 3):
                 arr = np.transpose(arr, (0, 2, 3, 1))
@@ -393,7 +396,26 @@ class MingPreprocessor:
         # placeholder positions (which share the same generic image_patch_token).
         image_cache_key = compute_image_cache_key(raw_images) if raw_images else None
         audio_cache_key = compute_audio_cache_key(audio_urls) if audio_urls else None
-        video_cache_key = compute_video_cache_key(raw_videos) if raw_videos else None
+        video_cache_key = (
+            compute_video_cache_key(
+                raw_videos,
+                fps=float(video_fps) if video_fps is not None else None,
+                max_frames=(
+                    int(video_max_frames) if video_max_frames is not None else None
+                ),
+                min_pixels=(
+                    int(video_min_pixels) if video_min_pixels is not None else None
+                ),
+                max_pixels=(
+                    int(video_max_pixels) if video_max_pixels is not None else None
+                ),
+                total_pixels=(
+                    int(video_total_pixels) if video_total_pixels is not None else None
+                ),
+            )
+            if raw_videos
+            else None
+        )
 
         # --- Load images, videos and audio concurrently ---
         image_coro = ensure_image_list_async(raw_images) if raw_images else None
