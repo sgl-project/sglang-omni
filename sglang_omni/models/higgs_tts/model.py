@@ -171,6 +171,9 @@ class HiggsTTSModel(nn.Module):
             pool_size, num_codebooks, dtype=torch.long, device=cg_device
         )
         self._cg_was_done = torch.zeros(pool_size, dtype=torch.bool, device=cg_device)
+        self._cg_collect_BM = torch.zeros(
+            pool_size, num_codebooks + 2, dtype=torch.long, device=cg_device
+        )
 
         self._cg_active_delay_count = torch.zeros(
             pool_size, dtype=torch.int32, device=cg_device
@@ -360,6 +363,9 @@ class HiggsTTSModel(nn.Module):
         self._cg_active_generation_done[:batch_size] = new_generation_done_B
         self._cg_active_last_codes[:batch_size] = new_last_codes_BN
         self._cg_codes_BN[:batch_size] = codes_BN
+        self._cg_collect_BM[:batch_size, 0] = self._cg_was_done[:batch_size]
+        self._cg_collect_BM[:batch_size, 1] = new_generation_done_B
+        self._cg_collect_BM[:batch_size, 2:] = codes_BN
 
         text_vocab_size = self.backbone.config.vocab_size
         return torch.zeros(

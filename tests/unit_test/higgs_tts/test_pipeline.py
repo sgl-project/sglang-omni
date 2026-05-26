@@ -114,6 +114,7 @@ def test_higgs_model_runner_marks_sampler_finish_cg() -> None:
         _cg_active_last_codes=torch.tensor([[1, 2, 3]]),
         _cg_was_done=torch.tensor([False]),
         _cg_codes_BN=torch.tensor([[EOC_ID, 1, 2]]),
+        _cg_collect_BM=torch.tensor([[0, 1, EOC_ID, 1, 2]]),
         _sampler_pool=SimpleNamespace(
             delay_count=torch.zeros(1, dtype=torch.int32),
             eoc_countdown=torch.zeros(1, dtype=torch.int32),
@@ -137,6 +138,74 @@ def test_higgs_model_runner_marks_sampler_finish_cg() -> None:
     assert data.generation_done is True
     assert req.finished_reason.to_json() == {"type": "stop", "matched": EOC_ID}
     assert len(data.output_codes) == 1
+
+
+def test_higgs_model_runner_collects_cg_outputs_with_single_cpu_pack(
+    monkeypatch,
+) -> None:
+    runner = object.__new__(HiggsTTSModelRunner)
+    collect_buffer = torch.tensor(
+        [
+            [1, 0, 101, 102, 103],
+            [0, 1, EOC_ID, 7, 8],
+        ],
+        dtype=torch.long,
+    )
+    runner.model = SimpleNamespace(
+        _cg_row_indices=torch.tensor([0, 1]),
+        _cg_active_delay_count=torch.tensor([8, 8], dtype=torch.int32),
+        _cg_active_eoc_countdown=torch.tensor([0, 0], dtype=torch.int32),
+        _cg_active_generation_done=torch.tensor([False, True]),
+        _cg_active_last_codes=torch.tensor([[1, 2, 3], [4, 5, 6]]),
+        _cg_was_done=torch.tensor([True, False]),
+        _cg_codes_BN=torch.tensor([[101, 102, 103], [EOC_ID, 7, 8]]),
+        _cg_collect_BM=collect_buffer,
+        _sampler_pool=SimpleNamespace(
+            delay_count=torch.zeros(2, dtype=torch.int32),
+            eoc_countdown=torch.zeros(2, dtype=torch.int32),
+            generation_done=torch.zeros(2, dtype=torch.bool),
+            last_codes=torch.zeros((2, 3), dtype=torch.long),
+        ),
+    )
+    done_req = SimpleNamespace(is_chunked=0, finished_reason=object())
+    active_req = SimpleNamespace(is_chunked=0, finished_reason=None)
+    done_data = SimpleNamespace(req=done_req, output_codes=[], generation_done=False)
+    active_data = SimpleNamespace(
+        req=active_req, output_codes=[], generation_done=False
+    )
+    result = SimpleNamespace(
+        logits_output=SimpleNamespace(next_token_logits=torch.zeros(2, 4))
+    )
+    forward_batch = SimpleNamespace(batch_size=2)
+    cpu_calls: list[tuple[int, ...]] = []
+    orig_cpu = torch.Tensor.cpu
+
+    def counted_cpu(tensor, *args, **kwargs):
+        cpu_calls.append(tuple(tensor.shape))
+        return orig_cpu(tensor, *args, **kwargs)
+
+    monkeypatch.setattr(torch.Tensor, "cpu", counted_cpu)
+
+    runner._collect_step_outputs_cg(
+        result,
+        forward_batch,
+        [
+            SimpleNamespace(request_id="done", data=done_data),
+            SimpleNamespace(request_id="active", data=active_data),
+        ],
+    )
+
+    assert done_data.output_codes == []
+    assert active_data.generation_done is True
+    assert active_req.finished_reason.to_json() == {"type": "stop", "matched": EOC_ID}
+    assert len(active_data.output_codes) == 1
+    assert torch.equal(active_data.output_codes[0], torch.tensor([EOC_ID, 7, 8]))
+    assert result.next_token_ids.tolist() == [0, EOC_ID]
+    assert torch.equal(
+        collect_buffer,
+        torch.tensor([[1, 0, 101, 102, 103], [0, 1, EOC_ID, 7, 8]]),
+    )
+    assert cpu_calls == [(2, 5)]
 
 
 def test_higgs_model_runner_skips_already_finished_eager_request() -> None:

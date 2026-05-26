@@ -148,9 +148,7 @@ class HiggsTTSModelRunner(ModelRunner):
         pool.generation_done[rows_t] = model._cg_active_generation_done[:n_real]
         pool.last_codes[rows_t] = model._cg_active_last_codes[:n_real]
 
-        was_done_cpu = model._cg_was_done[:n_real].cpu().tolist()
-        codes_BN_cpu = model._cg_codes_BN[:n_real].detach().cpu().clone()
-        gen_done_after_cpu = model._cg_active_generation_done[:n_real].cpu().tolist()
+        collect_cpu = self._collect_cg_step_outputs_to_cpu(n_real)
         cb0_per_row: list[int] = []
         for b, sched_req in enumerate(requests):
             data = sched_req.data
@@ -158,20 +156,28 @@ class HiggsTTSModelRunner(ModelRunner):
             if req.is_chunked > 0:
                 cb0_per_row.append(0)
                 continue
-            if was_done_cpu[b]:
+            row_cpu = collect_cpu[b]
+            if bool(row_cpu[0].item()):
                 cb0_per_row.append(0)
                 continue
-            codes_N = codes_BN_cpu[b]
-            data.output_codes.append(codes_N.to(torch.long))
-            data.generation_done = bool(gen_done_after_cpu[b])
+            codes_N = row_cpu[2:].to(torch.long)
+            data.output_codes.append(codes_N.clone())
+            data.generation_done = bool(row_cpu[1].item())
             self._mark_sampler_finished(req, data.generation_done)
-            cb0_per_row.append(int(codes_N[0].item()))
+            cb0_per_row.append(int(row_cpu[2].item()))
 
         result.next_token_ids = torch.tensor(
             cb0_per_row,
             dtype=torch.long,
             device=result.logits_output.next_token_logits.device,
         )
+
+    def _collect_cg_step_outputs_to_cpu(self, n_real: int) -> torch.Tensor:
+        model = self.model
+        collect_BM = model._cg_collect_BM[
+            :n_real, : model._cg_codes_BN.shape[1] + 2
+        ]
+        return collect_BM.detach().cpu()
 
     def _build_prefill_input_embeds(
         self,
