@@ -114,6 +114,7 @@ def test_higgs_model_runner_marks_sampler_finish_cg() -> None:
         _cg_active_last_codes=torch.tensor([[1, 2, 3]]),
         _cg_was_done=torch.tensor([False]),
         _cg_codes_BN=torch.tensor([[EOC_ID, 1, 2]]),
+        _cg_collect_staging=torch.zeros((1, 3 + 2), dtype=torch.long),
         _sampler_pool=SimpleNamespace(
             delay_count=torch.zeros(1, dtype=torch.int32),
             eoc_countdown=torch.zeros(1, dtype=torch.int32),
@@ -137,6 +138,62 @@ def test_higgs_model_runner_marks_sampler_finish_cg() -> None:
     assert data.generation_done is True
     assert req.finished_reason.to_json() == {"type": "stop", "matched": EOC_ID}
     assert len(data.output_codes) == 1
+
+
+def test_higgs_model_runner_collect_cg_mixed_batch() -> None:
+    """A 4-row batch covering chunked / was-done / active rows verifies the
+    batched single-D2H packing preserves per-row semantics, including the
+    bool->long->bool round-trip for generation_done.
+    """
+    n, k = 4, 3
+    runner = object.__new__(HiggsTTSModelRunner)
+    runner.model = SimpleNamespace(
+        _cg_row_indices=torch.arange(n),
+        _cg_active_delay_count=torch.zeros(n, dtype=torch.int32),
+        _cg_active_eoc_countdown=torch.zeros(n, dtype=torch.int32),
+        # row1's True must NOT leak into the was-done (skipped) request.
+        _cg_active_generation_done=torch.tensor([False, True, False, True]),
+        _cg_active_last_codes=torch.zeros((n, k), dtype=torch.long),
+        _cg_was_done=torch.tensor([False, True, False, False]),
+        _cg_codes_BN=torch.tensor([[1, 1, 1], [7, 8, 9], [20, 1, 2], [EOC_ID, 3, 4]]),
+        _cg_collect_staging=torch.zeros((n, k + 2), dtype=torch.long),
+        _sampler_pool=SimpleNamespace(
+            delay_count=torch.zeros(n, dtype=torch.int32),
+            eoc_countdown=torch.zeros(n, dtype=torch.int32),
+            generation_done=torch.zeros(n, dtype=torch.bool),
+            last_codes=torch.zeros((n, k), dtype=torch.long),
+        ),
+    )
+    # row0 chunked, row1 was-done, row2 active (not done), row3 active (EOC done).
+    reqs = [
+        SimpleNamespace(is_chunked=1, finished_reason=None),
+        SimpleNamespace(is_chunked=0, finished_reason=None),
+        SimpleNamespace(is_chunked=0, finished_reason=None),
+        SimpleNamespace(is_chunked=0, finished_reason=None),
+    ]
+    datas = [
+        SimpleNamespace(req=r, output_codes=[], generation_done=False) for r in reqs
+    ]
+    result = SimpleNamespace(
+        logits_output=SimpleNamespace(next_token_logits=torch.zeros(n, 4))
+    )
+    forward_batch = SimpleNamespace(batch_size=n)
+
+    runner._collect_step_outputs_cg(
+        result,
+        forward_batch,
+        [SimpleNamespace(request_id=f"req{i}", data=d) for i, d in enumerate(datas)],
+    )
+
+    assert [len(d.output_codes) for d in datas] == [0, 0, 1, 1]
+    # Direct bool-list equality locks the bool->long->bool round-trip; the
+    # was-done row stays False despite _cg_active_generation_done[1] being True.
+    assert [d.generation_done for d in datas] == [False, False, False, True]
+    assert result.next_token_ids.tolist() == [0, 0, 20, EOC_ID]
+    assert datas[2].output_codes[0].tolist() == [20, 1, 2]
+    assert datas[3].output_codes[0].tolist() == [EOC_ID, 3, 4]
+    assert reqs[3].finished_reason.to_json() == {"type": "stop", "matched": EOC_ID}
+    assert all(reqs[i].finished_reason is None for i in (0, 1, 2))
 
 
 def test_higgs_model_runner_skips_already_finished_eager_request() -> None:
