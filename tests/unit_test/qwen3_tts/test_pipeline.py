@@ -95,6 +95,18 @@ def install_fake_sglang(monkeypatch: pytest.MonkeyPatch) -> None:
     def add_prefix(name: str, prefix: str = "") -> str:
         return f"{prefix}.{name}" if prefix else name
 
+    sampler_calls = []
+
+    def multinomial_with_seed(inputs, seed, positions):
+        sampler_calls.append(
+            {
+                "inputs": inputs.detach().clone(),
+                "seed": seed.detach().clone(),
+                "positions": positions.detach().clone(),
+            }
+        )
+        return torch.zeros((inputs.shape[0], 1), device=inputs.device, dtype=torch.long)
+
     modules = {
         "sglang": types.ModuleType("sglang"),
         "sglang.srt": types.ModuleType("sglang.srt"),
@@ -109,6 +121,7 @@ def install_fake_sglang(monkeypatch: pytest.MonkeyPatch) -> None:
         "sglang.srt.layers.logits_processor": types.ModuleType(
             "sglang.srt.layers.logits_processor"
         ),
+        "sglang.srt.layers.sampler": types.ModuleType("sglang.srt.layers.sampler"),
         "sglang.srt.model_loader": types.ModuleType("sglang.srt.model_loader"),
         "sglang.srt.model_loader.weight_utils": types.ModuleType(
             "sglang.srt.model_loader.weight_utils"
@@ -145,6 +158,7 @@ def install_fake_sglang(monkeypatch: pytest.MonkeyPatch) -> None:
     modules["sglang.srt.layers"].logits_processor = modules[
         "sglang.srt.layers.logits_processor"
     ]
+    modules["sglang.srt.layers"].sampler = modules["sglang.srt.layers.sampler"]
     modules["sglang.srt.model_loader"].weight_utils = modules[
         "sglang.srt.model_loader.weight_utils"
     ]
@@ -162,6 +176,8 @@ def install_fake_sglang(monkeypatch: pytest.MonkeyPatch) -> None:
     modules["sglang.srt.layers.logits_processor"].LogitsProcessorOutput = (
         FakeLogitsProcessorOutput
     )
+    modules["sglang.srt.layers.sampler"].multinomial_with_seed = multinomial_with_seed
+    modules["sglang.srt.layers.sampler"].sampler_calls = sampler_calls
     modules["sglang.srt.model_loader.weight_utils"].default_weight_loader = (
         default_weight_loader
     )
@@ -581,6 +597,47 @@ def test_qwen3_tts_request_data_keeps_decode_tensors_on_prepared_device(
     assert data.pending_text_queue.rows is not None
     assert data.pending_text_queue.rows.device == prepared.trailing_text_hidden.device
     assert data.pending_text_queue.rows.dtype == prepared.trailing_text_hidden.dtype
+    assert isinstance(data.subtalker_sampling_seed, int)
+    assert 0 <= data.subtalker_sampling_seed <= 0x7FFFFFFF
+
+
+def test_qwen3_tts_request_data_uses_private_subtalker_seed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_fake_sglang(monkeypatch)
+    monkeypatch.setattr(
+        qwen3_request_builders.os,
+        "urandom",
+        lambda size: b"\x39\x30\x00\x00" if size == 4 else b"\x00" * size,
+    )
+    payload = make_payload(inputs="target")
+    payload.data = {
+        qwen3_request_builders._QWEN3_TTS_PREPARED_MARKER: payload.request_id
+    }
+    prepared = Qwen3TTSPreparedRequest(
+        state=Qwen3TTSState(),
+        input_ids_list=[11, 12],
+        input_ids=torch.tensor([11, 12], dtype=torch.long),
+        attention_mask=torch.ones((1, 2), dtype=torch.long),
+        trailing_text_hidden=torch.randn(1, 4),
+        ref_code=None,
+        prompt_input_embeds=torch.randn(2, 4),
+        tts_pad_embed=torch.randn(4),
+        gen_kwargs={"max_new_tokens": 16},
+    )
+    with qwen3_request_builders._PREPARED_REQUESTS_LOCK:
+        qwen3_request_builders._PREPARED_REQUESTS[payload.request_id] = prepared
+
+    data = build_sglang_qwen3_tts_request(
+        payload,
+        model=SimpleNamespace(
+            config=SimpleNamespace(codec_eos_token_id=42, vocab_size=1200)
+        ),
+        wrapper=object(),
+    )
+
+    assert data.subtalker_sampling_seed == 12345
+    assert data.req.sampling_params.__dict__.get("sampling_seed") is None
 
 
 def test_qwen3_tts_prepared_payload_missing_state_fails_without_rebuild(
@@ -729,6 +786,73 @@ def test_qwen3_tts_prefill_prepares_subtalker_buffers_before_forward(
     assert calls == ["prepare", "embeds", "forward"]
 
 
+def test_qwen3_tts_prepare_decode_buffers_collects_private_subtalker_seeds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_fake_sglang(monkeypatch)
+    from sglang_omni.models.qwen3_tts.sglang_model import Qwen3TTSTalker
+
+    talker = Qwen3TTSTalker.__new__(Qwen3TTSTalker)
+    talker.config = SimpleNamespace(
+        code_predictor_config=SimpleNamespace(vocab_size=2048)
+    )
+    talker.model = SimpleNamespace(
+        codec_embedding=SimpleNamespace(weight=torch.empty(1, device="cpu"))
+    )
+    talker._sub_temperature_tensor = torch.empty(2, dtype=torch.float32)
+    talker._sub_top_p_tensor = torch.empty(2, dtype=torch.float32)
+    talker._sub_top_k_tensor = torch.empty(2, dtype=torch.long)
+    talker._sub_sampling_seed_tensor = torch.empty(2, dtype=torch.long)
+    talker._sub_sample_row_indices_tensor = torch.empty(2, dtype=torch.long)
+    requests = [
+        SimpleNamespace(
+            data=Qwen3TTSSGLangRequestData(
+                subtalker_dosample=True,
+                subtalker_temperature=0.8,
+                subtalker_top_p=0.9,
+                subtalker_top_k=40,
+                subtalker_sampling_seed=7,
+            )
+        ),
+        SimpleNamespace(
+            data=Qwen3TTSSGLangRequestData(
+                subtalker_dosample=False,
+                subtalker_temperature=1.0,
+                subtalker_top_p=1.0,
+                subtalker_top_k=-1,
+                subtalker_sampling_seed=11,
+            )
+        ),
+    ]
+
+    Qwen3TTSTalker.prepare_decode_buffers(talker, requests)
+
+    assert talker._sub_batch_size == 2
+    assert talker._sub_sampling_seed_tensor[:2].tolist() == [7, 11]
+    assert talker._sub_temperature_tensor[:2].tolist() == pytest.approx([0.8, 1.0])
+    assert talker._sub_sample_rows == [0]
+    assert talker._sub_sample_count == 1
+    assert talker._sub_sample_row_indices_tensor[:1].tolist() == [0]
+    assert talker._sub_has_sampled_rows is True
+    assert talker._sub_sampled_has_top_p is True
+    assert talker._sub_sampled_max_top_k == 40
+    assert talker._sub_sampled_has_unbounded_top_k is False
+
+
+def test_qwen3_tts_prepare_decode_buffers_requires_owned_request_data(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_fake_sglang(monkeypatch)
+    from sglang_omni.models.qwen3_tts.sglang_model import Qwen3TTSTalker
+
+    talker = Qwen3TTSTalker.__new__(Qwen3TTSTalker)
+    talker._sub_temperature_tensor = torch.empty(1, dtype=torch.float32)
+    requests = [SimpleNamespace(data=SimpleNamespace())]
+
+    with pytest.raises(TypeError, match="Qwen3TTSSGLangRequestData"):
+        Qwen3TTSTalker.prepare_decode_buffers(talker, requests)
+
+
 def test_qwen3_tts_subtalker_sampling_batches_argmax_path(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -736,10 +860,8 @@ def test_qwen3_tts_subtalker_sampling_batches_argmax_path(
     from sglang_omni.models.qwen3_tts.sglang_model import Qwen3TTSTalker
 
     talker = Qwen3TTSTalker.__new__(Qwen3TTSTalker)
-    talker._sub_dosample = [False, False]
-    talker._sub_temperature = [1.0, 1.0]
-    talker._sub_top_p = [1.0, 1.0]
-    talker._sub_top_k = [-1, -1]
+    talker._sub_batch_size = 2
+    talker._sub_has_sampled_rows = False
 
     tokens = Qwen3TTSTalker._sample_subtalker_token(
         talker,
@@ -750,34 +872,107 @@ def test_qwen3_tts_subtalker_sampling_batches_argmax_path(
     assert tokens.tolist() == [1, 0]
 
 
-def test_qwen3_tts_subtalker_sampling_keeps_sampled_path_rowwise(
+def test_qwen3_tts_subtalker_sampling_batches_sampled_path_without_global_rng(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     install_fake_sglang(monkeypatch)
     from sglang_omni.models.qwen3_tts.sglang_model import Qwen3TTSTalker
 
     talker = Qwen3TTSTalker.__new__(Qwen3TTSTalker)
-    talker._sub_dosample = [True, True]
-    talker._sub_temperature = [1.0, 1.0]
-    talker._sub_top_p = [1.0, 1.0]
-    talker._sub_top_k = [-1, -1]
+    talker.config = SimpleNamespace(num_code_groups=4)
+    talker._sub_batch_size = 2
+    talker._sub_temperature_tensor = torch.tensor([1.0, 1.0])
+    talker._sub_top_p_tensor = torch.tensor([1.0, 1.0])
+    talker._sub_top_k_tensor = torch.tensor([-1, -1])
+    talker._sub_sampling_seed_tensor = torch.tensor([17, 23])
+    talker._sub_sample_rows = [0, 1]
+    talker._sub_sample_row_indices_tensor = torch.tensor([0, 1])
+    talker._sub_sample_count = 2
+    talker._sub_has_sampled_rows = True
+    talker._sub_sampled_has_top_p = False
+    talker._sub_sampled_max_top_k = 0
+    talker._sub_sampled_has_unbounded_top_k = True
 
-    def fail_batched_sample(_self, _logits):
-        raise AssertionError("sampled subtalker path must stay row-wise")
+    sampler_calls = []
+
+    def fake_multinomial_with_seed(inputs, seed, positions):
+        assert torch.all(inputs >= 0)
+        assert torch.allclose(inputs.sum(dim=1), torch.ones(inputs.shape[0]))
+        sampler_calls.append(
+            {
+                "inputs": inputs.detach().clone(),
+                "seed": seed.detach().clone(),
+                "positions": positions.detach().clone(),
+            }
+        )
+        return torch.zeros((inputs.shape[0], 1), device=inputs.device, dtype=torch.long)
 
     monkeypatch.setattr(
-        Qwen3TTSTalker,
-        "_sample_subtalker_token_batch",
-        fail_batched_sample,
+        sglang_model, "multinomial_with_seed", fake_multinomial_with_seed
     )
+
+    def fail_multinomial(*args, **kwargs):
+        del args, kwargs
+        raise AssertionError("sampled subtalker path must not use global RNG")
+
+    monkeypatch.setattr(torch, "multinomial", fail_multinomial)
+
+    def fail_argmax(*args, **kwargs):
+        del args, kwargs
+        raise AssertionError("all-sampled subtalker path must not compute argmax")
+
+    monkeypatch.setattr(torch, "argmax", fail_argmax)
 
     tokens = Qwen3TTSTalker._sample_subtalker_token(
         talker,
-        torch.tensor([[1000.0, -1000.0], [1000.0, -1000.0]]),
+        torch.tensor([[0.0, 0.0], [0.0, 0.0]]),
         0,
+        semantic_positions=torch.tensor([3, 3]),
     )
 
-    assert tokens.tolist() == [0, 0]
+    assert tokens.shape == (2,)
+    assert tokens.dtype == torch.long
+    assert set(tokens.tolist()) <= {0, 1}
+    assert sampler_calls[0]["seed"].tolist() == [17, 23]
+    assert sampler_calls[0]["positions"].tolist() == [10, 10]
+
+    Qwen3TTSTalker._sample_subtalker_token(
+        talker,
+        torch.tensor([[0.0, 0.0], [0.0, 0.0]]),
+        1,
+        semantic_positions=torch.tensor([3, 3]),
+    )
+
+    assert sampler_calls[1]["positions"].tolist() == [11, 11]
+
+
+def test_qwen3_tts_sampled_subtalker_requires_semantic_positions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_fake_sglang(monkeypatch)
+    from sglang_omni.models.qwen3_tts.sglang_model import Qwen3TTSTalker
+
+    talker = Qwen3TTSTalker.__new__(Qwen3TTSTalker)
+    talker.config = SimpleNamespace(num_code_groups=4)
+    talker._sub_batch_size = 1
+    talker._sub_temperature_tensor = torch.tensor([1.0])
+    talker._sub_top_p_tensor = torch.tensor([1.0])
+    talker._sub_top_k_tensor = torch.tensor([-1])
+    talker._sub_sampling_seed_tensor = torch.tensor([17])
+    talker._sub_sample_rows = [0]
+    talker._sub_sample_row_indices_tensor = torch.tensor([0])
+    talker._sub_sample_count = 1
+    talker._sub_has_sampled_rows = True
+    talker._sub_sampled_has_top_p = False
+    talker._sub_sampled_max_top_k = 0
+    talker._sub_sampled_has_unbounded_top_k = True
+
+    with pytest.raises(RuntimeError, match="require positions"):
+        Qwen3TTSTalker._sample_subtalker_token(
+            talker,
+            torch.tensor([[0.0, 0.0]]),
+            0,
+        )
 
 
 def test_qwen3_tts_engine_keeps_cuda_graph_disabled_after_bootstrap(

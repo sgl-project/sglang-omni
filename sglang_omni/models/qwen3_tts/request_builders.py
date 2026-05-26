@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import threading
 import time
 from dataclasses import dataclass, field
@@ -40,6 +41,10 @@ _IMPLICIT_SAMPLING_DEFAULTS = {
 }
 
 
+def _new_subtalker_sampling_seed() -> int:
+    return int.from_bytes(os.urandom(4), "little") & 0x7FFFFFFF
+
+
 @dataclass
 class Qwen3TTSSGLangRequestData(SGLangARRequestData):
     """Qwen3-TTS scheduler-owned request state."""
@@ -53,6 +58,7 @@ class Qwen3TTSSGLangRequestData(SGLangARRequestData):
     subtalker_temperature: float = 0.9
     subtalker_top_p: float = 1.0
     subtalker_top_k: int = 50
+    subtalker_sampling_seed: int = field(default_factory=_new_subtalker_sampling_seed)
     engine_start_s: float = 0.0
 
 
