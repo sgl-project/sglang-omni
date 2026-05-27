@@ -36,6 +36,15 @@ MM_AGGREGATE_STAGE = "mm_aggregate"
 MAX_INT32_POSITIVE = 0x7FFFFFFF
 
 
+def _resolve_seed(params: dict[str, Any]) -> int | None:
+    """Resolve random seed from request params (accepts both ``seed`` and ``sampling_seed``)."""
+    for key in ("seed", "sampling_seed"):
+        value = params.get(key)
+        if value is not None:
+            return int(value)
+    return None
+
+
 def output_modalities(request: OmniRequest | None) -> set[str] | None:
     metadata = getattr(request, "metadata", None)
     if not isinstance(metadata, dict):
@@ -551,7 +560,7 @@ def build_sglang_thinker_request(
     repetition_penalty = params.get("repetition_penalty", 1.0)
     stop = params.get("stop") or []
     stop_token_ids = params.get("stop_token_ids") or []
-    seed = params.get("seed")
+    seed = _resolve_seed(params)
 
     # Build SGLang SamplingParams and normalize
     sampling_params = SamplingParams(
@@ -990,7 +999,7 @@ def make_talker_scheduler_adapters(
             "repetition_penalty": float(params.get("talker_repetition_penalty", 1.05)),
             "codec_eos_id": codec_eos_id if codec_eos_id >= 0 else None,
             "suppress_tokens": suppress_tokens,
-            "seed": params.get("seed"),
+            "seed": _resolve_seed(params),
         }
 
     def request_builder(payload: StagePayload) -> SGLangARRequestData:
@@ -1092,7 +1101,7 @@ def _build_talker_request_data(
         thinker_chunks_done=thinker_done,
         thinker_config=thinker_config,
         talker_model_inputs=prompt_prefill["prompt_model_inputs"],
-        sampling_seed=sampling_cfg.get("seed"),
+        seed=sampling_cfg.get("seed"),
     )
     req_data.tts_eos_embed = prompt_prefill["tts_eos_embed"]
     req_data.stage_payload = payload
