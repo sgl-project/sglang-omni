@@ -9,15 +9,10 @@ import pytest
 import torch
 
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
-from sglang_omni.models.voxtral_tts.acoustic_transformer import AudioSpecialTokens
 from sglang_omni.models.voxtral_tts.config import VoxtralTTSPipelineConfig
 from sglang_omni.models.voxtral_tts.io import VoxtralTTSState
 from sglang_omni.models.voxtral_tts.pipeline import stages
-from sglang_omni.models.voxtral_tts.request_builders import (
-    VoxtralSGLangRequestData,
-    apply_sglang_voxtral_result,
-    build_sglang_voxtral_request,
-)
+from sglang_omni.models.voxtral_tts.request_builders import build_sglang_voxtral_request
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.utils.audio_payload import audio_waveform_payload
 
@@ -154,26 +149,3 @@ def test_voxtral_audio_waveform_payload_is_compact() -> None:
     assert audio.tolist() == [0.0, 0.5, -0.5]
     assert payload["audio_waveform_shape"] == [3]
     assert payload["audio_waveform_dtype"] == "float32"
-
-
-def test_voxtral_result_adapter_drops_terminal_eos_frame() -> None:
-    eos_id = AudioSpecialTokens.id(AudioSpecialTokens.end_audio)
-    payload = StagePayload(
-        request_id="req-voxtral",
-        request=OmniRequest(inputs="", params={}),
-        data=VoxtralTTSState(input_ids=[1, 2, 3]).to_dict(),
-    )
-    data = VoxtralSGLangRequestData(
-        input_ids=torch.tensor([1, 2, 3]),
-        output_codes=[
-            torch.tensor([10, 20, 30]),
-            torch.tensor([eos_id, 0, 0]),
-        ],
-        stage_payload=payload,
-    )
-
-    result = apply_sglang_voxtral_result(payload, data)
-    state = VoxtralTTSState.from_dict(result.data)
-
-    assert state.audio_codes.tolist() == [[10, 20, 30]]
-    assert state.completion_tokens == 1

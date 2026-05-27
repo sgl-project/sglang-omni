@@ -9,6 +9,7 @@ import torch
 from sglang.srt.managers.scheduler import GenerationBatchResult
 
 from sglang_omni.model_runner.base import ModelRunner
+from sglang_omni.models.voxtral_tts.acoustic_transformer import AudioSpecialTokens
 
 
 class VoxtralTTSModelRunner(ModelRunner):
@@ -115,8 +116,11 @@ class VoxtralTTSModelRunner(ModelRunner):
         result.next_token_ids = semantic_ids
         schedule_batch.output_ids = semantic_ids
 
+        eos_id = AudioSpecialTokens.id(AudioSpecialTokens.end_audio)
         embeds = self.model.audio_token_embedding(codes.unsqueeze(2)).sum(dim=1)
-        for row_idx, sched_req in enumerate(requests):
+        active_rows = (semantic_ids != eos_id).nonzero(as_tuple=True)[0].tolist()
+        for row_idx in active_rows:
+            sched_req = requests[row_idx]
             sched_req.data.output_codes.append(codes[row_idx].detach().clone())
             sched_req.data.pending_feedback_queue.append(
                 embeds[row_idx, 0].detach().clone()

@@ -317,13 +317,7 @@ class Qwen3TTSTalker(nn.Module):
         self._sub_sampling_seed_tensor = torch.zeros(
             max_batch_size, device=device, dtype=torch.long
         )
-        self._semantic_sampling_seed_cpu = torch.empty(max_batch_size, dtype=torch.long)
-        self._sub_temperature_cpu = torch.empty(max_batch_size, dtype=torch.float32)
-        self._sub_top_p_cpu = torch.empty(max_batch_size, dtype=torch.float32)
-        self._sub_top_k_cpu = torch.empty(max_batch_size, dtype=torch.long)
-        self._sub_sampling_seed_cpu = torch.empty(max_batch_size, dtype=torch.long)
         self._sub_sample_rows: list[int] = []
-        self._sub_sample_row_indices_cpu = torch.empty(max_batch_size, dtype=torch.long)
         self._sub_sample_row_indices_tensor = torch.empty(
             max_batch_size, device=device, dtype=torch.long
         )
@@ -594,18 +588,12 @@ class Qwen3TTSTalker(nn.Module):
         if batch_size > self._sub_temperature_tensor.shape[0]:
             raise RuntimeError("Qwen3-TTS sampling buffers are too small")
 
-        semantic_seed_cpu = self._semantic_sampling_seed_cpu[:batch_size]
-        sub_temperature_cpu = self._sub_temperature_cpu[:batch_size]
-        sub_top_p_cpu = self._sub_top_p_cpu[:batch_size]
-        sub_top_k_cpu = self._sub_top_k_cpu[:batch_size]
-        sub_seed_cpu = self._sub_sampling_seed_cpu[:batch_size]
-        sampled_row_cpu = self._sub_sample_row_indices_cpu[:batch_size]
-        predictor_vocab_size = int(self.config.code_predictor_config.vocab_size)
-        self._sub_sample_rows.clear()
-        sampled_top_k_count = 0
-        bounded_top_k_count = 0
-        sampled_max_top_k = 0
-        sampled_has_top_p = False
+        semantic_seeds: list[int] = []
+        sub_temperatures: list[float] = []
+        sub_top_ps: list[float] = []
+        sub_top_ks: list[int] = []
+        sub_seeds: list[int] = []
+        self._sub_sample_rows = []
         for row_idx, sched_req in enumerate(requests):
             data = sched_req.data
             try:
@@ -625,46 +613,54 @@ class Qwen3TTSTalker(nn.Module):
                     "Qwen3-TTS decode buffers require numeric semantic and "
                     "subtalker sampling fields"
                 ) from exc
-            semantic_seed_cpu[row_idx] = semantic_seed
-            sub_temperature_cpu[row_idx] = subtalker_temperature
-            sub_top_p_cpu[row_idx] = subtalker_top_p
-            sub_top_k_cpu[row_idx] = subtalker_top_k
-            sub_seed_cpu[row_idx] = subtalker_seed
+            semantic_seeds.append(semantic_seed)
+            sub_temperatures.append(subtalker_temperature)
+            sub_top_ps.append(subtalker_top_p)
+            sub_top_ks.append(subtalker_top_k)
+            sub_seeds.append(subtalker_seed)
             if do_sample:
                 self._sub_sample_rows.append(row_idx)
-                sampled_row_cpu[sampled_top_k_count] = row_idx
-                sampled_top_k_count += 1
-                sampled_has_top_p = sampled_has_top_p or (0.0 < subtalker_top_p < 1.0)
-                if 0 < subtalker_top_k < predictor_vocab_size:
-                    bounded_top_k_count += 1
-                    sampled_max_top_k = max(sampled_max_top_k, subtalker_top_k)
 
+        predictor_vocab_size = int(self.config.code_predictor_config.vocab_size)
+        sampled_top_ks = [sub_top_ks[row_idx] for row_idx in self._sub_sample_rows]
+        bounded_top_ks = [
+            top_k for top_k in sampled_top_ks if 0 < int(top_k) < predictor_vocab_size
+        ]
         self._sub_batch_size = batch_size
-        self._sub_sample_count = sampled_top_k_count
-        self._sub_has_sampled_rows = sampled_top_k_count > 0
-        self._sub_sampled_has_top_p = sampled_has_top_p
-        self._sub_sampled_max_top_k = sampled_max_top_k
-        self._sub_sampled_has_unbounded_top_k = (
-            bounded_top_k_count != sampled_top_k_count
+        self._sub_sample_count = len(self._sub_sample_rows)
+        self._sub_has_sampled_rows = bool(self._sub_sample_rows)
+        self._sub_sampled_has_top_p = any(
+            0.0 < float(sub_top_ps[row_idx]) < 1.0 for row_idx in self._sub_sample_rows
+        )
+        self._sub_sampled_max_top_k = max(bounded_top_ks, default=0)
+        self._sub_sampled_has_unbounded_top_k = len(bounded_top_ks) != len(
+            sampled_top_ks
         )
 
         if batch_size == 0:
             return
 
-        self._semantic_sampling_seed_tensor[:batch_size].copy_(
-            semantic_seed_cpu, non_blocking=True
+        device = self._sub_temperature_tensor.device
+        self._semantic_sampling_seed_tensor[:batch_size] = torch.tensor(
+            semantic_seeds,
+            device=device,
+            dtype=self._semantic_sampling_seed_tensor.dtype,
         )
-        self._sub_temperature_tensor[:batch_size].copy_(
-            sub_temperature_cpu, non_blocking=True
+        self._sub_temperature_tensor[:batch_size] = torch.tensor(
+            sub_temperatures, device=device, dtype=self._sub_temperature_tensor.dtype
         )
-        self._sub_top_p_tensor[:batch_size].copy_(sub_top_p_cpu, non_blocking=True)
-        self._sub_top_k_tensor[:batch_size].copy_(sub_top_k_cpu, non_blocking=True)
-        self._sub_sampling_seed_tensor[:batch_size].copy_(
-            sub_seed_cpu, non_blocking=True
+        self._sub_top_p_tensor[:batch_size] = torch.tensor(
+            sub_top_ps, device=device, dtype=self._sub_top_p_tensor.dtype
+        )
+        self._sub_top_k_tensor[:batch_size] = torch.tensor(
+            sub_top_ks, device=device, dtype=self._sub_top_k_tensor.dtype
+        )
+        self._sub_sampling_seed_tensor[:batch_size] = torch.tensor(
+            sub_seeds, device=device, dtype=self._sub_sampling_seed_tensor.dtype
         )
         if self._sub_sample_count:
-            self._sub_sample_row_indices_tensor[: self._sub_sample_count].copy_(
-                sampled_row_cpu[: self._sub_sample_count], non_blocking=True
+            self._sub_sample_row_indices_tensor[: self._sub_sample_count] = (
+                torch.tensor(self._sub_sample_rows, device=device, dtype=torch.long)
             )
 
     @torch.no_grad()

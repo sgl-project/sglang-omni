@@ -87,13 +87,11 @@ def apply_sglang_voxtral_result(
     state = VoxtralTTSState.from_dict(payload.data)
     if data.output_codes:
         codes = torch.stack(data.output_codes, dim=0).to(dtype=torch.long)
-        eos_id = AudioSpecialTokens.id(AudioSpecialTokens.end_audio)
-        codes = codes[codes[:, 0] != eos_id]
     else:
         codes = torch.empty((0, 0), dtype=torch.long)
     state.audio_codes = codes
     state.prompt_tokens = len(data.input_ids) if data.input_ids is not None else 0
-    state.completion_tokens = int(codes.shape[0])
+    state.completion_tokens = len(data.output_codes)
     return StagePayload(
         request_id=payload.request_id,
         request=payload.request,
