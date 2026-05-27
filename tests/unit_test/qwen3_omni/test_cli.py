@@ -9,12 +9,14 @@ import typer
 
 from sglang_omni.cli.serve import (
     apply_cuda_graph_cli_overrides,
+    apply_encoder_mem_reserve_cli_override,
     apply_parallelism_cli_overrides,
     apply_torch_compile_cli_overrides,
     serve,
 )
 from sglang_omni.config import PipelineConfig, StageConfig, resolve_stage_factory_args
 from sglang_omni.models.qwen3_omni.config import (
+    Qwen3OmniPipelineConfig,
     Qwen3OmniSpeechColocatedPipelineConfig,
     Qwen3OmniSpeechPipelineConfig,
 )
@@ -237,6 +239,49 @@ def test_registry_resolves_qwen_colocated_config_by_class_name():
         )
         is Qwen3OmniSpeechColocatedPipelineConfig
     )
+
+
+def test_qwen_text_encoder_mem_reserve_still_targets_thinker():
+    config = Qwen3OmniPipelineConfig(model_path="dummy")
+
+    apply_encoder_mem_reserve_cli_override(
+        config,
+        encoder_mem_reserve=0.05,
+        mem_fraction_static=None,
+        thinker_mem_fraction_static=None,
+    )
+
+    assert _stage(config, "thinker").factory_args["encoder_mem_reserve"] == 0.05
+
+
+def test_qwen_speech_encoder_mem_reserve_still_targets_thinker():
+    config = Qwen3OmniSpeechPipelineConfig(model_path="dummy")
+
+    apply_encoder_mem_reserve_cli_override(
+        config,
+        encoder_mem_reserve=0.05,
+        mem_fraction_static=None,
+        thinker_mem_fraction_static=None,
+    )
+
+    assert _stage(config, "thinker").factory_args["encoder_mem_reserve"] == 0.05
+    assert "encoder_mem_reserve" not in _stage(config, "talker_ar").factory_args
+
+
+def test_qwen_text_cli_rejects_talker_gpu_with_stable_message():
+    config = Qwen3OmniPipelineConfig(model_path="dummy")
+
+    with pytest.raises(
+        typer.BadParameter,
+        match="--talker-gpu is not supported by Qwen3OmniPipelineConfig",
+    ):
+        apply_parallelism_cli_overrides(
+            config,
+            thinker_tp_size=None,
+            thinker_gpus=None,
+            talker_gpu=1,
+            code2wav_gpu=None,
+        )
 
 
 def test_speech_colocated_rejects_talker_gpu_override_to_other_gpu():

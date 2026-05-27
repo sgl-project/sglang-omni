@@ -233,6 +233,10 @@ class Qwen3OmniPipelineConfig(PipelineConfig):
     def mem_fraction_role_to_stage(cls) -> dict[str, str]:
         return {"thinker": "thinker"}
 
+    @classmethod
+    def encoder_mem_reserve_role_to_stage(cls) -> dict[str, str]:
+        return {"thinker": "thinker"}
+
     model_path: str
     placement_policy: str | None = _PLACEMENT_POLICY
     stages: list[StageConfig] = Field(default_factory=_text_stages)
@@ -249,6 +253,22 @@ class Qwen3OmniSpeechPipelineConfig(PipelineConfig):
     @classmethod
     def mem_fraction_role_to_stage(cls) -> dict[str, str]:
         return {"thinker": "thinker", "talker": "talker_ar"}
+
+    @classmethod
+    def encoder_mem_reserve_role_to_stage(cls) -> dict[str, str]:
+        return {"thinker": "thinker"}
+
+    @classmethod
+    def talker_role_to_stage(cls) -> dict[str, str]:
+        return {"talker": "talker_ar"}
+
+    @classmethod
+    def talker_sglang_role_to_stage(cls) -> dict[str, str]:
+        return {"talker": "talker_ar"}
+
+    @classmethod
+    def code2wav_stage(cls) -> str | None:
+        return "code2wav"
 
     model_path: str
     placement_policy: str | None = _PLACEMENT_POLICY

@@ -212,7 +212,8 @@ that happened to contain an older version of the test.
 
   - text + speech pipeline config and stage schema
   - omni serve CLI/config merge, default speech vs. text-only selection,
-    launcher handoff, GPU placement, and TP wiring
+    launcher handoff, GPU placement, TP wiring, and unsupported flag capability
+    boundaries
   - stage factory and scheduler contracts (preprocessing, encoders, thinker, talker, decode)
   - thinker bootstrap registration and Ming model runner wiring
   - multimodal embed injection (per-modality consumed state, pad-value fallback, short-embeds detection)

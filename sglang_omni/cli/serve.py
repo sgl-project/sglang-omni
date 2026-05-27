@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Annotated, Literal
+from typing import Annotated, Literal, NoReturn
 
 import typer
 import yaml
@@ -83,6 +83,37 @@ def _find_matching_stages(
             f"Stage {stage_name!r} not found in pipeline; cannot set {reason}"
         )
     return matching_stages
+
+
+def _raise_unsupported_flag(
+    pipeline_config: PipelineConfig,
+    flag_name: str,
+) -> NoReturn:
+    raise typer.BadParameter(
+        f"{flag_name} is not supported by {type(pipeline_config).__name__}"
+    )
+
+
+def _resolve_talker_stage(
+    pipeline_config: PipelineConfig,
+    *,
+    flag_name: str,
+) -> str:
+    stage_name = type(pipeline_config).talker_role_to_stage().get("talker")
+    if stage_name is None:
+        _raise_unsupported_flag(pipeline_config, flag_name)
+    return stage_name
+
+
+def _resolve_talker_sglang_stage(
+    pipeline_config: PipelineConfig,
+    *,
+    flag_name: str,
+) -> str:
+    stage_name = type(pipeline_config).talker_sglang_role_to_stage().get("talker")
+    if stage_name is None:
+        _raise_unsupported_flag(pipeline_config, flag_name)
+    return stage_name
 
 
 def _apply_stage_server_args_override(
@@ -243,19 +274,17 @@ def apply_encoder_mem_reserve_cli_override(
 ) -> PipelineConfig:
     if encoder_mem_reserve is None:
         return pipeline_config
+    encoder_mem_reserve = _validate_encoder_mem_reserve(encoder_mem_reserve)
+
+    role_to_stage = type(pipeline_config).encoder_mem_reserve_role_to_stage()
+    thinker_stage = role_to_stage.get("thinker")
+    if thinker_stage is None:
+        _raise_unsupported_flag(pipeline_config, "--encoder-mem-reserve")
+
     if mem_fraction_static is not None or thinker_mem_fraction_static is not None:
         raise typer.BadParameter(
             "--encoder-mem-reserve is mutually exclusive with "
             "--mem-fraction-static and --thinker-mem-fraction-static"
-        )
-    encoder_mem_reserve = _validate_encoder_mem_reserve(encoder_mem_reserve)
-
-    role_to_stage = type(pipeline_config).mem_fraction_role_to_stage()
-    thinker_stage = role_to_stage.get("thinker")
-    if thinker_stage is None:
-        raise typer.BadParameter(
-            "--encoder-mem-reserve requires a pipeline with a supported "
-            "thinker SGLang AR stage"
         )
 
     matching_stages = _find_matching_stages(
@@ -376,26 +405,6 @@ def _apply_stage_gpu_override(
         stage.gpu = int(gpu)
 
 
-def _apply_talker_gpu_override(
-    pipeline_config: PipelineConfig,
-    *,
-    gpu: int | None,
-) -> None:
-    if gpu is None:
-        return
-    for stage_name in ("talker_ar", "talker"):
-        if any(stage.name == stage_name for stage in pipeline_config.stages):
-            _apply_stage_gpu_override(
-                pipeline_config,
-                stage_name=stage_name,
-                gpu=gpu,
-            )
-            return
-    raise typer.BadParameter(
-        "No talker stage found in pipeline; cannot set --talker-gpu"
-    )
-
-
 def _validate_colocated_gpu_override(
     pipeline_config: PipelineConfig,
     *,
@@ -499,23 +508,45 @@ def apply_parallelism_cli_overrides(
             if stage.tp_size == 1 and isinstance(stage.gpu, list):
                 stage.gpu = int(stage.gpu[0])
 
-    _validate_colocated_gpu_override(
-        pipeline_config,
-        stage_name="talker_ar",
-        flag_name="--talker-gpu",
-        gpu=talker_gpu,
+    talker_stage = (
+        _resolve_talker_stage(
+            pipeline_config,
+            flag_name="--talker-gpu",
+        )
+        if talker_gpu is not None
+        else None
     )
-    _validate_colocated_gpu_override(
-        pipeline_config,
-        stage_name="code2wav",
-        flag_name="--code2wav-gpu",
-        gpu=code2wav_gpu,
-    )
-    _apply_talker_gpu_override(pipeline_config, gpu=talker_gpu)
+    code2wav_stage = None
     if code2wav_gpu is not None:
+        code2wav_stage = type(pipeline_config).code2wav_stage()
+        if code2wav_stage is None:
+            _raise_unsupported_flag(pipeline_config, "--code2wav-gpu")
+
+    if talker_stage is not None:
+        _validate_colocated_gpu_override(
+            pipeline_config,
+            stage_name=talker_stage,
+            flag_name="--talker-gpu",
+            gpu=talker_gpu,
+        )
+    if code2wav_stage is not None:
+        _validate_colocated_gpu_override(
+            pipeline_config,
+            stage_name=code2wav_stage,
+            flag_name="--code2wav-gpu",
+            gpu=code2wav_gpu,
+        )
+
+    if talker_stage is not None:
         _apply_stage_gpu_override(
             pipeline_config,
-            stage_name="code2wav",
+            stage_name=talker_stage,
+            gpu=talker_gpu,
+        )
+    if code2wav_stage is not None:
+        _apply_stage_gpu_override(
+            pipeline_config,
+            stage_name=code2wav_stage,
             gpu=code2wav_gpu,
         )
     _apply_tensor_parallel_server_args_overrides(pipeline_config)
@@ -581,11 +612,15 @@ def apply_cuda_graph_cli_overrides(
         stage_name="thinker",
         mode=thinker_mode,
     )
-    _apply_stage_cuda_graph_override(
-        pipeline_config,
-        stage_name="talker_ar",
-        mode=talker_mode,
-    )
+    if talker_mode != "default":
+        _apply_stage_cuda_graph_override(
+            pipeline_config,
+            stage_name=_resolve_talker_sglang_stage(
+                pipeline_config,
+                flag_name="--talker-cuda-graph",
+            ),
+            mode=talker_mode,
+        )
     return pipeline_config
 
 
@@ -609,12 +644,21 @@ def apply_torch_compile_cli_overrides(
         mode=thinker_mode,
         max_bs=thinker_torch_compile_max_bs,
     )
-    _apply_stage_torch_compile_override(
-        pipeline_config,
-        stage_name="talker_ar",
-        mode=talker_mode,
-        max_bs=talker_torch_compile_max_bs,
-    )
+    if talker_mode != "default" or talker_torch_compile_max_bs is not None:
+        flag_name = (
+            "--talker-torch-compile"
+            if talker_mode != "default"
+            else "--talker-torch-compile-max-bs"
+        )
+        _apply_stage_torch_compile_override(
+            pipeline_config,
+            stage_name=_resolve_talker_sglang_stage(
+                pipeline_config,
+                flag_name=flag_name,
+            ),
+            mode=talker_mode,
+            max_bs=talker_torch_compile_max_bs,
+        )
     return pipeline_config
 
 
@@ -734,7 +778,7 @@ def serve(
         typer.Option(
             "--talker-gpu",
             "--talker_gpu",
-            help="Override GPU id for talker_ar stage.",
+            help="Override GPU id for supported talker stage.",
         ),
     ] = None,
     code2wav_gpu: Annotated[
@@ -742,7 +786,7 @@ def serve(
         typer.Option(
             "--code2wav-gpu",
             "--code2wav_gpu",
-            help="Override GPU id for code2wav stage.",
+            help="Override GPU id for supported code2wav stage.",
         ),
     ] = None,
     thinker_cuda_graph: Annotated[
@@ -760,7 +804,7 @@ def serve(
             "--talker-cuda-graph",
             "--talker_cuda_graph",
             "--talker_CUDA_graph",
-            help="CUDA graph mode for talker_ar stage: default|on|off.",
+            help="CUDA graph mode for supported SGLang talker stage: default|on|off.",
         ),
     ] = "default",
     thinker_torch_compile: Annotated[
@@ -776,7 +820,10 @@ def serve(
         typer.Option(
             "--talker-torch-compile",
             "--talker_torch_compile",
-            help="torch.compile mode for talker_ar stage: default|on|off.",
+            help=(
+                "torch.compile mode for supported SGLang talker stage: "
+                "default|on|off."
+            ),
         ),
     ] = "default",
     thinker_torch_compile_max_bs: Annotated[
@@ -792,7 +839,7 @@ def serve(
         typer.Option(
             "--talker-torch-compile-max-bs",
             "--talker_torch_compile_max_bs",
-            help="Override torch_compile_max_bs for talker_ar stage.",
+            help="Override torch_compile_max_bs for supported SGLang talker stage.",
         ),
     ] = None,
     enable_realtime: Annotated[

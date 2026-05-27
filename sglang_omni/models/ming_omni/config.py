@@ -187,6 +187,10 @@ class MingOmniSpeechPipelineConfig(PipelineConfig):
         return {"thinker": THINKER_STAGE}
 
     @classmethod
+    def talker_role_to_stage(cls) -> dict[str, str]:
+        return {"talker": TALKER_STAGE}
+
+    @classmethod
     def tensor_parallel_server_args_overrides(
         cls,
         *,

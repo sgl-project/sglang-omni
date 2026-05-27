@@ -242,6 +242,26 @@ class PipelineConfig(BaseModel):
         return {}
 
     @classmethod
+    def encoder_mem_reserve_role_to_stage(cls) -> dict[str, str]:
+        """Class-level public role map for encoder memory reserve overrides."""
+        return {}
+
+    @classmethod
+    def talker_role_to_stage(cls) -> dict[str, str]:
+        """Class-level public role map for talker placement overrides."""
+        return {}
+
+    @classmethod
+    def talker_sglang_role_to_stage(cls) -> dict[str, str]:
+        """Class-level public role map for talker SGLang ServerArgs overrides."""
+        return {}
+
+    @classmethod
+    def code2wav_stage(cls) -> str | None:
+        """Return the code2wav stage name when the pipeline supports it."""
+        return None
+
+    @classmethod
     def tensor_parallel_server_args_overrides(
         cls,
         *,

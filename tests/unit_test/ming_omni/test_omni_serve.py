@@ -8,9 +8,12 @@ import pytest
 import typer
 
 from sglang_omni.cli.serve import (
+    apply_cuda_graph_cli_overrides,
+    apply_encoder_mem_reserve_cli_override,
     apply_mem_fraction_cli_overrides,
     apply_parallelism_cli_overrides,
     apply_thinker_server_args_cli_overrides,
+    apply_torch_compile_cli_overrides,
 )
 from sglang_omni.config import PipelineConfig
 from sglang_omni.config.manager import ConfigManager
@@ -177,6 +180,67 @@ def test_ming_cli_applies_thinker_sglang_server_args() -> None:
     assert overrides["quantization"] == "fp8"
 
 
+@pytest.mark.parametrize(
+    "config_cls",
+    [MingOmniPipelineConfig, MingOmniSpeechPipelineConfig],
+)
+def test_ming_cli_rejects_encoder_mem_reserve_with_stable_message(config_cls) -> None:
+    config = config_cls(model_path="dummy")
+
+    with pytest.raises(
+        typer.BadParameter,
+        match=(f"--encoder-mem-reserve is not supported by {config_cls.__name__}"),
+    ):
+        apply_encoder_mem_reserve_cli_override(
+            config,
+            encoder_mem_reserve=0.05,
+            mem_fraction_static=None,
+            thinker_mem_fraction_static=None,
+        )
+
+    assert "encoder_mem_reserve" not in _stage(config, "thinker").factory_args
+
+
+@pytest.mark.parametrize(
+    "config_cls,kwargs",
+    [
+        (
+            MingOmniPipelineConfig,
+            {"mem_fraction_static": 0.80, "thinker_mem_fraction_static": None},
+        ),
+        (
+            MingOmniPipelineConfig,
+            {"mem_fraction_static": None, "thinker_mem_fraction_static": 0.80},
+        ),
+        (
+            MingOmniSpeechPipelineConfig,
+            {"mem_fraction_static": 0.80, "thinker_mem_fraction_static": None},
+        ),
+        (
+            MingOmniSpeechPipelineConfig,
+            {"mem_fraction_static": None, "thinker_mem_fraction_static": 0.80},
+        ),
+    ],
+)
+def test_ming_cli_rejects_encoder_mem_reserve_as_unsupported_before_exclusive_flags(
+    config_cls,
+    kwargs,
+) -> None:
+    config = config_cls(model_path="dummy")
+
+    with pytest.raises(
+        typer.BadParameter,
+        match=(f"--encoder-mem-reserve is not supported by {config_cls.__name__}"),
+    ):
+        apply_encoder_mem_reserve_cli_override(
+            config,
+            encoder_mem_reserve=0.05,
+            **kwargs,
+        )
+
+    assert "encoder_mem_reserve" not in _stage(config, "thinker").factory_args
+
+
 def test_ming_speech_cli_rejects_talker_thinker_gpu_collision() -> None:
     config = MingOmniSpeechPipelineConfig(model_path="dummy")
 
@@ -205,16 +269,101 @@ def test_ming_cli_talker_gpu_targets_talker_stage() -> None:
     assert _stage(config, "talker").gpu == 3
 
 
-def test_ming_cli_rejects_code2wav_gpu_without_code2wav_stage() -> None:
-    config = MingOmniSpeechPipelineConfig(model_path="dummy")
+def test_ming_text_cli_rejects_talker_gpu_with_stable_message() -> None:
+    config = MingOmniPipelineConfig(model_path="dummy")
 
-    with pytest.raises(typer.BadParameter, match="code2wav"):
+    with pytest.raises(
+        typer.BadParameter,
+        match="--talker-gpu is not supported by MingOmniPipelineConfig",
+    ):
+        apply_parallelism_cli_overrides(
+            config,
+            thinker_tp_size=None,
+            thinker_gpus=None,
+            talker_gpu=3,
+            code2wav_gpu=None,
+        )
+
+
+@pytest.mark.parametrize(
+    "config_cls",
+    [MingOmniPipelineConfig, MingOmniSpeechPipelineConfig],
+)
+def test_ming_cli_rejects_code2wav_gpu_with_stable_message(config_cls) -> None:
+    config = config_cls(model_path="dummy")
+
+    with pytest.raises(
+        typer.BadParameter,
+        match=f"--code2wav-gpu is not supported by {config_cls.__name__}",
+    ):
         apply_parallelism_cli_overrides(
             config,
             thinker_tp_size=None,
             thinker_gpus=None,
             talker_gpu=None,
             code2wav_gpu=5,
+        )
+
+
+@pytest.mark.parametrize(
+    "config_cls",
+    [MingOmniPipelineConfig, MingOmniSpeechPipelineConfig],
+)
+def test_ming_cli_rejects_talker_cuda_graph_with_stable_message(config_cls) -> None:
+    config = config_cls(model_path="dummy")
+
+    with pytest.raises(
+        typer.BadParameter,
+        match=f"--talker-cuda-graph is not supported by {config_cls.__name__}",
+    ):
+        apply_cuda_graph_cli_overrides(
+            config,
+            thinker_cuda_graph="default",
+            talker_cuda_graph="on",
+        )
+
+
+@pytest.mark.parametrize(
+    "config_cls,kwargs,flag_name",
+    [
+        (
+            MingOmniPipelineConfig,
+            {"talker_torch_compile": "on", "talker_torch_compile_max_bs": None},
+            "--talker-torch-compile",
+        ),
+        (
+            MingOmniSpeechPipelineConfig,
+            {"talker_torch_compile": "on", "talker_torch_compile_max_bs": None},
+            "--talker-torch-compile",
+        ),
+        (
+            MingOmniPipelineConfig,
+            {"talker_torch_compile": "default", "talker_torch_compile_max_bs": 2},
+            "--talker-torch-compile-max-bs",
+        ),
+        (
+            MingOmniSpeechPipelineConfig,
+            {"talker_torch_compile": "default", "talker_torch_compile_max_bs": 2},
+            "--talker-torch-compile-max-bs",
+        ),
+    ],
+)
+def test_ming_cli_rejects_talker_torch_compile_with_stable_message(
+    config_cls,
+    kwargs,
+    flag_name,
+) -> None:
+    config = config_cls(model_path="dummy")
+
+    with pytest.raises(
+        typer.BadParameter,
+        match=f"{flag_name} is not supported by {config_cls.__name__}",
+    ):
+        apply_torch_compile_cli_overrides(
+            config,
+            thinker_torch_compile="default",
+            thinker_torch_compile_max_bs=None,
+            **kwargs,
         )
 
 
