@@ -8,6 +8,8 @@ Note (Qiujiang, Chenyang):
 2. Plain TTS (e.g. mistralai/Voxtral-4B-TTS-2603): use --no-ref-audio and
   --voice for a server-side speaker preset.
 3. Higgs TTS uses the same benchmark with --ref-format references.
+4. Regression runs default to --seed 0 for reproducible stochastic sampling.
+  Pass --seed -1 to omit the seed for stochastic quality sweeps.
 
 Usage:
 
@@ -193,6 +195,7 @@ class TtsSeedttsBenchmarkConfig:
     output_dir: str = "results/tts_seedtts"
     max_samples: int | None = None
     max_new_tokens: int | None = 2048
+    seed: int | None = 0
     temperature: float | None = None
     top_p: float | None = None
     top_k: int | None = None
@@ -212,6 +215,8 @@ def _build_generation_kwargs(config: TtsSeedttsBenchmarkConfig) -> dict:
     generation_kwargs: dict = {}
     if config.max_new_tokens is not None:
         generation_kwargs["max_new_tokens"] = config.max_new_tokens
+    if config.seed is not None:
+        generation_kwargs["seed"] = config.seed
     if config.temperature is not None:
         generation_kwargs["temperature"] = config.temperature
     if config.top_p is not None:
@@ -238,6 +243,11 @@ def _build_results_config(
         "stream": config.stream,
         "max_samples": config.max_samples,
         "max_new_tokens": config.max_new_tokens,
+        "seed": config.seed,
+        "temperature": config.temperature,
+        "top_p": config.top_p,
+        "top_k": config.top_k,
+        "repetition_penalty": config.repetition_penalty,
         "warmup": config.warmup,
         "concurrency": config.concurrency,
         "request_rate": config.request_rate,
@@ -305,7 +315,11 @@ def run_tts_seedtts_transcribe(config: TtsSeedttsBenchmarkConfig) -> dict:
         "ref_format": config.ref_format,
         "voice": config.voice,
         "max_new_tokens": config.max_new_tokens,
+        "seed": config.seed,
         "temperature": config.temperature,
+        "top_p": config.top_p,
+        "top_k": config.top_k,
+        "repetition_penalty": config.repetition_penalty,
         "max_samples": config.max_samples,
         "stream": config.stream,
         "concurrency": config.concurrency,
@@ -333,6 +347,7 @@ def _config_from_args(args: argparse.Namespace) -> TtsSeedttsBenchmarkConfig:
         output_dir=args.output_dir,
         max_samples=args.max_samples,
         max_new_tokens=args.max_new_tokens,
+        seed=None if args.seed < 0 else args.seed,
         temperature=args.temperature,
         top_p=args.top_p,
         top_k=args.top_k,
@@ -411,7 +426,24 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-dir", type=str, default="results/tts_seedtts")
     parser.add_argument("--max-samples", type=int, default=None)
     parser.add_argument("--max-new-tokens", type=int, default=2048)
-    parser.add_argument("--temperature", type=float, default=None)
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=0,
+        help=(
+            "Sampling seed for reproducible regression runs. Use -1 to omit "
+            "the seed and keep server-side stochastic sampling."
+        ),
+    )
+    parser.add_argument(
+        "--temperature",
+        type=float,
+        default=None,
+        help=(
+            "Generation temperature. Defaults to None so the server/model "
+            "default is used."
+        ),
+    )
     parser.add_argument("--top-p", type=float, default=None)
     parser.add_argument("--top-k", type=int, default=None)
     parser.add_argument("--repetition-penalty", type=float, default=None)

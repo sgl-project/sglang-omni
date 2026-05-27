@@ -169,6 +169,51 @@ def test_runner_specs_wire_same_process_targets_only_for_local_edges() -> None:
     assert specs["b"].same_process_targets == set()
 
 
+def test_fused_stages_compile_to_same_process_local_edges() -> None:
+    config = PipelineConfig(
+        model_path="model",
+        stages=[
+            stage("preprocess", next="encoder", process="preprocess"),
+            stage("encoder", next="decode", gpu=0, process="encoder"),
+            stage("decode", terminal=True, process="decode"),
+        ],
+        fused_stages=[["preprocess", "encoder"]],
+    )
+    prep = prepare_pipeline_runtime(config)
+
+    assert [stage_cfg.name for stage_cfg in prep.stages_cfg] == [
+        "preprocess",
+        "encoder",
+        "decode",
+    ]
+    assert prep.name_map == {
+        "preprocess": "preprocess",
+        "encoder": "encoder",
+        "decode": "decode",
+    }
+    assert prep.entry_stage == "preprocess"
+    assert prep.process_plan.stage_to_process["preprocess"] == (
+        prep.process_plan.stage_to_process["encoder"]
+    )
+    assert prep.process_plan.stage_to_process["decode"] != (
+        prep.process_plan.stage_to_process["encoder"]
+    )
+
+    groups = _build_stage_groups(
+        config,
+        ctx=FakeMpContext(),
+        stages_cfg=prep.stages_cfg,
+        name_map=prep.name_map,
+        endpoints=prep.endpoints,
+        placement_plan=prep.placement_plan,
+        process_plan=prep.process_plan,
+    )
+    specs = {spec.stage_name: spec for group in groups for spec in group.specs}
+
+    assert specs["preprocess"].same_process_targets == {"encoder"}
+    assert specs["encoder"].same_process_targets == set()
+
+
 def test_runner_specs_wire_same_process_stream_targets() -> None:
     config = PipelineConfig(
         model_path="model",
@@ -223,6 +268,29 @@ def test_runner_specs_do_not_wire_same_process_targets_to_tp_stages() -> None:
         )
         == set()
     )
+
+
+def test_fused_stages_reject_unsupported_internal_stage_contracts() -> None:
+    with pytest.raises(ValueError, match="cannot include TP stage"):
+        PipelineConfig(
+            model_path="model",
+            stages=[
+                stage("preprocess", next="encoder", process="preprocess"),
+                stage("encoder", gpu=[0, 1], tp_size=2, terminal=True),
+            ],
+            fused_stages=[["preprocess", "encoder"]],
+        )
+
+    with pytest.raises(ValueError, match="must route only to 'encoder'"):
+        PipelineConfig(
+            model_path="model",
+            stages=[
+                stage("preprocess", next="decode", process="preprocess"),
+                stage("encoder", next="decode", process="encoder"),
+                stage("decode", terminal=True, process="decode"),
+            ],
+            fused_stages=[["preprocess", "encoder"]],
+        )
 
 
 def test_mp_runner_preserves_tp_rank_and_visible_device_contracts(tmp_path) -> None:

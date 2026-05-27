@@ -2,6 +2,7 @@
 
 from types import SimpleNamespace
 
+import pytest
 import torch
 
 from sglang_omni.models.higgs_tts import stages
@@ -109,6 +110,7 @@ def test_higgs_model_runner_marks_sampler_finish_cg() -> None:
     runner.model = SimpleNamespace(
         _cg_row_indices=torch.tensor([0]),
         _cg_active_delay_count=torch.tensor([8], dtype=torch.int32),
+        _cg_active_sample_count=torch.tensor([3], dtype=torch.int32),
         _cg_active_eoc_countdown=torch.tensor([0], dtype=torch.int32),
         _cg_active_generation_done=torch.tensor([True]),
         _cg_active_last_codes=torch.tensor([[1, 2, 3]]),
@@ -117,6 +119,7 @@ def test_higgs_model_runner_marks_sampler_finish_cg() -> None:
         _cg_collect_staging=torch.zeros((1, 3 + 2), dtype=torch.long),
         _sampler_pool=SimpleNamespace(
             delay_count=torch.zeros(1, dtype=torch.int32),
+            sample_count=torch.zeros(1, dtype=torch.int32),
             eoc_countdown=torch.zeros(1, dtype=torch.int32),
             generation_done=torch.zeros(1, dtype=torch.bool),
             last_codes=torch.zeros((1, 3), dtype=torch.long),
@@ -150,6 +153,7 @@ def test_higgs_model_runner_collect_cg_mixed_batch() -> None:
     runner.model = SimpleNamespace(
         _cg_row_indices=torch.arange(n),
         _cg_active_delay_count=torch.zeros(n, dtype=torch.int32),
+        _cg_active_sample_count=torch.arange(n, dtype=torch.int32),
         _cg_active_eoc_countdown=torch.zeros(n, dtype=torch.int32),
         # row1's True must NOT leak into the was-done (skipped) request.
         _cg_active_generation_done=torch.tensor([False, True, False, True]),
@@ -159,6 +163,7 @@ def test_higgs_model_runner_collect_cg_mixed_batch() -> None:
         _cg_collect_staging=torch.zeros((n, k + 2), dtype=torch.long),
         _sampler_pool=SimpleNamespace(
             delay_count=torch.zeros(n, dtype=torch.int32),
+            sample_count=torch.zeros(n, dtype=torch.int32),
             eoc_countdown=torch.zeros(n, dtype=torch.int32),
             generation_done=torch.zeros(n, dtype=torch.bool),
             last_codes=torch.zeros((n, k), dtype=torch.long),
@@ -194,6 +199,26 @@ def test_higgs_model_runner_collect_cg_mixed_batch() -> None:
     assert datas[3].output_codes[0].tolist() == [EOC_ID, 3, 4]
     assert reqs[3].finished_reason.to_json() == {"type": "stop", "matched": EOC_ID}
     assert all(reqs[i].finished_reason is None for i in (0, 1, 2))
+
+
+def test_higgs_model_runner_extracts_decode_sampling_seed() -> None:
+    forward_batch = SimpleNamespace(
+        sampling_info=SimpleNamespace(
+            temperatures=torch.tensor([0.8, 0.9]),
+            top_ps=torch.tensor([0.7, 0.6]),
+            top_ks=torch.tensor([30, 40]),
+            sampling_seed=torch.tensor([123, 456]),
+        )
+    )
+
+    temps, top_ps, top_ks, seeds = HiggsTTSModelRunner._extract_decode_sampling_params(
+        forward_batch, 2
+    )
+
+    assert temps == pytest.approx([0.8, 0.9])
+    assert top_ps == pytest.approx([0.7, 0.6])
+    assert top_ks == [30, 40]
+    assert seeds == [123, 456]
 
 
 def test_higgs_model_runner_skips_already_finished_eager_request() -> None:

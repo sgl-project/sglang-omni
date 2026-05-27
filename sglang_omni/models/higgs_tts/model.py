@@ -40,6 +40,7 @@ class HiggsGenParams:
     temperature: float = 1.0
     top_p: float | None = None
     top_k: int | None = None
+    seed: int | None = None
 
 
 _DEFAULT_MAX_BATCH_SIZE = 64
@@ -161,6 +162,12 @@ class HiggsTTSModel(nn.Module):
             pool_size, dtype=torch.float32, device=cg_device
         )
         self._cg_top_p = torch.ones(pool_size, dtype=torch.float32, device=cg_device)
+        self._cg_sampling_seed = torch.full(
+            (pool_size,),
+            -1,
+            dtype=torch.long,
+            device=cg_device,
+        )
         self._cg_top_k_buf = torch.full(
             (pool_size,),
             K_MAX,
@@ -177,6 +184,9 @@ class HiggsTTSModel(nn.Module):
         self._cg_was_done = torch.zeros(pool_size, dtype=torch.bool, device=cg_device)
 
         self._cg_active_delay_count = torch.zeros(
+            pool_size, dtype=torch.int32, device=cg_device
+        )
+        self._cg_active_sample_count = torch.zeros(
             pool_size, dtype=torch.int32, device=cg_device
         )
         self._cg_active_eoc_countdown = torch.full(
@@ -290,6 +300,16 @@ class HiggsTTSModel(nn.Module):
             dtype=torch.long,
             device=device,
         )
+        seeds = [p.seed for p in gen_params]
+        sampling_seed = (
+            torch.tensor(
+                [-1 if seed is None else int(seed) for seed in seeds],
+                dtype=torch.long,
+                device=device,
+            )
+            if any(seed is not None for seed in seeds)
+            else None
+        )
 
         was_done = self._sampler_pool.generation_done[row_indices].clone()
 
@@ -300,6 +320,7 @@ class HiggsTTSModel(nn.Module):
             temperature=temperature,
             top_p=top_p,
             top_k_buf=top_k_buf,
+            sampling_seed=sampling_seed,
         )
 
         # Note(yichi): One D2H per step to skip STOP-sentinel rows in the Python append loop.
@@ -331,8 +352,10 @@ class HiggsTTSModel(nn.Module):
         temperature = self._cg_temperature[:batch_size]
         top_p = self._cg_top_p[:batch_size]
         top_k_buf = self._cg_top_k_buf[:batch_size]
+        sampling_seed = self._cg_sampling_seed[:batch_size]
 
         delay_count_B = self._cg_active_delay_count[:batch_size].to(torch.long)
+        sample_count_B = self._cg_active_sample_count[:batch_size].to(torch.long)
         eoc_countdown_B = self._cg_active_eoc_countdown[:batch_size].to(torch.long)
         generation_done_B = self._cg_active_generation_done[:batch_size]
         last_codes_BN_in = self._cg_active_last_codes[:batch_size]
@@ -342,21 +365,27 @@ class HiggsTTSModel(nn.Module):
         (
             codes_BN,
             new_delay_count_B,
+            new_sample_count_B,
             new_eoc_countdown_B,
             new_generation_done_B,
             new_last_codes_BN,
         ) = batched_step_direct(
             logits_BNV,
             delay_count_B,
+            sample_count_B,
             eoc_countdown_B,
             generation_done_B,
             last_codes_BN_in,
             temperature=temperature,
             top_p=top_p,
             top_k_buf=top_k_buf,
+            sampling_seed=sampling_seed,
         )
         self._cg_active_delay_count[:batch_size] = new_delay_count_B.to(
             self._cg_active_delay_count.dtype
+        )
+        self._cg_active_sample_count[:batch_size] = new_sample_count_B.to(
+            self._cg_active_sample_count.dtype
         )
         self._cg_active_eoc_countdown[:batch_size] = new_eoc_countdown_B.to(
             self._cg_active_eoc_countdown.dtype
@@ -476,17 +505,22 @@ class HiggsTTSModel(nn.Module):
         temps = _flat_sampling_attr(sampling_info, "temperatures")
         top_ps = _flat_sampling_attr(sampling_info, "top_ps")
         top_ks = _flat_sampling_attr(sampling_info, "top_ks")
+        seeds = _flat_sampling_attr(sampling_info, "sampling_seed")
+        if seeds is None:
+            seeds = _flat_sampling_attr(sampling_info, "sampling_seeds")
 
         params: list[HiggsGenParams] = []
         for b in range(batch_size):
             temp = float(temps[b]) if temps is not None else 1.0
             tp = float(top_ps[b]) if top_ps is not None else None
             tk_raw = int(top_ks[b]) if top_ks is not None else 0
+            seed = int(seeds[b]) if seeds is not None and seeds[b] is not None else None
             params.append(
                 HiggsGenParams(
                     temperature=temp,
                     top_p=tp,
                     top_k=tk_raw or None,
+                    seed=seed,
                 )
             )
         return params
