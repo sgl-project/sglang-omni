@@ -44,3 +44,38 @@ def test_higgs_scheduler_adapters_clamp_cap_and_record_engine_time(
     assert result.data["completion_tokens"] == 1
     assert result.data["engine_time_s"] == 2.5
     assert reset_calls == ["req-higgs"]
+
+
+def test_build_sglang_higgs_request_passes_sampling_params() -> None:
+    """Regression: sglang's SamplingParams uses ``sampling_seed``, not ``seed``;
+    pre-fix the builder raised TypeError when state.seed was set.
+
+    Also pins that top_p / top_k / temperature flow through unchanged.
+    """
+    state = HiggsTtsState(
+        prompt_token_ids=[1, 2, 3],
+        max_new_tokens=128,
+        temperature=0.8,
+        top_p=0.95,
+        top_k=50,
+        seed=12345,
+    )
+    data = request_builders.build_sglang_higgs_request(state, request_id="r-seed")
+    sp = data.req.sampling_params
+
+    assert sp.sampling_seed == 12345
+    assert sp.max_new_tokens == 128
+    assert sp.temperature == 0.8
+    assert sp.top_p == 0.95
+    assert sp.top_k == 50
+
+
+def test_build_sglang_higgs_request_omits_seed_when_unset() -> None:
+    """When no seed is supplied, SamplingParams.sampling_seed stays None."""
+    state = HiggsTtsState(
+        prompt_token_ids=[1, 2, 3],
+        max_new_tokens=64,
+        seed=None,
+    )
+    data = request_builders.build_sglang_higgs_request(state, request_id="r-noseed")
+    assert data.req.sampling_params.sampling_seed is None
