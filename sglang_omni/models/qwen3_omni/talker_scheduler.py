@@ -109,9 +109,11 @@ class QwenTalkerScheduler(OmniScheduler):
         return batch
 
     def _rollback_decode_prep_after_skip(self, batch: Any) -> None:
-        # Note(Chenchen Hong): This is talker-only. It does not fully invert
-        # prepare_for_decode; talker disables overlap/spec/Mamba/hisparse, and
-        # its SamplingParams defaults keep the upstream penalizer branch inactive.
+        # Note(Chenchen Hong, Xuesong): This is talker-only. It does not fully
+        # invert prepare_for_decode; talker disables overlap/spec/Mamba/hisparse,
+        # and its SamplingParams defaults keep the upstream penalizer branch
+        # inactive. Also zero the req_to_token_pool cell that alloc_for_decode
+        # wrote at (req_pool_indices, pre-increment seq_lens).
         if not batch.forward_mode.is_decode():
             return
         if not isinstance(batch.seq_lens_sum, int):
@@ -132,6 +134,7 @@ class QwenTalkerScheduler(OmniScheduler):
         batch.seq_lens_cpu.sub_(1)
         batch.orig_seq_lens.sub_(1)
         batch.seq_lens_sum -= len(batch.reqs)
+        batch.req_to_token_pool.req_to_token[batch.req_pool_indices, batch.seq_lens] = 0
 
     def self_check_during_idle(self) -> None:
         if self.running_batch is not None and not self.running_batch.is_empty():

@@ -301,6 +301,7 @@ class OmniScheduler:
         self._pending_stream_chunks: dict[str, list[Any]] = {}
         self._pending_stream_done: set[str] = set()
         self._deferred_request_payloads: dict[str, Any] = {}
+        self._dirty_deferred_request_ids: set[str] = set()
         self._first_emit_done: set[str] = set()
         self._prefill_start_done: set[str] = set()
 
@@ -520,10 +521,14 @@ class OmniScheduler:
         return None
 
     def _take_deferred_request_payloads(self) -> list[Any]:
-        if not self._deferred_request_payloads:
+        if not self._dirty_deferred_request_ids:
             return []
-        deferred = list(self._deferred_request_payloads.values())
-        self._deferred_request_payloads.clear()
+        deferred: list[Any] = []
+        for req_id in list(self._dirty_deferred_request_ids):
+            payload = self._deferred_request_payloads.pop(req_id, None)
+            if payload is not None:
+                deferred.append(payload)
+        self._dirty_deferred_request_ids.clear()
         return deferred
 
     def _is_request_build_ready(
@@ -712,6 +717,8 @@ class OmniScheduler:
             self._append_stream_chunk(req_data, chunk)
             return
         self._pending_stream_chunks.setdefault(request_id, []).append(chunk)
+        if request_id in self._deferred_request_payloads:
+            self._dirty_deferred_request_ids.add(request_id)
 
     def _on_stream_done(self, request_id: str) -> None:
         req_data = self._find_request_data(request_id)
@@ -719,6 +726,8 @@ class OmniScheduler:
             self._mark_stream_done(req_data)
             return
         self._pending_stream_done.add(request_id)
+        if request_id in self._deferred_request_payloads:
+            self._dirty_deferred_request_ids.add(request_id)
 
     def start(self) -> None:
         self._running = True
@@ -750,6 +759,7 @@ class OmniScheduler:
         self._pending_stream_chunks.pop(request_id, None)
         self._pending_stream_done.discard(request_id)
         self._deferred_request_payloads.pop(request_id, None)
+        self._dirty_deferred_request_ids.discard(request_id)
         self.__dict__.setdefault("_first_emit_done", set()).discard(request_id)
         self.__dict__.setdefault("_prefill_start_done", set()).discard(request_id)
         self.waiting_queue = [

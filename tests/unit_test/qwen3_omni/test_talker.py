@@ -795,6 +795,7 @@ def _build_state_machine_scheduler(
     scheduler._pending_stream_chunks = {}
     scheduler._pending_stream_done = set()
     scheduler._deferred_request_payloads = {}
+    scheduler._dirty_deferred_request_ids = set()
     scheduler._aborted_request_ids = set()
     scheduler.waiting_queue = []
     scheduler._request_builder = request_builder_stub
@@ -901,6 +902,7 @@ def test_abort_filters_subsequent_stream_messages_via_recv_requests() -> None:
     scheduler._pending_stream_chunks = {}
     scheduler._pending_stream_done = set()
     scheduler._deferred_request_payloads = {}
+    scheduler._dirty_deferred_request_ids = set()
     scheduler.waiting_queue = []
 
     stream_chunk_calls: list[Any] = []
@@ -954,9 +956,10 @@ def test_rollback_decode_prep_after_skip_is_idempotent_across_repeated_stalls() 
     Reviewer flagged that an incomplete rollback in shared OmniScheduler could
     leak state across the side-effect set that ``prepare_for_decode`` writes
     (out_cache_loc, seq_lens, decode_batch_idx, kv_committed_len,
-    kv_allocated_len). Under talker server_args (overlap disabled, no Mamba)
-    those are the only writes; assert that rolling back twice leaves counters
-    where they started.
+    kv_allocated_len, plus the req_to_token_pool cell that ``alloc_for_decode``
+    writes for the new KV slot). Under talker server_args (overlap disabled,
+    no Mamba) those are the only writes; assert that rolling back twice leaves
+    every one of them where it started.
     """
     freed: list[Any] = []
 
@@ -978,16 +981,23 @@ def test_rollback_decode_prep_after_skip_is_idempotent_across_repeated_stalls() 
         SimpleNamespace(decode_batch_idx=5, kv_committed_len=12, kv_allocated_len=13),
         SimpleNamespace(decode_batch_idx=7, kv_committed_len=12, kv_allocated_len=13),
     ]
+    req_pool_indices = torch.tensor([3, 4])
+    req_to_token = torch.zeros((8, 16), dtype=torch.int32)
+    req_to_token[req_pool_indices, pre_seq_lens] = torch.tensor(
+        [777, 888], dtype=torch.int32
+    )
     batch = SimpleNamespace(
         forward_mode=FakeForwardMode(),
         out_cache_loc=object(),
         output_ids=None,
         input_ids=torch.tensor([99, 100]),
         reqs=reqs,
-        seq_lens=pre_seq_lens.clone(),
-        seq_lens_cpu=pre_seq_lens_cpu.clone(),
-        orig_seq_lens=pre_orig_seq_lens.clone(),
-        seq_lens_sum=pre_seq_lens_sum,
+        seq_lens=pre_seq_lens.clone() + 1,
+        seq_lens_cpu=pre_seq_lens_cpu.clone() + 1,
+        orig_seq_lens=pre_orig_seq_lens.clone() + 1,
+        seq_lens_sum=pre_seq_lens_sum + len(reqs),
+        req_pool_indices=req_pool_indices,
+        req_to_token_pool=SimpleNamespace(req_to_token=req_to_token),
     )
 
     scheduler = object.__new__(QwenTalkerScheduler)
@@ -1002,16 +1012,20 @@ def test_rollback_decode_prep_after_skip_is_idempotent_across_repeated_stalls() 
         assert req.decode_batch_idx == [5, 7][reqs.index(req)] - 1
         assert req.kv_committed_len == 11
         assert req.kv_allocated_len == 12
-    assert torch.equal(batch.seq_lens, pre_seq_lens - 1)
-    assert torch.equal(batch.seq_lens_cpu, pre_seq_lens_cpu - 1)
-    assert torch.equal(batch.orig_seq_lens, pre_orig_seq_lens - 1)
-    assert batch.seq_lens_sum == pre_seq_lens_sum - len(reqs)
+    assert torch.equal(batch.seq_lens, pre_seq_lens)
+    assert torch.equal(batch.seq_lens_cpu, pre_seq_lens_cpu)
+    assert torch.equal(batch.orig_seq_lens, pre_orig_seq_lens)
+    assert batch.seq_lens_sum == pre_seq_lens_sum
     assert len(freed) == 1
+    assert torch.equal(
+        req_to_token[req_pool_indices, pre_seq_lens],
+        torch.zeros(len(reqs), dtype=torch.int32),
+    )
 
     # A second stall on the next iteration must roll back again without
     # accumulating state — the contract is "leaves no residue per stall".
-    # Re-simulate prepare_for_decode having run: counters re-incremented +
-    # a fresh out_cache_loc was allocated.
+    # Re-simulate prepare_for_decode having run: counters re-incremented,
+    # a fresh out_cache_loc was allocated, and the new KV slot was written.
     batch.out_cache_loc = object()
     for req in reqs:
         req.decode_batch_idx += 1
@@ -1021,6 +1035,9 @@ def test_rollback_decode_prep_after_skip_is_idempotent_across_repeated_stalls() 
     batch.seq_lens_cpu.add_(1)
     batch.orig_seq_lens.add_(1)
     batch.seq_lens_sum += len(reqs)
+    req_to_token[req_pool_indices, pre_seq_lens] = torch.tensor(
+        [333, 444], dtype=torch.int32
+    )
 
     scheduler._rollback_decode_prep_after_skip(batch)
     assert batch.out_cache_loc is None
@@ -1028,8 +1045,9 @@ def test_rollback_decode_prep_after_skip_is_idempotent_across_repeated_stalls() 
         assert req.decode_batch_idx == [5, 7][reqs.index(req)] - 1
         assert req.kv_committed_len == 11
         assert req.kv_allocated_len == 12
-    assert batch.seq_lens_sum == pre_seq_lens_sum - len(reqs)
+    assert batch.seq_lens_sum == pre_seq_lens_sum
     assert len(freed) == 2
+    assert torch.equal(req_to_token, torch.zeros_like(req_to_token))
 
 
 def test_rollback_decode_prep_after_skip_is_noop_for_prefill_batches() -> None:
@@ -1097,11 +1115,20 @@ def test_prepare_for_decode_rollback_type_contract_with_upstream(monkeypatch) ->
     batch.seq_lens_sum = 10
     batch.device = torch.device("cpu")
     batch.spec_info = None
+    batch.req_pool_indices = torch.tensor([2], dtype=torch.long)
+    req_to_token = torch.zeros((4, 16), dtype=torch.int32)
+    batch.req_to_token_pool = SimpleNamespace(req_to_token=req_to_token)
+
+    def _fake_alloc_for_decode(b, token_per_req):
+        out = torch.tensor([123], dtype=torch.long)
+        locs = b.seq_lens.clone()
+        b.req_to_token_pool.req_to_token[b.req_pool_indices, locs] = out.to(torch.int32)
+        return out
 
     monkeypatch.setattr(
         schedule_batch_mod,
         "alloc_for_decode",
-        lambda _batch, token_per_req: torch.tensor([123], dtype=torch.long),
+        _fake_alloc_for_decode,
     )
     monkeypatch.setattr(
         schedule_batch_mod,
@@ -1111,6 +1138,7 @@ def test_prepare_for_decode_rollback_type_contract_with_upstream(monkeypatch) ->
 
     ScheduleBatch.prepare_for_decode(batch)
     assert isinstance(batch.seq_lens_sum, int)
+    assert int(req_to_token[2, 10]) == 123
 
     allocated = batch.out_cache_loc
     freed: list[Any] = []
@@ -1123,6 +1151,7 @@ def test_prepare_for_decode_rollback_type_contract_with_upstream(monkeypatch) ->
     assert batch.out_cache_loc is None
     assert len(freed) == 1
     assert torch.equal(freed[0], allocated)
+    assert int(req_to_token[2, 10]) == 0
 
 
 def test_qwen_model_runner_and_code_predictor_tensor_contracts() -> None:

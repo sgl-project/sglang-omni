@@ -233,17 +233,6 @@ _SPEECH_DEFAULT_PROCESSES = {
     "code2wav": "code2wav",
 }
 
-_SPEECH_COLOCATED_PROCESSES = {
-    "preprocessing": "preprocessing",
-    "image_encoder": "image_encoder",
-    "audio_encoder": "audio_encoder",
-    "mm_aggregate": "mm_aggregate",
-    "thinker": "thinker",
-    "decode": "decode",
-    "talker_ar": "talker_ar",
-    "code2wav": "code2wav",
-}
-
 
 class Qwen3OmniPipelineConfig(PipelineConfig):
     """6-stage text-only pipeline."""
@@ -305,7 +294,7 @@ class Qwen3OmniSpeechColocatedPipelineConfig(Qwen3OmniSpeechPipelineConfig):
         default_factory=lambda: _speech_stages(
             thinker_gpu=0,
             talker_gpu=0,
-            process_by_stage=_SPEECH_COLOCATED_PROCESSES,
+            process_by_stage=_SPEECH_DEFAULT_PROCESSES,
         )
     )
 
