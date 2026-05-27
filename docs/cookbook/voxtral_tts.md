@@ -9,17 +9,9 @@ and is served through the OpenAI-compatible `/v1/audio/speech` endpoint.
 
 ## Prerequisites
 
-```bash
-docker pull frankleeeee/sglang-omni:dev
-docker run -it --shm-size 32g --gpus all frankleeeee/sglang-omni:dev /bin/zsh
-```
+Install `sglang-omni` by following [Installation](../get_started/installation.md), then install the Voxtral-specific tokenizer and download the model:
 
 ```bash
-git clone https://github.com/sgl-project/sglang-omni.git
-cd sglang-omni
-uv venv .venv -p 3.12 && source .venv/bin/activate
-uv pip install -v .
-
 # Voxtral preprocessing uses Mistral's Tekken tokenizer from mistral-common.
 uv pip install 'mistral-common[audio]>=1.8.0'
 
