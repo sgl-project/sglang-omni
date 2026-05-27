@@ -970,6 +970,13 @@ def test_qwen3_tts_prepare_decode_buffers_collects_private_subtalker_seeds(
     talker._sub_top_k_tensor = torch.empty(2, dtype=torch.long)
     talker._semantic_sampling_seed_tensor = torch.empty(2, dtype=torch.long)
     talker._sub_sampling_seed_tensor = torch.empty(2, dtype=torch.long)
+    talker._semantic_sampling_seed_cpu = torch.empty(2, dtype=torch.long)
+    talker._sub_temperature_cpu = torch.empty(2, dtype=torch.float32)
+    talker._sub_top_p_cpu = torch.empty(2, dtype=torch.float32)
+    talker._sub_top_k_cpu = torch.empty(2, dtype=torch.long)
+    talker._sub_sampling_seed_cpu = torch.empty(2, dtype=torch.long)
+    talker._sub_sample_row_indices_cpu = torch.empty(2, dtype=torch.long)
+    talker._sub_sample_rows = []
     talker._sub_sample_row_indices_tensor = torch.empty(2, dtype=torch.long)
     requests = [
         SimpleNamespace(
@@ -994,6 +1001,12 @@ def test_qwen3_tts_prepare_decode_buffers_collects_private_subtalker_seeds(
         ),
     ]
 
+    def fail_tensor(*args, **kwargs):
+        del args, kwargs
+        raise AssertionError("prepare_decode_buffers must not allocate tensors")
+
+    monkeypatch.setattr(torch, "tensor", fail_tensor)
+
     Qwen3TTSTalker.prepare_decode_buffers(talker, requests)
 
     assert talker._sub_batch_size == 2
@@ -1016,7 +1029,17 @@ def test_qwen3_tts_prepare_decode_buffers_requires_owned_request_data(
     from sglang_omni.models.qwen3_tts.sglang_model import Qwen3TTSTalker
 
     talker = Qwen3TTSTalker.__new__(Qwen3TTSTalker)
+    talker.config = SimpleNamespace(
+        code_predictor_config=SimpleNamespace(vocab_size=2048)
+    )
     talker._sub_temperature_tensor = torch.empty(1, dtype=torch.float32)
+    talker._semantic_sampling_seed_cpu = torch.empty(1, dtype=torch.long)
+    talker._sub_temperature_cpu = torch.empty(1, dtype=torch.float32)
+    talker._sub_top_p_cpu = torch.empty(1, dtype=torch.float32)
+    talker._sub_top_k_cpu = torch.empty(1, dtype=torch.long)
+    talker._sub_sampling_seed_cpu = torch.empty(1, dtype=torch.long)
+    talker._sub_sample_row_indices_cpu = torch.empty(1, dtype=torch.long)
+    talker._sub_sample_rows = []
     requests = [SimpleNamespace(data=SimpleNamespace())]
 
     with pytest.raises(TypeError, match="request data with"):
