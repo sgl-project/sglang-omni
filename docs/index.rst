@@ -21,6 +21,13 @@ Our core features include:
 
 .. toctree::
    :maxdepth: 1
+   :caption: Cookbook
+
+   cookbook/higgs_tts.md
+
+
+.. toctree::
+   :maxdepth: 1
    :caption: Basic Usage
 
    basic_usage/qwen3_omni.md
