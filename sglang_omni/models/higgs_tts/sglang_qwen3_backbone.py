@@ -41,9 +41,9 @@ class HiggsQwen3Model(Qwen3Model):
             residual = pp_proxy_tensors["residual"]
 
         # Prefill keeps ``self.layers`` because its shape varies per request,
-        # which would force dynamo recompiles. bs above ``_compiled_max_decode_bs``
-        # also falls back to eager to dodge an upstream sglang × inductor bug at
-        # ``bs == cuda_graph_max_bs`` (see ``issue_565_torch_compile_result.md``).
+        # which would force dynamo recompiles. The ``_compiled_max_decode_bs``
+        # hook is kept for future workarounds; with the eager pre-warmup the
+        # full decode bs range is safe (see ``issue_565_torch_compile_result.md``).
         compiled = getattr(self, "_compiled_decode_layers", None)
         max_bs = getattr(self, "_compiled_max_decode_bs", None)
         forward_mode = getattr(forward_batch, "forward_mode", None)

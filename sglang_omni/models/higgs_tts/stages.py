@@ -245,12 +245,32 @@ def _compile_higgs_backbone(model: Any) -> None:
     inner._compiled_decode_layers = [
         torch.compile(layer, mode=compile_mode) for layer in layers
     ]
-    # bs above this falls back to eager ``self.layers`` to dodge an upstream
-    # sglang × inductor CG-capture bug at ``bs == cuda_graph_max_bs`` — see
-    # ``issue_565_torch_compile_result.md``.
-    # TODO (yichi): lift this cap to 16 (i.e. drop ``_compiled_max_decode_bs``
-    # entirely) once the upstream sglang × inductor CG-capture bug is fixed.
-    inner._compiled_max_decode_bs = 12
+    # ``_warmup_eager_pre_cg`` (called below) makes the full decode bs range
+    # safe under torch.compile + CG, so we no longer cap below the largest
+    # captured bs. Kept as a hook in case a future workaround needs it.
+    inner._compiled_max_decode_bs = 16
+
+
+def _warmup_eager_pre_cg(model_runner: Any) -> None:
+    """Run a single eager forward at bs=1 BEFORE CG capture starts.
+
+    Temporarily hides ``_compiled_decode_layers`` so the dispatch in
+    ``HiggsQwen3Model.forward`` falls back to ``self.layers``. The eager
+    forward initializes lazy CUDA state (allocator pools, cuBLAS handles,
+    etc.) that would otherwise get initialized inside the FIRST CG
+    capture's dynamo trace — a code path that empirically corrupts the
+    captured kernels for that bs.
+    """
+    inner = model_runner.model.backbone.model
+    saved = getattr(inner, "_compiled_decode_layers", None)
+    if saved is None:
+        return
+    inner._compiled_decode_layers = None
+    try:
+        model_runner._dummy_run(batch_size=1)
+        torch.cuda.synchronize()
+    finally:
+        inner._compiled_decode_layers = saved
 
 
 def create_sglang_tts_engine_executor(
@@ -272,9 +292,10 @@ def create_sglang_tts_engine_executor(
         "chunked_prefill_size": 8192,
         "dtype": "bfloat16",
         # Issue #565: torch.compile on the AR backbone (manual layer-by-layer,
-        # see :func:`_compile_higgs_backbone`). bs > 12 falls back to eager.
+        # see :func:`_compile_higgs_backbone`). The full bs range is safe
+        # thanks to the eager pre-warmup in ``_warmup_eager_pre_cg``.
         "enable_torch_compile": True,
-        "torch_compile_max_bs": 12,
+        "torch_compile_max_bs": 16,
         "sampling_backend": "pytorch",
         # Radix cache is namespaced per ref-audio via Req.extra_key (set in
         # build_sglang_higgs_request); shared -100 placeholder prefixes from
@@ -317,6 +338,12 @@ def create_sglang_tts_engine_executor(
         # and letting ``patch_model`` re-wrap the whole forward at capture
         # time triggers a device-side assert at bs ≥ 8.
         server_args.enable_torch_compile = False
+        # Warm up the model in eager mode BEFORE CG capture so the first
+        # compile dynamo trace during capture sees a fully-initialized CUDA
+        # state. Without this, lazy CUDA init (cuBLAS handle, allocator pool,
+        # etc.) lands inside the captured graph and corrupts replay at the
+        # first compiled+captured bs.
+        _warmup_eager_pre_cg(model_worker.model_runner)
 
     if want_cuda_graph:
         model_worker.model_runner.init_device_graphs()
