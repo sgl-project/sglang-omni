@@ -10,9 +10,15 @@ from sglang.srt.managers.scheduler import GenerationBatchResult
 
 from sglang_omni.model_runner.base import ModelRunner
 from sglang_omni.models.voxtral_tts.acoustic_transformer import AudioSpecialTokens
+from sglang_omni.scheduling.types import RequestOutput
 
 
 class VoxtralTTSModelRunner(ModelRunner):
+    def __init__(self, tp_worker: Any, output_processor: Any):
+        super().__init__(tp_worker, output_processor)
+        self._pending_audio_codes: torch.Tensor | None = None
+        self._pending_audio_embeds: torch.Tensor | None = None
+
     def prepare_prefill(
         self,
         forward_batch: Any,
@@ -108,6 +114,7 @@ class VoxtralTTSModelRunner(ModelRunner):
         schedule_batch: Any,
         requests: list,
     ) -> None:
+        del requests
         hidden = result.logits_output.hidden_states
         if hidden.ndim == 3:
             hidden = hidden[:, -1, :]
@@ -116,11 +123,30 @@ class VoxtralTTSModelRunner(ModelRunner):
         result.next_token_ids = semantic_ids
         schedule_batch.output_ids = semantic_ids
 
+        self._pending_audio_codes = codes
+        self._pending_audio_embeds = self.model.audio_token_embedding(
+            codes.unsqueeze(2)
+        ).sum(dim=1)
+
+    def post_process_outputs(
+        self,
+        result: Any,
+        scheduler_output: Any,
+        outputs: dict[str, RequestOutput],
+    ) -> None:
+        del result
+        codes = self._pending_audio_codes
+        embeds = self._pending_audio_embeds
+        self._pending_audio_codes = None
+        self._pending_audio_embeds = None
+        if codes is None or embeds is None:
+            return
+
         eos_id = AudioSpecialTokens.id(AudioSpecialTokens.end_audio)
-        embeds = self.model.audio_token_embedding(codes.unsqueeze(2)).sum(dim=1)
-        active_rows = (semantic_ids != eos_id).nonzero(as_tuple=True)[0].tolist()
-        for row_idx in active_rows:
-            sched_req = requests[row_idx]
+        for row_idx, sched_req in enumerate(scheduler_output.requests):
+            req_output = outputs[sched_req.request_id]
+            if req_output.data is None or int(req_output.data) == eos_id:
+                continue
             sched_req.data.output_codes.append(codes[row_idx].detach().clone())
             sched_req.data.pending_feedback_queue.append(
                 embeds[row_idx, 0].detach().clone()

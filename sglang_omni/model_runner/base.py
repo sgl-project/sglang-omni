@@ -11,7 +11,7 @@ from typing import Any
 
 import torch
 
-from sglang_omni.scheduling.types import ModelRunnerOutput
+from sglang_omni.scheduling.types import ModelRunnerOutput, RequestOutput
 
 logger = logging.getLogger(__name__)
 
@@ -137,6 +137,7 @@ class ModelRunner:
 
         # Output extraction
         outputs = self.output_processor.process(batch_result, scheduler_output)
+        self.post_process_outputs(batch_result, scheduler_output, outputs)
         for sched_req in scheduler_output.requests:
             data = sched_req.data
             data.generation_steps = int(data.generation_steps) + 1
@@ -183,6 +184,14 @@ class ModelRunner:
         self, result: Any, forward_batch: Any, schedule_batch: Any, requests: list
     ) -> None:
         """Called after decode forward."""
+
+    def post_process_outputs(
+        self,
+        result: Any,
+        scheduler_output: Any,
+        outputs: dict[str, RequestOutput],
+    ) -> None:
+        """Called after output tokens are materialized into RequestOutput."""
 
     def sample_before_post_prefill(
         self, forward_batch: Any, schedule_batch: Any, requests: list

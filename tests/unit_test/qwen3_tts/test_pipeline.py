@@ -30,6 +30,7 @@ from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling.messages import IncomingMessage
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
+from sglang_omni.scheduling.types import RequestOutput
 
 
 def install_fake_sglang(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -917,6 +918,7 @@ def test_qwen3_tts_collect_codes_excludes_semantic_eos(
     from sglang_omni.models.qwen3_tts.model_runner import Qwen3TTSModelRunner
 
     runner = Qwen3TTSModelRunner.__new__(Qwen3TTSModelRunner)
+    runner._has_pending_code_step = False
 
     def code_predictor_forward(layer0_codes, hidden, semantic_positions=None):
         assert layer0_codes.tolist() == [[7], [42]]
@@ -939,17 +941,32 @@ def test_qwen3_tts_collect_codes_excludes_semantic_eos(
         positions=torch.tensor([3, 3], dtype=torch.long),
     )
     requests = [
-        SimpleNamespace(data=Qwen3TTSSGLangRequestData()),
-        SimpleNamespace(data=Qwen3TTSSGLangRequestData()),
+        SimpleNamespace(request_id="active", data=Qwen3TTSSGLangRequestData()),
+        SimpleNamespace(request_id="eos", data=Qwen3TTSSGLangRequestData()),
     ]
 
     runner._collect_codes(result, forward_batch, schedule_batch, requests)
 
     assert schedule_batch.output_ids.tolist() == [7, 42]
+    assert requests[0].data.output_codes == []
+    assert requests[1].data.output_codes == []
+
+    runner.post_process_outputs(
+        result,
+        SimpleNamespace(requests=requests),
+        {
+            "active": RequestOutput("active", data=7),
+            "eos": RequestOutput("eos", data=42),
+        },
+    )
+
     assert [chunk.tolist() for chunk in requests[0].data.output_codes] == [[1, 2]]
     assert len(requests[0].data.pending_feedback_queue) == 1
     assert requests[1].data.output_codes == []
     assert len(requests[1].data.pending_feedback_queue) == 0
+
+    runner.post_process_outputs(result, SimpleNamespace(requests=requests), {})
+    assert len(requests[0].data.output_codes) == 1
 
 
 def test_qwen3_tts_prepare_decode_buffers_collects_private_subtalker_seeds(

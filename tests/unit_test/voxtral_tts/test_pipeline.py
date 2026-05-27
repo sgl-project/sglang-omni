@@ -14,6 +14,7 @@ from sglang_omni.models.voxtral_tts.io import VoxtralTTSState
 from sglang_omni.models.voxtral_tts.pipeline import stages
 from sglang_omni.models.voxtral_tts.request_builders import build_sglang_voxtral_request
 from sglang_omni.proto import OmniRequest, StagePayload
+from sglang_omni.scheduling.types import RequestOutput
 from sglang_omni.utils.audio_payload import audio_waveform_payload
 
 
@@ -149,3 +150,64 @@ def test_voxtral_audio_waveform_payload_is_compact() -> None:
     assert audio.tolist() == [0.0, 0.5, -0.5]
     assert payload["audio_waveform_shape"] == [3]
     assert payload["audio_waveform_dtype"] == "float32"
+
+
+def test_voxtral_collect_audio_step_reuses_output_tokens_for_eos_filter() -> None:
+    from sglang_omni.models.voxtral_tts.acoustic_transformer import AudioSpecialTokens
+    from sglang_omni.models.voxtral_tts.model_runner import VoxtralTTSModelRunner
+
+    eos_id = AudioSpecialTokens.id(AudioSpecialTokens.end_audio)
+    runner = VoxtralTTSModelRunner.__new__(VoxtralTTSModelRunner)
+    runner._pending_audio_codes = None
+    runner._pending_audio_embeds = None
+    runner.model = SimpleNamespace(
+        acoustic_transformer=lambda hidden: torch.tensor(
+            [[11, 12, 13], [eos_id, 21, 22]], dtype=torch.long
+        ),
+        audio_token_embedding=lambda codes: codes.to(torch.float32).unsqueeze(-1),
+    )
+    result = SimpleNamespace(
+        logits_output=SimpleNamespace(hidden_states=torch.ones((2, 4))),
+        next_token_ids=None,
+    )
+    schedule_batch = SimpleNamespace(output_ids=None)
+    requests = [
+        SimpleNamespace(
+            request_id="active",
+            data=SimpleNamespace(
+                output_codes=[],
+                pending_feedback_queue=[],
+            ),
+        ),
+        SimpleNamespace(
+            request_id="eos",
+            data=SimpleNamespace(
+                output_codes=[],
+                pending_feedback_queue=[],
+            ),
+        ),
+    ]
+
+    runner._collect_audio_step(result, schedule_batch, requests)
+
+    assert result.next_token_ids.tolist() == [11, eos_id]
+    assert schedule_batch.output_ids.tolist() == [11, eos_id]
+    assert requests[0].data.output_codes == []
+    assert requests[1].data.output_codes == []
+
+    runner.post_process_outputs(
+        result,
+        SimpleNamespace(requests=requests),
+        {
+            "active": RequestOutput("active", data=11),
+            "eos": RequestOutput("eos", data=eos_id),
+        },
+    )
+
+    assert [chunk.tolist() for chunk in requests[0].data.output_codes] == [[11, 12, 13]]
+    assert len(requests[0].data.pending_feedback_queue) == 1
+    assert requests[1].data.output_codes == []
+    assert requests[1].data.pending_feedback_queue == []
+
+    runner.post_process_outputs(result, SimpleNamespace(requests=requests), {})
+    assert len(requests[0].data.output_codes) == 1

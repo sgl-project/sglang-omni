@@ -10,10 +10,15 @@ from sglang.srt.managers.scheduler import GenerationBatchResult
 
 from sglang_omni.model_runner.base import ModelRunner
 from sglang_omni.models.qwen3_omni.talker_model_runner import QwenTalkerModelRunner
+from sglang_omni.scheduling.types import RequestOutput
 
 
 class Qwen3TTSModelRunner(ModelRunner):
     """Runs Qwen3-TTS AR steps and stores generated codec frames per request."""
+
+    def __init__(self, tp_worker: Any, output_processor: Any):
+        super().__init__(tp_worker, output_processor)
+        self._has_pending_code_step = False
 
     def prepare_prefill(
         self,
@@ -102,6 +107,7 @@ class Qwen3TTSModelRunner(ModelRunner):
         schedule_batch: Any,
         requests: list,
     ) -> None:
+        self._has_pending_code_step = False
         if result.next_token_ids is None:
             return
         layer0_codes = result.next_token_ids
@@ -118,14 +124,23 @@ class Qwen3TTSModelRunner(ModelRunner):
             semantic_positions=semantic_positions,
         )
         schedule_batch.output_ids = result.next_token_ids
+        self._has_pending_code_step = True
 
+    def post_process_outputs(
+        self,
+        result: Any,
+        scheduler_output: Any,
+        outputs: dict[str, RequestOutput],
+    ) -> None:
+        del result
+        if not self._has_pending_code_step:
+            return
+        self._has_pending_code_step = False
         eos_id = int(self.model.config.codec_eos_token_id)
-        semantic_ids = result.next_token_ids.reshape(-1)
-        semantic_tokens = semantic_ids[: len(requests)].tolist()
-        for row_idx, semantic_token in enumerate(semantic_tokens):
-            if semantic_token == eos_id:
+        for row_idx, sched_req in enumerate(scheduler_output.requests):
+            req_output = outputs[sched_req.request_id]
+            if req_output.data is None or int(req_output.data) == eos_id:
                 continue
-            sched_req = requests[row_idx]
             code_chunk = self.model._output_codes[row_idx].detach().clone()
             feedback = self.model._output_embeds[row_idx].detach().clone()
             sched_req.data.output_codes.append(code_chunk)
