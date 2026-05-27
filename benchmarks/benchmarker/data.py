@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass
@@ -20,3 +20,6 @@ class RequestResult:
     tok_per_s: float = 0.0
     wav_path: str = ""
     error: str = ""
+    audio_ttfp_s: float | None = None
+    inter_chunk_s: list[float] = field(default_factory=list)
+    text_ttft_s: float | None = None

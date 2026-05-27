@@ -148,9 +148,16 @@ class HiggsTTSModelRunner(ModelRunner):
         pool.generation_done[rows_t] = model._cg_active_generation_done[:n_real]
         pool.last_codes[rows_t] = model._cg_active_last_codes[:n_real]
 
-        was_done_cpu = model._cg_was_done[:n_real].cpu().tolist()
-        codes_BN_cpu = model._cg_codes_BN[:n_real].detach().cpu().clone()
-        gen_done_after_cpu = model._cg_active_generation_done[:n_real].cpu().tolist()
+        # Note(Jiaxin): pack the 3 tensors, copy back with one D2H, then slice on host.
+        num_codebooks = model._cg_codes_BN.shape[1]
+        staging = model._cg_collect_staging
+        staging[:n_real, :num_codebooks] = model._cg_codes_BN[:n_real]
+        staging[:n_real, num_codebooks] = model._cg_was_done[:n_real]
+        staging[:n_real, num_codebooks + 1] = model._cg_active_generation_done[:n_real]
+        combined_cpu = staging[:n_real].cpu()
+        codes_BN_cpu = combined_cpu[:, :num_codebooks]
+        was_done_cpu = combined_cpu[:, num_codebooks].bool().tolist()
+        gen_done_after_cpu = combined_cpu[:, num_codebooks + 1].bool().tolist()
         cb0_per_row: list[int] = []
         for b, sched_req in enumerate(requests):
             data = sched_req.data
