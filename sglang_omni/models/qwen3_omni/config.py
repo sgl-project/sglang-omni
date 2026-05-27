@@ -11,6 +11,7 @@ from sglang_omni.config import PipelineConfig, PlacementConfig, StageConfig
 
 _PKG = "sglang_omni.models.qwen3_omni"
 _PLACEMENT_POLICY = f"{_PKG}.placement.Qwen3OmniPlacementPolicy"
+MIN_PARTIAL_START_CHUNKS = 3
 
 # SGLang reads this when DeepGEMM compile utilities are imported. Qwen AR
 # stages can first hit some dense FP8 shapes after readiness; disable all-M
@@ -74,7 +75,25 @@ def _audio_encoder_stage(*, gpu: int, process: str) -> StageConfig:
     )
 
 
-def _aggregate_stage(*, process: str) -> StageConfig:
+def _aggregate_stage(*, process: str, speech_enabled: bool = False) -> StageConfig:
+    # Route the merged payload to talker_ar so partial-start can fire — the
+    # policy hook needs the new_request before `stream_done` arrives.
+    if speech_enabled:
+        return StageConfig(
+            name="mm_aggregate",
+            process=process,
+            factory=f"{_PKG}.stages.create_aggregate_executor",
+            wait_for=["preprocessing", "image_encoder", "audio_encoder"],
+            wait_for_fn=f"{_PKG}.request_builders.resolve_mm_aggregate_wait_sources",
+            merge_fn=f"{_PKG}.merge.merge_for_thinker",
+            next=["thinker", "talker_ar"],
+            route_fn=f"{_PKG}.request_builders.resolve_mm_aggregate_next_stages",
+            project_payload={
+                "talker_ar": (
+                    f"{_PKG}.request_builders.project_mm_aggregate_to_talker_ar"
+                ),
+            },
+        )
     return StageConfig(
         name="mm_aggregate",
         process=process,
@@ -97,7 +116,7 @@ def _thinker_stage(*, gpu: int, speech_enabled: bool, process: str) -> StageConf
         factory_args=factory_args,
         gpu=gpu,
         runtime_arg_map={"max_seq_len": "thinker_max_seq_len"},
-        next=["decode", "talker_ar"] if speech_enabled else "decode",
+        next="decode",
         stream_to=["talker_ar", "decode"] if speech_enabled else ["decode"],
         route_fn=(
             f"{_PKG}.request_builders.resolve_thinker_next_stages"
@@ -138,6 +157,8 @@ def _talker_stage(*, gpu: int, process: str) -> StageConfig:
             "talker_max_seq_len": 32768,
             "speech_enabled": True,
             "feedback_enabled": True,
+            "enable_partial_start": False,
+            "partial_start_min_chunks": 5,
         },
         gpu=gpu,
         runtime_arg_map={"max_seq_len": "talker_max_seq_len"},
@@ -164,7 +185,7 @@ def _text_stages() -> list[StageConfig]:
         _preprocessing_stage(process="pipeline"),
         _image_encoder_stage(gpu=0, process="pipeline"),
         _audio_encoder_stage(gpu=0, process="pipeline"),
-        _aggregate_stage(process="pipeline"),
+        _aggregate_stage(process="pipeline", speech_enabled=False),
         _thinker_stage(gpu=0, speech_enabled=False, process="pipeline"),
         _decode_stage(process="pipeline"),
     ]
@@ -186,7 +207,10 @@ def _speech_stages(
             gpu=thinker_gpu,
             process=process_by_stage["audio_encoder"],
         ),
-        _aggregate_stage(process=process_by_stage["mm_aggregate"]),
+        _aggregate_stage(
+            process=process_by_stage["mm_aggregate"],
+            speech_enabled=True,
+        ),
         _thinker_stage(
             gpu=thinker_gpu,
             speech_enabled=True,
@@ -199,17 +223,6 @@ def _speech_stages(
 
 
 _SPEECH_DEFAULT_PROCESSES = {
-    "preprocessing": "preprocessing",
-    "image_encoder": "image_encoder",
-    "audio_encoder": "audio_encoder",
-    "mm_aggregate": "mm_aggregate",
-    "thinker": "thinker",
-    "decode": "decode",
-    "talker_ar": "talker_ar",
-    "code2wav": "code2wav",
-}
-
-_SPEECH_COLOCATED_PROCESSES = {
     "preprocessing": "preprocessing",
     "image_encoder": "image_encoder",
     "audio_encoder": "audio_encoder",
@@ -281,7 +294,7 @@ class Qwen3OmniSpeechColocatedPipelineConfig(Qwen3OmniSpeechPipelineConfig):
         default_factory=lambda: _speech_stages(
             thinker_gpu=0,
             talker_gpu=0,
-            process_by_stage=_SPEECH_COLOCATED_PROCESSES,
+            process_by_stage=_SPEECH_DEFAULT_PROCESSES,
         )
     )
 

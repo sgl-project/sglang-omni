@@ -1,4 +1,4 @@
-# Higgs Audio v3 TTS
+# Higgs TTS
 
 [Higgs Audio v3 TTS](https://huggingface.co/boson-sglang/higgs-audio-v3-tts-4b-base)
 is a chat-native text-to-speech model from Boson AI built on a Qwen3-4B backbone. It generates
