@@ -316,6 +316,13 @@ class OmniScheduler:
         self.use_ngram_embedding = False
         self.return_health_check_ipcs = []
         self.enable_overlap_mlx = False
+        # Upstream scheduler_runtime_checker_mixin._streaming_session_count
+        # iterates ``self.session_controller.sessions.values()`` during
+        # report_decode_stats. We don't host SGLang's interactive-session
+        # feature, so a stub with an empty sessions dict is sufficient.
+        from types import SimpleNamespace
+
+        self.session_controller = SimpleNamespace(sessions={})
 
     def self_check_during_idle(self) -> None:
         self.new_token_ratio = self.init_new_token_ratio
