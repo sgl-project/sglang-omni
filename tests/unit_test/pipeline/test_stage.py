@@ -653,6 +653,93 @@ def test_stage_projected_fan_out_rejects_nested_mutable_aliases() -> None:
     asyncio.run(_run())
 
 
+def test_stage_projected_fan_out_rejects_wrapped_original_data() -> None:
+    def _wrapped_data_projector(payload):
+        return make_stage_payload(
+            request_id=payload.request_id,
+            inputs=payload.request.inputs,
+            params=payload.request.params,
+            data={"projected": payload.data},
+        )
+
+    async def _run() -> None:
+        relay = FakeRelay()
+        control_plane = RecordingStageControlPlane()
+        sender = make_stage(
+            name="thinker",
+            get_next=lambda request_id, output: ["decode", "archive"],
+            endpoints={
+                "decode": "inproc://decode",
+                "archive": "inproc://archive",
+            },
+            relay=relay,
+            control_plane=control_plane,
+            project_payload={
+                "decode": _wrapped_data_projector,
+                "archive": _wrapped_data_projector,
+            },
+            same_process_targets={"decode", "archive"},
+            local_dispatcher=LocalStageDispatcher(),
+        )
+
+        await sender._route_result(
+            "req-fanout",
+            make_stage_payload(request_id="req-fanout", data={"answer": 7}),
+        )
+
+        assert [target for target, _, _ in control_plane.sent_to_stage] == [
+            "decode",
+            "archive",
+        ]
+        assert relay.storage
+
+    asyncio.run(_run())
+
+
+def test_stage_projected_fan_out_allows_tensor_leaf_sharing() -> None:
+    def _tensor_leaf_projector(payload):
+        return make_stage_payload(
+            request_id=payload.request_id,
+            inputs=payload.request.inputs,
+            params=payload.request.params,
+            data={"tensor": payload.data["tensor"], "target_only": []},
+        )
+
+    async def _run() -> None:
+        dispatcher = LocalStageDispatcher()
+        relay = FakeRelay()
+        control_plane = RecordingStageControlPlane()
+        decode_scheduler = FakeScheduler()
+        decode = make_stage(name="decode", scheduler=decode_scheduler)
+        sender = make_stage(
+            name="thinker",
+            get_next=lambda request_id, output: "decode",
+            endpoints={"decode": "inproc://decode"},
+            relay=relay,
+            control_plane=control_plane,
+            project_payload={"decode": _tensor_leaf_projector},
+            same_process_targets={"decode"},
+            local_dispatcher=dispatcher,
+        )
+        dispatcher.register_many([sender, decode])
+        tensor = torch.arange(4)
+
+        await sender._route_result(
+            "req-tensor-leaf",
+            make_stage_payload(
+                request_id="req-tensor-leaf",
+                data={"tensor": tensor, "scratch": []},
+            ),
+        )
+
+        assert relay.storage == {}
+        assert control_plane.sent_to_stage == []
+        queued = decode_scheduler.inbox.get_nowait()
+        assert queued.data.data["tensor"] is tensor
+
+    asyncio.run(_run())
+
+
 def test_stage_projected_fan_out_requires_stage_payload_projection() -> None:
     def _invalid_projector(payload):
         del payload

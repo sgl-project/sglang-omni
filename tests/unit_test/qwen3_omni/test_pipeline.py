@@ -171,6 +171,25 @@ def test_qwen_thinker_to_decode_projection_drops_multimodal_tensors() -> None:
     assert state.engine_outputs["thinker"]["extra_model_outputs"] == {}
 
 
+def test_qwen_thinker_to_decode_projection_isolates_stream_state() -> None:
+    stream_state = {"token_ids": [1, 2], "text": "hi", "emitted_text": ""}
+    payload = StagePayload(
+        request_id="req-1",
+        request=OmniRequest(inputs="hi"),
+        data={
+            "prompt": {"input_ids": torch.tensor([1, 2]), "prompt_text": "hi"},
+            "stream_state": stream_state,
+            "thinker_out": {"output_ids": [3], "is_final": False},
+        },
+    )
+
+    projected = project_thinker_to_decode(payload)
+
+    assert projected.data["stream_state"] == stream_state
+    assert projected.data["stream_state"] is not stream_state
+    assert projected.data["stream_state"]["token_ids"] is not stream_state["token_ids"]
+
+
 def test_qwen_talker_to_code2wav_projection_keeps_only_request_latch() -> None:
     payload = StagePayload(
         request_id="req-1",

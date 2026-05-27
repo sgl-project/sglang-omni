@@ -110,6 +110,7 @@ def project_thinker_to_decode(payload: StagePayload) -> StagePayload:
     """Keep decode payload focused on text detokenization state."""
     state = PipelineState.from_dict(payload.data)
     state.thinker_inputs = {}
+    state.stream_state = _copy_mutable_containers(state.stream_state)
 
     if isinstance(state.thinker_out, dict):
         thinker_out = dict(state.thinker_out)
@@ -253,6 +254,22 @@ def _payload_with_state(payload: StagePayload, state: PipelineState) -> StagePay
         request=payload.request,
         data=state.to_dict(),
     )
+
+
+def _copy_mutable_containers(value: Any) -> Any:
+    if isinstance(value, torch.Tensor):
+        return value
+    if isinstance(value, dict):
+        return {key: _copy_mutable_containers(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_copy_mutable_containers(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_copy_mutable_containers(item) for item in value)
+    if isinstance(value, set):
+        return {_copy_mutable_containers(item) for item in value}
+    if isinstance(value, bytearray):
+        return bytearray(value)
+    return value
 
 
 def _select_encoder_inputs(

@@ -751,6 +751,87 @@ def test_send_stream_chunk_falls_back_to_relay_for_large_inline_metadata(
     asyncio.run(_run())
 
 
+def test_send_stream_chunk_falls_back_to_relay_for_large_python_container_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _run() -> None:
+        control_plane = _FakeControlPlane()
+        relay = _FakeRelay()
+        codes = torch.arange(11, dtype=torch.float32)
+        token_ids = list(range(128 * 1024))
+
+        monkeypatch.setattr(relay_io, "_is_cuda_tensor", lambda data: data is codes)
+        monkeypatch.setattr(
+            relay_io,
+            "serialize_ipc_chunk",
+            lambda data, metadata: pytest.fail("large metadata must use relay"),
+        )
+
+        await relay_io.send_stream_chunk(
+            relay,
+            control_plane,
+            request_id="req",
+            data=codes,
+            target_stage="vocoder",
+            target_endpoint="inproc://vocoder",
+            from_stage="tts_engine",
+            chunk_id=0,
+            metadata={"modality": "audio_codes", "token_ids": token_ids},
+            same_gpu_targets={"vocoder"},
+        )
+
+        assert len(relay.puts) == 1
+        assert len(control_plane.stage_messages) == 1
+        _, _, msg = control_plane.stage_messages[0]
+        assert "_ipc" not in msg.shm_metadata
+        assert msg.shm_metadata["chunk_metadata"] == {
+            "modality": "audio_codes",
+            "token_ids": token_ids,
+        }
+
+    asyncio.run(_run())
+
+
+def test_send_stream_chunk_rejects_mixed_cuda_cpu_data_object_graph(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _run() -> None:
+        control_plane = _FakeControlPlane()
+        relay = _FakeRelay()
+        cuda_codes = torch.arange(11, dtype=torch.float32)
+        cpu_stats = torch.arange(3)
+
+        monkeypatch.setattr(
+            relay_io,
+            "_is_cuda_tensor",
+            lambda data: data is cuda_codes,
+        )
+        monkeypatch.setattr(
+            relay_io,
+            "serialize_ipc_chunk",
+            lambda data, metadata: pytest.fail("mixed data must not use IPC"),
+        )
+
+        with pytest.raises(ValueError, match="mixed object graphs"):
+            await relay_io.send_stream_chunk(
+                relay,
+                control_plane,
+                request_id="req",
+                data={"codes": cuda_codes, "stats": cpu_stats},
+                target_stage="vocoder",
+                target_endpoint="inproc://vocoder",
+                from_stage="tts_engine",
+                chunk_id=0,
+                metadata={"modality": "audio_codes"},
+                same_gpu_targets={"vocoder"},
+            )
+
+        assert relay.puts == []
+        assert control_plane.stage_messages == []
+
+    asyncio.run(_run())
+
+
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
 def test_send_stream_chunk_uses_cuda_ipc_for_cuda_same_gpu_chunk() -> None:
     async def _run() -> None:
