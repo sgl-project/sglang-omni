@@ -18,6 +18,7 @@ from sglang_omni.models.qwen3_tts.request_builders import (
 )
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
+from sglang_omni.utils.audio_payload import audio_waveform_payload
 
 logger = logging.getLogger(__name__)
 
@@ -105,20 +106,6 @@ def _load_qwen3_tts_generate_defaults(checkpoint_dir: str) -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
-def _audio_to_list(audio: Any) -> list[float]:
-    if isinstance(audio, torch.Tensor):
-        return audio.detach().float().cpu().flatten().tolist()
-    try:
-        import numpy as np
-
-        array = np.asarray(audio, dtype=np.float32).reshape(-1)
-        return array.tolist()
-    except (TypeError, ValueError) as exc:
-        raise TypeError(
-            f"Unsupported Qwen3-TTS audio output type: {type(audio)}"
-        ) from exc
-
-
 def _build_usage(state: Qwen3TTSState) -> dict[str, Any] | None:
     if not (state.prompt_tokens or state.completion_tokens or state.engine_time_s):
         return None
@@ -144,6 +131,7 @@ def create_sglang_tts_engine_executor(
     model_path: str,
     *,
     device: str = "cuda:0",
+    gpu_id: int | None = None,
     dtype: str = "bfloat16",
     attn_implementation: str | None = None,
 ) -> Any:
@@ -160,6 +148,8 @@ def create_sglang_tts_engine_executor(
 
     _register_qwen3_tts_hf_config()
     checkpoint_dir = _resolve_checkpoint(model_path)
+    if gpu_id is not None:
+        device = f"cuda:{gpu_id}"
     gpu_id = int(device.split(":")[-1]) if ":" in device else 0
 
     server_args = build_sglang_server_args(
@@ -239,11 +229,14 @@ def create_vocoder_executor(
     model_path: str,
     *,
     device: str = "cuda:0",
+    gpu_id: int | None = None,
     dtype: str = "bfloat16",
     attn_implementation: str | None = None,
     max_batch_size: int = 8,
     max_batch_wait_ms: int = 2,
 ) -> SimpleScheduler:
+    if gpu_id is not None:
+        device = f"cuda:{gpu_id}"
     tokenizer = _load_qwen3_tts_tokenizer(
         model_path,
         device=device,
@@ -275,13 +268,13 @@ def create_vocoder_executor(
             total_len = int(codes.shape[0])
             cut = int(state.ref_code_len / max(total_len, 1) * wav.shape[0])
             wav = wav[cut:]
-        state.audio_samples = _audio_to_list(wav)
+        audio_payload = audio_waveform_payload(wav, source_hint="Qwen3-TTS")
+        state.audio_samples = None
         state.sample_rate = int(sample_rate)
         state.audio_codes = None
 
         payload = store_state(payload, state)
-        audio = state.audio_samples or []
-        payload.data["audio_data"] = audio
+        payload.data.update(audio_payload)
         payload.data["sample_rate"] = state.sample_rate
         payload.data["modality"] = "audio"
         usage = _build_usage(state)

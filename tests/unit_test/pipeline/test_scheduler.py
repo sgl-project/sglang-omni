@@ -236,6 +236,36 @@ def test_omni_scheduler_run_batch_failure_emits_error_and_aborts(monkeypatch) ->
     assert scheduler._dirty_deferred_request_ids == set()
 
 
+def test_omni_scheduler_custom_runner_updates_next_input_ids() -> None:
+    """Custom AR runners must preserve SGLang's decode handoff contract."""
+
+    next_token_ids = torch.tensor([11, 12], dtype=torch.int32)
+
+    class FakeModelRunner:
+        def execute(self, sched_output):
+            sched_output.batch_data.output_ids = next_token_ids
+            return SimpleNamespace(outputs={}, can_run_cuda_graph=False)
+
+    scheduler = object.__new__(OmniScheduler)
+    scheduler._model_runner = FakeModelRunner()
+    scheduler._stream_output_builder = None
+    scheduler._prefill_start_done = set()
+
+    batch = SimpleNamespace(
+        reqs=[
+            SimpleNamespace(rid="req-1", _omni_data=SimpleNamespace()),
+            SimpleNamespace(rid="req-2", _omni_data=SimpleNamespace()),
+        ],
+        output_ids=None,
+    )
+
+    result = scheduler._run_batch(batch)
+
+    assert result.next_token_ids is next_token_ids
+    assert batch.input_ids.dtype == torch.int64
+    assert batch.input_ids.tolist() == [11, 12]
+
+
 def test_omni_scheduler_abort_propagates_immediate_kv_cleanup_failure(
     monkeypatch,
 ) -> None:
@@ -511,6 +541,39 @@ def test_omni_scheduler_request_builder_errors_do_not_stop_loop() -> None:
     assert scheduler.waiting_queue == []
 
 
+def test_omni_scheduler_follower_request_builder_errors_do_not_emit() -> None:
+    """TP followers clean local state but do not emit user-visible errors."""
+    scheduler = object.__new__(OmniScheduler)
+    scheduler.outbox = Queue()
+    scheduler.waiting_queue = []
+    scheduler._pending_stream_chunks = {}
+    scheduler._pending_stream_done = {"req-err"}
+    scheduler._deferred_request_payloads = {"req-err": object()}
+    scheduler._dirty_deferred_request_ids = set()
+    scheduler._aborted_request_ids = set()
+    scheduler.is_entry_rank = False
+    scheduler.running_batch = SimpleNamespace(reqs=[], batch_is_full=False)
+    scheduler.cur_batch = None
+    scheduler.last_batch = None
+    scheduler._abort_callback = None
+    scheduler._first_emit_done = set()
+    scheduler._prefill_start_done = set()
+    scheduler.inbox = Queue()
+    scheduler.tree_cache = None
+
+    def request_builder(payload: SimpleNamespace) -> None:
+        raise ValueError(payload.request_id)
+
+    scheduler._request_builder = request_builder
+
+    scheduler.process_input_requests([SimpleNamespace(request_id="req-err")])
+
+    assert scheduler.outbox.empty()
+    assert scheduler.waiting_queue == []
+    assert scheduler._pending_stream_done == set()
+    assert scheduler._deferred_request_payloads == {}
+
+
 def test_omni_scheduler_prepares_custom_request_token_budget() -> None:
     """Preserves upstream max_new_tokens clamping for custom request builders."""
     scheduler = object.__new__(OmniScheduler)
@@ -584,6 +647,62 @@ def test_omni_scheduler_rejects_custom_request_over_context() -> None:
     assert scheduler.waiting_queue == []
 
 
+def test_omni_scheduler_follower_rejections_do_not_emit_errors() -> None:
+    """Request-limit and KV-capacity rejections are entry-rank emissions only."""
+    scheduler = object.__new__(OmniScheduler)
+    scheduler.outbox = Queue()
+    scheduler.waiting_queue = []
+    scheduler._pending_stream_chunks = {}
+    scheduler._pending_stream_done = set()
+    scheduler._deferred_request_payloads = {}
+    scheduler._dirty_deferred_request_ids = set()
+    scheduler._aborted_request_ids = set()
+    scheduler.is_entry_rank = False
+    scheduler.running_batch = SimpleNamespace(reqs=[], batch_is_full=False)
+    scheduler.cur_batch = None
+    scheduler.last_batch = None
+    scheduler._abort_callback = None
+    scheduler._first_emit_done = set()
+    scheduler._prefill_start_done = set()
+    scheduler.inbox = Queue()
+    scheduler.tree_cache = None
+    scheduler.max_req_len = 6
+    scheduler.max_req_input_len = 5
+    scheduler.server_args = SimpleNamespace(mem_fraction_static=0.85)
+
+    over_context_req = SimpleNamespace(
+        rid="req-long",
+        origin_input_ids=[1, 2, 3, 4, 5],
+        sampling_params=SimpleNamespace(max_new_tokens=10),
+        output_ids=[],
+    )
+    scheduler._request_builder = lambda payload: SimpleNamespace(
+        req=over_context_req,
+        enforce_request_limits=True,
+    )
+
+    scheduler.process_input_requests([SimpleNamespace(request_id="req-long")])
+
+    assert scheduler.outbox.empty()
+    assert scheduler.waiting_queue == []
+
+    over_kv_req = SimpleNamespace(
+        rid="req-kv",
+        origin_input_ids=[1, 2, 3],
+        sampling_params=SimpleNamespace(max_new_tokens=4),
+        output_ids=[],
+    )
+    scheduler._request_builder = lambda payload: SimpleNamespace(
+        req=over_kv_req,
+        enforce_request_limits=False,
+    )
+
+    scheduler.process_input_requests([SimpleNamespace(request_id="req-kv")])
+
+    assert scheduler.outbox.empty()
+    assert scheduler.waiting_queue == []
+
+
 def test_omni_scheduler_leaves_request_budget_unchanged_without_opt_in() -> None:
     """Keeps existing OmniScheduler users on their original request semantics."""
     scheduler = object.__new__(OmniScheduler)
@@ -613,3 +732,39 @@ def test_omni_scheduler_leaves_request_budget_unchanged_without_opt_in() -> None
     assert req.sampling_params.max_new_tokens == 3
     assert req_data.max_new_tokens == 3
     assert scheduler.outbox.empty()
+
+
+def test_omni_scheduler_result_adapter_failure_emits_error_without_raise() -> None:
+    """Finished-request adapter failures remain request-local."""
+    scheduler = object.__new__(OmniScheduler)
+    scheduler.outbox = Queue()
+    scheduler.is_entry_rank = True
+    scheduler._first_emit_done = {"req-adapter"}
+    scheduler._prefill_start_done = {"req-adapter"}
+
+    def fail_adapter(_data):
+        raise RuntimeError("adapter failed")
+
+    scheduler._result_adapter = fail_adapter
+    request_data = SimpleNamespace(
+        prefill_input_embeds=torch.ones(1),
+        decode_input_embeds=[torch.ones(1)],
+    )
+    req = SimpleNamespace(
+        rid="req-adapter",
+        _omni_data=request_data,
+        output_ids=[1, 2],
+        finished=lambda: True,
+        finished_reason=None,
+    )
+
+    scheduler.stream_output([req])
+
+    output = scheduler.outbox.get_nowait()
+    assert output.request_id == "req-adapter"
+    assert output.type == "error"
+    assert isinstance(output.data, RuntimeError)
+    assert scheduler._first_emit_done == set()
+    assert scheduler._prefill_start_done == set()
+    assert request_data.prefill_input_embeds is None
+    assert request_data.decode_input_embeds is None

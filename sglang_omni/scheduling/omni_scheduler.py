@@ -20,6 +20,7 @@ import types
 from collections import deque
 from typing import Any, Callable
 
+import torch
 from sglang.srt.environ import envs
 from sglang.srt.layers.dp_attention import compute_dp_attention_world_info
 from sglang.srt.managers.schedule_batch import FINISH_ABORT, ScheduleBatch
@@ -461,9 +462,7 @@ class OmniScheduler:
                 req_data = self._request_builder(payload)
             except Exception as exc:
                 logger.exception(f"OmniScheduler: request builder failed for {req_id}")
-                self.outbox.put(
-                    OutgoingMessage(request_id=req_id, type="error", data=exc)
-                )
+                self._emit_request_error(req_id, exc)
                 self.abort(req_id)
                 continue
             if pending_stream_done:
@@ -480,13 +479,7 @@ class OmniScheduler:
             if bool(getattr(req_data, "enforce_request_limits", False)):
                 error_msg = self._prepare_request_limits(req_data)
                 if error_msg:
-                    self.outbox.put(
-                        OutgoingMessage(
-                            request_id=req_id,
-                            type="error",
-                            data=ValueError(error_msg),
-                        )
-                    )
+                    self._emit_request_error(req_id, ValueError(error_msg))
                     self.abort(req_id)
                     continue
             kv_error = self._request_kv_capacity_error(req)
@@ -494,13 +487,7 @@ class OmniScheduler:
                 logger.warning(
                     f"Rejecting request {req_id} before scheduling: {kv_error}"
                 )
-                self.outbox.put(
-                    OutgoingMessage(
-                        request_id=req_id,
-                        type="error",
-                        data=ValueError(kv_error),
-                    )
-                )
+                self._emit_request_error(req_id, ValueError(kv_error))
                 self.abort(req_id)
                 continue
             self._initialize_request_stream_state(req_data, payload)
@@ -583,6 +570,17 @@ class OmniScheduler:
             f"{mem_hint}"
         )
 
+    def _emit_request_error(self, request_id: str, error: Exception) -> None:
+        if not getattr(self, "is_entry_rank", True):
+            return
+        self.outbox.put(
+            OutgoingMessage(
+                request_id=request_id,
+                type="error",
+                data=error,
+            )
+        )
+
     def run_batch(self, batch, pp_proxy_tensors=None):
         try:
             return self._run_batch(batch, pp_proxy_tensors)
@@ -640,9 +638,12 @@ class OmniScheduler:
             # The upstream process_batch_result reads .next_token_ids and
             # .logits_output from the result; both are already on batch via
             # the model runner's execute() (batch.output_ids is set there).
+            next_token_ids = batch.output_ids
+            if isinstance(next_token_ids, torch.Tensor):
+                batch.input_ids = next_token_ids.to(torch.int64)
             return GenerationBatchResult(
                 logits_output=None,
-                next_token_ids=batch.output_ids,
+                next_token_ids=next_token_ids,
                 can_run_cuda_graph=mr_output.can_run_cuda_graph,
             )
         # Fallback: call upstream's run_batch (uses tp_worker directly)
@@ -653,14 +654,7 @@ class OmniScheduler:
         request_ids = [req.rid for req in reqs]
         logger.exception("OmniScheduler batch failed for requests=%s", request_ids)
         for req in reqs:
-            if self.is_entry_rank:
-                self.outbox.put(
-                    OutgoingMessage(
-                        request_id=req.rid,
-                        type="error",
-                        data=error,
-                    )
-                )
+            self._emit_request_error(req.rid, error)
             self.abort(req.rid, defer_running_cleanup=False)
 
     def _emit_prefill_start_for_batch(self, batch: Any) -> None:
@@ -705,10 +699,19 @@ class OmniScheduler:
                 if finished_reason is not None
                 else None
             )
-            result = self._result_adapter(data)
-
-            data.prefill_input_embeds = None
-            data.decode_input_embeds = None
+            try:
+                result = self._result_adapter(data)
+            except Exception as exc:
+                logger.exception(
+                    "OmniScheduler result adapter failed for request %s", rid
+                )
+                self._first_emit_done.discard(rid)
+                self._prefill_start_done.discard(rid)
+                self._emit_request_error(rid, exc)
+                continue
+            finally:
+                data.prefill_input_embeds = None
+                data.decode_input_embeds = None
 
             self._first_emit_done.discard(rid)
             self._prefill_start_done.discard(rid)

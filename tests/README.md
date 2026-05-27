@@ -182,8 +182,12 @@ that happened to contain an older version of the test.
   - runtime schema/adapter behavior
   - coordinator behavior
   - stage routing
+  - local-object fan-out selector contracts, including negative coverage for
+    shared mutable payload containers while preserving tensor leaf sharing
   - stage process environment
   - relay handling
+  - stream relay/IPC selector contracts, including negative coverage for CPU
+    tensor metadata and large inline metadata on same-GPU stream chunks
   - GPU memory accounting helpers
   - IPC lifecycle
   - scheduler batching
@@ -200,7 +204,13 @@ that happened to contain an older version of the test.
   - tokenizer and preprocessing fallback behavior
   - memory flag contracts
   - colocation config and SGLang AR budget contracts
-  - `PipelineState` request builders
+  - `PipelineState` request builders, including projected payload container
+    isolation for mutable streaming state
+  - talker behavior, including projected prefill tensor storage/slicing, decode
+    feedback/text FIFO consumption, and replay of generated-token input embeds
+    after decode retract
+  - `PipelineState` request builders, including projected payload container
+    isolation for mutable streaming state
   - talker behavior, including partial-prefix startup gate, the real
     `_build_talker_request_data` propagation contract (input_ids,
     tts_pad_embed, sampling_seed, fallback chunks, thinker_done), and the

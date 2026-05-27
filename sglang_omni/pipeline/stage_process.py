@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal, Mapping
 
 from sglang_omni.pipeline.control_plane import StageControlPlane
+from sglang_omni.pipeline.local_dispatch import LocalStageDispatcher
 from sglang_omni.pipeline.stage.input import AggregatedInput, DirectInput
 from sglang_omni.pipeline.stage.runtime import Stage
 from sglang_omni.pipeline.stage.stream_queue import StreamQueue
@@ -69,6 +70,9 @@ class StageProcessSpec:
     same_gpu_targets: set[str] = field(default_factory=set)
     is_stream_receiver: bool = False
     can_accept_stream_before_payload: bool = False
+
+    # Same-process full payload wiring
+    same_process_targets: set[str] = field(default_factory=set)
 
     # Fusion name map
     name_map: dict[str, str] = field(default_factory=dict)
@@ -144,7 +148,12 @@ def _run_process(
       live in this process, cold-start time degrades from ``max`` to ``sum``
       across them.
     """
-    stages = [_construct_stage(stage_spec, log) for stage_spec in spec.stage_specs]
+    local_dispatcher = LocalStageDispatcher()
+    stages = [
+        _construct_stage(stage_spec, log, local_dispatcher=local_dispatcher)
+        for stage_spec in spec.stage_specs
+    ]
+    local_dispatcher.register_many(stages)
 
     async def _start_and_run():
         tasks: list[asyncio.Task] = []
@@ -174,6 +183,7 @@ def _run_process(
 def _construct_stage(
     spec: StageProcessSpec,
     log: logging.Logger,
+    local_dispatcher: LocalStageDispatcher | None = None,
 ) -> Stage:
     gpu_id = spec.relay_config.get("gpu_id")
     if gpu_id is None:
@@ -352,6 +362,8 @@ def _construct_stage(
         stream_targets=spec.stream_targets or None,
         get_stream_done_targets=get_stream_done_targets,
         same_gpu_targets=spec.same_gpu_targets or None,
+        same_process_targets=spec.same_process_targets or None,
+        local_dispatcher=local_dispatcher,
         can_accept_stream_before_payload=spec.can_accept_stream_before_payload,
         tp_fanout=tp_fanout,
         is_terminal=spec.is_terminal,

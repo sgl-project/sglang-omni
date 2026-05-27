@@ -7,6 +7,7 @@ from typing import Any, Iterable, Optional, Tuple
 
 import torch
 from sglang.srt.layers.logits_processor import LogitsProcessorOutput
+from sglang.srt.layers.sampler import multinomial_with_seed
 from sglang.srt.utils import add_prefix
 from torch import nn
 
@@ -23,6 +24,14 @@ from sglang_omni.vendor.sglang.core import ForwardBatch
 from sglang_omni.vendor.sglang.layers import ReplicatedLinear, RMSNorm
 from sglang_omni.vendor.sglang.models import apply_qk_norm
 from sglang_omni.vendor.sglang.server_args import get_global_server_args
+
+
+def _sample_seeded_categorical(
+    weights: torch.Tensor,
+    seeds: torch.Tensor,
+    positions: torch.Tensor,
+) -> torch.Tensor:
+    return multinomial_with_seed(weights, seeds, positions).view(-1)
 
 
 class Qwen3TTSTalkerDecoderLayer(nn.Module):
@@ -292,11 +301,31 @@ class Qwen3TTSTalker(nn.Module):
         self._output_embeds = torch.zeros(
             max_batch_size, hidden_size, device=device, dtype=dtype
         )
-        self._sub_dosample: list[bool] = []
-        self._sub_temperature: list[float] = []
-        self._sub_top_p: list[float] = []
-        self._sub_top_k: list[int] = []
-        self._sub_generators: list[torch.Generator | None] = []
+        self._sub_batch_size = 0
+        self._sub_temperature_tensor = torch.full(
+            (max_batch_size,), 0.9, device=device, dtype=torch.float32
+        )
+        self._sub_top_p_tensor = torch.ones(
+            max_batch_size, device=device, dtype=torch.float32
+        )
+        self._sub_top_k_tensor = torch.full(
+            (max_batch_size,), 50, device=device, dtype=torch.long
+        )
+        self._semantic_sampling_seed_tensor = torch.zeros(
+            max_batch_size, device=device, dtype=torch.long
+        )
+        self._sub_sampling_seed_tensor = torch.zeros(
+            max_batch_size, device=device, dtype=torch.long
+        )
+        self._sub_sample_rows: list[int] = []
+        self._sub_sample_row_indices_tensor = torch.empty(
+            max_batch_size, device=device, dtype=torch.long
+        )
+        self._sub_sample_count = 0
+        self._sub_has_sampled_rows = False
+        self._sub_sampled_has_top_p = False
+        self._sub_sampled_max_top_k = 0
+        self._sub_sampled_has_unbounded_top_k = False
         _bind_default_weight_loaders(self)
         self._cached_params_dict = dict(self.named_parameters())
         self._sampler = None
@@ -555,39 +584,84 @@ class Qwen3TTSTalker(nn.Module):
         return text_embed + codec_embed, tts_pad_embed
 
     def prepare_decode_buffers(self, requests: list[Any]) -> None:
-        self._sub_dosample = []
-        self._sub_temperature = []
-        self._sub_top_p = []
-        self._sub_top_k = []
-        self._sub_generators = []
-        generator_device = self.device
-        for sched_req in requests:
-            data = sched_req.data
-            self._sub_dosample.append(bool(getattr(data, "subtalker_dosample", True)))
-            self._sub_temperature.append(
-                float(getattr(data, "subtalker_temperature", 0.9))
-            )
-            self._sub_top_p.append(float(getattr(data, "subtalker_top_p", 1.0)))
-            self._sub_top_k.append(int(getattr(data, "subtalker_top_k", 50)))
-            seed = getattr(data.req.sampling_params, "sampling_seed", None)
-            if seed is None:
-                self._sub_generators.append(None)
-                continue
+        batch_size = len(requests)
+        if batch_size > self._sub_temperature_tensor.shape[0]:
+            raise RuntimeError("Qwen3-TTS sampling buffers are too small")
 
-            seed = int(seed)
-            generator = getattr(data, "_subtalker_generator", None)
-            if (
-                not isinstance(generator, torch.Generator)
-                or getattr(data, "_subtalker_generator_seed", None) != seed
-                or getattr(data, "_subtalker_generator_device", None)
-                != generator_device
-            ):
-                generator = torch.Generator(device=generator_device)
-                generator.manual_seed(seed)
-                data._subtalker_generator = generator
-                data._subtalker_generator_seed = seed
-                data._subtalker_generator_device = generator_device
-            self._sub_generators.append(generator)
+        semantic_seeds: list[int] = []
+        sub_temperatures: list[float] = []
+        sub_top_ps: list[float] = []
+        sub_top_ks: list[int] = []
+        sub_seeds: list[int] = []
+        self._sub_sample_rows = []
+        for row_idx, sched_req in enumerate(requests):
+            data = sched_req.data
+            try:
+                semantic_seed = int(data.semantic_sampling_seed)
+                do_sample = bool(data.subtalker_dosample)
+                subtalker_temperature = float(data.subtalker_temperature)
+                subtalker_top_p = float(data.subtalker_top_p)
+                subtalker_top_k = int(data.subtalker_top_k)
+                subtalker_seed = int(data.subtalker_sampling_seed)
+            except AttributeError as exc:
+                raise TypeError(
+                    "Qwen3-TTS decode buffers require request data with semantic "
+                    "and subtalker sampling fields"
+                ) from exc
+            except (TypeError, ValueError) as exc:
+                raise TypeError(
+                    "Qwen3-TTS decode buffers require numeric semantic and "
+                    "subtalker sampling fields"
+                ) from exc
+            semantic_seeds.append(semantic_seed)
+            sub_temperatures.append(subtalker_temperature)
+            sub_top_ps.append(subtalker_top_p)
+            sub_top_ks.append(subtalker_top_k)
+            sub_seeds.append(subtalker_seed)
+            if do_sample:
+                self._sub_sample_rows.append(row_idx)
+
+        predictor_vocab_size = int(self.config.code_predictor_config.vocab_size)
+        sampled_top_ks = [sub_top_ks[row_idx] for row_idx in self._sub_sample_rows]
+        bounded_top_ks = [
+            top_k for top_k in sampled_top_ks if 0 < int(top_k) < predictor_vocab_size
+        ]
+        self._sub_batch_size = batch_size
+        self._sub_sample_count = len(self._sub_sample_rows)
+        self._sub_has_sampled_rows = bool(self._sub_sample_rows)
+        self._sub_sampled_has_top_p = any(
+            0.0 < float(sub_top_ps[row_idx]) < 1.0 for row_idx in self._sub_sample_rows
+        )
+        self._sub_sampled_max_top_k = max(bounded_top_ks, default=0)
+        self._sub_sampled_has_unbounded_top_k = len(bounded_top_ks) != len(
+            sampled_top_ks
+        )
+
+        if batch_size == 0:
+            return
+
+        device = self._sub_temperature_tensor.device
+        self._semantic_sampling_seed_tensor[:batch_size] = torch.tensor(
+            semantic_seeds,
+            device=device,
+            dtype=self._semantic_sampling_seed_tensor.dtype,
+        )
+        self._sub_temperature_tensor[:batch_size] = torch.tensor(
+            sub_temperatures, device=device, dtype=self._sub_temperature_tensor.dtype
+        )
+        self._sub_top_p_tensor[:batch_size] = torch.tensor(
+            sub_top_ps, device=device, dtype=self._sub_top_p_tensor.dtype
+        )
+        self._sub_top_k_tensor[:batch_size] = torch.tensor(
+            sub_top_ks, device=device, dtype=self._sub_top_k_tensor.dtype
+        )
+        self._sub_sampling_seed_tensor[:batch_size] = torch.tensor(
+            sub_seeds, device=device, dtype=self._sub_sampling_seed_tensor.dtype
+        )
+        if self._sub_sample_count:
+            self._sub_sample_row_indices_tensor[: self._sub_sample_count] = (
+                torch.tensor(self._sub_sample_rows, device=device, dtype=torch.long)
+            )
 
     @torch.no_grad()
     def forward(
@@ -633,10 +707,12 @@ class Qwen3TTSTalker(nn.Module):
         self,
         layer0_codes: torch.Tensor,
         talker_hidden: torch.Tensor,
+        semantic_positions: torch.Tensor | None = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         result_codes, summed_embeddings = self._code_predictor_forward_incremental(
             layer0_codes=layer0_codes,
             talker_hidden=talker_hidden,
+            semantic_positions=semantic_positions,
         )
         return result_codes, summed_embeddings
 
@@ -644,6 +720,7 @@ class Qwen3TTSTalker(nn.Module):
         self,
         layer0_codes: torch.Tensor,
         talker_hidden: torch.Tensor,
+        semantic_positions: torch.Tensor | None = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         if layer0_codes.ndim == 1:
             layer0_codes = layer0_codes.unsqueeze(1)
@@ -651,6 +728,12 @@ class Qwen3TTSTalker(nn.Module):
             talker_hidden = talker_hidden.unsqueeze(1)
 
         batch_size, seq_len = layer0_codes.shape
+        semantic_positions = self._normalize_semantic_positions(
+            semantic_positions,
+            batch_size=batch_size,
+            seq_len=seq_len,
+            device=layer0_codes.device,
+        )
         predictor_input = self._predictor_input_buffer[:batch_size]
         predictor_input.zero_()
         num_groups = self.config.num_code_groups
@@ -691,7 +774,11 @@ class Qwen3TTSTalker(nn.Module):
 
             for layer_idx in range(num_groups - 1):
                 logits, _ = self.code_predictor.lm_head[layer_idx](last_hidden)
-                next_code = self._sample_subtalker_token(logits[:, -1, :], layer_idx)
+                next_code = self._sample_subtalker_token(
+                    logits[:, -1, :],
+                    layer_idx,
+                    semantic_positions=semantic_positions[:, pos],
+                )
                 pos_codes[:, layer_idx + 1].copy_(next_code)
                 new_embed = self.code_predictor.model.codec_embedding[layer_idx](
                     next_code.unsqueeze(1)
@@ -708,45 +795,136 @@ class Qwen3TTSTalker(nn.Module):
                     cache_len += 1
         return result_codes, summed_embeddings
 
+    def _normalize_semantic_positions(
+        self,
+        semantic_positions: torch.Tensor | None,
+        *,
+        batch_size: int,
+        seq_len: int,
+        device: torch.device,
+    ) -> torch.Tensor:
+        if semantic_positions is None:
+            base = torch.zeros(batch_size, device=device, dtype=torch.long)
+        else:
+            base = semantic_positions.to(device=device, dtype=torch.long)
+            if base.ndim == 2:
+                if base.shape != (batch_size, seq_len):
+                    raise ValueError("Qwen3-TTS subtalker positions shape mismatch")
+                return base
+            if base.ndim != 1 or base.shape[0] != batch_size:
+                raise ValueError("Qwen3-TTS subtalker positions shape mismatch")
+        offsets = torch.arange(seq_len, device=device, dtype=torch.long)
+        return base.unsqueeze(1) + offsets.unsqueeze(0)
+
     def _sample_subtalker_token(
         self,
         logits: torch.Tensor,
-        layer_idx: int,
+        layer_idx: int = 0,
+        *,
+        semantic_positions: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        del layer_idx
-        tokens = []
-        for row_idx, row in enumerate(logits):
-            if row_idx >= len(self._sub_dosample) or not self._sub_dosample[row_idx]:
-                tokens.append(torch.argmax(row))
-                continue
-            scores = row.float()
-            temperature = max(float(self._sub_temperature[row_idx]), 1e-5)
-            scores = scores / temperature
-            top_k = int(self._sub_top_k[row_idx])
-            if top_k > 0 and top_k < scores.numel():
-                keep = torch.topk(scores, top_k).indices
-                mask = torch.full_like(scores, -float("inf"))
-                mask[keep] = scores[keep]
-                scores = mask
-            probs = torch.softmax(scores, dim=-1)
-            generator = (
-                self._sub_generators[row_idx]
-                if row_idx < len(self._sub_generators)
-                else None
+        if logits.shape[0] == 0:
+            return torch.empty((0,), device=logits.device, dtype=torch.long)
+        batch_size = int(logits.shape[0])
+        if batch_size > self._sub_batch_size:
+            raise RuntimeError("Qwen3-TTS subtalker sampling buffers are too small")
+
+        if not self._sub_has_sampled_rows:
+            return torch.argmax(logits, dim=-1).to(dtype=torch.long)
+
+        if self._sub_sample_rows[-1] >= batch_size:
+            raise RuntimeError("Qwen3-TTS sampled row index exceeds batch size")
+        sampled_rows = self._sub_sample_row_indices_tensor[: self._sub_sample_count]
+        sampled_positions = self._select_semantic_positions(
+            semantic_positions,
+            batch_size,
+            logits.device,
+        )
+        if self._sub_sample_count == batch_size:
+            return self._sample_subtalker_token_seeded(
+                logits,
+                layer_idx,
+                row_indices=sampled_rows,
+                semantic_positions=sampled_positions,
             )
-            top_p = float(self._sub_top_p[row_idx])
-            if 0.0 < top_p < 1.0:
-                sorted_probs, sorted_idx = torch.sort(probs, descending=True)
-                cdf = torch.cumsum(sorted_probs, dim=-1)
-                remove = cdf > top_p
-                remove[0] = False
-                sorted_probs = sorted_probs.masked_fill(remove, 0)
-                sorted_probs = sorted_probs / sorted_probs.sum().clamp_min(1e-12)
-                sample = torch.multinomial(sorted_probs, 1, generator=generator)[0]
-                tokens.append(sorted_idx[sample])
-            else:
-                tokens.append(torch.multinomial(probs, 1, generator=generator)[0])
-        return torch.stack(tokens).to(dtype=torch.long)
+
+        tokens = torch.argmax(logits, dim=-1).to(dtype=torch.long)
+        sampled_logits = logits.index_select(0, sampled_rows)
+        tokens[sampled_rows] = self._sample_subtalker_token_seeded(
+            sampled_logits,
+            layer_idx,
+            row_indices=sampled_rows,
+            semantic_positions=sampled_positions,
+        )
+        return tokens
+
+    def _select_semantic_positions(
+        self,
+        semantic_positions: torch.Tensor | None,
+        batch_size: int,
+        device: torch.device,
+    ) -> torch.Tensor:
+        if semantic_positions is None:
+            raise RuntimeError("Qwen3-TTS sampled subtalker rows require positions")
+        semantic_positions = semantic_positions.to(device=device, dtype=torch.long)
+        if semantic_positions.ndim != 1 or semantic_positions.shape[0] != batch_size:
+            raise ValueError("Qwen3-TTS subtalker positions shape mismatch")
+        sample_rows = self._sub_sample_row_indices_tensor[: self._sub_sample_count]
+        return semantic_positions.index_select(0, sample_rows)
+
+    def _sample_subtalker_token_seeded(
+        self,
+        logits: torch.Tensor,
+        layer_idx: int,
+        *,
+        row_indices: torch.Tensor,
+        semantic_positions: torch.Tensor,
+    ) -> torch.Tensor:
+        row_indices = row_indices.to(device=logits.device, dtype=torch.long)
+        scores = logits.float()
+        temperatures = self._sub_temperature_tensor.index_select(
+            0, row_indices
+        ).clamp_min(1e-5)
+        scores = scores / temperatures.unsqueeze(1)
+
+        vocab_size = int(logits.shape[-1])
+        top_ks = self._sub_top_k_tensor.index_select(0, row_indices)
+        max_top_k = int(self._sub_sampled_max_top_k)
+        has_unbounded_top_k = bool(self._sub_sampled_has_unbounded_top_k)
+        if max_top_k > 0 and max_top_k < vocab_size and not has_unbounded_top_k:
+            sorted_scores, sorted_idx = torch.topk(scores, max_top_k, dim=-1)
+            rank = torch.arange(max_top_k, device=logits.device).unsqueeze(0)
+            keep_top_k = rank < top_ks.unsqueeze(1)
+            sorted_scores = sorted_scores.masked_fill(~keep_top_k, -float("inf"))
+        else:
+            sorted_scores, sorted_idx = torch.sort(scores, dim=-1, descending=True)
+            rank = torch.arange(vocab_size, device=logits.device).unsqueeze(0)
+            keep_all = (top_ks <= 0) | (top_ks >= vocab_size)
+            keep_top_k = keep_all.unsqueeze(1) | (rank < top_ks.unsqueeze(1))
+            sorted_scores = sorted_scores.masked_fill(~keep_top_k, -float("inf"))
+
+        sorted_probs = torch.softmax(sorted_scores, dim=-1)
+        top_ps = self._sub_top_p_tensor.index_select(0, row_indices)
+        if self._sub_sampled_has_top_p:
+            active_top_p = (top_ps > 0.0) & (top_ps < 1.0)
+            cdf = torch.cumsum(sorted_probs, dim=-1)
+            remove = (cdf > top_ps.unsqueeze(1)) & active_top_p.unsqueeze(1)
+            remove[:, 0] = False
+            sorted_probs = sorted_probs.masked_fill(remove, 0.0)
+
+        seeds = self._sub_sampling_seed_tensor.index_select(0, row_indices)
+        sub_positions = (
+            semantic_positions.to(device=logits.device, dtype=torch.long)
+            * max(int(self.config.num_code_groups) - 1, 1)
+            + int(layer_idx)
+            + 1
+        )
+        sampled_rank = _sample_seeded_categorical(
+            sorted_probs,
+            seeds,
+            sub_positions,
+        ).to(device=logits.device, dtype=torch.long)
+        return sorted_idx.gather(1, sampled_rank.unsqueeze(1)).view(-1).to(torch.long)
 
     def _predictor_forward_one_token(
         self,

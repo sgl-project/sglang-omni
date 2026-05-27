@@ -36,6 +36,15 @@ MM_AGGREGATE_STAGE = "mm_aggregate"
 MAX_INT32_POSITIVE = 0x7FFFFFFF
 
 
+def _resolve_seed(params: dict[str, Any]) -> int | None:
+    """Resolve random seed from request params (accepts both ``seed`` and ``sampling_seed``)."""
+    for key in ("seed", "sampling_seed"):
+        value = params.get(key)
+        if value is not None:
+            return int(value)
+    return None
+
+
 def output_modalities(request: OmniRequest | None) -> set[str] | None:
     metadata = getattr(request, "metadata", None)
     if not isinstance(metadata, dict):
@@ -116,6 +125,44 @@ def resolve_mm_aggregate_wait_sources(
         return None
     state = PipelineState.from_dict(payload.data)
     return ["preprocessing", *_active_encoder_stages(state.encoder_inputs)]
+
+
+def project_thinker_to_decode(payload: StagePayload) -> StagePayload:
+    """Keep decode payload focused on text detokenization state."""
+    state = PipelineState.from_dict(payload.data)
+    state.thinker_inputs = {}
+    state.stream_state = _copy_mutable_containers(state.stream_state)
+
+    if isinstance(state.thinker_out, dict):
+        thinker_out = dict(state.thinker_out)
+        if "extra_model_outputs" in thinker_out:
+            thinker_out["extra_model_outputs"] = {}
+        state.thinker_out = thinker_out
+
+    if state.engine_outputs:
+        engine_outputs = dict(state.engine_outputs)
+        thinker_engine_out = engine_outputs.get(THINKER_STAGE)
+        if isinstance(thinker_engine_out, dict):
+            thinker_engine_out = dict(thinker_engine_out)
+            if "extra_model_outputs" in thinker_engine_out:
+                thinker_engine_out["extra_model_outputs"] = {}
+            engine_outputs[THINKER_STAGE] = thinker_engine_out
+        state.engine_outputs = engine_outputs
+
+    return StagePayload(
+        request_id=payload.request_id,
+        request=payload.request,
+        data=state.to_dict(),
+    )
+
+
+def project_talker_to_code2wav(payload: StagePayload) -> StagePayload:
+    """Keep code2wav payload as a request latch; code tensors arrive by stream."""
+    return StagePayload(
+        request_id=payload.request_id,
+        request=payload.request,
+        data={},
+    )
 
 
 @dataclass(slots=True)
@@ -240,6 +287,22 @@ def _payload_with_state(payload: StagePayload, state: PipelineState) -> StagePay
         request=payload.request,
         data=state.to_dict(),
     )
+
+
+def _copy_mutable_containers(value: Any) -> Any:
+    if isinstance(value, torch.Tensor):
+        return value
+    if isinstance(value, dict):
+        return {key: _copy_mutable_containers(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_copy_mutable_containers(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_copy_mutable_containers(item) for item in value)
+    if isinstance(value, set):
+        return {_copy_mutable_containers(item) for item in value}
+    if isinstance(value, bytearray):
+        return bytearray(value)
+    return value
 
 
 def _select_encoder_inputs(
@@ -497,7 +560,7 @@ def build_sglang_thinker_request(
     repetition_penalty = params.get("repetition_penalty", 1.0)
     stop = params.get("stop") or []
     stop_token_ids = params.get("stop_token_ids") or []
-    seed = params.get("seed")
+    seed = _resolve_seed(params)
 
     # Build SGLang SamplingParams and normalize
     sampling_params = SamplingParams(
@@ -936,7 +999,7 @@ def make_talker_scheduler_adapters(
             "repetition_penalty": float(params.get("talker_repetition_penalty", 1.05)),
             "codec_eos_id": codec_eos_id if codec_eos_id >= 0 else None,
             "suppress_tokens": suppress_tokens,
-            "seed": params.get("seed"),
+            "seed": _resolve_seed(params),
         }
 
     def request_builder(payload: StagePayload) -> SGLangARRequestData:
@@ -1038,7 +1101,7 @@ def _build_talker_request_data(
         thinker_chunks_done=thinker_done,
         thinker_config=thinker_config,
         talker_model_inputs=prompt_prefill["prompt_model_inputs"],
-        sampling_seed=sampling_cfg.get("seed"),
+        seed=sampling_cfg.get("seed"),
     )
     req_data.tts_eos_embed = prompt_prefill["tts_eos_embed"]
     req_data.stage_payload = payload

@@ -58,6 +58,7 @@ def _build_stage_groups(
     for scfg in stages_cfg:
         for target in scfg.stream_to:
             stream_receivers.add(target)
+    stage_cfg_by_name = {stage.name: stage for stage in stages_cfg}
 
     nccl_port_counter = _NcclPortAllocator()
 
@@ -71,6 +72,12 @@ def _build_stage_groups(
         same_gpu_targets = resolve_same_gpu_stream_targets(
             placement_plan,
             stage_cfg,
+        )
+        same_process_targets = _resolve_same_process_targets(
+            stage_cfg,
+            stage_cfg_by_name,
+            name_map,
+            process_plan,
         )
 
         # Pre-resolve factory args (inject model_path, gpu_id)
@@ -96,6 +103,7 @@ def _build_stage_groups(
             stream_targets=list(stage_cfg.stream_to),
             stream_done_to_fn=stage_cfg.stream_done_to_fn,
             same_gpu_targets=same_gpu_targets,
+            same_process_targets=same_process_targets,
             is_stream_receiver=stage_cfg.name in stream_receivers,
             can_accept_stream_before_payload=stage_cfg.can_accept_stream_before_payload,
             name_map=name_map,
@@ -152,6 +160,36 @@ def _build_stage_groups(
     groups.extend(tp_groups)
 
     return groups
+
+
+def _resolve_same_process_targets(
+    stage_cfg: StageConfig,
+    stage_cfg_by_name: dict[str, StageConfig],
+    name_map: dict[str, str],
+    process_plan: ProcessTopologyPlan,
+) -> set[str]:
+    if stage_cfg.tp_size > 1:
+        return set()
+    source_process = process_plan.stage_to_process.get(stage_cfg.name)
+    if source_process is None:
+        return set()
+
+    raw_targets: list[str] = []
+    if stage_cfg.next is not None:
+        raw_targets.extend(
+            [stage_cfg.next] if isinstance(stage_cfg.next, str) else stage_cfg.next
+        )
+    raw_targets.extend(stage_cfg.stream_to)
+
+    same_process_targets: set[str] = set()
+    for raw_target in raw_targets:
+        target = name_map.get(raw_target, raw_target)
+        target_cfg = stage_cfg_by_name.get(target)
+        if target_cfg is None or target_cfg.tp_size > 1:
+            continue
+        if process_plan.stage_to_process.get(target) == source_process:
+            same_process_targets.add(target)
+    return same_process_targets
 
 
 def _build_single_stage_spec(

@@ -4,17 +4,7 @@ This guide uses [Qwen3-Omni](https://huggingface.co/Qwen/Qwen3-Omni-30B-A3B-Inst
 
 ## Prerequisites
 
-```bash
-docker pull frankleeeee/sglang-omni:dev
-docker run -it --shm-size 32g --gpus all frankleeeee/sglang-omni:dev /bin/zsh
-```
-
-```bash
-git clone https://github.com/sgl-project/sglang-omni.git
-cd sglang-omni
-uv venv .venv -p 3.12 && source .venv/bin/activate
-uv pip install -v .
-```
+Install `sglang-omni` by following [Installation](../get_started/installation.md).
 
 ## Text-Only Mode
 
