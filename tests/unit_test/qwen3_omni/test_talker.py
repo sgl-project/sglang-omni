@@ -741,9 +741,9 @@ def test_real_builder_derives_per_request_seed_when_missing() -> None:
         prefetched_stream_done=False,
         request_id="rid-B",
     )
-    seed_a1 = captured1["talker_request_kwargs"]["sampling_seed"]
-    seed_a2 = captured2["talker_request_kwargs"]["sampling_seed"]
-    seed_b = captured3["talker_request_kwargs"]["sampling_seed"]
+    seed_a1 = captured1["talker_request_kwargs"]["seed"]
+    seed_a2 = captured2["talker_request_kwargs"]["seed"]
+    seed_b = captured3["talker_request_kwargs"]["seed"]
     assert seed_a1 is not None and seed_a1 > 0
     assert seed_a1 == seed_a2, "same request_id must derive the same seed"
     assert seed_a1 != seed_b, "different request_id must derive different seeds"
@@ -756,7 +756,7 @@ def test_real_builder_preserves_explicit_seed_from_request_params() -> None:
         prefetched_stream_done=False,
         request_params={"seed": 42},
     )
-    assert captured["talker_request_kwargs"]["sampling_seed"] == 42
+    assert captured["talker_request_kwargs"]["seed"] == 42
 
 
 def test_real_builder_attaches_tts_eos_and_stage_payload() -> None:
