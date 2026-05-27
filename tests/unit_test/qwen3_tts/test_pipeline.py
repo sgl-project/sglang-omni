@@ -1046,6 +1046,7 @@ def test_qwen3_tts_subtalker_sampling_batches_sampled_path_without_global_rng(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     install_fake_sglang(monkeypatch)
+    from sglang_omni.models.qwen3_tts import sglang_model
     from sglang_omni.models.qwen3_tts.sglang_model import Qwen3TTSTalker
 
     talker = Qwen3TTSTalker.__new__(Qwen3TTSTalker)
