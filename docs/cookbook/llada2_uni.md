@@ -1,14 +1,26 @@
-# LLaDA2.0-Uni Usage
+# LLaDA2.0-Uni
 
-This guide uses [LLaDA2.0-Uni](https://huggingface.co/inclusionAI/LLaDA2.0-Uni) as an example diffusion LLM (dLLM) with SGLang-Omni and the OpenAI-compatible API. LLaDA2.0-Uni supports multimodal input (text, image) and produces text output.
+[LLaDA2.0-Uni](https://huggingface.co/inclusionAI/LLaDA2.0-Uni) is a multi-modal model that accepts text, and image input and can produce text-only or image-only or text + image output.
+
+## Highlights
+
+- Unified dLLM-MoE Backbone — Built on LLaDA 2.0, unifying multimodal understanding and generation.
+- Top-Tier Understanding & Generation — Matches dedicated VLMs in visual QA and document understanding, while generating high-quality images.
+- Interleaved Generation & Reasoning — Empowered by unified discrete representations, unlocking interleaved generation and reasoning.
+
+## Architecture
+
+![LLaDA2.0-Uni Architecture](../_static/image/llada2.0_uni_architecture.png)
+
+LLaDA2.0-Uni unifies multimodal understanding and generation into a simple Mask Token Prediction paradigm. Visual inputs are encoded by the SigLIP-VQ tokenizer into discrete semantic tokens, then mapped alongside text tokens to backbone hidden states under a unified mask prediction objective. Output tokens are decoded back to text via the Text De-Tokenizer, or reconstructed into high-fidelity images through the Diffusion Decoder. Empowered by unified discrete representations, it effortlessly handles complex interleaved generation and unlocks advanced interleaved reasoning, interleaving <|image|>...<|/image|> chunks to enable end-to-end training and inference within a single coherent framework.
 
 ## Prerequisites
 
 Install `sglang-omni` by following [Installation](../get_started/installation.md).
 
-## Launch the Server
+## Server Configuration
 
-LLaDA2.0-Uni runs a 4-stage pipeline (`preprocessing` → `image_encoder` → `thinker` → `decode`) on a single GPU.
+LLaDA2.0-Uni runs a 4-stage pipeline (`preprocessing → image_encoder → thinker → decode`) on a single GPU.
 
 ```bash
 sgl-omni serve --model-path inclusionAI/LLaDA2.0-Uni --port 8000
@@ -124,3 +136,9 @@ The table below lists all parameters accepted by the `/v1/chat/completions` endp
 | `modalities` | list | `["text"]` | Output modalities (only `["text"]` is supported) |
 | `images` | list | `null` | List of image file paths (local paths or URLs) |
 | `max_tokens` | int | `null` | Maximum number of tokens to generate |
+
+### Incoming Features
+
+- Text-to-image generation
+- Text-to-Image Generation with Thinking
+- Interleaved Generation
