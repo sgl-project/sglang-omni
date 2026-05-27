@@ -90,6 +90,9 @@ def test_qwen_pipeline_config_and_state_contracts() -> None:
     assert aggregate.wait_for_fn == (
         f"{request_builders_path}.resolve_mm_aggregate_wait_sources"
     )
+    assert aggregate.route_fn == (
+        f"{request_builders_path}.resolve_mm_aggregate_next_stages"
+    )
     assert speech_thinker.stream_to == ["talker_ar", "decode"]
     assert speech_thinker.route_fn == (
         f"{request_builders_path}.resolve_thinker_next_stages"
@@ -105,6 +108,21 @@ def test_qwen_pipeline_config_and_state_contracts() -> None:
     assert text_config.env_defaults == {"SGLANG_JIT_DEEPGEMM_PRECOMPILE": "0"}
     assert speech_config.env_defaults == {"SGLANG_JIT_DEEPGEMM_PRECOMPILE": "0"}
     assert colocated_config.env_defaults == {"SGLANG_JIT_DEEPGEMM_PRECOMPILE": "0"}
+
+    # Early-submit wiring (issue #473): the talker stage receives its
+    # new_request from mm_aggregate so it can enter its deferred state
+    # before the thinker finishes streaming. The thinker therefore only
+    # routes its final payload to decode; its hidden-state stream to
+    # talker_ar is preserved via stream_to (locked above).
+    speech_aggregate = _stage(speech_config, "mm_aggregate")
+    assert speech_aggregate.next == ["thinker", "talker_ar"]
+    assert speech_aggregate.project_payload is not None
+    assert "talker_ar" in speech_aggregate.project_payload
+    assert _stage(speech_config, "thinker").next == "decode"
+
+    text_aggregate = _stage(text_config, "mm_aggregate")
+    assert text_aggregate.next == "thinker"
+    assert _stage(text_config, "thinker").next == "decode"
 
     state = PipelineState.from_dict(
         {
@@ -122,7 +140,9 @@ def test_qwen_pipeline_config_and_state_contracts() -> None:
 
 def test_qwen_speech_config_wires_request_granular_active_subgraph() -> None:
     config = Qwen3OmniSpeechPipelineConfig(model_path="model")
+    aggregate = _stage(config, "mm_aggregate")
     thinker = _stage(config, "thinker")
+    aggregate_route_fn = import_string(aggregate.route_fn)
     route_fn = import_string(thinker.route_fn)
     stream_done_to_fn = import_string(thinker.stream_done_to_fn)
     terminal_stages_fn = import_string(config.terminal_stages_fn)
@@ -143,15 +163,18 @@ def test_qwen_speech_config_wires_request_granular_active_subgraph() -> None:
         data={},
     )
 
+    assert aggregate_route_fn("text", text_payload) == "thinker"
     assert route_fn("text", text_payload) == "decode"
     assert stream_done_to_fn("text", text_payload) == ["decode"]
     assert terminal_stages_fn(text_payload.request) == ["decode"]
 
-    assert route_fn("audio", audio_payload) == ["decode", "talker_ar"]
+    assert aggregate_route_fn("audio", audio_payload) == ["thinker", "talker_ar"]
+    assert route_fn("audio", audio_payload) == "decode"
     assert stream_done_to_fn("audio", audio_payload) == ["talker_ar", "decode"]
     assert terminal_stages_fn(audio_payload.request) == ["decode", "code2wav"]
 
-    assert route_fn("default", default_payload) == ["decode", "talker_ar"]
+    assert aggregate_route_fn("default", default_payload) == ["thinker", "talker_ar"]
+    assert route_fn("default", default_payload) == "decode"
     assert stream_done_to_fn("default", default_payload) == ["talker_ar", "decode"]
     assert terminal_stages_fn(default_payload.request) == ["decode", "code2wav"]
 

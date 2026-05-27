@@ -303,10 +303,11 @@ class Client:
             result.request_id = request_id
             return result
         if isinstance(result, dict):
-            # Multi-terminal merged result, e.g. decode + code2wav/talker.
+            # Multi-terminal merged result, e.g. decode + code2wav/talker/
+            # talker_stream.
             audio_result = None
             if "decode" in result:
-                for audio_stage in ("code2wav", "talker"):
+                for audio_stage in ("code2wav", "talker", "talker_stream"):
                     if audio_stage in result:
                         audio_result = result[audio_stage] or {}
                         break

@@ -485,3 +485,274 @@ def test_ming_decode_metadata_includes_usage_and_finish_reason() -> None:
         "completion_tokens": 3,
         "total_tokens": 8,
     }
+
+
+def test_ming_preprocessor_injects_top_level_videos_as_inline_content() -> None:
+    """``videos=[...]`` at the top level becomes an inline ``video_url`` item.
+
+    Mirrors the existing ``_inject_top_level_images`` contract so the rest of
+    the preprocessor handles top-level and inline video requests identically.
+    """
+    from sglang_omni.models.ming_omni.components.preprocessor import (
+        _inject_top_level_videos,
+    )
+
+    messages = [
+        {"role": "system", "content": "你是助手"},
+        {"role": "user", "content": "What is happening?"},
+    ]
+    out = _inject_top_level_videos(messages, ["/tmp/clip.mp4"])
+
+    # System message untouched, only first user message extended.
+    assert out[0] == {"role": "system", "content": "你是助手"}
+    assert out[1]["role"] == "user"
+    # Ming-Omni was trained with text BEFORE the media item in user turns
+    # (see _inject_top_level_audios docstring), so videos go after text too.
+    assert out[1]["content"] == [
+        {"type": "text", "text": "What is happening?"},
+        {"type": "video_url", "video_url": {"url": "/tmp/clip.mp4"}},
+    ]
+    # Original list unchanged (helper does a shallow copy).
+    assert messages[1]["content"] == "What is happening?"
+
+
+def test_ming_image_encoder_forward_accepts_video_inputs() -> None:
+    """MingImageEncoder.forward should accept optional video kwargs.
+
+    Videos reuse the image encoder stage (Qwen3-Omni pattern); the signature
+    must expose ``pixel_values_videos`` + ``video_grid_thw`` so the
+    preprocessing → image_encoder stage path can flow both modalities.
+    """
+    from sglang_omni.models.ming_omni.components.image_encoder import MingImageEncoder
+
+    params = inspect.signature(MingImageEncoder.forward).parameters
+    for name in (
+        "pixel_values",
+        "image_grid_thw",
+        "pixel_values_videos",
+        "video_grid_thw",
+    ):
+        assert name in params, f"missing forward kwarg: {name}"
+        assert params[name].default is None, (
+            f"{name} must default to None so the image stage can be invoked "
+            "with images only, videos only, or both."
+        )
+
+
+def test_ming_merge_extracts_video_embeds_into_thinker_inputs() -> None:
+    """build_thinker_inputs must route ``video_embeds`` from the image stage.
+
+    The thinker model_runner injects multimodal embeddings by token id; this
+    test verifies ``merge.build_thinker_inputs`` exposes video_embeds the same
+    way it already exposes image_embeds/audio_embeds.
+    """
+    import torch
+
+    from sglang_omni.models.ming_omni.io import PipelineState
+    from sglang_omni.models.ming_omni.pipeline.merge import build_thinker_inputs
+    from sglang_omni.models.ming_omni.pipeline.next_stage import (
+        AUDIO_STAGE,
+        IMAGE_STAGE,
+    )
+
+    state = PipelineState(
+        raw_inputs={},
+        prompt={
+            "input_ids": torch.zeros((1, 1), dtype=torch.long),
+            "attention_mask": torch.ones((1, 1), dtype=torch.long),
+            "prompt_text": "",
+        },
+        encoder_inputs={
+            IMAGE_STAGE: {"cache_key": "img:abc|vid:def"},
+        },
+    )
+
+    encoder_outs = {
+        AUDIO_STAGE: {},
+        IMAGE_STAGE: {
+            "image_embeds": torch.randn(4, 8),
+            "video_embeds": torch.randn(12, 8),
+        },
+    }
+
+    result = build_thinker_inputs(state, encoder_outs)
+
+    model_inputs = result.get("model_inputs", {})
+    assert "image_embeds" in model_inputs
+    assert "video_embeds" in model_inputs
+    assert tuple(model_inputs["video_embeds"].shape) == (12, 8)
+    assert result["media_cache_keys"]["image"] == "image:img:abc|vid:def"
+    # Video must have its own modality-keyed cache entry; the SGLang adapter
+    # looks up media_cache_keys.get("video") separately and without this
+    # entry video patch tokens would alias in the radix prefix cache.
+    assert result["media_cache_keys"]["video"] == "video:img:abc|vid:def"
+
+
+def test_compute_video_cache_key_changes_with_decode_params() -> None:
+    """Different fps/max_frames/pixel limits must produce distinct cache keys.
+
+    Without this, the encoder cache could return ``video_embeds`` whose
+    length doesn't match the prompt placeholders for the new request.
+    """
+    from sglang_omni.preprocessing.video import compute_video_cache_key
+
+    videos = ["/tmp/clip.mp4"]
+    base = compute_video_cache_key(videos)
+    k_fps_1 = compute_video_cache_key(videos, fps=1.0)
+    k_fps_8 = compute_video_cache_key(videos, fps=8.0)
+    k_frames_16 = compute_video_cache_key(videos, max_frames=16)
+    k_min_px = compute_video_cache_key(videos, min_pixels=128)
+    k_max_px = compute_video_cache_key(videos, max_pixels=4096)
+    k_total_px = compute_video_cache_key(videos, total_pixels=65536)
+    k_all = compute_video_cache_key(
+        videos,
+        fps=8.0,
+        max_frames=16,
+        min_pixels=128,
+        max_pixels=4096,
+        total_pixels=65536,
+    )
+
+    # Every param shift produces a distinct key.
+    distinct = {
+        base,
+        k_fps_1,
+        k_fps_8,
+        k_frames_16,
+        k_min_px,
+        k_max_px,
+        k_total_px,
+        k_all,
+    }
+    assert len(distinct) == 8
+
+    # Same params -> same key (deterministic).
+    assert k_fps_8 == compute_video_cache_key(videos, fps=8.0)
+
+    # Empty / None input still returns None (no cache).
+    assert compute_video_cache_key(None, fps=8.0) is None
+    assert compute_video_cache_key([], fps=8.0) is None
+
+
+def _make_fake_ming_image_encoder(spatial_merge_size: int = 2):
+    """Build a MingImageEncoder shell whose ``_encode`` returns synthetic
+    tensors with the real shape contract (embeds rows == sum(token_counts)).
+
+    Bypasses nn.Module.__init__ so we don't need vision-encoder weights, and
+    only exercises ``forward``'s dispatch + the embeds/token_counts invariant.
+    """
+    import types
+
+    import torch
+
+    from sglang_omni.models.ming_omni.components.image_encoder import MingImageEncoder
+
+    enc = object.__new__(MingImageEncoder)
+    enc.__dict__["_spatial_merge_size"] = spatial_merge_size
+    enc.__dict__["visual"] = types.SimpleNamespace(device=torch.device("cpu"))
+
+    def fake_encode(pixel_values, grid_thw):
+        merge_sq = spatial_merge_size**2
+        token_counts = (grid_thw[:, 0] * grid_thw[:, 1] * grid_thw[:, 2]) // merge_sq
+        total = int(token_counts.sum().item())
+        embeds = torch.zeros(total, 8)  # hidden_dim doesn't matter for shape test
+        return embeds, token_counts
+
+    enc.__dict__["_encode"] = fake_encode
+    return enc
+
+
+def test_ming_image_encoder_forward_video_embeds_match_token_counts() -> None:
+    """video_embeds.shape[0] MUST equal sum(video_token_counts).
+
+    This is the placeholder-count contract: the encoder's output length has
+    to match the number of <video_patch> slots the prompt reserved for it.
+    Signature tests alone don't catch a regression where forward silently
+    returns wrong-length embeds.
+    """
+    import torch
+
+    from sglang_omni.models.ming_omni.components.image_encoder import MingImageEncoder
+
+    enc = _make_fake_ming_image_encoder()
+    # Two videos: (t=2, h=4, w=4) and (t=1, h=6, w=6).
+    # With merge_sq=4: tokens = 8 and 9, total = 17.
+    video_grid_thw = torch.tensor([[2, 4, 4], [1, 6, 6]], dtype=torch.long)
+    pixel_values_videos = torch.zeros(100, 16)
+
+    out = MingImageEncoder.forward(
+        enc,
+        pixel_values_videos=pixel_values_videos,
+        video_grid_thw=video_grid_thw,
+    )
+
+    assert {"video_embeds", "video_grid_thw", "video_token_counts"} <= set(out)
+    assert "image_embeds" not in out
+    expected_total = int(out["video_token_counts"].sum().item())
+    assert expected_total == 17
+    assert out["video_embeds"].shape[0] == expected_total
+
+
+def test_ming_image_encoder_forward_handles_image_and_video_together() -> None:
+    """Mixed image+video request must produce both modalities with the
+    embeds/token_counts invariant holding independently for each."""
+    import torch
+
+    from sglang_omni.models.ming_omni.components.image_encoder import MingImageEncoder
+
+    enc = _make_fake_ming_image_encoder()
+    out = MingImageEncoder.forward(
+        enc,
+        pixel_values=torch.zeros(50, 16),
+        image_grid_thw=torch.tensor([[1, 4, 4]], dtype=torch.long),  # 4 tokens
+        pixel_values_videos=torch.zeros(100, 16),
+        video_grid_thw=torch.tensor([[2, 4, 4]], dtype=torch.long),  # 8 tokens
+    )
+
+    assert {
+        "image_embeds",
+        "image_grid_thw",
+        "image_token_counts",
+        "video_embeds",
+        "video_grid_thw",
+        "video_token_counts",
+    } <= set(out)
+    assert (
+        out["image_embeds"].shape[0] == int(out["image_token_counts"].sum().item()) == 4
+    )
+    assert (
+        out["video_embeds"].shape[0] == int(out["video_token_counts"].sum().item()) == 8
+    )
+
+
+def test_ming_image_encoder_forward_skips_video_when_grid_thw_missing() -> None:
+    """If only one of (pixel_values_videos, video_grid_thw) is provided,
+    the encoder must silently skip the video path rather than crash.
+
+    This locks the current defensive behavior: upstream stages that fail to
+    produce a usable video pair (e.g. partial decode failure) won't take
+    down the encoder, the request just produces no video_embeds.
+    """
+    import torch
+
+    from sglang_omni.models.ming_omni.components.image_encoder import MingImageEncoder
+
+    enc = _make_fake_ming_image_encoder()
+
+    # pixel_values_videos without video_grid_thw -> skipped.
+    out = MingImageEncoder.forward(
+        enc,
+        pixel_values_videos=torch.zeros(100, 16),
+        video_grid_thw=None,
+    )
+    assert "video_embeds" not in out
+    assert "video_grid_thw" not in out
+
+    # video_grid_thw without pixel_values_videos -> also skipped.
+    out = MingImageEncoder.forward(
+        enc,
+        pixel_values_videos=None,
+        video_grid_thw=torch.tensor([[2, 4, 4]], dtype=torch.long),
+    )
+    assert "video_embeds" not in out
+    assert "video_grid_thw" not in out

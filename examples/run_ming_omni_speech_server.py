@@ -82,6 +82,27 @@ def parse_args() -> argparse.Namespace:
             "If omitted, SGLang chooses automatically."
         ),
     )
+    parser.add_argument(
+        "--cpu-offload-gb",
+        type=int,
+        default=None,
+        help=(
+            "Offload N GiB of thinker weights to CPU. Required for "
+            "Ming-flash-omni-2.0 (~200 GB MoE weights) on a single GPU. "
+            "Mirrors the text launcher's default of 80."
+        ),
+    )
+    # Streaming TTS
+    parser.add_argument(
+        "--enable-streaming-tts",
+        action="store_true",
+        help=(
+            "Use the 8-stage streaming-TTS pipeline (segmenter + streaming "
+            "talker) for sub-second time-to-first-audio. Default keeps the "
+            "non-streaming 7-stage speech pipeline."
+        ),
+    )
+
     # Server
     parser.add_argument("--host", type=str, default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8000)
@@ -147,28 +168,44 @@ def _set_thinker_tp(config: Any, *, start_gpu: int, tp_size: int) -> None:
 
 
 def _launch_speech_server(args: argparse.Namespace) -> None:
-    from sglang_omni.models.ming_omni.config import MingOmniSpeechPipelineConfig
+    from sglang_omni.models.ming_omni.config import (
+        MingOmniSpeechPipelineConfig,
+        MingOmniStreamingSpeechPipelineConfig,
+    )
     from sglang_omni.serve import launch_server
 
     _validate_fraction("--mem-fraction-static", args.mem_fraction_static)
 
-    config = MingOmniSpeechPipelineConfig(
-        model_path=args.model_path,
-        relay_backend=args.relay_backend,
-    )
+    if getattr(args, "enable_streaming_tts", False):
+        config = MingOmniStreamingSpeechPipelineConfig(
+            model_path=args.model_path,
+            relay_backend=args.relay_backend,
+        )
+        talker_stage_name = "talker_stream"
+        gpu_validator = config._validate_talker_stream_gpu_not_in_thinker_tp_range
+    else:
+        config = MingOmniSpeechPipelineConfig(
+            model_path=args.model_path,
+            relay_backend=args.relay_backend,
+        )
+        talker_stage_name = "talker"
+        gpu_validator = config._validate_talker_gpu_not_in_thinker_tp_range
+
     _set_thinker_tp(
         config,
         start_gpu=args.gpu_thinker,
         tp_size=int(args.tp_size),
     )
-    _set_stage_gpu(config, "talker", args.gpu_talker)
-    config._validate_talker_gpu_not_in_thinker_tp_range()
+    _set_stage_gpu(config, talker_stage_name, args.gpu_talker)
+    gpu_validator()
 
     server_arg_updates: dict[str, object] = {}
     if args.tp_size and args.tp_size > 1:
         server_arg_updates["disable_custom_all_reduce"] = True
     if args.mem_fraction_static is not None:
         server_arg_updates["mem_fraction_static"] = args.mem_fraction_static
+    if getattr(args, "cpu_offload_gb", None) is not None:
+        server_arg_updates["cpu_offload_gb"] = args.cpu_offload_gb
     if server_arg_updates:
         _apply_stage_factory_updates(
             config,
@@ -177,7 +214,7 @@ def _launch_speech_server(args: argparse.Namespace) -> None:
         )
     _apply_stage_factory_updates(
         config,
-        stage_name="talker",
+        stage_name=talker_stage_name,
         updates={"voice": args.voice},
     )
 

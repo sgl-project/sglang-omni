@@ -15,6 +15,8 @@ AGGREGATE_STAGE = "mm_aggregate"
 THINKER_STAGE = "thinker"
 DECODE_STAGE = "decode"
 TALKER_STAGE = "talker"
+SEGMENTER_STAGE = "segmenter"
+TALKER_STREAM_STAGE = "talker_stream"
 
 
 def preprocessing_next(request_id: str, output: Any) -> list[str]:

@@ -301,6 +301,7 @@ class OmniScheduler:
         self._pending_stream_chunks: dict[str, list[Any]] = {}
         self._pending_stream_done: set[str] = set()
         self._deferred_request_payloads: dict[str, Any] = {}
+        self._dirty_deferred_request_ids: set[str] = set()
         self._first_emit_done: set[str] = set()
         self._prefill_start_done: set[str] = set()
 
@@ -316,6 +317,13 @@ class OmniScheduler:
         self.use_ngram_embedding = False
         self.return_health_check_ipcs = []
         self.enable_overlap_mlx = False
+        # Upstream scheduler_runtime_checker_mixin._streaming_session_count
+        # iterates ``self.session_controller.sessions.values()`` during
+        # report_decode_stats. We don't host SGLang's interactive-session
+        # feature, so a stub with an empty sessions dict is sufficient.
+        from types import SimpleNamespace
+
+        self.session_controller = SimpleNamespace(sessions={})
 
     def self_check_during_idle(self) -> None:
         self.new_token_ratio = self.init_new_token_ratio
@@ -387,12 +395,6 @@ class OmniScheduler:
             self.attn_tp_rank == 0 or self.enable_metrics_for_all_schedulers
         )
 
-    def get_next_batch_to_run(self):
-        batch = _Upstream.get_next_batch_to_run(self)
-        if batch is not None and not self._is_batch_ready_to_run(batch):
-            return None
-        return batch
-
     def recv_requests(self):
         """Drain inbox on rank 0 and broadcast scheduler inputs to TP followers."""
         recv_msgs = self._recv_scheduler_messages()
@@ -459,11 +461,10 @@ class OmniScheduler:
                 req_data = self._request_builder(payload)
             except Exception as exc:
                 logger.exception(f"OmniScheduler: request builder failed for {req_id}")
-                self._pending_stream_done.discard(req_id)
-                self._deferred_request_payloads.pop(req_id, None)
                 self.outbox.put(
                     OutgoingMessage(request_id=req_id, type="error", data=exc)
                 )
+                self.abort(req_id)
                 continue
             if pending_stream_done:
                 self._pending_stream_done.discard(req_id)
@@ -486,6 +487,7 @@ class OmniScheduler:
                             data=ValueError(error_msg),
                         )
                     )
+                    self.abort(req_id)
                     continue
             kv_error = self._request_kv_capacity_error(req)
             if kv_error is not None:
@@ -499,6 +501,7 @@ class OmniScheduler:
                         data=ValueError(kv_error),
                     )
                 )
+                self.abort(req_id)
                 continue
             self._initialize_request_stream_state(req_data, payload)
             if req_id in self._aborted_request_ids:
@@ -525,11 +528,21 @@ class OmniScheduler:
         return None
 
     def _take_deferred_request_payloads(self) -> list[Any]:
-        if not self._deferred_request_payloads:
+        if not self._dirty_deferred_request_ids:
             return []
-        deferred = list(self._deferred_request_payloads.values())
-        self._deferred_request_payloads.clear()
+        deferred: list[Any] = []
+        for req_id in list(self._dirty_deferred_request_ids):
+            payload = self._deferred_request_payloads.pop(req_id, None)
+            if payload is not None:
+                deferred.append(payload)
+        self._dirty_deferred_request_ids.clear()
         return deferred
+
+    def _should_recheck_deferred_request_on_stream_chunk(
+        self, request_id: str, chunk: Any
+    ) -> bool:
+        del request_id, chunk
+        return True
 
     def _is_request_build_ready(
         self,
@@ -545,10 +558,6 @@ class OmniScheduler:
             self._append_stream_chunk(req_data, chunk)
         if bool(getattr(payload, "prefetched_stream_done", False)):
             self._mark_stream_done(req_data)
-
-    def _is_batch_ready_to_run(self, batch: Any) -> bool:
-        del batch
-        return True
 
     def _request_kv_capacity_error(self, req: Any) -> str | None:
         input_len = len(req.origin_input_ids)
@@ -721,6 +730,11 @@ class OmniScheduler:
             self._append_stream_chunk(req_data, chunk)
             return
         self._pending_stream_chunks.setdefault(request_id, []).append(chunk)
+        if (
+            request_id in self._deferred_request_payloads
+            and self._should_recheck_deferred_request_on_stream_chunk(request_id, chunk)
+        ):
+            self._dirty_deferred_request_ids.add(request_id)
 
     def _on_stream_done(self, request_id: str) -> None:
         req_data = self._find_request_data(request_id)
@@ -728,6 +742,8 @@ class OmniScheduler:
             self._mark_stream_done(req_data)
             return
         self._pending_stream_done.add(request_id)
+        if request_id in self._deferred_request_payloads:
+            self._dirty_deferred_request_ids.add(request_id)
 
     def start(self) -> None:
         self._running = True
@@ -759,6 +775,7 @@ class OmniScheduler:
         self._pending_stream_chunks.pop(request_id, None)
         self._pending_stream_done.discard(request_id)
         self._deferred_request_payloads.pop(request_id, None)
+        self._dirty_deferred_request_ids.discard(request_id)
         self.__dict__.setdefault("_first_emit_done", set()).discard(request_id)
         self.__dict__.setdefault("_prefill_start_done", set()).discard(request_id)
         self.waiting_queue = [
@@ -889,9 +906,13 @@ class OmniScheduler:
             self.inbox.put(msg)
 
     def _find_request_data(self, request_id: str) -> Any | None:
-        for req in self.running_batch.reqs:
-            if req.rid == request_id:
-                return req._omni_data
+        # Scan all batches a live req can sit in during prefill→decode handoff.
+        for batch in (self.running_batch, self.cur_batch, self.last_batch):
+            if batch is None:
+                continue
+            for req in getattr(batch, "reqs", ()):
+                if req.rid == request_id:
+                    return req._omni_data
         for req in self.waiting_queue:
             if req.rid == request_id:
                 return req._omni_data
