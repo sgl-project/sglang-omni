@@ -87,6 +87,12 @@ class QwenTalkerScheduler(OmniScheduler):
         del req_data, payload
         return None
 
+    def _should_recheck_deferred_request_on_stream_chunk(
+        self, request_id: str, chunk: Any
+    ) -> bool:
+        del request_id, chunk
+        return self._enable_partial_start
+
     def _is_batch_ready_to_run(self, batch: Any) -> bool:
         if (
             batch is not None

@@ -531,6 +531,12 @@ class OmniScheduler:
         self._dirty_deferred_request_ids.clear()
         return deferred
 
+    def _should_recheck_deferred_request_on_stream_chunk(
+        self, request_id: str, chunk: Any
+    ) -> bool:
+        del request_id, chunk
+        return True
+
     def _is_request_build_ready(
         self,
         payload: Any,
@@ -717,7 +723,10 @@ class OmniScheduler:
             self._append_stream_chunk(req_data, chunk)
             return
         self._pending_stream_chunks.setdefault(request_id, []).append(chunk)
-        if request_id in self._deferred_request_payloads:
+        if (
+            request_id in self._deferred_request_payloads
+            and self._should_recheck_deferred_request_on_stream_chunk(request_id, chunk)
+        ):
             self._dirty_deferred_request_ids.add(request_id)
 
     def _on_stream_done(self, request_id: str) -> None:

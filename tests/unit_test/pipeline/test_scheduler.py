@@ -488,6 +488,14 @@ def test_omni_scheduler_request_builder_errors_do_not_stop_loop() -> None:
     scheduler._deferred_request_payloads = {}
     scheduler._dirty_deferred_request_ids = set()
     scheduler._aborted_request_ids = set()
+    scheduler.running_batch = SimpleNamespace(reqs=[], batch_is_full=False)
+    scheduler.cur_batch = None
+    scheduler.last_batch = None
+    scheduler._abort_callback = None
+    scheduler._first_emit_done = set()
+    scheduler._prefill_start_done = set()
+    scheduler.inbox = Queue()
+    scheduler.tree_cache = None
 
     def request_builder(payload: SimpleNamespace) -> None:
         raise ValueError(payload.request_id)
@@ -546,6 +554,14 @@ def test_omni_scheduler_rejects_custom_request_over_context() -> None:
     scheduler._aborted_request_ids = set()
     scheduler.max_req_len = 6
     scheduler.max_req_input_len = 5
+    scheduler.running_batch = SimpleNamespace(reqs=[], batch_is_full=False)
+    scheduler.cur_batch = None
+    scheduler.last_batch = None
+    scheduler._abort_callback = None
+    scheduler._first_emit_done = set()
+    scheduler._prefill_start_done = set()
+    scheduler.inbox = Queue()
+    scheduler.tree_cache = None
 
     req = SimpleNamespace(
         rid="req-long",

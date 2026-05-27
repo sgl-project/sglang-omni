@@ -887,6 +887,30 @@ def test_process_input_requests_keeps_deferred_when_below_threshold() -> None:
     assert scheduler.waiting_queue == []
 
 
+def test_deferred_request_payload_ignores_chunks_when_partial_disabled() -> None:
+    """Default-disabled talker payloads wait for stream_done instead of every chunk."""
+
+    scheduler = _build_state_machine_scheduler(
+        enable_partial_start=False,
+        request_builder_stub=lambda _payload: None,
+    )
+    scheduler._find_request_data = lambda _rid: None
+    payload = SimpleNamespace(request_id="rid-disabled", prefetched_chunks=[])
+    scheduler._deferred_request_payloads["rid-disabled"] = payload
+
+    OmniScheduler._on_stream_chunk(
+        scheduler, "rid-disabled", SimpleNamespace(data=torch.tensor([1.0]))
+    )
+
+    assert scheduler._pending_stream_chunks["rid-disabled"]
+    assert scheduler._dirty_deferred_request_ids == set()
+    assert OmniScheduler._take_deferred_request_payloads(scheduler) == []
+
+    OmniScheduler._on_stream_done(scheduler, "rid-disabled")
+    assert scheduler._dirty_deferred_request_ids == {"rid-disabled"}
+    assert OmniScheduler._take_deferred_request_payloads(scheduler) == [payload]
+
+
 def test_abort_filters_subsequent_stream_messages_via_recv_requests() -> None:
     """After abort, subsequent stream messages are filtered at recv_requests.
 
