@@ -7,12 +7,12 @@ infrastructure, CFM/DiT/Aggregator modules and generation.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import math
 import queue
 import re
 import threading
-import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from queue import Queue
@@ -34,6 +34,8 @@ from .talker_module.cfm import CFM, get_epss_timesteps
 from .talker_module.dit import DiT
 
 logger = logging.getLogger(__name__)
+
+_TOKEN_DONE = object()
 
 # ---------- Optional: onnxruntime for speaker embedding ----------
 try:
@@ -109,8 +111,16 @@ class CFMGraphExecutor:
         self.graph = None
 
     def execute(
-        self, input_tensor, his_lat, cfg_strength=2.0, sigma=0.25, temperature=0.0
+        self,
+        input_tensor,
+        his_lat,
+        cfg_strength=2.0,
+        sigma=0.25,
+        temperature=0.0,
+        abort_event: threading.Event | None = None,
     ):
+        if abort_event is not None and abort_event.is_set():
+            raise asyncio.CancelledError()
         bat_size, his_patch_size, z_dim = his_lat.shape
         randn_tensor = torch.randn(
             (bat_size, self.config.patch_size, z_dim),
@@ -127,7 +137,11 @@ class CFMGraphExecutor:
         )
 
         if not self.initialized:
-            self._initialize_graph(input_tensor, his_lat, randn_tensor, sde_rnd)
+            if abort_event is not None and abort_event.is_set():
+                raise asyncio.CancelledError()
+            self._initialize_graph(
+                input_tensor, his_lat, randn_tensor, sde_rnd, abort_event
+            )
 
         self.last_hidden_state_placeholder.copy_(input_tensor)
         self.his_lat_placeholder.copy_(his_lat)
@@ -138,7 +152,13 @@ class CFMGraphExecutor:
         self.sde_args_placeholder[2] = temperature
         self.sde_rnd_placeholder.copy_(sde_rnd)
 
+        if abort_event is not None and abort_event.is_set():
+            raise asyncio.CancelledError()
+        # Python abort checks inside CFM.sample run during capture; replay is
+        # bounded by explicit checks before and after the CUDA graph replay.
         self.graph.replay()
+        if abort_event is not None and abort_event.is_set():
+            raise asyncio.CancelledError()
 
         gen_lat = torch.empty_like(self.gen_lat_placeholder)
         gen_lat.copy_(self.gen_lat_placeholder)
@@ -149,7 +169,9 @@ class CFMGraphExecutor:
 
         return gen_lat, inputs_embeds, stop_out
 
-    def _initialize_graph(self, input_tensor, his_lat, randn_tensor, sde_rnd):
+    def _initialize_graph(
+        self, input_tensor, his_lat, randn_tensor, sde_rnd, abort_event=None
+    ):
         self.last_hidden_state_placeholder = torch.empty_like(input_tensor)
         self.his_lat_placeholder = torch.empty_like(his_lat)
         self.randn_like_placeholder = torch.empty_like(randn_tensor)
@@ -163,20 +185,33 @@ class CFMGraphExecutor:
         )
         self.sde_rnd_placeholder = torch.empty_like(sde_rnd)
 
+        # (wenyao) Aborting CFM.sample during torch.cuda.graph capture corrupts the
+        # partial graph. Pass abort_event=None during capture; the caller
+        # (execute) checks abort before _initialize_graph and on every replay.
         self.graph = torch.cuda.CUDAGraph()
-        with torch.cuda.graph(self.graph):
-            self.gen_lat_placeholder = self.cfm.sample(
-                self.last_hidden_state_placeholder,
-                self.his_lat_placeholder,
-                self.randn_like_placeholder,
-                self.t_placeholder,
-                self.sde_args_placeholder,
-                self.sde_rnd_placeholder,
-            )
-            self.inputs_embeds_placeholder = self.aggregator(self.gen_lat_placeholder)
-            self.stop_out_placeholder = self.stop_head(
-                self.last_hidden_state_placeholder[:, -1, :]
-            ).softmax(dim=-1)
+        try:
+            with torch.cuda.graph(self.graph):
+                self.gen_lat_placeholder = self.cfm.sample(
+                    self.last_hidden_state_placeholder,
+                    self.his_lat_placeholder,
+                    self.randn_like_placeholder,
+                    self.t_placeholder,
+                    self.sde_args_placeholder,
+                    self.sde_rnd_placeholder,
+                    abort_event=None,
+                )
+                self.inputs_embeds_placeholder = self.aggregator(
+                    self.gen_lat_placeholder
+                )
+                self.stop_out_placeholder = self.stop_head(
+                    self.last_hidden_state_placeholder[:, -1, :]
+                ).softmax(dim=-1)
+        except BaseException:
+            self.graph = None
+            self.gen_lat_placeholder = None
+            self.inputs_embeds_placeholder = None
+            self.stop_out_placeholder = None
+            raise
 
         self.initialized = True
 
@@ -206,12 +241,18 @@ class CFMGraphExecutorPool:
             self.pool.put(executor)
 
     def execute(
-        self, input_tensor, his_lat, cfg_strength=2.0, sigma=0.25, temperature=0.0
+        self,
+        input_tensor,
+        his_lat,
+        cfg_strength=2.0,
+        sigma=0.25,
+        temperature=0.0,
+        abort_event: threading.Event | None = None,
     ):
         executor = self.acquire()
         try:
             return executor.execute(
-                input_tensor, his_lat, cfg_strength, sigma, temperature
+                input_tensor, his_lat, cfg_strength, sigma, temperature, abort_event
             )
         finally:
             self.release(executor)
@@ -373,24 +414,25 @@ class MingOmniTalker(nn.Module):
                         "Please generate speech based on the following description.\n"
                     )
                     text = "Initialize compilation graph"
-                    future = self.executor.submit(
-                        self.llm_job,
-                        prompt,
-                        text,
-                        None,
-                        None,
-                        "",
-                        None,
-                        None,
-                        this_uuid,
-                    )
-                    future.result()
-
-                    with self.lock:
-                        self.tts_speech_token_dict.pop(this_uuid)
-                        self.llm_end_dict.pop(this_uuid)
-                        self.vae_cache.pop(this_uuid)
-                        self.sil_holder_cache.pop(this_uuid)
+                    try:
+                        future = self.executor.submit(
+                            self.llm_job,
+                            prompt,
+                            text,
+                            None,
+                            None,
+                            "",
+                            None,
+                            None,
+                            this_uuid,
+                        )
+                        future.result()
+                    finally:
+                        with self.lock:
+                            self.tts_speech_token_dict.pop(this_uuid, None)
+                            self.llm_end_dict.pop(this_uuid, None)
+                            self.vae_cache.pop(this_uuid, None)
+                            self.sil_holder_cache.pop(this_uuid, None)
 
                 self.initialized = True
 
@@ -414,6 +456,7 @@ class MingOmniTalker(nn.Module):
         cfg=2.0,
         sigma=0.25,
         temperature=0,
+        abort_event: threading.Event | None = None,
     ):
         step = 0
         target_dtype = torch.bfloat16
@@ -446,121 +489,128 @@ class MingOmniTalker(nn.Module):
             model_graph,
         ) = self.model_graph_pool.get()
 
-        if past_key_values is None:
-            past_key_values = StaticCache(
-                config=self.model.config,
-                max_batch_size=1,
-                max_cache_len=max_cache_len,
-                device=self.model.device,
-                dtype=target_dtype,
-            )
-        else:
-            if hasattr(past_key_values, "reset"):
-                past_key_values.reset()
-            elif hasattr(past_key_values, "key_cache"):
-                for layer_idx in range(len(past_key_values.key_cache)):
-                    past_key_values.key_cache[layer_idx].zero_()
-                    past_key_values.value_cache[layer_idx].zero_()
-            else:
-                for layer in past_key_values.layers:
-                    layer.keys.zero_()
-                    layer.values.zero_()
-
-        prefill_len = inputs_embeds.shape[1]
-        attention_mask = torch.ones(input_ids.shape).to(input_ids.device)
-        position_ids = (attention_mask.cumsum(-1) - 1).masked_fill_(
-            (attention_mask == 0), 1
-        )
-
-        max_decode_steps = (max_cache_len - prefill_len) // self.patch_size
-
-        while step < 1000 and step < max_decode_steps:
-            if step == 0:
-                prefill_cache_position = torch.arange(
-                    0, prefill_len, device=inputs_embeds.device
-                )
-                outputs = self.model(
-                    position_ids=position_ids,
-                    cache_position=prefill_cache_position,
-                    past_key_values=past_key_values,
-                    inputs_embeds=inputs_embeds,
-                    use_cache=True,
-                    output_hidden_states=True,
+        try:
+            if past_key_values is None:
+                past_key_values = StaticCache(
+                    config=self.model.config,
+                    max_batch_size=1,
+                    max_cache_len=max_cache_len,
+                    device=self.model.device,
+                    dtype=target_dtype,
                 )
             else:
-                past_seen_tokens = past_key_values.get_seq_length()
-                cache_position = torch.arange(
-                    past_seen_tokens,
-                    past_seen_tokens + inputs_embeds.shape[1],
-                    device=inputs_embeds.device,
-                )
-
-                if model_graph is None:
-                    model_graph = torch.cuda.CUDAGraph()
-                    inputs_embeds_placeholder = torch.empty_like(inputs_embeds)
-                    position_ids_placeholder = None
-                    attention_mask_placeholder = None
-                    cache_position_placeholder = torch.empty_like(cache_position)
-
-                    inputs_embeds_placeholder.copy_(inputs_embeds)
-                    cache_position_placeholder.copy_(cache_position)
-
-                    with torch.cuda.graph(model_graph):
-                        outputs_placeholder = self.model(
-                            position_ids=position_ids_placeholder,
-                            cache_position=cache_position_placeholder,
-                            attention_mask=attention_mask_placeholder,
-                            past_key_values=past_key_values,
-                            inputs_embeds=inputs_embeds_placeholder,
-                            use_cache=True,
-                            output_hidden_states=True,
-                        )
+                if hasattr(past_key_values, "reset"):
+                    past_key_values.reset()
+                elif hasattr(past_key_values, "key_cache"):
+                    for layer_idx in range(len(past_key_values.key_cache)):
+                        past_key_values.key_cache[layer_idx].zero_()
+                        past_key_values.value_cache[layer_idx].zero_()
                 else:
-                    inputs_embeds_placeholder.copy_(inputs_embeds)
-                    if cache_position_placeholder is not None:
+                    for layer in past_key_values.layers:
+                        layer.keys.zero_()
+                        layer.values.zero_()
+
+            prefill_len = inputs_embeds.shape[1]
+            attention_mask = torch.ones(input_ids.shape).to(input_ids.device)
+            position_ids = (attention_mask.cumsum(-1) - 1).masked_fill_(
+                (attention_mask == 0), 1
+            )
+
+            max_decode_steps = (max_cache_len - prefill_len) // self.patch_size
+
+            while step < 1000 and step < max_decode_steps:
+                if abort_event is not None and abort_event.is_set():
+                    raise asyncio.CancelledError()
+                if step == 0:
+                    prefill_cache_position = torch.arange(
+                        0, prefill_len, device=inputs_embeds.device
+                    )
+                    outputs = self.model(
+                        position_ids=position_ids,
+                        cache_position=prefill_cache_position,
+                        past_key_values=past_key_values,
+                        inputs_embeds=inputs_embeds,
+                        use_cache=True,
+                        output_hidden_states=True,
+                    )
+                else:
+                    past_seen_tokens = past_key_values.get_seq_length()
+                    cache_position = torch.arange(
+                        past_seen_tokens,
+                        past_seen_tokens + inputs_embeds.shape[1],
+                        device=inputs_embeds.device,
+                    )
+
+                    if model_graph is None:
+                        model_graph = torch.cuda.CUDAGraph()
+                        inputs_embeds_placeholder = torch.empty_like(inputs_embeds)
+                        position_ids_placeholder = None
+                        attention_mask_placeholder = None
+                        cache_position_placeholder = torch.empty_like(cache_position)
+
+                        inputs_embeds_placeholder.copy_(inputs_embeds)
                         cache_position_placeholder.copy_(cache_position)
-                    model_graph.replay()
 
-                outputs = outputs_placeholder
+                        with torch.cuda.graph(model_graph):
+                            outputs_placeholder = self.model(
+                                position_ids=position_ids_placeholder,
+                                cache_position=cache_position_placeholder,
+                                attention_mask=attention_mask_placeholder,
+                                past_key_values=past_key_values,
+                                inputs_embeds=inputs_embeds_placeholder,
+                                use_cache=True,
+                                output_hidden_states=True,
+                            )
+                    else:
+                        inputs_embeds_placeholder.copy_(inputs_embeds)
+                        if cache_position_placeholder is not None:
+                            cache_position_placeholder.copy_(cache_position)
+                        model_graph.replay()
 
-            hidden_out = outputs.hidden_states[-1][:, -1:, :]
+                    outputs = outputs_placeholder
 
-            gen_lat, inputs_embeds, stop_out = self.sampler_pool.execute(
-                hidden_out,
-                his_lat,
-                cfg,
-                sigma,
-                temperature,
-            )
+                hidden_out = outputs.hidden_states[-1][:, -1:, :]
 
-            if self.his_patch_size == self.patch_size:
-                his_lat = gen_lat
-            elif self.his_patch_size > self.patch_size:
-                his_lat = torch.cat(
-                    [his_lat[:, self.patch_size - self.his_patch_size :], gen_lat],
-                    dim=1,
+                gen_lat, inputs_embeds, stop_out = self.sampler_pool.execute(
+                    hidden_out,
+                    his_lat,
+                    cfg,
+                    sigma,
+                    temperature,
+                    abort_event,
                 )
-            else:
-                raise NotImplementedError
 
-            if step > min_new_token and stop_out.cpu()[0, 1] > 0.5:
-                yield gen_lat, True
-                break
+                if self.his_patch_size == self.patch_size:
+                    his_lat = gen_lat
+                elif self.his_patch_size > self.patch_size:
+                    his_lat = torch.cat(
+                        [his_lat[:, self.patch_size - self.his_patch_size :], gen_lat],
+                        dim=1,
+                    )
+                else:
+                    raise NotImplementedError
 
-            yield gen_lat, False
-            step += 1
+                if abort_event is not None and abort_event.is_set():
+                    raise asyncio.CancelledError()
 
-        self.model_graph_pool.put(
-            (
-                past_key_values,
-                inputs_embeds_placeholder,
-                cache_position_placeholder,
-                position_ids_placeholder,
-                attention_mask_placeholder,
-                outputs_placeholder,
-                model_graph,
+                if step > min_new_token and stop_out.cpu()[0, 1] > 0.5:
+                    yield gen_lat, True
+                    break
+
+                yield gen_lat, False
+                step += 1
+        finally:
+            self.model_graph_pool.put(
+                (
+                    past_key_values,
+                    inputs_embeds_placeholder,
+                    cache_position_placeholder,
+                    position_ids_placeholder,
+                    attention_mask_placeholder,
+                    outputs_placeholder,
+                    model_graph,
+                )
             )
-        )
 
     def omni_audio_generation_func(
         self,
@@ -574,6 +624,7 @@ class MingOmniTalker(nn.Module):
         cfg=2.0,
         sigma=0.25,
         temperature=0,
+        abort_event: threading.Event | None = None,
     ):
         assert (
             self.tokenizer is not None
@@ -668,6 +719,7 @@ class MingOmniTalker(nn.Module):
                 cfg=cfg,
                 sigma=sigma,
                 temperature=temperature,
+                abort_event=abort_event,
             ):
                 yield audio_token
 
@@ -755,23 +807,37 @@ class MingOmniTalker(nn.Module):
         cfg=2.0,
         sigma=0.25,
         temperature=0,
+        token_queue: queue.Queue | None = None,
+        abort_event: threading.Event | None = None,
     ):
-        with torch.cuda.stream(torch.cuda.Stream(self.device)):
-            for audio_token in self.omni_audio_generation_func(
-                prompt=prompt,
-                text=text,
-                spk_emb=spk_emb,
-                instruction=instruction,
-                prompt_text=prompt_text,
-                prompt_wav_lat=prompt_wav_lat,
-                prompt_wav_emb=prompt_wav_emb,
-                cfg=cfg,
-                sigma=sigma,
-                temperature=temperature,
-            ):
-                torch.cuda.current_stream().synchronize()
-                self.tts_speech_token_dict[this_uuid].append(audio_token)
-        self.llm_end_dict[this_uuid] = True
+        try:
+            with torch.cuda.stream(torch.cuda.Stream(self.device)):
+                for audio_token in self.omni_audio_generation_func(
+                    prompt=prompt,
+                    text=text,
+                    spk_emb=spk_emb,
+                    instruction=instruction,
+                    prompt_text=prompt_text,
+                    prompt_wav_lat=prompt_wav_lat,
+                    prompt_wav_emb=prompt_wav_emb,
+                    cfg=cfg,
+                    sigma=sigma,
+                    temperature=temperature,
+                    abort_event=abort_event,
+                ):
+                    if abort_event is not None and abort_event.is_set():
+                        raise asyncio.CancelledError()
+                    torch.cuda.current_stream().synchronize()
+                    if token_queue is not None:
+                        token_queue.put(audio_token)
+                    else:
+                        self.tts_speech_token_dict[this_uuid].append(audio_token)
+        finally:
+            with self.lock:
+                if this_uuid in self.llm_end_dict:
+                    self.llm_end_dict[this_uuid] = True
+            if token_queue is not None:
+                token_queue.put(_TOKEN_DONE)
 
     def tts_job(
         self,
@@ -787,9 +853,16 @@ class MingOmniTalker(nn.Module):
         cfg=2.0,
         sigma=0.25,
         temperature=0,
+        abort_event: threading.Event | None = None,
     ):
         with torch.cuda.stream(torch.cuda.Stream(self.device)):
             this_uuid = str(uuid.uuid1())
+            token_queue = queue.Queue() if stream else None
+            effective_abort_event = abort_event
+            if stream and effective_abort_event is None:
+                effective_abort_event = threading.Event()
+            completed = False
+            future = None
             with self.lock:
                 self.tts_speech_token_dict[this_uuid] = []
                 self.llm_end_dict[this_uuid] = False
@@ -799,36 +872,50 @@ class MingOmniTalker(nn.Module):
                 }
                 self.sil_holder_cache[this_uuid] = None
 
-            future = self.executor.submit(
-                self.llm_job,
-                prompt,
-                text,
-                spk_emb,
-                instruction,
-                prompt_text,
-                prompt_wav_lat,
-                prompt_wav_emb,
-                this_uuid,
-                cfg,
-                sigma,
-                temperature,
-            )
+            try:
+                future = self.executor.submit(
+                    self.llm_job,
+                    prompt,
+                    text,
+                    spk_emb,
+                    instruction,
+                    prompt_text,
+                    prompt_wav_lat,
+                    prompt_wav_emb,
+                    this_uuid,
+                    cfg,
+                    sigma,
+                    temperature,
+                    token_queue=token_queue,
+                    abort_event=effective_abort_event,
+                )
 
-            if stream:
-                token_offset = 0
-                while True:
-                    if future.done():
-                        exc = future.exception()
-                        if exc:
-                            raise exc
-                    time.sleep(0.1)
-                    nxt = len(self.tts_speech_token_dict[this_uuid])
-                    if nxt > token_offset:
-                        this_tts_speech_token = self.tts_speech_token_dict[this_uuid][
-                            token_offset:nxt
-                        ]
-                        last_chunk = this_tts_speech_token[-1][-1]
-                        this_tts_speech_token = [ii[0] for ii in this_tts_speech_token]
+                if stream:
+                    assert token_queue is not None
+                    # 25ms wakeup keeps the abort_event check responsive when
+                    # llm_job has not yet pushed a token or _TOKEN_DONE.
+                    # Worst-case external abort latency is bounded by this poll
+                    # interval plus one inner generator step.
+                    while True:
+                        if (
+                            effective_abort_event is not None
+                            and effective_abort_event.is_set()
+                        ):
+                            raise asyncio.CancelledError()
+                        if future.done():
+                            exc = future.exception()
+                            if exc:
+                                raise exc
+                        try:
+                            queue_item = token_queue.get(timeout=0.025)
+                        except queue.Empty:
+                            continue
+                        if queue_item is _TOKEN_DONE:
+                            future.result()
+                            completed = True
+                            break
+                        last_chunk = queue_item[-1]
+                        this_tts_speech_token = [queue_item[0]]
                         this_tts_speech, self.vae_cache[this_uuid] = self.token2wav(
                             audio_detokenizer=audio_detokenizer,
                             token=this_tts_speech_token,
@@ -836,41 +923,43 @@ class MingOmniTalker(nn.Module):
                             stream=True,
                             last_chunk=last_chunk,
                         )
-                        token_offset = nxt
                         yield {"tts_speech": this_tts_speech.cpu()}
+                else:
+                    future.result()
+                    this_tts_speech_token = self.tts_speech_token_dict[this_uuid]
+                    this_tts_speech_token = [ii[0] for ii in this_tts_speech_token]
+                    this_tts_speech, self.vae_cache[this_uuid] = self.token2wav(
+                        audio_detokenizer=audio_detokenizer,
+                        token=this_tts_speech_token,
+                        cache=self.vae_cache[this_uuid],
+                        stream=False,
+                        last_chunk=True,
+                    )
+                    (
+                        this_tts_speech,
+                        self.sil_holder_cache[this_uuid],
+                    ) = self.silence_holder(
+                        this_tts_speech,
+                        audio_detokenizer.config.sample_rate,
+                        self.sil_holder_cache[this_uuid],
+                        True,
+                    )
+                    yield {"tts_speech": this_tts_speech.cpu()}
+                    completed = True
 
-                    if self.llm_end_dict[this_uuid] and token_offset == len(
-                        self.tts_speech_token_dict[this_uuid]
-                    ):
-                        break
-                future.result()
-            else:
-                future.result()
-                this_tts_speech_token = self.tts_speech_token_dict[this_uuid]
-                this_tts_speech_token = [ii[0] for ii in this_tts_speech_token]
-                this_tts_speech, self.vae_cache[this_uuid] = self.token2wav(
-                    audio_detokenizer=audio_detokenizer,
-                    token=this_tts_speech_token,
-                    cache=self.vae_cache[this_uuid],
-                    stream=False,
-                    last_chunk=True,
-                )
-                this_tts_speech, self.sil_holder_cache[this_uuid] = self.silence_holder(
-                    this_tts_speech,
-                    audio_detokenizer.config.sample_rate,
-                    self.sil_holder_cache[this_uuid],
-                    True,
-                )
-                yield {"tts_speech": this_tts_speech.cpu()}
-
-            if torch.cuda.is_available():
-                torch.cuda.current_stream().synchronize()
-
-            with self.lock:
-                self.tts_speech_token_dict.pop(this_uuid)
-                self.llm_end_dict.pop(this_uuid)
-                self.vae_cache.pop(this_uuid)
-                self.sil_holder_cache.pop(this_uuid)
+                if torch.cuda.is_available():
+                    torch.cuda.current_stream().synchronize()
+            finally:
+                if stream and not completed:
+                    if effective_abort_event is not None:
+                        effective_abort_event.set()
+                    if future is not None:
+                        future.cancel()
+                with self.lock:
+                    self.tts_speech_token_dict.pop(this_uuid, None)
+                    self.llm_end_dict.pop(this_uuid, None)
+                    self.vae_cache.pop(this_uuid, None)
+                    self.sil_holder_cache.pop(this_uuid, None)
 
     def register_prompt_wav(self, prompt_wav_path, audio_detokenizer):
         if isinstance(prompt_wav_path, str):
@@ -976,6 +1065,7 @@ class MingOmniTalker(nn.Module):
         prompt_wav_emb,
         stream,
         max_length=50,
+        abort_event: threading.Event | None = None,
     ):
         count = 0
         cache_position: dict = {}
@@ -1045,6 +1135,7 @@ class MingOmniTalker(nn.Module):
                     max_length,
                     wds_lg_zh,
                     wds_lg_en,
+                    abort_event,
                 )
                 count += 1
                 streaming_text = []
@@ -1067,6 +1158,7 @@ class MingOmniTalker(nn.Module):
                 max_length,
                 wds_lg_zh,
                 wds_lg_en,
+                abort_event,
             )
 
     def _process_segment(
@@ -1085,6 +1177,7 @@ class MingOmniTalker(nn.Module):
         max_length,
         wds_lg_zh,
         wds_lg_en,
+        abort_event: threading.Event | None = None,
     ):
         sub_output_dict = cut_text_by_semantic_length(streaming_text, max_length)
         text_list = sub_output_dict["fragments"]
@@ -1124,6 +1217,7 @@ class MingOmniTalker(nn.Module):
                     prompt_wav_lat=prompt_wav_lat,
                     prompt_wav_emb=prompt_wav_emb,
                     stream=use_stream,
+                    abort_event=abort_event,
                 )
             ):
                 tts_speech = this_tts_speech_dict["tts_speech"]
@@ -1186,6 +1280,7 @@ class MingOmniTalker(nn.Module):
         text = tts_text
         prompt = "Please generate speech based on the following description.\n"
         instruction = None
+        abort_event = kwargs.get("abort_event")
 
         with torch.cuda.stream(torch.cuda.Stream(self.device)):
             self.initial_graph()
@@ -1211,8 +1306,9 @@ class MingOmniTalker(nn.Module):
                 prompt_text,
                 prompt_wav_lat,
                 prompt_wav_emb,
-                stream,
-                max_length,
+                stream=stream,
+                max_length=max_length,
+                abort_event=abort_event if stream else None,
             )
 
     def instruct_audio_generation(
@@ -1234,6 +1330,7 @@ class MingOmniTalker(nn.Module):
         taskname="TTS",
         **kwargs,
     ):
+        abort_event = kwargs.get("abort_event")
         with torch.cuda.stream(torch.cuda.Stream(self.device)):
             self.initial_graph()
 
@@ -1265,6 +1362,7 @@ class MingOmniTalker(nn.Module):
                     cfg=cfg,
                     sigma=sigma,
                     temperature=temperature,
+                    abort_event=abort_event if stream else None,
                 ):
                     yield this_tts_speech_dict["tts_speech"], None, None, None
             else:
@@ -1277,6 +1375,7 @@ class MingOmniTalker(nn.Module):
                     prompt_text,
                     prompt_wav_lat,
                     prompt_wav_emb,
-                    stream,
-                    max_length,
+                    stream=stream,
+                    max_length=max_length,
+                    abort_event=abort_event if stream else None,
                 )

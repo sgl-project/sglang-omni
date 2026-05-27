@@ -69,7 +69,7 @@ cleanup_between_attempts() {
   bash .github/scripts/delete_gpu_process.sh || {
     echo "::warning::GPU cleanup failed before retry; continuing to preserve the retry signal"
   }
-  rm -rf /github/home/.cache/flashinfer || true
+  rm -rf "${XDG_CACHE_HOME:-/github/home/.cache}/flashinfer" || true
   if [ "${retry_delay_seconds}" -gt 0 ]; then
     sleep "${retry_delay_seconds}"
   fi

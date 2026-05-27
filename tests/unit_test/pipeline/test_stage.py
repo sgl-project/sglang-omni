@@ -9,6 +9,7 @@ import pytest
 import torch
 
 from sglang_omni.pipeline import relay_io
+from sglang_omni.pipeline.local_dispatch import LocalStageDispatcher
 from sglang_omni.pipeline.stage.input import AggregatedInput
 from sglang_omni.pipeline.stage.stream_queue import StreamQueue
 from sglang_omni.pipeline.stage_process import StageProcessSpec, _construct_stage
@@ -322,5 +323,632 @@ def test_stage_uses_dynamic_route_and_stream_done_targets() -> None:
         assert routed_target == "decode"
         assert isinstance(routed_msg, DataReadyMessage)
         assert not routed_msg.is_done
+
+    asyncio.run(_run())
+
+
+def test_stage_sends_same_process_payload_as_local_object(monkeypatch) -> None:
+    events: list[dict] = []
+    monkeypatch.setattr(
+        "sglang_omni.pipeline.stage.runtime._emit_event",
+        lambda **kwargs: events.append(kwargs),
+    )
+
+    async def _run() -> None:
+        dispatcher = LocalStageDispatcher()
+        relay = FakeRelay()
+        control_plane = RecordingStageControlPlane()
+        receiver_scheduler = FakeScheduler()
+        receiver = make_stage(name="decode", scheduler=receiver_scheduler)
+        sender = make_stage(
+            name="thinker",
+            endpoints={"decode": "inproc://decode"},
+            relay=relay,
+            control_plane=control_plane,
+            same_process_targets={"decode"},
+            local_dispatcher=dispatcher,
+        )
+        dispatcher.register_many([sender, receiver])
+
+        tensor = torch.arange(4)
+        payload = make_stage_payload(request_id="req-local", data={"tensor": tensor})
+
+        await sender._send_to_stage(
+            "req-local",
+            "decode",
+            payload,
+            allow_local_object=True,
+        )
+
+        assert relay.storage == {}
+        assert control_plane.sent_to_stage == []
+        queued = receiver_scheduler.inbox.get_nowait()
+        assert queued.type == "new_request"
+        assert queued.data is payload
+        assert queued.data.data["tensor"] is tensor
+
+    asyncio.run(_run())
+
+    hop_events = [event for event in events if event["event_name"] == "stage_hop_sent"]
+    assert hop_events == [
+        {
+            "request_id": "req-local",
+            "stage": "thinker",
+            "event_name": "stage_hop_sent",
+            "metadata": {"to_stage": "decode", "transport": "local_object"},
+        }
+    ]
+
+
+def test_stage_applies_projector_before_local_object_send() -> None:
+    async def _run() -> None:
+        dispatcher = LocalStageDispatcher()
+        receiver_scheduler = FakeScheduler()
+        receiver = make_stage(name="decode", scheduler=receiver_scheduler)
+        sender = make_stage(
+            name="thinker",
+            endpoints={"decode": "inproc://decode"},
+            project_payload={"decode": make_noop_projector("decode-only")},
+            same_process_targets={"decode"},
+            local_dispatcher=dispatcher,
+        )
+        dispatcher.register_many([sender, receiver])
+
+        await sender._send_to_stage(
+            "req-local",
+            "decode",
+            make_stage_payload(request_id="req-local", data={"answer": 7}),
+            allow_local_object=True,
+        )
+
+        queued = receiver_scheduler.inbox.get_nowait()
+        assert queued.data.data == {
+            "marker": "decode-only",
+            "data": {"answer": 7},
+        }
+
+    asyncio.run(_run())
+
+
+def test_stage_local_object_preserves_fan_in_semantics() -> None:
+    async def _run() -> None:
+        dispatcher = LocalStageDispatcher()
+        receiver_scheduler = FakeScheduler()
+        receiver = make_stage(
+            name="aggregate",
+            scheduler=receiver_scheduler,
+            input_handler=AggregatedInput(
+                {"preprocess", "thinker"},
+                lambda payloads: make_stage_payload(
+                    request_id="req-local",
+                    data={
+                        "sources": sorted(payloads),
+                        "values": {
+                            name: payload.data for name, payload in payloads.items()
+                        },
+                    },
+                ),
+            ),
+        )
+        preprocess = make_stage(
+            name="preprocess",
+            endpoints={"aggregate": "inproc://aggregate"},
+            same_process_targets={"aggregate"},
+            local_dispatcher=dispatcher,
+        )
+        thinker = make_stage(
+            name="thinker",
+            endpoints={"aggregate": "inproc://aggregate"},
+            same_process_targets={"aggregate"},
+            local_dispatcher=dispatcher,
+        )
+        dispatcher.register(receiver)
+
+        await preprocess._send_to_stage(
+            "req-local",
+            "aggregate",
+            make_stage_payload(request_id="req-local", data={"p": 1}),
+            allow_local_object=True,
+        )
+        assert receiver_scheduler.inbox.empty()
+
+        await thinker._send_to_stage(
+            "req-local",
+            "aggregate",
+            make_stage_payload(request_id="req-local", data={"t": 2}),
+            allow_local_object=True,
+        )
+
+        queued = receiver_scheduler.inbox.get_nowait()
+        assert queued.type == "new_request"
+        assert queued.data.data["sources"] == ["preprocess", "thinker"]
+        assert queued.data.data["values"] == {
+            "preprocess": {"p": 1},
+            "thinker": {"t": 2},
+        }
+
+    asyncio.run(_run())
+
+
+def test_stage_fan_out_payloads_fall_back_to_relay() -> None:
+    async def _run() -> None:
+        relay = FakeRelay()
+        control_plane = RecordingStageControlPlane()
+        sender = make_stage(
+            name="thinker",
+            get_next=lambda request_id, output: ["decode", "archive"],
+            endpoints={
+                "decode": "inproc://decode",
+                "archive": "inproc://archive",
+            },
+            relay=relay,
+            control_plane=control_plane,
+            same_process_targets={"decode", "archive"},
+        )
+
+        await sender._route_result(
+            "req-fanout",
+            make_stage_payload(request_id="req-fanout", data={"answer": 7}),
+        )
+
+        assert [target for target, _, _ in control_plane.sent_to_stage] == [
+            "decode",
+            "archive",
+        ]
+        assert control_plane.sent_to_stage[0][2].chunk_id is None
+        assert control_plane.sent_to_stage[1][2].chunk_id is None
+
+    asyncio.run(_run())
+
+
+def test_stage_projected_fan_out_payloads_use_local_object_when_isolated() -> None:
+    def _isolated_projector(marker):
+        def _project(payload):
+            return make_stage_payload(
+                request_id=payload.request_id,
+                inputs=payload.request.inputs,
+                params=payload.request.params,
+                data={"marker": marker, "data": dict(payload.data)},
+            )
+
+        return _project
+
+    async def _run() -> None:
+        dispatcher = LocalStageDispatcher()
+        relay = FakeRelay()
+        control_plane = RecordingStageControlPlane()
+        decode_scheduler = FakeScheduler()
+        archive_scheduler = FakeScheduler()
+        decode = make_stage(name="decode", scheduler=decode_scheduler)
+        archive = make_stage(name="archive", scheduler=archive_scheduler)
+        sender = make_stage(
+            name="thinker",
+            get_next=lambda request_id, output: ["decode", "archive"],
+            endpoints={
+                "decode": "inproc://decode",
+                "archive": "inproc://archive",
+            },
+            relay=relay,
+            control_plane=control_plane,
+            project_payload={
+                "decode": _isolated_projector("decode-only"),
+                "archive": _isolated_projector("archive-only"),
+            },
+            same_process_targets={"decode", "archive"},
+            local_dispatcher=dispatcher,
+        )
+        dispatcher.register_many([sender, decode, archive])
+
+        await sender._route_result(
+            "req-fanout",
+            make_stage_payload(request_id="req-fanout", data={"answer": 7}),
+        )
+
+        assert relay.storage == {}
+        assert control_plane.sent_to_stage == []
+        decode_msg = decode_scheduler.inbox.get_nowait()
+        archive_msg = archive_scheduler.inbox.get_nowait()
+        assert decode_msg.data.data == {
+            "marker": "decode-only",
+            "data": {"answer": 7},
+        }
+        assert archive_msg.data.data == {
+            "marker": "archive-only",
+            "data": {"answer": 7},
+        }
+
+    asyncio.run(_run())
+
+
+def test_stage_projected_fan_out_requires_isolated_data_container() -> None:
+    def _shared_data_projector(payload):
+        return make_stage_payload(
+            request_id=payload.request_id,
+            inputs=payload.request.inputs,
+            params=payload.request.params,
+            data=payload.data,
+        )
+
+    async def _run() -> None:
+        relay = FakeRelay()
+        control_plane = RecordingStageControlPlane()
+        sender = make_stage(
+            name="thinker",
+            get_next=lambda request_id, output: ["decode", "archive"],
+            endpoints={
+                "decode": "inproc://decode",
+                "archive": "inproc://archive",
+            },
+            relay=relay,
+            control_plane=control_plane,
+            project_payload={
+                "decode": _shared_data_projector,
+                "archive": _shared_data_projector,
+            },
+            same_process_targets={"decode", "archive"},
+            local_dispatcher=LocalStageDispatcher(),
+        )
+
+        await sender._route_result(
+            "req-fanout",
+            make_stage_payload(request_id="req-fanout", data={"answer": 7}),
+        )
+
+        assert [target for target, _, _ in control_plane.sent_to_stage] == [
+            "decode",
+            "archive",
+        ]
+        assert relay.storage
+
+    asyncio.run(_run())
+
+
+def test_stage_projected_fan_out_rejects_nested_mutable_aliases() -> None:
+    def _shallow_copy_projector(payload):
+        return make_stage_payload(
+            request_id=payload.request_id,
+            inputs=payload.request.inputs,
+            params=payload.request.params,
+            data={"projected": dict(payload.data)},
+        )
+
+    async def _run() -> None:
+        dispatcher = LocalStageDispatcher()
+        relay = FakeRelay()
+        control_plane = RecordingStageControlPlane()
+        decode = make_stage(name="decode", scheduler=FakeScheduler())
+        archive = make_stage(name="archive", scheduler=FakeScheduler())
+        sender = make_stage(
+            name="thinker",
+            get_next=lambda request_id, output: ["decode", "archive"],
+            endpoints={
+                "decode": "inproc://decode",
+                "archive": "inproc://archive",
+            },
+            relay=relay,
+            control_plane=control_plane,
+            project_payload={
+                "decode": _shallow_copy_projector,
+                "archive": _shallow_copy_projector,
+            },
+            same_process_targets={"decode", "archive"},
+            local_dispatcher=dispatcher,
+        )
+        dispatcher.register_many([sender, decode, archive])
+
+        await sender._route_result(
+            "req-fanout",
+            make_stage_payload(
+                request_id="req-fanout",
+                data={"nested": {"tokens": [1, 2, 3]}, "answer": 7},
+            ),
+        )
+
+        assert [target for target, _, _ in control_plane.sent_to_stage] == [
+            "decode",
+            "archive",
+        ]
+        assert relay.storage
+
+    asyncio.run(_run())
+
+
+def test_stage_projected_fan_out_rejects_wrapped_original_data() -> None:
+    def _wrapped_data_projector(payload):
+        return make_stage_payload(
+            request_id=payload.request_id,
+            inputs=payload.request.inputs,
+            params=payload.request.params,
+            data={"projected": payload.data},
+        )
+
+    async def _run() -> None:
+        relay = FakeRelay()
+        control_plane = RecordingStageControlPlane()
+        sender = make_stage(
+            name="thinker",
+            get_next=lambda request_id, output: ["decode", "archive"],
+            endpoints={
+                "decode": "inproc://decode",
+                "archive": "inproc://archive",
+            },
+            relay=relay,
+            control_plane=control_plane,
+            project_payload={
+                "decode": _wrapped_data_projector,
+                "archive": _wrapped_data_projector,
+            },
+            same_process_targets={"decode", "archive"},
+            local_dispatcher=LocalStageDispatcher(),
+        )
+
+        await sender._route_result(
+            "req-fanout",
+            make_stage_payload(request_id="req-fanout", data={"answer": 7}),
+        )
+
+        assert [target for target, _, _ in control_plane.sent_to_stage] == [
+            "decode",
+            "archive",
+        ]
+        assert relay.storage
+
+    asyncio.run(_run())
+
+
+def test_stage_projected_fan_out_allows_tensor_leaf_sharing() -> None:
+    def _tensor_leaf_projector(payload):
+        return make_stage_payload(
+            request_id=payload.request_id,
+            inputs=payload.request.inputs,
+            params=payload.request.params,
+            data={"tensor": payload.data["tensor"], "target_only": []},
+        )
+
+    async def _run() -> None:
+        dispatcher = LocalStageDispatcher()
+        relay = FakeRelay()
+        control_plane = RecordingStageControlPlane()
+        decode_scheduler = FakeScheduler()
+        decode = make_stage(name="decode", scheduler=decode_scheduler)
+        sender = make_stage(
+            name="thinker",
+            get_next=lambda request_id, output: "decode",
+            endpoints={"decode": "inproc://decode"},
+            relay=relay,
+            control_plane=control_plane,
+            project_payload={"decode": _tensor_leaf_projector},
+            same_process_targets={"decode"},
+            local_dispatcher=dispatcher,
+        )
+        dispatcher.register_many([sender, decode])
+        tensor = torch.arange(4)
+
+        await sender._route_result(
+            "req-tensor-leaf",
+            make_stage_payload(
+                request_id="req-tensor-leaf",
+                data={"tensor": tensor, "scratch": []},
+            ),
+        )
+
+        assert relay.storage == {}
+        assert control_plane.sent_to_stage == []
+        queued = decode_scheduler.inbox.get_nowait()
+        assert queued.data.data["tensor"] is tensor
+
+    asyncio.run(_run())
+
+
+def test_stage_projected_fan_out_requires_stage_payload_projection() -> None:
+    def _invalid_projector(payload):
+        del payload
+        return {"not": "a-stage-payload"}
+
+    async def _run() -> None:
+        sender = make_stage(
+            name="thinker",
+            get_next=lambda request_id, output: ["decode", "archive"],
+            endpoints={
+                "decode": "inproc://decode",
+                "archive": "inproc://archive",
+            },
+            project_payload={
+                "decode": _invalid_projector,
+                "archive": _invalid_projector,
+            },
+            same_process_targets={"decode", "archive"},
+            local_dispatcher=LocalStageDispatcher(),
+        )
+
+        with pytest.raises(
+            TypeError,
+            match="projectors to return StagePayload",
+        ):
+            await sender._route_result(
+                "req-fanout",
+                make_stage_payload(request_id="req-fanout", data={"answer": 7}),
+            )
+
+    asyncio.run(_run())
+
+
+def test_stage_sends_same_process_stream_chunk_as_local_object(monkeypatch) -> None:
+    events: list[dict] = []
+    monkeypatch.setattr(
+        "sglang_omni.pipeline.stage.runtime._emit_event",
+        lambda **kwargs: events.append(kwargs),
+    )
+
+    async def _run() -> None:
+        dispatcher = LocalStageDispatcher()
+        relay = FakeRelay()
+        control_plane = RecordingStageControlPlane()
+        receiver_scheduler = FakeScheduler()
+        receiver = make_stage(
+            name="talker",
+            scheduler=receiver_scheduler,
+            can_accept_stream_before_payload=True,
+        )
+        receiver._stream_queue = StreamQueue()
+        sender = make_stage(
+            name="thinker",
+            endpoints={"talker": "inproc://talker"},
+            relay=relay,
+            control_plane=control_plane,
+            same_process_targets={"talker"},
+            local_dispatcher=dispatcher,
+        )
+        dispatcher.register_many([sender, receiver])
+
+        chunk = torch.arange(4)
+        metadata = {"modality": "audio"}
+
+        await sender._send_stream_to_target(
+            "req-stream-local",
+            chunk,
+            "talker",
+            metadata,
+        )
+
+        assert relay.storage == {}
+        assert control_plane.sent_to_stage == []
+        queued = receiver_scheduler.inbox.get_nowait()
+        assert queued.type == "stream_chunk"
+        assert queued.data.chunk_id == 0
+        assert queued.data.data is chunk
+        assert queued.data.metadata is metadata
+
+    asyncio.run(_run())
+
+    receive_events = [
+        event
+        for event in events
+        if event["event_name"] == "stage_stream_chunk_received"
+    ]
+    assert receive_events == [
+        {
+            "request_id": "req-stream-local",
+            "stage": "talker",
+            "event_name": "stage_stream_chunk_received",
+            "metadata": {"from_stage": "thinker", "chunk_id": 0},
+        }
+    ]
+
+
+def test_stage_sends_same_process_stream_done_and_final_payload_locally() -> None:
+    async def _run() -> None:
+        dispatcher = LocalStageDispatcher()
+        relay = FakeRelay()
+        control_plane = RecordingStageControlPlane()
+        receiver_scheduler = FakeScheduler()
+        receiver = make_stage(
+            name="decode",
+            scheduler=receiver_scheduler,
+            can_accept_stream_before_payload=True,
+        )
+        receiver._stream_queue = StreamQueue()
+        sender = make_stage(
+            name="thinker",
+            get_next=lambda request_id, output: "decode",
+            endpoints={"decode": "inproc://decode"},
+            relay=relay,
+            control_plane=control_plane,
+            stream_targets=["decode"],
+            same_process_targets={"decode"},
+            local_dispatcher=dispatcher,
+        )
+        dispatcher.register_many([sender, receiver])
+
+        payload = make_stage_payload(request_id="req-stream-local", data={"answer": 7})
+        await sender._route_result("req-stream-local", payload)
+
+        assert relay.storage == {}
+        assert control_plane.sent_to_stage == []
+        stream_done = receiver_scheduler.inbox.get_nowait()
+        full_payload = receiver_scheduler.inbox.get_nowait()
+        assert stream_done.type == "stream_done"
+        assert full_payload.type == "new_request"
+        assert full_payload.data is payload
+
+    asyncio.run(_run())
+
+
+def test_stage_allows_local_payload_when_static_stream_target_is_inactive() -> None:
+    async def _run() -> None:
+        dispatcher = LocalStageDispatcher()
+        relay = FakeRelay()
+        control_plane = RecordingStageControlPlane()
+        receiver_scheduler = FakeScheduler()
+        receiver = make_stage(name="decode", scheduler=receiver_scheduler)
+        sender = make_stage(
+            name="thinker",
+            get_next=lambda request_id, output: "decode",
+            get_stream_done_targets=lambda request_id, output: None,
+            endpoints={"decode": "inproc://decode"},
+            relay=relay,
+            control_plane=control_plane,
+            stream_targets=["decode"],
+            same_process_targets={"decode"},
+            local_dispatcher=dispatcher,
+        )
+        dispatcher.register_many([sender, receiver])
+
+        payload = make_stage_payload(request_id="req-no-stream", data={"answer": 7})
+        await sender._route_result("req-no-stream", payload)
+
+        assert relay.storage == {}
+        assert control_plane.sent_to_stage == []
+        queued = receiver_scheduler.inbox.get_nowait()
+        assert queued.type == "new_request"
+        assert queued.data is payload
+
+    asyncio.run(_run())
+
+
+def test_stage_preserves_relay_order_when_target_also_receives_stream() -> None:
+    async def _run() -> None:
+        relay = FakeRelay()
+        control_plane = RecordingStageControlPlane()
+        sender = make_stage(
+            name="thinker",
+            get_next=lambda request_id, output: "decode",
+            endpoints={"decode": "inproc://decode"},
+            relay=relay,
+            control_plane=control_plane,
+            stream_targets=["decode"],
+        )
+
+        await sender._route_result(
+            "req-streamed",
+            make_stage_payload(request_id="req-streamed", data={"answer": 7}),
+        )
+
+        assert [msg.is_done for _, _, msg in control_plane.sent_to_stage] == [
+            True,
+            False,
+        ]
+        assert control_plane.sent_to_stage[1][2].chunk_id is None
+        assert relay.storage
+
+    asyncio.run(_run())
+
+
+def test_stage_local_object_requires_registered_target() -> None:
+    async def _run() -> None:
+        sender = make_stage(
+            name="thinker",
+            endpoints={"decode": "inproc://decode"},
+            same_process_targets={"decode"},
+            local_dispatcher=LocalStageDispatcher(),
+        )
+
+        with pytest.raises(RuntimeError, match="not registered"):
+            await sender._send_to_stage(
+                "req-local",
+                "decode",
+                make_stage_payload(request_id="req-local"),
+                allow_local_object=True,
+            )
 
     asyncio.run(_run())

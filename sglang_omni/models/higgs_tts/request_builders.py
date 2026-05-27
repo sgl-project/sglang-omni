@@ -73,7 +73,7 @@ def build_sglang_higgs_request(
     if state.top_k is not None:
         sp_kwargs["top_k"] = int(state.top_k)
     if state.seed is not None:
-        sp_kwargs["seed"] = int(state.seed)
+        sp_kwargs["sampling_seed"] = int(state.seed)
     sampling_params = SamplingParams(**sp_kwargs)
     # tokenizer_manager.normalize() is bypassed in our custom pipeline;
     # without it stop_strs / stop_regex_strs stay None and the upstream

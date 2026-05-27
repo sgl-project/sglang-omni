@@ -246,6 +246,8 @@ def make_send_fn(
             request_id=sample.sample_id,
             text=sample.target_text[:TEXT_PREVIEW_LENGTH],
         )
+        chunk_times: list[float] = []
+        text_first_time_holder: list[float] = []
         start_time = time.perf_counter()
         try:
             wav_bytes, _, usage = await task.generate_speech(
@@ -260,6 +262,8 @@ def make_send_fn(
                 voice_clone=voice_clone,
                 stream=stream,
                 system_prompt=system_prompt,
+                chunk_times_out=chunk_times if stream else None,
+                text_first_time_holder=text_first_time_holder if stream else None,
             )
             result.audio_duration_s = get_wav_duration(wav_bytes)
             elapsed = time.perf_counter() - start_time
@@ -287,6 +291,15 @@ def make_send_fn(
             with open(wav_path, "wb") as f:
                 f.write(wav_bytes)
             result.wav_path = wav_path
+
+            if chunk_times:
+                result.audio_ttfp_s = chunk_times[0] - start_time
+                result.inter_chunk_s = [
+                    chunk_times[i + 1] - chunk_times[i]
+                    for i in range(len(chunk_times) - 1)
+                ]
+            if text_first_time_holder:
+                result.text_ttft_s = text_first_time_holder[0] - start_time
         except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
             result.error = str(exc)
         finally:
@@ -527,6 +540,12 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         "Pass a strict TTS-only prompt for models that leak chat-style "
         "preambles or refusals (e.g. Ming-Omni).",
     )
+    parser.add_argument(
+        "--with-similarity",
+        action="store_true",
+        help="Also score speaker similarity (WavLM-ECAPA-TDNN) after WER, "
+        "per seed-tts-eval protocol.",
+    )
 
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument(
@@ -570,6 +589,9 @@ def main() -> None:
         return
 
     accuracy_results = evaluate_generated_audio(config)
+    similarity_results = None
+    if args.with_similarity:
+        similarity_results = run_seedtts_similarity(config, log_per_sample=False)
     combined = {
         "generation": {
             "speed": gen_results["summary"],
@@ -581,6 +603,8 @@ def main() -> None:
             "wer": accuracy_results["wer_summary"],
         },
     }
+    if similarity_results is not None:
+        combined["similarity"] = similarity_results.get("summary", similarity_results)
     save_json_results(combined, config.output_dir, "eval_results.json")
 
 

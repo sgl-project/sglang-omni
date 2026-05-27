@@ -239,6 +239,36 @@ def compute_text_audio_consistency(
     return {"summary": calculate_wer_metrics(outputs, lang), "per_sample": per_sample}
 
 
+def compute_text_audio_consistency_from_records(
+    per_sample: list[dict],
+    lang: str,
+    asr_device: str,
+    *,
+    audio_dir: str | None = None,
+    sample_id_key: str = "sample_id",
+    text_key: str = "raw_response",
+) -> dict:
+    """Compute WER from saved eval records after the inference server is stopped."""
+    request_results: list[RequestResult] = []
+    for record in per_sample:
+        sample_id = record.get(sample_id_key)
+        wav_path = record.get("wav_path") or ""
+        if not wav_path and audio_dir and sample_id:
+            wav_path = os.path.join(audio_dir, f"{sample_id}.wav")
+        request_results.append(
+            RequestResult(
+                request_id=str(sample_id or ""),
+                text=str(record.get(text_key) or ""),
+                is_success=bool(record.get("is_success")),
+                latency_s=float(record.get("latency_s") or 0),
+                audio_duration_s=float(record.get("audio_duration_s") or 0),
+                wav_path=wav_path,
+                error=str(record.get("error") or ""),
+            )
+        )
+    return compute_text_audio_consistency(request_results, lang, asr_device)
+
+
 def save_wer_results(
     outputs: list[SampleOutput], metrics: dict, config: dict, output_dir: str
 ) -> None:
@@ -823,6 +853,8 @@ class VoiceCloneOmni:
         voice_clone: bool = False,
         stream: bool = False,
         system_prompt: str | None = None,
+        chunk_times_out: list[float] | None = None,
+        text_first_time_holder: list[float] | None = None,
     ) -> tuple[bytes, float, dict]:
         if max_tokens is None:
             max_tokens = self.THINKER_MAX_NEW_TOKENS
@@ -871,7 +903,11 @@ class VoiceCloneOmni:
                 error_text = await response.text()
                 raise RuntimeError(f"HTTP {response.status}: {error_text}")
             if stream:
-                wav_bytes, usage = await self._read_streaming_chat_audio(response)
+                wav_bytes, usage = await self._read_streaming_chat_audio(
+                    response,
+                    chunk_times_out=chunk_times_out,
+                    text_first_time_holder=text_first_time_holder,
+                )
                 latency = time.perf_counter() - t0
                 return wav_bytes, latency, usage
             resp_json = await response.json()
@@ -900,6 +936,8 @@ class VoiceCloneOmni:
     async def _read_streaming_chat_audio(
         self,
         response: aiohttp.ClientResponse,
+        chunk_times_out: list[float] | None = None,
+        text_first_time_holder: list[float] | None = None,
     ) -> tuple[bytes, dict]:
         """Read OpenAI chat SSE audio deltas and concatenate them into one WAV."""
         pcm_chunks: list[bytes] = []
@@ -918,6 +956,8 @@ class VoiceCloneOmni:
                     pcm_chunks,
                     stream_format,
                     usage,
+                    chunk_times_out=chunk_times_out,
+                    text_first_time_holder=text_first_time_holder,
                 )
 
         if buffer.strip():
@@ -926,6 +966,8 @@ class VoiceCloneOmni:
                 pcm_chunks,
                 stream_format,
                 usage,
+                chunk_times_out=chunk_times_out,
+                text_first_time_holder=text_first_time_holder,
             )
 
         if not pcm_chunks or stream_format is None:
@@ -990,6 +1032,7 @@ def _build_tts_payload(
     *,
     stream: bool = False,
     no_ref_audio: bool = False,
+    ref_format: str = "flat",
     voice: str | None = None,
     **gen_kwargs,
 ) -> dict:
@@ -999,8 +1042,13 @@ def _build_tts_payload(
         "response_format": "wav",
     }
     if not no_ref_audio:
-        payload["ref_audio"] = sample.ref_audio
-        payload["ref_text"] = sample.ref_text
+        if ref_format == "references":
+            payload["references"] = [
+                {"audio_path": sample.ref_audio, "text": sample.ref_text}
+            ]
+        else:
+            payload["ref_audio"] = sample.ref_audio
+            payload["ref_text"] = sample.ref_text
     if voice is not None:
         payload["voice"] = voice
     for key, value in gen_kwargs.items():
@@ -1133,6 +1181,8 @@ def _collect_chat_streaming_audio(
     pcm_chunks: list[bytes],
     stream_format: tuple[int, int, int] | None,
     usage: dict,
+    chunk_times_out: list[float] | None = None,
+    text_first_time_holder: list[float] | None = None,
 ) -> tuple[int, int, int] | None:
     event = parse_sse_event(line)
     if event is None:
@@ -1149,6 +1199,10 @@ def _collect_chat_streaming_audio(
         delta = choice.get("delta")
         if not isinstance(delta, dict):
             continue
+        if text_first_time_holder is not None and not text_first_time_holder:
+            content = delta.get("content")
+            if isinstance(content, str) and content:
+                text_first_time_holder.append(time.perf_counter())
         audio = delta.get("audio")
         if not isinstance(audio, dict) or not audio.get("data"):
             continue
@@ -1159,6 +1213,8 @@ def _collect_chat_streaming_audio(
             with io.BytesIO(chunk_bytes) as buf:
                 with wave.open(buf, "rb") as wf:
                     pcm_chunks.append(wf.readframes(wf.getnframes()))
+                    if chunk_times_out is not None:
+                        chunk_times_out.append(time.perf_counter())
                     if stream_format is None:
                         stream_format = (
                             wf.getframerate(),
@@ -1190,6 +1246,7 @@ def make_tts_send_fn(
     *,
     stream: bool = False,
     no_ref_audio: bool = False,
+    ref_format: str = "flat",
     voice: str | None = None,
     save_audio_dir: str | None = None,
     **gen_kwargs,
@@ -1208,6 +1265,7 @@ def make_tts_send_fn(
             model_name,
             stream=stream,
             no_ref_audio=no_ref_audio,
+            ref_format=ref_format,
             voice=voice,
             **gen_kwargs,
         )
