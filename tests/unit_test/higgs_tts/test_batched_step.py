@@ -12,7 +12,6 @@ import pytest
 import torch
 
 from sglang_omni.models.higgs_tts.sampler import (
-    _SEED_MODULUS,
     K_MAX,
     STOP_CODE,
     HiggsBatchedSamplerState,
@@ -54,30 +53,10 @@ def _run_per_row(
     return codes_out
 
 
-def _run_per_row_with_temperature(
-    logits_BNV: torch.Tensor,
-    pool: HiggsBatchedSamplerState,
-    row_indices: torch.Tensor,
-    *,
-    temperature: float,
-) -> torch.Tensor:
-    """Per-row :func:`step` with explicit temperature and default sampling."""
-    B = logits_BNV.shape[0]
-    codes_out = torch.empty((B, N), dtype=torch.long, device=logits_BNV.device)
-    for b in range(B):
-        row = int(row_indices[b].item())
-        state = pool.view_row(row)
-        codes_b = step(logits_BNV[b], state, temperature=temperature)
-        pool.write_row(row, state)
-        codes_out[b] = codes_b
-    return codes_out
-
-
 def _snapshot_pool(pool: HiggsBatchedSamplerState) -> dict:
     """Snapshot pool tensors for cross-mode equality checks."""
     return {
         "delay_count": pool.delay_count.clone(),
-        "sample_count": pool.sample_count.clone(),
         "eoc_countdown": pool.eoc_countdown.clone(),
         "generation_done": pool.generation_done.clone(),
         "last_codes": pool.last_codes.clone(),
@@ -117,116 +96,6 @@ def test_batched_matches_per_row_delay_window():
 
         assert torch.equal(codes_pr, codes_bt), f"codes mismatch at t={t}"
         _assert_pools_equal(_snapshot_pool(pool_pr), _snapshot_pool(pool_bt))
-
-
-def test_batched_temperature_zero_matches_per_row_greedy_without_top_k():
-    """temperature=0 should be greedy even when top_k is not explicitly set."""
-    B = 2
-    pool_pr = HiggsBatchedSamplerState(B, N, device=DEVICE)
-    pool_bt = HiggsBatchedSamplerState(B, N, device=DEVICE)
-    pool_pr.delay_count.fill_(N)
-    pool_bt.delay_count.fill_(N)
-    row_indices = torch.arange(B, device=DEVICE)
-    temperature = torch.zeros((B,), device=DEVICE)
-    logits = torch.zeros((B, N, V), device=DEVICE)
-
-    codes_pr = _run_per_row_with_temperature(
-        logits, pool_pr, row_indices, temperature=0.0
-    )
-    codes_bt = batched_step(logits, pool_bt, row_indices, temperature=temperature)
-
-    assert torch.equal(codes_pr, codes_bt)
-    _assert_pools_equal(_snapshot_pool(pool_pr), _snapshot_pool(pool_bt))
-
-
-def test_batched_seeded_sampling_ignores_global_rng_state():
-    """Explicit sampling_seed should make stochastic sampling reproducible."""
-    B = 2
-    row_indices = torch.arange(B, device=DEVICE)
-    temperature = torch.ones((B,), device=DEVICE)
-    sampling_seed = torch.tensor([123, 456], dtype=torch.long, device=DEVICE)
-    logits = torch.zeros((B, N, V), device=DEVICE)
-
-    pool_a = HiggsBatchedSamplerState(B, N, device=DEVICE)
-    pool_b = HiggsBatchedSamplerState(B, N, device=DEVICE)
-    pool_a.delay_count.fill_(N)
-    pool_b.delay_count.fill_(N)
-
-    torch.manual_seed(0)
-    codes_a = batched_step(
-        logits,
-        pool_a,
-        row_indices,
-        temperature=temperature,
-        sampling_seed=sampling_seed,
-    )
-    torch.manual_seed(999)
-    codes_b = batched_step(
-        logits,
-        pool_b,
-        row_indices,
-        temperature=temperature,
-        sampling_seed=sampling_seed,
-    )
-
-    assert torch.equal(codes_a, codes_b)
-    assert torch.equal(pool_a.sample_count, torch.ones_like(pool_a.sample_count))
-    _assert_pools_equal(_snapshot_pool(pool_a), _snapshot_pool(pool_b))
-
-
-def test_batched_seeded_sampling_advances_per_row_sample_count():
-    """The same seed should produce a new deterministic draw on each AR step."""
-    B = 1
-    pool = HiggsBatchedSamplerState(B, N, device=DEVICE)
-    pool.delay_count.fill_(N)
-    row_indices = torch.arange(B, device=DEVICE)
-    temperature = torch.ones((B,), device=DEVICE)
-    sampling_seed = torch.tensor([123], dtype=torch.long, device=DEVICE)
-    logits = torch.zeros((B, N, V), device=DEVICE)
-
-    codes_first = batched_step(
-        logits,
-        pool,
-        row_indices,
-        temperature=temperature,
-        sampling_seed=sampling_seed,
-    )
-    codes_second = batched_step(
-        logits,
-        pool,
-        row_indices,
-        temperature=temperature,
-        sampling_seed=sampling_seed,
-    )
-
-    assert int(pool.sample_count[0].item()) == 2
-    assert not torch.equal(codes_first, codes_second)
-
-
-def test_batched_seeded_sampling_normalizes_large_seed():
-    """Huge user seeds should be reduced before integer hash mixing."""
-    B = 2
-    pool = HiggsBatchedSamplerState(B, N, device=DEVICE)
-    pool.delay_count.fill_(N)
-    row_indices = torch.arange(B, device=DEVICE)
-    temperature = torch.ones((B,), device=DEVICE)
-    large_seed = (1 << 62) + 123
-    sampling_seed = torch.tensor(
-        [large_seed, large_seed % _SEED_MODULUS],
-        dtype=torch.long,
-        device=DEVICE,
-    )
-    logits = torch.zeros((B, N, V), device=DEVICE)
-
-    codes = batched_step(
-        logits,
-        pool,
-        row_indices,
-        temperature=temperature,
-        sampling_seed=sampling_seed,
-    )
-
-    assert torch.equal(codes[0], codes[1])
 
 
 # ---------------------------------------------------------------------------

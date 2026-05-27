@@ -73,22 +73,16 @@ class HiggsTTSModelRunner(ModelRunner):
             rows_py, dtype=torch.long, device=model._cg_row_indices.device
         )
 
-        temps, top_ps, top_ks, seeds = self._extract_decode_sampling_params(
+        temps, top_ps, top_ks = self._extract_decode_sampling_params(
             forward_batch, n_real
         )
         temps.extend([1.0] * (bs - n_real))
         top_ps.extend([1.0] * (bs - n_real))
-        seeds.extend([None] * (bs - n_real))
         model._cg_temperature[:bs] = torch.tensor(
             temps, dtype=torch.float32, device=model._cg_temperature.device
         )
         model._cg_top_p[:bs] = torch.tensor(
             top_ps, dtype=torch.float32, device=model._cg_top_p.device
-        )
-        model._cg_sampling_seed[:bs] = torch.tensor(
-            [-1 if seed is None else int(seed) for seed in seeds],
-            dtype=torch.long,
-            device=model._cg_sampling_seed.device,
         )
 
         top_k_vals = [(tk if (tk is not None and tk > 0) else K_MAX) for tk in top_ks]
@@ -100,7 +94,6 @@ class HiggsTTSModelRunner(ModelRunner):
         rows_t = model._cg_row_indices[:bs]
         pool = model._sampler_pool
         model._cg_active_delay_count[:bs] = pool.delay_count[rows_t]
-        model._cg_active_sample_count[:bs] = pool.sample_count[rows_t]
         model._cg_active_eoc_countdown[:bs] = pool.eoc_countdown[rows_t]
         model._cg_active_generation_done[:bs] = pool.generation_done[rows_t]
         model._cg_active_last_codes[:bs] = pool.last_codes[rows_t]
@@ -115,19 +108,11 @@ class HiggsTTSModelRunner(ModelRunner):
         """
         sampling_info = getattr(forward_batch, "sampling_info", None)
         if sampling_info is None or n_real == 0:
-            return (
-                [1.0] * n_real,
-                [1.0] * n_real,
-                [None] * n_real,
-                [None] * n_real,
-            )
+            return ([1.0] * n_real, [1.0] * n_real, [None] * n_real)
 
         temps_raw = _flat_sampling_attr(sampling_info, "temperatures") or [1.0] * n_real
         top_ps_raw = _flat_sampling_attr(sampling_info, "top_ps") or [1.0] * n_real
         top_ks_raw = _flat_sampling_attr(sampling_info, "top_ks")
-        seeds_raw = _flat_sampling_attr(sampling_info, "sampling_seed")
-        if seeds_raw is None:
-            seeds_raw = _flat_sampling_attr(sampling_info, "sampling_seeds")
 
         temps = [float(t) for t in temps_raw[:n_real]]
         top_ps = [float(t) for t in top_ps_raw[:n_real]]
@@ -138,11 +123,7 @@ class HiggsTTSModelRunner(ModelRunner):
                 int(t) if (t is not None and 0 < int(t) < K_MAX) else None
                 for t in top_ks_raw[:n_real]
             ]
-        if seeds_raw is None:
-            seeds: list[int | None] = [None] * n_real
-        else:
-            seeds = [int(t) if t is not None else None for t in seeds_raw[:n_real]]
-        return temps, top_ps, top_ks, seeds
+        return temps, top_ps, top_ks
 
     def _collect_step_outputs_cg(
         self, result: Any, forward_batch: Any, requests: list
@@ -163,7 +144,6 @@ class HiggsTTSModelRunner(ModelRunner):
         rows_t = model._cg_row_indices[:n_real]
         pool = model._sampler_pool
         pool.delay_count[rows_t] = model._cg_active_delay_count[:n_real]
-        pool.sample_count[rows_t] = model._cg_active_sample_count[:n_real]
         pool.eoc_countdown[rows_t] = model._cg_active_eoc_countdown[:n_real]
         pool.generation_done[rows_t] = model._cg_active_generation_done[:n_real]
         pool.last_codes[rows_t] = model._cg_active_last_codes[:n_real]
