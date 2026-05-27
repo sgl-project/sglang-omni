@@ -7,7 +7,6 @@ We provide two installation paths. Docker is recommended — the image ships wit
 **1. Pull the image**
 
 ```bash
-# NOTE: this docker image will be moved to lmsysorg upon release
 docker pull frankleeeee/sglang-omni:dev
 ```
 
