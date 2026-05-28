@@ -38,14 +38,23 @@ _HiggsRequestBuilder = Callable[[StagePayload], HiggsSGLangRequestData]
 _HiggsResultAdapter = Callable[[HiggsSGLangRequestData], StagePayload]
 
 
-def _ref_audio_fingerprint(codes: list[list[int]] | None) -> str | None:
-    """Stable hash of the full N-codebook ref-audio sequence.
+def _ref_audio_fingerprint(state: HiggsTtsState) -> str | None:
+    """Per-ref-audio fingerprint for ``Req.extra_key``.
 
-    Returned as a short hex string used as ``Req.extra_key``. ``None`` for
-    zero-shot (no ref audio) so all zero-shot requests share the radix subtree.
-    Each codec value packs into 2 bytes (range 0..1025) so the hash is
-    sensitive to every codebook, not just cb0.
+    Preference order:
+
+    1. ``state.speaker_fingerprint`` — populated by the audio_encoder stage
+       when the server runs with ``enable_speaker_bank=True``. Speaker-level
+       grouping: two recordings of the same speaker share the fingerprint
+       (and therefore the radix-cache prefix).
+    2. bit-exact hash of ``state.reference_codes_delayed`` — the original
+       per-recording fingerprint. Only same-byte recordings share.
+    3. ``None`` for zero-shot (no ref audio at all).
     """
+    if state.speaker_fingerprint is not None:
+        return state.speaker_fingerprint
+
+    codes = state.reference_codes_delayed
     if not codes:
         return None
     buf = bytearray(2 * sum(len(row) for row in codes))
@@ -89,7 +98,7 @@ def build_sglang_higgs_request(
         origin_input_ids=input_ids_list,
         sampling_params=sampling_params,
         vocab_size=151_936,
-        extra_key=_ref_audio_fingerprint(state.reference_codes_delayed),
+        extra_key=_ref_audio_fingerprint(state),
     )
     # V1's prefill manager probes these attrs; absence triggers AttributeError.
     req._codec_suppress_tokens = None

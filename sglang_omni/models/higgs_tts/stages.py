@@ -180,12 +180,20 @@ def create_audio_encoder_executor(
     num_codebooks: int = 8,
     max_batch_size: int = 8,
     max_batch_wait_ms: int = 2,
+    enable_speaker_bank: bool = False,
+    speaker_bank_threshold: float = 0.5,
 ):
     """GPU stage: codec-encode raw ref audio → delayed codes + prompt assembly.
 
     No-op when preprocessing already produced ``reference_codes_delayed`` (the
     client-supplied pre-encoded fast path). Codec weights are extracted from
     the TTS checkpoint itself (bundled at ``tied.embedding.modality_embeddings``).
+
+    When ``enable_speaker_bank=True``, also compute a speaker-level
+    fingerprint from the waveform and stash it in
+    ``state.speaker_fingerprint``. The tts_engine stage will use it as
+    ``Req.extra_key`` so two recordings of the same speaker share the
+    radix-cache prefix.
     """
     checkpoint_dir = resolve_checkpoint(model_path)
     raw = Tokenizer.from_file(os.path.join(checkpoint_dir, "tokenizer.json"))
@@ -194,11 +202,26 @@ def create_audio_encoder_executor(
 
     codec = get_or_load_codec(checkpoint_dir, device, dtype)
 
+    if enable_speaker_bank:
+        from sglang_omni.models.higgs_tts import speaker_bank
+
+        speaker_bank.configure(threshold=speaker_bank_threshold, device=device)
+        logger.info(
+            "speaker_bank enabled (threshold=%.2f, device=%s)",
+            speaker_bank_threshold,
+            device,
+        )
+
     def _encode(payload: StagePayload) -> StagePayload:
         state = HiggsTtsState.from_dict(payload.data)
         waveform = state.reference_waveform
         if waveform is None:
             return payload
+
+        if enable_speaker_bank:
+            from sglang_omni.models.higgs_tts import speaker_bank
+
+            state.speaker_fingerprint = speaker_bank.fingerprint(waveform)
 
         ref_codes_TN = codec.encode_reference(waveform, sample_rate=24000).to(
             torch.long
