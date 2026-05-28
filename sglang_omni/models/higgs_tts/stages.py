@@ -22,8 +22,13 @@ Pipeline shape::
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import logging
 import os
+import threading
+from collections import OrderedDict
+from pathlib import Path
 from typing import Any
 
 import torch
@@ -61,6 +66,102 @@ logger = logging.getLogger(__name__)
 # Codec runs at 75 Hz; chunked prefill of the multi-codebook prompt is unsafe
 # (sampler state machine has no rollback) so reject inputs past chunked_prefill_size.
 _MAX_REF_AUDIO_SEC = 100
+_REF_CODE_CACHE_MAX_ITEMS = 256
+_REF_CODE_CACHE_ENV = "SGLANG_OMNI_HIGGS_REF_CODE_CACHE"
+_REF_WAVEFORM_CACHE_MAX_ITEMS = 256
+
+
+def _ref_code_cache_enabled() -> bool:
+    return os.getenv(_REF_CODE_CACHE_ENV) == "1"
+
+
+def _reference_path_cache_key(path_like: str | Path) -> str | None:
+    path = Path(path_like).expanduser().resolve()
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    return f"path:{path}:{stat.st_size}:{stat.st_mtime_ns}"
+
+
+def _reference_audio_cache_key(reference_audio: Any) -> str | None:
+    if isinstance(reference_audio, (str, Path)):
+        return _reference_path_cache_key(reference_audio)
+    if not isinstance(reference_audio, dict):
+        return None
+    path = reference_audio.get("audio_path") or reference_audio.get("path")
+    if path:
+        return _reference_path_cache_key(path)
+    if "bytes" in reference_audio:
+        data = reference_audio["bytes"]
+        if isinstance(data, str):
+            data = data.encode()
+        return "bytes:" + hashlib.blake2b(data, digest_size=16).hexdigest()
+    encoded = reference_audio.get("base64") or reference_audio.get("data")
+    if encoded is None:
+        return None
+    if isinstance(encoded, str):
+        raw = base64.b64decode(encoded)
+    else:
+        raw = bytes(encoded)
+    media_type = reference_audio.get("media_type", "audio/wav")
+    digest = hashlib.blake2b(raw, digest_size=16).hexdigest()
+    return f"base64:{media_type}:{digest}"
+
+
+def _waveform_cache_get(
+    cache: OrderedDict[str, torch.Tensor],
+    lock: threading.Lock,
+    key: str | None,
+) -> torch.Tensor | None:
+    if key is None:
+        return None
+    with lock:
+        cached = cache.get(key)
+        if cached is None:
+            return None
+        cache.move_to_end(key)
+        return cached.clone()
+
+
+def _waveform_cache_put(
+    cache: OrderedDict[str, torch.Tensor],
+    lock: threading.Lock,
+    key: str | None,
+    value: torch.Tensor,
+) -> None:
+    if key is None:
+        return
+    with lock:
+        cache[key] = value.detach().clone()
+        cache.move_to_end(key)
+        while len(cache) > _REF_WAVEFORM_CACHE_MAX_ITEMS:
+            cache.popitem(last=False)
+
+
+def _cache_get(
+    cache: OrderedDict[str, list[list[int]]], key: str | None
+) -> list[list[int]] | None:
+    if key is None:
+        return None
+    cached = cache.get(key)
+    if cached is None:
+        return None
+    cache.move_to_end(key)
+    return [list(row) for row in cached]
+
+
+def _cache_put(
+    cache: OrderedDict[str, list[list[int]]],
+    key: str | None,
+    value: list[list[int]],
+) -> None:
+    if key is None:
+        return
+    cache[key] = [list(row) for row in value]
+    cache.move_to_end(key)
+    while len(cache) > _REF_CODE_CACHE_MAX_ITEMS:
+        cache.popitem(last=False)
 
 
 def create_preprocessing_executor(
@@ -84,6 +185,8 @@ def create_preprocessing_executor(
     raw = Tokenizer.from_file(os.path.join(checkpoint_dir, "tokenizer.json"))
     tokenizer = PreTrainedTokenizerFast(tokenizer_object=raw)
     adapter = HiggsTokenizerAdapter(tokenizer)
+    reference_waveform_cache: OrderedDict[str, torch.Tensor] = OrderedDict()
+    reference_waveform_cache_lock = threading.Lock()
 
     def _preprocess(payload: StagePayload) -> StagePayload:
         inputs = payload.request.inputs or {}
@@ -117,17 +220,34 @@ def create_preprocessing_executor(
             )
 
         waveform_tensor = None
+        reference_cache_key = None
         if ref_codes_TN is None and inputs.get("reference_audio") is not None:
-            waveform_np, sample_rate = load_audio_to_24k(inputs["reference_audio"])
-            wav = torch.from_numpy(waveform_np)
-            if sample_rate != 24000:
-                wav = F_audio.resample(wav, sample_rate, 24000)
-            if wav.shape[-1] > _MAX_REF_AUDIO_SEC * 24000:
-                raise ValueError(
-                    f"reference_audio is too long "
-                    f"({wav.shape[-1] / 24000:.1f}s); cap at {_MAX_REF_AUDIO_SEC}s."
+            reference_audio = inputs["reference_audio"]
+            reference_cache_key = _reference_audio_cache_key(reference_audio)
+            if _ref_code_cache_enabled():
+                waveform_tensor = _waveform_cache_get(
+                    reference_waveform_cache,
+                    reference_waveform_cache_lock,
+                    reference_cache_key,
                 )
-            waveform_tensor = wav.view(1, 1, -1).contiguous().float()
+            if waveform_tensor is None:
+                waveform_np, sample_rate = load_audio_to_24k(reference_audio)
+                wav = torch.from_numpy(waveform_np)
+                if sample_rate != 24000:
+                    wav = F_audio.resample(wav, sample_rate, 24000)
+                if wav.shape[-1] > _MAX_REF_AUDIO_SEC * 24000:
+                    raise ValueError(
+                        f"reference_audio is too long "
+                        f"({wav.shape[-1] / 24000:.1f}s); cap at {_MAX_REF_AUDIO_SEC}s."
+                    )
+                waveform_tensor = wav.view(1, 1, -1).contiguous().float()
+                if _ref_code_cache_enabled():
+                    _waveform_cache_put(
+                        reference_waveform_cache,
+                        reference_waveform_cache_lock,
+                        reference_cache_key,
+                        waveform_tensor,
+                    )
 
         if ref_codes_TN is not None:
             delayed = apply_delay_pattern(ref_codes_TN)
@@ -156,6 +276,7 @@ def create_preprocessing_executor(
             prompt_token_ids=prompt_ids,
             reference_codes_delayed=ref_codes_delayed,
             reference_waveform=waveform_tensor,
+            reference_cache_key=reference_cache_key,
             target_text=target_text_for_encoder,
             reference_text=reference_text_for_encoder,
             num_codebooks=num_codebooks,
@@ -199,6 +320,7 @@ def create_audio_encoder_executor(
     codec.encode_reference(
         torch.zeros(codec.SAMPLE_RATE), sample_rate=codec.SAMPLE_RATE
     )
+    reference_code_cache: OrderedDict[str, list[list[int]]] = OrderedDict()
 
     def _encode(payload: StagePayload) -> StagePayload:
         state = HiggsTtsState.from_dict(payload.data)
@@ -206,22 +328,36 @@ def create_audio_encoder_executor(
         if waveform is None:
             return payload
 
-        ref_codes_TN = codec.encode_reference(waveform, sample_rate=24000).to(
-            torch.long
+        delayed_rows = (
+            _cache_get(reference_code_cache, state.reference_cache_key)
+            if _ref_code_cache_enabled()
+            else None
         )
-        if ref_codes_TN.ndim != 2 or ref_codes_TN.shape[1] != num_codebooks:
-            raise ValueError(
-                f"codec output must be [T, {num_codebooks}], got "
-                f"{tuple(ref_codes_TN.shape)}"
+        if delayed_rows is None:
+            ref_codes_TN = codec.encode_reference(waveform, sample_rate=24000).to(
+                torch.long
             )
-        delayed = apply_delay_pattern(ref_codes_TN)
-        state.reference_codes_delayed = delayed.tolist()
+            if ref_codes_TN.ndim != 2 or ref_codes_TN.shape[1] != num_codebooks:
+                raise ValueError(
+                    f"codec output must be [T, {num_codebooks}], got "
+                    f"{tuple(ref_codes_TN.shape)}"
+                )
+            delayed = apply_delay_pattern(ref_codes_TN)
+            delayed_rows = delayed.tolist()
+            if _ref_code_cache_enabled():
+                _cache_put(
+                    reference_code_cache,
+                    state.reference_cache_key,
+                    delayed_rows,
+                )
+        state.reference_codes_delayed = delayed_rows
         state.prompt_token_ids = adapter.build_prompt(
             state.target_text or "",
-            num_ref_tokens=delayed.shape[0],
+            num_ref_tokens=len(delayed_rows),
             reference_text=state.reference_text,
         )
         state.reference_waveform = None
+        state.reference_cache_key = None
         state.target_text = None
         state.reference_text = None
         payload.data = state.to_dict()
