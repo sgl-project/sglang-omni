@@ -8,6 +8,7 @@ import threading
 import types
 from queue import Queue
 from types import SimpleNamespace
+from typing import Any
 
 import numpy as np
 import pytest
@@ -209,6 +210,13 @@ def make_payload(
     )
 
 
+@pytest.fixture(autouse=True)
+def clear_qwen3_tts_request_state():
+    qwen3_request_builders.clear_qwen3_tts_preprocessing_context()
+    yield
+    qwen3_request_builders.clear_qwen3_tts_preprocessing_context()
+
+
 def test_qwen3_tts_config_and_registry_contracts() -> None:
     config = Qwen3TTSPipelineConfig(model_path="model")
     assert [stage.name for stage in config.stages] == [
@@ -332,6 +340,115 @@ def test_qwen3_tts_embedding_cache_keys_are_stable_and_content_based() -> None:
     assert build_embedding_cache_key_ids(embeds) != build_embedding_cache_key_ids(
         different_same_length
     )
+
+
+def test_qwen3_tts_reference_prompt_cache_is_default_off(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("SGLANG_OMNI_QWEN3_TTS_REF_PROMPT_CACHE", raising=False)
+    calls = 0
+
+    class FakeWrapper:
+        def create_voice_clone_prompt(self, **kwargs):
+            nonlocal calls
+            calls += 1
+            return [
+                SimpleNamespace(
+                    ref_code=torch.tensor([[calls]]),
+                    ref_spk_embedding=torch.tensor([float(calls)]),
+                    x_vector_only_mode=kwargs["x_vector_only_mode"],
+                    icl_mode=not kwargs["x_vector_only_mode"],
+                    ref_text=kwargs["ref_text"],
+                )
+            ]
+
+    state = Qwen3TTSState(
+        ref_audio="voice.wav",
+        ref_text="reference",
+        x_vector_only_mode=False,
+    )
+
+    qwen3_request_builders._get_or_create_reference_prompt_items(
+        state, wrapper=FakeWrapper()
+    )
+    qwen3_request_builders._get_or_create_reference_prompt_items(
+        state, wrapper=FakeWrapper()
+    )
+
+    assert calls == 2
+
+
+def test_qwen3_tts_reference_prompt_cache_reuses_and_clones_prompt_items(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SGLANG_OMNI_QWEN3_TTS_REF_PROMPT_CACHE", "1")
+
+    fake_qwen_tts = types.ModuleType("qwen_tts")
+    fake_inference = types.ModuleType("qwen_tts.inference")
+    fake_model_mod = types.ModuleType("qwen_tts.inference.qwen3_tts_model")
+
+    class FakeVoiceClonePromptItem:
+        def __init__(
+            self,
+            *,
+            ref_code,
+            ref_spk_embedding,
+            x_vector_only_mode,
+            icl_mode,
+            ref_text=None,
+        ) -> None:
+            self.ref_code = ref_code
+            self.ref_spk_embedding = ref_spk_embedding
+            self.x_vector_only_mode = x_vector_only_mode
+            self.icl_mode = icl_mode
+            self.ref_text = ref_text
+
+    fake_model_mod.VoiceClonePromptItem = FakeVoiceClonePromptItem
+    monkeypatch.setitem(sys.modules, "qwen_tts", fake_qwen_tts)
+    monkeypatch.setitem(sys.modules, "qwen_tts.inference", fake_inference)
+    monkeypatch.setitem(
+        sys.modules,
+        "qwen_tts.inference.qwen3_tts_model",
+        fake_model_mod,
+    )
+
+    calls = 0
+
+    class FakeWrapper:
+        def create_voice_clone_prompt(self, **kwargs):
+            nonlocal calls
+            calls += 1
+            return [
+                FakeVoiceClonePromptItem(
+                    ref_code=torch.tensor([[7, 8]]),
+                    ref_spk_embedding=torch.tensor([1.0, 2.0]),
+                    x_vector_only_mode=kwargs["x_vector_only_mode"],
+                    icl_mode=not kwargs["x_vector_only_mode"],
+                    ref_text=kwargs["ref_text"],
+                )
+            ]
+
+    state = Qwen3TTSState(
+        ref_audio="voice.wav",
+        ref_text="reference",
+        x_vector_only_mode=False,
+    )
+    wrapper = FakeWrapper()
+
+    first = qwen3_request_builders._get_or_create_reference_prompt_items(
+        state, wrapper=wrapper
+    )
+    first[0].ref_code.fill_(99)
+    first[0].ref_spk_embedding.fill_(99)
+    second = qwen3_request_builders._get_or_create_reference_prompt_items(
+        state, wrapper=wrapper
+    )
+
+    assert calls == 1
+    assert second[0].ref_code.tolist() == [[7, 8]]
+    assert second[0].ref_spk_embedding.tolist() == [1.0, 2.0]
+    assert second[0].ref_text == "reference"
+    assert second[0] is not first[0]
 
 
 def test_qwen3_tts_maps_ref_audio_form_and_explicit_sampling() -> None:
@@ -765,8 +882,42 @@ def test_qwen3_tts_request_data_keeps_decode_tensors_on_prepared_device(
     assert isinstance(data.semantic_sampling_seed, int)
     assert 0 <= data.semantic_sampling_seed <= 0x7FFFFFFF
     assert data.req.sampling_params.sampling_seed == data.semantic_sampling_seed
+    assert data.subtalker_dosample is True
     assert isinstance(data.subtalker_sampling_seed, int)
     assert 0 <= data.subtalker_sampling_seed <= 0x7FFFFFFF
+
+
+def test_qwen3_tts_request_data_preserves_explicit_subtalker_dosample(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_fake_sglang(monkeypatch)
+    payload = make_payload(inputs="target")
+    payload.data = {
+        qwen3_request_builders._QWEN3_TTS_PREPARED_MARKER: payload.request_id
+    }
+    prepared = Qwen3TTSPreparedRequest(
+        state=Qwen3TTSState(),
+        input_ids_list=[11, 12],
+        input_ids=torch.tensor([11, 12], dtype=torch.long),
+        attention_mask=torch.ones((1, 2), dtype=torch.long),
+        trailing_text_hidden=torch.randn(1, 4),
+        ref_code=None,
+        prompt_input_embeds=torch.randn(2, 4),
+        tts_pad_embed=torch.randn(4),
+        gen_kwargs={"max_new_tokens": 16, "subtalker_dosample": False},
+    )
+    with qwen3_request_builders._PREPARED_REQUESTS_LOCK:
+        qwen3_request_builders._PREPARED_REQUESTS[payload.request_id] = prepared
+
+    data = build_sglang_qwen3_tts_request(
+        payload,
+        model=SimpleNamespace(
+            config=SimpleNamespace(codec_eos_token_id=42, vocab_size=1200)
+        ),
+        wrapper=object(),
+    )
+
+    assert data.subtalker_dosample is False
 
 
 def test_qwen3_tts_request_data_uses_private_sampling_seeds(
@@ -1665,8 +1816,25 @@ def test_qwen3_tts_compile_backbone_compiles_every_layer(
     ]
 
 
-def test_qwen3_tts_engine_reenables_cuda_graph_after_bootstrap(
+@pytest.mark.parametrize(
+    (
+        "factory_kwargs",
+        "expected_build_disable_cuda_graph",
+        "expected_final_disable_cuda_graph",
+        "expected_init_graph_calls",
+    ),
+    [
+        ({}, False, False, [True]),
+        ({"disable_cuda_graph": True}, True, True, []),
+        ({"server_args_overrides": {"disable_cuda_graph": True}}, True, True, []),
+    ],
+)
+def test_qwen3_tts_engine_cuda_graph_defaults_on_and_can_disable(
     monkeypatch: pytest.MonkeyPatch,
+    factory_kwargs: dict[str, Any],
+    expected_build_disable_cuda_graph: bool,
+    expected_final_disable_cuda_graph: bool,
+    expected_init_graph_calls: list[bool],
 ) -> None:
     """Qwen3-TTS defers graph capture until custom buffers are ready."""
     install_fake_sglang(monkeypatch)
@@ -1788,16 +1956,18 @@ def test_qwen3_tts_engine_reenables_cuda_graph_after_bootstrap(
         lambda **kwargs: SimpleNamespace(**kwargs),
     )
 
-    scheduler = stages.create_sglang_tts_engine_executor("model", device="cuda:0")
+    scheduler = stages.create_sglang_tts_engine_executor(
+        "model", device="cuda:0", **factory_kwargs
+    )
 
-    assert build_kwargs["disable_cuda_graph"] is False
+    assert build_kwargs["disable_cuda_graph"] is expected_build_disable_cuda_graph
     assert build_kwargs["enable_torch_compile"] is True
     assert build_kwargs["sampling_backend"] == "pytorch"
     assert build_kwargs["torch_compile_max_bs"] == 16
     assert infrastructure_saw_graph_disabled == [True]
     assert len(compile_calls) == 1
-    assert init_graph_calls == [True]
-    assert scheduler.server_args.disable_cuda_graph is False
+    assert init_graph_calls == expected_init_graph_calls
+    assert scheduler.server_args.disable_cuda_graph is expected_final_disable_cuda_graph
     assert scheduler.server_args.enable_torch_compile is False
     assert scheduler.server_args.torch_compile_max_bs == 16
     clear_qwen3_tts_preprocessing_context()

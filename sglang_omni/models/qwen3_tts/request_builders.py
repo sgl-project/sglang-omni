@@ -3,10 +3,12 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import os
 import threading
 import time
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -123,6 +125,8 @@ class Qwen3TTSPreprocessingContext:
 _PREPROCESSING_CONTEXT: Qwen3TTSPreprocessingContext | None = None
 _PREPARED_REQUESTS: dict[str, Qwen3TTSPreparedRequest] = {}
 _PREPARED_REQUESTS_LOCK = threading.Lock()
+_REFERENCE_PROMPT_CACHE: OrderedDict[str, list[Any]] = OrderedDict()
+_REFERENCE_PROMPT_CACHE_MAX_SIZE = 256
 
 
 def set_qwen3_tts_preprocessing_context(*, model: Any, wrapper: Any) -> None:
@@ -135,6 +139,7 @@ def set_qwen3_tts_preprocessing_context(*, model: Any, wrapper: Any) -> None:
             wrapper=wrapper,
         )
         _PREPARED_REQUESTS.clear()
+        _REFERENCE_PROMPT_CACHE.clear()
 
 
 def clear_qwen3_tts_preprocessing_context() -> None:
@@ -144,6 +149,116 @@ def clear_qwen3_tts_preprocessing_context() -> None:
     with _PREPARED_REQUESTS_LOCK:
         _PREPROCESSING_CONTEXT = None
         _PREPARED_REQUESTS.clear()
+        _REFERENCE_PROMPT_CACHE.clear()
+
+
+def _qwen3_tts_reference_prompt_cache_enabled() -> bool:
+    return os.getenv("SGLANG_OMNI_QWEN3_TTS_REF_PROMPT_CACHE") == "1"
+
+
+def _hash_reference_audio(ref_audio: Any) -> str | None:
+    if isinstance(ref_audio, str):
+        if os.path.isfile(ref_audio):
+            try:
+                stat = os.stat(ref_audio)
+            except OSError:
+                return None
+            return f"path:{os.path.abspath(ref_audio)}:{stat.st_size}:{stat.st_mtime_ns}"
+        digest = hashlib.blake2b(ref_audio.encode("utf-8"), digest_size=16).hexdigest()
+        return f"str:{digest}"
+
+    try:
+        import numpy as np
+
+        if isinstance(ref_audio, tuple) and len(ref_audio) == 2:
+            audio, sr = ref_audio
+            array = np.asarray(audio, dtype=np.float32)
+            digest = hashlib.blake2b(array.tobytes(), digest_size=16).hexdigest()
+            return f"tuple:{int(sr)}:{array.shape}:{digest}"
+        array = np.asarray(ref_audio, dtype=np.float32)
+        if array.ndim > 0:
+            digest = hashlib.blake2b(array.tobytes(), digest_size=16).hexdigest()
+            return f"array:{array.shape}:{digest}"
+    except (TypeError, ValueError):
+        return None
+    return None
+
+
+def _reference_prompt_cache_key(state: Qwen3TTSState) -> str | None:
+    audio_key = _hash_reference_audio(state.ref_audio)
+    if audio_key is None:
+        return None
+    ref_text = "" if state.ref_text is None else state.ref_text
+    return f"{audio_key}|ref_text:{ref_text}|xvec:{int(state.x_vector_only_mode)}"
+
+
+def _clone_cached_reference_prompt_item(item: Any) -> Any:
+    ref_code = getattr(item, "ref_code", None)
+    if isinstance(ref_code, torch.Tensor):
+        ref_code = ref_code.detach().clone()
+    ref_spk_embedding = getattr(item, "ref_spk_embedding", None)
+    if isinstance(ref_spk_embedding, torch.Tensor):
+        ref_spk_embedding = ref_spk_embedding.detach().clone()
+    kwargs = {
+        "ref_code": ref_code,
+        "ref_spk_embedding": ref_spk_embedding,
+        "x_vector_only_mode": bool(getattr(item, "x_vector_only_mode", False)),
+        "icl_mode": bool(getattr(item, "icl_mode", False)),
+        "ref_text": getattr(item, "ref_text", None),
+    }
+    try:
+        from qwen_tts.inference.qwen3_tts_model import VoiceClonePromptItem
+
+        return VoiceClonePromptItem(**kwargs)
+    except (ImportError, TypeError):
+        try:
+            return item.__class__(**kwargs)
+        except TypeError:
+            cloned = copy.copy(item)
+            for key, value in kwargs.items():
+                if hasattr(cloned, key):
+                    setattr(cloned, key, value)
+            return cloned
+
+
+def _get_or_create_reference_prompt_items(
+    state: Qwen3TTSState,
+    *,
+    wrapper: Any,
+) -> list[Any]:
+    if not _qwen3_tts_reference_prompt_cache_enabled():
+        with torch.no_grad():
+            return wrapper.create_voice_clone_prompt(
+                ref_audio=state.ref_audio,
+                ref_text=state.ref_text,
+                x_vector_only_mode=state.x_vector_only_mode,
+            )
+
+    key = _reference_prompt_cache_key(state)
+    if key is not None:
+        with _PREPARED_REQUESTS_LOCK:
+            cached = _REFERENCE_PROMPT_CACHE.get(key)
+            if cached is not None:
+                _REFERENCE_PROMPT_CACHE.move_to_end(key)
+                return [_clone_cached_reference_prompt_item(item) for item in cached]
+
+    with torch.no_grad():
+        prompt_items = wrapper.create_voice_clone_prompt(
+            ref_audio=state.ref_audio,
+            ref_text=state.ref_text,
+            x_vector_only_mode=state.x_vector_only_mode,
+        )
+
+    if key is not None:
+        cached_items = [
+            _clone_cached_reference_prompt_item(item) for item in prompt_items
+        ]
+        with _PREPARED_REQUESTS_LOCK:
+            _REFERENCE_PROMPT_CACHE[key] = cached_items
+            _REFERENCE_PROMPT_CACHE.move_to_end(key)
+            while len(_REFERENCE_PROMPT_CACHE) > _REFERENCE_PROMPT_CACHE_MAX_SIZE:
+                _REFERENCE_PROMPT_CACHE.popitem(last=False)
+    return prompt_items
 
 
 def _prepared_request_id(payload: StagePayload) -> str | None:
@@ -518,12 +633,7 @@ def _prepare_qwen3_tts_base_request(
     model: Any,
     wrapper: Any,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor | None]:
-    with torch.no_grad():
-        prompt_items = wrapper.create_voice_clone_prompt(
-            ref_audio=state.ref_audio,
-            ref_text=state.ref_text,
-            x_vector_only_mode=state.x_vector_only_mode,
-        )
+    prompt_items = _get_or_create_reference_prompt_items(state, wrapper=wrapper)
     if len(prompt_items) != 1:
         raise ValueError("Qwen3-TTS expects exactly one voice-clone prompt")
     voice_clone_prompt = wrapper._prompt_items_to_voice_clone_prompt(prompt_items)
