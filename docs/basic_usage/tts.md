@@ -349,4 +349,4 @@ The launcher starts the backend first, waits for `/health`, then starts the Grad
 python -m playground.tts.app --api-base http://localhost:8000
 ```
 
-A demo play video is available [here](https://x.com/lmsysorg/status/2031412267213008984/video/1). We highly recommend using playground since audio data is hard to intertact with by CLI.
+A demo play video is available [here](https://x.com/lmsysorg/status/2031412267213008984/video/1). We highly recommend using playground since audio data is hard to interact with by CLI.
