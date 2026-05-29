@@ -234,6 +234,8 @@ def create_sglang_tts_engine_executor(
     device: str = "cuda:0",
     max_new_tokens: int | None = 2048,
     server_args_overrides: dict[str, Any] | None = None,
+    enable_async_decode: bool = False,
+    async_decode_min_batch_size: int = 2,
 ):
     """sglang-backed AR engine for Higgs TTS."""
     checkpoint_dir = resolve_checkpoint(model_path)
@@ -297,6 +299,8 @@ def create_sglang_tts_engine_executor(
         request_builder=request_builder,
         result_adapter=result_adapter,
         abort_callback=model.reset_request,
+        enable_async_decode=enable_async_decode,
+        async_decode_min_batch_size=async_decode_min_batch_size,
     )
 
 
@@ -316,33 +320,32 @@ def create_vocoder_executor(
     codec = get_or_load_codec(checkpoint_dir, device, dtype)
     sample_rate = HiggsAudioCodec.SAMPLE_RATE
 
-    def _vocode(payload: StagePayload) -> StagePayload:
+    def _prepare_vocoder_item(
+        payload: StagePayload,
+    ) -> tuple[HiggsTtsState, torch.Tensor | None]:
         state = HiggsTtsState.from_dict(payload.data)
         delayed_rows = state.output_codes_delayed
-
         if not delayed_rows:
-            payload.data["audio_data"] = []
-            payload.data["sample_rate"] = sample_rate
-            payload.data["modality"] = "audio"
-            return payload
-
+            return state, None
         delayed_LN = torch.tensor(delayed_rows, dtype=torch.long)
-        N = state.num_codebooks
-        if delayed_LN.shape[0] < N:
-            payload.data["audio_data"] = []
-            payload.data["sample_rate"] = sample_rate
-            payload.data["modality"] = "audio"
-            return payload
-
+        if delayed_LN.shape[0] < state.num_codebooks:
+            return state, None
         codes_TN = reverse_delay_pattern(delayed_LN)
-        codec_vocab = state.codebook_size - 2  # 1026 - BOC - EOC
-        codes_TN = torch.where(
+        codec_vocab = state.codebook_size - 2
+        return state, torch.where(
             codes_TN >= codec_vocab, torch.zeros_like(codes_TN), codes_TN
         )
-        waveform = codec.decode(codes_TN)
-        audio_np = waveform.detach().to(torch.float32).cpu().numpy()
 
-        payload.data["audio_data"] = audio_np.tolist()
+    def _store_vocoder_result(
+        payload: StagePayload,
+        state: HiggsTtsState,
+        waveform: torch.Tensor | None,
+    ) -> StagePayload:
+        if waveform is not None:
+            audio_np = waveform.detach().to(torch.float32).cpu().numpy()
+            payload.data["audio_data"] = audio_np.tolist()
+        else:
+            payload.data["audio_data"] = []
         payload.data["sample_rate"] = sample_rate
         payload.data["modality"] = "audio"
         if state.prompt_tokens or state.completion_tokens or state.engine_time_s:
@@ -356,8 +359,33 @@ def create_vocoder_executor(
             payload.data["usage"] = usage
         return payload
 
+    def _vocode(payload: StagePayload) -> StagePayload:
+        state, codes_TN = _prepare_vocoder_item(payload)
+        waveform = codec.decode(codes_TN) if codes_TN is not None else None
+        return _store_vocoder_result(payload, state, waveform)
+
+    def _vocode_batch(payloads: list[StagePayload]) -> list[StagePayload]:
+        items = [_prepare_vocoder_item(p) for p in payloads]
+        valid = [(i, codes) for i, (_, codes) in enumerate(items) if codes is not None]
+        waveforms: list[torch.Tensor | None] = [None] * len(items)
+        if valid:
+            indices, codes_list = zip(*valid)
+            wavs = codec.decode_batch(list(codes_list))
+            if len(wavs) != len(valid):
+                raise RuntimeError(
+                    f"Higgs vocoder decode_batch returned {len(wavs)} audios "
+                    f"for {len(valid)} requests"
+                )
+            for idx, wav in zip(indices, wavs):
+                waveforms[idx] = wav
+        return [
+            _store_vocoder_result(payload, state, wav)
+            for payload, (state, _), wav in zip(payloads, items, waveforms)
+        ]
+
     return SimpleScheduler(
         _vocode,
+        batch_compute_fn=_vocode_batch,
         max_batch_size=max_batch_size,
         max_batch_wait_ms=max_batch_wait_ms,
     )

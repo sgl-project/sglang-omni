@@ -44,6 +44,7 @@ class SimpleScheduler:
     ):
         self.inbox: _queue_mod.Queue[IncomingMessage] = _queue_mod.Queue()
         self.outbox: _queue_mod.Queue[OutgoingMessage] = _queue_mod.Queue()
+        self.requires_tp_work_fanout: bool = True
         self._fn = compute_fn
         self._batch_fn = batch_compute_fn
         self._max_batch_size = max(int(max_batch_size), 1)

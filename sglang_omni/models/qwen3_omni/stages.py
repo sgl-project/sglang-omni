@@ -1036,6 +1036,8 @@ def create_talker_ar_executor_from_config(
     feedback_enabled: bool = True,
     weight_prefix: str = "talker.",
     total_gpu_memory_fraction: float | None = None,
+    enable_partial_start: bool = False,
+    partial_start_min_chunks: int = 5,
 ):
     """Returns OmniScheduler for talker."""
     from sglang_omni.models.qwen3_omni.bootstrap import create_talker_scheduler
@@ -1045,7 +1047,7 @@ def create_talker_ar_executor_from_config(
     # — the `fused_experts (full graph)` backend picked in #344. Caller can
     # override via factory_args or the `--talker-cuda-graph off` CLI flag.
     # Note (Xuesong): pytorch backend works around an sglang upstream gap —
-    # Sampler.forward doesn't forward sampling_seed to flashinfer, so
+    # Sampler.forward doesn't forward seed to flashinfer, so
     # under cuda graph the captured RNG is boot-dependent and ~5% of prompts
     # trigger degenerate AR loops (see #408). Revert once upstream lands.
     overrides: dict[str, Any] = {
@@ -1085,6 +1087,8 @@ def create_talker_ar_executor_from_config(
         tp_rank=tp_rank,
         nccl_port=nccl_port,
         total_gpu_memory_fraction=total_gpu_memory_fraction,
+        enable_partial_start=enable_partial_start,
+        partial_start_min_chunks=partial_start_min_chunks,
     )
     post_load_process_mem = get_process_gpu_memory_bytes(gpu_id)
     logger.info(

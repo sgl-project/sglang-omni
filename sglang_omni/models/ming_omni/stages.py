@@ -123,6 +123,33 @@ def create_aggregate_executor():
     return SimpleScheduler(_identity)
 
 
+def create_streaming_segmenter_executor(
+    *,
+    segment_min_tokens: int = 8,
+    segment_max_tokens: int = 40,
+    first_segment_min_tokens: int = 4,
+    first_segment_max_wait_ms: int = 450,
+):
+    """Factory for the streaming TTS segmenter stage.
+
+    Returns a stream-aware scheduler that consumes text deltas from the
+    thinker's stream channel and emits speakable segments on its own
+    stream channel to the talker stream stage.
+    """
+    from sglang_omni.models.ming_omni.components.streaming_segmenter import (
+        MingStreamingSegmenterScheduler,
+    )
+    from sglang_omni.models.ming_omni.components.streaming_text import SegmenterConfig
+
+    config = SegmenterConfig(
+        segment_min_tokens=segment_min_tokens,
+        segment_max_tokens=segment_max_tokens,
+        first_segment_min_tokens=first_segment_min_tokens,
+        first_segment_max_wait_ms=first_segment_max_wait_ms,
+    )
+    return MingStreamingSegmenterScheduler(config=config)
+
+
 def create_audio_encoder_executor(
     model_path: str,
     *,
@@ -159,11 +186,21 @@ def create_image_encoder_executor(
     *,
     device: str = "cuda",
     dtype: str | None = None,
+    tp_rank: int = 0,
+    tp_size: int = 1,
+    nccl_port: int | None = None,
 ):
     from sglang_omni.models.ming_omni.components.image_encoder import MingImageEncoder
     from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 
-    model = MingImageEncoder(model_path=model_path, device=device, dtype=dtype)
+    model = MingImageEncoder(
+        model_path=model_path,
+        device=device,
+        dtype=dtype,
+        tp_rank=tp_rank,
+        tp_size=tp_size,
+        nccl_port=nccl_port,
+    )
 
     def _encode(payload: StagePayload) -> StagePayload:
         state = PipelineState.from_dict(payload.data)
@@ -193,6 +230,7 @@ def create_sglang_thinker_executor_from_config(
     nccl_port: int | None = None,
     thinker_max_seq_len: int = 8192,
     server_args_overrides: dict[str, Any] | None = None,
+    enable_streaming_tts: bool = False,
 ):
     validate_stage_tp_support(stage_name="thinker", tp_size=tp_size)
 
@@ -217,6 +255,7 @@ def create_sglang_thinker_executor_from_config(
         tp_rank=tp_rank,
         tp_size=tp_size,
         nccl_port=nccl_port,
+        enable_streaming_tts=enable_streaming_tts,
     )
 
 
@@ -253,6 +292,31 @@ def create_talker_executor(
         return await executor.get_result()
 
     return SimpleScheduler(_talk)
+
+
+def create_streaming_talker_executor(
+    model_path: str,
+    *,
+    device: str = "cuda",
+    voice: str = "DB30",
+):
+    """Factory for the streaming TTS talker stage.
+
+    Consumes text segments emitted by the segmenter and produces audio
+    chunks on the outbox stream channel. Terminal stage — chunks go to
+    the coordinator and out to the client.
+    """
+    from sglang_omni.models.ming_omni.components.streaming_talker import (
+        MingStreamingTalkerScheduler,
+    )
+    from sglang_omni.models.weight_loader import resolve_model_path
+
+    local_path = resolve_model_path(model_path)
+    return MingStreamingTalkerScheduler(
+        model_path=local_path,
+        device=device,
+        voice=voice,
+    )
 
 
 def create_decode_executor(model_path: str):

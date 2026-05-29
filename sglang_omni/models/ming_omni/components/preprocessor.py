@@ -21,6 +21,10 @@ from sglang_omni.preprocessing.image import (
     compute_image_cache_key,
     ensure_image_list_async,
 )
+from sglang_omni.preprocessing.video import (
+    compute_video_cache_key,
+    ensure_video_list_async,
+)
 from sglang_omni.proto import StagePayload
 
 logger = logging.getLogger(__name__)
@@ -42,6 +46,10 @@ END_OF_AUDIO = "<end_of_audio>"
 IMAGE_START = "<image>"
 IMAGE_END = "</image>"
 IMAGE_PATCH = "<imagePatch>"
+
+VIDEO_START = "<video>"
+VIDEO_END = "</video>"
+VIDEO_PATCH = "<videoPatch>"
 
 # Whisper mel spectrogram parameters
 WHISPER_N_MELS = 128
@@ -173,6 +181,34 @@ def _inject_top_level_audios(
     return messages
 
 
+def _inject_top_level_videos(
+    messages: list[dict[str, Any]],
+    videos: list[str],
+) -> list[dict[str, Any]]:
+    """Convert top-level ``videos`` into inline content items.
+
+    Mirrors ``_inject_top_level_audios``: text comes before video so attention
+    can condition the video interpretation on the user's instruction.
+    """
+    messages = list(messages)
+    video_items: list[dict[str, Any]] = [
+        {"type": "video_url", "video_url": {"url": url}} for url in videos
+    ]
+    for idx, msg in enumerate(messages):
+        if msg.get("role") != "user":
+            continue
+        content = msg.get("content", "")
+        new_content: list[dict[str, Any]] = []
+        if isinstance(content, str):
+            new_content.append({"type": "text", "text": content})
+        elif isinstance(content, list):
+            new_content.extend(content)
+        new_content.extend(video_items)
+        messages[idx] = {**msg, "content": new_content}
+        break
+    return messages
+
+
 class MingPreprocessor:
     """Preprocessor for Ming-Omni model.
 
@@ -198,6 +234,9 @@ class MingPreprocessor:
         self._image_patch_id = getattr(llm_config, "image_patch_token", None)
         if self._image_patch_id is None:
             self._image_patch_id = self._tokenizer.convert_tokens_to_ids(IMAGE_PATCH)
+        self._video_patch_id = getattr(llm_config, "video_patch_token", None)
+        if self._video_patch_id is None:
+            self._video_patch_id = self._tokenizer.convert_tokens_to_ids(VIDEO_PATCH)
 
         # Lazy-init image processor
         self._image_processor = None
@@ -237,6 +276,48 @@ class MingPreprocessor:
         )
         return pixel_values, image_grid_thw, token_counts
 
+    def _process_videos(
+        self, videos: list[Any]
+    ) -> tuple[torch.Tensor, torch.Tensor, list[int]]:
+        """Process video frames into pixel_values_videos, video_grid_thw, token counts.
+
+        ``videos`` is a list where each item is the per-video frame stack
+        produced by ``ensure_video_list_async`` (torch.Tensor shape ``(T, C, H, W)``
+        of float pixels in 0..255). ``Qwen2VLImageProcessor.preprocess(videos=...)``
+        groups consecutive frames by ``temporal_patch_size`` and returns flattened
+        patches plus ``video_grid_thw`` with the merged temporal dim.
+        """
+        processor = self._get_image_processor()
+        # Convert per-video tensors to numpy arrays in (T, H, W, C) uint8 — the
+        # format Qwen2VLImageProcessor expects when ``videos`` is a list of
+        # per-video frame stacks.
+        np_videos: list[np.ndarray] = []
+        for v in videos:
+            t = v
+            if isinstance(t, torch.Tensor):
+                # load_video_path resizes with BICUBIC + antialias and returns
+                # a float tensor; BICUBIC can overshoot outside [0, 255] and
+                # to(uint8) wraps rather than saturates. Clamp before casting.
+                arr = t.detach().cpu().clamp_(0, 255).to(torch.uint8).numpy()
+            else:
+                arr = np.clip(np.asarray(t), 0, 255).astype(np.uint8)
+            # (T, C, H, W) -> (T, H, W, C)
+            if arr.ndim == 4 and arr.shape[1] in (1, 3):
+                arr = np.transpose(arr, (0, 2, 3, 1))
+            np_videos.append(arr)
+        # ``processor.__call__`` requires ``images`` as a positional argument;
+        # call ``preprocess`` directly so we can pass only ``videos``.
+        result = processor.preprocess(
+            images=None, videos=np_videos, return_tensors="pt"
+        )
+        pixel_values_videos = result["pixel_values_videos"]
+        video_grid_thw = result["video_grid_thw"]
+        token_counts = _estimate_image_tokens(
+            video_grid_thw.tolist(),
+            self._vision_config.spatial_merge_size,
+        )
+        return pixel_values_videos, video_grid_thw, token_counts
+
     async def __call__(self, payload: StagePayload) -> StagePayload:
         """Process a chat completion request into pipeline state."""
         request = payload.request
@@ -246,10 +327,22 @@ class MingPreprocessor:
             messages = raw_inputs
             audio_urls = []
             top_level_images: list[str] = []
+            top_level_videos: list[str] = []
+            video_fps = None
+            video_max_frames = None
+            video_min_pixels = None
+            video_max_pixels = None
+            video_total_pixels = None
         else:
             messages = raw_inputs.get("messages", [])
             audio_urls = raw_inputs.get("audios", [])
             top_level_images = raw_inputs.get("images") or []
+            top_level_videos = raw_inputs.get("videos") or []
+            video_fps = raw_inputs.get("video_fps")
+            video_max_frames = raw_inputs.get("video_max_frames")
+            video_min_pixels = raw_inputs.get("video_min_pixels")
+            video_max_pixels = raw_inputs.get("video_max_pixels")
+            video_total_pixels = raw_inputs.get("video_total_pixels")
 
         # If top-level images are provided (e.g. {"images": ["url1", ...]}),
         # inject them as inline content items in the first user message so that
@@ -258,9 +351,12 @@ class MingPreprocessor:
             messages = _inject_top_level_images(messages, top_level_images)
         if audio_urls:
             messages = _inject_top_level_audios(messages, audio_urls)
+        if top_level_videos:
+            messages = _inject_top_level_videos(messages, top_level_videos)
 
-        # --- Extract image URLs/data from messages ---
+        # --- Extract image / video URLs/data from messages ---
         raw_images: list[Any] = []
+        raw_videos: list[Any] = []
         for msg in messages:
             content = msg.get("content", "")
             if isinstance(content, list):
@@ -280,6 +376,19 @@ class MingPreprocessor:
                             img = item.get("image", "")
                             if img:
                                 raw_images.append(img)
+                        elif item_type == "video_url":
+                            url_data = item.get("video_url", {})
+                            url = (
+                                url_data.get("url", "")
+                                if isinstance(url_data, dict)
+                                else str(url_data)
+                            )
+                            if url:
+                                raw_videos.append(url)
+                        elif item_type == "video":
+                            vid = item.get("video", "")
+                            if vid:
+                                raw_videos.append(vid)
 
         # Compute cache keys BEFORE async loading; same content -> same key so
         # SGLang's radix prefix cache can correctly reuse KVs across requests, and
@@ -287,9 +396,49 @@ class MingPreprocessor:
         # placeholder positions (which share the same generic image_patch_token).
         image_cache_key = compute_image_cache_key(raw_images) if raw_images else None
         audio_cache_key = compute_audio_cache_key(audio_urls) if audio_urls else None
+        video_cache_key = (
+            compute_video_cache_key(
+                raw_videos,
+                fps=float(video_fps) if video_fps is not None else None,
+                max_frames=(
+                    int(video_max_frames) if video_max_frames is not None else None
+                ),
+                min_pixels=(
+                    int(video_min_pixels) if video_min_pixels is not None else None
+                ),
+                max_pixels=(
+                    int(video_max_pixels) if video_max_pixels is not None else None
+                ),
+                total_pixels=(
+                    int(video_total_pixels) if video_total_pixels is not None else None
+                ),
+            )
+            if raw_videos
+            else None
+        )
 
-        # --- Load images and audio concurrently ---
+        # --- Load images, videos and audio concurrently ---
         image_coro = ensure_image_list_async(raw_images) if raw_images else None
+        video_coro = (
+            ensure_video_list_async(
+                raw_videos,
+                fps=float(video_fps) if video_fps is not None else None,
+                max_frames=(
+                    int(video_max_frames) if video_max_frames is not None else None
+                ),
+                min_pixels=(
+                    int(video_min_pixels) if video_min_pixels is not None else None
+                ),
+                max_pixels=(
+                    int(video_max_pixels) if video_max_pixels is not None else None
+                ),
+                total_pixels=(
+                    int(video_total_pixels) if video_total_pixels is not None else None
+                ),
+            )
+            if raw_videos
+            else None
+        )
         audio_coros = (
             [
                 asyncio.to_thread(load_audio_path, url, target_sr=WHISPER_SAMPLE_RATE)
@@ -303,6 +452,8 @@ class MingPreprocessor:
         all_tasks: list[Any] = []
         if image_coro is not None:
             all_tasks.append(image_coro)
+        if video_coro is not None:
+            all_tasks.append(video_coro)
         all_tasks.extend(audio_coros)
 
         if all_tasks:
@@ -310,17 +461,26 @@ class MingPreprocessor:
         else:
             results = []
 
-        # Unpack results
+        # Unpack results in the same order as they were appended
         images: list[Any] = []
+        videos: list[Any] = []
+        idx = 0
         if image_coro is not None:
-            img_result = results[0]
+            img_result = results[idx]
+            idx += 1
             if isinstance(img_result, list):
                 images = img_result
             elif isinstance(img_result, BaseException):
                 logger.error("Failed to load images: %s", img_result)
-            audio_results = results[1:]
-        else:
-            audio_results = results
+        if video_coro is not None:
+            vid_result = results[idx]
+            idx += 1
+            if isinstance(vid_result, BaseException):
+                logger.error("Failed to load videos: %s", vid_result)
+            else:
+                # ensure_video_list_async returns (videos, sample_fps, audio)
+                videos = vid_result[0] if isinstance(vid_result, tuple) else vid_result
+        audio_results = results[idx:]
 
         waveforms: list[np.ndarray] = [
             a for a in audio_results if isinstance(a, np.ndarray)
@@ -335,6 +495,18 @@ class MingPreprocessor:
             pixel_values, image_grid_thw, image_token_counts = await asyncio.to_thread(
                 self._process_images, images
             )
+
+        # --- Process videos ---
+        video_token_counts: list[int] = []
+        pixel_values_videos: torch.Tensor | None = None
+        video_grid_thw: torch.Tensor | None = None
+
+        if videos:
+            (
+                pixel_values_videos,
+                video_grid_thw,
+                video_token_counts,
+            ) = await asyncio.to_thread(self._process_videos, videos)
 
         # --- Compute mel features FIRST so we know exact placeholder counts ---
         mel_features_list: list[torch.Tensor] = []
@@ -358,6 +530,7 @@ class MingPreprocessor:
             messages,
             audio_token_counts=audio_token_counts,
             image_token_counts=image_token_counts,
+            video_token_counts=video_token_counts,
         )
         input_ids_tensor = torch.tensor([input_ids], dtype=torch.long)
         attention_mask = torch.ones_like(input_ids_tensor)
@@ -396,13 +569,24 @@ class MingPreprocessor:
             if audio_cache_key:
                 encoder_inputs[AUDIO_STAGE]["cache_key"] = audio_cache_key
 
-        if pixel_values is not None and image_grid_thw is not None:
-            encoder_inputs[IMAGE_STAGE] = {
-                "pixel_values": pixel_values,
-                "image_grid_thw": image_grid_thw,
-            }
+        has_image = pixel_values is not None and image_grid_thw is not None
+        has_video = pixel_values_videos is not None and video_grid_thw is not None
+        if has_image or has_video:
+            stage_inputs: dict[str, Any] = {}
+            if has_image:
+                stage_inputs["pixel_values"] = pixel_values
+                stage_inputs["image_grid_thw"] = image_grid_thw
+            if has_video:
+                stage_inputs["pixel_values_videos"] = pixel_values_videos
+                stage_inputs["video_grid_thw"] = video_grid_thw
+            keys = []
             if image_cache_key:
-                encoder_inputs[IMAGE_STAGE]["cache_key"] = image_cache_key
+                keys.append(f"img:{image_cache_key}")
+            if video_cache_key:
+                keys.append(f"vid:{video_cache_key}")
+            if keys:
+                stage_inputs["cache_key"] = "|".join(keys)
+            encoder_inputs[IMAGE_STAGE] = stage_inputs
 
         state = PipelineState(
             raw_inputs=raw_inputs,
@@ -422,6 +606,7 @@ class MingPreprocessor:
         *,
         audio_token_counts: list[int] | None = None,
         image_token_counts: list[int] | None = None,
+        video_token_counts: list[int] | None = None,
     ) -> tuple[str, list[int], list[int]]:
         """Build Ming-Omni chat prompt and token IDs with modality placeholders.
 
@@ -440,11 +625,13 @@ class MingPreprocessor:
         """
         a_counts = audio_token_counts or []
         i_counts = image_token_counts or []
+        v_counts = video_token_counts or []
         parts: list[str] = []
         input_ids: list[int] = []
         text_buffer: list[str] = []
         audio_idx = 0
         image_idx = 0
+        video_idx = 0
 
         def flush_text() -> None:
             if not text_buffer:
@@ -540,6 +727,18 @@ class MingPreprocessor:
                                 n_tokens,
                             )
                             image_idx += 1
+                        elif item_type in ("video_url", "video"):
+                            n_tokens = (
+                                v_counts[video_idx] if video_idx < len(v_counts) else 1
+                            )
+                            append_placeholder(
+                                VIDEO_START,
+                                VIDEO_PATCH,
+                                VIDEO_END,
+                                self._video_patch_id,
+                                n_tokens,
+                            )
+                            video_idx += 1
                     elif isinstance(item, str):
                         append_text(item)
                 append_text(role_end)

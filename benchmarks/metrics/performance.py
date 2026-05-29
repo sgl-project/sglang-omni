@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
-"""System performance metrics: latency, RTF, throughput, token throughput.
+"""System performance metrics: latency, RTF, throughput, token throughput,
+streaming UX.
 
 Metric semantics:
 
@@ -17,6 +18,28 @@ Metric semantics:
     Per-request completion tokens divided by that request's engine/request time.
 ``rtf_mean``
     Mean request elapsed seconds divided by generated output audio duration seconds.
+``rtf_p95`` / ``rtf_p99``
+    Tail percentiles of per-request RTF.
+``audio_throughput_s_per_s``
+    Total seconds of generated audio divided by benchmark wall-clock seconds.
+    Independent of per-request audio duration; comparable across engines that
+    emit different audio lengths for the same input.
+``audio_ttfp_mean_s`` (TTFC)
+    Mean time-to-first-audio-chunk: client-side wall time from request send
+    to first decoded audio chunk arrival. Streaming only.
+``audio_ttfp_median_s`` / ``audio_ttfp_p95_s`` / ``audio_ttfp_p99_s``
+    Median / tail percentiles of TTFC.
+``text_ttft_mean_s`` (TTFT)
+    Mean time-to-first-text-token: client-side wall time from request send to
+    first non-empty content delta. Streaming only; populated when the model
+    emits text deltas (dual-modality text+audio output).
+``text_ttft_median_s`` / ``text_ttft_p95_s`` / ``text_ttft_p99_s``
+    Median / tail percentiles of TTFT.
+``inter_chunk_mean_s`` (ITL)
+    Mean inter-arrival latency between successive audio chunks within a
+    request. Streaming smoothness metric.
+``inter_chunk_p95_s`` / ``inter_chunk_p99_s``
+    Tail percentiles of inter-chunk latency (streaming jitter).
 """
 
 from __future__ import annotations
@@ -72,6 +95,17 @@ def compute_speed_metrics(
     latencies = [o.latency_s for o in successes]
     rtfs = [o.rtf for o in successes if 0 < o.rtf < float("inf")]
     audio_durations = [o.audio_duration_s for o in successes if o.audio_duration_s > 0]
+    ttfps = [
+        o.audio_ttfp_s
+        for o in successes
+        if getattr(o, "audio_ttfp_s", None) is not None
+    ]
+    text_ttfts = [
+        o.text_ttft_s for o in successes if getattr(o, "text_ttft_s", None) is not None
+    ]
+    inter_chunk_deltas = [
+        d for o in successes for d in getattr(o, "inter_chunk_s", []) or []
+    ]
 
     if wall_clock_s is not None and wall_clock_s > 0:
         throughput = round(len(successes) / wall_clock_s, 3)
@@ -93,9 +127,40 @@ def compute_speed_metrics(
         ),
         "rtf_mean": round(float(np.mean(rtfs)), 4) if rtfs else None,
         "rtf_median": round(float(np.median(rtfs)), 4) if rtfs else None,
+        "rtf_p95": round(float(np.percentile(rtfs, 95)), 4) if rtfs else None,
+        "rtf_p99": round(float(np.percentile(rtfs, 99)), 4) if rtfs else None,
         "throughput_qps": throughput,
         **_compute_token_metrics(successes, wall_clock_s=wall_clock_s),
     }
+    if audio_durations and wall_clock_s is not None and wall_clock_s > 0:
+        total_audio_s = sum(audio_durations)
+        metrics_summary["audio_throughput_s_per_s"] = round(
+            total_audio_s / wall_clock_s, 3
+        )
+    if ttfps:
+        metrics_summary["audio_ttfp_mean_s"] = round(float(np.mean(ttfps)), 4)
+        metrics_summary["audio_ttfp_median_s"] = round(float(np.median(ttfps)), 4)
+        metrics_summary["audio_ttfp_p95_s"] = round(float(np.percentile(ttfps, 95)), 4)
+        metrics_summary["audio_ttfp_p99_s"] = round(float(np.percentile(ttfps, 99)), 4)
+    if text_ttfts:
+        metrics_summary["text_ttft_mean_s"] = round(float(np.mean(text_ttfts)), 4)
+        metrics_summary["text_ttft_median_s"] = round(float(np.median(text_ttfts)), 4)
+        metrics_summary["text_ttft_p95_s"] = round(
+            float(np.percentile(text_ttfts, 95)), 4
+        )
+        metrics_summary["text_ttft_p99_s"] = round(
+            float(np.percentile(text_ttfts, 99)), 4
+        )
+    if inter_chunk_deltas:
+        metrics_summary["inter_chunk_mean_s"] = round(
+            float(np.mean(inter_chunk_deltas)), 4
+        )
+        metrics_summary["inter_chunk_p95_s"] = round(
+            float(np.percentile(inter_chunk_deltas, 95)), 4
+        )
+        metrics_summary["inter_chunk_p99_s"] = round(
+            float(np.percentile(inter_chunk_deltas, 99)), 4
+        )
     return metrics_summary
 
 
@@ -123,10 +188,32 @@ def print_speed_summary(
     if metrics.get("rtf_mean") is not None:
         print(f"  {'RTF mean:':<{lw}} {metrics['rtf_mean']}")
         print(f"  {'RTF median:':<{lw}} {metrics['rtf_median']}")
+    if metrics.get("rtf_p95") is not None:
+        print(f"  {'RTF p95:':<{lw}} {metrics['rtf_p95']}")
+        print(f"  {'RTF p99:':<{lw}} {metrics['rtf_p99']}")
     if metrics.get("audio_duration_mean_s"):
         print(
             f"  {'Audio duration mean (s):':<{lw}} {metrics['audio_duration_mean_s']}"
         )
+    if metrics.get("audio_throughput_s_per_s") is not None:
+        print(
+            f"  {'Audio throughput (s/s):':<{lw}} "
+            f"{metrics['audio_throughput_s_per_s']}"
+        )
+    if metrics.get("audio_ttfp_mean_s") is not None:
+        print(f"  {'TTFC mean (s):':<{lw}} {metrics['audio_ttfp_mean_s']}")
+        print(f"  {'TTFC median (s):':<{lw}} {metrics['audio_ttfp_median_s']}")
+        print(f"  {'TTFC p95 (s):':<{lw}} {metrics['audio_ttfp_p95_s']}")
+        print(f"  {'TTFC p99 (s):':<{lw}} {metrics['audio_ttfp_p99_s']}")
+    if metrics.get("text_ttft_mean_s") is not None:
+        print(f"  {'TTFT mean (s):':<{lw}} {metrics['text_ttft_mean_s']}")
+        print(f"  {'TTFT median (s):':<{lw}} {metrics['text_ttft_median_s']}")
+        print(f"  {'TTFT p95 (s):':<{lw}} {metrics['text_ttft_p95_s']}")
+        print(f"  {'TTFT p99 (s):':<{lw}} {metrics['text_ttft_p99_s']}")
+    if metrics.get("inter_chunk_mean_s") is not None:
+        print(f"  {'ITL mean (s):':<{lw}} {metrics['inter_chunk_mean_s']}")
+        print(f"  {'ITL p95 (s):':<{lw}} {metrics['inter_chunk_p95_s']}")
+        print(f"  {'ITL p99 (s):':<{lw}} {metrics['inter_chunk_p99_s']}")
     if metrics.get("output_throughput") is not None:
         print(f"  {'Output throughput (tok/s):':<{lw}} {metrics['output_throughput']}")
     if metrics.get("output_tok_per_req_s") is not None:
@@ -157,6 +244,9 @@ def build_speed_results(
 
 
 def _request_result_to_dict(output: RequestResult) -> dict:
+    inter = getattr(output, "inter_chunk_s", None) or None
+    ttfp = getattr(output, "audio_ttfp_s", None)
+    ttft = getattr(output, "text_ttft_s", None)
     return {
         "id": output.request_id,
         "text": output.text,
@@ -171,4 +261,7 @@ def _request_result_to_dict(output: RequestResult) -> dict:
         ),
         "wav_path": output.wav_path or None,
         "error": output.error or None,
+        "audio_ttfp_s": round(ttfp, 4) if ttfp is not None else None,
+        "text_ttft_s": round(ttft, 4) if ttft is not None else None,
+        "inter_chunk_s": [round(d, 4) for d in inter] if inter else None,
     }

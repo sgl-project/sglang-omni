@@ -7,6 +7,7 @@ Note (Qiujiang, Chenyang):
   ref_text from the meta file.
 2. Plain TTS (e.g. mistralai/Voxtral-4B-TTS-2603): use --no-ref-audio and
   --voice for a server-side speaker preset.
+3. Higgs TTS uses the same benchmark with --ref-format references.
 
 Usage:
 
@@ -24,6 +25,12 @@ Usage:
         --model-path mistralai/Voxtral-4B-TTS-2603 \
         --port 8000
 
+    3. For Higgs TTS:
+    python -m sglang_omni.cli serve \
+        --model-path boson-sglang/higgs-audio-v3-tts-4b-base \
+        --config examples/configs/higgs_tts.yaml \
+        --port 8000
+
     # Full pipeline (generate + transcribe) — voice cloning
     python -m benchmarks.eval.benchmark_tts_seedtts \
         --meta zhaochenyang20/seed-tts-eval-arrow \
@@ -36,6 +43,14 @@ Usage:
         --model mistralai/Voxtral-4B-TTS-2603 --port 8000 \
         --max-concurrency 16 \
         --no-ref-audio --voice cheerful_female --max-samples 50
+
+    # Full pipeline — Higgs TTS voice cloning
+    python -m benchmarks.eval.benchmark_tts_seedtts \
+        --meta zhaochenyang20/seed-tts-eval-arrow \
+        --model boson-sglang/higgs-audio-v3-tts-4b-base --port 8000 \
+        --ref-format references \
+        --output-dir results/higgs_tts_en \
+        --lang en --max-concurrency 16
 
 For CI settings, separate the generate and transcribe phases into two runs.
 
@@ -65,9 +80,12 @@ CI runs on a subset and has its own thresholds elsewhere (see tasks/*.py).
 
 Benchmark: SeedTTS  |  Dataset: seed-tts-eval, full set (EN=1088, ZH=2020)
 Hardware:  1 x H200 (default; non-H200 sources are tagged in Source column)
-Last verified: 2026-05-04
+Last verified: 2026-05-25
 
 Accuracy (accuracy.wer)
+
+Note: the Higgs TTS EN raw corpus WER includes 2 samples above 50% WER; the
+outlier-excluded corpus WER is 1.36%.
 
 | Model  | Config           | wer_corpus | wer_per_sample_mean | wer_per_sample_median | wer_per_sample_std | evaluated | skipped | Source                         |
 | ------ | ---------------- | ---------- | ------------------- | --------------------- | ------------------ | --------- | ------- | ------------------------------ |
@@ -83,7 +101,8 @@ Accuracy (accuracy.wer)
 | S2-Pro | EN, stream=True  | 1.06%      | 1.02%               | 0.00%                 | 3.5%               | 1088/1088 | 0       | PR #411 [H100, full-set, c=16] |
 | S2-Pro | ZH, stream=False | 0.92%      | 0.87%               | 0.00%                 | 2.1%               | 2020/2020 | 0       | PR #411 [H100, full-set, c=16] |
 | S2-Pro | ZH, stream=True  | 0.90%      | 0.86%               | 0.00%                 | 2.1%               | 2020/2020 | 0       | PR #411 [H100, full-set, c=16] |
-
+| Higgs TTS | EN, stream=False | 4.68%   | 4.16%               | 0.00%                 | 91.2%              | 1088/1088 | 0       | PR #534 [H200, full-set, c=16, CUDA Graph on, torch.compile off] |
+| Higgs TTS | ZH, stream=False | 1.14%   | 1.08%               | 0.00%                 | 2.7%               | 2020/2020 | 0       | PR #534 [H200, full-set, c=16, CUDA Graph on, torch.compile off] |
 
 Generation speed (generation.speed)
 
@@ -101,6 +120,8 @@ Generation speed (generation.speed)
 | S2-Pro | EN, stream=True  | 12.164         | 16.717        | 3.265    | 1.308          | 67.0                           | PR #411 [H100, V1-pipeline, full-set, c=16] |
 | S2-Pro | ZH, stream=False | 12.028         | 15.526        | 2.256    | 1.327          | 65.7                           | PR #411 [H100, V1-pipeline, full-set, c=16] |
 | S2-Pro | ZH, stream=True  | 11.417         | 15.020        | 2.141    | 1.398          | 65.5                           | PR #411 [H100, V1-pipeline, full-set, c=16] |
+| Higgs TTS | EN, stream=False | 1.749       | 2.600         | 0.425    | 9.104          | 112.9                          | PR #534 [H200, full-set, c=16, CUDA Graph on, torch.compile off] |
+| Higgs TTS | ZH, stream=False | 1.629       | 2.110         | 0.282    | 9.792          | 109.9                          | PR #534 [H200, full-set, c=16, CUDA Graph on, torch.compile off] |
 
 Note (Chenyang): output-token rates here count S2-Pro's codec tokens. They are not
 comparable to Qwen3-Omni rates in benchmark_omni_seedtts.py, whose tokens are
@@ -110,10 +131,12 @@ instead when comparing backends.
 
 ASR speed (accuracy.asr_speed) — Whisper-large-v3 for EN, FunASR paraformer-zh for ZH
 
-| Lang | asr_latency_mean_s | asr_rtf_mean | asr_throughput_samples_per_s | Source                                          |
-| ---- | ------------------ | ------------ | ---------------------------- | ----------------------------------------------- |
-| EN   | 0.297              | 0.0772       | 3.36                         | PR #393 [H200, from S2-Pro EN stream=False run] |
-| ZH   | 0.294              | 0.0556       | 3.40                         | PR #393 [H200, from S2-Pro ZH stream=False run] |
+| Model     | Lang | asr_latency_mean_s | asr_rtf_mean | asr_throughput_samples_per_s | Source                                          |
+| --------- | ---- | ------------------ | ------------ | ---------------------------- | ----------------------------------------------- |
+| S2-Pro    | EN   | 0.297              | 0.0772       | 3.36                         | PR #393 [H200, from S2-Pro EN stream=False run] |
+| S2-Pro    | ZH   | 0.294              | 0.0556       | 3.40                         | PR #393 [H200, from S2-Pro ZH stream=False run] |
+| Higgs TTS | EN   | 0.360              | 0.0835       | 2.78                         | PR #534 [H200, from Higgs TTS EN stream=False run] |
+| Higgs TTS | ZH   | 0.0867             | 0.0157       | 11.53                        | PR #534 [H200, from Higgs TTS ZH stream=False run] |
 """
 
 from __future__ import annotations
@@ -160,10 +183,15 @@ class TtsSeedttsBenchmarkConfig:
     # "cheerful_female" server-side); voice-cloning models such as S2-Pro
     # ignore it and take the speaker from ref_audio/ref_text instead.
     voice: str | None = None
+    task_type: str | None = None
+    instructions: str | None = None
     # Default is voice-clone ON — S2-Pro's canonical flow uses the
     # seed-tts-eval reference audio.  The ``--no-ref-audio`` CLI flag flips
     # this to False for plain TTS models that do not accept ref audio.
     voice_clone: bool = True
+    # Reference payload shape for voice cloning. The default keeps the original
+    # ref_audio/ref_text fields; Higgs TTS should pass --ref-format references.
+    ref_format: str = "flat"
     output_dir: str = "results/tts_seedtts"
     max_samples: int | None = None
     max_new_tokens: int | None = 2048
@@ -207,7 +235,10 @@ def _build_results_config(
         "base_url": base_url,
         "meta": config.meta,
         "voice_clone": config.voice_clone,
+        "ref_format": config.ref_format,
         "voice": config.voice,
+        "task_type": config.task_type,
+        "instructions": config.instructions,
         "stream": config.stream,
         "max_samples": config.max_samples,
         "max_new_tokens": config.max_new_tokens,
@@ -239,7 +270,10 @@ async def run_tts_seedtts_benchmark(
         api_url,
         stream=config.stream,
         no_ref_audio=not config.voice_clone,
+        ref_format=config.ref_format,
         voice=config.voice,
+        task_type=config.task_type,
+        instructions=config.instructions,
         save_audio_dir=save_audio_dir,
         **generation_kwargs,
     )
@@ -274,7 +308,10 @@ def run_tts_seedtts_transcribe(config: TtsSeedttsBenchmarkConfig) -> dict:
         "model": config.model,
         "meta": config.meta,
         "voice_clone": config.voice_clone,
+        "ref_format": config.ref_format,
         "voice": config.voice,
+        "task_type": config.task_type,
+        "instructions": config.instructions,
         "max_new_tokens": config.max_new_tokens,
         "temperature": config.temperature,
         "max_samples": config.max_samples,
@@ -299,7 +336,10 @@ def _config_from_args(args: argparse.Namespace) -> TtsSeedttsBenchmarkConfig:
         model=args.model,
         meta=args.meta,
         voice=args.voice,
+        task_type=args.task_type,
+        instructions=args.instructions,
         voice_clone=voice_clone,
+        ref_format=args.ref_format,
         output_dir=args.output_dir,
         max_samples=args.max_samples,
         max_new_tokens=args.max_new_tokens,
@@ -355,6 +395,18 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--task-type",
+        type=str,
+        default=None,
+        help="Model-specific TTS task type, for example Base, CustomVoice, or VoiceDesign.",
+    )
+    parser.add_argument(
+        "--instructions",
+        type=str,
+        default=None,
+        help="Model-specific style or voice-design instructions.",
+    )
+    parser.add_argument(
         "--meta",
         "--testset",
         dest="meta",
@@ -367,6 +419,16 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         dest="no_ref_audio",
         action="store_true",
         help="Skip ref audio/text from testset (TTS without voice cloning).",
+    )
+    parser.add_argument(
+        "--ref-format",
+        choices=["flat", "references"],
+        default="flat",
+        help=(
+            "Reference payload shape for voice cloning. The default 'flat' sends "
+            "ref_audio/ref_text, preserving the original behavior for S2-Pro "
+            "and similar models. Use 'references' for Higgs TTS."
+        ),
     )
     parser.add_argument("--output-dir", type=str, default="results/tts_seedtts")
     parser.add_argument("--max-samples", type=int, default=None)

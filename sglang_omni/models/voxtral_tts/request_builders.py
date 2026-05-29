@@ -73,9 +73,7 @@ def build_sglang_voxtral_request(
         max_new_tokens=int(state.max_new_tokens or 4096),
         output_ids=req.output_ids,
         req=req,
-        voice_embedding=(
-            voice_embedding.detach().cpu() if voice_embedding is not None else None
-        ),
+        voice_embedding=voice_embedding,
         audio_token_id=int(model.audio_token_id),
     )
     data.stage_payload = payload

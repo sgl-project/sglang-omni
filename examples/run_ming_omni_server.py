@@ -63,8 +63,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--gpu-image-encoder",
         type=int,
+        nargs="+",
         default=None,
-        help="GPU id for the image encoder stage.",
+        help=(
+            "GPU id(s) for the image encoder stage. "
+            "For --image-encoder-tp N, pass N GPU ids."
+        ),
+    )
+    parser.add_argument(
+        "--image-encoder-tp",
+        type=int,
+        default=1,
+        help="Tensor parallel size for image encoder (default: 1)",
     )
     parser.add_argument(
         "--thinker-only",
@@ -203,8 +213,33 @@ def _launch_text_server(args: argparse.Namespace) -> None:
         server_arg_updates["disable_custom_all_reduce"] = True
     if args.gpu_audio_encoder is not None:
         _set_stage_gpu(config, "audio_encoder", args.gpu_audio_encoder)
-    if args.gpu_image_encoder is not None:
-        _set_stage_gpu(config, "image_encoder", args.gpu_image_encoder)
+    image_encoder_tp = getattr(args, "image_encoder_tp", 1)
+    if image_encoder_tp < 1:
+        raise ValueError("--image-encoder-tp must be >= 1")
+    if image_encoder_tp > 1 and getattr(args, "thinker_only", False):
+        raise ValueError("--thinker-only cannot be used with --image-encoder-tp > 1")
+    if image_encoder_tp > 1:
+        if args.gpu_image_encoder is None:
+            raise ValueError(
+                "--gpu-image-encoder must be specified when --image-encoder-tp > 1"
+            )
+        if len(args.gpu_image_encoder) != image_encoder_tp:
+            raise ValueError(
+                f"--gpu-image-encoder requires exactly {image_encoder_tp} GPU ids "
+                f"(matching --image-encoder-tp), got {len(args.gpu_image_encoder)}"
+            )
+        if len(set(args.gpu_image_encoder)) != len(args.gpu_image_encoder):
+            raise ValueError("--gpu-image-encoder GPU ids must be unique")
+        img_stage = next(
+            stage for stage in config.stages if stage.name == "image_encoder"
+        )
+        img_stage.tp_size = image_encoder_tp
+        img_stage.parallelism = img_stage.parallelism.model_copy(
+            update={"tp": image_encoder_tp}
+        )
+        img_stage.gpu = args.gpu_image_encoder
+    elif args.gpu_image_encoder is not None:
+        _set_stage_gpu(config, "image_encoder", args.gpu_image_encoder[0])
     if args.quantization:
         server_arg_updates["quantization"] = args.quantization
     if args.cpu_offload_gb:

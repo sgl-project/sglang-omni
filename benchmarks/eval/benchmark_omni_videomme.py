@@ -139,6 +139,7 @@ async def run_video_eval(
     audio_output_dir_default: str,
     enable_audio_input: bool = False,
     fixed_prompt: str | None = None,
+    compute_wer: bool = True,
 ) -> dict:
     base_url = _build_base_url(config)
     api_url = f"{base_url}/v1/chat/completions"
@@ -207,7 +208,7 @@ async def run_video_eval(
         },
         "per_sample": per_sample,
     }
-    if config.enable_audio:
+    if config.enable_audio and compute_wer:
         results["wer"] = compute_text_audio_consistency(
             request_results,
             config.lang,

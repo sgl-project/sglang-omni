@@ -250,6 +250,8 @@ def _apply_model_worker_backend_policy(
             "Qwen3-Omni ModelWorker does not support expert parallelism; "
             "use ep_size=1."
         )
+    has_moe = _model_config_has_moe(model_config)
+    has_native_fp8_block_quant = _model_config_has_native_fp8_block_quant(model_config)
 
     if (
         model_arch_override == "Qwen3OmniTalker"
@@ -262,9 +264,9 @@ def _apply_model_worker_backend_policy(
     if (
         is_qwen3_omni_arch
         and effective_quantization == "fp8"
-        and _model_config_has_moe(model_config)
+        and has_moe
         and moe_runner_backend == "auto"
-        and _model_config_has_native_fp8_block_quant(model_config)
+        and has_native_fp8_block_quant
         and _is_fp8_cutlass_moe_supported()
     ):
         server_args.moe_runner_backend = "cutlass"
@@ -273,10 +275,10 @@ def _apply_model_worker_backend_policy(
     if (
         is_qwen3_omni_arch
         and effective_quantization == "fp8"
-        and _model_config_has_moe(model_config)
+        and has_moe
         and moe_runner_backend == "cutlass"
     ):
-        if not _model_config_has_native_fp8_block_quant(model_config):
+        if not has_native_fp8_block_quant:
             raise ValueError(
                 "Qwen3-Omni FP8 CUTLASS MoE requires a native serialized "
                 "block-FP8 checkpoint with weight_block_size."
@@ -293,8 +295,19 @@ def _apply_model_worker_backend_policy(
             "'auto' so Omni selects a native-FP8-compatible MoE runner."
         )
 
+    fp8_gemm_backend = _normalize_quantization(server_args.fp8_gemm_runner_backend)
+    if (
+        model_arch_override == "Qwen3OmniTalker"
+        and effective_quantization == "fp8"
+        and has_native_fp8_block_quant
+        and fp8_gemm_backend in (None, "auto")
+    ):
+        # Projected talker prefill has request-dependent FP8 dense GEMM shapes
+        # outside decode CUDA graph replay; DeepGEMM can otherwise JIT there.
+        server_args.fp8_gemm_runner_backend = "triton"
+        fp8_gemm_backend = server_args.fp8_gemm_runner_backend
+
     server_quantization = getattr(server_args, "quantization", None)
-    fp8_gemm_backend = getattr(server_args, "fp8_gemm_runner_backend", None)
     logger.info(
         f"Configured SGLang backend policy: arch={model_arch_override} "
         f"effective_quantization={effective_quantization} "

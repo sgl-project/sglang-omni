@@ -170,6 +170,10 @@ class HiggsTTSModel(nn.Module):
         self._cg_codes_BN = torch.zeros(
             pool_size, num_codebooks, dtype=torch.long, device=cg_device
         )
+        # Note(Jiaxin): Packs codes_BN | was_done | active_generation_done into one buffer.
+        self._cg_collect_staging = torch.zeros(
+            pool_size, num_codebooks + 2, dtype=torch.long, device=cg_device
+        )
         self._cg_was_done = torch.zeros(pool_size, dtype=torch.bool, device=cg_device)
 
         self._cg_active_delay_count = torch.zeros(

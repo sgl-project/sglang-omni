@@ -41,7 +41,7 @@ compile:
 # Serve documentation with auto-build and live reload
 serve:
 	@echo "Starting auto-build server at http://0.0.0.0:$(PORT)"
-	@$(SPHINXAUTOBUILD) "$(SOURCEDIR)" "$(BUILDDIR)/html" \
+	@WATCHFILES_FORCE_POLLING=true $(SPHINXAUTOBUILD) "$(SOURCEDIR)" "$(BUILDDIR)/html" \
 		--host 0.0.0.0 \
 		--port $(PORT) \
 		--watch $(SOURCEDIR) \

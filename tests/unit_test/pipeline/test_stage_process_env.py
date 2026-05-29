@@ -145,6 +145,49 @@ def test_gpu_scheduler_construction_uses_startup_lock(monkeypatch) -> None:
     assert seen_gpu_ids == [0]
 
 
+def test_construct_stage_uses_factory_gpu_id_for_device_and_startup_lock(
+    monkeypatch,
+) -> None:
+    """Config-owned gpu_id must drive both current device and startup lock."""
+    import torch
+
+    class _FakeStage:
+        def __init__(self, **kwargs):
+            self.scheduler = kwargs["scheduler"]
+
+    set_device_calls: list[int] = []
+    seen_gpu_ids: list[int] = []
+
+    @contextmanager
+    def _fake_lock(gpu_id: int):
+        seen_gpu_ids.append(gpu_id)
+        yield Path("/tmp/test.lock")
+
+    monkeypatch.setattr(
+        torch.cuda,
+        "set_device",
+        lambda gpu_id: set_device_calls.append(int(gpu_id)),
+    )
+    monkeypatch.setattr(stage_process, "gpu_startup_lock", _fake_lock)
+    monkeypatch.setattr(stage_process, "Stage", _FakeStage)
+
+    specs = [
+        StageProcessSpec(
+            stage_name=f"gpu_stage_{idx}",
+            factory=fake_factory_path("make_scheduler_accepting_gpu_id"),
+            factory_args={"gpu_id": 0},
+            gpu_id=0,
+        )
+        for idx in range(2)
+    ]
+
+    stages = [stage_process._construct_stage(spec, _RecordingLog()) for spec in specs]
+
+    assert [stage.scheduler.gpu_id for stage in stages] == [0, 0]
+    assert set_device_calls == [0, 0]
+    assert seen_gpu_ids == [0, 0]
+
+
 def test_cpu_scheduler_construction_skips_startup_lock(monkeypatch) -> None:
     def _unexpected_lock(gpu_id: int):
         raise AssertionError(f"unexpected GPU lock for {gpu_id}")

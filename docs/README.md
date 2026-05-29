@@ -21,7 +21,7 @@ Update your Jupyter notebooks in the appropriate subdirectories under `docs/`. I
 ```bash
 bash serve.sh
 
-# if you want to ues a custom port
+# if you want to use a custom port
 PORT=8080 make serve
 ```
 ---

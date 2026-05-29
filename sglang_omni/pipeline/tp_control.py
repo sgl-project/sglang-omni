@@ -2,9 +2,10 @@
 """Internal TP control helpers.
 
 These helpers sit above the per-rank SGLang worker layer and below the
-pipeline stage abstraction. They only mirror stage-control messages from
-the leader to follower ranks; request replication remains owned by
-SGLang itself.
+pipeline stage abstraction. They mirror stage-control messages and, for
+non-SGLang schedulers (e.g. SimpleScheduler-based image encoders),
+replicate work payloads from the leader to follower ranks so that NCCL
+collectives in TP-parallel forward passes do not deadlock.
 """
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import queue as queue_mod
+from dataclasses import dataclass
 from typing import Any
 
 from sglang_omni.proto import (
@@ -24,6 +26,14 @@ from sglang_omni.proto import (
 logger = logging.getLogger(__name__)
 
 _WORK_POLL_SECONDS = 0.1
+
+
+@dataclass
+class TPWorkMessage:
+    """Payload replicated from the TP leader to follower schedulers."""
+
+    request_id: str
+    data: Any
 
 
 class TPLeaderFanout:
@@ -44,6 +54,11 @@ class TPLeaderFanout:
         self,
         msg: ShutdownMessage | ProfilerStartMessage | ProfilerStopMessage,
     ) -> None:
+        for q in self._follower_work_queues:
+            q.put_nowait(msg)
+
+    def fanout_work(self, payload: Any) -> None:
+        msg = TPWorkMessage(request_id=getattr(payload, "request_id", ""), data=payload)
         for q in self._follower_work_queues:
             q.put_nowait(msg)
 
@@ -78,7 +93,7 @@ class TPFollowerControlPlane:
 
     async def recv(
         self,
-    ) -> ShutdownMessage | ProfilerStartMessage | ProfilerStopMessage:
+    ) -> ShutdownMessage | ProfilerStartMessage | ProfilerStopMessage | TPWorkMessage:
         msg = await self._recv_from_queue(self._work_queue)
         if isinstance(
             msg,
@@ -86,6 +101,7 @@ class TPFollowerControlPlane:
                 ShutdownMessage,
                 ProfilerStartMessage,
                 ProfilerStopMessage,
+                TPWorkMessage,
             ),
         ):
             return msg

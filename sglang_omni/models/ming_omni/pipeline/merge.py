@@ -87,6 +87,11 @@ def build_thinker_inputs(
         if isinstance(image_out, dict)
         else None
     )
+    video_embeds = (
+        _as_tensor(image_out.get("video_embeds"))
+        if isinstance(image_out, dict)
+        else None
+    )
 
     thinker_model_inputs: dict[str, Any] = {}
 
@@ -102,12 +107,24 @@ def build_thinker_inputs(
             image_embeds = image_embeds.squeeze(0)
         thinker_model_inputs["image_embeds"] = image_embeds
 
+    if _non_empty(video_embeds):
+        if video_embeds.dim() == 3:
+            video_embeds = video_embeds.squeeze(0)
+        thinker_model_inputs["video_embeds"] = video_embeds
+
     media_cache_keys: dict[str, str] = {}
     encoder_inputs = state.encoder_inputs or {}
     image_ck = (encoder_inputs.get(IMAGE_STAGE) or {}).get("cache_key")
     audio_ck = (encoder_inputs.get(AUDIO_STAGE) or {}).get("cache_key")
     if image_ck:
+        # Image and video share the same encoder cache key, so prefix them
+        # differently so the SGLang adapter's modality-keyed lookup
+        # (media_cache_keys.get("image"|"video")) gives each its own hashed
+        # pad value. Without the "video" entry, video placeholder tokens
+        # keep their raw token id and alias in the radix prefix cache
+        # across different videos with the same placeholder count.
         media_cache_keys["image"] = f"image:{image_ck}"
+        media_cache_keys["video"] = f"video:{image_ck}"
     if audio_ck:
         media_cache_keys["audio"] = f"audio:{audio_ck}"
 
