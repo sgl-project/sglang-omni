@@ -40,7 +40,7 @@ def build_process_topology_plan(
     stages_cfg: list[StageConfig] | None = None,
 ) -> ProcessTopologyPlan:
     stages = stages_cfg if stages_cfg is not None else config.stages
-    groups = _build_process_groups(stages, gpu_placement)
+    groups = _build_process_groups(config, stages, gpu_placement)
     tp_stage_to_processes = _build_tp_process_names(stages)
 
     plan = ProcessTopologyPlan(
@@ -58,28 +58,103 @@ def build_process_topology_plan(
 
 
 def _build_process_groups(
+    config: PipelineConfig,
     stages: list[StageConfig],
     gpu_placement: StagePlacementPlan,
 ) -> list[ProcessGroupPlacement]:
-    grouped: OrderedDict[str, list[StageConfig]] = OrderedDict()
+    non_tp_stages = [stage for stage in stages if stage.tp_size == 1]
+    _validate_non_tp_processes(non_tp_stages)
+
+    components = _resolve_non_tp_process_components(config, non_tp_stages)
+    used_names: set[str] = set()
+    groups: list[ProcessGroupPlacement] = []
+    for component in components.values():
+        group_name = _component_process_name(component, used_names)
+        groups.append(
+            ProcessGroupPlacement(
+                name=group_name,
+                stage_names=tuple(stage.name for stage in component),
+                gpu_id=_resolve_group_gpu_id(group_name, component, gpu_placement),
+            )
+        )
+    return groups
+
+
+def _validate_non_tp_processes(stages: list[StageConfig]) -> None:
     for stage in stages:
-        if stage.tp_size > 1:
-            continue
         if stage.process is None:
             raise ValueError(
                 f"Stage {stage.name!r} must declare process; non-TP stage "
                 "process groups are explicit"
             )
-        grouped.setdefault(stage.process, []).append(stage)
 
-    return [
-        ProcessGroupPlacement(
-            name=name,
-            stage_names=tuple(stage.name for stage in group_stages),
-            gpu_id=_resolve_group_gpu_id(name, group_stages, gpu_placement),
-        )
-        for name, group_stages in grouped.items()
-    ]
+
+def _resolve_non_tp_process_components(
+    config: PipelineConfig,
+    stages: list[StageConfig],
+) -> OrderedDict[str, list[StageConfig]]:
+    parent = {stage.name: stage.name for stage in stages}
+    stage_by_name = {stage.name: stage for stage in stages}
+
+    def find(name: str) -> str:
+        root = name
+        while parent[root] != root:
+            root = parent[root]
+        while parent[name] != name:
+            next_name = parent[name]
+            parent[name] = root
+            name = next_name
+        return root
+
+    def union(left: str, right: str) -> None:
+        left_root = find(left)
+        right_root = find(right)
+        if left_root != right_root:
+            parent[right_root] = left_root
+
+    by_process: OrderedDict[str, list[str]] = OrderedDict()
+    for stage in stages:
+        by_process.setdefault(stage.process or "", []).append(stage.name)
+    for stage_names in by_process.values():
+        first = stage_names[0]
+        for stage_name in stage_names[1:]:
+            union(first, stage_name)
+
+    for group in config.fused_stages or []:
+        local_stage_names = [
+            stage_name
+            for stage_name in group
+            if stage_name in stage_by_name and stage_by_name[stage_name].tp_size == 1
+        ]
+        if not local_stage_names:
+            continue
+        first = local_stage_names[0]
+        for stage_name in local_stage_names[1:]:
+            union(first, stage_name)
+
+    components: OrderedDict[str, list[StageConfig]] = OrderedDict()
+    for stage in stages:
+        components.setdefault(find(stage.name), []).append(stage)
+    return components
+
+
+def _component_process_name(
+    stages: list[StageConfig],
+    used_names: set[str],
+) -> str:
+    explicit_names = {stage.process for stage in stages if stage.process}
+    if len(explicit_names) == 1:
+        base_name = next(iter(explicit_names))
+    else:
+        base_name = "fused_" + "_".join(stage.name for stage in stages)
+
+    name = base_name
+    suffix = 1
+    while name in used_names:
+        suffix += 1
+        name = f"{base_name}_{suffix}"
+    used_names.add(name)
+    return name
 
 
 def _build_tp_process_names(stages: list[StageConfig]) -> dict[str, tuple[str, ...]]:

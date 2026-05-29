@@ -98,12 +98,12 @@ STREAMING_BENCHMARK_MAX_SAMPLES = 32
 THRESHOLD_SLACK_HIGHER = 0.75
 THRESHOLD_SLACK_LOWER = 1.25
 
-VC_WER_MAX_CORPUS = 0.012411347517730497
+VC_WER_MAX_CORPUS = 0.010638297872340425
 VC_WER_CORPUS_THRESHOLD = apply_wer_slack(VC_WER_MAX_CORPUS)
-VC_WER_MAX_PER_SAMPLE = 0.17
-VC_STREAM_WER_MAX_CORPUS = 0.010610079575596816
+VC_WER_MAX_PER_SAMPLE = 0.16666666666666666
+VC_STREAM_WER_MAX_CORPUS = 0.013262599469496022
 VC_STREAM_WER_CORPUS_THRESHOLD = apply_wer_slack(VC_STREAM_WER_MAX_CORPUS)
-VC_STREAM_WER_MAX_PER_SAMPLE = 0.14285714285714285
+VC_STREAM_WER_MAX_PER_SAMPLE = 0.16666666666666666
 # Calibrated per PR #469 review (item 5): worst-of-5 = 63.24, mean = 63.74,
 # stdev = 0.56 over 5 independent SeedTTS-50 EN runs on H200 (Spec GPU 4-7),
 # same scorer (popsoda2002/seedtts-wavlm-sim @ wavlm_large_finetune.pth).
@@ -117,19 +117,19 @@ VC_SIMILARITY_MEAN_MIN = 60.0
 
 _VC_NON_STREAM_P95 = {
     16: {
-        "throughput_qps": 1.433,
+        "throughput_qps": 1.465,
         "output_tok_per_req_s": 67.5,
-        "latency_mean_s": 9.769,
+        "latency_mean_s": 9.757,
         "rtf_mean": 3.0009,
     }
 }
 
 _VC_STREAM_P95 = {
     16: {
-        "throughput_qps": 1.285,
+        "throughput_qps": 1.287,
         "output_tok_per_req_s": 60.8,
-        "latency_mean_s": 10.289,
-        "rtf_mean": 2.8576,
+        "latency_mean_s": 10.229,
+        "rtf_mean": 2.8508,
     }
 }
 

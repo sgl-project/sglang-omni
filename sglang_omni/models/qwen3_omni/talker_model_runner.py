@@ -46,7 +46,10 @@ class QwenTalkerModelRunner(ModelRunner):
         forward_batch: Any,
         schedule_batch: Any,
         requests: list,
+        *,
+        is_lookahead: bool = False,
     ) -> GenerationBatchResult | None:
+        del is_lookahead
         del forward_batch
         del schedule_batch
         if not self._feedback_enabled:

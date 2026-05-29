@@ -40,18 +40,22 @@ distinguishes the model launched per row).
 ## Prerequisites (the skill verifies, it does not create)
 
 - A sglang-omni clone (`benchmarks/eval/` reachable from the working dir).
-- A venv with `sglang` + `torch` importable. Default candidates:
+- A venv with `sglang` + `torch` importable. Default candidates (first existing wins):
   `/sgl-workspace/sglang-omni/omni-qwen3/bin/python`,
-  `/github/home/omni-qwen3/bin/python`,
-  `/data/sglang-omni/omni-qwen3/bin/python`. Override with
+  `/github/home/calibration/qwen3/omni-qwen3/bin/python`,
+  `/github/home/omni-qwen3/bin/python` (legacy). Override with
   `--venv-python <path>` or `$EVAL_VENV_PYTHON`.
-- HF model + datasets cached. precheck reports `✓` / `✗` and prints
-  the exact `huggingface-cli download …` commands when something's
-  missing.
+- HF model + datasets cached under `HF_HOME=/github/home/.cache/huggingface`
+  (see `auto_env` in `config.yaml`). precheck reports `✓` / `✗` and prints
+  the exact `huggingface-cli download …` commands when something's missing.
 - Free GPUs. The skill **never** kills another user's processes; if
   GPUs are busy precheck fails with the busy PID list and stops.
-- `auto_env` env vars from `config.yaml` are set automatically when the
-  runner starts.
+- `auto_env` from `config.yaml` is applied at startup (overrides shell) to
+  match CI omni-setup: `OMNI_CI_HOME`, `UV_INDEX_URL`, torchinductor slice
+  paths, etc. See `tune-ci-thresholds` skill for the full cache layout table.
+- First-time venv on the repro host: use `.github/scripts/prepare_omni_venv.sh`
+  and `.github/scripts/install_flashinfer_jit_cache.sh` with
+  `OMNI_CI_HOME=/github/home/calibration/qwen3` (documented in tune-ci-thresholds).
 
 If anything's off, `precheck` fails with an actionable message; fix it
 yourself and retry.

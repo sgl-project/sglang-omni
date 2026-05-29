@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Any, ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -203,6 +203,8 @@ class PipelineConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    architecture_aliases: ClassVar[tuple[str, ...]] = ()
+
     model_path: str
     stages: list[StageConfig]
     name: str | None = None
@@ -237,6 +239,36 @@ class PipelineConfig(BaseModel):
     @classmethod
     def mem_fraction_role_to_stage(cls) -> dict[str, str]:
         """Class-level public role map for SGLang mem_fraction_static overrides."""
+        return {}
+
+    @classmethod
+    def encoder_mem_reserve_role_to_stage(cls) -> dict[str, str]:
+        """Class-level public role map for encoder memory reserve overrides."""
+        return {}
+
+    @classmethod
+    def talker_role_to_stage(cls) -> dict[str, str]:
+        """Class-level public role map for talker placement overrides."""
+        return {}
+
+    @classmethod
+    def talker_sglang_role_to_stage(cls) -> dict[str, str]:
+        """Class-level public role map for talker SGLang ServerArgs overrides."""
+        return {}
+
+    @classmethod
+    def code2wav_stage(cls) -> str | None:
+        """Return the code2wav stage name when the pipeline supports it."""
+        return None
+
+    @classmethod
+    def tensor_parallel_server_args_overrides(
+        cls,
+        *,
+        stage_name: str,
+        tp_size: int,
+    ) -> dict[str, object]:
+        """Return SGLang ServerArgs overrides implied by stage TP settings."""
         return {}
 
     @property
@@ -337,6 +369,7 @@ class PipelineConfig(BaseModel):
         if not fused:
             return
         index_map = {n: i for i, n in enumerate(names)}
+        stage_by_name = {s.name: s for s in self.stages}
         seen: set[str] = set()
         for group in fused:
             if not group or len(group) < 2:
@@ -350,13 +383,69 @@ class PipelineConfig(BaseModel):
             indices = [index_map[n] for n in group]
             if indices != list(range(indices[0], indices[0] + len(indices))):
                 raise ValueError(f"fused group not adjacent/ordered: {group}")
+            self._validate_fused_group_contract(group, stage_by_name)
+
+    def _validate_fused_group_contract(
+        self,
+        group: list[str],
+        stage_by_name: dict[str, StageConfig],
+    ) -> None:
+        stages = [stage_by_name[name] for name in group]
+
+        for stage in stages:
+            if stage.tp_size != 1:
+                raise ValueError(
+                    f"fused group {group} cannot include TP stage {stage.name!r}"
+                )
+
+        gpu_ids = {
+            gpu_id for stage in stages for gpu_id in _stage_gpu_ids_for_fusion(stage)
+        }
+        if len(gpu_ids) > 1:
+            raise ValueError(
+                f"fused group {group} must fit on one GPU; got {sorted(gpu_ids)}"
+            )
+
+        for index, stage in enumerate(stages):
+            if index > 0 and stage.wait_for:
+                raise ValueError(
+                    f"fused group {group} cannot include internal fan-in stage "
+                    f"{stage.name!r}"
+                )
+            if index < len(stages) - 1:
+                expected_next = group[index + 1]
+                if stage.terminal or stage.route_fn is not None:
+                    raise ValueError(
+                        f"fused group {group} must be linear; internal stage "
+                        f"{stage.name!r} cannot be terminal or dynamic-routed"
+                    )
+                if _target_list(stage.next) != [expected_next]:
+                    raise ValueError(
+                        f"fused group {group} must be linear; stage "
+                        f"{stage.name!r} must route only to {expected_next!r}"
+                    )
 
     def apply_fusion(self) -> tuple[list[StageConfig], dict[str, str], str]:
-        if self.fused_stages:
-            raise NotImplementedError("fused_stages not yet supported")
         name_map = {s.name: s.name for s in self.stages}
         return list(self.stages), name_map, self.resolved_entry_stage
 
     @staticmethod
     def from_dict(data: dict[str, Any]) -> PipelineConfig:
         return PipelineConfig(**data)
+
+
+def _target_list(targets: str | list[str] | None) -> list[str]:
+    if targets is None:
+        return []
+    if isinstance(targets, str):
+        return [targets]
+    return list(targets)
+
+
+def _stage_gpu_ids_for_fusion(stage: StageConfig) -> tuple[int, ...]:
+    gpu = stage.gpu
+    if gpu is None:
+        return ()
+    if isinstance(gpu, int):
+        return (gpu,)
+    return tuple(int(gpu_id) for gpu_id in gpu)

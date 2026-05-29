@@ -1,0 +1,190 @@
+import json
+import os
+import sys
+import time
+
+from github import Auth, Github
+
+PERMISSIONS_FILE_PATH = ".github/CI_PERMISSIONS.json"
+
+
+def get_env_var(name):
+    val = os.getenv(name)
+    if not val:
+        print(f"Error: Environment variable {name} not set.")
+        sys.exit(1)
+    return val
+
+
+def load_permissions(user_login):
+    """
+    Reads the permissions JSON from the local file system and returns
+    the permissions dict for the specific user.
+    """
+    try:
+        print(f"Loading permissions from {PERMISSIONS_FILE_PATH}...")
+        if not os.path.exists(PERMISSIONS_FILE_PATH):
+            print(f"Error: Permissions file not found at {PERMISSIONS_FILE_PATH}")
+            return None
+
+        with open(PERMISSIONS_FILE_PATH, "r") as f:
+            data = json.load(f)
+
+        user_perms = data.get(user_login)
+
+        if not user_perms:
+            print(f"User '{user_login}' not found in permissions file.")
+            return None
+
+        return user_perms
+
+    except Exception as e:
+        print(f"Failed to load or parse permissions file: {e}")
+        sys.exit(1)
+
+
+def handle_tag_run_ci(pr, comment, user_perms, react_on_success=True):
+    """
+    Handles the /tag-run-ci-label command.
+
+    How fresh runs get dispatched: Omni CI workflows include `labeled` in
+    `on.pull_request.types`, so adding `run-ci` fires a new
+    `pull_request.labeled` event with the up-to-date label set in its
+    payload. This is the recovery mechanism for label-gated workflows.
+
+    Returns True if action was taken, False otherwise.
+    """
+    if not user_perms.get("can_tag_run_ci_label", False):
+        print("Permission denied: can_tag_run_ci_label is false.")
+        return False
+
+    labels = ["run-ci"]
+    print(f"Permission granted. Adding labels: {labels}.")
+    for label in labels:
+        pr.add_to_labels(label)
+
+    if react_on_success:
+        comment.create_reaction("+1")
+        print("Labels added and comment reacted.")
+    else:
+        print("Labels added (reaction suppressed).")
+
+    return True
+
+
+def handle_rerun_failed_ci(gh_repo, pr, comment, user_perms, react_on_success=True):
+    """
+    Handles the /rerun-failed-ci command.
+    Reruns workflows with 'failure' or 'skipped' conclusions.
+    Returns True if action was taken, False otherwise.
+    """
+    if not user_perms.get("can_rerun_failed_ci", False):
+        print("Permission denied: can_rerun_failed_ci is false.")
+        return False
+
+    print("Permission granted. Triggering rerun of failed or skipped workflows.")
+
+    head_sha = pr.head.sha
+    print(f"Checking workflows for commit: {head_sha}")
+
+    runs = gh_repo.get_workflow_runs(head_sha=head_sha)
+
+    rerun_count = 0
+    for run in runs:
+        if run.status != "completed":
+            continue
+        if run.conclusion not in ("failure", "skipped"):
+            continue
+
+        print(f"Processing {run.conclusion} workflow: {run.name} (ID: {run.id})")
+        try:
+            if run.conclusion == "skipped":
+                print("  Full rerun")
+                run.rerun()
+            else:
+                print("  rerun_failed_jobs")
+                run.rerun_failed_jobs()
+            rerun_count += 1
+        except Exception as e:
+            print(f"Failed to rerun workflow {run.id}: {e}")
+
+    if rerun_count > 0:
+        print(f"Triggered rerun for {rerun_count} workflows.")
+        if react_on_success:
+            comment.create_reaction("+1")
+        return True
+    else:
+        print("No failed or skipped workflows found to rerun.")
+        return False
+
+
+def main():
+    token = get_env_var("GITHUB_TOKEN")
+    repo_name = get_env_var("REPO_FULL_NAME")
+    pr_number = int(get_env_var("PR_NUMBER"))
+    comment_id = int(get_env_var("COMMENT_ID"))
+    comment_body = get_env_var("COMMENT_BODY").strip()
+    user_login = get_env_var("USER_LOGIN")
+
+    user_perms = load_permissions(user_login)
+
+    auth = Auth.Token(token)
+    g = Github(auth=auth)
+
+    repo = g.get_repo(repo_name)
+    pr = repo.get_pull(pr_number)
+    comment = repo.get_issue(pr_number).get_comment(comment_id)
+
+    # PR authors can always rerun failed CI on their own PRs, even if they are
+    # not listed in CI_PERMISSIONS.json. Tagging still requires explicit
+    # CI_PERMISSIONS.json access.
+    if pr.user.login == user_login:
+        if user_perms is None:
+            print(
+                f"User {user_login} is the PR author (not in CI_PERMISSIONS.json). "
+                "Granting CI rerun permissions."
+            )
+            user_perms = {}
+        else:
+            print(
+                f"User {user_login} is the PR author and has existing CI permissions."
+            )
+        user_perms["can_rerun_failed_ci"] = True
+
+    if not user_perms:
+        print(f"User {user_login} does not have any configured permissions. Exiting.")
+        return
+
+    first_line = comment_body.split("\n")[0].strip()
+
+    if first_line.startswith("/tag-run-ci-label"):
+        handle_tag_run_ci(pr, comment, user_perms)
+
+    elif first_line.startswith("/rerun-failed-ci"):
+        handle_rerun_failed_ci(repo, pr, comment, user_perms)
+
+    elif first_line.startswith("/tag-and-rerun-ci"):
+        print("Processing combined command: /tag-and-rerun-ci")
+
+        tagged = handle_tag_run_ci(pr, comment, user_perms, react_on_success=False)
+
+        if tagged:
+            print("Waiting 5 seconds for label to propagate...")
+            time.sleep(5)
+
+        rerun = handle_rerun_failed_ci(
+            repo, pr, comment, user_perms, react_on_success=False
+        )
+
+        if tagged or rerun:
+            comment.create_reaction("+1")
+            print("Combined command processed successfully; reaction added.")
+        else:
+            print("Combined command finished, but no actions were taken.")
+
+    else:
+        print(f"Unknown or ignored command: {first_line}")
+
+
+if __name__ == "__main__":
+    main()

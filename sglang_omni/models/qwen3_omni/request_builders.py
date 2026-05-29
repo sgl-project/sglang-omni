@@ -3,9 +3,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+import logging
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from types import SimpleNamespace
 from typing import Any
 
 import torch
@@ -22,12 +22,27 @@ from sglang_omni.scheduling.messages import OutgoingMessage
 from sglang_omni.scheduling.sglang_backend import SGLangARRequestData
 from sglang_omni.scheduling.types import ARRequestData
 
+logger = logging.getLogger(__name__)
+
 IMAGE_STAGE = "image_encoder"
 AUDIO_STAGE = "audio_encoder"
+THINKER_STAGE = "thinker"
 DECODE_STAGE = "decode"
 TALKER_STAGE = "talker_ar"
 CODE2WAV_STAGE = "code2wav"
 MM_AGGREGATE_STAGE = "mm_aggregate"
+
+# Note(Chenchen Hong): PyTorch sampling_seed must fit a positive int32.
+MAX_INT32_POSITIVE = 0x7FFFFFFF
+
+
+def _resolve_seed(params: dict[str, Any]) -> int | None:
+    """Resolve random seed from request params (accepts both ``seed`` and ``sampling_seed``)."""
+    for key in ("seed", "sampling_seed"):
+        value = params.get(key)
+        if value is not None:
+            return int(value)
+    return None
 
 
 def output_modalities(request: OmniRequest | None) -> set[str] | None:
@@ -61,10 +76,17 @@ def should_generate_audio_output(
 def resolve_thinker_next_stages(
     request_id: str, output: StagePayload
 ) -> str | list[str]:
+    del request_id, output
+    return DECODE_STAGE
+
+
+def resolve_mm_aggregate_next_stages(
+    request_id: str, output: StagePayload
+) -> str | list[str]:
     del request_id
     if should_generate_audio_output(output):
-        return [DECODE_STAGE, TALKER_STAGE]
-    return DECODE_STAGE
+        return [THINKER_STAGE, TALKER_STAGE]
+    return THINKER_STAGE
 
 
 def resolve_thinker_stream_done_targets(
@@ -103,6 +125,44 @@ def resolve_mm_aggregate_wait_sources(
         return None
     state = PipelineState.from_dict(payload.data)
     return ["preprocessing", *_active_encoder_stages(state.encoder_inputs)]
+
+
+def project_thinker_to_decode(payload: StagePayload) -> StagePayload:
+    """Keep decode payload focused on text detokenization state."""
+    state = PipelineState.from_dict(payload.data)
+    state.thinker_inputs = {}
+    state.stream_state = _copy_mutable_containers(state.stream_state)
+
+    if isinstance(state.thinker_out, dict):
+        thinker_out = dict(state.thinker_out)
+        if "extra_model_outputs" in thinker_out:
+            thinker_out["extra_model_outputs"] = {}
+        state.thinker_out = thinker_out
+
+    if state.engine_outputs:
+        engine_outputs = dict(state.engine_outputs)
+        thinker_engine_out = engine_outputs.get(THINKER_STAGE)
+        if isinstance(thinker_engine_out, dict):
+            thinker_engine_out = dict(thinker_engine_out)
+            if "extra_model_outputs" in thinker_engine_out:
+                thinker_engine_out["extra_model_outputs"] = {}
+            engine_outputs[THINKER_STAGE] = thinker_engine_out
+        state.engine_outputs = engine_outputs
+
+    return StagePayload(
+        request_id=payload.request_id,
+        request=payload.request,
+        data=state.to_dict(),
+    )
+
+
+def project_talker_to_code2wav(payload: StagePayload) -> StagePayload:
+    """Keep code2wav payload as a request latch; code tensors arrive by stream."""
+    return StagePayload(
+        request_id=payload.request_id,
+        request=payload.request,
+        data={},
+    )
 
 
 @dataclass(slots=True)
@@ -195,6 +255,18 @@ def project_encoder_to_mm_aggregate(payload: StagePayload) -> StagePayload:
     return _payload_with_state(payload, projected)
 
 
+def project_mm_aggregate_to_talker_ar(payload: StagePayload) -> StagePayload:
+    """Early-submit projection: ship prompt + thinker_inputs to the talker."""
+    state = PipelineState.from_dict(payload.data)
+    projected = PipelineState(
+        prompt=dict(state.prompt) if isinstance(state.prompt, dict) else None,
+        thinker_inputs=(
+            dict(state.thinker_inputs) if isinstance(state.thinker_inputs, dict) else {}
+        ),
+    )
+    return _payload_with_state(payload, projected)
+
+
 def _project_preprocessing_to_encoder(
     payload: StagePayload,
     *,
@@ -215,6 +287,22 @@ def _payload_with_state(payload: StagePayload, state: PipelineState) -> StagePay
         request=payload.request,
         data=state.to_dict(),
     )
+
+
+def _copy_mutable_containers(value: Any) -> Any:
+    if isinstance(value, torch.Tensor):
+        return value
+    if isinstance(value, dict):
+        return {key: _copy_mutable_containers(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_copy_mutable_containers(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_copy_mutable_containers(item) for item in value)
+    if isinstance(value, set):
+        return {_copy_mutable_containers(item) for item in value}
+    if isinstance(value, bytearray):
+        return bytearray(value)
+    return value
 
 
 def _select_encoder_inputs(
@@ -472,7 +560,7 @@ def build_sglang_thinker_request(
     repetition_penalty = params.get("repetition_penalty", 1.0)
     stop = params.get("stop") or []
     stop_token_ids = params.get("stop_token_ids") or []
-    seed = params.get("seed")
+    seed = _resolve_seed(params)
 
     # Build SGLang SamplingParams and normalize
     sampling_params = SamplingParams(
@@ -561,7 +649,7 @@ def build_sglang_talker_request(
     thinker_chunks_done: bool = True,
     thinker_config: Any = None,
     talker_model_inputs: dict[str, Any] | None = None,
-    sampling_seed: int | None = None,
+    seed: int | None = None,
 ) -> "SGLangARRequestData":
     """Build SGLang AR request for the Talker from thinker hidden states.
 
@@ -605,7 +693,7 @@ def build_sglang_talker_request(
         repetition_penalty=repetition_penalty,
         stop_token_ids=[int(codec_eos_id)] if codec_eos_id is not None else None,
         logit_bias=None,
-        sampling_seed=sampling_seed,
+        sampling_seed=seed,
     )
     sampling_params.normalize(tokenizer)
     sampling_params.verify(codec_vocab_size)
@@ -896,29 +984,6 @@ def make_talker_scheduler_adapters(
         speaker_map=speaker_map,
     )
 
-    def _fallback_thinker_chunks_from_state(payload: StagePayload) -> list[Any]:
-        state = PipelineState.from_dict(payload.data)
-        thinker_out = state.thinker_out or state.engine_outputs.get("thinker")
-        if not isinstance(thinker_out, dict):
-            return []
-
-        output_ids = thinker_out.get("output_ids")
-        if not isinstance(output_ids, list) or not output_ids:
-            return []
-
-        token_ids = torch.tensor(
-            [int(token_id) for token_id in output_ids],
-            dtype=torch.long,
-        )
-        token_embeds = prefill_builder._load_prompt_token_embeddings(token_ids)
-        return [
-            SimpleNamespace(
-                data=row.detach().cpu(),
-                metadata={"token_id": int(token_id)},
-            )
-            for token_id, row in zip(token_ids.tolist(), token_embeds)
-        ]
-
     def _resolve_talker_sampling_config(params: dict[str, Any]) -> dict[str, Any]:
         codec_eos_id = int(getattr(model.config, "codec_eos_token_id", -1))
         suppress_tokens = [
@@ -934,60 +999,22 @@ def make_talker_scheduler_adapters(
             "repetition_penalty": float(params.get("talker_repetition_penalty", 1.05)),
             "codec_eos_id": codec_eos_id if codec_eos_id >= 0 else None,
             "suppress_tokens": suppress_tokens,
-            "seed": params.get("seed"),
+            "seed": _resolve_seed(params),
         }
 
     def request_builder(payload: StagePayload) -> SGLangARRequestData:
-        params = payload.request.params
-        sampling_cfg = _resolve_talker_sampling_config(params)
-        thinker_chunks = list(payload.prefetched_chunks)
-        thinker_done = bool(payload.prefetched_stream_done)
-
-        if not thinker_done:
-            raise RuntimeError(
-                "QwenTalkerScheduler called talker request_builder before thinker "
-                "stream completion"
-            )
-
-        if not thinker_chunks:
-            thinker_chunks = _fallback_thinker_chunks_from_state(payload)
-        if not thinker_chunks:
-            raise ValueError("talker request_builder requires thinker output tokens")
-
-        prompt_prefill = prefill_builder.build_prompt_prefill(
+        return _build_talker_request_data(
             payload,
-            thinker_chunks,
-            thinker_done=True,
-        )
-        req_data = build_sglang_talker_request(
-            thinker_hidden_states=torch.empty(0),
+            prefill_builder=prefill_builder,
             tokenizer=tokenizer,
             codec_vocab_size=codec_vocab_size,
-            max_new_tokens=sampling_cfg["max_new_tokens"],
-            temperature=sampling_cfg["temperature"],
-            top_k=sampling_cfg["top_k"],
-            top_p=sampling_cfg["top_p"],
-            repetition_penalty=sampling_cfg["repetition_penalty"],
-            request_id=payload.request_id,
             codec_bos_id=codec_bos_id,
-            codec_eos_id=sampling_cfg["codec_eos_id"],
-            suppress_tokens=sampling_cfg["suppress_tokens"],
             audio_token_id=audio_token_id,
             image_token_id=image_token_id,
             video_token_id=video_token_id,
-            talker_input_embeds=prompt_prefill["input_embeds"],
-            talker_input_ids=prompt_prefill["input_ids"],
-            input_embeds_are_projected=True,
-            pending_text_queue=prompt_prefill["pending_text_queue"],
-            tts_pad_embed=prompt_prefill["tts_pad_embed"],
-            thinker_chunks_done=True,
             thinker_config=thinker_config,
-            talker_model_inputs=prompt_prefill["prompt_model_inputs"],
-            sampling_seed=sampling_cfg.get("seed"),
+            resolve_sampling_config=_resolve_talker_sampling_config,
         )
-        req_data.tts_eos_embed = prompt_prefill["tts_eos_embed"]
-        req_data.stage_payload = payload
-        return req_data
 
     def result_adapter(data: SGLangARRequestData) -> StagePayload:
         payload = data.stage_payload
@@ -1003,3 +1030,79 @@ def make_talker_scheduler_adapters(
         prefill_builder.append_text_chunk,
         prefill_builder.mark_thinker_done,
     )
+
+
+def _build_talker_request_data(
+    payload: StagePayload,
+    *,
+    prefill_builder: TalkerPrefillBuilder,
+    tokenizer: Any,
+    codec_vocab_size: int,
+    codec_bos_id: int,
+    audio_token_id: int | None,
+    image_token_id: int | None,
+    video_token_id: int | None,
+    thinker_config: Any,
+    resolve_sampling_config: Callable[[dict[str, Any]], dict[str, Any]],
+) -> SGLangARRequestData:
+    params = payload.request.params
+    sampling_cfg = resolve_sampling_config(params)
+    if sampling_cfg.get("seed") is None:
+        sampling_cfg["seed"] = (
+            xxhash.xxh64_intdigest(str(payload.request_id).encode("utf-8"))
+            & MAX_INT32_POSITIVE
+        )
+    thinker_chunks = list(payload.prefetched_chunks)
+    thinker_done = bool(payload.prefetched_stream_done)
+
+    if not thinker_chunks:
+        raise RuntimeError(
+            "talker request_builder requires prefetched thinker chunks; "
+            "check the partial-start readiness policy or upstream wiring"
+        )
+
+    prompt_prefill = prefill_builder.build_prompt_prefill(
+        payload,
+        thinker_chunks,
+        thinker_done=thinker_done,
+    )
+    pending_text_queue = prompt_prefill["pending_text_queue"]
+    pending_text_rows = len(pending_text_queue) if pending_text_queue is not None else 0
+    logger.debug(
+        "talker_request_build request_id=%s thinker_chunks=%d "
+        "talker_input_rows=%d future_text_rows=%d thinker_done=%s",
+        payload.request_id,
+        len(thinker_chunks),
+        int(prompt_prefill["input_embeds"].shape[0]),
+        pending_text_rows,
+        thinker_done,
+    )
+    req_data = build_sglang_talker_request(
+        thinker_hidden_states=torch.empty(0),
+        tokenizer=tokenizer,
+        codec_vocab_size=codec_vocab_size,
+        max_new_tokens=sampling_cfg["max_new_tokens"],
+        temperature=sampling_cfg["temperature"],
+        top_k=sampling_cfg["top_k"],
+        top_p=sampling_cfg["top_p"],
+        repetition_penalty=sampling_cfg["repetition_penalty"],
+        request_id=payload.request_id,
+        codec_bos_id=codec_bos_id,
+        codec_eos_id=sampling_cfg["codec_eos_id"],
+        suppress_tokens=sampling_cfg["suppress_tokens"],
+        audio_token_id=audio_token_id,
+        image_token_id=image_token_id,
+        video_token_id=video_token_id,
+        talker_input_embeds=prompt_prefill["input_embeds"],
+        talker_input_ids=prompt_prefill["input_ids"],
+        input_embeds_are_projected=True,
+        pending_text_queue=pending_text_queue,
+        tts_pad_embed=prompt_prefill["tts_pad_embed"],
+        thinker_chunks_done=thinker_done,
+        thinker_config=thinker_config,
+        talker_model_inputs=prompt_prefill["prompt_model_inputs"],
+        seed=sampling_cfg.get("seed"),
+    )
+    req_data.tts_eos_embed = prompt_prefill["tts_eos_embed"]
+    req_data.stage_payload = payload
+    return req_data

@@ -282,3 +282,69 @@ def test_batched_step_mixed_top_k_per_row_filter():
             f"row 1 cb {cb} sampled {int(codes[1, cb].item())} "
             f"outside its own strong-set {row1_allowed}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Greedy short-circuit determinism (T4): temperature=0 / top_k=1 -> argmax,
+# RNG-free and reproducible (the batched sampler used to always go through
+# multinomial, making temperature=0 decode non-deterministic run-to-run).
+# ---------------------------------------------------------------------------
+
+
+def _tie_logits(B: int, device: str) -> torch.Tensor:
+    """Logits with an EXACT two-way tie for the max in every (row, codebook),
+    so multinomial would break the tie randomly but argmax is deterministic."""
+    logits = torch.full((B, N, V), -10.0, device=device)
+    logits[..., 5] = 9.0
+    logits[..., 7] = 9.0  # exact tie with index 5
+    return logits
+
+
+def test_batched_greedy_temperature_zero_is_deterministic_argmax():
+    from sglang_omni.models.higgs_tts.sampler import _sample_independent_batched
+
+    B = 4
+    logits = _tie_logits(B, DEVICE)
+    temperature = torch.zeros(B, device=DEVICE)
+    expected = logits.argmax(dim=-1)
+    outs = [
+        _sample_independent_batched(logits, temperature=temperature, top_p=None)
+        for _ in range(100)
+    ]
+    for o in outs:
+        assert torch.equal(o, expected), "temperature=0 must be deterministic argmax"
+
+
+def test_batched_greedy_top_k_one_is_argmax():
+    from sglang_omni.models.higgs_tts.sampler import _sample_independent_batched
+
+    B = 4
+    logits = _tie_logits(B, DEVICE)
+    temperature = torch.full((B,), 1.0, device=DEVICE)  # NOT temp-greedy
+    top_k_buf = torch.ones(B, dtype=torch.long, device=DEVICE)  # top_k == 1
+    expected = logits.argmax(dim=-1)
+    outs = [
+        _sample_independent_batched(
+            logits, temperature=temperature, top_p=None, top_k_buf=top_k_buf
+        )
+        for _ in range(50)
+    ]
+    for o in outs:
+        assert torch.equal(o, expected), "top_k=1 must collapse to argmax"
+
+
+def test_batched_mixed_greedy_rows_deterministic_sampled_rows_free():
+    from sglang_omni.models.higgs_tts.sampler import _sample_independent_batched
+
+    B = 4
+    logits = _tie_logits(B, DEVICE)
+    # rows 0 & 2 greedy (temp 0); rows 1 & 3 stochastic (temp 1)
+    temperature = torch.tensor([0.0, 1.0, 0.0, 1.0], device=DEVICE)
+    expected = logits.argmax(dim=-1)
+    for _ in range(50):
+        o = _sample_independent_batched(logits, temperature=temperature, top_p=None)
+        assert torch.equal(o[0], expected[0])
+        assert torch.equal(o[2], expected[2])
+        # stochastic rows still pick a tied-max token (5 or 7), never a -10 one
+        for b in (1, 3):
+            assert set(o[b].tolist()) <= {5, 7}
