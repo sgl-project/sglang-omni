@@ -76,8 +76,7 @@ def _ref_code_cache_enabled() -> bool:
 
 
 def _reference_audio_cache_key(reference_audio: Any) -> str | None:
-    """Stable cache key for a reference-audio input.
-    """
+    """Stable cache key for a reference-audio input."""
     if isinstance(reference_audio, (str, Path)):
         return hash_media_item(reference_audio)
     if not isinstance(reference_audio, dict):
