@@ -33,6 +33,17 @@ def test_ming_text_config_imports_and_uses_current_stage_schema() -> None:
     assert all("get_next" not in stage.model_dump() for stage in config.stages)
 
 
+def test_ming_text_config_streams_thinker_deltas_to_decode() -> None:
+    from sglang_omni.models.ming_omni.config import MingOmniPipelineConfig
+
+    config = MingOmniPipelineConfig(model_path="dummy")
+    stages = {stage.name: stage for stage in config.stages}
+
+    assert stages["thinker"].stream_to == ["decode"]
+    assert stages["thinker"].factory_args.get("enable_streaming_text") is True
+    assert stages["decode"].can_accept_stream_before_payload is True
+
+
 def test_ming_speech_config_routes_decode_and_talker() -> None:
     from sglang_omni.models.ming_omni.config import MingOmniSpeechPipelineConfig
 
@@ -68,7 +79,10 @@ def test_ming_speech_config_routes_decode_and_talker() -> None:
         == "sglang_omni.models.ming_omni.pipeline.merge.merge_for_thinker"
     )
     assert stages["thinker"].next == ["decode", "talker"]
+    assert stages["thinker"].stream_to == ["decode"]
+    assert stages["thinker"].factory_args.get("enable_streaming_text") is True
     assert stages["decode"].terminal is True
+    assert stages["decode"].can_accept_stream_before_payload is True
     assert stages["talker"].terminal is True
     assert config.terminal_stages == ["decode", "talker"]
 

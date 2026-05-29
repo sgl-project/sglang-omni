@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from typing import Any
 
 from sglang_omni.models.ming_omni.pipeline.sampling import build_ming_sampling_params
@@ -19,6 +20,8 @@ def create_thinker_scheduler(
     tp_size: int = 1,
     nccl_port: int | None = None,
     enable_streaming_tts: bool = False,
+    enable_streaming_text: bool = False,
+    stream_text_targets: Sequence[str] | None = None,
 ):
     if tp_size < 1:
         raise ValueError(f"tp_size must be >= 1, got {tp_size}")
@@ -83,11 +86,18 @@ def create_thinker_scheduler(
     )
 
     stream_output_builder = None
-    if enable_streaming_tts:
+    if enable_streaming_tts or enable_streaming_text:
         eos_token_id = getattr(tokenizer, "eos_token_id", None)
+        targets = list(stream_text_targets or ())
+        if enable_streaming_text and "decode" not in targets:
+            targets.append("decode")
+        if enable_streaming_tts and "segmenter" not in targets:
+            targets.append("segmenter")
         stream_output_builder = make_thinker_stream_output_builder(
             tokenizer=tokenizer,
             eos_token_id=eos_token_id,
+            target_stages=targets,
+            client_stream_target_stages=("decode",),
         )
 
     return OmniScheduler(
@@ -253,8 +263,10 @@ def make_thinker_stream_output_builder(
     tokenizer: Any,
     eos_token_id: int | None,
     target_stage: str = "segmenter",
+    target_stages: Sequence[str] | None = None,
+    client_stream_target_stages: Sequence[str] = (),
 ):
-    """Build a per-token stream callback that emits text deltas to the segmenter.
+    """Build a per-token stream callback that emits text deltas to target stages.
 
     OmniScheduler calls this on every model step with the freshly generated
     token id. We maintain per-request running output_ids on ``req`` so we can
@@ -266,6 +278,28 @@ def make_thinker_stream_output_builder(
     import torch
 
     from sglang_omni.scheduling.messages import OutgoingMessage
+
+    targets = list(target_stages or [target_stage])
+    client_stream_targets = set(client_stream_target_stages)
+
+    def _client_streaming_requested(req_data: Any) -> bool:
+        payload = getattr(req_data, "stage_payload", None)
+        request = getattr(payload, "request", None)
+        params = getattr(request, "params", None) or {}
+        return bool(params.get("stream", False))
+
+    def _text_output_requested(req_data: Any) -> bool:
+        payload = getattr(req_data, "stage_payload", None)
+        request = getattr(payload, "request", None)
+        metadata = getattr(request, "metadata", None) or {}
+        modalities = metadata.get("output_modalities")
+        if modalities is None:
+            return True
+        if isinstance(modalities, str):
+            return modalities == "text"
+        if isinstance(modalities, (list, tuple, set)):
+            return "text" in {str(modality) for modality in modalities}
+        return True
 
     def _build_stream_output(request_id, req_data, req_output):
         req = getattr(req_data, "req", None)
@@ -316,27 +350,31 @@ def make_thinker_stream_output_builder(
             list(delta.encode("utf-8")),
             dtype=torch.uint8,
         )
-        # Only emit to the segmenter. The thinker is not a terminal stage,
-        # so it cannot send chunks directly to the coordinator via
-        # target=None — the runtime would fan that out to ``stream_to``
-        # peers, and the relay transport requires torch.Tensor payloads.
-        # Streaming text deltas to the client requires either a stream-
-        # aware decode stage or a dedicated text fan-out stage; left as a
-        # follow-up. Streaming audio still works via the talker_stream.
-        return [
-            OutgoingMessage(
-                request_id=request_id,
-                type="stream",
-                data=text_tensor,
-                target=target_stage,
-                metadata={
-                    "token_id": token_id,
-                    "step": len(token_ids),
-                    "text_len": int(text_tensor.numel()),
-                    "is_eos": bool(is_eos),
-                },
+        messages: list[OutgoingMessage] = []
+        client_streaming_requested = _client_streaming_requested(req_data)
+        text_output_requested = _text_output_requested(req_data)
+        metadata = {
+            "token_id": token_id,
+            "step": len(token_ids),
+            "text_len": int(text_tensor.numel()),
+            "is_eos": bool(is_eos),
+            "modality": "text",
+        }
+        for target in targets:
+            if target in client_stream_targets and (
+                not client_streaming_requested or not text_output_requested
+            ):
+                continue
+            messages.append(
+                OutgoingMessage(
+                    request_id=request_id,
+                    type="stream",
+                    data=text_tensor,
+                    target=target,
+                    metadata=metadata,
+                )
             )
-        ]
+        return messages
 
     return _build_stream_output
 

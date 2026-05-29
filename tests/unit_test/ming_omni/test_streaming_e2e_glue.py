@@ -5,9 +5,13 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import torch
+
 from sglang_omni.client.client import Client
 from sglang_omni.client.types import GenerateChunk
 from sglang_omni.models.ming_omni.bootstrap import make_thinker_stream_output_builder
+from sglang_omni.models.ming_omni.stages import MingStreamingDecodeScheduler
+from sglang_omni.proto import OmniRequest, StagePayload
 
 
 class _FakeTokenizer:
@@ -31,12 +35,38 @@ def _make_req():
     )
 
 
-def _make_req_data(req):
-    return SimpleNamespace(req=req)
+def _make_req_data(req, *, stage_payload=None):
+    return SimpleNamespace(req=req, stage_payload=stage_payload)
 
 
 def _make_req_output(token_id):
     return SimpleNamespace(data=token_id)
+
+
+def _make_stage_payload(*, stream: bool, output_modalities=None):
+    metadata = {}
+    if output_modalities is not None:
+        metadata["output_modalities"] = output_modalities
+    return StagePayload(
+        request_id="req-1",
+        request=OmniRequest(
+            inputs=[],
+            params={"stream": stream},
+            metadata=metadata,
+        ),
+        data={
+            "prompt": {"input_ids": [1, 2]},
+            "engine_outputs": {
+                "thinker": {
+                    "output_ids": [5, 6, 7],
+                    "step": 3,
+                    "is_final": True,
+                    "extra_model_outputs": {},
+                    "finish_reason": "stop",
+                }
+            },
+        },
+    )
 
 
 def test_thinker_stream_builder_emits_to_segmenter():
@@ -53,6 +83,36 @@ def test_thinker_stream_builder_emits_to_segmenter():
     assert msgs[0].target == "segmenter"
     assert msgs[0].data.dtype.is_floating_point is False  # uint8 tensor
     assert bytes(msgs[0].data.tolist()).decode("utf-8") == "Hello"
+
+
+def test_thinker_stream_builder_emits_decode_only_for_client_streaming():
+    builder = make_thinker_stream_output_builder(
+        tokenizer=_FakeTokenizer(),
+        eos_token_id=None,
+        target_stages=["decode", "segmenter"],
+        client_stream_target_stages=("decode",),
+    )
+
+    req_data = _make_req_data(
+        _make_req(),
+        stage_payload=_make_stage_payload(stream=True, output_modalities=["text"]),
+    )
+    msgs = builder("req-1", req_data, _make_req_output(5))
+    assert [msg.target for msg in msgs] == ["decode", "segmenter"]
+
+    non_stream_req_data = _make_req_data(
+        _make_req(),
+        stage_payload=_make_stage_payload(stream=False, output_modalities=["text"]),
+    )
+    msgs = builder("req-1", non_stream_req_data, _make_req_output(5))
+    assert [msg.target for msg in msgs] == ["segmenter"]
+
+    audio_only_req_data = _make_req_data(
+        _make_req(),
+        stage_payload=_make_stage_payload(stream=True, output_modalities=["audio"]),
+    )
+    msgs = builder("req-1", audio_only_req_data, _make_req_output(5))
+    assert [msg.target for msg in msgs] == ["segmenter"]
 
 
 def test_thinker_stream_builder_suppresses_during_chunked_prefill():
@@ -90,6 +150,66 @@ def test_thinker_stream_builder_buffers_incomplete_utf8():
     msgs2 = builder("req-3", req_data, _make_req_output(6))
     assert len(msgs2) == 1
     assert msgs2[0].target == "segmenter"
+
+
+def test_streaming_decode_scheduler_forwards_deltas_and_slims_final():
+    scheduler = MingStreamingDecodeScheduler(
+        tokenizer=_FakeTokenizer(),
+        eos_token_id=None,
+    )
+    stream_messages = []
+    for text in ("Hello", " world", "."):
+        scheduler._on_stream_chunk(
+            "req-1",
+            SimpleNamespace(
+                data=torch.tensor(list(text.encode("utf-8")), dtype=torch.uint8)
+            ),
+        )
+        stream_messages.append(scheduler.outbox.get_nowait())
+
+    assert [msg.type for msg in stream_messages] == ["stream", "stream", "stream"]
+    assert [msg.target for msg in stream_messages] == [None, None, None]
+    assert [msg.data["text"] for msg in stream_messages] == ["Hello", " world", "."]
+    assert stream_messages[0].data == {
+        "text": "Hello",
+        "modality": "text",
+        "stage_name": "decode",
+    }
+
+    scheduler._on_stream_done("req-1")
+    scheduler._on_new_request("req-1", _make_stage_payload(stream=True))
+
+    result_msg = scheduler.outbox.get_nowait()
+    assert result_msg.type == "result"
+    assert result_msg.data.data["finish_reason"] == "stop"
+    assert result_msg.data.data["usage"] == {
+        "prompt_tokens": 2,
+        "completion_tokens": 3,
+        "total_tokens": 5,
+    }
+    assert "text" not in result_msg.data.data
+
+
+def test_streaming_decode_scheduler_emits_final_suffix_if_stream_missed_tail():
+    scheduler = MingStreamingDecodeScheduler(
+        tokenizer=_FakeTokenizer(),
+        eos_token_id=None,
+    )
+    scheduler._on_stream_chunk(
+        "req-1",
+        SimpleNamespace(
+            data=torch.tensor(list("Hello".encode("utf-8")), dtype=torch.uint8)
+        ),
+    )
+    scheduler.outbox.get_nowait()
+
+    scheduler._on_stream_done("req-1")
+    scheduler._on_new_request("req-1", _make_stage_payload(stream=True))
+
+    result_msg = scheduler.outbox.get_nowait()
+    assert result_msg.type == "result"
+    assert result_msg.data.data["text"] == " world."
+    assert result_msg.data.data["finish_reason"] == "stop"
 
 
 def test_client_result_builder_merges_decode_with_talker_stream():

@@ -37,6 +37,8 @@ class BailingMoeV2Config(PretrainedConfig):
         first_k_dense_replace=1,
         rope_scaling=None,
         tie_word_embeddings=False,
+        head_dim=None,
+        rotary_dim=None,
         **kwargs,
     ):
         super().__init__(tie_word_embeddings=tie_word_embeddings, **kwargs)
@@ -67,8 +69,16 @@ class BailingMoeV2Config(PretrainedConfig):
         else:
             self.rope_scaling = rope_scaling
 
-        self.head_dim = hidden_size // num_attention_heads
-        self.rotary_dim = int(self.head_dim * partial_rotary_factor)
+        self.head_dim = (
+            int(head_dim)
+            if head_dim is not None
+            else hidden_size // num_attention_heads
+        )
+        self.rotary_dim = (
+            int(rotary_dim)
+            if rotary_dim is not None
+            else int(self.head_dim * partial_rotary_factor)
+        )
 
 
 class BailingMM2Config(PretrainedConfig):

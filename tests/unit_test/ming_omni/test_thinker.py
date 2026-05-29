@@ -78,6 +78,33 @@ def test_ming_thinker_weight_loader_uses_qwen3_helper_path() -> None:
     assert "extract_fused_experts" in source
 
 
+def test_ming_attention_keeps_qkv_flat_for_radix_attention() -> None:
+    source = _read(MING_THINKER_PATH)
+    init_block = source.split("def forward_prepare", 1)[0]
+    prepare_block = source.split("def forward_prepare", 1)[1].split(
+        "    def forward_core", 1
+    )[0]
+
+    assert "get_rope(\n            self.head_dim," in init_block
+    assert ".view(-1, self.num_heads_per_tp, self.head_dim)" not in prepare_block
+    assert ".view(-1, self.num_kv_heads_per_tp, self.head_dim)" not in prepare_block
+    assert "q, k = self.rotary_emb(forward_batch.positions, q, k)" in prepare_block
+
+
+def test_ming_config_preserves_explicit_attention_dims() -> None:
+    from sglang_omni.models.ming_omni.configuration import BailingMoeV2Config
+
+    config = BailingMoeV2Config(
+        hidden_size=8,
+        num_attention_heads=8,
+        head_dim=32,
+        rotary_dim=32,
+    )
+
+    assert config.head_dim == 32
+    assert config.rotary_dim == 32
+
+
 def test_ming_image_encoder_keeps_its_tp_context_for_runtime_forward() -> None:
     source = _read(MING_IMAGE_ENCODER_PATH)
     init_body = source.split("    @staticmethod", 1)[0]

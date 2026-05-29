@@ -102,9 +102,8 @@ class BailingMoeV2Attention(nn.Module):
             self.q_norm = RMSNorm(self.head_dim, eps=config.rms_norm_eps)
             self.k_norm = RMSNorm(self.head_dim, eps=config.rms_norm_eps)
 
-        # RoPE - using partial rotary factor
         self.rotary_emb = get_rope(
-            self.rotary_dim,
+            self.head_dim,
             rotary_dim=self.rotary_dim,
             max_position=config.max_position_embeddings,
             base=config.rope_theta,
@@ -129,25 +128,11 @@ class BailingMoeV2Attention(nn.Module):
         qkv, _ = self.qkv_proj(hidden_states)
         q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
 
-        # Reshape for multi-head
-        q = q.view(-1, self.num_heads_per_tp, self.head_dim)
-        k = k.view(-1, self.num_kv_heads_per_tp, self.head_dim)
-        v = v.view(-1, self.num_kv_heads_per_tp, self.head_dim)
-
         # QK normalization
         if self.use_qk_norm:
             q, k = apply_qk_norm(q, k, self.q_norm, self.k_norm, self.head_dim)
 
-        # Partial RoPE: only apply to first rotary_dim dimensions
-        q_rot = q[..., : self.rotary_dim]
-        q_pass = q[..., self.rotary_dim :]
-        k_rot = k[..., : self.rotary_dim]
-        k_pass = k[..., self.rotary_dim :]
-
-        q_rot, k_rot = self.rotary_emb(forward_batch.positions, q_rot, k_rot)
-
-        q = torch.cat([q_rot, q_pass], dim=-1)
-        k = torch.cat([k_rot, k_pass], dim=-1)
+        q, k = self.rotary_emb(forward_batch.positions, q, k)
 
         return q, k, v
 

@@ -93,32 +93,49 @@ def _aggregate_stage(*, process: str) -> StageConfig:
     )
 
 
-def _thinker_stage(*, gpu: int, speech_enabled: bool, process: str) -> StageConfig:
+def _thinker_stage(
+    *,
+    gpu: int,
+    speech_enabled: bool,
+    process: str,
+    enable_streaming_text: bool = False,
+) -> StageConfig:
+    factory_args: dict[str, Any] = {"thinker_max_seq_len": 8192}
+    stream_to: list[str] = []
+    if enable_streaming_text:
+        factory_args["enable_streaming_text"] = True
+        stream_to.append(DECODE_STAGE)
+
     return StageConfig(
         name=THINKER_STAGE,
         process=process,
         factory=f"{_PKG}.stages.create_sglang_thinker_executor_from_config",
-        factory_args={"thinker_max_seq_len": 8192},
+        factory_args=factory_args,
         gpu=gpu,
         next=[DECODE_STAGE, TALKER_STAGE] if speech_enabled else DECODE_STAGE,
+        stream_to=stream_to,
     )
 
 
 def _streaming_thinker_stage(*, gpu: int, process: str) -> StageConfig:
     """Thinker stage variant for streaming TTS.
 
-    Fans out to decode + segmenter (final payload) AND streams per-token text
-    deltas to the segmenter via stream_to. Sets enable_streaming_tts=True
-    on the factory so the thinker installs the per-token stream callback.
+    Fans out to decode + segmenter (final payload) and streams per-token text
+    deltas to decode and segmenter via stream_to. The thinker callback emits
+    client-visible text to decode and TTS text to the segmenter.
     """
     return StageConfig(
         name=THINKER_STAGE,
         process=process,
         factory=f"{_PKG}.stages.create_sglang_thinker_executor_from_config",
-        factory_args={"thinker_max_seq_len": 8192, "enable_streaming_tts": True},
+        factory_args={
+            "thinker_max_seq_len": 8192,
+            "enable_streaming_tts": True,
+            "enable_streaming_text": True,
+        },
         gpu=gpu,
         next=[DECODE_STAGE, SEGMENTER_STAGE],
-        stream_to=[SEGMENTER_STAGE],
+        stream_to=[DECODE_STAGE, SEGMENTER_STAGE],
     )
 
 
@@ -151,6 +168,7 @@ def _decode_stage(*, process: str) -> StageConfig:
         process=process,
         factory=f"{_PKG}.stages.create_decode_executor",
         terminal=True,
+        can_accept_stream_before_payload=True,
     )
 
 
@@ -171,7 +189,12 @@ def _ming_text_stages() -> list[StageConfig]:
         _audio_encoder_stage(gpu=0, process="audio_encoder"),
         _image_encoder_stage(gpu=0, process="image_encoder"),
         _aggregate_stage(process="mm_aggregate"),
-        _thinker_stage(gpu=0, speech_enabled=False, process="thinker"),
+        _thinker_stage(
+            gpu=0,
+            speech_enabled=False,
+            process="thinker",
+            enable_streaming_text=True,
+        ),
         _decode_stage(process="decode"),
     ]
 
@@ -182,7 +205,12 @@ def _ming_speech_stages() -> list[StageConfig]:
         _audio_encoder_stage(gpu=0, process="audio_encoder"),
         _image_encoder_stage(gpu=0, process="image_encoder"),
         _aggregate_stage(process="mm_aggregate"),
-        _thinker_stage(gpu=0, speech_enabled=True, process="thinker"),
+        _thinker_stage(
+            gpu=0,
+            speech_enabled=True,
+            process="thinker",
+            enable_streaming_text=True,
+        ),
         _decode_stage(process="decode"),
         _talker_stage(gpu=1, process="talker"),
     ]
@@ -296,8 +324,9 @@ class MingOmniStreamingSpeechPipelineConfig(PipelineConfig):
     Adds a ``segmenter`` stage between ``thinker`` and ``talker_stream``
     that converts incremental thinker text deltas into speakable segments.
     The thinker fans out final payloads to ``decode`` and ``segmenter``,
-    and streams per-token deltas to ``segmenter`` via stream_to. The
-    streaming talker emits audio chunks to the coordinator (terminal).
+    streams client-visible text deltas to ``decode``, and streams TTS text
+    deltas to ``segmenter``. The streaming talker emits audio chunks to the
+    coordinator (terminal).
     """
 
     architecture: ClassVar[str] = "BailingMM2NativeForConditionalGeneration"

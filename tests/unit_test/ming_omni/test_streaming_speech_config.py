@@ -31,8 +31,9 @@ def test_streaming_thinker_fans_out_and_streams_to_segmenter():
     config = MingOmniStreamingSpeechPipelineConfig(model_path="dummy")
     thinker = _stage(config, THINKER_STAGE)
     assert sorted(thinker.next) == sorted([DECODE_STAGE, SEGMENTER_STAGE])
-    assert thinker.stream_to == [SEGMENTER_STAGE]
+    assert thinker.stream_to == [DECODE_STAGE, SEGMENTER_STAGE]
     assert thinker.factory_args.get("enable_streaming_tts") is True
+    assert thinker.factory_args.get("enable_streaming_text") is True
 
 
 def test_segmenter_routes_to_talker_stream_and_accepts_pre_payload_streams():

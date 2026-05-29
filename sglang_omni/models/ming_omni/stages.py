@@ -7,12 +7,21 @@ Ming's config remains usable in lightweight environments.
 
 from __future__ import annotations
 
+import logging
+import queue as _queue_mod
+from collections import OrderedDict
+from dataclasses import dataclass
 from typing import Any
 
 from sglang_omni.models.ming_omni.io import PipelineState
 from sglang_omni.models.ming_omni.pipeline.next_stage import AUDIO_STAGE, IMAGE_STAGE
 from sglang_omni.models.ming_omni.pipeline.usage import build_text_usage
 from sglang_omni.proto import StagePayload
+
+logger = logging.getLogger(__name__)
+
+_DONE_SEEN_MAX = 10000
+_DONE_SEEN_EVICT_TO = 5000
 
 
 def project_preprocessing_to_audio_encoder(payload: StagePayload) -> StagePayload:
@@ -99,6 +108,255 @@ def _attach_decode_final_metadata(
     if finish_reason is not None:
         result.setdefault("finish_reason", finish_reason)
     result.setdefault("usage", build_text_usage(state, thinker_out))
+
+
+def _event_to_dict(event: Any) -> dict[str, Any]:
+    return {
+        "type": event.type,
+        "modality": event.modality,
+        "payload": dict(event.payload),
+        "is_final": bool(event.is_final),
+    }
+
+
+def _build_decode_result(
+    payload: StagePayload,
+    *,
+    tokenizer: Any,
+    eos_token_id: int | None,
+    is_streaming: bool,
+    streamed_text: str = "",
+) -> dict[str, Any]:
+    from sglang_omni.models.ming_omni.pipeline.merge import decode_events
+    from sglang_omni.models.ming_omni.pipeline.next_stage import THINKER_STAGE
+    from sglang_omni.models.ming_omni.pipeline.state_io import load_state
+
+    state = load_state(payload)
+    thinker_out = state.thinker_out or state.engine_outputs.get(THINKER_STAGE)
+    if not isinstance(thinker_out, dict):
+        thinker_out = {
+            "output_ids": [],
+            "step": 0,
+            "is_final": True,
+            "extra_model_outputs": {},
+        }
+
+    step = int(thinker_out.get("step") or len(thinker_out.get("output_ids", [])))
+    events = list(
+        decode_events(
+            thinker_out=thinker_out,  # type: ignore[arg-type]
+            state=state,
+            tokenizer=tokenizer,
+            eos_token_id=eos_token_id,
+            step=step,
+        )
+    )
+    result: dict[str, Any] = {"events": [_event_to_dict(event) for event in events]}
+    final_event = next(
+        (
+            event
+            for event in reversed(events)
+            if event.is_final or event.type in {"text_final", "final"}
+        ),
+        None,
+    )
+    if final_event is not None:
+        result.update(final_event.payload)
+        result.setdefault("modality", final_event.modality)
+
+    if "text" not in result:
+        output_ids = thinker_out.get("output_ids")
+        if (
+            callable(getattr(tokenizer, "decode", None))
+            and isinstance(output_ids, list)
+            and output_ids
+        ):
+            result["text"] = tokenizer.decode(output_ids, skip_special_tokens=True)
+            result.setdefault("modality", "text")
+
+    if is_streaming and isinstance(result.get("text"), str):
+        text = result["text"]
+        if streamed_text and text.startswith(streamed_text):
+            missing_text = text[len(streamed_text) :]
+            if missing_text:
+                result["text"] = missing_text
+            else:
+                result.pop("text", None)
+
+    _attach_decode_final_metadata(result, state, thinker_out)
+    return result
+
+
+@dataclass
+class _StreamingDecodeState:
+    payload: StagePayload | None = None
+    done: bool = False
+    emitted_text: str = ""
+
+
+class MingStreamingDecodeScheduler:
+    """Decode stage that forwards streamed Ming text deltas to the coordinator."""
+
+    def __init__(
+        self,
+        *,
+        tokenizer: Any,
+        eos_token_id: int | None,
+        stage_name: str = "decode",
+    ) -> None:
+        from sglang_omni.scheduling.messages import IncomingMessage, OutgoingMessage
+
+        self.inbox: _queue_mod.Queue[IncomingMessage] = _queue_mod.Queue()
+        self.outbox: _queue_mod.Queue[OutgoingMessage] = _queue_mod.Queue()
+        self._tokenizer = tokenizer
+        self._eos_token_id = eos_token_id
+        self.stage_name = stage_name
+        self._running = False
+        self._state: dict[str, _StreamingDecodeState] = {}
+        self._done_seen: OrderedDict[str, None] = OrderedDict()
+
+    def start(self) -> None:
+        from sglang_omni.scheduling.messages import OutgoingMessage
+
+        self._running = True
+        while self._running:
+            try:
+                msg = self.inbox.get(timeout=0.1)
+            except _queue_mod.Empty:
+                continue
+
+            try:
+                if msg.type == "new_request":
+                    self._on_new_request(msg.request_id, msg.data)
+                elif msg.type == "stream_chunk":
+                    self._on_stream_chunk(msg.request_id, msg.data)
+                elif msg.type == "stream_done":
+                    self._on_stream_done(msg.request_id)
+            except Exception as exc:
+                logger.exception(
+                    "MingStreamingDecodeScheduler failed %s", msg.request_id
+                )
+                self.abort(msg.request_id)
+                self.outbox.put(
+                    OutgoingMessage(
+                        request_id=msg.request_id,
+                        type="error",
+                        data=exc,
+                    )
+                )
+
+    def stop(self) -> None:
+        self._running = False
+
+    def abort(self, request_id: str) -> None:
+        self._state.pop(request_id, None)
+        self._done_seen.pop(request_id, None)
+
+    def _ensure_state(self, request_id: str) -> _StreamingDecodeState:
+        state = self._state.get(request_id)
+        if state is None:
+            state = _StreamingDecodeState()
+            self._state[request_id] = state
+        return state
+
+    def _on_stream_chunk(self, request_id: str, item: Any) -> None:
+        from sglang_omni.scheduling.messages import OutgoingMessage
+
+        text = self._stream_item_to_text(item)
+        if not text:
+            return
+
+        state = self._ensure_state(request_id)
+        state.emitted_text += text
+        self.outbox.put(
+            OutgoingMessage(
+                request_id=request_id,
+                type="stream",
+                target=None,
+                data={
+                    "text": text,
+                    "modality": "text",
+                    "stage_name": self.stage_name,
+                },
+                metadata={"modality": "text"},
+            )
+        )
+
+    def _on_stream_done(self, request_id: str) -> None:
+        state = self._state.get(request_id)
+        if state is None:
+            self._done_seen[request_id] = None
+            if len(self._done_seen) > _DONE_SEEN_MAX:
+                for _ in range(len(self._done_seen) - _DONE_SEEN_EVICT_TO):
+                    self._done_seen.popitem(last=False)
+            return
+        state.done = True
+        if state.payload is not None:
+            self._finalize(request_id)
+
+    def _on_new_request(self, request_id: str, payload: StagePayload) -> None:
+        state = self._ensure_state(request_id)
+        state.payload = payload
+        if request_id in self._done_seen:
+            state.done = True
+            self._done_seen.pop(request_id, None)
+
+        is_streaming = bool((payload.request.params or {}).get("stream", False))
+        if state.done or not is_streaming:
+            self._finalize(request_id)
+
+    def _finalize(self, request_id: str) -> None:
+        from sglang_omni.scheduling.messages import OutgoingMessage
+
+        state = self._state.pop(request_id, None)
+        self._done_seen.pop(request_id, None)
+        if state is None or state.payload is None:
+            return
+
+        is_streaming = bool((state.payload.request.params or {}).get("stream", False))
+        state.payload.data = _build_decode_result(
+            state.payload,
+            tokenizer=self._tokenizer,
+            eos_token_id=self._eos_token_id,
+            is_streaming=is_streaming,
+            streamed_text=state.emitted_text,
+        )
+        self.outbox.put(
+            OutgoingMessage(
+                request_id=request_id,
+                type="result",
+                data=state.payload,
+            )
+        )
+
+    def _stream_item_to_text(self, item: Any) -> str:
+        data = getattr(item, "data", item)
+        if isinstance(data, str):
+            return data
+        if isinstance(data, bytes):
+            return data.decode("utf-8", errors="ignore")
+        if isinstance(data, int):
+            return self._tokenizer.decode([data], skip_special_tokens=True)
+
+        try:
+            import torch
+
+            if isinstance(data, torch.Tensor):
+                if data.dtype == torch.uint8:
+                    values = data.detach().cpu().flatten().tolist()
+                    return bytes(values).decode("utf-8", errors="ignore")
+                token_ids = [
+                    int(token_id) for token_id in data.detach().cpu().flatten()
+                ]
+                if token_ids:
+                    return self._tokenizer.decode(
+                        token_ids,
+                        skip_special_tokens=True,
+                    )
+        except Exception:
+            raise
+
+        return str(data)
 
 
 def create_preprocessing_executor(model_path: str):
@@ -220,6 +478,8 @@ def create_sglang_thinker_executor_from_config(
     thinker_max_seq_len: int = 8192,
     server_args_overrides: dict[str, Any] | None = None,
     enable_streaming_tts: bool = False,
+    enable_streaming_text: bool = False,
+    stream_text_targets: list[str] | None = None,
 ):
     from sglang_omni.models.ming_omni.bootstrap import create_thinker_scheduler
     from sglang_omni.models.ming_omni.registration import register_ming_hf_config
@@ -243,6 +503,8 @@ def create_sglang_thinker_executor_from_config(
         tp_size=tp_size,
         nccl_port=nccl_port,
         enable_streaming_tts=enable_streaming_tts,
+        enable_streaming_text=enable_streaming_text,
+        stream_text_targets=stream_text_targets,
     )
 
 
@@ -308,69 +570,10 @@ def create_streaming_talker_executor(
 
 def create_decode_executor(model_path: str):
     from sglang_omni.models.ming_omni.components.common import load_ming_tokenizer
-    from sglang_omni.models.ming_omni.io import OmniEvent
-    from sglang_omni.models.ming_omni.pipeline.merge import decode_events
-    from sglang_omni.models.ming_omni.pipeline.next_stage import THINKER_STAGE
-    from sglang_omni.models.ming_omni.pipeline.state_io import load_state
-    from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 
     tokenizer = load_ming_tokenizer(model_path)
     eos_token_id = getattr(tokenizer, "eos_token_id", None)
-
-    def _event_to_dict(event: OmniEvent) -> dict[str, Any]:
-        return {
-            "type": event.type,
-            "modality": event.modality,
-            "payload": dict(event.payload),
-            "is_final": bool(event.is_final),
-        }
-
-    def _decode(payload: StagePayload) -> StagePayload:
-        state = load_state(payload)
-        thinker_out = state.thinker_out or state.engine_outputs.get(THINKER_STAGE)
-        if not isinstance(thinker_out, dict):
-            thinker_out = {
-                "output_ids": [],
-                "step": 0,
-                "is_final": True,
-                "extra_model_outputs": {},
-            }
-
-        step = int(thinker_out.get("step") or len(thinker_out.get("output_ids", [])))
-        events = list(
-            decode_events(
-                thinker_out=thinker_out,  # type: ignore[arg-type]
-                state=state,
-                tokenizer=tokenizer,
-                eos_token_id=eos_token_id,
-                step=step,
-            )
-        )
-        result: dict[str, Any] = {"events": [_event_to_dict(event) for event in events]}
-        final_event = next(
-            (
-                event
-                for event in reversed(events)
-                if event.is_final or event.type in {"text_final", "final"}
-            ),
-            None,
-        )
-        if final_event is not None:
-            result.update(final_event.payload)
-            result.setdefault("modality", final_event.modality)
-
-        if "text" not in result:
-            output_ids = thinker_out.get("output_ids")
-            if (
-                callable(getattr(tokenizer, "decode", None))
-                and isinstance(output_ids, list)
-                and output_ids
-            ):
-                result["text"] = tokenizer.decode(output_ids, skip_special_tokens=True)
-                result.setdefault("modality", "text")
-
-        _attach_decode_final_metadata(result, state, thinker_out)
-        payload.data = result
-        return payload
-
-    return SimpleScheduler(_decode)
+    return MingStreamingDecodeScheduler(
+        tokenizer=tokenizer,
+        eos_token_id=eos_token_id,
+    )
