@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
+import base64
 from types import SimpleNamespace
 
 import numpy as np
@@ -88,19 +89,38 @@ def test_higgs_reference_cache_key_round_trip() -> None:
     assert restored.reference_cache_key == "path:/tmp/ref.wav"
 
 
-def test_higgs_reference_cache_key_tracks_path_metadata(tmp_path) -> None:
+def test_higgs_reference_cache_key_tracks_file_content(tmp_path) -> None:
     ref_audio = tmp_path / "ref.wav"
     ref_audio.write_bytes(b"a")
     first_key = stages._reference_audio_cache_key(ref_audio)
 
+    # Same content -> stable key (so repeat requests hit the cache).
+    assert first_key == stages._reference_audio_cache_key(ref_audio)
+
     ref_audio.write_bytes(b"longer")
     second_key = stages._reference_audio_cache_key(ref_audio)
 
-    assert first_key is not None
-    assert first_key.startswith(f"path:{ref_audio.resolve()}:1:")
-    assert second_key is not None
-    assert second_key.startswith(f"path:{ref_audio.resolve()}:6:")
+    # Different content -> different key (so a replaced file is not stale-served).
+    assert first_key is not None and first_key.startswith("file:")
+    assert second_key is not None and second_key.startswith("file:")
     assert first_key != second_key
+
+
+def test_higgs_reference_cache_key_ignores_media_type() -> None:
+    raw = b"\x01\x02\x03fake-audio-bytes"
+    encoded = base64.b64encode(raw).decode()
+    key_wav = stages._reference_audio_cache_key(
+        {"base64": encoded, "media_type": "audio/wav"}
+    )
+    key_mp3 = stages._reference_audio_cache_key(
+        {"base64": encoded, "media_type": "audio/mpeg"}
+    )
+
+    # media_type is a decode hint the codec ignores, so it must not split keys.
+    assert key_wav is not None
+    assert key_wav == key_mp3
+    # Raw bytes and equivalent base64 resolve to the same content key.
+    assert stages._reference_audio_cache_key({"bytes": raw}) == key_wav
 
 
 def test_higgs_audio_encoder_uses_guarded_reference_code_cache(monkeypatch) -> None:
@@ -163,9 +183,9 @@ def test_higgs_audio_encoder_uses_guarded_reference_code_cache(monkeypatch) -> N
     second = encode(make_payload("second"))
 
     assert fake_codec.calls == 1
-    assert first.data["reference_codes_delayed"] == second.data[
-        "reference_codes_delayed"
-    ]
+    assert (
+        first.data["reference_codes_delayed"] == second.data["reference_codes_delayed"]
+    )
     assert first.data["prompt_token_ids"] == [5, 3, 7]
     assert second.data["prompt_token_ids"] == [5, 3, 7]
     assert "reference_waveform" not in second.data
@@ -257,9 +277,7 @@ def test_higgs_preprocessing_uses_guarded_waveform_cache(monkeypatch, tmp_path) 
             request=OmniRequest(
                 inputs={
                     "text": "hello",
-                    "references": [
-                        {"audio_path": str(ref_audio), "text": "speaker"}
-                    ],
+                    "references": [{"audio_path": str(ref_audio), "text": "speaker"}],
                 },
                 params={},
             ),
