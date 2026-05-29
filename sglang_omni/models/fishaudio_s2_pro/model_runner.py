@@ -83,7 +83,15 @@ class FishS2ProModelRunner(ModelRunner):
             forward_batch.input_embeds = input_embeds
         return None
 
-    def prepare_decode(self, forward_batch, schedule_batch, requests):
+    def prepare_decode(
+        self,
+        forward_batch,
+        schedule_batch,
+        requests,
+        *,
+        is_lookahead: bool = False,
+    ):
+        del is_lookahead
         del schedule_batch
         input_ids = forward_batch.input_ids
         batch_size = input_ids.shape[0]

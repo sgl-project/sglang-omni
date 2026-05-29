@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Qwen3-TTS Base pipeline state."""
+"""Qwen3-TTS pipeline state."""
 
 from __future__ import annotations
 
@@ -9,10 +9,14 @@ from typing import Any
 
 @dataclass
 class Qwen3TTSState:
-    """Per-request state for Qwen3-TTS Base voice cloning."""
+    """Per-request state for Qwen3-TTS generation."""
 
     text: str = ""
+    task_type: str = "Base"
+    task_type_explicit: bool = False
     language: str = "auto"
+    voice: str | None = None
+    instructions: str | None = None
     ref_audio: Any | None = None
     ref_text: str | None = None
     x_vector_only_mode: bool = False
@@ -40,12 +44,18 @@ class Qwen3TTSState:
     def to_dict(self) -> dict[str, Any]:
         data: dict[str, Any] = {
             "text": self.text,
+            "task_type": self.task_type,
+            "task_type_explicit": self.task_type_explicit,
             "language": self.language,
             "x_vector_only_mode": self.x_vector_only_mode,
             "non_streaming_mode": self.non_streaming_mode,
             "generation_kwargs": dict(self.generation_kwargs),
             "sample_rate": self.sample_rate,
         }
+        if self.voice is not None:
+            data["voice"] = self.voice
+        if self.instructions is not None:
+            data["instructions"] = self.instructions
         if self.ref_audio is not None:
             data["ref_audio"] = self.ref_audio
         if self.ref_text is not None:
@@ -73,7 +83,11 @@ class Qwen3TTSState:
         generation_kwargs = data.get("generation_kwargs")
         return cls(
             text=str(data.get("text", "")),
+            task_type=str(data.get("task_type") or "Base"),
+            task_type_explicit=bool(data.get("task_type_explicit", False)),
             language=str(data.get("language") or "auto"),
+            voice=data.get("voice"),
+            instructions=data.get("instructions"),
             ref_audio=data.get("ref_audio"),
             ref_text=data.get("ref_text"),
             x_vector_only_mode=bool(data.get("x_vector_only_mode", False)),

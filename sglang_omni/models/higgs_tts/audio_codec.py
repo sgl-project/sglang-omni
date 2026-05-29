@@ -199,5 +199,42 @@ class HiggsAudioCodec:
         )
         return self.model.decode(codes_BNT).audio_values.squeeze(0).squeeze(0).cpu()
 
+    @torch.no_grad()
+    def decode_batch(self, codes_list: list[torch.Tensor]) -> list[torch.Tensor]:
+        """Batch-decode variable-length ``[T_i, N]`` tensors into ``[L_i]`` waveforms.
+
+        Only same-length items are batched into a single forward pass.
+        The non-causal DAC decoder corrupts shorter items when padded to
+        a longer ``T_max``, so mixed-length inputs are decoded per-bucket.
+        """
+        if not codes_list:
+            return []
+        if len(codes_list) == 1:
+            return [self.decode(codes_list[0])]
+
+        buckets: dict[int, list[int]] = {}
+        for i, c in enumerate(codes_list):
+            buckets.setdefault(c.shape[0], []).append(i)
+
+        results: list[torch.Tensor | None] = [None] * len(codes_list)
+        for indices in buckets.values():
+            if len(indices) == 1:
+                results[indices[0]] = self.decode(codes_list[indices[0]])
+            else:
+                stacked = torch.stack([codes_list[i] for i in indices])
+                codes_BNT = stacked.transpose(1, 2).to(
+                    device=self.device, dtype=torch.long
+                )
+                audio = self.model.decode(codes_BNT).audio_values.cpu()
+                for j, idx in enumerate(indices):
+                    results[idx] = audio[j, 0]
+
+        out: list[torch.Tensor] = []
+        for i, result in enumerate(results):
+            if result is None:
+                raise RuntimeError(f"decode_batch did not produce audio for item {i}")
+            out.append(result)
+        return out
+
 
 __all__ = ["HiggsAudioCodec"]

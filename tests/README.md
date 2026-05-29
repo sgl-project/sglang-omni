@@ -46,6 +46,7 @@ tests/
     │   ├── test_talker.py
     │   └── test_text_template.py
     ├── ming_omni/
+    │   ├── test_omni_serve.py
     │   ├── test_pipeline.py
     │   ├── test_talker.py
     │   ├── test_thinker.py
@@ -182,8 +183,12 @@ that happened to contain an older version of the test.
   - runtime schema/adapter behavior
   - coordinator behavior
   - stage routing
+  - local-object fan-out selector contracts, including negative coverage for
+    shared mutable payload containers while preserving tensor leaf sharing
   - stage process environment
   - relay handling
+  - stream relay/IPC selector contracts, including negative coverage for CPU
+    tensor metadata and large inline metadata on same-GPU stream chunks
   - GPU memory accounting helpers
   - IPC lifecycle
   - scheduler batching
@@ -200,7 +205,13 @@ that happened to contain an older version of the test.
   - tokenizer and preprocessing fallback behavior
   - memory flag contracts
   - colocation config and SGLang AR budget contracts
-  - `PipelineState` request builders
+  - `PipelineState` request builders, including projected payload container
+    isolation for mutable streaming state
+  - talker behavior, including projected prefill tensor storage/slicing, decode
+    feedback/text FIFO consumption, and replay of generated-token input embeds
+    after decode retract
+  - `PipelineState` request builders, including projected payload container
+    isolation for mutable streaming state
   - talker behavior, including partial-prefix startup gate, the real
     `_build_talker_request_data` propagation contract (input_ids,
     tts_pad_embed, sampling_seed, fallback chunks, thinker_done), and the
@@ -213,7 +224,9 @@ that happened to contain an older version of the test.
 - `unit_test/ming_omni/` Ming-Omni unit tests:
 
   - text + speech pipeline config and stage schema
-  - launcher argparse, GPU placement, and TP wiring
+  - omni serve CLI/config merge, default speech vs. text-only selection,
+    launcher handoff, GPU placement, TP wiring, and unsupported flag capability
+    boundaries
   - stage factory and scheduler contracts (preprocessing, encoders, thinker, talker, decode)
   - thinker bootstrap registration and Ming model runner wiring
   - multimodal embed injection (per-modality consumed state, pad-value fallback, short-embeds detection)
@@ -223,11 +236,12 @@ that happened to contain an older version of the test.
   - Bailing tokenizer loader fallback for vocab compatibility
   - TP topology validation (rank-specific stage specs, talker/thinker GPU collision detection, server_args alignment before infra init).
 
-- `unit_test/qwen3_tts/`: Qwen3-TTS Base unit tests:
+- `unit_test/qwen3_tts/`: Qwen3-TTS unit tests:
   - pipeline config and registry contracts
   - OmniScheduler-backed AR stage factory wiring
   - request mapping for `ref_audio` / `ref_text` and `references`
   - model-owned default preservation for language and sampling parameters
+  - Base, CustomVoice, and VoiceDesign request validation
   - voice-clone reference validation
   - pipeline payload state serialization.
 

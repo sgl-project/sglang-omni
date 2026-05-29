@@ -84,7 +84,8 @@ jobs:
         run: |
           source omni-s2pro/bin/activate
           export PYTHONPATH=$PWD
-          pytest tests/docs/s2pro/test_docs_tts_s2pro.py -v -s -x
+          bash .github/scripts/run_flaky_pytest.sh \
+            pytest tests/docs/s2pro/test_docs_tts_s2pro.py -v -s -x
         env:
           HF_ENDPOINT: https://hf-mirror.com
           TORCHINDUCTOR_CACHE_DIR: ${{ env.OMNI_CI_HOME }}/.torchinductor
@@ -234,7 +235,8 @@ jobs:
         shell: bash
         run: |
           export PYTHONPATH=$PWD
-          python -m pytest tests/test_model/test_s2pro_consistency_artifacts.py -v -s -x
+          bash .github/scripts/run_flaky_pytest.sh \
+            python -m pytest tests/test_model/test_s2pro_consistency_artifacts.py -v -s -x
         env:
           S2PRO_STAGE1_SPEED_RESULTS_DIR: ${{ github.workspace }}/stage-artifacts/nonstream
           S2PRO_STAGE2_SPEED_RESULTS_DIR: ${{ github.workspace }}/stage-artifacts/stream

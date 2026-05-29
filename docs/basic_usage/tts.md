@@ -1,6 +1,6 @@
 # TTS Model Usage
 
-This guide uses [Fish Speech S2-Pro](https://huggingface.co/fishaudio/s2-pro) as an example TTS (text-to-speech) model with SGLang-Omni and the OpenAI-compatible API. The same `/v1/audio/speech` endpoint also supports Voxtral TTS and Qwen3-TTS Base.
+This guide uses [Fish Speech S2-Pro](https://huggingface.co/fishaudio/s2-pro) as an example TTS (text-to-speech) model with SGLang-Omni and the OpenAI-compatible API. The same `/v1/audio/speech` endpoint also supports Voxtral TTS and Qwen3-TTS.
 
 ## Prerequisites
 
@@ -10,7 +10,7 @@ Install `sglang-omni` by following [Installation](../get_started/installation.md
 hf download fishaudio/s2-pro
 ```
 
-Qwen3-TTS Base uses the upstream `qwen-tts` package, which currently requires
+Qwen3-TTS uses the upstream `qwen-tts` package, which currently requires
 Transformers 4.57.3. Install it only in environments that serve Qwen3-TTS:
 
 ```bash
@@ -25,6 +25,8 @@ uv pip install --no-deps qwen-tts==0.1.1
 | Fish Speech S2-Pro | `examples/configs/s2pro_tts.yaml` | Supports plain TTS and voice cloning with `references` |
 | [Voxtral TTS](../cookbook/voxtral_tts.md) | `examples/configs/voxtral_tts.yaml` | Uses `input`, `voice`, `response_format`, and `max_new_tokens`; use `--no-ref-audio` for SeedTTS benchmarking |
 | [Qwen3-TTS Base](../cookbook/qwen3_tts.md) | `examples/configs/qwen3_tts_0_6b.yaml`, `examples/configs/qwen3_tts_1_7b.yaml` | Requires reference audio through `ref_audio` or `references[0].audio_path`; `language` defaults to `auto` |
+| Qwen3-TTS CustomVoice | `examples/configs/qwen3_tts_0_6b_customvoice.yaml` | Text-only requests use the checkpoint speaker table; missing `voice` defaults to `Vivian` |
+| Qwen3-TTS VoiceDesign | `examples/configs/qwen3_tts_1_7b_voicedesign.yaml` | Requires `task_type="VoiceDesign"` and non-empty `instructions`; no reference audio is required |
 
 ## Launch the Server
 
@@ -53,9 +55,28 @@ sgl-omni serve \
   --port 8000
 ```
 
+For Qwen3-TTS CustomVoice:
+
+```bash
+sgl-omni serve \
+  --model-path Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice \
+  --config examples/configs/qwen3_tts_0_6b_customvoice.yaml \
+  --port 8000
+```
+
+For Qwen3-TTS VoiceDesign:
+
+```bash
+sgl-omni serve \
+  --model-path Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign \
+  --config examples/configs/qwen3_tts_1_7b_voicedesign.yaml \
+  --port 8000
+```
+
 ## Use Curl
 
-Generate speech from text without any reference audio:
+Generate speech from text without any reference audio. This is valid for
+Qwen3-TTS CustomVoice, Voxtral, and S2-Pro. It is not valid for Qwen3-TTS Base.
 
 ```bash
 curl -X POST http://localhost:8000/v1/audio/speech \
@@ -64,7 +85,33 @@ curl -X POST http://localhost:8000/v1/audio/speech \
     --output output.wav
 ```
 
-Note that without reference audio, the generated voice will sound robotic. For natural-sounding results, use Voice Cloning with a reference audio clip.
+Qwen3-TTS Base requires reference audio:
+
+```bash
+curl -X POST http://localhost:8000/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{
+    "input": "Get the trust fund to the bank early.",
+    "ref_audio": "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav",
+    "ref_text": "We asked over twenty different people, and they all said it was his."
+  }' \
+  --output output.wav
+```
+
+Qwen3-TTS VoiceDesign uses text plus voice instructions:
+
+```bash
+curl -X POST http://localhost:8000/v1/audio/speech \
+    -H "Content-Type: application/json" \
+    -d '{
+      "input": "Hello, how are you?",
+      "task_type": "VoiceDesign",
+      "instructions": "A warm, natural young adult voice."
+    }' \
+    --output output.wav
+```
+
+For natural-sounding Fish Speech S2-Pro results, use Voice Cloning with a reference audio clip.
 
 ### Voice Cloning
 
@@ -107,6 +154,8 @@ The server returns a stream of SSE events. Each event contains an `audio.speech.
 ## Use Python
 
 ### Basic TTS
+
+This no-reference request applies to Fish Speech S2-Pro and Voxtral TTS.
 
 ```python
 import requests
@@ -206,12 +255,14 @@ The table below lists all parameters accepted by the `/v1/audio/speech` endpoint
 | `ref_audio` | string | `null` | Reference audio path / URL / base64 string; equivalent to `references[0].audio_path` |
 | `ref_text` | string | `null` | Transcript for `ref_audio`; equivalent to `references[0].text` |
 | `language` | string | `null` | Model-specific language hint; Qwen3-TTS Base defaults to `auto` |
+| `task_type` | string | `null` | Qwen3-TTS task type: `Base`, `CustomVoice`, or `VoiceDesign`; inferred as `Base` when reference audio/text is present, otherwise `CustomVoice` |
+| `instructions` | string | `null` | Qwen3-TTS style or VoiceDesign instructions |
 | `max_new_tokens` | int | `null` | Maximum number of generated tokens |
 | `temperature` | float | `null` | Sampling temperature |
 | `top_p` | float | `null` | Top-p sampling |
 | `top_k` | int | `null` | Top-k sampling |
 | `repetition_penalty` | float | `null` | Repetition penalty |
-| `seed` | int | `null` | Random seed for reproducibility |
+| `seed` | int | `null` | Model-specific; Qwen3-TTS Base accepts request-scoped seed, Voxtral TTS currently rejects seed |
 
 ## H200 SeedTTS Benchmark Commands
 
@@ -298,4 +349,4 @@ The launcher starts the backend first, waits for `/health`, then starts the Grad
 python -m playground.tts.app --api-base http://localhost:8000
 ```
 
-A demo play video is available [here](https://x.com/lmsysorg/status/2031412267213008984/video/1). We highly recommend using playground since audio data is hard to intertact with by CLI.
+A demo play video is available [here](https://x.com/lmsysorg/status/2031412267213008984/video/1). We highly recommend using playground since audio data is hard to interact with by CLI.

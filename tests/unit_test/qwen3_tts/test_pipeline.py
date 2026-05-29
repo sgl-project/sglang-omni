@@ -9,6 +9,7 @@ import types
 from queue import Queue
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 import torch
 
@@ -23,11 +24,13 @@ from sglang_omni.models.qwen3_tts.request_builders import (
     build_embedding_cache_key_ids,
     build_qwen3_tts_state,
     build_sglang_qwen3_tts_request,
+    derive_qwen3_tts_sampling_seeds,
 )
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling.messages import IncomingMessage
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
+from sglang_omni.scheduling.types import RequestOutput
 
 
 def install_fake_sglang(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -94,6 +97,18 @@ def install_fake_sglang(monkeypatch: pytest.MonkeyPatch) -> None:
     def add_prefix(name: str, prefix: str = "") -> str:
         return f"{prefix}.{name}" if prefix else name
 
+    sampler_calls = []
+
+    def multinomial_with_seed(inputs, seed, positions):
+        sampler_calls.append(
+            {
+                "inputs": inputs.detach().clone(),
+                "seed": seed.detach().clone(),
+                "positions": positions.detach().clone(),
+            }
+        )
+        return torch.zeros((inputs.shape[0], 1), device=inputs.device, dtype=torch.long)
+
     modules = {
         "sglang": types.ModuleType("sglang"),
         "sglang.srt": types.ModuleType("sglang.srt"),
@@ -108,6 +123,7 @@ def install_fake_sglang(monkeypatch: pytest.MonkeyPatch) -> None:
         "sglang.srt.layers.logits_processor": types.ModuleType(
             "sglang.srt.layers.logits_processor"
         ),
+        "sglang.srt.layers.sampler": types.ModuleType("sglang.srt.layers.sampler"),
         "sglang.srt.model_loader": types.ModuleType("sglang.srt.model_loader"),
         "sglang.srt.model_loader.weight_utils": types.ModuleType(
             "sglang.srt.model_loader.weight_utils"
@@ -144,6 +160,7 @@ def install_fake_sglang(monkeypatch: pytest.MonkeyPatch) -> None:
     modules["sglang.srt.layers"].logits_processor = modules[
         "sglang.srt.layers.logits_processor"
     ]
+    modules["sglang.srt.layers"].sampler = modules["sglang.srt.layers.sampler"]
     modules["sglang.srt.model_loader"].weight_utils = modules[
         "sglang.srt.model_loader.weight_utils"
     ]
@@ -161,6 +178,8 @@ def install_fake_sglang(monkeypatch: pytest.MonkeyPatch) -> None:
     modules["sglang.srt.layers.logits_processor"].LogitsProcessorOutput = (
         FakeLogitsProcessorOutput
     )
+    modules["sglang.srt.layers.sampler"].multinomial_with_seed = multinomial_with_seed
+    modules["sglang.srt.layers.sampler"].sampler_calls = sampler_calls
     modules["sglang.srt.model_loader.weight_utils"].default_weight_loader = (
         default_weight_loader
     )
@@ -200,6 +219,10 @@ def test_qwen3_tts_config_and_registry_contracts() -> None:
     assert config.stages[1].factory.endswith("create_sglang_tts_engine_executor")
     assert config.terminal_stages == ["vocoder"]
     assert config.gpu_placement == {"tts_engine": 0, "vocoder": 0}
+    assert "device" not in config.stages[1].factory_args
+    assert "device" not in config.stages[2].factory_args
+    assert config.stages[1].factory_args["gpu_id"] == 0
+    assert config.stages[2].factory_args["gpu_id"] == 0
     assert {stage.process for stage in config.stages} == {"pipeline"}
     assert (
         PIPELINE_CONFIG_REGISTRY.get_config("Qwen3TTSForConditionalGeneration")
@@ -210,11 +233,14 @@ def test_qwen3_tts_config_and_registry_contracts() -> None:
 def test_qwen3_tts_state_round_trip_preserves_request_fields() -> None:
     state = Qwen3TTSState(
         text="hello",
+        task_type="CustomVoice",
+        task_type_explicit=True,
         language="en",
+        voice="Vivian",
+        instructions="warm",
         ref_audio="voice.wav",
         ref_text="reference",
         generation_kwargs={"max_new_tokens": 128, "temperature": 0.7},
-        seed=123,
         audio_codes=[[1, 2], [3, 4]],
         ref_code_len=1,
         audio_samples=[0.0, 0.1],
@@ -222,7 +248,11 @@ def test_qwen3_tts_state_round_trip_preserves_request_fields() -> None:
     )
     restored = Qwen3TTSState.from_dict(state.to_dict())
     assert restored.text == "hello"
+    assert restored.task_type == "CustomVoice"
+    assert restored.task_type_explicit is True
     assert restored.language == "en"
+    assert restored.voice == "Vivian"
+    assert restored.instructions == "warm"
     assert restored.ref_audio == "voice.wav"
     assert restored.ref_text == "reference"
     assert restored.generation_kwargs["max_new_tokens"] == 128
@@ -248,6 +278,7 @@ def test_qwen3_tts_maps_references_and_keeps_upstream_sampling_defaults() -> Non
     state = build_qwen3_tts_state(payload)
 
     assert state.text == "target"
+    assert state.task_type == "Base"
     assert state.language == "auto"
     assert state.ref_audio == "voice.wav"
     assert state.ref_text == "reference"
@@ -326,6 +357,192 @@ def test_qwen3_tts_maps_ref_audio_form_and_explicit_sampling() -> None:
     }
 
 
+def test_qwen3_tts_accepts_seed_as_request_metadata() -> None:
+    payload = make_payload(
+        inputs="target",
+        tts_params={"ref_audio": "voice.wav", "ref_text": "reference", "seed": 123},
+    )
+
+    state = build_qwen3_tts_state(payload)
+
+    assert state.seed == 123
+    assert "seed" not in state.generation_kwargs
+
+
+def test_qwen3_tts_rejects_invalid_seed() -> None:
+    payload = make_payload(
+        inputs="target",
+        tts_params={"ref_audio": "voice.wav", "ref_text": "reference", "seed": True},
+    )
+
+    with pytest.raises(ValueError, match="seed must be an integer"):
+        build_qwen3_tts_state(payload)
+
+
+def test_qwen3_tts_preprocessing_does_not_mutate_global_rng(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = make_payload(
+        inputs="target",
+        tts_params={"ref_audio": "voice.wav", "ref_text": "reference"},
+    )
+
+    class FakeWrapper:
+        def create_voice_clone_prompt(self, **kwargs):
+            del kwargs
+            return [SimpleNamespace(ref_text="reference")]
+
+        def _prompt_items_to_voice_clone_prompt(self, prompt_items):
+            return prompt_items[0]
+
+        def _tokenize_texts(self, texts):
+            return [[idx + 1 for idx, _ in enumerate(texts[0])]]
+
+        def _build_assistant_text(self, text):
+            return text
+
+        def _build_ref_text(self, text):
+            return text
+
+        def _merge_generate_kwargs(self, **kwargs):
+            return kwargs
+
+    class FakeModel:
+        device = torch.device("cpu")
+        root_config = SimpleNamespace(tts_pad_token_id=0)
+        model = SimpleNamespace(_feedback_buffer=torch.empty((1, 4)))
+
+        def build_voice_clone_inputs(self, **kwargs):
+            del kwargs
+            return (
+                torch.ones((1, 2, 4)),
+                torch.ones((1, 2), dtype=torch.long),
+                torch.ones((1, 1, 4)),
+                None,
+            )
+
+        def get_text_embeddings(self):
+            return lambda ids: torch.ones((*ids.shape, 4), device=ids.device)
+
+        def text_projection(self, embeds):
+            return embeds
+
+    def fail_manual_seed(seed):
+        raise AssertionError(f"global seed mutated: {seed}")
+
+    monkeypatch.setattr(torch, "manual_seed", fail_manual_seed)
+
+    prepared = qwen3_request_builders._prepare_qwen3_tts_request(
+        payload,
+        model=FakeModel(),
+        wrapper=FakeWrapper(),
+    )
+
+    assert prepared.state.seed is None
+
+
+def test_qwen3_tts_public_seed_derivation_is_stable() -> None:
+    first = derive_qwen3_tts_sampling_seeds(123)
+    second = derive_qwen3_tts_sampling_seeds(123)
+    different = derive_qwen3_tts_sampling_seeds(124)
+
+    assert first == second
+    assert first != different
+    assert first[0] != first[1]
+    assert all(0 <= seed <= 0x7FFFFFFF for seed in first)
+    assert derive_qwen3_tts_sampling_seeds(123456) == (709979716, 2088621061)
+
+
+def test_qwen3_tts_text_only_defaults_to_custom_voice() -> None:
+    payload = make_payload(inputs="target", tts_params={"voice": "default"})
+
+    state = build_qwen3_tts_state(payload)
+
+    assert state.task_type == "CustomVoice"
+    assert state.task_type_explicit is False
+    assert state.voice == "Vivian"
+    assert state.ref_audio is None
+    assert state.ref_text is None
+    assert state.non_streaming_mode is True
+
+
+def test_qwen3_tts_custom_voice_rejects_base_only_fields() -> None:
+    payload = make_payload(
+        inputs="target",
+        tts_params={"task_type": "CustomVoice", "ref_text": "reference"},
+    )
+
+    with pytest.raises(ValueError, match="CustomVoice does not accept ref_text"):
+        build_qwen3_tts_state(payload)
+
+
+@pytest.mark.parametrize(
+    ("task_type", "extra_tts_params", "match"),
+    [
+        ("CustomVoice", {}, "CustomVoice does not accept ref_audio"),
+        (
+            "VoiceDesign",
+            {"instructions": "A warm adult voice."},
+            "VoiceDesign does not accept ref_audio",
+        ),
+    ],
+)
+@pytest.mark.parametrize(
+    ("inputs", "tts_params"),
+    [
+        ("target", {"ref_audio": "voice.wav"}),
+        ({"text": "target", "references": [{"audio_path": "voice.wav"}]}, {}),
+        ({"text": "target", "references": [{"ref_audio": "voice.wav"}]}, {}),
+        ({"text": "target", "references": [{"audio": "voice.wav"}]}, {}),
+    ],
+)
+def test_qwen3_tts_non_base_tasks_reject_audio_references(
+    task_type: str,
+    extra_tts_params: dict[str, str],
+    match: str,
+    inputs: object,
+    tts_params: dict[str, str],
+) -> None:
+    payload = make_payload(
+        inputs=inputs,
+        tts_params={
+            "task_type": task_type,
+            **extra_tts_params,
+            **tts_params,
+        },
+    )
+
+    with pytest.raises(ValueError, match=match):
+        build_qwen3_tts_state(payload)
+
+
+def test_qwen3_tts_voice_design_requires_instructions() -> None:
+    payload = make_payload(
+        inputs="target",
+        tts_params={"task_type": "VoiceDesign"},
+    )
+
+    with pytest.raises(ValueError, match="VoiceDesign requires instructions"):
+        build_qwen3_tts_state(payload)
+
+
+def test_qwen3_tts_voice_design_state_forces_non_streaming() -> None:
+    payload = make_payload(
+        inputs="target",
+        tts_params={
+            "task_type": "VoiceDesign",
+            "instructions": "A warm adult voice.",
+        },
+    )
+
+    state = build_qwen3_tts_state(payload)
+
+    assert state.task_type == "VoiceDesign"
+    assert state.instructions == "A warm adult voice."
+    assert state.voice is None
+    assert state.non_streaming_mode is True
+
+
 def test_qwen3_tts_uses_x_vector_only_when_ref_text_is_missing() -> None:
     payload = make_payload(
         inputs={"text": "target", "references": [{"audio_path": "voice.wav"}]},
@@ -339,7 +556,7 @@ def test_qwen3_tts_uses_x_vector_only_when_ref_text_is_missing() -> None:
 
 
 def test_qwen3_tts_rejects_missing_reference_audio() -> None:
-    payload = make_payload(inputs="target")
+    payload = make_payload(inputs="target", tts_params={"task_type": "Base"})
 
     with pytest.raises(ValueError, match="requires reference audio"):
         build_qwen3_tts_state(payload)
@@ -399,6 +616,44 @@ def test_qwen3_tts_predictor_codec_embeddings_use_talker_hidden_size(
     assert predictor.small_to_mtp_projection.weight.shape == (1024, 2048)
 
 
+def test_qwen3_tts_custom_voice_requires_speaker_table(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_fake_sglang(monkeypatch)
+    from sglang_omni.models.qwen3_tts.sglang_model import Qwen3TTSTalker
+
+    talker = Qwen3TTSTalker.__new__(Qwen3TTSTalker)
+    talker.config = SimpleNamespace(spk_id={})
+
+    with pytest.raises(ValueError, match="configured spk_id"):
+        Qwen3TTSTalker.build_custom_voice_inputs(
+            talker,
+            input_id=torch.arange(8, dtype=torch.long).unsqueeze(0),
+            voice="Vivian",
+            language="auto",
+            non_streaming_mode=True,
+        )
+
+
+def test_qwen3_tts_custom_voice_rejects_invalid_speaker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_fake_sglang(monkeypatch)
+    from sglang_omni.models.qwen3_tts.sglang_model import Qwen3TTSTalker
+
+    talker = Qwen3TTSTalker.__new__(Qwen3TTSTalker)
+    talker.config = SimpleNamespace(spk_id={"Vivian": 3065})
+
+    with pytest.raises(ValueError, match="Unsupported Qwen3-TTS CustomVoice speaker"):
+        Qwen3TTSTalker.build_custom_voice_inputs(
+            talker,
+            input_id=torch.arange(8, dtype=torch.long).unsqueeze(0),
+            voice="Missing",
+            language="auto",
+            non_streaming_mode=True,
+        )
+
+
 def test_qwen3_tts_vocoder_batches_decode_requests(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -442,9 +697,13 @@ def test_qwen3_tts_vocoder_batches_decode_requests(
     assert scheduler._max_batch_wait_s == pytest.approx(0.003)
     assert decode_batch_sizes == [2]
     assert results[0].data["sample_rate"] == 24000
-    assert results[0].data["audio_data"] == [3.0, 4.0, 5.0]
+    first_audio = np.frombuffer(results[0].data["audio_waveform"], dtype=np.float32)
+    assert first_audio.tolist() == [3.0, 4.0, 5.0]
+    assert results[0].data["audio_waveform_shape"] == [3]
+    assert results[0].data["audio_waveform_dtype"] == "float32"
     assert "audio_codes" not in results[0].data
-    assert results[1].data["audio_data"] == [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0]
+    second_audio = np.frombuffer(results[1].data["audio_waveform"], dtype=np.float32)
+    assert second_audio.tolist() == [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0]
 
 
 def test_qwen3_tts_result_adapter_keeps_code_handoff_tensor_native() -> None:
@@ -475,7 +734,7 @@ def test_qwen3_tts_request_data_keeps_decode_tensors_on_prepared_device(
         qwen3_request_builders._QWEN3_TTS_PREPARED_MARKER: payload.request_id
     }
     prepared = Qwen3TTSPreparedRequest(
-        state=Qwen3TTSState(seed=123),
+        state=Qwen3TTSState(),
         input_ids_list=[11, 12, 13],
         input_ids=torch.tensor([11, 12, 13], dtype=torch.long),
         attention_mask=torch.ones((1, 3), dtype=torch.long),
@@ -503,6 +762,90 @@ def test_qwen3_tts_request_data_keeps_decode_tensors_on_prepared_device(
     assert data.pending_text_queue.rows is not None
     assert data.pending_text_queue.rows.device == prepared.trailing_text_hidden.device
     assert data.pending_text_queue.rows.dtype == prepared.trailing_text_hidden.dtype
+    assert isinstance(data.semantic_sampling_seed, int)
+    assert 0 <= data.semantic_sampling_seed <= 0x7FFFFFFF
+    assert data.req.sampling_params.sampling_seed == data.semantic_sampling_seed
+    assert isinstance(data.subtalker_sampling_seed, int)
+    assert 0 <= data.subtalker_sampling_seed <= 0x7FFFFFFF
+
+
+def test_qwen3_tts_request_data_uses_private_sampling_seeds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_fake_sglang(monkeypatch)
+    urandom_values = iter([b"\x39\x30\x00\x00", b"\x32\x09\x01\x00"])
+    monkeypatch.setattr(
+        qwen3_request_builders.os,
+        "urandom",
+        lambda size: next(urandom_values) if size == 4 else b"\x00" * size,
+    )
+    payload = make_payload(inputs="target")
+    payload.data = {
+        qwen3_request_builders._QWEN3_TTS_PREPARED_MARKER: payload.request_id
+    }
+    prepared = Qwen3TTSPreparedRequest(
+        state=Qwen3TTSState(),
+        input_ids_list=[11, 12],
+        input_ids=torch.tensor([11, 12], dtype=torch.long),
+        attention_mask=torch.ones((1, 2), dtype=torch.long),
+        trailing_text_hidden=torch.randn(1, 4),
+        ref_code=None,
+        prompt_input_embeds=torch.randn(2, 4),
+        tts_pad_embed=torch.randn(4),
+        gen_kwargs={"max_new_tokens": 16},
+    )
+    with qwen3_request_builders._PREPARED_REQUESTS_LOCK:
+        qwen3_request_builders._PREPARED_REQUESTS[payload.request_id] = prepared
+
+    data = build_sglang_qwen3_tts_request(
+        payload,
+        model=SimpleNamespace(
+            config=SimpleNamespace(codec_eos_token_id=42, vocab_size=1200)
+        ),
+        wrapper=object(),
+    )
+
+    assert data.semantic_sampling_seed == 12345
+    assert data.subtalker_sampling_seed == 67890
+    assert data.req.sampling_params.sampling_seed == data.semantic_sampling_seed
+
+
+def test_qwen3_tts_request_data_uses_public_seed_split(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_fake_sglang(monkeypatch)
+    payload = make_payload(inputs="target")
+    payload.data = {
+        qwen3_request_builders._QWEN3_TTS_PREPARED_MARKER: payload.request_id
+    }
+    prepared = Qwen3TTSPreparedRequest(
+        state=Qwen3TTSState(seed=123),
+        input_ids_list=[11, 12],
+        input_ids=torch.tensor([11, 12], dtype=torch.long),
+        attention_mask=torch.ones((1, 2), dtype=torch.long),
+        trailing_text_hidden=torch.randn(1, 4),
+        ref_code=None,
+        prompt_input_embeds=torch.randn(2, 4),
+        tts_pad_embed=torch.randn(4),
+        gen_kwargs={"max_new_tokens": 16},
+    )
+    with qwen3_request_builders._PREPARED_REQUESTS_LOCK:
+        qwen3_request_builders._PREPARED_REQUESTS[payload.request_id] = prepared
+
+    data = build_sglang_qwen3_tts_request(
+        payload,
+        model=SimpleNamespace(
+            config=SimpleNamespace(codec_eos_token_id=42, vocab_size=1200)
+        ),
+        wrapper=object(),
+    )
+    expected_semantic_seed, expected_subtalker_seed = derive_qwen3_tts_sampling_seeds(
+        123
+    )
+
+    assert data.semantic_sampling_seed == expected_semantic_seed
+    assert data.subtalker_sampling_seed == expected_subtalker_seed
+    assert data.req.sampling_params.sampling_seed == expected_semantic_seed
 
 
 def test_qwen3_tts_prepared_payload_missing_state_fails_without_rebuild(
@@ -519,6 +862,140 @@ def test_qwen3_tts_prepared_payload_missing_state_fails_without_rebuild(
                 config=SimpleNamespace(codec_eos_token_id=42, vocab_size=1200)
             ),
             wrapper=object(),
+        )
+
+
+def test_qwen3_tts_prepare_custom_voice_uses_speaker_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, object]] = []
+
+    class FakeWrapper:
+        def _build_assistant_text(self, text):
+            return f"assistant:{text}"
+
+        def _build_instruct_text(self, text):
+            return f"instruct:{text}"
+
+        def _tokenize_texts(self, texts):
+            return [torch.arange(8, dtype=torch.long).unsqueeze(0) for _ in texts]
+
+        def _merge_generate_kwargs(self, **kwargs):
+            return kwargs
+
+        def create_voice_clone_prompt(self, **kwargs):
+            calls.append(("base", kwargs))
+            return []
+
+    class FakeModel:
+        tts_model_type = "custom_voice"
+        model = SimpleNamespace(_feedback_buffer=torch.zeros(4, 4))
+
+        def build_custom_voice_inputs(self, **kwargs):
+            calls.append(("custom", kwargs))
+            return (
+                torch.ones(1, 3, 4),
+                torch.ones(1, 3, dtype=torch.long),
+                torch.ones(1, 1, 4),
+                None,
+            )
+
+    monkeypatch.setattr(
+        qwen3_request_builders,
+        "_build_qwen3_tts_pad_embed",
+        lambda model: torch.zeros(4),
+    )
+
+    prepared = qwen3_request_builders._prepare_qwen3_tts_request(
+        make_payload(
+            inputs="target",
+            tts_params={
+                "task_type": "CustomVoice",
+                "voice": "Ryan",
+                "instructions": "calm",
+            },
+        ),
+        model=FakeModel(),
+        wrapper=FakeWrapper(),
+    )
+
+    assert prepared.state.task_type == "CustomVoice"
+    assert prepared.state.voice == "Ryan"
+    assert [name for name, _ in calls] == ["custom"]
+    kwargs = calls[0][1]
+    assert kwargs["voice"] == "Ryan"
+    assert kwargs["instruct_id"] is not None
+
+
+def test_qwen3_tts_prepare_voice_design_uses_instruction_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict] = []
+
+    class FakeWrapper:
+        def _build_assistant_text(self, text):
+            return f"assistant:{text}"
+
+        def _build_instruct_text(self, text):
+            return f"instruct:{text}"
+
+        def _tokenize_texts(self, texts):
+            return [torch.arange(8, dtype=torch.long).unsqueeze(0) for _ in texts]
+
+        def _merge_generate_kwargs(self, **kwargs):
+            return kwargs
+
+    class FakeModel:
+        tts_model_type = "voice_design"
+        model = SimpleNamespace(_feedback_buffer=torch.zeros(4, 4))
+
+        def build_voice_design_inputs(self, **kwargs):
+            calls.append(kwargs)
+            return (
+                torch.ones(1, 3, 4),
+                torch.ones(1, 3, dtype=torch.long),
+                torch.ones(1, 1, 4),
+                None,
+            )
+
+    monkeypatch.setattr(
+        qwen3_request_builders,
+        "_build_qwen3_tts_pad_embed",
+        lambda model: torch.zeros(4),
+    )
+
+    prepared = qwen3_request_builders._prepare_qwen3_tts_request(
+        make_payload(
+            inputs="target",
+            tts_params={
+                "task_type": "VoiceDesign",
+                "instructions": "A warm adult voice.",
+            },
+        ),
+        model=FakeModel(),
+        wrapper=FakeWrapper(),
+    )
+
+    assert prepared.state.task_type == "VoiceDesign"
+    assert prepared.state.instructions == "A warm adult voice."
+    assert len(calls) == 1
+    assert calls[0]["instruct_id"] is not None
+
+
+def test_qwen3_tts_base_checkpoint_text_only_rejects_custom_voice_default() -> None:
+    class FakeWrapper:
+        def _merge_generate_kwargs(self, **kwargs):
+            return kwargs
+
+    model = SimpleNamespace(tts_model_type="base")
+
+    with pytest.raises(
+        ValueError, match="Base requires ref_audio or speaker_embedding"
+    ):
+        qwen3_request_builders._prepare_qwen3_tts_request(
+            make_payload(inputs="target"),
+            model=model,
+            wrapper=FakeWrapper(),
         )
 
 
@@ -652,55 +1129,546 @@ def test_qwen3_tts_prefill_prepares_subtalker_buffers_before_forward(
     assert calls == ["prepare", "embeds", "forward"]
 
 
-def test_qwen3_tts_subtalker_sampling_reuses_request_generator(
+def test_qwen3_tts_sampling_installs_semantic_seed_tensor(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     install_fake_sglang(monkeypatch)
-    from sglang_omni.models.qwen3_tts.sglang_model import Qwen3TTSTalker
+    from sglang_omni.models.qwen3_tts.model_runner import Qwen3TTSModelRunner
 
-    talker = Qwen3TTSTalker.__new__(Qwen3TTSTalker)
-    talker.model = SimpleNamespace(
-        codec_embedding=SimpleNamespace(weight=torch.empty(1))
+    sample_calls: list[list[int]] = []
+
+    def sample(logits_output, forward_batch):
+        del logits_output
+        sample_calls.append(forward_batch.sampling_info.sampling_seed.tolist())
+        return torch.tensor([2, 3], dtype=torch.long)
+
+    runner = Qwen3TTSModelRunner.__new__(Qwen3TTSModelRunner)
+    runner.model = SimpleNamespace(
+        _semantic_sampling_seed_tensor=torch.tensor([101, 202], dtype=torch.long)
     )
+    runner.tp_worker = SimpleNamespace(model_runner=SimpleNamespace(sample=sample))
+    forward_batch = SimpleNamespace(sampling_info=SimpleNamespace(sampling_seed=None))
+    logits_output = SimpleNamespace(next_token_logits=torch.zeros((2, 4)))
+    requests = [
+        SimpleNamespace(
+            data=SimpleNamespace(
+                req=SimpleNamespace(
+                    sampling_params=SimpleNamespace(repetition_penalty=1.0),
+                    output_ids=[],
+                ),
+                suppress_tokens=[],
+            )
+        ),
+        SimpleNamespace(
+            data=SimpleNamespace(
+                req=SimpleNamespace(
+                    sampling_params=SimpleNamespace(repetition_penalty=1.0),
+                    output_ids=[],
+                ),
+                suppress_tokens=[],
+            )
+        ),
+    ]
+
+    token_ids = runner._sample_next_token_ids(
+        logits_output,
+        forward_batch,
+        object(),
+        requests,
+    )
+
+    assert token_ids.tolist() == [2, 3]
+    assert sample_calls == [[101, 202]]
+    assert forward_batch.sampling_info.sampling_seed.tolist() == [101, 202]
+
+
+def test_qwen3_tts_collect_codes_excludes_semantic_eos(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_fake_sglang(monkeypatch)
+    from sglang_omni.models.qwen3_tts.model_runner import Qwen3TTSModelRunner
+
+    runner = Qwen3TTSModelRunner.__new__(Qwen3TTSModelRunner)
+    runner._has_pending_code_step = False
+
+    def code_predictor_forward(layer0_codes, hidden, semantic_positions=None):
+        assert layer0_codes.tolist() == [[7], [42]]
+        assert hidden.shape == (2, 1, 4)
+        assert semantic_positions.tolist() == [3, 3]
+
+    runner.model = SimpleNamespace(
+        config=SimpleNamespace(codec_eos_token_id=42),
+        code_predictor_forward=code_predictor_forward,
+        _output_codes=torch.tensor([[1, 2], [3, 4]], dtype=torch.long),
+        _output_embeds=torch.tensor([[0.1, 0.2], [0.3, 0.4]]),
+    )
+    result = SimpleNamespace(
+        next_token_ids=torch.tensor([7, 42], dtype=torch.long),
+        logits_output=SimpleNamespace(hidden_states=torch.ones((2, 4))),
+    )
+    schedule_batch = SimpleNamespace(output_ids=None)
+    forward_batch = SimpleNamespace(
+        forward_mode=SimpleNamespace(is_decode=lambda: True),
+        positions=torch.tensor([3, 3], dtype=torch.long),
+    )
+    requests = [
+        SimpleNamespace(request_id="active", data=Qwen3TTSSGLangRequestData()),
+        SimpleNamespace(request_id="eos", data=Qwen3TTSSGLangRequestData()),
+    ]
+
+    runner._collect_codes(result, forward_batch, schedule_batch, requests)
+
+    assert schedule_batch.output_ids.tolist() == [7, 42]
+    assert requests[0].data.output_codes == []
+    assert requests[1].data.output_codes == []
+
+    runner.post_process_outputs(
+        result,
+        SimpleNamespace(requests=requests),
+        {
+            "active": RequestOutput("active", data=7),
+            "eos": RequestOutput("eos", data=42),
+        },
+    )
+
+    assert [chunk.tolist() for chunk in requests[0].data.output_codes] == [[1, 2]]
+    assert len(requests[0].data.pending_feedback_queue) == 1
+    assert requests[1].data.output_codes == []
+    assert len(requests[1].data.pending_feedback_queue) == 0
+
+    runner.post_process_outputs(result, SimpleNamespace(requests=requests), {})
+    assert len(requests[0].data.output_codes) == 1
+
+
+def test_qwen3_tts_steady_decode_reports_cuda_graph_ready(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Decode should use SGLang's graph-capable forward result."""
+    install_fake_sglang(monkeypatch)
+    from sglang.srt.model_executor import forward_batch_info
+
+    from sglang_omni.models.qwen3_omni.talker_model_runner import QwenTalkerModelRunner
+    from sglang_omni.models.qwen3_tts.model_runner import Qwen3TTSModelRunner
+
+    fake_forward_batch = SimpleNamespace(
+        input_ids=torch.tensor([1]),
+        positions=torch.tensor([0]),
+        mrope_positions=None,
+    )
+    monkeypatch.setattr(
+        forward_batch_info.ForwardBatch,
+        "init_new",
+        staticmethod(lambda model_worker_batch, model_runner: fake_forward_batch),
+    )
+    monkeypatch.setattr(
+        QwenTalkerModelRunner,
+        "_take_next_decode_input_embed",
+        staticmethod(
+            lambda *, sched_req, device, dtype: torch.ones(
+                4, device=device, dtype=dtype
+            )
+        ),
+    )
+
+    class FakeQwenModel:
+        config = SimpleNamespace(codec_eos_token_id=-1)
+
+        def __init__(self) -> None:
+            self._feedback_buffer = torch.zeros(1, 4)
+            self._feedback_mask = torch.zeros(1, dtype=torch.bool)
+            self._decode_feedback_embedding = torch.nn.Embedding(1, 4)
+            self._output_codes = torch.ones(1, 2)
+            self._output_embeds = torch.ones(1, 4)
+            self.prepare_calls = 0
+
+        def prepare_decode_buffers(self, requests) -> None:
+            del requests
+            self.prepare_calls += 1
+
+        def code_predictor_forward(
+            self,
+            layer0_codes,
+            hidden,
+            semantic_positions=None,
+        ) -> None:
+            del layer0_codes, hidden, semantic_positions
+
+    class FakeTPWorker:
+        gpu_id = 0
+        model_runner = SimpleNamespace(model=FakeQwenModel())
+
+        def forward_batch_generation(self, forward_batch):
+            del forward_batch
+            return SimpleNamespace(
+                logits_output=SimpleNamespace(hidden_states=torch.ones(1, 4)),
+                next_token_ids=torch.tensor([7]),
+                can_run_cuda_graph=True,
+            )
+
+    class FakeOutputProcessor:
+        _capture_hidden = False
+
+        def process(self, model_output, scheduler_output):
+            del model_output
+            return {
+                req.request_id: RequestOutput(req.request_id, data=7)
+                for req in scheduler_output.requests
+            }
+
+    runner = Qwen3TTSModelRunner.__new__(Qwen3TTSModelRunner)
+    runner.tp_worker = FakeTPWorker()
+    runner.output_processor = FakeOutputProcessor()
+    runner.device = torch.device("cpu")
+    runner.model = runner.tp_worker.model_runner.model
+
     data = SimpleNamespace(
-        req=SimpleNamespace(
-            sampling_params=SimpleNamespace(sampling_seed=7),
-        )
+        req=SimpleNamespace(sampling_params=SimpleNamespace(repetition_penalty=1.0)),
+        output_codes=[],
+        pending_feedback_queue=[],
+        generation_steps=0,
+        extra_model_outputs={},
+    )
+    request = SimpleNamespace(request_id="req", data=data)
+    schedule_batch = SimpleNamespace(
+        forward_mode=SimpleNamespace(is_extend=lambda: False),
+        is_prefill_only=False,
+        output_ids=None,
+        get_model_worker_batch=lambda: SimpleNamespace(),
     )
 
-    Qwen3TTSTalker.prepare_decode_buffers(talker, [SimpleNamespace(data=data)])
-    generator = data._subtalker_generator
-    Qwen3TTSTalker.prepare_decode_buffers(talker, [SimpleNamespace(data=data)])
+    output = runner.execute(
+        SimpleNamespace(requests=[request], batch_data=schedule_batch)
+    )
 
-    assert data._subtalker_generator is generator
-    assert talker._sub_generators == [generator]
+    assert output.can_run_cuda_graph is True
+    assert schedule_batch.output_ids.tolist() == [7]
+    assert runner.model.prepare_calls == 1
+    assert fake_forward_batch.input_ids.tolist() == [0]
 
 
-def test_qwen3_tts_subtalker_sampling_advances_request_generator(
+def test_qwen3_tts_decode_feedback_empty_batch_noops() -> None:
+    from sglang_omni.models.qwen3_tts.model_runner import Qwen3TTSModelRunner
+
+    runner = Qwen3TTSModelRunner.__new__(Qwen3TTSModelRunner)
+    runner.model = SimpleNamespace(
+        _decode_feedback_embedding=torch.nn.Embedding(1, 4),
+    )
+    forward_batch = SimpleNamespace(input_ids=torch.empty(0, dtype=torch.long))
+
+    runner._write_feedback_buffers(forward_batch, [])
+
+    assert forward_batch.input_ids.numel() == 0
+
+
+def test_qwen3_tts_decode_forward_does_not_clear_feedback_mask(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_fake_sglang(monkeypatch)
+    from sglang_omni.models.qwen3_tts.sglang_model import Qwen3TTSTalkerTextModel
+
+    class IdentityNorm(torch.nn.Module):
+        def forward(self, hidden_states, residual=None):
+            if residual is None:
+                return hidden_states
+            return hidden_states, residual
+
+    model = Qwen3TTSTalkerTextModel.__new__(Qwen3TTSTalkerTextModel)
+    torch.nn.Module.__init__(model)
+    model.codec_embedding = torch.nn.Embedding(8, 4)
+    model.layers = torch.nn.ModuleList([])
+    model._compiled_decode_layers = model.layers
+    model.start_layer = 0
+    model.end_layer = 0
+    model.norm = IdentityNorm()
+    model._feedback_buffer = torch.full((1, 4), 5.0)
+    model._feedback_mask = torch.tensor([True])
+    model._decode_feedback_embedding = torch.nn.Embedding(1, 4)
+    model._decode_feedback_embedding.weight.requires_grad_(False)
+    with torch.no_grad():
+        model._decode_feedback_embedding.weight[0].fill_(7.0)
+
+    output = model.forward(
+        input_ids=torch.tensor([0]),
+        positions=torch.tensor([0]),
+        forward_batch=SimpleNamespace(
+            forward_mode=SimpleNamespace(is_decode=lambda: True),
+        ),
+    )
+
+    assert torch.equal(output, model._decode_feedback_embedding.weight[:1])
+    assert bool(model._feedback_mask[0]) is True
+
+
+def test_qwen3_tts_decode_forward_rejects_invalid_feedback_row(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_fake_sglang(monkeypatch)
+    from sglang_omni.models.qwen3_tts.sglang_model import Qwen3TTSTalkerTextModel
+
+    model = Qwen3TTSTalkerTextModel.__new__(Qwen3TTSTalkerTextModel)
+    torch.nn.Module.__init__(model)
+    model.codec_embedding = torch.nn.Embedding(8, 4)
+    model.layers = torch.nn.ModuleList([])
+    model._compiled_decode_layers = model.layers
+    model.start_layer = 0
+    model.end_layer = 0
+    model.norm = torch.nn.Identity()
+    model._decode_feedback_embedding = torch.nn.Embedding(1, 4)
+
+    with pytest.raises(IndexError):
+        model.forward(
+            input_ids=torch.tensor([1]),
+            positions=torch.tensor([0]),
+            forward_batch=SimpleNamespace(
+                forward_mode=SimpleNamespace(is_decode=lambda: True),
+            ),
+        )
+
+
+def test_qwen3_tts_prepare_decode_buffers_collects_private_subtalker_seeds(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     install_fake_sglang(monkeypatch)
     from sglang_omni.models.qwen3_tts.sglang_model import Qwen3TTSTalker
 
     talker = Qwen3TTSTalker.__new__(Qwen3TTSTalker)
-    generator = torch.Generator(device="cpu")
-    generator.manual_seed(11)
-    before = generator.get_state().clone()
-    talker._sub_dosample = [True]
-    talker._sub_temperature = [1.0]
-    talker._sub_top_p = [1.0]
-    talker._sub_top_k = [-1]
-    talker._sub_generators = [generator]
+    talker.config = SimpleNamespace(
+        code_predictor_config=SimpleNamespace(vocab_size=2048)
+    )
+    talker.model = SimpleNamespace(
+        codec_embedding=SimpleNamespace(weight=torch.empty(1, device="cpu"))
+    )
+    talker._sub_temperature_tensor = torch.empty(2, dtype=torch.float32)
+    talker._sub_top_p_tensor = torch.empty(2, dtype=torch.float32)
+    talker._sub_top_k_tensor = torch.empty(2, dtype=torch.long)
+    talker._semantic_sampling_seed_tensor = torch.empty(2, dtype=torch.long)
+    talker._sub_sampling_seed_tensor = torch.empty(2, dtype=torch.long)
+    talker._sub_sample_row_indices_tensor = torch.empty(2, dtype=torch.long)
+    requests = [
+        SimpleNamespace(
+            data=Qwen3TTSSGLangRequestData(
+                semantic_sampling_seed=5,
+                subtalker_dosample=True,
+                subtalker_temperature=0.8,
+                subtalker_top_p=0.9,
+                subtalker_top_k=40,
+                subtalker_sampling_seed=7,
+            )
+        ),
+        SimpleNamespace(
+            data=Qwen3TTSSGLangRequestData(
+                semantic_sampling_seed=9,
+                subtalker_dosample=False,
+                subtalker_temperature=1.0,
+                subtalker_top_p=1.0,
+                subtalker_top_k=-1,
+                subtalker_sampling_seed=11,
+            )
+        ),
+    ]
 
-    Qwen3TTSTalker._sample_subtalker_token(talker, torch.tensor([[0.2, 0.8]]), 0)
+    Qwen3TTSTalker.prepare_decode_buffers(talker, requests)
 
-    assert not torch.equal(generator.get_state(), before)
+    assert talker._sub_batch_size == 2
+    assert talker._semantic_sampling_seed_tensor[:2].tolist() == [5, 9]
+    assert talker._sub_sampling_seed_tensor[:2].tolist() == [7, 11]
+    assert talker._sub_temperature_tensor[:2].tolist() == pytest.approx([0.8, 1.0])
+    assert talker._sub_sample_rows == [0]
+    assert talker._sub_sample_count == 1
+    assert talker._sub_sample_row_indices_tensor[:1].tolist() == [0]
+    assert talker._sub_has_sampled_rows is True
+    assert talker._sub_sampled_has_top_p is True
+    assert talker._sub_sampled_max_top_k == 40
+    assert talker._sub_sampled_has_unbounded_top_k is False
 
 
-def test_qwen3_tts_engine_keeps_cuda_graph_disabled_after_bootstrap(
+def test_qwen3_tts_prepare_decode_buffers_requires_owned_request_data(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Qwen3-TTS CUDA graph support remains disabled until a follow-up PR."""
+    install_fake_sglang(monkeypatch)
+    from sglang_omni.models.qwen3_tts.sglang_model import Qwen3TTSTalker
+
+    talker = Qwen3TTSTalker.__new__(Qwen3TTSTalker)
+    talker._sub_temperature_tensor = torch.empty(1, dtype=torch.float32)
+    requests = [SimpleNamespace(data=SimpleNamespace())]
+
+    with pytest.raises(TypeError, match="request data with"):
+        Qwen3TTSTalker.prepare_decode_buffers(talker, requests)
+
+
+def test_qwen3_tts_subtalker_sampling_batches_argmax_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_fake_sglang(monkeypatch)
+    from sglang_omni.models.qwen3_tts.sglang_model import Qwen3TTSTalker
+
+    talker = Qwen3TTSTalker.__new__(Qwen3TTSTalker)
+    talker._sub_batch_size = 2
+    talker._sub_has_sampled_rows = False
+
+    tokens = Qwen3TTSTalker._sample_subtalker_token(
+        talker,
+        torch.tensor([[0.1, 0.9], [0.7, 0.2]]),
+        0,
+    )
+
+    assert tokens.tolist() == [1, 0]
+
+
+def test_qwen3_tts_subtalker_sampling_batches_sampled_path_without_global_rng(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_fake_sglang(monkeypatch)
+    from sglang_omni.models.qwen3_tts import sglang_model
+    from sglang_omni.models.qwen3_tts.sglang_model import Qwen3TTSTalker
+
+    talker = Qwen3TTSTalker.__new__(Qwen3TTSTalker)
+    talker.config = SimpleNamespace(num_code_groups=4)
+    talker._sub_batch_size = 2
+    talker._sub_temperature_tensor = torch.tensor([1.0, 1.0])
+    talker._sub_top_p_tensor = torch.tensor([1.0, 1.0])
+    talker._sub_top_k_tensor = torch.tensor([-1, -1])
+    talker._sub_sampling_seed_tensor = torch.tensor([17, 23])
+    talker._sub_sample_rows = [0, 1]
+    talker._sub_sample_row_indices_tensor = torch.tensor([0, 1])
+    talker._sub_sample_count = 2
+    talker._sub_has_sampled_rows = True
+    talker._sub_sampled_has_top_p = False
+    talker._sub_sampled_max_top_k = 0
+    talker._sub_sampled_has_unbounded_top_k = True
+
+    sampler_calls = []
+
+    def fake_multinomial_with_seed(inputs, seed, positions):
+        assert torch.all(inputs >= 0)
+        assert torch.allclose(inputs.sum(dim=1), torch.ones(inputs.shape[0]))
+        sampler_calls.append(
+            {
+                "inputs": inputs.detach().clone(),
+                "seed": seed.detach().clone(),
+                "positions": positions.detach().clone(),
+            }
+        )
+        return torch.zeros((inputs.shape[0], 1), device=inputs.device, dtype=torch.long)
+
+    monkeypatch.setattr(
+        sglang_model, "multinomial_with_seed", fake_multinomial_with_seed
+    )
+
+    def fail_multinomial(*args, **kwargs):
+        del args, kwargs
+        raise AssertionError("sampled subtalker path must not use global RNG")
+
+    monkeypatch.setattr(torch, "multinomial", fail_multinomial)
+
+    def fail_argmax(*args, **kwargs):
+        del args, kwargs
+        raise AssertionError("all-sampled subtalker path must not compute argmax")
+
+    monkeypatch.setattr(torch, "argmax", fail_argmax)
+
+    tokens = Qwen3TTSTalker._sample_subtalker_token(
+        talker,
+        torch.tensor([[0.0, 0.0], [0.0, 0.0]]),
+        0,
+        semantic_positions=torch.tensor([3, 3]),
+    )
+
+    assert tokens.shape == (2,)
+    assert tokens.dtype == torch.long
+    assert set(tokens.tolist()) <= {0, 1}
+    assert sampler_calls[0]["seed"].tolist() == [17, 23]
+    assert sampler_calls[0]["positions"].tolist() == [10, 10]
+
+    Qwen3TTSTalker._sample_subtalker_token(
+        talker,
+        torch.tensor([[0.0, 0.0], [0.0, 0.0]]),
+        1,
+        semantic_positions=torch.tensor([3, 3]),
+    )
+
+    assert sampler_calls[1]["positions"].tolist() == [11, 11]
+
+
+def test_qwen3_tts_sampled_subtalker_requires_semantic_positions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_fake_sglang(monkeypatch)
+    from sglang_omni.models.qwen3_tts.sglang_model import Qwen3TTSTalker
+
+    talker = Qwen3TTSTalker.__new__(Qwen3TTSTalker)
+    talker.config = SimpleNamespace(num_code_groups=4)
+    talker._sub_batch_size = 1
+    talker._sub_temperature_tensor = torch.tensor([1.0])
+    talker._sub_top_p_tensor = torch.tensor([1.0])
+    talker._sub_top_k_tensor = torch.tensor([-1])
+    talker._sub_sampling_seed_tensor = torch.tensor([17])
+    talker._sub_sample_rows = [0]
+    talker._sub_sample_row_indices_tensor = torch.tensor([0])
+    talker._sub_sample_count = 1
+    talker._sub_has_sampled_rows = True
+    talker._sub_sampled_has_top_p = False
+    talker._sub_sampled_max_top_k = 0
+    talker._sub_sampled_has_unbounded_top_k = True
+
+    with pytest.raises(RuntimeError, match="require positions"):
+        Qwen3TTSTalker._sample_subtalker_token(
+            talker,
+            torch.tensor([[0.0, 0.0]]),
+            0,
+        )
+
+
+def test_qwen3_tts_compile_backbone_requires_text_layers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_fake_sglang(monkeypatch)
+    from sglang_omni.models.qwen3_tts.stages import _compile_qwen3_tts_backbone
+
+    with pytest.raises(AttributeError):
+        _compile_qwen3_tts_backbone(SimpleNamespace())
+
+
+def test_qwen3_tts_compile_backbone_compiles_every_layer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_fake_sglang(monkeypatch)
+    from sglang_omni.models.qwen3_tts.stages import _compile_qwen3_tts_backbone
+
+    set_config_calls = []
+    compiled = []
+    cuda_graph_runner = types.ModuleType("sglang.srt.model_executor.cuda_graph_runner")
+    cuda_graph_runner.set_torch_compile_config = lambda: set_config_calls.append(True)
+    monkeypatch.setitem(
+        sys.modules,
+        "sglang.srt.model_executor.cuda_graph_runner",
+        cuda_graph_runner,
+    )
+
+    def fake_compile(layer, *, mode):
+        compiled.append((layer, mode))
+        return f"compiled-{len(compiled)}"
+
+    monkeypatch.setattr(torch, "compile", fake_compile)
+    layers = [object(), object(), object()]
+    text_model = SimpleNamespace(layers=layers)
+    model = SimpleNamespace(model=text_model)
+
+    _compile_qwen3_tts_backbone(model)
+
+    assert set_config_calls == [True]
+    assert compiled == [(layer, "max-autotune-no-cudagraphs") for layer in layers]
+    assert text_model._compiled_decode_layers == [
+        "compiled-1",
+        "compiled-2",
+        "compiled-3",
+    ]
+
+
+def test_qwen3_tts_engine_reenables_cuda_graph_after_bootstrap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Qwen3-TTS defers graph capture until custom buffers are ready."""
     install_fake_sglang(monkeypatch)
     from transformers import AutoProcessor
 
@@ -716,6 +1684,7 @@ def test_qwen3_tts_engine_keeps_cuda_graph_disabled_after_bootstrap(
     build_kwargs: dict = {}
     infrastructure_saw_graph_disabled: list[bool] = []
     init_graph_calls: list[bool] = []
+    compile_calls: list[bool] = []
 
     class FakeModel:
         def load_speech_tokenizer(self, tokenizer) -> None:
@@ -727,6 +1696,8 @@ def test_qwen3_tts_engine_keeps_cuda_graph_disabled_after_bootstrap(
             self.model = FakeModel()
 
         def init_device_graphs(self) -> None:
+            assert self.server_args.enable_torch_compile is False
+            assert self.server_args.torch_compile_max_bs == 16
             init_graph_calls.append(True)
 
     class FakeWorker:
@@ -758,6 +1729,11 @@ def test_qwen3_tts_engine_keeps_cuda_graph_disabled_after_bootstrap(
         "make_qwen3_tts_scheduler_adapters",
         lambda **kwargs: (lambda payload: payload, lambda data: data),
     )
+    monkeypatch.setattr(
+        stages,
+        "_compile_qwen3_tts_backbone",
+        lambda model: compile_calls.append(model),
+    )
 
     def fake_build_sglang_server_args(model_path, context_length, **kwargs):
         del model_path, context_length
@@ -765,10 +1741,12 @@ def test_qwen3_tts_engine_keeps_cuda_graph_disabled_after_bootstrap(
         return SimpleNamespace(
             disable_cuda_graph=kwargs["disable_cuda_graph"],
             disable_overlap_schedule=kwargs["disable_overlap_schedule"],
+            enable_torch_compile=kwargs["enable_torch_compile"],
             page_size=1,
             chunked_prefill_size=0,
             max_prefill_tokens=kwargs["max_prefill_tokens"],
             max_running_requests=kwargs["max_running_requests"],
+            torch_compile_max_bs=kwargs["torch_compile_max_bs"],
         )
 
     def fake_create_sglang_infrastructure(server_args, gpu_id, **kwargs):
@@ -812,9 +1790,14 @@ def test_qwen3_tts_engine_keeps_cuda_graph_disabled_after_bootstrap(
 
     scheduler = stages.create_sglang_tts_engine_executor("model", device="cuda:0")
 
-    assert build_kwargs["disable_cuda_graph"] is True
+    assert build_kwargs["disable_cuda_graph"] is False
+    assert build_kwargs["enable_torch_compile"] is True
     assert build_kwargs["sampling_backend"] == "pytorch"
+    assert build_kwargs["torch_compile_max_bs"] == 16
     assert infrastructure_saw_graph_disabled == [True]
-    assert init_graph_calls == []
-    assert scheduler.server_args.disable_cuda_graph is True
+    assert len(compile_calls) == 1
+    assert init_graph_calls == [True]
+    assert scheduler.server_args.disable_cuda_graph is False
+    assert scheduler.server_args.enable_torch_compile is False
+    assert scheduler.server_args.torch_compile_max_bs == 16
     clear_qwen3_tts_preprocessing_context()

@@ -26,6 +26,8 @@ from sglang_omni.models.qwen3_omni.payload_types import PipelineState
 from sglang_omni.models.qwen3_omni.request_builders import (
     build_sglang_thinker_request,
     project_preprocessing_to_mm_aggregate,
+    project_talker_to_code2wav,
+    project_thinker_to_decode,
     resolve_mm_aggregate_wait_sources,
     resolve_preprocessing_next_stages,
 )
@@ -74,6 +76,7 @@ def test_qwen_pipeline_config_and_state_contracts() -> None:
         == "sglang_omni.models.qwen3_omni.request_builders.resolve_terminal_stages"
     )
     speech_thinker = _stage(speech_config, "thinker")
+    speech_talker = _stage(speech_config, "talker_ar")
     text_thinker = _stage(text_config, "thinker")
     preprocessing = _stage(speech_config, "preprocessing")
     aggregate = _stage(speech_config, "mm_aggregate")
@@ -99,6 +102,15 @@ def test_qwen_pipeline_config_and_state_contracts() -> None:
     )
     assert speech_thinker.stream_done_to_fn == (
         f"{request_builders_path}.resolve_thinker_stream_done_targets"
+    )
+    assert speech_thinker.project_payload["decode"] == (
+        f"{request_builders_path}.project_thinker_to_decode"
+    )
+    assert text_thinker.project_payload["decode"] == (
+        f"{request_builders_path}.project_thinker_to_decode"
+    )
+    assert speech_talker.project_payload["code2wav"] == (
+        f"{request_builders_path}.project_talker_to_code2wav"
     )
     assert text_thinker.stream_to == ["decode"]
     assert _stage(text_config, "decode").can_accept_stream_before_payload
@@ -136,6 +148,88 @@ def test_qwen_pipeline_config_and_state_contracts() -> None:
     assert state.mm_inputs == {}
     assert state.encoder_inputs["image_encoder"]["cache_key"] == "img"
     assert state.thinker_out["is_final"] is True
+
+
+def test_qwen_thinker_to_decode_projection_drops_multimodal_tensors() -> None:
+    audio_embeds = torch.ones(2, 3, device="cpu")
+    hidden_states = torch.ones(4, device="cpu")
+    payload = StagePayload(
+        request_id="req-1",
+        request=OmniRequest(inputs="hi"),
+        data={
+            "prompt": {"input_ids": torch.tensor([1, 2]), "prompt_text": "hi"},
+            "thinker_inputs": {
+                "model_inputs": {
+                    "audio_embeds": audio_embeds,
+                    "audio_feature_lengths": torch.tensor([2]),
+                }
+            },
+            "thinker_out": {
+                "output_ids": [3],
+                "step": 1,
+                "is_final": True,
+                "extra_model_outputs": {"hidden_states": hidden_states},
+            },
+            "engine_outputs": {
+                "thinker": {
+                    "output_ids": [3],
+                    "extra_model_outputs": {"hidden_states": hidden_states},
+                }
+            },
+        },
+    )
+
+    projected = project_thinker_to_decode(payload)
+    state = PipelineState.from_dict(projected.data)
+
+    assert state.thinker_inputs == {}
+    assert state.thinker_out["output_ids"] == [3]
+    assert state.thinker_out["extra_model_outputs"] == {}
+    assert state.engine_outputs["thinker"]["output_ids"] == [3]
+    assert state.engine_outputs["thinker"]["extra_model_outputs"] == {}
+
+
+def test_qwen_thinker_to_decode_projection_isolates_stream_state() -> None:
+    stream_state = {"token_ids": [1, 2], "text": "hi", "emitted_text": ""}
+    payload = StagePayload(
+        request_id="req-1",
+        request=OmniRequest(inputs="hi"),
+        data={
+            "prompt": {"input_ids": torch.tensor([1, 2]), "prompt_text": "hi"},
+            "stream_state": stream_state,
+            "thinker_out": {"output_ids": [3], "is_final": False},
+        },
+    )
+
+    projected = project_thinker_to_decode(payload)
+
+    assert projected.data["stream_state"] == stream_state
+    assert projected.data["stream_state"] is not stream_state
+    assert projected.data["stream_state"]["token_ids"] is not stream_state["token_ids"]
+
+
+def test_qwen_talker_to_code2wav_projection_keeps_only_request_latch() -> None:
+    payload = StagePayload(
+        request_id="req-1",
+        request=OmniRequest(inputs="hi", params={"stream": False}),
+        data={
+            "prompt": {"input_ids": torch.tensor([1, 2]), "prompt_text": "hi"},
+            "thinker_inputs": {
+                "model_inputs": {
+                    "audio_embeds": torch.ones(2, 3),
+                }
+            },
+            "thinker_out": {
+                "extra_model_outputs": {"hidden_states": torch.ones(4)},
+            },
+        },
+    )
+
+    projected = project_talker_to_code2wav(payload)
+
+    assert projected.request_id == payload.request_id
+    assert projected.request is payload.request
+    assert projected.data == {}
 
 
 def test_qwen_speech_config_wires_request_granular_active_subgraph() -> None:

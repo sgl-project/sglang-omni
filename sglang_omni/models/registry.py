@@ -10,6 +10,20 @@ from sglang_omni.config import PipelineConfig
 logger = logging.getLogger(__name__)
 
 
+def _iter_config_architectures(config_cls: Type[PipelineConfig]) -> list[str]:
+    architectures: list[str] = []
+    seen: set[str] = set()
+    aliases = getattr(config_cls, "architecture_aliases", ())
+    if isinstance(aliases, str):
+        aliases = (aliases,)
+    for arch in (getattr(config_cls, "architecture", None), *tuple(aliases or ())):
+        if not arch or arch in seen:
+            continue
+        architectures.append(arch)
+        seen.add(arch)
+    return architectures
+
+
 @lru_cache()
 def import_pipeline_configs(
     package_name: str, config_path: str, strict: bool = False
@@ -55,7 +69,18 @@ def import_pipeline_configs(
                 f"Config module {name}.{config_path} must have an EntryClass"
             )
         config_cls = config_module.EntryClass
-        model_arch_to_config_cls[config_cls.architecture] = config_cls
+        for arch in _iter_config_architectures(config_cls):
+            existing_config_cls = model_arch_to_config_cls.get(arch)
+            if (
+                existing_config_cls is not None
+                and existing_config_cls is not config_cls
+            ):
+                raise ValueError(
+                    f"Config for architecture {arch} is registered by both "
+                    f"{existing_config_cls.__module__}.{existing_config_cls.__name__} "
+                    f"and {config_cls.__module__}.{config_cls.__name__}"
+                )
+            model_arch_to_config_cls[arch] = config_cls
     return model_arch_to_config_cls
 
 

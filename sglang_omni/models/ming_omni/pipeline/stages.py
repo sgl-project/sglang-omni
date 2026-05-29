@@ -239,7 +239,7 @@ def _ensure_ming_config_registered(model_path: str = "inclusionAI/Ming-flash-omn
 
     from transformers import AutoConfig
 
-    from sglang_omni.models.ming_omni.thinker import BailingMM2Config
+    from sglang_omni.models.ming_omni.configuration import BailingMM2Config
 
     AutoConfig.register("bailingmm_moe_v2_lite", BailingMM2Config, exist_ok=True)
 
@@ -254,7 +254,7 @@ def _ensure_ming_config_registered(model_path: str = "inclusionAI/Ming-flash-omn
         if not os.path.exists(shim_path):
             with open(shim_path, "w") as f:
                 f.write(
-                    "from sglang_omni.models.ming_omni.thinker "
+                    "from sglang_omni.models.ming_omni.configuration "
                     "import BailingMM2Config\n"
                 )
 

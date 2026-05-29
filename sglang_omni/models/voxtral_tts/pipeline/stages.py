@@ -17,6 +17,7 @@ from sglang_omni.models.voxtral_tts.io import VoxtralTTSState
 from sglang_omni.models.voxtral_tts.pipeline.state_io import load_state, store_state
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
+from sglang_omni.utils.audio_payload import audio_waveform_payload
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +47,52 @@ def _resolve_checkpoint(checkpoint: str) -> str:
     return snapshot_download(checkpoint)
 
 
+def _validate_voxtral_speech_params(
+    *,
+    inputs: Any,
+    params: dict[str, Any],
+    tts_params: dict[str, Any],
+) -> None:
+    explicit_generation_params = tts_params.get("explicit_generation_params")
+    if isinstance(explicit_generation_params, (list, tuple, set)):
+        explicit_fields = {str(field) for field in explicit_generation_params}
+    else:
+        explicit_fields = set()
+
+    unsupported: set[str] = set()
+    for field in explicit_fields:
+        if field != "max_new_tokens":
+            unsupported.add(field)
+
+    if params.get("seed") is not None:
+        unsupported.add("seed")
+    if params.get("stage_sampling"):
+        unsupported.add("stage_sampling")
+    if params.get("stage_params"):
+        unsupported.add("stage_params")
+
+    for field in ("task_type", "language", "instructions", "ref_audio", "ref_text"):
+        if tts_params.get(field) not in (None, ""):
+            unsupported.add(field)
+
+    if isinstance(inputs, dict) and inputs.get("references"):
+        unsupported.add("references")
+
+    if unsupported:
+        fields = ", ".join(sorted(unsupported))
+        raise ValueError(
+            "Voxtral TTS does not support these /v1/audio/speech fields: "
+            f"{fields}. Supported model-specific fields are voice and max_new_tokens."
+        )
+
+
+def _ensure_non_empty_audio_codes(audio_codes: Any) -> None:
+    if audio_codes is None:
+        raise ValueError("Voxtral TTS generated no audio codes")
+    if isinstance(audio_codes, torch.Tensor) and audio_codes.numel() == 0:
+        raise ValueError("Voxtral TTS generated no audio codes")
+
+
 # ---- Preprocessing ----
 
 
@@ -62,6 +109,14 @@ def create_preprocessing_executor(model_path: str) -> SimpleScheduler:
         inputs = payload.request.inputs
         params = payload.request.params or {}
         metadata = payload.request.metadata or {}
+        tts_params = metadata.get("tts_params", {})
+        if not isinstance(tts_params, dict):
+            tts_params = {}
+        _validate_voxtral_speech_params(
+            inputs=inputs,
+            params=params,
+            tts_params=tts_params,
+        )
 
         if isinstance(inputs, str):
             text = inputs
@@ -70,7 +125,6 @@ def create_preprocessing_executor(model_path: str) -> SimpleScheduler:
         else:
             text = str(inputs) if inputs else ""
 
-        tts_params = metadata.get("tts_params", {})
         voice = tts_params.get("voice") or params.get("voice")
         if voice in (None, "", "default"):
             voice = "cheerful_female"
@@ -103,6 +157,7 @@ def create_generation_executor(
     model_path: str,
     *,
     device: str = "cuda:0",
+    gpu_id: int | None = None,
     max_new_tokens: int = 4096,
 ) -> Any:
     """Factory for the SGLang-backed AR generation stage."""
@@ -119,19 +174,28 @@ def create_generation_executor(
     )
 
     checkpoint_dir = _resolve_checkpoint(model_path)
+    if gpu_id is not None:
+        device = f"cuda:{gpu_id}"
     gpu_id = int(device.split(":")[-1]) if ":" in device else 0
 
     server_args = build_sglang_server_args(
         checkpoint_dir,
         context_length=8192,
         dtype="bfloat16",
-        disable_cuda_graph=True,
+        disable_cuda_graph=False,
         disable_overlap_schedule=True,
         decrypted_config_file=_write_voxtral_sglang_config(checkpoint_dir),
+        enable_torch_compile=True,
         mem_fraction_static=0.85,
         max_prefill_tokens=8192,
         max_running_requests=16,
+        sampling_backend="pytorch",
+        torch_compile_max_bs=16,
     )
+
+    want_cuda_graph = not bool(getattr(server_args, "disable_cuda_graph", False))
+    if want_cuda_graph:
+        server_args.disable_cuda_graph = True
 
     (
         model_worker,
@@ -143,8 +207,15 @@ def create_generation_executor(
         model_config,
     ) = create_sglang_infrastructure(server_args, gpu_id)
 
+    if want_cuda_graph:
+        server_args.disable_cuda_graph = False
+
     voice_embeddings = _load_voxtral_voice_embeddings(checkpoint_dir, device)
     model = model_worker.model_runner.model
+    if want_cuda_graph:
+        # Voxtral uses SGLang's native compile path during graph capture.
+        model_worker.model_runner.init_device_graphs()
+
     request_builder, result_adapter = make_voxtral_scheduler_adapters(
         model=model,
         voice_embeddings=voice_embeddings,
@@ -278,9 +349,12 @@ def create_vocoder_executor(
     model_path: str,
     *,
     device: str = "cuda:0",
+    gpu_id: int | None = None,
 ) -> SimpleScheduler:
     """Factory for the vocoder (audio tokenizer decode) stage."""
     checkpoint_dir = _resolve_checkpoint(model_path)
+    if gpu_id is not None:
+        device = f"cuda:{gpu_id}"
 
     logger.info("Loading Voxtral audio tokenizer for vocoding...")
     audio_tokenizer = _load_audio_tokenizer(checkpoint_dir, {}, device)
@@ -289,15 +363,7 @@ def create_vocoder_executor(
         state = load_state(payload)
         audio_codes = state.audio_codes
 
-        if audio_codes is None or (
-            isinstance(audio_codes, torch.Tensor) and audio_codes.numel() == 0
-        ):
-            state.audio_samples = []
-            payload = store_state(payload, state)
-            payload.data["audio_data"] = []
-            payload.data["sample_rate"] = 24000
-            payload.data["modality"] = "audio"
-            return payload
+        _ensure_non_empty_audio_codes(audio_codes)
 
         if not isinstance(audio_codes, torch.Tensor):
             audio_codes = torch.tensor(audio_codes)
@@ -339,11 +405,12 @@ def create_vocoder_executor(
             )
             audio_np[:fade_samples] = audio_np[:fade_samples] * fade_in
 
-        state.audio_samples = audio_np
+        audio_payload = audio_waveform_payload(audio_np, source_hint="Voxtral TTS")
+        state.audio_samples = None
         state.sample_rate = audio_tokenizer.sampling_rate
         payload = store_state(payload, state)
 
-        payload.data["audio_data"] = audio_np.tolist()
+        payload.data.update(audio_payload)
         payload.data["sample_rate"] = audio_tokenizer.sampling_rate
         payload.data["modality"] = "audio"
 
