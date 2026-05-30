@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import numpy as np
 import torch
 
+from sglang_omni.cli.serve import apply_higgs_ref_code_cache_cli_overrides
 from sglang_omni.models.higgs_tts import stages
 from sglang_omni.models.higgs_tts.config import HiggsTtsPipelineConfig
 from sglang_omni.models.higgs_tts.model_runner import HiggsTTSModelRunner
@@ -25,6 +26,24 @@ def test_higgs_streaming_pipeline_routes_chunks_to_vocoder() -> None:
 
     assert stages_by_name["tts_engine"].stream_to == ["vocoder"]
     assert stages_by_name["vocoder"].can_accept_stream_before_payload is True
+
+
+def test_higgs_ref_code_cache_server_arg_disables_cache_stages() -> None:
+    config = HiggsTtsPipelineConfig(model_path="fake-model")
+
+    apply_higgs_ref_code_cache_cli_overrides(
+        config,
+        higgs_ref_code_cache=False,
+    )
+
+    stages_by_name = {stage.name: stage for stage in config.stages}
+    assert (
+        stages_by_name["preprocessing"].factory_args["enable_ref_code_cache"] is False
+    )
+    assert (
+        stages_by_name["audio_encoder"].factory_args["enable_ref_code_cache"] is False
+    )
+    assert "enable_ref_code_cache" not in stages_by_name["tts_engine"].factory_args
 
 
 def test_higgs_tts_engine_enables_cuda_graph_by_default(monkeypatch) -> None:
@@ -160,8 +179,7 @@ def test_higgs_reference_cache_key_ignores_media_type() -> None:
     assert stages._reference_audio_cache_key({"bytes": raw}) == key_wav
 
 
-def test_higgs_audio_encoder_uses_guarded_reference_code_cache(monkeypatch) -> None:
-    monkeypatch.setenv("SGLANG_OMNI_HIGGS_REF_CODE_CACHE", "1")
+def test_higgs_audio_encoder_uses_reference_code_cache_by_default(monkeypatch) -> None:
     monkeypatch.setattr(stages, "resolve_checkpoint", lambda model_path: model_path)
     monkeypatch.setattr(
         stages.Tokenizer,
@@ -234,8 +252,7 @@ def test_higgs_audio_encoder_uses_guarded_reference_code_cache(monkeypatch) -> N
     assert "reference_cache_key" not in second.data
 
 
-def test_higgs_audio_encoder_cache_is_env_guarded(monkeypatch) -> None:
-    monkeypatch.delenv("SGLANG_OMNI_HIGGS_REF_CODE_CACHE", raising=False)
+def test_higgs_audio_encoder_cache_can_be_disabled_by_server_arg(monkeypatch) -> None:
     monkeypatch.setattr(stages, "resolve_checkpoint", lambda model_path: model_path)
     monkeypatch.setattr(stages.Tokenizer, "from_file", lambda _path: object())
     monkeypatch.setattr(
@@ -271,6 +288,7 @@ def test_higgs_audio_encoder_cache_is_env_guarded(monkeypatch) -> None:
         "ckpt",
         device="cuda:0",
         num_codebooks=2,
+        enable_ref_code_cache=False,
     )
     # Ignore the construction-time codec warm-up call added by #612.
     fake_codec.calls = 0
@@ -293,8 +311,9 @@ def test_higgs_audio_encoder_cache_is_env_guarded(monkeypatch) -> None:
     assert fake_codec.calls == 2
 
 
-def test_higgs_preprocessing_uses_guarded_waveform_cache(monkeypatch, tmp_path) -> None:
-    monkeypatch.setenv("SGLANG_OMNI_HIGGS_REF_CODE_CACHE", "1")
+def test_higgs_preprocessing_uses_waveform_cache_by_default(
+    monkeypatch, tmp_path
+) -> None:
     monkeypatch.setattr(stages, "resolve_checkpoint", lambda model_path: model_path)
     monkeypatch.setattr(stages.Tokenizer, "from_file", lambda _path: object())
     monkeypatch.setattr(
@@ -345,8 +364,9 @@ def test_higgs_preprocessing_uses_guarded_waveform_cache(monkeypatch, tmp_path) 
     )
 
 
-def test_higgs_preprocessing_waveform_cache_is_env_guarded(monkeypatch) -> None:
-    monkeypatch.delenv("SGLANG_OMNI_HIGGS_REF_CODE_CACHE", raising=False)
+def test_higgs_preprocessing_waveform_cache_can_be_disabled_by_server_arg(
+    monkeypatch,
+) -> None:
     monkeypatch.setattr(stages, "resolve_checkpoint", lambda model_path: model_path)
     monkeypatch.setattr(stages.Tokenizer, "from_file", lambda _path: object())
     monkeypatch.setattr(
@@ -365,7 +385,11 @@ def test_higgs_preprocessing_waveform_cache_is_env_guarded(monkeypatch) -> None:
 
     monkeypatch.setattr(stages, "load_audio_to_24k", fake_load_audio_to_24k)
 
-    scheduler = stages.create_preprocessing_executor("ckpt", num_codebooks=2)
+    scheduler = stages.create_preprocessing_executor(
+        "ckpt",
+        num_codebooks=2,
+        enable_ref_code_cache=False,
+    )
 
     def make_payload(request_id: str) -> StagePayload:
         return StagePayload(

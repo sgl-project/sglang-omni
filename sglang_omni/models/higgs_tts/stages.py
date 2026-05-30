@@ -68,13 +68,8 @@ logger = logging.getLogger(__name__)
 _MAX_REF_AUDIO_SEC = 100
 _REF_CODE_CACHE_MAX_ITEMS = 256
 _REF_CODE_CACHE_MAX_BYTES = 256 * 1024 * 1024
-_REF_CODE_CACHE_ENV = "SGLANG_OMNI_HIGGS_REF_CODE_CACHE"
 _REF_WAVEFORM_CACHE_MAX_ITEMS = 256
 _REF_WAVEFORM_CACHE_MAX_BYTES = 512 * 1024 * 1024
-
-
-def _ref_code_cache_enabled() -> bool:
-    return os.getenv(_REF_CODE_CACHE_ENV) == "1"
 
 
 def _reference_path_cache_key(path_like: str | Path) -> str | None:
@@ -116,6 +111,7 @@ def create_preprocessing_executor(
     num_codebooks: int = 8,
     codebook_size: int = 1026,
     max_concurrency: int = 8,
+    enable_ref_code_cache: bool = True,
 ):
     """CPU stage: text tokenize + optional ref-audio file IO.
 
@@ -137,6 +133,7 @@ def create_preprocessing_executor(
         max_bytes=_REF_WAVEFORM_CACHE_MAX_BYTES,
     )
     reference_waveform_cache_lock = threading.Lock()
+    reference_cache_enabled = bool(enable_ref_code_cache)
 
     def _preprocess(payload: StagePayload) -> StagePayload:
         inputs = payload.request.inputs or {}
@@ -173,8 +170,7 @@ def create_preprocessing_executor(
         reference_cache_key = None
         if ref_codes_TN is None and inputs.get("reference_audio") is not None:
             reference_audio = inputs["reference_audio"]
-            cache_enabled = _ref_code_cache_enabled()
-            if cache_enabled:
+            if reference_cache_enabled:
                 reference_cache_key = _reference_audio_cache_key(reference_audio)
                 with reference_waveform_cache_lock:
                     cached_waveform = reference_waveform_cache.get(reference_cache_key)
@@ -191,7 +187,7 @@ def create_preprocessing_executor(
                         f"({wav.shape[-1] / 24000:.1f}s); cap at {_MAX_REF_AUDIO_SEC}s."
                     )
                 waveform_tensor = wav.view(1, 1, -1).contiguous().float()
-                if cache_enabled:
+                if reference_cache_enabled:
                     with reference_waveform_cache_lock:
                         reference_waveform_cache.put(
                             reference_cache_key, waveform_tensor.clone()
@@ -249,6 +245,7 @@ def create_audio_encoder_executor(
     num_codebooks: int = 8,
     max_batch_size: int = 8,
     max_batch_wait_ms: int = 2,
+    enable_ref_code_cache: bool = True,
 ):
     """GPU stage: codec-encode raw ref audio → delayed codes + prompt assembly.
 
@@ -275,6 +272,7 @@ def create_audio_encoder_executor(
         max_bytes=_REF_CODE_CACHE_MAX_BYTES,
         cache_device="cpu",
     )
+    reference_cache_enabled = bool(enable_ref_code_cache)
 
     def _encode(payload: StagePayload) -> StagePayload:
         state = HiggsTtsState.from_dict(payload.data)
@@ -282,10 +280,9 @@ def create_audio_encoder_executor(
         if waveform is None:
             return payload
 
-        cache_enabled = _ref_code_cache_enabled()
         cached_delayed = (
             reference_code_cache.get(state.reference_cache_key)
-            if cache_enabled
+            if reference_cache_enabled
             else None
         )
         if cached_delayed is not None:
@@ -301,7 +298,7 @@ def create_audio_encoder_executor(
                 )
             delayed = apply_delay_pattern(ref_codes_TN)
             delayed_rows = delayed.tolist()
-            if cache_enabled:
+            if reference_cache_enabled:
                 reference_code_cache.put(
                     state.reference_cache_key, delayed.to("cpu", torch.int32)
                 )
