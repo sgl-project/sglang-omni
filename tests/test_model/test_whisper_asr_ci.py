@@ -9,6 +9,7 @@ server against the dataset reference text.
 from __future__ import annotations
 
 import os
+import statistics
 import sys
 import time
 from pathlib import Path
@@ -17,6 +18,7 @@ import pytest
 import requests
 from jiwer import process_words
 
+from benchmarks.benchmarker.utils import get_wav_duration
 from benchmarks.dataset.prepare import DATASETS
 from benchmarks.dataset.seedtts import SampleInput, load_seedtts_samples
 from benchmarks.tasks.tts import normalize_text
@@ -32,6 +34,15 @@ WHISPER_MODEL_PATH = "openai/whisper-large-v3"
 SEEDTTS_ASR_CORRECTNESS_SAMPLES = 20
 SEEDTTS_ASR_CORPUS_WER_MAX = 0.01
 SEEDTTS_ASR_SAMPLE_WER_MAX = 0.20
+# H100 calibration on 2026-05-30 with CUDA graph bs=1:
+# throughput=8.532 samples/s, latency_mean=0.117s, latency_p95=0.155s,
+# rtf_mean=0.0243, rtf_p95=0.0300. Thresholds include initial CI jitter slack;
+# retune these on H20 before treating them as final CI gates.
+WHISPER_ASR_THROUGHPUT_MIN = 6.0
+WHISPER_ASR_LATENCY_MEAN_MAX_S = 0.20
+WHISPER_ASR_LATENCY_P95_MAX_S = 0.50
+WHISPER_ASR_RTF_MEAN_MAX = 0.04
+WHISPER_ASR_RTF_P95_MAX = 0.12
 STARTUP_TIMEOUT = 600
 REQUEST_TIMEOUT = 300
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -87,28 +98,47 @@ def _start_whisper_server(tmp_path_factory: pytest.TempPathFactory):
     return proc, port
 
 
-def _transcribe_with_omni(port: int, sample: SampleInput) -> tuple[str, float]:
-    start = time.perf_counter()
+def _transcribe_with_omni(port: int, sample: SampleInput) -> tuple[str, float, float]:
     with open(sample.ref_audio, "rb") as audio_file:
-        with disable_proxy():
-            response = requests.post(
-                f"http://127.0.0.1:{port}/v1/audio/transcriptions",
-                data={
-                    "model": WHISPER_MODEL_PATH,
-                    "language": "en",
-                    "temperature": "0",
-                },
-                files={
-                    "file": (
-                        os.path.basename(sample.ref_audio),
-                        audio_file,
-                        "audio/wav",
-                    )
-                },
-                timeout=REQUEST_TIMEOUT,
-            )
+        audio_bytes = audio_file.read()
+
+    start = time.perf_counter()
+    with disable_proxy():
+        response = requests.post(
+            f"http://127.0.0.1:{port}/v1/audio/transcriptions",
+            data={
+                "model": WHISPER_MODEL_PATH,
+                "language": "en",
+                "temperature": "0",
+            },
+            files={
+                "file": (
+                    os.path.basename(sample.ref_audio),
+                    audio_bytes,
+                    "audio/wav",
+                )
+            },
+            timeout=REQUEST_TIMEOUT,
+        )
     response.raise_for_status()
-    return str(response.json()["text"]), time.perf_counter() - start
+    return (
+        str(response.json()["text"]),
+        time.perf_counter() - start,
+        get_wav_duration(audio_bytes),
+    )
+
+
+def _percentile(values: list[float], percentile: float) -> float:
+    ordered = sorted(values)
+    if not ordered:
+        return 0.0
+    if len(ordered) == 1:
+        return ordered[0]
+    rank = (len(ordered) - 1) * percentile / 100.0
+    lower = int(rank)
+    upper = min(lower + 1, len(ordered) - 1)
+    weight = rank - lower
+    return ordered[lower] * (1.0 - weight) + ordered[upper] * weight
 
 
 @pytest.mark.benchmark
@@ -121,12 +151,14 @@ def test_whisper_asr_matches_seedtts_reference_text(
 
     proc, port = _start_whisper_server(tmp_path_factory)
     omni_outputs: dict[str, str] = {}
-    omni_latency_s = 0.0
+    latencies_s: list[float] = []
+    audio_durations_s: list[float] = []
     try:
         for sample in seedtts_en_samples:
-            text, latency_s = _transcribe_with_omni(port, sample)
+            text, latency_s, audio_duration_s = _transcribe_with_omni(port, sample)
             omni_outputs[sample.sample_id] = text
-            omni_latency_s += latency_s
+            latencies_s.append(latency_s)
+            audio_durations_s.append(audio_duration_s)
     finally:
         stop_server(proc)
 
@@ -160,12 +192,31 @@ def test_whisper_asr_matches_seedtts_reference_text(
         print("\n[Whisper ASR correctness diffs]\n" + "\n\n".join(sample_diffs))
 
     corpus_wer = process_words(ref_norms, hyp_norms).wer
+    total_latency_s = sum(latencies_s)
+    latency_mean_s = statistics.mean(latencies_s)
+    latency_p95_s = _percentile(latencies_s, 95)
+    throughput_samples_per_s = len(latencies_s) / total_latency_s
+    rtfs = [
+        latency_s / audio_duration_s
+        for latency_s, audio_duration_s in zip(latencies_s, audio_durations_s)
+        if audio_duration_s > 0
+    ]
+    rtf_mean = statistics.mean(rtfs)
+    rtf_p95 = _percentile(rtfs, 95)
     print(
         "\n[Whisper ASR correctness] "
         f"samples={len(seedtts_en_samples)} "
-        f"omni_total_s={omni_latency_s:.3f} "
         f"diff_samples={len(sample_diffs)} "
         f"corpus_wer={corpus_wer:.4f}"
+    )
+    print(
+        "\n[Whisper ASR speed] "
+        f"total_latency_s={total_latency_s:.3f} "
+        f"throughput_samples_per_s={throughput_samples_per_s:.3f} "
+        f"latency_mean_s={latency_mean_s:.3f} "
+        f"latency_p95_s={latency_p95_s:.3f} "
+        f"rtf_mean={rtf_mean:.4f} "
+        f"rtf_p95={rtf_p95:.4f}"
     )
     assert corpus_wer <= SEEDTTS_ASR_CORPUS_WER_MAX, (
         f"Whisper ASR corpus WER {corpus_wer:.4f} exceeds "
@@ -174,3 +225,22 @@ def test_whisper_asr_matches_seedtts_reference_text(
     assert (
         not high_wer_samples
     ), "Whisper ASR high-WER SeedTTS samples:\n" + "\n\n".join(high_wer_samples)
+    assert throughput_samples_per_s >= WHISPER_ASR_THROUGHPUT_MIN, (
+        f"Whisper ASR throughput {throughput_samples_per_s:.3f} samples/s "
+        f"is below {WHISPER_ASR_THROUGHPUT_MIN:.3f}"
+    )
+    assert latency_mean_s <= WHISPER_ASR_LATENCY_MEAN_MAX_S, (
+        f"Whisper ASR mean latency {latency_mean_s:.3f}s exceeds "
+        f"{WHISPER_ASR_LATENCY_MEAN_MAX_S:.3f}s"
+    )
+    assert latency_p95_s <= WHISPER_ASR_LATENCY_P95_MAX_S, (
+        f"Whisper ASR p95 latency {latency_p95_s:.3f}s exceeds "
+        f"{WHISPER_ASR_LATENCY_P95_MAX_S:.3f}s"
+    )
+    assert rtf_mean <= WHISPER_ASR_RTF_MEAN_MAX, (
+        f"Whisper ASR mean RTF {rtf_mean:.4f} exceeds "
+        f"{WHISPER_ASR_RTF_MEAN_MAX:.4f}"
+    )
+    assert rtf_p95 <= WHISPER_ASR_RTF_P95_MAX, (
+        f"Whisper ASR p95 RTF {rtf_p95:.4f} exceeds " f"{WHISPER_ASR_RTF_P95_MAX:.4f}"
+    )
