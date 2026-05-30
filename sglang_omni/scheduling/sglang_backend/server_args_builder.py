@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Shared ServerArgs construction for SGLang AR engines."""
+"""Shared ServerArgs construction for SGLang AR engines and encoders."""
 from __future__ import annotations
 
 from typing import Any
@@ -34,6 +34,75 @@ def build_sglang_server_args(
     kwargs.update(overrides)
     if kwargs.get("mem_fraction_static") is None:
         kwargs.pop("mem_fraction_static", None)
+    return ServerArgs(**kwargs)
+
+
+_ENCODER_PROTECTED_KEYS = frozenset({
+    "tp_size",
+    "pp_size",
+    "dp_size",
+    "ep_size",
+    "moe_dense_tp_size",
+    "nnodes",
+    "node_rank",
+    "rank",
+    "world_size",
+    "tp_rank",
+    "gpu_id",
+    "base_gpu_id",
+    "nccl_port",
+    "dist_init_addr",
+    "encoder_only",
+    "language_only",
+    "mm_enable_dp_encoder",
+    "enable_dp_attention",
+    "enable_dp_lm_head",
+    "disable_cuda_graph",
+    "device",
+    "mem_fraction_static",
+    "max_running_requests",
+    "max_prefill_tokens",
+    "chunked_prefill_size",
+    "context_length",
+})
+
+
+def build_sglang_encoder_server_args(
+    model_path: str,
+    *,
+    tp_size: int,
+    base_gpu_id: int,
+    dist_init_addr: str,
+    dtype: str | None = None,
+    load_format: str | None = None,
+    **overrides: Any,
+) -> ServerArgs:
+    """Build encoder-only ServerArgs with runner-owned topology locked down."""
+    bad = sorted(_ENCODER_PROTECTED_KEYS & overrides.keys())
+    if bad:
+        raise ValueError(
+            f"server_args_overrides cannot override protected keys: {bad}. "
+            "These are decided by the encoder runner / pipeline runner."
+        )
+
+    kwargs: dict[str, Any] = {
+        "model_path": model_path,
+        "trust_remote_code": True,
+        "tp_size": tp_size,
+        "pp_size": 1,
+        "base_gpu_id": base_gpu_id,
+        "dist_init_addr": dist_init_addr,
+        "encoder_only": True,
+        "language_only": False,
+        "mm_enable_dp_encoder": False,
+        "disable_cuda_graph": True,
+        "random_seed": 123,
+    }
+    if dtype is not None:
+        kwargs["dtype"] = dtype
+    if load_format is not None:
+        kwargs["load_format"] = load_format
+    kwargs.update(overrides)
     return ServerArgs(**kwargs)
 
 

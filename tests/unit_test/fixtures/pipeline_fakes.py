@@ -196,6 +196,8 @@ def runtime_factory(
     server_args_overrides: dict[str, Any] | None = None,
     encoder_mem_reserve: float | None = None,
     total_gpu_memory_fraction: float | None = None,
+    encoder_activation_budget_bytes: int | None = None,
+    encoder_max_batch_size: int | None = None,
 ) -> dict[str, Any]:
     return {
         "model_path": model_path,
@@ -205,6 +207,8 @@ def runtime_factory(
         "server_args_overrides": server_args_overrides,
         "encoder_mem_reserve": encoder_mem_reserve,
         "total_gpu_memory_fraction": total_gpu_memory_fraction,
+        "encoder_activation_budget_bytes": encoder_activation_budget_bytes,
+        "encoder_max_batch_size": encoder_max_batch_size,
     }
 
 
@@ -219,6 +223,30 @@ def runtime_factory_without_total_budget(
         "gpu_id": gpu_id,
         "server_args_overrides": server_args_overrides,
     }
+
+
+def auto_local_encoder_factory(
+    model_path: str,
+    *,
+    backend: str = "local",
+    gpu_id: int = 0,
+    tp_rank: int = 0,
+    tp_size: int = 1,
+    nccl_port: int | None = None,
+) -> dict[str, Any]:
+    return {
+        "model_path": model_path,
+        "backend": backend,
+        "gpu_id": gpu_id,
+        "tp_rank": tp_rank,
+        "tp_size": tp_size,
+        "nccl_port": nccl_port,
+    }
+
+
+def _resolve_backend(backend: str, model_path: str, *, stage: str) -> str:
+    del model_path, stage
+    return "local" if backend == "auto" else backend
 
 
 def make_scheduler_accepting_model_path(

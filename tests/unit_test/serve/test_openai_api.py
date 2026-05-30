@@ -15,6 +15,7 @@ from sglang_omni.pipeline.coordinator import Coordinator
 from sglang_omni.proto import CompleteMessage, OmniRequest, StreamMessage
 from sglang_omni.serve import create_app
 from sglang_omni.serve.openai_api import (
+    _build_chat_generate_request,
     _build_speech_generate_request,
     _chat_stream,
     _speech_stream,
@@ -211,6 +212,21 @@ def test_speech_stream_failure_closes_without_done_sentinel() -> None:
     payload = json.loads(chunks[0][len("data: ") :])
     assert payload["audio"] is not None
     assert payload["finish_reason"] is None
+
+
+def test_chat_request_forwards_audio_truncation_to_metadata() -> None:
+    req = ChatCompletionRequest(
+        model="qwen3-omni",
+        messages=[{"role": "user", "content": "describe"}],
+        audios=["audio.wav"],
+        audio_truncation=False,
+    )
+
+    gen_req = _build_chat_generate_request(req)
+    omni_req = Client._build_omni_request(gen_req)
+
+    assert gen_req.metadata["audio_truncation"] is False
+    assert omni_req.inputs["audio_truncation"] is False
 
 
 def test_speech_request_records_explicit_generation_params() -> None:

@@ -7,11 +7,18 @@ from typing import ClassVar
 
 from pydantic import Field
 
-from sglang_omni.config import PipelineConfig, PlacementConfig, StageConfig
+from sglang_omni.config import (
+    PipelineConfig,
+    PlacementConfig,
+    StageConfig,
+    StageResourceConfig,
+    StageRuntimeConfig,
+)
 
 _PKG = "sglang_omni.models.qwen3_omni"
 _PLACEMENT_POLICY = f"{_PKG}.placement.Qwen3OmniPlacementPolicy"
 MIN_PARTIAL_START_CHUNKS = 3
+_ENCODER_ACTIVATION_BUDGET_BYTES = 2 * 1024**3
 
 # SGLang reads this when DeepGEMM compile utilities are imported. Qwen AR
 # stages can first hit some dense FP8 shapes after readiness; disable all-M
@@ -51,9 +58,15 @@ def _image_encoder_stage(*, gpu: int, process: str) -> StageConfig:
     return StageConfig(
         name="image_encoder",
         process=process,
-        factory=f"{_PKG}.stages.create_image_encoder_executor",
-        factory_args={"device": "cuda", "dtype": None},
+        factory=f"{_PKG}.stages.create_image_encoder_runner",
+        factory_args={"backend": "auto", "device": "cuda", "dtype": None},
         gpu=gpu,
+        runtime=StageRuntimeConfig(
+            resources=StageResourceConfig(
+                total_gpu_memory_fraction=0.1,
+                encoder_activation_budget_bytes=_ENCODER_ACTIVATION_BUDGET_BYTES,
+            )
+        ),
         next="mm_aggregate",
         project_payload={
             "mm_aggregate": f"{_PKG}.request_builders.project_encoder_to_mm_aggregate"
@@ -65,9 +78,15 @@ def _audio_encoder_stage(*, gpu: int, process: str) -> StageConfig:
     return StageConfig(
         name="audio_encoder",
         process=process,
-        factory=f"{_PKG}.stages.create_audio_encoder_executor",
-        factory_args={"device": "cuda", "dtype": None},
+        factory=f"{_PKG}.stages.create_audio_encoder_runner",
+        factory_args={"backend": "auto", "device": "cuda", "dtype": None},
         gpu=gpu,
+        runtime=StageRuntimeConfig(
+            resources=StageResourceConfig(
+                total_gpu_memory_fraction=0.1,
+                encoder_activation_budget_bytes=_ENCODER_ACTIVATION_BUDGET_BYTES,
+            )
+        ),
         next="mm_aggregate",
         project_payload={
             "mm_aggregate": f"{_PKG}.request_builders.project_encoder_to_mm_aggregate"
@@ -115,6 +134,9 @@ def _thinker_stage(*, gpu: int, speech_enabled: bool, process: str) -> StageConf
         factory=f"{_PKG}.stages.create_sglang_thinker_executor_from_config",
         factory_args=factory_args,
         gpu=gpu,
+        runtime=StageRuntimeConfig(
+            resources=StageResourceConfig(total_gpu_memory_fraction=0.7)
+        ),
         runtime_arg_map={"max_seq_len": "thinker_max_seq_len"},
         next="decode",
         stream_to=["talker_ar", "decode"] if speech_enabled else ["decode"],
@@ -189,8 +211,8 @@ def _code2wav_stage(*, gpu: int, process: str) -> StageConfig:
 def _text_stages() -> list[StageConfig]:
     return [
         _preprocessing_stage(process="pipeline"),
-        _image_encoder_stage(gpu=0, process="pipeline"),
-        _audio_encoder_stage(gpu=0, process="pipeline"),
+        _image_encoder_stage(gpu=0, process="image_encoder"),
+        _audio_encoder_stage(gpu=0, process="audio_encoder"),
         _aggregate_stage(process="pipeline", speech_enabled=False),
         _thinker_stage(gpu=0, speech_enabled=False, process="pipeline"),
         _decode_stage(process="pipeline"),

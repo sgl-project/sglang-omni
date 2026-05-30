@@ -1,8 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
+import sglang_omni.config.placement as placement_mod
 from sglang_omni.config import (
     PipelineConfig,
     StageConfig,
@@ -14,6 +17,7 @@ from sglang_omni.config import (
 from sglang_omni.config.manager import ConfigManager
 
 _FACTORY = "tests.unit_test.fixtures.pipeline_fakes.dummy_factory"
+_AUTO_LOCAL_FACTORY = "tests.unit_test.fixtures.pipeline_fakes.auto_local_encoder_factory"
 
 
 def _stage(
@@ -23,6 +27,7 @@ def _stage(
     fraction: float | None = None,
     process: str | None = None,
     tp_size: int = 1,
+    encoder_budget: int | None = None,
     terminal: bool = False,
     next_stage: str | None = None,
 ) -> StageConfig:
@@ -33,7 +38,10 @@ def _stage(
         process=process,
         tp_size=tp_size,
         runtime=StageRuntimeConfig(
-            resources=StageResourceConfig(total_gpu_memory_fraction=fraction)
+            resources=StageResourceConfig(
+                total_gpu_memory_fraction=fraction,
+                encoder_activation_budget_bytes=encoder_budget,
+            )
         ),
         next=next_stage,
         terminal=terminal,
@@ -127,6 +135,29 @@ def test_same_process_same_gpu_does_not_require_memory_budgets() -> None:
     ] == [("p0", ("a", "b"), 0)]
 
 
+def test_auto_backend_resolved_local_may_share_process() -> None:
+    config = PipelineConfig(
+        model_path="dummy",
+        stages=[
+            StageConfig(
+                name="image_encoder",
+                factory=_AUTO_LOCAL_FACTORY,
+                factory_args={"backend": "auto"},
+                gpu=0,
+                process="p0",
+                next="decode",
+            ),
+            _stage("decode", process="p0", terminal=True),
+        ],
+    )
+
+    topology = _topology(config)
+
+    assert [
+        (group.name, group.stage_names, group.gpu_id) for group in topology.groups
+    ] == [("p0", ("image_encoder", "decode"), 0)]
+
+
 def test_same_gpu_multiple_processes_accepts_explicit_budgets() -> None:
     config = PipelineConfig(
         model_path="dummy",
@@ -171,6 +202,55 @@ def test_same_gpu_multiple_processes_rejects_over_budget() -> None:
     )
 
     with pytest.raises(ValueError, match="exceeds placement limit"):
+        build_stage_placement_plan(config)
+
+
+def test_dynamic_headroom_accepts_encoder_activation_budget(monkeypatch) -> None:
+    monkeypatch.setattr(
+        placement_mod,
+        "get_gpu_device_info",
+        lambda gpu_id: SimpleNamespace(total_memory_bytes=100 * 1024**3),
+    )
+    config = PipelineConfig(
+        model_path="dummy",
+        stages=[
+            _stage(
+                "image_encoder",
+                gpu=0,
+                fraction=0.80,
+                encoder_budget=10 * 1024**3,
+                process="image_encoder",
+                terminal=True,
+            )
+        ],
+    )
+
+    plan = build_stage_placement_plan(config)
+
+    assert plan.gpus[0].total_gpu_memory_fraction == pytest.approx(0.80)
+
+
+def test_dynamic_headroom_rejects_encoder_activation_budget(monkeypatch) -> None:
+    monkeypatch.setattr(
+        placement_mod,
+        "get_gpu_device_info",
+        lambda gpu_id: SimpleNamespace(total_memory_bytes=100 * 1024**3),
+    )
+    config = PipelineConfig(
+        model_path="dummy",
+        stages=[
+            _stage(
+                "image_encoder",
+                gpu=0,
+                fraction=0.95,
+                encoder_budget=10 * 1024**3,
+                process="image_encoder",
+                terminal=True,
+            )
+        ],
+    )
+
+    with pytest.raises(ValueError, match="resident plus dynamic"):
         build_stage_placement_plan(config)
 
 

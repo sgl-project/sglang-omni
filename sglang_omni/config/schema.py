@@ -53,12 +53,38 @@ class StageResourceConfig(BaseModel):
             "its assigned GPU."
         ),
     )
+    encoder_activation_budget_bytes: int | None = Field(
+        default=None,
+        description=(
+            "Admission budget for SGLang-backed encoder batches. This is not "
+            "a placement or KV-cache memory fraction."
+        ),
+    )
+    encoder_max_batch_size: int | None = Field(
+        default=None,
+        description=(
+            "Admission-time maximum batch size for SGLang-backed encoder "
+            "schedulers. Used as a conservative guard for colocated TP layouts."
+        ),
+    )
 
     def model_post_init(self, __context: Any = None) -> None:
         value = self.total_gpu_memory_fraction
         if value is not None and not 0.0 < value <= 1.0:
             raise ValueError(
                 "runtime.resources.total_gpu_memory_fraction must be in (0, 1]"
+            )
+        budget = self.encoder_activation_budget_bytes
+        if budget is not None and budget <= 0:
+            raise ValueError(
+                "runtime.resources.encoder_activation_budget_bytes must be a "
+                "positive integer"
+            )
+        max_batch_size = self.encoder_max_batch_size
+        if max_batch_size is not None and max_batch_size <= 0:
+            raise ValueError(
+                "runtime.resources.encoder_max_batch_size must be a "
+                "positive integer"
             )
 
 

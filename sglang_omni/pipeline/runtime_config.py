@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from sglang_omni.config.placement import StagePlacementPlan, build_stage_placement_plan
+from sglang_omni.config.runtime import StageLaunchMode, build_stage_launch_modes
 from sglang_omni.config.schema import PipelineConfig, StageConfig
 from sglang_omni.config.topology import ProcessTopologyPlan, build_process_topology_plan
 
@@ -55,6 +56,7 @@ class PipelineRuntimePrep:
     endpoints: dict[str, str]
     placement_plan: StagePlacementPlan
     process_plan: ProcessTopologyPlan
+    launch_modes: dict[str, StageLaunchMode]
     runtime_dir: IpcRuntimeDir
     runtime_dir_created_here: bool
 
@@ -86,11 +88,13 @@ def prepare_pipeline_runtime(
 
     try:
         stages_cfg, name_map, entry_stage = config.apply_fusion()
+        launch_modes = build_stage_launch_modes(config, stages_cfg=stages_cfg)
         placement_plan = build_stage_placement_plan(config, stages_cfg=stages_cfg)
         process_plan = build_process_topology_plan(
             config,
             placement_plan,
             stages_cfg=stages_cfg,
+            launch_modes=launch_modes,
         )
         endpoints = allocate_endpoints(
             stages=stages_cfg,
@@ -108,6 +112,7 @@ def prepare_pipeline_runtime(
         endpoints=endpoints,
         placement_plan=placement_plan,
         process_plan=process_plan,
+        launch_modes=launch_modes,
         runtime_dir=runtime_dir,
         runtime_dir_created_here=runtime_dir_created_here,
     )

@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 import torch
 import torch.nn.functional as F
@@ -46,6 +46,7 @@ logger = logging.getLogger(__name__)
 # Image-encoder batching budget; the multiplier accounts for transient activations.
 QWEN3_IMAGE_ENCODER_BATCH_BUDGET_BYTES = 10 * 1024**3
 QWEN3_IMAGE_ENCODER_ACTIVATION_MULTIPLIER = 5
+QWEN3_AUDIO_ENCODER_BATCH_BUDGET_BYTES = 10 * 1024**3
 
 # CPU LRU cap for repeated-media encoder outputs.
 QWEN3_ENCODER_CACHE_MAX_BYTES = 4 * 1024**3
@@ -86,14 +87,14 @@ def _apply_colocated_ar_memory_contract(
             effective_total_gpu_memory_fraction=None,
             applied_encoder_mem_reserve=0.0,
         )
+    if encoder_mem_reserve:
+        raise ValueError(
+            f"Stage {stage_name} cannot apply encoder_mem_reserve when "
+            "runtime.resources.total_gpu_memory_fraction is set."
+        )
 
     explicit_mem_fraction = overrides.get("mem_fraction_static")
     if explicit_mem_fraction is not None:
-        if encoder_mem_reserve:
-            raise ValueError(
-                f"Stage {stage_name} cannot apply encoder_mem_reserve when "
-                "runtime.sglang_server_args.mem_fraction_static is explicitly set."
-            )
         if abs(float(explicit_mem_fraction) - total_gpu_memory_fraction) > 1e-3:
             raise ValueError(
                 f"Stage {stage_name} sets conflicting colocated memory "
@@ -109,20 +110,12 @@ def _apply_colocated_ar_memory_contract(
             applied_encoder_mem_reserve=0.0,
         )
 
-    effective_total_gpu_memory_fraction = _apply_colocated_encoder_mem_reserve(
-        total_gpu_memory_fraction,
-        encoder_mem_reserve,
-    )
+    effective_total_gpu_memory_fraction = total_gpu_memory_fraction
     overrides["mem_fraction_static"] = effective_total_gpu_memory_fraction
-    applied_encoder_mem_reserve = (
-        encoder_mem_reserve
-        if effective_total_gpu_memory_fraction != total_gpu_memory_fraction
-        else 0.0
-    )
     return _ArMemoryContract(
         mem_fraction_static_pinned=True,
         effective_total_gpu_memory_fraction=effective_total_gpu_memory_fraction,
-        applied_encoder_mem_reserve=applied_encoder_mem_reserve,
+        applied_encoder_mem_reserve=0.0,
     )
 
 
@@ -779,10 +772,29 @@ def create_aggregate_executor():
     return SimpleScheduler(_identity)
 
 
-def create_image_encoder_executor(
+_BACKEND_CHOICES = ("local", "sglang", "auto")
+
+
+def _resolve_backend(
+    backend: str,
     model_path: str,
     *,
-    device: str = "cuda",
+    stage: str,
+) -> Literal["local", "sglang"]:
+    del model_path
+    if backend not in _BACKEND_CHOICES:
+        raise ValueError(
+            f"Stage {stage!r}: backend must be one of {_BACKEND_CHOICES}, got {backend!r}"
+        )
+    if backend == "auto":
+        return "sglang"
+    return backend  # type: ignore[return-value]
+
+
+def _build_local_image_encoder(
+    model_path: str,
+    *,
+    device: str,
     dtype: str | None = None,
 ):
     from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
@@ -851,10 +863,10 @@ def create_image_encoder_executor(
     )
 
 
-def create_audio_encoder_executor(
+def _build_local_audio_encoder(
     model_path: str,
     *,
-    device: str = "cuda",
+    device: str,
     dtype: str | None = None,
 ):
     from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
@@ -919,6 +931,203 @@ def create_audio_encoder_executor(
     )
 
 
+def _resolve_dtype(dtype: str | None) -> torch.dtype:
+    if dtype is None:
+        return torch.float16
+    if dtype in ("float16", "fp16", "half"):
+        return torch.float16
+    if dtype in ("bfloat16", "bf16"):
+        return torch.bfloat16
+    if dtype in ("float32", "fp32"):
+        return torch.float32
+    raise ValueError(f"Unsupported dtype: {dtype!r}")
+
+
+def _build_sglang_encoder_scheduler(
+    *,
+    model_path: str,
+    stage: Literal["image_encoder", "audio_encoder"],
+    gpu_id: int,
+    tp_rank: int,
+    tp_size: int,
+    nccl_port: int | None,
+    max_batch_size: int,
+    max_batch_wait_ms: int,
+    encoder_max_batch_size: int | None,
+    encoder_activation_budget_bytes: int | None,
+    max_single_request_cost: int | None,
+    server_args_overrides: dict[str, Any] | None,
+    dtype: str | None,
+    load_format: str | None,
+    tp_parity_mode: str | None,
+):
+    from sglang_omni.model_runner.sglang_encoder_runner import SGLangEncoderRunner
+    from sglang_omni.models.qwen3_omni.components.common import load_thinker_config
+    from sglang_omni.models.qwen3_omni.encoder_adapters import (
+        Qwen3OmniAudioEncoderAdapter,
+        Qwen3OmniImageEncoderAdapter,
+    )
+    from sglang_omni.scheduling.encoder_scheduler import EncoderScheduler
+
+    hf_thinker_config = load_thinker_config(model_path)
+    torch_dtype = _resolve_dtype(dtype)
+    if stage == IMAGE_STAGE:
+        adapter = Qwen3OmniImageEncoderAdapter(
+            hf_config=hf_thinker_config,
+            dtype=torch_dtype,
+            tp_size=tp_size,
+        )
+    else:
+        adapter = Qwen3OmniAudioEncoderAdapter(
+            hf_config=hf_thinker_config,
+            dtype=torch_dtype,
+            tp_size=tp_size,
+        )
+
+    runner = SGLangEncoderRunner(
+        model_path=model_path,
+        gpu_id=gpu_id,
+        tp_rank=tp_rank,
+        tp_size=tp_size,
+        nccl_port=nccl_port,
+        encoder_specs=adapter.encoder_specs,
+        dtype=dtype,
+        load_format=load_format,
+        server_args_overrides=server_args_overrides,
+        tp_parity_mode=tp_parity_mode,
+    )
+    if (
+        max_single_request_cost is None
+        and encoder_activation_budget_bytes is not None
+    ):
+        max_single_request_cost = encoder_activation_budget_bytes
+    if encoder_max_batch_size is not None:
+        if encoder_max_batch_size <= 0:
+            raise ValueError("encoder_max_batch_size must be positive")
+        max_batch_size = encoder_max_batch_size
+    logger.info(
+        "encoder_scheduler_config stage=%s tp_rank=%d/%d "
+        "max_batch_size=%d max_batch_wait_ms=%d "
+        "encoder_activation_budget_bytes=%s max_single_request_cost=%s",
+        stage,
+        tp_rank,
+        tp_size,
+        max_batch_size,
+        max_batch_wait_ms,
+        encoder_activation_budget_bytes,
+        max_single_request_cost,
+    )
+    return EncoderScheduler(
+        runner=runner,
+        adapter=adapter,
+        max_batch_size=max_batch_size,
+        max_batch_wait_ms=max_batch_wait_ms,
+        request_cost_fn=adapter.request_cost_fn,
+        batch_cost_fn=getattr(adapter, "batch_cost_fn", None),
+        max_batch_cost=encoder_activation_budget_bytes,
+        max_single_request_cost=max_single_request_cost,
+        output_cache=StageOutputCache(
+            max_size=QWEN3_ENCODER_CACHE_MAX_ENTRIES,
+            max_bytes=QWEN3_ENCODER_CACHE_MAX_BYTES,
+            cache_device="cpu",
+        ),
+    )
+
+
+def create_image_encoder_runner(
+    model_path: str,
+    *,
+    backend: Literal["local", "sglang", "auto"] = "local",
+    gpu_id: int = 0,
+    tp_rank: int = 0,
+    tp_size: int = 1,
+    nccl_port: int | None = None,
+    device: str = "cuda",
+    dtype: str | None = None,
+    load_format: str | None = None,
+    max_batch_size: int = 32,
+    max_batch_wait_ms: int = 50,
+    encoder_max_batch_size: int | None = None,
+    encoder_activation_budget_bytes: int | None = QWEN3_IMAGE_ENCODER_BATCH_BUDGET_BYTES,
+    max_single_request_cost: int | None = None,
+    server_args_overrides: dict[str, Any] | None = None,
+    tp_parity_mode: str | None = None,
+):
+    chosen = _resolve_backend(backend, model_path, stage=IMAGE_STAGE)
+    if chosen == "sglang":
+        return _build_sglang_encoder_scheduler(
+            model_path=model_path,
+            stage=IMAGE_STAGE,
+            gpu_id=gpu_id,
+            tp_rank=tp_rank,
+            tp_size=tp_size,
+            nccl_port=nccl_port,
+            max_batch_size=max_batch_size,
+            max_batch_wait_ms=max_batch_wait_ms,
+            encoder_max_batch_size=encoder_max_batch_size,
+            encoder_activation_budget_bytes=encoder_activation_budget_bytes,
+            max_single_request_cost=max_single_request_cost,
+            server_args_overrides=server_args_overrides,
+            dtype=dtype,
+            load_format=load_format,
+            tp_parity_mode=tp_parity_mode,
+        )
+    if tp_size > 1:
+        raise ValueError(
+            f"image_encoder backend='local' does not support tp_size={tp_size}"
+        )
+    return _build_local_image_encoder(model_path, device=device, dtype=dtype)
+
+
+def create_audio_encoder_runner(
+    model_path: str,
+    *,
+    backend: Literal["local", "sglang", "auto"] = "local",
+    gpu_id: int = 0,
+    tp_rank: int = 0,
+    tp_size: int = 1,
+    nccl_port: int | None = None,
+    device: str = "cuda",
+    dtype: str | None = None,
+    load_format: str | None = None,
+    max_batch_size: int = 32,
+    max_batch_wait_ms: int = 50,
+    encoder_max_batch_size: int | None = None,
+    encoder_activation_budget_bytes: int | None = QWEN3_AUDIO_ENCODER_BATCH_BUDGET_BYTES,
+    max_single_request_cost: int | None = None,
+    server_args_overrides: dict[str, Any] | None = None,
+    tp_parity_mode: str | None = None,
+):
+    chosen = _resolve_backend(backend, model_path, stage=AUDIO_STAGE)
+    if chosen == "sglang":
+        return _build_sglang_encoder_scheduler(
+            model_path=model_path,
+            stage=AUDIO_STAGE,
+            gpu_id=gpu_id,
+            tp_rank=tp_rank,
+            tp_size=tp_size,
+            nccl_port=nccl_port,
+            max_batch_size=max_batch_size,
+            max_batch_wait_ms=max_batch_wait_ms,
+            encoder_max_batch_size=encoder_max_batch_size,
+            encoder_activation_budget_bytes=encoder_activation_budget_bytes,
+            max_single_request_cost=max_single_request_cost,
+            server_args_overrides=server_args_overrides,
+            dtype=dtype,
+            load_format=load_format,
+            tp_parity_mode=tp_parity_mode,
+        )
+    if tp_size > 1:
+        raise ValueError(
+            f"audio_encoder backend='local' does not support tp_size={tp_size}"
+        )
+    return _build_local_audio_encoder(model_path, device=device, dtype=dtype)
+
+
+create_image_encoder_executor = create_image_encoder_runner
+create_audio_encoder_executor = create_audio_encoder_runner
+
+
 def create_decode_executor(model_path: str):
     return create_streaming_detokenize_scheduler(model_path)
 
@@ -937,7 +1146,7 @@ def create_sglang_thinker_executor_from_config(
     nccl_port: int | None = None,
     thinker_max_seq_len: int = 8192,
     server_args_overrides: dict[str, Any] | None = None,
-    encoder_mem_reserve: float = 0.05,
+    encoder_mem_reserve: float = 0.0,
     speech_enabled: bool = False,
     total_gpu_memory_fraction: float | None = None,
 ):
@@ -952,10 +1161,7 @@ def create_sglang_thinker_executor_from_config(
         and overrides.get("mem_fraction_static") is not None
     )
     colocated_encoder_mem_reserve = (
-        encoder_mem_reserve
-        if total_gpu_memory_fraction is not None
-        and not has_explicit_colocated_mem_fraction
-        else 0.0
+        encoder_mem_reserve if total_gpu_memory_fraction is not None else 0.0
     )
     memory_contract = _apply_colocated_ar_memory_contract(
         overrides,

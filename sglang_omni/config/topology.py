@@ -12,6 +12,7 @@ from collections import Counter, OrderedDict, defaultdict
 from dataclasses import dataclass
 
 from sglang_omni.config.placement import StagePlacementPlan, resolve_stage_gpu_ids
+from sglang_omni.config.runtime import StageLaunchMode, build_stage_launch_modes
 from sglang_omni.config.schema import PipelineConfig, StageConfig
 
 
@@ -38,8 +39,10 @@ def build_process_topology_plan(
     gpu_placement: StagePlacementPlan,
     *,
     stages_cfg: list[StageConfig] | None = None,
+    launch_modes: dict[str, StageLaunchMode] | None = None,
 ) -> ProcessTopologyPlan:
     stages = stages_cfg if stages_cfg is not None else config.stages
+    modes = launch_modes or build_stage_launch_modes(config, stages_cfg=stages)
     groups = _build_process_groups(config, stages, gpu_placement)
     tp_stage_to_processes = _build_tp_process_names(stages)
 
@@ -53,6 +56,7 @@ def build_process_topology_plan(
         tp_stage_to_processes=tp_stage_to_processes,
     )
     _validate_process_name_uniqueness(plan)
+    _validate_sglang_stage_process_exclusivity(modes, plan)
     _validate_gpu_process_colocation(config, gpu_placement, stages, plan)
     return plan
 
@@ -193,6 +197,24 @@ def _validate_process_name_uniqueness(plan: ProcessTopologyPlan) -> None:
             "TP-derived process names collide with non-TP process groups: "
             f"{collisions}"
         )
+
+
+def _validate_sglang_stage_process_exclusivity(
+    launch_modes: dict[str, StageLaunchMode],
+    plan: ProcessTopologyPlan,
+) -> None:
+    for group in plan.groups:
+        sglang_stages = [
+            name
+            for name in group.stage_names
+            if launch_modes[name].requires_sglang_launch
+        ]
+        if sglang_stages and len(group.stage_names) > 1:
+            raise ValueError(
+                f"SGLang-backed stage(s) {sglang_stages} must own their OS "
+                f"process; process group {group.name!r} contains "
+                f"{list(group.stage_names)}"
+            )
 
 
 def _resolve_group_gpu_id(

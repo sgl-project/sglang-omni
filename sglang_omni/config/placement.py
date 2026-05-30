@@ -4,13 +4,17 @@
 from __future__ import annotations
 
 import inspect
+import logging
 from collections import defaultdict
 from dataclasses import dataclass
 from typing import Protocol
 
 from sglang_omni.config.runtime import reject_untyped_total_gpu_memory_fraction
 from sglang_omni.config.schema import PipelineConfig, StageConfig
+from sglang_omni.utils.gpu_memory import format_bytes_gib, get_gpu_device_info
 from sglang_omni.utils.imports import import_string
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -90,6 +94,7 @@ class StagePlacementPlanner:
             ),
         )
         self._validate_memory_budgets(plan)
+        self._validate_dynamic_headroom(stages, plan)
         if apply_policy:
             _apply_placement_policy(self._config, plan)
         return plan
@@ -103,6 +108,64 @@ class StagePlacementPlanner:
                     f"{gpu.total_gpu_memory_fraction:.3f} exceeds placement limit "
                     f"{limit:.3f}"
                 )
+
+    def _validate_dynamic_headroom(
+        self,
+        stages: list[StageConfig],
+        plan: StagePlacementPlan,
+    ) -> None:
+        dynamic_entries: dict[int, list[tuple[str, int]]] = defaultdict(list)
+        for stage in stages:
+            budget = stage.runtime.resources.encoder_activation_budget_bytes
+            if budget is None:
+                continue
+            for gpu_id in _resolve_stage_gpu_ids(stage):
+                dynamic_entries[gpu_id].append((stage.name, int(budget)))
+
+        if not dynamic_entries:
+            return
+
+        limit = self._config.placement.max_total_gpu_memory_fraction_per_gpu
+        for gpu_id, entries in dynamic_entries.items():
+            gpu = plan.gpus.get(gpu_id)
+            if gpu is None:
+                continue
+            total_memory = get_gpu_device_info(gpu_id).total_memory_bytes
+            if total_memory is None:
+                logger.info(
+                    "Skipping dynamic GPU headroom validation for GPU %s: "
+                    "total memory is unavailable",
+                    gpu_id,
+                )
+                continue
+
+            resident_bytes = int(total_memory * gpu.total_gpu_memory_fraction)
+            dynamic_bytes = sum(value for _, value in entries)
+            limit_bytes = int(total_memory * limit)
+            if resident_bytes + dynamic_bytes <= limit_bytes:
+                logger.info(
+                    "GPU %s memory budget validated: resident=%s dynamic=%s "
+                    "limit=%s",
+                    gpu_id,
+                    format_bytes_gib(resident_bytes),
+                    format_bytes_gib(dynamic_bytes),
+                    format_bytes_gib(limit_bytes),
+                )
+                continue
+
+            detail = ", ".join(
+                f"{stage_name}={format_bytes_gib(value)}"
+                for stage_name, value in entries
+            )
+            raise ValueError(
+                f"GPU {gpu_id} resident plus dynamic memory budgets exceed "
+                "placement limit: "
+                f"resident={format_bytes_gib(resident_bytes)} "
+                f"dynamic={format_bytes_gib(dynamic_bytes)} ({detail}) "
+                f"limit={format_bytes_gib(limit_bytes)}. Lower "
+                "runtime.resources.total_gpu_memory_fraction or "
+                "runtime.resources.encoder_activation_budget_bytes."
+            )
 
 
 def build_stage_placement_plan(

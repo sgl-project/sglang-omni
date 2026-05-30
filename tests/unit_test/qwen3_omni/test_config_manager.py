@@ -4,6 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+import typer
 
 from sglang_omni.cli.serve import apply_encoder_mem_reserve_cli_override
 from sglang_omni.config import (
@@ -161,7 +162,14 @@ def test_qwen3_omni_mmsu_example_config_uses_text_pipeline() -> None:
         "thinker",
         "decode",
     ]
-    assert {stage.process for stage in config.stages} == {"pipeline"}
+    assert {stage.name: stage.process for stage in config.stages} == {
+        "preprocessing": "pipeline",
+        "image_encoder": "image_encoder",
+        "audio_encoder": "audio_encoder",
+        "mm_aggregate": "pipeline",
+        "thinker": "pipeline",
+        "decode": "pipeline",
+    }
     assert "talker_ar" not in {stage.name for stage in config.stages}
     assert "code2wav" not in {stage.name for stage in config.stages}
     assert plan.gpus[0].total_gpu_memory_fraction == pytest.approx(0.8)
@@ -179,24 +187,17 @@ def test_qwen_preprocessing_runtime_video_fps_resolves_to_factory_arg() -> None:
     assert args["video_fps"] == 2.0
 
 
-def test_h20_colocated_example_reserve_keeps_raw_budget_in_resolved_config() -> None:
+def test_h20_colocated_example_rejects_legacy_encoder_reserve() -> None:
     config_path = _REPO_ROOT / "examples" / "configs" / "qwen3_omni_colocated_h20.yaml"
     config = ConfigManager.from_file(str(config_path)).config
 
-    apply_encoder_mem_reserve_cli_override(
-        config,
-        encoder_mem_reserve=0.05,
-        mem_fraction_static=None,
-        thinker_mem_fraction_static=None,
-    )
-    plan = build_stage_placement_plan(config)
-    thinker = _stage(config, "thinker")
-    thinker_args = resolve_stage_factory_args(thinker, config)
-
-    assert plan.gpus[0].total_gpu_memory_fraction == pytest.approx(0.94)
-    assert thinker.runtime.resources.total_gpu_memory_fraction == pytest.approx(0.75)
-    assert thinker_args["total_gpu_memory_fraction"] == pytest.approx(0.75)
-    assert thinker_args["encoder_mem_reserve"] == pytest.approx(0.05)
+    with pytest.raises(typer.BadParameter, match="total_gpu_memory_fraction"):
+        apply_encoder_mem_reserve_cli_override(
+            config,
+            encoder_mem_reserve=0.05,
+            mem_fraction_static=None,
+            thinker_mem_fraction_static=None,
+        )
 
 
 def test_config_manager_rejects_unknown_stage_override(tmp_path: Path) -> None:

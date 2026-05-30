@@ -44,6 +44,18 @@ def _take_decode_input(sched_req: SimpleNamespace) -> torch.Tensor | None:
     )
 
 
+def _fresh_partial_scheduler(
+    *,
+    enable_partial_start: bool = False,
+    partial_start_min_chunks: int = MIN_PARTIAL_START_CHUNKS,
+) -> QwenTalkerScheduler:
+    scheduler = object.__new__(QwenTalkerScheduler)
+    scheduler._enable_partial_start = enable_partial_start
+    scheduler._partial_start_min_chunks = partial_start_min_chunks
+    scheduler._im_end_token_id = None
+    return scheduler
+
+
 def test_qwen_talker_decode_input_consumes_feedback_and_text_or_pad() -> None:
     """Preserves FIFO consumption for ordinary text and final pad fallback."""
     text_req = _sched_req(
