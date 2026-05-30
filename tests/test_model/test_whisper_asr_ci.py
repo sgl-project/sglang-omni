@@ -23,6 +23,7 @@ from benchmarks.dataset.prepare import DATASETS
 from benchmarks.dataset.seedtts import SampleInput, load_seedtts_samples
 from benchmarks.tasks.tts import normalize_text
 from tests.utils import (
+    MetricCheckCollector,
     disable_proxy,
     no_proxy_env,
     server_log_file,
@@ -147,7 +148,14 @@ def test_whisper_asr_matches_seedtts_reference_text(
     tmp_path_factory: pytest.TempPathFactory,
 ) -> None:
     _require_cuda()
-    assert len(seedtts_en_samples) == SEEDTTS_ASR_CORRECTNESS_SAMPLES
+    checks = MetricCheckCollector("Whisper ASR correctness and speed")
+    checks.check(
+        len(seedtts_en_samples) == SEEDTTS_ASR_CORRECTNESS_SAMPLES,
+        f"Expected {SEEDTTS_ASR_CORRECTNESS_SAMPLES} SeedTTS samples, "
+        f"got {len(seedtts_en_samples)}",
+    )
+    if not seedtts_en_samples:
+        checks.assert_all()
 
     proc, port = _start_whisper_server(tmp_path_factory)
     omni_outputs: dict[str, str] = {}
@@ -218,29 +226,37 @@ def test_whisper_asr_matches_seedtts_reference_text(
         f"rtf_mean={rtf_mean:.4f} "
         f"rtf_p95={rtf_p95:.4f}"
     )
-    assert corpus_wer <= SEEDTTS_ASR_CORPUS_WER_MAX, (
+    checks.check(
+        corpus_wer <= SEEDTTS_ASR_CORPUS_WER_MAX,
         f"Whisper ASR corpus WER {corpus_wer:.4f} exceeds "
-        f"{SEEDTTS_ASR_CORPUS_WER_MAX:.4f}"
+        f"{SEEDTTS_ASR_CORPUS_WER_MAX:.4f}",
     )
-    assert (
-        not high_wer_samples
-    ), "Whisper ASR high-WER SeedTTS samples:\n" + "\n\n".join(high_wer_samples)
-    assert throughput_samples_per_s >= WHISPER_ASR_THROUGHPUT_MIN, (
+    checks.check(
+        not high_wer_samples,
+        "Whisper ASR high-WER SeedTTS samples:\n" + "\n\n".join(high_wer_samples),
+    )
+    checks.check(
+        throughput_samples_per_s >= WHISPER_ASR_THROUGHPUT_MIN,
         f"Whisper ASR throughput {throughput_samples_per_s:.3f} samples/s "
-        f"is below {WHISPER_ASR_THROUGHPUT_MIN:.3f}"
+        f"is below {WHISPER_ASR_THROUGHPUT_MIN:.3f}",
     )
-    assert latency_mean_s <= WHISPER_ASR_LATENCY_MEAN_MAX_S, (
+    checks.check(
+        latency_mean_s <= WHISPER_ASR_LATENCY_MEAN_MAX_S,
         f"Whisper ASR mean latency {latency_mean_s:.3f}s exceeds "
-        f"{WHISPER_ASR_LATENCY_MEAN_MAX_S:.3f}s"
+        f"{WHISPER_ASR_LATENCY_MEAN_MAX_S:.3f}s",
     )
-    assert latency_p95_s <= WHISPER_ASR_LATENCY_P95_MAX_S, (
+    checks.check(
+        latency_p95_s <= WHISPER_ASR_LATENCY_P95_MAX_S,
         f"Whisper ASR p95 latency {latency_p95_s:.3f}s exceeds "
-        f"{WHISPER_ASR_LATENCY_P95_MAX_S:.3f}s"
+        f"{WHISPER_ASR_LATENCY_P95_MAX_S:.3f}s",
     )
-    assert rtf_mean <= WHISPER_ASR_RTF_MEAN_MAX, (
+    checks.check(
+        rtf_mean <= WHISPER_ASR_RTF_MEAN_MAX,
         f"Whisper ASR mean RTF {rtf_mean:.4f} exceeds "
-        f"{WHISPER_ASR_RTF_MEAN_MAX:.4f}"
+        f"{WHISPER_ASR_RTF_MEAN_MAX:.4f}",
     )
-    assert rtf_p95 <= WHISPER_ASR_RTF_P95_MAX, (
-        f"Whisper ASR p95 RTF {rtf_p95:.4f} exceeds " f"{WHISPER_ASR_RTF_P95_MAX:.4f}"
+    checks.check(
+        rtf_p95 <= WHISPER_ASR_RTF_P95_MAX,
+        f"Whisper ASR p95 RTF {rtf_p95:.4f} exceeds " f"{WHISPER_ASR_RTF_P95_MAX:.4f}",
     )
+    checks.assert_all()
