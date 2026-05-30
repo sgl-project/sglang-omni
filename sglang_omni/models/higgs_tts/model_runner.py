@@ -279,8 +279,8 @@ class HiggsTTSModelRunner(ModelRunner):
             if was_done_cpu[b]:
                 cb0_per_row.append(0)
                 continue
-            codes_N = codes_BN_cpu[b]
-            data.output_codes.append(codes_N.to(torch.long))
+            codes_N = codes_BN_cpu[b].to(torch.long).clone()
+            data.output_codes.append(codes_N)
             data.generation_done = bool(gen_done_after_cpu[b])
             self._emit_code_chunk(sched_req, codes_N)
             self._mark_sampler_finished(req, data.generation_done)
@@ -374,45 +374,18 @@ class HiggsTTSModelRunner(ModelRunner):
     def _emit_code_chunk(self, sched_req: Any, codes_N: torch.Tensor) -> None:
         if self._outbox is None:
             return
-        metadata = self._stream_metadata_for_request(sched_req)
+        metadata = sched_req.data.stream_metadata
         if metadata is None:
             return
-        # codes_N is already CPU in both eager and CUDA-graph collection paths.
         self._outbox.put(
             OutgoingMessage(
                 request_id=sched_req.request_id,
                 type="stream",
                 target=self._vocoder_target,
-                data=codes_N.to(torch.long).clone(),
+                data=codes_N,
                 metadata=metadata,
             )
         )
-
-    @staticmethod
-    def _stream_metadata_for_request(sched_req: Any) -> dict[str, Any] | None:
-        data = sched_req.data
-        stage_payload = data.stage_payload
-        params = stage_payload.request.params
-        if not isinstance(params, dict):
-            raise TypeError(
-                f"Higgs request params must be a dict, got {type(params).__name__}"
-            )
-        if not bool(params.get("stream", False)):
-            return None
-
-        num_codebooks = int(data.num_codebooks)
-        codebook_size = int(data.codebook_size)
-        if num_codebooks <= 0 or codebook_size <= 2:
-            raise ValueError(
-                f"Invalid Higgs stream codec contract: "
-                f"num_codebooks={num_codebooks}, codebook_size={codebook_size}"
-            )
-        return {
-            "modality": "audio_codes",
-            "stream": True,
-            "num_codebooks": num_codebooks,
-            "codebook_size": codebook_size,
-        }
 
 
 __all__ = ["HiggsTTSModelRunner"]

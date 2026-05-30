@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from dataclasses import dataclass, field
 from typing import Any
@@ -13,7 +12,7 @@ import torch
 from sglang_omni.models.fishaudio_s2_pro.payload_types import S2ProState
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
 from sglang_omni.proto import StagePayload
-from sglang_omni.scheduling.messages import IncomingMessage, OutgoingMessage
+from sglang_omni.scheduling.messages import OutgoingMessage
 from sglang_omni.scheduling.streaming_simple_scheduler import StreamingSimpleScheduler
 from sglang_omni.utils.audio_payload import audio_waveform_payload
 
@@ -323,8 +322,8 @@ class S2ProVocoderScheduler(StreamingSimpleScheduler):
         self._stream_states: dict[str, _StreamVocoderState] = {}
 
         super().__init__(
-            lambda payload: self._vocode_payload(payload),
-            batch_compute_fn=lambda payloads: self._vocode_payloads(payloads),
+            self._vocode_payload,
+            batch_compute_fn=self._vocode_payloads,
             max_batch_size=max_batch_size,
             max_batch_wait_ms=max_batch_wait_ms,
         )
@@ -407,32 +406,6 @@ class S2ProVocoderScheduler(StreamingSimpleScheduler):
 
     def clear_stream_state(self, request_id: str) -> None:
         self._stream_states.pop(request_id, None)
-
-    def _on_done(self, request_id: str) -> None:
-        if request_id not in self._stream_states and request_id not in self._payloads:
-            return
-        super()._on_done(request_id)
-
-    def _vocode_non_streaming_batch(self, batch: list[IncomingMessage]) -> None:
-        loop = asyncio.new_event_loop()
-        try:
-            self._run_non_streaming_batch(batch, loop)
-        finally:
-            loop.close()
-
-    def _handle_new_request_batch(
-        self,
-        batch: list[IncomingMessage],
-        loop: asyncio.AbstractEventLoop | None = None,
-    ) -> None:
-        owns_loop = loop is None
-        if loop is None:
-            loop = asyncio.new_event_loop()
-        try:
-            super()._handle_new_request_batch(batch, loop)
-        finally:
-            if owns_loop:
-                loop.close()
 
     def _vocode_payload(self, payload: StagePayload) -> StagePayload:
         return self._vocode_payloads([payload])[0]

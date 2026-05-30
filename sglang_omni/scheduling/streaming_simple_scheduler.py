@@ -70,6 +70,7 @@ class StreamingSimpleScheduler:
         self._stream_payloads: dict[str, Any] = {}
         self._aborted_request_ids: set[str] = set()
         self._completed_non_streaming_request_ids: set[str] = set()
+        self._state_lock = threading.RLock()
         self._abort_lock = threading.Lock()
 
     # ------------------------------------------------------------------
@@ -175,28 +176,30 @@ class StreamingSimpleScheduler:
     def _clear_request_state(
         self, request_id: str, *, keep_aborted: bool = False
     ) -> None:
-        self._stream_payloads.pop(request_id, None)
-        self._pending_done.discard(request_id)
-        self.clear_stream_state(request_id)
-        if not keep_aborted:
-            with self._abort_lock:
-                self._aborted_request_ids.discard(request_id)
+        with self._state_lock:
+            self._stream_payloads.pop(request_id, None)
+            self._pending_done.discard(request_id)
+            self.clear_stream_state(request_id)
+            if not keep_aborted:
+                with self._abort_lock:
+                    self._aborted_request_ids.discard(request_id)
 
     def _record_completed_non_streaming_request_id(self, request_id: str) -> None:
-        self._completed_non_streaming_request_ids.add(request_id)
-        if (
-            len(self._completed_non_streaming_request_ids)
-            <= _COMPLETED_NON_STREAMING_REQUEST_ID_LIMIT
-        ):
-            return
-        excess = (
-            len(self._completed_non_streaming_request_ids)
-            - _COMPLETED_NON_STREAMING_REQUEST_ID_RETAINED
-        )
-        for stale_request_id in list(self._completed_non_streaming_request_ids)[
-            :excess
-        ]:
-            self._completed_non_streaming_request_ids.discard(stale_request_id)
+        with self._state_lock:
+            self._completed_non_streaming_request_ids.add(request_id)
+            if (
+                len(self._completed_non_streaming_request_ids)
+                <= _COMPLETED_NON_STREAMING_REQUEST_ID_LIMIT
+            ):
+                return
+            excess = (
+                len(self._completed_non_streaming_request_ids)
+                - _COMPLETED_NON_STREAMING_REQUEST_ID_RETAINED
+            )
+            for stale_request_id in list(self._completed_non_streaming_request_ids)[
+                :excess
+            ]:
+                self._completed_non_streaming_request_ids.discard(stale_request_id)
 
     def _cleanup_aborted_request(self, request_id: str) -> None:
         if self._abort_callback is None:
@@ -321,8 +324,9 @@ class StreamingSimpleScheduler:
         active = [msg for msg in batch if not self._is_aborted(msg.request_id)]
         if not active:
             return
-        for msg in active:
-            self._pending_done.discard(msg.request_id)
+        with self._state_lock:
+            for msg in active:
+                self._pending_done.discard(msg.request_id)
 
         valid: list[IncomingMessage] = []
         for msg in active:
@@ -394,12 +398,13 @@ class StreamingSimpleScheduler:
     def _handle_streaming_new_request(self, request_id: str, payload: Any) -> None:
         with self._abort_lock:
             self._aborted_request_ids.discard(request_id)
-        self._completed_non_streaming_request_ids.discard(request_id)
-        self._stream_payloads[request_id] = payload
-        self.on_streaming_new_request(request_id, payload)
-        if request_id in self._pending_done:
-            self._pending_done.discard(request_id)
-            self._handle_stream_done(request_id)
+        with self._state_lock:
+            self._completed_non_streaming_request_ids.discard(request_id)
+            self._stream_payloads[request_id] = payload
+            self.on_streaming_new_request(request_id, payload)
+            if request_id in self._pending_done:
+                self._pending_done.discard(request_id)
+                self._handle_stream_done(request_id)
 
     def _handle_stream_chunk(self, request_id: str, item: Any) -> None:
         if not isinstance(item, StreamItem):
@@ -407,21 +412,23 @@ class StreamingSimpleScheduler:
                 f"{self.__class__.__name__} expected StreamItem for "
                 f"{request_id!r}, got {type(item).__name__}"
             )
-        for out in self.on_stream_chunk(request_id, item):
-            if not self._is_aborted(request_id):
-                self.outbox.put(out)
+        with self._state_lock:
+            for out in self.on_stream_chunk(request_id, item):
+                if not self._is_aborted(request_id):
+                    self.outbox.put(out)
 
     def _handle_stream_done(self, request_id: str) -> None:
-        if request_id not in self._stream_payloads:
-            if request_id in self._completed_non_streaming_request_ids:
+        with self._state_lock:
+            if request_id not in self._stream_payloads:
+                if request_id in self._completed_non_streaming_request_ids:
+                    return
+                self._pending_done.add(request_id)
                 return
-            self._pending_done.add(request_id)
-            return
-        for out in self.on_stream_done(request_id):
+            for out in self.on_stream_done(request_id):
+                if not self._is_aborted(request_id):
+                    self.outbox.put(out)
             if not self._is_aborted(request_id):
-                self.outbox.put(out)
-        if not self._is_aborted(request_id):
-            self._clear_request_state(request_id)
+                self._clear_request_state(request_id)
 
     # Compatibility wrappers for existing tests and subclasses.
     def _on_streaming_new_request(self, request_id: str, payload: Any) -> None:

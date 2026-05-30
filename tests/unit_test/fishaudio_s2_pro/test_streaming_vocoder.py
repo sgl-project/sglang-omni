@@ -314,6 +314,20 @@ def test_streaming_vocoder_done_before_payload_finalizes_after_new_request() -> 
         _stop_scheduler(scheduler, thread)
 
 
+def test_streaming_vocoder_zero_chunk_done_before_payload_finalizes() -> None:
+    scheduler, thread = _start_scheduler()
+    try:
+        scheduler.inbox.put(IncomingMessage("req", "stream_done"))
+        scheduler.inbox.put(IncomingMessage("req", "new_request", _payload("req")))
+        final = scheduler.outbox.get(timeout=2.0)
+        assert final.type == "result"
+        assert final.request_id == "req"
+        with pytest.raises(queue.Empty):
+            scheduler.outbox.get(timeout=0.2)
+    finally:
+        _stop_scheduler(scheduler, thread)
+
+
 def test_streaming_vocoder_final_payload_preserves_usage_and_authoritative_audio() -> (
     None
 ):
@@ -527,7 +541,7 @@ def test_non_streaming_vocoder_batch_isolates_invalid_payload() -> None:
         ),
     ]
 
-    scheduler._vocode_non_streaming_batch(messages)
+    scheduler._handle_new_request_batch(messages)
 
     outputs = [scheduler.outbox.get_nowait(), scheduler.outbox.get_nowait()]
     by_request = {out.request_id: out for out in outputs}
@@ -632,9 +646,9 @@ def test_non_streaming_vocoder_abort_during_batch_decode_suppresses_result() -> 
         scheduler.abort("aborted")
         return payloads
 
-    scheduler._vocode_payloads = _abort_during_decode
+    scheduler._batch_fn = _abort_during_decode
 
-    scheduler._vocode_non_streaming_batch(messages)
+    scheduler._handle_new_request_batch(messages)
 
     out = scheduler.outbox.get_nowait()
     assert out.request_id == "other"

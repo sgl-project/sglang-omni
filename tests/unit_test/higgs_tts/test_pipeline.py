@@ -132,7 +132,7 @@ def test_higgs_model_runner_marks_sampler_finish() -> None:
     assert len(data.output_codes) == 1
 
 
-def test_higgs_model_runner_emits_strict_stream_metadata() -> None:
+def test_higgs_model_runner_emits_latched_stream_metadata() -> None:
     runner = object.__new__(HiggsTTSModelRunner)
     runner._outbox = queue.Queue()
     runner._vocoder_target = "vocoder"
@@ -146,18 +146,16 @@ def test_higgs_model_runner_emits_strict_stream_metadata() -> None:
         finished_reason=None,
         finished=lambda: False,
     )
-    payload = StagePayload(
-        request_id="req",
-        request=OmniRequest(inputs="", params={"stream": True}),
-        data={},
-    )
     data = SimpleNamespace(
         req=req,
         output_codes=[],
         generation_done=False,
-        stage_payload=payload,
-        num_codebooks=3,
-        codebook_size=17,
+        stream_metadata={
+            "modality": "audio_codes",
+            "stream": True,
+            "num_codebooks": 3,
+            "codebook_size": 17,
+        },
     )
     result = SimpleNamespace(
         logits_output=SimpleNamespace(next_token_logits=torch.zeros(1, 4))
@@ -409,6 +407,32 @@ class _FakeHiggsStreamingCodec:
         return [self.decode(codes) for codes in codes_list]
 
 
+class _FakeUnevenHiggsStreamingCodec:
+    class _Model:
+        class config:
+            hop_length = 5
+
+    def __init__(self, tail_samples: int = 3) -> None:
+        self.model = self._Model()
+        self.tail_samples = tail_samples
+
+    def decode(self, codes_TN: torch.Tensor) -> torch.Tensor:
+        frames = []
+        offsets = torch.arange(
+            self.model.config.hop_length,
+            dtype=torch.float32,
+        )
+        for row in codes_TN:
+            frames.append(row.sum().float().repeat(self.model.config.hop_length))
+            frames[-1] = frames[-1] + offsets / 10.0
+        body = torch.cat(frames) if frames else torch.empty(0, dtype=torch.float32)
+        tail = torch.arange(self.tail_samples, dtype=torch.float32) + 10_000
+        return torch.cat([body, tail])
+
+    def decode_batch(self, codes_list: list[torch.Tensor]) -> list[torch.Tensor]:
+        return [self.decode(codes) for codes in codes_list]
+
+
 def _higgs_stream_payload(
     request_id: str,
     *,
@@ -510,6 +534,53 @@ def test_higgs_streaming_vocoder_emits_compact_chunks_and_slim_final() -> None:
     }
     assert "req" not in scheduler._pending_done
     assert "req" not in scheduler._stream_states
+
+
+def test_higgs_streaming_vocoder_matches_full_decode_with_codec_tail() -> None:
+    raw_codes = torch.tensor(
+        [
+            [1, 2, 3],
+            [4, 5, 6],
+            [7, 8, 9],
+            [10, 11, 12],
+            [13, 14, 15],
+            [16, 17, 18],
+        ],
+        dtype=torch.long,
+    )
+    delayed = apply_delay_pattern(raw_codes)
+    codec = _FakeUnevenHiggsStreamingCodec()
+    scheduler = HiggsStreamingVocoderScheduler(
+        codec,
+        stream_stride=3,
+        stream_followup_stride=2,
+        stream_overlap_tokens=1,
+        stream_holdback_tokens=0,
+    )
+    payload = _higgs_stream_payload(
+        "req",
+        stream=True,
+        delayed_rows=delayed.tolist(),
+        codebook_size=64,
+    )
+
+    full = scheduler._decode_state_to_audio(HiggsTtsState.from_dict(payload.data))
+    assert full is not None
+
+    scheduler._on_streaming_new_request("req", payload)
+    for idx, row in enumerate(delayed):
+        item = _higgs_stream_item(row, codebook_size=64)
+        item.chunk_id = idx
+        scheduler._on_chunk("req", item)
+    scheduler._on_done("req")
+
+    stream_chunks = [
+        np.frombuffer(msg.data["audio_waveform"], dtype=np.float32).copy()
+        for msg in _drain_higgs_outbox(scheduler)
+        if msg.type == "stream"
+    ]
+    streamed = np.concatenate(stream_chunks)
+    np.testing.assert_array_equal(streamed, full.numpy())
 
 
 def _drain_higgs_outbox(

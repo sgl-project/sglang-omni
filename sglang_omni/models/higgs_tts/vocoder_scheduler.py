@@ -56,10 +56,11 @@ class HiggsStreamingVocoderScheduler(StreamingSimpleScheduler):
         self._stream_holdback_tokens = int(stream_holdback_tokens)
         self._sample_rate = HiggsAudioCodec.SAMPLE_RATE
         self._stream_states: dict[str, _HiggsStreamState] = {}
+        self._samples_per_frame = self._resolve_samples_per_frame(codec)
 
         super().__init__(
-            lambda payload: self._vocode_payload(payload),
-            batch_compute_fn=lambda payloads: self._vocode_payloads(payloads),
+            self._vocode_payload,
+            batch_compute_fn=self._vocode_payloads,
             max_batch_size=max_batch_size,
             max_batch_wait_ms=max_batch_wait_ms,
         )
@@ -299,7 +300,10 @@ class HiggsStreamingVocoderScheduler(StreamingSimpleScheduler):
         emit_until_raw = raw_total
         if not is_final and self._stream_holdback_tokens:
             emit_until_raw = max(0, raw_total - self._stream_holdback_tokens)
-        if emit_until_raw <= state.emitted_raw_frames:
+        can_flush_codec_tail = is_final and self._samples_per_frame is not None
+        if emit_until_raw < state.emitted_raw_frames or (
+            emit_until_raw == state.emitted_raw_frames and not can_flush_codec_tail
+        ):
             state.next_decode_rows = delayed_count + self._stream_followup_stride
             return None
 
@@ -315,10 +319,17 @@ class HiggsStreamingVocoderScheduler(StreamingSimpleScheduler):
         )
 
         decoded_raw_frames = emit_until_raw - window_start_raw
-        samples_per_frame = max(int(audio.shape[-1]) // max(decoded_raw_frames, 1), 1)
+        samples_per_frame = self._samples_per_frame or max(
+            int(audio.shape[-1]) // max(decoded_raw_frames, 1), 1
+        )
         trim_frames = state.emitted_raw_frames - window_start_raw
         trim_samples = min(int(trim_frames * samples_per_frame), int(audio.shape[-1]))
-        delta = audio[trim_samples:].contiguous()
+        if not is_final and self._samples_per_frame is not None:
+            new_frames = emit_until_raw - state.emitted_raw_frames
+            emit_samples = int(new_frames * samples_per_frame)
+            delta = audio[trim_samples : trim_samples + emit_samples].contiguous()
+        else:
+            delta = audio[trim_samples:].contiguous()
         if delta.numel() == 0:
             state.next_decode_rows = delayed_count + self._stream_followup_stride
             return None
@@ -449,6 +460,15 @@ class HiggsStreamingVocoderScheduler(StreamingSimpleScheduler):
         if state.engine_time_s:
             usage["engine_time_s"] = round(state.engine_time_s, 6)
         return usage
+
+    @staticmethod
+    def _resolve_samples_per_frame(codec: HiggsAudioCodec) -> int | None:
+        hop_length = getattr(getattr(codec, "model", None), "config", None)
+        hop_length = getattr(hop_length, "hop_length", None)
+        if hop_length is None:
+            return None
+        hop_length_i = int(hop_length)
+        return hop_length_i if hop_length_i > 0 else None
 
 
 __all__ = ["HiggsStreamingVocoderScheduler"]
