@@ -98,12 +98,12 @@ html_last_updated_fmt = ""
 
 html_theme_options = {
     "repository_url": "https://github.com/sgl-project/sglang-omni",
-    "repository_branch": "main",
+    "repository_branch": "main/docs",
     "show_navbar_depth": 3,
     "max_navbar_depth": 4,
     "collapse_navbar": True,
-    "use_edit_page_button": False,
-    "use_source_button": False,
+    "use_edit_page_button": True,
+    "use_source_button": True,
     "use_issues_button": True,
     "use_repository_button": True,
     "use_download_button": True,
