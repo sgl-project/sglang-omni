@@ -147,8 +147,11 @@ def test_higgs_audio_encoder_uses_guarded_reference_code_cache(monkeypatch) -> N
             return [len(text), num_ref_tokens, len(reference_text or "")]
 
     class FakeCodec:
+        SAMPLE_RATE = 24000
+
         def __init__(self) -> None:
             self.calls = 0
+            self.model = SimpleNamespace(acoustic_encoder=torch.nn.Identity())
 
         def encode_reference(self, waveform, sample_rate: int) -> torch.Tensor:
             self.calls += 1
@@ -163,6 +166,8 @@ def test_higgs_audio_encoder_uses_guarded_reference_code_cache(monkeypatch) -> N
         device="cuda:0",
         num_codebooks=2,
     )
+    # Ignore the construction-time codec warm-up call added by #612.
+    fake_codec.calls = 0
     encode = scheduler._fn
 
     def make_payload(request_id: str) -> StagePayload:
@@ -212,8 +217,11 @@ def test_higgs_audio_encoder_cache_is_env_guarded(monkeypatch) -> None:
     )
 
     class FakeCodec:
+        SAMPLE_RATE = 24000
+
         def __init__(self) -> None:
             self.calls = 0
+            self.model = SimpleNamespace(acoustic_encoder=torch.nn.Identity())
 
         def encode_reference(self, waveform, sample_rate: int) -> torch.Tensor:
             self.calls += 1
@@ -227,6 +235,8 @@ def test_higgs_audio_encoder_cache_is_env_guarded(monkeypatch) -> None:
         device="cuda:0",
         num_codebooks=2,
     )
+    # Ignore the construction-time codec warm-up call added by #612.
+    fake_codec.calls = 0
     encode = scheduler._fn
 
     def make_payload(request_id: str) -> StagePayload:
