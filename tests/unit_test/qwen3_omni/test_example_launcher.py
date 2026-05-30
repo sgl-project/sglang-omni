@@ -11,6 +11,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from sglang_omni.models.qwen3_omni.config import MIN_PARTIAL_START_CHUNKS
+
 _EXAMPLES_DIR = pathlib.Path(__file__).resolve().parents[3] / "examples"
 
 
@@ -167,6 +169,19 @@ def test_partial_start_can_be_disabled(mock_launch_server):
     talker = _stage(config, "talker_ar")
 
     assert talker.factory_args["enable_partial_start"] is False
+
+
+def test_partial_start_disabled_does_not_propagate_subfloor_min_chunks(
+    mock_launch_server,
+):
+    args = _make_args(enable_partial_start=False, partial_start_min_chunks=2)
+    _launch_speech_server(args)
+
+    config = mock_launch_server.call_args[0][0]
+    talker = _stage(config, "talker_ar")
+
+    assert talker.factory_args["enable_partial_start"] is False
+    assert talker.factory_args["partial_start_min_chunks"] >= MIN_PARTIAL_START_CHUNKS
 
 
 def test_partial_start_min_chunks_rejects_below_floor(mock_launch_server):

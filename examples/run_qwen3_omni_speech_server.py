@@ -386,13 +386,17 @@ def _launch_speech_server(args: argparse.Namespace) -> None:
             updates=thinker_seq_len_updates,
         )
 
+    talker_partial_start_updates: dict[str, object] = {
+        "enable_partial_start": bool(args.enable_partial_start),
+    }
+    if args.enable_partial_start:
+        talker_partial_start_updates["partial_start_min_chunks"] = int(
+            args.partial_start_min_chunks
+        )
     _apply_stage_factory_updates(
         config,
         stage_name="talker_ar",
-        updates={
-            "enable_partial_start": bool(args.enable_partial_start),
-            "partial_start_min_chunks": int(args.partial_start_min_chunks),
-        },
+        updates=talker_partial_start_updates,
     )
 
     launch_server(
