@@ -45,7 +45,7 @@ Core features:
 | [inclusionAI/Ming-flash-omni-2.0](https://huggingface.co/inclusionAI/Ming-flash-omni-2.0) | Omni | Streaming TTS |
 | [inclusionAI/LLaDA2.0-Uni](https://huggingface.co/inclusionAI/LLaDA2.0-Uni) | Omni | Text + image I/O |
 
-## Quick Start
+## Get Started
 
 - [Installation](./docs/get_started/installation.md)
 - [Developer Reference](./docs/developer_reference/main.md)
