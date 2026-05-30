@@ -18,8 +18,8 @@
 ## News
 - [2026/05] 🔥 Higgs TTS streaming vocoder with batched decode for higher throughput ([PR #574](https://github.com/sgl-project/sglang-omni/pull/574)).
 - [2026/05] 🔥 Ming-Omni streaming TTS support ([PR #506](https://github.com/sgl-project/sglang-omni/pull/506)).
-- [2026/04] Qwen3-Omni talker partial-prefix startup for faster first-token latency ([PR #475](https://github.com/sgl-project/sglang-omni/pull/475)).
-- [2026/04] Higgs Audio V3 TTS cookbook ([PR #560](https://github.com/sgl-project/sglang-omni/pull/560)).
+- [2026/05] Qwen3-Omni talker partial-prefix startup for faster first-token latency ([PR #475](https://github.com/sgl-project/sglang-omni/pull/475)).
+- [2026/05] Higgs Audio V3 TTS cookbook ([PR #560](https://github.com/sgl-project/sglang-omni/pull/560)).
 
 ## About
 
