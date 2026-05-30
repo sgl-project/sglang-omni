@@ -637,7 +637,10 @@ def apply_partial_start_cli_overrides(
         return pipeline_config
     _apply_stage_factory_args_override(
         pipeline_config,
-        stage_name="talker_ar",
+        stage_name=_resolve_talker_stage(
+            pipeline_config,
+            flag_name="--talker-partial-start",
+        ),
         updates={"enable_partial_start": mode == "on"},
         reason=f"talker partial-start mode to {mode!r}",
         flag_name="--talker-partial-start",

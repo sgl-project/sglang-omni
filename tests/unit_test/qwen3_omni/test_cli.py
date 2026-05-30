@@ -396,3 +396,12 @@ def test_partial_start_cli_invalid_mode_rejected():
     config = Qwen3OmniSpeechPipelineConfig(model_path="dummy")
     with pytest.raises(typer.BadParameter):
         apply_partial_start_cli_overrides(config, talker_partial_start="bogus")
+
+
+def test_partial_start_cli_rejects_unsupported_config_with_stable_message():
+    config = Qwen3OmniPipelineConfig(model_path="dummy")
+    with pytest.raises(
+        typer.BadParameter,
+        match="--talker-partial-start is not supported by Qwen3OmniPipelineConfig",
+    ):
+        apply_partial_start_cli_overrides(config, talker_partial_start="on")
