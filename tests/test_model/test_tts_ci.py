@@ -81,8 +81,6 @@ SIMILARITY_CHECKPOINT_ENV = "SEEDTTS_SIM_CHECKPOINT"
 TTS_STAGE_OUTPUT_ROOT_ENV = "TTS_STAGE_OUTPUT_ROOT"
 TTS_STAGE1_SPEED_RESULTS_DIR_ENV = "TTS_STAGE1_SPEED_RESULTS_DIR"
 TTS_STAGE2_SPEED_RESULTS_DIR_ENV = "TTS_STAGE2_SPEED_RESULTS_DIR"
-TTS_ASR_BASE_URL_ENV = "TTS_ASR_BASE_URL"
-TTS_ASR_CONCURRENCY_ENV = "TTS_ASR_CONCURRENCY"
 
 # Run both non-streaming and streaming stages on the full English SeedTTS split.
 STREAMING_BENCHMARK_MAX_SAMPLES: int | None = None
@@ -206,12 +204,6 @@ def _run_wer_transcribe(
     ]
     if stream:
         cmd.append("--stream")
-    asr_base_url = os.environ.get(TTS_ASR_BASE_URL_ENV)
-    if asr_base_url:
-        cmd += ["--asr-base-url", asr_base_url]
-        asr_concurrency = os.environ.get(TTS_ASR_CONCURRENCY_ENV)
-        if asr_concurrency:
-            cmd += ["--asr-concurrency", asr_concurrency]
 
     env = no_proxy_env()
     existing_pp = env.get("PYTHONPATH", "")
