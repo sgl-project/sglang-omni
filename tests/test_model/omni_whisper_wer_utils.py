@@ -10,7 +10,10 @@ from pathlib import Path
 
 import pytest
 
-from tests.test_model.omni_router_utils import ManagedRouterHandle, launch_managed_router
+from tests.test_model.omni_router_utils import (
+    ManagedRouterHandle,
+    launch_managed_router,
+)
 
 WHISPER_MODEL_PATH = "openai/whisper-large-v3"
 WHISPER_ASR_WORKER_ARGS = "--stages.0.factory-args.max-running-requests 1"
@@ -35,7 +38,9 @@ def wait_for_gpu_memory_release(
 
     env = os.environ.copy()
     env["OMNI_CI_GPU_MEMORY_CLEAN_THRESHOLD_MB"] = str(
-        memory_threshold_mb if memory_threshold_mb is not None else GPU_IDLE_THRESHOLD_MB
+        memory_threshold_mb
+        if memory_threshold_mb is not None
+        else GPU_IDLE_THRESHOLD_MB
     )
     env["OMNI_CI_GPU_CLEAN_WAIT_SECONDS"] = str(
         wait_timeout_seconds

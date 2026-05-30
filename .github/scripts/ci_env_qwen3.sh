@@ -1,4 +1,3 @@
-#!/usr/bin/env bash
 # Source CI-aligned env for Qwen3-Omni benchmark tests (matches test-qwen3-omni-ci.yaml + tune qwen3-omni-v1).
 set -a
 export HOME=/github/home

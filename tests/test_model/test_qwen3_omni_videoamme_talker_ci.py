@@ -31,10 +31,7 @@ from tests.test_model.omni_router_utils import (
     ManagedRouterHandle,
     router_worker_traffic_guard,
 )
-from tests.test_model.omni_whisper_wer_utils import (
-    omni_whisper_wer_router,
-    wait_for_gpu_memory_release,
-)
+from tests.test_model.omni_whisper_wer_utils import wait_for_gpu_memory_release
 from tests.utils import (
     MetricCheckCollector,
     apply_slack,

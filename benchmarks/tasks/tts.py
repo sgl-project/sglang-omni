@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 import aiohttp
+import requests
 import soundfile as sf
 import torch
 from jiwer import process_words
@@ -44,8 +45,6 @@ from benchmarks.metrics.speaker_similarity import WavLMSpeakerSimilarity
 from benchmarks.metrics.speaker_similarity_assets import (
     ensure_speaker_similarity_assets,
 )
-import requests
-
 from benchmarks.metrics.wer import (
     calculate_asr_speed_metrics,
     calculate_wer_metrics,
@@ -232,8 +231,7 @@ def _resolve_asr_backend(
     if whisper_router_port is not None:
         if lang != "en":
             raise ValueError(
-                "Omni Whisper router ASR only supports lang='en'; "
-                f"got {lang!r}"
+                "Omni Whisper router ASR only supports lang='en'; " f"got {lang!r}"
             )
         return load_omni_whisper_asr(whisper_router_port)
     return load_asr_model(lang, asr_device, generation_mode)

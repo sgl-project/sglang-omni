@@ -1,4 +1,3 @@
-#!/usr/bin/env bash
 # Source CI-aligned env for S2-Pro benchmark tests (matches test-s2pro-ci.yaml + tune s2-pro-v1).
 set -a
 export HOME=/github/home

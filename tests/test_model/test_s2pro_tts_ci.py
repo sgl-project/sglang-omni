@@ -51,10 +51,7 @@ from tests.test_model.omni_router_utils import (
     print_router_diagnostics,
     router_get_json,
 )
-from tests.test_model.omni_whisper_wer_utils import (
-    omni_whisper_wer_router,
-    wait_for_gpu_memory_release,
-)
+from tests.test_model.omni_whisper_wer_utils import wait_for_gpu_memory_release
 from tests.utils import (
     MetricCheckCollector,
     apply_slack,
@@ -191,9 +188,9 @@ def _run_wer_transcribe(
     device: str = "cuda:0",
 ) -> dict:
     """Transcribe saved audio and compute WER via Omni Whisper router."""
-    from benchmarks.eval.benchmark_tts_seedtts import run_tts_seedtts_transcribe
     from benchmarks.eval.benchmark_tts_seedtts import (
         TtsSeedttsBenchmarkConfig,
+        run_tts_seedtts_transcribe,
     )
 
     config = TtsSeedttsBenchmarkConfig(
