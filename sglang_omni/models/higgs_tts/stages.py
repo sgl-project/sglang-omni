@@ -135,7 +135,6 @@ def create_preprocessing_executor(
     reference_waveform_cache = StageOutputCache(
         max_size=_REF_WAVEFORM_CACHE_MAX_ITEMS,
         max_bytes=_REF_WAVEFORM_CACHE_MAX_BYTES,
-        cache_device="cpu",
     )
     reference_waveform_cache_lock = threading.Lock()
 
@@ -195,7 +194,7 @@ def create_preprocessing_executor(
                 if cache_enabled:
                     with reference_waveform_cache_lock:
                         reference_waveform_cache.put(
-                            reference_cache_key, waveform_tensor
+                            reference_cache_key, waveform_tensor.clone()
                         )
 
         if ref_codes_TN is not None:
