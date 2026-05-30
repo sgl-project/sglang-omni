@@ -9,6 +9,8 @@
 #   wer_results.json live in that same per-mode dir.
 # - Concurrency: CI uses HIGGS_CONCURRENCY = 16. Discover reads the conc=16 row.
 # - Venv: CI uses omni-higgs-tts under OMNI_CI_HOME (see omni_ci_home below).
+# - Auth: export HF_TOKEN before precheck/run unless the private Higgs model
+#   weights are already present in the configured HF cache.
 name: higgs-tts
 description: "Boson Higgs Audio V3 TTS"
 hf_model_id: "boson-sglang/higgs-audio-v3-tts-4b-base"
