@@ -48,7 +48,7 @@ from sglang_omni.models.higgs_tts.utils import (
     to_codes_TN,
     truncate_rope_to_bf16,
 )
-from sglang_omni.preprocessing.cache_key import hash_media_item
+from sglang_omni.preprocessing.cache_key import hash_bytes, hash_media_item
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.bootstrap import create_sglang_infrastructure
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
@@ -67,23 +67,37 @@ logger = logging.getLogger(__name__)
 # (sampler state machine has no rollback) so reject inputs past chunked_prefill_size.
 _MAX_REF_AUDIO_SEC = 100
 _REF_CODE_CACHE_MAX_ITEMS = 256
+_REF_CODE_CACHE_MAX_BYTES = 256 * 1024 * 1024
 _REF_CODE_CACHE_ENV = "SGLANG_OMNI_HIGGS_REF_CODE_CACHE"
 _REF_WAVEFORM_CACHE_MAX_ITEMS = 256
+_REF_WAVEFORM_CACHE_MAX_BYTES = 512 * 1024 * 1024
 
 
 def _ref_code_cache_enabled() -> bool:
     return os.getenv(_REF_CODE_CACHE_ENV) == "1"
 
 
+def _reference_path_cache_key(path_like: str | Path) -> str | None:
+    # Full-content hash, not hash_media_item's sampled head/tail+size hash
+    # (which stale-hits a same-size middle edit). None for URLs/missing files.
+    try:
+        path = Path(str(path_like)).expanduser()
+        if not path.is_file():
+            return None
+        return f"file:{hash_bytes(path.read_bytes())}"
+    except OSError:
+        return None
+
+
 def _reference_audio_cache_key(reference_audio: Any) -> str | None:
     """Stable cache key for a reference-audio input."""
     if isinstance(reference_audio, (str, Path)):
-        return hash_media_item(reference_audio)
+        return _reference_path_cache_key(reference_audio)
     if not isinstance(reference_audio, dict):
         return None
     path = reference_audio.get("audio_path") or reference_audio.get("path")
     if path:
-        return hash_media_item(path)
+        return _reference_path_cache_key(path)
     if "bytes" in reference_audio:
         data = reference_audio["bytes"]
         if isinstance(data, str):
@@ -118,7 +132,11 @@ def create_preprocessing_executor(
     tokenizer = PreTrainedTokenizerFast(tokenizer_object=raw)
     adapter = HiggsTokenizerAdapter(tokenizer)
     # Runs on a ThreadedSimpleScheduler pool for preprocessing;
-    reference_waveform_cache = StageOutputCache(max_size=_REF_WAVEFORM_CACHE_MAX_ITEMS)
+    reference_waveform_cache = StageOutputCache(
+        max_size=_REF_WAVEFORM_CACHE_MAX_ITEMS,
+        max_bytes=_REF_WAVEFORM_CACHE_MAX_BYTES,
+        cache_device="cpu",
+    )
     reference_waveform_cache_lock = threading.Lock()
 
     def _preprocess(payload: StagePayload) -> StagePayload:
@@ -251,8 +269,13 @@ def create_audio_encoder_executor(
     codec.encode_reference(
         torch.zeros(codec.SAMPLE_RATE), sample_rate=codec.SAMPLE_RATE
     )
-    # Single-threaded SimpleScheduler stage, so no lock needed.
-    reference_code_cache = StageOutputCache(max_size=_REF_CODE_CACHE_MAX_ITEMS)
+    # Single-threaded SimpleScheduler stage, so no lock needed. Cache a CPU
+    # tensor (not list[list[int]]) so StageOutputCache can byte-bound it.
+    reference_code_cache = StageOutputCache(
+        max_size=_REF_CODE_CACHE_MAX_ITEMS,
+        max_bytes=_REF_CODE_CACHE_MAX_BYTES,
+        cache_device="cpu",
+    )
 
     def _encode(payload: StagePayload) -> StagePayload:
         state = HiggsTtsState.from_dict(payload.data)
@@ -261,12 +284,14 @@ def create_audio_encoder_executor(
             return payload
 
         cache_enabled = _ref_code_cache_enabled()
-        delayed_rows = (
+        cached_delayed = (
             reference_code_cache.get(state.reference_cache_key)
             if cache_enabled
             else None
         )
-        if delayed_rows is None:
+        if cached_delayed is not None:
+            delayed_rows = cached_delayed.tolist()
+        else:
             ref_codes_TN = codec.encode_reference(waveform, sample_rate=24000).to(
                 torch.long
             )
@@ -278,7 +303,9 @@ def create_audio_encoder_executor(
             delayed = apply_delay_pattern(ref_codes_TN)
             delayed_rows = delayed.tolist()
             if cache_enabled:
-                reference_code_cache.put(state.reference_cache_key, delayed_rows)
+                reference_code_cache.put(
+                    state.reference_cache_key, delayed.to("cpu", torch.int32)
+                )
         state.reference_codes_delayed = delayed_rows
         state.prompt_token_ids = adapter.build_prompt(
             state.target_text or "",

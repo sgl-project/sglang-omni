@@ -106,6 +106,20 @@ def test_higgs_reference_cache_key_tracks_file_content(tmp_path) -> None:
     assert first_key != second_key
 
 
+def test_higgs_reference_cache_key_same_size_edit_and_urls(tmp_path) -> None:
+    # Same path, same size, same head/tail, different middle must not stale-hit.
+    head, tail = b"H" * 8192, b"T" * 8192
+    ref_audio = tmp_path / "ref.wav"
+    ref_audio.write_bytes(head + b"a" * 4096 + tail)
+    key_a = stages._reference_audio_cache_key(ref_audio)
+    ref_audio.write_bytes(head + b"b" * 4096 + tail)  # same size, middle differs
+    assert key_a is not None and key_a != stages._reference_audio_cache_key(ref_audio)
+
+    # URLs and missing files are not cached.
+    assert stages._reference_audio_cache_key("https://example.com/ref.wav") is None
+    assert stages._reference_audio_cache_key(str(tmp_path / "missing.wav")) is None
+
+
 def test_higgs_reference_cache_key_ignores_media_type() -> None:
     raw = b"\x01\x02\x03fake-audio-bytes"
     encoded = base64.b64encode(raw).decode()
