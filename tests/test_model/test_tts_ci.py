@@ -336,9 +336,17 @@ def _run_utmos(output_dir: str, *, device: str = "cuda:0") -> dict:
         f"{PROJECT_ROOT}{os.pathsep}{existing_pp}" if existing_pp else str(PROJECT_ROOT)
     )
     result = subprocess.run(
-        cmd, text=True, timeout=UTMOS_TIMEOUT, env=env, cwd=str(PROJECT_ROOT)
+        cmd,
+        capture_output=True,
+        text=True,
+        timeout=UTMOS_TIMEOUT,
+        env=env,
+        cwd=str(PROJECT_ROOT),
     )
-    assert result.returncode == 0, f"UTMOS eval failed (rc={result.returncode})"
+    assert result.returncode == 0, (
+        f"UTMOS eval failed (rc={result.returncode}).\n"
+        f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    )
     results_path = Path(output_dir) / "utmos_results.json"
     assert results_path.exists(), f"UTMOS results file not found: {results_path}"
     with open(results_path) as f:
