@@ -457,6 +457,7 @@ class MingOmniTalker(nn.Module):
         sigma=0.25,
         temperature=0,
         abort_event: threading.Event | None = None,
+        max_decode_steps: int | None = None,
     ):
         step = 0
         target_dtype = torch.bfloat16
@@ -516,9 +517,15 @@ class MingOmniTalker(nn.Module):
                 (attention_mask == 0), 1
             )
 
-            max_decode_steps = (max_cache_len - prefill_len) // self.patch_size
+            cache_max_decode_steps = (max_cache_len - prefill_len) // self.patch_size
+            if max_decode_steps is None:
+                effective_max_decode_steps = cache_max_decode_steps
+            else:
+                effective_max_decode_steps = min(
+                    cache_max_decode_steps, max_decode_steps
+                )
 
-            while step < 1000 and step < max_decode_steps:
+            while step < 1000 and step < effective_max_decode_steps:
                 if abort_event is not None and abort_event.is_set():
                     raise asyncio.CancelledError()
                 if step == 0:
@@ -593,11 +600,15 @@ class MingOmniTalker(nn.Module):
                 if abort_event is not None and abort_event.is_set():
                     raise asyncio.CancelledError()
 
-                if step > min_new_token and stop_out.cpu()[0, 1] > 0.5:
-                    yield gen_lat, True
+                is_stop = step > min_new_token and bool(stop_out.cpu()[0, 1] > 0.5)
+                last_chunk = (
+                    is_stop
+                    or step + 1 >= effective_max_decode_steps
+                    or step + 1 >= 1000
+                )
+                yield gen_lat, last_chunk
+                if last_chunk:
                     break
-
-                yield gen_lat, False
                 step += 1
         finally:
             self.model_graph_pool.put(
@@ -625,6 +636,7 @@ class MingOmniTalker(nn.Module):
         sigma=0.25,
         temperature=0,
         abort_event: threading.Event | None = None,
+        max_decode_steps: int | None = None,
     ):
         assert (
             self.tokenizer is not None
@@ -720,6 +732,7 @@ class MingOmniTalker(nn.Module):
                 sigma=sigma,
                 temperature=temperature,
                 abort_event=abort_event,
+                max_decode_steps=max_decode_steps,
             ):
                 yield audio_token
 
@@ -809,6 +822,7 @@ class MingOmniTalker(nn.Module):
         temperature=0,
         token_queue: queue.Queue | None = None,
         abort_event: threading.Event | None = None,
+        max_decode_steps: int | None = None,
     ):
         try:
             with torch.cuda.stream(torch.cuda.Stream(self.device)):
@@ -824,6 +838,7 @@ class MingOmniTalker(nn.Module):
                     sigma=sigma,
                     temperature=temperature,
                     abort_event=abort_event,
+                    max_decode_steps=max_decode_steps,
                 ):
                     if abort_event is not None and abort_event.is_set():
                         raise asyncio.CancelledError()
@@ -854,6 +869,7 @@ class MingOmniTalker(nn.Module):
         sigma=0.25,
         temperature=0,
         abort_event: threading.Event | None = None,
+        max_decode_steps: int | None = None,
     ):
         with torch.cuda.stream(torch.cuda.Stream(self.device)):
             this_uuid = str(uuid.uuid1())
@@ -888,6 +904,7 @@ class MingOmniTalker(nn.Module):
                     temperature,
                     token_queue=token_queue,
                     abort_event=effective_abort_event,
+                    max_decode_steps=max_decode_steps,
                 )
 
                 if stream:
@@ -1022,6 +1039,32 @@ class MingOmniTalker(nn.Module):
             "spk_emb": spk_emb_list if spk_emb_list else None,
         }
         logger.info("register_prompt_wav: %s", key)
+
+    def duration_capped_steps(
+        self,
+        text_len: int,
+        audio_detokenizer,
+        requested_max_steps: int,
+    ) -> int:
+        """Cap CFM decode steps by an audio-duration heuristic from the
+        Ming reference inference: up to ~0.36s/char with a 2.0s floor.
+        """
+        if audio_detokenizer is None:
+            return requested_max_steps
+        try:
+            sample_rate = float(audio_detokenizer.config.sample_rate)
+            vae_patch_size = float(getattr(audio_detokenizer.encoder, "patch_size", 1))
+            hop_size = float(audio_detokenizer.encoder.hop_size)
+        except AttributeError:
+            return requested_max_steps
+        seconds_per_step = (
+            float(self.patch_size) * vae_patch_size * hop_size
+        ) / sample_rate
+        if seconds_per_step <= 0:
+            return requested_max_steps
+        max_duration_s = max(2.0, float(text_len) * (5818.0 / 16000.0))
+        max_steps_by_duration = max(1, int(max_duration_s / seconds_per_step))
+        return min(requested_max_steps, max_steps_by_duration)
 
     def get_prompt_emb(
         self,
@@ -1206,6 +1249,12 @@ class MingOmniTalker(nn.Module):
             use_stream = stream and (count == 0)
             all_wavs: list = []
 
+            segment_max_decode_steps = self.duration_capped_steps(
+                text_len=len(text),
+                audio_detokenizer=audio_detokenizer,
+                requested_max_steps=1000,
+            )
+
             for idx, this_tts_speech_dict in enumerate(
                 self.tts_job(
                     prompt=prompt,
@@ -1218,6 +1267,7 @@ class MingOmniTalker(nn.Module):
                     prompt_wav_emb=prompt_wav_emb,
                     stream=use_stream,
                     abort_event=abort_event,
+                    max_decode_steps=segment_max_decode_steps,
                 )
             ):
                 tts_speech = this_tts_speech_dict["tts_speech"]
@@ -1282,13 +1332,30 @@ class MingOmniTalker(nn.Module):
         instruction = None
         abort_event = kwargs.get("abort_event")
 
+        # Resolve before grabbing a CUDA stream so bad requests fail fast
+        # without holding CUDA resources.
+        if prompt_wav_path is not None:
+            pass
+        elif voice_name is not None and voice_name in self.voice_json_dict:
+            prompt_text = self.voice_json_dict[voice_name]["prompt_text"]
+            prompt_wav_path = self.voice_json_dict[voice_name]["prompt_wav_path"]
+        elif voice_name is not None:
+            raise ValueError(
+                f"voice_name={voice_name!r} not found in loaded voice presets "
+                f"(available: {sorted(self.voice_json_dict)}). Without a preset "
+                f"or explicit prompt_wav_path the talker would run without a "
+                f"speaker anchor and produce drifting voice output. Either "
+                f"install talker/data/voice_name.json with this voice or pass "
+                f"prompt_wav_path explicitly."
+            )
+        else:
+            raise ValueError(
+                "omni_audio_generation requires either voice_name (resolved via "
+                "loaded voice presets) or prompt_wav_path. Both are None."
+            )
+
         with torch.cuda.stream(torch.cuda.Stream(self.device)):
             self.initial_graph()
-
-            if voice_name is not None and voice_name in self.voice_json_dict:
-                assert prompt_wav_path is None and prompt_text is None
-                prompt_text = self.voice_json_dict[voice_name]["prompt_text"]
-                prompt_wav_path = self.voice_json_dict[voice_name]["prompt_wav_path"]
 
             prompt_wav_lat, prompt_wav_emb, spk_emb = self.get_prompt_emb(
                 prompt_wav_path,
@@ -1349,6 +1416,11 @@ class MingOmniTalker(nn.Module):
                 "SPEECH_SOUND",
                 "PODCAST",
             ]:
+                non_segmented_max_decode_steps = self.duration_capped_steps(
+                    text_len=len(text),
+                    audio_detokenizer=audio_detokenizer,
+                    requested_max_steps=1000,
+                )
                 for this_tts_speech_dict in self.tts_job(
                     prompt=prompt,
                     text=text,
@@ -1363,6 +1435,7 @@ class MingOmniTalker(nn.Module):
                     sigma=sigma,
                     temperature=temperature,
                     abort_event=abort_event if stream else None,
+                    max_decode_steps=non_segmented_max_decode_steps,
                 ):
                     yield this_tts_speech_dict["tts_speech"], None, None, None
             else:

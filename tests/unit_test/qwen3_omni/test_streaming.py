@@ -25,6 +25,7 @@ from sglang_omni.models.qwen3_omni.request_builders import (
     should_generate_audio_output,
 )
 from sglang_omni.pipeline.stage.runtime import Stage
+from sglang_omni.pipeline.stage.stream_queue import StreamItem
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling.messages import IncomingMessage, OutgoingMessage
 from sglang_omni.scheduling.sglang_backend import SGLangOutputProcessor
@@ -510,9 +511,14 @@ class _FakeCode2Wav:
         return torch.zeros(1, n_frames * self.total_upsample)
 
 
-def _make_code_chunk(metadata: dict | None) -> _StreamItem:
+def _make_code_chunk(metadata: dict | None) -> StreamItem:
     """One frame per chunk, single codebook, non-EOS code id."""
-    return _StreamItem(data=torch.tensor([7], dtype=torch.long), metadata=metadata)
+    return StreamItem(
+        chunk_id=0,
+        data=torch.tensor([7], dtype=torch.long),
+        from_stage="talker",
+        metadata=metadata,
+    )
 
 
 def test_code2wav_chunk_without_stream_metadata_emits_error():

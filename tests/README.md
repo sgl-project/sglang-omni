@@ -49,6 +49,7 @@ tests/
     │   ├── test_omni_serve.py
     │   ├── test_pipeline.py
     │   ├── test_talker.py
+    │   ├── test_talker_voice_validation.py
     │   ├── test_thinker.py
     │   ├── test_tokenizer.py
     │   └── test_tp.py
@@ -233,6 +234,7 @@ that happened to contain an older version of the test.
   - image/vision encoder TP context preservation
   - audio/image preprocessor placeholder construction and cache-key plumbing
   - talker executor request gating and result-builder modality merging
+  - talker voice-preset validation (load-time manifest / wav existence, request-time prompt_wav_path priority), duration-cap heuristic, and `generate()` final-chunk flush across stop-token and step-ceiling exits
   - Bailing tokenizer loader fallback for vocab compatibility
   - TP topology validation (rank-specific stage specs, talker/thinker GPU collision detection, server_args alignment before infra init).
 
