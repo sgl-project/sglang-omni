@@ -13,7 +13,7 @@ name: higgs-tts
 description: "Boson Higgs Audio V3 TTS"
 hf_model_id: "boson-sglang/higgs-audio-v3-tts-4b-base"
 hf_datasets:
-  - "zhaochenyang20/seed-tts-eval-50-arrow"
+  - "zhaochenyang20/seed-tts-eval-arrow"
 omni_ci_home: "/github/home/calibration/higgs-tts"
 default_venv_python:
   - "/sgl-workspace/sglang-omni/omni-higgs-tts/bin/python"
@@ -32,8 +32,7 @@ auto_env:
   UV_CACHE_DIR: "/github/home/.cache/uv"
   TORCHINDUCTOR_CACHE_DIR: "/github/home/calibration/higgs-tts/.torchinductor"
   FLASHINFER_DISABLE_VERSION_CHECK: "1"
-# Higgs TTS CI runs one managed router plus two one-GPU workers, so the test
-# needs 2 GPUs just like the previous router-backed TTS gate.
+# Higgs TTS CI runs one managed router plus two one-GPU workers.
 gpus_per_test:
   test_higgs_tts_ci.py: 2
 test_globs:
