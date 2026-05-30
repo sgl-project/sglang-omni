@@ -346,9 +346,7 @@ def pytest_addoption(parser: pytest.Parser) -> None:
 
 def pytest_configure(config: pytest.Config) -> None:
     option_value = config.getoption(TTS_CONCURRENCY_OPTION)
-    config.stash[SELECTED_TTS_CONCURRENCIES] = _parse_tts_concurrency(
-        option_value
-    )
+    config.stash[SELECTED_TTS_CONCURRENCIES] = _parse_tts_concurrency(option_value)
     stage_value = config.getoption(TTS_STAGE_OPTION)
     config.stash[SELECTED_TTS_CI_STAGE] = _parse_tts_ci_stage(stage_value)
 

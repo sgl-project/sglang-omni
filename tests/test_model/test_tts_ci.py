@@ -572,9 +572,7 @@ def test_voice_cloning_non_streaming(
     tmp_path: Path,
     selected_tts_concurrencies: tuple[int, ...],
 ) -> None:
-    print(
-        f"\n[TTS benchmark] selected concurrency: {selected_tts_concurrencies}"
-    )
+    print(f"\n[TTS benchmark] selected concurrency: {selected_tts_concurrencies}")
     for concurrency in selected_tts_concurrencies:
         _print_stage("TTS speed", "non-streaming", concurrency, "generate WAVs for WER")
         output_dir = _resolve_stage_output_dir(tmp_path, f"vc_nonstream_c{concurrency}")
@@ -586,9 +584,7 @@ def test_voice_cloning_non_streaming(
                 output_dir,
                 concurrency=concurrency,
             )
-            checks = MetricCheckCollector(
-                f"TTS non-streaming benchmark c{concurrency}"
-            )
+            checks = MetricCheckCollector(f"TTS non-streaming benchmark c{concurrency}")
             _assert_stage_used_all_router_workers(
                 router_server=router_server,
                 before_workers=before_workers,
