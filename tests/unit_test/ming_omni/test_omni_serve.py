@@ -12,6 +12,7 @@ from sglang_omni.cli.serve import (
     apply_encoder_mem_reserve_cli_override,
     apply_mem_fraction_cli_overrides,
     apply_parallelism_cli_overrides,
+    apply_partial_start_cli_overrides,
     apply_thinker_server_args_cli_overrides,
     apply_torch_compile_cli_overrides,
 )
@@ -267,6 +268,21 @@ def test_ming_cli_talker_gpu_targets_talker_stage() -> None:
 
     assert _stage(config, "thinker").gpu == [0, 1]
     assert _stage(config, "talker").gpu == 3
+
+
+@pytest.mark.parametrize("mode", ["on", "off"])
+def test_ming_cli_rejects_talker_partial_start_before_mutating_factory_args(
+    mode: str,
+) -> None:
+    config = MingOmniSpeechPipelineConfig(model_path="dummy")
+
+    with pytest.raises(
+        typer.BadParameter,
+        match="--talker-partial-start currently supports only Qwen3-Omni talker",
+    ):
+        apply_partial_start_cli_overrides(config, talker_partial_start=mode)
+
+    assert "enable_partial_start" not in _stage(config, "talker").factory_args
 
 
 def test_ming_text_cli_rejects_talker_gpu_with_stable_message() -> None:

@@ -17,6 +17,9 @@ _QWEN_COLOCATED_CONFIG_CLASS = "Qwen3OmniSpeechColocatedPipelineConfig"
 _HIGGS_ASYNC_DECODE_FACTORY = (
     "sglang_omni.models.higgs_tts.stages.create_sglang_tts_engine_executor"
 )
+_QWEN_PARTIAL_START_TALKER_FACTORY = (
+    "sglang_omni.models.qwen3_omni.stages.create_talker_ar_executor_from_config"
+)
 
 
 def launch_server(*args: object, **kwargs: object) -> object:
@@ -635,12 +638,24 @@ def apply_partial_start_cli_overrides(
     mode = _normalize_stage_toggle_mode("talker_partial_start", talker_partial_start)
     if mode == "default":
         return pipeline_config
+    stage_name = _resolve_talker_stage(
+        pipeline_config,
+        flag_name="--talker-partial-start",
+    )
+    matching_stages = _find_matching_stages(
+        pipeline_config,
+        stage_name=stage_name,
+        reason=f"talker partial-start mode to {mode!r}",
+    )
+    for stage in matching_stages:
+        if stage.factory != _QWEN_PARTIAL_START_TALKER_FACTORY:
+            raise typer.BadParameter(
+                "--talker-partial-start currently supports only Qwen3-Omni "
+                f"talker; stage {stage.name!r} uses factory {stage.factory!r}"
+            )
     _apply_stage_factory_args_override(
         pipeline_config,
-        stage_name=_resolve_talker_stage(
-            pipeline_config,
-            flag_name="--talker-partial-start",
-        ),
+        stage_name=stage_name,
         updates={"enable_partial_start": mode == "on"},
         reason=f"talker partial-start mode to {mode!r}",
         flag_name="--talker-partial-start",
