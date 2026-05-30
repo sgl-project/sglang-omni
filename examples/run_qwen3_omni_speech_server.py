@@ -131,10 +131,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--enable-partial-start",
         action=argparse.BooleanOptionalAction,
-        default=True,
+        default=None,
         help=(
-            "Enable partial-prefix talker startup (default: on). "
-            "Use --no-enable-partial-start to disable."
+            "Enable partial-prefix talker startup. Defaults to on for the "
+            "disaggregated speech topology and off for --colocated. Use "
+            "--no-enable-partial-start to disable."
         ),
     )
     parser.add_argument(
@@ -252,10 +253,13 @@ def _launch_speech_server(args: argparse.Namespace) -> None:
     ):
         _validate_fraction(flag_name, value)
 
-    if (
-        args.enable_partial_start
-        and args.partial_start_min_chunks < MIN_PARTIAL_START_CHUNKS
-    ):
+    enable_partial_start = (
+        not args.colocated
+        if args.enable_partial_start is None
+        else bool(args.enable_partial_start)
+    )
+
+    if enable_partial_start and args.partial_start_min_chunks < MIN_PARTIAL_START_CHUNKS:
         raise ValueError(
             f"--partial-start-min-chunks must be >= {MIN_PARTIAL_START_CHUNKS}, "
             f"got {args.partial_start_min_chunks}"
@@ -387,9 +391,9 @@ def _launch_speech_server(args: argparse.Namespace) -> None:
         )
 
     talker_partial_start_updates: dict[str, object] = {
-        "enable_partial_start": bool(args.enable_partial_start),
+        "enable_partial_start": enable_partial_start,
     }
-    if args.enable_partial_start:
+    if enable_partial_start:
         talker_partial_start_updates["partial_start_min_chunks"] = int(
             args.partial_start_min_chunks
         )
