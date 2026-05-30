@@ -15,16 +15,6 @@
 <a href="https://slack.sglang.ai"><b>Join Slack</b></a>
 </p>
 
-## News
-- [2026/05] 🔥 Qwen3-Omni talker partial-start enabled by default ([PR #617](https://github.com/sgl-project/sglang-omni/pull/617)).
-- [2026/05] 🔥 Streaming TTS schedulers with framework-level support ([PR #614](https://github.com/sgl-project/sglang-omni/pull/614)).
-- [2026/05] 🔥 Higgs TTS streaming vocoder with batched decode for higher throughput ([PR #574](https://github.com/sgl-project/sglang-omni/pull/574)).
-- [2026/05] 🔥 Ming-Omni streaming TTS support ([PR #506](https://github.com/sgl-project/sglang-omni/pull/506)).
-- [2026/05] torch.compile + CUDA Graph for Qwen3-TTS and Voxtral-TTS AR backbones ([PR #527](https://github.com/sgl-project/sglang-omni/pull/527)).
-- [2026/05] Higgs TTS async decode (one-step lookahead) for lower latency ([PR #590](https://github.com/sgl-project/sglang-omni/pull/590)).
-- [2026/05] Qwen3-Omni talker partial-prefix startup for faster first-token latency ([PR #475](https://github.com/sgl-project/sglang-omni/pull/475)).
-- [2026/05] New cookbooks: LLaDA2.0-Uni ([PR #598](https://github.com/sgl-project/sglang-omni/pull/598)), Voxtral TTS + Qwen3 TTS ([PR #585](https://github.com/sgl-project/sglang-omni/pull/585)), Higgs Audio V3 TTS ([PR #560](https://github.com/sgl-project/sglang-omni/pull/560)).
-
 ## About
 
 SGLang-Omni is a high-performance serving framework for omni and multimodal models, built on top of [SGLang](https://github.com/sgl-project/sglang). It is designed to orchestrate multi-stage pipelines with low latency and OpenAI-compatible APIs.
