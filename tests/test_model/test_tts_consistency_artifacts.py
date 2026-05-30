@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""JSON-only Higgs TTS stage-3 checks for GitHub-hosted runners."""
+"""JSON-only TTS stage-3 checks for GitHub-hosted runners."""
 
 from __future__ import annotations
 
@@ -16,9 +16,9 @@ from tests.utils import (
     assert_summary_metrics,
 )
 
-HIGGS_STAGE1_SPEED_RESULTS_DIR_ENV = "HIGGS_STAGE1_SPEED_RESULTS_DIR"
-HIGGS_STAGE2_SPEED_RESULTS_DIR_ENV = "HIGGS_STAGE2_SPEED_RESULTS_DIR"
-HIGGS_CONSISTENCY_CONCURRENCY_ENV = "HIGGS_CONSISTENCY_CONCURRENCY"
+TTS_STAGE1_SPEED_RESULTS_DIR_ENV = "TTS_STAGE1_SPEED_RESULTS_DIR"
+TTS_STAGE2_SPEED_RESULTS_DIR_ENV = "TTS_STAGE2_SPEED_RESULTS_DIR"
+TTS_CONSISTENCY_CONCURRENCY_ENV = "TTS_CONSISTENCY_CONCURRENCY"
 DEFAULT_CONCURRENCY = 16
 
 
@@ -46,27 +46,27 @@ def _find_results(artifact_root: str, output_dir_name: str) -> dict:
 
 
 def _concurrency() -> int:
-    return int(os.environ.get(HIGGS_CONSISTENCY_CONCURRENCY_ENV, DEFAULT_CONCURRENCY))
+    return int(os.environ.get(TTS_CONSISTENCY_CONCURRENCY_ENV, DEFAULT_CONCURRENCY))
 
 
 @pytest.mark.benchmark
-def test_higgs_streaming_consistency_from_artifacts() -> None:
-    non_stream_root = os.environ.get(HIGGS_STAGE1_SPEED_RESULTS_DIR_ENV)
-    stream_root = os.environ.get(HIGGS_STAGE2_SPEED_RESULTS_DIR_ENV)
-    assert non_stream_root, f"{HIGGS_STAGE1_SPEED_RESULTS_DIR_ENV} is required"
-    assert stream_root, f"{HIGGS_STAGE2_SPEED_RESULTS_DIR_ENV} is required"
+def test_tts_streaming_consistency_from_artifacts() -> None:
+    non_stream_root = os.environ.get(TTS_STAGE1_SPEED_RESULTS_DIR_ENV)
+    stream_root = os.environ.get(TTS_STAGE2_SPEED_RESULTS_DIR_ENV)
+    assert non_stream_root, f"{TTS_STAGE1_SPEED_RESULTS_DIR_ENV} is required"
+    assert stream_root, f"{TTS_STAGE2_SPEED_RESULTS_DIR_ENV} is required"
 
     concurrency = _concurrency()
     non_stream_results = _find_results(
         non_stream_root,
-        f"higgs_nonstream_c{concurrency}",
+        f"tts_nonstream_c{concurrency}",
     )
     stream_results = _find_results(
         stream_root,
-        f"higgs_stream_c{concurrency}",
+        f"tts_stream_c{concurrency}",
     )
 
-    checks = MetricCheckCollector("Higgs artifact streaming consistency")
+    checks = MetricCheckCollector("TTS artifact streaming consistency")
     assert_summary_metrics(non_stream_results["summary"], collector=checks)
     assert_summary_metrics(stream_results["summary"], collector=checks)
     assert_per_request_fields(non_stream_results["per_request"], collector=checks)

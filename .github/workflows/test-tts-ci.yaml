@@ -1,4 +1,4 @@
-name: Higgs TTS CI
+name: TTS CI
 
 on:
   pull_request:
@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: higgs-tts-ci-${{ github.event.pull_request.number || github.ref }}
+  group: tts-ci-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -16,13 +16,13 @@ permissions:
 env:
   OMNI_CI_HOME: >-
     ${{ github.event_name == 'pull_request'
-        && format('/github/home/pr-{0}/higgs-tts', github.event.pull_request.number)
-        || format('/github/home/run-{0}/higgs-tts', github.run_id) }}
-  HIGGS_MODEL_PATH: boson-sglang/higgs-audio-v3-tts-4b-base
-  HIGGS_CONFIG_PATH: examples/configs/higgs_tts.yaml
+        && format('/github/home/pr-{0}/tts', github.event.pull_request.number)
+        || format('/github/home/run-{0}/tts', github.run_id) }}
+  TTS_MODEL_PATH: boson-sglang/higgs-audio-v3-tts-4b-base
+  TTS_CONFIG_PATH: examples/configs/higgs_tts.yaml
 
 # DAG:
-#   setup (install-deps under OMNI_CI_HOME + verify Higgs weights)
+#   setup (install-deps under OMNI_CI_HOME + verify TTS weights)
 #     ├── stage-1-non-streaming
 #     └── stage-2-streaming
 #           └── stage-3-consistency
@@ -30,7 +30,7 @@ env:
 
 jobs:
   setup:
-    name: setup - omni-higgs-tts venv
+    name: setup - omni-tts venv
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (!github.event.pull_request.draft &&
@@ -46,19 +46,19 @@ jobs:
 
       - uses: ./.github/actions/omni-setup
         with:
-          venv-name: omni-higgs-tts
+          venv-name: omni-tts
           install-deps: "true"
 
       - uses: ./.github/actions/omni-save-cache
         with:
-          venv-name: omni-higgs-tts
+          venv-name: omni-tts
 
-      - name: Ensure Higgs model weights
+      - name: Ensure TTS model weights
         shell: bash
         env:
           HF_ENDPOINT: https://hf-mirror.com
           HF_TOKEN: ${{ secrets.BOSON_HF_TOKEN }}
-        run: bash .github/scripts/ensure_hf_models.sh omni-higgs-tts "$HIGGS_MODEL_PATH"
+        run: bash .github/scripts/ensure_hf_models.sh omni-tts "$TTS_MODEL_PATH"
 
   stage-1-non-streaming:
     name: stage 1 - non-streaming
@@ -78,33 +78,33 @@ jobs:
 
       - uses: ./.github/actions/omni-setup
         with:
-          venv-name: omni-higgs-tts
+          venv-name: omni-tts
 
-      - name: Run Higgs non-streaming benchmark stage
+      - name: Run TTS non-streaming benchmark stage
         shell: bash
         run: |
-          source omni-higgs-tts/bin/activate
+          source omni-tts/bin/activate
           export PYTHONPATH=$PWD
           bash .github/scripts/run_flaky_pytest.sh \
             pytest -v -s -x \
-              tests/test_model/test_higgs_tts_ci.py::test_higgs_non_streaming_generation \
-              tests/test_model/test_higgs_tts_ci.py::test_higgs_non_streaming_wer
+              tests/test_model/test_tts_ci.py::test_tts_non_streaming_generation \
+              tests/test_model/test_tts_ci.py::test_tts_non_streaming_wer
         env:
           HF_ENDPOINT: https://hf-mirror.com
           HF_TOKEN: ${{ secrets.BOSON_HF_TOKEN }}
-          HIGGS_STAGE_OUTPUT_ROOT: ${{ github.workspace }}/stage-results/nonstream
+          TTS_STAGE_OUTPUT_ROOT: ${{ github.workspace }}/stage-results/nonstream
           TORCHINDUCTOR_CACHE_DIR: ${{ env.OMNI_CI_HOME }}/.torchinductor
 
       - name: Post-stage cleanup
         if: always()
         uses: ./.github/actions/omni-post-stage
         with:
-          stage-label: Higgs TTS stage 1 (non-streaming)
+          stage-label: TTS stage 1 (non-streaming)
           artifact-search-root: stage-results/nonstream
           artifact-path-globs: |
             */speed_results.json
             */wer_results.json
-          artifact-upload-name: higgs-stage-1-results
+          artifact-upload-name: tts-stage-1-results
           artifact-upload-path: stage-results/nonstream
           artifact-if-no-files-found: error
 
@@ -126,33 +126,33 @@ jobs:
 
       - uses: ./.github/actions/omni-setup
         with:
-          venv-name: omni-higgs-tts
+          venv-name: omni-tts
 
-      - name: Run Higgs streaming benchmark stage
+      - name: Run TTS streaming benchmark stage
         shell: bash
         run: |
-          source omni-higgs-tts/bin/activate
+          source omni-tts/bin/activate
           export PYTHONPATH=$PWD
           bash .github/scripts/run_flaky_pytest.sh \
             pytest -v -s -x \
-              tests/test_model/test_higgs_tts_ci.py::test_higgs_streaming_generation \
-              tests/test_model/test_higgs_tts_ci.py::test_higgs_streaming_wer
+              tests/test_model/test_tts_ci.py::test_tts_streaming_generation \
+              tests/test_model/test_tts_ci.py::test_tts_streaming_wer
         env:
           HF_ENDPOINT: https://hf-mirror.com
           HF_TOKEN: ${{ secrets.BOSON_HF_TOKEN }}
-          HIGGS_STAGE_OUTPUT_ROOT: ${{ github.workspace }}/stage-results/stream
+          TTS_STAGE_OUTPUT_ROOT: ${{ github.workspace }}/stage-results/stream
           TORCHINDUCTOR_CACHE_DIR: ${{ env.OMNI_CI_HOME }}/.torchinductor
 
       - name: Post-stage cleanup
         if: always()
         uses: ./.github/actions/omni-post-stage
         with:
-          stage-label: Higgs TTS stage 2 (streaming)
+          stage-label: TTS stage 2 (streaming)
           artifact-search-root: stage-results/stream
           artifact-path-globs: |
             */speed_results.json
             */wer_results.json
-          artifact-upload-name: higgs-stage-2-results
+          artifact-upload-name: tts-stage-2-results
           artifact-upload-path: stage-results/stream
           artifact-if-no-files-found: error
 
@@ -179,13 +179,13 @@ jobs:
       - name: Download stage 1 artifact
         uses: actions/download-artifact@v4
         with:
-          name: higgs-stage-1-results
+          name: tts-stage-1-results
           path: stage-artifacts/nonstream
 
       - name: Download stage 2 artifact
         uses: actions/download-artifact@v4
         with:
-          name: higgs-stage-2-results
+          name: tts-stage-2-results
           path: stage-artifacts/stream
 
       - name: Run consistency check
@@ -193,11 +193,11 @@ jobs:
         run: |
           export PYTHONPATH=$PWD
           bash .github/scripts/run_flaky_pytest.sh \
-            python -m pytest tests/test_model/test_higgs_consistency_artifacts.py -v -s -x
+            python -m pytest tests/test_model/test_tts_consistency_artifacts.py -v -s -x
         env:
-          HIGGS_STAGE1_SPEED_RESULTS_DIR: ${{ github.workspace }}/stage-artifacts/nonstream
-          HIGGS_STAGE2_SPEED_RESULTS_DIR: ${{ github.workspace }}/stage-artifacts/stream
-          HIGGS_CONSISTENCY_CONCURRENCY: "16"
+          TTS_STAGE1_SPEED_RESULTS_DIR: ${{ github.workspace }}/stage-artifacts/nonstream
+          TTS_STAGE2_SPEED_RESULTS_DIR: ${{ github.workspace }}/stage-artifacts/stream
+          TTS_CONSISTENCY_CONCURRENCY: "16"
 
   cleanup:
     name: cleanup - reclaim host cache

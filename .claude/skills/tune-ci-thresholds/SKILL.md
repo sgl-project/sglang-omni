@@ -1,6 +1,6 @@
 ---
 name: tune-ci-thresholds
-description: Run CI tests N times per stage on the H20 CI-reproduction host, produce a per-metric strict worst-of-N observation report (every stage must have N full-sample repeats), and (on user confirmation) write the worst-of-N values back into the test files as new baselines. Use when recalibrating CI thresholds after an engine update. Currently supports qwen3-omni-v1 and higgs-tts; extensible via models/<name>/config.yaml.
+description: Run CI tests N times per stage on the H20 CI-reproduction host, produce a per-metric strict worst-of-N observation report (every stage must have N full-sample repeats), and (on user confirmation) write the worst-of-N values back into the test files as new baselines. Use when recalibrating CI thresholds after an engine update. Currently supports qwen3-omni-v1 and tts; extensible via models/<name>/config.yaml.
 ---
 
 # tune-ci-thresholds
@@ -221,7 +221,7 @@ List what's configured:
 ```
 python .claude/skills/tune-ci-thresholds/tune.py models-list
 ```
-Today: `qwen3-omni-v1`, `higgs-tts`. To add another model,
+Today: `qwen3-omni-v1`, `tts`. To add another model,
 drop in a new `models/<name>/config.yaml` and run `tune.py discover
 --model <name>`. No Python code changes needed unless the new model
 emits metrics with a
@@ -255,7 +255,7 @@ test) explicitly marks as missing or misaligned.
 | Action | Why forbidden by default |
 |--------|--------------------------|
 | `prepare_omni_venv.sh` | Fresh path does `rm -rf $OMNI_CI_HOME` — wipes slice caches and forces a full PyPI/CUDA re-download. |
-| `install_flashinfer_jit_cache.sh` | Only when precheck reports `flashinfer-jit-cache` missing from venv. Use host wheel cache first (seconds); network only on cache miss or corrupt wheel. **Every CI venv gets it via `omni-setup`**, including Whisper / S2-Pro slices — calibration must match. |
+| `install_flashinfer_jit_cache.sh` | Only when precheck reports `flashinfer-jit-cache` missing from venv. Use host wheel cache first (seconds); network only on cache miss or corrupt wheel. **Every CI venv gets it via `omni-setup`**, including Whisper / TTS slices — calibration must match. |
 | `ensure_hf_models.sh` (bulk) | Download only the model id(s) precheck marks `✗`, not the whole CI model list. |
 | Ad-hoc `uv pip install torch` / wheel URLs | Pins must match CI; precheck reports pin drift. |
 
@@ -327,12 +327,12 @@ python .claude/skills/tune-ci-thresholds/tune.py --model qwen3-omni-v1 run \
   --repeats 5 --output-dir .tune-runs/<timestamp>_qwen3-omni-v1_fp8_stage_11_r5
 ```
 
-Common Higgs TTS preset:
+Common TTS preset:
 ```
-# Full Higgs TTS threshold stages: nonstream speed/WER and stream speed/WER.
-python .claude/skills/tune-ci-thresholds/tune.py --model higgs-tts run \
+# Full TTS threshold stages: nonstream speed/WER and stream speed/WER.
+python .claude/skills/tune-ci-thresholds/tune.py --model tts run \
   --stages tts \
-  --repeats 5 --output-dir .tune-runs/<timestamp>_higgs-tts_tts_r5
+  --repeats 5 --output-dir .tune-runs/<timestamp>_tts_r5
 ```
 
 ## Environment and networking notes
@@ -373,14 +373,14 @@ not merely run the same pytest command.
 | | `/github/home/.cache/modelscope` | `MODELSCOPE_CACHE` |
 | | `/github/home/.cache/uv` | `UV_CACHE_DIR`; PyPI wheels |
 | | `/github/home/.cache/flashinfer-jit-cache/` | Host-resident flashinfer-jit-cache **wheel**; download only when pin changes |
-| **Per slice (`OMNI_CI_HOME`)** | `<OMNI_CI_HOME>/omni-qwen3` or `omni-higgs-tts` | Python venv |
+| **Per slice (`OMNI_CI_HOME`)** | `<OMNI_CI_HOME>/omni-qwen3` or `omni-tts` | Python venv |
 | | `<OMNI_CI_HOME>/.cache` | `XDG_CACHE_HOME`; uv/torch compile artifacts |
 | | `<OMNI_CI_HOME>/.cache/flashinfer` | Runtime FlashInfer JIT dir — **safe to delete** between runs |
 | | `<OMNI_CI_HOME>/.torchinductor` | `TORCHINDUCTOR_CACHE_DIR` |
 
-- **CI Actions runners** use `OMNI_CI_HOME=/github/home/pr-<N>/qwen3` (or `/higgs-tts`, `/unit`).
+- **CI Actions runners** use `OMNI_CI_HOME=/github/home/pr-<N>/qwen3` (or `/tts`, `/unit`).
 - **Calibration host** uses fixed slices from each model's `config.yaml`:
-  `omni_ci_home: /github/home/calibration/qwen3` (or `.../higgs-tts`).
+  `omni_ci_home: /github/home/calibration/qwen3` (or `.../tts`).
 - `tune.py` / `runner.py` apply `auto_env` from `config.yaml` and **override** shell env to match CI.
 
 ### Prepare a calibration venv (only when precheck proves venv missing or corrupt)
@@ -392,7 +392,7 @@ pins cannot be fixed with `uv pip install -e .`.
 From repo root on the H20 repro host (`frankleeeee/sglang-omni:dev` semantics):
 
 ```bash
-# Qwen3-Omni example (Higgs TTS: OMNI_CI_HOME=/github/home/calibration/higgs-tts, venv omni-higgs-tts)
+# Qwen3-Omni example (TTS: OMNI_CI_HOME=/github/home/calibration/tts, venv omni-tts)
 export OMNI_CI_HOME=/github/home/calibration/qwen3
 export HOME=/github/home
 export HF_HOME=/github/home/.cache/huggingface
@@ -491,7 +491,8 @@ It is **not** a model bug — the environment is wrong.
 | Workload | CI workflow | venv | `OMNI_CI_HOME` (calibration host) | Source env script |
 |----------|-------------|------|-----------------------------------|-------------------|
 | Qwen3-Omni benchmarks (MMMU/MMSU/TTS/talker/video*) | `test-qwen3-omni-ci.yaml` | **`omni-qwen3`** | `/github/home/calibration/qwen3` | `source .github/scripts/ci_env_qwen3.sh` |
-| S2-Pro TTS / Whisper ASR | `test-s2pro-ci.yaml`, `whisper-asr-v1` | **`omni-s2pro`** | `/github/home/calibration/s2pro` | `source .github/scripts/ci_env_s2pro.sh` |
+| TTS benchmarks | `test-tts-ci.yaml`, `tts` | **`omni-tts`** | `/github/home/calibration/tts` | workflow env / model config auto env |
+| Whisper ASR | `whisper-asr-v1` | **`omni-s2pro`** | `/github/home/calibration/s2pro` | `source .github/scripts/ci_env_s2pro.sh` |
 
 **Forbidden shortcuts (observed 2026-05-30):**
 
@@ -503,14 +504,14 @@ It is **not** a model bug — the environment is wrong.
 | Skipping `install_flashinfer_jit_cache.sh` when precheck fails | MoE JIT compile + router timeout on first launch | Install from host wheel cache into the **correct** venv |
 | Killing calibration mid-run without cleaning orphans | `nvidia-smi` shows ~70–85 GiB used but “No running processes” | `pgrep -af multiprocessing.spawn` then `kill -9`; run `delete_gpu_process.sh` |
 
-**Before any Qwen3 or S2-Pro pytest / calibration / WER sweep**, always:
+**Before any Qwen3, TTS, or Whisper pytest / calibration / WER sweep**, always:
 
 ```bash
 cd /sgl-workspace/sglang-omni
 source omni-qwen3/bin/activate   # or omni-s2pro — pick from table above
 source .github/scripts/ci_env_qwen3.sh   # or ci_env_s2pro.sh
 python -c "import os; assert os.environ['TORCHINDUCTOR_CACHE_DIR'].startswith(os.environ['OMNI_CI_HOME'])"
-python .claude/skills/tune-ci-thresholds/tune.py --model qwen3-omni-v1 precheck   # or whisper-asr-v1 / s2-pro-v1
+python .claude/skills/tune-ci-thresholds/tune.py --model qwen3-omni-v1 precheck   # or whisper-asr-v1 / tts
 ```
 
 Aligned env → Qwen3 colocated router CUDA graph capture ~5–10 s on warm
@@ -954,7 +955,7 @@ Two gates — **both** required before apply:
     ├── qwen3-omni-v1/                   # v1 pipeline (qwen3-omni)
     │   ├── config.yaml
     │   └── stages.yaml
-    ├── higgs-tts/                       # Higgs TTS pipeline
+    ├── tts/                             # TTS pipeline
     │   ├── config.yaml                  #   uses per-test-file `variants`)
     │   └── stages.yaml
     └── whisper-asr-v1/                  # Whisper large-v3 ASR (omni-s2pro venv)

@@ -1,12 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Higgs TTS SeedTTS CI benchmark.
+"""TTS SeedTTS CI benchmark.
 
 The workflow runs this file in two GPU stages:
 
 1. full SeedTTS EN non-stream generation + WER
 2. full SeedTTS EN SSE streaming generation + WER
 
-Each generation stage starts two Higgs workers behind the managed router, matching
+Each generation stage starts two TTS workers behind the managed router, matching
 the online-serving topology used by the other Omni CI stages. WER runs after the
 router is stopped so the ASR transcription can reuse the GPU memory.
 """
@@ -47,16 +47,16 @@ from tests.utils import (
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
-HIGGS_MODEL_PATH = os.environ.get(
-    "HIGGS_MODEL_PATH", "boson-sglang/higgs-audio-v3-tts-4b-base"
+TTS_MODEL_PATH = os.environ.get(
+    "TTS_MODEL_PATH", "boson-sglang/higgs-audio-v3-tts-4b-base"
 )
-HIGGS_CONFIG_PATH = os.environ.get(
-    "HIGGS_CONFIG_PATH", "examples/configs/higgs_tts.yaml"
+TTS_CONFIG_PATH = os.environ.get(
+    "TTS_CONFIG_PATH", "examples/configs/higgs_tts.yaml"
 )
-HIGGS_REF_FORMAT = "references"
-HIGGS_STAGE_OUTPUT_ROOT_ENV = "HIGGS_STAGE_OUTPUT_ROOT"
-HIGGS_CONCURRENCY = 16
-HIGGS_SEED = 601
+TTS_REF_FORMAT = "references"
+TTS_STAGE_OUTPUT_ROOT_ENV = "TTS_STAGE_OUTPUT_ROOT"
+TTS_CONCURRENCY = 16
+TTS_SEED = 601
 
 STARTUP_TIMEOUT = 300
 BENCHMARK_TIMEOUT = 900
@@ -64,16 +64,16 @@ WER_TIMEOUT = 900
 
 SPEED_OUTPUT_DIRS: dict[str, dict[int, str]] = {"non_stream": {}, "stream": {}}
 
-_HIGGS_NON_STREAM_REFERENCE = {
-    HIGGS_CONCURRENCY: {
+_TTS_NON_STREAM_REFERENCE = {
+    TTS_CONCURRENCY: {
         "throughput_qps": 9.104,
         "output_tok_per_req_s": 112.9,
         "latency_mean_s": 1.749,
         "rtf_mean": 0.425,
     }
 }
-_HIGGS_STREAM_REFERENCE = {
-    HIGGS_CONCURRENCY: {
+_TTS_STREAM_REFERENCE = {
+    TTS_CONCURRENCY: {
         "throughput_qps": 7.0,
         "output_tok_per_req_s": 80.0,
         "latency_mean_s": 2.5,
@@ -81,22 +81,22 @@ _HIGGS_STREAM_REFERENCE = {
     }
 }
 
-HIGGS_THRESHOLD_SLACK_HIGHER = 0.35
-HIGGS_THRESHOLD_SLACK_LOWER = 3.0
-HIGGS_NON_STREAM_THRESHOLDS = apply_slack(
-    _HIGGS_NON_STREAM_REFERENCE,
-    HIGGS_THRESHOLD_SLACK_HIGHER,
-    HIGGS_THRESHOLD_SLACK_LOWER,
+TTS_THRESHOLD_SLACK_HIGHER = 0.35
+TTS_THRESHOLD_SLACK_LOWER = 3.0
+TTS_NON_STREAM_THRESHOLDS = apply_slack(
+    _TTS_NON_STREAM_REFERENCE,
+    TTS_THRESHOLD_SLACK_HIGHER,
+    TTS_THRESHOLD_SLACK_LOWER,
 )
-HIGGS_STREAM_THRESHOLDS = apply_slack(
-    _HIGGS_STREAM_REFERENCE,
-    HIGGS_THRESHOLD_SLACK_HIGHER,
-    HIGGS_THRESHOLD_SLACK_LOWER,
+TTS_STREAM_THRESHOLDS = apply_slack(
+    _TTS_STREAM_REFERENCE,
+    TTS_THRESHOLD_SLACK_HIGHER,
+    TTS_THRESHOLD_SLACK_LOWER,
 )
 
-HIGGS_WER_BELOW_50_CORPUS_MAX = 0.0136
-HIGGS_WER_BELOW_50_CORPUS_THRESHOLD = apply_wer_slack(HIGGS_WER_BELOW_50_CORPUS_MAX)
-HIGGS_WER_N_ABOVE_50_MAX = 3
+TTS_WER_BELOW_50_CORPUS_MAX = 0.0136
+TTS_WER_BELOW_50_CORPUS_THRESHOLD = apply_wer_slack(TTS_WER_BELOW_50_CORPUS_MAX)
+TTS_WER_N_ABOVE_50_MAX = 3
 
 
 @pytest.fixture(scope="module")
@@ -108,21 +108,21 @@ def dataset_repo() -> str:
 
 @pytest.fixture(scope="module")
 def router_server(tmp_path_factory: pytest.TempPathFactory):
-    """Start two Higgs workers behind the router and wait until healthy."""
+    """Start two TTS workers behind the router and wait until healthy."""
     with launch_managed_router(
         tmp_path_factory=tmp_path_factory,
-        model_path=HIGGS_MODEL_PATH,
-        model_name=HIGGS_MODEL_PATH,
-        worker_extra_args=f"--config {HIGGS_CONFIG_PATH}",
+        model_path=TTS_MODEL_PATH,
+        model_name=TTS_MODEL_PATH,
+        worker_extra_args=f"--config {TTS_CONFIG_PATH}",
         wait_timeout=STARTUP_TIMEOUT,
-        log_prefix="higgs_tts_router_logs",
+        log_prefix="tts_router_logs",
     ) as router:
         yield router
 
 
 @pytest.fixture(scope="module")
 def wer_input_dirs(router_server: ManagedRouterHandle) -> dict[str, dict[int, str]]:
-    """Free the Higgs router workers before starting ASR transcription."""
+    """Free the TTS router workers before starting ASR transcription."""
     router_server.stop()
     for output_dirs in SPEED_OUTPUT_DIRS.values():
         for output_dir in output_dirs.values():
@@ -139,14 +139,14 @@ def _run_benchmark(
     stream: bool = False,
 ) -> dict:
     benchmark_config = TtsSeedttsBenchmarkConfig(
-        model=HIGGS_MODEL_PATH,
+        model=TTS_MODEL_PATH,
         port=port,
         meta=meta,
         output_dir=output_dir,
-        concurrency=HIGGS_CONCURRENCY,
+        concurrency=TTS_CONCURRENCY,
         stream=stream,
-        ref_format=HIGGS_REF_FORMAT,
-        seed=HIGGS_SEED,
+        ref_format=TTS_REF_FORMAT,
+        seed=TTS_SEED,
         disable_tqdm=True,
     )
     return asyncio.run(
@@ -174,9 +174,9 @@ def _run_wer_transcribe(
         "--output-dir",
         output_dir,
         "--model",
-        HIGGS_MODEL_PATH,
+        TTS_MODEL_PATH,
         "--ref-format",
-        HIGGS_REF_FORMAT,
+        TTS_REF_FORMAT,
         "--lang",
         "en",
         "--device",
@@ -211,7 +211,7 @@ def _run_wer_transcribe(
 
 
 def _resolve_stage_output_dir(tmp_path: Path, output_dir_name: str) -> str:
-    output_root = os.environ.get(HIGGS_STAGE_OUTPUT_ROOT_ENV)
+    output_root = os.environ.get(TTS_STAGE_OUTPUT_ROOT_ENV)
     if output_root:
         output_dir = Path(output_root) / output_dir_name
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -225,30 +225,30 @@ def _validate_speed_results(
     mode: str,
     output_dir: str,
 ) -> None:
-    checks = MetricCheckCollector(f"Higgs {mode} speed")
+    checks = MetricCheckCollector(f"TTS {mode} speed")
     summary = results.get("summary", {})
     per_request = results.get("per_request", [])
     assert_summary_metrics(summary, collector=checks)
     assert_per_request_fields(per_request, collector=checks)
     thresholds = (
-        HIGGS_STREAM_THRESHOLDS if mode == "stream" else HIGGS_NON_STREAM_THRESHOLDS
+        TTS_STREAM_THRESHOLDS if mode == "stream" else TTS_NON_STREAM_THRESHOLDS
     )
     assert_speed_thresholds(
         summary,
         thresholds,
-        HIGGS_CONCURRENCY,
+        TTS_CONCURRENCY,
         collector=checks,
     )
-    SPEED_OUTPUT_DIRS[mode][HIGGS_CONCURRENCY] = output_dir
+    SPEED_OUTPUT_DIRS[mode][TTS_CONCURRENCY] = output_dir
     checks.assert_all()
 
 
 def _validate_wer_results(results: dict, *, mode: str) -> None:
-    checks = MetricCheckCollector(f"Higgs {mode} WER")
+    checks = MetricCheckCollector(f"TTS {mode} WER")
     assert_wer_partitioned(
         results,
-        max_wer_below_50_corpus=HIGGS_WER_BELOW_50_CORPUS_THRESHOLD,
-        max_n_above_50=HIGGS_WER_N_ABOVE_50_MAX,
+        max_wer_below_50_corpus=TTS_WER_BELOW_50_CORPUS_THRESHOLD,
+        max_n_above_50=TTS_WER_N_ABOVE_50_MAX,
         collector=checks,
     )
     checks.assert_all()
@@ -273,23 +273,23 @@ def _assert_stage_used_all_router_workers(
 
 
 @pytest.mark.benchmark
-def test_higgs_non_streaming_generation(
+def test_tts_non_streaming_generation(
     router_server: ManagedRouterHandle,
     dataset_repo: str,
     tmp_path: Path,
 ) -> None:
     output_dir = _resolve_stage_output_dir(
-        tmp_path, f"higgs_nonstream_c{HIGGS_CONCURRENCY}"
+        tmp_path, f"tts_nonstream_c{TTS_CONCURRENCY}"
     )
     before_workers = router_get_json(router_server.port, "/workers")
     try:
         results = _run_benchmark(router_server.port, dataset_repo, output_dir)
-        checks = MetricCheckCollector("Higgs non-stream router traffic")
+        checks = MetricCheckCollector("TTS non-stream router traffic")
         _assert_stage_used_all_router_workers(
             router_server=router_server,
             before_workers=before_workers,
             results=results,
-            label=f"Higgs non-stream c{HIGGS_CONCURRENCY}",
+            label=f"TTS non-stream c{TTS_CONCURRENCY}",
             collector=checks,
         )
         checks.assert_all()
@@ -300,13 +300,13 @@ def test_higgs_non_streaming_generation(
 
 
 @pytest.mark.benchmark
-def test_higgs_streaming_generation(
+def test_tts_streaming_generation(
     router_server: ManagedRouterHandle,
     dataset_repo: str,
     tmp_path: Path,
 ) -> None:
     output_dir = _resolve_stage_output_dir(
-        tmp_path, f"higgs_stream_c{HIGGS_CONCURRENCY}"
+        tmp_path, f"tts_stream_c{TTS_CONCURRENCY}"
     )
     before_workers = router_get_json(router_server.port, "/workers")
     try:
@@ -316,12 +316,12 @@ def test_higgs_streaming_generation(
             output_dir,
             stream=True,
         )
-        checks = MetricCheckCollector("Higgs stream router traffic")
+        checks = MetricCheckCollector("TTS stream router traffic")
         _assert_stage_used_all_router_workers(
             router_server=router_server,
             before_workers=before_workers,
             results=results,
-            label=f"Higgs stream c{HIGGS_CONCURRENCY}",
+            label=f"TTS stream c{TTS_CONCURRENCY}",
             collector=checks,
         )
         checks.assert_all()
@@ -334,20 +334,20 @@ def test_higgs_streaming_generation(
 # Keep both generation tests before WER so full-file calibration does not stop
 # the router before streaming audio has been generated.
 @pytest.mark.benchmark
-def test_higgs_non_streaming_wer(
+def test_tts_non_streaming_wer(
     wer_input_dirs: dict[str, dict[int, str]],
     dataset_repo: str,
 ) -> None:
-    output_dir = wer_input_dirs["non_stream"][HIGGS_CONCURRENCY]
+    output_dir = wer_input_dirs["non_stream"][TTS_CONCURRENCY]
     results = _run_wer_transcribe(dataset_repo, output_dir)
     _validate_wer_results(results, mode="non_stream")
 
 
 @pytest.mark.benchmark
-def test_higgs_streaming_wer(
+def test_tts_streaming_wer(
     wer_input_dirs: dict[str, dict[int, str]],
     dataset_repo: str,
 ) -> None:
-    output_dir = wer_input_dirs["stream"][HIGGS_CONCURRENCY]
+    output_dir = wer_input_dirs["stream"][TTS_CONCURRENCY]
     results = _run_wer_transcribe(dataset_repo, output_dir, stream=True)
     _validate_wer_results(results, mode="stream")
