@@ -47,6 +47,5 @@ Core features:
 ## Get Started
 
 - [Installation](./docs/get_started/installation.md)
+- [Cookbook](./docs/cookbook/)
 - [Developer Reference](./docs/developer_reference/main.md)
-- [Benchmarks](./benchmarks/README.md)
-- [Examples](./examples/README.md)
