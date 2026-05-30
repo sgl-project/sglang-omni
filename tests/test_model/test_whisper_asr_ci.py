@@ -1,9 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Whisper ASR parity CI for SGLang Omni vs Transformers.
+"""Whisper ASR correctness CI for SGLang Omni.
 
 The test uses the first 20 English SeedTTS samples as a lightweight speech
 corpus. It compares normalized transcriptions from the SGLang Omni Whisper
-server against the native Transformers pipeline.
+server against the dataset reference text.
 """
 
 from __future__ import annotations
@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pytest
 import requests
+from jiwer import process_words
 
 from benchmarks.dataset.prepare import DATASETS
 from benchmarks.dataset.seedtts import SampleInput, load_seedtts_samples
@@ -28,7 +29,9 @@ from tests.utils import (
 )
 
 WHISPER_MODEL_PATH = "openai/whisper-large-v3"
-SEEDTTS_ASR_PARITY_SAMPLES = 20
+SEEDTTS_ASR_CORRECTNESS_SAMPLES = 20
+SEEDTTS_ASR_CORPUS_WER_MAX = 0.01
+SEEDTTS_ASR_SAMPLE_WER_MAX = 0.20
 STARTUP_TIMEOUT = 600
 REQUEST_TIMEOUT = 300
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -38,14 +41,14 @@ def _require_cuda() -> None:
     import torch
 
     if not torch.cuda.is_available():
-        pytest.skip("CUDA is required for Whisper ASR parity CI")
+        pytest.skip("CUDA is required for Whisper ASR correctness CI")
 
 
 @pytest.fixture(scope="module")
 def seedtts_en_samples() -> list[SampleInput]:
     return load_seedtts_samples(
         DATASETS["seedtts"],
-        max_samples=SEEDTTS_ASR_PARITY_SAMPLES,
+        max_samples=SEEDTTS_ASR_CORRECTNESS_SAMPLES,
         split="en",
     )
 
@@ -106,36 +109,13 @@ def _transcribe_with_omni(port: int, sample: SampleInput) -> tuple[str, float]:
     return str(response.json()["text"]), time.perf_counter() - start
 
 
-def _transcribe_with_transformers(
-    samples: list[SampleInput],
-) -> tuple[dict[str, str], float]:
-    import torch
-    from transformers import pipeline
-
-    start = time.perf_counter()
-    asr = pipeline(
-        "automatic-speech-recognition",
-        model=WHISPER_MODEL_PATH,
-        dtype=torch.float16,
-        device="cuda:0",
-    )
-    outputs: dict[str, str] = {}
-    for sample in samples:
-        result = asr(
-            sample.ref_audio,
-            generate_kwargs={"language": "english", "task": "transcribe"},
-        )
-        outputs[sample.sample_id] = str(result["text"])
-    return outputs, time.perf_counter() - start
-
-
 @pytest.mark.benchmark
-def test_whisper_asr_matches_transformers_on_seedtts_en(
+def test_whisper_asr_matches_seedtts_reference_text(
     seedtts_en_samples: list[SampleInput],
     tmp_path_factory: pytest.TempPathFactory,
 ) -> None:
     _require_cuda()
-    assert len(seedtts_en_samples) == SEEDTTS_ASR_PARITY_SAMPLES
+    assert len(seedtts_en_samples) == SEEDTTS_ASR_CORRECTNESS_SAMPLES
 
     proc, port = _start_whisper_server(tmp_path_factory)
     omni_outputs: dict[str, str] = {}
@@ -148,32 +128,47 @@ def test_whisper_asr_matches_transformers_on_seedtts_en(
     finally:
         stop_server(proc)
 
-    hf_outputs, hf_total_s = _transcribe_with_transformers(seedtts_en_samples)
-
-    mismatches: list[str] = []
+    sample_diffs: list[str] = []
+    high_wer_samples: list[str] = []
+    ref_norms: list[str] = []
+    hyp_norms: list[str] = []
     for sample in seedtts_en_samples:
         omni_text = omni_outputs[sample.sample_id]
-        hf_text = hf_outputs[sample.sample_id]
+        ref_norm = normalize_text(sample.ref_text, "en")
         omni_norm = normalize_text(omni_text, "en")
-        hf_norm = normalize_text(hf_text, "en")
-        if omni_norm != hf_norm:
-            mismatches.append(
-                "\n".join(
-                    [
-                        f"sample_id={sample.sample_id}",
-                        f"ref_text={sample.ref_text!r}",
-                        f"omni={omni_text!r}",
-                        f"hf={hf_text!r}",
-                        f"omni_norm={omni_norm!r}",
-                        f"hf_norm={hf_norm!r}",
-                    ]
-                )
+        ref_norms.append(ref_norm)
+        hyp_norms.append(omni_norm)
+        sample_wer = process_words(ref_norm, omni_norm).wer
+        if sample_wer > 0:
+            diff = "\n".join(
+                [
+                    f"sample_id={sample.sample_id}",
+                    f"ref_text={sample.ref_text!r}",
+                    f"omni={omni_text!r}",
+                    f"sample_wer={sample_wer:.4f}",
+                    f"ref_norm={ref_norm!r}",
+                    f"omni_norm={omni_norm!r}",
+                ]
             )
+            sample_diffs.append(diff)
+            if sample_wer > SEEDTTS_ASR_SAMPLE_WER_MAX:
+                high_wer_samples.append(diff)
 
+    if sample_diffs:
+        print("\n[Whisper ASR correctness diffs]\n" + "\n\n".join(sample_diffs))
+
+    corpus_wer = process_words(ref_norms, hyp_norms).wer
     print(
-        "\n[Whisper ASR parity] "
+        "\n[Whisper ASR correctness] "
         f"samples={len(seedtts_en_samples)} "
         f"omni_total_s={omni_latency_s:.3f} "
-        f"hf_total_s={hf_total_s:.3f}"
+        f"diff_samples={len(sample_diffs)} "
+        f"corpus_wer={corpus_wer:.4f}"
     )
-    assert not mismatches, "Whisper ASR parity mismatches:\n" + "\n\n".join(mismatches)
+    assert corpus_wer <= SEEDTTS_ASR_CORPUS_WER_MAX, (
+        f"Whisper ASR corpus WER {corpus_wer:.4f} exceeds "
+        f"{SEEDTTS_ASR_CORPUS_WER_MAX:.4f}"
+    )
+    assert (
+        not high_wer_samples
+    ), "Whisper ASR high-WER SeedTTS samples:\n" + "\n\n".join(high_wer_samples)

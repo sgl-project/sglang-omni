@@ -98,7 +98,7 @@ jobs:
           stage-label: S2-Pro docs
 
   stage-0-whisper-asr:
-    name: stage 0 - whisper ASR parity
+    name: stage 0 - whisper ASR correctness
     needs: setup
     if: >-
       github.event_name == 'workflow_dispatch' ||
@@ -117,7 +117,7 @@ jobs:
         with:
           venv-name: omni-s2pro
 
-      - name: Run Whisper ASR parity
+      - name: Run Whisper ASR correctness
         shell: bash
         run: |
           source omni-s2pro/bin/activate
@@ -134,7 +134,7 @@ jobs:
         if: always()
         uses: ./.github/actions/omni-post-stage
         with:
-          stage-label: Whisper ASR parity
+          stage-label: Whisper ASR correctness
 
   stage-1-non-streaming:
     name: stage 1 - non-streaming
