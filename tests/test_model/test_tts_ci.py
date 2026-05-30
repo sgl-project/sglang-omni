@@ -75,7 +75,10 @@ STARTUP_TIMEOUT = 180
 BENCHMARK_TIMEOUT = 600
 WER_TIMEOUT = 600
 SIMILARITY_TIMEOUT = 600
-
+UTMOS_TIMEOUT = 600
+# Optional user override: a path to a custom fine-tuned WavLM checkpoint.
+# When unset, the bootstrapper in benchmarks.metrics.speaker_similarity_assets
+# auto-downloads the official weights into the shared cache directory.
 SIMILARITY_CHECKPOINT_ENV = "SEEDTTS_SIM_CHECKPOINT"
 TTS_STAGE_OUTPUT_ROOT_ENV = "TTS_STAGE_OUTPUT_ROOT"
 TTS_STAGE1_SPEED_RESULTS_DIR_ENV = "TTS_STAGE1_SPEED_RESULTS_DIR"
@@ -102,8 +105,10 @@ VC_WER_MAX_CORPUS = 0.0104
 VC_WER_CORPUS_THRESHOLD = apply_wer_slack(VC_WER_MAX_CORPUS)
 VC_STREAM_WER_MAX_CORPUS = 0.0098
 VC_STREAM_WER_CORPUS_THRESHOLD = apply_wer_slack(VC_STREAM_WER_MAX_CORPUS)
+VC_STREAM_WER_MAX_PER_SAMPLE = 0.16666666666666666
 
 VC_SIMILARITY_MEAN_MIN = 66.18289001464844
+VC_UTMOS_MEAN_MIN = 0.0
 
 # Note (Chenyang): Only thresholds for the CI concurrency are dedicatedly tuned,
 # others may not pass the CI.
@@ -305,6 +310,61 @@ def _assert_similarity_results(
         checks.check(
             mean >= min_mean,
             f"speaker_similarity_mean {mean:.4f} < threshold {min_mean:.4f}",
+        )
+    if collector is None:
+        checks.assert_all()
+
+
+def _run_utmos(output_dir: str, *, device: str = "cuda:0") -> dict:
+    cmd = [
+        sys.executable,
+        "-m",
+        WER_MODULE,
+        "--utmos-only",
+        "--meta",
+        DATASETS["seedtts-50"],
+        "--output-dir",
+        output_dir,
+        "--model",
+        S2PRO_MODEL_PATH,
+        "--device",
+        device,
+    ]
+    env = no_proxy_env()
+    existing_pp = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = (
+        f"{PROJECT_ROOT}{os.pathsep}{existing_pp}" if existing_pp else str(PROJECT_ROOT)
+    )
+    result = subprocess.run(
+        cmd, text=True, timeout=UTMOS_TIMEOUT, env=env, cwd=str(PROJECT_ROOT)
+    )
+    assert result.returncode == 0, f"UTMOS eval failed (rc={result.returncode})"
+    results_path = Path(output_dir) / "utmos_results.json"
+    assert results_path.exists(), f"UTMOS results file not found: {results_path}"
+    with open(results_path) as f:
+        return json.load(f)
+
+
+def _assert_utmos_results(
+    results: dict,
+    threshold: float,
+    *,
+    collector: MetricCheckCollector | None = None,
+) -> None:
+    checks = collector or MetricCheckCollector("UTMOS")
+    summary = results.get("summary", {})
+    checks.check(bool(results.get("per_sample")), "per_sample must be non-empty")
+    checks.check(
+        summary.get("skipped", 0) == 0,
+        f"UTMOS: {summary.get('skipped')} skipped samples != 0",
+    )
+    mean = summary.get("utmos_mean")
+    if mean is None:
+        checks.fail("Missing utmos_mean in summary")
+    else:
+        checks.check(
+            mean >= threshold,
+            f"utmos_mean {mean:.4f} < threshold {threshold:.4f}",
         )
     if collector is None:
         checks.assert_all()
@@ -865,7 +925,21 @@ def test_voice_cloning_similarity(
     checks.assert_all()
 
 
-@pytest.mark.tts_stage(TTS_STAGE_STREAM)
+@pytest.mark.s2pro_stage(S2PRO_STAGE_NONSTREAM)
+@pytest.mark.benchmark
+def test_voice_cloning_utmos(
+    wer_input_dirs: dict[str, dict[int, str]],
+    selected_s2pro_tts_concurrencies: tuple[int, ...],
+) -> None:
+    checks = MetricCheckCollector("S2-Pro non-streaming UTMOS")
+    for concurrency in selected_s2pro_tts_concurrencies:
+        _print_stage("UTMOS", "non-streaming", concurrency, "score speed-stage WAVs")
+        results = _run_utmos(wer_input_dirs["non_stream"][concurrency])
+        _assert_utmos_results(results, VC_UTMOS_MEAN_MIN, collector=checks)
+    checks.assert_all()
+
+
+@pytest.mark.s2pro_stage(S2PRO_STAGE_STREAM)
 @pytest.mark.benchmark
 def test_voice_cloning_streaming_wer(
     wer_input_dirs: dict[str, dict[int, str]],
