@@ -83,11 +83,26 @@ is for the operator to glance at overall progress; Tab A is for supervision.
 4. Tell the user: **Tab A = details, Tab B = milestones** — they are not interchangeable.
 5. Poll with `tail -20` / `tune.py status` every **≤120s**; user watches Tab A.
 
+### Calibration (`tune.py run`) — always two tabs, no exceptions
+
+**Never start `tune.py run` with only one terminal.** Never wrap it in
+`>> <run-dir>/run.log` — `tune.py` already tees milestones to `run.log`
+internally; shell redirect hides Tab B and can race/truncate the log file.
+
+| Tab | Role | Agent Shell (`block_until_ms: 0`) |
+|-----|------|-----------------------------------|
+| **A — supervision** | pytest + router/server verbose | `touch <run-dir>/run.log && tail -f $(ls -t <run-dir>/_pytest/*/run*.log 2>/dev/null \| head -1)` — fall back to `tail -f <run-dir>/run.log` until `_pytest` exists |
+| **B — job** | tune.py milestone lines (stdout) | `cd /sgl-workspace/sglang-omni && python .claude/skills/tune-ci-thresholds/tune.py --model <M> run ... --output-dir <run-dir>` — **no** `tee`, **no** `>>` |
+
+Spawn **A then B**. Tell the user which tab is pytest/server (A) vs tune
+progress (B). During each repeat, if A stalls, re-point it at the newest
+`_pytest/*/run{k}.log`.
+
 ### Log path conventions
 
 | Job | Tab A `tail -f` target | Tab B command |
 |-----|------------------------|---------------|
-| `tune.py run` | `<run-dir>/run.log` (+ `_pytest/*/run{k}.log` when active) | `python tune.py --model <M> run ... >> <run-dir>/run.log 2>&1` |
+| **`tune.py run` (calibration)** | **Newest** `<run-dir>/_pytest/*/run{k}.log` (pytest/server) | **`python tune.py ... run`** — stdout only, no redirect |
 | WER sweep (qwen3) | `/tmp/wer_ci_qwen3.log` | `bash .github/scripts/run_all_wer_ci_aligned.sh` |
 | WER sweep (s2pro) | `/tmp/wer_ci_s2pro.log` | (same script; switches log at s2pro section) |
 | Ad-hoc pytest | `/tmp/pytest_<name>.log` | `pytest ... -v -s >> /tmp/pytest_<name>.log 2>&1` |
@@ -692,19 +707,20 @@ Two gates — **both** required before apply:
 5. **Before** launching run, **spawn two IDE terminal tabs** per **Two-terminal
    supervision (mandatory — always)** — Tab A `tail -f` first, Tab B job second:
 
-   **Tab A — supervision (detailed log):**
+   **Tab A — supervision (pytest + server log):**
    ```bash
-   tail -f <run-dir>/run.log
-   # when pytest starts, also: tail -f $(ls -t <run-dir>/_pytest/*/run*.log | head -1)
+   touch <run-dir>/run.log
+   tail -f $(ls -t <run-dir>/_pytest/*/run*.log 2>/dev/null | head -1)
    ```
 
-   **Tab B — job (milestones only; verbose >> log, no tee):**
+   **Tab B — job (tune.py milestones on stdout — no redirect):**
    ```bash
    cd /sgl-workspace/sglang-omni && python .claude/skills/tune-ci-thresholds/tune.py --model <M> run ... \
-     --output-dir <run-dir> >> <run-dir>/run.log 2>&1
+     --output-dir <run-dir>
    ```
 
-   Tell the user: **Tab A = details, Tab B = milestones** — never identical.
+   Tell the user: **Tab A = pytest/server**, **Tab B = tune progress** — never
+   `>> run.log` on Tab B (tune.py tees internally).
 
    Agent polls every **≤120s**: `python tune.py status --run-dir <run-dir>`.
 

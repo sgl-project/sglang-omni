@@ -8,6 +8,7 @@ server against the dataset reference text.
 
 from __future__ import annotations
 
+import concurrent.futures
 import json
 import os
 import statistics
@@ -30,18 +31,18 @@ from tests.utils import MetricCheckCollector, disable_proxy
 
 WHISPER_MODEL_PATH = "openai/whisper-large-v3"
 WHISPER_ASR_WORKER_ARGS = "--stages.0.factory-args.max-running-requests 1"
+WHISPER_ASR_CONCURRENCY = 2
 SEEDTTS_ASR_CORRECTNESS_SAMPLES = 20
-SEEDTTS_ASR_CORPUS_WER_MAX = 0.01
-SEEDTTS_ASR_SAMPLE_WER_MAX = 0.20
-# H100 calibration on 2026-05-30 with CUDA graph bs=1:
-# throughput=8.532 samples/s, latency_mean=0.117s, latency_p95=0.155s,
-# rtf_mean=0.0243, rtf_p95=0.0300. Thresholds include initial CI jitter slack;
-# retune these on H20 before treating them as final CI gates.
-WHISPER_ASR_THROUGHPUT_MIN = 6.0
-WHISPER_ASR_LATENCY_MEAN_MAX_S = 0.20
-WHISPER_ASR_LATENCY_P95_MAX_S = 0.50
-WHISPER_ASR_RTF_MEAN_MAX = 0.04
-WHISPER_ASR_RTF_P95_MAX = 0.12
+SEEDTTS_ASR_CORPUS_WER_MAX = 0.007
+SEEDTTS_ASR_SAMPLE_WER_MAX = 0.0667
+# H20 calibration on 2026-05-30, CUDA graph bs=1, concurrency=2 (DP=2 router):
+# worst-of-5: throughput=10.153 samples/s, latency_mean=0.196s,
+# latency_p95=0.570s, rtf_mean=0.0415, rtf_p95=0.1459.
+WHISPER_ASR_THROUGHPUT_MIN = 10.153
+WHISPER_ASR_LATENCY_MEAN_MAX_S = 0.196
+WHISPER_ASR_LATENCY_P95_MAX_S = 0.570
+WHISPER_ASR_RTF_MEAN_MAX = 0.0415
+WHISPER_ASR_RTF_P95_MAX = 0.1459
 STARTUP_TIMEOUT = 600
 REQUEST_TIMEOUT = 300
 
@@ -143,14 +144,31 @@ def test_whisper_asr_matches_seedtts_reference_text(
         whisper_asr_router_server,
         label="Whisper ASR SeedTTS",
     ) as router_guard:
-        for sample in seedtts_en_samples:
+        wall_start_s = time.perf_counter()
+
+        def _transcribe_sample(
+            sample: SampleInput,
+        ) -> tuple[str, str, float, float]:
             text, latency_s, audio_duration_s = _transcribe_with_omni(
                 whisper_asr_router_server.port,
                 sample,
             )
-            omni_outputs[sample.sample_id] = text
-            latencies_s.append(latency_s)
-            audio_durations_s.append(audio_duration_s)
+            return sample.sample_id, text, latency_s, audio_duration_s
+
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=WHISPER_ASR_CONCURRENCY,
+        ) as executor:
+            futures = [
+                executor.submit(_transcribe_sample, sample)
+                for sample in seedtts_en_samples
+            ]
+            for future in concurrent.futures.as_completed(futures):
+                sample_id, text, latency_s, audio_duration_s = future.result()
+                omni_outputs[sample_id] = text
+                latencies_s.append(latency_s)
+                audio_durations_s.append(audio_duration_s)
+
+        wall_clock_s = time.perf_counter() - wall_start_s
 
     sample_diffs: list[str] = []
     high_wer_samples: list[str] = []
@@ -182,10 +200,9 @@ def test_whisper_asr_matches_seedtts_reference_text(
         print("\n[Whisper ASR correctness diffs]\n" + "\n\n".join(sample_diffs))
 
     corpus_wer = process_words(ref_norms, hyp_norms).wer
-    total_latency_s = sum(latencies_s)
     latency_mean_s = statistics.mean(latencies_s)
     latency_p95_s = _percentile(latencies_s, 95)
-    throughput_samples_per_s = len(latencies_s) / total_latency_s
+    throughput_samples_per_s = len(latencies_s) / wall_clock_s
     rtfs = [
         latency_s / audio_duration_s
         for latency_s, audio_duration_s in zip(latencies_s, audio_durations_s)
@@ -201,7 +218,8 @@ def test_whisper_asr_matches_seedtts_reference_text(
     )
     print(
         "\n[Whisper ASR speed] "
-        f"total_latency_s={total_latency_s:.3f} "
+        f"wall_clock_s={wall_clock_s:.3f} "
+        f"concurrency={WHISPER_ASR_CONCURRENCY} "
         f"throughput_samples_per_s={throughput_samples_per_s:.3f} "
         f"latency_mean_s={latency_mean_s:.3f} "
         f"latency_p95_s={latency_p95_s:.3f} "
@@ -272,5 +290,8 @@ def test_whisper_asr_matches_seedtts_reference_text(
         rtf_p95 <= WHISPER_ASR_RTF_P95_MAX,
         f"Whisper ASR p95 RTF {rtf_p95:.4f} exceeds " f"{WHISPER_ASR_RTF_P95_MAX:.4f}",
     )
-    router_guard.assert_served(min_total_requests=len(seedtts_en_samples))
+    router_guard.assert_served(
+        min_total_requests=len(seedtts_en_samples),
+        min_worker_share=0.40,
+    )
     checks.assert_all()

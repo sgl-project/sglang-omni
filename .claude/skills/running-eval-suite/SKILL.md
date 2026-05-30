@@ -73,6 +73,10 @@ that duplicates Tab A and breaks supervision.
 Agent **must spawn both tabs** (Shell, `block_until_ms: 0`): Tab A first, Tab B
 second. Tell the user which is which.
 
+**Calibration (`tune.py run`):** Tab A = newest `_pytest/*/run*.log`; Tab B =
+`tune.py run` on stdout (**never** `>> run.log`). See `tune-ci-thresholds` §
+**Calibration (`tune.py run`) — always two tabs**.
+
 **Eval suite commands:**
 
 | Tab | Command |
