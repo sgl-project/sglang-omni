@@ -12,9 +12,7 @@
 
 <p align="center">
 <a href="https://sgl-project.github.io/sglang-omni/"><b>Documentation</b></a> |
-<a href="./benchmarks/README.md"><b>Benchmarks</b></a> |
-<a href="./examples/README.md"><b>Examples</b></a> |
-<a href="https://slack.sglang.ai"><b>Slack</b></a>
+<a href="https://slack.sglang.ai"><b>Join Slack</b></a>
 </p>
 
 ## News
