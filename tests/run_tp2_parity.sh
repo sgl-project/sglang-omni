@@ -15,7 +15,7 @@ RANK0_GPU="${RANK0_GPU:-2}"
 
 CUDA_VISIBLE_DEVICES="$RANK1_GPU" SGLANG_ONE_VISIBLE_DEVICE_PER_PROCESS=true \
     PYTHONPATH=/data/sglang-omni \
-    python /data/sglang-omni/tests/_encoder_parity_harness.py \
+    python /data/sglang-omni/tests/unit_test/encoder_tp/_encoder_parity_harness.py \
         sglang /tmp/parity_tp2_rank1_dummy.pkl \
         --tp-size 2 --tp-rank 1 --nccl-port "$PORT" $EXTRA_ARGS \
         > /tmp/parity_tp2_rank1.log 2>&1 &
@@ -23,7 +23,7 @@ RANK1_PID=$!
 
 CUDA_VISIBLE_DEVICES="$RANK0_GPU" SGLANG_ONE_VISIBLE_DEVICE_PER_PROCESS=true \
     PYTHONPATH=/data/sglang-omni \
-    python /data/sglang-omni/tests/_encoder_parity_harness.py \
+    python /data/sglang-omni/tests/unit_test/encoder_tp/_encoder_parity_harness.py \
         sglang "$OUT_PATH" \
         --tp-size 2 --tp-rank 0 --nccl-port "$PORT" $EXTRA_ARGS \
         > /tmp/parity_tp2_rank0.log 2>&1
