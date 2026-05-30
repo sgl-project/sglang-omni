@@ -1,7 +1,7 @@
-# Source CI-aligned env for Whisper ASR tests (matches whisper-asr-v1 calibration).
+# Source CI-aligned env for TTS benchmark tests (matches test-tts-ci.yaml + tune tts).
 set -a
 export HOME=/github/home
-export OMNI_CI_HOME=/github/home/calibration/s2pro
+export OMNI_CI_HOME=/github/home/calibration/tts
 export HF_HOME=/github/home/.cache/huggingface
 export MODELSCOPE_CACHE=/github/home/.cache/modelscope
 export XDG_CACHE_HOME="${OMNI_CI_HOME}/.cache"

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Full WER CI sweep (Qwen3 then S2-Pro). One instance at a time (flock).
+# Full WER CI sweep (Qwen3 then TTS). One instance at a time (flock).
 #
 # Two-terminal contract (see tune-ci-thresholds § Two-terminal supervision):
 #   Tab A (supervision) — tail -f /tmp/wer_ci_*.log  → detailed log
@@ -58,13 +58,13 @@ print('env OK', os.environ['OMNI_CI_HOME'], os.environ['TORCHINDUCTOR_CACHE_DIR'
     log_and_echo "${log_path}" "${env_msg}"
 }
 
-run_s2pro() {
+run_tts() {
     local log_path="$1"
     # shellcheck source=/dev/null
-    source omni-s2pro/bin/activate
+    source omni-tts/bin/activate
     # shellcheck source=/dev/null
-    source .github/scripts/ci_env_s2pro.sh
-    log_and_echo "${log_path}" "env OK s2pro ${OMNI_CI_HOME} ${TORCHINDUCTOR_CACHE_DIR}"
+    source .github/scripts/ci_env_tts.sh
+    log_and_echo "${log_path}" "env OK tts ${OMNI_CI_HOME} ${TORCHINDUCTOR_CACHE_DIR}"
 }
 
 run_one() {
@@ -114,20 +114,20 @@ run_one qwen3_tts_wer "${LOG}" \
     pytest tests/test_model/test_qwen3_omni_tts_ci.py::test_voice_cloning_wer -v -s
 
 log_and_echo "${LOG}" "===== QWEN3 WER CI FINISHED $(date -Is) ====="
-echo "Qwen3 done — switch supervision to: tail -f /tmp/wer_ci_s2pro.log"
+echo "Qwen3 done — switch supervision to: tail -f /tmp/wer_ci_tts.log"
 
-LOG_S2=/tmp/wer_ci_s2pro.log
-: > "${LOG_S2}"
-echo "WER sweep s2pro started — milestones here; full log: tail -f ${LOG_S2}"
+LOG_TTS=/tmp/wer_ci_tts.log
+: > "${LOG_TTS}"
+echo "WER sweep tts started — milestones here; full log: tail -f ${LOG_TTS}"
 
-run_s2pro "${LOG_S2}"
+run_tts "${LOG_TTS}"
 
-run_one s2pro_nonstream_wer "${LOG_S2}" \
-    pytest tests/test_model/test_s2pro_tts_ci.py --s2pro-stage s2pro-stage-1-nonstream \
+run_one tts_nonstream_wer "${LOG_TTS}" \
+    pytest tests/test_model/test_tts_ci.py --tts-stage tts-stage-1-nonstream \
     -k "test_voice_cloning_non_streaming or test_voice_cloning_wer" -v -s
 
-run_one s2pro_stream_wer "${LOG_S2}" \
-    pytest tests/test_model/test_s2pro_tts_ci.py --s2pro-stage s2pro-stage-2-stream \
+run_one tts_stream_wer "${LOG_TTS}" \
+    pytest tests/test_model/test_tts_ci.py --tts-stage tts-stage-2-stream \
     -k "test_voice_cloning_streaming or test_voice_cloning_streaming_wer" -v -s
 
-log_and_echo "${LOG_S2}" "===== ALL WER CI FINISHED $(date -Is) ====="
+log_and_echo "${LOG_TTS}" "===== ALL WER CI FINISHED $(date -Is) ====="

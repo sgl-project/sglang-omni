@@ -104,7 +104,7 @@ progress (B). During each repeat, if A stalls, re-point it at the newest
 |-----|------------------------|---------------|
 | **`tune.py run` (calibration)** | **Newest** `<run-dir>/_pytest/*/run{k}.log` (pytest/server) | **`python tune.py ... run`** — stdout only, no redirect |
 | WER sweep (qwen3) | `/tmp/wer_ci_qwen3.log` | `bash .github/scripts/run_all_wer_ci_aligned.sh` |
-| WER sweep (s2pro) | `/tmp/wer_ci_s2pro.log` | (same script; switches log at s2pro section) |
+| WER sweep (tts) | `/tmp/wer_ci_tts.log` | (same script; switches log at tts section) |
 | Ad-hoc pytest | `/tmp/pytest_<name>.log` | `pytest ... -v -s >> /tmp/pytest_<name>.log 2>&1` |
 | Eval suite | `<run-dir>/run.log` | `runner.py run ... >> <run-dir>/run.log 2>&1` |
 
@@ -266,7 +266,7 @@ test) explicitly marks as missing or misaligned.
   `omni-setup`). If missing, run `install_flashinfer_jit_cache.sh omni-s2pro`
   from host cache — do **not** use `--skip-precheck`. Source
   `.github/scripts/ci_env_s2pro.sh` before pytest/calibration.
-- **Qwen3 / S2-Pro MoE stages**: if smoke test shows
+- **Qwen3 MoE stages**: if smoke test shows
   `gen_cutlass_fused_moe_sm90_module` + router timeout, **then** run
   `install_flashinfer_jit_cache.sh` (host cache first; network only on cache miss).
   Qwen3 stages: **`omni-qwen3` only** — never reuse `omni-s2pro` for talker/TTS/video
@@ -491,7 +491,7 @@ It is **not** a model bug — the environment is wrong.
 | Workload | CI workflow | venv | `OMNI_CI_HOME` (calibration host) | Source env script |
 |----------|-------------|------|-----------------------------------|-------------------|
 | Qwen3-Omni benchmarks (MMMU/MMSU/TTS/talker/video*) | `test-qwen3-omni-ci.yaml` | **`omni-qwen3`** | `/github/home/calibration/qwen3` | `source .github/scripts/ci_env_qwen3.sh` |
-| TTS benchmarks | `test-tts-ci.yaml`, `tts` | **`omni-tts`** | `/github/home/calibration/tts` | workflow env / model config auto env |
+| TTS benchmarks | `test-tts-ci.yaml`, `tts` | **`omni-tts`** | `/github/home/calibration/tts` | `source .github/scripts/ci_env_tts.sh` |
 | Whisper ASR | `whisper-asr-v1` | **`omni-s2pro`** | `/github/home/calibration/s2pro` | `source .github/scripts/ci_env_s2pro.sh` |
 
 **Forbidden shortcuts (observed 2026-05-30):**
@@ -508,8 +508,8 @@ It is **not** a model bug — the environment is wrong.
 
 ```bash
 cd /sgl-workspace/sglang-omni
-source omni-qwen3/bin/activate   # or omni-s2pro — pick from table above
-source .github/scripts/ci_env_qwen3.sh   # or ci_env_s2pro.sh
+source omni-qwen3/bin/activate   # or omni-tts / omni-s2pro — pick from table above
+source .github/scripts/ci_env_qwen3.sh   # or ci_env_tts.sh / ci_env_s2pro.sh
 python -c "import os; assert os.environ['TORCHINDUCTOR_CACHE_DIR'].startswith(os.environ['OMNI_CI_HOME'])"
 python .claude/skills/tune-ci-thresholds/tune.py --model qwen3-omni-v1 precheck   # or whisper-asr-v1 / tts
 ```
@@ -519,7 +519,7 @@ Aligned env → Qwen3 colocated router CUDA graph capture ~5–10 s on warm
 do **not** treat that as a threshold or code regression.
 
 **WER CI with Omni Whisper router (DP=2):** still uses the **parent model’s**
-venv/slice for the benchmark fixture (Qwen3 → qwen3 env; S2-Pro → s2pro env).
+venv/slice for the benchmark fixture (Qwen3 → qwen3 env; TTS → tts env; Whisper → s2pro env).
 Only the Whisper router stage needs 2 free GPUs after `delete_gpu_process.sh`.
 
 ### Agent operational rules (mandatory)

@@ -22,9 +22,9 @@ env:
 
 # DAG:
 #   setup (install-deps under OMNI_CI_HOME + verify TTS weights)
-#     ├── stage-1-non-streaming
-#     └── stage-2-streaming
-#           └── stage-3-consistency
+#     ├── stage-0-whisper-asr ─────────────┬──► stage-1-non-streaming ──┐
+#                                          └──► stage-2-streaming ──────┤
+#                                                                      └──► stage-3-consistency
 #   cleanup runs only after full success, preserving host cache on failures.
 
 jobs:
@@ -59,9 +59,48 @@ jobs:
           HF_TOKEN: ${{ secrets.BOSON_HF_TOKEN }}
         run: bash .github/scripts/ensure_hf_models.sh omni-tts "$TTS_MODEL_PATH"
 
+  stage-0-whisper-asr:
+    name: stage 0 - whisper ASR correctness
+    needs: setup
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (!github.event.pull_request.draft &&
+       contains(github.event.pull_request.labels.*.name, 'run-ci'))
+    runs-on: [self-hosted]
+    timeout-minutes: 30
+    container:
+      image: frankleeeee/sglang-omni:dev
+      options: --gpus all --rm -v /dev/shm:/dev/shm
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - uses: ./.github/actions/omni-setup
+        with:
+          venv-name: omni-tts
+
+      - name: Run Whisper ASR correctness
+        shell: bash
+        run: |
+          source omni-tts/bin/activate
+          export PYTHONPATH=$PWD
+          bash .github/scripts/run_flaky_pytest.sh \
+            pytest tests/test_model/test_whisper_asr_ci.py -v -s -x
+        env:
+          HF_ENDPOINT: https://hf-mirror.com
+          HF_HUB_DISABLE_XET: "1"
+          HF_TOKEN: ${{ secrets.BOSON_HF_TOKEN }}
+          TORCHINDUCTOR_CACHE_DIR: ${{ env.OMNI_CI_HOME }}/.torchinductor
+
+      - name: Post-stage cleanup
+        if: always()
+        uses: ./.github/actions/omni-post-stage
+        with:
+          stage-label: Whisper ASR correctness
+
   stage-1-non-streaming:
     name: stage 1 - non-streaming
-    needs: setup
+    needs: [setup, stage-0-whisper-asr]
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (!github.event.pull_request.draft &&
@@ -119,7 +158,7 @@ jobs:
 
   stage-2-streaming:
     name: stage 2 - streaming
-    needs: setup
+    needs: [setup, stage-0-whisper-asr]
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (!github.event.pull_request.draft &&
@@ -211,6 +250,7 @@ jobs:
     name: cleanup - reclaim host cache
     needs:
       - setup
+      - stage-0-whisper-asr
       - stage-1-non-streaming
       - stage-2-streaming
       - stage-3-consistency
