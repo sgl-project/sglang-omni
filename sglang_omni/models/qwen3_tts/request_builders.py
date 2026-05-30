@@ -3,21 +3,22 @@
 
 from __future__ import annotations
 
-import copy
 import hashlib
 import os
 import threading
 import time
-from collections import OrderedDict
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 import torch
 
 from sglang_omni.models.qwen3_omni.pending_text_queue import PendingTextTensorQueue
 from sglang_omni.models.qwen3_tts.payload_types import Qwen3TTSState
+from sglang_omni.preprocessing.cache_key import hash_bytes
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.sglang_backend import SGLangARRequestData
+from sglang_omni.scheduling.stage_cache import StageOutputCache
 
 QWEN3_TTS_DEFAULT_MAX_NEW_TOKENS = 2048
 QWEN3_TTS_TASK_BASE = "Base"
@@ -125,8 +126,17 @@ class Qwen3TTSPreprocessingContext:
 _PREPROCESSING_CONTEXT: Qwen3TTSPreprocessingContext | None = None
 _PREPARED_REQUESTS: dict[str, Qwen3TTSPreparedRequest] = {}
 _PREPARED_REQUESTS_LOCK = threading.Lock()
-_REFERENCE_PROMPT_CACHE: OrderedDict[str, list[Any]] = OrderedDict()
+# Long-lived server state, so bound it by bytes (not just item count) and keep
+# the cached reference tensors on the host so all-miss / low-reuse traffic cannot
+# pin GPU memory without bound. Mirrors the Higgs ref-cache and Qwen3 Omni encoder
+# cache patterns.
 _REFERENCE_PROMPT_CACHE_MAX_SIZE = 256
+_REFERENCE_PROMPT_CACHE_MAX_BYTES = 512 * 1024 * 1024
+_REFERENCE_PROMPT_CACHE = StageOutputCache(
+    max_size=_REFERENCE_PROMPT_CACHE_MAX_SIZE,
+    max_bytes=_REFERENCE_PROMPT_CACHE_MAX_BYTES,
+    cache_device="cpu",
+)
 
 
 def set_qwen3_tts_preprocessing_context(*, model: Any, wrapper: Any) -> None:
@@ -158,14 +168,17 @@ def _qwen3_tts_reference_prompt_cache_enabled() -> bool:
 
 def _hash_reference_audio(ref_audio: Any) -> str | None:
     if isinstance(ref_audio, str):
-        if os.path.isfile(ref_audio):
-            try:
-                stat = os.stat(ref_audio)
-            except OSError:
+        # Full-content hash for local files, not path+size+mtime (a same-size
+        # in-place edit, or a preserved mtime after cp -p / rsync, would
+        # stale-hit and synthesize with the old voice). URLs and missing paths
+        # are not cached: the string alone is not a sound content key.
+        try:
+            path = Path(ref_audio).expanduser()
+            if not path.is_file():
                 return None
-            return f"path:{os.path.abspath(ref_audio)}:{stat.st_size}:{stat.st_mtime_ns}"
-        digest = hashlib.blake2b(ref_audio.encode("utf-8"), digest_size=16).hexdigest()
-        return f"str:{digest}"
+            return f"file:{hash_bytes(path.read_bytes())}"
+        except OSError:
+            return None
 
     try:
         import numpy as np
@@ -173,12 +186,10 @@ def _hash_reference_audio(ref_audio: Any) -> str | None:
         if isinstance(ref_audio, tuple) and len(ref_audio) == 2:
             audio, sr = ref_audio
             array = np.asarray(audio, dtype=np.float32)
-            digest = hashlib.blake2b(array.tobytes(), digest_size=16).hexdigest()
-            return f"tuple:{int(sr)}:{array.shape}:{digest}"
+            return f"tuple:{int(sr)}:{array.shape}:{hash_bytes(array.tobytes())}"
         array = np.asarray(ref_audio, dtype=np.float32)
         if array.ndim > 0:
-            digest = hashlib.blake2b(array.tobytes(), digest_size=16).hexdigest()
-            return f"array:{array.shape}:{digest}"
+            return f"array:{array.shape}:{hash_bytes(array.tobytes())}"
     except (TypeError, ValueError):
         return None
     return None
@@ -192,33 +203,56 @@ def _reference_prompt_cache_key(state: Qwen3TTSState) -> str | None:
     return f"{audio_key}|ref_text:{ref_text}|xvec:{int(state.x_vector_only_mode)}"
 
 
-def _clone_cached_reference_prompt_item(item: Any) -> Any:
-    ref_code = getattr(item, "ref_code", None)
-    if isinstance(ref_code, torch.Tensor):
-        ref_code = ref_code.detach().clone()
-    ref_spk_embedding = getattr(item, "ref_spk_embedding", None)
-    if isinstance(ref_spk_embedding, torch.Tensor):
-        ref_spk_embedding = ref_spk_embedding.detach().clone()
-    kwargs = {
-        "ref_code": ref_code,
-        "ref_spk_embedding": ref_spk_embedding,
-        "x_vector_only_mode": bool(getattr(item, "x_vector_only_mode", False)),
-        "icl_mode": bool(getattr(item, "icl_mode", False)),
-        "ref_text": getattr(item, "ref_text", None),
-    }
+def _build_voice_clone_prompt_item(template_cls: type, kwargs: dict[str, Any]) -> Any:
     try:
         from qwen_tts.inference.qwen3_tts_model import VoiceClonePromptItem
 
         return VoiceClonePromptItem(**kwargs)
     except (ImportError, TypeError):
-        try:
-            return item.__class__(**kwargs)
-        except TypeError:
-            cloned = copy.copy(item)
-            for key, value in kwargs.items():
-                if hasattr(cloned, key):
-                    setattr(cloned, key, value)
-            return cloned
+        return template_cls(**kwargs)
+
+
+def _reference_prompt_item_to_cache_entry(item: Any) -> dict[str, Any]:
+    """Snapshot a prompt item into an independent, host-resident cache entry.
+
+    Tensors are detached, cloned, and moved to CPU so the cached copy neither
+    aliases the returned item (clone-on-put) nor pins GPU memory; the original
+    device is recorded so a cache hit can restore it. Only the lightweight class
+    is retained (not the original item, which would keep its GPU tensors alive).
+    """
+    device: str | None = None
+    snapshot: dict[str, Any] = {}
+    for field_name in ("ref_code", "ref_spk_embedding"):
+        value = getattr(item, field_name, None)
+        if isinstance(value, torch.Tensor):
+            if device is None:
+                device = str(value.device)
+            value = value.detach().to("cpu").clone()
+        snapshot[field_name] = value
+    snapshot["device"] = device
+    snapshot["template_cls"] = type(item)
+    snapshot["x_vector_only_mode"] = bool(getattr(item, "x_vector_only_mode", False))
+    snapshot["icl_mode"] = bool(getattr(item, "icl_mode", False))
+    snapshot["ref_text"] = getattr(item, "ref_text", None)
+    return snapshot
+
+
+def _reference_prompt_item_from_cache_entry(entry: dict[str, Any]) -> Any:
+    """Rebuild a fresh prompt item from a cache entry on its original device."""
+    device = entry.get("device")
+    kwargs: dict[str, Any] = {
+        "x_vector_only_mode": entry["x_vector_only_mode"],
+        "icl_mode": entry["icl_mode"],
+        "ref_text": entry["ref_text"],
+    }
+    for field_name in ("ref_code", "ref_spk_embedding"):
+        value = entry.get(field_name)
+        if isinstance(value, torch.Tensor):
+            value = value.detach().clone()
+            if device is not None:
+                value = value.to(device)
+        kwargs[field_name] = value
+    return _build_voice_clone_prompt_item(entry["template_cls"], kwargs)
 
 
 def _get_or_create_reference_prompt_items(
@@ -238,9 +272,8 @@ def _get_or_create_reference_prompt_items(
     if key is not None:
         with _PREPARED_REQUESTS_LOCK:
             cached = _REFERENCE_PROMPT_CACHE.get(key)
-            if cached is not None:
-                _REFERENCE_PROMPT_CACHE.move_to_end(key)
-                return [_clone_cached_reference_prompt_item(item) for item in cached]
+        if cached is not None:
+            return [_reference_prompt_item_from_cache_entry(entry) for entry in cached]
 
     with torch.no_grad():
         prompt_items = wrapper.create_voice_clone_prompt(
@@ -250,14 +283,11 @@ def _get_or_create_reference_prompt_items(
         )
 
     if key is not None:
-        cached_items = [
-            _clone_cached_reference_prompt_item(item) for item in prompt_items
+        cache_entries = [
+            _reference_prompt_item_to_cache_entry(item) for item in prompt_items
         ]
         with _PREPARED_REQUESTS_LOCK:
-            _REFERENCE_PROMPT_CACHE[key] = cached_items
-            _REFERENCE_PROMPT_CACHE.move_to_end(key)
-            while len(_REFERENCE_PROMPT_CACHE) > _REFERENCE_PROMPT_CACHE_MAX_SIZE:
-                _REFERENCE_PROMPT_CACHE.popitem(last=False)
+            _REFERENCE_PROMPT_CACHE.put(key, cache_entries)
     return prompt_items
 
 

@@ -378,10 +378,40 @@ def test_qwen3_tts_reference_prompt_cache_is_default_off(
     assert calls == 2
 
 
+def test_qwen3_tts_reference_audio_cache_key_content_and_urls(tmp_path) -> None:
+    # Local files are keyed by full content: a same-path, same-size, same
+    # head/tail, middle-only edit must change the key so a replaced reference
+    # audio is never served from a stale cache entry.
+    head, tail = b"H" * 8192, b"T" * 8192
+    ref_audio = tmp_path / "voice.wav"
+    ref_audio.write_bytes(head + b"a" * 4096 + tail)
+    key_a = qwen3_request_builders._hash_reference_audio(str(ref_audio))
+    ref_audio.write_bytes(head + b"b" * 4096 + tail)  # same size, middle differs
+    key_b = qwen3_request_builders._hash_reference_audio(str(ref_audio))
+    assert key_a is not None and key_a.startswith("file:")
+    assert key_a != key_b
+
+    # In-memory waveforms are content-addressed too.
+    assert (
+        qwen3_request_builders._hash_reference_audio(np.zeros(8, dtype=np.float32))
+        is not None
+    )
+
+    # URLs and missing files are not cached (the string alone is not a key).
+    assert qwen3_request_builders._hash_reference_audio("https://x/voice.wav") is None
+    assert (
+        qwen3_request_builders._hash_reference_audio(str(tmp_path / "missing.wav"))
+        is None
+    )
+
+
 def test_qwen3_tts_reference_prompt_cache_reuses_and_clones_prompt_items(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
 ) -> None:
     monkeypatch.setenv("SGLANG_OMNI_QWEN3_TTS_REF_PROMPT_CACHE", "1")
+    ref_audio = tmp_path / "voice.wav"
+    ref_audio.write_bytes(b"fake reference audio bytes")
 
     fake_qwen_tts = types.ModuleType("qwen_tts")
     fake_inference = types.ModuleType("qwen_tts.inference")
@@ -429,7 +459,7 @@ def test_qwen3_tts_reference_prompt_cache_reuses_and_clones_prompt_items(
             ]
 
     state = Qwen3TTSState(
-        ref_audio="voice.wav",
+        ref_audio=str(ref_audio),
         ref_text="reference",
         x_vector_only_mode=False,
     )
