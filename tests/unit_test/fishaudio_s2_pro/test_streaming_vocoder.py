@@ -5,6 +5,7 @@ import queue
 import threading
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 import torch
 
@@ -111,6 +112,15 @@ def _chunk(value: int = 1) -> StreamItem:
     return StreamItem(chunk_id=value, data=_code(value), from_stage="tts_engine")
 
 
+def _audio_tensor(payload: dict) -> torch.Tensor:
+    audio = np.frombuffer(payload["audio_waveform"], dtype=np.float32)
+    return torch.from_numpy(audio.copy()).reshape(payload["audio_waveform_shape"])
+
+
+def _audio_len(payload: dict) -> int:
+    return int(np.prod(payload["audio_waveform_shape"]))
+
+
 def _start_scheduler(
     *,
     stream_stride: int = 3,
@@ -149,7 +159,7 @@ def test_streaming_vocoder_chunk_cadence() -> None:
         first = scheduler.outbox.get(timeout=2.0)
         assert first.type == "stream"
         assert first.data["modality"] == "audio"
-        assert len(first.data["audio_data"]) == 12
+        assert _audio_len(first.data) == 12
 
         for value in range(4, 8):
             scheduler.inbox.put(IncomingMessage("req", "stream_chunk", _chunk(value)))
@@ -177,7 +187,7 @@ def test_streaming_vocoder_sample_level_matches_contextual_full_decode() -> None
             stream_crossfade_samples=0,
         )
         if output is not None:
-            chunks.append(torch.tensor(output["audio_data"]))
+            chunks.append(_audio_tensor(output))
 
     output = flush_stream_vocoder_chunk(
         state,
@@ -187,7 +197,7 @@ def test_streaming_vocoder_sample_level_matches_contextual_full_decode() -> None
         stream_crossfade_samples=0,
     )
     if output is not None:
-        chunks.append(torch.tensor(output["audio_data"]))
+        chunks.append(_audio_tensor(output))
 
     streaming_audio = torch.cat(chunks)
     full_audio = codec.from_indices(full_codes[1:][None])[0, 0]
@@ -241,7 +251,7 @@ def test_streaming_vocoder_zero_overlap_final_flush_emits_retained_tail() -> Non
 
     assert flush is not None
     assert flush["modality"] == "audio"
-    assert len(flush["audio_data"]) == 3
+    assert _audio_len(flush) == 3
     assert state.pending_tail is None
 
 
@@ -263,7 +273,7 @@ def test_streaming_vocoder_final_flush_clears_tail_when_codes_remain() -> None:
     )
 
     assert flush is not None
-    assert flush["audio_data"] == [1.0, 2.0, 3.0]
+    assert _audio_tensor(flush).tolist() == [1.0, 2.0, 3.0]
     assert state.pending_tail is None
 
 
