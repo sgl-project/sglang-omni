@@ -30,7 +30,7 @@ Core features:
 - **Multi-Stage Pipeline**: Flexible framework for orchestrating preprocessing, AR engine, codec, and vocoder stages across processes and GPUs.
 - **Native SGLang Integration**: Leverages SGLang's RadixAttention, continuous batching, and CUDA Graph optimizations for the AR backbone.
 - **OpenAI-Compatible Server**: Drop-in `/v1/audio/speech` and `/v1/chat/completions` endpoints with real-time streaming support.
-- **Broad Model Support**: Supports a growing set of TTS and omni models including Higgs Audio, Fish Audio S2-Pro, Voxtral TTS, Qwen3-Omni, and Ming-Omni.
+- **Broad Model Support**: Supports a growing set of TTS and omni models including Higgs Audio, Fish Audio S2-Pro, Voxtral TTS, Qwen3 TTS, Qwen3-Omni, Ming-Omni, and LLaDA2.0-Uni.
 
 ## Supported Models
 
