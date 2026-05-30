@@ -142,6 +142,19 @@ def test_ming_stages_import_light_and_accept_mp_injection_args() -> None:
     assert "nccl_port" in sig.parameters
 
 
+def test_ming_image_encoder_factory_accepts_tp_injection_args() -> None:
+    stages = importlib.import_module("sglang_omni.models.ming_omni.stages")
+
+    sig = inspect.signature(stages.create_image_encoder_executor)
+
+    assert "tp_rank" in sig.parameters
+    assert "tp_size" in sig.parameters
+    assert "nccl_port" in sig.parameters
+    assert sig.parameters["tp_rank"].default == 0
+    assert sig.parameters["tp_size"].default == 1
+    assert sig.parameters["nccl_port"].default is None
+
+
 def test_ming_talker_factory_returns_scheduler_contract(monkeypatch) -> None:
     talker_module = ModuleType(
         "sglang_omni.models.ming_omni.components.talker_executor"
@@ -224,6 +237,7 @@ def test_ming_text_launcher_places_tp_ranks_on_distinct_gpus(monkeypatch) -> Non
         cpu_offload_gb=0,
         gpu_audio_encoder=None,
         gpu_image_encoder=None,
+        image_encoder_tp=1,
         thinker_only=False,
         mem_fraction_static=None,
         thinker_max_seq_len=8192,
@@ -260,7 +274,8 @@ def test_ming_text_launcher_allows_encoder_gpu_overrides(monkeypatch) -> None:
         quantization=None,
         cpu_offload_gb=0,
         gpu_audio_encoder=4,
-        gpu_image_encoder=4,
+        gpu_image_encoder=[4],
+        image_encoder_tp=1,
         thinker_only=False,
         mem_fraction_static=None,
         thinker_max_seq_len=8192,
@@ -301,6 +316,7 @@ def test_ming_text_launcher_can_build_thinker_only_smoke_pipeline(
         cpu_offload_gb=0,
         gpu_audio_encoder=None,
         gpu_image_encoder=None,
+        image_encoder_tp=1,
         thinker_only=True,
         mem_fraction_static=None,
         thinker_max_seq_len=8192,
@@ -319,6 +335,198 @@ def test_ming_text_launcher_can_build_thinker_only_smoke_pipeline(
     assert stages["mm_aggregate"].wait_for == ["preprocessing"]
     assert stages["thinker"].gpu == [0, 1, 2, 3]
     assert stages["thinker"].tp_size == 4
+
+
+def test_ming_text_launcher_configures_image_encoder_tp(monkeypatch) -> None:
+    from examples.run_ming_omni_server import _launch_text_server
+
+    captured: dict[str, object] = {}
+    serve_module = ModuleType("sglang_omni.serve")
+
+    def fake_launch_server(config, **kwargs):
+        del kwargs
+        captured["config"] = config
+
+    serve_module.launch_server = fake_launch_server
+    monkeypatch.setitem(sys.modules, "sglang_omni.serve", serve_module)
+
+    args = SimpleNamespace(
+        model_path="dummy",
+        relay_backend="shm",
+        tp_size=1,
+        quantization=None,
+        cpu_offload_gb=0,
+        gpu_audio_encoder=None,
+        gpu_image_encoder=[2, 3],
+        image_encoder_tp=2,
+        thinker_only=False,
+        mem_fraction_static=None,
+        thinker_max_seq_len=8192,
+        host="127.0.0.1",
+        port=8000,
+        model_name="ming-omni",
+    )
+
+    _launch_text_server(args)
+
+    config = captured["config"]
+    stages = {stage.name: stage for stage in config.stages}
+    assert stages["image_encoder"].tp_size == 2
+    assert stages["image_encoder"].gpu == [2, 3]
+
+
+def test_ming_text_launcher_rejects_image_encoder_tp_zero(monkeypatch) -> None:
+    import pytest
+
+    from examples.run_ming_omni_server import _launch_text_server
+
+    serve_module = ModuleType("sglang_omni.serve")
+    serve_module.launch_server = lambda *a, **kw: None
+    monkeypatch.setitem(sys.modules, "sglang_omni.serve", serve_module)
+
+    args = SimpleNamespace(
+        model_path="dummy",
+        relay_backend="shm",
+        tp_size=1,
+        quantization=None,
+        cpu_offload_gb=0,
+        gpu_audio_encoder=None,
+        gpu_image_encoder=None,
+        image_encoder_tp=0,
+        thinker_only=False,
+        mem_fraction_static=None,
+        thinker_max_seq_len=8192,
+        host="127.0.0.1",
+        port=8000,
+        model_name="ming-omni",
+    )
+
+    with pytest.raises(ValueError, match="--image-encoder-tp must be >= 1"):
+        _launch_text_server(args)
+
+
+def test_ming_text_launcher_rejects_thinker_only_with_image_encoder_tp(
+    monkeypatch,
+) -> None:
+    import pytest
+
+    from examples.run_ming_omni_server import _launch_text_server
+
+    serve_module = ModuleType("sglang_omni.serve")
+    serve_module.launch_server = lambda *a, **kw: None
+    monkeypatch.setitem(sys.modules, "sglang_omni.serve", serve_module)
+
+    args = SimpleNamespace(
+        model_path="dummy",
+        relay_backend="shm",
+        tp_size=1,
+        quantization=None,
+        cpu_offload_gb=0,
+        gpu_audio_encoder=None,
+        gpu_image_encoder=None,
+        image_encoder_tp=2,
+        thinker_only=True,
+        mem_fraction_static=None,
+        thinker_max_seq_len=8192,
+        host="127.0.0.1",
+        port=8000,
+        model_name="ming-omni",
+    )
+
+    with pytest.raises(ValueError, match="--thinker-only cannot be used"):
+        _launch_text_server(args)
+
+
+def test_ming_text_launcher_requires_gpu_ids_for_image_encoder_tp(
+    monkeypatch,
+) -> None:
+    import pytest
+
+    from examples.run_ming_omni_server import _launch_text_server
+
+    serve_module = ModuleType("sglang_omni.serve")
+    serve_module.launch_server = lambda *a, **kw: None
+    monkeypatch.setitem(sys.modules, "sglang_omni.serve", serve_module)
+
+    args = SimpleNamespace(
+        model_path="dummy",
+        relay_backend="shm",
+        tp_size=1,
+        quantization=None,
+        cpu_offload_gb=0,
+        gpu_audio_encoder=None,
+        gpu_image_encoder=None,
+        image_encoder_tp=2,
+        thinker_only=False,
+        mem_fraction_static=None,
+        thinker_max_seq_len=8192,
+        host="127.0.0.1",
+        port=8000,
+        model_name="ming-omni",
+    )
+
+    with pytest.raises(ValueError, match="--gpu-image-encoder must be specified"):
+        _launch_text_server(args)
+
+
+def test_ming_text_launcher_rejects_mismatched_gpu_count(monkeypatch) -> None:
+    import pytest
+
+    from examples.run_ming_omni_server import _launch_text_server
+
+    serve_module = ModuleType("sglang_omni.serve")
+    serve_module.launch_server = lambda *a, **kw: None
+    monkeypatch.setitem(sys.modules, "sglang_omni.serve", serve_module)
+
+    args = SimpleNamespace(
+        model_path="dummy",
+        relay_backend="shm",
+        tp_size=1,
+        quantization=None,
+        cpu_offload_gb=0,
+        gpu_audio_encoder=None,
+        gpu_image_encoder=[2],
+        image_encoder_tp=2,
+        thinker_only=False,
+        mem_fraction_static=None,
+        thinker_max_seq_len=8192,
+        host="127.0.0.1",
+        port=8000,
+        model_name="ming-omni",
+    )
+
+    with pytest.raises(ValueError, match="requires exactly 2 GPU ids"):
+        _launch_text_server(args)
+
+
+def test_ming_text_launcher_rejects_duplicate_gpu_ids(monkeypatch) -> None:
+    import pytest
+
+    from examples.run_ming_omni_server import _launch_text_server
+
+    serve_module = ModuleType("sglang_omni.serve")
+    serve_module.launch_server = lambda *a, **kw: None
+    monkeypatch.setitem(sys.modules, "sglang_omni.serve", serve_module)
+
+    args = SimpleNamespace(
+        model_path="dummy",
+        relay_backend="shm",
+        tp_size=1,
+        quantization=None,
+        cpu_offload_gb=0,
+        gpu_audio_encoder=None,
+        gpu_image_encoder=[3, 3],
+        image_encoder_tp=2,
+        thinker_only=False,
+        mem_fraction_static=None,
+        thinker_max_seq_len=8192,
+        host="127.0.0.1",
+        port=8000,
+        model_name="ming-omni",
+    )
+
+    with pytest.raises(ValueError, match="GPU ids must be unique"):
+        _launch_text_server(args)
 
 
 def test_ming_thinker_factory_registers_hf_config_before_server_args(

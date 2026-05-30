@@ -1,20 +1,31 @@
 from __future__ import annotations
 
 import logging
-from typing import Annotated, Literal
+from typing import Annotated, Literal, NoReturn
 
 import typer
 import yaml
 
 from sglang_omni.config import PipelineConfig
 from sglang_omni.config.manager import ConfigManager
-from sglang_omni.serve.launcher import launch_server
 
 logger = logging.getLogger(__name__)
 
 
 _STAGE_TOGGLE_MODE = Literal["default", "on", "off"]
 _QWEN_COLOCATED_CONFIG_CLASS = "Qwen3OmniSpeechColocatedPipelineConfig"
+_HIGGS_ASYNC_DECODE_FACTORY = (
+    "sglang_omni.models.higgs_tts.stages.create_sglang_tts_engine_executor"
+)
+_QWEN_PARTIAL_START_TALKER_FACTORY = (
+    "sglang_omni.models.qwen3_omni.stages.create_talker_ar_executor_from_config"
+)
+
+
+def launch_server(*args: object, **kwargs: object) -> object:
+    from sglang_omni.serve.launcher import launch_server as _launch_server
+
+    return _launch_server(*args, **kwargs)
 
 
 def _normalize_stage_toggle_mode(flag_name: str, value: str) -> _STAGE_TOGGLE_MODE:
@@ -78,6 +89,37 @@ def _find_matching_stages(
             f"Stage {stage_name!r} not found in pipeline; cannot set {reason}"
         )
     return matching_stages
+
+
+def _raise_unsupported_flag(
+    pipeline_config: PipelineConfig,
+    flag_name: str,
+) -> NoReturn:
+    raise typer.BadParameter(
+        f"{flag_name} is not supported by {type(pipeline_config).__name__}"
+    )
+
+
+def _resolve_talker_stage(
+    pipeline_config: PipelineConfig,
+    *,
+    flag_name: str,
+) -> str:
+    stage_name = type(pipeline_config).talker_role_to_stage().get("talker")
+    if stage_name is None:
+        _raise_unsupported_flag(pipeline_config, flag_name)
+    return stage_name
+
+
+def _resolve_talker_sglang_stage(
+    pipeline_config: PipelineConfig,
+    *,
+    flag_name: str,
+) -> str:
+    stage_name = type(pipeline_config).talker_sglang_role_to_stage().get("talker")
+    if stage_name is None:
+        _raise_unsupported_flag(pipeline_config, flag_name)
+    return stage_name
 
 
 def _apply_stage_server_args_override(
@@ -238,19 +280,17 @@ def apply_encoder_mem_reserve_cli_override(
 ) -> PipelineConfig:
     if encoder_mem_reserve is None:
         return pipeline_config
+    encoder_mem_reserve = _validate_encoder_mem_reserve(encoder_mem_reserve)
+
+    role_to_stage = type(pipeline_config).encoder_mem_reserve_role_to_stage()
+    thinker_stage = role_to_stage.get("thinker")
+    if thinker_stage is None:
+        _raise_unsupported_flag(pipeline_config, "--encoder-mem-reserve")
+
     if mem_fraction_static is not None or thinker_mem_fraction_static is not None:
         raise typer.BadParameter(
             "--encoder-mem-reserve is mutually exclusive with "
             "--mem-fraction-static and --thinker-mem-fraction-static"
-        )
-    encoder_mem_reserve = _validate_encoder_mem_reserve(encoder_mem_reserve)
-
-    role_to_stage = type(pipeline_config).mem_fraction_role_to_stage()
-    thinker_stage = role_to_stage.get("thinker")
-    if thinker_stage is None:
-        raise typer.BadParameter(
-            "--encoder-mem-reserve requires a pipeline with a supported "
-            "thinker SGLang AR stage"
         )
 
     matching_stages = _find_matching_stages(
@@ -392,6 +432,59 @@ def _validate_colocated_gpu_override(
         )
 
 
+def _apply_tensor_parallel_server_args_overrides(
+    pipeline_config: PipelineConfig,
+) -> None:
+    config_cls = type(pipeline_config)
+    for stage in pipeline_config.stages:
+        updates = config_cls.tensor_parallel_server_args_overrides(
+            stage_name=stage.name,
+            tp_size=stage.tp_size,
+        )
+        if not updates:
+            continue
+        _apply_stage_server_args_override(
+            pipeline_config,
+            stage_name=stage.name,
+            updates=updates,
+            reason=f"tensor parallel server args for {stage.name}",
+        )
+
+
+def _validate_parallelism_config(pipeline_config: PipelineConfig) -> None:
+    try:
+        type(pipeline_config)(**pipeline_config.model_dump())
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+
+
+def apply_thinker_server_args_cli_overrides(
+    pipeline_config: PipelineConfig,
+    *,
+    cpu_offload_gb: int | None,
+    quantization: str | None,
+) -> PipelineConfig:
+    updates: dict[str, object] = {}
+    if cpu_offload_gb is not None:
+        if cpu_offload_gb < 0:
+            raise typer.BadParameter("--cpu-offload-gb must be >= 0")
+        updates["cpu_offload_gb"] = int(cpu_offload_gb)
+    if quantization is not None:
+        quantization = quantization.strip()
+        if not quantization:
+            raise typer.BadParameter("--quantization must not be empty")
+        updates["quantization"] = quantization
+
+    if updates:
+        _apply_stage_server_args_override(
+            pipeline_config,
+            stage_name="thinker",
+            updates=updates,
+            reason="thinker SGLang ServerArgs override",
+        )
+    return pipeline_config
+
+
 def apply_parallelism_cli_overrides(
     pipeline_config: PipelineConfig,
     *,
@@ -421,28 +514,49 @@ def apply_parallelism_cli_overrides(
             if stage.tp_size == 1 and isinstance(stage.gpu, list):
                 stage.gpu = int(stage.gpu[0])
 
-    _validate_colocated_gpu_override(
-        pipeline_config,
-        stage_name="talker_ar",
-        flag_name="--talker-gpu",
-        gpu=talker_gpu,
+    talker_stage = (
+        _resolve_talker_stage(
+            pipeline_config,
+            flag_name="--talker-gpu",
+        )
+        if talker_gpu is not None
+        else None
     )
-    _validate_colocated_gpu_override(
-        pipeline_config,
-        stage_name="code2wav",
-        flag_name="--code2wav-gpu",
-        gpu=code2wav_gpu,
-    )
-    _apply_stage_gpu_override(
-        pipeline_config,
-        stage_name="talker_ar",
-        gpu=talker_gpu,
-    )
-    _apply_stage_gpu_override(
-        pipeline_config,
-        stage_name="code2wav",
-        gpu=code2wav_gpu,
-    )
+    code2wav_stage = None
+    if code2wav_gpu is not None:
+        code2wav_stage = type(pipeline_config).code2wav_stage()
+        if code2wav_stage is None:
+            _raise_unsupported_flag(pipeline_config, "--code2wav-gpu")
+
+    if talker_stage is not None:
+        _validate_colocated_gpu_override(
+            pipeline_config,
+            stage_name=talker_stage,
+            flag_name="--talker-gpu",
+            gpu=talker_gpu,
+        )
+    if code2wav_stage is not None:
+        _validate_colocated_gpu_override(
+            pipeline_config,
+            stage_name=code2wav_stage,
+            flag_name="--code2wav-gpu",
+            gpu=code2wav_gpu,
+        )
+
+    if talker_stage is not None:
+        _apply_stage_gpu_override(
+            pipeline_config,
+            stage_name=talker_stage,
+            gpu=talker_gpu,
+        )
+    if code2wav_stage is not None:
+        _apply_stage_gpu_override(
+            pipeline_config,
+            stage_name=code2wav_stage,
+            gpu=code2wav_gpu,
+        )
+    _apply_tensor_parallel_server_args_overrides(pipeline_config)
+    _validate_parallelism_config(pipeline_config)
     return pipeline_config
 
 
@@ -504,10 +618,103 @@ def apply_cuda_graph_cli_overrides(
         stage_name="thinker",
         mode=thinker_mode,
     )
-    _apply_stage_cuda_graph_override(
+    if talker_mode != "default":
+        _apply_stage_cuda_graph_override(
+            pipeline_config,
+            stage_name=_resolve_talker_sglang_stage(
+                pipeline_config,
+                flag_name="--talker-cuda-graph",
+            ),
+            mode=talker_mode,
+        )
+    return pipeline_config
+
+
+def apply_partial_start_cli_overrides(
+    pipeline_config: PipelineConfig,
+    *,
+    talker_partial_start: str,
+) -> PipelineConfig:
+    mode = _normalize_stage_toggle_mode("talker_partial_start", talker_partial_start)
+    if mode == "default":
+        return pipeline_config
+    stage_name = _resolve_talker_stage(
         pipeline_config,
-        stage_name="talker_ar",
-        mode=talker_mode,
+        flag_name="--talker-partial-start",
+    )
+    matching_stages = _find_matching_stages(
+        pipeline_config,
+        stage_name=stage_name,
+        reason=f"talker partial-start mode to {mode!r}",
+    )
+    for stage in matching_stages:
+        if stage.factory != _QWEN_PARTIAL_START_TALKER_FACTORY:
+            raise typer.BadParameter(
+                "--talker-partial-start currently supports only Qwen3-Omni "
+                f"talker; stage {stage.name!r} uses factory {stage.factory!r}"
+            )
+    _apply_stage_factory_args_override(
+        pipeline_config,
+        stage_name=stage_name,
+        updates={"enable_partial_start": mode == "on"},
+        reason=f"talker partial-start mode to {mode!r}",
+        flag_name="--talker-partial-start",
+    )
+    return pipeline_config
+
+
+def _apply_stage_factory_args_override(
+    pipeline_config: PipelineConfig,
+    *,
+    stage_name: str,
+    updates: dict[str, object],
+    reason: str,
+    supported_factory: str | None = None,
+    flag_name: str | None = None,
+) -> None:
+    matching_stages = _find_matching_stages(
+        pipeline_config,
+        stage_name=stage_name,
+        reason=reason,
+    )
+    for stage in matching_stages:
+        if supported_factory is not None and stage.factory != supported_factory:
+            display_flag = flag_name or reason
+            raise typer.BadParameter(
+                f"{display_flag} currently supports only Higgs TTS; "
+                f"stage {stage.name!r} uses factory {stage.factory!r}"
+            )
+        factory_args = dict(stage.factory_args or {})
+        factory_args.update(updates)
+        stage.factory_args = factory_args
+
+        stage_runtime_overrides = pipeline_config.runtime_overrides.get(stage.name)
+        if isinstance(stage_runtime_overrides, dict):
+            stage_runtime_overrides.update(updates)
+
+
+def apply_async_decode_cli_overrides(
+    pipeline_config: PipelineConfig,
+    *,
+    enable_async_decode: bool,
+    async_decode_min_batch_size: int | None,
+) -> PipelineConfig:
+    updates: dict[str, object] = {}
+    if enable_async_decode:
+        updates["enable_async_decode"] = True
+    if async_decode_min_batch_size is not None:
+        if int(async_decode_min_batch_size) < 1:
+            raise typer.BadParameter("--async-decode-min-batch-size must be >= 1")
+        updates["async_decode_min_batch_size"] = int(async_decode_min_batch_size)
+    if not updates:
+        return pipeline_config
+    _apply_stage_factory_args_override(
+        pipeline_config,
+        stage_name="tts_engine",
+        updates=updates,
+        reason="async decode override",
+        supported_factory=_HIGGS_ASYNC_DECODE_FACTORY,
+        flag_name="--enable-async-decode/--async-decode-min-batch-size",
     )
     return pipeline_config
 
@@ -532,12 +739,21 @@ def apply_torch_compile_cli_overrides(
         mode=thinker_mode,
         max_bs=thinker_torch_compile_max_bs,
     )
-    _apply_stage_torch_compile_override(
-        pipeline_config,
-        stage_name="talker_ar",
-        mode=talker_mode,
-        max_bs=talker_torch_compile_max_bs,
-    )
+    if talker_mode != "default" or talker_torch_compile_max_bs is not None:
+        flag_name = (
+            "--talker-torch-compile"
+            if talker_mode != "default"
+            else "--talker-torch-compile-max-bs"
+        )
+        _apply_stage_torch_compile_override(
+            pipeline_config,
+            stage_name=_resolve_talker_sglang_stage(
+                pipeline_config,
+                flag_name=flag_name,
+            ),
+            mode=talker_mode,
+            max_bs=talker_torch_compile_max_bs,
+        )
     return pipeline_config
 
 
@@ -581,7 +797,7 @@ def serve(
         typer.Option(
             "--mem-fraction-static",
             help=(
-                "Set SGLang mem_fraction_static for all supported Qwen AR stages. "
+                "Set SGLang mem_fraction_static for supported SGLang AR stages. "
                 "If omitted, SGLang chooses the value automatically."
             ),
         ),
@@ -591,7 +807,7 @@ def serve(
         typer.Option(
             "--thinker-mem-fraction-static",
             help=(
-                "Set SGLang mem_fraction_static for Qwen thinker. Overrides "
+                "Set SGLang mem_fraction_static for the thinker stage. Overrides "
                 "--mem-fraction-static for thinker."
             ),
         ),
@@ -601,8 +817,8 @@ def serve(
         typer.Option(
             "--talker-mem-fraction-static",
             help=(
-                "Set SGLang mem_fraction_static for Qwen talker_ar. Overrides "
-                "--mem-fraction-static for talker_ar."
+                "Set SGLang mem_fraction_static for supported talker AR stages. "
+                "Overrides --mem-fraction-static for talker."
             ),
         ),
     ] = None,
@@ -615,6 +831,21 @@ def serve(
                 "mem_fraction_static for colocated external encoders. Valid only "
                 "when thinker mem_fraction_static is not explicitly pinned."
             ),
+        ),
+    ] = None,
+    cpu_offload_gb: Annotated[
+        int | None,
+        typer.Option(
+            "--cpu-offload-gb",
+            "--cpu_offload_gb",
+            help="Set SGLang cpu_offload_gb for the thinker stage.",
+        ),
+    ] = None,
+    quantization: Annotated[
+        str | None,
+        typer.Option(
+            "--quantization",
+            help="Set SGLang quantization mode for the thinker stage.",
         ),
     ] = None,
     log_level: Annotated[
@@ -642,7 +873,7 @@ def serve(
         typer.Option(
             "--talker-gpu",
             "--talker_gpu",
-            help="Override GPU id for talker_ar stage.",
+            help="Override GPU id for supported talker stage.",
         ),
     ] = None,
     code2wav_gpu: Annotated[
@@ -650,7 +881,7 @@ def serve(
         typer.Option(
             "--code2wav-gpu",
             "--code2wav_gpu",
-            help="Override GPU id for code2wav stage.",
+            help="Override GPU id for supported code2wav stage.",
         ),
     ] = None,
     thinker_cuda_graph: Annotated[
@@ -668,7 +899,20 @@ def serve(
             "--talker-cuda-graph",
             "--talker_cuda_graph",
             "--talker_CUDA_graph",
-            help="CUDA graph mode for talker_ar stage: default|on|off.",
+            help="CUDA graph mode for supported SGLang talker stage: default|on|off.",
+        ),
+    ] = "default",
+    talker_partial_start: Annotated[
+        str,
+        typer.Option(
+            "--talker-partial-start",
+            "--talker_partial_start",
+            help=(
+                "Partial-start mode for the Qwen3-Omni talker stage: "
+                "default|on|off. When on, the talker begins audio generation "
+                "from a partial thinker text stream instead of waiting for the "
+                "full text. 'default' uses the pipeline config default."
+            ),
         ),
     ] = "default",
     thinker_torch_compile: Annotated[
@@ -684,7 +928,10 @@ def serve(
         typer.Option(
             "--talker-torch-compile",
             "--talker_torch_compile",
-            help="torch.compile mode for talker_ar stage: default|on|off.",
+            help=(
+                "torch.compile mode for supported SGLang talker stage: "
+                "default|on|off."
+            ),
         ),
     ] = "default",
     thinker_torch_compile_max_bs: Annotated[
@@ -700,7 +947,7 @@ def serve(
         typer.Option(
             "--talker-torch-compile-max-bs",
             "--talker_torch_compile_max_bs",
-            help="Override torch_compile_max_bs for talker_ar stage.",
+            help="Override torch_compile_max_bs for supported SGLang talker stage.",
         ),
     ] = None,
     enable_realtime: Annotated[
@@ -711,6 +958,29 @@ def serve(
             help="Mount the OpenAI Realtime WebSocket endpoint at /v1/realtime.",
         ),
     ] = False,
+    enable_async_decode: Annotated[
+        bool,
+        typer.Option(
+            "--enable-async-decode",
+            "--enable_async_decode",
+            help=(
+                "Enable one-step-lookahead async decode for the tts_engine stage "
+                "(overlaps per-step host collect with the next GPU forward). "
+                "Currently supported by Higgs TTS."
+            ),
+        ),
+    ] = False,
+    async_decode_min_batch_size: Annotated[
+        int | None,
+        typer.Option(
+            "--async-decode-min-batch-size",
+            "--async_decode_min_batch_size",
+            help=(
+                "Decode batches smaller than this bypass the async-decode "
+                "lookahead and run synchronously (fast path). Default 2."
+            ),
+        ),
+    ] = None,
 ) -> None:
     """Serve the pipeline."""
     logging.basicConfig(
@@ -756,6 +1026,11 @@ def serve(
         mem_fraction_static=mem_fraction_static,
         thinker_mem_fraction_static=thinker_mem_fraction_static,
     )
+    merged_config = apply_thinker_server_args_cli_overrides(
+        merged_config,
+        cpu_offload_gb=cpu_offload_gb,
+        quantization=quantization,
+    )
     merged_config = apply_parallelism_cli_overrides(
         merged_config,
         thinker_tp_size=thinker_tp_size,
@@ -774,6 +1049,15 @@ def serve(
         talker_torch_compile=talker_torch_compile,
         thinker_torch_compile_max_bs=thinker_torch_compile_max_bs,
         talker_torch_compile_max_bs=talker_torch_compile_max_bs,
+    )
+    merged_config = apply_async_decode_cli_overrides(
+        merged_config,
+        enable_async_decode=enable_async_decode,
+        async_decode_min_batch_size=async_decode_min_batch_size,
+    )
+    merged_config = apply_partial_start_cli_overrides(
+        merged_config,
+        talker_partial_start=talker_partial_start,
     )
 
     if _should_print_merged_config(colocate=colocate, log_level=log_level):

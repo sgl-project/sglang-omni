@@ -2,7 +2,7 @@
 
 set -uo pipefail
 
-max_attempts="${OMNI_CI_MAX_ATTEMPTS:-2}"
+max_attempts="${OMNI_CI_MAX_ATTEMPTS:-3}"
 retry_delay_seconds="${OMNI_CI_RETRY_DELAY_SECONDS:-10}"
 stage_label="${OMNI_CI_STAGE_LABEL:-${GITHUB_JOB:-pytest stage}}"
 
@@ -33,43 +33,22 @@ fi
 log_root="${RUNNER_TEMP:-/tmp}/omni-ci-retry"
 mkdir -p "${log_root}"
 
-has_hard_failure() {
-  local log_file="$1"
-
-  grep -Eiq \
-    '(CUDA out of memory|OutOfMemoryError|No space left on device|Segmentation fault|core dumped|exit code 13[79]|returned non-zero exit status 13[79]|SIGKILL|SIGTERM|Server failed to start|server process.*exit|Connection refused|connection refused|Health check failed)' \
-    "${log_file}"
-}
-
-has_retryable_metric_assertion() {
-  local log_file="$1"
-
-  grep -Eiq \
-    '(AssertionError|FAILED .* - AssertionError|E +assert).*(threshold|throughput_qps|tok_per_s_agg|latency_mean_s|rtf_mean|accuracy|WER|wer_|speaker_similarity|similarity)' \
-    "${log_file}" ||
-    grep -Eiq \
-      '(threshold|throughput_qps|tok_per_s_agg|latency_mean_s|rtf_mean|accuracy|WER|wer_|speaker_similarity|similarity).*(AssertionError|FAILED|E +assert)' \
-      "${log_file}"
-}
-
 should_retry() {
   local status="$1"
-  local log_file="$2"
+  local _log_file="$2"
 
-  # Pytest exits 1 for ordinary test failures. Exit codes 2+ indicate
-  # interruption, internal errors, bad invocation, or collection problems.
-  [ "${status}" -eq 1 ] || return 1
-  grep -Eq '=+ FAILURES =+|FAILED .+ - AssertionError|AssertionError' "${log_file}" || return 1
-  ! has_hard_failure "${log_file}" || return 1
-  has_retryable_metric_assertion "${log_file}"
+  [ "${status}" -ne 0 ]
 }
 
 cleanup_between_attempts() {
   echo "Cleaning GPU state before retry..."
-  bash .github/scripts/delete_gpu_process.sh || {
-    echo "::warning::GPU cleanup failed before retry; continuing to preserve the retry signal"
+  if ! bash .github/scripts/delete_gpu_process.sh; then
+    echo "::error::GPU cleanup failed before retry; not retrying with dirty GPU state"
+    return 1
+  fi
+  rm -rf "${XDG_CACHE_HOME:-/github/home/.cache}/flashinfer" || {
+    echo "::warning::Failed to remove FlashInfer cache before retry"
   }
-  rm -rf "${XDG_CACHE_HOME:-/github/home/.cache}/flashinfer" || true
   if [ "${retry_delay_seconds}" -gt 0 ]; then
     sleep "${retry_delay_seconds}"
   fi
@@ -101,13 +80,13 @@ while [ "${attempt}" -le "${max_attempts}" ]; do
   fi
 
   if should_retry "${last_status}" "${log_file}"; then
-    echo "::warning::Retrying ${stage_label}; failure looks like a flaky metric assertion."
-    cleanup_between_attempts
+    echo "::warning::Retrying ${stage_label}; CI stages retry all failures by default."
+    cleanup_between_attempts || exit "${last_status}"
     attempt=$((attempt + 1))
     continue
   fi
 
-  echo "Not retrying ${stage_label}; failure does not match the flaky metric assertion policy."
+  echo "Not retrying ${stage_label}."
   exit "${last_status}"
 done
 

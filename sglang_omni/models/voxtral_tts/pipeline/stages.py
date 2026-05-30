@@ -182,13 +182,20 @@ def create_generation_executor(
         checkpoint_dir,
         context_length=8192,
         dtype="bfloat16",
-        disable_cuda_graph=True,
+        disable_cuda_graph=False,
         disable_overlap_schedule=True,
         decrypted_config_file=_write_voxtral_sglang_config(checkpoint_dir),
+        enable_torch_compile=True,
         mem_fraction_static=0.85,
         max_prefill_tokens=8192,
         max_running_requests=16,
+        sampling_backend="pytorch",
+        torch_compile_max_bs=16,
     )
+
+    want_cuda_graph = not bool(getattr(server_args, "disable_cuda_graph", False))
+    if want_cuda_graph:
+        server_args.disable_cuda_graph = True
 
     (
         model_worker,
@@ -200,8 +207,15 @@ def create_generation_executor(
         model_config,
     ) = create_sglang_infrastructure(server_args, gpu_id)
 
+    if want_cuda_graph:
+        server_args.disable_cuda_graph = False
+
     voice_embeddings = _load_voxtral_voice_embeddings(checkpoint_dir, device)
     model = model_worker.model_runner.model
+    if want_cuda_graph:
+        # Voxtral uses SGLang's native compile path during graph capture.
+        model_worker.model_runner.init_device_graphs()
+
     request_builder, result_adapter = make_voxtral_scheduler_adapters(
         model=model,
         voice_embeddings=voice_embeddings,

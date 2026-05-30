@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import collections
 from types import SimpleNamespace
 
 import numpy as np
@@ -211,3 +212,285 @@ def test_voxtral_collect_audio_step_reuses_output_tokens_for_eos_filter() -> Non
 
     runner.post_process_outputs(result, SimpleNamespace(requests=requests), {})
     assert len(requests[0].data.output_codes) == 1
+
+
+def test_voxtral_decode_writes_feedback_buffer_for_standard_forward() -> None:
+    from sglang_omni.models.voxtral_tts.model_runner import VoxtralTTSModelRunner
+
+    runner = VoxtralTTSModelRunner.__new__(VoxtralTTSModelRunner)
+    runner.model = SimpleNamespace(
+        hidden_size=3,
+        _decode_input_embed_buffer=torch.zeros(2, 3, dtype=torch.float16),
+    )
+    first = SimpleNamespace(
+        data=SimpleNamespace(
+            pending_feedback_queue=collections.deque([torch.tensor([1.0, 2.0, 3.0])])
+        )
+    )
+    second = SimpleNamespace(
+        data=SimpleNamespace(pending_feedback_queue=collections.deque())
+    )
+
+    result = runner.prepare_decode(object(), object(), [first, second])
+
+    assert result is None
+    assert not first.data.pending_feedback_queue
+    assert torch.equal(
+        runner.model._decode_input_embed_buffer,
+        torch.tensor(
+            [[1.0, 2.0, 3.0], [0.0, 0.0, 0.0]],
+            dtype=torch.float16,
+        ),
+    )
+
+
+def test_voxtral_decode_empty_batch_keeps_feedback_buffer() -> None:
+    from sglang_omni.models.voxtral_tts.model_runner import VoxtralTTSModelRunner
+
+    runner = VoxtralTTSModelRunner.__new__(VoxtralTTSModelRunner)
+    runner.model = SimpleNamespace(
+        hidden_size=3,
+        _decode_input_embed_buffer=torch.ones(1, 3, dtype=torch.float16),
+    )
+
+    result = runner.prepare_decode(object(), object(), [])
+
+    assert result is None
+    assert torch.equal(
+        runner.model._decode_input_embed_buffer,
+        torch.ones(1, 3, dtype=torch.float16),
+    )
+
+
+def test_voxtral_steady_decode_reports_cuda_graph_ready(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Decode should use SGLang's graph-capable forward result."""
+    from sglang.srt.model_executor import forward_batch_info
+
+    from sglang_omni.models.voxtral_tts.model_runner import VoxtralTTSModelRunner
+
+    fake_forward_batch = SimpleNamespace(
+        input_ids=torch.tensor([1]),
+        positions=torch.tensor([0]),
+        mrope_positions=None,
+    )
+    monkeypatch.setattr(
+        forward_batch_info.ForwardBatch,
+        "init_new",
+        staticmethod(lambda model_worker_batch, model_runner: fake_forward_batch),
+    )
+
+    class FakeVoxtralModel:
+        hidden_size = 3
+
+        def __init__(self) -> None:
+            self._decode_input_embed_buffer = torch.zeros(1, 3)
+
+        def acoustic_transformer(self, hidden):
+            assert hidden.shape == (1, 3)
+            return torch.tensor([[5]])
+
+        def audio_token_embedding(self, codes):
+            del codes
+            return torch.ones(1, 1, 3)
+
+    class FakeTPWorker:
+        gpu_id = 0
+        model_runner = SimpleNamespace(model=FakeVoxtralModel())
+
+        def forward_batch_generation(self, forward_batch):
+            del forward_batch
+            return SimpleNamespace(
+                logits_output=SimpleNamespace(hidden_states=torch.ones(1, 3)),
+                next_token_ids=None,
+                can_run_cuda_graph=True,
+            )
+
+    class FakeOutputProcessor:
+        _capture_hidden = False
+
+        def process(self, model_output, scheduler_output):
+            del model_output
+            return {
+                req.request_id: RequestOutput(req.request_id, data=5)
+                for req in scheduler_output.requests
+            }
+
+    runner = VoxtralTTSModelRunner.__new__(VoxtralTTSModelRunner)
+    runner.tp_worker = FakeTPWorker()
+    runner.output_processor = FakeOutputProcessor()
+    runner.device = torch.device("cpu")
+    runner.model = runner.tp_worker.model_runner.model
+
+    data = SimpleNamespace(
+        pending_feedback_queue=collections.deque([torch.tensor([1.0, 2.0, 3.0])]),
+        output_codes=[],
+        generation_steps=0,
+        extra_model_outputs={},
+    )
+    request = SimpleNamespace(request_id="req", data=data)
+    schedule_batch = SimpleNamespace(
+        forward_mode=SimpleNamespace(is_extend=lambda: False),
+        is_prefill_only=False,
+        output_ids=None,
+        get_model_worker_batch=lambda: SimpleNamespace(),
+    )
+
+    output = runner.execute(
+        SimpleNamespace(requests=[request], batch_data=schedule_batch)
+    )
+
+    assert output.can_run_cuda_graph is True
+    assert schedule_batch.output_ids.tolist() == [5]
+    assert torch.equal(
+        runner.model._decode_input_embed_buffer,
+        torch.tensor([[1.0, 2.0, 3.0]]),
+    )
+
+
+def test_voxtral_forward_returns_graph_compatible_logits() -> None:
+    from sglang_omni.models.voxtral_tts.sglang_model import VoxtralSGLangTTSModel
+
+    model = VoxtralSGLangTTSModel.__new__(VoxtralSGLangTTSModel)
+    model._decode_input_embed_buffer = torch.arange(6, dtype=torch.float32).reshape(
+        2, 3
+    )
+
+    def fake_language_model(input_ids, positions, forward_batch, input_embeds=None):
+        del input_ids, positions, forward_batch
+        assert input_embeds is not None
+        return input_embeds + 1
+
+    model.language_model = fake_language_model
+    forward_batch = SimpleNamespace(
+        forward_mode=SimpleNamespace(
+            is_decode=lambda: True,
+            is_extend=lambda: False,
+        )
+    )
+
+    output = model.forward(
+        torch.tensor([1, 2]),
+        torch.tensor([0, 1]),
+        forward_batch,
+    )
+
+    assert output.hidden_states.shape == (2, 3)
+    assert output.next_token_logits.shape == (2, 1)
+    assert output.next_token_logits.dtype == output.hidden_states.dtype
+    assert output.next_token_logits.device == output.hidden_states.device
+
+
+def test_voxtral_generation_reenables_cuda_graph_after_bootstrap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sglang_omni.models.voxtral_tts import model_runner as model_runner_mod
+    from sglang_omni.models.voxtral_tts import request_builders
+    from sglang_omni.models.voxtral_tts.pipeline import stages
+    from sglang_omni.scheduling import bootstrap as bootstrap_mod
+    from sglang_omni.scheduling import omni_scheduler as scheduler_mod
+    from sglang_omni.scheduling import sglang_backend
+
+    build_kwargs: dict = {}
+    infrastructure_saw_graph_disabled: list[bool] = []
+    init_graph_calls: list[bool] = []
+
+    class FakeModel:
+        pass
+
+    class FakeSGLangRunner:
+        def __init__(self, server_args) -> None:
+            self.server_args = server_args
+            self.model = FakeModel()
+
+        def init_device_graphs(self) -> None:
+            assert self.server_args.enable_torch_compile is True
+            assert self.server_args.torch_compile_max_bs == 16
+            init_graph_calls.append(True)
+
+    class FakeWorker:
+        def __init__(self, server_args) -> None:
+            self.model_runner = FakeSGLangRunner(server_args)
+
+    monkeypatch.setattr(stages, "_resolve_checkpoint", lambda model_path: model_path)
+    monkeypatch.setattr(
+        stages,
+        "_write_voxtral_sglang_config",
+        lambda checkpoint_dir: f"{checkpoint_dir}/config.json",
+    )
+    monkeypatch.setattr(
+        stages,
+        "_load_voxtral_voice_embeddings",
+        lambda checkpoint_dir, device: {},
+    )
+    monkeypatch.setattr(
+        request_builders,
+        "make_voxtral_scheduler_adapters",
+        lambda **kwargs: (lambda payload: payload, lambda data: data),
+    )
+
+    def fake_build_sglang_server_args(model_path, context_length, **kwargs):
+        del model_path, context_length
+        build_kwargs.update(kwargs)
+        return SimpleNamespace(
+            disable_cuda_graph=kwargs["disable_cuda_graph"],
+            disable_overlap_schedule=kwargs["disable_overlap_schedule"],
+            enable_torch_compile=kwargs["enable_torch_compile"],
+            page_size=1,
+            chunked_prefill_size=0,
+            max_prefill_tokens=kwargs["max_prefill_tokens"],
+            max_running_requests=kwargs["max_running_requests"],
+            torch_compile_max_bs=kwargs["torch_compile_max_bs"],
+        )
+
+    def fake_create_sglang_infrastructure(server_args, gpu_id, **kwargs):
+        del gpu_id, kwargs
+        infrastructure_saw_graph_disabled.append(bool(server_args.disable_cuda_graph))
+        return (
+            FakeWorker(server_args),
+            object(),
+            object(),
+            object(),
+            object(),
+            object(),
+            SimpleNamespace(),
+        )
+
+    monkeypatch.setattr(
+        sglang_backend,
+        "build_sglang_server_args",
+        fake_build_sglang_server_args,
+    )
+    monkeypatch.setattr(
+        bootstrap_mod,
+        "create_sglang_infrastructure",
+        fake_create_sglang_infrastructure,
+    )
+    monkeypatch.setattr(
+        sglang_backend,
+        "SGLangOutputProcessor",
+        lambda **kwargs: SimpleNamespace(**kwargs),
+    )
+    monkeypatch.setattr(
+        model_runner_mod,
+        "VoxtralTTSModelRunner",
+        lambda *args, **kwargs: SimpleNamespace(args=args, kwargs=kwargs),
+    )
+    monkeypatch.setattr(
+        scheduler_mod,
+        "OmniScheduler",
+        lambda **kwargs: SimpleNamespace(**kwargs),
+    )
+
+    scheduler = stages.create_generation_executor("model", device="cuda:0")
+
+    assert build_kwargs["disable_cuda_graph"] is False
+    assert build_kwargs["enable_torch_compile"] is True
+    assert build_kwargs["sampling_backend"] == "pytorch"
+    assert build_kwargs["torch_compile_max_bs"] == 16
+    assert infrastructure_saw_graph_disabled == [True]
+    assert init_graph_calls == [True]
+    assert scheduler.server_args.disable_cuda_graph is False
+    assert scheduler.server_args.enable_torch_compile is True
+    assert scheduler.server_args.torch_compile_max_bs == 16

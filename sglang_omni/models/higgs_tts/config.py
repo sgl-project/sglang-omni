@@ -46,6 +46,7 @@ class HiggsTtsPipelineConfig(PipelineConfig):
             factory_args={"device": "cuda", "max_new_tokens": 2048},
             gpu=0,
             next="vocoder",
+            stream_to=["vocoder"],
         ),
         StageConfig(
             name="vocoder",
@@ -54,6 +55,7 @@ class HiggsTtsPipelineConfig(PipelineConfig):
             factory_args={"device": "cuda"},
             gpu=0,
             terminal=True,
+            can_accept_stream_before_payload=True,
         ),
     ]
 

@@ -39,10 +39,13 @@ class Qwen3TTSModelRunner(ModelRunner):
         forward_batch: Any,
         schedule_batch: Any,
         requests: list,
+        *,
+        is_lookahead: bool = False,
     ) -> GenerationBatchResult | None:
-        del forward_batch, schedule_batch
+        del is_lookahead
+        del schedule_batch
         self.model.prepare_decode_buffers(requests)
-        self._write_feedback_buffers(requests)
+        self._write_feedback_buffers(forward_batch, requests)
         return None
 
     def post_prefill(
@@ -170,22 +173,47 @@ class Qwen3TTSModelRunner(ModelRunner):
 
         raise RuntimeError("Qwen3-TTS subtalker sampling requires semantic positions")
 
-    def _write_feedback_buffers(self, requests: list) -> None:
+    def _write_feedback_buffers(self, forward_batch: Any, requests: list) -> None:
         batch_size = len(requests)
-        feedback_buffer = self.model._feedback_buffer
-        feedback_mask = self.model._feedback_mask
-        feedback_mask[:batch_size] = False
+        if batch_size == 0:
+            return
+        decode_feedback_embedding = self.model._decode_feedback_embedding
+        input_ids = forward_batch.input_ids
+        if input_ids.numel() < batch_size:
+            raise RuntimeError(
+                "Qwen3-TTS decode input_ids must contain one row id per request"
+            )
+        if batch_size > decode_feedback_embedding.num_embeddings:
+            raise RuntimeError(
+                "Qwen3-TTS decode batch exceeds staged feedback embedding rows"
+            )
+        row_ids = torch.arange(
+            batch_size,
+            device=input_ids.device,
+            dtype=input_ids.dtype,
+        )
+        rows = []
 
         for row_idx, sched_req in enumerate(requests):
             combined = QwenTalkerModelRunner._take_next_decode_input_embed(
                 sched_req=sched_req,
-                device=feedback_buffer.device,
-                dtype=feedback_buffer.dtype,
+                device=decode_feedback_embedding.weight.device,
+                dtype=decode_feedback_embedding.weight.dtype,
             )
             if combined is None:
-                continue
-            feedback_buffer[row_idx].copy_(combined)
-            feedback_mask[row_idx] = True
+                token_id = input_ids[row_idx : row_idx + 1].to(
+                    device=decode_feedback_embedding.weight.device
+                )
+                combined = self.model.get_input_embeddings()(token_id).reshape(-1)
+            rows.append(combined)
+        stacked = torch.stack(rows, dim=0).to(
+            device=decode_feedback_embedding.weight.device,
+            dtype=decode_feedback_embedding.weight.dtype,
+        )
+        with torch.no_grad():
+            decode_feedback_embedding.weight[:batch_size].copy_(stacked)
+        # During graph decode, input_ids carries staged embedding row ids.
+        input_ids[:batch_size].copy_(row_ids)
 
     def _build_prefill_input_embeds(
         self,

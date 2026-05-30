@@ -144,7 +144,12 @@ def _decode_stage(*, process: str) -> StageConfig:
     )
 
 
-def _talker_stage(*, gpu: int, process: str) -> StageConfig:
+def _talker_stage(
+    *,
+    gpu: int,
+    process: str,
+    enable_partial_start: bool,
+) -> StageConfig:
     return StageConfig(
         name="talker_ar",
         process=process,
@@ -160,7 +165,7 @@ def _talker_stage(*, gpu: int, process: str) -> StageConfig:
             "talker_max_seq_len": 32768,
             "speech_enabled": True,
             "feedback_enabled": True,
-            "enable_partial_start": False,
+            "enable_partial_start": enable_partial_start,
             "partial_start_min_chunks": 5,
         },
         gpu=gpu,
@@ -202,6 +207,7 @@ def _speech_stages(
     thinker_gpu: int,
     talker_gpu: int,
     process_by_stage: dict[str, str],
+    enable_partial_start: bool,
 ) -> list[StageConfig]:
     return [
         _preprocessing_stage(process=process_by_stage["preprocessing"]),
@@ -223,7 +229,11 @@ def _speech_stages(
             process=process_by_stage["thinker"],
         ),
         _decode_stage(process=process_by_stage["decode"]),
-        _talker_stage(gpu=talker_gpu, process=process_by_stage["talker_ar"]),
+        _talker_stage(
+            gpu=talker_gpu,
+            process=process_by_stage["talker_ar"],
+            enable_partial_start=enable_partial_start,
+        ),
         _code2wav_stage(gpu=talker_gpu, process=process_by_stage["code2wav"]),
     ]
 
@@ -252,6 +262,10 @@ class Qwen3OmniPipelineConfig(PipelineConfig):
     def mem_fraction_role_to_stage(cls) -> dict[str, str]:
         return {"thinker": "thinker"}
 
+    @classmethod
+    def encoder_mem_reserve_role_to_stage(cls) -> dict[str, str]:
+        return {"thinker": "thinker"}
+
     model_path: str
     placement_policy: str | None = _PLACEMENT_POLICY
     stages: list[StageConfig] = Field(default_factory=_text_stages)
@@ -269,6 +283,22 @@ class Qwen3OmniSpeechPipelineConfig(PipelineConfig):
     def mem_fraction_role_to_stage(cls) -> dict[str, str]:
         return {"thinker": "thinker", "talker": "talker_ar"}
 
+    @classmethod
+    def encoder_mem_reserve_role_to_stage(cls) -> dict[str, str]:
+        return {"thinker": "thinker"}
+
+    @classmethod
+    def talker_role_to_stage(cls) -> dict[str, str]:
+        return {"talker": "talker_ar"}
+
+    @classmethod
+    def talker_sglang_role_to_stage(cls) -> dict[str, str]:
+        return {"talker": "talker_ar"}
+
+    @classmethod
+    def code2wav_stage(cls) -> str | None:
+        return "code2wav"
+
     model_path: str
     placement_policy: str | None = _PLACEMENT_POLICY
     terminal_stages_fn: str | None = f"{_PKG}.request_builders.resolve_terminal_stages"
@@ -282,6 +312,7 @@ class Qwen3OmniSpeechPipelineConfig(PipelineConfig):
             thinker_gpu=0,
             talker_gpu=1,
             process_by_stage=_SPEECH_DEFAULT_PROCESSES,
+            enable_partial_start=True,
         )
     )
 
@@ -301,6 +332,7 @@ class Qwen3OmniSpeechColocatedPipelineConfig(Qwen3OmniSpeechPipelineConfig):
             thinker_gpu=0,
             talker_gpu=0,
             process_by_stage=_SPEECH_DEFAULT_PROCESSES,
+            enable_partial_start=False,
         )
     )
 

@@ -120,12 +120,32 @@ class Qwen3TTSTalkerTextModel(nn.Module):
             dtype=torch.bool,
             device=self.codec_embedding.weight.device,
         )
+        self._decode_feedback_embedding = nn.Embedding(
+            max_batch_size,
+            config.hidden_size,
+            device=self.codec_embedding.weight.device,
+            dtype=self.codec_embedding.weight.dtype,
+        )
+        self._decode_feedback_embedding.weight.requires_grad_(False)
 
     def get_input_embeddings(self):
         return self.codec_embedding
 
     def get_text_embeddings(self):
         return self.text_embedding
+
+    def _build_input_hidden_states(
+        self,
+        input_ids: torch.Tensor,
+    ) -> torch.Tensor:
+        hidden_states = self.codec_embedding(input_ids)
+        bs = hidden_states.shape[0]
+        feedback_mask = self._feedback_mask[:bs]
+        return torch.where(
+            feedback_mask.unsqueeze(-1),
+            self._feedback_buffer[:bs].to(hidden_states.dtype),
+            hidden_states,
+        )
 
     def forward(
         self,
@@ -134,22 +154,22 @@ class Qwen3TTSTalkerTextModel(nn.Module):
         forward_batch: ForwardBatch,
         input_embeds: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
+        forward_mode = getattr(forward_batch, "forward_mode", None)
+        is_decode = forward_mode is not None and forward_mode.is_decode()
         if input_embeds is None:
-            hidden_states = self.codec_embedding(input_ids)
-            bs = hidden_states.shape[0]
-            feedback_mask = self._feedback_mask[:bs]
-            hidden_states = torch.where(
-                feedback_mask.unsqueeze(-1),
-                self._feedback_buffer[:bs].to(hidden_states.dtype),
-                hidden_states,
-            )
-            self._feedback_mask[:bs] = False
+            if is_decode:
+                hidden_states = self._decode_feedback_embedding(input_ids)
+            else:
+                hidden_states = self._build_input_hidden_states(input_ids)
         else:
             hidden_states = input_embeds
 
         residual = None
+        layers = self.layers
+        if is_decode:
+            layers = self._compiled_decode_layers
         for idx in range(self.start_layer, self.end_layer):
-            hidden_states, residual = self.layers[idx](
+            hidden_states, residual = layers[idx](
                 positions=positions,
                 hidden_states=hidden_states,
                 forward_batch=forward_batch,
@@ -267,6 +287,7 @@ class Qwen3TTSTalker(nn.Module):
         dtype = self.model.codec_embedding.weight.dtype
         self._feedback_buffer = self.model._feedback_buffer
         self._feedback_mask = self.model._feedback_mask
+        self._decode_feedback_embedding = self.model._decode_feedback_embedding
         self._predictor_input_buffer = torch.zeros(
             max_batch_size,
             predictor_len,
@@ -351,7 +372,7 @@ class Qwen3TTSTalker(nn.Module):
         return ["auto", *list(self.config.codec_language_id.keys())]
 
     def get_supported_speakers(self):
-        return self.config.spk_id.keys()
+        return (getattr(self.config, "spk_id", None) or {}).keys()
 
     @torch.inference_mode()
     def extract_speaker_embedding(self, audio, sr):
@@ -382,22 +403,19 @@ class Qwen3TTSTalker(nn.Module):
             for emb in voice_clone_prompt["ref_spk_embedding"]
         ]
 
-    def build_voice_clone_inputs(
+    def _build_instruct_embed(
+        self,
+        instruct_id: torch.Tensor | None,
+    ) -> torch.Tensor | None:
+        if instruct_id is None:
+            return None
+        return self.text_projection(self.get_text_embeddings()(instruct_id))
+
+    def _build_tts_special_embeds(
         self,
         *,
-        input_id: torch.Tensor,
-        ref_id: torch.Tensor | None,
-        voice_clone_prompt: dict[str, Any],
-        language: str,
-        non_streaming_mode: bool,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor | None]:
-        voice_clone_spk_embeds = self.generate_speaker_prompt(voice_clone_prompt)
-        speaker_embed = voice_clone_spk_embeds[0]
-
-        language_id = None
-        if language.lower() != "auto":
-            language_id = self.config.codec_language_id[language.lower()]
-
+        dtype: torch.dtype,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         ids = torch.tensor(
             [
                 [
@@ -407,12 +425,34 @@ class Qwen3TTSTalker(nn.Module):
                 ]
             ],
             device=self.device,
-            dtype=input_id.dtype,
+            dtype=dtype,
         )
-        tts_bos_embed, tts_eos_embed, tts_pad_embed = self.text_projection(
-            self.get_text_embeddings()(ids)
-        ).chunk(3, dim=1)
+        return self.text_projection(self.get_text_embeddings()(ids)).chunk(3, dim=1)
 
+    def _resolve_language_id(
+        self,
+        *,
+        language: str,
+        voice: str | None = None,
+    ) -> int | None:
+        if language.lower() != "auto":
+            return self.config.codec_language_id[language.lower()]
+        if voice is None:
+            return None
+        spk_is_dialect = getattr(self.config, "spk_is_dialect", None) or {}
+        dialect = spk_is_dialect.get(voice.lower())
+        if isinstance(dialect, str) and dialect:
+            return self.config.codec_language_id.get(dialect)
+        return None
+
+    def _build_codec_prefill(
+        self,
+        *,
+        language: str,
+        dtype: torch.dtype,
+        voice: str | None = None,
+    ) -> torch.Tensor:
+        language_id = self._resolve_language_id(language=language, voice=voice)
         if language_id is None:
             codec_prefill = [
                 self.config.codec_nothink_id,
@@ -426,9 +466,109 @@ class Qwen3TTSTalker(nn.Module):
                 language_id,
                 self.config.codec_think_eos_id,
             ]
+        return self.get_input_embeddings()(
+            torch.tensor([codec_prefill], device=self.device, dtype=dtype)
+        )
 
-        codec_input_0 = self.get_input_embeddings()(
-            torch.tensor([codec_prefill], device=self.device, dtype=input_id.dtype)
+    def _finish_text_prompt(
+        self,
+        *,
+        talker_input_embed: torch.Tensor,
+        input_id: torch.Tensor,
+        codec_last_embed: torch.Tensor,
+        tts_pad_embed: torch.Tensor,
+        tts_eos_embed: torch.Tensor,
+        non_streaming_mode: bool,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        if non_streaming_mode:
+            text_all = self.text_projection(
+                self.get_text_embeddings()(input_id[:, 3:-5])
+            )
+            text_all = torch.cat([text_all, tts_eos_embed], dim=1)
+            pad_ids = torch.full(
+                (1, int(text_all.shape[1])),
+                int(self.config.codec_pad_id),
+                device=self.device,
+                dtype=input_id.dtype,
+            )
+            talker_input_embed = torch.cat(
+                [
+                    talker_input_embed,
+                    text_all + self.get_input_embeddings()(pad_ids),
+                    tts_pad_embed
+                    + self.get_input_embeddings()(
+                        torch.tensor(
+                            [[self.config.codec_bos_id]],
+                            device=self.device,
+                            dtype=input_id.dtype,
+                        )
+                    ),
+                ],
+                dim=1,
+            )
+            return talker_input_embed, tts_pad_embed
+
+        first_text = (
+            self.text_projection(self.get_text_embeddings()(input_id[:, 3:4]))
+            + codec_last_embed
+        )
+        talker_input_embed = torch.cat([talker_input_embed, first_text], dim=1)
+        trailing_text_hidden = torch.cat(
+            [
+                self.text_projection(self.get_text_embeddings()(input_id[:, 4:-5])),
+                tts_eos_embed,
+            ],
+            dim=1,
+        )
+        return talker_input_embed, trailing_text_hidden
+
+    def _apply_instruct_prefix(
+        self,
+        talker_input_embed: torch.Tensor,
+        instruct_id: torch.Tensor | None,
+    ) -> torch.Tensor:
+        instruct_embed = self._build_instruct_embed(instruct_id)
+        if instruct_embed is None:
+            return talker_input_embed
+        return torch.cat([instruct_embed, talker_input_embed], dim=1)
+
+    def _build_conditioned_prompt_prefix(
+        self,
+        *,
+        input_id: torch.Tensor,
+        codec_input: torch.Tensor,
+        tts_bos_embed: torch.Tensor,
+        tts_pad_embed: torch.Tensor,
+    ) -> torch.Tensor:
+        role_embed = self.text_projection(self.get_text_embeddings()(input_id[:, :3]))
+        prompt_embed = (
+            torch.cat(
+                [tts_pad_embed.expand(-1, codec_input.shape[1] - 2, -1), tts_bos_embed],
+                dim=1,
+            )
+            + codec_input[:, :-1]
+        )
+        return torch.cat([role_embed, prompt_embed], dim=1)
+
+    def build_voice_clone_inputs(
+        self,
+        *,
+        input_id: torch.Tensor,
+        ref_id: torch.Tensor | None,
+        voice_clone_prompt: dict[str, Any],
+        language: str,
+        non_streaming_mode: bool,
+        instruct_id: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor | None]:
+        voice_clone_spk_embeds = self.generate_speaker_prompt(voice_clone_prompt)
+        speaker_embed = voice_clone_spk_embeds[0]
+
+        tts_bos_embed, tts_eos_embed, tts_pad_embed = self._build_tts_special_embeds(
+            dtype=input_id.dtype
+        )
+        codec_input_0 = self._build_codec_prefill(
+            language=language,
+            dtype=input_id.dtype,
         )
         codec_input_1 = self.get_input_embeddings()(
             torch.tensor(
@@ -440,16 +580,12 @@ class Qwen3TTSTalker(nn.Module):
         codec_input = torch.cat(
             [codec_input_0, speaker_embed.view(1, 1, -1), codec_input_1], dim=1
         )
-
-        role_embed = self.text_projection(self.get_text_embeddings()(input_id[:, :3]))
-        prompt_embed = (
-            torch.cat(
-                [tts_pad_embed.expand(-1, codec_input.shape[1] - 2, -1), tts_bos_embed],
-                dim=1,
-            )
-            + codec_input[:, :-1]
+        talker_input_embed = self._build_conditioned_prompt_prefix(
+            input_id=input_id,
+            codec_input=codec_input,
+            tts_bos_embed=tts_bos_embed,
+            tts_pad_embed=tts_pad_embed,
         )
-        talker_input_embed = torch.cat([role_embed, prompt_embed], dim=1)
 
         ref_code = None
         ref_codes = voice_clone_prompt.get("ref_code")
@@ -469,61 +605,139 @@ class Qwen3TTSTalker(nn.Module):
             )
             talker_input_embed = torch.cat([talker_input_embed, icl_embed], dim=1)
         else:
-            first_text = (
-                self.text_projection(self.get_text_embeddings()(input_id[:, 3:4]))
-                + codec_input[:, -1:]
+            talker_input_embed, trailing_text_hidden = self._finish_text_prompt(
+                talker_input_embed=talker_input_embed,
+                input_id=input_id,
+                codec_last_embed=codec_input[:, -1:],
+                tts_pad_embed=tts_pad_embed,
+                tts_eos_embed=tts_eos_embed,
+                non_streaming_mode=non_streaming_mode,
             )
-            talker_input_embed = torch.cat([talker_input_embed, first_text], dim=1)
-            if non_streaming_mode:
-                talker_input_embed = torch.cat(
-                    [
-                        talker_input_embed[:, :-1],
-                        torch.cat(
-                            [
-                                self.text_projection(
-                                    self.get_text_embeddings()(input_id[:, 3:-5])
-                                ),
-                                tts_eos_embed,
-                            ],
-                            dim=1,
-                        )
-                        + self.get_input_embeddings()(
-                            torch.tensor(
-                                [
-                                    [self.config.codec_pad_id]
-                                    * (input_id[:, 3:-5].shape[1] + 1)
-                                ],
-                                device=self.device,
-                                dtype=input_id.dtype,
-                            )
-                        ),
-                        tts_pad_embed
-                        + self.get_input_embeddings()(
-                            torch.tensor(
-                                [[self.config.codec_bos_id]],
-                                device=self.device,
-                                dtype=input_id.dtype,
-                            )
-                        ),
-                    ],
-                    dim=1,
-                )
-                trailing_text_hidden = tts_pad_embed
-            else:
-                trailing_text_hidden = torch.cat(
-                    [
-                        self.text_projection(
-                            self.get_text_embeddings()(input_id[:, 4:-5])
-                        ),
-                        tts_eos_embed,
-                    ],
-                    dim=1,
-                )
 
+        talker_input_embed = self._apply_instruct_prefix(
+            talker_input_embed,
+            instruct_id,
+        )
         attention_mask = torch.ones(
             (1, talker_input_embed.shape[1]), device=self.device, dtype=torch.long
         )
         return talker_input_embed, attention_mask, trailing_text_hidden, ref_code
+
+    def build_custom_voice_inputs(
+        self,
+        *,
+        input_id: torch.Tensor,
+        voice: str,
+        language: str,
+        non_streaming_mode: bool,
+        instruct_id: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, None]:
+        spk_id = getattr(self.config, "spk_id", None) or {}
+        if not spk_id:
+            raise ValueError(
+                "Qwen3-TTS CustomVoice requires a checkpoint with configured spk_id"
+            )
+        speaker_key = voice.lower()
+        spk_id_map = {str(key).lower(): value for key, value in spk_id.items()}
+        if speaker_key not in spk_id_map:
+            supported = ", ".join(sorted(str(key) for key in spk_id))
+            raise ValueError(
+                f"Unsupported Qwen3-TTS CustomVoice speaker {voice!r}. "
+                f"Supported speakers: {supported}"
+            )
+
+        tts_bos_embed, tts_eos_embed, tts_pad_embed = self._build_tts_special_embeds(
+            dtype=input_id.dtype
+        )
+        codec_input_0 = self._build_codec_prefill(
+            language=language,
+            dtype=input_id.dtype,
+            voice=speaker_key,
+        )
+        speaker_embed = self.get_input_embeddings()(
+            torch.tensor(
+                [spk_id_map[speaker_key]], device=self.device, dtype=input_id.dtype
+            )
+        ).view(1, 1, -1)
+        codec_input_1 = self.get_input_embeddings()(
+            torch.tensor(
+                [[self.config.codec_pad_id, self.config.codec_bos_id]],
+                device=self.device,
+                dtype=input_id.dtype,
+            )
+        )
+        codec_input = torch.cat([codec_input_0, speaker_embed, codec_input_1], dim=1)
+        talker_input_embed = self._build_conditioned_prompt_prefix(
+            input_id=input_id,
+            codec_input=codec_input,
+            tts_bos_embed=tts_bos_embed,
+            tts_pad_embed=tts_pad_embed,
+        )
+        talker_input_embed, trailing_text_hidden = self._finish_text_prompt(
+            talker_input_embed=talker_input_embed,
+            input_id=input_id,
+            codec_last_embed=codec_input[:, -1:],
+            tts_pad_embed=tts_pad_embed,
+            tts_eos_embed=tts_eos_embed,
+            non_streaming_mode=non_streaming_mode,
+        )
+        talker_input_embed = self._apply_instruct_prefix(
+            talker_input_embed,
+            instruct_id,
+        )
+        attention_mask = torch.ones(
+            (1, talker_input_embed.shape[1]), device=self.device, dtype=torch.long
+        )
+        return talker_input_embed, attention_mask, trailing_text_hidden, None
+
+    def build_voice_design_inputs(
+        self,
+        *,
+        input_id: torch.Tensor,
+        language: str,
+        non_streaming_mode: bool,
+        instruct_id: torch.Tensor | None,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, None]:
+        if instruct_id is None:
+            raise ValueError("Qwen3-TTS VoiceDesign requires instructions")
+
+        tts_bos_embed, tts_eos_embed, tts_pad_embed = self._build_tts_special_embeds(
+            dtype=input_id.dtype
+        )
+        codec_input_0 = self._build_codec_prefill(
+            language=language,
+            dtype=input_id.dtype,
+        )
+        codec_input_1 = self.get_input_embeddings()(
+            torch.tensor(
+                [[self.config.codec_pad_id, self.config.codec_bos_id]],
+                device=self.device,
+                dtype=input_id.dtype,
+            )
+        )
+        codec_input = torch.cat([codec_input_0, codec_input_1], dim=1)
+        talker_input_embed = self._build_conditioned_prompt_prefix(
+            input_id=input_id,
+            codec_input=codec_input,
+            tts_bos_embed=tts_bos_embed,
+            tts_pad_embed=tts_pad_embed,
+        )
+        talker_input_embed, trailing_text_hidden = self._finish_text_prompt(
+            talker_input_embed=talker_input_embed,
+            input_id=input_id,
+            codec_last_embed=codec_input[:, -1:],
+            tts_pad_embed=tts_pad_embed,
+            tts_eos_embed=tts_eos_embed,
+            non_streaming_mode=non_streaming_mode,
+        )
+        talker_input_embed = self._apply_instruct_prefix(
+            talker_input_embed,
+            instruct_id,
+        )
+        attention_mask = torch.ones(
+            (1, talker_input_embed.shape[1]), device=self.device, dtype=torch.long
+        )
+        return talker_input_embed, attention_mask, trailing_text_hidden, None
 
     def generate_icl_prompt(
         self,

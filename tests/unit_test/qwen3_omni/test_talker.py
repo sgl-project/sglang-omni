@@ -961,7 +961,7 @@ def test_wiring_propagation_factory_args_to_scheduler(monkeypatch) -> None:
 
     config = Qwen3OmniSpeechPipelineConfig(model_path="dummy")
     talker_stage = next(stage for stage in config.stages if stage.name == "talker_ar")
-    assert talker_stage.factory_args["enable_partial_start"] is False
+    assert talker_stage.factory_args["enable_partial_start"] is True
     assert talker_stage.factory_args["partial_start_min_chunks"] == 5
 
     scheduler = QwenTalkerScheduler.__new__(QwenTalkerScheduler)

@@ -183,6 +183,8 @@ class TtsSeedttsBenchmarkConfig:
     # "cheerful_female" server-side); voice-cloning models such as S2-Pro
     # ignore it and take the speaker from ref_audio/ref_text instead.
     voice: str | None = None
+    task_type: str | None = None
+    instructions: str | None = None
     # Default is voice-clone ON — S2-Pro's canonical flow uses the
     # seed-tts-eval reference audio.  The ``--no-ref-audio`` CLI flag flips
     # this to False for plain TTS models that do not accept ref audio.
@@ -197,6 +199,7 @@ class TtsSeedttsBenchmarkConfig:
     top_p: float | None = None
     top_k: int | None = None
     repetition_penalty: float | None = None
+    seed: int | None = None
     warmup: int = 1
     concurrency: int = 1
     request_rate: float = float("inf")
@@ -220,6 +223,8 @@ def _build_generation_kwargs(config: TtsSeedttsBenchmarkConfig) -> dict:
         generation_kwargs["top_k"] = config.top_k
     if config.repetition_penalty is not None:
         generation_kwargs["repetition_penalty"] = config.repetition_penalty
+    if config.seed is not None:
+        generation_kwargs["seed"] = config.seed
     return generation_kwargs
 
 
@@ -235,9 +240,12 @@ def _build_results_config(
         "voice_clone": config.voice_clone,
         "ref_format": config.ref_format,
         "voice": config.voice,
+        "task_type": config.task_type,
+        "instructions": config.instructions,
         "stream": config.stream,
         "max_samples": config.max_samples,
         "max_new_tokens": config.max_new_tokens,
+        "seed": config.seed,
         "warmup": config.warmup,
         "concurrency": config.concurrency,
         "request_rate": config.request_rate,
@@ -268,6 +276,8 @@ async def run_tts_seedtts_benchmark(
         no_ref_audio=not config.voice_clone,
         ref_format=config.ref_format,
         voice=config.voice,
+        task_type=config.task_type,
+        instructions=config.instructions,
         save_audio_dir=save_audio_dir,
         **generation_kwargs,
     )
@@ -304,6 +314,8 @@ def run_tts_seedtts_transcribe(config: TtsSeedttsBenchmarkConfig) -> dict:
         "voice_clone": config.voice_clone,
         "ref_format": config.ref_format,
         "voice": config.voice,
+        "task_type": config.task_type,
+        "instructions": config.instructions,
         "max_new_tokens": config.max_new_tokens,
         "temperature": config.temperature,
         "max_samples": config.max_samples,
@@ -328,6 +340,8 @@ def _config_from_args(args: argparse.Namespace) -> TtsSeedttsBenchmarkConfig:
         model=args.model,
         meta=args.meta,
         voice=args.voice,
+        task_type=args.task_type,
+        instructions=args.instructions,
         voice_clone=voice_clone,
         ref_format=args.ref_format,
         output_dir=args.output_dir,
@@ -337,6 +351,7 @@ def _config_from_args(args: argparse.Namespace) -> TtsSeedttsBenchmarkConfig:
         top_p=args.top_p,
         top_k=args.top_k,
         repetition_penalty=args.repetition_penalty,
+        seed=args.seed,
         warmup=args.warmup,
         concurrency=args.concurrency,
         request_rate=args.request_rate,
@@ -385,6 +400,18 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--task-type",
+        type=str,
+        default=None,
+        help="Model-specific TTS task type, for example Base, CustomVoice, or VoiceDesign.",
+    )
+    parser.add_argument(
+        "--instructions",
+        type=str,
+        default=None,
+        help="Model-specific style or voice-design instructions.",
+    )
+    parser.add_argument(
         "--meta",
         "--testset",
         dest="meta",
@@ -415,6 +442,12 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--top-p", type=float, default=None)
     parser.add_argument("--top-k", type=int, default=None)
     parser.add_argument("--repetition-penalty", type=float, default=None)
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Per-request sampler seed for reproducible generation.",
+    )
     parser.add_argument("--warmup", type=int, default=1)
     parser.add_argument(
         "--concurrency",

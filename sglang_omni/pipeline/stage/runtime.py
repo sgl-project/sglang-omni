@@ -19,7 +19,7 @@ from typing import Any, Callable, Literal
 from sglang_omni.pipeline import relay_io
 from sglang_omni.pipeline.stage.input import DirectInput, InputHandler
 from sglang_omni.pipeline.stage.stream_queue import StreamItem, StreamQueue
-from sglang_omni.pipeline.tp_control import TPLeaderFanout
+from sglang_omni.pipeline.tp_control import TPLeaderFanout, TPWorkMessage
 from sglang_omni.profiler.event_recorder import emit as _emit_event
 from sglang_omni.profiler.event_recorder import get_recorder as _get_recorder
 from sglang_omni.profiler.event_recorder import set_active_stage as _set_active_stage
@@ -223,6 +223,9 @@ class Stage:
                     await self._tp_fanout.fanout_control(msg)
                 if isinstance(msg, ShutdownMessage):
                     break
+                if isinstance(msg, TPWorkMessage):
+                    await self._execute(msg.data)
+                    continue
                 await self._handle_message(msg)
         except asyncio.CancelledError:
             pass
@@ -640,6 +643,12 @@ class Stage:
             stage=self.name,
             event_name="stage_dispatch",
         )
+        if (
+            self.role == "leader"
+            and self._tp_fanout is not None
+            and getattr(self.scheduler, "requires_tp_work_fanout", False)
+        ):
+            self._tp_fanout.fanout_work(payload)
         self.scheduler.inbox.put(
             IncomingMessage(request_id=request_id, type="new_request", data=payload)
         )

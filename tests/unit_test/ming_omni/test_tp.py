@@ -401,3 +401,155 @@ def test_ming_bootstrap_aligns_server_args_tp_size_before_infra(
     assert captured["nccl_port"] == 29500
     assert captured["model_arch_override"] == "BailingMoeV2ForCausalLM"
     assert scheduler.kwargs["server_args"] is server_args
+
+
+def _ming_config_with_image_encoder_tp2(config_cls):
+    config = config_cls(model_path="dummy")
+    stages = [stage.model_copy(deep=True) for stage in config.stages]
+    for stage in stages:
+        if stage.name == "image_encoder":
+            stage.tp_size = 2
+            stage.parallelism = stage.parallelism.model_copy(update={"tp": 2})
+            stage.gpu = [2, 3]
+    return stages
+
+
+def test_ming_image_encoder_tp2_builds_rank_specific_stage_specs(monkeypatch) -> None:
+    importlib.import_module("sglang_omni.pipeline")
+    before_import = set(sys.modules)
+    fake_torch = ModuleType("torch")
+    fake_torch.Tensor = object
+    fake_torch_nn = ModuleType("torch.nn")
+    fake_torch_nn.Module = object
+    fake_torch_distributed = ModuleType("torch.distributed")
+    fake_torch_distributed.ProcessGroup = object
+    fake_torch.distributed = fake_torch_distributed
+    fake_profiler = ModuleType("torch.profiler")
+    fake_profiler.ProfilerActivity = SimpleNamespace(CPU="cpu", CUDA="cuda")
+
+    class FakeProfile:
+        def __init__(self, *args, **kwargs):
+            pass
+
+    fake_profiler.profile = FakeProfile
+    fake_transformers = ModuleType("transformers")
+    fake_transformers.AutoConfig = SimpleNamespace(from_pretrained=lambda *a, **k: None)
+    fake_transformers_init = ModuleType("transformers.initialization")
+    fake_transformers_init.no_init_weights = lambda: SimpleNamespace(
+        __enter__=lambda self: None,
+        __exit__=lambda self, exc_type, exc, tb: None,
+    )
+    fake_transformers_utils = ModuleType("transformers.utils")
+    fake_transformers_hub = ModuleType("transformers.utils.hub")
+    fake_transformers_hub.cached_file = lambda *a, **k: ""
+    fake_refs = (
+        fake_torch,
+        fake_torch_nn,
+        fake_torch_distributed,
+        fake_profiler,
+        fake_transformers,
+        fake_transformers_init,
+        fake_transformers_utils,
+        fake_transformers_hub,
+    )
+
+    try:
+        with monkeypatch.context() as mp:
+            mp.setitem(sys.modules, "torch", fake_torch)
+            mp.setitem(sys.modules, "torch.nn", fake_torch_nn)
+            mp.setitem(sys.modules, "torch.distributed", fake_torch_distributed)
+            mp.setitem(sys.modules, "torch.profiler", fake_profiler)
+            mp.setitem(sys.modules, "transformers", fake_transformers)
+            mp.setitem(
+                sys.modules, "transformers.initialization", fake_transformers_init
+            )
+            mp.setitem(sys.modules, "transformers.utils", fake_transformers_utils)
+            mp.setitem(sys.modules, "transformers.utils.hub", fake_transformers_hub)
+
+            from sglang_omni.models.ming_omni.config import MingOmniPipelineConfig
+            from sglang_omni.pipeline.mp_runner import _build_stage_groups
+            from sglang_omni.pipeline.runtime_config import prepare_pipeline_runtime
+
+            config = MingOmniPipelineConfig(
+                model_path="dummy",
+                stages=_ming_config_with_image_encoder_tp2(MingOmniPipelineConfig),
+            )
+
+            groups = _build_groups(
+                config, _build_stage_groups, prepare_pipeline_runtime
+            )
+            all_specs = [s for g in groups for s in g.specs]
+            specs = [s for s in all_specs if s.stage_name == "image_encoder"]
+
+            assert len(specs) == 2
+            assert [spec.role for spec in specs] == ["leader", "follower"]
+            assert [spec.gpu_id for spec in specs] == [2, 3]
+            assert [spec.tp_rank for spec in specs] == [0, 1]
+            assert {spec.tp_size for spec in specs} == {2}
+            assert specs[0].nccl_port is not None
+            assert specs[0].nccl_port == specs[1].nccl_port
+            assert [spec.factory_args["tp_rank"] for spec in specs] == [0, 1]
+            assert {spec.factory_args["tp_size"] for spec in specs} == {2}
+            assert specs[0].factory_args["nccl_port"] == specs[0].nccl_port
+    finally:
+        _purge_project_modules_with_fake_refs(before_import, fake_refs)
+
+    assert _project_modules_with_ref(fake_torch) == []
+    assert _cached_attrs_from_missing_project_modules() == []
+
+
+@pytest.mark.asyncio
+async def test_tp_leader_skips_fanout_work_for_omni_scheduler() -> None:
+    """OmniScheduler-backed leaders must not call fanout_work()."""
+    import queue as _queue_mod
+    from unittest.mock import MagicMock
+
+    from sglang_omni.pipeline.stage.runtime import Stage
+    from sglang_omni.pipeline.tp_control import TPLeaderFanout
+
+    fanout = MagicMock(spec=TPLeaderFanout)
+
+    omni_like = SimpleNamespace(
+        inbox=_queue_mod.Queue(),
+        requires_tp_work_fanout=False,
+    )
+    simple_like = SimpleNamespace(
+        inbox=_queue_mod.Queue(),
+        requires_tp_work_fanout=True,
+    )
+
+    def _make_stage(scheduler):
+        return Stage(
+            name="test_stage",
+            role="leader",
+            get_next=lambda _name: [],
+            gpu_id=0,
+            endpoints={},
+            control_plane=MagicMock(),
+            relay=MagicMock(),
+            scheduler=scheduler,
+            tp_fanout=fanout,
+        )
+
+    payload = SimpleNamespace(request_id="req-1")
+
+    stage_omni = _make_stage(omni_like)
+    await stage_omni._execute(payload)
+    fanout.fanout_work.assert_not_called()
+    assert omni_like.inbox.get_nowait().request_id == "req-1"
+
+    fanout.reset_mock()
+
+    stage_simple = _make_stage(simple_like)
+    await stage_simple._execute(payload)
+    fanout.fanout_work.assert_called_once_with(payload)
+    assert simple_like.inbox.get_nowait().request_id == "req-1"
+
+
+def test_ming_image_encoder_tp2_config_accepts_gpu_list() -> None:
+    from sglang_omni.models.ming_omni.config import MingOmniPipelineConfig
+
+    stages = _ming_config_with_image_encoder_tp2(MingOmniPipelineConfig)
+    config = MingOmniPipelineConfig(model_path="dummy", stages=stages)
+
+    assert config.gpu_placement["image_encoder"] == [2, 3]

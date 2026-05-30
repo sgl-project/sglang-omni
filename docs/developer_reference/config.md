@@ -118,7 +118,7 @@ Derived from stages:
 | `name` | `str` or `None` | `model_path` | Pipeline name. Used for reporting and runtime identification. |
 | `entry_stage` | `str` or `None` | first stage | Optional override for the stage that receives new requests. |
 | `relay_backend` | one of `shm`, `nccl`, `nixl`, `mooncake` | `shm` | Global relay backend used when creating per-stage relays. |
-| `fused_stages` | `list[list[str]]` | `[]` | Validated as adjacent stage groups, but fusion is not implemented yet. |
+| `fused_stages` | `list[list[str]]` | `[]` | Adjacent linear stage groups to colocate in one runtime process, enabling Stage-level local dispatch while preserving normal Stage ownership. |
 | `runtime_overrides` | `dict[str, dict[str, Any]]` | `{}` | Per-stage factory argument overrides applied during runtime prep. |
 | `env_defaults` | `dict[str, str]` | `{}` | Environment defaults applied before stage factory imports. Existing process values take precedence. |
 | `endpoints` | `EndpointsConfig` | IPC defaults | Endpoint allocation settings. `base_path` controls where Unix-domain sockets are created. |
@@ -133,6 +133,25 @@ Derived values are computed from stages, not manually maintained:
 
 `RelayConfig` is the per-stage data-transfer override. It currently contains
 `slot_size_mb`, `credits`, `rank`, `world_size`, and `device`.
+
+### Stage Fusion
+
+`fused_stages` is a framework-level colocation hint. It keeps every listed
+logical stage as a normal `Stage`; it does not create a synthetic scheduler or
+move routing, relay, fan-in, streaming, abort, or terminal completion into the
+scheduler layer.
+
+At runtime prep, each fused group adds a process-colocation constraint. The
+process topology planner merges the process groups that contain those stages.
+Once colocated, ordinary Stage routing can use process-local object dispatch for
+eligible full-payload hops and process-local stream dispatch for same-process
+stream edges. Cross-process or unsafe fan-out edges still use the relay/control
+plane path.
+
+The first supported fusion form is conservative: a group must be adjacent,
+linear, non-TP, and fit on at most one GPU. Internal stages must route only to
+the next stage in the group. Existing explicit `process` groups are not split;
+if fusion connects two process groups, those groups are merged.
 
 ## Runtime Prep and Runner
 

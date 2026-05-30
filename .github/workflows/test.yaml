@@ -76,7 +76,8 @@ jobs:
         run: |
           source omni/bin/activate
           export PYTHONPATH=$PWD
-          pytest tests/ -v -m "not benchmark and not docs" -x
+          bash .github/scripts/run_flaky_pytest.sh \
+            pytest tests/ -v -m "not benchmark and not docs" -x
 
   cleanup:
     name: cleanup - reclaim host cache

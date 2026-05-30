@@ -56,6 +56,9 @@ class MingImageEncoder(nn.Module):
         *,
         device: str = "cuda",
         dtype: str | None = None,
+        tp_rank: int = 0,
+        tp_size: int = 1,
+        nccl_port: int | None = None,
     ) -> None:
         super().__init__()
 
@@ -66,8 +69,8 @@ class MingImageEncoder(nn.Module):
         vision_cfg = config.vision_config
         mlp_depth = config.mlp_depth
 
-        # Need sglang TP context for VisionAttention
-        self._init_sglang_tp()
+        # Need sglang TP context for VisionAttention and parallel layers
+        self._init_sglang_tp(tp_rank=tp_rank, tp_size=tp_size, nccl_port=nccl_port)
 
         # Build vision encoder
         from transformers import PretrainedConfig
@@ -122,8 +125,14 @@ class MingImageEncoder(nn.Module):
     _did_init_tp = False  # Track whether we initialized TP ourselves
 
     @classmethod
-    def _init_sglang_tp(cls):
-        """Initialize minimal sglang TP=1 context if not already done."""
+    def _init_sglang_tp(
+        cls,
+        *,
+        tp_rank: int = 0,
+        tp_size: int = 1,
+        nccl_port: int | None = None,
+    ):
+        """Initialize sglang TP context for vision parallel layers."""
         import os
 
         import sglang.srt.layers.dp_attention as dp
@@ -133,10 +142,17 @@ class MingImageEncoder(nn.Module):
             getattr(dp, "_ATTN_TP_SIZE", None) is not None and dp._ATTN_TP_SIZE > 0
         )
         if dp_tp_ready and parallel_state.model_parallel_is_initialized():
-            return  # Already initialized
+            if dp._ATTN_TP_SIZE != tp_size:
+                raise RuntimeError(
+                    f"TP already initialized with tp_size={dp._ATTN_TP_SIZE}, "
+                    f"cannot reinitialize with tp_size={tp_size}"
+                )
+            return
 
         os.environ.setdefault("MASTER_ADDR", "127.0.0.1")
-        if "MASTER_PORT" not in os.environ:
+        if nccl_port is not None:
+            os.environ["MASTER_PORT"] = str(nccl_port)
+        elif "MASTER_PORT" not in os.environ:
             import socket
 
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -155,13 +171,18 @@ class MingImageEncoder(nn.Module):
 
         if not parallel_state.model_parallel_is_initialized():
             parallel_state.init_distributed_environment(
-                backend="nccl", world_size=1, rank=0, local_rank=0
+                backend="nccl",
+                world_size=tp_size,
+                rank=tp_rank,
+                local_rank=0,
             )
-            parallel_state.initialize_model_parallel()
+            parallel_state.initialize_model_parallel(
+                tensor_model_parallel_size=tp_size,
+            )
             cls._did_init_tp = True
 
-        dp._ATTN_TP_SIZE = 1
-        dp._ATTN_TP_RANK = 0
+        dp._ATTN_TP_SIZE = tp_size
+        dp._ATTN_TP_RANK = tp_rank
 
     @classmethod
     def _cleanup_sglang_tp(cls):

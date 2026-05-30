@@ -26,28 +26,41 @@ class VoxtralTTSModelRunner(ModelRunner):
         requests: list,
     ) -> GenerationBatchResult | None:
         del schedule_batch
-        input_embeds = self._build_prefill_input_embeds(forward_batch, requests)
-        return self._forward_with_input_embeds(forward_batch, input_embeds)
+        forward_batch.input_embeds = self._build_prefill_input_embeds(
+            forward_batch, requests
+        )
+        return None
 
     def prepare_decode(
         self,
         forward_batch: Any,
         schedule_batch: Any,
         requests: list,
+        *,
+        is_lookahead: bool = False,
     ) -> GenerationBatchResult | None:
-        del schedule_batch
+        del is_lookahead
+        del forward_batch, schedule_batch
+        self._write_decode_input_embed_buffer(requests)
+        return None
+
+    def _write_decode_input_embed_buffer(self, requests: list) -> None:
+        batch_size = len(requests)
+        if batch_size == 0:
+            return
+        buffer = self.model._decode_input_embed_buffer
         rows = []
         for sched_req in requests:
             queue = sched_req.data.pending_feedback_queue
             if not queue:
-                rows.append(torch.zeros(self.model.hidden_size))
+                rows.append(torch.zeros(self.model.hidden_size, device=buffer.device))
                 continue
             rows.append(queue.popleft())
-        input_embeds = torch.stack(rows, dim=0).to(
-            device=forward_batch.input_ids.device,
-            dtype=next(self.model.parameters()).dtype,
+        stacked = torch.stack(rows, dim=0).to(
+            device=buffer.device,
+            dtype=buffer.dtype,
         )
-        return self._forward_with_input_embeds(forward_batch, input_embeds)
+        buffer[:batch_size].copy_(stacked)
 
     def post_prefill(
         self,
@@ -151,26 +164,3 @@ class VoxtralTTSModelRunner(ModelRunner):
             sched_req.data.pending_feedback_queue.append(
                 embeds[row_idx, 0].detach().clone()
             )
-
-    def _forward_with_input_embeds(
-        self,
-        forward_batch: Any,
-        input_embeds: torch.Tensor,
-    ) -> GenerationBatchResult:
-        model_runner = self.tp_worker.model_runner
-        model_runner.attn_backend.init_forward_metadata(forward_batch)
-        input_embeds = input_embeds.to(
-            device=forward_batch.input_ids.device,
-            dtype=next(self.model.parameters()).dtype,
-        )
-        logits_output = self.model(
-            input_ids=forward_batch.input_ids,
-            positions=forward_batch.positions,
-            forward_batch=forward_batch,
-            input_embeds=input_embeds,
-        )
-        return GenerationBatchResult(
-            logits_output=logits_output,
-            next_token_ids=None,
-            can_run_cuda_graph=False,
-        )

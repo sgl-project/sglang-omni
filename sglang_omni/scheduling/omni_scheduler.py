@@ -99,9 +99,12 @@ class OmniScheduler:
         stream_done_handler: Callable | None = None,
         abort_callback: Callable[[str], None] | None = None,
         enable_overlap: bool = False,
+        enable_async_decode: bool = False,
+        async_decode_min_batch_size: int = 2,
     ):
         self.inbox: _queue_mod.Queue[IncomingMessage] = _queue_mod.Queue()
         self.outbox: _queue_mod.Queue[OutgoingMessage] = _queue_mod.Queue()
+        self.requires_tp_work_fanout: bool = False
 
         # --- Request builder: StagePayload → SGLangARRequestData ----------
         self._request_builder = request_builder
@@ -126,6 +129,17 @@ class OmniScheduler:
         self.moe_ep_size = 1
         self.page_size = server_args.page_size
         self.enable_overlap = enable_overlap
+        # One-step-lookahead async decode (single stream + CUDA event). Only
+        # safe for model runners that implement post_decode_launch/resolve.
+        self.enable_async_decode = enable_async_decode
+        # Below this decode batch size the lookahead is bypassed for a plain
+        # synchronous step: at low concurrency the per-step collect is too small
+        # to overlap, so the lookahead's fixed overhead is a net loss (the bs=1
+        # regression — see benchmark_results.md / stall_analysis.md). Default 2
+        # = only bs=1 takes the fast path.
+        self.async_decode_min_batch_size = int(async_decode_min_batch_size)
+        if model_runner is not None:
+            model_runner._async_enabled = enable_async_decode
 
         # Token / memory info (upstream reads from tp_worker.get_worker_info)
         mr = tp_worker.model_runner
@@ -167,6 +181,10 @@ class OmniScheduler:
         self.running_batch = ScheduleBatch(reqs=[], batch_is_full=False)
         self.cur_batch = None
         self.last_batch = None
+        # Async decode (one-step lookahead): the launched-but-not-resolved
+        # decode batch, or None. Tracked here (not just a loop local) so abort
+        # can reach the in-flight step. See _event_loop_async_decode.
+        self._async_pending = None
         self.forward_ct = 0
         self.return_health_check_ct = 0
         self.num_retracted_reqs = 0
@@ -599,55 +617,95 @@ class OmniScheduler:
         """
         self._emit_prefill_start_for_batch(batch)
         if self._model_runner is not None:
-            from sglang.srt.managers.scheduler import GenerationBatchResult
-
-            from sglang_omni.scheduling.types import SchedulerOutput, SchedulerRequest
-
-            # Wrap ScheduleBatch → SchedulerOutput for the model runner
-            sched_reqs = []
-            for req in batch.reqs:
-                rid = req.rid
-                data = req._omni_data
-                sched_reqs.append(SchedulerRequest(request_id=rid, data=data))
-            sched_output = SchedulerOutput(requests=sched_reqs, batch_data=batch)
-
+            sched_output = self._build_sched_output(batch)
             mr_output = self._model_runner.execute(sched_output)
-
-            if self._stream_output_builder is not None:
-                for sched_req in sched_output.requests:
-                    rid = sched_req.request_id
-                    req_output = mr_output.outputs[rid]
-                    emitted_any = False
-                    for msg in self._stream_output_builder(
-                        rid,
-                        sched_req.data,
-                        req_output,
-                    ):
-                        if not emitted_any:
-                            if rid not in self._first_emit_done:
-                                self._first_emit_done.add(rid)
-                                _emit_event(
-                                    request_id=rid,
-                                    stage=None,
-                                    event_name="scheduler_first_emit",
-                                )
-                            emitted_any = True
-                        self.outbox.put(msg)
-
-            # Convert ModelRunnerOutput → GenerationBatchResult
-            # The upstream process_batch_result reads .next_token_ids and
-            # .logits_output from the result; both are already on batch via
-            # the model runner's execute() (batch.output_ids is set there).
-            next_token_ids = batch.output_ids
-            if isinstance(next_token_ids, torch.Tensor):
-                batch.input_ids = next_token_ids.to(torch.int64)
-            return GenerationBatchResult(
-                logits_output=None,
-                next_token_ids=next_token_ids,
-                can_run_cuda_graph=mr_output.can_run_cuda_graph,
-            )
+            self._emit_stream_output(sched_output, mr_output)
+            return self._make_batch_result(batch, mr_output)
         # Fallback: call upstream's run_batch (uses tp_worker directly)
         return _Upstream.run_batch(self, batch, pp_proxy_tensors)
+
+    def _build_sched_output(self, batch):
+        """Wrap a ScheduleBatch into the SchedulerOutput the model runner
+        expects. Shared by the sync and async (launch) paths."""
+        from sglang_omni.scheduling.types import SchedulerOutput, SchedulerRequest
+
+        sched_reqs = [
+            SchedulerRequest(request_id=req.rid, data=req._omni_data)
+            for req in batch.reqs
+        ]
+        return SchedulerOutput(requests=sched_reqs, batch_data=batch)
+
+    def _emit_stream_output(self, sched_output, mr_output, skip_rids=()) -> None:
+        """Emit per-request stream chunks from a ModelRunnerOutput. Shared by
+        the sync and async (resolve) paths. ``skip_rids`` suppresses emission
+        for requests already finished in an earlier step (the lookahead
+        overrun) — emitting their extra chunk would corrupt the downstream
+        vocoder's delayed-code stream."""
+        if self._stream_output_builder is None:
+            return
+        for sched_req in sched_output.requests:
+            rid = sched_req.request_id
+            if rid in skip_rids:
+                continue
+            req_output = mr_output.outputs[rid]
+            emitted_any = False
+            for msg in self._stream_output_builder(rid, sched_req.data, req_output):
+                if not emitted_any:
+                    if rid not in self._first_emit_done:
+                        self._first_emit_done.add(rid)
+                        _emit_event(
+                            request_id=rid,
+                            stage=None,
+                            event_name="scheduler_first_emit",
+                        )
+                    emitted_any = True
+                self.outbox.put(msg)
+
+    @staticmethod
+    def _make_batch_result(batch, mr_output):
+        # process_batch_result reads .next_token_ids / .logits_output; the
+        # model runner already set batch.output_ids during execute/resolve.
+        from sglang.srt.managers.scheduler import GenerationBatchResult
+
+        next_token_ids = batch.output_ids
+        if isinstance(next_token_ids, torch.Tensor):
+            batch.input_ids = next_token_ids.to(torch.int64)
+        return GenerationBatchResult(
+            logits_output=None,
+            next_token_ids=next_token_ids,
+            can_run_cuda_graph=mr_output.can_run_cuda_graph,
+        )
+
+    def _run_batch_launch(self, batch):
+        """Async: build SchedulerOutput and launch the decode step on the GPU
+        (forward + sample + async D2H of the collect snapshot), without waiting.
+        Returns ``(sched_output, pending_step)``; the caller holds the pending
+        step (launch-first keeps two steps momentarily in flight)."""
+        self._emit_prefill_start_for_batch(batch)
+        sched_output = self._build_sched_output(batch)
+        pending_step = self._model_runner.execute_launch(sched_output)
+        return sched_output, pending_step
+
+    def _run_batch_resolve(self, batch, sched_output, pending_step, skip_rids=()):
+        """Async: resolve the given launched step (wait event, host collect),
+        emit its stream chunks (except overrun reqs in ``skip_rids``), and
+        return its GenerationBatchResult.
+
+        next_token_ids comes from the resolved step's own batch_result, not
+        ``batch.output_ids`` — the running batch's output_ids was already
+        consumed (reset to None) by the next step's prepare_for_decode.
+        """
+        from sglang.srt.managers.scheduler import GenerationBatchResult
+
+        mr_output = self._model_runner.execute_resolve(pending_step)
+        if mr_output is None:
+            return _FAILED_BATCH_RESULT
+        self._emit_stream_output(sched_output, mr_output, skip_rids=skip_rids)
+        return GenerationBatchResult(
+            logits_output=None,
+            next_token_ids=pending_step.batch_result.next_token_ids,
+            can_run_cuda_graph=mr_output.can_run_cuda_graph,
+        )
 
     def _handle_batch_failure(self, batch: Any, error: Exception) -> None:
         reqs = list(batch.reqs)
@@ -750,7 +808,9 @@ class OmniScheduler:
 
     def start(self) -> None:
         self._running = True
-        if self.enable_overlap:
+        if getattr(self, "enable_async_decode", False):
+            self._event_loop_async_decode()
+        elif self.enable_overlap:
             self._event_loop_overlap()
         else:
             self._event_loop_normal()
@@ -789,12 +849,18 @@ class OmniScheduler:
             _remove_from_batch(self.running_batch, request_id)
             _remove_from_batch(self.cur_batch, request_id)
             _remove_from_batch(self.last_batch, request_id)
+            _remove_from_batch(self._async_pending_batch(), request_id)
         self._drain_inbox_for_request(request_id)
 
     def _mark_running_request_aborted(self, request_id: str) -> bool:
         marked = False
         seen: set[int] = set()
-        for batch in (self.running_batch, self.cur_batch, self.last_batch):
+        for batch in (
+            self.running_batch,
+            self.cur_batch,
+            self.last_batch,
+            self._async_pending_batch(),
+        ):
             if batch is None or id(batch) in seen:
                 continue
             seen.add(id(batch))
@@ -807,7 +873,12 @@ class OmniScheduler:
 
     def _release_immediate_request_resources(self, request_id: str) -> None:
         seen: set[int] = set()
-        for batch in (self.running_batch, self.cur_batch, self.last_batch):
+        for batch in (
+            self.running_batch,
+            self.cur_batch,
+            self.last_batch,
+            self._async_pending_batch(),
+        ):
             if batch is None:
                 continue
             for req in batch.reqs:
@@ -891,6 +962,161 @@ class OmniScheduler:
 
             if self.is_generation:
                 self.launch_batch_sample_if_needed(batch_result)
+
+            self.last_batch = batch
+            if envs.SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_BUSY.get():
+                self.self_check_during_busy()
+
+    @staticmethod
+    def _batch_is_decode(batch) -> bool:
+        mode = getattr(batch, "forward_mode", None)
+        if mode is None:
+            return False
+        is_decode = getattr(mode, "is_decode", None)
+        if callable(is_decode):
+            return bool(is_decode())
+        is_extend = getattr(mode, "is_extend", None)
+        return (not bool(is_extend())) if callable(is_extend) else False
+
+    def _async_pending_batch(self):
+        """The in-flight (launched, not yet resolved) decode batch, or None.
+
+        ``getattr`` with default so abort paths stay safe even for schedulers
+        built without going through ``__init__`` (e.g. unit-test fixtures).
+        ``_async_pending`` is ``(batch, sched_output, pending_step)`` or None.
+        """
+        pending = getattr(self, "_async_pending", None)
+        return pending[0] if pending is not None else None
+
+    def _resolve_and_process(self, batch, sched_output, pending_step) -> None:
+        """Resolve a launched step and feed it to process_batch_result, after
+        dropping requests that already finished in an earlier step.
+
+        Lookahead overrun: a request that finishes at step S is still present in
+        step S+1's (already-launched) batch — its S+1 output is discarded by the
+        collect's ``_cg_was_done`` skip, but upstream process_batch_result would
+        re-free its KV. So drop reqs that were ALREADY finished in an earlier
+        step (and their next_token_ids rows) from this lagged batch.
+
+        Crucially, snapshot finished-state BEFORE the resolve: a req that
+        finishes *during* this step's collect (e.g. an EOC finish, which
+        _mark_sampler_finished sets) must be KEPT so process_batch_result emits
+        it — only reqs finished in a *prior* step are the overrun to drop.
+        """
+        pre_finished = [r.finished() for r in batch.reqs]
+        # rids finished in a PRIOR step (overrun) — suppress their stream emit
+        skip_rids = {batch.reqs[i].rid for i, was in enumerate(pre_finished) if was}
+        result = self._run_batch_resolve(
+            batch, sched_output, pending_step, skip_rids=skip_rids
+        )
+        if result is _FAILED_BATCH_RESULT:
+            return
+        keep = [i for i, was_finished in enumerate(pre_finished) if not was_finished]
+        if len(keep) < len(batch.reqs):
+            if result.next_token_ids is not None and keep:
+                idx = torch.tensor(keep, device=result.next_token_ids.device)
+                result.next_token_ids = result.next_token_ids[idx]
+            # Drop overrun reqs from the batch. NOT filter_batch(): batch is a
+            # ScheduleBatch.copy() which omits seq_lens (it carries only the
+            # fields process_batch_result needs). process_batch_result_decode
+            # zips batch.reqs with next_token_ids and uses Req attributes (not
+            # positional batch tensors), so trimming reqs in lockstep suffices.
+            batch.reqs = [batch.reqs[i] for i in keep]
+        if batch.reqs:
+            self.process_batch_result(batch, result)
+
+    def _resolve_pending_async(self) -> None:
+        """Resolve + process the in-flight decode step, if any. Used to flush
+        before prefill / pause / shutdown so a launched step is never stranded.
+        """
+        if self._async_pending is None:
+            return
+        batch, sched_output, pending_step = self._async_pending
+        self._async_pending = None
+        try:
+            self._resolve_and_process(batch, sched_output, pending_step)
+        except Exception as exc:
+            self._handle_batch_failure(batch, exc)
+
+    def _event_loop_async_decode(self) -> None:
+        """One-step-lookahead decode loop (single stream + CUDA event).
+
+        Each iteration LAUNCHES the current decode step (GPU forward + on-GPU
+        sample + async D2H of the collect snapshot, no GPU wait) and THEN
+        RESOLVES the previous step's host-side collect — so ~1.1ms of per-step
+        CPU work overlaps the current step's GPU forward (launch-first, D1 in
+        design.md §1.3). Prefill / empty batches flush any in-flight decode
+        first and run synchronously (the in-flight step is never stranded).
+        """
+        while self._running:
+            recv_reqs = self.recv_requests()
+            recv_reqs.extend(self._take_deferred_request_payloads())
+            self.process_input_requests(recv_reqs)
+            if self._engine_paused:
+                self._resolve_pending_async()
+                time.sleep(0.001)
+                continue
+
+            batch = self.get_next_batch_to_run()
+            self.cur_batch = batch
+
+            use_lookahead = (
+                batch is not None
+                and len(batch.reqs) >= self.async_decode_min_batch_size
+                and self._batch_is_decode(batch)
+            )
+
+            if use_lookahead:
+                try:
+                    sched_output, pending_step = self._run_batch_launch(batch)
+                except Exception as exc:
+                    self._handle_batch_failure(batch, exc)
+                else:
+                    prev_pending = self._async_pending
+                    self._async_pending = (batch.copy(), sched_output, pending_step)
+                    if prev_pending is not None:
+                        pb, ps, pstep = prev_pending
+                        try:
+                            self._resolve_and_process(pb, ps, pstep)
+                        except Exception as exc:
+                            self._handle_batch_failure(pb, exc)
+            else:
+                # Fast path (low-concurrency decode below the threshold) +
+                # prefill + empty all land here: flush any in-flight lookahead
+                # step first (preserve ordering — this is also the bs>=2 -> bs=1
+                # drain transition), then run this batch synchronously. Bypassing
+                # the lookahead at bs=1 avoids its fixed per-step overhead, which
+                # at low concurrency has no overlap payoff (the bs=1 regression).
+                # Skip the drain call entirely in the common no-pending case (the
+                # bs=1 steady state) — _resolve_pending_async would just no-op.
+                if self._async_pending is not None:
+                    self._resolve_pending_async()
+                    # Stale-batch overrun: `batch` was built (get_next_batch_to_run,
+                    # top of loop) BEFORE this drain. The drain can finish reqs that
+                    # are still present in `batch` (the live running batch); running
+                    # them again double-frees their committed KV cache
+                    # (process_batch_result_decode -> release_kv_cache ->
+                    # pop_committed_kv_cache asserts "already freed"). Drop them —
+                    # the fast-path analogue of the _resolve_and_process pre_finished
+                    # drop. Higgs marks EOC finishes in the sampler so they leave the
+                    # running set a step earlier; a model that marks no early finish
+                    # (e.g. the Qwen talker) lands every finish in this window.
+                    if (
+                        batch is not None
+                        and batch.reqs
+                        and any(r.finished() for r in batch.reqs)
+                    ):
+                        batch.filter_batch()
+                        if not batch.reqs:
+                            batch = None
+                        self.cur_batch = batch
+                if batch:
+                    result = self.run_batch(batch)
+                    if result is not _FAILED_BATCH_RESULT:
+                        self.process_batch_result(batch, result)
+                else:
+                    self.self_check_during_idle()
+                    time.sleep(0.001)
 
             self.last_batch = batch
             if envs.SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_BUSY.get():

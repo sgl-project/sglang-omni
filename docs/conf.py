@@ -90,15 +90,15 @@ exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
 pygments_style = "sphinx"
 
 html_theme = "sphinx_book_theme"
-html_logo = "_static/image/logo.png"
+html_logo = "_static/image/sgl-omni-logo.png"
 html_favicon = "_static/image/logo.ico"
 html_title = project
 html_copy_source = True
 html_last_updated_fmt = ""
 
 html_theme_options = {
-    "repository_url": "https://github.com/sgl-project/sgl-project.github.io",
-    "repository_branch": "main",
+    "repository_url": "https://github.com/sgl-project/sglang-omni",
+    "repository_branch": "main/docs",
     "show_navbar_depth": 3,
     "max_navbar_depth": 4,
     "collapse_navbar": True,
@@ -121,6 +121,9 @@ html_context = {
 
 html_static_path = ["_static"]
 html_css_files = ["css/custom_log.css"]
+html_js_files = [
+    "js/qwen3_omni_server_generator.js",
+]
 
 
 def setup(app):

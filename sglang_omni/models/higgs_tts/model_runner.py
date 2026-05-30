@@ -21,12 +21,21 @@ from sglang_omni.models.higgs_tts.model import _flat_sampling_attr
 from sglang_omni.models.higgs_tts.sampler import K_MAX
 from sglang_omni.models.higgs_tts.text_tokenizer import AUDIO_PLACEHOLDER_ID
 from sglang_omni.models.higgs_tts.utils import EOC_ID
+from sglang_omni.scheduling.messages import OutgoingMessage
 
 logger = logging.getLogger(__name__)
 
 
 class HiggsTTSModelRunner(ModelRunner):
     """ModelRunner for :class:`HiggsTTSModel`."""
+
+    def __init__(self, tp_worker: Any, output_processor: Any) -> None:
+        super().__init__(tp_worker, output_processor)
+        self._outbox: Any | None = None
+        self._vocoder_target = "vocoder"
+
+    def set_stream_outbox(self, outbox: Any) -> None:
+        self._outbox = outbox
 
     def prepare_prefill(self, forward_batch, schedule_batch, requests):
         del schedule_batch
@@ -40,17 +49,69 @@ class HiggsTTSModelRunner(ModelRunner):
         del forward_batch, schedule_batch
         self._collect_step_outputs(result, requests)
 
-    def prepare_decode(self, forward_batch, schedule_batch, requests):
+    def prepare_decode(
+        self,
+        forward_batch,
+        schedule_batch,
+        requests,
+        *,
+        is_lookahead: bool = False,
+    ):
         del schedule_batch
         forward_batch.req_ids = [req.request_id for req in requests]
-        self._populate_cg_buffers(forward_batch, requests)
+        self._populate_cg_buffers(forward_batch, requests, is_lookahead=is_lookahead)
         return None
 
     def post_decode(self, result, forward_batch, schedule_batch, requests):
         del schedule_batch
         self._collect_step_outputs_cg(result, forward_batch, requests)
 
-    def _populate_cg_buffers(self, forward_batch, requests) -> None:
+    def post_decode_launch(self, result, forward_batch, requests):
+        """Async-decode GPU half: scatter + pack (GPU->GPU), then a
+        non-blocking D2H of the staging snapshot into a pinned host buffer.
+        Returns the buffer; the base runner records the event right after, so
+        ``event.query()`` then means "this snapshot is on the host".
+        """
+        if len(requests) == 0:
+            return None
+        n_real = len(requests)
+        bs = int(forward_batch.batch_size)
+        if bs < n_real:
+            raise ValueError(
+                f"forward_batch.batch_size ({bs}) < len(requests) ({n_real})"
+            )
+        staging = self._decode_pack_gpu(n_real)
+        host_buf = self._next_host_staging(self.model._cg_collect_staging)
+        host_buf[:n_real].copy_(staging[:n_real], non_blocking=True)
+        # Set next_token_ids (cb0) from GPU state now, with NO host sync, so the
+        # AR input chain (next step's input_ids = this step's output_ids) is
+        # available at launch — the host collect (post_decode_resolve) lags by
+        # one step under lookahead. For Higgs the decode input_ids is masked by
+        # _decode_step_embeds_cg (rows with codes use _cg_active_last_codes), so
+        # this only feeds the upstream bookkeeping. clamp>=0 keeps STOP_CODE(-1)
+        # rows in embed_tokens range; the host collect later overwrites with the
+        # skip-aware cb0 for output reporting.
+        result.next_token_ids = (
+            self.model._cg_codes_BN[:n_real, 0].clamp_min(0).to(torch.long).clone()
+        )
+        return host_buf
+
+    def post_decode_resolve(
+        self, host_buf, result, forward_batch, schedule_batch, requests
+    ):
+        """Async-decode host half: read the already-copied pinned snapshot and
+        run the per-request collect loop. Mirrors the tail of
+        ``_collect_step_outputs_cg`` (shares ``_decode_collect_host``).
+        """
+        del forward_batch, schedule_batch
+        if len(requests) == 0:
+            return
+        n_real = len(requests)
+        self._decode_collect_host(host_buf[:n_real], result, requests)
+
+    def _populate_cg_buffers(
+        self, forward_batch, requests, *, is_lookahead: bool = False
+    ) -> None:
         """Fill the model's CG buffers for one decode step.
 
         Padding rows (``batch_size > len(requests)``) point at the
@@ -72,6 +133,25 @@ class HiggsTTSModelRunner(ModelRunner):
         model._cg_row_indices[:bs] = torch.tensor(
             rows_py, dtype=torch.long, device=model._cg_row_indices.device
         )
+
+        if self._async_enabled and is_lookahead and n_real > 0:
+            # Async-lookahead overrun guard (GPU-side, no host sync): a request
+            # that finished via EOC at the prior step is still in this batch
+            # with pool.generation_done=True. Running the normal decode forward
+            # for such a done row trips a device-side gather assert, so route it
+            # to the reset padding row — its overrun output is discarded by the
+            # collect's finished()/was_done skip anyway. Length-finish rows have
+            # generation_done=False and are untouched.
+            #
+            # Only the lookahead launch path can carry such an overrun (the
+            # 1-wasted-step lag). On a fast-path (sync) decode step finished reqs
+            # are filtered out before the step, so no generation_done row is ever
+            # present and this gather+torch.where would be pure wasted GPU work.
+            rows_t_real = model._cg_row_indices[:n_real]
+            done = model._sampler_pool.generation_done[rows_t_real]
+            model._cg_row_indices[:n_real] = torch.where(
+                done, torch.full_like(rows_t_real, model._padding_row), rows_t_real
+            )
 
         temps, top_ps, top_ks = self._extract_decode_sampling_params(
             forward_batch, n_real
@@ -128,19 +208,30 @@ class HiggsTTSModelRunner(ModelRunner):
     def _collect_step_outputs_cg(
         self, result: Any, forward_batch: Any, requests: list
     ) -> None:
-        """Scatter shadow state back into the pool and append per-request
-        codes from the CG output buffers.
+        """Synchronous collect: scatter + pack (GPU->GPU), one blocking D2H,
+        then the host collect loop. Used when async decode is off; behavior is
+        identical to the pre-split implementation (now factored into
+        ``_decode_pack_gpu`` + ``_decode_collect_host``, which the async
+        ``post_decode_launch`` / ``post_decode_resolve`` also reuse).
         """
         if len(requests) == 0:
             return
-        model = self.model
         n_real = len(requests)
         bs = int(forward_batch.batch_size)
         if bs < n_real:
             raise ValueError(
                 f"forward_batch.batch_size ({bs}) < len(requests) ({n_real})"
             )
+        staging = self._decode_pack_gpu(n_real)
+        combined_cpu = staging[:n_real].cpu()  # one blocking D2H (sync path)
+        self._decode_collect_host(combined_cpu, result, requests)
 
+    def _decode_pack_gpu(self, n_real: int) -> torch.Tensor:
+        """Scatter shadow sampler state back into the pool and pack the three
+        collect tensors (codes / was_done / generation_done) into the staging
+        buffer. All GPU->GPU; returns the device staging buffer.
+        """
+        model = self.model
         rows_t = model._cg_row_indices[:n_real]
         pool = model._sampler_pool
         pool.delay_count[rows_t] = model._cg_active_delay_count[:n_real]
@@ -148,13 +239,24 @@ class HiggsTTSModelRunner(ModelRunner):
         pool.generation_done[rows_t] = model._cg_active_generation_done[:n_real]
         pool.last_codes[rows_t] = model._cg_active_last_codes[:n_real]
 
-        # Note(Jiaxin): pack the 3 tensors, copy back with one D2H, then slice on host.
+        # Note(Jiaxin): pack the 3 tensors so a single D2H pulls them all back.
         num_codebooks = model._cg_codes_BN.shape[1]
         staging = model._cg_collect_staging
         staging[:n_real, :num_codebooks] = model._cg_codes_BN[:n_real]
         staging[:n_real, num_codebooks] = model._cg_was_done[:n_real]
         staging[:n_real, num_codebooks + 1] = model._cg_active_generation_done[:n_real]
-        combined_cpu = staging[:n_real].cpu()
+        return staging
+
+    def _decode_collect_host(
+        self, combined_cpu: torch.Tensor, result: Any, requests: list
+    ) -> None:
+        """Host-side collect loop over an already-D2H'd staging snapshot:
+        append per-request codes, mark finishes, build ``result.next_token_ids``.
+        Skips chunked and already-done rows (the latter is what makes the
+        one-step-lookahead overrun harmless — see r1_idempotency_check.md).
+        """
+        model = self.model
+        num_codebooks = model._cg_codes_BN.shape[1]
         codes_BN_cpu = combined_cpu[:, :num_codebooks]
         was_done_cpu = combined_cpu[:, num_codebooks].bool().tolist()
         gen_done_after_cpu = combined_cpu[:, num_codebooks + 1].bool().tolist()
@@ -165,12 +267,22 @@ class HiggsTTSModelRunner(ModelRunner):
             if req.is_chunked > 0:
                 cb0_per_row.append(0)
                 continue
+            # Already finished in an earlier step? Skip its append. Under async
+            # lookahead the finished req gets one extra (wasted) forward before
+            # being dropped; this prevents leaking that overrun token. Catches
+            # length finishes too (which `_cg_was_done`, an EOC-only flag, does
+            # not). No-op for the sync path: a req is never finished() at its
+            # own collect (finish is set later, in process_batch_result).
+            if req.finished():
+                cb0_per_row.append(0)
+                continue
             if was_done_cpu[b]:
                 cb0_per_row.append(0)
                 continue
-            codes_N = codes_BN_cpu[b]
-            data.output_codes.append(codes_N.to(torch.long))
+            codes_N = codes_BN_cpu[b].to(torch.long).clone()
+            data.output_codes.append(codes_N)
             data.generation_done = bool(gen_done_after_cpu[b])
+            self._emit_code_chunk(sched_req, codes_N)
             self._mark_sampler_finished(req, data.generation_done)
             cb0_per_row.append(int(codes_N[0].item()))
 
@@ -243,6 +355,7 @@ class HiggsTTSModelRunner(ModelRunner):
             codes_N = codes_log[-1]
             data.output_codes.append(codes_N.detach().cpu().clone())
             data.generation_done = bool(model._sampler_pool.generation_done[row].item())
+            self._emit_code_chunk(sched_req, data.output_codes[-1])
             self._mark_sampler_finished(req, data.generation_done)
             cb0_per_row.append(int(codes_N[0].item()))
 
@@ -257,6 +370,22 @@ class HiggsTTSModelRunner(ModelRunner):
         """Bridge Higgs sampler completion into upstream SGLang finish state."""
         if generation_done and req.finished_reason is None:
             req.finished_reason = FINISH_MATCHED_TOKEN(EOC_ID)
+
+    def _emit_code_chunk(self, sched_req: Any, codes_N: torch.Tensor) -> None:
+        if self._outbox is None:
+            return
+        metadata = sched_req.data.stream_metadata
+        if metadata is None:
+            return
+        self._outbox.put(
+            OutgoingMessage(
+                request_id=sched_req.request_id,
+                type="stream",
+                target=self._vocoder_target,
+                data=codes_N,
+                metadata=metadata,
+            )
+        )
 
 
 __all__ = ["HiggsTTSModelRunner"]

@@ -68,13 +68,16 @@ def _audio_encoder_stage(*, gpu: int, process: str) -> StageConfig:
     )
 
 
-def _image_encoder_stage(*, gpu: int, process: str) -> StageConfig:
+def _image_encoder_stage(
+    *, gpu: int | list[int], tp_size: int = 1, process: str
+) -> StageConfig:
     return StageConfig(
         name=IMAGE_STAGE,
         process=process,
         factory=f"{_PKG}.stages.create_image_encoder_executor",
         factory_args={"device": "cuda", "dtype": None},
         gpu=gpu,
+        tp_size=tp_size,
         next=AGGREGATE_STAGE,
         project_payload={
             AGGREGATE_STAGE: f"{_PKG}.stages.project_encoder_to_mm_aggregate"
@@ -204,7 +207,23 @@ def _ming_streaming_speech_stages() -> list[StageConfig]:
 class MingOmniPipelineConfig(PipelineConfig):
     """6-stage text pipeline."""
 
-    architecture: ClassVar[str] = "BailingMoeV2ForCausalLM"
+    architecture: ClassVar[str] = "BailingMM2NativeForConditionalGeneration"
+    architecture_aliases: ClassVar[tuple[str, ...]] = ("BailingMoeV2ForCausalLM",)
+
+    @classmethod
+    def mem_fraction_role_to_stage(cls) -> dict[str, str]:
+        return {"thinker": THINKER_STAGE}
+
+    @classmethod
+    def tensor_parallel_server_args_overrides(
+        cls,
+        *,
+        stage_name: str,
+        tp_size: int,
+    ) -> dict[str, object]:
+        if stage_name == THINKER_STAGE and tp_size > 1:
+            return {"disable_custom_all_reduce": True}
+        return {}
 
     model_path: str
     entry_stage: str = PREPROCESSING_STAGE
@@ -219,7 +238,27 @@ class MingOmniPipelineConfig(PipelineConfig):
 class MingOmniSpeechPipelineConfig(PipelineConfig):
     """7-stage speech pipeline."""
 
-    architecture: ClassVar[str] = "BailingMoeV2ForCausalLM"
+    architecture: ClassVar[str] = "BailingMM2NativeForConditionalGeneration"
+    architecture_aliases: ClassVar[tuple[str, ...]] = ("BailingMoeV2ForCausalLM",)
+
+    @classmethod
+    def mem_fraction_role_to_stage(cls) -> dict[str, str]:
+        return {"thinker": THINKER_STAGE}
+
+    @classmethod
+    def talker_role_to_stage(cls) -> dict[str, str]:
+        return {"talker": TALKER_STAGE}
+
+    @classmethod
+    def tensor_parallel_server_args_overrides(
+        cls,
+        *,
+        stage_name: str,
+        tp_size: int,
+    ) -> dict[str, object]:
+        if stage_name == THINKER_STAGE and tp_size > 1:
+            return {"disable_custom_all_reduce": True}
+        return {}
 
     model_path: str
     entry_stage: str = PREPROCESSING_STAGE
@@ -264,7 +303,27 @@ class MingOmniStreamingSpeechPipelineConfig(PipelineConfig):
     streaming talker emits audio chunks to the coordinator (terminal).
     """
 
-    architecture: ClassVar[str] = "BailingMoeV2ForCausalLM"
+    architecture: ClassVar[str] = "BailingMM2NativeForConditionalGeneration"
+    architecture_aliases: ClassVar[tuple[str, ...]] = ("BailingMoeV2ForCausalLM",)
+
+    @classmethod
+    def mem_fraction_role_to_stage(cls) -> dict[str, str]:
+        return {"thinker": THINKER_STAGE}
+
+    @classmethod
+    def talker_role_to_stage(cls) -> dict[str, str]:
+        return {"talker": TALKER_STREAM_STAGE}
+
+    @classmethod
+    def tensor_parallel_server_args_overrides(
+        cls,
+        *,
+        stage_name: str,
+        tp_size: int,
+    ) -> dict[str, object]:
+        if stage_name == THINKER_STAGE and tp_size > 1:
+            return {"disable_custom_all_reduce": True}
+        return {}
 
     model_path: str
     entry_stage: str = PREPROCESSING_STAGE
@@ -299,7 +358,7 @@ class MingOmniStreamingSpeechPipelineConfig(PipelineConfig):
         )
 
 
-EntryClass = MingOmniPipelineConfig
+EntryClass = MingOmniSpeechPipelineConfig
 
 Variants = {
     "text": MingOmniPipelineConfig,

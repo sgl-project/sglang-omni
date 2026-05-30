@@ -218,8 +218,26 @@ def _sample_independent_batched(
     top_p: torch.Tensor | None,
     top_k_buf: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    """Batched ``[B, N, V] → [B, N]`` sampler."""
+    """Batched ``[B, N, V] → [B, N]`` sampler.
+
+    Greedy rows short-circuit to ``argmax`` over the raw logits — mirroring the
+    per-row :func:`_sample_independent` — so they are RNG-free and reproducible.
+    A row is greedy when ``temperature <= _GREEDY_TEMP_THRESHOLD`` (or
+    ``top_k == 1``). Without this, multinomial on the near-one-hot distribution
+    that ``temperature≈0`` produces breaks near-ties differently run-to-run,
+    making ``temperature=0`` decode non-deterministic. The selection is
+    branchless (compute both, then ``torch.where``) because this runs inside the
+    captured CUDA graph, where data-dependent host control flow is illegal.
+    """
     B, N, V = logits_BNV.shape
+
+    # Per-row greedy mask (broadcast over codebooks). argmax over RAW logits,
+    # exactly as _sample_independent does.
+    greedy_B1 = (temperature <= _GREEDY_TEMP_THRESHOLD).view(B, 1)
+    if top_k_buf is not None:
+        greedy_B1 = greedy_B1 | (top_k_buf == 1).view(B, 1)
+    argmax_BN = logits_BNV.argmax(dim=-1)
+
     safe_temp = temperature.clamp(min=_GREEDY_TEMP_THRESHOLD).view(B, 1, 1)
     logits = logits_BNV / safe_temp
 
@@ -242,7 +260,9 @@ def _sample_independent_batched(
 
     probs = logits.softmax(dim=-1)
     codes_flat = probs.reshape(B * N, V).multinomial(num_samples=1).squeeze(-1)
-    return codes_flat.view(B, N).to(torch.long)
+    sampled_BN = codes_flat.view(B, N)
+
+    return torch.where(greedy_B1, argmax_BN, sampled_BN).to(torch.long)
 
 
 def batched_step(

@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""（wenyao）Launch Ming V1 speech server and run TP4 smoke tests from one terminal.
+"""（wenyao）Launch Ming speech server and run TP4 smoke tests from one terminal.
 
 The script starts ``examples/run_ming_omni_speech_server.py`` in a subprocess,
 waits for ``/health``, then exercises the OpenAI-compatible endpoints.
@@ -217,8 +217,6 @@ def _start_server(args: argparse.Namespace, log_path: Path) -> subprocess.Popen:
         sys.executable,
         "-u",
         args.launcher,
-        "--version",
-        "v1",
         "--model-path",
         args.model_path,
         "--tp-size",
