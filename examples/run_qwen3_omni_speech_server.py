@@ -259,7 +259,10 @@ def _launch_speech_server(args: argparse.Namespace) -> None:
         else bool(args.enable_partial_start)
     )
 
-    if enable_partial_start and args.partial_start_min_chunks < MIN_PARTIAL_START_CHUNKS:
+    if (
+        enable_partial_start
+        and args.partial_start_min_chunks < MIN_PARTIAL_START_CHUNKS
+    ):
         raise ValueError(
             f"--partial-start-min-chunks must be >= {MIN_PARTIAL_START_CHUNKS}, "
             f"got {args.partial_start_min_chunks}"
