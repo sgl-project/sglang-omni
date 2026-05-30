@@ -12,8 +12,8 @@ encoder GPU. These tests exercise:
 - Audio-stage container symmetrically drops vision / language / talker
   keys.
 - Checkpoint-rewrite ordering applies left-to-right.
-- Missing-prefix and missing-param keys are silently skipped, not
-  errors (mirrors upstream loader's tolerant behavior).
+- Missing-prefix keys are skipped only when the declared encoder spec loads at
+  least one matching weight. A completely unmatched declared spec is an error.
 
 We use tiny synthetic ``nn.Linear`` submodules so the tests run on CPU
 in well under a second — no Qwen3-Omni weights involved.
@@ -178,10 +178,11 @@ def test_audio_stage_container_loads_only_audio_weights():
     }, param_names
 
 
-def test_container_skips_unmatched_prefix_silently():
+def test_container_skips_unmatched_prefixes_after_declared_spec_matches():
     """Mirrors upstream loader's tolerant behavior: unknown keys do not
     raise (some checkpoints carry tied-embedding shadows, optimizer
-    state, etc.); the container just drops them."""
+    state, etc.); the container drops them once the declared encoder
+    spec is known to be present."""
     container = EncoderModuleContainer(
         hf_config=None,
         encoder_specs=(VISUAL_SPEC,),
@@ -189,11 +190,28 @@ def test_container_skips_unmatched_prefix_silently():
     )
 
     weights = [
+        ("visual.proj.weight", torch.randn(4, 4)),
         ("totally.unrelated.tensor", torch.randn(4, 4)),
         ("optimizer.state.0", torch.randn(4)),
     ]
     # Should not raise.
     container.load_weights(weights)
+
+
+def test_container_rejects_declared_spec_with_no_matching_weights():
+    container = EncoderModuleContainer(
+        hf_config=None,
+        encoder_specs=(VISUAL_SPEC,),
+        quant_config=None,
+    )
+
+    with pytest.raises(ValueError, match="No checkpoint weights matched"):
+        container.load_weights(
+            [
+                ("totally.unrelated.tensor", torch.randn(4, 4)),
+                ("optimizer.state.0", torch.randn(4)),
+            ]
+        )
 
 
 def test_checkpoint_rewrites_apply_in_order():

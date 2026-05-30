@@ -338,7 +338,13 @@ class EncoderModuleContainer(nn.Module):
         loaded_total = 0
         for spec_name, bucket in buckets.items():
             if not bucket:
-                continue
+                spec = self._specs[spec_name]
+                raise ValueError(
+                    f"No checkpoint weights matched declared encoder spec "
+                    f"{spec_name!r}; expected one of prefixes "
+                    f"{spec.checkpoint_prefixes}. Refusing to run the encoder "
+                    "with random-initialized weights."
+                )
             spec = self._specs[spec_name]
             submodule = getattr(self, spec_name)
             if hasattr(submodule, "load_weights"):

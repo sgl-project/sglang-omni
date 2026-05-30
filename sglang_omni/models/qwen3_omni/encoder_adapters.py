@@ -606,7 +606,12 @@ class Qwen3OmniImageEncoderAdapter:
                 continue
 
             result: dict[str, Any] = {}
-            if span.image_rows > 0 and image_feat is not None:
+            if span.image_rows > 0:
+                if image_feat is None:
+                    raise ValueError(
+                        "image encoder produced no image embeddings for an active "
+                        f"request {span.request_id!r}"
+                    )
                 tok_end = img_tok + span.image_token_count
                 base, deepstack = _split_with_deepstack(
                     image_feat, img_tok, tok_end, self._base_hidden
@@ -624,7 +629,12 @@ class Qwen3OmniImageEncoderAdapter:
                 img_row += span.image_rows
                 img_tok = tok_end
 
-            if span.video_rows > 0 and video_feat is not None:
+            if span.video_rows > 0:
+                if video_feat is None:
+                    raise ValueError(
+                        "image encoder produced no video embeddings for an active "
+                        f"request {span.request_id!r}"
+                    )
                 tok_end = vid_tok + span.video_token_count
                 base, deepstack = _split_with_deepstack(
                     video_feat, vid_tok, tok_end, self._base_hidden
@@ -658,6 +668,16 @@ def _split_with_deepstack(
     ``vision_config.out_hidden_size * (1 + len(deepstack_visual_indexes))``
     (confirmed via ``disaggregation/encode_server.py:_infer_embedding_dims``).
     """
+    if end > int(feature.shape[0]):
+        raise ValueError(
+            "visual encoder output is shorter than requested slice: "
+            f"end={end} rows={int(feature.shape[0])}"
+        )
+    if int(feature.shape[-1]) % int(base_hidden) != 0:
+        raise ValueError(
+            "visual encoder hidden dimension is not divisible by base hidden "
+            f"size: hidden={int(feature.shape[-1])} base_hidden={int(base_hidden)}"
+        )
     sliced = feature[start:end]
     parts = list(torch.split(sliced, base_hidden, dim=-1))
     base = parts[0]
@@ -873,10 +893,25 @@ class Qwen3OmniAudioEncoderAdapter:
                 out.append(_payload_with_state(payload, state))
                 continue
 
-            assert audio_feat is not None
-            assert span.audio_output_lengths is not None
-            assert span.audio_feature_lengths is not None
+            if audio_feat is None:
+                raise ValueError(
+                    "audio encoder produced no embeddings for an active "
+                    f"request {span.request_id!r}"
+                )
+            if span.audio_output_lengths is None:
+                raise ValueError(
+                    f"audio output lengths missing for active request {span.request_id!r}"
+                )
+            if span.audio_feature_lengths is None:
+                raise ValueError(
+                    f"audio feature lengths missing for active request {span.request_id!r}"
+                )
             tok_end = tok + int(span.audio_output_lengths.sum().item())
+            if tok_end > int(audio_feat.shape[0]):
+                raise ValueError(
+                    "audio encoder output is shorter than requested slice: "
+                    f"end={tok_end} rows={int(audio_feat.shape[0])}"
+                )
             result = {
                 "audio_embeds": audio_feat[tok:tok_end],
                 # Unpadded lengths preserved at build_batch time.

@@ -224,6 +224,51 @@ def test_image_adapter_slice_results_round_trip():
     assert torch.equal(reconstructed, raw_image)
 
 
+def test_image_adapter_rejects_missing_raw_image_output():
+    adapter = Qwen3OmniImageEncoderAdapter(hf_config=_hf_cfg(), dtype=torch.float16)
+    grid = torch.tensor([[1, 2, 4]], dtype=torch.long)
+    msg = _msg(
+        "r0",
+        {
+            "image_encoder": {
+                "pixel_values": torch.zeros(8, 6),
+                "image_grid_thw": grid,
+            }
+        },
+    )
+    plan = adapter.build_batch([msg])
+
+    with pytest.raises(ValueError, match="no image embeddings"):
+        adapter.slice_results(
+            {"image": None, "video": None, "audio": None}, plan, [msg]
+        )
+
+
+def test_image_adapter_rejects_short_raw_image_output():
+    adapter = Qwen3OmniImageEncoderAdapter(
+        hf_config=_hf_cfg(base_hidden=4, deepstack=0),
+        dtype=torch.float16,
+    )
+    grid = torch.tensor([[1, 2, 4]], dtype=torch.long)
+    msg = _msg(
+        "r0",
+        {
+            "image_encoder": {
+                "pixel_values": torch.zeros(8, 6),
+                "image_grid_thw": grid,
+            }
+        },
+    )
+    plan = adapter.build_batch([msg])
+
+    with pytest.raises(ValueError, match="shorter than requested slice"):
+        adapter.slice_results(
+            {"image": torch.zeros(1, 4), "video": None, "audio": None},
+            plan,
+            [msg],
+        )
+
+
 def test_image_adapter_request_cost_uses_base_hidden_not_wrapper():
     """The deepstack double-count trap: cost function must read
     ``vision_config.out_hidden_size`` (the *base* hidden), not the
@@ -526,6 +571,46 @@ def test_audio_adapter_slice_results_round_trip():
     enc = payload.data["encoder_outs"]["audio_encoder"]
     assert torch.equal(enc["audio_embeds"], raw_audio[:out_lens])
     assert enc["audio_feature_lengths"].tolist() == [100]
+
+
+def test_audio_adapter_rejects_missing_raw_audio_output():
+    adapter = Qwen3OmniAudioEncoderAdapter(hf_config=_hf_cfg(), dtype=torch.float16)
+    msg = _msg(
+        "r0",
+        {
+            "audio_encoder": {
+                "input_features": torch.zeros(1, 8, 100),
+                "audio_feature_lengths": torch.tensor([100], dtype=torch.long),
+            }
+        },
+    )
+    plan = adapter.build_batch([msg])
+
+    with pytest.raises(ValueError, match="no embeddings"):
+        adapter.slice_results(
+            {"image": None, "video": None, "audio": None}, plan, [msg]
+        )
+
+
+def test_audio_adapter_rejects_short_raw_audio_output():
+    adapter = Qwen3OmniAudioEncoderAdapter(hf_config=_hf_cfg(), dtype=torch.float16)
+    msg = _msg(
+        "r0",
+        {
+            "audio_encoder": {
+                "input_features": torch.zeros(1, 8, 100),
+                "audio_feature_lengths": torch.tensor([100], dtype=torch.long),
+            }
+        },
+    )
+    plan = adapter.build_batch([msg])
+
+    with pytest.raises(ValueError, match="shorter than requested slice"):
+        adapter.slice_results(
+            {"image": None, "video": None, "audio": torch.zeros(1, 4)},
+            plan,
+            [msg],
+        )
 
 
 def test_audio_adapter_run_feature_flattens_3d_upstream_output():
