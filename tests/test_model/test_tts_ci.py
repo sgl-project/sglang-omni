@@ -48,10 +48,7 @@ from tests.utils import (
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 TTS_MODEL_PATH = os.environ.get(
-    "TTS_MODEL_PATH", "boson-sglang/higgs-audio-v3-tts-4b-base"
-)
-TTS_CONFIG_PATH = os.environ.get(
-    "TTS_CONFIG_PATH", "examples/configs/higgs_tts.yaml"
+    "TTS_MODEL_PATH", "boson-sglang/higgs-audio-v3-TTS-4B-grpo05200410999"
 )
 TTS_REF_FORMAT = "references"
 TTS_STAGE_OUTPUT_ROOT_ENV = "TTS_STAGE_OUTPUT_ROOT"
@@ -113,7 +110,7 @@ def router_server(tmp_path_factory: pytest.TempPathFactory):
         tmp_path_factory=tmp_path_factory,
         model_path=TTS_MODEL_PATH,
         model_name=TTS_MODEL_PATH,
-        worker_extra_args=f"--config {TTS_CONFIG_PATH}",
+        worker_extra_args="",
         wait_timeout=STARTUP_TIMEOUT,
         log_prefix="tts_router_logs",
     ) as router:
