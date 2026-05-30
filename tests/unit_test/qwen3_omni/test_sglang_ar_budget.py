@@ -195,19 +195,16 @@ def test_qwen_ar_factory_derives_mem_fraction_from_total_budget() -> None:
     assert contract.applied_encoder_mem_reserve == 0.0
 
 
-def test_qwen_colocated_thinker_reserve_reduces_effective_ar_budget() -> None:
+def test_qwen_colocated_thinker_reserve_rejects_typed_budget() -> None:
     overrides = {"disable_cuda_graph": False}
 
-    contract = qwen_stages._apply_colocated_ar_memory_contract(
-        overrides,
-        stage_name="thinker",
-        total_gpu_memory_fraction=0.75,
-        encoder_mem_reserve=0.05,
-    )
-
-    assert overrides["mem_fraction_static"] == 0.70
-    assert contract.effective_total_gpu_memory_fraction == 0.70
-    assert contract.applied_encoder_mem_reserve == 0.05
+    with pytest.raises(ValueError, match="encoder_mem_reserve"):
+        qwen_stages._apply_colocated_ar_memory_contract(
+            overrides,
+            stage_name="thinker",
+            total_gpu_memory_fraction=0.75,
+            encoder_mem_reserve=0.05,
+        )
 
 
 def test_qwen_colocated_ar_explicit_matching_mem_fraction_keeps_stage_budget() -> None:
@@ -233,29 +230,17 @@ def test_qwen_ar_factory_rejects_conflicting_memory_contract() -> None:
         )
 
 
-def test_qwen_colocated_thinker_startup_threads_effective_budget(
+def test_qwen_colocated_thinker_startup_rejects_legacy_reserve(
     monkeypatch,
-    caplog,
 ) -> None:
-    scheduler_calls = _patch_thinker_startup(monkeypatch)
+    _patch_thinker_startup(monkeypatch)
 
-    with caplog.at_level(logging.INFO, logger=qwen_stages.logger.name):
+    with pytest.raises(ValueError, match="encoder_mem_reserve"):
         qwen_stages.create_sglang_thinker_executor_from_config(
             "dummy",
             total_gpu_memory_fraction=0.75,
             encoder_mem_reserve=0.05,
         )
-
-    assert scheduler_calls == [
-        {
-            "mem_fraction_static": 0.70,
-            "gpu_id": 0,
-            "total_gpu_memory_fraction": 0.70,
-        }
-    ]
-    assert "total_gpu_memory_fraction=0.75" in caplog.text
-    assert "effective_total_gpu_memory_fraction=0.7" in caplog.text
-    assert "encoder_mem_reserve=0.05" in caplog.text
 
 
 def test_qwen_colocated_thinker_explicit_mem_fraction_skips_default_reserve(

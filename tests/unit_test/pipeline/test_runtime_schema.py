@@ -48,6 +48,16 @@ def test_invalid_total_gpu_memory_fraction_raises() -> None:
         StageResourceConfig(total_gpu_memory_fraction=0.0)
 
 
+def test_invalid_encoder_activation_budget_raises() -> None:
+    with pytest.raises(ValueError, match="encoder_activation_budget_bytes"):
+        StageResourceConfig(encoder_activation_budget_bytes=0)
+
+
+def test_invalid_encoder_max_batch_size_raises() -> None:
+    with pytest.raises(ValueError, match="encoder_max_batch_size"):
+        StageResourceConfig(encoder_max_batch_size=0)
+
+
 def test_invalid_sglang_mem_fraction_static_raises() -> None:
     with pytest.raises(ValueError, match="mem_fraction_static"):
         SGLangServerArgsConfig(mem_fraction_static=1.0)

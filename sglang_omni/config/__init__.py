@@ -8,7 +8,14 @@ from sglang_omni.config.placement import (
     resolve_same_gpu_stream_targets,
     resolve_stage_gpu_ids,
 )
-from sglang_omni.config.runtime import resolve_stage_factory_args
+from sglang_omni.config.runtime import (
+    StageLaunchMode,
+    build_stage_launch_modes,
+    reject_untyped_encoder_activation_budget_bytes,
+    reject_untyped_encoder_max_batch_size,
+    reject_untyped_total_gpu_memory_fraction,
+    resolve_stage_factory_args,
+)
 from sglang_omni.config.schema import (
     EndpointsConfig,
     ParallelismConfig,
@@ -38,7 +45,12 @@ __all__ = [
     "build_stage_placement_plan",
     "resolve_same_gpu_stream_targets",
     "resolve_stage_gpu_ids",
+    "StageLaunchMode",
+    "build_stage_launch_modes",
     "resolve_stage_factory_args",
+    "reject_untyped_total_gpu_memory_fraction",
+    "reject_untyped_encoder_activation_budget_bytes",
+    "reject_untyped_encoder_max_batch_size",
     "ProcessGroupPlacement",
     "ProcessTopologyPlan",
     "build_process_topology_plan",

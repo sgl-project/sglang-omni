@@ -296,6 +296,14 @@ def apply_encoder_mem_reserve_cli_override(
         reason="Qwen thinker encoder memory reserve",
     )
     for stage in matching_stages:
+        if (
+            encoder_mem_reserve
+            and stage.runtime.resources.total_gpu_memory_fraction is not None
+        ):
+            raise typer.BadParameter(
+                "--encoder-mem-reserve is not valid when thinker "
+                "runtime.resources.total_gpu_memory_fraction is set"
+            )
         factory_args = dict(stage.factory_args or {})
         if _stage_has_explicit_mem_fraction_static(
             pipeline_config,

@@ -65,6 +65,76 @@ def test_typed_runtime_maps_to_factory_args_and_sglang_overrides() -> None:
     assert args["total_gpu_memory_fraction"] == 0.25
 
 
+def test_encoder_activation_budget_is_injected_from_typed_resources() -> None:
+    stage = _stage(
+        runtime=StageRuntimeConfig(
+            resources=StageResourceConfig(encoder_activation_budget_bytes=1234)
+        )
+    )
+    config = PipelineConfig(model_path="dummy-model", stages=[stage])
+
+    args = resolve_stage_factory_args(stage, config)
+
+    assert args["encoder_activation_budget_bytes"] == 1234
+
+
+def test_encoder_max_batch_size_is_injected_from_typed_resources() -> None:
+    stage = _stage(
+        runtime=StageRuntimeConfig(
+            resources=StageResourceConfig(encoder_max_batch_size=1)
+        )
+    )
+    config = PipelineConfig(model_path="dummy-model", stages=[stage])
+
+    args = resolve_stage_factory_args(stage, config)
+
+    assert args["encoder_max_batch_size"] == 1
+
+
+@pytest.mark.parametrize(
+    "source",
+    ["factory_args", "runtime_overrides"],
+)
+def test_encoder_activation_budget_rejects_untyped_key_presence(source: str) -> None:
+    stage_kwargs = {}
+    overrides = {}
+    if source == "factory_args":
+        stage_kwargs["factory_args"] = {"encoder_activation_budget_bytes": None}
+    else:
+        overrides = {"thinker": {"encoder_activation_budget_bytes": None}}
+    stage = _stage(**stage_kwargs)
+    config = PipelineConfig(
+        model_path="dummy-model",
+        stages=[stage],
+        runtime_overrides=overrides,
+    )
+
+    with pytest.raises(ValueError, match="encoder_activation_budget_bytes"):
+        resolve_stage_factory_args(stage, config)
+
+
+@pytest.mark.parametrize(
+    "source",
+    ["factory_args", "runtime_overrides"],
+)
+def test_encoder_max_batch_size_rejects_untyped_key_presence(source: str) -> None:
+    stage_kwargs = {}
+    overrides = {}
+    if source == "factory_args":
+        stage_kwargs["factory_args"] = {"encoder_max_batch_size": None}
+    else:
+        overrides = {"thinker": {"encoder_max_batch_size": None}}
+    stage = _stage(**stage_kwargs)
+    config = PipelineConfig(
+        model_path="dummy-model",
+        stages=[stage],
+        runtime_overrides=overrides,
+    )
+
+    with pytest.raises(ValueError, match="encoder_max_batch_size"):
+        resolve_stage_factory_args(stage, config)
+
+
 def test_total_gpu_memory_fraction_is_not_injected_into_unrelated_factories() -> None:
     stage = _stage(
         factory=_FACTORY_WITHOUT_TOTAL_BUDGET,

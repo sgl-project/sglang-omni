@@ -105,9 +105,21 @@ class Coordinator:
     async def fail_pending_requests(self, error: BaseException | str) -> None:
         """Fail all requests currently owned by the coordinator."""
         self._running = False
-        message = str(error)
+        self.fail_all_active(error)
+        self._requests.clear()
+        self._partial_results.clear()
+
+    def fail_all_active(self, error: BaseException | str) -> None:
+        """Fail active request futures and stream queues without awaiting IO."""
+        message = str(error) or "Pipeline runtime failed"
         self._fatal_error = message
         for request_id, info in list(self._requests.items()):
+            if info.state in (
+                RequestState.COMPLETED,
+                RequestState.FAILED,
+                RequestState.ABORTED,
+            ):
+                continue
             info.state = RequestState.FAILED
             info.error = message
             future = self._completion_futures.get(request_id)
@@ -115,7 +127,7 @@ class Coordinator:
                 future.set_exception(RuntimeError(message))
             queue = self._stream_queues.get(request_id)
             if queue is not None:
-                await queue.put(
+                queue.put_nowait(
                     CompleteMessage(
                         request_id=request_id,
                         from_stage="coordinator",
@@ -123,8 +135,6 @@ class Coordinator:
                         error=message,
                     )
                 )
-        self._requests.clear()
-        self._partial_results.clear()
 
     async def shutdown_stages(self) -> None:
         """Send shutdown signal to all registered stages."""

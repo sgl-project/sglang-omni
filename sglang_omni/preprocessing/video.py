@@ -28,6 +28,54 @@ class VideoDecodeError(RuntimeError):
     """Raised when video decoding fails."""
 
 
+def _unpack_qwen_video_reader_result(result: Any) -> tuple[torch.Tensor, float]:
+    """Handle qwen-vl-utils reader return shapes across versions."""
+    if not isinstance(result, tuple):
+        raise ValueError(f"video reader returned {type(result).__name__}, not tuple")
+    if len(result) == 2:
+        video, sample_fps = result
+    elif len(result) == 3:
+        video, _metadata, sample_fps = result
+    else:
+        raise ValueError(f"video reader returned {len(result)} values")
+    return video, float(sample_fps)
+
+
+def _qwen_video_resize_defaults() -> tuple[int, int, float, int]:
+    """Return qwen-vl-utils video resize defaults across package versions."""
+    image_factor = int(
+        getattr(
+            qwen_vision,
+            "IMAGE_FACTOR",
+            14 * int(getattr(qwen_vision, "SPATIAL_MERGE_SIZE", 2)),
+        )
+    )
+    min_pixels = int(
+        getattr(
+            qwen_vision,
+            "VIDEO_MIN_PIXELS",
+            int(getattr(qwen_vision, "VIDEO_MIN_TOKEN_NUM", 128)) * image_factor**2,
+        )
+    )
+    max_pixels = int(
+        getattr(
+            qwen_vision,
+            "VIDEO_MAX_PIXELS",
+            int(getattr(qwen_vision, "VIDEO_MAX_TOKEN_NUM", 768)) * image_factor**2,
+        )
+    )
+    total_pixels = float(
+        getattr(
+            qwen_vision,
+            "VIDEO_TOTAL_PIXELS",
+            float(getattr(qwen_vision, "MODEL_SEQ_LEN", 128000))
+            * image_factor**2
+            * 0.9,
+        )
+    )
+    return image_factor, min_pixels, total_pixels, max_pixels
+
+
 class VideoMediaIO(MediaIO[tuple[torch.Tensor, float, Any | None]]):
     """MediaIO implementation for video files with optional audio extraction."""
 
@@ -323,7 +371,9 @@ def load_video_path(
         ele["total_pixels"] = int(total_pixels)
     backend = qwen_vision.get_video_reader_backend()
     try:
-        video, sample_fps = qwen_vision.VIDEO_READER_BACKENDS[backend](ele)
+        video, sample_fps = _unpack_qwen_video_reader_result(
+            qwen_vision.VIDEO_READER_BACKENDS[backend](ele)
+        )
     except Exception as backend_exc:
         if backend == "torchvision":
             raise VideoDecodeError(
@@ -332,7 +382,9 @@ def load_video_path(
             ) from backend_exc
         logger.warning("Video reader %s failed, falling back to torchvision", backend)
         try:
-            video, sample_fps = qwen_vision.VIDEO_READER_BACKENDS["torchvision"](ele)
+            video, sample_fps = _unpack_qwen_video_reader_result(
+                qwen_vision.VIDEO_READER_BACKENDS["torchvision"](ele)
+            )
         except Exception as fallback_exc:
             raise VideoDecodeError(
                 f"Failed to decode video path={path}; {backend} failed with "
@@ -341,11 +393,14 @@ def load_video_path(
                 f"{fallback_exc}"
             ) from fallback_exc
     nframes, _, height, width = video.shape
-    min_pixels = ele.get("min_pixels", qwen_vision.VIDEO_MIN_PIXELS)
-    total_pixels = ele.get("total_pixels", qwen_vision.VIDEO_TOTAL_PIXELS)
+    image_factor, default_min_pixels, default_total_pixels, default_max_pixels = (
+        _qwen_video_resize_defaults()
+    )
+    min_pixels = ele.get("min_pixels", default_min_pixels)
+    total_pixels = ele.get("total_pixels", default_total_pixels)
     max_pixels = max(
         min(
-            qwen_vision.VIDEO_MAX_PIXELS,
+            default_max_pixels,
             total_pixels / nframes * qwen_vision.FRAME_FACTOR,
         ),
         int(min_pixels * 1.05),
@@ -356,13 +411,13 @@ def load_video_path(
         resized_height, resized_width = qwen_vision.smart_resize(
             ele["resized_height"],
             ele["resized_width"],
-            factor=qwen_vision.IMAGE_FACTOR,
+            factor=image_factor,
         )
     else:
         resized_height, resized_width = qwen_vision.smart_resize(
             height,
             width,
-            factor=qwen_vision.IMAGE_FACTOR,
+            factor=image_factor,
             min_pixels=min_pixels,
             max_pixels=max_pixels,
         )

@@ -62,6 +62,8 @@ def server_process(tmp_path_factory: pytest.TempPathFactory):
         MODEL_PATH,
         "--model-name",
         MODEL_NAME,
+        "--cpu-offload-gb",
+        "4",
         "--enable-realtime",
         "--port",
         str(port),

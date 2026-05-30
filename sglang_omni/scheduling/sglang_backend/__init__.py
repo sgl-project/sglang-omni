@@ -9,6 +9,7 @@ from sglang_omni.scheduling.sglang_backend.request_data import (
 )
 from sglang_omni.scheduling.sglang_backend.server_args_builder import (
     apply_encoder_mem_reserve,
+    build_sglang_encoder_server_args,
     build_sglang_server_args,
 )
 
@@ -20,5 +21,6 @@ __all__ = [
     "SGLangDLLMRequestData",
     "SGLangOutputProcessor",
     "apply_encoder_mem_reserve",
+    "build_sglang_encoder_server_args",
     "build_sglang_server_args",
 ]

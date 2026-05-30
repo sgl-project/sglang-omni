@@ -442,6 +442,7 @@ def _extract_inputs(request: GenerateRequest) -> Any:
         if videos:
             result["videos"] = videos
         for key in (
+            "audio_truncation",
             "video_fps",
             "video_max_frames",
             "video_min_pixels",

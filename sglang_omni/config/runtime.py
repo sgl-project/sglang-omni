@@ -4,12 +4,42 @@
 from __future__ import annotations
 
 import inspect
+import logging
+from dataclasses import dataclass
 from typing import Any
 
 from sglang_omni.config.schema import PipelineConfig, StageConfig
 from sglang_omni.utils.imports import import_string
 
+logger = logging.getLogger(__name__)
+
 _MAPPED_STAGE_RUNTIME_FIELDS = ("max_seq_len", "video_fps")
+_TP_LAUNCH_PARAMS = frozenset({"tp_rank", "tp_size", "nccl_port"})
+_ENCODER_ACTIVATION_BUDGET_KEY = "encoder_activation_budget_bytes"
+_ENCODER_MAX_BATCH_SIZE_KEY = "encoder_max_batch_size"
+
+
+@dataclass(frozen=True)
+class StageLaunchMode:
+    """Launcher-visible backend decision for one stage.
+
+    `requested_backend` is the value present in resolved factory kwargs after
+    `factory_args` and `runtime_overrides` merge. Factory signature defaults
+    are intentionally ignored so launch decisions cannot diverge from config.
+    """
+
+    stage_name: str
+    requested_backend: str
+    execution_backend: str
+    has_backend_parameter: bool
+
+    @property
+    def requires_sglang_launch(self) -> bool:
+        return self.execution_backend == "sglang"
+
+    @property
+    def is_sglang_execution(self) -> bool:
+        return self.execution_backend == "sglang"
 
 
 def resolve_stage_factory_args(
@@ -52,7 +82,92 @@ def resolve_stage_factory_args(
     ):
         args["total_gpu_memory_fraction"] = total_gpu_memory_fraction
 
+    encoder_activation_budget_bytes = (
+        stage_cfg.runtime.resources.encoder_activation_budget_bytes
+    )
+    if (
+        encoder_activation_budget_bytes is not None
+        and _ENCODER_ACTIVATION_BUDGET_KEY in sig.parameters
+        and _ENCODER_ACTIVATION_BUDGET_KEY not in args
+    ):
+        args[_ENCODER_ACTIVATION_BUDGET_KEY] = encoder_activation_budget_bytes
+    encoder_max_batch_size = stage_cfg.runtime.resources.encoder_max_batch_size
+    if (
+        encoder_max_batch_size is not None
+        and _ENCODER_MAX_BATCH_SIZE_KEY in sig.parameters
+        and _ENCODER_MAX_BATCH_SIZE_KEY not in args
+    ):
+        args[_ENCODER_MAX_BATCH_SIZE_KEY] = encoder_max_batch_size
+
     return args
+
+
+def build_stage_launch_modes(
+    config: PipelineConfig,
+    *,
+    stages_cfg: list[StageConfig] | None = None,
+) -> dict[str, StageLaunchMode]:
+    """Build launcher backend decisions before process topology is resolved."""
+
+    stages = stages_cfg if stages_cfg is not None else config.stages
+    modes: dict[str, StageLaunchMode] = {}
+    for stage_cfg in stages:
+        factory = import_string(stage_cfg.factory)
+        params = inspect.signature(factory).parameters
+        args = resolve_stage_factory_args(stage_cfg, config)
+        requested = str(args.get("backend", "local"))
+        execution = _resolve_execution_backend(
+            stage_cfg,
+            config,
+            requested_backend=requested,
+            factory=factory,
+        )
+        modes[stage_cfg.name] = StageLaunchMode(
+            stage_name=stage_cfg.name,
+            requested_backend=requested,
+            execution_backend=execution,
+            has_backend_parameter="backend" in params,
+        )
+    return modes
+
+
+def _resolve_execution_backend(
+    stage_cfg: StageConfig,
+    config: PipelineConfig,
+    *,
+    requested_backend: str,
+    factory: Any,
+) -> str:
+    if requested_backend != "auto":
+        return requested_backend
+
+    resolver = getattr(inspect.getmodule(factory), "_resolve_backend", None)
+    if callable(resolver):
+        try:
+            resolved = resolver(
+                requested_backend,
+                config.model_path,
+                stage=stage_cfg.name,
+            )
+        except TypeError as exc:
+            logger.debug(
+                "Backend resolver for stage %s did not match the standard "
+                "_resolve_backend(backend, model_path, *, stage=...) shape: %s",
+                stage_cfg.name,
+                exc,
+            )
+        else:
+            if resolved not in {"local", "sglang"}:
+                raise ValueError(
+                    f"Stage {stage_cfg.name!r}: backend='auto' resolved to "
+                    f"unsupported execution backend {resolved!r}"
+                )
+            return str(resolved)
+
+    # Conservative fallback: auto is SGLang-launch-capable. Backend-aware TP
+    # factories without an explicit resolver must advertise TP launch params
+    # and receive a parent-owned NCCL port.
+    return "sglang"
 
 
 def reject_untyped_total_gpu_memory_fraction(
@@ -69,6 +184,40 @@ def reject_untyped_total_gpu_memory_fraction(
         f"Stage {stage_name!r} sets total_gpu_memory_fraction through "
         "factory_args/runtime_overrides; set "
         "runtime.resources.total_gpu_memory_fraction instead"
+    )
+
+
+def reject_untyped_encoder_activation_budget_bytes(
+    stage_name: str,
+    factory_args: dict[str, Any],
+    runtime_overrides: dict[str, Any],
+) -> None:
+    if (
+        _ENCODER_ACTIVATION_BUDGET_KEY not in factory_args
+        and _ENCODER_ACTIVATION_BUDGET_KEY not in runtime_overrides
+    ):
+        return
+    raise ValueError(
+        f"Stage {stage_name!r} sets encoder_activation_budget_bytes through "
+        "factory_args/runtime_overrides; set "
+        "runtime.resources.encoder_activation_budget_bytes instead"
+    )
+
+
+def reject_untyped_encoder_max_batch_size(
+    stage_name: str,
+    factory_args: dict[str, Any],
+    runtime_overrides: dict[str, Any],
+) -> None:
+    if (
+        _ENCODER_MAX_BATCH_SIZE_KEY not in factory_args
+        and _ENCODER_MAX_BATCH_SIZE_KEY not in runtime_overrides
+    ):
+        return
+    raise ValueError(
+        f"Stage {stage_name!r} sets encoder_max_batch_size through "
+        "factory_args/runtime_overrides; set "
+        "runtime.resources.encoder_max_batch_size instead"
     )
 
 
@@ -95,6 +244,26 @@ def _validate_runtime_sources(
         factory_args,
         runtime_overrides,
     )
+    reject_untyped_encoder_activation_budget_bytes(
+        stage_cfg.name,
+        factory_args,
+        runtime_overrides,
+    )
+    reject_untyped_encoder_max_batch_size(
+        stage_cfg.name,
+        factory_args,
+        runtime_overrides,
+    )
+
+    leaked = sorted(
+        _TP_LAUNCH_PARAMS & (set(factory_args.keys()) | set(runtime_overrides.keys()))
+    )
+    if leaked:
+        raise ValueError(
+            f"Stage {stage_cfg.name!r}: factory_args/runtime_overrides cannot "
+            f"set {leaked}. These keys are managed by the pipeline runner "
+            "from StageConfig.tp_size and the per-stage NCCL port allocator."
+        )
 
     for field_name in _MAPPED_STAGE_RUNTIME_FIELDS:
         value = getattr(stage_cfg.runtime, field_name)

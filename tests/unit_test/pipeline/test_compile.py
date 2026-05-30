@@ -128,6 +128,7 @@ def test_runner_specs_wire_routes_overrides_aggregation_and_streams(tmp_path) ->
     specs = {spec.stage_name: spec for spec in group.specs}
 
     assert prep.entry_stage == "preprocess"
+    assert prep.launch_modes["thinker"].requested_backend == "local"
     assert specs["preprocess"].next_stages == ["thinker", "aggregate"]
     assert specs["thinker"].route_fn == fake_factory_path("identity_route")
     assert specs["thinker"].stream_done_to_fn == fake_factory_path(

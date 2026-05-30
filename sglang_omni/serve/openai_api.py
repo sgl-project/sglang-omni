@@ -427,6 +427,8 @@ def _build_chat_generate_request(req: ChatCompletionRequest) -> GenerateRequest:
         metadata["audio_config"] = req.audio
     if audios:
         metadata["audios"] = audios
+    if req.audio_truncation is not None:
+        metadata["audio_truncation"] = req.audio_truncation
     if images:
         metadata["images"] = images
     if videos:

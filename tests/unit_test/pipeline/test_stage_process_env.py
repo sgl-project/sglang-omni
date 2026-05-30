@@ -73,6 +73,28 @@ def test_tp_child_keeps_parent_mapped_visible_device(monkeypatch) -> None:
     assert os.environ["CUDA_VISIBLE_DEVICES"] == "4"
 
 
+def test_tp_child_preserves_cpu_shm_relay_gpu_id(monkeypatch) -> None:
+    """CPU SHM relay must not start staging payloads through cuda:0."""
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "4")
+    monkeypatch.setenv("SGLANG_ONE_VISIBLE_DEVICE_PER_PROCESS", "true")
+    spec = StageProcessSpec(
+        stage_name="image_encoder",
+        role="leader",
+        tp_rank=0,
+        tp_size=1,
+        gpu_id=1,
+        factory_args={"gpu_id": 1},
+        relay_config={"gpu_id": None},
+        nccl_port=12345,
+    )
+
+    stage_process._prepare_cuda_environment(spec, _RecordingLog())
+
+    assert spec.gpu_id == 0
+    assert spec.factory_args["gpu_id"] == 0
+    assert spec.relay_config["gpu_id"] is None
+
+
 def test_spawn_env_applies_stage_defaults_before_child_start(monkeypatch) -> None:
     monkeypatch.delenv("SGLANG_TEST_STAGE_ENV", raising=False)
     spec = StageProcessSpec(

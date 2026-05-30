@@ -403,7 +403,7 @@ def get_stage_process_env(
     env: Mapping[str, str] | None = None,
 ) -> dict[str, str]:
     """Return per-process env overrides needed before TP child startup."""
-    if spec.tp_size <= 1:
+    if not stage_requires_single_visible_device(spec):
         return {}
 
     source_env = env if env is not None else os.environ
@@ -426,6 +426,14 @@ def get_stage_process_env(
         "SGLANG_ONE_VISIBLE_DEVICE_PER_PROCESS": "true",
         "SGLANG_ENABLE_TP_MEMORY_INBALANCE_CHECK": "false",
     }
+
+
+def stage_requires_single_visible_device(spec: StageProcessSpec) -> bool:
+    """Whether this stage must start with a one-GPU CUDA namespace."""
+    # The launch planner allocates an NCCL port for single-rank stages only
+    # when the resolved execution backend needs SGLang distributed init. Do
+    # not key this off requested backend="auto"; auto may resolve to local.
+    return spec.tp_size > 1 or spec.nccl_port is not None
 
 
 def _prepare_cuda_environment(
@@ -464,6 +472,6 @@ def _prepare_cuda_environment(
 def _normalize_spec_gpu_id_to_local_device(spec: StageProcessSpec) -> None:
     if "gpu_id" in spec.factory_args:
         spec.factory_args["gpu_id"] = 0
-    if "gpu_id" in spec.relay_config:
+    if spec.relay_config.get("gpu_id") is not None:
         spec.relay_config["gpu_id"] = 0
     spec.gpu_id = 0

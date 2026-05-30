@@ -223,6 +223,7 @@ class Qwen3OmniPreprocessor:
             raw_videos = inputs.get("videos") or inputs.get("video")
             raw_audios = inputs.get("audio") or inputs.get("audios")
             audio_target_sr = int(inputs.get("audio_target_sr", 16000))
+            audio_truncation = inputs.get("audio_truncation")
             video_fps = inputs.get("video_fps", self.default_video_fps)
             video_max_frames = inputs.get(
                 "video_max_frames",
@@ -267,6 +268,9 @@ class Qwen3OmniPreprocessor:
                 float(video_position_id_per_seconds)
                 if video_position_id_per_seconds is not None
                 else None
+            )
+            resolved_audio_truncation = (
+                bool(audio_truncation) if audio_truncation is not None else None
             )
 
             # Compute cache keys BEFORE conversion (paths are cheap to hash)
@@ -329,6 +333,7 @@ class Qwen3OmniPreprocessor:
             raw_audio_cache_key = None
             video_cache_key = None
             audio_target_sr = 16000
+            resolved_audio_truncation = None
             video_fps = self.default_video_fps
             video_max_frames = self.default_video_max_frames
             video_min_pixels = self.default_video_min_pixels
@@ -396,6 +401,8 @@ class Qwen3OmniPreprocessor:
         processor_kwargs: dict[str, Any] = {}
         if videos_kwargs:
             processor_kwargs["videos_kwargs"] = videos_kwargs
+        if resolved_audio_truncation is not None:
+            processor_kwargs["audio_kwargs"] = {"truncation": resolved_audio_truncation}
 
         hf_inputs = self.processor(
             text=prompt_text,
@@ -462,6 +469,7 @@ class Qwen3OmniPreprocessor:
         contextualized_audio_cache_key = _contextualize_cache_key(
             raw_audio_cache_key,
             target_sr=audio_target_sr,
+            truncation=resolved_audio_truncation,
         )
         if audio_from_video:
             contextualized_audio_cache_key = _combine_cache_keys(

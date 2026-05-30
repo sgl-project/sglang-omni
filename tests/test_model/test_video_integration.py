@@ -65,6 +65,8 @@ def server_process(tmp_path_factory: pytest.TempPathFactory):
         "--text-only",
         "--relay-backend",
         "nixl",
+        "--cpu-offload-gb",
+        "4",
         "--port",
         str(port),
     ]

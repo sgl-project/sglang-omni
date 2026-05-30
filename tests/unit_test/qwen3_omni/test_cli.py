@@ -11,6 +11,7 @@ from sglang_omni.cli.serve import (
     apply_cuda_graph_cli_overrides,
     apply_encoder_mem_reserve_cli_override,
     apply_parallelism_cli_overrides,
+    apply_thinker_server_args_cli_overrides,
     apply_torch_compile_cli_overrides,
     serve,
 )
@@ -58,6 +59,8 @@ def _serve_kwargs(**overrides):
         thinker_mem_fraction_static=None,
         talker_mem_fraction_static=None,
         encoder_mem_reserve=None,
+        cpu_offload_gb=None,
+        quantization=None,
         log_level="info",
         thinker_tp_size=None,
         thinker_gpus=None,
@@ -241,31 +244,34 @@ def test_registry_resolves_qwen_colocated_config_by_class_name():
     )
 
 
-def test_qwen_text_encoder_mem_reserve_still_targets_thinker():
+def test_qwen_text_encoder_mem_reserve_rejects_typed_thinker_budget():
     config = Qwen3OmniPipelineConfig(model_path="dummy")
 
-    apply_encoder_mem_reserve_cli_override(
-        config,
-        encoder_mem_reserve=0.05,
-        mem_fraction_static=None,
-        thinker_mem_fraction_static=None,
-    )
+    with pytest.raises(
+        typer.BadParameter,
+        match="runtime.resources.total_gpu_memory_fraction is set",
+    ):
+        apply_encoder_mem_reserve_cli_override(
+            config,
+            encoder_mem_reserve=0.05,
+            mem_fraction_static=None,
+            thinker_mem_fraction_static=None,
+        )
 
-    assert _stage(config, "thinker").factory_args["encoder_mem_reserve"] == 0.05
 
-
-def test_qwen_speech_encoder_mem_reserve_still_targets_thinker():
+def test_qwen_speech_encoder_mem_reserve_rejects_typed_thinker_budget():
     config = Qwen3OmniSpeechPipelineConfig(model_path="dummy")
 
-    apply_encoder_mem_reserve_cli_override(
-        config,
-        encoder_mem_reserve=0.05,
-        mem_fraction_static=None,
-        thinker_mem_fraction_static=None,
-    )
-
-    assert _stage(config, "thinker").factory_args["encoder_mem_reserve"] == 0.05
-    assert "encoder_mem_reserve" not in _stage(config, "talker_ar").factory_args
+    with pytest.raises(
+        typer.BadParameter,
+        match="runtime.resources.total_gpu_memory_fraction is set",
+    ):
+        apply_encoder_mem_reserve_cli_override(
+            config,
+            encoder_mem_reserve=0.05,
+            mem_fraction_static=None,
+            thinker_mem_fraction_static=None,
+        )
 
 
 def test_qwen_text_cli_rejects_talker_gpu_with_stable_message():
@@ -341,6 +347,43 @@ def test_cuda_graph_cli_override_reaches_resolved_sglang_args():
 
     assert thinker_args["server_args_overrides"]["disable_cuda_graph"] is True
     assert talker_args["server_args_overrides"]["disable_cuda_graph"] is False
+
+
+def test_thinker_server_args_cli_override_reaches_thinker_only():
+    config = Qwen3OmniSpeechPipelineConfig(model_path="dummy")
+
+    apply_thinker_server_args_cli_overrides(
+        config,
+        cpu_offload_gb=4,
+        quantization="fp8",
+    )
+
+    thinker = next(stage for stage in config.stages if stage.name == "thinker")
+    thinker_args = resolve_stage_factory_args(thinker, config)
+
+    assert thinker_args["server_args_overrides"]["cpu_offload_gb"] == 4
+    assert thinker_args["server_args_overrides"]["quantization"] == "fp8"
+    for non_thinker_stage in (
+        "image_encoder",
+        "audio_encoder",
+        "talker_ar",
+        "code2wav",
+    ):
+        assert (
+            "server_args_overrides"
+            not in _stage(config, non_thinker_stage).factory_args
+        )
+
+
+def test_thinker_server_args_cli_override_rejects_negative_cpu_offload():
+    config = Qwen3OmniSpeechPipelineConfig(model_path="dummy")
+
+    with pytest.raises(typer.BadParameter, match="cpu-offload-gb"):
+        apply_thinker_server_args_cli_overrides(
+            config,
+            cpu_offload_gb=-1,
+            quantization=None,
+        )
 
 
 def test_torch_compile_cli_override_reaches_resolved_sglang_args():

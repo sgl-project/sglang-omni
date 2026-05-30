@@ -16,6 +16,7 @@ from sglang_omni.pipeline.stage_process import (
     StageWorkerProcessSpec,
     get_stage_process_env,
     stage_process_main,
+    stage_requires_single_visible_device,
 )
 
 logger = logging.getLogger(__name__)
@@ -29,16 +30,18 @@ def _get_worker_process_env(spec: StageWorkerProcessSpec) -> dict[str, str]:
     sole tenant. Mixing a TP stage with any other stage in the same
     process group is a placement bug, not a fallback case.
     """
-    tp_stages = [s for s in spec.stage_specs if s.tp_size > 1]
-    if not tp_stages:
+    isolated_stages = [
+        s for s in spec.stage_specs if stage_requires_single_visible_device(s)
+    ]
+    if not isolated_stages:
         return {}
-    if len(tp_stages) > 1 or len(spec.stage_specs) > 1:
+    if len(isolated_stages) > 1 or len(spec.stage_specs) > 1:
         raise AssertionError(
-            f"Process {spec.process_name!r} mixes a TP stage with other "
-            "stages; TP stages must own their OS process exclusively. "
+            f"Process {spec.process_name!r} mixes a TP/SGLang-isolated stage "
+            "with other stages; isolated stages must own their OS process. "
             f"stage_specs={[s.stage_name for s in spec.stage_specs]}"
         )
-    return get_stage_process_env(tp_stages[0])
+    return get_stage_process_env(isolated_stages[0])
 
 
 @contextmanager

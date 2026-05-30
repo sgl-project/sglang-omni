@@ -75,6 +75,9 @@ class ChatCompletionRequest(BaseModel):
     # Audio input (sglang-omni extension)
     # Can be a list of audio file paths (local paths or URLs)
     audios: list[str] | None = None
+    # Forwarded to the Qwen3-Omni audio feature extractor. Set to False to
+    # process audio longer than the default Whisper 30s window.
+    audio_truncation: bool | None = None
 
     # Image input (sglang-omni extension)
     # Can be a list of image file paths (local paths or URLs)

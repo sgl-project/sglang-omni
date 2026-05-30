@@ -8,6 +8,7 @@ one-process-per-rank TP topology.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import multiprocessing
 import socket
@@ -18,7 +19,11 @@ from sglang_omni.config.placement import (
     resolve_same_gpu_stream_targets,
     resolve_stage_gpu_ids,
 )
-from sglang_omni.config.runtime import resolve_stage_factory_args
+from sglang_omni.config.runtime import (
+    StageLaunchMode,
+    build_stage_launch_modes,
+    resolve_stage_factory_args,
+)
 from sglang_omni.config.schema import PipelineConfig, StageConfig
 from sglang_omni.config.topology import ProcessTopologyPlan
 from sglang_omni.pipeline import Coordinator
@@ -34,16 +39,62 @@ from sglang_omni.utils.imports import import_string
 
 logger = logging.getLogger(__name__)
 
+_TP_LAUNCH_PARAMS = frozenset({"tp_rank", "tp_size", "nccl_port"})
+
+
+def any_sglang_backend_stage(config: PipelineConfig) -> bool:
+    return any(
+        mode.requires_sglang_launch
+        for mode in build_stage_launch_modes(config).values()
+    )
+
+
+def _run_tp_preflight(
+    stages_cfg: list[StageConfig],
+    *,
+    launch_modes: dict[str, StageLaunchMode],
+) -> None:
+    for stage_cfg in stages_cfg:
+        factory = import_string(stage_cfg.factory)
+        params = inspect.signature(factory).parameters
+        mode = launch_modes[stage_cfg.name]
+        requires_tp_kwargs = stage_cfg.tp_size > 1 or mode.requires_sglang_launch
+        if not requires_tp_kwargs:
+            continue
+
+        accepts_kwargs = any(
+            param.kind is inspect.Parameter.VAR_KEYWORD for param in params.values()
+        )
+        missing = [] if accepts_kwargs else sorted(_TP_LAUNCH_PARAMS - params.keys())
+        if missing:
+            raise ValueError(
+                f"Stage {stage_cfg.name!r}: factory {stage_cfg.factory!r} is not "
+                f"TP-capable; missing launch parameters {missing}"
+            )
+
+        if (
+            stage_cfg.tp_size > 1
+            and mode.has_backend_parameter
+            and not mode.is_sglang_execution
+        ):
+            raise ValueError(
+                f"Stage {stage_cfg.name!r}: tp_size={stage_cfg.tp_size} "
+                "requires backend='sglang' or backend='auto' resolving to "
+                f"SGLang (got requested={mode.requested_backend!r}, "
+                f"execution={mode.execution_backend!r})"
+            )
+
 
 def _build_stage_groups(
     config: PipelineConfig,
     ctx: multiprocessing.context.BaseContext | None = None,
     *,
-    stages_cfg: list[StageConfig],
-    name_map: dict[str, str],
-    endpoints: dict[str, str],
-    placement_plan: StagePlacementPlan,
-    process_plan: ProcessTopologyPlan,
+    stages_cfg: list[StageConfig] | None = None,
+    name_map: dict[str, str] | None = None,
+    endpoints: dict[str, str] | None = None,
+    placement_plan: StagePlacementPlan | None = None,
+    process_plan: ProcessTopologyPlan | None = None,
+    launch_modes: dict[str, StageLaunchMode] | None = None,
 ) -> list[StageGroup]:
     """Build lifecycle groups from prepared endpoints and process topology.
 
@@ -52,6 +103,23 @@ def _build_stage_groups(
     """
     if ctx is None:
         ctx = multiprocessing.get_context("spawn")
+    if (
+        stages_cfg is None
+        or name_map is None
+        or endpoints is None
+        or placement_plan is None
+        or process_plan is None
+    ):
+        prep = prepare_pipeline_runtime(config)
+        stages_cfg = prep.stages_cfg
+        name_map = prep.name_map
+        endpoints = prep.endpoints
+        placement_plan = prep.placement_plan
+        process_plan = prep.process_plan
+        launch_modes = prep.launch_modes
+    if launch_modes is None:
+        launch_modes = build_stage_launch_modes(config, stages_cfg=stages_cfg)
+    _run_tp_preflight(stages_cfg, launch_modes=launch_modes)
 
     stage_endpoints = {s.name: endpoints[f"stage_{s.name}"] for s in stages_cfg}
     stream_receivers: set[str] = set()
@@ -67,7 +135,6 @@ def _build_stage_groups(
     for stage_cfg in stages_cfg:
         tp_size = stage_cfg.tp_size
         gpu_ids = resolve_stage_gpu_ids(placement_plan, stage_cfg)
-        nccl_port = nccl_port_counter.allocate() if tp_size > 1 else None
 
         same_gpu_targets = resolve_same_gpu_stream_targets(
             placement_plan,
@@ -80,8 +147,11 @@ def _build_stage_groups(
             process_plan,
         )
 
-        # Pre-resolve factory args (inject model_path, gpu_id)
         base_factory_args = resolve_stage_factory_args(stage_cfg, config)
+        sglang_launch_mode = launch_modes[stage_cfg.name].requires_sglang_launch
+        nccl_port = (
+            nccl_port_counter.allocate() if tp_size > 1 or sglang_launch_mode else None
+        )
 
         stage_kwargs = dict(
             stage_name=stage_cfg.name,
@@ -116,6 +186,8 @@ def _build_stage_groups(
                 recv_endpoint=stage_endpoints[stage_cfg.name],
                 base_factory_args=base_factory_args,
                 stage_kwargs=stage_kwargs,
+                sglang_launch_mode=sglang_launch_mode,
+                nccl_port=nccl_port,
             )
         else:
             specs = _build_tp_stage_specs(
@@ -200,17 +272,27 @@ def _build_single_stage_spec(
     recv_endpoint: str,
     base_factory_args: dict[str, Any],
     stage_kwargs: dict[str, Any],
+    sglang_launch_mode: bool,
+    nccl_port: int | None,
 ) -> StageProcessSpec:
     factory_args = dict(base_factory_args)
     if "gpu_id" in base_factory_args:
         factory_args["gpu_id"] = gpu_id
+    if sglang_launch_mode:
+        if nccl_port is None:
+            raise AssertionError(
+                f"SGLang-backed stage {stage_cfg.name!r} requires an NCCL port"
+            )
+        factory_args["tp_rank"] = 0
+        factory_args["tp_size"] = 1
+        factory_args["nccl_port"] = nccl_port
     relay_config = _resolve_relay_config(stage_cfg, config, gpu_id=gpu_id)
     return StageProcessSpec(
         role="single",
         tp_rank=0,
         tp_size=1,
         gpu_id=gpu_id,
-        nccl_port=None,
+        nccl_port=factory_args.get("nccl_port"),
         factory_args=factory_args,
         relay_config=relay_config,
         recv_endpoint=recv_endpoint,
@@ -229,6 +311,8 @@ def _build_tp_stage_specs(
     base_factory_args: dict[str, Any],
     stage_kwargs: dict[str, Any],
 ) -> list[StageProcessSpec]:
+    if nccl_port is None:
+        raise AssertionError(f"TP stage {stage_cfg.name!r} requires an NCCL port")
     follower_work_queues = [ctx.Queue() for _ in range(stage_cfg.tp_size - 1)]
     follower_abort_queues = [ctx.Queue() for _ in range(stage_cfg.tp_size - 1)]
     specs: list[StageProcessSpec] = []
@@ -377,6 +461,7 @@ class MultiProcessPipelineRunner:
                 endpoints=prep.endpoints,
                 placement_plan=prep.placement_plan,
                 process_plan=prep.process_plan,
+                launch_modes=prep.launch_modes,
             )
 
             terminal_stages_resolver = (
@@ -402,8 +487,14 @@ class MultiProcessPipelineRunner:
                 logger.info(f"Configured stage process env defaults: {env_names}")
             for group in self._groups:
                 group.spawn(ctx)
-
-            await asyncio.gather(*(g.wait_ready(timeout) for g in self._groups))
+                # Keep GPU-heavy scheduler construction serialized at the
+                # StageGroup level. If two TP encoder groups share the same
+                # GPU pair and start concurrently, rank-local per-GPU startup
+                # locks can be acquired in opposite orders and block distributed
+                # initialization. Waiting group-by-group preserves concurrent
+                # rank startup within one TP group while avoiding cross-group
+                # lock inversion on colocated deployments.
+                await group.wait_ready(timeout)
 
             for group in self._groups:
                 if group.any_dead():
@@ -437,8 +528,12 @@ class MultiProcessPipelineRunner:
         while self._started:
             for group in self._groups:
                 if group.any_dead():
+                    group_name = getattr(group, "group_name", None) or getattr(
+                        group, "stage_name", "unknown"
+                    )
                     error = RuntimeError(
-                        f"Dead stage process(es) detected: {group.dead_summary()}"
+                        f"Dead stage process(es) detected in {group_name}: "
+                        f"{group.dead_summary()}"
                     )
                     logger.error("%s", error)
                     await self._fail_runtime(error)
@@ -448,9 +543,10 @@ class MultiProcessPipelineRunner:
     async def _fail_runtime(self, error: BaseException) -> None:
         self._fatal_error = error
         if self._coordinator is not None:
-            await self._coordinator.fail_pending_requests(error)
-        if self._fatal_event is not None:
-            self._fatal_event.set()
+            self._coordinator.fail_all_active(str(error))
+        fatal_event = getattr(self, "_fatal_event", None)
+        if fatal_event is not None:
+            fatal_event.set()
         await self.stop()
 
     async def wait_failed(self) -> None:
