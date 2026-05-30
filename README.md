@@ -4,7 +4,6 @@
 [![license](https://img.shields.io/github/license/sgl-project/sglang-omni.svg)](https://github.com/sgl-project/sglang-omni/tree/main/LICENSE)
 [![issue resolution](https://img.shields.io/github/issues-closed-raw/sgl-project/sglang-omni)](https://github.com/sgl-project/sglang-omni/issues)
 [![open issues](https://img.shields.io/github/issues-raw/sgl-project/sglang-omni)](https://github.com/sgl-project/sglang-omni/issues)
-[![Slack](https://img.shields.io/badge/slack-sglang-blue?logo=slack)](https://slack.sglang.ai)
 [![DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/sgl-project/sglang-omni)
 
 </div>
@@ -14,7 +13,8 @@
 <p align="center">
 <a href="https://sgl-project.github.io/sglang-omni/"><b>Documentation</b></a> |
 <a href="./benchmarks/README.md"><b>Benchmarks</b></a> |
-<a href="./examples/README.md"><b>Examples</b></a>
+<a href="./examples/README.md"><b>Examples</b></a> |
+<a href="https://slack.sglang.ai"><b>Slack</b></a>
 </p>
 
 ## News
