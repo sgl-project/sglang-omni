@@ -36,13 +36,13 @@ Core features:
 
 | Model | Type | Notes |
 |-------|------|-------|
-| [boson-sglang/higgs-audio-v3-tts-4b-base](https://huggingface.co/boson-sglang/higgs-audio-v3-tts-4b-base) | TTS | Voice cloning |
+| [boson-sglang/higgs-audio-v3-tts-4b-base](https://huggingface.co/boson-sglang/higgs-audio-v3-tts-4b-base) | TTS | Voice cloning, streaming, 100+ languages |
 | [fishaudio/s2-pro](https://huggingface.co/fishaudio/s2-pro) | TTS | Voice cloning, streaming |
-| [mistralai/Voxtral-4B-TTS-2603](https://huggingface.co/mistralai/Voxtral-4B-TTS-2603) | TTS | Speaker presets |
-| [Qwen/Qwen3-TTS-12Hz-Base](https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-Base) | TTS | Voice cloning, 0.6B / 1.7B |
-| [Qwen/Qwen3-Omni-30B-A3B-Instruct](https://huggingface.co/Qwen/Qwen3-Omni-30B-A3B-Instruct) | Omni | Speech + text I/O |
+| [mistralai/Voxtral-4B-TTS-2603](https://huggingface.co/mistralai/Voxtral-4B-TTS-2603) | TTS | Named voices, streaming, 9 languages |
+| [Qwen/Qwen3-TTS-12Hz-Base](https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-Base) | TTS | Voice cloning, streaming, 10 languages, 0.6B / 1.7B |
+| [Qwen/Qwen3-Omni-30B-A3B-Instruct](https://huggingface.co/Qwen/Qwen3-Omni-30B-A3B-Instruct) | Omni | Text, image, audio, video → text + audio |
 | [inclusionAI/Ming-flash-omni-2.0](https://huggingface.co/inclusionAI/Ming-flash-omni-2.0) | Omni | Streaming TTS |
-| [inclusionAI/LLaDA2.0-Uni](https://huggingface.co/inclusionAI/LLaDA2.0-Uni) | Omni | Text + image I/O |
+| [inclusionAI/LLaDA2.0-Uni](https://huggingface.co/inclusionAI/LLaDA2.0-Uni) | Multimodal | Text + image understanding and generation |
 
 ## Get Started
 
