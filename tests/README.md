@@ -159,10 +159,15 @@ Relevant model CI ownership:
   with `--enable-realtime` and drives `/v1/realtime` through a real WebSocket
   client to cover text responses, server VAD transcription, and disconnect
   teardown.
+- `test_higgs_tts_ci.py`: default TTS CI gate for Higgs. It starts the Higgs
+  managed router with two one-GPU workers using `examples/configs/higgs_tts.yaml`,
+  runs full SeedTTS EN non-stream and SSE streaming stages at concurrency 16,
+  and frees the server GPUs before ASR/WER.
+- `test_higgs_consistency_artifacts.py`: CPU-only stage-3 check that compares
+  downloaded Higgs non-stream and streaming JSON artifacts.
 - CLI flags `--s2pro-stage {nonstream,stream,consistency,all}` and
   `--concurrency {1,2,4,8,16,all}`: scope an S2-Pro CI sweep without editing
   source.
-
 
 ## `unit_test/`
 

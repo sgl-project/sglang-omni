@@ -1,4 +1,4 @@
-name: S2-Pro CI
+name: Higgs TTS CI
 
 on:
   pull_request:
@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: s2pro-ci-${{ github.event.pull_request.number || github.ref }}
+  group: higgs-tts-ci-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -16,19 +16,21 @@ permissions:
 env:
   OMNI_CI_HOME: >-
     ${{ github.event_name == 'pull_request'
-        && format('/github/home/pr-{0}/s2pro', github.event.pull_request.number)
-        || format('/github/home/run-{0}/s2pro', github.run_id) }}
+        && format('/github/home/pr-{0}/higgs-tts', github.event.pull_request.number)
+        || format('/github/home/run-{0}/higgs-tts', github.run_id) }}
+  HIGGS_MODEL_PATH: boson-sglang/higgs-audio-v3-tts-4b-base
+  HIGGS_CONFIG_PATH: examples/configs/higgs_tts.yaml
 
 # DAG:
-#   setup (install-deps under OMNI_CI_HOME + verify model weights)
-#     └── docs ──► stage-1-non-streaming ──┐
-#              └── stage-2-streaming ──────┤
-#                                         └──► stage-3-consistency
-#           └── cleanup on full success only (kept on failure for re-run)
+#   setup (install-deps under OMNI_CI_HOME + verify Higgs weights)
+#     ├── stage-1-non-streaming
+#     └── stage-2-streaming
+#           └── stage-3-consistency
+#   cleanup runs only after full success, preserving host cache on failures.
 
 jobs:
   setup:
-    name: setup - omni-s2pro venv
+    name: setup - omni-higgs-tts venv
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (!github.event.pull_request.draft &&
@@ -44,67 +46,29 @@ jobs:
 
       - uses: ./.github/actions/omni-setup
         with:
-          venv-name: omni-s2pro
+          venv-name: omni-higgs-tts
           install-deps: "true"
 
       - uses: ./.github/actions/omni-save-cache
         with:
-          venv-name: omni-s2pro
+          venv-name: omni-higgs-tts
 
-      - name: Ensure S2-Pro model weights
+      - name: Ensure Higgs model weights
         shell: bash
         env:
           HF_ENDPOINT: https://hf-mirror.com
-        run: bash .github/scripts/ensure_hf_models.sh omni-s2pro fishaudio/s2-pro
-
-  docs:
-    name: docs
-    needs: setup
-    # CI gate — runs on workflow_dispatch, or on non-draft PRs carrying the `run-ci` label.
-    # Keep in sync with the same gate in test.yaml / test-examples.yaml / test-qwen3-omni-ci.yaml.
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (!github.event.pull_request.draft &&
-       contains(github.event.pull_request.labels.*.name, 'run-ci'))
-    runs-on: [self-hosted]
-    timeout-minutes: 10
-    container:
-      image: frankleeeee/sglang-omni:dev
-      options: --gpus all --rm -v /dev/shm:/dev/shm
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - uses: ./.github/actions/omni-setup
-        with:
-          venv-name: omni-s2pro
-
-      - name: Run docs tests
-        shell: bash
-        run: |
-          source omni-s2pro/bin/activate
-          export PYTHONPATH=$PWD
-          bash .github/scripts/run_flaky_pytest.sh \
-            pytest tests/docs/s2pro/test_docs_tts_s2pro.py -v -s -x
-        env:
-          HF_ENDPOINT: https://hf-mirror.com
-          TORCHINDUCTOR_CACHE_DIR: ${{ env.OMNI_CI_HOME }}/.torchinductor
-
-      - name: Post-stage cleanup
-        if: always()
-        uses: ./.github/actions/omni-post-stage
-        with:
-          stage-label: S2-Pro docs
+          HF_TOKEN: ${{ secrets.BOSON_HF_TOKEN }}
+        run: bash .github/scripts/ensure_hf_models.sh omni-higgs-tts "$HIGGS_MODEL_PATH"
 
   stage-1-non-streaming:
     name: stage 1 - non-streaming
-    needs: [setup, docs]
+    needs: setup
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (!github.event.pull_request.draft &&
        contains(github.event.pull_request.labels.*.name, 'run-ci'))
     runs-on: [self-hosted]
-    timeout-minutes: 15
+    timeout-minutes: 25
     container:
       image: frankleeeee/sglang-omni:dev
       options: --gpus all --rm -v /dev/shm:/dev/shm
@@ -114,54 +78,45 @@ jobs:
 
       - uses: ./.github/actions/omni-setup
         with:
-          venv-name: omni-s2pro
+          venv-name: omni-higgs-tts
 
-      - name: Prepare speaker similarity assets
+      - name: Run Higgs non-streaming benchmark stage
         shell: bash
         run: |
-          source omni-s2pro/bin/activate
-          python -m benchmarks.metrics.speaker_similarity_assets --warm-cache
-        env:
-          HF_ENDPOINT: https://hf-mirror.com
-          SEEDTTS_SIM_CACHE_DIR: /github/home/seedtts-wavlm-sim
-
-      - name: Run benchmark stage
-        shell: bash
-        run: |
-          source omni-s2pro/bin/activate
+          source omni-higgs-tts/bin/activate
           export PYTHONPATH=$PWD
           bash .github/scripts/run_flaky_pytest.sh \
-            pytest tests/test_model/test_s2pro_tts_ci.py -v -s -x --concurrency 16 --s2pro-stage s2pro-stage-1-nonstream
+            pytest -v -s -x \
+              tests/test_model/test_higgs_tts_ci.py::test_higgs_non_streaming_generation \
+              tests/test_model/test_higgs_tts_ci.py::test_higgs_non_streaming_wer
         env:
           HF_ENDPOINT: https://hf-mirror.com
-          SGLANG_SEEDTTS50_DIR: /github/home/seedtts-50
-          SEEDTTS_SIM_CACHE_DIR: /github/home/seedtts-wavlm-sim
-          S2PRO_STAGE_OUTPUT_ROOT: ${{ github.workspace }}/stage-results/nonstream
+          HF_TOKEN: ${{ secrets.BOSON_HF_TOKEN }}
+          HIGGS_STAGE_OUTPUT_ROOT: ${{ github.workspace }}/stage-results/nonstream
           TORCHINDUCTOR_CACHE_DIR: ${{ env.OMNI_CI_HOME }}/.torchinductor
 
       - name: Post-stage cleanup
         if: always()
         uses: ./.github/actions/omni-post-stage
         with:
-          stage-label: S2-Pro stage 1 (non-streaming)
+          stage-label: Higgs TTS stage 1 (non-streaming)
           artifact-search-root: stage-results/nonstream
           artifact-path-globs: |
             */speed_results.json
             */wer_results.json
-            */similarity_results.json
-          artifact-upload-name: s2pro-stage-1-results
+          artifact-upload-name: higgs-stage-1-results
           artifact-upload-path: stage-results/nonstream
           artifact-if-no-files-found: error
 
   stage-2-streaming:
     name: stage 2 - streaming
-    needs: [setup, docs]
+    needs: setup
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (!github.event.pull_request.draft &&
        contains(github.event.pull_request.labels.*.name, 'run-ci'))
     runs-on: [self-hosted]
-    timeout-minutes: 5
+    timeout-minutes: 25
     container:
       image: frankleeeee/sglang-omni:dev
       options: --gpus all --rm -v /dev/shm:/dev/shm
@@ -171,31 +126,33 @@ jobs:
 
       - uses: ./.github/actions/omni-setup
         with:
-          venv-name: omni-s2pro
+          venv-name: omni-higgs-tts
 
-      - name: Run benchmark stage
+      - name: Run Higgs streaming benchmark stage
         shell: bash
         run: |
-          source omni-s2pro/bin/activate
+          source omni-higgs-tts/bin/activate
           export PYTHONPATH=$PWD
           bash .github/scripts/run_flaky_pytest.sh \
-            pytest tests/test_model/test_s2pro_tts_ci.py -v -s -x --concurrency 16 --s2pro-stage s2pro-stage-2-stream
+            pytest -v -s -x \
+              tests/test_model/test_higgs_tts_ci.py::test_higgs_streaming_generation \
+              tests/test_model/test_higgs_tts_ci.py::test_higgs_streaming_wer
         env:
           HF_ENDPOINT: https://hf-mirror.com
-          SGLANG_SEEDTTS50_DIR: /github/home/seedtts-50
-          S2PRO_STAGE_OUTPUT_ROOT: ${{ github.workspace }}/stage-results/stream
+          HF_TOKEN: ${{ secrets.BOSON_HF_TOKEN }}
+          HIGGS_STAGE_OUTPUT_ROOT: ${{ github.workspace }}/stage-results/stream
           TORCHINDUCTOR_CACHE_DIR: ${{ env.OMNI_CI_HOME }}/.torchinductor
 
       - name: Post-stage cleanup
         if: always()
         uses: ./.github/actions/omni-post-stage
         with:
-          stage-label: S2-Pro stage 2 (streaming)
+          stage-label: Higgs TTS stage 2 (streaming)
           artifact-search-root: stage-results/stream
           artifact-path-globs: |
             */speed_results.json
             */wer_results.json
-          artifact-upload-name: s2pro-stage-2-results
+          artifact-upload-name: higgs-stage-2-results
           artifact-upload-path: stage-results/stream
           artifact-if-no-files-found: error
 
@@ -222,13 +179,13 @@ jobs:
       - name: Download stage 1 artifact
         uses: actions/download-artifact@v4
         with:
-          name: s2pro-stage-1-results
+          name: higgs-stage-1-results
           path: stage-artifacts/nonstream
 
       - name: Download stage 2 artifact
         uses: actions/download-artifact@v4
         with:
-          name: s2pro-stage-2-results
+          name: higgs-stage-2-results
           path: stage-artifacts/stream
 
       - name: Run consistency check
@@ -236,17 +193,16 @@ jobs:
         run: |
           export PYTHONPATH=$PWD
           bash .github/scripts/run_flaky_pytest.sh \
-            python -m pytest tests/test_model/test_s2pro_consistency_artifacts.py -v -s -x
+            python -m pytest tests/test_model/test_higgs_consistency_artifacts.py -v -s -x
         env:
-          S2PRO_STAGE1_SPEED_RESULTS_DIR: ${{ github.workspace }}/stage-artifacts/nonstream
-          S2PRO_STAGE2_SPEED_RESULTS_DIR: ${{ github.workspace }}/stage-artifacts/stream
-          S2PRO_CONSISTENCY_CONCURRENCY: "16"
+          HIGGS_STAGE1_SPEED_RESULTS_DIR: ${{ github.workspace }}/stage-artifacts/nonstream
+          HIGGS_STAGE2_SPEED_RESULTS_DIR: ${{ github.workspace }}/stage-artifacts/stream
+          HIGGS_CONSISTENCY_CONCURRENCY: "16"
 
   cleanup:
     name: cleanup - reclaim host cache
     needs:
       - setup
-      - docs
       - stage-1-non-streaming
       - stage-2-streaming
       - stage-3-consistency
