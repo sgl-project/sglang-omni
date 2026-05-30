@@ -79,18 +79,27 @@ jobs:
         with:
           venv-name: omni-tts
 
+      - name: Prepare speaker similarity assets
+        shell: bash
+        run: |
+          source omni-tts/bin/activate
+          python -m benchmarks.metrics.speaker_similarity_assets --warm-cache
+        env:
+          HF_ENDPOINT: https://hf-mirror.com
+          SEEDTTS_SIM_CACHE_DIR: /github/home/seedtts-wavlm-sim
+
       - name: Run TTS non-streaming benchmark stage
         shell: bash
         run: |
           source omni-tts/bin/activate
           export PYTHONPATH=$PWD
           bash .github/scripts/run_flaky_pytest.sh \
-            pytest -v -s -x \
-              tests/test_model/test_tts_ci.py::test_tts_non_streaming_generation \
-              tests/test_model/test_tts_ci.py::test_tts_non_streaming_wer
+            pytest tests/test_model/test_tts_ci.py -v -s -x --concurrency 16 --tts-stage tts-stage-1-nonstream
         env:
           HF_ENDPOINT: https://hf-mirror.com
           HF_TOKEN: ${{ secrets.BOSON_HF_TOKEN }}
+          SGLANG_SEEDTTS50_DIR: /github/home/seedtts-50
+          SEEDTTS_SIM_CACHE_DIR: /github/home/seedtts-wavlm-sim
           TTS_STAGE_OUTPUT_ROOT: ${{ github.workspace }}/stage-results/nonstream
           TORCHINDUCTOR_CACHE_DIR: ${{ env.OMNI_CI_HOME }}/.torchinductor
 
@@ -103,6 +112,7 @@ jobs:
           artifact-path-globs: |
             */speed_results.json
             */wer_results.json
+            */similarity_results.json
           artifact-upload-name: tts-stage-1-results
           artifact-upload-path: stage-results/nonstream
           artifact-if-no-files-found: error
@@ -133,12 +143,11 @@ jobs:
           source omni-tts/bin/activate
           export PYTHONPATH=$PWD
           bash .github/scripts/run_flaky_pytest.sh \
-            pytest -v -s -x \
-              tests/test_model/test_tts_ci.py::test_tts_streaming_generation \
-              tests/test_model/test_tts_ci.py::test_tts_streaming_wer
+            pytest tests/test_model/test_tts_ci.py -v -s -x --concurrency 16 --tts-stage tts-stage-2-stream
         env:
           HF_ENDPOINT: https://hf-mirror.com
           HF_TOKEN: ${{ secrets.BOSON_HF_TOKEN }}
+          SGLANG_SEEDTTS50_DIR: /github/home/seedtts-50
           TTS_STAGE_OUTPUT_ROOT: ${{ github.workspace }}/stage-results/stream
           TORCHINDUCTOR_CACHE_DIR: ${{ env.OMNI_CI_HOME }}/.torchinductor
 
