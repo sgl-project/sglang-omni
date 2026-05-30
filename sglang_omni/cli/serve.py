@@ -627,6 +627,24 @@ def apply_cuda_graph_cli_overrides(
     return pipeline_config
 
 
+def apply_partial_start_cli_overrides(
+    pipeline_config: PipelineConfig,
+    *,
+    talker_partial_start: str,
+) -> PipelineConfig:
+    mode = _normalize_stage_toggle_mode("talker_partial_start", talker_partial_start)
+    if mode == "default":
+        return pipeline_config
+    _apply_stage_factory_args_override(
+        pipeline_config,
+        stage_name="talker_ar",
+        updates={"enable_partial_start": mode == "on"},
+        reason=f"talker partial-start mode to {mode!r}",
+        flag_name="--talker-partial-start",
+    )
+    return pipeline_config
+
+
 def _apply_stage_factory_args_override(
     pipeline_config: PipelineConfig,
     *,
@@ -866,6 +884,19 @@ def serve(
             help="CUDA graph mode for supported SGLang talker stage: default|on|off.",
         ),
     ] = "default",
+    talker_partial_start: Annotated[
+        str,
+        typer.Option(
+            "--talker-partial-start",
+            "--talker_partial_start",
+            help=(
+                "Partial-start mode for the Qwen3-Omni talker stage: "
+                "default|on|off. When on, the talker begins audio generation "
+                "from a partial thinker text stream instead of waiting for the "
+                "full text. 'default' uses the pipeline config default."
+            ),
+        ),
+    ] = "default",
     thinker_torch_compile: Annotated[
         str,
         typer.Option(
@@ -1005,6 +1036,10 @@ def serve(
         merged_config,
         enable_async_decode=enable_async_decode,
         async_decode_min_batch_size=async_decode_min_batch_size,
+    )
+    merged_config = apply_partial_start_cli_overrides(
+        merged_config,
+        talker_partial_start=talker_partial_start,
     )
 
     if _should_print_merged_config(colocate=colocate, log_level=log_level):

@@ -66,7 +66,7 @@ def _make_args(**overrides) -> argparse.Namespace:
         mem_fraction_static=None,
         thinker_mem_fraction_static=None,
         talker_mem_fraction_static=None,
-        enable_partial_start=False,
+        enable_partial_start=True,
         partial_start_min_chunks=5,
         colocated=False,
         host="0.0.0.0",
@@ -147,6 +147,26 @@ def test_partial_start_updates_talker_factory_args(mock_launch_server):
 
     assert talker.factory_args["enable_partial_start"] is True
     assert talker.factory_args["partial_start_min_chunks"] == 7
+
+
+def test_partial_start_defaults_on(mock_launch_server):
+    args = _make_args()
+    _launch_speech_server(args)
+
+    config = mock_launch_server.call_args[0][0]
+    talker = _stage(config, "talker_ar")
+
+    assert talker.factory_args["enable_partial_start"] is True
+
+
+def test_partial_start_can_be_disabled(mock_launch_server):
+    args = _make_args(enable_partial_start=False)
+    _launch_speech_server(args)
+
+    config = mock_launch_server.call_args[0][0]
+    talker = _stage(config, "talker_ar")
+
+    assert talker.factory_args["enable_partial_start"] is False
 
 
 def test_partial_start_min_chunks_rejects_below_floor(mock_launch_server):
