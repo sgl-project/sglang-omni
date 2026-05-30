@@ -1,6 +1,6 @@
 ---
 name: tune-ci-thresholds
-description: Run CI tests N times per stage on the H20 CI-reproduction host, produce a per-metric strict worst-of-N observation report (every stage must have N full-sample repeats), and (on user confirmation) write the worst-of-N values back into the test files as new baselines. Use when recalibrating CI thresholds after an engine update. Currently supports qwen3-omni-v1 and s2-pro-v1; extensible via models/<name>/config.yaml.
+description: Run CI tests N times per stage on the H20 CI-reproduction host, produce a per-metric strict worst-of-N observation report (every stage must have N full-sample repeats), and (on user confirmation) write the worst-of-N values back into the test files as new baselines. Use when recalibrating CI thresholds after an engine update. Currently supports qwen3-omni-v1 and higgs-tts; extensible via models/<name>/config.yaml.
 ---
 
 # tune-ci-thresholds
@@ -221,7 +221,7 @@ List what's configured:
 ```
 python .claude/skills/tune-ci-thresholds/tune.py models-list
 ```
-Today: `qwen3-omni-v1`, `s2-pro-v1`. To add another model,
+Today: `qwen3-omni-v1`, `higgs-tts`. To add another model,
 drop in a new `models/<name>/config.yaml` and run `tune.py discover
 --model <name>`. No Python code changes needed unless the new model
 emits metrics with a
@@ -327,6 +327,14 @@ python .claude/skills/tune-ci-thresholds/tune.py --model qwen3-omni-v1 run \
   --repeats 5 --output-dir .tune-runs/<timestamp>_qwen3-omni-v1_fp8_stage_11_r5
 ```
 
+Common Higgs TTS preset:
+```
+# Full Higgs TTS threshold stages: nonstream speed/WER and stream speed/WER.
+python .claude/skills/tune-ci-thresholds/tune.py --model higgs-tts run \
+  --stages tts \
+  --repeats 5 --output-dir .tune-runs/<timestamp>_higgs-tts_tts_r5
+```
+
 ## Environment and networking notes
 - Some CI-reproduction hosts need outbound network proxies or a
   HuggingFace mirror. Keep those values environment-specific and do not
@@ -365,14 +373,14 @@ not merely run the same pytest command.
 | | `/github/home/.cache/modelscope` | `MODELSCOPE_CACHE` |
 | | `/github/home/.cache/uv` | `UV_CACHE_DIR`; PyPI wheels |
 | | `/github/home/.cache/flashinfer-jit-cache/` | Host-resident flashinfer-jit-cache **wheel**; download only when pin changes |
-| **Per slice (`OMNI_CI_HOME`)** | `<OMNI_CI_HOME>/omni-qwen3` or `omni-s2pro` | Python venv |
+| **Per slice (`OMNI_CI_HOME`)** | `<OMNI_CI_HOME>/omni-qwen3` or `omni-higgs-tts` | Python venv |
 | | `<OMNI_CI_HOME>/.cache` | `XDG_CACHE_HOME`; uv/torch compile artifacts |
 | | `<OMNI_CI_HOME>/.cache/flashinfer` | Runtime FlashInfer JIT dir — **safe to delete** between runs |
 | | `<OMNI_CI_HOME>/.torchinductor` | `TORCHINDUCTOR_CACHE_DIR` |
 
-- **CI Actions runners** use `OMNI_CI_HOME=/github/home/pr-<N>/qwen3` (or `/s2pro`, `/unit`).
+- **CI Actions runners** use `OMNI_CI_HOME=/github/home/pr-<N>/qwen3` (or `/higgs-tts`, `/unit`).
 - **Calibration host** uses fixed slices from each model's `config.yaml`:
-  `omni_ci_home: /github/home/calibration/qwen3` (or `.../s2pro`).
+  `omni_ci_home: /github/home/calibration/qwen3` (or `.../higgs-tts`).
 - `tune.py` / `runner.py` apply `auto_env` from `config.yaml` and **override** shell env to match CI.
 
 ### Prepare a calibration venv (only when precheck proves venv missing or corrupt)
@@ -384,7 +392,7 @@ pins cannot be fixed with `uv pip install -e .`.
 From repo root on the H20 repro host (`frankleeeee/sglang-omni:dev` semantics):
 
 ```bash
-# Qwen3-Omni example (S2-Pro: OMNI_CI_HOME=/github/home/calibration/s2pro, venv omni-s2pro)
+# Qwen3-Omni example (Higgs TTS: OMNI_CI_HOME=/github/home/calibration/higgs-tts, venv omni-higgs-tts)
 export OMNI_CI_HOME=/github/home/calibration/qwen3
 export HOME=/github/home
 export HF_HOME=/github/home/.cache/huggingface
@@ -946,7 +954,7 @@ Two gates — **both** required before apply:
     ├── qwen3-omni-v1/                   # v1 pipeline (qwen3-omni)
     │   ├── config.yaml
     │   └── stages.yaml
-    ├── s2-pro-v1/                       # v1 pipeline (FishAudio S2-Pro,
+    ├── higgs-tts/                       # Higgs TTS pipeline
     │   ├── config.yaml                  #   uses per-test-file `variants`)
     │   └── stages.yaml
     └── whisper-asr-v1/                  # Whisper large-v3 ASR (omni-s2pro venv)
@@ -987,8 +995,8 @@ The `metric_sources` block in `config.yaml` declares, per test file:
   variants via the alias system.
 
 Config.yaml entries always override auto-inferred values. For TTS tests
-(`tmp_path_factory`-based), auto-inference is not available — config.yaml
-entries are required.
+with shared generation/WER artifacts, auto-inference is not available —
+config.yaml entries are required.
 
 ## Regenerating stages.yaml
 If a test file's sha256 no longer matches `models/<M>/stages.yaml`,
