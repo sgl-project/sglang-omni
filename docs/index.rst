@@ -1,15 +1,14 @@
 SGLang-Omni
 =======================
 
-SGLang-Omni is an ecosystem project for SGLang.
-Omni models refer to models that have multi-modal inputs and multi-modal outputs.
-These models typically consist of multiple stages, making SGLang's LLM-specific architecture no longer suitable.
-Therefore, SGLang-Omni is designed to provide the ability to orchestrate multi-stage pipeline with high performance and real-time API support.
-Our core features include:
+SGLang-Omni is a high-performance serving framework for omni and multimodal models, built on top of `SGLang <https://github.com/sgl-project/sglang>`_. It is designed to orchestrate multi-stage pipelines with low latency and OpenAI-compatible APIs.
 
-- Native Integration with SGLang for performance
-- Multi-Stage Pipeline Framework for Omni Models
-- OpenAI-Compatible Server with Real-Time API support
+Core features:
+
+- **Multi-Stage Pipeline**: Flexible framework for orchestrating preprocessing, AR engine, codec, and vocoder stages across processes and GPUs.
+- **Native SGLang Integration**: Leverages SGLang's RadixAttention, continuous batching, and CUDA Graph optimizations for the AR backbone.
+- **OpenAI-Compatible Server**: Drop-in ``/v1/audio/speech`` and ``/v1/chat/completions`` endpoints with real-time streaming support.
+- **Broad Model Support**: Supports a growing set of TTS and omni models including Higgs Audio, Fish Audio S2-Pro, Voxtral TTS, Qwen3 TTS, Qwen3-Omni, Ming-Omni, and LLaDA2.0-Uni.
 
 
 .. toctree::
