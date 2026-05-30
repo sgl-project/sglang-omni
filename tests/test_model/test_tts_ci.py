@@ -83,9 +83,9 @@ TTS_STAGE_OUTPUT_ROOT_ENV = "TTS_STAGE_OUTPUT_ROOT"
 TTS_STAGE1_SPEED_RESULTS_DIR_ENV = "TTS_STAGE1_SPEED_RESULTS_DIR"
 TTS_STAGE2_SPEED_RESULTS_DIR_ENV = "TTS_STAGE2_SPEED_RESULTS_DIR"
 
-# Note (Chenyang): The streaming mode evaluation is only run at first 32.
-
-STREAMING_BENCHMARK_MAX_SAMPLES = 32
+# Keep both non-streaming and streaming CI stages on the full SeedTTS EN split.
+SEEDTTS_EN_FULLSET_SAMPLES = 1088
+STREAMING_BENCHMARK_MAX_SAMPLES: int | None = None
 
 # Note (chenyang): the RTF thresholds also includes the reference audio
 # processing time.
@@ -106,12 +106,10 @@ VC_WER_MAX_PER_SAMPLE = 0.16666666666666666
 VC_STREAM_WER_MAX_CORPUS = 0.013262599469496022
 VC_STREAM_WER_CORPUS_THRESHOLD = apply_wer_slack(VC_STREAM_WER_MAX_CORPUS)
 VC_STREAM_WER_MAX_PER_SAMPLE = 0.16666666666666666
-# Calibrated per PR #469 review (item 5): worst-of-5 = 63.24, mean = 63.74,
-# stdev = 0.56 over 5 independent SeedTTS-50 EN runs on H200 (Spec GPU 4-7),
-# same scorer (popsoda2002/seedtts-wavlm-sim @ wavlm_large_finetune.pth).
-# All five comfortably above 60.0 (margin +5.4%) — current floor has
-# worst-of-5 support. See the "Speaker similarity calibration" section of
-# the PR description for the full per-run table.
+# Historical calibration from five independent SeedTTS EN subset runs on H200
+# (Spec GPU 4-7), same scorer (popsoda2002/seedtts-wavlm-sim @
+# wavlm_large_finetune.pth). Keep this loose floor until the full-set TTS
+# speaker-similarity calibration is refreshed.
 VC_SIMILARITY_MEAN_MIN = 60.0
 
 # Note (Chenyang): Only thresholds for the CI concurrency are dedicatedly tuned,
@@ -483,9 +481,44 @@ def _print_stage(stage: str, mode: str, concurrency: int, details: str = "") -> 
     print(message)
 
 
+def _sample_scope_label(max_samples: int | None) -> str:
+    if max_samples is None:
+        return "full SeedTTS EN set"
+    return f"max_samples={max_samples}"
+
+
+def _assert_full_seedtts_en_speed_results(
+    results: dict,
+    *,
+    label: str,
+    collector: MetricCheckCollector,
+) -> None:
+    per_request = results.get("per_request") or []
+    collector.check(
+        len(per_request) == SEEDTTS_EN_FULLSET_SAMPLES,
+        f"{label} generated {len(per_request)}/{SEEDTTS_EN_FULLSET_SAMPLES} "
+        "SeedTTS EN samples",
+    )
+
+
+def _assert_full_seedtts_en_wer_results(
+    results: dict,
+    *,
+    label: str,
+    collector: MetricCheckCollector,
+) -> None:
+    summary = results.get("summary") or {}
+    total_samples = summary.get("total_samples")
+    collector.check(
+        total_samples == SEEDTTS_EN_FULLSET_SAMPLES,
+        f"{label} WER total_samples={total_samples}, expected "
+        f"{SEEDTTS_EN_FULLSET_SAMPLES}",
+    )
+
+
 @pytest.fixture(scope="module")
 def dataset_repo() -> str:
-    repo_id = DATASETS["seedtts-50"]
+    repo_id = DATASETS["seedtts"]
     download_dataset(repo_id, quiet=True)
     return repo_id
 
@@ -585,6 +618,11 @@ def test_voice_cloning_non_streaming(
                 concurrency=concurrency,
             )
             checks = MetricCheckCollector(f"TTS non-streaming benchmark c{concurrency}")
+            _assert_full_seedtts_en_speed_results(
+                results,
+                label=f"TTS non-stream c{concurrency}",
+                collector=checks,
+            )
             _assert_stage_used_all_router_workers(
                 router_server=router_server,
                 before_workers=before_workers,
@@ -618,7 +656,8 @@ def test_voice_cloning_streaming(
             "TTS speed",
             "streaming",
             concurrency,
-            f"max_samples={STREAMING_BENCHMARK_MAX_SAMPLES} | generate WAVs for WER",
+            f"{_sample_scope_label(STREAMING_BENCHMARK_MAX_SAMPLES)} | "
+            "generate WAVs for WER",
         )
         output_dir = _resolve_stage_output_dir(tmp_path, f"vc_stream_c{concurrency}")
         before_workers = router_get_json(router_server.port, "/workers")
@@ -632,6 +671,11 @@ def test_voice_cloning_streaming(
                 stream=True,
             )
             checks = MetricCheckCollector(f"TTS streaming benchmark c{concurrency}")
+            _assert_full_seedtts_en_speed_results(
+                results,
+                label=f"TTS stream c{concurrency}",
+                collector=checks,
+            )
             _assert_stage_used_all_router_workers(
                 router_server=router_server,
                 before_workers=before_workers,
@@ -671,7 +715,7 @@ def test_voice_cloning_streaming_consistency(
         assert_streaming_consistency(
             ns,
             st,
-            expected_stream_count=STREAMING_BENCHMARK_MAX_SAMPLES,
+            expected_stream_count=len(ns),
             collector=checks,
         )
     checks.assert_all()
@@ -697,6 +741,11 @@ def test_voice_cloning_wer(
             dataset_repo,
             wer_input_dirs["non_stream"][concurrency],
             whisper_router_port=omni_whisper_wer_router.port,
+        )
+        _assert_full_seedtts_en_wer_results(
+            results,
+            label=f"TTS non-stream c{concurrency}",
+            collector=checks,
         )
         assert_wer_results(
             results,
@@ -746,13 +795,19 @@ def test_voice_cloning_streaming_wer(
             "WER",
             "streaming",
             concurrency,
-            f"transcribe {STREAMING_BENCHMARK_MAX_SAMPLES} speed-stage WAVs",
+            f"transcribe {_sample_scope_label(STREAMING_BENCHMARK_MAX_SAMPLES)} "
+            "speed-stage WAVs",
         )
         results = _run_wer_transcribe(
             dataset_repo,
             wer_input_dirs["stream"][concurrency],
             stream=True,
             whisper_router_port=omni_whisper_wer_router.port,
+        )
+        _assert_full_seedtts_en_wer_results(
+            results,
+            label=f"TTS stream c{concurrency}",
+            collector=checks,
         )
         assert_wer_results(
             results,

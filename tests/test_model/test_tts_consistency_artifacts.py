@@ -42,7 +42,7 @@ TTS_STAGE1_SPEED_RESULTS_DIR_ENV = "TTS_STAGE1_SPEED_RESULTS_DIR"
 TTS_STAGE2_SPEED_RESULTS_DIR_ENV = "TTS_STAGE2_SPEED_RESULTS_DIR"
 TTS_CONSISTENCY_CONCURRENCY_ENV = "TTS_CONSISTENCY_CONCURRENCY"
 DEFAULT_CONSISTENCY_CONCURRENCY = 16
-STREAMING_BENCHMARK_MAX_SAMPLES = 32
+SEEDTTS_EN_FULLSET_SAMPLES = 1088
 
 
 def _load_speed_results(results_root_env: str, output_dir_name: str) -> dict:
@@ -87,10 +87,20 @@ def test_tts_streaming_consistency_from_artifacts() -> None:
     )
 
     checks = MetricCheckCollector("TTS artifact streaming consistency")
+    checks.check(
+        len(non_stream_results["per_request"]) == SEEDTTS_EN_FULLSET_SAMPLES,
+        f"non-stream artifact has {len(non_stream_results['per_request'])}/"
+        f"{SEEDTTS_EN_FULLSET_SAMPLES} SeedTTS EN samples",
+    )
+    checks.check(
+        len(stream_results["per_request"]) == SEEDTTS_EN_FULLSET_SAMPLES,
+        f"stream artifact has {len(stream_results['per_request'])}/"
+        f"{SEEDTTS_EN_FULLSET_SAMPLES} SeedTTS EN samples",
+    )
     assert_streaming_consistency(
         non_stream_results["per_request"],
         stream_results["per_request"],
-        expected_stream_count=STREAMING_BENCHMARK_MAX_SAMPLES,
+        expected_stream_count=len(non_stream_results["per_request"]),
         collector=checks,
     )
     checks.assert_all()

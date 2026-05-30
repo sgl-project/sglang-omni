@@ -16,7 +16,7 @@ name: tts
 description: "TTS CI"
 hf_model_id: "boson-sglang/higgs-audio-v3-TTS-4B-grpo05200410999"
 hf_datasets:
-  - "zhaochenyang20/seed-tts-eval-50-arrow"
+  - "zhaochenyang20/seed-tts-eval-arrow"
 omni_ci_home: "/github/home/calibration/tts"
 default_venv_python:
   - "/sgl-workspace/sglang-omni/omni-tts/bin/python"

@@ -183,8 +183,9 @@ Relevant model CI ownership:
   teardown.
 - `test_tts_ci.py`: default TTS CI gate. It starts the TTS managed router
   with two one-GPU workers using the default model config, runs the
-  SeedTTS-50 non-streaming / streaming stages at concurrency 16, and frees
-  the server GPUs before ASR/WER and speaker-similarity checks.
+  full SeedTTS EN set (1088 samples) in non-streaming / streaming stages at
+  concurrency 16, and frees the server GPUs before ASR/WER and
+  speaker-similarity checks.
 - `test_tts_consistency_artifacts.py`: CPU-only stage-3 check that compares
   downloaded TTS non-stream and streaming JSON artifacts.
 - CLI flags `--tts-stage {tts-stage-1-nonstream,tts-stage-2-stream,tts-stage-3-consistency,all}`
