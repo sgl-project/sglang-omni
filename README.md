@@ -12,7 +12,7 @@
 --------------------------------------------------------------------------------
 
 <p align="center">
-<a href="https://sglang-omni.readthedocs.io/"><b>Documentation</b></a> |
+<a href="https://docs.sglang-omni.ai/"><b>Documentation</b></a> |
 <a href="./benchmarks/README.md"><b>Benchmarks</b></a> |
 <a href="./examples/README.md"><b>Examples</b></a>
 </p>
