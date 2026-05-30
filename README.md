@@ -4,6 +4,8 @@
 [![license](https://img.shields.io/github/license/sgl-project/sglang-omni.svg)](https://github.com/sgl-project/sglang-omni/tree/main/LICENSE)
 [![issue resolution](https://img.shields.io/github/issues-closed-raw/sgl-project/sglang-omni)](https://github.com/sgl-project/sglang-omni/issues)
 [![open issues](https://img.shields.io/github/issues-raw/sgl-project/sglang-omni)](https://github.com/sgl-project/sglang-omni/issues)
+[![Slack](https://img.shields.io/badge/slack-sglang-blue?logo=slack)](https://slack.sglang.ai)
+[![DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/sgl-project/sglang-omni)
 
 </div>
 
