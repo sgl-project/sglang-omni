@@ -84,6 +84,19 @@ class ModelWorker:
     def _apply_arch_override(model_config: ModelConfig, arch: str) -> None:
         """Override model config for a sub-model architecture."""
         model_config.hf_config.architectures = [arch]
+        if arch == "WhisperForConditionalGeneration":
+            cfg = model_config.hf_config
+            model_config.hf_text_config = cfg
+            model_config.is_encoder_decoder = True
+            model_config.hidden_size = int(cfg.d_model)
+            model_config.num_attention_heads = int(cfg.decoder_attention_heads)
+            model_config.num_key_value_heads = int(cfg.decoder_attention_heads)
+            model_config.num_hidden_layers = int(cfg.decoder_layers)
+            model_config.num_attention_layers = int(cfg.decoder_layers) * 2
+            model_config.vocab_size = int(cfg.vocab_size)
+            model_config.head_dim = int(cfg.d_model) // int(cfg.decoder_attention_heads)
+            model_config.v_head_dim = model_config.head_dim
+            return
         entry = _ARCH_CONFIG_MAP.get(arch)
         if entry is None:
             return

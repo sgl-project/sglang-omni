@@ -81,10 +81,11 @@ SIMILARITY_CHECKPOINT_ENV = "SEEDTTS_SIM_CHECKPOINT"
 TTS_STAGE_OUTPUT_ROOT_ENV = "TTS_STAGE_OUTPUT_ROOT"
 TTS_STAGE1_SPEED_RESULTS_DIR_ENV = "TTS_STAGE1_SPEED_RESULTS_DIR"
 TTS_STAGE2_SPEED_RESULTS_DIR_ENV = "TTS_STAGE2_SPEED_RESULTS_DIR"
+TTS_ASR_BASE_URL_ENV = "TTS_ASR_BASE_URL"
+TTS_ASR_CONCURRENCY_ENV = "TTS_ASR_CONCURRENCY"
 
-# Note (Chenyang): The streaming mode evaluation is only run at first 32.
-
-STREAMING_BENCHMARK_MAX_SAMPLES = 32
+# Run both non-streaming and streaming stages on the full English SeedTTS split.
+STREAMING_BENCHMARK_MAX_SAMPLES: int | None = None
 
 # Note (chenyang): the RTF thresholds also includes the reference audio
 # processing time.
@@ -205,6 +206,12 @@ def _run_wer_transcribe(
     ]
     if stream:
         cmd.append("--stream")
+    asr_base_url = os.environ.get(TTS_ASR_BASE_URL_ENV)
+    if asr_base_url:
+        cmd += ["--asr-base-url", asr_base_url]
+        asr_concurrency = os.environ.get(TTS_ASR_CONCURRENCY_ENV)
+        if asr_concurrency:
+            cmd += ["--asr-concurrency", asr_concurrency]
 
     env = no_proxy_env()
     existing_pp = env.get("PYTHONPATH", "")
@@ -499,7 +506,7 @@ def _print_stage(stage: str, mode: str, concurrency: int, details: str = "") -> 
 
 @pytest.fixture(scope="module")
 def dataset_repo() -> str:
-    repo_id = DATASETS["seedtts-50"]
+    repo_id = DATASETS["seedtts"]
     download_dataset(repo_id, quiet=True)
     return repo_id
 
@@ -631,7 +638,7 @@ def test_voice_cloning_streaming(
             "TTS speed",
             "streaming",
             concurrency,
-            f"max_samples={STREAMING_BENCHMARK_MAX_SAMPLES} | generate WAVs for WER",
+            "full English set | generate WAVs for WER",
         )
         output_dir = _resolve_stage_output_dir(tmp_path, f"vc_stream_c{concurrency}")
         before_workers = router_get_json(router_server.port, "/workers")
@@ -684,7 +691,7 @@ def test_voice_cloning_streaming_consistency(
         assert_streaming_consistency(
             ns,
             st,
-            expected_stream_count=STREAMING_BENCHMARK_MAX_SAMPLES,
+            expected_stream_count=len(ns),
             collector=checks,
         )
     checks.assert_all()
@@ -756,7 +763,7 @@ def test_voice_cloning_streaming_wer(
             "WER",
             "streaming",
             concurrency,
-            f"transcribe {STREAMING_BENCHMARK_MAX_SAMPLES} speed-stage WAVs",
+            "transcribe full speed-stage WAVs",
         )
         results = _run_wer_transcribe(
             dataset_repo,

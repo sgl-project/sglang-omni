@@ -208,6 +208,8 @@ class TtsSeedttsBenchmarkConfig:
     # Transcribe phase
     lang: str = "en"
     device: str = "cuda:0"
+    asr_base_url: str | None = None
+    asr_concurrency: int = 16
     similarity_checkpoint: str | None = None
 
 
@@ -359,6 +361,8 @@ def _config_from_args(args: argparse.Namespace) -> TtsSeedttsBenchmarkConfig:
         disable_tqdm=args.disable_tqdm,
         lang=args.lang,
         device=args.device,
+        asr_base_url=args.asr_base_url,
+        asr_concurrency=args.asr_concurrency,
         similarity_checkpoint=args.similarity_checkpoint,
     )
 
@@ -488,6 +492,21 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         type=str,
         default="cuda:0",
         help="Device for ASR model (transcribe phase).",
+    )
+    parser.add_argument(
+        "--asr-base-url",
+        type=str,
+        default=None,
+        help=(
+            "Optional SGLang-Omni ASR server base URL for WER transcription "
+            "(for example http://127.0.0.1:30000). When set, --device is ignored."
+        ),
+    )
+    parser.add_argument(
+        "--asr-concurrency",
+        type=int,
+        default=16,
+        help="Concurrent /v1/audio/transcriptions requests for remote ASR.",
     )
     parser.add_argument(
         "--similarity-checkpoint",

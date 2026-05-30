@@ -179,6 +179,15 @@ def transcribe_and_compute_wer(
         logger.error(f"[{output.sample_id}] {output.error}")
         return output
 
+    return compute_wer_from_transcript(output, hyp_text, lang)
+
+
+def compute_wer_from_transcript(
+    output: SampleOutput,
+    hyp_text: str,
+    lang: str,
+) -> SampleOutput:
+    """Compute per-sample WER metrics from a precomputed ASR transcript."""
     output.whisper_text = hyp_text
     output.ref_norm = normalize_text(output.target_text, lang)
     output.hyp_norm = normalize_text(hyp_text, lang)
@@ -529,6 +538,8 @@ class SeedttsTranscribeConfig(Protocol):
     output_dir: str
     lang: str
     device: str
+    asr_base_url: str | None
+    asr_concurrency: int
 
 
 def build_base_url(config: ServerEndpointConfig) -> str:
@@ -557,6 +568,92 @@ def _transcribe_one_entry(
     output = transcribe_and_compute_wer(output, entry["wav_path"], asr, lang, device)
     output.asr_latency_s = time.perf_counter() - asr_t0
     return output
+
+
+async def _transcribe_one_entry_remote(
+    entry: dict,
+    *,
+    session: aiohttp.ClientSession,
+    base_url: str,
+    lang: str,
+    semaphore: asyncio.Semaphore,
+) -> SampleOutput:
+    """Transcribe one generated WAV through a remote ASR HTTP server."""
+    output = SampleOutput(
+        sample_id=entry["sample_id"],
+        target_text=entry["target_text"],
+    )
+    if not entry.get("is_success", False):
+        output.error = f"Generation failed: {entry.get('error', 'unknown')}"
+        return output
+
+    output.latency_s = entry.get("latency_s", 0.0)
+    output.audio_duration_s = entry.get("audio_duration_s", 0.0)
+    asr_t0 = time.perf_counter()
+    try:
+        wav_path = entry["wav_path"]
+        with open(wav_path, "rb") as audio_file:
+            audio_bytes = audio_file.read()
+
+        form = aiohttp.FormData()
+        form.add_field("model", "openai/whisper-large-v3")
+        form.add_field("language", lang)
+        form.add_field(
+            "file",
+            audio_bytes,
+            filename=os.path.basename(wav_path),
+            content_type="audio/wav",
+        )
+        async with semaphore:
+            async with session.post(
+                f"{base_url.rstrip('/')}/v1/audio/transcriptions",
+                data=form,
+            ) as response:
+                if response.status != 200:
+                    error_text = await response.text()
+                    raise RuntimeError(f"HTTP {response.status}: {error_text}")
+                result = await response.json()
+        hyp_text = str(result.get("text") or "")
+    except Exception as exc:
+        output.error = f"Transcription failed: {exc}"
+        logger.error(f"[{output.sample_id}] {output.error}")
+        return output
+
+    output.asr_latency_s = time.perf_counter() - asr_t0
+    return compute_wer_from_transcript(output, hyp_text, lang)
+
+
+async def _run_remote_asr_transcribe(
+    generated: list[dict],
+    *,
+    base_url: str,
+    lang: str,
+    concurrency: int,
+) -> list[SampleOutput]:
+    """Transcribe saved WAVs through /v1/audio/transcriptions concurrently."""
+    timeout = aiohttp.ClientTimeout(total=None, sock_connect=30, sock_read=300)
+    semaphore = asyncio.Semaphore(max(int(concurrency), 1))
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        tasks = [
+            asyncio.create_task(
+                _transcribe_one_entry_remote(
+                    entry,
+                    session=session,
+                    base_url=base_url,
+                    lang=lang,
+                    semaphore=semaphore,
+                )
+            )
+            for entry in generated
+        ]
+        outputs: list[SampleOutput] = []
+        for task in tqdm(
+            asyncio.as_completed(tasks),
+            total=len(tasks),
+            desc="WER transcribe",
+        ):
+            outputs.append(await task)
+        return outputs
 
 
 def _log_transcribe_result(
@@ -605,7 +702,10 @@ def run_seedtts_transcribe(
         - ``asr_speed``:   ASR transcription latency/throughput metrics
         - ``per_sample``:  list[SampleOutput] with per-sample details
     """
-    if "cuda" in config.device:
+    asr_base_url = getattr(config, "asr_base_url", None)
+    if asr_base_url:
+        logger.info("Using remote ASR server at %s", asr_base_url)
+    elif "cuda" in config.device:
         torch.cuda.set_device(config.device)
         logger.info(f"Set ASR CUDA device to {config.device}")
 
@@ -614,22 +714,32 @@ def run_seedtts_transcribe(
         generated: list[dict] = json.load(f)
     logger.info(f"Loaded {len(generated)} entries from {generated_path}")
 
-    asr = load_asr_model(config.lang, config.device, generation_mode)
-
-    tqdm_desc = (
-        f"Transcribing ({config.lang})" if not generation_mode else "WER transcribe"
-    )
-    outputs: list[SampleOutput] = []
-    for idx, entry in enumerate(tqdm(generated, desc=tqdm_desc)):
-        output = _transcribe_one_entry(entry, asr, config.lang, config.device)
-        outputs.append(output)
-        _log_transcribe_result(
-            idx=idx,
-            total=len(generated),
-            entry=entry,
-            output=output,
-            log_per_sample=log_per_sample,
+    if asr_base_url:
+        outputs = asyncio.run(
+            _run_remote_asr_transcribe(
+                generated,
+                base_url=asr_base_url,
+                lang=config.lang,
+                concurrency=getattr(config, "asr_concurrency", 16),
+            )
         )
+    else:
+        asr = load_asr_model(config.lang, config.device, generation_mode)
+
+        tqdm_desc = (
+            f"Transcribing ({config.lang})" if not generation_mode else "WER transcribe"
+        )
+        outputs = []
+        for idx, entry in enumerate(tqdm(generated, desc=tqdm_desc)):
+            output = _transcribe_one_entry(entry, asr, config.lang, config.device)
+            outputs.append(output)
+            _log_transcribe_result(
+                idx=idx,
+                total=len(generated),
+                entry=entry,
+                output=output,
+                log_per_sample=log_per_sample,
+            )
 
     wer_metrics = calculate_wer_metrics(outputs, config.lang)
     asr_metrics = calculate_asr_speed_metrics(outputs)

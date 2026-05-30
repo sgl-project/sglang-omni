@@ -19,6 +19,7 @@ from sglang_omni.serve.openai_api import (
     _chat_stream,
     _speech_stream,
     build_speech_generate_request,
+    build_transcription_generate_request,
 )
 from sglang_omni.serve.protocol import ChatCompletionRequest, CreateSpeechRequest
 from tests.unit_test.fixtures.pipeline_fakes import RecordingCoordinatorControlPlane
@@ -101,6 +102,27 @@ class SuccessfulSpeechClient:
             sample_rate=24000,
             finish_reason="stop",
         )
+
+
+class SuccessfulTranscriptionClient:
+    def __init__(self) -> None:
+        self.requests: list[GenerateRequest] = []
+
+    def health(self) -> dict[str, Any]:
+        return {"running": True}
+
+    async def completion(
+        self,
+        request: GenerateRequest,
+        *,
+        request_id: str,
+        audio_format: str = "wav",
+    ):
+        from sglang_omni.client.types import CompletionResult
+
+        del request_id, audio_format
+        self.requests.append(request)
+        return CompletionResult(request_id="transcription-1", text="hello world")
 
 
 @pytest.mark.parametrize("model_name", MODEL_FAMILIES)
@@ -232,3 +254,47 @@ def test_speech_request_records_explicit_generation_params() -> None:
         "temperature",
         "top_k",
     ]
+
+
+def test_transcription_request_builds_asr_generate_request() -> None:
+    gen_req = build_transcription_generate_request(
+        audio_bytes=b"RIFF",
+        filename="sample.wav",
+        content_type="audio/wav",
+        model="openai/whisper-large-v3",
+        language="en",
+        prompt=None,
+        temperature=None,
+    )
+
+    assert gen_req.model == "openai/whisper-large-v3"
+    assert gen_req.prompt == {
+        "audio_bytes": b"RIFF",
+        "filename": "sample.wav",
+        "content_type": "audio/wav",
+    }
+    assert gen_req.extra_params == {"task": "transcribe", "language": "en"}
+    assert gen_req.metadata == {"task": "asr"}
+    assert gen_req.output_modalities == ["text"]
+    assert gen_req.stream is False
+
+
+def test_transcription_endpoint_returns_text_json() -> None:
+    transcription_client = SuccessfulTranscriptionClient()
+    client = TestClient(
+        create_app(transcription_client, model_name="openai/whisper-large-v3")
+    )
+
+    response = client.post(
+        "/v1/audio/transcriptions",
+        data={"model": "openai/whisper-large-v3", "language": "en"},
+        files={"file": ("sample.wav", b"RIFF", "audio/wav")},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"text": "hello world"}
+    assert transcription_client.requests
+    request = transcription_client.requests[0]
+    assert request.model == "openai/whisper-large-v3"
+    assert request.prompt["filename"] == "sample.wav"
+    assert request.extra_params["language"] == "en"

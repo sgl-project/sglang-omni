@@ -20,9 +20,14 @@ import time
 import uuid
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, WebSocket
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, Response, StreamingResponse
+from fastapi.responses import (
+    JSONResponse,
+    PlainTextResponse,
+    Response,
+    StreamingResponse,
+)
 
 from sglang_omni.client import (
     Client,
@@ -48,6 +53,7 @@ from sglang_omni.serve.protocol import (
     CreateSpeechRequest,
     ModelCard,
     ModelList,
+    TranscriptionResponse,
     UsageResponse,
 )
 
@@ -103,6 +109,7 @@ def create_app(
     _register_models(app)
     _register_chat_completions(app)
     _register_speech(app)
+    _register_transcriptions(app)
     if enable_realtime:
         _register_realtime(app)
 
@@ -715,3 +722,86 @@ def build_speech_generate_request(
 
 
 _build_speech_generate_request = build_speech_generate_request
+
+
+def _register_transcriptions(app: FastAPI) -> None:
+    @app.post("/v1/audio/transcriptions")
+    async def create_transcription(
+        file: UploadFile = File(...),
+        model: str | None = Form(default=None),
+        language: str | None = Form(default=None),
+        prompt: str | None = Form(default=None),
+        response_format: str = Form(default="json"),
+        temperature: float | None = Form(default=None),
+    ) -> Response:
+        client: Client = app.state.client
+        default_model: str = app.state.model_name
+        request_id = f"transcription-{uuid.uuid4()}"
+
+        audio_bytes = await file.read()
+        if not audio_bytes:
+            raise HTTPException(status_code=400, detail="Uploaded audio file is empty")
+
+        gen_req = build_transcription_generate_request(
+            audio_bytes=audio_bytes,
+            filename=file.filename,
+            content_type=file.content_type,
+            model=model or default_model,
+            language=language,
+            prompt=prompt,
+            temperature=temperature,
+        )
+
+        try:
+            result = await client.completion(gen_req, request_id=request_id)
+        except ClientError as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+        except Exception as exc:
+            logger.exception("Error transcribing audio for request %s", request_id)
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+        text = result.text
+        normalized_response_format = response_format.strip().lower()
+        if normalized_response_format == "text":
+            return PlainTextResponse(text)
+        if normalized_response_format not in {"json", "verbose_json"}:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Unsupported response_format for /v1/audio/transcriptions: "
+                    f"{response_format!r}"
+                ),
+            )
+        return JSONResponse(content=TranscriptionResponse(text=text).model_dump())
+
+
+def build_transcription_generate_request(
+    *,
+    audio_bytes: bytes,
+    filename: str | None,
+    content_type: str | None,
+    model: str,
+    language: str | None,
+    prompt: str | None,
+    temperature: float | None,
+) -> GenerateRequest:
+    params: dict[str, Any] = {"task": "transcribe"}
+    if language is not None:
+        params["language"] = language
+    if prompt is not None:
+        params["prompt"] = prompt
+    if temperature is not None:
+        params["temperature"] = temperature
+
+    return GenerateRequest(
+        model=model,
+        prompt={
+            "audio_bytes": audio_bytes,
+            "filename": filename,
+            "content_type": content_type,
+        },
+        extra_params=params,
+        stream=False,
+        output_modalities=["text"],
+        metadata={"task": "asr"},
+    )

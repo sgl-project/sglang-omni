@@ -42,7 +42,6 @@ TTS_STAGE1_SPEED_RESULTS_DIR_ENV = "TTS_STAGE1_SPEED_RESULTS_DIR"
 TTS_STAGE2_SPEED_RESULTS_DIR_ENV = "TTS_STAGE2_SPEED_RESULTS_DIR"
 TTS_CONSISTENCY_CONCURRENCY_ENV = "TTS_CONSISTENCY_CONCURRENCY"
 DEFAULT_CONSISTENCY_CONCURRENCY = 16
-STREAMING_BENCHMARK_MAX_SAMPLES = 32
 
 
 def _load_speed_results(results_root_env: str, output_dir_name: str) -> dict:
@@ -90,7 +89,7 @@ def test_tts_streaming_consistency_from_artifacts() -> None:
     assert_streaming_consistency(
         non_stream_results["per_request"],
         stream_results["per_request"],
-        expected_stream_count=STREAMING_BENCHMARK_MAX_SAMPLES,
+        expected_stream_count=len(non_stream_results["per_request"]),
         collector=checks,
     )
     checks.assert_all()
