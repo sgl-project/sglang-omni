@@ -256,8 +256,7 @@ def _validate_runtime_sources(
     )
 
     leaked = sorted(
-        _TP_LAUNCH_PARAMS
-        & (set(factory_args.keys()) | set(runtime_overrides.keys()))
+        _TP_LAUNCH_PARAMS & (set(factory_args.keys()) | set(runtime_overrides.keys()))
     )
     if leaked:
         raise ValueError(

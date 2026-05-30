@@ -53,9 +53,7 @@ def _resolve_model_path() -> str | None:
         return env_path
     cache_root = Path.home() / ".cache" / "huggingface" / "hub"
     snapshots_root = (
-        cache_root
-        / "models--Qwen--Qwen3-Omni-30B-A3B-Instruct"
-        / "snapshots"
+        cache_root / "models--Qwen--Qwen3-Omni-30B-A3B-Instruct" / "snapshots"
     )
     if not snapshots_root.exists():
         return None
@@ -93,9 +91,7 @@ def sglang_image_runner_tp1():
     talker), per the partial-load contract. Footprint should be ~1-2
     GB instead of ~57 GB for the full Qwen3-Omni-30B model.
     """
-    from sglang_omni.model_runner.sglang_encoder_runner import (
-        SGLangEncoderRunner,
-    )
+    from sglang_omni.model_runner.sglang_encoder_runner import SGLangEncoderRunner
     from sglang_omni.models.qwen3_omni.encoder_adapters import (
         Qwen3OmniImageEncoderAdapter,
     )
@@ -131,9 +127,9 @@ def test_partial_load_visual_only_no_thinker_no_talker(sglang_image_runner_tp1):
     """
     runner = sglang_image_runner_tp1
     children = dict(runner.model.named_children())
-    assert set(children) == {"visual"}, (
-        f"image-stage container should hold only 'visual', got {sorted(children)}"
-    )
+    assert set(children) == {
+        "visual"
+    }, f"image-stage container should hold only 'visual', got {sorted(children)}"
 
     # The visual submodule itself should not contain any sub-attribute
     # that looks like a language-model layer or talker block.
@@ -154,10 +150,8 @@ def test_partial_load_visual_footprint_under_5gb(sglang_image_runner_tp1):
     the full thinker) blows past 5 GB by an order of magnitude.
     """
     runner = sglang_image_runner_tp1
-    total_bytes = sum(
-        p.numel() * p.element_size() for p in runner.model.parameters()
-    )
-    total_gb = total_bytes / (1024 ** 3)
+    total_bytes = sum(p.numel() * p.element_size() for p in runner.model.parameters())
+    total_gb = total_bytes / (1024**3)
     assert total_gb < 5.0, (
         f"visual-only encoder is using {total_gb:.2f} GB; the full thinker "
         f"would land ~57 GB here. Did the partial-load contract regress?"
@@ -243,9 +237,7 @@ def test_image_encoder_local_vs_sglang_tp1_parity(
 
     runner = sglang_image_runner_tp1
     hf_cfg = runner.model_config.hf_config
-    adapter = Qwen3OmniImageEncoderAdapter(
-        hf_config=hf_cfg, dtype=torch.float16
-    )
+    adapter = Qwen3OmniImageEncoderAdapter(hf_config=hf_cfg, dtype=torch.float16)
     msg = IncomingMessage(
         request_id="r0",
         type="new_request",
@@ -282,5 +274,5 @@ def test_image_encoder_local_vs_sglang_tp1_parity(
     assert torch.isfinite(sglang_image).all()
     # token count = 1 * 4 * 4 // (spatial_merge_size**2)
     spatial_merge = hf_cfg.thinker_config.vision_config.spatial_merge_size
-    expected_tokens = (1 * 4 * 4) // (spatial_merge ** 2)
+    expected_tokens = (1 * 4 * 4) // (spatial_merge**2)
     assert sglang_image.shape[0] == expected_tokens

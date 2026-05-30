@@ -38,9 +38,7 @@ class TensorStats:
 def _stats_for_tensors(label: str, le: torch.Tensor, re: torch.Tensor) -> TensorStats:
     abs_diff = (le - re).abs()
     token_max = abs_diff.flatten(1).max(dim=-1).values
-    cos = torch.nn.functional.cosine_similarity(
-        le.flatten(1), re.flatten(1), dim=-1
-    )
+    cos = torch.nn.functional.cosine_similarity(le.flatten(1), re.flatten(1), dim=-1)
     return TensorStats(
         label=label,
         shape=tuple(le.shape),
@@ -97,9 +95,7 @@ def _summarize(left: dict, right: dict, label: str) -> TensorStats | None:
         f">1.0={(token_max > 1.0).sum().item()}"
     )
 
-    cos = torch.nn.functional.cosine_similarity(
-        le.flatten(1), re.flatten(1), dim=-1
-    )
+    cos = torch.nn.functional.cosine_similarity(le.flatten(1), re.flatten(1), dim=-1)
     print(
         "  per-token cosine_sim: "
         f"min={cos.min().item():.6f} mean={cos.mean().item():.6f}"
@@ -164,7 +160,9 @@ def _summarize_layers(left: dict, right: dict, *, top_layers: int) -> None:
 
     stats.sort(key=lambda item: item.abs_diff_max, reverse=True)
     print(f"\nlayer summary: {len(stats)} common captured tensors")
-    print("  label                                     max_abs   mean_abs  >0.1  >1.0  cos_mean  cos_min")
+    print(
+        "  label                                     max_abs   mean_abs  >0.1  >1.0  cos_mean  cos_min"
+    )
     for item in stats[:top_layers]:
         print(
             f"  {item.label:<40} "

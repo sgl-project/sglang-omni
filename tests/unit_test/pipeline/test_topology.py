@@ -17,7 +17,9 @@ from sglang_omni.config import (
 from sglang_omni.config.manager import ConfigManager
 
 _FACTORY = "tests.unit_test.fixtures.pipeline_fakes.dummy_factory"
-_AUTO_LOCAL_FACTORY = "tests.unit_test.fixtures.pipeline_fakes.auto_local_encoder_factory"
+_AUTO_LOCAL_FACTORY = (
+    "tests.unit_test.fixtures.pipeline_fakes.auto_local_encoder_factory"
+)
 
 
 def _stage(

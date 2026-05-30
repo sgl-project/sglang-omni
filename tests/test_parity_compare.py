@@ -8,7 +8,6 @@ from pathlib import Path
 
 import torch
 
-
 SCRIPT = Path(__file__).with_name("parity_compare.py")
 HARNESS = Path(__file__).with_name("_encoder_parity_harness.py")
 

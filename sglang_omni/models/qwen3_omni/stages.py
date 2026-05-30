@@ -996,10 +996,7 @@ def _build_sglang_encoder_scheduler(
         server_args_overrides=server_args_overrides,
         tp_parity_mode=tp_parity_mode,
     )
-    if (
-        max_single_request_cost is None
-        and encoder_activation_budget_bytes is not None
-    ):
+    if max_single_request_cost is None and encoder_activation_budget_bytes is not None:
         max_single_request_cost = encoder_activation_budget_bytes
     if encoder_max_batch_size is not None:
         if encoder_max_batch_size <= 0:
@@ -1048,7 +1045,9 @@ def create_image_encoder_runner(
     max_batch_size: int = 32,
     max_batch_wait_ms: int = 50,
     encoder_max_batch_size: int | None = None,
-    encoder_activation_budget_bytes: int | None = QWEN3_IMAGE_ENCODER_BATCH_BUDGET_BYTES,
+    encoder_activation_budget_bytes: (
+        int | None
+    ) = QWEN3_IMAGE_ENCODER_BATCH_BUDGET_BYTES,
     max_single_request_cost: int | None = None,
     server_args_overrides: dict[str, Any] | None = None,
     tp_parity_mode: str | None = None,
@@ -1093,7 +1092,9 @@ def create_audio_encoder_runner(
     max_batch_size: int = 32,
     max_batch_wait_ms: int = 50,
     encoder_max_batch_size: int | None = None,
-    encoder_activation_budget_bytes: int | None = QWEN3_AUDIO_ENCODER_BATCH_BUDGET_BYTES,
+    encoder_activation_budget_bytes: (
+        int | None
+    ) = QWEN3_AUDIO_ENCODER_BATCH_BUDGET_BYTES,
     max_single_request_cost: int | None = None,
     server_args_overrides: dict[str, Any] | None = None,
     tp_parity_mode: str | None = None,

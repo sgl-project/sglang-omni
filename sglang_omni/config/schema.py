@@ -83,8 +83,7 @@ class StageResourceConfig(BaseModel):
         max_batch_size = self.encoder_max_batch_size
         if max_batch_size is not None and max_batch_size <= 0:
             raise ValueError(
-                "runtime.resources.encoder_max_batch_size must be a "
-                "positive integer"
+                "runtime.resources.encoder_max_batch_size must be a " "positive integer"
             )
 
 

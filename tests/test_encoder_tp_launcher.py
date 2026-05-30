@@ -24,7 +24,6 @@ from __future__ import annotations
 
 import inspect
 import multiprocessing
-import os
 from types import SimpleNamespace
 from typing import Any
 
@@ -38,18 +37,13 @@ from examples.qwen3_omni_encoder_tp import (
     _resolve_layout,
     _validate_optional_fraction,
 )
-from sglang_omni.config.schema import (
-    EndpointsConfig,
-    PipelineConfig,
-    StageConfig,
-)
+from sglang_omni.config.schema import EndpointsConfig, PipelineConfig, StageConfig
 from sglang_omni.pipeline.mp_runner import _build_stage_groups
 from sglang_omni.pipeline.stage_process import (
     StageProcessSpec,
     get_stage_process_env,
     stage_requires_single_visible_device,
 )
-
 
 # ---------------------------------------------------------------------------
 # Test factories — registered as importable callables so ``import_string``
@@ -563,11 +557,14 @@ def test_sglang_encoder_factory_defaults_single_request_cap_to_activation_budget
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("key,value", [
-    ("tp_size", 2),
-    ("tp_rank", 1),
-    ("nccl_port", 29500),
-])
+@pytest.mark.parametrize(
+    "key,value",
+    [
+        ("tp_size", 2),
+        ("tp_rank", 1),
+        ("nccl_port", 29500),
+    ],
+)
 def test_resolve_factory_args_rejects_tp_launch_params_in_factory_args(key, value):
     """Lock the TP topology source-of-truth contract.
 
@@ -588,11 +585,14 @@ def test_resolve_factory_args_rejects_tp_launch_params_in_factory_args(key, valu
         resolve_stage_factory_args(cfg.stages[0], cfg)
 
 
-@pytest.mark.parametrize("key,value", [
-    ("tp_size", 2),
-    ("tp_rank", 1),
-    ("nccl_port", 29500),
-])
+@pytest.mark.parametrize(
+    "key,value",
+    [
+        ("tp_size", 2),
+        ("tp_rank", 1),
+        ("nccl_port", 29500),
+    ],
+)
 def test_resolve_factory_args_rejects_tp_launch_params_in_runtime_overrides(key, value):
     """Same as above but via ``runtime_overrides`` (the CLI-friendly path)."""
     from sglang_omni.config.runtime import resolve_stage_factory_args

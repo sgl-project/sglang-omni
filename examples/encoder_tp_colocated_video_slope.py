@@ -28,14 +28,10 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_VIDEO = (
-    "/data/encoder_tp_evidence_20260526/media/draw_loop_2048frames.mp4"
-)
+DEFAULT_VIDEO = "/data/encoder_tp_evidence_20260526/media/draw_loop_2048frames.mp4"
 DEFAULT_OUT = (
-    "/data/encoder_tp_evidence_20260526/"
-    "h100_colocated_video_memory_slope_20260529"
+    "/data/encoder_tp_evidence_20260526/" "h100_colocated_video_memory_slope_20260529"
 )
 
 
@@ -73,7 +69,9 @@ def _parse_int_list(value: str) -> list[int]:
 
 def _health_ok(base_url: str, *, timeout: float = 5.0) -> bool:
     try:
-        with urllib.request.urlopen(base_url.rstrip("/") + "/health", timeout=timeout) as resp:
+        with urllib.request.urlopen(
+            base_url.rstrip("/") + "/health", timeout=timeout
+        ) as resp:
             return 200 <= resp.status < 300
     except Exception:  # noqa: BLE001
         return False
@@ -145,9 +143,7 @@ def _parse_server_log(path: Path) -> dict[str, Any]:
         match = _ADMISSION_RE.search(line)
         if match:
             admissions.append({"raw": line, **_parse_key_values(match.group("body"))})
-    image_marks = [
-        mark for mark in marks if mark.get("stage") == "image_encoder"
-    ]
+    image_marks = [mark for mark in marks if mark.get("stage") == "image_encoder"]
     by_rank: dict[str, dict[str, Any]] = {}
     for mark in image_marks:
         rank = str(mark.get("tp_rank"))
@@ -199,7 +195,9 @@ def _read_probe_summary(case_dir: Path, case_id: str) -> dict[str, Any] | None:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def _gpu_peak_for_visible(summary: dict[str, Any] | None, visible_gpus: list[int]) -> dict[str, Any]:
+def _gpu_peak_for_visible(
+    summary: dict[str, Any] | None, visible_gpus: list[int]
+) -> dict[str, Any]:
     if summary is None:
         return {}
     rows = summary.get("gpu_peak_summary", {}).get("gpus", [])
@@ -228,17 +226,19 @@ def _run_case(
     server_log = case_dir / "server.log"
     visible_gpus = _parse_int_list(args.cuda_visible_devices)
     env = os.environ.copy()
-    env.update({
-        "CUDA_VISIBLE_DEVICES": args.cuda_visible_devices,
-        "SGLANG_OMNI_ENCODER_TIMING_DETAIL": "1",
-        "SGLANG_OMNI_ENCODER_MEMORY_DETAIL": "1",
-        "SGLANG_ALLOW_OVERWRITE_LONGER_CONTEXT_LEN": "1",
-        "PYTORCH_CUDA_ALLOC_CONF": env.get(
-            "PYTORCH_CUDA_ALLOC_CONF",
-            "expandable_segments:True",
-        ),
-        "PYTHONPATH": str(REPO_ROOT) + os.pathsep + env.get("PYTHONPATH", ""),
-    })
+    env.update(
+        {
+            "CUDA_VISIBLE_DEVICES": args.cuda_visible_devices,
+            "SGLANG_OMNI_ENCODER_TIMING_DETAIL": "1",
+            "SGLANG_OMNI_ENCODER_MEMORY_DETAIL": "1",
+            "SGLANG_ALLOW_OVERWRITE_LONGER_CONTEXT_LEN": "1",
+            "PYTORCH_CUDA_ALLOC_CONF": env.get(
+                "PYTORCH_CUDA_ALLOC_CONF",
+                "expandable_segments:True",
+            ),
+            "PYTHONPATH": str(REPO_ROOT) + os.pathsep + env.get("PYTHONPATH", ""),
+        }
+    )
     server_cmd = [
         sys.executable,
         str(REPO_ROOT / "examples" / "qwen3_omni_encoder_tp.py"),
@@ -272,13 +272,16 @@ def _run_case(
         {
             "case_id": case_id,
             "server_cmd": server_cmd,
-            "env": {key: env.get(key) for key in (
-                "CUDA_VISIBLE_DEVICES",
-                "SGLANG_OMNI_ENCODER_TIMING_DETAIL",
-                "SGLANG_OMNI_ENCODER_MEMORY_DETAIL",
-                "SGLANG_ALLOW_OVERWRITE_LONGER_CONTEXT_LEN",
-                "PYTORCH_CUDA_ALLOC_CONF",
-            )},
+            "env": {
+                key: env.get(key)
+                for key in (
+                    "CUDA_VISIBLE_DEVICES",
+                    "SGLANG_OMNI_ENCODER_TIMING_DETAIL",
+                    "SGLANG_OMNI_ENCODER_MEMORY_DETAIL",
+                    "SGLANG_ALLOW_OVERWRITE_LONGER_CONTEXT_LEN",
+                    "PYTORCH_CUDA_ALLOC_CONF",
+                )
+            },
         },
     )
     _write_json(case_dir / "nvidia_smi_before.json", _run_cmd(["nvidia-smi"]))
@@ -405,7 +408,9 @@ def _fit(points: list[tuple[float, float]]) -> dict[str, Any] | None:
     }
 
 
-def _final_summary(results: list[dict[str, Any]], visible_gpus: list[int]) -> dict[str, Any]:
+def _final_summary(
+    results: list[dict[str, Any]], visible_gpus: list[int]
+) -> dict[str, Any]:
     rows: list[dict[str, Any]] = []
     for result in results:
         visible_peaks = result.get("gpu_peaks_visible", {})
@@ -417,47 +422,55 @@ def _final_summary(results: list[dict[str, Any]], visible_gpus: list[int]) -> di
             ),
             default=None,
         )
-        rows.append({
-            "tp_size": result["tp_size"],
-            "frame_cap": result["frame_cap"],
-            "success": result["success"],
-            "image_max_rank_peak_mib": result.get("image_max_rank_peak_mib"),
-            "visible_whole_gpu_max_mib": whole_max,
-            "gpu_peaks_visible": visible_peaks,
-            "case_dir": result["case_dir"],
-            "probe_failures": (
-                None
-                if result.get("probe_summary") is None
-                else result["probe_summary"].get("failures")
-            ),
-            "prompt_tokens": (
-                None
-                if result.get("probe_summary") is None
-                else result["probe_summary"].get("prompt_tokens_max")
-            ),
-        })
+        rows.append(
+            {
+                "tp_size": result["tp_size"],
+                "frame_cap": result["frame_cap"],
+                "success": result["success"],
+                "image_max_rank_peak_mib": result.get("image_max_rank_peak_mib"),
+                "visible_whole_gpu_max_mib": whole_max,
+                "gpu_peaks_visible": visible_peaks,
+                "case_dir": result["case_dir"],
+                "probe_failures": (
+                    None
+                    if result.get("probe_summary") is None
+                    else result["probe_summary"].get("failures")
+                ),
+                "prompt_tokens": (
+                    None
+                    if result.get("probe_summary") is None
+                    else result["probe_summary"].get("prompt_tokens_max")
+                ),
+            }
+        )
     fits: dict[str, Any] = {}
     for tp_size in sorted({int(row["tp_size"]) for row in rows}):
         tp_rows = [
-            row for row in rows
+            row
+            for row in rows
             if int(row["tp_size"]) == tp_size
             and row["success"]
             and row.get("image_max_rank_peak_mib") is not None
         ]
-        fits[f"tp{tp_size}_image_max_rank"] = _fit([
-            (float(row["frame_cap"]), float(row["image_max_rank_peak_mib"]))
-            for row in sorted(tp_rows, key=lambda item: item["frame_cap"])
-        ])
+        fits[f"tp{tp_size}_image_max_rank"] = _fit(
+            [
+                (float(row["frame_cap"]), float(row["image_max_rank_peak_mib"]))
+                for row in sorted(tp_rows, key=lambda item: item["frame_cap"])
+            ]
+        )
         gpu_rows = [
-            row for row in rows
+            row
+            for row in rows
             if int(row["tp_size"]) == tp_size
             and row["success"]
             and row.get("visible_whole_gpu_max_mib") is not None
         ]
-        fits[f"tp{tp_size}_visible_whole_gpu_max"] = _fit([
-            (float(row["frame_cap"]), float(row["visible_whole_gpu_max_mib"]))
-            for row in sorted(gpu_rows, key=lambda item: item["frame_cap"])
-        ])
+        fits[f"tp{tp_size}_visible_whole_gpu_max"] = _fit(
+            [
+                (float(row["frame_cap"]), float(row["visible_whole_gpu_max_mib"]))
+                for row in sorted(gpu_rows, key=lambda item: item["frame_cap"])
+            ]
+        )
     return {
         "rows": sorted(rows, key=lambda item: (item["tp_size"], item["frame_cap"])),
         "fits": fits,
@@ -470,7 +483,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model-path", default="/data/qwen3omni")
     parser.add_argument("--video", default=DEFAULT_VIDEO)
     parser.add_argument("--output-dir", default=DEFAULT_OUT)
-    parser.add_argument("--frame-caps", type=_parse_int_list, default=[64, 96, 128, 160])
+    parser.add_argument(
+        "--frame-caps", type=_parse_int_list, default=[64, 96, 128, 160]
+    )
     parser.add_argument("--cuda-visible-devices", default="1,3")
     parser.add_argument("--base-port", type=int, default=8320)
     parser.add_argument("--video-fps", type=float, default=30.0)

@@ -172,7 +172,10 @@ def test_audio_stage_container_loads_only_audio_weights():
     container.load_weights(_full_qwen3_omni_checkpoint_keys())
 
     param_names = set(dict(container.named_parameters()))
-    assert param_names == {"audio_tower.encoder.weight", "audio_tower.encoder.bias"}, param_names
+    assert param_names == {
+        "audio_tower.encoder.weight",
+        "audio_tower.encoder.bias",
+    }, param_names
 
 
 def test_container_skips_unmatched_prefix_silently():
@@ -234,9 +237,7 @@ def test_qwen3_omni_visual_spec_prefix_set():
     plain ``visual.``. Any drift here means the loader silently skips
     the visual weights and the encoder runs random-init.
     """
-    from sglang_omni.models.qwen3_omni.encoder_adapters import (
-        QWEN3_OMNI_VISUAL_SPEC,
-    )
+    from sglang_omni.models.qwen3_omni.encoder_adapters import QWEN3_OMNI_VISUAL_SPEC
 
     assert QWEN3_OMNI_VISUAL_SPEC.name == "visual"
     assert "model.visual." in QWEN3_OMNI_VISUAL_SPEC.checkpoint_prefixes
@@ -245,9 +246,7 @@ def test_qwen3_omni_visual_spec_prefix_set():
 
 
 def test_qwen3_omni_audio_spec_prefix_set():
-    from sglang_omni.models.qwen3_omni.encoder_adapters import (
-        QWEN3_OMNI_AUDIO_SPEC,
-    )
+    from sglang_omni.models.qwen3_omni.encoder_adapters import QWEN3_OMNI_AUDIO_SPEC
 
     assert QWEN3_OMNI_AUDIO_SPEC.name == "audio_tower"
     assert "audio_tower." in QWEN3_OMNI_AUDIO_SPEC.checkpoint_prefixes
@@ -288,6 +287,7 @@ class _FusedQKVLinear(nn.Module):
     ``self.weight`` here), and the loader receives ``shard_id`` so it
     knows which slice of the fused tensor to write to.
     """
+
     def __init__(self):
         super().__init__()
         # Total fused dim 12 = 3*4 (q + k + v shards of 4 each).
@@ -295,7 +295,7 @@ class _FusedQKVLinear(nn.Module):
 
         def _shard_loader(param, weight, shard_id):
             offset = {"q": 0, "k": 4, "v": 8}[shard_id]
-            param.data[offset:offset + 4].copy_(weight)
+            param.data[offset : offset + 4].copy_(weight)
 
         self.weight.weight_loader = _shard_loader
 
@@ -330,7 +330,9 @@ def test_audio_stage_fuses_qkv_via_stacked_params_mapping():
         ),
     )
     container = EncoderModuleContainer(
-        hf_config=None, encoder_specs=(spec,), quant_config=None,
+        hf_config=None,
+        encoder_specs=(spec,),
+        quant_config=None,
     )
 
     # Synthesize one (shard, value) per slice so we can verify each
@@ -338,11 +340,13 @@ def test_audio_stage_fuses_qkv_via_stacked_params_mapping():
     q_w = torch.full((4, 4), 1.0)
     k_w = torch.full((4, 4), 2.0)
     v_w = torch.full((4, 4), 3.0)
-    container.load_weights([
-        ("audio_tower.self_attn.q_proj.weight", q_w),
-        ("audio_tower.self_attn.k_proj.weight", k_w),
-        ("audio_tower.self_attn.v_proj.weight", v_w),
-    ])
+    container.load_weights(
+        [
+            ("audio_tower.self_attn.q_proj.weight", q_w),
+            ("audio_tower.self_attn.k_proj.weight", k_w),
+            ("audio_tower.self_attn.v_proj.weight", v_w),
+        ]
+    )
 
     fused = dict(container.named_parameters())["audio_tower.self_attn.qkv_proj.weight"]
     assert torch.allclose(fused[0:4], q_w)
@@ -375,11 +379,15 @@ def test_visual_load_weights_delegated_to_submodule():
         stacked_params_mapping=((".attn.qkv_proj", ".attn.q_proj", "q"),),
     )
     container = EncoderModuleContainer(
-        hf_config=None, encoder_specs=(spec,), quant_config=None,
+        hf_config=None,
+        encoder_specs=(spec,),
+        quant_config=None,
     )
-    container.load_weights([
-        ("visual.attn.q_proj.weight", torch.zeros(4, 4)),
-        ("visual.proj.weight", torch.zeros(4, 4)),
-    ])
+    container.load_weights(
+        [
+            ("visual.attn.q_proj.weight", torch.zeros(4, 4)),
+            ("visual.proj.weight", torch.zeros(4, 4)),
+        ]
+    )
     # The submodule sees relative names (without the leading "visual.").
     assert calls == ["attn.q_proj.weight", "proj.weight"]

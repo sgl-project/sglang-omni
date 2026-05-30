@@ -32,7 +32,6 @@ from typing import TYPE_CHECKING, Any, Callable, Protocol
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
 from sglang.srt.managers.schedule_batch import Modality, MultimodalDataItem
 from sglang.srt.models.qwen3_omni_moe import (
     Qwen3OmniMoeAudioEncoder,
@@ -449,9 +448,7 @@ class Qwen3OmniImageEncoderAdapter:
         raw_bytes = _tensor_bytes(inputs.get("pixel_values"))
         raw_bytes += _tensor_bytes(inputs.get("pixel_values_videos"))
         visual_tokens = _grid_visual_tokens(inputs.get("image_grid_thw"), self._merge)
-        visual_tokens += _grid_visual_tokens(
-            inputs.get("video_grid_thw"), self._merge
-        )
+        visual_tokens += _grid_visual_tokens(inputs.get("video_grid_thw"), self._merge)
         output_bytes = (
             visual_tokens * self._base_hidden * self._dtype_bytes * self._output_layers
         )
@@ -462,7 +459,9 @@ class Qwen3OmniImageEncoderAdapter:
             tp_size=self._tp_size,
         )
 
-    def lookup_cached_output(self, msg: IncomingMessage, cache: Any) -> StagePayload | None:
+    def lookup_cached_output(
+        self, msg: IncomingMessage, cache: Any
+    ) -> StagePayload | None:
         return _lookup_cached_payload(msg, cache, stage_name=IMAGE_STAGE)
 
     def store_cached_output(
@@ -511,9 +510,7 @@ class Qwen3OmniImageEncoderAdapter:
                 it.image_grid_thw = grid
                 images.append(it)
                 n_img = int(grid.shape[0])
-                img_tokens = int(
-                    (grid.prod(-1) // self._merge).sum().item()
-                )
+                img_tokens = int((grid.prod(-1) // self._merge).sum().item())
             if isinstance(inputs.get("pixel_values_videos"), torch.Tensor):
                 grid = inputs["video_grid_thw"].to(dtype=torch.long, device="cpu")
                 v = MultimodalDataItem(
@@ -523,9 +520,7 @@ class Qwen3OmniImageEncoderAdapter:
                 v.video_grid_thw = grid
                 videos.append(v)
                 n_vid = int(grid.shape[0])
-                vid_tokens = int(
-                    (grid.prod(-1) // self._merge).sum().item()
-                )
+                vid_tokens = int((grid.prod(-1) // self._merge).sum().item())
             spans.append(
                 RequestSpan(
                     request_id=msg.request_id,
@@ -579,8 +574,8 @@ class Qwen3OmniImageEncoderAdapter:
         is not mirrored here; that upstream chunking mode needs a separate
         parity lane before it is enabled.
         """
-        pixel_values = (
-            torch.cat([item.feature for item in items], dim=0).type(visual.dtype)
+        pixel_values = torch.cat([item.feature for item in items], dim=0).type(
+            visual.dtype
         )
         grid_attr = "image_grid_thw" if kind == "image" else "video_grid_thw"
         grid = torch.cat([getattr(item, grid_attr) for item in items], dim=0)
@@ -698,7 +693,9 @@ class Qwen3OmniAudioEncoderAdapter:
     def request_cost_fn(self, payload: StagePayload) -> int:
         return self.batch_cost_fn([payload])
 
-    def lookup_cached_output(self, msg: IncomingMessage, cache: Any) -> StagePayload | None:
+    def lookup_cached_output(
+        self, msg: IncomingMessage, cache: Any
+    ) -> StagePayload | None:
         return _lookup_cached_payload(msg, cache, stage_name=AUDIO_STAGE)
 
     def store_cached_output(
@@ -754,10 +751,7 @@ class Qwen3OmniAudioEncoderAdapter:
             return 0
 
         padded_input_bytes = (
-            total_rows
-            * self._num_mel_bins
-            * max_time
-            * max_input_dtype_bytes
+            total_rows * self._num_mel_bins * max_time * max_input_dtype_bytes
         )
         padded_mask_bytes = total_rows * max_time * max_mask_dtype_bytes
         output_bytes = output_tokens * self._output_dim * self._output_dtype_bytes
@@ -796,9 +790,7 @@ class Qwen3OmniAudioEncoderAdapter:
                     audio_output_lengths=out_lens,
                 )
             )
-            normalized.append(
-                {"features": features, "mask": mask, "lengths": lengths}
-            )
+            normalized.append({"features": features, "mask": mask, "lengths": lengths})
 
         if not normalized:
             return BatchPlan(self, [], [], [], spans)
@@ -834,10 +826,9 @@ class Qwen3OmniAudioEncoderAdapter:
         items: list[MultimodalDataItem],
     ) -> torch.Tensor:
         """Mirror of ``thinker.get_audio_feature`` against the loaded submodule."""
-        feature_attention_mask = (
-            torch.cat([item.feature_attention_mask for item in items], dim=0)
-            .type(torch.long)
-        )
+        feature_attention_mask = torch.cat(
+            [item.feature_attention_mask for item in items], dim=0
+        ).type(torch.long)
         input_features = (
             torch.cat([item.feature for item in items])
             .type(audio_tower.dtype)
@@ -845,10 +836,9 @@ class Qwen3OmniAudioEncoderAdapter:
         )
         audio_feature_lengths = torch.sum(feature_attention_mask, dim=1)
         # Drop padded positions before the conv stack — same as upstream.
-        input_features = (
-            input_features.permute(0, 2, 1)[feature_attention_mask.bool()]
-            .permute(1, 0)
-        )
+        input_features = input_features.permute(0, 2, 1)[
+            feature_attention_mask.bool()
+        ].permute(1, 0)
         outputs = audio_tower(input_features, feature_lens=audio_feature_lengths)
         hidden = outputs.last_hidden_state
         if hidden.dim() == 3:

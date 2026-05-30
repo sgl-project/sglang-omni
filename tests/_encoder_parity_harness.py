@@ -57,11 +57,7 @@ def _resolve_model_path() -> str:
     if env_path:
         return env_path
     cache_root = Path.home() / ".cache" / "huggingface" / "hub"
-    snap_root = (
-        cache_root
-        / "models--Qwen--Qwen3-Omni-30B-A3B-Instruct"
-        / "snapshots"
-    )
+    snap_root = cache_root / "models--Qwen--Qwen3-Omni-30B-A3B-Instruct" / "snapshots"
     for snap in snap_root.iterdir():
         if (snap / "config.json").exists():
             return str(snap)
@@ -81,8 +77,8 @@ def _build_real_image_inputs(model_path: str):
     pre-normalization range both implementations were trained on. A
     real image keeps inputs in the valid distribution.
     """
-    from transformers import AutoImageProcessor
     from PIL import Image
+    from transformers import AutoImageProcessor
 
     img_path = Path(__file__).resolve().parents[1] / "tests" / "data" / "cars.jpg"
     img = Image.open(img_path).convert("RGB")
@@ -118,12 +114,14 @@ def _build_preprocessed_encoder_inputs(
     }
     stage_name = "image_encoder"
     if modality == "video":
-        inputs.update({
-            "videos": [str(_fixture_path("draw.mp4"))],
-            "video_fps": 2,
-            "video_max_frames": 16,
-            "video_max_pixels": 401408,
-        })
+        inputs.update(
+            {
+                "videos": [str(_fixture_path("draw.mp4"))],
+                "video_fps": 2,
+                "video_max_frames": 16,
+                "video_max_pixels": 401408,
+            }
+        )
     elif modality == "audio":
         stage_name = "audio_encoder"
         inputs["audios"] = [str(_fixture_path("query_to_cars.wav"))]
@@ -164,8 +162,7 @@ def _write_encoder_output(
             out[key] = value.detach().cpu()
         elif isinstance(value, list):
             out[key] = [
-                item.detach().cpu() if torch.is_tensor(item) else item
-                for item in value
+                item.detach().cpu() if torch.is_tensor(item) else item for item in value
             ]
         else:
             out[key] = value
@@ -452,9 +449,7 @@ def _run_sglang(
     tp_parity_mode: str = "default",
     capture_gathered_shards: bool = False,
 ) -> None:
-    from sglang_omni.model_runner.sglang_encoder_runner import (
-        SGLangEncoderRunner,
-    )
+    from sglang_omni.model_runner.sglang_encoder_runner import SGLangEncoderRunner
     from sglang_omni.models.qwen3_omni.encoder_adapters import (
         Qwen3OmniAudioEncoderAdapter,
         Qwen3OmniImageEncoderAdapter,
@@ -531,25 +526,28 @@ def _run_sglang(
                 tp_size=tp_size,
                 enabled=capture_gathered_shards,
             )
-            captures[name] = _slice_capture_tensor(
-                t,
-                final_indices=final_capture_indices,
-                pre_indices=pre_capture_indices,
-            ).detach().cpu()
+            captures[name] = (
+                _slice_capture_tensor(
+                    t,
+                    final_indices=final_capture_indices,
+                    pre_indices=pre_capture_indices,
+                )
+                .detach()
+                .cpu()
+            )
 
         def _grab(name: str):
             def hook(mod, _inp, out):
                 t = out[0] if isinstance(out, tuple) else out
                 if torch.is_tensor(t):
                     _capture_tensor(name, mod, t)
+
             return hook
 
         if hasattr(visual, "patch_embed"):
             visual.patch_embed.register_forward_hook(_grab("00_patch_embed"))
         if hasattr(visual, "blocks"):
-            selected_blocks = _parse_capture_blocks(
-                capture_blocks, len(visual.blocks)
-            )
+            selected_blocks = _parse_capture_blocks(capture_blocks, len(visual.blocks))
             for i, blk in enumerate(visual.blocks):
                 if capture_layers:
                     blk.register_forward_hook(_grab(f"blk_{i:02d}"))
@@ -608,8 +606,7 @@ def _run_sglang(
             out_dict[key] = value.detach().cpu()
         elif isinstance(value, list):
             out_dict[key] = [
-                item.detach().cpu() if torch.is_tensor(item) else item
-                for item in value
+                item.detach().cpu() if torch.is_tensor(item) else item for item in value
             ]
         else:
             out_dict[key] = value
@@ -644,24 +641,24 @@ def _run_bare_sglang(model_path: str, out_path: str) -> None:
     )
     from sglang.srt.layers.dp_attention import initialize_dp_attention
     from sglang.srt.model_loader import get_model
-    from sglang.srt.server_args import (
-        ServerArgs, set_global_server_args_for_scheduler,
-    )
+    from sglang.srt.server_args import ServerArgs, set_global_server_args_for_scheduler
 
-    from sglang_omni.proto import StagePayload
-    from sglang_omni.scheduling.messages import IncomingMessage
     from sglang_omni.models.qwen3_omni.encoder_adapters import (
         Qwen3OmniImageEncoderAdapter,
     )
+    from sglang_omni.proto import StagePayload
+    from sglang_omni.scheduling.messages import IncomingMessage
 
     pixel, grid = _build_real_image_inputs(model_path)
 
     server_args = ServerArgs(
         model_path=model_path,
         trust_remote_code=True,
-        tp_size=1, pp_size=1, base_gpu_id=0,
+        tp_size=1,
+        pp_size=1,
+        base_gpu_id=0,
         dist_init_addr="127.0.0.1:29577",
-        encoder_only=False,           # bare = full ForConditionalGeneration
+        encoder_only=False,  # bare = full ForConditionalGeneration
         mm_enable_dp_encoder=False,
         disable_cuda_graph=True,
         random_seed=123,
@@ -671,7 +668,9 @@ def _run_bare_sglang(model_path: str, out_path: str) -> None:
     set_global_server_args_for_scheduler(server_args)
 
     init_distributed_environment(
-        world_size=1, rank=0, local_rank=0,
+        world_size=1,
+        rank=0,
+        local_rank=0,
         distributed_init_method="tcp://127.0.0.1:29577",
         backend="nccl",
     )
@@ -695,11 +694,16 @@ def _run_bare_sglang(model_path: str, out_path: str) -> None:
         request_id="r0",
         type="new_request",
         data=StagePayload(
-            request_id="r0", request=None,
-            data={"encoder_inputs": {"image_encoder": {
-                "pixel_values": pixel.to("cuda:0"),
-                "image_grid_thw": grid,
-            }}},
+            request_id="r0",
+            request=None,
+            data={
+                "encoder_inputs": {
+                    "image_encoder": {
+                        "pixel_values": pixel.to("cuda:0"),
+                        "image_grid_thw": grid,
+                    }
+                }
+            },
         ),
     )
     plan = adapter.build_batch([msg])
@@ -710,7 +714,9 @@ def _run_bare_sglang(model_path: str, out_path: str) -> None:
     grid = torch.cat([item.image_grid_thw for item in items], dim=0)
     with torch.no_grad():
         embeds = visual(pixel_values, grid_thw=grid)
-    image_embeds = embeds.detach().cpu() if torch.is_tensor(embeds) else embeds[0].detach().cpu()
+    image_embeds = (
+        embeds.detach().cpu() if torch.is_tensor(embeds) else embeds[0].detach().cpu()
+    )
     with open(out_path, "wb") as f:
         pickle.dump({"image_embeds": image_embeds, "deepstack": None}, f)
 
@@ -758,7 +764,9 @@ def main() -> None:
         _run_local(model_path, args.out_path, modality=args.modality)
     elif args.backend == "bare_sglang":
         if args.modality != "image":
-            raise SystemExit("bare_sglang parity currently supports --modality image only")
+            raise SystemExit(
+                "bare_sglang parity currently supports --modality image only"
+            )
         _run_bare_sglang(model_path, args.out_path)
     else:
         _run_sglang(

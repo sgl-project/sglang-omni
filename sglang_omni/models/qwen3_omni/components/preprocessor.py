@@ -402,9 +402,7 @@ class Qwen3OmniPreprocessor:
         if videos_kwargs:
             processor_kwargs["videos_kwargs"] = videos_kwargs
         if resolved_audio_truncation is not None:
-            processor_kwargs["audio_kwargs"] = {
-                "truncation": resolved_audio_truncation
-            }
+            processor_kwargs["audio_kwargs"] = {"truncation": resolved_audio_truncation}
 
         hf_inputs = self.processor(
             text=prompt_text,

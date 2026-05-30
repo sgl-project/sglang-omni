@@ -41,7 +41,6 @@ from typing import TYPE_CHECKING, Any, Iterable, Sequence
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
 from sglang.srt.configs.device_config import DeviceConfig
 from sglang.srt.configs.load_config import LoadConfig
 from sglang.srt.configs.model_config import ModelConfig
@@ -74,10 +73,16 @@ logger = logging.getLogger(__name__)
 # Reject these in `server_args_overrides` BEFORE the **splat — otherwise
 # Python raises TypeError "got multiple values for keyword argument" before
 # the helper's protected-key reject can fire.
-_RUNNER_MANAGED_KEYS = frozenset({
-    "model_path", "tp_size", "base_gpu_id", "dist_init_addr",
-    "dtype", "load_format",
-})
+_RUNNER_MANAGED_KEYS = frozenset(
+    {
+        "model_path",
+        "tp_size",
+        "base_gpu_id",
+        "dist_init_addr",
+        "dtype",
+        "load_format",
+    }
+)
 
 _TP_PARITY_MODES = frozenset({"default", "fp32_row_parallel", "fp32_linear"})
 
@@ -227,7 +232,9 @@ def _column_parallel_forward_fp32(
     return output, output_bias
 
 
-def _enable_fp32_linear(model: nn.Module, *, include_column_parallel: bool) -> dict[str, int]:
+def _enable_fp32_linear(
+    model: nn.Module, *, include_column_parallel: bool
+) -> dict[str, int]:
     """Patch TP linear modules in ``model`` for TP parity runs."""
     from sglang.srt.layers.linear import ColumnParallelLinear, RowParallelLinear
 
@@ -341,7 +348,7 @@ class EncoderModuleContainer(nn.Module):
                 inner_prefix = spec.name + "."
                 for n, w in bucket:
                     if n.startswith(inner_prefix):
-                        relative.append((n[len(inner_prefix):], w))
+                        relative.append((n[len(inner_prefix) :], w))
                     else:
                         # If rewrites didn't produce the expected prefix,
                         # forward as-is and let the submodule's own
@@ -354,7 +361,8 @@ class EncoderModuleContainer(nn.Module):
 
         logger.info(
             "EncoderModuleContainer.load_weights: loaded=%d skipped=%d",
-            loaded_total, skipped,
+            loaded_total,
+            skipped,
         )
 
     def _load_with_stacked_mapping(
@@ -383,9 +391,7 @@ class EncoderModuleContainer(nn.Module):
                 continue
             if name in params:
                 param = params[name]
-                weight_loader = getattr(
-                    param, "weight_loader", default_weight_loader
-                )
+                weight_loader = getattr(param, "weight_loader", default_weight_loader)
                 weight_loader(param, loaded_weight)
                 loaded += 1
         return loaded
@@ -564,8 +570,12 @@ class SGLangEncoderRunner:
         logger.info(
             "SGLangEncoderRunner ready (tp_rank=%d/%d, physical_gpu=%d, "
             "model=%s, submodules=%s, dist_addr=%s)",
-            self.tp_rank, self.tp_size, self.physical_gpu_id,
-            model_path, [s.name for s in encoder_specs], dist_addr,
+            self.tp_rank,
+            self.tp_size,
+            self.physical_gpu_id,
+            model_path,
+            [s.name for s in encoder_specs],
+            dist_addr,
         )
 
     # ------------------------------------------------------------------
@@ -618,7 +628,9 @@ class SGLangEncoderRunner:
                 )
 
             DefaultModelLoader.load_weights_and_postprocess(
-                container, weights, target_device,
+                container,
+                weights,
+                target_device,
             )
         return container
 

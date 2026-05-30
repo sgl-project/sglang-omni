@@ -17,12 +17,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from sglang_omni.pipeline.coordinator import Coordinator
-from sglang_omni.proto import (
-    CompleteMessage,
-    RequestInfo,
-    RequestState,
-    StreamMessage,
-)
+from sglang_omni.proto import CompleteMessage, RequestInfo, RequestState
 
 
 @pytest.fixture

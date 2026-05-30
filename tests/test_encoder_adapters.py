@@ -23,10 +23,8 @@ import torch
 from sglang.srt.models.qwen3_omni_moe import _get_feat_extract_output_lengths
 
 from sglang_omni.models.qwen3_omni.encoder_adapters import (
-    BatchPlan,
     Qwen3OmniAudioEncoderAdapter,
     Qwen3OmniImageEncoderAdapter,
-    RequestSpan,
     _normalize_audio_request_tensors,
     _pad_audio_features,
     _pad_audio_mask,
@@ -34,7 +32,6 @@ from sglang_omni.models.qwen3_omni.encoder_adapters import (
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.messages import IncomingMessage
 from sglang_omni.scheduling.stage_cache import StageOutputCache
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -81,17 +78,18 @@ def _msg(rid: str, encoder_inputs: dict | None = None) -> IncomingMessage:
 
 
 def test_image_adapter_build_batch_image_only():
-    adapter = Qwen3OmniImageEncoderAdapter(
-        hf_config=_hf_cfg(), dtype=torch.float16
-    )
+    adapter = Qwen3OmniImageEncoderAdapter(hf_config=_hf_cfg(), dtype=torch.float16)
     grid = torch.tensor([[1, 4, 4]], dtype=torch.long)  # 16 patches
     pixel = torch.zeros(16, 6)  # 16 patches × 6 channels (dummy)
-    msg = _msg("r0", {
-        "image_encoder": {
-            "pixel_values": pixel,
-            "image_grid_thw": grid,
-        }
-    })
+    msg = _msg(
+        "r0",
+        {
+            "image_encoder": {
+                "pixel_values": pixel,
+                "image_grid_thw": grid,
+            }
+        },
+    )
     plan = adapter.build_batch([msg])
     assert len(plan.image_items) == 1
     assert len(plan.video_items) == 0
@@ -104,19 +102,20 @@ def test_image_adapter_build_batch_image_only():
 
 
 def test_image_adapter_build_batch_image_plus_video_same_request():
-    adapter = Qwen3OmniImageEncoderAdapter(
-        hf_config=_hf_cfg(), dtype=torch.float16
-    )
+    adapter = Qwen3OmniImageEncoderAdapter(hf_config=_hf_cfg(), dtype=torch.float16)
     image_grid = torch.tensor([[1, 2, 2]], dtype=torch.long)  # 4 patches
     video_grid = torch.tensor([[1, 2, 2]], dtype=torch.long)
-    msg = _msg("r0", {
-        "image_encoder": {
-            "pixel_values": torch.zeros(4, 6),
-            "image_grid_thw": image_grid,
-            "pixel_values_videos": torch.zeros(4, 6),
-            "video_grid_thw": video_grid,
-        }
-    })
+    msg = _msg(
+        "r0",
+        {
+            "image_encoder": {
+                "pixel_values": torch.zeros(4, 6),
+                "image_grid_thw": image_grid,
+                "pixel_values_videos": torch.zeros(4, 6),
+                "video_grid_thw": video_grid,
+            }
+        },
+    )
     plan = adapter.build_batch([msg])
     assert len(plan.image_items) == 1
     assert len(plan.video_items) == 1
@@ -139,41 +138,41 @@ def test_image_adapter_build_batch_keeps_grid_thw_on_cpu():
     upstream path is the same — adapter normalizes to CPU regardless of
     incoming device, so the contract is enforced).
     """
-    adapter = Qwen3OmniImageEncoderAdapter(
-        hf_config=_hf_cfg(), dtype=torch.float16
-    )
+    adapter = Qwen3OmniImageEncoderAdapter(hf_config=_hf_cfg(), dtype=torch.float16)
     grid = torch.tensor([[1, 4, 4]], dtype=torch.long)
     pixel = torch.zeros(16, 6)
-    msg = _msg("r0", {
-        "image_encoder": {
-            "pixel_values": pixel,
-            "image_grid_thw": grid,
-        }
-    })
+    msg = _msg(
+        "r0",
+        {
+            "image_encoder": {
+                "pixel_values": pixel,
+                "image_grid_thw": grid,
+            }
+        },
+    )
     plan = adapter.build_batch([msg])
     assert plan.image_items[0].image_grid_thw.device.type == "cpu"
 
 
 def test_video_adapter_build_batch_keeps_grid_thw_on_cpu():
-    adapter = Qwen3OmniImageEncoderAdapter(
-        hf_config=_hf_cfg(), dtype=torch.float16
-    )
+    adapter = Qwen3OmniImageEncoderAdapter(hf_config=_hf_cfg(), dtype=torch.float16)
     grid = torch.tensor([[1, 2, 2]], dtype=torch.long)
     pixel = torch.zeros(4, 6)
-    msg = _msg("r0", {
-        "image_encoder": {
-            "pixel_values_videos": pixel,
-            "video_grid_thw": grid,
-        }
-    })
+    msg = _msg(
+        "r0",
+        {
+            "image_encoder": {
+                "pixel_values_videos": pixel,
+                "video_grid_thw": grid,
+            }
+        },
+    )
     plan = adapter.build_batch([msg])
     assert plan.video_items[0].video_grid_thw.device.type == "cpu"
 
 
 def test_image_adapter_build_batch_skip_request():
-    adapter = Qwen3OmniImageEncoderAdapter(
-        hf_config=_hf_cfg(), dtype=torch.float16
-    )
+    adapter = Qwen3OmniImageEncoderAdapter(hf_config=_hf_cfg(), dtype=torch.float16)
     msg = _msg("r0", {"image_encoder": {"_skip": True, "_result": {"foo": "bar"}}})
     plan = adapter.build_batch([msg])
     assert plan.is_empty
@@ -193,12 +192,15 @@ def test_image_adapter_slice_results_round_trip():
     # 1 request with 4 image tokens × (4 base + 4*2 deepstack) = 12 hidden dim
     grid = torch.tensor([[1, 2, 4]], dtype=torch.long)  # 8 patches; 8//4 = 2 tokens
     pixel = torch.zeros(8, 6)
-    msg = _msg("r0", {
-        "image_encoder": {
-            "pixel_values": pixel,
-            "image_grid_thw": grid,
-        }
-    })
+    msg = _msg(
+        "r0",
+        {
+            "image_encoder": {
+                "pixel_values": pixel,
+                "image_grid_thw": grid,
+            }
+        },
+    )
     plan = adapter.build_batch([msg])
     # token_count = 1*2*4 // (2*2) = 2
     assert plan.spans[0].image_token_count == 2
@@ -236,12 +238,15 @@ def test_image_adapter_request_cost_uses_base_hidden_not_wrapper():
     # 1 image, 4 patches => 1 token after merge=4
     grid = torch.tensor([[1, 2, 2]], dtype=torch.long)
     pixel = torch.zeros(4, 6, dtype=torch.float16)
-    payload = _payload("r0", {
-        "image_encoder": {
-            "pixel_values": pixel,
-            "image_grid_thw": grid,
-        }
-    })
+    payload = _payload(
+        "r0",
+        {
+            "image_encoder": {
+                "pixel_values": pixel,
+                "image_grid_thw": grid,
+            }
+        },
+    )
     cost = adapter.request_cost_fn(payload)
     # raw bytes = 4*6*2 = 48
     # tokens = 4 // 4 = 1
@@ -258,12 +263,15 @@ def test_image_adapter_request_cost_shards_activation_proxy_by_tp_size():
     )
     grid = torch.tensor([[1, 2, 2]], dtype=torch.long)
     pixel = torch.zeros(4, 6, dtype=torch.float16)
-    payload = _payload("r0", {
-        "image_encoder": {
-            "pixel_values": pixel,
-            "image_grid_thw": grid,
-        }
-    })
+    payload = _payload(
+        "r0",
+        {
+            "image_encoder": {
+                "pixel_values": pixel,
+                "image_grid_thw": grid,
+            }
+        },
+    )
 
     # raw bytes are replicated on every rank: 4*6*2*5 = 240
     # output activation proxy is sharded: (1*4*2*(1+3)*5) / 2 = 80
@@ -271,27 +279,26 @@ def test_image_adapter_request_cost_shards_activation_proxy_by_tp_size():
 
 
 def test_image_adapter_skip_request_cost_is_zero():
-    adapter = Qwen3OmniImageEncoderAdapter(
-        hf_config=_hf_cfg(), dtype=torch.float16
-    )
+    adapter = Qwen3OmniImageEncoderAdapter(hf_config=_hf_cfg(), dtype=torch.float16)
     payload = _payload("r0", {"image_encoder": {"_skip": True, "_result": {}}})
     assert adapter.request_cost_fn(payload) == 0
 
 
 def test_image_adapter_cache_lookup_and_store_round_trip():
-    adapter = Qwen3OmniImageEncoderAdapter(
-        hf_config=_hf_cfg(), dtype=torch.float16
-    )
+    adapter = Qwen3OmniImageEncoderAdapter(hf_config=_hf_cfg(), dtype=torch.float16)
     cache = StageOutputCache(cache_device="cpu")
     cached = {"video_embeds": torch.ones(2, 3)}
     cache.put("media-0", cached)
-    msg = _msg("r0", {
-        "image_encoder": {
-            "cache_key": "media-0",
-            "pixel_values_videos": torch.zeros(4, 6),
-            "video_grid_thw": torch.tensor([[1, 2, 2]], dtype=torch.long),
-        }
-    })
+    msg = _msg(
+        "r0",
+        {
+            "image_encoder": {
+                "cache_key": "media-0",
+                "pixel_values_videos": torch.zeros(4, 6),
+                "video_grid_thw": torch.tensor([[1, 2, 2]], dtype=torch.long),
+            }
+        },
+    )
 
     hit = adapter.lookup_cached_output(msg, cache)
 
@@ -304,13 +311,16 @@ def test_image_adapter_cache_lookup_and_store_round_trip():
     new_output.data = {
         "encoder_outs": {"image_encoder": {"image_embeds": torch.zeros(1, 3)}}
     }
-    miss_msg = _msg("r1", {
-        "image_encoder": {
-            "cache_key": "media-1",
-            "pixel_values": torch.zeros(4, 6),
-            "image_grid_thw": torch.tensor([[1, 2, 2]], dtype=torch.long),
-        }
-    })
+    miss_msg = _msg(
+        "r1",
+        {
+            "image_encoder": {
+                "cache_key": "media-1",
+                "pixel_values": torch.zeros(4, 6),
+                "image_grid_thw": torch.tensor([[1, 2, 2]], dtype=torch.long),
+            }
+        },
+    )
 
     adapter.store_cached_output(miss_msg, new_output, cache)
 
@@ -324,23 +334,27 @@ def test_image_adapter_cache_lookup_and_store_round_trip():
 
 
 def test_audio_adapter_build_batch_pads_to_max_time():
-    adapter = Qwen3OmniAudioEncoderAdapter(
-        hf_config=_hf_cfg(), dtype=torch.float16
-    )
+    adapter = Qwen3OmniAudioEncoderAdapter(hf_config=_hf_cfg(), dtype=torch.float16)
     feat0 = torch.zeros(1, 8, 50)  # 50 time steps
     feat1 = torch.zeros(1, 8, 80)  # 80 time steps
-    msg0 = _msg("r0", {
-        "audio_encoder": {
-            "input_features": feat0,
-            "audio_feature_lengths": torch.tensor([50], dtype=torch.long),
-        }
-    })
-    msg1 = _msg("r1", {
-        "audio_encoder": {
-            "input_features": feat1,
-            "audio_feature_lengths": torch.tensor([80], dtype=torch.long),
-        }
-    })
+    msg0 = _msg(
+        "r0",
+        {
+            "audio_encoder": {
+                "input_features": feat0,
+                "audio_feature_lengths": torch.tensor([50], dtype=torch.long),
+            }
+        },
+    )
+    msg1 = _msg(
+        "r1",
+        {
+            "audio_encoder": {
+                "input_features": feat1,
+                "audio_feature_lengths": torch.tensor([80], dtype=torch.long),
+            }
+        },
+    )
     plan = adapter.build_batch([msg0, msg1])
     assert len(plan.audio_items) == 2
     # Both items padded to max_time=80 along the time axis.
@@ -353,19 +367,20 @@ def test_audio_adapter_build_batch_pads_to_max_time():
 
 
 def test_audio_adapter_cache_lookup_and_store_round_trip():
-    adapter = Qwen3OmniAudioEncoderAdapter(
-        hf_config=_hf_cfg(), dtype=torch.float16
-    )
+    adapter = Qwen3OmniAudioEncoderAdapter(hf_config=_hf_cfg(), dtype=torch.float16)
     cache = StageOutputCache(cache_device="cpu")
     cached = {"audio_embeds": torch.ones(2, 4)}
     cache.put("audio-0", cached)
-    msg = _msg("r0", {
-        "audio_encoder": {
-            "cache_key": "audio-0",
-            "input_features": torch.zeros(1, 8, 50),
-            "audio_feature_lengths": torch.tensor([50], dtype=torch.long),
-        }
-    })
+    msg = _msg(
+        "r0",
+        {
+            "audio_encoder": {
+                "cache_key": "audio-0",
+                "input_features": torch.zeros(1, 8, 50),
+                "audio_feature_lengths": torch.tensor([50], dtype=torch.long),
+            }
+        },
+    )
 
     hit = adapter.lookup_cached_output(msg, cache)
 
@@ -378,13 +393,16 @@ def test_audio_adapter_cache_lookup_and_store_round_trip():
     new_output.data = {
         "encoder_outs": {"audio_encoder": {"audio_embeds": torch.zeros(1, 4)}}
     }
-    miss_msg = _msg("r1", {
-        "audio_encoder": {
-            "cache_key": "audio-1",
-            "input_features": torch.zeros(1, 8, 50),
-            "audio_feature_lengths": torch.tensor([50], dtype=torch.long),
-        }
-    })
+    miss_msg = _msg(
+        "r1",
+        {
+            "audio_encoder": {
+                "cache_key": "audio-1",
+                "input_features": torch.zeros(1, 8, 50),
+                "audio_feature_lengths": torch.tensor([50], dtype=torch.long),
+            }
+        },
+    )
 
     adapter.store_cached_output(miss_msg, new_output, cache)
 
@@ -393,23 +411,27 @@ def test_audio_adapter_cache_lookup_and_store_round_trip():
 
 
 def test_audio_adapter_batch_cost_accounts_for_batch_padding():
-    adapter = Qwen3OmniAudioEncoderAdapter(
-        hf_config=_hf_cfg(), dtype=torch.float16
-    )
+    adapter = Qwen3OmniAudioEncoderAdapter(hf_config=_hf_cfg(), dtype=torch.float16)
     feat0 = torch.zeros(1, 8, 50, dtype=torch.float16)
     feat1 = torch.zeros(1, 8, 80, dtype=torch.float16)
-    payload0 = _payload("r0", {
-        "audio_encoder": {
-            "input_features": feat0,
-            "audio_feature_lengths": torch.tensor([50], dtype=torch.long),
-        }
-    })
-    payload1 = _payload("r1", {
-        "audio_encoder": {
-            "input_features": feat1,
-            "audio_feature_lengths": torch.tensor([80], dtype=torch.long),
-        }
-    })
+    payload0 = _payload(
+        "r0",
+        {
+            "audio_encoder": {
+                "input_features": feat0,
+                "audio_feature_lengths": torch.tensor([50], dtype=torch.long),
+            }
+        },
+    )
+    payload1 = _payload(
+        "r1",
+        {
+            "audio_encoder": {
+                "input_features": feat1,
+                "audio_feature_lengths": torch.tensor([80], dtype=torch.long),
+            }
+        },
+    )
 
     out_tokens = int(
         _get_feat_extract_output_lengths(torch.tensor([50, 80])).sum().item()
@@ -418,9 +440,10 @@ def test_audio_adapter_batch_cost_accounts_for_batch_padding():
     padded_mask_bytes = 2 * 80 * 1
     output_bytes = out_tokens * 4 * 2
 
-    assert adapter.batch_cost_fn([payload0, payload1]) == (
-        padded_input_bytes + padded_mask_bytes + output_bytes
-    ) * 5
+    assert (
+        adapter.batch_cost_fn([payload0, payload1])
+        == (padded_input_bytes + padded_mask_bytes + output_bytes) * 5
+    )
     assert adapter.request_cost_fn(payload0) == adapter.batch_cost_fn([payload0])
 
 
@@ -430,18 +453,24 @@ def test_audio_adapter_batch_cost_shards_activation_proxy_by_tp_size():
     )
     feat0 = torch.zeros(1, 8, 50, dtype=torch.float16)
     feat1 = torch.zeros(1, 8, 80, dtype=torch.float16)
-    payload0 = _payload("r0", {
-        "audio_encoder": {
-            "input_features": feat0,
-            "audio_feature_lengths": torch.tensor([50], dtype=torch.long),
-        }
-    })
-    payload1 = _payload("r1", {
-        "audio_encoder": {
-            "input_features": feat1,
-            "audio_feature_lengths": torch.tensor([80], dtype=torch.long),
-        }
-    })
+    payload0 = _payload(
+        "r0",
+        {
+            "audio_encoder": {
+                "input_features": feat0,
+                "audio_feature_lengths": torch.tensor([50], dtype=torch.long),
+            }
+        },
+    )
+    payload1 = _payload(
+        "r1",
+        {
+            "audio_encoder": {
+                "input_features": feat1,
+                "audio_feature_lengths": torch.tensor([80], dtype=torch.long),
+            }
+        },
+    )
 
     out_tokens = int(
         _get_feat_extract_output_lengths(torch.tensor([50, 80])).sum().item()
@@ -456,33 +485,35 @@ def test_audio_adapter_batch_cost_shards_activation_proxy_by_tp_size():
 
 
 def test_audio_adapter_cost_requires_precomputed_lengths():
-    adapter = Qwen3OmniAudioEncoderAdapter(
-        hf_config=_hf_cfg(), dtype=torch.float16
+    adapter = Qwen3OmniAudioEncoderAdapter(hf_config=_hf_cfg(), dtype=torch.float16)
+    payload = _payload(
+        "r0",
+        {
+            "audio_encoder": {
+                "input_features": torch.zeros(1, 8, 50),
+                "feature_attention_mask": torch.ones(1, 50, dtype=torch.bool),
+            }
+        },
     )
-    payload = _payload("r0", {
-        "audio_encoder": {
-            "input_features": torch.zeros(1, 8, 50),
-            "feature_attention_mask": torch.ones(1, 50, dtype=torch.bool),
-        }
-    })
 
     with pytest.raises(ValueError, match="audio_feature_lengths"):
         adapter.request_cost_fn(payload)
 
 
 def test_audio_adapter_slice_results_round_trip():
-    adapter = Qwen3OmniAudioEncoderAdapter(
-        hf_config=_hf_cfg(), dtype=torch.float16
-    )
+    adapter = Qwen3OmniAudioEncoderAdapter(hf_config=_hf_cfg(), dtype=torch.float16)
     feat = torch.zeros(1, 8, 100)  # 100 -> output_lengths = (
     # (100 % 100) = 0 -> feat_lengths = (0-1)//2+1 = 0; but real formula:
     # leave = 0 → feat = (-1)//2 + 1 = 0; output = ((-1)//2 + 1 - 1)//2 + 1 + 1*13 = 14
-    msg = _msg("r0", {
-        "audio_encoder": {
-            "input_features": feat,
-            "audio_feature_lengths": torch.tensor([100], dtype=torch.long),
-        }
-    })
+    msg = _msg(
+        "r0",
+        {
+            "audio_encoder": {
+                "input_features": feat,
+                "audio_feature_lengths": torch.tensor([100], dtype=torch.long),
+            }
+        },
+    )
     plan = adapter.build_batch([msg])
     out_lens = int(plan.spans[0].audio_output_lengths.sum().item())
     # _get_feat_extract_output_lengths(100) = 13 in the upstream formula
@@ -560,9 +591,7 @@ def test_audio_adapter_run_feature_flattens_3d_upstream_output():
 
 
 def test_audio_adapter_skip_request_passes_through_skip_result():
-    adapter = Qwen3OmniAudioEncoderAdapter(
-        hf_config=_hf_cfg(), dtype=torch.float16
-    )
+    adapter = Qwen3OmniAudioEncoderAdapter(hf_config=_hf_cfg(), dtype=torch.float16)
     msg = _msg("r0", {"audio_encoder": {"_skip": True, "_result": {"foo": "bar"}}})
     plan = adapter.build_batch([msg])
     assert plan.is_empty
@@ -576,18 +605,17 @@ def test_audio_adapter_skip_request_passes_through_skip_result():
 
 
 def test_audio_adapter_mixed_batch_skip_and_active():
-    adapter = Qwen3OmniAudioEncoderAdapter(
-        hf_config=_hf_cfg(), dtype=torch.float16
+    adapter = Qwen3OmniAudioEncoderAdapter(hf_config=_hf_cfg(), dtype=torch.float16)
+    skip_msg = _msg("rs", {"audio_encoder": {"_skip": True, "_result": {"skip": True}}})
+    active_msg = _msg(
+        "ra",
+        {
+            "audio_encoder": {
+                "input_features": torch.zeros(1, 8, 100),
+                "audio_feature_lengths": torch.tensor([100], dtype=torch.long),
+            }
+        },
     )
-    skip_msg = _msg("rs", {
-        "audio_encoder": {"_skip": True, "_result": {"skip": True}}
-    })
-    active_msg = _msg("ra", {
-        "audio_encoder": {
-            "input_features": torch.zeros(1, 8, 100),
-            "audio_feature_lengths": torch.tensor([100], dtype=torch.long),
-        }
-    })
     plan = adapter.build_batch([skip_msg, active_msg])
     assert len(plan.audio_items) == 1  # only the active request contributes
     assert plan.spans[0].skip_result is not None
@@ -601,11 +629,13 @@ def test_audio_adapter_mixed_batch_skip_and_active():
 
 def test_normalize_audio_request_tensors_arange_follows_lengths_device_cpu():
     """CPU lengths → CPU arange → CPU mask. The local v1 path."""
-    request = SimpleNamespace(model_inputs={
-        "input_features": torch.zeros(1, 8, 50),
-        "audio_feature_lengths": torch.tensor([30], dtype=torch.long),
-        # No feature_attention_mask -> synthesized from lengths
-    })
+    request = SimpleNamespace(
+        model_inputs={
+            "input_features": torch.zeros(1, 8, 50),
+            "audio_feature_lengths": torch.tensor([30], dtype=torch.long),
+            # No feature_attention_mask -> synthesized from lengths
+        }
+    )
     features, mask, lengths = _normalize_audio_request_tensors(request)
     assert features.device.type == "cpu"
     assert lengths.device.type == "cpu"
@@ -622,10 +652,12 @@ def test_normalize_audio_request_tensors_arange_follows_lengths_device_no_dtype_
     to a non-default torch.long-on-cpu tensor and checking that the
     arange and resulting mask end up on the same device."""
     cpu_lengths = torch.tensor([20], dtype=torch.long)
-    request = SimpleNamespace(model_inputs={
-        "input_features": torch.zeros(1, 8, 30),
-        "audio_feature_lengths": cpu_lengths,
-    })
+    request = SimpleNamespace(
+        model_inputs={
+            "input_features": torch.zeros(1, 8, 30),
+            "audio_feature_lengths": cpu_lengths,
+        }
+    )
     _, mask, lengths = _normalize_audio_request_tensors(request)
     assert mask.device == lengths.device
 
@@ -649,9 +681,7 @@ def test_pad_audio_mask_pads_with_false():
 
 
 def test_batch_plan_is_empty_when_all_skip():
-    adapter = Qwen3OmniImageEncoderAdapter(
-        hf_config=_hf_cfg(), dtype=torch.float16
-    )
+    adapter = Qwen3OmniImageEncoderAdapter(hf_config=_hf_cfg(), dtype=torch.float16)
     msgs = [
         _msg("r0", {"image_encoder": {"_skip": True, "_result": {}}}),
         _msg("r1", {"image_encoder": {"_skip": True, "_result": {}}}),

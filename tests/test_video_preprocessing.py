@@ -36,9 +36,7 @@ def test_unpack_qwen_video_reader_rejects_unexpected_arity() -> None:
 
 
 def test_qwen_video_resize_defaults_are_positive() -> None:
-    image_factor, min_pixels, total_pixels, max_pixels = (
-        _qwen_video_resize_defaults()
-    )
+    image_factor, min_pixels, total_pixels, max_pixels = _qwen_video_resize_defaults()
 
     assert image_factor > 0
     assert min_pixels > 0

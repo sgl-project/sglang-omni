@@ -226,9 +226,7 @@ def _summarize_gpu_samples(samples: list[dict[str, Any]]) -> dict[str, Any]:
                     "max_memory_used_mib": gpu["memory_used_mib"],
                     "max_memory_delta_mib": 0,
                     "min_memory_free_mib": gpu["memory_free_mib"],
-                    "max_utilization_gpu_percent": gpu[
-                        "utilization_gpu_percent"
-                    ],
+                    "max_utilization_gpu_percent": gpu["utilization_gpu_percent"],
                     "samples": 0,
                 },
             )
@@ -466,20 +464,17 @@ def summarize_runs(runs: list[dict[str, Any]]) -> dict[str, Any]:
     prompt_tokens = [
         int(run["usage"]["prompt_tokens"])
         for run in successful
-        if isinstance(run.get("usage"), dict)
-        and "prompt_tokens" in run["usage"]
+        if isinstance(run.get("usage"), dict) and "prompt_tokens" in run["usage"]
     ]
     completion_tokens = [
         int(run["usage"]["completion_tokens"])
         for run in successful
-        if isinstance(run.get("usage"), dict)
-        and "completion_tokens" in run["usage"]
+        if isinstance(run.get("usage"), dict) and "completion_tokens" in run["usage"]
     ]
     total_tokens = [
         int(run["usage"]["total_tokens"])
         for run in successful
-        if isinstance(run.get("usage"), dict)
-        and "total_tokens" in run["usage"]
+        if isinstance(run.get("usage"), dict) and "total_tokens" in run["usage"]
     ]
     completion_tokens_per_s = [
         int(run["usage"]["completion_tokens"]) / float(run["latency_s"])
@@ -506,24 +501,22 @@ def summarize_runs(runs: list[dict[str, Any]]) -> dict[str, Any]:
         "latency_s_p90": _percentile(latencies, 90),
         "latency_s_p95": _percentile(latencies, 95),
         "latency_s_max": max(latencies) if latencies else None,
-        "prompt_tokens_mean": statistics.mean(prompt_tokens)
-        if prompt_tokens
-        else None,
+        "prompt_tokens_mean": statistics.mean(prompt_tokens) if prompt_tokens else None,
         "prompt_tokens_max": max(prompt_tokens) if prompt_tokens else None,
-        "completion_tokens_mean": statistics.mean(completion_tokens)
-        if completion_tokens
-        else None,
-        "completion_tokens_max": max(completion_tokens)
-        if completion_tokens
-        else None,
+        "completion_tokens_mean": (
+            statistics.mean(completion_tokens) if completion_tokens else None
+        ),
+        "completion_tokens_max": max(completion_tokens) if completion_tokens else None,
         "total_tokens_mean": statistics.mean(total_tokens) if total_tokens else None,
         "total_tokens_max": max(total_tokens) if total_tokens else None,
-        "completion_tokens_per_s_mean": statistics.mean(completion_tokens_per_s)
-        if completion_tokens_per_s
-        else None,
-        "total_tokens_per_s_mean": statistics.mean(total_tokens_per_s)
-        if total_tokens_per_s
-        else None,
+        "completion_tokens_per_s_mean": (
+            statistics.mean(completion_tokens_per_s)
+            if completion_tokens_per_s
+            else None
+        ),
+        "total_tokens_per_s_mean": (
+            statistics.mean(total_tokens_per_s) if total_tokens_per_s else None
+        ),
     }
 
 
@@ -570,9 +563,7 @@ def main() -> None:
             "response_body": response.get("body"),
             "usage": usage if isinstance(usage, dict) else None,
             "gpu_peak_summary": _summarize_gpu_samples(sampler.samples),
-            "gpu_process_peak_summary": _summarize_gpu_process_samples(
-                sampler.samples
-            ),
+            "gpu_process_peak_summary": _summarize_gpu_process_samples(sampler.samples),
         }
         runs.append(run)
         with (out_dir / "runs.jsonl").open("a") as f:

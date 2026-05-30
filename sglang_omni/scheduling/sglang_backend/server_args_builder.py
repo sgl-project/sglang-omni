@@ -37,34 +37,36 @@ def build_sglang_server_args(
     return ServerArgs(**kwargs)
 
 
-_ENCODER_PROTECTED_KEYS = frozenset({
-    "tp_size",
-    "pp_size",
-    "dp_size",
-    "ep_size",
-    "moe_dense_tp_size",
-    "nnodes",
-    "node_rank",
-    "rank",
-    "world_size",
-    "tp_rank",
-    "gpu_id",
-    "base_gpu_id",
-    "nccl_port",
-    "dist_init_addr",
-    "encoder_only",
-    "language_only",
-    "mm_enable_dp_encoder",
-    "enable_dp_attention",
-    "enable_dp_lm_head",
-    "disable_cuda_graph",
-    "device",
-    "mem_fraction_static",
-    "max_running_requests",
-    "max_prefill_tokens",
-    "chunked_prefill_size",
-    "context_length",
-})
+_ENCODER_PROTECTED_KEYS = frozenset(
+    {
+        "tp_size",
+        "pp_size",
+        "dp_size",
+        "ep_size",
+        "moe_dense_tp_size",
+        "nnodes",
+        "node_rank",
+        "rank",
+        "world_size",
+        "tp_rank",
+        "gpu_id",
+        "base_gpu_id",
+        "nccl_port",
+        "dist_init_addr",
+        "encoder_only",
+        "language_only",
+        "mm_enable_dp_encoder",
+        "enable_dp_attention",
+        "enable_dp_lm_head",
+        "disable_cuda_graph",
+        "device",
+        "mem_fraction_static",
+        "max_running_requests",
+        "max_prefill_tokens",
+        "chunked_prefill_size",
+        "context_length",
+    }
+)
 
 
 def build_sglang_encoder_server_args(

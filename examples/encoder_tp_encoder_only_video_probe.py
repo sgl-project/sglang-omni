@@ -34,11 +34,8 @@ import time
 from pathlib import Path
 from typing import Any
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_VIDEO = (
-    "/data/encoder_tp_evidence_20260526/media/draw_loop_2048frames.mp4"
-)
+DEFAULT_VIDEO = "/data/encoder_tp_evidence_20260526/media/draw_loop_2048frames.mp4"
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
@@ -115,9 +112,7 @@ def _query_gpu_sample() -> dict[str, Any]:
         "time_s": time.time(),
         "ok": gpu_res.get("returncode") == 0,
         "gpu_result": gpu_res if gpu_res.get("returncode") != 0 else None,
-        "process_result": (
-            process_res if process_res.get("returncode") != 0 else None
-        ),
+        "process_result": (process_res if process_res.get("returncode") != 0 else None),
         "gpus": [],
         "processes": [],
     }
@@ -127,14 +122,16 @@ def _query_gpu_sample() -> dict[str, Any]:
             if len(parts) != len(gpu_fields):
                 continue
             try:
-                sample["gpus"].append({
-                    "index": int(parts[0]),
-                    "uuid": parts[1],
-                    "name": parts[2],
-                    "memory_used_mib": int(parts[3]),
-                    "memory_free_mib": int(parts[4]),
-                    "utilization_gpu_percent": int(parts[5]),
-                })
+                sample["gpus"].append(
+                    {
+                        "index": int(parts[0]),
+                        "uuid": parts[1],
+                        "name": parts[2],
+                        "memory_used_mib": int(parts[3]),
+                        "memory_free_mib": int(parts[4]),
+                        "utilization_gpu_percent": int(parts[5]),
+                    }
+                )
             except ValueError:
                 continue
     if process_res.get("returncode") == 0:
@@ -143,12 +140,14 @@ def _query_gpu_sample() -> dict[str, Any]:
             if len(parts) != 4:
                 continue
             try:
-                sample["processes"].append({
-                    "pid": int(parts[0]),
-                    "process_name": parts[1],
-                    "gpu_uuid": parts[2],
-                    "used_memory_mib": int(parts[3]),
-                })
+                sample["processes"].append(
+                    {
+                        "pid": int(parts[0]),
+                        "process_name": parts[1],
+                        "gpu_uuid": parts[2],
+                        "used_memory_mib": int(parts[3]),
+                    }
+                )
             except ValueError:
                 continue
     return sample
@@ -283,9 +282,7 @@ def _parse_tp_specs(value: str) -> list[tuple[int, list[int]]]:
         if not item:
             continue
         if ":" not in item:
-            raise argparse.ArgumentTypeError(
-                "expected TP specs like '1:6;4:1,3,4,5'"
-            )
+            raise argparse.ArgumentTypeError("expected TP specs like '1:6;4:1,3,4,5'")
         tp_text, gpu_text = item.split(":", 1)
         try:
             tp_size = int(tp_text)
@@ -397,14 +394,16 @@ def _preprocess_video(
             f,
         )
     summary = _summarize_encoder_inputs(encoder_inputs)
-    summary.update({
-        "frame_cap": int(frame_cap),
-        "video": video_path,
-        "video_fps": video_fps,
-        "video_max_pixels_override": None,
-        "preprocess_elapsed_s": elapsed_s,
-        "input_path": str(input_path),
-    })
+    summary.update(
+        {
+            "frame_cap": int(frame_cap),
+            "video": video_path,
+            "video_fps": video_fps,
+            "video_max_pixels_override": None,
+            "preprocess_elapsed_s": elapsed_s,
+            "input_path": str(input_path),
+        }
+    )
     _write_json(artifact_dir / f"preprocessed_video_{frame_cap}.json", summary)
     return input_path, summary
 
@@ -439,7 +438,9 @@ def _classify_failure(
     timed_out: bool,
     returncodes: list[int | None],
 ) -> str:
-    if any(str(item.get("failure_type")) == "admission_reject" for item in rank_results):
+    if any(
+        str(item.get("failure_type")) == "admission_reject" for item in rank_results
+    ):
         return "admission_reject"
     text = logs.lower()
     if (
@@ -491,18 +492,22 @@ def _run_case(
     rank_result_paths = _result_paths(case_dir, tp_size)
     started = time.perf_counter()
     common_env = os.environ.copy()
-    common_env.update({
-        "PYTHONPATH": str(REPO_ROOT) + os.pathsep + common_env.get("PYTHONPATH", ""),
-        "SGLANG_OMNI_ENCODER_TIMING_DETAIL": "1",
-        "SGLANG_OMNI_ENCODER_MEMORY_DETAIL": "1",
-        "SGLANG_OMNI_ENCODER_GPU_GUARD": "0",
-        "SGLANG_ONE_VISIBLE_DEVICE_PER_PROCESS": "true",
-        "SGLANG_ENABLE_TP_MEMORY_INBALANCE_CHECK": "false",
-        "PYTORCH_CUDA_ALLOC_CONF": common_env.get(
-            "PYTORCH_CUDA_ALLOC_CONF",
-            "expandable_segments:True",
-        ),
-    })
+    common_env.update(
+        {
+            "PYTHONPATH": str(REPO_ROOT)
+            + os.pathsep
+            + common_env.get("PYTHONPATH", ""),
+            "SGLANG_OMNI_ENCODER_TIMING_DETAIL": "1",
+            "SGLANG_OMNI_ENCODER_MEMORY_DETAIL": "1",
+            "SGLANG_OMNI_ENCODER_GPU_GUARD": "0",
+            "SGLANG_ONE_VISIBLE_DEVICE_PER_PROCESS": "true",
+            "SGLANG_ENABLE_TP_MEMORY_INBALANCE_CHECK": "false",
+            "PYTORCH_CUDA_ALLOC_CONF": common_env.get(
+                "PYTORCH_CUDA_ALLOC_CONF",
+                "expandable_segments:True",
+            ),
+        }
+    )
 
     for rank, gpu_id in enumerate(gpu_ids):
         log_path = case_dir / f"rank{rank}.log"
@@ -554,7 +559,9 @@ def _run_case(
         processes.append(proc)
 
     timed_out = False
-    with _GpuSampler(case_dir / "gpu_samples.jsonl", args.gpu_sample_interval) as sampler:
+    with _GpuSampler(
+        case_dir / "gpu_samples.jsonl", args.gpu_sample_interval
+    ) as sampler:
         deadline = time.time() + float(args.timeout)
         while time.time() < deadline:
             if all(proc.poll() is not None for proc in processes):
@@ -596,11 +603,15 @@ def _run_case(
         and all(bool(item.get("success")) for item in rank_results)
         and all(rc == 0 for rc in returncodes)
     )
-    failure_type = None if success else _classify_failure(
-        rank_results=rank_results,
-        logs=logs,
-        timed_out=timed_out,
-        returncodes=returncodes,
+    failure_type = (
+        None
+        if success
+        else _classify_failure(
+            rank_results=rank_results,
+            logs=logs,
+            timed_out=timed_out,
+            returncodes=returncodes,
+        )
     )
     summary = {
         "tp_size": tp_size,
@@ -665,21 +676,23 @@ def _summarize_memory(case: dict[str, Any]) -> dict[str, Any]:
             if peak_mib is not None and baseline_mib is not None
             else None
         )
-        rank_rows.append({
-            "rank": rank_result.get("rank"),
-            "pid": rank_result.get("pid"),
-            "physical_gpu_id": rank_result.get("physical_gpu_id"),
-            "peak_mib": peak_mib,
-            "after_load_mib": baseline_mib,
-            "delta_mib": delta_mib,
-            "torch_max_allocated_mib": _bytes_to_mib(
-                rank_result.get("torch_max_memory_allocated_bytes")
-            ),
-            "torch_max_reserved_mib": _bytes_to_mib(
-                rank_result.get("torch_max_memory_reserved_bytes")
-            ),
-            "output": rank_result.get("output_summary"),
-        })
+        rank_rows.append(
+            {
+                "rank": rank_result.get("rank"),
+                "pid": rank_result.get("pid"),
+                "physical_gpu_id": rank_result.get("physical_gpu_id"),
+                "peak_mib": peak_mib,
+                "after_load_mib": baseline_mib,
+                "delta_mib": delta_mib,
+                "torch_max_allocated_mib": _bytes_to_mib(
+                    rank_result.get("torch_max_memory_allocated_bytes")
+                ),
+                "torch_max_reserved_mib": _bytes_to_mib(
+                    rank_result.get("torch_max_memory_reserved_bytes")
+                ),
+                "output": rank_result.get("output_summary"),
+            }
+        )
     peaks = [row["peak_mib"] for row in rank_rows if isinstance(row["peak_mib"], int)]
     return {
         "rank_rows": rank_rows,
@@ -806,12 +819,14 @@ def _build_final_summary(cases: list[dict[str, Any]]) -> dict[str, Any]:
     tp2_comparison = comparisons_to_tp1.get("2", {})
     return {
         "rows": rows,
-        "fit_frames": sorted({
-            int(frame)
-            for row in rows
-            if row.get("success")
-            for frame in [row["frame_cap"]]
-        }),
+        "fit_frames": sorted(
+            {
+                int(frame)
+                for row in rows
+                if row.get("success")
+                for frame in [row["frame_cap"]]
+            }
+        ),
         "fits_by_tp": fits_by_tp,
         "comparisons_to_tp1": comparisons_to_tp1,
         "fit": {
@@ -1157,7 +1172,9 @@ def _worker_run(args: argparse.Namespace) -> None:
             {
                 "success": True,
                 "message_count": len(messages),
-                "output_summary": _output_summary(output) if output is not None else None,
+                "output_summary": (
+                    _output_summary(output) if output is not None else None
+                ),
                 "timing": timings,
                 "memory_marks": marks,
                 "max_mark_nvml_process_bytes": max_mark_nvml,
@@ -1173,7 +1190,10 @@ def _worker_run(args: argparse.Namespace) -> None:
         )
         finish({"success": False, "failure_type": failure_type, "error": text}, code=10)
     except Exception as exc:  # noqa: BLE001
-        finish({"success": False, "failure_type": "other_crash", "error": repr(exc)}, code=11)
+        finish(
+            {"success": False, "failure_type": "other_crash", "error": repr(exc)},
+            code=11,
+        )
     finally:
         try:
             if dist.is_available() and dist.is_initialized():
@@ -1210,7 +1230,11 @@ def _main_parser() -> argparse.ArgumentParser:
         default="/data/encoder_tp_evidence_20260526/"
         "h100_encoder_only_video_memory_20260529",
     )
-    parser.add_argument("--frame-caps", type=_parse_int_list, default=[128, 256, 512, 768, 1024, 1536, 2048])
+    parser.add_argument(
+        "--frame-caps",
+        type=_parse_int_list,
+        default=[128, 256, 512, 768, 1024, 1536, 2048],
+    )
     parser.add_argument("--tp1-gpu", type=int, default=6)
     parser.add_argument("--tp2-gpus", type=_parse_int_list, default=[6, 7])
     parser.add_argument(
@@ -1246,19 +1270,25 @@ def main() -> None:
     args = _main_parser().parse_args()
     artifact_dir = Path(args.output_dir)
     artifact_dir.mkdir(parents=True, exist_ok=True)
-    _write_json(artifact_dir / "command.json", {
-        "argv": sys.argv,
-        "cwd": os.getcwd(),
-        "env": {
-            "CUDA_VISIBLE_DEVICES": os.environ.get("CUDA_VISIBLE_DEVICES"),
-            "PYTORCH_CUDA_ALLOC_CONF": os.environ.get("PYTORCH_CUDA_ALLOC_CONF"),
+    _write_json(
+        artifact_dir / "command.json",
+        {
+            "argv": sys.argv,
+            "cwd": os.getcwd(),
+            "env": {
+                "CUDA_VISIBLE_DEVICES": os.environ.get("CUDA_VISIBLE_DEVICES"),
+                "PYTORCH_CUDA_ALLOC_CONF": os.environ.get("PYTORCH_CUDA_ALLOC_CONF"),
+            },
         },
-    })
-    _write_json(artifact_dir / "git_status.json", {
-        "status": _run_cmd(["git", "status", "--short"], timeout=30),
-        "head": _run_cmd(["git", "rev-parse", "HEAD"], timeout=30),
-        "diff_stat": _run_cmd(["git", "diff", "--stat"], timeout=30),
-    })
+    )
+    _write_json(
+        artifact_dir / "git_status.json",
+        {
+            "status": _run_cmd(["git", "status", "--short"], timeout=30),
+            "head": _run_cmd(["git", "rev-parse", "HEAD"], timeout=30),
+            "diff_stat": _run_cmd(["git", "diff", "--stat"], timeout=30),
+        },
+    )
     _write_json(artifact_dir / "nvidia_smi_initial.json", _query_gpu_sample())
 
     tp_specs = (
@@ -1308,26 +1338,28 @@ def main() -> None:
                 failed_tp.add(tp_size)
 
     final = _build_final_summary(cases)
-    final.update({
-        "artifact_dir": str(artifact_dir),
-        "model_path": args.model_path,
-        "video": args.video,
-        "video_fps": args.video_fps,
-        "frame_caps_requested": [int(x) for x in args.frame_caps],
-        "tp1_gpu": int(args.tp1_gpu),
-        "tp2_gpus": [int(x) for x in args.tp2_gpus],
-        "tp_specs": [
-            {"tp_size": int(tp_size), "gpu_ids": [int(gpu) for gpu in gpu_ids]}
-            for tp_size, gpu_ids in tp_specs
-        ],
-        "notes": [
-            "encoder-only image/video forward; no thinker/talker/generation",
-            "fresh subprocesses per TP/frame point",
-            "no video_max_pixels override set by this probe",
-            "activation budget disabled; measurement-only GPU guard allowed all candidates",
-            "encoder_max_batch_size forced to 1",
-        ],
-    })
+    final.update(
+        {
+            "artifact_dir": str(artifact_dir),
+            "model_path": args.model_path,
+            "video": args.video,
+            "video_fps": args.video_fps,
+            "frame_caps_requested": [int(x) for x in args.frame_caps],
+            "tp1_gpu": int(args.tp1_gpu),
+            "tp2_gpus": [int(x) for x in args.tp2_gpus],
+            "tp_specs": [
+                {"tp_size": int(tp_size), "gpu_ids": [int(gpu) for gpu in gpu_ids]}
+                for tp_size, gpu_ids in tp_specs
+            ],
+            "notes": [
+                "encoder-only image/video forward; no thinker/talker/generation",
+                "fresh subprocesses per TP/frame point",
+                "no video_max_pixels override set by this probe",
+                "activation budget disabled; measurement-only GPU guard allowed all candidates",
+                "encoder_max_batch_size forced to 1",
+            ],
+        }
+    )
     _write_json(artifact_dir / "summary.json", final)
     print(json.dumps(final["fit"], indent=2, sort_keys=True))
     print(json.dumps(final["comparisons_to_tp1"], indent=2, sort_keys=True))

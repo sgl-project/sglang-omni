@@ -16,9 +16,7 @@ deterministically without a multi-process distributed context.
 from __future__ import annotations
 
 import queue as _queue_mod
-from dataclasses import replace
 from types import SimpleNamespace
-from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -26,13 +24,11 @@ import torch
 
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.encoder_scheduler import (
-    BatchCollectError,
-    EncoderScheduler,
     _RECV_ERROR_KIND,
+    EncoderScheduler,
     _TensorSpec,
 )
 from sglang_omni.scheduling.messages import IncomingMessage, OutgoingMessage
-
 
 # ---------------------------------------------------------------------------
 # Fakes
@@ -66,8 +62,12 @@ class _FakeAdapter:
     def build_batch(self, messages):
         self.build_calls += 1
         return SimpleNamespace(
-            adapter=self, image_items=[], video_items=[], audio_items=[],
-            spans=[], is_empty=True,
+            adapter=self,
+            image_items=[],
+            video_items=[],
+            audio_items=[],
+            spans=[],
+            is_empty=True,
         )
 
     def run_feature(self, model, plan):
@@ -77,9 +77,7 @@ class _FakeAdapter:
     def slice_results(self, raw, plan, messages):
         self.slice_calls += 1
         # mirror what real adapters do: build a StagePayload per message
-        return [
-            _mk_payload(m.request_id, data={"ok": True}) for m in messages
-        ]
+        return [_mk_payload(m.request_id, data={"ok": True}) for m in messages]
 
 
 class _FakeWorker:
@@ -158,9 +156,7 @@ def test_recv_returns_strip_and_lift_failure_at_tp_size_1():
     sch = EncoderScheduler(_FakeWorker(tp_size=1), _FakeAdapter())
     sch.inbox.put(_mk_msg("r0", data={"pixel_values": torch.randn(2, 2)}))
 
-    with patch.object(
-        sch, "_strip_and_lift", side_effect=RuntimeError("lift boom")
-    ):
+    with patch.object(sch, "_strip_and_lift", side_effect=RuntimeError("lift boom")):
         msgs, err = sch._recv_messages()
     assert isinstance(err, RuntimeError)
     assert "lift boom" in str(err)
@@ -206,6 +202,7 @@ class _BroadcastBus:
     Used to drive the two-channel ``_recv_messages`` from inside a
     single test process.
     """
+
     def __init__(self):
         self.metadata: list = None  # leader writes; follower reads
         self.tensor_calls: list[torch.Tensor] = []
@@ -265,15 +262,19 @@ def test_pre_broadcast_collect_error_publishes_sentinel(bus):
     )
     sch.inbox.put(_mk_msg("r0"))
 
-    with patch(
-        "sglang_omni.scheduling.encoder_scheduler.broadcast_pyobj",
-        _patched_broadcast_pyobj(bus),
-    ), patch(
-        "sglang_omni.scheduling.encoder_scheduler.dist.all_gather_object",
-        _patched_all_gather_object(bus),
-    ), patch(
-        "sglang_omni.scheduling.encoder_scheduler.dist.broadcast",
-        _patched_dist_broadcast(bus),
+    with (
+        patch(
+            "sglang_omni.scheduling.encoder_scheduler.broadcast_pyobj",
+            _patched_broadcast_pyobj(bus),
+        ),
+        patch(
+            "sglang_omni.scheduling.encoder_scheduler.dist.all_gather_object",
+            _patched_all_gather_object(bus),
+        ),
+        patch(
+            "sglang_omni.scheduling.encoder_scheduler.dist.broadcast",
+            _patched_dist_broadcast(bus),
+        ),
     ):
         msgs, err = sch._recv_messages()
 
@@ -300,15 +301,19 @@ def test_follower_decodes_pre_broadcast_sentinel(bus):
         _FakeAdapter(),
     )
 
-    with patch(
-        "sglang_omni.scheduling.encoder_scheduler.broadcast_pyobj",
-        _patched_broadcast_pyobj(bus),
-    ), patch(
-        "sglang_omni.scheduling.encoder_scheduler.dist.all_gather_object",
-        _patched_all_gather_object(bus),
-    ), patch(
-        "sglang_omni.scheduling.encoder_scheduler.dist.broadcast",
-        _patched_dist_broadcast(bus),
+    with (
+        patch(
+            "sglang_omni.scheduling.encoder_scheduler.broadcast_pyobj",
+            _patched_broadcast_pyobj(bus),
+        ),
+        patch(
+            "sglang_omni.scheduling.encoder_scheduler.dist.all_gather_object",
+            _patched_all_gather_object(bus),
+        ),
+        patch(
+            "sglang_omni.scheduling.encoder_scheduler.dist.broadcast",
+            _patched_dist_broadcast(bus),
+        ),
     ):
         msgs, err = sch._recv_messages()
 
@@ -335,18 +340,23 @@ def test_follower_allocation_failure_returns_before_device_broadcast(bus):
         _FakeAdapter(),
     )
 
-    with patch(
-        "sglang_omni.scheduling.encoder_scheduler.broadcast_pyobj",
-        _patched_broadcast_pyobj(bus),
-    ), patch(
-        "sglang_omni.scheduling.encoder_scheduler.dist.all_gather_object",
-        _patched_all_gather_object(bus),
-    ), patch(
-        "sglang_omni.scheduling.encoder_scheduler.dist.broadcast",
-        _patched_dist_broadcast(bus),
-    ), patch(
-        "sglang_omni.scheduling.encoder_scheduler.torch.empty",
-        side_effect=RuntimeError("placeholder oom"),
+    with (
+        patch(
+            "sglang_omni.scheduling.encoder_scheduler.broadcast_pyobj",
+            _patched_broadcast_pyobj(bus),
+        ),
+        patch(
+            "sglang_omni.scheduling.encoder_scheduler.dist.all_gather_object",
+            _patched_all_gather_object(bus),
+        ),
+        patch(
+            "sglang_omni.scheduling.encoder_scheduler.dist.broadcast",
+            _patched_dist_broadcast(bus),
+        ),
+        patch(
+            "sglang_omni.scheduling.encoder_scheduler.torch.empty",
+            side_effect=RuntimeError("placeholder oom"),
+        ),
     ):
         msgs, err = sch._recv_messages()
 
@@ -372,15 +382,19 @@ def test_entry_broadcasts_stripped_metadata_and_returns_restored_messages(bus):
     tensor = torch.randn(2, 3)
     sch.inbox.put(_mk_msg("r0", data={"pixel_values": tensor}))
 
-    with patch(
-        "sglang_omni.scheduling.encoder_scheduler.broadcast_pyobj",
-        _patched_broadcast_pyobj(bus),
-    ), patch(
-        "sglang_omni.scheduling.encoder_scheduler.dist.all_gather_object",
-        _patched_all_gather_object(bus),
-    ), patch(
-        "sglang_omni.scheduling.encoder_scheduler.dist.broadcast",
-        _patched_dist_broadcast(bus),
+    with (
+        patch(
+            "sglang_omni.scheduling.encoder_scheduler.broadcast_pyobj",
+            _patched_broadcast_pyobj(bus),
+        ),
+        patch(
+            "sglang_omni.scheduling.encoder_scheduler.dist.all_gather_object",
+            _patched_all_gather_object(bus),
+        ),
+        patch(
+            "sglang_omni.scheduling.encoder_scheduler.dist.broadcast",
+            _patched_dist_broadcast(bus),
+        ),
     ):
         msgs, err = sch._recv_messages()
 
@@ -400,10 +414,13 @@ def test_strip_and_lift_returns_typed_dtype_specs():
     """Specs carry torch.dtype objects, not stringified dtypes — locks
     the [_TensorSpec typed dtype] note in the RFC."""
     sch = EncoderScheduler(_FakeWorker(tp_size=2, tp_rank=0), _FakeAdapter())
-    msg = _mk_msg("r0", data={
-        "image_grid_thw": torch.tensor([[1, 2, 3]], dtype=torch.long),
-        "pixel_values": torch.randn(2, 3, dtype=torch.float16),
-    })
+    msg = _mk_msg(
+        "r0",
+        data={
+            "image_grid_thw": torch.tensor([[1, 2, 3]], dtype=torch.long),
+            "pixel_values": torch.randn(2, 3, dtype=torch.float16),
+        },
+    )
     meta_msgs, tensor_lists, specs_lists = sch._strip_and_lift([msg])
     assert len(specs_lists) == 1
     specs = specs_lists[0]

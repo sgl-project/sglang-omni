@@ -99,9 +99,7 @@ def test_probe_includes_audio_no_truncation_override():
 
 def test_probe_extracts_text_from_chat_completion_shapes():
     assert (
-        extract_response_text(
-            {"choices": [{"message": {"content": "plain response"}}]}
-        )
+        extract_response_text({"choices": [{"message": {"content": "plain response"}}]})
         == "plain response"
     )
     assert (

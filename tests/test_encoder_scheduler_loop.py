@@ -7,14 +7,12 @@ the request-level error emission against drained messages.
 """
 from __future__ import annotations
 
+import logging
 import queue as _queue_mod
 import threading
 import time
-import logging
 from types import SimpleNamespace
-from unittest.mock import patch
 
-import pytest
 import torch
 
 from sglang_omni.proto import StagePayload
@@ -39,8 +37,12 @@ class _PassthroughAdapter:
 
     def build_batch(self, messages):
         return SimpleNamespace(
-            adapter=self, image_items=[], video_items=[], audio_items=[],
-            spans=[], is_empty=True,
+            adapter=self,
+            image_items=[],
+            video_items=[],
+            audio_items=[],
+            spans=[],
+            is_empty=True,
         )
 
     def run_feature(self, model, plan):
@@ -126,7 +128,9 @@ class _LimitGpuGuard:
         if not decision.allowed:
             return decision, None
         self.reserved.append(batch_cost)
-        return decision, _GpuReservation(key=f"test-{len(self.reserved)}", bytes=batch_cost)
+        return decision, _GpuReservation(
+            key=f"test-{len(self.reserved)}", bytes=batch_cost
+        )
 
     def release(self, reservation: _GpuReservation | None) -> None:
         if reservation is not None:
@@ -367,7 +371,9 @@ def test_loop_logs_batch_admission_decisions(caplog):
     sch.inbox.put(_mk_msg("r0"))
     sch.inbox.put(_mk_msg("r1"))
 
-    with caplog.at_level(logging.INFO, logger="sglang_omni.scheduling.encoder_scheduler"):
+    with caplog.at_level(
+        logging.INFO, logger="sglang_omni.scheduling.encoder_scheduler"
+    ):
         batch = sch._collect_batch_from_inbox()
 
     assert [msg.request_id for msg in batch] == ["r0"]
@@ -486,7 +492,9 @@ def test_loop_logs_recv_path_timing_fields(caplog):
     )
     sch.inbox.put(_mk_msg("r0"))
 
-    with caplog.at_level(logging.INFO, logger="sglang_omni.scheduling.encoder_scheduler"):
+    with caplog.at_level(
+        logging.INFO, logger="sglang_omni.scheduling.encoder_scheduler"
+    ):
         _run_until_outbox(sch, expected=1)
 
     text = caplog.text
@@ -518,6 +526,30 @@ def test_loop_single_request_cost_guard_emits_request_error():
     assert out[0].request_id == "r0"
     assert out[0].type == "error"
     assert "max_single_request_cost" in str(out[0].data)
+
+
+def test_loop_single_request_cost_guard_rejects_later_candidate_only():
+    def cost_fn(payload):
+        return payload.data["cost"]
+
+    sch = EncoderScheduler(
+        _FakeWorker(),
+        _PassthroughAdapter(),
+        max_batch_size=4,
+        max_batch_wait_ms=0,
+        request_cost_fn=cost_fn,
+        max_batch_cost=10**9,
+        max_single_request_cost=100,
+    )
+    sch.inbox.put(_mk_msg("r0", {"cost": 50}))
+    sch.inbox.put(_mk_msg("r1", {"cost": 200}))
+
+    _run_until_outbox(sch, expected=2)
+    out = _drain_outbox(sch)
+    by_id = {o.request_id: o for o in out}
+    assert by_id["r0"].type == "result"
+    assert by_id["r1"].type == "error"
+    assert "max_single_request_cost" in str(by_id["r1"].data)
 
 
 # ---------------------------------------------------------------------------
@@ -616,6 +648,7 @@ def test_loop_post_forward_slice_error_recovery():
 
 class _CrashingForwardWorker:
     """Runner whose encode_batch raises — must trigger the fatal path."""
+
     def __init__(self):
         self.tp_size = 1
         self.tp_rank = 0

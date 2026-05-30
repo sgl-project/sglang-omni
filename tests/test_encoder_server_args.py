@@ -10,9 +10,9 @@ from __future__ import annotations
 
 import pytest
 
-from sglang_omni.scheduling.sglang_backend import server_args_builder
 from sglang_omni.scheduling.sglang_backend import (
     build_sglang_encoder_server_args,
+    server_args_builder,
 )
 
 
@@ -299,9 +299,7 @@ def test_runner_rejects_unknown_tp_parity_mode():
 
 
 def test_runner_accepts_fp32_linear_tp_parity_mode():
-    from sglang_omni.model_runner.sglang_encoder_runner import (
-        _resolve_tp_parity_mode,
-    )
+    from sglang_omni.model_runner.sglang_encoder_runner import _resolve_tp_parity_mode
 
     assert _resolve_tp_parity_mode("fp32_linear") == "fp32_linear"
 

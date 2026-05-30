@@ -63,8 +63,7 @@ def _run_tp_preflight(
             continue
 
         accepts_kwargs = any(
-            param.kind is inspect.Parameter.VAR_KEYWORD
-            for param in params.values()
+            param.kind is inspect.Parameter.VAR_KEYWORD for param in params.values()
         )
         missing = [] if accepts_kwargs else sorted(_TP_LAUNCH_PARAMS - params.keys())
         if missing:
@@ -151,9 +150,7 @@ def _build_stage_groups(
         base_factory_args = resolve_stage_factory_args(stage_cfg, config)
         sglang_launch_mode = launch_modes[stage_cfg.name].requires_sglang_launch
         nccl_port = (
-            nccl_port_counter.allocate()
-            if tp_size > 1 or sglang_launch_mode
-            else None
+            nccl_port_counter.allocate() if tp_size > 1 or sglang_launch_mode else None
         )
 
         stage_kwargs = dict(
