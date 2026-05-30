@@ -11,7 +11,7 @@ tests/
 │   ├── conftest.py
 │   ├── test_qwen3_omni_*_ci.py
 │   ├── test_qwen3_omni_videoamme_talker_tp2_ci.py
-│   └── test_s2pro_tts_ci.py
+│   └── test_tts_ci.py
 └── unit_test/
     ├── fixtures/
     │   ├── fish_fakes.py
@@ -97,8 +97,8 @@ Tag each test with the marker that matches its lane and use it to filter runs.
   out hardware needs.
 - `docs`: documented-example tests in `docs/`. Verify documented request
   shapes and CLI snippets still work.
-- `s2pro_stage(name)`: in-file CI stage selector for S2-Pro benchmarks.
-  Combined with `--s2pro-stage` (see `test_model/conftest.py`).
+- `tts_stage(name)`: in-file CI stage selector for TTS benchmarks.
+  Combined with `--tts-stage` (see `test_model/conftest.py`).
 
 
 ## Root Files
@@ -160,14 +160,14 @@ Relevant model CI ownership:
   client to cover text responses, server VAD transcription, and disconnect
   teardown.
 - `test_tts_ci.py`: default TTS CI gate. It starts the TTS managed router
-  with two one-GPU workers using the TTS model config,
-  runs full SeedTTS EN non-stream and SSE streaming stages at concurrency 16,
-  and frees the server GPUs before ASR/WER.
+  with two one-GPU workers using the default model config, runs the
+  SeedTTS-50 non-streaming / streaming stages at concurrency 16, and frees
+  the server GPUs before ASR/WER and speaker-similarity checks.
 - `test_tts_consistency_artifacts.py`: CPU-only stage-3 check that compares
   downloaded TTS non-stream and streaming JSON artifacts.
-- CLI flags `--s2pro-stage {nonstream,stream,consistency,all}` and
-  `--concurrency {1,2,4,8,16,all}`: scope an S2-Pro CI sweep without editing
-  source.
+- CLI flags `--tts-stage {tts-stage-1-nonstream,tts-stage-2-stream,tts-stage-3-consistency,all}`
+  and `--concurrency {1,2,4,8,16,all}`: scope a TTS CI sweep without
+  editing source.
 
 ## `unit_test/`
 

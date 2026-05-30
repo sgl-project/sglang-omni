@@ -24,7 +24,7 @@ env:
 #     └── unit-test (restore cached venv only; excludes docs/benchmark)
 #           └── cleanup on full success only (kept on failure for re-run)
 #
-# Docs tests run in test-s2pro-ci.yaml after the same setup pattern.
+# Docs tests run in model-specific CI workflows after the same setup pattern.
 
 jobs:
   setup:
