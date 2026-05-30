@@ -123,6 +123,18 @@ def test_streaming_simple_scheduler_done_before_payload_finalizes_later() -> Non
     assert "req" not in scheduler.stream_state
 
 
+def test_streaming_simple_scheduler_ignores_late_non_streaming_done() -> None:
+    scheduler = _TestStreamingScheduler()
+
+    scheduler._handle_new_request_batch(
+        [IncomingMessage("req", "new_request", _payload("req", stream=False))]
+    )
+    scheduler._on_done("req")
+
+    assert scheduler.outbox.get_nowait().type == "result"
+    assert "req" not in scheduler._pending_done
+
+
 def test_streaming_simple_scheduler_abort_clears_all_stream_state() -> None:
     scheduler = _TestStreamingScheduler()
     scheduler._stream_payloads["req"] = _payload("req", stream=True)

@@ -27,6 +27,8 @@ logger = logging.getLogger(__name__)
 
 _ABORTED_REQUEST_ID_LIMIT = 10000
 _ABORTED_REQUEST_ID_RETAINED = 5000
+_COMPLETED_NON_STREAMING_REQUEST_ID_LIMIT = 10000
+_COMPLETED_NON_STREAMING_REQUEST_ID_RETAINED = 5000
 
 
 class StreamingSimpleScheduler:
@@ -67,6 +69,7 @@ class StreamingSimpleScheduler:
         self._pending_done: set[str] = set()
         self._stream_payloads: dict[str, Any] = {}
         self._aborted_request_ids: set[str] = set()
+        self._completed_non_streaming_request_ids: set[str] = set()
         self._abort_lock = threading.Lock()
 
     # ------------------------------------------------------------------
@@ -178,6 +181,22 @@ class StreamingSimpleScheduler:
         if not keep_aborted:
             with self._abort_lock:
                 self._aborted_request_ids.discard(request_id)
+
+    def _record_completed_non_streaming_request_id(self, request_id: str) -> None:
+        self._completed_non_streaming_request_ids.add(request_id)
+        if (
+            len(self._completed_non_streaming_request_ids)
+            <= _COMPLETED_NON_STREAMING_REQUEST_ID_LIMIT
+        ):
+            return
+        excess = (
+            len(self._completed_non_streaming_request_ids)
+            - _COMPLETED_NON_STREAMING_REQUEST_ID_RETAINED
+        )
+        for stale_request_id in list(self._completed_non_streaming_request_ids)[
+            :excess
+        ]:
+            self._completed_non_streaming_request_ids.discard(stale_request_id)
 
     def _cleanup_aborted_request(self, request_id: str) -> None:
         if self._abort_callback is None:
@@ -311,6 +330,7 @@ class StreamingSimpleScheduler:
                 self.validate_non_streaming_payload(msg.data)
             except Exception as exc:
                 self._emit_error(msg.request_id, exc)
+                self._record_completed_non_streaming_request_id(msg.request_id)
                 continue
             valid.append(msg)
         if not valid:
@@ -325,9 +345,11 @@ class StreamingSimpleScheduler:
                 except Exception as exc:
                     if not self._is_aborted(msg.request_id):
                         self._emit_error(msg.request_id, exc)
+                        self._record_completed_non_streaming_request_id(msg.request_id)
                     continue
                 if not self._is_aborted(msg.request_id):
                     self._emit_result(msg.request_id, result)
+                    self._record_completed_non_streaming_request_id(msg.request_id)
             return
 
         try:
@@ -338,6 +360,7 @@ class StreamingSimpleScheduler:
             for msg in valid:
                 if not self._is_aborted(msg.request_id):
                     self._emit_error(msg.request_id, exc)
+                    self._record_completed_non_streaming_request_id(msg.request_id)
             return
         if len(results) != len(valid):
             exc = ValueError(
@@ -347,10 +370,12 @@ class StreamingSimpleScheduler:
             for msg in valid:
                 if not self._is_aborted(msg.request_id):
                     self._emit_error(msg.request_id, exc)
+                    self._record_completed_non_streaming_request_id(msg.request_id)
             return
         for msg, result in zip(valid, results):
             if not self._is_aborted(msg.request_id):
                 self._emit_result(msg.request_id, result)
+                self._record_completed_non_streaming_request_id(msg.request_id)
 
     def _run_compute(self, payload: Any, loop: asyncio.AbstractEventLoop) -> Any:
         if self._fn is None:
@@ -369,6 +394,7 @@ class StreamingSimpleScheduler:
     def _handle_streaming_new_request(self, request_id: str, payload: Any) -> None:
         with self._abort_lock:
             self._aborted_request_ids.discard(request_id)
+        self._completed_non_streaming_request_ids.discard(request_id)
         self._stream_payloads[request_id] = payload
         self.on_streaming_new_request(request_id, payload)
         if request_id in self._pending_done:
@@ -387,6 +413,8 @@ class StreamingSimpleScheduler:
 
     def _handle_stream_done(self, request_id: str) -> None:
         if request_id not in self._stream_payloads:
+            if request_id in self._completed_non_streaming_request_ids:
+                return
             self._pending_done.add(request_id)
             return
         for out in self.on_stream_done(request_id):
