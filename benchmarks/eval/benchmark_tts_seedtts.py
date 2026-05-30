@@ -300,7 +300,11 @@ async def run_tts_seedtts_benchmark(
     return benchmark_results
 
 
-def run_tts_seedtts_transcribe(config: TtsSeedttsBenchmarkConfig) -> dict:
+def run_tts_seedtts_transcribe(
+    config: TtsSeedttsBenchmarkConfig,
+    *,
+    whisper_router_port: int | None = None,
+) -> dict:
     """Transcribe saved audio and compute WER + ASR speed metrics.
 
     Server need not be running.
@@ -326,6 +330,7 @@ def run_tts_seedtts_transcribe(config: TtsSeedttsBenchmarkConfig) -> dict:
         config,
         wer_config=wer_config,
         generation_mode=generation_mode,
+        whisper_router_port=whisper_router_port,
     )
 
 

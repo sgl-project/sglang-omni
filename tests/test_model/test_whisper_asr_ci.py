@@ -8,9 +8,9 @@ server against the dataset reference text.
 
 from __future__ import annotations
 
+import json
 import os
 import statistics
-import sys
 import time
 from pathlib import Path
 
@@ -22,16 +22,15 @@ from benchmarks.benchmarker.utils import get_wav_duration
 from benchmarks.dataset.prepare import DATASETS
 from benchmarks.dataset.seedtts import SampleInput, load_seedtts_samples
 from benchmarks.tasks.tts import normalize_text
-from tests.utils import (
-    MetricCheckCollector,
-    disable_proxy,
-    no_proxy_env,
-    server_log_file,
-    start_server_from_cmd,
-    stop_server,
+from tests.test_model.omni_router_utils import (
+    ManagedRouterHandle,
+    launch_managed_router,
+    router_worker_traffic_guard,
 )
+from tests.utils import MetricCheckCollector, disable_proxy
 
 WHISPER_MODEL_PATH = "openai/whisper-large-v3"
+WHISPER_ASR_WORKER_ARGS = "--stages.0.factory-args.max-running-requests 1"
 SEEDTTS_ASR_CORRECTNESS_SAMPLES = 20
 SEEDTTS_ASR_CORPUS_WER_MAX = 0.01
 SEEDTTS_ASR_SAMPLE_WER_MAX = 0.20
@@ -46,7 +45,6 @@ WHISPER_ASR_RTF_MEAN_MAX = 0.04
 WHISPER_ASR_RTF_P95_MAX = 0.12
 STARTUP_TIMEOUT = 600
 REQUEST_TIMEOUT = 300
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _require_cuda() -> None:
@@ -65,38 +63,19 @@ def seedtts_en_samples() -> list[SampleInput]:
     )
 
 
-def _start_whisper_server(tmp_path_factory: pytest.TempPathFactory):
-    from sglang_omni.utils import find_available_port
-
-    port = find_available_port()
-    log_file = server_log_file(tmp_path_factory, prefix="whisper_asr_logs")
-    env = no_proxy_env()
-    env["PYTHONPATH"] = str(PROJECT_ROOT)
-    env.setdefault("HF_HUB_DISABLE_XET", "1")
-    cmd = [
-        sys.executable,
-        "-m",
-        "sglang_omni.cli",
-        "serve",
-        "--model-path",
-        WHISPER_MODEL_PATH,
-        "--host",
-        "127.0.0.1",
-        "--port",
-        str(port),
-        "--log-level",
-        "info",
-        "--stages.0.factory-args.max-running-requests",
-        "1",
-    ]
-    proc = start_server_from_cmd(
-        cmd,
-        log_file,
-        port,
-        timeout=STARTUP_TIMEOUT,
-        env=env,
-    )
-    return proc, port
+@pytest.fixture(scope="module")
+def whisper_asr_router_server(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> ManagedRouterHandle:
+    with launch_managed_router(
+        tmp_path_factory=tmp_path_factory,
+        model_path=WHISPER_MODEL_PATH,
+        model_name=WHISPER_MODEL_PATH,
+        worker_extra_args=WHISPER_ASR_WORKER_ARGS,
+        wait_timeout=STARTUP_TIMEOUT,
+        log_prefix="whisper_asr_router_logs",
+    ) as router:
+        yield router
 
 
 def _transcribe_with_omni(port: int, sample: SampleInput) -> tuple[str, float, float]:
@@ -145,6 +124,7 @@ def _percentile(values: list[float], percentile: float) -> float:
 @pytest.mark.benchmark
 def test_whisper_asr_matches_seedtts_reference_text(
     seedtts_en_samples: list[SampleInput],
+    whisper_asr_router_server: ManagedRouterHandle,
     tmp_path_factory: pytest.TempPathFactory,
 ) -> None:
     _require_cuda()
@@ -157,18 +137,21 @@ def test_whisper_asr_matches_seedtts_reference_text(
     if not seedtts_en_samples:
         checks.assert_all()
 
-    proc, port = _start_whisper_server(tmp_path_factory)
     omni_outputs: dict[str, str] = {}
     latencies_s: list[float] = []
     audio_durations_s: list[float] = []
-    try:
+    with router_worker_traffic_guard(
+        whisper_asr_router_server,
+        label="Whisper ASR SeedTTS",
+    ) as router_guard:
         for sample in seedtts_en_samples:
-            text, latency_s, audio_duration_s = _transcribe_with_omni(port, sample)
+            text, latency_s, audio_duration_s = _transcribe_with_omni(
+                whisper_asr_router_server.port,
+                sample,
+            )
             omni_outputs[sample.sample_id] = text
             latencies_s.append(latency_s)
             audio_durations_s.append(audio_duration_s)
-    finally:
-        stop_server(proc)
 
     sample_diffs: list[str] = []
     high_wer_samples: list[str] = []
@@ -226,6 +209,37 @@ def test_whisper_asr_matches_seedtts_reference_text(
         f"rtf_mean={rtf_mean:.4f} "
         f"rtf_p95={rtf_p95:.4f}"
     )
+    per_sample_wer_max = max(
+        (
+            process_words(
+                normalize_text(sample.ref_text, "en"),
+                normalize_text(omni_outputs[sample.sample_id], "en"),
+            ).wer
+            for sample in seedtts_en_samples
+        ),
+        default=0.0,
+    )
+    results_path = tmp_path_factory.getbasetemp() / "whisper_asr_results.json"
+    results_path.write_text(
+        json.dumps(
+            {
+                "summary": {
+                    "total_samples": len(seedtts_en_samples),
+                    "evaluated": len(seedtts_en_samples),
+                    "corpus_wer": corpus_wer,
+                    "wer_per_sample_max": per_sample_wer_max,
+                },
+                "speed": {
+                    "throughput_samples_per_s": throughput_samples_per_s,
+                    "latency_mean_s": latency_mean_s,
+                    "latency_p95_s": latency_p95_s,
+                    "rtf_mean": rtf_mean,
+                    "rtf_p95": rtf_p95,
+                },
+            },
+            indent=2,
+        )
+    )
     checks.check(
         corpus_wer <= SEEDTTS_ASR_CORPUS_WER_MAX,
         f"Whisper ASR corpus WER {corpus_wer:.4f} exceeds "
@@ -259,4 +273,5 @@ def test_whisper_asr_matches_seedtts_reference_text(
         rtf_p95 <= WHISPER_ASR_RTF_P95_MAX,
         f"Whisper ASR p95 RTF {rtf_p95:.4f} exceeds " f"{WHISPER_ASR_RTF_P95_MAX:.4f}",
     )
+    router_guard.assert_served(min_total_requests=len(seedtts_en_samples))
     checks.assert_all()
