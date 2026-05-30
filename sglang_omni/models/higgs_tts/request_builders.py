@@ -28,6 +28,7 @@ class HiggsSGLangRequestData(SGLangARRequestData):
     output_codes: list[torch.Tensor] = field(default_factory=list)
     generation_done: bool = False
     engine_start_s: float = 0.0
+    stream_metadata: dict[str, Any] | None = None
 
 
 class _ResettableHiggsModel(Protocol):
@@ -108,6 +109,32 @@ def build_sglang_higgs_request(
     )
 
 
+def build_higgs_stream_metadata(
+    payload: StagePayload, data: HiggsSGLangRequestData
+) -> dict[str, Any] | None:
+    params = payload.request.params
+    if not isinstance(params, dict):
+        raise TypeError(
+            f"Higgs request params must be a dict, got {type(params).__name__}"
+        )
+    if not bool(params.get("stream", False)):
+        return None
+
+    num_codebooks = int(data.num_codebooks)
+    codebook_size = int(data.codebook_size)
+    if num_codebooks <= 0 or codebook_size <= 2:
+        raise ValueError(
+            f"Invalid Higgs stream codec contract: "
+            f"num_codebooks={num_codebooks}, codebook_size={codebook_size}"
+        )
+    return {
+        "modality": "audio_codes",
+        "stream": True,
+        "num_codebooks": num_codebooks,
+        "codebook_size": codebook_size,
+    }
+
+
 def apply_higgs_result(state: HiggsTtsState, data: HiggsSGLangRequestData) -> None:
     if data.output_codes:
         codes = torch.stack(data.output_codes, dim=0).to(torch.long)
@@ -141,6 +168,7 @@ def make_higgs_scheduler_adapters(
         data = build_sglang_higgs_request(state, request_id=payload.request_id)
         data.engine_start_s = time.perf_counter()
         data.stage_payload = payload
+        data.stream_metadata = build_higgs_stream_metadata(payload, data)
         return data
 
     def result_adapter(data: HiggsSGLangRequestData) -> StagePayload:
@@ -162,6 +190,7 @@ def make_higgs_scheduler_adapters(
 __all__ = [
     "HiggsSGLangRequestData",
     "apply_higgs_result",
+    "build_higgs_stream_metadata",
     "build_sglang_higgs_request",
     "make_higgs_scheduler_adapters",
 ]

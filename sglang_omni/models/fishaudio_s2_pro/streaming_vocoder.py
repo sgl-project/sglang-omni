@@ -3,23 +3,20 @@
 
 from __future__ import annotations
 
-import collections
 import logging
-import queue as _queue_mod
-import time
 from dataclasses import dataclass, field
 from typing import Any
 
 import torch
 
 from sglang_omni.models.fishaudio_s2_pro.payload_types import S2ProState
+from sglang_omni.pipeline.stage.stream_queue import StreamItem
 from sglang_omni.proto import StagePayload
-from sglang_omni.scheduling.messages import IncomingMessage, OutgoingMessage
+from sglang_omni.scheduling.messages import OutgoingMessage
+from sglang_omni.scheduling.streaming_simple_scheduler import StreamingSimpleScheduler
+from sglang_omni.utils.audio_payload import audio_waveform_payload
 
 logger = logging.getLogger(__name__)
-
-_ABORTED_REQUEST_ID_LIMIT = 10000
-_ABORTED_REQUEST_ID_RETAINED = 5000
 
 
 @dataclass
@@ -268,11 +265,12 @@ def trim_retained_stream_codes(
 def _build_audio_chunk_payload(
     audio_data: torch.Tensor, *, sample_rate: int
 ) -> dict[str, Any]:
-    return {
-        "audio_data": audio_data.cpu().tolist(),
-        "sample_rate": sample_rate,
-        "modality": "audio",
-    }
+    return audio_waveform_payload(
+        audio_data,
+        sample_rate=sample_rate,
+        modality="audio",
+        source_hint="S2-Pro streaming",
+    )
 
 
 def _build_usage(state: S2ProState) -> dict[str, Any] | None:
@@ -289,7 +287,7 @@ def _build_usage(state: S2ProState) -> dict[str, Any] | None:
     return usage
 
 
-class S2ProVocoderScheduler:
+class S2ProVocoderScheduler(StreamingSimpleScheduler):
     """Fish S2-Pro vocoder scheduler with streaming and batch final paths."""
 
     def __init__(
@@ -313,8 +311,6 @@ class S2ProVocoderScheduler:
                 "stream_crossfade_samples and max_batch_wait_ms must be >= 0"
             )
 
-        self.inbox: _queue_mod.Queue[IncomingMessage] = _queue_mod.Queue()
-        self.outbox: _queue_mod.Queue[OutgoingMessage] = _queue_mod.Queue()
         self._codec = codec
         self._device = torch.device(device)
         self._stream_stride = int(stream_stride)
@@ -323,135 +319,36 @@ class S2ProVocoderScheduler:
             codec, stream_overlap_tokens
         )
         self._stream_crossfade_samples = int(stream_crossfade_samples)
-        self._max_batch_size = int(max_batch_size)
-        self._max_batch_wait_s = float(max_batch_wait_ms) / 1000.0
-        self._running = False
-        self._pending_messages: collections.deque[IncomingMessage] = collections.deque()
-
-        self._payloads: dict[str, StagePayload] = {}
         self._stream_states: dict[str, _StreamVocoderState] = {}
-        self._pending_done: set[str] = set()
-        self._aborted_request_ids: set[str] = set()
 
-    def start(self) -> None:
-        self._running = True
-        while self._running:
-            msg = self._next_message()
-            if msg is None:
-                continue
-            if msg.request_id in self._aborted_request_ids:
-                continue
-            try:
-                if msg.type == "new_request":
-                    self._handle_new_request_batch(self._collect_new_request_batch(msg))
-                elif msg.type == "stream_chunk":
-                    self._on_chunk(msg.request_id, msg.data)
-                elif msg.type == "stream_done":
-                    self._on_done(msg.request_id)
-                else:
-                    raise ValueError(f"Unsupported vocoder message type: {msg.type}")
-            except Exception as exc:
-                logger.exception("S2ProVocoderScheduler failed for %s", msg.request_id)
-                self.outbox.put(
-                    OutgoingMessage(
-                        request_id=msg.request_id,
-                        type="error",
-                        data=exc,
-                    )
-                )
-                self.abort(msg.request_id)
+        super().__init__(
+            self._vocode_payload,
+            batch_compute_fn=self._vocode_payloads,
+            max_batch_size=max_batch_size,
+            max_batch_wait_ms=max_batch_wait_ms,
+        )
+        self._payloads = self._stream_payloads
 
-    def stop(self) -> None:
-        self._running = False
+    def is_streaming_payload(self, payload: StagePayload) -> bool:
+        return self._is_streaming_payload(payload)
 
-    def abort(self, request_id: str) -> None:
-        self._record_aborted_request_id(request_id)
-        self._clear_request_state(request_id, keep_aborted=True)
+    def validate_non_streaming_payload(self, payload: StagePayload) -> None:
+        self._validate_payload_state(payload)
 
-    def _record_aborted_request_id(self, request_id: str) -> None:
-        self._aborted_request_ids.add(request_id)
-        if len(self._aborted_request_ids) <= _ABORTED_REQUEST_ID_LIMIT:
-            return
-
-        # Note (Ratish): keep aborted ids bounded for late queued messages;
-        # do not drain the shared inbox because it owns request order.
-        excess = len(self._aborted_request_ids) - _ABORTED_REQUEST_ID_RETAINED
-        to_remove = list(self._aborted_request_ids)[:excess]
-        self._aborted_request_ids -= set(to_remove)
-
-    def _clear_request_state(
-        self, request_id: str, *, keep_aborted: bool = False
-    ) -> None:
-        self._payloads.pop(request_id, None)
-        self._stream_states.pop(request_id, None)
-        self._pending_done.discard(request_id)
-        if not keep_aborted:
-            self._aborted_request_ids.discard(request_id)
-
-    def _next_message(self) -> IncomingMessage | None:
-        if self._pending_messages:
-            return self._pending_messages.popleft()
-        try:
-            return self.inbox.get(timeout=0.1)
-        except _queue_mod.Empty:
-            return None
-
-    def _collect_new_request_batch(
-        self, first_msg: IncomingMessage
-    ) -> list[IncomingMessage]:
-        batch = [first_msg]
-        if self._max_batch_size <= 1 or self._is_streaming_payload(first_msg.data):
-            return batch
-
-        deadline = time.monotonic() + self._max_batch_wait_s
-        while len(batch) < self._max_batch_size:
-            try:
-                msg = self.inbox.get_nowait()
-            except _queue_mod.Empty:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    break
-                try:
-                    msg = self.inbox.get(timeout=remaining)
-                except _queue_mod.Empty:
-                    break
-
-            if msg.request_id in self._aborted_request_ids:
-                continue
-            if msg.type == "new_request" and not self._is_streaming_payload(msg.data):
-                batch.append(msg)
-            else:
-                self._pending_messages.append(msg)
-                break
-        return batch
-
-    def _handle_new_request_batch(self, batch: list[IncomingMessage]) -> None:
-        streaming = []
-        non_streaming = []
-        for msg in batch:
-            if self._is_streaming_payload(msg.data):
-                streaming.append(msg)
-            else:
-                non_streaming.append(msg)
-        for msg in streaming:
-            self._on_streaming_new_request(msg.request_id, msg.data)
-        if non_streaming:
-            self._vocode_non_streaming_batch(non_streaming)
-
-    def _on_streaming_new_request(self, request_id: str, payload: StagePayload) -> None:
-        self._aborted_request_ids.discard(request_id)
-        self._payloads[request_id] = payload
+    def on_streaming_new_request(self, request_id: str, payload: StagePayload) -> None:
+        del payload
         self._stream_states.setdefault(request_id, _StreamVocoderState())
-        if request_id in self._pending_done:
-            self._pending_done.discard(request_id)
-            self._on_done(request_id)
 
-    def _on_chunk(self, request_id: str, chunk: Any) -> None:
-        if request_id in self._aborted_request_ids:
-            return
+    def on_stream_chunk(
+        self, request_id: str, chunk: StreamItem
+    ) -> list[OutgoingMessage]:
         state = self._stream_states.setdefault(request_id, _StreamVocoderState())
         codes = chunk.data
-        assert isinstance(codes, torch.Tensor)
+        if not isinstance(codes, torch.Tensor):
+            raise TypeError(
+                f"S2-Pro stream chunk for {request_id!r} must carry a torch.Tensor, "
+                f"got {type(codes).__name__}"
+            )
         output = build_stream_vocoder_chunk(
             state,
             codes,
@@ -462,26 +359,22 @@ class S2ProVocoderScheduler:
             stream_overlap_tokens=self._stream_overlap_tokens,
             stream_crossfade_samples=self._stream_crossfade_samples,
         )
-        if output is not None and request_id not in self._aborted_request_ids:
-            self.outbox.put(
-                OutgoingMessage(
-                    request_id=request_id,
-                    type="stream",
-                    data=output,
-                    metadata={"modality": "audio"},
-                )
+        if output is None:
+            return []
+        return [
+            OutgoingMessage(
+                request_id=request_id,
+                type="stream",
+                data=output,
+                metadata={"modality": "audio"},
             )
+        ]
 
-    def _on_done(self, request_id: str) -> None:
-        if request_id in self._aborted_request_ids:
-            return
-        if request_id not in self._stream_states:
-            return
-        if request_id not in self._payloads:
-            self._pending_done.add(request_id)
-            return
+    def on_stream_done(self, request_id: str) -> list[OutgoingMessage]:
+        state = self._stream_states.get(request_id)
+        if state is None:
+            return []
 
-        state = self._stream_states[request_id]
         output = flush_stream_vocoder_chunk(
             state,
             codec=self._codec,
@@ -489,8 +382,9 @@ class S2ProVocoderScheduler:
             stream_overlap_tokens=self._stream_overlap_tokens,
             stream_crossfade_samples=self._stream_crossfade_samples,
         )
-        if output is not None and request_id not in self._aborted_request_ids:
-            self.outbox.put(
+        messages: list[OutgoingMessage] = []
+        if output is not None:
+            messages.append(
                 OutgoingMessage(
                     request_id=request_id,
                     type="stream",
@@ -499,69 +393,19 @@ class S2ProVocoderScheduler:
                 )
             )
 
-        payload = self._payloads.get(request_id)
-        if payload is None or request_id in self._aborted_request_ids:
-            return
+        payload = self._payloads[request_id]
         result = self._vocode_payload(payload)
-        if request_id in self._aborted_request_ids:
-            return
-        self.outbox.put(
+        messages.append(
             OutgoingMessage(
                 request_id=request_id,
                 type="result",
                 data=result,
             )
         )
-        self._clear_request_state(request_id)
+        return messages
 
-    def _vocode_non_streaming_batch(self, batch: list[IncomingMessage]) -> None:
-        batch = [
-            msg for msg in batch if msg.request_id not in self._aborted_request_ids
-        ]
-        if not batch:
-            return
-        for msg in batch:
-            self._pending_done.discard(msg.request_id)
-
-        valid_messages: list[IncomingMessage] = []
-        valid_payloads: list[StagePayload] = []
-        for msg in batch:
-            try:
-                self._validate_payload_state(msg.data)
-            except Exception as exc:
-                self.outbox.put(
-                    OutgoingMessage(
-                        request_id=msg.request_id,
-                        type="error",
-                        data=exc,
-                    )
-                )
-                continue
-            valid_messages.append(msg)
-            valid_payloads.append(msg.data)
-
-        if not valid_messages:
-            return
-
-        try:
-            results = self._vocode_payloads(valid_payloads)
-        except Exception as exc:
-            for msg in valid_messages:
-                self.outbox.put(
-                    OutgoingMessage(request_id=msg.request_id, type="error", data=exc)
-                )
-            return
-
-        for msg, result in zip(valid_messages, results):
-            if msg.request_id in self._aborted_request_ids:
-                continue
-            self.outbox.put(
-                OutgoingMessage(
-                    request_id=msg.request_id,
-                    type="result",
-                    data=result,
-                )
-            )
+    def clear_stream_state(self, request_id: str) -> None:
+        self._stream_states.pop(request_id, None)
 
     def _vocode_payload(self, payload: StagePayload) -> StagePayload:
         return self._vocode_payloads([payload])[0]

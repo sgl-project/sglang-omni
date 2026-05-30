@@ -12,6 +12,8 @@ import torch
 def audio_waveform_payload(
     audio: Any,
     *,
+    sample_rate: int | None = None,
+    modality: str | None = None,
     source_hint: str = "audio",
 ) -> dict[str, Any]:
     if isinstance(audio, torch.Tensor):
@@ -22,8 +24,13 @@ def audio_waveform_payload(
         raise TypeError(
             f"Unsupported {source_hint} audio output type: {type(audio)}"
         ) from exc
-    return {
+    payload: dict[str, Any] = {
         "audio_waveform": array.tobytes(),
         "audio_waveform_shape": list(array.shape),
         "audio_waveform_dtype": "float32",
     }
+    if sample_rate is not None:
+        payload["sample_rate"] = int(sample_rate)
+    if modality is not None:
+        payload["modality"] = modality
+    return payload

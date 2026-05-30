@@ -7,15 +7,17 @@ runs vocoder incrementally, outputs final audio via outbox.
 from __future__ import annotations
 
 import logging
-import queue as _queue_mod
 from typing import Any
 
 import numpy as np
 import torch
 
+from sglang_omni.pipeline.stage.stream_queue import StreamItem
 from sglang_omni.profiler.event_recorder import emit as _emit_event
 from sglang_omni.proto import StagePayload
-from sglang_omni.scheduling.messages import IncomingMessage, OutgoingMessage
+from sglang_omni.scheduling.messages import OutgoingMessage
+from sglang_omni.scheduling.streaming_simple_scheduler import StreamingSimpleScheduler
+from sglang_omni.utils.audio_payload import audio_waveform_payload
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +50,7 @@ def load_code2wav_model(
     return model
 
 
-class Code2WavScheduler:
+class Code2WavScheduler(StreamingSimpleScheduler):
     """Streaming vocoder scheduler. Same inbox/outbox interface as OmniScheduler."""
 
     def __init__(
@@ -60,8 +62,6 @@ class Code2WavScheduler:
         sample_rate: int = 24000,
         codec_eos_token_id: int = 2150,
     ):
-        self.inbox: _queue_mod.Queue[IncomingMessage] = _queue_mod.Queue()
-        self.outbox: _queue_mod.Queue[OutgoingMessage] = _queue_mod.Queue()
         self._model = model
         self._device = torch.device(device)
         self._stream_chunk_size = max(int(stream_chunk_size), 1)
@@ -69,47 +69,28 @@ class Code2WavScheduler:
         self._sample_rate = sample_rate
         self._codec_eos_token_id = codec_eos_token_id
         self._total_upsample = int(model.total_upsample)
-        self._running = False
 
         # Per-request state
         self._code_chunks: dict[str, list[torch.Tensor]] = {}
         self._emitted: dict[str, int] = {}
         self._audio_chunks: dict[str, list[np.ndarray]] = {}
-        self._payloads: dict[str, StagePayload] = {}
-        self._pending_done: set[str] = set()
         self._stream_enabled: dict[str, bool] = {}
+        super().__init__(compute_fn=None)
+        self._payloads = self._stream_payloads
 
-    def start(self) -> None:
-        self._running = True
-        while self._running:
-            try:
-                msg = self.inbox.get(timeout=0.1)
-            except _queue_mod.Empty:
-                continue
+    def is_streaming_payload(self, payload: StagePayload) -> bool:
+        del payload
+        return True
 
-            if msg.type == "new_request":
-                self._ensure_request_state(msg.request_id)
-                self._payloads[msg.request_id] = msg.data
-                if msg.request_id in self._pending_done:
-                    self._pending_done.discard(msg.request_id)
-                    self._on_done(msg.request_id)
+    def on_streaming_new_request(self, request_id: str, payload: StagePayload) -> None:
+        del payload
+        self._ensure_request_state(request_id)
 
-            elif msg.type == "stream_chunk":
-                self._on_chunk(msg.request_id, msg.data)
-
-            elif msg.type == "stream_done":
-                self._on_done(msg.request_id)
-
-    def stop(self) -> None:
-        self._running = False
-
-    def abort(self, request_id: str) -> None:
+    def clear_stream_state(self, request_id: str) -> None:
         self._code_chunks.pop(request_id, None)
         self._emitted.pop(request_id, None)
         self._audio_chunks.pop(request_id, None)
-        self._payloads.pop(request_id, None)
         self._stream_enabled.pop(request_id, None)
-        self._pending_done.discard(request_id)
 
     def _fail_request(self, request_id: str, error: Exception) -> None:
         self.outbox.put(
@@ -128,7 +109,9 @@ class Code2WavScheduler:
         self._emitted[request_id] = 0
         self._audio_chunks[request_id] = []
 
-    def _on_chunk(self, request_id: str, chunk: Any) -> None:
+    def on_stream_chunk(
+        self, request_id: str, chunk: StreamItem
+    ) -> list[OutgoingMessage]:
         self._ensure_request_state(request_id)
 
         # Latch the stream flag from talker's metadata once per request.
@@ -145,7 +128,7 @@ class Code2WavScheduler:
                         "populate it."
                     ),
                 )
-                return
+                return []
             self._stream_enabled[request_id] = bool(meta["stream"])
 
         codes = chunk.data.to(device=self._device, dtype=torch.long)
@@ -163,25 +146,20 @@ class Code2WavScheduler:
                 logger.debug(
                     "Code2Wav skip EOS req=%s codes=%s", request_id, codes.tolist()
                 )
-            return
+            return []
         self._code_chunks[request_id].append(codes)
         ready = len(self._code_chunks[request_id]) - self._emitted[request_id]
         if ready >= self._stream_chunk_size:
-            self._decode_and_emit(request_id)
+            return self._decode_and_emit(request_id)
+        return []
 
-    def _on_done(self, request_id: str) -> None:
-        if request_id not in self._code_chunks:
-            self._pending_done.add(request_id)
-            return
-        if request_id not in self._payloads:
-            self._pending_done.add(request_id)
-            return
-
+    def on_stream_done(self, request_id: str) -> list[OutgoingMessage]:
         # Decode remaining
         chunks = self._code_chunks[request_id]
         emitted = self._emitted[request_id]
+        messages: list[OutgoingMessage] = []
         if chunks and emitted < len(chunks):
-            self._decode_and_emit(request_id)
+            messages.extend(self._decode_and_emit(request_id))
 
         # Build final output
         audio_parts = self._audio_chunks.get(request_id, [])
@@ -190,7 +168,7 @@ class Code2WavScheduler:
                 request_id,
                 RuntimeError(f"code2wav produced no audio for {request_id!r}"),
             )
-            return
+            return []
         full_audio = np.concatenate(audio_parts).astype(np.float32, copy=False)
         payload = self._payloads[request_id]
         if logger.isEnabledFor(logging.DEBUG):
@@ -212,7 +190,7 @@ class Code2WavScheduler:
             }
         else:
             final_data = self._build_audio_payload(full_audio)
-        self.outbox.put(
+        messages.append(
             OutgoingMessage(
                 request_id=request_id,
                 type="result",
@@ -223,20 +201,15 @@ class Code2WavScheduler:
                 ),
             )
         )
+        return messages
 
-        # Cleanup
-        self._code_chunks.pop(request_id, None)
-        self._emitted.pop(request_id, None)
-        self._audio_chunks.pop(request_id, None)
-        self._payloads.pop(request_id, None)
-        self._stream_enabled.pop(request_id, None)
-
-    def _decode_and_emit(self, request_id: str) -> None:
+    def _decode_and_emit(self, request_id: str) -> list[OutgoingMessage]:
         chunks = self._code_chunks[request_id]
         start = self._emitted[request_id]
         end = len(chunks)
         audio = self._decode_incremental(request_id, chunks, start, end)
         self._emitted[request_id] = end
+        messages: list[OutgoingMessage] = []
         if audio.size > 0:
             is_first = not self._audio_chunks[request_id]
             self._audio_chunks[request_id].append(audio)
@@ -248,7 +221,7 @@ class Code2WavScheduler:
                     metadata={"samples": int(audio.shape[0])},
                 )
             if self._stream_enabled.get(request_id, True):
-                self.outbox.put(
+                messages.append(
                     OutgoingMessage(
                         request_id=request_id,
                         type="stream",
@@ -257,6 +230,7 @@ class Code2WavScheduler:
                         metadata={"modality": "audio"},
                     )
                 )
+        return messages
 
     def _decode_incremental(
         self, request_id: str, code_chunks, start, end
@@ -286,14 +260,12 @@ class Code2WavScheduler:
         return audio
 
     def _build_audio_payload(self, audio: np.ndarray) -> dict[str, Any]:
-        audio = audio.astype(np.float32, copy=False)
-        return {
-            "audio_waveform": audio.tobytes(),
-            "audio_waveform_shape": list(audio.shape),
-            "audio_waveform_dtype": "float32",
-            "sample_rate": self._sample_rate,
-            "modality": "audio",
-        }
+        return audio_waveform_payload(
+            audio.astype(np.float32, copy=False),
+            sample_rate=self._sample_rate,
+            modality="audio",
+            source_hint="Qwen3-Omni code2wav",
+        )
 
 
 def create_code2wav_scheduler(
