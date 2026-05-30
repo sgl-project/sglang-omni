@@ -74,6 +74,8 @@ def _start_whisper_server(tmp_path_factory: pytest.TempPathFactory):
         str(port),
         "--log-level",
         "info",
+        "--stages.0.factory-args.max-running-requests",
+        "1",
     ]
     proc = start_server_from_cmd(
         cmd,
