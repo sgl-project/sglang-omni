@@ -143,6 +143,30 @@ def test_higgs_reference_cache_key_same_size_edit_and_urls(tmp_path) -> None:
     assert stages._reference_audio_cache_key(str(tmp_path / "missing.wav")) is None
 
 
+def test_higgs_reference_cache_key_memoizes_stable_file_hash(
+    monkeypatch, tmp_path
+) -> None:
+    ref_audio = tmp_path / "ref.wav"
+    ref_audio.write_bytes(b"fake wav bytes")
+    stages._REF_PATH_HASH_MEMO.clear()
+    read_calls = 0
+    original_read_bytes = stages.Path.read_bytes
+
+    def counting_read_bytes(path):
+        nonlocal read_calls
+        if path == ref_audio:
+            read_calls += 1
+        return original_read_bytes(path)
+
+    monkeypatch.setattr(stages.Path, "read_bytes", counting_read_bytes)
+
+    first_key = stages._reference_audio_cache_key(ref_audio)
+    second_key = stages._reference_audio_cache_key(ref_audio)
+
+    assert first_key == second_key
+    assert read_calls == 1
+
+
 def test_higgs_reference_cache_key_ignores_media_type() -> None:
     raw = b"\x01\x02\x03fake-audio-bytes"
     encoded = base64.b64encode(raw).decode()

@@ -245,6 +245,7 @@ def _build_results_config(
         "stream": config.stream,
         "max_samples": config.max_samples,
         "max_new_tokens": config.max_new_tokens,
+        "seed": config.seed,
         "warmup": config.warmup,
         "concurrency": config.concurrency,
         "request_rate": config.request_rate,
