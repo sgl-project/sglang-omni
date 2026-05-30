@@ -111,7 +111,6 @@ def create_preprocessing_executor(
     num_codebooks: int = 8,
     codebook_size: int = 1026,
     max_concurrency: int = 8,
-    enable_ref_code_cache: bool = True,
 ):
     """CPU stage: text tokenize + optional ref-audio file IO.
 
@@ -133,7 +132,6 @@ def create_preprocessing_executor(
         max_bytes=_REF_WAVEFORM_CACHE_MAX_BYTES,
     )
     reference_waveform_cache_lock = threading.Lock()
-    reference_cache_enabled = bool(enable_ref_code_cache)
 
     def _preprocess(payload: StagePayload) -> StagePayload:
         inputs = payload.request.inputs or {}
@@ -170,12 +168,11 @@ def create_preprocessing_executor(
         reference_cache_key = None
         if ref_codes_TN is None and inputs.get("reference_audio") is not None:
             reference_audio = inputs["reference_audio"]
-            if reference_cache_enabled:
-                reference_cache_key = _reference_audio_cache_key(reference_audio)
-                with reference_waveform_cache_lock:
-                    cached_waveform = reference_waveform_cache.get(reference_cache_key)
-                if cached_waveform is not None:
-                    waveform_tensor = cached_waveform.clone()
+            reference_cache_key = _reference_audio_cache_key(reference_audio)
+            with reference_waveform_cache_lock:
+                cached_waveform = reference_waveform_cache.get(reference_cache_key)
+            if cached_waveform is not None:
+                waveform_tensor = cached_waveform.clone()
             if waveform_tensor is None:
                 waveform_np, sample_rate = load_audio_to_24k(reference_audio)
                 wav = torch.from_numpy(waveform_np)
@@ -187,11 +184,10 @@ def create_preprocessing_executor(
                         f"({wav.shape[-1] / 24000:.1f}s); cap at {_MAX_REF_AUDIO_SEC}s."
                     )
                 waveform_tensor = wav.view(1, 1, -1).contiguous().float()
-                if reference_cache_enabled:
-                    with reference_waveform_cache_lock:
-                        reference_waveform_cache.put(
-                            reference_cache_key, waveform_tensor.clone()
-                        )
+                with reference_waveform_cache_lock:
+                    reference_waveform_cache.put(
+                        reference_cache_key, waveform_tensor.clone()
+                    )
 
         if ref_codes_TN is not None:
             delayed = apply_delay_pattern(ref_codes_TN)
@@ -245,7 +241,6 @@ def create_audio_encoder_executor(
     num_codebooks: int = 8,
     max_batch_size: int = 8,
     max_batch_wait_ms: int = 2,
-    enable_ref_code_cache: bool = True,
 ):
     """GPU stage: codec-encode raw ref audio → delayed codes + prompt assembly.
 
@@ -272,7 +267,6 @@ def create_audio_encoder_executor(
         max_bytes=_REF_CODE_CACHE_MAX_BYTES,
         cache_device="cpu",
     )
-    reference_cache_enabled = bool(enable_ref_code_cache)
 
     def _encode(payload: StagePayload) -> StagePayload:
         state = HiggsTtsState.from_dict(payload.data)
@@ -280,11 +274,7 @@ def create_audio_encoder_executor(
         if waveform is None:
             return payload
 
-        cached_delayed = (
-            reference_code_cache.get(state.reference_cache_key)
-            if reference_cache_enabled
-            else None
-        )
+        cached_delayed = reference_code_cache.get(state.reference_cache_key)
         if cached_delayed is not None:
             delayed_rows = cached_delayed.tolist()
         else:
@@ -298,10 +288,9 @@ def create_audio_encoder_executor(
                 )
             delayed = apply_delay_pattern(ref_codes_TN)
             delayed_rows = delayed.tolist()
-            if reference_cache_enabled:
-                reference_code_cache.put(
-                    state.reference_cache_key, delayed.to("cpu", torch.int32)
-                )
+            reference_code_cache.put(
+                state.reference_cache_key, delayed.to("cpu", torch.int32)
+            )
         state.reference_codes_delayed = delayed_rows
         state.prompt_token_ids = adapter.build_prompt(
             state.target_text or "",

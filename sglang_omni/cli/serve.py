@@ -14,19 +14,9 @@ logger = logging.getLogger(__name__)
 
 _STAGE_TOGGLE_MODE = Literal["default", "on", "off"]
 _QWEN_COLOCATED_CONFIG_CLASS = "Qwen3OmniSpeechColocatedPipelineConfig"
-_HIGGS_PREPROCESSING_FACTORY = (
-    "sglang_omni.models.higgs_tts.stages.create_preprocessing_executor"
-)
-_HIGGS_AUDIO_ENCODER_FACTORY = (
-    "sglang_omni.models.higgs_tts.stages.create_audio_encoder_executor"
-)
 _HIGGS_ASYNC_DECODE_FACTORY = (
     "sglang_omni.models.higgs_tts.stages.create_sglang_tts_engine_executor"
 )
-_HIGGS_REF_CODE_CACHE_FACTORIES = {
-    "preprocessing": _HIGGS_PREPROCESSING_FACTORY,
-    "audio_encoder": _HIGGS_AUDIO_ENCODER_FACTORY,
-}
 
 
 def launch_server(*args: object, **kwargs: object) -> object:
@@ -693,26 +683,6 @@ def apply_async_decode_cli_overrides(
     return pipeline_config
 
 
-def apply_higgs_ref_code_cache_cli_overrides(
-    pipeline_config: PipelineConfig,
-    *,
-    higgs_ref_code_cache: bool,
-) -> PipelineConfig:
-    if higgs_ref_code_cache:
-        return pipeline_config
-
-    for stage_name, factory in _HIGGS_REF_CODE_CACHE_FACTORIES.items():
-        _apply_stage_factory_args_override(
-            pipeline_config,
-            stage_name=stage_name,
-            updates={"enable_ref_code_cache": False},
-            reason="Higgs reference-code cache override",
-            supported_factory=factory,
-            flag_name="--no-higgs-ref-code-cache",
-        )
-    return pipeline_config
-
-
 def apply_torch_compile_cli_overrides(
     pipeline_config: PipelineConfig,
     *,
@@ -962,16 +932,6 @@ def serve(
             ),
         ),
     ] = None,
-    higgs_ref_code_cache: Annotated[
-        bool,
-        typer.Option(
-            "--higgs-ref-code-cache/--no-higgs-ref-code-cache",
-            help=(
-                "Enable Higgs TTS reference audio/code cache. Enabled by "
-                "default for Higgs TTS."
-            ),
-        ),
-    ] = True,
 ) -> None:
     """Serve the pipeline."""
     logging.basicConfig(
@@ -1045,10 +1005,6 @@ def serve(
         merged_config,
         enable_async_decode=enable_async_decode,
         async_decode_min_batch_size=async_decode_min_batch_size,
-    )
-    merged_config = apply_higgs_ref_code_cache_cli_overrides(
-        merged_config,
-        higgs_ref_code_cache=higgs_ref_code_cache,
     )
 
     if _should_print_merged_config(colocate=colocate, log_level=log_level):
