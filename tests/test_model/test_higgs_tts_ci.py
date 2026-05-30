@@ -64,9 +64,6 @@ WER_TIMEOUT = 900
 
 SPEED_OUTPUT_DIRS: dict[str, dict[int, str]] = {"non_stream": {}, "stream": {}}
 
-# Bootstrap thresholds use the H200 full-set reference in
-# benchmark_tts_seedtts.py with intentionally wide slack. Replace these with
-# H20 CI P95 values after the first calibrated CI run.
 _HIGGS_NON_STREAM_REFERENCE = {
     HIGGS_CONCURRENCY: {
         "throughput_qps": 9.104,
@@ -97,9 +94,6 @@ HIGGS_STREAM_THRESHOLDS = apply_slack(
     HIGGS_THRESHOLD_SLACK_LOWER,
 )
 
-# Higgs EN full-set reference has two catastrophic WER outliers and 1.36%
-# corpus WER after excluding samples above 50% WER. Partitioned thresholds
-# preserve the normal-case quality gate without hiding production outliers.
 HIGGS_WER_BELOW_50_CORPUS_MAX = 0.0136
 HIGGS_WER_BELOW_50_CORPUS_THRESHOLD = apply_wer_slack(HIGGS_WER_BELOW_50_CORPUS_MAX)
 HIGGS_WER_N_ABOVE_50_MAX = 3
