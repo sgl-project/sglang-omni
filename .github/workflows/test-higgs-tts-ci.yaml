@@ -1,0 +1,225 @@
+name: Higgs TTS CI
+
+on:
+  pull_request:
+    branches: [main]
+    types: [labeled, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+
+concurrency:
+  group: higgs-tts-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  OMNI_CI_HOME: >-
+    ${{ github.event_name == 'pull_request'
+        && format('/github/home/pr-{0}/higgs-tts', github.event.pull_request.number)
+        || format('/github/home/run-{0}/higgs-tts', github.run_id) }}
+  HIGGS_MODEL_PATH: boson-sglang/higgs-audio-v3-tts-4b-base
+  HIGGS_CONFIG_PATH: examples/configs/higgs_tts.yaml
+
+# DAG:
+#   setup (install-deps under OMNI_CI_HOME + verify Higgs weights)
+#     ├── stage-1-non-streaming
+#     └── stage-2-streaming
+#           └── stage-3-consistency
+#   cleanup runs only after full success, preserving host cache on failures.
+
+jobs:
+  setup:
+    name: setup - omni-higgs-tts venv
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (!github.event.pull_request.draft &&
+       contains(github.event.pull_request.labels.*.name, 'run-ci'))
+    runs-on: [self-hosted]
+    timeout-minutes: 15
+    container:
+      image: frankleeeee/sglang-omni:dev
+      options: --gpus all --rm -v /dev/shm:/dev/shm
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - uses: ./.github/actions/omni-setup
+        with:
+          venv-name: omni-higgs-tts
+          install-deps: "true"
+
+      - uses: ./.github/actions/omni-save-cache
+        with:
+          venv-name: omni-higgs-tts
+
+      - name: Ensure Higgs model weights
+        shell: bash
+        env:
+          HF_ENDPOINT: https://hf-mirror.com
+          HF_TOKEN: ${{ secrets.BOSON_HF_TOKEN }}
+        run: bash .github/scripts/ensure_hf_models.sh omni-higgs-tts "$HIGGS_MODEL_PATH"
+
+  stage-1-non-streaming:
+    name: stage 1 - non-streaming
+    needs: setup
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (!github.event.pull_request.draft &&
+       contains(github.event.pull_request.labels.*.name, 'run-ci'))
+    runs-on: [self-hosted]
+    timeout-minutes: 25
+    container:
+      image: frankleeeee/sglang-omni:dev
+      options: --gpus all --rm -v /dev/shm:/dev/shm
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - uses: ./.github/actions/omni-setup
+        with:
+          venv-name: omni-higgs-tts
+
+      - name: Run Higgs non-streaming benchmark stage
+        shell: bash
+        run: |
+          source omni-higgs-tts/bin/activate
+          export PYTHONPATH=$PWD
+          bash .github/scripts/run_flaky_pytest.sh \
+            pytest -v -s -x \
+              tests/test_model/test_higgs_tts_ci.py::test_higgs_non_streaming_generation \
+              tests/test_model/test_higgs_tts_ci.py::test_higgs_non_streaming_wer
+        env:
+          HF_ENDPOINT: https://hf-mirror.com
+          HF_TOKEN: ${{ secrets.BOSON_HF_TOKEN }}
+          HIGGS_STAGE_OUTPUT_ROOT: ${{ github.workspace }}/stage-results/nonstream
+          TORCHINDUCTOR_CACHE_DIR: ${{ env.OMNI_CI_HOME }}/.torchinductor
+
+      - name: Post-stage cleanup
+        if: always()
+        uses: ./.github/actions/omni-post-stage
+        with:
+          stage-label: Higgs TTS stage 1 (non-streaming)
+          artifact-search-root: stage-results/nonstream
+          artifact-path-globs: |
+            */speed_results.json
+            */wer_results.json
+          artifact-upload-name: higgs-stage-1-results
+          artifact-upload-path: stage-results/nonstream
+          artifact-if-no-files-found: error
+
+  stage-2-streaming:
+    name: stage 2 - streaming
+    needs: setup
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (!github.event.pull_request.draft &&
+       contains(github.event.pull_request.labels.*.name, 'run-ci'))
+    runs-on: [self-hosted]
+    timeout-minutes: 25
+    container:
+      image: frankleeeee/sglang-omni:dev
+      options: --gpus all --rm -v /dev/shm:/dev/shm
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - uses: ./.github/actions/omni-setup
+        with:
+          venv-name: omni-higgs-tts
+
+      - name: Run Higgs streaming benchmark stage
+        shell: bash
+        run: |
+          source omni-higgs-tts/bin/activate
+          export PYTHONPATH=$PWD
+          bash .github/scripts/run_flaky_pytest.sh \
+            pytest -v -s -x \
+              tests/test_model/test_higgs_tts_ci.py::test_higgs_streaming_generation \
+              tests/test_model/test_higgs_tts_ci.py::test_higgs_streaming_wer
+        env:
+          HF_ENDPOINT: https://hf-mirror.com
+          HF_TOKEN: ${{ secrets.BOSON_HF_TOKEN }}
+          HIGGS_STAGE_OUTPUT_ROOT: ${{ github.workspace }}/stage-results/stream
+          TORCHINDUCTOR_CACHE_DIR: ${{ env.OMNI_CI_HOME }}/.torchinductor
+
+      - name: Post-stage cleanup
+        if: always()
+        uses: ./.github/actions/omni-post-stage
+        with:
+          stage-label: Higgs TTS stage 2 (streaming)
+          artifact-search-root: stage-results/stream
+          artifact-path-globs: |
+            */speed_results.json
+            */wer_results.json
+          artifact-upload-name: higgs-stage-2-results
+          artifact-upload-path: stage-results/stream
+          artifact-if-no-files-found: error
+
+  stage-3-consistency:
+    name: stage 3 - consistency
+    needs: [stage-1-non-streaming, stage-2-streaming]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install test dependency
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pytest
+
+      - name: Download stage 1 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: higgs-stage-1-results
+          path: stage-artifacts/nonstream
+
+      - name: Download stage 2 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: higgs-stage-2-results
+          path: stage-artifacts/stream
+
+      - name: Run consistency check
+        shell: bash
+        run: |
+          export PYTHONPATH=$PWD
+          bash .github/scripts/run_flaky_pytest.sh \
+            python -m pytest tests/test_model/test_higgs_consistency_artifacts.py -v -s -x
+        env:
+          HIGGS_STAGE1_SPEED_RESULTS_DIR: ${{ github.workspace }}/stage-artifacts/nonstream
+          HIGGS_STAGE2_SPEED_RESULTS_DIR: ${{ github.workspace }}/stage-artifacts/stream
+          HIGGS_CONSISTENCY_CONCURRENCY: "16"
+
+  cleanup:
+    name: cleanup - reclaim host cache
+    needs:
+      - setup
+      - stage-1-non-streaming
+      - stage-2-streaming
+      - stage-3-consistency
+    if: >-
+      success() &&
+      (github.event_name == 'workflow_dispatch' ||
+       (!github.event.pull_request.draft &&
+        contains(github.event.pull_request.labels.*.name, 'run-ci')))
+    runs-on: [self-hosted]
+    timeout-minutes: 5
+    container:
+      image: frankleeeee/sglang-omni:dev
+      options: --gpus all --rm -v /dev/shm:/dev/shm
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - uses: ./.github/actions/omni-cleanup-host
+        with:
+          ci-home: ${{ env.OMNI_CI_HOME }}
