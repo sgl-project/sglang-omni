@@ -41,22 +41,23 @@ distinguishes the model launched per row).
 
 - A sglang-omni clone (`benchmarks/eval/` reachable from the working dir).
 - A venv with `sglang` + `torch` importable. Default candidates (first existing wins):
-  `/sgl-workspace/sglang-omni/omni-qwen3/bin/python`,
-  `/github/home/calibration/qwen3/omni-qwen3/bin/python`,
-  `/github/home/omni-qwen3/bin/python` (legacy). Override with
+  `/sgl-workspace/sglang-omni/omni/bin/python`,
+  `/github/home/calibration/omni/bin/python`,
+  `/github/home/omni/bin/python` (legacy). Override with
   `--venv-python <path>` or `$EVAL_VENV_PYTHON`.
 - HF model + datasets cached under `HF_HOME=/github/home/.cache/huggingface`
   (see `auto_env` in `config.yaml`). precheck reports `✓` / `✗` and prints
-  the exact `huggingface-cli download …` commands when something's missing.
+  the exact `HF_ENDPOINT=https://hf-mirror.com huggingface-cli download …`
+  commands when something's missing.
 - Free GPUs. The skill **never** kills another user's processes; if
   GPUs are busy precheck fails with the busy PID list and stops.
 - `auto_env` from `config.yaml` is applied at startup (overrides shell) to
   match CI omni-setup: `OMNI_CI_HOME`, `UV_INDEX_URL`, torchinductor slice
-  paths, etc. See `tune-ci-thresholds` skill for the full cache layout table
-  and **venv/slice per workflow** (never run Qwen3 benchmarks on `omni-s2pro`).
-- Before pytest or eval runs, prefer `source .github/scripts/ci_env_qwen3.sh`
-  (or `ci_env_s2pro.sh`) so `TORCHINDUCTOR_CACHE_DIR` stays under
-  `${OMNI_CI_HOME}/.torchinductor` — wrong paths cause multi-minute cold starts.
+  paths, etc. See `tune-ci-thresholds` skill for the full cache layout table.
+  All benchmarks share the single **`omni`** venv and `.github/scripts/ci_env.sh`.
+- `HF_ENDPOINT` defaults to `https://hf-mirror.com` (matches CI omni-setup).
+- Before pytest or eval runs, run `source .github/scripts/ci_env.sh` so
+  `TORCHINDUCTOR_CACHE_DIR` stays under `${OMNI_CI_HOME}/.torchinductor`.
 
 ## Two-terminal supervision (mandatory — always)
 
@@ -89,7 +90,7 @@ Full diagram, log-path table, and checklist: see `tune-ci-thresholds` §
 
 - First-time venv on the repro host: use `.github/scripts/prepare_omni_venv.sh`
   and `.github/scripts/install_flashinfer_jit_cache.sh` with
-  `OMNI_CI_HOME=/github/home/calibration/qwen3` (documented in tune-ci-thresholds).
+  `OMNI_CI_HOME=/github/home/calibration` (documented in tune-ci-thresholds).
 
 If anything's off, `precheck` fails with an actionable message; fix it
 yourself and retry.

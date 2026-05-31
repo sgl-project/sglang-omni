@@ -16,8 +16,8 @@ permissions:
 env:
   OMNI_CI_HOME: >-
     ${{ github.event_name == 'pull_request'
-        && format('/github/home/pr-{0}/qwen3', github.event.pull_request.number)
-        || format('/github/home/run-{0}/qwen3', github.run_id) }}
+        && format('/github/home/pr-{0}', github.event.pull_request.number)
+        || format('/github/home/run-{0}', github.run_id) }}
 
 # DAG:
 #   setup (install-deps under OMNI_CI_HOME + verify model weights)
@@ -27,7 +27,7 @@ env:
 
 jobs:
   setup:
-    name: setup - omni-qwen3 venv
+    name: setup - omni venv
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (!github.event.pull_request.draft &&
@@ -43,19 +43,19 @@ jobs:
 
       - uses: ./.github/actions/omni-setup
         with:
-          venv-name: omni-qwen3
+          venv-name: omni
           install-deps: "true"
 
       - uses: ./.github/actions/omni-save-cache
         with:
-          venv-name: omni-qwen3
+          venv-name: omni
 
       - name: Ensure Qwen3 CI model weights
         shell: bash
         env:
           HF_ENDPOINT: https://hf-mirror.com
         run: |
-          bash .github/scripts/ensure_hf_models.sh omni-qwen3 \
+          bash .github/scripts/ensure_hf_models.sh omni \
             Qwen/Qwen3-Omni-30B-A3B-Instruct \
             marksverdhei/Qwen3-Omni-30B-A3B-FP8
 
@@ -77,12 +77,12 @@ jobs:
 
       - uses: ./.github/actions/omni-setup
         with:
-          venv-name: omni-qwen3
+          venv-name: omni
 
       - name: Run thinker length integration test
         shell: bash
         run: |
-          source omni-qwen3/bin/activate
+          source omni/bin/activate
           export PYTHONPATH=$PWD
           bash .github/scripts/run_flaky_pytest.sh \
             pytest tests/test_model/test_qwen3_omni_thinker_length.py -v -s -x
@@ -114,12 +114,12 @@ jobs:
 
       - uses: ./.github/actions/omni-setup
         with:
-          venv-name: omni-qwen3
+          venv-name: omni
 
       - name: Prepare speaker similarity assets
         shell: bash
         run: |
-          source omni-qwen3/bin/activate
+          source omni/bin/activate
           python -m benchmarks.metrics.speaker_similarity_assets --warm-cache
         env:
           HF_ENDPOINT: https://hf-mirror.com
@@ -128,7 +128,7 @@ jobs:
       - name: Run TTS CI (speed + WER + SIM)
         shell: bash
         run: |
-          source omni-qwen3/bin/activate
+          source omni/bin/activate
           export PYTHONPATH=$PWD
           bash .github/scripts/run_flaky_pytest.sh \
             pytest tests/test_model/test_qwen3_omni_tts_ci.py -v -s -x
@@ -168,12 +168,12 @@ jobs:
 
       - uses: ./.github/actions/omni-setup
         with:
-          venv-name: omni-qwen3
+          venv-name: omni
 
       - name: Run MMMU CI (accuracy + speed)
         shell: bash
         run: |
-          source omni-qwen3/bin/activate
+          source omni/bin/activate
           export PYTHONPATH=$PWD
           bash .github/scripts/run_flaky_pytest.sh \
             pytest tests/test_model/test_qwen3_omni_mmmu_ci.py -v -s -x
@@ -209,12 +209,12 @@ jobs:
 
       - uses: ./.github/actions/omni-setup
         with:
-          venv-name: omni-qwen3
+          venv-name: omni
 
       - name: Run MMMU Talker CI (WER + speed)
         shell: bash
         run: |
-          source omni-qwen3/bin/activate
+          source omni/bin/activate
           export PYTHONPATH=$PWD
           bash .github/scripts/run_flaky_pytest.sh \
             pytest tests/test_model/test_qwen3_omni_mmmu_talker_ci.py -v -s -x
@@ -250,12 +250,12 @@ jobs:
 
       - uses: ./.github/actions/omni-setup
         with:
-          venv-name: omni-qwen3
+          venv-name: omni
 
       - name: Run MMSU CI (accuracy + speed)
         shell: bash
         run: |
-          source omni-qwen3/bin/activate
+          source omni/bin/activate
           export PYTHONPATH=$PWD
           bash .github/scripts/run_flaky_pytest.sh \
             pytest tests/test_model/test_qwen3_omni_mmsu_ci.py -v -s -x
@@ -292,12 +292,12 @@ jobs:
 
       - uses: ./.github/actions/omni-setup
         with:
-          venv-name: omni-qwen3
+          venv-name: omni
 
       - name: Run MMSU Talker CI (WER + speed)
         shell: bash
         run: |
-          source omni-qwen3/bin/activate
+          source omni/bin/activate
           export PYTHONPATH=$PWD
           bash .github/scripts/run_flaky_pytest.sh \
             pytest tests/test_model/test_qwen3_omni_mmsu_talker_ci.py -v -s -x
@@ -333,12 +333,12 @@ jobs:
 
       - uses: ./.github/actions/omni-setup
         with:
-          venv-name: omni-qwen3
+          venv-name: omni
 
       - name: Run Video-MME CI (accuracy + speed)
         shell: bash
         run: |
-          source omni-qwen3/bin/activate
+          source omni/bin/activate
           export PYTHONPATH=$PWD
           bash .github/scripts/run_flaky_pytest.sh \
             pytest tests/test_model/test_qwen3_omni_videomme_ci.py -v -s -x
@@ -374,12 +374,12 @@ jobs:
 
       - uses: ./.github/actions/omni-setup
         with:
-          venv-name: omni-qwen3
+          venv-name: omni
 
       - name: Run Video-MME Talker CI (WER + speed)
         shell: bash
         run: |
-          source omni-qwen3/bin/activate
+          source omni/bin/activate
           export PYTHONPATH=$PWD
           bash .github/scripts/run_flaky_pytest.sh \
             pytest tests/test_model/test_qwen3_omni_videomme_talker_ci.py -v -s -x
@@ -415,12 +415,12 @@ jobs:
 
       - uses: ./.github/actions/omni-setup
         with:
-          venv-name: omni-qwen3
+          venv-name: omni
 
       - name: Run Video-AMME CI (accuracy + speed)
         shell: bash
         run: |
-          source omni-qwen3/bin/activate
+          source omni/bin/activate
           export PYTHONPATH=$PWD
           bash .github/scripts/run_flaky_pytest.sh \
             pytest tests/test_model/test_qwen3_omni_videoamme_ci.py -v -s -x
@@ -456,12 +456,12 @@ jobs:
 
       - uses: ./.github/actions/omni-setup
         with:
-          venv-name: omni-qwen3
+          venv-name: omni
 
       - name: Run Video-AMME Talker CI (WER + speed)
         shell: bash
         run: |
-          source omni-qwen3/bin/activate
+          source omni/bin/activate
           export PYTHONPATH=$PWD
           bash .github/scripts/run_flaky_pytest.sh \
             pytest tests/test_model/test_qwen3_omni_videoamme_talker_ci.py -v -s -x
@@ -497,12 +497,12 @@ jobs:
 
       - uses: ./.github/actions/omni-setup
         with:
-          venv-name: omni-qwen3
+          venv-name: omni
 
       - name: Run FP8 Thinker TP=2 CI
         shell: bash
         run: |
-          source omni-qwen3/bin/activate
+          source omni/bin/activate
           export PYTHONPATH=$PWD
           bash .github/scripts/run_flaky_pytest.sh \
             pytest tests/test_model/test_qwen3_omni_videoamme_talker_tp2_ci.py -v -s -x

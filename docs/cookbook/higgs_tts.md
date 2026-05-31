@@ -1,6 +1,6 @@
 # Higgs TTS
 
-[Higgs Audio v3 TTS](https://huggingface.co/boson-sglang/higgs-audio-v3-tts-4b-base)
+[Higgs Audio v3 TTS](https://huggingface.co/boson-sglang/higgs-audio-v3-TTS-4B-grpo05200410999)
 is a chat-native text-to-speech model from Boson AI built on a Qwen3-4B backbone. It generates
 24 kHz speech through 8 discrete codebooks and supports 100+ languages, voice cloning from a
 reference clip, and fine-grained inline control over emotion, style, sound effects, and prosody.
@@ -43,7 +43,6 @@ The pipeline is `preprocessing → audio_encoder → tts_engine → vocoder`.
 ```bash
 sgl-omni serve \
   --model-path boson-sglang/higgs-audio-v3-TTS-4B-grpo05200410999 \
-  --config examples/configs/higgs_tts.yaml \
   --port 8000
 ```
 

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import signal
 import statistics
@@ -16,6 +17,11 @@ from pathlib import Path
 from typing import Generator
 
 STARTUP_TIMEOUT = 600
+REPO_ROOT = Path(__file__).resolve().parents[1]
+GPU_CLEANUP_SCRIPT = REPO_ROOT / ".github/scripts/ensure_gpus_idle.sh"
+GPU_IDLE_THRESHOLD_MB = 2048
+GPU_IDLE_WAIT_SECONDS = 600
+GPU_IDLE_POLL_SECONDS = 5
 
 
 @dataclass
@@ -51,7 +57,7 @@ class MetricCheckCollector:
     ) -> None:
         try:
             func(*args, **kwargs)
-        except AssertionError as exc:
+        except Exception as exc:
             detail = str(exc) or exc.__class__.__name__
             self.fail(f"{check_label}: {detail}")
 
@@ -133,6 +139,48 @@ def stop_server(proc: subprocess.Popen) -> None:
         except (ProcessLookupError, ChildProcessError):
             # Process already exited — nothing left to kill.
             return
+
+
+def wait_for_gpu_memory_release(
+    *,
+    memory_threshold_mb: int | None = None,
+    wait_timeout_seconds: int | None = None,
+    poll_seconds: int | None = None,
+) -> None:
+    """Kill orphan GPU processes and block until every GPU is below threshold."""
+    if not GPU_CLEANUP_SCRIPT.exists():
+        raise FileNotFoundError(f"GPU cleanup script missing: {GPU_CLEANUP_SCRIPT}")
+
+    env = os.environ.copy()
+    env["OMNI_CI_GPU_MEMORY_CLEAN_THRESHOLD_MB"] = str(
+        memory_threshold_mb
+        if memory_threshold_mb is not None
+        else GPU_IDLE_THRESHOLD_MB
+    )
+    env["OMNI_CI_GPU_CLEAN_WAIT_SECONDS"] = str(
+        wait_timeout_seconds
+        if wait_timeout_seconds is not None
+        else GPU_IDLE_WAIT_SECONDS
+    )
+    env["OMNI_CI_GPU_CLEAN_POLL_SECONDS"] = str(
+        poll_seconds if poll_seconds is not None else GPU_IDLE_POLL_SECONDS
+    )
+
+    print(
+        f"[gpu cleanup] running ensure_gpus_idle "
+        f"(threshold={env['OMNI_CI_GPU_MEMORY_CLEAN_THRESHOLD_MB']} MiB)...",
+        flush=True,
+    )
+    result = subprocess.run(
+        ["bash", str(GPU_CLEANUP_SCRIPT)],
+        env=env,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            "GPU memory was not released after stopping the inference server. "
+            f"ensure_gpus_idle.sh exit={result.returncode}"
+        )
 
 
 def wait_healthy(
@@ -324,6 +372,18 @@ def apply_slack(
     return result
 
 
+def persist_wer_in_benchmark_results(
+    audio_dir: str,
+    wer: dict,
+    results_basename: str,
+) -> None:
+    """Merge WER into the benchmark results JSON for tune.py calibration."""
+    results_path = Path(audio_dir).parent / results_basename
+    data = json.loads(results_path.read_text())
+    data["wer"] = wer
+    results_path.write_text(json.dumps(data, indent=2))
+
+
 def apply_wer_slack(reference: float, slack: float = 1.25) -> float:
     """Derive a max WER threshold from a reference value with uniform slack."""
     return round(reference * slack, 4)
@@ -440,6 +500,7 @@ def assert_streaming_consistency(
     stream_requests: list[dict],
     *,
     expected_stream_count: int | None = None,
+    max_failed_requests: int = 0,
     total_completion_token_rtol: float = DEFAULT_TOTAL_COMPLETION_TOKEN_RTOL,
     median_completion_token_rtol: float = DEFAULT_MEDIAN_COMPLETION_TOKEN_RTOL,
     total_audio_duration_rtol: float = DEFAULT_TOTAL_AUDIO_DURATION_RTOL,
@@ -454,6 +515,34 @@ def assert_streaming_consistency(
     stream_by_id = _request_by_id(stream_requests)
     common_ids = _assert_request_sets(
         non_stream_by_id, stream_by_id, expected_stream_count, checks
+    )
+    non_stream_failed = {
+        request_id
+        for request_id, request in non_stream_by_id.items()
+        if request.get("is_success") is not True
+    }
+    stream_failed = {
+        request_id
+        for request_id, request in stream_by_id.items()
+        if request.get("is_success") is not True
+    }
+    checks.check(
+        len(non_stream_failed) <= max_failed_requests,
+        f"Non-streaming failed request count {len(non_stream_failed)} > "
+        f"{max_failed_requests}",
+    )
+    checks.check(
+        len(stream_failed) <= max_failed_requests,
+        f"Streaming failed request count {len(stream_failed)} > "
+        f"{max_failed_requests}",
+    )
+    failed_ids = non_stream_failed | stream_failed
+    common_ids = [
+        request_id for request_id in common_ids if request_id not in failed_ids
+    ]
+    checks.check(
+        bool(common_ids),
+        "No successful overlapping request IDs between non-stream and stream runs",
     )
 
     non_stream_completion_tokens: list[int] = []

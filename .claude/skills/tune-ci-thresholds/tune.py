@@ -11,7 +11,7 @@ import argparse, ast, datetime as dt, hashlib, json, math, os, re, shutil, signa
 import subprocess, sys, time, tomllib
 from pathlib import Path
 
-__version__ = "0.4.1"
+__version__ = "0.4.3"
 
 SKILL_DIR = Path(__file__).resolve().parent
 MODELS_DIR = SKILL_DIR / "models"
@@ -108,6 +108,8 @@ METRIC_SPECS = {
     "latency_p95_s":        dict(worst="max", label="Latency p95 (s)",       digits=3, scale=1,   group="speed"),
     "rtf_mean":             dict(worst="max", label="RTF mean",              digits=4, scale=1,   group="speed"),
     "rtf_p95":              dict(worst="max", label="RTF p95",               digits=4, scale=1,   group="speed"),
+    "failed_requests":      dict(worst="max", label="Failed requests",       digits=0, scale=1,   group="reliability"),
+    "similarity_mean":      dict(worst="min", label="Speaker sim mean",      digits=4, scale=1,   group="similarity"),
 }
 _NESTED = {
     "throughput_qps",
@@ -148,16 +150,29 @@ _BENCHMARK_PATH_OVERRIDES = {
     },
 }
 
+# test_tts_ci.py sample-scope presets — fixed by CI design, never apply targets.
+_TTS_FIXED_PRESETS = frozenset({
+    "SEEDTTS_EN_FULLSET_SAMPLES",
+    "TTS_SIMILARITY_MAX_SAMPLES",
+    "STREAMING_BENCHMARK_MAX_SAMPLES",
+})
+
 
 def match_metric(name, nested):
     if nested is not None:
         return nested if nested in _NESTED else None
+    if name in _TTS_FIXED_PRESETS:
+        return None
     if re.fullmatch(r".*_ACC(?:URACY)?_MIN", name) or re.fullmatch(r".*_MIN_ACCURACY", name):
         return "accuracy"
     # Partitioned WER (wer_below_50_corpus + n_above_50) must precede the
     # generic "WER_MAX_CORPUS" substring check to avoid false hits.
     if "WER_BELOW_50_CORPUS_MAX" in name: return "wer_below_50_corpus"
     if "N_ABOVE_50_MAX" in name: return "n_above_50"
+    if name == "TTS_MAX_FAILED_REQUESTS" or "MAX_FAILED_REQUESTS" in name:
+        return "failed_requests"
+    if "SIMILARITY" in name and name.endswith("_MIN"):
+        return "similarity_mean"
     if "WER_MAX_CORPUS" in name: return "corpus_wer"
     if "WER_MAX_PER_SAMPLE" in name: return "per_sample_wer_max"
     if "CORPUS_WER_MAX" in name: return "corpus_wer"
@@ -458,10 +473,31 @@ def _observation_status(stage, metrics, pytest_status, pytest_reason):
     if not stage.get("metrics"):
         return pytest_status, pytest_reason
     if not _stage_metrics_complete(stage, metrics):
-        return pytest_status, pytest_reason
+        return "failed", "incomplete_metrics_extraction"
     if pytest_status == "ok":
         return "ok", ""
     return "ok", f"threshold_assertion ({pytest_reason})"
+
+
+def _should_halt_on_extraction(
+    stage_keys,
+    all_stages,
+    metrics_by_stage,
+    extraction_warnings,
+    pytest_rc: int,
+) -> bool:
+    """True when pytest passed but threshold metrics could not be extracted."""
+    if pytest_rc != 0:
+        return False
+    for warning in extraction_warnings:
+        if "file missing" in warning or "read failed" in warning:
+            return True
+    for sk in stage_keys:
+        stage = all_stages[sk]
+        metrics = metrics_by_stage.get(sk) or {}
+        if stage.get("metrics") and not _stage_metrics_complete(stage, metrics):
+            return True
+    return False
 
 
 def _run_json_ok(path: Path, stage=None) -> bool:
@@ -621,11 +657,43 @@ def precheck(py, src, out, skip_ver, cfg, datasets_override=None,
     # explicitly and the warning was producing noise without changing
     # behavior. `expected_wer_normalizer` in config.yaml is now ignored.
     def _cached(repo_id, kind):
-        extra = ", repo_type='dataset'" if kind == "dataset" else ""
-        r = subprocess.run([py, "-c",
-            "from huggingface_hub import snapshot_download;"
-            f"snapshot_download(repo_id={repo_id!r}{extra}, local_files_only=True)"],
-            capture_output=True, text=True)
+        if kind == "dataset":
+            r = subprocess.run(
+                [
+                    py,
+                    "-c",
+                    "from huggingface_hub import snapshot_download;"
+                    f"snapshot_download(repo_id={repo_id!r}, repo_type='dataset', "
+                    "local_files_only=True)",
+                ],
+                capture_output=True,
+                text=True,
+            )
+            return r.returncode == 0
+
+        r = subprocess.run(
+            [
+                py,
+                "-c",
+                "from pathlib import Path\n"
+                "from huggingface_hub import snapshot_download\n"
+                f"repo_id = {repo_id!r}\n"
+                "try:\n"
+                "    snapshot = Path(snapshot_download("
+                "repo_id=repo_id, local_files_only=True))\n"
+                "except Exception:\n"
+                "    raise SystemExit(1)\n"
+                "weight_files = [\n"
+                "    path for path in snapshot.rglob('*')\n"
+                "    if path.is_file()\n"
+                "    and path.suffix in ('.safetensors', '.bin')\n"
+                "    and not path.name.endswith('.incomplete')\n"
+                "]\n"
+                "raise SystemExit(0 if weight_files else 1)",
+            ],
+            capture_output=True,
+            text=True,
+        )
         return r.returncode == 0
     # When called from `run` with a resolved stage selection, only the
     # model checkpoints and datasets those tests actually use are required;
@@ -663,10 +731,13 @@ def precheck(py, src, out, skip_ver, cfg, datasets_override=None,
             print(f"    {mark} dataset: {ds}")
     if missing:
         lines = [f"{len(missing)} asset(s) not cached locally. "
-                 "Run these to download (HF_ENDPOINT stays in effect):"]
+                 "Run these to download via the HF mirror:"]
         for repo_id, kind in missing:
             flag = " --repo-type dataset" if kind == "dataset" else ""
-            lines.append(f"  huggingface-cli download {repo_id}{flag}")
+            lines.append(
+                "  HF_ENDPOINT=https://hf-mirror.com "
+                f"huggingface-cli download {repo_id}{flag}"
+            )
         errs.append("\n".join(lines))
     smi = nvidia_smi_L()
     if not smi:
@@ -730,7 +801,8 @@ def _ctx_vars(tree):
         if isinstance(n, ast.keyword) and n.arg in want \
                 and isinstance(n.value, ast.Name) \
                 and re.fullmatch(r"_?[A-Z][A-Z0-9_]*", n.value.id) \
-                and n.value.id not in seen:
+                and n.value.id not in seen \
+                and n.value.id not in _TTS_FIXED_PRESETS:
             seen.append(n.value.id)
     return seen
 
@@ -929,17 +1001,22 @@ def discover(out, only, cfg):
                            if pat.match(n.lstrip("_"))]
                 v_default = vcfg.get("json_file")
                 v_paths = vcfg.get("paths") or {}
-                v_sc = _build_sample_counts(
+                v_sc_default = _build_sample_counts(
                     vcfg.get("sample_counts") or {}, v_default)
+                sc_by_group = vcfg.get("sample_counts_by_group") or {}
                 v_groups = _emit_groups(claimed, v_paths, v_default, counters)
                 for g, metrics in v_groups.items():
+                    if g in sc_by_group:
+                        group_sc = _build_sample_counts(sc_by_group[g], v_default)
+                    else:
+                        group_sc = v_sc_default
                     key = f"{base}_{vname}_{g}"
                     title = (f"{base.replace('_', ' ').upper()} "
                              f"{vname.upper()} {g.capitalize()}")
                     stages[key] = dict(test=rel, title=title, group=g,
                         variant=vname, extra_env=extra, context_vars=ctx,
                         test_file_sha256=sha, last_discovered_at=now_iso(),
-                        metrics=metrics, sample_counts=v_sc)
+                        metrics=metrics, sample_counts=group_sc)
         else:
             # Single-source flow (one result-JSON tree per test file).
             default_file = ms.get("json_file")
@@ -1258,8 +1335,12 @@ def _run_cmd_inner(args, cfg, py, src, out):
                 if pass_num > 1:
                     print(f"=== calibration pass {pass_num}/{max_passes}: "
                           f"retry {Path(test_path).stem} run {k} ===")
-                _run_shared(test_path, stage_keys, all_stages, out, k, py,
-                            args.repeats, needed, extra_args)
+                if _run_shared(test_path, stage_keys, all_stages, out, k, py,
+                               args.repeats, needed, extra_args):
+                    audit = audit_completeness(out, all_stages)
+                    print(f"completeness at HALT: "
+                          f"{audit['ok']}/{audit['total']} stage-runs complete")
+                    return 1
                 ran_any = True
         audit = audit_completeness(out, all_stages)
         print(f"completeness after pass {pass_num}: "
@@ -1473,8 +1554,11 @@ def _run_shared(test_path, stage_keys, all_stages, out, k, py, total, gpus_neede
         print(f"{label} using GPU(s) {picked} "
               f"(CUDA_VISIBLE_DEVICES={env['CUDA_VISIBLE_DEVICES']})")
         t0 = time.monotonic()
+        # Never pass -x / --exitfirst: calibration must collect every stage's
+        # metrics even when an earlier threshold assertion fails. Only hard
+        # failures (OOM, crash, timeout) may leave metrics missing.
         pytest_cmd = [py, "-m", "pytest", test_path,
-                      "-v", "-s", "-x", f"--basetemp={basetemp}"]
+                      "-v", "-s", f"--basetemp={basetemp}"]
         if extra_args:
             pytest_cmd.extend(extra_args)
         with open(log, "w") as lf:
@@ -1516,10 +1600,12 @@ def _run_shared(test_path, stage_keys, all_stages, out, k, py, total, gpus_neede
     else:
         print(f"{label} failed: {reason} ({dur:.1f}s)")
     extraction_warnings = []
+    metrics_by_stage = {}
     for sk in stage_keys:
         stage = all_stages[sk]
         sd = out / sk
         metrics = _extract(stage, basetemp, stage_key=sk, warnings=extraction_warnings)
+        metrics_by_stage[sk] = metrics
         sample_counts = _extract_counts(stage, basetemp)
         obs_status, obs_reason = _observation_status(
             stage, metrics, status, reason)
@@ -1559,6 +1645,15 @@ def _run_shared(test_path, stage_keys, all_stages, out, k, py, total, gpus_neede
         if len(extraction_warnings) > 20:
             print(f"  ... and {len(extraction_warnings) - 20} more "
                   f"(see {basetemp} listing to debug)")
+    if _should_halt_on_extraction(
+            stage_keys, all_stages, metrics_by_stage, extraction_warnings, pytest_rc):
+        print(f"error: metric extraction HALT after {label}")
+        print("  pytest passed but one or more threshold metrics are missing.")
+        print("  Fix models/<M>/config.yaml metric_sources (or test JSON output),")
+        print(f"  purge incomplete run{k}.json for: {', '.join(stage_keys)},")
+        print("  then: tune.py --model … run --output-dir … --resume")
+        return True
+    return False
 
 
 def _cleanup_after_pytest(test_path, process_group_id, basetemp):
@@ -1700,9 +1795,15 @@ def _extract_counts(stage, basetemp):
             if data is None:
                 data = json.loads(p.read_text())
                 cache[jf] = data
-            for key in jp.split("."):
-                data = data[key]
-            o[ck] = int(data)
+            keys = jp.split(".")
+            if keys[-1] == "__len__":
+                for key in keys[:-1]:
+                    data = data[key]
+                o[ck] = len(data) if isinstance(data, list) else None
+            else:
+                for key in keys:
+                    data = data[key]
+                o[ck] = int(data)
         except (KeyError, TypeError, ValueError, json.JSONDecodeError):
             o[ck] = None
     return o
@@ -1944,7 +2045,9 @@ def _apply_write_value(worst_op: str, worst_raw: float | None,
         return None
     if stage_group == "wer":
         return _ceil_wer_reference(worst_raw)
-    if stage_group == "accuracy":
+    if stage_group == "reliability":
+        return math.ceil(worst_raw)
+    if stage_group in ("accuracy", "similarity"):
         return worst_raw
     if worst_rounded is None:
         return worst_raw

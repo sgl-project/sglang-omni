@@ -16,15 +16,15 @@ permissions:
 env:
   OMNI_CI_HOME: >-
     ${{ github.event_name == 'pull_request'
-        && format('/github/home/pr-{0}/unit', github.event.pull_request.number)
-        || format('/github/home/run-{0}/unit', github.run_id) }}
+        && format('/github/home/pr-{0}', github.event.pull_request.number)
+        || format('/github/home/run-{0}', github.run_id) }}
 
 # DAG:
 #   setup (install-deps under OMNI_CI_HOME)
 #     └── unit-test (restore cached venv only; excludes docs/benchmark)
 #           └── cleanup on full success only (kept on failure for re-run)
 #
-# Docs tests run in test-s2pro-ci.yaml after the same setup pattern.
+# Docs tests run in model-specific CI workflows after the same setup pattern.
 
 jobs:
   setup:

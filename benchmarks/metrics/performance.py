@@ -90,7 +90,11 @@ def compute_speed_metrics(
     """Compute system performance summary from a list of request results."""
     successes = [o for o in outputs if o.is_success]
     if not successes:
-        return {"completed_requests": 0, "failed_requests": len(outputs)}
+        return {
+            "total_requests": len(outputs),
+            "completed_requests": 0,
+            "failed_requests": len(outputs),
+        }
 
     latencies = [o.latency_s for o in successes]
     rtfs = [o.rtf for o in successes if 0 < o.rtf < float("inf")]
@@ -116,6 +120,7 @@ def compute_speed_metrics(
         )
 
     metrics_summary: dict = {
+        "total_requests": len(outputs),
         "completed_requests": len(successes),
         "failed_requests": len(outputs) - len(successes),
         "latency_mean_s": round(float(np.mean(latencies)), 3),
