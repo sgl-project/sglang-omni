@@ -77,9 +77,7 @@ BENCHMARK_TIMEOUT = 600
 WER_TIMEOUT = 600
 SIMILARITY_TIMEOUT = 600
 UTMOS_TIMEOUT = 600
-# Optional user override: a path to a custom fine-tuned WavLM checkpoint.
-# When unset, the bootstrapper in benchmarks.metrics.speaker_similarity_assets
-# auto-downloads the official weights into the shared cache directory.
+
 SIMILARITY_CHECKPOINT_ENV = "SEEDTTS_SIM_CHECKPOINT"
 TTS_STAGE_OUTPUT_ROOT_ENV = "TTS_STAGE_OUTPUT_ROOT"
 TTS_STAGE1_SPEED_RESULTS_DIR_ENV = "TTS_STAGE1_SPEED_RESULTS_DIR"
@@ -330,7 +328,7 @@ def _run_utmos(output_dir: str, *, device: str = "cuda:0") -> dict:
         "--output-dir",
         output_dir,
         "--model",
-        S2PRO_MODEL_PATH,
+        TTS_MODEL_PATH,
         "--device",
         device,
     ]
@@ -574,9 +572,6 @@ def _generate_consistency_inputs(
     tmp_path_factory: pytest.TempPathFactory,
     selected_tts_concurrencies: tuple[int, ...],
 ) -> None:
-    # Lazily resolve fixtures via getfixturevalue so that the server is only
-    # started when stage 3 actually needs to generate its own inputs (local
-    # dev path).  In CI the artifact path returns early above.
     router_server = request.getfixturevalue("router_server")
     dataset_repo = request.getfixturevalue("dataset_repo")
     output_root = tmp_path_factory.mktemp("tts_consistency")
@@ -868,9 +863,6 @@ def test_voice_cloning_streaming_consistency(
             ns,
             st,
             expected_stream_count=len(ns),
-            # Stage 1/2 tolerate a small request-failure budget to keep
-            # diagnostics flowing, but stage 3 must only pass when the
-            # compared artifacts are complete.
             max_failed_requests=0,
             collector=checks,
         )
@@ -937,21 +929,21 @@ def test_voice_cloning_similarity(
     checks.assert_all()
 
 
-@pytest.mark.s2pro_stage(S2PRO_STAGE_NONSTREAM)
+@pytest.mark.tts_stage(TTS_STAGE_NONSTREAM)
 @pytest.mark.benchmark
 def test_voice_cloning_utmos(
     wer_input_dirs: dict[str, dict[int, str]],
-    selected_s2pro_tts_concurrencies: tuple[int, ...],
+    selected_tts_concurrencies: tuple[int, ...],
 ) -> None:
-    checks = MetricCheckCollector("S2-Pro non-streaming UTMOS")
-    for concurrency in selected_s2pro_tts_concurrencies:
+    checks = MetricCheckCollector("TTS non-streaming UTMOS")
+    for concurrency in selected_tts_concurrencies:
         _print_stage("UTMOS", "non-streaming", concurrency, "score speed-stage WAVs")
         results = _run_utmos(wer_input_dirs["non_stream"][concurrency])
         _assert_utmos_results(results, VC_UTMOS_MEAN_MIN, collector=checks)
     checks.assert_all()
 
 
-@pytest.mark.s2pro_stage(S2PRO_STAGE_STREAM)
+@pytest.mark.tts_stage(TTS_STAGE_STREAM)
 @pytest.mark.benchmark
 def test_voice_cloning_streaming_wer(
     wer_input_dirs: dict[str, dict[int, str]],

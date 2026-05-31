@@ -25,6 +25,7 @@ import aiohttp
 import numpy as np
 import requests
 import numpy as np
+import requests
 import soundfile as sf
 import torch
 from jiwer import process_words
