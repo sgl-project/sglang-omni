@@ -41,8 +41,10 @@ from tests.utils import MetricCheckCollector, assert_streaming_consistency
 TTS_STAGE1_SPEED_RESULTS_DIR_ENV = "TTS_STAGE1_SPEED_RESULTS_DIR"
 TTS_STAGE2_SPEED_RESULTS_DIR_ENV = "TTS_STAGE2_SPEED_RESULTS_DIR"
 TTS_CONSISTENCY_CONCURRENCY_ENV = "TTS_CONSISTENCY_CONCURRENCY"
+TTS_MAX_FAILED_REQUESTS_ENV = "TTS_MAX_FAILED_REQUESTS"
 DEFAULT_CONSISTENCY_CONCURRENCY = 16
 SEEDTTS_EN_FULLSET_SAMPLES = 1088
+DEFAULT_TTS_MAX_FAILED_REQUESTS = 16
 
 
 def _load_speed_results(results_root_env: str, output_dir_name: str) -> dict:
@@ -101,6 +103,12 @@ def test_tts_streaming_consistency_from_artifacts() -> None:
         non_stream_results["per_request"],
         stream_results["per_request"],
         expected_stream_count=len(non_stream_results["per_request"]),
+        max_failed_requests=int(
+            os.environ.get(
+                TTS_MAX_FAILED_REQUESTS_ENV,
+                str(DEFAULT_TTS_MAX_FAILED_REQUESTS),
+            )
+        ),
         collector=checks,
     )
     checks.assert_all()

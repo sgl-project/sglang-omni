@@ -663,10 +663,13 @@ def precheck(py, src, out, skip_ver, cfg, datasets_override=None,
             print(f"    {mark} dataset: {ds}")
     if missing:
         lines = [f"{len(missing)} asset(s) not cached locally. "
-                 "Run these to download (HF_ENDPOINT stays in effect):"]
+                 "Run these to download via the HF mirror:"]
         for repo_id, kind in missing:
             flag = " --repo-type dataset" if kind == "dataset" else ""
-            lines.append(f"  huggingface-cli download {repo_id}{flag}")
+            lines.append(
+                "  HF_ENDPOINT=https://hf-mirror.com "
+                f"huggingface-cli download {repo_id}{flag}"
+            )
         errs.append("\n".join(lines))
     smi = nvidia_smi_L()
     if not smi:

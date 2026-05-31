@@ -245,8 +245,8 @@ test) explicitly marks as missing or misaligned.
    `source <venv>/bin/activate && uv pip install -e .`
    Do **not** run `prepare_omni_venv.sh` for this.
 3. **Fix one gap at a time** — use the exact command precheck prints (e.g.
-   `huggingface-cli download …` for one missing checkpoint). Do not batch
-   unrelated installs “just in case”.
+   `HF_ENDPOINT=https://hf-mirror.com huggingface-cli download …` for one
+   missing checkpoint). Do not batch unrelated installs “just in case”.
 4. **Re-run precheck** after each fix until all selected assets are `✓`,
    then start `tune.py run`.
 
@@ -261,15 +261,15 @@ test) explicitly marks as missing or misaligned.
 
 ### Stage-specific shortcuts (still check-first)
 
-- **Whisper ASR (`whisper-asr-v1`)**: uses `omni-s2pro`, **2 GPU / router DP=2**.
+- **Whisper ASR (`whisper-asr-v1`)**: uses `omni-tts`, **2 GPU / router DP=2**.
   Venv must pass full precheck including `flashinfer-jit-cache` (same as CI
-  `omni-setup`). If missing, run `install_flashinfer_jit_cache.sh omni-s2pro`
+  `omni-setup`). If missing, run `install_flashinfer_jit_cache.sh omni-tts`
   from host cache — do **not** use `--skip-precheck`. Source
-  `.github/scripts/ci_env_s2pro.sh` before pytest/calibration.
+  `.github/scripts/ci_env_tts.sh` before pytest/calibration.
 - **Qwen3 MoE stages**: if smoke test shows
   `gen_cutlass_fused_moe_sm90_module` + router timeout, **then** run
   `install_flashinfer_jit_cache.sh` (host cache first; network only on cache miss).
-  Qwen3 stages: **`omni-qwen3` only** — never reuse `omni-s2pro` for talker/TTS/video
+  Qwen3 stages: **`omni-qwen3` only** — never reuse `omni-tts` for talker/TTS/video
   benchmarks even if that venv is already activated for Whisper work.
 
 ### When a full venv rebuild is allowed
@@ -292,12 +292,16 @@ Prefer repairing the single reported gap over rebuilding.
   `run`, precheck lists each selected stage's required assets as `✓` /
   `✗`; standalone `precheck` checks all configured assets. On any miss,
   it prints the exact
-  `huggingface-cli download …` commands to run — run **only those**.
+  `HF_ENDPOINT=https://hf-mirror.com huggingface-cli download …` commands
+  to run — run **only those**.
 - Env vars under `auto_env` in the model's config.yaml are set
   automatically at tune.py startup. The user does NOT need to `export`
   them. Proxy env vars (`http_proxy` etc.) are left alone — the tests'
   own `disable_proxy()` helper strips them for loopback calls, matching
   real CI.
+- `HF_ENDPOINT` defaults to `https://huggingface.co` for precheck, pytest,
+  server startup, and metric calibration. Use `https://hf-mirror.com` only
+  on the explicit missing-asset download commands printed by precheck.
 - No GPU processes holding memory at **precheck** time. If all GPUs are
   busy, precheck fails with the busy PID list and the user must free them.
   **During `tune.py run`**, the tool runs `delete_gpu_process.sh` and
@@ -397,7 +401,7 @@ export OMNI_CI_HOME=/github/home/calibration/qwen3
 export HOME=/github/home
 export HF_HOME=/github/home/.cache/huggingface
 export MODELSCOPE_CACHE=/github/home/.cache/modelscope
-export HF_ENDPOINT=https://hf-mirror.com HF_HUB_DISABLE_XET=1
+export HF_ENDPOINT=https://huggingface.co HF_HUB_DISABLE_XET=1
 export UV_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
 export UV_CACHE_DIR=/github/home/.cache/uv
 export XDG_CACHE_HOME=${OMNI_CI_HOME}/.cache
@@ -419,9 +423,13 @@ venv path is missing or corrupt; its fresh path deletes `$OMNI_CI_HOME`.
 
 - `HOME=/github/home`
 - `OMNI_CI_HOME`, `XDG_CACHE_HOME`, `TORCHINDUCTOR_CACHE_DIR` — per-slice paths above
-- `HF_HOME`, `MODELSCOPE_CACHE`, `HF_ENDPOINT=https://hf-mirror.com`, `HF_HUB_DISABLE_XET=1`
+- `HF_HOME`, `MODELSCOPE_CACHE`, `HF_ENDPOINT=https://huggingface.co`, `HF_HUB_DISABLE_XET=1`
 - `UV_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple`, `UV_CACHE_DIR=/github/home/.cache/uv`
 - `FLASHINFER_DISABLE_VERSION_CHECK=1`
+
+For missing model/dataset assets only, run the precheck-printed download
+command with `HF_ENDPOINT=https://hf-mirror.com`; switch back to
+`https://huggingface.co` before calibration or pytest.
 
 If HF cache lives elsewhere, symlink into `/github/home/.cache/huggingface` rather
 than redownloading checkpoints.
@@ -451,7 +459,7 @@ PY
 source /github/home/calibration/qwen3/omni-qwen3/bin/activate
 export GITHUB_ACTIONS=true RUNNER_TEMP=/tmp PYTHONPATH=$PWD
 export HOME=/github/home OMNI_CI_HOME=/github/home/calibration/qwen3
-export HF_HOME=/github/home/.cache/huggingface HF_ENDPOINT=https://hf-mirror.com HF_HUB_DISABLE_XET=1
+export HF_HOME=/github/home/.cache/huggingface HF_ENDPOINT=https://huggingface.co HF_HUB_DISABLE_XET=1
 export XDG_CACHE_HOME=${OMNI_CI_HOME}/.cache
 export TORCHINDUCTOR_CACHE_DIR=${OMNI_CI_HOME}/.torchinductor
 export UV_CACHE_DIR=/github/home/.cache/uv FLASHINFER_DISABLE_VERSION_CHECK=1
@@ -492,13 +500,13 @@ It is **not** a model bug — the environment is wrong.
 |----------|-------------|------|-----------------------------------|-------------------|
 | Qwen3-Omni benchmarks (MMMU/MMSU/TTS/talker/video*) | `test-qwen3-omni-ci.yaml` | **`omni-qwen3`** | `/github/home/calibration/qwen3` | `source .github/scripts/ci_env_qwen3.sh` |
 | TTS benchmarks | `test-tts-ci.yaml`, `tts` | **`omni-tts`** | `/github/home/calibration/tts` | `source .github/scripts/ci_env_tts.sh` |
-| Whisper ASR | `whisper-asr-v1` | **`omni-s2pro`** | `/github/home/calibration/s2pro` | `source .github/scripts/ci_env_s2pro.sh` |
+| Whisper ASR | `whisper-asr-v1` | **`omni-tts`** | `/github/home/calibration/tts` | `source .github/scripts/ci_env_tts.sh` |
 
 **Forbidden shortcuts (observed 2026-05-30):**
 
 | Mistake | Symptom | Fix |
 |---------|---------|-----|
-| Qwen3 talker/WER tests with `omni-s2pro` + `OMNI_CI_HOME=.../s2pro` | Router worker unhealthy, GPU lock contention, MoE on wrong venv | Switch to `omni-qwen3` + qwen3 slice |
+| Qwen3 talker/WER tests with `omni-tts` + `OMNI_CI_HOME=.../tts` | Router worker unhealthy, GPU lock contention, MoE on wrong venv | Switch to `omni-qwen3` + qwen3 slice |
 | `TORCHINDUCTOR_CACHE_DIR=/.torchinductor` or unset (inherits garbage) | **Every** server start re-captures CUDA graphs (~minutes); log shows long `Capturing batches` | Set to `${OMNI_CI_HOME}/.torchinductor` via `ci_env_*.sh` |
 | `HOME=/root` or datasets under `/root/.cache/huggingface` | HF cache miss, re-download, wrong normalizer paths | `HOME=/github/home`, `HF_HOME=/github/home/.cache/huggingface` |
 | Skipping `install_flashinfer_jit_cache.sh` when precheck fails | MoE JIT compile + router timeout on first launch | Install from host wheel cache into the **correct** venv |
@@ -508,8 +516,8 @@ It is **not** a model bug — the environment is wrong.
 
 ```bash
 cd /sgl-workspace/sglang-omni
-source omni-qwen3/bin/activate   # or omni-tts / omni-s2pro — pick from table above
-source .github/scripts/ci_env_qwen3.sh   # or ci_env_tts.sh / ci_env_s2pro.sh
+source omni-qwen3/bin/activate   # or omni-tts — pick from table above
+source .github/scripts/ci_env_qwen3.sh   # or ci_env_tts.sh
 python -c "import os; assert os.environ['TORCHINDUCTOR_CACHE_DIR'].startswith(os.environ['OMNI_CI_HOME'])"
 python .claude/skills/tune-ci-thresholds/tune.py --model qwen3-omni-v1 precheck   # or whisper-asr-v1 / tts
 ```
@@ -519,7 +527,7 @@ Aligned env → Qwen3 colocated router CUDA graph capture ~5–10 s on warm
 do **not** treat that as a threshold or code regression.
 
 **WER CI with Omni Whisper router (DP=2):** still uses the **parent model’s**
-venv/slice for the benchmark fixture (Qwen3 → qwen3 env; TTS → tts env; Whisper → s2pro env).
+venv/slice for the benchmark fixture (Qwen3 → qwen3 env; TTS → tts env; Whisper → tts env).
 Only the Whisper router stage needs 2 free GPUs after `delete_gpu_process.sh`.
 
 ### Agent operational rules (mandatory)
@@ -702,7 +710,8 @@ Two gates — **both** required before apply:
 3. Run `python tune.py --model <M> precheck --output-dir <run-dir>`.
    On failure, relay the message verbatim; fix **only** the reported gap(s)
    per **Environment policy — check first** (typically `uv pip install -e .`
-   and/or one `huggingface-cli download …`), re-run precheck until `✓`, then
+   and/or one `HF_ENDPOINT=https://hf-mirror.com huggingface-cli download …`),
+   re-run precheck until `✓`, then
    continue. Do **not** run `prepare_omni_venv.sh` or bulk downloads when
    precheck already passes.
    **`<run-dir>` must live under `.tune-runs/<timestamp>_<label>/`** at
@@ -958,7 +967,7 @@ Two gates — **both** required before apply:
     ├── tts/                             # TTS pipeline
     │   ├── config.yaml                  #   uses per-test-file `variants`)
     │   └── stages.yaml
-    └── whisper-asr-v1/                  # Whisper large-v3 ASR (omni-s2pro venv)
+    └── whisper-asr-v1/                  # Whisper large-v3 ASR (omni-tts venv)
         ├── config.yaml
         └── stages.yaml
 ```

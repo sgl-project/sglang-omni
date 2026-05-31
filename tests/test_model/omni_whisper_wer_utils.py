@@ -68,7 +68,7 @@ def wait_for_gpu_memory_release(
         )
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture
 def omni_whisper_wer_router(
     tmp_path_factory: pytest.TempPathFactory,
 ) -> Iterator[ManagedRouterHandle]:

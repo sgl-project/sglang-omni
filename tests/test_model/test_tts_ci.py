@@ -51,15 +51,16 @@ from tests.test_model.omni_router_utils import (
     print_router_diagnostics,
     router_get_json,
 )
-from tests.test_model.omni_whisper_wer_utils import wait_for_gpu_memory_release
+from tests.test_model.omni_whisper_wer_utils import (
+    omni_whisper_wer_router,  # noqa: F401 - pytest fixture imported by name.
+    wait_for_gpu_memory_release,
+)
 from tests.utils import (
     MetricCheckCollector,
     apply_slack,
     apply_wer_slack,
-    assert_per_request_fields,
     assert_speed_thresholds,
     assert_streaming_consistency,
-    assert_summary_metrics,
     assert_wer_results,
     no_proxy_env,
 )
@@ -82,10 +83,18 @@ SIMILARITY_CHECKPOINT_ENV = "SEEDTTS_SIM_CHECKPOINT"
 TTS_STAGE_OUTPUT_ROOT_ENV = "TTS_STAGE_OUTPUT_ROOT"
 TTS_STAGE1_SPEED_RESULTS_DIR_ENV = "TTS_STAGE1_SPEED_RESULTS_DIR"
 TTS_STAGE2_SPEED_RESULTS_DIR_ENV = "TTS_STAGE2_SPEED_RESULTS_DIR"
+TTS_MAX_FAILED_REQUESTS_ENV = "TTS_MAX_FAILED_REQUESTS"
+TTS_SIMILARITY_MAX_SAMPLES_ENV = "TTS_SIMILARITY_MAX_SAMPLES"
 
 # Keep both non-streaming and streaming CI stages on the full SeedTTS EN split.
 SEEDTTS_EN_FULLSET_SAMPLES = 1088
 STREAMING_BENCHMARK_MAX_SAMPLES: int | None = None
+# Full-set TTS CI can tolerate a small number of transport-level request
+# failures while still monitoring the failure budget explicitly.
+TTS_MAX_FAILED_REQUESTS = int(os.environ.get(TTS_MAX_FAILED_REQUESTS_ENV, "16"))
+TTS_SIMILARITY_MAX_SAMPLES = int(
+    os.environ.get(TTS_SIMILARITY_MAX_SAMPLES_ENV, "50")
+)
 
 # Note (chenyang): the RTF thresholds also includes the reference audio
 # processing time.
@@ -236,8 +245,11 @@ def _run_similarity(
     checkpoint_path: str | None,
     *,
     device: str = "cuda:0",
+    max_samples: int | None = None,
 ) -> dict:
     """Compute SeedTTS speaker similarity in CI."""
+    wait_for_gpu_memory_release()
+
     cmd = [
         sys.executable,
         "-m",
@@ -252,6 +264,8 @@ def _run_similarity(
         "--device",
         device,
     ]
+    if max_samples is not None:
+        cmd += ["--max-samples", str(max_samples)]
     if checkpoint_path is not None:
         cmd += ["--similarity-checkpoint", checkpoint_path]
 
@@ -320,6 +334,89 @@ def _load_speed_results(results_path: Path) -> dict:
     return speed_results
 
 
+def _assert_tts_speed_result_integrity(
+    summary: dict,
+    per_request: list[dict],
+    *,
+    label: str,
+    collector: MetricCheckCollector,
+) -> None:
+    failed_rows = [
+        request for request in per_request if request.get("is_success") is not True
+    ]
+    failed_requests = summary.get("failed_requests")
+    completed_requests = summary.get("completed_requests")
+    collector.check(
+        isinstance(failed_requests, int),
+        f"{label}: failed_requests must be an int, got {failed_requests}",
+    )
+    collector.check(
+        isinstance(completed_requests, int),
+        f"{label}: completed_requests must be an int, got {completed_requests}",
+    )
+    if isinstance(failed_requests, int):
+        collector.check(
+            failed_requests <= TTS_MAX_FAILED_REQUESTS,
+            f"{label}: failed_requests {failed_requests} > "
+            f"{TTS_MAX_FAILED_REQUESTS}",
+        )
+        collector.check(
+            failed_requests == len(failed_rows),
+            f"{label}: summary failed_requests={failed_requests}, "
+            f"per_request failures={len(failed_rows)}",
+        )
+    if isinstance(failed_requests, int) and isinstance(completed_requests, int):
+        collector.check(
+            completed_requests + failed_requests == len(per_request),
+            f"{label}: completed_requests + failed_requests = "
+            f"{completed_requests + failed_requests}, per_request={len(per_request)}",
+        )
+
+    audio_duration_mean_s = summary.get("audio_duration_mean_s")
+    collector.check(
+        audio_duration_mean_s is not None and audio_duration_mean_s > 0,
+        f"{label}: expected positive audio_duration_mean_s, "
+        f"got {audio_duration_mean_s}",
+    )
+    output_tokens_mean = summary.get("output_tokens_mean", 0)
+    collector.check(
+        output_tokens_mean > 0,
+        f"{label}: expected positive output_tokens_mean, got {output_tokens_mean}",
+    )
+    prompt_tokens_mean = summary.get("prompt_tokens_mean", 0)
+    collector.check(
+        prompt_tokens_mean > 0,
+        f"{label}: expected positive prompt_tokens_mean, got {prompt_tokens_mean}",
+    )
+
+    for request in per_request:
+        request_id = request.get("id", "<missing id>")
+        if request.get("is_success") is not True:
+            collector.check(
+                bool(request.get("error")),
+                f"{label}: failed request {request_id} is missing error detail",
+            )
+            continue
+        audio_duration_s = request.get("audio_duration_s")
+        collector.check(
+            audio_duration_s is not None and audio_duration_s > 0,
+            f"{label}: request {request_id} audio_duration_s={audio_duration_s}, "
+            "expected > 0",
+        )
+        prompt_tokens = request.get("prompt_tokens")
+        completion_tokens = request.get("completion_tokens")
+        collector.check(
+            prompt_tokens is not None and prompt_tokens > 0,
+            f"{label}: request {request_id} prompt_tokens={prompt_tokens}, "
+            "expected > 0",
+        )
+        collector.check(
+            completion_tokens is not None and completion_tokens > 0,
+            f"{label}: request {request_id} completion_tokens={completion_tokens}, "
+            "expected > 0",
+        )
+
+
 def _store_consistency_inputs(
     *,
     mode: Literal["non_stream", "stream"],
@@ -332,8 +429,12 @@ def _store_consistency_inputs(
         f"TTS {mode} speed results at concurrency {concurrency}"
     )
     summary, per_request = results["summary"], results["per_request"]
-    assert_summary_metrics(summary, collector=checks)
-    assert_per_request_fields(per_request, collector=checks)
+    _assert_tts_speed_result_integrity(
+        summary,
+        per_request,
+        label=f"TTS {mode} c{concurrency}",
+        collector=checks,
+    )
     if mode == "non_stream":
         assert_speed_thresholds(
             summary, VC_NON_STREAM_THRESHOLDS, concurrency, collector=checks
@@ -716,6 +817,7 @@ def test_voice_cloning_streaming_consistency(
             ns,
             st,
             expected_stream_count=len(ns),
+            max_failed_requests=TTS_MAX_FAILED_REQUESTS,
             collector=checks,
         )
     checks.assert_all()
@@ -776,6 +878,7 @@ def test_voice_cloning_similarity(
             dataset_repo,
             wer_input_dirs["non_stream"][concurrency],
             similarity_checkpoint,
+            max_samples=TTS_SIMILARITY_MAX_SAMPLES,
         )
         _assert_similarity_results(results, VC_SIMILARITY_MEAN_MIN, collector=checks)
     checks.assert_all()

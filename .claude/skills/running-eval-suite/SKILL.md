@@ -47,15 +47,19 @@ distinguishes the model launched per row).
   `--venv-python <path>` or `$EVAL_VENV_PYTHON`.
 - HF model + datasets cached under `HF_HOME=/github/home/.cache/huggingface`
   (see `auto_env` in `config.yaml`). precheck reports `✓` / `✗` and prints
-  the exact `huggingface-cli download …` commands when something's missing.
+  the exact `HF_ENDPOINT=https://hf-mirror.com huggingface-cli download …`
+  commands when something's missing.
 - Free GPUs. The skill **never** kills another user's processes; if
   GPUs are busy precheck fails with the busy PID list and stops.
 - `auto_env` from `config.yaml` is applied at startup (overrides shell) to
   match CI omni-setup: `OMNI_CI_HOME`, `UV_INDEX_URL`, torchinductor slice
   paths, etc. See `tune-ci-thresholds` skill for the full cache layout table
-  and **venv/slice per workflow** (never run Qwen3 benchmarks on `omni-s2pro`).
+  and **venv/slice per workflow** (never run Qwen3 benchmarks on `omni-tts`).
+- `HF_ENDPOINT` defaults to `https://huggingface.co` for precheck, server
+  startup, and evaluation. Use `https://hf-mirror.com` only for explicit
+  missing-asset downloads printed by precheck.
 - Before pytest or eval runs, prefer `source .github/scripts/ci_env_qwen3.sh`
-  (or `ci_env_s2pro.sh`) so `TORCHINDUCTOR_CACHE_DIR` stays under
+  (or `ci_env_tts.sh`) so `TORCHINDUCTOR_CACHE_DIR` stays under
   `${OMNI_CI_HOME}/.torchinductor` — wrong paths cause multi-minute cold starts.
 
 ## Two-terminal supervision (mandatory — always)

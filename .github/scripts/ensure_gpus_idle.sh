@@ -11,23 +11,47 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 memory_threshold_mb="${OMNI_CI_GPU_MEMORY_CLEAN_THRESHOLD_MB:-1024}"
 wait_timeout_seconds="${OMNI_CI_GPU_CLEAN_WAIT_SECONDS:-600}"
 poll_seconds="${OMNI_CI_GPU_CLEAN_POLL_SECONDS:-5}"
+target_gpu_ids="${CUDA_VISIBLE_DEVICES:-}"
+
+has_target_gpu_scope() {
+    [ -n "${target_gpu_ids}" ] && [ "${target_gpu_ids}" != "all" ]
+}
+
+target_gpu_device_regex() {
+    echo "${target_gpu_ids}" \
+        | tr ',' '\n' \
+        | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' \
+        | sed -n '/^[0-9][0-9]*$/p' \
+        | paste -sd'|' -
+}
 
 kill_orphan_gpu_processes() {
-    local patterns=(
-        "multiprocessing.spawn"
-        "sglang_omni_router.serve"
-        "sgl-omni serve"
-        "stage_process"
-    )
-    for pattern in "${patterns[@]}"; do
-        pkill -9 -f "${pattern}" 2>/dev/null || true
-    done
+    if ! has_target_gpu_scope; then
+        local patterns=(
+            "multiprocessing.spawn"
+            "sglang_omni_router.serve"
+            "sgl-omni serve"
+            "stage_process"
+        )
+        for pattern in "${patterns[@]}"; do
+            pkill -9 -f "${pattern}" 2>/dev/null || true
+        done
+    fi
     rm -f /tmp/sglang_omni_gpu_*_startup.lock
 
     # nvidia-smi often misses zombie CUDA contexts; scan open /dev/nvidia* fds.
-    local pid cmdline
+    local pid cmdline gpu_regex fd_target
+    gpu_regex="$(target_gpu_device_regex)"
     for pid in $(ls /proc 2>/dev/null | grep -E '^[0-9]+$' || true); do
-        if ls -l "/proc/${pid}/fd" 2>/dev/null | grep -q nvidia; then
+        if [ -n "${gpu_regex}" ]; then
+            fd_target="$(find "/proc/${pid}/fd" -maxdepth 1 -type l -printf '%l\n' 2>/dev/null || true)"
+            if ! echo "${fd_target}" | grep -Eq "/dev/nvidia(${gpu_regex})$"; then
+                continue
+            fi
+        elif ! ls -l "/proc/${pid}/fd" 2>/dev/null | grep -q nvidia; then
+            continue
+        fi
+        if true; then
             cmdline="$(tr '\0' ' ' < "/proc/${pid}/cmdline" 2>/dev/null || true)"
             if [ -n "${cmdline}" ]; then
                 echo "  killing orphan GPU PID ${pid}: ${cmdline}"

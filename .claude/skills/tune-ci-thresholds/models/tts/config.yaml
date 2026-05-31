@@ -29,7 +29,7 @@ auto_env:
   HF_HOME: "/github/home/.cache/huggingface"
   MODELSCOPE_CACHE: "/github/home/.cache/modelscope"
   XDG_CACHE_HOME: "/github/home/calibration/tts/.cache"
-  HF_ENDPOINT: "https://hf-mirror.com"
+  HF_ENDPOINT: "https://huggingface.co"
   HF_HUB_DISABLE_XET: "1"
   UV_INDEX_URL: "https://pypi.tuna.tsinghua.edu.cn/simple"
   UV_CACHE_DIR: "/github/home/.cache/uv"

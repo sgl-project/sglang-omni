@@ -33,7 +33,10 @@ from tests.test_model.omni_router_utils import (
     print_worker_snapshot,
     router_get_json,
 )
-from tests.test_model.omni_whisper_wer_utils import wait_for_gpu_memory_release
+from tests.test_model.omni_whisper_wer_utils import (
+    omni_whisper_wer_router,  # noqa: F401 - pytest fixture imported by name.
+    wait_for_gpu_memory_release,
+)
 from tests.utils import (
     MetricCheckCollector,
     apply_slack,

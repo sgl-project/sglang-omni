@@ -167,8 +167,7 @@ Relevant model CI ownership:
   clips (>30 s) are chunked client-side in `benchmarks/tasks/tts.py` to match
   the transformers `chunk_length_s=30` behavior.
 - CI env alignment on the H20 repro host: `source .github/scripts/ci_env_qwen3.sh`
-  (Qwen3-Omni), `source .github/scripts/ci_env_tts.sh` (TTS), or
-  `source .github/scripts/ci_env_s2pro.sh` (Whisper ASR).
+  (Qwen3-Omni), or `source .github/scripts/ci_env_tts.sh` (TTS and Whisper ASR).
   Full WER sweep: `.github/scripts/run_all_wer_ci_aligned.sh` (milestones on
   stdout; details in `/tmp/wer_ci_qwen3.log` and `/tmp/wer_ci_tts.log`).
 - GPU handoff between stages: `.github/scripts/ensure_gpus_idle.sh` (kills orphan

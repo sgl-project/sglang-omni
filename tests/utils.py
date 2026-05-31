@@ -51,7 +51,7 @@ class MetricCheckCollector:
     ) -> None:
         try:
             func(*args, **kwargs)
-        except AssertionError as exc:
+        except Exception as exc:
             detail = str(exc) or exc.__class__.__name__
             self.fail(f"{check_label}: {detail}")
 
@@ -440,6 +440,7 @@ def assert_streaming_consistency(
     stream_requests: list[dict],
     *,
     expected_stream_count: int | None = None,
+    max_failed_requests: int = 0,
     total_completion_token_rtol: float = DEFAULT_TOTAL_COMPLETION_TOKEN_RTOL,
     median_completion_token_rtol: float = DEFAULT_MEDIAN_COMPLETION_TOKEN_RTOL,
     total_audio_duration_rtol: float = DEFAULT_TOTAL_AUDIO_DURATION_RTOL,
@@ -454,6 +455,34 @@ def assert_streaming_consistency(
     stream_by_id = _request_by_id(stream_requests)
     common_ids = _assert_request_sets(
         non_stream_by_id, stream_by_id, expected_stream_count, checks
+    )
+    non_stream_failed = {
+        request_id
+        for request_id, request in non_stream_by_id.items()
+        if request.get("is_success") is not True
+    }
+    stream_failed = {
+        request_id
+        for request_id, request in stream_by_id.items()
+        if request.get("is_success") is not True
+    }
+    checks.check(
+        len(non_stream_failed) <= max_failed_requests,
+        f"Non-streaming failed request count {len(non_stream_failed)} > "
+        f"{max_failed_requests}",
+    )
+    checks.check(
+        len(stream_failed) <= max_failed_requests,
+        f"Streaming failed request count {len(stream_failed)} > "
+        f"{max_failed_requests}",
+    )
+    failed_ids = non_stream_failed | stream_failed
+    common_ids = [
+        request_id for request_id in common_ids if request_id not in failed_ids
+    ]
+    checks.check(
+        bool(common_ids),
+        "No successful overlapping request IDs between non-stream and stream runs",
     )
 
     non_stream_completion_tokens: list[int] = []
