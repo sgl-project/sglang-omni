@@ -327,11 +327,6 @@ class Qwen3OmniSpeechColocatedPipelineConfig(Qwen3OmniSpeechPipelineConfig):
     SGLang AR cache fractions.
     """
 
-    placement: PlacementConfig = Field(
-        default_factory=lambda: PlacementConfig(
-            require_memory_fraction_for_colocation=True
-        )
-    )
     stages: list[StageConfig] = Field(
         default_factory=lambda: _speech_stages(
             thinker_gpu=0,

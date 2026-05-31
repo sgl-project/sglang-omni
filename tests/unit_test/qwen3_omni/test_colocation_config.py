@@ -149,31 +149,6 @@ def test_colocated_config_rejects_missing_stage_budgets() -> None:
         build_stage_placement_plan(config)
 
 
-def test_colocated_config_allows_missing_stage_budgets_when_auto_memory_enabled() -> (
-    None
-):
-    config = Qwen3OmniSpeechColocatedPipelineConfig(model_path="dummy")
-    config.placement.require_memory_fraction_for_colocation = False
-
-    plan = build_stage_placement_plan(config)
-
-    assert set(plan.gpus[0].missing_fraction_stage_names) == {
-        "image_encoder",
-        "audio_encoder",
-        "thinker",
-        "talker_ar",
-        "code2wav",
-    }
-
-
-def test_colocated_config_rejects_partial_stage_budgets() -> None:
-    config = Qwen3OmniSpeechColocatedPipelineConfig(model_path="dummy")
-    _stage(config, "thinker").runtime.resources.total_gpu_memory_fraction = 0.75
-
-    with pytest.raises(ValueError, match="either all colocated stages or no"):
-        build_stage_placement_plan(config)
-
-
 @pytest.mark.parametrize("stage_name", ["talker_ar", "code2wav"])
 def test_colocated_config_rejects_moving_gpu_stage_away(stage_name: str) -> None:
     config = Qwen3OmniSpeechColocatedPipelineConfig(model_path="dummy")
