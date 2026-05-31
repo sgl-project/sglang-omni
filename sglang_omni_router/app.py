@@ -280,6 +280,10 @@ def register_routes(
     async def audio_speech(request: Request) -> Response:
         return await proxy.forward_model_request(request, "/v1/audio/speech")
 
+    @app.post("/v1/audio/transcriptions")
+    async def audio_transcriptions(request: Request) -> Response:
+        return await proxy.forward_model_request(request, "/v1/audio/transcriptions")
+
 
 def _pool_summary(
     workers: list[Worker],

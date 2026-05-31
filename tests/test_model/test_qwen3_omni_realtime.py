@@ -125,6 +125,7 @@ async def _stream_audio(ws, pcm: bytes, chunk_ms: int = 200) -> None:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.benchmark
 @pytest.mark.asyncio
 async def test_vad_audio_emits_response_then_transcription(
     server_process: subprocess.Popen,
@@ -181,6 +182,7 @@ async def test_vad_audio_emits_response_then_transcription(
     ).strip(), f"expected non-empty transcript; got {completed!r}"
 
 
+@pytest.mark.benchmark
 @pytest.mark.asyncio
 async def test_disconnect_during_response_keeps_server_healthy(
     server_process: subprocess.Popen,

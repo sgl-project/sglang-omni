@@ -82,8 +82,10 @@ def test_ming_image_encoder_keeps_its_tp_context_for_runtime_forward() -> None:
     source = _read(MING_IMAGE_ENCODER_PATH)
     init_body = source.split("    @staticmethod", 1)[0]
 
-    assert "self._init_sglang_tp()" in init_body
-    assert "self._cleanup_sglang_tp()" not in init_body
+    assert (
+        "_init_sglang_tp(" in init_body
+    ), "TP context must be initialized in __init__, not deferred to forward"
+    assert "_cleanup_sglang_tp()" not in init_body
 
 
 def test_ming_image_encoder_tp_init_requires_parallel_state() -> None:

@@ -421,6 +421,8 @@ def _required_capabilities(
 ) -> set[Capability]:
     if path == "/v1/audio/speech":
         capabilities: set[Capability] = {"speech"}
+    elif path == "/v1/audio/transcriptions":
+        capabilities = {"audio_input"}
     else:
         capabilities = {"chat"}
 

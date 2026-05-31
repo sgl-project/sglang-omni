@@ -28,6 +28,7 @@ class HiggsSGLangRequestData(SGLangARRequestData):
     output_codes: list[torch.Tensor] = field(default_factory=list)
     generation_done: bool = False
     engine_start_s: float = 0.0
+    stream_metadata: dict[str, Any] | None = None
 
 
 class _ResettableHiggsModel(Protocol):
@@ -73,7 +74,7 @@ def build_sglang_higgs_request(
     if state.top_k is not None:
         sp_kwargs["top_k"] = int(state.top_k)
     if state.seed is not None:
-        sp_kwargs["seed"] = int(state.seed)
+        sp_kwargs["sampling_seed"] = int(state.seed)
     sampling_params = SamplingParams(**sp_kwargs)
     # tokenizer_manager.normalize() is bypassed in our custom pipeline;
     # without it stop_strs / stop_regex_strs stay None and the upstream
@@ -106,6 +107,32 @@ def build_sglang_higgs_request(
         top_p=float(state.top_p) if state.top_p is not None else 1.0,
         top_k=int(state.top_k) if state.top_k is not None else -1,
     )
+
+
+def build_higgs_stream_metadata(
+    payload: StagePayload, data: HiggsSGLangRequestData
+) -> dict[str, Any] | None:
+    params = payload.request.params
+    if not isinstance(params, dict):
+        raise TypeError(
+            f"Higgs request params must be a dict, got {type(params).__name__}"
+        )
+    if not bool(params.get("stream", False)):
+        return None
+
+    num_codebooks = int(data.num_codebooks)
+    codebook_size = int(data.codebook_size)
+    if num_codebooks <= 0 or codebook_size <= 2:
+        raise ValueError(
+            f"Invalid Higgs stream codec contract: "
+            f"num_codebooks={num_codebooks}, codebook_size={codebook_size}"
+        )
+    return {
+        "modality": "audio_codes",
+        "stream": True,
+        "num_codebooks": num_codebooks,
+        "codebook_size": codebook_size,
+    }
 
 
 def apply_higgs_result(state: HiggsTtsState, data: HiggsSGLangRequestData) -> None:
@@ -141,6 +168,7 @@ def make_higgs_scheduler_adapters(
         data = build_sglang_higgs_request(state, request_id=payload.request_id)
         data.engine_start_s = time.perf_counter()
         data.stage_payload = payload
+        data.stream_metadata = build_higgs_stream_metadata(payload, data)
         return data
 
     def result_adapter(data: HiggsSGLangRequestData) -> StagePayload:
@@ -162,6 +190,7 @@ def make_higgs_scheduler_adapters(
 __all__ = [
     "HiggsSGLangRequestData",
     "apply_higgs_result",
+    "build_higgs_stream_metadata",
     "build_sglang_higgs_request",
     "make_higgs_scheduler_adapters",
 ]

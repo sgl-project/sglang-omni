@@ -97,6 +97,9 @@ class SGLModelRunner(ModelRunner):
         from sglang_omni.models.qwen3_omni.components.talker import Qwen3OmniTalker
         from sglang_omni.models.qwen3_tts.sglang_model import Qwen3TTSTalker
         from sglang_omni.models.voxtral_tts.sglang_model import VoxtralSGLangTTSModel
+        from sglang_omni.models.whisper_asr.sglang_model import (
+            WhisperForConditionalGeneration,
+        )
 
         register_ming_hf_config()
         register_ming_model_registry()
@@ -112,6 +115,9 @@ class SGLModelRunner(ModelRunner):
         ModelRegistry.models["Qwen3TTSTalker"] = Qwen3TTSTalker
         ModelRegistry.models["VoxtralSGLangTTSModel"] = VoxtralSGLangTTSModel
         ModelRegistry.models["LLaDA2MoeModelLM"] = LLaDA2MoeModelLM
+        ModelRegistry.models["WhisperForConditionalGeneration"] = (
+            WhisperForConditionalGeneration
+        )
 
     def _profile_available_bytes(self, pre_model_load_memory: float) -> int:
         """Profile KV-cache headroom for colocated SGLang AR stages.

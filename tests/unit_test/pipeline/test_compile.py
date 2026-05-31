@@ -5,7 +5,10 @@ from __future__ import annotations
 import pytest
 
 from sglang_omni.config.schema import EndpointsConfig, PipelineConfig
-from sglang_omni.pipeline.mp_runner import _build_stage_groups
+from sglang_omni.pipeline.mp_runner import (
+    _build_stage_groups,
+    _resolve_same_process_targets,
+)
 from sglang_omni.pipeline.runtime_config import prepare_pipeline_runtime
 from sglang_omni.pipeline.stage_process import get_stage_process_env
 from tests.unit_test.fixtures.pipeline_fakes import FakeMpContext, fake_factory_path
@@ -135,8 +138,159 @@ def test_runner_specs_wire_routes_overrides_aggregation_and_streams(tmp_path) ->
     assert specs["aggregate"].merge_fn == fake_factory_path("merge_payloads")
     assert specs["talker"].is_stream_receiver
     assert specs["thinker"].same_gpu_targets == {"talker"}
+    assert specs["preprocess"].same_process_targets == {"thinker", "aggregate"}
+    assert specs["thinker"].same_process_targets == {"aggregate", "talker"}
     assert specs["thinker"].factory_args["model_path"] == "runtime-model"
     assert specs["thinker"].factory_args["extra"] == "rt"
+
+
+def test_runner_specs_wire_same_process_targets_only_for_local_edges() -> None:
+    config = PipelineConfig(
+        model_path="model",
+        stages=[
+            stage("a", next="b", process="p0"),
+            stage("b", next="c", process="p0"),
+            stage("c", terminal=True, process="p1"),
+        ],
+    )
+    prep = prepare_pipeline_runtime(config)
+    groups = _build_stage_groups(
+        config,
+        ctx=FakeMpContext(),
+        stages_cfg=prep.stages_cfg,
+        name_map=prep.name_map,
+        endpoints=prep.endpoints,
+        placement_plan=prep.placement_plan,
+        process_plan=prep.process_plan,
+    )
+    specs = {spec.stage_name: spec for group in groups for spec in group.specs}
+
+    assert specs["a"].same_process_targets == {"b"}
+    assert specs["b"].same_process_targets == set()
+
+
+def test_fused_stages_compile_to_same_process_local_edges() -> None:
+    config = PipelineConfig(
+        model_path="model",
+        stages=[
+            stage("preprocess", next="encoder", process="preprocess"),
+            stage("encoder", next="decode", gpu=0, process="encoder"),
+            stage("decode", terminal=True, process="decode"),
+        ],
+        fused_stages=[["preprocess", "encoder"]],
+    )
+    prep = prepare_pipeline_runtime(config)
+
+    assert [stage_cfg.name for stage_cfg in prep.stages_cfg] == [
+        "preprocess",
+        "encoder",
+        "decode",
+    ]
+    assert prep.name_map == {
+        "preprocess": "preprocess",
+        "encoder": "encoder",
+        "decode": "decode",
+    }
+    assert prep.entry_stage == "preprocess"
+    assert prep.process_plan.stage_to_process["preprocess"] == (
+        prep.process_plan.stage_to_process["encoder"]
+    )
+    assert prep.process_plan.stage_to_process["decode"] != (
+        prep.process_plan.stage_to_process["encoder"]
+    )
+
+    groups = _build_stage_groups(
+        config,
+        ctx=FakeMpContext(),
+        stages_cfg=prep.stages_cfg,
+        name_map=prep.name_map,
+        endpoints=prep.endpoints,
+        placement_plan=prep.placement_plan,
+        process_plan=prep.process_plan,
+    )
+    specs = {spec.stage_name: spec for group in groups for spec in group.specs}
+
+    assert specs["preprocess"].same_process_targets == {"encoder"}
+    assert specs["encoder"].same_process_targets == set()
+
+
+def test_runner_specs_wire_same_process_stream_targets() -> None:
+    config = PipelineConfig(
+        model_path="model",
+        stages=[
+            stage("thinker", next="decode", stream_to=["decode"]),
+            stage("decode", terminal=True, can_accept_stream_before_payload=True),
+        ],
+    )
+    prep = prepare_pipeline_runtime(config)
+    groups = _build_stage_groups(
+        config,
+        ctx=FakeMpContext(),
+        stages_cfg=prep.stages_cfg,
+        name_map=prep.name_map,
+        endpoints=prep.endpoints,
+        placement_plan=prep.placement_plan,
+        process_plan=prep.process_plan,
+    )
+    specs = {spec.stage_name: spec for group in groups for spec in group.specs}
+
+    assert specs["thinker"].same_process_targets == {"decode"}
+
+
+def test_runner_specs_do_not_wire_same_process_targets_to_tp_stages() -> None:
+    config = PipelineConfig(
+        model_path="model",
+        stages=[
+            stage("preprocess", next="thinker"),
+            stage("thinker", gpu=[0, 1], tp_size=2, terminal=True),
+        ],
+    )
+    prep = prepare_pipeline_runtime(config)
+    stage_cfg_by_name = {stage_cfg.name: stage_cfg for stage_cfg in prep.stages_cfg}
+    preprocess = stage_cfg_by_name["preprocess"]
+    thinker = stage_cfg_by_name["thinker"]
+
+    assert (
+        _resolve_same_process_targets(
+            preprocess,
+            stage_cfg_by_name,
+            prep.name_map,
+            prep.process_plan,
+        )
+        == set()
+    )
+    assert (
+        _resolve_same_process_targets(
+            thinker,
+            stage_cfg_by_name,
+            prep.name_map,
+            prep.process_plan,
+        )
+        == set()
+    )
+
+
+def test_fused_stages_reject_unsupported_internal_stage_contracts() -> None:
+    with pytest.raises(ValueError, match="cannot include TP stage"):
+        PipelineConfig(
+            model_path="model",
+            stages=[
+                stage("preprocess", next="encoder", process="preprocess"),
+                stage("encoder", gpu=[0, 1], tp_size=2, terminal=True),
+            ],
+            fused_stages=[["preprocess", "encoder"]],
+        )
+
+    with pytest.raises(ValueError, match="must route only to 'encoder'"):
+        PipelineConfig(
+            model_path="model",
+            stages=[
+                stage("preprocess", next="decode", process="preprocess"),
+                stage("encoder", next="decode", process="encoder"),
+                stage("decode", terminal=True, process="decode"),
+            ],
+            fused_stages=[["preprocess", "encoder"]],
+        )
 
 
 def test_mp_runner_preserves_tp_rank_and_visible_device_contracts(tmp_path) -> None:

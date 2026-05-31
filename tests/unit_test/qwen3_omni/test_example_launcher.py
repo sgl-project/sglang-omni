@@ -11,6 +11,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from sglang_omni.models.qwen3_omni.config import MIN_PARTIAL_START_CHUNKS
+
 _EXAMPLES_DIR = pathlib.Path(__file__).resolve().parents[3] / "examples"
 
 
@@ -54,11 +56,11 @@ def _make_args(**overrides) -> argparse.Namespace:
     defaults = dict(
         model_path="Qwen/Qwen3-Omni-30B-A3B-Instruct",
         gpu_thinker=0,
-        gpu_talker=1,
+        gpu_talker=None,
         gpu_code_predictor=None,
-        gpu_code2wav=0,
-        gpu_image_encoder=0,
-        gpu_audio_encoder=0,
+        gpu_code2wav=None,
+        gpu_image_encoder=None,
+        gpu_audio_encoder=None,
         thinker_tp_size=1,
         gpu_thinker_tp=None,
         relay_backend="shm",
@@ -66,6 +68,9 @@ def _make_args(**overrides) -> argparse.Namespace:
         mem_fraction_static=None,
         thinker_mem_fraction_static=None,
         talker_mem_fraction_static=None,
+        enable_partial_start=None,
+        partial_start_min_chunks=5,
+        colocated=False,
         host="0.0.0.0",
         port=8000,
         model_name="qwen3-omni",
@@ -110,10 +115,14 @@ def test_tp1_default_config_contract(mock_launch_server):
 
     config = mock_launch_server.call_args[0][0]
     thinker = _stage(config, "thinker")
+    talker = _stage(config, "talker_ar")
+    code2wav = _stage(config, "code2wav")
 
     assert thinker.tp_size == 1
     assert thinker.parallelism.tp == 1
     assert thinker.gpu == 0
+    assert talker.gpu == 1
+    assert code2wav.gpu == 0
 
 
 def test_mem_fractions_applied(mock_launch_server):
@@ -129,6 +138,98 @@ def test_mem_fractions_applied(mock_launch_server):
 
     assert thinker.factory_args["server_args_overrides"]["mem_fraction_static"] == 0.55
     assert talker.factory_args["server_args_overrides"]["mem_fraction_static"] == 0.20
+
+
+def test_partial_start_updates_talker_factory_args(mock_launch_server):
+    args = _make_args(enable_partial_start=True, partial_start_min_chunks=7)
+    _launch_speech_server(args)
+
+    config = mock_launch_server.call_args[0][0]
+    talker = _stage(config, "talker_ar")
+
+    assert talker.factory_args["enable_partial_start"] is True
+    assert talker.factory_args["partial_start_min_chunks"] == 7
+
+
+def test_partial_start_defaults_on(mock_launch_server):
+    args = _make_args()
+    _launch_speech_server(args)
+
+    config = mock_launch_server.call_args[0][0]
+    talker = _stage(config, "talker_ar")
+
+    assert talker.factory_args["enable_partial_start"] is True
+
+
+def test_partial_start_colocated_defaults_off(mock_launch_server):
+    args = _make_args(colocated=True)
+    _launch_speech_server(args)
+
+    config = mock_launch_server.call_args[0][0]
+    talker = _stage(config, "talker_ar")
+
+    assert talker.factory_args["enable_partial_start"] is False
+
+
+def test_partial_start_colocated_can_be_enabled(mock_launch_server):
+    args = _make_args(colocated=True, enable_partial_start=True)
+    _launch_speech_server(args)
+
+    config = mock_launch_server.call_args[0][0]
+    talker = _stage(config, "talker_ar")
+
+    assert talker.factory_args["enable_partial_start"] is True
+
+
+def test_partial_start_can_be_disabled(mock_launch_server):
+    args = _make_args(enable_partial_start=False)
+    _launch_speech_server(args)
+
+    config = mock_launch_server.call_args[0][0]
+    talker = _stage(config, "talker_ar")
+
+    assert talker.factory_args["enable_partial_start"] is False
+
+
+def test_partial_start_disabled_does_not_propagate_subfloor_min_chunks(
+    mock_launch_server,
+):
+    args = _make_args(enable_partial_start=False, partial_start_min_chunks=2)
+    _launch_speech_server(args)
+
+    config = mock_launch_server.call_args[0][0]
+    talker = _stage(config, "talker_ar")
+
+    assert talker.factory_args["enable_partial_start"] is False
+    assert talker.factory_args["partial_start_min_chunks"] >= MIN_PARTIAL_START_CHUNKS
+
+
+def test_partial_start_min_chunks_rejects_below_floor(mock_launch_server):
+    args = _make_args(enable_partial_start=True, partial_start_min_chunks=2)
+    with pytest.raises(ValueError, match="partial-start-min-chunks must be >= 3"):
+        _launch_speech_server(args)
+
+    mock_launch_server.assert_not_called()
+
+
+def test_colocated_defaults_use_thinker_gpu_for_gpu_stages(mock_launch_server):
+    args = _make_args(colocated=True)
+    _launch_speech_server(args)
+
+    config = mock_launch_server.call_args[0][0]
+    assert _stage(config, "image_encoder").gpu == 0
+    assert _stage(config, "audio_encoder").gpu == 0
+    assert _stage(config, "thinker").gpu == 0
+    assert _stage(config, "talker_ar").gpu == 0
+    assert _stage(config, "code2wav").gpu == 0
+
+
+def test_colocated_rejects_conflicting_stage_gpu(mock_launch_server):
+    args = _make_args(colocated=True, gpu_talker=1)
+    with pytest.raises(ValueError, match="--colocated requires all GPU stage flags"):
+        _launch_speech_server(args)
+
+    mock_launch_server.assert_not_called()
 
 
 def test_parse_thinker_tp_rejects_length_mismatch():

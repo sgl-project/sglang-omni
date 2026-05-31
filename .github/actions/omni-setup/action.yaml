@@ -13,13 +13,32 @@ inputs:
 runs:
   using: composite
   steps:
+    - name: Validate PR-scoped CI home
+      shell: bash
+      run: bash .github/scripts/validate_omni_ci_home.sh
+
+    - name: Align CI cache home
+      shell: bash
+      run: |
+        echo "HOME=/github/home" >> "${GITHUB_ENV}"
+        echo "HF_HOME=/github/home/.cache/huggingface" >> "${GITHUB_ENV}"
+        echo "MODELSCOPE_CACHE=/github/home/.cache/modelscope" >> "${GITHUB_ENV}"
+        echo "XDG_CACHE_HOME=${OMNI_CI_HOME}/.cache" >> "${GITHUB_ENV}"
+        echo "HF_HUB_DISABLE_XET=1" >> "${GITHUB_ENV}"
+        echo "HF_ENDPOINT=${HF_ENDPOINT:-https://hf-mirror.com}" >> "${GITHUB_ENV}"
+        # PyPI mirror + shared wheel cache (HF mirror does not accelerate pip/uv).
+        echo "UV_INDEX_URL=${UV_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}" >> "${GITHUB_ENV}"
+        echo "UV_CACHE_DIR=/github/home/.cache/uv" >> "${GITHUB_ENV}"
+
     - name: Restore cache
       shell: bash
       env:
         VENV_NAME: ${{ inputs.venv-name }}
       run: |
-        if [ -d "/github/home/${VENV_NAME}" ] && [ -n "$(ls -A "/github/home/${VENV_NAME}/")" ]; then
-          cp -p -r "/github/home/${VENV_NAME}" "./${VENV_NAME}"
+        HOST="${OMNI_CI_HOME}/${VENV_NAME}"
+        if [ -d "${HOST}" ] && [ -n "$(ls -A "${HOST}/")" ]; then
+          rm -rf "./${VENV_NAME}"
+          ln -sfn "${HOST}" "./${VENV_NAME}"
         fi
 
     - name: Install dependencies
@@ -27,28 +46,7 @@ runs:
       shell: bash
       env:
         VENV_NAME: ${{ inputs.venv-name }}
-      run: |
-        if [ -d "${VENV_NAME}" ] && ! "${VENV_NAME}/bin/python" -c "import torch" 2>/dev/null; then
-          echo "Cached venv is corrupted, removing..."
-          rm -rf "${VENV_NAME}"
-        fi
-        if [ ! -d "${VENV_NAME}" ]; then
-          uv venv "${VENV_NAME}" -p 3.11
-        fi
-        source "${VENV_NAME}/bin/activate"
-        uv pip install -v -e .
-        # Repair PyAV if its bundled shared libs got corrupted in the cached
-        # venv (e.g. "libx265-...so.215: file too short"). The editable install
-        # above does not reinstall an already-present package, so force it.
-        if ! python -c "import av" 2>/dev/null; then
-          echo "PyAV native libraries corrupted in cached venv, force-reinstalling..."
-          uv pip install --force-reinstall --no-deps --no-cache av
-        fi
-        if ! python -c "from whisper.normalizers import EnglishTextNormalizer" 2>/dev/null; then
-          echo "openai-whisper missing from prepared venv, installing pinned dependency..."
-          uv pip install --force-reinstall --no-deps --no-cache openai-whisper==20250625
-        fi
-        python -c "from whisper.normalizers import EnglishTextNormalizer"
+      run: bash .github/scripts/prepare_omni_venv.sh "${VENV_NAME}"
 
     - name: Validate prepared environment
       if: ${{ inputs.install-deps != 'true' }}
@@ -57,7 +55,7 @@ runs:
         VENV_NAME: ${{ inputs.venv-name }}
       run: |
         test -x "${VENV_NAME}/bin/python" || {
-          echo "Prepared ${VENV_NAME} environment is missing. Run the setup stage first."
+          echo "Prepared ${VENV_NAME} environment is missing under ${OMNI_CI_HOME}. Run the setup stage first."
           exit 1
         }
         "${VENV_NAME}/bin/python" -c "import torch" 2>/dev/null || {
@@ -67,7 +65,17 @@ runs:
     - name: Remove flashinfer
       shell: bash
       run: |
-        rm -rf /github/home/.cache/flashinfer
+        # Runtime JIT artifacts only; host wheel cache is under
+        # /github/home/.cache/flashinfer-jit-cache/ and is never removed here.
+        rm -rf "${OMNI_CI_HOME}/.cache/flashinfer"
+
+    - name: Ensure flashinfer-jit-cache
+      shell: bash
+      env:
+        VENV_NAME: ${{ inputs.venv-name }}
+      run: |
+        bash .github/scripts/install_flashinfer_jit_cache.sh "${VENV_NAME}"
+        echo "FLASHINFER_DISABLE_VERSION_CHECK=1" >> "${GITHUB_ENV}"
 
     - name: Kill GPU processes
       shell: bash

@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 import aiohttp
+import requests
 import soundfile as sf
 import torch
 from jiwer import process_words
@@ -113,6 +114,129 @@ def normalize_text(text: str, lang: str) -> str:
     return normalizer(text)
 
 
+OMNI_WHISPER_MODEL_PATH = "openai/whisper-large-v3"
+OMNI_WHISPER_REQUEST_TIMEOUT_S = 300
+# Whisper encoder accepts at most ~30 s per request (nb_max_frames=3000).
+# transformers pipeline uses chunk_length_s=30; mirror that for long talker audio.
+OMNI_WHISPER_CHUNK_LENGTH_S = 30
+OMNI_WHISPER_CHUNK_STRIDE_S = 25
+OMNI_WHISPER_SAMPLE_RATE = 16000
+
+
+def _load_wav_mono_16k(wav_path: str) -> torch.Tensor:
+    import torchaudio
+
+    audio, sample_rate = torchaudio.load(wav_path)
+    if audio.ndim == 2 and audio.shape[0] > 1:
+        audio = audio.mean(dim=0, keepdim=True)
+    audio = audio.squeeze(0).to(torch.float32)
+    if sample_rate != OMNI_WHISPER_SAMPLE_RATE:
+        audio = torchaudio.functional.resample(
+            audio, sample_rate, OMNI_WHISPER_SAMPLE_RATE
+        )
+    return audio
+
+
+def _wav_bytes_from_mono_16k(audio: torch.Tensor) -> bytes:
+    pcm16 = (audio.clamp(-1.0, 1.0) * 32767.0).to(torch.int16).cpu()
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as wav_file:
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(OMNI_WHISPER_SAMPLE_RATE)
+        wav_file.writeframes(pcm16.numpy().tobytes())
+    return buffer.getvalue()
+
+
+def _post_omni_whisper_transcription(
+    asr: dict,
+    audio_bytes: bytes,
+    filename: str,
+    lang: str,
+) -> str:
+    response = requests.post(
+        f"http://127.0.0.1:{asr['router_port']}/v1/audio/transcriptions",
+        data={
+            "model": asr["model_path"],
+            "language": "en" if lang == "en" else lang,
+            "temperature": "0",
+        },
+        files={
+            "file": (
+                filename,
+                audio_bytes,
+                "audio/wav",
+            )
+        },
+        timeout=OMNI_WHISPER_REQUEST_TIMEOUT_S,
+        proxies={"http": None, "https": None},
+    )
+    response.raise_for_status()
+    return str(response.json()["text"])
+
+
+def _transcribe_omni_whisper(asr: dict, wav_path: str, lang: str) -> str:
+    audio = _load_wav_mono_16k(wav_path)
+    duration_s = float(audio.shape[0]) / OMNI_WHISPER_SAMPLE_RATE
+    if duration_s <= OMNI_WHISPER_CHUNK_LENGTH_S:
+        with open(wav_path, "rb") as audio_file:
+            return _post_omni_whisper_transcription(
+                asr,
+                audio_file.read(),
+                os.path.basename(wav_path),
+                lang,
+            )
+
+    chunk_samples = OMNI_WHISPER_CHUNK_LENGTH_S * OMNI_WHISPER_SAMPLE_RATE
+    stride_samples = OMNI_WHISPER_CHUNK_STRIDE_S * OMNI_WHISPER_SAMPLE_RATE
+    chunk_texts: list[str] = []
+    for start in range(0, int(audio.shape[0]), stride_samples):
+        chunk = audio[start : start + chunk_samples]
+        if chunk.numel() == 0:
+            break
+        chunk_bytes = _wav_bytes_from_mono_16k(chunk)
+        chunk_texts.append(
+            _post_omni_whisper_transcription(
+                asr,
+                chunk_bytes,
+                f"{os.path.basename(wav_path)}.chunk{start // stride_samples}.wav",
+                lang,
+            ).strip()
+        )
+        if start + chunk_samples >= audio.shape[0]:
+            break
+    return " ".join(text for text in chunk_texts if text)
+
+
+def load_omni_whisper_asr(
+    router_port: int,
+    *,
+    model_path: str = OMNI_WHISPER_MODEL_PATH,
+) -> dict:
+    """Return an ASR handle that transcribes via SGLang Omni Whisper router."""
+    return {
+        "type": "omni_whisper",
+        "router_port": router_port,
+        "model_path": model_path,
+    }
+
+
+def _resolve_asr_backend(
+    lang: str,
+    asr_device: str,
+    *,
+    whisper_router_port: int | None = None,
+    generation_mode: str | None = None,
+) -> dict:
+    if whisper_router_port is not None:
+        if lang != "en":
+            raise ValueError(
+                "Omni Whisper router ASR only supports lang='en'; " f"got {lang!r}"
+            )
+        return load_omni_whisper_asr(whisper_router_port)
+    return load_asr_model(lang, asr_device, generation_mode)
+
+
 def load_asr_model(lang: str, device: str, generation_mode: str | None = None):
     """Load ASR model for voice clone WER evaluation."""
     mode_suffix = f" for {generation_mode} generation" if generation_mode else ""
@@ -145,6 +269,8 @@ def load_asr_model(lang: str, device: str, generation_mode: str | None = None):
 
 
 def transcribe(asr: dict, wav_path: str, lang: str, device: str) -> str:
+    if asr["type"] == "omni_whisper":
+        return _transcribe_omni_whisper(asr, wav_path, lang)
     if asr["type"] == "whisper":
         # pipeline internally chunks at chunk_length_s=30 with stride overlap,
         # so outputs longer than 30 s are transcribed end-to-end rather than
@@ -201,9 +327,15 @@ def compute_text_audio_consistency(
     request_results: list[RequestResult],
     lang: str,
     asr_device: str,
+    *,
+    whisper_router_port: int | None = None,
 ) -> dict:
     """WER between each request's text output (ref) and ASR-transcribed audio (hyp)."""
-    asr = load_asr_model(lang, asr_device)
+    asr = _resolve_asr_backend(
+        lang,
+        asr_device,
+        whisper_router_port=whisper_router_port,
+    )
 
     outputs: list[SampleOutput] = []
     for result in request_results:
@@ -237,6 +369,42 @@ def compute_text_audio_consistency(
         for o in outputs
     ]
     return {"summary": calculate_wer_metrics(outputs, lang), "per_sample": per_sample}
+
+
+def compute_text_audio_consistency_from_records(
+    per_sample: list[dict],
+    lang: str,
+    asr_device: str,
+    *,
+    audio_dir: str | None = None,
+    sample_id_key: str = "sample_id",
+    text_key: str = "raw_response",
+    whisper_router_port: int | None = None,
+) -> dict:
+    """Compute WER from saved eval records after the inference server is stopped."""
+    request_results: list[RequestResult] = []
+    for record in per_sample:
+        sample_id = record.get(sample_id_key)
+        wav_path = record.get("wav_path") or ""
+        if not wav_path and audio_dir and sample_id:
+            wav_path = os.path.join(audio_dir, f"{sample_id}.wav")
+        request_results.append(
+            RequestResult(
+                request_id=str(sample_id or ""),
+                text=str(record.get(text_key) or ""),
+                is_success=bool(record.get("is_success")),
+                latency_s=float(record.get("latency_s") or 0),
+                audio_duration_s=float(record.get("audio_duration_s") or 0),
+                wav_path=wav_path,
+                error=str(record.get("error") or ""),
+            )
+        )
+    return compute_text_audio_consistency(
+        request_results,
+        lang,
+        asr_device,
+        whisper_router_port=whisper_router_port,
+    )
 
 
 def save_wer_results(
@@ -563,6 +731,7 @@ def run_seedtts_transcribe(
     wer_config: dict,
     generation_mode: str | None = None,
     log_per_sample: bool = False,
+    whisper_router_port: int | None = None,
 ) -> dict:
     """Transcribe saved audio, compute WER + ASR-speed metrics, and persist them.
 
@@ -575,7 +744,7 @@ def run_seedtts_transcribe(
         - ``asr_speed``:   ASR transcription latency/throughput metrics
         - ``per_sample``:  list[SampleOutput] with per-sample details
     """
-    if "cuda" in config.device:
+    if whisper_router_port is None and "cuda" in config.device:
         torch.cuda.set_device(config.device)
         logger.info(f"Set ASR CUDA device to {config.device}")
 
@@ -584,7 +753,12 @@ def run_seedtts_transcribe(
         generated: list[dict] = json.load(f)
     logger.info(f"Loaded {len(generated)} entries from {generated_path}")
 
-    asr = load_asr_model(config.lang, config.device, generation_mode)
+    asr = _resolve_asr_backend(
+        config.lang,
+        config.device,
+        whisper_router_port=whisper_router_port,
+        generation_mode=generation_mode,
+    )
 
     tqdm_desc = (
         f"Transcribing ({config.lang})" if not generation_mode else "WER transcribe"
@@ -823,6 +997,8 @@ class VoiceCloneOmni:
         voice_clone: bool = False,
         stream: bool = False,
         system_prompt: str | None = None,
+        chunk_times_out: list[float] | None = None,
+        text_first_time_holder: list[float] | None = None,
     ) -> tuple[bytes, float, dict]:
         if max_tokens is None:
             max_tokens = self.THINKER_MAX_NEW_TOKENS
@@ -871,7 +1047,11 @@ class VoiceCloneOmni:
                 error_text = await response.text()
                 raise RuntimeError(f"HTTP {response.status}: {error_text}")
             if stream:
-                wav_bytes, usage = await self._read_streaming_chat_audio(response)
+                wav_bytes, usage = await self._read_streaming_chat_audio(
+                    response,
+                    chunk_times_out=chunk_times_out,
+                    text_first_time_holder=text_first_time_holder,
+                )
                 latency = time.perf_counter() - t0
                 return wav_bytes, latency, usage
             resp_json = await response.json()
@@ -900,6 +1080,8 @@ class VoiceCloneOmni:
     async def _read_streaming_chat_audio(
         self,
         response: aiohttp.ClientResponse,
+        chunk_times_out: list[float] | None = None,
+        text_first_time_holder: list[float] | None = None,
     ) -> tuple[bytes, dict]:
         """Read OpenAI chat SSE audio deltas and concatenate them into one WAV."""
         pcm_chunks: list[bytes] = []
@@ -918,6 +1100,8 @@ class VoiceCloneOmni:
                     pcm_chunks,
                     stream_format,
                     usage,
+                    chunk_times_out=chunk_times_out,
+                    text_first_time_holder=text_first_time_holder,
                 )
 
         if buffer.strip():
@@ -926,6 +1110,8 @@ class VoiceCloneOmni:
                 pcm_chunks,
                 stream_format,
                 usage,
+                chunk_times_out=chunk_times_out,
+                text_first_time_holder=text_first_time_holder,
             )
 
         if not pcm_chunks or stream_format is None:
@@ -990,7 +1176,10 @@ def _build_tts_payload(
     *,
     stream: bool = False,
     no_ref_audio: bool = False,
+    ref_format: str = "flat",
     voice: str | None = None,
+    task_type: str | None = None,
+    instructions: str | None = None,
     **gen_kwargs,
 ) -> dict:
     payload: dict = {
@@ -999,10 +1188,19 @@ def _build_tts_payload(
         "response_format": "wav",
     }
     if not no_ref_audio:
-        payload["ref_audio"] = sample.ref_audio
-        payload["ref_text"] = sample.ref_text
+        if ref_format == "references":
+            payload["references"] = [
+                {"audio_path": sample.ref_audio, "text": sample.ref_text}
+            ]
+        else:
+            payload["ref_audio"] = sample.ref_audio
+            payload["ref_text"] = sample.ref_text
     if voice is not None:
         payload["voice"] = voice
+    if task_type is not None:
+        payload["task_type"] = task_type
+    if instructions is not None:
+        payload["instructions"] = instructions
     for key, value in gen_kwargs.items():
         if value is not None:
             payload[key] = value
@@ -1133,6 +1331,8 @@ def _collect_chat_streaming_audio(
     pcm_chunks: list[bytes],
     stream_format: tuple[int, int, int] | None,
     usage: dict,
+    chunk_times_out: list[float] | None = None,
+    text_first_time_holder: list[float] | None = None,
 ) -> tuple[int, int, int] | None:
     event = parse_sse_event(line)
     if event is None:
@@ -1149,6 +1349,10 @@ def _collect_chat_streaming_audio(
         delta = choice.get("delta")
         if not isinstance(delta, dict):
             continue
+        if text_first_time_holder is not None and not text_first_time_holder:
+            content = delta.get("content")
+            if isinstance(content, str) and content:
+                text_first_time_holder.append(time.perf_counter())
         audio = delta.get("audio")
         if not isinstance(audio, dict) or not audio.get("data"):
             continue
@@ -1159,6 +1363,8 @@ def _collect_chat_streaming_audio(
             with io.BytesIO(chunk_bytes) as buf:
                 with wave.open(buf, "rb") as wf:
                     pcm_chunks.append(wf.readframes(wf.getnframes()))
+                    if chunk_times_out is not None:
+                        chunk_times_out.append(time.perf_counter())
                     if stream_format is None:
                         stream_format = (
                             wf.getframerate(),
@@ -1190,7 +1396,10 @@ def make_tts_send_fn(
     *,
     stream: bool = False,
     no_ref_audio: bool = False,
+    ref_format: str = "flat",
     voice: str | None = None,
+    task_type: str | None = None,
+    instructions: str | None = None,
     save_audio_dir: str | None = None,
     **gen_kwargs,
 ) -> SendFn:
@@ -1208,7 +1417,10 @@ def make_tts_send_fn(
             model_name,
             stream=stream,
             no_ref_audio=no_ref_audio,
+            ref_format=ref_format,
             voice=voice,
+            task_type=task_type,
+            instructions=instructions,
             **gen_kwargs,
         )
         start_time = time.perf_counter()

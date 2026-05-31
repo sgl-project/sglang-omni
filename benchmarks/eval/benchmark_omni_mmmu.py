@@ -123,7 +123,11 @@ def _build_base_url(config: MMMUEvalConfig) -> str:
     return config.base_url or f"http://{config.host}:{config.port}"
 
 
-async def run_mmmu_eval(config: MMMUEvalConfig) -> dict:
+async def run_mmmu_eval(
+    config: MMMUEvalConfig,
+    *,
+    compute_wer: bool = True,
+) -> dict:
     """Run full MMMU evaluation and return results dict.
 
     Returns a dict with keys: summary, speed, config,
@@ -188,7 +192,7 @@ async def run_mmmu_eval(config: MMMUEvalConfig) -> dict:
         "per_sample": per_sample,
     }
 
-    if config.enable_audio:
+    if config.enable_audio and compute_wer:
         results["wer"] = compute_text_audio_consistency(
             request_results, config.lang, config.asr_device
         )

@@ -51,6 +51,7 @@ from tests.test_model.omni_router_utils import (
     print_router_diagnostics,
     router_get_json,
 )
+from tests.test_model.omni_whisper_wer_utils import wait_for_gpu_memory_release
 from tests.utils import (
     MetricCheckCollector,
     apply_slack,
@@ -98,12 +99,12 @@ STREAMING_BENCHMARK_MAX_SAMPLES = 32
 THRESHOLD_SLACK_HIGHER = 0.75
 THRESHOLD_SLACK_LOWER = 1.25
 
-VC_WER_MAX_CORPUS = 0.012411347517730497
+VC_WER_MAX_CORPUS = 0.010638297872340425
 VC_WER_CORPUS_THRESHOLD = apply_wer_slack(VC_WER_MAX_CORPUS)
-VC_WER_MAX_PER_SAMPLE = 0.17
-VC_STREAM_WER_MAX_CORPUS = 0.010610079575596816
+VC_WER_MAX_PER_SAMPLE = 0.16666666666666666
+VC_STREAM_WER_MAX_CORPUS = 0.013262599469496022
 VC_STREAM_WER_CORPUS_THRESHOLD = apply_wer_slack(VC_STREAM_WER_MAX_CORPUS)
-VC_STREAM_WER_MAX_PER_SAMPLE = 0.14285714285714285
+VC_STREAM_WER_MAX_PER_SAMPLE = 0.16666666666666666
 # Calibrated per PR #469 review (item 5): worst-of-5 = 63.24, mean = 63.74,
 # stdev = 0.56 over 5 independent SeedTTS-50 EN runs on H200 (Spec GPU 4-7),
 # same scorer (popsoda2002/seedtts-wavlm-sim @ wavlm_large_finetune.pth).
@@ -117,19 +118,19 @@ VC_SIMILARITY_MEAN_MIN = 60.0
 
 _VC_NON_STREAM_P95 = {
     16: {
-        "throughput_qps": 1.433,
+        "throughput_qps": 1.465,
         "output_tok_per_req_s": 67.5,
-        "latency_mean_s": 9.769,
+        "latency_mean_s": 9.757,
         "rtf_mean": 3.0009,
     }
 }
 
 _VC_STREAM_P95 = {
     16: {
-        "throughput_qps": 1.285,
+        "throughput_qps": 1.287,
         "output_tok_per_req_s": 60.8,
-        "latency_mean_s": 10.289,
-        "rtf_mean": 2.8576,
+        "latency_mean_s": 10.229,
+        "rtf_mean": 2.8508,
     }
 }
 
@@ -181,44 +182,29 @@ def _run_wer_transcribe(
     meta: str,
     output_dir: str,
     *,
+    whisper_router_port: int,
     stream: bool = False,
     lang: str = "en",
     device: str = "cuda:0",
 ) -> dict:
-    """Transcribe saved audio and compute WER in CI."""
-    cmd = [
-        sys.executable,
-        "-m",
-        WER_MODULE,
-        "--transcribe-only",
-        "--meta",
-        meta,
-        "--output-dir",
-        output_dir,
-        "--model",
-        S2PRO_MODEL_PATH,
-        "--lang",
-        lang,
-        "--device",
-        device,
-    ]
-    if stream:
-        cmd.append("--stream")
-
-    env = no_proxy_env()
-    existing_pp = env.get("PYTHONPATH", "")
-    env["PYTHONPATH"] = (
-        f"{PROJECT_ROOT}{os.pathsep}{existing_pp}" if existing_pp else str(PROJECT_ROOT)
+    """Transcribe saved audio and compute WER via Omni Whisper router."""
+    from benchmarks.eval.benchmark_tts_seedtts import (
+        TtsSeedttsBenchmarkConfig,
+        run_tts_seedtts_transcribe,
     )
 
-    result = subprocess.run(
-        cmd,
-        text=True,
-        timeout=WER_TIMEOUT,
-        env=env,
-        cwd=str(PROJECT_ROOT),
+    config = TtsSeedttsBenchmarkConfig(
+        model=S2PRO_MODEL_PATH,
+        meta=meta,
+        output_dir=output_dir,
+        lang=lang,
+        device=device,
+        stream=stream,
     )
-    assert result.returncode == 0, f"WER transcribe failed (rc={result.returncode})"
+    run_tts_seedtts_transcribe(
+        config,
+        whisper_router_port=whisper_router_port,
+    )
 
     results_path = Path(output_dir) / "wer_results.json"
     assert results_path.exists(), f"WER results file not found: {results_path}"
@@ -568,6 +554,7 @@ def wer_input_dirs(
 ) -> dict[str, dict[int, str]]:
     """Reuse saved benchmark audio for WER after freeing the TTS server GPU."""
     router_server.stop()
+    wait_for_gpu_memory_release()
 
     for output_dirs in SPEED_OUTPUT_DIRS.values():
         for output_dir in output_dirs.values():
@@ -699,6 +686,7 @@ def test_voice_cloning_wer(
     wer_input_dirs: dict[str, dict[int, str]],
     dataset_repo: str,
     selected_s2pro_tts_concurrencies: tuple[int, ...],
+    omni_whisper_wer_router: ManagedRouterHandle,
 ) -> None:
     checks = MetricCheckCollector("S2-Pro non-streaming WER")
     for concurrency in selected_s2pro_tts_concurrencies:
@@ -711,6 +699,7 @@ def test_voice_cloning_wer(
         results = _run_wer_transcribe(
             dataset_repo,
             wer_input_dirs["non_stream"][concurrency],
+            whisper_router_port=omni_whisper_wer_router.port,
         )
         assert_wer_results(
             results,
@@ -752,6 +741,7 @@ def test_voice_cloning_streaming_wer(
     wer_input_dirs: dict[str, dict[int, str]],
     dataset_repo: str,
     selected_s2pro_tts_concurrencies: tuple[int, ...],
+    omni_whisper_wer_router: ManagedRouterHandle,
 ) -> None:
     checks = MetricCheckCollector("S2-Pro streaming WER")
     for concurrency in selected_s2pro_tts_concurrencies:
@@ -765,6 +755,7 @@ def test_voice_cloning_streaming_wer(
             dataset_repo,
             wer_input_dirs["stream"][concurrency],
             stream=True,
+            whisper_router_port=omni_whisper_wer_router.port,
         )
         assert_wer_results(
             results,

@@ -18,6 +18,7 @@ from sglang_omni.models.qwen3_tts.request_builders import (
 )
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
+from sglang_omni.utils.audio_payload import audio_waveform_payload
 
 logger = logging.getLogger(__name__)
 
@@ -105,6 +106,24 @@ def _load_qwen3_tts_generate_defaults(checkpoint_dir: str) -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
+def _compile_qwen3_tts_backbone(model: Any) -> None:
+    """Compile decoder blocks while leaving decode-input staging eager."""
+
+    text_model = model.model
+    layers = text_model.layers
+
+    from sglang.srt.model_executor.cuda_graph_runner import set_torch_compile_config
+
+    set_torch_compile_config()
+    compile_mode = os.environ.get(
+        "SGLANG_TORCH_COMPILE_MODE",
+        "max-autotune-no-cudagraphs",
+    )
+    text_model._compiled_decode_layers = [
+        torch.compile(layer, mode=compile_mode) for layer in layers
+    ]
+
+
 def _audio_to_list(audio: Any) -> list[float]:
     if isinstance(audio, torch.Tensor):
         return audio.detach().float().cpu().flatten().tolist()
@@ -144,6 +163,7 @@ def create_sglang_tts_engine_executor(
     model_path: str,
     *,
     device: str = "cuda:0",
+    gpu_id: int | None = None,
     dtype: str = "bfloat16",
     attn_implementation: str | None = None,
 ) -> Any:
@@ -160,20 +180,28 @@ def create_sglang_tts_engine_executor(
 
     _register_qwen3_tts_hf_config()
     checkpoint_dir = _resolve_checkpoint(model_path)
+    if gpu_id is not None:
+        device = f"cuda:{gpu_id}"
     gpu_id = int(device.split(":")[-1]) if ":" in device else 0
 
     server_args = build_sglang_server_args(
         checkpoint_dir,
         context_length=8192,
         dtype=dtype,
-        disable_cuda_graph=True,
+        disable_cuda_graph=False,
         disable_overlap_schedule=True,
+        enable_torch_compile=True,
         mem_fraction_static=0.85,
         max_prefill_tokens=8192,
         max_running_requests=16,
         sampling_backend="pytorch",
+        torch_compile_max_bs=16,
         trust_remote_code=True,
     )
+
+    want_cuda_graph = not bool(getattr(server_args, "disable_cuda_graph", False))
+    if want_cuda_graph:
+        server_args.disable_cuda_graph = True
 
     (
         model_worker,
@@ -188,6 +216,9 @@ def create_sglang_tts_engine_executor(
         gpu_id,
         model_arch_override="Qwen3TTSTalker",
     )
+
+    if want_cuda_graph:
+        server_args.disable_cuda_graph = False
 
     model = model_worker.model_runner.model
     speech_tokenizer = _load_qwen3_tts_tokenizer(
@@ -204,6 +235,11 @@ def create_sglang_tts_engine_executor(
         generate_defaults=_load_qwen3_tts_generate_defaults(checkpoint_dir),
     )
     set_qwen3_tts_preprocessing_context(model=model, wrapper=wrapper)
+    if bool(getattr(server_args, "enable_torch_compile", False)):
+        _compile_qwen3_tts_backbone(model)
+        server_args.enable_torch_compile = False
+    if want_cuda_graph:
+        model_worker.model_runner.init_device_graphs()
 
     output_proc = SGLangOutputProcessor(
         capture_hidden=False,
@@ -239,11 +275,14 @@ def create_vocoder_executor(
     model_path: str,
     *,
     device: str = "cuda:0",
+    gpu_id: int | None = None,
     dtype: str = "bfloat16",
     attn_implementation: str | None = None,
     max_batch_size: int = 8,
     max_batch_wait_ms: int = 2,
 ) -> SimpleScheduler:
+    if gpu_id is not None:
+        device = f"cuda:{gpu_id}"
     tokenizer = _load_qwen3_tts_tokenizer(
         model_path,
         device=device,
@@ -275,13 +314,13 @@ def create_vocoder_executor(
             total_len = int(codes.shape[0])
             cut = int(state.ref_code_len / max(total_len, 1) * wav.shape[0])
             wav = wav[cut:]
-        state.audio_samples = _audio_to_list(wav)
+        audio_payload = audio_waveform_payload(wav, source_hint="Qwen3-TTS")
+        state.audio_samples = None
         state.sample_rate = int(sample_rate)
         state.audio_codes = None
 
         payload = store_state(payload, state)
-        audio = state.audio_samples or []
-        payload.data["audio_data"] = audio
+        payload.data.update(audio_payload)
         payload.data["sample_rate"] = state.sample_rate
         payload.data["modality"] = "audio"
         usage = _build_usage(state)

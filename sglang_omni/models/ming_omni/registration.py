@@ -14,7 +14,7 @@ def register_ming_hf_config() -> None:
 
     from transformers import AutoConfig
 
-    from sglang_omni.models.ming_omni.thinker import BailingMM2Config
+    from sglang_omni.models.ming_omni.configuration import BailingMM2Config
 
     AutoConfig.register("bailingmm_moe_v2_lite", BailingMM2Config, exist_ok=True)
     _ming_hf_config_registered = True

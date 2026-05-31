@@ -1,6 +1,6 @@
 ---
 name: tune-ci-thresholds
-description: Run CI tests N times per stage on the H20 CI-reproduction host, produce a per-metric worst-of-N observation report, and (on user confirmation) write the worst-of-N values back into the test files as new baselines. Use when recalibrating CI thresholds after an engine update. Currently supports qwen3-omni-v1 and s2-pro-v1; extensible via models/<name>/config.yaml.
+description: Run CI tests N times per stage on the H20 CI-reproduction host, produce a per-metric strict worst-of-N observation report (every stage must have N full-sample repeats), and (on user confirmation) write the worst-of-N values back into the test files as new baselines. Use when recalibrating CI thresholds after an engine update. Currently supports qwen3-omni-v1 and s2-pro-v1; extensible via models/<name>/config.yaml.
 ---
 
 # tune-ci-thresholds
@@ -15,14 +15,200 @@ run the tests locally, use pytest directly — this skill is not for
 that.
 
 The skill is observation-first: it runs tests N times and produces a
-worst-of-N report. After the report is shown, it offers a one-shot
-**apply step** that writes the worst-of-N values directly into the
-test files as the new P95 baselines and accuracy / WER thresholds —
-**only** if the user explicitly confirms. The skill still does NOT
-re-run `apply_slack` separately, generate patch files, or
-commit / push anything; if the user rejects the apply prompt, the
+**strict worst-of-N** report. After the report is shown, it offers a
+one-shot **apply step** that writes the worst-of-N values directly
+into the test files as the new P95 baselines and accuracy / WER
+thresholds — **only** if the user explicitly confirms. The skill
+still does NOT re-run `apply_slack` separately, generate patch files,
+or commit / push anything; if the user rejects the apply prompt, the
 test files stay untouched and the user picks values manually from
 the report.
+
+## Two-terminal supervision (mandatory — always)
+
+Every long-running job on the repro host — calibration (`tune.py run`), WER
+sweep, eval suite, ad-hoc pytest — uses **exactly two IDE terminal tabs** with
+**fixed, non-interchangeable roles**. This split is permanent; never collapse
+into one tab, never duplicate content across tabs, never ask the user to paste
+`tail -f` themselves. **Agent spawns both tabs** (Shell tool, `block_until_ms: 0`).
+
+```
+┌─────────────────────────────────────┐   ┌────────────────────────────────────┐
+│  Tab A — SUPERVISION                │   │  Tab B — JOB                       │
+│  tail -f <log-path>                 │   │  wrapper script or redirected cmd  │
+│                                     │   │                                    │
+│  DETAILED LOG (everything verbose)  │   │  PROGRESS SUMMARY ONLY             │
+│  • pytest -v -s output              │   │  • START / PASS / FAIL / ABORT     │
+│  • router & worker startup          │   │  • current stage name              │
+│  • CUDA graph capture progress      │   │  • log path reminder               │
+│  • /health, route_completed, HTTP   │   │  • env OK / sweep section headers  │
+│  • WER scores, assertions, traces   │   │                                    │
+│                                     │   │  NO server lines, NO pytest spam   │
+└─────────────────────────────────────┘   └────────────────────────────────────┘
+              ▲                                          │
+              │         log file on disk                   │
+              └──────── verbose via >> log only ─────────┘
+                        (never tee on Tab B)
+```
+
+### Tab A — Supervision (detailed log)
+
+| | |
+|--|--|
+| **Command** | `tail -f <log-path>` |
+| **Shows** | **All** verbose output — the only place the user reads server/router/pytest details |
+| **Spawn order** | **First** — before Tab B |
+| **Extra (tune.py only)** | When pytest subprocess starts, also `tail -f $(ls -t <run-dir>/_pytest/*/run*.log \| head -1)` — server lines often land here, not only in `run.log` |
+
+### Tab B — Job (progress summary)
+
+| | |
+|--|--|
+| **Command** | Wrapper script, or `cmd >> <log-path> 2>&1` with no stdout tee |
+| **Shows** | **Milestones only** — which stage started/finished, pass/fail exit code, where to tail |
+| **Spawn order** | **Second** — after supervision tab is running |
+| **Forbidden** | `tee`, `2>&1 \| tee`, pytest `-s` to job stdout, any pattern that mirrors Tab A |
+
+Verbose subprocess output **must** go to the log file (`>> log 2>&1`). Tab B stdout
+is for the operator to glance at overall progress; Tab A is for supervision.
+
+### Agent checklist (every long run)
+
+0. **Kill stale tabs first** — before spawning, stop any prior supervision/job
+   processes (`pkill -f 'tail -f <same-log-path>'`, sweep script, pytest) so
+   the IDE does not accumulate duplicate terminal tabs.
+1. Choose stable `<log-path>`; print it.
+2. Spawn **Tab A**: `tail -f <log-path>`.
+3. Spawn **Tab B**: run command (see examples below).
+4. Tell the user: **Tab A = details, Tab B = milestones** — they are not interchangeable.
+5. Poll with `tail -20` / `tune.py status` every **≤120s**; user watches Tab A.
+
+### Calibration (`tune.py run`) — always two tabs, no exceptions
+
+**Never start `tune.py run` with only one terminal.** Never wrap it in
+`>> <run-dir>/run.log` — `tune.py` already tees milestones to `run.log`
+internally; shell redirect hides Tab B and can race/truncate the log file.
+
+| Tab | Role | Agent Shell (`block_until_ms: 0`) |
+|-----|------|-----------------------------------|
+| **A — supervision** | pytest + router/server verbose | `touch <run-dir>/run.log && tail -f $(ls -t <run-dir>/_pytest/*/run*.log 2>/dev/null \| head -1)` — fall back to `tail -f <run-dir>/run.log` until `_pytest` exists |
+| **B — job** | tune.py milestone lines (stdout) | `cd /sgl-workspace/sglang-omni && python .claude/skills/tune-ci-thresholds/tune.py --model <M> run ... --output-dir <run-dir>` — **no** `tee`, **no** `>>` |
+
+Spawn **A then B**. Tell the user which tab is pytest/server (A) vs tune
+progress (B). During each repeat, if A stalls, re-point it at the newest
+`_pytest/*/run{k}.log`.
+
+### Log path conventions
+
+| Job | Tab A `tail -f` target | Tab B command |
+|-----|------------------------|---------------|
+| **`tune.py run` (calibration)** | **Newest** `<run-dir>/_pytest/*/run{k}.log` (pytest/server) | **`python tune.py ... run`** — stdout only, no redirect |
+| WER sweep (qwen3) | `/tmp/wer_ci_qwen3.log` | `bash .github/scripts/run_all_wer_ci_aligned.sh` |
+| WER sweep (s2pro) | `/tmp/wer_ci_s2pro.log` | (same script; switches log at s2pro section) |
+| Ad-hoc pytest | `/tmp/pytest_<name>.log` | `pytest ... -v -s >> /tmp/pytest_<name>.log 2>&1` |
+| Eval suite | `<run-dir>/run.log` | `runner.py run ... >> <run-dir>/run.log 2>&1` |
+
+Reference implementation: `.github/scripts/run_all_wer_ci_aligned.sh` — milestones
+to stdout, pytest `>> "$LOG"`.
+
+## Strict worst-of-N (mandatory — non-negotiable)
+
+**Worst-of-N is only valid when every stage has N full-sample repeats.**
+This is a hard requirement for report, apply, and any threshold change —
+now and in all future calibrations.
+
+### What counts as a valid repeat
+
+A stage-run is **strict-complete** (✓) only when **both** hold:
+
+1. **All tracked metrics extracted** — every metric in `stages.yaml`
+   for that stage is non-null in `run{k}.json`.
+2. **Full sample coverage** — `sample_counts.ok == sample_counts.total`
+   and both are non-null (e.g. MMSU `2000/2000`, talker `20/20`).
+
+Anything else is **not** a valid worst-of-N input:
+
+| Symbol | Meaning | Valid for worst-of-N? |
+|--------|---------|----------------------|
+| **✓** | Strict-complete (`ok == total`, all metrics present) | **Yes** |
+| **△** | Partial — metrics exist but `ok < total` (OOM mid-benchmark, early abort) | **No** |
+| **✗** | No usable metrics — missing JSON, OOM before results, extraction failed | **No** |
+| **—** | Not yet run | **No** |
+
+**Partial runs are never acceptable for worst-of-N**, even when
+`tune.py` marks the stage-run `status: ok` with reason
+`threshold_assertion (OOM)` — that only means metrics were *read*, not
+that the repeat was *complete*.
+
+### tune.py `complete: true` ≠ strict-ready
+
+`tune.py status` counts a stage-run toward `ok/total` when metrics
+were extracted (including △ partial and threshold-failure runs). That
+counter is a **scheduling/progress** signal, **not** strict readiness.
+
+Before **report**, **apply**, or telling the user calibration is
+done, you **must** run the strict audit below and confirm:
+
+```
+strict-ready stages: <S> / <total stages>   (each stage has N/N ✓)
+```
+
+If any stage has fewer than N ✓ repeats, calibration is **incomplete
+for threshold purposes** — `--resume` / targeted re-runs until every
+gap is filled. Do **not** apply thresholds from a mix of ✓, △, and ✗.
+
+### Strict audit command (run before report / apply / status updates to user)
+
+From repo root, after each major progress checkpoint and always before
+steps 6–9:
+
+```
+python3 << 'PY'
+import json
+from pathlib import Path
+
+run_dir = Path("<run-dir>")
+plan = json.loads((run_dir / "plan.json").read_text())
+repeats = plan["repeats"]
+stage_keys = plan["stages"]
+
+def classify(p):
+    if not p.exists():
+        return "—"
+    d = json.loads(p.read_text())
+    sc = d.get("sample_counts") or {}
+    tot, ok = sc.get("total"), sc.get("ok")
+    metrics = d.get("metrics") or {}
+    has_all = bool(metrics) and all(v is not None for v in metrics.values())
+    if not has_all:
+        return "✗"
+    if tot is not None and ok is not None and ok >= tot:
+        return "✓"
+    if tot is not None and ok is not None and ok < tot:
+        return "△"
+    return "✗"
+
+ready = 0
+for sk in stage_keys:
+    cells = [classify(run_dir / sk / f"run{k}.json") for k in range(1, repeats + 1)]
+    if cells.count("✓") == repeats:
+        ready += 1
+    print(f"{sk}: {''.join(cells)} ({cells.count('✓')}/{repeats} strict)")
+print(f"STRICT READY: {ready}/{len(stage_keys)} stages ({repeats} repeats each)")
+PY
+```
+
+When reporting progress to the user, show **strict ✓ counts** (and △/✗
+gaps), not only `tune.py status` `ok/total`.
+
+### Re-run policy for △ and ✗
+
+- **△ partial** (e.g. videoamme_talker `15/20`): treat as **failed for
+  calibration** — re-run that pytest repeat until ✓ or exhaust retries.
+- **✗ no metrics**: re-run after GPU cleanup; check OOM / missing
+  `*_results.json` in `_pytest/<test>/run{k}.log`.
+- Do **not** skip a bad repeat because other repeats for the same stage
+  already passed — worst-of-N requires **all N** valid observations.
 
 ## Models
 Each supported model has a config under `models/<name>/`:
@@ -42,18 +228,71 @@ emits metrics with a
 constant-naming convention not covered by `match_metric()` in `tune.py`
 — in that case the matcher has to grow first.
 
+## Environment policy — check first, fix only what precheck proves missing (mandatory)
+
+**Never download or rebuild the calibration environment proactively.**
+Every calibration session starts with **read-only alignment checks**; only
+run install/download commands for items that precheck (or a failed smoke
+test) explicitly marks as missing or misaligned.
+
+### Default workflow (always, before `run`)
+
+1. **Check only** — run `tune.py precheck --output-dir <run-dir>` and read
+   every line. Treat `✓` as “leave alone”. Treat `✗` / version mismatch /
+   busy GPU as the **only** allowed triggers for a fix.
+2. **Refresh code, not the venv** — when the venv path resolves and torch/sglang
+   pins match, sync the checked-out branch with:
+   `source <venv>/bin/activate && uv pip install -e .`
+   Do **not** run `prepare_omni_venv.sh` for this.
+3. **Fix one gap at a time** — use the exact command precheck prints (e.g.
+   `huggingface-cli download …` for one missing checkpoint). Do not batch
+   unrelated installs “just in case”.
+4. **Re-run precheck** after each fix until all selected assets are `✓`,
+   then start `tune.py run`.
+
+### Forbidden unless precheck / smoke test proves need
+
+| Action | Why forbidden by default |
+|--------|--------------------------|
+| `prepare_omni_venv.sh` | Fresh path does `rm -rf $OMNI_CI_HOME` — wipes slice caches and forces a full PyPI/CUDA re-download. |
+| `install_flashinfer_jit_cache.sh` | Only when precheck reports `flashinfer-jit-cache` missing from venv. Use host wheel cache first (seconds); network only on cache miss or corrupt wheel. **Every CI venv gets it via `omni-setup`**, including Whisper / S2-Pro slices — calibration must match. |
+| `ensure_hf_models.sh` (bulk) | Download only the model id(s) precheck marks `✗`, not the whole CI model list. |
+| Ad-hoc `uv pip install torch` / wheel URLs | Pins must match CI; precheck reports pin drift. |
+
+### Stage-specific shortcuts (still check-first)
+
+- **Whisper ASR (`whisper-asr-v1`)**: uses `omni-s2pro`, **2 GPU / router DP=2**.
+  Venv must pass full precheck including `flashinfer-jit-cache` (same as CI
+  `omni-setup`). If missing, run `install_flashinfer_jit_cache.sh omni-s2pro`
+  from host cache — do **not** use `--skip-precheck`. Source
+  `.github/scripts/ci_env_s2pro.sh` before pytest/calibration.
+- **Qwen3 / S2-Pro MoE stages**: if smoke test shows
+  `gen_cutlass_fused_moe_sm90_module` + router timeout, **then** run
+  `install_flashinfer_jit_cache.sh` (host cache first; network only on cache miss).
+  Qwen3 stages: **`omni-qwen3` only** — never reuse `omni-s2pro` for talker/TTS/video
+  benchmarks even if that venv is already activated for Whisper work.
+
+### When a full venv rebuild is allowed
+
+Only if **all** hold: user explicitly asked, **or** precheck shows venv
+missing/corrupt **and** `uv pip install -e .` did not fix import/pin errors,
+**and** you warned that `prepare_omni_venv.sh` may delete `$OMNI_CI_HOME`.
+Prefer repairing the single reported gap over rebuilding.
+
 ## Prerequisites (I verify, I do not create)
 - Running inside the CI-reproduction container (image
   `frankleeeee/sglang-omni:dev` or equivalent). The container name
   is not checked — rely on the image being correct.
-- Venv ready; default path comes from the selected model's config.yaml,
-  overridable via `--venv-python` or `$TUNE_VENV_PYTHON`
-- Branch checked out, dependencies installed
+- Venv path from the selected model's `config.yaml` resolves; default
+  overridable via `--venv-python` or `$TUNE_VENV_PYTHON`. **Existence ≠ run
+  `prepare_omni_venv.sh`** — run precheck first (see policy above).
+- Branch checked out; **`uv pip install -e .` only** to sync sglang-omni onto
+  the existing venv unless precheck proves the venv is missing or corrupt.
 - Model weights and datasets from the config cached locally. During
   `run`, precheck lists each selected stage's required assets as `✓` /
   `✗`; standalone `precheck` checks all configured assets. On any miss,
   it prints the exact
-  `huggingface-cli download …` commands to run.
+  `huggingface-cli download …` commands to run — run **only those**.
 - Env vars under `auto_env` in the model's config.yaml are set
   automatically at tune.py startup. The user does NOT need to `export`
   them. Proxy env vars (`http_proxy` etc.) are left alone — the tests'
@@ -66,8 +305,9 @@ constant-naming convention not covered by `match_metric()` in `tune.py`
   invocation and retry — this matches CI's per-stage cleanup, but only
   inside an active calibration run. Precheck itself never kills processes.
 
-If anything's off, `precheck` fails with an actionable message; fix it
-yourself and retry.
+If anything's off, `precheck` fails with an actionable message — fix **only
+that item**, re-run precheck, then proceed. Never “refresh the whole env”
+when precheck already shows `✓` for venv pins and assets.
 
 ## Invocation
 - `/tune-ci-thresholds` — default model, all stages, 5 repeats
@@ -101,13 +341,196 @@ python .claude/skills/tune-ci-thresholds/tune.py --model qwen3-omni-v1 run \
   `HTTPS_PROXY=<proxy-url>`,
   `NO_PROXY=localhost,127.0.0.1,::1`,
   `HF_ENDPOINT=<hf-endpoint>`,
-  `HF_HOME=<hf-cache-dir>`, and
+  `HF_HOME=<hf-cache-dir>`,
+  `OMNI_CI_HOME=<ci-slice-dir>`,
+  `UV_INDEX_URL=<pypi-mirror>`,
+  `UV_CACHE_DIR=/github/home/.cache/uv`, and
   `HF_HUB_DISABLE_XET=1` when the environment needs them.
 - Do not wrap pytest with `proxychains4`: it can proxy loopback health
   checks and make local server startup look broken. Use proxy env vars
   plus `NO_PROXY` for local addresses.
 - If HuggingFace cache locks appear, inspect active pytest/server/download
   processes first. Only stop processes from the current calibration run.
+
+## CI Environment Alignment and Server Startup Debugging
+
+Calibration must reproduce the **same runtime layout as GitHub Actions omni-setup**,
+not merely run the same pytest command.
+
+### Cache layout (matches `.github/actions/omni-setup`)
+
+| Scope | Path | Notes |
+|-------|------|-------|
+| **Global (shared)** | `/github/home/.cache/huggingface` | `HF_HOME`; model weights |
+| | `/github/home/.cache/modelscope` | `MODELSCOPE_CACHE` |
+| | `/github/home/.cache/uv` | `UV_CACHE_DIR`; PyPI wheels |
+| | `/github/home/.cache/flashinfer-jit-cache/` | Host-resident flashinfer-jit-cache **wheel**; download only when pin changes |
+| **Per slice (`OMNI_CI_HOME`)** | `<OMNI_CI_HOME>/omni-qwen3` or `omni-s2pro` | Python venv |
+| | `<OMNI_CI_HOME>/.cache` | `XDG_CACHE_HOME`; uv/torch compile artifacts |
+| | `<OMNI_CI_HOME>/.cache/flashinfer` | Runtime FlashInfer JIT dir — **safe to delete** between runs |
+| | `<OMNI_CI_HOME>/.torchinductor` | `TORCHINDUCTOR_CACHE_DIR` |
+
+- **CI Actions runners** use `OMNI_CI_HOME=/github/home/pr-<N>/qwen3` (or `/s2pro`, `/unit`).
+- **Calibration host** uses fixed slices from each model's `config.yaml`:
+  `omni_ci_home: /github/home/calibration/qwen3` (or `.../s2pro`).
+- `tune.py` / `runner.py` apply `auto_env` from `config.yaml` and **override** shell env to match CI.
+
+### Prepare a calibration venv (only when precheck proves venv missing or corrupt)
+
+**Do not run this block at the start of a normal calibration.** Use it only
+after precheck reports the venv path missing, imports fail, or sglang/torch
+pins cannot be fixed with `uv pip install -e .`.
+
+From repo root on the H20 repro host (`frankleeeee/sglang-omni:dev` semantics):
+
+```bash
+# Qwen3-Omni example (S2-Pro: OMNI_CI_HOME=/github/home/calibration/s2pro, venv omni-s2pro)
+export OMNI_CI_HOME=/github/home/calibration/qwen3
+export HOME=/github/home
+export HF_HOME=/github/home/.cache/huggingface
+export MODELSCOPE_CACHE=/github/home/.cache/modelscope
+export HF_ENDPOINT=https://hf-mirror.com HF_HUB_DISABLE_XET=1
+export UV_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+export UV_CACHE_DIR=/github/home/.cache/uv
+export XDG_CACHE_HOME=${OMNI_CI_HOME}/.cache
+export TORCHINDUCTOR_CACHE_DIR=${OMNI_CI_HOME}/.torchinductor
+
+bash .github/scripts/prepare_omni_venv.sh omni-qwen3
+ln -sfn "${OMNI_CI_HOME}/omni-qwen3" ./omni-qwen3
+bash .github/scripts/install_flashinfer_jit_cache.sh omni-qwen3
+bash .github/scripts/ensure_hf_models.sh omni-qwen3 \
+  Qwen/Qwen3-Omni-30B-A3B-Instruct marksverdhei/Qwen3-Omni-30B-A3B-FP8
+```
+
+Normal day-to-day calibration (venv already exists, pins ok): **only**
+`source <venv>/bin/activate && uv pip install -e .` — same as CI re-checkout
+on a new commit. Call `prepare_omni_venv.sh` only when precheck proves the
+venv path is missing or corrupt; its fresh path deletes `$OMNI_CI_HOME`.
+
+### Required env vars (auto-set from `config.yaml`)
+
+- `HOME=/github/home`
+- `OMNI_CI_HOME`, `XDG_CACHE_HOME`, `TORCHINDUCTOR_CACHE_DIR` — per-slice paths above
+- `HF_HOME`, `MODELSCOPE_CACHE`, `HF_ENDPOINT=https://hf-mirror.com`, `HF_HUB_DISABLE_XET=1`
+- `UV_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple`, `UV_CACHE_DIR=/github/home/.cache/uv`
+- `FLASHINFER_DISABLE_VERSION_CHECK=1`
+
+If HF cache lives elsewhere, symlink into `/github/home/.cache/huggingface` rather
+than redownloading checkpoints.
+
+### Verify runtime before calibration
+
+```
+hostname
+python -V
+python - <<'PY'
+import os, torch, flashinfer
+print("OMNI_CI_HOME", os.environ.get("OMNI_CI_HOME"))
+print("HOME", os.environ.get("HOME"))
+print("XDG_CACHE_HOME", os.environ.get("XDG_CACHE_HOME"))
+print("TORCHINDUCTOR_CACHE_DIR", os.environ.get("TORCHINDUCTOR_CACHE_DIR"))
+print("HF_HOME", os.environ.get("HF_HOME"))
+print("UV_CACHE_DIR", os.environ.get("UV_CACHE_DIR"))
+print("FLASHINFER_DISABLE_VERSION_CHECK", os.environ.get("FLASHINFER_DISABLE_VERSION_CHECK"))
+print("torch", torch.__version__, "cuda", torch.version.cuda)
+print("flashinfer", flashinfer.__version__, flashinfer.__file__)
+PY
+```
+
+### CI-like smoke test (before large calibration)
+
+```bash
+source /github/home/calibration/qwen3/omni-qwen3/bin/activate
+export GITHUB_ACTIONS=true RUNNER_TEMP=/tmp PYTHONPATH=$PWD
+export HOME=/github/home OMNI_CI_HOME=/github/home/calibration/qwen3
+export HF_HOME=/github/home/.cache/huggingface HF_ENDPOINT=https://hf-mirror.com HF_HUB_DISABLE_XET=1
+export XDG_CACHE_HOME=${OMNI_CI_HOME}/.cache
+export TORCHINDUCTOR_CACHE_DIR=${OMNI_CI_HOME}/.torchinductor
+export UV_CACHE_DIR=/github/home/.cache/uv FLASHINFER_DISABLE_VERSION_CHECK=1
+export NO_PROXY=localhost,127.0.0.1,::1
+bash .github/scripts/run_flaky_pytest.sh \
+  pytest tests/test_model/test_qwen3_omni_videomme_ci.py -v -s -x
+```
+
+### Known failure signatures
+
+- **Slow safetensors load / disk sleep**: IO pressure — check competing processes, not thresholds.
+- **`gen_cutlass_fused_moe_sm90_module` + router timeout**: missing flashinfer-jit-cache in venv.
+  Run `.github/scripts/install_flashinfer_jit_cache.sh` (uses host wheel cache).
+- **nvcc/ninja referencing wrong Python home**: stale `${OMNI_CI_HOME}/.cache/flashinfer` or
+  wrong `HOME`. Delete `${OMNI_CI_HOME}/.cache/flashinfer` only — **never** delete
+  `/github/home/.cache/flashinfer-jit-cache/`.
+- **GPU cleanup / `[Not Found]` PIDs**: kill container-visible pytest/server processes:
+  `pgrep -af "multiprocessing.spawn|sglang_omni_router|sgl-omni serve|pytest|nvcc|ninja"`
+- **Between sequential pytest stages on the repro host**: `delete_gpu_process.sh`
+  alone is **not enough** — orphan `multiprocessing.spawn` children can hold
+  ~70–85 GiB while `nvidia-smi` shows "No running processes". Always run
+  `.github/scripts/ensure_gpus_idle.sh` (kills orphans + scans `/proc/*/fd`
+  for nvidia + waits until **every** GPU `< 2048 MiB`) **before and after**
+  each heavy benchmark. Do **not** start the next pytest until cleanup succeeds.
+- **Starting pytest while the previous server is still tearing down** causes
+  colocated-router OOM on the second worker — wait for `ensure_gpus_idle`, then
+  `sleep 3–5` before launch.
+
+After alignment fixes, rerun `tune.py precheck` and the smoke test before resuming calibration.
+
+### Critical: venv + slice per workflow (do not mix)
+
+Running the right pytest with the **wrong venv or `OMNI_CI_HOME`** is the most common
+cause of “server load is impossibly slow” or router worker `Connection refused`.
+It is **not** a model bug — the environment is wrong.
+
+| Workload | CI workflow | venv | `OMNI_CI_HOME` (calibration host) | Source env script |
+|----------|-------------|------|-----------------------------------|-------------------|
+| Qwen3-Omni benchmarks (MMMU/MMSU/TTS/talker/video*) | `test-qwen3-omni-ci.yaml` | **`omni-qwen3`** | `/github/home/calibration/qwen3` | `source .github/scripts/ci_env_qwen3.sh` |
+| S2-Pro TTS / Whisper ASR | `test-s2pro-ci.yaml`, `whisper-asr-v1` | **`omni-s2pro`** | `/github/home/calibration/s2pro` | `source .github/scripts/ci_env_s2pro.sh` |
+
+**Forbidden shortcuts (observed 2026-05-30):**
+
+| Mistake | Symptom | Fix |
+|---------|---------|-----|
+| Qwen3 talker/WER tests with `omni-s2pro` + `OMNI_CI_HOME=.../s2pro` | Router worker unhealthy, GPU lock contention, MoE on wrong venv | Switch to `omni-qwen3` + qwen3 slice |
+| `TORCHINDUCTOR_CACHE_DIR=/.torchinductor` or unset (inherits garbage) | **Every** server start re-captures CUDA graphs (~minutes); log shows long `Capturing batches` | Set to `${OMNI_CI_HOME}/.torchinductor` via `ci_env_*.sh` |
+| `HOME=/root` or datasets under `/root/.cache/huggingface` | HF cache miss, re-download, wrong normalizer paths | `HOME=/github/home`, `HF_HOME=/github/home/.cache/huggingface` |
+| Skipping `install_flashinfer_jit_cache.sh` when precheck fails | MoE JIT compile + router timeout on first launch | Install from host wheel cache into the **correct** venv |
+| Killing calibration mid-run without cleaning orphans | `nvidia-smi` shows ~70–85 GiB used but “No running processes” | `pgrep -af multiprocessing.spawn` then `kill -9`; run `delete_gpu_process.sh` |
+
+**Before any Qwen3 or S2-Pro pytest / calibration / WER sweep**, always:
+
+```bash
+cd /sgl-workspace/sglang-omni
+source omni-qwen3/bin/activate   # or omni-s2pro — pick from table above
+source .github/scripts/ci_env_qwen3.sh   # or ci_env_s2pro.sh
+python -c "import os; assert os.environ['TORCHINDUCTOR_CACHE_DIR'].startswith(os.environ['OMNI_CI_HOME'])"
+python .claude/skills/tune-ci-thresholds/tune.py --model qwen3-omni-v1 precheck   # or whisper-asr-v1 / s2-pro-v1
+```
+
+Aligned env → Qwen3 colocated router CUDA graph capture ~5–10 s on warm
+`${OMNI_CI_HOME}/.torchinductor`. Cold or wrong slice → multi-minute startup;
+do **not** treat that as a threshold or code regression.
+
+**WER CI with Omni Whisper router (DP=2):** still uses the **parent model’s**
+venv/slice for the benchmark fixture (Qwen3 → qwen3 env; S2-Pro → s2pro env).
+Only the Whisper router stage needs 2 free GPUs after `delete_gpu_process.sh`.
+
+### Agent operational rules (mandatory)
+
+- **Two-terminal supervision** — follow **Two-terminal supervision (mandatory —
+  always)** at the top of this skill. Agent creates Tab A (`tail -f`) then Tab B
+  (job). Tab A = detailed log; Tab B = milestones only. **Never `tee` on Tab B.**
+- **Never block on a single shell/tool wait longer than 2 minutes.** Agent
+  polls with short checks (`tail -20`, `grep PASS/FAIL`, `nvidia-smi`,
+  `tune.py status`) at ≤120s intervals. User supervision is **`tail -f`**, not
+  agent long-wait.
+- **Always `source ci_env_*.sh` in the same shell** that launches pytest or
+  `tune.py run` — background wrappers must source it inside the script, not
+  rely on a polluted parent shell (`TORCHINDUCTOR_CACHE_DIR=/.torchinductor`
+  has been observed from stale exports).
+- **One GPU consumer at a time** on the repro host: do not overlap `tune.py
+  run` with full talker/WER pytest — they fight for the same 2× H20.
+- **GPU idle gate before every stage** — run `.github/scripts/ensure_gpus_idle.sh`
+  (not `delete_gpu_process.sh` alone); abort if VRAM not below 2048 MiB on
+  **both** GPUs before starting the next pytest.
 
 ## Performance optimization checks
 - When recalibrating after performance work, first identify what changed
@@ -149,7 +572,9 @@ python .claude/skills/tune-ci-thresholds/tune.py --model qwen3-omni-v1 run \
   1. Run `python tune.py status --run-dir <run-dir>` and read JSON.
   2. Tail `<run-dir>/run.log` and the active
      `<run-dir>/_pytest/<test>/run{k}.log` (last ~30 lines).
-  3. Report `ok/total` completeness and GPU memory to yourself.
+  3. Report **strict** progress (✓/△/✗ per stage, see strict audit
+     above) **and** `tune.py` `ok/total` / GPU memory. Never cite
+     `ok/total` alone as "calibration progress" — it includes △ partial.
 - If `status` shows `pytest_active: false` but completeness is not
   `complete: true` and the last log lines show **crash / OOM / server
   startup failure**, do **not** keep waiting — immediately resume:
@@ -175,25 +600,44 @@ python .claude/skills/tune-ci-thresholds/tune.py --model qwen3-omni-v1 run \
 - **Auto-retry passes:** after the first pass, `run` automatically
   re-executes any stage-run whose metrics are incomplete (up to
   `--max-passes`, default 10), with GPU cleanup between passes.
+  This retries ✗ (missing metrics) — it does **not** automatically
+  reject or re-run △ partial repeats. After each pass, run the **strict
+  audit**; manually `--resume` until every stage is N/N ✓.
 - **Per-run retries:** up to 4 attempts for OOM / crash / GPU-not-clear
   failures before marking a stage-run incomplete.
 - **`status` subcommand:** machine-readable snapshot for agent polling.
 - **`report` gate:** refuses to write `report.md` unless **every**
-  stage × repeat has complete metrics (`130/130` for full qwen3, etc.).
+  stage × repeat has complete metrics (`125/125` for full qwen3 ALL×5,
+  etc.) — this is tune.py's extraction gate, **not** strict worst-of-N.
+  You must still run the **strict audit** before trusting the report
+  for apply.
 
 ### Completeness is a hard prerequisite for thresholds
-- **Never** show the apply prompt (step 9) or write thresholds unless
-  `tune.py status --run-dir <run-dir>` returns `"complete": true`.
-- Partial runs may exist on disk for debugging, but they are **not**
-  valid calibration artifacts. Do not infer worst-of-N from missing runs.
-- If completeness fails after `--max-passes`, relay the `missing` list
-  from `status` JSON and `--resume` — do not proceed to apply.
+
+Two gates — **both** required before apply:
+
+1. **tune.py gate:** `tune.py status --run-dir <run-dir>` returns
+   `"complete": true` (every stage × repeat has extractable metrics).
+2. **Strict gate:** strict audit shows **every stage has N/N ✓**
+   (full-sample repeats only; no △, no ✗).
+
+- **Never** show the apply prompt (step 9), run `report` for final
+  artifacts, or write thresholds unless **both gates pass**.
+- Partial runs (△) may exist on disk for debugging but are **never**
+  valid calibration artifacts. Do not infer worst-of-N from △ or ✗ runs.
+- If tune.py completeness fails after `--max-passes`, relay the
+  `missing` list from `status` JSON and `--resume` — do not proceed.
+- If tune.py is `complete: true` but strict audit fails, **keep
+  resuming / re-running** until strict-ready — do not proceed to apply.
 
 ### Resume
 - On interruptions or failed stage-runs, resume with the same
   `--output-dir --resume`; completed stage-runs are skipped, incomplete
   ones are purged and re-run automatically.
-- Do not rerun completed repeats from scratch unless the run directory
+- **△ partial repeats are not auto-purged** — if strict audit shows △,
+  delete the offending `run{k}.json` files for that stage (or the whole
+  pytest repeat) and `--resume` so tune.py re-executes them.
+- Do not rerun completed ✓ repeats from scratch unless the run directory
   is corrupt.
 
 ## Steps I follow
@@ -247,7 +691,11 @@ python .claude/skills/tune-ci-thresholds/tune.py --model qwen3-omni-v1 run \
    exact stage keys (`mmmu_accuracy`), and `@group` aliases are all
    accepted and expanded automatically.
 3. Run `python tune.py --model <M> precheck --output-dir <run-dir>`.
-   On failure, relay the message verbatim and stop.
+   On failure, relay the message verbatim; fix **only** the reported gap(s)
+   per **Environment policy — check first** (typically `uv pip install -e .`
+   and/or one `huggingface-cli download …`), re-run precheck until `✓`, then
+   continue. Do **not** run `prepare_omni_venv.sh` or bulk downloads when
+   precheck already passes.
    **`<run-dir>` must live under `.tune-runs/<timestamp>_<label>/`** at
    the repo root (e.g. `.tune-runs/20260423T050000Z_mmsu_r3/`). That
    path is already gitignored. Do NOT point `<run-dir>` inside
@@ -256,22 +704,34 @@ python .claude/skills/tune-ci-thresholds/tune.py --model qwen3-omni-v1 run \
 4. State plan in one line:
    `Running <M>: <stages>, <N> repeats, est. <T>.`
    No further confirmation.
-5. **Before** launching run, tell the user the output dir and the log
-   paths, plus the **2-minute polling contract**:
+5. **Before** launching run, **spawn two IDE terminal tabs** per **Two-terminal
+   supervision (mandatory — always)** — Tab A `tail -f` first, Tab B job second:
+
+   **Tab A — supervision (pytest + server log):**
+   ```bash
+   touch <run-dir>/run.log
+   tail -f $(ls -t <run-dir>/_pytest/*/run*.log 2>/dev/null | head -1)
    ```
-   Output dir: <run-dir>
-   tail -f <run-dir>/run.log                               # tune.py progress
-   tail -f <run-dir>/_pytest/<test>/run1.log               # pytest subprocess
-   Agent polls every ≤120s:
-     python tune.py status --run-dir <run-dir>
+
+   **Tab B — job (tune.py milestones on stdout — no redirect):**
+   ```bash
+   cd /sgl-workspace/sglang-omni && python .claude/skills/tune-ci-thresholds/tune.py --model <M> run ... \
+     --output-dir <run-dir>
    ```
-   Then run `python tune.py --model <M> run --stages ... --repeats N
-   --output-dir <run-dir>`. While the subprocess runs, poll with
-   `status` every **≤120s** — never blind-wait ≥50 min. On crash or
-   incomplete metrics, `--resume` immediately.
-6. When `tune.py run` exits 0, verify completeness once more:
-   `python tune.py status --run-dir <run-dir>` must show
-   `"complete": true`. Then open `<run-dir>/report.md`.
+
+   Tell the user: **Tab A = pytest/server**, **Tab B = tune progress** — never
+   `>> run.log` on Tab B (tune.py tees internally).
+
+   Agent polls every **≤120s**: `python tune.py status --run-dir <run-dir>`.
+
+6. When `tune.py run` exits 0, verify **both** gates:
+   - `python tune.py status --run-dir <run-dir>` → `"complete": true`
+   - Strict audit → every stage **N/N ✓** (see "Strict worst-of-N")
+   If strict audit fails, `--resume` (or targeted re-runs) until it
+   passes — **do not** open `report.md` for final threshold work yet.
+   When both pass, run `python tune.py report --run-dir <run-dir>` if
+   needed, then open `<run-dir>/report.md`. In the report narrative,
+   note any △ runs that were superseded by successful re-runs.
 7. For every `{{CONTEXT:<stage_key>}}` placeholder:
    a. Load `models/<M>/stages.yaml`; find that stage's `test` path and
       `context_vars`.
@@ -289,24 +749,27 @@ python .claude/skills/tune-ci-thresholds/tune.py --model qwen3-omni-v1 run \
    canonical calibration artifact: it must keep the full per-run tables,
    worst-of-N rows, provenance, context lines, and (after apply) the
    applied-changes table. Do not replace it with a lightweight summary.
-9. **Apply prompt — strictly after the entire run is done AND complete.**
-   This prompt is the LAST thing the skill does, and must only fire once
-   ALL of the following have completed for the whole `--stages` set:
+9. **Apply prompt — strictly after the entire run is done AND both
+   completeness gates pass.** This prompt is the LAST thing the skill
+   does, and must only fire once ALL of the following have completed
+   for the whole `--stages` set:
    `tune.py run` has exited with exit code 0,
-   `tune.py status --run-dir <run-dir>` shows `"complete": true`
-   (every stage × repeat has full metrics — e.g. 130/130 for full qwen3),
+   `tune.py status --run-dir <run-dir>` shows `"complete": true`,
+   **strict audit shows every stage N/N ✓** (full-sample repeats —
+   e.g. 25/25 stages × 5 for full qwen3 ALL),
    `report.md` has been written, every `{{CONTEXT:...}}` placeholder in
    step 7 has been resolved, and step 8 has shown the user the report
    path. Never ask between stages, between repeats, on partial failure,
    or while any pytest subprocess is still alive — the user may be
    running unattended for an hour+ and must not be interrupted mid-run.
-   If the run was aborted, completeness check failed, or any stage-run
-   is missing metrics, skip step 9 entirely.
+   If the run was aborted, either completeness gate failed, any stage has
+   △/✗ repeats, or any stage-run is missing metrics, skip step 9
+   entirely.
 
    Use AskUserQuestion to ask exactly once which **apply mode** to use:
      - `report` — only the report, no test files touched
-     - `smart` — auto-tighten speed thresholds; ask per metric for
-       acc/wer and any speed metric that would loosen
+     - `smart` — auto-apply accuracy and WER worst-of-N; auto-tighten
+       speed thresholds; ask only for speed metrics that would loosen
      - `full` — write worst-of-N for every metric, no further prompts
    If the user picks `report`, stop without touching any file.
 
@@ -318,11 +781,14 @@ python .claude/skills/tune-ci-thresholds/tune.py --model qwen3-omni-v1 run \
    and `direction` (`tightens` / `loosens` / `equal` / `unknown`).
 
    **Which value to write:**
-     - **`wer` and `accuracy`:** always `write_value` (= `worst_raw` exactly).
-       **Never** round WER/accuracy to `display.digits` — report percentages
-       use 2 decimal places for readability, but test-file literals must
-       preserve the full observed float so a max-bound WER threshold is
-       never accidentally tightened (e.g. 0.010596 → 0.01).
+     - **`wer`:** `write_value` = `ceil(worst_raw, 4 dp)` — never round
+       down or to `display.digits` (e.g. 0.02387640 → 0.0239, not
+       0.023876404494382022 or 0.0238). Write into `*_MAX` /
+       `*_CORPUS_MAX`; CI tests derive the assertion threshold via
+       `apply_wer_slack(reference)` (×1.25).
+     - **`accuracy`:** `write_value` = `worst_raw` exactly into
+       `*_MIN_ACCURACY` — no post-calibration slack multiplier.
+       Report percentages use 2 decimal places for readability only.
      - **`speed`:** use `write_value` from apply-plan (rounded unless that
        would tighten beyond `worst_raw`). Never re-round or multiply by
        `scale`.
@@ -337,13 +803,13 @@ python .claude/skills/tune-ci-thresholds/tune.py --model qwen3-omni-v1 run \
    test file using the rules in (b) below, no questions asked.
 
    **Mode `smart`**: classify each metric:
-     - **auto-apply** iff `stage_group == "speed"` AND
-       `direction == "tightens"`. Edit using rules in (b).
+     - **auto-apply** iff `stage_group` in (`accuracy`, `wer`), OR
+       (`stage_group == "speed"` AND `direction == "tightens"`).
+       Edit using rules in (b).
      - **auto-skip** iff `direction == "equal"` (nothing to do).
-     - **interactive** otherwise — i.e. all `accuracy` and `wer`
-       metrics, plus any `speed` metric that would `loosen` the
-       threshold. For each interactive metric, fire AskUserQuestion
-       (one per metric) showing:
+     - **interactive** otherwise — i.e. any `speed` metric that would
+       `loosen` the threshold. For each interactive metric, fire
+       AskUserQuestion (one per metric) showing:
          - the per-run raw values from `per_run_raw`
          - the current literal in the test file (`current_raw`)
          - the proposed value (`write_value` — full-precision for wer/acc)
@@ -444,8 +910,21 @@ python .claude/skills/tune-ci-thresholds/tune.py --model qwen3-omni-v1 run \
       and test/pre-commit verification.
 
 ## What I do not do
-- Set up container / venv / caches
-- Check out branches, install packages
+- Treat `tune.py status` `ok/total` or `complete: true` as strict
+  worst-of-N readiness — always run the strict audit (✓ = full samples).
+- Include △ partial or ✗ failed repeats in worst-of-N calculations or
+  apply decisions.
+- Download, rebuild, or bulk-install the calibration environment before
+  `precheck` proves a specific gap. No proactive `prepare_omni_venv.sh`,
+  `install_flashinfer_jit_cache.sh`, or `ensure_hf_models.sh`.
+- Run `prepare_omni_venv.sh` when precheck already shows a working venv
+  (its fresh path runs `rm -rf $OMNI_CI_HOME`).
+- Check out branches unless the user asked or calibration requires it.
+  Sync code with `uv pip install -e .` only unless precheck proves the
+  venv is missing/corrupt — then follow **Environment policy — check first**.
+- Install flashinfer-jit-cache only when precheck reports it missing — use
+  host wheel cache first (`install_flashinfer_jit_cache.sh`; network only on
+  cache miss). Every CI venv slice gets it via `omni-setup`, including Whisper.
 - Run `apply_slack` or generate patch files
 - Commit or push without explicit user authorization
 - Edit test files outside of the explicit apply prompt (step 9)
@@ -467,8 +946,11 @@ python .claude/skills/tune-ci-thresholds/tune.py --model qwen3-omni-v1 run \
     ├── qwen3-omni-v1/                   # v1 pipeline (qwen3-omni)
     │   ├── config.yaml
     │   └── stages.yaml
-    └── s2-pro-v1/                       # v1 pipeline (FishAudio S2-Pro,
-        ├── config.yaml                  #   uses per-test-file `variants`)
+    ├── s2-pro-v1/                       # v1 pipeline (FishAudio S2-Pro,
+    │   ├── config.yaml                  #   uses per-test-file `variants`)
+    │   └── stages.yaml
+    └── whisper-asr-v1/                  # Whisper large-v3 ASR (omni-s2pro venv)
+        ├── config.yaml
         └── stages.yaml
 ```
 
