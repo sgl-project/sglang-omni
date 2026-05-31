@@ -66,7 +66,11 @@ jobs:
     timeout-minutes: 15
     container:
       image: frankleeeee/sglang-omni:dev
-      options: --gpus all --rm -v /dev/shm:/dev/shm
+      options: >-
+        --gpus all --rm
+        -v /dev/shm:/dev/shm
+        -v /data/cache/huggingface:/github/home/.cache/huggingface
+        -v /data/cache/huggingface:/root/.cache/huggingface
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -98,7 +102,11 @@ jobs:
     timeout-minutes: 30
     container:
       image: frankleeeee/sglang-omni:dev
-      options: --gpus all --rm -v /dev/shm:/dev/shm
+      options: >-
+        --gpus all --rm
+        -v /dev/shm:/dev/shm
+        -v /data/cache/huggingface:/github/home/.cache/huggingface
+        -v /data/cache/huggingface:/root/.cache/huggingface
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -137,7 +145,11 @@ jobs:
     timeout-minutes: 25
     container:
       image: frankleeeee/sglang-omni:dev
-      options: --gpus all --rm -v /dev/shm:/dev/shm
+      options: >-
+        --gpus all --rm
+        -v /dev/shm:/dev/shm
+        -v /data/cache/huggingface:/github/home/.cache/huggingface
+        -v /data/cache/huggingface:/root/.cache/huggingface
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -194,7 +206,11 @@ jobs:
     timeout-minutes: 25
     container:
       image: frankleeeee/sglang-omni:dev
-      options: --gpus all --rm -v /dev/shm:/dev/shm
+      options: >-
+        --gpus all --rm
+        -v /dev/shm:/dev/shm
+        -v /data/cache/huggingface:/github/home/.cache/huggingface
+        -v /data/cache/huggingface:/root/.cache/huggingface
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -289,7 +305,11 @@ jobs:
     timeout-minutes: 5
     container:
       image: frankleeeee/sglang-omni:dev
-      options: --gpus all --rm -v /dev/shm:/dev/shm
+      options: >-
+        --gpus all --rm
+        -v /dev/shm:/dev/shm
+        -v /data/cache/huggingface:/github/home/.cache/huggingface
+        -v /data/cache/huggingface:/root/.cache/huggingface
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
