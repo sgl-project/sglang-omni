@@ -14,10 +14,11 @@
 # - Voice-clone artifacts live under per-variant dirs in pytest tmp_path:
 #   vc_nonstream_c16/ and vc_stream_c16/ (speed_results.json, wer_results.json,
 #   similarity_results.json for nonstream).
-# - TTS_MAX_FAILED_REQUESTS: max allowed generation failures out of 1088 on
-#   stage 1/2 speed runs (worst-of-N max → written back to the test constant).
+# - WER thresholds are corpus-level only (`VC_WER_MAX_CORPUS` /
+#   `VC_STREAM_WER_MAX_CORPUS`); per-sample WER caps and generation failure
+#   budgets are not calibrated.
 # - Stage 3 (streaming consistency) has no numeric threshold in tune.py; see
-#   SKILL.md § TTS stage 3 after calibrating failed_requests.
+#   SKILL.md § TTS stage 3.
 # - Concurrency: CI uses --concurrency 16. Discover reads the conc=16 row.
 # - Venv: CI uses omni under OMNI_CI_HOME (see omni_ci_home below).
 # - Auth: export HF_TOKEN before precheck/run unless the private TTS model
@@ -86,8 +87,8 @@ metric_sources:
     # tts_nonstream_similarity.
     variants:
       nonstream:
-        # VC_* (not VC_STREAM_*), _VC_NON_STREAM_*, TTS_MAX_FAILED_REQUESTS
-        constant_filter: "^VC_(?!STREAM_).*|^VC_NON_STREAM.*|^TTS_MAX_FAILED_REQUESTS$"
+        # VC_* (not VC_STREAM_*), _VC_NON_STREAM_*
+        constant_filter: "^VC_(?!STREAM_).*|^VC_NON_STREAM.*$"
         json_file: "test_voice_cloning_non_streami0/vc_nonstream_c16/speed_results.json"
         sample_counts:
           total: "summary.total_requests"
@@ -104,12 +105,10 @@ metric_sources:
           output_tok_per_req_s: "summary.output_tok_per_req_s"
           latency_mean_s: "summary.latency_mean_s"
           rtf_mean: "summary.rtf_mean"
-          failed_requests: "summary.failed_requests"
           corpus_wer: "test_voice_cloning_non_streami0/vc_nonstream_c16/wer_results.json::summary.wer_corpus"
-          per_sample_wer_max: "test_voice_cloning_non_streami0/vc_nonstream_c16/wer_results.json::summary.wer_per_sample_max"
           similarity_mean: "test_voice_cloning_non_streami0/vc_nonstream_c16/similarity_results.json::summary.speaker_similarity_mean"
       stream:
-        constant_filter: "^VC_STREAM_.*|^TTS_MAX_FAILED_REQUESTS$"
+        constant_filter: "^VC_STREAM_.*$"
         json_file: "test_voice_cloning_streaming0/vc_stream_c16/speed_results.json"
         sample_counts:
           total: "summary.total_requests"
@@ -123,6 +122,4 @@ metric_sources:
           output_tok_per_req_s: "summary.output_tok_per_req_s"
           latency_mean_s: "summary.latency_mean_s"
           rtf_mean: "summary.rtf_mean"
-          failed_requests: "summary.failed_requests"
           corpus_wer: "test_voice_cloning_streaming0/vc_stream_c16/wer_results.json::summary.wer_corpus"
-          per_sample_wer_max: "test_voice_cloning_streaming0/vc_stream_c16/wer_results.json::summary.wer_per_sample_max"

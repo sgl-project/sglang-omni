@@ -103,33 +103,6 @@ whisper_asr_speed:
         scale: 1
         digits: 4
       status: OK
-tts_nonstream_reliability:
-  test: tests/test_model/test_tts_ci.py
-  title: "TTS NONSTREAM Reliability"
-  group: reliability
-  extra_env: {}
-  context_vars: []
-  variant: "nonstream"
-  test_file_sha256: 29d565962ebce46d4c248ba3a4e2e91c138b90078db59934388281e70666d2d0
-  last_discovered_at: 2026-05-31T08:24:48Z
-  sample_counts:
-    total:
-      json_file: "test_voice_cloning_non_streami0/vc_nonstream_c16/speed_results.json"
-      json_path: "summary.total_requests"
-    ok:
-      json_file: "test_voice_cloning_non_streami0/vc_nonstream_c16/speed_results.json"
-      json_path: "summary.total_requests"
-  metrics:
-    failed_requests:
-      source: "TTS_MAX_FAILED_REQUESTS"
-      json_file: "test_voice_cloning_non_streami0/vc_nonstream_c16/speed_results.json"
-      json_path: "summary.failed_requests"
-      worst: max
-      display:
-        label: "Failed requests"
-        scale: 1
-        digits: 0
-      status: OK
 tts_nonstream_wer:
   test: tests/test_model/test_tts_ci.py
   title: "TTS NONSTREAM Wer"
@@ -137,7 +110,7 @@ tts_nonstream_wer:
   extra_env: {}
   context_vars: []
   variant: "nonstream"
-  test_file_sha256: 29d565962ebce46d4c248ba3a4e2e91c138b90078db59934388281e70666d2d0
+  test_file_sha256: b0073cf631d27e7d3dca98149e794d5dfb19600f12c4835346f73485dd3160a2
   last_discovered_at: 2026-05-31T08:24:48Z
   sample_counts:
     total:
@@ -157,16 +130,6 @@ tts_nonstream_wer:
         scale: 100
         digits: 2
       status: OK
-    per_sample_wer_max:
-      source: "VC_WER_MAX_PER_SAMPLE"
-      json_file: "test_voice_cloning_non_streami0/vc_nonstream_c16/wer_results.json"
-      json_path: "summary.wer_per_sample_max"
-      worst: max
-      display:
-        label: "Max per-sample WER (%)"
-        scale: 100
-        digits: 2
-      status: OK
 tts_nonstream_similarity:
   test: tests/test_model/test_tts_ci.py
   title: "TTS NONSTREAM Similarity"
@@ -174,7 +137,7 @@ tts_nonstream_similarity:
   extra_env: {}
   context_vars: []
   variant: "nonstream"
-  test_file_sha256: 29d565962ebce46d4c248ba3a4e2e91c138b90078db59934388281e70666d2d0
+  test_file_sha256: b0073cf631d27e7d3dca98149e794d5dfb19600f12c4835346f73485dd3160a2
   last_discovered_at: 2026-05-31T08:24:48Z
   sample_counts:
     total:
@@ -201,7 +164,7 @@ tts_nonstream_speed:
   extra_env: {}
   context_vars: []
   variant: "nonstream"
-  test_file_sha256: 29d565962ebce46d4c248ba3a4e2e91c138b90078db59934388281e70666d2d0
+  test_file_sha256: b0073cf631d27e7d3dca98149e794d5dfb19600f12c4835346f73485dd3160a2
   last_discovered_at: 2026-05-31T08:24:48Z
   sample_counts:
     total:
@@ -251,33 +214,6 @@ tts_nonstream_speed:
         scale: 1
         digits: 4
       status: OK
-tts_stream_reliability:
-  test: tests/test_model/test_tts_ci.py
-  title: "TTS STREAM Reliability"
-  group: reliability
-  extra_env: {}
-  context_vars: []
-  variant: "stream"
-  test_file_sha256: 29d565962ebce46d4c248ba3a4e2e91c138b90078db59934388281e70666d2d0
-  last_discovered_at: 2026-05-31T08:24:48Z
-  sample_counts:
-    total:
-      json_file: "test_voice_cloning_streaming0/vc_stream_c16/speed_results.json"
-      json_path: "summary.total_requests"
-    ok:
-      json_file: "test_voice_cloning_streaming0/vc_stream_c16/speed_results.json"
-      json_path: "summary.total_requests"
-  metrics:
-    failed_requests:
-      source: "TTS_MAX_FAILED_REQUESTS"
-      json_file: "test_voice_cloning_streaming0/vc_stream_c16/speed_results.json"
-      json_path: "summary.failed_requests"
-      worst: max
-      display:
-        label: "Failed requests"
-        scale: 1
-        digits: 0
-      status: OK
 tts_stream_wer:
   test: tests/test_model/test_tts_ci.py
   title: "TTS STREAM Wer"
@@ -285,7 +221,7 @@ tts_stream_wer:
   extra_env: {}
   context_vars: []
   variant: "stream"
-  test_file_sha256: 29d565962ebce46d4c248ba3a4e2e91c138b90078db59934388281e70666d2d0
+  test_file_sha256: b0073cf631d27e7d3dca98149e794d5dfb19600f12c4835346f73485dd3160a2
   last_discovered_at: 2026-05-31T08:24:48Z
   sample_counts:
     total:
@@ -305,16 +241,6 @@ tts_stream_wer:
         scale: 100
         digits: 2
       status: OK
-    per_sample_wer_max:
-      source: "VC_STREAM_WER_MAX_PER_SAMPLE"
-      json_file: "test_voice_cloning_streaming0/vc_stream_c16/wer_results.json"
-      json_path: "summary.wer_per_sample_max"
-      worst: max
-      display:
-        label: "Max per-sample WER (%)"
-        scale: 100
-        digits: 2
-      status: OK
 tts_stream_speed:
   test: tests/test_model/test_tts_ci.py
   title: "TTS STREAM Speed"
@@ -322,7 +248,7 @@ tts_stream_speed:
   extra_env: {}
   context_vars: []
   variant: "stream"
-  test_file_sha256: 29d565962ebce46d4c248ba3a4e2e91c138b90078db59934388281e70666d2d0
+  test_file_sha256: b0073cf631d27e7d3dca98149e794d5dfb19600f12c4835346f73485dd3160a2
   last_discovered_at: 2026-05-31T08:24:48Z
   sample_counts:
     total:

@@ -477,21 +477,19 @@ samples CI runs; tune.py only uses them indirectly for strict-audit sample count
 |-----------|-------|-------------------|------------------|
 | `tts_nonstream_speed` | speed | P95 speed slack | `_VC_NON_STREAM_P95[16]` |
 | `tts_stream_speed` | speed | same | `_VC_STREAM_P95[16]` |
-| `tts_nonstream_wer` | wer | corpus + per-sample WER ref | `VC_WER_MAX_*` |
-| `tts_stream_wer` | wer | same | `VC_STREAM_WER_MAX_*` |
+| `tts_nonstream_wer` | wer | corpus WER ref | `VC_WER_MAX_CORPUS` |
+| `tts_stream_wer` | wer | same | `VC_STREAM_WER_MAX_CORPUS` |
 | `tts_nonstream_similarity` | similarity | min mean score (50-sample eval) | `VC_SIMILARITY_MEAN_MIN` |
-| `tts_nonstream_reliability` | reliability | max allowed gen failures / 1088 | `TTS_MAX_FAILED_REQUESTS` |
-| `tts_stream_reliability` | reliability | same constant (shared) | `TTS_MAX_FAILED_REQUESTS` |
 
 Notes:
-- **`TTS_MAX_FAILED_REQUESTS`** is the only **reliability** threshold; worst-of-N
-  **max** of `speed_results.json` → `summary.failed_requests` (ceil to int on apply).
+- **WER** calibrates corpus reference only (`VC_*_WER_MAX_CORPUS`); CI asserts
+  via `apply_wer_slack()`. Per-sample WER caps and generation failure budgets
+  are not calibrated.
 - **Similarity** calibrates **`VC_SIMILARITY_MEAN_MIN`**, not `TTS_SIMILARITY_MAX_SAMPLES`.
 - **Stage 3 (streaming consistency)** is pass/fail only (`max_failed_requests=0` in
-  test code today). After calibrating `TTS_MAX_FAILED_REQUESTS`, compare worst-of-N
-  failure counts and decide whether stage 3 should stay at zero or adopt a budget.
+  test code today).
 
-Shortcuts: `@speed`, `@wer`, `@similarity`, `@reliability`, `ALL`, or `tts` /
+Shortcuts: `@speed`, `@wer`, `@similarity`, `ALL`, or `tts` /
 `tts_nonstream` / `tts_stream`.
 
 ## Environment and networking notes
@@ -978,8 +976,6 @@ Two gates — **both** required before apply:
        `*_MIN_ACCURACY` / `*_SIMILARITY_*_MIN` — no post-calibration slack multiplier.
        Report percentages use 2 decimal places for readability only; similarity
        uses raw mean score (not %).
-     - **`reliability` (`TTS_MAX_FAILED_REQUESTS`):** `write_value` =
-       `ceil(worst_raw)` integer — worst-of-N max failed requests out of 1088.
      - **`speed`:** use `write_value` from apply-plan (rounded unless that
        would tighten beyond `worst_raw`). Never re-round or multiply by
        `scale`.
@@ -994,8 +990,8 @@ Two gates — **both** required before apply:
    test file using the rules in (b) below, no questions asked.
 
    **Mode `smart`**: classify each metric:
-     - **auto-apply** iff `stage_group` in (`accuracy`, `wer`, `similarity`,
-       `reliability`), OR (`stage_group == "speed"` AND `direction == "tightens"`).
+     - **auto-apply** iff `stage_group` in (`accuracy`, `wer`, `similarity`),
+       OR (`stage_group == "speed"` AND `direction == "tightens"`).
        Edit using rules in (b).
      - **auto-skip** iff `direction == "equal"` (nothing to do).
      - **interactive** otherwise — i.e. any `speed` metric that would

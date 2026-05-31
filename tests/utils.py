@@ -742,7 +742,7 @@ def assert_wer_partitioned(
 def assert_wer_results(
     results: dict,
     max_corpus_wer: float,
-    max_per_sample_wer: float,
+    max_per_sample_wer: float | None = None,
     *,
     collector: MetricCheckCollector | None = None,
 ) -> None:
@@ -751,20 +751,21 @@ def assert_wer_results(
     summary, per_sample = _wer_result_sections(results, checks)
     _check_wer_per_sample_schema(per_sample, checks)
 
-    failed_details = [
-        f"  sample {s.get('id')}: {s.get('error')}"
-        for s in per_sample
-        if not s.get("is_success", True)
-    ]
-    evaluated = summary.get("evaluated")
-    total_samples = summary.get("total_samples")
-    skipped = summary.get("skipped")
-    checks.check(
-        evaluated == total_samples,
-        f"Only {evaluated}/{total_samples} samples evaluated, "
-        f"{skipped} skipped.\n"
-        f"Per-sample errors:\n" + "\n".join(failed_details),
-    )
+    if max_per_sample_wer is not None:
+        failed_details = [
+            f"  sample {s.get('id')}: {s.get('error')}"
+            for s in per_sample
+            if not s.get("is_success", True)
+        ]
+        evaluated = summary.get("evaluated")
+        total_samples = summary.get("total_samples")
+        skipped = summary.get("skipped")
+        checks.check(
+            evaluated == total_samples,
+            f"Only {evaluated}/{total_samples} samples evaluated, "
+            f"{skipped} skipped.\n"
+            f"Per-sample errors:\n" + "\n".join(failed_details),
+        )
 
     wer_corpus = summary.get("wer_corpus")
     if wer_corpus is None:
@@ -775,6 +776,10 @@ def assert_wer_results(
             f"Corpus WER {wer_corpus:.4f} ({wer_corpus * 100:.2f}%) "
             f"> threshold {max_corpus_wer} ({max_corpus_wer * 100:.0f}%)",
         )
+
+    if max_per_sample_wer is None:
+        _assert_metric_collector_if_local(collector, checks)
+        return
 
     for sample in per_sample:
         checks.check(
