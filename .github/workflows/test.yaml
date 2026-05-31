@@ -12,6 +12,8 @@ concurrency:
 
 permissions:
   contents: read
+  checks: read
+  pull-requests: read
 
 env:
   OMNI_CI_HOME: >-
@@ -20,15 +22,41 @@ env:
         || format('/github/home/run-{0}', github.run_id) }}
 
 # DAG:
-#   setup (install-deps under OMNI_CI_HOME)
+#   preflight (requires mergeable PR + successful lint)
+#     └── setup (install-deps under OMNI_CI_HOME)
 #     └── unit-test (restore cached venv only; excludes docs/benchmark)
 #           └── cleanup on full success only (kept on failure for re-run)
 #
 # Docs tests run in model-specific CI workflows after the same setup pattern.
 
 jobs:
+  preflight:
+    name: preflight - lint and mergeability
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (!github.event.pull_request.draft &&
+       contains(github.event.pull_request.labels.*.name, 'run-ci'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout workflow scripts
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+
+      - name: Check PR lint and mergeability
+        if: ${{ github.event_name == 'pull_request' }}
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python .github/scripts/pr_ci_gate.py
+
+      - name: Manual dispatch preflight
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        run: echo "Manual workflow_dispatch bypasses PR lint/mergeability gate."
+
   setup:
     name: setup - omni venv
+    needs: preflight
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (!github.event.pull_request.draft &&
