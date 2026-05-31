@@ -16,8 +16,8 @@ permissions:
 env:
   OMNI_CI_HOME: >-
     ${{ github.event_name == 'pull_request'
-        && format('/github/home/pr-{0}/tts', github.event.pull_request.number)
-        || format('/github/home/run-{0}/tts', github.run_id) }}
+        && format('/github/home/pr-{0}', github.event.pull_request.number)
+        || format('/github/home/run-{0}', github.run_id) }}
   TTS_MODEL_PATH: boson-sglang/higgs-audio-v3-TTS-4B-grpo05200410999
 
 # DAG:
@@ -29,7 +29,7 @@ env:
 
 jobs:
   setup:
-    name: setup - omni-tts venv
+    name: setup - omni venv
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (!github.event.pull_request.draft &&
@@ -45,19 +45,19 @@ jobs:
 
       - uses: ./.github/actions/omni-setup
         with:
-          venv-name: omni-tts
+          venv-name: omni
           install-deps: "true"
 
       - uses: ./.github/actions/omni-save-cache
         with:
-          venv-name: omni-tts
+          venv-name: omni
 
       - name: Ensure TTS model weights
         shell: bash
         env:
           HF_ENDPOINT: https://hf-mirror.com
           HF_TOKEN: ${{ secrets.BOSON_HF_TOKEN }}
-        run: bash .github/scripts/ensure_hf_models.sh omni-tts "$TTS_MODEL_PATH"
+        run: bash .github/scripts/ensure_hf_models.sh omni "$TTS_MODEL_PATH"
 
   stage-0-whisper-asr:
     name: stage 0 - whisper ASR correctness
@@ -77,12 +77,12 @@ jobs:
 
       - uses: ./.github/actions/omni-setup
         with:
-          venv-name: omni-tts
+          venv-name: omni
 
       - name: Run Whisper ASR correctness
         shell: bash
         run: |
-          source omni-tts/bin/activate
+          source omni/bin/activate
           export PYTHONPATH=$PWD
           bash .github/scripts/run_flaky_pytest.sh \
             pytest tests/test_model/test_whisper_asr_ci.py -v -s -x
@@ -116,12 +116,12 @@ jobs:
 
       - uses: ./.github/actions/omni-setup
         with:
-          venv-name: omni-tts
+          venv-name: omni
 
       - name: Prepare speaker similarity assets
         shell: bash
         run: |
-          source omni-tts/bin/activate
+          source omni/bin/activate
           python -m benchmarks.metrics.speaker_similarity_assets --warm-cache
         env:
           HF_ENDPOINT: https://hf-mirror.com
@@ -130,7 +130,7 @@ jobs:
       - name: Run TTS non-streaming benchmark stage
         shell: bash
         run: |
-          source omni-tts/bin/activate
+          source omni/bin/activate
           export PYTHONPATH=$PWD
           bash .github/scripts/run_flaky_pytest.sh \
             pytest tests/test_model/test_tts_ci.py -v -s -x --concurrency 16 --tts-stage tts-stage-1-nonstream
@@ -173,12 +173,12 @@ jobs:
 
       - uses: ./.github/actions/omni-setup
         with:
-          venv-name: omni-tts
+          venv-name: omni
 
       - name: Run TTS streaming benchmark stage
         shell: bash
         run: |
-          source omni-tts/bin/activate
+          source omni/bin/activate
           export PYTHONPATH=$PWD
           bash .github/scripts/run_flaky_pytest.sh \
             pytest tests/test_model/test_tts_ci.py -v -s -x --concurrency 16 --tts-stage tts-stage-2-stream

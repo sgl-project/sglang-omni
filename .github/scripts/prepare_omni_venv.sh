@@ -15,6 +15,15 @@ VENV_NAME="$1"
 HOST="${OMNI_CI_HOME}/${VENV_NAME}"
 DEPS_HASH_FILE="${OMNI_CI_HOME}/.deps-hash"
 DEPS_HASH="$(sha256sum pyproject.toml | awk '{print $1}')"
+LOCK_DIR="${UV_CACHE_DIR:-/github/home/.cache/uv}"
+mkdir -p "${LOCK_DIR}"
+LOCK_FILE="${LOCK_DIR}/omni-venv-prepare-$(echo -n "${OMNI_CI_HOME}" | sha256sum | awk '{print $1}').lock"
+
+exec 200>"${LOCK_FILE}"
+if ! flock -w 3600 200; then
+  echo "Timed out waiting for venv prepare lock: ${LOCK_FILE}" >&2
+  exit 1
+fi
 
 reuse_venv=false
 if [ -f "${DEPS_HASH_FILE}" ] \
