@@ -20,6 +20,8 @@ from pathlib import Path
 
 import pytest
 
+pytest_plugins = ["tests.test_model.omni_whisper_wer_utils"]
+
 from benchmarks.dataset.prepare import DATASETS
 from benchmarks.eval.benchmark_omni_videoamme import run_videoamme_eval
 from benchmarks.eval.benchmark_omni_videomme import VideoEvalConfig

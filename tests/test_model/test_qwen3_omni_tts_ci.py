@@ -18,6 +18,8 @@ from pathlib import Path
 
 import pytest
 
+pytest_plugins = ["tests.test_model.omni_whisper_wer_utils"]
+
 from benchmarks.dataset.prepare import DATASETS, download_dataset
 from benchmarks.eval.benchmark_omni_seedtts import (
     OmniSeedttsBenchmarkConfig,

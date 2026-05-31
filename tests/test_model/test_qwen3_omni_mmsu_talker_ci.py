@@ -26,6 +26,8 @@ from pathlib import Path
 
 import pytest
 
+pytest_plugins = ["tests.test_model.omni_whisper_wer_utils"]
+
 from benchmarks.dataset.mmsu import load_mmsu_samples
 from benchmarks.dataset.prepare import DATASETS
 from benchmarks.eval.benchmark_omni_mmsu import run as run_mmsu

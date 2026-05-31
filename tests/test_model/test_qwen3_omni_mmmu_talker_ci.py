@@ -26,6 +26,8 @@ from pathlib import Path
 
 import pytest
 
+pytest_plugins = ["tests.test_model.omni_whisper_wer_utils"]
+
 from benchmarks.dataset.prepare import DATASETS
 from benchmarks.eval.benchmark_omni_mmmu import MMMUEvalConfig, run_mmmu_eval
 from benchmarks.metrics.mmmu import print_mmmu_accuracy_summary

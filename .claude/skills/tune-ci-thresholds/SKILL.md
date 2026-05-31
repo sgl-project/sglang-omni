@@ -356,11 +356,14 @@ test) explicitly marks as missing or misaligned.
 
 ### Stage-specific shortcuts (still check-first)
 
-- **Whisper ASR (`whisper-asr-v1`)**: uses `omni`, **2 GPU / router DP=2**.
-  Venv must pass full precheck including `flashinfer-jit-cache` (same as CI
-  `omni-setup`). If missing, run `install_flashinfer_jit_cache.sh omni`
-  from host cache — do **not** use `--skip-precheck`. Source
-  `.github/scripts/ci_env.sh` before pytest/calibration.
+- **Whisper ASR (TTS stage 0 / `--model tts`)**: uses `omni`, **2 GPU / router DP=2**.
+  Included in `--model tts --stages ALL`; calibrate alone with
+  `--stages whisper_asr`. Venv must pass full precheck including
+  `flashinfer-jit-cache` (same as CI `omni-setup`). If missing, run
+  `install_flashinfer_jit_cache.sh omni` from host cache — do **not** use
+  `--skip-precheck`. Source `.github/scripts/ci_env.sh` before pytest/calibration.
+- **Whisper ASR (legacy `--model whisper-asr-v1`)**: same runtime as above;
+  use only for isolated ASR calibration — **TTS PRs should use `--model tts`**.
 - **Qwen3 MoE stages**: if smoke test shows
   `gen_cutlass_fused_moe_sm90_module` + router timeout, **then** run
   `install_flashinfer_jit_cache.sh` (host cache first; network only on cache miss).
@@ -428,12 +431,39 @@ python .claude/skills/tune-ci-thresholds/tune.py --model qwen3-omni-v1 run \
 
 Common TTS preset:
 ```
-# Full TTS threshold stages (SeedTTS EN 1088): speed, WER, similarity, failed-request budget.
+# Full TTS CI pipeline (stage 0 Whisper ASR + stages 1–6 Higgs voice clone), 5 repeats.
 python .claude/skills/tune-ci-thresholds/tune.py --model tts run \
   --stages ALL --repeats 5 --output-dir .tune-runs/<timestamp>_tts_all_r5
+
+# Stage 0 only (Whisper ASR on SeedTTS EN 20-sample correctness subset):
+python .claude/skills/tune-ci-thresholds/tune.py --model tts run \
+  --stages whisper_asr --repeats 5 --output-dir .tune-runs/<timestamp>_tts_whisper_asr_r5
 ```
 
-### TTS (Higgs) calibration targets
+### TTS CI stage 0 — Whisper ASR (mandatory in full TTS calibration)
+
+TTS GitHub Actions runs **`test_whisper_asr_ci.py` before `test_tts_ci.py`**
+(stage 0 in the DAG). Full `--model tts --stages ALL` calibration **must**
+include these stages — never calibrate Higgs thresholds alone while leaving
+Whisper ASR on stale literals.
+
+| Stage key | Group | What gets written | Test constant(s) |
+|-----------|-------|-------------------|------------------|
+| `whisper_asr_wer` | wer | corpus + per-sample WER ref | `SEEDTTS_ASR_CORPUS_WER_MAX`, `SEEDTTS_ASR_SAMPLE_WER_MAX` |
+| `whisper_asr_speed` | speed | throughput + latency + RTF mins/maxes | `WHISPER_ASR_THROUGHPUT_MIN`, `WHISPER_ASR_LATENCY_*`, `WHISPER_ASR_RTF_*` |
+
+Notes:
+- Uses **`openai/whisper-large-v3`** via `hf_model_ids_by_test` (not the Higgs
+  checkpoint). Same **`omni`** venv and 2-GPU router DP=2 as TTS stages.
+- Sample count for strict audit: **`SEEDTTS_ASR_CORRECTNESS_SAMPLES`** (=20),
+  JSON `summary.evaluated` / `summary.total_samples`.
+- Shortcuts: `whisper_asr`, `@wer`, `@speed` (scoped to whisper stages when
+  combined with `whisper_asr` base).
+- Legacy standalone model **`whisper-asr-v1`** remains for isolated ASR runs;
+  **TTS pipeline calibration uses `--model tts`** so stage 0 and Higgs stages
+  share one run directory and provenance.
+
+### TTS (Higgs) calibration targets (stages 1–6)
 
 **Fixed presets in `test_tts_ci.py` — never apply, never worst-of-N write:**
 `SEEDTTS_EN_FULLSET_SAMPLES` (=1088), `TTS_SIMILARITY_MAX_SAMPLES` (=50),
@@ -1112,10 +1142,10 @@ Two gates — **both** required before apply:
     ├── qwen3-omni-v1/                   # v1 pipeline (qwen3-omni)
     │   ├── config.yaml
     │   └── stages.yaml
-    ├── tts/                             # TTS pipeline
-    │   ├── config.yaml                  #   uses per-test-file `variants`)
+    ├── tts/                             # TTS CI pipeline (stage 0 Whisper + Higgs)
+    │   ├── config.yaml                  #   whisper + test_tts_ci.py; variants for Higgs
     │   └── stages.yaml
-    └── whisper-asr-v1/                  # Whisper large-v3 ASR (omni venv)
+    └── whisper-asr-v1/                  # Legacy: isolated Whisper ASR only
         ├── config.yaml
         └── stages.yaml
 ```
