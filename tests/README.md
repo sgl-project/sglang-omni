@@ -166,8 +166,8 @@ Relevant model CI ownership:
   GPUs, then transcribe saved WAVs through the Omni Whisper router. Long talker
   clips (>30 s) are chunked client-side in `benchmarks/tasks/tts.py` to match
   the transformers `chunk_length_s=30` behavior.
-- CI env alignment on the H20 repro host: `source .github/scripts/ci_env_qwen3.sh`
-  (Qwen3-Omni), or `source .github/scripts/ci_env_tts.sh` (TTS and Whisper ASR).
+- CI env alignment on the H20 repro host: `source .github/scripts/ci_env.sh`
+  then `source omni/bin/activate`.
   Full WER sweep: `.github/scripts/run_all_wer_ci_aligned.sh` (milestones on
   stdout; details in `/tmp/wer_ci_qwen3.log` and `/tmp/wer_ci_tts.log`).
 - GPU handoff between stages: `.github/scripts/ensure_gpus_idle.sh` (kills orphan

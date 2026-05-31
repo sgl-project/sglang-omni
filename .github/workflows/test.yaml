@@ -16,8 +16,8 @@ permissions:
 env:
   OMNI_CI_HOME: >-
     ${{ github.event_name == 'pull_request'
-        && format('/github/home/pr-{0}/unit', github.event.pull_request.number)
-        || format('/github/home/run-{0}/unit', github.run_id) }}
+        && format('/github/home/pr-{0}', github.event.pull_request.number)
+        || format('/github/home/run-{0}', github.run_id) }}
 
 # DAG:
 #   setup (install-deps under OMNI_CI_HOME)
