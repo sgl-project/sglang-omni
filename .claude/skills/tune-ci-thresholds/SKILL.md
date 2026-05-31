@@ -24,6 +24,86 @@ or commit / push anything; if the user rejects the apply prompt, the
 test files stay untouched and the user picks values manually from
 the report.
 
+## Zero-tolerance completeness contract (P0 — non-negotiable)
+
+**Calibration is not done until every stage × every repeat × every tracked
+metric is strict-complete (✓).** There are no exceptions, no “good enough”
+partial matrices, and no moving on while gaps remain.
+
+### Success criterion (all must hold)
+
+For model `M`, `--repeats N`, and stage list `S` from `plan.json`:
+
+```
+∀ stage ∈ S, ∀ run k ∈ 1..N:
+  run{k}.json exists
+  ∀ metric m in stages.yaml[stage].metrics: metrics[m] is non-null
+  sample_counts.ok == sample_counts.total (both non-null)
+```
+
+Equivalently: **strict audit shows N/N ✓ for every stage** and
+`STRICT READY: |S|/|S|`.
+
+### Mandatory re-run on any gap
+
+| Gap | Agent action (immediate) |
+|-----|--------------------------|
+| **—** not run yet | Keep `--resume` until filled |
+| **✗** missing / null metrics | Purge that `run{k}.json` (or whole pytest repeat); fix root cause; `--resume` |
+| **△** partial samples (`ok < total`) | Purge; `--resume` — never use for worst-of-N |
+| **Metric extraction warnings** in `run.log` (`file missing`, `ALL metrics None`) | **Stop `tune.py`**; fix `config.yaml` / test JSON output; purge affected repeats; `--resume` |
+| **One stage ✓ but sibling stage ✗** from same pytest file | Purge **entire pytest repeat k** for that test file (all its stages share one invocation) |
+
+**Forbidden:** continuing calibration, starting the next model, writing
+`report.md`, or discussing apply while **any** stage has `< N` strict ✓
+repeats. **Forbidden:** treating pytest PASS as success when
+`run{k}.json` metrics are null or partial.
+
+### No `-x` during calibration (P0 — non-negotiable)
+
+`tune.py run` **must never** pass pytest `-x` / `--exitfirst`.
+
+Calibration observes worst-of-N metrics; threshold assertions inside tests
+may fail with `pytest rc=1` and that is **expected**. Early exit skips later
+tests in the same file (WER, similarity, …) and produces null metrics —
+the agent then wastes hours in blind retry passes that cannot succeed.
+
+| Context | `-x` allowed? |
+|---------|----------------|
+| `tune.py run` (calibration) | **Never** |
+| Local dev / CI gating / ad-hoc pytest | Yes (default in test `__main__` blocks) |
+
+**Valid incomplete run:** server crash, CUDA OOM (exit 137), timeout — not
+“accuracy below threshold”. When metrics are missing after a non-OOM run,
+fix test order / JSON persistence / `config.yaml` paths — do not add `-x`.
+
+### Per-test-file rule
+
+Each CI test file (e.g. `test_qwen3_omni_mmmu_talker_ci.py`) produces one
+pytest invocation per repeat `k`, feeding **all** of its stages (accuracy,
+WER, speed, …). A repeat is valid only when **every** stage fed by that
+invocation is ✓. If any one threshold metric is missing, **the whole
+repeat is invalid** — purge all stage `run{k}.json` for that test and
+re-run.
+
+### Agent enforcement loop (every ≤120s while calibrating)
+
+1. `python tune.py status --run-dir <run-dir>`
+2. Run **strict audit** (script below) — this is the **only** progress metric
+   shown to the user
+3. If `STRICT READY < total stages` **or** `run.log` shows extraction
+   warnings → diagnose, fix, purge, `--resume` (do not wait for pass 10)
+4. If `tune.py` exits with **metric extraction HALT** → fix config before
+   any further pytest
+5. **Blocker fix is same-turn work** — when audit or `run.log` surfaces
+   `NEEDS_CONFIG`, null metrics, or missing JSON paths, patch
+   `config.yaml` / tests **immediately** in that session; purge the affected
+   pytest repeat; do **not** only report the issue and keep calibrating.
+
+`tune.py` **halts immediately** when pytest passes but metric extraction
+fails (config / JSON path bug). The agent must fix and `--resume`; never
+ignore HALT and start a fresh run directory without user approval.
+
 ## Two-terminal supervision (mandatory — always)
 
 Every long-running job on the repro host — calibration (`tune.py run`), WER
@@ -55,10 +135,10 @@ into one tab, never duplicate content across tabs, never ask the user to paste
 
 | | |
 |--|--|
-| **Command** | `tail -f <log-path>` |
+| **Command** | `tail -f <log-path>` — for **`tune.py run`**, `<log-path>` is **always** the newest `<run-dir>/_pytest/*/run{k}.log` (use `tail_calibration_pytest.sh`; see below) |
 | **Shows** | **All** verbose output — the only place the user reads server/router/pytest details |
 | **Spawn order** | **First** — before Tab B |
-| **Extra (tune.py only)** | When pytest subprocess starts, also `tail -f $(ls -t <run-dir>/_pytest/*/run*.log \| head -1)` — server lines often land here, not only in `run.log` |
+| **`tune.py run` forbidden** | **Never** `tail -f <run-dir>/run.log` on Tab A while Tab B runs `tune.py run`. `run.log` is tune.py’s milestone tee — **identical to Tab B stdout**. If both tabs show the same lines, Tab A is wrong. |
 
 ### Tab B — Job (progress summary)
 
@@ -75,13 +155,17 @@ is for the operator to glance at overall progress; Tab A is for supervision.
 ### Agent checklist (every long run)
 
 0. **Kill stale tabs first** — before spawning, stop any prior supervision/job
-   processes (`pkill -f 'tail -f <same-log-path>'`, sweep script, pytest) so
-   the IDE does not accumulate duplicate terminal tabs.
-1. Choose stable `<log-path>`; print it.
-2. Spawn **Tab A**: `tail -f <log-path>`.
+   processes (`pkill -f 'tail_calibration_pytest.sh'`, `pkill -f 'tail -f.*_pytest'`,
+   sweep script, pytest) so the IDE does not accumulate duplicate terminal tabs.
+1. Choose stable `<log-path>`; print it. For **`tune.py run`**, Tab A path is
+   `_pytest/*/run{k}.log`, **not** `<run-dir>/run.log`.
+2. Spawn **Tab A** (see job-specific command in table below).
 3. Spawn **Tab B**: run command (see examples below).
-4. Tell the user: **Tab A = details, Tab B = milestones** — they are not interchangeable.
-5. Poll with `tail -20` / `tune.py status` every **≤120s**; user watches Tab A.
+4. Tell the user: **Tab A = pytest/server details, Tab B = tune.py milestones** —
+   they must **not** show the same content. If they do, Tab A is tailing `run.log`
+   by mistake — kill it and respawn with `tail_calibration_pytest.sh`.
+5. Poll with `tail -20` on the **active `_pytest` log** / `tune.py status` every
+   **≤120s**; user watches Tab A.
 
 ### Calibration (`tune.py run`) — always two tabs, no exceptions
 
@@ -89,20 +173,26 @@ is for the operator to glance at overall progress; Tab A is for supervision.
 `>> <run-dir>/run.log` — `tune.py` already tees milestones to `run.log`
 internally; shell redirect hides Tab B and can race/truncate the log file.
 
+**Tab A must never tail `<run-dir>/run.log` for calibration.** That file mirrors
+Tab B exactly (milestone lines only). Pytest/router/CUDA-graph output lives under
+`<run-dir>/_pytest/<test>/run{k}.log`. Before `_pytest` exists, Tab A should
+**wait** (helper script loops) — do **not** fall back to `run.log`.
+
 | Tab | Role | Agent Shell (`block_until_ms: 0`) |
 |-----|------|-----------------------------------|
-| **A — supervision** | pytest + router/server verbose | `touch <run-dir>/run.log && tail -f $(ls -t <run-dir>/_pytest/*/run*.log 2>/dev/null \| head -1)` — fall back to `tail -f <run-dir>/run.log` until `_pytest` exists |
+| **A — supervision** | pytest + router/server verbose | `bash .claude/skills/tune-ci-thresholds/tail_calibration_pytest.sh <run-dir>` — resolves the **active** pytest via running process (`--basetemp`), switches immediately when tune.py starts the next test. **Forbidden:** `tail -f $(ls -t …/run*.log \| head -1)` (sticks on completed logs like failed mmmu run1). |
 | **B — job** | tune.py milestone lines (stdout) | `cd /sgl-workspace/sglang-omni && python .claude/skills/tune-ci-thresholds/tune.py --model <M> run ... --output-dir <run-dir>` — **no** `tee`, **no** `>>` |
 
 Spawn **A then B**. Tell the user which tab is pytest/server (A) vs tune
-progress (B). During each repeat, if A stalls, re-point it at the newest
-`_pytest/*/run{k}.log`.
+progress (B). The helper script re-points Tab A when a newer `run{k}.log`
+appears; if Tab A still looks like Tab B, respawn Tab A with the helper — never
+`tail -f run.log`.
 
 ### Log path conventions
 
 | Job | Tab A `tail -f` target | Tab B command |
 |-----|------------------------|---------------|
-| **`tune.py run` (calibration)** | **Newest** `<run-dir>/_pytest/*/run{k}.log` (pytest/server) | **`python tune.py ... run`** — stdout only, no redirect |
+| **`tune.py run` (calibration)** | **`bash …/tail_calibration_pytest.sh <run-dir>`** (active pytest log via process) | **`python tune.py ... run`** — stdout only, no redirect |
 | WER sweep (qwen3) | `/tmp/wer_ci_qwen3.log` | `bash .github/scripts/run_all_wer_ci_aligned.sh` |
 | WER sweep (tts) | `/tmp/wer_ci_tts.log` | (same script; switches log at tts section) |
 | Ad-hoc pytest | `/tmp/pytest_<name>.log` | `pytest ... -v -s >> /tmp/pytest_<name>.log 2>&1` |
@@ -203,12 +293,17 @@ gaps), not only `tune.py status` `ok/total`.
 
 ### Re-run policy for △ and ✗
 
+- **Any gap in the N×metrics matrix** — treat as **blocking**; re-run until ✓.
 - **△ partial** (e.g. videoamme_talker `15/20`): treat as **failed for
-  calibration** — re-run that pytest repeat until ✓ or exhaust retries.
-- **✗ no metrics**: re-run after GPU cleanup; check OOM / missing
-  `*_results.json` in `_pytest/<test>/run{k}.log`.
+  calibration** — purge and re-run that pytest repeat until ✓ or exhaust retries.
+- **✗ no metrics** (null, missing JSON, extraction failed): **stop forward
+  progress** if pytest passed; purge; fix config/test output; `--resume`.
+- **Partial null** (some metrics present, others null): same as ✗ — purge
+  entire pytest repeat for that `k`; fix paths; `--resume`.
 - Do **not** skip a bad repeat because other repeats for the same stage
-  already passed — worst-of-N requires **all N** valid observations.
+  already passed — worst-of-N requires **all N** valid observations per stage.
+- Do **not** advance to the next CI test file while the current file still
+  has any repeat `k` with a non-✓ stage among its fed stages.
 
 ## Models
 Each supported model has a config under `models/<name>/`:
@@ -333,11 +428,41 @@ python .claude/skills/tune-ci-thresholds/tune.py --model qwen3-omni-v1 run \
 
 Common TTS preset:
 ```
-# Full TTS threshold stages: nonstream speed/WER and stream speed/WER.
+# Full TTS threshold stages (SeedTTS EN 1088): speed, WER, similarity, failed-request budget.
 python .claude/skills/tune-ci-thresholds/tune.py --model tts run \
-  --stages tts \
-  --repeats 5 --output-dir .tune-runs/<timestamp>_tts_r5
+  --stages ALL --repeats 5 --output-dir .tune-runs/<timestamp>_tts_all_r5
 ```
+
+### TTS (Higgs) calibration targets
+
+**Fixed presets in `test_tts_ci.py` — never apply, never worst-of-N write:**
+`SEEDTTS_EN_FULLSET_SAMPLES` (=1088), `TTS_SIMILARITY_MAX_SAMPLES` (=50),
+`STREAMING_BENCHMARK_MAX_SAMPLES` (=None → full 1088). These define *how many*
+samples CI runs; tune.py only uses them indirectly for strict-audit sample counts
+(JSON `total_requests` / WER `evaluated` must match those presets).
+
+**Calibrated thresholds** (worst-of-N → `apply-plan` → test file):
+
+| Stage key | Group | What gets written | Test constant(s) |
+|-----------|-------|-------------------|------------------|
+| `tts_nonstream_speed` | speed | P95 speed slack | `_VC_NON_STREAM_P95[16]` |
+| `tts_stream_speed` | speed | same | `_VC_STREAM_P95[16]` |
+| `tts_nonstream_wer` | wer | corpus + per-sample WER ref | `VC_WER_MAX_*` |
+| `tts_stream_wer` | wer | same | `VC_STREAM_WER_MAX_*` |
+| `tts_nonstream_similarity` | similarity | min mean score (50-sample eval) | `VC_SIMILARITY_MEAN_MIN` |
+| `tts_nonstream_reliability` | reliability | max allowed gen failures / 1088 | `TTS_MAX_FAILED_REQUESTS` |
+| `tts_stream_reliability` | reliability | same constant (shared) | `TTS_MAX_FAILED_REQUESTS` |
+
+Notes:
+- **`TTS_MAX_FAILED_REQUESTS`** is the only **reliability** threshold; worst-of-N
+  **max** of `speed_results.json` → `summary.failed_requests` (ceil to int on apply).
+- **Similarity** calibrates **`VC_SIMILARITY_MEAN_MIN`**, not `TTS_SIMILARITY_MAX_SAMPLES`.
+- **Stage 3 (streaming consistency)** is pass/fail only (`max_failed_requests=0` in
+  test code today). After calibrating `TTS_MAX_FAILED_REQUESTS`, compare worst-of-N
+  failure counts and decide whether stage 3 should stay at zero or adopt a budget.
+
+Shortcuts: `@speed`, `@wer`, `@similarity`, `@reliability`, `ALL`, or `tts` /
+`tts_nonstream` / `tts_stream`.
 
 ## Environment and networking notes
 - Some CI-reproduction hosts need outbound network proxies or a
@@ -504,6 +629,11 @@ All CI workflows, calibration models, and WER sweeps use the same venv name
 
 | Mistake | Symptom | Fix |
 |---------|---------|-----|
+| Tab A tails `<run-dir>/run.log` during `tune.py run` | Tab A and Tab B show **identical** milestone lines; no pytest/router output | Kill Tab A; run `bash .claude/skills/tune-ci-thresholds/tail_calibration_pytest.sh <run-dir>` |
+| Tab A uses `tail -f $(ls -t …/run*.log \| head -1)` | Tab A **freezes** on first attached log (e.g. mmmu FAILED) while calibration continues | **Never** manual `ls -t` tail; use `tail_calibration_pytest.sh` only |
+| Ignoring metric extraction warnings and continuing calibration | Invalid `run{k}.json` on disk; strict audit ✗; worst-of-N unusable | **HALT** on extraction failure; fix config; purge; `--resume` |
+| Reporting progress from `ok/total` only | User thinks calibration is done while strict audit shows ✗/△ | Always show strict audit `N/N ✓` per stage |
+| Tab A helper matches wrong process or absolute `RUN_DIR` only | Tab A shows **waiting for pytest** or stale log while calibration runs | Fixed in script: `pgrep` must match `python -m pytest` (not supervisor bash); resolve log via `RUN_DIR_BASENAME` + `_pytest/<test>/runK` from relative `--basetemp` |
 | Wrong or unset `OMNI_CI_HOME` | Router worker unhealthy, stale torchinductor cache, HF cache miss | `source .github/scripts/ci_env.sh` |
 | `TORCHINDUCTOR_CACHE_DIR=/.torchinductor` or unset (inherits garbage) | **Every** server start re-captures CUDA graphs (~minutes); log shows long `Capturing batches` | Set via `ci_env.sh` → `${OMNI_CI_HOME}/.torchinductor` |
 | `HOME=/root` or datasets under `/root/.cache/huggingface` | HF cache miss, re-download, wrong normalizer paths | `HOME=/github/home`, `HF_HOME=/github/home/.cache/huggingface` |
@@ -531,8 +661,10 @@ Only the Whisper router stage needs 2 free GPUs after `delete_gpu_process.sh`.
 ### Agent operational rules (mandatory)
 
 - **Two-terminal supervision** — follow **Two-terminal supervision (mandatory —
-  always)** at the top of this skill. Agent creates Tab A (`tail -f`) then Tab B
-  (job). Tab A = detailed log; Tab B = milestones only. **Never `tee` on Tab B.**
+  always)** at the top of this skill. Agent creates Tab A
+  (`tail_calibration_pytest.sh <run-dir>`) then Tab B (job). Tab A = pytest log;
+  Tab B = milestones only. **Never `tail -f <run-dir>/run.log` on Tab A** during
+  calibration — it duplicates Tab B. **Never `tee` on Tab B.**
 - **Never block on a single shell/tool wait longer than 2 minutes.** Agent
   polls with short checks (`tail -20`, `grep PASS/FAIL`, `nvidia-smi`,
   `tune.py status`) at ≤120s intervals. User supervision is **`tail -f`**, not
@@ -585,11 +717,16 @@ Only the Whisper router stage needs 2 free GPUs after `delete_gpu_process.sh`.
   waste hours.
 - While `tune.py run` is in progress, **every 120s at most**:
   1. Run `python tune.py status --run-dir <run-dir>` and read JSON.
-  2. Tail `<run-dir>/run.log` and the active
-     `<run-dir>/_pytest/<test>/run{k}.log` (last ~30 lines).
+  2. For agent polling only (not Tab A): skim `<run-dir>/run.log` milestones if
+     needed; read the active `<run-dir>/_pytest/<test>/run{k}.log` (last ~30 lines)
+     for pytest/server detail. **Tab A** must tail `_pytest` via
+     `tail_calibration_pytest.sh`, never `run.log`.
   3. Report **strict** progress (✓/△/✗ per stage, see strict audit
      above) **and** `tune.py` `ok/total` / GPU memory. Never cite
      `ok/total` alone as "calibration progress" — it includes △ partial.
+  4. If strict audit shows **any** stage with `< N` ✓, or `run.log` has
+     `ALL metrics None`, `metric extraction warnings`, or `incomplete_metrics_extraction`:
+     **stop treating calibration as healthy** — fix, purge, `--resume`.
 - If `status` shows `pytest_active: false` but completeness is not
   `complete: true` and the last log lines show **crash / OOM / server
   startup failure**, do **not** keep waiting — immediately resume:
@@ -618,6 +755,11 @@ Only the Whisper router stage needs 2 free GPUs after `delete_gpu_process.sh`.
   This retries ✗ (missing metrics) — it does **not** automatically
   reject or re-run △ partial repeats. After each pass, run the **strict
   audit**; manually `--resume` until every stage is N/N ✓.
+- **Extraction HALT (v0.4.2+):** if pytest exits 0 but **any** fed stage
+  has incomplete metrics (config / missing JSON), `tune.py run` **stops
+  immediately** with exit code 1. Agent must fix `metric_sources` or test
+  JSON output, purge the bad repeat, then `--resume`. Do not start the
+  next test file until HALT is resolved.
 - **Per-run retries:** up to 4 attempts for OOM / crash / GPU-not-clear
   failures before marking a stage-run incomplete.
 - **`status` subcommand:** machine-readable snapshot for agent polling.
@@ -721,12 +863,11 @@ Two gates — **both** required before apply:
    `Running <M>: <stages>, <N> repeats, est. <T>.`
    No further confirmation.
 5. **Before** launching run, **spawn two IDE terminal tabs** per **Two-terminal
-   supervision (mandatory — always)** — Tab A `tail -f` first, Tab B job second:
+   supervision (mandatory — always)** — Tab A helper first, Tab B job second:
 
-   **Tab A — supervision (pytest + server log):**
+   **Tab A — supervision (pytest + server log; NOT run.log):**
    ```bash
-   touch <run-dir>/run.log
-   tail -f $(ls -t <run-dir>/_pytest/*/run*.log 2>/dev/null | head -1)
+   bash .claude/skills/tune-ci-thresholds/tail_calibration_pytest.sh <run-dir>
    ```
 
    **Tab B — job (tune.py milestones on stdout — no redirect):**
@@ -735,7 +876,8 @@ Two gates — **both** required before apply:
      --output-dir <run-dir>
    ```
 
-   Tell the user: **Tab A = pytest/server**, **Tab B = tune progress** — never
+   Tell the user: **Tab A = pytest/server**, **Tab B = tune progress** — if both
+   tabs show the same lines, Tab A is wrong (likely tailing `run.log`). Never
    `>> run.log` on Tab B (tune.py tees internally).
 
    Agent polls every **≤120s**: `python tune.py status --run-dir <run-dir>`.
@@ -802,9 +944,12 @@ Two gates — **both** required before apply:
        0.023876404494382022 or 0.0238). Write into `*_MAX` /
        `*_CORPUS_MAX`; CI tests derive the assertion threshold via
        `apply_wer_slack(reference)` (×1.25).
-     - **`accuracy`:** `write_value` = `worst_raw` exactly into
-       `*_MIN_ACCURACY` — no post-calibration slack multiplier.
-       Report percentages use 2 decimal places for readability only.
+     - **`accuracy` / `similarity`:** `write_value` = `worst_raw` exactly into
+       `*_MIN_ACCURACY` / `*_SIMILARITY_*_MIN` — no post-calibration slack multiplier.
+       Report percentages use 2 decimal places for readability only; similarity
+       uses raw mean score (not %).
+     - **`reliability` (`TTS_MAX_FAILED_REQUESTS`):** `write_value` =
+       `ceil(worst_raw)` integer — worst-of-N max failed requests out of 1088.
      - **`speed`:** use `write_value` from apply-plan (rounded unless that
        would tighten beyond `worst_raw`). Never re-round or multiply by
        `scale`.
@@ -819,8 +964,8 @@ Two gates — **both** required before apply:
    test file using the rules in (b) below, no questions asked.
 
    **Mode `smart`**: classify each metric:
-     - **auto-apply** iff `stage_group` in (`accuracy`, `wer`), OR
-       (`stage_group == "speed"` AND `direction == "tightens"`).
+     - **auto-apply** iff `stage_group` in (`accuracy`, `wer`, `similarity`,
+       `reliability`), OR (`stage_group == "speed"` AND `direction == "tightens"`).
        Edit using rules in (b).
      - **auto-skip** iff `direction == "equal"` (nothing to do).
      - **interactive** otherwise — i.e. any `speed` metric that would
@@ -926,8 +1071,12 @@ Two gates — **both** required before apply:
       and test/pre-commit verification.
 
 ## What I do not do
+- Proceed to the next test, model, report, or apply while **any** stage
+  lacks N/N strict ✓ repeats with **every** tracked metric non-null.
 - Treat `tune.py status` `ok/total` or `complete: true` as strict
   worst-of-N readiness — always run the strict audit (✓ = full samples).
+- Continue calibration after `run.log` shows metric extraction warnings
+  or `tune.py` extraction **HALT** — fix config, purge, `--resume` first.
 - Include △ partial or ✗ failed repeats in worst-of-N calculations or
   apply decisions.
 - Download, rebuild, or bulk-install the calibration environment before
@@ -955,6 +1104,7 @@ Two gates — **both** required before apply:
 ```
 .claude/skills/tune-ci-thresholds/
 ├── SKILL.md
+├── tail_calibration_pytest.sh         # Tab A helper for tune.py run (_pytest log)
 ├── tune.py                              # CLI; METRIC_SPECS + JSON extractor
 │                                        # subcommands: run, report, status,
 │                                        # apply-plan, precheck, discover
@@ -1040,8 +1190,9 @@ If a new test file adds a threshold constant:
   `metric_sources.<test_file>.paths`.
 - New nested-dict key (e.g. `_*_P95[*].ttft_ms`) → add to `_NESTED` and
   `METRIC_SPECS` in `tune.py`.
-- New naming pattern (e.g. `*_BLEU_MIN`) → extend `match_metric()` and
-  `METRIC_SPECS` in `tune.py`.
+- New naming pattern (e.g. `*_BLEU_MIN`, `TTS_MAX_FAILED_REQUESTS`,
+  `*_SIMILARITY_*_MIN`) → extend `match_metric()` and `METRIC_SPECS` in
+  `tune.py`.
 - Metric lives in a different JSON than the test's default → use the
   `<file>::<dotted.path>` inline form in `metric_sources.<test>.paths`.
 
