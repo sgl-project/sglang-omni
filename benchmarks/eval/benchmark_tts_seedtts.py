@@ -159,6 +159,7 @@ from benchmarks.tasks.tts import (
     make_tts_send_fn,
     run_seedtts_similarity,
     run_seedtts_transcribe,
+    run_seedtts_utmos,
     save_generated_audio_metadata,
     save_speed_results,
 )
@@ -507,7 +508,6 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         default=1200,
         help="Timeout in seconds to wait for server readiness.",
     )
-
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument(
         "--generate-only",
@@ -524,6 +524,11 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Only run speaker similarity on existing output-dir.",
     )
+    mode.add_argument(
+        "--utmos-only",
+        action="store_true",
+        help="Only run UTMOS MOS scoring on existing output-dir.",
+    )
     return parser
 
 
@@ -537,6 +542,10 @@ def main() -> None:
 
     if args.similarity_only:
         run_seedtts_similarity(config)
+        return
+
+    if args.utmos_only:
+        run_seedtts_utmos(config, log_per_sample=True)
         return
 
     if args.transcribe_only:

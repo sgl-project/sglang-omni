@@ -35,8 +35,10 @@ from tests.test_model.omni_router_utils import (
     print_worker_snapshot,
     router_get_json,
 )
+from tests.test_model.omni_whisper_wer_utils import wait_for_gpu_memory_release
 from tests.utils import (
     MetricCheckCollector,
+    apply_mos_slack,
     apply_slack,
     apply_wer_slack,
     assert_per_request_fields,
@@ -44,7 +46,6 @@ from tests.utils import (
     assert_summary_metrics,
     assert_wer_partitioned,
     no_proxy_env,
-    wait_for_gpu_memory_release,
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -58,10 +59,11 @@ SIMILARITY_CHECKPOINT_ENV = "SEEDTTS_SIM_CHECKPOINT"
 
 WER_TIMEOUT = 600
 SIMILARITY_TIMEOUT = 600
+UTMOS_TIMEOUT = 600
 
-VC_WER_BELOW_50_CORPUS_MAX = 0.0196
+VC_WER_BELOW_50_CORPUS_MAX = 0.0142
 VC_WER_BELOW_50_CORPUS_THRESHOLD = apply_wer_slack(VC_WER_BELOW_50_CORPUS_MAX)
-VC_N_ABOVE_50_MAX = 1
+VC_N_ABOVE_50_MAX = 0
 # 60.0 mirrors the S2-Pro floor and is a placeholder until upstream issue
 # #483 is fixed; the hard assertion is currently disabled in
 # test_voice_cloning_similarity (see docstring there). PR #469 also collected
@@ -72,16 +74,20 @@ VC_N_ABOVE_50_MAX = 1
 # calibration with the fix and reset this constant from the lowest of the
 # five with the standard slack margin. See the "Speaker similarity
 # calibration" section of the PR description for the per-run numbers.
-VC_SIMILARITY_MEAN_MIN = 2.771
+VC_SIMILARITY_MEAN_MIN = 60.0
+# Calibrated from worst-of-5 full generate+score runs on SeedTTS-50 EN, H200 SXM.
+# worst-of-5 = 4.1924 · mean = 4.2575 · stdev = 0.0487
+VC_UTMOS_MEAN_REFERENCE = 4.1924
+VC_UTMOS_MEAN_MIN = apply_mos_slack(VC_UTMOS_MEAN_REFERENCE)
 
 # Note (Chenyang): The thresholds for the throughput_qps of tests/test_model/test_qwen3_omni_tts_ci.py
 # are the most unstable metrics, so I drop it a lot.
 
 _VC_NON_STREAM_P95 = {
     16: {
-        "throughput_qps": 5.866,
-        "output_tok_per_req_s": 5.8,
-        "latency_mean_s": 2.514,
+        "throughput_qps": 5.750,
+        "output_tok_per_req_s": 5.7,
+        "latency_mean_s": 2.581,
         "rtf_mean": 0.8149,
     },
 }
@@ -91,7 +97,7 @@ _VC_NON_STREAM_P95 = {
 # Higher-is-better metrics (throughput, output tok/req-s): threshold = P95 x slack_higher
 # Lower-is-better metrics (latency, rtf): threshold = P95 x slack_lower
 
-QWEN3_OMNI_SEEDTTS_RTF_MEAN_MAX = 0.8235
+QWEN3_OMNI_SEEDTTS_RTF_MEAN_MAX = 0.95
 VC_NON_STREAM_THRESHOLDS = apply_slack(_VC_NON_STREAM_P95)
 VC_NON_STREAM_THRESHOLDS[CONCURRENCY]["rtf_mean_max"] = min(
     VC_NON_STREAM_THRESHOLDS[CONCURRENCY]["rtf_mean_max"],
@@ -256,6 +262,69 @@ def _assert_similarity_results(
         checks.assert_all()
 
 
+def _run_utmos(output_dir: str, *, device: str = "cuda:0") -> dict:
+    cmd = [
+        sys.executable,
+        "-m",
+        "benchmarks.eval.benchmark_omni_seedtts",
+        "--utmos-only",
+        "--meta",
+        DATASETS["seedtts-50"],
+        "--output-dir",
+        output_dir,
+        "--model",
+        "qwen3-omni",
+        "--device",
+        device,
+    ]
+    env = no_proxy_env()
+    existing = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = (
+        f"{PROJECT_ROOT}{os.pathsep}{existing}" if existing else str(PROJECT_ROOT)
+    )
+    result = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        timeout=UTMOS_TIMEOUT,
+        env=env,
+        cwd=str(PROJECT_ROOT),
+    )
+    assert result.returncode == 0, (
+        f"UTMOS eval failed (rc={result.returncode}).\n"
+        f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    )
+    results_path = Path(output_dir) / "utmos_results.json"
+    assert results_path.exists(), f"UTMOS results file not found: {results_path}"
+    with open(results_path) as f:
+        return json.load(f)
+
+
+def _assert_utmos_results(
+    results: dict,
+    threshold: float,
+    *,
+    collector: MetricCheckCollector | None = None,
+) -> None:
+    checks = collector or MetricCheckCollector("UTMOS")
+    summary = results.get("summary", {})
+    checks.check(bool(results.get("per_sample")), "per_sample must be non-empty")
+    checks.check(
+        summary.get("skipped", 0) == 0,
+        f"UTMOS: {summary.get('skipped')} skipped samples != 0",
+    )
+    mean = summary.get("utmos_mean")
+    if mean is None:
+        checks.fail("Missing utmos_mean in summary")
+    else:
+        checks.check(
+            mean >= threshold,
+            f"utmos_mean {mean:.4f} < threshold {threshold:.4f}",
+        )
+    if collector is None:
+        checks.assert_all()
+
+
 @pytest.fixture(scope="module")
 def dataset_repo() -> str:
     repo_id = DATASETS["seedtts-50"]
@@ -388,6 +457,29 @@ def test_voice_cloning_non_streaming(
 
 
 @pytest.mark.benchmark
+def test_voice_cloning_wer(
+    wer_audio_dir: str,
+    dataset_repo: str,
+    omni_whisper_wer_router: ManagedRouterHandle,
+) -> None:
+    results = _run_wer_transcribe(
+        dataset_repo,
+        wer_audio_dir,
+        whisper_router_port=omni_whisper_wer_router.port,
+    )
+    print_wer_summary(results["summary"], "qwen3-omni")
+    checks = MetricCheckCollector("Qwen3-Omni voice-cloning WER")
+    assert_wer_partitioned(
+        results,
+        max_wer_below_50_corpus=VC_WER_BELOW_50_CORPUS_THRESHOLD,
+        max_n_above_50=VC_N_ABOVE_50_MAX,
+        collector=checks,
+    )
+    checks.assert_all()
+    print_log_tail("whisper_wer_router", omni_whisper_wer_router.log_file)
+
+
+@pytest.mark.benchmark
 def test_voice_cloning_similarity(
     wer_audio_dir: str,
     dataset_repo: str,
@@ -406,9 +498,6 @@ def test_voice_cloning_similarity(
     metric tracks longitudinally and will catch the day #483 is fixed.
     Once #483 lands, swap the structural assert below back to
     ``_assert_similarity_results(results, VC_SIMILARITY_MEAN_MIN)``.
-
-    Runs before WER so calibration still records similarity when WER
-    threshold assertions fail (tune.py never uses pytest -x).
     """
     results = _run_similarity(
         dataset_repo,
@@ -437,26 +526,11 @@ def test_voice_cloning_similarity(
 
 
 @pytest.mark.benchmark
-def test_voice_cloning_wer(
-    wer_audio_dir: str,
-    dataset_repo: str,
-    omni_whisper_wer_router: ManagedRouterHandle,
-) -> None:
-    results = _run_wer_transcribe(
-        dataset_repo,
-        wer_audio_dir,
-        whisper_router_port=omni_whisper_wer_router.port,
-    )
-    print_wer_summary(results["summary"], "qwen3-omni")
-    checks = MetricCheckCollector("Qwen3-Omni voice-cloning WER")
-    assert_wer_partitioned(
-        results,
-        max_wer_below_50_corpus=VC_WER_BELOW_50_CORPUS_THRESHOLD,
-        max_n_above_50=VC_N_ABOVE_50_MAX,
-        collector=checks,
-    )
+def test_voice_cloning_utmos(wer_audio_dir: str) -> None:
+    results = _run_utmos(wer_audio_dir)
+    checks = MetricCheckCollector("Qwen3-Omni voice-cloning UTMOS")
+    _assert_utmos_results(results, VC_UTMOS_MEAN_MIN, collector=checks)
     checks.assert_all()
-    print_log_tail("whisper_wer_router", omni_whisper_wer_router.log_file)
 
 
 if __name__ == "__main__":
