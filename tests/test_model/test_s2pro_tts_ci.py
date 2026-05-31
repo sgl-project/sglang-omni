@@ -51,6 +51,7 @@ from tests.test_model.omni_router_utils import (
     print_router_diagnostics,
     router_get_json,
 )
+from tests.test_model.omni_whisper_wer_utils import wait_for_gpu_memory_release
 from tests.utils import (
     MetricCheckCollector,
     apply_slack,
@@ -181,44 +182,29 @@ def _run_wer_transcribe(
     meta: str,
     output_dir: str,
     *,
+    whisper_router_port: int,
     stream: bool = False,
     lang: str = "en",
     device: str = "cuda:0",
 ) -> dict:
-    """Transcribe saved audio and compute WER in CI."""
-    cmd = [
-        sys.executable,
-        "-m",
-        WER_MODULE,
-        "--transcribe-only",
-        "--meta",
-        meta,
-        "--output-dir",
-        output_dir,
-        "--model",
-        S2PRO_MODEL_PATH,
-        "--lang",
-        lang,
-        "--device",
-        device,
-    ]
-    if stream:
-        cmd.append("--stream")
-
-    env = no_proxy_env()
-    existing_pp = env.get("PYTHONPATH", "")
-    env["PYTHONPATH"] = (
-        f"{PROJECT_ROOT}{os.pathsep}{existing_pp}" if existing_pp else str(PROJECT_ROOT)
+    """Transcribe saved audio and compute WER via Omni Whisper router."""
+    from benchmarks.eval.benchmark_tts_seedtts import (
+        TtsSeedttsBenchmarkConfig,
+        run_tts_seedtts_transcribe,
     )
 
-    result = subprocess.run(
-        cmd,
-        text=True,
-        timeout=WER_TIMEOUT,
-        env=env,
-        cwd=str(PROJECT_ROOT),
+    config = TtsSeedttsBenchmarkConfig(
+        model=S2PRO_MODEL_PATH,
+        meta=meta,
+        output_dir=output_dir,
+        lang=lang,
+        device=device,
+        stream=stream,
     )
-    assert result.returncode == 0, f"WER transcribe failed (rc={result.returncode})"
+    run_tts_seedtts_transcribe(
+        config,
+        whisper_router_port=whisper_router_port,
+    )
 
     results_path = Path(output_dir) / "wer_results.json"
     assert results_path.exists(), f"WER results file not found: {results_path}"
@@ -568,6 +554,7 @@ def wer_input_dirs(
 ) -> dict[str, dict[int, str]]:
     """Reuse saved benchmark audio for WER after freeing the TTS server GPU."""
     router_server.stop()
+    wait_for_gpu_memory_release()
 
     for output_dirs in SPEED_OUTPUT_DIRS.values():
         for output_dir in output_dirs.values():
@@ -699,6 +686,7 @@ def test_voice_cloning_wer(
     wer_input_dirs: dict[str, dict[int, str]],
     dataset_repo: str,
     selected_s2pro_tts_concurrencies: tuple[int, ...],
+    omni_whisper_wer_router: ManagedRouterHandle,
 ) -> None:
     checks = MetricCheckCollector("S2-Pro non-streaming WER")
     for concurrency in selected_s2pro_tts_concurrencies:
@@ -711,6 +699,7 @@ def test_voice_cloning_wer(
         results = _run_wer_transcribe(
             dataset_repo,
             wer_input_dirs["non_stream"][concurrency],
+            whisper_router_port=omni_whisper_wer_router.port,
         )
         assert_wer_results(
             results,
@@ -752,6 +741,7 @@ def test_voice_cloning_streaming_wer(
     wer_input_dirs: dict[str, dict[int, str]],
     dataset_repo: str,
     selected_s2pro_tts_concurrencies: tuple[int, ...],
+    omni_whisper_wer_router: ManagedRouterHandle,
 ) -> None:
     checks = MetricCheckCollector("S2-Pro streaming WER")
     for concurrency in selected_s2pro_tts_concurrencies:
@@ -765,6 +755,7 @@ def test_voice_cloning_streaming_wer(
             dataset_repo,
             wer_input_dirs["stream"][concurrency],
             stream=True,
+            whisper_router_port=omni_whisper_wer_router.port,
         )
         assert_wer_results(
             results,

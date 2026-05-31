@@ -199,6 +199,7 @@ class TtsSeedttsBenchmarkConfig:
     top_p: float | None = None
     top_k: int | None = None
     repetition_penalty: float | None = None
+    seed: int | None = None
     warmup: int = 1
     concurrency: int = 1
     request_rate: float = float("inf")
@@ -222,6 +223,8 @@ def _build_generation_kwargs(config: TtsSeedttsBenchmarkConfig) -> dict:
         generation_kwargs["top_k"] = config.top_k
     if config.repetition_penalty is not None:
         generation_kwargs["repetition_penalty"] = config.repetition_penalty
+    if config.seed is not None:
+        generation_kwargs["seed"] = config.seed
     return generation_kwargs
 
 
@@ -242,6 +245,7 @@ def _build_results_config(
         "stream": config.stream,
         "max_samples": config.max_samples,
         "max_new_tokens": config.max_new_tokens,
+        "seed": config.seed,
         "warmup": config.warmup,
         "concurrency": config.concurrency,
         "request_rate": config.request_rate,
@@ -296,7 +300,11 @@ async def run_tts_seedtts_benchmark(
     return benchmark_results
 
 
-def run_tts_seedtts_transcribe(config: TtsSeedttsBenchmarkConfig) -> dict:
+def run_tts_seedtts_transcribe(
+    config: TtsSeedttsBenchmarkConfig,
+    *,
+    whisper_router_port: int | None = None,
+) -> dict:
     """Transcribe saved audio and compute WER + ASR speed metrics.
 
     Server need not be running.
@@ -322,6 +330,7 @@ def run_tts_seedtts_transcribe(config: TtsSeedttsBenchmarkConfig) -> dict:
         config,
         wer_config=wer_config,
         generation_mode=generation_mode,
+        whisper_router_port=whisper_router_port,
     )
 
 
@@ -347,6 +356,7 @@ def _config_from_args(args: argparse.Namespace) -> TtsSeedttsBenchmarkConfig:
         top_p=args.top_p,
         top_k=args.top_k,
         repetition_penalty=args.repetition_penalty,
+        seed=args.seed,
         warmup=args.warmup,
         concurrency=args.concurrency,
         request_rate=args.request_rate,
@@ -437,6 +447,12 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--top-p", type=float, default=None)
     parser.add_argument("--top-k", type=int, default=None)
     parser.add_argument("--repetition-penalty", type=float, default=None)
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Per-request sampler seed for reproducible generation.",
+    )
     parser.add_argument("--warmup", type=int, default=1)
     parser.add_argument(
         "--concurrency",

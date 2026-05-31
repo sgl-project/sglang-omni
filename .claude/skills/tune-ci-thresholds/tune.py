@@ -107,8 +107,16 @@ METRIC_SPECS = {
     "latency_mean_s":       dict(worst="max", label="Latency mean (s)",      digits=3, scale=1,   group="speed"),
     "latency_p95_s":        dict(worst="max", label="Latency p95 (s)",       digits=3, scale=1,   group="speed"),
     "rtf_mean":             dict(worst="max", label="RTF mean",              digits=4, scale=1,   group="speed"),
+    "rtf_p95":              dict(worst="max", label="RTF p95",               digits=4, scale=1,   group="speed"),
 }
-_NESTED = {"throughput_qps", "output_tok_per_req_s", "latency_mean_s", "latency_p95_s", "rtf_mean"}
+_NESTED = {
+    "throughput_qps",
+    "output_tok_per_req_s",
+    "latency_mean_s",
+    "latency_p95_s",
+    "rtf_mean",
+    "rtf_p95",
+}
 
 _DEFAULT_METRIC_PATHS = {
     "accuracy": "summary.accuracy",
@@ -152,6 +160,13 @@ def match_metric(name, nested):
     if "N_ABOVE_50_MAX" in name: return "n_above_50"
     if "WER_MAX_CORPUS" in name: return "corpus_wer"
     if "WER_MAX_PER_SAMPLE" in name: return "per_sample_wer_max"
+    if "CORPUS_WER_MAX" in name: return "corpus_wer"
+    if "SAMPLE_WER_MAX" in name: return "per_sample_wer_max"
+    if "THROUGHPUT_MIN" in name: return "throughput_qps"
+    if "LATENCY_MEAN_MAX" in name: return "latency_mean_s"
+    if "LATENCY_P95_MAX" in name: return "latency_p95_s"
+    if "RTF_MEAN_MAX" in name: return "rtf_mean"
+    if "RTF_P95_MAX" in name: return "rtf_p95"
     return None
 
 

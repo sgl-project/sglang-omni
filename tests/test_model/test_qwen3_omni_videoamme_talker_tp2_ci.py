@@ -28,6 +28,8 @@ from benchmarks.metrics.performance import print_speed_summary
 from benchmarks.metrics.video import print_videomme_accuracy_summary
 from benchmarks.metrics.wer import print_wer_summary
 from benchmarks.tasks.tts import compute_text_audio_consistency_from_records
+from tests.test_model.omni_router_utils import ManagedRouterHandle
+from tests.test_model.omni_whisper_wer_utils import wait_for_gpu_memory_release
 from tests.utils import (
     MetricCheckCollector,
     ServerHandle,
@@ -140,6 +142,7 @@ def wer_eval_artifacts(
 ) -> _TalkerEvalArtifacts:
     """Reuse saved benchmark audio for WER after freeing the talker server GPU."""
     stop_server(qwen3_omni_fp8_talker_server_tp2.proc)
+    wait_for_gpu_memory_release()
     return talker_eval_artifacts
 
 
@@ -190,13 +193,17 @@ def test_videoamme_talker_tp2_accuracy_and_speed(
 
 
 @pytest.mark.benchmark
-def test_videoamme_talker_tp2_wer(wer_eval_artifacts: _TalkerEvalArtifacts) -> None:
+def test_videoamme_talker_tp2_wer(
+    wer_eval_artifacts: _TalkerEvalArtifacts,
+    omni_whisper_wer_router: ManagedRouterHandle,
+) -> None:
     """Transcribe saved talker audio after the inference server is stopped."""
     wer = compute_text_audio_consistency_from_records(
         wer_eval_artifacts.per_sample,
         wer_eval_artifacts.lang,
         ASR_DEVICE,
         audio_dir=wer_eval_artifacts.audio_dir,
+        whisper_router_port=omni_whisper_wer_router.port,
     )
     print_wer_summary(wer["summary"], "qwen3-omni")
     checks = MetricCheckCollector("Video-AMME Talker TP=2 WER")

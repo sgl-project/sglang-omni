@@ -63,13 +63,19 @@ class RouterWorkerTrafficGuard:
     label: str
     before_snapshot: dict
 
-    def assert_served(self, *, min_total_requests: int | None = None) -> None:
+    def assert_served(
+        self,
+        *,
+        min_total_requests: int | None = None,
+        min_worker_share: float = 0.10,
+    ) -> None:
         try:
             assert_workers_served_requests_since(
                 port=self.handle.port,
                 before_snapshot=self.before_snapshot,
                 label=self.label,
                 min_total_requests=min_total_requests,
+                min_worker_share=min_worker_share,
             )
         except Exception:
             print_router_diagnostics(self.handle)
@@ -300,6 +306,7 @@ def assert_workers_served_requests_since(
     before_snapshot: dict,
     label: str,
     min_total_requests: int | None = None,
+    min_worker_share: float = 0.10,
 ) -> None:
     delta_snapshot = _worker_request_delta(
         before_snapshot,
@@ -309,6 +316,7 @@ def assert_workers_served_requests_since(
     assert_workers_served_requests(
         delta_snapshot,
         min_total_requests=min_total_requests,
+        min_worker_share=min_worker_share,
     )
 
 

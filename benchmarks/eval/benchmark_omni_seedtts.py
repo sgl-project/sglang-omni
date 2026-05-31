@@ -356,7 +356,11 @@ async def run_omni_seedtts_benchmark(
     return benchmark_results
 
 
-def evaluate_generated_audio(config: OmniSeedttsBenchmarkConfig) -> dict:
+def evaluate_generated_audio(
+    config: OmniSeedttsBenchmarkConfig,
+    *,
+    whisper_router_port: int | None = None,
+) -> dict:
     """Transcribe previously saved audio with ASR and compute WER + ASR speed.
 
     note (Chenyang): Server need not be running.
@@ -374,6 +378,7 @@ def evaluate_generated_audio(config: OmniSeedttsBenchmarkConfig) -> dict:
         config,
         wer_config=wer_config,
         log_per_sample=True,
+        whisper_router_port=whisper_router_port,
     )
 
 

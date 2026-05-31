@@ -33,6 +33,7 @@ from tests.test_model.omni_router_utils import (
     print_worker_snapshot,
     router_get_json,
 )
+from tests.test_model.omni_whisper_wer_utils import wait_for_gpu_memory_release
 from tests.utils import (
     MetricCheckCollector,
     apply_slack,
@@ -123,50 +124,27 @@ def _run_benchmark(
 def _run_wer_transcribe(
     meta: str,
     output_dir: str,
+    *,
+    whisper_router_port: int,
     lang: str = "en",
     device: str = "cuda:0",
 ) -> dict:
-    """Transcribe saved audio and compute WER in CI.
-
-    note (Chenyang): We invoke the benchmark as python -m
-    benchmarks.eval.benchmark_omni_seedtts rather than via a direct file
-    path so the benchmarks package is discovered via PEP 420 namespace
-    lookup from the project root (which PYTHONPATH guarantees below).
-    """
-    cmd = [
-        sys.executable,
-        "-m",
-        "benchmarks.eval.benchmark_omni_seedtts",
-        "--transcribe-only",
-        "--meta",
-        meta,
-        "--output-dir",
-        output_dir,
-        "--model",
-        "qwen3-omni",
-        "--lang",
-        lang,
-        "--device",
-        device,
-    ]
-
-    env = no_proxy_env()
-    existing = env.get("PYTHONPATH", "")
-    env["PYTHONPATH"] = (
-        f"{PROJECT_ROOT}{os.pathsep}{existing}" if existing else str(PROJECT_ROOT)
+    """Transcribe saved audio and compute WER via Omni Whisper router."""
+    from benchmarks.eval.benchmark_omni_seedtts import (
+        OmniSeedttsBenchmarkConfig,
+        evaluate_generated_audio,
     )
 
-    result = subprocess.run(
-        cmd,
-        capture_output=True,
-        text=True,
-        timeout=WER_TIMEOUT,
-        env=env,
-        cwd=str(PROJECT_ROOT),
+    config = OmniSeedttsBenchmarkConfig(
+        model="qwen3-omni",
+        meta=meta,
+        output_dir=output_dir,
+        lang=lang,
+        device=device,
     )
-    assert result.returncode == 0, (
-        f"WER transcribe failed (rc={result.returncode}).\n"
-        f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    evaluate_generated_audio(
+        config,
+        whisper_router_port=whisper_router_port,
     )
 
     results_path = Path(output_dir) / "wer_results.json"
@@ -185,7 +163,7 @@ def _run_wer_transcribe(
     if summary.get("skipped", 0) > 0:
         print(
             f"\n[WER DIAGNOSTIC] {summary['skipped']}/{summary['total_samples']} "
-            f"samples skipped.\nSubprocess stderr:\n{result.stderr}"
+            "samples skipped."
         )
         for sample in wer_results["per_sample"]:
             if not sample.get("is_success", True):
@@ -347,6 +325,7 @@ def wer_audio_dir(
 ) -> str:
     """Reuse speed-benchmark audio for WER after freeing the TTS server GPU."""
     qwen3_omni_router_server.stop()
+    wait_for_gpu_memory_release()
     generated_path = Path(speed_artifacts.output_dir) / "generated.json"
     assert generated_path.exists(), f"WER metadata missing: {generated_path}"
     return speed_artifacts.output_dir
@@ -408,13 +387,14 @@ def test_voice_cloning_non_streaming(
 
 @pytest.mark.benchmark
 def test_voice_cloning_wer(
-    qwen3_omni_router_server: ManagedRouterHandle,
     wer_audio_dir: str,
     dataset_repo: str,
+    omni_whisper_wer_router: ManagedRouterHandle,
 ) -> None:
     results = _run_wer_transcribe(
         dataset_repo,
         wer_audio_dir,
+        whisper_router_port=omni_whisper_wer_router.port,
     )
     print_wer_summary(results["summary"], "qwen3-omni")
     checks = MetricCheckCollector("Qwen3-Omni voice-cloning WER")
@@ -425,7 +405,7 @@ def test_voice_cloning_wer(
         collector=checks,
     )
     checks.assert_all()
-    print_log_tail("router", qwen3_omni_router_server.log_file)
+    print_log_tail("whisper_wer_router", omni_whisper_wer_router.log_file)
 
 
 @pytest.mark.benchmark
