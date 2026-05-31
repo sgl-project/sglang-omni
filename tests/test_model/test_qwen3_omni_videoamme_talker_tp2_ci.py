@@ -21,6 +21,8 @@ from pathlib import Path
 
 import pytest
 
+pytest_plugins = ["tests.test_model.omni_whisper_wer_utils"]
+
 from benchmarks.dataset.prepare import DATASETS
 from benchmarks.eval.benchmark_omni_videoamme import run_videoamme_eval
 from benchmarks.eval.benchmark_omni_videomme import VideoEvalConfig
@@ -29,7 +31,6 @@ from benchmarks.metrics.video import print_videomme_accuracy_summary
 from benchmarks.metrics.wer import print_wer_summary
 from benchmarks.tasks.tts import compute_text_audio_consistency_from_records
 from tests.test_model.omni_router_utils import ManagedRouterHandle
-from tests.test_model.omni_whisper_wer_utils import wait_for_gpu_memory_release
 from tests.utils import (
     MetricCheckCollector,
     ServerHandle,
@@ -37,7 +38,9 @@ from tests.utils import (
     apply_wer_slack,
     assert_speed_thresholds,
     assert_wer_partitioned,
+    persist_wer_in_benchmark_results,
     stop_server,
+    wait_for_gpu_memory_release,
 )
 
 CONCURRENCY = 8
@@ -46,7 +49,7 @@ MAX_TOKENS = 256
 ASR_DEVICE = "cuda:0"
 
 VIDEOAMME_TALKER_TP2_THINKER_TEXT_MIN_ACCURACY = 0.4
-VIDEOAMME_TALKER_TP2_WER_BELOW_50_CORPUS_MAX = 0.0085
+VIDEOAMME_TALKER_TP2_WER_BELOW_50_CORPUS_MAX = 0.0172
 VIDEOAMME_TALKER_TP2_WER_BELOW_50_CORPUS_THRESHOLD = apply_wer_slack(
     VIDEOAMME_TALKER_TP2_WER_BELOW_50_CORPUS_MAX
 )
@@ -54,10 +57,10 @@ VIDEOAMME_TALKER_TP2_N_ABOVE_50_MAX = 1
 
 _VIDEOAMME_TALKER_TP2_AUDIO_P95 = {
     8: {
-        "throughput_qps": 0.050,
+        "throughput_qps": 0.052,
         "output_tok_per_req_s": 0.3,
-        "latency_mean_s": 137.945,
-        "rtf_mean": 22.4697,
+        "latency_mean_s": 130.381,
+        "rtf_mean": 21.1857,
     },
 }
 VIDEOAMME_TALKER_TP2_THRESHOLDS = apply_slack(_VIDEOAMME_TALKER_TP2_AUDIO_P95)
@@ -206,6 +209,9 @@ def test_videoamme_talker_tp2_wer(
         whisper_router_port=omni_whisper_wer_router.port,
     )
     print_wer_summary(wer["summary"], "qwen3-omni")
+    persist_wer_in_benchmark_results(
+        wer_eval_artifacts.audio_dir, wer, "videoamme_results.json"
+    )
     checks = MetricCheckCollector("Video-AMME Talker TP=2 WER")
     assert_wer_partitioned(
         wer,

@@ -14,21 +14,21 @@ if TYPE_CHECKING:
 
     from tests.utils import ServerHandle
 
-S2PRO_TTS_ALLOWED_CONCURRENCIES = (1, 2, 4, 8, 16)
-S2PRO_STAGE_NONSTREAM = "s2pro-stage-1-nonstream"
-S2PRO_STAGE_STREAM = "s2pro-stage-2-stream"
-S2PRO_STAGE_CONSISTENCY = "s2pro-stage-3-consistency"
-S2PRO_CI_STAGES = (
-    S2PRO_STAGE_NONSTREAM,
-    S2PRO_STAGE_STREAM,
-    S2PRO_STAGE_CONSISTENCY,
+TTS_ALLOWED_CONCURRENCIES = (1, 2, 4, 8, 16)
+TTS_STAGE_NONSTREAM = "tts-stage-1-nonstream"
+TTS_STAGE_STREAM = "tts-stage-2-stream"
+TTS_STAGE_CONSISTENCY = "tts-stage-3-consistency"
+TTS_CI_STAGES = (
+    TTS_STAGE_NONSTREAM,
+    TTS_STAGE_STREAM,
+    TTS_STAGE_CONSISTENCY,
 )
-S2PRO_TTS_FULL_SWEEP_VALUE = "all"
-S2PRO_STAGE_ALL = "all"
-S2PRO_TTS_CONCURRENCY_OPTION = "--concurrency"
-SELECTED_S2PRO_TTS_CONCURRENCIES = pytest.StashKey[tuple[int, ...]]()
-S2PRO_STAGE_OPTION = "--s2pro-stage"
-SELECTED_S2PRO_CI_STAGE = pytest.StashKey[str]()
+TTS_FULL_SWEEP_VALUE = "all"
+TTS_STAGE_ALL = "all"
+TTS_CONCURRENCY_OPTION = "--concurrency"
+SELECTED_TTS_CONCURRENCIES = pytest.StashKey[tuple[int, ...]]()
+TTS_STAGE_OPTION = "--tts-stage"
+SELECTED_TTS_CI_STAGE = pytest.StashKey[str]()
 QWEN3_OMNI_MODEL_PATH = "Qwen/Qwen3-Omni-30B-A3B-Instruct"
 # Single source of truth for the model path used by Qwen3-Omni vision-encoder
 # benchmarks and the SGLang state they bring up. Honors
@@ -46,6 +46,9 @@ QWEN3_OMNI_ROUTER_WAIT_TIMEOUT = 180
 QWEN3_OMNI_COLOCATED_WORKER_ARGS = (
     "--config examples/configs/qwen3_omni_colocated_h20.yaml --colocate"
 )
+QWEN3_OMNI_MMMU_WORKER_ARGS = (
+    "--config examples/configs/qwen3_omni_mmmu.yaml --text-only"
+)
 QWEN3_OMNI_MMSU_WORKER_ARGS = (
     "--config examples/configs/qwen3_omni_mmsu.yaml --text-only"
 )
@@ -62,6 +65,16 @@ def qwen3_omni_router_server(tmp_path_factory: pytest.TempPathFactory):
     with _launch_qwen3_omni_router(
         tmp_path_factory,
         worker_extra_args=QWEN3_OMNI_COLOCATED_WORKER_ARGS,
+    ) as router:
+        yield router
+
+
+@pytest.fixture(scope="module")
+def qwen3_omni_mmmu_server(tmp_path_factory: pytest.TempPathFactory):
+    """Router-backed Qwen3-Omni endpoint tuned for MMMU text-output CI."""
+    with _launch_qwen3_omni_router(
+        tmp_path_factory,
+        worker_extra_args=QWEN3_OMNI_MMMU_WORKER_ARGS,
     ) as router:
         yield router
 
@@ -325,50 +338,48 @@ def qwen3_omni_vision_sglang_env():
 
 def pytest_addoption(parser: pytest.Parser) -> None:
     parser.addoption(
-        S2PRO_TTS_CONCURRENCY_OPTION,
+        TTS_CONCURRENCY_OPTION,
         action="store",
         default="1",
         help=(
-            "Select the S2-Pro TTS benchmark concurrency. "
+            "Select the TTS benchmark concurrency. "
             "Use one of {1,2,4,8,16} or 'all' for the full sweep."
         ),
     )
     parser.addoption(
-        S2PRO_STAGE_OPTION,
+        TTS_STAGE_OPTION,
         action="store",
-        default=S2PRO_STAGE_ALL,
+        default=TTS_STAGE_ALL,
         help=(
-            "Select the S2-Pro CI stage. "
-            f"Use one of {S2PRO_CI_STAGES} or '{S2PRO_STAGE_ALL}'."
+            "Select the TTS CI stage. "
+            f"Use one of {TTS_CI_STAGES} or '{TTS_STAGE_ALL}'."
         ),
     )
 
 
 def pytest_configure(config: pytest.Config) -> None:
-    option_value = config.getoption(S2PRO_TTS_CONCURRENCY_OPTION)
-    config.stash[SELECTED_S2PRO_TTS_CONCURRENCIES] = _parse_s2pro_tts_concurrency(
-        option_value
-    )
-    stage_value = config.getoption(S2PRO_STAGE_OPTION)
-    config.stash[SELECTED_S2PRO_CI_STAGE] = _parse_s2pro_ci_stage(stage_value)
+    option_value = config.getoption(TTS_CONCURRENCY_OPTION)
+    config.stash[SELECTED_TTS_CONCURRENCIES] = _parse_tts_concurrency(option_value)
+    stage_value = config.getoption(TTS_STAGE_OPTION)
+    config.stash[SELECTED_TTS_CI_STAGE] = _parse_tts_ci_stage(stage_value)
 
 
 @pytest.fixture(scope="session")
-def selected_s2pro_tts_concurrencies(
+def selected_tts_concurrencies(
     pytestconfig: pytest.Config,
 ) -> tuple[int, ...]:
-    return pytestconfig.stash[SELECTED_S2PRO_TTS_CONCURRENCIES]
+    return pytestconfig.stash[SELECTED_TTS_CONCURRENCIES]
 
 
 @pytest.fixture(scope="session")
-def selected_s2pro_ci_stage(pytestconfig: pytest.Config) -> str:
-    return pytestconfig.stash[SELECTED_S2PRO_CI_STAGE]
+def selected_tts_ci_stage(pytestconfig: pytest.Config) -> str:
+    return pytestconfig.stash[SELECTED_TTS_CI_STAGE]
 
 
-def _parse_s2pro_tts_concurrency(option_value: str) -> tuple[int, ...]:
+def _parse_tts_concurrency(option_value: str) -> tuple[int, ...]:
     normalized_value = option_value.strip().lower()
-    if normalized_value == S2PRO_TTS_FULL_SWEEP_VALUE:
-        return S2PRO_TTS_ALLOWED_CONCURRENCIES
+    if normalized_value == TTS_FULL_SWEEP_VALUE:
+        return TTS_ALLOWED_CONCURRENCIES
 
     try:
         concurrency = int(normalized_value)
@@ -377,22 +388,22 @@ def _parse_s2pro_tts_concurrency(option_value: str) -> tuple[int, ...]:
             "Invalid value for --concurrency. " "Use one of {1,2,4,8,16} or 'all'."
         ) from exc
 
-    if concurrency not in S2PRO_TTS_ALLOWED_CONCURRENCIES:
+    if concurrency not in TTS_ALLOWED_CONCURRENCIES:
         raise pytest.UsageError(
             f"Unsupported concurrency {concurrency}. "
-            f"Use one of {S2PRO_TTS_ALLOWED_CONCURRENCIES} or 'all'."
+            f"Use one of {TTS_ALLOWED_CONCURRENCIES} or 'all'."
         )
     return (concurrency,)
 
 
-def _parse_s2pro_ci_stage(option_value: str) -> str:
+def _parse_tts_ci_stage(option_value: str) -> str:
     normalized_value = option_value.strip().lower()
-    if normalized_value == S2PRO_STAGE_ALL:
-        return S2PRO_STAGE_ALL
-    if normalized_value not in S2PRO_CI_STAGES:
+    if normalized_value == TTS_STAGE_ALL:
+        return TTS_STAGE_ALL
+    if normalized_value not in TTS_CI_STAGES:
         raise pytest.UsageError(
-            f"Unsupported value for {S2PRO_STAGE_OPTION}: {option_value!r}. "
-            f"Use one of {S2PRO_CI_STAGES} or '{S2PRO_STAGE_ALL}'."
+            f"Unsupported value for {TTS_STAGE_OPTION}: {option_value!r}. "
+            f"Use one of {TTS_CI_STAGES} or '{TTS_STAGE_ALL}'."
         )
     return normalized_value
 
@@ -401,35 +412,35 @@ def pytest_collection_modifyitems(
     config: pytest.Config, items: list[pytest.Item]
 ) -> None:
     for item in items:
-        if item.path.name != "test_s2pro_tts_ci.py":
+        if item.path.name != "test_tts_ci.py":
             continue
 
-        stage_markers = tuple(item.iter_markers(name="s2pro_stage"))
+        stage_markers = tuple(item.iter_markers(name="tts_stage"))
         if len(stage_markers) != 1:
             raise pytest.UsageError(
-                "Each test in tests/test_model/test_s2pro_tts_ci.py must have "
-                "exactly one s2pro_stage marker."
+                "Each test in tests/test_model/test_tts_ci.py must have "
+                "exactly one tts_stage marker."
             )
 
         stage_ids = tuple(str(arg) for arg in stage_markers[0].args)
-        if len(stage_ids) != 1 or stage_ids[0] not in S2PRO_CI_STAGES:
+        if len(stage_ids) != 1 or stage_ids[0] not in TTS_CI_STAGES:
             raise pytest.UsageError(
-                "Each s2pro_stage marker in tests/test_model/test_s2pro_tts_ci.py "
-                f"must provide exactly one valid stage ID from {S2PRO_CI_STAGES}."
+                "Each tts_stage marker in tests/test_model/test_tts_ci.py "
+                f"must provide exactly one valid stage ID from {TTS_CI_STAGES}."
             )
 
-    selected_stage = config.stash.get(SELECTED_S2PRO_CI_STAGE, S2PRO_STAGE_ALL)
-    if selected_stage == S2PRO_STAGE_ALL:
+    selected_stage = config.stash.get(SELECTED_TTS_CI_STAGE, TTS_STAGE_ALL)
+    if selected_stage == TTS_STAGE_ALL:
         return
 
     selected_items: list[pytest.Item] = []
     deselected_items: list[pytest.Item] = []
     for item in items:
-        if item.path.name != "test_s2pro_tts_ci.py":
+        if item.path.name != "test_tts_ci.py":
             selected_items.append(item)
             continue
 
-        stage_marker = item.get_closest_marker("s2pro_stage")
+        stage_marker = item.get_closest_marker("tts_stage")
         assert stage_marker is not None
         stage_ids = tuple(str(arg) for arg in stage_marker.args)
         if selected_stage in stage_ids:

@@ -11,9 +11,9 @@ inputs:
   artifact-search-root:
     description: >
       Directory that `find` descends into when resolving `artifact-path-globs`.
-      Qwen3-Omni tests write to `/tmp` via pytest `tmp_path`; S2-Pro tests
-      write under `stage-results/<name>/` inside `$GITHUB_WORKSPACE`. Set
-      accordingly.
+      Qwen3-Omni tests write to `/tmp` via pytest `tmp_path`; staged TTS CI
+      tests write under `stage-results/<name>/` inside `$GITHUB_WORKSPACE`.
+      Set accordingly.
     required: false
     default: "/tmp"
   artifact-path-globs:
@@ -45,8 +45,9 @@ inputs:
     default: "ignore"
   summary-only:
     description: >
-      When "true", strips the `per_sample` field before printing large result
-      files to the log. The uploaded artifact still contains the full data.
+      When "true", strips the `per_sample` and `per_request` fields before
+      printing large result files to the log. The uploaded artifact still
+      contains the full data.
     required: false
     default: "false"
 
@@ -91,7 +92,7 @@ runs:
         while IFS= read -r f; do
           echo "--- $f ---"
           if [ "$SUMMARY_ONLY" = "true" ]; then
-            python -c "import json,sys; d=json.load(open(sys.argv[1])); d.pop('per_sample',None); print(json.dumps(d, indent=2, ensure_ascii=False))" "$f"
+            python -c "import json,sys; d=json.load(open(sys.argv[1])); d.pop('per_sample',None); d.pop('per_request',None); print(json.dumps(d, indent=2, ensure_ascii=False))" "$f"
           else
             cat "$f"
           fi

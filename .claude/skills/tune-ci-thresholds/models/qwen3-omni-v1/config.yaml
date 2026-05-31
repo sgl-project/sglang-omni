@@ -12,14 +12,14 @@ hf_datasets:
   - "zhaochenyang20/seed-tts-eval-50-arrow"
   - "zhaochenyang20/Video_MME_ci"
   - "zhaochenyang20/Video_AMME_ci"
-# CI uses OMNI_CI_HOME=/github/home/pr-<N>/qwen3 on Actions runners.
+# CI uses OMNI_CI_HOME=/github/home/pr-<N> on Actions runners.
 # Calibration uses a fixed slice with the same layout (no PR number).
-omni_ci_home: "/github/home/calibration/qwen3"
+omni_ci_home: "/github/home/calibration"
 default_venv_python:
-  - "/sgl-workspace/sglang-omni/omni-qwen3/bin/python"
-  - "/github/home/calibration/qwen3/omni-qwen3/bin/python"
-  - "/github/home/omni-qwen3/bin/python"
-# CI's omni-qwen3 venv has openai-whisper installed, so
+  - "/sgl-workspace/sglang-omni/omni/bin/python"
+  - "/github/home/calibration/omni/bin/python"
+  - "/github/home/omni/bin/python"
+# CI omni venv has openai-whisper installed, so
 # `_get_en_normalizer()` resolves to whisper.normalizers.EnglishTextNormalizer
 # (contractions expanded, numbers→words, etc.). precheck warns if the local
 # venv falls back to the punctuation-strip path.
@@ -27,16 +27,17 @@ expected_wer_normalizer: "english"
 # Env vars tune.py applies at startup (matches .github/actions/omni-setup).
 auto_env:
   HOME: "/github/home"
-  OMNI_CI_HOME: "/github/home/calibration/qwen3"
+  OMNI_CI_HOME: "/github/home/calibration"
   HF_HOME: "/github/home/.cache/huggingface"
   MODELSCOPE_CACHE: "/github/home/.cache/modelscope"
-  XDG_CACHE_HOME: "/github/home/calibration/qwen3/.cache"
+  XDG_CACHE_HOME: "/github/home/calibration/.cache"
   HF_ENDPOINT: "https://hf-mirror.com"
   HF_HUB_DISABLE_XET: "1"
   UV_INDEX_URL: "https://pypi.tuna.tsinghua.edu.cn/simple"
   UV_CACHE_DIR: "/github/home/.cache/uv"
-  TORCHINDUCTOR_CACHE_DIR: "/github/home/calibration/qwen3/.torchinductor"
+  TORCHINDUCTOR_CACHE_DIR: "/github/home/calibration/.torchinductor"
   FLASHINFER_DISABLE_VERSION_CHECK: "1"
+  SEEDTTS_SIM_CACHE_DIR: "/github/home/seedtts-wavlm-sim"
 # Number of GPUs each test needs. tune.py picks that many free GPUs
 # via CUDA_VISIBLE_DEVICES before each pytest invocation. Qwen benchmark CI
 # runs one router plus two colocated one-GPU workers, so stages need 2.
@@ -80,7 +81,7 @@ metric_sources:
       output_tok_per_req_s: "speed.output_tok_per_req_s"
       latency_mean_s: "speed.latency_mean_s"
   test_qwen3_omni_mmmu_talker_ci.py:
-    json_file: "test_mmmu_audio_wer_and_speed0/mmmu_audio/mmmu_results.json"
+    json_file: "mmmu_audio0/mmmu_results.json"
     sample_counts:
       total: "summary.total_samples"
       ok: "speed.completed_requests"
@@ -103,7 +104,7 @@ metric_sources:
       output_tok_per_req_s: "speed_metrics.output_tok_per_req_s"
       latency_mean_s: "speed_metrics.latency_mean_s"
   test_qwen3_omni_mmsu_talker_ci.py:
-    json_file: "test_mmsu_audio_wer_and_speed0/mmsu_audio/mmsu_results.json"
+    json_file: "mmsu_audio0/mmsu_results.json"
     sample_counts:
       total: "summary.total_samples"
       ok: "summary.successful_samples"
@@ -126,7 +127,7 @@ metric_sources:
       output_tok_per_req_s: "speed.output_tok_per_req_s"
       latency_mean_s: "speed.latency_mean_s"
   test_qwen3_omni_videomme_talker_ci.py:
-    json_file: "test_videomme_tts_accuracy_wer0/videomme_audio/videomme_results.json"
+    json_file: "videomme_audio0/videomme_results.json"
     sample_counts:
       total: "summary.total_samples"
       ok: "speed.completed_requests"
@@ -151,7 +152,7 @@ metric_sources:
       output_tok_per_req_s: "speed.output_tok_per_req_s"
       latency_mean_s: "speed.latency_mean_s"
   test_qwen3_omni_videoamme_talker_ci.py:
-    json_file: "test_videoamme_talker_accuracy0/videoamme_audio/videoamme_results.json"
+    json_file: "videoamme_audio0/videoamme_results.json"
     sample_counts:
       total: "summary.total_samples"
       ok: "speed.completed_requests"
@@ -164,7 +165,7 @@ metric_sources:
       latency_mean_s: "speed.latency_mean_s"
       rtf_mean: "speed.rtf_mean"
   test_qwen3_omni_videoamme_talker_tp2_ci.py:
-    json_file: "test_videoamme_talker_tp2_accu0/videoamme_audio/videoamme_results.json"
+    json_file: "videoamme_audio0/videoamme_results.json"
     sample_counts:
       total: "summary.total_samples"
       ok: "speed.completed_requests"
@@ -189,3 +190,4 @@ metric_sources:
       per_sample_wer_max: "vc_nonstream0/wer_results.json::summary.wer_per_sample_max"
       wer_below_50_corpus: "vc_nonstream0/wer_results.json::summary.wer_below_50_corpus"
       n_above_50: "vc_nonstream0/wer_results.json::summary.n_above_50_pct_wer"
+      similarity_mean: "vc_nonstream0/similarity_results.json::summary.speaker_similarity_mean"

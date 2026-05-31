@@ -11,7 +11,7 @@ tests/
 │   ├── conftest.py
 │   ├── test_qwen3_omni_*_ci.py
 │   ├── test_qwen3_omni_videoamme_talker_tp2_ci.py
-│   ├── test_s2pro_tts_ci.py
+│   ├── test_tts_ci.py
 │   ├── test_whisper_asr_ci.py
 │   └── omni_whisper_wer_utils.py
 └── unit_test/
@@ -100,8 +100,8 @@ Tag each test with the marker that matches its lane and use it to filter runs.
   out hardware needs.
 - `docs`: documented-example tests in `docs/`. Verify documented request
   shapes and CLI snippets still work.
-- `s2pro_stage(name)`: in-file CI stage selector for S2-Pro benchmarks.
-  Combined with `--s2pro-stage` (see `test_model/conftest.py`).
+- `tts_stage(name)`: in-file CI stage selector for TTS benchmarks.
+  Combined with `--tts-stage` (see `test_model/conftest.py`).
 
 
 ## Root Files
@@ -160,17 +160,17 @@ Relevant model CI ownership:
   calibration (`whisper-asr-v1` in `tune-ci-thresholds`).
 - `omni_whisper_wer_utils.py`: shared fixture/helpers for talker/TTS WER CI —
   stops the upstream model server, runs `ensure_gpus_idle.sh`, then launches
-  a DP=2 Whisper router for ASR. Used by Qwen3 talker WER tests and S2-Pro TTS
+  a DP=2 Whisper router for ASR. Used by Qwen3 talker WER tests and TTS
   WER tests instead of the in-process transformers Whisper pipeline.
-- Talker / video WER CI (`test_qwen3_omni_*_talker_ci.py`, `test_s2pro_tts_ci.py`):
+- Talker / video WER CI (`test_qwen3_omni_*_talker_ci.py`, `test_tts_ci.py`):
   generate audio with the model router first, tear down that server, free both
   GPUs, then transcribe saved WAVs through the Omni Whisper router. Long talker
   clips (>30 s) are chunked client-side in `benchmarks/tasks/tts.py` to match
   the transformers `chunk_length_s=30` behavior.
-- CI env alignment on the H20 repro host: `source .github/scripts/ci_env_qwen3.sh`
-  (Qwen3-Omni) or `source .github/scripts/ci_env_s2pro.sh` (S2-Pro / Whisper).
+- CI env alignment on the H20 repro host: `source .github/scripts/ci_env.sh`
+  then `source omni/bin/activate`.
   Full WER sweep: `.github/scripts/run_all_wer_ci_aligned.sh` (milestones on
-  stdout; details in `/tmp/wer_ci_qwen3.log` and `/tmp/wer_ci_s2pro.log`).
+  stdout; details in `/tmp/wer_ci_qwen3.log` and `/tmp/wer_ci_tts.log`).
 - GPU handoff between stages: `.github/scripts/ensure_gpus_idle.sh` (kills orphan
   spawn/router workers, waits for VRAM below threshold).
 - `qwen3_omni_vision_sglang_env`: session-scoped SGLang dist + DP-attention
@@ -202,6 +202,17 @@ MING_OMNI_MODEL_NAME=ming-omni \
 python3 -m pytest tests/test_model/test_ming_tp_parity_ci.py -q -s
 ```
 
+- `test_tts_ci.py`: default TTS CI gate. It starts the TTS managed router
+  with two one-GPU workers using the default model config, runs the
+  full SeedTTS EN set (1088 samples) in non-streaming / streaming stages at
+  concurrency 16, and frees the server GPUs before ASR/WER and
+  speaker-similarity checks.
+- `test_tts_consistency_artifacts.py`: CPU-only stage-3 check that compares
+  TTS non-stream and streaming `speed_results.json` under
+  `${OMNI_CI_HOME}/tts-stage-results/{nonstream,stream}/`.
+- CLI flags `--tts-stage {tts-stage-1-nonstream,tts-stage-2-stream,tts-stage-3-consistency,all}`
+  and `--concurrency {1,2,4,8,16,all}`: scope a TTS CI sweep without
+  editing source.
 
 ## `unit_test/`
 

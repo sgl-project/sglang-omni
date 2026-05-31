@@ -1,67 +1,27 @@
 name: PR Test
 
 on:
-  pull_request:
-    branches: [ main ]
-    types: [labeled, synchronize, reopened, ready_for_review]
-  workflow_dispatch:
-
-concurrency:
-  group: pr-test-${{ github.ref }}
-  cancel-in-progress: true
-
-permissions:
-  contents: read
+  workflow_call:
 
 env:
   OMNI_CI_HOME: >-
     ${{ github.event_name == 'pull_request'
-        && format('/github/home/pr-{0}/unit', github.event.pull_request.number)
-        || format('/github/home/run-{0}/unit', github.run_id) }}
+        && format('/github/home/pr-{0}', github.event.pull_request.number)
+        || format('/github/home/run-{0}', github.run_id) }}
 
-# DAG:
-#   setup (install-deps under OMNI_CI_HOME)
-#     └── unit-test (restore cached venv only; excludes docs/benchmark)
-#           └── cleanup on full success only (kept on failure for re-run)
-#
-# Docs tests run in test-s2pro-ci.yaml after the same setup pattern.
+# Invoked by omni-ci.yaml after the shared setup job. Restores omni only.
 
 jobs:
-  setup:
-    name: setup - omni venv
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (!github.event.pull_request.draft &&
-       contains(github.event.pull_request.labels.*.name, 'run-ci'))
-    runs-on: [self-hosted]
-    timeout-minutes: 15
-    container:
-      image: frankleeeee/sglang-omni:dev
-      options: --gpus all --shm-size=2g --rm -v /dev/shm
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - uses: ./.github/actions/omni-setup
-        with:
-          venv-name: omni
-          install-deps: "true"
-
-      - uses: ./.github/actions/omni-save-cache
-        with:
-          venv-name: omni
-
   unit-test:
     name: unit-test
-    needs: setup
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (!github.event.pull_request.draft &&
-       contains(github.event.pull_request.labels.*.name, 'run-ci'))
     runs-on: [self-hosted]
     container:
       image: frankleeeee/sglang-omni:dev
-      options: --gpus all --shm-size=2g --rm -v /dev/shm
+      options: >-
+        --gpus all --rm
+        -v /dev/shm:/dev/shm
+        -v /data/cache/huggingface:/github/home/.cache/huggingface
+        -v /data/cache/huggingface:/root/.cache/huggingface
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -78,24 +38,3 @@ jobs:
           export PYTHONPATH=$PWD
           bash .github/scripts/run_flaky_pytest.sh \
             pytest tests/ -v -m "not benchmark and not docs" -x
-
-  cleanup:
-    name: cleanup - reclaim host cache
-    needs: [setup, unit-test]
-    if: >-
-      success() &&
-      (github.event_name == 'workflow_dispatch' ||
-       (!github.event.pull_request.draft &&
-        contains(github.event.pull_request.labels.*.name, 'run-ci')))
-    runs-on: [self-hosted]
-    timeout-minutes: 5
-    container:
-      image: frankleeeee/sglang-omni:dev
-      options: --gpus all --rm -v /dev/shm:/dev/shm
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - uses: ./.github/actions/omni-cleanup-host
-        with:
-          ci-home: ${{ env.OMNI_CI_HOME }}

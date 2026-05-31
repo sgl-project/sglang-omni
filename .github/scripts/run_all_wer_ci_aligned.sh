@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Full WER CI sweep (Qwen3 then S2-Pro). One instance at a time (flock).
+# Full WER CI sweep (Qwen3 then TTS). One instance at a time (flock).
 #
 # Two-terminal contract (see tune-ci-thresholds § Two-terminal supervision):
 #   Tab A (supervision) — tail -f /tmp/wer_ci_*.log  → detailed log
@@ -41,12 +41,12 @@ ensure_gpus_idle() {
     sleep 3
 }
 
-run_qwen3() {
+setup_omni_env() {
     local log_path="$1"
     # shellcheck source=/dev/null
-    source omni-qwen3/bin/activate
+    source omni/bin/activate
     # shellcheck source=/dev/null
-    source .github/scripts/ci_env_qwen3.sh
+    source .github/scripts/ci_env.sh
     local env_msg
     env_msg="$(python -c "
 import os
@@ -56,15 +56,6 @@ assert os.environ['TORCHINDUCTOR_CACHE_DIR'].startswith(os.environ['OMNI_CI_HOME
 print('env OK', os.environ['OMNI_CI_HOME'], os.environ['TORCHINDUCTOR_CACHE_DIR'])
 ")"
     log_and_echo "${log_path}" "${env_msg}"
-}
-
-run_s2pro() {
-    local log_path="$1"
-    # shellcheck source=/dev/null
-    source omni-s2pro/bin/activate
-    # shellcheck source=/dev/null
-    source .github/scripts/ci_env_s2pro.sh
-    log_and_echo "${log_path}" "env OK s2pro ${OMNI_CI_HOME} ${TORCHINDUCTOR_CACHE_DIR}"
 }
 
 run_one() {
@@ -91,9 +82,9 @@ run_one() {
 
 LOG=/tmp/wer_ci_qwen3.log
 : > "${LOG}"
-echo "WER sweep qwen3 started — milestones here; full log: tail -f ${LOG}"
+echo "WER sweep started — milestones here; full log: tail -f ${LOG}"
 
-run_qwen3 "${LOG}"
+setup_omni_env "${LOG}"
 
 run_one mmmu_talker_wer "${LOG}" \
     pytest tests/test_model/test_qwen3_omni_mmmu_talker_ci.py::test_mmmu_talker_wer -v -s
@@ -113,21 +104,14 @@ run_one mmsu_talker_wer "${LOG}" \
 run_one qwen3_tts_wer "${LOG}" \
     pytest tests/test_model/test_qwen3_omni_tts_ci.py::test_voice_cloning_wer -v -s
 
-log_and_echo "${LOG}" "===== QWEN3 WER CI FINISHED $(date -Is) ====="
-echo "Qwen3 done — switch supervision to: tail -f /tmp/wer_ci_s2pro.log"
+log_and_echo "${LOG}" "===== QWEN3 WER SECTION FINISHED $(date -Is) ====="
 
-LOG_S2=/tmp/wer_ci_s2pro.log
-: > "${LOG_S2}"
-echo "WER sweep s2pro started — milestones here; full log: tail -f ${LOG_S2}"
-
-run_s2pro "${LOG_S2}"
-
-run_one s2pro_nonstream_wer "${LOG_S2}" \
-    pytest tests/test_model/test_s2pro_tts_ci.py --s2pro-stage s2pro-stage-1-nonstream \
+run_one tts_nonstream_wer "${LOG}" \
+    pytest tests/test_model/test_tts_ci.py --tts-stage tts-stage-1-nonstream \
     -k "test_voice_cloning_non_streaming or test_voice_cloning_wer" -v -s
 
-run_one s2pro_stream_wer "${LOG_S2}" \
-    pytest tests/test_model/test_s2pro_tts_ci.py --s2pro-stage s2pro-stage-2-stream \
+run_one tts_stream_wer "${LOG}" \
+    pytest tests/test_model/test_tts_ci.py --tts-stage tts-stage-2-stream \
     -k "test_voice_cloning_streaming or test_voice_cloning_streaming_wer" -v -s
 
-log_and_echo "${LOG_S2}" "===== ALL WER CI FINISHED $(date -Is) ====="
+log_and_echo "${LOG}" "===== ALL WER CI FINISHED $(date -Is) ====="

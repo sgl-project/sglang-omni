@@ -1,3 +1,0 @@
-config_cls: HiggsTtsPipelineConfig
-model_path: boson-sglang/higgs-audio-v3-tts-4b-base
-relay_backend: shm

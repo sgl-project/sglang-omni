@@ -20,6 +20,8 @@ from pathlib import Path
 
 import pytest
 
+pytest_plugins = ["tests.test_model.omni_whisper_wer_utils"]
+
 from benchmarks.dataset.prepare import DATASETS
 from benchmarks.eval.benchmark_omni_videoamme import run_videoamme_eval
 from benchmarks.eval.benchmark_omni_videomme import VideoEvalConfig
@@ -31,13 +33,14 @@ from tests.test_model.omni_router_utils import (
     ManagedRouterHandle,
     router_worker_traffic_guard,
 )
-from tests.test_model.omni_whisper_wer_utils import wait_for_gpu_memory_release
 from tests.utils import (
     MetricCheckCollector,
     apply_slack,
     apply_wer_slack,
     assert_speed_thresholds,
     assert_wer_partitioned,
+    persist_wer_in_benchmark_results,
+    wait_for_gpu_memory_release,
 )
 
 CONCURRENCY = 16
@@ -45,7 +48,7 @@ MAX_SAMPLES = 20
 MAX_TOKENS = 256
 ASR_DEVICE = "cuda:0"
 
-VIDEOAMME_TALKER_THINKER_TEXT_MIN_ACCURACY = 0.60
+VIDEOAMME_TALKER_THINKER_TEXT_MIN_ACCURACY = 0.65
 VIDEOAMME_TALKER_WER_BELOW_50_CORPUS_MAX = 0.0139
 VIDEOAMME_TALKER_WER_BELOW_50_CORPUS_THRESHOLD = apply_wer_slack(
     VIDEOAMME_TALKER_WER_BELOW_50_CORPUS_MAX
@@ -54,10 +57,10 @@ VIDEOAMME_TALKER_N_ABOVE_50_MAX = 1
 
 _VIDEOAMME_TALKER_AUDIO_P95 = {
     16: {
-        "throughput_qps": 0.606,
+        "throughput_qps": 0.661,
         "output_tok_per_req_s": 2.1,
-        "latency_mean_s": 22.427,
-        "rtf_mean": 3.3211,
+        "latency_mean_s": 21.764,
+        "rtf_mean": 2.5899,
     },
 }
 VIDEOAMME_TALKER_THRESHOLDS = apply_slack(_VIDEOAMME_TALKER_AUDIO_P95)
@@ -182,6 +185,9 @@ def test_videoamme_talker_wer(
         whisper_router_port=omni_whisper_wer_router.port,
     )
     print_wer_summary(wer["summary"], "qwen3-omni")
+    persist_wer_in_benchmark_results(
+        wer_eval_artifacts.audio_dir, wer, "videoamme_results.json"
+    )
     checks = MetricCheckCollector("Video-AMME Talker WER")
     assert_wer_partitioned(
         wer,

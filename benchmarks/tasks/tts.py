@@ -500,12 +500,14 @@ def run_seedtts_similarity(
     generated_path = os.path.join(output_dir, "generated.json")
     with open(generated_path) as f:
         generated: list[dict] = json.load(f)
+    if config.max_samples is not None:
+        generated = generated[: config.max_samples]
     logger.info(f"Loaded {len(generated)} entries from {generated_path}")
 
     split = config.lang
     ref_audio_by_id = {
         sample.sample_id: sample.ref_audio
-        for sample in load_seedtts_samples(config.meta, split=split)
+        for sample in load_seedtts_samples(config.meta, config.max_samples, split=split)
     }
     device = config.device
     if "cuda" in device:
@@ -632,6 +634,7 @@ def run_seedtts_similarity(
                 "model": config.model,
                 "meta": config.meta,
                 "device": device,
+                "max_samples": config.max_samples,
                 "similarity_checkpoint": str(assets.finetune_checkpoint),
             },
             "per_sample": per_sample,

@@ -1,0 +1,26 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# MMMU is image-in / text-out with long answers. Use the text-output Qwen3
+# pipeline so MMMU does not load speech-output stages, while keeping the
+# default SGLang running-request capacity for the benchmark concurrency.
+
+config_cls: Qwen3OmniPipelineConfig
+name: qwen3-omni-mmmu
+model_path: Qwen/Qwen3-Omni-30B-A3B-Instruct
+relay_backend: shm
+
+stage_overrides:
+  image_encoder:
+    runtime:
+      resources:
+        total_gpu_memory_fraction: 0.025
+
+  audio_encoder:
+    runtime:
+      resources:
+        total_gpu_memory_fraction: 0.025
+
+  thinker:
+    runtime:
+      resources:
+        total_gpu_memory_fraction: 0.75

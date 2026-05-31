@@ -1,0 +1,191 @@
+name: TTS CI
+
+on:
+  workflow_call:
+
+env:
+  OMNI_CI_HOME: >-
+    ${{ github.event_name == 'pull_request'
+        && format('/github/home/pr-{0}', github.event.pull_request.number)
+        || format('/github/home/run-{0}', github.run_id) }}
+  TTS_MODEL_PATH: boson-sglang/higgs-audio-v3-TTS-4B-grpo05200410999
+
+# Invoked by omni-ci.yaml after the shared setup job. Restores omni only.
+# DAG:
+#   stage-0-whisper-asr ─────────────┬──► stage-1-non-streaming ──┐
+#                                    └──► stage-2-streaming ──────┤
+#                                                                └──► stage-3-consistency
+
+jobs:
+  stage-0-whisper-asr:
+    name: stage 0 - whisper ASR correctness
+    runs-on: [self-hosted]
+    timeout-minutes: 30
+    container:
+      image: frankleeeee/sglang-omni:dev
+      options: >-
+        --gpus all --rm
+        -v /dev/shm:/dev/shm
+        -v /data/cache/huggingface:/github/home/.cache/huggingface
+        -v /data/cache/huggingface:/root/.cache/huggingface
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - uses: ./.github/actions/omni-setup
+        with:
+          venv-name: omni
+
+      - name: Run Whisper ASR correctness
+        shell: bash
+        run: |
+          source omni/bin/activate
+          export PYTHONPATH=$PWD
+          bash .github/scripts/run_flaky_pytest.sh \
+            pytest tests/test_model/test_whisper_asr_ci.py -v -s -x
+        env:
+          HF_ENDPOINT: https://hf-mirror.com
+          HF_HUB_DISABLE_XET: "1"
+          HF_TOKEN: ${{ secrets.BOSON_HF_TOKEN }}
+          TORCHINDUCTOR_CACHE_DIR: ${{ env.OMNI_CI_HOME }}/.torchinductor
+
+      - name: Post-stage cleanup
+        if: always()
+        uses: ./.github/actions/omni-post-stage
+        with:
+          stage-label: Whisper ASR correctness
+
+  stage-1-non-streaming:
+    name: stage 1 - non-streaming
+    needs: stage-0-whisper-asr
+    runs-on: [self-hosted]
+    timeout-minutes: 25
+    container:
+      image: frankleeeee/sglang-omni:dev
+      options: >-
+        --gpus all --rm
+        -v /dev/shm:/dev/shm
+        -v /data/cache/huggingface:/github/home/.cache/huggingface
+        -v /data/cache/huggingface:/root/.cache/huggingface
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - uses: ./.github/actions/omni-setup
+        with:
+          venv-name: omni
+
+      - name: Prepare speaker similarity assets
+        shell: bash
+        run: |
+          source omni/bin/activate
+          python -m benchmarks.metrics.speaker_similarity_assets --warm-cache
+        env:
+          HF_ENDPOINT: https://hf-mirror.com
+          SEEDTTS_SIM_CACHE_DIR: /github/home/seedtts-wavlm-sim
+
+      - name: Run TTS non-streaming benchmark stage
+        shell: bash
+        run: |
+          source omni/bin/activate
+          export PYTHONPATH=$PWD
+          bash .github/scripts/run_flaky_pytest.sh \
+            pytest tests/test_model/test_tts_ci.py -v -s -x --concurrency 16 --tts-stage tts-stage-1-nonstream
+        env:
+          HF_ENDPOINT: https://hf-mirror.com
+          HF_TOKEN: ${{ secrets.BOSON_HF_TOKEN }}
+          SEEDTTS_SIM_CACHE_DIR: /github/home/seedtts-wavlm-sim
+          TTS_STAGE_OUTPUT_ROOT: ${{ env.OMNI_CI_HOME }}/tts-stage-results/nonstream
+          TORCHINDUCTOR_CACHE_DIR: ${{ env.OMNI_CI_HOME }}/.torchinductor
+
+      - name: Post-stage cleanup
+        if: always()
+        uses: ./.github/actions/omni-post-stage
+        with:
+          stage-label: TTS stage 1 (non-streaming)
+          artifact-search-root: ${{ env.OMNI_CI_HOME }}/tts-stage-results/nonstream
+          artifact-path-globs: |
+            */speed_results.json
+            */wer_results.json
+            */similarity_results.json
+
+  stage-2-streaming:
+    name: stage 2 - streaming
+    needs: stage-0-whisper-asr
+    runs-on: [self-hosted]
+    timeout-minutes: 25
+    container:
+      image: frankleeeee/sglang-omni:dev
+      options: >-
+        --gpus all --rm
+        -v /dev/shm:/dev/shm
+        -v /data/cache/huggingface:/github/home/.cache/huggingface
+        -v /data/cache/huggingface:/root/.cache/huggingface
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - uses: ./.github/actions/omni-setup
+        with:
+          venv-name: omni
+
+      - name: Run TTS streaming benchmark stage
+        shell: bash
+        run: |
+          source omni/bin/activate
+          export PYTHONPATH=$PWD
+          bash .github/scripts/run_flaky_pytest.sh \
+            pytest tests/test_model/test_tts_ci.py -v -s -x --concurrency 16 --tts-stage tts-stage-2-stream
+        env:
+          HF_ENDPOINT: https://hf-mirror.com
+          HF_TOKEN: ${{ secrets.BOSON_HF_TOKEN }}
+          TTS_STAGE_OUTPUT_ROOT: ${{ env.OMNI_CI_HOME }}/tts-stage-results/stream
+          TORCHINDUCTOR_CACHE_DIR: ${{ env.OMNI_CI_HOME }}/.torchinductor
+
+      - name: Post-stage cleanup
+        if: always()
+        uses: ./.github/actions/omni-post-stage
+        with:
+          stage-label: TTS stage 2 (streaming)
+          artifact-search-root: ${{ env.OMNI_CI_HOME }}/tts-stage-results/stream
+          artifact-path-globs: |
+            */speed_results.json
+            */wer_results.json
+
+  stage-3-consistency:
+    name: stage 3 - consistency
+    needs: [stage-1-non-streaming, stage-2-streaming]
+    runs-on: [self-hosted]
+    timeout-minutes: 5
+    container:
+      image: frankleeeee/sglang-omni:dev
+      options: >-
+        --gpus all --rm
+        -v /dev/shm:/dev/shm
+        -v /data/cache/huggingface:/github/home/.cache/huggingface
+        -v /data/cache/huggingface:/root/.cache/huggingface
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - uses: ./.github/actions/omni-setup
+        with:
+          venv-name: omni
+
+      - name: Run consistency check
+        shell: bash
+        run: |
+          source omni/bin/activate
+          export PYTHONPATH=$PWD
+          bash .github/scripts/run_flaky_pytest.sh \
+            pytest tests/test_model/test_tts_consistency_artifacts.py -v -s -x
+        env:
+          TTS_STAGE1_SPEED_RESULTS_DIR: ${{ env.OMNI_CI_HOME }}/tts-stage-results/nonstream
+          TTS_STAGE2_SPEED_RESULTS_DIR: ${{ env.OMNI_CI_HOME }}/tts-stage-results/stream
+          TTS_CONSISTENCY_CONCURRENCY: "16"
+
+      - name: Post-stage cleanup
+        if: always()
+        uses: ./.github/actions/omni-post-stage
+        with:
+          stage-label: TTS stage 3 (consistency)
