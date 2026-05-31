@@ -187,7 +187,8 @@ Relevant model CI ownership:
   concurrency 16, and frees the server GPUs before ASR/WER and
   speaker-similarity checks.
 - `test_tts_consistency_artifacts.py`: CPU-only stage-3 check that compares
-  downloaded TTS non-stream and streaming JSON artifacts.
+  TTS non-stream and streaming `speed_results.json` under
+  `${OMNI_CI_HOME}/tts-stage-results/{nonstream,stream}/`.
 - CLI flags `--tts-stage {tts-stage-1-nonstream,tts-stage-2-stream,tts-stage-3-consistency,all}`
   and `--concurrency {1,2,4,8,16,all}`: scope a TTS CI sweep without
   editing source.
