@@ -1,9 +1,11 @@
 # Model-specific config for the TTS CI threshold skill.
 #
 # Notes:
-# - Stage 0 (Whisper ASR): test_whisper_asr_ci.py — runs before TTS stages in
-#   CI DAG; calibrate via `--model tts --stages whisper_asr` or full `--stages ALL`.
-# - test_tts_ci.py runs stages 1–3 internal stages (nonstream / stream /
+# - Stage 1 (Whisper ASR): test_whisper_asr_ci.py — runs in parallel with Higgs
+#   stages in CI DAG; calibrate via `--model tts --stages whisper_asr` or full
+#   `--stages ALL`. tune.py writes P95 reference constants; CI asserts via
+#   derived *_THRESHOLD values with 10% slack (0.9 / 1.1).
+# - test_tts_ci.py runs stages 2–4 internal stages (nonstream / stream /
 #   consistency) controlled by --tts-stage. tune.py runs the full file once
 #   per repeat (all pytest functions that match the selected stage filter).
 # Fixed CI presets in test_tts_ci.py — NEVER written by apply; used only to
@@ -50,7 +52,7 @@ auto_env:
   TORCHINDUCTOR_CACHE_DIR: "/github/home/calibration/.torchinductor"
   FLASHINFER_DISABLE_VERSION_CHECK: "1"
   SEEDTTS_SIM_CACHE_DIR: "/github/home/seedtts-wavlm-sim"
-# TTS CI stage 0 (Whisper ASR) + stages 1–2 (Higgs voice clone) share omni venv.
+# TTS CI stage 1 (Whisper ASR) + stages 2–3 (Higgs voice clone) share omni venv.
 gpus_per_test:
   test_whisper_asr_ci.py: 2
   test_tts_ci.py: 2
