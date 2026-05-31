@@ -1,12 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Speed benchmarks and voice-clone WER thresholds CI for S2-Pro as a representative of TTS models.
+"""Speed benchmarks and voice-clone WER thresholds CI for TTS models.
 
 Usage:
-    pytest tests/test_model/test_s2pro_tts_ci.py -s -x
-    pytest tests/test_model/test_s2pro_tts_ci.py -s -x --concurrency 16
-    pytest tests/test_model/test_s2pro_tts_ci.py -s -x --concurrency 16 \
-        --s2pro-stage s2pro-stage-1-nonstream
-    pytest tests/test_model/test_s2pro_tts_ci.py -s -x --concurrency all
+    pytest tests/test_model/test_tts_ci.py -s -x
+    pytest tests/test_model/test_tts_ci.py -s -x --concurrency 16
+    pytest tests/test_model/test_tts_ci.py -s -x --concurrency 16 \
+        --tts-stage tts-stage-1-nonstream
+    pytest tests/test_model/test_tts_ci.py -s -x --concurrency all
 
 Author:
     Chenyang Zhao https://github.com/zhaochenyang20
@@ -34,15 +34,17 @@ from typing import Literal
 
 import pytest
 
+pytest_plugins = ["tests.test_model.omni_whisper_wer_utils"]
+
 from benchmarks.dataset.prepare import DATASETS, download_dataset
 from benchmarks.eval.benchmark_tts_seedtts import (
     TtsSeedttsBenchmarkConfig,
     run_tts_seedtts_benchmark,
 )
 from tests.test_model.conftest import (
-    S2PRO_STAGE_CONSISTENCY,
-    S2PRO_STAGE_NONSTREAM,
-    S2PRO_STAGE_STREAM,
+    TTS_STAGE_CONSISTENCY,
+    TTS_STAGE_NONSTREAM,
+    TTS_STAGE_STREAM,
 )
 from tests.test_model.omni_router_utils import (
     ManagedRouterHandle,
@@ -55,40 +57,40 @@ from tests.utils import (
     MetricCheckCollector,
     apply_slack,
     apply_wer_slack,
-    assert_per_request_fields,
     assert_speed_thresholds,
     assert_streaming_consistency,
-    assert_summary_metrics,
     assert_wer_results,
     no_proxy_env,
+    wait_for_gpu_memory_release,
 )
 
 PER_REQUEST_STORE: dict[str, list[dict]] = {}
 SPEED_OUTPUT_DIRS: dict[str, dict[int, str]] = {"non_stream": {}, "stream": {}}
 
-S2PRO_MODEL_PATH = "fishaudio/s2-pro"
-S2PRO_CONFIG_PATH = "examples/configs/s2pro_tts.yaml"
+TTS_MODEL_PATH = os.environ.get(
+    "TTS_MODEL_PATH", "boson-sglang/higgs-audio-v3-TTS-4B-grpo05200410999"
+)
 
 STARTUP_TIMEOUT = 180
 BENCHMARK_TIMEOUT = 600
 WER_TIMEOUT = 600
 SIMILARITY_TIMEOUT = 600
-# Optional user override: a path to a custom fine-tuned WavLM checkpoint.
-# When unset, the bootstrapper in benchmarks.metrics.speaker_similarity_assets
-# auto-downloads the official weights into the shared cache directory.
+
 SIMILARITY_CHECKPOINT_ENV = "SEEDTTS_SIM_CHECKPOINT"
-S2PRO_STAGE_OUTPUT_ROOT_ENV = "S2PRO_STAGE_OUTPUT_ROOT"
-S2PRO_STAGE1_SPEED_RESULTS_DIR_ENV = "S2PRO_STAGE1_SPEED_RESULTS_DIR"
-S2PRO_STAGE2_SPEED_RESULTS_DIR_ENV = "S2PRO_STAGE2_SPEED_RESULTS_DIR"
+TTS_STAGE_OUTPUT_ROOT_ENV = "TTS_STAGE_OUTPUT_ROOT"
+TTS_STAGE1_SPEED_RESULTS_DIR_ENV = "TTS_STAGE1_SPEED_RESULTS_DIR"
+TTS_STAGE2_SPEED_RESULTS_DIR_ENV = "TTS_STAGE2_SPEED_RESULTS_DIR"
+TTS_MAX_FAILED_REQUESTS_ENV = "TTS_MAX_FAILED_REQUESTS"
+TTS_SIMILARITY_MAX_SAMPLES_ENV = "TTS_SIMILARITY_MAX_SAMPLES"
 
-# Note (Chenyang): The streaming mode evaluation is only run at first 32.
-
-STREAMING_BENCHMARK_MAX_SAMPLES = 32
+SEEDTTS_EN_FULLSET_SAMPLES = 1088
+STREAMING_BENCHMARK_MAX_SAMPLES: int | None = None
+TTS_SIMILARITY_MAX_SAMPLES = 50
 
 # Note (chenyang): the RTF thresholds also includes the reference audio
 # processing time.
 
-# Note (Ratish, Chenyang): We evalute the performance of S2-Pro CI on our H20
+# Note (Ratish, Chenyang): We evalute the performance of TTS CI on our H20
 # CI machines and compute the thresholds based on the results.
 
 # Slack factors applied to P95 reference values to derive CI thresholds.
@@ -97,39 +99,34 @@ STREAMING_BENCHMARK_MAX_SAMPLES = 32
 
 THRESHOLD_SLACK_HIGHER = 0.75
 THRESHOLD_SLACK_LOWER = 1.25
-
-VC_WER_MAX_CORPUS = 0.010638297872340425
+TTS_MAX_FAILED_REQUESTS = 0
+VC_WER_MAX_CORPUS = 0.0104
 VC_WER_CORPUS_THRESHOLD = apply_wer_slack(VC_WER_MAX_CORPUS)
-VC_WER_MAX_PER_SAMPLE = 0.16666666666666666
-VC_STREAM_WER_MAX_CORPUS = 0.013262599469496022
+VC_WER_MAX_PER_SAMPLE = 0.4286
+VC_STREAM_WER_MAX_CORPUS = 0.0098
 VC_STREAM_WER_CORPUS_THRESHOLD = apply_wer_slack(VC_STREAM_WER_MAX_CORPUS)
-VC_STREAM_WER_MAX_PER_SAMPLE = 0.16666666666666666
-# Calibrated per PR #469 review (item 5): worst-of-5 = 63.24, mean = 63.74,
-# stdev = 0.56 over 5 independent SeedTTS-50 EN runs on H200 (Spec GPU 4-7),
-# same scorer (popsoda2002/seedtts-wavlm-sim @ wavlm_large_finetune.pth).
-# All five comfortably above 60.0 (margin +5.4%) — current floor has
-# worst-of-5 support. See the "Speaker similarity calibration" section of
-# the PR description for the full per-run table.
-VC_SIMILARITY_MEAN_MIN = 60.0
+VC_STREAM_WER_MAX_PER_SAMPLE = 0.5385
+
+VC_SIMILARITY_MEAN_MIN = 66.18289001464844
 
 # Note (Chenyang): Only thresholds for the CI concurrency are dedicatedly tuned,
 # others may not pass the CI.
 
 _VC_NON_STREAM_P95 = {
     16: {
-        "throughput_qps": 1.465,
-        "output_tok_per_req_s": 67.5,
-        "latency_mean_s": 9.757,
-        "rtf_mean": 3.0009,
+        "throughput_qps": 11.558,
+        "output_tok_per_req_s": 119.9,
+        "latency_mean_s": 1.372,
+        "rtf_mean": 0.335,
     }
 }
 
 _VC_STREAM_P95 = {
     16: {
-        "throughput_qps": 1.287,
-        "output_tok_per_req_s": 60.8,
-        "latency_mean_s": 10.229,
-        "rtf_mean": 2.8508,
+        "throughput_qps": 11.535,
+        "output_tok_per_req_s": 109.7,
+        "latency_mean_s": 1.381,
+        "rtf_mean": 0.3174,
     }
 }
 
@@ -164,7 +161,7 @@ def _run_benchmark(
     stream: bool = False,
 ) -> dict:
     benchmark_config = TtsSeedttsBenchmarkConfig(
-        model=S2PRO_MODEL_PATH,
+        model=TTS_MODEL_PATH,
         port=port,
         meta=testset,
         output_dir=output_dir,
@@ -181,44 +178,29 @@ def _run_wer_transcribe(
     meta: str,
     output_dir: str,
     *,
+    whisper_router_port: int,
     stream: bool = False,
     lang: str = "en",
     device: str = "cuda:0",
 ) -> dict:
-    """Transcribe saved audio and compute WER in CI."""
-    cmd = [
-        sys.executable,
-        "-m",
-        WER_MODULE,
-        "--transcribe-only",
-        "--meta",
-        meta,
-        "--output-dir",
-        output_dir,
-        "--model",
-        S2PRO_MODEL_PATH,
-        "--lang",
-        lang,
-        "--device",
-        device,
-    ]
-    if stream:
-        cmd.append("--stream")
-
-    env = no_proxy_env()
-    existing_pp = env.get("PYTHONPATH", "")
-    env["PYTHONPATH"] = (
-        f"{PROJECT_ROOT}{os.pathsep}{existing_pp}" if existing_pp else str(PROJECT_ROOT)
+    """Transcribe saved audio and compute WER via Omni Whisper router."""
+    from benchmarks.eval.benchmark_tts_seedtts import (
+        TtsSeedttsBenchmarkConfig,
+        run_tts_seedtts_transcribe,
     )
 
-    result = subprocess.run(
-        cmd,
-        text=True,
-        timeout=WER_TIMEOUT,
-        env=env,
-        cwd=str(PROJECT_ROOT),
+    config = TtsSeedttsBenchmarkConfig(
+        model=TTS_MODEL_PATH,
+        meta=meta,
+        output_dir=output_dir,
+        lang=lang,
+        device=device,
+        stream=stream,
     )
-    assert result.returncode == 0, f"WER transcribe failed (rc={result.returncode})"
+    run_tts_seedtts_transcribe(
+        config,
+        whisper_router_port=whisper_router_port,
+    )
 
     results_path = Path(output_dir) / "wer_results.json"
     assert results_path.exists(), f"WER results file not found: {results_path}"
@@ -251,8 +233,11 @@ def _run_similarity(
     checkpoint_path: str | None,
     *,
     device: str = "cuda:0",
+    max_samples: int | None = None,
 ) -> dict:
     """Compute SeedTTS speaker similarity in CI."""
+    wait_for_gpu_memory_release()
+
     cmd = [
         sys.executable,
         "-m",
@@ -263,10 +248,12 @@ def _run_similarity(
         "--output-dir",
         output_dir,
         "--model",
-        S2PRO_MODEL_PATH,
+        TTS_MODEL_PATH,
         "--device",
         device,
     ]
+    if max_samples is not None:
+        cmd += ["--max-samples", str(max_samples)]
     if checkpoint_path is not None:
         cmd += ["--similarity-checkpoint", checkpoint_path]
 
@@ -335,6 +322,89 @@ def _load_speed_results(results_path: Path) -> dict:
     return speed_results
 
 
+def _assert_tts_speed_result_integrity(
+    summary: dict,
+    per_request: list[dict],
+    *,
+    label: str,
+    collector: MetricCheckCollector,
+) -> None:
+    failed_rows = [
+        request for request in per_request if request.get("is_success") is not True
+    ]
+    failed_requests = summary.get("failed_requests")
+    completed_requests = summary.get("completed_requests")
+    collector.check(
+        isinstance(failed_requests, int),
+        f"{label}: failed_requests must be an int, got {failed_requests}",
+    )
+    collector.check(
+        isinstance(completed_requests, int),
+        f"{label}: completed_requests must be an int, got {completed_requests}",
+    )
+    if isinstance(failed_requests, int):
+        collector.check(
+            failed_requests <= TTS_MAX_FAILED_REQUESTS,
+            f"{label}: failed_requests {failed_requests} > "
+            f"{TTS_MAX_FAILED_REQUESTS}",
+        )
+        collector.check(
+            failed_requests == len(failed_rows),
+            f"{label}: summary failed_requests={failed_requests}, "
+            f"per_request failures={len(failed_rows)}",
+        )
+    if isinstance(failed_requests, int) and isinstance(completed_requests, int):
+        collector.check(
+            completed_requests + failed_requests == len(per_request),
+            f"{label}: completed_requests + failed_requests = "
+            f"{completed_requests + failed_requests}, per_request={len(per_request)}",
+        )
+
+    audio_duration_mean_s = summary.get("audio_duration_mean_s")
+    collector.check(
+        audio_duration_mean_s is not None and audio_duration_mean_s > 0,
+        f"{label}: expected positive audio_duration_mean_s, "
+        f"got {audio_duration_mean_s}",
+    )
+    output_tokens_mean = summary.get("output_tokens_mean", 0)
+    collector.check(
+        output_tokens_mean > 0,
+        f"{label}: expected positive output_tokens_mean, got {output_tokens_mean}",
+    )
+    prompt_tokens_mean = summary.get("prompt_tokens_mean", 0)
+    collector.check(
+        prompt_tokens_mean > 0,
+        f"{label}: expected positive prompt_tokens_mean, got {prompt_tokens_mean}",
+    )
+
+    for request in per_request:
+        request_id = request.get("id", "<missing id>")
+        if request.get("is_success") is not True:
+            collector.check(
+                bool(request.get("error")),
+                f"{label}: failed request {request_id} is missing error detail",
+            )
+            continue
+        audio_duration_s = request.get("audio_duration_s")
+        collector.check(
+            audio_duration_s is not None and audio_duration_s > 0,
+            f"{label}: request {request_id} audio_duration_s={audio_duration_s}, "
+            "expected > 0",
+        )
+        prompt_tokens = request.get("prompt_tokens")
+        completion_tokens = request.get("completion_tokens")
+        collector.check(
+            prompt_tokens is not None and prompt_tokens > 0,
+            f"{label}: request {request_id} prompt_tokens={prompt_tokens}, "
+            "expected > 0",
+        )
+        collector.check(
+            completion_tokens is not None and completion_tokens > 0,
+            f"{label}: request {request_id} completion_tokens={completion_tokens}, "
+            "expected > 0",
+        )
+
+
 def _store_consistency_inputs(
     *,
     mode: Literal["non_stream", "stream"],
@@ -344,11 +414,15 @@ def _store_consistency_inputs(
     collector: MetricCheckCollector | None = None,
 ) -> None:
     checks = collector or MetricCheckCollector(
-        f"S2-Pro {mode} speed results at concurrency {concurrency}"
+        f"TTS {mode} speed results at concurrency {concurrency}"
     )
     summary, per_request = results["summary"], results["per_request"]
-    assert_summary_metrics(summary, collector=checks)
-    assert_per_request_fields(per_request, collector=checks)
+    _assert_tts_speed_result_integrity(
+        summary,
+        per_request,
+        label=f"TTS {mode} c{concurrency}",
+        collector=checks,
+    )
     if mode == "non_stream":
         assert_speed_thresholds(
             summary, VC_NON_STREAM_THRESHOLDS, concurrency, collector=checks
@@ -403,14 +477,14 @@ def _find_downloaded_speed_results(
 
 
 def _load_consistency_artifact_inputs(
-    selected_s2pro_tts_concurrencies: tuple[int, ...],
+    selected_tts_concurrencies: tuple[int, ...],
 ) -> bool:
-    non_stream_results_root = os.environ.get(S2PRO_STAGE1_SPEED_RESULTS_DIR_ENV)
-    stream_results_root = os.environ.get(S2PRO_STAGE2_SPEED_RESULTS_DIR_ENV)
+    non_stream_results_root = os.environ.get(TTS_STAGE1_SPEED_RESULTS_DIR_ENV)
+    stream_results_root = os.environ.get(TTS_STAGE2_SPEED_RESULTS_DIR_ENV)
     if not (non_stream_results_root and stream_results_root):
         return False
 
-    for concurrency in selected_s2pro_tts_concurrencies:
+    for concurrency in selected_tts_concurrencies:
         non_stream_output_dir, non_stream_results = _find_downloaded_speed_results(
             non_stream_results_root, f"vc_nonstream_c{concurrency}"
         )
@@ -435,15 +509,15 @@ def _load_consistency_artifact_inputs(
 def _generate_consistency_inputs(
     request: pytest.FixtureRequest,
     tmp_path_factory: pytest.TempPathFactory,
-    selected_s2pro_tts_concurrencies: tuple[int, ...],
+    selected_tts_concurrencies: tuple[int, ...],
 ) -> None:
     # Lazily resolve fixtures via getfixturevalue so that the server is only
     # started when stage 3 actually needs to generate its own inputs (local
     # dev path).  In CI the artifact path returns early above.
     router_server = request.getfixturevalue("router_server")
     dataset_repo = request.getfixturevalue("dataset_repo")
-    output_root = tmp_path_factory.mktemp("s2pro_consistency")
-    for concurrency in selected_s2pro_tts_concurrencies:
+    output_root = tmp_path_factory.mktemp("tts_consistency")
+    for concurrency in selected_tts_concurrencies:
         non_stream_key = f"vc_nonstream_c{concurrency}"
         stream_key = f"vc_stream_c{concurrency}"
 
@@ -481,7 +555,7 @@ def _generate_consistency_inputs(
 
 
 def _resolve_stage_output_dir(tmp_path: Path, output_dir_name: str) -> str:
-    output_root = os.environ.get(S2PRO_STAGE_OUTPUT_ROOT_ENV)
+    output_root = os.environ.get(TTS_STAGE_OUTPUT_ROOT_ENV)
     if output_root:
         output_dir = Path(output_root) / output_dir_name
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -496,9 +570,44 @@ def _print_stage(stage: str, mode: str, concurrency: int, details: str = "") -> 
     print(message)
 
 
+def _sample_scope_label(max_samples: int | None) -> str:
+    if max_samples is None:
+        return "full SeedTTS EN set"
+    return f"max_samples={max_samples}"
+
+
+def _assert_full_seedtts_en_speed_results(
+    results: dict,
+    *,
+    label: str,
+    collector: MetricCheckCollector,
+) -> None:
+    per_request = results.get("per_request") or []
+    collector.check(
+        len(per_request) == SEEDTTS_EN_FULLSET_SAMPLES,
+        f"{label} generated {len(per_request)}/{SEEDTTS_EN_FULLSET_SAMPLES} "
+        "SeedTTS EN samples",
+    )
+
+
+def _assert_full_seedtts_en_wer_results(
+    results: dict,
+    *,
+    label: str,
+    collector: MetricCheckCollector,
+) -> None:
+    summary = results.get("summary") or {}
+    total_samples = summary.get("total_samples")
+    collector.check(
+        total_samples == SEEDTTS_EN_FULLSET_SAMPLES,
+        f"{label} WER total_samples={total_samples}, expected "
+        f"{SEEDTTS_EN_FULLSET_SAMPLES}",
+    )
+
+
 @pytest.fixture(scope="module")
 def dataset_repo() -> str:
-    repo_id = DATASETS["seedtts-50"]
+    repo_id = DATASETS["seedtts"]
     download_dataset(repo_id, quiet=True)
     return repo_id
 
@@ -525,29 +634,29 @@ def cleanup_generated_audio_fixture():
 
 @pytest.fixture(scope="module")
 def router_server(tmp_path_factory: pytest.TempPathFactory):
-    """Start two S2-Pro workers behind the router and wait until healthy."""
+    """Start two TTS workers behind the router and wait until healthy."""
     with launch_managed_router(
         tmp_path_factory=tmp_path_factory,
-        model_path=S2PRO_MODEL_PATH,
-        model_name=S2PRO_MODEL_PATH,
-        worker_extra_args=f"--config {S2PRO_CONFIG_PATH}",
+        model_path=TTS_MODEL_PATH,
+        model_name=TTS_MODEL_PATH,
+        worker_extra_args="",
         wait_timeout=STARTUP_TIMEOUT,
-        log_prefix="s2pro_router_logs",
+        log_prefix="tts_router_logs",
     ) as router:
         yield router
 
 
 @pytest.fixture(scope="module")
 def consistency_stage_inputs(
-    selected_s2pro_ci_stage: str,
+    selected_tts_ci_stage: str,
     tmp_path_factory: pytest.TempPathFactory,
-    selected_s2pro_tts_concurrencies: tuple[int, ...],
+    selected_tts_concurrencies: tuple[int, ...],
     request: pytest.FixtureRequest,
 ) -> None:
-    if selected_s2pro_ci_stage != S2PRO_STAGE_CONSISTENCY:
+    if selected_tts_ci_stage != TTS_STAGE_CONSISTENCY:
         return
 
-    if _load_consistency_artifact_inputs(selected_s2pro_tts_concurrencies):
+    if _load_consistency_artifact_inputs(selected_tts_concurrencies):
         return
 
     if os.environ.get("GITHUB_ACTIONS") == "true":
@@ -558,7 +667,7 @@ def consistency_stage_inputs(
     _generate_consistency_inputs(
         request,
         tmp_path_factory,
-        selected_s2pro_tts_concurrencies,
+        selected_tts_concurrencies,
     )
 
 
@@ -568,6 +677,7 @@ def wer_input_dirs(
 ) -> dict[str, dict[int, str]]:
     """Reuse saved benchmark audio for WER after freeing the TTS server GPU."""
     router_server.stop()
+    wait_for_gpu_memory_release()
 
     for output_dirs in SPEED_OUTPUT_DIRS.values():
         for output_dir in output_dirs.values():
@@ -576,18 +686,16 @@ def wer_input_dirs(
     return SPEED_OUTPUT_DIRS
 
 
-@pytest.mark.s2pro_stage(S2PRO_STAGE_NONSTREAM)
+@pytest.mark.tts_stage(TTS_STAGE_NONSTREAM)
 @pytest.mark.benchmark
 def test_voice_cloning_non_streaming(
     router_server: ManagedRouterHandle,
     dataset_repo: str,
     tmp_path: Path,
-    selected_s2pro_tts_concurrencies: tuple[int, ...],
+    selected_tts_concurrencies: tuple[int, ...],
 ) -> None:
-    print(
-        f"\n[S2 Pro benchmark] selected concurrency: {selected_s2pro_tts_concurrencies}"
-    )
-    for concurrency in selected_s2pro_tts_concurrencies:
+    print(f"\n[TTS benchmark] selected concurrency: {selected_tts_concurrencies}")
+    for concurrency in selected_tts_concurrencies:
         _print_stage("TTS speed", "non-streaming", concurrency, "generate WAVs for WER")
         output_dir = _resolve_stage_output_dir(tmp_path, f"vc_nonstream_c{concurrency}")
         before_workers = router_get_json(router_server.port, "/workers")
@@ -598,14 +706,17 @@ def test_voice_cloning_non_streaming(
                 output_dir,
                 concurrency=concurrency,
             )
-            checks = MetricCheckCollector(
-                f"S2-Pro non-streaming benchmark c{concurrency}"
+            checks = MetricCheckCollector(f"TTS non-streaming benchmark c{concurrency}")
+            _assert_full_seedtts_en_speed_results(
+                results,
+                label=f"TTS non-stream c{concurrency}",
+                collector=checks,
             )
             _assert_stage_used_all_router_workers(
                 router_server=router_server,
                 before_workers=before_workers,
                 results=results,
-                label=f"S2-Pro non-stream c{concurrency}",
+                label=f"TTS non-stream c{concurrency}",
                 collector=checks,
             )
         except Exception:
@@ -621,20 +732,21 @@ def test_voice_cloning_non_streaming(
         checks.assert_all()
 
 
-@pytest.mark.s2pro_stage(S2PRO_STAGE_STREAM)
+@pytest.mark.tts_stage(TTS_STAGE_STREAM)
 @pytest.mark.benchmark
 def test_voice_cloning_streaming(
     router_server: ManagedRouterHandle,
     dataset_repo: str,
     tmp_path: Path,
-    selected_s2pro_tts_concurrencies: tuple[int, ...],
+    selected_tts_concurrencies: tuple[int, ...],
 ) -> None:
-    for concurrency in selected_s2pro_tts_concurrencies:
+    for concurrency in selected_tts_concurrencies:
         _print_stage(
             "TTS speed",
             "streaming",
             concurrency,
-            f"max_samples={STREAMING_BENCHMARK_MAX_SAMPLES} | generate WAVs for WER",
+            f"{_sample_scope_label(STREAMING_BENCHMARK_MAX_SAMPLES)} | "
+            "generate WAVs for WER",
         )
         output_dir = _resolve_stage_output_dir(tmp_path, f"vc_stream_c{concurrency}")
         before_workers = router_get_json(router_server.port, "/workers")
@@ -647,12 +759,17 @@ def test_voice_cloning_streaming(
                 max_samples=STREAMING_BENCHMARK_MAX_SAMPLES,
                 stream=True,
             )
-            checks = MetricCheckCollector(f"S2-Pro streaming benchmark c{concurrency}")
+            checks = MetricCheckCollector(f"TTS streaming benchmark c{concurrency}")
+            _assert_full_seedtts_en_speed_results(
+                results,
+                label=f"TTS stream c{concurrency}",
+                collector=checks,
+            )
             _assert_stage_used_all_router_workers(
                 router_server=router_server,
                 before_workers=before_workers,
                 results=results,
-                label=f"S2-Pro stream c{concurrency}",
+                label=f"TTS stream c{concurrency}",
                 collector=checks,
             )
         except Exception:
@@ -668,14 +785,14 @@ def test_voice_cloning_streaming(
         checks.assert_all()
 
 
-@pytest.mark.s2pro_stage(S2PRO_STAGE_CONSISTENCY)
+@pytest.mark.tts_stage(TTS_STAGE_CONSISTENCY)
 @pytest.mark.benchmark
 def test_voice_cloning_streaming_consistency(
     consistency_stage_inputs: None,
-    selected_s2pro_tts_concurrencies: tuple[int, ...],
+    selected_tts_concurrencies: tuple[int, ...],
 ) -> None:
-    checks = MetricCheckCollector("S2-Pro streaming consistency")
-    for concurrency in selected_s2pro_tts_concurrencies:
+    checks = MetricCheckCollector("TTS streaming consistency")
+    for concurrency in selected_tts_concurrencies:
         ns = PER_REQUEST_STORE.get(f"vc_nonstream_c{concurrency}")
         st = PER_REQUEST_STORE.get(f"vc_stream_c{concurrency}")
         if ns is None:
@@ -687,21 +804,26 @@ def test_voice_cloning_streaming_consistency(
         assert_streaming_consistency(
             ns,
             st,
-            expected_stream_count=STREAMING_BENCHMARK_MAX_SAMPLES,
+            expected_stream_count=len(ns),
+            # Stage 1/2 tolerate a small request-failure budget to keep
+            # diagnostics flowing, but stage 3 must only pass when the
+            # compared artifacts are complete.
+            max_failed_requests=0,
             collector=checks,
         )
     checks.assert_all()
 
 
-@pytest.mark.s2pro_stage(S2PRO_STAGE_NONSTREAM)
+@pytest.mark.tts_stage(TTS_STAGE_NONSTREAM)
 @pytest.mark.benchmark
 def test_voice_cloning_wer(
     wer_input_dirs: dict[str, dict[int, str]],
     dataset_repo: str,
-    selected_s2pro_tts_concurrencies: tuple[int, ...],
+    selected_tts_concurrencies: tuple[int, ...],
+    omni_whisper_wer_router: ManagedRouterHandle,
 ) -> None:
-    checks = MetricCheckCollector("S2-Pro non-streaming WER")
-    for concurrency in selected_s2pro_tts_concurrencies:
+    checks = MetricCheckCollector("TTS non-streaming WER")
+    for concurrency in selected_tts_concurrencies:
         _print_stage(
             "WER",
             "non-streaming",
@@ -711,6 +833,12 @@ def test_voice_cloning_wer(
         results = _run_wer_transcribe(
             dataset_repo,
             wer_input_dirs["non_stream"][concurrency],
+            whisper_router_port=omni_whisper_wer_router.port,
+        )
+        _assert_full_seedtts_en_wer_results(
+            results,
+            label=f"TTS non-stream c{concurrency}",
+            collector=checks,
         )
         assert_wer_results(
             results,
@@ -721,16 +849,16 @@ def test_voice_cloning_wer(
     checks.assert_all()
 
 
-@pytest.mark.s2pro_stage(S2PRO_STAGE_NONSTREAM)
+@pytest.mark.tts_stage(TTS_STAGE_NONSTREAM)
 @pytest.mark.benchmark
 def test_voice_cloning_similarity(
     wer_input_dirs: dict[str, dict[int, str]],
     dataset_repo: str,
     similarity_checkpoint: str | None,
-    selected_s2pro_tts_concurrencies: tuple[int, ...],
+    selected_tts_concurrencies: tuple[int, ...],
 ) -> None:
-    checks = MetricCheckCollector("S2-Pro non-streaming speaker similarity")
-    for concurrency in selected_s2pro_tts_concurrencies:
+    checks = MetricCheckCollector("TTS non-streaming speaker similarity")
+    for concurrency in selected_tts_concurrencies:
         _print_stage(
             "SIM",
             "non-streaming",
@@ -741,30 +869,39 @@ def test_voice_cloning_similarity(
             dataset_repo,
             wer_input_dirs["non_stream"][concurrency],
             similarity_checkpoint,
+            max_samples=TTS_SIMILARITY_MAX_SAMPLES,
         )
         _assert_similarity_results(results, VC_SIMILARITY_MEAN_MIN, collector=checks)
     checks.assert_all()
 
 
-@pytest.mark.s2pro_stage(S2PRO_STAGE_STREAM)
+@pytest.mark.tts_stage(TTS_STAGE_STREAM)
 @pytest.mark.benchmark
 def test_voice_cloning_streaming_wer(
     wer_input_dirs: dict[str, dict[int, str]],
     dataset_repo: str,
-    selected_s2pro_tts_concurrencies: tuple[int, ...],
+    selected_tts_concurrencies: tuple[int, ...],
+    omni_whisper_wer_router: ManagedRouterHandle,
 ) -> None:
-    checks = MetricCheckCollector("S2-Pro streaming WER")
-    for concurrency in selected_s2pro_tts_concurrencies:
+    checks = MetricCheckCollector("TTS streaming WER")
+    for concurrency in selected_tts_concurrencies:
         _print_stage(
             "WER",
             "streaming",
             concurrency,
-            f"transcribe {STREAMING_BENCHMARK_MAX_SAMPLES} speed-stage WAVs",
+            f"transcribe {_sample_scope_label(STREAMING_BENCHMARK_MAX_SAMPLES)} "
+            "speed-stage WAVs",
         )
         results = _run_wer_transcribe(
             dataset_repo,
             wer_input_dirs["stream"][concurrency],
             stream=True,
+            whisper_router_port=omni_whisper_wer_router.port,
+        )
+        _assert_full_seedtts_en_wer_results(
+            results,
+            label=f"TTS stream c{concurrency}",
+            collector=checks,
         )
         assert_wer_results(
             results,

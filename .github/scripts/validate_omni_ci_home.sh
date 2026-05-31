@@ -11,7 +11,9 @@ if [[ "${OMNI_CI_HOME}" == *".."* ]]; then
   exit 1
 fi
 
-if [[ "${OMNI_CI_HOME}" != /github/home/pr-* ]] && [[ "${OMNI_CI_HOME}" != /github/home/run-* ]]; then
-  echo "OMNI_CI_HOME must be under /github/home/pr-* or /github/home/run-*: ${OMNI_CI_HOME}" >&2
+if [[ "${OMNI_CI_HOME}" != /github/home/pr-* ]] \
+  && [[ "${OMNI_CI_HOME}" != /github/home/run-* ]] \
+  && [[ "${OMNI_CI_HOME}" != /github/home/calibration ]]; then
+  echo "OMNI_CI_HOME must be under /github/home/pr-*, /github/home/run-*, or /github/home/calibration: ${OMNI_CI_HOME}" >&2
   exit 1
 fi

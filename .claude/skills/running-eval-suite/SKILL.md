@@ -41,21 +41,56 @@ distinguishes the model launched per row).
 
 - A sglang-omni clone (`benchmarks/eval/` reachable from the working dir).
 - A venv with `sglang` + `torch` importable. Default candidates (first existing wins):
-  `/sgl-workspace/sglang-omni/omni-qwen3/bin/python`,
-  `/github/home/calibration/qwen3/omni-qwen3/bin/python`,
-  `/github/home/omni-qwen3/bin/python` (legacy). Override with
+  `/sgl-workspace/sglang-omni/omni/bin/python`,
+  `/github/home/calibration/omni/bin/python`,
+  `/github/home/omni/bin/python` (legacy). Override with
   `--venv-python <path>` or `$EVAL_VENV_PYTHON`.
 - HF model + datasets cached under `HF_HOME=/github/home/.cache/huggingface`
   (see `auto_env` in `config.yaml`). precheck reports `✓` / `✗` and prints
-  the exact `huggingface-cli download …` commands when something's missing.
+  the exact `HF_ENDPOINT=https://hf-mirror.com huggingface-cli download …`
+  commands when something's missing.
 - Free GPUs. The skill **never** kills another user's processes; if
   GPUs are busy precheck fails with the busy PID list and stops.
 - `auto_env` from `config.yaml` is applied at startup (overrides shell) to
   match CI omni-setup: `OMNI_CI_HOME`, `UV_INDEX_URL`, torchinductor slice
   paths, etc. See `tune-ci-thresholds` skill for the full cache layout table.
+  All benchmarks share the single **`omni`** venv and `.github/scripts/ci_env.sh`.
+- `HF_ENDPOINT` defaults to `https://hf-mirror.com` (matches CI omni-setup).
+- Before pytest or eval runs, run `source .github/scripts/ci_env.sh` so
+  `TORCHINDUCTOR_CACHE_DIR` stays under `${OMNI_CI_HOME}/.torchinductor`.
+
+## Two-terminal supervision (mandatory — always)
+
+Same contract as `tune-ci-thresholds` — **permanent, non-negotiable**:
+
+| Tab | Role | Shows |
+|-----|------|-------|
+| **A — Supervision** | `tail -f <log-path>` | **Detailed log** — pytest, router, worker, HTTP, tracebacks |
+| **B — Job** | run command / script | **Progress summary only** — START / PASS / FAIL, stage name |
+
+Verbose output goes to the log file (`>> log 2>&1`). **Never `tee` on Tab B** —
+that duplicates Tab A and breaks supervision.
+
+Agent **must spawn both tabs** (Shell, `block_until_ms: 0`): Tab A first, Tab B
+second. Tell the user which is which.
+
+**Calibration (`tune.py run`):** Tab A = newest `_pytest/*/run*.log`; Tab B =
+`tune.py run` on stdout (**never** `>> run.log`). See `tune-ci-thresholds` §
+**Calibration (`tune.py run`) — always two tabs**.
+
+**Eval suite commands:**
+
+| Tab | Command |
+|-----|---------|
+| **A — supervision** | `tail -f <run-dir>/run.log` |
+| **B — job** | `cd /sgl-workspace/sglang-omni && python .claude/skills/running-eval-suite/runner.py run ... >> <run-dir>/run.log 2>&1` |
+
+Full diagram, log-path table, and checklist: see `tune-ci-thresholds` §
+**Two-terminal supervision (mandatory — always)**.
+
 - First-time venv on the repro host: use `.github/scripts/prepare_omni_venv.sh`
   and `.github/scripts/install_flashinfer_jit_cache.sh` with
-  `OMNI_CI_HOME=/github/home/calibration/qwen3` (documented in tune-ci-thresholds).
+  `OMNI_CI_HOME=/github/home/calibration` (documented in tune-ci-thresholds).
 
 If anything's off, `precheck` fails with an actionable message; fix it
 yourself and retry.

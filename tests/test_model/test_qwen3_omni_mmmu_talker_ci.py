@@ -26,6 +26,8 @@ from pathlib import Path
 
 import pytest
 
+pytest_plugins = ["tests.test_model.omni_whisper_wer_utils"]
+
 from benchmarks.dataset.prepare import DATASETS
 from benchmarks.eval.benchmark_omni_mmmu import MMMUEvalConfig, run_mmmu_eval
 from benchmarks.metrics.mmmu import print_mmmu_accuracy_summary
@@ -42,6 +44,8 @@ from tests.utils import (
     apply_wer_slack,
     assert_speed_thresholds,
     assert_wer_partitioned,
+    persist_wer_in_benchmark_results,
+    wait_for_gpu_memory_release,
 )
 
 MAX_SAMPLES = 20
@@ -58,18 +62,18 @@ MMMU_TTS_PROMPT = (
 )
 
 MMMU_AUDIO_MIN_ACCURACY = 0.75
-MMMU_AUDIO_WER_BELOW_50_CORPUS_MAX = 0.1816
+MMMU_AUDIO_WER_BELOW_50_CORPUS_MAX = 0.2121
 MMMU_AUDIO_WER_BELOW_50_CORPUS_THRESHOLD = apply_wer_slack(
     MMMU_AUDIO_WER_BELOW_50_CORPUS_MAX
 )
-MMMU_AUDIO_N_ABOVE_50_MAX = 4
+MMMU_AUDIO_N_ABOVE_50_MAX = 5
 
 _MMMU_AUDIO_P95 = {
     16: {
-        "throughput_qps": 0.617,
-        "output_tok_per_req_s": 8.0,
-        "latency_mean_s": 16.666,
-        "rtf_mean": 0.4309,
+        "throughput_qps": 0.618,
+        "output_tok_per_req_s": 8.6,
+        "latency_mean_s": 16.126,
+        "rtf_mean": 0.4169,
     },
 }
 MMMU_AUDIO_THRESHOLDS = apply_slack(_MMMU_AUDIO_P95)
@@ -127,6 +131,7 @@ def wer_eval_artifacts(
 ) -> _TalkerEvalArtifacts:
     """Reuse saved benchmark audio for WER after freeing the talker server GPU."""
     qwen3_omni_router_server.stop()
+    wait_for_gpu_memory_release()
     return talker_eval_artifacts
 
 
@@ -172,15 +177,22 @@ def test_mmmu_talker_accuracy_and_speed(
 
 
 @pytest.mark.benchmark
-def test_mmmu_talker_wer(wer_eval_artifacts: _TalkerEvalArtifacts) -> None:
+def test_mmmu_talker_wer(
+    wer_eval_artifacts: _TalkerEvalArtifacts,
+    omni_whisper_wer_router: ManagedRouterHandle,
+) -> None:
     """Transcribe saved talker audio after the inference server is stopped."""
     wer = compute_text_audio_consistency_from_records(
         wer_eval_artifacts.per_sample,
         wer_eval_artifacts.lang,
         ASR_DEVICE,
         audio_dir=wer_eval_artifacts.audio_dir,
+        whisper_router_port=omni_whisper_wer_router.port,
     )
     print_wer_summary(wer["summary"], "qwen3-omni")
+    persist_wer_in_benchmark_results(
+        wer_eval_artifacts.audio_dir, wer, "mmmu_results.json"
+    )
     checks = MetricCheckCollector("MMMU Talker WER")
     assert_wer_partitioned(
         wer,

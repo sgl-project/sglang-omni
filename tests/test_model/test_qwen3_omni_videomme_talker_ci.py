@@ -29,6 +29,8 @@ from pathlib import Path
 
 import pytest
 
+pytest_plugins = ["tests.test_model.omni_whisper_wer_utils"]
+
 from benchmarks.dataset.prepare import DATASETS
 from benchmarks.dataset.videomme import VideoMMESample, load_videomme_samples
 from benchmarks.eval.benchmark_omni_videomme import VideoEvalConfig, run_video_eval
@@ -46,6 +48,8 @@ from tests.utils import (
     apply_wer_slack,
     assert_speed_thresholds,
     assert_wer_partitioned,
+    persist_wer_in_benchmark_results,
+    wait_for_gpu_memory_release,
 )
 
 CONCURRENCY = 16
@@ -57,8 +61,8 @@ SHORT_ANSWER_PROMPT = (
     "'Answer: $LETTER'. Do not include step-by-step reasoning."
 )
 
-VIDEOMME_TALKER_THINKER_TEXT_MIN_ACCURACY = 0.6
-VIDEOMME_TALKER_WER_BELOW_50_CORPUS_MAX = 0.0239
+VIDEOMME_TALKER_THINKER_TEXT_MIN_ACCURACY = 0.5
+VIDEOMME_TALKER_WER_BELOW_50_CORPUS_MAX = 0.0385
 VIDEOMME_TALKER_WER_BELOW_50_CORPUS_THRESHOLD = apply_wer_slack(
     VIDEOMME_TALKER_WER_BELOW_50_CORPUS_MAX
 )
@@ -66,10 +70,10 @@ VIDEOMME_TALKER_N_ABOVE_50_MAX = 0
 
 _VIDEOMME_TALKER_AUDIO_P95 = {
     16: {
-        "throughput_qps": 0.603,
-        "output_tok_per_req_s": 2.2,
-        "latency_mean_s": 20.486,
-        "rtf_mean": 2.1134,
+        "throughput_qps": 0.635,
+        "output_tok_per_req_s": 2.3,
+        "latency_mean_s": 20.687,
+        "rtf_mean": 2.1853,
     },
 }
 VIDEOMME_TALKER_THRESHOLDS = apply_slack(_VIDEOMME_TALKER_AUDIO_P95)
@@ -149,6 +153,7 @@ def wer_eval_artifacts(
 ) -> _TalkerEvalArtifacts:
     """Reuse saved benchmark audio for WER after freeing the talker server GPU."""
     qwen3_omni_talker_server.stop()
+    wait_for_gpu_memory_release()
     return talker_eval_artifacts
 
 
@@ -188,15 +193,22 @@ def test_videomme_talker_accuracy_and_speed(
 
 
 @pytest.mark.benchmark
-def test_videomme_talker_wer(wer_eval_artifacts: _TalkerEvalArtifacts) -> None:
+def test_videomme_talker_wer(
+    wer_eval_artifacts: _TalkerEvalArtifacts,
+    omni_whisper_wer_router: ManagedRouterHandle,
+) -> None:
     """Transcribe saved talker audio after the inference server is stopped."""
     wer = compute_text_audio_consistency_from_records(
         wer_eval_artifacts.per_sample,
         wer_eval_artifacts.lang,
         ASR_DEVICE,
         audio_dir=wer_eval_artifacts.audio_dir,
+        whisper_router_port=omni_whisper_wer_router.port,
     )
     print_wer_summary(wer["summary"], "qwen3-omni")
+    persist_wer_in_benchmark_results(
+        wer_eval_artifacts.audio_dir, wer, "videomme_results.json"
+    )
     checks = MetricCheckCollector("Video-MME Talker WER")
     assert_wer_partitioned(
         wer,

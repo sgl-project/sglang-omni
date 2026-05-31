@@ -1,0 +1,128 @@
+# Model-specific config for the TTS CI threshold skill.
+#
+# Notes:
+# - Stage 0 (Whisper ASR): test_whisper_asr_ci.py — runs before TTS stages in
+#   CI DAG; calibrate via `--model tts --stages whisper_asr` or full `--stages ALL`.
+# - test_tts_ci.py runs stages 1–3 internal stages (nonstream / stream /
+#   consistency) controlled by --tts-stage. tune.py runs the full file once
+#   per repeat (all pytest functions that match the selected stage filter).
+# Fixed CI presets in test_tts_ci.py — NEVER written by apply; used only to
+# validate strict sample coverage during a run:
+#   SEEDTTS_EN_FULLSET_SAMPLES = 1088
+#   TTS_SIMILARITY_MAX_SAMPLES = 50
+#   STREAMING_BENCHMARK_MAX_SAMPLES = None  (full 1088 for streaming too)
+# - Voice-clone artifacts live under per-variant dirs in pytest tmp_path:
+#   vc_nonstream_c16/ and vc_stream_c16/ (speed_results.json, wer_results.json,
+#   similarity_results.json for nonstream).
+# - TTS_MAX_FAILED_REQUESTS: max allowed generation failures out of 1088 on
+#   stage 1/2 speed runs (worst-of-N max → written back to the test constant).
+# - Stage 3 (streaming consistency) has no numeric threshold in tune.py; see
+#   SKILL.md § TTS stage 3 after calibrating failed_requests.
+# - Concurrency: CI uses --concurrency 16. Discover reads the conc=16 row.
+# - Venv: CI uses omni under OMNI_CI_HOME (see omni_ci_home below).
+# - Auth: export HF_TOKEN before precheck/run unless the private TTS model
+#   weights are already present in the configured HF cache.
+name: tts
+description: "TTS CI (Higgs / SeedTTS EN)"
+hf_model_id: "boson-sglang/higgs-audio-v3-TTS-4B-grpo05200410999"
+hf_model_ids_by_test:
+  test_whisper_asr_ci.py:
+    - "openai/whisper-large-v3"
+hf_datasets:
+  - "zhaochenyang20/seed-tts-eval-arrow"
+omni_ci_home: "/github/home/calibration"
+default_venv_python:
+  - "/sgl-workspace/sglang-omni/omni/bin/python"
+  - "/github/home/calibration/omni/bin/python"
+  - "/github/home/omni/bin/python"
+expected_wer_normalizer: "english"
+auto_env:
+  HOME: "/github/home"
+  OMNI_CI_HOME: "/github/home/calibration"
+  HF_HOME: "/github/home/.cache/huggingface"
+  MODELSCOPE_CACHE: "/github/home/.cache/modelscope"
+  XDG_CACHE_HOME: "/github/home/calibration/.cache"
+  HF_ENDPOINT: "https://hf-mirror.com"
+  HF_HUB_DISABLE_XET: "1"
+  UV_INDEX_URL: "https://pypi.tuna.tsinghua.edu.cn/simple"
+  UV_CACHE_DIR: "/github/home/.cache/uv"
+  TORCHINDUCTOR_CACHE_DIR: "/github/home/calibration/.torchinductor"
+  FLASHINFER_DISABLE_VERSION_CHECK: "1"
+  SEEDTTS_SIM_CACHE_DIR: "/github/home/seedtts-wavlm-sim"
+# TTS CI stage 0 (Whisper ASR) + stages 1–2 (Higgs voice clone) share omni venv.
+gpus_per_test:
+  test_whisper_asr_ci.py: 2
+  test_tts_ci.py: 2
+test_globs:
+  - "tests/test_model/test_whisper_asr_ci.py"
+  - "tests/test_model/test_tts_ci.py"
+extra_env: {}
+pytest_extra_args:
+  test_tts_ci.py:
+    - "--concurrency"
+    - "16"
+stage_base_strip_prefix: "test_"
+stage_base_strip_suffix: "_ci"
+stage_base_docs_override: "tts_docs"
+metric_sources:
+  test_whisper_asr_ci.py:
+    json_file: "whisper_asr_results.json"
+    sample_counts:
+      total: "summary.total_samples"
+      ok: "summary.evaluated"
+    paths:
+      corpus_wer: "summary.corpus_wer"
+      per_sample_wer_max: "summary.wer_per_sample_max"
+      throughput_qps: "speed.throughput_samples_per_s"
+      latency_mean_s: "speed.latency_mean_s"
+      latency_p95_s: "speed.latency_p95_s"
+      rtf_mean: "speed.rtf_mean"
+      rtf_p95: "speed.rtf_p95"
+  test_tts_ci.py:
+    # Per-variant routing: each variant claims constants matching its
+    # `constant_filter` regex (matched against the bare constant name with
+    # any leading underscore stripped). Stage keys become
+    # <base>_<variant>_<group>: e.g. tts_nonstream_speed, tts_stream_wer,
+    # tts_nonstream_similarity.
+    variants:
+      nonstream:
+        # VC_* (not VC_STREAM_*), _VC_NON_STREAM_*, TTS_MAX_FAILED_REQUESTS
+        constant_filter: "^VC_(?!STREAM_).*|^VC_NON_STREAM.*|^TTS_MAX_FAILED_REQUESTS$"
+        json_file: "test_voice_cloning_non_streami0/vc_nonstream_c16/speed_results.json"
+        sample_counts:
+          total: "summary.total_requests"
+          ok: "summary.total_requests"
+        sample_counts_by_group:
+          wer:
+            total: "test_voice_cloning_non_streami0/vc_nonstream_c16/wer_results.json::summary.total_samples"
+            ok: "test_voice_cloning_non_streami0/vc_nonstream_c16/wer_results.json::summary.evaluated"
+          similarity:
+            total: "test_voice_cloning_non_streami0/vc_nonstream_c16/similarity_results.json::summary.evaluated"
+            ok: "test_voice_cloning_non_streami0/vc_nonstream_c16/similarity_results.json::summary.evaluated"
+        paths:
+          throughput_qps: "summary.throughput_qps"
+          output_tok_per_req_s: "summary.output_tok_per_req_s"
+          latency_mean_s: "summary.latency_mean_s"
+          rtf_mean: "summary.rtf_mean"
+          failed_requests: "summary.failed_requests"
+          corpus_wer: "test_voice_cloning_non_streami0/vc_nonstream_c16/wer_results.json::summary.wer_corpus"
+          per_sample_wer_max: "test_voice_cloning_non_streami0/vc_nonstream_c16/wer_results.json::summary.wer_per_sample_max"
+          similarity_mean: "test_voice_cloning_non_streami0/vc_nonstream_c16/similarity_results.json::summary.speaker_similarity_mean"
+      stream:
+        constant_filter: "^VC_STREAM_.*|^TTS_MAX_FAILED_REQUESTS$"
+        json_file: "test_voice_cloning_streaming0/vc_stream_c16/speed_results.json"
+        sample_counts:
+          total: "summary.total_requests"
+          ok: "summary.total_requests"
+        sample_counts_by_group:
+          wer:
+            total: "test_voice_cloning_streaming0/vc_stream_c16/wer_results.json::summary.total_samples"
+            ok: "test_voice_cloning_streaming0/vc_stream_c16/wer_results.json::summary.evaluated"
+        paths:
+          throughput_qps: "summary.throughput_qps"
+          output_tok_per_req_s: "summary.output_tok_per_req_s"
+          latency_mean_s: "summary.latency_mean_s"
+          rtf_mean: "summary.rtf_mean"
+          failed_requests: "summary.failed_requests"
+          corpus_wer: "test_voice_cloning_streaming0/vc_stream_c16/wer_results.json::summary.wer_corpus"
+          per_sample_wer_max: "test_voice_cloning_streaming0/vc_stream_c16/wer_results.json::summary.wer_per_sample_max"

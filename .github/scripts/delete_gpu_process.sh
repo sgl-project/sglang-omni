@@ -3,6 +3,15 @@ set -uo pipefail
 memory_threshold_mb="${OMNI_CI_GPU_MEMORY_CLEAN_THRESHOLD_MB:-1024}"
 wait_timeout_seconds="${OMNI_CI_GPU_CLEAN_WAIT_SECONDS:-120}"
 poll_seconds="${OMNI_CI_GPU_CLEAN_POLL_SECONDS:-5}"
+target_gpu_ids="${CUDA_VISIBLE_DEVICES:-}"
+
+selected_gpu_ids() {
+    if [ -n "${target_gpu_ids}" ] && [ "${target_gpu_ids}" != "all" ]; then
+        echo "${target_gpu_ids}" | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | sed '/^$/d'
+    else
+        nvidia-smi --query-gpu=index --format=csv,noheader,nounits
+    fi
+}
 
 if ! command -v nvidia-smi >/dev/null 2>&1; then
     echo "nvidia-smi not found; skipping GPU cleanup."
@@ -11,11 +20,8 @@ fi
 
 echo "=== Checking GPU Utilization ==="
 
-# Get GPU indices and their utilization
-nvidia-smi --query-gpu=index,utilization.gpu --format=csv,noheader,nounits | while IFS=',' read -r gpu_index utilization; do
+while IFS= read -r gpu_index; do
     gpu_index=$(echo "$gpu_index" | tr -d ' ')
-    utilization=$(echo "$utilization" | tr -d ' ')
-
     # Get PIDs running on this GPU
     pids=$(nvidia-smi --query-compute-apps=pid --format=csv,noheader --id="$gpu_index")
     if [ -z "$pids" ]; then
@@ -29,7 +35,7 @@ nvidia-smi --query-gpu=index,utilization.gpu --format=csv,noheader,nounits | whi
             kill -9 "$pid" || true
         done
     fi
-done
+done < <(selected_gpu_ids)
 
 if ! [[ "${memory_threshold_mb}" =~ ^[0-9]+$ ]] || [ "${memory_threshold_mb}" -lt 1 ]; then
     echo "::error::OMNI_CI_GPU_MEMORY_CLEAN_THRESHOLD_MB must be a positive integer; got '${memory_threshold_mb}'"
@@ -41,13 +47,13 @@ if ! [[ "${wait_timeout_seconds}" =~ ^[0-9]+$ ]] || ! [[ "${poll_seconds}" =~ ^[
     exit 2
 fi
 
-echo "Waiting for every GPU memory.used to drop below ${memory_threshold_mb} MiB..."
+echo "Waiting for selected GPU memory.used to drop below ${memory_threshold_mb} MiB..."
 deadline=$((SECONDS + wait_timeout_seconds))
 while true; do
     max_used_mb=0
-    while IFS=',' read -r gpu_index used_mb; do
+    while IFS= read -r gpu_index; do
         gpu_index=$(echo "$gpu_index" | tr -d ' ')
-        used_mb=$(echo "$used_mb" | tr -d ' ')
+        used_mb=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits --id="$gpu_index" | head -n 1 | tr -d ' ')
         if [ -z "${used_mb}" ]; then
             continue
         fi
@@ -55,7 +61,7 @@ while true; do
             max_used_mb="${used_mb}"
         fi
         echo "  GPU ${gpu_index}: ${used_mb} MiB used"
-    done < <(nvidia-smi --query-gpu=index,memory.used --format=csv,noheader,nounits)
+    done < <(selected_gpu_ids)
 
     if [ "${max_used_mb}" -lt "${memory_threshold_mb}" ]; then
         echo "GPU memory cleanup complete: max memory.used=${max_used_mb} MiB."

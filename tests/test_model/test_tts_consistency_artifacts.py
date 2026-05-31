@@ -1,22 +1,22 @@
 # SPDX-License-Identifier: Apache-2.0
-"""JSON-only S2-Pro stage-3 checks for GitHub-hosted runners.
+"""JSON-only TTS stage-3 checks for GitHub-hosted runners.
 
 Note (Chenyang):
 To run locally, first run stage 1 and stage 2:
 
-S2PRO_STAGE_OUTPUT_ROOT=$PWD/stage-results/nonstream \
-pytest tests/test_model/test_s2pro_tts_ci.py -v -s -x --concurrency 16 \
-  --s2pro-stage s2pro-stage-1-nonstream
+TTS_STAGE_OUTPUT_ROOT=$PWD/stage-results/nonstream \
+pytest tests/test_model/test_tts_ci.py -v -s -x --concurrency 16 \
+  --tts-stage tts-stage-1-nonstream
 
-S2PRO_STAGE_OUTPUT_ROOT=$PWD/stage-results/stream \
-pytest tests/test_model/test_s2pro_tts_ci.py -v -s -x --concurrency 16 \
-  --s2pro-stage s2pro-stage-2-stream
+TTS_STAGE_OUTPUT_ROOT=$PWD/stage-results/stream \
+pytest tests/test_model/test_tts_ci.py -v -s -x --concurrency 16 \
+  --tts-stage tts-stage-2-stream
 
 Then run this JSON-only stage 3 check:
 
-S2PRO_STAGE1_SPEED_RESULTS_DIR=$PWD/stage-results/nonstream \
-S2PRO_STAGE2_SPEED_RESULTS_DIR=$PWD/stage-results/stream \
-pytest tests/test_model/test_s2pro_consistency_artifacts.py -v -s -x
+TTS_STAGE1_SPEED_RESULTS_DIR=$PWD/stage-results/nonstream \
+TTS_STAGE2_SPEED_RESULTS_DIR=$PWD/stage-results/stream \
+pytest tests/test_model/test_tts_consistency_artifacts.py -v -s -x
 
 
 Note (Chenyang):
@@ -38,11 +38,11 @@ import pytest
 
 from tests.utils import MetricCheckCollector, assert_streaming_consistency
 
-S2PRO_STAGE1_SPEED_RESULTS_DIR_ENV = "S2PRO_STAGE1_SPEED_RESULTS_DIR"
-S2PRO_STAGE2_SPEED_RESULTS_DIR_ENV = "S2PRO_STAGE2_SPEED_RESULTS_DIR"
-S2PRO_CONSISTENCY_CONCURRENCY_ENV = "S2PRO_CONSISTENCY_CONCURRENCY"
+TTS_STAGE1_SPEED_RESULTS_DIR_ENV = "TTS_STAGE1_SPEED_RESULTS_DIR"
+TTS_STAGE2_SPEED_RESULTS_DIR_ENV = "TTS_STAGE2_SPEED_RESULTS_DIR"
+TTS_CONSISTENCY_CONCURRENCY_ENV = "TTS_CONSISTENCY_CONCURRENCY"
 DEFAULT_CONSISTENCY_CONCURRENCY = 16
-STREAMING_BENCHMARK_MAX_SAMPLES = 32
+SEEDTTS_EN_FULLSET_SAMPLES = 1088
 
 
 def _load_speed_results(results_root_env: str, output_dir_name: str) -> dict:
@@ -60,37 +60,51 @@ def _load_speed_results(results_root_env: str, output_dir_name: str) -> dict:
 
 def _selected_concurrency() -> int:
     option_value = os.environ.get(
-        S2PRO_CONSISTENCY_CONCURRENCY_ENV,
+        TTS_CONSISTENCY_CONCURRENCY_ENV,
         str(DEFAULT_CONSISTENCY_CONCURRENCY),
     )
     try:
         return int(option_value)
     except ValueError as exc:
         raise ValueError(
-            f"{S2PRO_CONSISTENCY_CONCURRENCY_ENV} must be an integer"
+            f"{TTS_CONSISTENCY_CONCURRENCY_ENV} must be an integer"
         ) from exc
 
 
 @pytest.mark.benchmark
-def test_s2pro_streaming_consistency_from_artifacts() -> None:
+def test_tts_streaming_consistency_from_artifacts() -> None:
     """Validate stage-1 (non-stream) vs stage-2 (stream) speed_results.json
     artifacts agree on structural invariants: prompt token counts, completion
     token counts, and audio duration within tolerance."""
     concurrency = _selected_concurrency()
     non_stream_results = _load_speed_results(
-        S2PRO_STAGE1_SPEED_RESULTS_DIR_ENV,
+        TTS_STAGE1_SPEED_RESULTS_DIR_ENV,
         f"vc_nonstream_c{concurrency}",
     )
     stream_results = _load_speed_results(
-        S2PRO_STAGE2_SPEED_RESULTS_DIR_ENV,
+        TTS_STAGE2_SPEED_RESULTS_DIR_ENV,
         f"vc_stream_c{concurrency}",
     )
 
-    checks = MetricCheckCollector("S2-Pro artifact streaming consistency")
+    checks = MetricCheckCollector("TTS artifact streaming consistency")
+    checks.check(
+        len(non_stream_results["per_request"]) == SEEDTTS_EN_FULLSET_SAMPLES,
+        f"non-stream artifact has {len(non_stream_results['per_request'])}/"
+        f"{SEEDTTS_EN_FULLSET_SAMPLES} SeedTTS EN samples",
+    )
+    checks.check(
+        len(stream_results["per_request"]) == SEEDTTS_EN_FULLSET_SAMPLES,
+        f"stream artifact has {len(stream_results['per_request'])}/"
+        f"{SEEDTTS_EN_FULLSET_SAMPLES} SeedTTS EN samples",
+    )
     assert_streaming_consistency(
         non_stream_results["per_request"],
         stream_results["per_request"],
-        expected_stream_count=STREAMING_BENCHMARK_MAX_SAMPLES,
+        expected_stream_count=len(non_stream_results["per_request"]),
+        # Stage 1/2 speed tests may keep a small failure budget so WER and
+        # diagnostics can still run. Stage 3 is the strict consistency gate:
+        # downloaded artifacts must prove that every streaming request finished.
+        max_failed_requests=0,
         collector=checks,
     )
     checks.assert_all()

@@ -34,9 +34,9 @@ VIDEOAMME_MIN_ACCURACY = 0.66
 
 _VIDEOAMME_P95 = {
     16: {
-        "throughput_qps": 0.995,
-        "output_tok_per_req_s": 2.7,
-        "latency_mean_s": 15.716,
+        "throughput_qps": 1.166,
+        "output_tok_per_req_s": 3.4,
+        "latency_mean_s": 12.553,
     },
 }
 VIDEOAMME_THRESHOLDS = apply_slack(_VIDEOAMME_P95)

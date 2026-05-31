@@ -453,7 +453,7 @@ def cmd_precheck(args: argparse.Namespace) -> int:
         if not ok:
             errs.append(
                 f"HF model not cached: {mid} — "
-                f"`huggingface-cli download {mid}`"
+                f"`HF_ENDPOINT=https://hf-mirror.com huggingface-cli download {mid}`"
             )
     for ds in sorted(hf_datasets):
         ok = _hf_cached(py, ds, "dataset")
@@ -461,7 +461,8 @@ def cmd_precheck(args: argparse.Namespace) -> int:
         if not ok:
             errs.append(
                 f"HF dataset not cached: {ds} — "
-                f"`huggingface-cli download --repo-type dataset {ds}`"
+                "`HF_ENDPOINT=https://hf-mirror.com "
+                f"huggingface-cli download --repo-type dataset {ds}`"
             )
 
     # Auxiliary scoring resources (ASR models, normalizer pkgs, repo-root symlinks).
