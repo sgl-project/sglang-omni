@@ -51,10 +51,6 @@ from tests.test_model.omni_router_utils import (
     print_router_diagnostics,
     router_get_json,
 )
-from tests.test_model.omni_whisper_wer_utils import (
-    omni_whisper_wer_router,  # noqa: F401 - pytest fixture imported by name.
-    wait_for_gpu_memory_release,
-)
 from tests.utils import (
     MetricCheckCollector,
     apply_slack,
@@ -63,6 +59,7 @@ from tests.utils import (
     assert_streaming_consistency,
     assert_wer_results,
     no_proxy_env,
+    wait_for_gpu_memory_release,
 )
 
 PER_REQUEST_STORE: dict[str, list[dict]] = {}
@@ -76,9 +73,7 @@ STARTUP_TIMEOUT = 180
 BENCHMARK_TIMEOUT = 600
 WER_TIMEOUT = 600
 SIMILARITY_TIMEOUT = 600
-# Optional user override: a path to a custom fine-tuned WavLM checkpoint.
-# When unset, the bootstrapper in benchmarks.metrics.speaker_similarity_assets
-# auto-downloads the official weights into the shared cache directory.
+
 SIMILARITY_CHECKPOINT_ENV = "SEEDTTS_SIM_CHECKPOINT"
 TTS_STAGE_OUTPUT_ROOT_ENV = "TTS_STAGE_OUTPUT_ROOT"
 TTS_STAGE1_SPEED_RESULTS_DIR_ENV = "TTS_STAGE1_SPEED_RESULTS_DIR"
@@ -86,15 +81,11 @@ TTS_STAGE2_SPEED_RESULTS_DIR_ENV = "TTS_STAGE2_SPEED_RESULTS_DIR"
 TTS_MAX_FAILED_REQUESTS_ENV = "TTS_MAX_FAILED_REQUESTS"
 TTS_SIMILARITY_MAX_SAMPLES_ENV = "TTS_SIMILARITY_MAX_SAMPLES"
 
-# Keep both non-streaming and streaming CI stages on the full SeedTTS EN split.
 SEEDTTS_EN_FULLSET_SAMPLES = 1088
 STREAMING_BENCHMARK_MAX_SAMPLES: int | None = None
-# Full-set TTS CI can tolerate a small number of transport-level request
-# failures while still monitoring the failure budget explicitly.
+
 TTS_MAX_FAILED_REQUESTS = int(os.environ.get(TTS_MAX_FAILED_REQUESTS_ENV, "16"))
-TTS_SIMILARITY_MAX_SAMPLES = int(
-    os.environ.get(TTS_SIMILARITY_MAX_SAMPLES_ENV, "50")
-)
+TTS_SIMILARITY_MAX_SAMPLES = int(os.environ.get(TTS_SIMILARITY_MAX_SAMPLES_ENV, "50"))
 
 # Note (chenyang): the RTF thresholds also includes the reference audio
 # processing time.
@@ -115,10 +106,7 @@ VC_WER_MAX_PER_SAMPLE = 0.16666666666666666
 VC_STREAM_WER_MAX_CORPUS = 0.013262599469496022
 VC_STREAM_WER_CORPUS_THRESHOLD = apply_wer_slack(VC_STREAM_WER_MAX_CORPUS)
 VC_STREAM_WER_MAX_PER_SAMPLE = 0.16666666666666666
-# Historical calibration from five independent SeedTTS EN subset runs on H200
-# (Spec GPU 4-7), same scorer (popsoda2002/seedtts-wavlm-sim @
-# wavlm_large_finetune.pth). Keep this loose floor until the full-set TTS
-# speaker-similarity calibration is refreshed.
+
 VC_SIMILARITY_MEAN_MIN = 60.0
 
 # Note (Chenyang): Only thresholds for the CI concurrency are dedicatedly tuned,

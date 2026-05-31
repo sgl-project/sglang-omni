@@ -14,13 +14,13 @@ import sys
 import pytest
 import requests
 
-from tests.test_model.omni_router_utils import (
-    ManagedRouterHandle,
-    launch_managed_router,
-)
 from tests.test_model.conftest import (
     QWEN3_OMNI_COLOCATED_WORKER_ARGS,
     QWEN3_OMNI_TEST_MODEL_PATH,
+)
+from tests.test_model.omni_router_utils import (
+    ManagedRouterHandle,
+    launch_managed_router,
 )
 from tests.utils import disable_proxy
 

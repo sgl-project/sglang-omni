@@ -16,6 +16,11 @@ from pathlib import Path
 from typing import Generator
 
 STARTUP_TIMEOUT = 600
+REPO_ROOT = Path(__file__).resolve().parents[1]
+GPU_CLEANUP_SCRIPT = REPO_ROOT / ".github/scripts/ensure_gpus_idle.sh"
+GPU_IDLE_THRESHOLD_MB = 2048
+GPU_IDLE_WAIT_SECONDS = 600
+GPU_IDLE_POLL_SECONDS = 5
 
 
 @dataclass
@@ -133,6 +138,48 @@ def stop_server(proc: subprocess.Popen) -> None:
         except (ProcessLookupError, ChildProcessError):
             # Process already exited — nothing left to kill.
             return
+
+
+def wait_for_gpu_memory_release(
+    *,
+    memory_threshold_mb: int | None = None,
+    wait_timeout_seconds: int | None = None,
+    poll_seconds: int | None = None,
+) -> None:
+    """Kill orphan GPU processes and block until every GPU is below threshold."""
+    if not GPU_CLEANUP_SCRIPT.exists():
+        raise FileNotFoundError(f"GPU cleanup script missing: {GPU_CLEANUP_SCRIPT}")
+
+    env = os.environ.copy()
+    env["OMNI_CI_GPU_MEMORY_CLEAN_THRESHOLD_MB"] = str(
+        memory_threshold_mb
+        if memory_threshold_mb is not None
+        else GPU_IDLE_THRESHOLD_MB
+    )
+    env["OMNI_CI_GPU_CLEAN_WAIT_SECONDS"] = str(
+        wait_timeout_seconds
+        if wait_timeout_seconds is not None
+        else GPU_IDLE_WAIT_SECONDS
+    )
+    env["OMNI_CI_GPU_CLEAN_POLL_SECONDS"] = str(
+        poll_seconds if poll_seconds is not None else GPU_IDLE_POLL_SECONDS
+    )
+
+    print(
+        f"[gpu cleanup] running ensure_gpus_idle "
+        f"(threshold={env['OMNI_CI_GPU_MEMORY_CLEAN_THRESHOLD_MB']} MiB)...",
+        flush=True,
+    )
+    result = subprocess.run(
+        ["bash", str(GPU_CLEANUP_SCRIPT)],
+        env=env,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            "GPU memory was not released after stopping the inference server. "
+            f"ensure_gpus_idle.sh exit={result.returncode}"
+        )
 
 
 def wait_healthy(

@@ -507,9 +507,7 @@ def run_seedtts_similarity(
     split = config.lang
     ref_audio_by_id = {
         sample.sample_id: sample.ref_audio
-        for sample in load_seedtts_samples(
-            config.meta, config.max_samples, split=split
-        )
+        for sample in load_seedtts_samples(config.meta, config.max_samples, split=split)
     }
     device = config.device
     if "cuda" in device:

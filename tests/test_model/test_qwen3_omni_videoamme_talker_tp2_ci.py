@@ -29,10 +29,6 @@ from benchmarks.metrics.video import print_videomme_accuracy_summary
 from benchmarks.metrics.wer import print_wer_summary
 from benchmarks.tasks.tts import compute_text_audio_consistency_from_records
 from tests.test_model.omni_router_utils import ManagedRouterHandle
-from tests.test_model.omni_whisper_wer_utils import (
-    omni_whisper_wer_router,  # noqa: F401 - pytest fixture imported by name.
-    wait_for_gpu_memory_release,
-)
 from tests.utils import (
     MetricCheckCollector,
     ServerHandle,
@@ -41,6 +37,7 @@ from tests.utils import (
     assert_speed_thresholds,
     assert_wer_partitioned,
     stop_server,
+    wait_for_gpu_memory_release,
 )
 
 CONCURRENCY = 8
