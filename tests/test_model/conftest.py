@@ -43,8 +43,29 @@ QWEN3_OMNI_FP8_TEST_MODEL_PATH = os.environ.get(
 )
 QWEN3_OMNI_MODEL_NAME = "qwen3-omni"
 QWEN3_OMNI_ROUTER_WAIT_TIMEOUT = 180
+QWEN3_OMNI_COLOCATED_CONFIG_ENV = "SGLANG_OMNI_TEST_QWEN3_COLOCATED_CONFIG"
+QWEN3_OMNI_COLOCATED_H20_CONFIG = "examples/configs/qwen3_omni_colocated_h20.yaml"
+QWEN3_OMNI_COLOCATED_AUTO_CONFIG = "examples/configs/qwen3_omni_colocated_auto.yaml"
+
+
+def _select_qwen3_omni_colocated_config() -> str:
+    override = os.environ.get(QWEN3_OMNI_COLOCATED_CONFIG_ENV)
+    if override:
+        return override
+
+    try:
+        from sglang_omni.utils.gpu_memory import get_gpu_device_info
+
+        device_name = get_gpu_device_info(0).name or ""
+    except Exception:
+        device_name = ""
+    if "H100" in device_name:
+        return QWEN3_OMNI_COLOCATED_AUTO_CONFIG
+    return QWEN3_OMNI_COLOCATED_H20_CONFIG
+
+
 QWEN3_OMNI_COLOCATED_WORKER_ARGS = (
-    "--config examples/configs/qwen3_omni_colocated_h20.yaml --colocate"
+    f"--config {_select_qwen3_omni_colocated_config()} --colocate"
 )
 QWEN3_OMNI_MMSU_WORKER_ARGS = (
     "--config examples/configs/qwen3_omni_mmsu.yaml --text-only"

@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# Example single-GPU colocated Qwen3-Omni launcher config that leaves SGLang AR
+# mem_fraction_static auto-selection enabled. This is useful on H100-class local
+# validation hosts where the fixed H20 CI stage budgets can be too tight.
+
+config_cls: Qwen3OmniSpeechColocatedPipelineConfig
+name: qwen3-omni-colocated-auto
+model_path: Qwen/Qwen3-Omni-30B-A3B-Instruct
+relay_backend: shm
+placement:
+  require_memory_fraction_for_colocation: false

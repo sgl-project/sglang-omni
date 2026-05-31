@@ -817,7 +817,10 @@ def test_voice_cloning_streaming_consistency(
             ns,
             st,
             expected_stream_count=len(ns),
-            max_failed_requests=TTS_MAX_FAILED_REQUESTS,
+            # Stage 1/2 tolerate a small request-failure budget to keep
+            # diagnostics flowing, but stage 3 must only pass when the
+            # compared artifacts are complete.
+            max_failed_requests=0,
             collector=checks,
         )
     checks.assert_all()

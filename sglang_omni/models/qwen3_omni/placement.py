@@ -48,7 +48,7 @@ class Qwen3OmniPlacementPolicy:
         if type(config).__name__ == _COLOCATED_CONFIG_CLASS:
             self._validate_colocated_qwen_parallelism(stage_map)
             self._validate_colocated_qwen_topology(plan)
-            self._validate_colocated_qwen_runtime(stage_map)
+            self._validate_colocated_qwen_runtime(config, stage_map)
             return
 
         thinker = plan.stages.get("thinker")
@@ -103,7 +103,11 @@ class Qwen3OmniPlacementPolicy:
                 "thinker, talker_ar, and code2wav to share one GPU"
             )
 
-    def _validate_colocated_qwen_runtime(self, stage_map) -> None:
+    def _validate_colocated_qwen_runtime(
+        self,
+        config: PipelineConfig,
+        stage_map,
+    ) -> None:
         missing_budgets = [
             stage_name
             for stage_name in sorted(_COLOCATED_BUDGET_STAGES)
@@ -112,7 +116,15 @@ class Qwen3OmniPlacementPolicy:
                 is None
             )
         ]
+        if missing_budgets and len(missing_budgets) != len(_COLOCATED_BUDGET_STAGES):
+            raise ValueError(
+                "Qwen colocated speech requires either all colocated stages or "
+                "no colocated stages to set total_gpu_memory_fraction; missing "
+                f"{missing_budgets}"
+            )
         if missing_budgets:
+            if not config.placement.require_memory_fraction_for_colocation:
+                return
             raise ValueError(
                 "Qwen colocated speech requires total_gpu_memory_fraction for "
                 f"{missing_budgets}"

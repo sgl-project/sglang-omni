@@ -18,9 +18,13 @@ from tests.test_model.omni_router_utils import (
     ManagedRouterHandle,
     launch_managed_router,
 )
+from tests.test_model.conftest import (
+    QWEN3_OMNI_COLOCATED_WORKER_ARGS,
+    QWEN3_OMNI_TEST_MODEL_PATH,
+)
 from tests.utils import disable_proxy
 
-MODEL_PATH = "Qwen/Qwen3-Omni-30B-A3B-Instruct"
+MODEL_PATH = QWEN3_OMNI_TEST_MODEL_PATH
 MODEL_NAME = "qwen3-omni"
 THINKER_MAX_SEQ_LEN = 128
 ROUTER_WAIT_TIMEOUT = 180
@@ -43,8 +47,7 @@ def _post_chat(
 @pytest.fixture(scope="module")
 def router_server(tmp_path_factory: pytest.TempPathFactory):
     worker_extra_args = (
-        "--config examples/configs/qwen3_omni_colocated_h20.yaml "
-        "--colocate "
+        f"{QWEN3_OMNI_COLOCATED_WORKER_ARGS} "
         f"--stages.0.factory-args.thinker-max-seq-len {THINKER_MAX_SEQ_LEN} "
         f"--stages.4.factory-args.thinker-max-seq-len {THINKER_MAX_SEQ_LEN}"
     )
