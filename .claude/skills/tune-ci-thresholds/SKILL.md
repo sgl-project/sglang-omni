@@ -653,7 +653,7 @@ All CI workflows, calibration models, and WER sweeps use the same venv name
 
 | Workload | CI workflow | venv | `OMNI_CI_HOME` (calibration host) | Source env script |
 |----------|-------------|------|-----------------------------------|-------------------|
-| All benchmarks (unit, Qwen3, TTS, Whisper) | `test.yaml`, `test-qwen3-omni-ci.yaml`, `test-tts-ci.yaml` | **`omni`** | `/github/home/calibration` | `source .github/scripts/ci_env.sh` |
+| All benchmarks (unit, Qwen3, TTS, Whisper) | `omni-ci.yaml` (one shared setup) → `test.yaml`, `test-qwen3-omni-ci.yaml`, `test-tts-ci.yaml` | **`omni`** | `/github/home/calibration` | `source .github/scripts/ci_env.sh` |
 
 **Forbidden shortcuts (observed 2026-05-30):**
 

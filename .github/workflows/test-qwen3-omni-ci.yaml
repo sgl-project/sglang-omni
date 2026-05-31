@@ -1,14 +1,7 @@
 name: Qwen3-Omni CI
 
 on:
-  pull_request:
-    branches: [main]
-    types: [labeled, synchronize, reopened, ready_for_review]
-  workflow_dispatch:
-
-concurrency:
-  group: qwen3-omni-ci-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  workflow_call:
 
 permissions:
   contents: read
@@ -21,79 +14,11 @@ env:
         && format('/github/home/pr-{0}', github.event.pull_request.number)
         || format('/github/home/run-{0}', github.run_id) }}
 
-# DAG:
-#   preflight (requires mergeable PR + successful lint)
-#     └── setup (install-deps under OMNI_CI_HOME + verify model weights)
-#     └── stage 1 … stage 11 (restore only; parallel after setup)
-#           └── cleanup on full success only (kept on failure for re-run)
-#   PR close → cleanup-pr-ci-home-on-close.yaml removes /github/home/pr-N/
+# Invoked by omni-ci.yaml after the shared setup job. Restores omni only.
 
 jobs:
-  preflight:
-    name: preflight - lint and mergeability
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (!github.event.pull_request.draft &&
-       contains(github.event.pull_request.labels.*.name, 'run-ci'))
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - name: Checkout workflow scripts
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
-
-      - name: Check PR lint and mergeability
-        if: ${{ github.event_name == 'pull_request' }}
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: python .github/scripts/pr_ci_gate.py
-
-      - name: Manual dispatch preflight
-        if: ${{ github.event_name == 'workflow_dispatch' }}
-        run: echo "Manual workflow_dispatch bypasses PR lint/mergeability gate."
-
-  setup:
-    name: setup - omni venv
-    needs: preflight
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (!github.event.pull_request.draft &&
-       contains(github.event.pull_request.labels.*.name, 'run-ci'))
-    runs-on: [self-hosted]
-    timeout-minutes: 15
-    container:
-      image: frankleeeee/sglang-omni:dev
-      options: >-
-        --gpus all --rm
-        -v /dev/shm:/dev/shm
-        -v /data/cache/huggingface:/github/home/.cache/huggingface
-        -v /data/cache/huggingface:/root/.cache/huggingface
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - uses: ./.github/actions/omni-setup
-        with:
-          venv-name: omni
-          install-deps: "true"
-
-      - uses: ./.github/actions/omni-save-cache
-        with:
-          venv-name: omni
-
-      - name: Ensure Qwen3 CI model weights
-        shell: bash
-        env:
-          HF_ENDPOINT: https://hf-mirror.com
-        run: |
-          bash .github/scripts/ensure_hf_models.sh omni \
-            Qwen/Qwen3-Omni-30B-A3B-Instruct \
-            marksverdhei/Qwen3-Omni-30B-A3B-FP8
-
   stage-1-thinker:
     name: stage 1 - thinker length integration
-    needs: setup
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (!github.event.pull_request.draft &&
@@ -134,7 +59,6 @@ jobs:
 
   stage-2-tts:
     name: stage 2 - TTS speed + WER + SIM
-    needs: setup
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (!github.event.pull_request.draft &&
@@ -192,7 +116,6 @@ jobs:
 
   stage-3-mmmu:
     name: stage 3 - MMMU accuracy + speed
-    needs: setup
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (!github.event.pull_request.draft &&
@@ -237,7 +160,6 @@ jobs:
 
   stage-4-mmmu-talker:
     name: stage 4 - MMMU Talker
-    needs: setup
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (!github.event.pull_request.draft &&
@@ -282,7 +204,6 @@ jobs:
 
   stage-5-mmsu:
     name: stage 5 - MMSU accuracy + speed
-    needs: setup
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (!github.event.pull_request.draft &&
@@ -328,7 +249,6 @@ jobs:
 
   stage-6-mmsu-talker:
     name: stage 6 - MMSU Talker
-    needs: setup
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (!github.event.pull_request.draft &&
@@ -373,7 +293,6 @@ jobs:
 
   stage-7-videomme:
     name: stage 7 - Video-MME accuracy + speed
-    needs: setup
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (!github.event.pull_request.draft &&
@@ -418,7 +337,6 @@ jobs:
 
   stage-8-videomme-talker:
     name: stage 8 - Video-MME Talker
-    needs: setup
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (!github.event.pull_request.draft &&
@@ -463,7 +381,6 @@ jobs:
 
   stage-9-videoamme:
     name: stage 9 - Video-AMME accuracy + speed
-    needs: setup
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (!github.event.pull_request.draft &&
@@ -508,7 +425,6 @@ jobs:
 
   stage-10-videoamme-talker:
     name: stage 10 - Video-AMME Talker
-    needs: setup
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (!github.event.pull_request.draft &&
@@ -553,7 +469,6 @@ jobs:
 
   stage-11-thinker-tp2:
     name: stage 11 - FP8 Thinker TP=2 (Video-AMME Talker)
-    needs: setup
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (!github.event.pull_request.draft &&
@@ -596,39 +511,3 @@ jobs:
           artifact-upload-name: qwen3-omni-thinker-tp2-results
           artifact-upload-path: /tmp/**/videoamme_audio/videoamme_results.json
 
-  cleanup:
-    name: cleanup - reclaim host cache
-    needs:
-      - setup
-      - stage-1-thinker
-      - stage-2-tts
-      - stage-3-mmmu
-      - stage-4-mmmu-talker
-      - stage-5-mmsu
-      - stage-6-mmsu-talker
-      - stage-7-videomme
-      - stage-8-videomme-talker
-      - stage-9-videoamme
-      - stage-10-videoamme-talker
-      - stage-11-thinker-tp2
-    if: >-
-      success() &&
-      (github.event_name == 'workflow_dispatch' ||
-       (!github.event.pull_request.draft &&
-        contains(github.event.pull_request.labels.*.name, 'run-ci')))
-    runs-on: [self-hosted]
-    timeout-minutes: 5
-    container:
-      image: frankleeeee/sglang-omni:dev
-      options: >-
-        --gpus all --rm
-        -v /dev/shm:/dev/shm
-        -v /data/cache/huggingface:/github/home/.cache/huggingface
-        -v /data/cache/huggingface:/root/.cache/huggingface
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - uses: ./.github/actions/omni-cleanup-host
-        with:
-          ci-home: ${{ env.OMNI_CI_HOME }}

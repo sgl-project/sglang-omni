@@ -1,0 +1,146 @@
+name: Omni CI
+
+on:
+  pull_request:
+    branches: [main]
+    types: [labeled, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+
+concurrency:
+  group: omni-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  checks: read
+  pull-requests: read
+
+env:
+  OMNI_CI_HOME: >-
+    ${{ github.event_name == 'pull_request'
+        && format('/github/home/pr-{0}', github.event.pull_request.number)
+        || format('/github/home/run-{0}', github.run_id) }}
+  TTS_MODEL_PATH: boson-sglang/higgs-audio-v3-TTS-4B-grpo05200410999
+
+# One preflight + one omni venv install for all benchmark CI (PR Test, Qwen3, TTS).
+# Child workflows are workflow_call-only: they restore the host venv, never install-deps.
+
+jobs:
+  preflight:
+    name: preflight - lint and mergeability
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (!github.event.pull_request.draft &&
+       contains(github.event.pull_request.labels.*.name, 'run-ci'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout workflow scripts
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+
+      - name: Check PR lint and mergeability
+        if: ${{ github.event_name == 'pull_request' }}
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python .github/scripts/pr_ci_gate.py
+
+      - name: Manual dispatch preflight
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        run: echo "Manual workflow_dispatch bypasses PR lint/mergeability gate."
+
+  setup:
+    name: setup - omni venv
+    needs: preflight
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (!github.event.pull_request.draft &&
+       contains(github.event.pull_request.labels.*.name, 'run-ci'))
+    runs-on: [self-hosted]
+    timeout-minutes: 30
+    container:
+      image: frankleeeee/sglang-omni:dev
+      options: >-
+        --gpus all --rm
+        -v /dev/shm:/dev/shm
+        -v /data/cache/huggingface:/github/home/.cache/huggingface
+        -v /data/cache/huggingface:/root/.cache/huggingface
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - uses: ./.github/actions/omni-setup
+        with:
+          venv-name: omni
+          install-deps: "true"
+
+      - uses: ./.github/actions/omni-save-cache
+        with:
+          venv-name: omni
+
+      - name: Ensure CI model weights
+        shell: bash
+        env:
+          HF_ENDPOINT: https://hf-mirror.com
+          HF_TOKEN: ${{ secrets.BOSON_HF_TOKEN }}
+        run: |
+          bash .github/scripts/ensure_hf_models.sh omni \
+            Qwen/Qwen3-Omni-30B-A3B-Instruct \
+            marksverdhei/Qwen3-Omni-30B-A3B-FP8 \
+            "${TTS_MODEL_PATH}"
+
+  pr-test:
+    name: PR Test
+    needs: setup
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (!github.event.pull_request.draft &&
+       contains(github.event.pull_request.labels.*.name, 'run-ci'))
+    uses: ./.github/workflows/test.yaml
+    secrets: inherit
+
+  tts-ci:
+    name: TTS CI
+    needs: setup
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (!github.event.pull_request.draft &&
+       contains(github.event.pull_request.labels.*.name, 'run-ci'))
+    uses: ./.github/workflows/test-tts-ci.yaml
+    secrets: inherit
+
+  qwen3-omni-ci:
+    name: Qwen3-Omni CI
+    needs: setup
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (!github.event.pull_request.draft &&
+       contains(github.event.pull_request.labels.*.name, 'run-ci'))
+    uses: ./.github/workflows/test-qwen3-omni-ci.yaml
+    secrets: inherit
+
+  cleanup:
+    name: cleanup - reclaim host cache
+    needs: [setup, pr-test, tts-ci, qwen3-omni-ci]
+    if: >-
+      success() &&
+      (github.event_name == 'workflow_dispatch' ||
+       (!github.event.pull_request.draft &&
+        contains(github.event.pull_request.labels.*.name, 'run-ci')))
+    runs-on: [self-hosted]
+    timeout-minutes: 5
+    container:
+      image: frankleeeee/sglang-omni:dev
+      options: >-
+        --gpus all --rm
+        -v /dev/shm:/dev/shm
+        -v /data/cache/huggingface:/github/home/.cache/huggingface
+        -v /data/cache/huggingface:/root/.cache/huggingface
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - uses: ./.github/actions/omni-cleanup-host
+        with:
+          ci-home: ${{ env.OMNI_CI_HOME }}
