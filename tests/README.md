@@ -169,6 +169,9 @@ Relevant model CI ownership:
   the transformers `chunk_length_s=30` behavior.
 - CI env alignment on the H20 repro host: `source .github/scripts/ci_env.sh`
   then `source omni/bin/activate`.
+  Omni CI (`omni-ci.yaml`) runs benchmark suites sequentially after one shared
+  setup: TTS CI → Qwen3-Omni CI → PR Test (`test.yaml` unit tests). A failure in
+  an earlier suite does not skip later ones; only a failed setup blocks the chain.
   Full WER sweep: `.github/scripts/run_all_wer_ci_aligned.sh` (milestones on
   stdout; details in `/tmp/wer_ci_qwen3.log` and `/tmp/wer_ci_tts.log`).
 - GPU handoff between stages: `.github/scripts/ensure_gpus_idle.sh` (kills orphan

@@ -655,7 +655,13 @@ All CI workflows, calibration models, and WER sweeps use the same venv name
 
 | Workload | CI workflow | venv | `OMNI_CI_HOME` (calibration host) | Source env script |
 |----------|-------------|------|-----------------------------------|-------------------|
-| All benchmarks (unit, Qwen3, TTS, Whisper) | `omni-ci.yaml` (one shared setup) → `test.yaml`, `test-qwen3-omni-ci.yaml`, `test-tts-ci.yaml` | **`omni`** | `/github/home/calibration` | `source .github/scripts/ci_env.sh` |
+| All benchmarks (unit, Qwen3, TTS, Whisper) | `omni-ci.yaml` (one shared setup) → sequential `test-tts-ci.yaml` → `test-qwen3-omni-ci.yaml` → `test.yaml` (later suites still run if an earlier one fails) | **`omni`** | `/github/home/calibration` | `source .github/scripts/ci_env.sh` |
+
+**Omni CI suite order:** after the shared `setup` job, GitHub Actions runs
+`test-tts-ci.yaml`, then `test-qwen3-omni-ci.yaml`, then `test.yaml` (unit /
+non-benchmark tests). Each suite waits for the previous one to finish; a failure
+in TTS or Qwen3-Omni does **not** skip the remaining suites. Only a failed
+`setup` job blocks the benchmark chain.
 
 **Forbidden shortcuts (observed 2026-05-30):**
 
