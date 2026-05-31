@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import signal
 import statistics
@@ -369,6 +370,18 @@ def apply_slack(
             thresholds["rtf_mean_max"] = round(m["rtf_mean"] * slack_lower, 2)
         result[conc] = thresholds
     return result
+
+
+def persist_wer_in_benchmark_results(
+    audio_dir: str,
+    wer: dict,
+    results_basename: str,
+) -> None:
+    """Merge WER into the benchmark results JSON for tune.py calibration."""
+    results_path = Path(audio_dir).parent / results_basename
+    data = json.loads(results_path.read_text())
+    data["wer"] = wer
+    results_path.write_text(json.dumps(data, indent=2))
 
 
 def apply_wer_slack(reference: float, slack: float = 1.25) -> float:
