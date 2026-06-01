@@ -31,7 +31,7 @@ class QwenTalkerModelRunner(ModelRunner):
     def execute(self, scheduler_output: Any):
         return super().execute(scheduler_output)
 
-    def prepare_prefill(
+    def custom_prefill_forward(
         self,
         forward_batch: Any,
         schedule_batch: Any,
@@ -41,19 +41,19 @@ class QwenTalkerModelRunner(ModelRunner):
             forward_batch, schedule_batch, requests
         )
 
-    def prepare_decode(
+    def before_decode(
         self,
         forward_batch: Any,
         schedule_batch: Any,
         requests: list,
         *,
         is_lookahead: bool = False,
-    ) -> GenerationBatchResult | None:
+    ) -> None:
         del is_lookahead
         del forward_batch
         del schedule_batch
         if not self._feedback_enabled:
-            return None
+            return
 
         if not self._requests_ready_for_decode(requests):
             raise RuntimeError(
@@ -62,7 +62,6 @@ class QwenTalkerModelRunner(ModelRunner):
 
         self.model.prepare_decode_buffers(requests)
         self._write_feedback_buffers(requests)
-        return None
 
     def post_prefill(
         self,

@@ -91,6 +91,9 @@ class SGLModelRunner(ModelRunner):
             register_ming_hf_config,
             register_ming_model_registry,
         )
+        from sglang_omni.models.qwen3_asr.sglang_model import (
+            Qwen3ASRForConditionalGeneration,
+        )
         from sglang_omni.models.qwen3_omni.components.sglang_thinker import (
             Qwen3OmniThinkerForCausalLM,
         )
@@ -117,6 +120,9 @@ class SGLModelRunner(ModelRunner):
         ModelRegistry.models["LLaDA2MoeModelLM"] = LLaDA2MoeModelLM
         ModelRegistry.models["WhisperForConditionalGeneration"] = (
             WhisperForConditionalGeneration
+        )
+        ModelRegistry.models["Qwen3ASRForConditionalGeneration"] = (
+            Qwen3ASRForConditionalGeneration
         )
 
     def _profile_available_bytes(self, pre_model_load_memory: float) -> int:

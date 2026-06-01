@@ -62,8 +62,8 @@ class ThinkerModelRunner(ModelRunner):
                 return True
         return False
 
-    def prepare_prefill(self, forward_batch, schedule_batch, requests):
-        """Inject multimodal embeddings. Returns batch_result if custom forward needed."""
+    def custom_prefill_forward(self, forward_batch, schedule_batch, requests):
+        """Run custom prefill when multimodal embeddings must be injected."""
         if not schedule_batch.forward_mode.is_extend():
             return None
 

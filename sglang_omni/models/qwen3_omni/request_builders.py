@@ -12,7 +12,10 @@ import torch
 import xxhash
 
 from sglang_omni.models.qwen3_omni.components.talker_prefill import TalkerPrefillBuilder
-from sglang_omni.models.qwen3_omni.payload_types import PipelineState, ThinkerOutput
+from sglang_omni.models.qwen3_omni.payload_types import (
+    Qwen3OmniPipelineState,
+    ThinkerOutput,
+)
 from sglang_omni.models.qwen3_omni.pending_text_queue import (
     PendingTextTensorQueue,
     coerce_pending_text_queue,
@@ -108,7 +111,7 @@ def resolve_preprocessing_next_stages(
     request_id: str, output: StagePayload
 ) -> list[str]:
     del request_id
-    state = PipelineState.from_dict(output.data)
+    state = Qwen3OmniPipelineState.from_dict(output.data)
     return [
         *_encoder_stages_with_model_inputs(state.encoder_inputs),
         MM_AGGREGATE_STAGE,
@@ -123,13 +126,13 @@ def resolve_mm_aggregate_wait_sources(
     del request_id
     if from_stage != "preprocessing":
         return None
-    state = PipelineState.from_dict(payload.data)
+    state = Qwen3OmniPipelineState.from_dict(payload.data)
     return ["preprocessing", *_active_encoder_stages(state.encoder_inputs)]
 
 
 def project_thinker_to_decode(payload: StagePayload) -> StagePayload:
     """Keep decode payload focused on text detokenization state."""
-    state = PipelineState.from_dict(payload.data)
+    state = Qwen3OmniPipelineState.from_dict(payload.data)
     state.thinker_inputs = {}
     state.stream_state = _copy_mutable_containers(state.stream_state)
 
@@ -175,7 +178,7 @@ class EncoderRequestData:
 
 
 def build_encoder_request(
-    state: PipelineState, *, stage_name: str
+    state: Qwen3OmniPipelineState, *, stage_name: str
 ) -> EncoderRequestData:
     inputs = state.encoder_inputs.get(stage_name)
     if not isinstance(inputs, dict) or not inputs:
@@ -197,7 +200,7 @@ def build_encoder_request(
 
 
 def apply_encoder_result(
-    state: PipelineState,
+    state: Qwen3OmniPipelineState,
     *,
     stage_name: str,
     result: Any,
@@ -237,8 +240,8 @@ def project_preprocessing_to_audio_encoder(payload: StagePayload) -> StagePayloa
 
 
 def project_preprocessing_to_mm_aggregate(payload: StagePayload) -> StagePayload:
-    state = PipelineState.from_dict(payload.data)
-    projected = PipelineState(
+    state = Qwen3OmniPipelineState.from_dict(payload.data)
+    projected = Qwen3OmniPipelineState(
         prompt=dict(state.prompt) if isinstance(state.prompt, dict) else None,
         mm_inputs=build_lightweight_mm_inputs(state.mm_inputs),
         encoder_inputs=_project_encoder_input_metadata(state.encoder_inputs),
@@ -248,17 +251,17 @@ def project_preprocessing_to_mm_aggregate(payload: StagePayload) -> StagePayload
 
 
 def project_encoder_to_mm_aggregate(payload: StagePayload) -> StagePayload:
-    state = PipelineState.from_dict(payload.data)
+    state = Qwen3OmniPipelineState.from_dict(payload.data)
     stage_name = _single_encoder_stage_name(state)
     encoder_out = state.encoder_outs.get(stage_name, {})
-    projected = PipelineState(encoder_outs={stage_name: encoder_out})
+    projected = Qwen3OmniPipelineState(encoder_outs={stage_name: encoder_out})
     return _payload_with_state(payload, projected)
 
 
 def project_mm_aggregate_to_talker_ar(payload: StagePayload) -> StagePayload:
     """Early-submit projection: ship prompt + thinker_inputs to the talker."""
-    state = PipelineState.from_dict(payload.data)
-    projected = PipelineState(
+    state = Qwen3OmniPipelineState.from_dict(payload.data)
+    projected = Qwen3OmniPipelineState(
         prompt=dict(state.prompt) if isinstance(state.prompt, dict) else None,
         thinker_inputs=(
             dict(state.thinker_inputs) if isinstance(state.thinker_inputs, dict) else {}
@@ -272,8 +275,8 @@ def _project_preprocessing_to_encoder(
     *,
     stage_name: str,
 ) -> StagePayload:
-    state = PipelineState.from_dict(payload.data)
-    projected = PipelineState(
+    state = Qwen3OmniPipelineState.from_dict(payload.data)
+    projected = Qwen3OmniPipelineState(
         encoder_inputs=_select_encoder_inputs(
             state.encoder_inputs, stage_name=stage_name
         )
@@ -281,7 +284,9 @@ def _project_preprocessing_to_encoder(
     return _payload_with_state(payload, projected)
 
 
-def _payload_with_state(payload: StagePayload, state: PipelineState) -> StagePayload:
+def _payload_with_state(
+    payload: StagePayload, state: Qwen3OmniPipelineState
+) -> StagePayload:
     return StagePayload(
         request_id=payload.request_id,
         request=payload.request,
@@ -392,7 +397,7 @@ def _select_present_fields(
     return selected
 
 
-def _single_encoder_stage_name(state: PipelineState) -> str:
+def _single_encoder_stage_name(state: Qwen3OmniPipelineState) -> str:
     if len(state.encoder_outs) != 1:
         raise ValueError(
             f"Expected exactly one encoder output in payload, got {sorted(state.encoder_outs)}"
@@ -401,7 +406,7 @@ def _single_encoder_stage_name(state: PipelineState) -> str:
 
 
 def build_thinker_request(
-    state: PipelineState,
+    state: Qwen3OmniPipelineState,
     *,
     params: dict[str, Any],
 ) -> ARRequestData:
@@ -493,7 +498,7 @@ def _compute_mrope_positions(
 
 
 def build_sglang_thinker_request(
-    state: PipelineState,
+    state: Qwen3OmniPipelineState,
     *,
     params: dict[str, Any],
     tokenizer: Any,
@@ -774,7 +779,7 @@ def build_sglang_talker_request(
 
 
 def apply_thinker_result(
-    state: PipelineState,
+    state: Qwen3OmniPipelineState,
     *,
     stage_name: str,
     result: Any,
@@ -908,7 +913,7 @@ def make_thinker_scheduler_adapters(
     """Build model-specific StagePayload <-> scheduler adapters for thinker."""
 
     def request_builder(payload: StagePayload) -> SGLangARRequestData:
-        state = PipelineState.from_dict(payload.data)
+        state = Qwen3OmniPipelineState.from_dict(payload.data)
         params = payload.request.params or {}
         req_data = build_sglang_thinker_request(
             state,
@@ -923,7 +928,7 @@ def make_thinker_scheduler_adapters(
 
     def result_adapter(data: SGLangARRequestData) -> StagePayload:
         payload = data.stage_payload
-        state = PipelineState.from_dict(payload.data)
+        state = Qwen3OmniPipelineState.from_dict(payload.data)
         apply_thinker_result(state, stage_name=stage_name, result=data)
         return StagePayload(
             request_id=payload.request_id,

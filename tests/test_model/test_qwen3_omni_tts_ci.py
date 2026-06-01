@@ -18,8 +18,6 @@ from pathlib import Path
 
 import pytest
 
-pytest_plugins = ["tests.test_model.omni_whisper_wer_utils"]
-
 from benchmarks.dataset.prepare import DATASETS, download_dataset
 from benchmarks.eval.benchmark_omni_seedtts import (
     OmniSeedttsBenchmarkConfig,
@@ -35,8 +33,8 @@ from tests.test_model.omni_router_utils import (
     print_worker_snapshot,
     router_get_json,
 )
-from tests.test_model.omni_whisper_wer_utils import wait_for_gpu_memory_release
 from tests.utils import (
+    QWEN3_ASR_WER_CONCURRENCY,
     MetricCheckCollector,
     apply_mos_slack,
     apply_slack,
@@ -46,6 +44,7 @@ from tests.utils import (
     assert_summary_metrics,
     assert_wer_partitioned,
     no_proxy_env,
+    wait_for_gpu_memory_release,
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -133,11 +132,11 @@ def _run_wer_transcribe(
     meta: str,
     output_dir: str,
     *,
-    whisper_router_port: int,
+    asr_router_port: int,
     lang: str = "en",
     device: str = "cuda:0",
 ) -> dict:
-    """Transcribe saved audio and compute WER via Omni Whisper router."""
+    """Transcribe saved audio and compute WER via Qwen3-ASR router."""
     from benchmarks.eval.benchmark_omni_seedtts import (
         OmniSeedttsBenchmarkConfig,
         evaluate_generated_audio,
@@ -149,11 +148,10 @@ def _run_wer_transcribe(
         output_dir=output_dir,
         lang=lang,
         device=device,
+        port=asr_router_port,
+        asr_concurrency=QWEN3_ASR_WER_CONCURRENCY,
     )
-    evaluate_generated_audio(
-        config,
-        whisper_router_port=whisper_router_port,
-    )
+    evaluate_generated_audio(config)
 
     results_path = Path(output_dir) / "wer_results.json"
     assert results_path.exists(), f"WER results file not found: {results_path}"
@@ -460,12 +458,12 @@ def test_voice_cloning_non_streaming(
 def test_voice_cloning_wer(
     wer_audio_dir: str,
     dataset_repo: str,
-    omni_whisper_wer_router: ManagedRouterHandle,
+    qwen3_asr_wer_router: ManagedRouterHandle,
 ) -> None:
     results = _run_wer_transcribe(
         dataset_repo,
         wer_audio_dir,
-        whisper_router_port=omni_whisper_wer_router.port,
+        asr_router_port=qwen3_asr_wer_router.port,
     )
     print_wer_summary(results["summary"], "qwen3-omni")
     checks = MetricCheckCollector("Qwen3-Omni voice-cloning WER")
@@ -476,7 +474,7 @@ def test_voice_cloning_wer(
         collector=checks,
     )
     checks.assert_all()
-    print_log_tail("whisper_wer_router", omni_whisper_wer_router.log_file)
+    print_log_tail("asr_wer_router", qwen3_asr_wer_router.log_file)
 
 
 @pytest.mark.benchmark

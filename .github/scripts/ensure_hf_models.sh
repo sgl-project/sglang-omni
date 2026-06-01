@@ -27,12 +27,14 @@ export XDG_CACHE_HOME="${XDG_CACHE_HOME:-/github/home/.cache}"
 export HF_HOME="${HF_HOME:-/github/home/.cache/huggingface}"
 export HF_ENDPOINT="${HF_ENDPOINT:-https://hf-mirror.com}"
 export HF_HUB_DISABLE_XET="${HF_HUB_DISABLE_XET:-1}"
+export HF_HUB_ENABLE_HF_TRANSFER="${HF_HUB_ENABLE_HF_TRANSFER:-0}"
 export MODELSCOPE_CACHE="${MODELSCOPE_CACHE:-/github/home/.cache/modelscope}"
 
 source "${VENV_NAME}/bin/activate"
 
 python - "$@" <<'PY'
 import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -42,11 +44,6 @@ from modelscope.hub.snapshot_download import snapshot_download as ms_snapshot_do
 
 def hf_hub_dir() -> Path:
     return Path(os.environ["HF_HOME"]) / "hub"
-
-
-def modelscope_model_dir(repo_id: str) -> Path:
-    root = Path(os.environ["MODELSCOPE_CACHE"])
-    return root / "hub" / "models" / repo_id
 
 
 def weights_ready(model_dir: Path) -> bool:
@@ -60,6 +57,36 @@ def weights_ready(model_dir: Path) -> bool:
         and not path.name.endswith(".incomplete")
     ]
     return bool(weight_files)
+
+
+def _unique_paths(paths: list[Path]) -> list[Path]:
+    seen: set[str] = set()
+    out: list[Path] = []
+    for path in paths:
+        key = str(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(path)
+    return out
+
+
+def modelscope_model_candidates(
+    repo_id: str, downloaded: Path | None = None
+) -> list[Path]:
+    root = Path(os.environ["MODELSCOPE_CACHE"])
+    escaped_repo_id = repo_id.replace(".", "___")
+    candidates = []
+    if downloaded is not None:
+        candidates.append(downloaded)
+    for base in (root / "models", root / "hub" / "models"):
+        candidates.extend(
+            [
+                base / repo_id,
+                base / escaped_repo_id,
+            ]
+        )
+    return _unique_paths(candidates)
 
 
 def hf_cache_snapshot(repo_id: str) -> Path | None:
@@ -84,6 +111,8 @@ def seed_hf_cache_from_local(repo_id: str, local_dir: Path) -> Path:
     repo_cache = hf_hub_dir() / f"models--{repo_id.replace('/', '--')}"
     snapshot_dir = repo_cache / "snapshots" / commit
     refs_dir = repo_cache / "refs"
+    if snapshot_dir.exists() and not weights_ready(snapshot_dir):
+        shutil.rmtree(snapshot_dir)
     snapshot_dir.mkdir(parents=True, exist_ok=True)
     refs_dir.mkdir(parents=True, exist_ok=True)
     (refs_dir / "main").write_text(f"{commit}\n")
@@ -94,16 +123,16 @@ def seed_hf_cache_from_local(repo_id: str, local_dir: Path) -> Path:
         dest = snapshot_dir / src.relative_to(local_dir)
         dest.parent.mkdir(parents=True, exist_ok=True)
         if dest.exists() or dest.is_symlink():
-            continue
+            dest.unlink()
         dest.symlink_to(src.resolve())
 
     return snapshot_dir
 
 
 def modelscope_weights_dir(repo_id: str) -> Path | None:
-    cache_dir = modelscope_model_dir(repo_id)
-    if weights_ready(cache_dir):
-        return cache_dir
+    for cache_dir in modelscope_model_candidates(repo_id):
+        if weights_ready(cache_dir):
+            return cache_dir
     return None
 
 
@@ -115,17 +144,31 @@ def download_via_modelscope(repo_id: str) -> Path:
 
     print(f"HF cache miss; downloading model weights via ModelScope: {repo_id}")
     ms_dir = Path(ms_snapshot_download(repo_id))
-    cached = modelscope_weights_dir(repo_id)
+    cached = next(
+        (
+            path
+            for path in modelscope_model_candidates(repo_id, downloaded=ms_dir)
+            if weights_ready(path)
+        ),
+        None,
+    )
     if cached is None:
+        checked_paths = modelscope_model_candidates(repo_id, downloaded=ms_dir)
+        checked = ", ".join(
+            str(path) for path in checked_paths
+        )
         raise SystemExit(
             f"ModelScope download for {repo_id} finished but weights look incomplete "
-            f"under {ms_dir}"
+            f"under checked path(s): {checked}"
         )
     print(f"ModelScope download complete: {repo_id} -> {cached}")
     return cached
 
 
-def verify_hf_cache(repo_id: str) -> Path:
+def verify_hf_cache(repo_id: str, expected_snapshot: Path | None = None) -> Path:
+    if expected_snapshot is not None and weights_ready(expected_snapshot):
+        print(f"Verified HF cache: {repo_id} -> {expected_snapshot}")
+        return expected_snapshot
     cached = hf_cache_snapshot(repo_id)
     if cached is None:
         raise SystemExit(
@@ -216,7 +259,7 @@ def ensure_model(repo_id: str) -> Path:
     if ms_dir is not None:
         seeded = seed_hf_cache_from_local(repo_id, ms_dir)
         print(f"Seeded HF cache from ModelScope: {repo_id} -> {seeded}")
-        return verify_hf_cache(repo_id)
+        return verify_hf_cache(repo_id, expected_snapshot=seeded)
 
     return download_via_hf_hub(repo_id)
 

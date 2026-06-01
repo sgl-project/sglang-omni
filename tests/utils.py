@@ -1,27 +1,44 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Shared test utilities — model-agnostic helpers for launching and managing servers."""
+"""Shared test utilities for model CI, metrics checks, and server lifecycle."""
 
 from __future__ import annotations
 
 import json
-import os
-import signal
 import statistics
 import subprocess
-import sys
-import threading
-from collections.abc import Callable
-from contextlib import contextmanager
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Generator
+from typing import TYPE_CHECKING
 
-STARTUP_TIMEOUT = 600
-REPO_ROOT = Path(__file__).resolve().parents[1]
-GPU_CLEANUP_SCRIPT = REPO_ROOT / ".github/scripts/ensure_gpus_idle.sh"
-GPU_IDLE_THRESHOLD_MB = 2048
-GPU_IDLE_WAIT_SECONDS = 600
-GPU_IDLE_POLL_SECONDS = 5
+import pytest
+
+from benchmarks.benchmarker import utils as benchmark_utils
+from benchmarks.tasks.tts import (
+    DEFAULT_ASR_TRANSCRIBE_CONCURRENCY,
+    QWEN3_ASR_MODEL_PATH,
+)
+
+if TYPE_CHECKING:
+    from tests.test_model.omni_router_utils import ManagedRouterHandle
+
+STARTUP_TIMEOUT = benchmark_utils.STARTUP_TIMEOUT
+REPO_ROOT = benchmark_utils.REPO_ROOT
+GPU_CLEANUP_SCRIPT = benchmark_utils.GPU_CLEANUP_SCRIPT
+GPU_IDLE_THRESHOLD_MB = benchmark_utils.GPU_IDLE_THRESHOLD_MB
+GPU_IDLE_WAIT_SECONDS = benchmark_utils.GPU_IDLE_WAIT_SECONDS
+GPU_IDLE_POLL_SECONDS = benchmark_utils.GPU_IDLE_POLL_SECONDS
+disable_proxy = benchmark_utils.disable_proxy
+no_proxy_env = benchmark_utils.no_proxy_env
+server_log_file = benchmark_utils.server_log_file
+stop_server = benchmark_utils.stop_server
+wait_for_gpu_memory_release = benchmark_utils.wait_for_gpu_memory_release
+wait_healthy = benchmark_utils.wait_healthy
+start_server_from_cmd = benchmark_utils.start_server_from_cmd
+
+QWEN3_ASR_WER_MODEL_PATH = QWEN3_ASR_MODEL_PATH
+QWEN3_ASR_WER_CONCURRENCY = DEFAULT_ASR_TRANSCRIBE_CONCURRENCY
+QWEN3_ASR_ROUTER_STARTUP_TIMEOUT = 600
 
 
 @dataclass
@@ -72,6 +89,25 @@ class MetricCheckCollector:
         )
 
 
+@pytest.fixture
+def qwen3_asr_wer_router(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> Iterator["ManagedRouterHandle"]:
+    """Launch Qwen3-ASR router for WER after upstream servers release GPU."""
+    from tests.test_model.omni_router_utils import launch_managed_router
+
+    wait_for_gpu_memory_release()
+    with launch_managed_router(
+        tmp_path_factory=tmp_path_factory,
+        model_path=QWEN3_ASR_WER_MODEL_PATH,
+        model_name=QWEN3_ASR_WER_MODEL_PATH,
+        worker_extra_args="",
+        wait_timeout=QWEN3_ASR_ROUTER_STARTUP_TIMEOUT,
+        log_prefix="asr_wer_router_logs",
+    ) as router:
+        yield router
+
+
 def _metric_collector(
     collector: MetricCheckCollector | None,
     label: str,
@@ -85,201 +121,6 @@ def _assert_metric_collector_if_local(
 ) -> None:
     if collector_arg is None:
         collector.assert_all()
-
-
-@contextmanager
-def disable_proxy() -> Generator[None, None, None]:
-    """Temporarily disable proxy env vars for loopback requests."""
-    proxy_vars = (
-        "HTTP_PROXY",
-        "HTTPS_PROXY",
-        "http_proxy",
-        "https_proxy",
-        "ALL_PROXY",
-        "all_proxy",
-        "NO_PROXY",
-        "no_proxy",
-    )
-    saved_env = {k: os.environ[k] for k in proxy_vars if k in os.environ}
-    for k in proxy_vars:
-        os.environ.pop(k, None)
-    try:
-        yield
-    finally:
-        for k in proxy_vars:
-            os.environ.pop(k, None)
-        os.environ.update(saved_env)
-
-
-def no_proxy_env() -> dict[str, str]:
-    """Return a copy of os.environ with proxy variables removed, for subprocess use."""
-    proxy_keys = {"http_proxy", "https_proxy", "all_proxy", "no_proxy"}
-    return {k: v for k, v in os.environ.items() if k.lower() not in proxy_keys}
-
-
-def server_log_file(tmp_path_factory, prefix: str = "server_logs") -> Path | None:
-    """Capture server logs to a file on CI; stream to the terminal locally."""
-    is_ci = os.environ.get("GITHUB_ACTIONS") == "true"
-    if not is_ci:
-        return None
-    return tmp_path_factory.mktemp(prefix) / "server.log"
-
-
-def stop_server(proc: subprocess.Popen) -> None:
-    """Gracefully stop the server process group, tolerating already-dead processes."""
-    try:
-        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-        proc.wait(timeout=30)
-    except (ProcessLookupError, ChildProcessError):
-        return
-    except subprocess.TimeoutExpired:
-        try:
-            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-            proc.wait(timeout=10)
-        except (ProcessLookupError, ChildProcessError):
-            # Process already exited — nothing left to kill.
-            return
-
-
-def wait_for_gpu_memory_release(
-    *,
-    memory_threshold_mb: int | None = None,
-    wait_timeout_seconds: int | None = None,
-    poll_seconds: int | None = None,
-) -> None:
-    """Kill orphan GPU processes and block until every GPU is below threshold."""
-    if not GPU_CLEANUP_SCRIPT.exists():
-        raise FileNotFoundError(f"GPU cleanup script missing: {GPU_CLEANUP_SCRIPT}")
-
-    env = os.environ.copy()
-    env["OMNI_CI_GPU_MEMORY_CLEAN_THRESHOLD_MB"] = str(
-        memory_threshold_mb
-        if memory_threshold_mb is not None
-        else GPU_IDLE_THRESHOLD_MB
-    )
-    env["OMNI_CI_GPU_CLEAN_WAIT_SECONDS"] = str(
-        wait_timeout_seconds
-        if wait_timeout_seconds is not None
-        else GPU_IDLE_WAIT_SECONDS
-    )
-    env["OMNI_CI_GPU_CLEAN_POLL_SECONDS"] = str(
-        poll_seconds if poll_seconds is not None else GPU_IDLE_POLL_SECONDS
-    )
-
-    print(
-        f"[gpu cleanup] running ensure_gpus_idle "
-        f"(threshold={env['OMNI_CI_GPU_MEMORY_CLEAN_THRESHOLD_MB']} MiB)...",
-        flush=True,
-    )
-    result = subprocess.run(
-        ["bash", str(GPU_CLEANUP_SCRIPT)],
-        env=env,
-        check=False,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(
-            "GPU memory was not released after stopping the inference server. "
-            f"ensure_gpus_idle.sh exit={result.returncode}"
-        )
-
-
-def wait_healthy(
-    proc: subprocess.Popen,
-    port: int,
-    log_file: Path | None,
-    timeout: int = STARTUP_TIMEOUT,
-) -> None:
-    """Wait for a server to report healthy, stopping it and raising on failure."""
-    from benchmarks.benchmarker.utils import wait_for_service
-
-    try:
-        with disable_proxy():
-            wait_for_service(
-                f"http://localhost:{port}",
-                timeout=timeout,
-                server_process=proc,
-                server_log_file=log_file,
-                health_body_contains="healthy",
-            )
-    except Exception as exc:
-        stop_server(proc)
-        log_text = (
-            log_file.read_text() if log_file is not None and log_file.exists() else ""
-        )
-        message = str(exc)
-        if log_text and log_text not in message:
-            message = f"{message}\n{log_text}"
-        if isinstance(exc, TimeoutError):
-            raise TimeoutError(message) from exc
-        if isinstance(exc, RuntimeError):
-            raise RuntimeError(message) from exc
-        raise
-
-
-def start_server_from_cmd(
-    cmd: list[str],
-    log_file: Path | None,
-    port: int,
-    timeout: int = STARTUP_TIMEOUT,
-    env: dict[str, str] | None = None,
-    tee: bool = False,
-) -> subprocess.Popen:
-    """Start a server from an arbitrary command and wait until healthy."""
-    process_env = os.environ.copy()
-    if env is not None:
-        process_env.update(env)
-    if log_file is None:
-        proc = subprocess.Popen(
-            cmd,
-            env=process_env,
-            start_new_session=True,
-        )
-    elif tee:
-        # Tee (file + stdout): TP=2 fixture wants the file for grep + live
-        # output for `pytest -s`. Pattern from sglang's popen_launch_server.
-        log_handle = open(log_file, "w")
-        try:
-            proc = subprocess.Popen(
-                cmd,
-                env=process_env,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                start_new_session=True,
-                text=True,
-                bufsize=1,
-            )
-        except Exception:
-            log_handle.close()
-            raise
-
-        def _tee_stdout(src, sink) -> None:
-            try:
-                for line in iter(src.readline, ""):
-                    sink.write(line)
-                    sink.flush()
-                    sys.stdout.write(line)
-                    sys.stdout.flush()
-            finally:
-                src.close()
-                sink.close()
-
-        # log_handle ownership is handed to the thread; its finally closes it.
-        threading.Thread(
-            target=_tee_stdout,
-            args=(proc.stdout, log_handle),
-            daemon=True,
-        ).start()
-    else:
-        with open(log_file, "w") as log_handle:
-            proc = subprocess.Popen(
-                cmd,
-                env=process_env,
-                stdout=log_handle,
-                stderr=subprocess.STDOUT,
-                start_new_session=True,
-            )
-    wait_healthy(proc, port, log_file, timeout=timeout)
-    return proc
 
 
 def assert_summary_metrics(

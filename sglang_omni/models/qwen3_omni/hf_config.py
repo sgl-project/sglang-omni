@@ -20,11 +20,15 @@ def _normalize_rope_scaling(
         normalized["rope_type"] = normalized["type"]
 
     if _MROPE_ROPE_SCALING_KEYS.intersection(normalized.keys()):
+        # SGLang 0.5.8 selects MRotaryEmbedding from rope_type/type="default"
+        # plus mrope_section. Passing "mrope" reaches the generic rope switch
+        # and fails before the talker can start.
         rope_type = normalized.get("rope_type", normalized.get("type", "default"))
-        if rope_type == "default":
-            normalized["rope_type"] = "mrope"
-            if "type" in normalized:
-                normalized["type"] = "mrope"
+        if rope_type == "mrope":
+            rope_type = "default"
+        normalized["rope_type"] = rope_type
+        if "type" in normalized:
+            normalized["type"] = rope_type
     return normalized
 
 

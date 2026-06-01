@@ -112,7 +112,10 @@ from benchmarks.tasks.audio_understanding import (
     make_mmsu_send_fn,
     save_mmsu_results,
 )
-from benchmarks.tasks.tts import compute_text_audio_consistency
+from benchmarks.tasks.tts import (
+    DEFAULT_ASR_TRANSCRIBE_CONCURRENCY,
+    compute_text_audio_consistency,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -129,6 +132,9 @@ async def run(
     base_url = args.base_url or f"http://{args.host}:{args.port}"
     api_url = f"{base_url}/v1/chat/completions"
     modalities = ["text", "audio"] if args.modalities == "text+audio" else ["text"]
+    asr_concurrency = getattr(
+        args, "asr_concurrency", DEFAULT_ASR_TRANSCRIBE_CONCURRENCY
+    )
 
     if samples is None:
         samples = load_mmsu_samples(
@@ -185,6 +191,7 @@ async def run(
             request_results,
             args.lang,
             args.asr_device,
+            asr_concurrency=asr_concurrency,
         )
         output["wer"] = wer_results
 
@@ -200,6 +207,7 @@ async def run(
                 "max_tokens": args.max_tokens,
                 "temperature": args.temperature,
                 "seed": args.seed,
+                "asr_concurrency": asr_concurrency,
             },
             args.output_dir,
             speed_metrics=speed,
@@ -242,6 +250,12 @@ def main() -> None:
     )
     p.add_argument(
         "--asr-device", type=str, default="cuda:0", help="Device for ASR model"
+    )
+    p.add_argument(
+        "--asr-concurrency",
+        type=int,
+        default=DEFAULT_ASR_TRANSCRIBE_CONCURRENCY,
+        help="Concurrent ASR transcription requests for WER.",
     )
 
     args = p.parse_args()

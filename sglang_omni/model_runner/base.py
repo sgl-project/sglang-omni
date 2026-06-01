@@ -258,18 +258,21 @@ class ModelRunner:
     ):
         """Prepare hook → standard forward (if not custom) → sample-before-post
         block. Returns ``batch_result``."""
-        # Hook: model-specific preparation. Returns batch_result if it ran a
-        # custom forward path, or None for the standard forward.
-        batch_result = (
-            self.prepare_prefill(forward_batch, schedule_batch, requests)
-            if is_prefill
-            else self.prepare_decode(
+        if is_prefill:
+            self.before_prefill(forward_batch, schedule_batch, requests)
+            batch_result = self.custom_prefill_forward(
+                forward_batch, schedule_batch, requests
+            )
+        else:
+            self.before_decode(
                 forward_batch,
                 schedule_batch,
                 requests,
                 is_lookahead=is_lookahead,
             )
-        )
+            batch_result = self.custom_decode_forward(
+                forward_batch, schedule_batch, requests
+            )
         if batch_result is None:
             batch_result = self.tp_worker.forward_batch_generation(forward_batch)
 
@@ -356,26 +359,40 @@ class ModelRunner:
     # Hooks — override in subclasses
     # ------------------------------------------------------------------
 
-    def prepare_prefill(
+    def before_prefill(
         self, forward_batch: Any, schedule_batch: Any, requests: list
-    ) -> Any | None:
-        """Called before prefill forward.
+    ) -> None:
+        """Mutate state before the standard or custom prefill forward."""
 
-        Return a batch result if the subclass handled the forward itself,
-        or None to use the standard tp_worker forward path.
-        """
-        return None
-
-    def prepare_decode(
+    def before_decode(
         self,
         forward_batch: Any,
         schedule_batch: Any,
         requests: list,
         *,
         is_lookahead: bool = False,
-    ) -> Any | None:
-        """Called before decode forward."""
+    ) -> None:
+        """Mutate state before the standard or custom decode forward."""
         del is_lookahead
+
+    def custom_prefill_forward(
+        self, forward_batch: Any, schedule_batch: Any, requests: list
+    ) -> Any | None:
+        """Run a model-specific prefill forward.
+
+        Return a batch result when the subclass owns the forward path for this
+        batch, or None to use the standard tp_worker forward path.
+        """
+        return None
+
+    def custom_decode_forward(
+        self, forward_batch: Any, schedule_batch: Any, requests: list
+    ) -> Any | None:
+        """Run a model-specific decode forward.
+
+        Return a batch result when the subclass owns the forward path for this
+        batch, or None to use the standard tp_worker forward path.
+        """
         return None
 
     def post_prefill(

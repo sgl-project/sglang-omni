@@ -184,8 +184,7 @@ explicit and fit the configured placement limit.
 
 ```text
 pipeline/
-|-- stage_process.py    # StageProcessSpec and subprocess entrypoint
-|-- stage_group.py      # StageGroup lifecycle for topology process groups
+|-- stage_workers.py    # StageLaunchConfig, subprocess entrypoint, StageGroup
 |-- runtime_config.py   # endpoint/runtime-dir/placement prep
 `-- mp_runner.py        # Cross-stage orchestration and coordinator ownership
 ```

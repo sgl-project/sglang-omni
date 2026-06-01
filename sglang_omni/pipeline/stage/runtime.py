@@ -55,7 +55,7 @@ class Stage:
     **not** imply this stage has its OS process to itself — since the
     declarative topology PR, multiple ``role="single"`` stages can share
     one OS process (and one asyncio event loop). When they do, they share
-    a failure domain: see ``_run_process`` in ``stage_process.py``.
+    a failure domain: see ``_run_process`` in ``stage_workers.py``.
     ``role="leader"`` / ``role="follower"`` continue to denote TP rank 0
     vs rank > 0 within a multi-rank TP stage; TP stages must own their OS
     process exclusively.

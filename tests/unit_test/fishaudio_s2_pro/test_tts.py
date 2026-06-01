@@ -287,7 +287,7 @@ def test_fish_s2pro_audio_timestep_updates_audio_and_stream_state() -> None:
     assert torch.equal(data.last_codebook_values, torch.tensor([11, 22]))
 
 
-def test_fish_s2pro_prepare_decode_uses_gpu_history_buffer() -> None:
+def test_fish_s2pro_before_decode_uses_gpu_history_buffer() -> None:
     req = FakeFishReq()
     data = S2ProSGLangRequestData(input_ids=torch.tensor([], dtype=torch.long), req=req)
     data.previous_semantic_tokens = [9999]
@@ -323,7 +323,7 @@ def test_fish_s2pro_prepare_decode_uses_gpu_history_buffer() -> None:
     )
     forward_batch = SimpleNamespace(input_ids=torch.tensor([SEMANTIC_TOKEN_ID]))
 
-    runner.prepare_decode(forward_batch, None, [request])
+    runner.before_decode(forward_batch, None, [request])
 
     assert torch.equal(
         runner.model._prev_tokens[0],
@@ -340,7 +340,7 @@ def test_fish_s2pro_prepare_decode_uses_gpu_history_buffer() -> None:
     assert torch.allclose(runner.model._ras_top_p, torch.tensor([0.5]))
 
 
-def test_fish_s2pro_prepare_prefill_syncs_decode_state() -> None:
+def test_fish_s2pro_before_prefill_syncs_decode_state() -> None:
     first = S2ProSGLangRequestData(
         input_ids=torch.tensor([], dtype=torch.long),
         req=FakeFishReq(extend_input_len=1),
@@ -390,7 +390,7 @@ def test_fish_s2pro_prepare_prefill_syncs_decode_state() -> None:
     )
     forward_batch = SimpleNamespace(input_ids=torch.tensor([10, 11]))
 
-    runner.prepare_prefill(
+    runner.before_prefill(
         forward_batch,
         None,
         [

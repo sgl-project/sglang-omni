@@ -242,7 +242,7 @@ def test_voxtral_decode_writes_feedback_buffer_for_standard_forward() -> None:
         data=SimpleNamespace(pending_feedback_queue=collections.deque())
     )
 
-    result = runner.prepare_decode(object(), object(), [first, second])
+    result = runner.before_decode(object(), object(), [first, second])
 
     assert result is None
     assert not first.data.pending_feedback_queue
@@ -264,7 +264,7 @@ def test_voxtral_decode_empty_batch_keeps_feedback_buffer() -> None:
         _decode_input_embed_buffer=torch.ones(1, 3, dtype=torch.float16),
     )
 
-    result = runner.prepare_decode(object(), object(), [])
+    result = runner.before_decode(object(), object(), [])
 
     assert result is None
     assert torch.equal(

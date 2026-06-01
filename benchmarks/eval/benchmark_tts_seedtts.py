@@ -30,20 +30,22 @@ Usage:
         --model-path boson-sglang/higgs-audio-v3-tts-4b-base \
         --port 8000
 
-    # Full pipeline (generate + transcribe) — voice cloning
+    # Full pipeline (auto start TTS → generate → stop TTS → start ASR → WER)
+    # Single GPU: TTS and ASR reuse the same --port sequentially.
     python -m benchmarks.eval.benchmark_tts_seedtts \
         --meta zhaochenyang20/seed-tts-eval-arrow \
         --max-concurrency 16 \
-        --model fishaudio/s2-pro --port 8000
+        --model fishaudio/s2-pro \
+        --port 8000
 
-    # Full pipeline — plain TTS (no ref audio from testset)
+    # Plain TTS (no ref audio from testset)
     python -m benchmarks.eval.benchmark_tts_seedtts \
         --meta zhaochenyang20/seed-tts-eval-arrow \
         --model mistralai/Voxtral-4B-TTS-2603 --port 8000 \
         --max-concurrency 16 \
         --no-ref-audio --voice cheerful_female --max-samples 50
 
-    # Full pipeline — Higgs TTS voice cloning
+    # Higgs TTS voice cloning
     python -m benchmarks.eval.benchmark_tts_seedtts \
         --meta zhaochenyang20/seed-tts-eval-arrow \
         --model boson-sglang/higgs-audio-v3-tts-4b-base --port 8000 \
@@ -61,7 +63,8 @@ Usage (CI):
         --meta zhaochenyang20/seed-tts-eval-arrow \
         --max-concurrency 16 \
         --output-dir results/s2pro_en \
-        --model fishaudio/s2-pro --port 8000
+        --model fishaudio/s2-pro \
+        --port 8000
 
     # Transcribe + WER only
     python -m benchmarks.eval.benchmark_tts_seedtts \
@@ -69,7 +72,7 @@ Usage (CI):
         --meta zhaochenyang20/seed-tts-eval-arrow \
         --model fishaudio/s2-pro \
         --output-dir results/s2pro_en \
-        --lang en --device cuda:0
+        --lang en --port 8000
 
 
 H200 Full-Set Reference Results
@@ -128,7 +131,7 @@ discrete talker LM tokens emitted at audio frame rate. Cross-model comparison of
 this rate is not meaningful; use latency_mean_s / rtf_mean / throughput_qps
 instead when comparing backends.
 
-ASR speed (accuracy.asr_speed) — Whisper-large-v3 for EN, FunASR paraformer-zh for ZH
+ASR speed (asr_speed_results.json) — Qwen3-ASR-1.7B server for EN/ZH
 
 | Model     | Lang | asr_latency_mean_s | asr_rtf_mean | asr_throughput_samples_per_s | Source                                          |
 | --------- | ---- | ------------------ | ------------ | ---------------------------- | ----------------------------------------------- |
@@ -145,9 +148,10 @@ import asyncio
 import logging
 import os
 from dataclasses import dataclass
+from pathlib import Path
 
 from benchmarks.benchmarker.runner import BenchmarkRunner, RunConfig
-from benchmarks.benchmarker.utils import wait_for_service
+from benchmarks.benchmarker.utils import managed_omni_server
 from benchmarks.dataset.seedtts import load_seedtts_samples
 from benchmarks.metrics.performance import (
     build_speed_results,
@@ -155,6 +159,8 @@ from benchmarks.metrics.performance import (
     print_speed_summary,
 )
 from benchmarks.tasks.tts import (
+    DEFAULT_ASR_TRANSCRIBE_CONCURRENCY,
+    QWEN3_ASR_MODEL_PATH,
     build_base_url,
     make_tts_send_fn,
     run_seedtts_similarity,
@@ -169,6 +175,8 @@ logging.basicConfig(
     format="%(asctime)s %(name)s %(levelname)s %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+DEFAULT_TTS_BENCHMARK_CONCURRENCY = int(os.getenv("TTS_BENCHMARK_CONCURRENCY", "16"))
 
 
 @dataclass
@@ -201,7 +209,7 @@ class TtsSeedttsBenchmarkConfig:
     repetition_penalty: float | None = None
     seed: int | None = None
     warmup: int = 1
-    concurrency: int = 1
+    concurrency: int = DEFAULT_TTS_BENCHMARK_CONCURRENCY
     request_rate: float = float("inf")
     stream: bool = False
     disable_tqdm: bool = False
@@ -209,6 +217,8 @@ class TtsSeedttsBenchmarkConfig:
     lang: str = "en"
     device: str = "cuda:0"
     similarity_checkpoint: str | None = None
+    asr_model_path: str = QWEN3_ASR_MODEL_PATH
+    asr_concurrency: int = DEFAULT_ASR_TRANSCRIBE_CONCURRENCY
 
 
 def _build_generation_kwargs(config: TtsSeedttsBenchmarkConfig) -> dict:
@@ -303,7 +313,7 @@ async def run_tts_seedtts_benchmark(
 def run_tts_seedtts_transcribe(
     config: TtsSeedttsBenchmarkConfig,
     *,
-    whisper_router_port: int | None = None,
+    asr_router_port: int | None = None,
 ) -> dict:
     """Transcribe saved audio and compute WER + ASR speed metrics.
 
@@ -314,6 +324,8 @@ def run_tts_seedtts_transcribe(
     generation_mode = "streaming" if config.stream else "non-streaming"
     wer_config = {
         "model": config.model,
+        "tts_model": config.model,
+        "asr_model": config.asr_model_path,
         "meta": config.meta,
         "voice_clone": config.voice_clone,
         "ref_format": config.ref_format,
@@ -325,12 +337,13 @@ def run_tts_seedtts_transcribe(
         "max_samples": config.max_samples,
         "stream": config.stream,
         "concurrency": config.concurrency,
+        "asr_concurrency": config.asr_concurrency,
     }
     return run_seedtts_transcribe(
         config,
         wer_config=wer_config,
         generation_mode=generation_mode,
-        whisper_router_port=whisper_router_port,
+        asr_router_port=asr_router_port,
     )
 
 
@@ -365,6 +378,8 @@ def _config_from_args(args: argparse.Namespace) -> TtsSeedttsBenchmarkConfig:
         lang=args.lang,
         device=args.device,
         similarity_checkpoint=args.similarity_checkpoint,
+        asr_model_path=args.asr_model_path,
+        asr_concurrency=args.asr_concurrency,
     )
 
 
@@ -459,7 +474,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         "--max-concurrency",
         dest="concurrency",
         type=int,
-        default=1,
+        default=DEFAULT_TTS_BENCHMARK_CONCURRENCY,
         help="Maximum concurrent requests.",
     )
     parser.add_argument(
@@ -493,6 +508,20 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         type=str,
         default="cuda:0",
         help="Device for ASR model (transcribe phase).",
+    )
+    parser.add_argument(
+        "--asr-model-path",
+        type=str,
+        default=QWEN3_ASR_MODEL_PATH,
+        help="HuggingFace model id for the ASR server started in the "
+        f"transcribe phase. Defaults to {QWEN3_ASR_MODEL_PATH}; "
+        "openai/whisper-large-v3 can also be used.",
+    )
+    parser.add_argument(
+        "--asr-concurrency",
+        type=int,
+        default=DEFAULT_ASR_TRANSCRIBE_CONCURRENCY,
+        help="Concurrent transcription requests during WER evaluation.",
     )
     parser.add_argument(
         "--similarity-checkpoint",
@@ -549,16 +578,36 @@ def main() -> None:
         return
 
     if args.transcribe_only:
-        run_tts_seedtts_transcribe(config)
+        with managed_omni_server(
+            model_path=config.asr_model_path,
+            port=config.port,
+            host=config.host,
+            log_file=Path(config.output_dir) / "server_logs" / "asr_server.log",
+            timeout=args.server_timeout,
+        ):
+            run_tts_seedtts_transcribe(config, asr_router_port=config.port)
         return
 
-    wait_for_service(build_base_url(config), timeout=args.server_timeout)
-    asyncio.run(benchmark(config))
+    with managed_omni_server(
+        model_path=config.model,
+        port=config.port,
+        host=config.host,
+        log_file=Path(config.output_dir) / "server_logs" / "tts_server.log",
+        timeout=args.server_timeout,
+    ):
+        asyncio.run(benchmark(config))
 
     if args.generate_only:
         return
 
-    run_tts_seedtts_transcribe(config)
+    with managed_omni_server(
+        model_path=config.asr_model_path,
+        port=config.port,
+        host=config.host,
+        log_file=Path(config.output_dir) / "server_logs" / "asr_server.log",
+        timeout=args.server_timeout,
+    ):
+        run_tts_seedtts_transcribe(config, asr_router_port=config.port)
 
 
 if __name__ == "__main__":

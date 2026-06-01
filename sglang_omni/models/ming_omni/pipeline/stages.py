@@ -17,7 +17,7 @@ from sglang_omni.models.ming_omni.components.common import (
 )
 from sglang_omni.models.ming_omni.components.preprocessor import MingPreprocessor
 from sglang_omni.models.ming_omni.components.talker_executor import MingTalkerExecutor
-from sglang_omni.models.ming_omni.io import OmniEvent, ThinkerOutput
+from sglang_omni.models.ming_omni.io import MingOmniEvent, ThinkerOutput
 from sglang_omni.models.ming_omni.pipeline.engine_io import (
     apply_encoder_result,
     apply_thinker_result,
@@ -34,7 +34,7 @@ from sglang_omni.models.ming_omni.pipeline.state_io import load_state, store_sta
 from sglang_omni.proto import StagePayload
 
 
-def _event_to_dict(event: OmniEvent) -> dict[str, Any]:
+def _event_to_dict(event: MingOmniEvent) -> dict[str, Any]:
     return {
         "type": event.type,
         "modality": event.modality,
@@ -195,7 +195,9 @@ def create_sglang_thinker_executor(
         store_state(payload, state)
         if eos_token_id is not None and token_id == eos_token_id and not events:
             events = [
-                OmniEvent(type="text_final", modality="text", payload={}, is_final=True)
+                MingOmniEvent(
+                    type="text_final", modality="text", payload={}, is_final=True
+                )
             ]
 
         text_to_add = ""

@@ -37,12 +37,12 @@ CI Usage:
         --max-concurrency 16 \
         --model qwen3-omni --port 8000 --max-samples 50
 
-    # Transcribe + WER only (server not needed)
+    # Transcribe + WER only (ASR server must be running on --port)
     python -m benchmarks.eval.benchmark_omni_seedtts \
         --transcribe-only \
         --meta zhaochenyang20/seed-tts-eval-arrow \
         --output-dir results/qwen3_omni_en \
-        --model qwen3-omni --lang en --device cuda:0
+        --model qwen3-omni --lang en --port 8000
 
 
 H200 Full-Set Reference Results
@@ -96,7 +96,7 @@ are not comparable to codec-token TTS models (e.g. S2-Pro in
 benchmark_tts_seedtts.py); the two backends emit token streams with different
 semantics and rates.
 
-ASR speed (accuracy.asr_speed) — Whisper-large-v3 for EN, FunASR paraformer-zh for ZH
+ASR speed (asr.speed) — historical baseline
 
 | Lang | asr_latency_mean_s | asr_rtf_mean | asr_throughput_samples_per_s | Source                                      |
 | ---- | ------------------ | ------------ | ---------------------------- | ------------------------------------------- |
@@ -155,6 +155,8 @@ from benchmarks.metrics.performance import (
     print_speed_summary,
 )
 from benchmarks.tasks.tts import (
+    DEFAULT_ASR_TRANSCRIBE_CONCURRENCY,
+    QWEN3_ASR_MODEL_PATH,
     VoiceCloneOmni,
     build_base_url,
     run_seedtts_similarity,
@@ -171,6 +173,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 TEXT_PREVIEW_LENGTH = 60
+DEFAULT_TTS_BENCHMARK_CONCURRENCY = int(os.getenv("TTS_BENCHMARK_CONCURRENCY", "16"))
 
 
 @dataclass
@@ -189,11 +192,13 @@ class OmniSeedttsBenchmarkConfig:
     max_new_tokens: int = 256
     temperature: float = 0.7
     warmup: int = 1
-    max_concurrency: int = 1
+    max_concurrency: int = DEFAULT_TTS_BENCHMARK_CONCURRENCY
     request_rate: float = float("inf")
     disable_tqdm: bool = False
     # Transcribe phase
     device: str = "cuda:0"
+    asr_model_path: str = QWEN3_ASR_MODEL_PATH
+    asr_concurrency: int = DEFAULT_ASR_TRANSCRIBE_CONCURRENCY
     similarity_checkpoint: str | None = None
     # Optional system prompt prepended to chat messages. Default ``None``
     # preserves the legacy Qwen3-Omni behavior (no system role). Pass a
@@ -359,27 +364,29 @@ async def run_omni_seedtts_benchmark(
 
 def evaluate_generated_audio(
     config: OmniSeedttsBenchmarkConfig,
-    *,
-    whisper_router_port: int | None = None,
 ) -> dict:
     """Transcribe previously saved audio with ASR and compute WER + ASR speed.
 
-    note (Chenyang): Server need not be running.
+    note (Chenyang): Stop the TTS server first; the ASR server is expected on
+    ``config.port``.
 
     Returns a dict with keys: wer_summary, asr_speed, per_sample.
     """
     wer_config = {
         "model": config.model,
+        "tts_model": config.model,
+        "asr_model": config.asr_model_path,
         "speaker": config.speaker,
         "voice_clone": config.voice_clone,
         "meta": config.meta,
         "max_samples": config.max_samples,
+        "asr_concurrency": config.asr_concurrency,
     }
     return run_seedtts_transcribe(
         config,
         wer_config=wer_config,
         log_per_sample=True,
-        whisper_router_port=whisper_router_port,
+        asr_router_port=config.port,
     )
 
 
@@ -409,6 +416,8 @@ def _config_from_args(args: argparse.Namespace) -> OmniSeedttsBenchmarkConfig:
         request_rate=args.request_rate,
         disable_tqdm=args.disable_tqdm,
         device=device,
+        asr_model_path=args.asr_model_path,
+        asr_concurrency=args.asr_concurrency,
         similarity_checkpoint=args.similarity_checkpoint,
         system_prompt=args.system_prompt,
     )
@@ -493,7 +502,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--max-concurrency",
         type=int,
-        default=1,
+        default=DEFAULT_TTS_BENCHMARK_CONCURRENCY,
         help="Maximum concurrent requests.",
     )
     parser.add_argument(
@@ -522,6 +531,20 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         type=str,
         default="cuda:0",
         help="Legacy alias for --device (ASR transcription device).",
+    )
+    parser.add_argument(
+        "--asr-model-path",
+        type=str,
+        default=QWEN3_ASR_MODEL_PATH,
+        help="HuggingFace model id served by the ASR endpoint on --port. "
+        f"Defaults to {QWEN3_ASR_MODEL_PATH}; openai/whisper-large-v3 "
+        "can also be used.",
+    )
+    parser.add_argument(
+        "--asr-concurrency",
+        type=int,
+        default=DEFAULT_ASR_TRANSCRIBE_CONCURRENCY,
+        help="Concurrent transcription requests during WER evaluation.",
     )
     parser.add_argument(
         "--similarity-checkpoint",
@@ -614,8 +637,10 @@ def main() -> None:
             "per_request": gen_results["per_request"],
         },
         "accuracy": {
-            "asr_speed": accuracy_results["asr_speed"],
             "wer": accuracy_results["wer_summary"],
+        },
+        "asr": {
+            "speed": accuracy_results["asr_speed"],
         },
     }
     if similarity_results is not None:

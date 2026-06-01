@@ -20,33 +20,40 @@ class Qwen3TTSModelRunner(ModelRunner):
         super().__init__(tp_worker, output_processor)
         self._has_pending_code_step = False
 
-    def prepare_prefill(
+    def before_prefill(
+        self,
+        forward_batch: Any,
+        schedule_batch: Any,
+        requests: list,
+    ) -> None:
+        del forward_batch, schedule_batch
+        self.model.prepare_decode_buffers(requests)
+
+    def custom_prefill_forward(
         self,
         forward_batch: Any,
         schedule_batch: Any,
         requests: list,
     ) -> GenerationBatchResult | None:
         del schedule_batch
-        self.model.prepare_decode_buffers(requests)
         input_embeds = self._build_prefill_input_embeds(forward_batch, requests)
         return self._forward_with_input_embeds(
             forward_batch,
             input_embeds,
         )
 
-    def prepare_decode(
+    def before_decode(
         self,
         forward_batch: Any,
         schedule_batch: Any,
         requests: list,
         *,
         is_lookahead: bool = False,
-    ) -> GenerationBatchResult | None:
+    ) -> None:
         del is_lookahead
         del schedule_batch
         self.model.prepare_decode_buffers(requests)
         self._write_feedback_buffers(forward_batch, requests)
-        return None
 
     def post_prefill(
         self,

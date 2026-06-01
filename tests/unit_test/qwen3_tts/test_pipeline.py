@@ -1125,7 +1125,8 @@ def test_qwen3_tts_prefill_prepares_subtalker_buffers_before_forward(
         lambda forward_batch, input_embeds: calls.append("forward") or "result"
     )
 
-    assert runner.prepare_prefill(object(), object(), [object()]) == "result"
+    runner.before_prefill(object(), object(), [object()])
+    assert runner.custom_prefill_forward(object(), object(), [object()]) == "result"
     assert calls == ["prepare", "embeds", "forward"]
 
 

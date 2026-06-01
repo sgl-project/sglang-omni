@@ -25,6 +25,7 @@ runs:
         echo "MODELSCOPE_CACHE=/github/home/.cache/modelscope" >> "${GITHUB_ENV}"
         echo "XDG_CACHE_HOME=${OMNI_CI_HOME}/.cache" >> "${GITHUB_ENV}"
         echo "HF_HUB_DISABLE_XET=1" >> "${GITHUB_ENV}"
+        echo "HF_HUB_ENABLE_HF_TRANSFER=0" >> "${GITHUB_ENV}"
         echo "HF_ENDPOINT=${HF_ENDPOINT:-https://hf-mirror.com}" >> "${GITHUB_ENV}"
         # PyPI mirror + shared wheel cache (HF mirror does not accelerate pip/uv).
         echo "UV_INDEX_URL=${UV_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}" >> "${GITHUB_ENV}"
@@ -48,20 +49,20 @@ runs:
         VENV_NAME: ${{ inputs.venv-name }}
       run: bash .github/scripts/prepare_omni_venv.sh "${VENV_NAME}"
 
-    - name: Validate prepared environment
+    - name: Validate or recover prepared environment
       if: ${{ inputs.install-deps != 'true' }}
       shell: bash
       env:
         VENV_NAME: ${{ inputs.venv-name }}
       run: |
-        test -x "${VENV_NAME}/bin/python" || {
-          echo "Prepared ${VENV_NAME} environment is missing under ${OMNI_CI_HOME}. Run the setup stage first."
-          exit 1
-        }
-        "${VENV_NAME}/bin/python" -c "import torch" 2>/dev/null || {
-          echo "Cached venv is corrupted (torch not importable). Re-run the setup stage."
-          exit 1
-        }
+        if [ -x "${VENV_NAME}/bin/python" ] \
+          && "${VENV_NAME}/bin/python" -c "import torch; import av; from whisper.normalizers import EnglishTextNormalizer" 2>/dev/null; then
+          echo "Prepared ${VENV_NAME} environment is available under ${OMNI_CI_HOME}."
+          exit 0
+        fi
+
+        echo "::warning::Prepared ${VENV_NAME} environment is missing or incomplete under ${OMNI_CI_HOME}; rebuilding it for this job."
+        bash .github/scripts/prepare_omni_venv.sh "${VENV_NAME}"
     - name: Remove flashinfer
       shell: bash
       run: |

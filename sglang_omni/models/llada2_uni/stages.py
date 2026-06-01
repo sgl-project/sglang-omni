@@ -46,7 +46,7 @@ def create_image_encoder_executor(
     from sglang_omni.models.llada2_uni.components.image_encoder import (
         LLaDA2ImageEncoder,
     )
-    from sglang_omni.models.llada2_uni.payload_types import PipelineState
+    from sglang_omni.models.llada2_uni.payload_types import LLaDA2UniPipelineState
     from sglang_omni.models.llada2_uni.request_builders import (
         apply_encoder_result,
         build_encoder_request,
@@ -60,7 +60,7 @@ def create_image_encoder_executor(
     model = LLaDA2ImageEncoder(model_path=model_path, device=device, dtype=dtype)
 
     def _encode(payload):
-        state = PipelineState.from_dict(payload.data)
+        state = LLaDA2UniPipelineState.from_dict(payload.data)
         request = build_encoder_request(state, stage_name=IMAGE_STAGE)
 
         if request.get("_skip"):
@@ -111,13 +111,13 @@ def create_sglang_dllm_thinker_executor_from_config(
 def create_decode_executor(model_path: str):
     from sglang_omni.models.llada2_uni.components.common import load_llada2_tokenizer
     from sglang_omni.models.llada2_uni.merge import decode_events
-    from sglang_omni.models.llada2_uni.payload_types import PipelineState
+    from sglang_omni.models.llada2_uni.payload_types import LLaDA2UniPipelineState
     from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 
     tokenizer = load_llada2_tokenizer(model_path)
 
     def _decode(payload):
-        state = PipelineState.from_dict(payload.data)
+        state = LLaDA2UniPipelineState.from_dict(payload.data)
         thinker_out = state.thinker_out or state.engine_outputs.get(THINKER_STAGE)
         if not isinstance(thinker_out, dict):
             logger.warning(

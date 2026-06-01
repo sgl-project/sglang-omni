@@ -25,6 +25,7 @@ _ARCH_CONFIG_MAP: dict[str, tuple[str, str | None]] = {
     "BailingMoeV2ForCausalLM": ("llm_config", None),
     "Qwen3OmniTalker": ("talker_config", "text_config"),
     "Qwen3OmniThinkerForCausalLM": ("thinker_config", "text_config"),
+    "Qwen3ASRForConditionalGeneration": ("thinker_config", "text_config"),
     "Qwen3TTSTalker": ("talker_config", None),
 }
 

@@ -6,7 +6,6 @@ from __future__ import annotations
 from typing import Any
 
 import torch
-from sglang.srt.managers.scheduler import GenerationBatchResult
 
 from sglang_omni.model_runner.base import ModelRunner
 from sglang_omni.models.voxtral_tts.acoustic_transformer import AudioSpecialTokens
@@ -19,30 +18,28 @@ class VoxtralTTSModelRunner(ModelRunner):
         self._pending_audio_codes: torch.Tensor | None = None
         self._pending_audio_embeds: torch.Tensor | None = None
 
-    def prepare_prefill(
+    def before_prefill(
         self,
         forward_batch: Any,
         schedule_batch: Any,
         requests: list,
-    ) -> GenerationBatchResult | None:
+    ) -> None:
         del schedule_batch
         forward_batch.input_embeds = self._build_prefill_input_embeds(
             forward_batch, requests
         )
-        return None
 
-    def prepare_decode(
+    def before_decode(
         self,
         forward_batch: Any,
         schedule_batch: Any,
         requests: list,
         *,
         is_lookahead: bool = False,
-    ) -> GenerationBatchResult | None:
+    ) -> None:
         del is_lookahead
         del forward_batch, schedule_batch
         self._write_decode_input_embed_buffer(requests)
-        return None
 
     def _write_decode_input_embed_buffer(self, requests: list) -> None:
         batch_size = len(requests)

@@ -120,10 +120,10 @@ def make_thinker_scheduler_adapters(
     def request_builder(payload):
         from sglang.srt.managers.schedule_batch import Req
 
-        from sglang_omni.models.ming_omni.io import PipelineState
+        from sglang_omni.models.ming_omni.io import MingOmniPipelineState
         from sglang_omni.scheduling.sglang_backend import SGLangARRequestData
 
-        state = PipelineState.from_dict(payload.data)
+        state = MingOmniPipelineState.from_dict(payload.data)
         prompt = state.prompt
         if not isinstance(prompt, dict):
             raise TypeError("prompt missing for thinker request")
@@ -213,11 +213,11 @@ def make_thinker_scheduler_adapters(
         return req_data
 
     def result_adapter(data):
-        from sglang_omni.models.ming_omni.io import PipelineState
+        from sglang_omni.models.ming_omni.io import MingOmniPipelineState
         from sglang_omni.proto import StagePayload
 
         payload = data.stage_payload
-        state = PipelineState.from_dict(payload.data)
+        state = MingOmniPipelineState.from_dict(payload.data)
         output_ids = list(data.output_ids)
         if data.finish_reason is not None or not output_ids:
             logger.info(

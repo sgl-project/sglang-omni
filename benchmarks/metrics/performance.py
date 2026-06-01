@@ -44,10 +44,17 @@ Metric semantics:
 
 from __future__ import annotations
 
+import json
+import os
+
 import numpy as np
 
 from benchmarks.benchmarker.data import RequestResult
-from benchmarks.metrics._format import SPEED_LABEL_WIDTH, SPEED_LINE_WIDTH
+from benchmarks.metrics._format import (
+    SPEED_LABEL_WIDTH,
+    SPEED_LINE_WIDTH,
+    print_speed_metric_line,
+)
 
 
 def _compute_token_metrics(
@@ -186,54 +193,100 @@ def print_speed_summary(
     print(f"  {'Completed requests:':<{lw}} {metrics['completed_requests']}")
     print(f"  {'Failed requests:':<{lw}} {metrics['failed_requests']}")
     print(f"{'-' * w}")
-    print(f"  {'Latency mean (s):':<{lw}} {metrics.get('latency_mean_s', 'N/A')}")
-    print(f"  {'Latency median (s):':<{lw}} {metrics.get('latency_median_s', 'N/A')}")
-    print(f"  {'Latency p95 (s):':<{lw}} {metrics.get('latency_p95_s', 'N/A')}")
-    print(f"  {'Latency p99 (s):':<{lw}} {metrics.get('latency_p99_s', 'N/A')}")
-    if metrics.get("rtf_mean") is not None:
-        print(f"  {'RTF mean:':<{lw}} {metrics['rtf_mean']}")
-        print(f"  {'RTF median:':<{lw}} {metrics['rtf_median']}")
-    if metrics.get("rtf_p95") is not None:
-        print(f"  {'RTF p95:':<{lw}} {metrics['rtf_p95']}")
-        print(f"  {'RTF p99:':<{lw}} {metrics['rtf_p99']}")
-    if metrics.get("audio_duration_mean_s"):
-        print(
-            f"  {'Audio duration mean (s):':<{lw}} {metrics['audio_duration_mean_s']}"
-        )
-    if metrics.get("audio_throughput_s_per_s") is not None:
-        print(
-            f"  {'Audio throughput (s/s):':<{lw}} "
-            f"{metrics['audio_throughput_s_per_s']}"
-        )
-    if metrics.get("audio_ttfp_mean_s") is not None:
-        print(f"  {'TTFC mean (s):':<{lw}} {metrics['audio_ttfp_mean_s']}")
-        print(f"  {'TTFC median (s):':<{lw}} {metrics['audio_ttfp_median_s']}")
-        print(f"  {'TTFC p95 (s):':<{lw}} {metrics['audio_ttfp_p95_s']}")
-        print(f"  {'TTFC p99 (s):':<{lw}} {metrics['audio_ttfp_p99_s']}")
-    if metrics.get("text_ttft_mean_s") is not None:
-        print(f"  {'TTFT mean (s):':<{lw}} {metrics['text_ttft_mean_s']}")
-        print(f"  {'TTFT median (s):':<{lw}} {metrics['text_ttft_median_s']}")
-        print(f"  {'TTFT p95 (s):':<{lw}} {metrics['text_ttft_p95_s']}")
-        print(f"  {'TTFT p99 (s):':<{lw}} {metrics['text_ttft_p99_s']}")
-    if metrics.get("inter_chunk_mean_s") is not None:
-        print(f"  {'ITL mean (s):':<{lw}} {metrics['inter_chunk_mean_s']}")
-        print(f"  {'ITL p95 (s):':<{lw}} {metrics['inter_chunk_p95_s']}")
-        print(f"  {'ITL p99 (s):':<{lw}} {metrics['inter_chunk_p99_s']}")
-    if metrics.get("output_throughput") is not None:
-        print(f"  {'Output throughput (tok/s):':<{lw}} {metrics['output_throughput']}")
-    if metrics.get("output_tok_per_req_s") is not None:
-        print(
-            f"  {'Output tokens/request-s:':<{lw}} "
-            f"{metrics['output_tok_per_req_s']}"
-        )
+    print_speed_metric_line(lw, "Latency mean (s):", metrics, "latency_mean_s")
+    print_speed_metric_line(lw, "Latency median (s):", metrics, "latency_median_s")
+    print_speed_metric_line(lw, "Latency p95 (s):", metrics, "latency_p95_s")
+    print_speed_metric_line(lw, "Latency p99 (s):", metrics, "latency_p99_s")
+    print_speed_metric_line(lw, "RTF mean:", metrics, "rtf_mean")
+    print_speed_metric_line(lw, "RTF median:", metrics, "rtf_median")
+    print_speed_metric_line(lw, "RTF p95:", metrics, "rtf_p95")
+    print_speed_metric_line(lw, "RTF p99:", metrics, "rtf_p99")
+    print_speed_metric_line(
+        lw, "Audio duration mean (s):", metrics, "audio_duration_mean_s"
+    )
+    print_speed_metric_line(
+        lw, "Audio throughput (s/s):", metrics, "audio_throughput_s_per_s"
+    )
+    print_speed_metric_line(lw, "TTFC mean (s):", metrics, "audio_ttfp_mean_s")
+    print_speed_metric_line(lw, "TTFC median (s):", metrics, "audio_ttfp_median_s")
+    print_speed_metric_line(lw, "TTFC p95 (s):", metrics, "audio_ttfp_p95_s")
+    print_speed_metric_line(lw, "TTFC p99 (s):", metrics, "audio_ttfp_p99_s")
+    print_speed_metric_line(lw, "TTFT mean (s):", metrics, "text_ttft_mean_s")
+    print_speed_metric_line(lw, "TTFT median (s):", metrics, "text_ttft_median_s")
+    print_speed_metric_line(lw, "TTFT p95 (s):", metrics, "text_ttft_p95_s")
+    print_speed_metric_line(lw, "TTFT p99 (s):", metrics, "text_ttft_p99_s")
+    print_speed_metric_line(lw, "ITL mean (s):", metrics, "inter_chunk_mean_s")
+    print_speed_metric_line(lw, "ITL p95 (s):", metrics, "inter_chunk_p95_s")
+    print_speed_metric_line(lw, "ITL p99 (s):", metrics, "inter_chunk_p99_s")
+    print_speed_metric_line(
+        lw, "Output throughput (tok/s):", metrics, "output_throughput"
+    )
+    print_speed_metric_line(
+        lw, "Output tokens/request-s:", metrics, "output_tok_per_req_s"
+    )
     if metrics.get("output_tokens_mean") is not None:
         print(f"  {'Output tokens (mean):':<{lw}} {metrics['output_tokens_mean']:.0f}")
         print(f"  {'Output tokens (total):':<{lw}} {metrics['output_tokens_total']}")
     if metrics.get("prompt_tokens_mean") is not None:
         print(f"  {'Prompt tokens (mean):':<{lw}} {metrics['prompt_tokens_mean']:.0f}")
         print(f"  {'Prompt tokens (total):':<{lw}} {metrics['prompt_tokens_total']}")
-    print(f"  {'Throughput (req/s):':<{lw}} {metrics.get('throughput_qps', 'N/A')}")
+    print_speed_metric_line(lw, "Throughput (req/s):", metrics, "throughput_qps")
     print(f"{'=' * w}")
+
+
+def load_tts_speed_results(output_dir: str) -> dict | None:
+    """Load ``speed_results.json`` when present."""
+    results_path = os.path.join(output_dir, "speed_results.json")
+    if not os.path.isfile(results_path):
+        return None
+
+    with open(results_path) as f:
+        return json.load(f)
+
+
+def load_tts_speed_summary(output_dir: str) -> dict | None:
+    """Load the ``summary`` block from ``speed_results.json`` when present."""
+    speed_results = load_tts_speed_results(output_dir)
+    if speed_results is None:
+        return None
+
+    summary = speed_results.get("summary")
+    if not isinstance(summary, dict):
+        return None
+    return summary
+
+
+def print_saved_tts_speed_summary(
+    output_dir: str,
+    model_name: str,
+    *,
+    concurrency: int | None = None,
+    generation_mode: str | None = None,
+) -> bool:
+    """Print TTS speed metrics from ``speed_results.json`` when present."""
+    speed_results = load_tts_speed_results(output_dir)
+    if speed_results is None:
+        return False
+
+    summary = speed_results.get("summary")
+    if not isinstance(summary, dict):
+        return False
+
+    if concurrency is None:
+        saved_config = speed_results.get("config") or {}
+        concurrency = saved_config.get("concurrency")
+
+    title = "TTS Speed Benchmark Result"
+    if generation_mode:
+        title = f"TTS Speed Benchmark Result ({generation_mode})"
+
+    print_speed_summary(
+        summary,
+        model_name,
+        concurrency=concurrency,
+        title=title,
+    )
+    return True
 
 
 def build_speed_results(

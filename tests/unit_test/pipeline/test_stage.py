@@ -12,7 +12,7 @@ from sglang_omni.pipeline import relay_io
 from sglang_omni.pipeline.local_dispatch import LocalStageDispatcher
 from sglang_omni.pipeline.stage.input import AggregatedInput
 from sglang_omni.pipeline.stage.stream_queue import StreamQueue
-from sglang_omni.pipeline.stage_process import StageProcessSpec, _construct_stage
+from sglang_omni.pipeline.stage_workers import StageLaunchConfig, _construct_stage
 from sglang_omni.proto import DataReadyMessage
 from tests.unit_test.fixtures.pipeline_fakes import (
     EventLog,
@@ -148,7 +148,7 @@ def test_stage_routes_results_streams_and_clears_abort_state() -> None:
 
 
 def test_stage_process_rejects_dynamic_targets_outside_static_topology() -> None:
-    spec = StageProcessSpec(
+    spec = StageLaunchConfig(
         stage_name="thinker",
         factory=fake_factory_path("make_scheduler"),
         next_stages=["decode"],
@@ -177,7 +177,7 @@ def test_stage_process_rejects_dynamic_targets_outside_static_topology() -> None
 
 
 def test_stage_process_rejects_dynamic_wait_sources_outside_static_fanin() -> None:
-    spec = StageProcessSpec(
+    spec = StageLaunchConfig(
         stage_name="aggregate",
         factory=fake_factory_path("make_scheduler"),
         next_stages="decode",
@@ -197,7 +197,7 @@ def test_stage_process_rejects_dynamic_wait_sources_outside_static_fanin() -> No
 
 
 def test_stage_process_accepts_iterable_dynamic_wait_sources() -> None:
-    spec = StageProcessSpec(
+    spec = StageLaunchConfig(
         stage_name="aggregate",
         factory=fake_factory_path("make_scheduler"),
         next_stages="decode",

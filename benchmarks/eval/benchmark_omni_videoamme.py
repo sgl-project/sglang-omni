@@ -18,7 +18,7 @@ Usage:
     python -m benchmarks.eval.benchmark_omni_videoamme \
         --model qwen3-omni --port 30000 \
         --repo-id zhaochenyang20/Video_AMME_ci \
-        --max-samples 50 --max-concurrency 8 \
+        --max-samples 50 --max-concurrency 16 \
         --video-fps 2 --video-max-frames 128 --video-max-pixels 401408
 
 H200 Reference Results

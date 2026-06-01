@@ -16,9 +16,9 @@ Author:
     Yitong Guan https://github.com/minleminzui
     Xuesong Ye https://github.com/yxs
 
-The benchmark supports one selected concurrency per test run. Use --concurrency 16
-in CI, run without the flag to use concurrency 1, or pass --concurrency all
-to sweep all supported concurrency values locally.
+The benchmark supports one selected concurrency per test run. It defaults to
+concurrency 16 for CI; pass --concurrency all to sweep all supported
+concurrency values locally.
 """
 
 from __future__ import annotations
@@ -34,13 +34,12 @@ from typing import Literal
 
 import pytest
 
-pytest_plugins = ["tests.test_model.omni_whisper_wer_utils"]
-
 from benchmarks.dataset.prepare import DATASETS, download_dataset
 from benchmarks.eval.benchmark_tts_seedtts import (
     TtsSeedttsBenchmarkConfig,
     run_tts_seedtts_benchmark,
 )
+from benchmarks.metrics.performance import print_saved_tts_speed_summary
 from tests.test_model.conftest import (
     TTS_STAGE_CONSISTENCY,
     TTS_STAGE_NONSTREAM,
@@ -54,6 +53,7 @@ from tests.test_model.omni_router_utils import (
     router_get_json,
 )
 from tests.utils import (
+    QWEN3_ASR_WER_CONCURRENCY,
     MetricCheckCollector,
     apply_mos_slack,
     apply_slack,
@@ -153,6 +153,27 @@ def _validate_speed_results_keys(speed_results: dict) -> None:
     ), f"Missing 'per_request' key in results. Keys: {list(speed_results.keys())}"
 
 
+def _print_saved_tts_speed_summary(
+    output_dir: str,
+    *,
+    concurrency: int | None = None,
+    stream: bool = False,
+) -> None:
+    mode = "streaming" if stream else "non-streaming"
+    results_path = Path(output_dir) / "speed_results.json"
+    assert results_path.exists(), f"TTS speed results file not found: {results_path}"
+    with open(results_path) as f:
+        speed_results = json.load(f)
+    _validate_speed_results_keys(speed_results)
+    printed = print_saved_tts_speed_summary(
+        output_dir,
+        TTS_MODEL_PATH,
+        concurrency=concurrency,
+        generation_mode=mode,
+    )
+    assert printed, f"Failed to print TTS speed summary from {results_path}"
+
+
 def _run_benchmark(
     port: int,
     testset: str,
@@ -173,6 +194,11 @@ def _run_benchmark(
     )
     speed_results = asyncio.run(run_tts_seedtts_benchmark(benchmark_config))
     _validate_speed_results_keys(speed_results)
+    _print_saved_tts_speed_summary(
+        output_dir,
+        concurrency=concurrency,
+        stream=stream,
+    )
     return speed_results
 
 
@@ -180,12 +206,13 @@ def _run_wer_transcribe(
     meta: str,
     output_dir: str,
     *,
-    whisper_router_port: int,
+    asr_router_port: int,
+    concurrency: int,
     stream: bool = False,
     lang: str = "en",
     device: str = "cuda:0",
 ) -> dict:
-    """Transcribe saved audio and compute WER via Omni Whisper router."""
+    """Transcribe saved audio and compute WER via Qwen3-ASR router."""
     from benchmarks.eval.benchmark_tts_seedtts import (
         TtsSeedttsBenchmarkConfig,
         run_tts_seedtts_transcribe,
@@ -198,10 +225,12 @@ def _run_wer_transcribe(
         lang=lang,
         device=device,
         stream=stream,
+        concurrency=concurrency,
+        asr_concurrency=QWEN3_ASR_WER_CONCURRENCY,
     )
     run_tts_seedtts_transcribe(
         config,
-        whisper_router_port=whisper_router_port,
+        asr_router_port=asr_router_port,
     )
 
     results_path = Path(output_dir) / "wer_results.json"
@@ -874,7 +903,7 @@ def test_voice_cloning_wer(
     wer_input_dirs: dict[str, dict[int, str]],
     dataset_repo: str,
     selected_tts_concurrencies: tuple[int, ...],
-    omni_whisper_wer_router: ManagedRouterHandle,
+    qwen3_asr_wer_router: ManagedRouterHandle,
 ) -> None:
     checks = MetricCheckCollector("TTS non-streaming WER")
     for concurrency in selected_tts_concurrencies:
@@ -884,10 +913,12 @@ def test_voice_cloning_wer(
             concurrency,
             "transcribe speed-stage WAVs",
         )
+        output_dir = wer_input_dirs["non_stream"][concurrency]
         results = _run_wer_transcribe(
             dataset_repo,
-            wer_input_dirs["non_stream"][concurrency],
-            whisper_router_port=omni_whisper_wer_router.port,
+            output_dir,
+            asr_router_port=qwen3_asr_wer_router.port,
+            concurrency=concurrency,
         )
         _assert_full_seedtts_en_wer_results(
             results,
@@ -948,7 +979,7 @@ def test_voice_cloning_streaming_wer(
     wer_input_dirs: dict[str, dict[int, str]],
     dataset_repo: str,
     selected_tts_concurrencies: tuple[int, ...],
-    omni_whisper_wer_router: ManagedRouterHandle,
+    qwen3_asr_wer_router: ManagedRouterHandle,
 ) -> None:
     checks = MetricCheckCollector("TTS streaming WER")
     for concurrency in selected_tts_concurrencies:
@@ -959,11 +990,13 @@ def test_voice_cloning_streaming_wer(
             f"transcribe {_sample_scope_label(STREAMING_BENCHMARK_MAX_SAMPLES)} "
             "speed-stage WAVs",
         )
+        output_dir = wer_input_dirs["stream"][concurrency]
         results = _run_wer_transcribe(
             dataset_repo,
-            wer_input_dirs["stream"][concurrency],
+            output_dir,
             stream=True,
-            whisper_router_port=omni_whisper_wer_router.port,
+            asr_router_port=qwen3_asr_wer_router.port,
+            concurrency=concurrency,
         )
         _assert_full_seedtts_en_wer_results(
             results,

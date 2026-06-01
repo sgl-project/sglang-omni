@@ -15,7 +15,7 @@ import torch
 from safetensors import safe_open
 
 from sglang_omni.models.qwen3_omni.components.talker_input import build_prefill_input
-from sglang_omni.models.qwen3_omni.payload_types import PipelineState
+from sglang_omni.models.qwen3_omni.payload_types import Qwen3OmniPipelineState
 from sglang_omni.models.qwen3_omni.pending_text_queue import (
     PendingTextTensorQueue,
     coerce_pending_text_queue,
@@ -188,7 +188,7 @@ class TalkerPrefillBuilder:
         if not thinker_chunks:
             raise ValueError("prompt prefill requires thinker chunks")
 
-        state = PipelineState.from_dict(payload.data)
+        state = Qwen3OmniPipelineState.from_dict(payload.data)
         prompt_ids, prompt_embed, prompt_hidden, prompt_model_inputs = (
             self._reconstruct_prompt_states(state)
         )
@@ -332,7 +332,7 @@ class TalkerPrefillBuilder:
         return PendingTextTensorQueue.from_tensor(tensor)
 
     def _reconstruct_prompt_states(
-        self, state: PipelineState
+        self, state: Qwen3OmniPipelineState
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, dict[str, Any]]:
         prompt = state.prompt or {}
         prompt_input_ids = prompt["input_ids"]
@@ -394,7 +394,7 @@ class TalkerPrefillBuilder:
         gathered = unique_rows.index_select(0, inverse.to(device=unique_rows.device))
         return gathered.view(token_ids.shape[0], unique_rows.shape[-1])
 
-    def _prompt_model_inputs(self, state: PipelineState) -> dict[str, Any]:
+    def _prompt_model_inputs(self, state: Qwen3OmniPipelineState) -> dict[str, Any]:
         thinker_inputs = state.thinker_inputs or {}
         model_inputs = thinker_inputs.get("model_inputs")
         if isinstance(model_inputs, dict):

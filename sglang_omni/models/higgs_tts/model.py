@@ -431,7 +431,7 @@ class HiggsTTSModel(nn.Module):
         self, input_ids: torch.Tensor, batch_size: int
     ) -> torch.Tensor:
         """Graph-capture-friendly decode-step embedding lookup; reads from
-        shadow `_cg_active_*[:bs]` populated by ``prepare_decode``.
+        shadow `_cg_active_*[:bs]` populated by ``before_decode``.
         """
         delay_counts = self._cg_active_delay_count[:batch_size].to(torch.long)
         has_codes = (delay_counts > 0).unsqueeze(-1)

@@ -671,14 +671,14 @@ def test_ming_init_model_config_registers_auto_config_before_loading(
 
 
 def test_ming_decode_metadata_includes_usage_and_finish_reason() -> None:
-    from sglang_omni.models.ming_omni.io import PipelineState
+    from sglang_omni.models.ming_omni.io import MingOmniPipelineState
     from sglang_omni.models.ming_omni.stages import _attach_decode_final_metadata
 
     class TensorLike:
         def numel(self) -> int:
             return 5
 
-    state = PipelineState(prompt={"input_ids": TensorLike()})
+    state = MingOmniPipelineState(prompt={"input_ids": TensorLike()})
     thinker_out = {
         "output_ids": [10, 11, 12],
         "finish_reason": "length",
@@ -756,14 +756,14 @@ def test_ming_merge_extracts_video_embeds_into_thinker_inputs() -> None:
     """
     import torch
 
-    from sglang_omni.models.ming_omni.io import PipelineState
+    from sglang_omni.models.ming_omni.io import MingOmniPipelineState
     from sglang_omni.models.ming_omni.pipeline.merge import build_thinker_inputs
     from sglang_omni.models.ming_omni.pipeline.next_stage import (
         AUDIO_STAGE,
         IMAGE_STAGE,
     )
 
-    state = PipelineState(
+    state = MingOmniPipelineState(
         raw_inputs={},
         prompt={
             "input_ids": torch.zeros((1, 1), dtype=torch.long),

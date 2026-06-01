@@ -97,12 +97,12 @@ python -m benchmarks.eval.benchmark_omni_seedtts \
     --max-concurrency 16 \
     --model qwen3-omni --port 8000 --max-samples 50
 
-# 3c. Qwen3-Omni — transcribe only (reuses audio; no server)
+# 3c. Qwen3-Omni — transcribe only (reuses audio; ASR server on --port)
 python -m benchmarks.eval.benchmark_omni_seedtts \
     --transcribe-only \
     --meta zhaochenyang20/seed-tts-eval-arrow \
     --output-dir results/qwen3_omni_en \
-    --model qwen3-omni --lang en --device cuda:0
+    --model qwen3-omni --lang en --port 8000
 
 # 4. Qwen3-Omni — MMSU (audio comprehension)
 python -m benchmarks.eval.benchmark_omni_mmsu \
@@ -121,16 +121,16 @@ python -m benchmarks.eval.benchmark_omni_videomme \
 python -m benchmarks.eval.benchmark_omni_videoamme \
     --model qwen3-omni --port 8000 \
     --repo-id zhaochenyang20/Video_AMME_ci \
-    --max-samples 50 --max-concurrency 8 \
+    --max-samples 50 --max-concurrency 16 \
     --video-fps 2 --video-max-frames 128 --video-max-pixels 401408
 
 # 7b. Qwen3-Omni — Video-AMME Talker (text + audio output)
 python -m benchmarks.eval.benchmark_omni_videoamme \
     --model qwen3-omni --port 8000 \
     --repo-id zhaochenyang20/Video_AMME_ci \
-    --max-samples 50 --max-concurrency 8 \
+    --max-samples 50 --max-concurrency 16 \
     --video-fps 2 --video-max-frames 128 --video-max-pixels 401408 \
-    --enable-audio --asr-device cuda:0
+    --enable-audio --asr-device cuda:0 --asr-concurrency 32
 ```
 
 ## Eval Scripts
@@ -146,8 +146,8 @@ python -m benchmarks.eval.benchmark_omni_videoamme \
 
 The two `*_seedtts.py` scripts merge the previous `benchmark_*_tts_speed.py`
 and `voice_clone_*_wer.py` pairs into a single two-phase pipeline: phase 1
-generates + persists WAVs while the server runs, phase 2 transcribes offline
-to avoid GPU contention with the server. Use `--generate-only` or
+generates + persists WAVs while the TTS server runs, phase 2 transcribes through
+an ASR server to avoid GPU contention with the TTS server. Use `--generate-only` or
 `--transcribe-only` to run a single phase. For TTS, `--concurrency` and
 `--max-concurrency` are equivalent (see `benchmark_tts_seedtts.py`).
 `benchmark_tts_seedtts.py` also handles model-specific voice-cloning reference

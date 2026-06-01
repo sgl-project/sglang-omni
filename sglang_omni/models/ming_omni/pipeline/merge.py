@@ -7,7 +7,11 @@ from typing import Any, Iterable
 
 import torch
 
-from sglang_omni.models.ming_omni.io import OmniEvent, PipelineState, ThinkerOutput
+from sglang_omni.models.ming_omni.io import (
+    MingOmniEvent,
+    MingOmniPipelineState,
+    ThinkerOutput,
+)
 from sglang_omni.models.ming_omni.pipeline.next_stage import AUDIO_STAGE, IMAGE_STAGE
 from sglang_omni.proto import StagePayload
 
@@ -35,13 +39,13 @@ def merge_for_thinker(payloads: dict[str, StagePayload]) -> StagePayload:
     merged with the placeholder location info from preprocessing.
     """
     base = payloads.get("preprocessing") or next(iter(payloads.values()))
-    state = PipelineState.from_dict(base.data)
+    state = MingOmniPipelineState.from_dict(base.data)
     encoder_outs: dict[str, Any] = {}
     if state.encoder_outs:
         encoder_outs.update(state.encoder_outs)
 
     for stage_name, payload in payloads.items():
-        stage_state = PipelineState.from_dict(payload.data)
+        stage_state = MingOmniPipelineState.from_dict(payload.data)
         if stage_name in stage_state.encoder_outs:
             encoder_outs[stage_name] = stage_state.encoder_outs[stage_name]
             continue
@@ -58,7 +62,7 @@ def merge_for_thinker(payloads: dict[str, StagePayload]) -> StagePayload:
 
 
 def build_thinker_inputs(
-    state: PipelineState,
+    state: MingOmniPipelineState,
     encoder_outs: dict[str, Any],
 ) -> dict[str, Any]:
     """Build model_inputs dict for the Ming thinker from encoder outputs.
@@ -141,11 +145,11 @@ def build_thinker_inputs(
 def decode_events(
     *,
     thinker_out: ThinkerOutput,
-    state: PipelineState,
+    state: MingOmniPipelineState,
     tokenizer: Any,
     eos_token_id: int | None,
     step: int,
-) -> Iterable[OmniEvent]:
+) -> Iterable[MingOmniEvent]:
     """Convert thinker output tokens to text events with streaming support."""
     output_ids = thinker_out.get("output_ids", [])
     if not isinstance(output_ids, list) or not output_ids:
@@ -170,7 +174,7 @@ def decode_events(
         stream_state["token_ids"] = tokens
         stream_state["text"] = text
         return [
-            OmniEvent(
+            MingOmniEvent(
                 type="text_final",
                 modality="text",
                 payload={"text": text},
@@ -182,7 +186,7 @@ def decode_events(
     if eos_token_id is not None and token_id == int(eos_token_id):
         text = str(stream_state.get("text", ""))
         return [
-            OmniEvent(
+            MingOmniEvent(
                 type="text_final",
                 modality="text",
                 payload={"text": text},
@@ -204,7 +208,7 @@ def decode_events(
         return []
     stream_state["emitted_text"] = decoded
     return [
-        OmniEvent(
+        MingOmniEvent(
             type="text_delta", modality="text", payload={"text": delta}, is_final=False
         )
     ]

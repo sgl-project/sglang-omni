@@ -4,8 +4,24 @@ description: "Qwen3-Omni 30B-A3B Instruct (Talker + Thinker)"
 hf_model_id: "Qwen/Qwen3-Omni-30B-A3B-Instruct"
 # Extra model checkpoints required by tests that do not use hf_model_id.
 hf_model_ids_by_test:
+  test_qwen3_omni_tts_ci.py:
+    - "Qwen/Qwen3-Omni-30B-A3B-Instruct"
+    - "Qwen/Qwen3-ASR-1.7B"
+  test_qwen3_omni_mmmu_talker_ci.py:
+    - "Qwen/Qwen3-Omni-30B-A3B-Instruct"
+    - "Qwen/Qwen3-ASR-1.7B"
+  test_qwen3_omni_mmsu_talker_ci.py:
+    - "Qwen/Qwen3-Omni-30B-A3B-Instruct"
+    - "Qwen/Qwen3-ASR-1.7B"
+  test_qwen3_omni_videomme_talker_ci.py:
+    - "Qwen/Qwen3-Omni-30B-A3B-Instruct"
+    - "Qwen/Qwen3-ASR-1.7B"
+  test_qwen3_omni_videoamme_talker_ci.py:
+    - "Qwen/Qwen3-Omni-30B-A3B-Instruct"
+    - "Qwen/Qwen3-ASR-1.7B"
   test_qwen3_omni_videoamme_talker_tp2_ci.py:
     - "marksverdhei/Qwen3-Omni-30B-A3B-FP8"
+    - "Qwen/Qwen3-ASR-1.7B"
 hf_datasets:
   - "zhaochenyang20/mmsu-ci-2000"
   - "zhaochenyang20/mmmu-ci-50"
@@ -19,11 +35,8 @@ default_venv_python:
   - "/sgl-workspace/sglang-omni/omni/bin/python"
   - "/github/home/calibration/omni/bin/python"
   - "/github/home/omni/bin/python"
-# CI omni venv has openai-whisper installed, so
-# `_get_en_normalizer()` resolves to whisper.normalizers.EnglishTextNormalizer
-# (contractions expanded, numbers→words, etc.). precheck warns if the local
-# venv falls back to the punctuation-strip path.
-expected_wer_normalizer: "english"
+# Concurrency: Qwen3-Omni talker/TTS WER CI stages use CONCURRENCY=16 for
+# generation. Their Qwen3-ASR WER router/transcribe fan-out uses 32 at DP=2.
 # Env vars tune.py applies at startup (matches .github/actions/omni-setup).
 auto_env:
   HOME: "/github/home"
@@ -181,6 +194,18 @@ metric_sources:
     sample_counts:
       total: "vc_nonstream0/wer_results.json::summary.total_samples"
       ok: "vc_nonstream0/wer_results.json::summary.evaluated"
+    sample_counts_by_group:
+      speed:
+        total: "vc_nonstream0/speed_results.json::summary.total_requests"
+        ok: "vc_nonstream0/speed_results.json::summary.completed_requests"
+      wer:
+        total: "vc_nonstream0/wer_results.json::summary.total_samples"
+        ok: "vc_nonstream0/wer_results.json::summary.evaluated"
+      utmos:
+        total: "vc_nonstream0/utmos_results.json::summary.total_samples"
+        ok: "vc_nonstream0/utmos_results.json::summary.evaluated"
+    ignored_constants:
+      - VC_SIMILARITY_MEAN_MIN
     paths:
       throughput_qps: "vc_nonstream0/speed_results.json::summary.throughput_qps"
       output_tok_per_req_s: "vc_nonstream0/speed_results.json::summary.output_tok_per_req_s"
@@ -190,4 +215,4 @@ metric_sources:
       per_sample_wer_max: "vc_nonstream0/wer_results.json::summary.wer_per_sample_max"
       wer_below_50_corpus: "vc_nonstream0/wer_results.json::summary.wer_below_50_corpus"
       n_above_50: "vc_nonstream0/wer_results.json::summary.n_above_50_pct_wer"
-      similarity_mean: "vc_nonstream0/similarity_results.json::summary.speaker_similarity_mean"
+      utmos_mean: "vc_nonstream0/utmos_results.json::summary.utmos_mean"

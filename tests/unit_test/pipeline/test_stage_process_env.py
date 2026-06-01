@@ -7,18 +7,18 @@ from pathlib import Path
 
 import pytest
 
-from sglang_omni.pipeline import stage_process
-from sglang_omni.pipeline.stage_group import _patched_spawn_env
-from sglang_omni.pipeline.stage_process import (
-    StageProcessSpec,
+from sglang_omni.pipeline import stage_workers
+from sglang_omni.pipeline.stage_workers import (
+    StageLaunchConfig,
     StageWorkerProcessSpec,
+    _patched_spawn_env,
     get_stage_process_env,
 )
 from tests.unit_test.fixtures.pipeline_fakes import FakeScheduler, fake_factory_path
 
 
-def _tp_spec(*, gpu_id: int) -> StageProcessSpec:
-    return StageProcessSpec(
+def _tp_spec(*, gpu_id: int) -> StageLaunchConfig:
+    return StageLaunchConfig(
         stage_name="thinker",
         role="leader",
         tp_rank=0,
@@ -27,7 +27,7 @@ def _tp_spec(*, gpu_id: int) -> StageProcessSpec:
     )
 
 
-def _worker_spec(*stage_specs: StageProcessSpec) -> StageWorkerProcessSpec:
+def _worker_spec(*stage_specs: StageLaunchConfig) -> StageWorkerProcessSpec:
     return StageWorkerProcessSpec(
         process_name="worker",
         stage_specs=list(stage_specs),
@@ -48,14 +48,14 @@ def test_tp_process_env_rejects_single_visible_device_for_second_gpu() -> None:
 
 def test_tp_process_env_requires_gpu_id() -> None:
     with pytest.raises(ValueError, match="requires a GPU id"):
-        get_stage_process_env(StageProcessSpec(stage_name="thinker", tp_size=2), {})
+        get_stage_process_env(StageLaunchConfig(stage_name="thinker", tp_size=2), {})
 
 
 def test_tp_child_keeps_parent_mapped_visible_device(monkeypatch) -> None:
     """Child startup normalizes the already-mapped TP device to local cuda:0."""
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "4")
     monkeypatch.setenv("SGLANG_ONE_VISIBLE_DEVICE_PER_PROCESS", "true")
-    spec = StageProcessSpec(
+    spec = StageLaunchConfig(
         stage_name="thinker",
         role="follower",
         tp_rank=1,
@@ -65,7 +65,7 @@ def test_tp_child_keeps_parent_mapped_visible_device(monkeypatch) -> None:
         relay_config={"gpu_id": 1},
     )
 
-    stage_process._prepare_cuda_environment(spec, _RecordingLog())
+    stage_workers._prepare_cuda_environment(spec, _RecordingLog())
 
     assert spec.gpu_id == 0
     assert spec.factory_args["gpu_id"] == 0
@@ -75,7 +75,7 @@ def test_tp_child_keeps_parent_mapped_visible_device(monkeypatch) -> None:
 
 def test_spawn_env_applies_stage_defaults_before_child_start(monkeypatch) -> None:
     monkeypatch.delenv("SGLANG_TEST_STAGE_ENV", raising=False)
-    spec = StageProcessSpec(
+    spec = StageLaunchConfig(
         stage_name="thinker",
         env_defaults={"SGLANG_TEST_STAGE_ENV": "default"},
     )
@@ -88,7 +88,7 @@ def test_spawn_env_applies_stage_defaults_before_child_start(monkeypatch) -> Non
 
 def test_spawn_env_preserves_operator_stage_defaults(monkeypatch) -> None:
     monkeypatch.setenv("SGLANG_TEST_STAGE_ENV", "operator")
-    spec = StageProcessSpec(
+    spec = StageLaunchConfig(
         stage_name="thinker",
         env_defaults={"SGLANG_TEST_STAGE_ENV": "default"},
     )
@@ -133,13 +133,13 @@ def test_gpu_scheduler_construction_uses_startup_lock(monkeypatch) -> None:
         seen_gpu_ids.append(gpu_id)
         yield Path("/tmp/test.lock")
 
-    monkeypatch.setattr(stage_process, "gpu_startup_lock", _fake_lock)
-    spec = StageProcessSpec(
+    monkeypatch.setattr(stage_workers, "gpu_startup_lock", _fake_lock)
+    spec = StageLaunchConfig(
         stage_name="thinker",
         factory=fake_factory_path("make_scheduler"),
     )
 
-    scheduler = stage_process._construct_scheduler(spec, 0, _RecordingLog())
+    scheduler = stage_workers._construct_scheduler(spec, 0, _RecordingLog())
 
     assert isinstance(scheduler, FakeScheduler)
     assert seen_gpu_ids == [0]
@@ -168,11 +168,11 @@ def test_construct_stage_uses_factory_gpu_id_for_device_and_startup_lock(
         "set_device",
         lambda gpu_id: set_device_calls.append(int(gpu_id)),
     )
-    monkeypatch.setattr(stage_process, "gpu_startup_lock", _fake_lock)
-    monkeypatch.setattr(stage_process, "Stage", _FakeStage)
+    monkeypatch.setattr(stage_workers, "gpu_startup_lock", _fake_lock)
+    monkeypatch.setattr(stage_workers, "Stage", _FakeStage)
 
     specs = [
-        StageProcessSpec(
+        StageLaunchConfig(
             stage_name=f"gpu_stage_{idx}",
             factory=fake_factory_path("make_scheduler_accepting_gpu_id"),
             factory_args={"gpu_id": 0},
@@ -181,7 +181,7 @@ def test_construct_stage_uses_factory_gpu_id_for_device_and_startup_lock(
         for idx in range(2)
     ]
 
-    stages = [stage_process._construct_stage(spec, _RecordingLog()) for spec in specs]
+    stages = [stage_workers._construct_stage(spec, _RecordingLog()) for spec in specs]
 
     assert [stage.scheduler.gpu_id for stage in stages] == [0, 0]
     assert set_device_calls == [0, 0]
@@ -192,12 +192,12 @@ def test_cpu_scheduler_construction_skips_startup_lock(monkeypatch) -> None:
     def _unexpected_lock(gpu_id: int):
         raise AssertionError(f"unexpected GPU lock for {gpu_id}")
 
-    monkeypatch.setattr(stage_process, "gpu_startup_lock", _unexpected_lock)
-    spec = StageProcessSpec(
+    monkeypatch.setattr(stage_workers, "gpu_startup_lock", _unexpected_lock)
+    spec = StageLaunchConfig(
         stage_name="decode",
         factory=fake_factory_path("make_scheduler"),
     )
 
-    scheduler = stage_process._construct_scheduler(spec, None, _RecordingLog())
+    scheduler = stage_workers._construct_scheduler(spec, None, _RecordingLog())
 
     assert isinstance(scheduler, FakeScheduler)

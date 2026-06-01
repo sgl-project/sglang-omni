@@ -9,7 +9,7 @@ from typing import Any
 import torch
 from torch import nn
 
-from sglang_omni.models.qwen3_omni.payload_types import PipelineState
+from sglang_omni.models.qwen3_omni.payload_types import Qwen3OmniPipelineState
 from sglang_omni.proto import OmniRequest, StagePayload
 
 
@@ -33,7 +33,7 @@ class FakeQwenTokenizer:
         )
 
 
-def make_qwen_state(**kwargs: Any) -> PipelineState:
+def make_qwen_state(**kwargs: Any) -> Qwen3OmniPipelineState:
     defaults: dict[str, Any] = {
         "raw_inputs": {"text": "hello"},
         "prompt": {
@@ -46,11 +46,11 @@ def make_qwen_state(**kwargs: Any) -> PipelineState:
         "stream_state": {},
     }
     defaults.update(kwargs)
-    return PipelineState(**defaults)
+    return Qwen3OmniPipelineState(**defaults)
 
 
 def make_qwen_payload(
-    state: PipelineState | None = None,
+    state: Qwen3OmniPipelineState | None = None,
     *,
     request_id: str = "req-qwen",
     inputs: Any | None = None,

@@ -110,6 +110,7 @@ METRIC_SPECS = {
     "rtf_p95":              dict(worst="max", label="RTF p95",               digits=4, scale=1,   group="speed"),
     "failed_requests":      dict(worst="max", label="Failed requests",       digits=0, scale=1,   group="reliability"),
     "similarity_mean":      dict(worst="min", label="Speaker sim mean",      digits=4, scale=1,   group="similarity"),
+    "utmos_mean":           dict(worst="min", label="UTMOS mean",            digits=4, scale=1,   group="utmos"),
 }
 _NESTED = {
     "throughput_qps",
@@ -173,6 +174,8 @@ def match_metric(name, nested):
         return "failed_requests"
     if "SIMILARITY" in name and name.endswith("_MIN"):
         return "similarity_mean"
+    if "UTMOS" in name and name.endswith("_REFERENCE"):
+        return "utmos_mean"
     if "WER_MAX_CORPUS" in name: return "corpus_wer"
     if "WER_MAX_PER_SAMPLE" in name: return "per_sample_wer_max"
     if "CORPUS_WER_MAX" in name: return "corpus_wer"
@@ -468,6 +471,25 @@ def _stage_metrics_complete(stage, metrics):
     return True
 
 
+def _stage_counts_complete(stage, sample_counts):
+    """True when configured sample counts are present and ok == total."""
+    counts_cfg = stage.get("sample_counts") or {}
+    if not counts_cfg:
+        return True
+    total_cfg = counts_cfg.get("total") or {}
+    ok_cfg = counts_cfg.get("ok") or {}
+    if not (
+        total_cfg.get("json_file")
+        and total_cfg.get("json_path")
+        and ok_cfg.get("json_file")
+        and ok_cfg.get("json_path")
+    ):
+        return True
+    total = (sample_counts or {}).get("total")
+    ok = (sample_counts or {}).get("ok")
+    return total is not None and ok is not None and ok == total
+
+
 def _observation_status(stage, metrics, pytest_status, pytest_reason):
     """Calibration treats a run as complete once metrics are extracted."""
     if not stage.get("metrics"):
@@ -508,7 +530,10 @@ def _run_json_ok(path: Path, stage=None) -> bool:
     except (json.JSONDecodeError, OSError):
         return False
     if stage is not None and stage.get("metrics"):
-        return _stage_metrics_complete(stage, data.get("metrics") or {})
+        return (
+            _stage_metrics_complete(stage, data.get("metrics") or {})
+            and _stage_counts_complete(stage, data.get("sample_counts") or {})
+        )
     return data.get("status") == "ok"
 
 
@@ -989,7 +1014,11 @@ def discover(out, only, cfg):
             print(f"  [warn] {tp.name}: no auto-inference available, "
                   f"needs metric_sources in config.yaml")
         ms = _merge_metric_sources(inferred, ms)
-        all_constants = list(_constants(tree))
+        ignored_constants = set(ms.get("ignored_constants") or [])
+        all_constants = [
+            (n, k) for (n, k) in _constants(tree)
+            if n not in ignored_constants
+        ]
         variants = ms.get("variants") or {}
         if variants:
             # Per-variant routing: each constant assigned to at most one
@@ -1021,10 +1050,15 @@ def discover(out, only, cfg):
             # Single-source flow (one result-JSON tree per test file).
             default_file = ms.get("json_file")
             cfg_paths = ms.get("paths", {}) or {}
-            sample_counts = _build_sample_counts(
+            default_sample_counts = _build_sample_counts(
                 ms.get("sample_counts") or {}, default_file)
+            sc_by_group = ms.get("sample_counts_by_group") or {}
             groups = _emit_groups(all_constants, cfg_paths, default_file, counters)
             for g, metrics in groups.items():
+                if g in sc_by_group:
+                    sample_counts = _build_sample_counts(sc_by_group[g], default_file)
+                else:
+                    sample_counts = default_sample_counts
                 key = f"{base}_{g}"
                 title = f"{base.replace('_', ' ').upper()} {g.capitalize()}"
                 stages[key] = dict(test=rel, title=title, group=g,
@@ -2047,7 +2081,7 @@ def _apply_write_value(worst_op: str, worst_raw: float | None,
         return _ceil_wer_reference(worst_raw)
     if stage_group == "reliability":
         return math.ceil(worst_raw)
-    if stage_group in ("accuracy", "similarity"):
+    if stage_group in ("accuracy", "similarity", "utmos"):
         return worst_raw
     if worst_rounded is None:
         return worst_raw

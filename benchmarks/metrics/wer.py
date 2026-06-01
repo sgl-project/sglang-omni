@@ -7,7 +7,11 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from benchmarks.metrics._format import SPEED_LABEL_WIDTH, SPEED_LINE_WIDTH
+from benchmarks.metrics._format import (
+    SPEED_LABEL_WIDTH,
+    SPEED_LINE_WIDTH,
+    print_speed_metric_line,
+)
 
 if TYPE_CHECKING:
     from benchmarks.tasks.tts import SampleOutput
@@ -32,6 +36,9 @@ def calculate_wer_metrics(outputs: list["SampleOutput"], lang: str) -> dict:
             "n_above_50_pct_wer": 0,
             "pct_above_50_pct_wer": 0.0,
             "latency_mean_s": 0.0,
+            "latency_median_s": 0.0,
+            "latency_p95_s": 0.0,
+            "rtf_mean": 0.0,
             "audio_duration_mean_s": 0.0,
         }
 
@@ -42,6 +49,12 @@ def calculate_wer_metrics(outputs: list["SampleOutput"], lang: str) -> dict:
     wer_arr = np.array([o.wer for o in successes])
     latencies = [o.latency_s for o in successes]
     audio_durations = [o.audio_duration_s for o in successes if o.audio_duration_s > 0]
+    latency_arr = np.array(latencies) if latencies else np.array([0.0])
+    rtf_values = [
+        o.latency_s / o.audio_duration_s
+        for o in successes
+        if o.audio_duration_s > 0 and o.latency_s > 0
+    ]
 
     n_above_50 = int(np.sum(wer_arr > 0.5))
     ok_samples = [o for o in successes if o.wer <= 0.5]
@@ -68,25 +81,44 @@ def calculate_wer_metrics(outputs: list["SampleOutput"], lang: str) -> dict:
         "wer_below_50_corpus": float(wer_below_50_micro),
         "n_above_50_pct_wer": n_above_50,
         "pct_above_50_pct_wer": (n_above_50 / len(successes) * 100 if successes else 0),
-        "latency_mean_s": float(np.mean(latencies)),
+        "latency_mean_s": float(np.mean(latency_arr)),
+        "latency_median_s": float(np.median(latency_arr)),
+        "latency_p95_s": float(np.percentile(latency_arr, 95)),
+        "rtf_mean": float(np.mean(rtf_values)) if rtf_values else 0.0,
         "audio_duration_mean_s": (
             float(np.mean(audio_durations)) if audio_durations else 0
         ),
     }
 
 
-def print_wer_summary(
-    metrics: dict, model_name: str, generation_mode: str | None = None
+def _metric_value(metrics: dict, *keys: str, default: float = 0.0) -> float:
+    for key in keys:
+        value = metrics.get(key)
+        if value is not None:
+            return value
+    return default
+
+
+def _print_wer_summary_table(
+    metrics: dict,
+    model_name: str,
+    *,
+    title: str,
+    model_label: str,
+    generation_mode: str | None = None,
+    tts_speed_summary: dict | None = None,
 ) -> None:
     lw = SPEED_LABEL_WIDTH
     w = SPEED_LINE_WIDTH
-    title = "TTS WER Benchmark Result"
     if generation_mode:
-        title = f"TTS WER Benchmark Result ({generation_mode})"
+        title = f"{title} ({generation_mode})"
+    wer_corpus = _metric_value(metrics, "wer_corpus", "corpus_wer")
+    wer_per_sample_mean = _metric_value(metrics, "wer_per_sample_mean")
+    wer_per_sample_max = _metric_value(metrics, "wer_per_sample_max")
     print(f"\n{'=' * w}")
     print(f"{title:^{w}}")
     print(f"{'=' * w}")
-    print(f"  {'Model:':<{lw}} {model_name}")
+    print(f"  {model_label:<{lw}} {model_name}")
     if generation_mode:
         print(f"  {'Generation mode:':<{lw}} {generation_mode}")
     print(f"  {'Language:':<{lw}} {metrics.get('lang', 'N/A')}")
@@ -98,36 +130,36 @@ def print_wer_summary(
     print(f"{'-' * w}")
     print(
         f"  {'WER (corpus, micro-avg):':<{lw}} "
-        f"{metrics.get('wer_corpus', 0):.4f} "
-        f"({metrics.get('wer_corpus', 0) * 100:.2f}%)"
+        f"{wer_corpus:.4f} "
+        f"({wer_corpus * 100:.2f}%)"
     )
     print(f"{'-' * w}")
     print(
         f"  {'WER per-sample mean:':<{lw}} "
-        f"{metrics.get('wer_per_sample_mean', 0):.4f} "
-        f"({metrics.get('wer_per_sample_mean', 0) * 100:.2f}%)"
+        f"{wer_per_sample_mean:.4f} "
+        f"({wer_per_sample_mean * 100:.2f}%)"
     )
     print(
         f"  {'WER per-sample median:':<{lw}} "
-        f"{metrics.get('wer_per_sample_median', 0):.4f}"
+        f"{_metric_value(metrics, 'wer_per_sample_median'):.4f}"
     )
     print(
         f"  {'WER per-sample std:':<{lw}} "
-        f"{metrics.get('wer_per_sample_std', 0):.4f}"
+        f"{_metric_value(metrics, 'wer_per_sample_std'):.4f}"
     )
     print(
         f"  {'WER per-sample p95:':<{lw}} "
-        f"{metrics.get('wer_per_sample_p95', 0):.4f}"
+        f"{_metric_value(metrics, 'wer_per_sample_p95'):.4f}"
     )
     print(
         f"  {'WER per-sample max:':<{lw}} "
-        f"{metrics.get('wer_per_sample_max', 0):.4f} "
-        f"({metrics.get('wer_per_sample_max', 0) * 100:.2f}%)"
+        f"{wer_per_sample_max:.4f} "
+        f"({wer_per_sample_max * 100:.2f}%)"
     )
     print(
         f"  {'WER corpus (excl >50%):':<{lw}} "
-        f"{metrics.get('wer_below_50_corpus', 0):.4f} "
-        f"({metrics.get('wer_below_50_corpus', 0) * 100:.2f}%)"
+        f"{_metric_value(metrics, 'wer_below_50_corpus'):.4f} "
+        f"({_metric_value(metrics, 'wer_below_50_corpus') * 100:.2f}%)"
     )
     print(
         f"  {'>50% WER samples:':<{lw}} "
@@ -135,15 +167,53 @@ def print_wer_summary(
         f"({metrics.get('pct_above_50_pct_wer', 0):.1f}%)"
     )
     print(f"{'-' * w}")
-    print(f"  {'Latency mean (s):':<{lw}} {metrics.get('latency_mean_s', 'N/A')}")
-    print(
-        f"  {'Audio duration mean (s):':<{lw}} "
-        f"{metrics.get('audio_duration_mean_s', 'N/A')}"
+    print_speed_metric_line(lw, "Latency mean (s):", metrics, "latency_mean_s")
+    print_speed_metric_line(lw, "Latency p95 (s):", metrics, "latency_p95_s")
+    print_speed_metric_line(lw, "RTF mean:", metrics, "rtf_mean")
+    if tts_speed_summary is not None:
+        print_speed_metric_line(
+            lw, "TTFC mean (s):", tts_speed_summary, "audio_ttfp_mean_s"
+        )
+        print_speed_metric_line(
+            lw, "Throughput (req/s):", tts_speed_summary, "throughput_qps"
+        )
+    print_speed_metric_line(
+        lw, "Audio duration mean (s):", metrics, "audio_duration_mean_s"
     )
     print(f"{'=' * w}\n")
 
 
-def calculate_asr_speed_metrics(outputs: list["SampleOutput"]) -> dict:
+def print_wer_summary(
+    metrics: dict,
+    model_name: str,
+    generation_mode: str | None = None,
+    *,
+    tts_speed_summary: dict | None = None,
+) -> None:
+    _print_wer_summary_table(
+        metrics,
+        model_name,
+        title="TTS WER Benchmark Result",
+        model_label="TTS model:",
+        generation_mode=generation_mode,
+        tts_speed_summary=tts_speed_summary,
+    )
+
+
+def print_asr_wer_summary(metrics: dict, model_name: str) -> None:
+    _print_wer_summary_table(
+        metrics,
+        model_name,
+        title="ASR WER Benchmark Result",
+        model_label="ASR model:",
+    )
+
+
+def calculate_asr_speed_metrics(
+    outputs: list["SampleOutput"],
+    *,
+    wall_time_s: float | None = None,
+) -> dict:
     """Compute speed metrics for the ASR transcription phase."""
     successes = [o for o in outputs if o.is_success and o.asr_latency_s > 0]
     if not successes:
@@ -156,6 +226,7 @@ def calculate_asr_speed_metrics(outputs: list["SampleOutput"]) -> dict:
             "asr_latency_p95_s": 0.0,
             "asr_latency_p99_s": 0.0,
             "asr_total_time_s": 0.0,
+            "asr_latency_sum_s": 0.0,
             "asr_throughput_samples_per_s": 0.0,
             "asr_rtf_mean": 0.0,
             "asr_rtf_median": 0.0,
@@ -163,7 +234,12 @@ def calculate_asr_speed_metrics(outputs: list["SampleOutput"]) -> dict:
         }
 
     latencies = np.array([o.asr_latency_s for o in successes])
-    total_asr_time = float(np.sum(latencies))
+    latency_sum_s = float(np.sum(latencies))
+    total_asr_time = (
+        float(wall_time_s)
+        if wall_time_s is not None and wall_time_s > 0
+        else latency_sum_s
+    )
 
     audio_durations = [o.audio_duration_s for o in successes if o.audio_duration_s > 0]
     rtfs = np.array(
@@ -183,6 +259,7 @@ def calculate_asr_speed_metrics(outputs: list["SampleOutput"]) -> dict:
         "asr_latency_p95_s": float(np.percentile(latencies, 95)),
         "asr_latency_p99_s": float(np.percentile(latencies, 99)),
         "asr_total_time_s": total_asr_time,
+        "asr_latency_sum_s": latency_sum_s,
         "asr_throughput_samples_per_s": (
             float(len(successes) / total_asr_time) if total_asr_time > 0 else 0.0
         ),
@@ -201,11 +278,13 @@ def print_asr_speed_summary(metrics: dict, model_name: str) -> None:
     print(f"\n{'=' * w}")
     print(f"{'ASR Speed Benchmark Result':^{w}}")
     print(f"{'=' * w}")
-    print(f"  {'Model:':<{lw}} {model_name}")
+    print(f"  {'ASR model:':<{lw}} {model_name}")
     print(
         f"  {'Evaluated / Total:':<{lw}} "
         f"{metrics.get('evaluated', 0)}/{metrics.get('total_samples', 0)}"
     )
+    if metrics.get("asr_concurrency"):
+        print(f"  {'ASR concurrency:':<{lw}} {metrics['asr_concurrency']}")
     print(f"  {'Skipped:':<{lw}} {metrics.get('skipped', 0)}")
     print(f"{'-' * w}")
     print(
@@ -226,9 +305,18 @@ def print_asr_speed_summary(metrics: dict, model_name: str) -> None:
     )
     print(f"  {'ASR RTF mean:':<{lw}} {metrics.get('asr_rtf_mean', 'N/A')}")
     print(f"  {'ASR RTF median:':<{lw}} {metrics.get('asr_rtf_median', 'N/A')}")
+    if metrics.get("asr_rtf_p95") is not None:
+        print(f"  {'ASR RTF p95:':<{lw}} {metrics['asr_rtf_p95']}")
     print(
         f"  {'ASR total time (s):':<{lw}} " f"{metrics.get('asr_total_time_s', 'N/A')}"
     )
+    if metrics.get("asr_latency_sum_s") and (
+        metrics.get("asr_latency_sum_s") != metrics.get("asr_total_time_s")
+    ):
+        print(
+            f"  {'ASR latency sum (s):':<{lw}} "
+            f"{metrics.get('asr_latency_sum_s', 'N/A')}"
+        )
     print(
         f"  {'ASR throughput (samples/s):':<{lw}} "
         f"{metrics.get('asr_throughput_samples_per_s', 'N/A')}"

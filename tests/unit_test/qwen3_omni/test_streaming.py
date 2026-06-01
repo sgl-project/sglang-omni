@@ -69,7 +69,7 @@ def _make_payload(stream: bool) -> StagePayload:
         request_id="req-1",
         request=OmniRequest(inputs=[], params={"stream": stream}),
         data={
-            # Minimal PipelineState dict shape (decode_events will produce []).
+            # Minimal Qwen3OmniPipelineState dict shape (decode_events will produce []).
             "engine_outputs": {
                 "thinker": {
                     "output_ids": [],
@@ -816,7 +816,7 @@ def test_scheduler_isolates_per_request_chunk_failure():
 
 
 def test_scheduler_isolates_per_request_finalize_failure():
-    """An exception inside ``_finalize`` (e.g., via PipelineState.from_dict
+    """An exception inside ``_finalize`` (e.g., via Qwen3OmniPipelineState.from_dict
     on a malformed payload) must isolate to that request without taking
     down the scheduler thread.
     """

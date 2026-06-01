@@ -22,7 +22,7 @@ from sglang_omni.models.qwen3_omni.components.preprocessor import Qwen3OmniPrepr
 from sglang_omni.models.qwen3_omni.components.streaming_detokenizer import (
     create_streaming_detokenize_scheduler,
 )
-from sglang_omni.models.qwen3_omni.payload_types import PipelineState
+from sglang_omni.models.qwen3_omni.payload_types import Qwen3OmniPipelineState
 from sglang_omni.models.qwen3_omni.request_builders import (
     apply_encoder_result,
     build_encoder_request,
@@ -148,11 +148,11 @@ def _apply_colocated_encoder_mem_reserve(
     return round(effective_total_gpu_memory_fraction, 3)
 
 
-def load_state(payload: StagePayload) -> PipelineState:
-    return PipelineState.from_dict(payload.data)
+def load_state(payload: StagePayload) -> Qwen3OmniPipelineState:
+    return Qwen3OmniPipelineState.from_dict(payload.data)
 
 
-def store_state(payload: StagePayload, state: PipelineState) -> StagePayload:
+def store_state(payload: StagePayload, state: Qwen3OmniPipelineState) -> StagePayload:
     payload.data = state.to_dict()
     return payload
 

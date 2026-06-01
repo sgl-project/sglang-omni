@@ -28,8 +28,11 @@ from sglang_omni.pipeline.runtime_config import (
     build_relay_config,
     prepare_pipeline_runtime,
 )
-from sglang_omni.pipeline.stage_group import StageGroup
-from sglang_omni.pipeline.stage_process import StageProcessSpec, StageWorkerProcessSpec
+from sglang_omni.pipeline.stage_workers import (
+    StageGroup,
+    StageLaunchConfig,
+    StageWorkerProcessSpec,
+)
 from sglang_omni.utils.imports import import_string
 
 logger = logging.getLogger(__name__)
@@ -62,7 +65,7 @@ def _build_stage_groups(
 
     nccl_port_counter = _NcclPortAllocator()
 
-    single_stage_specs: dict[str, StageProcessSpec] = {}
+    single_stage_specs: dict[str, StageLaunchConfig] = {}
     tp_groups: list[StageGroup] = []
     for stage_cfg in stages_cfg:
         tp_size = stage_cfg.tp_size
@@ -200,12 +203,12 @@ def _build_single_stage_spec(
     recv_endpoint: str,
     base_factory_args: dict[str, Any],
     stage_kwargs: dict[str, Any],
-) -> StageProcessSpec:
+) -> StageLaunchConfig:
     factory_args = dict(base_factory_args)
     if "gpu_id" in base_factory_args:
         factory_args["gpu_id"] = gpu_id
     relay_config = _resolve_relay_config(stage_cfg, config, gpu_id=gpu_id)
-    return StageProcessSpec(
+    return StageLaunchConfig(
         role="single",
         tp_rank=0,
         tp_size=1,
@@ -228,10 +231,10 @@ def _build_tp_stage_specs(
     recv_endpoint: str,
     base_factory_args: dict[str, Any],
     stage_kwargs: dict[str, Any],
-) -> list[StageProcessSpec]:
+) -> list[StageLaunchConfig]:
     follower_work_queues = [ctx.Queue() for _ in range(stage_cfg.tp_size - 1)]
     follower_abort_queues = [ctx.Queue() for _ in range(stage_cfg.tp_size - 1)]
-    specs: list[StageProcessSpec] = []
+    specs: list[StageLaunchConfig] = []
 
     for tp_rank in range(stage_cfg.tp_size):
         gpu_id = gpu_ids[tp_rank] if tp_rank < len(gpu_ids) else gpu_ids[0]
@@ -248,7 +251,7 @@ def _build_tp_stage_specs(
 
         if tp_rank == 0:
             specs.append(
-                StageProcessSpec(
+                StageLaunchConfig(
                     role="leader",
                     tp_rank=tp_rank,
                     tp_size=stage_cfg.tp_size,
@@ -266,7 +269,7 @@ def _build_tp_stage_specs(
 
         idx = tp_rank - 1
         specs.append(
-            StageProcessSpec(
+            StageLaunchConfig(
                 role="follower",
                 tp_rank=tp_rank,
                 tp_size=stage_cfg.tp_size,

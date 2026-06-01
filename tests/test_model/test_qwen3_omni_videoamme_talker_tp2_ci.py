@@ -21,8 +21,6 @@ from pathlib import Path
 
 import pytest
 
-pytest_plugins = ["tests.test_model.omni_whisper_wer_utils"]
-
 from benchmarks.dataset.prepare import DATASETS
 from benchmarks.eval.benchmark_omni_videoamme import run_videoamme_eval
 from benchmarks.eval.benchmark_omni_videomme import VideoEvalConfig
@@ -32,6 +30,7 @@ from benchmarks.metrics.wer import print_wer_summary
 from benchmarks.tasks.tts import compute_text_audio_consistency_from_records
 from tests.test_model.omni_router_utils import ManagedRouterHandle
 from tests.utils import (
+    QWEN3_ASR_WER_CONCURRENCY,
     MetricCheckCollector,
     ServerHandle,
     apply_slack,
@@ -43,7 +42,7 @@ from tests.utils import (
     wait_for_gpu_memory_release,
 )
 
-CONCURRENCY = 8
+CONCURRENCY = 16
 MAX_SAMPLES = 10
 MAX_TOKENS = 256
 ASR_DEVICE = "cuda:0"
@@ -56,7 +55,7 @@ VIDEOAMME_TALKER_TP2_WER_BELOW_50_CORPUS_THRESHOLD = apply_wer_slack(
 VIDEOAMME_TALKER_TP2_N_ABOVE_50_MAX = 1
 
 _VIDEOAMME_TALKER_TP2_AUDIO_P95 = {
-    8: {
+    16: {
         "throughput_qps": 0.052,
         "output_tok_per_req_s": 0.3,
         "latency_mean_s": 130.381,
@@ -125,6 +124,7 @@ def talker_eval_artifacts(
         video_max_pixels=401408,
         enable_audio=True,
         asr_device=ASR_DEVICE,
+        asr_concurrency=QWEN3_ASR_WER_CONCURRENCY,
         disable_tqdm=False,
         timeout_s=500,
     )
@@ -198,7 +198,7 @@ def test_videoamme_talker_tp2_accuracy_and_speed(
 @pytest.mark.benchmark
 def test_videoamme_talker_tp2_wer(
     wer_eval_artifacts: _TalkerEvalArtifacts,
-    omni_whisper_wer_router: ManagedRouterHandle,
+    qwen3_asr_wer_router: ManagedRouterHandle,
 ) -> None:
     """Transcribe saved talker audio after the inference server is stopped."""
     wer = compute_text_audio_consistency_from_records(
@@ -206,7 +206,8 @@ def test_videoamme_talker_tp2_wer(
         wer_eval_artifacts.lang,
         ASR_DEVICE,
         audio_dir=wer_eval_artifacts.audio_dir,
-        whisper_router_port=omni_whisper_wer_router.port,
+        asr_router_port=qwen3_asr_wer_router.port,
+        asr_concurrency=QWEN3_ASR_WER_CONCURRENCY,
     )
     print_wer_summary(wer["summary"], "qwen3-omni")
     persist_wer_in_benchmark_results(

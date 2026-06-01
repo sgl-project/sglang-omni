@@ -20,7 +20,10 @@ from typing import Any
 from transformers import AutoTokenizer
 
 from sglang_omni.models.qwen3_omni.merge import decode_events
-from sglang_omni.models.qwen3_omni.payload_types import OmniEvent, PipelineState
+from sglang_omni.models.qwen3_omni.payload_types import (
+    Qwen3OmniEvent,
+    Qwen3OmniPipelineState,
+)
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.messages import IncomingMessage, OutgoingMessage
 
@@ -34,7 +37,7 @@ _DONE_SEEN_MAX = 10000
 _DONE_SEEN_EVICT_TO = 5000
 
 
-def _event_to_dict(event: OmniEvent) -> dict[str, Any]:
+def _event_to_dict(event: Qwen3OmniEvent) -> dict[str, Any]:
     return {
         "type": event.type,
         "modality": event.modality,
@@ -78,7 +81,7 @@ class StreamingDetokenizeScheduler:
                 continue
 
             # Per-request failure isolation: a malformed payload, tokenizer
-            # edge case, or PipelineState/decode_events bug must fail only
+            # edge case, or Qwen3OmniPipelineState/decode_events bug must fail only
             # the offending request — letting the exception escape `start()`
             # trips `Stage._handle_scheduler_crash`, which fails every
             # active request on the decode stage. Mirrors the
@@ -214,7 +217,7 @@ class StreamingDetokenizeScheduler:
     def _build_result(
         self, payload: StagePayload, *, is_streaming: bool = False
     ) -> dict[str, Any]:
-        state = PipelineState.from_dict(payload.data)
+        state = Qwen3OmniPipelineState.from_dict(payload.data)
         thinker_out = state.thinker_out or state.engine_outputs.get(THINKER_STAGE)
         if not isinstance(thinker_out, dict):
             thinker_out = {

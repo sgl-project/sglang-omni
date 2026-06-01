@@ -30,13 +30,13 @@ def test_build_text_usage_counts_tensor_prompt_and_output_ids() -> None:
 
 
 def test_build_text_usage_counts_attribute_prompt_input_ids() -> None:
-    from sglang_omni.models.ming_omni.io import PipelineState
+    from sglang_omni.models.ming_omni.io import MingOmniPipelineState
     from sglang_omni.models.ming_omni.pipeline.usage import build_text_usage
 
     class PromptObject:
         input_ids = _TensorLike(11)
 
-    state = PipelineState(
+    state = MingOmniPipelineState(
         prompt=PromptObject(),  # type: ignore[arg-type]
         thinker_out={"output_ids": [101, 102, 103]},
     )

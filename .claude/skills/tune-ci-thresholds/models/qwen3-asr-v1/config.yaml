@@ -1,9 +1,10 @@
-# Whisper ASR CI threshold calibration (shared omni venv).
-name: whisper-asr-v1
-description: "Whisper large-v3 ASR via SGLang Omni"
-hf_model_id: "openai/whisper-large-v3"
+# Qwen3-ASR CI threshold calibration (shared omni venv).
+# Concurrency: Qwen3-ASR router/transcribe fan-out uses 32 at DP=2.
+name: qwen3-asr-v1
+description: "Qwen3-ASR via SGLang Omni"
+hf_model_id: "Qwen/Qwen3-ASR-1.7B"
 hf_datasets:
-  - "zhaochenyang20/seed-tts-eval-50-arrow"
+  - "zhaochenyang20/seed-tts-eval-arrow"
 omni_ci_home: "/github/home/calibration"
 default_venv_python:
   - "/sgl-workspace/sglang-omni/omni/bin/python"
@@ -23,16 +24,16 @@ auto_env:
   FLASHINFER_DISABLE_VERSION_CHECK: "1"
   SEEDTTS_SIM_CACHE_DIR: "/github/home/seedtts-wavlm-sim"
 gpus_per_test:
-  test_whisper_asr_ci.py: 2
+  test_qwen3_asr_ci.py: 2
 test_globs:
-  - "tests/test_model/test_whisper_asr_ci.py"
+  - "tests/test_model/test_qwen3_asr_ci.py"
 extra_env: {}
 pytest_extra_args: {}
 stage_base_strip_prefix: "test_"
 stage_base_strip_suffix: "_ci"
 metric_sources:
-  test_whisper_asr_ci.py:
-    json_file: "whisper_asr_results.json"
+  test_qwen3_asr_ci.py:
+    json_file: "qwen3_asr_results.json"
     sample_counts:
       total: "summary.total_samples"
       ok: "summary.evaluated"

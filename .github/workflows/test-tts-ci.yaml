@@ -9,18 +9,19 @@ env:
         && format('/github/home/pr-{0}', github.event.pull_request.number)
         || format('/github/home/run-{0}', github.run_id) }}
   TTS_MODEL_PATH: boson-sglang/higgs-audio-v3-TTS-4B-grpo05200410999
+  QWEN3_ASR_MODEL_PATH: Qwen/Qwen3-ASR-1.7B
 
 # Invoked by omni-ci.yaml after shared setup (first benchmark suite in the
 # omni-ci sequence: TTS → Qwen3-Omni → PR Test). Restores omni only.
 # DAG:
-#   stage-1-whisper-asr          (independent)
+#   stage-1-qwen3-asr            (independent)
 #   stage-2-non-streaming ──┐
 #   stage-3-streaming ──────┤
 #                           └──► stage-4-consistency
 
 jobs:
-  stage-1-whisper-asr:
-    name: stage 1 - whisper ASR correctness
+  stage-1-qwen3-asr:
+    name: stage 1 - Qwen3-ASR correctness
     runs-on: [self-hosted]
     timeout-minutes: 30
     container:
@@ -38,24 +39,27 @@ jobs:
         with:
           venv-name: omni
 
-      - name: Run Whisper ASR correctness
+      - name: Run Qwen3-ASR correctness
         shell: bash
         run: |
           source omni/bin/activate
           export PYTHONPATH=$PWD
           bash .github/scripts/run_flaky_pytest.sh \
-            pytest tests/test_model/test_whisper_asr_ci.py -v -s -x
+            pytest tests/test_model/test_qwen3_asr_ci.py -v -s -x
         env:
           HF_ENDPOINT: https://hf-mirror.com
           HF_HUB_DISABLE_XET: "1"
+          HF_HUB_ENABLE_HF_TRANSFER: "0"
           HF_TOKEN: ${{ secrets.BOSON_HF_TOKEN }}
+          QWEN3_ASR_CI_CONCURRENCY: "2"
+          QWEN3_ASR_MODEL_PATH: ${{ env.QWEN3_ASR_MODEL_PATH }}
           TORCHINDUCTOR_CACHE_DIR: ${{ env.OMNI_CI_HOME }}/.torchinductor
 
       - name: Post-stage cleanup
         if: always()
         uses: ./.github/actions/omni-post-stage
         with:
-          stage-label: TTS stage 1 (Whisper ASR correctness)
+          stage-label: TTS stage 1 (Qwen3-ASR correctness)
 
   stage-2-non-streaming:
     name: stage 2 - non-streaming
