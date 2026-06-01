@@ -159,6 +159,7 @@ from benchmarks.tasks.tts import (
     build_base_url,
     run_seedtts_similarity,
     run_seedtts_transcribe,
+    run_seedtts_utmos,
     save_generated_audio_metadata,
     save_speed_results,
 )
@@ -568,6 +569,11 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Only run speaker similarity on existing output-dir.",
     )
+    mode.add_argument(
+        "--utmos-only",
+        action="store_true",
+        help="Only run UTMOS MOS scoring on existing output-dir.",
+    )
     return parser
 
 
@@ -581,6 +587,10 @@ def main() -> None:
 
     if args.similarity_only:
         run_seedtts_similarity(config, log_per_sample=True)
+        return
+
+    if args.utmos_only:
+        run_seedtts_utmos(config, log_per_sample=True)
         return
 
     if args.transcribe_only:

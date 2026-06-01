@@ -59,7 +59,9 @@ tests/
     ├── qwen3_tts/
     │   └── test_pipeline.py
     ├── higgs_tts/
+    │   ├── test_async_decode_runner.py
     │   ├── test_batched_step.py
+    │   ├── test_cli_async_decode.py
     │   ├── test_pipeline.py
     │   └── test_request_builders.py
     ├── router/
@@ -169,6 +171,9 @@ Relevant model CI ownership:
   the transformers `chunk_length_s=30` behavior.
 - CI env alignment on the H20 repro host: `source .github/scripts/ci_env.sh`
   then `source omni/bin/activate`.
+  Omni CI (`omni-ci.yaml`) runs benchmark suites sequentially after one shared
+  setup: TTS CI → Qwen3-Omni CI → PR Test (`test.yaml` unit tests). A failure in
+  an earlier suite does not skip later ones; only a failed setup blocks the chain.
   Full WER sweep: `.github/scripts/run_all_wer_ci_aligned.sh` (milestones on
   stdout; details in `/tmp/wer_ci_qwen3.log` and `/tmp/wer_ci_tts.log`).
 - GPU handoff between stages: `.github/scripts/ensure_gpus_idle.sh` (kills orphan
@@ -302,7 +307,9 @@ that happened to contain an older version of the test.
   - OmniScheduler-backed AR stage factory wiring
   - sampler-driven finish handling for eager and CUDA-graph paths
   - request builder sampling normalization and server-side token caps
-  - model slot cleanup and engine timing in scheduler result adapters.
+  - model slot cleanup and engine timing in scheduler result adapters
+  - async-decode one-step-lookahead parity with the synchronous collect path
+  - async-decode default-on config + `--async-decode` tri-state CLI override.
 
 - `unit_test/router/`: SGLang-Omni Router unit tests:
   - router CLI/config behavior

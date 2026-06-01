@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 import aiohttp
+import numpy as np
 import requests
 import soundfile as sf
 import torch
@@ -56,6 +57,7 @@ logger = logging.getLogger(__name__)
 
 TEXT_PREVIEW_LENGTH = 60
 SPEAKER_SIMILARITY_BATCH_SIZE = 8
+UTMOS_BATCH_SIZE = 8
 
 
 # ---------------------------------------------------------------------------
@@ -641,6 +643,138 @@ def run_seedtts_similarity(
         },
         config.output_dir,
         "similarity_results.json",
+    )
+    return {"summary": metrics, "per_sample": per_sample}
+
+
+class SeedttsUTMOSConfig(Protocol):
+    """Subset of config fields the shared UTMOS pipeline reads."""
+
+    model: str
+    output_dir: str
+    device: str
+
+
+def run_seedtts_utmos(
+    config: SeedttsUTMOSConfig,
+    *,
+    log_per_sample: bool = False,
+) -> dict:
+    """Compute UTMOS MOS scores for saved SeedTTS generated audio."""
+    from benchmarks.metrics.utmos import UTMOSScorer
+
+    output_dir = os.path.abspath(config.output_dir)
+    generated_path = os.path.join(output_dir, "generated.json")
+    with open(generated_path) as f:
+        generated: list[dict] = json.load(f)
+    logger.info(f"Loaded {len(generated)} entries from {generated_path}")
+
+    per_sample: list[dict | None] = [None] * len(generated)
+    scoreable: list[dict] = []
+
+    for idx, entry in enumerate(generated):
+        sample_id = entry.get("sample_id")
+        wav_path = entry.get("wav_path")
+        if (
+            isinstance(sample_id, str)
+            and sample_id
+            and entry.get("is_success")
+            and isinstance(wav_path, str)
+            and wav_path
+            and os.path.isfile(wav_path)
+        ):
+            scoreable.append({**entry, "_idx": idx})
+            continue
+
+        if not isinstance(sample_id, str) or not sample_id:
+            reason = "sample_id missing from generated.json entry"
+        elif not entry.get("is_success"):
+            reason = entry.get("error") or "generation reported is_success=False"
+        elif not (isinstance(wav_path, str) and wav_path):
+            reason = "wav_path missing from generated.json entry"
+        else:
+            reason = f"wav file not on disk: {wav_path}"
+
+        per_sample[idx] = {
+            "id": sample_id or wav_path,
+            "wav_path": wav_path,
+            "utmos_score": None,
+            "is_success": False,
+            "error": reason,
+        }
+
+    if not scoreable:
+        raise RuntimeError(
+            "UTMOS: no scoreable samples "
+            f"({sum(1 for r in per_sample if r is not None)}/{len(generated)} skipped). "
+            "Refusing to write empty utmos_results.json."
+        )
+
+    device = config.device
+    if "cuda" in device:
+        torch.cuda.set_device(device)
+        logger.info(f"Set UTMOS CUDA device to {device}")
+
+    scorer = UTMOSScorer(device=device)
+    scores: list[float] = []
+
+    for start in tqdm(
+        range(0, len(scoreable), UTMOS_BATCH_SIZE),
+        desc="UTMOS scoring",
+    ):
+        batch = scoreable[start : start + UTMOS_BATCH_SIZE]
+        wav_paths = [entry["wav_path"] for entry in batch]
+        batch_scores = scorer.score_batch(wav_paths)
+        if len(batch_scores) != len(batch):
+            raise RuntimeError(
+                f"UTMOS scorer returned {len(batch_scores)} scores for {len(batch)} inputs"
+            )
+
+        for entry, score in zip(batch, batch_scores):
+            scores.append(score)
+            per_sample[entry["_idx"]] = {
+                "id": entry["sample_id"],
+                "wav_path": entry["wav_path"],
+                "utmos_score": round(score, 4),
+                "is_success": True,
+                "error": None,
+            }
+            if log_per_sample:
+                logger.info(f"[{entry['sample_id']}] utmos={score:.3f}")
+
+    n_skipped = sum(1 for r in per_sample if r is None or not r["is_success"])
+    n_scored = len(scores)
+
+    metrics = {
+        "utmos_mean": round(float(np.mean(scores)), 4),
+        "utmos_median": round(float(np.median(scores)), 4),
+        "utmos_p5": round(float(np.percentile(scores, 5)), 4),
+        "utmos_p95": round(float(np.percentile(scores, 95)), 4),
+        "total_samples": len(generated),
+        "evaluated": n_scored,
+        "skipped": n_skipped,
+    }
+    print(
+        f"UTMOS: mean={metrics['utmos_mean']:.4f} "
+        f"({n_scored}/{len(generated)} evaluated, {n_skipped} skipped)"
+    )
+    if n_skipped:
+        logger.warning(
+            "UTMOS: %d samples skipped (see per_sample for details).",
+            n_skipped,
+        )
+
+    save_json_results(
+        {
+            "summary": metrics,
+            "config": {
+                "model": config.model,
+                "device": device,
+            },
+            "per_sample": per_sample,
+        },
+        config.output_dir,
+        "utmos_results.json",
     )
     return {"summary": metrics, "per_sample": per_sample}
 

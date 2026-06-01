@@ -11,6 +11,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from playground.http_utils import register_playground_favicon
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -158,10 +160,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+FRONTEND_DIR = Path(__file__).parent / "frontend"
+register_playground_favicon(app, frontend_dir=FRONTEND_DIR)
 _register_filesystem(app)
 _register_home(app)
-
-FRONTEND_DIR = Path(__file__).parent / "frontend"
 assert FRONTEND_DIR.is_dir(), "Frontend directory does not exist"
 app.mount("/", StaticFiles(directory=str(FRONTEND_DIR), html=True))
 logger.info("Serving playground UI from %s", FRONTEND_DIR)

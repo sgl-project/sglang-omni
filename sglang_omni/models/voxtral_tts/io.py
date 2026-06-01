@@ -5,7 +5,42 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+import numpy as np
 import torch
+
+
+def _encode_audio_codes(codes: Any) -> dict[str, Any]:
+    if isinstance(codes, torch.Tensor):
+        codes = codes.detach().cpu().numpy()
+    array = np.asarray(codes)
+    if array.size == 0:
+        array = array.astype(np.uint16, copy=False)
+    elif int(array.min()) >= 0 and int(array.max()) <= np.iinfo(np.uint16).max:
+        array = array.astype(np.uint16, copy=False)
+    else:
+        array = array.astype(np.int32, copy=False)
+    contiguous = np.ascontiguousarray(array)
+    return {
+        "audio_codes_bytes": contiguous.tobytes(),
+        "audio_codes_shape": list(contiguous.shape),
+        "audio_codes_dtype": str(contiguous.dtype),
+    }
+
+
+def _decode_audio_codes(data: dict[str, Any]) -> Any | None:
+    legacy = data.get("audio_codes")
+    if legacy is not None:
+        if isinstance(legacy, list):
+            return torch.tensor(legacy)
+        return legacy
+
+    raw = data.get("audio_codes_bytes")
+    shape = data.get("audio_codes_shape")
+    if raw is None or shape is None:
+        return None
+    dtype = np.dtype(data.get("audio_codes_dtype", "uint16"))
+    array = np.frombuffer(raw, dtype=dtype).reshape(shape).astype(np.int64)
+    return torch.from_numpy(array)
 
 
 @dataclass
@@ -40,7 +75,7 @@ class VoxtralTTSState:
             data["voice"] = self.voice
         data["max_new_tokens"] = self.max_new_tokens
         if self.audio_codes is not None:
-            data["audio_codes"] = self._tensor_to_list(self.audio_codes)
+            data.update(_encode_audio_codes(self.audio_codes))
         if self.prompt_tokens:
             data["prompt_tokens"] = self.prompt_tokens
         if self.completion_tokens:
@@ -52,14 +87,11 @@ class VoxtralTTSState:
 
     @classmethod
     def from_dict(cls, data: dict) -> VoxtralTTSState:
-        audio_codes = data.get("audio_codes")
-        if audio_codes is not None and isinstance(audio_codes, list):
-            audio_codes = torch.tensor(audio_codes)
         return cls(
             input_ids=data.get("input_ids"),
             voice=data.get("voice"),
             max_new_tokens=data.get("max_new_tokens", 4096),
-            audio_codes=audio_codes,
+            audio_codes=_decode_audio_codes(data),
             prompt_tokens=data.get("prompt_tokens", 0),
             completion_tokens=data.get("completion_tokens", 0),
             audio_samples=data.get("audio_samples"),

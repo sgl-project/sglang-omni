@@ -1,6 +1,31 @@
 from __future__ import annotations
 
+from typing import Any
+
 from transformers import PretrainedConfig
+
+_MROPE_ROPE_SCALING_KEYS = frozenset(
+    {"interleaved", "mrope_interleaved", "mrope_section"}
+)
+
+
+def _normalize_rope_scaling(
+    rope_scaling: dict[str, Any] | None
+) -> dict[str, Any] | None:
+    if rope_scaling is None:
+        return None
+
+    normalized = dict(rope_scaling)
+    if "type" in normalized and "rope_type" not in normalized:
+        normalized["rope_type"] = normalized["type"]
+
+    if _MROPE_ROPE_SCALING_KEYS.intersection(normalized.keys()):
+        rope_type = normalized.get("rope_type", normalized.get("type", "default"))
+        if rope_type == "default":
+            normalized["rope_type"] = "mrope"
+            if "type" in normalized:
+                normalized["type"] = "mrope"
+    return normalized
 
 
 class Qwen3OmniMoeAudioEncoderConfig(PretrainedConfig):
@@ -140,15 +165,11 @@ class Qwen3OmniMoeTextConfig(PretrainedConfig):
         self.rms_norm_eps = rms_norm_eps
         self.use_cache = use_cache
         self.rope_theta = rope_theta
-        self.rope_scaling = rope_scaling
+        self.rope_scaling = _normalize_rope_scaling(rope_scaling)
         self.partial_rotary_factor = partial_rotary_factor
         self.attention_bias = attention_bias
         self.attention_dropout = attention_dropout
         self.dual_chunk_attention_config = dual_chunk_attention_config
-        # Validate the correctness of rotary position embeddings parameters
-        # BC: if there is a 'type' field, move it to 'rope_type'.
-        if self.rope_scaling is not None and "type" in self.rope_scaling:
-            self.rope_scaling["rope_type"] = self.rope_scaling["type"]
 
         # MoE arguments
         self.decoder_sparse_step = decoder_sparse_step
@@ -327,12 +348,10 @@ class Qwen3OmniMoeTalkerCodePredictorConfig(PretrainedConfig):
         self.rms_norm_eps = rms_norm_eps
         self.use_cache = use_cache
         self.rope_theta = rope_theta
-        self.rope_scaling = rope_scaling
+        self.rope_scaling = _normalize_rope_scaling(rope_scaling)
         self.attention_bias = attention_bias
         self.sliding_window = sliding_window
         self.attention_dropout = attention_dropout
-        if self.rope_scaling is not None and "type" in self.rope_scaling:
-            self.rope_scaling["rope_type"] = self.rope_scaling["type"]
         self.num_code_groups = num_code_groups
 
 

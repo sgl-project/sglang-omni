@@ -1,101 +1,97 @@
 # Playground
 
-This directory contains multiple playground interfaces for SGLang-Omni.
+Browser playgrounds for the three models served by SGLang-Omni.
 
-| Subdirectory | Description |
-|---|---|
-| `web/` | Full-featured HTML/CSS/JS UI served directly by the sglang-omni server. Supports text, audio, image, video inputs and a built-in file browser. |
-| `gradio/` | Lightweight Gradio app that connects to a running server via HTTP. Text chat with streaming, model selector, and generation parameter controls. |
-| `tts/` | S2 Pro TTS Gradio app with shared controls for voice cloning plus separate streaming and non-streaming playback modes. |
+| Subdirectory | Model | UI |
+|---|---|---|
+| `qwen-omni/` | Qwen3-Omni — multimodal chat (text / audio / image / video). | HTML / CSS / JS |
+| `s2pro/` | S2 Pro — text-to-speech with voice cloning, streaming and non-streaming. | Gradio |
+| `higgs/` | Higgs Audio v3 — multilingual TTS with inline control tokens (emotion / style / sfx / prosody) and streaming. | HTML / CSS / JS |
 
-## Web Playground
+Each `start.sh` launches the backend, waits for `/health`, then launches the
+playground UI in the foreground. `Ctrl-C` stops both. The raw `sgl-omni serve`
+command is shown alongside in case you want to run the backend yourself (for
+example, on a separate host) and point the UI at it.
 
-The web playground is embedded in the backend — a single process serves both the API and the UI.
+## Qwen3-Omni
 
 ```bash
-uv pip install -v -e .
-./playground/web/start.sh \
+# One command: backend + UI
+./playground/qwen-omni/start.sh \
   --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct
 ```
 
-Then open `http://localhost:8000` in your browser.
-
-### Custom port
-
 ```bash
-./playground/web/start.sh \
+# Or run the backend yourself
+sgl-omni serve \
   --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct \
-  --port 8080
+  --port 8000
+
+# …then the UI separately (point it at the backend via env var)
+SGLANG_OMNI_API_BASE=http://localhost:8000 \
+  python playground/qwen-omni/app.py --port 7860
 ```
 
-## Gradio Playground
+Open <http://localhost:7860> — backend at <http://localhost:8000>.
 
-### Install
+Override ports with `--port` (backend) and `--playground-port` (UI).
+
+## S2 Pro TTS
 
 ```bash
-pip install sglang-omni
+# One command: backend + UI
+./playground/s2pro/start.sh \
+  --model-path fishaudio/s2-pro
 ```
-
-### Launch (one command)
-
-`start.sh` launches the backend server, waits for it to become healthy, then starts the Gradio UI:
 
 ```bash
-./playground/gradio/start.sh \
-  --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct
+# Or run the backend yourself
+sgl-omni serve \
+  --model-path fishaudio/s2-pro \
+  --config examples/configs/s2pro_tts.yaml \
+  --port 8000
+
+# …then the UI separately
+python -m playground.s2pro.app --api-base http://localhost:8000 --port 7899
 ```
 
-Backend runs on `http://localhost:8000`, Gradio UI on `http://localhost:7860`. Use `--port` / `--gradio-port` to change, `--share` for a public link.
+Open <http://localhost:7899>. Two tabs: `Non-Streaming` (final WAV after
+generation) and `Streaming` (incremental playback from
+`/v1/audio/speech` SSE chunks).
 
-### Connect to an existing server
+Override ports with `--port` (backend) and `--gradio-port` (UI).
 
-If you already have a server running, use `app.py` directly:
+## Higgs Audio v3 TTS
 
 ```bash
-python playground/gradio/app.py --api-base http://localhost:8000
+# One command: backend + UI
+./playground/higgs/start.sh \
+  --model-path boson-sglang/higgs-audio-v3-TTS-4B-grpo05200410999
 ```
-
-## TTS Playground
-
-### Install
 
 ```bash
-pip install "sglang-omni[s2pro]"
+# Or run the backend yourself
+sgl-omni serve \
+  --model-path boson-sglang/higgs-audio-v3-TTS-4B-grpo05200410999 \
+  --port 8000
+
+# …then the UI separately
+python -m playground.higgs.app --api-base http://localhost:8000 --port 7860
 ```
 
-### Launch
+Open <http://localhost:7860>. Features:
 
-```bash
-./playground/tts/start.sh --model-path fishaudio/s2-pro
-```
+- Non-streaming and streaming tabs (incremental playback from SSE chunks).
+- Reference audio from **microphone recording**, file upload, or URL for voice cloning.
+- Inline control-token picker (clickable chips for emotion / style / sfx /
+  prosody) that inserts `<|category:name|>` tokens at the cursor.
 
-The TTS playground starts the S2 Pro backend and exposes two tabs:
+Override ports with `--port` (backend) and `--playground-port` (UI).
 
-- `Non-Streaming` for final-audio latency measurement
-- `Streaming` for incremental playback from `/v1/audio/speech` SSE chunks
-
-### Connect to an existing server
-
-```bash
-python -m playground.tts.app --api-base http://localhost:8000
-```
-
-## SSH tunnel (for remote servers / Docker)
+## SSH tunnel (remote servers / Docker)
 
 From your local machine:
 
 ```bash
 ssh -L 8000:localhost:8000 -L 7860:localhost:7860 user@host
 ```
-
-## Architecture
-
-| Endpoint | Description |
-|----------|-------------|
-| `/` | Web playground UI (index.html, app.js, styles.css) |
-| `/v1/chat/completions` | Chat completions (text + audio, streaming) |
-| `/v1/audio/speech` | Text-to-speech |
-| `/v1/models` | List available models |
-| `/v1/fs/list` | Browse server filesystem |
-| `/v1/fs/file` | Download a server file |
-| `/health` | Health check |

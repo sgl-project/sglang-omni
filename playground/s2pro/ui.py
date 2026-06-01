@@ -10,14 +10,14 @@ from typing import Any
 
 import gradio as gr
 
-from playground.tts.api_client import SpeechDemoClient, SpeechDemoClientError
-from playground.tts.artifacts import ArtifactStore
-from playground.tts.audio_stream import (
+from playground.s2pro.api_client import SpeechDemoClient, SpeechDemoClientError
+from playground.s2pro.artifacts import ArtifactStore
+from playground.s2pro.audio_stream import (
     BufferedWavChunkEmitter,
     WavChunkAccumulator,
     wav_duration_seconds,
 )
-from playground.tts.models import GenerationSettings, SpeechSynthesisRequest
+from playground.s2pro.models import GenerationSettings, SpeechSynthesisRequest
 
 _ARTIFACT_STORE = ArtifactStore()
 _LIVE_AUDIO_MIN_CHUNK_DURATION_S = 1.0
@@ -26,6 +26,30 @@ _SYNTH_IDLE_LABEL = "Synthesize"
 _SYNTH_BUSY_LABEL = "Synthesizing..."
 _STREAM_IDLE_LABEL = "Start Streaming"
 _STREAM_BUSY_LABEL = "Streaming..."
+
+# History chatbot: native audio in messages is short by default; Gradio also
+# leaves excess padding below the waveform. Tighten the bubble and enlarge audio.
+_HISTORY_CHATBOT_CSS = """
+#s2pro-history {
+  max-height: min(50vh, 360px) !important;
+}
+#s2pro-history .message-wrap,
+#s2pro-history .message {
+  padding-top: 6px !important;
+  padding-bottom: 6px !important;
+}
+#s2pro-history audio {
+  width: 100% !important;
+  min-height: 52px !important;
+  height: 52px !important;
+  display: block !important;
+}
+#s2pro-history .audio-container,
+#s2pro-history .media-container {
+  min-height: unset !important;
+  padding: 4px 0 !important;
+}
+"""
 
 
 @dataclass(frozen=True)
@@ -525,7 +549,7 @@ def create_demo(api_base: str):
     synthesize = make_non_streaming_handler(api_base)
     synthesize_stream = make_streaming_handler(api_base)
 
-    with gr.Blocks(title="S2-Pro TTS Playground") as demo:
+    with gr.Blocks(title="S2-Pro TTS Playground", css=_HISTORY_CHATBOT_CSS) as demo:
         gr.Markdown("## S2-Pro Text-to-Speech")
         gr.Markdown(
             "*First request may take 10-20s due to warmup. Subsequent requests are much faster thanks to KV cache reuse.*",
@@ -618,7 +642,11 @@ def create_demo(api_base: str):
                             interactive=False,
                         )
 
-                chatbot = gr.Chatbot(label="History", height=420)
+                chatbot = gr.Chatbot(
+                    label="History",
+                    height=320,
+                    elem_id="s2pro-history",
+                )
                 clear_btn = gr.Button("Clear History")
 
         inputs = [

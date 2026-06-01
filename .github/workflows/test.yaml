@@ -9,7 +9,8 @@ env:
         && format('/github/home/pr-{0}', github.event.pull_request.number)
         || format('/github/home/run-{0}', github.run_id) }}
 
-# Invoked by omni-ci.yaml after the shared setup job. Restores omni only.
+# Invoked by omni-ci.yaml after Qwen3-Omni CI (last benchmark suite in the
+# omni-ci sequence: TTS → Qwen3-Omni → PR Test). Restores omni only.
 
 jobs:
   unit-test:

@@ -356,7 +356,7 @@ test) explicitly marks as missing or misaligned.
 
 ### Stage-specific shortcuts (still check-first)
 
-- **Whisper ASR (TTS stage 0 / `--model tts`)**: uses `omni`, **2 GPU / router DP=2**.
+- **Whisper ASR (TTS CI stage 1 / `--model tts`)**: uses `omni`, **2 GPU / router DP=2**.
   Included in `--model tts --stages ALL`; calibrate alone with
   `--stages whisper_asr`. Venv must pass full precheck including
   `flashinfer-jit-cache` (same as CI `omni-setup`). If missing, run
@@ -431,39 +431,43 @@ python .claude/skills/tune-ci-thresholds/tune.py --model qwen3-omni-v1 run \
 
 Common TTS preset:
 ```
-# Full TTS CI pipeline (stage 0 Whisper ASR + stages 1–6 Higgs voice clone), 5 repeats.
+# Full TTS CI pipeline (stage 1 Whisper ASR + stages 2–4 Higgs voice clone), 5 repeats.
 python .claude/skills/tune-ci-thresholds/tune.py --model tts run \
   --stages ALL --repeats 5 --output-dir .tune-runs/<timestamp>_tts_all_r5
 
-# Stage 0 only (Whisper ASR on SeedTTS EN 20-sample correctness subset):
+# Stage 1 only (Whisper ASR on SeedTTS EN 20-sample correctness subset):
 python .claude/skills/tune-ci-thresholds/tune.py --model tts run \
   --stages whisper_asr --repeats 5 --output-dir .tune-runs/<timestamp>_tts_whisper_asr_r5
 ```
 
-### TTS CI stage 0 — Whisper ASR (mandatory in full TTS calibration)
+### TTS CI stage 1 — Whisper ASR (mandatory in full TTS calibration)
 
-TTS GitHub Actions runs **`test_whisper_asr_ci.py` before `test_tts_ci.py`**
-(stage 0 in the DAG). Full `--model tts --stages ALL` calibration **must**
-include these stages — never calibrate Higgs thresholds alone while leaving
-Whisper ASR on stale literals.
+TTS GitHub Actions runs **`test_whisper_asr_ci.py` in parallel with Higgs stages**
+(CI stage 1 in the DAG; no longer blocks non-streaming/streaming). Full
+`--model tts --stages ALL` calibration **must** include these stages — never
+calibrate Higgs thresholds alone while leaving Whisper ASR on stale literals.
 
 | Stage key | Group | What gets written | Test constant(s) |
 |-----------|-------|-------------------|------------------|
 | `whisper_asr_wer` | wer | corpus + per-sample WER ref | `SEEDTTS_ASR_CORPUS_WER_MAX`, `SEEDTTS_ASR_SAMPLE_WER_MAX` |
-| `whisper_asr_speed` | speed | throughput + latency + RTF mins/maxes | `WHISPER_ASR_THROUGHPUT_MIN`, `WHISPER_ASR_LATENCY_*`, `WHISPER_ASR_RTF_*` |
+| `whisper_asr_speed` | speed | throughput + latency + RTF P95 refs | `WHISPER_ASR_THROUGHPUT_MIN`, `WHISPER_ASR_LATENCY_*`, `WHISPER_ASR_RTF_*` |
 
 Notes:
 - Uses **`openai/whisper-large-v3`** via `hf_model_ids_by_test` (not the Higgs
   checkpoint). Same **`omni`** venv and 2-GPU router DP=2 as TTS stages.
 - Sample count for strict audit: **`SEEDTTS_ASR_CORRECTNESS_SAMPLES`** (=20),
   JSON `summary.evaluated` / `summary.total_samples`.
+- **CI slack:** tune.py writes P95 reference constants only; assertions use
+  derived `*_THRESHOLD` values with **10% slack** (`THRESHOLD_SLACK_HIGHER=0.9`,
+  `THRESHOLD_SLACK_LOWER=1.1` via `apply_wer_slack()` for WER). Do **not**
+  bake slack into calibrated literals.
 - Shortcuts: `whisper_asr`, `@wer`, `@speed` (scoped to whisper stages when
   combined with `whisper_asr` base).
 - Legacy standalone model **`whisper-asr-v1`** remains for isolated ASR runs;
-  **TTS pipeline calibration uses `--model tts`** so stage 0 and Higgs stages
+  **TTS pipeline calibration uses `--model tts`** so Whisper and Higgs stages
   share one run directory and provenance.
 
-### TTS (Higgs) calibration targets (stages 1–6)
+### TTS (Higgs) calibration targets (stages 2–4)
 
 **Fixed presets in `test_tts_ci.py` — never apply, never worst-of-N write:**
 `SEEDTTS_EN_FULLSET_SAMPLES` (=1088), `TTS_SIMILARITY_MAX_SAMPLES` (=50),
@@ -477,21 +481,19 @@ samples CI runs; tune.py only uses them indirectly for strict-audit sample count
 |-----------|-------|-------------------|------------------|
 | `tts_nonstream_speed` | speed | P95 speed slack | `_VC_NON_STREAM_P95[16]` |
 | `tts_stream_speed` | speed | same | `_VC_STREAM_P95[16]` |
-| `tts_nonstream_wer` | wer | corpus + per-sample WER ref | `VC_WER_MAX_*` |
-| `tts_stream_wer` | wer | same | `VC_STREAM_WER_MAX_*` |
+| `tts_nonstream_wer` | wer | corpus WER ref | `VC_WER_MAX_CORPUS` |
+| `tts_stream_wer` | wer | same | `VC_STREAM_WER_MAX_CORPUS` |
 | `tts_nonstream_similarity` | similarity | min mean score (50-sample eval) | `VC_SIMILARITY_MEAN_MIN` |
-| `tts_nonstream_reliability` | reliability | max allowed gen failures / 1088 | `TTS_MAX_FAILED_REQUESTS` |
-| `tts_stream_reliability` | reliability | same constant (shared) | `TTS_MAX_FAILED_REQUESTS` |
 
 Notes:
-- **`TTS_MAX_FAILED_REQUESTS`** is the only **reliability** threshold; worst-of-N
-  **max** of `speed_results.json` → `summary.failed_requests` (ceil to int on apply).
+- **WER** calibrates corpus reference only (`VC_*_WER_MAX_CORPUS`); CI asserts
+  via `apply_wer_slack()`. Per-sample WER caps and generation failure budgets
+  are not calibrated.
 - **Similarity** calibrates **`VC_SIMILARITY_MEAN_MIN`**, not `TTS_SIMILARITY_MAX_SAMPLES`.
 - **Stage 3 (streaming consistency)** is pass/fail only (`max_failed_requests=0` in
-  test code today). After calibrating `TTS_MAX_FAILED_REQUESTS`, compare worst-of-N
-  failure counts and decide whether stage 3 should stay at zero or adopt a budget.
+  test code today).
 
-Shortcuts: `@speed`, `@wer`, `@similarity`, `@reliability`, `ALL`, or `tts` /
+Shortcuts: `@speed`, `@wer`, `@similarity`, `ALL`, or `tts` /
 `tts_nonstream` / `tts_stream`.
 
 ## Environment and networking notes
@@ -653,7 +655,13 @@ All CI workflows, calibration models, and WER sweeps use the same venv name
 
 | Workload | CI workflow | venv | `OMNI_CI_HOME` (calibration host) | Source env script |
 |----------|-------------|------|-----------------------------------|-------------------|
-| All benchmarks (unit, Qwen3, TTS, Whisper) | `omni-ci.yaml` (one shared setup) → `test.yaml`, `test-qwen3-omni-ci.yaml`, `test-tts-ci.yaml` | **`omni`** | `/github/home/calibration` | `source .github/scripts/ci_env.sh` |
+| All benchmarks (unit, Qwen3, TTS, Whisper) | `omni-ci.yaml` (one shared setup) → sequential `test-tts-ci.yaml` → `test-qwen3-omni-ci.yaml` → `test.yaml` (later suites still run if an earlier one fails) | **`omni`** | `/github/home/calibration` | `source .github/scripts/ci_env.sh` |
+
+**Omni CI suite order:** after the shared `setup` job, GitHub Actions runs
+`test-tts-ci.yaml`, then `test-qwen3-omni-ci.yaml`, then `test.yaml` (unit /
+non-benchmark tests). Each suite waits for the previous one to finish; a failure
+in TTS or Qwen3-Omni does **not** skip the remaining suites. Only a failed
+`setup` job blocks the benchmark chain.
 
 **Forbidden shortcuts (observed 2026-05-30):**
 
@@ -978,8 +986,6 @@ Two gates — **both** required before apply:
        `*_MIN_ACCURACY` / `*_SIMILARITY_*_MIN` — no post-calibration slack multiplier.
        Report percentages use 2 decimal places for readability only; similarity
        uses raw mean score (not %).
-     - **`reliability` (`TTS_MAX_FAILED_REQUESTS`):** `write_value` =
-       `ceil(worst_raw)` integer — worst-of-N max failed requests out of 1088.
      - **`speed`:** use `write_value` from apply-plan (rounded unless that
        would tighten beyond `worst_raw`). Never re-round or multiply by
        `scale`.
@@ -994,8 +1000,8 @@ Two gates — **both** required before apply:
    test file using the rules in (b) below, no questions asked.
 
    **Mode `smart`**: classify each metric:
-     - **auto-apply** iff `stage_group` in (`accuracy`, `wer`, `similarity`,
-       `reliability`), OR (`stage_group == "speed"` AND `direction == "tightens"`).
+     - **auto-apply** iff `stage_group` in (`accuracy`, `wer`, `similarity`),
+       OR (`stage_group == "speed"` AND `direction == "tightens"`).
        Edit using rules in (b).
      - **auto-skip** iff `direction == "equal"` (nothing to do).
      - **interactive** otherwise — i.e. any `speed` metric that would
@@ -1142,7 +1148,7 @@ Two gates — **both** required before apply:
     ├── qwen3-omni-v1/                   # v1 pipeline (qwen3-omni)
     │   ├── config.yaml
     │   └── stages.yaml
-    ├── tts/                             # TTS CI pipeline (stage 0 Whisper + Higgs)
+    ├── tts/                             # TTS CI pipeline (stage 1 Whisper + Higgs)
     │   ├── config.yaml                  #   whisper + test_tts_ci.py; variants for Higgs
     │   └── stages.yaml
     └── whisper-asr-v1/                  # Legacy: isolated Whisper ASR only

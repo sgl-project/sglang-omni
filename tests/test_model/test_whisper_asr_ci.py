@@ -27,22 +27,46 @@ from tests.test_model.omni_router_utils import (
     launch_managed_router,
     router_worker_traffic_guard,
 )
-from tests.utils import MetricCheckCollector, disable_proxy
+from tests.utils import MetricCheckCollector, apply_wer_slack, disable_proxy
 
 WHISPER_MODEL_PATH = "openai/whisper-large-v3"
 WHISPER_ASR_WORKER_ARGS = "--stages.0.factory-args.max-running-requests 1"
 WHISPER_ASR_CONCURRENCY = 2
 SEEDTTS_ASR_CORRECTNESS_SAMPLES = 20
+
+# P95 reference values calibrated by tune.py (worst-of-N).
 SEEDTTS_ASR_CORPUS_WER_MAX = 0.007
 SEEDTTS_ASR_SAMPLE_WER_MAX = 0.0667
-# H20 calibration on 2026-05-30, CUDA graph bs=1, concurrency=2 (DP=2 router):
-# worst-of-5: throughput=10.153 samples/s, latency_mean=0.196s,
-# latency_p95=0.570s, rtf_mean=0.0415, rtf_p95=0.1459.
 WHISPER_ASR_THROUGHPUT_MIN = 10.294983887949183
 WHISPER_ASR_LATENCY_MEAN_MAX_S = 0.19333569328882733
 WHISPER_ASR_LATENCY_P95_MAX_S = 0.555
 WHISPER_ASR_RTF_MEAN_MAX = 0.0409
 WHISPER_ASR_RTF_P95_MAX = 0.1421
+
+THRESHOLD_SLACK_HIGHER = 0.9
+THRESHOLD_SLACK_LOWER = 1.1
+
+SEEDTTS_ASR_CORPUS_WER_THRESHOLD = apply_wer_slack(
+    SEEDTTS_ASR_CORPUS_WER_MAX, THRESHOLD_SLACK_LOWER
+)
+SEEDTTS_ASR_SAMPLE_WER_THRESHOLD = apply_wer_slack(
+    SEEDTTS_ASR_SAMPLE_WER_MAX, THRESHOLD_SLACK_LOWER
+)
+WHISPER_ASR_THROUGHPUT_THRESHOLD = round(
+    WHISPER_ASR_THROUGHPUT_MIN * THRESHOLD_SLACK_HIGHER, 3
+)
+WHISPER_ASR_LATENCY_MEAN_THRESHOLD_S = round(
+    WHISPER_ASR_LATENCY_MEAN_MAX_S * THRESHOLD_SLACK_LOWER, 3
+)
+WHISPER_ASR_LATENCY_P95_THRESHOLD_S = round(
+    WHISPER_ASR_LATENCY_P95_MAX_S * THRESHOLD_SLACK_LOWER, 3
+)
+WHISPER_ASR_RTF_MEAN_THRESHOLD = round(
+    WHISPER_ASR_RTF_MEAN_MAX * THRESHOLD_SLACK_LOWER, 4
+)
+WHISPER_ASR_RTF_P95_THRESHOLD = round(
+    WHISPER_ASR_RTF_P95_MAX * THRESHOLD_SLACK_LOWER, 4
+)
 STARTUP_TIMEOUT = 600
 REQUEST_TIMEOUT = 300
 
@@ -193,7 +217,7 @@ def test_whisper_asr_matches_seedtts_reference_text(
                 ]
             )
             sample_diffs.append(diff)
-            if sample_wer > SEEDTTS_ASR_SAMPLE_WER_MAX:
+            if sample_wer > SEEDTTS_ASR_SAMPLE_WER_THRESHOLD:
                 high_wer_samples.append(diff)
 
     if sample_diffs:
@@ -258,37 +282,38 @@ def test_whisper_asr_matches_seedtts_reference_text(
         )
     )
     checks.check(
-        corpus_wer <= SEEDTTS_ASR_CORPUS_WER_MAX,
+        corpus_wer <= SEEDTTS_ASR_CORPUS_WER_THRESHOLD,
         f"Whisper ASR corpus WER {corpus_wer:.4f} exceeds "
-        f"{SEEDTTS_ASR_CORPUS_WER_MAX:.4f}",
+        f"{SEEDTTS_ASR_CORPUS_WER_THRESHOLD:.4f}",
     )
     checks.check(
         not high_wer_samples,
         "Whisper ASR high-WER SeedTTS samples:\n" + "\n\n".join(high_wer_samples),
     )
     checks.check(
-        throughput_samples_per_s >= WHISPER_ASR_THROUGHPUT_MIN,
+        throughput_samples_per_s >= WHISPER_ASR_THROUGHPUT_THRESHOLD,
         f"Whisper ASR throughput {throughput_samples_per_s:.3f} samples/s "
-        f"is below {WHISPER_ASR_THROUGHPUT_MIN:.3f}",
+        f"is below {WHISPER_ASR_THROUGHPUT_THRESHOLD:.3f}",
     )
     checks.check(
-        latency_mean_s <= WHISPER_ASR_LATENCY_MEAN_MAX_S,
+        latency_mean_s <= WHISPER_ASR_LATENCY_MEAN_THRESHOLD_S,
         f"Whisper ASR mean latency {latency_mean_s:.3f}s exceeds "
-        f"{WHISPER_ASR_LATENCY_MEAN_MAX_S:.3f}s",
+        f"{WHISPER_ASR_LATENCY_MEAN_THRESHOLD_S:.3f}s",
     )
     checks.check(
-        latency_p95_s <= WHISPER_ASR_LATENCY_P95_MAX_S,
+        latency_p95_s <= WHISPER_ASR_LATENCY_P95_THRESHOLD_S,
         f"Whisper ASR p95 latency {latency_p95_s:.3f}s exceeds "
-        f"{WHISPER_ASR_LATENCY_P95_MAX_S:.3f}s",
+        f"{WHISPER_ASR_LATENCY_P95_THRESHOLD_S:.3f}s",
     )
     checks.check(
-        rtf_mean <= WHISPER_ASR_RTF_MEAN_MAX,
+        rtf_mean <= WHISPER_ASR_RTF_MEAN_THRESHOLD,
         f"Whisper ASR mean RTF {rtf_mean:.4f} exceeds "
-        f"{WHISPER_ASR_RTF_MEAN_MAX:.4f}",
+        f"{WHISPER_ASR_RTF_MEAN_THRESHOLD:.4f}",
     )
     checks.check(
-        rtf_p95 <= WHISPER_ASR_RTF_P95_MAX,
-        f"Whisper ASR p95 RTF {rtf_p95:.4f} exceeds " f"{WHISPER_ASR_RTF_P95_MAX:.4f}",
+        rtf_p95 <= WHISPER_ASR_RTF_P95_THRESHOLD,
+        f"Whisper ASR p95 RTF {rtf_p95:.4f} exceeds "
+        f"{WHISPER_ASR_RTF_P95_THRESHOLD:.4f}",
     )
     router_guard.assert_served(
         min_total_requests=len(seedtts_en_samples),

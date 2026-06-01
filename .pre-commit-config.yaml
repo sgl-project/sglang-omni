@@ -13,7 +13,6 @@ repos:
     rev: v5.0.0
     hooks:
       - id: check-symlinks
-        exclude: ^(omni|omni-tts)$
       - id: destroyed-symlinks
       - id: trailing-whitespace
       - id: end-of-file-fixer

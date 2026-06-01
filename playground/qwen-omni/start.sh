@@ -2,12 +2,12 @@
 set -euo pipefail
 
 # ---------------------------------------------------------------------------
-# Start the playground: single-process backend serving API + UI + file browser.
+# Start the Qwen-Omni playground: single-process backend serving API + UI + file browser.
 #
 # Usage:
-#   ./playground/web/start.sh --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct
-#   CUDA_VISIBLE_DEVICES=5 ./playground/web/start.sh --model-path <path>
-#   ./playground/web/start.sh --model-path <path> --port 8080
+#   ./playground/qwen-omni/start.sh --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct
+#   CUDA_VISIBLE_DEVICES=5 ./playground/qwen-omni/start.sh --model-path <path>
+#   ./playground/qwen-omni/start.sh --model-path <path> --port 8080
 # ---------------------------------------------------------------------------
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

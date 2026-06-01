@@ -403,16 +403,16 @@ class HiggsStreamingVocoderScheduler(StreamingSimpleScheduler):
         state: HiggsTtsState,
         waveform: torch.Tensor | None,
     ) -> StagePayload:
-        if waveform is not None:
-            audio_np = waveform.detach().to(torch.float32).cpu().numpy()
-            payload.data["audio_data"] = audio_np.tolist()
-        else:
-            payload.data["audio_data"] = []
-        payload.data["sample_rate"] = self._sample_rate
-        payload.data["modality"] = "audio"
+        data = audio_waveform_payload(
+            waveform if waveform is not None else [],
+            sample_rate=self._sample_rate,
+            modality="audio",
+            source_hint="Higgs TTS vocoder",
+        )
         usage = self._build_usage(state)
         if usage is not None:
-            payload.data["usage"] = usage
+            data["usage"] = usage
+        payload.data = data
         return payload
 
     def _decode_state_to_audio(self, state: HiggsTtsState) -> torch.Tensor | None:

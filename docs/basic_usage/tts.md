@@ -335,7 +335,7 @@ python -m benchmarks.eval.benchmark_tts_seedtts \
 SGLang-Omni ships with a Gradio-based playground for interactive TTS experimentation:
 
 ```bash
-./playground/tts/start.sh
+./playground/s2pro/start.sh
 ```
 
 The playground now exposes two demo modes against the same S2 Pro backend:
@@ -346,7 +346,7 @@ The playground now exposes two demo modes against the same S2 Pro backend:
 The launcher starts the backend first, waits for `/health`, then starts the Gradio UI with:
 
 ```bash
-python -m playground.tts.app --api-base http://localhost:8000
+python -m playground.s2pro.app --api-base http://localhost:8000
 ```
 
 A demo play video is available [here](https://x.com/lmsysorg/status/2031412267213008984/video/1). We highly recommend using playground since audio data is hard to interact with by CLI.

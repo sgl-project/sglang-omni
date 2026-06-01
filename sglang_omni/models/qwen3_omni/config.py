@@ -268,6 +268,11 @@ class Qwen3OmniPipelineConfig(PipelineConfig):
 
     model_path: str
     placement_policy: str | None = _PLACEMENT_POLICY
+    placement: PlacementConfig = Field(
+        default_factory=lambda: PlacementConfig(
+            require_memory_fraction_for_colocation=False
+        )
+    )
     stages: list[StageConfig] = Field(default_factory=_text_stages)
 
 

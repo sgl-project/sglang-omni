@@ -1,5 +1,11 @@
 name: Omni CI
 
+# DAG:
+#   preflight ──► setup ──► tts-ci ──► qwen3-omni-ci ──► pr-test
+#                    │          │              │              │
+#                    └──────────┴──────────────┴──────────────┴──► cleanup
+
+
 on:
   pull_request:
     branches: [main]
@@ -22,8 +28,6 @@ env:
         || format('/github/home/run-{0}', github.run_id) }}
   TTS_MODEL_PATH: boson-sglang/higgs-audio-v3-TTS-4B-grpo05200410999
 
-# One preflight + one omni venv install for all benchmark CI (PR Test, Qwen3, TTS).
-# Child workflows are workflow_call-only: they restore the host venv, never install-deps.
 
 jobs:
   preflight:
@@ -90,16 +94,6 @@ jobs:
             marksverdhei/Qwen3-Omni-30B-A3B-FP8 \
             "${TTS_MODEL_PATH}"
 
-  pr-test:
-    name: PR Test
-    needs: setup
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (!github.event.pull_request.draft &&
-       contains(github.event.pull_request.labels.*.name, 'run-ci'))
-    uses: ./.github/workflows/test.yaml
-    secrets: inherit
-
   tts-ci:
     name: TTS CI
     needs: setup
@@ -112,19 +106,34 @@ jobs:
 
   qwen3-omni-ci:
     name: Qwen3-Omni CI
-    needs: setup
+    needs: [setup, tts-ci]
     if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (!github.event.pull_request.draft &&
-       contains(github.event.pull_request.labels.*.name, 'run-ci'))
+      always() && !cancelled() &&
+      needs.setup.result == 'success' &&
+      (github.event_name == 'workflow_dispatch' ||
+       (!github.event.pull_request.draft &&
+        contains(github.event.pull_request.labels.*.name, 'run-ci')))
     uses: ./.github/workflows/test-qwen3-omni-ci.yaml
+    secrets: inherit
+
+  pr-test:
+    name: PR Test
+    needs: [setup, qwen3-omni-ci]
+    if: >-
+      always() && !cancelled() &&
+      needs.setup.result == 'success' &&
+      (github.event_name == 'workflow_dispatch' ||
+       (!github.event.pull_request.draft &&
+        contains(github.event.pull_request.labels.*.name, 'run-ci')))
+    uses: ./.github/workflows/test.yaml
     secrets: inherit
 
   cleanup:
     name: cleanup - reclaim host cache
-    needs: [setup, pr-test, tts-ci, qwen3-omni-ci]
+    needs: [setup, tts-ci, qwen3-omni-ci, pr-test]
     if: >-
-      success() &&
+      always() && !cancelled() &&
+      needs.setup.result == 'success' &&
       (github.event_name == 'workflow_dispatch' ||
        (!github.event.pull_request.draft &&
         contains(github.event.pull_request.labels.*.name, 'run-ci')))

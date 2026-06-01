@@ -6,9 +6,9 @@ set -euo pipefail
 # then starts the Gradio UI.
 #
 # Usage:
-#   CUDA_VISIBLE_DEVICES=0 ./playground/tts/start.sh
-#   ./playground/tts/start.sh --port 8080 --gradio-port 7861 --share
-#   ./playground/tts/start.sh --model-path /path/to/s2-pro
+#   CUDA_VISIBLE_DEVICES=0 ./playground/s2pro/start.sh
+#   ./playground/s2pro/start.sh --port 8080 --gradio-port 7861 --share
+#   ./playground/s2pro/start.sh --model-path /path/to/s2-pro
 # ---------------------------------------------------------------------------
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -103,7 +103,7 @@ echo ""
 
 cd "${REPO_DIR}"
 
-exec "${PYTHON_BIN}" -m playground.tts.app \
+exec "${PYTHON_BIN}" -m playground.s2pro.app \
   --api-base "${API_BASE}" \
   --port "${GRADIO_PORT}" \
   ${GRADIO_SHARE}
