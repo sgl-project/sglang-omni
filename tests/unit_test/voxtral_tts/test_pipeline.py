@@ -153,6 +153,17 @@ def test_voxtral_audio_waveform_payload_is_compact() -> None:
     assert payload["audio_waveform_dtype"] == "float32"
 
 
+def test_voxtral_audio_codes_payload_is_compact() -> None:
+    state = VoxtralTTSState(audio_codes=torch.tensor([[1, 2], [3, 4]]))
+
+    data = state.to_dict()
+    restored = VoxtralTTSState.from_dict(data)
+
+    assert "audio_codes_bytes" in data
+    assert "audio_codes" not in data
+    assert restored.audio_codes.tolist() == [[1, 2], [3, 4]]
+
+
 def test_voxtral_collect_audio_step_reuses_output_tokens_for_eos_filter() -> None:
     from sglang_omni.models.voxtral_tts.acoustic_transformer import AudioSpecialTokens
     from sglang_omni.models.voxtral_tts.model_runner import VoxtralTTSModelRunner
