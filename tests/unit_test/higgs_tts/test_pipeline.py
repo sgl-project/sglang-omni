@@ -569,14 +569,16 @@ def test_higgs_tts_vocoder_batches_decode_requests(
 
     assert decode_batch_sizes == [2], "should call decode_batch once with 2 items"
     assert len(results) == 2
-    assert len(results[0].data["audio_data"]) > 0
+    audio = np.frombuffer(results[0].data["audio_waveform"], dtype=np.float32)
+    assert audio.size > 0
+    assert "audio_data" not in results[0].data
     assert results[0].data["usage"]["prompt_tokens"] == 5
 
 
 def test_higgs_tts_vocoder_batch_handles_empty_items(
     monkeypatch,
 ) -> None:
-    """Items with empty/too-short codes get empty audio_data, not a crash."""
+    """Items with empty/too-short codes get empty waveform payloads, not a crash."""
     decode_batch_sizes = _fake_codec_fixtures(monkeypatch)
 
     scheduler = stages.create_vocoder_executor("fake-model", max_batch_size=4)
@@ -596,9 +598,11 @@ def test_higgs_tts_vocoder_batch_handles_empty_items(
     results = scheduler._batch_fn(payloads)
 
     assert decode_batch_sizes == [1], "only the valid item should be batched"
-    assert results[0].data["audio_data"] == []
-    assert results[1].data["audio_data"] == []
-    assert len(results[2].data["audio_data"]) > 0
+    assert results[0].data["audio_waveform_shape"] == [0]
+    assert results[1].data["audio_waveform_shape"] == [0]
+    audio = np.frombuffer(results[2].data["audio_waveform"], dtype=np.float32)
+    assert audio.size > 0
+    assert all("audio_data" not in result.data for result in results)
 
 
 class _FakeHiggsStreamingCodec:
