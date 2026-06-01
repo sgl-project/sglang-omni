@@ -35,10 +35,9 @@ python -m sglang_omni.cli serve \
     --model-path mistralai/Voxtral-4B-TTS-2603 --port 8000
 
 # Higgs TTS — for section 2e (voice cloning via references[])
-# This config has CUDA Graph enabled and does not enable torch.compile.
 python -m sglang_omni.cli serve \
     --model-path boson-sglang/higgs-audio-v3-tts-4b-base \
-    --config examples/configs/higgs_tts.yaml --port 8000
+    --port 8000
 
 # Qwen3-Omni, speech mode — for section 3 (SeedTTS; multi-GPU)
 python -m sglang_omni.cli serve \

@@ -21,6 +21,35 @@ from sglang_omni.proto import StagePayload
 logger = logging.getLogger(__name__)
 
 
+def _compile_s2pro_codebook_decoder(model: Any, *, max_batch_size: int) -> None:
+    """Compile Fast AR decoder layers while leaving sampling and loop control eager."""
+    from sglang.srt.model_executor.cuda_graph_runner import set_torch_compile_config
+
+    if max_batch_size < 1:
+        raise ValueError("max_batch_size must be >= 1")
+
+    set_torch_compile_config()
+    compile_mode = os.environ.get(
+        "SGLANG_TORCH_COMPILE_MODE",
+        "max-autotune-no-cudagraphs",
+    )
+    audio_decoder = model._audio_decoder
+    compiled_forward_kvcached_layers = [
+        torch.compile(layer.forward_kvcached, mode=compile_mode)
+        for layer in audio_decoder.layers
+    ]
+    audio_decoder.set_compiled_forward_kvcached_layers(
+        compiled_forward_kvcached_layers,
+        max_batch_size=max_batch_size,
+    )
+    logger.info(
+        "Compiled %d Fast AR decoder layers (mode=%s, max_batch_size=%d)",
+        len(compiled_forward_kvcached_layers),
+        compile_mode,
+        max_batch_size,
+    )
+
+
 def _resolve_checkpoint(checkpoint: str) -> str:
     if os.path.isdir(checkpoint):
         return checkpoint
@@ -190,6 +219,8 @@ def create_sglang_tts_engine_executor(
         "max_running_requests": 64,
         "chunked_prefill_size": 8192,
         "dtype": "bfloat16",
+        "enable_torch_compile": True,
+        "torch_compile_max_bs": 16,
         "random_seed": int.from_bytes(os.urandom(4), "little") & 0x7FFFFFFF,
     }
     if server_args_overrides:
@@ -239,6 +270,13 @@ def create_sglang_tts_engine_executor(
         codebook_size=codebook_size,
         ras_window=ras_window,
     )
+
+    if bool(getattr(server_args, "enable_torch_compile", False)):
+        _compile_s2pro_codebook_decoder(
+            model_worker.model_runner.model,
+            max_batch_size=server_args.torch_compile_max_bs,
+        )
+        server_args.enable_torch_compile = False
 
     if want_cuda_graph:
         model_worker.model_runner.init_device_graphs()

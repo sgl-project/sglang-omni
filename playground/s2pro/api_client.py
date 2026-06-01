@@ -8,8 +8,8 @@ from collections.abc import Iterator
 
 import httpx
 
-from playground.tts.audio_stream import SpeechStreamEvent, parse_speech_stream_data
-from playground.tts.models import NonStreamingSpeechResult, SpeechSynthesisRequest
+from playground.s2pro.audio_stream import SpeechStreamEvent, parse_speech_stream_data
+from playground.s2pro.models import NonStreamingSpeechResult, SpeechSynthesisRequest
 
 
 class SpeechDemoClientError(RuntimeError):

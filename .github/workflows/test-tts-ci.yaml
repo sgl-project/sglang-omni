@@ -10,15 +10,17 @@ env:
         || format('/github/home/run-{0}', github.run_id) }}
   TTS_MODEL_PATH: boson-sglang/higgs-audio-v3-TTS-4B-grpo05200410999
 
-# Invoked by omni-ci.yaml after the shared setup job. Restores omni only.
+# Invoked by omni-ci.yaml after shared setup (first benchmark suite in the
+# omni-ci sequence: TTS → Qwen3-Omni → PR Test). Restores omni only.
 # DAG:
-#   stage-0-whisper-asr ─────────────┬──► stage-1-non-streaming ──┐
-#                                    └──► stage-2-streaming ──────┤
-#                                                                └──► stage-3-consistency
+#   stage-1-whisper-asr          (independent)
+#   stage-2-non-streaming ──┐
+#   stage-3-streaming ──────┤
+#                           └──► stage-4-consistency
 
 jobs:
-  stage-0-whisper-asr:
-    name: stage 0 - whisper ASR correctness
+  stage-1-whisper-asr:
+    name: stage 1 - whisper ASR correctness
     runs-on: [self-hosted]
     timeout-minutes: 30
     container:
@@ -53,11 +55,10 @@ jobs:
         if: always()
         uses: ./.github/actions/omni-post-stage
         with:
-          stage-label: Whisper ASR correctness
+          stage-label: TTS stage 1 (Whisper ASR correctness)
 
-  stage-1-non-streaming:
-    name: stage 1 - non-streaming
-    needs: stage-0-whisper-asr
+  stage-2-non-streaming:
+    name: stage 2 - non-streaming
     runs-on: [self-hosted]
     timeout-minutes: 25
     container:
@@ -102,16 +103,15 @@ jobs:
         if: always()
         uses: ./.github/actions/omni-post-stage
         with:
-          stage-label: TTS stage 1 (non-streaming)
+          stage-label: TTS stage 2 (non-streaming)
           artifact-search-root: ${{ env.OMNI_CI_HOME }}/tts-stage-results/nonstream
           artifact-path-globs: |
             */speed_results.json
             */wer_results.json
             */similarity_results.json
 
-  stage-2-streaming:
-    name: stage 2 - streaming
-    needs: stage-0-whisper-asr
+  stage-3-streaming:
+    name: stage 3 - streaming
     runs-on: [self-hosted]
     timeout-minutes: 25
     container:
@@ -146,15 +146,15 @@ jobs:
         if: always()
         uses: ./.github/actions/omni-post-stage
         with:
-          stage-label: TTS stage 2 (streaming)
+          stage-label: TTS stage 3 (streaming)
           artifact-search-root: ${{ env.OMNI_CI_HOME }}/tts-stage-results/stream
           artifact-path-globs: |
             */speed_results.json
             */wer_results.json
 
-  stage-3-consistency:
-    name: stage 3 - consistency
-    needs: [stage-1-non-streaming, stage-2-streaming]
+  stage-4-consistency:
+    name: stage 4 - consistency
+    needs: [stage-2-non-streaming, stage-3-streaming]
     runs-on: [self-hosted]
     timeout-minutes: 5
     container:
@@ -188,4 +188,4 @@ jobs:
         if: always()
         uses: ./.github/actions/omni-post-stage
         with:
-          stage-label: TTS stage 3 (consistency)
+          stage-label: TTS stage 4 (consistency)

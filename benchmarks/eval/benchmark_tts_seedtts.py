@@ -28,7 +28,6 @@ Usage:
     3. For Higgs TTS:
     python -m sglang_omni.cli serve \
         --model-path boson-sglang/higgs-audio-v3-tts-4b-base \
-        --config examples/configs/higgs_tts.yaml \
         --port 8000
 
     # Full pipeline (generate + transcribe) — voice cloning

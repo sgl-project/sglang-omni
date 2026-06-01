@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Higgs Audio v3 · TTS Playground</title>
+  <link rel="icon" href="/favicon.ico" type="image/x-icon" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap"
+    rel="stylesheet"
+  />
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div class="brand">
+        <a class="brand-org" href="https://github.com/sgl-project/sglang-omni" target="_blank" rel="noopener" title="SGL-omni">
+          <img class="brand-logo" src="/static/sgl-omni-logo.png" alt="SGL-omni" />
+        </a>
+        <span class="brand-divider" aria-hidden="true"></span>
+        <svg class="brand-mark" width="22" height="22" viewBox="0 0 24 24" aria-hidden="true">
+          <circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="1.6"/>
+          <circle cx="12" cy="12" r="3" fill="currentColor"/>
+          <circle cx="12" cy="12" r="6.5" fill="none" stroke="currentColor" stroke-width="1" stroke-dasharray="2 3"/>
+        </svg>
+        <div class="brand-text">
+          <span class="brand-title">HIGGS · AUDIO v3</span>
+          <span class="brand-sub">Text-to-Speech Playground</span>
+        </div>
+      </div>
+      <div class="topbar-right">
+        <span class="env-badge" id="env-badge">
+          <span class="env-dot"></span><span class="env-text">backend</span>
+        </span>
+        <button id="theme-toggle" class="icon-button theme-toggle" type="button" aria-label="Toggle theme">
+          <svg class="icon-sun" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="12" cy="12" r="4"/>
+            <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/>
+          </svg>
+          <svg class="icon-moon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+          </svg>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <main class="layout">
+    <!-- Left column: inputs -->
+    <section class="panel input-panel">
+      <div class="panel-label">01 · Input</div>
+
+      <div class="field">
+        <label for="text-input">
+          <span>Text</span>
+          <span id="insert-toast" class="insert-toast" aria-live="polite"></span>
+        </label>
+        <textarea
+          id="text-input"
+          rows="6"
+          placeholder="Enter text to synthesize. Click a control token below to insert it at the cursor."
+          spellcheck="true"
+        ></textarea>
+      </div>
+
+      <details class="accordion" open>
+        <summary>
+          <span class="accordion-title">Voice cloning</span>
+          <span class="accordion-hint">optional · record, upload, or URL</span>
+        </summary>
+        <p class="hint" style="padding: 0 14px; margin: 10px 0 0;">
+          Record from your microphone, upload a file, or paste a URL. If multiple
+          sources are given, <strong>recording / upload takes precedence</strong>
+          over URL.
+        </p>
+        <div class="field">
+          <label for="ref-audio">Reference audio</label>
+          <div class="file-row">
+            <button
+              type="button"
+              id="ref-audio-record"
+              class="file-button record-button"
+              title="Record reference audio from microphone"
+              aria-pressed="false"
+            >
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+                <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+                <line x1="12" y1="19" x2="12" y2="23"/>
+                <line x1="8" y1="23" x2="16" y2="23"/>
+              </svg>
+              <span>Record</span>
+            </button>
+            <label class="file-button" for="ref-audio">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/>
+              </svg>
+              <span>Choose file</span>
+            </label>
+            <span class="file-name" id="ref-audio-name">No reference selected</span>
+            <button type="button" id="ref-audio-clear" class="link-button">clear</button>
+            <input id="ref-audio" type="file" accept="audio/*" hidden />
+          </div>
+          <div id="ref-record-row" class="ref-record-row hidden" aria-live="polite">
+            <span class="record-indicator">
+              <span class="record-dot" aria-hidden="true"></span>
+              Recording
+            </span>
+            <span id="ref-record-timer" class="record-timer">0:00</span>
+          </div>
+          <div id="ref-audio-preview-wrap" class="ref-audio-preview hidden">
+            <audio id="ref-audio-preview" controls></audio>
+          </div>
+        </div>
+        <div class="field">
+          <label for="ref-audio-url">…or reference audio URL</label>
+          <input
+            id="ref-audio-url"
+            type="text"
+            placeholder="https://…/reference.wav"
+          />
+        </div>
+        <div class="field">
+          <label for="ref-text">Reference text</label>
+          <textarea
+            id="ref-text"
+            rows="2"
+            placeholder="Transcript of the reference audio"
+          ></textarea>
+        </div>
+      </details>
+
+      <details class="accordion">
+        <summary>
+          <span class="accordion-title">Inline control tokens</span>
+          <span class="accordion-hint">click to insert at cursor</span>
+        </summary>
+        <div class="token-tabs" id="token-tabs"></div>
+        <div class="token-grid" id="token-grid"></div>
+      </details>
+
+      <details class="accordion">
+        <summary>
+          <span class="accordion-title">Generation parameters</span>
+          <span class="accordion-hint">sampling · seed · length</span>
+        </summary>
+        <div class="param-grid">
+          <div class="field">
+            <label for="temperature">Temperature</label>
+            <input id="temperature" type="number" min="0.1" max="1.5" step="0.05" value="0.8" />
+          </div>
+          <div class="field">
+            <label for="top-p">Top P</label>
+            <input id="top-p" type="number" min="0.1" max="1.0" step="0.05" value="0.95" />
+          </div>
+          <div class="field">
+            <label for="top-k">Top K</label>
+            <input id="top-k" type="number" min="1" max="200" step="1" value="50" />
+          </div>
+          <div class="field">
+            <label for="max-new-tokens">Max New Tokens</label>
+            <input id="max-new-tokens" type="number" min="128" max="8192" step="128" value="2048" />
+          </div>
+          <div class="field span-2">
+            <label for="seed">Seed</label>
+            <input id="seed" type="number" placeholder="(unset · random)" />
+          </div>
+        </div>
+      </details>
+    </section>
+
+    <!-- Right column: output -->
+    <section class="panel output-panel">
+      <div class="panel-label">02 · Output</div>
+
+      <div class="output-header">
+        <button id="synth-button" class="primary">
+          <span class="primary-label">Synthesize</span>
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M5 12h14M13 6l6 6-6 6"/>
+          </svg>
+        </button>
+        <label class="toggle" title="Stream audio as it generates">
+          <input type="checkbox" id="stream-toggle" checked />
+          <span class="toggle-track"><span class="toggle-thumb"></span></span>
+          <span class="toggle-label">Streaming</span>
+        </label>
+      </div>
+
+      <div class="status-row">
+        <div id="status" class="status">
+          <span class="status-prefix">›</span>
+          <span class="status-text">Ready</span>
+        </div>
+        <button
+          id="mute-button"
+          class="icon-button volume-button"
+          type="button"
+          title="Mute live playback"
+          aria-pressed="false"
+        >
+          <svg class="icon-sound" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M11 5L6 9H2v6h4l5 4z"/>
+            <path d="M15.54 8.46a5 5 0 0 1 0 7.07"/>
+            <path d="M19.07 4.93a10 10 0 0 1 0 14.14"/>
+          </svg>
+          <svg class="icon-mute" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M11 5L6 9H2v6h4l5 4z"/>
+            <line x1="22" y1="9" x2="16" y2="15"/>
+            <line x1="16" y1="9" x2="22" y2="15"/>
+          </svg>
+        </button>
+      </div>
+
+      <div class="field">
+        <label>Final audio</label>
+        <div class="audio-row">
+          <audio
+            id="final-audio"
+            controls
+            controlslist="nodownload noplaybackrate noremoteplayback"
+          ></audio>
+          <div class="audio-actions" id="final-audio-actions"></div>
+        </div>
+      </div>
+
+      <div class="history-section">
+        <div class="history-header">
+          <h3>History</h3>
+          <button id="clear-history" class="link-button">Clear</button>
+        </div>
+        <ol id="history" class="history">
+          <li class="history-empty">No synthesis yet — your generated clips will appear here.</li>
+        </ol>
+      </div>
+    </section>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

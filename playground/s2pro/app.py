@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import argparse
 
-from playground.tts.ui import create_demo
+from playground.s2pro.ui import create_demo
 
 DEFAULT_API_BASE = "http://localhost:8000"
 

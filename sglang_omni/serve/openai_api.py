@@ -42,6 +42,7 @@ from sglang_omni.client.audio import (
     encode_audio,
     to_numpy,
 )
+from sglang_omni.http.favicon import register_favicon
 from sglang_omni.serve.protocol import (
     ChatCompletionAudio,
     ChatCompletionChoice,
@@ -105,6 +106,7 @@ def create_app(
     app.state.realtime_enabled = enable_realtime
 
     # Register all routes
+    register_favicon(app)
     _register_health(app)
     _register_models(app)
     _register_chat_completions(app)

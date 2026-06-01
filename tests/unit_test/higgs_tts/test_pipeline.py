@@ -868,3 +868,136 @@ def test_decode_batch_bit_exact_with_single_decode() -> None:
     assert call_log == [(2, 10)]
     assert torch.equal(single_a, batch_results[0])
     assert torch.equal(single_b, batch_results[1])
+
+
+def _make_fake_encoder_codec(encode_calls: list):
+    """Build a HiggsAudioCodec wrapping a FakeModel that logs encode calls.
+
+    Each item in the batch gets codes filled with ``int(batch[i,0,0]*100)``,
+    making outputs distinguishable by the waveform's first sample value.
+    """
+    from sglang_omni.models.higgs_tts.audio_codec import HiggsAudioCodec
+
+    N = 8  # num_codebooks
+
+    class FakeModel:
+        def encode(self, batch: torch.Tensor):
+            B, _, L = batch.shape
+            T = max(L // 320, 1)
+            encode_calls.append(tuple(batch.shape))
+            codes = torch.zeros(B, N, T, dtype=torch.long)
+            for i in range(B):
+                codes[i] = int(round(batch[i, 0, 0].item() * 100))
+            return SimpleNamespace(audio_codes=codes)
+
+        def parameters(self):
+            return iter([torch.zeros(1)])
+
+    codec = object.__new__(HiggsAudioCodec)
+    codec.model = FakeModel()
+    codec.device = torch.device("cpu")
+    codec._dtype = torch.float32
+    return codec
+
+
+def test_higgs_audio_codec_encode_batch_empty() -> None:
+    codec = _make_fake_encoder_codec([])
+    assert codec.encode_batch([]) == []
+
+
+def test_higgs_audio_codec_encode_batch_same_length_batched() -> None:
+    calls: list = []
+    codec = _make_fake_encoder_codec(calls)
+    wav1 = torch.zeros(1, 1, 24000)
+    wav2 = torch.ones(1, 1, 24000) * 0.5
+    results = codec.encode_batch([wav1, wav2])
+    assert len(calls) == 1, "same-length waveforms must batch into one forward pass"
+    assert calls[0] == (2, 1, 24000)
+    assert len(results) == 2
+    assert all(r.shape == (75, 8) for r in results)
+
+
+def test_higgs_audio_codec_encode_batch_short_waveforms_padded_and_batched() -> None:
+    calls: list = []
+    codec = _make_fake_encoder_codec(calls)
+    wav1 = torch.zeros(1, 1, 8000)
+    wav2 = torch.zeros(1, 1, 12000)
+    results = codec.encode_batch([wav1, wav2])
+    assert len(calls) == 1, "short waveforms must be padded to same length and batched"
+    assert calls[0] == (2, 1, 24000)
+    assert len(results) == 2
+
+
+def test_higgs_audio_codec_encode_batch_different_lengths_separate_calls() -> None:
+    calls: list = []
+    codec = _make_fake_encoder_codec(calls)
+    wav1 = torch.zeros(1, 1, 24000)
+    wav2 = torch.zeros(1, 1, 48000)
+    results = codec.encode_batch([wav1, wav2])
+    assert len(calls) == 2, "different-length waveforms must use separate passes"
+    assert len(results) == 2
+    assert results[0].shape[0] == 75
+    assert results[1].shape[0] == 150
+
+
+def test_higgs_audio_codec_encode_batch_order_preserved() -> None:
+    calls: list = []
+    codec = _make_fake_encoder_codec(calls)
+    wavs = [
+        torch.full((1, 1, 48000), 0.3),
+        torch.full((1, 1, 24000), 0.5),
+        torch.full((1, 1, 48000), 0.7),
+    ]
+    ref0 = codec.encode_reference(wavs[0])
+    ref1 = codec.encode_reference(wavs[1])
+    ref2 = codec.encode_reference(wavs[2])
+    calls.clear()
+
+    results = codec.encode_batch(wavs)
+
+    assert len(results) == 3
+    assert torch.equal(results[0], ref0)
+    assert torch.equal(results[1], ref1)
+    assert torch.equal(results[2], ref2)
+
+
+def test_higgs_audio_codec_encode_batch_matches_encode_reference() -> None:
+    """encode_batch must produce bit-exact codes vs per-item encode_reference."""
+    calls: list = []
+    codec = _make_fake_encoder_codec(calls)
+    wav1 = torch.full((1, 1, 24000), 0.3)
+    wav2 = torch.full((1, 1, 24000), 0.7)
+    wav3 = torch.full((1, 1, 48000), 0.5)
+
+    ref1 = codec.encode_reference(wav1)
+    ref2 = codec.encode_reference(wav2)
+    ref3 = codec.encode_reference(wav3)
+    calls.clear()
+
+    batch_results = codec.encode_batch([wav1, wav2, wav3])
+
+    assert torch.equal(batch_results[0], ref1)
+    assert torch.equal(batch_results[1], ref2)
+    assert torch.equal(batch_results[2], ref3)
+
+
+def test_higgs_audio_codec_encode_batch_input_normalisation() -> None:
+    """1-D tensor, 2-D tensor, and np.ndarray inputs all normalise to the same codes."""
+    calls: list = []
+    codec = _make_fake_encoder_codec(calls)
+    amp = 0.4
+
+    wav_3d = torch.full((1, 1, 24000), amp)
+    wav_2d = torch.full((1, 24000), amp)
+    wav_1d = torch.full((24000,), amp)
+    wav_np = np.full(24000, amp, dtype=np.float32)
+
+    ref = codec.encode_reference(wav_3d)
+    calls.clear()
+
+    results = codec.encode_batch([wav_3d, wav_2d, wav_1d, wav_np])
+
+    for i, r in enumerate(results):
+        assert torch.equal(
+            r, ref
+        ), f"input format {i} produced different codes than encode_reference"

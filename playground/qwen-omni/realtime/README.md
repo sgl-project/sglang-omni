@@ -24,7 +24,7 @@ you said fills in below. Vanilla HTML/CSS/JS — no build step.
    `getUserMedia` to `file://`):
 
    ```bash
-   cd playground/web/realtime
+   cd playground/qwen-omni/realtime
    python -m http.server 8080
    ```
 
