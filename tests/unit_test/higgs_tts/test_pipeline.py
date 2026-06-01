@@ -454,7 +454,11 @@ def test_higgs_model_runner_collect_cg_mixed_batch() -> None:
     )
     # row0 chunked, row1 was-done, row2 active (not done), row3 active (EOC done).
     reqs = [
-        SimpleNamespace(is_chunked=1, finished_reason=None, finished=lambda: False),
+        SimpleNamespace(
+            inflight_middle_chunks=1,
+            finished_reason=None,
+            finished=lambda: False,
+        ),
         SimpleNamespace(is_chunked=0, finished_reason=None, finished=lambda: False),
         SimpleNamespace(is_chunked=0, finished_reason=None, finished=lambda: False),
         SimpleNamespace(is_chunked=0, finished_reason=None, finished=lambda: False),

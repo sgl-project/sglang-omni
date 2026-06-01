@@ -19,6 +19,7 @@ from sglang.srt.mem_cache.common import release_kv_cache
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch
 from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
 
+from sglang_omni.scheduling.chunking import increment_inflight_middle_chunks
 from sglang_omni.scheduling.messages import IncomingMessage, OutgoingMessage
 
 logger = logging.getLogger(__name__)
@@ -185,7 +186,7 @@ class DllmScheduler:
         ]
 
         for req in self._staging_queue:
-            req.is_chunked += 1
+            increment_inflight_middle_chunks(req)
 
         new_batch = ScheduleBatch.init_new(
             reqs=adder.can_run_list,

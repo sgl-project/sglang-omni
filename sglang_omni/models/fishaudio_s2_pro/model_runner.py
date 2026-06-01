@@ -8,6 +8,7 @@ from typing import Any
 import torch
 
 from sglang_omni.model_runner.base import ModelRunner
+from sglang_omni.scheduling.chunking import get_inflight_middle_chunks
 
 
 def collect_s2pro_step_outputs(
@@ -28,7 +29,7 @@ def collect_s2pro_step_outputs(
 
     for row_idx, sched_req in enumerate(requests):
         data = sched_req.data
-        if data.req.is_chunked > 0:
+        if get_inflight_middle_chunks(data.req) > 0:
             continue
 
         semantic_token = semantic_tokens[row_idx]

@@ -174,6 +174,20 @@ def test_qwen_thinker_stream_builder_keeps_talker_for_audio_output():
     assert [msg.target for msg in messages] == ["decode", "talker_ar"]
 
 
+def test_qwen_thinker_stream_builder_suppresses_current_chunk_counter():
+    builder = make_thinker_stream_output_builder()
+    req_data = SimpleNamespace(
+        req=SimpleNamespace(inflight_middle_chunks=1),
+        stage_payload=_thinker_stage_payload(["audio"]),
+    )
+    req_output = SimpleNamespace(
+        data=11,
+        extra={"hidden_states": torch.tensor([[1.0, 2.0]])},
+    )
+
+    assert builder("req-current-chunk", req_data, req_output) == []
+
+
 def test_qwen_thinker_stream_builder_keeps_talker_when_modalities_missing():
     builder = make_thinker_stream_output_builder()
     req_data = SimpleNamespace(

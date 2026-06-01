@@ -21,6 +21,7 @@ from sglang_omni.models.higgs_tts.model import _flat_sampling_attr
 from sglang_omni.models.higgs_tts.sampler import K_MAX
 from sglang_omni.models.higgs_tts.text_tokenizer import AUDIO_PLACEHOLDER_ID
 from sglang_omni.models.higgs_tts.utils import EOC_ID
+from sglang_omni.scheduling.chunking import get_inflight_middle_chunks
 from sglang_omni.scheduling.messages import OutgoingMessage
 
 logger = logging.getLogger(__name__)
@@ -264,7 +265,7 @@ class HiggsTTSModelRunner(ModelRunner):
         for b, sched_req in enumerate(requests):
             data = sched_req.data
             req = data.req
-            if req.is_chunked > 0:
+            if get_inflight_middle_chunks(req) > 0:
                 cb0_per_row.append(0)
                 continue
             # Already finished in an earlier step? Skip its append. Under async
@@ -349,7 +350,12 @@ class HiggsTTSModelRunner(ModelRunner):
             rid = sched_req.request_id
             row = model._rid_to_row.get(rid)
             codes_log = model._output_codes.get(rid)
-            if req.is_chunked > 0 or row is None or not codes_log or req.finished():
+            if (
+                get_inflight_middle_chunks(req) > 0
+                or row is None
+                or not codes_log
+                or req.finished()
+            ):
                 cb0_per_row.append(0)
                 continue
             codes_N = codes_log[-1]

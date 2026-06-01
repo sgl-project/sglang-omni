@@ -18,6 +18,7 @@ from sglang_omni.models.qwen3_omni.pending_text_queue import (
     coerce_pending_text_queue,
 )
 from sglang_omni.proto import OmniRequest, StagePayload
+from sglang_omni.scheduling.chunking import get_inflight_middle_chunks
 from sglang_omni.scheduling.messages import OutgoingMessage
 from sglang_omni.scheduling.sglang_backend import SGLangARRequestData
 from sglang_omni.scheduling.types import ARRequestData
@@ -831,7 +832,7 @@ def make_thinker_stream_output_builder():
         request_id: str, req_data: Any, req_output: Any
     ) -> list[OutgoingMessage]:
         req = getattr(req_data, "req", None)
-        if req is not None and int(getattr(req, "is_chunked", 0) or 0) > 0:
+        if req is not None and get_inflight_middle_chunks(req) > 0:
             # While chunked prefill is still consuming prompt tokens, suppress
             # hidden-state streaming to the talker.
             # Emitting chunks this early lets prompt-side states masquerade as the

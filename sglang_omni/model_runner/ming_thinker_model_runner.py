@@ -9,6 +9,7 @@ import torch
 from sglang.srt.managers.scheduler import GenerationBatchResult
 
 from sglang_omni.model_runner.base import ModelRunner
+from sglang_omni.scheduling.chunking import get_inflight_middle_chunks
 
 
 class MingThinkerModelRunner(ModelRunner):
@@ -94,7 +95,7 @@ class MingThinkerModelRunner(ModelRunner):
             req_input_ids = forward_batch.input_ids[start:end]
             consumed = getattr(req, "_omni_consumed", None) or {}
             pad_values = omni_inputs.get("pad_values", {})
-            is_final_chunk = getattr(req, "is_chunked", 0) == 0
+            is_final_chunk = get_inflight_middle_chunks(req) == 0
             req_id = self._request_id(req)
 
             for modality, embed_key, token_id in [

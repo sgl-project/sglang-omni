@@ -7,6 +7,8 @@ from sglang.srt.managers.schedule_batch import Req, ScheduleBatch
 from sglang.srt.managers.schedule_policy import PrefillAdder
 from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
 
+from sglang_omni.scheduling.chunking import increment_inflight_middle_chunks
+
 logger = logging.getLogger(__name__)
 
 
@@ -129,7 +131,7 @@ class PrefillManager:
             )
 
         if self.chunked_req is not None:
-            self.chunked_req.is_chunked += 1
+            increment_inflight_middle_chunks(self.chunked_req)
 
         # Batch dataclass of req for return
         new_batch = ScheduleBatch.init_new(

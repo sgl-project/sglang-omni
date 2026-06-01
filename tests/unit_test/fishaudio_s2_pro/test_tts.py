@@ -667,6 +667,24 @@ def test_fish_s2pro_chunked_step_does_not_mutate_decode_state() -> None:
     assert tree_cache.cached_requests == 0
 
 
+def test_fish_s2pro_current_sglang_chunk_counter_is_supported() -> None:
+    tree_cache = _CountingTreeCache()
+    controller = FishIterationController(tree_cache, IM_END_TOKEN_ID)
+    request = _make_s2pro_request("req-current-chunked", is_chunked=0)
+    delattr(request.data.req, "is_chunked")
+    request.data.req.inflight_middle_chunks = 1
+
+    result = _collect_s2pro_step([request], [[SEMANTIC_TOKEN_ID, 11, 22]])
+    semantic_token = _update_request_from_step(controller, request, result)
+
+    assert not controller.is_finished(request, semantic_token)
+    assert request.data.req.inflight_middle_chunks == 0
+    assert request.data.req.output_ids == []
+    assert request.data.output_codes == []
+    assert request.data.previous_semantic_tokens == []
+    assert tree_cache.cached_requests == 0
+
+
 def test_fish_s2pro_max_tokens_sets_length_finish_reason() -> None:
     tree_cache = _CountingTreeCache()
     controller = FishIterationController(tree_cache, IM_END_TOKEN_ID)

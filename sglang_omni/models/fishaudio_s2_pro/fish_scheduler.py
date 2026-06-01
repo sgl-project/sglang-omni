@@ -16,6 +16,10 @@ from typing import Any
 
 from sglang.srt.mem_cache.common import release_kv_cache
 
+from sglang_omni.scheduling.chunking import (
+    decrement_inflight_middle_chunks,
+    get_inflight_middle_chunks,
+)
 from sglang_omni.scheduling.messages import IncomingMessage, OutgoingMessage
 from sglang_omni.scheduling.types import (
     ModelRunnerOutput,
@@ -252,8 +256,8 @@ class FishIterationController:
         data = request.data
         req = data.req
 
-        if req.is_chunked > 0:
-            req.is_chunked -= 1
+        if get_inflight_middle_chunks(req) > 0:
+            decrement_inflight_middle_chunks(req)
             return
 
         if output_token_id is not None:
@@ -271,7 +275,7 @@ class FishIterationController:
         self, request: SchedulerRequest, output_token_id: int | None
     ) -> bool:
         data = request.data
-        if data.req.is_chunked > 0:
+        if get_inflight_middle_chunks(data.req) > 0:
             return False
 
         semantic_token = output_token_id
