@@ -47,17 +47,12 @@ def test_huggingface_backend_dispatches_to_hf_helpers(monkeypatch) -> None:
         calls.append(("cached_file", args, kwargs))
         return "/hf/cached/config.json"
 
-    monkeypatch.setattr(
-        "huggingface_hub.snapshot_download", fake_snapshot_download
-    )
+    monkeypatch.setattr("huggingface_hub.snapshot_download", fake_snapshot_download)
     monkeypatch.setattr("huggingface_hub.hf_hub_download", fake_hf_hub_download)
     monkeypatch.setattr("transformers.utils.hub.cached_file", fake_cached_file)
 
     assert hub.AutoConfig.__module__.startswith("transformers")
-    assert (
-        hub.snapshot_download("repo/model", local_files_only=True)
-        == "/hf/snapshot"
-    )
+    assert hub.snapshot_download("repo/model", local_files_only=True) == "/hf/snapshot"
     assert (
         hub.hf_hub_download("repo/model", "config.json", revision="main")
         == "/hf/config.json"
@@ -106,9 +101,7 @@ def test_modelscope_backend_dispatches_to_modelscope_helpers(monkeypatch) -> Non
 
     assert hub.AutoConfig.__module__.startswith("modelscope")
     assert (
-        hub.snapshot_download(
-            "repo/model", local_files_only=True, force_download=True
-        )
+        hub.snapshot_download("repo/model", local_files_only=True, force_download=True)
         == "/modelscope/snapshot"
     )
     assert (
