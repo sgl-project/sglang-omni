@@ -3,7 +3,16 @@
 
 from __future__ import annotations
 
+import os
 from typing import Any
+
+
+def _resolve_checkpoint(model_path: str) -> str:
+    if os.path.isdir(model_path):
+        return model_path
+    from sglang_omni.utils.hub import snapshot_download
+
+    return snapshot_download(model_path, local_files_only=False)
 
 
 def create_sglang_whisper_asr_executor(
@@ -30,9 +39,10 @@ def create_sglang_whisper_asr_executor(
     )
 
     gpu_id = int(device.split(":")[-1]) if ":" in device else 0
-    processor = AutoProcessor.from_pretrained(model_path)
+    checkpoint_dir = _resolve_checkpoint(model_path)
+    processor = AutoProcessor.from_pretrained(checkpoint_dir)
     tokenizer = processor.tokenizer
-    generation_config = GenerationConfig.from_pretrained(model_path)
+    generation_config = GenerationConfig.from_pretrained(checkpoint_dir)
     encoder_token_count = int(processor.feature_extractor.nb_max_frames // 2)
 
     overrides: dict[str, Any] = {
@@ -52,7 +62,7 @@ def create_sglang_whisper_asr_executor(
         overrides.update(server_args_overrides)
 
     server_args = build_sglang_server_args(
-        model_path,
+        checkpoint_dir,
         context_length=encoder_token_count + int(max_new_tokens) + 8,
         **overrides,
     )
