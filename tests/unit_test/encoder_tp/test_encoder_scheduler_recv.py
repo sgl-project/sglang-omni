@@ -27,6 +27,7 @@ from sglang_omni.scheduling.encoder_scheduler import (
     _RECV_ERROR_KIND,
     EncoderScheduler,
     _TensorSpec,
+    _find_tensor_paths,
 )
 from sglang_omni.scheduling.messages import IncomingMessage, OutgoingMessage
 
@@ -407,7 +408,63 @@ def test_entry_broadcasts_stripped_metadata_and_returns_restored_messages(bus):
     assert isinstance(published_value, dict)
     assert published_value["_tensor_placeholder"] == "pixel_values"
     assert not isinstance(published_value, torch.Tensor)
+    assert _find_tensor_paths(bus.metadata) == []
     assert bus.broadcast_calls == 1
+
+
+def test_strip_and_lift_rejects_tensor_left_in_request_metadata():
+    """The CPU-group metadata channel must never pickle tensor-bearing objects.
+
+    ``payload.data`` tensors are extracted into the device-broadcast lane; a
+    tensor left elsewhere in the message, such as request metadata, would be
+    pickled by ``broadcast_pyobj`` and can allocate on follower ranks.
+    """
+
+    sch = EncoderScheduler(_FakeWorker(tp_size=2, tp_rank=0), _FakeAdapter())
+    msg = _mk_msg("r0", data={"pixel_values": torch.randn(2, 3)})
+    msg.data.request = SimpleNamespace(inputs=torch.randn(1), params={}, metadata={})
+
+    with pytest.raises(RuntimeError, match="metadata broadcast payload"):
+        sch._strip_and_lift([msg])
+
+
+def test_entry_metadata_tensor_leak_publishes_error_sentinel(bus):
+    """If tensor-free metadata validation fails on entry rank, the follower
+    receives the normal recv-error sentinel instead of waiting for device
+    broadcasts that will never happen."""
+
+    sch = EncoderScheduler(
+        _FakeWorker(tp_size=2, tp_rank=0),
+        _FakeAdapter(),
+        max_batch_size=1,
+        max_batch_wait_ms=0,
+    )
+    msg = _mk_msg("r0", data={"pixel_values": torch.randn(2, 3)})
+    msg.data.request = SimpleNamespace(inputs=torch.randn(1), params={}, metadata={})
+    sch.inbox.put(msg)
+
+    with (
+        patch(
+            "sglang_omni.scheduling.encoder_scheduler.broadcast_pyobj",
+            _patched_broadcast_pyobj(bus),
+        ),
+        patch(
+            "sglang_omni.scheduling.encoder_scheduler.dist.all_gather_object",
+            _patched_all_gather_object(bus),
+        ),
+        patch(
+            "sglang_omni.scheduling.encoder_scheduler.dist.broadcast",
+            _patched_dist_broadcast(bus),
+        ),
+    ):
+        msgs, err = sch._recv_messages()
+
+    assert msgs and msgs[0].request_id == "r0"
+    assert isinstance(err, RuntimeError)
+    assert "metadata broadcast payload" in str(err)
+    assert bus.metadata[0].get("kind") == _RECV_ERROR_KIND
+    assert "metadata broadcast payload" in bus.metadata[0]["error"]
+    assert bus.broadcast_calls == 0
 
 
 def test_strip_and_lift_returns_typed_dtype_specs():

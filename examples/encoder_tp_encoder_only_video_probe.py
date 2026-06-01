@@ -1115,6 +1115,10 @@ def _worker_run(args: argparse.Namespace) -> None:
         raw = runner.encode_batch(plan)
         torch.cuda.synchronize(0)
         forward_ms = (time.perf_counter() - forward_started) * 1000.0
+        if not runner.is_entry_rank:
+            raw = None
+            scheduler._release_non_entry_forward_cache()
+            torch.cuda.synchronize(0)
         scheduler._log_memory_mark("after_forward", batch_size=1)
 
         output = None

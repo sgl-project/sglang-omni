@@ -11,7 +11,9 @@ import logging
 import queue as _queue_mod
 import threading
 import time
+from contextlib import nullcontext
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import torch
 
@@ -237,6 +239,33 @@ def test_loop_forward_failure_is_fatal_even_at_tp_size_1():
     assert "forward boom" in str(fatal_calls[0])
     # Crucially: NO per-request error emission for a forward fault.
     assert sch.outbox.qsize() == 0
+
+
+def test_non_entry_forward_cache_release_calls_empty_cache_on_cuda():
+    """Non-entry TP ranks do not emit encoder outputs; after those outputs
+    are dropped, idle CUDA cache should be returned to the driver so colocated
+    processes can reclaim headroom."""
+
+    worker = _FakeWorker()
+    worker.device = torch.device("cuda:0")
+    sch = EncoderScheduler(worker, _PassthroughAdapter())
+
+    with (
+        patch(
+            "sglang_omni.scheduling.encoder_scheduler.torch.cuda.is_available",
+            return_value=True,
+        ),
+        patch(
+            "sglang_omni.scheduling.encoder_scheduler.torch.cuda.device",
+            return_value=nullcontext(),
+        ),
+        patch(
+            "sglang_omni.scheduling.encoder_scheduler.torch.cuda.empty_cache",
+        ) as empty_cache,
+    ):
+        sch._release_non_entry_forward_cache()
+
+    empty_cache.assert_called_once_with()
 
 
 def test_loop_drops_aborted_request_results():

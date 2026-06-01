@@ -42,6 +42,7 @@ import dataclasses
 import json
 import logging
 import os
+import pickle
 import queue as _queue_mod
 import tempfile
 import time
@@ -74,6 +75,7 @@ logger = logging.getLogger(__name__)
 _RECV_ERROR_KIND = "encoder_recv_error"
 _GPU_GUARD_TRANSIENT_MARGIN_MIB = 256
 _GPU_GUARD_ALLOCATOR_MARGIN_MIB = 256
+_TENSOR_PATH_REPORT_LIMIT = 8
 
 
 def _env_flag(name: str, *, default: bool) -> bool:
@@ -93,6 +95,59 @@ def _env_mib(name: str, default_mib: int) -> int:
         logger.warning("Ignoring invalid %s=%r; expected integer MiB", name, raw)
         value = int(default_mib)
     return max(value, 0) * 1024**2
+
+
+def _find_tensor_paths(obj: Any) -> list[str]:
+    paths: list[str] = []
+    seen: set[int] = set()
+
+    def _visit(value: Any, path: str) -> None:
+        if isinstance(value, torch.Tensor):
+            paths.append(path or "<root>")
+            return
+        if value is None or isinstance(value, (str, bytes, int, float, bool)):
+            return
+        value_id = id(value)
+        if value_id in seen:
+            return
+        seen.add(value_id)
+
+        if isinstance(value, dict):
+            for key, item in value.items():
+                key_path = f"{path}.{key}" if path else str(key)
+                _visit(item, key_path)
+            return
+
+        if isinstance(value, (list, tuple)):
+            for index, item in enumerate(value):
+                _visit(item, f"{path}[{index}]" if path else f"[{index}]")
+            return
+
+        if isinstance(value, set):
+            for index, item in enumerate(value):
+                _visit(item, f"{path}{{{index}}}" if path else f"{{{index}}}")
+            return
+
+        if dataclasses.is_dataclass(value) and not isinstance(value, type):
+            for field in dataclasses.fields(value):
+                field_path = f"{path}.{field.name}" if path else field.name
+                _visit(getattr(value, field.name), field_path)
+            return
+
+        if hasattr(value, "__dict__"):
+            for key, item in vars(value).items():
+                key_path = f"{path}.{key}" if path else str(key)
+                _visit(item, key_path)
+
+    _visit(obj, "")
+    return paths
+
+
+def _format_tensor_path_error(paths: list[str]) -> str:
+    shown = ", ".join(paths[:_TENSOR_PATH_REPORT_LIMIT])
+    if len(paths) > _TENSOR_PATH_REPORT_LIMIT:
+        shown += f", ... +{len(paths) - _TENSOR_PATH_REPORT_LIMIT} more"
+    return shown
 
 
 def _reservation_path_for_gpu(logical_gpu_id: int) -> Path:
@@ -460,6 +515,10 @@ class EncoderScheduler:
             "SGLANG_OMNI_ENCODER_MEMORY_DETAIL",
             default=False,
         )
+        self._release_non_entry_cuda_cache = _env_flag(
+            "SGLANG_OMNI_ENCODER_RELEASE_NON_ENTRY_CACHE",
+            default=True,
+        )
 
     @property
     def _stage_name(self) -> str:
@@ -562,9 +621,15 @@ class EncoderScheduler:
                 self._release_active_reservation()
                 return
             forward_ms = (time.perf_counter() - forward_started) * 1000.0
-            self._log_memory_mark("after_forward", batch_size=len(messages))
 
             if not self.runner.is_entry_rank:
+                # Non-entry ranks must participate in encoder TP collectives, but
+                # their returned features are never sliced or emitted. Drop them
+                # before memory accounting so unused output tensors do not stay
+                # resident in colocated layouts.
+                raw = None
+                self._release_non_entry_forward_cache()
+                self._log_memory_mark("after_forward", batch_size=len(messages))
                 logger.info(
                     "encoder_batch_timing stage=%s tp_rank=%d/%d "
                     "batch_size=%d recv_ms=%.3f "
@@ -600,6 +665,7 @@ class EncoderScheduler:
                 )
                 continue
 
+            self._log_memory_mark("after_forward", batch_size=len(messages))
             slice_started = time.perf_counter()
             try:
                 results = self.adapter.slice_results(raw, plan, messages)
@@ -715,6 +781,60 @@ class EncoderScheduler:
             int(total_bytes),
             "None" if nvml_process_bytes is None else str(nvml_process_bytes),
         )
+
+    def _log_metadata_payload_size(
+        self,
+        metadata_payload: list[Any],
+        *,
+        batch_size: int,
+        tensor_count: int,
+    ) -> None:
+        if batch_size <= 0:
+            return
+        if not (self._memory_detail or self._sync_recv_timing):
+            return
+        try:
+            metadata_bytes = len(pickle.dumps(metadata_payload))
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("encoder metadata payload sizing failed: %s", exc)
+            return
+        spec_count = 0
+        if len(metadata_payload) >= 2 and isinstance(metadata_payload[1], list):
+            spec_count = sum(len(specs) for specs in metadata_payload[1])
+        logger.info(
+            "encoder_metadata_payload stage=%s tp_rank=%d/%d "
+            "batch_size=%d metadata_bytes=%d tensor_count=%d spec_count=%d",
+            self._stage_name,
+            self.runner.tp_rank,
+            self.runner.tp_size,
+            batch_size,
+            metadata_bytes,
+            tensor_count,
+            spec_count,
+        )
+
+    def _assert_metadata_tensor_free(self, metadata_payload: Any) -> None:
+        paths = _find_tensor_paths(metadata_payload)
+        if not paths:
+            return
+        raise RuntimeError(
+            "encoder metadata broadcast payload still contains tensor(s) at "
+            f"{_format_tensor_path_error(paths)}"
+        )
+
+    def _release_non_entry_forward_cache(self) -> None:
+        if not self._release_non_entry_cuda_cache:
+            return
+        device = getattr(self.runner, "device", None)
+        if not isinstance(device, torch.device) or device.type != "cuda":
+            return
+        if not torch.cuda.is_available():
+            return
+        try:
+            with torch.cuda.device(device):
+                torch.cuda.empty_cache()
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("encoder non-entry cuda cache release failed: %s", exc)
 
     def _gather_pre_forward_error(
         self,
@@ -1090,6 +1210,7 @@ class EncoderScheduler:
         for msg in messages:
             payload = msg.data
             if payload is None or not hasattr(payload, "data"):
+                self._assert_metadata_tensor_free(msg)
                 meta_msgs.append(msg)
                 tensor_lists.append([])
                 specs_lists.append([])
@@ -1118,6 +1239,7 @@ class EncoderScheduler:
                 data=stripped,
             )
             meta_msg = dataclasses.replace(msg, data=new_payload)
+            self._assert_metadata_tensor_free(meta_msg)
             meta_msgs.append(meta_msg)
             tensor_lists.append(tensors)
             specs_lists.append(specs)
@@ -1259,6 +1381,13 @@ class EncoderScheduler:
                     "after_strip_h2d",
                     batch_size=len(meta_msgs),
                 )
+                metadata_payload = [meta_msgs, specs_lists, batch_cost]
+                self._assert_metadata_tensor_free(metadata_payload)
+                self._log_metadata_payload_size(
+                    metadata_payload,
+                    batch_size=len(meta_msgs),
+                    tensor_count=sum(len(tensors) for tensors in tensor_lists),
+                )
             except Exception as exc:  # noqa: BLE001
                 started = time.perf_counter()
                 broadcast_pyobj(
@@ -1276,7 +1405,7 @@ class EncoderScheduler:
 
             started = time.perf_counter()
             broadcast_pyobj(
-                [meta_msgs, specs_lists, batch_cost],
+                metadata_payload,
                 tp.rank,
                 tp.cpu_group,
                 src=src_rank,
