@@ -347,6 +347,7 @@ class MingOmniStreamingSpeechPipelineConfig(PipelineConfig):
 
     def model_post_init(self, __context: Any = None) -> None:
         super().model_post_init(__context)
+        _validate_ming_stage_tp_support(self.stages)
         self._validate_talker_stream_gpu_not_in_thinker_tp_range()
 
     def _validate_talker_stream_gpu_not_in_thinker_tp_range(self) -> None:

@@ -15,14 +15,21 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO
 
 import pytest
 
 MODEL_NAME = os.environ.get("MING_OMNI_MODEL_NAME", "ming-omni")
 MODEL_PATH = os.environ.get("MING_OMNI_MODEL_PATH", "inclusionAI/Ming-flash-omni-2.0")
 RUN_FLAG = os.environ.get("RUN_MING_TP_PARITY", "0") == "1"
+
+
+@dataclass(frozen=True)
+class MingServerProcess:
+    process: subprocess.Popen[bytes]
+    log_handle: BinaryIO
 
 
 def _post_json(port: int, payload: dict[str, Any], timeout: float = 180.0) -> Any:
@@ -39,7 +46,7 @@ def _post_json(port: int, payload: dict[str, Any], timeout: float = 180.0) -> An
 
 def _wait_health(
     port: int,
-    process: subprocess.Popen[bytes],
+    server: MingServerProcess,
     timeout: float = 900.0,
 ) -> None:
     deadline = time.monotonic() + timeout
@@ -47,7 +54,7 @@ def _wait_health(
     last_error: BaseException | None = None
 
     while time.monotonic() < deadline:
-        return_code = process.poll()
+        return_code = server.process.poll()
         if return_code is not None:
             raise AssertionError(
                 f"Ming server on port {port} exited early with code {return_code}"
@@ -79,7 +86,7 @@ def _start_server(
     cuda_visible_devices: str,
     gpu_talker: int,
     tmp_path: Path,
-) -> subprocess.Popen[bytes]:
+) -> MingServerProcess:
     cwd = Path.cwd()
     env = os.environ.copy()
     env["CUDA_VISIBLE_DEVICES"] = cuda_visible_devices
@@ -123,12 +130,11 @@ def _start_server(
     except Exception:
         log_handle.close()
         raise
-    process.ming_tp_parity_log_handle = log_handle  # type: ignore[attr-defined]
-    return process
+    return MingServerProcess(process=process, log_handle=log_handle)
 
 
-def _stop_server(process: subprocess.Popen[bytes]) -> None:
-    log_handle = getattr(process, "ming_tp_parity_log_handle", None)
+def _stop_server(server: MingServerProcess) -> None:
+    process = server.process
     try:
         if process.poll() is None:
             try:
@@ -144,8 +150,7 @@ def _stop_server(process: subprocess.Popen[bytes]) -> None:
                     process.kill()
                 process.wait(timeout=30.0)
     finally:
-        if log_handle is not None:
-            log_handle.close()
+        server.log_handle.close()
 
 
 def _extract_text(body: dict[str, Any]) -> str:
