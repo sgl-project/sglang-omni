@@ -97,6 +97,9 @@ class Environ:
     # logging
     SGLOMNI_LOG_LEVEL = EnvStr("INFO")
 
+    # model loading
+    SGLANG_OMNI_USE_MODELSCOPE = EnvBool(False)
+
     def __new__(cls):
         # single instance
         if cls._instance is None:

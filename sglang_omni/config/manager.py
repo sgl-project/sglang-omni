@@ -2,7 +2,6 @@ from copy import deepcopy
 from typing import Any
 
 import yaml
-from transformers import AutoConfig
 
 from sglang_omni.config.schema import PipelineConfig
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
@@ -11,6 +10,7 @@ from sglang_omni.utils import (
     try_resolve_arch_from_mistral_config,
     try_resolve_arch_from_raw_config,
 )
+from sglang_omni.utils.hub import AutoConfig
 
 
 def resolve_config_cls_for_model_path(model_path: str):
