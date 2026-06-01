@@ -10,7 +10,7 @@ import torch
 
 
 def _encode_audio_codes(codes: Any) -> dict[str, Any]:
-    if hasattr(codes, "detach"):
+    if isinstance(codes, torch.Tensor):
         codes = codes.detach().cpu().numpy()
     array = np.asarray(codes)
     if array.size == 0:
@@ -39,8 +39,7 @@ def _decode_audio_codes(data: dict[str, Any]) -> Any | None:
     if raw is None or shape is None:
         return None
     dtype = np.dtype(data.get("audio_codes_dtype", "uint16"))
-    array = np.frombuffer(raw, dtype=dtype).reshape(shape)
-    array = np.ascontiguousarray(array).astype(np.int64, copy=False)
+    array = np.frombuffer(raw, dtype=dtype).reshape(shape).astype(np.int64)
     return torch.from_numpy(array)
 
 
