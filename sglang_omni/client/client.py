@@ -288,6 +288,7 @@ class Client:
                 if isinstance(text, str):
                     chunk.text = text
                 Client._set_audio_data(chunk, c2w_result)
+                chunk.usage = UsageInfo.from_dict(decode_result.get("usage"))
                 return chunk
             text = result.get("text")
             if isinstance(text, str):
@@ -309,7 +310,24 @@ class Client:
             if modality is not None:
                 chunk.modality = modality
             Client._set_audio_data(chunk, result)
-            chunk.usage = UsageInfo.from_dict(result.get("usage"))
+            usage = dict(result.get("usage") or {})
+            if "prompt_tokens" not in usage and result.get("prompt_tokens") is not None:
+                usage["prompt_tokens"] = result.get("prompt_tokens")
+            if (
+                "completion_tokens" not in usage
+                and result.get("completion_tokens") is not None
+            ):
+                usage["completion_tokens"] = result.get("completion_tokens")
+            if "total_tokens" not in usage:
+                prompt_tokens = usage.get("prompt_tokens")
+                completion_tokens = usage.get("completion_tokens")
+                if prompt_tokens is not None or completion_tokens is not None:
+                    usage["total_tokens"] = (prompt_tokens or 0) + (
+                        completion_tokens or 0
+                    )
+            if "engine_time_s" not in usage and result.get("engine_time_s") is not None:
+                usage["engine_time_s"] = result.get("engine_time_s")
+            chunk.usage = UsageInfo.from_dict(usage)
             return chunk
         if isinstance(result, str):
             chunk.text = result
@@ -397,6 +415,11 @@ def _extract_inputs(request: GenerateRequest) -> Any:
     audios = request.metadata.get("audios")
     images = request.metadata.get("images")
     videos = request.metadata.get("videos")
+    video_fps = request.metadata.get("video_fps")
+    video_max_frames = request.metadata.get("video_max_frames")
+    video_min_pixels = request.metadata.get("video_min_pixels")
+    video_max_pixels = request.metadata.get("video_max_pixels")
+    video_total_pixels = request.metadata.get("video_total_pixels")
 
     # If we have any media, return a dict with messages and media
     # Otherwise, return just the messages list (for backward compatibility)
@@ -408,6 +431,16 @@ def _extract_inputs(request: GenerateRequest) -> Any:
             result["audios"] = audios
         if videos:
             result["videos"] = videos
+        if video_fps is not None:
+            result["video_fps"] = video_fps
+        if video_max_frames is not None:
+            result["video_max_frames"] = video_max_frames
+        if video_min_pixels is not None:
+            result["video_min_pixels"] = video_min_pixels
+        if video_max_pixels is not None:
+            result["video_max_pixels"] = video_max_pixels
+        if video_total_pixels is not None:
+            result["video_total_pixels"] = video_total_pixels
         return result
     return messages
 

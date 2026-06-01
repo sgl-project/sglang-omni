@@ -11,13 +11,16 @@ import asyncio
 import inspect
 import logging
 import multiprocessing
+import time
+from contextlib import suppress
 from typing import Any
 
 from sglang_omni.config.compiler import (
-    _allocate_endpoints,
+    IpcRuntimeDir,
     _build_relay_config,
     _create_input_handler,
     _wrap_get_next,
+    prepare_pipeline_runtime,
 )
 from sglang_omni.config.schema import PipelineConfig, StageConfig
 from sglang_omni.pipeline import Coordinator, Stage, Worker
@@ -97,6 +100,12 @@ def _compile_stage_local(
         raise TypeError(f"get_next not callable: {stage_cfg.get_next}")
     get_next = _wrap_get_next(get_next, name_map)
 
+    payload_filter = None
+    if stage_cfg.payload_filter:
+        payload_filter = import_string(stage_cfg.payload_filter)
+        if not callable(payload_filter):
+            raise TypeError(f"payload_filter not callable: {stage_cfg.payload_filter}")
+
     input_handler = _create_input_handler(stage_cfg.input_handler, name_map=name_map)
 
     stage = Stage(
@@ -107,6 +116,7 @@ def _compile_stage_local(
         abort_endpoint=all_endpoints["abort"],
         endpoints=stage_endpoints,
         input_handler=input_handler,
+        payload_filter=payload_filter,
         relay_config=_resolve_relay_config(stage_cfg, global_cfg),
     )
 
@@ -123,6 +133,14 @@ def _compile_stage_local(
     ):
         gpu_id = global_cfg.gpu_placement.get(stage_cfg.name, 0)
         stage_cfg.executor.args["gpu_id"] = gpu_id
+
+    # Also translate gpu_placement to device string for stages using "device"
+    # instead of "gpu_id" (e.g., talker, audio_encoder).
+    if "device" in inspect.signature(
+        factory
+    ).parameters and stage_cfg.executor.args.get("device", "").startswith("cuda"):
+        gpu_id = global_cfg.gpu_placement.get(stage_cfg.name, 0)
+        stage_cfg.executor.args["device"] = f"cuda:{gpu_id}"
 
     for _ in range(stage_cfg.num_workers):
         executor = factory(**stage_cfg.executor.args)
@@ -220,6 +238,16 @@ def _stage_process_entry(
         # Reconstruct PipelineConfig from serialized dict
         pipeline_config = PipelineConfig(**config_dict["pipeline_config"])
 
+        # Set default CUDA device early based on gpu_placement, before
+        # any CUDA initialization.  This prevents PyTorch from allocating
+        # the context on the wrong GPU in multi-GPU deployments.
+        gpu_id = pipeline_config.gpu_placement.get(stage_name, 0)
+        import torch
+
+        if torch.cuda.is_available() and torch.cuda.device_count() > gpu_id:
+            torch.cuda.set_device(gpu_id)
+            log.info("Set CUDA device to cuda:%d for stage %s", gpu_id, stage_name)
+
         # Apply fusion to get actual stage configs
         stages_cfg, fused_name_map, _ = pipeline_config.apply_fusion()
         name_map.update(fused_name_map)
@@ -276,6 +304,7 @@ class MultiProcessPipelineRunner:
     def __init__(self, config: PipelineConfig):
         self._config = config
         self._coordinator: Coordinator | None = None
+        self._ipc_runtime_dir: IpcRuntimeDir | None = None
         self._processes: list[multiprocessing.Process] = []
         self._completion_task: asyncio.Task | None = None
         self._monitor_task: asyncio.Task | None = None
@@ -296,14 +325,21 @@ class MultiProcessPipelineRunner:
         if self._started:
             raise RuntimeError("Already started")
 
-        try:
-            # 1. Apply fusion, allocate endpoints
-            stages_cfg, name_map, entry_stage = self._config.apply_fusion()
-            endpoints = _allocate_endpoints(self._config, stages=stages_cfg)
+        (
+            stages_cfg,
+            name_map,
+            entry_stage,
+            endpoints,
+            self._ipc_runtime_dir,
+            _,
+        ) = prepare_pipeline_runtime(
+            self._config,
+            ipc_runtime_dir=self._ipc_runtime_dir,
+        )
 
+        try:
             stage_endpoints = {s.name: endpoints[f"stage_{s.name}"] for s in stages_cfg}
 
-            # 2. Create Coordinator in main process (binds ZMQ first)
             self._coordinator = Coordinator(
                 completion_endpoint=endpoints["completion"],
                 abort_endpoint=endpoints["abort"],
@@ -315,11 +351,11 @@ class MultiProcessPipelineRunner:
                 self._coordinator.run_completion_loop()
             )
 
-            # 3. Spawn one subprocess per stage
+            ctx = multiprocessing.get_context("spawn")
             ready_events: list[multiprocessing.Event] = []
 
             for stage_cfg in stages_cfg:
-                ready = multiprocessing.Event()
+                ready = ctx.Event()
                 config_dict = _build_stage_process_config(
                     pipeline_config=self._config,
                     stage_name=stage_cfg.name,
@@ -327,26 +363,33 @@ class MultiProcessPipelineRunner:
                     all_endpoints=endpoints,
                     name_map=name_map,
                 )
-                p = multiprocessing.Process(
+                # Stages that spawn TP follower subprocesses (tp_size > 1)
+                # cannot be daemon — Python forbids daemon children.
+                needs_children = (
+                    stage_cfg.executor
+                    and stage_cfg.executor.args
+                    and stage_cfg.executor.args.get("server_args_overrides", {}).get(
+                        "tp_size", 1
+                    )
+                    > 1
+                )
+                p = ctx.Process(
                     target=_stage_process_entry,
                     args=(config_dict, ready),
                     name=f"stage-{stage_cfg.name}",
-                    daemon=True,
+                    daemon=not needs_children,
                 )
                 p.start()
                 self._processes.append(p)
                 ready_events.append(ready)
 
-            # 4. Wait for all stages to be ready
-            import time as _time
-
             loop = asyncio.get_running_loop()
             for i, event in enumerate(ready_events):
                 stage_name = stages_cfg[i].name
                 p = self._processes[i]
-                deadline = _time.monotonic() + timeout
+                deadline = time.monotonic() + timeout
                 while not event.is_set():
-                    remaining = deadline - _time.monotonic()
+                    remaining = deadline - time.monotonic()
                     if remaining <= 0:
                         raise TimeoutError(
                             f"Stage {stage_name} did not become ready within {timeout}s"
@@ -360,14 +403,12 @@ class MultiProcessPipelineRunner:
                     await loop.run_in_executor(None, event.wait, min(remaining, 1.0))
                 logger.info("Stage %s ready", stage_name)
 
-            # 5. Check for early process failures
             for i, p in enumerate(self._processes):
                 if not p.is_alive() and p.exitcode != 0:
                     raise RuntimeError(
                         f"Stage {stages_cfg[i].name} exited with code {p.exitcode}"
                     )
 
-            # 6. Register stages with coordinator
             for stage_cfg in stages_cfg:
                 self._coordinator.register_stage(
                     stage_cfg.name, stage_endpoints[stage_cfg.name]
@@ -408,6 +449,10 @@ class MultiProcessPipelineRunner:
                     pass
                 self._coordinator = None
 
+            if self._ipc_runtime_dir is not None:
+                self._ipc_runtime_dir.close()
+                self._ipc_runtime_dir = None
+
             raise
 
     async def _monitor_children(self) -> None:
@@ -439,13 +484,11 @@ class MultiProcessPipelineRunner:
                 self._monitor_task.cancel()
             self._monitor_task = None
 
-        # 1. Send shutdown to all stages via coordinator
         try:
             await self._coordinator.shutdown_stages()
         except Exception as e:
             logger.warning("shutdown_stages error: %s", e)
 
-        # 2. Wait for processes to exit
         for p in self._processes:
             p.join(timeout=30)
             if p.is_alive():
@@ -456,13 +499,16 @@ class MultiProcessPipelineRunner:
                     p.kill()
                     p.join(timeout=2)
 
-        # 3. Cancel completion loop and stop coordinator
         if self._completion_task is not None:
             self._completion_task.cancel()
-            try:
+            with suppress(asyncio.CancelledError):
                 await self._completion_task
-            except asyncio.CancelledError:
-                pass
+            self._completion_task = None
 
-        await self._coordinator.stop()
-        self._processes.clear()
+        try:
+            await self._coordinator.stop()
+            self._processes.clear()
+        finally:
+            if self._ipc_runtime_dir is not None:
+                self._ipc_runtime_dir.close()
+                self._ipc_runtime_dir = None

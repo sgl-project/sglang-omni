@@ -6,6 +6,11 @@ from transformers import AutoConfig
 
 from sglang_omni.config.schema import PipelineConfig
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
+from sglang_omni.utils.hf import (
+    architecture_from_hf_config,
+    try_resolve_arch_from_mistral_config,
+    try_resolve_arch_from_raw_config,
+)
 
 
 class ConfigManager:
@@ -91,12 +96,50 @@ class ConfigManager:
         return merged_config
 
     @staticmethod
-    def from_model_path(model_path: str) -> "ConfigManager":
-        """
-        Load the configuration from the model path.
-        """
-        hf_config = AutoConfig.from_pretrained(model_path)
-        config_cls = PIPELINE_CONFIG_REGISTRY.get_config(hf_config.architectures[0])
+    def from_model_path(model_path: str, variant: str | None = None) -> "ConfigManager":
+        """Load config from model path, optionally selecting a variant."""
+        import importlib
+
+        arch = None
+
+        # 1) Hugging Face: local snapshot or hub id (hub ids have no local config.json)
+        try:
+            hf_config = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
+            arch = architecture_from_hf_config(hf_config)
+        except Exception:
+            pass
+
+        # 2) Mistral-format params.json (e.g. Voxtral TTS) when HF config is absent
+        if arch is None:
+            arch = try_resolve_arch_from_mistral_config(model_path)
+
+        # 3) Raw config.json fallback (e.g. models needing trust_remote_code)
+        if arch is None:
+            arch = try_resolve_arch_from_raw_config(model_path)
+
+        if arch is None:
+            supported = ", ".join(
+                sorted(PIPELINE_CONFIG_REGISTRY.get_supported_archs())
+            )
+            raise ValueError(
+                f"Could not resolve model architecture for {model_path!r}. "
+                "Use a Hugging Face model id or a local directory with config.json "
+                "(architectures) or Mistral params.json (model_type, e.g. voxtral_tts). "
+                f"Supported architectures: {supported}"
+            )
+
+        config_cls = PIPELINE_CONFIG_REGISTRY.get_config(arch)
+
+        if variant:
+            module = importlib.import_module(config_cls.__module__)
+            variants = getattr(module, "Variants", None)
+            if variants and variant in variants:
+                config_cls = variants[variant]
+            else:
+                raise ValueError(
+                    f"Unknown variant '{variant}' for {config_cls.__name__}"
+                )
+
         config = config_cls(model_path=model_path)
         return ConfigManager(config)
 

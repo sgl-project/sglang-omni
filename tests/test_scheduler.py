@@ -5,8 +5,9 @@ import asyncio
 
 import pytest
 
+from sglang_omni.engines.omni.runtime.encoder import EncoderBatchPlanner
 from sglang_omni.engines.omni.scheduler import Scheduler
-from sglang_omni.engines.omni.types import SchedulerStatus
+from sglang_omni.engines.omni.types import SchedulerRequest, SchedulerStatus
 
 
 class _DummyBatchPlanner:
@@ -18,6 +19,13 @@ class _DummyBatchPlanner:
 
 
 class _DummyResourceManager:
+    def can_allocate(self, request):
+        del request
+        return True
+
+    def allocate(self, request):
+        del request
+
     def free(self, request):
         del request
 
@@ -57,3 +65,36 @@ async def test_get_result_keeps_terminal_request_streamable() -> None:
 
     assert result.status == SchedulerStatus.FINISHED
     assert await stream_task == []
+
+
+def test_encoder_batch_planner_respects_request_cost_budget() -> None:
+    planner = EncoderBatchPlanner(
+        max_batch_size=4,
+        request_cost_fn=lambda request: request.data["cost"],
+        max_batch_cost=10,
+    )
+    requests = [
+        SchedulerRequest(request_id="r1", data={"cost": 4}),
+        SchedulerRequest(request_id="r2", data={"cost": 5}),
+        SchedulerRequest(request_id="r3", data={"cost": 3}),
+    ]
+
+    selected = planner.select_requests(requests, [], _DummyResourceManager())
+
+    assert [request.request_id for request in selected] == ["r1", "r2"]
+
+
+def test_encoder_batch_planner_allows_single_oversized_request() -> None:
+    planner = EncoderBatchPlanner(
+        max_batch_size=4,
+        request_cost_fn=lambda request: request.data["cost"],
+        max_batch_cost=10,
+    )
+    requests = [
+        SchedulerRequest(request_id="large", data={"cost": 99}),
+        SchedulerRequest(request_id="next", data={"cost": 1}),
+    ]
+
+    selected = planner.select_requests(requests, [], _DummyResourceManager())
+
+    assert [request.request_id for request in selected] == ["large"]

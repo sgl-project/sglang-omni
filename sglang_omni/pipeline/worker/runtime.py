@@ -343,7 +343,20 @@ class Worker:
             if endpoint is None:
                 await self._send_failure(request_id, f"Unknown stage: {next_stage}")
                 return False
-            metadata, op = await self.data_plane.write_payload(request_id, payload)
+            routed_payload = payload
+            if self.stage.payload_filter is not None:
+                routed_payload = self.stage.payload_filter(
+                    request_id, next_stage, payload
+                )
+                if not isinstance(routed_payload, StagePayload):
+                    raise TypeError(
+                        "payload_filter must return StagePayload, "
+                        f"got {type(routed_payload)}"
+                    )
+
+            metadata, op = await self.data_plane.write_payload(
+                request_id, routed_payload
+            )
 
             await self.stage.control_plane.send_to_stage(
                 next_stage,

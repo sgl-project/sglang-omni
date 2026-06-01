@@ -7,13 +7,29 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 import torch
+import torch.nn.functional as F
 
 from ..types import RequestOutput, SchedulerOutput, SchedulerRequest
 from .interfaces import ResourceManager
 
-# -----------------------------------------------------------------------------
-# Data Structures
-# -----------------------------------------------------------------------------
+_AUDIO_FEATURES_NDIM = 3
+_AUDIO_MASK_NDIM = 2
+
+
+def _right_pad_last_dim(
+    tensor: torch.Tensor, target_len: int, pad_value: float | int = 0.0
+) -> torch.Tensor:
+    """Right-pad only the last dimension of tensor to target_len.
+
+    Note (Chenyang):
+    Returns the tensor unchanged if its last dimension already meets or
+    exceeds target_len. pad_value is cast by F.pad to the tensor's dtype,
+    so both float and int are accepted for use with feature/mask tensors.
+    """
+    current_len = tensor.shape[-1]
+    if current_len >= target_len:
+        return tensor
+    return F.pad(tensor, (0, target_len - current_len), value=pad_value)
 
 
 @dataclass
@@ -38,16 +54,19 @@ class EncoderBatchData:
     skip_results: list[dict[str, Any] | None] | None = None
 
 
-# -----------------------------------------------------------------------------
-# BatchPlanner
-# -----------------------------------------------------------------------------
-
-
 class EncoderBatchPlanner:
     """Batch planner for encoder models."""
 
-    def __init__(self, max_batch_size: int = 32):
+    def __init__(
+        self,
+        max_batch_size: int = 32,
+        *,
+        request_cost_fn: Callable[[SchedulerRequest], int] | None = None,
+        max_batch_cost: int | None = None,
+    ):
         self.max_batch_size = max_batch_size
+        self.request_cost_fn = request_cost_fn
+        self.max_batch_cost = max_batch_cost
 
     def select_requests(
         self,
@@ -57,14 +76,28 @@ class EncoderBatchPlanner:
     ) -> list[SchedulerRequest]:
         del running
         selected: list[SchedulerRequest] = []
+        selected_cost = 0
         for request in waiting:
             if len(selected) >= self.max_batch_size:
+                break
+            request_cost = self._request_cost(request)
+            if (
+                self.max_batch_cost is not None
+                and selected
+                and selected_cost + request_cost > self.max_batch_cost
+            ):
                 break
             if not resource_manager.can_allocate(request):
                 break
             resource_manager.allocate(request)
             selected.append(request)
+            selected_cost += request_cost
         return selected
+
+    def _request_cost(self, request: SchedulerRequest) -> int:
+        if self.request_cost_fn is None:
+            return 0
+        return max(0, int(self.request_cost_fn(request)))
 
     def build_batch(self, requests: list[SchedulerRequest]) -> EncoderBatchData:
         if any(getattr(r.data, "input_dict", None) is not None for r in requests):
@@ -114,18 +147,60 @@ class EncoderBatchPlanner:
         return True  # Encoder always done in one pass
 
 
-# -----------------------------------------------------------------------------
-# InputPreparer
-# -----------------------------------------------------------------------------
-
-
 class EncoderInputPreparer:
     """Converts EncoderBatchData to model inputs."""
 
     EXCLUDED_KEYS = {"cache_key", "_skip", "_result"}
+    # Note (Ratish): Qwen3-Omni pads within each request but can still produce
+    # different time lengths across requests. Keys listed here are right-padded
+    # on their last (time) dimension before being concatenated on the batch
+    # dimension. Each entry maps to (expected_ndim, pad_value_for_last_dim) so
+    # the dispatch key set and per-key invariants stay in a single source of
+    # truth.
+    TIME_PAD_SPECS: dict[str, tuple[int, float]] = {
+        "input_features": (_AUDIO_FEATURES_NDIM, 0.0),
+        "feature_attention_mask": (_AUDIO_MASK_NDIM, 0.0),
+    }
 
     def __init__(self, pad_token_id: int = 0):
         self.pad_token_id = pad_token_id
+
+    def _pad_and_cat_tensors(
+        self,
+        *,
+        key: str,
+        tensors: list[torch.Tensor],
+        device: torch.device,
+    ) -> torch.Tensor:
+        assert (
+            tensors
+        ), f"_pad_and_cat_tensors called with empty tensor list for key={key}"
+        expected_dim, pad_value = self.TIME_PAD_SPECS[key]
+        if any(tensor.dim() != expected_dim for tensor in tensors):
+            raise ValueError(
+                f"Unsupported tensor layout for time padding: key={key}, "
+                f"tensor_shapes={[tuple(tensor.shape) for tensor in tensors]}"
+            )
+
+        # Note (Chenyang, Ratish):
+        # Only the last (time) dim is padded; all non-time dims must match
+        # across requests. Catching the mismatch here surfaces a clear error
+        # instead of a silent shape bug downstream.
+        ref_shape = tensors[0].shape[:-1]
+        for i, tensor in enumerate(tensors[1:], 1):
+            if tensor.shape[:-1] != ref_shape:
+                raise ValueError(
+                    f"Non-time dimensions mismatch for key={key}: "
+                    f"tensor[0].shape={tuple(tensors[0].shape)}, "
+                    f"tensor[{i}].shape={tuple(tensor.shape)}"
+                )
+
+        max_time_dim = max(tensor.shape[-1] for tensor in tensors)
+        padded = [
+            _right_pad_last_dim(tensor, max_time_dim, pad_value=pad_value)
+            for tensor in tensors
+        ]
+        return torch.cat(padded, dim=0).to(device)
 
     def prepare(
         self,
@@ -140,14 +215,21 @@ class EncoderInputPreparer:
             active_inputs = [batch_data.input_dicts[i] for i in active_indices]
             first = active_inputs[0]
             batched: dict[str, Any] = {}
+
+            # Note (Ratish, Chenyang):
+            # Keys routed through plain torch.cat on dim=0. Entries in
+            # TIME_PAD_SPECS are intercepted earlier and handled via the
+            # right-pad-and-cat path, so they do not appear here.
+
             cat_keys = {
                 "pixel_values",
                 "pixel_values_videos",
                 "image_grid_thw",
                 "video_grid_thw",
-                "input_features",
-                "feature_attention_mask",
                 "audio_feature_lengths",
+                "audio_feats",
+                "audio_feats_lengths",
+                "audio_placeholder_loc_lens",
             }
             for key, value in first.items():
                 # Skip metadata keys that shouldn't be passed to the model
@@ -157,6 +239,12 @@ class EncoderInputPreparer:
                     tensors = [inp[key] for inp in active_inputs]
                     if value.dim() == 0:
                         batched[key] = torch.stack(tensors).to(device)
+                    elif key in self.TIME_PAD_SPECS:
+                        batched[key] = self._pad_and_cat_tensors(
+                            key=key,
+                            tensors=tensors,
+                            device=device,
+                        )
                     elif key in cat_keys:
                         batched[key] = torch.cat(tensors, dim=0).to(device)
                     else:
@@ -307,10 +395,6 @@ class EncoderOutputProcessor:
         else:
             return self._process_text_embedding(model_output, scheduler_output)
 
-    # -------------------------------------------------------------------------
-    # Multimodal Processing
-    # -------------------------------------------------------------------------
-
     def _process_multimodal(
         self,
         model_output: Any,
@@ -440,6 +524,17 @@ class EncoderOutputProcessor:
 
         return outputs
 
+    def _slice_for_request(
+        self,
+        items: list | torch.Tensor,
+        sizes: list[int],
+        out_idx: int,
+    ) -> list | torch.Tensor:
+        """Slice per-item ``items`` into the chunk belonging to request ``out_idx``."""
+        offset = sum(sizes[:out_idx])
+        count = sizes[out_idx]
+        return items[offset : offset + count]
+
     def _extract_value_for_request(
         self,
         key: str,
@@ -470,13 +565,32 @@ class EncoderOutputProcessor:
 
         # Handle count keys
         if key in {"image_token_counts", "audio_output_lengths", "video_token_counts"}:
-            if value.dim() == 1 and value.shape[0] == len(active_indices):
-                return value[out_idx : out_idx + 1]
+            for mod_name, config in self.modality_configs.items():
+                if config.count_key == key:
+                    sizes = modality_sizes[mod_name]
+                    return self._slice_for_request(value, sizes, out_idx)
             return value
 
-        # Handle embeddings
+        # Note(Yifei):
+        # Handle embeddings. ``embed_splits`` is built solely by
+        # ``_split_embeddings`` from ``self.modality_configs``, so any key here
+        # is guaranteed to match exactly one config.embed_key below.
         if key in embed_splits:
-            return embed_splits[key][out_idx]
+            splits = embed_splits[key]
+            for mod_name, config in self.modality_configs.items():
+                if config.embed_key == key:
+                    sizes = modality_sizes[mod_name]
+                    # Note(Yifei):
+                    # Precondition: image/audio live in separate encoder stages
+                    # and InputPreparer enforces homogeneous key sets across a
+                    # batch, so whenever ``key`` is in ``embed_splits`` every
+                    # active request must contribute at least one item.
+                    assert sizes[out_idx] > 0, (
+                        f"empty {mod_name} slice for active request {out_idx} "
+                        f"despite {key} present in embed_splits"
+                    )
+                    chunk = self._slice_for_request(splits, sizes, out_idx)
+                    return chunk[0] if len(chunk) == 1 else torch.cat(chunk)
 
         # Handle generic batched tensors
         if value.shape[0] == len(active_indices):

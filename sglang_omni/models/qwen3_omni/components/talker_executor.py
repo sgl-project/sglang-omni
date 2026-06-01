@@ -39,6 +39,29 @@ _THINKER_EMBED_CANDIDATE_KEYS = (
 )
 
 
+def _validate_talker_context(
+    *,
+    request_id: str,
+    prefill_tokens: int,
+    max_new_tokens: int,
+    max_seq_len: int | None,
+) -> None:
+    if max_seq_len is None:
+        return
+    total_tokens = int(prefill_tokens) + int(max_new_tokens)
+    if prefill_tokens >= max_seq_len:
+        raise ValueError(
+            f"Talker prefill for request {request_id} has {prefill_tokens} tokens, "
+            f"reaching or exceeding talker context length {max_seq_len}."
+        )
+    if total_tokens >= max_seq_len:
+        raise ValueError(
+            f"Talker request {request_id} needs {total_tokens} total tokens "
+            f"({prefill_tokens} prefill + {int(max_new_tokens)} generated), reaching "
+            f"or exceeding talker context length {max_seq_len}."
+        )
+
+
 @dataclass
 class _TalkerRequestState:
     payload: StagePayload
@@ -121,6 +144,7 @@ class TalkerStreamingExecutor(Executor):
         video_token_id: int | None,
         speaker_map: dict[str, int] | None,
         enqueue_fn_holder: dict[str, Any],
+        max_seq_len: int | None = None,
         thinker_config: Any = None,
     ):
         self._engine = engine
@@ -155,6 +179,7 @@ class TalkerStreamingExecutor(Executor):
             str(k).lower(): int(v) for k, v in (speaker_map or {}).items()
         }
         self._enqueue_fn_holder = enqueue_fn_holder
+        self._max_seq_len = int(max_seq_len) if max_seq_len is not None else None
         self._thinker_config = thinker_config
 
         self._talker_model = engine.model_runner._inner_model
@@ -418,6 +443,12 @@ class TalkerStreamingExecutor(Executor):
             include_assistant_eos=thinker_done,
             im_end_token_id=self._im_end_token_id,
         )
+        sampling_cfg["max_new_tokens"] = self._resolve_effective_max_new_tokens(
+            request_id,
+            prefill["input_ids"],
+            max_new_tokens=sampling_cfg["max_new_tokens"],
+            explicit=bool(sampling_cfg["max_new_tokens_explicit"]),
+        )
         self._log_assistant_component_summary(
             request_id=request_id,
             assistant_embed=assistant_embed,
@@ -460,6 +491,40 @@ class TalkerStreamingExecutor(Executor):
         data.tts_eos_embed = tts_eos_embed[0].detach().cpu()
         return data
 
+    def _resolve_effective_max_new_tokens(
+        self,
+        request_id: str,
+        input_ids: torch.Tensor,
+        *,
+        max_new_tokens: int,
+        explicit: bool,
+    ) -> int:
+        if self._max_seq_len is None:
+            return int(max_new_tokens)
+
+        prefill_tokens = int(input_ids.numel())
+        if explicit:
+            _validate_talker_context(
+                request_id=request_id,
+                prefill_tokens=prefill_tokens,
+                max_new_tokens=max_new_tokens,
+                max_seq_len=self._max_seq_len,
+            )
+            return int(max_new_tokens)
+
+        if prefill_tokens >= self._max_seq_len:
+            _validate_talker_context(
+                request_id=request_id,
+                prefill_tokens=prefill_tokens,
+                max_new_tokens=max_new_tokens,
+                max_seq_len=self._max_seq_len,
+            )
+
+        # Reserve 1 token of slack so prefill + generated stays strictly below
+        # max_seq_len (room for EOS / talker bos token handling).
+        max_available = max(int(self._max_seq_len) - prefill_tokens - 1, 0)
+        return min(int(max_new_tokens), max_available)
+
     def _resolve_speaker_id(self, payload: StagePayload) -> int:
         speaker_name = str(payload.request.params.get("speaker", "Ethan")).lower()
         speaker_id = self._speaker_map.get(speaker_name)
@@ -481,6 +546,7 @@ class TalkerStreamingExecutor(Executor):
         ]
         return {
             "max_new_tokens": int(params.get("talker_max_new_tokens", 4096)),
+            "max_new_tokens_explicit": "talker_max_new_tokens" in params,
             "temperature": float(params.get("talker_temperature", 0.9)),
             "top_k": int(params.get("talker_top_k", 50)),
             "top_p": float(params.get("talker_top_p", 1.0)),
@@ -500,20 +566,10 @@ class TalkerStreamingExecutor(Executor):
             self._tts_eos_token_id,
             self._tts_pad_token_id,
         ]
-        hidden_size = self._talker_model.config.thinker_hidden_size
-        try:
-            thinker_rows = _load_thinker_embedding_rows(
-                self._resolved_model_path, special_ids
-            )
-            thinker_rows = thinker_rows.to(device=self._device, dtype=self._dtype)
-        except Exception:
-            logger.exception("Failed to load thinker special token embeddings")
-            thinker_rows = torch.zeros(
-                len(special_ids),
-                hidden_size,
-                device=self._device,
-                dtype=self._dtype,
-            )
+        thinker_rows = _load_thinker_embedding_rows(
+            self._resolved_model_path, special_ids
+        )
+        thinker_rows = thinker_rows.to(device=self._device, dtype=self._dtype)
 
         projected = self._talker_model.text_projection(thinker_rows)
         tts_bos_embed, tts_eos_embed, tts_pad_embed = projected.chunk(3, dim=0)

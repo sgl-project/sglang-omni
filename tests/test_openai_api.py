@@ -7,7 +7,6 @@ import base64
 import io
 import json
 import wave
-from types import SimpleNamespace
 from typing import Any
 
 from fastapi.testclient import TestClient
@@ -18,12 +17,11 @@ from sglang_omni.client import (
     CompletionStreamChunk,
     GenerateChunk,
 )
-from sglang_omni.models.fishaudio_s2_pro.pipeline.next_stage import (
-    VOCODER_STAGE,
-    tts_engine_next,
-)
 from sglang_omni.serve import create_app
-from sglang_omni.serve.openai_api import _build_speech_generate_request
+from sglang_omni.serve.openai_api import (
+    _build_speech_generate_request,
+    _select_speech_audio_delta,
+)
 from sglang_omni.serve.protocol import CreateSpeechRequest
 
 
@@ -259,20 +257,78 @@ def test_speech_endpoint_stream_returns_sse_audio_chunks() -> None:
     assert events[-1]["finish_reason"] == "stop"
 
 
+def test_select_speech_audio_delta_suppresses_empty_chunks() -> None:
+    audio, emitted = _select_speech_audio_delta(
+        [],
+        emitted_samples=5,
+        is_terminal=False,
+    )
+
+    assert audio is None
+    assert emitted == 5
+
+
+def test_select_speech_audio_delta_returns_only_new_terminal_samples() -> None:
+    audio, emitted = _select_speech_audio_delta(
+        [0.0, 0.1, -0.1, 0.0, 0.2, -0.2],
+        emitted_samples=4,
+        is_terminal=True,
+    )
+
+    assert audio is not None
+    assert list(audio) == [0.2, -0.2]
+    assert emitted == 6
+
+
 def _decode_wav_frame_count(audio_b64: str) -> int:
     wav_bytes = base64.b64decode(audio_b64)
     with wave.open(io.BytesIO(wav_bytes), "rb") as wav_file:
         return wav_file.getnframes()
 
 
-def test_tts_engine_next_keeps_vocoder_for_stream_requests() -> None:
-    stream_output = SimpleNamespace(request=SimpleNamespace(params={"stream": True}))
-    non_stream_output = SimpleNamespace(
-        request=SimpleNamespace(params={"stream": False})
+def test_speech_stream_finishes_without_terminal_audio_chunk() -> None:
+    dummy = DummyClient(
+        [
+            GenerateChunk(
+                request_id="speech-1",
+                modality="audio",
+                audio_data=[0.0, 0.1, -0.1, 0.0],
+                sample_rate=24000,
+            ),
+            GenerateChunk(
+                request_id="speech-1",
+                finish_reason="stop",
+            ),
+        ]
     )
+    client = TestClient(create_app(dummy, model_name="s2-pro"))
 
-    assert tts_engine_next("req-stream", stream_output) == VOCODER_STAGE
-    assert tts_engine_next("req-non-stream", non_stream_output) == VOCODER_STAGE
+    with client.stream(
+        "POST",
+        "/v1/audio/speech",
+        json={
+            "model": "s2-pro",
+            "input": "hello",
+            "stream": True,
+            "response_format": "wav",
+        },
+        timeout=5.0,
+    ) as resp:
+        assert resp.status_code == 200
+        events = []
+        for line in resp.iter_lines():
+            if not line or not line.startswith("data: "):
+                continue
+            payload = line[len("data: ") :]
+            if payload == "[DONE]":
+                break
+            events.append(json.loads(payload))
+
+    assert len(events) == 2
+    assert events[0]["audio"] is not None
+    assert events[0]["finish_reason"] is None
+    assert events[1]["audio"] is None
+    assert events[1]["finish_reason"] == "stop"
 
 
 def test_speech_stream_uses_actual_audio_format_on_fallback(monkeypatch) -> None:

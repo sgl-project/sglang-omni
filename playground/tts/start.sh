@@ -61,7 +61,7 @@ echo "============================================================"
 
 # 1. Start backend
 echo "[1/2] Starting S2-Pro server..."
-"${PYTHON_BIN}" -m sglang_omni.cli.cli serve \
+"${PYTHON_BIN}" -m sglang_omni.cli serve \
   --model-path "${MODEL_PATH}" \
   --config "${CONFIG_PATH}" \
   --port "${BACKEND_PORT}" &
@@ -101,7 +101,9 @@ echo "  Then open http://localhost:${GRADIO_PORT} in your browser."
 echo "============================================================"
 echo ""
 
-exec "${PYTHON_BIN}" "${SCRIPT_DIR}/app.py" \
+cd "${REPO_DIR}"
+
+exec "${PYTHON_BIN}" -m playground.tts.app \
   --api-base "${API_BASE}" \
   --port "${GRADIO_PORT}" \
   ${GRADIO_SHARE}

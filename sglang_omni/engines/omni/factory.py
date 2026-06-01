@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, Callable
 
 import torch
 
@@ -28,6 +28,7 @@ from .runtime.encoder import (
     EncoderOutputProcessor,
 )
 from .scheduler import Scheduler
+from .types import SchedulerRequest
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +41,10 @@ def create_encoder_engine(
     device: str = "cuda",
     use_cache: bool = False,
     cache_size: int | None = None,
+    cache_max_bytes: int | None = None,
+    cache_device: torch.device | str | None = None,
+    request_cost_fn: Callable[[SchedulerRequest], int] | None = None,
+    max_batch_cost: int | None = None,
 ) -> OmniEngine:
     """Create an encoder engine.
 
@@ -51,6 +56,10 @@ def create_encoder_engine(
         device: Device to run on
         use_cache: Enable encoder output cache
         cache_size: Max cache entries (None for unbounded)
+        cache_max_bytes: Max cached tensor bytes (None for unbounded)
+        cache_device: Optional device used to store cached outputs
+        request_cost_fn: Optional per-request batch cost estimator
+        max_batch_cost: Optional maximum summed cost per scheduled batch
 
     Returns:
         OmniEngine configured for encoder models
@@ -77,7 +86,11 @@ def create_encoder_engine(
         pad_token_id = getattr(tokenizer, "pad_token_id", None) or 0
 
     scheduler = Scheduler(
-        batch_planner=EncoderBatchPlanner(max_batch_size=max_batch_size),
+        batch_planner=EncoderBatchPlanner(
+            max_batch_size=max_batch_size,
+            request_cost_fn=request_cost_fn,
+            max_batch_cost=max_batch_cost,
+        ),
         resource_manager=SimpleResourceManager(max_count=max_batch_size),
         iteration_controller=SinglePassIterationController(),
     )
@@ -93,7 +106,11 @@ def create_encoder_engine(
     # Create cache manager (if needed)
     cache_manager = None
     if use_cache:
-        cache_manager = SimpleCacheManager(max_size=cache_size)
+        cache_manager = SimpleCacheManager(
+            max_size=cache_size,
+            max_bytes=cache_max_bytes,
+            cache_device=cache_device,
+        )
 
     return OmniEngine(
         scheduler=scheduler,
@@ -238,12 +255,45 @@ def create_sglang_ar_engine(
         logger.debug("Disabling overlap for feedback-enabled engine")
         enable_overlap = False
 
-    # Initialize model worker
-    model_worker = ModelWorker(
-        config=ModelWorkerConfig(
+    # Note (wenyao):
+    # --- TP follower spawning ---
+    # Must happen BEFORE rank 0's ModelWorker init because
+    # init_distributed_environment is a collective operation.
+    # Follower GPUs are assigned as base_gpu_id + rank (1, 2, …, tp_size-1).
+    # Pipeline gpu_placement must not overlap with these IDs.
+    tp_size = server_args.tp_size
+    follower_processes = []
+
+    if tp_size > 1:
+        from sglang_omni.engines.ar.sglang_backend.model_worker import (
+            _resolve_nccl_port,
+        )
+        from sglang_omni.engines.tp.follower import spawn_followers
+
+        nccl_port = _resolve_nccl_port()
+        follower_processes = spawn_followers(
+            server_args=server_args,
+            nccl_port=nccl_port,
+            base_gpu_id=gpu_id,
+            tp_size=tp_size,
             model_arch_override=model_arch_override,
             weight_prefix=weight_prefix,
-        ),
+        )
+        # Inject nccl_port into config so rank 0 uses the same port
+        config = ModelWorkerConfig(
+            model_arch_override=model_arch_override,
+            weight_prefix=weight_prefix,
+            nccl_port=nccl_port,
+        )
+    else:
+        config = ModelWorkerConfig(
+            model_arch_override=model_arch_override,
+            weight_prefix=weight_prefix,
+        )
+
+    # Initialize model worker
+    model_worker = ModelWorker(
+        config=config,
         server_args=server_args,
         gpu_id=gpu_id,
     )
@@ -326,4 +376,5 @@ def create_sglang_ar_engine(
         model_runner=sglang_model_runner,
         enable_overlap=enable_overlap,
         feedback_mailbox=feedback_mailbox,
+        follower_processes=follower_processes,
     )

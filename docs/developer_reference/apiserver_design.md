@@ -10,7 +10,7 @@ The API server is the outer protocol layer on top of the `sglang-omni` pipeline 
 
 At a high level, the request path is:
 
-`CLI / Python entrypoint` → `PipelineConfig` → `compile_pipeline()` → `PipelineRunner` → `Coordinator` → `Client` → `FastAPI`
+`CLI / Python entrypoint` → `PipelineConfig` → `Pipeline Startup` → `Coordinator` → `Client` → `FastAPI`
 
 That split keeps responsibilities clean:
 

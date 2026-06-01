@@ -3,6 +3,7 @@ name: PR Test
 on:
   pull_request:
     branches: [ main ]
+    types: [labeled, synchronize, reopened, ready_for_review]
   workflow_dispatch:
 
 concurrency:
@@ -14,6 +15,12 @@ permissions:
 
 jobs:
   unit-test:
+    # CI gate — runs on workflow_dispatch, or on non-draft PRs carrying the `run-ci` label.
+    # Keep in sync with the same gate in test-examples.yaml / test-qwen3-omni-ci-v1.yaml / test-s2pro-ci-v1.yaml.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (!github.event.pull_request.draft &&
+       contains(github.event.pull_request.labels.*.name, 'run-ci'))
     runs-on: [self-hosted]
     container:
       image: frankleeeee/sglang-omni:dev # we lock to this version to avoid repeated docker pull
@@ -43,7 +50,14 @@ jobs:
             uv venv omni -p 3.11
           fi
           source omni/bin/activate
-          uv pip install -v -e ".[dev]"
+          uv pip install -v -e .
+          # Repair PyAV if its bundled shared libs got corrupted in the cached
+          # venv (e.g. "libx265-...so.215: file too short"). The editable install
+          # above does not reinstall an already-present package, so force it.
+          if ! python -c "import av" 2>/dev/null; then
+            echo "PyAV native libraries corrupted in cached venv, force-reinstalling..."
+            uv pip install --force-reinstall --no-deps --no-cache av
+          fi
 
       - name: Kill GPU processes
         shell: bash
@@ -56,7 +70,7 @@ jobs:
         run: |
           source omni/bin/activate
           export PYTHONPATH=$PWD
-          pytest tests/ -v -m "not benchmark"
+          pytest tests/ -v -m "not benchmark and not docs" -x
 
       - name: Save cache
         run: |

@@ -1,13 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Launch an OpenAI-compatible server for Qwen3-Omni.
+"""Launch an OpenAI-compatible server for Qwen3-Omni with text only output.
 
 Usage::
 
     python examples/run_qwen3_omni_server.py \
-        --model-id Qwen/Qwen3-Omni-30B-A3B-Instruct \
-        --thinker-device cuda:0 \
-        --image-device cuda:1 \
-        --audio-device cuda:1 \
+        --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct \
         --port 8000
 
 Then test with::
@@ -27,9 +24,11 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+from typing import Any
 
-from sglang_omni.models.qwen3_omni import create_text_first_pipeline_config
+from sglang_omni.models.qwen3_omni.config import Qwen3OmniPipelineConfig
 from sglang_omni.serve import launch_server
+from sglang_omni.utils import print_server_version_banner
 
 logging.basicConfig(
     level=os.environ.get("LOGLEVEL", "INFO").upper(),
@@ -42,29 +41,67 @@ def parse_args() -> argparse.Namespace:
 
     # Model
     parser.add_argument(
-        "--model-id",
+        "--model-path",
         type=str,
         default="Qwen/Qwen3-Omni-30B-A3B-Instruct",
-        help="Hugging Face model id",
+        help="Hugging Face model id or local path",
     )
-    parser.add_argument("--dtype", type=str, default="bfloat16")
-
-    # Device placement
-    parser.add_argument("--preprocessing-device", type=str, default="cpu")
-    parser.add_argument("--image-device", type=str, default="cuda:0")
-    parser.add_argument("--audio-device", type=str, default="cuda:0")
-    parser.add_argument("--thinker-device", type=str, default="cuda:0")
-    parser.add_argument("--thinker-max-seq-len", type=int, default=8192)
+    parser.add_argument("--thinker-max-seq-len", type=int, default=None)
+    parser.add_argument(
+        "--cpu-offload-gb",
+        type=int,
+        default=0,
+        help="GB of model weights to offload to CPU",
+    )
 
     # Pipeline options
     parser.add_argument(
-        "--relay-type",
+        "--relay-backend",
         type=str,
         default="shm",
         choices=["shm", "nccl", "nixl"],
         help="Relay type for inter-stage data transfer",
     )
-
+    parser.add_argument(
+        "--mem-fraction-static",
+        type=float,
+        default=None,
+        help=(
+            "Set SGLang mem_fraction_static for the thinker stage. "
+            "If omitted, SGLang chooses automatically."
+        ),
+    )
+    parser.add_argument(
+        "--encoder-mem-reserve",
+        type=float,
+        default=None,
+        help=(
+            "GPU-memory fraction kept OUT of SGLang's static pool (model weights "
+            "+ KV cache) and left free for the co-located vision/audio encoder's "
+            "weights and activations on the thinker GPU.\n"
+            "Behavior across the four flag combinations of --mem-fraction-static "
+            "and --encoder-mem-reserve:\n"
+            "  (1) neither flag passed: SGLang auto-selects mem_fraction_static "
+            "and the default reserve 0.05 is subtracted;\n"
+            "  (2) only --encoder-mem-reserve X: SGLang auto-selects "
+            "mem_fraction_static and X is subtracted;\n"
+            "  (3) only --mem-fraction-static X: X is used verbatim and the "
+            "default reserve is ignored;\n"
+            "  (4) both flags: rejected at CLI as mutually exclusive.\n"
+            "Default 0.05 is tuned for single-request / short-video workloads; "
+            "raise to 0.15-0.20 for high-concurrency long-video or long-audio "
+            "workloads."
+        ),
+    )
+    # Note (Chenyang): Add for V1.
+    parser.add_argument(
+        "--version",
+        type=str,
+        default=os.environ.get("SGLANG_OMNI_SERVER_VERSION", "legacy"),
+        choices=["legacy", "v1"],
+        help="Select the legacy or v1 Qwen3 launcher implementation.",
+    )
+    # Note (Chenyang): Add for V1.
     # Server
     parser.add_argument("--host", type=str, default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8000)
@@ -78,22 +115,134 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def main() -> None:
-    args = parse_args()
+def _check_mem_flag_mutex(
+    mem_fraction_static: float | None,
+    encoder_mem_reserve: float | None,
+) -> None:
+    """Reject passing both --mem-fraction-static and --encoder-mem-reserve."""
+    if mem_fraction_static is not None and encoder_mem_reserve is not None:
+        raise ValueError(
+            "--mem-fraction-static and --encoder-mem-reserve are mutually "
+            "exclusive: --mem-fraction-static pins the pool size directly "
+            "and the reserve only subtracts from SGLang's auto-selected "
+            "value. Pass only one."
+        )
 
-    # Build pipeline config
-    config = create_text_first_pipeline_config(
-        model_path=args.model_path,
-        preprocessing_device=args.preprocessing_device,
-        image_device=args.image_device,
-        audio_device=args.audio_device,
-        thinker_device=args.thinker_device,
-        thinker_max_seq_len=args.thinker_max_seq_len,
-        dtype=args.dtype,
-        relay_type=args.relay_type,
+
+# Note (Chenyang): Add for V1.
+
+
+def _validate_fraction(flag_name: str, value: float | None) -> None:
+    if value is not None and not 0.0 < value < 1.0:
+        raise ValueError(f"{flag_name} must be > 0 and < 1, got {value}")
+
+
+def _apply_stage_factory_updates(
+    config: Any,
+    *,
+    stage_name: str,
+    updates: dict[str, object],
+    server_arg_updates: dict[str, object] | None = None,
+) -> None:
+    for stage in config.stages:
+        if stage.name != stage_name:
+            continue
+
+        factory_args = dict(stage.factory_args or {})
+        factory_args.update(updates)
+        if server_arg_updates:
+            overrides = dict(factory_args.get("server_args_overrides") or {})
+            overrides.update(server_arg_updates)
+            factory_args["server_args_overrides"] = overrides
+        stage.factory_args = factory_args
+        return
+
+    raise ValueError(
+        f"Stage {stage_name!r} not found in config {type(config).__name__}"
     )
 
-    # Launch: compile pipeline + start stages + start OpenAI server
+
+def _launch_v1_text_server(args: argparse.Namespace) -> None:
+    from sglang_omni_v1.models.qwen3_omni.config import Qwen3OmniPipelineConfig
+    from sglang_omni_v1.serve import launch_server as launch_v1_server
+
+    _validate_fraction("--mem-fraction-static", args.mem_fraction_static)
+
+    config = Qwen3OmniPipelineConfig(
+        model_path=args.model_path,
+        relay_backend=args.relay_backend,
+    )
+
+    stage_updates: dict[str, object] = {}
+    if args.thinker_max_seq_len is not None:
+        stage_updates["thinker_max_seq_len"] = int(args.thinker_max_seq_len)
+
+    server_arg_updates: dict[str, object] = {}
+    if args.cpu_offload_gb:
+        server_arg_updates["cpu_offload_gb"] = int(args.cpu_offload_gb)
+    if args.mem_fraction_static is not None:
+        server_arg_updates["mem_fraction_static"] = args.mem_fraction_static
+
+    if stage_updates or server_arg_updates:
+        _apply_stage_factory_updates(
+            config,
+            stage_name="thinker",
+            updates=stage_updates,
+            server_arg_updates=server_arg_updates or None,
+        )
+    if stage_updates:
+        _apply_stage_factory_updates(
+            config,
+            stage_name="preprocessing",
+            updates=stage_updates,
+        )
+
+    launch_v1_server(
+        config,
+        host=args.host,
+        port=args.port,
+        model_name=args.model_name,
+    )
+
+
+# Note (Chenyang): Add for V1.
+
+
+def main() -> None:
+    args = parse_args()
+    print_server_version_banner(args.version, entry="examples/run_qwen3_omni_server.py")
+    # Note (Chenyang): Add for V1.
+    if args.version == "v1":
+        _launch_v1_text_server(args)
+        return
+    # Note (Chenyang): Add for V1.
+
+    _check_mem_flag_mutex(args.mem_fraction_static, args.encoder_mem_reserve)
+
+    overrides = {}
+    if args.thinker_max_seq_len is not None:
+        overrides["thinker_max_seq_len"] = args.thinker_max_seq_len
+    if args.cpu_offload_gb:
+        overrides["cpu_offload_gb"] = args.cpu_offload_gb
+    if args.encoder_mem_reserve is not None:
+        overrides["encoder_mem_reserve"] = args.encoder_mem_reserve
+
+    config = Qwen3OmniPipelineConfig(
+        model_path=args.model_path,
+        relay_backend=args.relay_backend,
+    )
+    if overrides:
+        config.apply_server_args_overrides(stage_name="thinker", overrides=overrides)
+    if args.mem_fraction_static is not None:
+        if not 0.0 < args.mem_fraction_static < 1.0:
+            raise ValueError(
+                f"--mem-fraction-static must be > 0 and < 1, got {args.mem_fraction_static}"
+            )
+        config.apply_server_args_overrides(
+            stage_name="thinker",
+            overrides={"mem_fraction_static": args.mem_fraction_static},
+        )
+
     launch_server(
         config,
         host=args.host,

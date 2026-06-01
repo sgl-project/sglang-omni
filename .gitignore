@@ -21,12 +21,15 @@ env/
 *.swo
 
 # Testing
+seedtts_testset/
 .pytest_cache/
 .coverage
 htmlcov/
 
 # Logs
 *.log
+*.txt
+output.wav
 
 # OS
 .DS_Store
@@ -35,4 +38,8 @@ Thumbs.db
 uv.lock
 results/
 .humanize/
-.humanize/
+.benchmark-data/
+
+.tune-runs/
+.claude/*
+!.claude/skills/

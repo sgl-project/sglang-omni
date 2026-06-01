@@ -31,6 +31,7 @@ class ThinkerOutput(TypedDict, total=False):
     output_ids: list[int]
     step: int
     is_final: bool
+    finish_reason: str | None
     extra_model_outputs: dict[str, Any]
 
 

@@ -1,11 +1,14 @@
 default_stages: [pre-commit, pre-push, manual]
 
+exclude: \.txt$
+
 repos:
   - repo: https://github.com/PyCQA/autoflake
     rev: v2.3.1
     hooks:
     -   id: autoflake
         args: [--remove-all-unused-imports, --in-place]
+        exclude: ^\.claude/skills/
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v5.0.0
     hooks:
@@ -20,6 +23,7 @@ repos:
       - id: check-added-large-files
       - id: check-merge-conflict
       - id: check-shebang-scripts-are-executable
+        exclude: ^\.claude/skills/
       - id: detect-private-key
       - id: debug-statements
       - id: no-commit-to-branch
@@ -27,17 +31,19 @@ repos:
     rev: 5.13.2
     hooks:
       - id: isort
+        exclude: ^\.claude/skills/
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.11.10
     hooks:
       - id: ruff
         args: [--select=F401, --fixable=F401]
-        files: ^(benchmark/|docs/|examples/)
+        files: ^(benchmarks/|docs/|examples/)
         exclude: \.ipynb$
   - repo: https://github.com/psf/black
     rev: 24.10.0
     hooks:
       - id: black-jupyter
+        exclude: ^\.claude/skills/
   - repo: https://github.com/pre-commit/mirrors-clang-format
     rev: v18.1.8
     hooks:

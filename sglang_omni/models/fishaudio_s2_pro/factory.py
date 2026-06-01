@@ -73,8 +73,6 @@ def create_s2pro_sglang_engine(
     max_new_tokens: int = 2048,
     top_k: int = 30,
     ras_window: int = 16,
-    ras_temperature: float = 1.5,
-    ras_top_p: float = 0.95,
 ) -> OmniEngine:
     """Create a unified S2-Pro engine (slow+fast head in one CUDA graph)."""
     from sglang_omni.engines.ar.sglang_backend.model_worker import (
@@ -126,6 +124,7 @@ def create_s2pro_sglang_engine(
         semantic_end_id=semantic_end_id,
         im_end_id=im_end_id,
         max_batch_size=max_bs,
+        rep_history_len=ras_window,
     )
 
     # Now capture CUDA graphs with _decode_codebooks in the graph

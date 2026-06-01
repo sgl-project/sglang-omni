@@ -10,14 +10,14 @@ git clone git@github.com:sgl-project/sglang-omni.git
 cd sglang-omni
 
 # create a virtual environment in docker
-uv venv .venv -p 3.11
+uv venv .venv -p 3.13
 source .venv/bin/activate
 
 # install
 uv pip install -v .
 
 # install for development
-uv pip install -v -e ".[dev]"
+uv pip install -v -e .
 ```
 
 

@@ -120,6 +120,7 @@ class Qwen3OmniImageEncoder(nn.Module):
         super().__init__()
         torch_dtype = resolve_dtype(dtype)
         thinker_cfg = load_thinker_config(model_path)
+        vision_cfg = thinker_cfg.vision_config
         self._device = torch.device(device)
         self.visual = _build_visual(
             model_path,
@@ -127,7 +128,13 @@ class Qwen3OmniImageEncoder(nn.Module):
             torch_dtype=torch_dtype,
             device=device,
         )
-        self.spatial_merge_size = int(thinker_cfg.vision_config.spatial_merge_size)
+        self.spatial_merge_size = int(vision_cfg.spatial_merge_size)
+        self.out_hidden_size = int(vision_cfg.out_hidden_size)
+        self.deepstack_layers = len(vision_cfg.deepstack_visual_indexes)
+        # Avoid constructing a visual output tensor just to learn dtype width.
+        self.visual_dtype_bytes = torch.empty(
+            (), dtype=self.visual.dtype
+        ).element_size()
 
     def forward(
         self,

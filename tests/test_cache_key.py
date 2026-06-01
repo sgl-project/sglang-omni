@@ -155,6 +155,50 @@ class TestCacheEviction:
         finally:
             await engine.stop()
 
+    @pytest.mark.asyncio
+    async def test_byte_budget_eviction(self):
+        """Old entries evicted when cached tensor bytes exceed budget."""
+        model = CountingModel()
+        engine = create_encoder_engine(
+            model=model,
+            device="cpu",
+            use_cache=True,
+            cache_size=100,
+            cache_max_bytes=300,
+        )
+        await engine.start()
+        try:
+            await run_request(engine, "req-0", cache_key="key-0")
+            await run_request(engine, "req-1", cache_key="key-1")
+            assert model.forward_count == 2
+
+            await run_request(engine, "req-2", cache_key="key-1")
+            assert model.forward_count == 2
+
+            await run_request(engine, "req-3", cache_key="key-0")
+            assert model.forward_count == 3
+        finally:
+            await engine.stop()
+
+    @pytest.mark.asyncio
+    async def test_oversized_entry_not_cached(self):
+        """Single entries larger than the byte budget are not cached."""
+        model = CountingModel()
+        engine = create_encoder_engine(
+            model=model,
+            device="cpu",
+            use_cache=True,
+            cache_size=100,
+            cache_max_bytes=1,
+        )
+        await engine.start()
+        try:
+            await run_request(engine, "req-0", cache_key="key-0")
+            await run_request(engine, "req-1", cache_key="key-0")
+            assert model.forward_count == 2
+        finally:
+            await engine.stop()
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

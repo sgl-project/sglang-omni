@@ -3,15 +3,59 @@
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING, Any
 
 import torch
+import xxhash
 
 from sglang_omni.engines.omni.runtime import ARRequestData, EncoderRequestData
 from sglang_omni.models.qwen3_omni.io import PipelineState, ThinkerOutput
 
 if TYPE_CHECKING:
     from sglang_omni.engines.omni.runtime.sglang_ar import SGLangARRequestData
+
+
+logger = logging.getLogger(__name__)
+
+DEFAULT_THINKER_MAX_NEW_TOKENS = 2048
+DEFAULT_THINKER_MAX_SEQ_LEN = 8192
+
+
+def validate_prompt_seq_len(
+    input_ids: torch.Tensor,
+    *,
+    max_seq_len: int | None,
+    max_new_tokens: int = DEFAULT_THINKER_MAX_NEW_TOKENS,
+    request_id: str | None = None,
+) -> None:
+    if max_seq_len is None:
+        return
+    prompt_len = int(input_ids.numel())
+    if prompt_len >= max_seq_len:
+        logger.info(
+            f"rejecting request {request_id}: prompt {prompt_len} tokens "
+            f">= max_seq_len {max_seq_len}"
+        )
+        raise ValueError(
+            f"The input ({prompt_len} tokens) is longer than the model's "
+            f"context length ({max_seq_len} tokens)."
+        )
+    total_tokens = prompt_len + int(max_new_tokens)
+    if total_tokens >= max_seq_len:
+        logger.info(
+            f"rejecting request {request_id}: prompt {prompt_len} + "
+            f"max_new_tokens {int(max_new_tokens)} = {total_tokens} tokens "
+            f">= max_seq_len {max_seq_len}"
+        )
+        raise ValueError(
+            f"Requested token count exceeds the model's maximum context length "
+            f"of {max_seq_len} tokens. You requested a total of {total_tokens} "
+            f"tokens: {prompt_len} tokens from the input messages and "
+            f"{int(max_new_tokens)} tokens for the completion. Please reduce "
+            f"the number of tokens in the input messages or the completion to "
+            f"fit within the limit."
+        )
 
 
 def build_encoder_request(
@@ -57,6 +101,8 @@ def build_thinker_request(
     state: PipelineState,
     *,
     params: dict[str, Any],
+    max_seq_len: int | None = None,
+    request_id: str | None = None,
 ) -> ARRequestData:
     prompt = state.prompt
     if not isinstance(prompt, dict):
@@ -65,6 +111,13 @@ def build_thinker_request(
     input_ids = prompt.get("input_ids")
     if not isinstance(input_ids, torch.Tensor):
         raise TypeError("prompt.input_ids must be a torch.Tensor")
+    max_new_tokens = params.get("max_new_tokens", DEFAULT_THINKER_MAX_NEW_TOKENS)
+    validate_prompt_seq_len(
+        input_ids,
+        max_seq_len=max_seq_len,
+        max_new_tokens=max_new_tokens,
+        request_id=request_id,
+    )
 
     attention_mask = prompt.get("attention_mask")
     thinker_inputs = state.thinker_inputs or {}
@@ -72,7 +125,9 @@ def build_thinker_request(
     model_inputs = dict(thinker_inputs.get("model_inputs", {}))
     if not model_inputs:
         model_inputs = {
-            k: v for k, v in thinker_inputs.items() if k != "capture_model_output_keys"
+            k: v
+            for k, v in thinker_inputs.items()
+            if k not in ("capture_model_output_keys", "media_cache_keys")
         }
 
     capture_keys = thinker_inputs.get("capture_model_output_keys", ())
@@ -86,7 +141,7 @@ def build_thinker_request(
         ),
         model_inputs=model_inputs,
         capture_model_output_keys=tuple(capture_keys) if capture_keys else (),
-        max_new_tokens=params.get("max_new_tokens"),
+        max_new_tokens=max_new_tokens,
         temperature=params.get("temperature", 0.0),
     )
 
@@ -157,6 +212,7 @@ def build_sglang_thinker_request(
     params: dict[str, Any],
     tokenizer: Any,
     vocab_size: int,
+    max_seq_len: int | None = None,
     request_id: str | None = None,
     thinker_config: Any = None,
 ) -> "SGLangARRequestData":
@@ -177,8 +233,15 @@ def build_sglang_thinker_request(
     input_ids = prompt.get("input_ids")
     if not isinstance(input_ids, torch.Tensor):
         raise TypeError("prompt.input_ids must be a torch.Tensor")
+    max_new_tokens = params.get("max_new_tokens", DEFAULT_THINKER_MAX_NEW_TOKENS)
+    validate_prompt_seq_len(
+        input_ids,
+        max_seq_len=max_seq_len,
+        max_new_tokens=max_new_tokens,
+        request_id=request_id,
+    )
 
-    input_ids_list = input_ids.to(dtype=torch.long).tolist()
+    input_ids = input_ids.to(dtype=torch.long)
 
     attention_mask = prompt.get("attention_mask")
     thinker_inputs = state.thinker_inputs or {}
@@ -186,16 +249,51 @@ def build_sglang_thinker_request(
     model_inputs = dict(thinker_inputs.get("model_inputs", {}))
     if not model_inputs:
         model_inputs = {
-            k: v for k, v in thinker_inputs.items() if k != "capture_model_output_keys"
+            k: v
+            for k, v in thinker_inputs.items()
+            if k not in ("capture_model_output_keys", "media_cache_keys")
         }
     capture_keys = thinker_inputs.get("capture_model_output_keys", ())
+
+    # Note (Yifei):
+    # Compute pad_values from per-modality cache keys and replace placeholder
+    # tokens in input_ids so that RadixCache naturally branches on different
+    # media content while sharing common text prefixes (e.g. system prompt).
+    original_input_ids = input_ids
+    media_cache_keys = thinker_inputs.get("media_cache_keys", {})
+    pad_values: dict[str, int] = {}
+    if media_cache_keys and thinker_config is not None:
+        token_id_map: dict[int, int] = {}
+        for modality, orig_token_id in [
+            ("image", thinker_config.image_token_id),
+            ("video", thinker_config.video_token_id),
+            ("audio", thinker_config.audio_token_id),
+        ]:
+            cache_key = media_cache_keys.get(modality)
+            if cache_key is None:
+                continue
+            h = xxhash.xxh3_64(cache_key.encode()).intdigest()
+            # Note (Yifei):
+            # Unlike SGLang main (hash % 2^30 without offset),
+            # offset by vocab_size to avoid collision with real token IDs.
+            pad_val = vocab_size + h % (1 << 30)
+            pad_values[modality] = pad_val
+            token_id_map[orig_token_id] = pad_val
+
+        if token_id_map:
+            input_ids = input_ids.clone()
+            for orig_id, pad_val in token_id_map.items():
+                input_ids[input_ids == orig_id] = pad_val
+
+        if pad_values:
+            model_inputs["pad_values"] = pad_values
+
+    input_ids_list = input_ids.tolist()
     if "attention_mask" in model_inputs:
         model_inputs.pop("attention_mask", None)
 
-    max_new_tokens = params.get("max_new_tokens", 2048)
     temperature = params.get("temperature", 0.0)
 
-    # Build SGLang SamplingParams and normalize
     sampling_params = SamplingParams(
         max_new_tokens=max_new_tokens,
         temperature=temperature,
@@ -216,7 +314,7 @@ def build_sglang_thinker_request(
     # Compute M-RoPE positions and attach multimodal_inputs to Req
     if thinker_config is not None and model_inputs:
         mrope_result = _compute_mrope_positions(
-            input_ids.to(dtype=torch.long), model_inputs, thinker_config
+            original_input_ids.to(dtype=torch.long), model_inputs, thinker_config
         )
         if mrope_result is not None:
             mrope_positions, mrope_position_delta = mrope_result
@@ -401,17 +499,32 @@ def apply_thinker_result(
 ) -> ThinkerOutput:
     if isinstance(result, ARRequestData):
         output_ids = list(result.output_ids)
+        prompt_tokens = (
+            int(result.input_ids.shape[0])
+            if result.input_ids is not None and hasattr(result.input_ids, "shape")
+            else 0
+        )
+        finish_reason = None
+        req_finish_reason = getattr(
+            getattr(result, "req", None), "finished_reason", None
+        )
+        if hasattr(req_finish_reason, "to_json"):
+            finish_reason = req_finish_reason.to_json().get("type")
         thinker_out: ThinkerOutput = {
             "output_ids": output_ids,
             "step": len(output_ids),
             "is_final": True,
+            "finish_reason": finish_reason,
             "extra_model_outputs": dict(result.extra_model_outputs),
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": len(output_ids),
         }
     else:
         thinker_out = {
             "output_ids": [],
             "step": 0,
             "is_final": True,
+            "finish_reason": None,
             "extra_model_outputs": {"result": result},
         }
 

@@ -83,6 +83,11 @@ class ChatCompletionRequest(BaseModel):
     # Video input (sglang-omni extension)
     # Can be a list of video file paths (local paths or URLs)
     videos: list[str] | None = None
+    video_fps: float | None = None
+    video_max_frames: int | None = None
+    video_min_pixels: int | None = None
+    video_max_pixels: int | None = None
+    video_total_pixels: int | None = None
 
     # Per-stage sampling overrides (sglang-omni specific)
     stage_sampling: dict[str, dict[str, Any]] | None = None

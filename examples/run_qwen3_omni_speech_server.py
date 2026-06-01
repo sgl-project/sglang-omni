@@ -31,6 +31,7 @@ import asyncio
 import logging
 import multiprocessing as mp
 import os
+from typing import Any
 
 logging.basicConfig(
     level=os.environ.get("LOGLEVEL", "INFO").upper(),
@@ -60,7 +61,51 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--relay-backend", type=str, default="shm", choices=["nixl", "shm"]
     )
-
+    parser.add_argument(
+        "--thinker-max-seq-len",
+        type=int,
+        default=8192,
+        help=(
+            "Context length for the thinker stage. The same value is routed "
+            "to preprocessing and Talker context guards."
+        ),
+    )
+    parser.add_argument(
+        "--mem-fraction-static",
+        type=float,
+        default=None,
+        help=(
+            "Set SGLang mem_fraction_static for both Qwen AR stages "
+            "(thinker and talker). If omitted, SGLang chooses automatically."
+        ),
+    )
+    parser.add_argument(
+        "--thinker-mem-fraction-static",
+        type=float,
+        default=None,
+        help=(
+            "Set SGLang mem_fraction_static only for the thinker stage. "
+            "Overrides --mem-fraction-static for thinker."
+        ),
+    )
+    parser.add_argument(
+        "--talker-mem-fraction-static",
+        type=float,
+        default=None,
+        help=(
+            "Set SGLang mem_fraction_static only for the talker stage. "
+            "Overrides --mem-fraction-static for talker."
+        ),
+    )
+    # Note (Chenyang): Add for V1.
+    parser.add_argument(
+        "--version",
+        type=str,
+        default=os.environ.get("SGLANG_OMNI_SERVER_VERSION", "legacy"),
+        choices=["legacy", "v1"],
+        help="Select the legacy or v1 Qwen3 speech launcher implementation.",
+    )
+    # Note (Chenyang): Add for V1.
     # Server
     parser.add_argument("--host", type=str, default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8000)
@@ -69,8 +114,131 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+# Note (Chenyang): Add for V1.
+
+
+def _validate_fraction(flag_name: str, value: float | None) -> None:
+    if value is not None and not 0.0 < value < 1.0:
+        raise ValueError(f"{flag_name} must be > 0 and < 1, got {value}")
+
+
+def _apply_stage_factory_updates(
+    config: Any,
+    *,
+    stage_name: str,
+    updates: dict[str, object] | None = None,
+    server_arg_updates: dict[str, object] | None = None,
+) -> None:
+    for stage in config.stages:
+        if stage.name != stage_name:
+            continue
+
+        factory_args = dict(stage.factory_args or {})
+        if updates:
+            factory_args.update(updates)
+        if server_arg_updates:
+            overrides = dict(factory_args.get("server_args_overrides") or {})
+            overrides.update(server_arg_updates)
+            factory_args["server_args_overrides"] = overrides
+        stage.factory_args = factory_args
+        return
+
+    raise ValueError(
+        f"Stage {stage_name!r} not found in config {type(config).__name__}"
+    )
+
+
+def _set_stage_gpu(config: Any, stage_name: str, gpu_id: int) -> None:
+    for stage in config.stages:
+        if stage.name == stage_name:
+            stage.gpu = gpu_id
+            return
+    raise ValueError(
+        f"Stage {stage_name!r} not found in config {type(config).__name__}"
+    )
+
+
+def _launch_v1_speech_server(args: argparse.Namespace) -> None:
+    from sglang_omni_v1.models.qwen3_omni.config import Qwen3OmniSpeechPipelineConfig
+    from sglang_omni_v1.serve import launch_server as launch_v1_server
+
+    for flag_name, value in (
+        ("--mem-fraction-static", args.mem_fraction_static),
+        ("--thinker-mem-fraction-static", args.thinker_mem_fraction_static),
+        ("--talker-mem-fraction-static", args.talker_mem_fraction_static),
+    ):
+        _validate_fraction(flag_name, value)
+
+    if args.gpu_code_predictor != args.gpu_talker:
+        raise ValueError(
+            "v1 Qwen3 speech pipeline does not expose a separate code_predictor "
+            "stage. Use the same GPU for --gpu-code-predictor and --gpu-talker."
+        )
+
+    config = Qwen3OmniSpeechPipelineConfig(
+        model_path=args.model_path,
+        relay_backend=args.relay_backend,
+    )
+
+    _set_stage_gpu(config, "image_encoder", args.gpu_image_encoder)
+    _set_stage_gpu(config, "audio_encoder", args.gpu_audio_encoder)
+    _set_stage_gpu(config, "thinker", args.gpu_thinker)
+    _set_stage_gpu(config, "talker_ar", args.gpu_talker)
+    _set_stage_gpu(config, "code2wav", args.gpu_code2wav)
+
+    thinker_mem_fraction = (
+        args.thinker_mem_fraction_static
+        if args.thinker_mem_fraction_static is not None
+        else args.mem_fraction_static
+    )
+    talker_mem_fraction = (
+        args.talker_mem_fraction_static
+        if args.talker_mem_fraction_static is not None
+        else args.mem_fraction_static
+    )
+
+    if thinker_mem_fraction is not None:
+        _apply_stage_factory_updates(
+            config,
+            stage_name="thinker",
+            server_arg_updates={"mem_fraction_static": thinker_mem_fraction},
+        )
+    if talker_mem_fraction is not None:
+        _apply_stage_factory_updates(
+            config,
+            stage_name="talker_ar",
+            server_arg_updates={"mem_fraction_static": talker_mem_fraction},
+        )
+
+    if args.thinker_max_seq_len is not None:
+        thinker_seq_len_updates: dict[str, object] = {
+            "thinker_max_seq_len": int(args.thinker_max_seq_len)
+        }
+        _apply_stage_factory_updates(
+            config,
+            stage_name="thinker",
+            updates=thinker_seq_len_updates,
+        )
+        _apply_stage_factory_updates(
+            config,
+            stage_name="preprocessing",
+            updates=thinker_seq_len_updates,
+        )
+
+    launch_v1_server(
+        config,
+        host=args.host,
+        port=args.port,
+        model_name=args.model_name,
+    )
+
+
+# Note (Chenyang): Add for V1.
+
+
 async def main_async(args: argparse.Namespace) -> None:
     import uvicorn
+    from _launcher_mem_fraction import resolve_and_apply_speech_mem_fraction
 
     from sglang_omni.client import Client
     from sglang_omni.models.qwen3_omni.config import Qwen3OmniSpeechPipelineConfig
@@ -90,12 +258,34 @@ async def main_async(args: argparse.Namespace) -> None:
         relay_backend=args.relay_backend,
         gpu_placement=gpu_placement,
     )
+    config.apply_server_args_overrides(
+        stage_name="thinker",
+        overrides={"thinker_max_seq_len": args.thinker_max_seq_len},
+    )
+    thinker_mem_fraction_static, talker_mem_fraction_static = (
+        resolve_and_apply_speech_mem_fraction(
+            config,
+            global_mem_fraction_static=args.mem_fraction_static,
+            thinker_mem_fraction_static=args.thinker_mem_fraction_static,
+            talker_mem_fraction_static=args.talker_mem_fraction_static,
+        )
+    )
+    logger.info(
+        f"Speech server config: thinker_gpu={args.gpu_thinker} "
+        f"talker_gpu={args.gpu_talker} "
+        f"code_predictor_gpu={args.gpu_code_predictor} "
+        f"code2wav_gpu={args.gpu_code2wav} "
+        f"thinker_mem_fraction_static="
+        f"{'auto' if thinker_mem_fraction_static is None else thinker_mem_fraction_static} "
+        f"talker_mem_fraction_static="
+        f"{'auto' if talker_mem_fraction_static is None else talker_mem_fraction_static} "
+        f"thinker_max_seq_len={args.thinker_max_seq_len}"
+    )
 
     runner = MultiProcessPipelineRunner(config)
     logger.info("Starting 9-stage speech pipeline (multiprocess)...")
     await runner.start(timeout=600)
     logger.info("Pipeline ready.")
-
     try:
         client = Client(runner.coordinator)
         app = create_app(client, model_name=args.model_name)
@@ -115,8 +305,18 @@ async def main_async(args: argparse.Namespace) -> None:
 
 
 def main() -> None:
+    from sglang_omni.utils import print_server_version_banner
+
     mp.set_start_method("spawn", force=True)
     args = parse_args()
+    print_server_version_banner(
+        args.version, entry="examples/run_qwen3_omni_speech_server.py"
+    )
+    # Note (Chenyang): Add for V1.
+    if args.version == "v1":
+        _launch_v1_speech_server(args)
+        return
+    # Note (Chenyang): Add for V1.
     asyncio.run(main_async(args))
 
 

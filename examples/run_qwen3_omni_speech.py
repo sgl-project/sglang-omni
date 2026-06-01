@@ -66,10 +66,39 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--gpu-image-encoder", type=int, default=0)
     parser.add_argument("--gpu-audio-encoder", type=int, default=0)
     parser.add_argument("--timeout", type=float, default=300.0)
+    parser.add_argument(
+        "--mem-fraction-static",
+        type=float,
+        default=None,
+        help=(
+            "Set SGLang mem_fraction_static for both Qwen AR stages "
+            "(thinker and talker). If omitted, SGLang chooses automatically."
+        ),
+    )
+    parser.add_argument(
+        "--thinker-mem-fraction-static",
+        type=float,
+        default=None,
+        help=(
+            "Set SGLang mem_fraction_static only for the thinker stage. "
+            "Overrides --mem-fraction-static for thinker."
+        ),
+    )
+    parser.add_argument(
+        "--talker-mem-fraction-static",
+        type=float,
+        default=None,
+        help=(
+            "Set SGLang mem_fraction_static only for the talker stage. "
+            "Overrides --mem-fraction-static for talker."
+        ),
+    )
     return parser.parse_args()
 
 
 async def main_async(args: argparse.Namespace) -> None:
+    from _launcher_mem_fraction import resolve_and_apply_speech_mem_fraction
+
     from sglang_omni.models.qwen3_omni.config import Qwen3OmniSpeechPipelineConfig
     from sglang_omni.pipeline.mp_runner import MultiProcessPipelineRunner
     from sglang_omni.proto import OmniRequest
@@ -86,6 +115,12 @@ async def main_async(args: argparse.Namespace) -> None:
         model_path=args.model_path,
         relay_backend=args.relay_backend,
         gpu_placement=gpu_placement,
+    )
+    resolve_and_apply_speech_mem_fraction(
+        config,
+        global_mem_fraction_static=args.mem_fraction_static,
+        thinker_mem_fraction_static=args.thinker_mem_fraction_static,
+        talker_mem_fraction_static=args.talker_mem_fraction_static,
     )
     runner = MultiProcessPipelineRunner(config)
     logger.info("Starting 9-stage speech pipeline...")

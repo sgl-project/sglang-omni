@@ -20,14 +20,16 @@ from sglang_omni.models.fishaudio_s2_pro.pipeline.state_io import (
     load_state,
     store_state,
 )
+from sglang_omni.models.fishaudio_s2_pro.pipeline.streaming_vocoder import (
+    build_stream_vocoder_chunk,
+    flush_stream_vocoder_chunk,
+    resolve_stream_overlap_tokens,
+)
 from sglang_omni.proto import StagePayload
 
 logger = logging.getLogger(__name__)
 
-_STREAM_CODES_KEY = "_stream_output_codes"
-_STREAM_EMITTED_SAMPLES_KEY = "_stream_emitted_samples"
-_STREAM_LAST_VOCODE_TOKENS_KEY = "_stream_last_vocode_tokens"
-_STREAM_NEXT_VOCODE_TOKENS_KEY = "_stream_next_vocode_tokens"
+_VOCODER_BYTES_PER_TOKEN = int(5.3 * 1024 * 1024)
 
 
 def _resolve_checkpoint(checkpoint: str) -> str:
@@ -109,72 +111,6 @@ def _warmup_codec(codec: Any, *, num_codebooks: int, device: str) -> None:
     logger.info("Stream codec warmup done in %.2fs", time.perf_counter() - t0)
 
 
-def _build_incremental_audio_chunk(
-    payload: StagePayload,
-    *,
-    codec: Any,
-    device: str,
-) -> dict[str, Any] | None:
-    if not isinstance(payload.data, dict):
-        return None
-
-    stream_codes = payload.data.get(_STREAM_CODES_KEY)
-    if not isinstance(stream_codes, list) or not stream_codes:
-        return None
-
-    total_tokens = sum(chunk.shape[1] for chunk in stream_codes)
-    output_codes = torch.cat(stream_codes, dim=1)
-    codebook_codes = output_codes[1:].to(device)
-
-    with torch.no_grad():
-        audio = codec.from_indices(codebook_codes[None])
-
-    audio_np = audio[0, 0].float().cpu()
-    emitted_samples = int(payload.data.get(_STREAM_EMITTED_SAMPLES_KEY, 0))
-    if audio_np.shape[-1] <= emitted_samples:
-        payload.data[_STREAM_LAST_VOCODE_TOKENS_KEY] = total_tokens
-        return None
-
-    delta_audio = audio_np[emitted_samples:]
-    payload.data[_STREAM_EMITTED_SAMPLES_KEY] = int(audio_np.shape[-1])
-    payload.data[_STREAM_LAST_VOCODE_TOKENS_KEY] = total_tokens
-
-    return {
-        "audio_data": delta_audio.tolist(),
-        "sample_rate": codec.sample_rate,
-        "modality": "audio",
-    }
-
-
-def _maybe_build_incremental_audio_chunk(
-    payload: StagePayload,
-    codes: Any,
-    *,
-    codec: Any,
-    device: str,
-    stream_stride: int,
-    stream_followup_stride: int,
-) -> dict[str, Any] | None:
-    if not isinstance(codes, torch.Tensor) or codes.ndim != 2:
-        return None
-    if not isinstance(payload.data, dict):
-        return None
-
-    stream_codes: list[torch.Tensor] = payload.data.setdefault(_STREAM_CODES_KEY, [])
-    stream_codes.append(codes.detach().cpu())
-
-    total_tokens = sum(chunk.shape[1] for chunk in stream_codes)
-    next_vocode_tokens = int(
-        payload.data.get(_STREAM_NEXT_VOCODE_TOKENS_KEY, stream_stride)
-    )
-    if total_tokens < next_vocode_tokens:
-        return None
-
-    chunk = _build_incremental_audio_chunk(payload, codec=codec, device=device)
-    payload.data[_STREAM_NEXT_VOCODE_TOKENS_KEY] = total_tokens + stream_followup_stride
-    return chunk
-
-
 def create_preprocessing_executor(model_path: str) -> PreprocessingExecutor:
     checkpoint_dir = _resolve_checkpoint(model_path)
 
@@ -191,9 +127,17 @@ def create_preprocessing_executor(model_path: str) -> PreprocessingExecutor:
     codec = _load_codec(checkpoint_dir, "cpu")
 
     def _encode_reference_audio(audio_path: str, device: str = "cpu") -> torch.Tensor:
+        import io
+
+        import httpx
         import torchaudio
 
-        audio, sr = torchaudio.load(audio_path)
+        if audio_path.startswith(("http://", "https://")):
+            resp = httpx.get(audio_path, follow_redirects=True, timeout=30)
+            resp.raise_for_status()
+            audio, sr = torchaudio.load(io.BytesIO(resp.content))
+        else:
+            audio, sr = torchaudio.load(audio_path)
         if audio.shape[0] > 1:
             audio = audio.mean(0, keepdim=True)
         audio = torchaudio.functional.resample(audio, sr, codec.sample_rate)
@@ -270,7 +214,10 @@ def create_sglang_tts_engine_executor(
     top_k: int = 30,
     stream_stride: int = 5,
     stream_followup_stride: int = 100,
+    stream_overlap_tokens: int | None = None,
+    stream_crossfade_samples: int = 0,
     stream_vocoder_device: str | None = None,
+    warmup_stream_codec_on_startup: bool = True,
 ) -> EngineExecutor:
     """Factory for the S2-Pro TTS engine stage."""
     from sglang.srt.server_args import ServerArgs
@@ -283,8 +230,6 @@ def create_sglang_tts_engine_executor(
     if stream_vocoder_device is None:
         stream_vocoder_device = "cpu"
 
-    # Note (Chenyang): Lazy-loaded: only materialised when
-    # the first streaming request arrives.
     audio_decoder, num_codebooks, codebook_size, tokenizer, checkpoint_dir = (
         _load_audio_decoder(model_path, device)
     )
@@ -293,16 +238,31 @@ def create_sglang_tts_engine_executor(
     # possible in the future, add threading.Lock protection
     # at that point.
     _stream_codec: Any = None
+    _stream_overlap_tokens: int | None = None
 
-    def _get_stream_codec() -> Any:
-        nonlocal _stream_codec
+    def _get_stream_codec_bundle() -> tuple[Any, int]:
+        nonlocal _stream_codec, _stream_overlap_tokens
         if _stream_codec is None:
             codec = _load_codec(checkpoint_dir, stream_vocoder_device)
             _warmup_codec(
                 codec, num_codebooks=num_codebooks, device=stream_vocoder_device
             )
             _stream_codec = codec
-        return _stream_codec
+            _stream_overlap_tokens = resolve_stream_overlap_tokens(
+                codec, stream_overlap_tokens
+            )
+            logger.info(
+                "Streaming codec overlap resolved to %d tokens (delay=%d samples, device=%s)",
+                _stream_overlap_tokens,
+                int(codec.delay),
+                stream_vocoder_device,
+            )
+        return _stream_codec, int(_stream_overlap_tokens)
+
+    if warmup_stream_codec_on_startup:
+        # Load and warm the stream codec during executor creation so the first
+        # streaming request is not dominated by codec initialization.
+        _get_stream_codec_bundle()
 
     _patch_fish_config_for_sglang(checkpoint_dir)
     server_args = ServerArgs(
@@ -326,14 +286,60 @@ def create_sglang_tts_engine_executor(
         top_k=top_k,
     )
 
+    # Note (Xuesong, Chenyang):
+    # SGLang engine pre-allocates ~85% of total VRAM for model weights
+    # and KV cache. The remaining ~15% is shared by runtime activations
+    # and the vocoder (DAC decoder).
+
+    # Unlike the KV cache, the vocoder has no pre-allocated memory pool —
+    # it allocates dynamically during codec.from_indices() on each request.
+    # If the AR model produces an oversized codebook sequence, DAC conv1d
+    # layers need ~5.3 MB per token (float32, measured empirically on H100),
+    # easily exceeding the remaining free VRAM.
+
+    # To prevent this, we snapshot free GPU memory at engine startup and
+    # compute the maximum token count the vocoder can safely handle.
+    # Requests whose max_new_tokens exceed this limit are clamped and raise
+    # warnings.
+
+    # Caveat: PyTorch's caching allocator reserves memory for intermediate
+    # tensors across requests (~5.5 GB over ~100 diverse requests on H100).
+    # This memory is NOT lost — the vocoder allocates through the same
+    # allocator and reuses cached blocks. The allocator also evicts old
+    # blocks when large contiguous allocations are needed.
+
+    # reference: https://github.com/sgl-project/sglang-omni/pull/267
+
+    gpu_id_int = int(device.split(":")[-1]) if ":" in device else 0
+    free_mem = torch.cuda.mem_get_info(gpu_id_int)[0]
+    max_vocoder_tokens = int(free_mem / _VOCODER_BYTES_PER_TOKEN)
+    logger.info(
+        f"Vocoder memory guard: GPU free {free_mem / 1e9:.1f} GB, max_vocoder_tokens={max_vocoder_tokens}"
+    )
+
     def _request_builder(payload: StagePayload):
         state = load_state(payload)
-        return build_sglang_tts_request(state, tokenizer)
+        if state.max_new_tokens > max_vocoder_tokens:
+            logger.warning(
+                f"Request {payload.request_id}: max_new_tokens={state.max_new_tokens} exceeds vocoder limit {max_vocoder_tokens}, clamping."
+            )
+            state.max_new_tokens = max_vocoder_tokens
+        return build_sglang_tts_request(state, tokenizer, request_id=payload.request_id)
 
     def _result_builder(payload: StagePayload, result: Any) -> StagePayload:
         state = load_state(payload)
         apply_tts_result(state, result)
-        return store_state(payload, state)
+        payload = store_state(payload, state)
+        usage = {
+            "prompt_tokens": state.prompt_tokens,
+            "completion_tokens": state.completion_tokens,
+            "total_tokens": state.prompt_tokens + state.completion_tokens,
+        }
+        engine_time_s = payload.data.get("engine_time_s")
+        if engine_time_s is not None:
+            usage["engine_time_s"] = round(float(engine_time_s), 6)
+        payload.data["usage"] = usage
+        return payload
 
     def _stream_builder(
         payload: StagePayload | None, item: Any
@@ -344,14 +350,31 @@ def create_sglang_tts_engine_executor(
         # GPU→CPU transfer for non-streaming requests.
         if not payload.request.params.get("stream"):
             return None
-        return _maybe_build_incremental_audio_chunk(
+        codec, overlap_tokens = _get_stream_codec_bundle()
+        return build_stream_vocoder_chunk(
             payload,
             item,
-            codec=_get_stream_codec(),
+            codec=codec,
             device=stream_vocoder_device,
             stream_stride=stream_stride,
             stream_followup_stride=stream_followup_stride,
+            stream_overlap_tokens=overlap_tokens,
+            stream_crossfade_samples=stream_crossfade_samples,
         )
+
+    def _flush_stream_builder(payload: StagePayload | None) -> dict[str, Any] | None:
+        if payload is None:
+            return None
+        codec, overlap_tokens = _get_stream_codec_bundle()
+        return flush_stream_vocoder_chunk(
+            payload,
+            codec=codec,
+            device=stream_vocoder_device,
+            stream_overlap_tokens=overlap_tokens,
+            stream_crossfade_samples=stream_crossfade_samples,
+        )
+
+    _stream_builder.flush = _flush_stream_builder
 
     return EngineExecutor(
         engine=engine,

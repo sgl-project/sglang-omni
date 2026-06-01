@@ -1,0 +1,120 @@
+name: Omni Post-Stage
+description: >
+  Shared teardown for Omni CI stages. Prints matching result JSON files to
+  the log (optionally summary-only), uploads them as workflow artifacts,
+  and always reclaims the GPU by killing leftover processes.
+
+inputs:
+  stage-label:
+    description: Human-readable label used in the log banner (e.g. "MMMU", "TTS").
+    required: true
+  artifact-search-root:
+    description: >
+      Directory that `find` descends into when resolving `artifact-path-globs`.
+      Qwen3-Omni tests write to `/tmp` via pytest `tmp_path`; S2-Pro tests
+      write under `stage-results/<name>/` inside `$GITHUB_WORKSPACE`. Set
+      accordingly.
+    required: false
+    default: "/tmp"
+  artifact-path-globs:
+    description: >
+      Newline-separated `find -path` globs (matched against the full path
+      starting from `artifact-search-root`). Leave empty to skip artifact
+      printing.
+    required: false
+    default: ""
+  artifact-upload-name:
+    description: >
+      If set, uploads files matching `artifact-upload-path` as a workflow
+      artifact under this name. Must be unique across the workflow run.
+    required: false
+    default: ""
+  artifact-upload-path:
+    description: >
+      Path or glob that `actions/upload-artifact` uploads when
+      `artifact-upload-name` is set. Required whenever `artifact-upload-name`
+      is provided — there is deliberately no default, since the right scope
+      (pytest `tmp_path` tree vs. workspace subdir) is stage-specific.
+    required: false
+    default: ""
+  artifact-if-no-files-found:
+    description: >
+      Behavior when the upload path matches nothing. Use "error" for stages
+      whose artifacts are required by downstream jobs; "ignore" otherwise.
+    required: false
+    default: "ignore"
+  summary-only:
+    description: >
+      When "true", strips the `per_sample` field before printing large result
+      files to the log. The uploaded artifact still contains the full data.
+    required: false
+    default: "false"
+
+runs:
+  using: composite
+  steps:
+    - name: Collect matching result files
+      id: collect
+      if: ${{ inputs.artifact-path-globs != '' }}
+      shell: bash
+      env:
+        ARTIFACT_SEARCH_ROOT: ${{ inputs.artifact-search-root }}
+        ARTIFACT_PATH_GLOBS: ${{ inputs.artifact-path-globs }}
+      run: |
+        matches_file="$(mktemp)"
+        if [ ! -d "${ARTIFACT_SEARCH_ROOT}" ]; then
+          echo "(search root ${ARTIFACT_SEARCH_ROOT} does not exist)"
+        else
+          while IFS= read -r pattern; do
+            [ -z "$pattern" ] && continue
+            find "${ARTIFACT_SEARCH_ROOT}" -path "$pattern" 2>/dev/null >> "$matches_file" || true
+          done <<< "$ARTIFACT_PATH_GLOBS"
+          sort -u "$matches_file" -o "$matches_file"
+        fi
+        echo "matches_file=${matches_file}" >> "$GITHUB_OUTPUT"
+        echo "match_count=$(wc -l < "$matches_file")" >> "$GITHUB_OUTPUT"
+
+    - name: Print CI artifacts
+      if: ${{ inputs.artifact-path-globs != '' }}
+      shell: bash
+      env:
+        STAGE_LABEL: ${{ inputs.stage-label }}
+        SUMMARY_ONLY: ${{ inputs.summary-only }}
+        MATCHES_FILE: ${{ steps.collect.outputs.matches_file }}
+        MATCH_COUNT: ${{ steps.collect.outputs.match_count }}
+      run: |
+        echo "=== ${STAGE_LABEL} CI results (${MATCH_COUNT} file(s)) ==="
+        if [ "${MATCH_COUNT}" = "0" ]; then
+          echo "(no matching result files found)"
+          exit 0
+        fi
+        while IFS= read -r f; do
+          echo "--- $f ---"
+          if [ "$SUMMARY_ONLY" = "true" ]; then
+            python -c "import json,sys; d=json.load(open(sys.argv[1])); d.pop('per_sample',None); print(json.dumps(d, indent=2, ensure_ascii=False))" "$f"
+          else
+            cat "$f"
+          fi
+          echo ""
+        done < "${MATCHES_FILE}"
+
+    - name: Validate upload inputs
+      if: ${{ inputs.artifact-upload-name != '' && inputs.artifact-upload-path == '' }}
+      shell: bash
+      run: |
+        echo "::error::artifact-upload-name='${{ inputs.artifact-upload-name }}' requires artifact-upload-path to be set explicitly."
+        exit 1
+
+    - name: Upload CI artifacts
+      if: ${{ inputs.artifact-upload-name != '' && inputs.artifact-upload-path != '' }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ inputs.artifact-upload-name }}
+        path: ${{ inputs.artifact-upload-path }}
+        if-no-files-found: ${{ inputs.artifact-if-no-files-found }}
+        retention-days: 7
+
+    - name: Kill GPU processes
+      shell: bash
+      run: |
+        bash .github/scripts/delete_gpu_process.sh

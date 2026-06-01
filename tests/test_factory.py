@@ -4,6 +4,8 @@ from __future__ import annotations
 import sys
 from types import ModuleType, SimpleNamespace
 
+import pytest
+
 import sglang_omni.engines.omni.factory as factory
 from sglang_omni.models.qwen3_omni.config import Qwen3OmniSpeechPipelineConfig
 
@@ -90,11 +92,20 @@ class _DummyScheduler:
 
 
 class _DummyEngine:
-    def __init__(self, scheduler, model_runner, enable_overlap, feedback_mailbox=None):
+    def __init__(
+        self,
+        scheduler,
+        model_runner,
+        enable_overlap,
+        feedback_mailbox=None,
+        follower_processes=None,
+        **kwargs,
+    ):
         self.scheduler = scheduler
         self.model_runner = model_runner
         self.enable_overlap = enable_overlap
         self.feedback_mailbox = feedback_mailbox
+        self.follower_processes = follower_processes
 
 
 def _install_sglang_stubs(monkeypatch):
@@ -136,6 +147,7 @@ def test_create_sglang_ar_engine_disables_overlap_for_feedback(monkeypatch) -> N
         page_size=16,
         chunked_prefill_size=32,
         max_prefill_tokens=64,
+        tp_size=1,
     )
 
     engine = factory.create_sglang_ar_engine(
@@ -156,6 +168,7 @@ def test_create_sglang_ar_engine_keeps_overlap_without_feedback(monkeypatch) -> 
         page_size=16,
         chunked_prefill_size=32,
         max_prefill_tokens=64,
+        tp_size=1,
     )
 
     engine = factory.create_sglang_ar_engine(
@@ -173,3 +186,21 @@ def test_qwen3_speech_pipeline_enables_talker_feedback() -> None:
     talker_stage = next(stage for stage in cfg.stages if stage.name == "talker_ar")
 
     assert talker_stage.executor.args["feedback_enabled"] is True
+
+
+def test_qwen3_speech_pipeline_rejects_tp() -> None:
+    cfg = Qwen3OmniSpeechPipelineConfig(
+        model_path="dummy",
+        gpu_placement={
+            "thinker": 0,
+            "talker_ar": 2,
+            "code_predictor": 2,
+            "code2wav": 2,
+        },
+    )
+
+    with pytest.raises(NotImplementedError, match="not supported yet"):
+        cfg.apply_server_args_overrides(
+            stage_name="thinker",
+            overrides={"tp_size": 2},
+        )

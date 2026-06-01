@@ -39,37 +39,35 @@ dependencies = [
     "typer>=0.9.0",
     "openai==2.6.1",
     "openai-harmony==0.0.4",
-    "soundfile>=0.12.0"
-]
-
-[project.optional-dependencies]
-dev = [
-    # Testing dependencies
+    "soundfile>=0.12.0",
+    "mistral-common[audio]>=1.8.0",
+    # Testing
     "pytest>=7.0.0",
     "pytest-asyncio>=0.21.0",
-]
-s2pro = [
+    "jiwer",
+    "scipy>=1.10.0",
+    "openai-whisper",
+    # S2-Pro
     "tiktoken",
     "hydra-core",
     "omegaconf",
     "descript-audiotools",
     "descript-audio-codec",
     "torchaudio",
+    # Gradio playground
     "gradio>=4.0.0",
     # flash-attn: install separately via prebuilt wheel (see install instructions below)
 ]
+
+[project.optional-dependencies]
 minicpm = [
-    # CosyVoice vocoder dependencies for MiniCPM-o audio output
-    "cosyvoice",          # CosyVoice flow-matching TTS model
-    "torchaudio>=2.0.0",  # Audio processing
-    "onnxruntime>=1.16.0", # ONNX runtime for CosyVoice components
-    # Note: CosyVoice may require additional setup, see:
-    # https://github.com/FunAudioLLM/CosyVoice
+    # CosyVoice is only needed for MiniCPM-o audio output.
+    "cosyvoice",
+    "onnxruntime>=1.16.0",
 ]
-gradio = ["gradio>=4.0.0"]
 
 [project.scripts]
-sgl-omni = "sglang_omni.cli.cli:app"
+sgl-omni = "sglang_omni.cli:app"
 
 [tool.uv]
 override-dependencies = [
@@ -80,8 +78,10 @@ override-dependencies = [
 pythonpath = ["."]
 markers = [
     "benchmark: performance benchmark tests (may require GPU and long runtime)",
-    "minicpmv: MiniCPM-V 2.6 integration tests (requires model weights and GPU)",
-    "minicpmo: MiniCPM-o 2.6 integration tests (requires model weights and GPU)",
+    "docs: documentation example tests (verify documented API calls still work)",
+    "s2pro_stage(name): select an in-file S2-Pro benchmark CI stage",
+    "minicpmv: MiniCPM-V integration tests (requires model weights and GPU)",
+    "minicpmo: MiniCPM-o integration tests (requires model weights and GPU)",
 ]
 
 [tool.setuptools.packages.find]
@@ -91,3 +91,6 @@ include = ["sglang_omni*"]
 # Fish Speech S2-Pro DAC: OmegaConf YAML must ship with the wheel (not only .py).
 [tool.setuptools.package-data]
 "sglang_omni.models.fishaudio_s2_pro" = ["fish_speech/configs/*.yaml"]
+# Note (Chenyang): Add for V1.
+"sglang_omni_v1.models.fishaudio_s2_pro" = ["fish_speech/configs/*.yaml"]
+# Note (Chenyang): Add for V1.
