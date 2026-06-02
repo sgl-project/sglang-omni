@@ -173,6 +173,10 @@ def test_voice_store_enforces_upload_contracts(tmp_path: Path) -> None:
             filename="two.wav",
             content_type="audio/wav",
         )
+    assert sorted(path.name for path in tmp_path.glob("*.safetensors")) == [
+        "one.safetensors"
+    ]
+    assert list(tmp_path.glob("*.tmp")) == []
 
 
 def test_speech_service_resolves_uploaded_voice_to_reference(tmp_path: Path) -> None:

@@ -200,44 +200,45 @@ class SpeakerSampleStore:
 
         fingerprint = hashlib.sha256(audio_bytes).hexdigest()
         voice_path = self.root_dir / f"{normalized_name}.safetensors"
+        voice = UploadedVoice(
+            name=display_name,
+            normalized_name=normalized_name,
+            consent=consent,
+            created_at=self._next_upload_timestamp(),
+            file_size=file_size,
+            mime_type=mime_type,
+            original_filename=filename or "",
+            sample_rate=sample_rate,
+            num_samples=int(samples.shape[0]),
+            fingerprint=fingerprint,
+            file_path=voice_path,
+            ref_text=ref_text,
+            speaker_description=speaker_description,
+        )
         temp_path: Path | None = None
-        with self._lock:
-            replaced = normalized_name in self._voices
-            if not replaced and len(self._voices) >= self.max_uploaded:
-                raise bad_request(
-                    f"Uploaded voice limit reached ({self.max_uploaded})",
-                    param="name",
-                )
-            voice = UploadedVoice(
-                name=display_name,
-                normalized_name=normalized_name,
-                consent=consent,
-                created_at=self._next_upload_timestamp(),
-                file_size=file_size,
-                mime_type=mime_type,
-                original_filename=filename or "",
-                sample_rate=sample_rate,
-                num_samples=int(samples.shape[0]),
-                fingerprint=fingerprint,
-                file_path=voice_path,
-                ref_text=ref_text,
-                speaker_description=speaker_description,
+        replaced = False
+        try:
+            temp_path = _write_voice_temp_file(
+                self.root_dir,
+                normalized_name,
+                samples,
+                voice.to_safetensors_metadata(),
             )
-            try:
-                temp_path = _write_voice_temp_file(
-                    self.root_dir,
-                    normalized_name,
-                    samples,
-                    voice.to_safetensors_metadata(),
-                )
+            with self._lock:
+                replaced = normalized_name in self._voices
+                if not replaced and len(self._voices) >= self.max_uploaded:
+                    raise bad_request(
+                        f"Uploaded voice limit reached ({self.max_uploaded})",
+                        param="name",
+                    )
                 _replace_voice_file(temp_path, voice_path)
                 temp_path = None
-            finally:
-                if temp_path is not None:
-                    temp_path.unlink(missing_ok=True)
-            if replaced:
-                self.cache.clear_voice(normalized_name)
-            self._voices[normalized_name] = voice
+                if replaced:
+                    self.cache.clear_voice(normalized_name)
+                self._voices[normalized_name] = voice
+        finally:
+            if temp_path is not None:
+                temp_path.unlink(missing_ok=True)
 
         response = voice.to_response_dict()
         if replaced:
