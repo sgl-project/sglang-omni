@@ -14,6 +14,12 @@ hf download inclusionAI/Ming-flash-omni-2.0
 
 The speech path expects the checkpoint to include the `talker/` assets, including `talker/data/voice_name.json` and `talker/vae/`. The default voice in the current Ming speech pipeline is `DB30`. `campplus.onnx` and `talker_tn` are optional runtime helpers: missing `campplus.onnx` disables speaker embedding extraction, and missing `talker_tn` falls back to identity text normalization.
 
+`Ming-flash-omni-2.0` on HF does not ship top-level thinker tokenizer files. `load_ming_tokenizer` falls back to `inclusionAI/Ming-flash-omni-Preview` (~12 MB) to copy `tokenizer.json`, `tokenizer_config.json`, and `special_tokens_map.json`. In offline environments, download those files too:
+
+```bash
+hf download inclusionAI/Ming-flash-omni-Preview tokenizer.json tokenizer_config.json special_tokens_map.json
+```
+
 Ming-flash-omni-2.0 is a large MoE model. For practical serving, use tensor parallelism for the thinker. The examples below use logical GPU ids inside `CUDA_VISIBLE_DEVICES`; with `CUDA_VISIBLE_DEVICES=0,1,2,3,4`, `--thinker-gpus 0,1,2,3` means the thinker uses the first four visible GPUs and `--talker-gpu 4` uses the fifth visible GPU.
 
 ## Architecture
@@ -32,23 +38,22 @@ The router, when used, routes whole requests to complete Ming workers. It does n
 
 ## Server Configuration
 
-### Text Output
+Use the selector below to generate the exact launch command for your configuration. Pick the output **Mode** (text-only or text + audio), the **Thinker TP** degree, an optional **Vision TP** degree for the image encoder, and the **Hardware** tier. GPUs are allocated without overlap — thinker ranks first, then the talker (speech mode), then the vision-encoder ranks — and the `CUDA_VISIBLE_DEVICES` prefix is sized to match.
 
-For text, image, audio, or video input with text output:
-
-```bash
-CUDA_VISIBLE_DEVICES=0,1,2,3 sgl-omni serve \
-  --model-path inclusionAI/Ming-flash-omni-2.0 \
-  --model-name ming-omni \
-  --text-only \
-  --thinker-tp-size 4 \
-  --thinker-gpus 0,1,2,3 \
-  --cpu-offload-gb 0 \
-  --mem-fraction-static 0.80 \
-  --port 8000
+```{raw} html
+<div id="sgl-ming-server-gen-mount"></div>
 ```
 
-If your machine cannot fit the thinker without CPU offload, remove `--cpu-offload-gb 0` and let the launcher use its default offload setting. Offload improves fit but reduces throughput.
+`--text-only` selects the thinker-only pipeline (no talker, no audio). Omit it for the speech pipeline, which adds a dedicated `--talker-gpu`. The talker GPU must not overlap the thinker TP placement (the only placement Ming validates), so the generator always keeps it separate. The vision encoder defaults to GPU 0 alongside the thinker, so its TP ranks may either share the thinker GPUs (**With thinker**, the default) or take dedicated GPUs.
+
+The **Hardware** toggle sets `--mem-fraction-static`:
+
+| Tier | VRAM | `--mem-fraction-static` | Why |
+|---|---|---|---|
+| H100 | 80 GB | `0.80` | Baseline; weights plus a smaller KV pool fit at 0.80. |
+| H200 | 141 GB | `0.90` | The MoE weights occupy roughly the same absolute space but a larger share is free, so a higher fraction is needed for the static budget to cover weights and still leave room for the KV pool; `0.80` can OOM at TP=2 because the reserved pool lands too small. |
+
+Other large-memory parts (e.g. H20-3e 144 GB) behave like H200 — start at `0.9`. If your machine cannot fit the thinker without CPU offload, remove `--cpu-offload-gb 0` and let the launcher use its default offload setting (improves fit, reduces throughput).
 
 For a smaller smoke run that uses OmniServe's default placement:
 
@@ -61,23 +66,11 @@ sgl-omni serve \
 
 This smoke command launches the default speech-capable Ming pipeline. Add `--text-only` if the smoke run should skip the talker.
 
-### Text + Audio Output
+### Vision Encoder Tensor Parallelism
 
-For speech output from the Ming talker:
+The Ming image (vision) encoder is stage index `2` in all three Ming pipelines (`preprocessing=0`, `audio_encoder=1`, `image_encoder=2`) and is configured through generic dotted stage overrides rather than a dedicated flag. The encoder has 16 attention heads, so TP=2 and TP=4 both shard evenly. `--stages.2.tp_size` sets the TP degree and `--stages.2.gpu` lists one GPU id per TP rank; the selector above fills these in when you raise **Vision TP**. TP=1 (single GPU) is the default — sharding helps only when the vision encoder is a throughput bottleneck for image/video workloads.
 
-```bash
-CUDA_VISIBLE_DEVICES=0,1,2,3,4 sgl-omni serve \
-  --model-path inclusionAI/Ming-flash-omni-2.0 \
-  --model-name ming-omni \
-  --thinker-tp-size 4 \
-  --thinker-gpus 0,1,2,3 \
-  --talker-gpu 4 \
-  --cpu-offload-gb 0 \
-  --mem-fraction-static 0.80 \
-  --port 8000
-```
-
-`--talker-gpu` must not overlap with the thinker TP placement. With `--thinker-gpus 0,1,2,3`, use logical GPU `4` or higher for the talker.
+By default the encoder runs on GPU 0 alongside the thinker, so its TP ranks can reuse the thinker GPUs (**Vision GPUs: With thinker**) with no extra hardware, valid when Vision TP ≤ Thinker TP. Choose **Dedicated** to place the ranks on their own GPUs when the thinker GPUs are memory-bound.
 
 ### Streaming Speech Client
 
@@ -87,29 +80,9 @@ The generic `sgl-omni serve --model-path` command currently exposes the default 
 
 The streaming pipeline is for audio chunks. The text-only `stream=true` path currently emits an aggregate text chunk instead of token-by-token text deltas.
 
-### Vision Encoder Tensor Parallelism
-
-The Ming image (vision) encoder can be sharded across GPUs. The dedicated `sgl-omni serve` flags cover the thinker and talker; the image-encoder stage is configured through generic dotted stage overrides. The image encoder is stage index `2` in all three Ming pipelines (`preprocessing=0`, `audio_encoder=1`, `image_encoder=2`).
-
-To run the vision encoder with TP=2 on two dedicated GPUs:
-
-```bash
-CUDA_VISIBLE_DEVICES=0,1,2,3,4,5 sgl-omni serve \
-  --model-path inclusionAI/Ming-flash-omni-2.0 \
-  --model-name ming-omni \
-  --text-only \
-  --thinker-tp-size 4 \
-  --thinker-gpus 0,1,2,3 \
-  --stages.2.tp_size 2 \
-  --stages.2.gpu '[4,5]' \
-  --port 8000
-```
-
-`--stages.2.tp_size` sets the image-encoder TP degree and `--stages.2.gpu` lists one GPU id per TP rank. Keep these GPUs separate from the thinker and talker placements. TP=1 (single GPU) is the default; sharding helps only when the vision encoder is a throughput bottleneck for image/video workloads.
-
 ### Placement and Memory Notes
 
-Use `--thinker-tp-size` to set thinker tensor parallelism and `--thinker-gpus` to choose the logical GPU ids. `--cpu-offload-gb`, `--quantization`, and `--mem-fraction-static` are forwarded to the thinker server. Use `--talker-gpu` only for the speech pipeline, and keep it separate from the thinker GPUs. Use `--stages.2.tp_size` / `--stages.2.gpu` for image-encoder tensor parallelism (see above).
+Use `--thinker-tp-size` to set thinker tensor parallelism and `--thinker-gpus` to choose the logical GPU ids. `--cpu-offload-gb`, `--quantization`, and `--mem-fraction-static` are forwarded to the thinker server. Use `--talker-gpu` only for the speech pipeline, and keep it separate from the thinker GPUs. Use `--stages.2.tp_size` / `--stages.2.gpu` for image-encoder tensor parallelism. The selector above wires all of these placements consistently.
 
 ## Input and Output Examples
 
@@ -308,7 +281,7 @@ The numbers below are directional H100-class serving evidence for SGLang-Omni se
 
 ### Text Thinker (GSM8K)
 
-Pure text thinker path, text-only output, 100-sample GSM8K, greedy (T=0), TP=4 thinker.
+Pure text thinker path, text-only output, 100 samples from the GSM8K `main` test split (first 100 of 1319 problems, deterministic file order), greedy (T=0), TP=4 thinker.
 
 | Concurrency | Throughput | Mean latency | Accuracy |
 |---:|---:|---:|---:|
@@ -320,7 +293,7 @@ Throughput scales roughly linearly from c=1 to c=16 (~7.5×) at stable accuracy.
 
 ### Image-Text (MMMU)
 
-Image-text input, text output, 50-sample MMMU, greedy (T=0), TP=4 thinker.
+Image-text input, text output, 50 samples from the full `MMMU/MMMU` `validation` split (all 30 subjects, sorted by sample id, first 50 with images — not the `zhaochenyang20/mmmu-ci-50` CI subset), greedy (T=0), TP=4 thinker.
 
 | Concurrency | Throughput | Mean latency | Median latency | Accuracy |
 |---:|---:|---:|---:|---:|
@@ -334,7 +307,7 @@ Throughput scales ~6.9× from c=1 to c=16; accuracy stays within MMMU sample noi
 
 ### Non-Streaming Talker
 
-Speech output (`modalities=["text","audio"]`), voice `DB30`, uniform prompt, TP=4 thinker + dedicated talker GPU.
+Speech output (`modalities=["text","audio"]`), voice `DB30`, uniform prompt, TP=4 thinker + dedicated talker GPU. Measured against the 7-stage non-streaming `MingOmniSpeechPipelineConfig` with `stream=false` (not the streaming pipeline); every request returned real 44.1 kHz audio (`n_fail=0`, mean ~6.3 s/clip).
 
 | Concurrency | Throughput | Mean wall | p95 wall |
 |---:|---:|---:|---:|

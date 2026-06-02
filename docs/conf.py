@@ -123,6 +123,7 @@ html_static_path = ["_static"]
 html_css_files = ["css/custom_log.css"]
 html_js_files = [
     "js/qwen3_omni_server_generator.js",
+    "js/ming_omni_server_generator.js",
 ]
 
 
