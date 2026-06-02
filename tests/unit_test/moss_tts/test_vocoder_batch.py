@@ -36,8 +36,12 @@ def test_vocode_batch_calls_decode_once():
     """_vocode_batch should call decode_audio_codes exactly once for a batch."""
     from sglang_omni.models.moss_tts.stages import create_vocoder_executor
 
-    codes1 = torch.tensor([[1, 1024], [2, 3], [1024, 4], [1024, 1024]], dtype=torch.long)
-    codes2 = torch.tensor([[5, 1024], [6, 7], [1024, 8], [1024, 1024]], dtype=torch.long)
+    codes1 = torch.tensor(
+        [[1, 1024], [2, 3], [1024, 4], [1024, 1024]], dtype=torch.long
+    )
+    codes2 = torch.tensor(
+        [[5, 1024], [6, 7], [1024, 8], [1024, 1024]], dtype=torch.long
+    )
 
     payload1 = make_payload("req-1", codes1)
     payload2 = make_payload("req-2", codes2)
@@ -61,8 +65,12 @@ def test_vocode_batch_distributes_waveforms_correctly():
     """Each payload should get its own waveform back."""
     from sglang_omni.models.moss_tts.stages import create_vocoder_executor
 
-    codes1 = torch.tensor([[1, 1024], [2, 3], [1024, 4], [1024, 1024]], dtype=torch.long)
-    codes2 = torch.tensor([[5, 1024], [6, 7], [1024, 8], [1024, 1024]], dtype=torch.long)
+    codes1 = torch.tensor(
+        [[1, 1024], [2, 3], [1024, 4], [1024, 1024]], dtype=torch.long
+    )
+    codes2 = torch.tensor(
+        [[5, 1024], [6, 7], [1024, 8], [1024, 1024]], dtype=torch.long
+    )
 
     payload1 = make_payload("req-1", codes1)
     payload2 = make_payload("req-2", codes2)
@@ -78,8 +86,12 @@ def test_vocode_batch_distributes_waveforms_correctly():
         scheduler = create_vocoder_executor("fake/model", device="cpu")
         results = scheduler._batch_fn([payload1, payload2])
 
-    audio1 = torch.from_numpy(np.frombuffer(results[0].data["audio_waveform"], dtype=np.float32).copy())
-    audio2 = torch.from_numpy(np.frombuffer(results[1].data["audio_waveform"], dtype=np.float32).copy())
+    audio1 = torch.from_numpy(
+        np.frombuffer(results[0].data["audio_waveform"], dtype=np.float32).copy()
+    )
+    audio2 = torch.from_numpy(
+        np.frombuffer(results[1].data["audio_waveform"], dtype=np.float32).copy()
+    )
 
     assert torch.allclose(audio1, wav1)
     assert torch.allclose(audio2, wav2)
