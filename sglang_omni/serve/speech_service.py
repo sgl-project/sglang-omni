@@ -8,7 +8,7 @@ import binascii
 import importlib.util
 import shutil
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 from urllib.request import url2pathname
 
@@ -25,6 +25,12 @@ from sglang_omni.serve.protocol import (
     SpeechReference,
 )
 from sglang_omni.serve.speech_errors import bad_request, internal_error
+
+if TYPE_CHECKING:
+    from sglang_omni.serve.speech_voices import (
+        SpeakerSampleStore,
+        UploadedVoiceReference,
+    )
 
 _LANGUAGE_CANONICAL = {
     language.lower(): language for language in SUPPORTED_TTS_LANGUAGES
@@ -43,8 +49,10 @@ class SpeechService:
         *,
         default_model: str,
         allowed_local_media_paths: list[str | Path] | None = None,
+        voice_store: SpeakerSampleStore | None = None,
     ) -> None:
         self.default_model = default_model
+        self.voice_store = voice_store
         self.allowed_local_media_paths = tuple(
             _resolve_allowed_local_media_path(path)
             for path in (allowed_local_media_paths or [])
@@ -144,6 +152,7 @@ class SpeechService:
             "response_format": request.response_format,
             "speed": request.speed,
         }
+        uploaded_voice = self._resolve_uploaded_voice_reference(request)
         if explicit_generation_params:
             tts_params["explicit_generation_params"] = explicit_generation_params
         if request.task_type is not None:
@@ -156,6 +165,14 @@ class SpeechService:
             tts_params["ref_audio"] = request.ref_audio
         if request.ref_text is not None:
             tts_params["ref_text"] = request.ref_text
+        if uploaded_voice is not None:
+            tts_params["task_type"] = "Base"
+            tts_params["ref_audio"] = uploaded_voice.ref_audio
+            if uploaded_voice.voice.ref_text is not None:
+                tts_params["ref_text"] = uploaded_voice.voice.ref_text
+            tts_params["uploaded_voice_name"] = uploaded_voice.voice.normalized_name
+            tts_params["uploaded_voice_created_at"] = uploaded_voice.voice.created_at
+            tts_params["uploaded_voice_fingerprint"] = uploaded_voice.voice.fingerprint
         if request.x_vector_only_mode is not None:
             tts_params["x_vector_only_mode"] = request.x_vector_only_mode
         if request.initial_codec_chunk_frames is not None:
@@ -197,6 +214,11 @@ class SpeechService:
             if request.ref_text is not None:
                 ref["text"] = request.ref_text
             references.append(ref)
+        elif uploaded_voice is not None:
+            ref = {"audio_path": uploaded_voice.ref_audio}
+            if uploaded_voice.voice.ref_text is not None:
+                ref["text"] = uploaded_voice.voice.ref_text
+            references.append(ref)
         if references:
             prompt = {"text": request.input, "references": references}
 
@@ -219,6 +241,19 @@ class SpeechService:
                 "tts_params": tts_params,
             },
         )
+
+    def _resolve_uploaded_voice_reference(
+        self, request: CreateSpeechRequest
+    ) -> UploadedVoiceReference | None:
+        if (
+            self.voice_store is None
+            or request.ref_audio is not None
+            or request.references
+        ):
+            return None
+        if not request.voice or request.voice.lower() == "default":
+            return None
+        return self.voice_store.resolve_reference(request.voice)
 
     def _validate_raw_payload(self, payload: dict[str, Any]) -> None:
         for field_name in (

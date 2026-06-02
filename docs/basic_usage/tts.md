@@ -177,6 +177,56 @@ The server returns a stream of SSE events. Each event contains an
 `audio.speech.chunk` object with a base64-encoded PCM chunk. The stream ends
 with `data: [DONE]`.
 
+### Uploaded Voices
+
+Use `/v1/audio/voices` to register reference clips once and reuse them by name
+in later `/v1/audio/speech` requests. Uploaded samples are stored as
+`.safetensors` files under `SPEAKER_SAMPLES_DIR` and are restored when the
+server restarts. If `SPEAKER_SAMPLES_DIR` is not set, the server uses
+`~/.cache/sglang-omni/speakers`. `SPEAKER_MAX_UPLOADED` limits the number of
+stored voices and defaults to `1000`.
+
+Upload a voice sample:
+
+```bash
+curl -X POST http://localhost:8000/v1/audio/voices \
+  -F "name=narrator" \
+  -F "consent=consent-recording-id" \
+  -F "ref_text=Transcript of the uploaded reference clip." \
+  -F "speaker_description=Clear narration voice" \
+  -F "audio_sample=@reference.wav;type=audio/wav"
+```
+
+List preset and uploaded voices:
+
+```bash
+curl http://localhost:8000/v1/audio/voices
+```
+
+Use the uploaded voice by name:
+
+```bash
+curl -X POST http://localhost:8000/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{
+    "input": "The uploaded voice can now be reused without resending audio.",
+    "voice": "narrator",
+    "response_format": "wav"
+  }' \
+  --output narrator.wav
+```
+
+Delete an uploaded voice:
+
+```bash
+curl -X DELETE http://localhost:8000/v1/audio/voices/narrator
+```
+
+Accepted upload formats are WAV, MP3, FLAC, OGG, AAC, WebM, and MP4. Each file
+must be at most 10 MiB and contain at least one second of non-silent reference
+audio. Uploading the same `name` overwrites the previous sample and invalidates
+cached speaker artifacts for that voice across TTS model types.
+
 ## Use Python
 
 ### Basic TTS
@@ -289,7 +339,7 @@ The table below lists all parameters accepted by the `/v1/audio/speech` endpoint
 | Parameter | Type | Default | Description |
 |---|---|---|---|
 | `input` | string | (required) | Text to synthesize |
-| `voice` | string | `"default"` | Voice identifier |
+| `voice` | string | `"default"` | Preset or uploaded voice identifier |
 | `response_format` | string | `"wav"` | Output audio format: `wav`, `mp3`, `flac`, `pcm`, `aac`, or `opus` |
 | `speed` | float | `1.0` | Playback speed multiplier from `0.25` to `4.0` |
 | `stream` | bool | `false` | Enable streaming via SSE; when true, `response_format` must be `pcm` |

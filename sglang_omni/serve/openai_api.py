@@ -4,6 +4,9 @@
 Provides the following endpoints:
 - POST /v1/chat/completions  — Text (+ audio) chat completions
 - POST /v1/audio/speech      — Text-to-speech synthesis
+- GET  /v1/audio/voices      — List preset and uploaded TTS voices
+- POST /v1/audio/voices      — Upload a persistent TTS reference voice
+- DELETE /v1/audio/voices/{name} — Delete an uploaded TTS voice
 - GET  /v1/models            — List available models
 - GET  /v1/fs/list           — Browse filesystem directories
 - GET  /v1/fs/file           — Download a file
@@ -57,6 +60,7 @@ from sglang_omni.serve.protocol import (
     ModelList,
     TranscriptionResponse,
     UsageResponse,
+    VoiceListResponse,
 )
 from sglang_omni.serve.speech_errors import (
     SpeechAPIError,
@@ -68,6 +72,7 @@ from sglang_omni.serve.speech_service import (
     SpeechService,
     build_speech_generate_request,
 )
+from sglang_omni.serve.speech_voices import SpeakerSampleStore
 
 logger = logging.getLogger(__name__)
 MIME_TO_FORMAT = {mime: fmt for fmt, mime in FORMAT_MIME_TYPES.items()}
@@ -119,11 +124,13 @@ def create_app(
     app.state.client = client
     app.state.model_name = model_name or "sglang-omni"
     app.state.realtime_enabled = enable_realtime
+    app.state.speaker_sample_store = SpeakerSampleStore()
     app.state.speech_service = SpeechService(
         default_model=app.state.model_name,
         allowed_local_media_paths=(
             [allowed_local_media_path] if allowed_local_media_path else None
         ),
+        voice_store=app.state.speaker_sample_store,
     )
 
     # Register all routes
@@ -131,12 +138,63 @@ def create_app(
     _register_health(app)
     _register_models(app)
     _register_chat_completions(app)
+    _register_voices(app)
     _register_speech(app)
     _register_transcriptions(app)
     if enable_realtime:
         _register_realtime(app)
 
     return app
+
+
+def _register_voices(app: FastAPI) -> None:
+    @app.get("/v1/audio/voices")
+    async def list_voices() -> JSONResponse:
+        voice_store: SpeakerSampleStore = app.state.speaker_sample_store
+        response = VoiceListResponse.model_validate(voice_store.list_response())
+        return JSONResponse(content=response.model_dump(exclude_none=True))
+
+    @app.post("/v1/audio/voices")
+    async def upload_voice(
+        audio_sample: UploadFile = File(...),
+        consent: str = Form(...),
+        name: str = Form(...),
+        ref_text: str | None = Form(default=None),
+        speaker_description: str | None = Form(default=None),
+    ) -> JSONResponse:
+        voice_store: SpeakerSampleStore = app.state.speaker_sample_store
+        try:
+            response = voice_store.upload(
+                name=name,
+                consent=consent,
+                audio_bytes=await audio_sample.read(),
+                filename=audio_sample.filename,
+                content_type=audio_sample.content_type,
+                ref_text=ref_text,
+                speaker_description=speaker_description,
+            )
+        except SpeechAPIError as exc:
+            return speech_error_response(exc)
+        return JSONResponse(content=response)
+
+    @app.delete("/v1/audio/voices/{name}")
+    async def delete_voice(name: str) -> JSONResponse:
+        voice_store: SpeakerSampleStore = app.state.speaker_sample_store
+        try:
+            deleted = voice_store.delete(name)
+        except SpeechAPIError as exc:
+            return speech_error_response(exc)
+        if not deleted:
+            return JSONResponse(
+                status_code=404,
+                content={"success": False, "error": f"Voice '{name}' not found"},
+            )
+        return JSONResponse(
+            content={
+                "success": True,
+                "message": f"Voice '{name}' deleted successfully",
+            }
+        )
 
 
 def _register_health(app: FastAPI) -> None:

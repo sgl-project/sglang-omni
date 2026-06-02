@@ -236,6 +236,26 @@ class CreateSpeechRequest(BaseModel):
     stage_params: dict[str, dict[str, Any]] | None = None
 
 
+class UploadedVoiceMetadata(BaseModel):
+    """Metadata returned for an uploaded TTS voice sample."""
+
+    name: str
+    consent: str
+    created_at: int
+    file_size: int
+    mime_type: str
+    ref_text: str | None = None
+    speaker_description: str | None = None
+
+
+class VoiceListResponse(BaseModel):
+    """Voice registry response for /v1/audio/voices."""
+
+    voices: list[str]
+    uploaded_voices: list[UploadedVoiceMetadata]
+    cache_stats: dict[str, int]
+
+
 # ---------------------------------------------------------------------------
 # Audio transcription (ASR)
 # ---------------------------------------------------------------------------
