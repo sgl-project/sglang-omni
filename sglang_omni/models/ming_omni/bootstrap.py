@@ -82,13 +82,16 @@ def create_thinker_scheduler(
         video_token_id=video_token_id,
     )
 
-    stream_output_builder = None
+    eos_token_id = getattr(tokenizer, "eos_token_id", None)
     if enable_streaming_tts:
-        eos_token_id = getattr(tokenizer, "eos_token_id", None)
         stream_output_builder = make_thinker_stream_output_builder(
             tokenizer=tokenizer,
             eos_token_id=eos_token_id,
         )
+    else:
+        # Text-only pipeline: emit per-token deltas to the decode stage so
+        # stream=true requests receive incremental delta.content chunks.
+        stream_output_builder = make_text_stream_output_builder()
 
     return OmniScheduler(
         tp_worker=model_worker,
@@ -246,6 +249,49 @@ def make_thinker_scheduler_adapters(
         )
 
     return request_builder, result_adapter
+
+
+def make_text_stream_output_builder(*, text_decode_stage: str = "decode"):
+    """Per-token stream callback for text-only pipelines.
+
+    Sends the raw token_id to the decode stage on every thinker step when
+    stream=true. The decode stage (MingStreamingDetokenizeScheduler) does
+    incremental detokenization and emits text deltas to the Coordinator.
+    """
+    import torch
+
+    from sglang_omni.scheduling.messages import OutgoingMessage
+
+    def _build_stream_output(request_id, req_data, req_output):
+        req = getattr(req_data, "req", None)
+        if req is None or req_output.data is None:
+            return []
+        if int(getattr(req, "is_chunked", 0) or 0) > 0:
+            return []
+        try:
+            token_id = int(req_output.data)
+        except (TypeError, ValueError):
+            return []
+
+        stage_payload = getattr(req_data, "stage_payload", None)
+        is_streaming = bool(
+            stage_payload is not None
+            and (stage_payload.request.params or {}).get("stream", False)
+        )
+        if not is_streaming:
+            return []
+
+        return [
+            OutgoingMessage(
+                request_id=request_id,
+                type="stream",
+                data=torch.tensor([token_id], dtype=torch.long),
+                target=text_decode_stage,
+                metadata={"token_id": token_id},
+            )
+        ]
+
+    return _build_stream_output
 
 
 def make_thinker_stream_output_builder(
