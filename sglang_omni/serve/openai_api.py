@@ -94,6 +94,7 @@ def create_app(
     client: Client,
     *,
     model_name: str | None = None,
+    model_path: str | None = None,
     enable_realtime: bool = False,
     allowed_local_media_path: str | None = None,
 ) -> FastAPI:
@@ -102,6 +103,7 @@ def create_app(
     Args:
         client: Client instance connected to the pipeline coordinator.
         model_name: Default model name to report in responses and /v1/models.
+        model_path: Served model path used for model-family validation.
         enable_realtime: If True, mount the WebSocket ``/v1/realtime``
             endpoint (OpenAI Realtime API).
         allowed_local_media_path: Directory allowed for ``file://`` TTS
@@ -127,6 +129,7 @@ def create_app(
     app.state.speaker_sample_store = SpeakerSampleStore()
     app.state.speech_service = SpeechService(
         default_model=app.state.model_name,
+        model_path=model_path,
         allowed_local_media_paths=(
             [allowed_local_media_path] if allowed_local_media_path else None
         ),

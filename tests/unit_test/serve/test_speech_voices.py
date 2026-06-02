@@ -219,6 +219,49 @@ def test_speech_service_rejects_unknown_voice_for_higgs(tmp_path: Path) -> None:
         service.build_generate_request(request, validate=False)
 
 
+def test_speech_service_rejects_unknown_voice_for_qwen3_base(tmp_path: Path) -> None:
+    store = SpeakerSampleStore(root_dir=tmp_path)
+    service = SpeechService(
+        default_model="Qwen/Qwen3-TTS-12Hz-0.6B-Base",
+        voice_store=store,
+    )
+
+    request = service.parse_request({"input": "hello", "voice": "missing"})
+
+    with pytest.raises(SpeechAPIError, match="Unknown voice"):
+        service.build_generate_request(request, validate=False)
+
+
+def test_speech_service_uses_model_path_for_voice_capabilities(
+    tmp_path: Path,
+) -> None:
+    store = SpeakerSampleStore(root_dir=tmp_path)
+    service = SpeechService(
+        default_model="public-tts-name",
+        model_path="Qwen/Qwen3-TTS-12Hz-0.6B-Base",
+        voice_store=store,
+    )
+
+    request = service.parse_request({"input": "hello", "voice": "missing"})
+
+    with pytest.raises(SpeechAPIError, match="Unknown voice"):
+        service.build_generate_request(request, validate=False)
+
+
+def test_speech_service_preserves_qwen3_custom_voice_names(tmp_path: Path) -> None:
+    store = SpeakerSampleStore(root_dir=tmp_path)
+    service = SpeechService(
+        default_model="Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice",
+        voice_store=store,
+    )
+
+    request = service.parse_request({"input": "hello", "voice": "Vivian"})
+    gen_req = service.build_generate_request(request, validate=False)
+
+    assert gen_req.prompt == "hello"
+    assert gen_req.metadata["tts_params"]["voice"] == "Vivian"
+
+
 def _reference_wav(
     *,
     duration_s: float = 1.2,

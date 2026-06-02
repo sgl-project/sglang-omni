@@ -48,10 +48,12 @@ class SpeechService:
         self,
         *,
         default_model: str,
+        model_path: str | None = None,
         allowed_local_media_paths: list[str | Path] | None = None,
         voice_store: SpeakerSampleStore | None = None,
     ) -> None:
         self.default_model = default_model
+        self.model_path = model_path or default_model
         self.voice_store = voice_store
         self.allowed_local_media_paths = tuple(
             _resolve_allowed_local_media_path(path)
@@ -254,9 +256,7 @@ class SpeechService:
         if not request.voice or request.voice.lower() == "default":
             return None
         uploaded_voice = self.voice_store.resolve_reference(request.voice)
-        if uploaded_voice is None and _model_requires_uploaded_voice(
-            request.model or self.default_model
-        ):
+        if uploaded_voice is None and _named_voice_requires_upload(self.model_path):
             raise bad_request(
                 f"Unknown voice '{request.voice}'. Upload a voice first via "
                 "POST /v1/audio/voices, or use ref_audio + ref_text.",
@@ -379,9 +379,21 @@ def _normalize_response_format(value: str) -> str:
     return fmt
 
 
-def _model_requires_uploaded_voice(model_name: str) -> bool:
-    normalized = model_name.replace("-", "_").lower()
-    return "higgs" in normalized
+def _named_voice_requires_upload(model_name: str) -> bool:
+    return _is_higgs_tts_model(model_name) or _is_qwen3_tts_base_model(model_name)
+
+
+def _is_higgs_tts_model(model_name: str) -> bool:
+    return "higgs" in _normalize_model_name(model_name)
+
+
+def _is_qwen3_tts_base_model(model_name: str) -> bool:
+    normalized = _normalize_model_name(model_name)
+    return "qwen3_tts" in normalized and normalized.endswith("_base")
+
+
+def _normalize_model_name(model_name: str) -> str:
+    return model_name.replace("-", "_").replace("/", "_").casefold()
 
 
 def _uploaded_voice_reference_dict(
