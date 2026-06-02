@@ -300,6 +300,8 @@ The table below lists all parameters accepted by the `/v1/audio/speech` endpoint
 | `task_type` | string | `null` | Qwen3-TTS task type: `Base`, `CustomVoice`, or `VoiceDesign`; inferred as `Base` when reference audio/text is present, otherwise `CustomVoice` |
 | `instructions` | string | `null` | Qwen3-TTS style or VoiceDesign instructions |
 | `max_new_tokens` | int | `null` | Maximum number of generated tokens |
+| `token_count` | int | `null` | Model-specific duration token target |
+| `duration_tokens` | int | `null` | Alias-style duration token target for models that expose duration control |
 | `initial_codec_chunk_frames` | int | `null` | Initial codec chunk size hint for streaming-capable TTS models |
 | `x_vector_only_mode` | bool | `null` | Qwen3-TTS Base speaker-embedding mode |
 | `temperature` | float | `null` | Sampling temperature |
@@ -398,7 +400,7 @@ SGLang-Omni ships with a Gradio-based playground for interactive TTS experimenta
 The playground now exposes two demo modes against the same S2 Pro backend:
 
 - `Non-Streaming` starts a standard request and shows the final WAV after generation finishes.
-- `Streaming` consumes the `/v1/audio/speech` SSE stream, starts playback from incremental WAV chunks, and also writes a final combined WAV artifact for inspection.
+- `Streaming` consumes the `/v1/audio/speech` SSE stream, converts incremental PCM chunks for playback, and also writes a final combined WAV artifact for inspection.
 
 The launcher starts the backend first, waits for `/health`, then starts the Gradio UI with:
 

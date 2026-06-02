@@ -15,6 +15,7 @@ from sglang_omni.pipeline.coordinator import Coordinator
 from sglang_omni.proto import CompleteMessage, OmniRequest, StreamMessage
 from sglang_omni.serve import create_app
 from sglang_omni.serve.openai_api import (
+    _await_speech_response,
     _chat_stream,
     _speech_stream,
     build_speech_generate_request,
@@ -134,6 +135,57 @@ class EmptyStreamingSpeechClient:
             sample_rate=24000,
             finish_reason="stop",
         )
+
+
+class BlockingStreamingSpeechClient:
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+        self.aborted: list[str] = []
+
+    def health(self) -> dict[str, Any]:
+        return {"running": True}
+
+    async def generate(self, request: Any, request_id: str | None = None):
+        del request
+        self.started.set()
+        await asyncio.Future()
+        yield GenerateChunk(request_id=request_id or "speech-1")
+
+    async def abort(self, request_id: str) -> None:
+        self.aborted.append(request_id)
+
+
+class BlockingNonStreamingSpeechClient:
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+        self.aborted: list[str] = []
+
+    def health(self) -> dict[str, Any]:
+        return {"running": True}
+
+    async def speech(
+        self,
+        request: GenerateRequest,
+        *,
+        request_id: str,
+        response_format: str = "wav",
+        speed: float = 1.0,
+        allow_format_fallback: bool = True,
+    ):
+        del request, request_id, response_format, speed, allow_format_fallback
+        self.started.set()
+        await asyncio.Future()
+
+    async def abort(self, request_id: str) -> None:
+        self.aborted.append(request_id)
+
+
+class DisconnectingRequest:
+    def __init__(self) -> None:
+        self.disconnected = asyncio.Event()
+
+    async def is_disconnected(self) -> bool:
+        return self.disconnected.is_set()
 
 
 class SuccessfulTranscriptionClient:
@@ -304,6 +356,27 @@ def test_speech_stream_without_audio_fails_without_done_sentinel() -> None:
         asyncio.run(_collect_speech_stream(EmptyStreamingSpeechClient()))
 
 
+def test_speech_stream_cancellation_aborts_active_request() -> None:
+    async def _drive() -> None:
+        client = BlockingStreamingSpeechClient()
+        stream = _speech_stream(
+            client=client,
+            gen_req=GenerateRequest(model="s2-pro", prompt="hello", stream=True),
+            request_id="req-1",
+            response_format="pcm",
+            speed=1.0,
+        )
+        task = asyncio.create_task(anext(stream))
+        await client.started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        await stream.aclose()
+        assert client.aborted == ["req-1"]
+
+    asyncio.run(_drive())
+
+
 def test_speech_stream_failure_closes_without_done_sentinel() -> None:
     """A mid-stream failure must not be reported as a successful SSE finish."""
 
@@ -333,6 +406,29 @@ def test_speech_stream_failure_closes_without_done_sentinel() -> None:
     payload = json.loads(chunks[0][len("data: ") :])
     assert payload["audio"] is not None
     assert payload["finish_reason"] is None
+
+
+def test_speech_response_disconnect_aborts_active_request() -> None:
+    async def _drive() -> None:
+        client = BlockingNonStreamingSpeechClient()
+        request = DisconnectingRequest()
+        task = asyncio.create_task(
+            _await_speech_response(
+                request=request,
+                client=client,
+                gen_req=GenerateRequest(model="s2-pro", prompt="hello"),
+                request_id="req-1",
+                response_format="wav",
+                speed=1.0,
+            )
+        )
+        await client.started.wait()
+        request.disconnected.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert client.aborted == ["req-1"]
+
+    asyncio.run(_drive())
 
 
 def test_speech_request_records_explicit_generation_params() -> None:

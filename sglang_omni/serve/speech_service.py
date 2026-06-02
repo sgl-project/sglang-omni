@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 import importlib.util
 import shutil
 from pathlib import Path
@@ -91,11 +93,13 @@ class SpeechService:
         if request.language is not None:
             updates["language"] = _normalize_language(request.language)
 
-        _validate_positive_int(request.max_new_tokens, param="max_new_tokens")
-        _validate_positive_int(
-            request.initial_codec_chunk_frames,
-            param="initial_codec_chunk_frames",
-        )
+        for field_name in (
+            "max_new_tokens",
+            "initial_codec_chunk_frames",
+            "token_count",
+            "duration_tokens",
+        ):
+            _validate_positive_int(getattr(request, field_name), param=field_name)
         _validate_non_negative_int(request.seed, param="seed")
 
         ref_audio = request.ref_audio
@@ -234,7 +238,13 @@ class SpeechService:
                     raise bad_request(
                         f"{field_name} must be a string", param=field_name
                     )
-        for field_name in ("max_new_tokens", "initial_codec_chunk_frames", "seed"):
+        for field_name in (
+            "max_new_tokens",
+            "initial_codec_chunk_frames",
+            "token_count",
+            "duration_tokens",
+            "seed",
+        ):
             if field_name in payload and payload[field_name] is not None:
                 value = payload[field_name]
                 if isinstance(value, bool) or not isinstance(value, int):
@@ -276,11 +286,7 @@ class SpeechService:
         if url.scheme in {"http", "https"}:
             return value
         if url.scheme == "data":
-            if "," not in (url.path or ""):
-                raise bad_request(
-                    "ref_audio data URL must include base64 media data",
-                    param=param,
-                )
+            _validate_data_url(value, param=param)
             return value
         if url.scheme != "file":
             raise bad_request(
@@ -337,6 +343,22 @@ def _validate_positive_int(value: int | None, *, param: str) -> None:
 def _validate_non_negative_int(value: int | None, *, param: str) -> None:
     if value is not None and value < 0:
         raise bad_request(f"{param} must be greater than or equal to 0", param=param)
+
+
+def _validate_data_url(value: str, *, param: str) -> None:
+    header, separator, encoded = value.partition(",")
+    if not separator or ";base64" not in header.lower() or not encoded:
+        raise bad_request(
+            "ref_audio data URL must include base64 media data",
+            param=param,
+        )
+    try:
+        base64.b64decode(encoded, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise bad_request(
+            "ref_audio data URL must include valid base64 media data",
+            param=param,
+        ) from exc
 
 
 def _validate_encoder_dependency(response_format: str) -> None:

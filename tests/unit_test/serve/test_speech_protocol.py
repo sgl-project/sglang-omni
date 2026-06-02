@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 from pathlib import Path
 
 import pytest
@@ -52,6 +53,10 @@ def test_speech_service_rejects_boolean_seed() -> None:
         ({"input": "hello", "language": "Klingon"}, "language"),
         ({"input": "hello", "task_type": "Narration"}, "task_type"),
         ({"input": "hello", "max_new_tokens": 0}, "max_new_tokens"),
+        ({"input": "hello", "token_count": 0}, "token_count"),
+        ({"input": "hello", "token_count": -1}, "token_count"),
+        ({"input": "hello", "duration_tokens": 0}, "duration_tokens"),
+        ({"input": "hello", "duration_tokens": -1}, "duration_tokens"),
         (
             {"input": "hello", "initial_codec_chunk_frames": 0},
             "initial_codec_chunk_frames",
@@ -68,6 +73,27 @@ def test_speech_service_rejects_invalid_boundary_values(
 
     assert exc_info.value.status_code == 400
     assert exc_info.value.param == expected_param
+
+
+@pytest.mark.parametrize(
+    ("field_name", "value"),
+    [
+        ("token_count", "5"),
+        ("token_count", True),
+        ("duration_tokens", "5"),
+        ("duration_tokens", True),
+    ],
+)
+def test_speech_service_rejects_invalid_duration_field_types(
+    field_name: str, value: object
+) -> None:
+    service = SpeechService(default_model="tts")
+
+    with pytest.raises(SpeechAPIError) as exc_info:
+        service.parse_request({"input": "hello", field_name: value})
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.param == field_name
 
 
 def test_speech_service_normalizes_tts_extension_fields_into_tts_params() -> None:
@@ -121,6 +147,8 @@ def test_file_reference_requires_allowlist() -> None:
         ("relative/reference.wav", "ref_audio"),
         ("ftp://example.com/reference.wav", "ref_audio"),
         ("data:audio/wav;base64", "ref_audio"),
+        ("data:audio/wav,AAAA", "ref_audio"),
+        ("data:audio/wav;base64,not@@base64", "ref_audio"),
     ],
 )
 def test_reference_audio_rejects_unsupported_sources(
@@ -135,6 +163,17 @@ def test_reference_audio_rejects_unsupported_sources(
     assert exc_info.value.param == expected_param
 
 
+def test_reference_audio_accepts_valid_base64_data_url() -> None:
+    service = SpeechService(default_model="tts")
+    encoded = base64.b64encode(b"RIFF").decode("ascii")
+
+    request = service.parse_request(
+        {"input": "hello", "ref_audio": f"data:audio/wav;base64,{encoded}"}
+    )
+
+    assert request.ref_audio == f"data:audio/wav;base64,{encoded}"
+
+
 def test_reference_list_rejects_raw_local_path() -> None:
     service = SpeechService(default_model="tts")
 
@@ -143,6 +182,21 @@ def test_reference_list_rejects_raw_local_path() -> None:
             {
                 "input": "hello",
                 "references": [{"audio_path": "/tmp/reference.wav"}],
+            }
+        )
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.param == "references.audio_path"
+
+
+def test_reference_list_rejects_invalid_base64_data_url() -> None:
+    service = SpeechService(default_model="tts")
+
+    with pytest.raises(SpeechAPIError) as exc_info:
+        service.parse_request(
+            {
+                "input": "hello",
+                "references": [{"audio_path": "data:audio/wav;base64,not@@base64"}],
             }
         )
 
