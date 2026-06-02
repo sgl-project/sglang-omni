@@ -25,6 +25,7 @@ from sglang_omni.models.moss_tts.request_builders import (
     build_sglang_moss_tts_request,
     clear_moss_tts_preprocessing_context,
     preprocess_moss_tts_payload,
+    preprocess_moss_tts_payloads,
     set_moss_tts_preprocessing_context,
 )
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
@@ -410,6 +411,91 @@ def test_moss_preprocess_and_sglang_request_handoff(
     assert data.prompt_rows.shape == (3, 3)
     assert data.state.assistant_start_length == 0
     assert data.req.sampling_params.stop_token_ids == [151645]
+
+
+def test_moss_preprocess_batches_processor_and_reference_audio_encode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sglang_omni.models.moss_tts import request_builders as rb
+
+    class FakeProcessor:
+        def __init__(self) -> None:
+            self.encode_calls = []
+            self.processor_batch_sizes = []
+
+        def encode_audios_from_wav(self, wavs, sample_rate):
+            self.encode_calls.append((len(wavs), sample_rate))
+            return [
+                torch.full((2, 2), idx + 1, dtype=torch.long)
+                for idx in range(len(wavs))
+            ]
+
+        def build_user_message(self, **kwargs):
+            return {"role": "user", **kwargs}
+
+        def __call__(self, conversations, mode):
+            assert mode == "generation"
+            self.processor_batch_sizes.append(len(conversations))
+            rows = []
+            for conversation in conversations:
+                reference_codes = conversation[0]["reference"][0]
+                marker = int(reference_codes[0, 0].item())
+                rows.append(
+                    torch.tensor(
+                        [
+                            [marker, 1024, 1024],
+                            [151644, 1024, 1024],
+                            [0, 0, 0],
+                        ],
+                        dtype=torch.long,
+                    )
+                )
+            return {
+                "input_ids": torch.stack(rows, dim=0),
+                "attention_mask": torch.tensor(
+                    [[1, 1, 0], [1, 1, 0]], dtype=torch.long
+                ),
+            }
+
+    def fake_decode_data_uri(ref_audio: str):
+        fill = 0.1 if ref_audio.endswith("AAAA") else 0.2
+        return torch.full((1, 4), fill, dtype=torch.float32), 24000
+
+    processor = FakeProcessor()
+    payloads = [
+        make_payload(
+            inputs={
+                "text": "hello",
+                "references": [{"audio_path": "data:audio/wav;base64,AAAA"}],
+            },
+            request_id="batch-0",
+        ),
+        make_payload(
+            inputs={
+                "text": "world",
+                "references": [{"audio_path": "data:audio/wav;base64,BBBB"}],
+            },
+            request_id="batch-1",
+        ),
+    ]
+
+    monkeypatch.setattr(rb, "_decode_data_uri_reference", fake_decode_data_uri)
+    try:
+        set_moss_tts_preprocessing_context(processor=processor)
+        prepared_payloads = preprocess_moss_tts_payloads(payloads)
+        prepared = [
+            rb.pop_prepared_moss_tts_request(payload)
+            for payload in prepared_payloads
+        ]
+    finally:
+        clear_moss_tts_preprocessing_context()
+
+    assert processor.encode_calls == [(2, 24000)]
+    assert processor.processor_batch_sizes == [2]
+    assert prepared[0].prompt_rows.shape == (2, 3)
+    assert prepared[1].prompt_rows.shape == (2, 3)
+    assert int(prepared[0].prompt_rows[0, 0]) == 1
+    assert int(prepared[1].prompt_rows[0, 0]) == 2
 
 
 def test_moss_delay_runner_samples_audio_and_appends_feedback() -> None:

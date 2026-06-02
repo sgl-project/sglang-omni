@@ -20,6 +20,7 @@ from sglang_omni.models.moss_tts.request_builders import (
     cleanup_prepared_moss_tts_request,
     make_moss_tts_scheduler_adapters,
     preprocess_moss_tts_payload,
+    preprocess_moss_tts_payloads,
     set_moss_tts_preprocessing_context,
 )
 from sglang_omni.proto import StagePayload
@@ -185,21 +186,26 @@ def _build_usage(state: MossTTSState) -> dict[str, Any] | None:
 
 
 def create_preprocessing_executor(
-    model_path: str, *, max_concurrency: int = 8
+    model_path: str,
+    *,
+    max_concurrency: int = 8,
+    max_batch_size: int | None = None,
+    max_batch_wait_ms: int = 2,
 ) -> SimpleScheduler:
     processor = _load_moss_processor(model_path, device="cpu", dtype="float32")
     set_moss_tts_preprocessing_context(processor=processor)
     # Preprocessing is CPU-heavy: every request tokenizes text and encodes the
-    # reference audio through the MOSS audio tokenizer. Serial execution
-    # (max_concurrency=1) lets the codec encode dominate wall-clock and starves
-    # the AR engine to batch size 1 (the dominant RTF cost). Run several in
-    # parallel — threads release the GIL during the torch codec forward — so the
-    # AR OmniScheduler receives a steady, batchable request stream. Mirrors the
-    # fishaudio_s2_pro preprocessing stage, which encodes references the same way.
+    # reference audio through the MOSS audio tokenizer. Batch adjacent requests
+    # so the processor and data-URI audio encode paths can share codec forwards,
+    # mirroring the batched reference-code path used by other TTS stages.
+    if max_batch_size is None:
+        max_batch_size = max_concurrency
     return SimpleScheduler(
         preprocess_moss_tts_payload,
+        batch_compute_fn=preprocess_moss_tts_payloads,
         abort_callback=cleanup_prepared_moss_tts_request,
-        max_concurrency=max_concurrency,
+        max_batch_size=max_batch_size,
+        max_batch_wait_ms=max_batch_wait_ms,
     )
 
 

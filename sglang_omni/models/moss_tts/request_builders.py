@@ -27,6 +27,7 @@ _TOKEN_PREFIX_START_RE = re.compile(r"^\$\{token:")
 _DATA_URI_RE = re.compile(r"^data:audio/[^;,]+;base64,(?P<data>.+)$", re.DOTALL)
 _INF_DELAY = -1
 _MOSS_TTS_SAMPLING_SEED_MASK = 0x7FFFFFFF
+_REFERENCE_UNSET = object()
 
 
 def _new_moss_tts_sampling_seed() -> int:
@@ -400,14 +401,10 @@ def build_row_cache_key_ids(rows: torch.Tensor) -> list[int]:
     return key_ids
 
 
-def _reference_for_processor(processor: Any, ref_audio: Any | None) -> list[Any] | None:
-    if ref_audio is None:
-        return None
-    if not isinstance(ref_audio, str):
-        return [ref_audio]
+def _decode_data_uri_reference(ref_audio: str) -> tuple[torch.Tensor, int] | None:
     match = _DATA_URI_RE.match(ref_audio)
     if match is None:
-        return [ref_audio]
+        return None
 
     try:
         import soundfile as sf
@@ -418,13 +415,66 @@ def _reference_for_processor(processor: Any, ref_audio: Any | None) -> list[Any]
 
     raw = base64.b64decode(match.group("data"))
     audio, sample_rate = sf.read(io.BytesIO(raw), dtype="float32", always_2d=True)
-    wav = torch.from_numpy(audio.T)
-    codes = processor.encode_audios_from_wav([wav], int(sample_rate))[0]
+    return torch.from_numpy(audio.T), int(sample_rate)
+
+
+def _reference_for_processor(processor: Any, ref_audio: Any | None) -> list[Any] | None:
+    if ref_audio is None:
+        return None
+    if not isinstance(ref_audio, str):
+        return [ref_audio]
+    decoded = _decode_data_uri_reference(ref_audio)
+    if decoded is None:
+        return [ref_audio]
+
+    wav, sample_rate = decoded
+    codes = processor.encode_audios_from_wav([wav], sample_rate)[0]
     return [codes]
 
 
-def _build_processor_message(processor: Any, state: MossTTSState) -> dict[str, Any]:
-    reference = _reference_for_processor(processor, state.ref_audio)
+def _references_for_processor_batch(
+    processor: Any, states: list[MossTTSState]
+) -> list[list[Any] | None]:
+    references: list[list[Any] | None] = [None] * len(states)
+    decode_groups: dict[int, list[tuple[int, torch.Tensor]]] = {}
+
+    for idx, state in enumerate(states):
+        ref_audio = state.ref_audio
+        if ref_audio is None:
+            continue
+        if not isinstance(ref_audio, str):
+            references[idx] = [ref_audio]
+            continue
+        decoded = _decode_data_uri_reference(ref_audio)
+        if decoded is None:
+            references[idx] = [ref_audio]
+            continue
+        wav, sample_rate = decoded
+        decode_groups.setdefault(sample_rate, []).append((idx, wav))
+
+    for sample_rate, items in decode_groups.items():
+        codes = processor.encode_audios_from_wav(
+            [wav for _, wav in items], int(sample_rate)
+        )
+        if len(codes) != len(items):
+            raise RuntimeError(
+                "MOSS-TTS batched reference encode returned "
+                f"{len(codes)} results for {len(items)} waveforms"
+            )
+        for (idx, _), item_codes in zip(items, codes):
+            references[idx] = [item_codes]
+
+    return references
+
+
+def _build_processor_message(
+    processor: Any,
+    state: MossTTSState,
+    *,
+    reference: Any = _REFERENCE_UNSET,
+) -> dict[str, Any]:
+    if reference is _REFERENCE_UNSET:
+        reference = _reference_for_processor(processor, state.ref_audio)
     return processor.build_user_message(
         text=state.text,
         reference=reference,
@@ -458,6 +508,68 @@ def _prepare_moss_tts_request(
     )
 
 
+def _trim_batched_processor_rows(
+    rows: torch.Tensor,
+    attention_mask: Any,
+) -> torch.Tensor:
+    if attention_mask is None:
+        return rows
+    mask = torch.as_tensor(attention_mask)
+    if mask.ndim > 1:
+        mask = mask.any(dim=tuple(range(1, mask.ndim)))
+    mask = mask.to(dtype=torch.bool, device=rows.device).flatten()
+    if int(mask.numel()) != int(rows.shape[0]):
+        return rows
+    return rows[mask]
+
+
+def _prepare_moss_tts_requests(
+    payloads: list[StagePayload],
+    *,
+    processor: Any,
+) -> list[MossTTSPreparedRequest]:
+    states = [build_moss_tts_state(payload) for payload in payloads]
+    references = _references_for_processor_batch(processor, states)
+    messages = [
+        _build_processor_message(processor, state, reference=reference)
+        for state, reference in zip(states, references)
+    ]
+    batch = processor([[message] for message in messages], mode="generation")
+    input_rows = batch["input_ids"]
+    if input_rows.ndim != 3 or int(input_rows.shape[0]) != len(payloads):
+        raise ValueError(
+            "MOSS-TTS processor must return input_ids with shape [B, T, C]"
+        )
+
+    attention_mask = batch.get("attention_mask") if isinstance(batch, dict) else None
+    prepared: list[MossTTSPreparedRequest] = []
+    for idx, state in enumerate(states):
+        mask = attention_mask[idx] if attention_mask is not None else None
+        prompt_rows = _trim_batched_processor_rows(input_rows[idx], mask)
+        prompt_rows = prompt_rows.detach().to(dtype=torch.long, device="cpu")
+        input_ids_list = build_row_cache_key_ids(prompt_rows)
+        prepared.append(
+            MossTTSPreparedRequest(
+                state=state,
+                input_ids_list=input_ids_list,
+                input_ids=torch.tensor(input_ids_list, dtype=torch.long),
+                prompt_rows=prompt_rows,
+                gen_kwargs=state.generation_kwargs,
+            )
+        )
+    return prepared
+
+
+def _store_prepared_moss_tts_request(
+    payload: StagePayload, prepared: MossTTSPreparedRequest
+) -> StagePayload:
+    data = prepared.state.to_dict()
+    data[_MOSS_TTS_PREPARED_MARKER] = payload.request_id
+    return StagePayload(
+        request_id=payload.request_id, request=payload.request, data=data
+    )
+
+
 def preprocess_moss_tts_payload(payload: StagePayload) -> StagePayload:
     """Run MOSS-TTS prompt/reference preprocessing outside the AR scheduler."""
 
@@ -487,11 +599,52 @@ def preprocess_moss_tts_payload(payload: StagePayload) -> StagePayload:
             # Aborted-while-preprocessing drops the handoff so it never lingers.
             _PREPARED_REQUESTS[rid] = prepared
 
-    data = prepared.state.to_dict()
-    data[_MOSS_TTS_PREPARED_MARKER] = payload.request_id
-    return StagePayload(
-        request_id=payload.request_id, request=payload.request, data=data
-    )
+    return _store_prepared_moss_tts_request(payload, prepared)
+
+
+def preprocess_moss_tts_payloads(payloads: list[StagePayload]) -> list[StagePayload]:
+    """Batch MOSS-TTS prompt/reference preprocessing for SimpleScheduler."""
+
+    if not payloads:
+        return []
+    if len(payloads) == 1:
+        return [preprocess_moss_tts_payload(payloads[0])]
+
+    request_ids = [str(payload.request_id) for payload in payloads]
+    with _PREPARED_REQUESTS_LOCK:
+        context = _PREPROCESSING_CONTEXT
+        if context is not None:
+            _INFLIGHT_REQUESTS.update(request_ids)
+    if context is None:
+        raise RuntimeError(
+            "MOSS-TTS preprocessing context is not initialized; "
+            "create_preprocessing_executor must register it before requests run"
+        )
+
+    try:
+        prepared_items = _prepare_moss_tts_requests(
+            payloads, processor=context.processor
+        )
+    except BaseException:
+        with _PREPARED_REQUESTS_LOCK:
+            for rid in request_ids:
+                _INFLIGHT_REQUESTS.discard(rid)
+                _ABORTED_REQUESTS.discard(rid)
+        raise
+
+    with _PREPARED_REQUESTS_LOCK:
+        for rid, prepared in zip(request_ids, prepared_items):
+            _INFLIGHT_REQUESTS.discard(rid)
+            aborted = rid in _ABORTED_REQUESTS
+            _ABORTED_REQUESTS.discard(rid)
+            if not aborted:
+                _PREPARED_REQUESTS[rid] = prepared
+
+    return [
+        _store_prepared_moss_tts_request(payload, prepared)
+        for payload, prepared in zip(payloads, prepared_items)
+    ]
+
 
 
 def _last_equal(rows: torch.Tensor, value: int) -> int:
