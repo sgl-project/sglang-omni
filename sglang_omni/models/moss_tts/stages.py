@@ -384,7 +384,55 @@ def create_vocoder_executor(
         return _store_vocoder_result(payload, state, wav, sample_rate)
 
     def _vocode_batch(payloads: list[StagePayload]) -> list[StagePayload]:
-        return [_vocode(payload) for payload in payloads]
+        all_segments = []
+        payload_segment_ranges = []
+        states = []
+        audio_pad_code = int(
+            getattr(
+                getattr(processor, "model_config", None),
+                "audio_pad_code",
+                1024,
+            )
+        )
+        for payload in payloads:
+            state, delayed_codes = _prepare_vocoder_item(payload)
+            segments = split_moss_audio_segments(
+                delayed_codes.to(device=device, dtype=torch.long),
+                audio_pad_code=audio_pad_code,
+                assistant_start_length=int(state.assistant_start_length),
+            )
+            start = len(all_segments)
+            all_segments.extend(segments)
+            payload_segment_ranges.append((start, len(all_segments)))
+            states.append(state)
+
+        all_waveforms = (
+            processor.decode_audio_codes(all_segments) if all_segments else []
+        )
+
+        sample_rate = int(
+            getattr(getattr(processor, "model_config", None), "sampling_rate", 0)
+            or getattr(
+                getattr(getattr(processor, "audio_tokenizer", None), "config", None),
+                "sampling_rate",
+                0,
+            )
+            or 24000
+        )
+
+        results = []
+        for i, payload in enumerate(payloads):
+            state = states[i]
+            start, end = payload_segment_ranges[i]
+            wav_chunks = all_waveforms[start:end]
+            if not wav_chunks:
+                raise RuntimeError("MOSS-TTS vocoder decoded no audio segments")
+            waveform = torch.cat(
+                [torch.as_tensor(w).detach().reshape(-1).to("cpu") for w in wav_chunks],
+                dim=0,
+            )
+            results.append(_store_vocoder_result(payload, state, waveform, sample_rate))
+        return results
 
     return SimpleScheduler(
         _vocode,
