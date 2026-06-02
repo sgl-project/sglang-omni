@@ -6,11 +6,12 @@ from __future__ import annotations
 import os
 from typing import Any
 
+from sglang_omni.utils.hub import snapshot_download
+
 
 def _resolve_checkpoint(model_path: str) -> str:
     if os.path.isdir(model_path):
         return model_path
-    from sglang_omni.utils.hub import snapshot_download
 
     return snapshot_download(model_path, local_files_only=False)
 
