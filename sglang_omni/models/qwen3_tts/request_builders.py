@@ -516,7 +516,7 @@ def _cacheable_qwen3_tts_voice_prompt(
         "icl_mode": tuple(bool(value) for value in voice_clone_prompt["icl_mode"]),
         "ref_text": ref_text,
     }
-    if ref_codes is not None:
+    if ref_codes is not None and all(code is not None for code in ref_codes):
         artifact["ref_code"] = tuple(
             _cacheable_qwen3_tts_tensor(code) for code in ref_codes
         )

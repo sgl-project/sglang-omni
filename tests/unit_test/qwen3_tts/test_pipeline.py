@@ -555,6 +555,98 @@ def test_qwen3_tts_uploaded_voice_clone_prompt_uses_shared_cache(
     assert calls == 3
 
 
+def test_qwen3_tts_uploaded_voice_x_vector_cache_omits_ref_code(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cache = get_speaker_artifact_cache()
+    cache.clear()
+    calls = 0
+
+    class FakePrompt:
+        ref_text = None
+
+    class FakeWrapper:
+        def create_voice_clone_prompt(self, **kwargs):
+            nonlocal calls
+            calls += 1
+            assert kwargs["x_vector_only_mode"] is True
+            return [FakePrompt()]
+
+        def _prompt_items_to_voice_clone_prompt(self, prompt_items):
+            del prompt_items
+            return {
+                "ref_code": [None],
+                "ref_spk_embedding": [torch.ones(4)],
+                "icl_mode": [False],
+            }
+
+        def _tokenize_texts(self, texts):
+            return [torch.arange(len(texts[0]), dtype=torch.long).unsqueeze(0)]
+
+        def _build_assistant_text(self, text):
+            return text
+
+        def _merge_generate_kwargs(self, **kwargs):
+            return kwargs
+
+    class FakeModel:
+        device = torch.device("cpu")
+        root_config = SimpleNamespace(tts_pad_token_id=0)
+        model = SimpleNamespace(_feedback_buffer=torch.empty((1, 4)))
+
+        def build_voice_clone_inputs(self, **kwargs):
+            assert kwargs["voice_clone_prompt"]["icl_mode"] == [False]
+            assert kwargs["voice_clone_prompt"].get("ref_code") in (None, [None])
+            return (
+                torch.ones((1, 2, 4)),
+                torch.ones((1, 2), dtype=torch.long),
+                torch.ones((1, 1, 4)),
+                None,
+            )
+
+        def get_text_embeddings(self):
+            return lambda ids: torch.ones((*ids.shape, 4), device=ids.device)
+
+        def text_projection(self, embeds):
+            return embeds
+
+    monkeypatch.setattr(
+        qwen3_request_builders,
+        "_build_qwen3_tts_pad_embed",
+        lambda model: torch.zeros(4),
+    )
+
+    payload = make_payload(
+        inputs="target",
+        tts_params={
+            "ref_audio": "voice.wav",
+            "uploaded_voice_name": "guide",
+            "uploaded_voice_created_at": 9,
+            "uploaded_voice_fingerprint": "abc",
+            "x_vector_only_mode": True,
+        },
+    )
+
+    qwen3_request_builders._prepare_qwen3_tts_request(
+        payload,
+        model=FakeModel(),
+        wrapper=FakeWrapper(),
+    )
+    cached = cache.get(
+        SpeakerCacheKey("qwen3_tts_xvec", "guide", 9, "voice_clone_prompt")
+    )
+    assert isinstance(cached, dict)
+    assert "ref_code" not in cached
+
+    qwen3_request_builders._prepare_qwen3_tts_request(
+        payload,
+        model=FakeModel(),
+        wrapper=FakeWrapper(),
+    )
+
+    assert calls == 1
+
+
 def test_qwen3_tts_public_seed_derivation_is_stable() -> None:
     first = derive_qwen3_tts_sampling_seeds(123)
     second = derive_qwen3_tts_sampling_seeds(123)
