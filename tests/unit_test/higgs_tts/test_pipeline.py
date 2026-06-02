@@ -17,6 +17,7 @@ from sglang_omni.models.higgs_tts.vocoder_scheduler import (
 )
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
 from sglang_omni.proto import OmniRequest, StagePayload
+from sglang_omni.serve.speaker_cache import get_speaker_artifact_cache
 
 
 def test_higgs_streaming_pipeline_routes_chunks_to_vocoder() -> None:
@@ -110,11 +111,19 @@ def test_higgs_tts_engine_enables_cuda_graph_by_default(monkeypatch) -> None:
 
 
 def test_higgs_reference_cache_key_round_trip() -> None:
-    state = HiggsTtsState(reference_cache_key="path:/tmp/ref.wav")
+    state = HiggsTtsState(
+        reference_cache_key="path:/tmp/ref.wav",
+        uploaded_voice_name="guide",
+        uploaded_voice_created_at=7,
+        uploaded_voice_fingerprint="abc",
+    )
 
     restored = HiggsTtsState.from_dict(state.to_dict())
 
     assert restored.reference_cache_key == "path:/tmp/ref.wav"
+    assert restored.uploaded_voice_name == "guide"
+    assert restored.uploaded_voice_created_at == 7
+    assert restored.uploaded_voice_fingerprint == "abc"
 
 
 def test_higgs_reference_cache_key_tracks_file_content(tmp_path) -> None:
@@ -260,6 +269,81 @@ def test_higgs_audio_encoder_uses_reference_code_cache(monkeypatch) -> None:
     assert second.data["prompt_token_ids"] == [5, 3, 7]
     assert "reference_waveform" not in second.data
     assert "reference_cache_key" not in second.data
+
+
+def test_higgs_audio_encoder_uses_shared_cache_for_uploaded_voice(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(stages, "resolve_checkpoint", lambda model_path: model_path)
+    monkeypatch.setattr(stages.Tokenizer, "from_file", lambda _path: object())
+    monkeypatch.setattr(
+        stages,
+        "PreTrainedTokenizerFast",
+        lambda tokenizer_object: object(),
+    )
+
+    class FakeAdapter:
+        def __init__(self, _tokenizer) -> None:
+            pass
+
+        def build_prompt(
+            self, text: str, *, num_ref_tokens: int, reference_text: str | None
+        ) -> list[int]:
+            return [len(text), num_ref_tokens, len(reference_text or "")]
+
+    class FakeCodec:
+        SAMPLE_RATE = 24000
+
+        def __init__(self) -> None:
+            self.calls = 0
+            self.model = SimpleNamespace(acoustic_encoder=torch.nn.Identity())
+
+        def encode_reference(self, waveform, sample_rate: int) -> torch.Tensor:
+            self.calls += 1
+            return torch.tensor([[11, 12], [21, 22]], dtype=torch.long)
+
+    cache = get_speaker_artifact_cache()
+    cache.clear()
+    fake_codec = FakeCodec()
+    monkeypatch.setattr(stages, "HiggsTokenizerAdapter", FakeAdapter)
+    monkeypatch.setattr(stages, "get_or_load_codec", lambda *args, **kwargs: fake_codec)
+
+    scheduler = stages.create_audio_encoder_executor(
+        "ckpt",
+        device="cuda:0",
+        num_codebooks=2,
+    )
+    fake_codec.calls = 0
+    encode = scheduler._fn
+
+    def make_payload(request_id: str) -> StagePayload:
+        state = HiggsTtsState(
+            reference_waveform=torch.zeros(1, 1, 16),
+            target_text="hello",
+            reference_text="speaker",
+            uploaded_voice_name="guide",
+            uploaded_voice_created_at=7,
+            uploaded_voice_fingerprint="abc",
+            num_codebooks=2,
+        )
+        return StagePayload(
+            request_id=request_id,
+            request=OmniRequest(inputs={}),
+            data=state.to_dict(),
+        )
+
+    first = encode(make_payload("first"))
+    second = encode(make_payload("second"))
+    cache.clear_voice("guide")
+    third = encode(make_payload("third"))
+
+    assert fake_codec.calls == 2
+    assert (
+        first.data["reference_codes_delayed"] == second.data["reference_codes_delayed"]
+    )
+    assert (
+        third.data["reference_codes_delayed"] == first.data["reference_codes_delayed"]
+    )
 
 
 def test_higgs_preprocessing_uses_waveform_cache(monkeypatch, tmp_path) -> None:

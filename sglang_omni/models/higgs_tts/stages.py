@@ -60,6 +60,7 @@ from sglang_omni.scheduling.sglang_backend import (
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 from sglang_omni.scheduling.stage_cache import StageOutputCache
 from sglang_omni.scheduling.threaded_simple_scheduler import ThreadedSimpleScheduler
+from sglang_omni.serve.speaker_cache import SpeakerCacheKey, get_speaker_artifact_cache
 
 logger = logging.getLogger(__name__)
 
@@ -175,6 +176,40 @@ def _reference_audio_cache_key(reference_audio: Any) -> str | None:
     return hash_media_item(raw)
 
 
+def _uploaded_voice_cache_key(
+    reference_audio: Any,
+    *,
+    artifact_kind: str,
+) -> SpeakerCacheKey | None:
+    if not isinstance(reference_audio, dict):
+        return None
+    voice_name = reference_audio.get("uploaded_voice_name")
+    created_at = reference_audio.get("uploaded_voice_created_at")
+    if voice_name is None or created_at is None:
+        return None
+    return SpeakerCacheKey(
+        model_type="higgs_tts",
+        voice_name=str(voice_name),
+        voice_version=int(created_at),
+        artifact_kind=artifact_kind,
+    )
+
+
+def _state_uploaded_voice_cache_key(
+    state: HiggsTtsState,
+    *,
+    artifact_kind: str,
+) -> SpeakerCacheKey | None:
+    if state.uploaded_voice_name is None or state.uploaded_voice_created_at is None:
+        return None
+    return SpeakerCacheKey(
+        model_type="higgs_tts",
+        voice_name=state.uploaded_voice_name,
+        voice_version=int(state.uploaded_voice_created_at),
+        artifact_kind=artifact_kind,
+    )
+
+
 def create_preprocessing_executor(
     model_path: str,
     *,
@@ -202,6 +237,7 @@ def create_preprocessing_executor(
         max_bytes=_REF_WAVEFORM_CACHE_MAX_BYTES,
     )
     reference_waveform_cache_lock = threading.Lock()
+    speaker_cache = get_speaker_artifact_cache()
 
     def _preprocess(payload: StagePayload) -> StagePayload:
         inputs = payload.request.inputs or {}
@@ -236,11 +272,27 @@ def create_preprocessing_executor(
 
         waveform_tensor = None
         reference_cache_key = None
+        uploaded_voice_name = None
+        uploaded_voice_created_at = None
+        uploaded_voice_fingerprint = None
         if ref_codes_TN is None and inputs.get("reference_audio") is not None:
             reference_audio = inputs["reference_audio"]
-            reference_cache_key = _reference_audio_cache_key(reference_audio)
-            with reference_waveform_cache_lock:
-                cached_waveform = reference_waveform_cache.get(reference_cache_key)
+            speaker_waveform_cache_key = _uploaded_voice_cache_key(
+                reference_audio,
+                artifact_kind="reference_waveform",
+            )
+            if speaker_waveform_cache_key is not None:
+                uploaded_voice_name = speaker_waveform_cache_key.voice_name
+                uploaded_voice_created_at = speaker_waveform_cache_key.voice_version
+                if isinstance(reference_audio, dict):
+                    uploaded_voice_fingerprint = reference_audio.get(
+                        "uploaded_voice_fingerprint"
+                    )
+                cached_waveform = speaker_cache.get(speaker_waveform_cache_key)
+            else:
+                reference_cache_key = _reference_audio_cache_key(reference_audio)
+                with reference_waveform_cache_lock:
+                    cached_waveform = reference_waveform_cache.get(reference_cache_key)
             if cached_waveform is not None:
                 waveform_tensor = cached_waveform.clone()
             if waveform_tensor is None:
@@ -254,10 +306,16 @@ def create_preprocessing_executor(
                         f"({wav.shape[-1] / 24000:.1f}s); cap at {_MAX_REF_AUDIO_SEC}s."
                     )
                 waveform_tensor = wav.view(1, 1, -1).contiguous().float()
-                with reference_waveform_cache_lock:
-                    reference_waveform_cache.put(
-                        reference_cache_key, waveform_tensor.clone()
+                if speaker_waveform_cache_key is not None:
+                    speaker_cache.put(
+                        speaker_waveform_cache_key,
+                        waveform_tensor.clone(),
                     )
+                else:
+                    with reference_waveform_cache_lock:
+                        reference_waveform_cache.put(
+                            reference_cache_key, waveform_tensor.clone()
+                        )
 
         if ref_codes_TN is not None:
             delayed = apply_delay_pattern(ref_codes_TN)
@@ -289,6 +347,9 @@ def create_preprocessing_executor(
             reference_cache_key=reference_cache_key,
             target_text=target_text_for_encoder,
             reference_text=reference_text_for_encoder,
+            uploaded_voice_name=uploaded_voice_name,
+            uploaded_voice_created_at=uploaded_voice_created_at,
+            uploaded_voice_fingerprint=uploaded_voice_fingerprint,
             num_codebooks=num_codebooks,
             codebook_size=codebook_size,
             max_new_tokens=int(params.get("max_new_tokens", 2048)),
@@ -337,6 +398,7 @@ def create_audio_encoder_executor(
         max_bytes=_REF_CODE_CACHE_MAX_BYTES,
         cache_device="cpu",
     )
+    speaker_cache = get_speaker_artifact_cache()
 
     def _encode(payload: StagePayload) -> StagePayload:
         state = HiggsTtsState.from_dict(payload.data)
@@ -344,7 +406,14 @@ def create_audio_encoder_executor(
         if waveform is None:
             return payload
 
-        cached_delayed = reference_code_cache.get(state.reference_cache_key)
+        speaker_code_cache_key = _state_uploaded_voice_cache_key(
+            state,
+            artifact_kind="reference_codes",
+        )
+        if speaker_code_cache_key is not None:
+            cached_delayed = speaker_cache.get(speaker_code_cache_key)
+        else:
+            cached_delayed = reference_code_cache.get(state.reference_cache_key)
         if cached_delayed is not None:
             delayed_rows = cached_delayed.tolist()
         else:
@@ -358,9 +427,11 @@ def create_audio_encoder_executor(
                 )
             delayed = apply_delay_pattern(ref_codes_TN)
             delayed_rows = delayed.tolist()
-            reference_code_cache.put(
-                state.reference_cache_key, delayed.to("cpu", torch.int32)
-            )
+            cached_codes = delayed.to("cpu", torch.int32)
+            if speaker_code_cache_key is not None:
+                speaker_cache.put(speaker_code_cache_key, cached_codes)
+            else:
+                reference_code_cache.put(state.reference_cache_key, cached_codes)
         state.reference_codes_delayed = delayed_rows
         state.prompt_token_ids = adapter.build_prompt(
             state.target_text or "",

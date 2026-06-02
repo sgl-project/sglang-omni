@@ -22,6 +22,7 @@ import numpy as np
 from sglang_omni.client.audio import DEFAULT_SAMPLE_RATE, encode_wav
 from sglang_omni.serve.speaker_cache import (
     SpeakerArtifactCache,
+    SpeakerCacheKey,
     get_speaker_artifact_cache,
 )
 from sglang_omni.serve.speech_errors import SpeechAPIError, bad_request, internal_error
@@ -32,6 +33,7 @@ DEFAULT_SPEAKER_SAMPLES_DIR = Path("~/.cache/sglang-omni/speakers").expanduser()
 DEFAULT_SPEAKER_MAX_UPLOADED = 1000
 MAX_VOICE_UPLOAD_BYTES = 10 * 1024 * 1024
 MIN_REFERENCE_AUDIO_SECONDS = 1.0
+MAX_REFERENCE_AUDIO_SECONDS = 30.0
 VOICE_SILENCE_THRESHOLD = 1e-5
 VOICE_METADATA_INT_FIELDS = frozenset(
     {"created_at", "file_size", "sample_rate", "num_samples"}
@@ -145,7 +147,6 @@ class SpeakerSampleStore:
             raise ValueError("SPEAKER_MAX_UPLOADED must be positive")
         self.cache = cache or get_speaker_artifact_cache()
         self._voices: dict[str, UploadedVoice] = {}
-        self._data_url_cache: dict[tuple[str, str], str] = {}
         self._last_upload_timestamp = 0
         self._lock = RLock()
         self._restore()
@@ -199,7 +200,7 @@ class SpeakerSampleStore:
 
         fingerprint = hashlib.sha256(audio_bytes).hexdigest()
         voice_path = self.root_dir / f"{normalized_name}.safetensors"
-
+        temp_path: Path | None = None
         with self._lock:
             replaced = normalized_name in self._voices
             if not replaced and len(self._voices) >= self.max_uploaded:
@@ -222,10 +223,20 @@ class SpeakerSampleStore:
                 ref_text=ref_text,
                 speaker_description=speaker_description,
             )
-            _write_voice_file(voice_path, samples, voice.to_safetensors_metadata())
+            try:
+                temp_path = _write_voice_temp_file(
+                    self.root_dir,
+                    normalized_name,
+                    samples,
+                    voice.to_safetensors_metadata(),
+                )
+                _replace_voice_file(temp_path, voice_path)
+                temp_path = None
+            finally:
+                if temp_path is not None:
+                    temp_path.unlink(missing_ok=True)
             if replaced:
                 self.cache.clear_voice(normalized_name)
-                self._drop_data_url_cache(normalized_name)
             self._voices[normalized_name] = voice
 
         response = voice.to_response_dict()
@@ -250,28 +261,31 @@ class SpeakerSampleStore:
                     param="name",
                 ) from exc
             self._voices.pop(normalized)
-            self._drop_data_url_cache(normalized)
             self.cache.clear_voice(normalized)
         return True
 
     def resolve_reference(self, name: str) -> UploadedVoiceReference | None:
         normalized = normalize_voice_name(name)
-        with self._lock:
-            voice = self._voices.get(normalized)
-            if voice is None:
-                return None
-            cache_key = (voice.normalized_name, voice.fingerprint)
-            cached = self._data_url_cache.get(cache_key)
-        if cached is None:
+        while True:
+            with self._lock:
+                voice = self._voices.get(normalized)
+                if voice is None:
+                    return None
+                cache_key = _voice_data_url_cache_key(voice)
+                cached = self.cache.get(cache_key)
+            if cached is not None:
+                return UploadedVoiceReference(voice=voice, ref_audio=cached)
+
             samples, sample_rate = self._load_samples(voice)
             audio_b64 = base64.b64encode(encode_wav(samples, sample_rate)).decode(
                 "ascii"
             )
             cached = f"data:audio/wav;base64,{audio_b64}"
             with self._lock:
-                if self._voices.get(normalized) == voice:
-                    self._data_url_cache[cache_key] = cached
-        return UploadedVoiceReference(voice=voice, ref_audio=cached)
+                if self._voices.get(normalized) != voice:
+                    continue
+                self.cache.put(cache_key, cached)
+                return UploadedVoiceReference(voice=voice, ref_audio=cached)
 
     def _restore(self) -> None:
         restored: dict[str, UploadedVoice] = {}
@@ -318,11 +332,6 @@ class SpeakerSampleStore:
                 param="voice",
             ) from exc
         return samples, voice.sample_rate
-
-    def _drop_data_url_cache(self, normalized_name: str) -> None:
-        for key in list(self._data_url_cache):
-            if key[0] == normalized_name:
-                self._data_url_cache.pop(key, None)
 
 
 def normalize_voice_name(name: str) -> str:
@@ -443,6 +452,11 @@ def _validate_reference_audio(samples: np.ndarray, sample_rate: int) -> None:
             f"audio_sample must be at least {MIN_REFERENCE_AUDIO_SECONDS:.1f}s",
             param="audio_sample",
         )
+    if duration > MAX_REFERENCE_AUDIO_SECONDS:
+        raise bad_request(
+            f"audio_sample must be at most {MAX_REFERENCE_AUDIO_SECONDS:.1f}s",
+            param="audio_sample",
+        )
     if float(np.max(np.abs(samples))) <= VOICE_SILENCE_THRESHOLD:
         raise bad_request(
             "audio_sample must contain non-silent speech reference audio",
@@ -450,16 +464,26 @@ def _validate_reference_audio(samples: np.ndarray, sample_rate: int) -> None:
         )
 
 
-def _write_voice_file(
-    path: Path,
+def _voice_data_url_cache_key(voice: UploadedVoice) -> SpeakerCacheKey:
+    return SpeakerCacheKey(
+        model_type="serve",
+        voice_name=voice.normalized_name,
+        voice_version=voice.created_at,
+        artifact_kind="wav_data_url",
+    )
+
+
+def _write_voice_temp_file(
+    directory: Path,
+    stem: str,
     samples: np.ndarray,
     metadata: dict[str, str],
-) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
+) -> Path:
+    directory.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(
-        prefix=f".{path.stem}.",
+        prefix=f".{stem}.",
         suffix=".tmp",
-        dir=path.parent,
+        dir=directory,
         delete=False,
     ) as tmp_file:
         tmp_path = Path(tmp_file.name)
@@ -470,12 +494,19 @@ def _write_voice_file(
             str(tmp_path),
             metadata=metadata,
         )
-        os.replace(tmp_path, path)
+        return tmp_path
     except SpeechAPIError:
         tmp_path.unlink(missing_ok=True)
         raise
     except Exception as exc:
         tmp_path.unlink(missing_ok=True)
+        raise bad_request(f"Failed to save uploaded voice: {exc}") from exc
+
+
+def _replace_voice_file(temp_path: Path, path: Path) -> None:
+    try:
+        os.replace(temp_path, path)
+    except OSError as exc:
         raise bad_request(f"Failed to save uploaded voice: {exc}") from exc
 
 

@@ -223,9 +223,10 @@ curl -X DELETE http://localhost:8000/v1/audio/voices/narrator
 ```
 
 Accepted upload formats are WAV, MP3, FLAC, OGG, AAC, WebM, and MP4. Each file
-must be at most 10 MiB and contain at least one second of non-silent reference
-audio. Uploading the same `name` overwrites the previous sample and invalidates
-cached speaker artifacts for that voice across TTS model types.
+must be at most 10 MiB and contain 1-30 seconds of non-silent reference audio.
+Uploading the same `name` overwrites the previous sample and invalidates cached
+speaker artifacts for that voice across TTS model types. Deleting a voice
+removes the persisted sample and clears the same shared artifact cache.
 
 ## Use Python
 

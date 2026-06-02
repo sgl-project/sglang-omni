@@ -16,6 +16,7 @@ from sglang_omni.models.qwen3_omni.pending_text_queue import PendingTextTensorQu
 from sglang_omni.models.qwen3_tts.payload_types import Qwen3TTSState
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.sglang_backend import SGLangARRequestData
+from sglang_omni.serve.speaker_cache import SpeakerCacheKey, get_speaker_artifact_cache
 
 QWEN3_TTS_DEFAULT_MAX_NEW_TOKENS = 2048
 QWEN3_TTS_TASK_BASE = "Base"
@@ -268,6 +269,17 @@ def build_qwen3_tts_state(payload: StagePayload) -> Qwen3TTSState:
         instructions=instructions,
         ref_audio=ref_audio,
         ref_text=ref_text,
+        uploaded_voice_name=resolve_optional_text(
+            tts_params.get("uploaded_voice_name")
+        ),
+        uploaded_voice_created_at=(
+            int(tts_params["uploaded_voice_created_at"])
+            if tts_params.get("uploaded_voice_created_at") is not None
+            else None
+        ),
+        uploaded_voice_fingerprint=resolve_optional_text(
+            tts_params.get("uploaded_voice_fingerprint")
+        ),
         x_vector_only_mode=x_vector_only_mode,
         non_streaming_mode=non_streaming_mode,
         generation_kwargs=build_generation_kwargs(params, tts_params=tts_params),
@@ -477,6 +489,61 @@ def _build_instruct_id(wrapper: Any, instructions: str | None) -> torch.Tensor |
     return wrapper._tokenize_texts([instruct_text])[0]
 
 
+def _qwen3_tts_uploaded_voice_cache_key(state: Qwen3TTSState) -> SpeakerCacheKey | None:
+    if state.uploaded_voice_name is None or state.uploaded_voice_created_at is None:
+        return None
+    mode = "xvec" if state.x_vector_only_mode else "icl"
+    return SpeakerCacheKey(
+        model_type=f"qwen3_tts_{mode}",
+        voice_name=state.uploaded_voice_name,
+        voice_version=int(state.uploaded_voice_created_at),
+        artifact_kind="voice_clone_prompt",
+    )
+
+
+def _cacheable_qwen3_tts_voice_prompt(
+    voice_clone_prompt: dict[str, Any],
+    *,
+    ref_text: str | None,
+) -> dict[str, Any]:
+    ref_codes = voice_clone_prompt.get("ref_code")
+    artifact: dict[str, Any] = {
+        "artifact_type": "qwen3_tts_voice_clone_prompt",
+        "ref_spk_embedding": tuple(
+            _cacheable_qwen3_tts_tensor(embedding)
+            for embedding in voice_clone_prompt["ref_spk_embedding"]
+        ),
+        "icl_mode": tuple(bool(value) for value in voice_clone_prompt["icl_mode"]),
+        "ref_text": ref_text,
+    }
+    if ref_codes is not None:
+        artifact["ref_code"] = tuple(
+            _cacheable_qwen3_tts_tensor(code) for code in ref_codes
+        )
+    return artifact
+
+
+def _cacheable_qwen3_tts_tensor(value: torch.Tensor) -> torch.Tensor:
+    return value.detach().to(device="cpu").clone()
+
+
+def _qwen3_tts_voice_prompt_from_cache(
+    artifact: dict[str, Any],
+) -> tuple[dict[str, Any], str | None] | None:
+    if artifact.get("artifact_type") != "qwen3_tts_voice_clone_prompt":
+        return None
+    prompt: dict[str, Any] = {
+        "ref_spk_embedding": [
+            embedding.detach().clone() for embedding in artifact["ref_spk_embedding"]
+        ],
+        "icl_mode": list(artifact["icl_mode"]),
+    }
+    if "ref_code" in artifact:
+        prompt["ref_code"] = [code.detach().clone() for code in artifact["ref_code"]]
+    ref_text = artifact.get("ref_text")
+    return prompt, str(ref_text) if ref_text is not None else None
+
+
 def _normalized_model_type(model: Any) -> str:
     model_type = getattr(model, "tts_model_type", None)
     if model_type is None:
@@ -518,18 +585,37 @@ def _prepare_qwen3_tts_base_request(
     model: Any,
     wrapper: Any,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor | None]:
-    with torch.no_grad():
-        prompt_items = wrapper.create_voice_clone_prompt(
-            ref_audio=state.ref_audio,
-            ref_text=state.ref_text,
-            x_vector_only_mode=state.x_vector_only_mode,
-        )
-    if len(prompt_items) != 1:
-        raise ValueError("Qwen3-TTS expects exactly one voice-clone prompt")
-    voice_clone_prompt = wrapper._prompt_items_to_voice_clone_prompt(prompt_items)
+    speaker_cache = get_speaker_artifact_cache()
+    cache_key = _qwen3_tts_uploaded_voice_cache_key(state)
+    cached_artifact = speaker_cache.get(cache_key) if cache_key is not None else None
+    cached_prompt = (
+        _qwen3_tts_voice_prompt_from_cache(cached_artifact)
+        if isinstance(cached_artifact, dict)
+        else None
+    )
+    if cached_prompt is not None:
+        voice_clone_prompt, ref_text = cached_prompt
+    else:
+        with torch.no_grad():
+            prompt_items = wrapper.create_voice_clone_prompt(
+                ref_audio=state.ref_audio,
+                ref_text=state.ref_text,
+                x_vector_only_mode=state.x_vector_only_mode,
+            )
+        if len(prompt_items) != 1:
+            raise ValueError("Qwen3-TTS expects exactly one voice-clone prompt")
+        voice_clone_prompt = wrapper._prompt_items_to_voice_clone_prompt(prompt_items)
+        ref_text = prompt_items[0].ref_text
+        if cache_key is not None:
+            speaker_cache.put(
+                cache_key,
+                _cacheable_qwen3_tts_voice_prompt(
+                    voice_clone_prompt,
+                    ref_text=ref_text,
+                ),
+            )
 
     input_id = wrapper._tokenize_texts([wrapper._build_assistant_text(state.text)])[0]
-    ref_text = prompt_items[0].ref_text
     ref_id = (
         wrapper._tokenize_texts([wrapper._build_ref_text(ref_text)])[0]
         if ref_text

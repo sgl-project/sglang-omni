@@ -149,6 +149,15 @@ def test_voice_store_enforces_upload_contracts(tmp_path: Path) -> None:
             content_type="audio/wav",
         )
 
+    with pytest.raises(SpeechAPIError, match="at most 30.0s"):
+        store.upload(
+            name="long",
+            consent="consent",
+            audio_bytes=_reference_wav(duration_s=30.1),
+            filename="long.wav",
+            content_type="audio/wav",
+        )
+
     store.upload(
         name="one",
         consent="consent",
@@ -184,9 +193,26 @@ def test_speech_service_resolves_uploaded_voice_to_reference(tmp_path: Path) -> 
     assert gen_req.prompt["references"][0]["audio_path"].startswith(
         "data:audio/wav;base64,"
     )
+    assert gen_req.prompt["references"][0]["uploaded_voice_name"] == "anchor"
+    assert (
+        gen_req.prompt["references"][0]["uploaded_voice_created_at"]
+        == uploaded["created_at"]
+    )
     assert tts_params["task_type"] == "Base"
     assert tts_params["uploaded_voice_name"] == "anchor"
     assert tts_params["uploaded_voice_created_at"] == uploaded["created_at"]
+
+
+def test_speech_service_rejects_unknown_voice_for_higgs(tmp_path: Path) -> None:
+    store = SpeakerSampleStore(root_dir=tmp_path)
+    service = SpeechService(
+        default_model="boson-sglang/higgs-audio-v3", voice_store=store
+    )
+
+    request = service.parse_request({"input": "hello", "voice": "missing"})
+
+    with pytest.raises(SpeechAPIError, match="Unknown voice"):
+        service.build_generate_request(request, validate=False)
 
 
 def _reference_wav(

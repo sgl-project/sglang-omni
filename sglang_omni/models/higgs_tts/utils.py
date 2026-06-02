@@ -132,17 +132,19 @@ def load_audio_to_24k(reference_audio: Any) -> tuple[np.ndarray, int]:
     if isinstance(reference_audio, (str, Path)):
         return _load_path_or_url(reference_audio)
 
+    if "bytes" in reference_audio:
+        audio, sr = io.load_bytes(reference_audio["bytes"])
+        return np.asarray(audio, dtype=np.float32), int(sr)
+    data = reference_audio.get("base64") or reference_audio.get("data")
+    if data is not None:
+        media_type = reference_audio.get("media_type", "audio/wav")
+        audio, sr = io.load_base64(media_type, data)
+        return np.asarray(audio, dtype=np.float32), int(sr)
     if "audio_path" in reference_audio or "path" in reference_audio:
         return _load_path_or_url(
             reference_audio.get("audio_path") or reference_audio["path"]
         )
-    if "bytes" in reference_audio:
-        audio, sr = io.load_bytes(reference_audio["bytes"])
-        return np.asarray(audio, dtype=np.float32), int(sr)
-    media_type = reference_audio.get("media_type", "audio/wav")
-    data = reference_audio.get("base64") or reference_audio["data"]
-    audio, sr = io.load_base64(media_type, data)
-    return np.asarray(audio, dtype=np.float32), int(sr)
+    raise ValueError("reference_audio must include audio_path, path, bytes, or data")
 
 
 __all__ = [

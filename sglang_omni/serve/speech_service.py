@@ -215,7 +215,7 @@ class SpeechService:
                 ref["text"] = request.ref_text
             references.append(ref)
         elif uploaded_voice is not None:
-            ref = {"audio_path": uploaded_voice.ref_audio}
+            ref = _uploaded_voice_reference_dict(uploaded_voice)
             if uploaded_voice.voice.ref_text is not None:
                 ref["text"] = uploaded_voice.voice.ref_text
             references.append(ref)
@@ -253,7 +253,16 @@ class SpeechService:
             return None
         if not request.voice or request.voice.lower() == "default":
             return None
-        return self.voice_store.resolve_reference(request.voice)
+        uploaded_voice = self.voice_store.resolve_reference(request.voice)
+        if uploaded_voice is None and _model_requires_uploaded_voice(
+            request.model or self.default_model
+        ):
+            raise bad_request(
+                f"Unknown voice '{request.voice}'. Upload a voice first via "
+                "POST /v1/audio/voices, or use ref_audio + ref_text.",
+                param="voice",
+            )
+        return uploaded_voice
 
     def _validate_raw_payload(self, payload: dict[str, Any]) -> None:
         for field_name in (
@@ -368,6 +377,29 @@ def _normalize_response_format(value: str) -> str:
             param="response_format",
         )
     return fmt
+
+
+def _model_requires_uploaded_voice(model_name: str) -> bool:
+    normalized = model_name.replace("-", "_").lower()
+    return "higgs" in normalized
+
+
+def _uploaded_voice_reference_dict(
+    uploaded_voice: "UploadedVoiceReference",
+) -> dict[str, Any]:
+    ref: dict[str, Any] = {
+        "audio_path": uploaded_voice.ref_audio,
+        "uploaded_voice_name": uploaded_voice.voice.normalized_name,
+        "uploaded_voice_created_at": uploaded_voice.voice.created_at,
+        "uploaded_voice_fingerprint": uploaded_voice.voice.fingerprint,
+    }
+    parsed = urlparse(uploaded_voice.ref_audio)
+    if parsed.scheme == "data" and "," in parsed.path:
+        header, data = parsed.path.split(",", 1)
+        media_type = header.split(";", 1)[0] or "audio/wav"
+        ref["media_type"] = media_type
+        ref["data"] = data
+    return ref
 
 
 def _validate_positive_int(value: int | None, *, param: str) -> None:
