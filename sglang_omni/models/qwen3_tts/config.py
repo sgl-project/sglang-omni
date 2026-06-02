@@ -41,5 +41,13 @@ class Qwen3TTSPipelineConfig(PipelineConfig):
         ),
     ]
 
+    def requires_uploaded_voice_for_named_voice(self) -> bool:
+        return _is_qwen3_tts_base_model(self.model_path)
+
+
+def _is_qwen3_tts_base_model(model_path: str) -> bool:
+    normalized = model_path.replace("-", "_").replace("/", "_").casefold()
+    return "qwen3_tts" in normalized and normalized.endswith("_base")
+
 
 EntryClass = Qwen3TTSPipelineConfig

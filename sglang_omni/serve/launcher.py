@@ -334,7 +334,9 @@ async def _run_server(
         app = create_app(
             client,
             model_name=model_name or pipeline_config.name,
-            model_path=pipeline_config.model_path,
+            requires_uploaded_voice_for_named_voice=(
+                pipeline_config.requires_uploaded_voice_for_named_voice()
+            ),
             enable_realtime=enable_realtime,
             allowed_local_media_path=allowed_local_media_path,
         )

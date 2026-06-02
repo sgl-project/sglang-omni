@@ -271,6 +271,10 @@ class PipelineConfig(BaseModel):
         """Return SGLang ServerArgs overrides implied by stage TP settings."""
         return {}
 
+    def requires_uploaded_voice_for_named_voice(self) -> bool:
+        """Return whether non-default TTS voice names must be uploaded voices."""
+        return False
+
     @property
     def gpu_placement(self) -> dict[str, int | list[int]]:
         out: dict[str, int | list[int]] = {}

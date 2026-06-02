@@ -207,38 +207,13 @@ def test_speech_service_resolves_uploaded_voice_to_reference(tmp_path: Path) -> 
     assert tts_params["uploaded_voice_created_at"] == uploaded["created_at"]
 
 
-def test_speech_service_rejects_unknown_voice_for_higgs(tmp_path: Path) -> None:
-    store = SpeakerSampleStore(root_dir=tmp_path)
-    service = SpeechService(
-        default_model="boson-sglang/higgs-audio-v3", voice_store=store
-    )
-
-    request = service.parse_request({"input": "hello", "voice": "missing"})
-
-    with pytest.raises(SpeechAPIError, match="Unknown voice"):
-        service.build_generate_request(request, validate=False)
-
-
-def test_speech_service_rejects_unknown_voice_for_qwen3_base(tmp_path: Path) -> None:
-    store = SpeakerSampleStore(root_dir=tmp_path)
-    service = SpeechService(
-        default_model="Qwen/Qwen3-TTS-12Hz-0.6B-Base",
-        voice_store=store,
-    )
-
-    request = service.parse_request({"input": "hello", "voice": "missing"})
-
-    with pytest.raises(SpeechAPIError, match="Unknown voice"):
-        service.build_generate_request(request, validate=False)
-
-
-def test_speech_service_uses_model_path_for_voice_capabilities(
+def test_speech_service_rejects_unknown_required_uploaded_voice(
     tmp_path: Path,
 ) -> None:
     store = SpeakerSampleStore(root_dir=tmp_path)
     service = SpeechService(
         default_model="public-tts-name",
-        model_path="Qwen/Qwen3-TTS-12Hz-0.6B-Base",
+        requires_uploaded_voice_for_named_voice=True,
         voice_store=store,
     )
 
@@ -248,10 +223,10 @@ def test_speech_service_uses_model_path_for_voice_capabilities(
         service.build_generate_request(request, validate=False)
 
 
-def test_speech_service_preserves_qwen3_custom_voice_names(tmp_path: Path) -> None:
+def test_speech_service_preserves_preset_voice_names(tmp_path: Path) -> None:
     store = SpeakerSampleStore(root_dir=tmp_path)
     service = SpeechService(
-        default_model="Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice",
+        default_model="preset-voice-model",
         voice_store=store,
     )
 

@@ -63,5 +63,8 @@ class HiggsTtsPipelineConfig(PipelineConfig):
         ),
     ]
 
+    def requires_uploaded_voice_for_named_voice(self) -> bool:
+        return True
+
 
 EntryClass = HiggsTtsPipelineConfig
