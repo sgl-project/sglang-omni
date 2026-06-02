@@ -12,12 +12,14 @@ import re
 import threading
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 import torch
 
 from sglang_omni.models.moss_tts.payload_types import MossTTSState
 from sglang_omni.proto import StagePayload
+from sglang_omni.scheduling.stage_cache import StageOutputCache
 from sglang_omni.scheduling.types import ARRequestData
 
 MOSS_TTS_DEFAULT_MAX_NEW_TOKENS = 4096
@@ -27,6 +29,14 @@ _TOKEN_PREFIX_START_RE = re.compile(r"^\$\{token:")
 _DATA_URI_RE = re.compile(r"^data:audio/[^;,]+;base64,(?P<data>.+)$", re.DOTALL)
 _INF_DELAY = -1
 _MOSS_TTS_SAMPLING_SEED_MASK = 0x7FFFFFFF
+_REF_AUDIO_CACHE_MAX_ITEMS = 256
+_REF_AUDIO_CACHE_MAX_BYTES = 256 * 1024 * 1024
+_REF_PATH_HASH_MEMO_MAX_ITEMS = 1024
+_REF_PATH_HASH_SENTINEL_BYTES = 8192
+_REF_PATH_HASH_MEMO: collections.OrderedDict[str, tuple[str, str]] = (
+    collections.OrderedDict()
+)
+_REF_PATH_HASH_MEMO_LOCK = threading.Lock()
 
 
 def _new_moss_tts_sampling_seed() -> int:
@@ -45,6 +55,10 @@ def derive_moss_tts_sampling_seed(public_seed: int) -> int:
         f"moss-tts:{int(public_seed)}".encode("utf-8"), digest_size=8
     ).digest()
     return int.from_bytes(digest, "little") & _MOSS_TTS_SAMPLING_SEED_MASK
+
+
+def _hash_bytes(payload: bytes | bytearray | memoryview) -> str:
+    return hashlib.blake2b(payload, digest_size=16).hexdigest()
 
 
 _GENERATION_FIELDS = (
@@ -112,6 +126,10 @@ class MossTTSPreparedRequest:
 @dataclass
 class MossTTSPreprocessingContext:
     processor: Any
+    # Mirrors Higgs TTS's reference cache, but lives in preprocessing because
+    # MOSS currently encodes references through its processor wrapper.
+    reference_audio_cache: StageOutputCache
+    reference_audio_cache_lock: threading.Lock = field(default_factory=threading.Lock)
 
 
 _PREPROCESSING_CONTEXT: MossTTSPreprocessingContext | None = None
@@ -124,12 +142,25 @@ _ABORTED_REQUESTS: set[str] = set()
 _PREPARED_REQUESTS_LOCK = threading.Lock()
 
 
-def set_moss_tts_preprocessing_context(*, processor: Any) -> None:
+def set_moss_tts_preprocessing_context(
+    *,
+    processor: Any,
+    reference_audio_cache: StageOutputCache | None = None,
+) -> None:
     """Register the upstream MOSS processor used by preprocessing."""
 
     global _PREPROCESSING_CONTEXT
     with _PREPARED_REQUESTS_LOCK:
-        _PREPROCESSING_CONTEXT = MossTTSPreprocessingContext(processor=processor)
+        if reference_audio_cache is None:
+            reference_audio_cache = StageOutputCache(
+                max_size=_REF_AUDIO_CACHE_MAX_ITEMS,
+                max_bytes=_REF_AUDIO_CACHE_MAX_BYTES,
+                cache_device="cpu",
+            )
+        _PREPROCESSING_CONTEXT = MossTTSPreprocessingContext(
+            processor=processor,
+            reference_audio_cache=reference_audio_cache,
+        )
         _PREPARED_REQUESTS.clear()
         _INFLIGHT_REQUESTS.clear()
         _ABORTED_REQUESTS.clear()
@@ -400,31 +431,239 @@ def build_row_cache_key_ids(rows: torch.Tensor) -> list[int]:
     return key_ids
 
 
-def _reference_for_processor(processor: Any, ref_audio: Any | None) -> list[Any] | None:
-    if ref_audio is None:
+def _reference_path_hash_memo_key(path: Path) -> tuple[str, int] | None:
+    try:
+        if not path.is_file():
+            return None
+        stat_result = path.stat()
+        memo_key = (
+            f"{path.resolve()}:"
+            f"{stat_result.st_size}:"
+            f"{stat_result.st_mtime_ns}:"
+            f"{stat_result.st_ctime_ns}"
+        )
+        return memo_key, int(stat_result.st_size)
+    except OSError:
         return None
-    if not isinstance(ref_audio, str):
-        return [ref_audio]
-    match = _DATA_URI_RE.match(ref_audio)
+
+
+def _reference_path_sentinel(path: Path, file_size: int) -> str | None:
+    try:
+        chunk_size = min(_REF_PATH_HASH_SENTINEL_BYTES, file_size)
+        with path.open("rb") as f:
+            chunks = [f.read(chunk_size)]
+            if file_size > _REF_PATH_HASH_SENTINEL_BYTES:
+                middle_offset = max((file_size - chunk_size) // 2, 0)
+                f.seek(middle_offset)
+                chunks.append(f.read(chunk_size))
+            if file_size > 2 * _REF_PATH_HASH_SENTINEL_BYTES:
+                f.seek(max(file_size - chunk_size, 0))
+                chunks.append(f.read(chunk_size))
+        return _hash_bytes(b"".join(chunks) + f"|size:{file_size}".encode())
+    except OSError:
+        return None
+
+
+def _get_reference_path_hash(memo_key: str, sentinel: str) -> str | None:
+    with _REF_PATH_HASH_MEMO_LOCK:
+        cached = _REF_PATH_HASH_MEMO.get(memo_key)
+        if cached is None:
+            return None
+        cached_sentinel, digest = cached
+        if cached_sentinel != sentinel:
+            _REF_PATH_HASH_MEMO.pop(memo_key, None)
+            return None
+        _REF_PATH_HASH_MEMO.move_to_end(memo_key)
+        return digest
+
+
+def _put_reference_path_hash(memo_key: str, sentinel: str, digest: str) -> None:
+    with _REF_PATH_HASH_MEMO_LOCK:
+        _REF_PATH_HASH_MEMO[memo_key] = (sentinel, digest)
+        _REF_PATH_HASH_MEMO.move_to_end(memo_key)
+        while len(_REF_PATH_HASH_MEMO) > _REF_PATH_HASH_MEMO_MAX_ITEMS:
+            _REF_PATH_HASH_MEMO.popitem(last=False)
+
+
+def _reference_path_cache_key(path_like: str | Path) -> str | None:
+    path = Path(str(path_like)).expanduser()
+    memo = _reference_path_hash_memo_key(path)
+    if memo is None:
+        return None
+    memo_key, file_size = memo
+    sentinel = _reference_path_sentinel(path, file_size)
+    if sentinel is None:
+        return None
+    digest = _get_reference_path_hash(memo_key, sentinel)
+    if digest is not None:
+        return f"file:{digest}"
+    try:
+        digest = _hash_bytes(path.read_bytes())
+    except OSError:
+        return None
+    if _reference_path_hash_memo_key(path) == memo:
+        _put_reference_path_hash(memo_key, sentinel, digest)
+    return f"file:{digest}"
+
+
+def _data_uri_bytes(value: str) -> bytes | None:
+    match = _DATA_URI_RE.match(value)
     if match is None:
-        return [ref_audio]
+        return None
+    return base64.b64decode(match.group("data"))
+
+
+def _reference_audio_cache_key(reference_audio: Any) -> str | None:
+    """Stable cache key for MOSS reference-audio inputs."""
+
+    if isinstance(reference_audio, (str, Path)):
+        raw = _data_uri_bytes(str(reference_audio))
+        if raw is not None:
+            return f"bytes:{_hash_bytes(raw)}"
+        return _reference_path_cache_key(reference_audio)
+    if not isinstance(reference_audio, dict):
+        return None
+    path = reference_audio.get("audio_path") or reference_audio.get("path")
+    if path:
+        return _reference_audio_cache_key(path)
+    if "bytes" in reference_audio:
+        data = reference_audio["bytes"]
+        if isinstance(data, str):
+            data = data.encode()
+        return f"bytes:{_hash_bytes(data)}"
+    encoded = reference_audio.get("base64") or reference_audio.get("data")
+    if encoded is None:
+        return None
+    if isinstance(encoded, str):
+        raw = _data_uri_bytes(encoded)
+        if raw is None:
+            raw = base64.b64decode(encoded)
+    else:
+        raw = bytes(encoded)
+    return f"bytes:{_hash_bytes(raw)}"
+
+
+def _raw_reference_audio_bytes(ref_audio: Any) -> bytes | None:
+    if isinstance(ref_audio, str):
+        raw = _data_uri_bytes(ref_audio)
+        if raw is not None:
+            return raw
+        path = Path(ref_audio).expanduser()
+        if path.is_file():
+            try:
+                return path.read_bytes()
+            except OSError:
+                return None
+        return None
+    if isinstance(ref_audio, Path):
+        path = ref_audio.expanduser()
+        try:
+            return path.read_bytes() if path.is_file() else None
+        except OSError:
+            return None
+    if not isinstance(ref_audio, dict):
+        return None
+    path = ref_audio.get("audio_path") or ref_audio.get("path")
+    if path:
+        return _raw_reference_audio_bytes(path)
+    if "bytes" in ref_audio:
+        data = ref_audio["bytes"]
+        return data.encode() if isinstance(data, str) else bytes(data)
+    encoded = ref_audio.get("base64") or ref_audio.get("data")
+    if encoded is None:
+        return None
+    if isinstance(encoded, str):
+        raw = _data_uri_bytes(encoded)
+        return raw if raw is not None else base64.b64decode(encoded)
+    return bytes(encoded)
+
+
+def _reference_audio_is_local_path(ref_audio: Any) -> bool:
+    if isinstance(ref_audio, (str, Path)):
+        return Path(str(ref_audio)).expanduser().is_file()
+    if not isinstance(ref_audio, dict):
+        return False
+    path = ref_audio.get("audio_path") or ref_audio.get("path")
+    return bool(path and Path(str(path)).expanduser().is_file())
+
+
+def _clone_cached_reference(value: Any) -> Any:
+    if isinstance(value, torch.Tensor):
+        return value.clone()
+    if isinstance(value, dict):
+        return {key: _clone_cached_reference(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return type(value)(_clone_cached_reference(item) for item in value)
+    return value
+
+
+def _encode_reference_for_processor(processor: Any, ref_audio: Any) -> list[Any] | None:
+    raw = _raw_reference_audio_bytes(ref_audio)
+    if raw is None:
+        return None
 
     try:
         import soundfile as sf
     except ImportError as exc:
+        if _reference_audio_is_local_path(ref_audio):
+            return None
         raise RuntimeError(
-            "MOSS-TTS base64 reference audio requires soundfile to decode the data URI"
+            "MOSS-TTS reference audio cache requires soundfile to decode audio bytes"
         ) from exc
 
-    raw = base64.b64decode(match.group("data"))
-    audio, sample_rate = sf.read(io.BytesIO(raw), dtype="float32", always_2d=True)
+    try:
+        audio, sample_rate = sf.read(io.BytesIO(raw), dtype="float32", always_2d=True)
+    except Exception:
+        if _reference_audio_is_local_path(ref_audio):
+            return None
+        raise
     wav = torch.from_numpy(audio.T)
     codes = processor.encode_audios_from_wav([wav], int(sample_rate))[0]
+    if isinstance(codes, torch.Tensor):
+        codes = codes.detach().to("cpu")
     return [codes]
 
 
-def _build_processor_message(processor: Any, state: MossTTSState) -> dict[str, Any]:
-    reference = _reference_for_processor(processor, state.ref_audio)
+def _reference_for_processor(
+    processor: Any,
+    ref_audio: Any | None,
+    *,
+    reference_audio_cache: StageOutputCache | None = None,
+    reference_audio_cache_lock: threading.Lock | None = None,
+) -> list[Any] | None:
+    if ref_audio is None:
+        return None
+
+    cache_key = _reference_audio_cache_key(ref_audio)
+    if reference_audio_cache is not None and reference_audio_cache_lock is not None:
+        with reference_audio_cache_lock:
+            cached_reference = reference_audio_cache.get(cache_key)
+        if cached_reference is not None:
+            return _clone_cached_reference(cached_reference)
+
+    reference = _encode_reference_for_processor(processor, ref_audio)
+    if reference is None:
+        return [ref_audio]
+
+    if reference_audio_cache is not None and reference_audio_cache_lock is not None:
+        with reference_audio_cache_lock:
+            reference_audio_cache.put(cache_key, _clone_cached_reference(reference))
+    return reference
+
+
+def _build_processor_message(
+    processor: Any,
+    state: MossTTSState,
+    *,
+    reference_audio_cache: StageOutputCache | None = None,
+    reference_audio_cache_lock: threading.Lock | None = None,
+) -> dict[str, Any]:
+    reference = _reference_for_processor(
+        processor,
+        state.ref_audio,
+        reference_audio_cache=reference_audio_cache,
+        reference_audio_cache_lock=reference_audio_cache_lock,
+    )
     return processor.build_user_message(
         text=state.text,
         reference=reference,
@@ -438,9 +677,16 @@ def _prepare_moss_tts_request(
     payload: StagePayload,
     *,
     processor: Any,
+    reference_audio_cache: StageOutputCache | None = None,
+    reference_audio_cache_lock: threading.Lock | None = None,
 ) -> MossTTSPreparedRequest:
     state = build_moss_tts_state(payload)
-    message = _build_processor_message(processor, state)
+    message = _build_processor_message(
+        processor,
+        state,
+        reference_audio_cache=reference_audio_cache,
+        reference_audio_cache_lock=reference_audio_cache_lock,
+    )
     batch = processor([[message]], mode="generation")
     input_rows = batch["input_ids"]
     if input_rows.ndim != 3 or int(input_rows.shape[0]) != 1:
@@ -473,7 +719,12 @@ def preprocess_moss_tts_payload(payload: StagePayload) -> StagePayload:
         )
 
     try:
-        prepared = _prepare_moss_tts_request(payload, processor=context.processor)
+        prepared = _prepare_moss_tts_request(
+            payload,
+            processor=context.processor,
+            reference_audio_cache=context.reference_audio_cache,
+            reference_audio_cache_lock=context.reference_audio_cache_lock,
+        )
     except BaseException:
         with _PREPARED_REQUESTS_LOCK:
             _INFLIGHT_REQUESTS.discard(rid)
