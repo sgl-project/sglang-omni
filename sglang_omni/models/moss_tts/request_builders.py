@@ -646,7 +646,6 @@ def preprocess_moss_tts_payloads(payloads: list[StagePayload]) -> list[StagePayl
     ]
 
 
-
 def _last_equal(rows: torch.Tensor, value: int) -> int:
     matches = (rows[:, 0] == int(value)).nonzero(as_tuple=False).flatten()
     if matches.numel() == 0:

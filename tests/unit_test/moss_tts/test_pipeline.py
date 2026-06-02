@@ -484,8 +484,7 @@ def test_moss_preprocess_batches_processor_and_reference_audio_encode(
         set_moss_tts_preprocessing_context(processor=processor)
         prepared_payloads = preprocess_moss_tts_payloads(payloads)
         prepared = [
-            rb.pop_prepared_moss_tts_request(payload)
-            for payload in prepared_payloads
+            rb.pop_prepared_moss_tts_request(payload) for payload in prepared_payloads
         ]
     finally:
         clear_moss_tts_preprocessing_context()
