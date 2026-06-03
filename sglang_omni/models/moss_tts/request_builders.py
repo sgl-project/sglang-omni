@@ -428,6 +428,9 @@ def _reference_for_processor(processor: Any, ref_audio: Any | None) -> list[Any]
         return [ref_audio]
     decoded = _decode_data_uri_reference(ref_audio)
     if decoded is None:
+        encode_fn = getattr(processor, "encode_audios_from_path", None)
+        if encode_fn is not None:
+            return [encode_fn([ref_audio])[0]]
         return [ref_audio]
 
     wav, sample_rate = decoded
@@ -435,11 +438,39 @@ def _reference_for_processor(processor: Any, ref_audio: Any | None) -> list[Any]
     return [codes]
 
 
+def _encode_path_references_batch(
+    processor: Any,
+    path_items: list[tuple[int, str]],
+    references: list[list[Any] | None],
+) -> None:
+    """Batch-encode file-path references via the processor's path encoder.
+
+    Falls back to passing raw path strings when the processor lacks
+    ``encode_audios_from_path``.
+    """
+    encode_fn = getattr(processor, "encode_audios_from_path", None)
+    if encode_fn is None:
+        for idx, path in path_items:
+            references[idx] = [path]
+        return
+
+    paths = [path for _, path in path_items]
+    codes = encode_fn(paths)
+    if len(codes) != len(path_items):
+        raise RuntimeError(
+            "MOSS-TTS batched path reference encode returned "
+            f"{len(codes)} results for {len(path_items)} paths"
+        )
+    for (idx, _), item_codes in zip(path_items, codes):
+        references[idx] = [item_codes]
+
+
 def _references_for_processor_batch(
     processor: Any, states: list[MossTTSState]
 ) -> list[list[Any] | None]:
     references: list[list[Any] | None] = [None] * len(states)
     decode_groups: dict[int, list[tuple[int, torch.Tensor]]] = {}
+    path_items: list[tuple[int, str]] = []
 
     for idx, state in enumerate(states):
         ref_audio = state.ref_audio
@@ -450,10 +481,13 @@ def _references_for_processor_batch(
             continue
         decoded = _decode_data_uri_reference(ref_audio)
         if decoded is None:
-            references[idx] = [ref_audio]
+            path_items.append((idx, ref_audio))
             continue
         wav, sample_rate = decoded
         decode_groups.setdefault(sample_rate, []).append((idx, wav))
+
+    if path_items:
+        _encode_path_references_batch(processor, path_items, references)
 
     for sample_rate, items in decode_groups.items():
         codes = processor.encode_audios_from_wav(

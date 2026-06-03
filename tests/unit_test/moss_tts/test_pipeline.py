@@ -571,6 +571,161 @@ def test_moss_preprocess_batch_mixed_reference_types(
     assert int(prepared[2].prompt_rows[0, 0]) == 1
 
 
+def test_moss_preprocess_batch_file_path_references(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """File-path references are batch-encoded via encode_audios_from_path."""
+    from sglang_omni.models.moss_tts import request_builders as rb
+
+    class FakeProcessor:
+        def __init__(self) -> None:
+            self.path_encode_calls: list[list[str]] = []
+
+        def encode_audios_from_path(self, paths):
+            self.path_encode_calls.append(list(paths))
+            return [
+                torch.full((2, 2), idx + 10, dtype=torch.long)
+                for idx in range(len(paths))
+            ]
+
+        def build_user_message(self, **kwargs):
+            return {"role": "user", **kwargs}
+
+        def __call__(self, conversations, mode):
+            assert mode == "generation"
+            rows = []
+            for conversation in conversations:
+                ref = conversation[0].get("reference")
+                if ref is not None and isinstance(ref[0], torch.Tensor):
+                    marker = int(ref[0][0, 0].item())
+                else:
+                    marker = 0
+                rows.append(
+                    torch.tensor(
+                        [[marker, 1024, 1024], [151644, 1024, 1024]],
+                        dtype=torch.long,
+                    )
+                )
+            return {"input_ids": torch.stack(rows, dim=0)}
+
+    processor = FakeProcessor()
+    payloads = [
+        make_payload(
+            inputs={"text": "a", "references": [{"audio_path": "voice_a.wav"}]},
+            request_id="path-0",
+        ),
+        make_payload(
+            inputs={"text": "b", "references": [{"audio_path": "voice_b.wav"}]},
+            request_id="path-1",
+        ),
+        make_payload(
+            inputs={"text": "c", "references": [{"audio_path": "voice_c.wav"}]},
+            request_id="path-2",
+        ),
+    ]
+
+    try:
+        set_moss_tts_preprocessing_context(processor=processor)
+        prepared_payloads = preprocess_moss_tts_payloads(payloads)
+        prepared = [
+            rb.pop_prepared_moss_tts_request(payload) for payload in prepared_payloads
+        ]
+    finally:
+        clear_moss_tts_preprocessing_context()
+
+    assert processor.path_encode_calls == [
+        ["voice_a.wav", "voice_b.wav", "voice_c.wav"]
+    ]
+    assert int(prepared[0].prompt_rows[0, 0]) == 10
+    assert int(prepared[1].prompt_rows[0, 0]) == 11
+    assert int(prepared[2].prompt_rows[0, 0]) == 12
+
+
+def test_moss_preprocess_batch_mixed_paths_and_data_uris(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """File paths and data URIs in the same batch are both batch-encoded."""
+    from sglang_omni.models.moss_tts import request_builders as rb
+
+    class FakeProcessor:
+        def __init__(self) -> None:
+            self.path_encode_calls: list[list[str]] = []
+            self.wav_encode_calls: list[tuple[int, int]] = []
+
+        def encode_audios_from_path(self, paths):
+            self.path_encode_calls.append(list(paths))
+            return [
+                torch.full((2, 2), idx + 50, dtype=torch.long)
+                for idx in range(len(paths))
+            ]
+
+        def encode_audios_from_wav(self, wavs, sample_rate):
+            self.wav_encode_calls.append((len(wavs), sample_rate))
+            return [
+                torch.full((2, 2), idx + 70, dtype=torch.long)
+                for idx in range(len(wavs))
+            ]
+
+        def build_user_message(self, **kwargs):
+            return {"role": "user", **kwargs}
+
+        def __call__(self, conversations, mode):
+            rows = []
+            for conversation in conversations:
+                ref = conversation[0].get("reference")
+                if ref is not None and isinstance(ref[0], torch.Tensor):
+                    marker = int(ref[0][0, 0].item())
+                else:
+                    marker = 0
+                rows.append(
+                    torch.tensor(
+                        [[marker, 1024, 1024], [151644, 1024, 1024]],
+                        dtype=torch.long,
+                    )
+                )
+            return {"input_ids": torch.stack(rows, dim=0)}
+
+    def fake_decode_data_uri(ref_audio: str):
+        return torch.full((1, 4), 0.5, dtype=torch.float32), 24000
+
+    processor = FakeProcessor()
+    payloads = [
+        make_payload(
+            inputs={"text": "path", "references": [{"audio_path": "ref.wav"}]},
+            request_id="mixed-0",
+        ),
+        make_payload(
+            inputs={
+                "text": "uri",
+                "references": [{"audio_path": "data:audio/wav;base64,AAAA"}],
+            },
+            request_id="mixed-1",
+        ),
+        make_payload(inputs={"text": "none"}, request_id="mixed-2"),
+        make_payload(
+            inputs={"text": "path2", "references": [{"audio_path": "ref2.wav"}]},
+            request_id="mixed-3",
+        ),
+    ]
+
+    monkeypatch.setattr(rb, "_decode_data_uri_reference", fake_decode_data_uri)
+    try:
+        set_moss_tts_preprocessing_context(processor=processor)
+        prepared_payloads = preprocess_moss_tts_payloads(payloads)
+        prepared = [
+            rb.pop_prepared_moss_tts_request(payload) for payload in prepared_payloads
+        ]
+    finally:
+        clear_moss_tts_preprocessing_context()
+
+    assert processor.path_encode_calls == [["ref.wav", "ref2.wav"]]
+    assert processor.wav_encode_calls == [(1, 24000)]
+    assert int(prepared[0].prompt_rows[0, 0]) == 50  # first path
+    assert int(prepared[1].prompt_rows[0, 0]) == 70  # data URI
+    assert int(prepared[2].prompt_rows[0, 0]) == 0   # no ref
+    assert int(prepared[3].prompt_rows[0, 0]) == 51  # second path
+
+
 def test_moss_preprocess_batch_groups_by_sample_rate(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
