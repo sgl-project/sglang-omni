@@ -156,6 +156,28 @@ class BlockingStreamingSpeechClient:
         self.aborted.append(request_id)
 
 
+class PrefetchedBlockingStreamingSpeechClient:
+    def __init__(self) -> None:
+        self.aborted: list[str] = []
+
+    def health(self) -> dict[str, Any]:
+        return {"running": True}
+
+    async def generate(self, request: Any, request_id: str | None = None):
+        del request
+        yield GenerateChunk(
+            request_id=request_id or "speech-1",
+            modality="audio",
+            audio_data=[0.0, 0.1, -0.1, 0.0],
+            sample_rate=24000,
+            finish_reason=None,
+        )
+        await asyncio.Future()
+
+    async def abort(self, request_id: str) -> None:
+        self.aborted.append(request_id)
+
+
 class BlockingNonStreamingSpeechClient:
     def __init__(self) -> None:
         self.started = asyncio.Event()
@@ -187,6 +209,11 @@ class DisconnectingRequest:
 
     async def is_disconnected(self) -> bool:
         return self.disconnected.is_set()
+
+
+class ConnectedRequest:
+    async def is_disconnected(self) -> bool:
+        return False
 
 
 class SuccessfulTranscriptionClient:
@@ -435,6 +462,21 @@ def test_speech_response_disconnect_aborts_active_request() -> None:
     asyncio.run(_drive())
 
 
+def test_speech_response_returns_when_disconnect_poll_is_false() -> None:
+    async def _drive() -> None:
+        result = await _await_speech_response(
+            request=ConnectedRequest(),
+            client=SuccessfulSpeechClient(),
+            gen_req=GenerateRequest(model="s2-pro", prompt="hello"),
+            request_id="req-1",
+            response_format="wav",
+            speed=1.0,
+        )
+        assert result.audio_bytes == b"RIFF"
+
+    asyncio.run(_drive())
+
+
 def test_speech_stream_prefetch_wrapper_closes_inner_generator() -> None:
     closed = False
 
@@ -454,6 +496,25 @@ def test_speech_stream_prefetch_wrapper_closes_inner_generator() -> None:
 
     asyncio.run(_drive())
     assert closed is True
+
+
+def test_speech_stream_prefetch_wrapper_aborts_inner_speech_stream() -> None:
+    async def _drive() -> None:
+        client = PrefetchedBlockingStreamingSpeechClient()
+        speech_events = _speech_stream(
+            client=client,
+            gen_req=GenerateRequest(model="s2-pro", prompt="hello", stream=True),
+            request_id="req-1",
+            response_format="pcm",
+            speed=1.0,
+        )
+        first_event = await anext(speech_events)
+        stream = _prepend_speech_stream_event(first_event, speech_events)
+        assert await anext(stream) == first_event
+        await stream.aclose()
+        assert client.aborted == ["req-1"]
+
+    asyncio.run(_drive())
 
 
 def test_speech_request_records_explicit_generation_params() -> None:

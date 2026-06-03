@@ -23,24 +23,15 @@ def test_speech_service_rejects_non_string_input() -> None:
     assert exc_info.value.param == "input"
 
 
-def test_speech_service_requires_pcm_for_http_streaming() -> None:
+@pytest.mark.parametrize("response_format", ["wav", "mp3", "flac", "aac", "opus"])
+def test_speech_service_requires_pcm_for_http_streaming(
+    response_format: str,
+) -> None:
     service = SpeechService(default_model="tts")
 
     with pytest.raises(SpeechAPIError) as exc_info:
         service.parse_request(
-            {"input": "hello", "stream": True, "response_format": "wav"}
-        )
-
-    assert exc_info.value.status_code == 400
-    assert exc_info.value.param == "response_format"
-
-
-def test_speech_service_validates_stream_format_before_encoder_dependency() -> None:
-    service = SpeechService(default_model="tts")
-
-    with pytest.raises(SpeechAPIError) as exc_info:
-        service.parse_request(
-            {"input": "hello", "stream": True, "response_format": "mp3"}
+            {"input": "hello", "stream": True, "response_format": response_format}
         )
 
     assert exc_info.value.status_code == 400

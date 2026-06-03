@@ -318,16 +318,16 @@ class SpeechService:
         if url.scheme != "file":
             if Path(value).is_absolute():
                 return self._normalize_local_media_path(value, param=param)
-            raise bad_request("ref_audio must be a data or file:// URL", param=param)
+            raise bad_request(f"{param} must be a data or file:// URL", param=param)
         if not self.allowed_local_media_paths:
             raise bad_request(
-                "file:// ref_audio requires --allowed-local-media-path",
+                f"file:// {param} requires --allowed-local-media-path",
                 param=param,
             )
         netloc = url.netloc or ""
         if netloc and netloc != "localhost":
             raise bad_request(
-                f"file:// ref_audio netloc is not supported: {netloc}",
+                f"file:// {param} netloc is not supported: {netloc}",
                 param=param,
             )
         return self._normalize_local_media_path(url2pathname(url.path), param=param)
@@ -335,7 +335,7 @@ class SpeechService:
     def _normalize_local_media_path(self, value: str, *, param: str) -> str:
         if not self.allowed_local_media_paths:
             raise bad_request(
-                "file:// ref_audio requires --allowed-local-media-path",
+                f"file:// {param} requires --allowed-local-media-path",
                 param=param,
             )
         file_path = Path(value).expanduser().resolve()
@@ -343,18 +343,18 @@ class SpeechService:
             if _is_relative_to(file_path, allowed_path):
                 if not file_path.exists():
                     raise bad_request(
-                        f"file:// ref_audio path does not exist: {file_path}",
+                        f"file:// {param} path does not exist: {file_path}",
                         param=param,
                     )
                 if not file_path.is_file():
                     raise bad_request(
-                        f"file:// ref_audio path must be a file: {file_path}",
+                        f"file:// {param} path must be a file: {file_path}",
                         param=param,
                     )
                 _validate_reference_size(file_path.stat().st_size, param=param)
                 return str(file_path)
         raise bad_request(
-            f"file:// ref_audio path is outside allowed local media paths: {file_path}",
+            f"file:// {param} path is outside allowed local media paths: {file_path}",
             param=param,
         )
 
@@ -395,7 +395,7 @@ def _parse_data_url(value: str, *, param: str) -> tuple[str, str]:
     header, separator, encoded = value.partition(",")
     if not separator or ";base64" not in header.lower() or not encoded:
         raise bad_request(
-            "ref_audio data URL must include base64 media data",
+            f"{param} data URL must include base64 media data",
             param=param,
         )
     media_type = header.removeprefix("data:").split(";", 1)[0] or "audio/wav"
@@ -405,15 +405,13 @@ def _parse_data_url(value: str, *, param: str) -> tuple[str, str]:
 
 def _validate_base64_media_data(encoded: str, *, media_type: str, param: str) -> None:
     if not media_type.startswith("audio/"):
-        raise bad_request(
-            "ref_audio data URL must use an audio media type", param=param
-        )
+        raise bad_request(f"{param} data URL must use an audio media type", param=param)
     _validate_reference_size(_estimated_base64_decoded_size(encoded), param=param)
     try:
         base64.b64decode(encoded, validate=True)
     except (binascii.Error, ValueError) as exc:
         raise bad_request(
-            "ref_audio data URL must include valid base64 media data",
+            f"{param} data URL must include valid base64 media data",
             param=param,
         ) from exc
 
@@ -425,7 +423,7 @@ def _estimated_base64_decoded_size(encoded: str) -> int:
 def _validate_reference_size(size_bytes: int, *, param: str) -> None:
     if size_bytes > MAX_REFERENCE_AUDIO_BYTES:
         raise bad_request(
-            f"ref_audio must be at most {MAX_REFERENCE_AUDIO_BYTES} bytes",
+            f"{param} must be at most {MAX_REFERENCE_AUDIO_BYTES} bytes",
             param=param,
         )
 
