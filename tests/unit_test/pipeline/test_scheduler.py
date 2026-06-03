@@ -18,6 +18,16 @@ from sglang_omni.scheduling.threaded_simple_scheduler import ThreadedSimpleSched
 from tests.unit_test.pipeline.helpers import run_scheduler
 
 
+def _set_upstream_request_limit_state(
+    scheduler: OmniScheduler,
+    *,
+    page_size: int = 1,
+    max_total_num_tokens: int = 16,
+) -> None:
+    scheduler.page_size = page_size
+    scheduler.max_total_num_tokens = max_total_num_tokens
+
+
 def test_simple_scheduler_batch_and_error_contracts() -> None:
     """Preserves batched success output and per-request batch failure emission."""
     good = SimpleScheduler(
@@ -586,6 +596,7 @@ def test_omni_scheduler_prepares_custom_request_token_budget() -> None:
     scheduler._aborted_request_ids = set()
     scheduler.max_req_len = 6
     scheduler.max_req_input_len = 5
+    _set_upstream_request_limit_state(scheduler)
 
     sampling_params = SimpleNamespace(max_new_tokens=10)
     req = SimpleNamespace(
@@ -617,6 +628,7 @@ def test_omni_scheduler_rejects_custom_request_over_context() -> None:
     scheduler._aborted_request_ids = set()
     scheduler.max_req_len = 6
     scheduler.max_req_input_len = 5
+    _set_upstream_request_limit_state(scheduler)
     scheduler.running_batch = SimpleNamespace(reqs=[], batch_is_full=False)
     scheduler.cur_batch = None
     scheduler.last_batch = None
@@ -668,6 +680,7 @@ def test_omni_scheduler_follower_rejections_do_not_emit_errors() -> None:
     scheduler.tree_cache = None
     scheduler.max_req_len = 6
     scheduler.max_req_input_len = 5
+    _set_upstream_request_limit_state(scheduler)
     scheduler.server_args = SimpleNamespace(mem_fraction_static=0.85)
 
     over_context_req = SimpleNamespace(
