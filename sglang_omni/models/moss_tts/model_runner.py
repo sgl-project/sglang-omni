@@ -40,6 +40,7 @@ class MossTTSModelRunner(ModelRunner):
         kwargs: dict[str, Any] = {
             "input_ids": forward_batch.input_ids,
             "positions": forward_batch.positions,
+            "forward_batch": forward_batch,
             "input_embeds": input_embeds,
         }
         if forward_batch.mrope_positions is not None:
