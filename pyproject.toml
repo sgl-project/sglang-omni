@@ -16,8 +16,8 @@ dependencies = [
     "numpy>=1.24.0",          # Array operations
     "pydantic>=2.0.0",        # Data validation and serialization
     "PyYAML>=6.0",            # YAML config parsing
-    "torch==2.9.1",          # PyTorch for tensor operations
-    "torchvision==0.24.1",    # torchvision for vision processor
+    "torch==2.11.0",          # PyTorch for tensor operations; matches sglang==0.5.12
+    "torchvision==0.26.0",    # torchvision for vision processor
     "accelerate>=0.27.0",     # init_empty_weights for meta initialization
     "transformers>=5.0",  # HF models/tokenizers; SGLang >=0.5.10 requires transformers 5.x
     "safetensors>=0.4.3",     # Direct weight loading
@@ -63,7 +63,7 @@ dependencies = [
     "omegaconf",
     "descript-audiotools",
     "descript-audio-codec",
-    "torchaudio",
+    "torchaudio==2.11.0",
     # Gradio playground
     "gradio>=4.0.0",
     # Ming-Omni
@@ -79,6 +79,9 @@ sgl-omni-router = "sglang_omni_router.serve:main"
 [tool.uv]
 override-dependencies = [
     "protobuf>=6.31.1,<7.0.0",
+    # kernels>=0.15 breaks transformers 5.x hub_kernels (LayerRepository missing version).
+    # Pin until transformers ships a fix (tracked upstream: huggingface/transformers#46039).
+    "kernels<0.15",
 ]
 
 [tool.pytest.ini_options]
