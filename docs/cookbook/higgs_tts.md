@@ -91,8 +91,8 @@ curl -X POST http://localhost:8000/v1/audio/speech \
   -d '{
     "input": "Have a nice day and enjoy south california sunshine.",
     "references": [{
-      "audio_path": "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav",
-      "text": "We asked over twenty different people, and they all said it was his."
+      "audio_path": "docs/_static/audio/male-voice.wav",
+      "text": "Hey, Adam here. Let'\''s create something that feels real, sounds human, and connects every time."
     }],
     "temperature": 0.8,
     "top_k": 50,
@@ -111,8 +111,8 @@ resp = requests.post(
     json={
         "input": "Have a nice day and enjoy south california sunshine.",
         "references": [{
-            "audio_path": "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav",
-            "text": "We asked over twenty different people, and they all said it was his.",
+            "audio_path": "docs/_static/audio/male-voice.wav",
+            "text": "Hey, Adam here. Let's create something that feels real, sounds human, and connects every time.",
         }],
         "temperature": 0.8,
         "top_k": 50,
@@ -126,7 +126,7 @@ with open("output.wav", "wb") as f:
 Reference input:
 
 <audio controls>
-  <source src="../_static/audio/higgs-3.wav" type="audio/wav">
+  <source src="../_static/audio/male-voice.wav" type="audio/wav">
 </audio>
 
 Reference output:
@@ -153,8 +153,8 @@ curl -N -X POST http://localhost:8000/v1/audio/speech \
   -d '{
     "input": "Get the trust fund to the bank early.",
     "references": [{
-      "audio_path": "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav",
-      "text": "We asked over twenty different people, and they all said it was his."
+      "audio_path": "docs/_static/audio/male-voice.wav",
+      "text": "Hey, Adam here. Let'\''s create something that feels real, sounds human, and connects every time."
     }],
     "stream": true
   }'
@@ -170,8 +170,8 @@ import requests
 import base64
 import json
 
-REFERENCE_AUDIO = "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav"
-REFERENCE_TEXT = "We asked over twenty different people, and they all said it was his."
+REFERENCE_AUDIO = "docs/_static/audio/male-voice.wav"
+REFERENCE_TEXT = "Hey, Adam here. Let's create something that feels real, sounds human, and connects every time."
 SPEECH_INPUT = "Get the trust fund to the bank early."
 
 with requests.post(
@@ -228,13 +228,16 @@ categories can be combined:
 
 **Demo**
 
-1. Emotion: surprise
+1. Emotion: amusement + laughter
 
 ```bash
 curl -X POST http://localhost:8000/v1/audio/speech \
   -H "Content-Type: application/json" \
   -d '{
-    "input": "I cant believe it! <|emotion:surprise|> <|prosody:pause|> <|style:whispering|> Higgs Model and SGLang are absolutely incredible."
+    "input": "<|emotion:amusement|><|prosody:expressive_high|>Wait, wait, that was kind of hilarious. <|sfx:laughter|>Hehe, no, seriously, I was not ready for that.",
+    "temperature": 0.8,
+    "top_k": 50,
+    "max_new_tokens": 1024
   }' \
   --output output.wav
 ```
@@ -245,13 +248,16 @@ Reference output:
   <source src="../_static/audio/control-tokens-test1.wav" type="audio/wav">
 </audio>
 
-2. Prosody: speed_slow
+2. Emotion: anger + shouting
 
 ```bash
 curl -X POST http://localhost:8000/v1/audio/speech \
   -H "Content-Type: application/json" \
   -d '{
-    "input": "<|emotion:enthusiasm|> Welcome to the show! <|prosody:pause|> <|prosody:speed_slow|> Today we have something truly special for you."
+    "input": "<|emotion:anger|><|style:shouting|>No, that is not okay! We cannot ship something that sounds broken, delayed, and unnatural.",
+    "temperature": 0.8,
+    "top_k": 50,
+    "max_new_tokens": 1024
   }' \
   --output output.wav
 ```
@@ -261,63 +267,132 @@ Reference output:
   <source src="../_static/audio/control-tokens-test2.wav" type="audio/wav">
 </audio>
 
-3. Combine them together:
+3. Emotion: sadness + sniff
 
-Here is an example of combining emotion, prosody and style tokens together:
+```bash
+curl -X POST http://localhost:8000/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{
+    "input": "<|emotion:sadness|><|sfx:crying|>I... I’m sorry. <|sfx:sniff|>Sff, We really tried. after all those late nights, I thought the whole thing had failed.",
+    "references": [{
+      "audio_path": "docs/_static/audio/ref_voice.wav",
+      "text": "It was the night before my birthday. Hooray! It’s almost here! It may not be a holiday, but it’s the best day of the year."
+    }],
+    "temperature": 0.8,
+    "top_k": 50,
+    "max_new_tokens": 1024
+  }' \
+  --output output.wav
+```
+Reference output:
+
+<audio controls>
+  <source src="../_static/audio/control-tokens-test3.wav" type="audio/wav">
+</audio>
+
+4. Emotion: confusion + humming + sigh
+
+```bash
+curl -X POST http://localhost:8000/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{
+    "input": "<|emotion:confusion|><|sfx:humming|>Hmm... wait. <|sfx:sigh|>Uh, I’m not sure I understand. Do you mean the voice should speak faster, or the system should respond earlier?",
+    "references": [{
+      "audio_path": "docs/_static/audio/ref_voice.wav",
+      "text": "It was the night before my birthday. Hooray! It’s almost here! It may not be a holiday, but it’s the best day of the year."
+    }],
+    "temperature": 0.8,
+    "top_k": 50,
+    "max_new_tokens": 1024
+  }' \
+  --output output.wav
+```
+Reference output:
+
+<audio controls>
+  <source src="../_static/audio/control-tokens-test4.wav" type="audio/wav">
+</audio>
+
+5. Emotion: surprise + screaming
+
+```bash
+curl -X POST http://localhost:8000/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{
+    "input": "<|emotion:surprise|><|prosody:pitch_high|><|sfx:screaming|>Ah! Wait, I almost forgot! Higgs Audio v3 also supports over one hundred languages.",
+    "references": [{
+      "audio_path": "docs/_static/audio/ref_voice.wav",
+      "text": "It was the night before my birthday. Hooray! It’s almost here! It may not be a holiday, but it’s the best day of the year."
+    }],
+    "temperature": 0.8,
+    "top_k": 50,
+    "max_new_tokens": 1024
+  }' \
+  --output output.wav
+```
+Reference output:
+
+<audio controls>
+  <source src="../_static/audio/control-tokens-test5.wav" type="audio/wav">
+</audio>
+
+6. Combine them together:
+
+Here is an example of combining emotion, sound effects, and prosody tokens together — a short Gaokao-style English listening dialogue between two speakers:
 
 <details>
 <summary>Commands</summary>
 
-Part 1 — female asks:
+Part 1 — she asks about the missed class:
 
 ```bash
 curl -X POST http://localhost:8000/v1/audio/speech \
   -H "Content-Type: application/json" \
   -d '{
-    "input": "<|prosody:pitch_high|> <|prosody:speed_slow|> Excuse me. Can you tell me how much the shirt is?",
+    "input": "<|emotion:contemplation|>Hi David, I missed the biology class today because I caught a cold. <|sfx:cough|>Ahem! Sorry, Could you tell me what the teacher covered?",
     "references": [{
-      "audio_path": "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_103675.wav",
-      "text": "Excuse me. Can you tell me how much the shirt is?"
+      "audio_path": "docs/_static/audio/female-voice.wav",
+      "text": "By repeating what students say, teachers can demonstrate that they are listening. By extending what students say."
     }],
-    "temperature": 0.5,
-    "top_k": 30,
-    "seed": 404
+    "temperature": 0.8,
+    "top_k": 50,
+    "max_new_tokens": 1024
   }' \
   --output part1.wav
 ```
 
-Part 2 — male answers:
+Part 2 — he explains what was covered:
 
 ```bash
 curl -X POST http://localhost:8000/v1/audio/speech \
   -H "Content-Type: application/json" \
   -d '{
-    "input": "<|prosody:speed_very_slow|> <|prosody:expressive_low|> Yes, it is nine fifteen.",
+    "input": "<|emotion:enthusiasm|>Sure, no problem! We learned how plants make food through photosynthesis, and <|prosody:long_pause|> there will be a quiz this Friday.",
     "references": [{
-      "audio_path": "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav",
-      "text": "We asked over twenty different people, and they all said it was his."
+      "audio_path": "docs/_static/audio/male-voice.wav",
+      "text": "Hey, Adam here. Let'\''s create something that feels real, sounds human, and connects every time."
     }],
-    "temperature": 0.5,
-    "top_k": 30,
-    "seed": 43
+    "temperature": 0.8,
+    "top_k": 50,
+    "max_new_tokens": 1024
   }' \
   --output part2.wav
 ```
 
-Part 3 — female reads the question:
+Part 3 — she reads the result:
 
 ```bash
 curl -X POST http://localhost:8000/v1/audio/speech \
   -H "Content-Type: application/json" \
   -d '{
-    "input": "<|prosody:speed_slow|> <|prosody:expressive_low|> Question: How much is the shirt?",
+    "input": "<|emotion:relief|>Oh, that is really helpful. Thank you!",
     "references": [{
-      "audio_path": "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_103675.wav",
-      "text": "We asked over twenty different people, and they all said it was his."
+      "audio_path": "docs/_static/audio/female-voice.wav",
+      "text": "By repeating what students say, teachers can demonstrate that they are listening. By extending what students say."
     }],
-    "temperature": 0.5,
-    "top_k": 30,
-    "seed": 44
+    "temperature": 0.8,
+    "top_k": 50,
+    "max_new_tokens": 1024
   }' \
   --output part3.wav
 ```
@@ -457,50 +532,50 @@ We report **WER / CER** (↓, %) and **WavLM speaker similarity** (↑, ×100) o
 
 | Lang | WER ↓ | SIM ↑ |
 |---|---|---|
-| en | 2.05 | 64.86 |
-| zh | 2.00 | 70.96 |
-| **macro** | **2.02** | **67.91** |
+| en | 1.36 | 67.08 |
+| zh | 0.87 | 72.68 |
+| **macro** | **1.11** | **69.88** |
 
 ### CV3 (9 langs)
 
 | Lang | WER ↓ | SIM ↑ |
 |---|---|---|
-| de | 8.62 | 65.43 |
-| en | 6.73 | 60.37 |
-| es | 5.03 | 68.18 |
-| fr | 14.50 | 62.34 |
-| it | 8.55 | 67.34 |
-| ja | 7.96 | 67.91 |
-| ko | 4.38 | 68.40 |
-| ru | 9.38 | 66.77 |
-| zh | 5.19 | 69.71 |
-| **macro** | **7.82** | **66.27** |
+| de | 3.83 | 68.82 |
+| en | 3.54 | 62.82 |
+| es | 2.92 | 71.69 |
+| fr | 9.19 | 65.71 |
+| it | 3.50 | 70.93 |
+| ja | 4.92 | 70.46 |
+| ko | 4.15 | 71.04 |
+| ru | 4.43 | 69.98 |
+| zh | 3.19 | 72.09 |
+| **macro** | **4.41** | **69.28** |
 
 ### MiniMax-Multilingual (23 langs)
 
 | Lang | WER ↓ | SIM ↑ |
 |---|---|---|
-| ar | 2.59 | 74.77 |
-| cs | 4.62 | 78.80 |
-| de | 0.74 | 70.65 |
-| el | 1.81 | 78.02 |
-| en | 1.87 | 81.32 |
-| es | 3.06 | 72.78 |
-| fi | 4.62 | 82.69 |
-| fr | 4.70 | 70.27 |
-| hi | 6.81 | 80.94 |
-| id | 2.38 | 72.42 |
-| it | 2.07 | 74.56 |
-| ja | 3.74 | 74.23 |
-| ko | 3.57 | 74.86 |
-| nl | 2.10 | 73.02 |
-| pl | 2.08 | 83.16 |
-| pt | 2.59 | 76.52 |
-| ro | 3.64 | 77.10 |
-| ru | 4.66 | 74.48 |
-| th | 7.59 | 77.64 |
-| tr | 2.09 | 77.72 |
-| uk | 2.69 | 71.79 |
-| vi | 1.18 | 73.46 |
-| zh | 1.65 | 74.85 |
-| **macro** | **3.17** | **75.92** |
+| ar | 0.81 | 75.86 |
+| cs | 2.72 | 78.77 |
+| de | 0.67 | 75.37 |
+| el | 0.68 | 77.46 |
+| en | 1.53 | 81.71 |
+| es | 0.94 | 74.60 |
+| fi | 2.44 | 82.97 |
+| fr | 3.76 | 71.41 |
+| hi | 5.24 | 83.49 |
+| id | 1.48 | 74.94 |
+| it | 1.70 | 77.09 |
+| ja | 3.04 | 76.02 |
+| ko | 2.49 | 76.96 |
+| nl | 0.72 | 74.34 |
+| pl | 0.98 | 84.40 |
+| pt | 1.28 | 77.33 |
+| ro | 2.03 | 80.45 |
+| ru | 3.40 | 76.39 |
+| th | 3.37 | 78.96 |
+| tr | 0.88 | 80.24 |
+| uk | 0.92 | 74.58 |
+| vi | 0.49 | 75.62 |
+| zh | 0.76 | 77.83 |
+| **macro** | **1.84** | **77.69** |
