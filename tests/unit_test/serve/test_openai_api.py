@@ -262,7 +262,7 @@ def test_non_streaming_http_faults_return_500(model_name: str) -> None:
         },
     )
     assert speech_resp.status_code == 500
-    assert speech_resp.json()["error"]["type"] == "InternalServerError"
+    assert speech_resp.json()["error"]["type"] == "server_error"
     assert "cuda out of memory" in speech_resp.json()["error"]["message"]
 
 
@@ -282,9 +282,9 @@ def test_speech_endpoint_rejects_invalid_request_with_openai_error() -> None:
     assert response.json() == {
         "error": {
             "message": "stream=true requires response_format='pcm'",
-            "type": "BadRequestError",
+            "type": "invalid_request_error",
             "param": "response_format",
-            "code": 400,
+            "code": None,
         }
     }
 
@@ -312,7 +312,7 @@ def test_speech_endpoint_rejects_invalid_json_with_openai_error() -> None:
     )
 
     assert response.status_code == 400
-    assert response.json()["error"]["type"] == "BadRequestError"
+    assert response.json()["error"]["type"] == "invalid_request_error"
 
 
 def test_speech_endpoint_stream_without_audio_returns_error() -> None:
@@ -324,7 +324,7 @@ def test_speech_endpoint_stream_without_audio_returns_error() -> None:
     )
 
     assert response.status_code == 500
-    assert response.json()["error"]["type"] == "InternalServerError"
+    assert response.json()["error"]["type"] == "server_error"
     assert "No audio output generated" in response.json()["error"]["message"]
 
 

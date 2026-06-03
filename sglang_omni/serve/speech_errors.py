@@ -62,7 +62,7 @@ def openai_error_response(
             message,
             error_type=error_type,
             param=param,
-            code=status_code if code is None else code,
+            code=code,
         ),
     )
 
@@ -81,9 +81,9 @@ def bad_request(message: str, *, param: str | None = None) -> SpeechAPIError:
     return SpeechAPIError(
         message=message,
         status_code=400,
-        error_type="BadRequestError",
+        error_type="invalid_request_error",
         param=param,
-        code=400,
+        code=None,
     )
 
 
@@ -91,7 +91,17 @@ def internal_error(message: str, *, param: str | None = None) -> SpeechAPIError:
     return SpeechAPIError(
         message=message,
         status_code=500,
-        error_type="InternalServerError",
+        error_type="server_error",
         param=param,
-        code=500,
+        code=None,
+    )
+
+
+def service_unavailable(message: str, *, param: str | None = None) -> SpeechAPIError:
+    return SpeechAPIError(
+        message=message,
+        status_code=503,
+        error_type="server_error",
+        param=param,
+        code=None,
     )

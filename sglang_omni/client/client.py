@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from dataclasses import replace
 from typing import Any, AsyncIterator, Callable
@@ -206,7 +207,9 @@ class Client:
         if sample_rate is not None:
             encode_kwargs["sample_rate"] = sample_rate
 
-        audio_bytes, mime_type = encode_audio(audio_data, **encode_kwargs)
+        audio_bytes, mime_type = await asyncio.to_thread(
+            encode_audio, audio_data, **encode_kwargs
+        )
 
         # Derive actual format from MIME type (encode_audio may fall back
         # to WAV if the requested codec is unavailable).

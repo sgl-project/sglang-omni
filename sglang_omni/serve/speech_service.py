@@ -24,7 +24,7 @@ from sglang_omni.serve.protocol import (
     CreateSpeechRequest,
     SpeechReference,
 )
-from sglang_omni.serve.speech_errors import bad_request, internal_error
+from sglang_omni.serve.speech_errors import bad_request, service_unavailable
 
 _LANGUAGE_CANONICAL = {
     language.lower(): language for language in SUPPORTED_TTS_LANGUAGES
@@ -354,7 +354,7 @@ class SpeechRequestValidator:
     def _validate_encoder_dependency(self, response_format: str) -> None:
         message = self.encoder_dependency_errors.get(response_format)
         if message is not None:
-            raise internal_error(message)
+            raise service_unavailable(message, param="response_format")
 
 
 def _reference_dict_from_media_reference(value: str) -> dict[str, Any]:

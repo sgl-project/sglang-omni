@@ -39,6 +39,20 @@ def test_speech_service_requires_pcm_for_http_streaming(
     assert "stream=true" in exc_info.value.message
 
 
+def test_speech_service_reports_missing_encoder_dependency_as_capability_error() -> (
+    None
+):
+    service = SpeechRequestValidator(default_model="tts")
+    service.encoder_dependency_errors["mp3"] = "mp3 encoder is unavailable"
+
+    with pytest.raises(SpeechAPIError) as exc_info:
+        service.parse_request({"input": "hello", "response_format": "mp3"})
+
+    assert exc_info.value.status_code == 503
+    assert exc_info.value.error_type == "server_error"
+    assert exc_info.value.param == "response_format"
+
+
 def test_speech_service_rejects_boolean_seed() -> None:
     service = SpeechRequestValidator(default_model="tts")
 
