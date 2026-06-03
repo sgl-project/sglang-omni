@@ -11,6 +11,8 @@ reference clip, and fine-grained inline control over emotion, style, sound effec
 - **Voice clone accuracy** — high-fidelity zero-shot speaker cloning from reference clips
 - **Inline control** via `<|emotion:…|>`, `<|style:…|>`, `<|sfx:…|>`, `<|prosody:…|>` tags
 
+The **100-language single-digit WER/CER** claim comes from our internal **Higgs-Multilingual** benchmark, an extension of the FLEURS-102 benchmark.
+
 ## Architecture
 
 ![Higgs Audio v3 Generation Architecture](../_static/image/higgs-architecture.png)
