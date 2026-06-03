@@ -1,6 +1,6 @@
 # Higgs TTS
 
-[Higgs Audio v3 TTS](https://huggingface.co/boson-sglang/higgs-audio-v3-TTS-4B-grpo05200410999)
+[Higgs Audio v3 TTS](https://huggingface.co/bosonai/higgs-audio-v3-tts-4b)
 is a chat-native text-to-speech model from Boson AI built on a Qwen3-4B backbone. It generates
 24 kHz speech through 8 discrete codebooks and supports 100+ languages, voice cloning from a
 reference clip, and fine-grained inline control over emotion, style, sound effects, and prosody.
@@ -32,7 +32,7 @@ Install `sglang-omni` by following [Installation](../get_started/installation.md
 ```bash
 # Higgs TTS model is private; export your HF token before downloading.
 export HF_TOKEN=hf_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-hf download boson-sglang/higgs-audio-v3-TTS-4B-grpo05200410999
+hf download bosonai/higgs-audio-v3-tts-4b
 hf download bosonai/higgs-audio-v2-tokenizer
 ```
 
@@ -42,7 +42,7 @@ The pipeline is `preprocessing → audio_encoder → tts_engine → vocoder`.
 
 ```bash
 sgl-omni serve \
-  --model-path boson-sglang/higgs-audio-v3-TTS-4B-grpo05200410999 \
+  --model-path bosonai/higgs-audio-v3-tts-4b \
   --port 8000
 ```
 
