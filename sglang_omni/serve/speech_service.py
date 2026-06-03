@@ -7,6 +7,7 @@ import base64
 import binascii
 import importlib.util
 import shutil
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -15,7 +16,10 @@ from pydantic import ValidationError
 
 from sglang_omni.client import GenerateRequest, SamplingParams
 from sglang_omni.preprocessing.base import MediaIO
-from sglang_omni.preprocessing.resource_connector import MultiModalResourceConnector
+from sglang_omni.preprocessing.resource_connector import (
+    MultiModalResourceConnector,
+    resolve_allowed_local_media_path,
+)
 from sglang_omni.serve.protocol import (
     SUPPORTED_TTS_LANGUAGES,
     SUPPORTED_TTS_RESPONSE_FORMATS,
@@ -39,6 +43,12 @@ MAX_REFERENCE_AUDIO_BYTES = 10 * 1024 * 1024
 _REFERENCE_AUDIO_FIELDS = ("audio_path", "ref_audio", "audio")
 
 
+@dataclass(frozen=True)
+class PreparedSpeechRequest:
+    request: CreateSpeechRequest
+    reference_descriptors: list[dict[str, Any]]
+
+
 class SpeechRequestValidator:
     """Validate and lower OpenAI-compatible TTS requests."""
 
@@ -47,10 +57,11 @@ class SpeechRequestValidator:
         *,
         default_model: str,
         allowed_local_media_path: str | Path | None = None,
+        allowed_media_domains: list[str] | None = None,
     ) -> None:
         self.default_model = default_model
         self.allowed_local_media_path = (
-            _resolve_allowed_local_media_path(allowed_local_media_path)
+            resolve_allowed_local_media_path(allowed_local_media_path)
             if allowed_local_media_path is not None
             and str(allowed_local_media_path).strip()
             else None
@@ -60,7 +71,8 @@ class SpeechRequestValidator:
                 str(self.allowed_local_media_path)
                 if self.allowed_local_media_path
                 else ""
-            )
+            ),
+            allowed_media_domains=allowed_media_domains,
         )
         self.encoder_dependency_errors = _build_encoder_dependency_errors()
 
@@ -76,10 +88,30 @@ class SpeechRequestValidator:
             raise bad_request(_validation_error_message(exc)) from exc
         return self.prepare_request(request)
 
+    def parse_generation_request(self, payload: Any) -> PreparedSpeechRequest:
+        """Parse and prepare a raw HTTP payload for GenerateRequest lowering."""
+
+        if not isinstance(payload, dict):
+            raise bad_request("speech request body must be a JSON object")
+        self._validate_raw_payload(payload)
+        try:
+            request = CreateSpeechRequest.model_validate(payload)
+        except ValidationError as exc:
+            raise bad_request(_validation_error_message(exc)) from exc
+        return self.prepare_generation_request(request)
+
     def prepare_request(self, request: CreateSpeechRequest) -> CreateSpeechRequest:
         """Validate and normalize a request that was already parsed."""
 
+        return self.prepare_generation_request(request).request
+
+    def prepare_generation_request(
+        self, request: CreateSpeechRequest
+    ) -> PreparedSpeechRequest:
+        """Validate a parsed request and build backend reference descriptors."""
+
         updates: dict[str, Any] = {}
+        reference_descriptors: list[dict[str, Any]] = []
 
         input_text = request.input
         if not isinstance(input_text, str) or not input_text.strip():
@@ -122,28 +154,46 @@ class SpeechRequestValidator:
 
         ref_audio = request.ref_audio
         if ref_audio is not None:
-            updates["ref_audio"] = self._normalize_media_reference(
+            descriptor = self._load_media_reference_descriptor(
                 ref_audio, param="ref_audio"
             )
+            updates["ref_audio"] = _media_reference_from_descriptor(descriptor)
 
         if request.references:
-            updates["references"] = [
-                self._normalize_speech_reference(reference)
-                for reference in request.references
-            ]
+            references: list[SpeechReference] = []
+            for reference in request.references:
+                normalized_reference = self._normalize_speech_reference(reference)
+                references.append(normalized_reference)
+                reference_descriptors.append(
+                    normalized_reference.model_dump(exclude_none=True)
+                )
+            updates["references"] = references
 
-        return request.model_copy(update=updates)
+        if ref_audio is not None:
+            if request.ref_text is not None:
+                descriptor = dict(descriptor)
+                descriptor["text"] = request.ref_text
+            reference_descriptors.append(descriptor)
+
+        prepared_request = request.model_copy(update=updates)
+        return PreparedSpeechRequest(
+            request=prepared_request,
+            reference_descriptors=reference_descriptors,
+        )
 
     def build_generate_request(
         self,
         request: CreateSpeechRequest,
         *,
         validate: bool = True,
+        reference_descriptors: list[dict[str, Any]] | None = None,
     ) -> GenerateRequest:
         """Convert a validated speech request into a client GenerateRequest."""
 
         if validate:
-            request = self.prepare_request(request)
+            prepared = self.prepare_generation_request(request)
+            request = prepared.request
+            reference_descriptors = prepared.reference_descriptors
         explicit_generation_params = sorted(
             field
             for field in (
@@ -204,19 +254,10 @@ class SpeechRequestValidator:
             sampling.seed = request.seed
 
         prompt: Any = request.input
-        references: list[dict[str, Any]] = []
-        if request.references:
-            references.extend(
-                reference.model_dump(exclude_none=True)
-                for reference in request.references
-            )
-        if request.ref_audio is not None:
-            ref = _reference_dict_from_media_reference(request.ref_audio)
-            if request.ref_text is not None:
-                ref["text"] = request.ref_text
-            references.append(ref)
-        if references:
-            prompt = {"text": request.input, "references": references}
+        if reference_descriptors is None:
+            reference_descriptors = _reference_descriptors_from_request(request)
+        if reference_descriptors:
+            prompt = {"text": request.input, "references": reference_descriptors}
 
         return GenerateRequest(
             model=request.model or self.default_model,
@@ -306,27 +347,23 @@ class SpeechRequestValidator:
             break
         return reference.model_copy(update=updates)
 
-    def _normalize_media_reference(self, value: str, *, param: str) -> str:
-        descriptor = self._load_media_reference_descriptor(value, param=param)
-        return _media_reference_from_descriptor(descriptor)
-
     def _load_media_reference_descriptor(
         self, value: str, *, param: str
     ) -> dict[str, str]:
         url = urlparse(value)
-        if url.scheme in {"http", "https"}:
-            raise bad_request(
-                "remote reference audio URLs are not supported by this endpoint",
-                param=param,
-            )
-        if url.scheme not in {"data", "file"}:
+        if url.scheme not in {"http", "https", "data", "file"}:
             if Path(value).is_absolute():
                 value = Path(value).expanduser().resolve().as_uri()
             else:
-                raise bad_request(f"{param} must be a data or file:// URL", param=param)
+                raise bad_request(
+                    f"{param} must be an http, https, data, or file:// URL",
+                    param=param,
+                )
         try:
             return self.reference_connector.load_resource(
-                value, _SpeechReferenceMediaIO(param)
+                value,
+                _SpeechReferenceMediaIO(param),
+                max_bytes=MAX_REFERENCE_AUDIO_BYTES,
             )
         except (RuntimeError, ValueError, OSError) as exc:
             raise bad_request(str(exc), param=param) from exc
@@ -344,9 +381,20 @@ class _SpeechReferenceMediaIO(MediaIO[dict[str, str]]):
         self.param = param
 
     def load_bytes(self, data: bytes) -> dict[str, str]:
-        raise ValueError(
-            "remote reference audio URLs are not supported by this endpoint"
-        )
+        return {
+            "data": base64.b64encode(data).decode("ascii"),
+            "media_type": "audio/wav",
+        }
+
+    def load_http_bytes(self, data: bytes, media_type: str | None) -> dict[str, str]:
+        if media_type is not None and not (
+            media_type.startswith("audio/") or media_type == "application/octet-stream"
+        ):
+            raise ValueError(f"{self.param} URL must return an audio media type")
+        descriptor = self.load_bytes(data)
+        if media_type is not None and media_type.startswith("audio/"):
+            descriptor["media_type"] = media_type
+        return descriptor
 
     def load_base64(self, media_type: str, data: str) -> dict[str, str]:
         _validate_base64_media_data(data, media_type=media_type, param=self.param)
@@ -364,6 +412,22 @@ def _reference_dict_from_media_reference(value: str) -> dict[str, Any]:
         media_type, encoded = _parse_data_url(value, param="ref_audio")
         return {"data": encoded, "media_type": media_type}
     return {"audio_path": value}
+
+
+def _reference_descriptors_from_request(
+    request: CreateSpeechRequest,
+) -> list[dict[str, Any]]:
+    references: list[dict[str, Any]] = []
+    if request.references:
+        references.extend(
+            reference.model_dump(exclude_none=True) for reference in request.references
+        )
+    if request.ref_audio is not None:
+        ref = _reference_dict_from_media_reference(request.ref_audio)
+        if request.ref_text is not None:
+            ref["text"] = request.ref_text
+        references.append(ref)
+    return references
 
 
 def _media_reference_from_descriptor(descriptor: dict[str, str]) -> str:
@@ -472,10 +536,3 @@ def _validation_error_message(exc: ValidationError) -> str:
     location = ".".join(str(item) for item in first_error.get("loc", ()))
     message = first_error.get("msg") or "invalid speech request"
     return f"{location}: {message}" if location else str(message)
-
-
-def _resolve_allowed_local_media_path(path: str | Path) -> Path:
-    resolved = Path(path).expanduser().resolve()
-    if not resolved.exists() or not resolved.is_dir():
-        raise ValueError(f"allowed local media path must be a directory: {path}")
-    return resolved

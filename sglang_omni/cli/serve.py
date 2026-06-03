@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 from typing import Annotated, Literal, NoReturn
 
 import typer
@@ -9,6 +8,9 @@ import yaml
 
 from sglang_omni.config import PipelineConfig
 from sglang_omni.config.manager import ConfigManager
+from sglang_omni.preprocessing.resource_connector import (
+    resolve_allowed_local_media_path,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -211,10 +213,19 @@ def _validate_encoder_mem_reserve(value: float | None) -> float | None:
 def _validate_allowed_local_media_path(value: str | None) -> str | None:
     if value is None:
         return None
-    path = Path(value).expanduser()
-    if not path.exists() or not path.is_dir():
-        raise typer.BadParameter("--allowed-local-media-path must be a directory")
-    return str(path.resolve())
+    try:
+        return str(resolve_allowed_local_media_path(value))
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+
+
+def _normalize_allowed_media_domains(values: list[str] | None) -> list[str]:
+    domains: list[str] = []
+    for value in values or []:
+        domains.extend(
+            part.strip().lower() for part in value.split(",") if part.strip()
+        )
+    return domains
 
 
 def apply_mem_fraction_cli_overrides(
@@ -828,6 +839,18 @@ def serve(
             ),
         ),
     ] = None,
+    allowed_media_domain: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--allowed-media-domain",
+            "--allowed_media_domain",
+            help=(
+                "Restrict remote media references to this domain. Repeat the "
+                "flag to allow multiple domains. If omitted, remote HTTP(S) "
+                "references are unrestricted."
+            ),
+        ),
+    ] = None,
     mem_fraction_static: Annotated[
         float | None,
         typer.Option(
@@ -1119,4 +1142,5 @@ def serve(
         allowed_local_media_path=_validate_allowed_local_media_path(
             allowed_local_media_path
         ),
+        allowed_media_domains=_normalize_allowed_media_domains(allowed_media_domain),
     )

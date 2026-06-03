@@ -49,6 +49,9 @@ sgl-omni serve \
   --port 8000
 ```
 
+Remote HTTP(S) reference audio is allowed by default. Operators can restrict
+remote references to specific domains with `--allowed-media-domain`.
+
 For Voxtral:
 
 ```bash
@@ -306,8 +309,8 @@ The table below lists all parameters accepted by the `/v1/audio/speech` endpoint
 | `response_format` | string | `"wav"` | Output audio format: `wav`, `mp3`, `flac`, `pcm`, `aac`, or `opus` |
 | `speed` | float | `1.0` | Playback speed multiplier from `0.25` to `4.0` |
 | `stream` | bool | `false` | Enable streaming via SSE; when true, `response_format` must be `pcm` |
-| `references` | list | `null` | Reference audio for voice cloning; each item has `audio_path` (data URL or allowed `file://` URI) and `text` |
-| `ref_audio` | string | `null` | Reference audio as an allowed `file://` URI or base64 data URL; equivalent to `references[0].audio_path` |
+| `references` | list | `null` | Reference audio for voice cloning; each item has `audio_path` (`http(s)`, data URL, or allowed `file://` URI) and `text` |
+| `ref_audio` | string | `null` | Reference audio as `http(s)`, data URL, or an allowed `file://` URI; equivalent to `references[0].audio_path` |
 | `ref_text` | string | `null` | Transcript for `ref_audio`; equivalent to `references[0].text` |
 | `language` | string | `null` | Language hint: `Auto`, `Chinese`, `English`, `Japanese`, `Korean`, `German`, `French`, `Russian`, `Portuguese`, `Spanish`, or `Italian` |
 | `task_type` | string | `null` | Qwen3-TTS task type: `Base`, `CustomVoice`, or `VoiceDesign`; inferred as `Base` when reference audio/text is present, otherwise `CustomVoice` |

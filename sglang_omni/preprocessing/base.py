@@ -41,6 +41,13 @@ class MediaIO(ABC, Generic[_M]):
         """
         raise NotImplementedError
 
+    def load_http_bytes(self, data: bytes, media_type: str | None) -> _M:
+        """Load media fetched from HTTP.
+
+        Subclasses that need HTTP response metadata can override this method.
+        """
+        return self.load_bytes(data)
+
     @abstractmethod
     def load_base64(self, media_type: str, data: str) -> _M:
         """Load media from base64-encoded data URL.

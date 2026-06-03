@@ -5,12 +5,21 @@ from __future__ import annotations
 import base64
 from pathlib import Path
 
+import httpx
 import pytest
 
 from sglang_omni.serve import speech_service
 from sglang_omni.serve.protocol import CreateSpeechRequest
 from sglang_omni.serve.speech_errors import SpeechAPIError
 from sglang_omni.serve.speech_service import SpeechRequestValidator
+
+
+class _MockHTTPConnection:
+    def __init__(self, handler) -> None:
+        self.client = httpx.Client(transport=httpx.MockTransport(handler))
+
+    def get_sync_client(self) -> httpx.Client:
+        return self.client
 
 
 def test_speech_service_rejects_non_string_input() -> None:
@@ -168,7 +177,6 @@ def test_file_reference_requires_allowlist() -> None:
         ("data:audio/wav;base64", "ref_audio"),
         ("data:audio/wav,AAAA", "ref_audio"),
         ("data:audio/wav;base64,not@@base64", "ref_audio"),
-        ("https://example.com/reference.wav", "ref_audio"),
     ],
 )
 def test_reference_audio_rejects_unsupported_sources(
@@ -187,16 +195,102 @@ def test_reference_audio_accepts_valid_base64_data_url() -> None:
     service = SpeechRequestValidator(default_model="tts")
     encoded = base64.b64encode(b"RIFF").decode("ascii")
 
-    request = service.parse_request(
-        {"input": "hello", "ref_audio": f"data:audio/wav;base64,{encoded}"}
+    gen_req = service.build_generate_request(
+        CreateSpeechRequest(
+            input="hello",
+            ref_audio=f"data:audio/wav;base64,{encoded}",
+        )
     )
-    gen_req = service.build_generate_request(request, validate=False)
 
-    assert request.ref_audio == f"data:audio/wav;base64,{encoded}"
     assert gen_req.prompt == {
         "text": "hello",
         "references": [{"data": encoded, "media_type": "audio/wav"}],
     }
+
+
+def test_reference_audio_accepts_https_by_default() -> None:
+    service = SpeechRequestValidator(default_model="tts")
+    service.reference_connector.connection = _MockHTTPConnection(
+        lambda request: httpx.Response(
+            200,
+            headers={"content-type": "audio/wav"},
+            content=b"RIFF",
+        )
+    )
+
+    prepared = service.parse_generation_request(
+        {"input": "hello", "ref_audio": "https://example.com/reference.wav"}
+    )
+    gen_req = service.build_generate_request(
+        prepared.request,
+        validate=False,
+        reference_descriptors=prepared.reference_descriptors,
+    )
+    encoded = base64.b64encode(b"RIFF").decode("ascii")
+
+    assert prepared.request.ref_audio == f"data:audio/wav;base64,{encoded}"
+    assert gen_req.prompt == {
+        "text": "hello",
+        "references": [{"data": encoded, "media_type": "audio/wav"}],
+    }
+
+
+def test_reference_audio_honors_allowed_media_domains() -> None:
+    service = SpeechRequestValidator(
+        default_model="tts",
+        allowed_media_domains=["allowed.example"],
+    )
+
+    with pytest.raises(SpeechAPIError) as exc_info:
+        service.parse_request(
+            {"input": "hello", "ref_audio": "https://blocked.example/reference.wav"}
+        )
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.param == "ref_audio"
+
+
+def test_reference_audio_revalidates_redirect_domains() -> None:
+    service = SpeechRequestValidator(
+        default_model="tts",
+        allowed_media_domains=["allowed.example"],
+    )
+    service.reference_connector.connection = _MockHTTPConnection(
+        lambda request: httpx.Response(
+            302,
+            headers={"location": "https://blocked.example/reference.wav"},
+        )
+    )
+
+    with pytest.raises(SpeechAPIError) as exc_info:
+        service.parse_request(
+            {"input": "hello", "ref_audio": "https://allowed.example/reference.wav"}
+        )
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.param == "ref_audio"
+
+
+def test_reference_audio_rejects_oversized_https_response(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = SpeechRequestValidator(default_model="tts")
+    service.reference_connector.connection = _MockHTTPConnection(
+        lambda request: httpx.Response(
+            200,
+            headers={"content-type": "audio/wav"},
+            content=b"RIFF",
+        )
+    )
+    monkeypatch.setattr(speech_service, "MAX_REFERENCE_AUDIO_BYTES", 3)
+
+    with pytest.raises(SpeechAPIError) as exc_info:
+        service.parse_request(
+            {"input": "hello", "ref_audio": "https://example.com/reference.wav"}
+        )
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.param == "ref_audio"
 
 
 def test_reference_audio_rejects_oversized_data_url(

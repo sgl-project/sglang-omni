@@ -88,6 +88,7 @@ def create_app(
     model_name: str | None = None,
     enable_realtime: bool = False,
     allowed_local_media_path: str | None = None,
+    allowed_media_domains: list[str] | None = None,
 ) -> FastAPI:
     """Create a FastAPI application with OpenAI-compatible endpoints.
 
@@ -98,6 +99,7 @@ def create_app(
             endpoint (OpenAI Realtime API).
         allowed_local_media_path: Directory allowed for ``file://`` TTS
             reference audio.
+        allowed_media_domains: Domains allowed for remote TTS reference audio.
 
     Returns:
         Configured FastAPI application.
@@ -119,6 +121,7 @@ def create_app(
     app.state.speech_service = SpeechRequestValidator(
         default_model=app.state.model_name,
         allowed_local_media_path=allowed_local_media_path,
+        allowed_media_domains=allowed_media_domains,
     )
 
     # Register all routes
@@ -520,8 +523,15 @@ def _register_speech(app: FastAPI) -> None:
         request_id = f"speech-{uuid.uuid4()}"
         try:
             payload = await request.json()
-            req = speech_service.parse_request(payload)
-            gen_req = speech_service.build_generate_request(req, validate=False)
+            prepared = await asyncio.to_thread(
+                speech_service.parse_generation_request, payload
+            )
+            req = prepared.request
+            gen_req = speech_service.build_generate_request(
+                req,
+                validate=False,
+                reference_descriptors=prepared.reference_descriptors,
+            )
         except json.JSONDecodeError as exc:
             return speech_error_response(
                 bad_request("speech request body must be valid JSON")
@@ -621,7 +631,7 @@ async def _speech_stream(
             if audio_data is None:
                 continue
 
-            audio_bytes, mime_type = encode_audio(
+            audio_bytes, mime_type = await _encode_speech_stream_chunk(
                 audio_data,
                 response_format=response_format,
                 sample_rate=sample_rate,
@@ -749,6 +759,25 @@ def _select_speech_audio_delta(
     if total_samples <= emitted_samples:
         return None, emitted_samples
     return audio[emitted_samples:], total_samples
+
+
+async def _encode_speech_stream_chunk(
+    audio_data: Any,
+    *,
+    response_format: str,
+    sample_rate: int,
+    speed: float,
+    allow_format_fallback: bool,
+) -> tuple[bytes, str]:
+    encode_kwargs = {
+        "response_format": response_format,
+        "sample_rate": sample_rate,
+        "speed": speed,
+        "allow_format_fallback": allow_format_fallback,
+    }
+    if response_format == "pcm":
+        return encode_audio(audio_data, **encode_kwargs)
+    return await asyncio.to_thread(encode_audio, audio_data, **encode_kwargs)
 
 
 def _register_transcriptions(app: FastAPI) -> None:
