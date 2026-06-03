@@ -391,14 +391,14 @@ def test_model_config_has_moe_prefers_effective_text_config() -> None:
         pytest.param(False, True, False, False, id="cutlass_runtime_rejected"),
     ],
 )
-def test_fp8_cutlass_moe_support_matches_sglang_0_5_8_contract(
+def test_fp8_cutlass_moe_support_check(
     monkeypatch: pytest.MonkeyPatch,
     cutlass_supported: bool,
     sm90_supported: bool,
     sm100_supported: bool,
     expected_supported: bool,
 ) -> None:
-    """Mirrors the CUTLASS FP8 MoE assertions in pinned SGLang 0.5.8."""
+    """Validates the CUTLASS FP8 MoE support check."""
     _install_fake_cutlass_support_modules(
         monkeypatch,
         cutlass_supported=cutlass_supported,
