@@ -1202,6 +1202,237 @@ def test_moss_tts_rejects_invalid_sampling_params() -> None:
             build_moss_tts_state(make_payload(inputs={"text": "hi"}, tts_params=bad))
 
 
+def test_moss_preprocess_batch_single_equivalence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """preprocess_moss_tts_payloads([p]) produces the same prompt_rows as
+    preprocess_moss_tts_payload(p)."""
+    from sglang_omni.models.moss_tts import request_builders as rb
+
+    class FakeProcessor:
+        def build_user_message(self, **kwargs):
+            return {"role": "user", **kwargs}
+
+        def __call__(self, conversations, mode):
+            assert mode == "generation"
+            rows = [
+                torch.tensor(
+                    [[1, 1024, 1024], [151644, 1024, 1024], [198, 1024, 1024]],
+                    dtype=torch.long,
+                )
+                for _ in conversations
+            ]
+            return {"input_ids": torch.stack(rows, dim=0)}
+
+    processor = FakeProcessor()
+    payload = make_payload(inputs="hello", request_id="equiv-single")
+
+    try:
+        set_moss_tts_preprocessing_context(processor=processor)
+        single_out = preprocess_moss_tts_payload(payload)
+        single_prepared = rb.pop_prepared_moss_tts_request(single_out)
+    finally:
+        clear_moss_tts_preprocessing_context()
+
+    try:
+        set_moss_tts_preprocessing_context(processor=processor)
+        batch_out = preprocess_moss_tts_payloads(
+            [make_payload(inputs="hello", request_id="equiv-batch")]
+        )
+        batch_prepared = rb.pop_prepared_moss_tts_request(batch_out[0])
+    finally:
+        clear_moss_tts_preprocessing_context()
+
+    assert torch.equal(single_prepared.prompt_rows, batch_prepared.prompt_rows)
+    assert single_prepared.input_ids_list == batch_prepared.input_ids_list
+    assert single_prepared.state.text == batch_prepared.state.text
+
+
+def test_moss_preprocess_batch_multi_equivalence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Each item from a multi-item batch matches its single-item counterpart."""
+    from sglang_omni.models.moss_tts import request_builders as rb
+
+    class FakeProcessor:
+        def build_user_message(self, **kwargs):
+            return {"role": "user", **kwargs}
+
+        def __call__(self, conversations, mode):
+            rows = []
+            for conv in conversations:
+                text = conv[0]["text"]
+                marker = hash(text) % 1000
+                rows.append(
+                    torch.tensor(
+                        [[marker, 1024, 1024], [151644, 1024, 1024]],
+                        dtype=torch.long,
+                    )
+                )
+            return {"input_ids": torch.stack(rows, dim=0)}
+
+    processor = FakeProcessor()
+    texts = ["alpha", "beta", "gamma"]
+
+    single_prepared_list = []
+    for i, text in enumerate(texts):
+        try:
+            set_moss_tts_preprocessing_context(processor=processor)
+            out = preprocess_moss_tts_payload(
+                make_payload(inputs=text, request_id=f"single-{i}")
+            )
+            single_prepared_list.append(rb.pop_prepared_moss_tts_request(out))
+        finally:
+            clear_moss_tts_preprocessing_context()
+
+    payloads = [
+        make_payload(inputs=text, request_id=f"multi-{i}")
+        for i, text in enumerate(texts)
+    ]
+    try:
+        set_moss_tts_preprocessing_context(processor=processor)
+        batch_outs = preprocess_moss_tts_payloads(payloads)
+        batch_prepared_list = [
+            rb.pop_prepared_moss_tts_request(out) for out in batch_outs
+        ]
+    finally:
+        clear_moss_tts_preprocessing_context()
+
+    for single, batched in zip(single_prepared_list, batch_prepared_list):
+        assert torch.equal(single.prompt_rows, batched.prompt_rows)
+        assert single.input_ids_list == batched.input_ids_list
+        assert single.state.text == batched.state.text
+
+
+def test_moss_preprocess_data_uri_output_order_preserved(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Results stay in payload order even when data-URI sample rates differ."""
+    from sglang_omni.models.moss_tts import request_builders as rb
+
+    class FakeProcessor:
+        def encode_audios_from_wav(self, wavs, sample_rate):
+            return [
+                torch.full((2, 2), sample_rate, dtype=torch.long) for _ in wavs
+            ]
+
+        def build_user_message(self, **kwargs):
+            return {"role": "user", **kwargs}
+
+        def __call__(self, conversations, mode):
+            rows = []
+            for conv in conversations:
+                ref = conv[0].get("reference")
+                if ref is not None and isinstance(ref[0], torch.Tensor):
+                    marker = int(ref[0][0, 0].item())
+                else:
+                    marker = 0
+                rows.append(
+                    torch.tensor(
+                        [[marker, 1024, 1024], [151644, 1024, 1024]],
+                        dtype=torch.long,
+                    )
+                )
+            return {"input_ids": torch.stack(rows, dim=0)}
+
+    call_idx = 0
+
+    def fake_decode_data_uri(ref_audio: str):
+        nonlocal call_idx
+        call_idx += 1
+        sr = 16000 if "16k" in ref_audio else 24000
+        return torch.full((1, 4), 0.1 * call_idx, dtype=torch.float32), sr
+
+    processor = FakeProcessor()
+    payloads = [
+        make_payload(
+            inputs={"text": "first-24k",
+                    "references": [{"audio_path": "data:audio/wav;base64,24kAAA"}]},
+            request_id="order-0",
+        ),
+        make_payload(
+            inputs={"text": "second-16k",
+                    "references": [{"audio_path": "data:audio/wav;base64,16kBBB"}]},
+            request_id="order-1",
+        ),
+        make_payload(
+            inputs={"text": "third-24k",
+                    "references": [{"audio_path": "data:audio/wav;base64,24kCCC"}]},
+            request_id="order-2",
+        ),
+    ]
+
+    monkeypatch.setattr(rb, "_decode_data_uri_reference", fake_decode_data_uri)
+    try:
+        set_moss_tts_preprocessing_context(processor=processor)
+        results = preprocess_moss_tts_payloads(payloads)
+        prepared = [rb.pop_prepared_moss_tts_request(r) for r in results]
+    finally:
+        clear_moss_tts_preprocessing_context()
+
+    assert prepared[0].state.text == "first-24k"
+    assert prepared[1].state.text == "second-16k"
+    assert prepared[2].state.text == "third-24k"
+    assert int(prepared[0].prompt_rows[0, 0]) == 24000
+    assert int(prepared[1].prompt_rows[0, 0]) == 16000
+    assert int(prepared[2].prompt_rows[0, 0]) == 24000
+
+
+def test_moss_preprocess_batch_attention_mask_trim_matches_single(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Batch attention_mask trimming produces the same prompt_rows as the
+    unpadded single-item path -- padding does not leak into prompt rows."""
+    from sglang_omni.models.moss_tts import request_builders as rb
+
+    single_rows = torch.tensor(
+        [[1, 1024, 1024], [151644, 1024, 1024]],
+        dtype=torch.long,
+    )
+
+    class FakeProcessor:
+        def build_user_message(self, **kwargs):
+            return {"role": "user", **kwargs}
+
+        def __call__(self, conversations, mode):
+            n = len(conversations)
+            if n == 1:
+                return {"input_ids": single_rows.unsqueeze(0)}
+            padded_rows = torch.zeros(3, 3, dtype=torch.long)
+            padded_rows[:2] = single_rows
+            batch = torch.stack([padded_rows for _ in conversations], dim=0)
+            mask = torch.tensor([[1, 1, 0]] * n, dtype=torch.long)
+            return {"input_ids": batch, "attention_mask": mask}
+
+    processor = FakeProcessor()
+
+    try:
+        set_moss_tts_preprocessing_context(processor=processor)
+        single_out = preprocess_moss_tts_payload(
+            make_payload(inputs="hi", request_id="mask-single")
+        )
+        single_prepared = rb.pop_prepared_moss_tts_request(single_out)
+    finally:
+        clear_moss_tts_preprocessing_context()
+
+    try:
+        set_moss_tts_preprocessing_context(processor=processor)
+        batch_outs = preprocess_moss_tts_payloads([
+            make_payload(inputs="hi", request_id="mask-batch-0"),
+            make_payload(inputs="hi", request_id="mask-batch-1"),
+        ])
+        batch_prepared = [
+            rb.pop_prepared_moss_tts_request(out) for out in batch_outs
+        ]
+    finally:
+        clear_moss_tts_preprocessing_context()
+
+    assert torch.equal(single_prepared.prompt_rows, batch_prepared[0].prompt_rows)
+    assert torch.equal(single_prepared.prompt_rows, batch_prepared[1].prompt_rows)
+    assert single_prepared.input_ids_list == batch_prepared[0].input_ids_list
+    assert single_prepared.prompt_rows.shape == (2, 3)
+
+
 def test_moss_preprocess_pre_start_abort_does_not_block(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
