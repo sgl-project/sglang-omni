@@ -41,7 +41,7 @@ def store_state(payload: StagePayload, state: Qwen3TTSState) -> StagePayload:
 def _resolve_checkpoint(checkpoint: str) -> str:
     if os.path.isdir(checkpoint):
         return checkpoint
-    from huggingface_hub import snapshot_download
+    from sglang_omni.utils.hub import snapshot_download
 
     return snapshot_download(checkpoint)
 

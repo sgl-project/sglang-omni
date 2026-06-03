@@ -255,7 +255,7 @@ def _ensure_ming_config_registered(model_path: str = "inclusionAI/Ming-flash-omn
 
     # Patch HF cache with missing files
     try:
-        from huggingface_hub import hf_hub_download, snapshot_download
+        from sglang_omni.utils.hub import hf_hub_download, snapshot_download
 
         snapshot_dir = snapshot_download(model_path)
 
@@ -293,7 +293,7 @@ def _resolve_local_model_path(model_path: str) -> str:
     if os.path.isdir(model_path):
         return model_path
     try:
-        from huggingface_hub import snapshot_download
+        from sglang_omni.utils.hub import snapshot_download
 
         return snapshot_download(model_path)
     except Exception:

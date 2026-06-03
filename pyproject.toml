@@ -23,7 +23,7 @@ dependencies = [
     "safetensors>=0.4.3",     # Direct weight loading
     "pillow>=10.0.0",         # Required by AutoImageProcessor
     "huggingface-hub>=0.36.0",# HF model downloads
-    "modelscope",             # Model source when SGLANG_OMNI_USE_MODELSCOPE is set
+    "modelscope>=1.34.0",     # Model source when SGLANG_OMNI_USE_MODELSCOPE is set
     "datasets>=2.14.0",       # Arrow-based SeedTTS dataset loading
     "fastapi>=0.110.0",       # OpenAI-compatible API adapter
     "uvicorn>=0.23.0",        # ASGI server for FastAPI

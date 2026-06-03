@@ -18,13 +18,13 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 import torchaudio
-from huggingface_hub import snapshot_download
 from safetensors import safe_open
 
 from sglang_omni.models.higgs_tts._vendored.higgs_audio_v2_tokenizer_hf import (
     HiggsAudioV2TokenizerConfig,
     HiggsAudioV2TokenizerModel,
 )
+from sglang_omni.utils.hub import snapshot_download
 
 WaveformInput = torch.Tensor | np.ndarray
 

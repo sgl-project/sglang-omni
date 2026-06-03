@@ -229,7 +229,7 @@ def _model_cache_present(model_path: str) -> bool:
     on a CI runner that did not opt in.
     """
     try:
-        from huggingface_hub import snapshot_download
+        from sglang_omni.utils.hub import snapshot_download
     except ImportError:
         return False
     if Path(model_path).exists():
@@ -248,7 +248,7 @@ def resolve_qwen3_omni_model_dir(model_path: str) -> Path:
     """
     if Path(model_path).exists():
         return Path(model_path)
-    from huggingface_hub import snapshot_download
+    from sglang_omni.utils.hub import snapshot_download
 
     return Path(snapshot_download(model_path, local_files_only=True))
 

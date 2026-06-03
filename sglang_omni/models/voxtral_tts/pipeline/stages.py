@@ -42,7 +42,7 @@ def _import_mistral_common_for_voxtral():
 def _resolve_checkpoint(checkpoint: str) -> str:
     if os.path.isdir(checkpoint):
         return checkpoint
-    from huggingface_hub import snapshot_download
+    from sglang_omni.utils.hub import snapshot_download
 
     return snapshot_download(checkpoint)
 
