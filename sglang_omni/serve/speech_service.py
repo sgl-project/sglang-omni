@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Shared service layer for TTS speech API requests."""
+"""Request validation and lowering for TTS speech API requests."""
 
 from __future__ import annotations
 
@@ -7,7 +7,6 @@ import base64
 import binascii
 import importlib.util
 import shutil
-from functools import cache
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -39,21 +38,23 @@ MAX_REFERENCE_AUDIO_BYTES = 10 * 1024 * 1024
 _REFERENCE_AUDIO_FIELDS = ("audio_path", "ref_audio", "audio")
 
 
-class SpeechService:
+class SpeechRequestValidator:
     """Validate and lower OpenAI-compatible TTS requests."""
 
     def __init__(
         self,
         *,
         default_model: str,
-        allowed_local_media_paths: list[str | Path] | None = None,
+        allowed_local_media_path: str | Path | None = None,
     ) -> None:
         self.default_model = default_model
-        self.allowed_local_media_paths = tuple(
-            _resolve_allowed_local_media_path(path)
-            for path in (allowed_local_media_paths or [])
-            if str(path).strip()
+        self.allowed_local_media_path = (
+            _resolve_allowed_local_media_path(allowed_local_media_path)
+            if allowed_local_media_path is not None
+            and str(allowed_local_media_path).strip()
+            else None
         )
+        self.encoder_dependency_errors = _build_encoder_dependency_errors()
 
     def parse_request(self, payload: Any) -> CreateSpeechRequest:
         """Parse and validate a raw HTTP payload."""
@@ -88,7 +89,7 @@ class SpeechService:
                 param="response_format",
             )
         if not request.stream:
-            _validate_encoder_dependency(response_format)
+            self._validate_encoder_dependency(response_format)
         updates["response_format"] = response_format
 
         if not TTS_SPEED_MIN <= float(request.speed) <= TTS_SPEED_MAX:
@@ -209,18 +210,11 @@ class SpeechService:
         if references:
             prompt = {"text": request.input, "references": references}
 
-        extra_params: dict[str, Any] = {}
-        if request.initial_codec_chunk_frames is not None:
-            extra_params["initial_codec_chunk_frames"] = (
-                request.initial_codec_chunk_frames
-            )
-
         return GenerateRequest(
             model=request.model or self.default_model,
             prompt=prompt,
             sampling=sampling,
             stage_params=request.stage_params,
-            extra_params=extra_params,
             stream=request.stream,
             output_modalities=["audio"],
             metadata={
@@ -319,7 +313,7 @@ class SpeechService:
             if Path(value).is_absolute():
                 return self._normalize_local_media_path(value, param=param)
             raise bad_request(f"{param} must be a data or file:// URL", param=param)
-        if not self.allowed_local_media_paths:
+        if self.allowed_local_media_path is None:
             raise bad_request(
                 f"file:// {param} requires --allowed-local-media-path",
                 param=param,
@@ -333,30 +327,34 @@ class SpeechService:
         return self._normalize_local_media_path(url2pathname(url.path), param=param)
 
     def _normalize_local_media_path(self, value: str, *, param: str) -> str:
-        if not self.allowed_local_media_paths:
+        if self.allowed_local_media_path is None:
             raise bad_request(
                 f"file:// {param} requires --allowed-local-media-path",
                 param=param,
             )
         file_path = Path(value).expanduser().resolve()
-        for allowed_path in self.allowed_local_media_paths:
-            if _is_relative_to(file_path, allowed_path):
-                if not file_path.exists():
-                    raise bad_request(
-                        f"file:// {param} path does not exist: {file_path}",
-                        param=param,
-                    )
-                if not file_path.is_file():
-                    raise bad_request(
-                        f"file:// {param} path must be a file: {file_path}",
-                        param=param,
-                    )
-                _validate_reference_size(file_path.stat().st_size, param=param)
-                return str(file_path)
+        if _is_relative_to(file_path, self.allowed_local_media_path):
+            if not file_path.exists():
+                raise bad_request(
+                    f"file:// {param} path does not exist: {file_path}",
+                    param=param,
+                )
+            if not file_path.is_file():
+                raise bad_request(
+                    f"file:// {param} path must be a file: {file_path}",
+                    param=param,
+                )
+            _validate_reference_size(file_path.stat().st_size, param=param)
+            return str(file_path)
         raise bad_request(
             f"file:// {param} path is outside allowed local media paths: {file_path}",
             param=param,
         )
+
+    def _validate_encoder_dependency(self, response_format: str) -> None:
+        message = self.encoder_dependency_errors.get(response_format)
+        if message is not None:
+            raise internal_error(message)
 
 
 def _reference_dict_from_media_reference(value: str) -> dict[str, Any]:
@@ -428,25 +426,22 @@ def _validate_reference_size(size_bytes: int, *, param: str) -> None:
         )
 
 
-@cache
-def _validate_encoder_dependency(response_format: str) -> None:
-    if response_format == "flac":
-        _require_module("soundfile", "soundfile is required for response_format='flac'")
-    elif response_format in {"mp3", "aac", "opus"}:
-        _require_module(
-            "pydub",
-            f"pydub is required for response_format={response_format!r}",
-        )
-        if shutil.which("ffmpeg") is None and shutil.which("avconv") is None:
-            raise internal_error(
+def _build_encoder_dependency_errors() -> dict[str, str]:
+    errors: dict[str, str] = {}
+    if importlib.util.find_spec("soundfile") is None:
+        errors["flac"] = "soundfile is required for response_format='flac'"
+    if importlib.util.find_spec("pydub") is None:
+        for response_format in ("mp3", "aac", "opus"):
+            errors[response_format] = (
+                f"pydub is required for response_format={response_format!r}"
+            )
+    elif shutil.which("ffmpeg") is None and shutil.which("avconv") is None:
+        for response_format in ("mp3", "aac", "opus"):
+            errors[response_format] = (
                 "ffmpeg or avconv is required for "
                 f"response_format={response_format!r}"
             )
-
-
-def _require_module(module_name: str, message: str) -> None:
-    if importlib.util.find_spec(module_name) is None:
-        raise internal_error(message)
+    return errors
 
 
 def _normalize_language(value: str) -> str:

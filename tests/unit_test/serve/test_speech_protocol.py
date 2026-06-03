@@ -10,11 +10,11 @@ import pytest
 from sglang_omni.serve import speech_service
 from sglang_omni.serve.protocol import CreateSpeechRequest
 from sglang_omni.serve.speech_errors import SpeechAPIError
-from sglang_omni.serve.speech_service import SpeechService
+from sglang_omni.serve.speech_service import SpeechRequestValidator
 
 
 def test_speech_service_rejects_non_string_input() -> None:
-    service = SpeechService(default_model="tts")
+    service = SpeechRequestValidator(default_model="tts")
 
     with pytest.raises(SpeechAPIError) as exc_info:
         service.parse_request({"input": 123})
@@ -27,7 +27,7 @@ def test_speech_service_rejects_non_string_input() -> None:
 def test_speech_service_requires_pcm_for_http_streaming(
     response_format: str,
 ) -> None:
-    service = SpeechService(default_model="tts")
+    service = SpeechRequestValidator(default_model="tts")
 
     with pytest.raises(SpeechAPIError) as exc_info:
         service.parse_request(
@@ -40,7 +40,7 @@ def test_speech_service_requires_pcm_for_http_streaming(
 
 
 def test_speech_service_rejects_boolean_seed() -> None:
-    service = SpeechService(default_model="tts")
+    service = SpeechRequestValidator(default_model="tts")
 
     with pytest.raises(SpeechAPIError) as exc_info:
         service.parse_request({"input": "hello", "seed": True})
@@ -71,7 +71,7 @@ def test_speech_service_rejects_boolean_seed() -> None:
 def test_speech_service_rejects_invalid_boundary_values(
     payload: dict[str, object], expected_param: str
 ) -> None:
-    service = SpeechService(default_model="tts")
+    service = SpeechRequestValidator(default_model="tts")
 
     with pytest.raises(SpeechAPIError) as exc_info:
         service.parse_request(payload)
@@ -92,7 +92,7 @@ def test_speech_service_rejects_invalid_boundary_values(
 def test_speech_service_rejects_invalid_duration_field_types(
     field_name: str, value: object
 ) -> None:
-    service = SpeechService(default_model="tts")
+    service = SpeechRequestValidator(default_model="tts")
 
     with pytest.raises(SpeechAPIError) as exc_info:
         service.parse_request({"input": "hello", field_name: value})
@@ -102,7 +102,7 @@ def test_speech_service_rejects_invalid_duration_field_types(
 
 
 def test_speech_service_normalizes_tts_extension_fields_into_tts_params() -> None:
-    service = SpeechService(default_model="tts")
+    service = SpeechRequestValidator(default_model="tts")
     request = CreateSpeechRequest.model_validate(
         {
             "input": "hello",
@@ -128,13 +128,13 @@ def test_speech_service_normalizes_tts_extension_fields_into_tts_params() -> Non
     assert tts_params["instructions"] == "calm"
     assert tts_params["x_vector_only_mode"] is True
     assert tts_params["initial_codec_chunk_frames"] == 8
-    assert gen_req.extra_params == {"initial_codec_chunk_frames": 8}
+    assert gen_req.extra_params == {}
     assert gen_req.sampling.max_new_tokens == 128
     assert tts_params["explicit_generation_params"] == ["max_new_tokens"]
 
 
 def test_file_reference_requires_allowlist() -> None:
-    service = SpeechService(default_model="tts")
+    service = SpeechRequestValidator(default_model="tts")
 
     with pytest.raises(SpeechAPIError) as exc_info:
         service.parse_request(
@@ -160,7 +160,7 @@ def test_file_reference_requires_allowlist() -> None:
 def test_reference_audio_rejects_unsupported_sources(
     ref_audio: str, expected_param: str
 ) -> None:
-    service = SpeechService(default_model="tts")
+    service = SpeechRequestValidator(default_model="tts")
 
     with pytest.raises(SpeechAPIError) as exc_info:
         service.parse_request({"input": "hello", "ref_audio": ref_audio})
@@ -170,7 +170,7 @@ def test_reference_audio_rejects_unsupported_sources(
 
 
 def test_reference_audio_accepts_valid_base64_data_url() -> None:
-    service = SpeechService(default_model="tts")
+    service = SpeechRequestValidator(default_model="tts")
     encoded = base64.b64encode(b"RIFF").decode("ascii")
 
     request = service.parse_request(
@@ -188,7 +188,7 @@ def test_reference_audio_accepts_valid_base64_data_url() -> None:
 def test_reference_audio_rejects_oversized_data_url(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    service = SpeechService(default_model="tts")
+    service = SpeechRequestValidator(default_model="tts")
     monkeypatch.setattr(speech_service, "MAX_REFERENCE_AUDIO_BYTES", 3)
     encoded = base64.b64encode(b"RIFF").decode("ascii")
 
@@ -204,7 +204,7 @@ def test_reference_audio_rejects_oversized_data_url(
 def test_speech_service_rejects_oversized_input(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    service = SpeechService(default_model="tts")
+    service = SpeechRequestValidator(default_model="tts")
     monkeypatch.setattr(speech_service, "MAX_SPEECH_INPUT_CHARS", 5)
 
     with pytest.raises(SpeechAPIError) as exc_info:
@@ -215,7 +215,7 @@ def test_speech_service_rejects_oversized_input(
 
 
 def test_reference_list_rejects_raw_local_path() -> None:
-    service = SpeechService(default_model="tts")
+    service = SpeechRequestValidator(default_model="tts")
 
     with pytest.raises(SpeechAPIError) as exc_info:
         service.parse_request(
@@ -230,7 +230,7 @@ def test_reference_list_rejects_raw_local_path() -> None:
 
 
 def test_reference_list_rejects_invalid_base64_data_url() -> None:
-    service = SpeechService(default_model="tts")
+    service = SpeechRequestValidator(default_model="tts")
 
     with pytest.raises(SpeechAPIError) as exc_info:
         service.parse_request(
@@ -250,9 +250,9 @@ def test_reference_list_canonicalizes_audio_aliases(
 ) -> None:
     audio_path = tmp_path / "reference.wav"
     audio_path.write_bytes(b"RIFF")
-    service = SpeechService(
+    service = SpeechRequestValidator(
         default_model="tts",
-        allowed_local_media_paths=[tmp_path],
+        allowed_local_media_path=tmp_path,
     )
 
     request = service.parse_request(
@@ -270,7 +270,7 @@ def test_reference_list_canonicalizes_audio_aliases(
 
 
 def test_reference_list_canonicalizes_data_url() -> None:
-    service = SpeechService(default_model="tts")
+    service = SpeechRequestValidator(default_model="tts")
     encoded = base64.b64encode(b"RIFF").decode("ascii")
 
     request = service.parse_request(
@@ -300,15 +300,15 @@ def test_allowed_local_media_path_must_be_directory(tmp_path: Path) -> None:
     with pytest.raises(
         ValueError, match="allowed local media path must be a directory"
     ):
-        SpeechService(default_model="tts", allowed_local_media_paths=[missing])
+        SpeechRequestValidator(default_model="tts", allowed_local_media_path=missing)
 
 
 def test_file_reference_resolves_inside_allowlist(tmp_path: Path) -> None:
     audio_path = tmp_path / "reference.wav"
     audio_path.write_bytes(b"RIFF")
-    service = SpeechService(
+    service = SpeechRequestValidator(
         default_model="tts",
-        allowed_local_media_paths=[tmp_path],
+        allowed_local_media_path=tmp_path,
     )
 
     request = service.parse_request(
@@ -332,9 +332,9 @@ def test_file_reference_rejects_oversized_file(
     audio_path = tmp_path / "reference.wav"
     audio_path.write_bytes(b"RIFF")
     monkeypatch.setattr(speech_service, "MAX_REFERENCE_AUDIO_BYTES", 3)
-    service = SpeechService(
+    service = SpeechRequestValidator(
         default_model="tts",
-        allowed_local_media_paths=[tmp_path],
+        allowed_local_media_path=tmp_path,
     )
 
     with pytest.raises(SpeechAPIError) as exc_info:
@@ -345,9 +345,9 @@ def test_file_reference_rejects_oversized_file(
 
 
 def test_file_reference_rejects_missing_file_inside_allowlist(tmp_path: Path) -> None:
-    service = SpeechService(
+    service = SpeechRequestValidator(
         default_model="tts",
-        allowed_local_media_paths=[tmp_path],
+        allowed_local_media_path=tmp_path,
     )
     missing_path = tmp_path / "missing.wav"
 
@@ -361,9 +361,9 @@ def test_file_reference_rejects_missing_file_inside_allowlist(tmp_path: Path) ->
 def test_file_reference_rejects_directory_inside_allowlist(tmp_path: Path) -> None:
     audio_dir = tmp_path / "reference-dir"
     audio_dir.mkdir()
-    service = SpeechService(
+    service = SpeechRequestValidator(
         default_model="tts",
-        allowed_local_media_paths=[tmp_path],
+        allowed_local_media_path=tmp_path,
     )
 
     with pytest.raises(SpeechAPIError) as exc_info:
@@ -380,9 +380,9 @@ def test_file_reference_rejects_symlink_escape(tmp_path: Path) -> None:
     outside.write_bytes(b"RIFF")
     link = allowed / "escape.wav"
     link.symlink_to(outside)
-    service = SpeechService(
+    service = SpeechRequestValidator(
         default_model="tts",
-        allowed_local_media_paths=[allowed],
+        allowed_local_media_path=allowed,
     )
 
     with pytest.raises(SpeechAPIError) as exc_info:

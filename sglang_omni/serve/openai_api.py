@@ -64,7 +64,7 @@ from sglang_omni.serve.speech_errors import (
     internal_error,
     speech_error_response,
 )
-from sglang_omni.serve.speech_service import SpeechService
+from sglang_omni.serve.speech_service import SpeechRequestValidator
 
 logger = logging.getLogger(__name__)
 MIME_TO_FORMAT = {mime: fmt for fmt, mime in FORMAT_MIME_TYPES.items()}
@@ -116,11 +116,9 @@ def create_app(
     app.state.client = client
     app.state.model_name = model_name or "sglang-omni"
     app.state.realtime_enabled = enable_realtime
-    app.state.speech_service = SpeechService(
+    app.state.speech_service = SpeechRequestValidator(
         default_model=app.state.model_name,
-        allowed_local_media_paths=(
-            [allowed_local_media_path] if allowed_local_media_path else None
-        ),
+        allowed_local_media_path=allowed_local_media_path,
     )
 
     # Register all routes
@@ -517,7 +515,7 @@ def _register_speech(app: FastAPI) -> None:
     @app.post("/v1/audio/speech")
     async def create_speech(request: Request) -> Response:
         client: Client = app.state.client
-        speech_service: SpeechService = app.state.speech_service
+        speech_service: SpeechRequestValidator = app.state.speech_service
 
         request_id = f"speech-{uuid.uuid4()}"
         try:

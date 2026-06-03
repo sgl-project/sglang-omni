@@ -666,11 +666,16 @@ def _higgs_stream_payload(
         completion_tokens=len(delayed_rows),
     )
     params = {"stream": stream}
+    metadata = {}
     if initial_codec_chunk_frames is not None:
-        params["initial_codec_chunk_frames"] = initial_codec_chunk_frames
+        metadata = {
+            "tts_params": {
+                "initial_codec_chunk_frames": initial_codec_chunk_frames,
+            },
+        }
     return StagePayload(
         request_id=request_id,
-        request=OmniRequest(inputs="", params=params),
+        request=OmniRequest(inputs="", params=params, metadata=metadata),
         data=state.to_dict(),
     )
 

@@ -136,7 +136,13 @@ def build_higgs_stream_metadata(
         "num_codebooks": num_codebooks,
         "codebook_size": codebook_size,
     }
-    initial_codec_chunk_frames = params.get(INITIAL_CODEC_CHUNK_FRAMES_PARAM)
+    tts_params = payload.request.metadata.get("tts_params")
+    if not isinstance(tts_params, dict):
+        tts_params = {}
+    initial_codec_chunk_frames = tts_params.get(
+        INITIAL_CODEC_CHUNK_FRAMES_PARAM,
+        params.get(INITIAL_CODEC_CHUNK_FRAMES_PARAM),
+    )
     if initial_codec_chunk_frames is not None:
         metadata[INITIAL_CODEC_CHUNK_FRAMES_PARAM] = initial_codec_chunk_frames
     return metadata

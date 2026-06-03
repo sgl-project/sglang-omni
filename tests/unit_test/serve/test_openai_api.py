@@ -22,7 +22,7 @@ from sglang_omni.serve.openai_api import (
     build_transcription_generate_request,
 )
 from sglang_omni.serve.protocol import ChatCompletionRequest, CreateSpeechRequest
-from sglang_omni.serve.speech_service import SpeechService
+from sglang_omni.serve.speech_service import SpeechRequestValidator
 from tests.unit_test.fixtures.pipeline_fakes import RecordingCoordinatorControlPlane
 
 MODEL_FAMILIES = {
@@ -525,7 +525,9 @@ def test_speech_request_records_explicit_generation_params() -> None:
         seed=123,
     )
 
-    gen_req = SpeechService(default_model="qwen3-tts").build_generate_request(req)
+    gen_req = SpeechRequestValidator(default_model="qwen3-tts").build_generate_request(
+        req
+    )
 
     assert gen_req.sampling.temperature == 0.8
     assert gen_req.sampling.top_k == 30
@@ -546,13 +548,15 @@ def test_speech_request_passes_streaming_control_fields() -> None:
         stream=True,
     )
 
-    gen_req = SpeechService(default_model="qwen3-tts").build_generate_request(req)
+    gen_req = SpeechRequestValidator(default_model="qwen3-tts").build_generate_request(
+        req
+    )
     tts_params = gen_req.metadata["tts_params"]
 
     assert tts_params["initial_codec_chunk_frames"] == 8
     assert tts_params["x_vector_only_mode"] is True
     assert tts_params["response_format"] == "pcm"
-    assert gen_req.extra_params == {"initial_codec_chunk_frames": 8}
+    assert gen_req.extra_params == {}
 
 
 def test_transcription_request_builds_asr_generate_request() -> None:
@@ -602,6 +606,8 @@ def test_transcription_endpoint_returns_text_json() -> None:
 def test_speech_request_passes_moss_token_count() -> None:
     req = CreateSpeechRequest(input="hello", token_count=180)
 
-    gen_req = SpeechService(default_model="moss-tts").build_generate_request(req)
+    gen_req = SpeechRequestValidator(default_model="moss-tts").build_generate_request(
+        req
+    )
 
     assert gen_req.metadata["tts_params"]["token_count"] == 180
