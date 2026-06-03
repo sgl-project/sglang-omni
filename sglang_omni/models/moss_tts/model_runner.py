@@ -448,12 +448,40 @@ class MossTTSModelRunner(ModelRunner):
         positions_row = MossTTSModelRunner._as_row_tensor(
             positions, num_rows, torch.long, device
         )
-        sampled = multinomial_with_seed(probs, seeds_row, positions_row).view(-1)
-
         fallback = (~do_sample) | (probs.sum(dim=-1) <= 0)
-        if bool(fallback.any()):
-            sampled[fallback] = torch.argmax(logits[fallback], dim=-1)
+        sample_mask = ~fallback
+        sampled = torch.argmax(logits, dim=-1)
+        if bool(sample_mask.any()):
+            if device.type == "cpu":
+                sampled[sample_mask] = MossTTSModelRunner._multinomial_with_seed_cpu(
+                    probs[sample_mask],
+                    seeds_row[sample_mask],
+                    positions_row[sample_mask],
+                )
+            else:
+                sampled[sample_mask] = multinomial_with_seed(
+                    probs[sample_mask],
+                    seeds_row[sample_mask],
+                    positions_row[sample_mask],
+                ).view(-1)
         return sampled.to(torch.long)
+
+    @staticmethod
+    def _multinomial_with_seed_cpu(
+        probs: torch.Tensor,
+        seeds: torch.Tensor,
+        positions: torch.Tensor,
+    ) -> torch.Tensor:
+        rows = []
+        for row, seed, position in zip(probs, seeds, positions, strict=True):
+            mixed_seed = (
+                int(seed.item())
+                + 0x9E3779B97F4A7C15 * int(position.item() + 1)
+            ) % (2**63 - 1)
+            generator = torch.Generator(device="cpu")
+            generator.manual_seed(mixed_seed)
+            rows.append(torch.multinomial(row.cpu(), 1, generator=generator)[0])
+        return torch.stack(rows).to(device=probs.device, dtype=torch.long)
 
     @staticmethod
     def _apply_top_k(scores: torch.Tensor, top_k_row: torch.Tensor) -> torch.Tensor:

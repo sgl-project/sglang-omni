@@ -14,7 +14,7 @@ from sglang_omni.proto import OmniRequest, StagePayload
 def test_higgs_scheduler_adapters_clamp_cap_and_record_engine_time(
     monkeypatch,
 ) -> None:
-    ticks = iter([10.0, 12.5])
+    ticks = iter([0.0, 0.0, 10.0, 12.5])
     reset_calls: list[str] = []
     monkeypatch.setattr(
         request_builders.time,
