@@ -15,6 +15,7 @@ from urllib.parse import urlparse
 from pydantic import ValidationError
 
 from sglang_omni.client import GenerateRequest, SamplingParams
+from sglang_omni.models.tts_streaming import INITIAL_CODEC_CHUNK_FRAMES_PARAM
 from sglang_omni.preprocessing.base import MediaIO
 from sglang_omni.preprocessing.resource_connector import (
     MultiModalResourceConnector,
@@ -41,6 +42,7 @@ _TTS_TASK_TYPE_ALIASES = {
 MAX_SPEECH_INPUT_CHARS = 4096
 MAX_REFERENCE_AUDIO_BYTES = 10 * 1024 * 1024
 _REFERENCE_AUDIO_FIELDS = ("audio_path", "ref_audio", "audio")
+RAW_PCM_DEFAULT_INITIAL_CODEC_CHUNK_FRAMES = 1
 
 
 @dataclass(frozen=True)
@@ -143,13 +145,12 @@ class SpeechRequestValidator:
         if request.language is not None:
             updates["language"] = _normalize_language(request.language)
 
-        for field_name in (
-            "max_new_tokens",
-            "initial_codec_chunk_frames",
-            "token_count",
-            "duration_tokens",
-        ):
+        for field_name in ("max_new_tokens", "token_count", "duration_tokens"):
             _validate_positive_int(getattr(request, field_name), param=field_name)
+        _validate_non_negative_int(
+            request.initial_codec_chunk_frames,
+            param=INITIAL_CODEC_CHUNK_FRAMES_PARAM,
+        )
         _validate_non_negative_int(request.seed, param="seed")
 
         ref_audio = request.ref_audio
@@ -227,7 +228,7 @@ class SpeechRequestValidator:
         if request.x_vector_only_mode is not None:
             tts_params["x_vector_only_mode"] = request.x_vector_only_mode
         if request.initial_codec_chunk_frames is not None:
-            tts_params["initial_codec_chunk_frames"] = (
+            tts_params[INITIAL_CODEC_CHUNK_FRAMES_PARAM] = (
                 request.initial_codec_chunk_frames
             )
         if request.token_count is not None:
@@ -259,11 +260,23 @@ class SpeechRequestValidator:
         if reference_descriptors:
             prompt = {"text": request.input, "references": reference_descriptors}
 
+        extra_params: dict[str, Any] = {}
+        initial_codec_chunk_frames = request.initial_codec_chunk_frames
+        if (
+            initial_codec_chunk_frames is None
+            and request.stream
+            and request.stream_format == "audio"
+        ):
+            initial_codec_chunk_frames = RAW_PCM_DEFAULT_INITIAL_CODEC_CHUNK_FRAMES
+        if initial_codec_chunk_frames is not None:
+            extra_params[INITIAL_CODEC_CHUNK_FRAMES_PARAM] = initial_codec_chunk_frames
+
         return GenerateRequest(
             model=request.model or self.default_model,
             prompt=prompt,
             sampling=sampling,
             stage_params=request.stage_params,
+            extra_params=extra_params,
             stream=request.stream,
             output_modalities=["audio"],
             metadata={

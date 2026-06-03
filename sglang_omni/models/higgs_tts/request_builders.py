@@ -12,10 +12,8 @@ import torch
 from sglang.srt.managers.schedule_batch import Req
 from sglang.srt.sampling.sampling_params import SamplingParams
 
-from sglang_omni.models.higgs_tts.payload_types import (
-    INITIAL_CODEC_CHUNK_FRAMES_PARAM,
-    HiggsTtsState,
-)
+from sglang_omni.models.higgs_tts.payload_types import HiggsTtsState
+from sglang_omni.models.tts_streaming import INITIAL_CODEC_CHUNK_FRAMES_PARAM
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.sglang_backend import SGLangARRequestData
 
@@ -136,15 +134,10 @@ def build_higgs_stream_metadata(
         "num_codebooks": num_codebooks,
         "codebook_size": codebook_size,
     }
-    tts_params = payload.request.metadata.get("tts_params")
-    if not isinstance(tts_params, dict):
-        tts_params = {}
-    initial_codec_chunk_frames = tts_params.get(
-        INITIAL_CODEC_CHUNK_FRAMES_PARAM,
-        params.get(INITIAL_CODEC_CHUNK_FRAMES_PARAM),
-    )
-    if initial_codec_chunk_frames is not None:
-        metadata[INITIAL_CODEC_CHUNK_FRAMES_PARAM] = initial_codec_chunk_frames
+    if params.get(INITIAL_CODEC_CHUNK_FRAMES_PARAM) is not None:
+        metadata[INITIAL_CODEC_CHUNK_FRAMES_PARAM] = params[
+            INITIAL_CODEC_CHUNK_FRAMES_PARAM
+        ]
     return metadata
 
 

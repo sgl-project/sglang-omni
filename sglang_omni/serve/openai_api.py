@@ -41,7 +41,9 @@ from sglang_omni.client import (
 from sglang_omni.client.audio import (
     DEFAULT_SAMPLE_RATE,
     FORMAT_MIME_TYPES,
+    apply_speed,
     encode_audio,
+    encode_pcm,
     to_numpy,
 )
 from sglang_omni.http.favicon import register_favicon
@@ -540,6 +542,23 @@ def _register_speech(app: FastAPI) -> None:
             return speech_error_response(exc)
 
         if req.stream:
+            if req.stream_format == "audio":
+                try:
+                    return await _speech_audio_response(
+                        client=client,
+                        gen_req=gen_req,
+                        request_id=request_id,
+                        speed=req.speed,
+                    )
+                except ClientError as exc:
+                    return speech_error_response(internal_error(str(exc)))
+                except Exception as exc:
+                    logger.exception(
+                        "Error preparing raw PCM speech stream for request %s",
+                        request_id,
+                    )
+                    return speech_error_response(internal_error(str(exc)))
+
             speech_events = _speech_stream(
                 client=client,
                 gen_req=gen_req,
@@ -673,6 +692,88 @@ async def _speech_stream(
     }
     yield f"data: {json.dumps(final_payload)}\n\n"
     yield f"data: {STREAM_DONE_SENTINEL}\n\n"
+
+
+def _speech_pcm_chunk_bytes(
+    chunk: Any,
+    *,
+    emitted_samples: int,
+    speed: float,
+) -> tuple[bytes | None, int, int]:
+    sample_rate = chunk.sample_rate or DEFAULT_SAMPLE_RATE
+    audio_data, emitted_samples = _select_speech_audio_delta(
+        chunk.audio_data,
+        emitted_samples=emitted_samples,
+        is_terminal=chunk.finish_reason is not None,
+    )
+    if audio_data is None:
+        return None, emitted_samples, sample_rate
+
+    if speed != 1.0:
+        audio_data, sample_rate = apply_speed(audio_data, speed, sample_rate)
+    return encode_pcm(audio_data, sample_rate), emitted_samples, sample_rate
+
+
+async def _speech_audio_response(
+    client: Client,
+    gen_req: GenerateRequest,
+    request_id: str,
+    speed: float,
+) -> StreamingResponse:
+    """Build a raw PCM stream after deriving headers from the first audio chunk."""
+    emitted_samples = 0
+    chunk_stream = client.generate(gen_req, request_id=request_id)
+    first_audio_bytes: bytes | None = None
+    stream_sample_rate: int | None = None
+
+    async for chunk in chunk_stream:
+        if chunk.audio_data is None:
+            continue
+
+        first_audio_bytes, emitted_samples, stream_sample_rate = (
+            _speech_pcm_chunk_bytes(
+                chunk,
+                emitted_samples=emitted_samples,
+                speed=speed,
+            )
+        )
+        if first_audio_bytes is not None:
+            break
+
+    if first_audio_bytes is None or stream_sample_rate is None:
+        raise RuntimeError("No audio chunks received from raw PCM speech stream")
+
+    async def _body():
+        nonlocal emitted_samples
+        yield first_audio_bytes
+
+        async for chunk in chunk_stream:
+            if chunk.audio_data is None:
+                continue
+
+            audio_bytes, emitted_samples, sample_rate = _speech_pcm_chunk_bytes(
+                chunk,
+                emitted_samples=emitted_samples,
+                speed=speed,
+            )
+            if audio_bytes is None:
+                continue
+            if sample_rate != stream_sample_rate:
+                raise RuntimeError(
+                    "Raw PCM speech stream sample rate changed from "
+                    f"{stream_sample_rate} to {sample_rate}"
+                )
+            yield audio_bytes
+
+    return StreamingResponse(
+        _body(),
+        media_type="audio/pcm",
+        headers={
+            "X-Sample-Rate": str(stream_sample_rate),
+            "X-Channels": "1",
+            "X-Bit-Depth": "16",
+        },
+    )
 
 
 async def _await_speech_response(

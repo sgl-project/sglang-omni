@@ -85,10 +85,6 @@ def test_speech_service_rejects_boolean_seed() -> None:
         ({"input": "hello", "token_count": -1}, "token_count"),
         ({"input": "hello", "duration_tokens": 0}, "duration_tokens"),
         ({"input": "hello", "duration_tokens": -1}, "duration_tokens"),
-        (
-            {"input": "hello", "initial_codec_chunk_frames": 0},
-            "initial_codec_chunk_frames",
-        ),
     ],
 )
 def test_speech_service_rejects_invalid_boundary_values(
@@ -151,7 +147,7 @@ def test_speech_service_normalizes_tts_extension_fields_into_tts_params() -> Non
     assert tts_params["instructions"] == "calm"
     assert tts_params["x_vector_only_mode"] is True
     assert tts_params["initial_codec_chunk_frames"] == 8
-    assert gen_req.extra_params == {}
+    assert gen_req.extra_params == {"initial_codec_chunk_frames": 8}
     assert gen_req.sampling.max_new_tokens == 128
     assert tts_params["explicit_generation_params"] == ["max_new_tokens"]
 

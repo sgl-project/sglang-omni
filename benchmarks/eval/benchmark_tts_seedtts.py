@@ -186,6 +186,7 @@ class TtsSeedttsBenchmarkConfig:
     # Reference payload shape for voice cloning. The default keeps the original
     # ref_audio/ref_text fields; Higgs TTS should pass --ref-format references.
     ref_format: str = "flat"
+    response_format: str = "wav"
     output_dir: str = "results/tts_seedtts"
     max_samples: int | None = None
     max_new_tokens: int | None = 2048
@@ -199,6 +200,8 @@ class TtsSeedttsBenchmarkConfig:
     concurrency: int = DEFAULT_TTS_BENCHMARK_CONCURRENCY
     request_rate: float = float("inf")
     stream: bool = False
+    stream_format: str = "sse"
+    initial_codec_chunk_frames: int | None = None
     disable_tqdm: bool = False
     # Transcribe phase
     lang: str = "en"
@@ -238,6 +241,7 @@ def _build_results_config(
         "meta": config.meta,
         "voice_clone": config.voice_clone,
         "ref_format": config.ref_format,
+        "response_format": config.response_format,
         "voice": config.voice,
         "task_type": config.task_type,
         "instructions": config.instructions,
@@ -249,6 +253,8 @@ def _build_results_config(
         "warmup": config.warmup,
         "concurrency": config.concurrency,
         "request_rate": config.request_rate,
+        "stream_format": config.stream_format if config.stream else None,
+        "initial_codec_chunk_frames": config.initial_codec_chunk_frames,
     }
 
 
@@ -272,7 +278,10 @@ async def run_tts_seedtts_benchmark(
     send_fn = make_tts_send_fn(
         config.model,
         api_url,
+        response_format=config.response_format,
         stream=config.stream,
+        stream_format=config.stream_format,
+        initial_codec_chunk_frames=config.initial_codec_chunk_frames,
         no_ref_audio=not config.voice_clone,
         ref_format=config.ref_format,
         voice=config.voice,
@@ -311,7 +320,9 @@ def run_tts_seedtts_transcribe(
 
     Returns a dict with keys: wer_summary, asr_speed, per_sample.
     """
-    generation_mode = "streaming" if config.stream else "non-streaming"
+    generation_mode = (
+        f"streaming-{config.stream_format}" if config.stream else "non-streaming"
+    )
     wer_config = {
         "model": config.model,
         "tts_model": config.model,
@@ -319,6 +330,7 @@ def run_tts_seedtts_transcribe(
         "meta": config.meta,
         "voice_clone": config.voice_clone,
         "ref_format": config.ref_format,
+        "response_format": config.response_format,
         "voice": config.voice,
         "task_type": config.task_type,
         "instructions": config.instructions,
@@ -327,6 +339,8 @@ def run_tts_seedtts_transcribe(
         "temperature": config.temperature,
         "max_samples": config.max_samples,
         "stream": config.stream,
+        "stream_format": config.stream_format if config.stream else None,
+        "initial_codec_chunk_frames": config.initial_codec_chunk_frames,
         "concurrency": config.concurrency,
         "asr_concurrency": config.asr_concurrency,
     }
@@ -342,6 +356,9 @@ def _config_from_args(args: argparse.Namespace) -> TtsSeedttsBenchmarkConfig:
     # ``--no-ref-audio`` is preserved as a legacy CLI flag; it flips the
     # dataclass default (``voice_clone=True``) to False for plain TTS.
     voice_clone = not args.no_ref_audio
+    response_format = (
+        "pcm" if args.stream and args.stream_format == "audio" else args.response_format
+    )
     return TtsSeedttsBenchmarkConfig(
         base_url=args.base_url,
         host=args.host,
@@ -353,6 +370,7 @@ def _config_from_args(args: argparse.Namespace) -> TtsSeedttsBenchmarkConfig:
         instructions=args.instructions,
         voice_clone=voice_clone,
         ref_format=args.ref_format,
+        response_format=response_format,
         output_dir=args.output_dir,
         max_samples=args.max_samples,
         max_new_tokens=args.max_new_tokens,
@@ -366,6 +384,8 @@ def _config_from_args(args: argparse.Namespace) -> TtsSeedttsBenchmarkConfig:
         concurrency=args.concurrency,
         request_rate=args.request_rate,
         stream=args.stream,
+        stream_format=args.stream_format,
+        initial_codec_chunk_frames=args.initial_codec_chunk_frames,
         disable_tqdm=args.disable_tqdm,
         lang=args.lang,
         device=args.device,
@@ -462,6 +482,15 @@ def _build_arg_parser() -> argparse.ArgumentParser:
             "and similar models. Use 'references' for Higgs TTS."
         ),
     )
+    parser.add_argument(
+        "--response-format",
+        type=str,
+        default="wav",
+        help=(
+            "Requested audio payload format. SSE can use wav or pcm; raw "
+            "audio streaming always sends response_format=pcm."
+        ),
+    )
     parser.add_argument("--output-dir", type=str, default="results/tts_seedtts")
     parser.add_argument("--max-samples", type=int, default=None)
     parser.add_argument("--max-new-tokens", type=int, default=2048)
@@ -502,7 +531,25 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--stream",
         action="store_true",
-        help="Use streaming SSE for TTS generation.",
+        help="Use streaming for TTS generation.",
+    )
+    parser.add_argument(
+        "--stream-format",
+        choices=["sse", "audio"],
+        default="sse",
+        help=(
+            "Streaming transport. 'sse' reads audio chunks from SSE events; "
+            "'audio' requests raw PCM audio streaming."
+        ),
+    )
+    parser.add_argument(
+        "--initial-codec-chunk-frames",
+        type=int,
+        default=None,
+        help=(
+            "Optional model-specific first codec chunk size. With Higgs TTS "
+            "this controls only the first streaming vocoder chunk."
+        ),
     )
     parser.add_argument(
         "--save-audio",
@@ -553,6 +600,14 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         default=1200,
         help="Timeout in seconds to wait for server readiness.",
     )
+    parser.add_argument(
+        "--use-existing-server",
+        action="store_true",
+        help=(
+            "Do not start or stop a server; send requests to the configured "
+            "--base-url or --host/--port instead."
+        ),
+    )
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument(
         "--generate-only",
@@ -580,6 +635,18 @@ def _build_arg_parser() -> argparse.ArgumentParser:
 def main() -> None:
     parser = _build_arg_parser()
     args = parser.parse_args()
+    if args.stream_format == "audio" and not args.stream:
+        parser.error("--stream-format audio requires --stream")
+    if (
+        args.initial_codec_chunk_frames is not None
+        and args.initial_codec_chunk_frames < 0
+    ):
+        parser.error("--initial-codec-chunk-frames must be non-negative")
+    if args.use_existing_server and not (args.generate_only or args.transcribe_only):
+        parser.error(
+            "--use-existing-server currently requires --generate-only or "
+            "--transcribe-only"
+        )
     config = _config_from_args(args)
 
     if args.save_audio:
@@ -594,24 +661,30 @@ def main() -> None:
         return
 
     if args.transcribe_only:
-        with managed_omni_server(
-            model_path=config.asr_model_path,
-            port=config.port,
-            host=config.host,
-            log_file=Path(config.output_dir) / "server_logs" / "asr_server.log",
-            timeout=args.server_timeout,
-        ):
+        if args.use_existing_server:
             run_tts_seedtts_transcribe(config, asr_router_port=config.port)
+        else:
+            with managed_omni_server(
+                model_path=config.asr_model_path,
+                port=config.port,
+                host=config.host,
+                log_file=Path(config.output_dir) / "server_logs" / "asr_server.log",
+                timeout=args.server_timeout,
+            ):
+                run_tts_seedtts_transcribe(config, asr_router_port=config.port)
         return
 
-    with managed_omni_server(
-        model_path=config.model,
-        port=config.port,
-        host=config.host,
-        log_file=Path(config.output_dir) / "server_logs" / "tts_server.log",
-        timeout=args.server_timeout,
-    ):
+    if args.use_existing_server:
         asyncio.run(benchmark(config))
+    else:
+        with managed_omni_server(
+            model_path=config.model,
+            port=config.port,
+            host=config.host,
+            log_file=Path(config.output_dir) / "server_logs" / "tts_server.log",
+            timeout=args.server_timeout,
+        ):
+            asyncio.run(benchmark(config))
 
     if args.generate_only:
         return
