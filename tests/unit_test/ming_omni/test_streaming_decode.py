@@ -182,6 +182,35 @@ def test_stream_done_before_new_request():
     assert len(result_msgs) == 1, "Must finalize even when done arrives before new_request"
 
 
+def test_stream_done_before_new_request_without_token_chunks_finalizes():
+    """decode must finalize when runtime sends only stream_done before payload."""
+    vocab = {1: "A", 2: "B"}
+    tok = _SimpleTokenizer(vocab)
+    sched = MingStreamingDetokenizeScheduler(tok, eos_token_id=None)
+    t = _run_scheduler(sched)
+
+    rid = "req-speech-done-only"
+    _send(sched, IncomingMessage(request_id=rid, type="stream_done", data=None))
+    _send(sched, IncomingMessage(
+        request_id=rid,
+        type="new_request",
+        data=_make_payload(rid, stream=True, output_ids=[1, 2]),
+    ))
+
+    import time
+    time.sleep(0.3)
+    sched.stop()
+    t.join(timeout=1)
+
+    msgs = _drain_outbox(sched)
+    stream_msgs = [m for m in msgs if m.type == "stream"]
+    result_msgs = [m for m in msgs if m.type == "result"]
+
+    assert stream_msgs == []
+    assert len(result_msgs) == 1
+    assert "text" not in result_msgs[0].data.data
+
+
 def test_abort_clears_state():
     """abort() removes the request from internal state."""
     tok = _SimpleTokenizer({1: "A"})
