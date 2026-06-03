@@ -554,6 +554,8 @@ def _raw_reference_audio_bytes(ref_audio: Any) -> bytes | None:
                 return path.read_bytes()
             except OSError:
                 return None
+        # URLs and other non-file strings intentionally fall through here;
+        # _reference_for_processor passes them to the processor as-is.
         return None
     if isinstance(ref_audio, Path):
         path = ref_audio.expanduser()
@@ -636,6 +638,9 @@ def _reference_for_processor(
 
     cache_key = _reference_audio_cache_key(ref_audio)
     if reference_audio_cache is not None and reference_audio_cache_lock is not None:
+        # Lock only covers the cache lookup; the returned value is safe to
+        # clone outside the lock because StageOutputCache.get returns a
+        # reference that is immediately deep-cloned before any shared use.
         with reference_audio_cache_lock:
             cached_reference = reference_audio_cache.get(cache_key)
         if cached_reference is not None:
