@@ -72,6 +72,7 @@ logger = logging.getLogger(__name__)
 MIME_TO_FORMAT = {mime: fmt for fmt, mime in FORMAT_MIME_TYPES.items()}
 STREAM_DONE_SENTINEL = "[DONE]"
 HTTP_DISCONNECT_POLL_INTERVAL_S = 0.05
+HTTP_DISCONNECT_CANCEL_TIMEOUT_S = 0.1
 
 _BAD_REQUEST_MARKERS = (
     "longer than the model's context length",
@@ -835,10 +836,16 @@ async def _await_speech_response(
         raise
     finally:
         if not speech_task.done():
-            speech_task.cancel()
+            await _cancel_task_bounded(speech_task)
         if not disconnect_task.done():
-            disconnect_task.cancel()
-        await asyncio.gather(speech_task, disconnect_task, return_exceptions=True)
+            await _cancel_task_bounded(disconnect_task)
+
+
+async def _cancel_task_bounded(task: asyncio.Task[Any]) -> None:
+    task.cancel()
+    done, _ = await asyncio.wait({task}, timeout=HTTP_DISCONNECT_CANCEL_TIMEOUT_S)
+    if done:
+        await asyncio.gather(*done, return_exceptions=True)
 
 
 async def _wait_for_request_disconnect(request: Request) -> None:

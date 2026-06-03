@@ -5,7 +5,9 @@ from __future__ import annotations
 
 import asyncio
 import atexit
+import ipaddress
 import logging
+import socket
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -104,6 +106,49 @@ def _validate_downloaded_size(size: int, *, max_bytes: int | None) -> None:
         raise ValueError(f"Media URL response exceeds {max_bytes} bytes.")
 
 
+def _resolve_remote_addresses(
+    hostname: str,
+) -> tuple[ipaddress.IPv4Address | ipaddress.IPv6Address, ...]:
+    try:
+        literal = ipaddress.ip_address(hostname)
+    except ValueError:
+        pass
+    else:
+        return (literal,)
+
+    try:
+        addr_infos = socket.getaddrinfo(hostname, None, type=socket.SOCK_STREAM)
+    except socket.gaierror as exc:
+        raise ValueError(f"Could not resolve media URL hostname: {hostname}") from exc
+
+    addresses: set[ipaddress.IPv4Address | ipaddress.IPv6Address] = set()
+    for addr_info in addr_infos:
+        sockaddr = addr_info[4]
+        if sockaddr:
+            addresses.add(ipaddress.ip_address(sockaddr[0]))
+    if not addresses:
+        raise ValueError(f"Could not resolve media URL hostname: {hostname}")
+    return tuple(addresses)
+
+
+def _unsafe_remote_address_category(
+    address: ipaddress.IPv4Address | ipaddress.IPv6Address,
+) -> str | None:
+    if address.is_loopback:
+        return "loopback"
+    if address.is_private:
+        return "private"
+    if address.is_link_local:
+        return "link-local"
+    if address.is_reserved:
+        return "reserved"
+    if address.is_multicast:
+        return "multicast"
+    if address.is_unspecified:
+        return "unspecified"
+    return None
+
+
 def _read_limited_response_bytes(
     response: httpx.Response, *, max_bytes: int | None
 ) -> bytes:
@@ -142,8 +187,10 @@ class MultiModalResourceConnector:
         media_io_kwargs: dict[str, dict[str, Any]] | None = None,
         *,
         connection: ResourceHTTPConnection = global_http_connection,
-        allowed_local_media_path: str = "",
+        allowed_local_media_path: str | Path | None = None,
         allowed_media_domains: list[str] | None = None,
+        allow_remote_media_without_domains: bool = True,
+        reject_unsafe_remote_addresses: bool = False,
     ) -> None:
         """Initialize the media connector.
 
@@ -151,7 +198,11 @@ class MultiModalResourceConnector:
             media_io_kwargs: Additional args passed to process media inputs, keyed by modalities.
             connection: ResourceHTTPConnection instance for HTTP clients.
             allowed_local_media_path: A local directory to load media files from.
-            allowed_media_domains: If set, only media URLs from these domains are allowed.
+            allowed_media_domains: Domains allowed for remote media URLs.
+            allow_remote_media_without_domains: Whether remote HTTP(S) URLs are
+                allowed when no domain allowlist is configured.
+            reject_unsafe_remote_addresses: Whether resolved loopback, private,
+                link-local, reserved, multicast, and unspecified addresses are rejected.
         """
         self.media_io_kwargs = media_io_kwargs or {}
         self.connection = connection
@@ -163,20 +214,46 @@ class MultiModalResourceConnector:
             )
 
         self.allowed_media_domains = [
-            domain.lower() for domain in allowed_media_domains or []
+            domain.strip().rstrip(".").lower()
+            for domain in allowed_media_domains or []
+            if domain.strip()
         ]
+        self.allow_remote_media_without_domains = allow_remote_media_without_domains
+        self.reject_unsafe_remote_addresses = reject_unsafe_remote_addresses
 
     def _assert_url_allowed(self, url_spec: Any) -> None:
-        """Check if URL hostname is in allowed domains."""
+        """Check whether a remote media URL is allowed to be fetched."""
+        hostname = url_spec.hostname
+        if not hostname:
+            raise ValueError("Remote media URL must include a hostname.")
+        normalized_hostname = hostname.rstrip(".").lower()
+        if (
+            not self.allowed_media_domains
+            and not self.allow_remote_media_without_domains
+        ):
+            raise ValueError(
+                "Remote media URLs require --allowed-media-domain to be configured."
+            )
         if (
             self.allowed_media_domains
-            and (url_spec.hostname or "").lower() not in self.allowed_media_domains
+            and normalized_hostname not in self.allowed_media_domains
         ):
-            raise ValueError(f"Domain {url_spec.hostname} is not allowed.")
+            raise ValueError(f"Domain {hostname} is not allowed.")
+
+        if self.reject_unsafe_remote_addresses:
+            for address in _resolve_remote_addresses(normalized_hostname):
+                category = _unsafe_remote_address_category(address)
+                if category is not None:
+                    raise ValueError(
+                        f"Remote media URL resolves to a {category} address: {address}"
+                    )
 
     def assert_url_allowed(self, url: str) -> None:
         """Validate URL policy without loading the resource."""
         self._assert_url_allowed(urlparse(url))
+
+    async def _assert_url_allowed_async(self, url_spec: Any) -> None:
+        await asyncio.to_thread(self._assert_url_allowed, url_spec)
 
     def _load_data_url(self, url_spec: Any, media_io: MediaIO[_M]) -> _M:
         """Load media from a data URL (base64 encoded)."""
@@ -338,7 +415,7 @@ class MultiModalResourceConnector:
         client = await self.connection.get_async_client()
         current_url = url
         for _ in range(_MAX_HTTP_REDIRECTS + 1):
-            self._assert_url_allowed(urlparse(current_url))
+            await self._assert_url_allowed_async(urlparse(current_url))
             async with client.stream(
                 "GET",
                 current_url,

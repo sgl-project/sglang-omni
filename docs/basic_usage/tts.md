@@ -49,9 +49,8 @@ sgl-omni serve \
   --port 8000
 ```
 
-Remote HTTP(S) reference audio is allowed by default. Operators can restrict
-remote references to specific domains with `--allowed-media-domain`. Set this
-allowlist when reference-audio fetches should be limited to trusted media hosts.
+Remote HTTP(S) reference audio requires `--allowed-media-domain`. Repeat the
+flag to allow multiple trusted media hosts.
 
 For Voxtral:
 
@@ -328,8 +327,8 @@ The table below lists all parameters accepted by the `/v1/audio/speech` endpoint
 | `stream` | bool | `false` | Enable streaming via SSE; when true, `response_format` must be `pcm` |
 | `stream_format` | string | `"sse"` | Streaming transport. Use `"audio"` with `stream=true` and `response_format="pcm"` for raw PCM bytes; the response headers declare the stream sample rate, channel count, and bit depth |
 | `initial_codec_chunk_frames` | int | `null` | Optional first codec chunk size for streaming TTFA tuning. Higgs TTS currently consumes this parameter first; raw PCM speech requests default this to `1` unless the client sets a value, including `0` |
-| `references` | list | `null` | Reference audio for voice cloning; each item has `audio_path` (`http(s)`, data URL, or allowed `file://` URI) and `text` |
-| `ref_audio` | string | `null` | Reference audio as `http(s)`, data URL, or an allowed `file://` URI; equivalent to `references[0].audio_path` |
+| `references` | list | `null` | Reference audio for voice cloning; each item has `audio_path` (allowed HTTP(S), data URL, or allowed `file://` URI) and `text` |
+| `ref_audio` | string | `null` | Reference audio as allowed HTTP(S), data URL, or an allowed `file://` URI; equivalent to `references[0].audio_path` |
 | `ref_text` | string | `null` | Transcript for `ref_audio`; equivalent to `references[0].text` |
 | `language` | string | `null` | Language hint: `Auto`, `Chinese`, `English`, `Japanese`, `Korean`, `German`, `French`, `Russian`, `Portuguese`, `Spanish`, or `Italian` |
 | `task_type` | string | `null` | Qwen3-TTS task type: `Base`, `CustomVoice`, or `VoiceDesign`; inferred as `Base` when reference audio/text is present, otherwise `CustomVoice` |

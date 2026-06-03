@@ -17,10 +17,7 @@ from pydantic import ValidationError
 from sglang_omni.client import GenerateRequest, SamplingParams
 from sglang_omni.models.tts_streaming import INITIAL_CODEC_CHUNK_FRAMES_PARAM
 from sglang_omni.preprocessing.base import MediaIO
-from sglang_omni.preprocessing.resource_connector import (
-    MultiModalResourceConnector,
-    resolve_allowed_local_media_path,
-)
+from sglang_omni.preprocessing.resource_connector import MultiModalResourceConnector
 from sglang_omni.serve.protocol import (
     SUPPORTED_TTS_LANGUAGES,
     SUPPORTED_TTS_RESPONSE_FORMATS,
@@ -62,19 +59,11 @@ class SpeechRequestValidator:
         allowed_media_domains: list[str] | None = None,
     ) -> None:
         self.default_model = default_model
-        self.allowed_local_media_path = (
-            resolve_allowed_local_media_path(allowed_local_media_path)
-            if allowed_local_media_path is not None
-            and str(allowed_local_media_path).strip()
-            else None
-        )
         self.reference_connector = MultiModalResourceConnector(
-            allowed_local_media_path=(
-                str(self.allowed_local_media_path)
-                if self.allowed_local_media_path
-                else ""
-            ),
+            allowed_local_media_path=allowed_local_media_path,
             allowed_media_domains=allowed_media_domains,
+            allow_remote_media_without_domains=False,
+            reject_unsafe_remote_addresses=True,
         )
         self.encoder_dependency_errors = _build_encoder_dependency_errors()
 

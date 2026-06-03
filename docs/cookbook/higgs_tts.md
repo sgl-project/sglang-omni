@@ -458,7 +458,7 @@ resp = requests.post(
 | `voice` | string | `"default"` | Voice identifier (ignored when `references` is set) |
 | `response_format` | string | `"wav"` | Output audio format |
 | `stream` | bool | `false` | Enable streaming via SSE |
-| `references` | list | `null` | Reference audio for voice cloning; each item has `audio_path` (remote URL, data URL, or allowed `file://` URI) and `text` (transcript) |
+| `references` | list | `null` | Reference audio for voice cloning; each item has `audio_path` (allowed remote URL, data URL, or allowed `file://` URI) and `text` (transcript) |
 | `reference_codes` | list[list[int]] | `null` | Pre-encoded discrete codes, shape `[T, 8]` — alternative to `references[0].audio_path` |
 | `reference_text` | string | `null` | Transcript of reference audio when supplying `reference_codes` |
 | `max_new_tokens` | int | `2048` | Maximum number of generated multi-codebook steps |

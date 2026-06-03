@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import base64
+import ipaddress
 from pathlib import Path
 
 import httpx
 import pytest
 
+from sglang_omni.preprocessing import resource_connector
 from sglang_omni.serve import speech_service
 from sglang_omni.serve.protocol import CreateSpeechRequest
 from sglang_omni.serve.speech_errors import SpeechAPIError
@@ -20,6 +22,11 @@ class _MockHTTPConnection:
 
     def get_sync_client(self) -> httpx.Client:
         return self.client
+
+
+def _public_test_addresses(hostname: str) -> tuple[ipaddress.IPv4Address, ...]:
+    del hostname
+    return (ipaddress.ip_address("93.184.216.34"),)
 
 
 def test_speech_service_rejects_non_string_input() -> None:
@@ -204,8 +211,18 @@ def test_reference_audio_accepts_valid_base64_data_url() -> None:
     }
 
 
-def test_reference_audio_accepts_https_by_default() -> None:
-    service = SpeechRequestValidator(default_model="tts")
+def test_reference_audio_accepts_allowed_https(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = SpeechRequestValidator(
+        default_model="tts",
+        allowed_media_domains=["example.com"],
+    )
+    monkeypatch.setattr(
+        resource_connector,
+        "_resolve_remote_addresses",
+        _public_test_addresses,
+    )
     service.reference_connector.connection = _MockHTTPConnection(
         lambda request: httpx.Response(
             200,
@@ -246,10 +263,46 @@ def test_reference_audio_honors_allowed_media_domains() -> None:
     assert exc_info.value.param == "ref_audio"
 
 
-def test_reference_audio_revalidates_redirect_domains() -> None:
+def test_reference_audio_requires_allowed_media_domain() -> None:
+    service = SpeechRequestValidator(default_model="tts")
+
+    with pytest.raises(SpeechAPIError) as exc_info:
+        service.parse_request(
+            {"input": "hello", "ref_audio": "https://example.com/reference.wav"}
+        )
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.param == "ref_audio"
+    assert "allowed-media-domain" in exc_info.value.message
+
+
+def test_reference_audio_rejects_private_remote_addresses() -> None:
+    service = SpeechRequestValidator(
+        default_model="tts",
+        allowed_media_domains=["127.0.0.1"],
+    )
+
+    with pytest.raises(SpeechAPIError) as exc_info:
+        service.parse_request(
+            {"input": "hello", "ref_audio": "https://127.0.0.1/reference.wav"}
+        )
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.param == "ref_audio"
+    assert "loopback" in exc_info.value.message
+
+
+def test_reference_audio_revalidates_redirect_domains(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     service = SpeechRequestValidator(
         default_model="tts",
         allowed_media_domains=["allowed.example"],
+    )
+    monkeypatch.setattr(
+        resource_connector,
+        "_resolve_remote_addresses",
+        _public_test_addresses,
     )
     service.reference_connector.connection = _MockHTTPConnection(
         lambda request: httpx.Response(
@@ -267,10 +320,54 @@ def test_reference_audio_revalidates_redirect_domains() -> None:
     assert exc_info.value.param == "ref_audio"
 
 
+def test_reference_audio_revalidates_redirect_addresses(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def resolve_addresses(
+        hostname: str,
+    ) -> tuple[ipaddress.IPv4Address | ipaddress.IPv6Address, ...]:
+        if hostname == "private.example":
+            return (ipaddress.ip_address("10.0.0.1"),)
+        return _public_test_addresses(hostname)
+
+    service = SpeechRequestValidator(
+        default_model="tts",
+        allowed_media_domains=["allowed.example", "private.example"],
+    )
+    monkeypatch.setattr(
+        resource_connector,
+        "_resolve_remote_addresses",
+        resolve_addresses,
+    )
+    service.reference_connector.connection = _MockHTTPConnection(
+        lambda request: httpx.Response(
+            302,
+            headers={"location": "https://private.example/reference.wav"},
+        )
+    )
+
+    with pytest.raises(SpeechAPIError) as exc_info:
+        service.parse_request(
+            {"input": "hello", "ref_audio": "https://allowed.example/reference.wav"}
+        )
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.param == "ref_audio"
+    assert "private" in exc_info.value.message
+
+
 def test_reference_audio_rejects_oversized_https_response(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    service = SpeechRequestValidator(default_model="tts")
+    service = SpeechRequestValidator(
+        default_model="tts",
+        allowed_media_domains=["example.com"],
+    )
+    monkeypatch.setattr(
+        resource_connector,
+        "_resolve_remote_addresses",
+        _public_test_addresses,
+    )
     service.reference_connector.connection = _MockHTTPConnection(
         lambda request: httpx.Response(
             200,
