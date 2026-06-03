@@ -110,7 +110,7 @@ Each event carries a base64-encoded audio chunk; the stream ends with `data: [DO
 | `input` | (required) | Text to synthesize |
 | `voice` | `cheerful_female` | Preset voice name from the checkpoint's `voice_embedding/` directory |
 | `max_new_tokens` | `4096` | Maximum number of generated acoustic tokens |
-| `response_format` | `wav` | Output container |
+| `response_format` | `wav` | Output container (`wav`, `mp3`, `flac`, `opus`, `aac`, `pcm`) |
 | `stream` | `false` | Stream audio chunks over SSE |
 
 > Voxtral generation is **deterministic**: the engine fixes `temperature` to `0.0`, so sampling
