@@ -263,6 +263,18 @@ class Qwen3OmniPipelineConfig(PipelineConfig):
         return {"thinker": "thinker"}
 
     @classmethod
+    def global_tp_stage_config(cls, tp: int) -> dict[str, int] | None:
+        if tp < 1:
+            raise ValueError(f"global tp must be >= 1, got {tp}")
+        # image_encoder mirrors thinker TP; audio_encoder scales at half
+        # the rate (TP >= 2 uses half of thinker TP, minimum 1).
+        return {
+            "thinker": tp,
+            "image_encoder": tp,
+            "audio_encoder": max(1, tp // 2),
+        }
+
+    @classmethod
     def encoder_mem_reserve_role_to_stage(cls) -> dict[str, str]:
         return {"thinker": "thinker"}
 
@@ -287,6 +299,17 @@ class Qwen3OmniSpeechPipelineConfig(PipelineConfig):
     @classmethod
     def mem_fraction_role_to_stage(cls) -> dict[str, str]:
         return {"thinker": "thinker", "talker": "talker_ar"}
+
+    @classmethod
+    def global_tp_stage_config(cls, tp: int) -> dict[str, int] | None:
+        if tp < 1:
+            raise ValueError(f"global tp must be >= 1, got {tp}")
+        return {
+            "thinker": tp,
+            "image_encoder": tp,
+            "audio_encoder": max(1, tp // 2),
+            "talker_ar": tp,
+        }
 
     @classmethod
     def encoder_mem_reserve_role_to_stage(cls) -> dict[str, str]:

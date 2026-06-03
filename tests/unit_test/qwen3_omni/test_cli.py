@@ -10,6 +10,7 @@ import typer
 from sglang_omni.cli.serve import (
     apply_cuda_graph_cli_overrides,
     apply_encoder_mem_reserve_cli_override,
+    apply_global_tp_expansion,
     apply_parallelism_cli_overrides,
     apply_partial_start_cli_overrides,
     apply_torch_compile_cli_overrides,
@@ -60,6 +61,7 @@ def _serve_kwargs(**overrides):
         talker_mem_fraction_static=None,
         encoder_mem_reserve=None,
         log_level="info",
+        global_tp=None,
         thinker_tp_size=None,
         thinker_gpus=None,
         talker_gpu=None,
@@ -405,3 +407,94 @@ def test_partial_start_cli_rejects_unsupported_config_with_stable_message():
         match="--talker-partial-start is not supported by Qwen3OmniPipelineConfig",
     ):
         apply_partial_start_cli_overrides(config, talker_partial_start="on")
+
+
+# -- global TP expansion tests --
+
+
+def test_global_tp_text_config_sets_thinker_and_encoders():
+    config = Qwen3OmniPipelineConfig(model_path="dummy")
+
+    apply_global_tp_expansion(config, global_tp=2)
+
+    assert _stage(config, "thinker").tp_size == 2
+    assert _stage(config, "thinker").parallelism.tp == 2
+    assert _stage(config, "image_encoder").tp_size == 2
+    assert _stage(config, "audio_encoder").tp_size == 1
+
+
+def test_global_tp_speech_config_sets_talker_ar():
+    config = Qwen3OmniSpeechPipelineConfig(model_path="dummy")
+
+    apply_global_tp_expansion(config, global_tp=2)
+
+    assert _stage(config, "thinker").tp_size == 2
+    assert _stage(config, "image_encoder").tp_size == 2
+    assert _stage(config, "audio_encoder").tp_size == 1
+    assert _stage(config, "talker_ar").tp_size == 2
+
+
+def test_global_tp_1_is_identity():
+    config = Qwen3OmniSpeechPipelineConfig(model_path="dummy")
+    original = {s.name: s.tp_size for s in config.stages}
+
+    apply_global_tp_expansion(config, global_tp=1)
+
+    for stage in config.stages:
+        assert stage.tp_size == original[stage.name]
+
+
+def test_global_tp_4_scales_audio_encoder():
+    config = Qwen3OmniSpeechPipelineConfig(model_path="dummy")
+
+    apply_global_tp_expansion(config, global_tp=4)
+
+    assert _stage(config, "thinker").tp_size == 4
+    assert _stage(config, "image_encoder").tp_size == 4
+    assert _stage(config, "audio_encoder").tp_size == 2
+    assert _stage(config, "talker_ar").tp_size == 4
+
+
+def test_global_tp_none_is_noop():
+    config = Qwen3OmniSpeechPipelineConfig(model_path="dummy")
+    original = {s.name: s.tp_size for s in config.stages}
+
+    apply_global_tp_expansion(config, global_tp=None)
+
+    for stage in config.stages:
+        assert stage.tp_size == original[stage.name]
+
+
+def test_global_tp_unsupported_config_raises():
+    config = PipelineConfig(
+        model_path="dummy",
+        stages=[
+            StageConfig(
+                name="stage",
+                process="pipeline",
+                factory="tests.unit_test.fixtures.pipeline_fakes.dummy_factory",
+                terminal=True,
+            )
+        ],
+    )
+
+    with pytest.raises(typer.BadParameter, match="--tp is not supported"):
+        apply_global_tp_expansion(config, global_tp=2)
+
+
+def test_global_tp_per_stage_override_takes_precedence():
+    config = Qwen3OmniSpeechPipelineConfig(model_path="dummy")
+
+    # global sets thinker=2, then per-stage override sets thinker=4
+    apply_global_tp_expansion(config, global_tp=2)
+    apply_parallelism_cli_overrides(
+        config,
+        thinker_tp_size=4,
+        thinker_gpus="0,1,2,3",
+        talker_gpu=None,
+        code2wav_gpu=None,
+    )
+
+    assert _stage(config, "thinker").tp_size == 4
+    # image_encoder still at global_tp=2
+    assert _stage(config, "image_encoder").tp_size == 2

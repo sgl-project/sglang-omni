@@ -485,6 +485,34 @@ def apply_thinker_server_args_cli_overrides(
     return pipeline_config
 
 
+def apply_global_tp_expansion(
+    pipeline_config: PipelineConfig,
+    *,
+    global_tp: int | None,
+) -> PipelineConfig:
+    """Expand a global ``--tp N`` into model-specific per-stage TP sizes.
+
+    The mapping is defined by each model config's
+    :meth:`PipelineConfig.global_tp_stage_config` classmethod.  Per-stage
+    CLI overrides (e.g. ``--thinker-tp-size``) applied later take precedence.
+    """
+    if global_tp is None:
+        return pipeline_config
+
+    stage_tp_map = type(pipeline_config).global_tp_stage_config(global_tp)
+    if stage_tp_map is None:
+        raise typer.BadParameter(
+            f"--tp is not supported by {type(pipeline_config).__name__}"
+        )
+
+    for stage in pipeline_config.stages:
+        if stage.name in stage_tp_map:
+            tp = stage_tp_map[stage.name]
+            stage.tp_size = tp
+            stage.parallelism.tp = tp
+    return pipeline_config
+
+
 def apply_parallelism_cli_overrides(
     pipeline_config: PipelineConfig,
     *,
@@ -867,6 +895,17 @@ def serve(
         Literal["debug", "info", "warning", "error", "critical"],
         typer.Option(help="Log level (default: info)."),
     ] = "info",
+    global_tp: Annotated[
+        int | None,
+        typer.Option(
+            "--tp",
+            help=(
+                "Global tensor parallel size. Expands to model-specific per-stage "
+                "TP sizes (e.g. for Qwen3-Omni: thinker=tp, image_encoder=tp, "
+                "audio_encoder=max(1,tp//2)). Per-stage overrides take precedence."
+            ),
+        ),
+    ] = None,
     thinker_tp_size: Annotated[
         int | None,
         typer.Option(
@@ -1055,6 +1094,10 @@ def serve(
         merged_config,
         cpu_offload_gb=cpu_offload_gb,
         quantization=quantization,
+    )
+    merged_config = apply_global_tp_expansion(
+        merged_config,
+        global_tp=global_tp,
     )
     merged_config = apply_parallelism_cli_overrides(
         merged_config,
