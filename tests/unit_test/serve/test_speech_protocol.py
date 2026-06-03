@@ -340,6 +340,36 @@ def test_file_reference_resolves_inside_allowlist(tmp_path: Path) -> None:
     assert prepared_again.ref_audio == str(audio_path.resolve())
 
 
+def test_file_reference_accepts_localhost_file_url(tmp_path: Path) -> None:
+    audio_path = tmp_path / "reference.wav"
+    audio_path.write_bytes(b"RIFF")
+    service = SpeechRequestValidator(
+        default_model="tts",
+        allowed_local_media_path=tmp_path,
+    )
+
+    request = service.parse_request(
+        {"input": "hello", "ref_audio": f"file://localhost{audio_path}"}
+    )
+
+    assert request.ref_audio == str(audio_path.resolve())
+
+
+def test_file_reference_rejects_remote_file_netloc(tmp_path: Path) -> None:
+    service = SpeechRequestValidator(
+        default_model="tts",
+        allowed_local_media_path=tmp_path,
+    )
+
+    with pytest.raises(SpeechAPIError) as exc_info:
+        service.parse_request(
+            {"input": "hello", "ref_audio": "file://remotehost/reference.wav"}
+        )
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.param == "ref_audio"
+
+
 def test_file_reference_rejects_oversized_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

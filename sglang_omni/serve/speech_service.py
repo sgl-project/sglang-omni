@@ -10,11 +10,12 @@ import shutil
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
-from urllib.request import url2pathname
 
 from pydantic import ValidationError
 
 from sglang_omni.client import GenerateRequest, SamplingParams
+from sglang_omni.preprocessing.base import MediaIO
+from sglang_omni.preprocessing.resource_connector import MultiModalResourceConnector
 from sglang_omni.serve.protocol import (
     SUPPORTED_TTS_LANGUAGES,
     SUPPORTED_TTS_RESPONSE_FORMATS,
@@ -53,6 +54,13 @@ class SpeechRequestValidator:
             if allowed_local_media_path is not None
             and str(allowed_local_media_path).strip()
             else None
+        )
+        self.reference_connector = MultiModalResourceConnector(
+            allowed_local_media_path=(
+                str(self.allowed_local_media_path)
+                if self.allowed_local_media_path
+                else ""
+            )
         )
         self.encoder_dependency_errors = _build_encoder_dependency_errors()
 
@@ -279,77 +287,49 @@ class SpeechRequestValidator:
             field_name: None for field_name in _REFERENCE_AUDIO_FIELDS
         }
         if reference.data is not None:
-            _validate_base64_media_data(
-                reference.data,
-                media_type=reference.media_type or "audio/wav",
-                param="references.data",
+            updates.update(
+                _SpeechReferenceMediaIO("references.data").load_base64(
+                    reference.media_type or "audio/wav", reference.data
+                )
             )
-            updates["data"] = reference.data
-            updates["media_type"] = reference.media_type or "audio/wav"
             return reference.model_copy(update=updates)
 
         for field_name in _REFERENCE_AUDIO_FIELDS:
             value = getattr(reference, field_name)
             if not isinstance(value, str):
                 continue
-            normalized = self._normalize_media_reference(
-                value, param=f"references.{field_name}"
+            updates.update(
+                self._load_media_reference_descriptor(
+                    value, param=f"references.{field_name}"
+                )
             )
-            updates.update(_reference_dict_from_media_reference(normalized))
             break
         return reference.model_copy(update=updates)
 
     def _normalize_media_reference(self, value: str, *, param: str) -> str:
+        descriptor = self._load_media_reference_descriptor(value, param=param)
+        return _media_reference_from_descriptor(descriptor)
+
+    def _load_media_reference_descriptor(
+        self, value: str, *, param: str
+    ) -> dict[str, str]:
         url = urlparse(value)
         if url.scheme in {"http", "https"}:
             raise bad_request(
                 "remote reference audio URLs are not supported by this endpoint",
                 param=param,
             )
-        if url.scheme == "data":
-            _validate_data_url(value, param=param)
-            return value
-        if url.scheme != "file":
+        if url.scheme not in {"data", "file"}:
             if Path(value).is_absolute():
-                return self._normalize_local_media_path(value, param=param)
-            raise bad_request(f"{param} must be a data or file:// URL", param=param)
-        if self.allowed_local_media_path is None:
-            raise bad_request(
-                f"file:// {param} requires --allowed-local-media-path",
-                param=param,
+                value = Path(value).expanduser().resolve().as_uri()
+            else:
+                raise bad_request(f"{param} must be a data or file:// URL", param=param)
+        try:
+            return self.reference_connector.load_resource(
+                value, _SpeechReferenceMediaIO(param)
             )
-        netloc = url.netloc or ""
-        if netloc and netloc != "localhost":
-            raise bad_request(
-                f"file:// {param} netloc is not supported: {netloc}",
-                param=param,
-            )
-        return self._normalize_local_media_path(url2pathname(url.path), param=param)
-
-    def _normalize_local_media_path(self, value: str, *, param: str) -> str:
-        if self.allowed_local_media_path is None:
-            raise bad_request(
-                f"file:// {param} requires --allowed-local-media-path",
-                param=param,
-            )
-        file_path = Path(value).expanduser().resolve()
-        if _is_relative_to(file_path, self.allowed_local_media_path):
-            if not file_path.exists():
-                raise bad_request(
-                    f"file:// {param} path does not exist: {file_path}",
-                    param=param,
-                )
-            if not file_path.is_file():
-                raise bad_request(
-                    f"file:// {param} path must be a file: {file_path}",
-                    param=param,
-                )
-            _validate_reference_size(file_path.stat().st_size, param=param)
-            return str(file_path)
-        raise bad_request(
-            f"file:// {param} path is outside allowed local media paths: {file_path}",
-            param=param,
-        )
+        except (RuntimeError, ValueError, OSError) as exc:
+            raise bad_request(str(exc), param=param) from exc
 
     def _validate_encoder_dependency(self, response_format: str) -> None:
         message = self.encoder_dependency_errors.get(response_format)
@@ -357,11 +337,40 @@ class SpeechRequestValidator:
             raise service_unavailable(message, param="response_format")
 
 
+class _SpeechReferenceMediaIO(MediaIO[dict[str, str]]):
+    """Return backend reference descriptors after connector policy checks."""
+
+    def __init__(self, param: str) -> None:
+        self.param = param
+
+    def load_bytes(self, data: bytes) -> dict[str, str]:
+        raise ValueError(
+            "remote reference audio URLs are not supported by this endpoint"
+        )
+
+    def load_base64(self, media_type: str, data: str) -> dict[str, str]:
+        _validate_base64_media_data(data, media_type=media_type, param=self.param)
+        return {"data": data, "media_type": media_type}
+
+    def load_file(self, filepath: Path) -> dict[str, str]:
+        if not filepath.is_file():
+            raise ValueError(f"file:// {self.param} path must be a file: {filepath}")
+        _validate_reference_size(filepath.stat().st_size, param=self.param)
+        return {"audio_path": str(filepath)}
+
+
 def _reference_dict_from_media_reference(value: str) -> dict[str, Any]:
     if value.startswith("data:"):
         media_type, encoded = _parse_data_url(value, param="ref_audio")
         return {"data": encoded, "media_type": media_type}
     return {"audio_path": value}
+
+
+def _media_reference_from_descriptor(descriptor: dict[str, str]) -> str:
+    audio_path = descriptor.get("audio_path")
+    if audio_path is not None:
+        return audio_path
+    return f"data:{descriptor['media_type']};base64,{descriptor['data']}"
 
 
 def _normalize_response_format(value: str) -> str:
@@ -383,10 +392,6 @@ def _validate_positive_int(value: int | None, *, param: str) -> None:
 def _validate_non_negative_int(value: int | None, *, param: str) -> None:
     if value is not None and value < 0:
         raise bad_request(f"{param} must be greater than or equal to 0", param=param)
-
-
-def _validate_data_url(value: str, *, param: str) -> None:
-    _parse_data_url(value, param=param)
 
 
 def _parse_data_url(value: str, *, param: str) -> tuple[str, str]:
@@ -467,14 +472,6 @@ def _validation_error_message(exc: ValidationError) -> str:
     location = ".".join(str(item) for item in first_error.get("loc", ()))
     message = first_error.get("msg") or "invalid speech request"
     return f"{location}: {message}" if location else str(message)
-
-
-def _is_relative_to(path: Path, root: Path) -> bool:
-    try:
-        path.relative_to(root)
-    except ValueError:
-        return False
-    return True
 
 
 def _resolve_allowed_local_media_path(path: str | Path) -> Path:

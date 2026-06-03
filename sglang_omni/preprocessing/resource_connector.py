@@ -106,6 +106,8 @@ class MultiModalResourceConnector:
         if "," not in path:
             raise ValueError("Invalid data URL format")
         spec, data = path.split(",", 1)
+        if ";base64" not in spec.lower():
+            raise ValueError("Data URL must use base64 encoding")
         media_type = spec.split(";")[0].lstrip("/")
         return media_io.load_base64(media_type, data)
 
@@ -115,9 +117,13 @@ class MultiModalResourceConnector:
             raise RuntimeError("Local file loading is disabled.")
 
         netloc = url_spec.netloc or ""
-        filepath = Path(url2pathname(netloc + url_spec.path)).resolve()
+        if netloc and netloc != "localhost":
+            raise ValueError(f"File URL netloc is not supported: {netloc}")
+        filepath = Path(url2pathname(url_spec.path)).resolve()
 
-        if self.allowed_local_media_path not in filepath.parents:
+        try:
+            filepath.relative_to(self.allowed_local_media_path)
+        except ValueError:
             raise ValueError(f"File path {filepath} is not within allowed directory.")
         return media_io.load_file(filepath)
 
