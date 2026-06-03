@@ -499,7 +499,10 @@ def apply_global_tp_expansion(
     if global_tp is None:
         return pipeline_config
 
-    stage_tp_map = type(pipeline_config).global_tp_stage_config(global_tp)
+    try:
+        stage_tp_map = type(pipeline_config).global_tp_stage_config(global_tp)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
     if stage_tp_map is None:
         raise typer.BadParameter(
             f"--tp is not supported by {type(pipeline_config).__name__}"

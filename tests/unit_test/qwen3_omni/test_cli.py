@@ -482,6 +482,14 @@ def test_global_tp_unsupported_config_raises():
         apply_global_tp_expansion(config, global_tp=2)
 
 
+@pytest.mark.parametrize("bad_tp", [0, -1, -10])
+def test_global_tp_rejects_invalid_values(bad_tp):
+    config = Qwen3OmniSpeechPipelineConfig(model_path="dummy")
+
+    with pytest.raises(typer.BadParameter, match="must be >= 1"):
+        apply_global_tp_expansion(config, global_tp=bad_tp)
+
+
 def test_global_tp_per_stage_override_takes_precedence():
     config = Qwen3OmniSpeechPipelineConfig(model_path="dummy")
 
