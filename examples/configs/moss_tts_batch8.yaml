@@ -1,0 +1,29 @@
+config_cls: MossTTSPipelineConfig
+model_path: OpenMOSS-Team/MOSS-TTS-v1.5
+relay_backend: shm
+stages:
+  - name: preprocessing
+    process: pipeline
+    factory: sglang_omni.models.moss_tts.stages.create_preprocessing_executor
+    factory_args:
+      max_batch_size: 8
+      max_batch_wait_ms: 2
+    next: tts_engine
+
+  - name: tts_engine
+    process: pipeline
+    factory: sglang_omni.models.moss_tts.stages.create_sglang_tts_engine_executor
+    factory_args:
+      gpu_id: 0
+      dtype: bfloat16
+    gpu: 0
+    next: vocoder
+
+  - name: vocoder
+    process: pipeline
+    factory: sglang_omni.models.moss_tts.stages.create_vocoder_executor
+    factory_args:
+      gpu_id: 0
+      dtype: float32
+    gpu: 0
+    terminal: true
