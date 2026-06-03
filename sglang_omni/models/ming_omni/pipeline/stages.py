@@ -32,6 +32,7 @@ from sglang_omni.models.ming_omni.pipeline.next_stage import (
 )
 from sglang_omni.models.ming_omni.pipeline.state_io import load_state, store_state
 from sglang_omni.proto import StagePayload
+from sglang_omni.utils.hub import hf_hub_download, snapshot_download
 
 
 def _event_to_dict(event: OmniEvent) -> dict[str, Any]:
@@ -255,8 +256,6 @@ def _ensure_ming_config_registered(model_path: str = "inclusionAI/Ming-flash-omn
 
     # Patch HF cache with missing files
     try:
-        from sglang_omni.utils.hub import hf_hub_download, snapshot_download
-
         snapshot_dir = snapshot_download(model_path)
 
         # 1. Write configuration_bailingmm2.py shim
@@ -293,8 +292,6 @@ def _resolve_local_model_path(model_path: str) -> str:
     if os.path.isdir(model_path):
         return model_path
     try:
-        from sglang_omni.utils.hub import snapshot_download
-
         return snapshot_download(model_path)
     except Exception:
         return model_path

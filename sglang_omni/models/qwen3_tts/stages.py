@@ -19,6 +19,7 @@ from sglang_omni.models.qwen3_tts.request_builders import (
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 from sglang_omni.utils.audio_payload import audio_waveform_payload
+from sglang_omni.utils.hub import snapshot_download
 
 logger = logging.getLogger(__name__)
 
@@ -41,8 +42,6 @@ def store_state(payload: StagePayload, state: Qwen3TTSState) -> StagePayload:
 def _resolve_checkpoint(checkpoint: str) -> str:
     if os.path.isdir(checkpoint):
         return checkpoint
-    from sglang_omni.utils.hub import snapshot_download
-
     return snapshot_download(checkpoint)
 
 

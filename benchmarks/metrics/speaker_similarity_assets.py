@@ -98,7 +98,7 @@ def _hf_download(repo_id: str, filename: str, dest_dir: Path) -> Path:
     file against the HF-side metadata before returning, so a transport
     truncation surfaces here rather than as a silent partial cache.
     """
-    from huggingface_hub import hf_hub_download
+    from sglang_omni.utils.hub import hf_hub_download
 
     dest_dir.mkdir(parents=True, exist_ok=True)
     local_path = hf_hub_download(

@@ -17,6 +17,7 @@ from sglang_omni.models.fishaudio_s2_pro.request_builders import (
     make_tts_scheduler_adapters,
 )
 from sglang_omni.proto import StagePayload
+from sglang_omni.utils.hub import snapshot_download
 
 logger = logging.getLogger(__name__)
 
@@ -53,8 +54,6 @@ def _compile_s2pro_codebook_decoder(model: Any, *, max_batch_size: int) -> None:
 def _resolve_checkpoint(checkpoint: str) -> str:
     if os.path.isdir(checkpoint):
         return checkpoint
-    from sglang_omni.utils.hub import snapshot_download
-
     return snapshot_download(checkpoint)
 
 

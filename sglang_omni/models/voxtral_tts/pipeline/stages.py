@@ -18,6 +18,7 @@ from sglang_omni.models.voxtral_tts.pipeline.state_io import load_state, store_s
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 from sglang_omni.utils.audio_payload import audio_waveform_payload
+from sglang_omni.utils.hub import snapshot_download
 
 logger = logging.getLogger(__name__)
 
@@ -42,8 +43,6 @@ def _import_mistral_common_for_voxtral():
 def _resolve_checkpoint(checkpoint: str) -> str:
     if os.path.isdir(checkpoint):
         return checkpoint
-    from sglang_omni.utils.hub import snapshot_download
-
     return snapshot_download(checkpoint)
 
 
