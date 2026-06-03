@@ -1,14 +1,13 @@
 # Higgs TTS
 
 [Higgs Audio v3 TTS](https://huggingface.co/bosonai/higgs-audio-v3-tts-4b)
-is a chat-native text-to-speech model from Boson AI built on a Qwen3-4B backbone. It generates
-24 kHz speech through 8 discrete codebooks and supports 100+ languages, voice cloning from a
+is a text-to-speech model from Boson AI built on a Qwen3-4B backbone. It generates
+24 kHz speech through 8 discrete codebooks and supports 100 languages, voice cloning from a
 reference clip, and fine-grained inline control over emotion, style, sound effects, and prosody.
 
 ## Highlights
 
-- **Chat-native, low-latency** streaming multi-turn speech generation
-- **Multilingual** — 100+ languages and dialects, 90+ with single-digit WER/CER
+- **Multilingual** — 100 languages with single-digit WER/CER
 - **Voice clone accuracy** — high-fidelity zero-shot speaker cloning from reference clips
 - **Inline control** via `<|emotion:…|>`, `<|style:…|>`, `<|sfx:…|>`, `<|prosody:…|>` tags
 
