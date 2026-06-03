@@ -7,10 +7,6 @@ from typing import Any
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
-# ---------------------------------------------------------------------------
-# Shared / Common
-# ---------------------------------------------------------------------------
-
 
 class UsageResponse(BaseModel):
     """Token usage statistics."""
@@ -18,11 +14,6 @@ class UsageResponse(BaseModel):
     prompt_tokens: int = 0
     completion_tokens: int = 0
     total_tokens: int = 0
-
-
-# ---------------------------------------------------------------------------
-# Chat Completion
-# ---------------------------------------------------------------------------
 
 
 class ChatMessage(BaseModel):
@@ -155,10 +146,6 @@ class ChatCompletionStreamResponse(BaseModel):
     usage: UsageResponse | None = None
 
 
-# ---------------------------------------------------------------------------
-# Speech (TTS)
-# ---------------------------------------------------------------------------
-
 SUPPORTED_TTS_RESPONSE_FORMATS = frozenset({"wav", "mp3", "flac", "pcm", "aac", "opus"})
 SUPPORTED_TTS_LANGUAGES = frozenset(
     {
@@ -238,20 +225,10 @@ class CreateSpeechRequest(BaseModel):
     stage_params: dict[str, dict[str, Any]] | None = None
 
 
-# ---------------------------------------------------------------------------
-# Audio transcription (ASR)
-# ---------------------------------------------------------------------------
-
-
 class TranscriptionResponse(BaseModel):
     """OpenAI-compatible transcription response."""
 
     text: str
-
-
-# ---------------------------------------------------------------------------
-# Model listing
-# ---------------------------------------------------------------------------
 
 
 class ModelPermission(BaseModel):
