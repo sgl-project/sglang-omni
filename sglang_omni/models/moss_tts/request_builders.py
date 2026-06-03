@@ -7,6 +7,7 @@ import base64
 import collections
 import hashlib
 import io
+import logging
 import os
 import re
 import threading
@@ -19,6 +20,8 @@ import torch
 from sglang_omni.models.moss_tts.payload_types import MossTTSState
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.types import ARRequestData
+
+logger = logging.getLogger(__name__)
 
 MOSS_TTS_DEFAULT_MAX_NEW_TOKENS = 4096
 _MOSS_TTS_PREPARED_MARKER = "_moss_tts_prepared_request"
@@ -454,7 +457,7 @@ def _references_for_processor_batch(
 
     for sample_rate, items in decode_groups.items():
         codes = processor.encode_audios_from_wav(
-            [wav for _, wav in items], int(sample_rate)
+            [wav for _, wav in items], sample_rate
         )
         if len(codes) != len(items):
             raise RuntimeError(
@@ -512,6 +515,13 @@ def _trim_batched_processor_rows(
     rows: torch.Tensor,
     attention_mask: Any,
 ) -> torch.Tensor:
+    """Remove padding rows using the per-sample attention mask.
+
+    ``rows`` has shape ``[T, C]`` (one sample sliced from the batch).
+    ``attention_mask`` is ``[T]`` or ``[T, ...]``; any position with at least
+    one active value is kept.  Falls back to returning all rows when the mask
+    is absent or its length doesn't match ``T``.
+    """
     if attention_mask is None:
         return rows
     mask = torch.as_tensor(attention_mask)
@@ -603,7 +613,11 @@ def preprocess_moss_tts_payload(payload: StagePayload) -> StagePayload:
 
 
 def preprocess_moss_tts_payloads(payloads: list[StagePayload]) -> list[StagePayload]:
-    """Batch MOSS-TTS prompt/reference preprocessing for SimpleScheduler."""
+    """Batch MOSS-TTS prompt/reference preprocessing for SimpleScheduler.
+
+    Falls back to per-item preprocessing when the batched path raises so that
+    one bad payload does not fail the entire batch.
+    """
 
     if not payloads:
         return []
@@ -625,12 +639,16 @@ def preprocess_moss_tts_payloads(payloads: list[StagePayload]) -> list[StagePayl
         prepared_items = _prepare_moss_tts_requests(
             payloads, processor=context.processor
         )
-    except BaseException:
+    except Exception:
         with _PREPARED_REQUESTS_LOCK:
             for rid in request_ids:
                 _INFLIGHT_REQUESTS.discard(rid)
                 _ABORTED_REQUESTS.discard(rid)
-        raise
+        logger.debug(
+            "MOSS-TTS batched preprocessing failed; falling back to per-item",
+            exc_info=True,
+        )
+        return [preprocess_moss_tts_payload(p) for p in payloads]
 
     with _PREPARED_REQUESTS_LOCK:
         for rid, prepared in zip(request_ids, prepared_items):

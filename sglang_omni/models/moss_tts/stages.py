@@ -188,8 +188,7 @@ def _build_usage(state: MossTTSState) -> dict[str, Any] | None:
 def create_preprocessing_executor(
     model_path: str,
     *,
-    max_concurrency: int = 8,
-    max_batch_size: int | None = None,
+    max_batch_size: int = 8,
     max_batch_wait_ms: int = 2,
 ) -> SimpleScheduler:
     processor = _load_moss_processor(model_path, device="cpu", dtype="float32")
@@ -198,8 +197,6 @@ def create_preprocessing_executor(
     # reference audio through the MOSS audio tokenizer. Batch adjacent requests
     # so the processor and data-URI audio encode paths can share codec forwards,
     # mirroring the batched reference-code path used by other TTS stages.
-    if max_batch_size is None:
-        max_batch_size = max_concurrency
     return SimpleScheduler(
         preprocess_moss_tts_payload,
         batch_compute_fn=preprocess_moss_tts_payloads,

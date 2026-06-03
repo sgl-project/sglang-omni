@@ -497,6 +497,246 @@ def test_moss_preprocess_batches_processor_and_reference_audio_encode(
     assert int(prepared[1].prompt_rows[0, 0]) == 2
 
 
+def test_moss_preprocess_batch_mixed_reference_types(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Batch with None, file-path, and data-URI references."""
+    from sglang_omni.models.moss_tts import request_builders as rb
+
+    class FakeProcessor:
+        def __init__(self) -> None:
+            self.encode_calls = []
+
+        def encode_audios_from_wav(self, wavs, sample_rate):
+            self.encode_calls.append((len(wavs), sample_rate))
+            return [
+                torch.full((2, 2), idx + 1, dtype=torch.long)
+                for idx in range(len(wavs))
+            ]
+
+        def build_user_message(self, **kwargs):
+            return {"role": "user", **kwargs}
+
+        def __call__(self, conversations, mode):
+            assert mode == "generation"
+            rows = []
+            for conversation in conversations:
+                ref = conversation[0].get("reference")
+                if ref is not None and isinstance(ref[0], torch.Tensor):
+                    marker = int(ref[0][0, 0].item())
+                elif ref is not None and isinstance(ref[0], str):
+                    marker = 99
+                else:
+                    marker = 0
+                rows.append(
+                    torch.tensor(
+                        [[marker, 1024, 1024], [151644, 1024, 1024]],
+                        dtype=torch.long,
+                    )
+                )
+            return {"input_ids": torch.stack(rows, dim=0)}
+
+    def fake_decode_data_uri(ref_audio: str):
+        return torch.full((1, 4), 0.5, dtype=torch.float32), 24000
+
+    processor = FakeProcessor()
+    payloads = [
+        make_payload(inputs={"text": "no ref"}, request_id="mix-0"),
+        make_payload(
+            inputs={"text": "path ref", "references": [{"audio_path": "voice.wav"}]},
+            request_id="mix-1",
+        ),
+        make_payload(
+            inputs={
+                "text": "uri ref",
+                "references": [{"audio_path": "data:audio/wav;base64,AAAA"}],
+            },
+            request_id="mix-2",
+        ),
+    ]
+
+    monkeypatch.setattr(rb, "_decode_data_uri_reference", fake_decode_data_uri)
+    try:
+        set_moss_tts_preprocessing_context(processor=processor)
+        prepared_payloads = preprocess_moss_tts_payloads(payloads)
+        prepared = [
+            rb.pop_prepared_moss_tts_request(payload) for payload in prepared_payloads
+        ]
+    finally:
+        clear_moss_tts_preprocessing_context()
+
+    assert processor.encode_calls == [(1, 24000)]
+    assert int(prepared[0].prompt_rows[0, 0]) == 0
+    assert int(prepared[1].prompt_rows[0, 0]) == 99
+    assert int(prepared[2].prompt_rows[0, 0]) == 1
+
+
+def test_moss_preprocess_batch_groups_by_sample_rate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Data-URI refs at different sample rates produce separate encode calls."""
+    from sglang_omni.models.moss_tts import request_builders as rb
+
+    class FakeProcessor:
+        def __init__(self) -> None:
+            self.encode_calls = []
+
+        def encode_audios_from_wav(self, wavs, sample_rate):
+            self.encode_calls.append((len(wavs), sample_rate))
+            return [
+                torch.full((2, 2), idx + 1, dtype=torch.long)
+                for idx in range(len(wavs))
+            ]
+
+        def build_user_message(self, **kwargs):
+            return {"role": "user", **kwargs}
+
+        def __call__(self, conversations, mode):
+            rows = [
+                torch.tensor(
+                    [[151644, 1024, 1024], [0, 0, 0]],
+                    dtype=torch.long,
+                )
+                for _ in conversations
+            ]
+            return {"input_ids": torch.stack(rows, dim=0)}
+
+    call_count = 0
+
+    def fake_decode_data_uri(ref_audio: str):
+        nonlocal call_count
+        call_count += 1
+        sr = 16000 if "16k" in ref_audio else 24000
+        return torch.full((1, 4), 0.1 * call_count, dtype=torch.float32), sr
+
+    processor = FakeProcessor()
+    payloads = [
+        make_payload(
+            inputs={
+                "text": "a",
+                "references": [{"audio_path": "data:audio/wav;base64,24kAAAA"}],
+            },
+            request_id="sr-0",
+        ),
+        make_payload(
+            inputs={
+                "text": "b",
+                "references": [{"audio_path": "data:audio/wav;base64,16kBBBB"}],
+            },
+            request_id="sr-1",
+        ),
+        make_payload(
+            inputs={
+                "text": "c",
+                "references": [{"audio_path": "data:audio/wav;base64,24kCCCC"}],
+            },
+            request_id="sr-2",
+        ),
+    ]
+
+    monkeypatch.setattr(rb, "_decode_data_uri_reference", fake_decode_data_uri)
+    try:
+        set_moss_tts_preprocessing_context(processor=processor)
+        preprocess_moss_tts_payloads(payloads)
+    finally:
+        clear_moss_tts_preprocessing_context()
+
+    rates = sorted((n, sr) for n, sr in processor.encode_calls)
+    assert rates == [(1, 16000), (2, 24000)]
+
+
+def test_moss_preprocess_batch_falls_back_on_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A batch failure falls back to per-item preprocessing."""
+    from sglang_omni.models.moss_tts import request_builders as rb
+
+    class FakeProcessor:
+        def build_user_message(self, **kwargs):
+            return {"role": "user", **kwargs}
+
+        def __call__(self, conversations, mode):
+            return {
+                "input_ids": torch.tensor(
+                    [[[1, 1024, 1024], [151644, 1024, 1024]]],
+                    dtype=torch.long,
+                )
+            }
+
+    batch_called = False
+
+    def boom_batch(payloads, *, processor):
+        nonlocal batch_called
+        batch_called = True
+        raise ValueError("simulated batch failure")
+
+    monkeypatch.setattr(rb, "_prepare_moss_tts_requests", boom_batch)
+
+    processor = FakeProcessor()
+    payloads = [
+        make_payload(inputs="hello", request_id="fb-0"),
+        make_payload(inputs="world", request_id="fb-1"),
+    ]
+
+    try:
+        set_moss_tts_preprocessing_context(processor=processor)
+        results = preprocess_moss_tts_payloads(payloads)
+        prepared = [
+            rb.pop_prepared_moss_tts_request(payload) for payload in results
+        ]
+    finally:
+        clear_moss_tts_preprocessing_context()
+
+    assert batch_called
+    assert len(prepared) == 2
+    assert prepared[0].state.text == "hello"
+    assert prepared[1].state.text == "world"
+
+
+def test_moss_preprocess_batch_discards_aborted_requests(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Abort arriving during batch preprocessing drops that request's handoff."""
+    from sglang_omni.models.moss_tts import request_builders as rb
+
+    class FakeProcessor:
+        def build_user_message(self, **kwargs):
+            return {"role": "user", **kwargs}
+
+        def __call__(self, conversations, mode):
+            rows = [
+                torch.tensor(
+                    [[1, 1024, 1024], [151644, 1024, 1024]],
+                    dtype=torch.long,
+                )
+                for _ in conversations
+            ]
+            return {"input_ids": torch.stack(rows, dim=0)}
+
+    original_prepare = rb._prepare_moss_tts_requests
+
+    def prepare_with_abort(payloads, *, processor):
+        rb.cleanup_prepared_moss_tts_request("abort-batch-1")
+        return original_prepare(payloads, processor=processor)
+
+    monkeypatch.setattr(rb, "_prepare_moss_tts_requests", prepare_with_abort)
+
+    processor = FakeProcessor()
+    payloads = [
+        make_payload(inputs="keep", request_id="abort-batch-0"),
+        make_payload(inputs="drop", request_id="abort-batch-1"),
+    ]
+
+    try:
+        set_moss_tts_preprocessing_context(processor=processor)
+        preprocess_moss_tts_payloads(payloads)
+        with rb._PREPARED_REQUESTS_LOCK:
+            assert "abort-batch-0" in rb._PREPARED_REQUESTS
+            assert "abort-batch-1" not in rb._PREPARED_REQUESTS
+    finally:
+        clear_moss_tts_preprocessing_context()
+
+
 def test_moss_delay_runner_samples_audio_and_appends_feedback() -> None:
     from sglang_omni.models.moss_tts.model_runner import MossTTSModelRunner
 
