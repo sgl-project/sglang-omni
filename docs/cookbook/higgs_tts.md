@@ -224,7 +224,23 @@ Audio chunks have `"finish_reason": null` and carry audio data in `audio.data`. 
 ### Inline Control Tokens
 
 Embed control tokens directly in the `input` field. Tokens from different
-categories can be combined:
+categories can be combined.
+
+Each request is a single **turn**, and two rules make control tokens reliable:
+
+1. **Lead the turn with the delivery tokens.** Emotion (`<|emotion:…|>`), Style
+   (`<|style:…|>`), and the prosody *speed* (`<|prosody:speed_…|>`), *pitch*
+   (`<|prosody:pitch_…|>`) and *expressive* (`<|prosody:expressive_…|>`) tokens
+   set how the entire turn is delivered, so place them at the very start of the
+   `input`, before any text. Positional tokens are the exception:
+   `<|prosody:pause|>` / `<|prosody:long_pause|>` go inline exactly where the
+   break should fall, and each `<|sfx:…|>` goes right before the sound it triggers.
+
+2. **Pair every sound effect with its onomatopoeia.** A `<|sfx:…|>` token lands
+   best when the matching written sound follows it immediately
+   (e.g. `<|sfx:laughter|>Haha`, `<|sfx:sigh|>Uh`, `<|sfx:sneeze|>Achoo`) — the
+   onomatopoeia gives the model the acoustic cue to realize the effect. See the
+   [Sound Effects](#sound-effects) table for suggested pairings.
 
 **Demo**
 
@@ -452,17 +468,19 @@ Reference output:
 
 #### Sound Effects
 
-| Token | Description |
-|---|---|
-| `<\|sfx:cough\|>` | Cough |
-| `<\|sfx:laughter\|>` | Laughter |
-| `<\|sfx:crying\|>` | Crying |
-| `<\|sfx:screaming\|>` | Screaming |
-| `<\|sfx:burping\|>` | Burping |
-| `<\|sfx:humming\|>` | Humming |
-| `<\|sfx:sigh\|>` | Sigh |
-| `<\|sfx:sniff\|>` | Sniff |
-| `<\|sfx:sneeze\|>` | Sneeze |
+Pair each token with the matching onomatopoeia immediately after it.
+
+| Token | Description | Suggested onomatopoeia |
+|---|---|---|
+| `<\|sfx:cough\|>` | Cough | Ahem |
+| `<\|sfx:laughter\|>` | Laughter | Haha / Hehe |
+| `<\|sfx:crying\|>` | Crying | Boohoo / Sob |
+| `<\|sfx:screaming\|>` | Screaming | Ahh / Aaah |
+| `<\|sfx:burping\|>` | Burping | Burp |
+| `<\|sfx:humming\|>` | Humming | Hmm / Mmm |
+| `<\|sfx:sigh\|>` | Sigh | Uh / Ahh |
+| `<\|sfx:sniff\|>` | Sniff | Sff |
+| `<\|sfx:sneeze\|>` | Sneeze | Achoo |
 
 #### Prosody
 
