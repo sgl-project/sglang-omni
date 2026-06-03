@@ -33,12 +33,10 @@ def make_mock_processor(waveforms: list[torch.Tensor]) -> MagicMock:
     
     mock_dec = MagicMock()
     mock_dec.audio_lengths = torch.tensor([w.shape[0] for w in waveforms])
-    mock_dec.audio = torch.stack([
-        torch.nn.functional.pad(w, (0, max(w.shape[0] for w in waveforms) - w.shape[0])).unsqueeze(0)
-        for w in waveforms
-    ]).unsqueeze(1) 
+    mock_dec.audio = torch.zeros(len(waveforms), 1, max(w.shape[0] for w in waveforms))
+    for i, w in enumerate(waveforms):
+        mock_dec.audio[i, 0, :w.shape[0]] = w
     mock_audio_tokenizer.decode.return_value = mock_dec
-    
     processor.audio_tokenizer = mock_audio_tokenizer
     return processor
 
