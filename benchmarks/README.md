@@ -39,6 +39,11 @@ python -m sglang_omni.cli serve \
     --model-path boson-sglang/higgs-audio-v3-tts-4b-base \
     --port 8000
 
+# MOSS-TTS — for section 2f (voice cloning via references[], duration via token_count)
+python -m sglang_omni.cli serve \
+    --model-path OpenMOSS-Team/MOSS-TTS-v1.5 \
+    --config examples/configs/moss_tts.yaml --port 8000
+
 # Qwen3-Omni, speech mode — for section 3 (SeedTTS; multi-GPU)
 python -m sglang_omni.cli serve \
     --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct --port 8000
@@ -81,6 +86,14 @@ python -m benchmarks.eval.benchmark_tts_seedtts \
     --ref-format references \
     --max-concurrency 16 \
     --output-dir results/higgs_tts_en --lang en --max-samples 50
+
+# 2f. MOSS-TTS — full pipeline with SeedTTS voice-cloning references
+python -m benchmarks.eval.benchmark_tts_seedtts \
+    --meta zhaochenyang20/seed-tts-eval-arrow \
+    --model OpenMOSS-Team/MOSS-TTS-v1.5 --port 8000 \
+    --ref-format references --token-count auto \
+    --max-concurrency 8 \
+    --output-dir results/moss_tts_en --lang en --max-samples 50
 
 # 3a. Qwen3-Omni — full pipeline (generate + transcribe)
 python -m benchmarks.eval.benchmark_omni_seedtts \
@@ -152,7 +165,9 @@ an ASR server to avoid GPU contention with the TTS server. Use `--generate-only`
 `--max-concurrency` are equivalent (see `benchmark_tts_seedtts.py`).
 `benchmark_tts_seedtts.py` also handles model-specific voice-cloning reference
 payloads: the default `--ref-format flat` sends `ref_audio`/`ref_text`, while
-`--ref-format references` sends `references=[{audio_path, text}]` for Higgs TTS.
+`--ref-format references` sends `references=[{audio_path, text}]` for Higgs TTS
+and MOSS-TTS. MOSS-TTS additionally supports duration control through
+`--token-count`.
 `benchmark_omni_seedtts.py` documents local vs CI GPU usage in its module
 docstring (sequential phases on CI to reduce OOM risk).
 
